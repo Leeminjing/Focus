@@ -92,7 +92,7 @@ button { cursor: pointer; }
   border-radius: var(--radius);
   background: var(--panel);
   align-items: center;
-  overflow: hidden;
+  overflow: visible;
 }
 .composer:focus-within { border-color: #76a9fb; box-shadow: 0 0 0 2px rgba(8, 103, 242, .08); }
 .composer textarea { border: 0; outline: 0; resize: none; padding: 16px 18px; min-height: 54px; max-height: 132px; background: transparent; }

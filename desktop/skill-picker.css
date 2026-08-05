@@ -1,0 +1,41 @@
+.skill-picker-shell { position: relative; min-width: 0; }
+.composer > .skill-picker-shell, .composer .skill-picker-shell textarea { width: 100%; }
+.composer .skill-picker-shell textarea { display: block; }
+.skill-tags { display: flex; flex-wrap: wrap; gap: 6px; padding: 9px 12px 0; }
+.skill-tags:empty { display: none; }
+.skill-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #b9d1f7;
+  border-radius: 999px;
+  background: #eef5ff;
+  color: #0758c9;
+  padding: 4px 8px 4px 10px;
+  font-size: 12px;
+}
+.skill-tag button { border: 0; background: transparent; color: inherit; padding: 0 1px; line-height: 1; }
+.skill-menu {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 7px);
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid #c8cdd6;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 12px 32px rgba(20, 35, 60, .14);
+  padding: 5px;
+}
+.skill-menu[hidden] { display: none; }
+.skill-option { display: grid; gap: 3px; width: 100%; border: 0; border-radius: 6px; background: transparent; padding: 9px 10px; text-align: left; }
+.skill-option:hover, .skill-option.is-active { background: #eef5ff; }
+.skill-option-name { font-size: 13px; font-weight: 650; }
+.skill-option-description { color: #737986; font-size: 12px; line-height: 1.35; }
+.skill-empty { padding: 14px 10px; color: #737986; font-size: 12px; }
+.draft-skill-picker { display: flex; flex-direction: column; grid-column: 1 / -1; }
+.draft-skill-picker .skill-tags { order: -2; padding-left: 0; }
+.draft-skill-picker .skill-menu { position: static; order: -1; margin-bottom: 7px; }
+.draft-skill-picker textarea { min-height: 110px; }

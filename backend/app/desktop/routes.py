@@ -94,6 +94,11 @@ async def get_task(task_id: str, request: Request) -> dict:
     return await request.app.state.desktop_service.get_task(task_id)
 
 
+@desktop_router.get("/tasks/{task_id}/skills")
+async def list_task_skills(task_id: str, request: Request) -> dict:
+    return {"skills": await request.app.state.desktop_service.list_task_skills(task_id)}
+
+
 @desktop_router.put("/tasks/{task_id}/ui-state")
 async def save_ui_state(task_id: str, body: dict, request: Request) -> dict:
     await request.app.state.desktop_service.save_ui_state(task_id, body)
@@ -124,7 +129,7 @@ async def deploy(draft_id: str, body: DeployRequest, request: Request) -> dict:
 @desktop_router.post("/tasks/{task_id}/main/runs")
 async def start_main_run(task_id: str, body: MainRunCreate, request: Request) -> dict:
     return await request.app.state.desktop_service.start_main_run(
-        task_id, body.message, body.model_name, body.permissions
+        task_id, body.message, body.model_name, body.permissions, body.skills
     )
 
 

@@ -11,7 +11,7 @@ from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 
 
 os.environ.setdefault("OPENAI_API_KEY", "desktop-test")
@@ -23,12 +23,13 @@ os.environ.setdefault(
 
 # 决策 1：桌面功能内嵌 Gateway，测试目标为唯一 FastAPI 应用
 from backend.app.gateway.app import app  # noqa: E402
-from backend.app.desktop.models import DesktopThread, DesktopWorkspace  # noqa: E402
+from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace  # noqa: E402
 from backend.app.desktop.service import (  # noqa: E402
     DesktopService,
     NamespacedCheckpointer,
     deserialize_messages,
     estimate_tokens,
+    prompt_with_skills,
     stream_text,
     validate_messages,
 )
@@ -93,6 +94,13 @@ async def _cleanup(service: DesktopService, task_id: str, workspace_id: str, thr
         await session.commit()
 
 
+async def _run_count(service: DesktopService, task_id: str) -> int:
+    async with service.session_factory() as session:
+        return await session.scalar(
+            select(func.count()).select_from(DesktopRun).where(DesktopRun.task_id == task_id)
+        )
+
+
 def test_message_validation_token_estimate_and_path_policy(tmp_path):
     valid = [
         {
@@ -154,6 +162,31 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
         ).json()
         service = app.state.desktop_service
 
+        skills_root = workspace_folder / ".agents" / "skills"
+        for name in ("one", "two"):
+            skill_file = skills_root / name / "SKILL.md"
+            skill_file.parent.mkdir(parents=True, exist_ok=True)
+            skill_file.write_text(
+                f"---\nname: {name}\ndescription: Skill {name}\n---\n\nOriginal {name} instructions.\n",
+                encoding="utf-8",
+            )
+        catalog = client.get(
+            f"/desktop/api/tasks/{task['task_id']}/skills", headers=SESSION
+        ).json()
+        assert [skill["name"] for skill in catalog["skills"]] == ["one", "two"]
+
+        runs_before = client.portal.call(_run_count, service, task["task_id"])
+        unavailable_main = client.post(
+            f"/desktop/api/tasks/{task['task_id']}/main/runs",
+            headers=SESSION,
+            json={"message": "run", "skills": ["missing"]},
+        )
+        assert unavailable_main.status_code == 422
+        assert unavailable_main.json()["detail"] == {
+            "code": "skill_unavailable", "names": ["missing"]
+        }
+        assert client.portal.call(_run_count, service, task["task_id"]) == runs_before
+
         main_history = client.portal.call(
             _seed_checkpoint, service, thread_id, "", "main checkpoint"
         )
@@ -186,6 +219,28 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
         )
         assert invalid.status_code == 422
 
+        stale = client.put(
+            f"/desktop/api/drafts/{draft['draft_id']}",
+            headers=SESSION,
+            json={
+                "history_messages": draft["history_messages"],
+                "final_human_message": "run",
+                "equipment": {"skills": ["missing"], "permissions": ["read"]},
+            },
+        )
+        assert stale.status_code == 200
+        runs_before = client.portal.call(_run_count, service, task["task_id"])
+        unavailable_patrol = client.post(
+            f"/desktop/api/drafts/{draft['draft_id']}/deploy",
+            headers=SESSION,
+            json={"deployment_id": uuid.uuid4().hex},
+        )
+        assert unavailable_patrol.status_code == 422
+        assert unavailable_patrol.json()["detail"] == {
+            "code": "skill_unavailable", "names": ["missing"]
+        }
+        assert client.portal.call(_run_count, service, task["task_id"]) == runs_before
+
         updated = client.put(
             f"/desktop/api/drafts/{draft['draft_id']}",
             headers=SESSION,
@@ -193,21 +248,42 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
                 "system_prompt": "只返回结论",
                 "history_messages": draft["history_messages"],
                 "final_human_message": "检查材料",
-                "equipment": {"model_name": "deepseek-v4-flash", "tools": "auto", "skills": "auto", "permissions": ["read"]},
+                "equipment": {"model_name": "deepseek-v4-flash", "tools": "auto", "skills": ["one", "two", "one"], "permissions": ["read"]},
             },
         ).json()
         assert updated["source_checkpoint_id"] == draft["source_checkpoint_id"]
+        assert updated["equipment"]["skills"] == ["one", "two"]
+        assert updated["token_estimate"] > estimate_tokens(
+            updated["system_prompt"], updated["history_messages"], updated["final_human_message"]
+        )
+        oversized_with_skill = estimate_tokens(
+            prompt_with_skills("", [{"name": "huge", "content": "界" * 131100}]), [], ""
+        )
         try:
-            service._validate_model_window("deepseek-v4-flash", 131073)
+            service._validate_model_window("deepseek-v4-flash", oversized_with_skill)
         except Exception as exc:
             assert getattr(exc, "status_code", None) == 422
         else:
             raise AssertionError("deployment above the declared context window must be blocked")
 
-        async def no_run(*_args, **_kwargs):
+        scheduled = []
+
+        async def no_run(*args, **_kwargs):
+            scheduled.append(args)
             return None
 
         service._schedule_run = no_run
+        main = client.post(
+            f"/desktop/api/tasks/{task['task_id']}/main/runs",
+            headers=SESSION,
+            json={"message": "run", "skills": ["two", "one", "two"]},
+        )
+        assert main.status_code == 200
+        main_snapshots = scheduled[-1][4]["skill_snapshots"]
+        assert [snapshot["name"] for snapshot in main_snapshots] == ["two", "one"]
+        injected = prompt_with_skills("base", main_snapshots)
+        assert injected.index("## two") < injected.index("## one")
+
         deployment_id = uuid.uuid4().hex
         first = client.post(
             f"/desktop/api/drafts/{draft['draft_id']}/deploy",
@@ -220,6 +296,8 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
             json={"deployment_id": deployment_id},
         ).json()
         assert first["run_id"] == second["run_id"]
+        patrol_snapshots = scheduled[-1][4]["skill_snapshots"]
+        assert [snapshot["name"] for snapshot in patrol_snapshots] == ["one", "two"]
         envelope = service._event_envelope(
             SimpleNamespace(run_id=first["run_id"], agent_id=first["agent_id"]),
             SimpleNamespace(workspace_id=workspace["workspace_id"], thread_id=thread_id),
@@ -231,6 +309,10 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
         ).json()[0]
         assert agent["checkpoint_ns"] == f"patrol:{agent['agent_id']}"
 
+        (skills_root / "one" / "SKILL.md").write_text(
+            "---\nname: one\ndescription: changed\n---\n\nChanged instructions.\n",
+            encoding="utf-8",
+        )
         retried = client.post(
             f"/desktop/api/agents/{agent['agent_id']}/retry", headers=SESSION
         ).json()
@@ -240,6 +322,8 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
             json={"message": "继续"},
         ).json()
         assert retried["agent_id"] == continued["agent_id"] == agent["agent_id"]
+        assert scheduled[-2][4]["skill_snapshots"] == patrol_snapshots
+        assert scheduled[-1][4]["skill_snapshots"] == patrol_snapshots
         assert client.post(
             f"/desktop/api/runs/{continued['run_id']}/cancel", headers=SESSION
         ).json()["status"] == "interrupted"

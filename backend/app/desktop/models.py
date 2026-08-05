@@ -153,6 +153,7 @@ class ThreadCreate(StrictRequest):
 class MainRunCreate(StrictRequest):
     message: str = Field(min_length=1)
     model_name: str | None = None
+    skills: list[str] = Field(default_factory=list)
     permissions: list[Literal["read", "write", "host_command"]] = Field(
         default_factory=lambda: ["read", "write"]
     )

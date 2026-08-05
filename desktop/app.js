@@ -13,6 +13,8 @@ const state = {
   drafts: new Map(),
   materials: new Map(),
   agents: new Map(),
+  skillCatalogs: new Map(),
+  pickerActive: { main: 0, draft: 0 },
   equipment: { models: [], tools: [], skills: [], permissions: [] },
   soldierArmed: false,
   openMaterial: null,
@@ -28,6 +30,7 @@ const state = {
 const app = document.querySelector("#app");
 const statusNode = document.querySelector("#globalStatus");
 const dialog = document.querySelector("#taskDialog");
+const skillPicker = window.FocusSkillPicker;
 
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
@@ -117,14 +120,16 @@ async function bootstrap() {
 
 async function hydrateActive() {
   if (!state.activeTaskId) return;
-  const [detail, materials, agents] = await Promise.all([
+  const [detail, materials, agents, catalog] = await Promise.all([
     api(`/desktop/api/tasks/${state.activeTaskId}`),
     api(`/desktop/api/tasks/${state.activeTaskId}/materials`),
     api(`/desktop/api/tasks/${state.activeTaskId}/agents`),
+    api(`/desktop/api/tasks/${state.activeTaskId}/skills`),
   ]);
   state.details.set(state.activeTaskId, detail);
   state.materials.set(state.activeTaskId, materials);
   state.agents.set(state.activeTaskId, agents);
+  state.skillCatalogs.set(state.activeTaskId, catalog.skills);
 }
 
 function render() {
@@ -137,6 +142,92 @@ function render() {
   if (state.view === "focus") renderFocus();
   else if (state.view === "map") renderMap();
   else renderDraft();
+}
+
+function normalizeSkillNames(value) {
+  return Array.isArray(value) ? [...new Set(value.filter(name => typeof name === "string"))] : [];
+}
+
+function selectedSkills(kind) {
+  if (kind === "draft") {
+    return normalizeSkillNames(state.drafts.get(state.activeTaskId)?.equipment?.skills);
+  }
+  return normalizeSkillNames(state.details.get(state.activeTaskId)?.ui_state?.skills);
+}
+
+function renderSkillPicker(kind, textarea) {
+  const selected = selectedSkills(kind);
+  const listId = `${kind}SkillList`;
+  const tags = selected.map(name => `<span class="skill-tag">${escapeHtml(name)}<button type="button" data-action="remove-skill" data-picker-kind="${kind}" data-skill-name="${escapeHtml(name)}" aria-label="Remove ${escapeHtml(name)}">×</button></span>`).join("");
+  return `<div class="skill-picker-shell ${kind === "draft" ? "draft-skill-picker" : ""}" data-skill-picker="${kind}">
+    <div class="skill-tags" aria-label="Selected skills">${tags}</div>
+    ${textarea.replace(">", ` data-skill-input="${kind}" aria-controls="${listId}" aria-expanded="false">`)}
+    <div class="skill-menu" id="${listId}" role="listbox" aria-label="Skills" hidden></div>
+  </div>`;
+}
+
+function pickerMatches(input) {
+  const query = skillPicker.queryFromInput(input.value);
+  if (query === null) return null;
+  const kind = input.dataset.skillInput;
+  return skillPicker.filterSkills(
+    state.skillCatalogs.get(state.activeTaskId) || [], query, selectedSkills(kind)
+  );
+}
+
+function updateSkillMenu(input, reset = false) {
+  const kind = input.dataset.skillInput;
+  const menu = document.querySelector(`#${kind}SkillList`);
+  const matches = pickerMatches(input);
+  if (!menu || matches === null) {
+    if (menu) menu.hidden = true;
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+    return [];
+  }
+  if (reset) state.pickerActive[kind] = 0;
+  state.pickerActive[kind] = matches.length
+    ? Math.min(state.pickerActive[kind], matches.length - 1)
+    : -1;
+  menu.innerHTML = matches.length
+    ? matches.map((skill, index) => `<button type="button" id="${kind}SkillOption${index}" class="skill-option ${index === state.pickerActive[kind] ? "is-active" : ""}" role="option" aria-selected="${index === state.pickerActive[kind]}" data-action="select-skill" data-picker-kind="${kind}" data-skill-name="${escapeHtml(skill.name)}"><span class="skill-option-name">${escapeHtml(skill.name)}</span><span class="skill-option-description">${escapeHtml(skill.description)}</span></button>`).join("")
+    : `<div class="skill-empty">No matching skills</div>`;
+  menu.hidden = false;
+  input.setAttribute("aria-expanded", "true");
+  if (state.pickerActive[kind] >= 0) {
+    input.setAttribute("aria-activedescendant", `${kind}SkillOption${state.pickerActive[kind]}`);
+    menu.querySelector(".is-active")?.scrollIntoView({ block: "nearest" });
+  } else {
+    input.removeAttribute("aria-activedescendant");
+  }
+  return matches;
+}
+
+function setPickerSelection(kind, names, clearQuery = false) {
+  if (kind === "draft") {
+    const draft = syncDraftFromDom();
+    draft.equipment.skills = names;
+    if (clearQuery) draft.final_human_message = "";
+    renderDraft();
+    scheduleDraftSave();
+  } else {
+    const detail = state.details.get(state.activeTaskId);
+    detail.ui_state ||= {};
+    detail.ui_state.input = clearQuery ? "" : (document.querySelector("#mainInput")?.value || "");
+    detail.ui_state.skills = names;
+    detail.ui_state.scrollTop = document.querySelector("#conversation")?.scrollTop || 0;
+    renderFocus();
+    persistFocusState();
+  }
+  requestAnimationFrame(() => document.querySelector(`[data-skill-input="${kind}"]`)?.focus());
+}
+
+function selectSkill(kind, name) {
+  setPickerSelection(kind, skillPicker.addSelection(selectedSkills(kind), name), true);
+}
+
+function removeSkill(kind, name) {
+  setPickerSelection(kind, skillPicker.removeSelection(selectedSkills(kind), name));
 }
 
 function renderFocus() {
@@ -153,7 +244,7 @@ function renderFocus() {
       </div>
       <div class="focus-bottom">
         <div class="composer">
-          <textarea id="mainInput" aria-label="任务输入" placeholder="继续输入任务…">${escapeHtml(detail.ui_state?.input || "")}</textarea>
+          ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="任务输入" placeholder="继续输入任务…">${escapeHtml(detail.ui_state?.input || "")}</textarea>`)}
           <div class="composer-actions"><label class="attach-button">添加文件<input id="fileInput" type="file" hidden></label><button class="send-button" data-action="send-main">发送</button></div>
         </div>
         <section class="materials ${materials.length ? "" : "is-empty"}">${materials.length ? materials.map(renderMaterial).join("") : `<div class="materials-empty">暂无材料</div>`}</section>
@@ -290,7 +381,7 @@ function renderDraft() {
       <div class="draft-sections">
         ${draftSection("system", "1. System Prompt", `<textarea data-draft-field="system_prompt">${escapeHtml(draft.system_prompt)}</textarea>`)}
         ${draftSection("history", "2. 上下文历史", renderHistory(draft))}
-        ${draftSection("final", "3. 最后一条 HumanMessage", `<textarea data-draft-field="final_human_message" placeholder="给小兵的任务…">${escapeHtml(draft.final_human_message)}</textarea>`)}
+        ${draftSection("final", "3. 最后一条 HumanMessage", renderSkillPicker("draft", `<textarea data-draft-field="final_human_message" placeholder="给小兵的任务…">${escapeHtml(draft.final_human_message)}</textarea>`))}
         ${draftSection("equipment", "4. 模型、工具、技能与权限", renderEquipment(draft))}
       </div>
       <footer class="draft-footer"><button class="text-button" data-action="exit-draft">退出并保存</button><span class="token-count" id="tokenCount">估算 ${draft.token_estimate} tokens</span><button class="primary" data-action="deploy">投放</button></footer>
@@ -327,7 +418,6 @@ function renderEquipment(draft) {
     <label>工具<select data-equipment="tools"><option value="auto" ${equipment.tools === "auto" ? "selected" : ""}>自动组装</option><option value="custom" ${Array.isArray(equipment.tools) ? "selected" : ""}>手动选择</option></select></label>
     <div><span class="tiny muted">权限</span><div class="check-line">${state.equipment.permissions.map(permission => `<label><input type="checkbox" data-permission="${permission}" ${permissions.includes(permission) ? "checked" : ""}>${permission}</label>`).join("")}</div></div>
     <div><span class="tiny muted">可用工具</span><div class="check-line">${state.equipment.tools.map(name => `<label><input type="checkbox" data-tool="${name}" ${equipment.tools === "auto" || equipment.tools?.includes?.(name) ? "checked" : ""}>${name}</label>`).join("")}</div></div>
-    <div><span class="tiny muted">技能</span><div class="check-line">${state.equipment.skills.length ? state.equipment.skills.map(name => `<label><input type="checkbox" data-skill="${name}" checked>${name}</label>`).join("") : `<span class="muted tiny">当前没有启用的技能</span>`}</div></div>
     <p class="tiny danger">无沙箱：写入或命令权限会直接影响真实宿主机。命令权限可绕过文件工具规则。</p>
   </div>`;
 }
@@ -335,9 +425,13 @@ function renderEquipment(draft) {
 async function openDraft(taskId) {
   setStatus("复制 checkpoint…");
   try {
-    const draft = await api(`/desktop/api/tasks/${taskId}/drafts/open`, { method: "POST" });
+    const [draft, catalog] = await Promise.all([
+      api(`/desktop/api/tasks/${taskId}/drafts/open`, { method: "POST" }),
+      api(`/desktop/api/tasks/${taskId}/skills`),
+    ]);
     state.activeTaskId = taskId;
     state.drafts.set(taskId, draft);
+    state.skillCatalogs.set(taskId, catalog.skills);
     state.view = "draft";
     state.soldierArmed = false;
     setStatus("");
@@ -360,7 +454,7 @@ function syncDraftFromDom() {
   const toolMode = document.querySelector('[data-equipment="tools"]');
   if (toolMode) draft.equipment.tools = toolMode.value === "auto" ? "auto" : [...document.querySelectorAll("[data-tool]:checked")].map(input => input.dataset.tool);
   draft.equipment.permissions = [...document.querySelectorAll("[data-permission]:checked")].map(input => input.dataset.permission);
-  draft.equipment.skills = state.equipment.skills.length ? [...document.querySelectorAll("[data-skill]:checked")].map(input => input.dataset.skill) : "auto";
+  draft.equipment.skills = normalizeSkillNames(draft.equipment.skills);
   return draft;
 }
 
@@ -422,12 +516,16 @@ async function sendMain() {
   const input = document.querySelector("#mainInput");
   const message = input.value.trim();
   if (!message) return;
-  input.value = "";
   const detail = state.details.get(state.activeTaskId);
-  detail.messages = [...(detail.messages || []), { role: "human", content: message }];
-  renderFocus();
   try {
-    const run = await api(`/desktop/api/tasks/${state.activeTaskId}/main/runs`, { method: "POST", body: JSON.stringify({ message }) });
+    const run = await api(`/desktop/api/tasks/${state.activeTaskId}/main/runs`, {
+      method: "POST",
+      body: JSON.stringify({ message, skills: selectedSkills("main") }),
+    });
+    detail.messages = [...(detail.messages || []), { role: "human", content: message }];
+    detail.ui_state = { ...(detail.ui_state || {}), input: "", skills: [] };
+    renderFocus();
+    persistFocusState();
     listenToRun(run);
   } catch (error) { setStatus(error.message, true); }
 }
@@ -516,6 +614,8 @@ document.addEventListener("click", async event => {
   if (action === "reload") return bootstrap();
   if (action === "new-task") return dialog.showModal();
   if (action === "pick-workspace") return pickWorkspace();
+  if (action === "select-skill") return selectSkill(button.dataset.pickerKind, button.dataset.skillName);
+  if (action === "remove-skill") return removeSkill(button.dataset.pickerKind, button.dataset.skillName);
   if (action === "show-map") { persistFocusState(); state.view = "map"; return render(); }
   if (action === "focus-home" && state.activeTaskId) { state.view = "focus"; await hydrateActive(); return render(); }
   if (action === "arm-soldier") { state.soldierArmed = !state.soldierArmed; return renderMap(); }
@@ -523,6 +623,7 @@ document.addEventListener("click", async event => {
     const taskId = button.dataset.taskId;
     if (state.view === "draft") return;
     if (state.soldierArmed) return openDraft(taskId);
+    persistFocusState();
     state.activeTaskId = taskId; state.view = "focus"; await hydrateActive(); return render();
   }
   if (action === "send-main") return sendMain();
@@ -549,7 +650,34 @@ document.addEventListener("click", async event => {
 });
 
 document.addEventListener("input", event => {
-  if (event.target.matches("[data-draft-field],[data-message-field],[data-equipment],[data-permission],[data-tool],[data-skill]")) scheduleDraftSave();
+  if (event.target.matches("[data-skill-input]")) updateSkillMenu(event.target, true);
+  if (event.target.matches("[data-draft-field],[data-message-field],[data-equipment],[data-permission],[data-tool]")) scheduleDraftSave();
+});
+
+document.addEventListener("keydown", event => {
+  const input = event.target.closest("[data-skill-input]");
+  if (!input) return;
+  const action = skillPicker.keyAction(event.key);
+  if (!action || pickerMatches(input) === null) return;
+  const kind = input.dataset.skillInput;
+  if (action === "close") {
+    event.preventDefault();
+    document.querySelector(`#${kind}SkillList`).hidden = true;
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+    return;
+  }
+  const matches = pickerMatches(input);
+  if (action === "next" || action === "previous") {
+    event.preventDefault();
+    state.pickerActive[kind] = skillPicker.moveActive(
+      state.pickerActive[kind], action === "next" ? 1 : -1, matches.length
+    );
+    updateSkillMenu(input);
+  } else if (action === "select" && matches.length) {
+    event.preventDefault();
+    selectSkill(kind, matches[state.pickerActive[kind]].name);
+  }
 });
 
 document.addEventListener("toggle", event => {
@@ -621,7 +749,12 @@ document.addEventListener("change", async event => {
 function persistFocusState() {
   const detail = state.details.get(state.activeTaskId);
   if (!detail) return;
-  detail.ui_state = { input: document.querySelector("#mainInput")?.value || "", scrollTop: document.querySelector("#conversation")?.scrollTop || 0 };
+  detail.ui_state = {
+    ...(detail.ui_state || {}),
+    input: document.querySelector("#mainInput")?.value || "",
+    skills: selectedSkills("main"),
+    scrollTop: document.querySelector("#conversation")?.scrollTop || 0,
+  };
   api(`/desktop/api/tasks/${state.activeTaskId}/ui-state`, { method: "PUT", body: JSON.stringify(detail.ui_state) }).catch(() => {});
 }
 
