@@ -143,6 +143,9 @@ function renderFocus() {
   const task = activeTask();
   const detail = state.details.get(task.task_id) || { messages: [] };
   const materials = state.materials.get(task.task_id) || [];
+  const previousConversation = app.dataset.taskId === task.task_id ? document.querySelector("#conversation") : null;
+  const wasPinned = previousConversation && previousConversation.scrollHeight - previousConversation.scrollTop - previousConversation.clientHeight < 80;
+  const previousScrollTop = previousConversation?.scrollTop;
   app.innerHTML = `
     <section class="focus-view" data-task-id="${task.task_id}">
       <div class="conversation" id="conversation">
@@ -157,8 +160,11 @@ function renderFocus() {
         <div class="agents-strip">${renderAgentStrip(task.task_id)}</div>
       </div>
     </section>`;
+  app.dataset.taskId = task.task_id;
   const conversation = document.querySelector("#conversation");
-  conversation.scrollTop = detail.ui_state?.scrollTop ?? conversation.scrollHeight;
+  conversation.scrollTop = previousConversation
+    ? (wasPinned ? conversation.scrollHeight : previousScrollTop)
+    : (detail.ui_state?.scrollTop ?? conversation.scrollHeight);
 }
 
 function renderMessage(message) {
