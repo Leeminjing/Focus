@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -45,8 +46,9 @@ from focus.models import create_chat_model
 from focus.runtime.stream_bridge.base import StreamBridge
 from focus.runtime.stream_bridge.schemas import StreamEvent
 
+logger = logging.getLogger(__name__)
 
-_MAIN_SYSTEM_PROMPT = """你是 Focus 的本地主 Agent。当前工作目录是真实宿主机工作区。
+_MAIN_SYSTEM_PROMPT ="""你是 Focus 的本地主 Agent。当前工作目录是真实宿主机工作区。
 使用已提供的工具完成用户任务；严格服从平台授予的工具权限，不要把当前环境描述为沙箱。"""
 _TERMINAL_STATUSES = frozenset({"success", "error", "interrupted"})
 
@@ -1007,24 +1009,31 @@ class DesktopService:
                     ).all()
                     changed = False
                     for material, _, workspace in rows:
-                        path = Path(workspace.path, *Path(material.relative_path).parts)
-                        if not path.exists():
-                            latest = await session.scalar(
-                                select(MaterialVersion)
-                                .where(MaterialVersion.material_id == material.material_id)
-                                .order_by(MaterialVersion.created_at.desc())
-                            )
-                            if latest:
-                                path.parent.mkdir(parents=True, exist_ok=True)
-                                path.write_bytes(await self._git_bytes(Path(workspace.path), "cat-file", "blob", latest.object_id))
-                                material.digest = self._digest(path)
-                                material.needs_confirmation = True
-                                changed = True
-                        else:
-                            digest = self._digest(path)
-                            if material.digest and digest != material.digest:
-                                await self._save_material_version(session, material, workspace.path, "external")
-                                changed = True
+                        try:
+                            path = Path(workspace.path, *Path(material.relative_path).parts)
+                            if not path.exists():
+                                latest = await session.scalar(
+                                    select(MaterialVersion)
+                                    .where(MaterialVersion.material_id == material.material_id)
+                                    .order_by(MaterialVersion.created_at.desc())
+                                )
+                                if latest:
+                                    path.parent.mkdir(parents=True, exist_ok=True)
+                                    path.write_bytes(await self._git_bytes(Path(workspace.path), "cat-file", "blob", latest.object_id))
+                                    material.digest = self._digest(path)
+                                    material.needs_confirmation = True
+                                    changed = True
+                            else:
+                                digest = self._digest(path)
+                                if material.digest and digest != material.digest:
+                                    await self._save_material_version(session, material, workspace.path, "external")
+                                    changed = True
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            # 单个材料失败（如工作区目录已删除的遗留材料）不阻塞其他材料
+                            logger.warning("材料监测失败，跳过该材料: material_id=%s", material.material_id, exc_info=True)
+                            continue
                     if changed:
                         await session.commit()
             except asyncio.CancelledError:

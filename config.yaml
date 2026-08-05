@@ -55,11 +55,13 @@ stream_bridge:
   type: memory
   queue_maxsize: 512
 
+# 设计决策 11：全应用迁移到 PostgreSQL checkpointer/store。
+# Web 网关链路随之从内存态转为持久态（checkpoint 跨重启保留、rollback 生效、跨线程 store 记忆开启）。
 checkpointer:
-  type: memory
+  type: postgres
 
 langgraph_store:
-  backend: memory
+  backend: async_postgres
   vector_enabled: false
   embed: text-embedding-v4
   dims: 1024

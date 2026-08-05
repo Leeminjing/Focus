@@ -158,6 +158,22 @@ def dispose_engine() -> None:
     _session_factory = None
 
 
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """返回全局 session factory，供需要持有会话工厂的组件（如 DesktopService）使用。
+
+    输入: 无
+    输出: async_sessionmaker[AsyncSession] — 全局 session factory
+
+    工作流:
+        (1) 校验 _session_factory 已初始化
+        (2) 返回 _session_factory
+    """
+    if _session_factory is None:
+        raise RuntimeError("session factory 未初始化，请先调用 init_engine()")
+
+    return _session_factory
+
+
 def get_session() -> AsyncSession:
     """通过全局 session factory 创建新的 AsyncSession 实例。
 

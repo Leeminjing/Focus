@@ -34,7 +34,7 @@ from backend.app.gateway.auth.config import AuthConfig
 logger = logging.getLogger(__name__)
 
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
-_CSRF_SKIP_PREFIXES = {"/api/auth/login", "/api/auth/logout"}
+_CSRF_SKIP_PREFIXES = ("/api/auth/login", "/api/auth/logout", "/desktop/")
 
 
 class CSRFMiddleware(BaseHTTPMiddleware):
@@ -57,8 +57,9 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         if request.method in _SAFE_METHODS:
             return await call_next(request)
 
-        # (2) 认证路由跳过（login/logout 不需要 CSRF）
-        if request.url.path in _CSRF_SKIP_PREFIXES:
+        # (2) 认证路由跳过（login/logout 不需要 CSRF）；桌面路由由会话密钥
+        #     与 loopback 对等地址校验保护，跳过 CSRF 双提交
+        if any(request.url.path.startswith(prefix) for prefix in _CSRF_SKIP_PREFIXES):
             return await call_next(request)
 
         # (3) 读取 Cookie 和 Header 中的 CSRF token
