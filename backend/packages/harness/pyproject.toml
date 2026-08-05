@@ -1,4 +1,4 @@
-﻿[project]
+[project]
 name = "focus-harness"
 version = "0.1.0"
 description = "Focus agent harness — focus core runtime"
@@ -23,7 +23,7 @@ dependencies = [
 ]
 [project.optional-dependencies]
 mcp = ["langchain-mcp-adapters>=0.1.0"]
-postgres = ["asyncpg", "langgraph-checkpoint-postgres"]
+postgres = ["asyncpg", "langgraph-checkpoint-postgres", "psycopg[binary]>=3.2"]
 sqlite = ["aiosqlite"]
 aiosandbox = ["agent-sandbox", "docker"]
 

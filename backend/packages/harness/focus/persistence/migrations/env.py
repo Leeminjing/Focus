@@ -30,6 +30,7 @@ Alembic 迁移环境配置。
 
 import asyncio
 from logging.config import fileConfig
+import os
 
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -70,7 +71,7 @@ async def run_migrations_online():
     输入: 无（从 alembic.ini 读取配置）
     输出: None
     """
-    url = config.get_main_option("sqlalchemy.url")
+    url = os.getenv("FOCUS_DATABASE_URL", config.get_main_option("sqlalchemy.url"))
 
     engine = create_async_engine(url)
 

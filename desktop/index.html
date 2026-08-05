@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Focus</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <button class="brand" data-action="focus-home" aria-label="返回当前任务">Focus</button>
+    <button class="icon-button" data-action="show-map" aria-label="打开全图">全图</button>
+    <span id="globalStatus" class="global-status" role="status"></span>
+    <button class="quiet-button" data-action="new-task">新增任务</button>
+  </header>
+  <main id="app" aria-live="polite"></main>
+  <dialog id="taskDialog">
+    <form method="dialog" id="taskForm" class="dialog-form">
+      <h2>新增工作区任务</h2>
+      <label>工作区文件夹
+        <span class="path-picker"><input id="workspacePath" required><button type="button" data-action="pick-workspace">选择</button></span>
+      </label>
+      <label>任务标题<input id="threadTitle" value="新任务" required></label>
+      <div class="dialog-actions"><button value="cancel">取消</button><button class="primary" value="default">创建</button></div>
+    </form>
+  </dialog>
+  <template id="emptyTemplate">
+    <section class="empty-state"><h1>建立第一个工作区任务</h1><p>一个全图单元由本地工作区文件夹和线程共同组成。</p><button class="primary" data-action="new-task">选择文件夹</button></section>
+  </template>
+  <script src="./app.js"></script>
+</body>
+</html>
