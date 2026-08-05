@@ -41,6 +41,7 @@ from backend.app.desktop.models import (
     PatrolAgent,
     PatrolDraft,
 )
+from backend.app.desktop.skills import build_task_skill_catalog, resolve_task_skills
 from focus.config.app_config import AppConfig
 from focus.models import create_chat_model
 from focus.runtime.stream_bridge.base import StreamBridge
@@ -143,6 +144,15 @@ def estimate_tokens(system_prompt: str, messages: list[dict[str, Any]], final_me
     cjk = sum(1 for char in raw if "\u3400" <= char <= "\u9fff")
     other = sum(1 for char in raw if not char.isspace() and not ("\u3400" <= char <= "\u9fff"))
     return cjk + (other + 3) // 4 + 12 * (len(messages) + 2)
+
+
+def prompt_with_skills(system_prompt: str, snapshots: list[dict[str, str]]) -> str:
+    if not snapshots:
+        return system_prompt
+    blocks = "\n\n".join(
+        f"## {snapshot['name']}\n{snapshot['content']}" for snapshot in snapshots
+    )
+    return f"{system_prompt}\n\n<selected_skills>\n{blocks}\n</selected_skills>"
 
 
 def stream_text(content: Any) -> str:
@@ -356,6 +366,14 @@ class DesktopService:
         payload["messages"] = await self.get_checkpoint_messages(task.thread_id, "")
         return payload
 
+    async def list_task_skills(self, task_id: str) -> list[dict[str, str]]:
+        async with self.session_factory() as session:
+            _, workspace = await self._get_task_entities(session, task_id)
+        return [
+            {"name": skill.name, "description": skill.description}
+            for skill in build_task_skill_catalog(workspace.path).values()
+        ]
+
     async def save_ui_state(self, task_id: str, ui_state: dict[str, Any]) -> None:
         async with self.session_factory() as session:
             task = await session.get(DesktopThread, task_id)
@@ -394,7 +412,7 @@ class DesktopService:
             equipment = {
                 "model_name": default_model,
                 "tools": "auto",
-                "skills": "auto",
+                "skills": [],
                 "permissions": ["read"],
             }
             draft = PatrolDraft(
@@ -411,15 +429,24 @@ class DesktopService:
 
     async def update_draft(self, draft_id: str, body: DraftUpdate) -> dict[str, Any]:
         validate_messages(body.history_messages)
-        estimate = estimate_tokens(body.system_prompt, body.history_messages, body.final_human_message)
         async with self.session_factory() as session:
             draft = await session.get(PatrolDraft, draft_id)
             if not draft or draft.status != "editing":
                 raise HTTPException(404, "可编辑草稿不存在")
+            _, workspace = await self._get_task_entities(session, draft.task_id)
+            equipment = self._normalize_equipment(body.equipment)
+            snapshots, _ = resolve_task_skills(
+                build_task_skill_catalog(workspace.path), equipment["skills"]
+            )
+            estimate = estimate_tokens(
+                prompt_with_skills(body.system_prompt, snapshots),
+                body.history_messages,
+                body.final_human_message,
+            )
             draft.system_prompt = body.system_prompt
             draft.history_messages = body.history_messages
             draft.final_human_message = body.final_human_message
-            draft.equipment = self._normalize_equipment(body.equipment)
+            draft.equipment = equipment
             draft.token_estimate = estimate
             await session.commit()
             return self._draft_payload(draft)
@@ -435,7 +462,15 @@ class DesktopService:
             if not draft.final_human_message.strip():
                 raise HTTPException(422, "最后一条 HumanMessage 不能为空")
             validate_messages(draft.history_messages)
-            self._validate_model_window(draft.equipment.get("model_name"), draft.token_estimate)
+            _, workspace = await self._get_task_entities(session, draft.task_id)
+            snapshots = self._freeze_skills(workspace.path, draft.equipment.get("skills", []))
+            equipment = {**draft.equipment, "skill_snapshots": snapshots}
+            estimate = estimate_tokens(
+                prompt_with_skills(draft.system_prompt, snapshots),
+                draft.history_messages,
+                draft.final_human_message,
+            )
+            self._validate_model_window(equipment.get("model_name"), estimate)
             await self._validate_attachments(session, draft.task_id, draft.history_messages)
             agent_id = new_id()
             frozen = [*draft.history_messages, {"role": "human", "content": draft.final_human_message}]
@@ -445,13 +480,13 @@ class DesktopService:
                 checkpoint_ns=f"patrol:{agent_id}",
                 system_prompt=draft.system_prompt,
                 frozen_messages=frozen,
-                equipment=draft.equipment,
+                equipment=equipment,
                 source_checkpoint_id=draft.source_checkpoint_id,
             )
             run = DesktopRun(
                 run_id=new_id(), task_id=draft.task_id, agent_id=agent_id, deployment_id=deployment_id,
                 kind="patrol", status="pending", input_messages=frozen,
-                model_name=draft.equipment.get("model_name"),
+                model_name=equipment.get("model_name"),
             )
             draft.status = "deployed"
             session.add_all([agent, run])
@@ -467,17 +502,25 @@ class DesktopService:
         return self._run_payload(run)
 
     async def start_main_run(
-        self, task_id: str, message: str, model_name: str | None, permissions: list[str]
+        self, task_id: str, message: str, model_name: str | None,
+        permissions: list[str], skills: list[str],
     ) -> dict[str, Any]:
         async with self.session_factory() as session:
-            await self._get_task_entities(session, task_id)
+            _, workspace = await self._get_task_entities(session, task_id)
+            snapshots = self._freeze_skills(workspace.path, skills)
             run = DesktopRun(
                 run_id=new_id(), task_id=task_id, agent_id=f"main:{task_id}", kind="main", status="pending",
                 input_messages=[{"role": "human", "content": message}], model_name=model_name,
             )
             session.add(run)
             await session.commit()
-        equipment = {"model_name": model_name, "tools": "auto", "skills": "auto", "permissions": permissions}
+        equipment = {
+            "model_name": model_name,
+            "tools": "auto",
+            "skills": list(dict.fromkeys(skills)),
+            "skill_snapshots": snapshots,
+            "permissions": permissions,
+        }
         await self._schedule_run(run.run_id, _MAIN_SYSTEM_PROMPT, "", run.input_messages, equipment)
         return self._run_payload(run)
 
@@ -695,7 +738,9 @@ class DesktopService:
             model = create_chat_model(name=model_name, app_config=self.app_config)
             tools = await self._build_tools(task, workspace, equipment, run.kind == "main")
             material_context = await self._material_context(task.task_id)
-            runtime_prompt = system_prompt
+            runtime_prompt = prompt_with_skills(
+                system_prompt, equipment.get("skill_snapshots", [])
+            )
             if material_context:
                 runtime_prompt += f"\n\n<focus_material_policies>\n{material_context}\n</focus_material_policies>"
             run_checkpointer = NamespacedCheckpointer(self.checkpointer, checkpoint_ns)
@@ -877,6 +922,22 @@ class DesktopService:
         if model.context_window is not None and estimate > model.context_window:
             raise HTTPException(422, {"code": "context_window_exceeded", "estimate": estimate, "limit": model.context_window})
 
+    @staticmethod
+    def _normalize_skill_names(value: Any) -> list[str]:
+        if value is None or value == "auto":
+            return []
+        if not isinstance(value, list) or any(not isinstance(name, str) for name in value):
+            raise HTTPException(422, {"code": "invalid_skills"})
+        return list(dict.fromkeys(value))
+
+    def _freeze_skills(self, workspace: str | Path, selected: Any) -> list[dict[str, str]]:
+        snapshots, unavailable = resolve_task_skills(
+            build_task_skill_catalog(workspace), self._normalize_skill_names(selected)
+        )
+        if unavailable:
+            raise HTTPException(422, {"code": "skill_unavailable", "names": unavailable})
+        return snapshots
+
     def _normalize_equipment(self, equipment: dict[str, Any]) -> dict[str, Any]:
         model_name = equipment.get("model_name") or self.app_config.models[0].name
         self.app_config.get_model(model_name)
@@ -896,7 +957,7 @@ class DesktopService:
         return {
             "model_name": model_name,
             "tools": selected_tools,
-            "skills": equipment.get("skills", "auto"),
+            "skills": self._normalize_skill_names(equipment.get("skills")),
             "permissions": permissions,
         }
 
@@ -1075,10 +1136,15 @@ class DesktopService:
 
     @staticmethod
     def _draft_payload(draft: PatrolDraft) -> dict[str, Any]:
+        equipment = {
+            **draft.equipment,
+            "skills": DesktopService._normalize_skill_names(draft.equipment.get("skills")),
+        }
+        equipment.pop("skill_snapshots", None)
         return {
             "draft_id": draft.draft_id, "task_id": draft.task_id, "status": draft.status,
             "system_prompt": draft.system_prompt, "history_messages": draft.history_messages,
-            "final_human_message": draft.final_human_message, "equipment": draft.equipment,
+            "final_human_message": draft.final_human_message, "equipment": equipment,
             "source_checkpoint_id": draft.source_checkpoint_id, "token_estimate": draft.token_estimate,
         }
 
