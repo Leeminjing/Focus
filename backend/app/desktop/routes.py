@@ -34,6 +34,12 @@ async def require_desktop_session(
     request: Request,
     x_focus_session: str | None = Header(default=None),
 ) -> None:
+    # 设计决策 10：桌面 API 只接受 loopback 对等连接。
+    # 即使 Gateway 以 0.0.0.0 监听，非 loopback 请求也直接 404，
+    # 桌面路由（含 host_command 真实宿主机命令）不暴露到网络。
+    host = request.client.host if request.client else ""
+    if host not in ("127.0.0.1", "::1"):
+        raise HTTPException(404, "Not Found")
     supplied = x_focus_session or request.query_params.get("session")
     if not supplied or supplied != request.app.state.session_key:
         raise HTTPException(401, "无效的桌面会话")

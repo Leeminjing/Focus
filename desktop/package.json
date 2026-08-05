@@ -6,7 +6,7 @@
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
-    "dev": "cd .. && python -m backend.app.desktop.app"
+    "dev": "cd .. && python -m uvicorn backend.app.gateway.app:app --host 127.0.0.1 --port 8765"
   },
   "dependencies": {
     "electron": "^43.2.0"

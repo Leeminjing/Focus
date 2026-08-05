@@ -42,14 +42,22 @@ async def create_checkpointer(config: AppConfig) -> BaseCheckpointSaver:
         if config.database is None:
             raise RuntimeError("AppConfig.database 为空，无法创建 PostgresSaver")
 
-        # ponytail: 去掉 SQLAlchemy 的 +asyncpg 驱动前缀，asyncpg 只需要 postgresql://
+        # ponytail: 去掉 SQLAlchemy 的 +asyncpg 驱动前缀
         dsn = config.database.url.replace("postgresql+asyncpg://", "postgresql://")
-        conn = await asyncpg.connect(dsn=dsn)
-        from langgraph.checkpoint.postgres import PostgresSaver
+        # 必须使用 aio 变体：worker 与 NamespacedCheckpointer 全部走 async 方法
+        # （aget_tuple/aput），sync PostgresSaver 无 async 实现，会回落 base 抛 NotImplementedError。
+        # v3 的 AsyncPostgresSaver 使用 psycopg 连接，镜像官方 from_conn_string 的建连方式
+        from psycopg import AsyncConnection
+        from psycopg.rows import dict_row
 
-        checkpointer = PostgresSaver(conn)
+        conn = await AsyncConnection.connect(
+            dsn, autocommit=True, prepare_threshold=0, row_factory=dict_row
+        )
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+        checkpointer = AsyncPostgresSaver(conn)
         # ponytail: 不调用 setup()，表结构已由 Alembic 迁移管理
-        logger.info("PostgresSaver 已创建 (url=%s)", config.database.url)
+        logger.info("AsyncPostgresSaver 已创建 (url=%s)", config.database.url)
         return checkpointer
 
     if checkpointer_type == "memory":
@@ -80,9 +88,11 @@ async def dispose_checkpointer(checkpointer: BaseCheckpointSaver) -> None:
         return
 
     from langgraph.checkpoint.postgres import PostgresSaver
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-    if isinstance(checkpointer, PostgresSaver):
-        conn = getattr(checkpointer, "_conn", None)
+    if isinstance(checkpointer, (PostgresSaver, AsyncPostgresSaver)):
+        # sync 类用 _conn，aio 类用 conn；兼容两种实例
+        conn = getattr(checkpointer, "_conn", None) or getattr(checkpointer, "conn", None)
         if conn is not None:
             await conn.close()
             logger.info("PostgresSaver asyncpg 连接已关闭")

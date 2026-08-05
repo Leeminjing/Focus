@@ -21,7 +21,8 @@ os.environ.setdefault(
     "postgresql+asyncpg://focus:qweasdzxc123@127.0.0.1:7221/focus",
 )
 
-from backend.app.desktop.app import app  # noqa: E402
+# 决策 1：桌面功能内嵌 Gateway，测试目标为唯一 FastAPI 应用
+from backend.app.gateway.app import app  # noqa: E402
 from backend.app.desktop.models import DesktopThread, DesktopWorkspace  # noqa: E402
 from backend.app.desktop.service import (  # noqa: E402
     DesktopService,
@@ -34,6 +35,11 @@ from backend.app.desktop.service import (  # noqa: E402
 
 
 SESSION = {"X-Focus-Session": "focus-dev-session"}
+
+
+def _client():
+    # 决策 10：桌面 API 只接受 loopback 对等连接，测试显式模拟 loopback 来源
+    return TestClient(app, client=("127.0.0.1", 50000))
 
 
 def test_langgraph_messages_mode_streams_incrementally():
@@ -134,7 +140,7 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
     material_file.write_text("version one", encoding="utf-8")
     thread_id = f"desktop-test-{uuid.uuid4().hex}"
 
-    with TestClient(app) as client:
+    with _client() as client:
         assert client.get("/desktop/api/bootstrap").status_code == 401
         workspace = client.post(
             "/desktop/api/workspaces",
@@ -307,7 +313,7 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
 
         orphan_run_id = retried["run_id"]
 
-    with TestClient(app) as restarted:
+    with _client() as restarted:
         assert restarted.get(
             f"/desktop/api/runs/{orphan_run_id}", headers=SESSION
         ).json()["status"] == "interrupted"

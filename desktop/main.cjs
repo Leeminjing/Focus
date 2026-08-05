@@ -72,7 +72,9 @@ async function start() {
   const apiBase = `http://127.0.0.1:${port}`;
   process.env.FOCUS_DESKTOP_API = apiBase;
   process.env.FOCUS_DESKTOP_SESSION = session;
-  backend = spawn(python, ["-m", "backend.app.desktop.app"], {
+  // 决策 1：桌面功能内嵌 Gateway，Electron 以 loopback 模式启动唯一 FastAPI 应用。
+  // --loop 选择 Selector 事件循环（psycopg async 在 Windows 上不能用 ProactorEventLoop）
+  backend = spawn(python, ["-m", "uvicorn", "backend.app.gateway.app:app", "--host", "127.0.0.1", "--port", String(port), "--loop", "backend.app.gateway.app:selector_loop_factory"], {
     cwd: rootDir,
     env: { ...env, FOCUS_DESKTOP_PORT: String(port) },
     windowsHide: true,
@@ -98,7 +100,8 @@ async function start() {
     },
   });
   win.setMenuBarVisibility(false);
-  await win.loadFile(path.join(desktopDir, "index.html"));
+  // 决策 7：同源加载（页面与 API 同一 Origin，无需 CORS）
+  await win.loadURL(`${apiBase}/desktop/`);
 }
 
 ipcMain.handle("focus:select-workspace", async () => {

@@ -41,11 +41,16 @@ logger = logging.getLogger(__name__)
 _AUTH_WHITELIST_PATHS = {
     "/api/auth/login",
     "/api/auth/logout",
+    # Electron 启动链的健康检查（不带 JWT cookie）
+    "/health",
 }
 _AUTH_WHITELIST_PREFIXES = [
     "/docs",
     "/openapi.json",
     "/redoc",
+    # 桌面路由与静态资源：不走 JWT/CSRF，由 require_desktop_session 的
+    # 会话密钥 + loopback 对等地址校验保护（设计决策 1、10）
+    "/desktop/",
 ]
 
 
