@@ -3,6 +3,7 @@
     display_name: Other OpenAI-compatible / deepseek-v4-flash
     use: langchain_openai:ChatOpenAI
     model: deepseek-v4-flash
+    context_window: 131072
     api_key: $OPENAI_API_KEY
     base_url: https://api.deepseek.com
 

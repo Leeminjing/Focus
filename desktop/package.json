@@ -1,0 +1,14 @@
+{
+  "name": "focus-desktop-poc",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Focus 全图巡逻小兵桌面 PoC",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "dev": "cd .. && python -m backend.app.desktop.app"
+  },
+  "dependencies": {
+    "electron": "^43.2.0"
+  }
+}

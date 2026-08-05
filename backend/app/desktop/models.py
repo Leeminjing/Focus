@@ -1,0 +1,192 @@
+r"""
+本文件对外提供桌面 PoC 的 PostgreSQL ORM 模型与 API 数据模型。
+
+输入为工作区、任务、草稿、运行和材料的结构化数据；输出为 SQLAlchemy 表定义与
+Pydantic 请求模型。具体工作流由 routes.py 校验请求、service.py 持久化这些对象。
+
+示例:
+    workspace = DesktopWorkspace(path=r"C:\Users\name\project", display_name="project")
+    request = DraftUpdate(system_prompt="审查代码", history_messages=[])
+"""
+
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column
+
+from focus.persistence.base import Base
+
+
+class DesktopWorkspace(Base):
+    __tablename__ = "desktop_workspaces"
+
+    workspace_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    path: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DesktopThread(Base):
+    __tablename__ = "desktop_threads"
+    __table_args__ = (UniqueConstraint("workspace_id", "thread_id", name="uq_desktop_task_identity"),)
+
+    task_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_workspaces.workspace_id", ondelete="CASCADE"), nullable=False
+    )
+    thread_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    ui_state: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class PatrolDraft(Base):
+    __tablename__ = "patrol_drafts"
+
+    draft_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="editing")
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    history_messages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    final_human_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    equipment: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    source_checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    token_estimate: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class PatrolAgent(Base):
+    __tablename__ = "patrol_agents"
+
+    agent_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    checkpoint_ns: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    frozen_messages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    equipment: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    source_checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DesktopRun(Base):
+    __tablename__ = "desktop_runs"
+
+    run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    agent_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    deployment_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    input_messages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    model_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DesktopMaterial(Base):
+    __tablename__ = "desktop_materials"
+    __table_args__ = (UniqueConstraint("task_id", "relative_path", name="uq_desktop_material_path"),)
+
+    material_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    reading_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="full")
+    instruction_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="reference")
+    retention: Mapped[str] = mapped_column(String(20), nullable=False, default="removable")
+    digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    git_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    needs_confirmation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MaterialVersion(Base):
+    __tablename__ = "material_versions"
+
+    version_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    material_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_materials.material_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    commit_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class StrictRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class WorkspaceCreate(StrictRequest):
+    path: str
+    display_name: str | None = None
+
+
+class ThreadCreate(StrictRequest):
+    thread_id: str | None = None
+    title: str = "新任务"
+
+
+class MainRunCreate(StrictRequest):
+    message: str = Field(min_length=1)
+    model_name: str | None = None
+    permissions: list[Literal["read", "write", "host_command"]] = Field(
+        default_factory=lambda: ["read", "write"]
+    )
+
+
+class DraftUpdate(StrictRequest):
+    system_prompt: str = ""
+    history_messages: list[dict[str, Any]] = Field(default_factory=list)
+    final_human_message: str = ""
+    equipment: dict[str, Any] = Field(default_factory=dict)
+
+
+class DeployRequest(StrictRequest):
+    deployment_id: str = Field(min_length=1, max_length=64)
+
+
+class ContinueRequest(StrictRequest):
+    message: str = Field(min_length=1)
+
+
+class MaterialCreate(StrictRequest):
+    path: str
+    reading_mode: Literal["full", "rough"] = "full"
+    instruction_mode: Literal["reference", "strict"] = "reference"
+    retention: Literal["removable", "irreplaceable"] = "removable"
+    confirm_git_init: bool = False
+
+
+class MaterialUpdate(StrictRequest):
+    reading_mode: Literal["full", "rough"]
+    instruction_mode: Literal["reference", "strict"]
+    retention: Literal["removable", "irreplaceable"]
+    confirm_git_init: bool = False
+
+
+class MaterialRestore(StrictRequest):
+    version_id: str

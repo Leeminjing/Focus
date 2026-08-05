@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${FOCUS_DB_USER:-focus}
+      POSTGRES_PASSWORD: ${FOCUS_DB_PASSWORD:-qweasdzxc123}
+      POSTGRES_DB: ${FOCUS_DB_NAME:-focus}
+    ports:
+      - "127.0.0.1:${FOCUS_DB_PORT:-7221}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - focus_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  focus_postgres_data:

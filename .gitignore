@@ -37,5 +37,8 @@ openspec/
 # Distribution / packaging
 dist/
 build/
+node_modules/
+desktop/.electron-smoke-data*/
+desktop/.smoke-*.log
 *.egg-info/
 *.egg
