@@ -25,6 +25,26 @@
       <div class="dialog-actions"><button value="cancel">取消</button><button class="primary" value="default">创建</button></div>
     </form>
   </dialog>
+  <dialog id="agentDialog" class="agent-dialog">
+    <header class="agent-dialog-head">
+      <div>
+        <h2>小兵详情</h2>
+        <span class="muted tiny" id="agentDialogMeta"></span>
+      </div>
+      <button class="quiet-button" data-action="close-agent-details" aria-label="关闭">×</button>
+    </header>
+    <div class="agent-dialog-history" id="agentHistory"></div>
+    <div class="agent-dialog-actions">
+      <button class="text-button" data-action="refresh-agent-details">刷新</button>
+      <button class="text-button" data-action="retry-agent-details">重试</button>
+      <button class="text-button danger" data-action="cancel-agent-details">取消运行</button>
+      <button class="text-button" data-action="debug-agent-menu" title="保留的高级操作通道">调试通道</button>
+    </div>
+    <form class="agent-dialog-continue" id="agentContinueForm">
+      <input id="agentContinueInput" placeholder="给小兵继续对话的消息…" autocomplete="off">
+      <button class="primary" type="submit">继续</button>
+    </form>
+  </dialog>
   <template id="emptyTemplate">
     <section class="empty-state"><h1>建立第一个工作区任务</h1><p>一个全图单元由本地工作区文件夹和线程共同组成。</p><button class="primary" data-action="new-task">选择文件夹</button></section>
   </template>
