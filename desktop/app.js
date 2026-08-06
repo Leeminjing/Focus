@@ -19,6 +19,7 @@ const state = {
   soldierArmed: false,
   openMaterial: null,
   openDraftSection: "history",
+  agentDialog: { agentId: null, messages: [], busy: false },
   saveTimer: null,
   statusTimer: null,
   deploying: false,
@@ -30,6 +31,7 @@ const state = {
 const app = document.querySelector("#app");
 const statusNode = document.querySelector("#globalStatus");
 const dialog = document.querySelector("#taskDialog");
+const agentDialog = document.querySelector("#agentDialog");
 const skillPicker = window.FocusSkillPicker;
 
 async function api(path, options = {}) {
@@ -347,7 +349,88 @@ function renderAgentStrip(taskId) {
   const agents = state.agents.get(taskId) || [];
   const warning = agents.some(agent => agent.permissions?.some(permission => permission === "write" || permission === "host_command"))
     ? `<span class="write-warning">共享宿主机写入：并发冲突采用最后写入者结果</span>` : "";
-  return warning + agents.map(agent => `<button class="agent-chip" data-action="agent-menu" data-agent-id="${agent.agent_id}">小兵 ${agent.agent_id.slice(0, 5)} · ${agent.latest_run?.status || "ready"}</button>`).join("");
+  return warning + agents.map(agent => `<button class="agent-chip" data-action="agent-details" data-agent-id="${agent.agent_id}">小兵 ${agent.agent_id.slice(0, 5)} · ${agent.latest_run?.status || "ready"}</button>`).join("");
+}
+
+function agentFromState(agentId) {
+  return (state.agents.get(state.activeTaskId) || []).find(item => item.agent_id === agentId);
+}
+
+async function openAgentDetails(agentId) {
+  state.agentDialog = { agentId, messages: [], busy: false };
+  renderAgentDialog();
+  agentDialog.showModal();
+  await refreshAgentDetails();
+}
+
+async function refreshAgentDetails() {
+  if (!state.agentDialog.agentId || state.agentDialog.busy) return;
+  state.agentDialog.busy = true;
+  renderAgentDialog();
+  try {
+    const [history, agents] = await Promise.all([
+      api(`/desktop/api/agents/${state.agentDialog.agentId}/history`),
+      api(`/desktop/api/tasks/${state.activeTaskId}/agents`),
+    ]);
+    state.agents.set(state.activeTaskId, agents);
+    state.agentDialog.messages = history;
+  } catch (error) { setStatus(error.message, true); }
+  finally { state.agentDialog.busy = false; renderAgentDialog(); }
+}
+
+function renderAgentDialog() {
+  const agent = agentFromState(state.agentDialog.agentId);
+  document.querySelector("#agentDialogMeta").textContent = agent
+    ? `小兵 ${agent.agent_id} · ${agent.latest_run?.status || "ready"} · ${agent.checkpoint_ns}`
+    : "";
+  const history = document.querySelector("#agentHistory");
+  if (state.agentDialog.busy) { history.innerHTML = `<p class="muted">加载中…</p>`; return; }
+  history.innerHTML = state.agentDialog.messages.length
+    ? state.agentDialog.messages.map(renderMessage).join("")
+    : `<p class="muted">暂无消息记录（该小兵尚未产生已提交的 checkpoint）</p>`;
+}
+
+async function retryAgentDetails() {
+  try {
+    const run = await api(`/desktop/api/agents/${state.agentDialog.agentId}/retry`, { method: "POST" });
+    listenToRun(run);
+    setStatus("已发起小兵重试");
+    await refreshAgentDetails();
+  } catch (error) { setStatus(error.message, true); }
+}
+
+async function continueAgentDetails() {
+  const input = document.querySelector("#agentContinueInput");
+  const message = input.value.trim();
+  if (!message) return;
+  try {
+    const run = await api(`/desktop/api/agents/${state.agentDialog.agentId}/continue`, { method: "POST", body: JSON.stringify({ message }) });
+    listenToRun(run);
+    input.value = "";
+    setStatus("已发起小兵继续对话");
+    await refreshAgentDetails();
+  } catch (error) { setStatus(error.message, true); }
+}
+
+async function cancelAgentDetails() {
+  const agent = agentFromState(state.agentDialog.agentId);
+  if (!agent?.latest_run) return setStatus("该小兵尚无运行可取消", true);
+  try {
+    await api(`/desktop/api/runs/${agent.latest_run.run_id}/cancel`, { method: "POST" });
+    setStatus("已请求取消运行");
+    await refreshAgentDetails();
+  } catch (error) { setStatus(error.message, true); }
+}
+
+async function debugAgentMenu(agentId) {
+  // 保留的高级操作通道：原 prompt 交互在 Electron 中被禁用，调用即抛错，此处显式提示
+  let choice;
+  try { choice = prompt("输入操作：history / retry / continue / cancel", "history"); }
+  catch { return setStatus("调试通道依赖 window.prompt，Electron 不支持，请使用详情面板操作", true); }
+  if (choice === "history") alert(JSON.stringify(await api(`/desktop/api/agents/${agentId}/history`), null, 2));
+  if (choice === "retry") listenToRun(await api(`/desktop/api/agents/${agentId}/retry`, { method: "POST" }));
+  if (choice === "continue") { const message = prompt("继续对话内容"); if (message) listenToRun(await api(`/desktop/api/agents/${agentId}/continue`, { method: "POST", body: JSON.stringify({ message }) })); }
+  if (choice === "cancel") { const agent = agentFromState(agentId); if (agent?.latest_run) await api(`/desktop/api/runs/${agent.latest_run.run_id}/cancel`, { method: "POST" }); }
 }
 
 function taskCards(draftMode = false) {
@@ -639,14 +722,12 @@ document.addEventListener("click", async event => {
     renderDraft(); scheduleDraftSave(); return;
   }
   if (button.closest("[data-material-id]")) return handleMaterialAction(button);
-  if (action === "agent-menu") {
-    const choice = prompt("输入操作：history / retry / continue / cancel", "history");
-    const agentId = button.dataset.agentId;
-    if (choice === "history") alert(JSON.stringify(await api(`/desktop/api/agents/${agentId}/history`), null, 2));
-    if (choice === "retry") listenToRun(await api(`/desktop/api/agents/${agentId}/retry`, { method: "POST" }));
-    if (choice === "continue") { const message = prompt("继续对话内容"); if (message) listenToRun(await api(`/desktop/api/agents/${agentId}/continue`, { method: "POST", body: JSON.stringify({ message }) })); }
-    if (choice === "cancel") { const agent = (state.agents.get(state.activeTaskId) || []).find(item => item.agent_id === agentId); if (agent?.latest_run) await api(`/desktop/api/runs/${agent.latest_run.run_id}/cancel`, { method: "POST" }); }
-  }
+  if (action === "agent-menu" || action === "debug-agent-menu") return debugAgentMenu(button.dataset.agentId);
+  if (action === "agent-details") return openAgentDetails(button.dataset.agentId);
+  if (action === "close-agent-details") return agentDialog.close();
+  if (action === "refresh-agent-details") return refreshAgentDetails();
+  if (action === "retry-agent-details") return retryAgentDetails();
+  if (action === "cancel-agent-details") return cancelAgentDetails();
 });
 
 document.addEventListener("input", event => {
@@ -736,6 +817,7 @@ function moveMessageGroup(messages, from, to) {
 }
 
 document.querySelector("#taskForm").addEventListener("submit", createTask);
+document.querySelector("#agentContinueForm").addEventListener("submit", event => { event.preventDefault(); return continueAgentDetails(); });
 document.querySelector("#fileInput")?.addEventListener("change", () => {});
 document.addEventListener("change", async event => {
   if (event.target.id !== "fileInput" || !event.target.files[0]) return;
