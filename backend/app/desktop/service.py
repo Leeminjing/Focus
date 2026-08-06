@@ -1,11 +1,13 @@
 """
 本文件对外提供 DesktopService，集中实现桌面工作区、草稿、小兵运行与材料版本业务。
 
-输入为已初始化的 PostgreSQL session factory、LangGraph checkpointer/store、StreamBridge
-和 AppConfig；输出为供 routes.py 调用的异步业务方法以及按 run_id 发布的桌面事件。
+输入为已初始化的 PostgreSQL session factory、LangGraph checkpointer/store、StreamBridge、
+RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以及 PreparedRun（统一
+编排入口 start_run 的输入 + agent_factory 闭包）。
 具体工作流为：登记真实宿主机工作区与线程，复制已提交 checkpoint 形成冻结草稿，
-按工具级安全策略组装无沙箱 Agent，在独立 checkpoint namespace 中执行，并用 Git
-隐藏引用保护不可遗失材料。示例：`service = DesktopService(...); await service.open_draft(task_id)`。
+准备无沙箱工作区 Agent 的装配参数（经统一执行链路 worker.run_agent 执行，
+独立 checkpoint namespace 隔离小兵），并用 Git 隐藏引用保护不可遗失材料。
+示例：`service = DesktopService(...); await service.open_draft(task_id)`。
 """
 
 from __future__ import annotations
@@ -15,16 +17,15 @@ import hashlib
 import json
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 import subprocess
-from typing import Any
+from typing import Any, Awaitable, Callable
 import uuid
 
 from fastapi import HTTPException
-from langchain.agents import create_agent
-from langgraph.checkpoint.base import BaseCheckpointSaver, CheckpointTuple
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
+from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -42,10 +43,16 @@ from backend.app.desktop.models import (
     PatrolDraft,
 )
 from backend.app.desktop.skills import build_task_skill_catalog, resolve_task_skills
+from backend.app.gateway.routers.thread_runs import RunCreateRequest
+from focus.agents.lead import make_lead_agent
 from focus.config.app_config import AppConfig
-from focus.models import create_chat_model
+from focus.runtime.runs.events import (
+    serialize_message,
+    validate_messages,
+)
+from focus.runtime.runs.manager import RunManager, RunRecord
 from focus.runtime.stream_bridge.base import StreamBridge
-from focus.runtime.stream_bridge.schemas import StreamEvent
+from focus.tools.builtins.workspace_tools import select_workspace_tools
 
 logger = logging.getLogger(__name__)
 
@@ -54,85 +61,17 @@ _MAIN_SYSTEM_PROMPT ="""你是 Focus 的本地主 Agent。当前工作目录是�
 _TERMINAL_STATUSES = frozenset({"success", "error", "interrupted"})
 
 
-class NamespacedCheckpointer(BaseCheckpointSaver):
-    """Keep a root LangGraph in one explicit PostgreSQL checkpoint namespace."""
+@dataclass
+class PreparedRun:
+    """一次运行发起所需的编排输入：统一接口 body + agent_factory 闭包 + 响应载荷。
 
-    def __init__(self, backend: BaseCheckpointSaver, namespace: str) -> None:
-        super().__init__(serde=backend.serde)
-        self.backend = backend
-        self.namespace = namespace
+    agent_factory 为 None 表示幂等命中已有 run，无需发起（routes._launch 据此跳过）。
+    """
 
-    @property
-    def config_specs(self):
-        return self.backend.config_specs
-
-    def _stored(self, config):
-        result = {**config, "configurable": {**config.get("configurable", {})}}
-        result["configurable"]["checkpoint_ns"] = self.namespace
-        return result
-
-    @staticmethod
-    def _root(config):
-        if config is None:
-            return None
-        result = {**config, "configurable": {**config.get("configurable", {})}}
-        result["configurable"]["checkpoint_ns"] = ""
-        return result
-
-    def _root_tuple(self, value):
-        if value is None:
-            return None
-        return CheckpointTuple(
-            self._root(value.config), value.checkpoint, value.metadata,
-            self._root(value.parent_config), value.pending_writes,
-        )
-
-    async def aget_tuple(self, config):
-        return self._root_tuple(await self.backend.aget_tuple(self._stored(config)))
-
-    async def alist(self, config, *, filter=None, before=None, limit=None):
-        stored = self._stored(config) if config is not None else None
-        stored_before = self._stored(before) if before is not None else None
-        async for value in self.backend.alist(
-            stored, filter=filter, before=stored_before, limit=limit
-        ):
-            yield self._root_tuple(value)
-
-    async def aput(self, config, checkpoint, metadata, new_versions):
-        saved = await self.backend.aput(
-            self._stored(config), checkpoint, metadata, new_versions
-        )
-        return self._root(saved)
-
-    async def aput_writes(self, config, writes, task_id, task_path=""):
-        await self.backend.aput_writes(
-            self._stored(config), writes, task_id, task_path
-        )
-
-    async def adelete_thread(self, thread_id):
-        await self.backend.adelete_thread(thread_id)
-
-    async def adelete_for_runs(self, run_ids):
-        await self.backend.adelete_for_runs(run_ids)
-
-    async def acopy_thread(self, source_thread_id, target_thread_id):
-        await self.backend.acopy_thread(source_thread_id, target_thread_id)
-
-    async def aprune(self, thread_ids, *, strategy="keep_latest"):
-        await self.backend.aprune(thread_ids, strategy=strategy)
-
-    async def aget_delta_channel_history(self, *, config, channels):
-        return await self.backend.aget_delta_channel_history(
-            config=self._stored(config), channels=channels
-        )
-
-    def get_next_version(self, current, channel):
-        return self.backend.get_next_version(current, channel)
-
-    def with_allowlist(self, extra_allowlist):
-        return NamespacedCheckpointer(
-            self.backend.with_allowlist(extra_allowlist), self.namespace
-        )
+    body: RunCreateRequest
+    thread_id: str
+    agent_factory: Callable[[], Awaitable[CompiledStateGraph]] | None
+    payload: dict[str, Any]
 
 
 def new_id() -> str:
@@ -155,112 +94,6 @@ def prompt_with_skills(system_prompt: str, snapshots: list[dict[str, str]]) -> s
     return f"{system_prompt}\n\n<selected_skills>\n{blocks}\n</selected_skills>"
 
 
-def stream_text(content: Any) -> str:
-    """Extract visible text from a LangChain message chunk."""
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    parts: list[str] = []
-    for block in content:
-        if isinstance(block, str):
-            parts.append(block)
-        elif isinstance(block, dict) and isinstance(block.get("text"), str):
-            parts.append(block["text"])
-    return "".join(parts)
-
-
-def serialize_message(message: BaseMessage) -> dict[str, Any]:
-    if isinstance(message, HumanMessage):
-        role = "human"
-    elif isinstance(message, AIMessage):
-        role = "ai"
-    elif isinstance(message, SystemMessage):
-        role = "system"
-    elif isinstance(message, ToolMessage):
-        role = "tool"
-    else:
-        role = message.type
-    result: dict[str, Any] = {"role": role, "content": message.content}
-    if message.id:
-        result["id"] = message.id
-    if isinstance(message, AIMessage) and message.tool_calls:
-        result["tool_calls"] = message.tool_calls
-        result["locked"] = True
-    if isinstance(message, ToolMessage):
-        result["tool_call_id"] = message.tool_call_id
-        result["name"] = message.name
-        result["locked"] = True
-    files = message.additional_kwargs.get("files") if message.additional_kwargs else None
-    if files:
-        result["files"] = files
-    return result
-
-
-def validate_messages(messages: list[dict[str, Any]]) -> None:
-    pending_calls: dict[str, int] = {}
-    resolved_calls: set[str] = set()
-    for index, message in enumerate(messages):
-        role = message.get("role")
-        content = message.get("content", "")
-        unresolved = set(pending_calls) - resolved_calls
-        if unresolved and role != "tool":
-            raise ValueError(
-                f"消息 {index + 1} 之前必须紧跟完成工具结果: {', '.join(sorted(unresolved))}"
-            )
-        if role not in {"human", "user", "ai", "assistant", "system", "tool"}:
-            raise ValueError(f"消息 {index + 1} 的角色无效")
-        if not isinstance(content, (str, list)):
-            raise ValueError(f"消息 {index + 1} 的 content 必须是文本或内容块")
-        tool_calls = message.get("tool_calls", [])
-        if tool_calls:
-            if role not in {"ai", "assistant"}:
-                raise ValueError(f"消息 {index + 1} 的 tool_calls 只能属于 AIMessage")
-            for call in tool_calls:
-                call_id = call.get("id") if isinstance(call, dict) else None
-                if not call_id or call_id in pending_calls:
-                    raise ValueError(f"消息 {index + 1} 包含无效或重复 tool call id")
-                pending_calls[call_id] = index
-        if role == "tool":
-            call_id = message.get("tool_call_id")
-            if not call_id or call_id not in pending_calls or call_id in resolved_calls:
-                raise ValueError(f"消息 {index + 1} 的 ToolMessage 没有合法调用方")
-            resolved_calls.add(call_id)
-    unresolved = set(pending_calls) - resolved_calls
-    if unresolved:
-        raise ValueError(f"工具调用缺少结果: {', '.join(sorted(unresolved))}")
-
-
-def deserialize_messages(messages: list[dict[str, Any]]) -> list[BaseMessage]:
-    validate_messages(messages)
-    result: list[BaseMessage] = []
-    for message in messages:
-        role = message.get("role")
-        kwargs: dict[str, Any] = {}
-        if message.get("id"):
-            kwargs["id"] = message["id"]
-        if message.get("files"):
-            kwargs["additional_kwargs"] = {"files": message["files"]}
-        if role in {"human", "user"}:
-            result.append(HumanMessage(content=message.get("content", ""), **kwargs))
-        elif role in {"ai", "assistant"}:
-            if message.get("tool_calls"):
-                kwargs["tool_calls"] = message["tool_calls"]
-            result.append(AIMessage(content=message.get("content", ""), **kwargs))
-        elif role == "system":
-            result.append(SystemMessage(content=message.get("content", ""), **kwargs))
-        else:
-            result.append(
-                ToolMessage(
-                    content=message.get("content", ""),
-                    tool_call_id=message["tool_call_id"],
-                    name=message.get("name"),
-                    **kwargs,
-                )
-            )
-    return result
-
-
 class DesktopService:
     def __init__(
         self,
@@ -269,13 +102,16 @@ class DesktopService:
         store: Any,
         bridge: StreamBridge,
         app_config: AppConfig,
+        run_manager: RunManager,
     ) -> None:
         self.session_factory = session_factory
         self.checkpointer = checkpointer
         self.store = store
         self.bridge = bridge
         self.app_config = app_config
-        self._tasks: dict[str, asyncio.Task] = {}
+        self.run_manager = run_manager
+        # 仅持有 DB 终态同步任务（运行注册表/取消由 RunManager 负责）
+        self._sync_tasks: set[asyncio.Task] = set()
         self._watcher: asyncio.Task | None = None
 
     async def start(self) -> None:
@@ -289,7 +125,7 @@ class DesktopService:
         self._watcher = asyncio.create_task(self._watch_materials())
 
     async def close(self) -> None:
-        background = list(self._tasks.values())
+        background = list(self._sync_tasks)
         if self._watcher:
             self._watcher.cancel()
             background.append(self._watcher)
@@ -451,11 +287,11 @@ class DesktopService:
             await session.commit()
             return self._draft_payload(draft)
 
-    async def deploy(self, draft_id: str, deployment_id: str) -> dict[str, Any]:
+    async def deploy(self, draft_id: str, deployment_id: str) -> PreparedRun:
         async with self.session_factory() as session:
             existing = await session.scalar(select(DesktopRun).where(DesktopRun.deployment_id == deployment_id))
             if existing:
-                return self._run_payload(existing)
+                return PreparedRun(body=RunCreateRequest(), thread_id="", agent_factory=None, payload=self._run_payload(existing))
             draft = await session.get(PatrolDraft, draft_id)
             if not draft or draft.status != "editing":
                 raise HTTPException(404, "可投放草稿不存在")
@@ -496,15 +332,21 @@ class DesktopService:
                 await session.rollback()
                 winner = await session.scalar(select(DesktopRun).where(DesktopRun.deployment_id == deployment_id))
                 if winner:
-                    return self._run_payload(winner)
+                    return PreparedRun(body=RunCreateRequest(), thread_id="", agent_factory=None, payload=self._run_payload(winner))
                 raise
-        await self._schedule_run(run.run_id, agent.system_prompt, agent.checkpoint_ns, frozen, agent.equipment)
-        return self._run_payload(run)
+            task_row = await session.get(DesktopThread, draft.task_id)
+            thread_id = task_row.thread_id
+            workspace_id = workspace.workspace_id
+            workspace_path = workspace.path
+        return await self._prepare(
+            run, thread_id, workspace_id, workspace_path, frozen,
+            draft.system_prompt, agent.equipment, agent.checkpoint_ns, False,
+        )
 
     async def start_main_run(
         self, task_id: str, message: str, model_name: str | None,
         permissions: list[str], skills: list[str],
-    ) -> dict[str, Any]:
+    ) -> PreparedRun:
         async with self.session_factory() as session:
             _, workspace = await self._get_task_entities(session, task_id)
             snapshots = self._freeze_skills(workspace.path, skills)
@@ -514,6 +356,10 @@ class DesktopService:
             )
             session.add(run)
             await session.commit()
+            task_row = await session.get(DesktopThread, task_id)
+            thread_id = task_row.thread_id
+            workspace_id = workspace.workspace_id
+            workspace_path = workspace.path
         equipment = {
             "model_name": model_name,
             "tools": "auto",
@@ -521,10 +367,12 @@ class DesktopService:
             "skill_snapshots": snapshots,
             "permissions": permissions,
         }
-        await self._schedule_run(run.run_id, _MAIN_SYSTEM_PROMPT, "", run.input_messages, equipment)
-        return self._run_payload(run)
+        return await self._prepare(
+            run, thread_id, workspace_id, workspace_path, run.input_messages,
+            _MAIN_SYSTEM_PROMPT, equipment, "", True,
+        )
 
-    async def retry_agent(self, agent_id: str) -> dict[str, Any]:
+    async def retry_agent(self, agent_id: str) -> PreparedRun:
         async with self.session_factory() as session:
             agent = await session.get(PatrolAgent, agent_id)
             if not agent:
@@ -536,10 +384,17 @@ class DesktopService:
             )
             session.add(run)
             await session.commit()
-        await self._schedule_run(run.run_id, agent.system_prompt, agent.checkpoint_ns, agent.frozen_messages, agent.equipment)
-        return self._run_payload(run)
+            task_row = await session.get(DesktopThread, agent.task_id)
+            workspace_row = await session.get(DesktopWorkspace, task_row.workspace_id)
+            thread_id = task_row.thread_id
+            workspace_id = workspace_row.workspace_id
+            workspace_path = workspace_row.path
+        return await self._prepare(
+            run, thread_id, workspace_id, workspace_path, agent.frozen_messages,
+            agent.system_prompt, agent.equipment, agent.checkpoint_ns, False,
+        )
 
-    async def continue_agent(self, agent_id: str, message: str) -> dict[str, Any]:
+    async def continue_agent(self, agent_id: str, message: str) -> PreparedRun:
         async with self.session_factory() as session:
             agent = await session.get(PatrolAgent, agent_id)
             if not agent:
@@ -551,13 +406,19 @@ class DesktopService:
             )
             session.add(run)
             await session.commit()
-        await self._schedule_run(run.run_id, agent.system_prompt, agent.checkpoint_ns, input_messages, agent.equipment)
-        return self._run_payload(run)
+            task_row = await session.get(DesktopThread, agent.task_id)
+            workspace_row = await session.get(DesktopWorkspace, task_row.workspace_id)
+            thread_id = task_row.thread_id
+            workspace_id = workspace_row.workspace_id
+            workspace_path = workspace_row.path
+        return await self._prepare(
+            run, thread_id, workspace_id, workspace_path, input_messages,
+            agent.system_prompt, agent.equipment, agent.checkpoint_ns, False,
+        )
 
     async def cancel_run(self, run_id: str) -> dict[str, Any]:
-        task = self._tasks.get(run_id)
-        if task and not task.done():
-            task.cancel()
+        # 软硬双通道取消由 RunManager 负责（abort_event + task.cancel）
+        self.run_manager.cancel(run_id)
         async with self.session_factory() as session:
             run = await session.get(DesktopRun, run_id)
             if not run:
@@ -711,158 +572,92 @@ class DesktopService:
             await session.commit()
             return self._material_payload(material, workspace.path)
 
-    async def _schedule_run(
-        self, run_id: str, system_prompt: str, checkpoint_ns: str,
-        messages: list[dict[str, Any]], equipment: dict[str, Any],
-    ) -> None:
-        task = asyncio.create_task(self._run_agent(run_id, system_prompt, checkpoint_ns, messages, equipment))
-        self._tasks[run_id] = task
+    async def _prepare(
+        self, run: DesktopRun, thread_id: str, workspace_id: str, workspace_path: str,
+        messages: list[dict[str, Any]], base_prompt: str, equipment: dict[str, Any],
+        checkpoint_ns: str, with_patrol_readers: bool,
+    ) -> PreparedRun:
+        """组装统一编排入口的输入：RunCreateRequest（input/context/stream_mode）+ agent_factory 闭包。
 
-    async def _run_agent(
-        self, run_id: str, system_prompt: str, checkpoint_ns: str,
-        messages: list[dict[str, Any]], equipment: dict[str, Any],
-    ) -> None:
-        run: DesktopRun | None = None
-        task: DesktopThread | None = None
-        try:
-            async with self.session_factory() as session:
-                run = await session.get(DesktopRun, run_id)
-                if not run:
-                    return
-                run.status = "running"
-                task, workspace = await self._get_task_entities(session, run.task_id)
-                await session.commit()
-            envelope = self._event_envelope(run, task, "metadata", {"status": "running"})
-            self.bridge.publish(run_id, StreamEvent(id="", event="metadata", data=envelope))
-            model_name = equipment.get("model_name") or run.model_name
-            model = create_chat_model(name=model_name, app_config=self.app_config)
-            tools = await self._build_tools(task, workspace, equipment, run.kind == "main")
-            material_context = await self._material_context(task.task_id)
-            runtime_prompt = prompt_with_skills(
-                system_prompt, equipment.get("skill_snapshots", [])
-            )
+        工作流:
+            (1) 查询任务材料策略，拼入运行 prompt 基础
+            (2) 构建 agent_factory 闭包（工作区内置工具按权限过滤 + 小兵读取工具 + 技能快照）
+            (3) context 携带 workspace/workspace_id/agent_id/permissions/skills/checkpoint_ns，
+                由 services.start_run 透传给 worker 与工具（ToolRuntime）
+        """
+        material_context = await self._material_context(run.task_id)
+        factory = self._build_agent_factory(
+            run.task_id, workspace_path, equipment, base_prompt,
+            material_context, with_patrol_readers,
+        )
+        body = RunCreateRequest(
+            input={"messages": messages},
+            context={
+                "model_name": equipment.get("model_name") or run.model_name,
+                "workspace_id": workspace_id,
+                "agent_id": run.agent_id,
+                "permissions": equipment.get("permissions") or ["read"],
+                "skills": equipment.get("skills") or [],
+                "workspace": workspace_path,
+                "checkpoint_ns": checkpoint_ns,
+                "run_id": run.run_id,
+            },
+            stream_mode=["messages-tuple", "values"],
+        )
+        return PreparedRun(body=body, thread_id=thread_id, agent_factory=factory, payload=self._run_payload(run))
+
+    def _build_agent_factory(
+        self, task_id: str, workspace_path: str, equipment: dict[str, Any],
+        base_prompt: str, material_context: str, with_patrol_readers: bool,
+    ) -> Callable[[], Awaitable[CompiledStateGraph]]:
+        """构建 agent_factory 闭包：工作区内置工具（权限过滤）+ 小兵读取工具 + prompt 注入。
+
+        输入:
+            task_id: str — 任务 ID（小兵读取工具按任务过滤）
+            workspace_path: str — 真实工作区路径（经 ToolRuntime context 注入工具）
+            equipment: dict — 模型/权限/技能快照（skill_snapshots）
+            base_prompt: str — 主 prompt（主 Agent 固定模板 / 小兵草稿 system_prompt）
+            material_context: str — 材料策略文本（可为空）
+            with_patrol_readers: bool — 主 Agent 是否携带小兵读取工具
+
+        输出:
+            Callable — async 闭包，await 后返回 CompiledStateGraph
+        """
+        permissions = equipment.get("permissions") or ["read"]
+        snapshots = equipment.get("skill_snapshots") or []
+        model_name = equipment.get("model_name")
+
+        async def factory() -> CompiledStateGraph:
+            tools = select_workspace_tools(permissions)
+            if with_patrol_readers:
+                tools = [*tools, *self._build_patrol_reader_tools(task_id)]
+            prompt = prompt_with_skills(base_prompt, snapshots)
             if material_context:
-                runtime_prompt += f"\n\n<focus_material_policies>\n{material_context}\n</focus_material_policies>"
-            run_checkpointer = NamespacedCheckpointer(self.checkpointer, checkpoint_ns)
-            graph = create_agent(
-                model=model, tools=tools, system_prompt=runtime_prompt,
-                checkpointer=run_checkpointer, store=self.store,
+                prompt = f"{prompt}\n\n<focus_material_policies>\n{material_context}\n</focus_material_policies>"
+            return await make_lead_agent(
+                model_name=model_name,
+                tools=tools,
+                system_prompt=prompt,
+                middlewares=[],
             )
-            config = {
-                "recursion_limit": 50,
-                "configurable": {
-                    "thread_id": task.thread_id,
-                    "run_id": run_id,
-                },
-            }
-            async for mode, chunk in graph.astream(
-                {"messages": deserialize_messages(messages)},
-                config=config,
-                stream_mode=["messages", "values"],
-            ):
-                if mode == "messages":
-                    message, metadata = chunk
-                    content = stream_text(message.content)
-                    if not content:
-                        continue
-                    payload = {
-                        "content": content,
-                        "message_id": message.id,
-                        "node": metadata.get("langgraph_node"),
-                    }
-                    event_name = "tokens"
-                else:
-                    payload = self._serialize_value(chunk)
-                    event_name = "events"
-                envelope = self._event_envelope(run, task, event_name, payload)
-                self.bridge.publish(run_id, StreamEvent(id="", event=event_name, data=envelope))
-            await self._set_run_status(run_id, "success")
-            envelope = self._event_envelope(run, task, "status", {"status": "success"})
-            self.bridge.publish(run_id, StreamEvent(id="", event="status", data=envelope))
+
+        return factory
+
+    def attach_run_sync(self, record: RunRecord) -> None:
+        """挂载 DB 终态同步薄任务：worker 结束后把 RunRecord 终态写入 desktop_runs。"""
+        task = asyncio.create_task(self._sync_run_status(record))
+        self._sync_tasks.add(task)
+
+    async def _sync_run_status(self, record: RunRecord) -> None:
+        try:
+            await record.task
         except asyncio.CancelledError:
-            await self._set_run_status(run_id, "interrupted")
-            if run and task:
-                envelope = self._event_envelope(run, task, "status", {"status": "interrupted"})
-                self.bridge.publish(run_id, StreamEvent(id="", event="status", data=envelope))
-        except Exception as exc:
-            await self._set_run_status(run_id, "error", str(exc))
-            if run and task:
-                envelope = self._event_envelope(run, task, "error", {"error": str(exc)})
-                self.bridge.publish(run_id, StreamEvent(id="", event="error", data=envelope))
+            pass  # RunManager.cancel 已置 interrupted
         finally:
-            self.bridge.publish_end(run_id)
-            self.bridge.cleanup(run_id, delay=300)
-            self._tasks.pop(run_id, None)
-
-    async def _build_tools(
-        self, task: DesktopThread, workspace: DesktopWorkspace,
-        equipment: dict[str, Any], include_patrol_readers: bool,
-    ) -> list[BaseTool]:
-        root = Path(workspace.path)
-        raw_permissions = equipment.get("permissions")
-        permissions = frozenset(["read"] if raw_permissions is None else raw_permissions)
-
-        @tool
-        def read_file(path: str) -> str:
-            """读取当前真实工作区内文件；path 可以是绝对路径或相对工作区路径。"""
-            if "read" not in permissions:
-                raise PermissionError("当前运行未授权 read")
-            target = self._resolve_workspace_path(root, path)
-            if not target.is_file():
-                raise FileNotFoundError(str(target))
-            suffix = target.suffix.lower()
-            if suffix in {".pdf", ".docx", ".doc"}:
-                from focus.sandbox.readers import _read_doc, _read_docx, _read_pdf
-                if suffix == ".pdf":
-                    return _read_pdf(str(target))
-                if suffix == ".docx":
-                    return _read_docx(str(target))
-                return _read_doc(str(target))
-            return target.read_text(encoding="utf-8", errors="replace")
-
-        @tool
-        def list_files(path: str = ".") -> str:
-            """列出当前真实工作区内目录；path 可以是绝对路径或相对工作区路径。"""
-            if "read" not in permissions:
-                raise PermissionError("当前运行未授权 read")
-            target = self._resolve_workspace_path(root, path)
-            if not target.is_dir():
-                raise NotADirectoryError(str(target))
-            return "\n".join(str(item) for item in sorted(target.iterdir()))
-
-        @tool
-        def write_file(path: str, content: str) -> str:
-            """在当前真实工作区写入 UTF-8 文本；只有用户授权 write 时才会装备。"""
-            if "write" not in permissions:
-                raise PermissionError("当前运行未授权 write")
-            target = self._resolve_workspace_path(root, path)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
-            return f"已写入真实宿主机路径: {target}"
-
-        @tool
-        def powershell(command: str) -> str:
-            """在真实工作区执行 PowerShell；只有用户授权 host_command 时才会装备。"""
-            if "host_command" not in permissions:
-                raise PermissionError("当前运行未授权 host_command")
-            result = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-Command", command], cwd=root,
-                capture_output=True, text=True, timeout=120, shell=False,
-            )
-            return (result.stdout + result.stderr)[-30000:]
-
-        available: dict[str, BaseTool] = {}
-        if "read" in permissions:
-            available.update({"read_file": read_file, "list_files": list_files})
-        if "write" in permissions:
-            available["write_file"] = write_file
-        if "host_command" in permissions:
-            available["powershell"] = powershell
-        selected = equipment.get("tools", "auto")
-        tools = list(available.values()) if selected == "auto" else [available[name] for name in selected if name in available]
-        if include_patrol_readers:
-            tools.extend(self._build_patrol_reader_tools(task.task_id))
-        return tools
+            try:
+                await self._set_run_status(record.run_id, record.status.value)
+            finally:
+                self._sync_tasks.discard(asyncio.current_task())
 
     async def _material_context(self, task_id: str) -> str:
         async with self.session_factory() as session:
@@ -1103,16 +898,6 @@ class DesktopService:
                 await asyncio.sleep(3)
 
     @staticmethod
-    def _serialize_value(value: Any) -> Any:
-        if isinstance(value, BaseMessage):
-            return serialize_message(value)
-        if isinstance(value, dict):
-            return {key: DesktopService._serialize_value(item) for key, item in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [DesktopService._serialize_value(item) for item in value]
-        return value
-
-    @staticmethod
     def _workspace_payload(workspace: DesktopWorkspace) -> dict[str, Any]:
         return {"workspace_id": workspace.workspace_id, "path": workspace.path, "display_name": workspace.display_name}
 
@@ -1173,13 +958,4 @@ class DesktopService:
             "version_id": version.version_id, "commit_id": version.commit_id,
             "object_id": version.object_id, "digest": version.digest, "source": version.source,
             "created_at": version.created_at.isoformat() if version.created_at else None,
-        }
-
-    @staticmethod
-    def _event_envelope(
-        run: DesktopRun, task: DesktopThread, event: str, data: Any
-    ) -> dict[str, Any]:
-        return {
-            "workspace_id": task.workspace_id, "thread_id": task.thread_id,
-            "agent_id": run.agent_id, "run_id": run.run_id, "event": event, "data": data,
         }

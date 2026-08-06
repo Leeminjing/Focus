@@ -39,3 +39,6 @@ desktop/.electron-smoke-data*/
 desktop/.smoke-*.log
 *.egg-info/
 *.egg
+
+# 测试临时数据库
+*.db

@@ -1,10 +1,8 @@
 ﻿"""
-本文件对外提供 make_lead_agent 异步工厂函数和 _build_middlewares 内部函数，
-作为 lead_agent 装配的唯一对外入口。
+本文件对外提供 make_lead_agent 异步工厂函数，作为 lead_agent 装配的唯一对外入口。
 
 对外提供:
     make_lead_agent — 装配并返回可执行的 CompiledStateGraph
-    _build_middlewares — 组装 lead_agent 的中间件链（通用 + 专属）
 
 输入:
     make_lead_agent:
@@ -12,34 +10,30 @@
         agent_name: str | None — system prompt 中的 agent 名称，None 时使用默认值 "focus"
         tool_groups: list[str] | None — 需要加载的工具分组名列表，None 表示加载全部
         user_id: str | None — 用户标识，用于定位 per-user custom skills 路径，None 时跳过 custom
+        tools: list[BaseTool] | None — 自定义工具集，非 None 时跳过全局工具汇集与 describe_skill_tool
+        system_prompt: str | None — 自定义系统提示词，非 None 时跳过技能扫描与模板生成
+        middlewares: list[AgentMiddleware] | None — 自定义中间件链，非 None 时覆盖默认构建
 
 输出:
     CompiledStateGraph — langchain.agents.create_agent() 产出的可执行 agent graph
 
 具体工作流:
     (1) 调用 create_chat_model(name=model_name) 获取 BaseChatModel 实例
-    (2) 加载 skills:
-        (2a) 读 extensions_config.json 获取 enabled skill 名称集合
-        (2b) public: SKILLS_PUBLIC_REAL_ROOT 下扫描 skills/public/ 发现 SKILL.md
-        (2c) custom: SKILLS_CUSTOM_REAL_ROOT.format(user_id=user_id) 下扫描 skills/custom/（user_id 为 None 时跳过）
-        (2d) 逐个 parse_skill_file() 解析 + _validate_skill_frontmatter 校验
-        (2e) 过滤 enabled=true 的 Skill → 构建 SkillCatalog
-        (2f) skill_names = catalog.names → 逗号分隔字符串
-    (3) await get_available_tools(tool_groups=tool_groups) 汇集全局工具
-        (3a) 调用 build_describe_skill_tool(catalog) 创建 skill 查询工具
-        (3b) 合并: [describe_skill_tool] + global_tools
-    (4) 调用 _build_middlewares() 获取中间件列表
-        (4a) 调用 build_general_middlewares() 获取通用中间件链
-        (4b) 追加 lead_agent 专属中间件（当前无额外中间件，预留 extend 调用点）
-    (5) 调用 apply_prompt_template(agent_name, skill_names, container_base_path) 生成 system_prompt
-    (6) 调用 langchain.agents.create_agent(model, tools, middleware, system_prompt, state_schema=LeadAgentState)
-    (7) 返回 CompiledStateGraph
+    (2) 若 system_prompt 为 None:
+        (2a) 加载 skills（public/custom 扫描 + enabled 过滤 → SkillCatalog）
+        (2b) apply_prompt_template(agent_name, skill_names, container_base_path) 生成 system_prompt
+    (3) 若 tools 为 None: await get_available_tools(tool_groups=tool_groups) 汇集全局工具
+        + build_describe_skill_tool(catalog) 创建 skill 查询工具
+    (4) 若 middlewares 为 None: 使用空中间件链（沙箱/上传中间件已随网页端与沙箱移除）
+    (5) 调用 langchain.agents.create_agent(model, tools, middleware, system_prompt, state_schema=LeadAgentState)
+    (6) 返回 CompiledStateGraph
 
 示例:
     graph = await make_lead_agent()
     graph = await make_lead_agent(model_name="deepseek-v4-flash", agent_name="DeepSeek")
     graph = await make_lead_agent(tool_groups=["file:read", "bash"])
     graph = await make_lead_agent(user_id="uuid-xxx")
+    graph = await make_lead_agent(tools=my_tools, system_prompt=my_prompt, middlewares=[])
 """
 
 import json
@@ -48,33 +42,15 @@ from pathlib import Path
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
+from langchain_core.tools import BaseTool
 from langgraph.graph.state import CompiledStateGraph
 
 from focus.agents.lead.prompt import apply_prompt_template
 from focus.agents.lead_agent_state import LeadAgentState
-from focus.agents.middlewares.builder import build_general_middlewares
 from focus.models import create_chat_model
 from focus.tools import get_available_tools
 
 logger = logging.getLogger(__name__)
-
-
-def _build_middlewares() -> list[AgentMiddleware]:
-    """组装 lead_agent 的中间件链：通用链 + lead_agent 专属中间件。
-
-    输入: 无
-
-    输出:
-        list[AgentMiddleware] — 按顺序排列的中间件列表
-
-    工作流:
-        (1) 调用 build_general_middlewares() 获取通用中间件链
-        (2) 追加 lead_agent 专属中间件（当前无额外中间件，预留 extend 调用点）
-        (3) 返回完整列表
-    """
-    middlewares = build_general_middlewares()
-    # ponytail: lead_agent 专属中间件预留扩展点
-    return middlewares
 
 
 def _load_enabled_skill_names() -> frozenset[str]:
@@ -129,10 +105,14 @@ def _discover_and_build_catalog(
         (4) 根据 enabled_names 过滤 enabled=true
         (5) 构建 SkillCatalog 并返回
     """
-    from focus.sandbox.path_utils import SKILLS_CUSTOM_REAL_ROOT, SKILLS_PUBLIC_REAL_ROOT
     from focus.skills.catalog import SkillCatalog
     from focus.skills.parser import parse_skill_file
-    from focus.skills.types import SKILL_MD_FILE, SkillCategory
+    from focus.skills.types import (
+        SKILLS_CUSTOM_REAL_ROOT,
+        SKILLS_PUBLIC_REAL_ROOT,
+        SKILL_MD_FILE,
+        SkillCategory,
+    )
 
     base_path = Path(host_base_path) if host_base_path else Path(SKILLS_PUBLIC_REAL_ROOT)
 
@@ -169,40 +149,42 @@ async def make_lead_agent(
     agent_name: str | None = None,
     tool_groups: list[str] | None = None,
     user_id: str | None = None,
+    tools: list[BaseTool] | None = None,
+    system_prompt: str | None = None,
+    middlewares: list[AgentMiddleware] | None = None,
 ) -> CompiledStateGraph:
     # (1) 创建模型
     model = create_chat_model(name=model_name)
 
-    # (2) 加载 skills
-    from focus.config import get_app_config
+    # (2) system prompt：未注入时走技能扫描 + 模板生成
+    catalog = None
+    if system_prompt is None:
+        enabled_names = _load_enabled_skill_names()
+        catalog = _discover_and_build_catalog(enabled_names, host_base_path=None, user_id=user_id)
+        skill_names = ", ".join(sorted(catalog.names))
 
-    app_config = get_app_config("config.yaml")
-    # container_base_path 用于 system prompt（沙箱内的 skill 路径），host 路径用 SKILLS_PUBLIC_REAL_ROOT
-    container_base_path = app_config.skills.container_path if app_config.skills else None
+        system_prompt = apply_prompt_template(
+            agent_name=agent_name,
+            skill_names=skill_names,
+            container_base_path=None,
+        )
 
-    enabled_names = _load_enabled_skill_names()
-    catalog = _discover_and_build_catalog(enabled_names, host_base_path=None, user_id=user_id)
-    skill_names = ", ".join(sorted(catalog.names))
+    # (3) 汇集工具：未注入时走全局工具池 + describe_skill_tool
+    if tools is None:
+        tools = await get_available_tools(tool_groups=tool_groups)
 
-    # (3) 汇集工具
-    tools = await get_available_tools(tool_groups=tool_groups)
+        from focus.tools.builtins.describe_skill_tool import build_describe_skill_tool
 
-    from focus.tools.builtins.describe_skill_tool import build_describe_skill_tool
+        if catalog is None:
+            enabled_names = _load_enabled_skill_names()
+            catalog = _discover_and_build_catalog(enabled_names, host_base_path=None, user_id=user_id)
+        describe_skill_tool = build_describe_skill_tool(catalog)
+        tools = [describe_skill_tool] + tools
 
-    describe_skill_tool = build_describe_skill_tool(catalog)
-    tools = [describe_skill_tool] + tools
+    # (4) middleware：未注入时为空链（沙箱/上传中间件已随网页端与沙箱移除）
+    middleware = middlewares if middlewares is not None else []
 
-    # (4) system prompt
-    system_prompt = apply_prompt_template(
-        agent_name=agent_name,
-        skill_names=skill_names,
-        container_base_path=container_base_path,
-    )
-
-    # (5) middleware
-    middleware = _build_middlewares()
-
-    # (6) create_agent
+    # (5) create_agent
     return create_agent(
         model=model,
         tools=tools,

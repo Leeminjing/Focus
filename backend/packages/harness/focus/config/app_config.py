@@ -1,7 +1,7 @@
 ﻿"""
 本文件对外提供 get_app_config、reload_app_config 两个公开函数，以及 AppConfig 配置聚合类。
 
-AppConfig: 声明式配置数据模型，聚合 models / tool_groups / tools / skills / sandbox / stream_bridge / database / checkpointer / extensions 配置
+AppConfig: 声明式配置数据模型，聚合 models / stream_bridge / database / checkpointer / extensions 配置
 get_app_config: 组合根入口，将 config.yaml 加载为全局单例 AppConfig 对象
 reload_app_config: 强制刷新全局单例，修改 config.yaml 后立即生效
 
@@ -22,21 +22,13 @@ from focus.config.database_config import DatabaseConfig
 from focus.config.extensions_config import ExtensionsConfig
 from focus.config.langgraph_store_config import LanggraphStoreConfig
 from focus.config.model_config import ModelConfig
-from focus.config.sandbox_config import SandboxConfig
-from focus.config.skills_config import SkillsConfig
 from focus.config.stream_bridge_config import StreamBridgeConfig
-from focus.config.tool_config import ToolConfig
-from focus.config.tool_group_config import ToolGroupConfig
 
 
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     models: list[ModelConfig]
-    tool_groups: list[ToolGroupConfig]
-    tools: list[ToolConfig]
-    skills: SkillsConfig
-    sandbox: SandboxConfig
     stream_bridge: StreamBridgeConfig = StreamBridgeConfig()
     database: DatabaseConfig | None = None
     checkpointer: CheckpointerConfig = CheckpointerConfig()
@@ -59,9 +51,6 @@ class AppConfig(BaseModel):
             if m.name == normalized:
                 return m
         raise KeyError(f"未找到模型配置: '{name}'")
-
-    def get_tools_by_group(self, group: str) -> list[ToolConfig]:
-        return [t for t in self.tools if t.group == group]
 
 
 _app_config: AppConfig | None = None

@@ -1,5 +1,5 @@
 """
-本文件提供文档格式解析器，从 LocalSandbox 中解耦为独立模块。
+本文件提供文档格式解析器，供内置 read_file 工具复用。
 
 对外提供:
     _read_pdf(real_path)   : .pdf  文件文字提取（含扫描版 OCR + 版面解析）
@@ -8,7 +8,7 @@
 
 输入:
     所有函数仅接受已解析的真实磁盘路径 (real_path: str)，返回提取的文字内容 (str)。
-    路径解析与安全校验由调用方（LocalSandbox.read_file）在调用前完成。
+    路径解析与权限校验由调用方（内置工作区工具）在调用前完成。
 
 工作流:
     _read_pdf:
@@ -31,8 +31,7 @@
     (3) block 内按 par_num → line_num → word_num 展开，段落间空行
 
 解耦约束:
-    本模块不 import local.py / base.py 等沙箱模块。
-    函数为纯输入输出，无沙箱状态依赖。
+    本模块为纯输入输出，无沙箱/工作区状态依赖。
 
 示例:
     text = _read_pdf("/path/to/report.pdf")
