@@ -162,11 +162,12 @@ class RunManager:
 
     # === 核心操作 ===
 
-    def create(self, thread_id: str, **fields) -> RunRecord:
+    def create(self, thread_id: str, run_id: str | None = None, **fields) -> RunRecord:
         """创建一条新的 run 记录。
 
         输入:
             thread_id: str — 所属会话线程 ID
+            run_id: str | None — 显式 run_id（如桌面 DB 记录 ID），None 时自动生成
             **fields — 可选字段，可传入 on_disconnect、model_name 等
 
         输出:
@@ -175,13 +176,14 @@ class RunManager:
         示例:
             record = mgr.create("th-001")
             record = mgr.create("th-001", on_disconnect=DisconnectMode.continue_)
+            record = mgr.create("th-001", run_id="db-run-1")
         """
         now = self._now_iso()
         on_disconnect = fields.pop("on_disconnect", DisconnectMode.cancel)
         model_name = fields.pop("model_name", None)
 
         record = RunRecord(
-            run_id=self._generate_run_id(),
+            run_id=run_id or self._generate_run_id(),
             thread_id=thread_id,
             status=RunStatus.pending,
             on_disconnect=on_disconnect,

@@ -1,13 +1,14 @@
 ﻿"""
-本文件对外提供 `start_run` 异步函数，作为 core-aob 链路的编排层核心。
+本文件对外提供 `start_run` 异步函数，作为统一 agent 链路的编排层核心。
 
 对外提供:
     start_run — 编排实现层需要的参数与对象，最后创建 asyncio task 调用实现层
 
 输入:
-    body: Any — RunCreateRequest 解析后的请求体
+    body: Any — RunCreateRequest 解析后的请求体（input.messages / context / stream_mode）
     thread_id: str — 请求查询参数中的 thread_id
     request: Request — FastAPI Request 对象，用于获取 app.state 中的资源
+    agent_factory: Callable | None — 自定义装配函数，None 时 worker 使用 make_lead_agent
 
 输出:
     RunRecord — 新创建的 run 运行时档案
@@ -15,11 +16,13 @@
 具体工作流:
     (1) 从 request.app.state 获取 StreamBridge、RunManager、Checkpointer、Store
     (2) 通过 get_app_config("config.yaml") 获取 AppConfig
-    (3) 从 request.state.current_user.id 提取 user_id
+    (3) 从 body.context 提取运行参数（model_name/workspace_id/agent_id/permissions/skills/checkpoint_ns/workspace 等）
     (4) 创建 RunRecord（初始状态 pending）
-    (5) 组装参数：input → HumanMessage（保留 additional_kwargs.files）、RunnableConfig、context（含 user_id）、stream_modes
-    (6) asyncio.create_task(run_agent(...)) 启动 worker
-    (7) record.task = task，返回 RunRecord
+    (5) 组装参数：input.messages → BaseMessage（deserialize_messages 全角色还原）、
+        RunnableConfig、context（透传 + user_id）、stream_modes
+    (6) context.checkpoint_ns 非空时以 NamespacedCheckpointer 包装 checkpointer
+    (7) asyncio.create_task(run_agent(...)) 启动 worker
+    (8) record.task = task，返回 RunRecord
 
 示例:
     @router.post("/{thread_id}/runs/stream")
@@ -30,13 +33,15 @@
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from fastapi import Request
-from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.graph.state import CompiledStateGraph
 
 from focus.config.app_config import get_app_config
+from focus.runtime.checkpointer.namespaced import NamespacedCheckpointer
+from focus.runtime.runs.events import deserialize_messages
 from focus.runtime.runs.manager import RunManager, RunRecord
 from focus.runtime.runs.schemas import DisconnectMode
 from focus.runtime.runs.worker import run_agent
@@ -47,10 +52,18 @@ logger = logging.getLogger(__name__)
 _DEFAULT_RECURSION_LIMIT = 25
 
 
+def _context_dict(body: Any) -> dict[str, Any]:
+    """从请求体提取 context 字典。"""
+    if hasattr(body, "context") and body.context:
+        return body.context if isinstance(body.context, dict) else body.context.model_dump()
+    return {}
+
+
 async def start_run(
     body: Any,
     thread_id: str,
     request: Request,
+    agent_factory: Callable[[], Awaitable[CompiledStateGraph]] | None = None,
 ) -> RunRecord:
     # (1) 从 request.app.state 获取资源
     bridge: StreamBridge = request.app.state.stream_bridge
@@ -61,13 +74,14 @@ async def start_run(
     # (2) 获取 AppConfig
     app_config = get_app_config("config.yaml")
 
-    # (3) 创建 RunRecord
-    model_name = None
-    if hasattr(body, "context") and body.context:
-        model_name = body.context.get("model_name") if isinstance(body.context, dict) else getattr(body.context, "model_name", None)
+    # (3) 从 context 提取运行参数
+    context = _context_dict(body)
+    model_name = context.get("model_name")
+    checkpoint_ns = context.get("checkpoint_ns")
 
     record = run_manager.create(
         thread_id=thread_id,
+        run_id=context.get("run_id") or None,
         on_disconnect=DisconnectMode.cancel,
         model_name=model_name,
     )
@@ -75,36 +89,19 @@ async def start_run(
 
     # (4) 组装参数
 
-    # input → HumanMessage
+    # input.messages → BaseMessage（全角色还原，支持冻结消息重放）
     graph_input: dict = {}
     if hasattr(body, "input") and body.input:
         raw_input = body.input
         if isinstance(raw_input, dict):
             msgs = raw_input.get("messages", [])
-            messages = []
-            for m in msgs:
-                if isinstance(m, HumanMessage):
-                    messages.append(m)
-                elif isinstance(m, dict):
-                    role = m.get("role", "user")
-                    content = m.get("content", "")
-                    if role == "user":
-                        additional_kwargs = m.get("additional_kwargs")
-                        if additional_kwargs is not None and isinstance(additional_kwargs, dict):
-                            # 只保留 files 字段，过滤其他未预期的键
-                            files_val = additional_kwargs.get("files")
-                            if files_val is not None:
-                                additional_kwargs = {"files": files_val}
-                            else:
-                                additional_kwargs = None
-                        else:
-                            additional_kwargs = None
+            from langchain_core.messages import BaseMessage
 
-                        kw = {}
-                        if additional_kwargs:
-                            kw["additional_kwargs"] = additional_kwargs
-                        messages.append(HumanMessage(content=content, **kw))
-            graph_input["messages"] = messages
+            plain = [m for m in msgs if isinstance(m, dict)]
+            if plain:
+                graph_input["messages"] = deserialize_messages(plain)
+            else:
+                graph_input["messages"] = [m for m in msgs if isinstance(m, BaseMessage)]
         else:
             graph_input = raw_input
 
@@ -118,13 +115,16 @@ async def start_run(
         },
     }
 
-    # LangGraph context
-    user_id = str(request.state.current_user.id)
-    langgraph_context: dict = {
-        "model_name": model_name,
-        "app_config": app_config,
-        "user_id": user_id,
-    }
+    # LangGraph context（透传桌面参数 + user_id）
+    langgraph_context: dict = {**context}
+    langgraph_context.setdefault("model_name", model_name)
+    langgraph_context.setdefault("app_config", app_config)
+    current_user = getattr(request.state, "current_user", None)
+    langgraph_context.setdefault("user_id", str(current_user.id) if current_user is not None else None)
+
+    # (5) checkpoint_ns 非空时包装 checkpointer（小兵命名空间隔离）
+    if checkpoint_ns:
+        checkpointer = NamespacedCheckpointer(checkpointer, checkpoint_ns)
 
     # stream_modes
     stream_modes: list[str] | str | None = None
@@ -133,7 +133,7 @@ async def start_run(
     if stream_modes is None:
         stream_modes = ["values"]
 
-    # (5) asyncio.create_task 启动 worker
+    # (6) asyncio.create_task 启动 worker
     task = asyncio.create_task(
         run_agent(
             record=record,
@@ -144,12 +144,13 @@ async def start_run(
             runnable_config=runnable_config,
             stream_modes=stream_modes,
             langgraph_context=langgraph_context,
+            agent_factory=agent_factory,
             checkpointer=checkpointer,
             store=store,
         )
     )
 
-    # (6) 挂载 task 并返回
+    # (7) 挂载 task 并返回
     record.task = task
     logger.info("worker 已启动: run_id='%s'", record.run_id)
     return record

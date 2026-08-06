@@ -13,9 +13,17 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
 from sqlalchemy import delete, func, select
 
+from focus.runtime.checkpointer.namespaced import NamespacedCheckpointer
+from focus.runtime.runs.events import (
+    build_envelope,
+    deserialize_messages,
+    stream_text,
+    validate_messages,
+)
+from focus.tools.builtins.workspace_tools import select_workspace_tools
+
 
 os.environ.setdefault("OPENAI_API_KEY", "desktop-test")
-os.environ.setdefault("JWT_SECRET", "desktop-test")
 os.environ.setdefault(
     "FOCUS_DATABASE_URL",
     "postgresql+asyncpg://focus:qweasdzxc123@127.0.0.1:7221/focus",
@@ -26,13 +34,10 @@ from backend.app.gateway.app import app  # noqa: E402
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace  # noqa: E402
 from backend.app.desktop.service import (  # noqa: E402
     DesktopService,
-    NamespacedCheckpointer,
-    deserialize_messages,
     estimate_tokens,
     prompt_with_skills,
-    stream_text,
-    validate_messages,
 )
+from backend.app.gateway.routers.thread_runs import sse_consumer  # noqa: E402
 
 
 SESSION = {"X-Focus-Session": "focus-dev-session"}
@@ -139,6 +144,86 @@ def test_message_validation_token_estimate_and_path_policy(tmp_path):
         assert getattr(exc, "status_code", None) == 403
     else:
         raise AssertionError("paths outside the real workspace must be rejected")
+
+
+def test_unified_pipeline_main_run_end_to_end(tmp_path):
+    """端到端：真实 HTTP → start_run → worker.run_agent（统一事件契约）→ DB 终态同步。
+
+    仅替换装配工厂为 FakeListChatModel 图，其余（RunManager/worker/StreamBridge/SSE/
+    checkpoint/attach sync）全部真实执行。
+    """
+    import backend.app.desktop.service as svc
+
+    async def fake_make_lead_agent(**kwargs):
+        return create_agent(model=FakeListChatModel(responses=["你好"]), tools=[])
+
+    original = svc.make_lead_agent
+    svc.make_lead_agent = fake_make_lead_agent
+    thread_id = f"desktop-e2e-{uuid.uuid4().hex}"
+    try:
+        with _client() as client:
+            workspace_folder = tmp_path / "workspace"
+            workspace_folder.mkdir()
+            workspace = client.post(
+                "/desktop/api/workspaces", headers=SESSION,
+                json={"path": str(workspace_folder)},
+            ).json()
+            task = client.post(
+                f"/desktop/api/workspaces/{workspace['workspace_id']}/threads",
+                headers=SESSION, json={"thread_id": thread_id, "title": "e2e"},
+            ).json()
+            service = app.state.desktop_service
+            before = client.portal.call(_run_count, service, task["task_id"])
+
+            run = client.post(
+                f"/desktop/api/tasks/{task['task_id']}/main/runs",
+                headers=SESSION,
+                json={"message": "你好", "permissions": ["read"]},
+            ).json()
+            assert run["status"] == "pending"
+            assert client.portal.call(_run_count, service, task["task_id"]) == before + 1
+
+            # 订阅统一事件流，收集 tokens/events/end
+            async def collect() -> list[str]:
+                events = []
+                async for event in service.bridge.subscribe(run["run_id"]):
+                    from focus.runtime.stream_bridge.schemas import END_SENTINEL
+
+                    if event is END_SENTINEL:
+                        break
+                    events.append(event.event)
+                    if len(events) > 50:
+                        break
+                return events
+
+            # worker 完成后 DB 终态应为 success（attach_run_sync 同步）
+            deadline = time.monotonic() + 20
+            status = None
+            while time.monotonic() < deadline:
+                current = client.get(
+                    f"/desktop/api/runs/{run['run_id']}", headers=SESSION
+                ).json()
+                status = current["status"]
+                if status == "success":
+                    break
+                time.sleep(0.2)
+            assert status == "success"
+
+            names = client.portal.call(collect)
+            assert "tokens" in names and "events" in names
+
+            messages = client.portal.call(
+                service.get_checkpoint_messages, thread_id, ""
+            )
+            assert messages[-1]["role"] == "ai"
+            assert "你好" in messages[-1]["content"]
+
+            # 清理
+            client.portal.call(
+                _cleanup, service, task["task_id"], workspace["workspace_id"], thread_id
+            )
+    finally:
+        svc.make_lead_agent = original
 
 
 def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
@@ -266,23 +351,35 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
         else:
             raise AssertionError("deployment above the declared context window must be blocked")
 
-        scheduled = []
+        launched = []
 
-        async def no_run(*args, **_kwargs):
-            scheduled.append(args)
-            return None
+        async def fake_start_run(body, thread_id, request, agent_factory=None):
+            launched.append((body, thread_id, agent_factory))
+            future = asyncio.Future()
+            future.set_result(None)
+            return SimpleNamespace(
+                run_id=uuid.uuid4().hex, thread_id=thread_id,
+                status=SimpleNamespace(value="pending"), task=future,
+            )
 
-        service._schedule_run = no_run
+        import backend.app.desktop.routes as desktop_routes
+
+        desktop_routes.start_run = fake_start_run
         main = client.post(
             f"/desktop/api/tasks/{task['task_id']}/main/runs",
             headers=SESSION,
             json={"message": "run", "skills": ["two", "one", "two"]},
         )
         assert main.status_code == 200
-        main_snapshots = scheduled[-1][4]["skill_snapshots"]
-        assert [snapshot["name"] for snapshot in main_snapshots] == ["two", "one"]
-        injected = prompt_with_skills("base", main_snapshots)
-        assert injected.index("## two") < injected.index("## one")
+        main_body, main_thread, main_factory = launched[-1]
+        assert main_thread == thread_id
+        assert main_body.context["skills"] == ["two", "one"]
+        assert main_body.context["checkpoint_ns"] == ""
+        assert main_body.context["agent_id"] == f"main:{task['task_id']}"
+        assert main_body.context["workspace"] == str(workspace_folder)
+        assert main_body.stream_mode == ["messages-tuple", "values"]
+        assert len(main_body.input["messages"]) == 1
+        assert main_factory is not None
 
         deployment_id = uuid.uuid4().hex
         first = client.post(
@@ -296,12 +393,13 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
             json={"deployment_id": deployment_id},
         ).json()
         assert first["run_id"] == second["run_id"]
-        patrol_snapshots = scheduled[-1][4]["skill_snapshots"]
-        assert [snapshot["name"] for snapshot in patrol_snapshots] == ["one", "two"]
-        envelope = service._event_envelope(
-            SimpleNamespace(run_id=first["run_id"], agent_id=first["agent_id"]),
-            SimpleNamespace(workspace_id=workspace["workspace_id"], thread_id=thread_id),
-            "events", {"ok": True},
+        assert len(launched) == 2  # 幂等部署不重复发起
+        patrol_body, patrol_thread, patrol_factory = launched[-1]
+        assert patrol_body.context["checkpoint_ns"] == f"patrol:{first['agent_id']}"
+        assert patrol_body.context["agent_id"] == first["agent_id"]
+        assert patrol_body.input["messages"][-1]["role"] == "human"
+        envelope = build_envelope(
+            workspace["workspace_id"], thread_id, first["agent_id"], first["run_id"], "events", {"ok": True},
         )
         assert set(envelope) == {"workspace_id", "thread_id", "agent_id", "run_id", "event", "data"}
         agent = client.get(
@@ -322,26 +420,16 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
             json={"message": "继续"},
         ).json()
         assert retried["agent_id"] == continued["agent_id"] == agent["agent_id"]
-        assert scheduled[-2][4]["skill_snapshots"] == patrol_snapshots
-        assert scheduled[-1][4]["skill_snapshots"] == patrol_snapshots
+        assert launched[-2][0].context["checkpoint_ns"] == f"patrol:{agent['agent_id']}"
+        assert launched[-1][0].context["checkpoint_ns"] == f"patrol:{agent['agent_id']}"
         assert client.post(
             f"/desktop/api/runs/{continued['run_id']}/cancel", headers=SESSION
         ).json()["status"] == "interrupted"
 
-        async def tool_names(permissions):
-            async with service.session_factory() as session:
-                task_row = await session.get(DesktopThread, task["task_id"])
-                workspace_row = await session.get(DesktopWorkspace, workspace["workspace_id"])
-            tools = await service._build_tools(
-                task_row, workspace_row,
-                {"tools": "auto", "permissions": permissions}, False,
-            )
-            return {item.name for item in tools}
-
-        assert client.portal.call(tool_names, ["read"]) == {"read_file", "list_files"}
-        assert client.portal.call(tool_names, []) == set()
-        assert client.portal.call(tool_names, ["read", "write", "host_command"]) == {
-            "read_file", "list_files", "write_file", "powershell"
+        assert {t.name for t in select_workspace_tools(["read"])} == {"read_file", "list_files"}
+        assert select_workspace_tools([]) == []
+        assert {t.name for t in select_workspace_tools(["read", "write", "host_command"])} == {
+            "read_file", "list_files", "write_file", "bash", "powershell", "cmd", "sh"
         }
 
         _git(workspace_folder, "init")

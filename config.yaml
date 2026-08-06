@@ -1,4 +1,4 @@
-﻿models:
+models:
   - name: deepseek-v4-flash
     display_name: Other OpenAI-compatible / deepseek-v4-flash
     use: langchain_openai:ChatOpenAI
@@ -6,50 +6,6 @@
     context_window: 131072
     api_key: $OPENAI_API_KEY
     base_url: https://api.deepseek.com
-
-tool_groups:
-  - name: web
-  - name: file:read
-  - name: file:write
-  - name: shell
-
-tools:
-  - name: read_file
-    group: file:read
-    use: focus.sandbox.tools:read_file_tool
-  - name: write_file
-    group: file:write
-    use: focus.sandbox.tools:write_file_tool
-  - name: bash
-    group: shell
-    use: focus.sandbox.tools:bash_tool
-  - name: powershell
-    group: shell
-    use: focus.sandbox.tools:powershell_tool
-  - name: cmd
-    group: shell
-    use: focus.sandbox.tools:cmd_tool
-  - name: sh
-    group: shell
-    use: focus.sandbox.tools:sh_tool
-
-skills:
-  container_path: /mnt/skills
-
-sandbox:
-  use: focus.sandbox.local:LocalSandbox
-  # 使用 AioSandbox (Docker all-in-one 沙箱) 时的配置:
-  # use: focus.community.aio_sandbox:AioSandbox
-  # image: ghcr.io/agent-infra/sandbox:latest
-  # port: 8080
-  # replicas: 3
-  # container_prefix: focus-sandbox
-  # mounts:
-  #   - host_path: /path/to/extra
-  #     container_path: /mnt/extra
-  #     read_only: false
-  # environment:
-  #   MY_KEY: value
 
 stream_bridge:
   type: memory
@@ -77,11 +33,3 @@ database:
   pool_pre_ping: true
   pool_recycle: -1
   isolation_level: READ COMMITTED
-
-auth:
-  jwt_secret: $JWT_SECRET
-  token_expiry_days: 7
-  cookie_name: access_token
-  csrf_cookie_name: csrf_token
-  login_limit_window: 60
-  login_limit_max_attempts: 5

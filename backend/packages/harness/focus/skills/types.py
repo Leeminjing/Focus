@@ -3,6 +3,8 @@
 
 对外提供:
     SKILL_MD_FILE — skill 主入口文件名常量
+    SKILLS_PUBLIC_REAL_ROOT — public skills 宿主机存储路径 "skills"
+    SKILLS_CUSTOM_REAL_ROOT — custom skills 宿主机存储路径模板 ".focus/users/{user_id}/skills"
     SkillCategory(StrEnum) — skill 类别枚举: PUBLIC(平台内置,只读) / CUSTOM(用户创建,可改)
     Skill — skill 数据类，持有从 SKILL.md frontmatter 解析出的元数据及文件系统位置信息
 
@@ -33,6 +35,8 @@ from enum import StrEnum
 from pathlib import Path
 
 SKILL_MD_FILE = "SKILL.md"
+SKILLS_PUBLIC_REAL_ROOT = "skills"
+SKILLS_CUSTOM_REAL_ROOT = ".focus/users/{user_id}/skills"
 
 
 class SkillCategory(StrEnum):

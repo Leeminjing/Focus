@@ -1,8 +1,8 @@
 ﻿"""
-本文件对外提供 `run_agent` 异步函数，作为 core-aob 链路的执行层主入口。
+本文件对外提供 `run_agent` 异步函数，作为统一 agent 执行层的主入口。
 
 对外提供:
-    run_agent — 在后台 asyncio task 中运行 agent graph，将 stream chunk 通过 StreamBridge 发布为 SSE 事件
+    run_agent — 在后台 asyncio task 中运行 agent graph，将 stream chunk 通过 StreamBridge 发布为统一信封 SSE 事件
 
 输入:
     record: RunRecord — 当前 run 的运行时档案，含 run_id、model_name、abort_event 等
@@ -11,24 +11,28 @@
     app_config: AppConfig — 组合根配置
     graph_input: dict — agent graph 的输入（含 messages 等）
     runnable_config: RunnableConfig — LangGraph 执行配置
-    stream_modes: list[str] | str | None — 前端传入的 stream mode
-    agent_name: str | None — agent 名称
-    tool_groups: list[str] | None — 工具分组过滤
-    langgraph_context: dict | None — LangGraph context，传给 agent.astream(context=...)，框架据此构建 Runtime 供节点读取；其中 user_id 传给 make_lead_agent 用于定位 per-user custom skills
+    stream_modes: list[str] | str | None — 前端传入的 stream mode（messages-tuple → tokens 事件，values → events 事件）
+    agent_name: str | None — agent 名称（缺省装配路径使用）
+    tool_groups: list[str] | None — 工具分组过滤（缺省装配路径使用）
+    langgraph_context: dict | None — LangGraph context，传给 agent.astream(context=...)；
+        其中 user_id 传给 make_lead_agent，workspace_id/agent_id 用于组装事件信封
+    agent_factory: Callable | None — 自定义装配函数（await 后返回 CompiledStateGraph），
+        缺省使用 make_lead_agent；桌面经此注入模型、工具、prompt 与 checkpoint 包装
     checkpointer: BaseCheckpointSaver | None — checkpoint 持久化器，None 时不启用
     store: BaseStore | None — 跨 thread 长期记忆存储，None 时不启用
 
 输出:
-    SSE 事件流 → bridge → 前端；最终状态 → run_manager
+    统一信封 SSE 事件流 → bridge → 前端；最终状态 → run_manager
 
 具体工作流:
-    (1) 设置 run 状态为 running，发布 metadata 事件（含 run_id + thread_id）
+    (1) 设置 run 状态为 running，发布信封 metadata 事件
     (2) 读取当前 thread 的旧 checkpoint 保存为 rollback 快照（checkpointer 可用时）
-    (3) 从 record.model_name 取模型名，从 langgraph_context 取 user_id，创建 agent
+    (3) 通过 agent_factory（缺省 make_lead_agent）创建 agent
     (3.5) 将 checkpointer 挂载到 agent.checkpointer，将 store 挂载到 agent.store
-    (4) 翻译 stream_modes（前端名称 → LangGraph 内部名称）
+    (4) 翻译 stream_modes（前端名称 → LangGraph 内部名称），统一为列表模式
     (5) 调用 agent.astream()，每轮检查 abort_event
-    (6) 每个 chunk 转换为 SSE 事件 publish 到 bridge
+    (6) 每个 chunk 经 focus.runtime.runs.events 转换为统一信封事件 publish 到 bridge
+        （messages 模式 → tokens；values 模式 → events）
     (7) 终态处理：success / interrupted（rollback 时用旧 checkpoint 恢复 thread 状态）/ error
     (8) finally: publish_end 关流 + 延迟缓存清理
 
@@ -46,16 +50,17 @@
 """
 
 import logging
-from typing import Any
+from typing import Any, Awaitable, Callable
 
-from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableConfig
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 
 from focus.agents.lead import make_lead_agent
 from focus.config.app_config import AppConfig
+from focus.runtime.runs.events import build_envelope, chunk_to_events
 from focus.runtime.runs.manager import RunManager, RunRecord
 from focus.runtime.runs.schemas import RunStatus
 from focus.runtime.stream_bridge.base import StreamBridge
@@ -109,52 +114,22 @@ def _map_stream_modes(stream_modes: list[str] | str | None) -> list[str] | str |
     return mapped
 
 
-def _build_chunk_event(event_type: str, data: dict | None = None) -> StreamEvent:
-    """将 chunk 转换为 StreamEvent（id 留空由 bridge 自动分配）。
+def _envelope_base(record: RunRecord, langgraph_context: dict | None) -> dict[str, Any]:
+    """组装统一事件信封的基础字段（workspace_id/thread_id/agent_id/run_id）。
 
     输入:
-        event_type: str — SSE 事件类型
-        data: dict | None — 事件载荷
+        record: RunRecord — 当前 run
+        langgraph_context: dict | None — 运行上下文，提供 workspace_id/agent_id
 
     输出:
-        StreamEvent — id 为空字符串，由 bridge.publish 自动分配
+        dict — 信封基础字段
     """
-    return StreamEvent(id="", event=event_type, data=data)
-
-
-def _serialize_chunk(data: Any) -> Any:
-    """递归转换 chunk 中的 LangChain Message 对象为 JSON 可序列化的 dict。
-
-    输入:
-        data: Any — agent.astream 产出的 chunk（可能含 BaseMessage 子类实例）
-
-    输出:
-        Any — JSON 可序列化的等价值
-
-    工作流:
-        (1) 若 data 是 BaseMessage 实例 → 调用 .model_dump() 转为 dict
-        (2) 若 data 是 dict → 递归处理每个 value，保留原始 key
-        (3) 若 data 是 list 或 tuple → 递归处理每个元素，保留原始容器类型
-        (4) 其他类型 → 原样返回
-
-    示例:
-        >>> chunk = {"messages": [HumanMessage(content="你好")]}
-        >>> serialized = _serialize_chunk(chunk)
-        >>> json.dumps(serialized)  # 不再抛 TypeError
-    """
-    if isinstance(data, BaseMessage):
-        return data.model_dump()
-
-    if isinstance(data, dict):
-        return {key: _serialize_chunk(value) for key, value in data.items()}
-
-    if isinstance(data, list):
-        return [_serialize_chunk(item) for item in data]
-
-    if isinstance(data, tuple):
-        return tuple(_serialize_chunk(item) for item in data)
-
-    return data
+    return {
+        "workspace_id": langgraph_context.get("workspace_id") if langgraph_context else None,
+        "thread_id": record.thread_id,
+        "agent_id": langgraph_context.get("agent_id") if langgraph_context else record.run_id,
+        "run_id": record.run_id,
+    }
 
 
 async def run_agent(
@@ -169,18 +144,24 @@ async def run_agent(
     agent_name: str | None = None,
     tool_groups: list[str] | None = None,
     langgraph_context: dict | None = None,
+    agent_factory: Callable[[], Awaitable[CompiledStateGraph]] | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     store: BaseStore | None = None,
 ) -> None:
     try:
-        # (1) 置 running，发 metadata 事件
+        # (1) 置 running，发信封 metadata 事件
         run_manager.update(record.run_id, status=RunStatus.running)
         logger.info("run '%s' 状态 → running", record.run_id)
 
-        metadata_event = _build_chunk_event("metadata", {
-            "run_id": record.run_id,
-            "thread_id": record.thread_id,
-        })
+        env_base = _envelope_base(record, langgraph_context)
+        metadata_event = StreamEvent(
+            id="",
+            event="metadata",
+            data=build_envelope(
+                env_base["workspace_id"], env_base["thread_id"], env_base["agent_id"],
+                record.run_id, "metadata", {"status": "running"},
+            ),
+        )
         bridge.publish(record.run_id, metadata_event)
 
         # (2) 读取旧 checkpoint 保存 rollback 快照
@@ -197,17 +178,20 @@ async def run_agent(
             except Exception:
                 logger.warning("run '%s' 读取旧 checkpoint 失败，rollback 不可用", record.run_id, exc_info=True)
 
-        # (3) 从 record.model_name 取模型名，从 langgraph_context 取 user_id，创建 agent
+        # (3) 通过 agent_factory（缺省 make_lead_agent）创建 agent
         model_name = record.model_name or (app_config.models[0].name if app_config.models else None)
         mapped_stream_modes = _map_stream_modes(stream_modes)
         user_id = langgraph_context.get("user_id") if langgraph_context else None
 
-        agent = await make_lead_agent(
-            model_name=model_name or None,
-            agent_name=agent_name,
-            tool_groups=tool_groups,
-            user_id=user_id,
-        )
+        if agent_factory is not None:
+            agent = await agent_factory()
+        else:
+            agent = await make_lead_agent(
+                model_name=model_name or None,
+                agent_name=agent_name,
+                tool_groups=tool_groups,
+                user_id=user_id,
+            )
 
         # (3.5) 挂载 checkpointer 和 store 到 agent
         if checkpointer is not None:
@@ -215,22 +199,22 @@ async def run_agent(
         if store is not None:
             agent.store = store
 
-        # (4) agent.astream 主循环
-        async for chunk in agent.astream(
+        # (4) agent.astream 主循环（统一列表模式 → (mode, chunk) 元组）
+        stream_modes_list = list(mapped_stream_modes) if isinstance(mapped_stream_modes, list) else [mapped_stream_modes]
+        async for mode, chunk in agent.astream(
             graph_input,
             config=runnable_config,
             context=langgraph_context,
-            stream_mode=mapped_stream_modes,
+            stream_mode=stream_modes_list,
         ):
             # (5) abort 中断检查
             if record.abort_event.is_set():
                 logger.info("run '%s' 收到 abort 信号，停止执行", record.run_id)
                 break
 
-            # 每个 chunk 序列化后转换为 SSE 事件 publish 到 bridge
-            serialized_chunk = _serialize_chunk(chunk)
-            chunk_event = _build_chunk_event("events", serialized_chunk)
-            bridge.publish(record.run_id, chunk_event)
+            # 每个 chunk 经 events 模块转换为统一信封事件 publish 到 bridge
+            for chunk_event in chunk_to_events(mode, chunk, env_base):
+                bridge.publish(record.run_id, chunk_event)
 
         # (6) 终态处理
         if record.abort_event.is_set():
@@ -260,7 +244,14 @@ async def run_agent(
     except Exception as exc:
         logger.error("run '%s' 异常: %s", record.run_id, exc, exc_info=True)
         run_manager.update(record.run_id, status=RunStatus.error, error=str(exc))
-        error_event = _build_chunk_event("error", {"error": str(exc)})
+        error_event = StreamEvent(
+            id="",
+            event="error",
+            data=build_envelope(
+                env_base["workspace_id"], env_base["thread_id"], env_base["agent_id"],
+                record.run_id, "error", {"error": str(exc)},
+            ),
+        )
         try:
             bridge.publish(record.run_id, error_event)
         except Exception:

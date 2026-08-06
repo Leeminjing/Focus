@@ -9,11 +9,10 @@ DesktopService，并保持所有事件按 run_id 订阅。示例：`app.include_
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 import uuid
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from backend.app.desktop.models import (
@@ -27,25 +26,14 @@ from backend.app.desktop.models import (
     ThreadCreate,
     WorkspaceCreate,
 )
-from focus.runtime.stream_bridge.schemas import END_SENTINEL, HEARTBEAT_SENTINEL
+from backend.app.desktop.service import PreparedRun
+from backend.app.gateway.routers.thread_runs import sse_consumer
+from backend.app.gateway.services import start_run
 
 
-async def require_desktop_session(
-    request: Request,
-    x_focus_session: str | None = Header(default=None),
-) -> None:
-    # 设计决策 10：桌面 API 只接受 loopback 对等连接。
-    # 即使 Gateway 以 0.0.0.0 监听，非 loopback 请求也直接 404，
-    # 桌面路由（含 host_command 真实宿主机命令）不暴露到网络。
-    host = request.client.host if request.client else ""
-    if host not in ("127.0.0.1", "::1"):
-        raise HTTPException(404, "Not Found")
-    supplied = x_focus_session or request.query_params.get("session")
-    if not supplied or supplied != request.app.state.session_key:
-        raise HTTPException(401, "无效的桌面会话")
-
-
-desktop_router = APIRouter(prefix="/desktop/api", dependencies=[Depends(require_desktop_session)])
+# 决策 10：桌面 API 只接受 loopback 对等连接（含 host_command 真实宿主机命令）。
+# 保护由 AuthMiddleware（统一会话保护）统一承担，本路由不再挂独立依赖。
+desktop_router = APIRouter(prefix="/desktop/api")
 
 
 @desktop_router.get("/bootstrap")
@@ -118,19 +106,38 @@ async def update_draft(draft_id: str, body: DraftUpdate, request: Request) -> di
         raise HTTPException(422, str(exc)) from exc
 
 
+async def _launch(request: Request, prepared: PreparedRun | None) -> None:
+    """桌面运行接口的统一发起入口：委托 services.start_run 创建并执行 run，并挂载 DB 终态同步。
+
+    输入:
+        request: Request — FastAPI 请求（提供 app.state 资源与 current_user）
+        prepared: PreparedRun | None — 编排输入；None 表示幂等命中已有 run，无需发起
+    """
+    if prepared is None or prepared.agent_factory is None:
+        return  # 幂等命中已有 run，无需发起
+    record = await start_run(
+        prepared.body, prepared.thread_id, request, agent_factory=prepared.agent_factory
+    )
+    request.app.state.desktop_service.attach_run_sync(record)
+
+
 @desktop_router.post("/drafts/{draft_id}/deploy")
 async def deploy(draft_id: str, body: DeployRequest, request: Request) -> dict:
     try:
-        return await request.app.state.desktop_service.deploy(draft_id, body.deployment_id)
+        prepared = await request.app.state.desktop_service.deploy(draft_id, body.deployment_id)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    await _launch(request, prepared)
+    return prepared.payload
 
 
 @desktop_router.post("/tasks/{task_id}/main/runs")
 async def start_main_run(task_id: str, body: MainRunCreate, request: Request) -> dict:
-    return await request.app.state.desktop_service.start_main_run(
+    prepared = await request.app.state.desktop_service.start_main_run(
         task_id, body.message, body.model_name, body.permissions, body.skills
     )
+    await _launch(request, prepared)
+    return prepared.payload
 
 
 @desktop_router.get("/runs/{run_id}")
@@ -150,24 +157,14 @@ async def stream_run(
     request: Request,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
-    await request.app.state.desktop_service.get_run(run_id)
-    bridge = request.app.state.desktop_service.bridge
-
-    async def events():
-        async for event in bridge.subscribe(run_id, last_event_id=last_event_id):
-            if await request.is_disconnected():
-                return
-            if event is HEARTBEAT_SENTINEL:
-                yield ": heartbeat\n\n"
-            elif event is END_SENTINEL:
-                yield "event: end\ndata: {}\n\n"
-                return
-            else:
-                data = json.dumps(event.data, ensure_ascii=False, separators=(",", ":"))
-                yield f"id: {event.id}\nevent: {event.event}\ndata: {data}\n\n"
-
+    # 统一 SSE 消费：复用 thread_runs.sse_consumer（信封格式帧，断线重连/心跳）
+    service = request.app.state.desktop_service
+    await service.get_run(run_id)
+    record = service.run_manager.get(run_id)
+    if record is None:
+        raise HTTPException(404, "运行不存在（流已过期）")
     return StreamingResponse(
-        events(),
+        sse_consumer(service.bridge, record, request, service.run_manager),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -185,12 +182,16 @@ async def agent_history(agent_id: str, request: Request) -> list[dict]:
 
 @desktop_router.post("/agents/{agent_id}/retry")
 async def retry_agent(agent_id: str, request: Request) -> dict:
-    return await request.app.state.desktop_service.retry_agent(agent_id)
+    prepared = await request.app.state.desktop_service.retry_agent(agent_id)
+    await _launch(request, prepared)
+    return prepared.payload
 
 
 @desktop_router.post("/agents/{agent_id}/continue")
 async def continue_agent(agent_id: str, body: ContinueRequest, request: Request) -> dict:
-    return await request.app.state.desktop_service.continue_agent(agent_id, body.message)
+    prepared = await request.app.state.desktop_service.continue_agent(agent_id, body.message)
+    await _launch(request, prepared)
+    return prepared.payload
 
 
 @desktop_router.get("/tasks/{task_id}/materials")

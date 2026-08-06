@@ -66,7 +66,8 @@ async function start() {
   checked(python, ["--version"]);
   checked("git", ["--version"]);
   checked("docker", ["compose", "version"]);
-  checked("docker", ["compose", "-f", path.join(desktopDir, "compose.yaml"), "up", "-d", "--pull", "always", "--wait"], { stdio: "inherit" });
+  // ponytail: 镜像已存在时不重复拉取（--pull missing），避免每次启动依赖镜像源网络
+  checked("docker", ["compose", "-f", path.join(desktopDir, "compose.yaml"), "up", "-d", "--pull", "missing", "--wait"], { stdio: "inherit" });
   checked(python, ["-m", "alembic", "-c", migrationIni, "upgrade", "head"], { env, stdio: "inherit" });
   const port = await freePort();
   const apiBase = `http://127.0.0.1:${port}`;

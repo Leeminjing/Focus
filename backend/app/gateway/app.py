@@ -3,16 +3,14 @@
 
 对外提供:
     app: FastAPI — 已绑定 lifespan 的 FastAPI 应用实例
-    auth_config: AuthConfig — 模块级认证配置单例，供中间件和路由使用
 
 具体工作流:
-    (0) 模块加载时从 config.yaml 独立加载 AuthConfig（web 层配置，不经过 AppConfig）
     (1) 定义 lifespan 异步上下文管理器
     (2) lifespan 内部加载 AppConfig（组合根），传入 langgraph_runtime 进行依赖注入
     (3) async with langgraph_runtime(app, app_config) 管理核心资源生命周期
     (4) 在同一 lifespan 内构造 DesktopService 并挂载到 app.state（决策 1、8、11）
     (5) 创建 FastAPI 实例并传入 lifespan
-    (6) 注册中间件和路由，并挂载桌面路由与 /desktop/ 静态资源（决策 1）
+    (6) 注册统一会话保护中间件与路由，并挂载桌面路由与 /desktop/ 静态资源（决策 1）
     (7) 模块级导出 app 实例，供 uvicorn 等 ASGI server 直接引用
 
 示例:
@@ -22,9 +20,6 @@
 
 import asyncio
 import os
-from pathlib import Path
-
-import yaml
 
 import logging
 from collections.abc import AsyncGenerator
@@ -33,11 +28,9 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
-from backend.app.gateway.auth.config import AuthConfig
 from backend.app.gateway.deps import langgraph_runtime
 
-# 导入 gateway 与 desktop models 以注册到 Base.metadata（供 Alembic autogenerate 发现）
-import backend.app.gateway.models  # noqa: F401
+# 导入 desktop models 以注册到 Base.metadata（供 Alembic autogenerate 发现）
 import backend.app.desktop.models  # noqa: F401
 
 # 在所有配置加载之前注入 .env 环境变量
@@ -48,50 +41,6 @@ if os.name == "nt":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 logger = logging.getLogger(__name__)
-
-ROOT = Path(__file__).resolve().parents[3]
-
-
-def _load_auth_config(yaml_path: str) -> AuthConfig:
-    """从 config.yaml 独立加载 AuthConfig（web 层配置，不经过 AppConfig 组合根）。
-
-    输入:
-        yaml_path: str — config.yaml 文件路径
-
-    输出:
-        AuthConfig — 认证配置实例
-
-    工作流:
-        (1) 读取 YAML 文件
-        (2) 解析 $ENV_VAR 环境变量引用
-        (3) 从 auth 段构造 AuthConfig 实例
-    """
-    yaml_file = Path(yaml_path)
-    if not yaml_file.exists():
-        raise FileNotFoundError(f"配置文件不存在: {yaml_path}")
-
-    with open(yaml_file, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
-
-    # 解析 auth 段中的 $ENV_VAR 环境变量引用
-    auth_raw = raw.get("auth", {})
-    resolved = {}
-    for key, value in auth_raw.items():
-        if isinstance(value, str) and len(value) > 1 and value.startswith("$"):
-            env_var = value[1:]
-            env_value = os.environ.get(env_var)
-            if env_value is None:
-                raise KeyError(f"环境变量未设置: {env_var}")
-            resolved[key] = env_value
-        else:
-            resolved[key] = value
-
-    return AuthConfig.model_validate(resolved)
-
-
-# 模块级加载认证配置（中间件注册时需要，必须在 lifespan 之前）
-auth_config = _load_auth_config("config.yaml")
-logger.info("AuthConfig 已加载（web 层独立配置）")
 
 
 @asynccontextmanager
@@ -124,6 +73,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             store=app.state.store,
             bridge=app.state.stream_bridge,
             app_config=app_config,
+            run_manager=app.state.run_manager,
         )
         app.state.desktop_service = service
         app.state.session_key = os.getenv("FOCUS_DESKTOP_SESSION", "focus-dev-session")
@@ -138,23 +88,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(lifespan=lifespan)
 
-# 注册中间件（AuthMiddleware 先于 CSRFMiddleware）
+# 注册中间件（统一桌面会话保护：loopback + X-Focus-Session）
 from backend.app.gateway.middleware.auth import AuthMiddleware
-from backend.app.gateway.middleware.csrf import CSRFMiddleware
 
-app.add_middleware(AuthMiddleware, auth_config=auth_config)
-app.add_middleware(CSRFMiddleware, auth_config=auth_config)
-logger.info("AuthMiddleware 和 CSRFMiddleware 已注册")
+app.add_middleware(AuthMiddleware)
+logger.info("AuthMiddleware（统一会话保护）已注册")
 
-# 注册路由
+# 注册路由（统一运行接口 thread_runs；uploads 随网页端移除）
 from backend.app.gateway.routers.thread_runs import router as thread_runs_router
-from backend.app.gateway.routers.auth import router as auth_router
-from backend.app.gateway.routers.uploads import router as uploads_router
 
 app.include_router(thread_runs_router, prefix="/api/threads")
-app.include_router(uploads_router, prefix="/api/threads")
-app.include_router(auth_router)
-logger.info("路由已注册: thread_runs, uploads, auth")
+logger.info("路由已注册: thread_runs")
 
 # 桌面功能内嵌（决策 1）：/desktop/api 路由 + /desktop/ 静态资源，页面与 API 同源
 from backend.app.desktop.app import mount_desktop
