@@ -42,6 +42,10 @@ const context = vm.createContext({
   window: {},
 });
 const source = fs.readFileSync(require.resolve("./app.js"), "utf8").replace(/bootstrap\(\);\s*$/, "");
+assert.match(source, /commitment_recovery/);
+assert.match(source, /pending_commitment_review/);
+assert.match(source, /commitment\/abandon/);
+assert.match(source, /放弃旧流程并重开/);
 new vm.Script(source).runInContext(context);
 
 new vm.Script(`

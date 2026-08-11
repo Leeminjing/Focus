@@ -57,10 +57,15 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
+from langgraph.types import Command
 
 from focus.agents.lead import make_lead_agent
 from focus.config.app_config import AppConfig
-from focus.runtime.runs.events import build_envelope, chunk_to_events
+from focus.runtime.runs.events import (
+    build_envelope,
+    chunk_to_events,
+    extract_interrupts,
+)
 from focus.runtime.runs.manager import RunManager, RunRecord
 from focus.runtime.runs.schemas import RunStatus
 from focus.runtime.stream_bridge.base import StreamBridge
@@ -138,7 +143,7 @@ async def run_agent(
     bridge: StreamBridge,
     run_manager: RunManager,
     app_config: AppConfig,
-    graph_input: dict,
+    graph_input: dict | Command,
     runnable_config: RunnableConfig,
     stream_modes: list[str] | str | None = None,
     agent_name: str | None = None,
@@ -148,6 +153,7 @@ async def run_agent(
     checkpointer: BaseCheckpointSaver | None = None,
     store: BaseStore | None = None,
 ) -> None:
+    agent_ready = False
     try:
         # (1) 置 running，发信封 metadata 事件
         run_manager.update(record.run_id, status=RunStatus.running)
@@ -192,6 +198,7 @@ async def run_agent(
                 tool_groups=tool_groups,
                 user_id=user_id,
             )
+        agent_ready = True
 
         # (3.5) 挂载 checkpointer 和 store 到 agent
         if checkpointer is not None:
@@ -201,6 +208,10 @@ async def run_agent(
 
         # (4) agent.astream 主循环（统一列表模式 → (mode, chunk) 元组）
         stream_modes_list = list(mapped_stream_modes) if isinstance(mapped_stream_modes, list) else [mapped_stream_modes]
+        # 承诺层开启时强制追加 values（interrupt 快照与 lead 状态）与 custom（各角色消息轨迹）
+        if app_config.commitment.enabled:
+            stream_modes_list = list(dict.fromkeys([*stream_modes_list, "values", "custom"]))
+        graph_interrupted = False
         async for mode, chunk in agent.astream(
             graph_input,
             config=runnable_config,
@@ -211,6 +222,25 @@ async def run_agent(
             if record.abort_event.is_set():
                 logger.info("run '%s' 收到 abort 信号，停止执行", record.run_id)
                 break
+
+            # interrupt 识别：graph 暂停 → 发布 interrupt 事件，流结束后置 interrupted
+            interrupts = extract_interrupts(chunk)
+            if interrupts:
+                graph_interrupted = True
+                for interrupt_data in interrupts:
+                    bridge.publish(
+                        record.run_id,
+                        StreamEvent(
+                            id="",
+                            event="interrupt",
+                            data=build_envelope(
+                                env_base["workspace_id"], env_base["thread_id"],
+                                env_base["agent_id"], record.run_id,
+                                "interrupt", interrupt_data,
+                            ),
+                        ),
+                    )
+                continue
 
             # 每个 chunk 经 events 模块转换为统一信封事件 publish 到 bridge
             for chunk_event in chunk_to_events(mode, chunk, env_base):
@@ -237,13 +267,29 @@ async def run_agent(
             else:
                 run_manager.update(record.run_id, status=RunStatus.interrupted)
                 logger.info("run '%s' 状态 → interrupted", record.run_id)
+        elif graph_interrupted:
+            run_manager.update(record.run_id, status=RunStatus.interrupted)
+            logger.info("run '%s' 状态 → interrupted (graph interrupt)", record.run_id)
         else:
             run_manager.update(record.run_id, status=RunStatus.success)
             logger.info("run '%s' 状态 → success", record.run_id)
 
     except Exception as exc:
         logger.error("run '%s' 异常: %s", record.run_id, exc, exc_info=True)
-        run_manager.update(record.run_id, status=RunStatus.error, error=str(exc))
+        # Resume 在 agent 装配完成前失败时，Command 尚未交给父图消费，原
+        # interrupt checkpoint 仍然有效。保留 interrupted 语义，桌面端才能
+        # 重新展示同一审批；普通运行或进入图后的异常仍是真正的 error。
+        status = (
+            RunStatus.interrupted
+            if isinstance(graph_input, Command) and not agent_ready
+            else RunStatus.error
+        )
+        run_manager.update(record.run_id, status=status, error=str(exc))
+        if status is RunStatus.interrupted:
+            logger.info(
+                "run '%s' resume 装配失败，保留 interrupted checkpoint",
+                record.run_id,
+            )
         error_event = StreamEvent(
             id="",
             event="error",

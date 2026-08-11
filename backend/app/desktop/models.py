@@ -174,6 +174,12 @@ class ContinueRequest(StrictRequest):
     message: str = Field(min_length=1)
 
 
+class ResumeRequest(StrictRequest):
+    """承诺层人工确认的 resume 载荷：decision=approve 或 decision=revise + feedback/replacement。"""
+
+    resume: dict[str, Any] = Field(default_factory=dict)
+
+
 class MaterialCreate(StrictRequest):
     path: str
     reading_mode: Literal["full", "rough"] = "full"

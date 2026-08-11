@@ -18,6 +18,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict
 
 from focus.config.checkpointer_config import CheckpointerConfig
+from focus.config.commitment_config import CommitmentConfig
 from focus.config.database_config import DatabaseConfig
 from focus.config.extensions_config import ExtensionsConfig
 from focus.config.langgraph_store_config import LanggraphStoreConfig
@@ -34,6 +35,7 @@ class AppConfig(BaseModel):
     checkpointer: CheckpointerConfig = CheckpointerConfig()
     langgraph_store: LanggraphStoreConfig = LanggraphStoreConfig()
     extensions: ExtensionsConfig = ExtensionsConfig(mcp_servers={})
+    commitment: CommitmentConfig = CommitmentConfig()
 
     def _normalize_name(self, name: str) -> str:
         return name.strip()

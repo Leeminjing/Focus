@@ -26,6 +26,23 @@ const state = {
   streams: new Map(),
   streamBuffers: new Map(),
   streamFrames: new Map(),
+  commitment: {
+    taskId: null,
+    stage: 0,
+    review: null,
+    recovery: null,
+    recoveryRestored: false,
+    busy: false,
+    tracePanel: null,
+    traceStartedAt: null,
+    traceTimer: null,
+    traceStreams: new Map(),
+    traceItems: new Map(),
+    messageIds: new Set(),
+    terminalStatus: null,
+    terminalError: null,
+    handoffStarted: false,
+  },
 };
 
 const app = document.querySelector("#app");
@@ -129,9 +146,13 @@ async function hydrateActive() {
     api(`/desktop/api/tasks/${state.activeTaskId}/skills`),
   ]);
   state.details.set(state.activeTaskId, detail);
+  reconcileCommitmentRecovery(detail);
   state.materials.set(state.activeTaskId, materials);
   state.agents.set(state.activeTaskId, agents);
   state.skillCatalogs.set(state.activeTaskId, catalog.skills);
+  if (detail.active_run?.status === "pending" || detail.active_run?.status === "running") {
+    listenToRun(detail.active_run);
+  }
 }
 
 function render() {
@@ -177,6 +198,10 @@ function pickerMatches(input) {
   );
 }
 
+function commitCommandVisible(query) {
+  return !query || "commit".startsWith(query.toLowerCase()) || query.toLowerCase().startsWith("commit");
+}
+
 function updateSkillMenu(input, reset = false) {
   const kind = input.dataset.skillInput;
   const menu = document.querySelector(`#${kind}SkillList`);
@@ -188,12 +213,20 @@ function updateSkillMenu(input, reset = false) {
     return [];
   }
   if (reset) state.pickerActive[kind] = 0;
-  state.pickerActive[kind] = matches.length
-    ? Math.min(state.pickerActive[kind], matches.length - 1)
+  const query = skillPicker.queryFromInput(input.value) || "";
+  const commitCount = commitCommandVisible(query) ? 1 : 0;
+  const total = commitCount + matches.length;
+  state.pickerActive[kind] = total
+    ? Math.min(state.pickerActive[kind], total - 1)
     : -1;
-  menu.innerHTML = matches.length
-    ? matches.map((skill, index) => `<button type="button" id="${kind}SkillOption${index}" class="skill-option ${index === state.pickerActive[kind] ? "is-active" : ""}" role="option" aria-selected="${index === state.pickerActive[kind]}" data-action="select-skill" data-picker-kind="${kind}" data-skill-name="${escapeHtml(skill.name)}"><span class="skill-option-name">${escapeHtml(skill.name)}</span><span class="skill-option-description">${escapeHtml(skill.description)}</span></button>`).join("")
-    : `<div class="skill-empty">No matching skills</div>`;
+  const commitItem = commitCount
+    ? `<button type="button" id="${kind}SkillOption0" class="skill-option commit-option ${state.pickerActive[kind] === 0 ? "is-active" : ""}" role="option" aria-selected="${state.pickerActive[kind] === 0}" data-action="select-commit" data-picker-kind="${kind}"><span class="skill-option-name">/commit</span><span class="skill-option-description">进入九阶段承诺流程</span></button>`
+    : "";
+  const options = matches.map((skill, index) => {
+    const optionIndex = index + commitCount;
+    return `<button type="button" id="${kind}SkillOption${optionIndex}" class="skill-option ${optionIndex === state.pickerActive[kind] ? "is-active" : ""}" role="option" aria-selected="${optionIndex === state.pickerActive[kind]}" data-action="select-skill" data-picker-kind="${kind}" data-skill-name="${escapeHtml(skill.name)}"><span class="skill-option-name">${escapeHtml(skill.name)}</span><span class="skill-option-description">${escapeHtml(skill.description)}</span></button>`;
+  }).join("");
+  menu.innerHTML = (commitItem + options) || `<div class="skill-empty">No matching skills</div>`;
   menu.hidden = false;
   input.setAttribute("aria-expanded", "true");
   if (state.pickerActive[kind] >= 0) {
@@ -203,6 +236,18 @@ function updateSkillMenu(input, reset = false) {
     input.removeAttribute("aria-activedescendant");
   }
   return matches;
+}
+
+function selectCommitCommand(kind) {
+  const input = document.querySelector(`[data-skill-input="${kind}"]`);
+  if (!input) return;
+  input.value = "/commit ";
+  input.focus();
+  const menu = document.querySelector(`#${kind}SkillList`);
+  if (menu) menu.hidden = true;
+  input.setAttribute("aria-expanded", "false");
+  input.removeAttribute("aria-activedescendant");
+  if (kind === "draft") scheduleDraftSave();
 }
 
 function setPickerSelection(kind, names, clearQuery = false) {
@@ -241,6 +286,10 @@ function renderFocus() {
   const previousScrollTop = previousConversation?.scrollTop;
   app.innerHTML = `
     <section class="focus-view" data-task-id="${task.task_id}">
+      <div class="commitment-progress" id="commitmentProgress" hidden>
+        <div class="progress-heading"><strong>任务合同</strong><span id="progressLabel"></span></div>
+        <ol id="progressSteps"></ol>
+      </div>
       <div class="conversation" id="conversation">
         ${renderConversation(detail, task)}
       </div>
@@ -255,16 +304,37 @@ function renderFocus() {
     </section>`;
   app.dataset.taskId = task.task_id;
   const conversation = document.querySelector("#conversation");
+  mountCommitmentRecovery(detail);
+  restoreCommitmentPanels(conversation);
+  const commitmentBlocked = activeTaskHasCommitmentLock();
+  const mainInput = document.querySelector("#mainInput");
+  const sendButton = document.querySelector('[data-action="send-main"]');
+  if (mainInput) mainInput.disabled = commitmentBlocked;
+  if (sendButton) sendButton.disabled = commitmentBlocked;
   conversation.scrollTop = previousConversation
     ? (wasPinned ? conversation.scrollHeight : previousScrollTop)
     : (detail.ui_state?.scrollTop ?? conversation.scrollHeight);
 }
 
 function renderMessage(message) {
-  const role = { human: "你", user: "你", ai: "助手", assistant: "助手", system: "System", tool: "Tool" }[message.role] || message.role;
+  const baseRole = { human: "你", user: "你", ai: "助手", assistant: "助手", system: "System", tool: "Tool" }[message.role] || message.role;
+  const role = message.role === "tool" && message.name ? `${baseRole} · ${message.name}` : baseRole;
   const kind = { human: "human", user: "human", ai: "ai", assistant: "ai", system: "system", tool: "tool" }[message.role] || "system";
   const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content, null, 2);
-  const rendered = kind === "ai" ? renderAssistantContent(content) : escapeHtml(content);
+  const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  const counts = new Map();
+  calls.forEach(call => {
+    const name = String(call?.name || "tool");
+    counts.set(name, (counts.get(name) || 0) + 1);
+  });
+  const callSummary = [...counts.entries()]
+    .map(([name, count]) => `<code>${escapeHtml(name)}${count > 1 ? ` ×${count}` : ""}</code>`)
+    .join("、");
+  const toolProgress = callSummary
+    ? `<div class="tool-call-progress">正在调用：${callSummary}</div>`
+    : "";
+  const renderedContent = kind === "ai" ? renderAssistantContent(content) : escapeHtml(content);
+  const rendered = `${renderedContent}${toolProgress}`;
   return `<article class="message ${kind}"><span class="message-role">${escapeHtml(role)}</span><div class="message-content">${rendered}</div></article>`;
 }
 
@@ -288,13 +358,18 @@ function replaceConversation(task, messages) {
   if (!conversation) return;
   const pinned = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 80;
   conversation.innerHTML = renderConversation(detail, task);
+  restoreCommitmentPanels(conversation);
   if (pinned) conversation.scrollTop = conversation.scrollHeight;
 }
 
 function appendToken(envelope) {
   const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
   const content = envelope.data?.content;
+  const messageId = envelope.data?.message_id;
+  // 防御：承诺子图冒泡消息（commitment-stage-*）只进轨迹面板，不进 lead 对话流
+  if (typeof messageId === "string" && messageId.startsWith("commitment-stage-")) return;
   if (!task || !content || !envelope.agent_id.startsWith("main:")) return;
+  beginLeadExecution(task.task_id);
   const buffer = state.streamBuffers.get(envelope.run_id) || { taskId: task.task_id, text: "" };
   buffer.text += content;
   state.streamBuffers.set(envelope.run_id, buffer);
@@ -596,6 +671,11 @@ async function deployDraft() {
 }
 
 async function sendMain() {
+  adoptCommitmentContext();
+  if (activeTaskHasCommitmentLock()) {
+    return setStatus("存在尚未处理的承诺流程，请先处理审批面板", true);
+  }
+  setStatus("");
   const input = document.querySelector("#mainInput");
   const message = input.value.trim();
   if (!message) return;
@@ -613,26 +693,682 @@ async function sendMain() {
   } catch (error) { setStatus(error.message, true); }
 }
 
+const COMMITMENT_STAGE_NAMES = {
+  1: "明确目标", 2: "要求与兼容性", 3: "优先级", 4: "必要输入",
+  5: "技术版本", 6: "官方知识", 7: "合同落盘", 8: "产出合同", 9: "交接准备",
+};
+const TRACE_ACTORS = { supervisor: "Supervisor", worker: "Worker", evaluator: "Evaluator" };
+
 function listenToRun(run) {
   if (state.streams.has(run.run_id)) return;
+  let runError = null;
   const source = new EventSource(`${runtime.apiBase}/desktop/api/runs/${run.run_id}/stream?session=${encodeURIComponent(runtime.session)}`);
   state.streams.set(run.run_id, source);
   source.addEventListener("tokens", event => appendToken(JSON.parse(event.data)));
   source.addEventListener("events", event => {
     const envelope = JSON.parse(event.data);
-    const messages = envelope.data?.messages;
+    const payload = envelope.data;
+    if (payload && payload.type === "commitment_messages") {
+      if (commitmentBelongsToTask(envelope)) appendCommitmentMessages(payload);
+      return;
+    }
+    const messages = payload?.messages;
     const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
     if (task && messages && envelope.agent_id.startsWith("main:")) {
+      beginLeadExecution(task.task_id);
       clearStreamBuffer(run.run_id);
       replaceConversation(task, messages);
     }
   });
-  source.addEventListener("error", event => { if (event.data) setStatus(JSON.parse(event.data).data?.error || "运行失败", true); });
-  source.addEventListener("end", async () => {
+  source.addEventListener("interrupt", event => {
+    const envelope = JSON.parse(event.data);
+    const value = envelope.data?.value;
+    if (!value || value.type !== "commitment_review") return;
+    if (!commitmentBelongsToTask(envelope)) return;
+    showReview(value);
+  });
+  source.addEventListener("error", event => {
+    if (!event.data) return;
+    const error = JSON.parse(event.data).data?.error || "运行失败";
+    runError = error;
+    setStatus(error, true);
+  });
+  source.addEventListener("end", async event => {
+    const terminal = event.data ? JSON.parse(event.data) : { status: "error", error: "运行流异常结束" };
+    if (!terminal.error && runError) terminal.error = runError;
     source.close(); state.streams.delete(run.run_id); clearStreamBuffer(run.run_id); await refreshTasks();
     if (state.activeTaskId) await hydrateActive();
+    const task = run.task_id
+      ? state.tasks.find(item => item.task_id === run.task_id)
+      : state.tasks.find(item => item.thread_id === run.thread_id);
+    if (task) settleCommitmentRun(task.task_id, terminal);
     render();
   });
+}
+
+// === 承诺进度条 ===
+
+function setProgress(stage, visible = true) {
+  const container = document.querySelector("#commitmentProgress");
+  if (!container) return;
+  container.hidden = !visible;
+  if (!visible) return;
+  const list = container.querySelector("#progressSteps");
+  list.replaceChildren();
+  for (let number = 1; number <= 9; number += 1) {
+    const item = document.createElement("li");
+    item.className = number < stage ? "done" : number === stage ? "active" : "";
+    item.title = `${number}. ${COMMITMENT_STAGE_NAMES[number] || ""}`;
+    list.append(item);
+  }
+  container.querySelector("#progressLabel").textContent = COMMITMENT_STAGE_NAMES[stage] || "正在准备任务合同";
+}
+
+// === 执行轨迹面板 ===
+
+function conversationNode() {
+  return document.querySelector("#conversation");
+}
+
+function commitmentBelongsToTask(envelope) {
+  const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
+  if (!task) return false;
+  if (state.commitment.taskId === task.task_id && state.commitment.terminalStatus) {
+    resetCommitment();
+  }
+  if (state.commitment.taskId === null) state.commitment.taskId = task.task_id;
+  return state.commitment.taskId === task.task_id;
+}
+
+function resetCommitment() {
+  clearInterval(state.commitment.traceTimer);
+  state.commitment.traceTimer = null;
+  state.commitment.tracePanel?.remove();
+  state.commitment.reviewPanel?.remove();
+  state.commitment.tracePanel = null;
+  state.commitment.reviewPanel = null;
+  state.commitment.traceStartedAt = null;
+  state.commitment.traceStreams = new Map();
+  state.commitment.traceItems = new Map();
+  state.commitment.messageIds = new Set();
+  state.commitment.terminalStatus = null;
+  state.commitment.terminalError = null;
+  state.commitment.handoffStarted = false;
+  state.commitment.taskId = null;
+  state.commitment.stage = 0;
+  state.commitment.review = null;
+  state.commitment.recovery = null;
+  state.commitment.recoveryRestored = false;
+}
+
+function beginLeadExecution(taskId) {
+  if (state.commitment.taskId !== taskId
+      || state.commitment.stage < 9
+      || state.commitment.review
+      || state.commitment.recovery
+      || state.commitment.terminalStatus
+      || state.commitment.handoffStarted) return;
+  state.commitment.handoffStarted = true;
+  finishTracePanel("承诺已完成");
+  if (state.commitment.tracePanel) state.commitment.tracePanel.open = false;
+  setProgress(state.commitment.stage, false);
+  setStatus("Lead Agent 正在执行…");
+  const conversation = conversationNode();
+  if (conversation && state.commitment.tracePanel?.isConnected) {
+    conversation.prepend(state.commitment.tracePanel);
+  }
+}
+
+function adoptCommitmentContext() {
+  // 承诺 UI 上下文绑定到当前任务；后端负责拒绝越过待确认 checkpoint 的普通输入。
+  if (state.commitment.taskId && state.commitment.taskId !== state.activeTaskId) {
+    resetCommitment();
+  }
+}
+
+function ensureTracePanel() {
+  if (state.commitment.tracePanel?.isConnected) return;
+  const fragment = document.querySelector("#traceTemplate").content.cloneNode(true);
+  state.commitment.tracePanel = fragment.querySelector(".trace-panel");
+  state.commitment.traceStartedAt = Date.now();
+  state.commitment.traceStreams = new Map();
+  clearInterval(state.commitment.traceTimer);
+  state.commitment.traceTimer = setInterval(updateTraceElapsed, 1000);
+  const conversation = conversationNode();
+  // 面板绑定任务：仅在渲染该任务时插入 DOM；切走时保留内存节点，切回由 restore 补插
+  if (conversation && state.commitment.taskId === state.activeTaskId) {
+    conversation.append(state.commitment.tracePanel);
+  }
+  updateTraceElapsed();
+}
+
+function updateTraceElapsed() {
+  const panel = state.commitment.tracePanel;
+  if (!panel?.isConnected || !state.commitment.traceStartedAt) return;
+  const seconds = Math.max(0, Math.floor((Date.now() - state.commitment.traceStartedAt) / 1000));
+  panel.querySelector(".trace-elapsed").textContent = `已思考 ${seconds} 秒`;
+}
+
+function updateTraceCount() {
+  const panel = state.commitment.tracePanel;
+  if (!panel?.isConnected) return;
+  panel.querySelector(".trace-count").textContent = `${panel.querySelectorAll(".trace-item").length} 项`;
+}
+
+function isNearBottom(element, threshold = 80) {
+  return element && element.scrollHeight - element.scrollTop - element.clientHeight <= threshold;
+}
+
+function contentText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map(item => typeof item === "string" ? item : item?.text || "").filter(Boolean).join("\n");
+}
+
+function prettyDraft(value) {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value ?? {}, null, 2);
+}
+
+function advanceCommitmentStage(stage) {
+  const next = Number(stage || 0);
+  if (next > state.commitment.stage) state.commitment.stage = next;
+  return state.commitment.stage;
+}
+
+function settleCommitmentRun(taskId, terminal) {
+  if (state.commitment.taskId !== taskId) return;
+  if (state.commitment.review || state.commitment.recovery) return;
+  const status = String(terminal?.status || "error");
+  if (["pending", "running", "interrupted"].includes(status)) return;
+  const error = terminal?.error || state.commitment.terminalError || null;
+  state.commitment.terminalStatus = status;
+  state.commitment.terminalError = error;
+  finishTracePanel(status === "success" ? "已完成" : "运行失败");
+  setProgress(state.commitment.stage, false);
+  if (status !== "success") setStatus(error || "运行失败", true);
+  else setStatus("");
+}
+
+function revealTraceText(element, text) {
+  const value = String(text || "");
+  if (!value || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    element.textContent = value;
+    return;
+  }
+  let index = 0;
+  const size = Math.max(1, Math.ceil(value.length / 100));
+  const step = () => {
+    if (!element.isConnected || index >= value.length) return;
+    index = Math.min(value.length, index + size);
+    element.textContent = value.slice(0, index);
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+function appendCommitmentTrace(trace) {
+  const followMessages = isNearBottom(conversationNode());
+  ensureTracePanel();
+  const panel = state.commitment.tracePanel;
+  const item = document.createElement("li");
+  item.className = `trace-item trace-${trace.actor} trace-${trace.status}`;
+  item.dataset.actor = trace.actor;
+  item.dataset.stage = String(trace.stage);
+  if (trace.status === "running") item.classList.add("is-active");
+  const meta = document.createElement("div");
+  meta.className = "trace-meta";
+  const actor = document.createElement("span");
+  actor.className = "trace-actor";
+  actor.textContent = TRACE_ACTORS[trace.actor] || trace.actor;
+  const position = document.createElement("span");
+  position.textContent = `第 ${trace.stage} 步${trace.attempt ? ` · 第 ${trace.attempt} 轮` : ""}`;
+  meta.append(actor, position);
+  const title = document.createElement("strong");
+  title.textContent = trace.title;
+  item.append(meta, title);
+  if (trace.detail) {
+    const detail = document.createElement("p");
+    revealTraceText(detail, trace.detail);
+    item.append(detail);
+  }
+  if (trace.payload?.reasoning_summary) {
+    const reasoning = document.createElement("p");
+    reasoning.className = "trace-reasoning";
+    reasoning.textContent = trace.payload.reasoning_summary;
+    item.append(reasoning);
+  }
+  if (trace.payload !== undefined) {
+    const payload = document.createElement("details");
+    payload.className = "trace-payload";
+    payload.innerHTML = "<summary>查看输入与输出</summary><pre></pre>";
+    payload.querySelector("pre").textContent = prettyDraft(trace.payload);
+    item.append(payload);
+  }
+  panel.querySelector(".trace-list").append(item);
+  if (trace.status !== "running") completeTraceActivity(trace);
+  updateTraceCount();
+  advanceCommitmentStage(trace.stage);
+  setProgress(state.commitment.stage, !state.commitment.terminalStatus);
+  if (followMessages) scrollConversation();
+  return item;
+}
+
+function appendTraceOutputDelta(trace, followMessages) {
+  ensureTracePanel();
+  const panel = state.commitment.tracePanel;
+  const streamId = trace.payload?.stream_id || `${trace.actor}-${trace.stage}`;
+  const key = `${trace.actor}:${trace.stage}:${streamId}`;
+  let item = state.commitment.traceStreams.get(key);
+  if (!item?.isConnected) {
+    item = document.createElement("li");
+    item.className = `trace-item trace-${trace.actor} trace-stream-item is-active`;
+    item.dataset.actor = trace.actor;
+    item.dataset.stage = String(trace.stage);
+    item.innerHTML = `
+      <div class="trace-meta">
+        <span class="trace-actor"></span>
+        <span>第 ${trace.stage} 步 · 公开输出流</span>
+      </div>
+      <strong></strong>
+      <pre class="trace-stream"><span></span><i aria-hidden="true"></i></pre>`;
+    item.querySelector(".trace-actor").textContent = TRACE_ACTORS[trace.actor] || trace.actor;
+    item.querySelector("strong").textContent = trace.title;
+    panel.querySelector(".trace-list").append(item);
+    state.commitment.traceStreams.set(key, item);
+    updateTraceCount();
+  }
+  const stream = item.querySelector(".trace-stream");
+  const followStream = isNearBottom(stream, 24);
+  stream.querySelector("span").textContent += String(trace.payload?.delta || "");
+  if (followStream) {
+    requestAnimationFrame(() => { stream.scrollTop = stream.scrollHeight; });
+  }
+  if (followMessages) scrollConversation();
+}
+
+function completeTraceActivity(trace) {
+  const panel = state.commitment.tracePanel;
+  if (!panel?.isConnected) return;
+  panel.querySelectorAll(`.trace-item.is-active[data-actor="${trace.actor}"][data-stage="${trace.stage}"]`)
+    .forEach(item => item.classList.remove("is-active"));
+  for (const [key, item] of state.commitment.traceStreams) {
+    if (item.dataset.actor === trace.actor && item.dataset.stage === String(trace.stage)) {
+      item.querySelector("i")?.remove();
+      state.commitment.traceStreams.delete(key);
+    }
+  }
+}
+
+function finishTracePanel(label = "已完成") {
+  clearInterval(state.commitment.traceTimer);
+  state.commitment.traceTimer = null;
+  const panel = state.commitment.tracePanel;
+  if (!panel?.isConnected) return;
+  updateTraceElapsed();
+  panel.classList.remove("is-live");
+  panel.classList.add("is-finished");
+  panel.querySelector(".trace-state").textContent = label;
+  panel.querySelectorAll(".trace-item.is-active").forEach(item => item.classList.remove("is-active"));
+  panel.querySelectorAll(".trace-stream i").forEach(cursor => cursor.remove());
+}
+
+function appendCommitmentMessages(batch) {
+  const actor = batch.actor || "supervisor";
+  const stage = Number(batch.stage || 0);
+  const attempt = Number(batch.attempt || 0) || undefined;
+  batch.messages.forEach(message => {
+    const type = String(message.type || message.role || "").toLowerCase();
+    const text = contentText(message.content);
+    const key = message.id || `${actor}:${stage}:${attempt || 0}:${type}:${text}`;
+    const signature = JSON.stringify(message);
+    if (type.includes("human")) {
+      if (actor === "supervisor" || state.commitment.messageIds.has(key)) return;
+      state.commitment.messageIds.add(key);
+      appendCommitmentTrace({
+        actor, stage, attempt,
+        title: `${TRACE_ACTORS[actor] || actor} 收到输入`,
+        status: "running",
+        detail: "已接收当前任务、Supervisor 消息历史与验收条件。",
+        payload: message,
+      });
+      return;
+    }
+    if (actor !== "supervisor" && (type.includes("chunk") || !message.id)) {
+      appendTraceOutputDelta({
+        actor, stage, attempt,
+        title: `${TRACE_ACTORS[actor] || actor} 正在生成`,
+        payload: { stream_id: `${actor}-${stage}-${attempt || 0}`, delta: text },
+      }, isNearBottom(conversationNode()));
+      return;
+    }
+    if (state.commitment.messageIds.has(key)) {
+      const existing = state.commitment.traceItems.get(key);
+      if (actor !== "supervisor" || !type.includes("tool")
+          || !existing || existing.signature === signature) return;
+      existing.item.remove();
+      state.commitment.messageIds.delete(key);
+      state.commitment.traceItems.delete(key);
+    }
+    state.commitment.messageIds.add(key);
+    let payload = message;
+    let status = "running";
+    let title = `${TRACE_ACTORS[actor] || actor} 消息`;
+    if (type.includes("tool")) {
+      try { payload = JSON.parse(text); } catch { payload = message; }
+      status = ["approved", "revised"].includes(payload?.status) ? "completed" : "failed";
+      title = "delegate_with_review 最终返回";
+    } else if (actor === "supervisor") {
+      title = "Supervisor 委派阶段任务";
+    }
+    const messageStage = Number(payload?.stage || message.tool_calls?.[0]?.args?.stage || stage);
+    const item = appendCommitmentTrace({
+      actor, stage: messageStage, attempt, title, status,
+      detail: type.includes("tool") ? "" : text,
+      payload,
+    });
+    if (actor === "supervisor" && type.includes("tool")) {
+      state.commitment.traceItems.set(key, { item, signature });
+    }
+  });
+}
+
+// === 审批面板 ===
+
+function showReview(payload) {
+  state.commitment.review = payload;
+  state.commitment.recovery = {
+    ...(state.commitment.recovery || {}),
+    status: "resumable",
+    stage: Number(payload.stage || 0),
+    review: payload,
+  };
+  state.commitment.stage = Number(payload.stage || state.commitment.stage);
+  finishTracePanel("等待确认");
+  if (state.commitment.tracePanel?.isConnected) state.commitment.tracePanel.open = true;
+  setStatus("等待确认", false);
+  setProgress(state.commitment.stage, true);
+  removeReviewPanel();
+
+  const fragment = document.querySelector("#reviewTemplate").content.cloneNode(true);
+  const panel = fragment.querySelector(".review-panel");
+  panel.dataset.recoveryStatus = "resumable";
+  panel.dataset.stage = String(payload.stage || 0);
+  panel.querySelector(".review-kicker").textContent = `第 ${payload.stage} 步`;
+  panel.querySelector("h3").textContent = COMMITMENT_STAGE_NAMES[payload.stage] || "人工确认";
+  panel.querySelector(".review-draft").textContent = prettyDraft(payload.draft);
+  panel.querySelector(".review-error").textContent = payload.error || "";
+  const allowed = payload.allowed_decisions || ["approve", "revise"];
+  panel.querySelector(".approve-button").hidden = !allowed.includes("approve");
+  if (payload.revise_label || !allowed.includes("approve")) {
+    panel.querySelector(".revise-toggle").textContent = payload.revise_label || (payload.stage === 2 ? "解决矛盾" : "提出修订");
+  }
+  const contract = payload.draft?.contract_markdown;
+  if (payload.stage === 7 && typeof contract === "string") {
+    panel.querySelector(".review-draft").hidden = true;
+    const editor = panel.querySelector(".review-contract-editor");
+    editor.hidden = false;
+    editor.value = contract;
+    editor.dataset.original = contract.trim();
+    panel.querySelector(".approve-button").textContent = "确认并写入";
+    panel.querySelector(".revise-toggle").textContent = "反馈重写";
+  }
+  bindReview(panel);
+  state.commitment.reviewPanel = panel;
+  const conversation = conversationNode();
+  if (conversation && state.commitment.taskId === state.activeTaskId) conversation.append(panel);
+  scrollConversation();
+}
+
+function removeReviewPanel() {
+  state.commitment.reviewPanel?.remove();
+  state.commitment.reviewPanel = null;
+}
+
+function bindReview(panel) {
+  const form = panel.querySelector(".revision-form");
+  const input = panel.querySelector(".revision-input");
+  const contractEditor = panel.querySelector(".review-contract-editor");
+  const approveButton = panel.querySelector(".approve-button");
+  const stage = Number(panel.dataset.stage || 0);
+  let mode = "feedback";
+
+  const updateContractAction = () => {
+    if (stage !== 7) return;
+    approveButton.textContent =
+      contractEditor.value.trim() === contractEditor.dataset.original
+        ? "确认并写入"
+        : "提交编辑并审核";
+  };
+
+  contractEditor.addEventListener("input", updateContractAction);
+  approveButton.addEventListener("click", () => {
+    if (stage === 7) {
+      const contract = contractEditor.value.trim();
+      if (!contract) {
+        panel.querySelector(".review-error").textContent = "任务合同不能为空";
+        return;
+      }
+      if (contract !== contractEditor.dataset.original) {
+        disableReview(panel);
+        resumeRun({ decision: "revise", replacement: { contract_markdown: contract } });
+        return;
+      }
+    }
+    disableReview(panel);
+    resumeRun({ decision: "approve" });
+  });
+
+  panel.querySelector(".revise-toggle").addEventListener("click", () => {
+    panel.querySelector(".review-actions").hidden = true;
+    form.hidden = false;
+    input.focus();
+  });
+
+  panel.querySelector(".cancel-revision").addEventListener("click", () => {
+    form.hidden = true;
+    panel.querySelector(".review-actions").hidden = false;
+  });
+
+  panel.querySelectorAll(".segmented button").forEach(button => {
+    button.addEventListener("click", () => {
+      mode = button.dataset.mode;
+      panel.querySelectorAll(".segmented button").forEach(item => item.classList.toggle("active", item === button));
+      input.value = "";
+      input.placeholder = mode === "feedback" ? "输入需要调整的内容" : "输入完整 JSON 替换草稿";
+    });
+  });
+
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    const value = input.value.trim();
+    if (!value) return;
+    const payload = { decision: "revise" };
+    if (mode === "feedback") {
+      payload.feedback = value;
+    } else {
+      try { payload.replacement = JSON.parse(value); }
+      catch {
+        panel.querySelector(".review-error").textContent = "替换草稿必须是有效 JSON";
+        return;
+      }
+    }
+    disableReview(panel);
+    resumeRun(payload);
+  });
+}
+
+function disableReview(panel) {
+  panel.querySelectorAll("button, textarea").forEach(control => { control.disabled = true; });
+  panel.classList.add("review-submitted");
+  const error = panel.querySelector(".review-error");
+  if (error && !error.textContent) error.textContent = "已提交，审核中…";
+}
+
+async function resumeRun(payload) {
+  if (state.commitment.busy) return;
+  // resume 必须发往审批面板绑定的任务（state.commitment.taskId），
+  // 不能依赖 activeTask()——activeTask 可能因重启/切换任务与面板不一致
+  const task = state.commitment.taskId
+    ? state.tasks.find(item => item.task_id === state.commitment.taskId)
+    : activeTask();
+  if (!task) return setStatus("当前没有活动任务", true);
+  state.commitment.busy = true;
+  try {
+    const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
+      method: "POST",
+      body: JSON.stringify({ resume: payload }),
+    });
+    listenToRun(run);
+    state.commitment.review = null;
+    state.commitment.recovery = null;
+    state.commitment.recoveryRestored = false;
+    removeReviewPanel();
+  } catch (error) { setStatus(error.message, true); }
+  finally { state.commitment.busy = false; }
+}
+
+function activeTaskHasCommitmentLock() {
+  return state.commitment.taskId === state.activeTaskId
+    && Boolean(state.commitment.review || state.commitment.recovery);
+}
+
+function reconcileCommitmentRecovery(detail) {
+  const recovery = detail?.commitment_recovery || null;
+  if (!recovery) {
+    if (state.commitment.taskId && state.commitment.taskId !== state.activeTaskId) {
+      setStatus("");
+    }
+    if (state.commitment.taskId === state.activeTaskId && state.commitment.recoveryRestored) {
+      resetCommitment();
+    }
+    return;
+  }
+  if (state.commitment.taskId && state.commitment.taskId !== state.activeTaskId) {
+    resetCommitment();
+  }
+  state.commitment.taskId = state.activeTaskId;
+  state.commitment.stage = Number(recovery.stage || 0);
+  state.commitment.recovery = recovery;
+  state.commitment.review = detail.pending_commitment_review || null;
+  state.commitment.recoveryRestored = true;
+}
+
+function mountCommitmentRecovery(detail) {
+  const recovery = detail?.commitment_recovery;
+  if (!recovery || state.commitment.taskId !== state.activeTaskId) return;
+  if (recovery.status === "resumable" && detail.pending_commitment_review) {
+    if (!state.commitment.reviewPanel?.isConnected
+        || state.commitment.reviewPanel.dataset.recoveryStatus !== "resumable") {
+      showReview(detail.pending_commitment_review);
+      state.commitment.recoveryRestored = true;
+    }
+    return;
+  }
+  if (recovery.status === "processing") {
+    if (state.commitment.reviewPanel?.dataset.recoveryStatus !== "processing") {
+      removeReviewPanel();
+      const fragment = document.querySelector("#reviewTemplate").content.cloneNode(true);
+      const panel = fragment.querySelector(".review-panel");
+      panel.dataset.stage = String(recovery.stage || 0);
+      panel.dataset.recoveryStatus = "processing";
+      panel.querySelector(".review-kicker").textContent = `第 ${recovery.stage} 步`;
+      panel.querySelector("h3").textContent = "人工决定正在处理";
+      panel.querySelector(".review-badge").textContent = "处理中";
+      panel.querySelector(".review-draft").textContent = prettyDraft(recovery.review?.draft);
+      panel.querySelector(".review-error").textContent = "正在从 checkpoint 继续执行，请等待新的审批或完成结果。";
+      panel.querySelector(".review-actions").remove();
+      panel.querySelector(".revision-form").remove();
+      panel.querySelector(".review-contract-editor").remove();
+      state.commitment.reviewPanel = panel;
+      conversationNode()?.append(panel);
+      setProgress(state.commitment.stage, true);
+      setStatus("承诺审批处理中");
+      scrollConversation();
+    }
+    return;
+  }
+  if (recovery.status !== "orphaned"
+      || state.commitment.reviewPanel?.dataset.recoveryStatus === "orphaned") return;
+  removeReviewPanel();
+  state.commitment.review = null;
+  const fragment = document.querySelector("#reviewTemplate").content.cloneNode(true);
+  const panel = fragment.querySelector(".review-panel");
+  panel.dataset.stage = String(recovery.stage || 0);
+  panel.dataset.recoveryStatus = "orphaned";
+  panel.querySelector(".review-kicker").textContent = `第 ${recovery.stage} 步`;
+  panel.querySelector("h3").textContent = "旧承诺流程无法继续";
+  panel.querySelector(".review-badge").textContent = "需要重开";
+  panel.querySelector(".review-draft").textContent = prettyDraft(recovery.review?.draft);
+  panel.querySelector(".review-error").textContent =
+    "父图已经越过原来的人工中断，旧决定不能安全恢复。放弃后只会清理承诺子图，现有对话和材料都会保留。";
+  panel.querySelector(".revision-form").remove();
+  panel.querySelector(".review-contract-editor").remove();
+  panel.querySelector(".review-actions").innerHTML =
+    '<button class="primary" type="button" data-action="abandon-commitment">放弃旧流程并重开</button>';
+  state.commitment.reviewPanel = panel;
+  conversationNode()?.append(panel);
+  setProgress(state.commitment.stage, true);
+  setStatus("旧承诺流程需要显式重开", true);
+  scrollConversation();
+}
+
+async function abandonCommitment() {
+  if (state.commitment.busy) return;
+  const task = state.commitment.taskId
+    ? state.tasks.find(item => item.task_id === state.commitment.taskId)
+    : activeTask();
+  if (!task) return setStatus("当前没有活动任务", true);
+  const restartMessage = state.commitment.recovery?.restart_message || "/commit ";
+  state.commitment.busy = true;
+  try {
+    await api(`/desktop/api/threads/${task.thread_id}/commitment/abandon`, {
+      method: "POST",
+    });
+    resetCommitment();
+    await hydrateActive();
+    render();
+    const input = document.querySelector("#mainInput");
+    if (input) {
+      input.value = restartMessage;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+    setStatus("旧承诺流程已放弃；请确认任务内容后重新发送");
+  } catch (error) {
+    setStatus(error.message, true);
+  } finally {
+    state.commitment.busy = false;
+  }
+}
+
+function restoreCommitmentPanels(conversation) {
+  // 承诺面板/轨迹绑定任务：仅恢复属于当前渲染任务的流程
+  if (!state.commitment.taskId || state.commitment.taskId !== state.activeTaskId) {
+    setProgress(state.commitment.stage, false);
+    return;
+  }
+  const panel = state.commitment.tracePanel;
+  if (panel && state.commitment.handoffStarted) {
+    conversation.prepend(panel);
+  } else if (panel && !panel.isConnected) {
+    conversation.insertBefore(panel, conversation.lastElementChild?.nextSibling || null);
+  }
+  // render() may create the review before restoring a detached trace panel.
+  // Always append the review last so the actionable panel stays below the trace.
+  if (state.commitment.reviewPanel) conversation.append(state.commitment.reviewPanel);
+  if (state.commitment.tracePanel?.isConnected) {
+    setProgress(
+      state.commitment.stage,
+      !state.commitment.terminalStatus && !state.commitment.handoffStarted,
+    );
+  }
+}
+
+function scrollConversation() {
+  const conversation = conversationNode();
+  if (!conversation) return;
+  requestAnimationFrame(() => { conversation.scrollTop = conversation.scrollHeight; });
 }
 
 async function refreshTasks() { state.tasks = await api("/desktop/api/tasks"); }
@@ -698,6 +1434,7 @@ document.addEventListener("click", async event => {
   if (action === "new-task") return dialog.showModal();
   if (action === "pick-workspace") return pickWorkspace();
   if (action === "select-skill") return selectSkill(button.dataset.pickerKind, button.dataset.skillName);
+  if (action === "select-commit") return selectCommitCommand(button.dataset.pickerKind);
   if (action === "remove-skill") return removeSkill(button.dataset.pickerKind, button.dataset.skillName);
   if (action === "show-map") { persistFocusState(); state.view = "map"; return render(); }
   if (action === "focus-home" && state.activeTaskId) { state.view = "focus"; await hydrateActive(); return render(); }
@@ -710,6 +1447,7 @@ document.addEventListener("click", async event => {
     state.activeTaskId = taskId; state.view = "focus"; await hydrateActive(); return render();
   }
   if (action === "send-main") return sendMain();
+  if (action === "abandon-commitment") return abandonCommitment();
   if (action === "exit-draft") { await saveDraft(); state.view = "map"; return render(); }
   if (action === "deploy") return deployDraft();
   if (action === "add-message") { syncDraftFromDom().history_messages.push({ role: "human", content: "" }); renderDraft(); scheduleDraftSave(); return; }
@@ -749,15 +1487,19 @@ document.addEventListener("keydown", event => {
     return;
   }
   const matches = pickerMatches(input);
+  const query = skillPicker.queryFromInput(input.value) || "";
+  const commitCount = commitCommandVisible(query) ? 1 : 0;
   if (action === "next" || action === "previous") {
     event.preventDefault();
     state.pickerActive[kind] = skillPicker.moveActive(
-      state.pickerActive[kind], action === "next" ? 1 : -1, matches.length
+      state.pickerActive[kind], action === "next" ? 1 : -1, commitCount + matches.length
     );
     updateSkillMenu(input);
-  } else if (action === "select" && matches.length) {
+  } else if (action === "select") {
     event.preventDefault();
-    selectSkill(kind, matches[state.pickerActive[kind]].name);
+    if (state.pickerActive[kind] < commitCount) return selectCommitCommand(kind);
+    const skillIndex = state.pickerActive[kind] - commitCount;
+    if (matches[skillIndex]) selectSkill(kind, matches[skillIndex].name);
   }
 });
 

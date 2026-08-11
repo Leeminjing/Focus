@@ -44,6 +44,8 @@ from backend.app.desktop.models import (
 )
 from backend.app.desktop.skills import build_task_skill_catalog, resolve_task_skills
 from backend.app.gateway.routers.thread_runs import RunCreateRequest
+from focus.agents.commitment.middleware import commitment_subgraph_thread_id
+from focus.agents.commitment.workflow import _human_payload
 from focus.agents.lead import make_lead_agent
 from focus.config.app_config import AppConfig
 from focus.runtime.runs.events import (
@@ -58,6 +60,7 @@ logger = logging.getLogger(__name__)
 
 _MAIN_SYSTEM_PROMPT ="""你是 Focus 的本地主 Agent。当前工作目录是真实宿主机工作区。
 使用已提供的工具完成用户任务；严格服从平台授予的工具权限，不要把当前环境描述为沙箱。"""
+_MAIN_RUNTIME_EQUIPMENT_KEY = "_main_run_equipment"
 _TERMINAL_STATUSES = frozenset({"success", "error", "interrupted"})
 
 
@@ -76,6 +79,29 @@ class PreparedRun:
 
 def new_id() -> str:
     return uuid.uuid4().hex
+
+
+def _checkpoint_commitment_review(
+    checkpoint: Any,
+    stage: int,
+) -> dict[str, Any] | None:
+    """读取 LangGraph 已持久化的最新承诺 interrupt 原始载荷。"""
+    pending_writes = list(getattr(checkpoint, "pending_writes", None) or [])
+    for _task_id, channel, raw_value in reversed(pending_writes):
+        if channel != "__interrupt__":
+            continue
+        values = raw_value if isinstance(raw_value, (list, tuple)) else [raw_value]
+        for item in reversed(values):
+            payload = getattr(item, "value", item)
+            if not isinstance(payload, dict):
+                continue
+            try:
+                payload_stage = int(payload.get("stage") or 0)
+            except (TypeError, ValueError):
+                continue
+            if payload.get("type") == "commitment_review" and payload_stage == stage:
+                return dict(payload)
+    return None
 
 
 def estimate_tokens(system_prompt: str, messages: list[dict[str, Any]], final_message: str) -> int:
@@ -215,7 +241,13 @@ class DesktopService:
             task = await session.get(DesktopThread, task_id)
             if not task:
                 raise HTTPException(404, "任务不存在")
-            task.ui_state = ui_state
+            persisted = dict(ui_state)
+            runtime_equipment = (task.ui_state or {}).get(
+                _MAIN_RUNTIME_EQUIPMENT_KEY
+            )
+            if runtime_equipment is not None:
+                persisted[_MAIN_RUNTIME_EQUIPMENT_KEY] = runtime_equipment
+            task.ui_state = persisted
             await session.commit()
 
     async def get_checkpoint_messages(self, thread_id: str, checkpoint_ns: str) -> list[dict[str, Any]]:
@@ -291,7 +323,10 @@ class DesktopService:
         async with self.session_factory() as session:
             existing = await session.scalar(select(DesktopRun).where(DesktopRun.deployment_id == deployment_id))
             if existing:
-                return PreparedRun(body=RunCreateRequest(), thread_id="", agent_factory=None, payload=self._run_payload(existing))
+                return PreparedRun(
+                    body=RunCreateRequest(input={"messages": []}), thread_id="",
+                    agent_factory=None, payload=self._run_payload(existing),
+                )
             draft = await session.get(PatrolDraft, draft_id)
             if not draft or draft.status != "editing":
                 raise HTTPException(404, "可投放草稿不存在")
@@ -332,7 +367,10 @@ class DesktopService:
                 await session.rollback()
                 winner = await session.scalar(select(DesktopRun).where(DesktopRun.deployment_id == deployment_id))
                 if winner:
-                    return PreparedRun(body=RunCreateRequest(), thread_id="", agent_factory=None, payload=self._run_payload(winner))
+                    return PreparedRun(
+                        body=RunCreateRequest(input={"messages": []}), thread_id="",
+                        agent_factory=None, payload=self._run_payload(winner),
+                    )
                 raise
             task_row = await session.get(DesktopThread, draft.task_id)
             thread_id = task_row.thread_id
@@ -348,29 +386,160 @@ class DesktopService:
         permissions: list[str], skills: list[str],
     ) -> PreparedRun:
         async with self.session_factory() as session:
-            _, workspace = await self._get_task_entities(session, task_id)
+            task_row, workspace = await self._get_task_entities(session, task_id)
+            recovery = await self._commitment_recovery_payload(session, task_row)
+            if recovery is not None:
+                raise HTTPException(
+                    409,
+                    {
+                        "code": "commitment_review_pending",
+                        "recovery": recovery["status"],
+                        "message": "存在尚未处理的承诺审批，请先继续审批或显式放弃旧流程",
+                    },
+                )
             snapshots = self._freeze_skills(workspace.path, skills)
+            equipment = {
+                "model_name": model_name,
+                "tools": "auto",
+                "skills": list(dict.fromkeys(skills)),
+                "skill_snapshots": snapshots,
+                "permissions": permissions,
+            }
             run = DesktopRun(
                 run_id=new_id(), task_id=task_id, agent_id=f"main:{task_id}", kind="main", status="pending",
                 input_messages=[{"role": "human", "content": message}], model_name=model_name,
             )
             session.add(run)
+            task_row.ui_state = {
+                **(task_row.ui_state or {}),
+                _MAIN_RUNTIME_EQUIPMENT_KEY: equipment,
+            }
             await session.commit()
-            task_row = await session.get(DesktopThread, task_id)
             thread_id = task_row.thread_id
             workspace_id = workspace.workspace_id
             workspace_path = workspace.path
-        equipment = {
-            "model_name": model_name,
-            "tools": "auto",
-            "skills": list(dict.fromkeys(skills)),
-            "skill_snapshots": snapshots,
-            "permissions": permissions,
-        }
         return await self._prepare(
             run, thread_id, workspace_id, workspace_path, run.input_messages,
             _MAIN_SYSTEM_PROMPT, equipment, "", True,
         )
+
+    async def resume_run(self, thread_id: str, resume: dict[str, Any]) -> PreparedRun:
+        """承诺层人工确认恢复：以相同 thread_id resume 父图，resume 载荷经 start_run 翻译为 Command(resume=...)。
+
+        输入:
+            thread_id: str — 桌面任务登记的唯一 thread 标识
+            resume: dict — 人工决定 {decision: approve|revise, feedback?, replacement?}
+
+        输出:
+            PreparedRun — 携带 RunCreateRequest(resume=...) 与主 Agent 装配闭包
+        """
+        async with self.session_factory() as session:
+            task = await session.scalar(
+                select(DesktopThread).where(DesktopThread.thread_id == thread_id)
+            )
+            if not task:
+                raise HTTPException(404, "任务不存在")
+            recovery = await self._commitment_recovery_payload(session, task)
+            if recovery is None:
+                raise HTTPException(409, "无可恢复的承诺流程")
+            if recovery["status"] != "resumable":
+                code = (
+                    "commitment_review_processing"
+                    if recovery["status"] == "processing"
+                    else "commitment_review_orphaned"
+                )
+                message = (
+                    "承诺审批正在处理，请等待当前运行结束"
+                    if recovery["status"] == "processing"
+                    else "父图已无法恢复旧承诺审批，请先显式放弃旧流程并重开"
+                )
+                raise HTTPException(
+                    409,
+                    {
+                        "code": code,
+                        "message": message,
+                    },
+                )
+            workspace = await session.get(DesktopWorkspace, task.workspace_id)
+            if not workspace:
+                raise HTTPException(404, "工作区不存在")
+            equipment = dict(
+                (task.ui_state or {}).get(_MAIN_RUNTIME_EQUIPMENT_KEY) or {}
+            )
+            if not equipment:
+                # 兼容修复前已进入 interrupt 的任务：尽量恢复 UI 中仍可获得的技能，
+                # 其余字段沿用旧行为的默认值。
+                skills = self._normalize_skill_names((task.ui_state or {}).get("skills"))
+                equipment = {
+                    "model_name": None,
+                    "tools": "auto",
+                    "skills": skills,
+                    "skill_snapshots": self._freeze_skills(workspace.path, skills),
+                    "permissions": ["read"],
+                }
+            run = DesktopRun(
+                run_id=new_id(),
+                task_id=task.task_id,
+                agent_id=f"main:{task.task_id}",
+                kind="main",
+                status="pending",
+                input_messages=[],
+                model_name=equipment.get("model_name"),
+            )
+            session.add(run)
+            await session.commit()
+            task_id = task.task_id
+            workspace_id = workspace.workspace_id
+            workspace_path = workspace.path
+        material_context, uploads_tag = await self._material_context(task_id)
+        factory = self._build_agent_factory(
+            task_id, workspace_path, equipment, _MAIN_SYSTEM_PROMPT,
+            material_context, True,
+        )
+        body = RunCreateRequest(
+            input=None,
+            resume=resume,
+            context={
+                "model_name": equipment.get("model_name"),
+                "workspace_id": workspace_id,
+                "agent_id": run.agent_id,
+                "permissions": equipment.get("permissions") or ["read"],
+                "skills": equipment.get("skills") or [],
+                "workspace": workspace_path,
+                "uploads": uploads_tag,
+                "checkpoint_ns": "",
+                "run_id": run.run_id,
+            },
+            stream_mode=["messages-tuple", "values"],
+        )
+        return PreparedRun(
+            body=body,
+            thread_id=thread_id,
+            agent_factory=factory,
+            payload=self._run_payload(run),
+        )
+
+    async def abandon_commitment(self, thread_id: str) -> dict[str, Any]:
+        """显式废弃待确认承诺子图；只删除派生 thread checkpoint。"""
+        async with self.session_factory() as session:
+            task = await session.scalar(
+                select(DesktopThread).where(DesktopThread.thread_id == thread_id)
+            )
+            if not task:
+                raise HTTPException(404, "任务不存在")
+            active = await session.scalar(
+                select(DesktopRun).where(
+                    DesktopRun.task_id == task.task_id,
+                    DesktopRun.agent_id == f"main:{task.task_id}",
+                    DesktopRun.status.in_(["pending", "running"]),
+                )
+            )
+            if active:
+                raise HTTPException(409, "主 Agent 仍在运行，不能废弃承诺流程")
+        await self.checkpointer.adelete_thread(
+            commitment_subgraph_thread_id(thread_id)
+        )
+        return {"ok": True, "thread_id": thread_id}
 
     async def retry_agent(self, agent_id: str) -> PreparedRun:
         async with self.session_factory() as session:
@@ -585,7 +754,7 @@ class DesktopService:
             (3) context 携带 workspace/workspace_id/agent_id/permissions/skills/checkpoint_ns，
                 由 services.start_run 透传给 worker 与工具（ToolRuntime）
         """
-        material_context = await self._material_context(run.task_id)
+        material_context, uploads_tag = await self._material_context(run.task_id)
         factory = self._build_agent_factory(
             run.task_id, workspace_path, equipment, base_prompt,
             material_context, with_patrol_readers,
@@ -599,6 +768,7 @@ class DesktopService:
                 "permissions": equipment.get("permissions") or ["read"],
                 "skills": equipment.get("skills") or [],
                 "workspace": workspace_path,
+                "uploads": uploads_tag,
                 "checkpoint_ns": checkpoint_ns,
                 "run_id": run.run_id,
             },
@@ -634,11 +804,21 @@ class DesktopService:
             prompt = prompt_with_skills(base_prompt, snapshots)
             if material_context:
                 prompt = f"{prompt}\n\n<focus_material_policies>\n{material_context}\n</focus_material_policies>"
+            # 承诺层装配：主 Agent 经共享 builder（按 commitment.enabled 条件装配，
+            # skill_names 取任务技能 catalog 全量用于触发剥离）；小兵不装配承诺层。
+            if with_patrol_readers:
+                task_skill_names = frozenset(build_task_skill_catalog(workspace_path))
+                middlewares = None
+            else:
+                task_skill_names = None
+                middlewares = []
             return await make_lead_agent(
                 model_name=model_name,
                 tools=tools,
                 system_prompt=prompt,
-                middlewares=[],
+                middlewares=middlewares,
+                app_config=self.app_config,
+                middleware_skill_names=task_skill_names,
             )
 
         return factory
@@ -655,11 +835,16 @@ class DesktopService:
             pass  # RunManager.cancel 已置 interrupted
         finally:
             try:
-                await self._set_run_status(record.run_id, record.status.value)
+                await self._set_run_status(record.run_id, record.status.value, record.error)
             finally:
                 self._sync_tasks.discard(asyncio.current_task())
 
-    async def _material_context(self, task_id: str) -> str:
+    async def _material_context(self, task_id: str) -> tuple[str, str]:
+        """返回 (材料策略文本, 上传清单标签)。
+
+        上传清单以 <current_uploads> 标签形式返回（承诺层阶段4 据此核对文件名），
+        经 run context 的 uploads 字段显式传给承诺子图，不依赖 lead 历史。
+        """
         async with self.session_factory() as session:
             _, workspace = await self._get_task_entities(session, task_id)
             materials = (
@@ -670,13 +855,20 @@ class DesktopService:
                 )
             ).all()
         lines = []
+        upload_names: list[str] = []
         for material in materials:
             reading = "优先完整阅读" if material.reading_mode == "full" else "优先粗略阅读，需要时仍可完整读取"
             instruction = "严格遵守" if material.instruction_mode == "strict" else "仅供参考"
             lines.append(
                 f"- {Path(workspace.path, *Path(material.relative_path).parts)} | {reading} | {instruction}"
             )
-        return "\n".join(lines)
+            upload_names.append(material.relative_path)
+        uploads_tag = (
+            "<current_uploads>\n" + "\n".join(upload_names) + "\n</current_uploads>"
+            if upload_names
+            else ""
+        )
+        return "\n".join(lines), uploads_tag
 
     def _build_patrol_reader_tools(self, task_id: str) -> list[BaseTool]:
         @tool
@@ -913,10 +1105,67 @@ class DesktopService:
             )
             .order_by(DesktopRun.created_at.desc())
         )
+        ui_state = dict(task.ui_state or {})
+        ui_state.pop(_MAIN_RUNTIME_EQUIPMENT_KEY, None)
+        recovery = await self._commitment_recovery_payload(session, task)
         return {
             "task_id": task.task_id, "workspace_id": task.workspace_id, "workspace_path": workspace.path,
             "workspace_name": workspace.display_name, "thread_id": task.thread_id, "title": task.title,
-            "ui_state": task.ui_state or {}, "active_run": self._run_payload(active) if active else None,
+            "ui_state": ui_state, "active_run": self._run_payload(active) if active else None,
+            "pending_commitment_review": (
+                recovery["review"] if recovery and recovery["status"] == "resumable" else None
+            ),
+            "commitment_recovery": recovery,
+        }
+
+    async def _commitment_recovery_payload(
+        self, session: AsyncSession, task: DesktopThread
+    ) -> dict[str, Any] | None:
+        """从承诺子图 checkpoint 投影桌面审批恢复状态。"""
+        config = {
+            "configurable": {
+                "thread_id": commitment_subgraph_thread_id(task.thread_id),
+            }
+        }
+        try:
+            checkpoint = await self.checkpointer.aget_tuple(config)
+        except Exception:
+            logger.warning(
+                "读取承诺子图 checkpoint 失败: thread_id=%s",
+                task.thread_id,
+                exc_info=True,
+            )
+            return None
+        if checkpoint is None:
+            return None
+        values = dict(checkpoint.checkpoint.get("channel_values", {}))
+        try:
+            stage = int(values.get("awaiting_human") or 0)
+        except (TypeError, ValueError):
+            return None
+        if stage < 1 or stage > 9:
+            return None
+        latest = await session.scalar(
+            select(DesktopRun)
+            .where(
+                DesktopRun.task_id == task.task_id,
+                DesktopRun.agent_id == f"main:{task.task_id}",
+            )
+            .order_by(DesktopRun.created_at.desc())
+        )
+        if latest is not None and latest.status in {"pending", "running"}:
+            status = "processing"
+        elif latest is not None and latest.status == "interrupted":
+            status = "resumable"
+        else:
+            status = "orphaned"
+        source_text = str(values.get("source_text") or "").strip()
+        review = _checkpoint_commitment_review(checkpoint, stage)
+        return {
+            "status": status,
+            "stage": stage,
+            "review": review or _human_payload(stage, values),
+            "restart_message": f"/commit {source_text}" if source_text else "/commit ",
         }
 
     @staticmethod

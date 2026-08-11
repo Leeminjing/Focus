@@ -45,6 +45,50 @@
       <button class="primary" type="submit">继续</button>
     </form>
   </dialog>
+  <template id="reviewTemplate">
+    <article class="review-panel">
+      <header>
+        <div>
+          <span class="review-kicker"></span>
+          <h3></h3>
+        </div>
+        <span class="review-badge">等待确认</span>
+      </header>
+      <pre class="review-draft"></pre>
+      <textarea class="review-contract-editor" aria-label="任务合同 Markdown" hidden></textarea>
+      <p class="review-error" role="alert"></p>
+      <div class="review-actions">
+        <button class="primary approve-button" type="button">批准并继续</button>
+        <button class="text-button revise-toggle" type="button">提出修订</button>
+      </div>
+      <form class="revision-form" hidden>
+        <div class="segmented" role="group" aria-label="修订方式">
+          <button class="active" type="button" data-mode="feedback">反馈</button>
+          <button type="button" data-mode="replacement">替换草稿</button>
+        </div>
+        <textarea class="revision-input" rows="4" placeholder="输入需要调整的内容"></textarea>
+        <div class="revision-footer">
+          <button class="text-button cancel-revision" type="button">取消</button>
+          <button class="primary" type="submit">提交修订</button>
+        </div>
+      </form>
+    </article>
+  </template>
+  <template id="traceTemplate">
+    <details class="trace-panel is-live" open>
+      <summary>
+        <span class="trace-summary-title">
+          <span class="trace-live-dot" aria-hidden="true"></span>
+          <span class="trace-state">思考中</span>
+        </span>
+        <span class="trace-summary-meta">
+          <span class="trace-elapsed">已思考 0 秒</span>
+          <span class="trace-count">0 项</span>
+        </span>
+      </summary>
+      <ol class="trace-list"></ol>
+    </details>
+  </template>
   <template id="emptyTemplate">
     <section class="empty-state"><h1>建立第一个工作区任务</h1><p>一个全图单元由本地工作区文件夹和线程共同组成。</p><button class="primary" data-action="new-task">选择文件夹</button></section>
   </template>

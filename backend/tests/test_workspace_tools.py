@@ -1,8 +1,14 @@
+import asyncio
+import os
+from pathlib import Path
+
 import pytest
 from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
 
 from focus.tools.builtins.workspace_tools import (
     WORKSPACE_TOOLS,
+    list_files,
     read_file,
     select_workspace_tools,
     write_file,
@@ -38,6 +44,34 @@ def test_read_file_within_workspace(tmp_path):
     assert read_file.func(path=str(target), runtime=runtime) == "内容"
 
 
+def test_workspace_path_type_errors_are_recoverable_tool_messages(tmp_path):
+    target = tmp_path / "hello.txt"
+    target.write_text("内容", encoding="utf-8")
+    runtime = _runtime(tmp_path, ["read"])
+
+    read_result = asyncio.run(read_file.ainvoke({
+        "type": "tool_call",
+        "id": "read-directory",
+        "name": "read_file",
+        "args": {"path": ".", "runtime": runtime},
+    }))
+    assert isinstance(read_result, ToolMessage)
+    assert read_result.status == "error"
+    assert read_result.tool_call_id == "read-directory"
+    assert "list_files" in read_result.content
+
+    list_result = asyncio.run(list_files.ainvoke({
+        "type": "tool_call",
+        "id": "list-file",
+        "name": "list_files",
+        "args": {"path": "hello.txt", "runtime": runtime},
+    }))
+    assert isinstance(list_result, ToolMessage)
+    assert list_result.status == "error"
+    assert list_result.tool_call_id == "list-file"
+    assert "read_file" in list_result.content
+
+
 def test_read_file_denied_without_read(tmp_path):
     target = tmp_path / "a.txt"
     target.write_text("x", encoding="utf-8")
@@ -60,6 +94,26 @@ def test_write_file_permission_gate(tmp_path):
     ok = write_file.func(path="sub/new.txt", content="内容", runtime=_runtime(tmp_path, ["read", "write"]))
     assert "已写入" in ok
     assert (tmp_path / "sub" / "new.txt").read_text(encoding="utf-8") == "内容"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended path prefix regression")
+def test_write_file_accepts_equivalent_windows_extended_path(tmp_path, monkeypatch):
+    target = tmp_path / "result" / "contract_markdown.md"
+    real_resolve = Path.resolve
+
+    def resolve_with_extended_target(self, *args, **kwargs):
+        resolved = real_resolve(self, *args, **kwargs)
+        if self == target:
+            return Path("\\\\?\\" + str(resolved))
+        return resolved
+
+    monkeypatch.setattr(Path, "resolve", resolve_with_extended_target)
+    write_file.func(
+        path=str(target),
+        content="合同",
+        runtime=_runtime(tmp_path, ["read", "write"]),
+    )
+    assert target.read_text(encoding="utf-8") == "合同"
 
 
 def test_missing_workspace_context():

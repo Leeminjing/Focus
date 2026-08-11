@@ -23,6 +23,7 @@ from backend.app.desktop.models import (
     MaterialCreate,
     MaterialRestore,
     MaterialUpdate,
+    ResumeRequest,
     ThreadCreate,
     WorkspaceCreate,
 )
@@ -138,6 +139,29 @@ async def start_main_run(task_id: str, body: MainRunCreate, request: Request) ->
     )
     await _launch(request, prepared)
     return prepared.payload
+
+
+@desktop_router.post("/threads/{thread_id}/runs/resume")
+async def resume_run(thread_id: str, body: ResumeRequest, request: Request) -> dict:
+    """承诺层人工确认恢复：以相同 thread_id resume，返回新 run 供前端订阅 SSE。"""
+    prepared = await request.app.state.desktop_service.resume_run(thread_id, body.resume)
+    if prepared.agent_factory is None:
+        raise HTTPException(409, "无可恢复的承诺流程")
+    record = await start_run(
+        prepared.body, prepared.thread_id, request, agent_factory=prepared.agent_factory
+    )
+    request.app.state.desktop_service.attach_run_sync(record)
+    return {
+        "run_id": record.run_id,
+        "thread_id": prepared.thread_id,
+        "status": record.status.value,
+    }
+
+
+@desktop_router.post("/threads/{thread_id}/commitment/abandon")
+async def abandon_commitment(thread_id: str, request: Request) -> dict:
+    """用户显式放弃不可恢复的承诺子图，保留父图与桌面任务。"""
+    return await request.app.state.desktop_service.abandon_commitment(thread_id)
 
 
 @desktop_router.get("/runs/{run_id}")

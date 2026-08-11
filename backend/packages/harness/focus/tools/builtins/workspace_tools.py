@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from langchain.tools import ToolRuntime
-from langchain_core.tools import tool
+from langchain_core.tools import ToolException, tool
 
 WORKSPACE_TOOL_NAMES = frozenset({"read_file", "list_files", "write_file", "bash", "powershell", "cmd", "sh"})
 
@@ -59,11 +59,31 @@ def _runtime_values(runtime: ToolRuntime) -> tuple[Path, frozenset[str]]:
     return Path(workspace).resolve(), permissions
 
 
+def _canonical_path_text(path: Path) -> str:
+    """统一 Windows 普通路径与扩展路径前缀的等价表示。"""
+    value = str(path)
+    if os.name == "nt":
+        if value.startswith("\\\\?\\UNC\\"):
+            value = "\\\\" + value[8:]
+        elif value.startswith("\\\\?\\"):
+            value = value[4:]
+    return os.path.normcase(os.path.normpath(value))
+
+
+def _is_workspace_path(root: Path, target: Path) -> bool:
+    root_text = _canonical_path_text(root)
+    target_text = _canonical_path_text(target)
+    try:
+        return os.path.commonpath((root_text, target_text)) == root_text
+    except ValueError:
+        return False
+
+
 def _resolve_workspace_path(root: Path, value: str) -> Path:
     """解析工具路径并校验位于工作区内。"""
     candidate = Path(value).expanduser()
     target = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
-    if target != root and root not in target.parents:
+    if not _is_workspace_path(root, target):
         raise PermissionError(f"路径不属于当前工作区: {value}")
     return target
 
@@ -75,8 +95,10 @@ def read_file(path: str, runtime: ToolRuntime) -> str:
     if "read" not in permissions:
         raise PermissionError("当前运行未授权 read")
     target = _resolve_workspace_path(workspace, path)
+    if target.is_dir():
+        raise ToolException(f"目标是目录，请改用 list_files: {target}")
     if not target.is_file():
-        raise FileNotFoundError(str(target))
+        raise ToolException(f"文件不存在: {target}")
     suffix = target.suffix.lower()
     if suffix in {".pdf", ".docx", ".doc"}:
         from focus.readers import _read_doc, _read_docx, _read_pdf
@@ -96,9 +118,19 @@ def list_files(path: str, runtime: ToolRuntime) -> str:
     if "read" not in permissions:
         raise PermissionError("当前运行未授权 read")
     target = _resolve_workspace_path(workspace, path)
+    if target.is_file():
+        raise ToolException(f"目标是文件，请改用 read_file: {target}")
     if not target.is_dir():
-        raise NotADirectoryError(str(target))
+        raise ToolException(f"目录不存在: {target}")
     return "\n".join(str(item) for item in sorted(target.iterdir()))
+
+
+def _recoverable_path_error(error: ToolException) -> str:
+    return f"工作区工具调用失败：{error}"
+
+
+read_file.handle_tool_error = _recoverable_path_error
+list_files.handle_tool_error = _recoverable_path_error
 
 
 @tool

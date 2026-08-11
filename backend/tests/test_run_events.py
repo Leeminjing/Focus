@@ -1,4 +1,8 @@
+import asyncio
+from types import SimpleNamespace
+
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph.types import Command
 
 from focus.runtime.runs.events import (
     build_envelope,
@@ -7,6 +11,24 @@ from focus.runtime.runs.events import (
     serialize_value,
     stream_text,
 )
+from focus.runtime.runs.manager import RunManager
+from focus.runtime.runs.schemas import RunStatus
+from focus.runtime.runs.worker import run_agent
+
+
+class _RecordingBridge:
+    def __init__(self):
+        self.events = []
+        self.ended = False
+
+    def publish(self, _run_id, event):
+        self.events.append(event)
+
+    def publish_end(self, _run_id):
+        self.ended = True
+
+    def cleanup(self, _run_id, delay):
+        assert delay == 300
 
 
 def test_serialize_message_shapes():
@@ -75,3 +97,89 @@ def test_build_envelope():
         "workspace_id": "ws-1", "thread_id": "th-1", "agent_id": "main:th-1",
         "run_id": "run-1", "event": "status", "data": {"status": "running"},
     }
+
+
+def test_start_run_uses_long_task_recursion_budget(monkeypatch):
+    from backend.app.gateway import services
+
+    captured = {}
+
+    async def fake_run_agent(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(services, "run_agent", fake_run_agent)
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                stream_bridge=object(),
+                run_manager=RunManager(),
+                checkpointer=None,
+                store=None,
+            )
+        ),
+        state=SimpleNamespace(current_user=None),
+    )
+    body = SimpleNamespace(
+        context={"run_id": "run-long-task", "agent_id": "main:task-a"},
+        input={"messages": [{"role": "human", "content": "build a web app"}]},
+        resume=None,
+        stream_mode=["messages-tuple", "values"],
+    )
+
+    async def exercise():
+        record = await services.start_run(body, "thread-a", request)
+        await record.task
+
+    asyncio.run(exercise())
+
+    assert captured["runnable_config"]["recursion_limit"] == 100
+
+
+def _run_with_failing_agent_factory(graph_input):
+    manager = RunManager()
+    record = manager.create("thread-agent-factory", run_id="run-agent-factory")
+    bridge = _RecordingBridge()
+
+    async def failing_factory():
+        raise RuntimeError("Context7 connection timeout")
+
+    asyncio.run(
+        run_agent(
+            record=record,
+            bridge=bridge,
+            run_manager=manager,
+            app_config=SimpleNamespace(
+                models=[], commitment=SimpleNamespace(enabled=True)
+            ),
+            graph_input=graph_input,
+            runnable_config={"configurable": {"thread_id": record.thread_id}},
+            agent_factory=failing_factory,
+            langgraph_context={
+                "workspace_id": "workspace-agent-factory",
+                "agent_id": "main:task-agent-factory",
+            },
+        )
+    )
+    return record, bridge
+
+
+def test_resume_agent_factory_failure_preserves_interrupted_state():
+    record, bridge = _run_with_failing_agent_factory(
+        Command(resume={"decision": "revise", "feedback": "继续修订"})
+    )
+
+    assert record.status is RunStatus.interrupted
+    assert record.error == "Context7 connection timeout"
+    assert [event.event for event in bridge.events] == ["metadata", "error"]
+    assert bridge.ended is True
+
+
+def test_normal_agent_factory_failure_remains_error():
+    record, bridge = _run_with_failing_agent_factory(
+        {"messages": [HumanMessage(content="普通消息")]}
+    )
+
+    assert record.status is RunStatus.error
+    assert record.error == "Context7 connection timeout"
+    assert [event.event for event in bridge.events] == ["metadata", "error"]
+    assert bridge.ended is True

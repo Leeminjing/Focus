@@ -48,7 +48,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from focus.runtime.runs.manager import RunManager, RunRecord
 from focus.runtime.stream_bridge.base import StreamBridge
@@ -64,17 +64,27 @@ router = APIRouter()
 
 
 class RunCreateRequest(BaseModel):
-    """POST /api/threads/{thread_id}/runs/stream 的请求体。input.messages[] 中的消息支持 additional_kwargs.files 字段，携带本轮上传文件元数据。"""
+    """POST /api/threads/{thread_id}/runs/stream 的请求体。input.messages[] 中的消息支持 additional_kwargs.files 字段，携带本轮上传文件元数据；resume 用于承诺层人工确认后恢复同一 thread 的 interrupt。"""
 
     input: dict[str, Any] | None = Field(
         default=None,
         description="Graph input (e.g. {messages: [...]})",
+    )
+    resume: Any | None = Field(
+        default=None,
+        description="LangGraph interrupt resume payload",
     )
     context: dict[str, Any] | None = Field(default=None)
     stream_mode: list[str] | str | None = Field(
         default=None,
         description="Stream mode(s)",
     )
+
+    @model_validator(mode="after")
+    def validate_input_or_resume(self):
+        if (self.input is None) == (self.resume is None):
+            raise ValueError("input 与 resume 必须且只能提供一个")
+        return self
 
 
 def format_sse(event_type: str, data: Any, event_id: str) -> str:
@@ -166,7 +176,15 @@ async def sse_consumer(
                 continue
 
             if event is END_SENTINEL:
-                yield format_sse("end", {"run_id": run_id}, event.id or "end")
+                yield format_sse(
+                    "end",
+                    {
+                        "run_id": run_id,
+                        "status": record.status.value,
+                        "error": record.error,
+                    },
+                    event.id or "end",
+                )
                 return
 
             yield format_sse(event.event, event.data, event.id)
