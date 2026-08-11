@@ -44,6 +44,9 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from focus.runtime.stream_bridge.schemas import StreamEvent
 
+# 承诺子图（Supervisor）节点名：其消息冒泡到父图 messages 通道时以此为特征排除
+_COMMITMENT_SUBGRAPH_NODES = frozenset({"prepare_call", "delegate_with_review", "human_review"})
+
 
 def serialize_message(message: BaseMessage) -> dict[str, Any]:
     """LangChain BaseMessage → 前端消息 dict。"""
@@ -203,33 +206,94 @@ def build_envelope(
     }
 
 
+def serialize_interrupt(value: Any) -> Any:
+    """递归序列化 LangGraph Interrupt（id + value）为 JSON 可序列化 dict。
+
+    输入:
+        value: Any — Interrupt 实例或包含它的任意结构
+
+    输出:
+        Any — {"id": ..., "value": ...} 或递归序列化后的等价结构
+    """
+    from langgraph.types import Interrupt
+
+    if isinstance(value, Interrupt):
+        return {"id": value.id, "value": serialize_interrupt(value.value)}
+    if isinstance(value, dict):
+        return {key: serialize_interrupt(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [serialize_interrupt(item) for item in value]
+    return serialize_value(value)
+
+
+def extract_interrupts(chunk: Any) -> list[dict[str, Any]]:
+    """递归提取 chunk 中所有 LangGraph Interrupt 对象。
+
+    输入:
+        chunk: Any — astream 产出的 chunk（values 快照可能含 __interrupt__ 键）
+
+    输出:
+        list[dict[str, Any]] — 序列化后的 Interrupt 列表；无中断返回空列表
+    """
+    from langgraph.types import Interrupt
+
+    if isinstance(chunk, Interrupt):
+        return [serialize_interrupt(chunk)]
+    if isinstance(chunk, dict):
+        result: list[dict[str, Any]] = []
+        for value in chunk.values():
+            result.extend(extract_interrupts(value))
+        return result
+    if isinstance(chunk, (list, tuple)):
+        result = []
+        for item in chunk:
+            result.extend(extract_interrupts(item))
+        return result
+    return []
+
+
 def chunk_to_events(mode: str, chunk: Any, envelope: dict[str, Any]) -> list[StreamEvent]:
     """将 astream 的 (mode, chunk) 转换为统一信封 StreamEvent 列表。
 
     输入:
-        mode: str — "messages"（token 增量）或 "values"（完整快照）
+        mode: str — "messages"（token 增量）、"values"（完整快照）或 "custom"
         chunk: Any — astream 产出的原始 chunk
         envelope: dict — 基础信封（workspace_id/thread_id/agent_id/run_id，event/data 由本函数填充）
 
     输出:
-        list[StreamEvent] — tokens 或 events 事件；无法识别的 chunk 返回空列表
+        list[StreamEvent] — tokens / events 事件；无法识别的 chunk 返回空列表
     """
     if mode == "messages":
         try:
             message, metadata = chunk
         except (TypeError, ValueError):
             return []
+        # 承诺子图（Supervisor）在 middleware 内 astream 时，其 AIMessage/ToolMessage
+        # 会冒泡到父图 messages 通道（langgraph_node 为子图节点名）；这些消息已通过
+        # custom 通道（commitment_messages）进入轨迹面板，不得重复发布为 tokens
+        # 污染 lead 对话流。
+        node = metadata.get("langgraph_node") if isinstance(metadata, dict) else None
+        message_id = getattr(message, "id", None)
+        if node in _COMMITMENT_SUBGRAPH_NODES or (
+            isinstance(message_id, str) and message_id.startswith("commitment-stage-")
+        ):
+            return []
         content = stream_text(message.content)
         if not content:
             return []
         payload = {
             "content": content,
-            "message_id": getattr(message, "id", None),
-            "node": metadata.get("langgraph_node") if isinstance(metadata, dict) else None,
+            "message_id": message_id,
+            "node": node,
         }
         return [StreamEvent(id="", event="tokens", data={**envelope, "event": "tokens", "data": payload})]
 
     if mode == "values":
+        payload = serialize_value(chunk)
+        return [StreamEvent(id="", event="events", data={**envelope, "event": "events", "data": payload})]
+
+    if mode == "custom":
+        # 承诺层各角色真实 messages（commitment_messages）→ events 信封
         payload = serialize_value(chunk)
         return [StreamEvent(id="", event="events", data={**envelope, "event": "events", "data": payload})]
 

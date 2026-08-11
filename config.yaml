@@ -11,6 +11,12 @@ stream_bridge:
   type: memory
   queue_maxsize: 512
 
+# 承诺层（commitment-layer）：本地 PoC 运行已开启。
+# 开启后仅当最后一条用户消息（剥离前导 skill token 后）为 /commit <非空指令> 时，
+# 在 lead agent 执行前运行九阶段承诺流程。
+commitment:
+  enabled: true
+
 # 设计决策 11：全应用迁移到 PostgreSQL checkpointer/store。
 # Web 网关链路随之从内存态转为持久态（checkpoint 跨重启保留、rollback 生效、跨线程 store 记忆开启）。
 checkpointer:

@@ -36,13 +36,27 @@ from focus.mcp.client import build_servers_config
 logger = logging.getLogger(__name__)
 
 
-async def get_mcp_tools() -> list[BaseTool]:
+async def load_mcp_tools(servers_config: dict[str, dict]) -> list[BaseTool]:
+    """连接一组 MCP server；单个 server 失败时跳过，其余 server 继续加载。"""
     try:
         from langchain_mcp_adapters.client import MultiServerMCPClient
     except ImportError:
         logger.warning("langchain-mcp-adapters 未安装，MCP 工具不可用")
         return []
 
+    tools: list[BaseTool] = []
+    for server_name, params in servers_config.items():
+        try:
+            client = MultiServerMCPClient({server_name: params})
+            server_tools = await client.get_tools()
+            tools.extend(server_tools)
+            logger.info("MCP Server '%s' 连接成功，获取 %d 个工具", server_name, len(server_tools))
+        except Exception:
+            logger.warning("MCP Server '%s' 连接失败，已跳过", server_name, exc_info=True)
+    return tools
+
+
+async def get_mcp_tools() -> list[BaseTool]:
     try:
         extensions_config = get_extensions_config("extensions_config.json")
         servers_config = build_servers_config(extensions_config)
@@ -55,18 +69,4 @@ async def get_mcp_tools() -> list[BaseTool]:
 
     if not servers_config:
         return []
-
-    tools: list[BaseTool] = []
-    for server_name, params in servers_config.items():
-        client = None
-        try:
-            client = MultiServerMCPClient({server_name: params})
-            server_tools = client.get_tools()
-            tools.extend(server_tools)
-            logger.info("MCP Server '%s' 连接成功，获取 %d 个工具", server_name, len(server_tools))
-        except Exception:
-            logger.warning("MCP Server '%s' 连接失败，已跳过", server_name, exc_info=True)
-        finally:
-            del client
-
-    return tools
+    return await load_mcp_tools(servers_config)

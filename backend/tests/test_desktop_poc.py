@@ -11,6 +11,7 @@ from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.types import Interrupt, interrupt
 from sqlalchemy import delete, func, select
 
 from focus.runtime.checkpointer.namespaced import NamespacedCheckpointer
@@ -34,6 +35,7 @@ from backend.app.gateway.app import app  # noqa: E402
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace  # noqa: E402
 from backend.app.desktop.service import (  # noqa: E402
     DesktopService,
+    _checkpoint_commitment_review,
     estimate_tokens,
     prompt_with_skills,
 )
@@ -61,6 +63,59 @@ def test_langgraph_messages_mode_streams_incrementally():
         return chunks
 
     assert asyncio.run(collect()) == list("stream")
+
+
+def test_desktop_run_sync_persists_record_error():
+    async def scenario():
+        service = DesktopService.__new__(DesktopService)
+        service._sync_tasks = set()
+        calls = []
+
+        async def capture(run_id, status, error=None):
+            calls.append((run_id, status, error))
+
+        async def completed():
+            return None
+
+        service._set_run_status = capture
+        record = SimpleNamespace(
+            run_id="run-error",
+            status=SimpleNamespace(value="error"),
+            error="read_file: target is a directory",
+            task=asyncio.create_task(completed()),
+        )
+        await service._sync_run_status(record)
+        return calls
+
+    assert asyncio.run(scenario()) == [
+        ("run-error", "error", "read_file: target is a directory")
+    ]
+
+
+def test_checkpoint_commitment_review_prefers_latest_interrupt_payload():
+    old_review = {
+        "type": "commitment_review",
+        "stage": 2,
+        "draft": {"requirements": ["old"]},
+        "error": "old error",
+    }
+    latest_review = {
+        "type": "commitment_review",
+        "stage": 2,
+        "draft": {"requirements": ["current"]},
+        "allowed_decisions": ["revise"],
+        "revise_label": "解决矛盾",
+        "error": "WorkerOutput EOF",
+    }
+    checkpoint = SimpleNamespace(
+        pending_writes=[
+            ("task-old", "__interrupt__", [Interrupt(old_review, id="old")]),
+            ("task-current", "__interrupt__", [Interrupt(latest_review, id="current")]),
+        ]
+    )
+
+    assert _checkpoint_commitment_review(checkpoint, 2) == latest_review
+    assert _checkpoint_commitment_review(SimpleNamespace(pending_writes=[]), 2) is None
 
 
 def _git(folder: Path, *args: str) -> str:
@@ -91,6 +146,7 @@ async def _seed_checkpoint(service: DesktopService, thread_id: str, namespace: s
 
 async def _cleanup(service: DesktopService, task_id: str, workspace_id: str, thread_id: str):
     await service.checkpointer.adelete_thread(thread_id)
+    await service.checkpointer.adelete_thread(f"{thread_id}:commitment")
     async with service.session_factory() as session:
         await session.execute(delete(DesktopThread).where(DesktopThread.task_id == task_id))
         await session.execute(
@@ -224,6 +280,288 @@ def test_unified_pipeline_main_run_end_to_end(tmp_path):
             )
     finally:
         svc.make_lead_agent = original
+
+
+def test_desktop_resume_run_is_immediately_streamable(tmp_path, monkeypatch):
+    """公共 HTTP 回归：resume 返回的 run_id 必须立即拥有可订阅 SSE。"""
+    import backend.app.desktop.service as svc
+
+    async def fake_make_lead_agent(**kwargs):
+        graph = StateGraph(MessagesState)
+
+        async def pause_for_review(_state):
+            decision = interrupt({
+                "type": "commitment_review",
+                "stage": 1,
+                "draft": {"summary": "review me"},
+            })
+            return {"messages": [AIMessage(content=f"resumed:{decision['decision']}")]}
+
+        graph.add_node("pause_for_review", pause_for_review)
+        graph.add_edge(START, "pause_for_review")
+        graph.add_edge("pause_for_review", END)
+        return graph.compile()
+
+    monkeypatch.setattr(svc, "make_lead_agent", fake_make_lead_agent)
+    thread_id = f"desktop-resume-e2e-{uuid.uuid4().hex}"
+
+    with _client() as client:
+        workspace_folder = tmp_path / "workspace"
+        workspace_folder.mkdir()
+        workspace = client.post(
+            "/desktop/api/workspaces",
+            headers=SESSION,
+            json={"path": str(workspace_folder)},
+        ).json()
+        task = client.post(
+            f"/desktop/api/workspaces/{workspace['workspace_id']}/threads",
+            headers=SESSION,
+            json={"thread_id": thread_id, "title": "resume e2e"},
+        ).json()
+        service = app.state.desktop_service
+
+        initial = client.post(
+            f"/desktop/api/tasks/{task['task_id']}/main/runs",
+            headers=SESSION,
+            json={"message": "pause", "permissions": ["read"]},
+        ).json()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            status = client.get(
+                f"/desktop/api/runs/{initial['run_id']}", headers=SESSION
+            ).json()["status"]
+            if status == "interrupted":
+                break
+            time.sleep(0.05)
+        assert status == "interrupted"
+        client.portal.call(_seed_commitment_review, service, thread_id)
+
+        resumed = client.post(
+            f"/desktop/api/threads/{thread_id}/runs/resume",
+            headers=SESSION,
+            json={"resume": {"decision": "approve"}},
+        )
+        assert resumed.status_code == 200
+        resumed_run = resumed.json()
+
+        with client.stream(
+            "GET",
+            f"/desktop/api/runs/{resumed_run['run_id']}/stream",
+            headers=SESSION,
+        ) as response:
+            assert response.status_code == 200
+            stream_body = "".join(response.iter_text())
+        assert "event: metadata" in stream_body
+        assert "event: end" in stream_body
+        end_frame = next(
+            frame for frame in stream_body.split("\n\n")
+            if frame.startswith("event: end")
+        )
+        assert '"status": "success"' in end_frame
+        assert '"error": null' in end_frame
+
+        client.portal.call(
+            _cleanup, service, task["task_id"], workspace["workspace_id"], thread_id
+        )
+
+
+async def _seed_commitment_review(service: DesktopService, thread_id: str):
+    from focus.agents.commitment.schemas import CommitmentState
+
+    graph = StateGraph(CommitmentState)
+
+    async def preserve(_state):
+        return {}
+
+    graph.add_node("preserve", preserve)
+    graph.add_edge(START, "preserve")
+    graph.add_edge("preserve", END)
+    compiled = graph.compile(checkpointer=service.checkpointer)
+    await compiled.ainvoke(
+        {
+            "messages": [HumanMessage(content="做X", id="commit-message")],
+            "source_text": "做X",
+            "thread_id": thread_id,
+            "workspace": "C:/tmp",
+            "stage": 3,
+            "awaiting_human": 3,
+            "artifacts": {
+                "3": {
+                    "requirements": [
+                        {"requirement": "必须完成X", "priority": 3}
+                    ]
+                }
+            },
+        },
+        {"configurable": {"thread_id": f"{thread_id}:commitment"}},
+    )
+
+
+async def _insert_main_run(
+    service: DesktopService, task_id: str, status: str, error: str | None = None
+) -> str:
+    run_id = uuid.uuid4().hex
+    async with service.session_factory() as session:
+        session.add(
+            DesktopRun(
+                run_id=run_id,
+                task_id=task_id,
+                agent_id=f"main:{task_id}",
+                kind="main",
+                status=status,
+                error=error,
+                input_messages=[],
+            )
+        )
+        await session.commit()
+    return run_id
+
+
+async def _set_desktop_run_status(
+    service: DesktopService, run_id: str, status: str
+) -> None:
+    async with service.session_factory() as session:
+        run = await session.get(DesktopRun, run_id)
+        run.status = status
+        await session.commit()
+
+
+async def _set_latest_main_run_status(
+    service: DesktopService, task_id: str, status: str
+) -> None:
+    async with service.session_factory() as session:
+        run = await session.scalar(
+            select(DesktopRun)
+            .where(
+                DesktopRun.task_id == task_id,
+                DesktopRun.agent_id == f"main:{task_id}",
+            )
+            .order_by(DesktopRun.created_at.desc())
+        )
+        run.status = status
+        await session.commit()
+
+
+async def _checkpoint_exists(service: DesktopService, thread_id: str) -> bool:
+    value = await service.checkpointer.aget_tuple(
+        {"configurable": {"thread_id": thread_id}}
+    )
+    return value is not None
+
+
+def test_commitment_review_recovers_blocks_input_and_abandons_explicitly(tmp_path):
+    thread_id = f"desktop-commitment-recovery-{uuid.uuid4().hex}"
+    with _client() as client:
+        workspace_folder = tmp_path / "commitment-recovery"
+        workspace_folder.mkdir()
+        workspace = client.post(
+            "/desktop/api/workspaces",
+            headers=SESSION,
+            json={"path": str(workspace_folder)},
+        ).json()
+        task = client.post(
+            f"/desktop/api/workspaces/{workspace['workspace_id']}/threads",
+            headers=SESSION,
+            json={"thread_id": thread_id, "title": "commitment recovery"},
+        ).json()
+        service = app.state.desktop_service
+        try:
+            client.portal.call(
+                _seed_checkpoint, service, thread_id, "", "parent remains"
+            )
+            client.portal.call(_seed_commitment_review, service, thread_id)
+            client.portal.call(
+                _insert_main_run, service, task["task_id"], "interrupted"
+            )
+
+            recovered = client.get(
+                f"/desktop/api/tasks/{task['task_id']}", headers=SESSION
+            ).json()
+            assert recovered["commitment_recovery"]["status"] == "resumable"
+            assert recovered["pending_commitment_review"]["stage"] == 3
+            assert recovered["pending_commitment_review"]["draft"] == {
+                "requirements": [
+                    {"requirement": "必须完成X", "priority": 3}
+                ]
+            }
+
+            client.portal.call(
+                _insert_main_run,
+                service,
+                task["task_id"],
+                "interrupted",
+                "Context7 connection timeout",
+            )
+            recovered_after_setup_failure = client.get(
+                f"/desktop/api/tasks/{task['task_id']}", headers=SESSION
+            ).json()
+            assert recovered_after_setup_failure["commitment_recovery"]["status"] == "resumable"
+            assert recovered_after_setup_failure["pending_commitment_review"]["stage"] == 3
+
+            before = client.portal.call(_run_count, service, task["task_id"])
+            blocked = client.post(
+                f"/desktop/api/tasks/{task['task_id']}/main/runs",
+                headers=SESSION,
+                json={"message": "越过审批的普通消息", "permissions": ["read"]},
+            )
+            assert blocked.status_code == 409
+            assert blocked.json()["detail"]["code"] == "commitment_review_pending"
+            assert client.portal.call(_run_count, service, task["task_id"]) == before
+
+            processing_run_id = client.portal.call(
+                _insert_main_run, service, task["task_id"], "pending"
+            )
+            processing = client.get(
+                f"/desktop/api/tasks/{task['task_id']}", headers=SESSION
+            ).json()
+            assert processing["commitment_recovery"]["status"] == "processing"
+            assert processing["pending_commitment_review"] is None
+            duplicate = client.post(
+                f"/desktop/api/threads/{thread_id}/runs/resume",
+                headers=SESSION,
+                json={"resume": {"decision": "approve"}},
+            )
+            assert duplicate.status_code == 409
+            assert duplicate.json()["detail"]["code"] == "commitment_review_processing"
+
+            client.portal.call(
+                _set_desktop_run_status, service, processing_run_id, "success"
+            )
+            orphaned = client.get(
+                f"/desktop/api/tasks/{task['task_id']}", headers=SESSION
+            ).json()
+            assert orphaned["commitment_recovery"]["status"] == "orphaned"
+            assert orphaned["pending_commitment_review"] is None
+            refused = client.post(
+                f"/desktop/api/threads/{thread_id}/runs/resume",
+                headers=SESSION,
+                json={"resume": {"decision": "approve"}},
+            )
+            assert refused.status_code == 409
+            assert refused.json()["detail"]["code"] == "commitment_review_orphaned"
+
+            abandoned = client.post(
+                f"/desktop/api/threads/{thread_id}/commitment/abandon",
+                headers=SESSION,
+            )
+            assert abandoned.status_code == 200
+            assert not client.portal.call(
+                _checkpoint_exists, service, f"{thread_id}:commitment"
+            )
+            assert client.portal.call(_checkpoint_exists, service, thread_id)
+            cleared = client.get(
+                f"/desktop/api/tasks/{task['task_id']}", headers=SESSION
+            ).json()
+            assert cleared["commitment_recovery"] is None
+            assert cleared["messages"][-1]["content"] == "ack:parent remains"
+        finally:
+            client.portal.call(
+                _cleanup,
+                service,
+                task["task_id"],
+                workspace["workspace_id"],
+                thread_id,
+            )
 
 
 def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
@@ -368,7 +706,12 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
         main = client.post(
             f"/desktop/api/tasks/{task['task_id']}/main/runs",
             headers=SESSION,
-            json={"message": "run", "skills": ["two", "one", "two"]},
+            json={
+                "message": "run",
+                "model_name": "deepseek-v4-flash",
+                "permissions": ["read", "host_command"],
+                "skills": ["two", "one", "two"],
+            },
         )
         assert main.status_code == 200
         main_body, main_thread, main_factory = launched[-1]
@@ -380,6 +723,19 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
         assert main_body.stream_mode == ["messages-tuple", "values"]
         assert len(main_body.input["messages"]) == 1
         assert main_factory is not None
+
+        client.portal.call(_seed_commitment_review, service, thread_id)
+        client.portal.call(
+            _set_latest_main_run_status, service, task["task_id"], "interrupted"
+        )
+
+        resumed = client.portal.call(
+            service.resume_run, thread_id, {"decision": "approve"}
+        )
+        assert resumed.body.context["model_name"] == "deepseek-v4-flash"
+        assert resumed.body.context["permissions"] == ["read", "host_command"]
+        assert resumed.body.context["skills"] == ["two", "one"]
+        assert resumed.agent_factory is not None
 
         deployment_id = uuid.uuid4().hex
         first = client.post(

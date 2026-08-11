@@ -38,6 +38,7 @@ from typing import Any, Awaitable, Callable
 from fastapi import Request
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import Command
 
 from focus.config.app_config import get_app_config
 from focus.runtime.checkpointer.namespaced import NamespacedCheckpointer
@@ -49,7 +50,9 @@ from focus.runtime.stream_bridge.base import StreamBridge
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_RECURSION_LIMIT = 25
+# Focus 主运行会在承诺交接后执行完整的多轮 ReAct 文件任务；LangGraph
+# 默认 25 步会在最后一次工具返回后提前终止，无法生成最终交付消息。
+_DEFAULT_RECURSION_LIMIT = 100
 
 
 def _context_dict(body: Any) -> dict[str, Any]:
@@ -89,9 +92,12 @@ async def start_run(
 
     # (4) 组装参数
 
-    # input.messages → BaseMessage（全角色还原，支持冻结消息重放）
-    graph_input: dict = {}
-    if hasattr(body, "input") and body.input:
+    # resume → Command(resume=...)（承诺层人工确认恢复同一 thread 的 interrupt）；
+    # 否则 input.messages → BaseMessage（全角色还原，支持冻结消息重放）
+    graph_input: dict | Command = {}
+    if hasattr(body, "resume") and body.resume is not None:
+        graph_input = Command(resume=body.resume)
+    elif hasattr(body, "input") and body.input:
         raw_input = body.input
         if isinstance(raw_input, dict):
             msgs = raw_input.get("messages", [])

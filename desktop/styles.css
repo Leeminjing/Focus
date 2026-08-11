@@ -76,6 +76,8 @@ button { cursor: pointer; }
 .message.ai { align-self: flex-start; }
 .message.ai .message-role { color: var(--blue); font-size: 13px; }
 .message.ai .message-content { white-space: normal; }
+.tool-call-progress { margin-top: 8px; color: var(--muted); font-size: 13px; }
+.tool-call-progress code { padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: #f7f9fc; color: #40516a; }
 .message-rich p { margin: 0 0 10px; }
 .message-rich ul, .message-rich ol { margin: 7px 0 13px; padding-left: 26px; }
 .message-rich li { margin: 4px 0; padding-left: 2px; }
@@ -208,3 +210,103 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
 .agent-dialog-actions { display: flex; gap: 10px; padding: 12px 24px; border-top: 1px solid var(--line-soft); }
 .agent-dialog-continue { display: flex; gap: 8px; padding: 0 24px 18px; }
 .agent-dialog-continue input { flex: 1; border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
+
+/* 承诺层审批面板 */
+.commit-option .skill-option-name { color: var(--blue); font-weight: 600; }
+
+/* 承诺进度条 */
+.commitment-progress { padding: 10px 0 0; border-bottom: 1px solid var(--line-soft); }
+.progress-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.progress-heading strong { font-size: 12px; }
+.progress-heading span { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.commitment-progress ol { display: grid; margin: 0 0 12px; padding: 0; grid-template-columns: repeat(9, minmax(24px, 1fr)); list-style: none; }
+.commitment-progress li { position: relative; height: 18px; }
+.commitment-progress li::before {
+  position: absolute; z-index: 1; top: 4px; left: 0; width: 9px; height: 9px;
+  border: 2px solid var(--line); border-radius: 50%; background: #fff; content: "";
+}
+.commitment-progress li::after {
+  position: absolute; top: 8px; right: 0; left: 9px; height: 2px; background: var(--line-soft); content: "";
+}
+.commitment-progress li:last-child::after { display: none; }
+.commitment-progress li.done::before { border-color: var(--blue); background: var(--blue); }
+.commitment-progress li.active::before { border-color: var(--blue); box-shadow: 0 0 0 4px rgb(70 120 240 / 14%); }
+.commitment-progress li.done::after { background: var(--blue); }
+
+/* 执行轨迹面板 */
+.trace-panel { margin: 8px 0 16px; border: 1px solid var(--line-soft); border-radius: 8px; background: #fff; }
+.trace-panel > summary {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  min-height: 44px; padding: 10px 14px; cursor: pointer; color: var(--text, #222);
+  font-size: 13px; font-weight: 700; list-style: none; border-radius: 8px;
+}
+.trace-panel > summary::-webkit-details-marker { display: none; }
+.trace-summary-title, .trace-summary-meta { display: flex; align-items: center; }
+.trace-summary-title { gap: 8px; }
+.trace-summary-meta { gap: 12px; }
+.trace-live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); }
+.trace-panel.is-live .trace-live-dot { animation: trace-pulse 1.6s ease-in-out infinite; }
+.trace-panel.is-finished .trace-live-dot { background: var(--muted); }
+.trace-elapsed, .trace-count { color: var(--muted); font-size: 11px; font-weight: 500; }
+.trace-list { position: relative; margin: 0; padding: 3px 16px 15px 42px; border-top: 1px solid var(--line-soft); list-style: none; }
+.trace-list::before { position: absolute; top: 20px; bottom: 25px; left: 27px; width: 1px; background: var(--line-soft); content: ""; }
+.trace-item { position: relative; min-height: 44px; padding: 12px 4px 10px 8px; border-bottom: 1px solid var(--line-soft); color: var(--text, #222); }
+.trace-item::before {
+  position: absolute; top: 18px; left: -21px; width: 7px; height: 7px;
+  border: 2px solid #fff; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 1px var(--line); content: "";
+}
+.trace-item.is-active { background: rgb(70 120 240 / 4%); }
+.trace-item.is-active::before { background: var(--blue); box-shadow: 0 0 0 4px rgb(70 120 240 / 14%); animation: trace-pulse 1.6s ease-in-out infinite; }
+.trace-item:last-child { border-bottom: 0; }
+.trace-meta { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; color: var(--muted); font-size: 10px; }
+.trace-actor { border: 1px solid rgb(70 120 240 / 45%); border-radius: 10px; padding: 1px 6px; color: var(--blue); background: white; font-weight: 700; }
+.trace-worker .trace-actor { border-color: rgb(90 130 170 / 45%); color: #2e607f; }
+.trace-evaluator .trace-actor { border-color: rgb(210 165 60 / 55%); color: #805514; }
+.trace-item > strong { display: block; color: var(--text, #222); font-size: 13px; }
+.trace-item > p { max-width: 820px; margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.trace-item > .trace-reasoning { margin-top: 10px; border-left: 2px solid rgb(70 120 240 / 40%); padding: 8px 10px; color: var(--text, #222); background: rgb(70 120 240 / 5%); line-height: 1.75; white-space: pre-wrap; }
+.trace-failed .trace-actor { border-color: #e0b2b2; color: var(--danger, #c0392b); }
+.trace-payload { margin-top: 8px; }
+.trace-payload > summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+.trace-payload pre {
+  max-height: 280px; margin: 7px 0 0; overflow: auto; padding: 10px;
+  border-left: 2px solid var(--line); color: var(--text, #222); background: var(--line-soft);
+  font-family: ui-monospace, Consolas, monospace; font-size: 11px; line-height: 1.55; white-space: pre-wrap;
+}
+.trace-stream {
+  max-height: 190px; margin: 9px 0 0; overflow: auto; padding: 10px 11px;
+  border-left: 2px solid rgb(90 130 170 / 60%); color: var(--text, #222); background: rgb(90 130 170 / 6%);
+  font-family: ui-monospace, Consolas, monospace; font-size: 11px; line-height: 1.6; white-space: pre-wrap;
+}
+.trace-stream i { display: inline-block; width: 6px; height: 13px; margin-left: 2px; vertical-align: -2px; background: var(--blue); animation: trace-cursor 0.8s steps(1) infinite; }
+@keyframes trace-pulse { 50% { opacity: 0.45; } }
+@keyframes trace-cursor { 50% { opacity: 0; } }
+
+/* 审批面板 */
+.review-panel { margin: 8px 0 16px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: white; }
+.review-panel > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 16px; border-bottom: 1px solid var(--line-soft); background: rgb(70 120 240 / 6%); }
+.review-kicker { color: var(--blue); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.review-panel h3 { margin: 3px 0 0; font-size: 15px; }
+.review-badge { flex: 0 0 auto; border: 1px solid rgb(70 120 240 / 40%); border-radius: 12px; padding: 3px 8px; color: var(--blue); background: white; font-size: 10px; }
+.review-draft { max-height: 340px; margin: 0; overflow: auto; padding: 15px 16px; color: var(--text, #222); background: var(--line-soft); font-family: ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.65; white-space: pre-wrap; }
+.review-contract-editor {
+  display: block; width: 100%; min-height: 380px; max-height: 62vh; resize: vertical; overflow: auto;
+  border: 0; border-bottom: 1px solid var(--line); padding: 15px 16px; color: var(--text, #222);
+  background: var(--line-soft); font-family: ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.65;
+}
+.review-contract-editor[hidden] { display: none; }
+.review-contract-editor:focus { outline: 2px solid rgb(70 120 240 / 20%); outline-offset: -2px; }
+.review-error { margin: 0; padding: 8px 16px 0; color: var(--danger, #c0392b); font-size: 12px; }
+.review-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px 16px; }
+.revision-form { display: grid; gap: 10px; padding: 12px 16px 16px; border-top: 1px solid var(--line-soft); }
+.revision-form[hidden] { display: none; }
+.segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; width: fit-content; }
+.segmented button { border: 0; background: #fff; padding: 6px 14px; font-size: 12px; cursor: pointer; }
+.segmented button.active { background: var(--blue); color: white; }
+.revision-input { width: 100%; box-sizing: border-box; border: 1px solid var(--line); border-radius: 6px; padding: 10px; font: inherit; resize: vertical; }
+.revision-footer { display: flex; justify-content: flex-end; gap: 8px; }
+.review-panel.review-submitted { opacity: 0.6; }
+
+
+/* 承诺面板在 flex 对话流中禁止收缩（overflow:hidden 会导致 min-height:0 被压塌） */
+.review-panel, .trace-panel { flex-shrink: 0; }

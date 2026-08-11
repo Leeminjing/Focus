@@ -62,3 +62,5 @@ class LeadAgentState(AgentState):
     title: NotRequired[str | None]
     artifacts: Annotated[list[str], merge_artifacts]
     viewed_images: Annotated[dict[str, ViewedImageData], merge_viewed_images]
+    # 承诺层：人工确认并审核通过的最终任务合同（commitment-layer 交接写入）
+    task_contract: NotRequired[str | None]

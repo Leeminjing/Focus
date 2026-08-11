@@ -47,6 +47,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from focus.agents.lead.prompt import apply_prompt_template
 from focus.agents.lead_agent_state import LeadAgentState
+from focus.config import AppConfig, get_app_config
 from focus.models import create_chat_model
 from focus.tools import get_available_tools
 
@@ -152,9 +153,11 @@ async def make_lead_agent(
     tools: list[BaseTool] | None = None,
     system_prompt: str | None = None,
     middlewares: list[AgentMiddleware] | None = None,
+    app_config: AppConfig | None = None,
+    middleware_skill_names: frozenset[str] | None = None,
 ) -> CompiledStateGraph:
     # (1) 创建模型
-    model = create_chat_model(name=model_name)
+    model = create_chat_model(name=model_name, app_config=app_config)
 
     # (2) system prompt：未注入时走技能扫描 + 模板生成
     catalog = None
@@ -181,7 +184,34 @@ async def make_lead_agent(
         describe_skill_tool = build_describe_skill_tool(catalog)
         tools = [describe_skill_tool] + tools
 
-    # (4) middleware：未注入时为空链（沙箱/上传中间件已随网页端与沙箱移除）
+    # (4) middleware：未注入时经共享 builder 按 commitment.enabled 装配承诺层；
+    #     开启承诺层时 skill_names 复用已构建的 catalog（桌面路径由 agent_factory 显式传入）
+    if middlewares is None:
+        from focus.agents.lead.middlewares import build_general_middlewares
+
+        resolved_config = app_config or get_app_config("config.yaml")
+        context7_tools: list[BaseTool] = []
+        if resolved_config.commitment.enabled:
+            from focus.mcp import get_context7_tools
+
+            context7_tools = await get_context7_tools(
+                resolved_config.commitment.context7_url
+            )
+            if not context7_tools:
+                raise RuntimeError(
+                    "CommitmentMiddleware 已启用，但 Context7 工具不可用"
+                )
+        skill_names = middleware_skill_names
+        if skill_names is None:
+            skill_names = (
+                frozenset(catalog.names) if catalog is not None else frozenset()
+            )
+        middlewares = build_general_middlewares(
+            app_config=resolved_config,
+            model=model,
+            context7_tools=context7_tools,
+            skill_names=skill_names,
+        )
     middleware = middlewares if middlewares is not None else []
 
     # (5) create_agent
