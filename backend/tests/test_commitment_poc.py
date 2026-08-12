@@ -127,6 +127,8 @@ def test_make_lead_agent_loads_context7_before_middleware(monkeypatch):
 
     model = _FakeModel([], [])
     context7_tools = [object()]
+    commitment_middleware = object()
+    tool_error_middleware = object()
     captured = {}
     expected_graph = object()
 
@@ -136,10 +138,14 @@ def test_make_lead_agent_loads_context7_before_middleware(monkeypatch):
 
     def fake_builder(**kwargs):
         captured.update(kwargs)
-        return []
+        return [commitment_middleware]
+
+    def fake_create_agent(**kwargs):
+        captured["middleware"] = kwargs["middleware"]
+        return expected_graph
 
     monkeypatch.setattr(lead_agent, "create_chat_model", lambda **_kwargs: model)
-    monkeypatch.setattr(lead_agent, "create_agent", lambda **_kwargs: expected_graph)
+    monkeypatch.setattr(lead_agent, "create_agent", fake_create_agent)
     monkeypatch.setattr(focus_mcp, "get_context7_tools", fake_context7)
     monkeypatch.setattr(lead_middlewares, "build_general_middlewares", fake_builder)
 
@@ -148,6 +154,7 @@ def test_make_lead_agent_loads_context7_before_middleware(monkeypatch):
         system_prompt="prompt",
         app_config=_app_config(True),
         middleware_skill_names=frozenset({"docx"}),
+        additional_middlewares=[tool_error_middleware],
     ))
 
     assert result is expected_graph
@@ -155,6 +162,7 @@ def test_make_lead_agent_loads_context7_before_middleware(monkeypatch):
     assert captured["model"] is model
     assert captured["context7_tools"] is context7_tools
     assert captured["skill_names"] == frozenset({"docx"})
+    assert captured["middleware"] == [commitment_middleware, tool_error_middleware]
 
 
 # === 2. 触发解析 ===

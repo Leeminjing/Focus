@@ -43,17 +43,13 @@ from langgraph.types import Command
 from focus.config.app_config import get_app_config
 from focus.runtime.checkpointer.namespaced import NamespacedCheckpointer
 from focus.runtime.runs.events import deserialize_messages
+from focus.runtime.runs.limits import DEFAULT_AGENT_RECURSION_LIMIT
 from focus.runtime.runs.manager import RunManager, RunRecord
 from focus.runtime.runs.schemas import DisconnectMode
 from focus.runtime.runs.worker import run_agent
 from focus.runtime.stream_bridge.base import StreamBridge
 
 logger = logging.getLogger(__name__)
-
-# Focus 主运行会在承诺交接后执行完整的多轮 ReAct 文件任务；LangGraph
-# 默认 25 步会在最后一次工具返回后提前终止，无法生成最终交付消息。
-_DEFAULT_RECURSION_LIMIT = 100
-
 
 def _context_dict(body: Any) -> dict[str, Any]:
     """从请求体提取 context 字典。"""
@@ -114,12 +110,15 @@ async def start_run(
     # RunnableConfig
     runnable_config: RunnableConfig = {
         "max_concurrency": None,
-        "recursion_limit": _DEFAULT_RECURSION_LIMIT,
+        "recursion_limit": DEFAULT_AGENT_RECURSION_LIMIT,
         "configurable": {
             "thread_id": thread_id,
             "run_id": record.run_id,
         },
     }
+    checkpoint_id = context.get("checkpoint_id")
+    if checkpoint_id is not None:
+        runnable_config["configurable"]["checkpoint_id"] = checkpoint_id
 
     # LangGraph context（透传桌面参数 + user_id）
     langgraph_context: dict = {**context}

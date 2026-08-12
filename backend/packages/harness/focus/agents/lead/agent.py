@@ -13,6 +13,7 @@
         tools: list[BaseTool] | None — 自定义工具集，非 None 时跳过全局工具汇集与 describe_skill_tool
         system_prompt: str | None — 自定义系统提示词，非 None 时跳过技能扫描与模板生成
         middlewares: list[AgentMiddleware] | None — 自定义中间件链，非 None 时覆盖默认构建
+        additional_middlewares: list[AgentMiddleware] | None — 追加到默认或自定义链末尾的中间件
 
 输出:
     CompiledStateGraph — langchain.agents.create_agent() 产出的可执行 agent graph
@@ -153,6 +154,7 @@ async def make_lead_agent(
     tools: list[BaseTool] | None = None,
     system_prompt: str | None = None,
     middlewares: list[AgentMiddleware] | None = None,
+    additional_middlewares: list[AgentMiddleware] | None = None,
     app_config: AppConfig | None = None,
     middleware_skill_names: frozenset[str] | None = None,
 ) -> CompiledStateGraph:
@@ -212,6 +214,8 @@ async def make_lead_agent(
             context7_tools=context7_tools,
             skill_names=skill_names,
         )
+    if additional_middlewares:
+        middlewares = [*(middlewares or []), *additional_middlewares]
     middleware = middlewares if middlewares is not None else []
 
     # (5) create_agent

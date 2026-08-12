@@ -136,6 +136,53 @@ class MaterialVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class SwarmAgent(Base):
+    __tablename__ = "swarm_agents"
+
+    agent_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)  # teammate | worker
+    checkpoint_ns: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")  # active | stopped
+    permissions: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)  # spawn 时的权限（wake 沿用，不放大）
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentMessage(Base):
+    __tablename__ = "agent_messages"
+
+    message_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    from_agent: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    to_agent: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False, default="message")
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentBoardTask(Base):
+    __tablename__ = "agent_tasks"
+
+    board_task_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    thread_task_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    requirements: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    claimed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class StrictRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

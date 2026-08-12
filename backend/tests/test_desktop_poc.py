@@ -702,6 +702,7 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
 
         import backend.app.desktop.routes as desktop_routes
 
+        original_start_run = desktop_routes.start_run
         desktop_routes.start_run = fake_start_run
         main = client.post(
             f"/desktop/api/tasks/{task['task_id']}/main/runs",
@@ -848,3 +849,5 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
         restarted.portal.call(
             _cleanup, app.state.desktop_service, task["task_id"], workspace["workspace_id"], thread_id
         )
+
+    desktop_routes.start_run = original_start_run  # 恢复 patch，避免污染后续测试
