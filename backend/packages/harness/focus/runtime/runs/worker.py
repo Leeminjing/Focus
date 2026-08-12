@@ -206,6 +206,28 @@ async def run_agent(
         if store is not None:
             agent.store = store
 
+        # 从已验证 checkpoint 恢复时先创建 clean fork，避免 replay 后续坏写入。
+        stream_input = graph_input
+        checkpoint_id = runnable_config.get("configurable", {}).get("checkpoint_id")
+        if checkpoint_id is not None:
+            fork_input_config = {
+                **runnable_config,
+                "configurable": {
+                    **runnable_config.get("configurable", {}),
+                    "checkpoint_ns": "",
+                },
+            }
+            fork_config = await agent.aupdate_state(fork_input_config, graph_input)
+            runnable_config = {
+                **runnable_config,
+                "configurable": {
+                    **runnable_config.get("configurable", {}),
+                    **fork_config.get("configurable", {}),
+                    "run_id": record.run_id,
+                },
+            }
+            stream_input = None
+
         # (4) agent.astream 主循环（统一列表模式 → (mode, chunk) 元组）
         stream_modes_list = list(mapped_stream_modes) if isinstance(mapped_stream_modes, list) else [mapped_stream_modes]
         # 承诺层开启时强制追加 values（interrupt 快照与 lead 状态）与 custom（各角色消息轨迹）
@@ -213,7 +235,7 @@ async def run_agent(
             stream_modes_list = list(dict.fromkeys([*stream_modes_list, "values", "custom"]))
         graph_interrupted = False
         async for mode, chunk in agent.astream(
-            graph_input,
+            stream_input,
             config=runnable_config,
             context=langgraph_context,
             stream_mode=stream_modes_list,
