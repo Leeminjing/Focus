@@ -121,7 +121,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path):
                 "system_prompt": "小兵提示",
                 "history_messages": [],
                 "final_human_message": "执行任务",
-                "equipment": {"model_name": None, "tools": "auto", "skills": [], "permissions": ["read"]},
+                "equipment": {"model_name": None, "skills": [], "permissions": ["read"]},
             }).json()
             run2 = client.post(
                 f"/desktop/api/drafts/{draft['draft_id']}/deploy", headers=SESSION,
@@ -146,7 +146,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path):
 
             # 机制③④：teammate / worker 装配（直接走装配矩阵，fake 捕获工具集与注入）
             captured.clear()
-            equipment = {"model_name": None, "tools": "auto", "skills": [],
+            equipment = {"model_name": None, "skills": [],
                          "skill_snapshots": [], "permissions": ["read"]}
 
             async def inspect_roles() -> list[set[str]]:
