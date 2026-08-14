@@ -42,3 +42,6 @@ desktop/.smoke-*.log
 
 # 测试临时数据库
 *.db
+
+# Playwright MCP 运行时快照输出目录
+.playwright-mcp/

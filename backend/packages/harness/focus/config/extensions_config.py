@@ -98,7 +98,9 @@ def _resolve_env_item(value):
             var_name = m.group(1) or m.group(2)
             env_value = os.environ.get(var_name)
             if env_value is None:
-                raise KeyError(f"环境变量未设置: {var_name}")
+                # 加载阶段不抛错：disabled server 的 $VAR 不参与解析；
+                # 缺失校验推迟到连接时（build_server_params，仅 enabled server）
+                return value
             return env_value
     return value
 
