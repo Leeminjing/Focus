@@ -41,11 +41,11 @@
 """
 
 import json
-import os
-import re
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from focus.config.env import resolve_env_var
 
 
 class McpServerConfig(BaseModel):
@@ -88,21 +88,10 @@ def get_enabled_mcp_servers(config: ExtensionsConfig) -> dict[str, McpServerConf
     return config.get_enabled_mcp_servers()
 
 
-_ENV_VAR_PATTERN = re.compile(r"^\$([A-Z_][A-Z0-9_]*)$|^\$\{([A-Z_][A-Z0-9_]*)\}$")
-
-
 def _resolve_env_item(value):
-    if isinstance(value, str):
-        m = _ENV_VAR_PATTERN.match(value)
-        if m:
-            var_name = m.group(1) or m.group(2)
-            env_value = os.environ.get(var_name)
-            if env_value is None:
-                # 加载阶段不抛错：disabled server 的 $VAR 不参与解析；
-                # 缺失校验推迟到连接时（build_server_params，仅 enabled server）
-                return value
-            return env_value
-    return value
+    # 命中 $VAR 但环境变量缺失时 resolve_env_var 返回 None,此处软返回原值——
+    # 加载阶段不抛错(disabled server 的 $VAR 不参与解析),缺失校验推迟到连接时
+    return resolve_env_var(value) or value
 
 
 def _resolve_env_vars(data):

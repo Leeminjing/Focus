@@ -5,7 +5,6 @@
 """
 
 import os
-import time
 import uuid
 
 from fastapi.testclient import TestClient
@@ -46,7 +45,7 @@ async def _cleanup(service: DesktopService, task_id: str, workspace_id: str, thr
         await session.commit()
 
 
-def test_subagent_role_assembly_and_mailbox_injection(tmp_path):
+def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
     """主 Agent/小兵按角色装配协作工具 + Mailbox 回合注入（fake 装配捕获，真实链路）。
 
     仅替换 make_lead_agent 为捕获型 fake 图，其余（start_run/worker/StreamBridge/DB）全真实。
@@ -96,10 +95,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path):
                 json={"message": "继续", "permissions": ["read"]},
             ).json()
             assert run["status"] == "pending"
-            deadline = time.monotonic() + 15
-            while time.monotonic() < deadline and not captured:
-                time.sleep(0.2)
-            assert captured, "主 Agent 装配未被捕获"
+            wait_until(lambda: captured, timeout=15, message="主 Agent 装配未被捕获")
             main_cfg = captured[-1]
             main_names = {tool.name for tool in main_cfg["tools"]}
             assert {"spawn_agent", "spawn_teammate", "spawn_worker", "wake_agent",
@@ -128,10 +124,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path):
                 json={"deployment_id": uuid.uuid4().hex},
             ).json()
             assert run2["status"] == "pending"
-            deadline = time.monotonic() + 15
-            while time.monotonic() < deadline and len(captured) == 0:
-                time.sleep(0.2)
-            assert captured, "小兵装配未被捕获"
+            wait_until(lambda: captured, timeout=15, message="小兵装配未被捕获")
             patrol_cfg = captured[-1]
             patrol_names = {tool.name for tool in patrol_cfg["tools"]}
             # 小兵机制纯净：仅工作区工具，无任何协作工具与消息注入
@@ -183,10 +176,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path):
                 "agent_id": f"main:{task_id}", "permissions": ["read"],
             }
             wake_run_id = client.portal.call(inspect_wake)
-            deadline = time.monotonic() + 15
-            while time.monotonic() < deadline and len(captured) == 0:
-                time.sleep(0.2)
-            assert captured, "wake 装配未被捕获"
+            wait_until(lambda: captured, timeout=15, message="wake 装配未被捕获")
             assert wake_run_id
             wake_cfg = captured[-1]
             wake_names = {tool.name for tool in wake_cfg["tools"]}
@@ -229,10 +219,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path):
                 await service._auto_wake_swarm(auto_id, "自动唤醒第二轮", 2)  # 目标忙（上轮 pending）→ 跳过
 
             client.portal.call(inspect_auto_wake)
-            deadline = time.monotonic() + 15
-            while time.monotonic() < deadline and len(captured) == 0:
-                time.sleep(0.2)
-            assert captured, "自动唤醒装配未被捕获"
+            wait_until(lambda: captured, timeout=15, message="自动唤醒装配未被捕获")
             assert len(captured) == 1, "busy 跳过未生效（不应有第二次装配）"
             auto_names = {tool.name for tool in captured[-1]["tools"]}
             assert {"send_message", "request_plan_approval", "request_shutdown"} <= auto_names

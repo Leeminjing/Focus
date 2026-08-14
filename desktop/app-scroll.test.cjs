@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
 const vm = require("node:vm");
+const { createAppHarness, readAppSource } = require("./test-helper.cjs");
 
 let conversation;
 let nextScrollHeight = 1000;
@@ -17,32 +17,8 @@ Object.defineProperty(app, "innerHTML", {
   },
 });
 
-const inert = {
-  addEventListener() {},
-  classList: { toggle() {} },
-  content: { cloneNode() {} },
-};
-const document = {
-  body: { dataset: {} },
-  addEventListener() {},
-  querySelector(selector) {
-    if (selector === "#app") return app;
-    if (selector === "#conversation") return conversation;
-    return inert;
-  },
-  querySelectorAll() { return []; },
-};
-
-const context = vm.createContext({
-  Headers,
-  clearTimeout() {},
-  console,
-  document,
-  location: { origin: "http://localhost", protocol: "http:" },
-  setTimeout() {},
-  window: {},
-});
-const source = fs.readFileSync(require.resolve("./app.js"), "utf8").replace(/bootstrap\(\);\s*$/, "");
+const { context } = createAppHarness({ selectors: { "#app": app, "#conversation": () => conversation } });
+const source = readAppSource();
 assert.match(source, /commitment_recovery/);
 assert.match(source, /pending_commitment_review/);
 assert.match(source, /commitment\/abandon/);

@@ -7,7 +7,6 @@
 
 import asyncio
 import os
-import time
 import uuid
 
 from fastapi.testclient import TestClient
@@ -58,23 +57,7 @@ def _build_graph(slow: bool):
     return graph.compile()
 
 
-def _memory_status(service, run_id):
-    """运行中的状态（pending/running）只存在于内存 RunManager；DB 在 worker 结束才同步。"""
-    record = service.run_manager.get(run_id)
-    return record.status.value if record else None
-
-
-def _wait_memory_status(client, service, run_id, statuses, timeout=20):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        status = client.portal.call(_memory_status, service, run_id)
-        if status in statuses:
-            return status
-        time.sleep(0.2)
-    raise AssertionError(f"run {run_id} 未在 {timeout}s 内到达 {statuses}")
-
-
-def test_interrupted_main_run_resumes_conversation_from_checkpoint(tmp_path):
+def test_interrupted_main_run_resumes_conversation_from_checkpoint(tmp_path, wait_for_memory_status, wait_until):
     """中断主 Agent 运行（保留 checkpoint）后，同一 thread 继续对话历史不丢失。"""
     import backend.app.desktop.service as svc
 
@@ -107,22 +90,26 @@ def test_interrupted_main_run_resumes_conversation_from_checkpoint(tmp_path):
                 headers=SESSION,
                 json={"message": "第一轮任务", "permissions": ["read"]},
             ).json()
-            _wait_memory_status(client, service, run1["run_id"], {"running"})
+            wait_for_memory_status(client, service, run1["run_id"], {"running"})
             # 等待首轮输入写入 checkpoint（pregel 首个 superstep 完成后），中断才有现场可保留
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
+            messages_after: list = []
+
+            def _checkpoint_written() -> bool:
+                nonlocal messages_after
                 messages_after = client.portal.call(
                     service.get_checkpoint_messages, thread_id, ""
                 )
-                if messages_after:
-                    break
-                time.sleep(0.1)
-            assert messages_after, "首轮输入未写入 checkpoint"
+                return bool(messages_after)
+
+            wait_until(
+                _checkpoint_written,
+                timeout=10, interval=0.1, message="首轮输入未写入 checkpoint",
+            )
             cancelled = client.post(
                 f"/desktop/api/runs/{run1['run_id']}/cancel", headers=SESSION
             ).json()
             assert cancelled["status"] == "interrupted"
-            _wait_memory_status(client, service, run1["run_id"], {"interrupted"})
+            wait_for_memory_status(client, service, run1["run_id"], {"interrupted"})
 
             # 中断后的 checkpoint 保留第一轮 HumanMessage
             assert [m["role"] for m in messages_after] == ["human"]
@@ -134,7 +121,7 @@ def test_interrupted_main_run_resumes_conversation_from_checkpoint(tmp_path):
                 headers=SESSION,
                 json={"message": "继续第二轮", "permissions": ["read"]},
             ).json()
-            _wait_memory_status(client, service, run2["run_id"], {"success"})
+            wait_for_memory_status(client, service, run2["run_id"], {"success"})
 
             messages_final = client.portal.call(
                 service.get_checkpoint_messages, thread_id, ""

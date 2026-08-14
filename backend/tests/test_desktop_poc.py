@@ -2,7 +2,6 @@ import asyncio
 import os
 from pathlib import Path
 import subprocess
-import time
 from types import SimpleNamespace
 import uuid
 
@@ -202,7 +201,7 @@ def test_message_validation_token_estimate_and_path_policy(tmp_path):
         raise AssertionError("paths outside the real workspace must be rejected")
 
 
-def test_unified_pipeline_main_run_end_to_end(tmp_path):
+def test_unified_pipeline_main_run_end_to_end(tmp_path, wait_until):
     """端到端：真实 HTTP → start_run → worker.run_agent（统一事件契约）→ DB 终态同步。
 
     仅替换装配工厂为 FakeListChatModel 图，其余（RunManager/worker/StreamBridge/SSE/
@@ -253,17 +252,12 @@ def test_unified_pipeline_main_run_end_to_end(tmp_path):
                 return events
 
             # worker 完成后 DB 终态应为 success（attach_run_sync 同步）
-            deadline = time.monotonic() + 20
-            status = None
-            while time.monotonic() < deadline:
-                current = client.get(
+            wait_until(
+                lambda: client.get(
                     f"/desktop/api/runs/{run['run_id']}", headers=SESSION
-                ).json()
-                status = current["status"]
-                if status == "success":
-                    break
-                time.sleep(0.2)
-            assert status == "success"
+                ).json()["status"] == "success",
+                timeout=20, message="DB 终态未同步为 success",
+            )
 
             names = client.portal.call(collect)
             assert "tokens" in names and "events" in names
@@ -282,7 +276,7 @@ def test_unified_pipeline_main_run_end_to_end(tmp_path):
         svc.make_lead_agent = original
 
 
-def test_desktop_resume_run_is_immediately_streamable(tmp_path, monkeypatch):
+def test_desktop_resume_run_is_immediately_streamable(tmp_path, monkeypatch, wait_until):
     """公共 HTTP 回归：resume 返回的 run_id 必须立即拥有可订阅 SSE。"""
     import backend.app.desktop.service as svc
 
@@ -325,15 +319,12 @@ def test_desktop_resume_run_is_immediately_streamable(tmp_path, monkeypatch):
             headers=SESSION,
             json={"message": "pause", "permissions": ["read"]},
         ).json()
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            status = client.get(
+        wait_until(
+            lambda: client.get(
                 f"/desktop/api/runs/{initial['run_id']}", headers=SESSION
-            ).json()["status"]
-            if status == "interrupted":
-                break
-            time.sleep(0.05)
-        assert status == "interrupted"
+            ).json()["status"] == "interrupted",
+            timeout=10, interval=0.05, message="run 未到达 interrupted",
+        )
         client.portal.call(_seed_commitment_review, service, thread_id)
 
         resumed = client.post(
@@ -564,7 +555,7 @@ def test_commitment_review_recovers_blocks_input_and_abandons_explicitly(tmp_pat
             )
 
 
-def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
+def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
     workspace_folder = tmp_path / "workspace"
     workspace_folder.mkdir()
     material_file = workspace_folder / "material.txt"
@@ -818,21 +809,18 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
         ).status_code == 409
 
         material_file.write_text("external version", encoding="utf-8")
-        deadline = time.monotonic() + 7
-        while time.monotonic() < deadline:
-            current = client.get(
+        wait_until(
+            lambda: len(client.get(
                 f"/desktop/api/materials/{material['material_id']}/versions", headers=SESSION
-            ).json()
-            if len(current) >= len(versions) + 3:
-                break
-            time.sleep(0.25)
-        else:
-            raise AssertionError("external material change was not versioned")
+            ).json()) >= len(versions) + 3,
+            timeout=7, interval=0.25, message="external material change was not versioned",
+        )
 
         material_file.unlink()
-        deadline = time.monotonic() + 7
-        while time.monotonic() < deadline and not material_file.exists():
-            time.sleep(0.25)
+        wait_until(
+            lambda: material_file.exists(),
+            timeout=7, interval=0.25, message="外部删除后材料未被恢复",
+        )
         assert material_file.read_text(encoding="utf-8") == "external version"
         current_material = client.get(
             f"/desktop/api/tasks/{task['task_id']}/materials", headers=SESSION

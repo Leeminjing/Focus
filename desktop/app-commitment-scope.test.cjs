@@ -1,42 +1,9 @@
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
 const vm = require("node:vm");
+const { createAppHarness, readAppSource } = require("./test-helper.cjs");
 
-const statusNode = {
-  textContent: "",
-  classList: { toggle() {} },
-};
-const input = { value: "你好" };
-const inert = {
-  addEventListener() {},
-  classList: { toggle() {} },
-};
-const document = {
-  body: { dataset: {} },
-  addEventListener() {},
-  querySelector(selector) {
-    if (selector === "#app") return { dataset: {} };
-    if (selector === "#globalStatus") return statusNode;
-    if (selector === "#mainInput") return input;
-    return inert;
-  },
-  querySelectorAll() { return []; },
-};
-
-const context = vm.createContext({
-  Headers,
-  clearInterval() {},
-  clearTimeout() {},
-  console,
-  document,
-  location: { origin: "http://localhost", protocol: "http:" },
-  setTimeout() {},
-  window: {},
-});
-const source = fs
-  .readFileSync(require.resolve("./app.js"), "utf8")
-  .replace(/bootstrap\(\);\s*$/, "");
-new vm.Script(source).runInContext(context);
+const { context } = createAppHarness({ selectors: { "#mainInput": { value: "你好" } } });
+new vm.Script(readAppSource()).runInContext(context);
 
 const result = new vm.Script(`
   (async () => {
