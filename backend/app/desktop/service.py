@@ -197,8 +197,6 @@ class DesktopService:
                 {"name": model.name, "display_name": model.display_name, "context_window": model.context_window}
                 for model in self.app_config.models
             ],
-            # 与 WORKSPACE_TOOLS 全集一致（bash/powershell/cmd/sh 4 个 shell 由 host_command 权限装配）
-            "tools": ["read_file", "list_files", "write_file", "bash", "powershell", "cmd", "sh"],
             "skills": skills,
             "permissions": ["read", "write", "host_command"],
         }
@@ -306,7 +304,6 @@ class DesktopService:
             default_model = self.app_config.models[0].name if self.app_config.models else None
             equipment = {
                 "model_name": default_model,
-                "tools": "auto",
                 "skills": [],
                 "permissions": ["read"],
             }
@@ -427,7 +424,6 @@ class DesktopService:
             snapshots = self._freeze_skills(workspace.path, skills)
             equipment = {
                 "model_name": model_name,
-                "tools": "auto",
                 "skills": list(dict.fromkeys(skills)),
                 "skill_snapshots": snapshots,
                 "permissions": permissions,
@@ -500,7 +496,6 @@ class DesktopService:
                 skills = self._normalize_skill_names((task.ui_state or {}).get("skills"))
                 equipment = {
                     "model_name": None,
-                    "tools": "auto",
                     "skills": skills,
                     "skill_snapshots": self._freeze_skills(workspace.path, skills),
                     "permissions": ["read"],
@@ -1070,7 +1065,6 @@ class DesktopService:
         await self.agent_collab.create_swarm_agent(agent_id, task_id, role, permissions)
         equipment = {
             "model_name": model_name,
-            "tools": "auto",
             "skills": [],
             "skill_snapshots": [],
             "permissions": permissions,
@@ -1105,7 +1099,6 @@ class DesktopService:
             raise HTTPException(409, "该 Agent 已停止")
         equipment = {
             "model_name": context.get("model_name"),
-            "tools": "auto",
             "skills": [],
             "skill_snapshots": [],
             "permissions": list(agent_row.permissions or ["read"]),
@@ -1154,7 +1147,6 @@ class DesktopService:
                     return
             equipment = {
                 "model_name": None,
-                "tools": "auto",
                 "skills": [],
                 "skill_snapshots": [],
                 "permissions": list(agent_row.permissions or ["read"]),
@@ -1383,17 +1375,8 @@ class DesktopService:
         invalid = set(permissions) - {"read", "write", "host_command"}
         if invalid:
             raise HTTPException(422, f"未知权限: {', '.join(sorted(invalid))}")
-        selected_tools = equipment.get("tools", "auto")
-        if selected_tools != "auto" and not isinstance(selected_tools, list):
-            raise HTTPException(422, "tools 必须是 auto 或工具名称数组")
-        unknown_tools = set(selected_tools if isinstance(selected_tools, list) else ()) - {
-            "read_file", "list_files", "write_file", "bash", "powershell", "cmd", "sh"
-        }
-        if unknown_tools:
-            raise HTTPException(422, f"未知工具: {', '.join(sorted(unknown_tools))}")
         return {
             "model_name": model_name,
-            "tools": selected_tools,
             "skills": self._normalize_skill_names(equipment.get("skills")),
             "permissions": permissions,
         }

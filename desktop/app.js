@@ -607,9 +607,7 @@ function renderEquipment(draft) {
   const permissions = equipment.permissions || ["read"];
   return `<div class="equipment-grid">
     <label>模型<select data-equipment="model_name">${state.equipment.models.map(model => `<option value="${model.name}" ${model.name === equipment.model_name ? "selected" : ""}>${escapeHtml(model.display_name)}</option>`).join("")}</select></label>
-    <label>工具<select data-equipment="tools"><option value="auto" ${equipment.tools === "auto" ? "selected" : ""}>自动组装</option><option value="custom" ${Array.isArray(equipment.tools) ? "selected" : ""}>手动选择</option></select></label>
     <div><span class="tiny muted">权限</span><div class="check-line">${state.equipment.permissions.map(permission => `<label><input type="checkbox" data-permission="${permission}" ${permissions.includes(permission) ? "checked" : ""}>${permission}</label>`).join("")}</div></div>
-    <div><span class="tiny muted">可用工具</span><div class="check-line">${state.equipment.tools.map(name => `<label><input type="checkbox" data-tool="${name}" ${equipment.tools === "auto" || equipment.tools?.includes?.(name) ? "checked" : ""}>${name}</label>`).join("")}</div></div>
     <p class="tiny danger">无沙箱：写入或命令权限会直接影响真实宿主机。命令权限可绕过文件工具规则。</p>
   </div>`;
 }
@@ -643,8 +641,6 @@ function syncDraftFromDom() {
   document.querySelectorAll("[data-draft-field]").forEach(input => { draft[input.dataset.draftField] = input.value; });
   const model = document.querySelector('[data-equipment="model_name"]');
   if (model) draft.equipment.model_name = model.value;
-  const toolMode = document.querySelector('[data-equipment="tools"]');
-  if (toolMode) draft.equipment.tools = toolMode.value === "auto" ? "auto" : [...document.querySelectorAll("[data-tool]:checked")].map(input => input.dataset.tool);
   draft.equipment.permissions = [...document.querySelectorAll("[data-permission]:checked")].map(input => input.dataset.permission);
   draft.equipment.skills = normalizeSkillNames(draft.equipment.skills);
   return draft;
@@ -1512,7 +1508,7 @@ document.addEventListener("click", async event => {
 
 document.addEventListener("input", event => {
   if (event.target.matches("[data-skill-input]")) updateSkillMenu(event.target, true);
-  if (event.target.matches("[data-draft-field],[data-message-field],[data-equipment],[data-permission],[data-tool]")) scheduleDraftSave();
+  if (event.target.matches("[data-draft-field],[data-message-field],[data-equipment],[data-permission]")) scheduleDraftSave();
 });
 
 document.addEventListener("keydown", event => {

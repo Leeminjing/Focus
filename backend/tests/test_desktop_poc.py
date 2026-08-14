@@ -671,7 +671,7 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
                 "system_prompt": "只返回结论",
                 "history_messages": draft["history_messages"],
                 "final_human_message": "检查材料",
-                "equipment": {"model_name": "deepseek-v4-flash", "tools": "auto", "skills": ["one", "two", "one"], "permissions": ["read"]},
+                "equipment": {"model_name": "deepseek-v4-flash", "skills": ["one", "two", "one"], "permissions": ["read"]},
             },
         ).json()
         assert updated["source_checkpoint_id"] == draft["source_checkpoint_id"]
@@ -853,11 +853,10 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path):
     desktop_routes.start_run = original_start_run  # 恢复 patch，避免污染后续测试
 
 
-def test_main_run_permissions_and_equipment_tool_consistency(tmp_path):
-    """主对话权限默认全开 + 装备面工具全集一致性（fix-shell-tool-unavailable）。
+def test_main_run_permissions(tmp_path):
+    """主对话权限默认全开 + host_command 装配 shell 工具（fix-shell-tool-unavailable）。
 
-    覆盖：equipment() 返回 7 个工具全集；_normalize_equipment 接受全部 7 个并拒绝白名单外；
-    start_main_run 带 host_command → context 含 host_command（shell 可装配）；
+    覆盖：start_main_run 带 host_command → context 含 host_command（shell 可装配）；
     MainRunCreate 默认 permissions = read+write+host_command（host_command 默认开启）；
     显式最小权限集仍生效。
     """
@@ -881,29 +880,9 @@ def test_main_run_permissions_and_equipment_tool_consistency(tmp_path):
             ).json()
             service = app.state.desktop_service
 
-            # 装备面：bootstrap 的 tools 与装配全集一致（7 个，含 4 个 shell）
+            # 装备面：bootstrap 的权限全集
             boot = client.get("/desktop/api/bootstrap", headers=SESSION).json()
-            assert boot["equipment"]["tools"] == [
-                "read_file", "list_files", "write_file", "bash", "powershell", "cmd", "sh",
-            ]
             assert boot["equipment"]["permissions"] == ["read", "write", "host_command"]
-
-            # _normalize_equipment：4 个 shell 全部接受
-            normalized = service._normalize_equipment({
-                "model_name": "deepseek-v4-flash",
-                "tools": ["bash", "cmd", "sh", "powershell"],
-                "permissions": ["read", "write", "host_command"],
-            })
-            assert normalized["tools"] == ["bash", "cmd", "sh", "powershell"]
-            # 白名单之外仍拒绝
-            try:
-                service._normalize_equipment({
-                    "model_name": "deepseek-v4-flash", "tools": ["curl"], "permissions": ["read"],
-                })
-            except Exception as exc:
-                assert getattr(exc, "status_code", None) == 422
-            else:
-                raise AssertionError("unknown tool must be rejected")
 
             # 带 host_command → context 透传，shell 可装配
             prepared = client.portal.call(
