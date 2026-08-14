@@ -194,7 +194,8 @@ class DesktopService:
                 {"name": model.name, "display_name": model.display_name, "context_window": model.context_window}
                 for model in self.app_config.models
             ],
-            "tools": ["read_file", "list_files", "write_file", "powershell"],
+            # 与 WORKSPACE_TOOLS 全集一致（bash/powershell/cmd/sh 4 个 shell 由 host_command 权限装配）
+            "tools": ["read_file", "list_files", "write_file", "bash", "powershell", "cmd", "sh"],
             "skills": skills,
             "permissions": ["read", "write", "host_command"],
         }
@@ -1378,7 +1379,7 @@ class DesktopService:
         if selected_tools != "auto" and not isinstance(selected_tools, list):
             raise HTTPException(422, "tools 必须是 auto 或工具名称数组")
         unknown_tools = set(selected_tools if isinstance(selected_tools, list) else ()) - {
-            "read_file", "list_files", "write_file", "powershell"
+            "read_file", "list_files", "write_file", "bash", "powershell", "cmd", "sh"
         }
         if unknown_tools:
             raise HTTPException(422, f"未知工具: {', '.join(sorted(unknown_tools))}")
