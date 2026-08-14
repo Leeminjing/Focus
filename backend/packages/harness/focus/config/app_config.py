@@ -11,13 +11,13 @@ _load_yaml 读取 YAML 文件 → _resolve_env_vars 解析 $ENV_VAR 环境变量
 → 写入模块级 _app_config 单例缓存，后续 get_app_config 直接返回
 """
 
-import os
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict
 
 from focus.config.checkpointer_config import CheckpointerConfig
+from focus.config.env import resolve_env_var
 from focus.config.commitment_config import CommitmentConfig
 from focus.config.database_config import DatabaseConfig
 from focus.config.extensions_config import ExtensionsConfig
@@ -82,12 +82,12 @@ def _resolve_env_vars(data: dict) -> dict:
 
 
 def _resolve_env_item(value):
+    resolved = resolve_env_var(value)
+    if resolved is not None:
+        return resolved
     if isinstance(value, str) and len(value) > 1 and value.startswith("$"):
-        env_var = value[1:]
-        env_value = os.environ.get(env_var)
-        if env_value is None:
-            raise KeyError(f"环境变量未设置: {env_var}")
-        return env_value
+        # 非标识符形式的 $ 前缀值仍按原语义硬失败（配置加载期契约）
+        raise KeyError(f"环境变量未设置: {value[1:]}")
     return value
 
 

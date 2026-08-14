@@ -1,5 +1,9 @@
 "use strict";
 
+// markdown-it 单例(渲染器无状态):完成态助手消息的 md 渲染引擎。
+// html:false 转义原始 HTML,危险协议链接由默认 validateLink 拒绝;vendor 文件先行加载。
+const mdRenderer = window.markdownit({ html: false, linkify: true });
+
 const runtime = window.focusDesktop?.runtime?.() || {
   apiBase: location.protocol === "file:" ? "http://127.0.0.1:8765" : location.origin,
   session: "focus-dev-session",
@@ -74,39 +78,9 @@ function escapeHtml(value = "") {
 }
 
 function renderAssistantContent(value) {
-  const blocks = [];
-  let paragraph = [];
-  let list = [];
-  let listType = null;
-  const flushParagraph = () => {
-    if (paragraph.length) blocks.push(`<p>${paragraph.map(escapeHtml).join("<br>")}</p>`);
-    paragraph = [];
-  };
-  const flushList = () => {
-    if (list.length) blocks.push(`<${listType}>${list.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</${listType}>`);
-    list = [];
-    listType = null;
-  };
-  for (const rawLine of String(value).replace(/\r\n?/g, "\n").split("\n")) {
-    const unordered = rawLine.match(/^\s*[-*+•]\s+(.+)$/);
-    const ordered = rawLine.match(/^\s*\d+[.)]\s+(.+)$/);
-    if (unordered || ordered) {
-      flushParagraph();
-      const nextType = unordered ? "ul" : "ol";
-      if (listType && listType !== nextType) flushList();
-      listType = nextType;
-      list.push((unordered || ordered)[1]);
-    } else if (!rawLine.trim()) {
-      flushParagraph();
-      flushList();
-    } else {
-      flushList();
-      paragraph.push(rawLine.trim());
-    }
-  }
-  flushParagraph();
-  flushList();
-  return `<div class="message-rich">${blocks.join("")}</div>`;
+  // markdown-it 渲染完成态助手消息(html:false 转义 LLM 输出中的原始 HTML;
+  // 危险协议链接被默认 validateLink 拒绝)。vendor 文件由 index.html 先行加载。
+  return `<div class="message-rich">${mdRenderer.render(String(value))}</div>`;
 }
 
 function setStatus(text, isError = false) {

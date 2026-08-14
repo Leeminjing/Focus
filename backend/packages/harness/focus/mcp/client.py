@@ -47,22 +47,20 @@ langchain-mcp-adapters 的 MultiServerMCPClient 可接受的 dict 格式。
 
 import logging
 import os
-import re
 
+from focus.config.env import match_env_ref
 from focus.config.extensions_config import ExtensionsConfig, McpServerConfig
 
 logger = logging.getLogger(__name__)
 
 _SUPPORTED_TRANSPORTS = frozenset({"stdio", "sse", "http"})
-_ENV_VAR_PATTERN = re.compile(r"^\$([A-Z_][A-Z0-9_]*)$|^\$\{([A-Z_][A-Z0-9_]*)\}$")
 
 
 def _resolve_env_value(value: str, server_name: str) -> str:
     """连接时解析 $VAR / ${VAR} 环境变量引用；缺失抛 ValueError（仅 enabled server 到达此处）。"""
-    match = _ENV_VAR_PATTERN.match(value)
-    if not match:
+    var_name = match_env_ref(value)
+    if var_name is None:
         return value
-    var_name = match.group(1) or match.group(2)
     env_value = os.environ.get(var_name)
     if env_value is None:
         raise ValueError(

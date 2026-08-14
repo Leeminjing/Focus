@@ -82,6 +82,15 @@ button { cursor: pointer; }
 .message-rich ul, .message-rich ol { margin: 7px 0 13px; padding-left: 26px; }
 .message-rich li { margin: 4px 0; padding-left: 2px; }
 .message-rich > :last-child { margin-bottom: 0; }
+.message-rich h1, .message-rich h2, .message-rich h3 { margin: 14px 0 8px; font-size: 1.05em; font-weight: 600; }
+.message-rich h1 { font-size: 1.15em; }
+.message-rich pre { margin: 8px 0; padding: 10px 12px; background: #f4f5f7; border-radius: 6px; overflow-x: auto; }
+.message-rich code { font-family: Consolas, "Courier New", monospace; font-size: 0.9em; }
+.message-rich :not(pre) > code { padding: 1px 4px; background: #f0f1f3; border-radius: 3px; }
+.message-rich blockquote { margin: 8px 0; padding-left: 12px; border-left: 3px solid var(--blue); color: var(--muted); }
+.message-rich table { border-collapse: collapse; margin: 8px 0; }
+.message-rich th, .message-rich td { border: 1px solid var(--line); padding: 4px 8px; }
+.message-rich a { color: var(--blue); text-decoration: underline; }
 .message.streaming .message-content::after { content: ""; display: inline-block; width: 2px; height: 1em; margin-left: 3px; vertical-align: -.12em; background: var(--blue); animation: cursor-blink .8s steps(1) infinite; }
 @keyframes cursor-blink { 50% { opacity: 0; } }
 .message.tool { color: var(--muted); border-left: 2px solid var(--line); padding-left: 12px; font-size: 13px; }
