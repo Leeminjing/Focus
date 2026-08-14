@@ -20,6 +20,7 @@ const document = {
     if (selector === "#mainInput") return input;
     return inert;
   },
+  querySelectorAll() { return []; },
 };
 
 const context = vm.createContext({
