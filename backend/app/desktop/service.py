@@ -8,8 +8,9 @@ RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以
 具体工作流为：登记真实宿主机工作区与线程，复制已提交 checkpoint 形成冻结草稿，
 准备无沙箱工作区 Agent 的装配参数（经统一执行链路 worker.run_agent 执行，
 独立 checkpoint namespace 隔离），并用 Git 隐藏引用保护不可遗失材料。
-四套机制装配边界经 agent_role 区分：main（spawn 三件套 + 协作工具 + Mailbox 注入）、
-teammate/worker（持久派生 Agent，协作工具 + Mailbox 注入）、patrol（小兵机制，工作区工具仅）。
+四套机制装配边界经 agent_role 区分：main（spawn 三件套 + 协作工具 + Mailbox 注入
++ 联网工具 web_search/web_fetch + MCP 远端工具）、teammate/worker（持久派生 Agent，
+协作工具 + Mailbox 注入 + 联网工具）、patrol（小兵机制，工作区工具仅，无联网无 MCP）。
 持久派生（spawn_teammate/spawn_worker）创建 SwarmAgent 身份并经 _launch_swarm_run
 启动独立命名空间的后台 run；工具错误 middleware 保证可恢复调用闭合，主任务运行前的
 checkpoint preflight 可从最近合法祖先恢复受损历史。
@@ -74,6 +75,8 @@ from focus.runtime.runs.events import (
 from focus.runtime.runs.limits import DEFAULT_AGENT_RECURSION_LIMIT
 from focus.runtime.runs.manager import RunManager, RunRecord
 from focus.runtime.stream_bridge.base import StreamBridge
+from focus.tools import get_available_tools
+from focus.tools.builtins.web_tools import web_fetch, web_search
 from focus.tools.builtins.workspace_tools import select_workspace_tools
 
 logger = logging.getLogger(__name__)
@@ -837,10 +840,15 @@ class DesktopService:
 
         async def factory() -> CompiledStateGraph:
             tools = select_workspace_tools(permissions)
+            # 联网工具（web_search/web_fetch）装配给 main/teammate/worker，patrol 保持纯净
+            if agent_role != "patrol":
+                tools = [*tools, web_search, web_fetch]
             if agent_role == "main":
+                # MCP 远端工具（如 Playwright 浏览器自动化）仅 main 装配，fail-soft 降级为空
                 tools = [*tools, *self._build_patrol_reader_tools(task_id),
                          *self._build_swarm_reader_tools(task_id),
-                         build_spawn_agent_tool(), *self._build_swarm_tools()]
+                         build_spawn_agent_tool(), *self._build_swarm_tools(),
+                         *await get_available_tools()]
             tools = [*tools, *collab_tools]
             prompt = prompt_with_skills(base_prompt, snapshots)
             if material_context:

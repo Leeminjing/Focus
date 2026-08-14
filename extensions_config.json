@@ -1,6 +1,20 @@
 {
   "skills": {},
   "mcpServers": {
+    "playwright": {
+      "enabled": true,
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--headless",
+        "--caps",
+        "core,network"
+      ],
+      "env": {},
+      "description": "Playwright 浏览器自动化（MCP）"
+    },
     "filesystem": {
       "enabled": false,
       "type": "stdio",

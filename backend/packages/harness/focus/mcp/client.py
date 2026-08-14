@@ -24,7 +24,8 @@ langchain-mcp-adapters 的 MultiServerMCPClient 可接受的 dict 格式。
     build_server_params:
     (1) 取 config.type，缺省 "stdio"，写入 params["transport"]
     (2) 按 transport 类型三分支:
-        stdio: command 缺则 raise ValueError，填 command/args/env（非空才填）
+        stdio: command 缺则 raise ValueError，填 command/args/env（非空才填）；
+             env 值中的 $VAR / ${VAR} 引用在此（连接时）解析，缺失抛 ValueError
         sse / http: url 缺则 raise ValueError，填 url/headers（非空才填）
         其他类型 → raise ValueError
     (3) 返回 params
@@ -45,12 +46,29 @@ langchain-mcp-adapters 的 MultiServerMCPClient 可接受的 dict 格式。
 """
 
 import logging
+import os
+import re
 
 from focus.config.extensions_config import ExtensionsConfig, McpServerConfig
 
 logger = logging.getLogger(__name__)
 
 _SUPPORTED_TRANSPORTS = frozenset({"stdio", "sse", "http"})
+_ENV_VAR_PATTERN = re.compile(r"^\$([A-Z_][A-Z0-9_]*)$|^\$\{([A-Z_][A-Z0-9_]*)\}$")
+
+
+def _resolve_env_value(value: str, server_name: str) -> str:
+    """连接时解析 $VAR / ${VAR} 环境变量引用；缺失抛 ValueError（仅 enabled server 到达此处）。"""
+    match = _ENV_VAR_PATTERN.match(value)
+    if not match:
+        return value
+    var_name = match.group(1) or match.group(2)
+    env_value = os.environ.get(var_name)
+    if env_value is None:
+        raise ValueError(
+            f"MCP server '{server_name}': 环境变量未设置: {var_name}"
+        )
+    return env_value
 
 
 def build_server_params(server_name: str, config: McpServerConfig) -> dict:
@@ -72,7 +90,10 @@ def build_server_params(server_name: str, config: McpServerConfig) -> dict:
         if config.args:
             params["args"] = config.args
         if config.env:
-            params["env"] = config.env
+            params["env"] = {
+                key: _resolve_env_value(value, server_name)
+                for key, value in config.env.items()
+            }
     else:
         if not config.url:
             raise ValueError(
