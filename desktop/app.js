@@ -23,6 +23,7 @@ const state = {
   saveTimer: null,
   statusTimer: null,
   deploying: false,
+  mainInterrupting: false,
   streams: new Map(),
   streamBuffers: new Map(),
   streamFrames: new Map(),
@@ -277,6 +278,13 @@ function removeSkill(kind, name) {
   setPickerSelection(kind, skillPicker.removeSelection(selectedSkills(kind), name));
 }
 
+function renderInterruptButton(detail) {
+  // 主 Agent 有 pending/running 的活动运行时才渲染中断按钮（active_run 由后端只查 main 运行）
+  const run = detail?.active_run;
+  if (!run || !["pending", "running"].includes(run.status)) return "";
+  return `<button class="text-button danger" data-action="interrupt-main-run" data-run-id="${run.run_id}"${state.mainInterrupting ? " disabled" : ""}>中断</button>`;
+}
+
 function renderFocus() {
   const task = activeTask();
   const detail = state.details.get(task.task_id) || { messages: [] };
@@ -296,7 +304,7 @@ function renderFocus() {
       <div class="focus-bottom">
         <div class="composer">
           ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="任务输入" placeholder="继续输入任务…">${escapeHtml(detail.ui_state?.input || "")}</textarea>`)}
-          <div class="composer-actions"><label class="attach-button">添加文件<input id="fileInput" type="file" hidden></label><button class="send-button" data-action="send-main">发送</button></div>
+          <div class="composer-actions"><label class="attach-button">添加文件<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">发送</button></div>
         </div>
         <section class="materials ${materials.length ? "" : "is-empty"}">${materials.length ? materials.map(renderMaterial).join("") : `<div class="materials-empty">暂无材料</div>`}</section>
         <div class="agents-strip">${renderAgentStrip(task.task_id)}</div>
@@ -497,6 +505,32 @@ async function cancelAgentDetails() {
   } catch (error) { setStatus(error.message, true); }
 }
 
+async function interruptMainRun() {
+  const detail = state.details.get(state.activeTaskId);
+  const run = detail?.active_run;
+  if (!run || !["pending", "running"].includes(run.status)) return setStatus("当前没有可中断的主 Agent 运行", true);
+  if (state.mainInterrupting) return; // busy 防连点
+  state.mainInterrupting = true;
+  const button = document.querySelector('[data-action="interrupt-main-run"]');
+  if (button) button.disabled = true;
+  try {
+    const payload = await api(`/desktop/api/runs/${run.run_id}/cancel`, { method: "POST" });
+    // cancel 受理即置 interrupted（DB 立即同步）；仅当竞态窗口内 run 自己先到
+    // success/error 等终态（非 interrupted）时才提示"已结束"
+    if (payload && payload.status === "interrupted") {
+      setStatus("已请求中断主 Agent，正在停止…");
+    } else if (payload && !["pending", "running"].includes(payload.status)) {
+      setStatus("运行已结束，无需中断", true);
+    } else {
+      setStatus("已请求中断主 Agent，正在停止…");
+    }
+  } catch (error) {
+    setStatus(error.status === 404 ? "运行不存在（可能已结束）" : error.message, true);
+  } finally {
+    state.mainInterrupting = false;
+  }
+}
+
 async function debugAgentMenu(agentId) {
   // 保留的高级操作通道：原 prompt 交互在 Electron 中被禁用，调用即抛错，此处显式提示
   let choice;
@@ -685,6 +719,8 @@ async function sendMain() {
       method: "POST",
       body: JSON.stringify({ message, skills: selectedSkills("main") }),
     });
+    // 运行已发起：立即暴露中断入口（否则运行中 active_run 仍为旧值，按钮不渲染）
+    detail.active_run = run;
     detail.messages = [...(detail.messages || []), { role: "human", content: message }];
     detail.ui_state = { ...(detail.ui_state || {}), input: "", skills: [] };
     renderFocus();
@@ -736,6 +772,8 @@ function listenToRun(run) {
   source.addEventListener("end", async event => {
     const terminal = event.data ? JSON.parse(event.data) : { status: "error", error: "运行流异常结束" };
     if (!terminal.error && runError) terminal.error = runError;
+    // 主动中断判定：主 Agent run 终态 interrupted 且无错误、且非承诺审批（审批面板已接管界面状态）
+    const wasMainInterrupted = run.kind === "main" && terminal.status === "interrupted" && !terminal.error;
     source.close(); state.streams.delete(run.run_id); clearStreamBuffer(run.run_id); await refreshTasks();
     if (state.activeTaskId) await hydrateActive();
     const task = run.task_id
@@ -743,6 +781,9 @@ function listenToRun(run) {
       : state.tasks.find(item => item.thread_id === run.thread_id);
     if (task) settleCommitmentRun(task.task_id, terminal);
     render();
+    if (wasMainInterrupted && !state.commitment.review && !state.commitment.recovery) {
+      setStatus("主 Agent 已中断，可继续对话");
+    }
   });
 }
 
@@ -1466,6 +1507,7 @@ document.addEventListener("click", async event => {
   if (action === "refresh-agent-details") return refreshAgentDetails();
   if (action === "retry-agent-details") return retryAgentDetails();
   if (action === "cancel-agent-details") return cancelAgentDetails();
+  if (action === "interrupt-main-run") return interruptMainRun();
 });
 
 document.addEventListener("input", event => {
