@@ -30,6 +30,7 @@ const document = {
     if (selector === "#conversation") return conversation;
     return inert;
   },
+  querySelectorAll() { return []; },
 };
 
 const context = vm.createContext({
