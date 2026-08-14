@@ -202,7 +202,7 @@ class MainRunCreate(StrictRequest):
     model_name: str | None = None
     skills: list[str] = Field(default_factory=list)
     permissions: list[Literal["read", "write", "host_command"]] = Field(
-        default_factory=lambda: ["read", "write"]
+        default_factory=lambda: ["read", "write", "host_command"]
     )
 
 
