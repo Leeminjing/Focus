@@ -81,6 +81,8 @@ class RunRecord:
     # === 结果信息 ===
     error: str | None = None
     model_name: str | None = None
+    prompt_input_tokens: int = 0
+    prompt_cache_hit_tokens: int = 0
 
     # === 特殊标志 ===
     store_only: bool = False

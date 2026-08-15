@@ -1,7 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 from langgraph.types import Command
 
 from focus.runtime.runs.events import (
@@ -183,3 +183,56 @@ def test_normal_agent_factory_failure_remains_error():
     assert record.error == "Context7 connection timeout"
     assert [event.event for event in bridge.events] == ["metadata", "error"]
     assert bridge.ended is True
+
+
+def test_run_agent_accumulates_standard_cache_usage():
+    class UsageAgent:
+        async def astream(self, *_args, **_kwargs):
+            yield "messages", (
+                AIMessageChunk(
+                    content="",
+                    usage_metadata={
+                        "input_tokens": 100,
+                        "output_tokens": 10,
+                        "total_tokens": 110,
+                        "input_token_details": {"cache_read": 25},
+                    },
+                ),
+                {"langgraph_node": "model"},
+            )
+            yield "messages", (
+                AIMessageChunk(
+                    content="",
+                    usage_metadata={
+                        "input_tokens": 80,
+                        "output_tokens": 8,
+                        "total_tokens": 88,
+                        "input_token_details": {"cache_read": 40},
+                    },
+                ),
+                {"langgraph_node": "model"},
+            )
+
+    manager = RunManager()
+    record = manager.create("thread-usage", run_id="run-usage")
+    bridge = _RecordingBridge()
+
+    async def factory():
+        return UsageAgent()
+
+    asyncio.run(
+        run_agent(
+            record=record,
+            bridge=bridge,
+            run_manager=manager,
+            app_config=SimpleNamespace(models=[], commitment=SimpleNamespace(enabled=False)),
+            graph_input={"messages": [HumanMessage(content="usage")]},
+            runnable_config={"configurable": {"thread_id": record.thread_id}},
+            stream_modes=["messages"],
+            agent_factory=factory,
+            langgraph_context={"workspace_id": "workspace-usage", "agent_id": "main:usage"},
+        )
+    )
+
+    assert record.prompt_input_tokens == 180
+    assert record.prompt_cache_hit_tokens == 65

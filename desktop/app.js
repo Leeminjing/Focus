@@ -18,6 +18,8 @@ const state = {
   materials: new Map(),
   agents: new Map(),
   skillCatalogs: new Map(),
+  contextTrees: new Map(),
+  contextDraft: null,
   pickerActive: { main: 0, draft: 0 },
   equipment: { models: [], tools: [], skills: [], permissions: [] },
   soldierArmed: false,
@@ -55,6 +57,15 @@ const statusNode = document.querySelector("#globalStatus");
 const dialog = document.querySelector("#taskDialog");
 const agentDialog = document.querySelector("#agentDialog");
 const skillPicker = window.FocusSkillPicker;
+const contextEditor = window.FocusContextEditor;
+let contextUiSequence = 0;
+let contextPointerDrag = null;
+let contextUndoTimer = null;
+
+function nextContextUiKey() {
+  contextUiSequence += 1;
+  return `context-ui-${contextUiSequence}`;
+}
 
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
@@ -102,6 +113,7 @@ async function bootstrap() {
     const data = await api("/desktop/api/bootstrap");
     state.tasks = data.tasks;
     state.equipment = data.equipment;
+    await hydrateContextTrees();
     state.activeTaskId ||= state.tasks[0]?.task_id || null;
     setStatus("");
     await hydrateActive();
@@ -139,7 +151,8 @@ function render() {
   }
   if (state.view === "focus") renderFocus();
   else if (state.view === "map") renderMap();
-  else renderDraft();
+  else if (state.view === "draft") renderDraft();
+  else renderContextEditor();
 }
 
 function normalizeSkillNames(value) {
@@ -259,36 +272,80 @@ function renderInterruptButton(detail) {
   return `<button class="text-button danger" data-action="interrupt-main-run" data-run-id="${run.run_id}"${state.mainInterrupting ? " disabled" : ""}>中断</button>`;
 }
 
+function renderContextRail(task) {
+  const tasks = contextEditor.contextFamilyTasks(state.tasks, state.contextTrees, task.task_id);
+  const tree = state.contextTrees.get(task.workspace_id) || [];
+  const nodes = new Map(tree.map(node => [node.context_id, node]));
+  const cards = tasks.map(item => {
+    const node = nodes.get(item.task_id);
+    const depth = Number(node?.depth || 0);
+    const projectionStatus = node?.projection_status || "root";
+    const blocked = !["root", "valid", "repaired", "approved"].includes(projectionStatus);
+    const cacheRate = Number.isFinite(node?.cache_hit_rate)
+      ? `${Math.round(node.cache_hit_rate * 100)}%`
+      : "—";
+    const otherParents = (node?.parents || []).slice(1).map(parent =>
+      state.tasks.find(candidate => candidate.task_id === parent.context_id)?.title || parent.context_id
+    ).join("、");
+    return `<div class="context-rail-item${node?.editable ? " is-editable" : ""}" style="--context-depth:${depth}">
+      <button type="button" class="context-rail-card${item.task_id === task.task_id ? " is-current" : ""}${blocked ? " is-blocked" : ""}" data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}">
+        <span class="context-rail-title">${escapeHtml(item.title)}</span>
+        <span class="context-rail-meta">${depth ? "派生 Context" : "根 Context"} · ${escapeHtml(item.task_id.slice(0, 8))}${blocked ? ` · ${escapeHtml(projectionStatus)}` : ""} · 缓存 ${cacheRate}</span>
+        ${otherParents ? `<span class="context-rail-parents">另含：${escapeHtml(otherParents)}</span>` : ""}
+      </button>
+      ${node?.editable ? `<button type="button" class="context-rail-edit" data-action="edit-context-definition" data-context-id="${escapeHtml(item.task_id)}">编辑</button>` : ""}
+    </div>`;
+  }).join("");
+  return `<aside class="context-rail" aria-label="Context 树">
+    <header class="context-rail-heading"><strong>Contexts</strong><span>${tasks.length}</span></header>
+    <nav class="context-rail-list" aria-label="当前聊天派生的 Context">
+      ${cards}
+      <button type="button" class="context-rail-add" data-action="derive-context">新增 Context</button>
+    </nav>
+  </aside>`;
+}
+
 function renderFocus() {
   const task = activeTask();
   const detail = state.details.get(task.task_id) || { messages: [] };
+  const projectionStatus = detail.context?.projection_status || "root";
+  const projectionBlocked = !["root", "valid", "repaired", "approved"].includes(projectionStatus);
+  const contextBlock = projectionBlocked
+    ? `<section class="context-block-banner"><strong>该 Context 尚未获得安全执行投影</strong><span>${escapeHtml(projectionStatus)}</span><button class="primary" data-action="resume-context-decision">查看并决断</button></section>`
+    : "";
   const materials = state.materials.get(task.task_id) || [];
   const previousConversation = app.dataset.taskId === task.task_id ? document.querySelector("#conversation") : null;
+  const previousRail = document.querySelector(".context-rail-list");
+  const previousRailScrollTop = previousRail?.scrollTop;
   const wasPinned = previousConversation && previousConversation.scrollHeight - previousConversation.scrollTop - previousConversation.clientHeight < 80;
   const previousScrollTop = previousConversation?.scrollTop;
   app.innerHTML = `
-    <section class="focus-view" data-task-id="${task.task_id}">
-      <div class="commitment-progress" id="commitmentProgress" hidden>
-        <div class="progress-heading"><strong>任务合同</strong><span id="progressLabel"></span></div>
-        <ol id="progressSteps"></ol>
-      </div>
-      <div class="conversation" id="conversation">
-        ${renderConversation(detail, task)}
-      </div>
-      <div class="focus-bottom">
-        <div class="composer">
-          ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="任务输入" placeholder="继续输入任务…">${escapeHtml(detail.ui_state?.input || "")}</textarea>`)}
-          <div class="composer-actions"><label class="attach-button">添加文件<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">发送</button></div>
+    <section class="focus-shell">
+      <section class="focus-view" data-task-id="${task.task_id}">
+        ${contextBlock}
+        <div class="commitment-progress" id="commitmentProgress" hidden>
+          <div class="progress-heading"><strong>任务合同</strong><span id="progressLabel"></span></div>
+          <ol id="progressSteps"></ol>
         </div>
-        <section class="materials ${materials.length ? "" : "is-empty"}">${materials.length ? materials.map(renderMaterial).join("") : `<div class="materials-empty">暂无材料</div>`}</section>
-        <div class="agents-strip">${renderAgentStrip(task.task_id)}</div>
-      </div>
+        <div class="conversation" id="conversation">
+          ${renderConversation(detail, task)}
+        </div>
+        <div class="focus-bottom">
+          <div class="composer">
+            ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="任务输入" placeholder="继续输入任务…">${escapeHtml(detail.ui_state?.input || "")}</textarea>`)}
+            <div class="composer-actions"><label class="attach-button">添加文件<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">发送</button></div>
+          </div>
+          <section class="materials ${materials.length ? "" : "is-empty"}">${materials.length ? materials.map(renderMaterial).join("") : `<div class="materials-empty">暂无材料</div>`}</section>
+          <div class="agents-strip">${renderAgentStrip(task.task_id)}</div>
+        </div>
+      </section>
+      ${renderContextRail(task)}
     </section>`;
   app.dataset.taskId = task.task_id;
   const conversation = document.querySelector("#conversation");
   mountCommitmentRecovery(detail);
   restoreCommitmentPanels(conversation);
-  const commitmentBlocked = activeTaskHasCommitmentLock();
+  const commitmentBlocked = activeTaskHasCommitmentLock() || projectionBlocked;
   const mainInput = document.querySelector("#mainInput");
   const sendButton = document.querySelector('[data-action="send-main"]');
   if (mainInput) mainInput.disabled = commitmentBlocked;
@@ -296,6 +353,9 @@ function renderFocus() {
   conversation.scrollTop = previousConversation
     ? (wasPinned ? conversation.scrollHeight : previousScrollTop)
     : (detail.ui_state?.scrollTop ?? conversation.scrollHeight);
+  const rail = document.querySelector(".context-rail-list");
+  if (previousRailScrollTop != null) rail.scrollTop = previousRailScrollTop;
+  if (!previousConversation) requestAnimationFrame(() => rail.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "nearest" }));
 }
 
 function renderMessage(message) {
@@ -518,13 +578,23 @@ async function debugAgentMenu(agentId) {
 
 function taskCards(draftMode = false) {
   const draft = state.drafts.get(state.activeTaskId);
-  return state.tasks.map(task => {
+  return contextEditor.orderTasksByTree(state.tasks, state.contextTrees).map(task => {
     const selected = draftMode && draft?.task_id === task.task_id;
     const status = task.active_run?.status;
-    return `<button class="task-card ${draftMode && !selected ? "dimmed" : ""}" data-task-id="${task.task_id}" data-action="task-card">
+    const tree = state.contextTrees.get(task.workspace_id) || [];
+    const context = tree.find(item => item.context_id === task.task_id);
+    const projectionStatus = context?.projection_status || "root";
+    const parents = (context?.parents || []).slice(1).map(parent => state.tasks.find(item => item.task_id === parent.context_id)?.title || parent.context_id).join("、");
+    const contextMeta = parents ? `<span class="context-parent-tags">另含：${escapeHtml(parents)}</span>` : "";
+    const contextIdentity = context
+      ? `<span class="context-identity">${context.depth ? "派生 Context" : "根 Context"} · ${escapeHtml(task.task_id.slice(0, 8))}${!["root", "valid", "repaired", "approved"].includes(projectionStatus) ? ` · ${escapeHtml(projectionStatus)}` : ""}</span>`
+      : `<span class="context-identity">兼容任务 · ${escapeHtml(task.task_id.slice(0, 8))}</span>`;
+    return `<button class="task-card ${draftMode && !selected ? "dimmed" : ""}" style="--context-depth:${context?.depth || 0}" data-task-id="${task.task_id}" data-action="task-card">
       <span class="task-title">${escapeHtml(task.title)}</span>
+      ${contextIdentity}
       <span class="task-path">${escapeHtml(task.workspace_name)} · ${escapeHtml(task.thread_id)}</span>
       <span class="task-status ${status === "running" ? "running" : ""}">${status === "running" ? "主 Agent 运行中" : escapeHtml(task.workspace_path)}</span>
+      ${contextMeta}
     </button>`;
   }).join("");
 }
@@ -534,6 +604,354 @@ function renderMap() {
     <div class="map-toolbar"><button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">小兵 · 拖向任务</button></div>
     <div class="task-grid">${taskCards()}</div>
   </section>`;
+}
+
+async function hydrateContextTrees() {
+  const workspaceIds = [...new Set(state.tasks.map(task => task.workspace_id))];
+  const trees = await Promise.all(workspaceIds.map(async workspaceId => [
+    workspaceId,
+    await api(`/desktop/api/workspaces/${workspaceId}/contexts/tree`),
+  ]));
+  trees.forEach(([workspaceId, tree]) => state.contextTrees.set(workspaceId, tree));
+}
+
+async function openContextEditor(contextId) {
+  const task = state.tasks.find(item => item.task_id === contextId);
+  if (!task) return;
+  setStatus("读取 Context checkpoint…");
+  try {
+    const snapshot = await api(`/desktop/api/contexts/${contextId}/snapshot`);
+    if (!snapshot.checkpoint_id) throw new Error("该 Context 尚无可派生的已提交 checkpoint");
+    state.contextDraft = {
+      title: `${task.title} · 派生`,
+      workspace_id: task.workspace_id,
+      sources: [{ context_id: contextId, checkpoint_id: snapshot.checkpoint_id }],
+      sourceSnapshots: [{ context_id: contextId, checkpoint_id: snapshot.checkpoint_id, messages: contextEditor.cloneMessages(snapshot.messages) }],
+      activeSourceId: contextId,
+      messages: [],
+      uiKeys: [],
+      expandedKey: null,
+      undo: null,
+      context: null,
+    };
+    state.view = "context";
+    setStatus("");
+    render();
+  } catch (error) { setStatus(error.message, true); }
+}
+
+async function reopenContextDecision(contextId) {
+  try {
+    const detail = state.details.get(contextId) || await api(`/desktop/api/tasks/${contextId}`);
+    const task = state.tasks.find(item => item.task_id === contextId);
+    if (!detail.context || !task) throw new Error("Context 决断数据不存在");
+    const sources = contextEditor.cloneMessages(detail.context.sources || []);
+    const sourceSnapshots = await Promise.all(sources.map(async source => {
+      const checkpoint = encodeURIComponent(source.checkpoint_id);
+      const snapshot = await api(`/desktop/api/contexts/${source.context_id}/snapshot?checkpoint_id=${checkpoint}`);
+      return { ...source, messages: contextEditor.cloneMessages(snapshot.messages) };
+    }));
+    const messages = contextEditor.cloneMessages(detail.context.authored_messages || []);
+    state.contextDraft = {
+      title: task.title,
+      workspace_id: task.workspace_id,
+      sources,
+      sourceSnapshots,
+      activeSourceId: sources[0]?.context_id || null,
+      messages,
+      uiKeys: contextEditor.createUiKeys(messages, nextContextUiKey),
+      expandedKey: null,
+      undo: null,
+      context: detail.context,
+    };
+    state.view = "context";
+    render();
+  } catch (error) { setStatus(error.message, true); }
+}
+
+function syncContextDraft() {
+  const draft = state.contextDraft;
+  if (!draft) return null;
+  const panel = document.querySelector(".context-editor-view");
+  if (!panel) return draft;
+  draft.title = panel.querySelector("[data-context-title]").value.trim();
+  draft.messages = contextEditor.readMessages(panel, draft.messages);
+  return draft;
+}
+
+function renderContextDecision(context) {
+  if (!context) return "";
+  const repairs = (context.repair_manifest || []).filter(item => item.kind !== "regex_flag");
+  const repairList = repairs.length
+    ? `<details open><summary>Focus 无损补齐了 ${repairs.length} 处协议结构</summary><pre>${escapeHtml(JSON.stringify(repairs, null, 2))}</pre></details>`
+    : "";
+  if (context.projection_status === "repaired" && !context.editable) {
+    return `<section class="context-decision repaired"><h2>执行投影已安全生成</h2>${repairList}<button class="primary" data-action="open-derived-context">进入新 Context</button></section>`;
+  }
+  if (!["approval_required", "rejected", "initialization_failed"].includes(context.projection_status)) return repairList;
+  const issues = (context.issues || []).map(issue => `<article class="context-issue">
+    <strong>${escapeHtml(issue.reason)}</strong>
+    <div class="context-diff"><div><span>原始片段</span><pre>${escapeHtml(JSON.stringify(issue.original, null, 2))}</pre></div><div><span>拟议投影</span><pre>${escapeHtml(JSON.stringify(issue.proposed, null, 2))}</pre></div></div>
+  </article>`).join("");
+  const actions = context.projection_status === "approval_required"
+    ? `<button class="primary" data-action="accept-context-projection">接受本次降级</button><button class="text-button" data-action="edit-context-projection">返回编辑</button><button class="text-button danger" data-action="cancel-context-projection">取消发送</button>`
+    : `<button class="text-button" data-action="edit-context-projection">返回编辑</button><button class="text-button danger" data-action="exit-context-editor">关闭</button>`;
+  return `<section class="context-decision blocked"><h2>需要你的决断</h2><p>Focus 不会静默采用以下降级。</p>${repairList}${issues}<div class="dialog-actions">${actions}</div></section>`;
+}
+
+function contextDraftLocked(draft = state.contextDraft) {
+  return Boolean(draft?.context && !draft.context.editable);
+}
+
+function ensureContextUiKeys(draft) {
+  draft.uiKeys ||= [];
+  while (draft.uiKeys.length < draft.messages.length) draft.uiKeys.push(nextContextUiKey());
+  if (draft.uiKeys.length > draft.messages.length) draft.uiKeys.length = draft.messages.length;
+  if (draft.expandedKey && !draft.uiKeys.includes(draft.expandedKey)) draft.expandedKey = null;
+}
+
+function contextSourcePanelMarkup(draft) {
+  const created = Boolean(draft.context);
+  const locked = contextDraftLocked(draft);
+  const active = draft.sourceSnapshots?.find(source => source.context_id === draft.activeSourceId) || draft.sourceSnapshots?.[0];
+  const tabs = draft.sources.map((source, index) => {
+    const task = state.tasks.find(item => item.task_id === source.context_id);
+    return `<span class="context-source-tab-wrap"><button type="button" class="context-source-tab${source.context_id === active?.context_id ? " is-active" : ""}" data-action="context-source-select" data-context-id="${escapeHtml(source.context_id)}">${escapeHtml(task?.title || source.context_id)}</button>${!created && draft.sources.length > 1 ? `<button type="button" class="context-source-remove" data-action="remove-context-source" data-source-index="${index}" aria-label="移除此来源">×</button>` : ""}</span>`;
+  }).join("");
+  const sourceIds = new Set(draft.sources.map(source => source.context_id));
+  const tree = state.contextTrees.get(draft.workspace_id) || [];
+  const candidates = tree.filter(item => !sourceIds.has(item.context_id)).map(item => {
+    const task = state.tasks.find(candidate => candidate.task_id === item.context_id);
+    return `<button class="context-source-candidate" style="--context-depth:${item.depth}" data-action="add-context-source" data-context-id="${escapeHtml(item.context_id)}">${escapeHtml(task?.title || item.title)}</button>`;
+  }).join("") || '<span class="muted tiny">没有其他可加入的 Context</span>';
+  return `<header class="context-source-heading"><div><span class="review-kicker">SOURCE</span><h2>已有消息</h2></div><span class="muted tiny">拖到右侧</span></header>
+    <div class="context-source-tabs" role="tablist" aria-label="来源 Context">${tabs}</div>
+    <div class="context-source-message-list">${contextEditor.renderSourceMessages(active?.messages || [], active?.context_id || "", locked)}</div>
+    <details class="context-source-add"${created ? " hidden" : ""}><summary>加入其他来源</summary><div class="context-source-tree">${candidates}</div></details>`;
+}
+
+function renderContextSourcePanel() {
+  const panel = document.querySelector(".context-source-panel");
+  if (panel && state.contextDraft) panel.innerHTML = contextSourcePanelMarkup(state.contextDraft);
+}
+
+function contextMessageElement(message, index, uiKey, expanded = false) {
+  const template = document.createElement("template");
+  template.innerHTML = contextEditor.renderMessages([message], [uiKey], expanded ? uiKey : null, contextDraftLocked()).trim();
+  const element = template.content.firstElementChild;
+  element.dataset.contextMessageIndex = String(index);
+  element.querySelector("[data-context-message-json]")?.setAttribute("data-context-message-index", String(index));
+  return element;
+}
+
+function contextListPositions() {
+  return new Map([...document.querySelectorAll(".context-message-editor")].map(row => [row.dataset.contextUiKey, row.getBoundingClientRect().top]));
+}
+
+function animateContextReflow(previous) {
+  if (!previous || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  document.querySelectorAll(".context-message-editor").forEach(row => {
+    const before = previous.get(row.dataset.contextUiKey);
+    if (before == null) return;
+    const delta = before - row.getBoundingClientRect().top;
+    if (Math.abs(delta) > 1) row.animate([{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }], { duration: 190, easing: "cubic-bezier(.2,.8,.2,1)" });
+  });
+}
+
+function updateContextMessageIndices() {
+  const draft = state.contextDraft;
+  const list = document.querySelector(".context-message-list");
+  if (!draft || !list) return;
+  const rows = [...list.querySelectorAll(".context-message-editor")];
+  rows.forEach((row, index) => {
+    row.dataset.contextMessageIndex = String(index);
+    const role = draft.messages[index]?.role || "未指定角色";
+    row.querySelector("header strong").textContent = `${String(index + 1).padStart(2, "0")} · ${role}`;
+    const input = row.querySelector("[data-context-message-json]");
+    if (input) {
+      input.dataset.contextMessageIndex = String(index);
+      input.setAttribute("aria-label", `消息 ${index + 1} JSON`);
+    }
+  });
+  const count = document.querySelector(".context-compose-heading > div > span");
+  if (count) count.textContent = `${draft.messages.length} 条消息`;
+  if (!rows.length && !list.querySelector(".context-empty-drop")) list.innerHTML = contextEditor.renderMessages([], []);
+}
+
+function renderContextEditor(scrollTop = null) {
+  const draft = state.contextDraft;
+  if (!draft) { state.view = "map"; return renderMap(); }
+  ensureContextUiKeys(draft);
+  const created = Boolean(draft.context);
+  const locked = contextDraftLocked(draft);
+  app.innerHTML = `<section class="context-editor-view">
+    <aside class="context-source-panel">${contextSourcePanelMarkup(draft)}</aside>
+    <section class="context-definition-panel">
+      <header><div><span class="review-kicker">NEW CONTEXT</span><h1>自由组装</h1></div><button class="text-button" data-action="exit-context-editor">关闭</button></header>
+      <label>Context 标题<input data-context-title value="${escapeHtml(draft.title)}" ${created ? "disabled" : ""}></label>
+      <div class="context-compose-heading"><div><strong>新 Context</strong><span>${draft.messages.length} 条消息</span></div><div class="history-actions"><button class="text-button" data-action="context-message-add" ${locked ? "disabled" : ""}>新增消息</button><button class="text-button danger" data-action="context-message-clear" ${locked ? "disabled" : ""}>清空</button></div></div>
+      <div class="context-message-list" data-context-drop-zone>${contextEditor.renderMessages(draft.messages, draft.uiKeys, draft.expandedKey, locked)}</div>
+      ${renderContextDecision(draft.context)}
+      <div class="context-undo-toast" hidden><span>已删除消息</span><button type="button" class="text-button" data-action="context-message-undo">撤销</button></div>
+      ${locked ? "" : `<footer><span class="muted tiny">只有右侧内容会成为新 Context；来源始终保持不变。</span><button class="primary" data-action="submit-context">${draft.context ? "重新编译" : "创建 Context"}</button></footer>`}
+    </section>
+  </section>`;
+  if (Number.isFinite(scrollTop)) document.querySelector(".context-definition-panel").scrollTop = scrollTop;
+}
+
+function insertContextMessage(message, index, options = {}) {
+  const draft = syncContextDraft();
+  ensureContextUiKeys(draft);
+  const list = document.querySelector(".context-message-list");
+  const previous = contextListPositions();
+  const safeIndex = Math.max(0, Math.min(Number(index), draft.messages.length));
+  const key = options.key || nextContextUiKey();
+  draft.messages.splice(safeIndex, 0, contextEditor.cloneMessages([message])[0]);
+  draft.uiKeys.splice(safeIndex, 0, key);
+  if (options.expand) draft.expandedKey = key;
+  list.querySelector(".context-empty-drop")?.remove();
+  const rows = [...list.querySelectorAll(".context-message-editor")];
+  list.insertBefore(contextMessageElement(draft.messages[safeIndex], safeIndex, key, Boolean(options.expand)), rows[safeIndex] || null);
+  updateContextMessageIndices();
+  animateContextReflow(previous);
+  if (options.focus) requestAnimationFrame(() => list.querySelector(`[data-context-ui-key="${key}"] [data-context-message-json]`)?.focus());
+  return key;
+}
+
+function moveContextMessage(from, to, focus = false) {
+  const draft = syncContextDraft();
+  if (from < 0 || from >= draft.messages.length || to < 0 || to >= draft.messages.length || from === to) return;
+  const previous = contextListPositions();
+  const key = draft.uiKeys[from];
+  contextEditor.move(draft.messages, from, to);
+  contextEditor.move(draft.uiKeys, from, to);
+  const rows = new Map([...document.querySelectorAll(".context-message-editor")].map(row => [row.dataset.contextUiKey, row]));
+  const list = document.querySelector(".context-message-list");
+  draft.uiKeys.forEach(uiKey => list.append(rows.get(uiKey)));
+  updateContextMessageIndices();
+  animateContextReflow(previous);
+  if (focus) document.querySelector(`[data-context-ui-key="${key}"] [data-context-pointer-handle]`)?.focus();
+}
+
+function toggleContextMessage(uiKey) {
+  const draft = syncContextDraft();
+  const previousExpanded = draft.expandedKey;
+  draft.expandedKey = previousExpanded === uiKey ? null : uiKey;
+  const replace = key => {
+    if (!key) return;
+    const index = draft.uiKeys.indexOf(key);
+    const row = document.querySelector(`[data-context-ui-key="${key}"]`);
+    if (row && index >= 0) row.replaceWith(contextMessageElement(draft.messages[index], index, key, draft.expandedKey === key));
+  };
+  replace(previousExpanded);
+  if (uiKey !== previousExpanded) replace(uiKey);
+  if (draft.expandedKey) requestAnimationFrame(() => document.querySelector(`[data-context-ui-key="${draft.expandedKey}"] [data-context-message-json]`)?.focus());
+}
+
+function showContextUndo() {
+  clearTimeout(contextUndoTimer);
+  const toast = document.querySelector(".context-undo-toast");
+  if (toast) toast.hidden = false;
+  contextUndoTimer = setTimeout(() => {
+    if (state.contextDraft) state.contextDraft.undo = null;
+    const current = document.querySelector(".context-undo-toast");
+    if (current) current.hidden = true;
+  }, 4500);
+}
+
+async function deleteContextMessage(index) {
+  const draft = syncContextDraft();
+  const row = document.querySelector(`.context-message-editor[data-context-message-index="${index}"]`);
+  if (!row) return;
+  const panel = document.querySelector(".context-definition-panel");
+  const scrollTop = panel?.scrollTop || 0;
+  const previous = contextListPositions();
+  const [message] = draft.messages.splice(index, 1);
+  const [key] = draft.uiKeys.splice(index, 1);
+  if (draft.expandedKey === key) draft.expandedKey = null;
+  draft.undo = { message, key, index };
+  if (!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+    const animation = row.animate([{ opacity: 1, transform: "scale(1)", maxHeight: `${row.offsetHeight}px` }, { opacity: 0, transform: "scale(.98)", maxHeight: "0px" }], { duration: 150, easing: "ease-in", fill: "forwards" });
+    await Promise.race([animation.finished.catch(() => {}), new Promise(resolve => setTimeout(resolve, 180))]);
+  }
+  row.remove();
+  updateContextMessageIndices();
+  if (panel) panel.scrollTop = Math.min(scrollTop, Math.max(0, panel.scrollHeight - panel.clientHeight));
+  animateContextReflow(previous);
+  showContextUndo();
+}
+
+function undoContextMessageDelete() {
+  const draft = state.contextDraft;
+  if (!draft?.undo) return;
+  const undo = draft.undo;
+  draft.undo = null;
+  clearTimeout(contextUndoTimer);
+  document.querySelector(".context-undo-toast")?.setAttribute("hidden", "");
+  insertContextMessage(undo.message, undo.index, { key: undo.key });
+}
+
+function clearContextMessages() {
+  const draft = syncContextDraft();
+  draft.messages = [];
+  draft.uiKeys = [];
+  draft.expandedKey = null;
+  document.querySelector(".context-message-list").innerHTML = contextEditor.renderMessages([], []);
+  document.querySelector(".context-compose-heading span").textContent = "0 条消息";
+}
+
+async function addContextSource(contextId) {
+  const draft = syncContextDraft();
+  if (!draft || draft.sources.some(source => source.context_id === contextId)) return;
+  try {
+    const snapshot = await api(`/desktop/api/contexts/${contextId}/snapshot`);
+    if (!snapshot.checkpoint_id) throw new Error("来源 Context 尚无已提交 checkpoint");
+    draft.sources.push({ context_id: contextId, checkpoint_id: snapshot.checkpoint_id });
+    draft.sourceSnapshots.push({ context_id: contextId, checkpoint_id: snapshot.checkpoint_id, messages: contextEditor.cloneMessages(snapshot.messages) });
+    draft.activeSourceId = contextId;
+    renderContextSourcePanel();
+  } catch (error) { setStatus(error.message, true); }
+}
+
+async function submitContext() {
+  let draft;
+  try { draft = syncContextDraft(); }
+  catch (error) { return setStatus(error.message, true); }
+  if (!draft.title) return setStatus("Context 标题不能为空", true);
+  try {
+    const context = draft.context
+      ? await api(`/desktop/api/contexts/${draft.context.context_id}/definition`, { method: "PUT", body: JSON.stringify({ messages: draft.messages }) })
+      : await api("/desktop/api/contexts/derive", { method: "POST", body: JSON.stringify({ title: draft.title, sources: draft.sources, messages: draft.messages }) });
+    draft.context = context;
+    await refreshTasks();
+    await hydrateContextTrees();
+    if (context.projection_status === "valid") return openDerivedContext();
+    renderContextEditor();
+  } catch (error) { setStatus(error.message, true); }
+}
+
+async function decideContextProjection(decision) {
+  const context = state.contextDraft?.context;
+  if (!context) return;
+  try {
+    const updated = await api(`/desktop/api/contexts/${context.context_id}/projection/decision`, {
+      method: "POST",
+      body: JSON.stringify({ decision, definition_hash: context.definition_hash, projection_hash: context.projection_hash }),
+    });
+    state.contextDraft.context = updated;
+    if (decision === "accept") return openDerivedContext();
+    renderContextEditor();
+  } catch (error) { setStatus(error.message, true); }
+}
+
+async function openDerivedContext() {
+  const contextId = state.contextDraft?.context?.context_id;
+  if (!contextId) return;
+  state.activeTaskId = contextId;
+  state.contextDraft = null;
+  state.view = "focus";
+  await hydrateActive();
+  render();
 }
 
 function renderDraft() {
@@ -689,6 +1107,10 @@ async function sendMain() {
       method: "POST",
       body: JSON.stringify({ message, skills: selectedSkills("main") }),
     });
+    const contextNode = (state.contextTrees.get(activeTask().workspace_id) || [])
+      .find(item => item.context_id === state.activeTaskId);
+    if (contextNode) contextNode.editable = false;
+    if (detail.context) detail.context.editable = false;
     // 运行已发起：立即暴露中断入口（否则运行中 active_run 仍为旧值，按钮不渲染）
     detail.active_run = run;
     detail.messages = [...(detail.messages || []), { role: "human", content: message }];
@@ -744,7 +1166,9 @@ function listenToRun(run) {
     if (!terminal.error && runError) terminal.error = runError;
     // 主动中断判定：主 Agent run 终态 interrupted 且无错误、且非承诺审批（审批面板已接管界面状态）
     const wasMainInterrupted = run.kind === "main" && terminal.status === "interrupted" && !terminal.error;
-    source.close(); state.streams.delete(run.run_id); clearStreamBuffer(run.run_id); await refreshTasks();
+    source.close(); state.streams.delete(run.run_id); clearStreamBuffer(run.run_id);
+    await refreshTasks();
+    await hydrateContextTrees();
     if (state.activeTaskId) await hydrateActive();
     const task = run.task_id
       ? state.tasks.find(item => item.task_id === run.task_id)
@@ -1437,6 +1861,16 @@ async function handleMaterialAction(button) {
   }
 }
 
+async function switchTask(taskId) {
+  if (state.view === "focus") await persistFocusState();
+  state.activeTaskId = taskId;
+  state.view = "focus";
+  await hydrateActive();
+  const projectionStatus = state.details.get(taskId)?.context?.projection_status || "root";
+  if (!["root", "valid", "repaired", "approved"].includes(projectionStatus)) return reopenContextDecision(taskId);
+  render();
+}
+
 document.addEventListener("click", async event => {
   const button = event.target.closest("[data-action]");
   if (!button) return;
@@ -1449,13 +1883,60 @@ document.addEventListener("click", async event => {
   if (action === "remove-skill") return removeSkill(button.dataset.pickerKind, button.dataset.skillName);
   if (action === "show-map") { persistFocusState(); state.view = "map"; return render(); }
   if (action === "focus-home" && state.activeTaskId) { state.view = "focus"; await hydrateActive(); return render(); }
+  if (action === "derive-context") return openContextEditor(state.activeTaskId);
+  if (action === "edit-context-definition") return reopenContextDecision(button.dataset.contextId);
+  if (action === "context-rail-card") return switchTask(button.dataset.taskId);
+  if (action === "resume-context-decision") return reopenContextDecision(state.activeTaskId);
+  if (action === "exit-context-editor") { state.contextDraft = null; state.view = "map"; return render(); }
+  if (action === "add-context-source") return addContextSource(button.dataset.contextId);
+  if (action === "context-source-select") {
+    state.contextDraft.activeSourceId = button.dataset.contextId;
+    return renderContextSourcePanel();
+  }
+  if (action === "remove-context-source") {
+    try {
+      const draft = syncContextDraft();
+      const [removed] = draft.sources.splice(Number(button.dataset.sourceIndex), 1);
+      draft.sourceSnapshots = draft.sourceSnapshots.filter(source => source.context_id !== removed.context_id);
+      if (draft.activeSourceId === removed.context_id) draft.activeSourceId = draft.sources[0]?.context_id || null;
+      return renderContextSourcePanel();
+    } catch (error) { return setStatus(error.message, true); }
+  }
+  if (action === "context-source-copy") {
+    try {
+      const row = button.closest("[data-context-source-index]");
+      const source = state.contextDraft.sourceSnapshots.find(item => item.context_id === row.dataset.sourceContextId);
+      return insertContextMessage(source.messages[Number(row.dataset.contextSourceIndex)], state.contextDraft.messages.length);
+    } catch (error) { return setStatus(error.message, true); }
+  }
+  if (action === "context-message-add") {
+    try { return insertContextMessage({ role: "human", content: "" }, state.contextDraft.messages.length, { expand: true, focus: true }); }
+    catch (error) { return setStatus(error.message, true); }
+  }
+  if (action === "context-message-clear") {
+    try { return clearContextMessages(); }
+    catch (error) { return setStatus(error.message, true); }
+  }
+  if (action === "context-message-toggle") return toggleContextMessage(button.closest("[data-context-ui-key]").dataset.contextUiKey);
+  if (action === "context-message-undo") return undoContextMessageDelete();
+  if (["context-message-copy", "context-message-delete"].includes(action)) {
+    try {
+      const index = Number(button.closest("[data-context-message-index]").dataset.contextMessageIndex);
+      if (action === "context-message-copy") return insertContextMessage(state.contextDraft.messages[index], index + 1);
+      return deleteContextMessage(index);
+    } catch (error) { return setStatus(error.message, true); }
+  }
+  if (action === "submit-context") return submitContext();
+  if (action === "accept-context-projection") return decideContextProjection("accept");
+  if (action === "cancel-context-projection") return decideContextProjection("reject");
+  if (action === "edit-context-projection") return renderContextEditor();
+  if (action === "open-derived-context") return openDerivedContext();
   if (action === "arm-soldier") { state.soldierArmed = !state.soldierArmed; return renderMap(); }
   if (action === "task-card") {
     const taskId = button.dataset.taskId;
     if (state.view === "draft") return;
     if (state.soldierArmed) return openDraft(taskId);
-    persistFocusState();
-    state.activeTaskId = taskId; state.view = "focus"; await hydrateActive(); return render();
+    return switchTask(taskId);
   }
   if (action === "send-main") return sendMain();
   if (action === "abandon-commitment") return abandonCommitment();
@@ -1486,6 +1967,22 @@ document.addEventListener("input", event => {
 });
 
 document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && contextPointerDrag) {
+    event.preventDefault();
+    return cancelContextPointerDrag();
+  }
+  const contextHandle = event.target.closest?.('[data-context-pointer-handle][data-context-drag-origin="draft"]');
+  if (contextHandle && event.altKey && ["ArrowUp", "ArrowDown"].includes(event.key)) {
+    event.preventDefault();
+    const index = Number(contextHandle.closest("[data-context-message-index]").dataset.contextMessageIndex);
+    const target = index + (event.key === "ArrowUp" ? -1 : 1);
+    try {
+      if (target >= 0 && target < state.contextDraft.messages.length) {
+        moveContextMessage(index, target, true);
+      }
+    } catch (error) { setStatus(error.message, true); }
+    return;
+  }
   const input = event.target.closest("[data-skill-input]");
   if (!input) return;
   const action = skillPicker.keyAction(event.key);
@@ -1520,6 +2017,183 @@ document.addEventListener("toggle", event => {
   state.openDraftSection = event.target.dataset.section;
   document.querySelectorAll(".draft-section").forEach(section => { if (section !== event.target) section.open = false; });
 }, true);
+
+function beginContextPointerDrag(drag, event) {
+  try { syncContextDraft(); }
+  catch (error) { setStatus(error.message, true); return cancelContextPointerDrag(); }
+  const rect = drag.card.getBoundingClientRect();
+  drag.started = true;
+  drag.offsetX = Math.max(18, Math.min(event.clientX - rect.left, rect.width - 18));
+  drag.offsetY = Math.max(18, Math.min(event.clientY - rect.top, rect.height - 18));
+  drag.preview = drag.card.cloneNode(true);
+  drag.preview.className = "context-drag-preview";
+  drag.preview.removeAttribute("data-context-message-index");
+  drag.preview.querySelectorAll("button, textarea, details").forEach(node => { node.tabIndex = -1; });
+  drag.preview.style.width = `${rect.width}px`;
+  drag.placeholder = document.createElement("div");
+  drag.placeholder.className = "context-drop-placeholder";
+  drag.placeholder.style.height = `${Math.min(rect.height, 180)}px`;
+  drag.card.classList.add("is-lifted");
+  document.body.append(drag.preview);
+  document.querySelector(".context-message-list")?.classList.add("is-drag-active");
+  positionContextDragPreview(event.clientX, event.clientY);
+  drag.autoFrame = requestAnimationFrame(runContextAutoScroll);
+}
+
+function positionContextDragPreview(clientX, clientY) {
+  if (!contextPointerDrag?.preview) return;
+  contextPointerDrag.clientX = clientX;
+  contextPointerDrag.clientY = clientY;
+  contextPointerDrag.preview.style.transform = `translate3d(${clientX - contextPointerDrag.offsetX}px, ${clientY - contextPointerDrag.offsetY}px, 0) scale(1.015)`;
+}
+
+function updateContextDropTarget(clientX, clientY) {
+  const drag = contextPointerDrag;
+  const list = document.querySelector(".context-message-list");
+  if (!drag?.started || !list) return;
+  const rect = list.getBoundingClientRect();
+  const inside = clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+  if (!inside) {
+    drag.dropIndex = null;
+    drag.placeholder?.remove();
+    return;
+  }
+  const rows = [...list.querySelectorAll(".context-message-editor")].filter(row => row !== drag.card);
+  let index = rows.findIndex(row => clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2);
+  if (index < 0) index = rows.length;
+  if (drag.dropIndex === index && drag.placeholder?.isConnected) return;
+  const previous = contextListPositions();
+  drag.dropIndex = index;
+  list.insertBefore(drag.placeholder, rows[index] || null);
+  animateContextReflow(previous);
+}
+
+function scrollContextPanelNearPointer(clientY) {
+  const panel = document.querySelector(".context-definition-panel");
+  const rect = panel?.getBoundingClientRect();
+  if (panel && rect) {
+    const edge = 58;
+    const delta = clientY < rect.top + edge ? -12 : clientY > rect.bottom - edge ? 12 : 0;
+    if (delta) {
+      panel.scrollTop += delta;
+      return true;
+    }
+  }
+  return false;
+}
+
+function runContextAutoScroll() {
+  const drag = contextPointerDrag;
+  if (!drag?.started) return;
+  if (scrollContextPanelNearPointer(drag.clientY)) updateContextDropTarget(drag.clientX, drag.clientY);
+  drag.autoFrame = requestAnimationFrame(runContextAutoScroll);
+}
+
+function cleanupContextPointerDrag(keepPreview = false) {
+  const drag = contextPointerDrag;
+  if (!drag) return null;
+  contextPointerDrag = null;
+  cancelAnimationFrame(drag.autoFrame);
+  drag.placeholder?.remove();
+  drag.card?.classList.remove("is-lifted");
+  document.querySelector(".context-message-list")?.classList.remove("is-drag-active");
+  if (!keepPreview) drag.preview?.remove();
+  try {
+    if (drag.handle.hasPointerCapture?.(drag.pointerId)) drag.handle.releasePointerCapture(drag.pointerId);
+  } catch {}
+  return drag;
+}
+
+function cancelContextPointerDrag() {
+  const drag = cleanupContextPointerDrag(true);
+  if (!drag?.preview) return;
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return drag.preview.remove();
+  const remove = () => drag.preview.remove();
+  drag.preview.animate([{ opacity: 1 }, { opacity: 0, transform: `${drag.preview.style.transform} scale(.96)` }], { duration: 120, easing: "ease-out" }).finished.finally(remove);
+  setTimeout(remove, 150);
+}
+
+function settleContextPointerPreview(drag, uiKey) {
+  if (!drag.preview) return;
+  const target = document.querySelector(`[data-context-ui-key="${uiKey}"]`);
+  if (!target || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return drag.preview.remove();
+  const rect = target.getBoundingClientRect();
+  const remove = () => drag.preview.remove();
+  drag.preview.animate([
+    { transform: drag.preview.style.transform, opacity: 1 },
+    { transform: `translate3d(${rect.left}px, ${rect.top}px, 0) scale(1)`, opacity: .2 },
+  ], { duration: 170, easing: "cubic-bezier(.2,.8,.2,1)" }).finished.finally(remove);
+  setTimeout(remove, 200);
+}
+
+document.addEventListener("pointerdown", event => {
+  const handle = event.target.closest?.("[data-context-pointer-handle]");
+  if (!handle || handle.disabled || event.button !== 0 || state.view !== "context") return;
+  const origin = handle.dataset.contextDragOrigin;
+  const card = origin === "source" ? handle.closest(".context-source-message") : handle.closest(".context-message-editor");
+  if (!card) return;
+  event.preventDefault();
+  contextPointerDrag = {
+    pointerId: event.pointerId,
+    handle,
+    card,
+    origin,
+    uiKey: card.dataset.contextUiKey,
+    sourceContextId: card.dataset.sourceContextId,
+    sourceIndex: Number(card.dataset.contextSourceIndex),
+    startX: event.clientX,
+    startY: event.clientY,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    started: false,
+    dropIndex: null,
+  };
+  try { handle.setPointerCapture(event.pointerId); } catch {}
+});
+
+document.addEventListener("pointermove", event => {
+  const drag = contextPointerDrag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  if (!drag.started && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 5) return;
+  event.preventDefault();
+  if (!drag.started) beginContextPointerDrag(drag, event);
+  if (!contextPointerDrag) return;
+  positionContextDragPreview(event.clientX, event.clientY);
+  updateContextDropTarget(event.clientX, event.clientY);
+  if (scrollContextPanelNearPointer(event.clientY)) updateContextDropTarget(event.clientX, event.clientY);
+});
+
+document.addEventListener("pointerup", event => {
+  const current = contextPointerDrag;
+  if (!current || event.pointerId !== current.pointerId) return;
+  if (!current.started || current.dropIndex == null) return cancelContextPointerDrag();
+  const dropIndex = current.dropIndex;
+  const drag = cleanupContextPointerDrag(true);
+  try {
+    let uiKey;
+    if (drag.origin === "source") {
+      const source = state.contextDraft.sourceSnapshots.find(item => item.context_id === drag.sourceContextId);
+      uiKey = insertContextMessage(source.messages[drag.sourceIndex], dropIndex);
+    } else {
+      const from = state.contextDraft.uiKeys.indexOf(drag.uiKey);
+      const to = Math.max(0, Math.min(dropIndex, state.contextDraft.messages.length - 1));
+      moveContextMessage(from, to);
+      uiKey = drag.uiKey;
+    }
+    settleContextPointerPreview(drag, uiKey);
+  } catch (error) {
+    drag.preview?.remove();
+    setStatus(error.message, true);
+  }
+});
+
+document.addEventListener("pointercancel", event => {
+  if (contextPointerDrag?.pointerId === event.pointerId) cancelContextPointerDrag();
+});
+
+document.addEventListener("lostpointercapture", event => {
+  if (contextPointerDrag?.pointerId === event.pointerId) cancelContextPointerDrag();
+});
 
 document.addEventListener("dragstart", event => {
   if (event.target.matches(".soldier-source")) event.dataTransfer.setData("application/x-focus-soldier", "new");
@@ -1591,7 +2265,7 @@ function persistFocusState() {
     skills: selectedSkills("main"),
     scrollTop: document.querySelector("#conversation")?.scrollTop || 0,
   };
-  api(`/desktop/api/tasks/${state.activeTaskId}/ui-state`, { method: "PUT", body: JSON.stringify(detail.ui_state) }).catch(() => {});
+  return api(`/desktop/api/tasks/${state.activeTaskId}/ui-state`, { method: "PUT", body: JSON.stringify(detail.ui_state) }).catch(() => {});
 }
 
 bootstrap();

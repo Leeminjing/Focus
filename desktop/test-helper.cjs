@@ -18,6 +18,7 @@ const BASE_GLOBALS = {
   clearTimeout() {},
   console,
   location: { origin: "http://localhost", protocol: "http:" },
+  requestAnimationFrame() {},
   setTimeout() {},
   window: {},
 };
@@ -68,6 +69,7 @@ function createAppHarness(options = {}) {
   context.window = context;
   // markdown-it(vendor):与浏览器一致,script 内容在 context 内执行,暴露全局 markdownit
   vm.runInContext(fs.readFileSync(require.resolve("./vendor/markdown-it.min.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("./context-editor.js"), "utf8"), context);
   return { vm, context, document, inert, statusNode, statusState, fetches };
 }
 

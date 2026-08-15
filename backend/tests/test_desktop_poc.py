@@ -70,8 +70,22 @@ def test_desktop_run_sync_persists_record_error():
         service._sync_tasks = set()
         calls = []
 
-        async def capture(run_id, status, error=None):
-            calls.append((run_id, status, error))
+        async def capture(
+            run_id,
+            status,
+            error=None,
+            prompt_input_tokens=0,
+            prompt_cache_hit_tokens=0,
+        ):
+            calls.append(
+                (
+                    run_id,
+                    status,
+                    error,
+                    prompt_input_tokens,
+                    prompt_cache_hit_tokens,
+                )
+            )
 
         async def completed():
             return None
@@ -81,13 +95,15 @@ def test_desktop_run_sync_persists_record_error():
             run_id="run-error",
             status=SimpleNamespace(value="error"),
             error="read_file: target is a directory",
+            prompt_input_tokens=120,
+            prompt_cache_hit_tokens=30,
             task=asyncio.create_task(completed()),
         )
         await service._sync_run_status(record)
         return calls
 
     assert asyncio.run(scenario()) == [
-        ("run-error", "error", "read_file: target is a directory")
+        ("run-error", "error", "read_file: target is a directory", 120, 30)
     ]
 
 
