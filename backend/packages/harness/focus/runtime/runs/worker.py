@@ -137,6 +137,24 @@ def _envelope_base(record: RunRecord, langgraph_context: dict | None) -> dict[st
     }
 
 
+def _accumulate_usage(record: RunRecord, mode: str, chunk: Any) -> None:
+    if mode != "messages":
+        return
+    try:
+        message, _metadata = chunk
+    except (TypeError, ValueError):
+        return
+    usage = getattr(message, "usage_metadata", None)
+    if not usage:
+        return
+    input_tokens = usage.get("input_tokens")
+    cache_read = (usage.get("input_token_details") or {}).get("cache_read")
+    if isinstance(input_tokens, int):
+        record.prompt_input_tokens += input_tokens
+    if isinstance(cache_read, int):
+        record.prompt_cache_hit_tokens += cache_read
+
+
 async def run_agent(
     *,
     record: RunRecord,
@@ -240,6 +258,7 @@ async def run_agent(
             context=langgraph_context,
             stream_mode=stream_modes_list,
         ):
+            _accumulate_usage(record, mode, chunk)
             # (5) abort 中断检查
             if record.abort_event.is_set():
                 logger.info("run '%s' 收到 abort 信号，停止执行", record.run_id)

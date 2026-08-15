@@ -2,7 +2,7 @@
 本文件对外提供 desktop_router，作为桌面 PoC 的 HTTP 与 SSE 接口层。
 
 输入为带 `X-Focus-Session` 的桌面请求以及 models.py 定义的数据模型；输出为工作区、
-任务、草稿、运行、材料 JSON 或独立 SSE 流。具体工作流为校验本机会话后调用
+Context、任务、草稿、运行、材料 JSON 或独立 SSE 流。具体工作流为校验本机会话后调用
 DesktopService，并保持所有事件按 run_id 订阅。示例：`app.include_router(desktop_router)`。
 """
 
@@ -17,6 +17,9 @@ from fastapi.responses import StreamingResponse
 
 from backend.app.desktop.models import (
     ContinueRequest,
+    ContextDefinitionUpdate,
+    ContextDeriveCreate,
+    ContextProjectionDecision,
     DeployRequest,
     DraftUpdate,
     MainRunCreate,
@@ -81,6 +84,42 @@ async def list_tasks(request: Request) -> list[dict]:
 @desktop_router.get("/tasks/{task_id}")
 async def get_task(task_id: str, request: Request) -> dict:
     return await request.app.state.desktop_service.get_task(task_id)
+
+
+@desktop_router.get("/contexts/{context_id}/snapshot")
+async def get_context_snapshot(
+    context_id: str, request: Request, checkpoint_id: str | None = None
+) -> dict:
+    return await request.app.state.desktop_service.contexts.snapshot(context_id, checkpoint_id)
+
+
+@desktop_router.get("/contexts/{context_id}/lineage")
+async def get_context_lineage(context_id: str, request: Request) -> dict:
+    return await request.app.state.desktop_service.contexts.lineage(context_id)
+
+
+@desktop_router.get("/workspaces/{workspace_id}/contexts/tree")
+async def get_context_tree(workspace_id: str, request: Request) -> list[dict]:
+    return await request.app.state.desktop_service.contexts.tree(workspace_id)
+
+
+@desktop_router.post("/contexts/derive")
+async def derive_context(body: ContextDeriveCreate, request: Request) -> dict:
+    return await request.app.state.desktop_service.contexts.derive(body)
+
+
+@desktop_router.put("/contexts/{context_id}/definition")
+async def update_context_definition(
+    context_id: str, body: ContextDefinitionUpdate, request: Request
+) -> dict:
+    return await request.app.state.desktop_service.contexts.update_definition(context_id, body)
+
+
+@desktop_router.post("/contexts/{context_id}/projection/decision")
+async def decide_context_projection(
+    context_id: str, body: ContextProjectionDecision, request: Request
+) -> dict:
+    return await request.app.state.desktop_service.contexts.decide(context_id, body)
 
 
 @desktop_router.get("/tasks/{task_id}/skills")

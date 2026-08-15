@@ -1,5 +1,5 @@
 r"""
-本文件对外提供桌面 PoC 的 PostgreSQL ORM 模型与 API 数据模型。
+本文件对外提供桌面 PoC 与 Recursive Context Forking 的 PostgreSQL ORM 模型和 API 数据模型。
 
 输入为工作区、任务、草稿、运行和材料的结构化数据；输出为 SQLAlchemy 表定义与
 Pydantic 请求模型。具体工作流由 routes.py 校验请求、service.py 持久化这些对象。
@@ -44,6 +44,49 @@ class DesktopThread(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class DesktopContextDefinition(Base):
+    __tablename__ = "desktop_context_definitions"
+
+    context_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), primary_key=True
+    )
+    authored_messages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    execution_messages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    repair_manifest: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    issues: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    definition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    projection_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    projection_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    initial_message_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    initial_checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    decided_definition_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    decided_projection_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DesktopContextSource(Base):
+    __tablename__ = "desktop_context_sources"
+    __table_args__ = (
+        UniqueConstraint("context_id", "position", name="uq_desktop_context_source_position"),
+    )
+
+    source_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    context_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    parent_context_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_threads.task_id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_checkpoint_id: Mapped[str] = mapped_column(Text, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class PatrolDraft(Base):
@@ -94,6 +137,8 @@ class DesktopRun(Base):
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
     input_messages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
     model_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    prompt_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    prompt_cache_hit_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -195,6 +240,27 @@ class WorkspaceCreate(StrictRequest):
 class ThreadCreate(StrictRequest):
     thread_id: str | None = None
     title: str = "新任务"
+
+
+class ContextSourceRef(StrictRequest):
+    context_id: str = Field(min_length=1)
+    checkpoint_id: str = Field(min_length=1)
+
+
+class ContextDeriveCreate(StrictRequest):
+    title: str = Field(default="新 Context", min_length=1, max_length=200)
+    sources: list[ContextSourceRef] = Field(min_length=1)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ContextDefinitionUpdate(StrictRequest):
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ContextProjectionDecision(StrictRequest):
+    decision: Literal["accept", "reject"]
+    definition_hash: str = Field(min_length=64, max_length=64)
+    projection_hash: str = Field(min_length=64, max_length=64)
 
 
 class MainRunCreate(StrictRequest):

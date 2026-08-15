@@ -1,5 +1,5 @@
 """
-本文件对外提供 DesktopService，集中实现桌面工作区、草稿、小兵运行、材料版本与
+本文件对外提供 DesktopService，集中实现桌面工作区、Context 接线、草稿、小兵运行、材料版本与
 Claude Code 三套 subagent 机制（树形 spawn / Swarm / Coordinator）业务。
 
 输入为已初始化的 PostgreSQL session factory、LangGraph checkpointer/store、StreamBridge、
@@ -42,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.collab import AgentCollab
 from backend.app.desktop.checkpoint_recovery import select_checkpoint_base
+from backend.app.desktop.context_service import ContextService
 from backend.app.desktop.models import (
     AgentBoardTask,
     AgentMessage,
@@ -159,6 +160,7 @@ class DesktopService:
         self.bridge = bridge
         self.app_config = app_config
         self.run_manager = run_manager
+        self.contexts = ContextService(session_factory, checkpointer, app_config)
         # Agent 协作（Mailbox 消息 / 任务板）：工具构建与未读消息回合注入；
         # swarm_launcher 注入消息驱动自动唤醒（send_message/publish_task 落表后触发目标 run）
         self.agent_collab = AgentCollab(session_factory, swarm_launcher=self._auto_wake_swarm)
@@ -250,7 +252,9 @@ class DesktopService:
         async with self.session_factory() as session:
             task, workspace = await self._get_task_entities(session, task_id)
             payload = await self._task_payload(session, task, workspace)
-        payload["messages"] = await self.get_checkpoint_messages(task.thread_id, "")
+        snapshot = await self.contexts.snapshot(task_id)
+        payload["messages"] = snapshot["messages"]
+        payload["context"] = await self.contexts.get(task_id)
         return payload
 
     async def list_task_skills(self, task_id: str) -> list[dict[str, str]]:
@@ -411,6 +415,7 @@ class DesktopService:
     ) -> PreparedRun:
         async with self.session_factory() as session:
             task_row, workspace = await self._get_task_entities(session, task_id)
+            await self.contexts.ensure_runnable(session, task_id)
             recovery = await self._commitment_recovery_payload(session, task_row)
             if recovery is not None:
                 raise HTTPException(
@@ -1257,7 +1262,13 @@ class DesktopService:
             pass  # RunManager.cancel 已置 interrupted
         finally:
             try:
-                await self._set_run_status(record.run_id, record.status.value, record.error)
+                await self._set_run_status(
+                    record.run_id,
+                    record.status.value,
+                    record.error,
+                    record.prompt_input_tokens,
+                    record.prompt_cache_hit_tokens,
+                )
             finally:
                 self._sync_tasks.discard(asyncio.current_task())
 
@@ -1328,12 +1339,21 @@ class DesktopService:
                 raise ValueError("任务不存在")
             return task.thread_id
 
-    async def _set_run_status(self, run_id: str, status: str, error: str | None = None) -> None:
+    async def _set_run_status(
+        self,
+        run_id: str,
+        status: str,
+        error: str | None = None,
+        prompt_input_tokens: int = 0,
+        prompt_cache_hit_tokens: int = 0,
+    ) -> None:
         async with self.session_factory() as session:
             run = await session.get(DesktopRun, run_id)
             if run:
                 run.status = status
                 run.error = error
+                run.prompt_input_tokens = prompt_input_tokens
+                run.prompt_cache_hit_tokens = prompt_cache_hit_tokens
                 await session.commit()
 
     async def _validate_attachments(
@@ -1621,6 +1641,8 @@ class DesktopService:
             "run_id": run.run_id, "task_id": run.task_id, "agent_id": run.agent_id,
             "deployment_id": run.deployment_id, "kind": run.kind, "status": run.status,
             "model_name": run.model_name, "error": run.error,
+            "prompt_input_tokens": run.prompt_input_tokens,
+            "prompt_cache_hit_tokens": run.prompt_cache_hit_tokens,
         }
 
     @staticmethod
