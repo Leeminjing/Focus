@@ -803,3 +803,52 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
   .context-message-actions,
   .context-empty-drop { transition: none; }
 }
+
+/* === 压缩视图（human-in-the-loop 上下文压缩）=== */
+
+.compression-view { height: 100%; display: flex; flex-direction: column; padding: 16px 20px; gap: 12px; box-sizing: border-box; }
+.compression-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.compression-heading h1 { margin: 2px 0 4px; font-size: 20px; }
+.compression-usage { margin: 0; font-size: 13px; color: var(--muted); }
+.compression-usage strong { color: var(--ink); }
+.compression-panels { flex: 1; display: grid; grid-template-columns: 5fr 7fr; gap: 12px; min-height: 0; }
+.compression-messages, .compression-plan { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.compression-panel-heading { display: flex; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line-soft); font-size: 13px; }
+.compression-panel-heading span { color: var(--muted); }
+.compression-message-list { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+.compression-message-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; padding: 8px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--bg); cursor: pointer; }
+.compression-message-row.is-block { background: var(--blue-soft); border-color: #cfe0ff; }
+.compression-role { flex: none; font-size: 12px; font-weight: 600; color: var(--muted); min-width: 64px; padding-top: 1px; }
+.compression-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.compression-preview { width: 100%; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.compression-block-source { width: 100%; }
+.compression-block-source summary { font-size: 12px; color: var(--blue); cursor: pointer; }
+.compression-block-source pre { max-height: 220px; overflow: auto; font-size: 11px; background: var(--bg); border: 1px solid var(--line-soft); border-radius: 4px; padding: 8px; margin: 4px 0 0; }
+.compression-messages footer, .compression-plan footer { padding: 10px 12px; border-top: 1px solid var(--line-soft); display: flex; justify-content: flex-end; }
+.compression-plan { overflow-y: auto; padding: 6px; }
+.compression-range-card { border: 1px solid var(--line); border-radius: 6px; background: var(--bg); padding: 10px; margin: 6px; display: flex; flex-direction: column; gap: 8px; }
+.compression-range-card.is-restore { border-color: var(--green); background: #f2fbf7; }
+.compression-range-card header { display: flex; justify-content: space-between; font-size: 13px; }
+.compression-range-card textarea { width: 100%; min-height: 96px; box-sizing: border-box; border: 1px solid var(--line); border-radius: 6px; padding: 8px; font-size: 13px; resize: vertical; }
+.compression-range-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.compression-stats { display: flex; justify-content: space-between; padding: 10px 12px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line-soft); margin-top: auto; }
+.compression-mapping { list-style: none; margin: 0; padding: 0 12px 8px; font-size: 12px; color: var(--muted); }
+.compression-mapping li::before { content: "· "; color: var(--blue); }
+
+@media (max-width: 900px) {
+  .compression-panels { grid-template-columns: 1fr; overflow-y: auto; }
+  .compression-messages { min-height: 40vh; }
+}
+.compression-range-error { margin: 0; font-size: 12px; color: var(--danger); }
+.compression-index { flex: none; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 24px; padding-top: 1px; }
+.compression-block-divider { margin: 6px 0; padding: 6px 10px; background: var(--blue-soft); border: 1px dashed #cfe0ff; border-radius: 6px; font-size: 12px; }
+.compression-block-summary summary { color: var(--blue); cursor: pointer; }
+.compression-block-summary-body { margin-top: 4px; white-space: pre-wrap; color: var(--ink); font-size: 13px; line-height: 1.5; }
+.compression-block-source-body { margin-top: 4px; display: flex; flex-direction: column; gap: 2px; }
+.compression-nested-row { display: flex; gap: 8px; align-items: flex-start; margin-left: calc(var(--nested-level, 0) * 16px); padding: 2px 0; font-size: 12px; }
+.compression-nested-row .compression-preview { width: 100%; overflow-wrap: anywhere; }
+.compression-nested-source { display: flex; flex-direction: column; flex-basis: 100%; }
+.compression-range-card.is-delete { border-color: var(--danger); background: #fdf3f3; }
+.compression-block-divider.is-deleted { background: #fdf3f3; border-color: #f0c4c4; color: var(--danger); }
+.compression-message-row.is-deleted { background: #fdf3f3; border-color: #f0c4c4; }
+.compression-message-row.is-synthetic { opacity: .65; }

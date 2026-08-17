@@ -73,6 +73,11 @@ def serialize_message(message: BaseMessage) -> dict[str, Any]:
     files = message.additional_kwargs.get("files") if message.additional_kwargs else None
     if files:
         result["files"] = files
+    compression = message.additional_kwargs.get("compression") if message.additional_kwargs else None
+    if compression:
+        result["compression"] = compression
+    if message.additional_kwargs and message.additional_kwargs.get("curation_synthetic"):
+        result["curation_synthetic"] = True
     return result
 
 
@@ -144,21 +149,26 @@ def validate_messages(messages: list[dict[str, Any]]) -> None:
         raise ValueError(f"工具调用缺少结果: {', '.join(sorted(unresolved))}")
 
 
-def deserialize_messages(messages: list[dict[str, Any]]) -> list[BaseMessage]:
-    """前端消息 dict 列表 → LangChain BaseMessage 列表（先校验结构）。
+def deserialize_messages(
+    messages: list[dict[str, Any]], validate: bool = True
+) -> list[BaseMessage]:
+    """前端消息 dict 列表 → LangChain BaseMessage 列表（默认先校验结构）。
 
     输入:
         messages: list[dict] — 前端消息（role/content/id/files/tool_calls/tool_call_id）
+        validate: bool — 是否先做 tool call 关联完整性校验；压缩块来源恢复等
+            局部切片可能孤立于调用方，由调用方后续统一修复时传 False
 
     输出:
         list[BaseMessage] — 按角色还原的消息实例
 
     工作流:
-        (1) validate_messages 校验 tool call 关联完整性
+        (1) validate=True 时 validate_messages 校验 tool call 关联完整性
         (2) human/user → HumanMessage；ai/assistant → AIMessage（含 tool_calls）；
             system → SystemMessage；tool → ToolMessage
     """
-    validate_messages(messages)
+    if validate:
+        validate_messages(messages)
     result: list[BaseMessage] = []
     for message in messages:
         role = message.get("role")
@@ -167,6 +177,8 @@ def deserialize_messages(messages: list[dict[str, Any]]) -> list[BaseMessage]:
             kwargs["id"] = message["id"]
         if message.get("files"):
             kwargs["additional_kwargs"] = {"files": message["files"]}
+        if message.get("compression"):
+            kwargs.setdefault("additional_kwargs", {})["compression"] = message["compression"]
         if role in {"human", "user"}:
             result.append(HumanMessage(content=message.get("content", ""), **kwargs))
         elif role in {"ai", "assistant"}:
