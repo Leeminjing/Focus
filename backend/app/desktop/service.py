@@ -9,11 +9,12 @@ RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以
 准备无沙箱工作区 Agent 的装配参数（经统一执行链路 worker.run_agent 执行，
 独立 checkpoint namespace 隔离），并用 Git 隐藏引用保护不可遗失材料。
 四套机制装配边界经 agent_role 区分：main（spawn 三件套 + 协作工具 + Mailbox 注入
-+ 联网工具 web_search/web_fetch + MCP 远端工具）、teammate/worker（持久派生 Agent，
-协作工具 + Mailbox 注入 + 联网工具）、patrol（小兵机制，工作区工具仅，无联网无 MCP）。
-持久派生（spawn_teammate/spawn_worker）创建 SwarmAgent 身份并经 _launch_swarm_run
-启动独立命名空间的后台 run；工具错误 middleware 保证可恢复调用闭合，主任务运行前的
-checkpoint preflight 可从最近合法祖先恢复受损历史。
++ 联网工具 web_search/web_fetch + MCP 远端工具 + 压缩门）、teammate/worker（持久派生
+Agent，协作工具 + Mailbox 注入 + 联网工具）、patrol（小兵机制，工作区工具仅，无联网
+无 MCP）。持久派生（spawn_teammate/spawn_worker）创建 SwarmAgent 身份并经
+_launch_swarm_run 启动独立命名空间的后台 run；工具错误 middleware 保证可恢复调用闭合，
+主任务运行前的 checkpoint preflight 可从最近合法祖先恢复受损历史；主 Agent 中断恢复
+经 resume_run 按载荷分派承诺层与压缩流程。
 示例：`service = DesktopService(...); await service.open_draft(task_id)`。
 """
 
@@ -42,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.collab import AgentCollab
 from backend.app.desktop.checkpoint_recovery import select_checkpoint_base
+from backend.app.desktop.compression import compression_recovery_payload
 from backend.app.desktop.context_service import ContextService
 from backend.app.desktop.models import (
     AgentBoardTask,
@@ -67,6 +69,7 @@ from focus.tools.builtins.spawn_agent_tool import build_spawn_agent_tool
 from backend.app.gateway.routers.thread_runs import RunCreateRequest
 from focus.agents.commitment.middleware import commitment_subgraph_thread_id
 from focus.agents.commitment.workflow import _human_payload
+from focus.agents.compression.tokens import estimate_raw_tokens
 from focus.agents.lead import make_lead_agent
 from focus.config.app_config import AppConfig
 from focus.runtime.runs.events import (
@@ -130,9 +133,7 @@ def _checkpoint_commitment_review(
 
 def estimate_tokens(system_prompt: str, messages: list[dict[str, Any]], final_message: str) -> int:
     raw = system_prompt + final_message + json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
-    cjk = sum(1 for char in raw if "\u3400" <= char <= "\u9fff")
-    other = sum(1 for char in raw if not char.isspace() and not ("\u3400" <= char <= "\u9fff"))
-    return cjk + (other + 3) // 4 + 12 * (len(messages) + 2)
+    return estimate_raw_tokens(raw, len(messages))
 
 
 def prompt_with_skills(system_prompt: str, snapshots: list[dict[str, str]]) -> str:
@@ -426,6 +427,18 @@ class DesktopService:
                         "message": "存在尚未处理的承诺审批，请先继续审批或显式放弃旧流程",
                     },
                 )
+            compression_recovery = await compression_recovery_payload(
+                session, task_row, self.checkpointer
+            )
+            if compression_recovery is not None:
+                raise HTTPException(
+                    409,
+                    {
+                        "code": "compression_request_pending",
+                        "recovery": compression_recovery["status"],
+                        "message": "存在待确认的压缩请求，请先完成压缩或取消后继续",
+                    },
+                )
             snapshots = self._freeze_skills(workspace.path, skills)
             equipment = {
                 "model_name": model_name,
@@ -453,14 +466,20 @@ class DesktopService:
         )
 
     async def resume_run(self, thread_id: str, resume: dict[str, Any]) -> PreparedRun:
-        """承诺层人工确认恢复：以相同 thread_id resume 父图，resume 载荷经 start_run 翻译为 Command(resume=...)。
+        """主 Agent 中断恢复：按 resume 载荷分派承诺层或压缩流程。
 
         输入:
             thread_id: str — 桌面任务登记的唯一 thread 标识
-            resume: dict — 人工决定 {decision: approve|revise, feedback?, replacement?}
+            resume: dict — 承诺层 {decision: approve|revise, feedback?, replacement?}
+                或压缩 {"type": "compression", "decision": apply|cancel, ...}
 
         输出:
             PreparedRun — 携带 RunCreateRequest(resume=...) 与主 Agent 装配闭包
+
+        工作流:
+            (1) 先按承诺子图 checkpoint 探测承诺审批；命中走承诺校验原路
+            (2) 否则按主图 checkpoint 探测压缩请求；命中且载荷为 compression 类型时走压缩校验
+            (3) 皆无可恢复时 409；校验通过后经 _prepare_main_resume 组装主 Agent resume run
         """
         async with self.session_factory() as session:
             task = await session.scalar(
@@ -470,7 +489,27 @@ class DesktopService:
                 raise HTTPException(404, "任务不存在")
             recovery = await self._commitment_recovery_payload(session, task)
             if recovery is None:
-                raise HTTPException(409, "无可恢复的承诺流程")
+                compression_recovery = await compression_recovery_payload(
+                    session, task, self.checkpointer
+                )
+                if (
+                    compression_recovery is None
+                    or not isinstance(resume, dict)
+                    or resume.get("type") != "compression"
+                ):
+                    raise HTTPException(409, "无可恢复的承诺流程")
+                if compression_recovery["status"] == "processing":
+                    raise HTTPException(
+                        409,
+                        {
+                            "code": "compression_request_processing",
+                            "message": "压缩请求正在处理，请等待当前运行结束",
+                        },
+                    )
+                workspace = await session.get(DesktopWorkspace, task.workspace_id)
+                if not workspace:
+                    raise HTTPException(404, "工作区不存在")
+                return await self._prepare_main_resume(session, task, workspace, resume)
             if recovery["status"] != "resumable":
                 code = (
                     "commitment_review_processing"
@@ -492,36 +531,44 @@ class DesktopService:
             workspace = await session.get(DesktopWorkspace, task.workspace_id)
             if not workspace:
                 raise HTTPException(404, "工作区不存在")
-            equipment = dict(
-                (task.ui_state or {}).get(_MAIN_RUNTIME_EQUIPMENT_KEY) or {}
-            )
-            if not equipment:
-                # 兼容修复前已进入 interrupt 的任务：尽量恢复 UI 中仍可获得的技能，
-                # 其余字段沿用旧行为的默认值。
-                skills = self._normalize_skill_names((task.ui_state or {}).get("skills"))
-                equipment = {
-                    "model_name": None,
-                    "skills": skills,
-                    "skill_snapshots": self._freeze_skills(workspace.path, skills),
-                    "permissions": ["read"],
-                }
-            run = DesktopRun(
-                run_id=new_id(),
-                task_id=task.task_id,
-                agent_id=f"main:{task.task_id}",
-                kind="main",
-                status="pending",
-                input_messages=[],
-                model_name=equipment.get("model_name"),
-            )
-            session.add(run)
-            await session.commit()
-            task_id = task.task_id
-            workspace_id = workspace.workspace_id
-            workspace_path = workspace.path
-        material_context, uploads_tag = await self._material_context(task_id)
+            return await self._prepare_main_resume(session, task, workspace, resume)
+
+    async def _prepare_main_resume(
+        self,
+        session: AsyncSession,
+        task: DesktopThread,
+        workspace: DesktopWorkspace,
+        resume: dict[str, Any],
+    ) -> PreparedRun:
+        """组装主 Agent resume run 的公共尾部：equipment 沿用、新建 DesktopRun、
+        agent_factory 与 RunCreateRequest(resume=...)。"""
+        equipment = dict(
+            (task.ui_state or {}).get(_MAIN_RUNTIME_EQUIPMENT_KEY) or {}
+        )
+        if not equipment:
+            # 兼容修复前已进入 interrupt 的任务：尽量恢复 UI 中仍可获得的技能，
+            # 其余字段沿用旧行为的默认值。
+            skills = self._normalize_skill_names((task.ui_state or {}).get("skills"))
+            equipment = {
+                "model_name": None,
+                "skills": skills,
+                "skill_snapshots": self._freeze_skills(workspace.path, skills),
+                "permissions": ["read"],
+            }
+        run = DesktopRun(
+            run_id=new_id(),
+            task_id=task.task_id,
+            agent_id=f"main:{task.task_id}",
+            kind="main",
+            status="pending",
+            input_messages=[],
+            model_name=equipment.get("model_name"),
+        )
+        session.add(run)
+        await session.commit()
+        material_context, uploads_tag = await self._material_context(task.task_id)
         factory = self._build_agent_factory(
-            task_id, run.agent_id, workspace_path, equipment, _MAIN_SYSTEM_PROMPT,
+            task.task_id, run.agent_id, workspace.path, equipment, _MAIN_SYSTEM_PROMPT,
             material_context, "main",
         )
         body = RunCreateRequest(
@@ -529,12 +576,12 @@ class DesktopService:
             resume=resume,
             context={
                 "model_name": equipment.get("model_name"),
-                "workspace_id": workspace_id,
+                "workspace_id": workspace.workspace_id,
                 "agent_id": run.agent_id,
-                "task_id": task_id,
+                "task_id": task.task_id,
                 "permissions": equipment.get("permissions") or ["read"],
                 "skills": equipment.get("skills") or [],
-                "workspace": workspace_path,
+                "workspace": workspace.path,
                 "uploads": uploads_tag,
                 "checkpoint_ns": "",
                 "run_id": run.run_id,
@@ -543,7 +590,7 @@ class DesktopService:
         )
         return PreparedRun(
             body=body,
-            thread_id=thread_id,
+            thread_id=task.thread_id,
             agent_factory=factory,
             payload=self._run_payload(run),
         )
@@ -866,17 +913,40 @@ class DesktopService:
             else:
                 task_skill_names = None
                 middlewares = []
+            # 压缩门：仅主 Agent、按 compression.enabled 装配（patrol/swarm 不装配）
+            additional_middlewares = [build_tool_error_middleware()]
+            if agent_role == "main" and self.app_config.compression.enabled:
+                from focus.agents.compression.gate import build_compression_gate
+
+                additional_middlewares.append(
+                    build_compression_gate(
+                        context_window=self._compression_context_window(model_name),
+                        threshold_ratio=self.app_config.compression.threshold_ratio,
+                    )
+                )
             return await make_lead_agent(
                 model_name=model_name,
                 tools=tools,
                 system_prompt=prompt,
                 middlewares=middlewares,
-                additional_middlewares=[build_tool_error_middleware()],
+                additional_middlewares=additional_middlewares,
                 app_config=self.app_config,
                 middleware_skill_names=task_skill_names,
             )
 
         return factory
+
+    def _compression_context_window(self, model_name: str | None) -> int | None:
+        """按运行模型取上下文窗口；模型未知时返回 None（压缩门恒放行）。"""
+        try:
+            model = (
+                self.app_config.get_model(model_name)
+                if model_name
+                else self.app_config.models[0]
+            )
+        except KeyError:
+            return None
+        return model.context_window
 
     # === 机制③④：持久派生 spawn（teammate/worker）===
 
@@ -1561,6 +1631,9 @@ class DesktopService:
         ui_state = dict(task.ui_state or {})
         ui_state.pop(_MAIN_RUNTIME_EQUIPMENT_KEY, None)
         recovery = await self._commitment_recovery_payload(session, task)
+        compression_recovery = await compression_recovery_payload(
+            session, task, self.checkpointer
+        )
         return {
             "task_id": task.task_id, "workspace_id": task.workspace_id, "workspace_path": workspace.path,
             "workspace_name": workspace.display_name, "thread_id": task.thread_id, "title": task.title,
@@ -1569,6 +1642,12 @@ class DesktopService:
                 recovery["review"] if recovery and recovery["status"] == "resumable" else None
             ),
             "commitment_recovery": recovery,
+            "pending_compression": (
+                compression_recovery["request"]
+                if compression_recovery and compression_recovery["status"] in ("resumable", "orphaned")
+                else None
+            ),
+            "compression_recovery": compression_recovery,
         }
 
     async def _commitment_recovery_payload(

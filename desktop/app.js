@@ -50,6 +50,15 @@ const state = {
     terminalError: null,
     handoffStarted: false,
   },
+  compression: {
+    taskId: null,
+    request: null,
+    messages: [],
+    selected: new Set(),
+    ranges: [],
+    busy: false,
+    recovery: null,
+  },
 };
 
 const app = document.querySelector("#app");
@@ -58,6 +67,7 @@ const dialog = document.querySelector("#taskDialog");
 const agentDialog = document.querySelector("#agentDialog");
 const skillPicker = window.FocusSkillPicker;
 const contextEditor = window.FocusContextEditor;
+const compressionPanel = window.FocusCompressionPanel;
 let contextUiSequence = 0;
 let contextPointerDrag = null;
 let contextUndoTimer = null;
@@ -134,6 +144,7 @@ async function hydrateActive() {
   ]);
   state.details.set(state.activeTaskId, detail);
   reconcileCommitmentRecovery(detail);
+  reconcileCompressionRecovery(detail);
   state.materials.set(state.activeTaskId, materials);
   state.agents.set(state.activeTaskId, agents);
   state.skillCatalogs.set(state.activeTaskId, catalog.skills);
@@ -152,6 +163,7 @@ function render() {
   if (state.view === "focus") renderFocus();
   else if (state.view === "map") renderMap();
   else if (state.view === "draft") renderDraft();
+  else if (state.view === "compress") renderCompress();
   else renderContextEditor();
 }
 
@@ -359,6 +371,11 @@ function renderFocus() {
 }
 
 function renderMessage(message) {
+  // 后端兜底降级消息按工具结果样式渲染，不泄露原始 XML 标签
+  const degraded = compressionPanel.degradedParts(message);
+  if (degraded) {
+    return `<article class="message tool"><span class="message-role">工具 · ${escapeHtml(degraded.name || "tool")}</span><div class="message-content">${escapeHtml(degraded.content)}</div></article>`;
+  }
   const baseRole = { human: "你", user: "你", ai: "助手", assistant: "助手", system: "System", tool: "Tool" }[message.role] || message.role;
   const role = message.role === "tool" && message.name ? `${baseRole} · ${message.name}` : baseRole;
   const kind = { human: "human", user: "human", ai: "ai", assistant: "ai", system: "system", tool: "tool" }[message.role] || "system";
@@ -380,9 +397,23 @@ function renderMessage(message) {
   return `<article class="message ${kind}"><span class="message-role">${escapeHtml(role)}</span><div class="message-content">${rendered}</div></article>`;
 }
 
+function renderCompressionDivider(item) {
+  // 压缩块/删除墓碑分界标记：原文已在其后原位展开显示；删除无摘要，仅提示
+  if (item.deleted) {
+    return `<div class="compression-block-divider is-deleted"><span>🗑 已删除 · 来源 ${item.count} 条（模型不可见，可在压缩面板中恢复）</span></div>`;
+  }
+  return `<div class="compression-block-divider">
+    <details class="compression-block-summary"><summary>📦 压缩块 · 来源 ${item.count} 条</summary><div class="compression-block-summary-body">${escapeHtml(item.summary)}</div></details>
+  </div>`;
+}
+
 function renderConversation(detail, task) {
+  // 压缩块展开为来源原文渲染（保留原会话视觉），curation_synthetic 占位跳过
+  const rendered = compressionPanel.expandForConversation(detail.messages || [])
+    .map(item => (item.divider ? renderCompressionDivider(item) : renderMessage(item)))
+    .join("");
   const messages = detail.messages?.length
-    ? detail.messages.map(renderMessage).join("")
+    ? rendered
     : `<div class="message"><span class="message-role">Focus</span><div class="message-content">${escapeHtml(task.workspace_path)}<br><span class="muted">这是该工作区与线程的 Page 1。输入任务即可开始。</span></div></div>`;
   const streaming = [...state.streamBuffers.entries()]
     .filter(([, buffer]) => buffer.taskId === task.task_id && buffer.text)
@@ -1097,6 +1128,9 @@ async function sendMain() {
   if (activeTaskHasCommitmentLock()) {
     return setStatus("存在尚未处理的承诺流程，请先处理审批面板", true);
   }
+  if (state.details.get(state.activeTaskId)?.pending_compression) {
+    return setStatus("存在待确认的压缩请求，请先完成压缩或取消", true);
+  }
   setStatus("");
   const input = document.querySelector("#mainInput");
   const message = input.value.trim();
@@ -1151,9 +1185,17 @@ function listenToRun(run) {
   source.addEventListener("interrupt", event => {
     const envelope = JSON.parse(event.data);
     const value = envelope.data?.value;
-    if (!value || value.type !== "commitment_review") return;
-    if (!commitmentBelongsToTask(envelope)) return;
-    showReview(value);
+    if (!value) return;
+    if (value.type === "commitment_review") {
+      if (!commitmentBelongsToTask(envelope)) return;
+      showReview(value);
+      return;
+    }
+    if (value.type === "compression_request") {
+      const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
+      if (!task) return;
+      openCompressionView(task, value);
+    }
   });
   source.addEventListener("error", event => {
     if (!event.data) return;
@@ -1806,6 +1848,319 @@ function scrollConversation() {
   requestAnimationFrame(() => { conversation.scrollTop = conversation.scrollHeight; });
 }
 
+// === 压缩视图（human-in-the-loop 上下文压缩）===
+
+function formatTokens(value) {
+  const number = Number(value || 0);
+  return number >= 1000 ? `${Math.round(number / 1000)}k` : String(number);
+}
+
+function compressionRoleLabel(message) {
+  const base = { human: "你", user: "你", ai: "助手", assistant: "助手", system: "系统", tool: "工具" }[message?.role] || message?.role || "消息";
+  return message?.role === "tool" && message.name ? `工具 · ${message.name}` : base;
+}
+
+function compressionBelongsToTask(envelope) {
+  const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
+  if (!task) return false;
+  if (state.compression.taskId === task.task_id) return true;
+  state.compression.taskId = task.task_id;
+  return true;
+}
+
+async function openCompressionView(task, request) {
+  if (!task) return setStatus("当前没有活动任务", true);
+  if (state.compression.busy && state.compression.taskId === task.task_id) return;
+  try {
+    if (state.activeTaskId !== task.task_id) state.activeTaskId = task.task_id;
+    const [detail, snapshot] = await Promise.all([
+      api(`/desktop/api/tasks/${task.task_id}`),
+      api(`/desktop/api/tasks/${task.task_id}/messages`),
+    ]);
+    state.compression = {
+      taskId: task.task_id,
+      request: request || detail.pending_compression || null,
+      messages: snapshot.messages || [],
+      selected: new Set(),
+      ranges: [],
+      busy: false,
+      recovery: detail.compression_recovery || null,
+    };
+    state.view = "compress";
+    setStatus("上下文接近上限，等待压缩确认");
+    render();
+  } catch (error) { setStatus(error.message, true); }
+}
+
+function closeCompressionView() {
+  state.compression = {
+    taskId: null, request: null, messages: [], selected: new Set(),
+    ranges: [], busy: false, recovery: null,
+  };
+  state.view = "focus";
+  render();
+}
+
+function reconcileCompressionRecovery(detail) {
+  const recovery = detail?.compression_recovery || null;
+  if (!recovery) {
+    if (state.compression.taskId === state.activeTaskId && state.compression.recovery) {
+      closeCompressionView();
+    }
+    return;
+  }
+  if (state.compression.taskId === state.activeTaskId && state.view === "compress") return;
+  if (recovery.status === "resumable" || recovery.status === "orphaned") {
+    const task = state.tasks.find(item => item.task_id === state.activeTaskId);
+    return openCompressionView(task, detail.pending_compression || recovery.request);
+  }
+  setStatus("压缩请求正在处理，请等待当前运行结束", true);
+}
+
+function compressionRowPreview(message, isBlock) {
+  // 行预览文案：块/墓碑显示标记，合成占位与空内容显示友好提示，降级消息取去标签内容
+  if (isBlock) {
+    const sourceCount = message.compression?.source?.length ?? 0;
+    const label = message.compression?.deleted ? "🗑 已删除" : "📦 压缩块";
+    return `${label} · 来源 ${sourceCount} 条`;
+  }
+  if (message.curation_synthetic) return "（工具结果已在压缩中省略）";
+  const degraded = compressionPanel.degradedParts(message);
+  const raw = degraded ? degraded.content : compressionPanel.messageText(message);
+  const text = raw.replace(/\s+/g, " ").trim().slice(0, 140);
+  if (!text) return message.tool_calls?.length ? "（工具调用）" : "（空内容）";
+  return text;
+}
+
+function renderCompressionNested(messages, level = 0) {
+  // 来源原文的递归渲染：嵌套压缩块继续展开，降级消息按工具结果展示
+  return (Array.isArray(messages) ? messages : []).map(message => {
+    const isBlock = Boolean(message.compression);
+    const sourceCount = message.compression?.source?.length ?? 0;
+    const nested = isBlock && sourceCount ? renderCompressionNested(message.compression.source, level + 1) : "";
+    return `<div class="compression-nested-row" style="--nested-level: ${level}">
+      <span class="compression-role">${escapeHtml(compressionRoleLabel(message))}</span>
+      <span class="compression-body">
+        <span class="compression-preview">${escapeHtml(compressionRowPreview(message, isBlock))}</span>
+        ${nested ? `<div class="compression-nested-source">${nested}</div>` : ""}
+      </span>
+    </div>`;
+  }).join("");
+}
+
+function renderCompressionMessages() {
+  const c = state.compression;
+  return c.messages.map((message, index) => {
+    const isBlock = Boolean(message.compression);
+    return `<label class="compression-message-row${isBlock ? " is-block" : ""}${message.compression?.deleted ? " is-deleted" : ""}${message.curation_synthetic ? " is-synthetic" : ""}">
+      <input type="checkbox" data-action="toggle-compress-message" data-index="${index}" ${c.selected.has(index) ? "checked" : ""}>
+      <span class="compression-index">${String(index + 1).padStart(2, "0")}</span>
+      <span class="compression-role">${escapeHtml(compressionRoleLabel(message))}</span>
+      <span class="compression-body">
+        <span class="compression-preview">${escapeHtml(compressionRowPreview(message, isBlock))}</span>
+        ${isBlock ? `<details class="compression-block-source"><summary>展开来源原文</summary><div class="compression-block-source-body">${renderCompressionNested(message.compression.source || [], 1)}</div></details>` : ""}
+      </span>
+    </label>`;
+  }).join("");
+}
+
+function renderCompressionRanges() {
+  const c = state.compression;
+  if (!c.ranges.length) return `<p class="muted">在左侧勾选消息并加入计划或直接删除；确认前当前上下文不会发生任何变化。</p>`;
+  return c.ranges.map((range, rangeIndex) => {
+    const indexes = range.source_ids.map(id => c.messages.findIndex(message => message.id === id));
+    const label = indexes.length ? `消息 ${Math.min(...indexes) + 1}~${Math.max(...indexes) + 1}` : "范围";
+    const singleBlock = range.source_ids.length === 1
+      && c.messages.find(message => message.id === range.source_ids[0])?.compression;
+    if (range.delete) {
+      return `<article class="compression-range-card is-delete">
+        <header><strong>${label}</strong><span class="muted tiny">${range.source_ids.length} 条消息</span></header>
+        <p>从上下文中删除这 ${range.source_ids.length} 条消息（不生成摘要）</p>
+        <div class="compression-range-actions">
+          <button class="text-button" data-action="undelete-range" data-range-index="${rangeIndex}">改回压缩</button>
+          <button class="text-button" data-action="remove-range" data-range-index="${rangeIndex}">移除</button>
+        </div>
+      </article>`;
+    }
+    return `<article class="compression-range-card${range.restore ? " is-restore" : ""}">
+      <header><strong>${label}</strong><span class="muted tiny">${range.source_ids.length} 条消息</span></header>
+      ${range.restore
+        ? `<p>恢复该压缩块的来源原文（撤销此次压缩）</p>
+           <div class="compression-range-actions">
+             <button class="text-button" data-action="unrestore-range" data-range-index="${rangeIndex}">改回压缩</button>
+             <button class="text-button" data-action="remove-range" data-range-index="${rangeIndex}">移除</button>
+           </div>`
+        : `<textarea data-range-index="${rangeIndex}" placeholder="摘要内容（可编辑，也可完全重写）">${escapeHtml(range.replacement)}</textarea>
+           ${range.error ? `<p class="compression-range-error" role="alert">${escapeHtml(range.error)}</p>` : ""}
+           <div class="compression-range-actions">
+             <button class="text-button" data-action="summarize-range" data-range-index="${rangeIndex}" ${range.summarizing ? "disabled" : ""}>${range.summarizing ? "生成中…" : range.generated ? "重新生成" : "生成摘要"}</button>
+             <button class="text-button danger" data-action="delete-range" data-range-index="${rangeIndex}">删除</button>
+             <button class="text-button" data-action="remove-range" data-range-index="${rangeIndex}">移除</button>
+             ${singleBlock ? `<button class="text-button" data-action="restore-range" data-range-index="${rangeIndex}">恢复原消息</button>` : ""}
+           </div>`}
+    </article>`;
+  }).join("");
+}
+
+function compressionReady() {
+  return state.compression.ranges.length > 0 && state.compression.ranges.every(range =>
+    range.restore || range.delete || String(range.replacement || "").trim()
+  );
+}
+
+function renderCompress() {
+  const c = state.compression;
+  const task = state.tasks.find(item => item.task_id === c.taskId) || activeTask();
+  if (!task || !c.messages.length) { state.view = "focus"; return render(); }
+  // 勾选/生成等操作会整体重渲染：保留左右两栏滚动位置，避免列表弹回顶部
+  const previousList = document.querySelector(".compression-message-list");
+  const previousPlan = document.querySelector(".compression-plan");
+  const listScrollTop = previousList?.scrollTop;
+  const planScrollTop = previousPlan?.scrollTop;
+  const stats = compressionPanel.beforeAfter(c.messages, c.ranges);
+  const usage = c.request?.usage ?? 0;
+  const limit = c.request?.limit ?? 0;
+  app.innerHTML = `
+    <section class="compression-view">
+      <header class="compression-heading">
+        <div>
+          <span class="review-kicker">CONTEXT COMPRESSION</span>
+          <h1>上下文压缩</h1>
+          <p class="compression-usage">Current usage: <strong>${formatTokens(usage)} / ${formatTokens(limit)} tokens</strong>${c.request ? `（触发阈值 ${Math.round((c.request.ratio ?? 0.9) * 100)}%）` : ""}</p>
+        </div>
+        <button class="text-button" data-action="cancel-compression">取消压缩</button>
+      </header>
+      <div class="compression-panels">
+        <aside class="compression-messages">
+          <header class="compression-panel-heading"><strong>当前 messages</strong><span>${c.messages.length} 条</span></header>
+          <div class="compression-message-list">${renderCompressionMessages()}</div>
+          <footer>
+            <button class="primary" data-action="compression-join-selection" ${c.selected.size ? "" : "disabled"}>加入计划（${compressionPanel.selectionRanges(c.selected).length} 个范围）</button>
+          </footer>
+        </aside>
+        <section class="compression-plan">
+          <header class="compression-panel-heading"><strong>压缩计划</strong><span>${c.ranges.length} 个范围</span></header>
+          ${renderCompressionRanges()}
+          <div class="compression-stats">
+            <span>Before ${stats.beforeCount} 条 · ${formatTokens(stats.beforeTokens)} tokens</span>
+            <span>After ${stats.afterCount} 条 · ${formatTokens(stats.afterTokens)} tokens</span>
+          </div>
+          <ul class="compression-mapping">${stats.mapping.map(item => `<li>${escapeHtml(item.label)} → ${item.delete ? "删除" : item.restore ? "恢复原消息" : "压缩块"}</li>`).join("")}</ul>
+          <footer>
+            <button class="primary" data-action="confirm-compression" ${compressionReady() ? "" : "disabled"}>确认压缩并继续</button>
+          </footer>
+        </section>
+      </div>
+    </section>`;
+  if (listScrollTop != null) document.querySelector(".compression-message-list").scrollTop = listScrollTop;
+  if (planScrollTop != null) document.querySelector(".compression-plan").scrollTop = planScrollTop;
+}
+
+function refreshCompressionStats() {
+  if (state.view !== "compress") return;
+  const c = state.compression;
+  const stats = compressionPanel.beforeAfter(c.messages, c.ranges);
+  const statsNode = document.querySelector(".compression-stats");
+  const mappingNode = document.querySelector(".compression-mapping");
+  if (statsNode) {
+    statsNode.innerHTML = `<span>Before ${stats.beforeCount} 条 · ${formatTokens(stats.beforeTokens)} tokens</span><span>After ${stats.afterCount} 条 · ${formatTokens(stats.afterTokens)} tokens</span>`;
+  }
+  if (mappingNode) {
+    mappingNode.innerHTML = stats.mapping.map(item => `<li>${escapeHtml(item.label)} → ${item.delete ? "删除" : item.restore ? "恢复原消息" : "压缩块"}</li>`).join("");
+  }
+  const confirm = document.querySelector('[data-action="confirm-compression"]');
+  if (confirm) confirm.disabled = !compressionReady();
+}
+
+function joinCompressionSelection() {
+  const c = state.compression;
+  const ranges = compressionPanel.selectionRanges(c.selected).map(range => ({
+    source_ids: c.messages.slice(range.start, range.end + 1).map(message => message.id),
+    replacement: "",
+    generated: false,
+    restore: false,
+    summarizing: false,
+  }));
+  c.ranges.push(...ranges);
+  c.selected = new Set();
+  renderCompress();
+}
+
+function deleteCompressionSelection() {
+  const c = state.compression;
+  const ranges = compressionPanel.selectionRanges(c.selected).map(range => ({
+    source_ids: c.messages.slice(range.start, range.end + 1).map(message => message.id),
+    delete: true,
+  }));
+  c.ranges.push(...ranges);
+  c.selected = new Set();
+  renderCompress();
+}
+
+
+async function summarizeRange(rangeIndex) {
+  const c = state.compression;
+  const range = c.ranges[rangeIndex];
+  if (!range || range.summarizing) return;
+  const indexes = range.source_ids.map(id => c.messages.findIndex(message => message.id === id));
+  const slice = c.messages.slice(Math.min(...indexes), Math.max(...indexes) + 1);
+  // 每范围独立 busy 标记：多个范围可并发生成摘要
+  range.summarizing = true;
+  range.error = "";
+  renderCompress();
+  try {
+    const result = await api("/desktop/api/compression/summarize", {
+      method: "POST",
+      body: JSON.stringify({ messages: slice }),
+    });
+    range.replacement = result.summary;
+    range.generated = true;
+    range.restore = false;
+  } catch (error) { range.error = error.message; }
+  finally { range.summarizing = false; renderCompress(); }
+}
+
+async function confirmCompression() {
+  const c = state.compression;
+  if (c.busy) return;
+  const task = state.tasks.find(item => item.task_id === c.taskId) || activeTask();
+  if (!task) return setStatus("当前没有活动任务", true);
+  const ranges = c.ranges.map(range => range.delete
+    ? { source_ids: range.source_ids, delete: true }
+    : range.restore
+      ? { source_ids: range.source_ids, restore: true }
+      : { source_ids: range.source_ids, replacement: range.replacement });
+  c.busy = true;
+  try {
+    const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
+      method: "POST",
+      body: JSON.stringify({ resume: { type: "compression", decision: "apply", ranges } }),
+    });
+    closeCompressionView();
+    listenToRun(run);
+    setStatus("压缩已确认，Agent 继续运行…");
+  } catch (error) { setStatus(error.message, true); }
+  finally { c.busy = false; }
+}
+
+async function cancelCompression() {
+  const c = state.compression;
+  if (c.busy) return;
+  const task = state.tasks.find(item => item.task_id === c.taskId) || activeTask();
+  if (!task) return setStatus("当前没有活动任务", true);
+  c.busy = true;
+  try {
+    const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
+      method: "POST",
+      body: JSON.stringify({ resume: { type: "compression", decision: "cancel" } }),
+    });
+    closeCompressionView();
+    listenToRun(run);
+    setStatus("已取消压缩，Agent 原样继续…");
+  } catch (error) { setStatus(error.message, true); }
+  finally { c.busy = false; }
+}
+
 async function refreshTasks() { state.tasks = await api("/desktop/api/tasks"); }
 
 async function createTask(event) {
@@ -1939,6 +2294,40 @@ document.addEventListener("click", async event => {
     return switchTask(taskId);
   }
   if (action === "send-main") return sendMain();
+  if (action === "toggle-compress-message") {
+    state.compression.selected = compressionPanel.toggleSelect(
+      state.compression.selected, Number(button.dataset.index)
+    );
+    return renderCompress();
+  }
+  if (action === "compression-join-selection") return joinCompressionSelection();
+  if (action === "delete-range") {
+    const range = state.compression.ranges[Number(button.dataset.rangeIndex)];
+    if (range) { range.delete = true; range.replacement = ""; range.summarizing = false; }
+    return renderCompress();
+  }
+  if (action === "undelete-range") {
+    const range = state.compression.ranges[Number(button.dataset.rangeIndex)];
+    if (range) { range.delete = false; }
+    return renderCompress();
+  }
+  if (action === "summarize-range") return summarizeRange(Number(button.dataset.rangeIndex));
+  if (action === "remove-range") {
+    state.compression.ranges.splice(Number(button.dataset.rangeIndex), 1);
+    return renderCompress();
+  }
+  if (action === "restore-range") {
+    const range = state.compression.ranges[Number(button.dataset.rangeIndex)];
+    if (range) { range.restore = true; range.replacement = ""; }
+    return renderCompress();
+  }
+  if (action === "unrestore-range") {
+    const range = state.compression.ranges[Number(button.dataset.rangeIndex)];
+    if (range) { range.restore = false; }
+    return renderCompress();
+  }
+  if (action === "confirm-compression") return confirmCompression();
+  if (action === "cancel-compression") return cancelCompression();
   if (action === "abandon-commitment") return abandonCommitment();
   if (action === "exit-draft") { await saveDraft(); state.view = "map"; return render(); }
   if (action === "deploy") return deployDraft();
@@ -1964,6 +2353,14 @@ document.addEventListener("click", async event => {
 document.addEventListener("input", event => {
   if (event.target.matches("[data-skill-input]")) updateSkillMenu(event.target, true);
   if (event.target.matches("[data-draft-field],[data-message-field],[data-equipment],[data-permission]")) scheduleDraftSave();
+  if (event.target.matches("[data-range-index]")) {
+    const range = state.compression.ranges[Number(event.target.dataset.rangeIndex)];
+    if (range) {
+      range.replacement = event.target.value;
+      range.generated = false;
+      refreshCompressionStats();
+    }
+  }
 });
 
 document.addEventListener("keydown", event => {

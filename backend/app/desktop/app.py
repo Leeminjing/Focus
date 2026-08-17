@@ -27,14 +27,17 @@ def mount_desktop(app) -> None:
 
     工作流:
         (1) include_router(desktop_router) — 提供 /desktop/api 全部接口
-        (2) app.mount("/desktop", StaticFiles(...)) — 提供 index.html / app.js / styles.css
+        (2) include_router(compression_router) — 提供压缩摘要与消息快照接口
+        (3) app.mount("/desktop", StaticFiles(...)) — 提供 index.html / app.js / styles.css
 
     路由注册先于静态挂载，确保 /desktop/api/* 优先由 API 路由处理，静态挂载兜底。
     """
     from fastapi.staticfiles import StaticFiles
 
+    from backend.app.desktop.compression_routes import compression_router
     from backend.app.desktop.routes import desktop_router
 
     app.include_router(desktop_router)
+    app.include_router(compression_router)
     app.mount("/desktop", StaticFiles(directory=str(DESKTOP_DIR), html=True), name="desktop")
     logger.info("桌面路由与静态资源已挂载 (/desktop/api, /desktop)")

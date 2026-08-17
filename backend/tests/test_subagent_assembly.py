@@ -105,7 +105,12 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
                     "list_patrol_agents", "read_patrol_agent_history",
                     "read_swarm_agent_history"} <= main_names
             assert main_cfg["middlewares"] is None
-            assert len(main_cfg["additional_middlewares"]) == 1
+            # 主 Agent：工具错误 middleware + 压缩门（compression.enabled=true 时仅 main 装配）
+            assert len(main_cfg["additional_middlewares"]) == 2
+            assert any(
+                middleware.__class__.__name__ == "CompressionGate"
+                for middleware in main_cfg["additional_middlewares"]
+            )
             assert "claim_task" not in main_names
             assert "<agent_messages>" in main_cfg["system_prompt"]
             assert 'from="patrol-x"' in main_cfg["system_prompt"]

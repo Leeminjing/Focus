@@ -158,6 +158,7 @@ def _run_shell(command: str, runtime: ToolRuntime, exe_name: str, args: list[str
     result = subprocess.run(
         [exe_path, *args, command],
         cwd=workspace, capture_output=True, text=True, timeout=120, shell=False,
+        errors="replace",
     )
     return (result.stdout + result.stderr)[-30000:]
 
