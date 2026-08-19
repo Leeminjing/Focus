@@ -125,6 +125,8 @@ def test_make_lead_agent_loads_context7_before_middleware(monkeypatch):
     import focus.agents.lead.middlewares as lead_middlewares
     import focus.mcp as focus_mcp
 
+    from focus.plugins.bridge import PluginBridgeMiddleware
+
     model = _FakeModel([], [])
     context7_tools = [object()]
     commitment_middleware = object()
@@ -162,7 +164,9 @@ def test_make_lead_agent_loads_context7_before_middleware(monkeypatch):
     assert captured["model"] is model
     assert captured["context7_tools"] is context7_tools
     assert captured["skill_names"] == frozenset({"docx"})
-    assert captured["middleware"] == [commitment_middleware, tool_error_middleware]
+    # 插件桥接位于最终链最末端（既有中间件保持原位置）
+    assert captured["middleware"][:2] == [commitment_middleware, tool_error_middleware]
+    assert isinstance(captured["middleware"][-1], PluginBridgeMiddleware)
 
 
 # === 2. 触发解析 ===

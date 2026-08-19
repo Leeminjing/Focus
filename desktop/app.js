@@ -59,6 +59,7 @@ const state = {
     busy: false,
     recovery: null,
   },
+  plugins: { plugins: [], interfaces: {}, traces: [] },
 };
 
 const app = document.querySelector("#app");
@@ -68,6 +69,7 @@ const agentDialog = document.querySelector("#agentDialog");
 const skillPicker = window.FocusSkillPicker;
 const contextEditor = window.FocusContextEditor;
 const compressionPanel = window.FocusCompressionPanel;
+const pluginView = window.FocusPluginView;
 let contextUiSequence = 0;
 let contextPointerDrag = null;
 let contextUndoTimer = null;
@@ -164,6 +166,7 @@ function render() {
   else if (state.view === "map") renderMap();
   else if (state.view === "draft") renderDraft();
   else if (state.view === "compress") renderCompress();
+  else if (state.view === "plugins") renderPlugins();
   else renderContextEditor();
 }
 
@@ -605,6 +608,21 @@ async function debugAgentMenu(agentId) {
   if (choice === "retry") listenToRun(await api(`/desktop/api/agents/${agentId}/retry`, { method: "POST" }));
   if (choice === "continue") { const message = prompt("继续对话内容"); if (message) listenToRun(await api(`/desktop/api/agents/${agentId}/continue`, { method: "POST", body: JSON.stringify({ message }) })); }
   if (choice === "cancel") { const agent = agentFromState(agentId); if (agent?.latest_run) await api(`/desktop/api/runs/${agent.latest_run.run_id}/cancel`, { method: "POST" }); }
+}
+
+function renderPlugins() {
+  const { plugins, interfaces, traces } = state.plugins;
+  app.innerHTML = pluginView.render(plugins, interfaces, traces);
+}
+
+async function hydratePlugins() {
+  try {
+    const [data, traceData] = await Promise.all([
+      api("/desktop/api/plugins"),
+      api("/desktop/api/plugins/traces"),
+    ]);
+    state.plugins = { plugins: data.plugins || [], interfaces: data.interfaces || {}, traces: traceData.traces || [] };
+  } catch (error) { setStatus(error.message, true); }
 }
 
 function taskCards(draftMode = false) {
@@ -2237,6 +2255,8 @@ document.addEventListener("click", async event => {
   if (action === "select-commit") return selectCommitCommand(button.dataset.pickerKind);
   if (action === "remove-skill") return removeSkill(button.dataset.pickerKind, button.dataset.skillName);
   if (action === "show-map") { persistFocusState(); state.view = "map"; return render(); }
+  if (action === "show-plugins") { await hydratePlugins(); state.view = "plugins"; return render(); }
+  if (action === "refresh-plugins") { await hydratePlugins(); return render(); }
   if (action === "focus-home" && state.activeTaskId) { state.view = "focus"; await hydrateActive(); return render(); }
   if (action === "derive-context") return openContextEditor(state.activeTaskId);
   if (action === "edit-context-definition") return reopenContextDecision(button.dataset.contextId);

@@ -852,3 +852,33 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
 .compression-block-divider.is-deleted { background: #fdf3f3; border-color: #f0c4c4; color: var(--danger); }
 .compression-message-row.is-deleted { background: #fdf3f3; border-color: #f0c4c4; }
 .compression-message-row.is-synthetic { opacity: .65; }
+
+/* === 插件调试视图（plugin-view.js） === */
+.plugins-view { padding: 18px 22px; overflow-y: auto; }
+.plugins-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
+.plugins-heading h1 { margin: 2px 0 4px; font-size: 22px; }
+.plugins-panels { display: grid; grid-template-columns: 360px 1fr; gap: 16px; align-items: start; }
+.plugins-list, .plugins-interfaces { background: var(--panel); border: 1px solid var(--line-soft); border-radius: 10px; overflow: hidden; }
+.plugins-list { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 14px; }
+.plugins-interfaces { padding: 0 12px 14px; }
+.plugin-card { border: 1px solid var(--line-soft); border-radius: 8px; padding: 10px 12px; background: #fff; }
+.plugin-card header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.plugin-card p { margin: 3px 0; font-size: 13px; }
+.plugin-card.status-unavailable { border-color: #e8c66a; background: #fffaf0; }
+.plugin-card.status-rejected { border-color: #f0c4c4; background: #fdf3f3; }
+.plugin-status-badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--blue-soft); color: var(--blue); }
+.status-unavailable .plugin-status-badge { background: #fdf3d7; color: #8a6d1a; }
+.status-rejected .plugin-status-badge { background: #fbe4e4; color: var(--danger); }
+.plugin-injected-tag { display: inline-block; margin: 1px 2px 1px 0; padding: 1px 7px; border-radius: 999px; background: #eef4ff; color: var(--blue); font-size: 12px; }
+.plugin-reason { color: #8a6d1a; font-size: 12px; margin: 4px 0 0; overflow-wrap: anywhere; }
+.plugin-reason.danger { color: var(--danger); }
+.plugin-interface-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line-soft); font-size: 13px; }
+.plugin-interface-order { color: var(--muted); font-size: 12px; }
+.plugin-readonly-tag { font-size: 11px; color: #7a5a1e; background: #fdf3d7; padding: 1px 6px; border-radius: 999px; }
+.plugin-cardinality-tag { font-size: 11px; color: var(--muted); border: 1px solid var(--line-soft); padding: 0 6px; border-radius: 999px; }
+.plugin-trace-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.plugin-trace-table th, .plugin-trace-table td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line-soft); }
+.plugin-trace-table th { color: var(--muted); font-weight: 600; }
+.plugin-trace-error { color: var(--danger); max-width: 320px; overflow-wrap: anywhere; }
+tr.trace-failed td, tr.trace-timeout td { background: #fdf3f3; }
+@media (max-width: 900px) { .plugins-panels { grid-template-columns: 1fr; } }

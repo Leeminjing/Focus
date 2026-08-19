@@ -26,6 +26,8 @@
     (3) 若 tools 为 None: await get_available_tools(tool_groups=tool_groups) 汇集全局工具
         + build_describe_skill_tool(catalog) 创建 skill 查询工具
     (4) 若 middlewares 为 None: 使用空中间件链（沙箱/上传中间件已随网页端与沙箱移除）
+    (4.5) 最终链最末端追加 PluginBridgeMiddleware（插件工具并入工具节点、插件 hook
+        稳定顺序分发；无插件时为空操作）
     (5) 调用 langchain.agents.create_agent(model, tools, middleware, system_prompt, state_schema=LeadAgentState)
     (6) 返回 CompiledStateGraph
 
@@ -50,6 +52,8 @@ from focus.agents.lead.prompt import apply_prompt_template
 from focus.agents.lead_agent_state import LeadAgentState
 from focus.config import AppConfig, get_app_config
 from focus.models import create_chat_model
+from focus.plugins import get_plugin_registry
+from focus.plugins.bridge import PluginBridgeMiddleware
 from focus.tools import get_available_tools
 
 logger = logging.getLogger(__name__)
@@ -216,6 +220,9 @@ async def make_lead_agent(
         )
     if additional_middlewares:
         middlewares = [*(middlewares or []), *additional_middlewares]
+    # 插件桥接：位于最终链最末端（所有系统中间件之后），插件工具经 middleware tools
+    # 属性并入工具节点、插件 hook 按注册表稳定顺序分发（全部角色统一生效）
+    middlewares = [*(middlewares or []), PluginBridgeMiddleware(get_plugin_registry())]
     middleware = middlewares if middlewares is not None else []
 
     # (5) create_agent
