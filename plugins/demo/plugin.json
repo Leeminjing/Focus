@@ -1,0 +1,8 @@
+{
+  "name": "demo",
+  "version": "1.0.0",
+  "enabled": true,
+  "provides": ["tool", "hook.before_model", "hook.after_model"],
+  "requires": [],
+  "entry": "plugin.py"
+}
