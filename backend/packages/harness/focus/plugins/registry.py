@@ -90,7 +90,26 @@ class PluginRegistry:
         self._tools: list[tuple[str, Any]] = []
         self._hooks: dict[str, list[HookImpl]] = {}
         self._services: dict[str, list[tuple[str, Any]]] = {}
+        # f18: 插件声明的桌面 API 路由与前端资源(仅 Active 插件在挂载时生效)
+        self._assets: dict[str, dict[str, Any]] = {}
         self._traces: deque[dict] = deque(maxlen=trace_maxlen)
+
+    def register_assets(self, name: str, assets: dict[str, Any]) -> None:
+        """登记插件的桌面 API 路由与前端资源;挂载时仅 Active 插件生效。"""
+        self._assets[name] = assets
+
+    def active_assets(self) -> dict[str, dict[str, Any]]:
+        """返回 Active 插件已登记的资源(router / assets_dir),供系统挂载。"""
+        active = {
+            record.manifest.name
+            for record in self._records
+            if record.status == "active"
+        }
+        return {
+            name: assets
+            for name, assets in self._assets.items()
+            if name in active
+        }
 
     def register(self, manifest: PluginManifest, declaration: PluginDeclaration) -> PluginRecord:
         invalid_requires = validate_requires(manifest, self.catalog)
@@ -238,6 +257,14 @@ class PluginRegistry:
     def hooks(self, name: str) -> list[HookImpl]:
         return list(self._hooks.get(name, []))
 
+    def declared_providers(self, name: str) -> list[str]:
+        """返回声明提供该接口的插件名(含 pending/active,供构建期能力判定)。"""
+        return [
+            record.manifest.name
+            for record in self._records
+            if name in record.manifest.provides and record.status in ("pending", "active")
+        ]
+
     def service(self, name: str) -> Any:
         iface = self.catalog.get(name)
         if iface is None or iface.kind is not InterfaceKind.SERVICE:
@@ -275,5 +302,24 @@ class PluginRegistry:
                 "missing": record.missing,
                 "conflict": record.conflict,
                 "reason": record.reason,
+                "desktop_assets": self._asset_files(record.manifest.name, record.status),
             })
         return result
+
+    def _asset_files(self, name: str, status: str) -> list[str]:
+        """返回插件前端资源目录内的 js/css 文件名清单(仅 Active 插件,供前端注入)。"""
+        if status != "active":
+            return []
+        assets = self._assets.get(name, {})
+        assets_dir = assets.get("assets_dir")
+        if assets_dir is None:
+            return []
+        import os
+
+        return sorted(
+            entry.name
+            for entry in os.scandir(assets_dir)
+            if entry.is_file()
+            and entry.name.endswith((".js", ".css"))
+            and not entry.name.endswith(".test.cjs")
+        )

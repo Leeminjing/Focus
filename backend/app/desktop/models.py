@@ -264,7 +264,9 @@ class ContextProjectionDecision(StrictRequest):
 
 
 class MainRunCreate(StrictRequest):
-    message: str = Field(min_length=1)
+    # f19 dsh-eyes:message 放行纯文本或含内容块列表(图片以 image_url 块随消息发送,
+    # 由插件剥离 hook 在模型调用前替换为文本引用)
+    message: str | list[dict[str, Any]] = Field(min_length=1)
     model_name: str | None = None
     skills: list[str] = Field(default_factory=list)
     permissions: list[Literal["read", "write", "host_command"]] = Field(

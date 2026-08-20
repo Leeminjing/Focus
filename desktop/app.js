@@ -70,6 +70,9 @@ const skillPicker = window.FocusSkillPicker;
 const contextEditor = window.FocusContextEditor;
 const compressionPanel = window.FocusCompressionPanel;
 const pluginView = window.FocusPluginView;
+// f18 插件视图宿主:插件前端脚本加载后经此注册视图与材料打开器
+window.__focusPluginViews = window.__focusPluginViews || {};
+const pluginViews = window.__focusPluginViews;
 let contextUiSequence = 0;
 let contextPointerDrag = null;
 let contextUndoTimer = null;
@@ -94,6 +97,57 @@ async function api(path, options = {}) {
   }
   if (response.status === 204) return null;
   return response.json();
+}
+
+function loadPluginScript(src) {
+  return new Promise(resolve => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.onload = resolve;
+    script.onerror = () => { console.error("插件脚本加载失败:", src); resolve(); };
+    document.head.append(script);
+  });
+}
+
+async function hydratePluginAssets() {
+  // f18: 按启用插件清单注入前端资源(css 并行、js 串行;entry.js 固定最后执行,
+  // 保证插件视图/打开器注册时其依赖模块已加载);失败不阻塞桌面
+  try {
+    const data = await api("/desktop/api/plugins");
+    const active = (data.plugins || []).filter(plugin => plugin.status === "active");
+    for (const plugin of active) {
+      const files = plugin.desktop_assets || [];
+      for (const file of files.filter(name => name.endsWith(".css"))) {
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = `/plugins/${encodeURIComponent(plugin.name)}/desktop/${encodeURIComponent(file)}`;
+        document.head.append(link);
+      }
+      const jsFiles = files
+        .filter(name => name.endsWith(".js"))
+        .sort((a, b) => (a === "entry.js") - (b === "entry.js"));
+      for (const file of jsFiles) {
+        await loadPluginScript(`/plugins/${encodeURIComponent(plugin.name)}/desktop/${encodeURIComponent(file)}`);
+      }
+    }
+  } catch (error) {
+    console.error("插件前端资源注入失败:", error);
+    setStatus(`插件资源注入失败: ${error.message}`, true);
+  }
+}
+
+// f18: 插件视图返回 Focus 对话页的统一钩子
+window.__focusBackToFocus = () => {
+  state.view = "focus";
+  render();
+};
+
+function openMaterialViewer(material) {
+  // f18: 询问已注册插件视图是否有内容查看器可打开该材料;接管返回 true
+  for (const view of Object.values(pluginViews)) {
+    if (typeof view.openMaterial === "function" && view.openMaterial(material, state)) return true;
+  }
+  return false;
 }
 
 function escapeHtml(value = "") {
@@ -125,6 +179,7 @@ async function bootstrap() {
     const data = await api("/desktop/api/bootstrap");
     state.tasks = data.tasks;
     state.equipment = data.equipment;
+    await hydratePluginAssets();
     await hydrateContextTrees();
     state.activeTaskId ||= state.tasks[0]?.task_id || null;
     setStatus("");
@@ -167,6 +222,10 @@ function render() {
   else if (state.view === "draft") renderDraft();
   else if (state.view === "compress") renderCompress();
   else if (state.view === "plugins") renderPlugins();
+  else if (state.view && pluginViews[state.view]) {
+    app.replaceChildren();
+    pluginViews[state.view].render(app, state);
+  }
   else renderContextEditor();
 }
 
@@ -373,6 +432,66 @@ function renderFocus() {
   if (!previousConversation) requestAnimationFrame(() => rail.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "nearest" }));
 }
 
+async function sha1Hex(text) {
+  const buffer = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(text));
+  return [...new Uint8Array(buffer)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// f19 dsh-eyes:从消息内容提取图片 URL 列表(image_url 块 / 文本引用),
+// 图片渲染为消息框上方的独立缩略图行(对齐 image8:图片在消息框上面,不嵌入气泡)。
+const IMAGE_REF_RE = /【图片\d+ attachment_id=([0-9a-f]{12})】查看请调 view_image\(attachment_id=[0-9a-f]{12}\)/g;
+
+function collectMessageImages(content) {
+  // 本地映射(本会话发送过的图片)优先;缺失时回退到后端附件接口
+  // (重启后历史消息的引用仍可还原为图片)。
+  // 引用可能位于字符串 content 或列表的 text 块中(后端剥离后列表形态)。
+  const urls = window.__dshEyesAttachmentUrls || {};
+  const threadId = state.details.get(state.activeTaskId)?.thread_id || "";
+  const backendUrl = id => `/desktop/api/plugin/dsh-eyes/attachments/${encodeURIComponent(id)}?thread_id=${encodeURIComponent(threadId)}`;
+  const images = [];
+  const collect = text => {
+    text.replace(IMAGE_REF_RE, (match, id) => {
+      images.push(urls[id] || backendUrl(id));
+      return match;
+    });
+  };
+  if (typeof content === "string") {
+    collect(content);
+  } else if (Array.isArray(content)) {
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      if (block.type === "image_url") {
+        const url = block.image_url && typeof block.image_url === "object" ? block.image_url.url : null;
+        if (typeof url === "string" && url.startsWith("data:image/")) images.push(url);
+      } else if (block.type === "text" && typeof block.text === "string") {
+        collect(block.text);
+      }
+    }
+  }
+  return images;
+}
+
+function renderMessageImages(images) {
+  if (!images.length) return "";
+  return `<div class="dsh-eyes-message-images">${images
+    .map(url => `<img class="dsh-eyes-message-image" src="${escapeHtml(url)}" alt="粘贴图片">`)
+    .join("")}</div>`;
+}
+
+// 文本中移除图片引用标记(图片已提取到上方独立行,气泡内只留文字)
+function stripImageReferences(text) {
+  return text.replace(IMAGE_REF_RE, "");
+}
+
+function renderContentBlock(block) {
+  if (!block || typeof block !== "object") return escapeHtml(String(block ?? ""));
+  if (block.type === "image_url") {
+    return ""; // 图片已由 collectMessageImages 提取到消息框上方,气泡内不输出
+  }
+  // text 块:移除图片引用(图片已提取到上方行),其余转义
+  return stripImageReferences(escapeHtml(String(block.text ?? "")));
+}
+
 function renderMessage(message) {
   // 后端兜底降级消息按工具结果样式渲染，不泄露原始 XML 标签
   const degraded = compressionPanel.degradedParts(message);
@@ -382,7 +501,17 @@ function renderMessage(message) {
   const baseRole = { human: "你", user: "你", ai: "助手", assistant: "助手", system: "System", tool: "Tool" }[message.role] || message.role;
   const role = message.role === "tool" && message.name ? `${baseRole} · ${message.name}` : baseRole;
   const kind = { human: "human", user: "human", ai: "ai", assistant: "ai", system: "system", tool: "tool" }[message.role] || "system";
-  const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content, null, 2);
+  // f19 dsh-eyes:图片提取为消息框上方的独立缩略图行(对齐 image8),气泡内只留文字。
+  // 安全:字符串 human 消息 MUST 转义(否则消息内 HTML 会注入 DOM,如 <style> 覆盖主题变量)。
+  const messageImages = collectMessageImages(message.content);
+  let content;
+  if (typeof message.content === "string") {
+    content = kind === "ai" ? message.content : stripImageReferences(escapeHtml(message.content));
+  } else if (Array.isArray(message.content)) {
+    content = message.content.map(renderContentBlock).join("\n");
+  } else {
+    content = escapeHtml(JSON.stringify(message.content, null, 2));
+  }
   const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
   const counts = new Map();
   calls.forEach(call => {
@@ -395,9 +524,11 @@ function renderMessage(message) {
   const toolProgress = callSummary
     ? `<div class="tool-call-progress">正在调用：${callSummary}</div>`
     : "";
-  const renderedContent = kind === "ai" ? renderAssistantContent(content) : escapeHtml(content);
+  const renderedContent = kind === "ai" ? renderAssistantContent(content) : content;
   const rendered = `${renderedContent}${toolProgress}`;
-  return `<article class="message ${kind}"><span class="message-role">${escapeHtml(role)}</span><div class="message-content">${rendered}</div></article>`;
+  // 用户消息不显示「你」角色标签(布局:图片缩略图在上、消息框在下,无 role 标签)
+  const roleLabel = kind === "human" ? "" : `<span class="message-role">${escapeHtml(role)}</span>`;
+  return `<article class="message ${kind}">${renderMessageImages(messageImages)}${roleLabel}<div class="message-content">${rendered}</div></article>`;
 }
 
 function renderCompressionDivider(item) {
@@ -478,7 +609,9 @@ function clearStreamBuffer(runId) {
 
 function renderMaterial(material) {
   const open = state.openMaterial === material.material_id;
+  const viewable = /\.(png|jpe?g|webp|bmp|gif|pdf)$/i.test(material.relative_path);
   return `<article class="material-row" data-material-id="${material.material_id}">
+    ${viewable ? `<button class="text-button material-open" data-action="open-material">查看</button>` : ""}
     <button class="material-summary" data-action="toggle-material">
       <span class="material-name">${escapeHtml(material.relative_path)}</span>
       <span class="material-meta">${material.reading_mode === "full" ? "完整阅读" : "粗略阅读"} · ${material.instruction_mode === "strict" ? "严格遵守" : "仅供参考"} · ${material.retention === "irreplaceable" ? "不可遗失" : "可移除"}</span>
@@ -1153,11 +1286,27 @@ async function sendMain() {
   const input = document.querySelector("#mainInput");
   const message = input.value.trim();
   if (!message) return;
+  // f19 dsh-eyes:插件前端粘贴的待发图片以 image_url 内容块随消息发送
+  // (纯文本时保持原形态;取走即清空插件队列)
+  const pendingImages = typeof window.__dshEyesTakePendingImages === "function"
+    ? window.__dshEyesTakePendingImages()
+    : [];
+  // f19 dsh-eyes:预计算 attachment_id(与后端剥离同算法 sha1(url) 前 12 位),
+  // 存本地映射供消息区把引用还原为缩略图(values 快照会用后端剥离后的引用覆盖本地消息)
+  window.__dshEyesAttachmentUrls = window.__dshEyesAttachmentUrls || {};
+  for (const image of pendingImages) {
+    const digest = await sha1Hex(image.url);
+    window.__dshEyesAttachmentUrls[digest.slice(0, 12)] = image.url;
+  }
+  const messagePayload = pendingImages.length
+    ? [{ type: "text", text: message },
+      ...pendingImages.map(image => ({ type: "image_url", image_url: { url: image.url } }))]
+    : message;
   const detail = state.details.get(state.activeTaskId);
   try {
     const run = await api(`/desktop/api/tasks/${state.activeTaskId}/main/runs`, {
       method: "POST",
-      body: JSON.stringify({ message, skills: selectedSkills("main") }),
+      body: JSON.stringify({ message: messagePayload, skills: selectedSkills("main") }),
     });
     const contextNode = (state.contextTrees.get(activeTask().workspace_id) || [])
       .find(item => item.context_id === state.activeTaskId);
@@ -1165,7 +1314,7 @@ async function sendMain() {
     if (detail.context) detail.context.editable = false;
     // 运行已发起：立即暴露中断入口（否则运行中 active_run 仍为旧值，按钮不渲染）
     detail.active_run = run;
-    detail.messages = [...(detail.messages || []), { role: "human", content: message }];
+    detail.messages = [...(detail.messages || []), { role: "human", content: messagePayload }];
     detail.ui_state = { ...(detail.ui_state || {}), input: "", skills: [] };
     renderFocus();
     persistFocusState();
@@ -2206,6 +2355,10 @@ async function handleMaterialAction(button) {
   const materialId = row.dataset.materialId;
   const material = (state.materials.get(state.activeTaskId) || []).find(item => item.material_id === materialId);
   if (button.dataset.action === "toggle-material") { state.openMaterial = state.openMaterial === materialId ? null : materialId; return renderFocus(); }
+  if (button.dataset.action === "open-material") {
+    if (!openMaterialViewer(material)) setStatus("没有可用的内容查看器插件", true);
+    else render();
+  }
   if (button.dataset.action === "save-material") {
     const body = Object.fromEntries([...row.querySelectorAll("select[data-field]")].map(select => [select.dataset.field, select.value]));
     try {
