@@ -29,7 +29,8 @@ def mount_desktop(app) -> None:
         (1) include_router(desktop_router) — 提供 /desktop/api 全部接口
         (2) include_router(compression_router) — 提供压缩摘要与消息快照接口
         (3) include_router(plugins_router) — 提供插件调试视图查询接口
-        (4) app.mount("/desktop", StaticFiles(...)) — 提供 index.html / app.js / styles.css
+        (4) mount_plugin_assets(app) — 挂载 Active 插件的桌面 API 路由与前端静态资源
+        (5) app.mount("/desktop", StaticFiles(...)) — 提供 index.html / app.js / styles.css
 
     路由注册先于静态挂载，确保 /desktop/api/* 优先由 API 路由处理，静态挂载兜底。
     """
@@ -42,5 +43,34 @@ def mount_desktop(app) -> None:
     app.include_router(desktop_router)
     app.include_router(compression_router)
     app.include_router(plugins_router)
+    mount_plugin_assets(app)
     app.mount("/desktop", StaticFiles(directory=str(DESKTOP_DIR), html=True), name="desktop")
     logger.info("桌面路由与静态资源已挂载 (/desktop/api, /desktop)")
+
+
+def mount_plugin_assets(app) -> None:
+    """挂载 Active 插件的桌面 API 路由与前端静态资源(f18 通用挂载约定)。
+
+    工作流:
+        (1) get_plugin_registry() 触发插件懒加载(与调试视图共享同一实例)
+        (2) 每个 Active 插件的路由以 /desktop/api/plugin/{name} 为强制前缀注册
+        (3) 其前端资源目录挂载为 /plugins/{name}/desktop 静态路径
+
+    插件被禁用或卸载后,本函数不再注册其资源(下次进程启动生效)。
+    """
+    from focus.plugins import get_plugin_registry
+
+    registry = get_plugin_registry()
+    for name, assets in registry.active_assets().items():
+        if (router := assets.get("router")) is not None:
+            app.include_router(router, prefix=f"/desktop/api/plugin/{name}")
+        if (assets_dir := assets.get("assets_dir")) is not None:
+            from fastapi.staticfiles import StaticFiles
+
+            app.mount(
+                f"/plugins/{name}/desktop",
+                StaticFiles(directory=str(assets_dir)),
+                name=f"plugin-{name}-desktop",
+            )
+    if registry.active_assets():
+        logger.info("插件资源已挂载: %s", ", ".join(sorted(registry.active_assets())))

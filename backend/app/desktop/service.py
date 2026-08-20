@@ -411,7 +411,7 @@ class DesktopService:
         )
 
     async def start_main_run(
-        self, task_id: str, message: str, model_name: str | None,
+        self, task_id: str, message: str | list[dict[str, Any]], model_name: str | None,
         permissions: list[str], skills: list[str],
     ) -> PreparedRun:
         async with self.session_factory() as session:

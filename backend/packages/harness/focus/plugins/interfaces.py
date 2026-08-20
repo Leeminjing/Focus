@@ -81,8 +81,11 @@ _BUILTINS: tuple[PluginInterface, ...] = (
                     failure_policy="skip", timeout_seconds=5.0),
 )
 
-# ponytail: v1 服务接口目录为空；新增服务接口（含 single 仲裁接口）只需在 _BUILTINS 加一行
-_SERVICES: tuple[PluginInterface, ...] = ()
+# f18/f19: service.vision 为视觉能力提供接口(实现约定: async describe(data_url) -> str);
+# 视觉插件(如 dsh-eyes)提供实现,text-only 主模型的插件可依赖或判定该能力
+_SERVICES: tuple[PluginInterface, ...] = (
+    PluginInterface(name="service.vision", cardinality="multi", mutability="read-only"),
+)
 
 
 class InterfaceCatalog:

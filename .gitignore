@@ -45,3 +45,4 @@ desktop/.smoke-*.log
 
 # Playwright MCP 运行时快照输出目录
 .playwright-mcp/
+plugins/*/data/

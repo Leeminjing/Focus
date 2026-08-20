@@ -59,7 +59,7 @@ def _load_config(plugin_dir: Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def _build_entry(plugin_dir: Path, entry: str, manifest: PluginManifest) -> Any:
+def _build_entry(plugin_dir: Path, entry: str, manifest: PluginManifest, registry: Any = None) -> Any:
     entry_file = plugin_dir / entry
     if not entry_file.is_file():
         raise ValueError(f"入口文件不存在: {entry}")
@@ -71,10 +71,44 @@ def _build_entry(plugin_dir: Path, entry: str, manifest: PluginManifest) -> Any:
     build_plugin = getattr(module, "build_plugin", None)
     if not callable(build_plugin):
         raise ValueError("入口缺少 build_plugin(context) 函数")
-    declaration = build_plugin(PluginContext(config=_load_config(plugin_dir), plugin_dir=plugin_dir))
+    declaration = build_plugin(
+        PluginContext(config=_load_config(plugin_dir), plugin_dir=plugin_dir, registry=registry)
+    )
     if not isinstance(declaration, PluginDeclaration):
         raise ValueError("build_plugin 必须返回 PluginDeclaration")
     return declaration
+
+
+def _collect_assets(plugin_dir: Path, manifest: PluginManifest) -> dict[str, Any]:
+    """校验并收集插件的桌面 API 路由与前端资源;缺失时抛 ValueError(理由含缺失文件)。
+
+    工作流:
+        (1) http_routes: 加载插件目录内的路由模块,校验其暴露 router 属性
+        (2) desktop_assets: 校验插件目录内的资源子目录存在
+        (3) 均未声明时返回空 dict(与修订前行为一致)
+    """
+    assets: dict[str, Any] = {}
+    if manifest.http_routes:
+        route_file = plugin_dir / manifest.http_routes
+        if not route_file.is_file():
+            raise ValueError(f"路由模块缺失: {manifest.http_routes}")
+        spec = importlib.util.spec_from_file_location(
+            f"{_module_name(manifest.name)}_routes", route_file
+        )
+        if spec is None or spec.loader is None:
+            raise ValueError(f"路由模块无法加载: {manifest.http_routes}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        router = getattr(module, "router", None)
+        if router is None:
+            raise ValueError(f"路由模块未暴露 router: {manifest.http_routes}")
+        assets["router"] = router
+    if manifest.desktop_assets:
+        assets_dir = plugin_dir / manifest.desktop_assets
+        if not assets_dir.is_dir():
+            raise ValueError(f"前端资源目录缺失: {manifest.desktop_assets}")
+        assets["assets_dir"] = assets_dir
+    return assets
 
 
 def load_plugins(registry: PluginRegistry, root: str | Path = DEFAULT_PLUGINS_DIR) -> None:
@@ -100,11 +134,22 @@ def load_plugins(registry: PluginRegistry, root: str | Path = DEFAULT_PLUGINS_DI
             continue
         if not manifest.enabled:
             continue
+        # f18: 资源声明校验先于 register——缺失时插件整体 Unavailable,不进入待提交队列
+        try:
+            assets = _collect_assets(plugin_dir, manifest)
+        except Exception as exc:
+            registry.register_failed(
+                manifest, "unavailable", f"插件自身资源不可用: {exc}",
+            )
+            logger.warning("插件 %s 资源收集失败: %s", manifest.name, exc)
+            continue
+        if assets:
+            registry.register_assets(manifest.name, assets)
         if manifest.runtime is not None:
             registry.register_remote(manifest, plugin_dir)
             continue
         try:
-            declaration = _build_entry(plugin_dir, manifest.entry, manifest)
+            declaration = _build_entry(plugin_dir, manifest.entry, manifest, registry)
         except Exception as exc:
             registry.register_failed(
                 manifest, "unavailable", f"插件自身运行环境不可用: {exc}",

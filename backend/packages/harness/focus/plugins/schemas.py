@@ -63,6 +63,9 @@ class PluginManifest(BaseModel):
     requires: list[str] = Field(default_factory=list)
     entry: str = "plugin.py"
     runtime: PluginRuntime | None = None
+    # f18: 桌面 API 路由模块文件名与前端资源子目录名（可选，缺省不影响既有行为）
+    http_routes: str | None = None
+    desktop_assets: str | None = None
 
     @model_validator(mode="after")
     def _entry_xor_runtime(self) -> "PluginManifest":
@@ -77,6 +80,7 @@ class PluginContext:
 
     config: dict[str, Any]  # plugins/<name>/config.json 原样内容（无该文件时为空 dict）
     plugin_dir: Path
+    registry: Any = None  # f19: 当前加载中的插件注册表（构建期可查询已登记插件）
 
 
 @dataclass
