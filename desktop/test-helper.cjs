@@ -1,7 +1,9 @@
+/*
+ * 本文件对外提供 app-*.test.cjs 共用的 VM 测试脚手架。输入为选择器、状态记录、网络与额外全局
+ * 配置，输出为带浏览器语义、localStorage、Markdown 渲染器和 Context helper 的隔离上下文；工作流
+ * 统一测试环境并允许调用方覆盖差异点。示例：`createAppHarness({ fetch: true })`。
+ */
 "use strict";
-// app-*.test.cjs 共享的 VM 测试脚手架（change 13）。
-// 统一:inert stub、document stub（selector 分支表）、vm context 骨架、app.js 加载。
-// 差异点(statusNode 记录、selector 分支、fetch 收集、额外全局)经 createAppHarness(options) 传入。
 const fs = require("node:fs");
 const vm = require("node:vm");
 
@@ -13,6 +15,7 @@ const inert = {
 };
 
 const BASE_GLOBALS = {
+  addEventListener() {},
   Headers,
   clearInterval() {},
   clearTimeout() {},
@@ -54,7 +57,14 @@ function createAppHarness(options = {}) {
     },
     querySelectorAll() { return []; },
   };
-  const globals = { ...BASE_GLOBALS, document, ...(options.globals || {}) };
+  const storage = new Map(Object.entries(options.storage || {}));
+  const localStorage = {
+    getItem(key) { return storage.has(String(key)) ? storage.get(String(key)) : null; },
+    setItem(key, value) { storage.set(String(key), String(value)); },
+    removeItem(key) { storage.delete(String(key)); },
+    clear() { storage.clear(); },
+  };
+  const globals = { ...BASE_GLOBALS, document, localStorage, ...(options.globals || {}) };
   const fetches = [];
   if (options.fetch) {
     globals.fetch = async (url, opts = {}) => {
@@ -69,7 +79,10 @@ function createAppHarness(options = {}) {
   context.window = context;
   // markdown-it(vendor):与浏览器一致,script 内容在 context 内执行,暴露全局 markdownit
   vm.runInContext(fs.readFileSync(require.resolve("./vendor/markdown-it.min.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("./skill-picker.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./context-editor.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("./compression-panel.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("./plugin-view.js"), "utf8"), context);
   return { vm, context, document, inert, statusNode, statusState, fetches };
 }
 

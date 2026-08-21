@@ -1,3 +1,7 @@
+/*
+ * 本文件启动 Focus 桌面运行时。输入为本机 Python/Git/Docker 能力与环境变量，输出为单一动态
+ * loopback FastAPI 服务及从同一 Origin 加载的隔离 BrowserWindow；启动失败时输出本地说明窗口。
+ */
 const { app, BrowserWindow, dialog, ipcMain, Menu } = require("electron");
 const { execFileSync, spawn } = require("node:child_process");
 const crypto = require("node:crypto");
@@ -54,9 +58,18 @@ async function waitForHealth(url, timeoutMs = 30000) {
 }
 
 function errorWindow(error) {
-  const win = new BrowserWindow({ width: 760, height: 460 });
+  const win = new BrowserWindow({ width: 760, height: 460, minWidth: 560, minHeight: 380, backgroundColor: "#f5f7fa" });
   const message = String(error?.message || error).replace(/[&<>]/g, value => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[value]);
-  win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<main style="font:16px Segoe UI;padding:42px;line-height:1.6"><h1>Focus 启动失败</h1><p>${message}</p><p>请确认 Python、Git、Docker Desktop 和项目 Python 依赖均已安装。</p></main>`)}`);
+  const page = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Focus 启动失败</title><style>
+    :root{font-family:"Segoe UI","Microsoft YaHei UI",sans-serif;color:#172033;background:#f5f7fa}
+    *{box-sizing:border-box}body{min-height:100vh;margin:0;display:grid;place-items:center;padding:32px}
+    main{width:min(620px,100%);padding:36px;border:1px solid #dce2ea;border-radius:16px;background:#fff;box-shadow:0 18px 48px rgba(21,35,55,.09)}
+    small{color:#b42318;font-weight:700;letter-spacing:.1em}h1{margin:8px 0 12px;font-size:28px}p{color:#596579;line-height:1.65}
+    pre{overflow:auto;padding:14px;border-radius:10px;background:#f7f8fa;color:#9b2c24;white-space:pre-wrap;overflow-wrap:anywhere}
+    button{min-height:38px;margin-top:10px;padding:0 18px;border:1px solid #cbd3df;border-radius:9px;background:#fff;color:#172033;font:inherit;cursor:pointer}
+    button:focus-visible{outline:3px solid rgba(11,108,245,.28);outline-offset:2px}
+  </style><body><main><small>STARTUP ERROR</small><h1>Focus 未能启动</h1><p>本地服务尚未就绪。请确认 Python、Git、Docker Desktop 和项目 Python 依赖均已安装并可运行。</p><pre>${message}</pre><button onclick="window.close()">关闭 Focus</button></main></body></html>`;
+  win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(page)}`);
 }
 
 async function start() {

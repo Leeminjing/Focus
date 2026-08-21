@@ -1,10 +1,19 @@
 /*
- * 本文件以 Electron 加载真实桌面页面并验证 Context 编辑交互。
- * 输入为 preload 提供的固定工作区，输出为树排序、拖拽语义和删除后滚动位置断言；
- * 示例：node_modules/electron/dist/electron.exe context-ui.e2e.cjs。
+ * 本文件以 Electron 加载真实桌面页面并验证 Context 与壳层交互。输入为 preload 提供的固定
+ * 工作区，输出为树排序、Pointer/键盘拖拽、滚动、reduced-motion、窄屏 Inspector 和焦点归还断言。
  */
 const path = require("node:path");
+const fs = require("node:fs");
+const os = require("node:os");
 const { app, BrowserWindow } = require("electron");
+
+const testUserData = path.join(os.tmpdir(), `focus-context-ui-${process.pid}`);
+fs.mkdirSync(testUserData, { recursive: true });
+app.setPath("userData", testUserData);
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch("disable-gpu");
+app.commandLine.appendSwitch("disable-software-rasterizer");
+app.commandLine.appendSwitch("no-sandbox");
 
 async function run() {
   const captureQa = process.argv.includes("--qa-screenshot");
@@ -65,11 +74,15 @@ async function run() {
     if (document.querySelector('#conversation').scrollTop !== childScroll) failures.push('切回 Context 后会话滚动位置没有恢复');
     document.querySelector('[data-action="show-map"]').click();
     await waitFor('.task-card');
+    if (!document.querySelector('.map-workspace-group') || document.querySelectorAll('.map-root-group').length < 2) failures.push('全图未按工作区与根 Context 分组');
     const order = [...document.querySelectorAll('.task-card')].map(card => card.dataset.taskId);
     if (order.slice(0, 5).join(',') !== 'root,child,merged,blocked,sibling') failures.push('全图没有按 Context tree 排序：' + order.join(','));
     if (!order.includes('foreign-root') || !order.includes('foreign-child')) failures.push('全图错误隐藏了其他线程');
     const identities = [...document.querySelectorAll('.context-identity')].map(node => node.textContent.trim());
     if (!identities.some(text => text.startsWith('根 Context')) || identities.filter(text => text.startsWith('派生 Context')).length < 4) failures.push('Context 卡片缺少根/派生标识');
+    const childShell = document.querySelector('.task-card[data-task-id="child"]').closest('.task-card-shell');
+    if (childShell.querySelector('.task-card').textContent.includes('another-very-long-directory-name')) failures.push('长路径仍占据全图主扫描层级');
+    if (!childShell.querySelector('.task-technical')?.textContent.includes('another-very-long-directory-name')) failures.push('折叠技术详情没有保留完整长路径');
     document.querySelector('.task-card[data-task-id="blocked"]').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     await waitFor('.context-decision.blocked');
     if (document.querySelectorAll('.context-source-message').length !== 14) failures.push('受阻 Context 重新进入后没有恢复来源消息');
@@ -124,6 +137,10 @@ async function run() {
     if (!stableCard.isConnected) failures.push('新增消息时重建了未受影响卡片');
     if (state.contextDraft.messages[0]?.content !== '未失焦编辑必须保留') failures.push('局部新增丢失未失焦 JSON 编辑');
     const draftHandle = stableCard.querySelector('[data-context-pointer-handle]');
+    draftHandle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true }));
+    if (state.contextDraft.messages[1]?.content !== '未失焦编辑必须保留') failures.push('Alt+ArrowDown 未移动 Context 消息');
+    draftHandle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', altKey: true, bubbles: true }));
+    if (state.contextDraft.messages[0]?.content !== '未失焦编辑必须保留') failures.push('Alt+ArrowUp 未恢复 Context 消息顺序');
     const draftStart = draftHandle.getBoundingClientRect();
     const reorderTarget = list.getBoundingClientRect();
     draftHandle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 8, button: 0, clientX: draftStart.left + 5, clientY: draftStart.top + 5 }));
@@ -182,6 +199,26 @@ async function run() {
     return { failures, before, after };
   })()`);
   if (result.failures.length) throw new Error(`${result.failures.join("\n")}\nscrollTop: ${result.before} -> ${result.after}`);
+  window.setSize(900, 680);
+  const responsive = await window.webContents.executeJavaScript(`(async () => {
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const failures = [];
+    if (document.documentElement.scrollWidth > document.documentElement.clientWidth) failures.push('900×680 存在页面级横向滚动');
+    const nav = document.querySelector('.app-navigation');
+    if (nav.getBoundingClientRect().width > 74) failures.push('900×680 导航未折叠');
+    const trigger = document.querySelector('[data-action="show-contexts"]');
+    trigger.focus();
+    trigger.click();
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const inspector = document.querySelector('#appInspector');
+    const rect = inspector.getBoundingClientRect();
+    if (getComputedStyle(inspector).position !== 'absolute' || rect.right > innerWidth + 1 || rect.left < nav.getBoundingClientRect().right - 1) failures.push('900×680 Inspector 未形成导航后的覆盖层');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    if (!inspector.hidden || document.activeElement !== trigger) failures.push('Inspector Escape 关闭后未归还焦点');
+    return failures;
+  })()`);
+  if (responsive.length) throw new Error(responsive.join("\n"));
   if (captureQa) {
     await window.webContents.executeJavaScript(`(async () => {
       state.view = 'context';

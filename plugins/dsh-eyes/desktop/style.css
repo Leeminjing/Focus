@@ -1,4 +1,41 @@
-/* dsh-eyes:消息框上方的图片缩略图行(图片不嵌入气泡,对齐 image8) */
+/* dsh-eyes 插件根样式：只消费宿主公开令牌，不覆盖宿主组件选择器。 */
+.dsh-eyes-paste-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 2px;
+}
+
+.dsh-eyes-preview-item { position: relative; }
+
+.dsh-eyes-preview-image {
+  display: block;
+  width: auto;
+  height: 72px;
+  border: 1px solid var(--focus-plugin-border, #dce2e9);
+  border-radius: var(--focus-plugin-radius, 8px);
+  object-fit: cover;
+}
+
+.dsh-eyes-preview-remove {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  display: grid;
+  width: 22px;
+  min-height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--focus-plugin-border, #dce2e9);
+  border-radius: 50%;
+  color: var(--focus-plugin-text, #18202d);
+  background: var(--focus-plugin-surface, #fff);
+  cursor: pointer;
+  line-height: 1;
+  box-shadow: var(--focus-plugin-shadow, 0 2px 8px rgb(20 31 48 / 10%));
+}
+
 .dsh-eyes-message-images {
   display: flex;
   flex-wrap: wrap;
@@ -9,7 +46,7 @@
 .dsh-eyes-message-image {
   max-height: 160px;
   max-width: 100%;
-  border-radius: 6px;
-  border: 1px solid #ddd;
+  border-radius: var(--focus-plugin-radius, 8px);
+  border: 1px solid var(--focus-plugin-border, #dce2e9);
   display: block;
 }

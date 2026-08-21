@@ -1,11 +1,13 @@
-/* dsh-eyes 前端粘贴处理器:聊天输入框粘贴图片 → data URL 待发队列。
-
-   工作流:
+/* dsh-eyes 前端粘贴处理器。输入为主 Composer 获得的图片剪贴板项，输出为使用宿主公开令牌的
+   待发附件条与 data URL 队列；工作流:
      (1) 监听 document 的 paste 事件;仅当焦点在聊天输入框(#mainInput)且
          剪贴板含图片时捕获;
      (2) 图片 → FileReader → data URL,入队 window.__dshEyesPendingImages;
      (3) 在输入框旁显示「已粘贴 N 张图片」反馈标记;
      (4) app.js sendMain 经 __dshEyesTakePendingImages() 取走并清空队列。
+
+   输入为 #mainInput 的图片剪贴板项，输出为宿主 Composer 附件条和待发送 data URL 队列；
+   样式只作用于 dsh-eyes 命名空间，不修改宿主布局或发信协议。
 */
 (function (root) {
   "use strict";
@@ -28,14 +30,13 @@
     if (!previewBox || !previewBox.isConnected) {
       previewBox = document.createElement("div");
       previewBox.className = "dsh-eyes-paste-preview";
-      previewBox.style.cssText = "display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:4px 2px;";
       const parent = container.parentElement || container;
       parent.insertBefore(previewBox, container);
     }
     previewBox.innerHTML = pending.map((image, index) =>
-      `<span class="dsh-eyes-preview-item" style="position:relative;">
-        <img src="${escapeAttr(image.url)}" alt="待发送图片" style="height:72px;border-radius:6px;border:1px solid #ddd;display:block;">
-        <button type="button" data-remove-image="${index}" style="position:absolute;top:-8px;right:-8px;width:18px;height:18px;border-radius:50%;border:1px solid #ccc;background:#fff;cursor:pointer;font-size:11px;line-height:1;">×</button>
+      `<span class="dsh-eyes-preview-item">
+        <img class="dsh-eyes-preview-image" src="${escapeAttr(image.url)}" alt="待发送图片">
+        <button class="dsh-eyes-preview-remove" type="button" data-remove-image="${index}" aria-label="移除第 ${index + 1} 张图片">×</button>
       </span>`
     ).join("");
     previewBox.querySelectorAll("[data-remove-image]").forEach(button => {

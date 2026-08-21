@@ -1,4 +1,8 @@
 <!doctype html>
+<!--
+  本文档提供 Focus 桌面宿主的持久挂载结构。输入为 app.js 的同源数据与原生 DOM 更新，
+  输出为全局导航、任务上下文、工作区、检查器、浮层、对话框和可复用模板。
+-->
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -6,16 +10,67 @@
   <title>Focus</title>
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./skill-picker.css">
+  <link rel="stylesheet" href="./styles/tokens.css">
+  <link rel="stylesheet" href="./styles/base.css">
+  <link rel="stylesheet" href="./styles/components.css">
+  <link rel="stylesheet" href="./styles/shell.css">
+  <link rel="stylesheet" href="./styles/views.css">
 </head>
 <body>
-  <header class="app-header">
-    <button class="brand" data-action="focus-home" aria-label="返回当前任务">Focus</button>
-    <button class="icon-button" data-action="show-map" aria-label="打开全图">全图</button>
-    <button class="icon-button" data-action="show-plugins" aria-label="打开插件视图">插件</button>
-    <span id="globalStatus" class="global-status" role="status"></span>
-    <button class="quiet-button" data-action="new-task">新增任务</button>
-  </header>
-  <main id="app" aria-live="polite"></main>
+  <div class="app-frame">
+    <header class="app-header">
+      <button class="brand" data-action="focus-home" aria-label="返回当前任务">Focus</button>
+      <div class="shell-task-context" aria-live="polite">
+        <strong id="shellTaskTitle">尚未选择任务</strong>
+        <span id="shellTaskMeta">本地 Agent 工作台</span>
+      </div>
+      <span id="globalStatus" class="global-status" role="status" aria-atomic="true"></span>
+      <button class="quiet-button" data-action="new-task">新增任务</button>
+    </header>
+    <div class="app-shell">
+      <nav id="appNavigation" class="app-navigation" aria-label="全局导航">
+        <button class="app-nav-item" data-action="focus-home" data-nav-key="focus">
+          <span class="app-nav-icon" aria-hidden="true">⌂</span><span class="app-nav-label">任务</span>
+        </button>
+        <button class="app-nav-item" data-action="show-map" data-nav-key="map">
+          <span class="app-nav-icon" aria-hidden="true">⊞</span><span class="app-nav-label">全图</span>
+        </button>
+        <button class="app-nav-item" data-action="show-contexts" data-nav-key="contexts">
+          <span class="app-nav-icon" aria-hidden="true">⑂</span><span class="app-nav-label">Contexts</span>
+        </button>
+        <button class="app-nav-item" data-action="show-agents" data-nav-key="agents">
+          <span class="app-nav-icon" aria-hidden="true">◎</span><span class="app-nav-label">Agents</span>
+        </button>
+        <button class="app-nav-item" data-action="show-plugins" data-nav-key="plugins">
+          <span class="app-nav-icon" aria-hidden="true">◇</span><span class="app-nav-label">Plugins</span>
+        </button>
+      </nav>
+      <section class="app-workspace">
+        <header class="workspace-context">
+          <div>
+            <span id="workspaceKicker" class="workspace-kicker">WORKSPACE</span>
+            <h1 id="workspaceTitle">任务</h1>
+          </div>
+          <span id="workspaceMeta" class="ui-meta"></span>
+        </header>
+        <main id="app" tabindex="-1" aria-live="polite"></main>
+      </section>
+      <aside id="appInspector" class="app-inspector" tabindex="-1" aria-labelledby="inspectorTitle" hidden>
+        <header class="inspector-header">
+          <div><span class="workspace-kicker">INSPECTOR</span><h2 id="inspectorTitle">任务信息</h2></div>
+          <button class="icon-button" data-action="close-inspector" aria-label="关闭检查器">×</button>
+        </header>
+        <div class="inspector-tabs" role="tablist" aria-label="检查器内容">
+          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="context">Contexts</button>
+          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="materials">材料</button>
+          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="agents">Agents</button>
+          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="run">运行</button>
+        </div>
+        <div id="inspectorContent" class="inspector-content"></div>
+      </aside>
+    </div>
+    <div id="overlayRoot" class="overlay-root" aria-live="polite"></div>
+  </div>
   <dialog id="taskDialog">
     <form method="dialog" id="taskForm" class="dialog-form">
       <h2>新增工作区任务</h2>

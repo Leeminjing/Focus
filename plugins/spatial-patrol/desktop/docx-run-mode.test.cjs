@@ -5,6 +5,7 @@ require("./viewer.js");
 const assert = require("node:assert");
 const {
   permissionsForMaterial,
+  presentAnchorStatus,
   requirePermissionsForMaterial,
 } = globalThis.FocusSpatialViewer;
 
@@ -17,5 +18,8 @@ assert.throws(
   () => requirePermissionsForMaterial("report.docx", null),
   /只读观察.*修改文档/,
 );
+assert.deepStrictEqual(presentAnchorStatus("needs_action"), { label: "需要处理", tone: "warning" });
+assert.deepStrictEqual(presentAnchorStatus("invalid"), { label: "锚点失效", tone: "danger" });
+assert.deepStrictEqual(presentAnchorStatus("done"), { label: "已完成", tone: "success" });
 
 console.log("docx-run-mode: 显式操作模式约束通过");

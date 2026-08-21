@@ -1,4 +1,7 @@
-// md 渲染测试:renderAssistantContent 经 markdown-it 渲染完整语法 + XSS 防护
+/*
+ * 本文件验证主任务 AI Markdown 与统一工作记录骨架。输入为消息对象和 Markdown 文本，输出为
+ * 安全 HTML、折叠技术元数据及 Human/AI/Tool 语义变体断言；工作流不访问网络或真实 DOM。
+ */
 const assert = require("node:assert/strict");
 const vm = require("node:vm");
 const { createAppHarness, readAppSource } = require("./test-helper.cjs");
@@ -42,5 +45,23 @@ assert.ok(html.includes("&lt;script&gt;"), "script 标签转义显示");
 html = render("[x](javascript:alert(1))");
 assert.ok(!html.includes('<a href="javascript:'), "javascript: 链接不生成");
 assert.match(html, /\[x\]\(javascript:alert\(1\)\)/, "危险链接渲染为纯文本");
+
+const renderMessage = message =>
+  new vm.Script(`renderMessage(${JSON.stringify(message)})`).runInContext(context);
+
+html = renderMessage({ id: "message-1", role: "ai", content: "**完成**", tool_calls: [{ id: "call-1", name: "search", args: { q: "x" } }] });
+assert.match(html, /class="work-record message ai"/, "AI 使用统一工作记录骨架");
+assert.match(html, /<strong>完成<\/strong>/, "工作记录继续使用安全 Markdown");
+assert.match(html, /<details class="message-details">/, "技术字段默认进入折叠详情");
+assert.match(html, /message-1/, "折叠详情保留完整消息 ID");
+assert.match(html, /call-1/, "折叠详情保留完整工具调用载荷");
+
+html = renderMessage({ role: "human", content: "<img src=x onerror=alert(1)>" });
+assert.match(html, /class="work-record message human"/, "Human 使用统一工作记录骨架");
+assert.ok(!html.includes("<img src=x"), "Human 工作记录仍转义原始 HTML");
+
+html = renderMessage({ role: "tool", name: "powershell", tool_call_id: "call-tool", content: "done" });
+assert.match(html, /class="work-record message tool"/, "Tool 使用统一工作记录骨架");
+assert.match(html, /工具调用 ID/, "Tool ID 进入技术详情");
 
 console.log("md-render.test.cjs OK");
