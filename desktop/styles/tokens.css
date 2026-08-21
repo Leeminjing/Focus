@@ -1,0 +1,98 @@
+/*
+ * F20 设计令牌层。宿主与插件只消费语义变量，不依赖页面私有颜色；旧变量在迁移期映射到同一值。
+ */
+:root {
+  color-scheme: light;
+
+  --surface-canvas: #f4f6f8;
+  --surface-base: #ffffff;
+  --surface-subtle: #f8fafc;
+  --surface-muted: #eef2f6;
+  --surface-accent: #edf5ff;
+  --surface-success: #ecf8f2;
+  --surface-warning: #fff6e8;
+  --surface-danger: #fff0f1;
+  --surface-code: #f5f7fa;
+  --surface-inverse: #202733;
+
+  --text-primary: #18202d;
+  --text-secondary: #566173;
+  --text-tertiary: #7b8494;
+  --text-inverse: #ffffff;
+  --text-accent: #0969da;
+  --text-success: #137a4f;
+  --text-warning: #946019;
+  --text-danger: #ba3341;
+
+  --border-strong: #c9d1dc;
+  --border-default: #dce2e9;
+  --border-subtle: #e9edf2;
+  --border-accent: #77aef7;
+  --border-warning: #e2bb79;
+
+  --accent-primary: #0b6cf5;
+  --accent-hover: #095dce;
+  --accent-pressed: #084ca8;
+  --accent-soft: #eaf3ff;
+  --status-success: #16885a;
+  --status-warning: #a66b17;
+  --status-danger: #c43b49;
+  --status-neutral: #667085;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  --radius-control: 7px;
+  --radius-card: 11px;
+  --radius-panel: 14px;
+  --radius-round: 999px;
+
+  --shadow-raised: 0 1px 2px rgb(20 31 48 / 5%), 0 8px 24px rgb(20 31 48 / 7%);
+  --shadow-overlay: 0 16px 48px rgb(20 31 48 / 18%);
+  --focus-ring: 0 0 0 3px rgb(11 108 245 / 20%);
+
+  --motion-fast: 120ms;
+  --motion-standard: 170ms;
+  --ease-standard: cubic-bezier(.2, .7, .2, 1);
+
+  --shell-header-height: 58px;
+  --shell-nav-width: 188px;
+  --shell-nav-collapsed: 72px;
+  --inspector-width: clamp(292px, 25vw, 380px);
+  --reading-width: 780px;
+  --composer-width: 920px;
+
+  /* 迁移期兼容旧宿主变量。 */
+  --bg: var(--surface-canvas);
+  --panel: var(--surface-base);
+  --ink: var(--text-primary);
+  --muted: var(--text-secondary);
+  --line: var(--border-default);
+  --line-soft: var(--border-subtle);
+  --blue: var(--accent-primary);
+  --blue-soft: var(--accent-soft);
+  --green: var(--status-success);
+  --danger: var(--status-danger);
+  --radius: var(--radius-card);
+
+  /* 插件公开契约：插件不得复制宿主色值或覆盖非插件根节点。 */
+  --focus-plugin-surface: var(--surface-base);
+  --focus-plugin-surface-subtle: var(--surface-subtle);
+  --focus-plugin-surface-inverse: var(--surface-inverse);
+  --focus-plugin-text: var(--text-primary);
+  --focus-plugin-text-muted: var(--text-secondary);
+  --focus-plugin-text-inverse: var(--text-inverse);
+  --focus-plugin-border: var(--border-default);
+  --focus-plugin-accent: var(--accent-primary);
+  --focus-plugin-success: var(--status-success);
+  --focus-plugin-warning: var(--status-warning);
+  --focus-plugin-danger: var(--status-danger);
+  --focus-plugin-radius: var(--radius-card);
+  --focus-plugin-shadow: var(--shadow-raised);
+}

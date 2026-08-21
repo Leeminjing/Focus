@@ -1,3 +1,8 @@
+/*
+ * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
+ * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、对话/Context/Agent/
+ * Commitment/压缩/插件等视图；工作流只更新宿主挂载点并保留任务级草稿、滚动与运行状态。
+ */
 "use strict";
 
 // markdown-it 单例(渲染器无状态):完成态助手消息的 md 渲染引擎。
@@ -26,7 +31,7 @@ const state = {
   equipment: { models: [], tools: [], skills: [], permissions: [] },
   soldierArmed: false,
   openMaterial: null,
-  openDraftSection: "history",
+  openDraftSection: null,
   agentDialog: { agentId: null, messages: [], busy: false },
   saveTimer: null,
   statusTimer: null,
@@ -35,6 +40,7 @@ const state = {
   streams: new Map(),
   streamBuffers: new Map(),
   streamFrames: new Map(),
+  composerErrors: new Map(),
   commitment: {
     taskId: null,
     stage: 0,
@@ -61,18 +67,22 @@ const state = {
     busy: false,
     recovery: null,
   },
-  plugins: { plugins: [], interfaces: {}, traces: [] },
+  plugins: { plugins: [], interfaces: {}, traces: [], filter: "all", selectedName: null },
+  inspector: { open: window.innerWidth > 1100, tab: "context", returnFocus: null },
   filesPanel: null,   // f18:右侧文件面板当前打开的 material(relative_path 等)
-  railWidth: (() => {
-    // f18:rail 宽度持久化;异常残留(>500,误拖/旧值)收敛回默认 310,避免列被撑宽产生空白
-    const saved = Number(localStorage.getItem("focus-rail-width"));
-    return saved > 500 ? 310 : (saved || 310);
-  })(),
   panelWidth: Number(localStorage.getItem("focus-panel-width") || 400),
 };
 
 const app = document.querySelector("#app");
 const statusNode = document.querySelector("#globalStatus");
+const appInspector = document.querySelector("#appInspector");
+const inspectorContent = document.querySelector("#inspectorContent");
+const inspectorTitle = document.querySelector("#inspectorTitle");
+const shellTaskTitle = document.querySelector("#shellTaskTitle");
+const shellTaskMeta = document.querySelector("#shellTaskMeta");
+const workspaceKicker = document.querySelector("#workspaceKicker");
+const workspaceTitle = document.querySelector("#workspaceTitle");
+const workspaceMeta = document.querySelector("#workspaceMeta");
 const dialog = document.querySelector("#taskDialog");
 const agentDialog = document.querySelector("#agentDialog");
 const skillPicker = window.FocusSkillPicker;
@@ -131,6 +141,7 @@ async function hydratePluginAssets(bootstrapPlugins = null) {
         const link = document.createElement("link");
         link.rel = "stylesheet";
         link.href = `/plugins/${encodeURIComponent(plugin.name)}/desktop/${encodeURIComponent(file)}`;
+        link.onerror = () => { console.error("插件样式加载失败:", link.href); };
         document.head.append(link);
       }
       const jsFiles = files
@@ -235,7 +246,7 @@ async function hydrateActive() {
 
 function render() {
   document.body.dataset.view = state.view;
-  document.querySelector('[data-action="show-map"]').hidden = !state.tasks.length || state.view !== "focus";
+  renderShellChrome();
   if (!state.tasks.length) {
     app.replaceChildren(document.querySelector("#emptyTemplate").content.cloneNode(true));
     return;
@@ -250,6 +261,128 @@ function render() {
     pluginViews[state.view].render(app, state);
   }
   else renderContextEditor();
+}
+
+function activeNavigationKey() {
+  if (state.inspector.open && ["context", "agents"].includes(state.inspector.tab)) {
+    return state.inspector.tab === "context" ? "contexts" : "agents";
+  }
+  if (state.view === "map") return "map";
+  if (state.view === "plugins") return "plugins";
+  return "focus";
+}
+
+function viewHeading() {
+  if (state.view === "map") return ["TASK MAP", "全图"];
+  if (state.view === "plugins") return ["PLUGINS", "插件中心"];
+  if (state.view === "draft") return ["AGENT DRAFT", "小兵草稿"];
+  if (state.view === "compress") return ["CONTEXT", "上下文压缩"];
+  if (state.view?.startsWith("context")) return ["CONTEXT", "Context 编辑"];
+  return ["WORKSPACE", "任务"];
+}
+
+function renderShellChrome() {
+  const task = activeTask();
+  const [kicker, title] = viewHeading();
+  if (shellTaskTitle) shellTaskTitle.textContent = task?.title || "尚未选择任务";
+  if (shellTaskMeta) shellTaskMeta.textContent = task
+    ? `${task.workspace_name || "本地工作区"} · ${task.task_id.slice(0, 8)}`
+    : "本地 Agent 工作台";
+  if (workspaceKicker) workspaceKicker.textContent = kicker;
+  if (workspaceTitle) workspaceTitle.textContent = state.view === "focus" && task ? task.title : title;
+  if (workspaceMeta) workspaceMeta.textContent = task?.workspace_path || "";
+  const current = activeNavigationKey();
+  document.querySelectorAll?.("[data-nav-key]").forEach(button => {
+    if (button.dataset.navKey === current) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+    button.disabled = !state.tasks.length && button.dataset.navKey !== "plugins";
+  });
+  renderInspector();
+}
+
+function inspectorHeading(tab) {
+  return { context: "Contexts", materials: "任务材料", agents: "Agents", run: "运行状态" }[tab] || "任务信息";
+}
+
+const RUN_STATUS_PRESENTATION = Object.freeze({
+  pending: { label: "排队中", tone: "active" },
+  running: { label: "运行中", tone: "active" },
+  success: { label: "已完成", tone: "success" },
+  interrupted: { label: "已中断", tone: "warning" },
+  error: { label: "运行失败", tone: "danger" },
+  cancelled: { label: "已取消", tone: "warning" },
+  ready: { label: "就绪", tone: "neutral" },
+});
+
+function presentRunStatus(status) {
+  return RUN_STATUS_PRESENTATION[status] || { label: status || "就绪", tone: "neutral" };
+}
+
+function renderInspector() {
+  if (!appInspector?.setAttribute || !inspectorContent) return;
+  appInspector.hidden = !state.inspector.open;
+  appInspector.setAttribute("aria-hidden", String(!state.inspector.open));
+  if (!state.inspector.open) return;
+  const tab = state.inspector.tab;
+  const task = activeTask();
+  inspectorTitle.textContent = inspectorHeading(tab);
+  appInspector.querySelectorAll?.('[role="tab"]').forEach(button => {
+    const selected = button.dataset.inspectorTab === tab;
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  });
+  if (!task) {
+    inspectorContent.innerHTML = '<section class="ui-empty-state"><h1>暂无任务</h1><p>创建任务后即可查看上下文信息。</p></section>';
+    return;
+  }
+  if (tab === "context") {
+    inspectorContent.innerHTML = renderContextRail(task);
+    return;
+  }
+  if (tab === "materials") {
+    const materials = state.materials.get(task.task_id) || [];
+    const protectedCount = materials.filter(item => item.retention === "irreplaceable").length;
+    inspectorContent.innerHTML = `<section class="inspector-section materials-inspector"><header><div><span class="workspace-kicker">TASK SOURCES</span><h3>任务材料</h3></div><span class="ui-badge">${materials.length}</span></header><p class="inspector-description">阅读策略、约束级别和版本保护只作用于当前任务。</p>${protectedCount ? `<div class="ui-notice is-success"><strong>${protectedCount} 份材料受版本保护</strong><span>不可遗失材料可置空或从历史版本恢复，但不会直接删除。</span></div>` : ""}<div class="inspector-list">${materials.length ? materials.map(renderMaterial).join("") : '<section class="ui-empty-state"><h1>暂无材料</h1><p>从 Composer 添加文件后，可在这里配置阅读和保留策略。</p></section>'}</div></section>`;
+    return;
+  }
+  if (tab === "agents") {
+    const agents = state.agents.get(task.task_id) || [];
+    if (state.agentDialog.agentId) {
+      const agent = agents.find(item => item.agent_id === state.agentDialog.agentId);
+      const status = agent?.latest_run?.status || "ready";
+      const presented = presentRunStatus(status);
+      inspectorContent.innerHTML = `<section class="inspector-section agent-inspector-detail">
+        <header><button class="text-button" type="button" data-action="agent-list">← Agents</button><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></header>
+        <div><h3>${agent ? `小兵 ${escapeHtml(agent.agent_id.slice(0, 8))}` : "Agent"}</h3><p class="ui-meta">${escapeHtml(agent?.checkpoint_ns || "")}</p></div>
+        <div class="agent-detail-history">${state.agentDialog.busy ? '<p class="muted">加载中…</p>' : state.agentDialog.messages.length ? state.agentDialog.messages.map(renderMessage).join("") : '<p class="muted">暂无已提交消息</p>'}</div>
+        <div class="ui-toolbar agent-detail-actions"><button class="text-button" data-action="refresh-agent-details">刷新</button><button class="text-button" data-action="retry-agent-details">重试</button><button class="text-button danger" data-action="cancel-agent-details">取消运行</button></div>
+        <form class="agent-inspector-continue" id="agentInspectorContinueForm"><label for="agentInspectorInput">继续对话</label><textarea id="agentInspectorInput" rows="3" placeholder="给这个 Agent 追加指令…"></textarea><button class="primary" type="submit">继续</button></form>
+      </section>`;
+      return;
+    }
+    inspectorContent.innerHTML = `<section class="inspector-section"><header><h3>协作 Agents</h3><span class="ui-badge">${agents.length}</span></header><div class="inspector-list">${agents.length ? renderAgentStrip(task.task_id) : '<p class="muted">尚未投放小兵</p>'}</div></section>`;
+    return;
+  }
+  const run = state.details.get(task.task_id)?.active_run;
+  const presented = presentRunStatus(run?.status || "ready");
+  inspectorContent.innerHTML = `<section class="inspector-section"><header><h3>主 Agent</h3><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></header><dl class="inspector-run-meta"><div><dt>任务</dt><dd>${escapeHtml(task.title)}</dd></div><div><dt>运行 ID</dt><dd>${escapeHtml(run?.run_id || "—")}</dd></div></dl>${state.commitment.stage ? `<section class="inspector-run-stage"><span class="workspace-kicker">COMMITMENT</span><strong>${state.commitment.stage}/9 · ${escapeHtml(COMMITMENT_STAGE_NAMES[state.commitment.stage] || "准备中")}</strong><span>${state.commitment.review ? "等待人工确认" : state.commitment.terminalStatus ? presentRunStatus(state.commitment.terminalStatus).label : "正在执行"}</span></section>` : ""}${renderInterruptButton(state.details.get(task.task_id))}</section>`;
+}
+
+function openInspector(tab, trigger) {
+  const wasOpen = state.inspector.open;
+  state.inspector.open = true;
+  state.inspector.tab = tab;
+  if (!wasOpen || !state.inspector.returnFocus) state.inspector.returnFocus = trigger || document.activeElement;
+  renderShellChrome();
+  requestAnimationFrame(() => appInspector?.focus());
+}
+
+function closeInspector() {
+  const returnFocus = state.inspector.returnFocus;
+  state.inspector.open = false;
+  state.inspector.returnFocus = null;
+  renderShellChrome();
+  requestAnimationFrame(() => returnFocus?.focus?.());
 }
 
 function normalizeSkillNames(value) {
@@ -369,6 +502,25 @@ function renderInterruptButton(detail) {
   return `<button class="text-button danger" data-action="interrupt-main-run" data-run-id="${run.run_id}"${state.mainInterrupting ? " disabled" : ""}>中断</button>`;
 }
 
+function composerFeedback(detail, projectionBlocked) {
+  const error = state.composerErrors.get(state.activeTaskId);
+  if (error) return { kind: "danger", text: `发送失败：${error}` };
+  if (projectionBlocked) return { kind: "warning", text: "该 Context 需要完成执行投影决断后才能继续。" };
+  if (activeTaskHasCommitmentLock()) return { kind: "warning", text: "当前任务正在等待 Commitment 审批，请先处理上方审批区。" };
+  if (detail?.pending_compression) return { kind: "warning", text: "存在待确认的压缩计划，请先确认或取消。" };
+  if (["pending", "running"].includes(detail?.active_run?.status)) return { kind: "active", text: "主 Agent 正在运行；你可以查看运行详情或中断。" };
+  return { kind: "muted", text: "Enter 换行 · 发送后任务会在本地工作区运行" };
+}
+
+function setComposerError(error = null) {
+  if (error) state.composerErrors.set(state.activeTaskId, String(error));
+  else state.composerErrors.delete(state.activeTaskId);
+  const node = document.querySelector("#composerFeedback");
+  if (!node) return;
+  node.className = error ? "composer-feedback is-danger" : "composer-feedback is-muted";
+  node.textContent = error ? `发送失败：${error}` : "Enter 换行 · 发送后任务会在本地工作区运行";
+}
+
 function renderContextRail(task) {
   const tasks = contextEditor.contextFamilyTasks(state.tasks, state.contextTrees, task.task_id);
   const tree = state.contextTrees.get(task.workspace_id) || [];
@@ -410,16 +562,16 @@ function renderFocus() {
   const contextBlock = projectionBlocked
     ? `<section class="context-block-banner"><strong>该 Context 尚未获得安全执行投影</strong><span>${escapeHtml(projectionStatus)}</span><button class="primary" data-action="resume-context-decision">查看并决断</button></section>`
     : "";
-  const materials = state.materials.get(task.task_id) || [];
+  const feedback = composerFeedback(detail, projectionBlocked);
   const previousConversation = app.dataset.taskId === task.task_id ? document.querySelector("#conversation") : null;
   const previousRail = document.querySelector(".context-rail-list");
   const previousRailScrollTop = previousRail?.scrollTop;
   const wasPinned = previousConversation && previousConversation.scrollHeight - previousConversation.scrollTop - previousConversation.clientHeight < 80;
   const previousScrollTop = previousConversation?.scrollTop;
-  // f18:三列布局 —— 对话 | Context rail(可伸缩)| 文件面板(打开时,宽度可调)。
-  // 显式行高约束 minmax(0,1fr):面板高度=视口,内部文本视图才能滚动
+  // F20:任务记录只占主工作区；Context、材料和 Agents 迁入持久检查器，文件仍使用专用画布。
+  // 显式行高约束 minmax(0,1fr):面板高度=工作区,内部文本视图可以独立滚动。
   const panelOpen = !!state.filesPanel;
-  const shellStyle = `grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr) ${state.railWidth}px${panelOpen ? ` ${state.panelWidth}px` : ""}`;
+  const shellStyle = `grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr)${panelOpen ? ` ${state.panelWidth}px` : ""}`;
   app.innerHTML = `
     <section class="focus-shell" style="${shellStyle}">
       <section class="focus-view" data-task-id="${task.task_id}">
@@ -432,25 +584,23 @@ function renderFocus() {
           ${renderConversation(detail, task)}
         </div>
         <div class="focus-bottom">
-          <div class="composer">
-            ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="任务输入" placeholder="继续输入任务…">${escapeHtml(detail.ui_state?.input || "")}</textarea>`)}
-            <div class="composer-actions"><label class="attach-button">添加文件<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">发送</button></div>
+          <div class="composer-shell">
+            <div class="composer-context"><span class="ui-badge is-active">当前任务</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">运行详情</button></div>
+            <div class="composer">
+              ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="任务输入" placeholder="描述下一步，或输入 / 选择技能…">${escapeHtml(detail.ui_state?.input || "")}</textarea>`)}
+              <div class="composer-actions"><label class="attach-button">添加文件<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">发送</button></div>
+            </div>
+            <p id="composerFeedback" class="composer-feedback is-${feedback.kind}" role="status">${escapeHtml(feedback.text)}</p>
           </div>
-          <section class="materials ${materials.length ? "" : "is-empty"}">${materials.length ? materials.map(renderMaterial).join("") : `<div class="materials-empty">暂无材料</div>`}</section>
-          <div class="agents-strip">${renderAgentStrip(task.task_id)}</div>
         </div>
       </section>
-      <div class="rail-wrap">
-        <div class="rail-resizer" id="railResizer" title="拖拽调整宽度"></div>
-        ${renderContextRail(task)}
-      </div>
       ${panelOpen ? `<aside class="file-panel" id="filePanel"><div class="panel-resizer" id="panelResizer" title="拖拽调整面板宽度"></div><div class="file-panel-inner"></div></aside>` : ""}
     </section>`;
   app.dataset.taskId = task.task_id;
   const conversation = document.querySelector("#conversation");
   mountCommitmentRecovery(detail);
   restoreCommitmentPanels(conversation);
-  const commitmentBlocked = activeTaskHasCommitmentLock() || projectionBlocked;
+  const commitmentBlocked = activeTaskHasCommitmentLock() || projectionBlocked || !!detail.pending_compression;
   const mainInput = document.querySelector("#mainInput");
   const sendButton = document.querySelector('[data-action="send-main"]');
   if (mainInput) mainInput.disabled = commitmentBlocked;
@@ -459,43 +609,13 @@ function renderFocus() {
     ? (wasPinned ? conversation.scrollHeight : previousScrollTop)
     : (detail.ui_state?.scrollTop ?? conversation.scrollHeight);
   const rail = document.querySelector(".context-rail-list");
-  if (previousRailScrollTop != null) rail.scrollTop = previousRailScrollTop;
-  if (!previousConversation) requestAnimationFrame(() => rail.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "nearest" }));
-  // f18:rail 宽度拖拽 + 文件面板挂载 + 面板宽度拖拽
-  bindRailResizer();
+  if (previousRailScrollTop != null && rail) rail.scrollTop = previousRailScrollTop;
+  if (!previousConversation) requestAnimationFrame(() => rail?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "nearest" }));
   if (panelOpen) {
     mountFilePanel();
     bindPanelResizer();
   }
-}
-
-function bindRailResizer() {
-  const resizer = document.querySelector("#railResizer");
-  const shell = document.querySelector(".focus-shell");
-  const railWrap = document.querySelector(".rail-wrap");
-  if (!resizer || !shell || !railWrap) return;
-  resizer.addEventListener("pointerdown", event => {
-    event.preventDefault();
-    resizer.classList.add("is-dragging");
-    resizer.setPointerCapture(event.pointerId);
-    const startX = event.clientX;
-    const startWidth = state.railWidth;
-    const move = moveEvent => {
-      // 增量拖动:线是 rail 的左边框 —— 向左拖(负位移)= rail 变宽,向右拖 = 变窄
-      const width = startWidth - (moveEvent.clientX - startX);
-      state.railWidth = Math.max(180, Math.min(560, width));
-      shell.style.gridTemplateColumns = `minmax(0, 1fr) ${state.railWidth}px${state.filesPanel ? ` ${state.panelWidth}px` : ""}`;
-    };
-    const up = () => {
-      resizer.classList.remove("is-dragging");
-      resizer.releasePointerCapture(event.pointerId);
-      resizer.removeEventListener("pointermove", move);
-      resizer.removeEventListener("pointerup", up);
-      localStorage.setItem("focus-rail-width", String(state.railWidth));
-    };
-    resizer.addEventListener("pointermove", move);
-    resizer.addEventListener("pointerup", up);
-  });
+  renderInspector();
 }
 
 function mountFilePanel() {
@@ -515,10 +635,10 @@ function bindPanelResizer() {
     const startX = event.clientX;
     const startWidth = state.panelWidth;
     const move = moveEvent => {
-      // 面板左缘:向左拖(负位移)= 面板变宽(与 rail 同语义:线是面板左边框)
+      // 面板左缘:向左拖(负位移)= 面板变宽。
       const width = startWidth - (moveEvent.clientX - startX);
       state.panelWidth = Math.max(280, Math.min(720, width));
-      shell.style.gridTemplateColumns = `minmax(0, 1fr) ${state.railWidth}px ${state.panelWidth}px`;
+      shell.style.gridTemplateColumns = `minmax(0, 1fr) ${state.panelWidth}px`;
     };
     const up = () => {
       resizer.releasePointerCapture(event.pointerId);
@@ -623,11 +743,37 @@ function renderContentBlock(block) {
   return stripImageReferences(escapeHtml(String(block.text ?? "")));
 }
 
+function renderMessageDetails(message) {
+  const metadata = [];
+  const id = message.id || message.message_id;
+  if (id) metadata.push(["消息 ID", id]);
+  if (message.tool_call_id) metadata.push(["工具调用 ID", message.tool_call_id]);
+  if (message.name) metadata.push(["工具名称", message.name]);
+  if (message.checkpoint_id) metadata.push(["Checkpoint", message.checkpoint_id]);
+  if (message.created_at) metadata.push(["时间", message.created_at]);
+  if (Array.isArray(message.tool_calls) && message.tool_calls.length) {
+    metadata.push(["工具参数", JSON.stringify(message.tool_calls, null, 2)]);
+  }
+  if (message.additional_kwargs && Object.keys(message.additional_kwargs).length) {
+    metadata.push(["附加数据", JSON.stringify(message.additional_kwargs, null, 2)]);
+  }
+  if (!metadata.length) return "";
+  if (metadata.length === 1 && id) return `<span class="visually-hidden">消息 ID：${escapeHtml(String(id))}</span>`;
+  return `<details class="message-details"><summary>技术详情</summary><dl>${metadata.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd><pre>${escapeHtml(String(value))}</pre></dd></div>`).join("")}</dl></details>`;
+}
+
+function messageRoleLabel(kind, role) {
+  if (kind === "human") return ["YOU", "你的指令"];
+  if (kind === "ai") return ["FOCUS", role || "助手"];
+  if (kind === "tool") return ["TOOL", role || "工具结果"];
+  return ["CONTEXT", role || "系统上下文"];
+}
+
 function renderMessage(message) {
   // 后端兜底降级消息按工具结果样式渲染，不泄露原始 XML 标签
   const degraded = compressionPanel.degradedParts(message);
   if (degraded) {
-    return `<article class="message tool"><span class="message-role">工具 · ${escapeHtml(degraded.name || "tool")}</span><div class="message-content">${escapeHtml(degraded.content)}</div></article>`;
+    return `<article class="work-record message tool"><header class="work-record-header"><span class="work-record-kicker">TOOL</span><span class="message-role">工具 · ${escapeHtml(degraded.name || "tool")}</span></header><div class="message-content">${escapeHtml(degraded.content)}</div></article>`;
   }
   const baseRole = { human: "你", user: "你", ai: "助手", assistant: "助手", system: "System", tool: "Tool" }[message.role] || message.role;
   const role = message.role === "tool" && message.name ? `${baseRole} · ${message.name}` : baseRole;
@@ -657,9 +803,13 @@ function renderMessage(message) {
     : "";
   const renderedContent = kind === "ai" ? renderAssistantContent(content) : content;
   const rendered = `${renderedContent}${toolProgress}`;
-  // 用户消息不显示「你」角色标签(布局:图片缩略图在上、消息框在下,无 role 标签)
-  const roleLabel = kind === "human" ? "" : `<span class="message-role">${escapeHtml(role)}</span>`;
-  return `<article class="message ${kind}">${renderMessageImages(messageImages)}${renderFileCards(message)}${roleLabel}<div class="message-content">${rendered}</div></article>`;
+  const [kicker, label] = messageRoleLabel(kind, role);
+  return `<article class="work-record message ${kind}">
+    <header class="work-record-header"><span class="work-record-kicker">${kicker}</span><span class="message-role">${escapeHtml(label)}</span></header>
+    ${renderMessageImages(messageImages)}${renderFileCards(message)}
+    <div class="message-content">${rendered}</div>
+    ${renderMessageDetails(message)}
+  </article>`;
 }
 
 function renderCompressionDivider(item) {
@@ -679,10 +829,10 @@ function renderConversation(detail, task) {
     .join("");
   const messages = detail.messages?.length
     ? rendered
-    : `<div class="message"><span class="message-role">Focus</span><div class="message-content">${escapeHtml(task.workspace_path)}<br><span class="muted">这是该工作区与线程的 Page 1。输入任务即可开始。</span></div></div>`;
+    : `<article class="work-record message system"><header class="work-record-header"><span class="work-record-kicker">READY</span><span class="message-role">任务已就绪</span></header><div class="message-content"><span class="muted">这是该工作区与线程的第一页。输入任务即可开始。</span><details class="message-details"><summary>工作区路径</summary><pre>${escapeHtml(task.workspace_path)}</pre></details></div></article>`;
   const streaming = [...state.streamBuffers.entries()]
     .filter(([, buffer]) => buffer.taskId === task.task_id && buffer.text)
-    .map(([runId, buffer]) => `<article class="message ai streaming" data-stream-run="${runId}"><span class="message-role">助手</span><div class="message-content">${escapeHtml(buffer.text.replace(/\n{2,}/g, "\n"))}</div></article>`)
+    .map(([runId, buffer]) => `<article class="work-record message ai streaming" data-stream-run="${runId}"><header class="work-record-header"><span class="work-record-kicker">FOCUS</span><span class="message-role">助手</span><span class="ui-badge is-active">生成中</span></header><div class="message-content">${escapeHtml(buffer.text.replace(/\n{2,}/g, "\n"))}</div></article>`)
     .join("");
   return messages + streaming;
 }
@@ -721,9 +871,9 @@ function appendToken(envelope) {
     let article = conversation.querySelector(`[data-stream-run="${envelope.run_id}"]`);
     if (!article) {
       article = document.createElement("article");
-      article.className = "message ai streaming";
+      article.className = "work-record message ai streaming";
       article.dataset.streamRun = envelope.run_id;
-      article.innerHTML = '<span class="message-role">助手</span><div class="message-content"></div>';
+      article.innerHTML = '<header class="work-record-header"><span class="work-record-kicker">FOCUS</span><span class="message-role">助手</span><span class="ui-badge is-active">生成中</span></header><div class="message-content"></div>';
       conversation.append(article);
     }
     article.querySelector(".message-content").textContent = buffer.text.replace(/\n{2,}/g, "\n");
@@ -741,19 +891,22 @@ function clearStreamBuffer(runId) {
 function renderMaterial(material) {
   const open = state.openMaterial === material.material_id;
   const viewable = !!pluginViewForMaterial(material);
+  const reading = material.reading_mode === "full" ? "完整阅读" : "粗略阅读";
+  const instruction = material.instruction_mode === "strict" ? "严格约束" : "参考材料";
+  const retention = material.retention === "irreplaceable" ? "版本保护" : "可移除";
   return `<article class="material-row" data-material-id="${material.material_id}">
-    ${viewable ? `<button class="text-button material-open" data-action="open-material">查看</button>` : ""}
-    <button class="material-summary" data-action="${viewable ? "open-material" : "toggle-material"}" title="${viewable ? "点击在右侧面板打开" : "查看材料规则"}">
-      <span class="material-name">${escapeHtml(material.relative_path)}</span>
-      <span class="material-meta">${material.reading_mode === "full" ? "完整阅读" : "粗略阅读"} · ${material.instruction_mode === "strict" ? "严格遵守" : "仅供参考"} · ${material.retention === "irreplaceable" ? "不可遗失" : "可移除"}</span>
-      ${material.needs_confirmation ? `<span class="danger tiny">检测到外部删除，文件已恢复</span>` : ""}
-      <span class="material-toggle" data-action="toggle-material">${open ? "收起" : "规则"}</span>
-    </button>
+    <header class="material-summary">
+      <button class="material-title-button" data-action="${viewable ? "open-material" : "toggle-material"}" title="${viewable ? "在文件工作台打开" : "查看材料规则"}"><span class="material-file-icon" aria-hidden="true">◇</span><span><strong class="material-name">${escapeHtml(material.relative_path)}</strong><small>${viewable ? "可在文件工作台查看" : "未启用匹配的查看器"}</small></span></button>
+      <button class="text-button" data-action="toggle-material" aria-expanded="${open}">${open ? "收起" : "管理"}</button>
+    </header>
+    <div class="material-policy-row"><span class="ui-badge">${reading}</span><span class="ui-badge${material.instruction_mode === "strict" ? " is-warning" : ""}">${instruction}</span><span class="ui-badge${material.retention === "irreplaceable" ? " is-success" : ""}">${retention}</span></div>
+    ${material.needs_confirmation ? `<div class="ui-notice is-warning"><strong>检测到外部删除</strong><span>Focus 已恢复文件，请从版本记录确认内容。</span></div>` : ""}
     ${open ? `<div class="material-editor">
       <label>阅读方式<select data-field="reading_mode"><option value="full" ${material.reading_mode === "full" ? "selected" : ""}>完整阅读</option><option value="rough" ${material.reading_mode === "rough" ? "selected" : ""}>粗略阅读</option></select></label>
       <label>约束<select data-field="instruction_mode"><option value="reference" ${material.instruction_mode === "reference" ? "selected" : ""}>仅供参考</option><option value="strict" ${material.instruction_mode === "strict" ? "selected" : ""}>严格遵守</option></select></label>
       <label>文件规则<select data-field="retention"><option value="removable" ${material.retention === "removable" ? "selected" : ""}>可移除</option><option value="irreplaceable" ${material.retention === "irreplaceable" ? "selected" : ""}>不可遗失</option></select></label>
-      <span class="material-actions"><button class="text-button" data-action="save-material">保存</button>
+      <div class="material-source-meta"><span>来源</span><code>${escapeHtml(material.relative_path)}</code></div>
+      <span class="material-actions"><button class="primary" data-action="save-material">保存规则</button>
       ${material.retention === "irreplaceable" ? `<button class="text-button" data-action="clear-material">置空</button><button class="text-button" data-action="load-versions">版本</button>` : `<button class="text-button danger" data-action="delete-material">删除</button>`}</span>
       <ul class="version-list" data-versions></ul>
     </div>` : ""}
@@ -764,7 +917,7 @@ function renderAgentStrip(taskId) {
   const agents = state.agents.get(taskId) || [];
   const warning = agents.some(agent => agent.permissions?.some(permission => permission === "write" || permission === "host_command"))
     ? `<span class="write-warning">共享宿主机写入：并发冲突采用最后写入者结果</span>` : "";
-  return warning + agents.map(agent => `<button class="agent-chip" data-action="agent-details" data-agent-id="${agent.agent_id}">小兵 ${agent.agent_id.slice(0, 5)} · ${agent.latest_run?.status || "ready"}</button>`).join("");
+  return warning + agents.map(agent => `<button class="agent-chip" data-action="agent-details" data-agent-id="${agent.agent_id}">小兵 ${agent.agent_id.slice(0, 5)} · ${presentRunStatus(agent.latest_run?.status || "ready").label}</button>`).join("");
 }
 
 function agentFromState(agentId) {
@@ -773,8 +926,7 @@ function agentFromState(agentId) {
 
 async function openAgentDetails(agentId) {
   state.agentDialog = { agentId, messages: [], busy: false };
-  renderAgentDialog();
-  agentDialog.showModal();
+  openInspector("agents", document.activeElement);
   await refreshAgentDetails();
 }
 
@@ -782,6 +934,7 @@ async function refreshAgentDetails() {
   if (!state.agentDialog.agentId || state.agentDialog.busy) return;
   state.agentDialog.busy = true;
   renderAgentDialog();
+  renderInspector();
   try {
     const [history, agents] = await Promise.all([
       api(`/desktop/api/agents/${state.agentDialog.agentId}/history`),
@@ -790,7 +943,7 @@ async function refreshAgentDetails() {
     state.agents.set(state.activeTaskId, agents);
     state.agentDialog.messages = history;
   } catch (error) { setStatus(error.message, true); }
-  finally { state.agentDialog.busy = false; renderAgentDialog(); }
+  finally { state.agentDialog.busy = false; renderAgentDialog(); renderInspector(); }
 }
 
 function renderAgentDialog() {
@@ -815,7 +968,7 @@ async function retryAgentDetails() {
 }
 
 async function continueAgentDetails() {
-  const input = document.querySelector("#agentContinueInput");
+  const input = document.querySelector("#agentInspectorInput") || document.querySelector("#agentContinueInput");
   const message = input.value.trim();
   if (!message) return;
   try {
@@ -875,8 +1028,8 @@ async function debugAgentMenu(agentId) {
 }
 
 function renderPlugins() {
-  const { plugins, interfaces, traces } = state.plugins;
-  app.innerHTML = pluginView.render(plugins, interfaces, traces);
+  const { plugins, interfaces, traces, filter, selectedName } = state.plugins;
+  app.innerHTML = pluginView.render(plugins, interfaces, traces, { filter, selectedName });
 }
 
 async function hydratePlugins() {
@@ -885,37 +1038,80 @@ async function hydratePlugins() {
       api("/desktop/api/plugins"),
       api("/desktop/api/plugins/traces"),
     ]);
-    state.plugins = { plugins: data.plugins || [], interfaces: data.interfaces || {}, traces: traceData.traces || [] };
+    const plugins = data.plugins || [];
+    const selectedName = plugins.some(item => item.name === state.plugins.selectedName)
+      ? state.plugins.selectedName
+      : (plugins.find(item => item.status === "rejected" || item.status === "unavailable") || plugins[0])?.name || null;
+    state.plugins = { plugins, interfaces: data.interfaces || {}, traces: traceData.traces || [], filter: state.plugins.filter || "all", selectedName };
   } catch (error) { setStatus(error.message, true); }
 }
 
-function taskCards(draftMode = false) {
+function taskCardMarkup(task, draftMode = false) {
   const draft = state.drafts.get(state.activeTaskId);
-  return contextEditor.orderTasksByTree(state.tasks, state.contextTrees).map(task => {
-    const selected = draftMode && draft?.task_id === task.task_id;
-    const status = task.active_run?.status;
-    const tree = state.contextTrees.get(task.workspace_id) || [];
-    const context = tree.find(item => item.context_id === task.task_id);
-    const projectionStatus = context?.projection_status || "root";
-    const parents = (context?.parents || []).slice(1).map(parent => state.tasks.find(item => item.task_id === parent.context_id)?.title || parent.context_id).join("、");
-    const contextMeta = parents ? `<span class="context-parent-tags">另含：${escapeHtml(parents)}</span>` : "";
-    const contextIdentity = context
-      ? `<span class="context-identity">${context.depth ? "派生 Context" : "根 Context"} · ${escapeHtml(task.task_id.slice(0, 8))}${!["root", "valid", "repaired", "approved"].includes(projectionStatus) ? ` · ${escapeHtml(projectionStatus)}` : ""}</span>`
-      : `<span class="context-identity">兼容任务 · ${escapeHtml(task.task_id.slice(0, 8))}</span>`;
-    return `<button class="task-card ${draftMode && !selected ? "dimmed" : ""}" style="--context-depth:${context?.depth || 0}" data-task-id="${task.task_id}" data-action="task-card">
-      <span class="task-title">${escapeHtml(task.title)}</span>
-      ${contextIdentity}
-      <span class="task-path">${escapeHtml(task.workspace_name)} · ${escapeHtml(task.thread_id)}</span>
-      <span class="task-status ${status === "running" ? "running" : ""}">${status === "running" ? "主 Agent 运行中" : escapeHtml(task.workspace_path)}</span>
+  const selected = draftMode && draft?.task_id === task.task_id;
+  const status = task.active_run?.status;
+  const presented = presentRunStatus(status || "ready");
+  const tree = state.contextTrees.get(task.workspace_id) || [];
+  const context = tree.find(item => item.context_id === task.task_id);
+  const projectionStatus = context?.projection_status || "root";
+  const parents = (context?.parents || []).slice(1).map(parent => state.tasks.find(item => item.task_id === parent.context_id)?.title || parent.context_id).join("、");
+  const contextMeta = parents ? `<span class="context-parent-tags">另含：${escapeHtml(parents)}</span>` : "";
+  const contextIdentity = context
+    ? `${context.depth ? "派生 Context" : "根 Context"}${!["root", "valid", "repaired", "approved"].includes(projectionStatus) ? ` · ${escapeHtml(projectionStatus)}` : ""}`
+    : "兼容任务";
+  return `<article class="task-card-shell ${draftMode && !selected ? "dimmed" : ""}" data-context-depth="${context?.depth || 0}">
+    <button class="task-card" data-task-id="${task.task_id}" data-action="task-card">
+      <span class="task-card-heading"><span class="task-title">${escapeHtml(task.title)}</span><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></span>
+      <span class="context-identity">${contextIdentity}</span>
+      <span class="task-path">${escapeHtml(task.workspace_name || "本地工作区")}</span>
       ${contextMeta}
-    </button>`;
-  }).join("");
+    </button>
+    <details class="task-technical"><summary>技术详情</summary><dl><div><dt>Context ID</dt><dd>${escapeHtml(task.task_id)}</dd></div><div><dt>Thread</dt><dd>${escapeHtml(task.thread_id)}</dd></div><div><dt>路径</dt><dd>${escapeHtml(task.workspace_path)}</dd></div></dl></details>
+  </article>`;
+}
+
+function taskCards(draftMode = false) {
+  return contextEditor.orderTasksByTree(state.tasks, state.contextTrees)
+    .map(task => taskCardMarkup(task, draftMode))
+    .join("");
+}
+
+function contextRootId(task, tree) {
+  const nodes = new Map(tree.map(node => [node.context_id, node]));
+  let current = nodes.get(task.task_id);
+  const visited = new Set();
+  while (current?.parents?.[0]?.context_id && !visited.has(current.context_id)) {
+    visited.add(current.context_id);
+    current = nodes.get(current.parents[0].context_id) || current;
+    if (visited.has(current.context_id)) break;
+  }
+  return current?.context_id || task.task_id;
+}
+
+function renderMapGroups() {
+  const ordered = contextEditor.orderTasksByTree(state.tasks, state.contextTrees);
+  const workspaces = new Map();
+  ordered.forEach(task => {
+    const tree = state.contextTrees.get(task.workspace_id) || [];
+    const workspace = workspaces.get(task.workspace_id) || { name: task.workspace_name || "本地工作区", roots: new Map() };
+    const rootId = contextRootId(task, tree);
+    if (!workspace.roots.has(rootId)) workspace.roots.set(rootId, []);
+    workspace.roots.get(rootId).push(task);
+    workspaces.set(task.workspace_id, workspace);
+  });
+  return [...workspaces.entries()].map(([workspaceId, workspace]) => `<section class="map-workspace-group" data-workspace-id="${escapeHtml(workspaceId)}">
+    <header><div><span class="workspace-kicker">WORKSPACE</span><h2>${escapeHtml(workspace.name)}</h2></div><span class="ui-badge">${[...workspace.roots.values()].reduce((sum, tasks) => sum + tasks.length, 0)} 个 Context</span></header>
+    <div class="map-root-groups">${[...workspace.roots.entries()].map(([rootId, tasks]) => {
+      const root = tasks.find(task => task.task_id === rootId) || tasks[0];
+      return `<section class="map-root-group"><header><strong>${escapeHtml(root.title)}</strong><span>${tasks.length === 1 ? "仅根 Context" : `${tasks.length - 1} 个派生`}</span></header><div class="task-grid">${tasks.map(task => taskCardMarkup(task)).join("")}</div></section>`;
+    }).join("")}</div>
+  </section>`).join("");
 }
 
 function renderMap() {
   app.innerHTML = `<section class="map-view">
-    <div class="map-toolbar"><button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">小兵 · 拖向任务</button></div>
-    <div class="task-grid">${taskCards()}</div>
+    <div class="map-toolbar"><div><span class="workspace-kicker">TASK MAP</span><strong>按工作区与根 Context 浏览</strong></div><button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">${state.soldierArmed ? "已装备小兵 · 选择任务" : "装备小兵"}</button></div>
+    <div class="map-groups">${renderMapGroups()}</div>
   </section>`;
 }
 
@@ -999,7 +1195,7 @@ function renderContextDecision(context) {
     ? `<details open><summary>Focus 无损补齐了 ${repairs.length} 处协议结构</summary><pre>${escapeHtml(JSON.stringify(repairs, null, 2))}</pre></details>`
     : "";
   if (context.projection_status === "repaired" && !context.editable) {
-    return `<section class="context-decision repaired"><h2>执行投影已安全生成</h2>${repairList}<button class="primary" data-action="open-derived-context">进入新 Context</button></section>`;
+    return `<section class="context-decision repaired"><span class="ui-badge is-success">已修复</span><h2>执行投影已安全生成</h2><p>协议结构已补齐，来源消息与用户定义未被静默改写。</p>${repairList}<div class="context-decision-actions ui-action-bar"><span class="muted tiny">可以安全进入派生 Context</span><button class="primary" data-action="open-derived-context">进入新 Context</button></div></section>`;
   }
   if (!["approval_required", "rejected", "initialization_failed"].includes(context.projection_status)) return repairList;
   const issues = (context.issues || []).map(issue => `<article class="context-issue">
@@ -1009,7 +1205,7 @@ function renderContextDecision(context) {
   const actions = context.projection_status === "approval_required"
     ? `<button class="primary" data-action="accept-context-projection">接受本次降级</button><button class="text-button" data-action="edit-context-projection">返回编辑</button><button class="text-button danger" data-action="cancel-context-projection">取消发送</button>`
     : `<button class="text-button" data-action="edit-context-projection">返回编辑</button><button class="text-button danger" data-action="exit-context-editor">关闭</button>`;
-  return `<section class="context-decision blocked"><h2>需要你的决断</h2><p>Focus 不会静默采用以下降级。</p>${repairList}${issues}<div class="dialog-actions">${actions}</div></section>`;
+  return `<section class="context-decision blocked"><span class="ui-badge is-warning">需要决断</span><h2>执行投影需要你的确认</h2><p>以下差异会影响 Agent 实际接收的上下文；Focus 不会静默采用降级。</p>${repairList}${issues}<div class="context-decision-actions ui-action-bar"><span class="muted tiny">确认前不会启动新 Context</span><div class="dialog-actions">${actions}</div></div></section>`;
 }
 
 function contextDraftLocked(draft = state.contextDraft) {
@@ -1272,23 +1468,21 @@ function renderDraft() {
   const task = state.tasks.find(item => item.task_id === draft?.task_id);
   if (!draft || !task) { state.view = "map"; renderMap(); return; }
   app.innerHTML = `<section class="draft-view">
-    <aside class="draft-map"><div class="task-grid">${taskCards(true)}</div></aside>
     <section class="draft-panel">
-      <header class="draft-heading"><h1>${escapeHtml(task.title)} · 小兵草稿</h1><span class="run-indicator">主 Agent 可继续运行</span><span class="muted tiny">复制自 checkpoint ${escapeHtml(draft.source_checkpoint_id || "空历史")}</span></header>
-      <div class="draft-sections">
-        ${draftSection("system", "1. System Prompt", `<textarea data-draft-field="system_prompt">${escapeHtml(draft.system_prompt)}</textarea>`)}
-        ${draftSection("history", "2. 上下文历史", renderHistory(draft))}
-        ${draftSection("final", "3. 最后一条 HumanMessage", renderSkillPicker("draft", `<textarea data-draft-field="final_human_message" placeholder="给小兵的任务…">${escapeHtml(draft.final_human_message)}</textarea>`))}
-        ${draftSection("equipment", "4. 模型、工具、技能与权限", renderEquipment(draft))}
+      <header class="draft-heading"><div><span class="workspace-kicker">AGENT DRAFT</span><h1>${escapeHtml(task.title)} · 小兵草稿</h1></div><div class="draft-heading-meta"><span class="ui-badge is-success">主 Agent 可继续运行</span><span class="ui-meta">来源 checkpoint ${escapeHtml(draft.source_checkpoint_id || "空历史")}</span></div></header>
+      <div class="draft-workflow">
+        <section class="draft-step" data-step="objective"><header><span>01</span><div><h2>目标摘要</h2><p>说明这个 Agent 要完成什么，以及它应继承的系统约束。</p></div></header><div class="draft-step-body">
+          <div class="draft-field"><label for="draftFinalMessage">最终任务指令</label>${renderSkillPicker("draft", `<textarea id="draftFinalMessage" data-draft-field="final_human_message" placeholder="给小兵一个清晰、可验收的目标…">${escapeHtml(draft.final_human_message)}</textarea>`)}</div>
+          <details class="draft-advanced" ${state.openDraftSection === "system" ? "open" : ""}><summary>高级：System Prompt</summary><textarea data-draft-field="system_prompt">${escapeHtml(draft.system_prompt)}</textarea></details>
+        </div></section>
+        <section class="draft-step" data-step="history"><header><span>02</span><div><h2>消息编排</h2><p>调整交接历史；工具调用关联项会作为一个整体处理。</p></div></header><div class="draft-step-body">${renderHistory(draft)}</div></section>
+        <section class="draft-step" data-step="equipment"><header><span>03</span><div><h2>装备与权限</h2><p>选择模型与宿主权限；写入和命令会直接影响真实工作区。</p></div></header><div class="draft-step-body">${renderEquipment(draft)}</div></section>
+        <section class="draft-step draft-confirm" data-step="confirm"><header><span>04</span><div><h2>确认投放</h2><p>草稿会自动保存。检查 token 预算和权限后再启动 Agent。</p></div></header><div class="draft-confirm-summary"><span id="draftSaveState" class="ui-badge is-success">自动保存</span><span class="token-count" id="tokenCount">估算 ${draft.token_estimate} tokens</span></div></section>
       </div>
-      <footer class="draft-footer"><button class="text-button" data-action="exit-draft">退出并保存</button><span class="token-count" id="tokenCount">估算 ${draft.token_estimate} tokens</span><button class="primary" data-action="deploy">投放</button></footer>
+      <footer class="draft-footer ui-action-bar"><button class="text-button" data-action="exit-draft">退出并保存</button><span class="muted tiny">草稿仅属于当前任务</span><button class="primary" data-action="deploy">确认并投放</button></footer>
     </section>
   </section>`;
   updateTokenState();
-}
-
-function draftSection(id, title, body) {
-  return `<details class="draft-section" data-section="${id}" ${state.openDraftSection === id ? "open" : ""}><summary>${title}<span>${state.openDraftSection === id ? "收起" : "展开"}</span></summary><div class="section-body">${body}</div></details>`;
 }
 
 function renderHistory(draft) {
@@ -1353,6 +1547,8 @@ function syncDraftFromDom() {
 
 function scheduleDraftSave() {
   clearTimeout(state.saveTimer);
+  const indicator = document.querySelector("#draftSaveState");
+  if (indicator) { indicator.textContent = "待保存"; indicator.className = "ui-badge is-warning"; }
   state.saveTimer = setTimeout(saveDraft, 350);
 }
 
@@ -1369,8 +1565,14 @@ async function saveDraft() {
     state.drafts.set(state.activeTaskId, saved);
     const counter = document.querySelector("#tokenCount");
     if (counter) { counter.textContent = `估算 ${saved.token_estimate} tokens`; updateTokenState(); }
+    const indicator = document.querySelector("#draftSaveState");
+    if (indicator) { indicator.textContent = "已自动保存"; indicator.className = "ui-badge is-success"; }
     setStatus("草稿已保存");
-  } catch (error) { setStatus(error.message, true); }
+  } catch (error) {
+    const indicator = document.querySelector("#draftSaveState");
+    if (indicator) { indicator.textContent = "保存失败"; indicator.className = "ui-badge is-danger"; }
+    setStatus(error.message, true);
+  }
 }
 
 function updateTokenState() {
@@ -1417,6 +1619,7 @@ async function sendMain() {
   const input = document.querySelector("#mainInput");
   const message = input.value.trim();
   if (!message) return;
+  setComposerError();
   const spatialTarget = currentSpatialTarget();
   if (spatialTarget?.focus.kind === "patrol"
       && typeof spatialTarget.view.sendFocusedMessage === "function") {
@@ -1431,6 +1634,7 @@ async function sendMain() {
       }
     } catch (error) {
       setStatus(error.message, true);
+      setComposerError(error.message);
       return;
     }
   }
@@ -1466,12 +1670,13 @@ async function sendMain() {
     if (detail.context) detail.context.editable = false;
     // 运行已发起：立即暴露中断入口（否则运行中 active_run 仍为旧值，按钮不渲染）
     detail.active_run = run;
+    state.composerErrors.delete(state.activeTaskId);
     detail.messages = [...(detail.messages || []), { role: "human", content: messagePayload }];
     detail.ui_state = { ...(detail.ui_state || {}), input: "", skills: [] };
     renderFocus();
     persistFocusState();
     listenToRun(run);
-  } catch (error) { setStatus(error.message, true); }
+  } catch (error) { setStatus(error.message, true); setComposerError(error.message); }
 }
 
 const COMMITMENT_STAGE_NAMES = {
@@ -1550,6 +1755,7 @@ function setProgress(stage, visible = true) {
   container.hidden = !visible;
   if (!visible) return;
   const list = container.querySelector("#progressSteps");
+  container.dataset.stage = String(stage || 0);
   list.replaceChildren();
   for (let number = 1; number <= 9; number += 1) {
     const item = document.createElement("li");
@@ -1557,7 +1763,9 @@ function setProgress(stage, visible = true) {
     item.title = `${number}. ${COMMITMENT_STAGE_NAMES[number] || ""}`;
     list.append(item);
   }
-  container.querySelector("#progressLabel").textContent = COMMITMENT_STAGE_NAMES[stage] || "正在准备任务合同";
+  container.querySelector("#progressLabel").textContent = stage
+    ? `${stage}/9 · ${COMMITMENT_STAGE_NAMES[stage] || "正在准备"}`
+    : "正在准备任务合同";
 }
 
 // === 执行轨迹面板 ===
@@ -2345,28 +2553,28 @@ function renderCompress() {
         <div>
           <span class="review-kicker">CONTEXT COMPRESSION</span>
           <h1>上下文压缩</h1>
-          <p class="compression-usage">Current usage: <strong>${formatTokens(usage)} / ${formatTokens(limit)} tokens</strong>${c.request ? `（触发阈值 ${Math.round((c.request.ratio ?? 0.9) * 100)}%）` : ""}</p>
+          <p class="compression-usage">当前用量 <strong>${formatTokens(usage)} / ${formatTokens(limit)} tokens</strong>${c.request ? ` · 触发阈值 ${Math.round((c.request.ratio ?? 0.9) * 100)}%` : ""}</p>
         </div>
-        <button class="text-button" data-action="cancel-compression">取消压缩</button>
+        <div class="compression-heading-actions"><span class="ui-badge is-warning">确认前不写入</span><button class="text-button" data-action="cancel-compression">取消压缩</button></div>
       </header>
       <div class="compression-panels">
         <aside class="compression-messages">
-          <header class="compression-panel-heading"><strong>当前 messages</strong><span>${c.messages.length} 条</span></header>
+          <header class="compression-panel-heading"><div><span class="workspace-kicker">01 · SOURCE</span><strong>选择原始消息</strong></div><span>${c.messages.length} 条</span></header>
           <div class="compression-message-list">${renderCompressionMessages()}</div>
           <footer>
             <button class="primary" data-action="compression-join-selection" ${c.selected.size ? "" : "disabled"}>加入计划（${compressionPanel.selectionRanges(c.selected).length} 个范围）</button>
           </footer>
         </aside>
         <section class="compression-plan">
-          <header class="compression-panel-heading"><strong>压缩计划</strong><span>${c.ranges.length} 个范围</span></header>
+          <header class="compression-panel-heading"><div><span class="workspace-kicker">02 · PLAN</span><strong>审阅变更计划</strong></div><span>${c.ranges.length} 个范围</span></header>
           ${renderCompressionRanges()}
           <div class="compression-stats">
-            <span>Before ${stats.beforeCount} 条 · ${formatTokens(stats.beforeTokens)} tokens</span>
-            <span>After ${stats.afterCount} 条 · ${formatTokens(stats.afterTokens)} tokens</span>
+            <span><small>变更前</small><strong>${stats.beforeCount} 条 · ${formatTokens(stats.beforeTokens)} tokens</strong></span>
+            <span><small>预计变更后</small><strong>${stats.afterCount} 条 · ${formatTokens(stats.afterTokens)} tokens</strong></span>
           </div>
-          <ul class="compression-mapping">${stats.mapping.map(item => `<li>${escapeHtml(item.label)} → ${item.delete ? "删除" : item.restore ? "恢复原消息" : "压缩块"}</li>`).join("")}</ul>
+          <details class="compression-mapping-details" ${stats.mapping.length ? "open" : ""}><summary>来源映射 · ${stats.mapping.length} 项</summary><ul class="compression-mapping">${stats.mapping.map(item => `<li>${escapeHtml(item.label)} → ${item.delete ? "删除" : item.restore ? "恢复原消息" : "压缩块"}</li>`).join("")}</ul></details>
           <footer>
-            <button class="primary" data-action="confirm-compression" ${compressionReady() ? "" : "disabled"}>确认压缩并继续</button>
+            <span class="muted tiny">只有确认后才会写入 checkpoint</span><button class="primary" data-action="confirm-compression" ${compressionReady() ? "" : "disabled"}>确认压缩并继续</button>
           </footer>
         </section>
       </div>
@@ -2382,7 +2590,7 @@ function refreshCompressionStats() {
   const statsNode = document.querySelector(".compression-stats");
   const mappingNode = document.querySelector(".compression-mapping");
   if (statsNode) {
-    statsNode.innerHTML = `<span>Before ${stats.beforeCount} 条 · ${formatTokens(stats.beforeTokens)} tokens</span><span>After ${stats.afterCount} 条 · ${formatTokens(stats.afterTokens)} tokens</span>`;
+    statsNode.innerHTML = `<span><small>变更前</small><strong>${stats.beforeCount} 条 · ${formatTokens(stats.beforeTokens)} tokens</strong></span><span><small>预计变更后</small><strong>${stats.afterCount} 条 · ${formatTokens(stats.afterTokens)} tokens</strong></span>`;
   }
   if (mappingNode) {
     mappingNode.innerHTML = stats.mapping.map(item => `<li>${escapeHtml(item.label)} → ${item.delete ? "删除" : item.restore ? "恢复原消息" : "压缩块"}</li>`).join("");
@@ -2617,10 +2825,24 @@ document.addEventListener("click", async event => {
   if (action === "select-skill") return selectSkill(button.dataset.pickerKind, button.dataset.skillName);
   if (action === "select-commit") return selectCommitCommand(button.dataset.pickerKind);
   if (action === "remove-skill") return removeSkill(button.dataset.pickerKind, button.dataset.skillName);
-  if (action === "show-map") { persistFocusState(); state.view = "map"; return render(); }
-  if (action === "show-plugins") { await hydratePlugins(); state.view = "plugins"; return render(); }
+  if (action === "show-map") { persistFocusState(); state.inspector.open = false; state.view = "map"; return render(); }
+  if (action === "show-contexts") return openInspector("context", button);
+  if (action === "show-agents") return openInspector("agents", button);
+  if (action === "open-inspector-tab") return openInspector(button.dataset.inspectorTab, button);
+  if (action === "close-inspector") return closeInspector();
+  if (action === "show-plugins") { state.inspector.open = false; await hydratePlugins(); state.view = "plugins"; return render(); }
   if (action === "refresh-plugins") { await hydratePlugins(); return render(); }
-  if (action === "focus-home" && state.activeTaskId) { state.view = "focus"; await hydrateActive(); return render(); }
+  if (action === "filter-plugins") {
+    state.plugins.filter = button.dataset.pluginStatus || "all";
+    const visible = state.plugins.plugins.filter(item => state.plugins.filter === "all" || item.status === state.plugins.filter);
+    if (!visible.some(item => item.name === state.plugins.selectedName)) state.plugins.selectedName = visible[0]?.name || null;
+    return renderPlugins();
+  }
+  if (action === "select-plugin") {
+    state.plugins.selectedName = button.dataset.pluginName || null;
+    return renderPlugins();
+  }
+  if (action === "focus-home" && state.activeTaskId) { state.inspector.open = false; state.view = "focus"; await hydrateActive(); return render(); }
   if (action === "derive-context") return openContextEditor(state.activeTaskId);
   if (action === "edit-context-definition") return reopenContextDecision(button.dataset.contextId);
   if (action === "context-rail-card") return switchTask(button.dataset.taskId);
@@ -2726,7 +2948,12 @@ document.addEventListener("click", async event => {
   if (button.closest("[data-material-id]")) return handleMaterialAction(button);
   if (action === "agent-menu" || action === "debug-agent-menu") return debugAgentMenu(button.dataset.agentId);
   if (action === "agent-details") return openAgentDetails(button.dataset.agentId);
-  if (action === "close-agent-details") return agentDialog.close();
+  if (action === "agent-list") { state.agentDialog = { agentId: null, messages: [], busy: false }; return renderInspector(); }
+  if (action === "close-agent-details") {
+    if (agentDialog.open) return agentDialog.close();
+    state.agentDialog = { agentId: null, messages: [], busy: false };
+    return renderInspector();
+  }
   if (action === "refresh-agent-details") return refreshAgentDetails();
   if (action === "retry-agent-details") return retryAgentDetails();
   if (action === "cancel-agent-details") return cancelAgentDetails();
@@ -2750,6 +2977,23 @@ document.addEventListener("keydown", event => {
   if (event.key === "Escape" && contextPointerDrag) {
     event.preventDefault();
     return cancelContextPointerDrag();
+  }
+  if (event.key === "Escape" && state.inspector.open) {
+    event.preventDefault();
+    closeInspector();
+    return;
+  }
+  const inspectorTab = event.target.closest?.('[role="tab"][data-inspector-tab]');
+  if (inspectorTab && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+    event.preventDefault();
+    const tabs = [...appInspector.querySelectorAll('[role="tab"][data-inspector-tab]')];
+    const index = tabs.indexOf(inspectorTab);
+    const nextIndex = event.key === "Home" ? 0
+      : event.key === "End" ? tabs.length - 1
+        : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    openInspector(tabs[nextIndex].dataset.inspectorTab, tabs[nextIndex]);
+    tabs[nextIndex].focus();
+    return;
   }
   const contextHandle = event.target.closest?.('[data-context-pointer-handle][data-context-drag-origin="draft"]');
   if (contextHandle && event.altKey && ["ArrowUp", "ArrowDown"].includes(event.key)) {
@@ -2793,9 +3037,8 @@ document.addEventListener("keydown", event => {
 });
 
 document.addEventListener("toggle", event => {
-  if (!event.target.matches(".draft-section") || !event.target.open) return;
-  state.openDraftSection = event.target.dataset.section;
-  document.querySelectorAll(".draft-section").forEach(section => { if (section !== event.target) section.open = false; });
+  if (!event.target.matches(".draft-advanced")) return;
+  state.openDraftSection = event.target.open ? "system" : null;
 }, true);
 
 function beginContextPointerDrag(drag, event) {
@@ -3026,6 +3269,11 @@ function moveMessageGroup(messages, from, to) {
 
 document.querySelector("#taskForm").addEventListener("submit", createTask);
 document.querySelector("#agentContinueForm").addEventListener("submit", event => { event.preventDefault(); return continueAgentDetails(); });
+document.addEventListener("submit", event => {
+  if (event.target.id !== "agentInspectorContinueForm") return;
+  event.preventDefault();
+  return continueAgentDetails();
+});
 document.querySelector("#fileInput")?.addEventListener("change", () => {});
 document.addEventListener("change", async event => {
   if (event.target.id !== "fileInput" || !event.target.files[0]) return;

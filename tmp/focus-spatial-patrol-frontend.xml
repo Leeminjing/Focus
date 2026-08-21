@@ -1,23 +1,614 @@
-/* spatial-patrol 内容查看器。输入为宿主文件工作台、同源插件 API、图片/PDF/文本文档与锚点操作，
-   输出为保持内容坐标的载体视图和显式授权动作；DOCX 的 deploy/copy/continue 必须选择只读或
-   修改模式，其他载体保持只读，entry.js 负责将能力注册到宿主授予的插件根。 */
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+docx-run-error.test.cjs
+docx-run-mode.test.cjs
+docx-text-coordinate.test.cjs
+entry.js
+response-error.test.cjs
+spatial-convert.test.cjs
+style.css
+viewer.js
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="docx-run-error.test.cjs">
+/* DOCX run 错误呈现：具体错误优先、兜底文案保留、HTML 必须转义。 */
+"use strict";
+
+require("./viewer.js");
+const assert = require("node:assert");
+const {
+  needsActionMessage,
+  needsActionMarkup,
+} = globalThis.FocusSpatialViewer;
+
+const locked = {
+  status: "needs_action",
+  run_error: "DOCX 正被其他程序占用，请关闭 WPS/Word <script>alert(1)</script> 后重试",
+};
+
+assert.match(needsActionMessage(locked), /关闭 WPS\/Word/);
+assert.match(needsActionMessage(locked), /可补充指令后重试/);
+assert.match(needsActionMarkup(locked), /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+assert.doesNotMatch(needsActionMarkup(locked), /<script>/);
+assert.strictEqual(
+  needsActionMessage({ status: "needs_action" }),
+  "未产生文件变更，可补充指令后重试。",
+);
+assert.strictEqual(needsActionMarkup({ status: "done", run_error: "不应显示" }), "");
+
+console.log("docx-run-error: 错误优先、兜底与 HTML 转义通过");
+</file>
+
+<file path="docx-run-mode.test.cjs">
+/* DOCX 操作模式测试:无默认权限,显式模式映射为唯一请求权限。 */
+"use strict";
+
+require("./viewer.js");
+const assert = require("node:assert");
+const {
+  permissionsForMaterial,
+  requirePermissionsForMaterial,
+} = globalThis.FocusSpatialViewer;
+
+assert.strictEqual(permissionsForMaterial("report.docx", null), null);
+assert.deepStrictEqual(permissionsForMaterial("report.docx", "read"), ["read"]);
+assert.deepStrictEqual(permissionsForMaterial("report.docx", "write"), ["read", "write"]);
+assert.deepStrictEqual(permissionsForMaterial("legacy.doc", null), ["read"]);
+assert.deepStrictEqual(permissionsForMaterial("image.png", null), ["read"]);
+assert.throws(
+  () => requirePermissionsForMaterial("report.docx", null),
+  /只读观察.*修改文档/,
+);
+
+console.log("docx-run-mode: 显式操作模式约束通过");
+</file>
+
+<file path="docx-text-coordinate.test.cjs">
+/* DOCX 文本坐标：DOM caret 与全文 Unicode 字符偏移双向转换。 */
+"use strict";
+
+require("./viewer.js");
+const assert = require("node:assert");
+const {
+  TEXT_COORDINATE_SPACE,
+  domPointFromTextOffset,
+  isLegacyTextAnchor,
+  textMarkerPosition,
+  textOffsetFromDomPoint,
+  textPointToContent,
+} = globalThis.FocusSpatialViewer;
+
+function fixture(values) {
+  const nodes = values.map(nodeValue => ({ nodeType: 3, nodeValue }));
+  const layout = { columns: 20, viewportShift: 0 };
+  const contentRect = () => ({ left: 100, top: 50 + layout.viewportShift });
+  const doc = {
+    defaultView: { NodeFilter: { SHOW_TEXT: 4 } },
+    createTreeWalker() {
+      let index = -1;
+      return { nextNode: () => nodes[++index] || null };
+    },
+    caretPositionFromPoint() { return doc.caret; },
+    createRange() {
+      let selectedNode;
+      let selectedOffset;
+      return {
+        setStart(node, offset) { selectedNode = node; selectedOffset = offset; },
+        collapse() {},
+        getBoundingClientRect() {
+          const nodeIndex = nodes.indexOf(selectedNode);
+          const before = nodes.slice(0, nodeIndex)
+            .reduce((sum, node) => sum + Array.from(node.nodeValue).length, 0);
+          const local = Array.from(selectedNode.nodeValue.slice(0, selectedOffset)).length;
+          const absolute = before + local;
+          const base = contentRect();
+          return {
+            left: base.left + (absolute % layout.columns) * 10,
+            top: base.top + Math.floor(absolute / layout.columns) * 20,
+            height: 20,
+          };
+        },
+      };
+    },
+  };
+  const root = {
+    ownerDocument: doc,
+    textContent: values.join(""),
+    contains: node => nodes.includes(node),
+  };
+  const content = {
+    scrollWidth: 400,
+    getBoundingClientRect: contentRect,
+  };
+  return { nodes, layout, doc, root, content };
+}
+
+const view = fixture(["标题\n", "水印🙂段落\n", "摘要"]);
+const targetUtf16Offset = "水印🙂".length;
+const absoluteOffset = textOffsetFromDomPoint(view.root, view.nodes[1], targetUtf16Offset);
+assert.strictEqual(absoluteOffset, 6, "代理对必须按一个 Unicode 字符累计");
+
+view.doc.caret = { offsetNode: view.nodes[1], offset: targetUtf16Offset };
+const contentPoint = textPointToContent(view.root, view.content, 220, 80, view.doc);
+const totalCharacters = Array.from(view.root.textContent).length;
+assert.deepStrictEqual(contentPoint, {
+  page: 1,
+  x: 0.3,
+  y: absoluteOffset / totalCharacters,
+  coordinate_space: TEXT_COORDINATE_SPACE,
+});
+
+const restored = domPointFromTextOffset(view.root, contentPoint.y);
+assert.strictEqual(restored.node, view.nodes[1]);
+assert.strictEqual(restored.offset, targetUtf16Offset);
+
+const widePosition = textMarkerPosition(view.root, view.content, contentPoint.y, view.doc);
+view.layout.columns = 4;
+const narrowPosition = textMarkerPosition(view.root, view.content, contentPoint.y, view.doc);
+assert.notDeepStrictEqual(narrowPosition, widePosition, "重新换行后应重新投影渲染位置");
+assert.strictEqual(domPointFromTextOffset(view.root, contentPoint.y).node, view.nodes[1]);
+assert.strictEqual(domPointFromTextOffset(view.root, contentPoint.y).offset, targetUtf16Offset);
+
+const beforeScroll = textMarkerPosition(view.root, view.content, contentPoint.y, view.doc);
+view.layout.viewportShift = -120;
+assert.deepStrictEqual(
+  textMarkerPosition(view.root, view.content, contentPoint.y, view.doc),
+  beforeScroll,
+  "滚动同时移动文字与内容容器，不得改变内容内坐标",
+);
+
+assert.strictEqual(isLegacyTextAnchor({ region: null }), true);
+assert.strictEqual(isLegacyTextAnchor({ region: { coordinate_space: TEXT_COORDINATE_SPACE } }), false);
+
+const fallback = fixture(["甲\n", "乙"]);
+delete fallback.doc.caretPositionFromPoint;
+fallback.doc.caretRangeFromPoint = () => ({ startContainer: fallback.nodes[1], startOffset: 1 });
+assert.strictEqual(
+  textPointToContent(fallback.root, fallback.content, 100, 50, fallback.doc).y,
+  3 / 3,
+  "旧 Chromium 回退也必须返回字符坐标",
+);
+
+console.log("docx-text-coordinate: 字符坐标、反向投影、重排/滚动与旧锚点保护通过");
+</file>
+
+<file path="entry.js">
+/* spatial-patrol 插件前端入口:注册视图与材料打开器到系统宿主。
+   app.js 按启用清单注入本脚本后,经 window.__focusPluginViews 注册表接入。 */
+(function (root) {
+  "use strict";
+
+  const host = (root.__focusPluginViews = root.__focusPluginViews || {});
+  const viewer = root.FocusSpatialViewer;
+  if (!viewer) return;
+
+  host["spatial-viewer"] = {
+    render: (app, appState) => viewer.render(app, appState),
+    openMaterial: (material, appState) => viewer.openMaterial(material, appState),
+    supportsMaterial: material => viewer.supportsMaterial(material),
+    mountPanel: (container, material, appState) => viewer.mountPanel(container, material, appState),
+    getFocus: () => viewer.getFocus(),
+    sendFocusedMessage: message => viewer.sendFocusedMessage(message),
+  };
+})(typeof globalThis === "object" ? globalThis : this);
+</file>
+
+<file path="response-error.test.cjs">
+/* API 错误响应：JSON 与纯文本均只读取一次响应体。 */
+"use strict";
+
+require("./viewer.js");
+const assert = require("node:assert");
+const { responseErrorDetail } = globalThis.FocusSpatialViewer;
+
+(async () => {
+  const json = new Response(JSON.stringify({ detail: "坐标无效" }), {
+    status: 422,
+    headers: { "Content-Type": "application/json" },
+  });
+  assert.strictEqual(await responseErrorDetail(json), "坐标无效");
+
+  const plain = new Response("Internal Server Error", { status: 500 });
+  assert.strictEqual(await responseErrorDetail(plain), "Internal Server Error");
+
+  console.log("response-error: JSON/纯文本错误响应单次读取通过");
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+</file>
+
+<file path="spatial-convert.test.cjs">
+/* spatial-patrol 坐标换算不变式测试:缩放/平移后内容坐标保持稳定(node 直接执行)。 */
+"use strict";
+
+require("./viewer.js");
+const convert = globalThis.FocusSpatialViewer.convertContent;
+const assert = require("node:assert");
+
+const rect = { left: 100, top: 50 };
+const natural = { width: 1000, height: 800 };
+
+// 基准:zoom=1、无平移,指针 (600, 450) → 内容 (0.5, 0.5)
+assert.deepStrictEqual(convert(rect, 1, 0, 0, natural, 600, 450), { x: 0.5, y: 0.5 });
+
+// 缩放不变式:zoom=4(400%) 时同一内容位置在屏幕上的新指针位置换算回同一坐标
+// 屏幕位置 = rect.left + tx + contentX * zoom
+const contentX = 0.5, contentY = 0.5;
+const zoom = 4, tx = 0, ty = 0;
+const clientX = rect.left + tx + contentX * natural.width * zoom;   // 2100
+const clientY = rect.top + ty + contentY * natural.height * zoom;   // 1650
+assert.deepStrictEqual(convert(rect, zoom, tx, ty, natural, clientX, clientY), { x: 0.5, y: 0.5 });
+
+// 平移不变式:平移 (200, 100) 后,原内容点移到 (clientX+200, clientY+100),换算回同一坐标
+const tx2 = 200, ty2 = 100;
+assert.deepStrictEqual(
+  convert(rect, zoom, tx2, ty2, natural, clientX + tx2, clientY + ty2),
+  { x: 0.5, y: 0.5 },
+);
+
+// 内容边界:指针超出图像区域时钳制到 0..1
+assert.deepStrictEqual(convert(rect, 1, 0, 0, natural, rect.left - 500, rect.top - 500), { x: 0, y: 0 });
+assert.deepStrictEqual(convert(rect, 1, 0, 0, natural, rect.left + 5000, rect.top + 5000), { x: 1, y: 1 });
+
+// 非法输入返回 null
+assert.strictEqual(convert(rect, 1, 0, 0, null, 600, 450), null);
+assert.strictEqual(convert(null, 1, 0, 0, natural, 600, 450), null);
+
+console.log("spatial-convert: 全部坐标不变式通过");
+</file>
+
+<file path="style.css">
+/* 文件面板承载形态(右侧面板) */
+.panel-resizer {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 5;
+}
+
+.panel-resizer:hover { background: rgb(70 120 240 / 14%); }
+
+.file-panel {
+  position: relative;
+  border-left: 1px solid var(--line, #d9dde5);
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel, #fff);
+}
+
+/* inner 占满 panel 列,内部 grid 行分配 head(自适应)与 body(剩余,可滚动) */
+.file-panel-inner {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.file-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-soft, #eceef2);
+}
+
+.file-panel-title {
+  flex: 1;
+  font-size: 12px;
+  color: #555;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-panel-body {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+.file-panel-body .spatial-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  overflow: auto;
+}
+
+.file-panel-body .spatial-stage img {
+  max-width: none;
+  transform-origin: 0 0;
+}
+
+.spatial-text-view {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 18px;
+  font-size: 13px;
+  line-height: 1.7;
+  cursor: crosshair;
+}
+
+.spatial-text-inner {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-height: 100%;
+}
+
+.spatial-text-content {
+  position: relative;
+  min-height: 100%;
+}
+
+.spatial-text-anchor-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.spatial-text-marker {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-size: 14px;
+  cursor: pointer;
+  pointer-events: auto;
+  z-index: 2;
+}
+
+.spatial-text-marker.is-selected { outline: 2px solid #4a7cf7; border-radius: 4px; }
+
+.file-panel-foot {
+  border-top: 1px solid var(--line-soft, #eceef2);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.file-panel-foot #spatialInstruction { width: 100%; box-sizing: border-box; }
+
+/* rail 拖拽把手 */
+.rail-wrap {
+  position: relative;
+  min-width: 0;
+  display: flex;
+}
+
+.rail-resizer {
+  position: absolute;
+  left: -6px;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  cursor: col-resize;
+  z-index: 5;
+}
+
+.rail-resizer:hover, .rail-resizer.is-dragging { background: rgb(70 120 240 / 14%); }
+
+/* 消息文件卡片 */
+.message-file-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.file-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--line, #d9dde5);
+  border-radius: 7px;
+  background: #f7f9fc;
+  color: #40516a;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.file-card:hover { border-color: var(--blue, #0867f2); color: var(--blue, #0867f2); }
+.file-card.is-plain { cursor: default; opacity: .7; }
+.file-card.is-plain:hover { border-color: var(--line, #d9dde5); color: #40516a; }
+
+/* spatial-patrol 插件前端样式:查看器、锚点层、小兵标记 */
+
+.spatial-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.spatial-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border, #e3e3ea);
+}
+
+.spatial-title {
+  flex: 1;
+  font-size: 13px;
+  color: #555;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spatial-zoom, .spatial-pages { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.spatial-zoom button, .spatial-pages button { width: 26px; height: 26px; }
+
+.spatial-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.spatial-stage {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  background: #22242a;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  cursor: crosshair;
+}
+
+.spatial-stage img {
+  max-width: none;
+  transform-origin: 0 0;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.spatial-content {
+  position: relative;
+  flex: none;
+  transform-origin: 0 0;
+}
+
+.spatial-content > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.spatial-anchor-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.spatial-marker {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  cursor: grab;
+  text-align: center;
+  z-index: 2;
+}
+
+.spatial-marker.is-selected .spatial-marker-icon { outline: 2px solid #4a7cf7; outline-offset: 2px; border-radius: 6px; }
+.spatial-marker-icon { font-size: 22px; line-height: 1; display: block; }
+.spatial-marker-label {
+  display: block;
+  font-size: 10px;
+  color: #fff;
+  background: rgba(20, 22, 28, 0.75);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-top: 2px;
+  white-space: nowrap;
+}
+.spatial-invalid .spatial-marker-icon { color: #ff5252; }
+.spatial-done .spatial-marker-icon { color: #37d67a; }
+.spatial-dismissed { opacity: 0; transition: opacity 200ms ease; }
+
+.spatial-picker {
+  position: absolute;
+  z-index: 5;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+
+.spatial-side {
+  width: 280px;
+  border-left: 1px solid var(--border, #e3e3ea);
+  padding: 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.spatial-instruction-label { display: block; font-size: 12px; color: #666; margin-bottom: 4px; }
+#spatialInstruction { width: 100%; box-sizing: border-box; }
+#spatialDeployButton { width: 100%; margin-top: 6px; }
+
+.spatial-selected-card {
+  border: 1px solid var(--border, #e3e3ea);
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.spatial-selected-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.spatial-observation { white-space: pre-wrap; max-height: 180px; overflow: auto; font-size: 11px; }
+.spatial-anchor-list { display: flex; flex-direction: column; gap: 6px; }
+</file>
+
+<file path="viewer.js">
+/* spatial-patrol 内容查看器:图片/PDF/文档载体渲染、空间锚点交互与 DOCX 显式操作模式。
+   注册为 window.FocusSpatialViewer;由 entry.js 组装进插件视图。DOCX 的 deploy/copy/continue
+   必须选择只读或修改模式,其他载体保持只读。 */
 (function (root) {
   "use strict";
 
   const API_PREFIX = "/desktop/api/plugin/spatial-patrol";
   const TEXT_COORDINATE_SPACE = "text-character-v1";
-  const ANCHOR_STATUS = Object.freeze({
-    anchor: { label: "待投放", tone: "neutral" },
-    deployed: { label: "执行中", tone: "active" },
-    done: { label: "已完成", tone: "success" },
-    dismissed: { label: "已回收", tone: "neutral" },
-    needs_action: { label: "需要处理", tone: "warning" },
-    invalid: { label: "锚点失效", tone: "danger" },
-  });
-
-  function presentAnchorStatus(status) {
-    return ANCHOR_STATUS[status] || { label: status || "待投放", tone: "neutral" };
-  }
 
   const state = {
     appState: null,
@@ -175,9 +766,9 @@
     app.innerHTML = `
       <section class="spatial-viewer" data-viewer-task="${escapeHtml(state.task?.task_id || "")}">
         <header class="spatial-toolbar">
-          <button type="button" class="text-button" data-spatial-action="close">← 返回任务</button>
-          <span class="spatial-title"><span class="workspace-kicker">FILE WORKBENCH</span><strong>${escapeHtml(state.material.relative_path)}</strong>${pdf ? `<small>第 ${state.page} 页</small>` : ""}</span>
-          <span class="spatial-zoom" aria-label="缩放"><button type="button" data-spatial-action="zoom-out" aria-label="缩小">−</button><span id="spatialZoomLabel">${Math.round(state.zoom * 100)}%</span><button type="button" data-spatial-action="zoom-in" aria-label="放大">＋</button></span>
+          <button type="button" class="text-button" data-spatial-action="close">← 返回对话</button>
+          <span class="spatial-title">${escapeHtml(state.material.relative_path)}${pdf ? ` · 第 ${state.page} 页` : ""}</span>
+          <span class="spatial-zoom"><button type="button" data-spatial-action="zoom-out">−</button><span id="spatialZoomLabel">${Math.round(state.zoom * 100)}%</span><button type="button" data-spatial-action="zoom-in">＋</button></span>
           ${pdf ? `<span class="spatial-pages"><button type="button" data-spatial-action="prev-page" ${state.page <= 1 ? "disabled" : ""}>◀</button><span id="spatialPageLabel">${state.page}/${state.pageCount}</span><button type="button" data-spatial-action="next-page" ${state.page >= state.pageCount ? "disabled" : ""}>▶</button></span>` : ""}
         </header>
         <div class="spatial-body">
@@ -424,15 +1015,14 @@
     const panel = document.querySelector("#spatialSelected");
     if (!panel) return;
     if (!anchor) { panel.innerHTML = ""; return; }
-    const presented = presentAnchorStatus(anchor.status);
-    panel.innerHTML = `<div class="spatial-selected-card status-${escapeHtml(anchor.status)}">
-      <header><strong>${anchor.kind === "anchor" ? "空间锚点" : "空间小兵"} ${escapeHtml(anchor.spatial_id.slice(0, 8))}</strong><span class="ui-badge is-${presented.tone}">${presented.label}</span></header>
-      <span class="muted tiny">第 ${anchor.page} 页 · (${anchor.x.toFixed(3)}, ${anchor.y.toFixed(3)})</span>
+    panel.innerHTML = `<div class="spatial-selected-card">
+      <strong>${anchor.kind === "anchor" ? "空间锚点" : "空间小兵"} ${escapeHtml(anchor.spatial_id.slice(0, 8))}</strong>
+      <span class="muted tiny">第 ${anchor.page} 页 · (${anchor.x.toFixed(3)}, ${anchor.y.toFixed(3)}) · ${escapeHtml(anchor.status)}</span>
       ${anchor.status === "invalid" ? `<p class="danger">! 原锚点已失效(载体或页坐标已不可对应)</p>` : ""}
       ${isTextViewFile(anchor.content_ref) && isLegacyTextAnchor(anchor) ? `<p class="danger">旧文本锚点没有字符坐标，请重新点击目标文字建立锚点。</p>` : ""}
       ${needsActionMarkup(anchor)}
       <span class="spatial-selected-actions">
-        ${anchor.kind === "patrol" && ["deployed", "done", "needs_action"].includes(anchor.status) ? `<button class="text-button" data-spatial-action="observe-anchor">观察</button><button class="text-button" data-spatial-action="copy-anchor">复制锚点</button>${anchor.status !== "needs_action" ? `<button class="text-button" data-spatial-action="complete-anchor">标记完成</button>` : ""}<button class="text-button danger" data-spatial-action="dismiss-anchor">回收</button>` : ""}
+        ${anchor.kind === "patrol" && ["deployed", "done", "needs_action"].includes(anchor.status) ? `<button class="text-button" data-spatial-action="observe-anchor">观察这里</button><button class="text-button" data-spatial-action="copy-anchor">复制到新坐标</button>${anchor.status !== "needs_action" ? `<button class="text-button" data-spatial-action="complete-anchor">✓ 完成</button>` : ""}<button class="text-button danger" data-spatial-action="dismiss-anchor">回收</button>` : ""}
         ${anchor.kind === "anchor" ? `<button class="text-button" data-spatial-action="dismiss-anchor">移除锚点</button>` : ""}
       </span>
       ${state.copySourceId === anchor.spatial_id ? `<span class="muted tiny">请在内容中点击复制目标位置</span>` : ""}
@@ -708,17 +1298,14 @@
     const name = state.material?.relative_path || "";
     const textType = isTextViewFile(name);
     const spatial = isSpatialFile(name);
-    const typeLabel = isPdf() ? "PDF" : isDocx() ? "DOCX" : /\.md$/i.test(name) ? "MARKDOWN" : /\.txt$/i.test(name) ? "TEXT" : "IMAGE";
     return `
       <header class="file-panel-head">
-        <span class="file-panel-title" title="${escapeHtml(name)}"><span class="workspace-kicker">FILE WORKBENCH · ${typeLabel}</span><strong>${escapeHtml(name)}</strong></span>
-        <span class="file-panel-tools">
-          ${!textType ? `<span class="spatial-zoom" aria-label="缩放"><button type="button" data-spatial-action="zoom-out" aria-label="缩小">−</button><span id="spatialZoomLabel">${Math.round(state.zoom * 100)}%</span><button type="button" data-spatial-action="zoom-in" aria-label="放大">＋</button></span>` : ""}
-          ${isPdf() ? `<span class="spatial-pages" aria-label="页码"><button type="button" data-spatial-action="prev-page" aria-label="上一页" ${state.page <= 1 ? "disabled" : ""}>←</button><span>${state.page}/${state.pageCount}</span><button type="button" data-spatial-action="next-page" aria-label="下一页" ${state.page >= state.pageCount ? "disabled" : ""}>→</button></span>` : ""}
-          <button type="button" class="text-button" data-panel-action="close" aria-label="关闭文件工作台">关闭</button>
-        </span>
+        <span class="file-panel-title" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+        ${!textType ? `<span class="spatial-zoom"><button type="button" data-spatial-action="zoom-out">−</button><span id="spatialZoomLabel">${Math.round(state.zoom * 100)}%</span><button type="button" data-spatial-action="zoom-in">＋</button></span>` : ""}
+        ${isPdf() ? `<span class="spatial-pages"><button type="button" data-spatial-action="prev-page" ${state.page <= 1 ? "disabled" : ""}>◀</button><span>${state.page}/${state.pageCount}</span><button type="button" data-spatial-action="next-page" ${state.page >= state.pageCount ? "disabled" : ""}>▶</button></span>` : ""}
+        <button type="button" class="text-button" data-panel-action="close" title="关闭面板">×</button>
       </header>
-      <div class="file-panel-body" data-carrier="${typeLabel.toLowerCase()}">
+      <div class="file-panel-body">
         ${textType
           ? `<div class="spatial-text-view" id="spatialTextView"><div class="spatial-text-content"><div class="spatial-text-inner"></div><div class="spatial-text-anchor-layer" id="spatialTextAnchorLayer"></div></div></div>`
           : `<div class="spatial-stage" id="spatialStage">
@@ -731,9 +1318,9 @@
       ${spatial ? `
         <footer class="file-panel-foot">
           <form id="spatialDeployForm">
-            <label class="spatial-instruction-label" for="spatialInstruction">锚点指令</label><textarea id="spatialInstruction" placeholder="先点内容建立锚点，再描述任务" rows="2"></textarea>
-            ${isDocx() ? `<fieldset class="spatial-permission"><legend>本次操作权限（必选）</legend><label><input type="radio" name="spatial-docx-run-mode" value="read" data-spatial-run-mode required ${state.docxRunMode === "read" ? "checked" : ""}><span><strong>只读观察</strong><small>不会修改文件</small></span></label><label><input type="radio" name="spatial-docx-run-mode" value="write" data-spatial-run-mode ${state.docxRunMode === "write" ? "checked" : ""}><span><strong>修改文档</strong><small>允许写入与删除</small></span></label></fieldset>` : ""}
-            <button class="primary" type="submit">在当前锚点投放</button>
+            <textarea id="spatialInstruction" placeholder="投放指令(先点内容,再投小兵)" rows="2"></textarea>
+            ${isDocx() ? `<fieldset class="muted tiny"><legend>操作模式（必选）</legend><label><input type="radio" name="spatial-docx-run-mode" value="read" data-spatial-run-mode required ${state.docxRunMode === "read" ? "checked" : ""}> 只读观察（不会修改文件）</label><label><input type="radio" name="spatial-docx-run-mode" value="write" data-spatial-run-mode ${state.docxRunMode === "write" ? "checked" : ""}> 修改文档（可执行删除）</label></fieldset>` : ""}
+            <button class="primary" type="submit">在锚点上投放 ⚔</button>
           </form>
           <div id="spatialSelected"></div>
         </footer>` : ""}
@@ -944,8 +1531,10 @@
     render, openMaterial, convertContent, mountPanel, supportsMaterial,
     getFocus, sendFocusedMessage, permissionsForMaterial, requirePermissionsForMaterial,
     needsActionMessage, needsActionMarkup, responseErrorDetail,
-    presentAnchorStatus,
     textOffsetFromDomPoint, domPointFromTextOffset,
     textPointToContent, textMarkerPosition, isLegacyTextAnchor, TEXT_COORDINATE_SPACE,
   };
 })(typeof globalThis === "object" ? globalThis : this);
+</file>
+
+</files>

@@ -4,7 +4,7 @@
  * 工作流不访问网络或数据库，仅让真实桌面页面复现滚动与树排序行为。
  */
 const tasks = [
-  { task_id: "child", title: "同名 Context", workspace_id: "workspace", workspace_name: "测试工作区", workspace_path: "C:/workspace", thread_id: "thread-child", active_run: null },
+  { task_id: "child", title: "同名 Context", workspace_id: "workspace", workspace_name: "测试工作区", workspace_path: "C:/workspace/这是一个用于验证最小窗口不会横向溢出的非常长目录名称/another-very-long-directory-name/focus", thread_id: "thread-child-with-a-long-identifier-that-must-remain-accessible", active_run: null },
   { task_id: "blocked", title: "同名 Context", workspace_id: "workspace", workspace_name: "测试工作区", workspace_path: "C:/workspace", thread_id: "thread-blocked", active_run: null },
   { task_id: "root", title: "同名 Context", workspace_id: "workspace", workspace_name: "测试工作区", workspace_path: "C:/workspace", thread_id: "thread-root", active_run: null },
   { task_id: "sibling", title: "安全 Context", workspace_id: "workspace", workspace_name: "测试工作区", workspace_path: "C:/workspace", thread_id: "thread-sibling", active_run: null },
@@ -55,7 +55,7 @@ const conversationMessages = taskId => Array.from({ length: 12 }, (_value, index
 
 window.focusDesktop = { runtime: () => ({ apiBase: "http://focus.test", session: "test-session" }) };
 window.fetch = async (input, options = {}) => {
-  const path = new URL(String(input)).pathname;
+  const path = new URL(String(input), "http://focus.test").pathname;
   if (path === "/desktop/api/bootstrap") return json({ tasks, equipment: { models: [], tools: [], skills: [], permissions: [] } });
   if (path === "/desktop/api/tasks") return json(tasks);
   if (path === "/desktop/api/workspaces/workspace/contexts/tree") return json(tree);
@@ -74,6 +74,9 @@ window.fetch = async (input, options = {}) => {
     return json({ task_id: taskId, messages: conversationMessages(taskId), ui_state: uiStates.get(taskId) || {}, active_run: null, context });
   }
   if (/\/desktop\/api\/tasks\/[^/]+\/(materials|agents)$/.test(path)) return json([]);
+  if (/\/desktop\/api\/plugin\/spatial-patrol\/tasks\/[^/]+\/anchors$/.test(path)) return json([]);
+  if (path === "/desktop/api/plugin/spatial-patrol/metadata") return json({ page_count: 1 });
+  if (path === "/desktop/api/plugin/spatial-patrol/text") return json({ content: "# 文件工作台\n\n这是一份用于视觉验收的 Markdown 材料。\n\n- 支持字符锚点\n- 保持重排和滚动坐标\n- 权限只在 DOCX 操作时显式选择\n\n## 说明\n\n文件工作台与任务记录并存，不会替换当前对话。" });
   if (/\/desktop\/api\/tasks\/[^/]+\/skills$/.test(path)) return json({ skills: [] });
   if (/\/desktop\/api\/contexts\/[^/]+\/snapshot$/.test(path)) return json({ checkpoint_id: "checkpoint", messages: snapshotMessages });
   return json({ detail: `Unhandled test route: ${path}` }, 404);
