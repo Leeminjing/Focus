@@ -29,10 +29,10 @@ commitment:
 
 # human-in-the-loop 压缩门：仅主 Agent 装配。模型调用前估算 messages 用量，
 # 超过 context_window × threshold_ratio 时 interrupt 暂停并发起压缩请求。
-# 压缩测试配置：0.0763 × 131072 ≈ 10000（原默认 0.9 ≈ 118k）。
+# 0.9 × 131072 ≈ 118k（接近窗口上限才触发，避免频繁打断）。
 compression:
   enabled: true
-  threshold_ratio: 0.0763
+  threshold_ratio: 0.9
 
 # 设计决策 11：全应用迁移到 PostgreSQL checkpointer/store。
 # Web 网关链路随之从内存态转为持久态（checkpoint 跨重启保留、rollback 生效、跨线程 store 记忆开启）。

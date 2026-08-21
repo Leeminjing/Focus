@@ -1,0 +1,10 @@
+{
+  "name": "spatial-patrol",
+  "version": "0.1.0",
+  "enabled": true,
+  "provides": [],
+  "requires": [],
+  "entry": "entry.py",
+  "http_routes": "routes.py",
+  "desktop_assets": "desktop"
+}

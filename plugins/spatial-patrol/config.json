@@ -1,0 +1,6 @@
+{
+  "vision_model": "qwen3.7-plus",
+  "observe_radius_start": 0.05,
+  "observe_radius_growth": 2.0,
+  "max_radius": 0.5
+}

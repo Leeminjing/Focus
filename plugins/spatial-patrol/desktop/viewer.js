@@ -1,0 +1,934 @@
+/* spatial-patrol 内容查看器:图片/PDF/文档载体渲染、空间锚点交互与 DOCX 显式操作模式。
+   注册为 window.FocusSpatialViewer;由 entry.js 组装进插件视图。DOCX 的 deploy/copy/continue
+   必须选择只读或修改模式,其他载体保持只读。 */
+(function (root) {
+  "use strict";
+
+  const API_PREFIX = "/desktop/api/plugin/spatial-patrol";
+  const TEXT_COORDINATE_SPACE = "text-character-v1";
+
+  const state = {
+    appState: null,
+    material: null,     // {material_id, relative_path, ...}
+    task: null,         // {task_id, workspace_id, ...}
+    page: 1,
+    pageCount: 1,
+    zoom: 1,
+    tx: 0,
+    ty: 0,
+    naturalSize: null,  // {width, height} 载体原始尺寸(页像素)
+    anchors: [],
+    selectedId: null,
+    dragging: null,     // 拖拽中的锚点
+    copySourceId: null,
+    observation: "",
+    panelContainer: null,
+    docxRunMode: null,
+    textResizeObserver: null,
+  };
+
+  function escapeHtml(value = "") {
+    return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+  }
+
+  function needsActionMessage(anchor) {
+    const runError = String(anchor?.run_error || "").trim();
+    return runError
+      ? `${runError} 可补充指令后重试。`
+      : "未产生文件变更，可补充指令后重试。";
+  }
+
+  function needsActionMarkup(anchor) {
+    if (anchor?.status !== "needs_action") return "";
+    return `<p class="danger">${escapeHtml(needsActionMessage(anchor))}</p>`;
+  }
+
+  async function responseErrorDetail(response) {
+    const body = await response.text();
+    if (!body) return `HTTP ${response.status}`;
+    try {
+      const payload = JSON.parse(body);
+      const detail = payload?.detail;
+      if (typeof detail === "string") return detail;
+      return JSON.stringify(detail === undefined ? payload : detail);
+    } catch {
+      return body;
+    }
+  }
+
+  async function api(path, options = {}) {
+    const headers = new Headers(options.headers || {});
+    headers.set("X-Focus-Session", window.focusDesktop?.runtime?.().session || "focus-dev-session");
+    if (options.body) headers.set("Content-Type", "application/json");
+    const response = await fetch(`${API_PREFIX}${path}`, { ...options, headers });
+    if (!response.ok) throw new Error(await responseErrorDetail(response));
+    return response.json();
+  }
+
+  function isPdf() {
+    return /\.pdf$/i.test(state.material?.relative_path || "");
+  }
+
+  function isDocx() {
+    return /\.docx$/i.test(state.material?.relative_path || "");
+  }
+
+  function permissionsForMaterial(name, docxRunMode) {
+    if (!/\.docx$/i.test(name || "")) return ["read"];
+    if (docxRunMode === "read") return ["read"];
+    if (docxRunMode === "write") return ["read", "write"];
+    return null;
+  }
+
+  function requirePermissionsForMaterial(name, docxRunMode) {
+    const permissions = permissionsForMaterial(name, docxRunMode);
+    if (!permissions) throw new Error("请先选择“只读观察”或“修改文档”");
+    return permissions;
+  }
+
+  function currentPermissions() {
+    return requirePermissionsForMaterial(state.material?.relative_path, state.docxRunMode);
+  }
+
+  function supportsMaterial(materialOrName) {
+    const name = typeof materialOrName === "string"
+      ? materialOrName : materialOrName?.relative_path || materialOrName?.path || "";
+    return /\.(png|jpe?g|webp|bmp|gif|pdf|docx?|md|txt)$/i.test(name);
+  }
+
+  function previewUrl() {
+    return `${API_PREFIX}/preview?task_id=${encodeURIComponent(state.task.task_id)}&content_ref=${encodeURIComponent(state.material.relative_path)}&page=${state.page}`;
+  }
+
+  // === 坐标换算(内容空间与视图解耦,缩放/平移稳定) ===
+
+  // 纯换算:视口指针位置 → 内容归一化坐标(与缩放/平移无关,供测试与运行共用)
+  function convertContent(rect, zoom, tx, ty, naturalSize, clientX, clientY) {
+    if (!rect || !naturalSize || naturalSize.width <= 0 || naturalSize.height <= 0) return null;
+    const stageX = (clientX - rect.left - tx) / zoom;
+    const stageY = (clientY - rect.top - ty) / zoom;
+    return {
+      x: Math.max(0, Math.min(1, stageX / naturalSize.width)),
+      y: Math.max(0, Math.min(1, stageY / naturalSize.height)),
+    };
+  }
+
+  function stageRect() {
+    return document.querySelector("#spatialStage")?.getBoundingClientRect();
+  }
+
+  function contentNode() {
+    return document.querySelector("#spatialContent");
+  }
+
+  function pointerToContent(clientX, clientY) {
+    const rect = stageRect();
+    if (!rect) return null;
+    const stage = document.querySelector("#spatialStage");
+    const content = convertContent(
+      rect, state.zoom, state.tx, state.ty, state.naturalSize,
+      clientX + (stage?.scrollLeft || 0), clientY + (stage?.scrollTop || 0),
+    );
+    return content ? { page: state.page, ...content } : null;
+  }
+
+  function onImageLoaded(image) {
+    state.naturalSize = { width: image.naturalWidth, height: image.naturalHeight };
+    const content = contentNode();
+    if (content) {
+      content.style.width = `${image.naturalWidth}px`;
+      content.style.height = `${image.naturalHeight}px`;
+    }
+    applyTransform();
+  }
+
+  async function loadMetadata() {
+    if (!state.task || !state.material) return;
+    try {
+      const data = await api(`/metadata?task_id=${encodeURIComponent(state.task.task_id)}&content_ref=${encodeURIComponent(state.material.relative_path)}`);
+      state.pageCount = Math.max(1, Number(data.page_count) || 1);
+      if (state.page > state.pageCount) state.page = state.pageCount;
+    } catch {
+      state.pageCount = 1;
+    }
+  }
+
+  // === 渲染 ===
+
+  function render(app, appState) {
+    if (appState) state.appState = appState;
+    if (state.task) state.task = state.appState?.tasks.find(item => item.task_id === state.appState.activeTaskId) || state.task;
+    const pdf = isPdf();
+    const anchorsMarkup = markersForCurrentPage().map(anchorMarkup).join("");
+    app.innerHTML = `
+      <section class="spatial-viewer" data-viewer-task="${escapeHtml(state.task?.task_id || "")}">
+        <header class="spatial-toolbar">
+          <button type="button" class="text-button" data-spatial-action="close">← 返回对话</button>
+          <span class="spatial-title">${escapeHtml(state.material.relative_path)}${pdf ? ` · 第 ${state.page} 页` : ""}</span>
+          <span class="spatial-zoom"><button type="button" data-spatial-action="zoom-out">−</button><span id="spatialZoomLabel">${Math.round(state.zoom * 100)}%</span><button type="button" data-spatial-action="zoom-in">＋</button></span>
+          ${pdf ? `<span class="spatial-pages"><button type="button" data-spatial-action="prev-page" ${state.page <= 1 ? "disabled" : ""}>◀</button><span id="spatialPageLabel">${state.page}/${state.pageCount}</span><button type="button" data-spatial-action="next-page" ${state.page >= state.pageCount ? "disabled" : ""}>▶</button></span>` : ""}
+        </header>
+        <div class="spatial-body">
+          <div class="spatial-stage" id="spatialStage">
+            <div class="spatial-content" id="spatialContent"${state.naturalSize ? ` style="width:${state.naturalSize.width}px;height:${state.naturalSize.height}px;transform:translate(${state.tx}px, ${state.ty}px) scale(${state.zoom})"` : ""}>
+              <img id="spatialImage" src="${previewUrl()}" alt="内容载体" draggable="false">
+              <div class="spatial-anchor-layer" id="spatialAnchorLayer">${anchorsMarkup}</div>
+            </div>
+          </div>
+          <aside class="spatial-side">
+            <form id="spatialDeployForm">
+              <label class="spatial-instruction-label">投放指令(先点,再投)</label>
+              <textarea id="spatialInstruction" placeholder="例如:检查这里的内容" rows="2"></textarea>
+              <button class="primary" type="submit" id="spatialDeployButton">在锚点上投放小兵 ⚔</button>
+            </form>
+            <div id="spatialSelected" class="spatial-selected"></div>
+            <div id="spatialAnchors" class="spatial-anchor-list"></div>
+          </aside>
+        </div>
+      </section>`;
+    bindEvents(app);
+    refreshAnchorList();
+  }
+
+  function anchorMarkup(anchor) {
+    const icon = anchor.kind === "anchor" ? "⚑"
+      : anchor.status === "done" ? "✓"
+      : anchor.status === "dismissed" ? (anchor._dismissing ? "⚔" : "")
+      : anchor.status === "invalid" ? "!"
+      : "⚔";
+    if (!icon) return "";
+    const label = anchor.status === "invalid"
+      ? "原锚点已失效"
+      : anchor.status === "done" ? "已完成"
+      : anchor.status === "needs_action" ? (anchor.run_error ? "执行失败" : "未产生文件变更")
+      : anchor.kind === "anchor" ? "锚点" : `小兵 ${anchor.spatial_id.slice(0, 5)}`;
+    return `<div class="spatial-marker spatial-${escapeHtml(anchor.status)}${anchor.spatial_id === state.selectedId ? " is-selected" : ""}"
+      data-anchor-id="${escapeHtml(anchor.spatial_id)}"
+      data-page="${anchor.page}"
+      style="left:${(anchor.x * 100).toFixed(4)}%;top:${(anchor.y * 100).toFixed(4)}%">
+      <span class="spatial-marker-icon" data-anchor-id="${escapeHtml(anchor.spatial_id)}">${icon}</span>
+      <span class="spatial-marker-label">${escapeHtml(label)}</span>
+    </div>`;
+  }
+
+  function markersForCurrentPage() {
+    return (state.anchors || []).filter(anchor => anchor.page === state.page);
+  }
+
+  // === 交互 ===
+
+  function bindEvents(app) {
+    const stage = document.querySelector("#spatialStage");
+    const image = document.querySelector("#spatialImage");
+    image.addEventListener("load", () => onImageLoaded(image));
+    if (image.complete && image.naturalWidth) onImageLoaded(image);
+    stage.addEventListener("pointerdown", event => onStagePointerDown(event));
+    bindPan(stage);
+    stage.addEventListener("wheel", event => {
+      event.preventDefault();
+      state.zoom = Math.max(0.2, Math.min(8, state.zoom * (event.deltaY < 0 ? 1.25 : 0.8)));
+      updateZoomLabel();
+      applyTransform();
+    }, { passive: false });
+    app.querySelector("[data-spatial-action='close']").addEventListener("click", () => {
+      window.__focusBackToFocus && window.__focusBackToFocus();
+    });
+    app.querySelector("[data-spatial-action='zoom-in']").addEventListener("click", () => { state.zoom = Math.min(8, state.zoom * 1.25); updateZoomLabel(); applyTransform(); });
+    app.querySelector("[data-spatial-action='zoom-out']").addEventListener("click", () => { state.zoom = Math.max(0.2, state.zoom / 1.25); updateZoomLabel(); applyTransform(); });
+    if (isPdf()) {
+      app.querySelector("[data-spatial-action='next-page']").addEventListener("click", () => switchPage(state.page + 1));
+      app.querySelector("[data-spatial-action='prev-page']").addEventListener("click", () => switchPage(Math.max(1, state.page - 1)));
+    }
+    document.querySelector("#spatialDeployForm").addEventListener("submit", event => {
+      event.preventDefault();
+      deploySelected();
+    });
+  }
+
+  function updateZoomLabel() {
+    const label = document.querySelector("#spatialZoomLabel");
+    if (label) label.textContent = `${Math.round(state.zoom * 100)}%`;
+  }
+
+  function applyTransform() {
+    const content = contentNode();
+    if (content) content.style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.zoom})`;
+  }
+
+  function bindPan(stage) {
+    stage.addEventListener("pointerdown", event => {
+      if (!(event.shiftKey || event.button === 1)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const origin = { x: event.clientX, y: event.clientY, tx: state.tx, ty: state.ty };
+      stage.setPointerCapture(event.pointerId);
+      const move = moveEvent => {
+        state.tx = origin.tx + moveEvent.clientX - origin.x;
+        state.ty = origin.ty + moveEvent.clientY - origin.y;
+        applyTransform();
+      };
+      const up = () => {
+        stage.releasePointerCapture(event.pointerId);
+        stage.removeEventListener("pointermove", move);
+        stage.removeEventListener("pointerup", up);
+      };
+      stage.addEventListener("pointermove", move);
+      stage.addEventListener("pointerup", up);
+    }, true);
+  }
+
+  function switchPage(page) {
+    state.page = Math.max(1, Math.min(state.pageCount, page));
+    state.zoom = 1; state.tx = 0; state.ty = 0;
+    state.naturalSize = null;
+    if (state.panelMode && state.panelContainer) {
+      state.panelContainer.innerHTML = panelMarkup();
+      bindPanelEvents(state.panelContainer);
+      renderPanelBody();
+    } else rerender();
+  }
+
+  function rerender() {
+    render(document.querySelector("#app"), state.appState);
+  }
+
+  function onStagePointerDown(event) {
+    if (event.shiftKey || event.button === 1) return;
+    const content = pointerToContent(event.clientX, event.clientY);
+    if (!content) return;
+    // 1) 命中已有标记 → 重新聚焦该小兵
+    const marker = event.target.closest("[data-anchor-id]");
+    if (marker) {
+      const id = marker.dataset.anchorId;
+      if (state.dragging) return;
+      startDrag(id, event);
+      selectAnchor(id);
+      return;
+    }
+    // 2) 附近点击(显示像素 24px 内)→ 重新指向该小兵空间
+    const near = nearbyAnchors(event.clientX, event.clientY);
+    if (near.length === 1) { selectAnchor(near[0].spatial_id); return; }
+    if (near.length > 1) { showLightPicker(near); return; }
+    // 3) 复制模式下,下一次空白点击决定新小兵坐标
+    if (state.copySourceId) { copyTo(content); return; }
+    // 4) 空白点击 → 立即成立锚点(先点后说)
+    createAnchor(content);
+  }
+
+  function nearbyAnchors(clientX, clientY) {
+    const rect = stageRect();
+    const results = [];
+    for (const anchor of markersForCurrentPage()) {
+      const marker = document.querySelector(`[data-anchor-id="${anchor.spatial_id}"]`);
+      if (!marker) continue;
+      const markerRect = marker.getBoundingClientRect();
+      const cx = markerRect.left + markerRect.width / 2;
+      const cy = markerRect.top + markerRect.height / 2;
+      const distance = Math.hypot(clientX - cx, clientY - cy);
+      if (distance <= 24) results.push(anchor);
+    }
+    return results;
+  }
+
+  function showLightPicker(anchors) {
+    const layer = document.querySelector("#spatialAnchorLayer");
+    if (!layer) return;
+    let picker = document.querySelector("#spatialPicker");
+    if (!picker) {
+      picker = document.createElement("div");
+      picker.id = "spatialPicker";
+      picker.className = "spatial-picker";
+      layer.append(picker);
+    }
+    picker.innerHTML = anchors.map(anchor =>
+      `<button type="button" data-pick-anchor="${escapeHtml(anchor.spatial_id)}">${escapeHtml(anchor.kind === "anchor" ? "锚点" : "小兵")} ${escapeHtml(anchor.spatial_id.slice(0, 5))}</button>`
+    ).join("");
+    picker.hidden = false;
+    picker.querySelectorAll("[data-pick-anchor]").forEach(button => {
+      button.addEventListener("click", () => { picker.hidden = true; selectAnchor(button.dataset.pickAnchor); });
+    });
+  }
+
+  function startDrag(id, event) {
+    const marker = document.querySelector(`[data-anchor-id="${id}"]`);
+    if (!marker) return;
+    state.dragging = { id, startX: event.clientX, startY: event.clientY };
+    marker.setPointerCapture(event.pointerId);
+    const move = moveEvent => {
+      const content = pointerToContent(moveEvent.clientX, moveEvent.clientY);
+      if (!content) return;
+      const anchor = state.anchors.find(item => item.spatial_id === id);
+      if (anchor) { anchor.x = content.x; anchor.y = content.y; anchor.page = content.page; }
+      marker.style.left = `${(content.x * 100).toFixed(4)}%`;
+      marker.style.top = `${(content.y * 100).toFixed(4)}%`;
+    };
+    const up = async upEvent => {
+      marker.releasePointerCapture(event.pointerId);
+      marker.removeEventListener("pointermove", move);
+      marker.removeEventListener("pointerup", up);
+      const anchor = state.anchors.find(item => item.spatial_id === id);
+      state.dragging = null;
+      if (!anchor) return;
+      try {
+        Object.assign(anchor, await api(`/anchors/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ page: anchor.page, x: anchor.x, y: anchor.y }),
+        }));
+      } catch (error) {
+        window.alert(`拖动重投失败: ${error.message}`);
+      }
+      refreshAnchorList();
+    };
+    marker.addEventListener("pointermove", move);
+    marker.addEventListener("pointerup", up);
+  }
+
+  async function createAnchor(content) {
+    try {
+      const anchor = await api("/anchors", {
+        method: "POST",
+        body: JSON.stringify({
+          task_id: state.task.task_id, content_ref: state.material.relative_path,
+          page: content.page, x: content.x, y: content.y,
+          coordinate_space: content.coordinate_space,
+        }),
+      });
+      state.anchors.push(anchor);
+      state.selectedId = anchor.spatial_id;
+      afterChange();
+    } catch (error) {
+      window.alert(`无法确定这个位置: ${error.message}`);
+    }
+  }
+
+  function selectAnchor(id) {
+    if (state.selectedId !== id) state.observation = "";
+    state.selectedId = id;
+    refreshSelection();
+  }
+
+  function refreshSelection() {
+    const anchor = state.anchors.find(item => item.spatial_id === state.selectedId);
+    const panel = document.querySelector("#spatialSelected");
+    if (!panel) return;
+    if (!anchor) { panel.innerHTML = ""; return; }
+    panel.innerHTML = `<div class="spatial-selected-card">
+      <strong>${anchor.kind === "anchor" ? "空间锚点" : "空间小兵"} ${escapeHtml(anchor.spatial_id.slice(0, 8))}</strong>
+      <span class="muted tiny">第 ${anchor.page} 页 · (${anchor.x.toFixed(3)}, ${anchor.y.toFixed(3)}) · ${escapeHtml(anchor.status)}</span>
+      ${anchor.status === "invalid" ? `<p class="danger">! 原锚点已失效(载体或页坐标已不可对应)</p>` : ""}
+      ${isTextViewFile(anchor.content_ref) && isLegacyTextAnchor(anchor) ? `<p class="danger">旧文本锚点没有字符坐标，请重新点击目标文字建立锚点。</p>` : ""}
+      ${needsActionMarkup(anchor)}
+      <span class="spatial-selected-actions">
+        ${anchor.kind === "patrol" && ["deployed", "done", "needs_action"].includes(anchor.status) ? `<button class="text-button" data-spatial-action="observe-anchor">观察这里</button><button class="text-button" data-spatial-action="copy-anchor">复制到新坐标</button>${anchor.status !== "needs_action" ? `<button class="text-button" data-spatial-action="complete-anchor">✓ 完成</button>` : ""}<button class="text-button danger" data-spatial-action="dismiss-anchor">回收</button>` : ""}
+        ${anchor.kind === "anchor" ? `<button class="text-button" data-spatial-action="dismiss-anchor">移除锚点</button>` : ""}
+      </span>
+      ${state.copySourceId === anchor.spatial_id ? `<span class="muted tiny">请在内容中点击复制目标位置</span>` : ""}
+      ${state.observation ? `<pre class="spatial-observation">${escapeHtml(state.observation)}</pre>` : ""}
+    </div>`;
+    panel.querySelectorAll("[data-spatial-action]").forEach(button => {
+      button.addEventListener("click", () => handleSelectedAction(button.dataset.spatialAction));
+    });
+  }
+
+  async function handleSelectedAction(action) {
+    const id = state.selectedId;
+    if (!id) return;
+    try {
+      if (action === "complete-anchor") {
+        await api(`/anchors/${encodeURIComponent(id)}/complete`, { method: "POST" });
+        await refreshAnchors();
+        afterChange();
+      } else if (action === "dismiss-anchor") {
+        const dismissed = await api(`/anchors/${encodeURIComponent(id)}/dismiss`, { method: "POST" });
+        const anchor = state.anchors.find(item => item.spatial_id === id);
+        if (anchor) Object.assign(anchor, dismissed, { _dismissing: true });
+        const marker = document.querySelector(`[data-anchor-id="${id}"]`);
+        marker?.classList.add("spatial-dismissed");
+        state.selectedId = null;
+        refreshSelection();
+        setTimeout(() => {
+          state.anchors = state.anchors.filter(item => item.spatial_id !== id);
+          afterChange();
+        }, 220);
+      } else if (action === "copy-anchor") {
+        state.copySourceId = id;
+        state.observation = "";
+        refreshSelection();
+      } else if (action === "observe-anchor") {
+        const result = await api(`/anchors/${encodeURIComponent(id)}/observe`, {
+          method: "POST", body: JSON.stringify({}),
+        });
+        state.observation = result.content || "";
+        afterChange();
+      }
+    } catch (error) {
+      window.alert(error.message);
+    }
+  }
+
+  async function copyTo(content) {
+    const sourceId = state.copySourceId;
+    if (!sourceId) return;
+    try {
+      const permissions = currentPermissions();
+      state.copySourceId = null;
+      const result = await api(`/anchors/${encodeURIComponent(sourceId)}/copy`, {
+        method: "POST",
+        body: JSON.stringify({
+          x: content.x, y: content.y, page: content.page,
+          coordinate_space: content.coordinate_space,
+          permissions,
+        }),
+      });
+      const copy = result.anchor;
+      state.anchors.push(copy);
+      state.selectedId = copy.spatial_id;
+      afterChange();
+      listenToSpatialRun(result.run_id, copy.spatial_id);
+    } catch (error) {
+      window.alert(error.message);
+      await refreshAnchors().catch(() => {});
+      afterChange();
+    }
+  }
+
+  async function deploySelected() {
+    const input = document.querySelector("#spatialInstruction");
+    const instruction = input.value.trim();
+    const anchor = state.anchors.find(item => item.spatial_id === state.selectedId);
+    if (!anchor) { window.alert("请先点击内容区域建立空间锚点"); return; }
+    if (anchor.status === "invalid") { window.alert("锚点已失效,无法投放"); return; }
+    if (isDocx() && state.docxRunMode === "write" && isLegacyTextAnchor(anchor)) {
+      window.alert("旧 DOCX 锚点不具备字符坐标语义，请重新点击目标文字建立锚点");
+      return;
+    }
+    if (!instruction) { window.alert("请输入小兵的任务指令"); return; }
+    let permissions;
+    try { permissions = currentPermissions(); }
+    catch (error) { window.alert(error.message); return; }
+    try {
+      const result = await api(`/anchors/${encodeURIComponent(anchor.spatial_id)}/deploy`, {
+        method: "POST",
+        body: JSON.stringify({ instruction, permissions }),
+      });
+      anchor.kind = "patrol";
+      anchor.status = "deployed";
+      anchor.run_id = result.run_id;
+      input.value = "";
+      afterChange();
+      listenToSpatialRun(result.run_id, anchor.spatial_id);
+    } catch (error) {
+      window.alert(`位置已经确定,但小兵暂时无法进入: ${error.message}`);
+    }
+  }
+
+  function listenToSpatialRun(runId, spatialId) {
+    const session = window.focusDesktop?.runtime?.().session || "focus-dev-session";
+    const source = new EventSource(`/desktop/api/runs/${runId}/stream?session=${encodeURIComponent(session)}`);
+    source.addEventListener("end", () => {
+      source.close();
+      setTimeout(async () => {
+        await refreshAnchors();
+        afterChange();
+      }, 120);
+    });
+  }
+
+  function getFocus() {
+    const visible = state.panelMode
+      ? !!state.panelContainer?.isConnected
+      : state.appState?.view === "spatial-viewer";
+    if (!visible) return null;
+    const anchor = state.anchors.find(item => item.spatial_id === state.selectedId);
+    if (!anchor || anchor.status === "invalid" || anchor.status === "dismissed") return null;
+    return {
+      spatial_id: anchor.spatial_id, content_ref: anchor.content_ref,
+      page: anchor.page, x: anchor.x, y: anchor.y,
+      kind: anchor.kind, status: anchor.status, task_id: anchor.task_id,
+    };
+  }
+
+  async function sendFocusedMessage(message) {
+    const anchor = state.anchors.find(item => item.spatial_id === state.selectedId);
+    if (!anchor || anchor.kind !== "patrol" || ["invalid", "dismissed"].includes(anchor.status)) return false;
+    const permissions = currentPermissions();
+    if (isDocx() && permissions.includes("write") && isLegacyTextAnchor(anchor)) {
+      throw new Error("旧 DOCX 锚点不具备字符坐标语义，请重新点击目标文字建立锚点");
+    }
+    const result = await api(`/anchors/${encodeURIComponent(anchor.spatial_id)}/continue`, {
+      method: "POST",
+      body: JSON.stringify({ instruction: message, permissions }),
+    });
+    anchor.status = "deployed";
+    anchor.run_id = result.run_id;
+    afterChange();
+    listenToSpatialRun(result.run_id, anchor.spatial_id);
+    return true;
+  }
+
+  async function refreshAnchors() {
+    state.anchors = await api(`/tasks/${encodeURIComponent(state.task.task_id)}/anchors`);
+  }
+
+  function refreshAnchorList() {
+    refreshSelection();
+  }
+
+  function openMaterial(material, appState) {
+    if (!/\.(png|jpe?g|webp|bmp|gif|pdf)$/i.test(material.relative_path)) return false;
+    state.material = material;
+    state.task = appState.tasks.find(item => item.task_id === appState.activeTaskId);
+    state.page = 1; state.pageCount = 1; state.zoom = 1; state.tx = 0; state.ty = 0; state.naturalSize = null;
+    state.selectedId = null; state.anchors = [];
+    state.docxRunMode = null;
+    appState.view = "spatial-viewer";
+    refreshAnchors().catch(() => {});
+    loadMetadata().then(() => rerender()).catch(() => {});
+    return true;
+  }
+
+  // === f18:右侧文件面板承载形态(对话区保持,面板内 f18 能力可用) ===
+
+  function isSpatialFile(name) {
+    return /\.(png|jpe?g|webp|bmp|gif|pdf|docx?)$/i.test(name);
+  }
+
+  function isTextViewFile(name) {
+    return /\.(docx?|md|txt)$/i.test(name);
+  }
+
+  function clamp01(value) {
+    return Math.max(0, Math.min(1, value));
+  }
+
+  function textNodes(rootNode) {
+    if (!rootNode?.ownerDocument) return [];
+    const showText = rootNode.ownerDocument.defaultView?.NodeFilter?.SHOW_TEXT || 4;
+    const walker = rootNode.ownerDocument.createTreeWalker(rootNode, showText);
+    const nodes = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node);
+    return nodes;
+  }
+
+  function textOffsetFromDomPoint(rootNode, targetNode, nodeOffset) {
+    let total = 0;
+    for (const node of textNodes(rootNode)) {
+      const value = node.nodeValue || "";
+      const length = Array.from(value).length;
+      if (node === targetNode) {
+        const utf16Offset = Math.max(0, Math.min(value.length, Number(nodeOffset) || 0));
+        return total + Array.from(value.slice(0, utf16Offset)).length;
+      }
+      total += length;
+    }
+    return null;
+  }
+
+  function domPointFromTextOffset(rootNode, normalizedOffset) {
+    const nodes = textNodes(rootNode);
+    const total = nodes.reduce((sum, node) => sum + Array.from(node.nodeValue || "").length, 0);
+    if (!nodes.length || !total) return null;
+    let remaining = Math.round(clamp01(Number(normalizedOffset) || 0) * total);
+    for (const node of nodes) {
+      const characters = Array.from(node.nodeValue || "");
+      const length = characters.length;
+      if (remaining <= length) {
+        return { node, offset: characters.slice(0, remaining).join("").length, total };
+      }
+      remaining -= length;
+    }
+    const node = nodes[nodes.length - 1];
+    return { node, offset: (node.nodeValue || "").length, total };
+  }
+
+  function caretFromPoint(doc, clientX, clientY) {
+    if (typeof doc?.caretPositionFromPoint === "function") {
+      const caret = doc.caretPositionFromPoint(clientX, clientY);
+      return caret ? { node: caret.offsetNode, offset: caret.offset } : null;
+    }
+    if (typeof doc?.caretRangeFromPoint === "function") {
+      const range = doc.caretRangeFromPoint(clientX, clientY);
+      return range ? { node: range.startContainer, offset: range.startOffset } : null;
+    }
+    return null;
+  }
+
+  function textPointToContent(rootNode, content, clientX, clientY, doc = rootNode?.ownerDocument) {
+    const caret = caretFromPoint(doc, clientX, clientY);
+    if (!caret || caret.node?.nodeType !== 3 || !rootNode.contains(caret.node)) return null;
+    const offset = textOffsetFromDomPoint(rootNode, caret.node, caret.offset);
+    const length = Array.from(rootNode.textContent || "").length;
+    if (offset === null || !length) return null;
+    const rect = content.getBoundingClientRect();
+    return {
+      page: 1,
+      x: clamp01((clientX - rect.left) / Math.max(1, content.scrollWidth)),
+      y: clamp01(offset / length),
+      coordinate_space: TEXT_COORDINATE_SPACE,
+    };
+  }
+
+  function textMarkerPosition(rootNode, content, normalizedOffset, doc = rootNode?.ownerDocument) {
+    const point = domPointFromTextOffset(rootNode, normalizedOffset);
+    if (!point) return null;
+    const range = doc.createRange();
+    range.setStart(point.node, point.offset);
+    range.collapse(true);
+    const caretRect = range.getBoundingClientRect();
+    const contentRect = content.getBoundingClientRect();
+    return {
+      left: caretRect.left - contentRect.left,
+      top: caretRect.top - contentRect.top + caretRect.height / 2,
+    };
+  }
+
+  function isLegacyTextAnchor(anchor) {
+    return anchor?.region?.coordinate_space !== TEXT_COORDINATE_SPACE;
+  }
+
+  function afterChange() {
+    if (state.panelMode) renderPanelBody();
+    else rerender();
+  }
+
+  function panelMarkup() {
+    const name = state.material?.relative_path || "";
+    const textType = isTextViewFile(name);
+    const spatial = isSpatialFile(name);
+    return `
+      <header class="file-panel-head">
+        <span class="file-panel-title" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+        ${!textType ? `<span class="spatial-zoom"><button type="button" data-spatial-action="zoom-out">−</button><span id="spatialZoomLabel">${Math.round(state.zoom * 100)}%</span><button type="button" data-spatial-action="zoom-in">＋</button></span>` : ""}
+        ${isPdf() ? `<span class="spatial-pages"><button type="button" data-spatial-action="prev-page" ${state.page <= 1 ? "disabled" : ""}>◀</button><span>${state.page}/${state.pageCount}</span><button type="button" data-spatial-action="next-page" ${state.page >= state.pageCount ? "disabled" : ""}>▶</button></span>` : ""}
+        <button type="button" class="text-button" data-panel-action="close" title="关闭面板">×</button>
+      </header>
+      <div class="file-panel-body">
+        ${textType
+          ? `<div class="spatial-text-view" id="spatialTextView"><div class="spatial-text-content"><div class="spatial-text-inner"></div><div class="spatial-text-anchor-layer" id="spatialTextAnchorLayer"></div></div></div>`
+          : `<div class="spatial-stage" id="spatialStage">
+               <div class="spatial-content" id="spatialContent">
+                 <img id="spatialImage" src="${previewUrl()}" alt="内容载体" draggable="false">
+                 <div class="spatial-anchor-layer" id="spatialAnchorLayer"></div>
+               </div>
+             </div>`}
+      </div>
+      ${spatial ? `
+        <footer class="file-panel-foot">
+          <form id="spatialDeployForm">
+            <textarea id="spatialInstruction" placeholder="投放指令(先点内容,再投小兵)" rows="2"></textarea>
+            ${isDocx() ? `<fieldset class="muted tiny"><legend>操作模式（必选）</legend><label><input type="radio" name="spatial-docx-run-mode" value="read" data-spatial-run-mode required ${state.docxRunMode === "read" ? "checked" : ""}> 只读观察（不会修改文件）</label><label><input type="radio" name="spatial-docx-run-mode" value="write" data-spatial-run-mode ${state.docxRunMode === "write" ? "checked" : ""}> 修改文档（可执行删除）</label></fieldset>` : ""}
+            <button class="primary" type="submit">在锚点上投放 ⚔</button>
+          </form>
+          <div id="spatialSelected"></div>
+        </footer>` : ""}
+    `;
+  }
+
+  function mountPanel(container, material, appState) {
+    const nextTask = appState.tasks.find(item => item.task_id === appState.activeTaskId) || state.task;
+    const sameContent = state.task?.task_id === nextTask?.task_id
+      && state.material?.relative_path === material?.relative_path;
+    state.panelMode = true;
+    state.panelContainer = container;
+    state.material = material;
+    state.task = nextTask;
+    if (!sameContent) {
+      state.page = 1; state.pageCount = 1; state.zoom = 1; state.tx = 0; state.ty = 0; state.naturalSize = null;
+      state.selectedId = null; state.anchors = [];
+      state.copySourceId = null; state.observation = "";
+      state.docxRunMode = null;
+      state.textResizeObserver?.disconnect();
+      state.textResizeObserver = null;
+    }
+    state.textContent = null;
+    container.innerHTML = panelMarkup();
+    bindPanelEvents(container);
+    refreshAnchors().then(() => renderPanelBody()).catch(() => renderPanelBody());
+    loadMetadata().then(() => {
+      if (!state.panelMode || state.panelContainer !== container) return;
+      container.innerHTML = panelMarkup();
+      bindPanelEvents(container);
+      renderPanelBody();
+    }).catch(() => {});
+  }
+
+  function bindPanelEvents(container) {
+    container.querySelector("[data-panel-action='close']")?.addEventListener("click", () => {
+      state.panelMode = false;
+      state.filesPanel = null;
+      state.docxRunMode = null;
+      state.textResizeObserver?.disconnect();
+      state.textResizeObserver = null;
+      if (typeof window.__focusCloseFilePanel === "function") window.__focusCloseFilePanel();
+    });
+    container.querySelectorAll("[data-spatial-run-mode]").forEach(input => {
+      input.addEventListener("change", event => {
+        state.docxRunMode = event.currentTarget.value;
+      });
+    });
+    const stage = container.querySelector("#spatialStage");
+    if (stage) {
+      stage.addEventListener("pointerdown", onStagePointerDown);
+      bindPan(stage);
+      stage.addEventListener("wheel", event => {
+        event.preventDefault();
+        state.zoom = Math.max(0.2, Math.min(8, state.zoom * (event.deltaY < 0 ? 1.25 : 0.8)));
+        updateZoomLabel();
+        applyTransform();
+      }, { passive: false });
+      container.querySelector("#spatialImage")?.addEventListener("load", event => onImageLoaded(event.target));
+      const image = container.querySelector("#spatialImage");
+      if (image?.complete && image.naturalWidth) onImageLoaded(image);
+    }
+    const textView = container.querySelector("#spatialTextView");
+    if (textView) {
+      textView.addEventListener("pointerdown", onTextPointerDown);
+      textView.addEventListener("scroll", renderTextMarkers);
+    }
+    container.querySelector("#spatialDeployForm")?.addEventListener("submit", event => {
+      event.preventDefault();
+      deploySelected();
+    });
+    container.querySelector("[data-spatial-action='zoom-in']")?.addEventListener("click", () => {
+      state.zoom = Math.min(8, state.zoom * 1.25); updateZoomLabel(); applyTransform();
+    });
+    container.querySelector("[data-spatial-action='zoom-out']")?.addEventListener("click", () => {
+      state.zoom = Math.max(0.2, state.zoom / 1.25); updateZoomLabel(); applyTransform();
+    });
+    container.querySelector("[data-spatial-action='next-page']")?.addEventListener("click", () => switchPage(state.page + 1));
+    container.querySelector("[data-spatial-action='prev-page']")?.addEventListener("click", () => switchPage(state.page - 1));
+  }
+
+  async function renderPanelBody() {
+    const name = state.material?.relative_path || "";
+    if (isTextViewFile(name)) {
+      await loadTextContent();
+      renderTextMarkers();
+      refreshSelection();
+      return;
+    }
+    // 图像页载体:重渲染锚点标记
+    const layer = document.querySelector("#spatialAnchorLayer");
+    if (layer) {
+      layer.innerHTML = (state.anchors || [])
+        .filter(anchor => anchor.page === state.page)
+        .map(anchorMarkup).join("");
+    }
+    refreshSelection();
+  }
+
+  async function loadTextContent() {
+    try {
+      const data = await api(`/text?task_id=${encodeURIComponent(state.task.task_id)}&content_ref=${encodeURIComponent(state.material.relative_path)}`);
+      state.textContent = data.content || "";
+    } catch (error) {
+      const detail = error.detail || error.message || "";
+      state.textContent = `[文件不可用] ${detail}`;
+      state.textContent += "\n\n提示:该文件可能尚未生成、已被移动,或不在当前任务工作区内。";
+    }
+    const inner = document.querySelector("#spatialTextView .spatial-text-inner");
+    if (!inner) return;
+    const name = state.material?.relative_path || "";
+    if (/\.md$/i.test(name)) {
+      inner.innerHTML = window.markdownit ? window.markdownit({ html: false, linkify: true }).render(state.textContent) : escapeHtml(state.textContent);
+    } else {
+      inner.textContent = state.textContent;
+    }
+    state.textResizeObserver?.disconnect();
+    if (typeof ResizeObserver === "function") {
+      state.textResizeObserver = new ResizeObserver(renderTextMarkers);
+      state.textResizeObserver.observe(inner);
+    }
+  }
+
+  function renderTextMarkers() {
+    const layer = document.querySelector("#spatialTextAnchorLayer");
+    if (!layer) return;
+    const inner = document.querySelector("#spatialTextView .spatial-text-inner");
+    const content = document.querySelector("#spatialTextView .spatial-text-content");
+    if (!inner || !content) return;
+    const anchors = (state.anchors || [])
+      .filter(anchor => anchor.page === 1 && anchor.status !== "dismissed" && !isLegacyTextAnchor(anchor));
+    layer.innerHTML = anchors.map(anchor => {
+      const icon = anchor.kind === "anchor" ? "⚑" : anchor.status === "done" ? "✓" : "⚔";
+      return `<span class="spatial-text-marker ${anchor.status === "invalid" ? "spatial-invalid" : ""}${anchor.spatial_id === state.selectedId ? " is-selected" : ""}" data-anchor-id="${escapeHtml(anchor.spatial_id)}" title="空间锚点">${icon}</span>`;
+    }).join("");
+    layer.querySelectorAll("[data-anchor-id]").forEach(el => {
+      const anchor = anchors.find(item => item.spatial_id === el.dataset.anchorId);
+      const position = anchor && textMarkerPosition(inner, content, anchor.y);
+      if (!position) { el.remove(); return; }
+      el.style.left = `${position.left}px`;
+      el.style.top = `${position.top}px`;
+      el.addEventListener("pointerdown", event => {
+        event.stopPropagation();
+        selectAnchor(el.dataset.anchorId);
+        startTextDrag(el.dataset.anchorId, event);
+      });
+    });
+  }
+
+  function textPointerToContent(clientX, clientY) {
+    const content = document.querySelector("#spatialTextView .spatial-text-content");
+    const inner = document.querySelector("#spatialTextView .spatial-text-inner");
+    return inner && content ? textPointToContent(inner, content, clientX, clientY) : null;
+  }
+
+  function startTextDrag(id, event) {
+    const marker = event.currentTarget;
+    if (!marker) return;
+    marker.setPointerCapture(event.pointerId);
+    const pointerContent = pointerEvent => {
+      marker.style.visibility = "hidden";
+      try { return textPointerToContent(pointerEvent.clientX, pointerEvent.clientY); }
+      finally { marker.style.visibility = ""; }
+    };
+    const move = moveEvent => {
+      const content = pointerContent(moveEvent);
+      if (!content) return;
+      const inner = document.querySelector("#spatialTextView .spatial-text-inner");
+      const textContent = document.querySelector("#spatialTextView .spatial-text-content");
+      const position = inner && textContent && textMarkerPosition(inner, textContent, content.y);
+      if (position) {
+        marker.style.left = `${position.left}px`;
+        marker.style.top = `${position.top}px`;
+      }
+    };
+    const up = async upEvent => {
+      marker.releasePointerCapture(event.pointerId);
+      marker.removeEventListener("pointermove", move);
+      marker.removeEventListener("pointerup", up);
+      const content = pointerContent(upEvent);
+      const anchor = state.anchors.find(item => item.spatial_id === id);
+      if (!content || !anchor) return;
+      try {
+        Object.assign(anchor, await api(`/anchors/${encodeURIComponent(id)}`, {
+          method: "PATCH", body: JSON.stringify(content),
+        }));
+      } catch (error) {
+        window.alert(`拖动重投失败: ${error.message}`);
+      }
+      renderTextMarkers();
+      refreshSelection();
+    };
+    marker.addEventListener("pointermove", move);
+    marker.addEventListener("pointerup", up);
+  }
+
+  function onTextPointerDown(event) {
+    if (!isSpatialFile(state.material?.relative_path || "")) return;
+    const marker = event.target.closest("[data-anchor-id]");
+    if (marker) { selectAnchor(marker.dataset.anchorId); return; }
+    const content = textPointerToContent(event.clientX, event.clientY);
+    if (!content) return;
+    if (state.copySourceId) copyTo(content);
+    else createAnchor(content);
+  }
+
+  root.FocusSpatialViewer = {
+    render, openMaterial, convertContent, mountPanel, supportsMaterial,
+    getFocus, sendFocusedMessage, permissionsForMaterial, requirePermissionsForMaterial,
+    needsActionMessage, needsActionMarkup, responseErrorDetail,
+    textOffsetFromDomPoint, domPointFromTextOffset,
+    textPointToContent, textMarkerPosition, isLegacyTextAnchor, TEXT_COORDINATE_SPACE,
+  };
+})(typeof globalThis === "object" ? globalThis : this);

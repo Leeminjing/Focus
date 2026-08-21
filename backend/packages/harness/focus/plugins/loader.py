@@ -31,6 +31,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from fastapi import APIRouter
+
 from focus.plugins.interfaces import InterfaceCatalog
 from focus.plugins.registry import PluginRegistry
 from focus.plugins.schemas import (
@@ -100,8 +102,10 @@ def _collect_assets(plugin_dir: Path, manifest: PluginManifest) -> dict[str, Any
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         router = getattr(module, "router", None)
-        if router is None:
-            raise ValueError(f"路由模块未暴露 router: {manifest.http_routes}")
+        if not isinstance(router, APIRouter):
+            raise ValueError(
+                f"路由模块 router 必须是 fastapi.APIRouter: {manifest.http_routes}"
+            )
         assets["router"] = router
     if manifest.desktop_assets:
         assets_dir = plugin_dir / manifest.desktop_assets

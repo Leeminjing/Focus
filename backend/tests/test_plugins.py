@@ -785,3 +785,114 @@ def _fake_app_config():
             "api_key": "sk-test", "base_url": "https://api.deepseek.com",
         }],
     )
+
+
+# === f18 路由与前端资源挂载 ===
+
+
+def _asset_plugin(root: Path, name: str, *, routes: bool = True, assets: bool = True,
+                  enabled: bool = True, extra_manifest: dict | None = None) -> Path:
+    plugin_dir = root / "plugins" / name
+    plugin_dir.mkdir(parents=True)
+    manifest = {
+        "name": name, "version": "1.0.0", "enabled": enabled,
+        "provides": ["tool"], "entry": "plugin.py",
+    }
+    manifest.update(extra_manifest or {})
+    (plugin_dir / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (plugin_dir / "plugin.py").write_text(
+        "from langchain_core.tools import tool\n"
+        "from focus.plugins.schemas import PluginDeclaration\n"
+        f"@tool\ndef tool_{name.replace('-', '_')}(x: str) -> str:\n"
+        f"    '''{name} 工具。'''\n    return x\n"
+        "def build_plugin(context):\n"
+        f"    return PluginDeclaration(tools=[tool_{name.replace('-', '_')}])\n",
+        encoding="utf-8",
+    )
+    if routes:
+        (plugin_dir / "routes.py").write_text(
+            "from fastapi import APIRouter\n"
+            "router = APIRouter()\n"
+            "@router.get('/ping')\n"
+            "async def ping():\n    return {'pong': True}\n",
+            encoding="utf-8",
+        )
+        manifest["http_routes"] = "routes.py"
+    if assets:
+        assets_dir = plugin_dir / "desktop"
+        assets_dir.mkdir()
+        (assets_dir / "entry.js").write_text("window.testPlugin = true;", encoding="utf-8")
+        (assets_dir / "style.css").write_text("body{}", encoding="utf-8")
+        manifest["desktop_assets"] = "desktop"
+    (plugin_dir / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return plugin_dir
+
+
+def _load(root: Path) -> PluginRegistry:
+    registry = PluginRegistry(builtin_catalog())
+    from focus.plugins.loader import load_plugins
+
+    load_plugins(registry, root / "plugins")
+    return registry
+
+
+def test_assets_missing_route_file_marks_unavailable(tmp_path):
+    plugin_dir = _asset_plugin(tmp_path, "broken", routes=False)
+    (plugin_dir / "plugin.json").write_text(
+        json.dumps({
+            "name": "broken", "version": "1", "enabled": True,
+            "provides": ["tool"], "entry": "plugin.py", "http_routes": "routes.py",
+        }), encoding="utf-8",
+    )
+    registry = _load(tmp_path)
+    records = {item["name"]: item for item in registry.list_plugins()}
+    assert records["broken"]["status"] == "unavailable"
+    assert "路由模块缺失" in records["broken"]["reason"]
+    assert registry.tools() == []
+    assert registry.active_assets() == {}
+
+
+def test_assets_missing_assets_dir_marks_unavailable(tmp_path):
+    _asset_plugin(tmp_path, "nodir", assets=False)
+    (tmp_path / "plugins" / "nodir" / "plugin.json").write_text(
+        json.dumps({
+            "name": "nodir", "version": "1", "enabled": True,
+            "provides": ["tool"], "entry": "plugin.py", "desktop_assets": "desktop",
+        }), encoding="utf-8",
+    )
+    registry = _load(tmp_path)
+    records = {item["name"]: item for item in registry.list_plugins()}
+    assert records["nodir"]["status"] == "unavailable"
+    assert "前端资源目录缺失" in records["nodir"]["reason"]
+
+
+def test_assets_collected_for_active_plugin(tmp_path):
+    _asset_plugin(tmp_path, "spatial", extra_manifest=None)
+    registry = _load(tmp_path)
+    records = {item["name"]: item for item in registry.list_plugins()}
+    assert records["spatial"]["status"] == "active"
+    assert records["spatial"]["desktop_assets"] == ["entry.js", "style.css"]
+    assets = registry.active_assets()
+    assert set(assets) == {"spatial"}
+    assert assets["spatial"]["router"] is not None
+    assert (assets["spatial"]["assets_dir"] / "entry.js").is_file()
+
+
+def test_assets_disabled_plugin_not_mounted(tmp_path):
+    _asset_plugin(tmp_path, "off", enabled=False)
+    registry = _load(tmp_path)
+    assert registry.active_assets() == {}
+    assert all(item["desktop_assets"] == [] for item in registry.list_plugins())
+
+
+def test_assets_rejected_plugin_not_mounted(tmp_path):
+    _asset_plugin(tmp_path, "bad-interface", extra_manifest={"provides": ["hook.unknown_point"]})
+    registry = _load(tmp_path)
+    records = {item["name"]: item for item in registry.list_plugins()}
+    assert records["bad-interface"]["status"] == "rejected"
+    assert registry.active_assets() == {}
+
+
+def test_assets_empty_plugin_dir_zero_impact(tmp_path):
+    registry = _load(tmp_path)
+    assert registry.active_assets() == {}
