@@ -63,6 +63,7 @@ button { cursor: pointer; }
   height: 100%;
   margin: 0 auto;
   display: grid;
+  grid-template-rows: minmax(0, 1fr); /* f18:行高受容器约束,避免内容撑开面板超高 */
   grid-template-columns: minmax(0, 1fr) 310px;
   gap: 16px;
 }

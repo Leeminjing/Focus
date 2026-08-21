@@ -1,0 +1,296 @@
+/* 文件面板承载形态(右侧面板) */
+.panel-resizer {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 5;
+}
+
+.panel-resizer:hover { background: rgb(70 120 240 / 14%); }
+
+.file-panel {
+  position: relative;
+  border-left: 1px solid var(--line, #d9dde5);
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel, #fff);
+}
+
+/* inner 占满 panel 列,内部 grid 行分配 head(自适应)与 body(剩余,可滚动) */
+.file-panel-inner {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.file-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-soft, #eceef2);
+}
+
+.file-panel-title {
+  flex: 1;
+  font-size: 12px;
+  color: #555;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-panel-body {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+.file-panel-body .spatial-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  overflow: auto;
+}
+
+.file-panel-body .spatial-stage img {
+  max-width: none;
+  transform-origin: 0 0;
+}
+
+.spatial-text-view {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 18px;
+  font-size: 13px;
+  line-height: 1.7;
+  cursor: crosshair;
+}
+
+.spatial-text-inner {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-height: 100%;
+}
+
+.spatial-text-content {
+  position: relative;
+  min-height: 100%;
+}
+
+.spatial-text-anchor-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.spatial-text-marker {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-size: 14px;
+  cursor: pointer;
+  pointer-events: auto;
+  z-index: 2;
+}
+
+.spatial-text-marker.is-selected { outline: 2px solid #4a7cf7; border-radius: 4px; }
+
+.file-panel-foot {
+  border-top: 1px solid var(--line-soft, #eceef2);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.file-panel-foot #spatialInstruction { width: 100%; box-sizing: border-box; }
+
+/* rail 拖拽把手 */
+.rail-wrap {
+  position: relative;
+  min-width: 0;
+  display: flex;
+}
+
+.rail-resizer {
+  position: absolute;
+  left: -6px;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  cursor: col-resize;
+  z-index: 5;
+}
+
+.rail-resizer:hover, .rail-resizer.is-dragging { background: rgb(70 120 240 / 14%); }
+
+/* 消息文件卡片 */
+.message-file-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.file-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--line, #d9dde5);
+  border-radius: 7px;
+  background: #f7f9fc;
+  color: #40516a;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.file-card:hover { border-color: var(--blue, #0867f2); color: var(--blue, #0867f2); }
+.file-card.is-plain { cursor: default; opacity: .7; }
+.file-card.is-plain:hover { border-color: var(--line, #d9dde5); color: #40516a; }
+
+/* spatial-patrol 插件前端样式:查看器、锚点层、小兵标记 */
+
+.spatial-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.spatial-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border, #e3e3ea);
+}
+
+.spatial-title {
+  flex: 1;
+  font-size: 13px;
+  color: #555;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spatial-zoom, .spatial-pages { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.spatial-zoom button, .spatial-pages button { width: 26px; height: 26px; }
+
+.spatial-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.spatial-stage {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  background: #22242a;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  cursor: crosshair;
+}
+
+.spatial-stage img {
+  max-width: none;
+  transform-origin: 0 0;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.spatial-content {
+  position: relative;
+  flex: none;
+  transform-origin: 0 0;
+}
+
+.spatial-content > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.spatial-anchor-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.spatial-marker {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  cursor: grab;
+  text-align: center;
+  z-index: 2;
+}
+
+.spatial-marker.is-selected .spatial-marker-icon { outline: 2px solid #4a7cf7; outline-offset: 2px; border-radius: 6px; }
+.spatial-marker-icon { font-size: 22px; line-height: 1; display: block; }
+.spatial-marker-label {
+  display: block;
+  font-size: 10px;
+  color: #fff;
+  background: rgba(20, 22, 28, 0.75);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-top: 2px;
+  white-space: nowrap;
+}
+.spatial-invalid .spatial-marker-icon { color: #ff5252; }
+.spatial-done .spatial-marker-icon { color: #37d67a; }
+.spatial-dismissed { opacity: 0; transition: opacity 200ms ease; }
+
+.spatial-picker {
+  position: absolute;
+  z-index: 5;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+
+.spatial-side {
+  width: 280px;
+  border-left: 1px solid var(--border, #e3e3ea);
+  padding: 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.spatial-instruction-label { display: block; font-size: 12px; color: #666; margin-bottom: 4px; }
+#spatialInstruction { width: 100%; box-sizing: border-box; }
+#spatialDeployButton { width: 100%; margin-top: 6px; }
+
+.spatial-selected-card {
+  border: 1px solid var(--border, #e3e3ea);
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.spatial-selected-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.spatial-observation { white-space: pre-wrap; max-height: 180px; overflow: auto; font-size: 11px; }
+.spatial-anchor-list { display: flex; flex-direction: column; gap: 6px; }

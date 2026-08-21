@@ -43,7 +43,17 @@ desktop_router = APIRouter(prefix="/desktop/api")
 @desktop_router.get("/bootstrap")
 async def bootstrap(request: Request) -> dict:
     service = request.app.state.desktop_service
-    return {"tasks": await service.list_tasks(), "equipment": await service.equipment()}
+    from focus.plugins import get_plugin_registry
+
+    plugins = [
+        plugin for plugin in get_plugin_registry().list_plugins()
+        if plugin["status"] == "active"
+    ]
+    return {
+        "tasks": await service.list_tasks(),
+        "equipment": await service.equipment(),
+        "plugins": plugins,
+    }
 
 
 @desktop_router.post("/workspaces")
@@ -174,7 +184,8 @@ async def deploy(draft_id: str, body: DeployRequest, request: Request) -> dict:
 @desktop_router.post("/tasks/{task_id}/main/runs")
 async def start_main_run(task_id: str, body: MainRunCreate, request: Request) -> dict:
     prepared = await request.app.state.desktop_service.start_main_run(
-        task_id, body.message, body.model_name, body.permissions, body.skills
+        task_id, body.message, body.model_name, body.permissions, body.skills,
+        body.spatial_focus,
     )
     await _launch(request, prepared)
     return prepared.payload

@@ -1,8 +1,10 @@
 "use strict";
 
 // markdown-it 单例(渲染器无状态):完成态助手消息的 md 渲染引擎。
-// html:false 转义原始 HTML,危险协议链接由默认 validateLink 拒绝;vendor 文件先行加载。
+// html:false 转义原始 HTML;validateLink 放行 file:// 协议(本地文件链接,
+// 点击经全局拦截器打开右侧文件面板,不触发窗口导航);vendor 文件先行加载。
 const mdRenderer = window.markdownit({ html: false, linkify: true });
+mdRenderer.validateLink = url => /^(https?:|file:)/i.test(url);
 
 const runtime = window.focusDesktop?.runtime?.() || {
   apiBase: location.protocol === "file:" ? "http://127.0.0.1:8765" : location.origin,
@@ -60,6 +62,13 @@ const state = {
     recovery: null,
   },
   plugins: { plugins: [], interfaces: {}, traces: [] },
+  filesPanel: null,   // f18:右侧文件面板当前打开的 material(relative_path 等)
+  railWidth: (() => {
+    // f18:rail 宽度持久化;异常残留(>500,误拖/旧值)收敛回默认 310,避免列被撑宽产生空白
+    const saved = Number(localStorage.getItem("focus-rail-width"));
+    return saved > 500 ? 310 : (saved || 310);
+  })(),
+  panelWidth: Number(localStorage.getItem("focus-panel-width") || 400),
 };
 
 const app = document.querySelector("#app");
@@ -109,11 +118,12 @@ function loadPluginScript(src) {
   });
 }
 
-async function hydratePluginAssets() {
+async function hydratePluginAssets(bootstrapPlugins = null) {
   // f18: 按启用插件清单注入前端资源(css 并行、js 串行;entry.js 固定最后执行,
   // 保证插件视图/打开器注册时其依赖模块已加载);失败不阻塞桌面
   try {
-    const data = await api("/desktop/api/plugins");
+    const data = bootstrapPlugins == null
+      ? await api("/desktop/api/plugins") : { plugins: bootstrapPlugins };
     const active = (data.plugins || []).filter(plugin => plugin.status === "active");
     for (const plugin of active) {
       const files = plugin.desktop_assets || [];
@@ -142,12 +152,25 @@ window.__focusBackToFocus = () => {
   render();
 };
 
-function openMaterialViewer(material) {
-  // f18: 询问已注册插件视图是否有内容查看器可打开该材料;接管返回 true
+// f18: 文件面板关闭钩子(viewer 面板内关闭按钮调用)
+window.__focusCloseFilePanel = () => {
+  state.filesPanel = null;
+  render();
+};
+
+function pluginViewForMaterial(material) {
+  return Object.values(pluginViews).find(view =>
+    typeof view.supportsMaterial === "function" && view.supportsMaterial(material)
+  ) || null;
+}
+
+function currentSpatialTarget() {
   for (const view of Object.values(pluginViews)) {
-    if (typeof view.openMaterial === "function" && view.openMaterial(material, state)) return true;
+    if (typeof view.getFocus !== "function") continue;
+    const focus = view.getFocus();
+    if (focus && focus.task_id === state.activeTaskId) return { view, focus };
   }
-  return false;
+  return null;
 }
 
 function escapeHtml(value = "") {
@@ -179,7 +202,7 @@ async function bootstrap() {
     const data = await api("/desktop/api/bootstrap");
     state.tasks = data.tasks;
     state.equipment = data.equipment;
-    await hydratePluginAssets();
+    await hydratePluginAssets(data.plugins || []);
     await hydrateContextTrees();
     state.activeTaskId ||= state.tasks[0]?.task_id || null;
     setStatus("");
@@ -393,8 +416,12 @@ function renderFocus() {
   const previousRailScrollTop = previousRail?.scrollTop;
   const wasPinned = previousConversation && previousConversation.scrollHeight - previousConversation.scrollTop - previousConversation.clientHeight < 80;
   const previousScrollTop = previousConversation?.scrollTop;
+  // f18:三列布局 —— 对话 | Context rail(可伸缩)| 文件面板(打开时,宽度可调)。
+  // 显式行高约束 minmax(0,1fr):面板高度=视口,内部文本视图才能滚动
+  const panelOpen = !!state.filesPanel;
+  const shellStyle = `grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr) ${state.railWidth}px${panelOpen ? ` ${state.panelWidth}px` : ""}`;
   app.innerHTML = `
-    <section class="focus-shell">
+    <section class="focus-shell" style="${shellStyle}">
       <section class="focus-view" data-task-id="${task.task_id}">
         ${contextBlock}
         <div class="commitment-progress" id="commitmentProgress" hidden>
@@ -413,7 +440,11 @@ function renderFocus() {
           <div class="agents-strip">${renderAgentStrip(task.task_id)}</div>
         </div>
       </section>
-      ${renderContextRail(task)}
+      <div class="rail-wrap">
+        <div class="rail-resizer" id="railResizer" title="拖拽调整宽度"></div>
+        ${renderContextRail(task)}
+      </div>
+      ${panelOpen ? `<aside class="file-panel" id="filePanel"><div class="panel-resizer" id="panelResizer" title="拖拽调整面板宽度"></div><div class="file-panel-inner"></div></aside>` : ""}
     </section>`;
   app.dataset.taskId = task.task_id;
   const conversation = document.querySelector("#conversation");
@@ -430,6 +461,74 @@ function renderFocus() {
   const rail = document.querySelector(".context-rail-list");
   if (previousRailScrollTop != null) rail.scrollTop = previousRailScrollTop;
   if (!previousConversation) requestAnimationFrame(() => rail.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "nearest" }));
+  // f18:rail 宽度拖拽 + 文件面板挂载 + 面板宽度拖拽
+  bindRailResizer();
+  if (panelOpen) {
+    mountFilePanel();
+    bindPanelResizer();
+  }
+}
+
+function bindRailResizer() {
+  const resizer = document.querySelector("#railResizer");
+  const shell = document.querySelector(".focus-shell");
+  const railWrap = document.querySelector(".rail-wrap");
+  if (!resizer || !shell || !railWrap) return;
+  resizer.addEventListener("pointerdown", event => {
+    event.preventDefault();
+    resizer.classList.add("is-dragging");
+    resizer.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    const startWidth = state.railWidth;
+    const move = moveEvent => {
+      // 增量拖动:线是 rail 的左边框 —— 向左拖(负位移)= rail 变宽,向右拖 = 变窄
+      const width = startWidth - (moveEvent.clientX - startX);
+      state.railWidth = Math.max(180, Math.min(560, width));
+      shell.style.gridTemplateColumns = `minmax(0, 1fr) ${state.railWidth}px${state.filesPanel ? ` ${state.panelWidth}px` : ""}`;
+    };
+    const up = () => {
+      resizer.classList.remove("is-dragging");
+      resizer.releasePointerCapture(event.pointerId);
+      resizer.removeEventListener("pointermove", move);
+      resizer.removeEventListener("pointerup", up);
+      localStorage.setItem("focus-rail-width", String(state.railWidth));
+    };
+    resizer.addEventListener("pointermove", move);
+    resizer.addEventListener("pointerup", up);
+  });
+}
+
+function mountFilePanel() {
+  const container = document.querySelector("#filePanel .file-panel-inner");
+  if (!container || !state.filesPanel) return;
+  const view = pluginViewForMaterial(state.filesPanel);
+  if (view?.mountPanel) view.mountPanel(container, state.filesPanel, state);
+}
+
+function bindPanelResizer() {
+  const resizer = document.querySelector("#panelResizer");
+  const shell = document.querySelector(".focus-shell");
+  if (!resizer || !shell) return;
+  resizer.addEventListener("pointerdown", event => {
+    event.preventDefault();
+    resizer.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    const startWidth = state.panelWidth;
+    const move = moveEvent => {
+      // 面板左缘:向左拖(负位移)= 面板变宽(与 rail 同语义:线是面板左边框)
+      const width = startWidth - (moveEvent.clientX - startX);
+      state.panelWidth = Math.max(280, Math.min(720, width));
+      shell.style.gridTemplateColumns = `minmax(0, 1fr) ${state.railWidth}px ${state.panelWidth}px`;
+    };
+    const up = () => {
+      resizer.releasePointerCapture(event.pointerId);
+      resizer.removeEventListener("pointermove", move);
+      resizer.removeEventListener("pointerup", up);
+      localStorage.setItem("focus-panel-width", String(state.panelWidth));
+    };
+    resizer.addEventListener("pointermove", move);
+    resizer.addEventListener("pointerup", up);
+  });
 }
 
 async function sha1Hex(text) {
@@ -440,6 +539,38 @@ async function sha1Hex(text) {
 // f19 dsh-eyes:从消息内容提取图片 URL 列表(image_url 块 / 文本引用),
 // 图片渲染为消息框上方的独立缩略图行(对齐 image8:图片在消息框上面,不嵌入气泡)。
 const IMAGE_REF_RE = /【图片\d+ attachment_id=([0-9a-f]{12})】查看请调 view_image\(attachment_id=[0-9a-f]{12}\)/g;
+
+// f18:消息文件卡片 —— 常见类型全部可点开(图片/PDF/docx/doc/md/txt),点击打开右侧文件面板
+const FILE_VIEWABLE_RE = /\.(png|jpe?g|webp|bmp|gif|pdf|docx?|md|txt)$/i;
+
+function fileNameFromLinkHref(href, hostPart = "") {
+  const source = href.startsWith("file:") ? href : hostPart;
+  return decodeURIComponent(source.replace(/[?#].*$/, "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "");
+}
+
+function renderFileCards(message) {
+  const files = message.files;
+  if (!Array.isArray(files) || !files.length) return "";
+  const cards = files.map(file => {
+    const name = String(file?.filename || file?.name || "");
+    if (!name) return "";
+    const viewable = FILE_VIEWABLE_RE.test(name)
+      && !!pluginViewForMaterial({ relative_path: name, path: name });
+    const icon = /\.(png|jpe?g|webp|bmp|gif)$/i.test(name) ? "🖼" : /\.pdf$/i.test(name) ? "📕" : /\.(docx?)$/i.test(name) ? "📘" : "📄";
+    const size = file?.size ? ` · ${formatBytes(file.size)}` : "";
+    return viewable
+      ? `<button class="file-card" data-action="open-file-panel" data-file-name="${escapeHtml(name)}" title="点击在右侧面板打开">${icon} ${escapeHtml(name)}${size}</button>`
+      : `<span class="file-card is-plain">${icon} ${escapeHtml(name)}${size}</span>`;
+  }).join("");
+  return cards ? `<div class="message-file-cards">${cards}</div>` : "";
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes)) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
 
 function collectMessageImages(content) {
   // 本地映射(本会话发送过的图片)优先;缺失时回退到后端附件接口
@@ -528,7 +659,7 @@ function renderMessage(message) {
   const rendered = `${renderedContent}${toolProgress}`;
   // 用户消息不显示「你」角色标签(布局:图片缩略图在上、消息框在下,无 role 标签)
   const roleLabel = kind === "human" ? "" : `<span class="message-role">${escapeHtml(role)}</span>`;
-  return `<article class="message ${kind}">${renderMessageImages(messageImages)}${roleLabel}<div class="message-content">${rendered}</div></article>`;
+  return `<article class="message ${kind}">${renderMessageImages(messageImages)}${renderFileCards(message)}${roleLabel}<div class="message-content">${rendered}</div></article>`;
 }
 
 function renderCompressionDivider(item) {
@@ -609,14 +740,14 @@ function clearStreamBuffer(runId) {
 
 function renderMaterial(material) {
   const open = state.openMaterial === material.material_id;
-  const viewable = /\.(png|jpe?g|webp|bmp|gif|pdf)$/i.test(material.relative_path);
+  const viewable = !!pluginViewForMaterial(material);
   return `<article class="material-row" data-material-id="${material.material_id}">
     ${viewable ? `<button class="text-button material-open" data-action="open-material">查看</button>` : ""}
-    <button class="material-summary" data-action="toggle-material">
+    <button class="material-summary" data-action="${viewable ? "open-material" : "toggle-material"}" title="${viewable ? "点击在右侧面板打开" : "查看材料规则"}">
       <span class="material-name">${escapeHtml(material.relative_path)}</span>
       <span class="material-meta">${material.reading_mode === "full" ? "完整阅读" : "粗略阅读"} · ${material.instruction_mode === "strict" ? "严格遵守" : "仅供参考"} · ${material.retention === "irreplaceable" ? "不可遗失" : "可移除"}</span>
       ${material.needs_confirmation ? `<span class="danger tiny">检测到外部删除，文件已恢复</span>` : ""}
-      <span class="material-toggle">${open ? "收起" : "规则"}</span>
+      <span class="material-toggle" data-action="toggle-material">${open ? "收起" : "规则"}</span>
     </button>
     ${open ? `<div class="material-editor">
       <label>阅读方式<select data-field="reading_mode"><option value="full" ${material.reading_mode === "full" ? "selected" : ""}>完整阅读</option><option value="rough" ${material.reading_mode === "rough" ? "selected" : ""}>粗略阅读</option></select></label>
@@ -1286,6 +1417,23 @@ async function sendMain() {
   const input = document.querySelector("#mainInput");
   const message = input.value.trim();
   if (!message) return;
+  const spatialTarget = currentSpatialTarget();
+  if (spatialTarget?.focus.kind === "patrol"
+      && typeof spatialTarget.view.sendFocusedMessage === "function") {
+    try {
+      if (await spatialTarget.view.sendFocusedMessage(message)) {
+        input.value = "";
+        const focusedDetail = state.details.get(state.activeTaskId);
+        focusedDetail.ui_state = { ...(focusedDetail.ui_state || {}), input: "" };
+        persistFocusState();
+        setStatus("后续指令已交给当前空间小兵");
+        return;
+      }
+    } catch (error) {
+      setStatus(error.message, true);
+      return;
+    }
+  }
   // f19 dsh-eyes:插件前端粘贴的待发图片以 image_url 内容块随消息发送
   // (纯文本时保持原形态;取走即清空插件队列)
   const pendingImages = typeof window.__dshEyesTakePendingImages === "function"
@@ -1306,7 +1454,11 @@ async function sendMain() {
   try {
     const run = await api(`/desktop/api/tasks/${state.activeTaskId}/main/runs`, {
       method: "POST",
-      body: JSON.stringify({ message: messagePayload, skills: selectedSkills("main") }),
+      body: JSON.stringify({
+        message: messagePayload,
+        skills: selectedSkills("main"),
+        spatial_focus: spatialTarget?.focus || null,
+      }),
     });
     const contextNode = (state.contextTrees.get(activeTask().workspace_id) || [])
       .find(item => item.context_id === state.activeTaskId);
@@ -2356,8 +2508,24 @@ async function handleMaterialAction(button) {
   const material = (state.materials.get(state.activeTaskId) || []).find(item => item.material_id === materialId);
   if (button.dataset.action === "toggle-material") { state.openMaterial = state.openMaterial === materialId ? null : materialId; return renderFocus(); }
   if (button.dataset.action === "open-material") {
-    if (!openMaterialViewer(material)) setStatus("没有可用的内容查看器插件", true);
-    else render();
+    // f18:材料「查看」→ 右侧文件面板(不再全屏替换)
+    if (!material) return setStatus("材料不存在", true);
+    if (!pluginViewForMaterial(material)) return setStatus("当前没有启用的材料查看器", true);
+    state.filesPanel = { ...material };
+    render();
+  }
+  if (button.dataset.action === "open-file-panel") {
+    // f18:消息文件卡片 → 右侧文件面板打开(优先匹配已登记材料,否则按文件名)
+    const fileName = button.dataset.fileName;
+    const taskId = state.activeTaskId;
+    const material = (state.materials.get(taskId) || [])
+      .find(item => item.relative_path === fileName || item.path === fileName);
+    const target = material
+      ? { ...material }
+      : { relative_path: fileName, path: fileName };
+    if (!pluginViewForMaterial(target)) return setStatus("当前没有启用的文件查看器", true);
+    state.filesPanel = target;
+    render();
   }
   if (button.dataset.action === "save-material") {
     const body = Object.fromEntries([...row.querySelectorAll("select[data-field]")].map(select => [select.dataset.field, select.value]));
@@ -2389,6 +2557,7 @@ async function handleMaterialAction(button) {
 
 async function switchTask(taskId) {
   if (state.view === "focus") await persistFocusState();
+  state.filesPanel = null;
   state.activeTaskId = taskId;
   state.view = "focus";
   await hydrateActive();
@@ -2396,6 +2565,47 @@ async function switchTask(taskId) {
   if (!["root", "valid", "repaired", "approved"].includes(projectionStatus)) return reopenContextDecision(taskId);
   render();
 }
+
+// f18:拦截消息内链接导航(避免 Electron 窗口跳转到本地路径白屏)。
+// capture 阶段拦截 + stopPropagation。判据:
+//   - file:// 链接:直接阻止导航,按文件打开面板;
+//   - http/https 链接:若 host 含中文或本地文件扩展结尾(markdown-it linkify 把
+//     file:///C:/.../中文名.md 误解析成 http://中文名.md/ 的形态)→ 视为文件误解析,
+//     阻止导航并从误解析的 host 提取文件名打开面板;真实外链放行。
+document.addEventListener("click", event => {
+  const anchor = event.target.closest("a[href]");
+  if (!anchor) return;
+  const href = anchor.getAttribute("href") || "";
+  const isHttp = /^https?:\/\//i.test(href);
+  const hostPart = isHttp ? href.replace(/^https?:\/\//i, "").split("/")[0] : "";
+  const looksLikeFileHost = isHttp && (
+    /\.(md|txt|png|jpe?g|pdf|docx?)$/i.test(hostPart)
+    || /[一-鿿]/.test(hostPart)
+  );
+  if (!isHttp && !href.startsWith("file:")) return; // 非 http/file 链接不处理
+  if (isHttp && !looksLikeFileHost) return;          // 真实外链放行
+  event.preventDefault();
+  event.stopPropagation();
+  // 显示文字可能含图标/说明,路径只取自 href(file URL)或兼容分支的 host。
+  const fileName = fileNameFromLinkHref(href, hostPart);
+  if (FILE_VIEWABLE_RE.test(fileName)) {
+    const taskId = state.activeTaskId;
+    const material = (state.materials.get(taskId) || [])
+      .find(item => item.relative_path === fileName || item.path === fileName);
+    const target = material ? { ...material } : { relative_path: fileName, path: fileName };
+    if (!pluginViewForMaterial(target)) return;
+    state.filesPanel = target;
+    render();
+  }
+}, true);
+
+// 全局错误可见化:任何未捕获异常显示在状态栏,避免白屏时无从排查
+window.addEventListener("error", event => {
+  try { setStatus(`页面错误: ${event.message}`, true); } catch { /* 初始阶段无状态栏 */ }
+});
+window.addEventListener("unhandledrejection", event => {
+  try { setStatus(`未处理 Promise 错误: ${String(event.reason || "").slice(0, 120)}`, true); } catch { /* ignore */ }
+});
 
 document.addEventListener("click", async event => {
   const button = event.target.closest("[data-action]");

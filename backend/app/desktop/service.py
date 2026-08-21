@@ -91,6 +91,24 @@ _MAIN_RUNTIME_EQUIPMENT_KEY = "_main_run_equipment"
 _TERMINAL_STATUSES = frozenset({"success", "error", "interrupted"})
 
 
+def _spatial_focus_prompt(focus: dict[str, Any] | None) -> str:
+    """把插件提供的当前空间焦点注入本轮系统提示，不改写用户原始消息。"""
+    if not focus:
+        return ""
+    required = ("spatial_id", "content_ref", "page", "x", "y", "kind", "status")
+    if any(key not in focus for key in required):
+        return ""
+    payload = {key: focus[key] for key in required}
+    return (
+        "\n\n<current_spatial_focus>\n"
+        f"{json.dumps(payload, ensure_ascii=False)}\n"
+        "用户刚刚在内容查看器中明确选择了这个空间锚点。"
+        "对‘这里/这个/这一块/刚才那里’等指代，必须优先围绕该坐标解释，"
+        "不得重新猜测或迁移坐标。\n"
+        "</current_spatial_focus>"
+    )
+
+
 @dataclass
 class PreparedRun:
     """一次运行发起所需的编排输入：统一接口 body + agent_factory 闭包 + 响应载荷。
@@ -412,7 +430,7 @@ class DesktopService:
 
     async def start_main_run(
         self, task_id: str, message: str | list[dict[str, Any]], model_name: str | None,
-        permissions: list[str], skills: list[str],
+        permissions: list[str], skills: list[str], spatial_focus: dict[str, Any] | None = None,
     ) -> PreparedRun:
         async with self.session_factory() as session:
             task_row, workspace = await self._get_task_entities(session, task_id)
@@ -462,7 +480,8 @@ class DesktopService:
         checkpoint_id = await select_checkpoint_base(self.checkpointer, thread_id)
         return await self._prepare(
             run, thread_id, workspace_id, workspace_path, run.input_messages,
-            _MAIN_SYSTEM_PROMPT, equipment, "", "main", checkpoint_id,
+            _MAIN_SYSTEM_PROMPT + _spatial_focus_prompt(spatial_focus),
+            equipment, "", "main", checkpoint_id,
         )
 
     async def resume_run(self, thread_id: str, resume: dict[str, Any]) -> PreparedRun:
