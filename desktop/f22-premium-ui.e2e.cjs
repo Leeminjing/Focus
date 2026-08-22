@@ -18,7 +18,16 @@ app.commandLine.appendSwitch("disable-gpu");
 app.commandLine.appendSwitch("disable-software-rasterizer");
 app.commandLine.appendSwitch("no-sandbox");
 
-const qaDir = path.join(__dirname, "..", "openspec", "changes", "f22-premium-interaction-system", "qa", "after");
+const qaDir = path.join(
+  __dirname,
+  "..",
+  "openspec",
+  "changes",
+  "archive",
+  "2026-08-22-f22-premium-interaction-system",
+  "qa",
+  "after",
+);
 fs.mkdirSync(qaDir, { recursive: true });
 
 async function run() {
@@ -26,6 +35,8 @@ async function run() {
     show: false,
     width: 1440,
     height: 900,
+    titleBarStyle: "hidden",
+    titleBarOverlay: { color: "#ffffff", symbolColor: "#18202d", height: 56 },
     webPreferences: {
       preload: path.join(__dirname, "context-ui-test-preload.cjs"),
       contextIsolation: false,
@@ -69,7 +80,18 @@ async function run() {
     const eventNodes = [...document.querySelectorAll('.conversation-event')];
     const summaries = eventNodes.map(node => node.querySelector('summary'));
     const icons = [...document.querySelectorAll('.conversation-event-mark .ui-icon')];
-    const nav = document.querySelector('.app-nav-item[data-nav-key="contexts"]');
+    const nav = document.querySelector('.app-nav-item[data-nav-key="focus"]');
+    const contextsNav = document.querySelector('.app-nav-item[data-nav-key="contexts"]');
+    const inspectorTabs = [...document.querySelectorAll('[data-inspector-tab]')];
+    const navIsolation = inspectorTabs.map(button => {
+      button.click();
+      return {
+        tab: button.dataset.inspectorTab,
+        view: state.view,
+        current: document.querySelector('.app-nav-item[aria-current="page"]')?.dataset.navKey || '',
+      };
+    });
+    document.querySelector('[data-inspector-tab="context"]').click();
     const tab = document.querySelector('.inspector-tabs button[aria-selected="true"]');
     const sequenceStyle = sequence ? getComputedStyle(sequence) : null;
     const navStyle = nav ? getComputedStyle(nav) : null;
@@ -80,6 +102,11 @@ async function run() {
     detail.messages.push({ role: 'tool', name: 'bash', tool_call_id: 'd', status: 'success', content: '/workspace' });
     replaceConversation(activeTask(), detail.messages);
     const settledNode = document.querySelector('.conversation-event[data-event-key="tool:d"]');
+    const titlebarArea = navigator.windowControlsOverlay?.getTitlebarAreaRect?.();
+    const headerRect = document.querySelector('.app-header').getBoundingClientRect();
+    const appMarkRect = document.querySelector('.app-mark').getBoundingClientRect();
+    const taskContextRect = document.querySelector('.shell-task-context').getBoundingClientRect();
+    const newTaskRect = document.querySelector('[data-action="new-task"]').getBoundingClientRect();
     return {
       sequenceExists: Boolean(sequence),
       sequenceGap: sequenceStyle?.rowGap || '',
@@ -94,14 +121,26 @@ async function run() {
       navTransitionProperty: navStyle?.transitionProperty || '',
       navCurrent: nav?.getAttribute('aria-current') || '',
       navMatchesSelected: nav?.matches('.app-nav-item[aria-current="page"]') || false,
+      contextsNavCurrent: contextsNav?.getAttribute('aria-current') || '',
+      navIsolation,
       selectedToken: navStyle?.getPropertyValue('--surface-selected') || '',
       tabShadow: tabStyle?.boxShadow || '',
       tabBackground: tabStyle?.backgroundColor || '',
       inspectorAnimation: getComputedStyle(document.querySelector('#appInspector')).animationDuration,
       documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
       unnamedButtons: [...document.querySelectorAll('button')].filter(button => !(button.textContent.trim() || button.getAttribute('aria-label') || button.title)).length,
+      inspectorHeaderExists: Boolean(document.querySelector('.inspector-header, #inspectorTitle')),
+      inspectorLabel: document.querySelector('#appInspector')?.getAttribute('aria-label') || '',
       stableEventIdentity: pendingNode === settledNode,
       settledStatus: settledNode?.querySelector('.conversation-event-status')?.textContent.trim() || '',
+      titlebar: {
+        visible: navigator.windowControlsOverlay?.visible === true,
+        area: titlebarArea ? { x: titlebarArea.x, y: titlebarArea.y, width: titlebarArea.width, height: titlebarArea.height, right: titlebarArea.right } : null,
+        header: { x: headerRect.x, y: headerRect.y, width: headerRect.width, height: headerRect.height },
+        appMark: { x: appMarkRect.x, width: appMarkRect.width },
+        taskContextX: taskContextRect.x,
+        newTaskRight: newTaskRect.right,
+      },
     };
   })()`);
 
@@ -134,12 +173,15 @@ async function run() {
   if (result.iconCount !== result.eventCount || result.iconRects.some(rect => Math.abs(rect.width - 14) > 0.5 || Math.abs(rect.height - 14) > 0.5)) failures.push(`事件图标尺寸或数量错误: ${JSON.stringify(result.iconRects)}`);
   if (!result.stableEventIdentity || result.settledStatus !== "完成") failures.push(`pending 原位更新失败: stable=${result.stableEventIdentity} status=${result.settledStatus}`);
   if (result.navCurrent !== "page") failures.push(`全局导航当前项错误: ${result.navCurrent}`);
+  if (result.contextsNavCurrent || result.navIsolation.some(item => item.view !== "focus" || item.current !== "focus")) failures.push(`Inspector Tab 仍联动主导航: ${JSON.stringify(result.navIsolation)}`);
+  if (result.inspectorHeaderExists || result.inspectorLabel !== "任务检查器") failures.push(`Inspector 标题栏或可访问名称错误: header=${result.inspectorHeaderExists} label=${result.inspectorLabel}`);
   if (result.navTransitionProperty.split(',').some(item => item.trim() === 'all')) failures.push(`导航仍使用 transition: all: ${result.navTransitionProperty}`);
   if (!seconds(result.navTransition).some(value => value > 0 && value <= .18) || seconds(result.navTransition).some(value => value > .24)) failures.push(`导航反馈时长不在令牌范围: ${result.navTransition}`);
   if (!seconds(result.inspectorAnimation).some(value => value > 0 && value <= .24)) failures.push(`Inspector 进入反馈未消费 motion token: ${result.inspectorAnimation}`);
   if (result.navShadow !== "none" || result.tabShadow !== "none") failures.push(`仍有选中半框: nav=${result.navShadow} tab=${result.tabShadow}`);
   if (/rgba?\(0, 0, 0, 0\)/.test(result.navBackground) || /rgba?\(0, 0, 0, 0\)/.test(result.tabBackground)) failures.push(`中性选中面缺失: nav=${result.navBackground} tab=${result.tabBackground} matches=${result.navMatchesSelected} token=${result.selectedToken}`);
   if (result.documentOverflow > 1 || result.unnamedButtons) failures.push(`溢出或无名控件: ${JSON.stringify(result)}`);
+  if (!result.titlebar.visible || !result.titlebar.area || Math.abs(result.titlebar.area.height - 56) > 1 || Math.abs(result.titlebar.header.height - 56) > 1 || result.titlebar.appMark.x > 20 || result.titlebar.appMark.width < 38 || result.titlebar.taskContextX < 56 || result.titlebar.newTaskRight > result.titlebar.area.right + 1) failures.push(`单层标题栏几何或系统按钮避让错误: ${JSON.stringify(result.titlebar)}`);
   if (!reduced.matches || !/^0(?:s|\.0+s)?(?:, 0s)*$/.test(reduced.buttonTransition) || !/^0(?:s|\.0+s)?$/.test(reduced.detailAnimation)) failures.push(`reduced-motion 未完全降级: ${JSON.stringify(reduced)}`);
   if (failures.length) throw new Error(`F22 premium audit:\n- ${failures.join("\n- ")}`);
   console.log("f22-premium-ui-e2e: 无半框、紧凑事件序列、本地图标、reduced-motion 与溢出通过");

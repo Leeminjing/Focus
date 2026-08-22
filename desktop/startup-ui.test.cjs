@@ -25,7 +25,15 @@ assert.ok(ico.readUInt16LE(4) >= 6, "ICO should contain multiple Windows icon si
 
 const index = text("index.html");
 assert.match(index, /rel="icon"[^>]+assets\/focus-icon\.png/);
-assert.match(index, /class="brand"[\s\S]*assets\/focus-icon\.png[\s\S]*<span>Focus<\/span>/);
+assert.doesNotMatch(index, /class="brand"|<header class="app-header">[\s\S]*<span>Focus<\/span>/);
+assert.match(index, /class="app-mark"[\s\S]*assets\/focus-icon\.png/);
+
+const shellCss = text("styles/shell.css");
+assert.doesNotMatch(shellCss, /\.brand(?:\s|[.#:{])/);
+assert.match(shellCss, /\.app-mark\s*\{/);
+assert.match(shellCss, /-webkit-app-region:\s*drag/);
+assert.match(shellCss, /-webkit-app-region:\s*no-drag/);
+assert.match(shellCss, /titlebar-area-width/);
 
 const splash = text("splash.html");
 const splashJs = text("splash.js");
@@ -34,6 +42,9 @@ assert.match(splash, /Content-Security-Policy/);
 assert.doesNotMatch(splash, /https?:\/\//);
 assert.match(splash, /role="status" aria-live="polite"/);
 assert.match(splash, /assets\/focus-icon\.png/);
+assert.match(splash, /aria-label="Focus 正在启动"/);
+assert.doesNotMatch(splash, /splash-copy|splash-kicker|LOCAL AGENT WORKSPACE|<h1[^>]*>Focus<\/h1>/);
+assert.doesNotMatch(splashCss, /\.splash-(?:copy|kicker)|\.splash-copy\s+h1/);
 assert.match(splashJs, /window\.setFocusSplashStage/);
 assert.match(splashJs, /Math\.max\(0, Math\.min\(100/);
 assert.match(splashCss, /@keyframes focus-arrive/);
@@ -43,6 +54,8 @@ assert.match(splashCss, /prefers-reduced-motion: reduce/);
 const main = text("main.cjs");
 assert.match(main, /focus-icon\.ico/);
 assert.match(main, /createSplashWindow\(\)/);
+assert.match(main, /titleBarStyle:\s*"hidden"/);
+assert.match(main, /titleBarOverlay:\s*\{[\s\S]*height:\s*56[\s\S]*\}/);
 assert.match(main, /show: false,[\s\S]*frame: false,[\s\S]*loadFile\(path\.join\(desktopDir, "splash\.html"\)\)/);
 assert.ok(main.indexOf("await createSplashWindow()") < main.indexOf("const pythonRuntime = resolvePythonRuntime()"));
 assert.ok(main.indexOf("await mainWindow.loadURL") < main.indexOf("mainWindow.show()"));
