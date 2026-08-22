@@ -32,7 +32,7 @@ body {
   height: 100%;
   align-content: center;
   justify-items: center;
-  gap: 14px;
+  gap: 0;
   overflow: hidden;
   border: 1px solid rgb(207 213 221 / 92%);
   border-radius: 28px;
@@ -48,25 +48,26 @@ body {
   background: rgb(255 138 0 / 12%);
   content: "";
   filter: blur(22px);
-  transform: translateY(54px);
+  transform: translateY(42px);
   animation: focus-shadow 1.8s ease-in-out infinite;
 }
 
 .splash-mark {
   position: relative;
   display: grid;
-  width: 108px;
-  height: 108px;
+  width: 120px;
+  height: 120px;
   place-items: center;
+  margin-bottom: 15px;
   animation: focus-arrive 720ms cubic-bezier(.2, .8, .2, 1) both, focus-float 2.2s 760ms ease-in-out infinite;
 }
 
 .splash-mark img {
   position: relative;
   z-index: 2;
-  width: 92px;
-  height: 92px;
-  border-radius: 22px;
+  width: 104px;
+  height: 104px;
+  border-radius: 24px;
   object-fit: cover;
   box-shadow: 0 12px 28px rgb(24 32 45 / 13%);
 }
@@ -80,10 +81,7 @@ body {
   animation: focus-halo 1.8s ease-out infinite;
 }
 
-.splash-copy { position: relative; z-index: 2; text-align: center; }
-.splash-kicker { margin: 0 0 3px; color: #c76800; font-size: 9px; font-weight: 760; letter-spacing: .18em; }
-.splash-copy h1 { margin: 0; color: var(--ink); font-size: 27px; line-height: 1.15; letter-spacing: -.035em; }
-.splash-status { min-height: 22px; margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.splash-status { position: relative; z-index: 2; min-height: 18px; margin: 0 0 17px; color: var(--muted); font-size: 12px; text-align: center; }
 
 .splash-progress {
   position: relative;
@@ -104,7 +102,7 @@ body {
   transition: width 260ms cubic-bezier(.2, .7, .2, 1);
 }
 
-.splash-note { position: relative; z-index: 2; margin: 1px 0 0; color: #8a93a1; font-size: 10px; }
+.splash-note { position: relative; z-index: 2; margin: 12px 0 0; color: #8a93a1; font-size: 10px; }
 
 @keyframes focus-arrive {
   from { transform: translateY(16px) scale(.88); }
@@ -122,8 +120,8 @@ body {
 }
 
 @keyframes focus-shadow {
-  0%, 100% { opacity: .65; transform: translateY(54px) scale(.9); }
-  50% { opacity: .35; transform: translateY(54px) scale(1.08); }
+  0%, 100% { opacity: .65; transform: translateY(42px) scale(.9); }
+  50% { opacity: .35; transform: translateY(42px) scale(1.08); }
 }
 
 @media (prefers-reduced-motion: reduce) {

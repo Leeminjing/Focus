@@ -27,13 +27,15 @@ async function run() {
   await win.loadFile(path.join(__dirname, "splash.html"));
 
   const initial = await win.webContents.executeJavaScript(`(() => ({
-    title: document.querySelector('#splashTitle')?.textContent,
+    label: document.querySelector('.splash-card')?.getAttribute('aria-label'),
+    duplicateBrandCopy: Boolean(document.querySelector('.splash-copy, .splash-kicker, h1')),
     statusRole: document.querySelector('#splashStatus')?.getAttribute('role'),
     imageLoaded: Boolean(document.querySelector('.splash-mark img')?.complete && document.querySelector('.splash-mark img')?.naturalWidth),
+    mark: (() => { const rect = document.querySelector('.splash-mark')?.getBoundingClientRect(); return rect ? { width: rect.width, height: rect.height } : null; })(),
     animations: document.getAnimations({ subtree: true }).map(item => item.animationName).filter(Boolean),
     overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
   }))()`);
-  if (initial.title !== "Focus" || initial.statusRole !== "status" || !initial.imageLoaded || initial.overflow > 1) {
+  if (initial.label !== "Focus 正在启动" || initial.duplicateBrandCopy || initial.statusRole !== "status" || !initial.imageLoaded || initial.mark?.width < 100 || initial.overflow > 1) {
     throw new Error(`启动页基本结构异常: ${JSON.stringify(initial)}`);
   }
   if (!initial.animations.some(name => name === "focus-arrive" || name === "focus-float")) {
@@ -62,9 +64,22 @@ async function run() {
   if (Number(visualState.markOpacity) < 0.95 || Number(visualState.imageOpacity) < 0.95) {
     throw new Error(`启动图标动画结束后仍然偏淡: ${JSON.stringify(visualState)}`);
   }
-  const qaDir = path.join(__dirname, "..", "openspec", "changes", "f20-frontend-ui-refresh", "qa", "after", "branding");
+  const qaDir = path.join(
+    __dirname,
+    "..",
+    "openspec",
+    "changes",
+    "archive",
+    "2026-08-22-f22-premium-interaction-system",
+    "qa",
+    "after",
+    "branding",
+  );
   fs.mkdirSync(qaDir, { recursive: true });
   fs.writeFileSync(path.join(qaDir, "focus-splash.png"), (await win.webContents.capturePage()).toPNG());
+  win.setContentSize(759, 759);
+  await wait(80);
+  fs.writeFileSync(path.join(qaDir, "focus-splash-759.png"), (await win.webContents.capturePage()).toPNG());
 
   await win.webContents.debugger.attach("1.3");
   await win.webContents.debugger.sendCommand("Emulation.setEmulatedMedia", {

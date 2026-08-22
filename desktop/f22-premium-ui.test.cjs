@@ -27,6 +27,9 @@ const shell = read("desktop/styles/shell.css");
 const views = read("desktop/styles/views.css");
 const events = read("desktop/styles/conversation-events.css");
 const packageJson = JSON.parse(read("desktop/package.json"));
+const main = read("desktop/main.cjs");
+const splash = read("desktop/splash.html");
+const splashCss = read("desktop/styles/splash.css");
 
 assert.match(index, /styles\/icons\.css/);
 const icons = read("desktop/styles/icons.css");
@@ -41,11 +44,27 @@ for (const icon of ["brain-circuit", "wrench", "terminal", "folder", "search", "
 }
 
 assert.equal((index.match(/class="app-nav-item"/g) || []).length, 5);
+assert.doesNotMatch(index, /class="brand"|<header class="app-header">[\s\S]*<span>Focus<\/span>/, "应用头部仍包含重复 Focus 字标");
+assert.match(index, /class="app-mark"[\s\S]*assets\/focus-icon\.png/, "应用头部没有保留用户指定的品牌 Logo");
+assert.doesNotMatch(shell, /\.brand(?:\s|[.#:{])/, "壳层仍保留已删除品牌样式");
+assert.match(rule(shell, ".app-header"), /grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\)\s+auto\s+auto/);
+assert.match(rule(shell, ".app-header"), /-webkit-app-region:\s*drag/);
+assert.match(shell, /titlebar-area-width/);
+assert.match(main, /titleBarStyle:\s*"hidden"/);
+assert.match(main, /titleBarOverlay:\s*\{[\s\S]*height:\s*56[\s\S]*\}/);
+assert.doesNotMatch(splash, /splash-copy|splash-kicker|LOCAL AGENT WORKSPACE|<h1[^>]*>Focus<\/h1>/);
+assert.doesNotMatch(splashCss, /\.splash-(?:copy|kicker)|\.splash-copy\s+h1/);
 assert.doesNotMatch(index, /app-nav-icon|icon-(?:house|map|layers|bot|plug)/, "左侧导航仍包含图标或图标占位");
 assert.doesNotMatch(index, /workspace-context|workspaceKicker|workspaceTitle|workspaceMeta/, "主工作区仍渲染与顶栏重复的大型 Workspace Header");
 assert.doesNotMatch(app, /function viewHeading|workspaceKicker|workspaceTitle|workspaceMeta/, "renderer 仍维护已删除的第二套标题状态");
 assert.doesNotMatch(shell, /\.workspace-context\s*\{/, "壳层仍保留第二套标题样式");
 assert.match(rule(shell, ".app-workspace"), /grid-template-rows:\s*minmax\(0, 1fr\)/, "主工作区没有直接把唯一网格行交给页面内容");
+assert.doesNotMatch(index, /inspector-header|inspectorTitle|data-action="close-inspector"/, "Inspector 仍挂载重复标题栏");
+assert.match(index, /<aside id="appInspector"[^>]*aria-label="任务检查器"/, "Inspector 缺少独立可访问名称");
+assert.doesNotMatch(app, /inspectorTitle|function inspectorHeading/, "renderer 仍同步已删除的 Inspector 标题");
+assert.doesNotMatch(shell, /\.inspector-header(?:\s|[.#:{])/, "壳层仍保留 Inspector 标题栏样式");
+assert.ok((shell.match(/\.app-inspector\s*\{[^}]*\}/g) || []).some(body => /grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\)/.test(body)), "Inspector 没有收敛为 Tab 与内容两行");
+assert.doesNotMatch(app.match(/function activeNavigationKey\(\)[\s\S]*?\n\}/)?.[0] || "", /state\.inspector/, "左侧导航仍由 Inspector 局部状态派生");
 assert.doesNotMatch(shell, /\.app-nav-label\s*\{[^}]*clip-path:\s*inset\(50%\)/s, "窄屏仍会隐藏导航文字");
 for (const removedIcon of ["house", "map", "layers", "bot", "plug"]) {
   assert.ok(!fs.existsSync(path.join(root, "desktop", "assets", "icons", `${removedIcon}.svg`)), `已删除的导航图标仍存在：${removedIcon}`);
@@ -92,7 +111,7 @@ assert.match(base, /prefers-reduced-motion:\s*reduce/);
 assert.match(base, /\(update:\s*slow\)/);
 
 assert.deepEqual(Object.keys(packageJson.dependencies || {}), ["electron"]);
-assert.match(read("desktop/main.cjs"), /loadURL\(`\$\{apiBase\}\/desktop\/`\)/);
+assert.match(main, /loadURL\(`\$\{apiBase\}\/desktop\/`\)/);
 assert.match(app, /location\.origin/);
 
 assert.match(app, /<div class="map-toolbar"><button class="soldier-source"/);

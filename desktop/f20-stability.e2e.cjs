@@ -182,17 +182,24 @@ async function run() {
       const id = node.getAttribute('aria-controls');
       return id && !document.getElementById(id);
     });
-    const brandImage = document.querySelector('.brand img');
-    const brandRect = brandImage?.getBoundingClientRect();
+    const header = document.querySelector('.app-header');
+    const appMark = document.querySelector('.app-mark img');
+    const taskContext = document.querySelector('.shell-task-context');
+    const headerRect = header?.getBoundingClientRect();
+    const appMarkRect = appMark?.getBoundingClientRect();
+    const taskRect = taskContext?.getBoundingClientRect();
     return {
       duplicateIds: ids.length - new Set(ids).size,
       unnamed: unnamed.length,
       brokenControls: brokenControls.length,
       documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      brandImage: { naturalWidth: brandImage?.naturalWidth || 0, x: brandRect?.x || 0, y: brandRect?.y || 0, width: brandRect?.width || 0, height: brandRect?.height || 0, display: brandImage ? getComputedStyle(brandImage).display : '' },
+      hasBrand: Boolean(document.querySelector('.brand')),
+      appMark: { naturalWidth: appMark?.naturalWidth || 0, width: appMarkRect?.width || 0, height: appMarkRect?.height || 0 },
+      header: { height: headerRect?.height || 0, drag: header ? getComputedStyle(header).webkitAppRegion : '' },
+      taskContext: { x: taskRect?.x || 0, width: taskRect?.width || 0, display: taskContext ? getComputedStyle(taskContext).display : '' },
     };
   })()`);
-  if (dom.duplicateIds || dom.unnamed || dom.brokenControls || dom.documentOverflow > 1 || dom.brandImage.naturalWidth < 1 || dom.brandImage.width < 24 || dom.brandImage.height < 24) failures.push(`全局 DOM 守卫失败：${JSON.stringify(dom)}`);
+  if (dom.duplicateIds || dom.unnamed || dom.brokenControls || dom.documentOverflow > 1 || dom.hasBrand || dom.appMark.naturalWidth < 1 || dom.appMark.width < 30 || dom.header.height < 52 || (dom.taskContext.display !== 'none' && dom.taskContext.width < 120)) failures.push(`全局 DOM 守卫失败：${JSON.stringify(dom)}`);
 
   win.destroy();
   if (failures.length) throw new Error(`F20 stability audit:\n- ${failures.join("\n- ")}`);

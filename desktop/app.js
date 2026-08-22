@@ -80,7 +80,6 @@ const app = document.querySelector("#app");
 const statusNode = document.querySelector("#globalStatus");
 const appInspector = document.querySelector("#appInspector");
 const inspectorContent = document.querySelector("#inspectorContent");
-const inspectorTitle = document.querySelector("#inspectorTitle");
 const shellTaskTitle = document.querySelector("#shellTaskTitle");
 const shellTaskMeta = document.querySelector("#shellTaskMeta");
 const dialog = document.querySelector("#taskDialog");
@@ -327,9 +326,6 @@ function render() {
 }
 
 function activeNavigationKey() {
-  if (state.inspector.open && ["context", "agents"].includes(state.inspector.tab)) {
-    return state.inspector.tab === "context" ? "contexts" : "agents";
-  }
   if (state.view === "map") return "map";
   if (state.view === "plugins") return "plugins";
   return "focus";
@@ -348,10 +344,6 @@ function renderShellChrome() {
     button.disabled = !state.tasks.length && button.dataset.navKey !== "plugins";
   });
   renderInspector();
-}
-
-function inspectorHeading(tab) {
-  return { context: "Contexts", materials: "任务材料", agents: "Agents", run: "运行状态" }[tab] || "任务信息";
 }
 
 const RUN_STATUS_PRESENTATION = Object.freeze({
@@ -375,7 +367,6 @@ function renderInspector() {
   if (!state.inspector.open) return;
   const tab = state.inspector.tab;
   const task = activeTask();
-  inspectorTitle.textContent = inspectorHeading(tab);
   appInspector.querySelectorAll?.('[role="tab"]').forEach(button => {
     const selected = button.dataset.inspectorTab === tab;
     button.setAttribute("aria-selected", String(selected));
@@ -3057,7 +3048,6 @@ document.addEventListener("click", async event => {
   if (action === "show-contexts") return openInspector("context", button);
   if (action === "show-agents") return openInspector("agents", button);
   if (action === "open-inspector-tab") return openInspector(button.dataset.inspectorTab, button);
-  if (action === "close-inspector") return closeInspector();
   if (action === "show-plugins") return openPluginsView();
   if (action === "refresh-plugins") { await hydratePlugins(); return render(); }
   if (action === "filter-plugins") {

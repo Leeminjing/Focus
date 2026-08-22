@@ -238,6 +238,12 @@ async function start() {
     minWidth: 900,
     minHeight: 680,
     autoHideMenuBar: true,
+    titleBarStyle: "hidden",
+    titleBarOverlay: {
+      color: "#ffffff",
+      symbolColor: "#18202d",
+      height: 56,
+    },
     backgroundColor: "#fbfbfc",
     icon: focusIconPath,
     webPreferences: {
