@@ -41,17 +41,20 @@ def build_tool_error_middleware() -> AgentMiddleware:
             return ToolMessage(
                 content=f"工具调用失败：{_error_text(error)}",
                 tool_call_id=request.tool_call["id"],
+                status="error",
             )
         except ToolException as error:
             return ToolMessage(
                 content=f"工具调用失败：{_error_text(error)}",
                 tool_call_id=request.tool_call["id"],
+                status="error",
             )
         except HTTPException as error:
             if 400 <= error.status_code < 500:
                 return ToolMessage(
                     content=f"工具调用失败：{_error_text(error)}",
                     tool_call_id=request.tool_call["id"],
+                    status="error",
                 )
             raise
 

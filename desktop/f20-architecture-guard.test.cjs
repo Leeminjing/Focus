@@ -27,6 +27,7 @@ const styleOrder = [
   "./styles/components.css",
   "./styles/shell.css",
   "./styles/views.css",
+  "./styles/conversation-events.css",
 ].map(value => html.indexOf(value));
 assert.ok(styleOrder.every(index => index >= 0));
 assert.deepStrictEqual([...styleOrder].sort((a, b) => a - b), styleOrder);
@@ -51,19 +52,26 @@ assert.match(eyesStyle, /\.dsh-eyes-paste-preview/);
 const main = read("desktop/main.cjs");
 assert.match(main, /const apiBase = `http:\/\/127\.0\.0\.1:\$\{port\}`/);
 assert.match(main, /process\.env\.FOCUS_DESKTOP_API = apiBase/);
-assert.match(main, /await win\.loadURL\(`\$\{apiBase\}\/desktop\/`\)/);
+assert.match(main, /await mainWindow\.loadURL\(`\$\{apiBase\}\/desktop\/`\)/);
+assert.match(main, /mainWindow\.show\(\);[\s\S]*closeSplashWindow\(\)/);
+assert.match(main, /setWindowOpenHandler/);
+assert.match(main, /will-navigate/);
+assert.match(main, /new URL\(target\)\.origin === new URL\(apiBase\)\.origin/);
+assert.match(main, /focus:open-external/);
 
 const preload = read("desktop/preload.cjs");
 assert.match(preload, /apiBase:\s*process\.env\.FOCUS_DESKTOP_API/);
+assert.match(preload, /openExternal:\s*url => ipcRenderer\.invoke\("focus:open-external", url\)/);
 assert.doesNotMatch(preload, /fetch\(|EventSource|proxy/i);
 
 const renderer = read("desktop/app.js");
 assert.match(renderer, /location\.origin/);
 assert.match(renderer, /fetch\(`\$\{runtime\.apiBase\}\$\{path\}`/);
 assert.match(renderer, /new EventSource\(`\$\{runtime\.apiBase\}\/desktop\/api\/runs\//);
-assert.match(renderer, /script\.onerror = \(\) => \{ console\.error\("插件脚本加载失败:"[\s\S]*resolve\(\)/);
-assert.match(renderer, /link\.onerror = \(\) => \{ console\.error\("插件样式加载失败:"/);
+assert.match(renderer, /script\.onerror = \(\) => \{[\s\S]*pluginScriptAssets\.delete\(src\)[\s\S]*console\.error\("插件脚本加载失败:"[\s\S]*resolve\(\)/);
+assert.match(renderer, /link\.onerror = \(\) => \{[\s\S]*pluginStyleAssets\.delete\(href\)[\s\S]*console\.error\("插件样式加载失败:"/);
 assert.match(renderer, /filter\(plugin => plugin\.status === "active"\)/);
+assert.match(html, /<script src="\.\/conversation-events\.js"><\/script>[\s\S]*<script src="\.\/app\.js"><\/script>/);
 
 const gateway = read("backend/app/gateway/app.py");
 const desktopApp = read("backend/app/desktop/app.py");

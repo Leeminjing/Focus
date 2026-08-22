@@ -65,14 +65,8 @@ input:focus,
 textarea:focus,
 select:focus { border-color: var(--border-accent); }
 
-.ui-card,
-.ui-panel {
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-card);
-  background: var(--surface-base);
-}
-
-.ui-panel { border-radius: var(--radius-panel); box-shadow: var(--shadow-raised); }
+.ui-card { border: 0; border-radius: var(--radius-card); background: transparent; }
+.ui-panel { border: 0; border-radius: var(--radius-panel); background: var(--surface-base); box-shadow: none; }
 
 .ui-badge,
 .status-badge {
@@ -117,11 +111,11 @@ select:focus { border-color: var(--border-accent); }
   width: min(520px, calc(100% - 32px));
   margin: auto;
   padding: var(--space-10);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-panel);
-  background: var(--surface-base);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   text-align: center;
-  box-shadow: var(--shadow-raised);
+  box-shadow: none;
 }
 
 .ui-empty-state h1,

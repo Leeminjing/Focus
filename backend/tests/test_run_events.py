@@ -7,6 +7,7 @@ from langgraph.types import Command
 from focus.runtime.runs.events import (
     build_envelope,
     chunk_to_events,
+    deserialize_messages,
     serialize_message,
     serialize_value,
     stream_text,
@@ -38,14 +39,34 @@ def test_serialize_message_shapes():
     ai = serialize_message(AIMessage(content="", id="m2", tool_calls=[{"id": "c1", "name": "read_file", "args": {}}]))
     assert ai["role"] == "ai" and ai["locked"] is True and ai["tool_calls"][0]["id"] == "c1"
 
-    tool = serialize_message(ToolMessage(content="ok", tool_call_id="c1", name="read_file", id="m3"))
+    tool = serialize_message(ToolMessage(content="denied", tool_call_id="c1", name="read_file", id="m3", status="error"))
     assert tool["role"] == "tool" and tool["locked"] is True and tool["tool_call_id"] == "c1"
+    assert tool["status"] == "error"
 
     system = serialize_message(SystemMessage(content="sys"))
     assert system["role"] == "system"
 
     files = serialize_message(HumanMessage(content="x", additional_kwargs={"files": [{"path": "a.md"}]}))
     assert files["files"] == [{"path": "a.md"}]
+
+    reasoning = serialize_message(AIMessage(content="answer", additional_kwargs={"reasoning_content": "think"}))
+    assert reasoning["reasoning_content"] == "think"
+
+
+def test_reasoning_and_tool_status_round_trip():
+    source = [
+        AIMessage(
+            content="",
+            id="ai-1",
+            tool_calls=[{"id": "c1", "name": "read_file", "args": {"path": "a.md"}}],
+            additional_kwargs={"reasoning_content": "先读取文件"},
+        ),
+        ToolMessage(content="路径不属于当前工作区", id="tool-1", tool_call_id="c1", name="read_file", status="error"),
+    ]
+    restored = deserialize_messages([serialize_message(message) for message in source])
+    assert restored[0].additional_kwargs["reasoning_content"] == "先读取文件"
+    assert restored[1].status == "error"
+    assert restored[1].tool_call_id == "c1"
 
 
 def test_serialize_value_recursive():
@@ -80,6 +101,15 @@ def test_chunk_to_events_tokens():
 
     assert chunk_to_events("messages", (EmptyMessage(), {"langgraph_node": "model"}), base) == []
     assert chunk_to_events("messages", ("not-a-tuple",), base) == []
+
+
+def test_chunk_to_events_reasoning_is_separate_from_visible_tokens():
+    chunk = AIMessageChunk(content="", id="reasoning-1", additional_kwargs={"reasoning_content": "先检查路径"})
+    base = {"workspace_id": "ws-1", "thread_id": "th-1", "agent_id": "main:th-1", "run_id": "run-1"}
+    events = chunk_to_events("messages", (chunk, {"langgraph_node": "model"}), base)
+    assert len(events) == 1
+    assert events[0].event == "reasoning"
+    assert events[0].data["data"]["content"] == "先检查路径"
 
 
 def test_chunk_to_events_values():

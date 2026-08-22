@@ -22,6 +22,7 @@ const windows = [];
 
 const stage = process.argv[2] || "before";
 const target = process.argv[3] || "focus";
+const changeId = process.argv[4] || "f20-frontend-ui-refresh";
 const sizes = [
   { name: "1440x1024", width: 1440, height: 1024 },
   { name: "1200x800", width: 1200, height: 800 },
@@ -118,6 +119,18 @@ async function capture(size, outputDir) {
       state.inspector.open = false;
       state.view = 'focus';
       render();
+    } else if (target === 'agents') {
+      const task = state.tasks.find(item => item.task_id === 'child') || state.tasks[0];
+      state.activeTaskId = task.task_id;
+      state.agents.set(task.task_id, [
+        { agent_id: 'agent-running', permissions: ['read'], checkpoint_ns: 'audit/worker', latest_run: { status: 'running' } },
+        { agent_id: 'agent-complete', permissions: ['read', 'write'], checkpoint_ns: 'audit/reviewer', latest_run: { status: 'success' } }
+      ]);
+      state.agentDialog = { agentId: null, messages: [], busy: false };
+      state.view = 'focus';
+      state.inspector.open = true;
+      state.inspector.tab = 'agents';
+      render();
     } else if (target === 'commitment') {
       state.inspector.open = false;
       state.commitment.taskId = state.activeTaskId;
@@ -147,6 +160,24 @@ async function capture(size, outputDir) {
     } else if (target === 'context') {
       state.inspector.open = false;
       await reopenContextDecision('blocked');
+    } else if (target === 'empty') {
+      state.tasks = [];
+      state.inspector.open = false;
+      state.view = 'focus';
+      render();
+    } else if (target === 'error') {
+      const task = state.tasks.find(item => item.task_id === 'child') || state.tasks[0];
+      state.activeTaskId = task.task_id;
+      const detail = state.details.get(task.task_id);
+      detail.messages = [
+        { role: 'human', content: '修改工作区外的 README。' },
+        { role: 'ai', content: '', tool_calls: [{ id: 'qa-error', name: 'edit_file', args: { path: 'C:/outside/README.md' } }] },
+        { role: 'tool', tool_call_id: 'qa-error', name: 'edit_file', status: 'error', content: '路径不属于当前工作区: C:/outside/README.md' },
+        { role: 'ai', content: '操作未执行。请选择当前工作区内的文件后重试。' }
+      ];
+      state.inspector.open = false;
+      state.view = 'focus';
+      render();
     }
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   })()`);
@@ -158,7 +189,7 @@ async function capture(size, outputDir) {
 }
 
 app.whenReady().then(async () => {
-  const outputDir = path.join(__dirname, "..", "openspec", "changes", "f20-frontend-ui-refresh", "qa", stage);
+  const outputDir = path.join(__dirname, "..", "openspec", "changes", changeId, "qa", stage, target);
   fs.mkdirSync(outputDir, { recursive: true });
   for (const size of sizes) await capture(size, outputDir);
   for (const win of windows) win.destroy();

@@ -34,9 +34,12 @@ const state = {
   openDraftSection: null,
   agentDialog: { agentId: null, messages: [], busy: false },
   saveTimer: null,
+  draftSaveRevisions: new Map(),
+  creatingTask: false,
   statusTimer: null,
   deploying: false,
   mainInterrupting: false,
+  mainSubmitting: false,
   streams: new Map(),
   streamBuffers: new Map(),
   streamFrames: new Map(),
@@ -70,7 +73,7 @@ const state = {
   plugins: { plugins: [], interfaces: {}, traces: [], filter: "all", selectedName: null },
   inspector: { open: window.innerWidth > 1100, tab: "context", returnFocus: null },
   filesPanel: null,   // f18:右侧文件面板当前打开的 material(relative_path 等)
-  panelWidth: Number(localStorage.getItem("focus-panel-width") || 400),
+  panelWidth: normalizePanelWidth(localStorage.getItem("focus-panel-width") || 400),
 };
 
 const app = document.querySelector("#app");
@@ -89,12 +92,35 @@ const skillPicker = window.FocusSkillPicker;
 const contextEditor = window.FocusContextEditor;
 const compressionPanel = window.FocusCompressionPanel;
 const pluginView = window.FocusPluginView;
+const conversationEvents = window.FocusConversationEvents;
 // f18 插件视图宿主:插件前端脚本加载后经此注册视图与材料打开器
 window.__focusPluginViews = window.__focusPluginViews || {};
 const pluginViews = window.__focusPluginViews;
 let contextUiSequence = 0;
+let contextRequestSequence = 0;
 let contextPointerDrag = null;
 let contextUndoTimer = null;
+let agentDetailsRequestSequence = 0;
+let taskSwitchSequence = 0;
+let compressionRequestSequence = 0;
+let draftOpenRequestSequence = 0;
+let pluginHydrationSequence = 0;
+let pluginViewRequestSequence = 0;
+let contextTreeRequestSequence = 0;
+let panelResizeFrame = null;
+const pluginStyleAssets = new Set();
+const pluginScriptAssets = new Map();
+
+function normalizePanelWidth(value, viewportWidth = window.innerWidth) {
+  const viewport = Number.isFinite(Number(viewportWidth)) && Number(viewportWidth) > 0
+    ? Number(viewportWidth)
+    : 1200;
+  const navigationWidth = viewport <= 1100 ? 72 : 188;
+  const workspaceWidth = Math.max(600, viewport - navigationWidth);
+  const maximum = Math.max(280, Math.min(720, workspaceWidth - 360));
+  const numeric = Number(value);
+  return Math.round(Math.min(maximum, Math.max(280, Number.isFinite(numeric) ? numeric : 400)));
+}
 
 function nextContextUiKey() {
   contextUiSequence += 1;
@@ -107,9 +133,19 @@ async function api(path, options = {}) {
   if (options.body && !(options.body instanceof FormData)) headers.set("Content-Type", "application/json");
   const response = await fetch(`${runtime.apiBase}${path}`, { ...options, headers });
   if (!response.ok) {
-    let detail;
-    try { detail = (await response.json()).detail; } catch { detail = await response.text(); }
-    const error = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    const raw = await response.text().catch(() => "");
+    let detail = raw;
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        detail = parsed && Object.prototype.hasOwnProperty.call(parsed, "detail") ? parsed.detail : parsed;
+      } catch { /* 纯文本错误直接使用原文 */ }
+    }
+    const fallback = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+    const message = typeof detail === "string"
+      ? (detail.trim() || fallback)
+      : detail == null ? fallback : JSON.stringify(detail);
+    const error = new Error(message);
     error.status = response.status;
     error.detail = detail;
     throw error;
@@ -119,13 +155,28 @@ async function api(path, options = {}) {
 }
 
 function loadPluginScript(src) {
-  return new Promise(resolve => {
+  if (pluginScriptAssets.has(src)) return pluginScriptAssets.get(src);
+  const loading = new Promise(resolve => {
     const script = document.createElement("script");
     script.src = src;
     script.onload = resolve;
-    script.onerror = () => { console.error("插件脚本加载失败:", src); resolve(); };
+    script.onerror = () => {
+      pluginScriptAssets.delete(src);
+      script.remove();
+      console.error("插件脚本加载失败:", src);
+      resolve();
+    };
     document.head.append(script);
   });
+  pluginScriptAssets.set(src, loading);
+  return loading;
+}
+
+function cancelPendingViewRequests() {
+  contextRequestSequence += 1;
+  compressionRequestSequence += 1;
+  draftOpenRequestSequence += 1;
+  pluginViewRequestSequence += 1;
 }
 
 async function hydratePluginAssets(bootstrapPlugins = null) {
@@ -138,10 +189,17 @@ async function hydratePluginAssets(bootstrapPlugins = null) {
     for (const plugin of active) {
       const files = plugin.desktop_assets || [];
       for (const file of files.filter(name => name.endsWith(".css"))) {
+        const href = `/plugins/${encodeURIComponent(plugin.name)}/desktop/${encodeURIComponent(file)}`;
+        if (pluginStyleAssets.has(href)) continue;
+        pluginStyleAssets.add(href);
         const link = document.createElement("link");
         link.rel = "stylesheet";
-        link.href = `/plugins/${encodeURIComponent(plugin.name)}/desktop/${encodeURIComponent(file)}`;
-        link.onerror = () => { console.error("插件样式加载失败:", link.href); };
+        link.href = href;
+        link.onerror = () => {
+          pluginStyleAssets.delete(href);
+          link.remove();
+          console.error("插件样式加载失败:", link.href);
+        };
         document.head.append(link);
       }
       const jsFiles = files
@@ -225,20 +283,22 @@ async function bootstrap() {
   }
 }
 
-async function hydrateActive() {
-  if (!state.activeTaskId) return;
+async function hydrateActive(taskId = state.activeTaskId) {
+  if (!taskId) return;
   const [detail, materials, agents, catalog] = await Promise.all([
-    api(`/desktop/api/tasks/${state.activeTaskId}`),
-    api(`/desktop/api/tasks/${state.activeTaskId}/materials`),
-    api(`/desktop/api/tasks/${state.activeTaskId}/agents`),
-    api(`/desktop/api/tasks/${state.activeTaskId}/skills`),
+    api(`/desktop/api/tasks/${taskId}`),
+    api(`/desktop/api/tasks/${taskId}/materials`),
+    api(`/desktop/api/tasks/${taskId}/agents`),
+    api(`/desktop/api/tasks/${taskId}/skills`),
   ]);
-  state.details.set(state.activeTaskId, detail);
-  reconcileCommitmentRecovery(detail);
-  reconcileCompressionRecovery(detail);
-  state.materials.set(state.activeTaskId, materials);
-  state.agents.set(state.activeTaskId, agents);
-  state.skillCatalogs.set(state.activeTaskId, catalog.skills);
+  state.details.set(taskId, detail);
+  state.materials.set(taskId, materials);
+  state.agents.set(taskId, agents);
+  state.skillCatalogs.set(taskId, catalog.skills);
+  if (state.activeTaskId === taskId) {
+    reconcileCommitmentRecovery(detail);
+    reconcileCompressionRecovery(detail);
+  }
   if (detail.active_run?.status === "pending" || detail.active_run?.status === "running") {
     listenToRun(detail.active_run);
   }
@@ -260,7 +320,13 @@ function render() {
     app.replaceChildren();
     pluginViews[state.view].render(app, state);
   }
-  else renderContextEditor();
+  else if (state.view === "context") renderContextEditor();
+  else {
+    state.view = "focus";
+    setStatus("当前视图已不可用，已返回任务", true);
+    renderShellChrome();
+    renderFocus();
+  }
 }
 
 function activeNavigationKey() {
@@ -374,7 +440,10 @@ function openInspector(tab, trigger) {
   state.inspector.tab = tab;
   if (!wasOpen || !state.inspector.returnFocus) state.inspector.returnFocus = trigger || document.activeElement;
   renderShellChrome();
-  requestAnimationFrame(() => appInspector?.focus());
+  requestAnimationFrame(() => {
+    if (wasOpen && trigger?.matches?.('[role="tab"]')) trigger.focus();
+    else appInspector?.focus();
+  });
 }
 
 function closeInspector() {
@@ -509,7 +578,7 @@ function composerFeedback(detail, projectionBlocked) {
   if (activeTaskHasCommitmentLock()) return { kind: "warning", text: "当前任务正在等待 Commitment 审批，请先处理上方审批区。" };
   if (detail?.pending_compression) return { kind: "warning", text: "存在待确认的压缩计划，请先确认或取消。" };
   if (["pending", "running"].includes(detail?.active_run?.status)) return { kind: "active", text: "主 Agent 正在运行；你可以查看运行详情或中断。" };
-  return { kind: "muted", text: "Enter 换行 · 发送后任务会在本地工作区运行" };
+  return { kind: "muted", text: "Enter 发送 · Shift+Enter 换行" };
 }
 
 function setComposerError(error = null) {
@@ -518,7 +587,7 @@ function setComposerError(error = null) {
   const node = document.querySelector("#composerFeedback");
   if (!node) return;
   node.className = error ? "composer-feedback is-danger" : "composer-feedback is-muted";
-  node.textContent = error ? `发送失败：${error}` : "Enter 换行 · 发送后任务会在本地工作区运行";
+  node.textContent = error ? `发送失败：${error}` : "Enter 发送 · Shift+Enter 换行";
 }
 
 function renderContextRail(task) {
@@ -571,6 +640,7 @@ function renderFocus() {
   // F20:任务记录只占主工作区；Context、材料和 Agents 迁入持久检查器，文件仍使用专用画布。
   // 显式行高约束 minmax(0,1fr):面板高度=工作区,内部文本视图可以独立滚动。
   const panelOpen = !!state.filesPanel;
+  if (panelOpen) state.panelWidth = normalizePanelWidth(state.panelWidth);
   const shellStyle = `grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr)${panelOpen ? ` ${state.panelWidth}px` : ""}`;
   app.innerHTML = `
     <section class="focus-shell" style="${shellStyle}">
@@ -637,19 +707,38 @@ function bindPanelResizer() {
     const move = moveEvent => {
       // 面板左缘:向左拖(负位移)= 面板变宽。
       const width = startWidth - (moveEvent.clientX - startX);
-      state.panelWidth = Math.max(280, Math.min(720, width));
+      state.panelWidth = normalizePanelWidth(width);
       shell.style.gridTemplateColumns = `minmax(0, 1fr) ${state.panelWidth}px`;
     };
-    const up = () => {
-      resizer.releasePointerCapture(event.pointerId);
+    const finish = () => {
+      try {
+        if (resizer.hasPointerCapture?.(event.pointerId)) resizer.releasePointerCapture(event.pointerId);
+      } catch {}
       resizer.removeEventListener("pointermove", move);
-      resizer.removeEventListener("pointerup", up);
+      resizer.removeEventListener("pointerup", finish);
+      resizer.removeEventListener("pointercancel", finish);
+      resizer.removeEventListener("lostpointercapture", finish);
       localStorage.setItem("focus-panel-width", String(state.panelWidth));
     };
     resizer.addEventListener("pointermove", move);
-    resizer.addEventListener("pointerup", up);
+    resizer.addEventListener("pointerup", finish);
+    resizer.addEventListener("pointercancel", finish);
+    resizer.addEventListener("lostpointercapture", finish);
   });
 }
+
+window.addEventListener("resize", () => {
+  if (!state.filesPanel) return;
+  if (panelResizeFrame != null) cancelAnimationFrame(panelResizeFrame);
+  panelResizeFrame = requestAnimationFrame(() => {
+    panelResizeFrame = null;
+    const width = normalizePanelWidth(state.panelWidth);
+    if (width === state.panelWidth) return;
+    state.panelWidth = width;
+    const shell = document.querySelector(".focus-shell");
+    if (shell) shell.style.gridTemplateColumns = `minmax(0, 1fr) ${width}px`;
+  });
+});
 
 async function sha1Hex(text) {
   const buffer = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(text));
@@ -762,13 +851,6 @@ function renderMessageDetails(message) {
   return `<details class="message-details"><summary>技术详情</summary><dl>${metadata.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd><pre>${escapeHtml(String(value))}</pre></dd></div>`).join("")}</dl></details>`;
 }
 
-function messageRoleLabel(kind, role) {
-  if (kind === "human") return ["YOU", "你的指令"];
-  if (kind === "ai") return ["FOCUS", role || "助手"];
-  if (kind === "tool") return ["TOOL", role || "工具结果"];
-  return ["CONTEXT", role || "系统上下文"];
-}
-
 function renderMessage(message) {
   // 后端兜底降级消息按工具结果样式渲染，不泄露原始 XML 标签
   const degraded = compressionPanel.degradedParts(message);
@@ -789,25 +871,14 @@ function renderMessage(message) {
   } else {
     content = escapeHtml(JSON.stringify(message.content, null, 2));
   }
-  const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
-  const counts = new Map();
-  calls.forEach(call => {
-    const name = String(call?.name || "tool");
-    counts.set(name, (counts.get(name) || 0) + 1);
-  });
-  const callSummary = [...counts.entries()]
-    .map(([name, count]) => `<code>${escapeHtml(name)}${count > 1 ? ` ×${count}` : ""}</code>`)
-    .join("、");
-  const toolProgress = callSummary
-    ? `<div class="tool-call-progress">正在调用：${callSummary}</div>`
-    : "";
   const renderedContent = kind === "ai" ? renderAssistantContent(content) : content;
-  const rendered = `${renderedContent}${toolProgress}`;
-  const [kicker, label] = messageRoleLabel(kind, role);
+  const header = kind === "system"
+    ? `<header class="work-record-header"><span class="work-record-kicker">CONTEXT</span><span class="message-role">${escapeHtml(role || "系统上下文")}</span></header>`
+    : "";
   return `<article class="work-record message ${kind}">
-    <header class="work-record-header"><span class="work-record-kicker">${kicker}</span><span class="message-role">${escapeHtml(label)}</span></header>
+    ${header}
     ${renderMessageImages(messageImages)}${renderFileCards(message)}
-    <div class="message-content">${rendered}</div>
+    <div class="message-content">${renderedContent}</div>
     ${renderMessageDetails(message)}
   </article>`;
 }
@@ -824,15 +895,27 @@ function renderCompressionDivider(item) {
 
 function renderConversation(detail, task) {
   // 压缩块展开为来源原文渲染（保留原会话视觉），curation_synthetic 占位跳过
-  const rendered = compressionPanel.expandForConversation(detail.messages || [])
-    .map(item => (item.divider ? renderCompressionDivider(item) : renderMessage(item)))
-    .join("");
+  const renderedParts = [];
+  let messageGroup = [];
+  const flushMessages = () => {
+    renderedParts.push(...conversationEvents.normalize(messageGroup).map(item =>
+      item.type === "message" ? renderMessage(item.message) : conversationEvents.renderEvent(item)
+    ));
+    messageGroup = [];
+  };
+  for (const item of compressionPanel.expandForConversation(detail.messages || [])) {
+    if (!item.divider) { messageGroup.push(item); continue; }
+    flushMessages();
+    renderedParts.push(renderCompressionDivider(item));
+  }
+  flushMessages();
+  const rendered = renderedParts.join("");
   const messages = detail.messages?.length
     ? rendered
     : `<article class="work-record message system"><header class="work-record-header"><span class="work-record-kicker">READY</span><span class="message-role">任务已就绪</span></header><div class="message-content"><span class="muted">这是该工作区与线程的第一页。输入任务即可开始。</span><details class="message-details"><summary>工作区路径</summary><pre>${escapeHtml(task.workspace_path)}</pre></details></div></article>`;
   const streaming = [...state.streamBuffers.entries()]
-    .filter(([, buffer]) => buffer.taskId === task.task_id && buffer.text)
-    .map(([runId, buffer]) => `<article class="work-record message ai streaming" data-stream-run="${runId}"><header class="work-record-header"><span class="work-record-kicker">FOCUS</span><span class="message-role">助手</span><span class="ui-badge is-active">生成中</span></header><div class="message-content">${escapeHtml(buffer.text.replace(/\n{2,}/g, "\n"))}</div></article>`)
+    .filter(([, buffer]) => buffer.taskId === task.task_id && (buffer.text || buffer.reasoning))
+    .map(([runId, buffer]) => `<article class="work-record message ai streaming" data-stream-run="${runId}">${renderStreamingContent(buffer)}</article>`)
     .join("");
   return messages + streaming;
 }
@@ -850,7 +933,17 @@ function replaceConversation(task, messages) {
   if (pinned) conversation.scrollTop = conversation.scrollHeight;
 }
 
-function appendToken(envelope) {
+function renderStreamingContent(buffer) {
+  const reasoning = buffer.reasoning
+    ? conversationEvents.renderEvent({ type: "reasoning", content: buffer.reasoning })
+    : "";
+  const answer = buffer.text
+    ? `<div class="message-content">${escapeHtml(buffer.text.replace(/\n{2,}/g, "\n"))}</div>`
+    : "";
+  return `<header class="work-record-header"><span class="ui-badge is-active">生成中</span></header>${reasoning}${answer}`;
+}
+
+function appendStreamDelta(envelope, field) {
   const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
   const content = envelope.data?.content;
   const messageId = envelope.data?.message_id;
@@ -858,8 +951,8 @@ function appendToken(envelope) {
   if (typeof messageId === "string" && messageId.startsWith("commitment-stage-")) return;
   if (!task || !content || !envelope.agent_id.startsWith("main:")) return;
   beginLeadExecution(task.task_id);
-  const buffer = state.streamBuffers.get(envelope.run_id) || { taskId: task.task_id, text: "" };
-  buffer.text += content;
+  const buffer = state.streamBuffers.get(envelope.run_id) || { taskId: task.task_id, text: "", reasoning: "" };
+  buffer[field] = (buffer[field] || "") + content;
   state.streamBuffers.set(envelope.run_id, buffer);
   if (state.streamFrames.has(envelope.run_id)) return;
   state.streamFrames.set(envelope.run_id, requestAnimationFrame(() => {
@@ -873,13 +966,15 @@ function appendToken(envelope) {
       article = document.createElement("article");
       article.className = "work-record message ai streaming";
       article.dataset.streamRun = envelope.run_id;
-      article.innerHTML = '<header class="work-record-header"><span class="work-record-kicker">FOCUS</span><span class="message-role">助手</span><span class="ui-badge is-active">生成中</span></header><div class="message-content"></div>';
       conversation.append(article);
     }
-    article.querySelector(".message-content").textContent = buffer.text.replace(/\n{2,}/g, "\n");
+    article.innerHTML = renderStreamingContent(buffer);
     if (pinned) conversation.scrollTop = conversation.scrollHeight;
   }));
 }
+
+function appendToken(envelope) { appendStreamDelta(envelope, "text"); }
+function appendReasoning(envelope) { appendStreamDelta(envelope, "reasoning"); }
 
 function clearStreamBuffer(runId) {
   const frame = state.streamFrames.get(runId);
@@ -932,18 +1027,33 @@ async function openAgentDetails(agentId) {
 
 async function refreshAgentDetails() {
   if (!state.agentDialog.agentId || state.agentDialog.busy) return;
+  const requestId = ++agentDetailsRequestSequence;
+  const agentId = state.agentDialog.agentId;
+  const taskId = state.activeTaskId;
   state.agentDialog.busy = true;
   renderAgentDialog();
   renderInspector();
   try {
     const [history, agents] = await Promise.all([
-      api(`/desktop/api/agents/${state.agentDialog.agentId}/history`),
-      api(`/desktop/api/tasks/${state.activeTaskId}/agents`),
+      api(`/desktop/api/agents/${agentId}/history`),
+      api(`/desktop/api/tasks/${taskId}/agents`),
     ]);
-    state.agents.set(state.activeTaskId, agents);
-    state.agentDialog.messages = history;
+    state.agents.set(taskId, agents);
+    if (requestId === agentDetailsRequestSequence
+        && state.activeTaskId === taskId
+        && state.agentDialog.agentId === agentId) {
+      state.agentDialog.messages = history;
+    }
   } catch (error) { setStatus(error.message, true); }
-  finally { state.agentDialog.busy = false; renderAgentDialog(); renderInspector(); }
+  finally {
+    if (requestId === agentDetailsRequestSequence
+        && state.activeTaskId === taskId
+        && state.agentDialog.agentId === agentId) {
+      state.agentDialog.busy = false;
+      renderAgentDialog();
+      renderInspector();
+    }
+  }
 }
 
 function renderAgentDialog() {
@@ -1016,34 +1126,37 @@ async function interruptMainRun() {
   }
 }
 
-async function debugAgentMenu(agentId) {
-  // 保留的高级操作通道：原 prompt 交互在 Electron 中被禁用，调用即抛错，此处显式提示
-  let choice;
-  try { choice = prompt("输入操作：history / retry / continue / cancel", "history"); }
-  catch { return setStatus("调试通道依赖 window.prompt，Electron 不支持，请使用详情面板操作", true); }
-  if (choice === "history") alert(JSON.stringify(await api(`/desktop/api/agents/${agentId}/history`), null, 2));
-  if (choice === "retry") listenToRun(await api(`/desktop/api/agents/${agentId}/retry`, { method: "POST" }));
-  if (choice === "continue") { const message = prompt("继续对话内容"); if (message) listenToRun(await api(`/desktop/api/agents/${agentId}/continue`, { method: "POST", body: JSON.stringify({ message }) })); }
-  if (choice === "cancel") { const agent = agentFromState(agentId); if (agent?.latest_run) await api(`/desktop/api/runs/${agent.latest_run.run_id}/cancel`, { method: "POST" }); }
-}
-
 function renderPlugins() {
   const { plugins, interfaces, traces, filter, selectedName } = state.plugins;
   app.innerHTML = pluginView.render(plugins, interfaces, traces, { filter, selectedName });
 }
 
 async function hydratePlugins() {
+  const requestId = ++pluginHydrationSequence;
   try {
     const [data, traceData] = await Promise.all([
       api("/desktop/api/plugins"),
       api("/desktop/api/plugins/traces"),
     ]);
     const plugins = data.plugins || [];
+    if (requestId !== pluginHydrationSequence) return false;
     const selectedName = plugins.some(item => item.name === state.plugins.selectedName)
       ? state.plugins.selectedName
       : (plugins.find(item => item.status === "rejected" || item.status === "unavailable") || plugins[0])?.name || null;
     state.plugins = { plugins, interfaces: data.interfaces || {}, traces: traceData.traces || [], filter: state.plugins.filter || "all", selectedName };
-  } catch (error) { setStatus(error.message, true); }
+    return true;
+  } catch (error) { if (requestId === pluginHydrationSequence) setStatus(error.message, true); return false; }
+}
+
+async function openPluginsView() {
+  if (state.view === "focus") persistFocusState();
+  cancelPendingViewRequests();
+  const requestId = pluginViewRequestSequence;
+  state.inspector.open = false;
+  await hydratePlugins();
+  if (requestId !== pluginViewRequestSequence) return;
+  state.view = "plugins";
+  render();
 }
 
 function taskCardMarkup(task, draftMode = false) {
@@ -1116,20 +1229,25 @@ function renderMap() {
 }
 
 async function hydrateContextTrees() {
+  const requestId = ++contextTreeRequestSequence;
   const workspaceIds = [...new Set(state.tasks.map(task => task.workspace_id))];
   const trees = await Promise.all(workspaceIds.map(async workspaceId => [
     workspaceId,
     await api(`/desktop/api/workspaces/${workspaceId}/contexts/tree`),
   ]));
+  if (requestId !== contextTreeRequestSequence) return;
   trees.forEach(([workspaceId, tree]) => state.contextTrees.set(workspaceId, tree));
 }
 
 async function openContextEditor(contextId) {
   const task = state.tasks.find(item => item.task_id === contextId);
   if (!task) return;
+  const requestId = ++contextRequestSequence;
+  const navigationId = taskSwitchSequence;
   setStatus("读取 Context checkpoint…");
   try {
     const snapshot = await api(`/desktop/api/contexts/${contextId}/snapshot`);
+    if (requestId !== contextRequestSequence || navigationId !== taskSwitchSequence) return;
     if (!snapshot.checkpoint_id) throw new Error("该 Context 尚无可派生的已提交 checkpoint");
     state.contextDraft = {
       title: `${task.title} · 派生`,
@@ -1146,10 +1264,12 @@ async function openContextEditor(contextId) {
     state.view = "context";
     setStatus("");
     render();
-  } catch (error) { setStatus(error.message, true); }
+  } catch (error) { if (requestId === contextRequestSequence) setStatus(error.message, true); }
 }
 
 async function reopenContextDecision(contextId) {
+  const requestId = ++contextRequestSequence;
+  const navigationId = taskSwitchSequence;
   try {
     const detail = state.details.get(contextId) || await api(`/desktop/api/tasks/${contextId}`);
     const task = state.tasks.find(item => item.task_id === contextId);
@@ -1160,6 +1280,7 @@ async function reopenContextDecision(contextId) {
       const snapshot = await api(`/desktop/api/contexts/${source.context_id}/snapshot?checkpoint_id=${checkpoint}`);
       return { ...source, messages: contextEditor.cloneMessages(snapshot.messages) };
     }));
+    if (requestId !== contextRequestSequence || navigationId !== taskSwitchSequence) return;
     const messages = contextEditor.cloneMessages(detail.context.authored_messages || []);
     state.contextDraft = {
       title: task.title,
@@ -1175,7 +1296,7 @@ async function reopenContextDecision(contextId) {
     };
     state.view = "context";
     render();
-  } catch (error) { setStatus(error.message, true); }
+  } catch (error) { if (requestId === contextRequestSequence) setStatus(error.message, true); }
 }
 
 function syncContextDraft() {
@@ -1456,11 +1577,8 @@ async function decideContextProjection(decision) {
 async function openDerivedContext() {
   const contextId = state.contextDraft?.context?.context_id;
   if (!contextId) return;
-  state.activeTaskId = contextId;
   state.contextDraft = null;
-  state.view = "focus";
-  await hydrateActive();
-  render();
+  await switchTask(contextId);
 }
 
 function renderDraft() {
@@ -1512,12 +1630,15 @@ function renderEquipment(draft) {
 }
 
 async function openDraft(taskId) {
+  const requestId = ++draftOpenRequestSequence;
+  const navigationId = taskSwitchSequence;
   setStatus("复制 checkpoint…");
   try {
     const [draft, catalog] = await Promise.all([
       api(`/desktop/api/tasks/${taskId}/drafts/open`, { method: "POST" }),
       api(`/desktop/api/tasks/${taskId}/skills`),
     ]);
+    if (requestId !== draftOpenRequestSequence || navigationId !== taskSwitchSequence) return;
     state.activeTaskId = taskId;
     state.drafts.set(taskId, draft);
     state.skillCatalogs.set(taskId, catalog.skills);
@@ -1525,7 +1646,7 @@ async function openDraft(taskId) {
     state.soldierArmed = false;
     setStatus("");
     render();
-  } catch (error) { setStatus(error.message, true); }
+  } catch (error) { if (requestId === draftOpenRequestSequence) setStatus(error.message, true); }
 }
 
 function syncDraftFromDom() {
@@ -1546,32 +1667,51 @@ function syncDraftFromDom() {
 }
 
 function scheduleDraftSave() {
+  const taskId = state.activeTaskId;
+  syncDraftFromDom();
   clearTimeout(state.saveTimer);
+  const revision = (state.draftSaveRevisions.get(taskId) || 0) + 1;
+  state.draftSaveRevisions.set(taskId, revision);
   const indicator = document.querySelector("#draftSaveState");
   if (indicator) { indicator.textContent = "待保存"; indicator.className = "ui-badge is-warning"; }
-  state.saveTimer = setTimeout(saveDraft, 350);
+  state.saveTimer = setTimeout(() => saveDraft(taskId, { syncDom: false, revision }), 350);
 }
 
-async function saveDraft() {
-  const draft = syncDraftFromDom();
-  if (!draft) return;
+async function saveDraft(taskId = state.activeTaskId, options = {}) {
+  if (options.cancelTimer !== false) {
+    clearTimeout(state.saveTimer);
+    state.saveTimer = null;
+  }
+  const draft = options.syncDom === false || taskId !== state.activeTaskId || state.view !== "draft"
+    ? state.drafts.get(taskId)
+    : syncDraftFromDom();
+  if (!draft) return false;
+  const revision = options.revision ?? ((state.draftSaveRevisions.get(taskId) || 0) + 1);
+  state.draftSaveRevisions.set(taskId, Math.max(revision, state.draftSaveRevisions.get(taskId) || 0));
+  const payload = {
+    system_prompt: draft.system_prompt,
+    history_messages: draft.history_messages,
+    final_human_message: draft.final_human_message,
+    equipment: draft.equipment,
+  };
   try {
-    const saved = await api(`/desktop/api/drafts/${draft.draft_id}`, { method: "PUT", body: JSON.stringify({
-      system_prompt: draft.system_prompt,
-      history_messages: draft.history_messages,
-      final_human_message: draft.final_human_message,
-      equipment: draft.equipment,
-    }) });
-    state.drafts.set(state.activeTaskId, saved);
-    const counter = document.querySelector("#tokenCount");
-    if (counter) { counter.textContent = `估算 ${saved.token_estimate} tokens`; updateTokenState(); }
-    const indicator = document.querySelector("#draftSaveState");
-    if (indicator) { indicator.textContent = "已自动保存"; indicator.className = "ui-badge is-success"; }
-    setStatus("草稿已保存");
+    const saved = await api(`/desktop/api/drafts/${draft.draft_id}`, { method: "PUT", body: JSON.stringify(payload) });
+    if (state.draftSaveRevisions.get(taskId) === revision) {
+      state.drafts.set(taskId, { ...saved, deployment_id: draft.deployment_id || saved.deployment_id });
+      if (state.activeTaskId === taskId && state.view === "draft") {
+        const counter = document.querySelector("#tokenCount");
+        if (counter) { counter.textContent = `估算 ${saved.token_estimate} tokens`; updateTokenState(); }
+        const indicator = document.querySelector("#draftSaveState");
+        if (indicator) { indicator.textContent = "已自动保存"; indicator.className = "ui-badge is-success"; }
+      }
+      setStatus("草稿已保存");
+    }
+    return true;
   } catch (error) {
-    const indicator = document.querySelector("#draftSaveState");
-    if (indicator) { indicator.textContent = "保存失败"; indicator.className = "ui-badge is-danger"; }
+    const indicator = state.activeTaskId === taskId ? document.querySelector("#draftSaveState") : null;
+    if (indicator) { indicator.textContent = "保存失败，可重试"; indicator.className = "ui-badge is-danger"; }
     setStatus(error.message, true);
+    return false;
   }
 }
 
@@ -1588,7 +1728,11 @@ async function deployDraft() {
   if (state.deploying) return;
   state.deploying = true;
   document.querySelector('[data-action="deploy"]')?.setAttribute("disabled", "");
-  await saveDraft();
+  if (!await saveDraft(state.activeTaskId)) {
+    state.deploying = false;
+    updateTokenState();
+    return;
+  }
   const draft = state.drafts.get(state.activeTaskId);
   if (!draft.final_human_message.trim()) {
     state.deploying = false;
@@ -1607,7 +1751,7 @@ async function deployDraft() {
   finally { state.deploying = false; updateTokenState(); }
 }
 
-async function sendMain() {
+async function sendMainOnce() {
   adoptCommitmentContext();
   if (activeTaskHasCommitmentLock()) {
     return setStatus("存在尚未处理的承诺流程，请先处理审批面板", true);
@@ -1640,8 +1784,10 @@ async function sendMain() {
   }
   // f19 dsh-eyes:插件前端粘贴的待发图片以 image_url 内容块随消息发送
   // (纯文本时保持原形态;取走即清空插件队列)
-  const pendingImages = typeof window.__dshEyesTakePendingImages === "function"
-    ? window.__dshEyesTakePendingImages()
+  const pendingImages = typeof window.__dshEyesPeekPendingImages === "function"
+    ? window.__dshEyesPeekPendingImages()
+    : typeof window.__dshEyesTakePendingImages === "function"
+      ? window.__dshEyesTakePendingImages()
     : [];
   // f19 dsh-eyes:预计算 attachment_id(与后端剥离同算法 sha1(url) 前 12 位),
   // 存本地映射供消息区把引用还原为缩略图(values 快照会用后端剥离后的引用覆盖本地消息)
@@ -1670,6 +1816,7 @@ async function sendMain() {
     if (detail.context) detail.context.editable = false;
     // 运行已发起：立即暴露中断入口（否则运行中 active_run 仍为旧值，按钮不渲染）
     detail.active_run = run;
+    window.__dshEyesCommitPendingImages?.();
     state.composerErrors.delete(state.activeTaskId);
     detail.messages = [...(detail.messages || []), { role: "human", content: messagePayload }];
     detail.ui_state = { ...(detail.ui_state || {}), input: "", skills: [] };
@@ -1677,6 +1824,12 @@ async function sendMain() {
     persistFocusState();
     listenToRun(run);
   } catch (error) { setStatus(error.message, true); setComposerError(error.message); }
+}
+
+function sendMain() {
+  if (state.mainSubmitting) return Promise.resolve();
+  state.mainSubmitting = true;
+  return sendMainOnce().finally(() => { state.mainSubmitting = false; });
 }
 
 const COMMITMENT_STAGE_NAMES = {
@@ -1688,11 +1841,28 @@ const TRACE_ACTORS = { supervisor: "Supervisor", worker: "Worker", evaluator: "E
 function listenToRun(run) {
   if (state.streams.has(run.run_id)) return;
   let runError = null;
+  const parseEvent = (event, fallback = null) => {
+    if (!event?.data) return fallback;
+    try { return JSON.parse(event.data); }
+    catch {
+      runError = "运行流返回了无法解析的数据";
+      setStatus(runError, true);
+      return fallback;
+    }
+  };
   const source = new EventSource(`${runtime.apiBase}/desktop/api/runs/${run.run_id}/stream?session=${encodeURIComponent(runtime.session)}`);
   state.streams.set(run.run_id, source);
-  source.addEventListener("tokens", event => appendToken(JSON.parse(event.data)));
+  source.addEventListener("tokens", event => {
+    const token = parseEvent(event);
+    if (token) appendToken(token);
+  });
+  source.addEventListener("reasoning", event => {
+    const reasoning = parseEvent(event);
+    if (reasoning) appendReasoning(reasoning);
+  });
   source.addEventListener("events", event => {
-    const envelope = JSON.parse(event.data);
+    const envelope = parseEvent(event);
+    if (!envelope) return;
     const payload = envelope.data;
     if (payload && payload.type === "commitment_messages") {
       if (commitmentBelongsToTask(envelope)) appendCommitmentMessages(payload);
@@ -1707,7 +1877,8 @@ function listenToRun(run) {
     }
   });
   source.addEventListener("interrupt", event => {
-    const envelope = JSON.parse(event.data);
+    const envelope = parseEvent(event);
+    if (!envelope) return;
     const value = envelope.data?.value;
     if (!value) return;
     if (value.type === "commitment_review") {
@@ -1723,12 +1894,12 @@ function listenToRun(run) {
   });
   source.addEventListener("error", event => {
     if (!event.data) return;
-    const error = JSON.parse(event.data).data?.error || "运行失败";
+    const error = parseEvent(event)?.data?.error || "运行失败";
     runError = error;
     setStatus(error, true);
   });
   source.addEventListener("end", async event => {
-    const terminal = event.data ? JSON.parse(event.data) : { status: "error", error: "运行流异常结束" };
+    const terminal = parseEvent(event, { status: "error", error: "运行流异常结束" });
     if (!terminal.error && runError) terminal.error = runError;
     // 主动中断判定：主 Agent run 终态 interrupted 且无错误、且非承诺审批（审批面板已接管界面状态）
     const wasMainInterrupted = run.kind === "main" && terminal.status === "interrupted" && !terminal.error;
@@ -2398,12 +2569,15 @@ function compressionBelongsToTask(envelope) {
 async function openCompressionView(task, request) {
   if (!task) return setStatus("当前没有活动任务", true);
   if (state.compression.busy && state.compression.taskId === task.task_id) return;
+  const requestId = ++compressionRequestSequence;
+  const navigationId = taskSwitchSequence;
   try {
-    if (state.activeTaskId !== task.task_id) state.activeTaskId = task.task_id;
     const [detail, snapshot] = await Promise.all([
       api(`/desktop/api/tasks/${task.task_id}`),
       api(`/desktop/api/tasks/${task.task_id}/messages`),
     ]);
+    if (requestId !== compressionRequestSequence || navigationId !== taskSwitchSequence) return;
+    state.activeTaskId = task.task_id;
     state.compression = {
       taskId: task.task_id,
       request: request || detail.pending_compression || null,
@@ -2420,6 +2594,7 @@ async function openCompressionView(task, request) {
 }
 
 function closeCompressionView() {
+  compressionRequestSequence += 1;
   state.compression = {
     taskId: null, request: null, messages: [], selected: new Set(),
     ranges: [], busy: false, recovery: null,
@@ -2477,10 +2652,12 @@ function renderCompressionNested(messages, level = 0) {
 
 function renderCompressionMessages() {
   const c = state.compression;
+  const plannedSourceIds = new Set(c.ranges.flatMap(range => range.source_ids || []));
   return c.messages.map((message, index) => {
     const isBlock = Boolean(message.compression);
-    return `<label class="compression-message-row${isBlock ? " is-block" : ""}${message.compression?.deleted ? " is-deleted" : ""}${message.curation_synthetic ? " is-synthetic" : ""}">
-      <input type="checkbox" data-action="toggle-compress-message" data-index="${index}" ${c.selected.has(index) ? "checked" : ""}>
+    const planned = plannedSourceIds.has(message.id);
+    return `<label class="compression-message-row${isBlock ? " is-block" : ""}${message.compression?.deleted ? " is-deleted" : ""}${message.curation_synthetic ? " is-synthetic" : ""}${planned ? " is-planned" : ""}">
+      <input type="checkbox" data-action="toggle-compress-message" data-index="${index}" ${c.selected.has(index) ? "checked" : ""} ${planned ? "disabled title=\"已加入变更计划\"" : ""}>
       <span class="compression-index">${String(index + 1).padStart(2, "0")}</span>
       <span class="compression-role">${escapeHtml(compressionRoleLabel(message))}</span>
       <span class="compression-body">
@@ -2530,9 +2707,11 @@ function renderCompressionRanges() {
 }
 
 function compressionReady() {
-  return state.compression.ranges.length > 0 && state.compression.ranges.every(range =>
-    range.restore || range.delete || String(range.replacement || "").trim()
-  );
+  const ranges = state.compression.ranges;
+  const allSourceIds = ranges.flatMap(range => range.source_ids || []);
+  return ranges.length > 0
+    && new Set(allSourceIds).size === allSourceIds.length
+    && ranges.every(range => range.restore || range.delete || String(range.replacement || "").trim());
 }
 
 function renderCompress() {
@@ -2562,6 +2741,7 @@ function renderCompress() {
           <header class="compression-panel-heading"><div><span class="workspace-kicker">01 · SOURCE</span><strong>选择原始消息</strong></div><span>${c.messages.length} 条</span></header>
           <div class="compression-message-list">${renderCompressionMessages()}</div>
           <footer>
+            <button class="text-button danger" data-action="compression-delete-selection" ${c.selected.size ? "" : "disabled"}>直接删除</button>
             <button class="primary" data-action="compression-join-selection" ${c.selected.size ? "" : "disabled"}>加入计划（${compressionPanel.selectionRanges(c.selected).length} 个范围）</button>
           </footer>
         </aside>
@@ -2601,13 +2781,14 @@ function refreshCompressionStats() {
 
 function joinCompressionSelection() {
   const c = state.compression;
+  const plannedSourceIds = new Set(c.ranges.flatMap(range => range.source_ids || []));
   const ranges = compressionPanel.selectionRanges(c.selected).map(range => ({
     source_ids: c.messages.slice(range.start, range.end + 1).map(message => message.id),
     replacement: "",
     generated: false,
     restore: false,
     summarizing: false,
-  }));
+  })).filter(range => range.source_ids.every(id => !plannedSourceIds.has(id)));
   c.ranges.push(...ranges);
   c.selected = new Set();
   renderCompress();
@@ -2615,10 +2796,11 @@ function joinCompressionSelection() {
 
 function deleteCompressionSelection() {
   const c = state.compression;
+  const plannedSourceIds = new Set(c.ranges.flatMap(range => range.source_ids || []));
   const ranges = compressionPanel.selectionRanges(c.selected).map(range => ({
     source_ids: c.messages.slice(range.start, range.end + 1).map(message => message.id),
     delete: true,
-  }));
+  })).filter(range => range.source_ids.every(id => !plannedSourceIds.has(id)));
   c.ranges.push(...ranges);
   c.selected = new Set();
   renderCompress();
@@ -2692,15 +2874,23 @@ async function refreshTasks() { state.tasks = await api("/desktop/api/tasks"); }
 
 async function createTask(event) {
   event.preventDefault();
+  if (state.creatingTask) return;
   const path = document.querySelector("#workspacePath").value.trim();
   const title = document.querySelector("#threadTitle").value.trim();
   if (!path || !title) return;
+  state.creatingTask = true;
+  const submit = document.querySelector('#taskForm button[type="submit"]');
+  if (submit) submit.disabled = true;
   try {
     const workspace = await api("/desktop/api/workspaces", { method: "POST", body: JSON.stringify({ path }) });
     const task = await api(`/desktop/api/workspaces/${workspace.workspace_id}/threads`, { method: "POST", body: JSON.stringify({ title }) });
     dialog.close(); state.tasks.push(task); state.activeTaskId = task.task_id; state.view = "focus";
     await hydrateActive(); render();
   } catch (error) { setStatus(error.message, true); }
+  finally {
+    state.creatingTask = false;
+    if (submit?.isConnected) submit.disabled = false;
+  }
 }
 
 async function pickWorkspace() {
@@ -2714,6 +2904,7 @@ async function handleMaterialAction(button) {
   const row = button.closest("[data-material-id]");
   const materialId = row.dataset.materialId;
   const material = (state.materials.get(state.activeTaskId) || []).find(item => item.material_id === materialId);
+  try {
   if (button.dataset.action === "toggle-material") { state.openMaterial = state.openMaterial === materialId ? null : materialId; return renderFocus(); }
   if (button.dataset.action === "open-material") {
     // f18:材料「查看」→ 右侧文件面板(不再全屏替换)
@@ -2761,17 +2952,36 @@ async function handleMaterialAction(button) {
   if (button.dataset.action === "restore-version") {
     Object.assign(material, await api(`/desktop/api/materials/${materialId}/restore`, { method: "POST", body: JSON.stringify({ version_id: button.dataset.versionId }) })); renderFocus();
   }
+  } catch (error) {
+    setStatus(error.message, true);
+  }
 }
 
 async function switchTask(taskId) {
-  if (state.view === "focus") await persistFocusState();
+  const requestId = ++taskSwitchSequence;
+  cancelPendingViewRequests();
+  if (state.view === "focus") persistFocusState();
   state.filesPanel = null;
   state.activeTaskId = taskId;
   state.view = "focus";
-  await hydrateActive();
+  render();
+  await hydrateActive(taskId);
+  if (requestId !== taskSwitchSequence || state.activeTaskId !== taskId) return;
   const projectionStatus = state.details.get(taskId)?.context?.projection_status || "root";
   if (!["root", "valid", "repaired", "approved"].includes(projectionStatus)) return reopenContextDecision(taskId);
   render();
+}
+
+async function goFocusHome() {
+  const taskId = state.activeTaskId;
+  if (!taskId) return;
+  if (state.view === "focus") persistFocusState();
+  cancelPendingViewRequests();
+  state.inspector.open = false;
+  state.view = "focus";
+  render();
+  await hydrateActive(taskId);
+  if (state.activeTaskId === taskId && state.view === "focus") render();
 }
 
 // f18:拦截消息内链接导航(避免 Electron 窗口跳转到本地路径白屏)。
@@ -2791,7 +3001,13 @@ document.addEventListener("click", event => {
     || /[一-鿿]/.test(hostPart)
   );
   if (!isHttp && !href.startsWith("file:")) return; // 非 http/file 链接不处理
-  if (isHttp && !looksLikeFileHost) return;          // 真实外链放行
+  if (isHttp && !looksLikeFileHost) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof window.focusDesktop?.openExternal !== "function") return setStatus("当前运行环境无法打开外部链接", true);
+    Promise.resolve(window.focusDesktop.openExternal(href)).catch(error => setStatus(error.message, true));
+    return;
+  }
   event.preventDefault();
   event.stopPropagation();
   // 显示文字可能含图标/说明,路径只取自 href(file URL)或兼容分支的 host。
@@ -2801,7 +3017,7 @@ document.addEventListener("click", event => {
     const material = (state.materials.get(taskId) || [])
       .find(item => item.relative_path === fileName || item.path === fileName);
     const target = material ? { ...material } : { relative_path: fileName, path: fileName };
-    if (!pluginViewForMaterial(target)) return;
+    if (!pluginViewForMaterial(target)) return setStatus("当前没有启用的文件查看器", true);
     state.filesPanel = target;
     render();
   }
@@ -2821,16 +3037,17 @@ document.addEventListener("click", async event => {
   const action = button.dataset.action;
   if (action === "reload") return bootstrap();
   if (action === "new-task") return dialog.showModal();
+  if (action === "close-task-dialog") return dialog.close();
   if (action === "pick-workspace") return pickWorkspace();
   if (action === "select-skill") return selectSkill(button.dataset.pickerKind, button.dataset.skillName);
   if (action === "select-commit") return selectCommitCommand(button.dataset.pickerKind);
   if (action === "remove-skill") return removeSkill(button.dataset.pickerKind, button.dataset.skillName);
-  if (action === "show-map") { persistFocusState(); state.inspector.open = false; state.view = "map"; return render(); }
+  if (action === "show-map") { if (state.view === "focus") persistFocusState(); cancelPendingViewRequests(); state.inspector.open = false; state.view = "map"; return render(); }
   if (action === "show-contexts") return openInspector("context", button);
   if (action === "show-agents") return openInspector("agents", button);
   if (action === "open-inspector-tab") return openInspector(button.dataset.inspectorTab, button);
   if (action === "close-inspector") return closeInspector();
-  if (action === "show-plugins") { state.inspector.open = false; await hydratePlugins(); state.view = "plugins"; return render(); }
+  if (action === "show-plugins") return openPluginsView();
   if (action === "refresh-plugins") { await hydratePlugins(); return render(); }
   if (action === "filter-plugins") {
     state.plugins.filter = button.dataset.pluginStatus || "all";
@@ -2842,7 +3059,7 @@ document.addEventListener("click", async event => {
     state.plugins.selectedName = button.dataset.pluginName || null;
     return renderPlugins();
   }
-  if (action === "focus-home" && state.activeTaskId) { state.inspector.open = false; state.view = "focus"; await hydrateActive(); return render(); }
+  if (action === "focus-home" && state.activeTaskId) return goFocusHome();
   if (action === "derive-context") return openContextEditor(state.activeTaskId);
   if (action === "edit-context-definition") return reopenContextDecision(button.dataset.contextId);
   if (action === "context-rail-card") return switchTask(button.dataset.taskId);
@@ -2906,6 +3123,7 @@ document.addEventListener("click", async event => {
     return renderCompress();
   }
   if (action === "compression-join-selection") return joinCompressionSelection();
+  if (action === "compression-delete-selection") return deleteCompressionSelection();
   if (action === "delete-range") {
     const range = state.compression.ranges[Number(button.dataset.rangeIndex)];
     if (range) { range.delete = true; range.replacement = ""; range.summarizing = false; }
@@ -2934,7 +3152,7 @@ document.addEventListener("click", async event => {
   if (action === "confirm-compression") return confirmCompression();
   if (action === "cancel-compression") return cancelCompression();
   if (action === "abandon-commitment") return abandonCommitment();
-  if (action === "exit-draft") { await saveDraft(); state.view = "map"; return render(); }
+  if (action === "exit-draft") { if (await saveDraft(state.activeTaskId)) { state.view = "map"; return render(); } return; }
   if (action === "deploy") return deployDraft();
   if (action === "add-message") { syncDraftFromDom().history_messages.push({ role: "human", content: "" }); renderDraft(); scheduleDraftSave(); return; }
   if (action === "clear-history") { syncDraftFromDom().history_messages = []; renderDraft(); scheduleDraftSave(); return; }
@@ -2946,7 +3164,6 @@ document.addEventListener("click", async event => {
     renderDraft(); scheduleDraftSave(); return;
   }
   if (button.closest("[data-material-id]")) return handleMaterialAction(button);
-  if (action === "agent-menu" || action === "debug-agent-menu") return debugAgentMenu(button.dataset.agentId);
   if (action === "agent-details") return openAgentDetails(button.dataset.agentId);
   if (action === "agent-list") { state.agentDialog = { agentId: null, messages: [], busy: false }; return renderInspector(); }
   if (action === "close-agent-details") {
@@ -3009,8 +3226,18 @@ document.addEventListener("keydown", event => {
   }
   const input = event.target.closest("[data-skill-input]");
   if (!input) return;
+  const mainEnter = input.id === "mainInput" && event.key === "Enter";
+  if (mainEnter && (event.isComposing || event.keyCode === 229)) return;
+  if (mainEnter && (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey)) return;
+  const matches = pickerMatches(input);
   const action = skillPicker.keyAction(event.key);
-  if (!action || pickerMatches(input) === null) return;
+  if (!action || matches === null) {
+    if (mainEnter && matches === null) {
+      event.preventDefault();
+      sendMain();
+    }
+    return;
+  }
   const kind = input.dataset.skillInput;
   if (action === "close") {
     event.preventDefault();
@@ -3019,7 +3246,6 @@ document.addEventListener("keydown", event => {
     input.removeAttribute("aria-activedescendant");
     return;
   }
-  const matches = pickerMatches(input);
   const query = skillPicker.queryFromInput(input.value) || "";
   const commitCount = commitCommandVisible(query) ? 1 : 0;
   if (action === "next" || action === "previous") {

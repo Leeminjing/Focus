@@ -21,18 +21,6 @@ body { min-width: 840px; overflow: hidden; }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 
-.app-header {
-  height: 54px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 22px;
-  border-bottom: 1px solid var(--line-soft);
-  background: rgba(255, 255, 255, .94);
-  position: relative;
-  z-index: 10;
-}
-.brand { border: 0; background: transparent; font-size: 18px; font-weight: 650; padding: 7px 10px 7px 0; }
 .icon-button, .quiet-button {
   border: 1px solid transparent;
   background: transparent;
@@ -43,9 +31,6 @@ button { cursor: pointer; }
 }
 .icon-button:hover, .quiet-button:hover { border-color: var(--line); background: var(--panel); }
 .quiet-button { border-color: var(--line); background: var(--panel); }
-.global-status { margin-left: auto; font-size: 12px; color: var(--muted); text-align: right; }
-
-#app { height: calc(100vh - 54px); padding: 8px 16px 18px; }
 .primary {
   border: 1px solid var(--blue);
   border-radius: 7px;
@@ -58,28 +43,9 @@ button { cursor: pointer; }
 .muted { color: var(--muted); }
 .tiny { font-size: 12px; }
 
-.focus-shell {
-  width: 100%;
-  height: 100%;
-  margin: 0 auto;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr); /* f18:行高受容器约束,避免内容撑开面板超高 */
-  grid-template-columns: minmax(0, 1fr) 310px;
-  gap: 16px;
-}
-.focus-view {
-  width: 100%;
-  min-width: 0;
-  min-height: 0;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-  gap: 14px;
-}
-.conversation { grid-row: 3; min-height: 0; overflow: auto; padding: 58px clamp(32px, 12%, 150px) 14px; display: flex; flex-direction: column; align-items: stretch; }
 .message { width: min(100%, 720px); margin: 0 0 22px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message-role { display: block; font-weight: 650; margin-bottom: 8px; }
 .message-content { white-space: pre-wrap; }
-.message.human { align-self: flex-end; width: fit-content; max-width: 78%; }
 .message.human .message-role { margin: 0 8px 5px; color: var(--muted); font-size: 12px; text-align: right; }
 .message.human .message-content { padding: 10px 14px; border: 1px solid #dfe6f0; border-radius: 14px 14px 4px 14px; background: #f0f4fa; }
 .message.ai { align-self: flex-start; }
@@ -177,24 +143,6 @@ button { cursor: pointer; }
   text-align: center;
 }
 .context-rail-add:hover { border-color: var(--blue); background: var(--blue-soft); }
-.composer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  min-height: 56px;
-  border: 1px solid #c8cdd6;
-  border-radius: var(--radius);
-  background: var(--panel);
-  align-items: center;
-  overflow: visible;
-}
-.composer:focus-within { border-color: #76a9fb; box-shadow: 0 0 0 2px rgba(8, 103, 242, .08); }
-.composer textarea { border: 0; outline: 0; resize: none; padding: 16px 18px; min-height: 54px; max-height: 132px; background: transparent; }
-.composer-actions { display: flex; align-items: center; gap: 7px; padding-right: 10px; }
-.attach-button { border: 1px solid transparent; border-radius: 7px; padding: 6px 9px; color: var(--muted); font-size: 13px; cursor: pointer; }
-.attach-button:hover { border-color: var(--line); background: #fafbfc; color: var(--ink); }
-.send-button { border: 1px solid var(--blue); border-radius: 7px; background: var(--blue); color: #fff; padding: 6px 12px; font-size: 13px; font-weight: 650; }
-.send-button:hover { background: #005bd8; }
-
 .map-view, .draft-view { height: 100%; display: grid; gap: 20px; }
 .map-view { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
 .map-toolbar { display: flex; align-items: center; justify-content: center; height: 54px; }
@@ -208,8 +156,6 @@ button { cursor: pointer; }
   user-select: none;
 }
 .soldier-source[aria-pressed="true"] { background: var(--blue-soft); border-color: var(--blue); }
-.task-grid { min-height: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); border: 1px solid var(--line); border-radius: 4px; overflow: auto; }
-.task-card { min-height: 270px; border: 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--panel); text-align: left; padding: 30px; position: relative; transition: background .18s, opacity .18s, transform .22s; }
 .task-card:hover, .task-card:focus-visible { background: #f7faff; outline: 2px solid var(--blue); outline-offset: -2px; }
 .task-card.drop-target { background: var(--blue-soft); outline: 2px solid var(--blue); outline-offset: -2px; }
 .task-card.dimmed { opacity: .32; }
@@ -222,7 +168,6 @@ button { cursor: pointer; }
 .draft-map { min-height: 0; }
 .draft-map .task-grid { height: 100%; grid-template-columns: repeat(2, minmax(140px, 1fr)); }
 .draft-map .task-card { min-height: 220px; padding: 22px; }
-.draft-panel { min-height: 0; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; padding: 28px 30px; }
 .draft-heading { border-bottom: 1px solid var(--line); padding-bottom: 24px; }
 .draft-heading h1 { margin: 0 0 12px; font-size: 22px; font-weight: 600; }
 .run-indicator { color: var(--green); margin-right: 24px; }
@@ -263,13 +208,6 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
 .path-picker button, .dialog-actions button { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 9px 13px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .dialog-actions .primary { background: var(--blue); color: white; border-color: var(--blue); }
-
-@media (max-width: 1050px) {
-  .focus-shell { grid-template-columns: minmax(0, 1fr) 210px; gap: 10px; }
-  .conversation { padding-left: 8%; padding-right: 8%; }
-  .draft-view { grid-template-columns: 34% 1fr; gap: 10px; }
-  .draft-panel { padding: 20px; }
-}
 
 /* 小兵详情面板 */
 .agent-dialog { width: min(720px, calc(100vw - 60px)); max-height: min(720px, calc(100vh - 90px)); display: flex; flex-direction: column; }
@@ -380,10 +318,6 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
 
 /* 承诺面板在 flex 对话流中禁止收缩（overflow:hidden 会导致 min-height:0 被压塌） */
 .review-panel, .trace-panel { flex-shrink: 0; }
-.task-card {
-  margin-left: calc(var(--context-depth, 0) * 1.25rem);
-}
-
 .context-parent-tags {
   color: var(--muted, #6f746f);
   font-size: .72rem;

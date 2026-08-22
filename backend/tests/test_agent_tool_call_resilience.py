@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import ToolException
 
 os.environ.setdefault("OPENAI_API_KEY", "desktop-test")
 
@@ -54,6 +55,7 @@ def test_tool_error_middleware_classifies_recoverable_errors():
 
         result = await middleware.awrap_tool_call(_request("call-value"), value_error)
         assert isinstance(result, ToolMessage)
+        assert result.status == "error"
         assert result.tool_call_id == "call-value"
         assert "参数不属于当前任务" in str(result.content)
 
@@ -62,6 +64,7 @@ def test_tool_error_middleware_classifies_recoverable_errors():
 
         result = await middleware.awrap_tool_call(_request("call-409"), client_error)
         assert isinstance(result, ToolMessage)
+        assert result.status == "error"
         assert result.tool_call_id == "call-409"
         assert "该 Agent 已停止" in str(result.content)
 
@@ -75,6 +78,7 @@ def test_tool_error_middleware_classifies_recoverable_errors():
 
             result = await middleware.awrap_tool_call(_request(call_id), path_input_error)
             assert isinstance(result, ToolMessage)
+            assert result.status == "error"
             assert result.tool_call_id == call_id
             assert str(error) in str(result.content)
 
@@ -105,7 +109,7 @@ def test_parallel_tool_results_remain_message_complete():
         middleware = build_tool_error_middleware()
 
         async def fail(_request):
-            raise ValueError("该小兵不属于当前任务")
+            raise ToolException("路径不属于当前工作区: ../outside.txt")
 
         async def succeed(request):
             return ToolMessage(content="[]", tool_call_id=request.tool_call["id"])
@@ -124,6 +128,16 @@ def test_parallel_tool_results_remain_message_complete():
         ]
         validate_messages(messages)
         assert {messages[1]["tool_call_id"], messages[2]["tool_call_id"]} == {"call-fail", "call-ok"}
+        assert messages[1]["status"] == "error"
+
+        async def next_model(history):
+            assert history[-2].tool_call_id == "call-fail"
+            assert history[-2].status == "error"
+            assert history[-1].tool_call_id == "call-ok"
+            return AIMessage(content="越界路径不可用，我将改用工作区内文件。")
+
+        continuation = await next_model([failed, succeeded])
+        assert "改用工作区内" in continuation.content
 
     asyncio.run(run())
 

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
+from langchain_core.tools import ToolException
 
 from focus.tools.builtins.workspace_tools import (
     WORKSPACE_TOOLS,
@@ -82,8 +83,19 @@ def test_read_file_denied_without_read(tmp_path):
 def test_read_file_outside_workspace(tmp_path):
     outside = tmp_path.parent / "outside.txt"
     outside.write_text("secret", encoding="utf-8")
-    with pytest.raises(PermissionError, match="不属于当前工作区"):
+    with pytest.raises(ToolException, match="不属于当前工作区"):
         read_file.func(path=str(outside), runtime=_runtime(tmp_path, ["read"]))
+
+    result = asyncio.run(read_file.ainvoke({
+        "type": "tool_call",
+        "id": "outside-workspace",
+        "name": "read_file",
+        "args": {"path": str(outside), "runtime": _runtime(tmp_path, ["read"])},
+    }))
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert result.tool_call_id == "outside-workspace"
+    assert "不属于当前工作区" in result.content
 
 
 def test_write_file_permission_gate(tmp_path):

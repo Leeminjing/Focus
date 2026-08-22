@@ -48,12 +48,12 @@
   --space-8: 32px;
   --space-10: 40px;
 
-  --radius-control: 7px;
-  --radius-card: 11px;
-  --radius-panel: 14px;
+  --radius-control: 6px;
+  --radius-card: 8px;
+  --radius-panel: 10px;
   --radius-round: 999px;
 
-  --shadow-raised: 0 1px 2px rgb(20 31 48 / 5%), 0 8px 24px rgb(20 31 48 / 7%);
+  --shadow-raised: 0 1px 3px rgb(20 31 48 / 7%);
   --shadow-overlay: 0 16px 48px rgb(20 31 48 / 18%);
   --focus-ring: 0 0 0 3px rgb(11 108 245 / 20%);
 
@@ -61,12 +61,12 @@
   --motion-standard: 170ms;
   --ease-standard: cubic-bezier(.2, .7, .2, 1);
 
-  --shell-header-height: 58px;
-  --shell-nav-width: 188px;
-  --shell-nav-collapsed: 72px;
-  --inspector-width: clamp(292px, 25vw, 380px);
-  --reading-width: 780px;
-  --composer-width: 920px;
+  --shell-header-height: 52px;
+  --shell-nav-width: 164px;
+  --shell-nav-collapsed: 56px;
+  --inspector-width: clamp(276px, 22vw, 360px);
+  --reading-width: 760px;
+  --composer-width: 900px;
 
   /* 迁移期兼容旧宿主变量。 */
   --bg: var(--surface-canvas);
