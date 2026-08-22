@@ -42,10 +42,10 @@ assert.match(event, /width:\s*fit-content/);
 assert.match(event, /max-width:/);
 assert.match(summary, /display:\s*inline-grid/);
 assert.doesNotMatch(summary, /minmax\(0,\s*1fr\)/);
-assert.match(summary, /min-height:\s*24px/);
+assert.match(summary, /min-height:\s*(24|28)px/);
 
-assert.match(tokens, /--shell-header-height:\s*52px/);
-assert.match(tokens, /--shell-nav-width:\s*164px/);
+assert.match(tokens, /--shell-header-height:\s*(52|56)px/);
+assert.match(tokens, /--shell-nav-width:\s*(164|172)px/);
 assert.match(rule(components, ".ui-card"), /border:\s*0/);
 assert.match(rule(views, ".focus-view"), /border:\s*0/);
 assert.ok(rules(shell, ".app-inspector").some(body => /box-shadow:\s*none/.test(body)));

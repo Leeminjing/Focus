@@ -24,14 +24,15 @@
   max-height: 240px;
   overflow-y: auto;
   border: 1px solid #c8cdd6;
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 12px 32px rgba(20, 35, 60, .14);
+  border-radius: var(--radius-panel, 12px);
+  background: var(--surface-base, #fff);
+  box-shadow: var(--shadow-overlay, 0 12px 32px rgba(20, 35, 60, .14));
   padding: 5px;
 }
 .skill-menu[hidden] { display: none; }
-.skill-option { display: grid; gap: 3px; width: 100%; border: 0; border-radius: 6px; background: transparent; padding: 9px 10px; text-align: left; }
-.skill-option:hover, .skill-option.is-active { background: #eef5ff; }
+.skill-option { display: grid; gap: 3px; width: 100%; border: 0; border-radius: var(--radius-control, 8px); background: transparent; padding: 9px 10px; text-align: left; transition: color var(--motion-fast, 120ms) var(--ease-standard, ease), background-color var(--motion-fast, 120ms) var(--ease-standard, ease); }
+.skill-option:hover { background: var(--surface-subtle, #f8fafc); }
+.skill-option.is-active { color: var(--text-primary, #18202d); background: var(--surface-selected, #e9eef4); }
 .skill-option-name { font-size: 13px; font-weight: 650; }
 .skill-option-description { color: #737986; font-size: 12px; line-height: 1.35; }
 .skill-empty { padding: 14px 10px; color: #737986; font-size: 12px; }

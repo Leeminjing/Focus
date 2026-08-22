@@ -125,7 +125,7 @@
 .file-panel .spatial-done .spatial-marker-icon,
 .spatial-viewer .spatial-done .spatial-marker-icon { color: var(--focus-plugin-success); }
 .file-panel .spatial-dismissed,
-.spatial-viewer .spatial-dismissed { opacity: 0; transition: opacity 200ms ease; }
+.spatial-viewer .spatial-dismissed { opacity: 0; transition: opacity var(--focus-plugin-motion-fast, 120ms) ease; }
 
 .file-panel .spatial-picker,
 .spatial-viewer .spatial-picker { position: absolute; z-index: 5; display: flex; flex-direction: column; gap: 4px; padding: 6px; border: 1px solid var(--focus-plugin-border); border-radius: var(--focus-plugin-radius); background: var(--focus-plugin-surface); box-shadow: var(--focus-plugin-shadow); }

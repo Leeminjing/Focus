@@ -106,13 +106,14 @@ button { cursor: pointer; }
   display: grid;
   width: 100%;
   margin: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
+  border: 1px solid var(--border-default, #dce2e9);
+  border-radius: var(--radius-control, 8px);
   background: var(--panel);
   padding: 12px;
   text-align: left;
 }
 .context-rail-item.is-editable .context-rail-card { padding-right: 54px; }
+.context-rail-card { justify-content: stretch; justify-items: stretch; }
 .context-rail-edit {
   position: absolute;
   top: 8px;
@@ -126,11 +127,11 @@ button { cursor: pointer; }
 }
 .context-rail-edit:hover { background: rgb(70 120 240 / 9%); }
 .context-rail-edit:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
-.context-rail-card:hover { border-color: #aeb9c9; background: #fafcff; }
+.context-rail-card:hover { border-color: var(--border-strong, #c9d1dc); background: #fafcff; }
 .context-rail-card:focus-visible,
 .context-rail-add:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-.context-rail-card.is-current { border-color: var(--blue); background: var(--blue-soft); }
-.context-rail-card.is-blocked { border-color: #d2b46f; }
+.context-rail-card.is-current { border-color: var(--border-accent, #77aef7); background: var(--surface-accent, #edf5ff); }
+.context-rail-card.is-blocked { border-color: var(--border-warning, #e2bb79); background: var(--surface-warning, #fff7e8); }
 .context-rail-title { overflow: hidden; font-size: 14px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .context-rail-meta,
 .context-rail-parents { margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.35; }
@@ -138,6 +139,8 @@ button { cursor: pointer; }
 .context-rail-add {
   width: 100%;
   margin: 0 0 8px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
   border-style: dashed;
   color: var(--blue);
   text-align: center;
@@ -310,7 +313,7 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
 .revision-form[hidden] { display: none; }
 .segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; width: fit-content; }
 .segmented button { border: 0; background: #fff; padding: 6px 14px; font-size: 12px; cursor: pointer; }
-.segmented button.active { background: var(--blue); color: white; }
+.segmented button.active { background: var(--surface-selected, #e9eef4); color: var(--ink); }
 .revision-input { width: 100%; box-sizing: border-box; border: 1px solid var(--line); border-radius: 6px; padding: 10px; font: inherit; resize: vertical; }
 .revision-footer { display: flex; justify-content: flex-end; gap: 8px; }
 .review-panel.review-submitted { opacity: 0.6; }
@@ -395,7 +398,7 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.context-source-tab.is-active { border-color: #cbd9fb; color: var(--blue); background: var(--blue-soft); }
+.context-source-tab.is-active { border-color: var(--line); color: var(--ink); background: var(--surface-selected, #e9eef4); }
 .context-source-remove { margin-left: -5px; border: 0; color: var(--muted); background: transparent; }
 
 .context-source-message-list {

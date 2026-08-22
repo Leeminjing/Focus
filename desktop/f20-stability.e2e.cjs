@@ -85,18 +85,22 @@ async function run() {
     state.panelWidth = 9999;
     state.filesPanel = { relative_path: 'README.md', path: 'README.md' };
     render();
-    const main = document.querySelector('.focus-view').getBoundingClientRect();
+    const mainNode = document.querySelector('.focus-view');
+    const main = mainNode.getBoundingClientRect();
     const file = document.querySelector('.file-panel').getBoundingClientRect();
+    const shell = document.querySelector('.focus-shell').getBoundingClientRect();
     return {
       mainWidth: main.width,
+      mainDisplay: getComputedStyle(mainNode).display,
       fileWidth: file.width,
+      shellWidth: shell.width,
       viewport: innerWidth,
       overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
       stored: state.panelWidth,
     };
   })()`);
-  if (panel.mainWidth < 320 || panel.fileWidth > panel.viewport * 0.62 || panel.overflow > 1 || !Number.isFinite(panel.stored)) {
-    failures.push(`非法持久宽度会挤毁文件工作台(main=${panel.mainWidth}, file=${panel.fileWidth}, overflow=${panel.overflow})`);
+  if (panel.mainDisplay !== "none" || Math.abs(panel.fileWidth - panel.shellWidth) > 1 || panel.overflow > 1 || !Number.isFinite(panel.stored)) {
+    failures.push(`中小窗口文件工作台没有保持单工作面：${JSON.stringify(panel)}`);
   }
 
   const fallback = await evaluate(win, `(() => {

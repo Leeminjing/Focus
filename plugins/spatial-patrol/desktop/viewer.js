@@ -175,10 +175,10 @@
     app.innerHTML = `
       <section class="spatial-viewer" data-viewer-task="${escapeHtml(state.task?.task_id || "")}">
         <header class="spatial-toolbar">
-          <button type="button" class="text-button" data-spatial-action="close">← 返回任务</button>
+          <button type="button" class="text-button" data-spatial-action="close"><span class="ui-icon is-sm icon-chevron-left" aria-hidden="true"></span>返回任务</button>
           <span class="spatial-title"><span class="workspace-kicker">FILE WORKBENCH</span><strong>${escapeHtml(state.material.relative_path)}</strong>${pdf ? `<small>第 ${state.page} 页</small>` : ""}</span>
-          <span class="spatial-zoom" aria-label="缩放"><button type="button" data-spatial-action="zoom-out" aria-label="缩小">−</button><span id="spatialZoomLabel">${Math.round(state.zoom * 100)}%</span><button type="button" data-spatial-action="zoom-in" aria-label="放大">＋</button></span>
-          ${pdf ? `<span class="spatial-pages"><button type="button" data-spatial-action="prev-page" ${state.page <= 1 ? "disabled" : ""}>◀</button><span id="spatialPageLabel">${state.page}/${state.pageCount}</span><button type="button" data-spatial-action="next-page" ${state.page >= state.pageCount ? "disabled" : ""}>▶</button></span>` : ""}
+          <span class="spatial-zoom" aria-label="缩放"><button type="button" data-spatial-action="zoom-out" aria-label="缩小"><span class="ui-icon is-sm icon-minus" aria-hidden="true"></span></button><span id="spatialZoomLabel">${Math.round(state.zoom * 100)}%</span><button type="button" data-spatial-action="zoom-in" aria-label="放大"><span class="ui-icon is-sm icon-plus" aria-hidden="true"></span></button></span>
+          ${pdf ? `<span class="spatial-pages"><button type="button" data-spatial-action="prev-page" aria-label="上一页" ${state.page <= 1 ? "disabled" : ""}><span class="ui-icon is-sm icon-chevron-left" aria-hidden="true"></span></button><span id="spatialPageLabel">${state.page}/${state.pageCount}</span><button type="button" data-spatial-action="next-page" aria-label="下一页" ${state.page >= state.pageCount ? "disabled" : ""}><span class="ui-icon is-sm icon-chevron-right" aria-hidden="true"></span></button></span>` : ""}
         </header>
         <div class="spatial-body">
           <div class="spatial-stage" id="spatialStage">
@@ -713,8 +713,8 @@
       <header class="file-panel-head">
         <span class="file-panel-title" title="${escapeHtml(name)}"><span class="workspace-kicker">FILE WORKBENCH · ${typeLabel}</span><strong>${escapeHtml(name)}</strong></span>
         <span class="file-panel-tools">
-          ${!textType ? `<span class="spatial-zoom" aria-label="缩放"><button type="button" data-spatial-action="zoom-out" aria-label="缩小">−</button><span id="spatialZoomLabel">${Math.round(state.zoom * 100)}%</span><button type="button" data-spatial-action="zoom-in" aria-label="放大">＋</button></span>` : ""}
-          ${isPdf() ? `<span class="spatial-pages" aria-label="页码"><button type="button" data-spatial-action="prev-page" aria-label="上一页" ${state.page <= 1 ? "disabled" : ""}>←</button><span>${state.page}/${state.pageCount}</span><button type="button" data-spatial-action="next-page" aria-label="下一页" ${state.page >= state.pageCount ? "disabled" : ""}>→</button></span>` : ""}
+          ${!textType ? `<span class="spatial-zoom" aria-label="缩放"><button type="button" data-spatial-action="zoom-out" aria-label="缩小"><span class="ui-icon is-sm icon-minus" aria-hidden="true"></span></button><span id="spatialZoomLabel">${Math.round(state.zoom * 100)}%</span><button type="button" data-spatial-action="zoom-in" aria-label="放大"><span class="ui-icon is-sm icon-plus" aria-hidden="true"></span></button></span>` : ""}
+          ${isPdf() ? `<span class="spatial-pages" aria-label="页码"><button type="button" data-spatial-action="prev-page" aria-label="上一页" ${state.page <= 1 ? "disabled" : ""}><span class="ui-icon is-sm icon-chevron-left" aria-hidden="true"></span></button><span>${state.page}/${state.pageCount}</span><button type="button" data-spatial-action="next-page" aria-label="下一页" ${state.page >= state.pageCount ? "disabled" : ""}><span class="ui-icon is-sm icon-chevron-right" aria-hidden="true"></span></button></span>` : ""}
           <button type="button" class="text-button" data-panel-action="close" aria-label="关闭文件工作台">关闭</button>
         </span>
       </header>
