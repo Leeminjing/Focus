@@ -31,7 +31,7 @@
     const role = message && typeof message === "object" ? (message.role || "未指定角色") : "非法消息";
     return `<article class="context-source-message" data-context-source-index="${index}" data-source-context-id="${escapeHtml(contextId)}">
       <header><span><strong>${String(index + 1).padStart(2, "0")} · ${escapeHtml(role)}</strong>${protocolSummary(message) ? `<small>${escapeHtml(protocolSummary(message))}</small>` : ""}</span><span class="context-message-actions">
-        <button type="button" class="context-pointer-handle" data-context-pointer-handle data-context-drag-origin="source" aria-label="拖拽此来源消息到新 Context"${locked ? " disabled" : ""}>⠿</button>
+        <button type="button" class="context-pointer-handle" data-context-pointer-handle data-context-drag-origin="source" aria-label="拖拽此来源消息到新 Context"${locked ? " disabled" : ""}><span class="ui-icon is-sm icon-grip-vertical" aria-hidden="true"></span></button>
         <button type="button" class="text-button" data-action="context-source-copy"${locked ? " disabled" : ""}>加入</button>
       </span></header>
       <p class="context-message-preview">${escapeHtml(messagePreview(message))}</p>
@@ -47,7 +47,7 @@
     const role = message && typeof message === "object" ? (message.role || "未指定角色") : "非法消息";
     const expanded = uiKey === expandedKey;
     return `<article class="context-message-editor${expanded ? " is-expanded" : ""}" data-context-message-index="${index}" data-context-ui-key="${escapeHtml(uiKey)}">
-      <header><span><button type="button" class="context-pointer-handle" data-context-pointer-handle data-context-drag-origin="draft" aria-label="拖拽消息排序" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"${locked ? " disabled" : ""}>⠿</button><strong>${String(index + 1).padStart(2, "0")} · ${escapeHtml(role)}</strong>${protocolSummary(message) ? `<small>${escapeHtml(protocolSummary(message))}</small>` : ""}</span><span class="context-message-actions">
+      <header><span><button type="button" class="context-pointer-handle" data-context-pointer-handle data-context-drag-origin="draft" aria-label="拖拽消息排序" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"${locked ? " disabled" : ""}><span class="ui-icon is-sm icon-grip-vertical" aria-hidden="true"></span></button><strong>${String(index + 1).padStart(2, "0")} · ${escapeHtml(role)}</strong>${protocolSummary(message) ? `<small>${escapeHtml(protocolSummary(message))}</small>` : ""}</span><span class="context-message-actions">
         <button type="button" class="text-button" data-action="context-message-copy"${locked ? " disabled" : ""}>复制</button>
         <button type="button" class="text-button danger" data-action="context-message-delete"${locked ? " disabled" : ""}>删除</button>
       </span></header>

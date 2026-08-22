@@ -83,14 +83,20 @@ a:hover { color: var(--accent-hover); }
 }
 *::-webkit-scrollbar-thumb:hover { background-color: #7f8998; }
 
-@media (prefers-reduced-motion: reduce) {
+@media (prefers-reduced-motion: reduce), (update: slow) {
   *,
   *::before,
   *::after {
     scroll-behavior: auto !important;
-    animation-duration: .01ms !important;
+    animation: none !important;
+    animation-duration: 0s !important;
     animation-iteration-count: 1 !important;
-    transition-duration: .01ms !important;
+    transition-duration: 0s !important;
     transition-delay: 0ms !important;
   }
+
+  button:active,
+  dialog[open],
+  .app-inspector,
+  .conversation-event-detail { transform: none !important; }
 }

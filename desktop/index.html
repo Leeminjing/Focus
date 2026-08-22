@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="./skill-picker.css">
   <link rel="stylesheet" href="./styles/tokens.css">
   <link rel="stylesheet" href="./styles/base.css">
+  <link rel="stylesheet" href="./styles/icons.css">
   <link rel="stylesheet" href="./styles/components.css">
   <link rel="stylesheet" href="./styles/shell.css">
   <link rel="stylesheet" href="./styles/views.css">
@@ -27,40 +28,33 @@
         <span id="shellTaskMeta">本地 Agent 工作台</span>
       </div>
       <span id="globalStatus" class="global-status" role="status" aria-atomic="true"></span>
-      <button class="quiet-button" data-action="new-task">新增任务</button>
+      <button class="quiet-button" data-action="new-task"><span class="ui-icon is-sm icon-plus" aria-hidden="true"></span>新增任务</button>
     </header>
     <div class="app-shell">
       <nav id="appNavigation" class="app-navigation" aria-label="全局导航">
         <button class="app-nav-item" data-action="focus-home" data-nav-key="focus">
-          <span class="app-nav-icon" aria-hidden="true">⌂</span><span class="app-nav-label">任务</span>
+          <span class="app-nav-label">任务</span>
         </button>
         <button class="app-nav-item" data-action="show-map" data-nav-key="map">
-          <span class="app-nav-icon" aria-hidden="true">⊞</span><span class="app-nav-label">全图</span>
+          <span class="app-nav-label">全图</span>
         </button>
         <button class="app-nav-item" data-action="show-contexts" data-nav-key="contexts">
-          <span class="app-nav-icon" aria-hidden="true">⑂</span><span class="app-nav-label">Contexts</span>
+          <span class="app-nav-label">Contexts</span>
         </button>
         <button class="app-nav-item" data-action="show-agents" data-nav-key="agents">
-          <span class="app-nav-icon" aria-hidden="true">◎</span><span class="app-nav-label">Agents</span>
+          <span class="app-nav-label">Agents</span>
         </button>
         <button class="app-nav-item" data-action="show-plugins" data-nav-key="plugins">
-          <span class="app-nav-icon" aria-hidden="true">◇</span><span class="app-nav-label">Plugins</span>
+          <span class="app-nav-label">Plugins</span>
         </button>
       </nav>
       <section class="app-workspace">
-        <header class="workspace-context">
-          <div>
-            <span id="workspaceKicker" class="workspace-kicker">WORKSPACE</span>
-            <h1 id="workspaceTitle">任务</h1>
-          </div>
-          <span id="workspaceMeta" class="ui-meta"></span>
-        </header>
         <main id="app" tabindex="-1" aria-live="polite"></main>
       </section>
       <aside id="appInspector" class="app-inspector" tabindex="-1" aria-labelledby="inspectorTitle" hidden>
         <header class="inspector-header">
           <div><span class="workspace-kicker">INSPECTOR</span><h2 id="inspectorTitle">任务信息</h2></div>
-          <button class="icon-button" data-action="close-inspector" aria-label="关闭检查器">×</button>
+          <button class="icon-button" data-action="close-inspector" aria-label="关闭检查器"><span class="ui-icon icon-x" aria-hidden="true"></span></button>
         </header>
         <div class="inspector-tabs" role="tablist" aria-label="检查器内容">
           <button role="tab" data-action="open-inspector-tab" data-inspector-tab="context">Contexts</button>
@@ -89,7 +83,7 @@
         <h2>小兵详情</h2>
         <span class="muted tiny" id="agentDialogMeta"></span>
       </div>
-      <button class="quiet-button" data-action="close-agent-details" aria-label="关闭">×</button>
+      <button class="quiet-button" data-action="close-agent-details" aria-label="关闭"><span class="ui-icon icon-x" aria-hidden="true"></span></button>
     </header>
     <div class="agent-dialog-history" id="agentHistory"></div>
     <div class="agent-dialog-actions">

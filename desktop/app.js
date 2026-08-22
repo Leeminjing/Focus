@@ -83,9 +83,6 @@ const inspectorContent = document.querySelector("#inspectorContent");
 const inspectorTitle = document.querySelector("#inspectorTitle");
 const shellTaskTitle = document.querySelector("#shellTaskTitle");
 const shellTaskMeta = document.querySelector("#shellTaskMeta");
-const workspaceKicker = document.querySelector("#workspaceKicker");
-const workspaceTitle = document.querySelector("#workspaceTitle");
-const workspaceMeta = document.querySelector("#workspaceMeta");
 const dialog = document.querySelector("#taskDialog");
 const agentDialog = document.querySelector("#agentDialog");
 const skillPicker = window.FocusSkillPicker;
@@ -338,25 +335,12 @@ function activeNavigationKey() {
   return "focus";
 }
 
-function viewHeading() {
-  if (state.view === "map") return ["TASK MAP", "全图"];
-  if (state.view === "plugins") return ["PLUGINS", "插件中心"];
-  if (state.view === "draft") return ["AGENT DRAFT", "小兵草稿"];
-  if (state.view === "compress") return ["CONTEXT", "上下文压缩"];
-  if (state.view?.startsWith("context")) return ["CONTEXT", "Context 编辑"];
-  return ["WORKSPACE", "任务"];
-}
-
 function renderShellChrome() {
   const task = activeTask();
-  const [kicker, title] = viewHeading();
   if (shellTaskTitle) shellTaskTitle.textContent = task?.title || "尚未选择任务";
   if (shellTaskMeta) shellTaskMeta.textContent = task
     ? `${task.workspace_name || "本地工作区"} · ${task.task_id.slice(0, 8)}`
     : "本地 Agent 工作台";
-  if (workspaceKicker) workspaceKicker.textContent = kicker;
-  if (workspaceTitle) workspaceTitle.textContent = state.view === "focus" && task ? task.title : title;
-  if (workspaceMeta) workspaceMeta.textContent = task?.workspace_path || "";
   const current = activeNavigationKey();
   document.querySelectorAll?.("[data-nav-key]").forEach(button => {
     if (button.dataset.navKey === current) button.setAttribute("aria-current", "page");
@@ -418,7 +402,7 @@ function renderInspector() {
       const status = agent?.latest_run?.status || "ready";
       const presented = presentRunStatus(status);
       inspectorContent.innerHTML = `<section class="inspector-section agent-inspector-detail">
-        <header><button class="text-button" type="button" data-action="agent-list">← Agents</button><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></header>
+        <header><button class="text-button" type="button" data-action="agent-list"><span class="ui-icon is-sm icon-chevron-left" aria-hidden="true"></span>Agents</button><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></header>
         <div><h3>${agent ? `小兵 ${escapeHtml(agent.agent_id.slice(0, 8))}` : "Agent"}</h3><p class="ui-meta">${escapeHtml(agent?.checkpoint_ns || "")}</p></div>
         <div class="agent-detail-history">${state.agentDialog.busy ? '<p class="muted">加载中…</p>' : state.agentDialog.messages.length ? state.agentDialog.messages.map(renderMessage).join("") : '<p class="muted">暂无已提交消息</p>'}</div>
         <div class="ui-toolbar agent-detail-actions"><button class="text-button" data-action="refresh-agent-details">刷新</button><button class="text-button" data-action="retry-agent-details">重试</button><button class="text-button danger" data-action="cancel-agent-details">取消运行</button></div>
@@ -468,7 +452,7 @@ function selectedSkills(kind) {
 function renderSkillPicker(kind, textarea) {
   const selected = selectedSkills(kind);
   const listId = `${kind}SkillList`;
-  const tags = selected.map(name => `<span class="skill-tag">${escapeHtml(name)}<button type="button" data-action="remove-skill" data-picker-kind="${kind}" data-skill-name="${escapeHtml(name)}" aria-label="Remove ${escapeHtml(name)}">×</button></span>`).join("");
+  const tags = selected.map(name => `<span class="skill-tag">${escapeHtml(name)}<button type="button" data-action="remove-skill" data-picker-kind="${kind}" data-skill-name="${escapeHtml(name)}" aria-label="Remove ${escapeHtml(name)}"><span class="ui-icon is-sm icon-x" aria-hidden="true"></span></button></span>`).join("");
   return `<div class="skill-picker-shell ${kind === "draft" ? "draft-skill-picker" : ""}" data-skill-picker="${kind}">
     <div class="skill-tags" aria-label="Selected skills">${tags}</div>
     ${textarea.replace(">", ` data-skill-input="${kind}" aria-controls="${listId}" aria-expanded="false">`)}
@@ -605,7 +589,7 @@ function renderContextRail(task) {
     const otherParents = (node?.parents || []).slice(1).map(parent =>
       state.tasks.find(candidate => candidate.task_id === parent.context_id)?.title || parent.context_id
     ).join("、");
-    return `<div class="context-rail-item${node?.editable ? " is-editable" : ""}" style="--context-depth:${depth}">
+    return `<div class="context-rail-item${node?.editable ? " is-editable" : ""}" style="--context-depth:${depth}" data-context-depth="${depth}">
       <button type="button" class="context-rail-card${item.task_id === task.task_id ? " is-current" : ""}${blocked ? " is-blocked" : ""}" data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}">
         <span class="context-rail-title">${escapeHtml(item.title)}</span>
         <span class="context-rail-meta">${depth ? "派生 Context" : "根 Context"} · ${escapeHtml(item.task_id.slice(0, 8))}${blocked ? ` · ${escapeHtml(projectionStatus)}` : ""} · 缓存 ${cacheRate}</span>
@@ -765,11 +749,12 @@ function renderFileCards(message) {
     if (!name) return "";
     const viewable = FILE_VIEWABLE_RE.test(name)
       && !!pluginViewForMaterial({ relative_path: name, path: name });
-    const icon = /\.(png|jpe?g|webp|bmp|gif)$/i.test(name) ? "🖼" : /\.pdf$/i.test(name) ? "📕" : /\.(docx?)$/i.test(name) ? "📘" : "📄";
+    const icon = /\.(png|jpe?g|webp|bmp|gif)$/i.test(name) ? "file-image" : /\.(pdf|docx?|md|txt)$/i.test(name) ? "file-text" : "file";
     const size = file?.size ? ` · ${formatBytes(file.size)}` : "";
+    const iconMarkup = `<span class="ui-icon is-sm icon-${icon}" aria-hidden="true"></span>`;
     return viewable
-      ? `<button class="file-card" data-action="open-file-panel" data-file-name="${escapeHtml(name)}" title="点击在右侧面板打开">${icon} ${escapeHtml(name)}${size}</button>`
-      : `<span class="file-card is-plain">${icon} ${escapeHtml(name)}${size}</span>`;
+      ? `<button class="file-card" data-action="open-file-panel" data-file-name="${escapeHtml(name)}" title="点击在右侧面板打开">${iconMarkup}<span>${escapeHtml(name)}${size}</span></button>`
+      : `<span class="file-card is-plain">${iconMarkup}<span>${escapeHtml(name)}${size}</span></span>`;
   }).join("");
   return cards ? `<div class="message-file-cards">${cards}</div>` : "";
 }
@@ -886,10 +871,10 @@ function renderMessage(message) {
 function renderCompressionDivider(item) {
   // 压缩块/删除墓碑分界标记：原文已在其后原位展开显示；删除无摘要，仅提示
   if (item.deleted) {
-    return `<div class="compression-block-divider is-deleted"><span>🗑 已删除 · 来源 ${item.count} 条（模型不可见，可在压缩面板中恢复）</span></div>`;
+    return `<div class="compression-block-divider is-deleted"><span><span class="ui-icon is-sm icon-trash-2" aria-hidden="true"></span>已删除 · 来源 ${item.count} 条（模型不可见，可在压缩面板中恢复）</span></div>`;
   }
   return `<div class="compression-block-divider">
-    <details class="compression-block-summary"><summary>📦 压缩块 · 来源 ${item.count} 条</summary><div class="compression-block-summary-body">${escapeHtml(item.summary)}</div></details>
+    <details class="compression-block-summary"><summary><span class="ui-icon is-sm icon-package" aria-hidden="true"></span>压缩块 · 来源 ${item.count} 条</summary><div class="compression-block-summary-body">${escapeHtml(item.summary)}</div></details>
   </div>`;
 }
 
@@ -898,9 +883,18 @@ function renderConversation(detail, task) {
   const renderedParts = [];
   let messageGroup = [];
   const flushMessages = () => {
-    renderedParts.push(...conversationEvents.normalize(messageGroup).map(item =>
-      item.type === "message" ? renderMessage(item.message) : conversationEvents.renderEvent(item)
-    ));
+    let eventGroup = [];
+    const flushEvents = () => {
+      if (!eventGroup.length) return;
+      renderedParts.push(`<section class="conversation-event-sequence" role="group" aria-label="执行过程">${eventGroup.map(conversationEvents.renderEvent).join("")}</section>`);
+      eventGroup = [];
+    };
+    for (const item of conversationEvents.normalize(messageGroup)) {
+      if (item.type !== "message") { eventGroup.push(item); continue; }
+      flushEvents();
+      renderedParts.push(renderMessage(item.message));
+    }
+    flushEvents();
     messageGroup = [];
   };
   for (const item of compressionPanel.expandForConversation(detail.messages || [])) {
@@ -920,6 +914,27 @@ function renderConversation(detail, task) {
   return messages + streaming;
 }
 
+function reconcileConversationMarkup(conversation, html) {
+  const template = document.createElement?.("template");
+  if (!template?.content || !conversation.replaceChildren) {
+    conversation.innerHTML = html;
+    return;
+  }
+  template.innerHTML = html;
+  const existing = new Map([...conversation.querySelectorAll?.(".conversation-event[data-event-key]") || []]
+    .map(node => [node.dataset.eventKey, node]));
+  for (const next of template.content.querySelectorAll(".conversation-event[data-event-key]")) {
+    const current = existing.get(next.dataset.eventKey);
+    if (!current) continue;
+    const expanded = current.open;
+    current.className = next.className;
+    current.innerHTML = next.innerHTML;
+    current.open = expanded;
+    next.replaceWith(current);
+  }
+  conversation.replaceChildren(template.content);
+}
+
 function replaceConversation(task, messages) {
   const detail = state.details.get(task.task_id) || {};
   detail.messages = messages;
@@ -928,14 +943,14 @@ function replaceConversation(task, messages) {
   const conversation = document.querySelector("#conversation");
   if (!conversation) return;
   const pinned = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 80;
-  conversation.innerHTML = renderConversation(detail, task);
+  reconcileConversationMarkup(conversation, renderConversation(detail, task));
   restoreCommitmentPanels(conversation);
   if (pinned) conversation.scrollTop = conversation.scrollHeight;
 }
 
 function renderStreamingContent(buffer) {
   const reasoning = buffer.reasoning
-    ? conversationEvents.renderEvent({ type: "reasoning", content: buffer.reasoning })
+    ? `<section class="conversation-event-sequence" role="group" aria-label="执行过程">${conversationEvents.renderEvent({ type: "reasoning", content: buffer.reasoning })}</section>`
     : "";
   const answer = buffer.text
     ? `<div class="message-content">${escapeHtml(buffer.text.replace(/\n{2,}/g, "\n"))}</div>`
@@ -991,7 +1006,7 @@ function renderMaterial(material) {
   const retention = material.retention === "irreplaceable" ? "版本保护" : "可移除";
   return `<article class="material-row" data-material-id="${material.material_id}">
     <header class="material-summary">
-      <button class="material-title-button" data-action="${viewable ? "open-material" : "toggle-material"}" title="${viewable ? "在文件工作台打开" : "查看材料规则"}"><span class="material-file-icon" aria-hidden="true">◇</span><span><strong class="material-name">${escapeHtml(material.relative_path)}</strong><small>${viewable ? "可在文件工作台查看" : "未启用匹配的查看器"}</small></span></button>
+      <button class="material-title-button" data-action="${viewable ? "open-material" : "toggle-material"}" title="${viewable ? "在文件工作台打开" : "查看材料规则"}"><span class="material-file-icon" aria-hidden="true"><span class="ui-icon is-sm icon-file-text"></span></span><span><strong class="material-name">${escapeHtml(material.relative_path)}</strong><small>${viewable ? "可在文件工作台查看" : "未启用匹配的查看器"}</small></span></button>
       <button class="text-button" data-action="toggle-material" aria-expanded="${open}">${open ? "收起" : "管理"}</button>
     </header>
     <div class="material-policy-row"><span class="ui-badge">${reading}</span><span class="ui-badge${material.instruction_mode === "strict" ? " is-warning" : ""}">${instruction}</span><span class="ui-badge${material.retention === "irreplaceable" ? " is-success" : ""}">${retention}</span></div>
@@ -1223,7 +1238,7 @@ function renderMapGroups() {
 
 function renderMap() {
   app.innerHTML = `<section class="map-view">
-    <div class="map-toolbar"><div><span class="workspace-kicker">TASK MAP</span><strong>按工作区与根 Context 浏览</strong></div><button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">${state.soldierArmed ? "已装备小兵 · 选择任务" : "装备小兵"}</button></div>
+    <div class="map-toolbar"><button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">${state.soldierArmed ? "已装备小兵 · 选择任务" : "装备小兵"}</button></div>
     <div class="map-groups">${renderMapGroups()}</div>
   </section>`;
 }
@@ -1346,7 +1361,7 @@ function contextSourcePanelMarkup(draft) {
   const active = draft.sourceSnapshots?.find(source => source.context_id === draft.activeSourceId) || draft.sourceSnapshots?.[0];
   const tabs = draft.sources.map((source, index) => {
     const task = state.tasks.find(item => item.task_id === source.context_id);
-    return `<span class="context-source-tab-wrap"><button type="button" class="context-source-tab${source.context_id === active?.context_id ? " is-active" : ""}" data-action="context-source-select" data-context-id="${escapeHtml(source.context_id)}">${escapeHtml(task?.title || source.context_id)}</button>${!created && draft.sources.length > 1 ? `<button type="button" class="context-source-remove" data-action="remove-context-source" data-source-index="${index}" aria-label="移除此来源">×</button>` : ""}</span>`;
+    return `<span class="context-source-tab-wrap"><button type="button" class="context-source-tab${source.context_id === active?.context_id ? " is-active" : ""}" data-action="context-source-select" data-context-id="${escapeHtml(source.context_id)}">${escapeHtml(task?.title || source.context_id)}</button>${!created && draft.sources.length > 1 ? `<button type="button" class="context-source-remove" data-action="remove-context-source" data-source-index="${index}" aria-label="移除此来源"><span class="ui-icon is-sm icon-x" aria-hidden="true"></span></button>` : ""}</span>`;
   }).join("");
   const sourceIds = new Set(draft.sources.map(source => source.context_id));
   const tree = state.contextTrees.get(draft.workspace_id) || [];
@@ -1587,7 +1602,7 @@ function renderDraft() {
   if (!draft || !task) { state.view = "map"; renderMap(); return; }
   app.innerHTML = `<section class="draft-view">
     <section class="draft-panel">
-      <header class="draft-heading"><div><span class="workspace-kicker">AGENT DRAFT</span><h1>${escapeHtml(task.title)} · 小兵草稿</h1></div><div class="draft-heading-meta"><span class="ui-badge is-success">主 Agent 可继续运行</span><span class="ui-meta">来源 checkpoint ${escapeHtml(draft.source_checkpoint_id || "空历史")}</span></div></header>
+      <header class="draft-heading"><span class="ui-meta">来源 checkpoint ${escapeHtml(draft.source_checkpoint_id || "空历史")}</span><span class="ui-badge is-success">主 Agent 可继续运行</span></header>
       <div class="draft-workflow">
         <section class="draft-step" data-step="objective"><header><span>01</span><div><h2>目标摘要</h2><p>说明这个 Agent 要完成什么，以及它应继承的系统约束。</p></div></header><div class="draft-step-body">
           <div class="draft-field"><label for="draftFinalMessage">最终任务指令</label>${renderSkillPicker("draft", `<textarea id="draftFinalMessage" data-draft-field="final_human_message" placeholder="给小兵一个清晰、可验收的目标…">${escapeHtml(draft.final_human_message)}</textarea>`)}</div>
@@ -2623,7 +2638,7 @@ function compressionRowPreview(message, isBlock) {
   // 行预览文案：块/墓碑显示标记，合成占位与空内容显示友好提示，降级消息取去标签内容
   if (isBlock) {
     const sourceCount = message.compression?.source?.length ?? 0;
-    const label = message.compression?.deleted ? "🗑 已删除" : "📦 压缩块";
+    const label = message.compression?.deleted ? "已删除" : "压缩块";
     return `${label} · 来源 ${sourceCount} 条`;
   }
   if (message.curation_synthetic) return "（工具结果已在压缩中省略）";
@@ -2643,7 +2658,7 @@ function renderCompressionNested(messages, level = 0) {
     return `<div class="compression-nested-row" style="--nested-level: ${level}">
       <span class="compression-role">${escapeHtml(compressionRoleLabel(message))}</span>
       <span class="compression-body">
-        <span class="compression-preview">${escapeHtml(compressionRowPreview(message, isBlock))}</span>
+        <span class="compression-preview">${isBlock ? `<span class="ui-icon is-sm ${message.compression?.deleted ? "icon-trash-2" : "icon-package"}" aria-hidden="true"></span>` : ""}${escapeHtml(compressionRowPreview(message, isBlock))}</span>
         ${nested ? `<div class="compression-nested-source">${nested}</div>` : ""}
       </span>
     </div>`;
@@ -2661,7 +2676,7 @@ function renderCompressionMessages() {
       <span class="compression-index">${String(index + 1).padStart(2, "0")}</span>
       <span class="compression-role">${escapeHtml(compressionRoleLabel(message))}</span>
       <span class="compression-body">
-        <span class="compression-preview">${escapeHtml(compressionRowPreview(message, isBlock))}</span>
+        <span class="compression-preview">${isBlock ? `<span class="ui-icon is-sm ${message.compression?.deleted ? "icon-trash-2" : "icon-package"}" aria-hidden="true"></span>` : ""}${escapeHtml(compressionRowPreview(message, isBlock))}</span>
         ${isBlock ? `<details class="compression-block-source"><summary>展开来源原文</summary><div class="compression-block-source-body">${renderCompressionNested(message.compression.source || [], 1)}</div></details>` : ""}
       </span>
     </label>`;
@@ -2729,11 +2744,7 @@ function renderCompress() {
   app.innerHTML = `
     <section class="compression-view">
       <header class="compression-heading">
-        <div>
-          <span class="review-kicker">CONTEXT COMPRESSION</span>
-          <h1>上下文压缩</h1>
-          <p class="compression-usage">当前用量 <strong>${formatTokens(usage)} / ${formatTokens(limit)} tokens</strong>${c.request ? ` · 触发阈值 ${Math.round((c.request.ratio ?? 0.9) * 100)}%` : ""}</p>
-        </div>
+        <p class="compression-usage">当前用量 <strong>${formatTokens(usage)} / ${formatTokens(limit)} tokens</strong>${c.request ? ` · 触发阈值 ${Math.round((c.request.ratio ?? 0.9) * 100)}%` : ""}</p>
         <div class="compression-heading-actions"><span class="ui-badge is-warning">确认前不写入</span><button class="text-button" data-action="cancel-compression">取消压缩</button></div>
       </header>
       <div class="compression-panels">

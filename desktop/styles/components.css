@@ -4,13 +4,20 @@
 .icon-button,
 .text-button,
 button {
+  display: inline-flex;
   min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
   border-radius: var(--radius-control);
   transition: border-color var(--motion-fast) var(--ease-standard),
     background var(--motion-fast) var(--ease-standard),
     color var(--motion-fast) var(--ease-standard),
-    box-shadow var(--motion-fast) var(--ease-standard);
+    box-shadow var(--motion-fast) var(--ease-standard),
+    transform var(--motion-instant) var(--ease-out);
 }
+
+button:active:not(:disabled) { transform: scale(.985); }
 
 .primary {
   border: 1px solid var(--accent-primary);
@@ -55,6 +62,9 @@ select {
   border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
   background: var(--surface-base);
+  transition: border-color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
 }
 
 input:hover,
@@ -132,7 +142,19 @@ dialog {
   box-shadow: var(--shadow-overlay);
 }
 
-dialog::backdrop { background: rgb(24 32 45 / 42%); }
+dialog[open] { animation: dialog-enter var(--motion-deliberate) var(--ease-out); }
+
+dialog::backdrop { background: rgb(24 32 45 / 42%); animation: backdrop-enter var(--motion-standard) var(--ease-standard); }
+
+@keyframes dialog-enter {
+  from { opacity: 0; transform: translateY(6px) scale(.99); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes backdrop-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
 
 .ui-meta {
   min-width: 0;

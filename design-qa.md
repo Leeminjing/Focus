@@ -98,6 +98,57 @@ final result: passed
 
 ---
 
+## F22 重复 Workspace Header 删除 QA — 2026-08-22
+
+**Comparison Target**
+
+- Source visual truth: `C:\Users\brubing\AppData\Local\Temp\codex-clipboard-ab2ad1aa-8162-405d-a9e1-7e7039fa910f.png` (`2560 × 1373`)，用户红框明确要求保留应用顶栏的小任务上下文并删除主内容区的大型 Workspace Header。
+- Implementation screenshot: `C:\Users\brubing\Desktop\ag-project\focus\openspec\changes\f22-premium-interaction-system\qa\workspace-header-after\1440x1024-z1-01-focus.png`（CSS 窗口 `1440 × 1024`、zoom `1`；Windows 150% 输出为 `2139 × 1442` 像素）。
+- Full-view comparison: `C:\Users\brubing\Desktop\ag-project\focus\openspec\changes\f22-premium-interaction-system\qa\comparisons\05-workspace-full-before-after.png` (`3071 × 934`)。
+- Focused comparison: `C:\Users\brubing\Desktop\ag-project\focus\openspec\changes\f22-premium-interaction-system\qa\comparisons\04-workspace-header-before-after.png` (`2418 × 174`)。
+- Normalization: source 去除顶部 32px Windows 标题栏；聚焦比较将两侧顶栏/工作区顶部裁切后统一为 1200px 宽，完整比较统一为 900px 高。测试任务标题与会话正文是确定性 QA fixture，与用户真实数据不同，不参与本次结构判断。
+- State: 已选择任务的 Focus 主工作面，左侧“任务”选中，顶栏任务上下文和 Composer 可见。
+
+**Findings**
+
+- No actionable P0/P1/P2 findings remain. 主内容区的大型 Workspace Header 已完全消失，应用顶栏仍保留任务标题、工作区和短 ID；页面内容从顶栏下方直接开始，没有隐藏占位或 58px 空行。
+
+**Required Fidelity Surfaces**
+
+- Fonts and typography: 顶栏原有字体、字号、字重、截断和双行层级保持不变；删除区域没有通过新增字体或替代标题补回。
+- Spacing and layout rhythm: `.app-workspace` 从 `auto + content` 两行收敛为单个 `minmax(0, 1fr)` 内容行；13 类状态 × 5 组窗口/缩放均测得页面内容顶边与工作区顶边重合。
+- Colors and visual tokens: 蓝白灰 token、导航选中面、正文表面和边界保持不变；没有新增颜色或装饰。
+- Image quality and asset fidelity: 本次不新增或替换图片、图标和品牌资产；现有 Focus 图标保持原样。
+- Copy and content: 删除重复的 `WORKSPACE`、第二个任务标题和路径；顶栏的任务标题、工作区与短 ID 成为唯一全局任务上下文。
+
+**Interaction and Accessibility Evidence**
+
+- 26 个 Node/插件测试通过；Context、响应式、稳定性、F21、F22 与全视图 Electron E2E 通过。
+- 65 个真实 Electron 状态组合验证不存在第二套 Header、隐藏空行、页面横向溢出、无名按钮、重复 ID、错误 `aria-controls` 或 renderer 错误。
+- 左侧导航、Composer、Inspector、dialog 和文件单工作面交互保持可用；删除区域没有焦点目标，因此不改变 Tab 顺序或 ARIA 关系。
+- Codex 应用内浏览器连接受可信 RPC 路径限制；本次使用与用户截图相同产品运行时的真实 Electron capture、交互和 console 守卫完成验收。
+
+**Comparison History**
+
+- Pass 1: [P1] 应用顶栏和 `.workspace-context` 同时维护任务标题，形成重复信息和 58px 永久占位。修正：删除第二套 DOM、`viewHeading()`、三个节点查询/同步及全部基础/响应式 CSS。
+- Pass 2: 聚焦与完整并排图确认主内容直接接在应用顶栏之后；静态守卫和 65 状态几何守卫均通过，无残留 P0/P1/P2。
+
+**Implementation Checklist**
+
+- [x] 删除 `.workspace-context` DOM，而不是 CSS 隐藏。
+- [x] 删除第二套 renderer 标题状态和 `viewHeading()`。
+- [x] 删除全部基础与响应式 Workspace Header CSS。
+- [x] 将主工作区收敛为单内容行。
+- [x] 验证全视图、多窗口、缩放、交互、无新增依赖与同源拓扑。
+
+**Follow-up Polish**
+
+- None required for this change.
+
+final result: passed
+
+---
+
 ## Context 双栏组装器 QA — 2026-08-15
 
 **验证场景**

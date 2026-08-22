@@ -8,6 +8,8 @@
   --surface-base: #ffffff;
   --surface-subtle: #f8fafc;
   --surface-muted: #eef2f6;
+  --surface-selected: #e9eef4;
+  --surface-selected-hover: #e4eaf1;
   --surface-accent: #edf5ff;
   --surface-success: #ecf8f2;
   --surface-warning: #fff6e8;
@@ -48,22 +50,25 @@
   --space-8: 32px;
   --space-10: 40px;
 
-  --radius-control: 6px;
-  --radius-card: 8px;
-  --radius-panel: 10px;
+  --radius-control: 8px;
+  --radius-card: 10px;
+  --radius-panel: 12px;
   --radius-round: 999px;
 
   --shadow-raised: 0 1px 3px rgb(20 31 48 / 7%);
   --shadow-overlay: 0 16px 48px rgb(20 31 48 / 18%);
   --focus-ring: 0 0 0 3px rgb(11 108 245 / 20%);
 
+  --motion-instant: 80ms;
   --motion-fast: 120ms;
-  --motion-standard: 170ms;
+  --motion-standard: 180ms;
+  --motion-deliberate: 240ms;
   --ease-standard: cubic-bezier(.2, .7, .2, 1);
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
 
-  --shell-header-height: 52px;
-  --shell-nav-width: 164px;
-  --shell-nav-collapsed: 56px;
+  --shell-header-height: 56px;
+  --shell-nav-width: 172px;
+  --shell-nav-collapsed: 96px;
   --inspector-width: clamp(276px, 22vw, 360px);
   --reading-width: 760px;
   --composer-width: 900px;
@@ -95,4 +100,5 @@
   --focus-plugin-danger: var(--status-danger);
   --focus-plugin-radius: var(--radius-card);
   --focus-plugin-shadow: var(--shadow-raised);
+  --focus-plugin-motion-fast: var(--motion-fast);
 }

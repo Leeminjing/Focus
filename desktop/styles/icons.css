@@ -1,0 +1,45 @@
+/*
+ * 本文件对外提供 Focus 宿主的本地线性图标契约。输入为白名单语义 class 与 currentColor，输出为
+ * 14/16/18px 的离线 Lucide mask；具体工作流为 renderer 只选择 class，CSS 从 assets/icons 读取
+ * 已审计资产并继承状态颜色。示例：`<span class="ui-icon is-sm icon-search" aria-hidden="true"></span>`。
+ */
+.ui-icon {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  background-color: currentColor;
+  -webkit-mask-image: var(--icon-url);
+  mask-image: var(--icon-url);
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  vertical-align: -.125em;
+}
+
+.ui-icon.is-sm { width: 14px; height: 14px; }
+.ui-icon.is-lg { width: 18px; height: 18px; }
+
+.icon-brain-circuit { --icon-url: url("../assets/icons/brain-circuit.svg"); }
+.icon-wrench { --icon-url: url("../assets/icons/wrench.svg"); }
+.icon-terminal { --icon-url: url("../assets/icons/terminal.svg"); }
+.icon-folder { --icon-url: url("../assets/icons/folder.svg"); }
+.icon-search { --icon-url: url("../assets/icons/search.svg"); }
+.icon-file { --icon-url: url("../assets/icons/file.svg"); }
+.icon-file-text { --icon-url: url("../assets/icons/file-text.svg"); }
+.icon-file-image { --icon-url: url("../assets/icons/file-image.svg"); }
+.icon-loader-circle { --icon-url: url("../assets/icons/loader-circle.svg"); }
+.icon-circle-check { --icon-url: url("../assets/icons/circle-check.svg"); }
+.icon-triangle-alert { --icon-url: url("../assets/icons/triangle-alert.svg"); }
+.icon-circle-x { --icon-url: url("../assets/icons/circle-x.svg"); }
+.icon-x { --icon-url: url("../assets/icons/x.svg"); }
+.icon-plus { --icon-url: url("../assets/icons/plus.svg"); }
+.icon-minus { --icon-url: url("../assets/icons/minus.svg"); }
+.icon-package { --icon-url: url("../assets/icons/package.svg"); }
+.icon-trash-2 { --icon-url: url("../assets/icons/trash-2.svg"); }
+.icon-grip-vertical { --icon-url: url("../assets/icons/grip-vertical.svg"); }
+.icon-chevron-left { --icon-url: url("../assets/icons/chevron-left.svg"); }
+.icon-chevron-right { --icon-url: url("../assets/icons/chevron-right.svg"); }

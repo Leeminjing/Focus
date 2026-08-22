@@ -43,7 +43,7 @@
     previewBox.innerHTML = pending.map((image, index) =>
       `<span class="dsh-eyes-preview-item">
         <img class="dsh-eyes-preview-image" src="${escapeAttr(image.url)}" alt="待发送图片">
-        <button class="dsh-eyes-preview-remove" type="button" data-remove-image="${index}" aria-label="移除第 ${index + 1} 张图片">×</button>
+        <button class="dsh-eyes-preview-remove" type="button" data-remove-image="${index}" aria-label="移除第 ${index + 1} 张图片"><span class="ui-icon is-sm icon-x" aria-hidden="true"></span></button>
       </span>`
     ).join("");
     previewBox.querySelectorAll("[data-remove-image]").forEach(button => {
