@@ -47,6 +47,8 @@ assert.match(html, /data-action="deploy"/, "保留确认投放动作");
 
 assert.match(source, /\/desktop\/api\/drafts\/\$\{draft\.draft_id\}/, "草稿继续使用原 PUT API");
 assert.match(source, /draft\.deployment_id \|\|= crypto\.randomUUID\(\)/, "投放继续使用稳定 deployment id 防重复");
-assert.match(source, /state\.drafts\.set\(state\.activeTaskId, saved\)/, "自动保存结果仍按任务隔离");
+assert.match(source, /state\.drafts\.set\(taskId, \{ \.\.\.saved/, "自动保存结果仍按捕获的任务隔离");
+assert.match(source, /draftSaveRevisions\.get\(taskId\) === revision/, "乱序保存响应不得覆盖新草稿");
+assert.match(source, /if \(!await saveDraft\(state\.activeTaskId\)\)/, "保存失败时投放必须停止");
 
 console.log("draft UI: 四段工作台、自动保存、token、权限与投放协议通过");

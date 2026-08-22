@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- 本地启动页只呈现品牌与主进程阶段，不访问 API、网络或用户数据。 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Focus 正在启动</title>
+  <link rel="stylesheet" href="./styles/splash.css">
+</head>
+<body>
+  <main class="splash-card" aria-labelledby="splashTitle">
+    <div class="splash-mark" aria-hidden="true">
+      <span class="splash-halo"></span>
+      <img src="./assets/focus-icon.png" alt="">
+    </div>
+    <div class="splash-copy">
+      <p class="splash-kicker">LOCAL AGENT WORKSPACE</p>
+      <h1 id="splashTitle">Focus</h1>
+      <p id="splashStatus" class="splash-status" role="status" aria-live="polite">正在检查本地运行环境</p>
+    </div>
+    <div class="splash-progress" aria-hidden="true"><span id="splashProgress"></span></div>
+    <p class="splash-note">你的工作区与 Agent 正在本机准备</p>
+  </main>
+  <script src="./splash.js"></script>
+</body>
+</html>

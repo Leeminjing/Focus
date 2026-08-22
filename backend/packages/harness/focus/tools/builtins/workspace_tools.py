@@ -19,7 +19,7 @@
 具体工作流:
     (1) 工具调用时从 runtime.context 读取 workspace 与 permissions
     (2) 权限门控：未授权（如无 write 时调用 write_file）→ PermissionError
-    (3) 路径 containment 校验：绝对路径或相对工作区路径，解析后必须位于工作区内
+    (3) 路径 containment 校验：越界是模型可修正的 ToolException；真实权限错误继续传播
     (4) read_file 按扩展名分发：.pdf/.docx/.doc → focus.readers 解析，其余 UTF-8 读取
     (5) shell 工具：subprocess 在工作区目录下执行（timeout=120）
 
@@ -84,7 +84,7 @@ def _resolve_workspace_path(root: Path, value: str) -> Path:
     candidate = Path(value).expanduser()
     target = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
     if not _is_workspace_path(root, target):
-        raise PermissionError(f"路径不属于当前工作区: {value}")
+        raise ToolException(f"路径不属于当前工作区: {value}")
     return target
 
 

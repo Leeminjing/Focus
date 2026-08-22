@@ -66,9 +66,14 @@ def serialize_message(message: BaseMessage) -> dict[str, Any]:
     if isinstance(message, AIMessage) and message.tool_calls:
         result["tool_calls"] = message.tool_calls
         result["locked"] = True
+    if isinstance(message, AIMessage):
+        reasoning = message.additional_kwargs.get("reasoning_content")
+        if reasoning is not None:
+            result["reasoning_content"] = reasoning
     if isinstance(message, ToolMessage):
         result["tool_call_id"] = message.tool_call_id
         result["name"] = message.name
+        result["status"] = message.status
         result["locked"] = True
     files = message.additional_kwargs.get("files") if message.additional_kwargs else None
     if files:
@@ -105,6 +110,12 @@ def stream_text(content: Any) -> str:
         elif isinstance(block, dict) and isinstance(block.get("text"), str):
             parts.append(block["text"])
     return "".join(parts)
+
+
+def stream_reasoning(message: BaseMessage) -> str:
+    """从 DeepSeek AI message chunk 提取独立思考增量。"""
+    reasoning = (getattr(message, "additional_kwargs", None) or {}).get("reasoning_content")
+    return reasoning if isinstance(reasoning, str) else ""
 
 
 def validate_messages(messages: list[dict[str, Any]]) -> None:
@@ -182,6 +193,8 @@ def deserialize_messages(
         if role in {"human", "user"}:
             result.append(HumanMessage(content=message.get("content", ""), **kwargs))
         elif role in {"ai", "assistant"}:
+            if message.get("reasoning_content") is not None:
+                kwargs.setdefault("additional_kwargs", {})["reasoning_content"] = message["reasoning_content"]
             if message.get("tool_calls"):
                 kwargs["tool_calls"] = message["tool_calls"]
             result.append(AIMessage(content=message.get("content", ""), **kwargs))
@@ -193,6 +206,7 @@ def deserialize_messages(
                     content=message.get("content", ""),
                     tool_call_id=message["tool_call_id"],
                     name=message.get("name"),
+                    status=message.get("status", "success"),
                     **kwargs,
                 )
             )
@@ -290,15 +304,22 @@ def chunk_to_events(mode: str, chunk: Any, envelope: dict[str, Any]) -> list[Str
             isinstance(message_id, str) and message_id.startswith("commitment-stage-")
         ):
             return []
+        events: list[StreamEvent] = []
+        reasoning = stream_reasoning(message)
+        if reasoning:
+            payload = {"content": reasoning, "message_id": message_id, "node": node}
+            events.append(StreamEvent(
+                id="", event="reasoning",
+                data={**envelope, "event": "reasoning", "data": payload},
+            ))
         content = stream_text(message.content)
-        if not content:
-            return []
-        payload = {
-            "content": content,
-            "message_id": message_id,
-            "node": node,
-        }
-        return [StreamEvent(id="", event="tokens", data={**envelope, "event": "tokens", "data": payload})]
+        if content:
+            payload = {"content": content, "message_id": message_id, "node": node}
+            events.append(StreamEvent(
+                id="", event="tokens",
+                data={**envelope, "event": "tokens", "data": payload},
+            ))
+        return events
 
     if mode == "values":
         payload = serialize_value(chunk)

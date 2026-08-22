@@ -8,6 +8,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Focus</title>
+  <link rel="icon" href="./assets/focus-icon.png">
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./skill-picker.css">
   <link rel="stylesheet" href="./styles/tokens.css">
@@ -15,11 +16,12 @@
   <link rel="stylesheet" href="./styles/components.css">
   <link rel="stylesheet" href="./styles/shell.css">
   <link rel="stylesheet" href="./styles/views.css">
+  <link rel="stylesheet" href="./styles/conversation-events.css">
 </head>
 <body>
   <div class="app-frame">
     <header class="app-header">
-      <button class="brand" data-action="focus-home" aria-label="返回当前任务">Focus</button>
+      <button class="brand" data-action="focus-home" aria-label="返回当前任务"><img src="./assets/focus-icon.png" alt="" aria-hidden="true"><span>Focus</span></button>
       <div class="shell-task-context" aria-live="polite">
         <strong id="shellTaskTitle">尚未选择任务</strong>
         <span id="shellTaskMeta">本地 Agent 工作台</span>
@@ -78,7 +80,7 @@
         <span class="path-picker"><input id="workspacePath" required><button type="button" data-action="pick-workspace">选择</button></span>
       </label>
       <label>任务标题<input id="threadTitle" value="新任务" required></label>
-      <div class="dialog-actions"><button value="cancel">取消</button><button class="primary" value="default">创建</button></div>
+      <div class="dialog-actions"><button type="button" value="cancel" data-action="close-task-dialog">取消</button><button class="primary" type="submit" value="default">创建</button></div>
     </form>
   </dialog>
   <dialog id="agentDialog" class="agent-dialog">
@@ -94,7 +96,6 @@
       <button class="text-button" data-action="refresh-agent-details">刷新</button>
       <button class="text-button" data-action="retry-agent-details">重试</button>
       <button class="text-button danger" data-action="cancel-agent-details">取消运行</button>
-      <button class="text-button" data-action="debug-agent-menu" title="保留的高级操作通道">调试通道</button>
     </div>
     <form class="agent-dialog-continue" id="agentContinueForm">
       <input id="agentContinueInput" placeholder="给小兵继续对话的消息…" autocomplete="off">
@@ -153,6 +154,7 @@
   <script src="./context-editor.js"></script>
   <script src="./compression-panel.js"></script>
   <script src="./plugin-view.js"></script>
+  <script src="./conversation-events.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

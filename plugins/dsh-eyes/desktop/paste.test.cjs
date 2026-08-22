@@ -57,15 +57,42 @@ assert.match(preview.innerHTML, /aria-label="移除第 1 张图片"/);
 
 removeListeners.at(-1)();
 assert.equal(context.__dshEyesPendingImages.length, 0, "单张移除更新队列");
+assert.equal(preview.isConnected, false, "移除最后一张图片后清理空附件条");
 
 pasteHandler({
   target: input,
   preventDefault() {},
   clipboardData: { items: [{ kind: "file", type: "image/png", getAsFile: () => ({ name: "again.png" }) }] },
 });
-const taken = context.__dshEyesTakePendingImages();
+const peeked = context.__dshEyesPeekPendingImages();
+assert.equal(peeked.length, 1);
+assert.equal(context.__dshEyesPendingImages.length, 1, "服务确认前附件仍属于 Composer");
+const taken = context.__dshEyesCommitPendingImages();
 assert.equal(taken.length, 1);
 assert.equal(context.__dshEyesPendingImages.length, 0, "发送取走后清空队列");
 assert.equal(preview.isConnected, false, "发送后移除附件条");
+
+const readers = [];
+class OrderedReader {
+  readAsDataURL(file) { this.file = file; readers.push(this); }
+}
+context.FileReader = OrderedReader;
+pasteHandler({
+  target: input,
+  preventDefault() {},
+  clipboardData: { items: [
+    { kind: "file", type: "image/png", getAsFile: () => ({ name: "first.png" }) },
+    { kind: "file", type: "image/png", getAsFile: () => ({ name: "second.png" }) },
+  ] },
+});
+readers[1].result = "data:image/png;base64,SECOND";
+readers[1].onload();
+readers[0].result = "data:image/png;base64,FIRST";
+readers[0].onload();
+assert.deepEqual(
+  Array.from(context.__dshEyesPeekPendingImages(), image => image.name),
+  ["first.png", "second.png"],
+  "异步读取完成顺序不得改变粘贴顺序",
+);
 
 console.log("dsh-eyes paste: 队列、单张移除、发送清空与宿主样式接入通过");

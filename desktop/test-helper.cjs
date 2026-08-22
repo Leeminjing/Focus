@@ -48,9 +48,14 @@ function createAppHarness(options = {}) {
         }
       : { textContent: "", classList: { toggle() {} } };
   const selectors = { "#app": { dataset: {} }, "#globalStatus": statusNode, ...(options.selectors || {}) };
+  const listeners = new Map();
   const document = {
     body: { dataset: {} },
-    addEventListener() {},
+    addEventListener(type, handler) {
+      const handlers = listeners.get(type) || [];
+      handlers.push(handler);
+      listeners.set(type, handlers);
+    },
     querySelector(selector) {
       const value = selectors[selector];
       return typeof value === "function" ? value() : value || inert;
@@ -83,7 +88,8 @@ function createAppHarness(options = {}) {
   vm.runInContext(fs.readFileSync(require.resolve("./context-editor.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./compression-panel.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./plugin-view.js"), "utf8"), context);
-  return { vm, context, document, inert, statusNode, statusState, fetches };
+  vm.runInContext(fs.readFileSync(require.resolve("./conversation-events.js"), "utf8"), context);
+  return { vm, context, document, inert, statusNode, statusState, fetches, listeners };
 }
 
 module.exports = { createAppHarness, readAppSource, inert };

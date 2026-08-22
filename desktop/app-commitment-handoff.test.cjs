@@ -56,20 +56,18 @@ const result = new vm.Script(`
       order: conversation.children.map(node => node.name),
       progress,
       labels,
-      toolCallHtml: renderMessage({
-        role: "ai",
-        content: "",
-        tool_calls: [
-          { name: "write_file", id: "call-1", args: {} },
-          { name: "write_file", id: "call-2", args: {} },
-          { name: "list_files", id: "call-3", args: {} },
-        ],
-      }),
-      toolResultHtml: renderMessage({
-        role: "tool",
-        name: "write_file",
-        content: "已写入 src/app.tsx",
-      }),
+      toolEvents: conversationEvents.normalize([
+        {
+          role: "ai",
+          content: "",
+          tool_calls: [
+            { name: "write_file", id: "call-1", args: { path: "src/app.tsx" } },
+            { name: "write_file", id: "call-2", args: { path: "src/test.ts" } },
+            { name: "list_files", id: "call-3", args: { path: "src" } },
+          ],
+        },
+        { role: "tool", name: "write_file", tool_call_id: "call-1", status: "success", content: "已写入 src/app.tsx" },
+      ]).filter(item => item.type === "tool").map(item => conversationEvents.renderEvent(item)),
     };
   })()
 `).runInContext(context);
@@ -80,7 +78,7 @@ assert.deepEqual([...result.order], ["trace", "old-lead"]);
 assert.deepEqual([...result.labels], ["承诺已完成"]);
 assert.equal(result.progress.length, 2);
 assert.ok(result.progress.every(call => call.stage === 9 && call.visible === false));
-assert.match(result.toolCallHtml, /write_file ×2/);
-assert.match(result.toolCallHtml, /list_files/);
-assert.match(result.toolResultHtml, /Tool · write_file/);
-assert.match(result.toolResultHtml, /已写入 src\/app\.tsx/);
+assert.equal(result.toolEvents.length, 3);
+assert.equal(result.toolEvents.filter(html => /write_file/.test(html)).length, 2);
+assert.equal(result.toolEvents.filter(html => /list_files/.test(html)).length, 1);
+assert.ok(result.toolEvents.some(html => /完成/.test(html) && /已写入 src\/app\.tsx/.test(html)));
