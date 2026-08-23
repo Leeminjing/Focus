@@ -804,3 +804,10 @@
   .work-record.human { max-inline-size: min(88%, 680px); }
   .focus-bottom { padding: 0 var(--space-2) var(--space-2); }
 }
+/* 装配（无工作区）会话：复用任务对话页，仅空态为居中三行 */
+.focus-view--assembly { grid-template-rows: minmax(0, 1fr) auto; }
+.focus-view--assembly .conversation { grid-row: 1; }
+.focus-view--assembly .focus-bottom { grid-row: 2; }
+.assembly-empty { margin: auto; align-self: center; text-align: center; color: var(--muted, #737986); font-size: 13px; line-height: 1.9; }
+.assembly-empty-title { font-weight: 600; color: var(--text-primary, #15171c); font-size: 15px; }
+.assembly-empty p { margin: 0; }

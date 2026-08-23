@@ -9,7 +9,7 @@ requires/missing/conflict/reason），traces 返回环形缓冲轨迹（最新�
 
 from fastapi import APIRouter
 
-from focus.plugins import get_plugin_registry
+from focus.plugins import get_plugin_registry, reload_plugins
 
 plugins_router = APIRouter()
 
@@ -23,3 +23,12 @@ async def list_plugins() -> dict:
 @plugins_router.get("/desktop/api/plugins/traces")
 async def plugin_traces() -> dict:
     return {"traces": get_plugin_registry().traces()}
+
+
+@plugins_router.post("/desktop/api/plugins/reload")
+async def reload_global_plugins() -> dict:
+    """会话内重新加载全局插件根（~/.focus/plugins），返回插件状态与接口映射供装配模式验证。"""
+    from focus.config.layered import global_home
+
+    registry = reload_plugins(global_home() / "plugins")
+    return {"plugins": registry.list_plugins(), "interfaces": registry.list_interfaces()}

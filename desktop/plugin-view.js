@@ -109,6 +109,7 @@
     return `<section class="plugins-view">
       <header class="plugins-heading">
         <div><strong>插件运行状况</strong><p class="muted">检查能力注入、依赖、冲突与实际执行轨迹。</p></div>
+        <button class="text-button" data-action="reload-plugins">重新加载</button>
         <button class="text-button" data-action="refresh-plugins">刷新</button>
       </header>
       <div class="plugin-filter segmented" role="group" aria-label="按插件状态筛选">${filters}</div>

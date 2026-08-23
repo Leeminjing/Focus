@@ -191,6 +191,12 @@ async def start_main_run(task_id: str, body: MainRunCreate, request: Request) ->
     return prepared.payload
 
 
+@desktop_router.get("/assembly/task")
+async def get_assembly_task(request: Request) -> dict:
+    """确保「无工作区模式」保留工作区与其任务存在，返回该任务 payload（复用任务页全套能力）。"""
+    return await request.app.state.desktop_service.ensure_assembly_task()
+
+
 @desktop_router.post("/threads/{thread_id}/runs/resume")
 async def resume_run(thread_id: str, body: ResumeRequest, request: Request) -> dict:
     """承诺层人工确认恢复：以相同 thread_id resume，返回新 run 供前端订阅 SSE。"""

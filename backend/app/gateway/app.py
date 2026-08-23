@@ -35,6 +35,10 @@ import backend.app.desktop.models  # noqa: F401
 
 # 在所有配置加载之前注入 .env 环境变量
 load_dotenv()
+# 全局态 ~/.focus/.env 密钥：仅补缺，不覆盖已设置环境变量（仓库态/真实 env 优先）
+from focus.config.layered import load_global_dotenv
+
+load_global_dotenv()
 
 # asyncpg 在 Windows 上需要 Selector 事件循环（桌面链路依赖同一策略）
 if os.name == "nt":

@@ -1,4 +1,4 @@
-﻿"""
+"""
 本文件提供 MCP 工具缓存机制，以 extensions_config.json 的文件修改时间 (mtime) 为刷新依据，
 避免每次调用都重新连接所有 MCP Server。
 
@@ -34,7 +34,7 @@ from focus.mcp.tools import get_mcp_tools
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_PATH = "extensions_config.json"
+_CONFIG_NAME = "extensions_config.json"
 
 _mcp_tools: list[BaseTool] | None = None
 _mtime: float | None = None
@@ -43,11 +43,11 @@ _mtime: float | None = None
 async def get_mcp_tools_cached() -> list[BaseTool]:
     global _mcp_tools, _mtime
 
-    try:
-        current_mtime = os.path.getmtime(_CONFIG_PATH)
-    except FileNotFoundError:
+    from focus.config.layered import layered_mtime
+
+    current_mtime = layered_mtime(_CONFIG_NAME, _CONFIG_NAME)
+    if current_mtime is None:
         logger.warning("extensions_config.json 不存在，无法检查 mtime")
-        current_mtime = None
 
     if _mcp_tools is not None and _mtime is not None and current_mtime is not None:
         if current_mtime <= _mtime:

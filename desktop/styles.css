@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   color-scheme: light;
   --bg: #fbfbfc;
   --panel: #ffffff;
@@ -212,7 +212,7 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .dialog-actions .primary { background: var(--blue); color: white; border-color: var(--blue); }
 
-/* 小兵详情面板 */
+/* 鐏忓繐鍙虹拠锔藉剰闂堛垺婢?*/
 .agent-dialog { width: min(720px, calc(100vw - 60px)); max-height: min(720px, calc(100vh - 90px)); display: flex; flex-direction: column; }
 .agent-dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 24px 10px; }
 .agent-dialog-head h2 { margin: 0; font-size: 18px; }
@@ -222,10 +222,10 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
 .agent-dialog-continue { display: flex; gap: 8px; padding: 0 24px 18px; }
 .agent-dialog-continue input { flex: 1; border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
 
-/* 承诺层审批面板 */
+/* 閹佃儻顕仦鍌氼吀閹靛綊娼伴弶?*/
 .commit-option .skill-option-name { color: var(--blue); font-weight: 600; }
 
-/* 承诺进度条 */
+/* 閹佃儻顕潻娑樺閺?*/
 .commitment-progress { padding: 10px 0 0; border-bottom: 1px solid var(--line-soft); }
 .progress-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 .progress-heading strong { font-size: 12px; }
@@ -244,7 +244,7 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
 .commitment-progress li.active::before { border-color: var(--blue); box-shadow: 0 0 0 4px rgb(70 120 240 / 14%); }
 .commitment-progress li.done::after { background: var(--blue); }
 
-/* 执行轨迹面板 */
+/* 閹笛嗩攽鏉炪劏鎶楅棃銏℃緲 */
 .trace-panel { margin: 8px 0 16px; border: 1px solid var(--line-soft); border-radius: 8px; background: #fff; }
 .trace-panel > summary {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
@@ -293,7 +293,7 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
 @keyframes trace-pulse { 50% { opacity: 0.45; } }
 @keyframes trace-cursor { 50% { opacity: 0; } }
 
-/* 审批面板 */
+/* 鐎光剝澹掗棃銏℃緲 */
 .review-panel { margin: 8px 0 16px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: white; }
 .review-panel > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 16px; border-bottom: 1px solid var(--line-soft); background: rgb(70 120 240 / 6%); }
 .review-kicker { color: var(--blue); font-size: 11px; font-weight: 700; text-transform: uppercase; }
@@ -319,7 +319,7 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
 .review-panel.review-submitted { opacity: 0.6; }
 
 
-/* 承诺面板在 flex 对话流中禁止收缩（overflow:hidden 会导致 min-height:0 被压塌） */
+/* 閹佃儻顕棃銏℃緲閸?flex 鐎电鐦藉ù浣疯厬缁備焦顒涢弨鍓佺級閿涘潵verflow:hidden 娴兼艾顕遍懛?min-height:0 鐞氼偄甯囨繅宀嬬礆 */
 .review-panel, .trace-panel { flex-shrink: 0; }
 .context-parent-tags {
   color: var(--muted, #6f746f);
@@ -721,7 +721,7 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
   .context-empty-drop { transition: none; }
 }
 
-/* === 压缩视图（human-in-the-loop 上下文压缩）=== */
+/* === 閸樺缂夌憴鍡楁禈閿涘潝uman-in-the-loop 娑撳﹣绗呴弬鍥у竾缂傗晪绱?== */
 
 .compression-view { height: 100%; display: flex; flex-direction: column; padding: 16px 20px; gap: 12px; box-sizing: border-box; }
 .compression-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -750,7 +750,7 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
 .compression-range-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .compression-stats { display: flex; justify-content: space-between; padding: 10px 12px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line-soft); margin-top: auto; }
 .compression-mapping { list-style: none; margin: 0; padding: 0 12px 8px; font-size: 12px; color: var(--muted); }
-.compression-mapping li::before { content: "· "; color: var(--blue); }
+.compression-mapping li::before { content: "璺?"; color: var(--blue); }
 
 @media (max-width: 900px) {
   .compression-panels { grid-template-columns: 1fr; overflow-y: auto; }

@@ -5,6 +5,7 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require("electron");
 const { execFileSync, spawn } = require("node:child_process");
 const crypto = require("node:crypto");
+const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
 
@@ -12,6 +13,19 @@ const desktopDir = __dirname;
 const rootDir = path.resolve(desktopDir, "..");
 const migrationIni = path.join(rootDir, "backend", "packages", "harness", "focus", "persistence", "migrations", "alembic.ini");
 const focusIconPath = path.join(desktopDir, "assets", process.platform === "win32" ? "focus-icon.ico" : "focus-icon.png");
+
+function ensureFocusHome() {
+  const home = path.join(app.getPath("home"), ".focus");
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(path.join(home, "plugins"), { recursive: true });
+  fs.mkdirSync(path.join(home, "users"), { recursive: true });
+  // 预创建全局配置占位（仓库/项目态优先，此处作默认/兜底层）
+  const extensions = path.join(home, "extensions_config.json");
+  if (!fs.existsSync(extensions)) fs.writeFileSync(extensions, '{"mcpServers": {}}', "utf8");
+  const config = path.join(home, "config.yaml");
+  if (!fs.existsSync(config)) fs.writeFileSync(config, "# Focus 全局配置默认层（仓库/项目态优先）\n", "utf8");
+  return home;
+}
 let backend = null;
 let splashWindow = null;
 let mainWindow = null;
@@ -198,6 +212,8 @@ function protectAppNavigation(win, apiBase) {
 async function start() {
   Menu.setApplicationMenu(null);
   await createSplashWindow();
+  // 首次启动自动创建全局配置家目录 ~/.focus（含 plugins/、users/）
+  try { ensureFocusHome(); } catch (error) { console.error("创建 ~/.focus 失败:", error); }
   await updateSplashStage("正在检查本地运行环境", 10);
   const session = crypto.randomBytes(32).toString("hex");
   const env = pythonEnvironment(session);

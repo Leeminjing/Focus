@@ -1,4 +1,4 @@
-﻿"""
+"""
 本文件对外提供 make_lead_agent 异步工厂函数，作为 lead_agent 装配的唯一对外入口。
 
 对外提供:
@@ -114,10 +114,10 @@ def _discover_and_build_catalog(
     from focus.skills.catalog import SkillCatalog
     from focus.skills.parser import parse_skill_file
     from focus.skills.types import (
-        SKILLS_CUSTOM_REAL_ROOT,
         SKILLS_PUBLIC_REAL_ROOT,
         SKILL_MD_FILE,
         SkillCategory,
+        skills_custom_root,
     )
 
     base_path = Path(host_base_path) if host_base_path else Path(SKILLS_PUBLIC_REAL_ROOT)
@@ -127,7 +127,7 @@ def _discover_and_build_catalog(
     ]
 
     if user_id is not None:
-        custom_base = Path(SKILLS_CUSTOM_REAL_ROOT.format(user_id=user_id))
+        custom_base = skills_custom_root(user_id)
         categories.append((custom_base, SkillCategory.CUSTOM))
 
     skills: list = []

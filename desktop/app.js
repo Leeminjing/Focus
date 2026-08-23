@@ -328,6 +328,7 @@ function render() {
 function activeNavigationKey() {
   if (state.view === "map") return "map";
   if (state.view === "plugins") return "plugins";
+  if (activeTask()?.harness_mode === "assembly") return "assembly";
   return "focus";
 }
 
@@ -341,7 +342,7 @@ function renderShellChrome() {
   document.querySelectorAll?.("[data-nav-key]").forEach(button => {
     if (button.dataset.navKey === current) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
-    button.disabled = !state.tasks.length && button.dataset.navKey !== "plugins";
+    button.disabled = !state.tasks.length && !["plugins", "assembly"].includes(button.dataset.navKey);
   });
   renderInspector();
 }
@@ -897,7 +898,13 @@ function renderConversation(detail, task) {
   const rendered = renderedParts.join("");
   const messages = detail.messages?.length
     ? rendered
-    : `<article class="work-record message system"><header class="work-record-header"><span class="work-record-kicker">READY</span><span class="message-role">任务已就绪</span></header><div class="message-content"><span class="muted">这是该工作区与线程的第一页。输入任务即可开始。</span><details class="message-details"><summary>工作区路径</summary><pre>${escapeHtml(task.workspace_path)}</pre></details></div></article>`;
+    : (task.harness_mode === "assembly"
+      ? `<div class="assembly-empty">
+          <p class="assembly-empty-title">无工作区模式</p>
+          <p>配置全局 skill、mcp tools、插件等</p>
+          <p>创造插件</p>
+        </div>`
+      : `<article class="work-record message system"><header class="work-record-header"><span class="work-record-kicker">READY</span><span class="message-role">任务已就绪</span></header><div class="message-content"><span class="muted">这是该工作区与线程的第一页。输入任务即可开始。</span><details class="message-details"><summary>工作区路径</summary><pre>${escapeHtml(task.workspace_path)}</pre></details></div></article>`);
   const streaming = [...state.streamBuffers.entries()]
     .filter(([, buffer]) => buffer.taskId === task.task_id && (buffer.text || buffer.reasoning))
     .map(([runId, buffer]) => `<article class="work-record message ai streaming" data-stream-run="${runId}">${renderStreamingContent(buffer)}</article>`)
@@ -2417,10 +2424,10 @@ function activeTaskHasCommitmentLock() {
 function reconcileCommitmentRecovery(detail) {
   const recovery = detail?.commitment_recovery || null;
   if (!recovery) {
+    // 当前任务无承诺流程：若残留的是其它任务的承诺状态，或已恢复，统一复位
     if (state.commitment.taskId && state.commitment.taskId !== state.activeTaskId) {
-      setStatus("");
-    }
-    if (state.commitment.taskId === state.activeTaskId && state.commitment.recoveryRestored) {
+      resetCommitment();
+    } else if (state.commitment.taskId === state.activeTaskId && state.commitment.recoveryRestored) {
       resetCommitment();
     }
     return;
@@ -2975,6 +2982,11 @@ async function switchTask(taskId) {
 }
 
 async function goFocusHome() {
+  // 若当前任务是「无工作区模式」任务，点击「任务」默认回到最近的工作区任务
+  if (activeTask()?.harness_mode === "assembly") {
+    const recent = [...state.tasks].reverse().find(task => task.harness_mode !== "assembly");
+    if (recent) return switchTask(recent.task_id);
+  }
   const taskId = state.activeTaskId;
   if (!taskId) return;
   if (state.view === "focus") persistFocusState();
@@ -3049,6 +3061,17 @@ document.addEventListener("click", async event => {
   if (action === "show-agents") return openInspector("agents", button);
   if (action === "open-inspector-tab") return openInspector(button.dataset.inspectorTab, button);
   if (action === "show-plugins") return openPluginsView();
+  if (action === "show-assembly") {
+    try {
+      const task = await api("/desktop/api/assembly/task");
+      // 只在首次新建时把装配任务并入 state.tasks，避免每次全量刷新（大任务列表耗时）
+      if (task?.task_id && !state.tasks.some(item => item.task_id === task.task_id)) {
+        state.tasks = [...state.tasks, task];
+      }
+      if (task?.task_id) return switchTask(task.task_id);
+    } catch (error) { setStatus(error.message, true); }
+    return render();
+  }
   if (action === "refresh-plugins") { await hydratePlugins(); return render(); }
   if (action === "filter-plugins") {
     state.plugins.filter = button.dataset.pluginStatus || "all";
