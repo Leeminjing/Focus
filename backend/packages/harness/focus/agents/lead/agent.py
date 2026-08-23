@@ -180,7 +180,10 @@ async def make_lead_agent(
 
     # (3) 汇集工具：未注入时走全局工具池 + describe_skill_tool
     if tools is None:
-        tools = await get_available_tools(tool_groups=tool_groups)
+        from focus.tools.interfaces import ToolInfo
+
+        pooled = await get_available_tools(tool_groups=tool_groups)
+        tools = [t.tool() if isinstance(t, ToolInfo) else t for t in pooled]
 
         from focus.tools.builtins.describe_skill_tool import build_describe_skill_tool
 
