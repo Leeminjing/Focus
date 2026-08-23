@@ -87,8 +87,16 @@ logger = logging.getLogger(__name__)
 
 _MAIN_SYSTEM_PROMPT ="""你是 Focus 的本地主 Agent。当前工作目录是真实宿主机工作区。
 使用已提供的工具完成用户任务；严格服从平台授予的工具权限，不要把当前环境描述为沙箱。"""
+_ASSEMBLY_SYSTEM_PROMPT ="""你是 Focus 的装配 Agent。当前工作目录是 Focus 仓库根。
+用户的目标是装配/配置 Focus 自身（配置 MCP 工具、填写全局密钥、设计插件、调整全局配置）。
+全局变更必须写入用户主目录的 ~/.focus（如 extensions_config.json、.env、plugins/、config.yaml），
+不得写入任何工作区项目。严格服从平台授予的工具权限，不要把当前环境描述为沙箱。"""
 _MAIN_RUNTIME_EQUIPMENT_KEY = "_main_run_equipment"
 _TERMINAL_STATUSES = frozenset({"success", "error", "interrupted"})
+
+
+_ASSEMBLY_WORKSPACE_DISPLAY = "无工作区模式"
+_ASSEMBLY_THREAD_ID = "focus-assembly"
 
 
 def _spatial_focus_prompt(focus: dict[str, Any] | None) -> str:
@@ -478,11 +486,61 @@ class DesktopService:
             workspace_id = workspace.workspace_id
             workspace_path = workspace.path
         checkpoint_id = await select_checkpoint_base(self.checkpointer, thread_id)
+        is_assembly = task_row.thread_id == _ASSEMBLY_THREAD_ID
+        base_prompt = (_ASSEMBLY_SYSTEM_PROMPT if is_assembly else _MAIN_SYSTEM_PROMPT) + _spatial_focus_prompt(spatial_focus)
         return await self._prepare(
             run, thread_id, workspace_id, workspace_path, run.input_messages,
-            _MAIN_SYSTEM_PROMPT + _spatial_focus_prompt(spatial_focus),
-            equipment, "", "main", checkpoint_id,
+            base_prompt, equipment, "", "main", checkpoint_id, allow_global_config=is_assembly,
         )
+
+    async def ensure_assembly_task(self) -> dict[str, Any]:
+        """确保「无工作区模式」保留工作区与其任务存在，返回该任务 payload。
+
+        无工作区模式被建模为保留工作区（路径 = 全局配置家目录 ~/.focus）下的普通任务，
+        由此复用任务页全套能力（派生 context / 草稿 / 材料 / 小兵 / 技能）。
+        """
+        async with self.session_factory() as session:
+            workspace = await self._ensure_assembly_workspace(session)
+            thread = await self._ensure_assembly_thread(session, workspace)
+            await session.commit()
+            return await self._task_payload(session, thread, workspace)
+
+    async def _ensure_assembly_workspace(self, session: AsyncSession) -> DesktopWorkspace:
+        """获取/创建装配保留 workspace（路径 = 全局配置家目录 ~/.focus），并尝试确保该目录存在。"""
+        from focus.config.layered import global_home
+
+        path = str(global_home().resolve())
+        try:
+            Path(path).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            logger.warning("无法创建全局配置家目录 %s（可能受文件沙箱限制）", path)
+        workspace = await session.scalar(
+            select(DesktopWorkspace).where(DesktopWorkspace.path == path)
+        )
+        if workspace is None:
+            workspace = DesktopWorkspace(
+                workspace_id=new_id(), path=path, display_name=_ASSEMBLY_WORKSPACE_DISPLAY
+            )
+            session.add(workspace)
+            await session.flush()
+        return workspace
+
+    async def _ensure_assembly_thread(self, session: AsyncSession, workspace: DesktopWorkspace) -> DesktopThread:
+        """获取/创建装配会话线程（单一稳定 thread，历史累积）。"""
+        thread = await session.scalar(
+            select(DesktopThread).where(
+                DesktopThread.workspace_id == workspace.workspace_id,
+                DesktopThread.thread_id == _ASSEMBLY_THREAD_ID,
+            )
+        )
+        if thread is None:
+            thread = DesktopThread(
+                task_id=new_id(), workspace_id=workspace.workspace_id,
+                thread_id=_ASSEMBLY_THREAD_ID, title="无工作区模式",
+            )
+            session.add(thread)
+            await session.flush()
+        return thread
 
     async def resume_run(self, thread_id: str, resume: dict[str, Any]) -> PreparedRun:
         """主 Agent 中断恢复：按 resume 载荷分派承诺层或压缩流程。
@@ -840,6 +898,7 @@ class DesktopService:
         self, run: DesktopRun, thread_id: str, workspace_id: str, workspace_path: str,
         messages: list[dict[str, Any]], base_prompt: str, equipment: dict[str, Any],
         checkpoint_ns: str, agent_role: str, checkpoint_id: str | None = None,
+        allow_global_config: bool = False,
     ) -> PreparedRun:
         """组装统一编排入口的输入：RunCreateRequest（input/context/stream_mode）+ agent_factory 闭包。
 
@@ -868,6 +927,8 @@ class DesktopService:
         if checkpoint_id is not None:
             context["checkpoint_id"] = checkpoint_id
         context["uploads"] = uploads_tag
+        if allow_global_config:
+            context["allow_global_config"] = True
         body = RunCreateRequest(
             input={"messages": messages},
             context=context,
@@ -1656,6 +1717,7 @@ class DesktopService:
         return {
             "task_id": task.task_id, "workspace_id": task.workspace_id, "workspace_path": workspace.path,
             "workspace_name": workspace.display_name, "thread_id": task.thread_id, "title": task.title,
+            "harness_mode": "assembly" if task.thread_id == _ASSEMBLY_THREAD_ID else "workspace",
             "ui_state": ui_state, "active_run": self._run_payload(active) if active else None,
             "pending_commitment_review": (
                 recovery["review"] if recovery and recovery["status"] == "resumable" else None

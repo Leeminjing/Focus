@@ -1,4 +1,4 @@
-﻿"""
+"""
 本文件对外提供 skill 数据模型定义。
 
 对外提供:
@@ -37,6 +37,13 @@ from pathlib import Path
 SKILL_MD_FILE = "SKILL.md"
 SKILLS_PUBLIC_REAL_ROOT = "skills"
 SKILLS_CUSTOM_REAL_ROOT = ".focus/users/{user_id}/skills"
+
+
+def skills_custom_root(user_id: str) -> "Path":
+    """返回 per-user custom skills 宿主机路径（全局态 `~/.focus/users/<user_id>/skills`）。"""
+    from focus.config.layered import global_home
+
+    return global_home() / "users" / user_id / "skills"
 
 
 class SkillCategory(StrEnum):

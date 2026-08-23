@@ -20,8 +20,10 @@ class DesktopSkill:
 
 def _enabled_public_names(config_path: Path) -> frozenset[str]:
     try:
-        raw = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        from focus.config.layered import load_layered_map
+
+        raw = load_layered_map(config_path.name, str(config_path))
+    except Exception:
         return frozenset()
     skills = raw.get("skills")
     if not isinstance(skills, dict):

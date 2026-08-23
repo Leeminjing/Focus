@@ -1,4 +1,4 @@
-﻿"""
+"""
 本文件对外提供 get_app_config、reload_app_config 两个公开函数，以及 AppConfig 配置聚合类。
 
 AppConfig: 声明式配置数据模型，聚合 models / stream_bridge / database / checkpointer / extensions 配置
@@ -96,15 +96,20 @@ def _resolve_env_item(value):
 def get_app_config(yaml_path: str) -> AppConfig:
     global _app_config
     if _app_config is None:
-        raw = _load_yaml(yaml_path)
-        resolved = _resolve_env_vars(raw)
-        _app_config = AppConfig.model_validate(resolved)
+        _app_config = _load_layered_config(yaml_path)
     return _app_config
 
 
 def reload_app_config(yaml_path: str) -> AppConfig:
     global _app_config
-    raw = _load_yaml(yaml_path)
-    resolved = _resolve_env_vars(raw)
-    _app_config = AppConfig.model_validate(resolved)
+    _app_config = _load_layered_config(yaml_path)
     return _app_config
+
+
+def _load_layered_config(yaml_path: str) -> AppConfig:
+    """经两层聚合层读取配置：全局态 `~/.focus/config.yaml` 为默认，仓库态 <yaml_path> 优先。"""
+    from focus.config.layered import load_layered_map
+
+    raw = load_layered_map(Path(yaml_path).name, yaml_path)
+    resolved = _resolve_env_vars(raw)
+    return AppConfig.model_validate(resolved)

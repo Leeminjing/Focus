@@ -48,15 +48,24 @@ TOOL_NAMES_BY_PERMISSION: dict[str, list[str]] = {
 }
 
 
-def _runtime_values(runtime: ToolRuntime) -> tuple[Path, frozenset[str]]:
-    """从 runtime.context 提取工作区路径与权限集合。"""
+def _runtime_values(runtime: ToolRuntime) -> tuple[Path, frozenset[str], list[Path]]:
+    """从 runtime.context 提取工作区路径、权限集合与额外可写根。
+
+    装配模式（context.allow_global_config=True）时把全局态 `~/.focus` 加入额外可写根，
+    使工作区工具在不新增工具的前提下可写入全局配置目录。
+    """
     context = runtime.context
     workspace = context.get("workspace") if isinstance(context, dict) else None
     if not workspace:
         raise RuntimeError("缺少工作区上下文: runtime.context['workspace']")
     raw_permissions = context.get("permissions") if isinstance(context, dict) else None
     permissions = frozenset(["read"] if raw_permissions is None else raw_permissions)
-    return Path(workspace).resolve(), permissions
+    extra_roots: list[Path] = []
+    if context.get("allow_global_config"):
+        from focus.config.layered import global_home
+
+        extra_roots.append(global_home().resolve())
+    return Path(workspace).resolve(), permissions, extra_roots
 
 
 def _canonical_path_text(path: Path) -> str:
@@ -79,11 +88,12 @@ def _is_workspace_path(root: Path, target: Path) -> bool:
         return False
 
 
-def _resolve_workspace_path(root: Path, value: str) -> Path:
-    """解析工具路径并校验位于工作区内。"""
+def _resolve_workspace_path(root: Path, value: str, extra_roots: list[Path] | None = None) -> Path:
+    """解析工具路径并校验位于工作区或额外可写根（装配模式全局配置目录）内。"""
     candidate = Path(value).expanduser()
     target = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
-    if not _is_workspace_path(root, target):
+    roots = [root, *(extra_roots or [])]
+    if not any(_is_workspace_path(candidate_root, target) for candidate_root in roots):
         raise ToolException(f"路径不属于当前工作区: {value}")
     return target
 
@@ -91,10 +101,10 @@ def _resolve_workspace_path(root: Path, value: str) -> Path:
 @tool
 def read_file(path: str, runtime: ToolRuntime) -> str:
     """读取当前工作区内文件；path 可以是绝对路径或相对工作区路径，支持 .pdf/.docx/.doc。"""
-    workspace, permissions = _runtime_values(runtime)
+    workspace, permissions, extra_roots = _runtime_values(runtime)
     if "read" not in permissions:
         raise PermissionError("当前运行未授权 read")
-    target = _resolve_workspace_path(workspace, path)
+    target = _resolve_workspace_path(workspace, path, extra_roots)
     if target.is_dir():
         raise ToolException(f"目标是目录，请改用 list_files: {target}")
     if not target.is_file():
@@ -114,10 +124,10 @@ def read_file(path: str, runtime: ToolRuntime) -> str:
 @tool
 def list_files(path: str, runtime: ToolRuntime) -> str:
     """列出当前工作区内目录；path 可以是绝对路径或相对工作区路径。"""
-    workspace, permissions = _runtime_values(runtime)
+    workspace, permissions, extra_roots = _runtime_values(runtime)
     if "read" not in permissions:
         raise PermissionError("当前运行未授权 read")
-    target = _resolve_workspace_path(workspace, path)
+    target = _resolve_workspace_path(workspace, path, extra_roots)
     if target.is_file():
         raise ToolException(f"目标是文件，请改用 read_file: {target}")
     if not target.is_dir():
@@ -136,10 +146,10 @@ list_files.handle_tool_error = _recoverable_path_error
 @tool
 def write_file(path: str, content: str, runtime: ToolRuntime) -> str:
     """在当前工作区写入 UTF-8 文本；只有用户授权 write 时才会被装配。"""
-    workspace, permissions = _runtime_values(runtime)
+    workspace, permissions, extra_roots = _runtime_values(runtime)
     if "write" not in permissions:
         raise PermissionError("当前运行未授权 write")
-    target = _resolve_workspace_path(workspace, path)
+    target = _resolve_workspace_path(workspace, path, extra_roots)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return f"已写入真实宿主机路径: {target}"
@@ -147,7 +157,7 @@ def write_file(path: str, content: str, runtime: ToolRuntime) -> str:
 
 def _run_shell(command: str, runtime: ToolRuntime, exe_name: str, args: list[str]) -> str:
     """在工作区内执行 shell 命令（权限门控 + subprocess）。"""
-    workspace, permissions = _runtime_values(runtime)
+    workspace, permissions, extra_roots = _runtime_values(runtime)
     if "host_command" not in permissions:
         raise PermissionError("当前运行未授权 host_command")
     if not isinstance(command, str) or not command.strip():

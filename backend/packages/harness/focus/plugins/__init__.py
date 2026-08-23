@@ -38,3 +38,18 @@ def get_plugin_registry(root: str | Path = "plugins") -> PluginRegistry:
         load_plugins(registry, root)
         _registries[key] = registry
     return _registries[key]
+
+
+def reload_plugins(root: str | Path = "plugins") -> PluginRegistry:
+    """重建指定插件根的注册表并替换缓存（会话内加载新插件）。
+
+    装配模式写入新插件后调用；新实例重新扫描、重新解析依赖，避免已登记插件重复。
+    正在运行中的 run 使用装配时快照，不受影响；下一次 run 装配时读到新注册表。
+    """
+    key = str(root)
+    registry = PluginRegistry(builtin_catalog())
+    from focus.plugins.loader import load_plugins
+
+    load_plugins(registry, root)
+    _registries[key] = registry
+    return registry

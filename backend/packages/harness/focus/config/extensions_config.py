@@ -73,14 +73,13 @@ class ExtensionsConfig(BaseModel):
 
 
 def get_extensions_config(json_path: str) -> ExtensionsConfig:
-    path = Path(json_path)
-    if not path.exists():
-        raise FileNotFoundError(f"扩展配置文件不存在: {json_path}")
+    """经两层聚合层读取扩展配置：全局态 `~/.focus/extensions_config.json` 为默认，仓库态 <json_path> 优先。"""
+    from focus.config.layered import load_layered_map
 
-    with open(path, "r", encoding="utf-8") as f:
-        raw = json.load(f)
-
+    raw = load_layered_map(Path(json_path).name, json_path)
     resolved = _resolve_env_vars(raw)
+    if not resolved.get("mcpServers"):
+        return ExtensionsConfig(mcp_servers={})
     return ExtensionsConfig.model_validate(resolved)
 
 
