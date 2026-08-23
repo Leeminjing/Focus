@@ -48,7 +48,7 @@ langgraph_store:
 
 database:
   backend: postgres
-  url: postgresql+asyncpg://focus:qweasdzxc123@localhost:7221/focus
+  url: postgresql+asyncpg://focus:qweasdzxc123@127.0.0.1:7221/focus
   echo: false
   pool_size: 5
   max_overflow: 10

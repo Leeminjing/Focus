@@ -13,22 +13,30 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import logging
 from typing import Any
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.context_projection import ContextProjection, compile_context_messages
 from backend.app.desktop.models import (
+    AgentBoardTask,
+    AgentMessage,
     ContextDefinitionUpdate,
     ContextDeriveCreate,
     ContextProjectionDecision,
     DesktopContextDefinition,
     DesktopContextSource,
+    DesktopMaterial,
     DesktopRun,
     DesktopThread,
+    DesktopWorkspace,
+    PatrolAgent,
+    PatrolDraft,
+    SwarmAgent,
 )
 from langchain_core.messages import RemoveMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
@@ -37,6 +45,7 @@ from focus.config.app_config import AppConfig
 from focus.runtime.runs.events import deserialize_messages, serialize_message, validate_messages
 
 
+logger = logging.getLogger(__name__)
 _RUNNABLE_STATUSES = frozenset({"valid", "repaired", "approved"})
 
 
@@ -204,6 +213,118 @@ class ContextService:
             await self._initialize(context_id, "approved")
         return await self.get(context_id)
 
+    async def archive(self, context_id: str, cascade: bool = False) -> dict[str, Any]:
+        """归档一个会话（根/派生 Context）。归档可恢复；有后代时侧栏保留「已归档」墓碑。
+
+        输入:
+            context_id: str — 会话标识
+            cascade: bool — True 时递归归档该会话及全部派生后代（无墓碑）
+
+        输出:
+            dict — {context_id, archived: True}
+
+        工作流:
+            (1) 会话不存在 404；已删除 409；存在 pending/running 主运行 409
+            (2) cascade 时对自身与全部后代置 archived_at；否则仅置自身 archived_at
+        """
+        async with self.session_factory() as session:
+            task = await session.get(DesktopThread, context_id)
+            if not task:
+                raise HTTPException(404, "Context 不存在")
+            if task.deleted_at is not None:
+                raise HTTPException(409, "会话已删除，不能归档")
+            if await self._has_active_run(session, context_id):
+                raise HTTPException(409, "会话正在运行，不能归档")
+            now = datetime.now(timezone.utc)
+            if cascade:
+                for cid in [context_id, *await self._descendant_ids(session, context_id)]:
+                    row = await session.get(DesktopThread, cid)
+                    if row is not None and row.deleted_at is None:
+                        row.archived_at = now
+            else:
+                task.archived_at = now
+            await session.commit()
+        return {"context_id": context_id, "archived": True}
+
+    async def unarchive(self, context_id: str) -> dict[str, Any]:
+        """恢复一个已归档会话（清空 archived_at，回到 active）。"""
+        async with self.session_factory() as session:
+            task = await session.get(DesktopThread, context_id)
+            if not task:
+                raise HTTPException(404, "Context 不存在")
+            if task.deleted_at is not None:
+                raise HTTPException(409, "会话已删除，不能恢复")
+            task.archived_at = None
+            await session.commit()
+        return {"context_id": context_id, "archived": False}
+
+    async def delete(self, context_id: str, cascade: bool = False) -> dict[str, Any]:
+        """删除一个会话（根/派生 Context）。永久删除、需确认；有后代时侧栏保留「已删除」墓碑。
+
+        输入:
+            context_id: str — 会话标识
+            cascade: bool — True 时递归删除该会话及全部派生后代（无墓碑）
+
+        输出:
+            dict — {context_id, deleted: True}
+
+        工作流:
+            (1) 会话不存在 404；存在 pending/running 主运行 409
+            (2) cascade：自底向上物理删除自身与全部后代线程行 + 清理各自 checkpoint（无墓碑）
+            (3) 非 cascade 且无后代：物理删除自身线程行 + 清理 checkpoint（无墓碑）
+            (4) 非 cascade 且有后代：保留自身线程行并置 deleted_at（墓碑），清自身内容与 checkpoint，
+                保留后代 source 行
+        """
+        to_clean: list[str] = []
+        async with self.session_factory() as session:
+            task = await session.get(DesktopThread, context_id)
+            if not task:
+                raise HTTPException(404, "Context 不存在")
+            if await self._has_active_run(session, context_id):
+                raise HTTPException(409, "会话正在运行，不能删除")
+            if cascade:
+                ids = [context_id, *await self._descendant_ids(session, context_id)]
+                await self._hard_delete_threads(session, ids, to_clean)
+            else:
+                descendants = await self._descendant_ids(session, context_id)
+                if descendants:
+                    await self._tombstone_deleted(session, task, to_clean)
+                else:
+                    await self._hard_delete_threads(session, [context_id], to_clean)
+            await session.commit()
+        for thread_id in to_clean:
+            try:
+                await self.checkpointer.adelete_thread(thread_id)
+            except Exception:
+                logger.warning("清理会话 checkpoint 失败: thread_id=%s", thread_id, exc_info=True)
+        return {"context_id": context_id, "deleted": True}
+
+    async def list_archived(self) -> list[dict[str, Any]]:
+        """列出全部已归档会话（archived_at 非空且未 deleted_at）。"""
+        async with self.session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(DesktopThread, DesktopWorkspace)
+                    .join(DesktopWorkspace, DesktopThread.workspace_id == DesktopWorkspace.workspace_id)
+                    .where(
+                        DesktopThread.archived_at.is_not(None),
+                        DesktopThread.deleted_at.is_(None),
+                    )
+                    .order_by(DesktopThread.archived_at)
+                )
+            ).all()
+            return [
+                {
+                    "context_id": task.task_id,
+                    "thread_id": task.thread_id,
+                    "title": task.title,
+                    "workspace_id": task.workspace_id,
+                    "workspace_name": workspace.display_name,
+                    "archived_at": task.archived_at.isoformat() if task.archived_at else None,
+                }
+                for task, workspace in rows
+            ]
+
     async def get(self, context_id: str) -> dict[str, Any]:
         async with self.session_factory() as session:
             task = await session.get(DesktopThread, context_id)
@@ -296,6 +417,7 @@ class ContextService:
                     "thread_id": task.thread_id,
                     "title": task.title,
                     "depth": depth(task.task_id),
+                    "lifecycle": self._lifecycle(task),
                     "projection_status": (
                         definitions[task.task_id].projection_status if task.task_id in definitions else "root"
                     ),
@@ -396,6 +518,88 @@ class ContextService:
         if actual != checkpoint_id:
             raise HTTPException(404, "来源 checkpoint 不存在或不属于指定 Context")
 
+    async def _has_active_run(self, session: AsyncSession, context_id: str) -> bool:
+        """判断会话是否存在 pending/running 主运行（避免边运行边归档/删除）。"""
+        return bool(
+            await session.scalar(
+                select(DesktopRun.run_id)
+                .where(
+                    DesktopRun.task_id == context_id,
+                    DesktopRun.status.in_(["pending", "running"]),
+                )
+                .limit(1)
+            )
+        )
+
+    async def _descendant_ids(self, session: AsyncSession, context_id: str) -> list[str]:
+        """经 desktop_context_sources（parent_context_id → context_id）BFS 求全部派生子会话 id。"""
+        result: list[str] = []
+        queue = [context_id]
+        seen = {context_id}
+        while queue:
+            current = queue.pop(0)
+            children = (
+                await session.scalars(
+                    select(DesktopContextSource.context_id)
+                    .where(DesktopContextSource.parent_context_id == current)
+                )
+            ).all()
+            for cid in children:
+                if cid not in seen:
+                    seen.add(cid)
+                    result.append(cid)
+                    queue.append(cid)
+        return result
+
+    async def _hard_delete_threads(
+        self, session: AsyncSession, ids: list[str], to_clean: list[str]
+    ) -> None:
+        """自底向上（叶子优先）物理删除多个会话线程行，确保 parent RESTRICT 不报错。
+
+        删除线程行会经 FK CASCADE 清掉其 definition/sources/runs 等关联记录；
+        将被删线程的 thread_id 追加到 to_clean，供提交后清理 LangGraph checkpoint。
+        """
+        ordered = list(reversed(ids))
+        for cid in ordered:
+            row = await session.get(DesktopThread, cid)
+            if row is None:
+                continue
+            to_clean.append(row.thread_id)
+            await session.execute(delete(DesktopThread).where(DesktopThread.task_id == cid))
+
+    async def _tombstone_deleted(
+        self, session: AsyncSession, task: DesktopThread, to_clean: list[str]
+    ) -> None:
+        """针对有后代的删除：保留线程行并置 deleted_at（墓碑），清自身内容与 checkpoint。
+
+        保留以 parent_context_id=自身 的后代 source 行（后代引用墓碑，血缘不断）。
+        """
+        cid = task.task_id
+        task.deleted_at = datetime.now(timezone.utc)
+        await session.execute(
+            delete(DesktopContextDefinition).where(DesktopContextDefinition.context_id == cid)
+        )
+        await session.execute(
+            delete(DesktopContextSource).where(DesktopContextSource.context_id == cid)
+        )
+        await session.execute(delete(DesktopRun).where(DesktopRun.task_id == cid))
+        await session.execute(delete(DesktopMaterial).where(DesktopMaterial.task_id == cid))
+        await session.execute(delete(PatrolDraft).where(PatrolDraft.task_id == cid))
+        await session.execute(delete(PatrolAgent).where(PatrolAgent.task_id == cid))
+        await session.execute(delete(SwarmAgent).where(SwarmAgent.task_id == cid))
+        await session.execute(delete(AgentMessage).where(AgentMessage.task_id == cid))
+        await session.execute(delete(AgentBoardTask).where(AgentBoardTask.thread_task_id == cid))
+        to_clean.append(task.thread_id)
+
+    @staticmethod
+    def _lifecycle(task: DesktopThread) -> str:
+        """返回会话生命周期标记：deleted / archived / active。"""
+        if task.deleted_at is not None:
+            return "deleted"
+        if task.archived_at is not None:
+            return "archived"
+        return "active"
+
     async def _depth(self, session: AsyncSession, context_id: str, memo: dict[str, int]) -> int:
         if context_id in memo:
             return memo[context_id]
@@ -455,6 +659,7 @@ class ContextService:
             "thread_id": task.thread_id,
             "title": task.title,
             "projection_status": "root",
+            "lifecycle": cls._lifecycle(task),
             "sources": [cls._source_payload(source) for source in sources],
             "editable": editable,
         }

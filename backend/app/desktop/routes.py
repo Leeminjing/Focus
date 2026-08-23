@@ -12,7 +12,7 @@ import asyncio
 from pathlib import Path
 import uuid
 
-from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from backend.app.desktop.models import (
@@ -130,6 +130,30 @@ async def decide_context_projection(
     context_id: str, body: ContextProjectionDecision, request: Request
 ) -> dict:
     return await request.app.state.desktop_service.contexts.decide(context_id, body)
+
+
+@desktop_router.post("/contexts/{context_id}/archive")
+async def archive_context(
+    context_id: str, request: Request, cascade: bool = Query(default=False)
+) -> dict:
+    return await request.app.state.desktop_service.contexts.archive(context_id, cascade)
+
+
+@desktop_router.post("/contexts/{context_id}/unarchive")
+async def unarchive_context(context_id: str, request: Request) -> dict:
+    return await request.app.state.desktop_service.contexts.unarchive(context_id)
+
+
+@desktop_router.delete("/contexts/{context_id}")
+async def delete_context(
+    context_id: str, request: Request, cascade: bool = Query(default=False)
+) -> dict:
+    return await request.app.state.desktop_service.contexts.delete(context_id, cascade)
+
+
+@desktop_router.get("/sessions/archived")
+async def list_archived_sessions(request: Request) -> list[dict]:
+    return await request.app.state.desktop_service.contexts.list_archived()
 
 
 @desktop_router.get("/tasks/{task_id}/skills")

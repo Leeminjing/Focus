@@ -83,6 +83,7 @@ const inspectorContent = document.querySelector("#inspectorContent");
 const shellTaskTitle = document.querySelector("#shellTaskTitle");
 const shellTaskMeta = document.querySelector("#shellTaskMeta");
 const dialog = document.querySelector("#taskDialog");
+const settingsDialog = document.querySelector("#settingsDialog");
 const agentDialog = document.querySelector("#agentDialog");
 const skillPicker = window.FocusSkillPicker;
 const contextEditor = window.FocusContextEditor;
@@ -269,7 +270,7 @@ async function bootstrap() {
     state.equipment = data.equipment;
     await hydratePluginAssets(data.plugins || []);
     await hydrateContextTrees();
-    state.activeTaskId ||= state.tasks[0]?.task_id || null;
+    state.activeTaskId ||= state.tasks.find(task => sessionLifecycle(task) === "active")?.task_id || null;
     setStatus("");
     await hydrateActive();
     render();
@@ -570,7 +571,7 @@ function renderContextRail(task) {
   const tasks = contextEditor.contextFamilyTasks(state.tasks, state.contextTrees, task.task_id);
   const tree = state.contextTrees.get(task.workspace_id) || [];
   const nodes = new Map(tree.map(node => [node.context_id, node]));
-  const cards = tasks.map(item => {
+  const cardList = tasks.map(item => {
     const node = nodes.get(item.task_id);
     const depth = Number(node?.depth || 0);
     const projectionStatus = node?.projection_status || "root";
@@ -581,6 +582,18 @@ function renderContextRail(task) {
     const otherParents = (node?.parents || []).slice(1).map(parent =>
       state.tasks.find(candidate => candidate.task_id === parent.context_id)?.title || parent.context_id
     ).join("、");
+    const lifecycle = item.lifecycle || node?.lifecycle || "active";
+    if (lifecycle !== "active") {
+      // 墓碑：仅当被归档/删除的会话仍被后代引用（有后代）时才保留原位占位；无后代直接消失。
+      if (!contextHasDescendants(item.task_id, tree)) return "";
+      const tag = lifecycle === "archived" ? "已归档" : "已删除";
+      return `<div class="context-rail-item is-tombstone" style="--context-depth:${depth}" data-context-depth="${depth}">
+        <span class="context-rail-card is-deleted" role="presentation">
+          <span class="context-rail-title">${escapeHtml(item.title)}</span>
+          <span class="context-rail-meta">${depth ? "派生 Context" : "根 Context"} · ${escapeHtml(item.task_id.slice(0, 8))} · ${tag}</span>
+        </span>
+      </div>`;
+    }
     return `<div class="context-rail-item${node?.editable ? " is-editable" : ""}" style="--context-depth:${depth}" data-context-depth="${depth}">
       <button type="button" class="context-rail-card${item.task_id === task.task_id ? " is-current" : ""}${blocked ? " is-blocked" : ""}" data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}">
         <span class="context-rail-title">${escapeHtml(item.title)}</span>
@@ -589,9 +602,10 @@ function renderContextRail(task) {
       </button>
       ${node?.editable ? `<button type="button" class="context-rail-edit" data-action="edit-context-definition" data-context-id="${escapeHtml(item.task_id)}">编辑</button>` : ""}
     </div>`;
-  }).join("");
+  }).filter(Boolean);
+  const cards = cardList.join("");
   return `<aside class="context-rail" aria-label="Context 树">
-    <header class="context-rail-heading"><strong>Contexts</strong><span>${tasks.length}</span></header>
+    <header class="context-rail-heading"><strong>Contexts</strong><span>${cardList.length}</span></header>
     <nav class="context-rail-list" aria-label="当前聊天派生的 Context">
       ${cards}
       <button type="button" class="context-rail-add" data-action="derive-context">新增 Context</button>
@@ -1192,6 +1206,16 @@ function taskCardMarkup(task, draftMode = false) {
       <span class="task-path">${escapeHtml(task.workspace_name || "本地工作区")}</span>
       ${contextMeta}
     </button>
+    ${sessionLifecycle(task) === "active" ? `
+      <details class="task-card-more">
+        <summary>更多操作</summary>
+        <div class="task-card-actions">
+          <button class="text-button" data-action="archive-context" data-context-id="${escapeHtml(task.task_id)}">归档</button>
+          <button class="text-button" data-action="cascade-archive-context" data-context-id="${escapeHtml(task.task_id)}">级联归档</button>
+          <button class="text-button danger" data-action="delete-context" data-context-id="${escapeHtml(task.task_id)}">删除</button>
+          <button class="text-button danger" data-action="cascade-delete-context" data-context-id="${escapeHtml(task.task_id)}">级联删除</button>
+        </div>
+      </details>` : ""}
     <details class="task-technical"><summary>技术详情</summary><dl><div><dt>Context ID</dt><dd>${escapeHtml(task.task_id)}</dd></div><div><dt>Thread</dt><dd>${escapeHtml(task.thread_id)}</dd></div><div><dt>路径</dt><dd>${escapeHtml(task.workspace_path)}</dd></div></dl></details>
   </article>`;
 }
@@ -1225,13 +1249,23 @@ function renderMapGroups() {
     workspace.roots.get(rootId).push(task);
     workspaces.set(task.workspace_id, workspace);
   });
-  return [...workspaces.entries()].map(([workspaceId, workspace]) => `<section class="map-workspace-group" data-workspace-id="${escapeHtml(workspaceId)}">
-    <header><div><span class="workspace-kicker">WORKSPACE</span><h2>${escapeHtml(workspace.name)}</h2></div><span class="ui-badge">${[...workspace.roots.values()].reduce((sum, tasks) => sum + tasks.length, 0)} 个 Context</span></header>
-    <div class="map-root-groups">${[...workspace.roots.entries()].map(([rootId, tasks]) => {
-      const root = tasks.find(task => task.task_id === rootId) || tasks[0];
-      return `<section class="map-root-group"><header><strong>${escapeHtml(root.title)}</strong><span>${tasks.length === 1 ? "仅根 Context" : `${tasks.length - 1} 个派生`}</span></header><div class="task-grid">${tasks.map(task => taskCardMarkup(task)).join("")}</div></section>`;
-    }).join("")}</div>
-  </section>`).join("");
+  return [...workspaces.entries()].map(([workspaceId, workspace]) => {
+    const allActive = [...workspace.roots.values()].reduce(
+      (sum, tasks) => sum + tasks.filter(task => sessionLifecycle(task) === "active").length, 0
+    );
+    return `<section class="map-workspace-group" data-workspace-id="${escapeHtml(workspaceId)}">
+      <header><div><span class="workspace-kicker">WORKSPACE</span><h2>${escapeHtml(workspace.name)}</h2></div><span class="ui-badge">${allActive} 个 Context</span></header>
+      <div class="map-root-groups">${[...workspace.roots.entries()].map(([rootId, tasks]) => {
+        const activeTasks = tasks.filter(task => sessionLifecycle(task) === "active");
+        const root = tasks.find(task => task.task_id === rootId) || tasks[0];
+        const rootLifecycle = sessionLifecycle(root);
+        const headerLabel = rootLifecycle === "active"
+          ? (activeTasks.length === 1 ? "仅根 Context" : `${activeTasks.length - 1} 个派生`)
+          : `根 context 已${rootLifecycle === "archived" ? "归档" : "删除"} · ${activeTasks.length} 个派生`;
+        return `<section class="map-root-group"><header><strong>${escapeHtml(root?.title || rootId)}</strong><span>${escapeHtml(headerLabel)}</span></header><div class="task-grid">${activeTasks.map(task => taskCardMarkup(task)).join("")}</div></section>`;
+      }).join("")}</div>
+    </section>`;
+  }).join("");
 }
 
 function renderMap() {
@@ -3030,6 +3064,80 @@ async function goFocusHome() {
   if (state.activeTaskId === taskId && state.view === "focus") render();
 }
 
+// === 会话生命周期：归档 / 恢复 / 删除 + 设置面板 ===
+
+function sessionLifecycle(task) {
+  return task?.lifecycle || "active";
+}
+
+function contextHasDescendants(contextId, tree) {
+  return (Array.isArray(tree) ? tree : []).some(node => node.parents?.[0]?.context_id === contextId);
+}
+
+async function archiveContext(contextId, cascade) {
+  try {
+    await api(`/desktop/api/contexts/${contextId}/archive${cascade ? "?cascade=true" : ""}`, { method: "POST" });
+    setStatus(cascade ? "已级联归档会话" : "已归档会话");
+    return refreshAfterSessionChange(contextId);
+  } catch (error) { return setStatus(error.message, true); }
+}
+
+async function unarchiveContext(contextId) {
+  try {
+    await api(`/desktop/api/contexts/${contextId}/unarchive`, { method: "POST" });
+    setStatus("已恢复会话");
+    if (settingsDialog?.open) await openSettings();
+    return refreshAfterSessionChange(null);
+  } catch (error) { return setStatus(error.message, true); }
+}
+
+async function deleteContext(contextId, cascade) {
+  const message = cascade
+    ? "确定永久删除该会话及其全部派生后代？此操作不可恢复。"
+    : "确定永久删除该会话？此操作不可恢复。";
+  if (!confirm(message)) return;
+  try {
+    await api(`/desktop/api/contexts/${contextId}${cascade ? "?cascade=true" : ""}`, { method: "DELETE" });
+    setStatus(cascade ? "已级联删除会话" : "已删除会话");
+    if (settingsDialog?.open) settingsDialog.close();
+    return refreshAfterSessionChange(contextId);
+  } catch (error) { return setStatus(error.message, true); }
+}
+
+async function refreshAfterSessionChange(contextId) {
+  const wasActive = contextId === state.activeTaskId;
+  state.activeTaskId = null;
+  await bootstrap();
+  if (wasActive) {
+    const next = state.tasks.find(task => sessionLifecycle(task) === "active");
+    state.activeTaskId = next?.task_id || null;
+  }
+  return render();
+}
+
+async function openSettings() {
+  try {
+    const sessions = await api("/desktop/api/sessions/archived");
+    const list = document.querySelector("#archivedSessions");
+    if (list) {
+      list.innerHTML = sessions.length
+        ? sessions.map(item => `
+            <div class="archived-session-item" data-context-id="${escapeHtml(item.context_id)}">
+              <div class="archived-session-info">
+                <span class="archived-session-title">${escapeHtml(item.title)}</span>
+                <span class="archived-session-meta">${escapeHtml(item.workspace_name || "本地工作区")} · ${escapeHtml(item.context_id.slice(0, 8))}</span>
+              </div>
+              <div class="archived-session-actions">
+                <button class="text-button" data-action="unarchive-context" data-context-id="${escapeHtml(item.context_id)}">恢复</button>
+                <button class="text-button danger" data-action="delete-context" data-context-id="${escapeHtml(item.context_id)}">删除</button>
+              </div>
+            </div>`).join("")
+        : '<p class="muted tiny" style="padding:var(--space-3)">暂无已归档会话</p>';
+    }
+  } catch (error) { setStatus(error.message, true); }
+  if (!settingsDialog?.open) settingsDialog?.showModal();
+}
+
 // f18:拦截消息内链接导航(避免 Electron 窗口跳转到本地路径白屏)。
 // capture 阶段拦截 + stopPropagation。判据:
 //   - file:// 链接:直接阻止导航,按文件打开面板;
@@ -3117,6 +3225,13 @@ document.addEventListener("click", async event => {
   }
   if (action === "focus-home" && state.activeTaskId) return goFocusHome();
   if (action === "derive-context") return openContextEditor(state.activeTaskId);
+  if (action === "open-settings") return openSettings();
+  if (action === "close-settings") return settingsDialog.close();
+  if (action === "archive-context") return archiveContext(button.dataset.contextId, false);
+  if (action === "cascade-archive-context") return archiveContext(button.dataset.contextId, true);
+  if (action === "unarchive-context") return unarchiveContext(button.dataset.contextId);
+  if (action === "delete-context") return deleteContext(button.dataset.contextId, false);
+  if (action === "cascade-delete-context") return deleteContext(button.dataset.contextId, true);
   if (action === "edit-context-definition") return reopenContextDecision(button.dataset.contextId);
   if (action === "context-rail-card") return switchTask(button.dataset.taskId);
   if (action === "resume-context-decision") return reopenContextDecision(state.activeTaskId);
