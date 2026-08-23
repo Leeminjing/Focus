@@ -164,3 +164,83 @@ dialog::backdrop { background: rgb(24 32 45 / 42%); animation: backdrop-enter va
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 会话生命周期：地图卡片动作 / 侧栏墓碑 / 设置面板 */
+details.task-card-more { padding: 0 var(--space-2) var(--space-2); }
+details.task-card-more > summary {
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+details.task-card-more > summary:hover { color: var(--text-primary); }
+details.task-card-more .task-card-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); padding-top: var(--space-1); }
+details.task-card-more .task-card-actions .text-button { font-size: 12px; }
+
+.context-rail-item.is-tombstone { position: relative; }
+.context-rail-card.is-deleted {
+  color: var(--text-secondary);
+  opacity: .6;
+  border-style: dashed;
+  cursor: default;
+}
+.context-rail-card.is-deleted:hover { border-color: var(--border-default); background: var(--panel); }
+.context-rail-card.is-deleted .context-rail-title { text-decoration: line-through; }
+
+.settings-dialog { padding: 0; }
+.settings-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.settings-dialog-head h2 { margin: 0; font-size: 18px; }
+.settings-sections {
+  display: flex;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.settings-sections button {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: var(--radius-card);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.settings-sections button.is-active,
+.settings-sections button[aria-selected="true"] { color: var(--text-primary); background: var(--surface-selected); font-weight: 600; }
+.settings-pane { padding: var(--space-4); }
+.settings-pane h3 { margin: 0 0 var(--space-3); font-size: 15px; }
+.settings-data-section { border: 1px solid var(--border-default); border-radius: var(--radius-card); overflow: hidden; }
+.settings-data-section > header {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.archived-session-list { max-height: 46vh; overflow: auto; }
+.archived-session-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.archived-session-item:last-child { border-bottom: 0; }
+.archived-session-info { min-width: 0; flex: 1; }
+.archived-session-title { display: block; font-weight: 600; }
+.archived-session-meta { color: var(--text-secondary); font-size: 12px; }
+.archived-session-actions { display: flex; gap: var(--space-2); }
+.settings-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+.empty-archived { padding: var(--space-3); color: var(--text-secondary); font-size: 12px; }

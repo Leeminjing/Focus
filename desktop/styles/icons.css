@@ -25,6 +25,7 @@
 
 .icon-brain-circuit { --icon-url: url("../assets/icons/brain-circuit.svg"); }
 .icon-wrench { --icon-url: url("../assets/icons/wrench.svg"); }
+.icon-settings { --icon-url: url("../assets/icons/settings.svg"); }
 .icon-terminal { --icon-url: url("../assets/icons/terminal.svg"); }
 .icon-folder { --icon-url: url("../assets/icons/folder.svg"); }
 .icon-search { --icon-url: url("../assets/icons/search.svg"); }

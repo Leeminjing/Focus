@@ -50,6 +50,10 @@
         <button class="app-nav-item" data-action="show-assembly" data-nav-key="assembly">
           <span class="app-nav-label">无工作区模式</span>
         </button>
+        <button class="app-nav-item app-nav-settings" data-action="open-settings" aria-label="设置">
+          <span class="ui-icon is-sm icon-settings" aria-hidden="true"></span>
+          <span class="app-nav-label">设置</span>
+        </button>
       </nav>
       <section class="app-workspace">
         <main id="app" tabindex="-1" aria-live="polite"></main>
@@ -94,6 +98,26 @@
       <input id="agentContinueInput" placeholder="给小兵继续对话的消息…" autocomplete="off">
       <button class="primary" type="submit">继续</button>
     </form>
+  </dialog>
+  <dialog id="settingsDialog" class="settings-dialog">
+    <header class="settings-dialog-head">
+      <div>
+        <h2>设置</h2>
+        <span class="muted tiny">Focus 桌面配置</span>
+      </div>
+      <button class="quiet-button" data-action="close-settings" aria-label="关闭"><span class="ui-icon icon-x" aria-hidden="true"></span></button>
+    </header>
+    <nav class="settings-sections" role="tablist" aria-label="设置区块">
+      <button role="tab" data-settings-tab="data" aria-selected="true" class="is-active">数据</button>
+    </nav>
+    <section class="settings-pane" data-settings-pane="data">
+      <h3>数据</h3>
+      <section class="settings-data-section">
+        <header><strong>已归档的会话</strong><span class="muted tiny">归档可恢复；删除需确认</span></header>
+        <div id="archivedSessions" class="archived-session-list"></div>
+      </section>
+    </section>
+    <div class="settings-dialog-actions"><button class="text-button" data-action="close-settings">关闭</button></div>
   </dialog>
   <template id="reviewTemplate">
     <article class="review-panel">

@@ -1753,6 +1753,11 @@ class DesktopService:
             "task_id": task.task_id, "workspace_id": task.workspace_id, "workspace_path": workspace.path,
             "workspace_name": workspace.display_name, "thread_id": task.thread_id, "title": task.title,
             "harness_mode": "assembly" if task.thread_id == _ASSEMBLY_THREAD_ID else "workspace",
+            "lifecycle": (
+                "deleted" if task.deleted_at is not None
+                else "archived" if task.archived_at is not None
+                else "active"
+            ),
             "ui_state": ui_state, "active_run": self._run_payload(active) if active else None,
             "pending_commitment_review": (
                 recovery["review"] if recovery and recovery["status"] == "resumable" else None
