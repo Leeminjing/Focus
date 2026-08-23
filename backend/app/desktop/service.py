@@ -228,7 +228,33 @@ class DesktopService:
             ],
             "skills": skills,
             "permissions": ["read", "write", "host_command"],
+            "tools": await self._equipment_tools(),
         }
+
+    async def _equipment_tools(self) -> list[dict[str, Any]]:
+        """返回装备信息中的工具清单（含 name/label/source），供前端区分内置与自定义工具。
+
+        工作流:
+            (1) 经 get_available_tools() 聚合全部可用工具（builtin/custom/mcp/plugin）
+            (2) 每个 ToolInfo 转 {name, label, source}
+            (3) 按 name 去重、保持顺序返回
+        """
+        from focus.tools.interfaces import ToolInfo
+        from focus.tools.tools import get_available_tools
+
+        reg = await get_available_tools()
+        result: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for info in reg:
+            if info.name in seen:
+                continue
+            seen.add(info.name)
+            result.append({
+                "name": info.name,
+                "label": info.label if isinstance(info, ToolInfo) else info.name,
+                "source": info.source if isinstance(info, ToolInfo) else "builtin",
+            })
+        return result
 
     async def create_workspace(self, path: str, display_name: str | None = None) -> dict[str, Any]:
         resolved = Path(path).expanduser().resolve()
@@ -972,11 +998,20 @@ class DesktopService:
             if agent_role != "patrol":
                 tools = [*tools, web_search, web_fetch]
             if agent_role == "main":
-                # MCP 远端工具（如 Playwright 浏览器自动化）仅 main 装配，fail-soft 降级为空
+                # 系统级可注册工具池（自定义/mcp/插件）仅 main 装配，fail-soft 降级为空。
+                # 内置工具已由上方 select_workspace_tools + web 按权限/角色装配，此处排除 source=="builtin" 以去重。
+                from focus.tools.interfaces import ToolInfo
+
+                pooled = await get_available_tools()
+                pool_tools = [
+                    t.tool() if isinstance(t, ToolInfo) else t
+                    for t in pooled
+                    if not (isinstance(t, ToolInfo) and t.source == "builtin")
+                ]
                 tools = [*tools, *self._build_patrol_reader_tools(task_id),
                          *self._build_swarm_reader_tools(task_id),
                          build_spawn_agent_tool(), *self._build_swarm_tools(),
-                         *await get_available_tools()]
+                         *pool_tools]
             tools = [*tools, *collab_tools]
             prompt = prompt_with_skills(base_prompt, snapshots)
             if material_context:

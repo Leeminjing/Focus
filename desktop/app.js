@@ -1632,12 +1632,44 @@ function renderMessageEditor(message, index) {
   </div>`;
 }
 
+const sourceMeta = {
+  builtin: { label: "内置", className: "tool-source builtin" },
+  custom: { label: "自定义", className: "tool-source custom" },
+  mcp: { label: "MCP", className: "tool-source mcp" },
+  plugin: { label: "插件", className: "tool-source plugin" },
+};
+
+function renderEquipmentTools() {
+  const tools = state.equipment.tools || [];
+  if (!tools.length) return "";
+  const grouped = tools.reduce((map, tool) => {
+    const source = tool.source || "builtin";
+    (map[source] = map[source] || []).push(tool);
+    return map;
+  }, {});
+  const blocks = Object.entries(grouped)
+    .sort(([a], [b]) => scoreSource(a) - scoreSource(b))
+    .map(([source, items]) => {
+      const meta = sourceMeta[source] || { label: source, className: "tool-source" };
+      return `<div class="equipment-tool-group">
+        <span class="${meta.className}">${escapeHtml(meta.label)}</span>
+        <ul class="equipment-tool-list">${items.map(tool => `<li title="${escapeHtml(String(tool.source || ""))}">${escapeHtml(tool.label || tool.name)}</li>`).join("")}</ul>
+      </div>`;
+    }).join("");
+  return `<div class="equipment-tools"><span class="tiny muted">可用工具（按来源）</span>${blocks}</div>`;
+}
+
+function scoreSource(source) {
+  return source === "builtin" ? 0 : source === "custom" ? 1 : source === "mcp" ? 2 : 3;
+}
+
 function renderEquipment(draft) {
   const equipment = draft.equipment || {};
   const permissions = equipment.permissions || ["read"];
   return `<div class="equipment-grid">
     <label>模型<select data-equipment="model_name">${state.equipment.models.map(model => `<option value="${model.name}" ${model.name === equipment.model_name ? "selected" : ""}>${escapeHtml(model.display_name)}</option>`).join("")}</select></label>
     <div><span class="tiny muted">权限</span><div class="check-line">${state.equipment.permissions.map(permission => `<label><input type="checkbox" data-permission="${permission}" ${permissions.includes(permission) ? "checked" : ""}>${permission}</label>`).join("")}</div></div>
+    ${renderEquipmentTools()}
     <p class="tiny danger">无沙箱：写入或命令权限会直接影响真实宿主机。命令权限可绕过文件工具规则。</p>
   </div>`;
 }

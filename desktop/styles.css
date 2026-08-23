@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   color-scheme: light;
   --bg: #fbfbfc;
   --panel: #ffffff;
@@ -193,6 +193,16 @@ button { cursor: pointer; }
 .check-line label { display: flex; grid-template-columns: auto 1fr; align-items: center; gap: 5px; color: var(--ink); }
 .draft-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 18px; }
 .token-count.over { color: var(--danger); }
+
+.equipment-tools { grid-column: 1 / -1; display: grid; gap: 8px; }
+.equipment-tool-group { display: flex; align-items: baseline; gap: 8px; }
+.tool-source { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 2px 8px; flex: none; }
+.tool-source.builtin { color: #2563eb; background: #dbeafe; }
+.tool-source.custom { color: #b45309; background: #fef3c7; }
+.tool-source.mcp { color: #047857; background: #d1fae5; }
+.tool-source.plugin { color: #6d28d9; background: #ede9fe; }
+.equipment-tool-list { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.equipment-tool-list li { font-size: 12px; color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; }
 
 .agents-strip { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
 .agent-chip { border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 6px 10px; font-size: 12px; }
