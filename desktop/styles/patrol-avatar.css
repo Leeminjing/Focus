@@ -1,0 +1,178 @@
+/* 会话 Patrol 小兵组件：只定义浮层、真实图像资源、气泡和原生交互状态。 */
+.focus-view:has(> .patrol-avatar-layer) {
+  position: relative;
+  isolation: isolate;
+}
+
+.patrol-avatar-layer {
+  position: absolute;
+  z-index: 8;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: layout style;
+}
+
+.patrol-avatar {
+  --patrol-size: clamp(92px, 8vw, 116px);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--patrol-size);
+  height: var(--patrol-size);
+  pointer-events: none;
+  will-change: transform;
+}
+
+.patrol-avatar__button {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  overflow: visible;
+  color: var(--text-primary);
+  border: 0;
+  background: transparent;
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+}
+
+.patrol-avatar__button:active,
+.patrol-avatar.is-dragging .patrol-avatar__button { cursor: grabbing; }
+
+.patrol-avatar__button:focus-visible {
+  border-radius: var(--radius-round);
+  outline-offset: 4px;
+}
+
+.patrol-avatar__image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  filter: drop-shadow(0 8px 10px rgb(15 37 66 / 10%));
+  animation: patrol-avatar-hover 2.8s var(--ease-standard) infinite;
+}
+
+.patrol-avatar[data-status="pending"] .patrol-avatar__image { animation: patrol-avatar-pulse 1.25s ease-in-out infinite; }
+.patrol-avatar[data-status="running"] .patrol-avatar__image { animation-duration: 1.8s; }
+.patrol-avatar.is-dragging .patrol-avatar__image { animation: none; filter: drop-shadow(0 14px 16px rgb(15 37 66 / 18%)); }
+
+.patrol-avatar__fallback {
+  display: grid;
+  width: 86px;
+  height: 58px;
+  margin: 22px auto 0;
+  place-items: center;
+  color: var(--text-accent);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-round);
+  background: var(--surface-base);
+  box-shadow: var(--shadow-raised);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+
+.patrol-avatar__fallback[hidden] { display: none; }
+
+.patrol-avatar__bubble {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  width: min(230px, 52vw);
+  padding: var(--space-3);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-panel);
+  background: var(--surface-base);
+  box-shadow: var(--shadow-overlay);
+  pointer-events: auto;
+  transform: translateX(-50%);
+}
+
+.patrol-avatar__bubble::after {
+  position: absolute;
+  bottom: -7px;
+  left: calc(50% - 7px);
+  width: 12px;
+  height: 12px;
+  border-right: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--surface-base);
+  content: "";
+  pointer-events: none;
+  transform: rotate(45deg);
+}
+
+.patrol-avatar[data-bubble-align="start"] .patrol-avatar__bubble {
+  right: auto;
+  left: 0;
+  transform: none;
+}
+
+.patrol-avatar[data-bubble-align="start"] .patrol-avatar__bubble::after {
+  left: 42px;
+}
+
+.patrol-avatar[data-bubble-align="end"] .patrol-avatar__bubble {
+  right: 0;
+  left: auto;
+  transform: none;
+}
+
+.patrol-avatar[data-bubble-align="end"] .patrol-avatar__bubble::after {
+  right: 42px;
+  left: auto;
+}
+
+.patrol-avatar__bubble[hidden] { display: none; }
+.patrol-avatar__bubble strong { display: block; font-size: 13px; }
+
+.patrol-avatar__status {
+  display: inline-flex;
+  margin-top: var(--space-1);
+  color: var(--text-accent);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.patrol-avatar[data-status="success"] .patrol-avatar__status { color: var(--text-success); }
+.patrol-avatar[data-status="error"] .patrol-avatar__status { color: var(--text-danger); }
+.patrol-avatar[data-status="interrupted"] .patrol-avatar__status,
+.patrol-avatar[data-status="cancelled"] .patrol-avatar__status { color: var(--text-warning); }
+
+.patrol-avatar__message {
+  margin: var(--space-2) 0 var(--space-3);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.patrol-avatar__detail {
+  min-height: 30px;
+  padding: 5px 11px;
+  color: var(--text-inverse);
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-control);
+  background: var(--accent-primary);
+  font-size: 12px;
+}
+
+.patrol-avatar__detail:hover { background: var(--accent-hover); }
+
+@keyframes patrol-avatar-hover {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+@keyframes patrol-avatar-pulse {
+  0%, 100% { transform: translateY(0) scale(1); opacity: .92; }
+  50% { transform: translateY(-4px) scale(1.025); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce), (update: slow) {
+  .patrol-avatar__image { animation: none !important; }
+}

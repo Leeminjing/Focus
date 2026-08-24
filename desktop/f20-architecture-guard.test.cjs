@@ -1,7 +1,8 @@
 /*
  * 本文件对外提供 F20 前端架构静态守卫。输入为桌面清单、Electron 主进程、Gateway 挂载、
- * HTML 与渲染入口源码，输出为零新增依赖、零外部 CDN、同一 loopback Origin 和无 CORS/代理
- * 的断言结果；工作流只读取仓库文件并在约束被破坏时退出失败。示例：`node f20-architecture-guard.test.cjs`。
+ * HTML、渲染入口与 Patrol presence 源码，输出为零新增依赖、零外部 CDN、同一 loopback
+ * Origin、无 CORS/代理和无待命后端副作用的断言结果；工作流只读取仓库文件并在约束被
+ * 破坏时退出失败。示例：`node f20-architecture-guard.test.cjs`。
  */
 "use strict";
 
@@ -28,6 +29,7 @@ const styleOrder = [
   "./styles/shell.css",
   "./styles/views.css",
   "./styles/conversation-events.css",
+  "./styles/patrol-avatar.css",
 ].map(value => html.indexOf(value));
 assert.ok(styleOrder.every(index => index >= 0));
 assert.deepStrictEqual([...styleOrder].sort((a, b) => a - b), styleOrder);
@@ -65,13 +67,30 @@ assert.match(preload, /openExternal:\s*url => ipcRenderer\.invoke\("focus:open-e
 assert.doesNotMatch(preload, /fetch\(|EventSource|proxy/i);
 
 const renderer = read("desktop/app.js");
+const patrolPresence = read("desktop/patrol-presence.js");
 assert.match(renderer, /location\.origin/);
 assert.match(renderer, /fetch\(`\$\{runtime\.apiBase\}\$\{path\}`/);
 assert.match(renderer, /new EventSource\(`\$\{runtime\.apiBase\}\/desktop\/api\/runs\//);
 assert.match(renderer, /script\.onerror = \(\) => \{[\s\S]*pluginScriptAssets\.delete\(src\)[\s\S]*console\.error\("插件脚本加载失败:"[\s\S]*resolve\(\)/);
 assert.match(renderer, /link\.onerror = \(\) => \{[\s\S]*pluginStyleAssets\.delete\(href\)[\s\S]*console\.error\("插件样式加载失败:"/);
 assert.match(renderer, /filter\(plugin => plugin\.status === "active"\)/);
-assert.match(html, /<script src="\.\/conversation-events\.js"><\/script>[\s\S]*<script src="\.\/app\.js"><\/script>/);
+assert.match(html, /<script src="\.\/conversation-events\.js"><\/script>[\s\S]*<script src="\.\/patrol-presence\.js"><\/script>[\s\S]*<script src="\.\/patrol-avatar\.js"><\/script>[\s\S]*<script src="\.\/app\.js"><\/script>/);
+assert.match(renderer, /patrol_avatar_positions/);
+assert.match(renderer, /FocusPatrolAvatar/);
+assert.match(renderer, /FocusPatrolPresence/);
+assert.match(renderer, /avatar\.presence === "standby"[\s\S]*openDraft\(task\.task_id\)[\s\S]*openAgentDetails\(avatar\.agent_id\)/);
+assert.match(patrolPresence, /STANDBY_AVATAR_ID = "__standby__"/);
+assert.doesNotMatch(patrolPresence, /fetch\(|EventSource|XMLHttpRequest|\/desktop\/api\//);
+
+const migrationDirectory = path.join(root, "backend/packages/harness/focus/persistence/migrations/versions");
+const backendPatrolBoundary = [
+  read("backend/app/desktop/models.py"),
+  read("backend/app/desktop/routes.py"),
+  ...fs.readdirSync(migrationDirectory)
+    .filter(name => name.endsWith(".py"))
+    .map(name => fs.readFileSync(path.join(migrationDirectory, name), "utf8")),
+].join("\n");
+assert.doesNotMatch(backendPatrolBoundary, /__standby__|FocusPatrolPresence|session-patrol-presence/);
 
 const gateway = read("backend/app/gateway/app.py");
 const desktopApp = read("backend/app/desktop/app.py");
