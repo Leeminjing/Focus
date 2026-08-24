@@ -373,14 +373,53 @@
 .task-card:focus-visible { outline-offset: -3px; background: var(--surface-subtle); }
 .task-title { min-width: 0; margin: 0; overflow: hidden; font-size: 15px; font-weight: 680; text-overflow: ellipsis; white-space: nowrap; }
 .task-card .context-identity { margin: 0; color: var(--text-accent); font-size: 11px; }
-.task-card .task-path { max-width: 100%; color: var(--text-secondary); font-size: 12px; }
 .context-parent-tags { color: var(--text-warning); font-size: 11px; }
-.task-technical { border-top: 1px solid var(--border-subtle); color: var(--text-secondary); font-size: 11px; }
+.task-technical { color: var(--text-secondary); font-size: 12px; }
 .task-technical summary { padding: var(--space-2) var(--space-3); cursor: pointer; }
 .task-technical dl { display: grid; gap: var(--space-2); margin: 0; padding: 0 var(--space-3) var(--space-3); }
 .task-technical dl div { min-width: 0; }
 .task-technical dt { font-weight: 650; }
 .task-technical dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+
+/* 地图卡片折叠块统一排版与前导图标：隐藏浏览器默认三角 marker，
+   改用「前导图标（更多操作=列表、技术详情=信息）」，不显示右侧展开箭头。
+   仅作用于 .task-card-shell（地图卡片），不影响其它视图的 <details>。
+   统一 summary 内边距/行高，使两行图标与文字左对齐、高度一致；
+   图标用 mask + currentColor 着色，随文字在 hover/[open] 时同步变色。 */
+.task-card-shell details.task-card-more { padding: 0; }
+.task-card-shell details.task-card-more .task-card-actions { padding: var(--space-1) var(--space-3) var(--space-2); }
+.task-card-shell details.task-card-more > summary,
+.task-card-shell .task-technical summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  user-select: none;
+  color: var(--text-secondary);
+}
+.task-card-shell details.task-card-more > summary:hover,
+.task-card-shell .task-technical summary:hover { color: var(--text-primary); }
+/* 前导图标 */
+.task-card-shell details.task-card-more > summary::before,
+.task-card-shell .task-technical summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  background-color: currentColor;
+}
+.task-card-shell details.task-card-more > summary::before {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 6h13M8 12h13M8 18h13'/%3E%3Ccircle cx='4' cy='6' r='1'/%3E%3Ccircle cx='4' cy='12' r='1'/%3E%3Ccircle cx='4' cy='18' r='1'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 6h13M8 12h13M8 18h13'/%3E%3Ccircle cx='4' cy='6' r='1'/%3E%3Ccircle cx='4' cy='12' r='1'/%3E%3Ccircle cx='4' cy='18' r='1'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.task-card-shell .task-technical summary::before {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 11v5'/%3E%3Cpath d='M12 8h.01'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 11v5'/%3E%3Cpath d='M12 8h.01'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.task-card-shell details.task-card-more > summary::-webkit-details-marker,
+.task-card-shell .task-technical summary::-webkit-details-marker { display: none; }
 
 /* Context 组装与投影决断使用工作区边界，不再按整个 viewport 计算高度。 */
 .context-editor-view {
