@@ -1,7 +1,8 @@
 /*
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
- * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、对话/Context/Agent/
- * Commitment/压缩/插件等视图；工作流只更新宿主挂载点并保留任务级草稿、滚动与运行状态。
+ * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
+ * 对话/Context/Agent/Commitment/压缩/插件等视图；工作流只更新宿主挂载点并保留任务级
+ * 草稿、滚动、化身位置与运行状态。
  */
 "use strict";
 
@@ -90,6 +91,8 @@ const contextEditor = window.FocusContextEditor;
 const compressionPanel = window.FocusCompressionPanel;
 const pluginView = window.FocusPluginView;
 const conversationEvents = window.FocusConversationEvents;
+const patrolPresence = window.FocusPatrolPresence;
+const patrolAvatar = window.FocusPatrolAvatar;
 // f18 插件视图宿主:插件前端脚本加载后经此注册视图与材料打开器
 window.__focusPluginViews = window.__focusPluginViews || {};
 const pluginViews = window.__focusPluginViews;
@@ -105,6 +108,7 @@ let pluginHydrationSequence = 0;
 let pluginViewRequestSequence = 0;
 let contextTreeRequestSequence = 0;
 let panelResizeFrame = null;
+let patrolAvatarController = null;
 const pluginStyleAssets = new Set();
 const pluginScriptAssets = new Map();
 
@@ -299,6 +303,10 @@ async function hydrateActive(taskId = state.activeTaskId) {
   if (detail.active_run?.status === "pending" || detail.active_run?.status === "running") {
     listenToRun(detail.active_run);
   }
+  agents.forEach(agent => {
+    if (["pending", "running"].includes(agent.latest_run?.status)) listenToRun(agent.latest_run);
+  });
+  updatePatrolAvatarLayer(taskId);
 }
 
 function render() {
@@ -632,6 +640,8 @@ function renderFocus() {
   const panelOpen = !!state.filesPanel;
   if (panelOpen) state.panelWidth = normalizePanelWidth(state.panelWidth);
   const shellStyle = `grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr)${panelOpen ? ` ${state.panelWidth}px` : ""}`;
+  patrolAvatarController?.destroy();
+  patrolAvatarController = null;
   app.innerHTML = `
     <section class="focus-shell" style="${shellStyle}">
       <section class="focus-view" data-task-id="${task.task_id}">
@@ -643,6 +653,7 @@ function renderFocus() {
         <div class="conversation" id="conversation">
           ${renderConversation(detail, task)}
         </div>
+        <div class="patrol-avatar-layer" id="patrolAvatarLayer" aria-label="会话 Patrol 小兵"></div>
         <div class="focus-bottom">
           <div class="composer-shell">
             <div class="composer-context"><span class="ui-badge is-active">当前任务</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">运行详情</button></div>
@@ -671,6 +682,7 @@ function renderFocus() {
   const rail = document.querySelector(".context-rail-list");
   if (previousRailScrollTop != null && rail) rail.scrollTop = previousRailScrollTop;
   if (!previousConversation) requestAnimationFrame(() => rail?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "nearest" }));
+  mountPatrolAvatarLayer(task, detail);
   if (panelOpen) {
     mountFilePanel();
     bindPanelResizer();
@@ -1042,6 +1054,58 @@ function renderAgentStrip(taskId) {
   return warning + agents.map(agent => `<button class="agent-chip" data-action="agent-details" data-agent-id="${agent.agent_id}">小兵 ${agent.agent_id.slice(0, 5)} · ${presentRunStatus(agent.latest_run?.status || "ready").label}</button>`).join("");
 }
 
+function patrolAvatarOptions(task, detail) {
+  const positions = detail.ui_state?.patrol_avatar_positions || {};
+  const composed = patrolPresence?.compose(state.agents.get(task.task_id) || [], positions) || {
+    avatars: state.agents.get(task.task_id) || [],
+    positions,
+  };
+  return {
+    avatars: composed.avatars,
+    positions: composed.positions,
+    onPositionCommit: (avatarId, position) => savePatrolAvatarPosition(task.task_id, avatarId, position),
+    onAction: avatar => avatar.presence === "standby"
+      ? openDraft(task.task_id)
+      : openAgentDetails(avatar.agent_id),
+  };
+}
+
+function mountPatrolAvatarLayer(task, detail) {
+  const root = document.querySelector("#patrolAvatarLayer");
+  if (!root || !patrolAvatar) return;
+  patrolAvatarController = patrolAvatar.mount(root, patrolAvatarOptions(task, detail));
+}
+
+function updatePatrolAvatarLayer(taskId = state.activeTaskId) {
+  if (!patrolAvatarController || state.view !== "focus" || taskId !== state.activeTaskId) return;
+  const task = activeTask();
+  const detail = state.details.get(taskId);
+  if (task && detail) patrolAvatarController.update(patrolAvatarOptions(task, detail));
+}
+
+function savePatrolAvatarPosition(taskId, avatarId, position) {
+  const detail = state.details.get(taskId);
+  if (!detail) return;
+  detail.ui_state = {
+    ...(detail.ui_state || {}),
+    patrol_avatar_positions: {
+      ...(detail.ui_state?.patrol_avatar_positions || {}),
+      [avatarId]: position,
+    },
+  };
+  if (taskId === state.activeTaskId && state.view === "focus") void persistFocusState();
+}
+
+function syncPatrolRunState(run, status, error = null) {
+  if (run?.kind !== "patrol" || !run.task_id || !run.agent_id) return;
+  const agents = state.agents.get(run.task_id) || [];
+  const agent = agents.find(item => item.agent_id === run.agent_id);
+  if (!agent) return;
+  agent.latest_run = { ...(agent.latest_run || {}), ...run, status, error };
+  updatePatrolAvatarLayer(run.task_id);
+  if (state.inspector.open && state.inspector.tab === "agents" && run.task_id === state.activeTaskId) renderInspector();
+}
+
 function agentFromState(agentId) {
   return (state.agents.get(state.activeTaskId) || []).find(item => item.agent_id === agentId);
 }
@@ -1066,6 +1130,7 @@ async function refreshAgentDetails() {
       api(`/desktop/api/tasks/${taskId}/agents`),
     ]);
     state.agents.set(taskId, agents);
+    updatePatrolAvatarLayer(taskId);
     if (requestId === agentDetailsRequestSequence
         && state.activeTaskId === taskId
         && state.agentDialog.agentId === agentId) {
@@ -1918,6 +1983,7 @@ const TRACE_ACTORS = { supervisor: "Supervisor", worker: "Worker", evaluator: "E
 
 function listenToRun(run) {
   if (state.streams.has(run.run_id)) return;
+  syncPatrolRunState(run, run.status || "pending", run.error || null);
   let runError = null;
   const parseEvent = (event, fallback = null) => {
     if (!event?.data) return fallback;
@@ -1930,6 +1996,10 @@ function listenToRun(run) {
   };
   const source = new EventSource(`${runtime.apiBase}/desktop/api/runs/${run.run_id}/stream?session=${encodeURIComponent(runtime.session)}`);
   state.streams.set(run.run_id, source);
+  source.addEventListener("metadata", event => {
+    const envelope = parseEvent(event);
+    if (envelope?.data?.status) syncPatrolRunState(run, envelope.data.status);
+  });
   source.addEventListener("tokens", event => {
     const token = parseEvent(event);
     if (token) appendToken(token);
@@ -1974,11 +2044,13 @@ function listenToRun(run) {
     if (!event.data) return;
     const error = parseEvent(event)?.data?.error || "运行失败";
     runError = error;
+    syncPatrolRunState(run, "error", error);
     setStatus(error, true);
   });
   source.addEventListener("end", async event => {
     const terminal = parseEvent(event, { status: "error", error: "运行流异常结束" });
     if (!terminal.error && runError) terminal.error = runError;
+    syncPatrolRunState(run, terminal.status, terminal.error || null);
     // 主动中断判定：主 Agent run 终态 interrupted 且无错误、且非承诺审批（审批面板已接管界面状态）
     const wasMainInterrupted = run.kind === "main" && terminal.status === "interrupted" && !terminal.error;
     source.close(); state.streams.delete(run.run_id); clearStreamBuffer(run.run_id);
