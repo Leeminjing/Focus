@@ -163,7 +163,6 @@ button { cursor: pointer; }
 .task-card.drop-target { background: var(--blue-soft); outline: 2px solid var(--blue); outline-offset: -2px; }
 .task-card.dimmed { opacity: .32; }
 .task-title { display: block; font-size: 18px; margin-bottom: 9px; }
-.task-path { display: block; color: var(--muted); font-size: 12px; max-width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-status { position: absolute; bottom: 25px; left: 30px; color: var(--muted); font-size: 13px; }
 .task-status.running { color: var(--green); }
 

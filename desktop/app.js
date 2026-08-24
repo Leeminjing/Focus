@@ -1203,7 +1203,6 @@ function taskCardMarkup(task, draftMode = false) {
     <button class="task-card" data-task-id="${task.task_id}" data-action="task-card">
       <span class="task-card-heading"><span class="task-title">${escapeHtml(task.title)}</span><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></span>
       <span class="context-identity">${contextIdentity}</span>
-      <span class="task-path">${escapeHtml(task.workspace_name || "本地工作区")}</span>
       ${contextMeta}
     </button>
     ${sessionLifecycle(task) === "active" ? `
