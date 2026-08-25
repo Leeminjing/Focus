@@ -1,14 +1,18 @@
 /*
  * 本文件对外提供 FocusPatrolAvatar 会话小兵组件。输入为挂载节点、待命/真实 Patrol
  * 视图模型、任务级归一化位置与动作/保存回调，输出为可访问的状态化小兵、气泡和自由
- * 拖动交互；工作流为按 avatar_id 协调 DOM，使用 Pointer Events/键盘更新受限坐标，并
- * 仅在交互结束时把位置或主操作交还宿主。示例：FocusPatrolAvatar.mount(root, options)。
+ * 拖动交互；工作流为按 avatar_id 协调 DOM，使用 Pointer Events/键盘更新受限坐标，以
+ * 稳定方向采样独立更新动作资源，并仅在交互结束时把位置或主操作交还宿主。示例：
+ * FocusPatrolAvatar.mount(root, options)。
  */
 (function patrolAvatarModule(global) {
   "use strict";
 
   const ASSET_ROOT = "./assets/patrol-avatar";
   const DRAG_THRESHOLD = 5;
+  const MOTION_SAMPLE_DISTANCE = 12;
+  const ROTATE_ENTER_RATIO = 1.6;
+  const ROTATE_EXIT_RATIO = 2.2;
   const DEFAULT_SIZE = 116;
   const STATUS = Object.freeze({
     ready: { asset: "idle", label: "就绪", message: "我在这里，需要时可以继续安排任务。" },
@@ -67,13 +71,21 @@
     return Math.hypot(currentX - startX, currentY - startY) >= threshold;
   }
 
-  function movementState(deltaX, deltaY) {
+  function movementState(deltaX, deltaY, currentMotion = null) {
     const horizontal = Math.abs(deltaX);
     const vertical = Math.abs(deltaY);
     if (horizontal < 1 && vertical < 1) return null;
-    if (horizontal > 6 && vertical > 6 && Math.max(horizontal, vertical) / Math.min(horizontal, vertical) < 1.8) return "rotate";
+    const ratio = Math.min(horizontal, vertical) >= 1 ? Math.max(horizontal, vertical) / Math.min(horizontal, vertical) : Infinity;
+    if (ratio <= (currentMotion === "rotate" ? ROTATE_EXIT_RATIO : ROTATE_ENTER_RATIO)) return "rotate";
     if (horizontal >= vertical) return deltaX < 0 ? "move-left" : "move-right";
     return deltaY < 0 ? "rise" : "descend";
+  }
+
+  function stableMovementState(sampleX, sampleY, currentX, currentY, currentMotion, threshold = MOTION_SAMPLE_DISTANCE) {
+    const deltaX = currentX - sampleX;
+    const deltaY = currentY - sampleY;
+    if (Math.hypot(deltaX, deltaY) < threshold) return { motion: currentMotion, sampled: false };
+    return { motion: movementState(deltaX, deltaY, currentMotion) || currentMotion, sampled: true };
   }
 
   function avatarId(avatar) {
@@ -132,13 +144,20 @@
       return statusPresentation(record.status).asset;
     }
 
+    function applyVisualAsset(record) {
+      const asset = visualState(record);
+      if (record.visualAsset === asset) return false;
+      record.visualAsset = asset;
+      record.element.dataset.visual = asset;
+      record.image.src = `${ASSET_ROOT}/${asset}.png`;
+      return true;
+    }
+
     function refreshVisual(record) {
       const presentation = statusPresentation(record.status);
       const statusLabel = record.avatar.status_label || presentation.label;
-      const asset = visualState(record);
       record.element.dataset.status = record.status;
-      record.element.dataset.visual = asset;
-      record.image.src = `${ASSET_ROOT}/${asset}.png`;
+      applyVisualAsset(record);
       record.button.setAttribute("aria-label", `${avatarLabel(record.avatar)}，${statusLabel}。点击查看状态，方向键移动位置。`);
       record.statusNode.textContent = statusLabel;
       record.message.textContent = record.avatar.message || presentation.message;
@@ -239,7 +258,7 @@
       const record = {
         avatar, avatarId: id, index, element, button, image, fallback, bubble, heading, detail, statusNode, message,
         position: sanitizePosition(position, defaultPosition(index)),
-        status: "ready", motion: null, drag: null, suppressClick: false,
+        status: "ready", motion: null, visualAsset: null, drag: null, suppressClick: false,
         celebrating: false, celebrationTimer: null, left: 0, top: 0,
       };
 
@@ -287,11 +306,14 @@
         event.preventDefault();
         drag.started = true;
         record.element.classList.add("is-dragging");
-        record.motion = movementState(event.clientX - drag.lastX, event.clientY - drag.lastY);
+        applyPixelPosition(record, drag.startLeft + event.clientX - drag.startX, drag.startTop + event.clientY - drag.startY);
+        const sampled = stableMovementState(drag.lastX, drag.lastY, event.clientX, event.clientY, record.motion);
+        if (!sampled.sampled) return;
         drag.lastX = event.clientX;
         drag.lastY = event.clientY;
-        applyPixelPosition(record, drag.startLeft + event.clientX - drag.startX, drag.startTop + event.clientY - drag.startY);
-        refreshVisual(record);
+        if (record.motion === sampled.motion) return;
+        record.motion = sampled.motion;
+        applyVisualAsset(record);
       });
       button.addEventListener("pointerup", event => finishPointer(record, event, true));
       button.addEventListener("pointercancel", event => finishPointer(record, event, false));
@@ -406,6 +428,7 @@
     normalizedPosition,
     dragExceeded,
     movementState,
+    stableMovementState,
     avatarId,
     avatarStatus,
     avatarLabel,

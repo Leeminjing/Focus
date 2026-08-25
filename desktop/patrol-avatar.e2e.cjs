@@ -1,7 +1,7 @@
 /*
  * 本文件以真实 Electron 验证会话 Patrol 小兵交互。输入为确定性 Patrol/API 数据与鼠标、
- * 触摸、键盘、缩放和任务切换操作，输出为状态资源、拖动边界、单次位置持久化、详情复用、
- * 点击穿透和恢复位置断言。示例：node desktop/patrol-avatar.e2e.cjs。
+ * 触摸、键盘、斜向/变向拖动、缩放和任务切换操作，输出为动作锚点、状态资源、拖动边界、
+ * 单次位置持久化、详情复用、点击穿透和恢复位置断言。示例：node desktop/patrol-avatar.e2e.cjs。
  */
 "use strict";
 
@@ -79,6 +79,73 @@ async function run() {
   if (!initial.images.every(source => source.startsWith("./assets/patrol-avatar/"))) throw new Error(`资源路径异常: ${initial.images}`);
   if (initial.layerPointerEvents !== "none" || initial.buttonPointerEvents !== "auto") throw new Error(`点击穿透失败: ${JSON.stringify(initial)}`);
 
+  const motionAnchors = await win.webContents.executeJavaScript(`(async () => {
+    const names = ['move-left', 'move-right', 'rise', 'descend', 'rotate'];
+    const anchors = [];
+    for (const name of names) {
+      const image = new Image();
+      image.src = './assets/patrol-avatar/' + name + '.png';
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = 384;
+      canvas.height = 384;
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      context.drawImage(image, 0, 0, 384, 384);
+      const pixels = context.getImageData(0, 0, 384, 384).data;
+      let count = 0;
+      let sumX = 0;
+      let sumY = 0;
+      for (let y = 100; y < 225; y += 1) {
+        for (let x = 126; x < 260; x += 1) {
+          const offset = (y * 384 + x) * 4;
+          const alpha = pixels[offset + 3];
+          if (alpha <= 200 || pixels[offset] >= 45 || pixels[offset + 1] >= 60 || pixels[offset + 2] >= 80) continue;
+          count += 1;
+          sumX += x;
+          sumY += y;
+        }
+      }
+      let leftEffect = 0;
+      let rightEffect = 0;
+      for (let y = 80; y < 240; y += 1) {
+        for (let x = 0; x < 126; x += 1) leftEffect += pixels[(y * 384 + x) * 4 + 3] > 8 ? 1 : 0;
+        for (let x = 260; x < 384; x += 1) rightEffect += pixels[(y * 384 + x) * 4 + 3] > 8 ? 1 : 0;
+      }
+      anchors.push({ name, x: sumX / count, y: sumY / count, count, leftEffect, rightEffect });
+    }
+    const xs = anchors.map(item => item.x);
+    const ys = anchors.map(item => item.y);
+    return { anchors, spreadX: Math.max(...xs) - Math.min(...xs), spreadY: Math.max(...ys) - Math.min(...ys) };
+  })()`);
+  if (motionAnchors.spreadX > 8 || motionAnchors.spreadY > 8) throw new Error(`动作资源主体锚点不一致: ${JSON.stringify(motionAnchors)}`);
+  const leftMotion = motionAnchors.anchors.find(item => item.name === "move-left");
+  const rightMotion = motionAnchors.anchors.find(item => item.name === "move-right");
+  if (leftMotion.rightEffect <= leftMotion.leftEffect * 1.5 || rightMotion.leftEffect <= rightMotion.rightEffect * 1.5) {
+    throw new Error(`左右移动拖尾方向错误: ${JSON.stringify({ leftMotion, rightMotion })}`);
+  }
+
+  const qaDirectory = path.join(__dirname, "..", "openspec", "changes", "smooth-session-patrol-drag", "qa");
+  fs.mkdirSync(qaDirectory, { recursive: true });
+  for (const name of ["move-left", "move-right", "rise", "descend", "rotate"]) {
+    await win.webContents.executeJavaScript(`(async () => {
+      const avatar = document.querySelector('[data-agent-id="patrol-running-0001"]');
+      const image = avatar.querySelector('.patrol-avatar__image');
+      avatar.dataset.visual = '${name}';
+      image.src = './assets/patrol-avatar/${name}.png';
+      await image.decode();
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    })()`);
+    const capture = await win.webContents.capturePage();
+    fs.writeFileSync(path.join(qaDirectory, `motion-${name}-1280x840.png`), capture.toPNG());
+  }
+  await win.webContents.executeJavaScript(`(async () => {
+    const avatar = document.querySelector('[data-agent-id="patrol-running-0001"]');
+    const image = avatar.querySelector('.patrol-avatar__image');
+    avatar.dataset.visual = 'working';
+    image.src = './assets/patrol-avatar/working.png';
+    await image.decode();
+  })()`);
+
   const details = await win.webContents.executeJavaScript(`(async () => {
     const avatar = document.querySelector('[data-agent-id="patrol-running-0001"]');
     const trigger = avatar.querySelector('.patrol-avatar__button');
@@ -129,9 +196,9 @@ async function run() {
     const bubble = avatar.querySelector('.patrol-avatar__bubble');
     const before = avatar.getBoundingClientRect();
     trigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 7, pointerType: 'touch', isPrimary: true, button: 0, clientX: before.left + 40, clientY: before.top + 40 }));
-    trigger.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, pointerId: 7, pointerType: 'touch', isPrimary: true, buttons: 1, clientX: before.left + 230, clientY: before.top + 150 }));
+    trigger.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, pointerId: 7, pointerType: 'touch', isPrimary: true, buttons: 1, clientX: before.left + 230, clientY: before.top + 170 }));
     const movingVisual = avatar.dataset.visual;
-    trigger.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 7, pointerType: 'touch', isPrimary: true, button: 0, clientX: before.left + 230, clientY: before.top + 150 }));
+    trigger.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 7, pointerType: 'touch', isPrimary: true, button: 0, clientX: before.left + 230, clientY: before.top + 170 }));
     await new Promise(resolve => setTimeout(resolve, 80));
     const after = avatar.getBoundingClientRect();
     const saved = window.__patrolAvatarTest.savedBodies.at(-1)?.body;
@@ -149,17 +216,85 @@ async function run() {
     throw new Error(`位置单次合并保存失败: ${JSON.stringify(drag)}`);
   }
 
+  const continuousDrag = await win.webContents.executeJavaScript(`(async () => {
+    const avatar = document.querySelector('[data-agent-id="patrol-running-0001"]');
+    const trigger = avatar.querySelector('.patrol-avatar__button');
+    const image = avatar.querySelector('.patrol-avatar__image');
+    const before = avatar.getBoundingClientRect();
+    const pointerId = 27;
+    const savedBefore = window.__patrolAvatarTest.savedBodies.length;
+    const sources = [];
+    const observer = new MutationObserver(records => {
+      records.forEach(record => {
+        if (record.type === 'attributes' && record.attributeName === 'src') sources.push(image.getAttribute('src'));
+      });
+    });
+    observer.observe(image, { attributes: true });
+    trigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1, clientX: before.left + 40, clientY: before.top + 40 }));
+    const positions = [];
+    for (let index = 1; index <= 48; index += 1) {
+      const clientX = before.left + 40 + index * 4;
+      const clientY = before.top + 40 + (index % 2 ? 4 : -4);
+      trigger.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, pointerId, pointerType: 'mouse', isPrimary: true, buttons: 1, clientX, clientY }));
+      positions.push(avatar.getBoundingClientRect().left);
+    }
+    trigger.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId, pointerType: 'mouse', isPrimary: true, button: 0, clientX: before.left + 232, clientY: before.top + 40 }));
+    observer.disconnect();
+    await new Promise(resolve => setTimeout(resolve, 80));
+    return {
+      sourceAssignments: sources.length,
+      sourceTransitions: sources.filter((value, index) => index === 0 || value !== sources[index - 1]).length,
+      movedContinuously: positions.every((value, index) => index === 0 || value >= positions[index - 1]),
+      finalVisual: avatar.dataset.visual,
+      finalSource: image.getAttribute('src'),
+      savedDelta: window.__patrolAvatarTest.savedBodies.length - savedBefore,
+    };
+  })()`);
+  if (!continuousDrag.movedContinuously || continuousDrag.sourceAssignments >= 24 || continuousDrag.sourceTransitions >= 24) {
+    throw new Error(`持续拖动动作抖动: ${JSON.stringify(continuousDrag)}`);
+  }
+  if (continuousDrag.finalVisual !== "working" || !continuousDrag.finalSource.endsWith('/working.png') || continuousDrag.savedDelta !== 1) {
+    throw new Error(`持续拖动结束状态异常: ${JSON.stringify(continuousDrag)}`);
+  }
+
+  const diagonalDrag = await win.webContents.executeJavaScript(`(async () => {
+    const avatar = document.querySelector('[data-agent-id="patrol-running-0001"]');
+    const trigger = avatar.querySelector('.patrol-avatar__button');
+    const before = avatar.getBoundingClientRect();
+    const pointerId = 31;
+    const savedBefore = window.__patrolAvatarTest.savedBodies.length;
+    const startX = before.left + 40;
+    const startY = before.top + 40;
+    trigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1, clientX: startX, clientY: startY }));
+    const visuals = [];
+    for (const [x, y] of [[10, 8], [23, 15], [36, 22], [49, 27]]) {
+      trigger.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, pointerId, pointerType: 'mouse', isPrimary: true, buttons: 1, clientX: startX + x, clientY: startY + y }));
+      visuals.push(avatar.dataset.visual);
+    }
+    trigger.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId, pointerType: 'mouse', isPrimary: true, button: 0, clientX: startX + 49, clientY: startY + 27 }));
+    await new Promise(resolve => setTimeout(resolve, 80));
+    return {
+      visuals,
+      finalVisual: avatar.dataset.visual,
+      savedDelta: window.__patrolAvatarTest.savedBodies.length - savedBefore,
+    };
+  })()`);
+  if (diagonalDrag.visuals.join(",") !== "rotate,rotate,rotate,move-right" || diagonalDrag.finalVisual !== "working" || diagonalDrag.savedDelta !== 1) {
+    throw new Error(`斜向迟滞失败: ${JSON.stringify(diagonalDrag)}`);
+  }
+
   const keyboard = await win.webContents.executeJavaScript(`(async () => {
     const avatar = document.querySelector('[data-agent-id="patrol-running-0001"]');
     const trigger = avatar.querySelector('.patrol-avatar__button');
     const before = avatar.getBoundingClientRect();
+    const savedBefore = window.__patrolAvatarTest.savedBodies.length;
     trigger.focus();
     trigger.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight', shiftKey: true }));
     await new Promise(resolve => setTimeout(resolve, 60));
     const after = avatar.getBoundingClientRect();
-    return { delta: after.left - before.left, savedCount: window.__patrolAvatarTest.savedBodies.length, active: document.activeElement === trigger };
+    return { delta: after.left - before.left, savedDelta: window.__patrolAvatarTest.savedBodies.length - savedBefore, active: document.activeElement === trigger };
   })()`);
-  if (keyboard.delta < 30 || keyboard.savedCount !== 2 || !keyboard.active) throw new Error(`键盘移动失败: ${JSON.stringify(keyboard)}`);
+  if (keyboard.delta < 30 || keyboard.savedDelta !== 1 || !keyboard.active) throw new Error(`键盘移动失败: ${JSON.stringify(keyboard)}`);
 
   const boundary = await win.webContents.executeJavaScript(`(async () => {
     const avatar = document.querySelector('[data-agent-id="patrol-running-0001"]');
@@ -238,8 +373,6 @@ async function run() {
   }
   if (standby.agentDialogId || standby.backendAgents !== 0) throw new Error(`待命小兵污染真实 Agent: ${JSON.stringify(standby)}`);
 
-  const qaDirectory = path.join(__dirname, "..", "openspec", "changes", "keep-session-patrol-visible", "qa");
-  fs.mkdirSync(qaDirectory, { recursive: true });
   const capture = await win.webContents.capturePage();
   fs.writeFileSync(path.join(qaDirectory, "standby-patrol-1280x840.png"), capture.toPNG());
 
