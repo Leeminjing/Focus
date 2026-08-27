@@ -15,6 +15,7 @@ from plugins.spatial_patrol.docx_edit import (
     _paragraph_index_at_y,
     observe_docx_delete_candidate,
 )
+from plugins.spatial_patrol.docx_semantic import DOCX_COORDINATE_SPACE
 from plugins.spatial_patrol.routes import (
     TEXT_COORDINATE_SPACE,
     _anchor_payload,
@@ -142,9 +143,15 @@ def test_legacy_docx_anchor_cannot_receive_write_permission():
     assert caught.value.status_code == 409
     assert "重新点击目标文字" in caught.value.detail
 
-    current = SimpleNamespace(
+    character_anchor = SimpleNamespace(
         content_ref="sample.docx",
         region={"coordinate_space": TEXT_COORDINATE_SPACE},
+    )
+    with pytest.raises(HTTPException):
+        _validate_write_anchor(character_anchor, ["read", "write"])
+    current = SimpleNamespace(
+        content_ref="sample.docx",
+        region={"coordinate_space": DOCX_COORDINATE_SPACE},
     )
     _validate_write_anchor(current, ["read", "write"])
     _validate_write_anchor(legacy, ["read"])

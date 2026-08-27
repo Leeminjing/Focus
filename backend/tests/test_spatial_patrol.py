@@ -23,9 +23,9 @@ def _fake_config(with_vision: bool):
     from focus.config.app_config import AppConfig
 
     models = [{
-        "name": "deepseek-v4-flash", "display_name": "deepseek-v4-flash",
+        "name": "deepseek-text-only-test", "display_name": "text-only",
         "use": "focus.models.deepseek:DeepSeekChatOpenAI",
-        "model": "deepseek-v4-flash", "context_window": 131072,
+        "model": "deepseek-text-only-test", "context_window": 131072,
         "api_key": "sk-test", "base_url": "https://api.deepseek.com",
     }]
     if with_vision:
@@ -41,9 +41,14 @@ def _fake_config(with_vision: bool):
 
 def _load(root: Path, monkeypatch, with_vision: bool) -> PluginRegistry:
     # 插件内部经 plugins.spatial_patrol.vision.get_app_config 读配置,测试注入假配置
+    config = _fake_config(with_vision)
     monkeypatch.setattr(
         "plugins.spatial_patrol.vision.get_app_config",
-        lambda _path="config.yaml": _fake_config(with_vision),
+        lambda _path="config.yaml": config,
+    )
+    monkeypatch.setattr(
+        "plugins.spatial_patrol.spatial.get_app_config",
+        lambda _path="config.yaml": config,
     )
     registry = PluginRegistry(builtin_catalog())
     from focus.plugins.loader import load_plugins
@@ -221,6 +226,10 @@ def test_plugin_active_with_vision_plugin_only(tmp_path, monkeypatch):
     # 放入一个提供 service.vision 的视觉插件(真实 dsh-eyes 目录)
     eyes_root = root / "dsh-eyes"
     shutil.copytree(Path(__file__).resolve().parents[2] / "plugins" / "dsh-eyes", eyes_root)
+    eyes_manifest = eyes_root / "plugin.json"
+    eyes_config = json.loads(eyes_manifest.read_text(encoding="utf-8"))
+    eyes_config["enabled"] = True
+    eyes_manifest.write_text(json.dumps(eyes_config), encoding="utf-8")
     registry = _load(root, monkeypatch, with_vision=False)
     records = {item["name"]: item for item in registry.list_plugins()}
     assert records["spatial-patrol"]["status"] == "active"
@@ -237,7 +246,9 @@ def test_plugin_active_with_vision_model(tmp_path, monkeypatch):
     assets = registry.active_assets()
     assert "spatial-patrol" in assets
     assert assets["spatial-patrol"]["router"] is not None
-    assert records["spatial-patrol"]["desktop_assets"] == ["entry.js", "style.css", "viewer.js"]
+    assert records["spatial-patrol"]["desktop_assets"] == [
+        "docx-editor.css", "docx-editor.js", "entry.js", "style.css", "viewer.js",
+    ]
 
 
 def test_plugin_disabled_no_assets(tmp_path, monkeypatch):
