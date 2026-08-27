@@ -607,7 +607,7 @@
   }
 
   function isTextViewFile(name) {
-    return /\.(docx?|md|txt)$/i.test(name);
+    return /\.(doc|md|txt)$/i.test(name);
   }
 
   function clamp01(value) {
@@ -741,6 +741,25 @@
   }
 
   function mountPanel(container, material, appState) {
+    if (/\.docx$/i.test(material?.relative_path || "")) {
+      state.panelMode = true;
+      state.panelContainer = container;
+      state.material = material;
+      state.task = appState.tasks.find(item => item.task_id === appState.activeTaskId) || state.task;
+      const editor = root.FocusDocxEditor;
+      if (!editor?.mount) {
+        container.innerHTML = '<section class="focus-docx-error"><strong>DOCX 编辑插件资源不可用</strong><p>Focus 其他功能不受影响。</p></section>';
+        return;
+      }
+      editor.mount(container, material, appState, {
+        onClose: () => {
+          state.panelMode = false;
+          state.panelContainer = null;
+          if (typeof root.__focusCloseFilePanel === "function") root.__focusCloseFilePanel();
+        },
+      });
+      return;
+    }
     const nextTask = appState.tasks.find(item => item.task_id === appState.activeTaskId) || state.task;
     const sameContent = state.task?.task_id === nextTask?.task_id
       && state.material?.relative_path === material?.relative_path;

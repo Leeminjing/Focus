@@ -1,0 +1,145 @@
+.focus-docx-editor {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-height: 0;
+  height: 100%;
+  background: #f4f6f8;
+}
+
+.file-panel-inner > .focus-docx-editor {
+  grid-row: 1 / -1;
+}
+
+.focus-docx-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  padding: 8px 14px;
+  border-bottom: 1px solid #dfe4ea;
+  background: #fff;
+}
+
+.focus-docx-title {
+  display: grid;
+  min-width: 0;
+  margin-right: auto;
+}
+
+.focus-docx-title strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focus-docx-status {
+  font-size: 12px;
+  color: #667085;
+}
+
+.focus-docx-status[data-tone="danger"] { color: #b42318; }
+.focus-docx-status[data-tone="success"] { color: #067647; }
+.focus-docx-status[data-tone="warning"] { color: #b54708; }
+
+.focus-docx-editor [hidden] {
+  display: none !important;
+}
+
+.focus-docx-stage {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.focus-docx-host {
+  position: absolute;
+  inset: 0;
+}
+
+.focus-docx-overlay-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+}
+
+.focus-docx-overlay {
+  position: absolute;
+  min-width: 14px;
+  min-height: 14px;
+  border: 2px solid #ff8a00;
+  border-radius: 5px;
+  background: color-mix(in srgb, #ff8a00 16%, transparent);
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 75%);
+}
+
+.focus-docx-overlay::before {
+  content: "⚔";
+  position: absolute;
+  left: -12px;
+  top: -17px;
+  font-size: 17px;
+}
+
+.focus-docx-overlay.is-point {
+  width: 14px !important;
+  height: 14px !important;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+}
+
+.focus-docx-anchor-picker {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: crosshair;
+}
+
+.focus-docx-mode {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 24px;
+}
+
+.focus-docx-mode-card {
+  width: min(420px, 100%);
+  padding: 22px;
+  border: 1px solid #d0d5dd;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 12px 34px rgb(16 24 40 / 10%);
+}
+
+.focus-docx-mode-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.focus-docx-error {
+  max-width: 680px;
+  margin: 32px auto;
+  padding: 18px;
+  border: 1px solid #fecdca;
+  border-radius: 10px;
+  background: #fef3f2;
+  color: #912018;
+}
+
+.focus-docx-footer {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 4px 14px;
+  border-top: 1px solid #dfe4ea;
+  background: #fff;
+  color: #667085;
+  font-size: 12px;
+}

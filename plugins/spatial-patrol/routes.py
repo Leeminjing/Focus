@@ -34,10 +34,10 @@ from focus.tools.builtins.workspace_tools import select_workspace_tools
 
 from plugins.spatial_patrol import spatial
 from plugins.spatial_patrol import db as spatial_db
-from plugins.spatial_patrol.docx_edit import (
-    delete_docx_paragraph,
-    observe_docx_delete_candidate,
-)
+from plugins.spatial_patrol.docx_routes import router as docx_router
+from plugins.spatial_patrol.docx_semantic import DOCX_COORDINATE_SPACE
+from plugins.spatial_patrol.docx_sessions import SessionError, session_manager as docx_sessions
+from plugins.spatial_patrol.docx_tools import apply_docx_edit, observe_docx_target
 from plugins.spatial_patrol.models import SpatialAnchor
 
 
@@ -48,6 +48,7 @@ async def _plugin_lifespan(_app):
 
 
 router = APIRouter(lifespan=_plugin_lifespan)
+router.include_router(docx_router)
 TEXT_COORDINATE_SPACE = "text-character-v1"
 
 
@@ -137,8 +138,12 @@ def _text_coordinate_region(content_ref: str, coordinate_space: str | None) -> d
 def _validate_write_anchor(anchor: SpatialAnchor, permissions: list[str]) -> None:
     if not _is_docx_write(anchor.content_ref, permissions):
         return
-    if not isinstance(anchor.region, dict) or anchor.region.get("coordinate_space") != TEXT_COORDINATE_SPACE:
-        raise HTTPException(409, "旧 DOCX 锚点不具备字符坐标语义，请重新点击目标文字建立锚点")
+    if not isinstance(anchor.region, dict) or anchor.region.get("coordinate_space") != DOCX_COORDINATE_SPACE:
+        raise HTTPException(
+            409,
+            "旧 DOCX 锚点不具备 Word 语义目标，不能执行结构化写操作；"
+            "请重新点击目标文字建立锚点",
+        )
 
 
 async def _mark_invalid(session: Any, anchor: SpatialAnchor, workspace_path: str) -> SpatialAnchor:
@@ -590,8 +595,25 @@ async def _launch_spatial_run(
     checkpoint_ns = f"patrol:{anchor.spatial_id}"
     checkpoint_id = await select_checkpoint_base(checkpointer, thread_id, checkpoint_ns)
     requires_verified_change = _is_docx_write(anchor.content_ref, permissions)
+    is_docx_session = anchor.content_ref.lower().endswith(".docx")
+    docx_session = None
+    if is_docx_session:
+        try:
+            docx_session = await docx_sessions.find_active(
+                task_id=anchor.task_id,
+                content_ref=anchor.content_ref,
+                require_edit=requires_verified_change,
+            )
+        except SessionError as exc:
+            raise HTTPException(409, str(exc)) from exc
+    docx_target_id = (
+        anchor.region.get("target", {}).get("target_id")
+        if isinstance(anchor.region, dict) else None
+    )
     change_evidence: dict[str, Any] = {}
     docx_observation_candidates: dict[str, Any] = {}
+    # Legacy observe_docx_delete_candidate/delete_docx_paragraph stay in docx_edit.py
+    # for historical callers, but active editor sessions intentionally never register them.
 
     def factory():
         service = spatial.get_service()
@@ -599,31 +621,39 @@ async def _launch_spatial_run(
             [permission for permission in permissions if permission != "write"]
             if requires_verified_change else permissions
         )
-        tools = [
-            *select_workspace_tools(workspace_permissions),
-            *spatial.build_observation_tools(service),
-        ]
-        if requires_verified_change:
-            tools.extend([observe_docx_delete_candidate, delete_docx_paragraph])
+        tools = [*select_workspace_tools(workspace_permissions)]
+        if is_docx_session:
+            tools.append(observe_docx_target)
+            if requires_verified_change:
+                tools.append(apply_docx_edit)
+        else:
+            tools.extend(spatial.build_observation_tools(service))
         prompt = (
             "你是 Focus 的空间小兵,驻守在一个用户指定的空间锚点上。\n"
             f"锚点: 载体 {anchor.content_ref},第 {anchor.page} 页,"
             f"坐标 ({anchor.x:.3f}, {anchor.y:.3f})。\n"
-            "用户把你放在这里,从这里开始找:先用 observe_anchor 观察锚点附近内容,"
-            "信息不足时用 expand_observation 逐圈扩大观察半径,由近及远。\n"
-            "不要一开始就把整个文档当成同等重要的对象;观察到的对象识别结果"
-            "不改变你的驻守锚点。\n"
+            + (
+                f"用户把你放在 Word 语义目标 target_id={docx_target_id} 上，从该目标开始观察；"
+                "不要先读全文。\n"
+                if is_docx_session else
+                "用户把你放在这里,从这里开始找:先用 observe_anchor 观察锚点附近内容,"
+                "信息不足时用 expand_observation 逐圈扩大观察半径,由近及远。\n"
+            )
+            + "观察到的对象识别结果不改变你的驻守锚点。\n"
             f"任务: {anchor.task_instruction}\n"
             "完成后简短汇报:你在锚点附近发现了什么、做了什么。"
         )
         if requires_verified_change:
             prompt += (
-                "\n当前 DOCX 已获得本次写授权。删除段落时必须先调用 observe_anchor "
-                "确认锚点附近内容，再调用 observe_docx_delete_candidate 取得 candidate_id，"
-                "最后把该标识传给 delete_docx_paragraph。不要自行复制或改写段落原文。"
-                "只有工具返回 changed=true 才能宣称文件已修改；"
-                "未取得该证据时应诚实说明未产生文件变更。若工具以某个 candidate_id "
-                "确定性拒绝，不得用相同参数重复调用；应立即汇报该拒绝原因并结束本次运行。"
+                "\n当前 DOCX 已获得本次写授权。必须先用 observe_docx_target 观察锚点中的"
+                "语义 target_id，再用 apply_docx_edit 对该目标执行白名单结构化操作。"
+                "每次修改必须由编辑器形成一个撤销历史点；只有返回 changed=true 且"
+                "document_version 递增，才能宣称编辑器内容已修改。保存状态与编辑状态分开汇报。"
+            )
+        elif is_docx_session:
+            prompt += (
+                "\n当前 DOCX 为 Word 语义只读会话。只用 observe_docx_target 从锚点目标开始观察，"
+                "不要提取或扫描全文。"
             )
         return make_lead_agent(
             model_name=model_name,
@@ -666,6 +696,10 @@ async def _launch_spatial_run(
         "y": anchor.y,
         "docx_change_evidence": change_evidence,
         "docx_observation_candidates": docx_observation_candidates,
+        "docx_session_id": docx_session.session_id if docx_session else None,
+        "docx_document_id": docx_session.document_id if docx_session else None,
+        "docx_document_version": docx_session.document_version if docx_session else None,
+        "docx_target_id": docx_target_id,
     }
     namespaced = NamespacedCheckpointer(checkpointer, checkpoint_ns)
     record = run_manager.create(
