@@ -230,6 +230,24 @@ class AgentBoardTask(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class Memory(Base):
+    __tablename__ = "memory_items"
+
+    memory_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    # 压缩语义：segmented（会话隔离→分段记忆）| complete（全部会话→完整记忆）
+    content_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="complete")
+    # 分段记忆的段列表，每段 {title, body, source_ref}；完整记忆时为空数组。
+    segments: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    source_kind: Mapped[str] = mapped_column(String(24), nullable=False, default="manual")
+    source_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class StrictRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -272,6 +290,7 @@ class MainRunCreate(StrictRequest):
     model_name: str | None = None
     skills: list[str] = Field(default_factory=list)
     spatial_focus: dict[str, Any] | None = None
+    memory_ids: list[str] | None = None
     permissions: list[Literal["read", "write", "host_command"]] = Field(
         default_factory=lambda: ["read", "write", "host_command"]
     )

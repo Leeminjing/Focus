@@ -72,6 +72,7 @@ const state = {
     recovery: null,
   },
   plugins: { plugins: [], interfaces: {}, traces: [], filter: "all", selectedName: null },
+  memory: { memories: [], selectedId: null, composing: false, draft: null, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], textSelection: "", textMessageId: null, textRange: null, editorRatio: 0.5, sourceRatio: 0.5, contentMode: "complete", segments: [], expandedGroups: [], mergeMode: false, selectedSourcesForMerge: [], sessionScrollTop: 0 },
   inspector: { open: window.innerWidth > 1100, tab: "context", returnFocus: null },
   filesPanel: null,   // f18:右侧文件面板当前打开的 material(relative_path 等)
   panelWidth: normalizePanelWidth(localStorage.getItem("focus-panel-width") || 400),
@@ -90,6 +91,7 @@ const skillPicker = window.FocusSkillPicker;
 const contextEditor = window.FocusContextEditor;
 const compressionPanel = window.FocusCompressionPanel;
 const pluginView = window.FocusPluginView;
+const memoryView = window.FocusMemoryView;
 const conversationEvents = window.FocusConversationEvents;
 const patrolPresence = window.FocusPatrolPresence;
 const patrolAvatar = window.FocusPatrolAvatar;
@@ -106,6 +108,8 @@ let compressionRequestSequence = 0;
 let draftOpenRequestSequence = 0;
 let pluginHydrationSequence = 0;
 let pluginViewRequestSequence = 0;
+let memoryViewRequestSequence = 0;
+let memoryHydrationSequence = 0;
 let contextTreeRequestSequence = 0;
 let panelResizeFrame = null;
 let patrolAvatarController = null;
@@ -321,6 +325,7 @@ function render() {
   else if (state.view === "draft") renderDraft();
   else if (state.view === "compress") renderCompress();
   else if (state.view === "plugins") renderPlugins();
+  else if (state.view === "memory") renderMemory();
   else if (state.view && pluginViews[state.view]) {
     app.replaceChildren();
     pluginViews[state.view].render(app, state);
@@ -337,6 +342,7 @@ function render() {
 function activeNavigationKey() {
   if (state.view === "map") return "map";
   if (state.view === "plugins") return "plugins";
+  if (state.view === "memory") return "memory";
   if (activeTask()?.harness_mode === "assembly") return "assembly";
   return "focus";
 }
@@ -351,7 +357,7 @@ function renderShellChrome() {
   document.querySelectorAll?.("[data-nav-key]").forEach(button => {
     if (button.dataset.navKey === current) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
-    button.disabled = !state.tasks.length && !["plugins", "assembly"].includes(button.dataset.navKey);
+    button.disabled = !state.tasks.length && !["plugins", "assembly", "memory"].includes(button.dataset.navKey);
   });
   renderInspector();
 }
@@ -727,6 +733,72 @@ function bindPanelResizer() {
     resizer.addEventListener("pointercancel", finish);
     resizer.addEventListener("lostpointercapture", finish);
   });
+}
+
+// 记忆库编辑器：上下区（选源 vs 编辑）垂直分隔条 + 源/压缩区 水平分隔条，均可拖拽调高度/宽度。
+function bindMemoryResizers() {
+  const vertical = document.querySelector("[data-memory-resizer-vertical]");
+  const horizontal = document.querySelector("[data-memory-resizer-horizontal]");
+  if (vertical) {
+    const top = document.querySelector("[data-memory-top]");
+    const bottom = document.querySelector("[data-memory-bottom]");
+    const parent = vertical.parentElement;
+    vertical.addEventListener("pointerdown", event => {
+      event.preventDefault();
+      vertical.setPointerCapture(event.pointerId);
+      const startY = event.clientY;
+      const startH = parent.getBoundingClientRect().height || 1;
+      const startTopH = top.getBoundingClientRect().height;
+      const move = moveEvent => {
+        const ratio = Math.min(0.85, Math.max(0.15, (startTopH + (moveEvent.clientY - startY)) / startH));
+        top.style.flex = `${ratio} 1 0`;
+        bottom.style.flex = `${1 - ratio} 1 0`;
+        // 比例写回 state，作为重建布局的唯一数据源（不触发 render，避免拖拽卡顿）。
+        state.memory = { ...state.memory, editorRatio: ratio };
+      };
+      const finish = () => {
+        try { if (vertical.hasPointerCapture?.(event.pointerId)) vertical.releasePointerCapture(event.pointerId); } catch {}
+        vertical.removeEventListener("pointermove", move);
+        vertical.removeEventListener("pointerup", finish);
+        vertical.removeEventListener("pointercancel", finish);
+        vertical.removeEventListener("lostpointercapture", finish);
+      };
+      vertical.addEventListener("pointermove", move);
+      vertical.addEventListener("pointerup", finish);
+      vertical.addEventListener("pointercancel", finish);
+      vertical.addEventListener("lostpointercapture", finish);
+    });
+  }
+  if (horizontal) {
+    const editor = document.querySelector("[data-memory-editor]");
+    const left = document.querySelector(".memory-editor-sources");
+    const right = document.querySelector(".memory-editor-target");
+    horizontal.addEventListener("pointerdown", event => {
+      event.preventDefault();
+      horizontal.setPointerCapture(event.pointerId);
+      const startX = event.clientX;
+      const startW = editor.getBoundingClientRect().width || 1;
+      const startLeftW = left.getBoundingClientRect().width;
+      const move = moveEvent => {
+        const ratio = Math.min(0.8, Math.max(0.2, (startLeftW + (moveEvent.clientX - startX)) / startW));
+        left.style.flex = `${ratio} 1 0`;
+        right.style.flex = `${1 - ratio} 1 0`;
+        // 比例写回 state，作为重建布局的唯一数据源。
+        state.memory = { ...state.memory, sourceRatio: ratio };
+      };
+      const finish = () => {
+        try { if (horizontal.hasPointerCapture?.(event.pointerId)) horizontal.releasePointerCapture(event.pointerId); } catch {}
+        horizontal.removeEventListener("pointermove", move);
+        horizontal.removeEventListener("pointerup", finish);
+        horizontal.removeEventListener("pointercancel", finish);
+        horizontal.removeEventListener("lostpointercapture", finish);
+      };
+      horizontal.addEventListener("pointermove", move);
+      horizontal.addEventListener("pointerup", finish);
+      horizontal.addEventListener("pointercancel", finish);
+      horizontal.addEventListener("lostpointercapture", finish);
+    });
+  }
 }
 
 window.addEventListener("resize", () => {
@@ -1249,6 +1321,355 @@ async function openPluginsView() {
   if (requestId !== pluginViewRequestSequence) return;
   state.view = "plugins";
   render();
+}
+
+function renderMemory() {
+  const s = state.memory;
+  app.innerHTML = memoryView.render(s.memories, {
+    selectedId: s.selectedId,
+    composing: s.composing,
+    draft: s.draft,
+    sessions: s.sessions,
+    activeSessionId: s.activeSessionId,
+    enabledMessages: s.enabledMessages,
+    selectedMessageIds: s.selectedMessageIds,
+    activeMessageId: s.activeMessageId,
+    collectedSources: s.collectedSources,
+    editorRatio: s.editorRatio,
+    sourceRatio: s.sourceRatio,
+    contentMode: s.draft?.contentMode || "complete",
+    segments: s.draft?.segments || [],
+    draftContent: s.draft?.content || "",
+    draftTitle: s.draft?.title || "",
+    expandedGroups: s.expandedGroups || [],
+    mergeMode: s.mergeMode || false,
+    selectedSourcesForMerge: s.selectedSourcesForMerge || [],
+  });
+  bindMemoryResizers();
+  restoreMemoryScroll();
+}
+
+// === 「对话」第一栏滚动位置：纳入 state 数据源，render 重建后恢复 ===
+// 采用与 editorRatio/expandedGroups 一致的原则：临时 UI 状态进 state，重建后回填，避免整棵重建丢滚动。
+function restoreMemoryScroll() {
+  const list = document.querySelector(".memory-session-list");
+  if (!list) return;
+  // 回填上次滚动位置；用数据集标志跳过「回填本身触发的 scroll 写回」，避免循环/覆盖。
+  list.dataset.restoringScroll = "1";
+  list.scrollTop = state.memory.sessionScrollTop || 0;
+  requestAnimationFrame(() => { delete list.dataset.restoringScroll; });
+  // 滚动写回 state（数据源）。
+  if (list.onmemoryScroll) return;
+  list.onmemoryScroll = () => {
+    if (list.dataset.restoringScroll === "1") return;
+    if (state.memory.sessionScrollTop === list.scrollTop) return;
+    state.memory = { ...state.memory, sessionScrollTop: list.scrollTop };
+  };
+  list.addEventListener("scroll", list.onmemoryScroll, { passive: true });
+}
+
+function syncMemoryField(field, value) {
+  const draft = { ...(state.memory.draft || {}) };
+  if (field === "title") draft.title = value;
+  else if (field === "content") { draft.content = value; draft.contentDirty = true; }
+  else if (field === "contentMode") { draft.contentMode = value; state.memory = { ...state.memory, draft }; render(); return; }
+  state.memory = { ...state.memory, draft };
+}
+
+// 编辑分段记忆的某个段（title 或 body）。
+function editMemorySegment(index, field, value) {
+  const draft = { ...(state.memory.draft || {}) };
+  const segments = (draft.segments || []).map((seg, i) => i === index ? { ...seg, [field]: value } : seg);
+  state.memory = { ...state.memory, draft: { ...draft, segments } };
+}
+
+async function hydrateMemory() {
+  const requestId = ++memoryHydrationSequence;
+  try {
+    const data = await api("/desktop/api/memory");
+    if (requestId !== memoryHydrationSequence) return false;
+    const memories = data.memories || [];
+    const selectedId = memories.some(item => item.memory_id === state.memory.selectedId)
+      ? state.memory.selectedId
+      : (memories[0]?.memory_id || null);
+    state.memory = { ...state.memory, memories, selectedId };
+    return true;
+  } catch (error) { if (requestId === memoryHydrationSequence) setStatus(error.message, true); return false; }
+}
+
+async function openMemoryView() {
+  if (state.view === "focus") persistFocusState();
+  cancelPendingViewRequests();
+  const requestId = memoryViewRequestSequence;
+  state.inspector.open = false;
+  state.memory = { ...state.memory, composing: false, selectedId: state.memory.selectedId, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], draft: null };
+  await hydrateMemory();
+  if (requestId !== memoryViewRequestSequence) return;
+  state.view = "memory";
+  render();
+}
+
+function memorySessionCandidates() {
+  return state.tasks.filter(task =>
+    task.harness_mode !== "assembly" && sessionLifecycle(task) === "active"
+  );
+}
+
+function openMemoryCompose(editing = false) {
+  const existing = editing ? (state.memory.memories.find(m => m.memory_id === state.memory.selectedId) || null) : null;
+  const fresh = {
+    composing: true,
+    draft: {
+      title: existing?.title || "",
+      content: existing?.content || "",
+      contentDirty: false,
+      contentMode: existing?.content_mode || "complete",
+      segments: existing?.segments || [],
+    },
+    sessions: memorySessionCandidates(),
+    activeSessionId: null,
+    enabledMessages: [],
+    selectedMessageIds: [],
+    activeMessageId: null,
+    collectedSources: [],
+    expandedGroups: [],
+    mergeMode: false,
+    selectedSourcesForMerge: [],
+    sessionScrollTop: 0,
+  };
+  state.memory = { ...state.memory, ...fresh };
+  render();
+}
+
+// 折叠/展开某个会话分组：更新 state.expandedGroups（数据源），渲染由 state 驱动。
+function toggleMemoryGroup(workspace) {
+  const current = state.memory.expandedGroups || [];
+  const has = current.includes(workspace);
+  const expandedGroups = has ? current.filter(g => g !== workspace) : [...current, workspace];
+  state.memory = { ...state.memory, expandedGroups };
+  render();
+}
+
+async function pickMemorySession(contextId) {
+  // 点选会话：加载其消息到消息栏，并清空选择。选中会话所在分组由渲染层恒展开。
+  state.memory = { ...state.memory, activeSessionId: contextId, enabledMessages: [], selectedMessageIds: [], activeMessageId: null };
+  render();
+  try {
+    const snapshot = await api(`/desktop/api/contexts/${contextId}/snapshot`);
+    if (state.memory.activeSessionId !== contextId) return;
+    state.memory = { ...state.memory, enabledMessages: snapshot.messages || [] };
+    render();
+  } catch (error) {
+    state.memory = { ...state.memory, activeSessionId: null };
+    setStatus(error.message, true);
+    render();
+  }
+}
+
+function toggleMemoryMessage(messageId) {
+  // 消息卡点击：勾选/取消该消息（部分消息来源），并设为当前原文。
+  const ids = new Set(state.memory.selectedMessageIds || []);
+  ids.has(messageId) ? ids.delete(messageId) : ids.add(messageId);
+  state.memory = { ...state.memory, selectedMessageIds: [...ids], activeMessageId: messageId };
+  render();
+}
+
+function uniqueSources() {
+  return state.memory.collectedSources || [];
+}
+
+function pushCollectedSource(source) {
+  const sources = [...(state.memory.collectedSources || [])];
+  sources.push(source);
+  state.memory = { ...state.memory, collectedSources: sources };
+  rebuildMemoryContent();
+}
+
+// 会话卡拖拽/「加入」：完整会话来源。
+function addSessionSource(contextId, title) {
+  if (!contextId) return;
+  if (uniqueSources().some(s => s.kind === "session" && s.context_id === contextId)) return;
+  pushCollectedSource({ kind: "session", context_id: contextId, title, rawText: `[完整会话] ${title || "会话"}` });
+}
+
+// 消息卡拖拽/勾选「加入」：部分消息来源（选中的消息 id，可任意多选不连续）。
+function addMessagesSource(messageIds) {
+  const ids = (messageIds || []).filter(Boolean);
+  if (!ids.length || !state.memory.activeSessionId) return;
+  // 按「会话 + 排序后的选中消息」作为内容指纹去重——不同勾选/不同会话的 messages 来源允许共存。
+  const fingerprint = `${state.memory.activeSessionId}:${[...ids].sort().join(",")}`;
+  if (uniqueSources().some(s => s.kind === "messages" && s.fingerprint === fingerprint)) return;
+  // 收集所选消息正文，作为可编辑原文。
+  const selected = (state.memory.enabledMessages || []).filter(m => ids.includes(m.id || ""));
+  const text = selected.map(m => `${memoryView.roleLabel(m.role)}：${memoryView.messageText(m.content)}`).join("\n\n");
+  pushCollectedSource({ kind: "messages", context_id: state.memory.activeSessionId, message_ids: ids, count: ids.length, text, rawText: text, fingerprint });
+}
+
+// 原文划选文字「加入」：部分文字来源。
+// 每次划选建立一个**独立**的文字来源（不做同消息合并）——3 次划选 = 3 源，
+// 且选取不要求连续（间断划选各自成源）。同消息多处文字自然表现为多个独立源。
+function addTextSource(text) {
+  const value = (text || "").trim();
+  if (!value) { setStatus("请先在原文中划选文字", true); return; }
+  const messageId = state.memory.textMessageId;
+  const range = state.memory.textRange || { start: 0, end: value.length };
+  const contextId = state.memory.activeSessionId;
+  if (!messageId || !contextId) { setStatus("请先选择会话与消息再划选文字", true); return; }
+  pushCollectedSource({ kind: "text", context_id: contextId, message_id: messageId, ranges: [{ start: range.start, end: range.end }], text: value, rawText: value });
+}
+
+function dropMemoryPayload(payload) {
+  // 拖拽统一入口：payload = { kind, context_id?, title?, message_ids?, text? }
+  if (!payload) return;
+  if (payload.kind === "session") addSessionSource(payload.context_id, payload.title);
+  else if (payload.kind === "messages") addMessagesSource(payload.message_ids);
+  else if (payload.kind === "text") addTextSource(payload.text);
+}
+
+function removeCollectedSource(index) {
+  const sources = (state.memory.collectedSources || []).filter((_, i) => i !== index);
+  state.memory = { ...state.memory, collectedSources: sources };
+  rebuildMemoryContent();
+}
+
+// === 记忆源合并（多选 → 归并成一个合并来源，分段压缩时作为一段） ===
+function enterMergeSources() {
+  state.memory = { ...state.memory, mergeMode: true, selectedSourcesForMerge: [] };
+  render();
+}
+
+function cancelMergeSources() {
+  state.memory = { ...state.memory, mergeMode: false, selectedSourcesForMerge: [] };
+  render();
+}
+
+function toggleMergeSource(index) {
+  const selected = new Set(state.memory.selectedSourcesForMerge || []);
+  selected.has(index) ? selected.delete(index) : selected.add(index);
+  state.memory = { ...state.memory, selectedSourcesForMerge: [...selected] };
+  render();
+}
+
+// 合并：把选中的多个来源归并成一个来源（保留原始子来源引用，正文逐项拼接）。
+function confirmMergeSources() {
+  const all = state.memory.collectedSources || [];
+  const selected = [...(state.memory.selectedSourcesForMerge || [])].filter(i => i >= 0 && i < all.length).sort((a, b) => a - b);
+  if (selected.length < 2) { setStatus("请至少选择两个来源再合并", true); return; }
+  const parts = selected.map(i => all[i]);
+  const mergedText = parts.map(s => s.rawText || s.text || "").filter(Boolean).join("\n\n");
+  const merged = {
+    kind: "merged",
+    rawText: mergedText,
+    text: mergedText,
+    subSources: parts.map(s => ({ kind: s.kind, context_id: s.context_id, title: s.title, message_ids: s.message_ids, ranges: s.ranges })),
+  };
+  // 用第一个被选中的来源的位置替换合并结果，移除其余选中项。
+  const newSources = all.filter((_, i) => !selected.includes(i));
+  newSources.splice(selected[0], 0, merged);
+  state.memory = { ...state.memory, collectedSources: newSources, mergeMode: false, selectedSourcesForMerge: [] };
+  rebuildMemoryContent();
+}
+
+// 拖拽重排左下栏「记忆源」列表顺序（来源顺序 = 合并/压缩/注入顺序）。
+function moveCollectedSource(fromIndex, toIndex) {
+  const sources = [...(state.memory.collectedSources || [])];
+  if (fromIndex < 0 || fromIndex >= sources.length) return;
+  const [moved] = sources.splice(fromIndex, 1);
+  const insertAt = Math.max(0, Math.min(toIndex, sources.length));
+  sources.splice(insertAt, 0, moved);
+  state.memory = { ...state.memory, collectedSources: sources };
+  rebuildMemoryContent();
+}
+
+function rebuildMemoryContent() {
+  // 加/删来源时，为「完整记忆」生成一个可编辑的初始草稿（拼接各源原文）；用户可再点「重新压缩」调后端。
+  // 「分段记忆」不在这里拼接——每段需逐来源压缩，交给「重新压缩」。
+  const draft = state.memory.draft || {};
+  if (draft.contentDirty) return;
+  const mode = draft.contentMode || "complete";
+  if (mode !== "complete") { render(); return; }
+  const parts = (state.memory.collectedSources || []).map(s => s.rawText || s.text || "").filter(Boolean);
+  const content = ["# 记忆", "", ...parts].join("\n\n");
+  state.memory = { ...state.memory, draft: { ...draft, content } };
+  render();
+}
+
+// 编辑某个记忆源的可编辑原文。
+function editSourceText(index, text) {
+  const sources = [...(state.memory.collectedSources || [])];
+  if (!sources[index]) return;
+  sources[index] = { ...sources[index], rawText: text };
+  state.memory = { ...state.memory, collectedSources: sources };
+}
+
+// 把收集来源映射为后端可解析的 source 对象（仅保留后端允许的字段）。
+function memorySourcesForApi(collectedSources, activeSessionId) {
+  return (collectedSources || []).map(s => {
+    if (s.kind === "session") return { type: "session", context_id: s.context_id, contextTitle: s.title || "会话" };
+    if (s.kind === "messages") return { type: "messages", context_id: s.context_id, contextTitle: "会话", message_ids: s.message_ids || [] };
+    if (s.kind === "text") return { type: "text", context_id: s.context_id || activeSessionId, parts: [{ message_id: s.message_id, ranges: s.ranges || [] }] };
+    if (s.kind === "merged") return { type: "manual", text: s.rawText || "", contextTitle: "合并来源" };
+    return null;
+  }).filter(Boolean).map(memorySourceForApi);
+}
+
+// 重新压缩：按当前压缩语义（完整/分段）调用后端生成草稿，填充目标区。
+async function recompressMemory() {
+  const draft = (state.memory.draft || {});
+  const sources = state.memory.collectedSources || [];
+  const mode = draft.contentMode || "complete";
+  const payloadSources = memorySourcesForApi(sources, state.memory.activeSessionId);
+  if (!payloadSources.length) { setStatus("请先添加至少一个记忆来源", true); return; }
+  try {
+    const result = await api("/desktop/api/memory/summarize", { method: "POST", body: JSON.stringify({ selection: { sources: payloadSources }, mode }) });
+    const segments = result.segments || [];
+    state.memory = { ...state.memory, draft: { ...draft, content: result.content || "", segments, contentMode: mode, contentDirty: false } };
+    render();
+  } catch (error) { setStatus(error.message, true); }
+}
+
+// 后端 MemorySource 仅接受的字段（前端展示字段 contextTitle/count/text 不发送）。
+const MEMORY_SOURCE_FIELDS = new Set(["type", "context_id", "message_ids", "parts", "text"]);
+
+function memorySourceForApi(source) {
+  return Object.fromEntries(Object.entries(source).filter(([key]) => MEMORY_SOURCE_FIELDS.has(key)));
+}
+
+async function saveMemory() {
+  const draft = state.memory.draft || {};
+  const title = (draft.title || "").trim();
+  const content = (draft.content || "").trim();
+  if (!content) { setStatus("记忆内容不能为空", true); return; }
+  const sources = state.memory.collectedSources || [];
+  const payloadSources = memorySourcesForApi(sources, state.memory.activeSessionId);
+  const firstSession = sources.find(s => s.kind === "session");
+  const anyText = sources.some(s => s.kind === "text");
+  const sourceKind = sources.length
+    ? (firstSession ? "full_session" : anyText ? "partial_text" : "partial_messages")
+    : "manual";
+  const body = {
+    title: title || (content.slice(0, 20) || "未命名记忆"),
+    content,
+    content_mode: draft.contentMode || "complete",
+    segments: draft.segments || [],
+    source_kind: sourceKind,
+    source: { sources: payloadSources.length ? payloadSources : [{ type: "manual", text: content }] },
+  };
+  try {
+    await api("/desktop/api/memory", { method: "POST", body: JSON.stringify(body) });
+    state.memory = { ...state.memory, composing: false, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], draft: null };
+    await hydrateMemory();
+    render();
+  } catch (error) { setStatus(error.message, true); }
+}
+
+async function deleteMemory(memoryId) {
+  if (!memoryId) return;
+  try {
+    await api(`/desktop/api/memory/${memoryId}`, { method: "DELETE" });
+    await hydrateMemory();
+    render();
+  } catch (error) { setStatus(error.message, true); }
 }
 
 function taskCardMarkup(task, draftMode = false) {
@@ -3272,6 +3693,26 @@ document.addEventListener("click", async event => {
   if (action === "show-agents") return openInspector("agents", button);
   if (action === "open-inspector-tab") return openInspector(button.dataset.inspectorTab, button);
   if (action === "show-plugins") return openPluginsView();
+  if (action === "show-memory") return openMemoryView();
+  if (action === "new-memory") return openMemoryCompose(false);
+  if (action === "select-memory") { state.memory = { ...state.memory, selectedId: button.dataset.memoryId || null }; return render(); }
+  if (action === "pick-session") return pickMemorySession(button.dataset.contextId);
+  if (action === "pick-session-source") { addSessionSource(button.dataset.contextId, button.dataset.contextTitle); return; }
+  if (action === "toggle-message") { toggleMemoryMessage(button.dataset.messageId); return; }
+  if (action === "add-checked-messages") { addMessagesSource(state.memory.selectedMessageIds || []); return; }
+  if (action === "add-text") { addTextSource(state.memory.textSelection); return; }
+  if (action === "remove-collected") { removeCollectedSource(Number(button.dataset.collectedIndex)); return; }
+  if (action === "enter-merge-sources") { enterMergeSources(); return; }
+  if (action === "cancel-merge-sources") { cancelMergeSources(); return; }
+  if (action === "toggle-merge-source") { toggleMergeSource(Number(button.dataset.sourceIndex)); return; }
+  if (action === "confirm-merge-sources") { confirmMergeSources(); return; }
+  if (action === "recompress-memory") { recompressMemory(); return; }
+  if (action === "set-memory-mode") { syncMemoryField("contentMode", button.dataset.mode || "complete"); return; }
+  if (action === "toggle-memory-group") { event.preventDefault(); toggleMemoryGroup(button.dataset.group); return; }
+  if (action === "save-memory") return saveMemory();
+  if (action === "cancel-compose") { state.memory = { ...state.memory, composing: false, draft: null, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [] }; return render(); }
+  if (action === "edit-memory") { state.memory = { ...state.memory, selectedId: button.dataset.memoryId || null }; return openMemoryCompose(true); }
+  if (action === "delete-memory") return deleteMemory(button.dataset.memoryId);
   if (action === "show-assembly") {
     try {
       const task = await api("/desktop/api/assembly/task");
@@ -3422,6 +3863,9 @@ document.addEventListener("click", async event => {
 document.addEventListener("input", event => {
   if (event.target.matches("[data-skill-input]")) updateSkillMenu(event.target, true);
   if (event.target.matches("[data-draft-field],[data-message-field],[data-equipment],[data-permission]")) scheduleDraftSave();
+  if (event.target.matches("[data-memory-field]")) syncMemoryField(event.target.dataset.memoryField, event.target.value);
+  if (event.target.matches("[data-source-field]")) editSourceText(Number(event.target.dataset.sourceIndex), event.target.value);
+  if (event.target.matches("[data-segment-field]")) editMemorySegment(Number(event.target.dataset.segmentIndex), event.target.dataset.segmentField, event.target.value);
   if (event.target.matches("[data-range-index]")) {
     const range = state.compression.ranges[Number(event.target.dataset.rangeIndex)];
     if (range) {
@@ -3430,6 +3874,28 @@ document.addEventListener("input", event => {
       refreshCompressionStats();
     }
   }
+});
+
+// 记忆库：划选原文文字 → 高亮 → 采集 text + 字符区间 + message_id（供「加入选中文字」/拖拽）。
+document.addEventListener("mouseup", event => {
+  if (state.view !== "memory" || !state.memory?.composing) return;
+  const pre = event.target.closest("[data-selectable-text]");
+  if (!pre) return;
+  const sel = window.getSelection();
+  const text = sel ? sel.toString() : "";
+  if (!text) return;
+  const container = pre.closest("[data-message-id]");
+  const messageId = container ? container.getAttribute("data-message-id") : null;
+  // 用选区文本在全文中的位置估算字符区间（同一条消息内划选足够准确）。
+  const full = pre.textContent || "";
+  const start = full.indexOf(text);
+  const end = start >= 0 ? start + text.length : null;
+  state.memory = {
+    ...state.memory,
+    textSelection: text,
+    textMessageId: messageId,
+    textRange: start >= 0 ? { start, end } : { start: 0, end: text.length },
+  };
 });
 
 document.addEventListener("keydown", event => {
@@ -3690,6 +4156,35 @@ document.addEventListener("dragstart", event => {
   if (event.target.matches(".soldier-source")) event.dataTransfer.setData("application/x-focus-soldier", "new");
   const row = event.target.closest(".message-editor");
   if (row) event.dataTransfer.setData("application/x-focus-message", row.dataset.index);
+  // 左下栏「记忆源」卡拖拽重排：携带来源索引，与三栏「添加来源」payload 区分。
+  const sourceCard = event.target.closest(".memory-source-edit[data-source-index]");
+  if (sourceCard) {
+    event.dataTransfer.setData("application/x-focus-source-index", sourceCard.dataset.sourceIndex);
+    event.dataTransfer.effectAllowed = "move";
+    return;
+  }
+  const sessionItem = event.target.closest(".memory-session-item");
+  if (sessionItem) {
+    event.dataTransfer.setData("application/x-focus-memory", JSON.stringify({ kind: "session", context_id: sessionItem.dataset.contextId, title: sessionItem.dataset.contextTitle }));
+    event.dataTransfer.effectAllowed = "copy";
+    return;
+  }
+  const memoryMsg = event.target.closest(".memory-msg");
+  if (memoryMsg) {
+    const id = memoryMsg.dataset.messageId;
+    const checked = state.memory.selectedMessageIds || [];
+    const ids = checked.length ? checked : [id];
+    event.dataTransfer.setData("application/x-focus-memory", JSON.stringify({ kind: "messages", message_ids: ids }));
+    event.dataTransfer.effectAllowed = "copy";
+    return;
+  }
+  const sourceText = event.target.closest(".memory-source-text");
+  if (sourceText) {
+    const sel = window.getSelection();
+    const text = (sel && sel.toString()) || sourceText.textContent || "";
+    event.dataTransfer.setData("application/x-focus-memory", JSON.stringify({ kind: "text", text }));
+    event.dataTransfer.effectAllowed = "copy";
+  }
 });
 
 document.addEventListener("dragover", event => {
@@ -3697,6 +4192,8 @@ document.addEventListener("dragover", event => {
   if (card && event.dataTransfer.types.includes("application/x-focus-soldier")) { event.preventDefault(); card.classList.add("drop-target"); }
   const row = event.target.closest(".message-editor");
   if (row && event.dataTransfer.types.includes("application/x-focus-message")) event.preventDefault();
+  if (event.target.closest(".memory-source-edit-list") && event.dataTransfer.types.includes("application/x-focus-source-index")) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }
+  if (event.target.closest(".memory-compose") && event.dataTransfer.types.includes("application/x-focus-memory")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }
 });
 
 document.addEventListener("dragleave", event => event.target.closest(".task-card")?.classList.remove("drop-target"));
@@ -3707,6 +4204,20 @@ document.addEventListener("drop", event => {
   const from = Number(event.dataTransfer.getData("application/x-focus-message"));
   if (row && Number.isInteger(from)) {
     event.preventDefault(); const draft = syncDraftFromDom(); moveMessageGroup(draft.history_messages, from, Number(row.dataset.index)); renderDraft(); scheduleDraftSave();
+  }
+  const sourceCard = event.target.closest(".memory-source-edit[data-source-index]");
+  const fromIndex = Number(event.dataTransfer.getData("application/x-focus-source-index"));
+  if (sourceCard && Number.isInteger(fromIndex) && event.dataTransfer.getData("application/x-focus-source-index") !== "") {
+    event.preventDefault();
+    moveCollectedSource(fromIndex, Number(sourceCard.dataset.sourceIndex));
+    return;
+  }
+  if (event.target.closest(".memory-compose") && event.dataTransfer.getData("application/x-focus-memory")) {
+    event.preventDefault();
+    try {
+      const payload = JSON.parse(event.dataTransfer.getData("application/x-focus-memory"));
+      dropMemoryPayload(payload);
+    } catch { /* 非法拖拽载荷，忽略 */ }
   }
 });
 
