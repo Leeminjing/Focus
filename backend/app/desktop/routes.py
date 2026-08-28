@@ -209,7 +209,7 @@ async def deploy(draft_id: str, body: DeployRequest, request: Request) -> dict:
 async def start_main_run(task_id: str, body: MainRunCreate, request: Request) -> dict:
     prepared = await request.app.state.desktop_service.start_main_run(
         task_id, body.message, body.model_name, body.permissions, body.skills,
-        body.spatial_focus,
+        body.spatial_focus, body.memory_ids,
     )
     await _launch(request, prepared)
     return prepared.payload

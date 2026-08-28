@@ -850,3 +850,144 @@
 .assembly-empty { margin: auto; align-self: center; text-align: center; color: var(--muted, #737986); font-size: 13px; line-height: 1.9; }
 .assembly-empty-title { font-weight: 600; color: var(--text-primary, #15171c); font-size: 15px; }
 .assembly-empty p { margin: 0; }
+
+/* 记忆库：左侧记忆清单，右侧单条详情与创建器；复用 context-editor 的卡片语言。 */
+.memory-view { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: var(--space-3); padding: var(--space-4); overflow: hidden; }
+.memory-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin: 0; padding: 0 0 var(--space-3); border: 0; border-bottom: 1px solid var(--border-default); border-radius: 0; background: transparent; }
+.memory-heading strong { font-size: 15px; }
+.memory-heading p { margin: var(--space-1) 0 0; font-size: 12px; }
+.memory-workbench { display: grid; flex: 1 1 auto; min-height: 0; grid-template-columns: minmax(250px, 320px) minmax(0, 1fr); gap: var(--space-4); }
+.memory-list,
+.memory-detail { border: 0; border-radius: var(--radius-control); background: var(--surface-base); }
+.memory-list { min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr); padding: 0; border: 1px solid var(--border-subtle); }
+.memory-list > header { display: flex; min-height: 48px; align-items: center; justify-content: space-between; padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border-subtle); background: var(--surface-subtle); font-size: 12px; }
+.memory-list-scroll { display: grid; align-content: start; gap: var(--space-2); min-height: 0; overflow: auto; padding: var(--space-2); }
+.memory-card { display: grid; width: 100%; gap: var(--space-2); padding: var(--space-3); border: 0; border-radius: var(--radius-control); background: transparent; color: var(--text-primary); text-align: left; }
+.memory-card:hover { background: var(--surface-subtle); }
+.memory-card.is-selected { background: var(--surface-selected); box-shadow: none; }
+.memory-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); }
+.memory-card-heading strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.memory-card-content { display: -webkit-box; overflow: hidden; color: var(--text-secondary); font-size: 12px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.memory-detail { min-height: 0; overflow: auto; }
+.memory-detail-card { display: grid; gap: var(--space-4); padding: var(--space-5); }
+.memory-detail-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.memory-detail-heading h2 { margin: var(--space-1) 0; font-size: 20px; }
+.memory-detail-heading p { margin: 0; color: var(--text-secondary); font-size: 11px; }
+.memory-detail-content { margin: 0; padding: var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); background: var(--surface-subtle); color: var(--text-primary); font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.memory-detail-actions { display: flex; gap: var(--space-2); }
+
+/* 整理态：上三栏选源 + 下 源↔压缩 双编辑（高度均可拖拽调整）。 */
+.memory-compose { display: flex; flex-direction: column; gap: 0; flex: 1 1 auto; height: 100%; min-height: 0; overflow: hidden; }
+.memory-compose-top, .memory-compose-bottom { min-height: 0; display: flex; }
+.memory-compose-top { flex: 1 1 0; overflow: hidden; }
+.memory-compose-bottom { flex: 1 1 0; overflow: hidden; }
+.memory-compose-grid { display: grid; min-height: 0; flex: 1 1 auto; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-3); padding: var(--space-3); overflow: hidden; }
+.memory-pane { display: grid; min-height: 0; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); background: var(--surface-base); }
+.memory-pane > header { display: flex; min-height: 40px; align-items: center; justify-content: space-between; padding: 0 var(--space-3); border-bottom: 1px solid var(--border-subtle); background: var(--surface-subtle); font-size: 12px; }
+.memory-session-list,
+.memory-msg-list,
+.memory-source-wrap { min-height: 0; overflow: auto; }
+.memory-msg-list > .muted,
+.memory-source-wrap > .muted { margin: 0; padding: var(--space-3) var(--space-4); color: var(--text-secondary); }
+
+.memory-session-group { border-bottom: 1px solid var(--border-subtle); }
+.memory-session-group-head { position: relative; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-2) var(--space-3); color: var(--text-secondary); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; cursor: pointer; user-select: none; list-style: none; }
+.memory-session-group-head::-webkit-details-marker { display: none; }
+.memory-session-group-head::before { position: absolute; left: var(--space-3); content: "▸"; color: var(--text-secondary); font-size: 10px; transition: transform var(--motion-fast) var(--ease-standard); }
+.memory-session-group[open] .memory-session-group-head::before { transform: rotate(90deg); }
+.memory-session-group-name { overflow: hidden; padding-left: calc(var(--space-3) + 12px); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.memory-session-group-count { flex: 0 0 auto; font-weight: 500; opacity: .7; }
+.memory-session-group-body { display: grid; gap: 1px; }
+.memory-session-item { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; min-width: 0; width: 100%; padding: var(--space-2) var(--space-3); border: 0; border-bottom: 1px solid var(--border-subtle); background: var(--surface-base); color: var(--text-primary); text-align: left; }
+.memory-session-item:hover { background: var(--surface-subtle); }
+.memory-session-item.is-active { background: var(--surface-selected); }
+.memory-session-title { overflow: hidden; font-size: 13px; font-weight: 600; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.memory-session-meta { overflow: hidden; color: var(--text-secondary); font-size: 11px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+
+.memory-msg { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: var(--space-1); width: 100%; padding: var(--space-2) var(--space-3); border: 0; border-bottom: 1px solid var(--border-subtle); background: var(--surface-base); color: var(--text-primary); text-align: left; }
+.memory-msg:hover { background: var(--surface-subtle); }
+.memory-msg.is-active { background: var(--surface-selected); }
+.memory-msg.is-checked { border-color: var(--border-accent); background: var(--surface-accent); }
+.memory-msg[draggable="true"] { cursor: grab; }
+.memory-msg-head { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: var(--space-3); text-align: left; }
+.memory-msg-head strong { font-size: 12px; color: var(--text-secondary); }
+.memory-msg-check { flex: 0 0 auto; min-width: 20px; text-align: center; color: var(--text-secondary); }
+.memory-msg.is-checked .memory-msg-check { color: var(--text-accent); }
+.memory-msg-preview { display: block; width: 100%; margin: 0; overflow: hidden; font-size: 12px; line-height: 1.5; color: var(--text-primary); text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
+.memory-msg-tool { color: var(--text-secondary); }
+.memory-msg-tool .memory-msg-head { cursor: pointer; list-style: none; }
+.memory-msg-tool .memory-msg-head::-webkit-details-marker { display: none; }
+.memory-msg-tool .memory-msg-preview { font-size: 11px; color: var(--text-secondary); }
+
+/* 第三栏：选中消息完整原文（可划选文字）。 */
+.memory-source { display: grid; gap: var(--space-2); padding: var(--space-3); }
+.memory-source-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.memory-source-head strong { font-size: 12px; color: var(--text-secondary); }
+.memory-source-text { margin: 0; padding: var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); background: var(--surface-subtle); color: var(--text-primary); font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; cursor: text; }
+
+/* 上下区可拖拽分隔条。 */
+.memory-resizer { flex: 0 0 8px; background: var(--border-subtle); cursor: row-resize; }
+.memory-resizer:hover { background: var(--border-accent); }
+.memory-resizer-v { cursor: row-resize; }
+.memory-resizer-h { cursor: col-resize; }
+
+/* 记忆编辑区：左 源(可编辑) | 右 压缩(可编辑)，宽度可拖拽。 */
+.memory-editor { display: flex; min-height: 0; flex: 1 1 auto; overflow: hidden; }
+.memory-editor-sources, .memory-editor-target { min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.memory-editor-sources { flex: 1 1 50%; border-right: 1px solid var(--border-default); }
+.memory-editor-target { flex: 1 1 50%; }
+.memory-editor-head { display: flex; min-height: 40px; align-items: center; justify-content: space-between; gap: var(--space-2); padding: 0 var(--space-3); border-bottom: 1px solid var(--border-subtle); background: var(--surface-subtle); font-size: 12px; }
+.memory-source-edit-list { min-height: 0; flex: 1 1 auto; overflow: auto; padding: var(--space-2) var(--space-3); display: grid; gap: var(--space-2); align-content: start; }
+.memory-source-edit { display: grid; gap: var(--space-2); padding: var(--space-2) var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); background: var(--surface-base); }
+.memory-source-edit-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); font-size: 12px; cursor: grab; }
+.memory-source-edit-head:active { cursor: grabbing; }
+.memory-source-edit.is-dragging { opacity: 0.45; }
+.memory-source-edit-list.is-drop-target .memory-source-edit { border-color: var(--border-accent); }
+.memory-source-edit-head strong { color: var(--text-secondary); }
+
+/* 合并模式：卡片可点选高亮 */
+.memory-source-edit.is-mergeable { cursor: pointer; }
+.memory-source-edit.is-mergeable:hover { border-color: var(--border-accent); }
+.memory-source-edit.is-merge-selected { border-color: var(--border-accent); background: var(--surface-selected); }
+.memory-source-merge-check { flex: 0 0 auto; color: var(--text-accent); font-weight: 600; }
+.memory-source-merge-actions { display: inline-flex; gap: var(--space-1); margin-right: auto; }
+.memory-source-merge-actions .text-button[disabled] { opacity: .4; cursor: not-allowed; }
+.memory-source-edit-label { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.memory-source-edit-text { width: 100%; padding: var(--space-2) var(--space-3); border: 1px solid var(--border-default); border-radius: var(--radius-control); background: var(--surface-base); color: var(--text-primary); font: inherit; resize: vertical; }
+.memory-editor-target { padding: 0 var(--space-3) var(--space-3); gap: var(--space-2); }
+.memory-editor-target .memory-editor-head { margin: 0 calc(-1 * var(--space-3)); padding: 0 var(--space-3); }
+.memory-empty-edit { padding: var(--space-3) var(--space-4); color: var(--text-secondary); font-size: 12px; }
+
+/* 压缩语义切换（完整记忆 / 分段记忆） */
+.memory-mode-toggle { display: inline-flex; gap: var(--space-1); margin-right: auto; }
+.memory-mode-toggle .text-button { padding: 2px 8px; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); background: transparent; color: var(--text-secondary); }
+.memory-mode-toggle .text-button.is-active { background: var(--surface-active, var(--surface-subtle)); color: var(--text-primary); border-color: var(--border-accent); }
+
+/* 分段记忆卡片：每段一个可编辑卡 */
+.memory-segment { display: grid; gap: var(--space-2); padding: var(--space-2) var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); background: var(--surface-base); }
+.memory-segment-head { display: flex; align-items: center; gap: var(--space-2); }
+.memory-segment-label { display: inline-flex; min-width: 20px; height: 20px; align-items: center; justify-content: center; border-radius: var(--radius-control); background: var(--surface-subtle); color: var(--text-secondary); font-size: 11px; }
+.memory-segment-title { flex: 1 1 auto; min-width: 0; padding: var(--space-1) var(--space-2); border: 1px solid transparent; border-radius: var(--radius-control); background: transparent; color: var(--text-primary); font: inherit; }
+.memory-segment-title:focus { border-color: var(--border-default); background: var(--surface-base); }
+.memory-segment-body { width: 100%; min-height: 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--border-default); border-radius: var(--radius-control); background: var(--surface-base); color: var(--text-primary); font: inherit; resize: vertical; }
+
+.memory-title-input,
+.memory-content-input { width: 100%; padding: var(--space-2) var(--space-3); border: 1px solid var(--border-default); border-radius: var(--radius-control); background: var(--surface-base); color: var(--text-primary); font: inherit; }
+.memory-content-input { flex: 1 1 auto; min-height: 0; resize: vertical; }
+.memory-create-actions { display: flex; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-top: 1px solid var(--border-subtle); }
+
+@media (max-width: 900px) {
+  .memory-workbench { grid-template-columns: minmax(220px, 34%) minmax(0, 1fr); }
+  .memory-compose { height: auto; min-height: 100%; overflow: auto; }
+  .memory-compose-grid { grid-template-columns: minmax(180px, 40%) minmax(0, 1fr); }
+  .memory-pane:last-child { grid-column: 1 / -1; }
+  .memory-editor { flex-direction: column; }
+  .memory-editor-sources { border-right: 0; border-bottom: 1px solid var(--border-default); }
+}
+@media (max-width: 720px) {
+  #app:has(.memory-view) { overflow: auto; }
+  .memory-view { height: auto; min-height: 100%; overflow: visible; padding: var(--space-3); }
+  .memory-workbench { grid-template-columns: 1fr; }
+  .memory-list { max-height: 360px; border-right: 0; }
+  .memory-detail { overflow: visible; }
+}
