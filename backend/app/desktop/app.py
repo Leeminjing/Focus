@@ -37,12 +37,14 @@ def mount_desktop(app) -> None:
     from fastapi.staticfiles import StaticFiles
 
     from backend.app.desktop.compression_routes import compression_router
+    from backend.app.desktop.memory_routes import memory_router
     from backend.app.desktop.plugins_routes import plugins_router
     from backend.app.desktop.routes import desktop_router
 
     app.include_router(desktop_router)
     app.include_router(compression_router)
     app.include_router(plugins_router)
+    app.include_router(memory_router)
     mount_plugin_assets(app)
     app.mount("/desktop", StaticFiles(directory=str(DESKTOP_DIR), html=True), name="desktop")
     logger.info("桌面路由与静态资源已挂载 (/desktop/api, /desktop)")
