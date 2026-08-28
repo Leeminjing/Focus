@@ -45,6 +45,7 @@ from backend.app.desktop.collab import AgentCollab
 from backend.app.desktop.checkpoint_recovery import select_checkpoint_base
 from backend.app.desktop.compression import compression_recovery_payload
 from backend.app.desktop.context_service import ContextService
+from backend.app.desktop.memory import MemoryService, _MAIN_RUNTIME_MEMORY_KEY
 from backend.app.desktop.models import (
     AgentBoardTask,
     AgentMessage,
@@ -191,6 +192,8 @@ class DesktopService:
         # Agent 协作（Mailbox 消息 / 任务板）：工具构建与未读消息回合注入；
         # swarm_launcher 注入消息驱动自动唤醒（send_message/publish_task 落表后触发目标 run）
         self.agent_collab = AgentCollab(session_factory, swarm_launcher=self._auto_wake_swarm)
+        # 全局记忆库：CRUD + 来源解析 + 压缩总结 + 注入块（context_reader 复用 contexts.snapshot）
+        self.memory = MemoryService(session_factory, app_config, self._memory_context_messages)
         # 仅持有 DB 终态同步任务（运行注册表/取消由 RunManager 负责）
         self._sync_tasks: set[asyncio.Task] = set()
         self._watcher: asyncio.Task | None = None
@@ -309,6 +312,11 @@ class DesktopService:
         payload["messages"] = snapshot["messages"]
         payload["context"] = await self.contexts.get(task_id)
         return payload
+
+    async def _memory_context_messages(self, context_id: str) -> list[dict[str, Any]]:
+        """记忆来源解析器：给定 context_id（根/派生 context 的 task_id），返回其 serialized messages。"""
+        snapshot = await self.contexts.snapshot(context_id)
+        return snapshot["messages"]
 
     async def list_task_skills(self, task_id: str) -> list[dict[str, str]]:
         async with self.session_factory() as session:
@@ -465,6 +473,7 @@ class DesktopService:
     async def start_main_run(
         self, task_id: str, message: str | list[dict[str, Any]], model_name: str | None,
         permissions: list[str], skills: list[str], spatial_focus: dict[str, Any] | None = None,
+        memory_ids: list[str] | None = None,
     ) -> PreparedRun:
         async with self.session_factory() as session:
             task_row, workspace = await self._get_task_entities(session, task_id)
@@ -507,6 +516,10 @@ class DesktopService:
                 **(task_row.ui_state or {}),
                 _MAIN_RUNTIME_EQUIPMENT_KEY: equipment,
             }
+            if memory_ids is not None:
+                state = dict(task_row.ui_state or {})
+                state[_MAIN_RUNTIME_MEMORY_KEY] = list(dict.fromkeys(memory_ids))
+                task_row.ui_state = state
             await session.commit()
             thread_id = task_row.thread_id
             workspace_id = workspace.workspace_id
@@ -514,6 +527,7 @@ class DesktopService:
         checkpoint_id = await select_checkpoint_base(self.checkpointer, thread_id)
         is_assembly = task_row.thread_id == _ASSEMBLY_THREAD_ID
         base_prompt = (_ASSEMBLY_SYSTEM_PROMPT if is_assembly else _MAIN_SYSTEM_PROMPT) + _spatial_focus_prompt(spatial_focus)
+        base_prompt = await self._apply_memory_block(base_prompt, memory_ids)
         return await self._prepare(
             run, thread_id, workspace_id, workspace_path, run.input_messages,
             base_prompt, equipment, "", "main", checkpoint_id, allow_global_config=is_assembly,
@@ -670,8 +684,14 @@ class DesktopService:
         session.add(run)
         await session.commit()
         material_context, uploads_tag = await self._material_context(task.task_id)
+        resume_memory_ids = list(
+            (task.ui_state or {}).get(_MAIN_RUNTIME_MEMORY_KEY) or []
+        )
+        memory_base_prompt = await self._apply_memory_block(
+            _MAIN_SYSTEM_PROMPT, resume_memory_ids
+        )
         factory = self._build_agent_factory(
-            task.task_id, run.agent_id, workspace.path, equipment, _MAIN_SYSTEM_PROMPT,
+            task.task_id, run.agent_id, workspace.path, equipment, memory_base_prompt,
             material_context, "main",
         )
         body = RunCreateRequest(
@@ -1062,6 +1082,15 @@ class DesktopService:
         except KeyError:
             return None
         return model.context_window
+
+    async def _apply_memory_block(self, base_prompt: str, memory_ids: list[str] | None) -> str:
+        """在 base_prompt 末尾注入 `<memory>` 块；无选中记忆时原样返回。"""
+        if not memory_ids:
+            return base_prompt
+        block = await self.memory.build_memory_block(memory_ids)
+        if not block:
+            return base_prompt
+        return f"{base_prompt}\n\n{block}"
 
     # === 机制③④：持久派生 spawn（teammate/worker）===
 
