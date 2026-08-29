@@ -374,6 +374,34 @@
 .task-title { min-width: 0; margin: 0; overflow: hidden; font-size: 15px; font-weight: 680; text-overflow: ellipsis; white-space: nowrap; }
 .task-card .context-identity { margin: 0; color: var(--text-accent); font-size: 11px; }
 .context-parent-tags { color: var(--text-warning); font-size: 11px; }
+/* 批量删除：全图多选标记与选中态 */
+.task-select-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  align-self: center;
+}
+.task-select-box {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface-base);
+}
+.task-card.is-selected { background: var(--surface-selected); }
+.task-card.is-selected .task-select-box {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+}
+.task-card.is-selected .task-select-box::after {
+  content: "✓";
+  color: var(--surface-base);
+  font-size: 12px;
+  font-weight: 700;
+}
+.map-selection-info { margin-left: auto; color: var(--text-secondary); font-size: 13px; }
 .task-technical { color: var(--text-secondary); font-size: 12px; }
 .task-technical summary { padding: var(--space-2) var(--space-3); cursor: pointer; }
 .task-technical dl { display: grid; gap: var(--space-2); margin: 0; padding: 0 var(--space-3) var(--space-3); }

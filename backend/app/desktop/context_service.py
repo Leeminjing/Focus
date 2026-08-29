@@ -299,6 +299,59 @@ class ContextService:
                 logger.warning("清理会话 checkpoint 失败: thread_id=%s", thread_id, exc_info=True)
         return {"context_id": context_id, "deleted": True}
 
+    async def delete_many(self, context_ids: list[str], cascade: bool = False) -> dict[str, Any]:
+        """删除多个会话（根/派生 Context），即批量删除。语义与 delete 完全一致，需确认。
+
+        输入:
+            context_ids: list[str] — 待删除的会话标识集合（重复或血缘重叠会被去重/合并）
+            cascade: bool — True 时递归删除每个被选会话及其全部派生后代（无墓碑）
+
+        输出:
+            dict — {context_ids, deleted: True}
+
+        工作流:
+            (1) 去重 context_ids；为空集合时 422
+            (2) 逐个校验：会话不存在 404、存在 pending/running 主运行 409（整批拒绝，不删除任何会话）
+            (3) 按「级联 / 有后代 / 无后代」分类复用删除引擎：级联并入硬删除列表；有后代走墓碑；
+                无后代并入硬删除列表；touched 并集去重血缘重叠，避免重复处理
+            (4) 单事务提交；提交后统一用 checkpointer.adelete_thread 清理（去重、best-effort）
+        """
+        ids = list(dict.fromkeys(context_ids))
+        if not ids:
+            raise HTTPException(422, "未提供要删除的会话")
+        to_clean: list[str] = []
+        async with self.session_factory() as session:
+            for cid in ids:
+                task = await session.get(DesktopThread, cid)
+                if not task:
+                    raise HTTPException(404, f"会话不存在: {cid}")
+                if await self._has_active_run(session, cid):
+                    raise HTTPException(409, f"会话正在运行，不能删除: {cid}")
+            hard: list[str] = []
+            touched: set[str] = set()
+            for cid in ids:
+                if cid in touched:
+                    continue
+                descendants = await self._descendant_ids(session, cid)
+                if cascade:
+                    hard.extend([cid, *descendants])
+                    touched.update([cid, *descendants])
+                elif descendants:
+                    task = await session.get(DesktopThread, cid)
+                    await self._tombstone_deleted(session, task, to_clean)
+                    touched.add(cid)
+                else:
+                    hard.append(cid)
+                    touched.add(cid)
+            await self._hard_delete_threads(session, list(dict.fromkeys(hard)), to_clean)
+            await session.commit()
+        for thread_id in dict.fromkeys(to_clean):
+            try:
+                await self.checkpointer.adelete_thread(thread_id)
+            except Exception:
+                logger.warning("清理会话 checkpoint 失败: thread_id=%s", thread_id, exc_info=True)
+        return {"context_ids": ids, "deleted": True}
+
     async def list_archived(self) -> list[dict[str, Any]]:
         """列出全部已归档会话（archived_at 非空且未 deleted_at）。"""
         async with self.session_factory() as session:

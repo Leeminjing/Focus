@@ -16,6 +16,7 @@ from fastapi import APIRouter, File, Header, HTTPException, Query, Request, Uplo
 from fastapi.responses import StreamingResponse
 
 from backend.app.desktop.models import (
+    BatchDeleteRequest,
     ContinueRequest,
     ContextDefinitionUpdate,
     ContextDeriveCreate,
@@ -149,6 +150,13 @@ async def delete_context(
     context_id: str, request: Request, cascade: bool = Query(default=False)
 ) -> dict:
     return await request.app.state.desktop_service.contexts.delete(context_id, cascade)
+
+
+@desktop_router.post("/contexts/batch-delete")
+async def batch_delete_contexts(body: BatchDeleteRequest, request: Request) -> dict:
+    return await request.app.state.desktop_service.contexts.delete_many(
+        body.context_ids, body.cascade
+    )
 
 
 @desktop_router.get("/sessions/archived")

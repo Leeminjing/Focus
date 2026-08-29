@@ -283,6 +283,11 @@ class ContextProjectionDecision(StrictRequest):
     projection_hash: str = Field(min_length=64, max_length=64)
 
 
+class BatchDeleteRequest(StrictRequest):
+    context_ids: list[str] = Field(min_length=1)
+    cascade: bool = False
+
+
 class MainRunCreate(StrictRequest):
     # f19 dsh-eyes:message 放行纯文本或含内容块列表(图片以 image_url 块随消息发送,
     # 由插件剥离 hook 在模型调用前替换为文本引用)

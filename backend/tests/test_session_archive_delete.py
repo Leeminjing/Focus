@@ -269,3 +269,135 @@ def test_lifecycle_static_resolves_order():
     assert ContextService._lifecycle(task) == "archived"
     task.deleted_at = datetime.now(timezone.utc)
     assert ContextService._lifecycle(task) == "deleted"
+
+
+def test_batch_delete_multiple_no_descendant_hard_deletes():
+    async def run() -> None:
+        checkpointer = FakeCheckpointer()
+        contexts = _contexts(checkpointer)
+        async with _SESSION_FACTORY() as session:
+            ws = await _seed_workspace(session)
+            a = await _seed_thread(session, ws, "a")
+            b = await _seed_thread(session, ws, "b")
+            thread_a = (await session.get(DesktopThread, a)).thread_id
+            thread_b = (await session.get(DesktopThread, b)).thread_id
+            await session.commit()
+        try:
+            result = await contexts.delete_many([a, b])
+            assert result == {"context_ids": [a, b], "deleted": True}
+            async with _SESSION_FACTORY() as session:
+                assert await session.get(DesktopThread, a) is None
+                assert await session.get(DesktopThread, b) is None
+            assert set(checkpointer.deleted_threads) == {thread_a, thread_b}
+        finally:
+            await _cleanup(ws, [a, b])
+    _LOOP.run_until_complete(run())
+
+
+def test_batch_delete_with_descendant_keeps_tombstone_and_preserves_child():
+    async def run() -> None:
+        checkpointer = FakeCheckpointer()
+        contexts = _contexts(checkpointer)
+        async with _SESSION_FACTORY() as session:
+            ws = await _seed_workspace(session)
+            parent = await _seed_thread(session, ws, "parent")
+            child = await _seed_thread(session, ws, "child")
+            leaf = await _seed_thread(session, ws, "leaf")
+            await _link_child(session, child, parent)
+            parent_thread_id = (await session.get(DesktopThread, parent)).thread_id
+            leaf_thread_id = (await session.get(DesktopThread, leaf)).thread_id
+            await session.commit()
+        try:
+            await contexts.delete_many([parent, leaf])
+            async with _SESSION_FACTORY() as session:
+                parent_row = await session.get(DesktopThread, parent)
+                child_row = await session.get(DesktopThread, child)
+                leaf_row = await session.get(DesktopThread, leaf)
+                assert parent_row is not None and parent_row.deleted_at is not None
+                assert child_row is not None and child_row.deleted_at is None
+                assert leaf_row is None
+                source = await session.scalar(
+                    select(DesktopContextSource).where(DesktopContextSource.parent_context_id == parent)
+                )
+                assert source is not None and source.context_id == child
+            assert set(checkpointer.deleted_threads) == {parent_thread_id, leaf_thread_id}
+        finally:
+            await _cleanup(ws, [parent, child, leaf])
+    _LOOP.run_until_complete(run())
+
+
+def test_batch_cascade_delete_removes_whole_lineage_without_tombstone():
+    async def run() -> None:
+        checkpointer = FakeCheckpointer()
+        contexts = _contexts(checkpointer)
+        async with _SESSION_FACTORY() as session:
+            ws = await _seed_workspace(session)
+            parent = await _seed_thread(session, ws, "parent")
+            child = await _seed_thread(session, ws, "child")
+            await _link_child(session, child, parent)
+            p_thread = (await session.get(DesktopThread, parent)).thread_id
+            c_thread = (await session.get(DesktopThread, child)).thread_id
+            await session.commit()
+        try:
+            await contexts.delete_many([parent], cascade=True)
+            async with _SESSION_FACTORY() as session:
+                assert await session.get(DesktopThread, parent) is None
+                assert await session.get(DesktopThread, child) is None
+            assert set(checkpointer.deleted_threads) == {p_thread, c_thread}
+        finally:
+            await _cleanup(ws, [parent, child])
+    _LOOP.run_until_complete(run())
+
+
+def test_batch_delete_rejects_whole_batch_on_active_run():
+    async def run() -> None:
+        contexts = _contexts()
+        async with _SESSION_FACTORY() as session:
+            ws = await _seed_workspace(session)
+            a = await _seed_thread(session, ws, "a")
+            b = await _seed_thread(session, ws, "b")
+            await _seed_main_run(session, b, "running")
+            await session.commit()
+        try:
+            try:
+                await contexts.delete_many([a, b])
+                raise AssertionError("批量删除应对运行中会话整批抛 409")
+            except HTTPException as exc:
+                assert exc.status_code == 409
+            async with _SESSION_FACTORY() as session:
+                assert await session.get(DesktopThread, a) is not None
+                assert await session.get(DesktopThread, b) is not None
+        finally:
+            await _cleanup(ws, [a, b])
+    _LOOP.run_until_complete(run())
+
+
+def test_batch_delete_missing_id_returns_404_and_deletes_nothing():
+    async def run() -> None:
+        contexts = _contexts()
+        async with _SESSION_FACTORY() as session:
+            ws = await _seed_workspace(session)
+            a = await _seed_thread(session, ws, "a")
+            await session.commit()
+        try:
+            try:
+                await contexts.delete_many([a, "ct-missing"])
+                raise AssertionError("批量删除应对缺失会话抛 404")
+            except HTTPException as exc:
+                assert exc.status_code == 404
+            async with _SESSION_FACTORY() as session:
+                assert await session.get(DesktopThread, a) is not None
+        finally:
+            await _cleanup(ws, [a])
+    _LOOP.run_until_complete(run())
+
+
+def test_batch_delete_empty_list_returns_422():
+    async def run() -> None:
+        contexts = _contexts()
+        try:
+            await contexts.delete_many([])
+            raise AssertionError("空列表应抛 422")
+        except HTTPException as exc:
+            assert exc.status_code == 422
+    _LOOP.run_until_complete(run())
