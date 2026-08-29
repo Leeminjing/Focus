@@ -31,6 +31,8 @@ const state = {
   pickerActive: { main: 0, draft: 0 },
   equipment: { models: [], tools: [], skills: [], permissions: [] },
   soldierArmed: false,
+  selectionMode: false,
+  selectedContextIds: new Set(),
   openMaterial: null,
   openDraftSection: null,
   agentDialog: { agentId: null, messages: [], busy: false },
@@ -1685,12 +1687,12 @@ function taskCardMarkup(task, draftMode = false) {
   const contextIdentity = context
     ? `${context.depth ? "派生 Context" : "根 Context"}${!["root", "valid", "repaired", "approved"].includes(projectionStatus) ? ` · ${escapeHtml(projectionStatus)}` : ""}`
     : "兼容任务";
-  return `<article class="task-card-shell ${draftMode && !selected ? "dimmed" : ""}" data-context-depth="${context?.depth || 0}">
-    <button class="task-card" data-task-id="${task.task_id}" data-action="task-card">
-      <span class="task-card-heading"><span class="task-title">${escapeHtml(task.title)}</span><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></span>
-      <span class="context-identity">${contextIdentity}</span>
-      ${contextMeta}
-    </button>
+  const selectable = state.selectionMode;
+  const isSelected = state.selectedContextIds.has(task.task_id);
+  const cardAction = selectable ? "toggle-select-session" : "task-card";
+  const cardClass = `task-card${selectable && isSelected ? " is-selected" : ""}`;
+  const selectMarkup = selectable ? `<span class="task-select-mark" aria-hidden="true"><span class="task-select-box"></span></span>` : "";
+  const actionsMarkup = selectable ? "" : `
     ${sessionLifecycle(task) === "active" ? `
       <details class="task-card-more">
         <summary>更多操作</summary>
@@ -1701,7 +1703,14 @@ function taskCardMarkup(task, draftMode = false) {
           <button class="text-button danger" data-action="cascade-delete-context" data-context-id="${escapeHtml(task.task_id)}">级联删除</button>
         </div>
       </details>` : ""}
-    <details class="task-technical"><summary>技术详情</summary><dl><div><dt>Context ID</dt><dd>${escapeHtml(task.task_id)}</dd></div><div><dt>Thread</dt><dd>${escapeHtml(task.thread_id)}</dd></div><div><dt>路径</dt><dd>${escapeHtml(task.workspace_path)}</dd></div></dl></details>
+    <details class="task-technical"><summary>技术详情</summary><dl><div><dt>Context ID</dt><dd>${escapeHtml(task.task_id)}</dd></div><div><dt>Thread</dt><dd>${escapeHtml(task.thread_id)}</dd></div><div><dt>路径</dt><dd>${escapeHtml(task.workspace_path)}</dd></div></dl></details>`;
+  return `<article class="task-card-shell ${draftMode && !selected ? "dimmed" : ""}" data-context-depth="${context?.depth || 0}">
+    <button class="${cardClass}" data-task-id="${task.task_id}" data-action="${cardAction}" ${selectable ? `aria-pressed="${isSelected}"` : ""}>
+      <span class="task-card-heading">${selectMarkup}<span class="task-title">${escapeHtml(task.title)}</span><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></span>
+      <span class="context-identity">${contextIdentity}</span>
+      ${contextMeta}
+    </button>
+    ${actionsMarkup}
   </article>`;
 }
 
@@ -1754,8 +1763,15 @@ function renderMapGroups() {
 }
 
 function renderMap() {
+  const sel = state.selectedContextIds.size;
+  const batchControls = state.selectionMode
+    ? `<span class="map-selection-info">已选 ${sel} 个会话</span>
+      <button class="text-button" data-action="batch-delete-selected" ${sel ? "" : "disabled"}>删除选中</button>
+      <button class="text-button" data-action="batch-cascade-delete-selected" ${sel ? "" : "disabled"}>级联删除</button>
+      <button class="text-button" data-action="toggle-selection-mode">取消</button>`
+    : `<button class="text-button" data-action="toggle-selection-mode">批量删除</button>`;
   app.innerHTML = `<section class="map-view">
-    <div class="map-toolbar"><button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">${state.soldierArmed ? "已装备小兵 · 选择任务" : "装备小兵"}</button></div>
+    <div class="map-toolbar"><button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">${state.soldierArmed ? "已装备小兵 · 选择任务" : "装备小兵"}</button>${batchControls}</div>
     <div class="map-groups">${renderMapGroups()}</div>
   </section>`;
 }
@@ -3607,6 +3623,39 @@ async function refreshAfterSessionChange(contextId) {
   return render();
 }
 
+function toggleSelectionMode() {
+  state.selectionMode = !state.selectionMode;
+  if (!state.selectionMode) state.selectedContextIds = new Set();
+  return render();
+}
+
+function toggleSelectSession(contextId) {
+  const ids = new Set(state.selectedContextIds);
+  ids.has(contextId) ? ids.delete(contextId) : ids.add(contextId);
+  state.selectedContextIds = ids;
+  return render();
+}
+
+async function batchDeleteSessions(cascade) {
+  const selected = [...state.selectedContextIds];
+  if (!selected.length) { setStatus("请先选中要删除的会话", true); return; }
+  const message = cascade
+    ? `确定永久删除选中的 ${selected.length} 个会话及其全部派生后代？此操作不可恢复。`
+    : `确定永久删除选中的 ${selected.length} 个会话？此操作不可恢复。`;
+  if (!confirm(message)) return;
+  try {
+    await api("/desktop/api/contexts/batch-delete", {
+      method: "POST",
+      body: JSON.stringify({ context_ids: selected, cascade }),
+    });
+    setStatus(cascade ? "已级联批量删除会话" : "已批量删除会话");
+    const wasActive = selected.includes(state.activeTaskId);
+    state.selectionMode = false;
+    state.selectedContextIds = new Set();
+    return refreshAfterSessionChange(wasActive ? state.activeTaskId : null);
+  } catch (error) { return setStatus(error.message, true); }
+}
+
 async function openSettings() {
   try {
     const sessions = await api("/desktop/api/sessions/archived");
@@ -3744,6 +3793,10 @@ document.addEventListener("click", async event => {
   if (action === "unarchive-context") return unarchiveContext(button.dataset.contextId);
   if (action === "delete-context") return deleteContext(button.dataset.contextId, false);
   if (action === "cascade-delete-context") return deleteContext(button.dataset.contextId, true);
+  if (action === "toggle-selection-mode") return toggleSelectionMode();
+  if (action === "toggle-select-session") return toggleSelectSession(button.dataset.taskId);
+  if (action === "batch-delete-selected") return batchDeleteSessions(false);
+  if (action === "batch-cascade-delete-selected") return batchDeleteSessions(true);
   if (action === "edit-context-definition") return reopenContextDecision(button.dataset.contextId);
   if (action === "context-rail-card") return switchTask(button.dataset.taskId);
   if (action === "resume-context-decision") return reopenContextDecision(state.activeTaskId);
