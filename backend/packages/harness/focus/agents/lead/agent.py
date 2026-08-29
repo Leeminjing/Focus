@@ -48,7 +48,6 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.tools import BaseTool
 from langgraph.graph.state import CompiledStateGraph
 
-from focus.agents.lead.prompt import apply_prompt_template
 from focus.agents.lead_agent_state import LeadAgentState
 from focus.config import AppConfig, get_app_config
 from focus.models import create_chat_model
@@ -156,7 +155,7 @@ async def make_lead_agent(
     tool_groups: list[str] | None = None,
     user_id: str | None = None,
     tools: list[BaseTool] | None = None,
-    system_prompt: str | None = None,
+    system_prompt: str = "",
     middlewares: list[AgentMiddleware] | None = None,
     additional_middlewares: list[AgentMiddleware] | None = None,
     app_config: AppConfig | None = None,
@@ -165,18 +164,8 @@ async def make_lead_agent(
     # (1) 创建模型
     model = create_chat_model(name=model_name, app_config=app_config)
 
-    # (2) system prompt：未注入时走技能扫描 + 模板生成
+    # (2) system prompt：桌面路径已注入（prompt_with_skills 等），此处不再生成默认模板
     catalog = None
-    if system_prompt is None:
-        enabled_names = _load_enabled_skill_names()
-        catalog = _discover_and_build_catalog(enabled_names, host_base_path=None, user_id=user_id)
-        skill_names = ", ".join(sorted(catalog.names))
-
-        system_prompt = apply_prompt_template(
-            agent_name=agent_name,
-            skill_names=skill_names,
-            container_base_path=None,
-        )
 
     # (3) 汇集工具：未注入时走全局工具池 + describe_skill_tool
     if tools is None:
