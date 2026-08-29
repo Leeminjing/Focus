@@ -45,6 +45,8 @@ assert.match(splash, /assets\/focus-icon\.png/);
 assert.match(splash, /aria-label="Focus 正在启动"/);
 assert.doesNotMatch(splash, /splash-copy|splash-kicker|LOCAL AGENT WORKSPACE|<h1[^>]*>Focus<\/h1>/);
 assert.doesNotMatch(splashCss, /\.splash-(?:copy|kicker)|\.splash-copy\s+h1/);
+const splashCardRule = splashCss.match(/\.splash-card\s*\{([^}]*)\}/)?.[1] || "";
+assert.doesNotMatch(splashCardRule, /box-shadow/, "启动卡片不应绘制会被透明窗口裁切的外层阴影");
 assert.match(splashJs, /window\.setFocusSplashStage/);
 assert.match(splashJs, /Math\.max\(0, Math\.min\(100/);
 assert.match(splashCss, /@keyframes focus-arrive/);

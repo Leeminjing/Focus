@@ -37,7 +37,6 @@ body {
   border: 1px solid rgb(207 213 221 / 92%);
   border-radius: 28px;
   background: radial-gradient(circle at 50% 18%, #fff 0, #fbfcfd 46%, #f3f5f7 100%);
-  box-shadow: 0 24px 70px rgb(24 32 45 / 22%);
 }
 
 .splash-card::after {
