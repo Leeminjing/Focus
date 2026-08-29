@@ -98,12 +98,6 @@ from backend.app.gateway.middleware.auth import AuthMiddleware
 app.add_middleware(AuthMiddleware)
 logger.info("AuthMiddleware（统一会话保护）已注册")
 
-# 注册路由（统一运行接口 thread_runs；uploads 随网页端移除）
-from backend.app.gateway.routers.thread_runs import router as thread_runs_router
-
-app.include_router(thread_runs_router, prefix="/api/threads")
-logger.info("路由已注册: thread_runs")
-
 # 桌面功能内嵌（决策 1）：/desktop/api 路由 + /desktop/ 静态资源，页面与 API 同源
 from backend.app.desktop.app import mount_desktop
 
