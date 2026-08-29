@@ -83,15 +83,13 @@ from focus.runtime.stream_bridge.base import StreamBridge
 from focus.tools import get_available_tools
 from focus.tools.builtins.web_tools import web_fetch, web_search
 from focus.tools.builtins.workspace_tools import select_workspace_tools
+from backend.app.desktop.prompts import (
+    MAIN_SYSTEM_PROMPT as _MAIN_SYSTEM_PROMPT,
+    ASSEMBLY_SYSTEM_PROMPT as _ASSEMBLY_SYSTEM_PROMPT,
+)
 
 logger = logging.getLogger(__name__)
 
-_MAIN_SYSTEM_PROMPT ="""你是 Focus 的本地主 Agent。当前工作目录是真实宿主机工作区。
-使用已提供的工具完成用户任务；严格服从平台授予的工具权限，不要把当前环境描述为沙箱。"""
-_ASSEMBLY_SYSTEM_PROMPT ="""你是 Focus 的装配 Agent。当前工作目录是 Focus 仓库根。
-用户的目标是装配/配置 Focus 自身（配置 MCP 工具、填写全局密钥、设计插件、调整全局配置）。
-全局变更必须写入用户主目录的 ~/.focus（如 extensions_config.json、.env、plugins/、config.yaml），
-不得写入任何工作区项目。严格服从平台授予的工具权限，不要把当前环境描述为沙箱。"""
 _MAIN_RUNTIME_EQUIPMENT_KEY = "_main_run_equipment"
 _TERMINAL_STATUSES = frozenset({"success", "error", "interrupted"})
 
