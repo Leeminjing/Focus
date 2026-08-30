@@ -2343,6 +2343,15 @@ async function sendMainOnce() {
   const input = document.querySelector("#mainInput");
   const message = input.value.trim();
   if (!message) return;
+  // f32 快捷关键字压缩：@压缩 <关键词> → 打开压缩面板并机械勾选命中消息
+  const quickCompression = message.match(/^@压缩\s+(.+)$/);
+  if (quickCompression) {
+    const keyword = quickCompression[1].trim();
+    const task = activeTask();
+    if (!task) return setStatus("当前没有活动任务", true);
+    input.value = "";
+    return openCompressionView(task, null, keyword);
+  }
   setComposerError();
   const spatialTarget = currentSpatialTarget();
   if (spatialTarget?.focus.kind === "patrol"
@@ -2491,9 +2500,7 @@ function listenToRun(run) {
     // 主动中断判定：主 Agent run 终态 interrupted 且无错误、且非承诺审批（审批面板已接管界面状态）
     const wasMainInterrupted = run.kind === "main" && terminal.status === "interrupted" && !terminal.error;
     source.close(); state.streams.delete(run.run_id); clearStreamBuffer(run.run_id);
-    await refreshTasks();
-    await hydrateContextTrees();
-    if (state.activeTaskId) await hydrateActive();
+    await refreshActiveAfterTxn();
     const task = run.task_id
       ? state.tasks.find(item => item.task_id === run.task_id)
       : state.tasks.find(item => item.thread_id === run.thread_id);
@@ -3153,7 +3160,7 @@ function compressionBelongsToTask(envelope) {
   return true;
 }
 
-async function openCompressionView(task, request) {
+async function openCompressionView(task, request, quickKeyword) {
   if (!task) return setStatus("当前没有活动任务", true);
   if (state.compression.busy && state.compression.taskId === task.task_id) return;
   const requestId = ++compressionRequestSequence;
@@ -3173,9 +3180,21 @@ async function openCompressionView(task, request) {
       ranges: [],
       busy: false,
       recovery: detail.compression_recovery || null,
+      quick: quickKeyword ? { keyword: quickKeyword } : null,
     };
+    // 快捷关键字压缩：自动把命中该词的消息勾选进 SOURCE，供用户调粒度
+    if (quickKeyword) {
+      const hitIds = compressionPanel.hitKeywordMessageIds(state.compression.messages, quickKeyword);
+      const indexes = [];
+      state.compression.messages.forEach((message, index) => {
+        if (hitIds.includes(message.id)) indexes.push(index);
+      });
+      state.compression.selected = new Set(indexes);
+      setStatus(`快捷压缩「${quickKeyword}」共命中 ${indexes.length} 条，请确认后继续`);
+    } else {
+      setStatus("上下文接近上限，等待压缩确认");
+    }
     state.view = "compress";
-    setStatus("上下文接近上限，等待压缩确认");
     render();
   } catch (error) { setStatus(error.message, true); }
 }
@@ -3403,7 +3422,12 @@ async function summarizeRange(rangeIndex) {
   try {
     const result = await api("/desktop/api/compression/summarize", {
       method: "POST",
-      body: JSON.stringify({ messages: slice }),
+      body: JSON.stringify({
+        messages: slice,
+        forbid_terms: state.compression.quick
+          ? [state.compression.quick.keyword]
+          : [],
+      }),
     });
     range.replacement = result.summary;
     range.generated = true;
@@ -3424,6 +3448,23 @@ async function confirmCompression() {
       : { source_ids: range.source_ids, replacement: range.replacement });
   c.busy = true;
   try {
+    if (c.quick) {
+      // 快捷关键字压缩：先机械剥离禁用词再写回，不走 resume
+      const keyword = c.quick.keyword;
+      await api("/desktop/api/compression/quick-apply", {
+        method: "POST",
+        body: JSON.stringify({
+          task_id: task.task_id,
+          ranges,
+          scrub_terms: [keyword],
+        }),
+      });
+      // 快捷 apply 无 run/SSE，需手动重载会话与上下文树，否则压缩块不会立刻显示
+      await refreshActiveAfterTxn();
+      closeCompressionView();
+      setStatus(`已快捷压缩「${keyword}」，上下文已更新`);
+      return;
+    }
     const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
       method: "POST",
       body: JSON.stringify({ resume: { type: "compression", decision: "apply", ranges } }),
@@ -3431,7 +3472,15 @@ async function confirmCompression() {
     closeCompressionView();
     listenToRun(run);
     setStatus("压缩已确认，Agent 继续运行…");
-  } catch (error) { setStatus(error.message, true); }
+  } catch (error) {
+    // 上下文已变化（部分消息被折叠进块）：清掉 busy，重新从最新 checkpoint 加载并命中关键词
+    if (c.quick && error?.detail?.code === "context_changed") {
+      c.busy = false; // 必须清：否则 openCompressionView 开头的忙守卫会短路，刷新不会发生
+      setStatus("上下文已更新，已按最新内容重新加载压缩面板");
+      return openCompressionView(task, null, c.quick.keyword);
+    }
+    setStatus(error.message, true);
+  }
   finally { c.busy = false; }
 }
 
@@ -3454,6 +3503,14 @@ async function cancelCompression() {
 }
 
 async function refreshTasks() { state.tasks = await api("/desktop/api/tasks"); }
+
+// 一次 run/事务结束后重载任务列表、上下文树与当前任务详情，使对话区反映最新消息。
+// run 结束事件与快捷压缩 apply 共用，避免两处重复刷新逻辑。渲染由调用方负责。
+async function refreshActiveAfterTxn() {
+  await refreshTasks();
+  await hydrateContextTrees();
+  if (state.activeTaskId) await hydrateActive();
+}
 
 async function createTask(event) {
   event.preventDefault();

@@ -70,10 +70,13 @@ from focus.tools.builtins.spawn_agent_tool import build_spawn_agent_tool
 from backend.app.gateway.routers.thread_runs import RunCreateRequest
 from focus.agents.commitment.middleware import commitment_subgraph_thread_id
 from focus.agents.commitment.workflow import _human_payload
+from focus.agents.compression import apply_compression_ranges, hit_keyword_message_ids
+from focus.agents.compression.schemas import validate_apply_decision
 from focus.agents.compression.tokens import estimate_raw_tokens
 from focus.agents.lead import make_lead_agent
 from focus.config.app_config import AppConfig
 from focus.runtime.runs.events import (
+    deserialize_messages,
     serialize_message,
     validate_messages,
 )
@@ -345,6 +348,100 @@ class DesktopService:
             return []
         values = checkpoint.checkpoint.get("channel_values", {})
         return [serialize_message(message) for message in values.get("messages", [])]
+
+    async def quick_compression_preview(
+        self, task_id: str, keyword: str, case_sensitive: bool = False
+    ) -> dict[str, Any]:
+        """关键字快捷压缩预览：机械命中主图消息中含该词的消息。
+
+        输入:
+            task_id: str — 桌面任务 id
+            keyword: str — 要命中的关键词
+            case_sensitive: bool — 是否区分大小写
+
+        输出:
+            dict — {"keyword", "hit_ids": [命中消息 id], "hit_messages": [命中消息快照]}
+            纯机械命中，不改动任何消息。
+        """
+        async with self.session_factory() as session:
+            task, _ = await self._get_task_entities(session, task_id)
+        messages = await self.get_checkpoint_messages(task.thread_id, "")
+        hit_ids = hit_keyword_message_ids(messages, keyword, case_sensitive)
+        hit_set = set(hit_ids)
+        hit_messages = [message for message in messages if message.get("id") in hit_set]
+        return {"keyword": keyword, "hit_ids": hit_ids, "hit_messages": hit_messages}
+
+    async def quick_compression_apply(self, task_id: str, ranges: list[dict[str, Any]], scrub_terms: list[str] | None = None) -> dict[str, Any]:
+        """关键字快捷压缩应用：校验范围后写回主图 checkpoint。
+
+        输入:
+            task_id: str — 桌面任务 id
+            ranges: list[dict] — 既有压缩语义范围（{source_ids, replacement|restore|delete}）
+            scrub_terms: list[str] | None — 先机械剥离的禁用词（先抠词再压缩），可空
+
+        输出:
+            dict — 应用后的主图消息快照；主 Agent 运行中或范围非法时抛 HTTPException
+
+        具体工作流:
+            (1) 主 Agent 空闲校验（存在 pending/running main run → 409）
+            (2) 读主图 checkpoint 消息 → deserialize → 先按 scrub_terms 机械剥离禁用词
+                （确保块内容与来源都不含该词）→ validate_apply_decision 校验范围
+            (3) apply_compression_ranges 编译新 messages → graph.aupdate_state 写回
+            (4) 返回写回后的消息快照（含压缩块/墓碑元数据）
+        """
+        async with self.session_factory() as session:
+            task, _ = await self._get_task_entities(session, task_id)
+            active = await session.scalar(
+                select(DesktopRun.run_id)
+                .where(
+                    DesktopRun.task_id == task.task_id,
+                    DesktopRun.agent_id == f"main:{task.task_id}",
+                    DesktopRun.status.in_(["pending", "running"]),
+                )
+                .limit(1)
+            )
+            if active:
+                raise HTTPException(
+                    409,
+                    {
+                        "code": "main_run_active",
+                        "message": "主 Agent 正在运行，请先等待其结束或取消后再执行快捷压缩",
+                    },
+                )
+        messages = await self.get_checkpoint_messages(task.thread_id, "")
+        base_messages = deserialize_messages(messages)
+        if scrub_terms:
+            from focus.agents.compression.keyword import scrub_message_contents
+
+            base_messages = scrub_message_contents(base_messages, scrub_terms)
+        # 状态一致性：范围引用的 source_ids 必须是当前顶层消息，否则面板快照已过期（上下文已变化）
+        current_ids = {m.id for m in base_messages if m.id}
+        missing = [
+            sid for r in ranges for sid in (r.get("source_ids") or [])
+            if sid not in current_ids
+        ]
+        if missing:
+            raise HTTPException(
+                409,
+                {
+                    "code": "context_changed",
+                    "message": "上下文已更新（部分消息已被折叠进压缩块），请刷新压缩面板后重试",
+                },
+            )
+        normalized, error = validate_apply_decision(
+            {"type": "compression", "decision": "apply", "ranges": ranges},
+            base_messages,
+        )
+        if error:
+            raise HTTPException(422, f"快捷压缩范围非法: {error}")
+        update = apply_compression_ranges(base_messages, normalized)
+        config = {"configurable": {"thread_id": task.thread_id, "checkpoint_ns": ""}}
+        graph = await make_lead_agent(
+            tools=[], system_prompt="", middlewares=[], app_config=self.app_config
+        )
+        graph.checkpointer = self.checkpointer
+        await graph.aupdate_state(config, update)
+        return {"messages": await self.get_checkpoint_messages(task.thread_id, "")}
 
     async def open_draft(self, task_id: str) -> dict[str, Any]:
         async with self.session_factory() as session:

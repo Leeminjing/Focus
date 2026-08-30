@@ -164,6 +164,29 @@
     return flat;
   }
 
+  // 关键字快捷压缩：与后端 focus/agents/compression/keyword.py 同语义——
+  // 子串匹配命中消息 id（默认大小写不敏感），可再组装为压缩范围。
+  function hitKeywordMessageIds(messages, keyword, caseSensitive) {
+    const needle = caseSensitive ? String(keyword) : String(keyword).toLowerCase();
+    const hits = [];
+    for (const message of (Array.isArray(messages) ? messages : [])) {
+      const id = message && typeof message === "object" ? message.id : null;
+      if (!id) continue;
+      const text = messageText(message);
+      const haystack = caseSensitive ? text : text.toLowerCase();
+      if (needle && haystack.includes(needle)) hits.push(id);
+    }
+    return hits;
+  }
+
+  // 与后端 build_keyword_ranges 同语义：groupAll 合并为单条范围，否则每 id 一条。
+  function buildKeywordRanges(ids, groupAll) {
+    const unique = [...new Set(Array.isArray(ids) ? ids : [])];
+    if (!unique.length) return [];
+    if (groupAll) return [{ source_ids: unique }];
+    return unique.map(id => ({ source_ids: [id] }));
+  }
+
   return {
     estimateRawTokens,
     estimateMessagesTokens,
@@ -174,5 +197,7 @@
     planAfterMessages,
     beforeAfter,
     expandForConversation,
+    hitKeywordMessageIds,
+    buildKeywordRanges,
   };
 });

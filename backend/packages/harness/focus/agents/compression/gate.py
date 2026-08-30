@@ -3,10 +3,14 @@
 对外提供:
     CompressionGate — 可装配到 create_agent 的压缩门中间件
     build_compression_gate — 按上下文窗口与阈值比例构造压缩门的同步工厂
+    apply_compression_ranges — 把压缩范围编译为新的 messages 状态（阈值压缩与
+        快捷压缩共用的应用编译器）
 
 输入:
-    context_window: int | None — 模型上下文窗口 token 上限，None 时压缩门恒放行
-    threshold_ratio: float — 触发阈值比例（默认 0.9）
+    apply_compression_ranges(messages, ranges): messages 为当前 BaseMessage 列表；
+        ranges 为规范化范围列表（每条 {source_ids, replacement|restore|delete}）
+    build_compression_gate(context_window, threshold_ratio): context_window 为窗口上限
+        （None 时恒放行）；threshold_ratio 为阈值比例（默认 0.9）
 
 输出:
     before_model 钩子返回 None（放行）或消息状态更新；wrap_model_call 钩子返回剥离
@@ -151,7 +155,24 @@ def _repair_protocol(messages: list[BaseMessage]) -> list[BaseMessage]:
     return repaired
 
 
-def _apply_plan(messages: list[BaseMessage], ranges: list[dict]) -> dict[str, Any]:
+def apply_compression_ranges(messages: list[BaseMessage], ranges: list[dict]) -> dict[str, Any]:
+    """把压缩范围编译为新的 messages 状态（阈值压缩与快捷压缩共用）。
+
+    输入:
+        messages: list[BaseMessage] — 当前 graph state 的完整 messages
+        ranges: list[dict] — 规范化范围列表，每条为
+            {source_ids, replacement}（压缩块）或 {source_ids, restore}（展开来源）
+            或 {source_ids, delete}（删除墓碑）；来源随块元数据持久化
+
+    输出:
+        dict — {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *rebuilt]} 状态更新
+
+    具体工作流:
+        (1) 逐范围收集 removed / restore_map / block_by_first（块与墓碑均携带来源元数据）
+        (2) 按原消息顺序重建：restore 展开来源、块/墓碑原位替换、其余保留
+        (3) 经 _repair_protocol 修复拆散 tool-call 组的悬空协议
+        (4) validate_messages 校验重建后协议合法后返回
+    """
     by_id = {message.id: message for message in messages if message.id}
     removed: set[str] = set()
     restore_map: dict[str, list[BaseMessage]] = {}
@@ -262,7 +283,7 @@ class CompressionGate(AgentMiddleware):
         ranges, error = validate_apply_decision(decision, messages)
         if error:
             raise ValueError(f"压缩 apply 载荷非法: {error}")
-        return _apply_plan(messages, ranges)
+        return apply_compression_ranges(messages, ranges)
 
     def wrap_model_call(self, request: Any, handler: Any) -> Any:
         return handler(request.override(messages=_strip_compression_kwargs(request.messages)))

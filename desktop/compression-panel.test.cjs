@@ -131,3 +131,20 @@ test("expandForConversation：删除墓碑展开原文并标记已删除", () =>
   assert.deepEqual(flat.map(item => (item.divider ? "D" : item.content)), ["开始", "D", "被删除的消息", "结束"]);
   assert.equal(flat[1].deleted, true);
 });
+
+test("关键字快捷压缩：机械命中消息 id（大小写不敏感默认）", () => {
+  const msgs = [
+    { id: "h1", role: "human", content: "我们讨论过胡萝卜方案，不考虑" },
+    { id: "h2", role: "human", content: "今天关注方向 A" },
+    { id: "h3", role: "human", content: [{ type: "text", text: "又提到胡萝卜" }] },
+  ];
+  assert.deepEqual(panel.hitKeywordMessageIds(msgs, "胡萝卜", false), ["h1", "h3"]);
+  assert.deepEqual(panel.hitKeywordMessageIds(msgs, "arrot", true), []);
+});
+
+test("关键字快捷压缩：范围组装 groupAll 与子集", () => {
+  assert.deepEqual(panel.buildKeywordRanges(["a", "b"], true), [{ source_ids: ["a", "b"] }]);
+  assert.deepEqual(panel.buildKeywordRanges(["a", "b"], false), [{ source_ids: ["a"] }, { source_ids: ["b"] }]);
+  assert.deepEqual(panel.buildKeywordRanges([], true), []);
+  assert.deepEqual(panel.buildKeywordRanges(["a", "a", "b"], true), [{ source_ids: ["a", "b"] }]);
+});
