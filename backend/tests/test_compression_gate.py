@@ -22,9 +22,9 @@ from langgraph.types import Command, interrupt
 
 from focus.agents.compression.gate import (
     CompressionGate,
-    _apply_plan,
     _repair_protocol,
     _strip_compression_kwargs,
+    apply_compression_ranges,
     build_compression_gate,
 )
 from focus.agents.compression.schemas import validate_apply_decision
@@ -261,7 +261,7 @@ def test_apply_plan_positions_blocks_and_restores_originals():
         HumanMessage(content="m5", id="m5"),
         HumanMessage(content="m6", id="m6"),
     ]
-    update = _apply_plan(
+    update = apply_compression_ranges(
         messages,
         [
             {"source_ids": ["m2", "m3", "m4"], "replacement": "summary A"},
@@ -277,7 +277,7 @@ def test_apply_plan_positions_blocks_and_restores_originals():
     assert [item["id"] for item in block_a.additional_kwargs["compression"]["source"]] == ["m2", "m3", "m4"]
 
     # 撤销：restore 将块原位展开为来源原文
-    restore = _apply_plan(
+    restore = apply_compression_ranges(
         rebuilt,
         [{"source_ids": [block_a.id], "restore": True}],
     )
@@ -293,7 +293,7 @@ def test_apply_plan_degrades_dangling_tool_message():
         AIMessage(content="", id="a1", tool_calls=[{"id": "c1", "name": "t", "args": {}}]),
         ToolMessage(content="结果", id="t1", tool_call_id="c1", name="t"),
     ]
-    update = _apply_plan(messages, [{"source_ids": ["a1"], "replacement": "summary"}])
+    update = apply_compression_ranges(messages, [{"source_ids": ["a1"], "replacement": "summary"}])
     rebuilt = update["messages"][1:]
     assert rebuilt[0].content == "summary"
     degraded = rebuilt[1]
@@ -309,7 +309,7 @@ def test_apply_plan_adds_synthetic_results_for_dangling_tool_calls():
         AIMessage(content="", id="a1", tool_calls=[{"id": "c1", "name": "t", "args": {}}]),
         ToolMessage(content="结果", id="t1", tool_call_id="c1", name="t"),
     ]
-    update = _apply_plan(messages, [{"source_ids": ["t1"], "replacement": "summary"}])
+    update = apply_compression_ranges(messages, [{"source_ids": ["t1"], "replacement": "summary"}])
     rebuilt = update["messages"][1:]
     assert rebuilt[0].id == "a1"
     synthetic = rebuilt[1]
@@ -558,7 +558,7 @@ def test_apply_plan_delete_leaves_tombstone_with_source():
         HumanMessage(content="m2", id="m2"),
         HumanMessage(content="m3", id="m3"),
     ]
-    update = _apply_plan(messages, [{"source_ids": ["m2"], "delete": True}])
+    update = apply_compression_ranges(messages, [{"source_ids": ["m2"], "delete": True}])
     rebuilt = update["messages"][1:]
     assert [message.content for message in rebuilt] == ["m1", "", "m3"]
     tombstone = rebuilt[1]
@@ -613,7 +613,7 @@ def test_restore_source_with_dangling_tool_message_is_repaired():
             ],
         }}),
     ]
-    update = _apply_plan(messages, [{"source_ids": ["b1"], "restore": True}])
+    update = apply_compression_ranges(messages, [{"source_ids": ["b1"], "restore": True}])
     rebuilt = update["messages"][1:]
     assert [message.content for message in rebuilt] == ["", "结果", "后续"]
     # 修复后全量协议合法

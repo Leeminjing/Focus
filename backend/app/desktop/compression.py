@@ -6,7 +6,10 @@
 
 输入:
     summarize_messages: messages — 面板消息快照（serialize_message 产物）；
-        model_name — 目标模型名，None 时取默认；app_config — 组合根配置
+        model_name — 目标模型名，None 时取默认；app_config — 组合根配置；
+        forbid_terms — 明文禁止出现在摘要中的词列表（快捷压缩禁提关键词用），
+            非空时摘要指令追加禁提条款（用指代表达，模型不写出该词）
+    SummarizeRequest: messages / model_name / forbid_terms
     compression_recovery_payload: session — 桌面 DB 会话；task — DesktopThread；
         checkpointer — LangGraph checkpointer
 
@@ -31,7 +34,7 @@ import logging
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from focus.models import create_chat_model
 
@@ -45,11 +48,30 @@ _SUMMARY_SYSTEM_PROMPT = """你是上下文压缩器。把给定对话片段概�
 - 直接输出概括正文，不要 Markdown 标题或代码块"""
 
 
+def _build_summary_prompt(forbid_terms: tuple[str, ...] | list[str] | None = None) -> str:
+    """按禁提词列表构造摘要系统指令；无禁提词时返回默认指令。
+
+    输入: forbid_terms — 明文禁止出现的词序列（可空）
+
+    输出: str — 摘要系统提示词；非空时追加不得提及该词的条款（可用指代表达）
+    """
+    terms = tuple(dict.fromkeys(forbid_terms or ()))
+    if not terms:
+        return _SUMMARY_SYSTEM_PROMPT
+    quoted = "、".join(f"「{term}」" for term in terms)
+    return (
+        f"{_SUMMARY_SYSTEM_PROMPT}\n"
+        f"- 明确禁止出现以下词：{quoted}；如需表达该含义请用指代（如『该方向』），"
+        "不得写出这些词"
+    )
+
+
 class SummarizeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     messages: list[dict[str, Any]]
     model_name: str | None = None
+    forbid_terms: list[str] = Field(default_factory=list)
 
 
 def _role_label(message: dict[str, Any]) -> str:
@@ -91,17 +113,44 @@ def _format_transcript(messages: list[dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
+def _scrub_terms(text: str, terms: tuple[str, ...] | list[str] | None) -> str:
+    """机械剥离摘要中禁止出现的词（最终保证，不依赖 LLM 自觉）。
+
+    输入:
+        text: str — 模型产出的摘要正文
+        terms: 序列 — 明文禁止出现的词（可为空）
+
+    输出:
+        str — 逐词去除后的文本；若去除后为空则回退为通用占位文本
+
+    具体工作流:
+        (1) 对每个禁用词做全量字符串替换去除
+        (2) 若结果为空（摘要仅由该词构成），回退为 '（该话题已从上下文移除）'
+    """
+    scrubbed = text
+    for term in dict.fromkeys(terms or ()):
+        if term:
+            scrubbed = scrubbed.replace(term, "")
+    if not scrubbed.strip():
+        return "（该话题已从上下文移除）"
+    return scrubbed.strip()
+
+
 async def summarize_messages(
     messages: list[dict[str, Any]],
     model_name: str | None,
     app_config: Any,
+    forbid_terms: tuple[str, ...] | list[str] | None = None,
 ) -> str:
-    transcript = _format_transcript(messages)
+    transcript = _scrub_terms(_format_transcript(messages), forbid_terms)
     if not transcript.strip():
         raise ValueError("所选范围没有可概括的内容")
     model = create_chat_model(model_name, app_config=app_config)
     response = await model.ainvoke(
-        [SystemMessage(content=_SUMMARY_SYSTEM_PROMPT), HumanMessage(content=transcript)]
+        [
+            SystemMessage(content=_build_summary_prompt(forbid_terms)),
+            HumanMessage(content=transcript),
+        ]
     )
     text = ""
     content = getattr(response, "content", "")
@@ -116,7 +165,7 @@ async def summarize_messages(
         )
     if not text.strip():
         raise RuntimeError("摘要模型未返回内容")
-    return text.strip()
+    return _scrub_terms(text.strip(), forbid_terms)
 
 
 def _checkpoint_compression_request(checkpoint: Any) -> dict[str, Any] | None:

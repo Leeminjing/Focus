@@ -2,7 +2,7 @@ models:
   - name: deepseek-v4-flash-vision-exp
     display_name: DeepSeek-V4-Flash-Vision-Exp
     use: focus.models.deepseek:DeepSeekChatOpenAI
-    model: DeepSeek-V4-Flash-Vision-Exp
+    model: deepseek-v4-flash-vision-exp
     context_window: 131072
     api_key: $OPENAI_API_KEY
     base_url: https://api.deepseek.com
