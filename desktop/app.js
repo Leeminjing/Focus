@@ -11,6 +11,7 @@
 // 点击经全局拦截器打开右侧文件面板,不触发窗口导航);vendor 文件先行加载。
 const mdRenderer = window.markdownit({ html: false, linkify: true });
 mdRenderer.validateLink = url => /^(https?:|file:)/i.test(url);
+const keywordCommand = window.FocusKeywordCommand;
 
 const runtime = window.focusDesktop?.runtime?.() || {
   apiBase: location.protocol === "file:" ? "http://127.0.0.1:8765" : location.origin,
@@ -458,13 +459,31 @@ function selectedSkills(kind) {
   return normalizeSkillNames(state.details.get(state.activeTaskId)?.ui_state?.skills);
 }
 
-function renderSkillPicker(kind, textarea) {
+function atHighlightHtml(value) {
+  return keywordCommand.highlightHtml(value, escapeHtml);
+}
+
+function updateAtHighlight(input) {
+  if (!input) return;
+  const wrap = typeof input.closest === "function" ? input.closest(".composer-input-wrap") : null;
+  const highlight = wrap?.querySelector(".composer-input-highlight");
+  if (!highlight) return;
+  highlight.innerHTML = atHighlightHtml(input.value) + "\u200b";
+  highlight.scrollTop = input.scrollTop;
+  highlight.scrollLeft = input.scrollLeft;
+}
+
+function renderSkillPicker(kind, textarea, highlight = false) {
   const selected = selectedSkills(kind);
   const listId = `${kind}SkillList`;
   const tags = selected.map(name => `<span class="skill-tag">${escapeHtml(name)}<button type="button" data-action="remove-skill" data-picker-kind="${kind}" data-skill-name="${escapeHtml(name)}" aria-label="Remove ${escapeHtml(name)}"><span class="ui-icon is-sm icon-x" aria-hidden="true"></span></button></span>`).join("");
+  const textareaWithAttrs = textarea.replace(">", ` data-skill-input="${kind}" aria-controls="${listId}" aria-expanded="false">`);
+  const inputNode = highlight
+    ? `<div class="composer-input-wrap"><div class="composer-input-highlight" aria-hidden="true"></div>${textareaWithAttrs}</div>`
+    : textareaWithAttrs;
   return `<div class="skill-picker-shell ${kind === "draft" ? "draft-skill-picker" : ""}" data-skill-picker="${kind}">
     <div class="skill-tags" aria-label="Selected skills">${tags}</div>
-    ${textarea.replace(">", ` data-skill-input="${kind}" aria-controls="${listId}" aria-expanded="false">`)}
+    ${inputNode}
     <div class="skill-menu" id="${listId}" role="listbox" aria-label="Skills" hidden></div>
   </div>`;
 }
@@ -666,7 +685,7 @@ function renderFocus() {
           <div class="composer-shell">
             <div class="composer-context"><span class="ui-badge is-active">当前任务</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">运行详情</button></div>
             <div class="composer">
-              ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="任务输入" placeholder="描述下一步，或输入 / 选择技能…">${escapeHtml(detail.ui_state?.input || "")}</textarea>`)}
+              ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="任务输入" placeholder="描述下一步，或输入 / 选择技能…">${escapeHtml(detail.ui_state?.input || "")}</textarea>`, true)}
               <div class="composer-actions"><label class="attach-button">添加文件<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">发送</button></div>
             </div>
             <p id="composerFeedback" class="composer-feedback is-${feedback.kind}" role="status">${escapeHtml(feedback.text)}</p>
@@ -684,6 +703,7 @@ function renderFocus() {
   const sendButton = document.querySelector('[data-action="send-main"]');
   if (mainInput) mainInput.disabled = commitmentBlocked;
   if (sendButton) sendButton.disabled = commitmentBlocked;
+  updateAtHighlight(mainInput);
   conversation.scrollTop = previousConversation
     ? (wasPinned ? conversation.scrollHeight : previousScrollTop)
     : (detail.ui_state?.scrollTop ?? conversation.scrollHeight);
@@ -2343,10 +2363,10 @@ async function sendMainOnce() {
   const input = document.querySelector("#mainInput");
   const message = input.value.trim();
   if (!message) return;
-  // f32 快捷关键字压缩：@压缩 <关键词> → 打开压缩面板并机械勾选命中消息
-  const quickCompression = message.match(/^@压缩\s+(.+)$/);
-  if (quickCompression) {
-    const keyword = quickCompression[1].trim();
+  // f35 仅保留规范命令；旧 @压缩 输入按普通用户消息发送。
+  const quickKeyword = keywordCommand.parse(message);
+  if (quickKeyword !== null) {
+    const keyword = quickKeyword;
     const task = activeTask();
     if (!task) return setStatus("当前没有活动任务", true);
     input.value = "";
@@ -2359,6 +2379,7 @@ async function sendMainOnce() {
     try {
       if (await spatialTarget.view.sendFocusedMessage(message)) {
         input.value = "";
+        updateAtHighlight(input);
         const focusedDetail = state.details.get(state.activeTaskId);
         focusedDetail.ui_state = { ...(focusedDetail.ui_state || {}), input: "" };
         persistFocusState();
@@ -3190,7 +3211,7 @@ async function openCompressionView(task, request, quickKeyword) {
         if (hitIds.includes(message.id)) indexes.push(index);
       });
       state.compression.selected = new Set(indexes);
-      setStatus(`快捷压缩「${quickKeyword}」共命中 ${indexes.length} 条，请确认后继续`);
+      setStatus(`关键字快捷压缩「${quickKeyword}」共命中 ${indexes.length} 条，请确认后继续`);
     } else {
       setStatus("上下文接近上限，等待压缩确认");
     }
@@ -3229,8 +3250,13 @@ function compressionRowPreview(message, isBlock) {
   // 行预览文案：块/墓碑显示标记，合成占位与空内容显示友好提示，降级消息取去标签内容
   if (isBlock) {
     const sourceCount = message.compression?.source?.length ?? 0;
-    const label = message.compression?.deleted ? "已删除" : "压缩块";
-    return `${label} · 来源 ${sourceCount} 条`;
+    // 压缩块：显示该块的摘要内容（它具体把这段对话浓缩成了什么），而非笼统的"压缩块"标记。
+    if (message.compression?.deleted) {
+      return sourceCount ? `已删除 · 来源 ${sourceCount} 条` : "已删除";
+    }
+    const summary = compressionPanel.messageText(message).replace(/\s+/g, " ").trim();
+    if (summary) return summary.slice(0, 140);
+    return sourceCount ? `来源 ${sourceCount} 条` : "（空压缩消息）";
   }
   if (message.curation_synthetic) return "（工具结果已在压缩中省略）";
   const degraded = compressionPanel.degradedParts(message);
@@ -3462,7 +3488,7 @@ async function confirmCompression() {
       // 快捷 apply 无 run/SSE，需手动重载会话与上下文树，否则压缩块不会立刻显示
       await refreshActiveAfterTxn();
       closeCompressionView();
-      setStatus(`已快捷压缩「${keyword}」，上下文已更新`);
+      setStatus(`已关键字快捷压缩「${keyword}」，上下文已更新`);
       return;
     }
     const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
@@ -3491,6 +3517,13 @@ async function cancelCompression() {
   if (!task) return setStatus("当前没有活动任务", true);
   c.busy = true;
   try {
+    if (c.quick) {
+      // 快捷关键字压缩不经 interrupt/resume 通道（quick-apply 直接写回，无中断可取消）：
+      // 取消只需关闭本地面板并清空状态，调用 resume 只会得到 409「无可恢复的承诺流程」。
+      closeCompressionView();
+      setStatus("已取消关键字快捷压缩");
+      return;
+    }
     const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
       method: "POST",
       body: JSON.stringify({ resume: { type: "compression", decision: "cancel" } }),
@@ -3971,6 +4004,7 @@ document.addEventListener("click", async event => {
 });
 
 document.addEventListener("input", event => {
+  if (event.target.id === "mainInput") updateAtHighlight(event.target);
   if (event.target.matches("[data-skill-input]")) updateSkillMenu(event.target, true);
   if (event.target.matches("[data-draft-field],[data-message-field],[data-equipment],[data-permission]")) scheduleDraftSave();
   if (event.target.matches("[data-memory-field]")) syncMemoryField(event.target.dataset.memoryField, event.target.value);
@@ -3985,6 +4019,11 @@ document.addEventListener("input", event => {
     }
   }
 });
+
+// 主输入框滚动时同步 @命令高亮 backdrop（textarea 的 scroll 不冒泡，用捕获监听）。
+document.addEventListener("scroll", event => {
+  if (event.target.id === "mainInput") updateAtHighlight(event.target);
+}, true);
 
 // 记忆库：划选原文文字 → 高亮 → 采集 text + 字符区间 + message_id（供「加入选中文字」/拖拽）。
 document.addEventListener("mouseup", event => {

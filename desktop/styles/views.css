@@ -275,6 +275,24 @@
 .composer-feedback.is-active { color: var(--text-accent); }
 .composer-feedback.is-warning { color: var(--text-warning); }
 .composer-feedback.is-danger { color: var(--text-danger); }
+/* @命令 高亮叠加层：与 textarea 同字体/内边距/换行；textarea 正文透明、由 backdrop 显示，@命令片段蓝字。 */
+.composer-input-wrap { position: relative; min-width: 0; }
+.composer .composer-input-wrap textarea { position: relative; z-index: 1; color: transparent; caret-color: var(--text-primary); }
+.composer-input-wrap textarea::placeholder { color: var(--text-secondary); }
+.composer-input-highlight {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  color: var(--text-primary);
+  padding: var(--space-3) var(--space-4);
+  min-height: 50px;
+}
+.composer-input-highlight .cmd-at { color: var(--text-accent); }
 
 .context-block-banner {
   margin: var(--space-3) var(--space-4) 0;

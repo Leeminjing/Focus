@@ -87,6 +87,7 @@ function createAppHarness(options = {}) {
   vm.runInContext(fs.readFileSync(require.resolve("./skill-picker.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./context-editor.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./compression-panel.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("./keyword-command.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./plugin-view.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./conversation-events.js"), "utf8"), context);
   return { vm, context, document, inert, statusNode, statusState, fetches, listeners };

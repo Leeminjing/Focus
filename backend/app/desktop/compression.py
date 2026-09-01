@@ -142,9 +142,10 @@ async def summarize_messages(
     app_config: Any,
     forbid_terms: tuple[str, ...] | list[str] | None = None,
 ) -> str:
-    transcript = _scrub_terms(_format_transcript(messages), forbid_terms)
-    if not transcript.strip():
+    raw_transcript = _format_transcript(messages)
+    if not raw_transcript.strip():
         raise ValueError("所选范围没有可概括的内容")
+    transcript = _scrub_terms(raw_transcript, forbid_terms)
     model = create_chat_model(model_name, app_config=app_config)
     response = await model.ainvoke(
         [
