@@ -1,14 +1,21 @@
-"""focus.agents.compression 关键字快捷压缩单测（f32）。
+"""focus.agents.compression 关键字快捷压缩单测（f34/f35）。
 
-覆盖机械命中、范围组装、关键词范围编译（块来源保留）与禁提词摘要提示词。
+覆盖机械命中、范围组装、关键词范围编译、用户/模型双投影与禁提词摘要。
 """
+
+import asyncio
+from copy import deepcopy
+from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, HumanMessage
 
+from backend.app.desktop import compression as desktop_compression
+from backend.app.desktop import service as desktop_service
 from backend.app.desktop.compression import (
     _SUMMARY_SYSTEM_PROMPT,
     _build_summary_prompt,
 )
+from backend.app.desktop.service import DesktopService
 from focus.agents.compression import (
     apply_compression_ranges,
     build_keyword_ranges,
@@ -119,3 +126,89 @@ def test_build_summary_prompt_forbid_terms():
     prompt = _build_summary_prompt(["胡萝卜"])
     assert "明确禁止出现" in prompt
     assert "「胡萝卜」" in prompt
+
+
+def test_summarize_scrubs_temporary_transcript_without_mutating_source(monkeypatch):
+    """禁提词只作用于摘要临时副本和结果，输入快照仍逐字保留。"""
+    source = [serialize_message(HumanMessage(content="原文保留胡萝卜与关键决策", id="h1"))]
+    before = deepcopy(source)
+    captured = {}
+
+    class FakeModel:
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return AIMessage(content="胡萝卜关键决策摘要")
+
+    monkeypatch.setattr(desktop_compression, "create_chat_model", lambda *args, **kwargs: FakeModel())
+    summary = asyncio.run(
+        desktop_compression.summarize_messages(source, None, object(), ["胡萝卜"])
+    )
+
+    assert source == before
+    assert "胡萝卜" not in captured["messages"][1].content
+    assert "胡萝卜" not in summary
+    assert summary == "关键决策摘要"
+
+
+def test_quick_apply_preserves_original_source_and_model_only_sees_summary(monkeypatch):
+    """快捷 apply 不 scrub 权威消息；用户取得原文来源，模型只取得摘要。"""
+    original = HumanMessage(content="原始会话含胡萝卜与关键决策", id="h1")
+    serialized = [serialize_message(original)]
+    captured = {}
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def scalar(self, _query):
+            return None
+
+    class FakeGraph:
+        checkpointer = None
+
+        async def aupdate_state(self, config, update):
+            captured["config"] = config
+            captured["update"] = update
+
+    service = object.__new__(DesktopService)
+    service.session_factory = lambda: FakeSession()
+    service.app_config = object()
+    service.checkpointer = object()
+    task = SimpleNamespace(task_id="task-1", thread_id="thread-1")
+
+    async def get_task_entities(_session, _task_id):
+        return task, object()
+
+    async def get_checkpoint_messages(_thread_id, _checkpoint_ns):
+        return serialized
+
+    async def make_graph(**_kwargs):
+        return FakeGraph()
+
+    service._get_task_entities = get_task_entities
+    service.get_checkpoint_messages = get_checkpoint_messages
+    monkeypatch.setattr(desktop_service, "make_lead_agent", make_graph)
+
+    asyncio.run(
+        service.quick_compression_apply(
+            "task-1",
+            [{"source_ids": ["h1"], "replacement": "关键决策摘要"}],
+            ["胡萝卜"],
+        )
+    )
+
+    block = next(
+        message
+        for message in captured["update"]["messages"]
+        if getattr(message, "additional_kwargs", {}).get("compression")
+    )
+    assert block.additional_kwargs["compression"]["source"] == serialized
+
+    model_messages = _strip_compression_kwargs([block])
+    assert len(model_messages) == 1
+    assert model_messages[0].content == "关键决策摘要"
+    assert "compression" not in model_messages[0].additional_kwargs
+    assert "胡萝卜" not in model_messages[0].content

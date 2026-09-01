@@ -377,16 +377,16 @@ class DesktopService:
         输入:
             task_id: str — 桌面任务 id
             ranges: list[dict] — 既有压缩语义范围（{source_ids, replacement|restore|delete}）
-            scrub_terms: list[str] | None — 先机械剥离的禁用词（先抠词再压缩），可空
+            scrub_terms: list[str] | None — 摘要阶段使用的禁用词；保留用于接口兼容，不改写来源
 
         输出:
             dict — 应用后的主图消息快照；主 Agent 运行中或范围非法时抛 HTTPException
 
         具体工作流:
             (1) 主 Agent 空闲校验（存在 pending/running main run → 409）
-            (2) 读主图 checkpoint 消息 → deserialize → 先按 scrub_terms 机械剥离禁用词
-                （确保块内容与来源都不含该词）→ validate_apply_decision 校验范围
-            (3) apply_compression_ranges 编译新 messages → graph.aupdate_state 写回
+            (2) 读主图 checkpoint 消息 → deserialize → validate_apply_decision 校验范围
+            (3) apply_compression_ranges 以原始消息编译新 messages，完整来源只保存在块元数据中
+                → graph.aupdate_state 写回；模型调用前由压缩门剥离该元数据
             (4) 返回写回后的消息快照（含压缩块/墓碑元数据）
         """
         async with self.session_factory() as session:
@@ -410,10 +410,6 @@ class DesktopService:
                 )
         messages = await self.get_checkpoint_messages(task.thread_id, "")
         base_messages = deserialize_messages(messages)
-        if scrub_terms:
-            from focus.agents.compression.keyword import scrub_message_contents
-
-            base_messages = scrub_message_contents(base_messages, scrub_terms)
         # 状态一致性：范围引用的 source_ids 必须是当前顶层消息，否则面板快照已过期（上下文已变化）
         current_ids = {m.id for m in base_messages if m.id}
         missing = [
