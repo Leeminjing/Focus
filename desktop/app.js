@@ -18,6 +18,24 @@ const runtime = window.focusDesktop?.runtime?.() || {
   session: "focus-dev-session",
 };
 
+const MAP_VIEW_PREFERENCES_KEY = "focus-map-view-v1";
+
+function readMapViewPreferences() {
+  const fallback = { mode: "tree", workspaceIds: [], contextIds: [] };
+  try {
+    const raw = localStorage.getItem(MAP_VIEW_PREFERENCES_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return {
+      mode: ["tree", "cards"].includes(parsed?.mode) ? parsed.mode : fallback.mode,
+      workspaceIds: Array.isArray(parsed?.workspaceIds) ? parsed.workspaceIds.filter(id => typeof id === "string") : [],
+      contextIds: Array.isArray(parsed?.contextIds) ? parsed.contextIds.filter(id => typeof id === "string") : [],
+    };
+  } catch { return fallback; }
+}
+
+const mapViewPreferences = readMapViewPreferences();
+
 const state = {
   view: "focus",
   tasks: [],
@@ -34,6 +52,11 @@ const state = {
   soldierArmed: false,
   selectionMode: false,
   selectedContextIds: new Set(),
+  mapViewMode: mapViewPreferences.mode,
+  mapExpandedWorkspaceIds: new Set(mapViewPreferences.workspaceIds),
+  mapExpandedContextIds: new Set(mapViewPreferences.contextIds),
+  mapExpandedForTaskId: null,
+  mapTreeFocusKey: "",
   openMaterial: null,
   openDraftSection: null,
   agentDialog: { agentId: null, messages: [], busy: false },
@@ -94,6 +117,7 @@ const skillPicker = window.FocusSkillPicker;
 const contextEditor = window.FocusContextEditor;
 const compressionPanel = window.FocusCompressionPanel;
 const pluginView = window.FocusPluginView;
+const mapCollapsibleView = window.FocusMapCollapsibleView;
 const memoryView = window.FocusMemoryView;
 const conversationEvents = window.FocusConversationEvents;
 const patrolPresence = window.FocusPatrolPresence;
@@ -1694,6 +1718,82 @@ async function deleteMemory(memoryId) {
   } catch (error) { setStatus(error.message, true); }
 }
 
+function persistMapViewPreferences() {
+  try {
+    localStorage.setItem(MAP_VIEW_PREFERENCES_KEY, JSON.stringify({
+      mode: state.mapViewMode,
+      workspaceIds: [...state.mapExpandedWorkspaceIds],
+      contextIds: [...state.mapExpandedContextIds],
+    }));
+  } catch { /* 本机禁用持久化时仍保持当前会话状态 */ }
+}
+
+function setsEqual(left, right) {
+  return left.size === right.size && [...left].every(value => right.has(value));
+}
+
+function prepareMapTreeModel() {
+  const model = mapCollapsibleView.buildModel(state.tasks, state.contextTrees);
+  const validWorkspaceIds = new Set(model.workspaces.map(workspace => workspace.id));
+  const validContextIds = new Set(model.contexts.keys());
+  const workspaceIds = new Set([...state.mapExpandedWorkspaceIds].filter(id => validWorkspaceIds.has(id)));
+  const contextIds = new Set([...state.mapExpandedContextIds].filter(id => validContextIds.has(id)));
+
+  if (state.activeTaskId && state.mapExpandedForTaskId !== state.activeTaskId) {
+    const path = mapCollapsibleView.expansionForTask(model, state.activeTaskId);
+    if (path.workspaceId) workspaceIds.add(path.workspaceId);
+    path.contextIds.forEach(id => contextIds.add(id));
+    state.mapExpandedForTaskId = state.activeTaskId;
+  }
+
+  const changed = !setsEqual(workspaceIds, state.mapExpandedWorkspaceIds)
+    || !setsEqual(contextIds, state.mapExpandedContextIds);
+  state.mapExpandedWorkspaceIds = workspaceIds;
+  state.mapExpandedContextIds = contextIds;
+  if (changed) persistMapViewPreferences();
+  return model;
+}
+
+function renderMapTree() {
+  const model = prepareMapTreeModel();
+  return mapCollapsibleView.render(model, {
+    tasks: state.tasks,
+    activeTaskId: state.activeTaskId,
+    expandedWorkspaceIds: state.mapExpandedWorkspaceIds,
+    expandedContextIds: state.mapExpandedContextIds,
+    selectedContextIds: state.selectedContextIds,
+    selectionMode: state.selectionMode,
+    focusKey: state.mapTreeFocusKey,
+    presentStatus: presentRunStatus,
+  });
+}
+
+function setMapExpansion(kind, id, expanded, focusKey) {
+  const stateKey = kind === "workspace" ? "mapExpandedWorkspaceIds" : "mapExpandedContextIds";
+  const next = new Set(state[stateKey]);
+  expanded ? next.add(id) : next.delete(id);
+  state[stateKey] = next;
+  state.mapTreeFocusKey = focusKey;
+  persistMapViewPreferences();
+  renderMap(focusKey);
+}
+
+function toggleMapExpansion(kind, id, focusKey) {
+  const expanded = kind === "workspace"
+    ? state.mapExpandedWorkspaceIds.has(id)
+    : state.mapExpandedContextIds.has(id);
+  setMapExpansion(kind, id, !expanded, focusKey);
+}
+
+function collapseMapTree() {
+  state.mapExpandedWorkspaceIds = new Set();
+  state.mapExpandedContextIds = new Set();
+  state.mapExpandedForTaskId = state.activeTaskId;
+  state.mapTreeFocusKey = state.tasks[0] ? `workspace:${state.tasks[0].workspace_id}` : "";
+  persistMapViewPreferences();
+  renderMap(state.mapTreeFocusKey);
+}
+
 function taskCardMarkup(task, draftMode = false) {
   const draft = state.drafts.get(state.activeTaskId);
   const selected = draftMode && draft?.task_id === task.task_id;
@@ -1782,8 +1882,16 @@ function renderMapGroups() {
   }).join("");
 }
 
-function renderMap() {
+function renderMap(focusKey = null) {
   const sel = state.selectedContextIds.size;
+  const treeMode = state.mapViewMode === "tree";
+  const presentationControls = `<div class="map-presentation-controls">
+    <div class="map-presentation-switch" role="group" aria-label="全图展示方式">
+      <button type="button" data-action="set-map-view" data-map-view="tree" aria-pressed="${treeMode}">折叠视图</button>
+      <button type="button" data-action="set-map-view" data-map-view="cards" aria-pressed="${!treeMode}">卡片视图</button>
+    </div>
+    ${treeMode ? '<button type="button" class="text-button map-collapse-all" data-action="collapse-map-tree">全部折叠</button>' : ""}
+  </div>`;
   const batchControls = state.selectionMode
     ? `<span class="map-selection-info">已选 ${sel} 个会话</span>
       <button class="text-button" data-action="batch-delete-selected" ${sel ? "" : "disabled"}>删除选中</button>
@@ -1791,9 +1899,15 @@ function renderMap() {
       <button class="text-button" data-action="toggle-selection-mode">取消</button>`
     : `<button class="text-button" data-action="toggle-selection-mode">批量删除</button>`;
   app.innerHTML = `<section class="map-view">
-    <div class="map-toolbar"><button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">${state.soldierArmed ? "已装备小兵 · 选择任务" : "装备小兵"}</button>${batchControls}</div>
-    <div class="map-groups">${renderMapGroups()}</div>
+    <div class="map-toolbar">${presentationControls}<button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">${state.soldierArmed ? "已装备小兵 · 选择任务" : "装备小兵"}</button>${batchControls}</div>
+    <div class="${treeMode ? "map-tree-host" : "map-groups"}">${treeMode ? renderMapTree() : renderMapGroups()}</div>
   </section>`;
+  if (focusKey) {
+    const target = [...app.querySelectorAll("[role='treeitem'][data-tree-key]")]
+      .find(item => item.dataset.treeKey === focusKey)
+      || app.querySelector("[role='treeitem'][tabindex='0']");
+    target?.focus();
+  }
 }
 
 async function hydrateContextTrees() {
@@ -3723,6 +3837,10 @@ function toggleSelectSession(contextId) {
   const ids = new Set(state.selectedContextIds);
   ids.has(contextId) ? ids.delete(contextId) : ids.add(contextId);
   state.selectedContextIds = ids;
+  if (state.view === "map" && state.mapViewMode === "tree") {
+    state.mapTreeFocusKey = `context:${contextId}`;
+    return renderMap(state.mapTreeFocusKey);
+  }
   return render();
 }
 
@@ -3828,6 +3946,28 @@ document.addEventListener("click", async event => {
   if (action === "select-commit") return selectCommitCommand(button.dataset.pickerKind);
   if (action === "remove-skill") return removeSkill(button.dataset.pickerKind, button.dataset.skillName);
   if (action === "show-map") { if (state.view === "focus") persistFocusState(); cancelPendingViewRequests(); state.inspector.open = false; state.view = "map"; return render(); }
+  if (action === "set-map-view") {
+    const mode = button.dataset.mapView;
+    if (!["tree", "cards"].includes(mode)) return;
+    state.mapViewMode = mode;
+    state.mapTreeFocusKey = "";
+    if (mode === "tree") state.mapExpandedForTaskId = null;
+    persistMapViewPreferences();
+    renderMap();
+    app.querySelector(`[data-action="set-map-view"][data-map-view="${mode}"]`)?.focus();
+    return;
+  }
+  if (action === "toggle-map-workspace") {
+    const id = button.dataset.workspaceId;
+    if (id) toggleMapExpansion("workspace", id, `workspace:${id}`);
+    return;
+  }
+  if (action === "toggle-map-context") {
+    const id = button.dataset.contextId;
+    if (id) toggleMapExpansion("context", id, `context:${id}`);
+    return;
+  }
+  if (action === "collapse-map-tree") return collapseMapTree();
   if (action === "show-contexts") return openInspector("context", button);
   if (action === "show-agents") return openInspector("agents", button);
   if (action === "open-inspector-tab") return openInspector(button.dataset.inspectorTab, button);
@@ -4047,6 +4187,33 @@ document.addEventListener("mouseup", event => {
   };
 });
 
+function handleMapTreeKeydown(event, treeItem) {
+  const keys = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"];
+  if (state.view !== "map" || state.mapViewMode !== "tree" || !keys.includes(event.key)) return false;
+  const elements = [...app.querySelectorAll(".map-collapsible-tree [role='treeitem'][data-tree-key]")];
+  const currentIndex = elements.indexOf(treeItem);
+  const items = elements.map(item => ({
+    key: item.dataset.treeKey,
+    parentKey: item.dataset.treeParentKey || "",
+    hasChildren: item.dataset.treeHasChildren === "true",
+    expanded: item.getAttribute("aria-expanded") === "true",
+  }));
+  const action = mapCollapsibleView.treeKeyAction(event.key, currentIndex, items);
+  event.preventDefault();
+  if (!action) return true;
+  if (action.type === "focus") {
+    elements.forEach((item, index) => item.tabIndex = index === action.index ? 0 : -1);
+    const target = elements[action.index];
+    state.mapTreeFocusKey = target.dataset.treeKey;
+    target.focus();
+    return true;
+  }
+  const kind = treeItem.dataset.treeKind;
+  const id = kind === "workspace" ? treeItem.dataset.workspaceId : treeItem.dataset.taskId;
+  if (id) setMapExpansion(kind, id, action.type === "expand", treeItem.dataset.treeKey);
+  return true;
+}
+
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && contextPointerDrag) {
     event.preventDefault();
@@ -4057,6 +4224,8 @@ document.addEventListener("keydown", event => {
     closeInspector();
     return;
   }
+  const mapTreeItem = event.target.closest?.(".map-collapsible-tree [role='treeitem'][data-tree-key]");
+  if (mapTreeItem && handleMapTreeKeydown(event, mapTreeItem)) return;
   const inspectorTab = event.target.closest?.('[role="tab"][data-inspector-tab]');
   if (inspectorTab && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
     event.preventDefault();
@@ -4337,7 +4506,7 @@ document.addEventListener("dragstart", event => {
 });
 
 document.addEventListener("dragover", event => {
-  const card = event.target.closest(".task-card");
+  const card = event.target.closest(".task-card, .map-collapsible-context-item");
   if (card && event.dataTransfer.types.includes("application/x-focus-soldier")) { event.preventDefault(); card.classList.add("drop-target"); }
   const row = event.target.closest(".message-editor");
   if (row && event.dataTransfer.types.includes("application/x-focus-message")) event.preventDefault();
@@ -4345,9 +4514,9 @@ document.addEventListener("dragover", event => {
   if (event.target.closest(".memory-compose") && event.dataTransfer.types.includes("application/x-focus-memory")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }
 });
 
-document.addEventListener("dragleave", event => event.target.closest(".task-card")?.classList.remove("drop-target"));
+document.addEventListener("dragleave", event => event.target.closest(".task-card, .map-collapsible-context-item")?.classList.remove("drop-target"));
 document.addEventListener("drop", event => {
-  const card = event.target.closest(".task-card");
+  const card = event.target.closest(".task-card, .map-collapsible-context-item");
   if (card && event.dataTransfer.getData("application/x-focus-soldier")) { event.preventDefault(); return openDraft(card.dataset.taskId); }
   const row = event.target.closest(".message-editor");
   const from = Number(event.dataTransfer.getData("application/x-focus-message"));
