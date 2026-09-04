@@ -22,6 +22,16 @@
 > **人参与在 contexts 里，并在它们上面做手术。**
 > **The human participates in the contexts, and operates on them.**
 
+Why operate at this level, with a scalpel? Because the context itself is the costliest thing in the loop — and it compounds:
+
+> **A carefully curated, precise context is better than a bloated context with a high cache hit rate, and as the number of run iterations increases, the former may actually become less expensive than the latter.**
+
+Context surgery is not an aesthetic preference for small inputs. It is a cost argument: a bloated context that reuses a warm cache still amortizes the same fat — its hit rate only hides the price you keep paying, and never stops paying, every additional round. A curated context spends the tokens once, and each subsequent run inherits a smaller, sharper base.
+
+> **经过筛选的精确的上下文优于臃肿但缓存命中率高的上下文，并且随着 run 的轮次增长，前者的花费反而可能低于后者。**
+
+上下文手术不是对"小输入"的美学偏好，而是一个成本论证：一个臃肿却命中缓存的上下文，只是在摊销同一份脂肪——缓存命中率只是把每个额外的轮次仍在付出的价格隐藏起来。经过筛选的上下文把 token 只花一次，之后的每一轮都继承一个更小、更锋利的基底。
+
 ---
 
 ## The core rule / 公理的内核

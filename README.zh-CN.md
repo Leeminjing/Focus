@@ -19,6 +19,14 @@
 
 > **人参与在 contexts 里，并在它们上面做手术。**
 
+为什么要在这一层、握着一把手术刀？因为 context 本身就是这条循环里最贵的东西——而且它会复利：
+
+> **经过筛选的精确的上下文优于臃肿但缓存命中率高的上下文，并且随着 run 的轮次增长，前者的花费反而可能低于后者。**
+
+上下文手术不是对"小输入"的美学偏好，而是一个成本论证：一个臃肿却命中缓存的上下文，只是在摊销同一份脂肪——缓存命中率只是把每个额外轮次仍在付出的价格隐藏起来。经过筛选的上下文把 token 只花一次，之后的每一轮都继承一个更小、更锋利的基底。
+
+> **A carefully curated, precise context is better than a bloated context with a high cache hit rate, and as the number of run iterations increases, the former may actually become less expensive than the latter.**
+
 ---
 
 ## 公理的内核
