@@ -158,6 +158,7 @@
           flat.push({
             divider: true,
             depth,
+            block_id: block.block_id || message.id || null,
             summary: messageText(message),
             count: block.source.length,
             deleted: Boolean(block.deleted),
