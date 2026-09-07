@@ -120,6 +120,7 @@ const pluginView = window.FocusPluginView;
 const mapCollapsibleView = window.FocusMapCollapsibleView;
 const memoryView = window.FocusMemoryView;
 const conversationEvents = window.FocusConversationEvents;
+const conversationReconciler = window.FocusConversationReconciler;
 const patrolPresence = window.FocusPatrolPresence;
 const patrolAvatar = window.FocusPatrolAvatar;
 // f18 插件视图宿主:插件前端脚本加载后经此注册视图与材料打开器
@@ -972,11 +973,16 @@ function renderMessageDetails(message) {
   return `<details class="message-details"><summary>技术详情</summary><dl>${metadata.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd><pre>${escapeHtml(String(value))}</pre></dd></div>`).join("")}</dl></details>`;
 }
 
-function renderMessage(message) {
+function messageKeyOf(message, fallbackIndex) {
+  return message?.id || message?.message_id || `${message?.role || "message"}:${fallbackIndex}`;
+}
+
+function renderMessage(message, fallbackIndex = 0) {
   // 后端兜底降级消息按工具结果样式渲染，不泄露原始 XML 标签
   const degraded = compressionPanel.degradedParts(message);
+  const messageKey = messageKeyOf(message, fallbackIndex);
   if (degraded) {
-    return `<article class="work-record message tool"><header class="work-record-header"><span class="work-record-kicker">TOOL</span><span class="message-role">工具 · ${escapeHtml(degraded.name || "tool")}</span></header><div class="message-content">${escapeHtml(degraded.content)}</div></article>`;
+    return `<article class="work-record message tool" data-message-key="${escapeHtml(messageKey)}"><header class="work-record-header"><span class="work-record-kicker">TOOL</span><span class="message-role">工具 · ${escapeHtml(degraded.name || "tool")}</span></header><div class="message-content">${escapeHtml(degraded.content)}</div></article>`;
   }
   const baseRole = { human: "你", user: "你", ai: "助手", assistant: "助手", system: "System", tool: "Tool" }[message.role] || message.role;
   const role = message.role === "tool" && message.name ? `${baseRole} · ${message.name}` : baseRole;
@@ -996,7 +1002,7 @@ function renderMessage(message) {
   const header = kind === "system"
     ? `<header class="work-record-header"><span class="work-record-kicker">CONTEXT</span><span class="message-role">${escapeHtml(role || "系统上下文")}</span></header>`
     : "";
-  return `<article class="work-record message ${kind}">
+  return `<article class="work-record message ${kind}" data-message-key="${escapeHtml(messageKey)}">
     ${header}
     ${renderMessageImages(messageImages)}${renderFileCards(message)}
     <div class="message-content">${renderedContent}</div>
@@ -1006,10 +1012,11 @@ function renderMessage(message) {
 
 function renderCompressionDivider(item) {
   // 压缩块/删除墓碑分界标记：原文已在其后原位展开显示；删除无摘要，仅提示
+  const dividerKey = item.deleted ? `deleted:${item.block_id || item.count}` : `block:${item.block_id || item.count}`;
   if (item.deleted) {
-    return `<div class="compression-block-divider is-deleted"><span><span class="ui-icon is-sm icon-trash-2" aria-hidden="true"></span>已删除 · 来源 ${item.count} 条（模型不可见，可在压缩面板中恢复）</span></div>`;
+    return `<div class="compression-block-divider is-deleted" data-divider-key="${escapeHtml(dividerKey)}"><span><span class="ui-icon is-sm icon-trash-2" aria-hidden="true"></span>已删除 · 来源 ${item.count} 条（模型不可见，可在压缩面板中恢复）</span></div>`;
   }
-  return `<div class="compression-block-divider">
+  return `<div class="compression-block-divider" data-divider-key="${escapeHtml(dividerKey)}">
     <details class="compression-block-summary"><summary><span class="ui-icon is-sm icon-package" aria-hidden="true"></span>压缩块 · 来源 ${item.count} 条</summary><div class="compression-block-summary-body">${escapeHtml(item.summary)}</div></details>
   </div>`;
 }
@@ -1018,6 +1025,7 @@ function renderConversation(detail, task) {
   // 压缩块展开为来源原文渲染（保留原会话视觉），curation_synthetic 占位跳过
   const renderedParts = [];
   let messageGroup = [];
+  let messageIndex = 0;
   const flushMessages = () => {
     let eventGroup = [];
     const flushEvents = () => {
@@ -1028,7 +1036,8 @@ function renderConversation(detail, task) {
     for (const item of conversationEvents.normalize(messageGroup)) {
       if (item.type !== "message") { eventGroup.push(item); continue; }
       flushEvents();
-      renderedParts.push(renderMessage(item.message));
+      renderedParts.push(renderMessage(item.message, messageIndex));
+      messageIndex += 1;
     }
     flushEvents();
     messageGroup = [];
@@ -1056,25 +1065,114 @@ function renderConversation(detail, task) {
   return messages + streaming;
 }
 
+function _unitFromNode(node) {
+  if (node.dataset?.streamRun !== undefined) {
+    return { kind: "streaming", key: `stream:${node.dataset.streamRun}`, signature: node.outerHTML || "" };
+  }
+  if (node.dataset?.messageKey !== undefined) {
+    return { kind: "message", key: node.dataset.messageKey, signature: node.outerHTML || "" };
+  }
+  if (node.dataset?.dividerKey !== undefined) {
+    return { kind: "divider", key: node.dataset.dividerKey, signature: node.outerHTML || "" };
+  }
+  if (node.classList?.contains("conversation-event-sequence")) {
+    const first = node.querySelector?.(".conversation-event[data-event-key]");
+    return first
+      ? { kind: "event", key: `seq:${first.dataset.eventKey}`, signature: _eventSequenceSignature(node) }
+      : null;
+  }
+  // 无稳定 key 的顶层节点（占位 article、assembly-empty 等）以内容签名作 key，随内容变化整体替换。
+  return { kind: "unkeyed", key: null, signature: node.outerHTML || "" };
+}
+
+function _eventSequenceSignature(node) {
+  // 事件序列的 open 状态是交互态而非内容，签名需剔除，否则用户展开会误判为内容变化。
+  return (node.outerHTML || "").replace(/\s+open(="[^"]*")?/g, "");
+}
+
 function reconcileConversationMarkup(conversation, html) {
   const template = document.createElement?.("template");
-  if (!template?.content || !conversation.replaceChildren) {
+  if (!template?.content || !conversation.replaceChildren || !conversationReconciler) {
     conversation.innerHTML = html;
     return;
   }
   template.innerHTML = html;
-  const existing = new Map([...conversation.querySelectorAll?.(".conversation-event[data-event-key]") || []]
-    .map(node => [node.dataset.eventKey, node]));
-  for (const next of template.content.querySelectorAll(".conversation-event[data-event-key]")) {
-    const current = existing.get(next.dataset.eventKey);
-    if (!current) continue;
-    const expanded = current.open;
-    current.className = next.className;
-    current.innerHTML = next.innerHTML;
-    current.open = expanded;
-    next.replaceWith(current);
+
+  const prevNodes = [...(conversation.children || [])];
+  const nextNodes = [...(template.content.children || [])];
+
+  const prevUnits = [];
+  const prevNodeByIndex = [];
+  for (const node of prevNodes) {
+    const unit = _unitFromNode(node);
+    if (unit === null) continue;
+    prevUnits.push(unit);
+    prevNodeByIndex.push(node);
   }
-  conversation.replaceChildren(template.content);
+  const nextUnits = [];
+  const nextNodeByIndex = [];
+  for (const node of nextNodes) {
+    const unit = _unitFromNode(node);
+    if (unit === null) continue;
+    nextUnits.push(unit);
+    nextNodeByIndex.push(node);
+  }
+
+  let patches;
+  try {
+    patches = conversationReconciler.diffUnits(prevUnits, nextUnits);
+  } catch (error) {
+    conversation.innerHTML = html;
+    return;
+  }
+
+  // 事件序列内的 <details open> 状态：update 时从旧节点迁移到新节点。
+  const openStatesByEventKey = new Map();
+  for (const node of prevNodes) {
+    for (const evt of node.querySelectorAll?.(".conversation-event[data-event-key]") || []) {
+      openStatesByEventKey.set(evt.dataset.eventKey, evt.open);
+    }
+  }
+
+  // 目标节点序列（按 next 顺序）：keep 复用 prev 节点，update/append 用 next 节点。
+  const nextToNode = new Array(nextUnits.length).fill(null);
+  const keptPrev = new Set();
+  for (const patch of patches) {
+    if (patch.op === "keep") {
+      nextToNode[patch.nextIndex] = prevNodeByIndex[patch.prevIndex];
+      keptPrev.add(patch.prevIndex);
+    } else if (patch.op === "update") {
+      const nextNode = nextNodeByIndex[patch.nextIndex];
+      for (const evt of nextNode.querySelectorAll?.(".conversation-event[data-event-key]") || []) {
+        if (openStatesByEventKey.has(evt.dataset.eventKey)) evt.open = openStatesByEventKey.get(evt.dataset.eventKey);
+      }
+      nextToNode[patch.nextIndex] = nextNode;
+    } else if (patch.op === "append") {
+      nextToNode[patch.nextIndex] = nextNodeByIndex[patch.nextIndex];
+    }
+    // remove：不填 nextToNode，旧节点稍后统一移除。
+  }
+  // 兜底：未被任何 patch 放置的 next 位置用 next 节点补入（防御 diff 遗漏）。
+  for (let j = 0; j < nextToNode.length; j++) {
+    if (nextToNode[j] == null) nextToNode[j] = nextNodeByIndex[j];
+  }
+
+  // 移除 prev 中未被 keep 的节点（含 remove 与 update 掉的旧节点）。
+  for (let i = 0; i < prevNodeByIndex.length; i++) {
+    if (!keptPrev.has(i)) prevNodeByIndex[i].remove();
+  }
+
+  // 按 next 顺序逐节点就位：已在正确位置的节点不动，其余用 insertBefore 移动/插入。
+  let anchor = null;
+  for (let j = 0; j < nextToNode.length; j++) {
+    const node = nextToNode[j];
+    if (anchor === null) {
+      if (conversation.firstChild !== node) conversation.insertBefore(node, conversation.firstChild);
+    } else if (anchor.nextSibling !== node) {
+      conversation.insertBefore(node, anchor.nextSibling);
+    }
+    anchor = node;
+  }
 }
 
 function replaceConversation(task, messages) {
@@ -1108,7 +1206,8 @@ function appendStreamDelta(envelope, field) {
   if (typeof messageId === "string" && messageId.startsWith("commitment-stage-")) return;
   if (!task || !content || !envelope.agent_id.startsWith("main:")) return;
   beginLeadExecution(task.task_id);
-  const buffer = state.streamBuffers.get(envelope.run_id) || { taskId: task.task_id, text: "", reasoning: "" };
+  const buffer = state.streamBuffers.get(envelope.run_id) || { taskId: task.task_id, text: "", reasoning: "", messageId: null };
+  if (typeof messageId === "string" && messageId) buffer.messageId = messageId;
   buffer[field] = (buffer[field] || "") + content;
   state.streamBuffers.set(envelope.run_id, buffer);
   if (state.streamFrames.has(envelope.run_id)) return;
@@ -1138,6 +1237,16 @@ function clearStreamBuffer(runId) {
   if (frame) cancelAnimationFrame(frame);
   state.streamFrames.delete(runId);
   state.streamBuffers.delete(runId);
+}
+
+function finalizeStreamingOnSnapshot(taskId, messages) {
+  // 快照确认消息完整后清理流式缓冲：当 buffer 记录的 messageId 已出现在快照中，
+  // 说明该 AI 消息已完成，流式占位由快照对账原位转为完成态，缓冲不再需要。
+  const ids = new Set((messages || []).map(message => message && (message.id || message.message_id)).filter(Boolean));
+  for (const [runId, buffer] of state.streamBuffers) {
+    if (buffer.taskId !== taskId) continue;
+    if (buffer.messageId && ids.has(buffer.messageId)) clearStreamBuffer(runId);
+  }
 }
 
 function renderMaterial(material) {
@@ -2601,7 +2710,7 @@ function listenToRun(run) {
     const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
     if (task && messages && envelope.agent_id.startsWith("main:")) {
       beginLeadExecution(task.task_id);
-      clearStreamBuffer(run.run_id);
+      finalizeStreamingOnSnapshot(task.task_id, messages);
       replaceConversation(task, messages);
     }
   });
