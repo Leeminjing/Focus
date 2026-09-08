@@ -54,5 +54,15 @@ assert.equal(avatar.avatarStatus({ status: "ready", latest_run: { status: "runni
 assert.equal(avatar.avatarStatus({ latest_run: { status: "running" } }), "running");
 assert.equal(avatar.avatarLabel({ label: "Patrol 小兵" }), "Patrol 小兵");
 assert.equal(avatar.avatarLabel({ agent_id: "patrol-123456789" }), "小兵 patrol-1");
+assert.deepEqual(avatar.avatarActions({ actions: [
+  { id: "configure", label: "布置任务", tone: "primary" },
+  { id: "quick-curate", label: "快捷策展", tone: "secondary" },
+]}), [
+  { id: "configure", label: "布置任务", tone: "primary" },
+  { id: "quick-curate", label: "快捷策展", tone: "secondary" },
+]);
+assert.deepEqual(avatar.avatarActions({ agent_id: "patrol-1" }), [
+  { id: "details", label: "查看详情", tone: "primary" },
+]);
 
 console.log("patrol avatar checks passed");

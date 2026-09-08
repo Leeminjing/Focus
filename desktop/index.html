@@ -16,10 +16,10 @@
   <link rel="stylesheet" href="./styles/icons.css">
   <link rel="stylesheet" href="./styles/components.css">
   <link rel="stylesheet" href="./styles/shell.css">
-  <link rel="stylesheet" href="./styles/views.css?v=20260829a">
+  <link rel="stylesheet" href="./styles/views.css?v=20260906a">
   <link rel="stylesheet" href="./styles/map-collapsible-view.css?v=20260902">
   <link rel="stylesheet" href="./styles/conversation-events.css">
-  <link rel="stylesheet" href="./styles/patrol-avatar.css">
+  <link rel="stylesheet" href="./styles/patrol-avatar.css?v=20260905b">
 </head>
 <body>
   <div class="app-frame">
@@ -83,25 +83,6 @@
       </label>
       <label>任务标题<input id="threadTitle" value="新任务" required></label>
       <div class="dialog-actions"><button type="button" value="cancel" data-action="close-task-dialog">取消</button><button class="primary" type="submit" value="default">创建</button></div>
-    </form>
-  </dialog>
-  <dialog id="agentDialog" class="agent-dialog">
-    <header class="agent-dialog-head">
-      <div>
-        <h2>小兵详情</h2>
-        <span class="muted tiny" id="agentDialogMeta"></span>
-      </div>
-      <button class="quiet-button" data-action="close-agent-details" aria-label="关闭"><span class="ui-icon icon-x" aria-hidden="true"></span></button>
-    </header>
-    <div class="agent-dialog-history" id="agentHistory"></div>
-    <div class="agent-dialog-actions">
-      <button class="text-button" data-action="refresh-agent-details">刷新</button>
-      <button class="text-button" data-action="retry-agent-details">重试</button>
-      <button class="text-button danger" data-action="cancel-agent-details">取消运行</button>
-    </div>
-    <form class="agent-dialog-continue" id="agentContinueForm">
-      <input id="agentContinueInput" placeholder="给小兵继续对话的消息…" autocomplete="off">
-      <button class="primary" type="submit">继续</button>
     </form>
   </dialog>
   <dialog id="settingsDialog" class="settings-dialog">
@@ -174,14 +155,15 @@
   <script src="./vendor/markdown-it.min.js"></script>
   <script src="./skill-picker.js"></script>
   <script src="./context-editor.js"></script>
-  <script src="./compression-panel.js?v=20260836"></script>
+  <script src="./compression-panel.js?v=20260905c"></script>
   <script src="./keyword-command.js?v=20260901"></script>
   <script src="./plugin-view.js"></script>
   <script src="./memory.js?v=20260829a"></script>
   <script src="./conversation-events.js"></script>
-  <script src="./patrol-presence.js"></script>
-  <script src="./patrol-avatar.js"></script>
+  <script src="./context-curator-presentation.js?v=20260906a"></script>
+  <script src="./patrol-presence.js?v=20260905b"></script>
+  <script src="./patrol-avatar.js?v=20260905b"></script>
   <script src="./map-collapsible-view.js?v=20260902"></script>
-  <script src="./app.js?v=20260837"></script>
+  <script src="./app.js?v=20260906b"></script>
 </body>
 </html>

@@ -102,7 +102,7 @@ async function run() {
         state.view = 'draft'; render();
       } else if (target === 'agents') {
         state.agents.set(task.task_id, [{ agent_id: 'agent-audit', permissions: ['read'], checkpoint_ns: 'audit', latest_run: { status: 'success' } }]);
-        state.agentDialog = { agentId: null, messages: [], busy: false };
+        state.agentDetails = { agentId: null, messages: [], curation: null, busy: false };
         state.view = 'focus'; state.inspector.open = true; state.inspector.tab = 'agents'; render();
       } else if (target === 'commitment') {
         state.view = 'focus'; state.commitment.taskId = task.task_id; state.commitment.stage = 4; render();

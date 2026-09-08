@@ -71,10 +71,13 @@ def test_builder_disabled_returns_empty_chain():
 
 
 def test_builder_enabled_assembles_commitment_middleware():
+    async def load_context7_tools():
+        return [object()]
+
     middlewares = build_general_middlewares(
         _app_config(True),
         model=_FakeModel([], []),
-        context7_tools=[object()],
+        context7_tools_loader=load_context7_tools,
         skill_names=frozenset({"docx"}),
     )
     assert len(middlewares) == 1
@@ -82,13 +85,37 @@ def test_builder_enabled_assembles_commitment_middleware():
     assert middlewares[0]._skill_names == frozenset({"docx"})
 
 
-def test_builder_enabled_rejects_missing_context7_tools():
-    with pytest.raises(RuntimeError, match="Context7 工具不可用"):
+def test_builder_enabled_rejects_missing_context7_loader():
+    with pytest.raises(RuntimeError, match="Context7 工具加载器"):
         build_general_middlewares(
             _app_config(True),
             model=_FakeModel([], []),
-            context7_tools=[],
         )
+
+
+def test_normal_message_does_not_load_context7():
+    calls = 0
+
+    async def load_context7_tools():
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("Context7 connection timeout")
+
+    middleware = build_general_middlewares(
+        _app_config(True),
+        model=_FakeModel([], []),
+        context7_tools_loader=load_context7_tools,
+    )[0]
+
+    result = asyncio.run(
+        middleware.abefore_agent(
+            {"messages": [HumanMessage(content="普通会话消息", id="m-normal")]},
+            None,
+        )
+    )
+
+    assert result is None
+    assert calls == 0
 
 
 def test_repository_config_enables_commitment_by_default():
@@ -120,7 +147,7 @@ def test_context7_uses_http_bearer_and_shared_loader(monkeypatch):
     }
 
 
-def test_make_lead_agent_loads_context7_before_middleware(monkeypatch):
+def test_make_lead_agent_defers_context7_until_loader_is_called(monkeypatch):
     import focus.agents.lead.agent as lead_agent
     import focus.agents.lead.middlewares as lead_middlewares
     import focus.mcp as focus_mcp
@@ -134,7 +161,11 @@ def test_make_lead_agent_loads_context7_before_middleware(monkeypatch):
     captured = {}
     expected_graph = object()
 
+    context7_calls = 0
+
     async def fake_context7(url):
+        nonlocal context7_calls
+        context7_calls += 1
         captured["url"] = url
         return context7_tools
 
@@ -160,9 +191,12 @@ def test_make_lead_agent_loads_context7_before_middleware(monkeypatch):
     ))
 
     assert result is expected_graph
-    assert captured["url"] == "https://mcp.context7.com/mcp"
+    assert context7_calls == 0
     assert captured["model"] is model
-    assert captured["context7_tools"] is context7_tools
+    assert callable(captured["context7_tools_loader"])
+    assert asyncio.run(captured["context7_tools_loader"]()) is context7_tools
+    assert context7_calls == 1
+    assert captured["url"] == "https://mcp.context7.com/mcp"
     assert captured["skill_names"] == frozenset({"docx"})
     # 插件桥接位于最终链最末端（既有中间件保持原位置）
     assert captured["middleware"][:2] == [commitment_middleware, tool_error_middleware]
@@ -251,6 +285,30 @@ class _FakeModel:
 
     async def ainvoke(self, messages, **kwargs):
         raise NotImplementedError
+
+
+def test_context7_tools_are_loaded_once_on_first_stage_use():
+    from focus.agents.commitment import ReviewedDelegator
+
+    calls = 0
+    resolver = type("FakeTool", (), {"name": "resolve-library-id"})()
+
+    async def load_context7_tools():
+        nonlocal calls
+        calls += 1
+        return [resolver]
+
+    delegator = ReviewedDelegator(
+        _FakeModel([], []),
+        context7_tools_loader=load_context7_tools,
+    )
+
+    async def exercise():
+        assert await delegator._context7_tool("resolve-library-id") is resolver
+        assert await delegator._context7_tool("resolve-library-id") is resolver
+
+    asyncio.run(exercise())
+    assert calls == 1
 
 
 def test_commitment_structured_agents_enable_deepseek_json_without_mutating_model(

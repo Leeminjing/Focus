@@ -3,7 +3,7 @@
 
 输入:
     model — 承诺层内部 Worker 和 Evaluator 使用的 BaseChatModel。
-    context7_tools — 只提供给承诺子图的已加载 Context7 BaseTool 列表。
+    context7_tools_loader — 承诺阶段首次使用 Context7 时调用的异步工具加载函数。
     skill_names — 当前任务可用技能名集合，用于剥离消息前导的 /name skill token。
     AgentState / runtime — lead agent 当前消息状态和包含 thread_id 的运行时信息。
 
@@ -27,11 +27,12 @@
     (6) 返回状态更新，由 LangGraph reducer 以相同 id 原位写入合同 HumanMessage。
 
 示例:
-    middleware = CommitmentMiddleware(model, context7_tools, skill_names)
+    middleware = CommitmentMiddleware(model, load_context7_tools, skill_names)
 """
 
 import asyncio
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
@@ -209,11 +210,14 @@ class CommitmentMiddleware(AgentMiddleware):
     def __init__(
         self,
         model: BaseChatModel,
-        context7_tools: list[BaseTool],
+        context7_tools_loader: Callable[[], Awaitable[list[BaseTool]]],
         skill_names: frozenset[str] = frozenset(),
     ) -> None:
         super().__init__()
-        delegator = ReviewedDelegator(model, context7_tools)
+        delegator = ReviewedDelegator(
+            model,
+            context7_tools_loader=context7_tools_loader,
+        )
         self._supervisor = _build_supervisor(delegator)
         self._skill_names = skill_names
 

@@ -99,6 +99,34 @@ test("expandForConversation 递归展开嵌套块并跳过 curation_synthetic", 
   assert.equal(flat[2].depth, 1);
 });
 
+test("expandForConversation 保留策展总结，只隐藏协议占位", () => {
+  const flat = panel.expandForConversation([
+    {
+      id: "legacy-summary",
+      role: "ai",
+      content: "旧版策展总结",
+      curation_synthetic: true,
+      curation_source_message_ids: ["source-1"],
+    },
+    {
+      id: "summary",
+      role: "ai",
+      content: "新版策展总结",
+      curation_source_message_ids: ["source-2"],
+    },
+    {
+      id: "placeholder",
+      role: "tool",
+      tool_call_id: "call-1",
+      name: "read_file",
+      content: "[Focus placeholder: tool result omitted]",
+      curation_synthetic: true,
+    },
+  ]);
+
+  assert.deepEqual(flat.map(item => item.content), ["旧版策展总结", "新版策展总结"]);
+});
+
 test("degradedParts 解析后端降级包装为工具结果", () => {
   const parts = panel.degradedParts({ role: "human", content: '<focus-degraded-message role="tool" name="list_files">\nC:\path\a.md\nC:\path\b.md\n</focus-degraded-message>' });
   assert.deepEqual(parts, { name: "list_files", content: "C:\path\a.md\nC:\path\b.md" });

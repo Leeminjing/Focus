@@ -4,6 +4,7 @@ models:
     use: focus.models.deepseek:DeepSeekChatOpenAI
     model: deepseek-v4-flash-vision-exp
     context_window: 131072
+    curation_output_method: prompt_json
     api_key: $OPENAI_API_KEY
     base_url: https://api.deepseek.com
 
@@ -12,6 +13,7 @@ models:
     use: focus.models.deepseek:DeepSeekChatOpenAI
     model: deepseek-v4-flash
     context_window: 131072
+    curation_output_method: prompt_json
     api_key: $OPENAI_API_KEY
     base_url: https://api.deepseek.com
 
@@ -22,6 +24,8 @@ models:
     use: langchain_openai:ChatOpenAI
     model: qwen3.7-plus
     context_window: 128000
+    curation_output_method: prompt_json
+    curation_default: true
     api_key: $VISION_API_KEY
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
 

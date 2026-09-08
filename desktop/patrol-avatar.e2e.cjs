@@ -152,13 +152,13 @@ async function run() {
     trigger.click();
     const opened = !avatar.querySelector('.patrol-avatar__bubble').hidden && trigger.getAttribute('aria-expanded') === 'true';
     avatar.querySelector('.patrol-avatar__detail').click();
-    for (let count = 0; count < 80 && state.agentDialog.messages.length !== 2; count += 1) {
+    for (let count = 0; count < 80 && state.agentDetails.messages.length !== 2; count += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     return {
       opened,
-      agentId: state.agentDialog.agentId,
-      history: state.agentDialog.messages.length,
+      agentId: state.agentDetails.agentId,
+      history: state.agentDetails.messages.length,
       inspector: state.inspector.open && state.inspector.tab === 'agents',
     };
   })()`);
@@ -343,7 +343,7 @@ async function run() {
   const standby = await win.webContents.executeJavaScript(`(async () => {
     state.activeTaskId = 'empty';
     state.view = 'focus';
-    state.agentDialog = { agentId: null, messages: [], busy: false };
+    state.agentDetails = { agentId: null, messages: [], curation: null, busy: false };
     await hydrateActive('empty');
     render();
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -361,7 +361,7 @@ async function run() {
       status: bubble.querySelector('.patrol-avatar__status').textContent,
       message: bubble.querySelector('.patrol-avatar__message').textContent,
       action: bubble.querySelector('.patrol-avatar__detail').textContent,
-      agentDialogId: state.agentDialog.agentId,
+      agentDetailsId: state.agentDetails.agentId,
       backendAgents: window.__patrolAvatarTest.agents.empty.length,
     };
   })()`);
@@ -371,7 +371,7 @@ async function run() {
   if (standby.heading !== "Patrol 小兵" || standby.status !== "待命" || !standby.message.includes("尚未布置任务") || standby.action !== "布置任务") {
     throw new Error(`待命气泡语义失败: ${JSON.stringify(standby)}`);
   }
-  if (standby.agentDialogId || standby.backendAgents !== 0) throw new Error(`待命小兵污染真实 Agent: ${JSON.stringify(standby)}`);
+  if (standby.agentDetailsId || standby.backendAgents !== 0) throw new Error(`待命小兵污染真实 Agent: ${JSON.stringify(standby)}`);
 
   const capture = await win.webContents.capturePage();
   fs.writeFileSync(path.join(qaDirectory, "standby-patrol-1280x840.png"), capture.toPNG());
@@ -410,9 +410,9 @@ async function run() {
     avatar.querySelector('.patrol-avatar__button').click();
     avatar.querySelector('.patrol-avatar__detail').click();
     for (let count = 0; count < 80 && state.view !== 'draft'; count += 1) await new Promise(resolve => setTimeout(resolve, 10));
-    return { view: state.view, openCalls: [...window.__patrolAvatarTest.draftOpenCalls], agentDialogId: state.agentDialog.agentId };
+    return { view: state.view, openCalls: [...window.__patrolAvatarTest.draftOpenCalls], agentDetailsId: state.agentDetails.agentId };
   })()`);
-  if (draftEntry.view !== "draft" || draftEntry.openCalls.at(-1) !== "empty" || draftEntry.agentDialogId) {
+  if (draftEntry.view !== "draft" || draftEntry.openCalls.at(-1) !== "empty" || draftEntry.agentDetailsId) {
     throw new Error(`待命布置入口失败: ${JSON.stringify(draftEntry)}`);
   }
 

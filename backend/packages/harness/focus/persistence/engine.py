@@ -7,8 +7,8 @@
         创建（或返回已有）AsyncEngine 全局单例，同时初始化 session factory；
         内部从 config.database 提取 DatabaseConfig
 
-    dispose_engine() → None
-        释放 AsyncEngine 连接池，重置全局单例为 None
+    dispose_engine() → Awaitable[None]
+        异步释放 AsyncEngine 连接池，重置全局单例为 None
 
     get_session() → AsyncSession
         通过全局 session factory 创建新的 AsyncSession 实例，
@@ -44,7 +44,7 @@
     async with get_session() as session:
         result = await session.execute(...)
 
-    dispose_engine()
+    await dispose_engine()
 """
 
 import logging
@@ -134,28 +134,28 @@ def init_engine(config: AppConfig) -> AsyncEngine:
     return _engine
 
 
-def dispose_engine() -> None:
-    """释放 AsyncEngine 连接池，重置全局单例为 None。
+async def dispose_engine() -> None:
+    """异步释放 AsyncEngine 连接池，重置全局单例为 None。
 
     输入: 无
     输出: None
 
     工作流:
-        (1) 若 _engine 非空，调用 engine.dispose() 释放连接池
-        (2) 将 _engine 和 _session_factory 均置为 None
+        (1) 先清空全局引用，阻止关闭期间继续创建 session
+        (2) 若原 _engine 非空，等待 engine.dispose() 释放连接池
 
     示例:
-        dispose_engine()
+        await dispose_engine()
     """
     global _engine, _session_factory
 
-    if _engine is not None:
-        # dispose() 是同步方法，在异步上下文中安全调用
-        _engine.dispose()
-        logger.info("AsyncEngine 已释放")
-
+    engine = _engine
     _engine = None
     _session_factory = None
+
+    if engine is not None:
+        await engine.dispose()
+        logger.info("AsyncEngine 已释放")
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:

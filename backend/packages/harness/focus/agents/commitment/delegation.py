@@ -3,7 +3,7 @@
 
 输入:
     model — 创建 Worker 和 Evaluator 所使用的 BaseChatModel。
-    context7_tools — 仅承诺层内部可见的 Context7 BaseTool 列表。
+    context7_tools / context7_tools_loader — 仅承诺层内部可见的静态工具，或按需加载函数。
     TaskEnvelope — 当前阶段指令、上下文和验收条件。
     Supervisor messages — 指令 HumanMessage 和此前阶段最终 ToolMessage。
 
@@ -25,6 +25,7 @@
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from langchain.agents import create_agent
@@ -149,12 +150,18 @@ class ReviewedDelegator:
     def __init__(
         self,
         model: BaseChatModel,
-        context7_tools: list[BaseTool],
+        context7_tools: list[BaseTool] | None = None,
+        *,
+        context7_tools_loader: Callable[[], Awaitable[list[BaseTool]]] | None = None,
     ) -> None:
+        if context7_tools is not None and context7_tools_loader is not None:
+            raise ValueError("Context7 静态工具与加载器不能同时提供")
         self._model = model
         self._structured_model = _deepseek_structured_model(model)
         self._tool_model = _deepseek_tool_model(model)
         self._context7_tools = context7_tools
+        self._context7_tools_loader = context7_tools_loader
+        self._context7_tools_lock = asyncio.Lock()
 
     async def _stream_agent(
         self,
@@ -280,7 +287,15 @@ class ReviewedDelegator:
         )
         return output
 
-    def _context7_tool(self, name: str) -> BaseTool:
+    async def _context7_tool(self, name: str) -> BaseTool:
+        if self._context7_tools is None:
+            async with self._context7_tools_lock:
+                if self._context7_tools is None:
+                    self._context7_tools = (
+                        await self._context7_tools_loader()
+                        if self._context7_tools_loader is not None
+                        else []
+                    )
         for tool_item in self._context7_tools:
             if tool_item.name == name:
                 return tool_item
@@ -321,7 +336,7 @@ class ReviewedDelegator:
                 if name.strip()
             )
         )
-        resolver = self._context7_tool("resolve-library-id")
+        resolver = await self._context7_tool("resolve-library-id")
 
         async def resolve(name: str) -> dict[str, Any]:
             emit_commitment_trace(
@@ -369,7 +384,7 @@ class ReviewedDelegator:
         resolution_evidence = await asyncio.gather(
             *(resolve(name) for name in names)
         )
-        query_docs = self._context7_tool("query-docs")
+        query_docs = await self._context7_tool("query-docs")
 
         async def query_version(item: dict[str, Any]) -> dict[str, Any]:
             name = str(item.get("name", ""))
@@ -534,7 +549,7 @@ class ReviewedDelegator:
             "technologies",
             [],
         )
-        query_docs = self._context7_tool("query-docs")
+        query_docs = await self._context7_tool("query-docs")
 
         async def query(item: dict[str, Any]) -> dict[str, Any]:
             name = str(item.get("name", ""))

@@ -138,13 +138,21 @@
     return { name: match[1], content: match[2] };
   }
 
+  function isProtocolPlaceholder(message) {
+    return Boolean(
+      message?.curation_synthetic
+      && !(Array.isArray(message.curation_source_message_ids)
+        && message.curation_source_message_ids.length),
+    );
+  }
+
   // 对话区渲染展开：压缩块原位展开为来源原文（递归），并在块位置插入分界标记；
-  // curation_synthetic 占位消息跳过。保证压缩后前端对话视觉上与压缩前一致。
+  // 只跳过执行协议占位；带来源证据的策展总结属于可见正文。
   function expandForConversation(messages) {
     const flat = [];
     const walk = (items, depth) => {
       for (const message of (Array.isArray(items) ? items : [])) {
-        if (!message || message.curation_synthetic) continue;
+        if (!message || isProtocolPlaceholder(message)) continue;
         const block = message.compression;
         if (block && Array.isArray(block.source)) {
           flat.push({
@@ -192,6 +200,7 @@
     estimateMessagesTokens,
     messageText,
     degradedParts,
+    isProtocolPlaceholder,
     toggleSelect,
     selectionRanges,
     planAfterMessages,

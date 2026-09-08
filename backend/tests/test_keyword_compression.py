@@ -177,7 +177,13 @@ def test_quick_apply_preserves_original_source_and_model_only_sees_summary(monke
     service.session_factory = lambda: FakeSession()
     service.app_config = object()
     service.checkpointer = object()
+    service.context_patrol = SimpleNamespace(
+        notify_stable_context_checkpoint=lambda task_id: _notify(task_id)
+    )
     task = SimpleNamespace(task_id="task-1", thread_id="thread-1")
+
+    async def _notify(task_id):
+        captured["notified_task_id"] = task_id
 
     async def get_task_entities(_session, _task_id):
         return task, object()
@@ -212,3 +218,4 @@ def test_quick_apply_preserves_original_source_and_model_only_sees_summary(monke
     assert model_messages[0].content == "关键决策摘要"
     assert "compression" not in model_messages[0].additional_kwargs
     assert "胡萝卜" not in model_messages[0].content
+    assert captured["notified_task_id"] == "task-1"

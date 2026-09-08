@@ -162,7 +162,7 @@ def test_start_run_uses_long_task_recursion_budget(monkeypatch):
 
     asyncio.run(exercise())
 
-    assert captured["runnable_config"]["recursion_limit"] == 100
+    assert captured["runnable_config"]["recursion_limit"] == 2000
 
 
 def _run_with_failing_agent_factory(graph_input):
@@ -266,3 +266,60 @@ def test_run_agent_accumulates_standard_cache_usage():
 
     assert record.prompt_input_tokens == 180
     assert record.prompt_cache_hit_tokens == 65
+
+
+def test_run_agent_forks_checkpoint_input_from_graph_start():
+    class CheckpointAgent:
+        def __init__(self):
+            self.received_input = None
+            self.received_config = None
+            self.update = None
+
+        async def aupdate_state(self, config, values, *, as_node=None):
+            self.update = {"config": config, "values": values, "as_node": as_node}
+            return {
+                "configurable": {
+                    **config["configurable"],
+                    "checkpoint_id": "forked-checkpoint",
+                }
+            }
+
+        async def astream(self, graph_input, *, config, **_kwargs):
+            self.received_input = graph_input
+            self.received_config = config
+            if False:
+                yield None
+
+    manager = RunManager()
+    record = manager.create("thread-checkpoint", run_id="run-checkpoint")
+    bridge = _RecordingBridge()
+    agent = CheckpointAgent()
+    graph_input = {"messages": [HumanMessage(content="继续派生 Context")]}
+
+    async def factory():
+        return agent
+
+    asyncio.run(
+        run_agent(
+            record=record,
+            bridge=bridge,
+            run_manager=manager,
+            app_config=SimpleNamespace(models=[], commitment=SimpleNamespace(enabled=False)),
+            graph_input=graph_input,
+            runnable_config={
+                "configurable": {
+                    "thread_id": record.thread_id,
+                    "checkpoint_id": "validated-checkpoint",
+                }
+            },
+            stream_modes=["messages"],
+            agent_factory=factory,
+            langgraph_context={"workspace_id": "workspace-checkpoint", "agent_id": "main:checkpoint"},
+        )
+    )
+
+    assert record.status is RunStatus.success
+    assert agent.update["values"] is graph_input
+    assert agent.update["as_node"] == "__start__"
+    assert agent.received_input is None
+    assert agent.received_config["configurable"]["checkpoint_id"] == "forked-checkpoint"

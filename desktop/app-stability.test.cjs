@@ -262,6 +262,25 @@ async function testConversationEventsAndKeyboardSubmit() {
   assert.match(rendered, /Think/);
   assert.match(rendered, /生成中/);
 
+  const managedRendered = harness.vm.runInContext(`renderConversation({
+    context: { managed_status: 'following' },
+    messages: [
+      { role: 'system', content: '执行边界' },
+      { role: 'human', content: '最终约束' },
+      { role: 'ai', content: '已确认结论' },
+    ],
+  }, { task_id: 'task-a', workspace_path: 'C:/workspace' })`, harness.context);
+  assert.match(managedRendered, /work-record-kicker">Human</);
+  assert.match(managedRendered, /work-record-kicker">AI</);
+
+  for (const role of ["System", "Human", "AI"]) {
+    assert.equal(
+      (managedRendered.match(new RegExp(`>${role}<\\/span>`, "g")) || []).length,
+      1,
+      `${role} 角色标签只渲染一次`,
+    );
+  }
+
   harness.vm.runInContext("globalThis.__sendCount = 0; sendMain = () => { __sendCount += 1; return Promise.resolve(); };", harness.context);
   const keydown = harness.listeners.get("keydown").at(-1);
   const event = overrides => ({
@@ -287,6 +306,54 @@ async function testConversationEventsAndKeyboardSubmit() {
   assert.equal(picker.prevented, true);
 }
 
+async function testActiveTaskSelectionInvariant() {
+  const harness = createAppHarness();
+  harness.vm.runInContext(readAppSource(), harness.context);
+  const result = harness.vm.runInContext(`(() => {
+    state.activeTaskId = 'missing-task';
+    replaceTasks([
+      { task_id: 'archived-task', lifecycle: 'archived' },
+      { task_id: 'active-task', lifecycle: 'active' },
+    ]);
+    const recovered = state.activeTaskId;
+
+    replaceTasks([{ task_id: 'archived-only', lifecycle: 'archived' }]);
+    const withoutActive = state.activeTaskId;
+    return { recovered, withoutActive };
+  })()`, harness.context);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), {
+    recovered: "active-task",
+    withoutActive: null,
+  });
+}
+
+async function testRenderWithoutActiveTask() {
+  const appNode = { dataset: {}, innerHTML: "", replaceChildren() {} };
+  const harness = createAppHarness({ selectors: { "#app": appNode } });
+  harness.vm.runInContext(readAppSource(), harness.context);
+  const result = harness.vm.runInContext(`(() => {
+    state.tasks = [{ task_id: 'archived-task', lifecycle: 'archived' }];
+    state.activeTaskId = null;
+    state.view = 'focus';
+    renderShellChrome = () => {};
+    renderFocus = () => { throw new Error('task renderer must not run'); };
+    render();
+    return app.innerHTML;
+  })()`, harness.context);
+
+  assert.match(result, /暂无活动 Context/);
+}
+
+async function testUiActionErrorBoundary() {
+  const harness = createAppHarness({ statusNode: "record" });
+  harness.vm.runInContext(readAppSource(), harness.context);
+  harness.vm.runInContext(`runUiAction(async () => { throw new Error('selection drift'); });`, harness.context);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(harness.statusState.text, "页面操作失败: selection drift");
+  assert.equal(harness.statusState.danger, true);
+}
+
 Promise.resolve()
   .then(testApiErrorBody)
   .then(testTaskScopedHydration)
@@ -296,5 +363,8 @@ Promise.resolve()
   .then(testAttachmentCommitBoundary)
   .then(testPluginAssetsAreIdempotent)
   .then(testConversationEventsAndKeyboardSubmit)
-  .then(() => console.log("app-stability: 错误解析、作用域、附件、紧凑会话与键盘提交边界通过"))
+  .then(testActiveTaskSelectionInvariant)
+  .then(testRenderWithoutActiveTask)
+  .then(testUiActionErrorBoundary)
+  .then(() => console.log("app-stability: 错误解析、任务选择、异步边界、附件、紧凑会话与键盘提交边界通过"))
   .catch(error => { console.error(error); process.exitCode = 1; });

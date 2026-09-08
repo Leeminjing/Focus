@@ -183,21 +183,18 @@ async def make_lead_agent(
         tools = [describe_skill_tool] + tools
 
     # (4) middleware：未注入时经共享 builder 按 commitment.enabled 装配承诺层；
-    #     开启承诺层时 skill_names 复用已构建的 catalog（桌面路径由 agent_factory 显式传入）
+    #     Context7 只提供延迟加载函数，网络连接由承诺阶段首次实际使用时建立。
     if middlewares is None:
         from focus.agents.lead.middlewares import build_general_middlewares
 
         resolved_config = app_config or get_app_config("config.yaml")
-        context7_tools: list[BaseTool] = []
+        context7_tools_loader = None
         if resolved_config.commitment.enabled:
             from focus.mcp import get_context7_tools
 
-            context7_tools = await get_context7_tools(
-                resolved_config.commitment.context7_url
-            )
-            if not context7_tools:
-                raise RuntimeError(
-                    "CommitmentMiddleware 已启用，但 Context7 工具不可用"
+            async def context7_tools_loader() -> list[BaseTool]:
+                return await get_context7_tools(
+                    resolved_config.commitment.context7_url
                 )
         skill_names = middleware_skill_names
         if skill_names is None:
@@ -207,7 +204,7 @@ async def make_lead_agent(
         middlewares = build_general_middlewares(
             app_config=resolved_config,
             model=model,
-            context7_tools=context7_tools,
+            context7_tools_loader=context7_tools_loader,
             skill_names=skill_names,
         )
     if additional_middlewares:

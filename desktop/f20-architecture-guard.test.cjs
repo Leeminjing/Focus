@@ -68,17 +68,22 @@ assert.doesNotMatch(preload, /fetch\(|EventSource|proxy/i);
 
 const renderer = read("desktop/app.js");
 const patrolPresence = read("desktop/patrol-presence.js");
+assert.doesNotMatch(html, /id=["']agentDialog["']|class=["'][^"']*agent-dialog/);
+assert.doesNotMatch(renderer, /agentDialog|renderAgentDialog|agentContinueInput/);
+assert.match(renderer, /agentDetails:\s*\{\s*agentId:\s*null/);
+assert.match(renderer, /openAgentDetails\(agentId\)[\s\S]*openInspector\("agents"/);
 assert.match(renderer, /location\.origin/);
 assert.match(renderer, /fetch\(`\$\{runtime\.apiBase\}\$\{path\}`/);
 assert.match(renderer, /new EventSource\(`\$\{runtime\.apiBase\}\/desktop\/api\/runs\//);
 assert.match(renderer, /script\.onerror = \(\) => \{[\s\S]*pluginScriptAssets\.delete\(src\)[\s\S]*console\.error\("插件脚本加载失败:"[\s\S]*resolve\(\)/);
 assert.match(renderer, /link\.onerror = \(\) => \{[\s\S]*pluginStyleAssets\.delete\(href\)[\s\S]*console\.error\("插件样式加载失败:"/);
 assert.match(renderer, /filter\(plugin => plugin\.status === "active"\)/);
-assert.match(html, /<script src="\.\/conversation-events\.js"><\/script>[\s\S]*<script src="\.\/patrol-presence\.js"><\/script>[\s\S]*<script src="\.\/patrol-avatar\.js"><\/script>[\s\S]*<script src="\.\/app\.js"><\/script>/);
+assert.match(html, /<script src="\.\/conversation-events\.js"><\/script>[\s\S]*<script src="\.\/context-curator-presentation\.js\?v=20260906a"><\/script>[\s\S]*<script src="\.\/patrol-presence\.js\?v=20260905b"><\/script>[\s\S]*<script src="\.\/patrol-avatar\.js\?v=20260905b"><\/script>[\s\S]*<script src="\.\/app\.js\?v=20260906b"><\/script>/);
+assert.match(html, /<link rel="stylesheet" href="\.\/styles\/patrol-avatar\.css\?v=20260905b">/);
 assert.match(renderer, /patrol_avatar_positions/);
 assert.match(renderer, /FocusPatrolAvatar/);
 assert.match(renderer, /FocusPatrolPresence/);
-assert.match(renderer, /avatar\.presence === "standby"[\s\S]*openDraft\(task\.task_id\)[\s\S]*openAgentDetails\(avatar\.agent_id\)/);
+assert.match(renderer, /action\.id === "quick-curate"[\s\S]*quickDeployContextCurator\(task\.task_id\)[\s\S]*action\.id === "configure"[\s\S]*openDraft\(task\.task_id\)[\s\S]*action\.id === "details"[\s\S]*openAgentDetails\(avatar\.agent_id\)/);
 assert.match(patrolPresence, /STANDBY_AVATAR_ID = "__standby__"/);
 assert.doesNotMatch(patrolPresence, /fetch\(|EventSource|XMLHttpRequest|\/desktop\/api\//);
 

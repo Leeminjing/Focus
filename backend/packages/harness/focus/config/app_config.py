@@ -14,7 +14,7 @@ _load_yaml 读取 YAML 文件 → _resolve_env_vars 解析 $ENV_VAR 环境变量
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from focus.config.checkpointer_config import CheckpointerConfig
 from focus.config.env import resolve_env_var
@@ -38,6 +38,13 @@ class AppConfig(BaseModel):
     extensions: ExtensionsConfig = ExtensionsConfig(mcp_servers={})
     commitment: CommitmentConfig = CommitmentConfig()
     compression: CompressionConfig = CompressionConfig()
+
+    @model_validator(mode="after")
+    def validate_curation_default(self) -> "AppConfig":
+        defaults = [model.name for model in self.models if model.curation_default]
+        if len(defaults) > 1:
+            raise ValueError(f"只能配置一个策展默认模型: {', '.join(defaults)}")
+        return self
 
     def _normalize_name(self, name: str) -> str:
         return name.strip()

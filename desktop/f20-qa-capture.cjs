@@ -126,7 +126,7 @@ async function capture(size, outputDir) {
         { agent_id: 'agent-running', permissions: ['read'], checkpoint_ns: 'audit/worker', latest_run: { status: 'running' } },
         { agent_id: 'agent-complete', permissions: ['read', 'write'], checkpoint_ns: 'audit/reviewer', latest_run: { status: 'success' } }
       ]);
-      state.agentDialog = { agentId: null, messages: [], busy: false };
+      state.agentDetails = { agentId: null, messages: [], curation: null, busy: false };
       state.view = 'focus';
       state.inspector.open = true;
       state.inspector.tab = 'agents';

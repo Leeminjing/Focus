@@ -29,7 +29,7 @@ const BASE_GLOBALS = {
 function readAppSource() {
   return fs
     .readFileSync(require.resolve("./app.js"), "utf8")
-    .replace(/bootstrap\(\);\s*$/, "");
+    .replace(/(?:runUiAction\(bootstrap\)|bootstrap\(\));\s*$/, "");
 }
 
 function createAppHarness(options = {}) {
@@ -87,6 +87,7 @@ function createAppHarness(options = {}) {
   vm.runInContext(fs.readFileSync(require.resolve("./skill-picker.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./context-editor.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./compression-panel.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("./context-curator-presentation.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./keyword-command.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./plugin-view.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./conversation-events.js"), "utf8"), context);

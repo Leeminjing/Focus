@@ -16,7 +16,7 @@
     (2) 通过 create_stream_bridge(app_config) 创建 StreamBridge → 挂载到 app.state.stream_bridge
         → 注册到 ExitStack（create_stream_bridge 自带 cleanup on exit）
     (3) 若 app_config.database 非空，初始化 AsyncEngine 和 session factory 全局单例
-        → 通过 stack.callback 注册 dispose_engine 以确保退出时释放连接池
+        → 通过 stack.push_async_callback 注册 dispose_engine 以确保退出时等待连接池释放
         → 不挂载到 app.state
     (3.5) 通过 create_checkpointer(app_config) 创建 Checkpointer → 挂载到 app.state.checkpointer
         → 通过 stack.push_async_callback 注册 dispose_checkpointer 以确保退出时释放连接
@@ -67,7 +67,7 @@ async def langgraph_runtime(app: FastAPI, app_config: AppConfig) -> AsyncGenerat
             from focus.persistence.engine import dispose_engine, init_engine
 
             init_engine(app_config)
-            stack.callback(dispose_engine)
+            stack.push_async_callback(dispose_engine)
             logger.info("数据库引擎已初始化 (backend=%s)", app_config.database.backend)
 
         # (3.5) Checkpointer 资源初始化

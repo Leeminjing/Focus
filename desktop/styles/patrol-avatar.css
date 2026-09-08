@@ -151,17 +151,34 @@
   line-height: 1.55;
 }
 
-.patrol-avatar__detail {
+.patrol-avatar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.patrol-avatar__action {
   min-height: 30px;
   padding: 5px 11px;
-  color: var(--text-inverse);
-  border: 1px solid var(--accent-primary);
   border-radius: var(--radius-control);
-  background: var(--accent-primary);
   font-size: 12px;
 }
 
-.patrol-avatar__detail:hover { background: var(--accent-hover); }
+.patrol-avatar__action.is-primary {
+  color: var(--text-inverse);
+  border: 1px solid var(--accent-primary);
+  background: var(--accent-primary);
+}
+
+.patrol-avatar__action.is-primary:hover { background: var(--accent-hover); }
+
+.patrol-avatar__action.is-secondary {
+  color: var(--text-accent);
+  border: 1px solid var(--border-accent);
+  background: var(--surface-base);
+}
+
+.patrol-avatar__action.is-secondary:hover { background: var(--surface-accent); }
 
 @keyframes patrol-avatar-hover {
   0%, 100% { transform: translateY(0); }

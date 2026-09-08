@@ -2,8 +2,8 @@
 本文件对外提供 desktop_router，作为桌面 PoC 的 HTTP 与 SSE 接口层。
 
 输入为带 `X-Focus-Session` 的桌面请求以及 models.py 定义的数据模型；输出为工作区、
-Context、任务、草稿、运行、材料 JSON 或独立 SSE 流。具体工作流为校验本机会话后调用
-DesktopService，并保持所有事件按 run_id 订阅。示例：`app.include_router(desktop_router)`。
+Context、任务、草稿、普通/策展 Patrol、运行、材料 JSON 或独立 SSE 流。具体工作流为
+校验本机会话后调用 DesktopService，并保持所有事件按 run_id 订阅。
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from backend.app.desktop.models import (
     ContextDefinitionUpdate,
     ContextDeriveCreate,
     ContextProjectionDecision,
+    ContextTrackingUpdate,
     DeployRequest,
     DraftUpdate,
     MainRunCreate,
@@ -130,7 +131,10 @@ async def update_context_definition(
 async def decide_context_projection(
     context_id: str, body: ContextProjectionDecision, request: Request
 ) -> dict:
-    return await request.app.state.desktop_service.contexts.decide(context_id, body)
+    service = request.app.state.desktop_service
+    result = await service.contexts.decide(context_id, body)
+    service.context_patrol.wake()
+    return result
 
 
 @desktop_router.post("/contexts/{context_id}/archive")
@@ -207,6 +211,20 @@ async def _launch(request: Request, prepared: PreparedRun | None) -> None:
 async def deploy(draft_id: str, body: DeployRequest, request: Request) -> dict:
     try:
         prepared = await request.app.state.desktop_service.deploy(draft_id, body.deployment_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    await _launch(request, prepared)
+    return prepared.payload
+
+
+@desktop_router.post("/tasks/{task_id}/context-curation/quick-deploy")
+async def quick_deploy_context_curator(
+    task_id: str, body: DeployRequest, request: Request
+) -> dict:
+    try:
+        prepared = await request.app.state.desktop_service.quick_deploy_context_curator(
+            task_id, body.deployment_id
+        )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     await _launch(request, prepared)
@@ -290,6 +308,27 @@ async def list_agents(task_id: str, request: Request) -> list[dict]:
 @desktop_router.get("/agents/{agent_id}/history")
 async def agent_history(agent_id: str, request: Request) -> list[dict]:
     return await request.app.state.desktop_service.agent_history(agent_id)
+
+
+@desktop_router.get("/agents/{agent_id}/context-curation")
+async def context_curation_detail(
+    agent_id: str,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    before: str | None = None,
+) -> dict:
+    return await request.app.state.desktop_service.context_patrol.detail(
+        agent_id, limit=limit, before=before
+    )
+
+
+@desktop_router.put("/agents/{agent_id}/context-curation/state")
+async def update_context_curation_state(
+    agent_id: str, body: ContextTrackingUpdate, request: Request
+) -> dict:
+    return await request.app.state.desktop_service.context_patrol.set_tracking_state(
+        agent_id, body.state
+    )
 
 
 @desktop_router.post("/agents/{agent_id}/retry")

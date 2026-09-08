@@ -451,10 +451,17 @@ def test_format_transcript_skips_synthetic_and_strips_metadata():
     text = _format_transcript([
         {"role": "human", "content": "讨论了数据库方案"},
         {"role": "tool", "name": "read_file", "content": "占位结果", "curation_synthetic": True},
+        {
+            "role": "ai",
+            "content": "可见策展总结",
+            "curation_synthetic": True,
+            "curation_source_message_ids": ["source-1"],
+        },
         {"role": "ai", "content": "最终决定使用 SQLite", "reasoning_content": "不可进入摘要的内部思考", "compression": {"block_id": "b"}},
     ])
     assert "讨论了数据库方案" in text
     assert "占位结果" not in text
+    assert "可见策展总结" in text
     assert "SQLite" in text
     assert "内部思考" not in text
 

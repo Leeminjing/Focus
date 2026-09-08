@@ -101,6 +101,23 @@
     return avatar?.agent_id ? `小兵 ${avatar.agent_id.slice(0, 8)}` : "Patrol 小兵";
   }
 
+  function avatarActions(avatar) {
+    if (Array.isArray(avatar?.actions) && avatar.actions.length) {
+      return avatar.actions
+        .filter(action => action && action.id && action.label)
+        .map(action => ({
+          id: String(action.id),
+          label: String(action.label),
+          tone: action.tone === "secondary" ? "secondary" : "primary",
+        }));
+    }
+    return [{
+      id: avatar?.agent_id ? "details" : "configure",
+      label: avatar?.action_label || (avatar?.agent_id ? "查看详情" : "布置任务"),
+      tone: "primary",
+    }];
+  }
+
   function mount(root, initial = {}) {
     if (!root) return { update() {}, destroy() {} };
     let options = { avatars: null, agents: [], positions: {}, onPositionCommit() {}, onAction: null, onOpenDetails() {}, ...initial };
@@ -192,6 +209,25 @@
       refreshVisual(record);
     }
 
+    function renderActions(record) {
+      record.actions.replaceChildren();
+      avatarActions(record.avatar).forEach(action => {
+        const actionButton = document.createElement("button");
+        actionButton.type = "button";
+        actionButton.className = `patrol-avatar__action is-${action.tone}`;
+        actionButton.dataset.patrolAction = action.id;
+        actionButton.textContent = action.label;
+        actionButton.addEventListener("click", event => {
+          event.stopPropagation();
+          if (typeof options.onAction === "function") options.onAction(record.avatar, action);
+          else if (action.id === "details" && record.avatar.agent_id) {
+            options.onOpenDetails(record.avatar.agent_id);
+          }
+        });
+        record.actions.append(actionButton);
+      });
+    }
+
     function finishPointer(record, event, commit) {
       const drag = record.drag;
       if (!drag || event.pointerId !== drag.pointerId) return;
@@ -224,7 +260,7 @@
       const heading = document.createElement("strong");
       const statusNode = document.createElement("span");
       const message = document.createElement("p");
-      const detail = document.createElement("button");
+      const actions = document.createElement("div");
       const bubbleId = `patrol-avatar-bubble-${id}`;
 
       element.className = "patrol-avatar";
@@ -247,16 +283,14 @@
       heading.textContent = avatarLabel(avatar);
       statusNode.className = "patrol-avatar__status";
       message.className = "patrol-avatar__message";
-      detail.type = "button";
-      detail.className = "patrol-avatar__detail";
-      detail.textContent = avatar.action_label || "查看详情";
+      actions.className = "patrol-avatar__actions";
       button.append(image, fallback);
-      bubble.append(heading, statusNode, message, detail);
+      bubble.append(heading, statusNode, message, actions);
       element.append(button, bubble);
       root.append(element);
 
       const record = {
-        avatar, avatarId: id, index, element, button, image, fallback, bubble, heading, detail, statusNode, message,
+        avatar, avatarId: id, index, element, button, image, fallback, bubble, heading, actions, statusNode, message,
         position: sanitizePosition(position, defaultPosition(index)),
         status: "ready", motion: null, visualAsset: null, drag: null, suppressClick: false,
         celebrating: false, celebrationTimer: null, left: 0, top: 0,
@@ -276,11 +310,6 @@
           return;
         }
         toggleBubble(record);
-      });
-      detail.addEventListener("click", event => {
-        event.stopPropagation();
-        if (typeof options.onAction === "function") options.onAction(record.avatar);
-        else if (record.avatar.agent_id) options.onOpenDetails(record.avatar.agent_id);
       });
       button.addEventListener("pointerdown", event => {
         if (event.button !== 0 || event.isPrimary === false) return;
@@ -336,6 +365,7 @@
         }, 180);
       });
 
+      renderActions(record);
       applyStatus(record, avatarStatus(avatar));
       applyNormalizedPosition(record, record.position);
       return record;
@@ -378,7 +408,7 @@
           record.avatar = avatar;
           record.index = index;
           record.heading.textContent = avatarLabel(avatar);
-          record.detail.textContent = avatar.action_label || "查看详情";
+          renderActions(record);
           record.element.dataset.presence = avatar.presence || "agent";
           if (avatar.agent_id) record.element.dataset.agentId = avatar.agent_id;
           else delete record.element.dataset.agentId;
@@ -432,5 +462,6 @@
     avatarId,
     avatarStatus,
     avatarLabel,
+    avatarActions,
   });
 })(typeof window === "undefined" ? globalThis : window);

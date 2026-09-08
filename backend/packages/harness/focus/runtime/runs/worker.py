@@ -55,6 +55,7 @@ from typing import Any, Awaitable, Callable
 from langchain_core.runnables import RunnableConfig
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.graph import START
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Command
@@ -224,7 +225,9 @@ async def run_agent(
         if store is not None:
             agent.store = store
 
-        # 从已验证 checkpoint 恢复时先创建 clean fork，避免 replay 后续坏写入。
+        # 从指定的已验证 checkpoint 创建干净后继分支，避免重放该节点之后的坏写入。
+        # 新输入属于图入口而非某个业务节点；显式使用 START 才会既消除人工投影
+        # checkpoint 的 as_node 歧义，又按图的正常入口调度 model/首节点。
         stream_input = graph_input
         checkpoint_id = runnable_config.get("configurable", {}).get("checkpoint_id")
         if checkpoint_id is not None:
@@ -235,7 +238,11 @@ async def run_agent(
                     "checkpoint_ns": "",
                 },
             }
-            fork_config = await agent.aupdate_state(fork_input_config, graph_input)
+            fork_config = await agent.aupdate_state(
+                fork_input_config,
+                graph_input,
+                as_node=START,
+            )
             runnable_config = {
                 **runnable_config,
                 "configurable": {

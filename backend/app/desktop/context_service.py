@@ -1,6 +1,6 @@
 """
-本文件对外提供 ContextService，负责桌面 Context 的快照、派生、lineage、执行投影审批
-与独立 checkpoint 初始化。
+本文件对外提供 ContextService，负责桌面 Context 的快照、根解析、派生、lineage、执行
+投影审批、受管版本发布与独立 checkpoint 初始化。
 
 输入为桌面 session factory、LangGraph checkpointer、AppConfig 以及 Context 请求模型；
 输出为可直接返回给桌面 API 的 Context 数据。具体工作流为校验同工作区来源和已提交
@@ -14,7 +14,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timezone
 import logging
-from typing import Any
+from typing import Any, Literal
 import uuid
 
 from fastapi import HTTPException
@@ -35,6 +35,8 @@ from backend.app.desktop.models import (
     DesktopThread,
     DesktopWorkspace,
     PatrolAgent,
+    PatrolContextBinding,
+    PatrolContextRevision,
     PatrolDraft,
     SwarmAgent,
 )
@@ -76,26 +78,49 @@ class ContextService:
                 "checkpoint_id": None,
                 "messages": deepcopy(definition.authored_messages),
             }
+        # 未指定 checkpoint 时读取该 Context 的最新运行态。initial_checkpoint_id
+        # 只是派生/策展投影的起点，不是永久固定的读取指针；Context 一旦被执行，
+        # 后续用户与 AI 消息都存在同一 thread 的更新 checkpoint 中。
+        effective_checkpoint_id = checkpoint_id
         config = {"configurable": {"thread_id": task.thread_id, "checkpoint_ns": ""}}
-        if checkpoint_id:
-            config["configurable"]["checkpoint_id"] = checkpoint_id
+        if effective_checkpoint_id:
+            config["configurable"]["checkpoint_id"] = effective_checkpoint_id
         checkpoint = await self.checkpointer.aget_tuple(config)
         if checkpoint is None:
-            if checkpoint_id:
+            if effective_checkpoint_id:
                 raise HTTPException(404, "Context checkpoint 不存在")
             messages = deepcopy(definition.authored_messages) if definition else []
             return {"context_id": context_id, "checkpoint_id": None, "messages": messages}
         actual_id = checkpoint.config.get("configurable", {}).get("checkpoint_id")
-        if checkpoint_id and actual_id != checkpoint_id:
+        if effective_checkpoint_id and actual_id != effective_checkpoint_id:
             raise HTTPException(404, "Context checkpoint 不属于该 Context")
         values = checkpoint.checkpoint.get("channel_values", {})
         runtime_messages = [serialize_message(message) for message in values.get("messages", [])]
         messages = (
             self._display_messages(definition, runtime_messages)
-            if definition and (not checkpoint_id or checkpoint_id == definition.initial_checkpoint_id)
+            if definition and actual_id == definition.initial_checkpoint_id
             else runtime_messages
         )
         return {"context_id": context_id, "checkpoint_id": actual_id, "messages": messages}
+
+    async def resolve_chat_root(self, context_id: str) -> str:
+        async with self.session_factory() as session:
+            return await self._resolve_chat_root(session, context_id)
+
+    async def current_checkpoint_id(self, context_id: str) -> str | None:
+        async with self.session_factory() as session:
+            task = await session.get(DesktopThread, context_id)
+            if task is None:
+                raise HTTPException(404, "Context 不存在")
+            definition = await session.get(DesktopContextDefinition, context_id)
+        checkpoint = await self.checkpointer.aget_tuple(
+            {"configurable": {"thread_id": task.thread_id, "checkpoint_ns": ""}}
+        )
+        return (
+            checkpoint.config.get("configurable", {}).get("checkpoint_id")
+            if checkpoint is not None
+            else definition.initial_checkpoint_id if definition is not None else None
+        )
 
     async def derive(self, body: ContextDeriveCreate) -> dict[str, Any]:
         refs = [(source.context_id, source.checkpoint_id) for source in body.sources]
@@ -156,6 +181,15 @@ class ContextService:
     ) -> dict[str, Any]:
         projection = compile_context_messages(body.messages)
         async with self.session_factory() as session:
+            binding = await session.scalar(
+                select(PatrolContextBinding)
+                .where(PatrolContextBinding.managed_context_id == context_id)
+                .with_for_update()
+            )
+            if binding and binding.control_state != "stopped":
+                binding.control_state = "stopped"
+                binding.health_state = "idle"
+                binding.revision += 1
             definition = await session.scalar(
                 select(DesktopContextDefinition)
                 .where(DesktopContextDefinition.context_id == context_id)
@@ -186,7 +220,16 @@ class ContextService:
         self, context_id: str, body: ContextProjectionDecision
     ) -> dict[str, Any]:
         async with self.session_factory() as session:
-            definition = await session.get(DesktopContextDefinition, context_id)
+            binding = await session.scalar(
+                select(PatrolContextBinding)
+                .where(PatrolContextBinding.managed_context_id == context_id)
+                .with_for_update()
+            )
+            definition = await session.scalar(
+                select(DesktopContextDefinition)
+                .where(DesktopContextDefinition.context_id == context_id)
+                .with_for_update()
+            )
             if not definition:
                 raise HTTPException(404, "派生 Context 不存在")
             if (
@@ -211,7 +254,560 @@ class ContextService:
             await session.commit()
         if body.decision == "accept":
             await self._initialize(context_id, "approved")
+            if binding is not None:
+                await self._complete_managed_approval(binding.binding_id)
+        elif binding is not None:
+            await self._reject_managed_approval(binding.binding_id)
         return await self.get(context_id)
+
+    async def publish_managed_revision(
+        self,
+        revision_id: str,
+        messages: list[dict[str, Any]],
+        dispositions: list[dict[str, Any]],
+        *,
+        outcome: Literal["replace", "no_change"] = "replace",
+    ) -> str:
+        """以绑定游标 CAS 发布整版 Context 或确认无变化。"""
+        if outcome == "no_change":
+            if messages:
+                raise ValueError("no_change 不得携带 authored messages")
+            return await self._acknowledge_unchanged_revision(revision_id, dispositions)
+        projection = compile_context_messages(messages)
+        if projection.status != "valid":
+            return await self._reject_invalid_managed_projection(
+                revision_id, projection, dispositions
+            )
+        async with self.session_factory() as session:
+            revision_probe = await session.get(PatrolContextRevision, revision_id)
+            if revision_probe is None:
+                raise HTTPException(404, "策展修订不存在")
+            binding = await session.scalar(
+                select(PatrolContextBinding)
+                .where(PatrolContextBinding.binding_id == revision_probe.binding_id)
+                .with_for_update()
+            )
+            if binding is None:
+                raise HTTPException(404, "策展绑定不存在")
+            if binding.managed_context_id:
+                await session.scalar(
+                    select(DesktopContextDefinition)
+                    .where(DesktopContextDefinition.context_id == binding.managed_context_id)
+                    .with_for_update()
+                )
+            revision = await session.scalar(
+                select(PatrolContextRevision)
+                .where(PatrolContextRevision.revision_id == revision_id)
+                .with_for_update()
+            )
+            if not self._revision_is_current(binding, revision):
+                revision.status = "superseded"
+                revision.completed_at = datetime.now(timezone.utc)
+                await session.commit()
+                return "superseded"
+
+            task, definition = await self._ensure_managed_rows(
+                session, binding, projection, revision.source_checkpoint_id
+            )
+            active_main_run = await session.scalar(
+                select(DesktopRun.run_id)
+                .where(
+                    DesktopRun.task_id == task.task_id,
+                    DesktopRun.kind == "main",
+                    DesktopRun.status.in_(["pending", "running"]),
+                )
+                .limit(1)
+            )
+            if active_main_run is not None:
+                revision.status = "observed"
+                binding.health_state = "idle"
+                await session.commit()
+                return "deferred"
+            has_main_run = bool(
+                await session.scalar(
+                    select(DesktopRun.run_id)
+                    .where(DesktopRun.task_id == task.task_id, DesktopRun.kind == "main")
+                    .limit(1)
+                )
+            )
+            revision.authored_messages = deepcopy(projection.authored_messages)
+            revision.execution_messages = deepcopy(projection.execution_messages)
+            revision.disposition_manifest = deepcopy(dispositions)
+            revision.repair_manifest = deepcopy(projection.repair_manifest)
+            revision.issues = deepcopy(projection.issues)
+            revision.definition_hash = projection.definition_hash
+            revision.projection_hash = projection.projection_hash
+            revision.projection_status = projection.status
+            revision.status = "publishing"
+            thread_id = task.thread_id
+            base_checkpoint_id = definition.initial_checkpoint_id
+            previous_initial_message_ids = set(definition.initial_message_ids or [])
+            await session.commit()
+
+        try:
+            suffix_messages: list[dict[str, Any]] = []
+            if has_main_run:
+                latest = await self.checkpointer.aget_tuple(
+                    {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+                )
+                if latest is not None:
+                    base_checkpoint_id = latest.config.get("configurable", {}).get(
+                        "checkpoint_id"
+                    )
+                    suffix_messages = [
+                        serialize_message(message)
+                        for message in latest.checkpoint.get("channel_values", {}).get(
+                            "messages", []
+                        )
+                        if message.id not in previous_initial_message_ids
+                    ]
+            checkpoint_id, initial_ids = await self._write_projection_checkpoint(
+                thread_id,
+                projection.execution_messages,
+                base_checkpoint_id,
+                suffix_messages=suffix_messages,
+            )
+        except Exception as exc:
+            await self.fail_managed_revision(revision_id, str(exc))
+            return "error"
+
+        async with self.session_factory() as session:
+            revision_probe = await session.get(PatrolContextRevision, revision_id)
+            if revision_probe is None:
+                return "superseded"
+            binding = await session.scalar(
+                select(PatrolContextBinding)
+                .where(PatrolContextBinding.binding_id == revision_probe.binding_id)
+                .with_for_update()
+            )
+            definition = await session.scalar(
+                select(DesktopContextDefinition)
+                .where(DesktopContextDefinition.context_id == binding.managed_context_id)
+                .with_for_update()
+            )
+            revision = await session.scalar(
+                select(PatrolContextRevision)
+                .where(PatrolContextRevision.revision_id == revision_id)
+                .with_for_update()
+            )
+            if not self._revision_is_current(binding, revision) or revision.status != "publishing":
+                revision.status = "superseded"
+                revision.completed_at = datetime.now(timezone.utc)
+                await session.commit()
+                return "superseded"
+            active_main_run = await session.scalar(
+                select(DesktopRun.run_id)
+                .where(
+                    DesktopRun.task_id == binding.managed_context_id,
+                    DesktopRun.kind == "main",
+                    DesktopRun.status.in_(["pending", "running"]),
+                )
+                .limit(1)
+            )
+            if active_main_run:
+                revision.status = "observed"
+                binding.health_state = "idle"
+                await session.commit()
+                return "deferred"
+
+            self._apply_projection(definition, projection)
+            definition.initial_checkpoint_id = checkpoint_id
+            definition.initial_message_ids = initial_ids
+            definition.projection_status = projection.status
+            source = await session.scalar(
+                select(DesktopContextSource)
+                .where(DesktopContextSource.context_id == binding.managed_context_id)
+                .order_by(DesktopContextSource.position)
+                .with_for_update()
+            )
+            if source is not None:
+                source.source_checkpoint_id = revision.source_checkpoint_id
+            binding.published_checkpoint_id = revision.source_checkpoint_id
+            binding.prepared_checkpoint_id = revision.source_checkpoint_id
+            binding.revision += 1
+            binding.health_state = "idle"
+            binding.last_error = None
+            revision.status = "published"
+            revision.published_context_checkpoint_id = checkpoint_id
+            revision.completed_at = datetime.now(timezone.utc)
+            revision.published_at = datetime.now(timezone.utc)
+            await session.commit()
+        return "published"
+
+    async def _acknowledge_unchanged_revision(
+        self,
+        revision_id: str,
+        dispositions: list[dict[str, Any]],
+    ) -> str:
+        async with self.session_factory() as session:
+            revision_probe = await session.get(PatrolContextRevision, revision_id)
+            if revision_probe is None:
+                raise HTTPException(404, "策展修订不存在")
+            binding = await session.scalar(
+                select(PatrolContextBinding)
+                .where(PatrolContextBinding.binding_id == revision_probe.binding_id)
+                .with_for_update()
+            )
+            revision = await session.scalar(
+                select(PatrolContextRevision)
+                .where(PatrolContextRevision.revision_id == revision_id)
+                .with_for_update()
+            )
+            if binding is None or revision is None:
+                raise HTTPException(404, "策展绑定或修订不存在")
+            if not self._revision_is_current(binding, revision):
+                revision.status = "superseded"
+                revision.completed_at = datetime.now(timezone.utc)
+                await session.commit()
+                return "superseded"
+            revision.authored_messages = []
+            revision.execution_messages = []
+            revision.disposition_manifest = deepcopy(dispositions)
+            revision.repair_manifest = []
+            revision.issues = []
+            revision.projection_status = "unchanged"
+            revision.status = "unchanged"
+            revision.error = None
+            revision.completed_at = datetime.now(timezone.utc)
+            revision.published_at = datetime.now(timezone.utc)
+            binding.published_checkpoint_id = revision.source_checkpoint_id
+            binding.prepared_checkpoint_id = revision.source_checkpoint_id
+            binding.revision += 1
+            binding.health_state = "idle"
+            binding.last_error = None
+            await session.commit()
+        return "unchanged"
+
+    async def _reject_invalid_managed_projection(
+        self,
+        revision_id: str,
+        projection: ContextProjection,
+        dispositions: list[dict[str, Any]],
+    ) -> str:
+        error = (
+            "自动策展候选必须直接得到 valid 投影；"
+            f"实际为 {projection.status}，不得通过隐藏修补或人工审批发布"
+        )
+        async with self.session_factory() as session:
+            revision_probe = await session.get(PatrolContextRevision, revision_id)
+            if revision_probe is None:
+                raise HTTPException(404, "策展修订不存在")
+            binding = await session.scalar(
+                select(PatrolContextBinding)
+                .where(PatrolContextBinding.binding_id == revision_probe.binding_id)
+                .with_for_update()
+            )
+            revision = await session.scalar(
+                select(PatrolContextRevision)
+                .where(PatrolContextRevision.revision_id == revision_id)
+                .with_for_update()
+            )
+            if binding is None or revision is None:
+                raise HTTPException(404, "策展绑定或修订不存在")
+            if not self._revision_is_current(binding, revision):
+                revision.status = "superseded"
+                revision.completed_at = datetime.now(timezone.utc)
+                await session.commit()
+                return "superseded"
+            revision.authored_messages = deepcopy(projection.authored_messages)
+            revision.execution_messages = deepcopy(projection.execution_messages)
+            revision.disposition_manifest = deepcopy(dispositions)
+            revision.repair_manifest = deepcopy(projection.repair_manifest)
+            revision.issues = deepcopy(projection.issues)
+            revision.definition_hash = projection.definition_hash
+            revision.projection_hash = projection.projection_hash
+            revision.projection_status = projection.status
+            revision.status = "error"
+            revision.error = error
+            revision.completed_at = datetime.now(timezone.utc)
+            binding.health_state = "degraded"
+            binding.last_error = error
+            await session.commit()
+        return "invalid"
+
+    async def fail_managed_revision(self, revision_id: str, error: str) -> None:
+        abandoned_thread_id: str | None = None
+        async with self.session_factory() as session:
+            revision_probe = await session.get(PatrolContextRevision, revision_id)
+            if revision_probe is None:
+                return
+            binding = await session.scalar(
+                select(PatrolContextBinding)
+                .where(PatrolContextBinding.binding_id == revision_probe.binding_id)
+                .with_for_update()
+            )
+            definition = (
+                await session.scalar(
+                    select(DesktopContextDefinition)
+                    .where(
+                        DesktopContextDefinition.context_id
+                        == binding.managed_context_id
+                    )
+                    .with_for_update()
+                )
+                if binding is not None and binding.managed_context_id
+                else None
+            )
+            revision = await session.scalar(
+                select(PatrolContextRevision)
+                .where(PatrolContextRevision.revision_id == revision_id)
+                .with_for_update()
+            )
+            if revision.status in {"published", "superseded"}:
+                return
+            revision.status = "error"
+            revision.error = error
+            revision.completed_at = datetime.now(timezone.utc)
+            if binding is not None:
+                binding.last_error = error
+                binding.health_state = "degraded"
+                if (
+                    binding.published_checkpoint_id is None
+                    and definition is not None
+                    and definition.initial_checkpoint_id is None
+                ):
+                    task = await session.get(DesktopThread, binding.managed_context_id)
+                    if task is not None:
+                        abandoned_thread_id = task.thread_id
+                        await session.execute(
+                            delete(DesktopThread).where(
+                                DesktopThread.task_id == binding.managed_context_id
+                            )
+                        )
+                    binding.managed_context_id = None
+            await session.commit()
+        if abandoned_thread_id is not None:
+            try:
+                await self.checkpointer.adelete_thread(abandoned_thread_id)
+            except Exception:
+                logger.warning(
+                    "清理失败的首版受管 Context checkpoint 失败: thread_id=%s",
+                    abandoned_thread_id,
+                    exc_info=True,
+                )
+
+    async def _reject_managed_approval(self, binding_id: str) -> None:
+        """拒绝当前候选并恢复上一成功发布版本；首次候选则等待新的根版本。"""
+        async with self.session_factory() as session:
+            binding_probe = await session.get(PatrolContextBinding, binding_id)
+            if binding_probe is None or binding_probe.health_state != "blocked":
+                return
+            task = await session.get(DesktopThread, binding_probe.managed_context_id)
+            previous = await session.scalar(
+                select(PatrolContextRevision)
+                .where(
+                    PatrolContextRevision.binding_id == binding_id,
+                    PatrolContextRevision.status == "published",
+                )
+                .order_by(PatrolContextRevision.published_at.desc())
+            )
+        initial_ids: list[str] = []
+        if previous is not None and previous.published_context_checkpoint_id and task is not None:
+            checkpoint = await self.checkpointer.aget_tuple({
+                "configurable": {
+                    "thread_id": task.thread_id,
+                    "checkpoint_ns": "",
+                    "checkpoint_id": previous.published_context_checkpoint_id,
+                }
+            })
+            if checkpoint is not None:
+                initial_ids = [
+                    message.id
+                    for message in checkpoint.checkpoint.get("channel_values", {}).get(
+                        "messages", []
+                    )
+                    if message.id
+                ]
+
+        async with self.session_factory() as session:
+            binding = await session.scalar(
+                select(PatrolContextBinding)
+                .where(PatrolContextBinding.binding_id == binding_id)
+                .with_for_update()
+            )
+            if binding is None or binding.health_state != "blocked":
+                return
+            definition = await session.scalar(
+                select(DesktopContextDefinition)
+                .where(DesktopContextDefinition.context_id == binding.managed_context_id)
+                .with_for_update()
+            )
+            rejected = await session.scalar(
+                select(PatrolContextRevision)
+                .where(
+                    PatrolContextRevision.binding_id == binding_id,
+                    PatrolContextRevision.status == "approval_required",
+                )
+                .order_by(PatrolContextRevision.created_at.desc())
+                .with_for_update()
+            )
+            if definition is None or rejected is None:
+                return
+            previous = await session.scalar(
+                select(PatrolContextRevision)
+                .where(
+                    PatrolContextRevision.binding_id == binding_id,
+                    PatrolContextRevision.status == "published",
+                )
+                .order_by(PatrolContextRevision.published_at.desc())
+            )
+            rejected.status = "superseded"
+            rejected.completed_at = datetime.now(timezone.utc)
+            binding.health_state = "idle"
+            binding.revision += 1
+            binding.last_error = None
+            if previous is not None:
+                definition.authored_messages = deepcopy(previous.authored_messages)
+                definition.execution_messages = deepcopy(previous.execution_messages)
+                definition.repair_manifest = deepcopy(previous.repair_manifest)
+                definition.issues = deepcopy(previous.issues)
+                definition.definition_hash = previous.definition_hash
+                definition.projection_hash = previous.projection_hash
+                definition.projection_status = previous.projection_status
+                definition.initial_checkpoint_id = previous.published_context_checkpoint_id
+                definition.initial_message_ids = initial_ids
+            source = await session.scalar(
+                select(DesktopContextSource)
+                .where(DesktopContextSource.context_id == binding.managed_context_id)
+                .order_by(DesktopContextSource.position)
+                .with_for_update()
+            )
+            if source is not None and binding.published_checkpoint_id:
+                source.source_checkpoint_id = binding.published_checkpoint_id
+            pending = await session.scalar(
+                select(PatrolContextRevision).where(
+                    PatrolContextRevision.binding_id == binding_id,
+                    PatrolContextRevision.source_checkpoint_id
+                    == binding.desired_checkpoint_id,
+                    PatrolContextRevision.status == "observed",
+                )
+            )
+            if pending is not None:
+                pending.base_binding_revision = binding.revision
+                pending.source_payload = {
+                    **(pending.source_payload or {}),
+                    "base_binding_revision": binding.revision,
+                }
+            await session.commit()
+
+    async def _ensure_managed_rows(
+        self,
+        session: AsyncSession,
+        binding: PatrolContextBinding,
+        projection: ContextProjection,
+        source_checkpoint_id: str,
+    ) -> tuple[DesktopThread, DesktopContextDefinition]:
+        if binding.managed_context_id is not None:
+            task = await session.get(DesktopThread, binding.managed_context_id)
+            definition = await session.get(DesktopContextDefinition, binding.managed_context_id)
+            if task is None or definition is None:
+                raise HTTPException(409, "受管 Context 已不存在")
+            return task, definition
+
+        root = await session.get(DesktopThread, binding.root_context_id)
+        if root is None:
+            raise HTTPException(409, "根 Context 已不存在")
+        context_id = _new_id()
+        task = DesktopThread(
+            task_id=context_id,
+            workspace_id=root.workspace_id,
+            thread_id=_new_id(),
+            title=f"{root.title} · 策展 Context",
+            ui_state={},
+        )
+        definition = DesktopContextDefinition(
+            context_id=context_id,
+            authored_messages=deepcopy(projection.authored_messages),
+            execution_messages=deepcopy(projection.execution_messages),
+            repair_manifest=deepcopy(projection.repair_manifest),
+            issues=deepcopy(projection.issues),
+            definition_hash=projection.definition_hash,
+            projection_hash=projection.projection_hash,
+            projection_status="initializing",
+            initial_message_ids=[],
+        )
+        source = DesktopContextSource(
+            source_id=_new_id(),
+            context_id=context_id,
+            parent_context_id=binding.root_context_id,
+            source_checkpoint_id=source_checkpoint_id,
+            position=0,
+        )
+        session.add(task)
+        await session.flush()
+        session.add_all([definition, source])
+        await session.flush()
+        binding.managed_context_id = context_id
+        return task, definition
+
+    @staticmethod
+    def _revision_is_current(
+        binding: PatrolContextBinding, revision: PatrolContextRevision
+    ) -> bool:
+        return (
+            binding.control_state == "following"
+            and binding.desired_checkpoint_id == revision.source_checkpoint_id
+            and binding.revision == revision.base_binding_revision
+            and revision.status in {"ready", "publishing"}
+        )
+
+    async def _complete_managed_approval(self, binding_id: str) -> None:
+        async with self.session_factory() as session:
+            binding = await session.scalar(
+                select(PatrolContextBinding)
+                .where(PatrolContextBinding.binding_id == binding_id)
+                .with_for_update()
+            )
+            if binding is None or binding.health_state != "blocked":
+                return
+            definition = await session.scalar(
+                select(DesktopContextDefinition)
+                .where(DesktopContextDefinition.context_id == binding.managed_context_id)
+                .with_for_update()
+            )
+            revision = await session.scalar(
+                select(PatrolContextRevision)
+                .where(
+                    PatrolContextRevision.binding_id == binding_id,
+                    PatrolContextRevision.status == "approval_required",
+                )
+                .order_by(PatrolContextRevision.created_at.desc())
+                .with_for_update()
+            )
+            if definition is None or revision is None or definition.initial_checkpoint_id is None:
+                return
+            source = await session.scalar(
+                select(DesktopContextSource)
+                .where(DesktopContextSource.context_id == binding.managed_context_id)
+                .order_by(DesktopContextSource.position)
+                .with_for_update()
+            )
+            if source is not None:
+                source.source_checkpoint_id = revision.source_checkpoint_id
+            binding.published_checkpoint_id = revision.source_checkpoint_id
+            binding.prepared_checkpoint_id = revision.source_checkpoint_id
+            binding.revision += 1
+            binding.health_state = "idle"
+            binding.last_error = None
+            revision.status = "published"
+            revision.published_context_checkpoint_id = definition.initial_checkpoint_id
+            revision.completed_at = datetime.now(timezone.utc)
+            revision.published_at = datetime.now(timezone.utc)
+            pending = await session.scalar(
+                select(PatrolContextRevision).where(
+                    PatrolContextRevision.binding_id == binding_id,
+                    PatrolContextRevision.source_checkpoint_id
+                    == binding.desired_checkpoint_id,
+                    PatrolContextRevision.status == "observed",
+                )
+            )
+            if pending is not None:
+                pending.base_binding_revision = binding.revision
+                pending.source_payload = {
+                    **(pending.source_payload or {}),
+                    "base_binding_revision": binding.revision,
+                }
+            await session.commit()
 
     async def archive(self, context_id: str, cascade: bool = False) -> dict[str, Any]:
         """归档一个会话（根/派生 Context）。归档可恢复；有后代时侧栏保留「已归档」墓碑。
@@ -241,8 +837,10 @@ class ContextService:
                     row = await session.get(DesktopThread, cid)
                     if row is not None and row.deleted_at is None:
                         row.archived_at = now
+                    await self._transition_bindings_for_context(session, cid, "paused")
             else:
                 task.archived_at = now
+                await self._transition_bindings_for_context(session, context_id, "paused")
             await session.commit()
         return {"context_id": context_id, "archived": True}
 
@@ -284,9 +882,12 @@ class ContextService:
                 raise HTTPException(409, "会话正在运行，不能删除")
             if cascade:
                 ids = [context_id, *await self._descendant_ids(session, context_id)]
+                for cid in ids:
+                    await self._transition_bindings_for_context(session, cid, "stopped")
                 await self._hard_delete_threads(session, ids, to_clean)
             else:
                 descendants = await self._descendant_ids(session, context_id)
+                await self._transition_bindings_for_context(session, context_id, "stopped")
                 if descendants:
                     await self._tombstone_deleted(session, task, to_clean)
                 else:
@@ -327,6 +928,7 @@ class ContextService:
                     raise HTTPException(404, f"会话不存在: {cid}")
                 if await self._has_active_run(session, cid):
                     raise HTTPException(409, f"会话正在运行，不能删除: {cid}")
+                await self._transition_bindings_for_context(session, cid, "stopped")
             hard: list[str] = []
             touched: set[str] = set()
             for cid in ids:
@@ -398,7 +1000,18 @@ class ContextService:
                     .limit(1)
                 )
             )
-            return self._payload(task, definition, sources, editable=bool(definition) and not has_main_run)
+            binding = await session.scalar(
+                select(PatrolContextBinding).where(
+                    PatrolContextBinding.managed_context_id == context_id
+                )
+            )
+            return self._payload(
+                task,
+                definition,
+                sources,
+                editable=bool(definition) and not has_main_run,
+                managed_status=binding.control_state if binding else None,
+            )
 
     async def lineage(self, context_id: str) -> dict[str, Any]:
         payload = await self.get(context_id)
@@ -431,6 +1044,19 @@ class ContextService:
                         )
                     )
                 ).all()
+            } if tasks else {}
+            managed_bindings = {
+                item.managed_context_id: item
+                for item in (
+                    await session.scalars(
+                        select(PatrolContextBinding).where(
+                            PatrolContextBinding.managed_context_id.in_(
+                                [task.task_id for task in tasks]
+                            )
+                        )
+                    )
+                ).all()
+                if item.managed_context_id
             } if tasks else {}
             run_stats = {
                 task_id: (int(input_tokens or 0), int(hit_tokens or 0))
@@ -479,15 +1105,43 @@ class ContextService:
                     "cache_hit_tokens": hit_tokens,
                     "cache_hit_rate": hit_tokens / input_tokens if input_tokens else None,
                     "parents": [self._source_payload(source) for source in by_child.get(task.task_id, [])],
+                    "managed_status": (
+                        managed_bindings[task.task_id].control_state
+                        if task.task_id in managed_bindings else None
+                    ),
+                    "managed_health": (
+                        managed_bindings[task.task_id].health_state
+                        if task.task_id in managed_bindings else None
+                    ),
                 })
             return result
 
-    async def ensure_runnable(self, session: AsyncSession, context_id: str) -> None:
+    async def ensure_runnable(self, session: AsyncSession, context_id: str) -> str | None:
+        binding = await session.scalar(
+            select(PatrolContextBinding)
+            .where(PatrolContextBinding.managed_context_id == context_id)
+            .with_for_update()
+        )
         definition = await session.scalar(
             select(DesktopContextDefinition)
             .where(DesktopContextDefinition.context_id == context_id)
             .with_for_update()
         )
+        publishing = (
+            await session.scalar(
+                select(PatrolContextRevision.revision_id)
+                .where(
+                    PatrolContextRevision.binding_id == binding.binding_id,
+                    PatrolContextRevision.status == "publishing",
+                )
+                .with_for_update()
+                .limit(1)
+            )
+            if binding is not None
+            else None
+        )
+        if publishing is not None:
+            raise HTTPException(409, "受管 Context 正在发布新版本，请稍后再运行")
         if definition and definition.projection_status not in _RUNNABLE_STATUSES:
             raise HTTPException(
                 409,
@@ -497,6 +1151,27 @@ class ContextService:
                     "context": self._definition_payload(definition),
                 },
             )
+        if definition and definition.initial_checkpoint_id is None:
+            raise HTTPException(409, "Context 尚无完整可运行 checkpoint")
+        if binding is not None:
+            if binding.health_state == "blocked":
+                raise HTTPException(409, "受管 Context 仍在等待投影决断")
+            if binding.health_state in {"preparing", "running"}:
+                raise HTTPException(409, "受管 Context 正在更新，请稍后再运行")
+            has_main_run = bool(
+                await session.scalar(
+                    select(DesktopRun.run_id)
+                    .where(
+                        DesktopRun.task_id == context_id,
+                        DesktopRun.kind == "main",
+                    )
+                    .limit(1)
+                )
+            )
+            return definition.initial_checkpoint_id if not has_main_run else None
+        # 普通派生 Context 沿用自身 thread 的最新合法 checkpoint；由调用方的
+        # checkpoint recovery 统一处理降级。
+        return None
 
     async def _initialize(self, context_id: str, ready_status: str) -> None:
         async with self.session_factory() as session:
@@ -504,41 +1179,16 @@ class ContextService:
             definition = await session.get(DesktopContextDefinition, context_id)
             if not task or not definition:
                 raise HTTPException(404, "Context 不存在")
-            config = {"configurable": {"thread_id": task.thread_id, "checkpoint_ns": ""}}
-            existing = await self.checkpointer.aget_tuple(config)
             execution_messages = deepcopy(definition.execution_messages)
-            replace_existing = False
-            if existing is not None:
-                values = existing.checkpoint.get("channel_values", {})
-                stored = [serialize_message(message) for message in values.get("messages", [])]
-                if self._comparable_messages(stored) != self._comparable_messages(execution_messages):
-                    replace_existing = True
+            base_checkpoint_id = definition.initial_checkpoint_id
+            expected_definition_hash = definition.definition_hash
+            expected_projection_hash = definition.projection_hash
             definition.projection_status = "initializing"
             await session.commit()
         try:
-            if existing is None or replace_existing:
-                graph = await self._make_state_graph()
-                messages = deserialize_messages(execution_messages)
-                for raw, message in zip(execution_messages, messages):
-                    if raw.get("curation_synthetic"):
-                        message.additional_kwargs["curation_synthetic"] = True
-                update = (
-                    [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages]
-                    if replace_existing
-                    else messages
-                )
-                updated_config = await graph.aupdate_state(
-                    config,
-                    {"messages": update},
-                    as_node="model" if replace_existing else None,
-                )
-                state = await graph.aget_state(updated_config)
-                checkpoint_id = state.config.get("configurable", {}).get("checkpoint_id")
-                initial_ids = [message.id for message in state.values.get("messages", []) if message.id]
-            else:
-                checkpoint_id = existing.config.get("configurable", {}).get("checkpoint_id")
-                values = existing.checkpoint.get("channel_values", {})
-                initial_ids = [message.id for message in values.get("messages", []) if message.id]
+            checkpoint_id, initial_ids = await self._write_projection_checkpoint(
+                task.thread_id, execution_messages, base_checkpoint_id
+            )
         except Exception as exc:
             async with self.session_factory() as session:
                 definition = await session.get(DesktopContextDefinition, context_id)
@@ -548,8 +1198,17 @@ class ContextService:
                     await session.commit()
             return
         async with self.session_factory() as session:
-            definition = await session.get(DesktopContextDefinition, context_id)
+            definition = await session.scalar(
+                select(DesktopContextDefinition)
+                .where(DesktopContextDefinition.context_id == context_id)
+                .with_for_update()
+            )
             if not definition:
+                return
+            if (
+                definition.definition_hash != expected_definition_hash
+                or definition.projection_hash != expected_projection_hash
+            ):
                 return
             definition.initial_checkpoint_id = checkpoint_id
             definition.initial_message_ids = initial_ids
@@ -563,6 +1222,48 @@ class ContextService:
         graph.checkpointer = self.checkpointer
         return graph
 
+    async def _write_projection_checkpoint(
+        self,
+        thread_id: str,
+        execution_messages: list[dict[str, Any]],
+        base_checkpoint_id: str | None,
+        *,
+        suffix_messages: list[dict[str, Any]] | None = None,
+    ) -> tuple[str, list[str]]:
+        graph = await self._make_state_graph()
+        config: dict[str, Any] = {
+            "configurable": {"thread_id": thread_id, "checkpoint_ns": ""}
+        }
+        if base_checkpoint_id:
+            config["configurable"]["checkpoint_id"] = base_checkpoint_id
+        existing = await self.checkpointer.aget_tuple(config)
+        projected_messages = deserialize_messages(deepcopy(execution_messages))
+        for raw, message in zip(execution_messages, projected_messages):
+            if raw.get("curation_synthetic"):
+                message.additional_kwargs["curation_synthetic"] = True
+        preserved_messages = deserialize_messages(deepcopy(suffix_messages or []))
+        messages = [*projected_messages, *preserved_messages]
+        update = (
+            [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages]
+            if existing is not None
+            else messages
+        )
+        updated_config = await graph.aupdate_state(
+            config,
+            {"messages": update},
+            as_node="model" if existing is not None else None,
+        )
+        state = await graph.aget_state(updated_config)
+        checkpoint_id = state.config.get("configurable", {}).get("checkpoint_id")
+        if not checkpoint_id:
+            raise RuntimeError("写入 Context checkpoint 后未返回 checkpoint_id")
+        initial_ids = [
+            message.id
+            for message in state.values.get("messages", [])[: len(projected_messages)]
+            if message.id
+        ]
+        return checkpoint_id, initial_ids
+
     async def _require_checkpoint(self, thread_id: str, checkpoint_id: str) -> None:
         checkpoint = await self.checkpointer.aget_tuple(
             {"configurable": {"thread_id": thread_id, "checkpoint_ns": "", "checkpoint_id": checkpoint_id}}
@@ -570,6 +1271,25 @@ class ContextService:
         actual = checkpoint.config.get("configurable", {}).get("checkpoint_id") if checkpoint else None
         if actual != checkpoint_id:
             raise HTTPException(404, "来源 checkpoint 不存在或不属于指定 Context")
+
+    async def _resolve_chat_root(self, session: AsyncSession, context_id: str) -> str:
+        current = context_id
+        visited: set[str] = set()
+        while True:
+            if current in visited:
+                raise HTTPException(409, "Context 第一父链存在循环")
+            visited.add(current)
+            task = await session.get(DesktopThread, current)
+            if task is None or task.deleted_at is not None:
+                raise HTTPException(404, "Context 第一父链包含不存在或已删除节点")
+            source = await session.scalar(
+                select(DesktopContextSource)
+                .where(DesktopContextSource.context_id == current)
+                .order_by(DesktopContextSource.position)
+            )
+            if source is None:
+                return current
+            current = source.parent_context_id
 
     async def _has_active_run(self, session: AsyncSession, context_id: str) -> bool:
         """判断会话是否存在 pending/running 主运行（避免边运行边归档/删除）。"""
@@ -604,6 +1324,26 @@ class ContextService:
                     queue.append(cid)
         return result
 
+    async def _transition_bindings_for_context(
+        self, session: AsyncSession, context_id: str, target: str
+    ) -> None:
+        bindings = (
+            await session.scalars(
+                select(PatrolContextBinding)
+                .where(
+                    (PatrolContextBinding.root_context_id == context_id)
+                    | (PatrolContextBinding.managed_context_id == context_id)
+                )
+                .with_for_update()
+            )
+        ).all()
+        for binding in bindings:
+            if binding.control_state == "stopped":
+                continue
+            binding.control_state = target
+            binding.health_state = "idle"
+            binding.revision += 1
+
     async def _hard_delete_threads(
         self, session: AsyncSession, ids: list[str], to_clean: list[str]
     ) -> None:
@@ -612,6 +1352,11 @@ class ContextService:
         删除线程行会经 FK CASCADE 清掉其 definition/sources/runs 等关联记录；
         将被删线程的 thread_id 追加到 to_clean，供提交后清理 LangGraph checkpoint。
         """
+        await session.execute(
+            delete(DesktopContextSource).where(
+                DesktopContextSource.context_id.in_(ids)
+            )
+        )
         ordered = list(reversed(ids))
         for cid in ordered:
             row = await session.get(DesktopThread, cid)
@@ -638,7 +1383,9 @@ class ContextService:
         await session.execute(delete(DesktopRun).where(DesktopRun.task_id == cid))
         await session.execute(delete(DesktopMaterial).where(DesktopMaterial.task_id == cid))
         await session.execute(delete(PatrolDraft).where(PatrolDraft.task_id == cid))
-        await session.execute(delete(PatrolAgent).where(PatrolAgent.task_id == cid))
+        await session.execute(
+            delete(PatrolAgent).where(PatrolAgent.task_id == cid, PatrolAgent.mode == "standard")
+        )
         await session.execute(delete(SwarmAgent).where(SwarmAgent.task_id == cid))
         await session.execute(delete(AgentMessage).where(AgentMessage.task_id == cid))
         await session.execute(delete(AgentBoardTask).where(AgentBoardTask.thread_task_id == cid))
@@ -704,6 +1451,7 @@ class ContextService:
         sources: list[DesktopContextSource],
         *,
         editable: bool = False,
+        managed_status: str | None = None,
     ) -> dict[str, Any]:
         payload = {
             "context_id": task.task_id,
@@ -715,6 +1463,7 @@ class ContextService:
             "lifecycle": cls._lifecycle(task),
             "sources": [cls._source_payload(source) for source in sources],
             "editable": editable,
+            "managed_status": managed_status,
         }
         if definition:
             payload.update(cls._definition_payload(definition))

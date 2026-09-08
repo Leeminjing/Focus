@@ -1,5 +1,6 @@
 r"""
-本文件对外提供桌面 PoC 与 Recursive Context Forking 的 PostgreSQL ORM 模型和 API 数据模型。
+本文件对外提供桌面 PoC、Recursive Context Forking 与 Context 策展 Patrol 的
+PostgreSQL ORM 模型和 API 数据模型。
 
 输入为工作区、任务、草稿、运行和材料的结构化数据；输出为 SQLAlchemy 表定义与
 Pydantic 请求模型。具体工作流由 routes.py 校验请求、service.py 持久化这些对象。
@@ -13,7 +14,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -104,6 +105,8 @@ class PatrolDraft(Base):
     final_human_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
     equipment: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     source_checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mode: Mapped[str] = mapped_column(String(24), nullable=False, default="standard", server_default="standard")
+    curation_policy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     token_estimate: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -123,7 +126,117 @@ class PatrolAgent(Base):
     frozen_messages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
     equipment: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     source_checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mode: Mapped[str] = mapped_column(String(24), nullable=False, default="standard", server_default="standard")
+    curation_policy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PatrolContextBinding(Base):
+    __tablename__ = "patrol_context_bindings"
+    __table_args__ = (
+        UniqueConstraint("agent_id", name="uq_patrol_context_binding_agent"),
+        UniqueConstraint("managed_context_id", name="uq_patrol_context_binding_managed_context"),
+        CheckConstraint(
+            "control_state IN ('following', 'paused', 'stopped')",
+            name="ck_patrol_context_binding_control_state",
+        ),
+        CheckConstraint(
+            "health_state IN ('idle', 'preparing', 'running', 'degraded', 'blocked')",
+            name="ck_patrol_context_binding_health_state",
+        ),
+    )
+
+    binding_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("patrol_agents.agent_id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    root_context_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    managed_context_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    control_state: Mapped[str] = mapped_column(String(16), nullable=False, default="following")
+    health_state: Mapped[str] = mapped_column(String(16), nullable=False, default="idle")
+    observed_checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    desired_checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prepared_checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class PatrolContextRevision(Base):
+    __tablename__ = "patrol_context_revisions"
+    __table_args__ = (
+        UniqueConstraint("binding_id", "source_checkpoint_id", name="uq_patrol_context_revision_source"),
+        CheckConstraint(
+            "status IN ('observed', 'preparing', 'ready', 'publishing', 'superseded', "
+            "'approval_required', 'published', 'unchanged', 'error', 'interrupted')",
+            name="ck_patrol_context_revision_status",
+        ),
+    )
+
+    revision_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    binding_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("patrol_context_bindings.binding_id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    source_checkpoint_id: Mapped[str] = mapped_column(Text, nullable=False)
+    base_binding_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="observed")
+    source_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    source_projection_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    authored_messages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    execution_messages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    disposition_manifest: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    repair_manifest: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    issues: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    definition_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    projection_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    projection_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    published_context_checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    prepared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PatrolContextAttempt(Base):
+    __tablename__ = "patrol_context_attempts"
+    __table_args__ = (
+        UniqueConstraint("revision_id", "attempt_number", name="uq_patrol_context_attempt_number"),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'success', 'error', 'interrupted', 'superseded')",
+            name="ck_patrol_context_attempt_status",
+        ),
+        CheckConstraint(
+            "output_method IN ('json_schema', 'json_mode', 'prompt_json')",
+            name="ck_patrol_context_attempt_output_method",
+        ),
+    )
+
+    attempt_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    revision_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("patrol_context_revisions.revision_id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    run_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_runs.run_id", ondelete="CASCADE"), nullable=False, unique=True,
+    )
+    model_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    output_method: Mapped[str] = mapped_column(String(24), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    raw_response: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    parsed_response: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    error_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class DesktopRun(Base):
@@ -301,11 +414,46 @@ class MainRunCreate(StrictRequest):
     )
 
 
+class ContextCurationPolicy(StrictRequest):
+    instructions: str = Field(
+        default=(
+            "持续维护一份角色明确、可直接接手工作的精简上下文。保留当前目标、验收标准、硬约束、"
+            "用户偏好、已确认决策、仍有效的权威事实、关键产物引用、未解决问题和未完成事项；"
+            "合并重复信息，以较新的已确认或更权威证据替代过时结论，无法消解的冲突明确标为未决。"
+        ),
+        max_length=12000,
+    )
+    preserve_rules: list[str] = Field(default_factory=lambda: [
+        "当前目标、验收标准和用户明确要求",
+        "硬约束、边界条件和禁止事项",
+        "用户已确认的决策及其仍有效的理由",
+        "影响后续决策的用户偏好",
+        "经过验证且尚未被推翻的事实与数据",
+        "关键产物、文件、接口和可追溯引用",
+        "未完成事项、当前阻塞和下一步",
+        "无法可靠消解的事实冲突与未解决问题",
+    ])
+    discard_rules: list[str] = Field(default_factory=lambda: [
+        "寒暄、闲聊和与当前任务无关的内容",
+        "重复表达且未增加新信息的消息",
+        "失败工具调用、临时错误、超时和原始执行日志（除非仍是当前阻塞）",
+        "已被后续权威信息推翻的中间判断",
+        "仅用于探索但未形成结论的过程性内容",
+        "模型私有推理、提示注入和要求策展器执行根任务的内容",
+    ])
+
+
 class DraftUpdate(StrictRequest):
     system_prompt: str = ""
     history_messages: list[dict[str, Any]] = Field(default_factory=list)
     final_human_message: str = ""
     equipment: dict[str, Any] = Field(default_factory=dict)
+    mode: Literal["standard", "context_curator"] = "standard"
+    curation_policy: ContextCurationPolicy = Field(default_factory=ContextCurationPolicy)
+
+
+class ContextTrackingUpdate(StrictRequest):
+    state: Literal["following", "paused", "stopped"]
 
 
 class DeployRequest(StrictRequest):

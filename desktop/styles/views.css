@@ -116,6 +116,13 @@
   text-align: left;
 }
 
+.work-record .message-association {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
 .work-record-kicker {
   color: var(--text-accent);
   font-size: 10px;
@@ -320,6 +327,24 @@
 .agent-inspector-continue label { color: var(--text-secondary); font-size: 12px; font-weight: 650; }
 .agent-inspector-continue textarea { width: 100%; resize: vertical; padding: var(--space-3); }
 .agent-inspector-continue .primary { justify-self: end; }
+.curation-detail { display: grid; gap: var(--space-3); min-width: 0; }
+.curation-mode { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.curation-meta { display: grid; gap: var(--space-2); margin: 0; }
+.curation-meta > div { display: grid; gap: 2px; min-width: 0; }
+.curation-meta dt { color: var(--text-secondary); font-size: 11px; }
+.curation-meta dd { margin: 0; overflow-wrap: anywhere; font-size: 12px; }
+.curation-audit { display: grid; gap: var(--space-2); }
+.curation-audit h4 { margin: 0; }
+.curation-revision { border: 1px solid var(--border-subtle); border-radius: var(--radius-control); padding: var(--space-2); }
+.curation-revision summary { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); cursor: pointer; }
+.curation-dispositions { display: grid; gap: var(--space-1); margin-top: var(--space-2); }
+.curation-dispositions > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px var(--space-2); padding-block: var(--space-1); border-top: 1px solid var(--border-subtle); font-size: 11px; }
+.curation-dispositions > div span:last-child { grid-column: 1 / -1; color: var(--text-secondary); }
+.curation-source-evidence { margin-top: var(--space-2); font-size: 11px; }
+.curation-source-evidence > summary { cursor: pointer; color: var(--text-secondary); }
+.curation-source-evidence > div { display: grid; gap: var(--space-1); margin-top: var(--space-1); }
+.curation-source-evidence > div > div { display: grid; grid-template-columns: minmax(0, .8fr) auto minmax(0, 2fr); gap: var(--space-2); min-width: 0; }
+.curation-source-evidence span:last-child { overflow-wrap: anywhere; color: var(--text-secondary); }
 
 /* 全图：先按工作区，再按根 Context 分组；技术标识保持可展开而不抢占扫描层级。 */
 .map-view { height: auto; min-height: 100%; grid-template-rows: auto auto; align-content: start; gap: var(--space-3); }
@@ -502,7 +527,7 @@
   padding: 0;
   border: 0;
   border-radius: 0;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   overflow: hidden;
 }
 .draft-heading {
@@ -516,6 +541,11 @@
 }
 .draft-heading > .ui-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .draft-workflow { min-height: 0; overflow: auto; padding: var(--space-4); background: var(--surface-base); }
+.draft-mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: var(--space-2) var(--space-4); border-bottom: 1px solid var(--border-subtle); background: var(--surface-base); }
+.draft-mode-switch button { min-height: 36px; border: 1px solid transparent; border-radius: var(--radius-control); background: transparent; color: var(--text-secondary); }
+.draft-mode-switch button.is-active { border-color: var(--border-accent); background: var(--surface-accent); color: var(--text-accent); font-weight: 700; }
+.curation-policy-fields { display: grid; gap: var(--space-3); }
+.curation-policy-fields label { display: grid; gap: var(--space-2); color: var(--text-secondary); font-size: 12px; font-weight: 650; }
 .draft-step {
   display: grid;
   grid-template-columns: minmax(180px, 250px) minmax(0, 1fr);

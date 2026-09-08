@@ -19,7 +19,7 @@
     "request": 原始 compression_request 载荷}）
 
 具体工作流:
-    (1) 摘要：消息按 role 分节格式化（跳过 curation_synthetic 占位、剥离 compression
+    (1) 摘要：消息按 role 分节格式化（跳过协议占位、剥离 compression
         元数据），以中文概括 system prompt 单次 ainvoke
     (2) 恢复投影：读主图 checkpoint（checkpoint_ns=""）pending_writes 的 __interrupt__
         channel，取最新 type=compression_request 的 Interrupt.value；再按最近一次 main
@@ -100,10 +100,10 @@ def _message_text(content: Any) -> str:
 
 
 def _format_transcript(messages: list[dict[str, Any]]) -> str:
-    """按 role 分节格式化；跳过 curation_synthetic 占位与 compression 元数据。"""
+    """按 role 分节格式化；跳过协议占位，保留有来源证据的策展总结。"""
     parts: list[str] = []
     for index, message in enumerate(messages, start=1):
-        if message.get("curation_synthetic"):
+        if message.get("curation_synthetic") and not message.get("curation_source_message_ids"):
             continue
         label = _role_label(message)
         content = _message_text(message.get("content", "")).strip()

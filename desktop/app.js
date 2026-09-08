@@ -1,8 +1,8 @@
 /*
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
  * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
- * 对话/Context/Agent/Commitment/压缩/插件等视图；工作流只更新宿主挂载点并保留任务级
- * 草稿、滚动、化身位置与运行状态。
+ * 对话/Context/Agent/Commitment/压缩/插件等视图；工作流在任务列表替换时统一归一化活动
+ * Context，并通过单一异步事件边界更新宿主挂载点及保留任务级草稿、滚动、化身位置与运行状态。
  */
 "use strict";
 
@@ -59,12 +59,13 @@ const state = {
   mapTreeFocusKey: "",
   openMaterial: null,
   openDraftSection: null,
-  agentDialog: { agentId: null, messages: [], busy: false },
+  agentDetails: { agentId: null, messages: [], curation: null, busy: false },
   saveTimer: null,
   draftSaveRevisions: new Map(),
   creatingTask: false,
   statusTimer: null,
   deploying: false,
+  quickCuratingTaskIds: new Set(),
   mainInterrupting: false,
   mainSubmitting: false,
   streams: new Map(),
@@ -112,7 +113,6 @@ const shellTaskTitle = document.querySelector("#shellTaskTitle");
 const shellTaskMeta = document.querySelector("#shellTaskMeta");
 const dialog = document.querySelector("#taskDialog");
 const settingsDialog = document.querySelector("#settingsDialog");
-const agentDialog = document.querySelector("#agentDialog");
 const skillPicker = window.FocusSkillPicker;
 const contextEditor = window.FocusContextEditor;
 const compressionPanel = window.FocusCompressionPanel;
@@ -121,6 +121,7 @@ const mapCollapsibleView = window.FocusMapCollapsibleView;
 const memoryView = window.FocusMemoryView;
 const conversationEvents = window.FocusConversationEvents;
 const patrolPresence = window.FocusPatrolPresence;
+const contextCuratorPresentation = window.FocusContextCuratorPresentation;
 const patrolAvatar = window.FocusPatrolAvatar;
 // f18 插件视图宿主:插件前端脚本加载后经此注册视图与材料打开器
 window.__focusPluginViews = window.__focusPluginViews || {};
@@ -295,24 +296,39 @@ function setStatus(text, isError = false) {
   }
 }
 
-function activeTask() { return state.tasks.find(task => task.task_id === state.activeTaskId); }
+function activeTask() {
+  const task = state.tasks.find(item => item.task_id === state.activeTaskId);
+  return sessionLifecycle(task) === "active" ? task : undefined;
+}
+
+function replaceTasks(tasks) {
+  state.tasks = Array.isArray(tasks) ? tasks : [];
+  const selected = state.tasks.find(task =>
+    task.task_id === state.activeTaskId && sessionLifecycle(task) === "active"
+  );
+  state.activeTaskId = selected?.task_id
+    || state.tasks.find(task => sessionLifecycle(task) === "active")?.task_id
+    || null;
+  return activeTask();
+}
 
 async function bootstrap() {
   setStatus("正在连接…");
   try {
     const data = await api("/desktop/api/bootstrap");
-    state.tasks = data.tasks;
+    replaceTasks(data.tasks);
     state.equipment = data.equipment;
     await hydratePluginAssets(data.plugins || []);
     await hydrateContextTrees();
-    state.activeTaskId ||= state.tasks.find(task => sessionLifecycle(task) === "active")?.task_id || null;
     setStatus("");
     await hydrateActive();
-    render();
   } catch (error) {
     setStatus(error.message, true);
     app.innerHTML = `<section class="empty-state"><h1>桌面服务未就绪</h1><p>${escapeHtml(error.message)}</p><button class="primary" data-action="reload">重试</button></section>`;
+    return false;
   }
+  render();
+  return true;
 }
 
 async function hydrateActive(taskId = state.activeTaskId) {
@@ -347,7 +363,11 @@ function render() {
     app.replaceChildren(document.querySelector("#emptyTemplate").content.cloneNode(true));
     return;
   }
-  if (state.view === "focus") renderFocus();
+  if (state.view === "focus") {
+    const task = activeTask();
+    if (!task) renderNoActiveTask();
+    else renderFocus(task);
+  }
   else if (state.view === "map") renderMap();
   else if (state.view === "draft") renderDraft();
   else if (state.view === "compress") renderCompress();
@@ -362,8 +382,14 @@ function render() {
     state.view = "focus";
     setStatus("当前视图已不可用，已返回任务", true);
     renderShellChrome();
-    renderFocus();
+    const task = activeTask();
+    if (!task) renderNoActiveTask();
+    else renderFocus(task);
   }
+}
+
+function renderNoActiveTask() {
+  app.innerHTML = `<section class="empty-state"><h1>暂无活动 Context</h1><p>当前没有可进入的活动 Context。可以新建任务，或从设置中恢复已归档的 Context。</p><div class="ui-toolbar"><button class="primary" data-action="new-task">新增任务</button><button class="text-button" data-action="open-settings">查看已归档 Context</button></div></section>`;
 }
 
 function activeNavigationKey() {
@@ -431,16 +457,21 @@ function renderInspector() {
   }
   if (tab === "agents") {
     const agents = state.agents.get(task.task_id) || [];
-    if (state.agentDialog.agentId) {
-      const agent = agents.find(item => item.agent_id === state.agentDialog.agentId);
-      const status = agent?.latest_run?.status || "ready";
+    if (state.agentDetails.agentId) {
+      const agent = agents.find(item => item.agent_id === state.agentDetails.agentId);
+      const status = agent?.mode === "context_curator"
+        ? curatorPresentationStatus(agent)
+        : agent?.latest_run?.status || "ready";
       const presented = presentRunStatus(status);
+      const curator = agent?.mode === "context_curator";
       inspectorContent.innerHTML = `<section class="inspector-section agent-inspector-detail">
-        <header><button class="text-button" type="button" data-action="agent-list"><span class="ui-icon is-sm icon-chevron-left" aria-hidden="true"></span>Agents</button><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></header>
+        <header><button class="text-button" type="button" data-action="agent-list"><span class="ui-icon is-sm icon-chevron-left" aria-hidden="true"></span>Agents</button><span class="ui-badge is-${presented.tone}">${escapeHtml(curator ? curatorStateLabel(agent) : presented.label)}</span></header>
         <div><h3>${agent ? `小兵 ${escapeHtml(agent.agent_id.slice(0, 8))}` : "Agent"}</h3><p class="ui-meta">${escapeHtml(agent?.checkpoint_ns || "")}</p></div>
-        <div class="agent-detail-history">${state.agentDialog.busy ? '<p class="muted">加载中…</p>' : state.agentDialog.messages.length ? state.agentDialog.messages.map(renderMessage).join("") : '<p class="muted">暂无已提交消息</p>'}</div>
-        <div class="ui-toolbar agent-detail-actions"><button class="text-button" data-action="refresh-agent-details">刷新</button><button class="text-button" data-action="retry-agent-details">重试</button><button class="text-button danger" data-action="cancel-agent-details">取消运行</button></div>
-        <form class="agent-inspector-continue" id="agentInspectorContinueForm"><label for="agentInspectorInput">继续对话</label><textarea id="agentInspectorInput" rows="3" placeholder="给这个 Agent 追加指令…"></textarea><button class="primary" type="submit">继续</button></form>
+        ${curator
+          ? (state.agentDetails.busy ? '<p class="muted">加载中…</p>' : renderCuratorDetails(agent, state.agentDetails.curation))
+          : `<div class="agent-detail-history">${state.agentDetails.busy ? '<p class="muted">加载中…</p>' : state.agentDetails.messages.length ? state.agentDetails.messages.map(renderMessage).join("") : '<p class="muted">暂无已提交消息</p>'}</div>
+            <div class="ui-toolbar agent-detail-actions"><button class="text-button" data-action="refresh-agent-details">刷新</button><button class="text-button" data-action="retry-agent-details">重试</button><button class="text-button danger" data-action="cancel-agent-details">取消运行</button></div>
+            <form class="agent-inspector-continue" id="agentInspectorContinueForm"><label for="agentInspectorInput">继续对话</label><textarea id="agentInspectorInput" rows="3" placeholder="给这个 Agent 追加指令…"></textarea><button class="primary" type="submit">继续</button></form>`}
       </section>`;
       return;
     }
@@ -656,7 +687,7 @@ function renderContextRail(task) {
     return `<div class="context-rail-item${node?.editable ? " is-editable" : ""}" style="--context-depth:${depth}" data-context-depth="${depth}">
       <button type="button" class="context-rail-card${item.task_id === task.task_id ? " is-current" : ""}${blocked ? " is-blocked" : ""}" data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}">
         <span class="context-rail-title">${escapeHtml(item.title)}</span>
-        <span class="context-rail-meta">${depth ? "派生 Context" : "根 Context"} · ${escapeHtml(item.task_id.slice(0, 8))}${blocked ? ` · ${escapeHtml(projectionStatus)}` : ""} · 缓存 ${cacheRate}</span>
+        <span class="context-rail-meta">${depth ? "派生 Context" : "根 Context"} · ${escapeHtml(item.task_id.slice(0, 8))}${node?.managed_status ? ` · 受管 ${escapeHtml(curatorTrackingLabel(node.managed_status))}${node.managed_health && node.managed_health !== "idle" ? `/${escapeHtml(node.managed_health)}` : ""}` : ""}${blocked ? ` · ${escapeHtml(projectionStatus)}` : ""} · 缓存 ${cacheRate}</span>
         ${otherParents ? `<span class="context-rail-parents">另含：${escapeHtml(otherParents)}</span>` : ""}
       </button>
       ${node?.editable ? `<button type="button" class="context-rail-edit" data-action="edit-context-definition" data-context-id="${escapeHtml(item.task_id)}">编辑</button>` : ""}
@@ -672,8 +703,8 @@ function renderContextRail(task) {
   </aside>`;
 }
 
-function renderFocus() {
-  const task = activeTask();
+function renderFocus(task = activeTask()) {
+  if (!task) return renderNoActiveTask();
   const detail = state.details.get(task.task_id) || { messages: [] };
   const projectionStatus = detail.context?.projection_status || "root";
   const projectionBlocked = !["root", "valid", "repaired", "approved"].includes(projectionStatus);
@@ -972,15 +1003,14 @@ function renderMessageDetails(message) {
   return `<details class="message-details"><summary>技术详情</summary><dl>${metadata.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd><pre>${escapeHtml(String(value))}</pre></dd></div>`).join("")}</dl></details>`;
 }
 
-function renderMessage(message) {
+function renderMessage(message, { showRoleHeader = false } = {}) {
   // 后端兜底降级消息按工具结果样式渲染，不泄露原始 XML 标签
   const degraded = compressionPanel.degradedParts(message);
   if (degraded) {
     return `<article class="work-record message tool"><header class="work-record-header"><span class="work-record-kicker">TOOL</span><span class="message-role">工具 · ${escapeHtml(degraded.name || "tool")}</span></header><div class="message-content">${escapeHtml(degraded.content)}</div></article>`;
   }
-  const baseRole = { human: "你", user: "你", ai: "助手", assistant: "助手", system: "System", tool: "Tool" }[message.role] || message.role;
-  const role = message.role === "tool" && message.name ? `${baseRole} · ${message.name}` : baseRole;
-  const kind = { human: "human", user: "human", ai: "ai", assistant: "ai", system: "system", tool: "tool" }[message.role] || "system";
+  const semantics = contextCuratorPresentation.messageSemantics(message);
+  const kind = semantics.kind;
   // f19 dsh-eyes:图片提取为消息框上方的独立缩略图行(对齐 image8),气泡内只留文字。
   // 安全:字符串 human 消息 MUST 转义(否则消息内 HTML 会注入 DOM,如 <style> 覆盖主题变量)。
   const messageImages = collectMessageImages(message.content);
@@ -993,9 +1023,13 @@ function renderMessage(message) {
     content = escapeHtml(JSON.stringify(message.content, null, 2));
   }
   const renderedContent = kind === "ai" ? renderAssistantContent(content) : content;
-  const header = kind === "system"
-    ? `<header class="work-record-header"><span class="work-record-kicker">CONTEXT</span><span class="message-role">${escapeHtml(role || "系统上下文")}</span></header>`
-    : "";
+  const associations = semantics.associations.map(item => `<span class="message-association">${escapeHtml(item.direction)} ${escapeHtml(item.name)}${item.tool_call_id ? ` · ${escapeHtml(item.tool_call_id)}` : ""}</span>`).join("");
+  let header = "";
+  if (showRoleHeader) {
+    header = `<header class="work-record-header"><span class="work-record-kicker">${escapeHtml(semantics.roleLabel)}</span>${associations}</header>`;
+  } else if (kind === "system") {
+    header = `<header class="work-record-header"><span class="work-record-kicker">CONTEXT</span><span class="message-role">系统上下文</span>${associations}</header>`;
+  }
   return `<article class="work-record message ${kind}">
     ${header}
     ${renderMessageImages(messageImages)}${renderFileCards(message)}
@@ -1015,10 +1049,16 @@ function renderCompressionDivider(item) {
 }
 
 function renderConversation(detail, task) {
-  // 压缩块展开为来源原文渲染（保留原会话视觉），curation_synthetic 占位跳过
+  // 压缩块展开为来源原文渲染（保留原会话视觉），仅跳过执行协议占位
   const renderedParts = [];
   let messageGroup = [];
+  const roleStructured = Boolean(detail.context?.managed_status);
   const flushMessages = () => {
+    if (roleStructured) {
+      for (const message of messageGroup) renderedParts.push(renderMessage(message, { showRoleHeader: true }));
+      messageGroup = [];
+      return;
+    }
     let eventGroup = [];
     const flushEvents = () => {
       if (!eventGroup.length) return;
@@ -1169,7 +1209,12 @@ function renderAgentStrip(taskId) {
   const agents = state.agents.get(taskId) || [];
   const warning = agents.some(agent => agent.permissions?.some(permission => permission === "write" || permission === "host_command"))
     ? `<span class="write-warning">共享宿主机写入：并发冲突采用最后写入者结果</span>` : "";
-  return warning + agents.map(agent => `<button class="agent-chip" data-action="agent-details" data-agent-id="${agent.agent_id}">小兵 ${agent.agent_id.slice(0, 5)} · ${presentRunStatus(agent.latest_run?.status || "ready").label}</button>`).join("");
+  return warning + agents.map(agent => {
+    const status = agent.mode === "context_curator"
+      ? curatorStateLabel(agent)
+      : presentRunStatus(agent.latest_run?.status || "ready").label;
+    return `<button class="agent-chip" data-action="agent-details" data-agent-id="${agent.agent_id}">${agent.mode === "context_curator" ? "Context 策展 · " : ""}小兵 ${agent.agent_id.slice(0, 5)} · ${escapeHtml(status)}</button>`;
+  }).join("");
 }
 
 function patrolAvatarOptions(task, detail) {
@@ -1182,9 +1227,11 @@ function patrolAvatarOptions(task, detail) {
     avatars: composed.avatars,
     positions: composed.positions,
     onPositionCommit: (avatarId, position) => savePatrolAvatarPosition(task.task_id, avatarId, position),
-    onAction: avatar => avatar.presence === "standby"
-      ? openDraft(task.task_id)
-      : openAgentDetails(avatar.agent_id),
+    onAction: (avatar, action) => {
+      if (action.id === "quick-curate") return quickDeployContextCurator(task.task_id);
+      if (action.id === "configure") return openDraft(task.task_id);
+      if (action.id === "details" && avatar.agent_id) return openAgentDetails(avatar.agent_id);
+    },
   };
 }
 
@@ -1229,58 +1276,62 @@ function agentFromState(agentId) {
 }
 
 async function openAgentDetails(agentId) {
-  state.agentDialog = { agentId, messages: [], busy: false };
+  state.agentDetails = { agentId, messages: [], curation: null, busy: false };
   openInspector("agents", document.activeElement);
   await refreshAgentDetails();
 }
 
-async function refreshAgentDetails() {
-  if (!state.agentDialog.agentId || state.agentDialog.busy) return;
+async function refreshAgentDetails({ appendCuration = false } = {}) {
+  if (!state.agentDetails.agentId || state.agentDetails.busy) return;
   const requestId = ++agentDetailsRequestSequence;
-  const agentId = state.agentDialog.agentId;
+  const agentId = state.agentDetails.agentId;
   const taskId = state.activeTaskId;
-  state.agentDialog.busy = true;
-  renderAgentDialog();
+  state.agentDetails.busy = true;
   renderInspector();
   try {
-    const [history, agents] = await Promise.all([
+    const agent = agentFromState(agentId);
+    const cursor = appendCuration ? state.agentDetails.curation?.next_cursor : null;
+    const [history, agents, curation] = await Promise.all([
       api(`/desktop/api/agents/${agentId}/history`),
       api(`/desktop/api/tasks/${taskId}/agents`),
+      agent?.mode === "context_curator"
+        ? api(`/desktop/api/agents/${agentId}/context-curation${cursor ? `?before=${encodeURIComponent(cursor)}` : ""}`)
+        : Promise.resolve(null),
     ]);
     state.agents.set(taskId, agents);
     updatePatrolAvatarLayer(taskId);
     if (requestId === agentDetailsRequestSequence
         && state.activeTaskId === taskId
-        && state.agentDialog.agentId === agentId) {
-      state.agentDialog.messages = history;
+        && state.agentDetails.agentId === agentId) {
+      state.agentDetails.messages = history;
+      if (appendCuration && state.agentDetails.curation && curation) {
+        const known = new Set(state.agentDetails.curation.revisions.map(item => item.revision_id));
+        state.agentDetails.curation = {
+          ...state.agentDetails.curation,
+          next_cursor: curation.next_cursor,
+          revisions: [
+            ...state.agentDetails.curation.revisions,
+            ...curation.revisions.filter(item => !known.has(item.revision_id)),
+          ],
+        };
+      } else {
+        state.agentDetails.curation = curation;
+      }
     }
   } catch (error) { setStatus(error.message, true); }
   finally {
     if (requestId === agentDetailsRequestSequence
         && state.activeTaskId === taskId
-        && state.agentDialog.agentId === agentId) {
-      state.agentDialog.busy = false;
-      renderAgentDialog();
+        && state.agentDetails.agentId === agentId) {
+      state.agentDetails.busy = false;
       renderInspector();
     }
   }
 }
 
-function renderAgentDialog() {
-  const agent = agentFromState(state.agentDialog.agentId);
-  document.querySelector("#agentDialogMeta").textContent = agent
-    ? `小兵 ${agent.agent_id} · ${agent.latest_run?.status || "ready"} · ${agent.checkpoint_ns}`
-    : "";
-  const history = document.querySelector("#agentHistory");
-  if (state.agentDialog.busy) { history.innerHTML = `<p class="muted">加载中…</p>`; return; }
-  history.innerHTML = state.agentDialog.messages.length
-    ? state.agentDialog.messages.map(renderMessage).join("")
-    : `<p class="muted">暂无消息记录（该小兵尚未产生已提交的 checkpoint）</p>`;
-}
-
 async function retryAgentDetails() {
   try {
-    const run = await api(`/desktop/api/agents/${state.agentDialog.agentId}/retry`, { method: "POST" });
+    const run = await api(`/desktop/api/agents/${state.agentDetails.agentId}/retry`, { method: "POST" });
     listenToRun(run);
     setStatus("已发起小兵重试");
     await refreshAgentDetails();
@@ -1288,11 +1339,11 @@ async function retryAgentDetails() {
 }
 
 async function continueAgentDetails() {
-  const input = document.querySelector("#agentInspectorInput") || document.querySelector("#agentContinueInput");
+  const input = document.querySelector("#agentInspectorInput");
   const message = input.value.trim();
   if (!message) return;
   try {
-    const run = await api(`/desktop/api/agents/${state.agentDialog.agentId}/continue`, { method: "POST", body: JSON.stringify({ message }) });
+    const run = await api(`/desktop/api/agents/${state.agentDetails.agentId}/continue`, { method: "POST", body: JSON.stringify({ message }) });
     listenToRun(run);
     input.value = "";
     setStatus("已发起小兵继续对话");
@@ -1301,7 +1352,7 @@ async function continueAgentDetails() {
 }
 
 async function cancelAgentDetails() {
-  const agent = agentFromState(state.agentDialog.agentId);
+  const agent = agentFromState(state.agentDetails.agentId);
   if (!agent?.latest_run) return setStatus("该小兵尚无运行可取消", true);
   try {
     await api(`/desktop/api/runs/${agent.latest_run.run_id}/cancel`, { method: "POST" });
@@ -1716,6 +1767,91 @@ async function deleteMemory(memoryId) {
     await hydrateMemory();
     render();
   } catch (error) { setStatus(error.message, true); }
+}
+
+async function setCurationTrackingState(target) {
+  const agentId = state.agentDetails.agentId;
+  if (!agentId) return;
+  try {
+    state.agentDetails.curation = await api(`/desktop/api/agents/${agentId}/context-curation/state`, {
+      method: "PUT",
+      body: JSON.stringify({ state: target }),
+    });
+    setStatus(`Context 策展跟踪已${target === "following" ? "恢复" : target === "paused" ? "暂停" : "停止"}`);
+    await refreshAgentDetails();
+  } catch (error) { setStatus(error.message, true); }
+}
+
+function curatorTrackingLabel(status) {
+  return contextCuratorPresentation.trackingLabel(status);
+}
+
+function curatorPresentationStatus(agent) {
+  return contextCuratorPresentation.presentationStatus(agent);
+}
+
+function curatorStateLabel(agent) {
+  return contextCuratorPresentation.stateLabel(agent);
+}
+
+function shortCheckpoint(value) {
+  return value ? String(value).slice(0, 12) : "—";
+}
+
+function renderCurationAudit(curation) {
+  const revisions = curation?.revisions || [];
+  if (!revisions.length) return '<p class="muted">尚无策展版本。</p>';
+  return revisions.map(revision => {
+    const dispositions = revision.disposition_manifest || [];
+    const summary = dispositions.reduce((counts, item) => {
+      counts[item.action] = (counts[item.action] || 0) + 1;
+      return counts;
+    }, {});
+    const planItemTypes = contextCuratorPresentation.revisionPlanItemTypes(revision);
+    const sourceMessages = revision.source_payload?.source_snapshot?.messages || [];
+    return `<details class="curation-revision">
+      <summary><span>${escapeHtml(shortCheckpoint(revision.source_checkpoint_id))}</span><span class="ui-badge">${escapeHtml(revision.status)}</span></summary>
+      <dl class="curation-meta"><div><dt>投影</dt><dd>${escapeHtml(revision.projection_status || "—")}</dd></div><div><dt>发布时间</dt><dd>${escapeHtml(revision.published_at || "—")}</dd></div></dl>
+      <p class="tiny muted">使用 ${summary.used || (summary.retained || 0) + (summary.synthesized || 0)} · 舍弃 ${summary.discarded || 0}${planItemTypes.length ? ` · 计划 ${planItemTypes.map(escapeHtml).join(" / ")}` : ""}</p>
+      ${revision.error ? `<p class="tiny danger">${escapeHtml(revision.error)}</p>` : ""}
+      ${sourceMessages.length ? `<details class="curation-source-evidence"><summary>来源证据 · ${sourceMessages.length} 条</summary><div>${sourceMessages.map(message => `<div><code>${escapeHtml(message.source_message_id || "—")}</code><span>${escapeHtml(message.role || "—")}</span><span>${escapeHtml(compressionPanel.messageText(message).replace(/\s+/g, " ").slice(0, 160))}</span></div>`).join("")}</div></details>` : ""}
+      <div class="curation-dispositions">${dispositions.map(item => {
+        const targets = item.target_message_indexes || (item.target_message_index == null ? [] : [item.target_message_index]);
+        const itemTypes = (item.plan_items || []).map(planItem => planItem.plan_item_type).filter(Boolean);
+        return `<div><code>${escapeHtml(item.source_message_id)}</code><span>${escapeHtml(item.action)}</span><span>${escapeHtml(item.reason_category)}${targets.length ? ` · 目标消息 ${targets.map(index => `#${index + 1}`).join(", ")}` : ""}${itemTypes.length ? ` · ${itemTypes.map(escapeHtml).join(" / ")}` : ""}</span></div>`;
+      }).join("")}</div>
+      <div class="curation-attempts">${contextCuratorPresentation.attemptRows(revision).map(attempt => `<div><span>#${attempt.attempt_number}</span><span>${escapeHtml(attempt.model_name)}</span><span>${escapeHtml(attempt.output_method)}</span><span>${escapeHtml(attempt.status)}</span>${attempt.error_text ? `<span class="danger">${escapeHtml(attempt.error_text)}</span>` : ""}</div>`).join("")}</div>
+    </details>`;
+  }).join("");
+}
+
+function renderCuratorDetails(agent, curation) {
+  if (!curation) return '<p class="muted">加载策展状态中…</p>';
+  const status = curation.control_state;
+  const current = curation.latest_revision;
+  const managed = curation.managed_context;
+  return `<section class="curation-detail">
+    <div class="curation-mode"><span class="ui-badge is-success">Context 策展</span><strong>${escapeHtml(curatorStateLabel(curation))}</strong></div>
+    <dl class="curation-meta">
+      <div><dt>根 Context</dt><dd>${escapeHtml(curation.root_context?.title || curation.root_context?.context_id || "—")}</dd></div>
+      <div><dt>受管 Context</dt><dd>${escapeHtml(managed?.title || "等待首次发布")}</dd></div>
+      <div><dt>已观察 checkpoint</dt><dd><code>${escapeHtml(shortCheckpoint(curation.observed_checkpoint_id))}</code></dd></div>
+      <div><dt>目标 checkpoint</dt><dd><code>${escapeHtml(shortCheckpoint(curation.desired_checkpoint_id))}</code></dd></div>
+      <div><dt>已准备 checkpoint</dt><dd><code>${escapeHtml(shortCheckpoint(curation.prepared_checkpoint_id))}</code></dd></div>
+      <div><dt>已发布 checkpoint</dt><dd><code>${escapeHtml(shortCheckpoint(curation.published_checkpoint_id))}</code></dd></div>
+      <div><dt>处理健康</dt><dd>${escapeHtml(curation.health_state || "—")}</dd></div>
+      <div><dt>当前尝试</dt><dd>${current ? `${escapeHtml(current.status)} · ${escapeHtml(shortCheckpoint(current.source_checkpoint_id))}` : "—"}</dd></div>
+    </dl>
+    ${curation.last_error ? `<div class="ui-notice is-warning"><strong>最近失败</strong><span>${escapeHtml(curation.last_error)}</span></div>` : ""}
+    <div class="ui-toolbar agent-detail-actions">
+      ${managed ? `<button class="text-button" data-action="open-managed-context" data-context-id="${escapeHtml(managed.context_id)}">打开受管 Context</button>` : ""}
+      ${status === "following" ? '<button class="text-button" data-action="set-curation-state" data-state="paused">暂停</button>' : ""}
+      ${status === "paused" ? '<button class="text-button" data-action="set-curation-state" data-state="following">恢复</button>' : ""}
+      ${["following", "paused"].includes(status) ? '<button class="text-button danger" data-action="set-curation-state" data-state="stopped">停止跟踪</button>' : ""}
+      ${["pending", "running"].includes(agent?.latest_run?.status) ? '<button class="text-button danger" data-action="cancel-agent-details">取消当前尝试</button>' : ""}
+    </div>
+    <section class="curation-audit"><h4>策展版本</h4>${renderCurationAudit(curation)}${curation.next_cursor ? '<button class="text-button" data-action="load-more-curation">加载更早版本</button>' : ""}</section>
+  </section>`;
 }
 
 function persistMapViewPreferences() {
@@ -2267,22 +2403,48 @@ function renderDraft() {
   const draft = state.drafts.get(state.activeTaskId);
   const task = state.tasks.find(item => item.task_id === draft?.task_id);
   if (!draft || !task) { state.view = "map"; renderMap(); return; }
+  const curator = draft.mode === "context_curator";
   app.innerHTML = `<section class="draft-view">
     <section class="draft-panel">
-      <header class="draft-heading"><span class="ui-meta">来源 checkpoint ${escapeHtml(draft.source_checkpoint_id || "空历史")}</span><span class="ui-badge is-success">主 Agent 可继续运行</span></header>
+      <header class="draft-heading"><span class="ui-meta">${curator ? "跟踪起点" : "来源"} checkpoint ${escapeHtml(draft.source_checkpoint_id || "空历史")}</span><span class="ui-badge is-success">${curator ? "只读策展 · 无通用工具" : "主 Agent 可继续运行"}</span></header>
+      <nav class="draft-mode-switch" aria-label="Patrol 运行模式">
+        <button type="button" class="${curator ? "" : "is-active"}" data-action="set-patrol-mode" data-mode="standard">普通 Patrol</button>
+        <button type="button" class="${curator ? "is-active" : ""}" data-action="set-patrol-mode" data-mode="context_curator">Context 策展</button>
+      </nav>
       <div class="draft-workflow">
-        <section class="draft-step" data-step="objective"><header><span>01</span><div><h2>目标摘要</h2><p>说明这个 Agent 要完成什么，以及它应继承的系统约束。</p></div></header><div class="draft-step-body">
-          <div class="draft-field"><label for="draftFinalMessage">最终任务指令</label>${renderSkillPicker("draft", `<textarea id="draftFinalMessage" data-draft-field="final_human_message" placeholder="给小兵一个清晰、可验收的目标…">${escapeHtml(draft.final_human_message)}</textarea>`)}</div>
-          <details class="draft-advanced" ${state.openDraftSection === "system" ? "open" : ""}><summary>高级：System Prompt</summary><textarea data-draft-field="system_prompt">${escapeHtml(draft.system_prompt)}</textarea></details>
-        </div></section>
-        <section class="draft-step" data-step="history"><header><span>02</span><div><h2>消息编排</h2><p>调整交接历史；工具调用关联项会作为一个整体处理。</p></div></header><div class="draft-step-body">${renderHistory(draft)}</div></section>
-        <section class="draft-step" data-step="equipment"><header><span>03</span><div><h2>装备与权限</h2><p>选择模型与宿主权限；写入和命令会直接影响真实工作区。</p></div></header><div class="draft-step-body">${renderEquipment(draft)}</div></section>
+        ${curator ? renderCuratorDraftSteps(draft) : renderStandardDraftSteps(draft)}
         <section class="draft-step draft-confirm" data-step="confirm"><header><span>04</span><div><h2>确认投放</h2><p>草稿会自动保存。检查 token 预算和权限后再启动 Agent。</p></div></header><div class="draft-confirm-summary"><span id="draftSaveState" class="ui-badge is-success">自动保存</span><span class="token-count" id="tokenCount">估算 ${draft.token_estimate} tokens</span></div></section>
       </div>
       <footer class="draft-footer ui-action-bar"><button class="text-button" data-action="exit-draft">退出并保存</button><span class="muted tiny">草稿仅属于当前任务</span><button class="primary" data-action="deploy">确认并投放</button></footer>
     </section>
   </section>`;
   updateTokenState();
+}
+
+function renderStandardDraftSteps(draft) {
+  return `<section class="draft-step" data-step="objective"><header><span>01</span><div><h2>目标摘要</h2><p>说明这个 Agent 要完成什么，以及它应继承的系统约束。</p></div></header><div class="draft-step-body">
+    <div class="draft-field"><label for="draftFinalMessage">最终任务指令</label>${renderSkillPicker("draft", `<textarea id="draftFinalMessage" data-draft-field="final_human_message" placeholder="给小兵一个清晰、可验收的目标…">${escapeHtml(draft.final_human_message)}</textarea>`)}</div>
+    <details class="draft-advanced" ${state.openDraftSection === "system" ? "open" : ""}><summary>高级：System Prompt</summary><textarea data-draft-field="system_prompt">${escapeHtml(draft.system_prompt)}</textarea></details>
+  </div></section>
+  <section class="draft-step" data-step="history"><header><span>02</span><div><h2>消息编排</h2><p>调整交接历史；工具调用关联项会作为一个整体处理。</p></div></header><div class="draft-step-body">${renderHistory(draft)}</div></section>
+  <section class="draft-step" data-step="equipment"><header><span>03</span><div><h2>装备与权限</h2><p>选择模型与宿主权限；写入和命令会直接影响真实工作区。</p></div></header><div class="draft-step-body">${renderEquipment(draft)}</div></section>`;
+}
+
+function renderCuratorDraftSteps(draft) {
+  const policy = draft.curation_policy || {};
+  const root = state.tasks.find(item => item.task_id === draft.root_context_id);
+  return `<section class="draft-step" data-step="objective"><header><span>01</span><div><h2>跟踪来源</h2><p>Patrol 会持续读取这个聊天根的稳定主 checkpoint，而不是冻结当前历史。</p></div></header><div class="draft-step-body">
+    <dl class="curation-meta"><div><dt>聊天根 Context</dt><dd>${escapeHtml(root?.title || draft.root_context_id || "保存后解析")}</dd></div><div><dt>权限边界</dt><dd>只读 · 无技能 · 无通用工具</dd></div></dl>
+  </div></section>
+  <section class="draft-step" data-step="policy"><header><span>02</span><div><h2>策展策略</h2><p>定义需要保留、合成和舍弃的信息；每次投放后策略会被冻结。</p></div></header><div class="draft-step-body curation-policy-fields">
+    <label>策展指令<textarea data-curation-policy="instructions" placeholder="例如：保留目标、约束、已确认决策、有效事实和未完成事项。">${escapeHtml(policy.instructions || "")}</textarea></label>
+    <label>必须保留（每行一条）<textarea data-curation-policy="preserve_rules">${escapeHtml((policy.preserve_rules || []).join("\n"))}</textarea></label>
+    <label>应当舍弃（每行一条）<textarea data-curation-policy="discard_rules">${escapeHtml((policy.discard_rules || []).join("\n"))}</textarea></label>
+  </div></section>
+  <section class="draft-step" data-step="equipment"><header><span>03</span><div><h2>模型窗口</h2><p>完整根快照必须落在模型窗口内；系统不会静默裁剪来源。</p></div></header><div class="draft-step-body">
+    <label>模型<select data-equipment="model_name">${state.equipment.models.map(model => `<option value="${model.name}" ${model.name === draft.equipment?.model_name ? "selected" : ""}>${escapeHtml(model.display_name)} · ${model.context_window || "未知"}</option>`).join("")}</select></label>
+    <p class="tiny muted">运行时固定为 read 权限，不装配 skills、write 或 host_command。</p>
+  </div></section>`;
 }
 
 function renderHistory(draft) {
@@ -2363,6 +2525,50 @@ async function openDraft(taskId) {
   } catch (error) { if (requestId === draftOpenRequestSequence) setStatus(error.message, true); }
 }
 
+async function quickDeployContextCurator(taskId) {
+  if (state.quickCuratingTaskIds.has(taskId)) return;
+  state.quickCuratingTaskIds.add(taskId);
+  setStatus("正在启动持续 Context 策展…");
+  try {
+    const run = await api(`/desktop/api/tasks/${taskId}/context-curation/quick-deploy`, {
+      method: "POST",
+      body: JSON.stringify({ deployment_id: crypto.randomUUID() }),
+    });
+    listenToRun(run);
+    await Promise.all([refreshTasks(), hydrateContextTrees(), hydrateActive(taskId)]);
+    if (state.activeTaskId === taskId) render();
+    setStatus("已启动持续 Context 策展 Patrol");
+  } catch (error) {
+    setStatus(error.message, true);
+  } finally {
+    state.quickCuratingTaskIds.delete(taskId);
+  }
+}
+
+function defaultCurationPolicy(draft) {
+  const source = draft?.default_curation_policy || {};
+  return {
+    instructions: String(source.instructions || ""),
+    preserve_rules: Array.isArray(source.preserve_rules) ? [...source.preserve_rules] : [],
+    discard_rules: Array.isArray(source.discard_rules) ? [...source.discard_rules] : [],
+  };
+}
+
+function setDraftPatrolMode(draft, mode) {
+  if (!draft || !["standard", "context_curator"].includes(mode) || draft.mode === mode) return false;
+  draft.mode = mode;
+  if (mode === "context_curator") {
+    draft.curation_policy = defaultCurationPolicy(draft);
+    draft.equipment = {
+      ...(draft.equipment || {}),
+      model_name: draft.default_curation_model_name || draft.equipment?.model_name,
+      permissions: ["read"],
+      skills: [],
+    };
+  }
+  return true;
+}
+
 function syncDraftFromDom() {
   const draft = state.drafts.get(state.activeTaskId);
   if (!draft) return null;
@@ -2373,10 +2579,22 @@ function syncDraftFromDom() {
     message.content = row.querySelector('[data-message-field="content"]').value;
   });
   document.querySelectorAll("[data-draft-field]").forEach(input => { draft[input.dataset.draftField] = input.value; });
+  document.querySelectorAll("[data-curation-policy]").forEach(input => {
+    const field = input.dataset.curationPolicy;
+    draft.curation_policy ||= {};
+    draft.curation_policy[field] = field === "instructions"
+      ? input.value
+      : input.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+  });
   const model = document.querySelector('[data-equipment="model_name"]');
   if (model) draft.equipment.model_name = model.value;
-  draft.equipment.permissions = [...document.querySelectorAll("[data-permission]:checked")].map(input => input.dataset.permission);
-  draft.equipment.skills = normalizeSkillNames(draft.equipment.skills);
+  if (draft.mode === "context_curator") {
+    draft.equipment.permissions = ["read"];
+    draft.equipment.skills = [];
+  } else {
+    draft.equipment.permissions = [...document.querySelectorAll("[data-permission]:checked")].map(input => input.dataset.permission);
+    draft.equipment.skills = normalizeSkillNames(draft.equipment.skills);
+  }
   return draft;
 }
 
@@ -2407,6 +2625,8 @@ async function saveDraft(taskId = state.activeTaskId, options = {}) {
     history_messages: draft.history_messages,
     final_human_message: draft.final_human_message,
     equipment: draft.equipment,
+    mode: draft.mode || "standard",
+    curation_policy: draft.curation_policy || {},
   };
   try {
     const saved = await api(`/desktop/api/drafts/${draft.draft_id}`, { method: "PUT", body: JSON.stringify(payload) });
@@ -2435,7 +2655,7 @@ function updateTokenState() {
   const over = model?.context_window && draft.token_estimate > model.context_window;
   document.querySelector("#tokenCount")?.classList.toggle("over", Boolean(over));
   const deploy = document.querySelector('[data-action="deploy"]');
-  if (deploy) deploy.disabled = Boolean(over) || !draft.final_human_message?.trim();
+  if (deploy) deploy.disabled = Boolean(over) || (draft.mode !== "context_curator" && !draft.final_human_message?.trim());
 }
 
 async function deployDraft() {
@@ -2448,7 +2668,7 @@ async function deployDraft() {
     return;
   }
   const draft = state.drafts.get(state.activeTaskId);
-  if (!draft.final_human_message.trim()) {
+  if (draft.mode !== "context_curator" && !draft.final_human_message.trim()) {
     state.deploying = false;
     updateTokenState();
     return setStatus("最后一条 HumanMessage 不能为空", true);
@@ -3372,7 +3592,7 @@ function compressionRowPreview(message, isBlock) {
     if (summary) return summary.slice(0, 140);
     return sourceCount ? `来源 ${sourceCount} 条` : "（空压缩消息）";
   }
-  if (message.curation_synthetic) return "（工具结果已在压缩中省略）";
+  if (compressionPanel.isProtocolPlaceholder(message)) return "（工具结果已在压缩中省略）";
   const degraded = compressionPanel.degradedParts(message);
   const raw = degraded ? degraded.content : compressionPanel.messageText(message);
   const text = raw.replace(/\s+/g, " ").trim().slice(0, 140);
@@ -3401,8 +3621,9 @@ function renderCompressionMessages() {
   const plannedSourceIds = new Set(c.ranges.flatMap(range => range.source_ids || []));
   return c.messages.map((message, index) => {
     const isBlock = Boolean(message.compression);
+    const isProtocolPlaceholder = compressionPanel.isProtocolPlaceholder(message);
     const planned = plannedSourceIds.has(message.id);
-    return `<label class="compression-message-row${isBlock ? " is-block" : ""}${message.compression?.deleted ? " is-deleted" : ""}${message.curation_synthetic ? " is-synthetic" : ""}${planned ? " is-planned" : ""}">
+    return `<label class="compression-message-row${isBlock ? " is-block" : ""}${message.compression?.deleted ? " is-deleted" : ""}${isProtocolPlaceholder ? " is-synthetic" : ""}${planned ? " is-planned" : ""}">
       <input type="checkbox" data-action="toggle-compress-message" data-index="${index}" ${c.selected.has(index) ? "checked" : ""} ${planned ? "disabled title=\"已加入变更计划\"" : ""}>
       <span class="compression-index">${String(index + 1).padStart(2, "0")}</span>
       <span class="compression-role">${escapeHtml(compressionRoleLabel(message))}</span>
@@ -3649,7 +3870,7 @@ async function cancelCompression() {
   finally { c.busy = false; }
 }
 
-async function refreshTasks() { state.tasks = await api("/desktop/api/tasks"); }
+async function refreshTasks() { return replaceTasks(await api("/desktop/api/tasks")); }
 
 // 一次 run/事务结束后重载任务列表、上下文树与当前任务详情，使对话区反映最新消息。
 // run 结束事件与快捷压缩 apply 共用，避免两处重复刷新逻辑。渲染由调用方负责。
@@ -3671,7 +3892,7 @@ async function createTask(event) {
   try {
     const workspace = await api("/desktop/api/workspaces", { method: "POST", body: JSON.stringify({ path }) });
     const task = await api(`/desktop/api/workspaces/${workspace.workspace_id}/threads`, { method: "POST", body: JSON.stringify({ title }) });
-    dialog.close(); state.tasks.push(task); state.activeTaskId = task.task_id; state.view = "focus";
+    dialog.close(); replaceTasks([...state.tasks, task]); state.activeTaskId = task.task_id; state.view = "focus";
     await hydrateActive(); render();
   } catch (error) { setStatus(error.message, true); }
   finally {
@@ -3790,7 +4011,7 @@ async function archiveContext(contextId, cascade) {
   try {
     await api(`/desktop/api/contexts/${contextId}/archive${cascade ? "?cascade=true" : ""}`, { method: "POST" });
     setStatus(cascade ? "已级联归档会话" : "已归档会话");
-    return refreshAfterSessionChange(contextId);
+    return refreshAfterSessionChange();
   } catch (error) { return setStatus(error.message, true); }
 }
 
@@ -3799,7 +4020,7 @@ async function unarchiveContext(contextId) {
     await api(`/desktop/api/contexts/${contextId}/unarchive`, { method: "POST" });
     setStatus("已恢复会话");
     if (settingsDialog?.open) await openSettings();
-    return refreshAfterSessionChange(null);
+    return refreshAfterSessionChange();
   } catch (error) { return setStatus(error.message, true); }
 }
 
@@ -3812,19 +4033,12 @@ async function deleteContext(contextId, cascade) {
     await api(`/desktop/api/contexts/${contextId}${cascade ? "?cascade=true" : ""}`, { method: "DELETE" });
     setStatus(cascade ? "已级联删除会话" : "已删除会话");
     if (settingsDialog?.open) settingsDialog.close();
-    return refreshAfterSessionChange(contextId);
+    return refreshAfterSessionChange();
   } catch (error) { return setStatus(error.message, true); }
 }
 
-async function refreshAfterSessionChange(contextId) {
-  const wasActive = contextId === state.activeTaskId;
-  state.activeTaskId = null;
-  await bootstrap();
-  if (wasActive) {
-    const next = state.tasks.find(task => sessionLifecycle(task) === "active");
-    state.activeTaskId = next?.task_id || null;
-  }
-  return render();
+async function refreshAfterSessionChange() {
+  return bootstrap();
 }
 
 function toggleSelectionMode() {
@@ -3857,10 +4071,9 @@ async function batchDeleteSessions(cascade) {
       body: JSON.stringify({ context_ids: selected, cascade }),
     });
     setStatus(cascade ? "已级联批量删除会话" : "已批量删除会话");
-    const wasActive = selected.includes(state.activeTaskId);
     state.selectionMode = false;
     state.selectedContextIds = new Set();
-    return refreshAfterSessionChange(wasActive ? state.activeTaskId : null);
+    return refreshAfterSessionChange();
   } catch (error) { return setStatus(error.message, true); }
 }
 
@@ -3934,7 +4147,16 @@ window.addEventListener("unhandledrejection", event => {
   try { setStatus(`未处理 Promise 错误: ${String(event.reason || "").slice(0, 120)}`, true); } catch { /* ignore */ }
 });
 
-document.addEventListener("click", async event => {
+function runUiAction(action) {
+  return Promise.resolve()
+    .then(action)
+    .catch(error => {
+      const message = error instanceof Error ? error.message : String(error || "未知错误");
+      setStatus(`页面操作失败: ${message}`, true);
+    });
+}
+
+async function handleDocumentClick(event) {
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const action = button.dataset.action;
@@ -3996,9 +4218,7 @@ document.addEventListener("click", async event => {
     try {
       const task = await api("/desktop/api/assembly/task");
       // 只在首次新建时把装配任务并入 state.tasks，避免每次全量刷新（大任务列表耗时）
-      if (task?.task_id && !state.tasks.some(item => item.task_id === task.task_id)) {
-        state.tasks = [...state.tasks, task];
-      }
+      if (task?.task_id && !state.tasks.some(item => item.task_id === task.task_id)) replaceTasks([...state.tasks, task]);
       if (task?.task_id) return switchTask(task.task_id);
     } catch (error) { setStatus(error.message, true); }
     return render();
@@ -4119,6 +4339,14 @@ document.addEventListener("click", async event => {
   if (action === "cancel-compression") return cancelCompression();
   if (action === "abandon-commitment") return abandonCommitment();
   if (action === "exit-draft") { if (await saveDraft(state.activeTaskId)) { state.view = "map"; return render(); } return; }
+  if (action === "set-patrol-mode") {
+    const draft = syncDraftFromDom();
+    const mode = button.dataset.mode;
+    if (!setDraftPatrolMode(draft, mode)) return;
+    renderDraft();
+    if (await saveDraft(state.activeTaskId, { syncDom: false })) renderDraft();
+    return;
+  }
   if (action === "deploy") return deployDraft();
   if (action === "add-message") { syncDraftFromDom().history_messages.push({ role: "human", content: "" }); renderDraft(); scheduleDraftSave(); return; }
   if (action === "clear-history") { syncDraftFromDom().history_messages = []; renderDraft(); scheduleDraftSave(); return; }
@@ -4131,22 +4359,27 @@ document.addEventListener("click", async event => {
   }
   if (button.closest("[data-material-id]")) return handleMaterialAction(button);
   if (action === "agent-details") return openAgentDetails(button.dataset.agentId);
-  if (action === "agent-list") { state.agentDialog = { agentId: null, messages: [], busy: false }; return renderInspector(); }
-  if (action === "close-agent-details") {
-    if (agentDialog.open) return agentDialog.close();
-    state.agentDialog = { agentId: null, messages: [], busy: false };
-    return renderInspector();
-  }
+  if (action === "agent-list") { state.agentDetails = { agentId: null, messages: [], curation: null, busy: false }; return renderInspector(); }
   if (action === "refresh-agent-details") return refreshAgentDetails();
   if (action === "retry-agent-details") return retryAgentDetails();
   if (action === "cancel-agent-details") return cancelAgentDetails();
+  if (action === "set-curation-state") return setCurationTrackingState(button.dataset.state);
+  if (action === "load-more-curation") return refreshAgentDetails({ appendCuration: true });
+  if (action === "open-managed-context") {
+    state.agentDetails = { agentId: null, messages: [], curation: null, busy: false };
+    return switchTask(button.dataset.contextId);
+  }
   if (action === "interrupt-main-run") return interruptMainRun();
+}
+
+document.addEventListener("click", event => {
+  runUiAction(() => handleDocumentClick(event));
 });
 
 document.addEventListener("input", event => {
   if (event.target.id === "mainInput") updateAtHighlight(event.target);
   if (event.target.matches("[data-skill-input]")) updateSkillMenu(event.target, true);
-  if (event.target.matches("[data-draft-field],[data-message-field],[data-equipment],[data-permission]")) scheduleDraftSave();
+  if (event.target.matches("[data-draft-field],[data-message-field],[data-equipment],[data-permission],[data-curation-policy]")) scheduleDraftSave();
   if (event.target.matches("[data-memory-field]")) syncMemoryField(event.target.dataset.memoryField, event.target.value);
   if (event.target.matches("[data-source-field]")) editSourceText(Number(event.target.dataset.sourceIndex), event.target.value);
   if (event.target.matches("[data-segment-field]")) editMemorySegment(Number(event.target.dataset.segmentIndex), event.target.dataset.segmentField, event.target.value);
@@ -4565,11 +4798,10 @@ function moveMessageGroup(messages, from, to) {
 }
 
 document.querySelector("#taskForm").addEventListener("submit", createTask);
-document.querySelector("#agentContinueForm").addEventListener("submit", event => { event.preventDefault(); return continueAgentDetails(); });
 document.addEventListener("submit", event => {
   if (event.target.id !== "agentInspectorContinueForm") return;
   event.preventDefault();
-  return continueAgentDetails();
+  runUiAction(continueAgentDetails);
 });
 document.querySelector("#fileInput")?.addEventListener("change", () => {});
 document.addEventListener("change", async event => {
@@ -4593,4 +4825,4 @@ function persistFocusState() {
   return api(`/desktop/api/tasks/${state.activeTaskId}/ui-state`, { method: "PUT", body: JSON.stringify(detail.ui_state) }).catch(() => {});
 }
 
-bootstrap();
+runUiAction(bootstrap);

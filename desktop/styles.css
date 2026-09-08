@@ -222,15 +222,6 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
 .dialog-actions .primary { background: var(--blue); color: white; border-color: var(--blue); }
 
 /* 鐏忓繐鍙虹拠锔藉剰闂堛垺婢?*/
-.agent-dialog { width: min(720px, calc(100vw - 60px)); max-height: min(720px, calc(100vh - 90px)); display: flex; flex-direction: column; }
-.agent-dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 24px 10px; }
-.agent-dialog-head h2 { margin: 0; font-size: 18px; }
-.agent-dialog-history { display: flex; flex-direction: column; gap: 14px; padding: 14px 24px 18px; overflow-y: auto; min-height: 120px; flex: 1; }
-.agent-dialog-history .message { margin: 0; }
-.agent-dialog-actions { display: flex; gap: 10px; padding: 12px 24px; border-top: 1px solid var(--line-soft); }
-.agent-dialog-continue { display: flex; gap: 8px; padding: 0 24px 18px; }
-.agent-dialog-continue input { flex: 1; border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
-
 /* 閹佃儻顕仦鍌氼吀閹靛綊娼伴弶?*/
 .commit-option .skill-option-name { color: var(--blue); font-weight: 600; }
 
