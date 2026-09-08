@@ -12,6 +12,17 @@
 const mdRenderer = window.markdownit({ html: false, linkify: true });
 mdRenderer.validateLink = url => /^(https?:|file:)/i.test(url);
 const keywordCommand = window.FocusKeywordCommand;
+const interfaceI18n = window.FocusI18n || {
+  apply() {},
+  locale: () => "zh-CN",
+  setLocale: () => false,
+  t: key => key,
+};
+
+function uiText(key, fallback, variables = {}) {
+  const translated = interfaceI18n.t(key, variables);
+  return translated === key ? fallback : translated;
+}
 
 const runtime = window.focusDesktop?.runtime?.() || {
   apiBase: location.protocol === "file:" ? "http://127.0.0.1:8765" : location.origin,
@@ -124,6 +135,7 @@ const conversationReconciler = window.FocusConversationReconciler;
 const patrolPresence = window.FocusPatrolPresence;
 const contextCuratorPresentation = window.FocusContextCuratorPresentation;
 const patrolAvatar = window.FocusPatrolAvatar;
+interfaceI18n.apply(document);
 // f18 插件视图宿主:插件前端脚本加载后经此注册视图与材料打开器
 window.__focusPluginViews = window.__focusPluginViews || {};
 const pluginViews = window.__focusPluginViews;
@@ -362,6 +374,7 @@ function render() {
   renderShellChrome();
   if (!state.tasks.length) {
     app.replaceChildren(document.querySelector("#emptyTemplate").content.cloneNode(true));
+    interfaceI18n.apply(app);
     return;
   }
   if (state.view === "focus") {
@@ -387,10 +400,12 @@ function render() {
     if (!task) renderNoActiveTask();
     else renderFocus(task);
   }
+  interfaceI18n.apply(app);
 }
 
 function renderNoActiveTask() {
-  app.innerHTML = `<section class="empty-state"><h1>暂无活动 Context</h1><p>当前没有可进入的活动 Context。可以新建任务，或从设置中恢复已归档的 Context。</p><div class="ui-toolbar"><button class="primary" data-action="new-task">新增任务</button><button class="text-button" data-action="open-settings">查看已归档 Context</button></div></section>`;
+  const english = interfaceI18n.locale() === "en-US";
+  app.innerHTML = `<section class="empty-state"><h1>${english ? "No active Context" : "暂无活动 Context"}</h1><p>${english ? "There is no active Context. Create a task or restore an archived Context from Settings." : "当前没有可进入的活动 Context。可以新建任务，或从设置中恢复已归档的 Context。"}</p><div class="ui-toolbar"><button class="primary" data-action="new-task">${uiText("header.new_task", "新增任务")}</button><button class="text-button" data-action="open-settings">${english ? "View Archived Contexts" : "查看已归档 Context"}</button></div></section>`;
 }
 
 function activeNavigationKey() {
@@ -403,10 +418,10 @@ function activeNavigationKey() {
 
 function renderShellChrome() {
   const task = activeTask();
-  if (shellTaskTitle) shellTaskTitle.textContent = task?.title || "尚未选择任务";
+  if (shellTaskTitle) shellTaskTitle.textContent = task?.title || uiText("header.no_task", "尚未选择任务");
   if (shellTaskMeta) shellTaskMeta.textContent = task
-    ? `${task.workspace_name || "本地工作区"} · ${task.task_id.slice(0, 8)}`
-    : "本地 Agent 工作台";
+    ? `${task.workspace_name || uiText("common.local_workspace", "本地工作区")} · ${task.task_id.slice(0, 8)}`
+    : uiText("header.workbench", "本地 Agent 工作台");
   const current = activeNavigationKey();
   document.querySelectorAll?.("[data-nav-key]").forEach(button => {
     if (button.dataset.navKey === current) button.setAttribute("aria-current", "page");
@@ -417,17 +432,18 @@ function renderShellChrome() {
 }
 
 const RUN_STATUS_PRESENTATION = Object.freeze({
-  pending: { label: "排队中", tone: "active" },
-  running: { label: "运行中", tone: "active" },
-  success: { label: "已完成", tone: "success" },
-  interrupted: { label: "已中断", tone: "warning" },
-  error: { label: "运行失败", tone: "danger" },
-  cancelled: { label: "已取消", tone: "warning" },
-  ready: { label: "就绪", tone: "neutral" },
+  pending: { key: "status.pending", fallback: "排队中", tone: "active" },
+  running: { key: "status.running", fallback: "运行中", tone: "active" },
+  success: { key: "status.success", fallback: "已完成", tone: "success" },
+  interrupted: { key: "status.interrupted", fallback: "已中断", tone: "warning" },
+  error: { key: "status.error", fallback: "运行失败", tone: "danger" },
+  cancelled: { key: "status.cancelled", fallback: "已取消", tone: "warning" },
+  ready: { key: "status.ready", fallback: "就绪", tone: "neutral" },
 });
 
 function presentRunStatus(status) {
-  return RUN_STATUS_PRESENTATION[status] || { label: status || "就绪", tone: "neutral" };
+  const item = RUN_STATUS_PRESENTATION[status] || RUN_STATUS_PRESENTATION.ready;
+  return { label: status && !RUN_STATUS_PRESENTATION[status] ? status : uiText(item.key, item.fallback), tone: item.tone };
 }
 
 function renderInspector() {
@@ -636,7 +652,7 @@ function renderInterruptButton(detail) {
   // 主 Agent 有 pending/running 的活动运行时才渲染中断按钮（active_run 由后端只查 main 运行）
   const run = detail?.active_run;
   if (!run || !["pending", "running"].includes(run.status)) return "";
-  return `<button class="text-button danger" data-action="interrupt-main-run" data-run-id="${run.run_id}"${state.mainInterrupting ? " disabled" : ""}>中断</button>`;
+  return `<button class="text-button danger" data-action="interrupt-main-run" data-run-id="${run.run_id}"${state.mainInterrupting ? " disabled" : ""}>${uiText("focus.interrupt", "中断")}</button>`;
 }
 
 function composerFeedback(detail, projectionBlocked) {
@@ -646,7 +662,7 @@ function composerFeedback(detail, projectionBlocked) {
   if (activeTaskHasCommitmentLock()) return { kind: "warning", text: "当前任务正在等待 Commitment 审批，请先处理上方审批区。" };
   if (detail?.pending_compression) return { kind: "warning", text: "存在待确认的压缩计划，请先确认或取消。" };
   if (["pending", "running"].includes(detail?.active_run?.status)) return { kind: "active", text: "主 Agent 正在运行；你可以查看运行详情或中断。" };
-  return { kind: "muted", text: "Enter 发送 · Shift+Enter 换行" };
+  return { kind: "muted", text: uiText("focus.enter_hint", "Enter 发送 · Shift+Enter 换行") };
 }
 
 function setComposerError(error = null) {
@@ -655,7 +671,7 @@ function setComposerError(error = null) {
   const node = document.querySelector("#composerFeedback");
   if (!node) return;
   node.className = error ? "composer-feedback is-danger" : "composer-feedback is-muted";
-  node.textContent = error ? `发送失败：${error}` : "Enter 发送 · Shift+Enter 换行";
+  node.textContent = error ? `发送失败：${error}` : uiText("focus.enter_hint", "Enter 发送 · Shift+Enter 换行");
 }
 
 function renderContextRail(task) {
@@ -681,14 +697,14 @@ function renderContextRail(task) {
       return `<div class="context-rail-item is-tombstone" style="--context-depth:${depth}" data-context-depth="${depth}">
         <span class="context-rail-card is-deleted" role="presentation">
           <span class="context-rail-title">${escapeHtml(item.title)}</span>
-          <span class="context-rail-meta">${depth ? "派生 Context" : "根 Context"} · ${escapeHtml(item.task_id.slice(0, 8))} · ${tag}</span>
+          <span class="context-rail-meta">${depth ? uiText("focus.context_derived", "派生 Context") : uiText("focus.context_root", "根 Context")} · ${escapeHtml(item.task_id.slice(0, 8))} · ${tag}</span>
         </span>
       </div>`;
     }
     return `<div class="context-rail-item${node?.editable ? " is-editable" : ""}" style="--context-depth:${depth}" data-context-depth="${depth}">
       <button type="button" class="context-rail-card${item.task_id === task.task_id ? " is-current" : ""}${blocked ? " is-blocked" : ""}" data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}">
         <span class="context-rail-title">${escapeHtml(item.title)}</span>
-        <span class="context-rail-meta">${depth ? "派生 Context" : "根 Context"} · ${escapeHtml(item.task_id.slice(0, 8))}${node?.managed_status ? ` · 受管 ${escapeHtml(curatorTrackingLabel(node.managed_status))}${node.managed_health && node.managed_health !== "idle" ? `/${escapeHtml(node.managed_health)}` : ""}` : ""}${blocked ? ` · ${escapeHtml(projectionStatus)}` : ""} · 缓存 ${cacheRate}</span>
+        <span class="context-rail-meta">${depth ? uiText("focus.context_derived", "派生 Context") : uiText("focus.context_root", "根 Context")} · ${escapeHtml(item.task_id.slice(0, 8))}${node?.managed_status ? ` · 受管 ${escapeHtml(curatorTrackingLabel(node.managed_status))}${node.managed_health && node.managed_health !== "idle" ? `/${escapeHtml(node.managed_health)}` : ""}` : ""}${blocked ? ` · ${escapeHtml(projectionStatus)}` : ""} · ${uiText("focus.cache", "缓存")} ${cacheRate}</span>
         ${otherParents ? `<span class="context-rail-parents">另含：${escapeHtml(otherParents)}</span>` : ""}
       </button>
       ${node?.editable ? `<button type="button" class="context-rail-edit" data-action="edit-context-definition" data-context-id="${escapeHtml(item.task_id)}">编辑</button>` : ""}
@@ -696,10 +712,10 @@ function renderContextRail(task) {
   }).filter(Boolean);
   const cards = cardList.join("");
   return `<aside class="context-rail" aria-label="Context 树">
-    <header class="context-rail-heading"><strong>Contexts</strong><span>${cardList.length}</span></header>
+    <header class="context-rail-heading"><strong>${uiText("nav.contexts", "上下文")}</strong><span>${cardList.length}</span></header>
     <nav class="context-rail-list" aria-label="当前聊天派生的 Context">
       ${cards}
-      <button type="button" class="context-rail-add" data-action="derive-context">新增 Context</button>
+      <button type="button" class="context-rail-add" data-action="derive-context">${uiText("focus.context_add", "新增 Context")}</button>
     </nav>
   </aside>`;
 }
@@ -739,10 +755,10 @@ function renderFocus(task = activeTask()) {
         <div class="patrol-avatar-layer" id="patrolAvatarLayer" aria-label="会话 Patrol 小兵"></div>
         <div class="focus-bottom">
           <div class="composer-shell">
-            <div class="composer-context"><span class="ui-badge is-active">当前任务</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">运行详情</button></div>
+            <div class="composer-context"><span class="ui-badge is-active">${uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
             <div class="composer">
-              ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="任务输入" placeholder="描述下一步，或输入 / 选择技能…">${escapeHtml(detail.ui_state?.input || "")}</textarea>`, true)}
-              <div class="composer-actions"><label class="attach-button">添加文件<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">发送</button></div>
+              ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(detail.ui_state?.input || "")}</textarea>`, true)}
+              <div class="composer-actions"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div>
             </div>
             <p id="composerFeedback" class="composer-feedback is-${feedback.kind}" role="status">${escapeHtml(feedback.text)}</p>
           </div>
@@ -4186,6 +4202,28 @@ async function batchDeleteSessions(cascade) {
   } catch (error) { return setStatus(error.message, true); }
 }
 
+function selectSettingsTab(tab) {
+  const selected = ["general", "data"].includes(tab) ? tab : "general";
+  document.querySelectorAll("[data-settings-tab]").forEach(button => {
+    const active = button.dataset.settingsTab === selected;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll("[data-settings-pane]").forEach(pane => {
+    pane.hidden = pane.dataset.settingsPane !== selected;
+  });
+}
+
+function syncLanguageControls() {
+  const current = interfaceI18n.locale();
+  document.querySelectorAll("[data-action='set-language']").forEach(button => {
+    const active = button.dataset.locale === current;
+    button.setAttribute("role", "radio");
+    button.setAttribute("aria-checked", String(active));
+  });
+}
+
 async function openSettings() {
   try {
     const sessions = await api("/desktop/api/sessions/archived");
@@ -4196,16 +4234,18 @@ async function openSettings() {
             <div class="archived-session-item" data-context-id="${escapeHtml(item.context_id)}">
               <div class="archived-session-info">
                 <span class="archived-session-title">${escapeHtml(item.title)}</span>
-                <span class="archived-session-meta">${escapeHtml(item.workspace_name || "本地工作区")} · ${escapeHtml(item.context_id.slice(0, 8))}</span>
+                <span class="archived-session-meta">${escapeHtml(item.workspace_name || uiText("common.local_workspace", "本地工作区"))} · ${escapeHtml(item.context_id.slice(0, 8))}</span>
               </div>
               <div class="archived-session-actions">
-                <button class="text-button" data-action="unarchive-context" data-context-id="${escapeHtml(item.context_id)}">恢复</button>
-                <button class="text-button danger" data-action="delete-context" data-context-id="${escapeHtml(item.context_id)}">删除</button>
+                <button class="text-button" data-action="unarchive-context" data-context-id="${escapeHtml(item.context_id)}">${uiText("common.restore", "恢复")}</button>
+                <button class="text-button danger" data-action="delete-context" data-context-id="${escapeHtml(item.context_id)}">${uiText("common.delete", "删除")}</button>
               </div>
             </div>`).join("")
-        : '<p class="muted tiny" style="padding:var(--space-3)">暂无已归档会话</p>';
+        : `<p class="muted tiny" style="padding:var(--space-3)">${uiText("common.no_archived", "暂无已归档会话")}</p>`;
     }
   } catch (error) { setStatus(error.message, true); }
+  syncLanguageControls();
+  interfaceI18n.apply(settingsDialog);
   if (!settingsDialog?.open) settingsDialog?.showModal();
 }
 
@@ -4270,7 +4310,13 @@ async function handleDocumentClick(event) {
   if (!button) return;
   const action = button.dataset.action;
   if (action === "reload") return bootstrap();
-  if (action === "new-task") return dialog.showModal();
+  if (action === "new-task") {
+    const titleInput = document.querySelector("#threadTitle");
+    if (titleInput && ["新任务", "New Task"].includes(titleInput.value)) {
+      titleInput.value = uiText("dialog.default_title", "新任务");
+    }
+    return dialog.showModal();
+  }
   if (action === "close-task-dialog") return dialog.close();
   if (action === "pick-workspace") return pickWorkspace();
   if (action === "select-skill") return selectSkill(button.dataset.pickerKind, button.dataset.skillName);
@@ -4347,6 +4393,12 @@ async function handleDocumentClick(event) {
   if (action === "derive-context") return openContextEditor(state.activeTaskId);
   if (action === "open-settings") return openSettings();
   if (action === "close-settings") return settingsDialog.close();
+  if (action === "settings-tab") return selectSettingsTab(button.dataset.settingsTab);
+  if (action === "set-language") {
+    interfaceI18n.setLocale(button.dataset.locale);
+    syncLanguageControls();
+    return;
+  }
   if (action === "archive-context") return archiveContext(button.dataset.contextId, false);
   if (action === "cascade-archive-context") return archiveContext(button.dataset.contextId, true);
   if (action === "unarchive-context") return unarchiveContext(button.dataset.contextId);
@@ -4933,5 +4985,12 @@ function persistFocusState() {
   };
   return api(`/desktop/api/tasks/${state.activeTaskId}/ui-state`, { method: "PUT", body: JSON.stringify(detail.ui_state) }).catch(() => {});
 }
+
+document.addEventListener("focus:languagechange", () => {
+  render();
+  interfaceI18n.apply(document);
+  syncLanguageControls();
+  if (settingsDialog?.open) runUiAction(openSettings);
+});
 
 runUiAction(bootstrap);

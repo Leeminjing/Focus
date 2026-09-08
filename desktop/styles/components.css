@@ -215,6 +215,28 @@ details.task-card-more .task-card-actions .text-button { font-size: 12px; }
 .settings-sections button[aria-selected="true"] { color: var(--text-primary); background: var(--surface-selected); font-weight: 600; }
 .settings-pane { padding: var(--space-4); }
 .settings-pane h3 { margin: 0 0 var(--space-3); font-size: 15px; }
+.settings-language-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  max-width: 420px;
+}
+.settings-language-options button {
+  min-height: 42px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  color: var(--text-secondary);
+  background: var(--surface-base);
+  cursor: pointer;
+}
+.settings-language-options button:hover { border-color: var(--border-strong); color: var(--text-primary); }
+.settings-language-options button[aria-checked="true"] {
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+  background: var(--surface-selected);
+  font-weight: 650;
+}
+.settings-language-help { margin: var(--space-2) 0 0; }
 .settings-data-section { border: 1px solid var(--border-default); border-radius: var(--radius-card); overflow: hidden; }
 .settings-data-section > header {
   display: flex;

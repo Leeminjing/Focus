@@ -26,38 +26,38 @@
     <header class="app-header">
       <button class="app-mark" data-action="focus-home" aria-label="返回当前任务"><img src="./assets/focus-icon.png" alt="" aria-hidden="true"></button>
       <div class="shell-task-context" aria-live="polite">
-        <strong id="shellTaskTitle">尚未选择任务</strong>
-        <span id="shellTaskMeta">本地 Agent 工作台</span>
+        <strong id="shellTaskTitle" data-i18n="header.no_task">尚未选择任务</strong>
+        <span id="shellTaskMeta" data-i18n="header.workbench">本地 Agent 工作台</span>
       </div>
       <span id="globalStatus" class="global-status" role="status" aria-atomic="true"></span>
-      <button class="quiet-button" data-action="new-task"><span class="ui-icon is-sm icon-plus" aria-hidden="true"></span>新增任务</button>
+      <button class="quiet-button" data-action="new-task"><span class="ui-icon is-sm icon-plus" aria-hidden="true"></span><span data-i18n="header.new_task">新增任务</span></button>
     </header>
     <div class="app-shell">
       <nav id="appNavigation" class="app-navigation" aria-label="全局导航">
         <button class="app-nav-item" data-action="focus-home" data-nav-key="focus">
-          <span class="app-nav-label">任务</span>
+          <span class="app-nav-label" data-i18n="nav.tasks">任务</span>
         </button>
         <button class="app-nav-item" data-action="show-map" data-nav-key="map">
-          <span class="app-nav-label">全图</span>
+          <span class="app-nav-label" data-i18n="nav.map">全图</span>
         </button>
         <button class="app-nav-item" data-action="show-contexts" data-nav-key="contexts">
-          <span class="app-nav-label">Contexts</span>
+          <span class="app-nav-label" data-i18n="nav.contexts">上下文</span>
         </button>
         <button class="app-nav-item" data-action="show-agents" data-nav-key="agents">
-          <span class="app-nav-label">Agents</span>
+          <span class="app-nav-label" data-i18n="nav.agents">代理</span>
         </button>
         <button class="app-nav-item" data-action="show-plugins" data-nav-key="plugins">
-          <span class="app-nav-label">Plugins</span>
+          <span class="app-nav-label" data-i18n="nav.plugins">插件</span>
         </button>
         <button class="app-nav-item" data-action="show-assembly" data-nav-key="assembly">
-          <span class="app-nav-label">无工作区模式</span>
+          <span class="app-nav-label" data-i18n="nav.assembly">无工作区模式</span>
         </button>
         <button class="app-nav-item" data-action="show-memory" data-nav-key="memory">
-          <span class="app-nav-label">记忆库</span>
+          <span class="app-nav-label" data-i18n="nav.memory">记忆库</span>
         </button>
-        <button class="app-nav-item app-nav-settings" data-action="open-settings" aria-label="设置">
+        <button class="app-nav-item app-nav-settings" data-action="open-settings" aria-label="设置" data-i18n-aria-label="nav.settings">
           <span class="ui-icon is-sm icon-settings" aria-hidden="true"></span>
-          <span class="app-nav-label">设置</span>
+          <span class="app-nav-label" data-i18n="nav.settings">设置</span>
         </button>
       </nav>
       <section class="app-workspace">
@@ -65,10 +65,10 @@
       </section>
       <aside id="appInspector" class="app-inspector" tabindex="-1" aria-label="任务检查器" hidden>
         <div class="inspector-tabs" role="tablist" aria-label="检查器内容">
-          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="context">Contexts</button>
-          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="materials">材料</button>
-          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="agents">Agents</button>
-          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="run">运行</button>
+          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="context" data-i18n="inspector.contexts">上下文</button>
+          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="materials" data-i18n="inspector.materials">材料</button>
+          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="agents" data-i18n="inspector.agents">代理</button>
+          <button role="tab" data-action="open-inspector-tab" data-inspector-tab="run" data-i18n="inspector.run">运行</button>
         </div>
         <div id="inspectorContent" class="inspector-content"></div>
       </aside>
@@ -77,33 +77,42 @@
   </div>
   <dialog id="taskDialog">
     <form method="dialog" id="taskForm" class="dialog-form">
-      <h2>新增工作区任务</h2>
-      <label>工作区文件夹
-        <span class="path-picker"><input id="workspacePath" required><button type="button" data-action="pick-workspace">选择</button></span>
+      <h2 data-i18n="dialog.new_task">新增工作区任务</h2>
+      <label><span data-i18n="dialog.workspace_folder">工作区文件夹</span>
+        <span class="path-picker"><input id="workspacePath" required><button type="button" data-action="pick-workspace" data-i18n="dialog.choose">选择</button></span>
       </label>
-      <label>任务标题<input id="threadTitle" value="新任务" required></label>
-      <div class="dialog-actions"><button type="button" value="cancel" data-action="close-task-dialog">取消</button><button class="primary" type="submit" value="default">创建</button></div>
+      <label><span data-i18n="dialog.task_title">任务标题</span><input id="threadTitle" value="新任务" required></label>
+      <div class="dialog-actions"><button type="button" value="cancel" data-action="close-task-dialog" data-i18n="dialog.cancel">取消</button><button class="primary" type="submit" value="default" data-i18n="dialog.create">创建</button></div>
     </form>
   </dialog>
   <dialog id="settingsDialog" class="settings-dialog">
     <header class="settings-dialog-head">
       <div>
-        <h2>设置</h2>
-        <span class="muted tiny">Focus 桌面配置</span>
+        <h2 data-i18n="settings.title">设置</h2>
+        <span class="muted tiny" data-i18n="settings.subtitle">Focus 桌面配置</span>
       </div>
-      <button class="quiet-button" data-action="close-settings" aria-label="关闭"><span class="ui-icon icon-x" aria-hidden="true"></span></button>
+      <button class="quiet-button" data-action="close-settings" aria-label="关闭" data-i18n-aria-label="settings.close"><span class="ui-icon icon-x" aria-hidden="true"></span></button>
     </header>
     <nav class="settings-sections" role="tablist" aria-label="设置区块">
-      <button role="tab" data-settings-tab="data" aria-selected="true" class="is-active">数据</button>
+      <button role="tab" data-action="settings-tab" data-settings-tab="general" aria-selected="true" class="is-active" data-i18n="settings.general">常规</button>
+      <button role="tab" data-action="settings-tab" data-settings-tab="data" aria-selected="false" data-i18n="settings.data">数据</button>
     </nav>
-    <section class="settings-pane" data-settings-pane="data">
-      <h3>数据</h3>
+    <section class="settings-pane" data-settings-pane="general">
+      <h3 data-i18n="settings.language">界面语言</h3>
+      <div class="settings-language-options" role="radiogroup" aria-label="界面语言" data-i18n-aria-label="settings.language">
+        <button type="button" data-action="set-language" data-locale="zh-CN" data-i18n="settings.chinese">中文</button>
+        <button type="button" data-action="set-language" data-locale="en-US" data-i18n="settings.english">English</button>
+      </div>
+      <p class="muted tiny settings-language-help" data-i18n="settings.language_help">切换后立即应用，并保存在本机。</p>
+    </section>
+    <section class="settings-pane" data-settings-pane="data" hidden>
+      <h3 data-i18n="settings.data">数据</h3>
       <section class="settings-data-section">
-        <header><strong>已归档的会话</strong><span class="muted tiny">归档可恢复；删除需确认</span></header>
+        <header><strong data-i18n="settings.archived">已归档的会话</strong><span class="muted tiny" data-i18n="settings.archived_help">归档可恢复；删除需确认</span></header>
         <div id="archivedSessions" class="archived-session-list"></div>
       </section>
     </section>
-    <div class="settings-dialog-actions"><button class="text-button" data-action="close-settings">关闭</button></div>
+    <div class="settings-dialog-actions"><button class="text-button" data-action="close-settings" data-i18n="settings.close">关闭</button></div>
   </dialog>
   <template id="reviewTemplate">
     <article class="review-panel">
@@ -150,9 +159,10 @@
     </details>
   </template>
   <template id="emptyTemplate">
-    <section class="empty-state"><h1>建立第一个工作区任务</h1><p>一个全图单元由本地工作区文件夹和线程共同组成。</p><button class="primary" data-action="new-task">选择文件夹</button></section>
+    <section class="empty-state"><h1 data-i18n="empty.title">建立第一个工作区任务</h1><p data-i18n="empty.body">一个全图单元由本地工作区文件夹和线程共同组成。</p><button class="primary" data-action="new-task" data-i18n="empty.choose_folder">选择文件夹</button></section>
   </template>
   <script src="./vendor/markdown-it.min.js"></script>
+  <script src="./i18n.js?v=20260908a"></script>
   <script src="./skill-picker.js"></script>
   <script src="./context-editor.js"></script>
   <script src="./compression-panel.js?v=20260905c"></script>
