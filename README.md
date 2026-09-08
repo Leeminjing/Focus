@@ -123,10 +123,16 @@ A single FastAPI gateway drives Focus over one `POST /api/threads/{thread_id}/ru
                      │   middleware + tools + prompt  │
                      └──────────────┬───────────────┘
                                     │  run_agent (the one execution spine)
-   ┌───────────────┬───────────┬────┴────────┬────────────────┐
-   ▼               ▼           ▼             ▼                ▼
-  commitment      compression  context fork  patrol/spatial   memory
-  9-stage         gate         DAG (f15)     frozen snapshot   <memory>
+                                    ▼
+                        ┌───────────────────────┐
+                        │  Patrol (delegated)    │
+                        │  operator across       │
+                        │  context mechanisms    │
+                        └──────────┬────────────┘
+            ┌───────────────┬──────┴────────┬────────────────┐
+            ▼               ▼               ▼                ▼
+          compression  context fork      memory           commitment
+          gate          DAG (f15)        <memory>         9-stage
 ```
 
 - **Storage**: PostgreSQL + asyncpg checkpointer (survives restart) + LangGraph Store (`async_postgres`, vectors off).
@@ -138,9 +144,13 @@ A single FastAPI gateway drives Focus over one `POST /api/threads/{thread_id}/ru
 
 ## Core mechanisms / 核心机制
 
-The context operations are implemented as five mechanisms. Each one is where the human participates, and where the human's decision is what gets kept.
+The context operations are implemented as mechanisms grouped into two, not a flat list of five. **The context operations are the substrate; Patrol is the delegated operator that can perform them on the user's behalf.**
 
-### Compression mechanism / 压缩机制
+### Context operations
+
+Each operation is where the human participates, and where the human's decision is what gets kept.
+
+#### Compression mechanism / 压缩机制
 
 The main agent estimates token usage before every model call. When usage crosses `context_window × threshold_ratio`, the graph interrupts and asks you — it never trims on its own.
 
@@ -151,7 +161,7 @@ The main agent estimates token usage before every model call. When usage crosses
 - `wrap_model_call` strips the compression metadata before every model call, so the original source never reaches the model.
 - Blocks can be expanded, re-edited, re-compressed, or undone; recovery goes through the resume channel. A pending compression request blocks a new main run (409) until resolved.
 
-### Derived-context mechanism / 派生 contexts 机制
+#### Derived-context mechanism / 派生 contexts 机制
 
 A context is not a single window; you can **fork** one. From one or more committed checkpoints of the same workspace, you derive a new context.
 
@@ -160,23 +170,7 @@ A context is not a single window; you can **fork** one. From one or more committ
 - Each derived context gets a **fresh** `thread_id`; the projection is written into the new checkpoint, never mutating the parent.
 - Contexts form a tree with depth and lineage you can trace, merge, branch, archive, and delete (a tombstone when it still has children).
 
-### Patrol mechanism / patrol 机制
-
-Patrol is the **delegated operator** of Human in the contexts. It has two roles:
-
-1. **Attention isolation** — delegate side quests without interrupting the user's main task.
-2. **Context operation** — perform context operations on the user's behalf: curate, derive, compress, organize memory, ...
-
-The "separate room" below is *how* it works, not *what* it is. Patrol's real definition is: **the user's delegated context operator**.
-
-- From the main agent's latest committed checkpoint you deep-copy a frozen draft, then edit its `system_prompt`, history, and final message freely.
-- Deployment is **idempotent** (`deployment_id` + unique constraint): repeat clicks never create a duplicate.
-- It runs in its own namespace (`patrol:{id}`), in parallel with your main line and never interrupting it.
-- Its results are **never auto-injected** into your main context. You read them when you choose, via `list_patrol_agents` / `read_patrol_agent_history`.
-- It has an independent lifecycle — cancel its run, retry on the original frozen input, or append a new message to continue.
-- **Spatial patrol** pins the same idea to a place: drop a patrol agent onto a coordinate in a document or page, and it observes outward from that point; position is its identity. DOCX edits require explicit read-or-write authorization.
-
-### Commitment layer / 承诺层
+#### Commitment layer / 承诺层
 
 Before the work begins, Focus makes you **align on a contract** — and the alignment machinery is deliberately not an LLM.
 
@@ -187,28 +181,48 @@ Before the work begins, Focus makes you **align on a contract** — and the alig
 - When signed, the contract **replaces the `/commit` message in place** (same message id), in the isolated namespace `{thread_id}:commitment`; the pre-commit conversation is untouched.
 - Because the supervisor is code, it cannot be prompt-injected to skip or reorder a stage; the LLM's reach is confined to a schema-gated content box.
 
-### Memory library / 记忆库
+#### Memory library / 记忆库
 
 Memory is not the model's job here; it is **yours** to curate. Nothing is auto-captured or auto-recalled.
+
+> Memory ownership is yours. Curation may be direct or delegated to Patrol.
 
 - You pull from a whole session, particular (non-contiguous) messages, a span of text, or your own words — any combination.
 - You compress it into a `complete` overview or independent `segmented` notes, then **edit the draft yourself**; what is saved is *your* version, not the model's.
 - Each memory carries its `source_snapshot` and per-segment `source_ref`, so it is always attributable and re-generatable.
 - Before a new session you choose which memories to carry in, injected as a `<memory>` block into the system prompt — to the main agent only.
 
+### Delegated operation: Patrol / 委托操作：Patrol
+
+Patrol is not a fifth context mechanism alongside the ones above — it is the **delegated operator** that can perform them on the user's behalf.
+
+The context operations above are the substrate; Patrol can operate Compression, Derivation, Memory, Curation... on the user's behalf. It has two roles:
+
+1. **Attention isolation** — delegate side quests without interrupting the user's main task.
+2. **Context operation** — perform context operations on the user's behalf: curate, derive, compress, organize memory, ...
+
+The "separate room" below is *how* it works, not *what* it is. Patrol's real definition is: **the user's delegated context operator across context mechanisms**.
+
+- From the main agent's latest committed checkpoint you deep-copy a frozen draft, then edit its `system_prompt`, history, and final message freely.
+- Deployment is **idempotent** (`deployment_id` + unique constraint): repeat clicks never create a duplicate.
+- It runs in its own namespace (`patrol:{id}`), in parallel with your main line and never interrupting it.
+- Its results are **never auto-injected** into your main context. You read them when you choose, via `list_patrol_agents` / `read_patrol_agent_history`.
+- It has an independent lifecycle — cancel its run, retry on the original frozen input, or append a new message to continue.
+- **Spatial patrol** pins the same idea to a place: drop a patrol agent onto a coordinate in a document or page, and it observes outward from that point; position is its identity. DOCX edits require explicit read-or-write authorization.
+
 ---
 
 ## Context operations: the division of labor / Context 操作：人与代码的分工
 
-Each governed context operation collapses the model's freedom into a narrow artifact. Code owns the **authorization and isolation** of that artifact; the LLM owns the **content**; the human owns the **decision**.
+Each governed context operation collapses the model's freedom into a narrow artifact. Code owns the **authorization and isolation** of that artifact; the LLM owns the **content**; the human owns the **decision**. Patrol is an **execution mode** that can perform any of these operations on the human's behalf.
 
 | Operation | Context artifact | Code owns | LLM owns | Human owns |
 |---|---|---|---|---|
 | **compression** | compressed / tombstoned messages | validate ranges, repair protocol, strip metadata, carry source | propose summary | pick range · write or rewrite · delete · undo |
 | **derived context** | authored / execution projection | compile projection (add-only), hash-bound accept/reject, fresh thread_id, lineage | — (human-authored) | author messages · accept or reject |
-| **patrol** | patrol / spatial context + derived context behind it | idempotent deploy, namespace isolation, no auto-inject, reader tools, curation pipeline | do the work | rewrite draft · deploy · choose to read · approve curation |
 | **commitment** | task contract | supervisor (code), validator, in-place replace, namespace | propose stage content | approve / revise each stage |
 | **memory** | memory (complete / segmented) + `<memory>` block | resolve source, slice text, render block, `_safe_attr` | propose the compressed draft | pick source · edit draft · choose what to carry in |
+| **patrol** *(operator, not an operation)* | the context artifact it operates on | idempotent deploy, namespace isolation, no auto-inject, reader tools, curation pipeline | do the work | rewrite draft · deploy · choose to read · approve curation |
 
 ---
 
