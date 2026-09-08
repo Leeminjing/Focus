@@ -8,23 +8,18 @@
 >
 > A carefully curated, precise context is better than a bloated context with a high cache hit rate, and as the number of run iterations increases, the former may actually become less expensive than the latter.
 
-```
-Focus
-                      │
-          ┌───────────┴───────────┐
-          │                       │
-      Agent Focus             Human Focus
-          │                       │
-   Context Surgery              Patrol
-          │                       │
-Prevents Context Drift    Prevents Attention Drift
-          │                       │
-          └───────────┬───────────┘
-                      │
-         Patrol can perform surgery
-              on the user's behalf
-                      │
-                 Focus on Task
+```mermaid
+flowchart TD
+    A[Focus]
+    A --> B[Agent Focus]
+    A --> C[Human Focus]
+    B --> D[Context Surgery]
+    C --> E[Patrol]
+    D --> F[Prevents Context Drift]
+    E --> G[Prevents Attention Drift]
+    F --> H[Patrol can perform surgery on the user's behalf]
+    G --> H
+    H --> I[Focus on Task]
 ```
 
 ## Windows 安装

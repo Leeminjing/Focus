@@ -10,23 +10,18 @@
 >
 > 经过筛选的精确的上下文优于臃肿但缓存命中率高的上下文，并且随着 run 的轮次增长，前者的花费反而可能低于后者。
 
-```
-Focus
-                      │
-          ┌───────────┴───────────┐
-          │                       │
-      Agent Focus             Human Focus
-          │                       │
-   Context Surgery              Patrol
-          │                       │
-Prevents Context Drift    Prevents Attention Drift
-          │                       │
-          └───────────┬───────────┘
-                      │
-         Patrol can perform surgery
-              on the user's behalf
-                      │
-                 Focus on Task
+```mermaid
+flowchart TD
+    A[Focus]
+    A --> B[Agent Focus]
+    A --> C[Human Focus]
+    B --> D[Context Surgery]
+    C --> E[Patrol]
+    D --> F[Prevents Context Drift]
+    E --> G[Prevents Attention Drift]
+    F --> H[Patrol can perform surgery on the user's behalf]
+    G --> H
+    H --> I[Focus on Task]
 ```
 
 ## Install on Windows / Windows 安装
