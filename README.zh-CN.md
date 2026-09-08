@@ -61,6 +61,38 @@ focus update   # 将受管理的已跟踪代码同步到 GitHub 最新 main
 
 ---
 
+## Patrol：委托的参与
+
+"Human in the contexts" 并不意味着人必须手动操作每一次上下文变换。人拥有**决定权**；**Patrol 可以代表人来执行这个操作**。
+
+- **直接参与** — `Human → Context Surgery`
+- **委托参与** — `Human → Patrol → Context Surgery`
+
+> **控制权可以委托，而不必交出所有权。**
+
+"Human in the contexts" 定义了用户对 context 的权威。**Patrol 让这份权威变得可委托。** 它的第一个落地实例是**上下文策展**：
+
+```
+Main Context
+     │
+     ▼
+   Patrol
+     │
+     ├─ reads the committed context
+     ├─ removes noise
+     ├─ preserves goals / constraints / decisions
+     ├─ curates a new context
+     ▼
+Derived Context
+     │
+     ▼
+Agent continues from a cleaner context
+```
+
+快捷策展正是 Patrol 作为 "Human in the contexts" 快捷键的第一次落地。
+
+---
+
 ## 公理的内核
 
 一条规则在整个系统里自我复制：
@@ -127,13 +159,19 @@ context 不是单扇窗口；你可以**派生**一个。从同一个工作区�
 
 ### patrol 机制
 
-patrol 小兵是你的会话被分叉进一个**独立房间**。
+Patrol 是 "Human in the contexts" 的**委托执行者**。它有双重角色：
+
+1. **注意力隔离** —— 把支线任务委托出去，不打断用户的主线任务。
+2. **上下文操作** —— 代表用户执行上下文操作：策展、派生、压缩、整理记忆……
+
+下面的「独立房间」是它*怎么工作*，不是它*是什么*。Patrol 真正的定义是：**用户的委托式上下文操作者（delegated context operator）**。
 
 - 从主 Agent 最近已提交 checkpoint 深拷贝出冻结草稿，然后自由编辑它的 `system_prompt`、历史、最后一条消息。
 - 投放是**幂等**的（`deployment_id` + 唯一约束）：重复点击绝不产生副本。
 - 它在自己的命名空间（`patrol:{id}`）运行，与你的主线并行、绝不打断它。
 - 它的结果**永不自动注入**你的主线。你想读时再读，经 `list_patrol_agents` / `read_patrol_agent_history`。
 - 它有独立生命周期——取消它的 run、按最初冻结输入重试、或追加一条消息继续对话。
+- **空间小兵**把同一想法钉在某个位置：把一个 patrol 放到文档或页面上的某个坐标，它从那个点向外观察；位置就是它的身份。DOCX 编辑需要显式的读/写授权。
 
 ### 承诺层
 
@@ -165,7 +203,7 @@ patrol 小兵是你的会话被分叉进一个**独立房间**。
 |---|---|---|---|---|
 | **压缩** | 压缩/墓碑化消息 | 校验范围、修复协议、剥离元数据、携带来源 | 提议摘要 | 划范围 · 写或改写 · 删除 · 撤销 |
 | **派生 context** | authored / execution 投影 | 编译投影（只增）、哈希绑定 accept/reject、全新 thread_id、血统 | —（人写的） | 撰写消息 · 接受或拒绝 |
-| **patrol** | patrol / 空间 context | 幂等投放、命名空间隔离、不自动注入、读取工具 | 干活 | 重写草稿 · 投放 · 选择读 |
+| **patrol** | patrol / 空间 context + 其后的派生 context | 幂等投放、命名空间隔离、不自动注入、读取工具、策展管线 | 干活 | 重写草稿 · 投放 · 选择读 · 批准策展 |
 | **承诺层** | 任务合同 | Supervisor（代码）、校验器、原位替换、命名空间 | 提议阶段内容 | 批准 / 修订每个阶段 |
 | **记忆库** | 记忆（complete/segmented）+ `<memory>` 块 | 解析来源、切文字、渲染块、`_safe_attr` | 提议压缩草稿 | 挑来源 · 编辑草稿 · 决定带什么 |
 
@@ -176,7 +214,7 @@ patrol 小兵是你的会话被分叉进一个**独立房间**。
 - **承诺层 (Commitment)**: `/commit <指令>` 触发 9 阶段；Worker–Evaluator 审核；阶段 3/5/6/7 固定人工暂停；输出 `task-contract`。Context7 仅为该流程懒加载。
 - **压缩机制**: 触发阈值 + 用户划范围 + LLM 摘要草稿 + 墓碑删除/撤销/重开；来源随 checkpoint 保留，模型看不到。
 - **派生 contexts 机制**: 从单/多父 checkpoint 派生；`authored vs execution` 分离；哈希绑定 accept/reject；lineage/depth/tree；全新 thread_id。
-- **patrol 机制**: 冻结草稿 + 全量重写上下文 + 幂等投放 + 独立命名空间 + 结果不自动注入。
+- **patrol 机制**: 用户的委托式上下文操作者 —— 注意力隔离（支线任务不占主线）+ 上下文操作（代表用户策展/派生/压缩/整理记忆）；实现为冻结草稿 + 全量重写上下文 + 幂等投放 + 独立命名空间 + 结果不自动注入。**快捷策展**为你派生一个更干净的 context。
 - **记忆库 (Memory)**: 多来源（会话/消息/文字/手输）、complete/segmented、人工编辑后保存、`<memory>` 注入新会话（仅 main）、跨会话持久化。
 - **插件 (Plugins)**: 接口目录（tool/hook/service）+ 依赖注入注册表 + 单一桥接中间件 + 语言中立 stdio 远程协议；可携带桌面 API 路由与前端资源。
 

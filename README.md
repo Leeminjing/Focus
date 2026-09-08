@@ -64,6 +64,38 @@ The installer keeps application code in `%USERPROFILE%\.focus\app`, its managed 
 
 ---
 
+## Patrol: delegated participation / patrol：委托的参与
+
+Human in the contexts does not mean the human must manually operate every context transformation. The human owns the decision; **Patrol can perform the operation on the human's behalf**.
+
+- **Direct participation** — `Human → Context Surgery`
+- **Delegated participation** — `Human → Patrol → Context Surgery`
+
+> **Control can be delegated without surrendering ownership.**
+
+Human in the contexts defines the user's authority over context. **Patrol makes that authority delegatable.** Its first instance is **context curation**:
+
+```
+Main Context
+     │
+     ▼
+   Patrol
+     │
+     ├─ reads the committed context
+     ├─ removes noise
+     ├─ preserves goals / constraints / decisions
+     ├─ curates a new context
+     ▼
+Derived Context
+     │
+     ▼
+Agent continues from a cleaner context
+```
+
+Quick Curation is the first instance of Patrol acting as a shortcut for Human in the contexts.
+
+---
+
 ## The core rule / 公理的内核
 
 One rule reproduces itself across the system:
@@ -130,7 +162,12 @@ A context is not a single window; you can **fork** one. From one or more committ
 
 ### Patrol mechanism / patrol 机制
 
-A patrol agent is a snapshot of your session forked into a **separate room**.
+Patrol is the **delegated operator** of Human in the contexts. It has two roles:
+
+1. **Attention isolation** — delegate side quests without interrupting the user's main task.
+2. **Context operation** — perform context operations on the user's behalf: curate, derive, compress, organize memory, ...
+
+The "separate room" below is *how* it works, not *what* it is. Patrol's real definition is: **the user's delegated context operator**.
 
 - From the main agent's latest committed checkpoint you deep-copy a frozen draft, then edit its `system_prompt`, history, and final message freely.
 - Deployment is **idempotent** (`deployment_id` + unique constraint): repeat clicks never create a duplicate.
@@ -169,7 +206,7 @@ Each governed context operation collapses the model's freedom into a narrow arti
 |---|---|---|---|---|
 | **compression** | compressed / tombstoned messages | validate ranges, repair protocol, strip metadata, carry source | propose summary | pick range · write or rewrite · delete · undo |
 | **derived context** | authored / execution projection | compile projection (add-only), hash-bound accept/reject, fresh thread_id, lineage | — (human-authored) | author messages · accept or reject |
-| **patrol** | patrol / spatial context | idempotent deploy, namespace isolation, no auto-inject, reader tools | do the work | rewrite draft · deploy · choose to read |
+| **patrol** | patrol / spatial context + derived context behind it | idempotent deploy, namespace isolation, no auto-inject, reader tools, curation pipeline | do the work | rewrite draft · deploy · choose to read · approve curation |
 | **commitment** | task contract | supervisor (code), validator, in-place replace, namespace | propose stage content | approve / revise each stage |
 | **memory** | memory (complete / segmented) + `<memory>` block | resolve source, slice text, render block, `_safe_attr` | propose the compressed draft | pick source · edit draft · choose what to carry in |
 
@@ -180,7 +217,7 @@ Each governed context operation collapses the model's freedom into a narrow arti
 - **承诺层 (Commitment)**: `/commit <指令>` triggers 9 phases; Worker–Evaluator review; fixed human pauses at phases 3/5/6/7; outputs a `task-contract`. Context7 is loaded lazily for this flow only.
 - **压缩机制 (Compression)**: interrupt-on-threshold; user picks ranges; LLM summary draft; tombstone delete / undo / reopen; source retained with the checkpoint, never seen by the model.
 - **派生 contexts 机制 (Derived context forking)**: derive from single/multiple parent checkpoints; `authored vs execution` separation; hash-bound accept/reject; lineage/depth/tree; fresh thread_id.
-- **patrol 机制 (Patrol)**: frozen draft + full context rewrite + idempotent deploy + isolated namespace + results not auto-injected.
+- **patrol 机制 (Patrol)**: the user's delegated context operator — attention isolation (side quests off the main thread) + context operation (curate / derive / compress / organize memory on the user's behalf); implemented as frozen draft + full context rewrite + idempotent deploy + isolated namespace + results not auto-injected. **Quick Curation** derives a cleaner context for you.
 - **空间小兵 (Spatial)**: coordinate-anchored deploy, observe outward, position is identity, DOCX explicit read/write authorization.
 - **记忆库 (Memory)**: multi-source (session / messages / text / manual), complete / segmented, human-edit-then-save, `<memory>` injection into a new session (main only), cross-session persistence.
 - **插件 (Plugins)**: interface catalog (tool/hook/service) + dependency-injection registry + a single bridge middleware + a language-neutral stdio remote protocol; can carry desktop API routes and frontend assets.
