@@ -48,6 +48,15 @@ wheels = [
 ]
 
 [[package]]
+name = "annotated-doc"
+version = "0.0.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/8e/38aa427ed5402449e226975b649c5dc73ccadfefeb95e6aecb8f8ea4b6b6/annotated_doc-0.0.5.tar.gz", hash = "sha256:c7e58ce09192557605d8bbd92836d7e1d520ac9580096042c0bfd197efacf1bb", size = 10758, upload-time = "2026-07-28T13:50:58.129Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3e/30/e900b21425a860e195f32e37657aa1f7c7f2b1bfb26f03ca209b90933c06/annotated_doc-0.0.5-py3-none-any.whl", hash = "sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101", size = 5302, upload-time = "2026-07-28T13:50:57.239Z" },
+]
+
+[[package]]
 name = "annotated-types"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -576,6 +585,22 @@ wheels = [
 ]
 
 [[package]]
+name = "fastapi"
+version = "0.133.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "annotated-doc" },
+    { name = "pydantic" },
+    { name = "starlette" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/22/6f/0eafed8349eea1fa462238b54a624c8b408cd1ba2795c8e64aa6c34f8ab7/fastapi-0.133.1.tar.gz", hash = "sha256:ed152a45912f102592976fde6cbce7dae1a8a1053da94202e51dd35d184fadd6", size = 378741, upload-time = "2026-02-25T18:18:17.398Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d2/c9/a175a7779f3599dfa4adfc97a6ce0e157237b3d7941538604aadaf97bfb6/fastapi-0.133.1-py3-none-any.whl", hash = "sha256:658f34ba334605b1617a65adf2ea6461901bdb9af3a3080d63ff791ecf7dc2e2", size = 109029, upload-time = "2026-02-25T18:18:18.578Z" },
+]
+
+[[package]]
 name = "focus-harness"
 version = "0.1.0"
 source = { editable = "." }
@@ -605,6 +630,15 @@ aiosandbox = [
     { name = "agent-sandbox" },
     { name = "docker" },
 ]
+desktop = [
+    { name = "asyncpg" },
+    { name = "fastapi" },
+    { name = "langchain-mcp-adapters" },
+    { name = "langgraph-checkpoint-postgres" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "python-multipart" },
+    { name = "uvicorn" },
+]
 mcp = [
     { name = "langchain-mcp-adapters" },
 ]
@@ -622,18 +656,23 @@ requires-dist = [
     { name = "agent-sandbox", marker = "extra == 'aiosandbox'" },
     { name = "aiosqlite", marker = "extra == 'sqlite'" },
     { name = "alembic", specifier = ">=1.0" },
+    { name = "asyncpg", marker = "extra == 'desktop'" },
     { name = "asyncpg", marker = "extra == 'postgres'" },
     { name = "bcrypt", specifier = ">=4.0" },
     { name = "ddgs", specifier = ">=9.14" },
     { name = "docker", marker = "extra == 'aiosandbox'" },
+    { name = "fastapi", marker = "extra == 'desktop'", specifier = ">=0.116,<0.134" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "langchain", specifier = ">=0.3.0" },
     { name = "langchain-core", specifier = ">=0.3.0" },
+    { name = "langchain-mcp-adapters", marker = "extra == 'desktop'", specifier = ">=0.1.0" },
     { name = "langchain-mcp-adapters", marker = "extra == 'mcp'", specifier = ">=0.1.0" },
     { name = "langchain-openai", specifier = ">=0.3.0" },
     { name = "langgraph", specifier = ">=0.3.0" },
+    { name = "langgraph-checkpoint-postgres", marker = "extra == 'desktop'" },
     { name = "langgraph-checkpoint-postgres", marker = "extra == 'postgres'" },
     { name = "olefile", specifier = ">=0.47" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'desktop'", specifier = ">=3.2" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyjwt", specifier = ">=2.0" },
@@ -642,10 +681,12 @@ requires-dist = [
     { name = "pytesseract", specifier = ">=0.3" },
     { name = "python-docx", specifier = ">=1.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "python-multipart", marker = "extra == 'desktop'", specifier = ">=0.0.20" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
+    { name = "uvicorn", marker = "extra == 'desktop'", specifier = ">=0.35" },
 ]
-provides-extras = ["mcp", "postgres", "sqlite", "aiosandbox"]
+provides-extras = ["mcp", "postgres", "sqlite", "aiosandbox", "desktop"]
 
 [[package]]
 name = "greenlet"

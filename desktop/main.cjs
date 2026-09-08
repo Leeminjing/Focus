@@ -15,7 +15,7 @@ const migrationIni = path.join(rootDir, "backend", "packages", "harness", "focus
 const focusIconPath = path.join(desktopDir, "assets", process.platform === "win32" ? "focus-icon.ico" : "focus-icon.png");
 
 function ensureFocusHome() {
-  const home = path.join(app.getPath("home"), ".focus");
+  const home = process.env.FOCUS_GLOBAL_HOME || path.join(app.getPath("home"), ".focus");
   fs.mkdirSync(home, { recursive: true });
   fs.mkdirSync(path.join(home, "plugins"), { recursive: true });
   fs.mkdirSync(path.join(home, "users"), { recursive: true });
@@ -47,7 +47,6 @@ function pythonEnvironment(session) {
   return {
     ...process.env,
     PYTHONPATH: pythonPath,
-    OPENAI_API_KEY: process.env.OPENAI_API_KEY || "desktop-not-configured",
     JWT_SECRET: process.env.JWT_SECRET || "desktop-unused",
     FOCUS_DESKTOP_SESSION: session,
     FOCUS_DATABASE_URL: process.env.FOCUS_DATABASE_URL || "postgresql+asyncpg://focus:qweasdzxc123@127.0.0.1:7221/focus",

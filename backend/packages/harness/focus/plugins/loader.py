@@ -2,7 +2,7 @@
 本文件对外提供 load_plugins 插件目录加载函数，作为插件发现 → 构建 → 登记的加载入口。
 
 对外提供:
-    load_plugins(registry, root) — 扫描插件目录、解析清单、构建声明、登记注册表并解析依赖
+    load_plugins(registry, root, resolve=True, seen_names=None) — 扫描插件目录、解析清单、构建声明、登记注册表
 
 输入:
     registry: PluginRegistry — 目标注入注册表
@@ -115,7 +115,13 @@ def _collect_assets(plugin_dir: Path, manifest: PluginManifest) -> dict[str, Any
     return assets
 
 
-def load_plugins(registry: PluginRegistry, root: str | Path = DEFAULT_PLUGINS_DIR) -> None:
+def load_plugins(
+    registry: PluginRegistry,
+    root: str | Path = DEFAULT_PLUGINS_DIR,
+    *,
+    resolve: bool = True,
+    seen_names: set[str] | None = None,
+) -> None:
     base = Path(root)
     if not base.is_dir():
         return
@@ -138,6 +144,14 @@ def load_plugins(registry: PluginRegistry, root: str | Path = DEFAULT_PLUGINS_DI
             continue
         if not manifest.enabled:
             continue
+        if seen_names is not None and manifest.name in seen_names:
+            registry.register_failed(
+                manifest, "rejected", f"插件名称与更高优先级目录重复: {manifest.name}",
+            )
+            logger.warning("插件名称跨目录重复，已跳过: %s", manifest.name)
+            continue
+        if seen_names is not None:
+            seen_names.add(manifest.name)
         # f18: 资源声明校验先于 register——缺失时插件整体 Unavailable,不进入待提交队列
         try:
             assets = _collect_assets(plugin_dir, manifest)
@@ -161,4 +175,5 @@ def load_plugins(registry: PluginRegistry, root: str | Path = DEFAULT_PLUGINS_DI
             logger.warning("插件 %s 构建失败: %s", manifest.name, exc)
             continue
         registry.register(manifest, declaration)
-    registry.resolve_dependencies()
+    if resolve:
+        registry.resolve_dependencies()

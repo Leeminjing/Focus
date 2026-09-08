@@ -283,6 +283,11 @@ class DesktopService:
         resolved = Path(path).expanduser().resolve()
         if not resolved.is_dir():
             raise HTTPException(422, "工作区必须是已存在的本地文件夹")
+        managed_app = os.getenv("FOCUS_MANAGED_APP")
+        if managed_app:
+            managed_root = Path(managed_app).expanduser().resolve()
+            if resolved == managed_root or managed_root in resolved.parents:
+                raise HTTPException(422, "工作区不能位于 Focus 托管程序目录内")
         normalized = os.path.normpath(str(resolved))
         async with self.session_factory() as session:
             existing = await session.scalar(select(DesktopWorkspace).where(DesktopWorkspace.path == normalized))

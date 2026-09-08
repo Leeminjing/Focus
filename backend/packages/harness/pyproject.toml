@@ -28,6 +28,15 @@ mcp = ["langchain-mcp-adapters>=0.1.0"]
 postgres = ["asyncpg", "langgraph-checkpoint-postgres", "psycopg[binary]>=3.2"]
 sqlite = ["aiosqlite"]
 aiosandbox = ["agent-sandbox", "docker"]
+desktop = [
+    "fastapi>=0.116,<0.134",
+    "uvicorn>=0.35",
+    "python-multipart>=0.0.20",
+    "asyncpg",
+    "langgraph-checkpoint-postgres",
+    "psycopg[binary]>=3.2",
+    "langchain-mcp-adapters>=0.1.0",
+]
 
 [build-system]
 requires = ["setuptools>=75.0"]

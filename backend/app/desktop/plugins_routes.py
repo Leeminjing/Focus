@@ -27,8 +27,6 @@ async def plugin_traces() -> dict:
 
 @plugins_router.post("/desktop/api/plugins/reload")
 async def reload_global_plugins() -> dict:
-    """会话内重新加载全局插件根（~/.focus/plugins），返回插件状态与接口映射供装配模式验证。"""
-    from focus.config.layered import global_home
-
-    registry = reload_plugins(global_home() / "plugins")
+    """会话内重新加载内置 + ~/.focus/plugins 组合根，返回插件状态与接口映射。"""
+    registry = reload_plugins()
     return {"plugins": registry.list_plugins(), "interfaces": registry.list_interfaces()}
