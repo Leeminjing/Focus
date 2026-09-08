@@ -8,6 +8,42 @@
 >
 > A carefully curated, precise context is better than a bloated context with a high cache hit rate, and as the number of run iterations increases, the former may actually become less expensive than the latter.
 
+```
+Focus
+                      │
+          ┌───────────┴───────────┐
+          │                       │
+      Agent Focus             Human Focus
+          │                       │
+   Context Surgery              Patrol
+          │                       │
+Prevents Context Drift    Prevents Attention Drift
+          │                       │
+          └───────────┬───────────┘
+                      │
+         Patrol can perform surgery
+              on the user's behalf
+                      │
+                 Focus on Task
+```
+
+## Windows 安装
+
+先准备 Git、Python 3.11+、Node.js 与 Docker Desktop，然后在 PowerShell 中执行一次：
+
+```powershell
+irm https://raw.githubusercontent.com/Leeminjing/Focus/main/install.ps1 | iex
+```
+
+把模型 API Key 写入 `%USERPROFILE%\.focus\.env`，以后可在任意目录使用同一组命令：
+
+```powershell
+focus          # 启动 Focus
+focus update   # 将受管理的已跟踪代码同步到 GitHub 最新 main
+```
+
+安装器把程序代码放在 `%USERPROFILE%\.focus\app`，托管的 Python 环境放在 `%USERPROFILE%\.focus\runtime`，命令入口放在 `%USERPROFILE%\.focus\bin`。持久化配置、插件、用户和 PostgreSQL 数据位于受管理 Git 工作区之外；选中的工作区也应放在 `.focus\app` 之外。`focus update` 会有意丢弃 `.focus\app` 内已跟踪文件的本地改动；开发请使用另一个 clone。
+
 ---
 
 ## 这个 "in" 是参与，不是坐标
@@ -157,7 +193,7 @@ patrol 小兵是你的会话被分叉进一个**独立房间**。
 
 ---
 
-## 快速开始
+## 开发环境
 
 **要求** — Python ≥ 3.11（需可用 `alembic` 与 `uvicorn`）、`git`、`docker`（用于 `desktop/compose.yaml` 内置的 PostgreSQL）、Node.js（用于 Electron 壳）、以及配置在 `OPENAI_API_KEY` 里的 OpenAI 兼容 Key（DeepSeek）。
 
