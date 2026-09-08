@@ -57,7 +57,7 @@ const main = text("main.cjs");
 assert.match(main, /focus-icon\.ico/);
 assert.match(main, /createSplashWindow\(\)/);
 assert.match(main, /titleBarStyle:\s*"hidden"/);
-assert.match(main, /titleBarOverlay:\s*\{[\s\S]*height:\s*56[\s\S]*\}/);
+assert.match(main, /if \(process\.platform !== "darwin"\) \{[\s\S]*mainWindowOptions\.titleBarOverlay\s*=\s*\{[\s\S]*height:\s*56/);
 assert.match(main, /show: false,[\s\S]*frame: false,[\s\S]*loadFile\(path\.join\(desktopDir, "splash\.html"\)\)/);
 assert.ok(main.indexOf("await createSplashWindow()") < main.indexOf("const pythonRuntime = resolvePythonRuntime()"));
 assert.ok(main.indexOf("await mainWindow.loadURL") < main.indexOf("mainWindow.show()"));

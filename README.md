@@ -46,6 +46,23 @@ focus update   # sync the managed installation to the latest GitHub main
 
 The installer keeps application code in `%USERPROFILE%\.focus\app`, its managed Python environment in `%USERPROFILE%\.focus\runtime`, and the command launcher in `%USERPROFILE%\.focus\bin`. Persistent configuration, plugins, users, and PostgreSQL data are outside the managed Git checkout; keep selected workspaces outside `.focus\app` as well. `focus update` deliberately discards tracked changes inside `.focus\app`; develop in a separate clone.
 
+## Install on macOS / macOS 安装
+
+Prerequisites: Git, Python 3.11+, Node.js, and a running Docker Desktop. Then run once in Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Leeminjing/Focus/main/install.sh | sh
+```
+
+Add your model API key to `~/.focus/.env`, then open a new terminal and use:
+
+```sh
+focus          # start Focus
+focus update   # sync the managed installation to the latest GitHub main
+```
+
+The macOS installer uses the same `~/.focus/app`, `~/.focus/runtime`, and `~/.focus/bin` layout and adds the command directory to the active shell's user profile. It does not use `sudo`. This is an unsigned, source-managed Electron distribution rather than a notarized `.app`, so macOS may show security prompts. As on Windows, updates replace tracked application files but leave persistent data outside `~/.focus/app` intact.
+
 ---
 
 ## The "in" is participation, not a location / 这个 "in" 是参与，不是坐标

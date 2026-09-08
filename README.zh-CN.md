@@ -44,6 +44,23 @@ focus update   # 将受管理的已跟踪代码同步到 GitHub 最新 main
 
 安装器把程序代码放在 `%USERPROFILE%\.focus\app`，托管的 Python 环境放在 `%USERPROFILE%\.focus\runtime`，命令入口放在 `%USERPROFILE%\.focus\bin`。持久化配置、插件、用户和 PostgreSQL 数据位于受管理 Git 工作区之外；选中的工作区也应放在 `.focus\app` 之外。`focus update` 会有意丢弃 `.focus\app` 内已跟踪文件的本地改动；开发请使用另一个 clone。
 
+## macOS 安装
+
+先准备 Git、Python 3.11+、Node.js，并启动 Docker Desktop，然后在终端执行一次：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Leeminjing/Focus/main/install.sh | sh
+```
+
+把模型 API Key 写入 `~/.focus/.env`，打开一个新终端后使用：
+
+```sh
+focus          # 启动 Focus
+focus update   # 将受管理的已跟踪代码同步到 GitHub 最新 main
+```
+
+macOS 安装器同样使用 `~/.focus/app`、`~/.focus/runtime` 和 `~/.focus/bin`，并把命令目录加入当前 shell 的用户配置文件；整个过程不使用 `sudo`。当前提供的是未签名、从源码托管运行的 Electron 分发方式，不是经过公证的 `.app`，因此 macOS 可能显示安全提示。更新只替换程序目录内的已跟踪文件，不影响 `~/.focus/app` 外的持久数据。
+
 ---
 
 ## 这个 "in" 是参与，不是坐标

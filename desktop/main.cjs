@@ -246,7 +246,7 @@ async function start() {
   });
   await waitForHealth(apiBase);
   await updateSplashStage("正在加载工作区", 84);
-  mainWindow = new BrowserWindow({
+  const mainWindowOptions = {
     show: false,
     width: 1440,
     height: 1024,
@@ -254,11 +254,6 @@ async function start() {
     minHeight: 680,
     autoHideMenuBar: true,
     titleBarStyle: "hidden",
-    titleBarOverlay: {
-      color: "#ffffff",
-      symbolColor: "#18202d",
-      height: 56,
-    },
     backgroundColor: "#fbfbfc",
     icon: focusIconPath,
     webPreferences: {
@@ -268,7 +263,16 @@ async function start() {
       // Chromium renderer isolation only; Python Agents still use real host paths with no Agent sandbox.
       sandbox: true,
     },
-  });
+  };
+  // macOS uses its native traffic-light title bar; titleBarOverlay is for the Windows/Linux shell.
+  if (process.platform !== "darwin") {
+    mainWindowOptions.titleBarOverlay = {
+      color: "#ffffff",
+      symbolColor: "#18202d",
+      height: 56,
+    };
+  }
+  mainWindow = new BrowserWindow(mainWindowOptions);
   mainWindow.setMenuBarVisibility(false);
   protectAppNavigation(mainWindow, apiBase);
   // 决策 7：同源加载（页面与 API 同一 Origin，无需 CORS）
