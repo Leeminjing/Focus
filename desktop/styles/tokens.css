@@ -69,8 +69,10 @@
   --shell-header-height: 56px;
   --shell-nav-width: 172px;
   --shell-nav-collapsed: 96px;
-  --inspector-min-width: 276px;
-  --inspector-max-width: 360px;
+  --shell-nav-max-width: 288px;
+  --workspace-min-width: 320px;
+  --inspector-min-width: 240px;
+  --inspector-max-width: 480px;
   --inspector-width: clamp(var(--inspector-min-width), 22vw, var(--inspector-max-width));
   --reading-width: 760px;
   --composer-width: 900px;

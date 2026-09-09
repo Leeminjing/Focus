@@ -47,6 +47,19 @@ function readMapViewPreferences() {
 
 const mapViewPreferences = readMapViewPreferences();
 
+/* 壳层三栏可拖拽布局：唯一尺寸来源是 .app-shell 上的 --shell-nav-width / --inspector-width
+   自定义属性，JS 只写入内联值；media query 只改其样式表默认值，因此用户偏好总是胜过断点。 */
+const SHELL_LAYOUT_KEY = "focus-shell-layout";
+
+// 壳层三栏拖拽边界：与 tokens.css 的 min/max 一致；导航可折叠到 0（collapse）即最小值 0。
+const SHELL_LAYOUT_BOUNDS = Object.freeze({
+  navMin: 0,
+  navMax: 288,
+  inspectorMin: 240,
+  inspectorMax: 480,
+  workspaceMin: 320,
+});
+
 const state = {
   view: "focus",
   tasks: [],
@@ -114,6 +127,7 @@ const state = {
   inspector: { open: window.innerWidth > 1100, tab: "context", returnFocus: null },
   filesPanel: null,   // f18:右侧文件面板当前打开的 material(relative_path 等)
   panelWidth: normalizePanelWidth(localStorage.getItem("focus-panel-width") || 400),
+  shellLayout: normalizeShellLayout(readShellLayout(), window.innerWidth),
 };
 
 const app = document.querySelector("#app");
@@ -166,6 +180,165 @@ function normalizePanelWidth(value, viewportWidth = window.innerWidth) {
   const maximum = Math.max(280, Math.min(720, workspaceWidth - 360));
   const numeric = Number(value);
   return Math.round(Math.min(maximum, Math.max(280, Number.isFinite(numeric) ? numeric : 400)));
+}
+
+function shellLayoutDefaults() {
+  return {
+    navWidth: 172,
+    inspectorWidth: Math.round(Math.min(SHELL_LAYOUT_BOUNDS.inspectorMax, Math.max(SHELL_LAYOUT_BOUNDS.inspectorMin, window.innerWidth * 0.22))),
+    navCollapsed: false,
+    // 用户是否手动拖拽/折叠过；未定制时壳层完全由 CSS 断点默认驱动，不写内联宽度。
+    customized: false,
+  };
+}
+
+function readShellLayout() {
+  try {
+    const raw = localStorage.getItem(SHELL_LAYOUT_KEY);
+    if (!raw) return shellLayoutDefaults();
+    const parsed = JSON.parse(raw);
+    return {
+      navWidth: Number.isFinite(Number(parsed.navWidth)) ? Number(parsed.navWidth) : shellLayoutDefaults().navWidth,
+      inspectorWidth: Number.isFinite(Number(parsed.inspectorWidth)) ? Number(parsed.inspectorWidth) : shellLayoutDefaults().inspectorWidth,
+      navCollapsed: Boolean(parsed.navCollapsed),
+      customized: true,
+    };
+  } catch {
+    return shellLayoutDefaults();
+  }
+}
+
+// 钳制三栏宽度：保证每栏在各自边界内，且三栏始终能容纳工作区保底宽度。
+function normalizeShellLayout(layout, viewportWidth = window.innerWidth) {
+  const bounds = SHELL_LAYOUT_BOUNDS;
+  const width = Number.isFinite(Number(viewportWidth)) && Number(viewportWidth) > 0 ? Number(viewportWidth) : 1200;
+  const navCollapsed = Boolean(layout?.navCollapsed);
+  let navWidth = Number.isFinite(Number(layout?.navWidth)) ? Number(layout.navWidth) : bounds.navMin;
+  let inspectorWidth = Number.isFinite(Number(layout?.inspectorWidth)) ? Number(layout.inspectorWidth) : bounds.inspectorMin;
+  navWidth = clamp(navWidth, navCollapsed ? 0 : bounds.navMin, bounds.navMax);
+  inspectorWidth = clamp(inspectorWidth, bounds.inspectorMin, bounds.inspectorMax);
+  // 三栏总和不能超出可用宽度，为工作区保留最小宽度；超出时优先挤压左、右栏。
+  const maxSides = Math.max(bounds.navMax + bounds.inspectorMax - 1, width - bounds.workspaceMin);
+  if (navWidth + inspectorWidth > maxSides) {
+    const scale = maxSides / (navWidth + inspectorWidth);
+    navWidth = Math.round(clamp(navWidth * scale, navCollapsed ? 0 : bounds.navMin, bounds.navMax));
+    inspectorWidth = Math.round(clamp(inspectorWidth * scale, bounds.inspectorMin, bounds.inspectorMax));
+    // 二次钳制：缩放到边界后若仍超出，回退到收缩侧的最小各自值。
+    if (navWidth + inspectorWidth > maxSides) {
+      const overflow = navWidth + inspectorWidth - maxSides;
+      if (navCollapsed) inspectorWidth -= overflow;
+      else inspectorWidth = Math.max(bounds.inspectorMin, inspectorWidth - overflow);
+    }
+  }
+  return { navWidth: Math.round(navWidth), inspectorWidth: Math.round(inspectorWidth), navCollapsed, customized: Boolean(layout?.customized) };
+}
+
+function clamp(value, min, max) {
+  return Math.round(Math.min(max, Math.max(min, value)));
+}
+
+// 把当前布局写回 .app-shell 的内联自定义属性（唯一尺寸来源）。不触发 render，避免重绘卡顿。
+// 未定制（用户从未拖拽/折叠）时不写内联值，让 CSS 断点默认值独立驱动，避免覆盖 1100px 自动收窄。
+function applyShellLayout(layout) {
+  const shell = document.querySelector(".app-shell");
+  if (!shell?.style) return;
+  if (layout.customized) {
+    const navWidth = layout.navCollapsed ? 0 : layout.navWidth;
+    shell.style.setProperty("--shell-nav-width", `${navWidth}px`);
+    shell.style.setProperty("--inspector-width", `${layout.inspectorWidth}px`);
+  }
+  shell.classList?.toggle("is-nav-collapsed", layout.navCollapsed);
+  syncShellResizerVisibility();
+  syncNavToggleButton(layout.navCollapsed);
+}
+
+function persistShellLayout() {
+  try {
+    localStorage.setItem(SHELL_LAYOUT_KEY, JSON.stringify(state.shellLayout));
+  } catch { /* 只读存储忽略 */ }
+}
+
+// 同步两个 resizer 手柄的可见性：导航折叠到 0 时隐藏导航侧手柄；
+// 检查器隐藏或窄屏覆盖态时隐藏检查器侧手柄（样式表也已用媒体查询覆盖窄屏）。
+function syncShellResizerVisibility() {
+  const shell = document.querySelector(".app-shell");
+  if (!shell?.querySelector) return;
+  const navResizer = shell.querySelector(".shell-resizer-nav");
+  if (navResizer?.setAttribute) navResizer.setAttribute("aria-hidden", String(state.shellLayout.navCollapsed));
+  const inspectorResizer = shell.querySelector(".shell-resizer-inspector");
+  if (inspectorResizer?.setAttribute) inspectorResizer.setAttribute("aria-hidden", String(!state.inspector.open));
+}
+
+function syncNavToggleButton(navCollapsed) {
+  const toggle = document.querySelector("[data-action='toggle-nav-collapse']");
+  if (!toggle?.setAttribute) return;
+  const icon = toggle.querySelector?.(".ui-icon");
+  // 折叠时显示「展开」箭头(右)，展开时显示「收起」箭头(左)；标题与 aria-label 同步。
+  toggle.setAttribute("aria-expanded", String(!navCollapsed));
+  toggle.setAttribute("aria-label", navCollapsed ? uiText("nav.expand", "展开导航") : uiText("nav.collapse", "收起导航"));
+  if (icon?.classList?.toggle) {
+    icon.classList.toggle("icon-chevron-right", navCollapsed);
+    icon.classList.toggle("icon-chevron-left", !navCollapsed);
+  }
+}
+
+function setShellNavCollapsed(navCollapsed) {
+  if (Boolean(state.shellLayout.navCollapsed) === navCollapsed) return;
+  state.shellLayout.navCollapsed = navCollapsed;
+  state.shellLayout.customized = true;
+  // 折叠态把 nav 宽度覆盖为 0，展开则恢复到 navWidth。折叠态同时记下当前 navWidth 便于恢复。
+  applyShellLayout(state.shellLayout);
+  persistShellLayout();
+}
+
+// 给两个 resizer 手柄绑定指针拖拽：把相邻栏宽度写回 .app-shell 内联自定义属性。
+function bindShellResizers() {
+  const shell = document.querySelector(".app-shell");
+  if (!shell?.querySelector) return;
+  const resizers = [
+    { node: shell.querySelector(".shell-resizer-nav"), target: "nav" },
+    { node: shell.querySelector(".shell-resizer-inspector"), target: "inspector" },
+  ];
+  for (const { node, target } of resizers) {
+    if (!node || node.dataset.shellResizerBound) continue;
+    node.dataset.shellResizerBound = "true";
+    let frame = null;
+    node.addEventListener("pointerdown", event => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      node.setPointerCapture?.(event.pointerId);
+      const startX = event.clientX;
+      const startNav = state.shellLayout.navWidth;
+      const startInspector = state.shellLayout.inspectorWidth;
+      const move = moveEvent => {
+        if (frame != null) cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(() => {
+          frame = null;
+          const delta = moveEvent.clientX - startX;
+          const draft = { ...state.shellLayout, navCollapsed: false, customized: true };
+          // 导航↔工作区：向右拖(+)放大导航；工作区↔检查器：向左拖(-)放大检查器。
+          if (target === "nav") draft.navWidth = startNav + delta;
+          else draft.inspectorWidth = startInspector - delta;
+          state.shellLayout = normalizeShellLayout(draft, shell.clientWidth || window.innerWidth);
+          applyShellLayout(state.shellLayout);
+        });
+      };
+      const finish = () => {
+        if (frame != null) cancelAnimationFrame(frame);
+        frame = null;
+        try { node.releasePointerCapture?.(event.pointerId); } catch { /* ignore */ }
+        node.removeEventListener("pointermove", move);
+        node.removeEventListener("pointerup", finish);
+        node.removeEventListener("pointercancel", finish);
+        node.removeEventListener("lostpointercapture", finish);
+        persistShellLayout();
+      };
+      node.addEventListener("pointermove", move);
+      node.addEventListener("pointerup", finish);
+      node.addEventListener("pointercancel", finish);
+      node.addEventListener("lostpointercapture", finish);
+    });
+  }
 }
 
 function nextContextUiKey() {
@@ -450,6 +623,7 @@ function renderInspector() {
   if (!appInspector?.setAttribute || !inspectorContent) return;
   appInspector.hidden = !state.inspector.open;
   appInspector.setAttribute("aria-hidden", String(!state.inspector.open));
+  syncShellResizerVisibility();
   if (!state.inspector.open) return;
   const tab = state.inspector.tab;
   const task = activeTask();
@@ -905,6 +1079,24 @@ window.addEventListener("resize", () => {
     state.panelWidth = width;
     const shell = document.querySelector(".focus-shell");
     if (shell) shell.style.gridTemplateColumns = `minmax(0, 1fr) ${width}px`;
+  });
+});
+
+// 壳层三栏：窗口尺寸变化时对持久化的宽度做钳制并重新应用（内联自定义属性仍是唯一来源）。
+// 未定制用户不介入（让 CSS 断点默认值驱动），定制用户才跟随窗口重新钳制。
+window.addEventListener("resize", () => {
+  if (panelResizeFrame != null) cancelAnimationFrame(panelResizeFrame);
+  panelResizeFrame = requestAnimationFrame(() => {
+    panelResizeFrame = null;
+    if (!state.shellLayout.customized) return;
+    const next = normalizeShellLayout(state.shellLayout, window.innerWidth);
+    if (next.navWidth !== state.shellLayout.navWidth
+      || next.inspectorWidth !== state.shellLayout.inspectorWidth
+      || Boolean(next.navCollapsed) !== Boolean(state.shellLayout.navCollapsed)) {
+      state.shellLayout = next;
+      applyShellLayout(state.shellLayout);
+      persistShellLayout();
+    }
   });
 });
 
@@ -4310,6 +4502,10 @@ async function handleDocumentClick(event) {
   if (!button) return;
   const action = button.dataset.action;
   if (action === "reload") return bootstrap();
+  if (action === "toggle-nav-collapse") {
+    // 已折叠则展开（恢复到 navWidth），未折叠则折叠为 0。
+    return setShellNavCollapsed(!state.shellLayout.navCollapsed);
+  }
   if (action === "new-task") {
     const titleInput = document.querySelector("#threadTitle");
     if (titleInput && ["新任务", "New Task"].includes(titleInput.value)) {
@@ -4616,6 +4812,12 @@ document.addEventListener("keydown", event => {
   if (event.key === "Escape" && state.inspector.open) {
     event.preventDefault();
     closeInspector();
+    return;
+  }
+  // 导航折叠/展开快捷键：Alt+N（与头部控制钮等价）。
+  if (event.altKey && (event.key === "n" || event.key === "N") && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+    event.preventDefault();
+    setShellNavCollapsed(!state.shellLayout.navCollapsed);
     return;
   }
   const mapTreeItem = event.target.closest?.(".map-collapsible-tree [role='treeitem'][data-tree-key]");
@@ -4992,5 +5194,9 @@ document.addEventListener("focus:languagechange", () => {
   syncLanguageControls();
   if (settingsDialog?.open) runUiAction(openSettings);
 });
+
+// 壳层三栏可拖拽：启动即应用持久化宽度/折叠态，并绑定两个 resizer 手柄。
+applyShellLayout(state.shellLayout);
+bindShellResizers();
 
 runUiAction(bootstrap);

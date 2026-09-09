@@ -25,6 +25,7 @@
   <div class="app-frame">
     <header class="app-header">
       <button class="app-mark" data-action="focus-home" aria-label="返回当前任务"><img src="./assets/focus-icon.png" alt="" aria-hidden="true"></button>
+      <button class="quiet-button app-nav-toggle" data-action="toggle-nav-collapse" aria-label="收起导航" aria-expanded="true" data-i18n-aria-label="nav.collapse"><span class="ui-icon is-sm icon-chevron-left" aria-hidden="true"></span><span class="app-nav-toggle-label" data-i18n="nav.collapse">收起导航</span></button>
       <div class="shell-task-context" aria-live="polite">
         <strong id="shellTaskTitle" data-i18n="header.no_task">尚未选择任务</strong>
         <span id="shellTaskMeta" data-i18n="header.workbench">本地 Agent 工作台</span>
@@ -60,9 +61,11 @@
           <span class="app-nav-label" data-i18n="nav.settings">设置</span>
         </button>
       </nav>
+      <div class="shell-resizer shell-resizer-nav" role="separator" aria-orientation="vertical" aria-label="调整导航宽度" title="拖拽调整导航宽度"></div>
       <section class="app-workspace">
         <main id="app" tabindex="-1" aria-live="polite"></main>
       </section>
+      <div class="shell-resizer shell-resizer-inspector" role="separator" aria-orientation="vertical" aria-label="调整检查器宽度" title="拖拽调整检查器宽度"></div>
       <aside id="appInspector" class="app-inspector" tabindex="-1" aria-label="任务检查器" hidden>
         <div class="inspector-tabs" role="tablist" aria-label="检查器内容">
           <button role="tab" data-action="open-inspector-tab" data-inspector-tab="context" data-i18n="inspector.contexts">上下文</button>

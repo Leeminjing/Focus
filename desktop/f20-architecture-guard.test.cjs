@@ -46,7 +46,7 @@ assert.doesNotMatch(legacyStyles, /\.materials(?:\s|\.|\{)|\.material-meta|\.mat
 const shellStyles = read("desktop/styles/shell.css");
 const cssRule = (source, selector) => {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = source.match(new RegExp(`${escaped}\\s*\\{([^}]+)\\}`));
+  const match = source.match(new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]+)\\}`));
   assert.ok(match, `缺少 CSS 规则 ${selector}`);
   return match[1];
 };
@@ -54,22 +54,30 @@ const appShellRule = cssRule(shellStyles, ".app-shell");
 assert.match(appShellRule, /display:\s*flex/);
 assert.match(appShellRule, /flex-direction:\s*row/);
 assert.doesNotMatch(appShellRule, /grid-template-columns/);
+// 尺寸唯一来源：.app-shell 携带三栏默认宽度，供用户拖拽用内联自定义属性覆盖。
+assert.match(appShellRule, /--shell-nav-width:\s*[^;]+/);
+assert.match(appShellRule, /--inspector-width:\s*[^;]+/);
 
 const navigationRule = cssRule(shellStyles, ".app-navigation");
 const workspaceRule = cssRule(shellStyles, ".app-workspace");
 const inspectorRule = cssRule(shellStyles, ".app-inspector");
 assert.match(navigationRule, /flex:\s*0\s+1\s+var\(--shell-nav-width\)/);
-assert.match(navigationRule, /min-width:\s*var\(--shell-nav-collapsed\)/);
-assert.match(navigationRule, /max-width:\s*var\(--shell-nav-width\)/);
+// 导航可拖拽到 0（折叠）：min-width 必须允许收缩到 0，而不是锁死在折叠宽度。
+assert.match(navigationRule, /min-width:\s*0/);
+assert.match(navigationRule, /max-width:\s*var\(--shell-nav-max-width\)/);
 assert.match(workspaceRule, /flex:\s*1\s+1\s+0/);
-assert.match(workspaceRule, /min-width:\s*0/);
+assert.match(workspaceRule, /min-width:\s*var\(--workspace-min-width\)/);
 assert.match(inspectorRule, /flex:\s*0\s+1\s+var\(--inspector-width\)/);
 assert.match(inspectorRule, /min-width:\s*var\(--inspector-min-width\)/);
 assert.match(inspectorRule, /max-width:\s*var\(--inspector-max-width\)/);
 assert.match(shellStyles, /\.app-inspector\[hidden\]\s*\{\s*display:\s*none/);
+// 三栏 resizer 手柄：导航↔工作区、工作区↔检查器。
+assert.match(shellStyles, /\.shell-resizer\s*\{[^}]*touch-action:\s*none/);
 
 const mediumLayout = shellStyles.match(/@media \(max-width:\s*1100px\)\s*\{([\s\S]*?)@media \(max-width:\s*900px\)/)?.[1] || "";
-assert.match(mediumLayout, /\.app-navigation\s*\{[^}]*flex:\s*0\s+0\s+var\(--shell-nav-collapsed\)/);
+// 1100px 断点只覆盖默认宽度自定义属性，不再覆盖 flex 简写（避免覆盖用户内联值）。
+assert.match(mediumLayout, /\.app-shell\s*\{[^}]*--shell-nav-width:/);
+assert.doesNotMatch(mediumLayout, /\.app-navigation\s*\{[^}]*flex:\s*0\s+0/);
 assert.doesNotMatch(mediumLayout, /grid-template-columns/);
 const narrowLayout = shellStyles.match(/@media \(max-width:\s*900px\)\s*\{([\s\S]*?)@media \(max-width:\s*640px\)/)?.[1] || "";
 assert.match(narrowLayout, /\.app-inspector\s*\{[^}]*position:\s*absolute/);
