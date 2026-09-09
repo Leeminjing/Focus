@@ -71,22 +71,23 @@
 }
 
 .app-shell {
-  display: grid;
+  display: flex;
+  flex-direction: row;
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
-  grid-template-columns: var(--shell-nav-width) minmax(0, 1fr) auto;
+  overflow: hidden;
   background: var(--surface-canvas);
 }
 
-.app-navigation,
-.app-workspace,
-.app-inspector { min-width: 0; min-height: 0; }
-
 .app-navigation {
   display: flex;
+  flex: 0 1 var(--shell-nav-width);
   flex-direction: column;
+  min-width: var(--shell-nav-collapsed);
+  min-height: 0;
+  max-width: var(--shell-nav-width);
   gap: var(--space-1);
   padding: var(--space-3) var(--space-2);
   border-right: 1px solid var(--border-subtle);
@@ -117,6 +118,9 @@
 .app-workspace {
   position: relative;
   display: grid;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
   grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
 }
@@ -125,7 +129,10 @@
 
 .app-inspector {
   display: grid;
-  width: var(--inspector-width);
+  flex: 0 1 var(--inspector-width);
+  min-width: var(--inspector-min-width);
+  min-height: 0;
+  max-width: var(--inspector-max-width);
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   border-left: 1px solid var(--border-subtle);
@@ -188,7 +195,11 @@
 }
 
 @media (max-width: 1100px) {
-  .app-shell { grid-template-columns: var(--shell-nav-collapsed) minmax(0, 1fr) auto; }
+  .app-navigation {
+    flex: 0 0 var(--shell-nav-collapsed);
+    min-width: var(--shell-nav-collapsed);
+    max-width: var(--shell-nav-collapsed);
+  }
 }
 
 @media (max-width: 900px) {
@@ -197,14 +208,17 @@
     padding-right: max(var(--space-3), calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)));
   }
   #app { padding: var(--space-2); }
-  .app-shell { position: relative; grid-template-columns: var(--shell-nav-collapsed) minmax(0, 1fr); }
+  .app-shell { position: relative; }
   .app-navigation { padding-inline: var(--space-2); }
   .app-nav-item { justify-content: flex-start; padding-inline: var(--space-3); }
   .app-inspector {
     position: absolute;
+    flex: none;
     z-index: 20;
     inset: 0 0 0 auto;
     width: min(420px, calc(100% - var(--shell-nav-collapsed)));
+    min-width: 0;
+    max-width: none;
     box-shadow: var(--shadow-overlay);
   }
 }

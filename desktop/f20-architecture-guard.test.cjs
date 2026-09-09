@@ -43,6 +43,39 @@ const legacyStyles = read("desktop/styles.css");
 assert.doesNotMatch(legacyStyles, /\.plugins-panels|\.plugins-interfaces|\.plugin-status-badge/);
 assert.doesNotMatch(legacyStyles, /\.materials(?:\s|\.|\{)|\.material-meta|\.material-toggle/);
 
+const shellStyles = read("desktop/styles/shell.css");
+const cssRule = (source, selector) => {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = source.match(new RegExp(`${escaped}\\s*\\{([^}]+)\\}`));
+  assert.ok(match, `缺少 CSS 规则 ${selector}`);
+  return match[1];
+};
+const appShellRule = cssRule(shellStyles, ".app-shell");
+assert.match(appShellRule, /display:\s*flex/);
+assert.match(appShellRule, /flex-direction:\s*row/);
+assert.doesNotMatch(appShellRule, /grid-template-columns/);
+
+const navigationRule = cssRule(shellStyles, ".app-navigation");
+const workspaceRule = cssRule(shellStyles, ".app-workspace");
+const inspectorRule = cssRule(shellStyles, ".app-inspector");
+assert.match(navigationRule, /flex:\s*0\s+1\s+var\(--shell-nav-width\)/);
+assert.match(navigationRule, /min-width:\s*var\(--shell-nav-collapsed\)/);
+assert.match(navigationRule, /max-width:\s*var\(--shell-nav-width\)/);
+assert.match(workspaceRule, /flex:\s*1\s+1\s+0/);
+assert.match(workspaceRule, /min-width:\s*0/);
+assert.match(inspectorRule, /flex:\s*0\s+1\s+var\(--inspector-width\)/);
+assert.match(inspectorRule, /min-width:\s*var\(--inspector-min-width\)/);
+assert.match(inspectorRule, /max-width:\s*var\(--inspector-max-width\)/);
+assert.match(shellStyles, /\.app-inspector\[hidden\]\s*\{\s*display:\s*none/);
+
+const mediumLayout = shellStyles.match(/@media \(max-width:\s*1100px\)\s*\{([\s\S]*?)@media \(max-width:\s*900px\)/)?.[1] || "";
+assert.match(mediumLayout, /\.app-navigation\s*\{[^}]*flex:\s*0\s+0\s+var\(--shell-nav-collapsed\)/);
+assert.doesNotMatch(mediumLayout, /grid-template-columns/);
+const narrowLayout = shellStyles.match(/@media \(max-width:\s*900px\)\s*\{([\s\S]*?)@media \(max-width:\s*640px\)/)?.[1] || "";
+assert.match(narrowLayout, /\.app-inspector\s*\{[^}]*position:\s*absolute/);
+assert.match(narrowLayout, /\.app-inspector\s*\{[^}]*flex:\s*none/);
+assert.doesNotMatch(narrowLayout, /grid-template-columns/);
+
 const spatialStyle = read("plugins/spatial-patrol/desktop/style.css");
 const eyesStyle = read("plugins/dsh-eyes/desktop/style.css");
 assert.doesNotMatch(spatialStyle, /\n\.(?:rail-wrap|rail-resizer|message-file-cards|file-card|panel-resizer)\b/);
