@@ -9,6 +9,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 
+import pytest
 from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -19,7 +20,9 @@ if os.name == "nt":
 _LOOP = asyncio.new_event_loop()
 
 # 独立 engine，不碰全局单例
-_ENGINE = create_async_engine("postgresql+asyncpg://focus:qweasdzxc123@127.0.0.1:7221/focus")
+pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
+
+_ENGINE = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
 _SESSION_FACTORY = async_sessionmaker(_ENGINE, expire_on_commit=False)
 atexit.register(lambda: _LOOP.run_until_complete(_ENGINE.dispose()))
 

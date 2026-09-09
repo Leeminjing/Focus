@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
@@ -12,10 +13,7 @@ from langchain_core.messages import HumanMessage
 
 os.environ.setdefault("OPENAI_API_KEY", "memory-test")
 os.environ.setdefault("VISION_API_KEY", "vision-test")
-os.environ.setdefault(
-    "FOCUS_DATABASE_URL",
-    "postgresql+asyncpg://focus:qweasdzxc123@127.0.0.1:7221/focus",
-)
+pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 from backend.app.desktop.memory import (  # noqa: E402
     _MAIN_RUNTIME_MEMORY_KEY,

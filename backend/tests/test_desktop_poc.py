@@ -5,6 +5,7 @@ import subprocess
 from types import SimpleNamespace
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
@@ -24,10 +25,7 @@ from focus.tools.builtins.workspace_tools import select_workspace_tools
 
 
 os.environ.setdefault("OPENAI_API_KEY", "desktop-test")
-os.environ.setdefault(
-    "FOCUS_DATABASE_URL",
-    "postgresql+asyncpg://focus:qweasdzxc123@127.0.0.1:7221/focus",
-)
+pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 # 决策 1：桌面功能内嵌 Gateway，测试目标为唯一 FastAPI 应用
 from backend.app.gateway.app import app  # noqa: E402

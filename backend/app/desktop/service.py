@@ -210,6 +210,7 @@ class DesktopService:
         # 仅持有 DB 终态同步任务（运行注册表/取消由 RunManager 负责）
         self._sync_tasks: set[asyncio.Task] = set()
         self._watcher: asyncio.Task | None = None
+        self._material_watch_failures: set[str] = set()
 
     async def start(self) -> None:
         async with self.session_factory() as session:
@@ -2030,11 +2031,21 @@ class DesktopService:
                                 if material.digest and digest != material.digest:
                                     await self._save_material_version(session, material, workspace.path, "external")
                                     changed = True
+                            self._material_watch_failures.discard(material.material_id)
                         except asyncio.CancelledError:
                             raise
                         except Exception:
                             # 单个材料失败（如工作区目录已删除的遗留材料）不阻塞其他材料
-                            logger.warning("材料监测失败，跳过该材料: material_id=%s", material.material_id, exc_info=True)
+                            failures = getattr(self, "_material_watch_failures", None)
+                            if failures is None:
+                                failures = self._material_watch_failures = set()
+                            if material.material_id not in failures:
+                                logger.warning(
+                                    "材料监测失败，跳过该材料: material_id=%s",
+                                    material.material_id,
+                                    exc_info=True,
+                                )
+                                failures.add(material.material_id)
                             continue
                     if changed:
                         await session.commit()

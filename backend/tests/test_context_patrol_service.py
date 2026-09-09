@@ -6,16 +6,14 @@ from pathlib import Path
 from typing import Any
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import HumanMessage
 from sqlalchemy import delete, select
 
 
 os.environ.setdefault("OPENAI_API_KEY", "context-curator-test")
-os.environ.setdefault(
-    "FOCUS_DATABASE_URL",
-    "postgresql+asyncpg://focus:qweasdzxc123@127.0.0.1:7221/focus",
-)
+pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 from backend.app.desktop.context_curator import (  # noqa: E402
     CurationEngineError,

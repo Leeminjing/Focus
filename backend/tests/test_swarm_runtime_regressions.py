@@ -7,6 +7,7 @@ import os
 from types import SimpleNamespace
 import uuid
 
+import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage
 from langchain_core.runnables.config import var_child_runnable_config
@@ -18,7 +19,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 if os.name == "nt":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 _LOOP = asyncio.new_event_loop()
-_ENGINE = create_async_engine("postgresql+asyncpg://focus:qweasdzxc123@127.0.0.1:7221/focus")
+pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
+
+_ENGINE = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
 _SESSION_FACTORY = async_sessionmaker(_ENGINE, expire_on_commit=False)
 atexit.register(lambda: _LOOP.run_until_complete(_ENGINE.dispose()))
 

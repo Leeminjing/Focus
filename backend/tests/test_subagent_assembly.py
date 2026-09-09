@@ -7,15 +7,13 @@
 import os
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 from sqlalchemy import delete
 
 os.environ.setdefault("OPENAI_API_KEY", "desktop-test")
-os.environ.setdefault(
-    "FOCUS_DATABASE_URL",
-    "postgresql+asyncpg://focus:qweasdzxc123@127.0.0.1:7221/focus",
-)
+pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 from backend.app.gateway.app import app  # noqa: E402
 from backend.app.desktop.models import (  # noqa: E402
