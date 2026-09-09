@@ -46,3 +46,6 @@ desktop/.smoke-*.log
 # Playwright MCP 运行时快照输出目录
 .playwright-mcp/
 plugins/*/data/
+
+# OpenSpec 变更工作流：不入库
+openspec/
