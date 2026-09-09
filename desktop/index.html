@@ -24,8 +24,7 @@
 <body>
   <div class="app-frame">
     <header class="app-header">
-      <button class="app-mark" data-action="focus-home" aria-label="返回当前任务"><img src="./assets/focus-icon.png" alt="" aria-hidden="true"></button>
-      <button class="quiet-button app-nav-toggle" data-action="toggle-nav-collapse" aria-label="收起导航" aria-expanded="true" data-i18n-aria-label="nav.collapse"><span class="ui-icon is-sm icon-chevron-left" aria-hidden="true"></span><span class="app-nav-toggle-label" data-i18n="nav.collapse">收起导航</span></button>
+      <button class="app-mark" data-action="toggle-nav-collapse" aria-controls="appNavigation" aria-expanded="true" aria-label="收起导航" data-i18n-aria-label="nav.collapse"><img src="./assets/focus-icon.png" alt="" aria-hidden="true"></button>
       <div class="shell-task-context" aria-live="polite">
         <strong id="shellTaskTitle" data-i18n="header.no_task">尚未选择任务</strong>
         <span id="shellTaskMeta" data-i18n="header.workbench">本地 Agent 工作台</span>

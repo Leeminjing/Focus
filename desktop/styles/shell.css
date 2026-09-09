@@ -2,7 +2,7 @@
 .app-header {
   display: grid;
   height: var(--shell-header-height);
-  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: var(--space-3);
   padding-left: max(var(--space-4), env(titlebar-area-x, 0px));
@@ -14,15 +14,6 @@
 
 .app-header button { -webkit-app-region: no-drag; }
 
-.app-nav-toggle {
-  min-height: 32px;
-  padding: 0 var(--space-2);
-  gap: var(--space-1);
-  color: var(--text-secondary);
-}
-.app-nav-toggle:hover { color: var(--text-primary); }
-.app-nav-toggle .app-nav-toggle-label { font-size: 12px; }
-
 /* 导航折叠态：宽度 0 且隐藏内容，中间工作区自动占用释放空间。 */
 .app-shell.is-nav-collapsed .app-navigation {
   overflow: hidden;
@@ -33,6 +24,7 @@
   visibility: hidden;
 }
 
+/* 左上角 logo：折叠/展开导航触发器。保持无痕——无 :hover 背景，仅以 cursor 与键盘焦点提示可点击。 */
 .app-mark {
   display: grid;
   width: 40px;
@@ -42,9 +34,8 @@
   border: 0;
   border-radius: var(--radius-control);
   background: transparent;
+  cursor: pointer;
 }
-
-.app-mark:hover { background: var(--surface-subtle); }
 
 .app-mark img {
   width: 32px;
@@ -121,7 +112,6 @@
 .shell-resizer.shell-resizer-inspector {
   right: calc(var(--inspector-width) - 4px);
 }
-.shell-resizer:hover { background: rgb(70 120 240 / 14%); }
 .shell-resizer[aria-hidden="true"] { display: none; }
 
 .app-navigation {

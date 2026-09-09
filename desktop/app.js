@@ -270,16 +270,12 @@ function syncShellResizerVisibility() {
 }
 
 function syncNavToggleButton(navCollapsed) {
-  const toggle = document.querySelector("[data-action='toggle-nav-collapse']");
+  // 折叠触发器是左上角 logo（.app-mark）。它保持 logo 图片不变（无痕），
+  // 仅用 aria-expanded / aria-label 反映展开/收起状态。
+  const toggle = document.querySelector(".app-mark");
   if (!toggle?.setAttribute) return;
-  const icon = toggle.querySelector?.(".ui-icon");
-  // 折叠时显示「展开」箭头(右)，展开时显示「收起」箭头(左)；标题与 aria-label 同步。
   toggle.setAttribute("aria-expanded", String(!navCollapsed));
   toggle.setAttribute("aria-label", navCollapsed ? uiText("nav.expand", "展开导航") : uiText("nav.collapse", "收起导航"));
-  if (icon?.classList?.toggle) {
-    icon.classList.toggle("icon-chevron-right", navCollapsed);
-    icon.classList.toggle("icon-chevron-left", !navCollapsed);
-  }
 }
 
 function setShellNavCollapsed(navCollapsed) {

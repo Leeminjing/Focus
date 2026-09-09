@@ -73,6 +73,20 @@ assert.match(inspectorRule, /max-width:\s*var\(--inspector-max-width\)/);
 assert.match(shellStyles, /\.app-inspector\[hidden\]\s*\{\s*display:\s*none/);
 // 三栏 resizer 手柄：导航↔工作区、工作区↔检查器。
 assert.match(shellStyles, /\.shell-resizer\s*\{[^}]*touch-action:\s*none/);
+// 拖拽手柄无痕：不得有 .shell-resizer:hover 背景高亮（保留 cursor: col-resize 提示）。
+assert.doesNotMatch(shellStyles, /\.shell-resizer:hover\s*\{[^}]*background:/, "拖拽手柄仍显示 :hover 背景高亮线");
+
+// 头部折叠触发器：logo 存在、保留图片、action 已改为折叠开关；独立的「收起导航」按钮样式被移除。
+assert.match(html, /class="app-mark"[^>]*data-action="toggle-nav-collapse"/);
+assert.match(html, /class="app-mark"[^>]*aria-controls="appNavigation"/);
+assert.match(html, /class="app-mark"[\s\S]*assets\/focus-icon\.png/, "应用头部没有保留用户指定的品牌 Logo");
+assert.doesNotMatch(shellStyles, /\.app-nav-toggle(?:\s|\.|\{)/, "壳层仍保留已删除的「收起导航」按钮样式");
+// 头部网格收敛为 4 列（删除折叠按钮后恢复断言），而非过渡态的 5 列。
+assert.match(shellStyles, /\.app-header\s*\{[^}]*grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\)\s+auto\s+auto/);
+assert.doesNotMatch(shellStyles, /\.app-header\s*\{[^}]*grid-template-columns:\s*auto\s+auto\s+minmax\(0,\s*1fr\)\s+auto\s+auto/, ".app-header 仍为 5 列（遗留折叠按钮占用的一格）");
+// logo 无痕：.app-mark 不得有 :hover 背景（可点击性仅由 cursor 与键盘焦点样式提示）。
+assert.doesNotMatch(shellStyles, /\.app-mark:hover\s*\{[^}]*background:/, ".app-mark 仍显示 :hover 背景");
+assert.match(shellStyles, /\.app-mark\s*\{[^}]*cursor:\s*pointer/, ".app-mark 缺少 cursor: pointer 可点击提示");
 
 const mediumLayout = shellStyles.match(/@media \(max-width:\s*1100px\)\s*\{([\s\S]*?)@media \(max-width:\s*900px\)/)?.[1] || "";
 // 1100px 断点只覆盖默认宽度自定义属性，不再覆盖 flex 简写（避免覆盖用户内联值）。
