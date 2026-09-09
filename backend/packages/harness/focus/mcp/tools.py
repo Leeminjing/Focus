@@ -20,12 +20,14 @@
     (4) 用 dict 构造 MultiServerMCPClient 并获取工具；client 同时登记到模块级
         _MCP_CLIENTS 注册表保活，防止其被垃圾回收后 stdio 子进程随之中断
         （langchain-mcp-adapters 0.2+ 无 context-manager，client 必须显式持有）
-    (4.5) 以常驻 session（手动进入 client.session() 上下文、进程内不退出）加载工具：
+    (4.5) 由独立后台任务持有常驻 session，并在同一任务内进入和退出上下文：
         get_tools() 默认"每次工具调用新建 session"，会导致 playwright 等有状态
         server 的页面上下文跨调用丢失（navigate 后 snapshot 看到 about:blank）；
-        绑定 session 后工具复用同一连接与浏览器实例
-        （ponytail: 配置刷新时旧 client/session 交由 GC 回收，不主动关闭）
+        绑定 session 后工具复用同一连接与浏览器实例，同时不污染 HTTP 请求任务的
+        AnyIO cancel scope 栈
     (5) 单 server 连接失败 log warn 跳过，不抛异常
+
+    close_mcp_sessions(): 在应用退出时关闭全部常驻 session
 
 示例:
     tools = await get_mcp_tools()
@@ -33,6 +35,7 @@
         print(tool.name)
 """
 
+import asyncio
 import logging
 
 from langchain_core.tools import BaseTool
@@ -42,10 +45,66 @@ from focus.mcp.client import build_servers_config
 
 logger = logging.getLogger(__name__)
 
-# client/session 保活注册表：持有引用，防止 GC 回收导致 stdio 子进程终止、
-# 或常驻 session 被关闭
+# client/session 保活注册表：持有引用，防止 GC 回收导致 stdio 子进程终止。
 _MCP_CLIENTS: list[object] = []
-_MCP_SESSIONS: list[object] = []
+_MCP_SESSIONS: list["_PersistentMcpSession"] = []
+
+
+class _PersistentMcpSession:
+    """在专属 asyncio task 内完整持有一个 MCP session 上下文。"""
+
+    def __init__(self, client, server_name: str, load_tools_from_session):
+        loop = asyncio.get_running_loop()
+        self._client = client
+        self._server_name = server_name
+        self._load_tools = load_tools_from_session
+        self._ready = loop.create_future()
+        self._stop = asyncio.Event()
+        self._task = loop.create_task(
+            self._run(), name=f"focus-mcp-session-{server_name}"
+        )
+
+    async def _run(self) -> None:
+        try:
+            async with self._client.session(self._server_name) as session:
+                tools = await self._load_tools(session)
+                if not self._ready.done():
+                    self._ready.set_result(tools)
+                await self._stop.wait()
+        except asyncio.CancelledError:
+            if not self._ready.done():
+                self._ready.cancel()
+            raise
+        except Exception as exc:
+            if not self._ready.done():
+                self._ready.set_exception(exc)
+            else:
+                logger.warning(
+                    "MCP Server '%s' 常驻 session 异常退出",
+                    self._server_name,
+                    exc_info=True,
+                )
+
+    async def start(self) -> list[BaseTool]:
+        """等待 session 初始化；shield 防止请求取消直接取消共享 future。"""
+        return await asyncio.shield(self._ready)
+
+    async def close(self) -> None:
+        """通知 owner task 退出，使 session 在进入它的同一任务内关闭。"""
+        if not self._ready.done():
+            self._task.cancel()
+        else:
+            self._stop.set()
+        await asyncio.gather(self._task, return_exceptions=True)
+
+
+async def close_mcp_sessions() -> None:
+    """关闭并清空当前进程持有的全部 MCP 常驻 session。"""
+    sessions = list(_MCP_SESSIONS)
+    _MCP_SESSIONS.clear()
+    _MCP_CLIENTS.clear()
+    if sessions:
+        await asyncio.gather(*(session.close() for session in sessions))
 
 
 async def load_mcp_tools(servers_config: dict[str, dict]) -> list[BaseTool]:
@@ -61,13 +120,14 @@ async def load_mcp_tools(servers_config: dict[str, dict]) -> list[BaseTool]:
     for server_name, params in servers_config.items():
         try:
             client = MultiServerMCPClient({server_name: params})
+            owner = _PersistentMcpSession(client, server_name, load_tools_from_session)
+            try:
+                server_tools = await owner.start()
+            except BaseException:
+                await owner.close()
+                raise
             _MCP_CLIENTS.append(client)
-            # 常驻 session：手动进入 client.session() 上下文但不在进程内退出，
-            # 工具绑定该 session 后跨调用复用同一连接（playwright 浏览器状态保持）
-            session_cm = client.session(server_name)
-            session = await session_cm.__aenter__()
-            _MCP_SESSIONS.append(session_cm)
-            server_tools = await load_tools_from_session(session)
+            _MCP_SESSIONS.append(owner)
             tools.extend(server_tools)
             logger.info("MCP Server '%s' 连接成功，获取 %d 个工具", server_name, len(server_tools))
         except Exception:

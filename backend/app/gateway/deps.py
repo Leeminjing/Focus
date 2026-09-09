@@ -91,6 +91,12 @@ async def langgraph_runtime(app: FastAPI, app_config: AppConfig) -> AsyncGenerat
         app.state.run_manager = run_manager
         logger.info("RunManager 已挂载到 app.state.run_manager")
 
+        # MCP session 内部包含 AnyIO TaskGroup，必须由进入 session 的 owner task
+        # 自己退出；tools.close_mcp_sessions 会通知并等待这些 owner task 完成清理。
+        from focus.mcp.tools import close_mcp_sessions
+
+        stack.push_async_callback(close_mcp_sessions)
+
         # (5) ... 待扩展更多资源
 
         yield

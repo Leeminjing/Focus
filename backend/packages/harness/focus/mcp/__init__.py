@@ -10,11 +10,12 @@ lead_agent MCP 模块。
 from focus.mcp.cache import get_mcp_tools_cached
 from focus.mcp.client import build_server_params, build_servers_config
 from focus.mcp.context7 import get_context7_tools
-from focus.mcp.tools import get_mcp_tools, load_mcp_tools
+from focus.mcp.tools import close_mcp_sessions, get_mcp_tools, load_mcp_tools
 
 __all__ = [
     "build_server_params",
     "build_servers_config",
+    "close_mcp_sessions",
     "get_mcp_tools",
     "get_mcp_tools_cached",
     "get_context7_tools",

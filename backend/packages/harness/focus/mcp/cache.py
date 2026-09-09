@@ -16,7 +16,7 @@
     (2) 首次调用: 记录 mtime → 调用 get_mcp_tools() → 存入缓存并返回
     (3) mtime 未变: 直接返回缓存的工具列表
     (4) mtime 变更: 重新调用 get_mcp_tools() → 更新缓存和 mtime
-       MultiServerMCPClient 使用 ephemeral session 模式，旧连接随 client 对象回收自动关闭
+       常驻 session 由 tools.close_mcp_sessions() 在应用退出时统一关闭
        刷新失败时保留上次成功缓存的工具列表作为降级返回，不更新 mtime
 
 示例:
