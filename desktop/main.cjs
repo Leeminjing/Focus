@@ -18,10 +18,27 @@ const focusIconPath = path.join(desktopDir, "assets", process.platform === "win3
 const ZOOM_LEVEL_MIN = -3;
 const ZOOM_LEVEL_MAX = 5;
 
+// 顶部带高：既是原生窗口控制覆盖层的基础高度（DIP），也是页面头部带高（CSS px）。
+// 两者必须相等——页面头部随缩放变化，故覆盖层高度必须随缩放同步，见 syncTitleBarOverlay。
+const TITLEBAR_BASE_HEIGHT = 56;
+
 function clampZoomLevel(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return 0;
   return Math.min(ZOOM_LEVEL_MAX, Math.max(ZOOM_LEVEL_MIN, Math.round(numeric)));
+}
+
+// 缩放因子：Chromium 每级 ×1.2。
+function zoomFactorForLevel(level) {
+  return 1.2 ** clampZoomLevel(level);
+}
+
+// 让原生窗口控制覆盖层高度跟随页面缩放：页面头部带物理高 = 56 CSS px × zoomFactor，
+// 覆盖层高度（DIP）取同一值，二者恒相等，避免缩放后头部内容被窗口按钮遮挡/错位。
+function syncTitleBarOverlay(win, level) {
+  if (process.platform === "darwin" || !win || win.isDestroyed?.()) return;
+  const height = Math.round(TITLEBAR_BASE_HEIGHT * zoomFactorForLevel(level));
+  try { win.setTitleBarOverlay({ height }); } catch { /* 未启用覆盖层时忽略 */ }
 }
 
 function ensureFocusHome() {
@@ -279,7 +296,7 @@ async function start() {
     mainWindowOptions.titleBarOverlay = {
       color: "#ffffff",
       symbolColor: "#18202d",
-      height: 56,
+      height: TITLEBAR_BASE_HEIGHT,
     };
   }
   mainWindow = new BrowserWindow(mainWindowOptions);
@@ -304,12 +321,14 @@ ipcMain.handle("focus:open-external", async (_event, value) => {
   return true;
 });
 
-// 整页缩放：主进程是缩放权威，对调用方窗口的 webContents 设置/读取级别并钳制。
+// 整页缩放：主进程是缩放权威，对调用方窗口的 webContents 设置/读取级别并钳制；
+// 设置后同步原生覆盖层带高，使原生窗口按钮与（随缩放的）页面头部带始终等高。
 ipcMain.handle("focus:set-zoom-level", (event, value) => {
   const level = clampZoomLevel(value);
-  const contents = BrowserWindow.fromWebContents(event.sender)?.webContents;
-  if (!contents) return level;
-  contents.setZoomLevel(level);
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return level;
+  win.webContents.setZoomLevel(level);
+  syncTitleBarOverlay(win, level);
   return level;
 });
 

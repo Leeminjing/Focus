@@ -121,6 +121,18 @@ assert.match(main, /ipcMain\.handle\("focus:get-zoom-level"/);
 assert.match(main, /setZoomLevel\(/);
 assert.match(main, /ZOOM_LEVEL_MIN\s*=\s*-3/);
 assert.match(main, /ZOOM_LEVEL_MAX\s*=\s*5/);
+// 窗口控制覆盖层：带高随缩放同步，避免原生按钮与（随缩放的）页面头部错位遮挡。
+assert.match(main, /TITLEBAR_BASE_HEIGHT\s*=\s*56/);
+assert.match(main, /setTitleBarOverlay\(/);
+assert.doesNotMatch(main, /titleBarOverlay\s*=\s*\{[^}]*height:\s*56\b/, "titleBarOverlay 高度仍是裸字面量，未复用 TITLEBAR_BASE_HEIGHT");
+// 同步逻辑必须挂在缩放处理路径上：同一 handler 内 setZoomLevel 之后调用。
+assert.match(main, /focus:set-zoom-level"[\s\S]*syncTitleBarOverlay\(/);
+// 原生带高必须等于页面头部带高（tokens.css --shell-header-height），防止两处漂移。
+const titlebarBaseHeight = main.match(/TITLEBAR_BASE_HEIGHT\s*=\s*(\d+)/)?.[1];
+const shellHeaderHeight = tokens.match(/--shell-header-height:\s*(\d+)px/)?.[1];
+assert.ok(titlebarBaseHeight, "main.cjs 缺少 TITLEBAR_BASE_HEIGHT 常量");
+assert.ok(shellHeaderHeight, "tokens.css 缺少 --shell-header-height");
+assert.strictEqual(titlebarBaseHeight, shellHeaderHeight, "原生覆盖层带高与页面头部带高不一致");
 
 const preload = read("desktop/preload.cjs");
 assert.match(preload, /apiBase:\s*process\.env\.FOCUS_DESKTOP_API/);

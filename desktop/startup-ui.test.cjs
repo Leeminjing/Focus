@@ -57,7 +57,9 @@ const main = text("main.cjs");
 assert.match(main, /focus-icon\.ico/);
 assert.match(main, /createSplashWindow\(\)/);
 assert.match(main, /titleBarStyle:\s*"hidden"/);
-assert.match(main, /if \(process\.platform !== "darwin"\) \{[\s\S]*mainWindowOptions\.titleBarOverlay\s*=\s*\{[\s\S]*height:\s*56/);
+assert.match(main, /if \(process\.platform !== "darwin"\) \{[\s\S]*mainWindowOptions\.titleBarOverlay\s*=\s*\{[\s\S]*height:\s*TITLEBAR_BASE_HEIGHT/);
+// 基础带高仍为 56，只是收敛为命名常量（并随缩放同步，见 f20-architecture-guard）。
+assert.match(main, /const TITLEBAR_BASE_HEIGHT = 56/);
 assert.match(main, /show: false,[\s\S]*frame: false,[\s\S]*loadFile\(path\.join\(desktopDir, "splash\.html"\)\)/);
 assert.ok(main.indexOf("await createSplashWindow()") < main.indexOf("const pythonRuntime = resolvePythonRuntime()"));
 assert.ok(main.indexOf("await mainWindow.loadURL") < main.indexOf("mainWindow.show()"));

@@ -51,7 +51,7 @@ assert.match(rule(shell, ".app-header"), /grid-template-columns:\s*auto\s+minmax
 assert.match(rule(shell, ".app-header"), /-webkit-app-region:\s*drag/);
 assert.match(shell, /titlebar-area-width/);
 assert.match(main, /titleBarStyle:\s*"hidden"/);
-assert.match(main, /titleBarOverlay:\s*\{[\s\S]*height:\s*56[\s\S]*\}/);
+assert.match(main, /titleBarOverlay:\s*\{[\s\S]*height:\s*TITLEBAR_BASE_HEIGHT[\s\S]*\}/);
 assert.doesNotMatch(splash, /splash-copy|splash-kicker|LOCAL AGENT WORKSPACE|<h1[^>]*>Focus<\/h1>/);
 assert.doesNotMatch(splashCss, /\.splash-(?:copy|kicker)|\.splash-copy\s+h1/);
 assert.doesNotMatch(index, /app-nav-icon|icon-(?:house|map|layers|bot|plug)/, "左侧导航仍包含图标或图标占位");
