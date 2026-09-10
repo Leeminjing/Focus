@@ -27,6 +27,7 @@ def _fake_config(with_vision: bool):
         "use": "focus.models.deepseek:DeepSeekChatOpenAI",
         "model": "deepseek-text-only-test", "context_window": 131072,
         "api_key": "sk-test", "base_url": "https://api.deepseek.com",
+        "default": True,
     }]
     if with_vision:
         models.append({
@@ -218,22 +219,38 @@ def test_plugin_unavailable_without_vision_model(tmp_path, monkeypatch):
     assert registry.active_assets() == {}
 
 
+def _write_fake_vision_plugin(root: Path) -> None:
+    """写入一个提供 service.vision 的最小插件（作为视觉能力提供方的测试替身）。"""
+    plugin_dir = root / "fake-vision"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "plugin.json").write_text(
+        json.dumps({
+            "name": "fake-vision", "version": "0.1.0", "enabled": True,
+            "provides": ["service.vision"], "entry": "plugin.py",
+        }),
+        encoding="utf-8",
+    )
+    (plugin_dir / "plugin.py").write_text(
+        "from focus.plugins.schemas import PluginDeclaration\n"
+        "\n"
+        "class _Vision:\n"
+        "    async def describe(self, data_url):\n"
+        "        return 'fake description'\n"
+        "\n"
+        "def build_plugin(context):\n"
+        "    return PluginDeclaration(services={'service.vision': _Vision()})\n",
+        encoding="utf-8",
+    )
+
+
 def test_plugin_active_with_vision_plugin_only(tmp_path, monkeypatch):
     """无 vision 条目但存在视觉插件(service.vision 提供者)→ spatial-patrol Active。"""
-    import plugins.dsh_eyes.entry  # noqa: F401 确保 dsh-eyes 服务声明可导入
-
     root = _copy_plugin(tmp_path)
-    # 放入一个提供 service.vision 的视觉插件(真实 dsh-eyes 目录)
-    eyes_root = root / "dsh-eyes"
-    shutil.copytree(Path(__file__).resolve().parents[2] / "plugins" / "dsh-eyes", eyes_root)
-    eyes_manifest = eyes_root / "plugin.json"
-    eyes_config = json.loads(eyes_manifest.read_text(encoding="utf-8"))
-    eyes_config["enabled"] = True
-    eyes_manifest.write_text(json.dumps(eyes_config), encoding="utf-8")
+    _write_fake_vision_plugin(root)
     registry = _load(root, monkeypatch, with_vision=False)
     records = {item["name"]: item for item in registry.list_plugins()}
     assert records["spatial-patrol"]["status"] == "active"
-    assert records["dsh-eyes"]["status"] == "active"
+    assert records["fake-vision"]["status"] == "active"
 
 
 def test_plugin_active_with_vision_model(tmp_path, monkeypatch):

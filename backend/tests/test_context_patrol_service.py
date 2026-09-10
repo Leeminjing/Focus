@@ -161,7 +161,7 @@ def _create_root_and_curator(client: TestClient, tmp_path: Path, suffix: str):
             "mode": "context_curator",
             "curation_policy": {"instructions": "保留目标与权威结论"},
             "equipment": {
-                "model_name": service.app_config.models[0].name,
+                "model_name": service.app_config.resolve_default_model_name(),
                 "permissions": ["read"],
                 "skills": [],
             },

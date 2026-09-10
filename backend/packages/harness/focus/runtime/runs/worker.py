@@ -1,4 +1,4 @@
-﻿"""
+"""
 本文件对外提供 `run_agent` 异步函数，作为统一 agent 执行层的主入口。
 
 对外提供:
@@ -204,15 +204,16 @@ async def run_agent(
                 logger.warning("run '%s' 读取旧 checkpoint 失败，rollback 不可用", record.run_id, exc_info=True)
 
         # (3) 通过 agent_factory（缺省 make_lead_agent）创建 agent
-        model_name = record.model_name or (app_config.models[0].name if app_config.models else None)
+        model_name = record.model_name
         mapped_stream_modes = _map_stream_modes(stream_modes)
         user_id = langgraph_context.get("user_id") if langgraph_context else None
 
         if agent_factory is not None:
             agent = await agent_factory()
         else:
+            # 默认模型按需解析：注入 agent_factory 的路径不消费该值
             agent = await make_lead_agent(
-                model_name=model_name or None,
+                model_name=model_name or app_config.resolve_default_model_name(),
                 agent_name=agent_name,
                 tool_groups=tool_groups,
                 user_id=user_id,

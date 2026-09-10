@@ -45,7 +45,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from focus.config.env import resolve_env_var
+from focus.config.env import resolve_env_vars
 
 
 class McpServerConfig(BaseModel):
@@ -77,7 +77,7 @@ def get_extensions_config(json_path: str) -> ExtensionsConfig:
     from focus.config.layered import load_layered_map
 
     raw = load_layered_map(Path(json_path).name, json_path)
-    resolved = _resolve_env_vars(raw)
+    resolved = resolve_env_vars(raw)
     if not resolved.get("mcpServers"):
         return ExtensionsConfig(mcp_servers={})
     return ExtensionsConfig.model_validate(resolved)
@@ -85,17 +85,3 @@ def get_extensions_config(json_path: str) -> ExtensionsConfig:
 
 def get_enabled_mcp_servers(config: ExtensionsConfig) -> dict[str, McpServerConfig]:
     return config.get_enabled_mcp_servers()
-
-
-def _resolve_env_item(value):
-    # 命中 $VAR 但环境变量缺失时 resolve_env_var 返回 None,此处软返回原值——
-    # 加载阶段不抛错(disabled server 的 $VAR 不参与解析),缺失校验推迟到连接时
-    return resolve_env_var(value) or value
-
-
-def _resolve_env_vars(data):
-    if isinstance(data, dict):
-        return {key: _resolve_env_vars(value) for key, value in data.items()}
-    if isinstance(data, list):
-        return [_resolve_env_vars(item) for item in data]
-    return _resolve_env_item(data)

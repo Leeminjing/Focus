@@ -783,6 +783,7 @@ def _fake_app_config():
             "use": "focus.models.deepseek:DeepSeekChatOpenAI",
             "model": "deepseek-v4-flash", "context_window": 131072,
             "api_key": "sk-test", "base_url": "https://api.deepseek.com",
+            "default": True,
         }],
     )
 

@@ -5,6 +5,8 @@ models:
     model: deepseek-v4-flash-vision-exp
     context_window: 131072
     curation_output_method: prompt_json
+    curation_default: true
+    default: true
     api_key: $OPENAI_API_KEY
     base_url: https://api.deepseek.com
 
@@ -16,18 +18,6 @@ models:
     curation_output_method: prompt_json
     api_key: $OPENAI_API_KEY
     base_url: https://api.deepseek.com
-
-  # 视觉模型(spatial-patrol 空间观察与 dsh-eyes 视觉插件共用,DeepSeek V4 为 text-only):
-  # qwen3.7-plus 为多模态模型(DashScope OpenAI 兼容模式),key 走 $VISION_API_KEY(.env)。
-  - name: qwen3.7-plus
-    display_name: Vision / qwen3.7-plus (DashScope)
-    use: langchain_openai:ChatOpenAI
-    model: qwen3.7-plus
-    context_window: 128000
-    curation_output_method: prompt_json
-    curation_default: true
-    api_key: $VISION_API_KEY
-    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
 
 stream_bridge:
   type: memory

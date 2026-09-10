@@ -60,16 +60,15 @@ def _render_pdf_page_cached(
 def _main_model_text_only() -> bool:
     """主模型是否 text-only;配置不可得时按 text-only 保守处理。
 
-    ponytail: 以 models[0].model 的 deepseek 前缀判定(DeepSeek V4 text-only,
+    ponytail: 以默认模型条目的 model 字段 deepseek 前缀判定(DeepSeek V4 text-only,
     官方文档确认);未来接入多厂商时再在模型条目加显式 multimodal 标记。
     """
     try:
         app_config = get_app_config("config.yaml")
+        model = app_config.get_model(app_config.resolve_default_model_name())
     except Exception:
         return True
-    if not app_config.models:
-        return True
-    return str(app_config.models[0].model or "").startswith("deepseek")
+    return str(model.model or "").startswith("deepseek")
 
 
 def init_service(plugin_config: dict, registry: Any = None) -> "ObservationService":

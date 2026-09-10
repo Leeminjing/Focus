@@ -99,12 +99,9 @@ assert.match(narrowLayout, /\.app-inspector\s*\{[^}]*flex:\s*none/);
 assert.doesNotMatch(narrowLayout, /grid-template-columns/);
 
 const spatialStyle = read("plugins/spatial-patrol/desktop/style.css");
-const eyesStyle = read("plugins/dsh-eyes/desktop/style.css");
 assert.doesNotMatch(spatialStyle, /\n\.(?:rail-wrap|rail-resizer|message-file-cards|file-card|panel-resizer)\b/);
 assert.doesNotMatch(spatialStyle, /var\(--(?!focus-plugin)/);
-assert.doesNotMatch(eyesStyle, /var\(--(?!focus-plugin)/);
 assert.match(spatialStyle, /\.file-panel[\s\S]*\.spatial-viewer/);
-assert.match(eyesStyle, /\.dsh-eyes-paste-preview/);
 
 const main = read("desktop/main.cjs");
 assert.match(main, /const apiBase = `http:\/\/127\.0\.0\.1:\$\{port\}`/);

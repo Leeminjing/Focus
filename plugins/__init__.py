@@ -13,7 +13,6 @@ from pathlib import Path
 _REGISTRATIONS = (
     # (目录名, 包路径)
     ("spatial-patrol", "plugins.spatial_patrol"),
-    ("dsh-eyes", "plugins.dsh_eyes"),
 )
 
 for _dir_name, _qualified in _REGISTRATIONS:

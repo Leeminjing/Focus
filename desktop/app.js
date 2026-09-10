@@ -1157,6 +1157,9 @@ async function sha1Hex(text) {
   return [...new Uint8Array(buffer)].map(byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
+// ponytail: 图片附件的后端路由随 dsh-eyes 插件一并移除,此处保留消息内图片引用解析与发送链路,
+// 显示来源待接入多模态主模型时重做(见 change consolidate-config-and-drop-vision);
+// 当前表现仅为图片加载失败,不抛异常。
 // f19 dsh-eyes:从消息内容提取图片 URL 列表(image_url 块 / 文本引用),
 // 图片渲染为消息框上方的独立缩略图行(对齐 image8:图片在消息框上面,不嵌入气泡)。
 const IMAGE_REF_RE = /【图片\d+ attachment_id=([0-9a-f]{12})】查看请调 view_image\(attachment_id=[0-9a-f]{12}\)/g;

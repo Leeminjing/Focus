@@ -12,7 +12,6 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import HumanMessage
 
 os.environ.setdefault("OPENAI_API_KEY", "memory-test")
-os.environ.setdefault("VISION_API_KEY", "vision-test")
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 from backend.app.desktop.memory import (  # noqa: E402

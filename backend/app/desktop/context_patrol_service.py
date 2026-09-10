@@ -855,9 +855,10 @@ class ContextPatrolService:
     def _model_config(self, model_name: str | None):
         if model_name:
             return self.app_config.get_model(model_name)
-        if not self.app_config.models:
-            raise HTTPException(422, "没有可用模型配置")
-        return self.app_config.models[0]
+        try:
+            return self.app_config.get_model(self.app_config.resolve_default_model_name())
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @staticmethod
     def _source_snapshot_from_payload(payload: dict[str, Any]) -> CurationSourceSnapshot:

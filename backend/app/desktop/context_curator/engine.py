@@ -123,9 +123,10 @@ class CurationEngine:
     def _resolve_config(self, model_name: str | None) -> ModelConfig:
         if model_name:
             return self._app_config.get_model(model_name)
-        if not self._app_config.models:
-            raise CurationEngineError("capability", "没有可用模型配置")
-        return self._app_config.models[0]
+        try:
+            return self._app_config.get_model(self._app_config.resolve_default_model_name())
+        except ValueError as exc:
+            raise CurationEngineError("capability", str(exc)) from exc
 
     @staticmethod
     def _prompt(payload: dict[str, Any], method: str) -> str:

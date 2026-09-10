@@ -1,8 +1,9 @@
-﻿"""
+"""
 本文件对外提供 create_chat_model 函数。
 
 输入:
-    name: 目标模型名，对应 ModelConfig.name。None 时取 AppConfig.models[0] 作为默认
+    name: 目标模型名，对应 ModelConfig.name。None 时取显式声明的默认模型
+          （FOCUS_MODEL 环境变量优先，其次 config.yaml 中 default: true 的条目）
     app_config: 配置对象。None 时内部调用 get_app_config() 自动加载默认 config.yaml
     **kwargs: 透传给 ChatModel 构造器的额外参数（如 temperature、max_tokens），若与 ModelConfig
               映射的参数重名则 **kwargs 优先
@@ -12,7 +13,7 @@
 
 工作流:
     1. 若 app_config 为 None，调用 get_app_config("config.yaml") 自动加载
-    2. 若 name 为 None，取 app_config.models[0]，空列表抛 ValueError
+    2. 若 name 为 None，经 app_config.resolve_default_model_name() 取默认模型名
     3. 否则遍历 app_config.models 按 name 匹配，未命中抛 ValueError
     4. 调用 resolve_class(model_config.use) 获取 ChatModel 类
     5. 以 model/api_key/base_url 为基础参数，合并 **kwargs（kwargs 优先），构造并返回实例
@@ -25,6 +26,7 @@
 from langchain_core.language_models import BaseChatModel
 
 from focus.config import AppConfig, get_app_config
+from focus.config.env import require_env_var
 from focus.reflection.resolvers import resolve_class
 
 
@@ -38,22 +40,21 @@ def create_chat_model(
         app_config = get_app_config("config.yaml")
 
     if name is None:
-        if not app_config.models:
-            raise ValueError("AppConfig.models 为空，无法获取默认模型")
-        model_config = app_config.models[0]
+        name = app_config.resolve_default_model_name()
+
+    for m in app_config.models:
+        if m.name == name:
+            model_config = m
+            break
     else:
-        for m in app_config.models:
-            if m.name == name:
-                model_config = m
-                break
-        else:
-            raise ValueError(f"未找到模型配置: '{name}'")
+        raise ValueError(f"未找到模型配置: '{name}'")
 
     chat_model_cls = resolve_class(model_config.use)
 
     params: dict = {
         "model": model_config.model,
-        "api_key": model_config.api_key,
+        # 密钥在此（唯一消费点）解析：未设置时抛带模型名的 ValueError，而非把引用字面量传下去
+        "api_key": require_env_var(model_config.api_key, context=f"模型 '{model_config.name}'"),
         "base_url": model_config.base_url,
     }
     params.update(kwargs)

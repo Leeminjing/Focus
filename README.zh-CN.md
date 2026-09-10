@@ -266,7 +266,17 @@ Patrol 不是上面这些机制的第五种——它是**委托执行者**，能
 
 **要求** — Python ≥ 3.11（需可用 `alembic` 与 `uvicorn`）、`git`、`docker`（用于 `desktop/compose.yaml` 内置的 PostgreSQL）、Node.js（用于 Electron 壳）、以及配置在 `OPENAI_API_KEY` 里的 OpenAI 兼容 Key（DeepSeek）。
 
-**配置** — `cp .env.example .env` 并填入 `OPENAI_API_KEY`（可选 `VISION_API_KEY`、`FOCUS_DATABASE_URL`）。编辑 `config.yaml`（models / commitment / compression / checkpointer / database）与 `extensions_config.json`（skills / mcpServers）。`~/.focus/` 是全局默认层，由仓库态配置覆盖。
+**配置** — 密钥与选择经环境变量提供，结构经配置文件提供。
+
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `OPENAI_API_KEY` | 是 | 模型条目的密钥来源 |
+| `FOCUS_MODEL` | 否 | 覆盖默认模型，取 `config.yaml` models 中已存在的条目名 |
+| `FOCUS_DATABASE_URL` | 否 | 覆盖数据库连接 |
+
+变量可写入 `.env`（`cp .env.example .env`），也可用操作系统环境变量提供（优先级更高）：Windows `setx OPENAI_API_KEY "sk-..."`，macOS/Linux `export OPENAI_API_KEY=...`；两者都需新开终端生效。
+
+编辑 `config.yaml`（models / commitment / compression / checkpointer / database）与 `extensions_config.json`（skills / mcpServers）。`~/.focus/` 是全局默认层，由仓库态配置覆盖。
 
 **启动后端**
 

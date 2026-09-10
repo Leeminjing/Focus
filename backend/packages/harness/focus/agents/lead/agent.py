@@ -6,7 +6,7 @@
 
 输入:
     make_lead_agent:
-        model_name: str | None — 目标模型名，None 时取 config.yaml 中 models[0] 作为默认
+        model_name: str | None — 目标模型名，None 时取显式声明的默认模型
         agent_name: str | None — system prompt 中的 agent 名称，None 时使用默认值 "focus"
         tool_groups: list[str] | None — 需要加载的工具分组名列表，None 表示加载全部
         user_id: str | None — 用户标识，用于定位 per-user custom skills 路径，None 时跳过 custom

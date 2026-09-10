@@ -488,7 +488,7 @@ class DesktopService:
                 messages = normalize_json_storage_value(
                     [serialize_message(message) for message in values.get("messages", [])]
                 )
-            default_model = self.app_config.models[0].name if self.app_config.models else None
+            default_model = self.app_config.resolve_default_model_name()
             equipment = {
                 "model_name": default_model,
                 "skills": [],
@@ -612,7 +612,7 @@ class DesktopService:
         source = CurationSourceProjector().project(checkpoint_id, snapshot["messages"])
         curation_input = build_curation_input(source, 0, policy, [])
         estimate = estimate_curation_tokens(curation_input)
-        model = self.app_config.get_model(model_name) if model_name else self.app_config.models[0]
+        model = self.app_config.get_model(model_name or self.app_config.resolve_default_model_name())
         self._validate_model_window(model_name, estimate + model.curation_max_output_tokens)
         draft.mode = "context_curator"
         draft.curation_policy = normalize_json_storage_value(policy.model_dump(mode="json"))
@@ -1351,12 +1351,10 @@ class DesktopService:
     def _compression_context_window(self, model_name: str | None) -> int | None:
         """按运行模型取上下文窗口；模型未知时返回 None（压缩门恒放行）。"""
         try:
-            model = (
-                self.app_config.get_model(model_name)
-                if model_name
-                else self.app_config.models[0]
+            model = self.app_config.get_model(
+                model_name or self.app_config.resolve_default_model_name()
             )
-        except KeyError:
+        except (KeyError, ValueError):
             return None
         return model.context_window
 
@@ -1869,7 +1867,7 @@ class DesktopService:
                     raise HTTPException(422, f"附件引用失效: {path}")
 
     def _validate_model_window(self, model_name: str | None, estimate: int) -> None:
-        model = self.app_config.get_model(model_name) if model_name else self.app_config.models[0]
+        model = self.app_config.get_model(model_name or self.app_config.resolve_default_model_name())
         if model.context_window is not None and estimate > model.context_window:
             raise HTTPException(422, {"code": "context_window_exceeded", "estimate": estimate, "limit": model.context_window})
 
@@ -1890,7 +1888,7 @@ class DesktopService:
         return snapshots
 
     def _normalize_equipment(self, equipment: dict[str, Any]) -> dict[str, Any]:
-        model_name = equipment.get("model_name") or self.app_config.models[0].name
+        model_name = equipment.get("model_name") or self.app_config.resolve_default_model_name()
         self.app_config.get_model(model_name)
         raw_permissions = equipment.get("permissions")
         permissions = list(dict.fromkeys(["read"] if raw_permissions is None else raw_permissions))

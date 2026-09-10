@@ -6,18 +6,20 @@ get_app_config: 组合根入口，将 config.yaml 加载为全局单例 AppConfi
 reload_app_config: 强制刷新全局单例，修改 config.yaml 后立即生效
 
 完整加载工作流：
-_load_yaml 读取 YAML 文件 → _resolve_env_vars 解析 $ENV_VAR 环境变量引用
+_load_yaml 读取 YAML 文件 → resolve_env_vars 软解析 $ENV_VAR 环境变量引用（未命中的引用
+原样保留，不阻塞加载，缺失校验推迟到使用期）
 → AppConfig.model_validate 由 dict 递归生成 AppConfig + 子 Pydantic 对象
 → 写入模块级 _app_config 单例缓存，后续 get_app_config 直接返回
 """
 
+import os
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from focus.config.checkpointer_config import CheckpointerConfig
-from focus.config.env import resolve_env_var
+from focus.config.env import resolve_env_vars
 from focus.config.commitment_config import CommitmentConfig
 from focus.config.compression_config import CompressionConfig
 from focus.config.database_config import DatabaseConfig
@@ -25,6 +27,10 @@ from focus.config.extensions_config import ExtensionsConfig
 from focus.config.langgraph_store_config import LanggraphStoreConfig
 from focus.config.model_config import ModelConfig
 from focus.config.stream_bridge_config import StreamBridgeConfig
+
+
+DEFAULT_MODEL_ENV_VAR = "FOCUS_MODEL"
+"""用户覆盖默认模型的入口：环境变量优先于配置中的显式声明。"""
 
 
 class AppConfig(BaseModel):
@@ -45,6 +51,35 @@ class AppConfig(BaseModel):
         if len(defaults) > 1:
             raise ValueError(f"只能配置一个策展默认模型: {', '.join(defaults)}")
         return self
+
+    @model_validator(mode="after")
+    def validate_default_model(self) -> "AppConfig":
+        declared = [model.name for model in self.models if model.default]
+        if len(declared) > 1:
+            raise ValueError(f"只能声明一个默认模型: {', '.join(declared)}")
+        return self
+
+    def resolve_default_model_name(self) -> str:
+        """解析默认模型名（默认模型的唯一真相来源）。
+
+        优先级：环境变量 FOCUS_MODEL > 配置中显式声明 default: true 的条目。
+        不再回退到列表位置，避免「调整条目顺序即改变系统行为」。
+        """
+        override = (os.environ.get(DEFAULT_MODEL_ENV_VAR) or "").strip()
+        if override:
+            if not any(model.name == override for model in self.models):
+                raise ValueError(
+                    f"{DEFAULT_MODEL_ENV_VAR} 指向不存在的模型条目: '{override}'"
+                )
+            return override
+
+        declared = [model.name for model in self.models if model.default]
+        if not declared:
+            raise ValueError(
+                "未声明默认模型: 请在 config.yaml 中为某个模型条目设置 default: true，"
+                f"或设置 {DEFAULT_MODEL_ENV_VAR}"
+            )
+        return declared[0]
 
     def _normalize_name(self, name: str) -> str:
         return name.strip()
@@ -75,31 +110,6 @@ def _load_yaml(path: str) -> dict:
         return yaml.safe_load(f) or {}
 
 
-def _resolve_env_vars(data: dict) -> dict:
-    resolved = {}
-    for key, value in data.items():
-        if isinstance(value, dict):
-            resolved[key] = _resolve_env_vars(value)
-        elif isinstance(value, list):
-            resolved[key] = [
-                _resolve_env_vars(item) if isinstance(item, dict) else _resolve_env_item(item)
-                for item in value
-            ]
-        else:
-            resolved[key] = _resolve_env_item(value)
-    return resolved
-
-
-def _resolve_env_item(value):
-    resolved = resolve_env_var(value)
-    if resolved is not None:
-        return resolved
-    if isinstance(value, str) and len(value) > 1 and value.startswith("$"):
-        # 非标识符形式的 $ 前缀值仍按原语义硬失败（配置加载期契约）
-        raise KeyError(f"环境变量未设置: {value[1:]}")
-    return value
-
-
 def get_app_config(yaml_path: str) -> AppConfig:
     global _app_config
     if _app_config is None:
@@ -118,5 +128,5 @@ def _load_layered_config(yaml_path: str) -> AppConfig:
     from focus.config.layered import load_layered_map
 
     raw = load_layered_map(Path(yaml_path).name, yaml_path)
-    resolved = _resolve_env_vars(raw)
+    resolved = resolve_env_vars(raw)
     return AppConfig.model_validate(resolved)

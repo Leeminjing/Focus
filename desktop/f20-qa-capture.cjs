@@ -85,14 +85,12 @@ async function capture(size, outputDir) {
         filter: 'all', selectedName: 'spatial-patrol',
         plugins: [
           { name: 'demo', version: '1.0.0', status: 'active', injected: ['tool', 'hook.before_model'], requires: [] },
-          { name: 'dsh-eyes', version: '0.1.0', status: 'active', injected: ['tool', 'service.vision'], requires: [] },
-          { name: 'spatial-patrol', version: '0.1.0', status: 'active', injected: ['service.spatial'], requires: ['dsh-eyes'] },
+          { name: 'spatial-patrol', version: '0.1.0', status: 'active', injected: ['service.spatial'], requires: [] },
           { name: 'broken-extension', version: '0.2.0', status: 'rejected', injected: [], requires: [], conflict: { interface: 'tool', current: 'demo', new: 'broken-extension' } }
         ],
         interfaces: {
-          tool: { plugins: ['demo', 'dsh-eyes'], cardinality: 'multiple' },
+          tool: { plugins: ['demo'], cardinality: 'multiple' },
           'hook.before_model': { plugins: ['demo'], cardinality: 'multiple' },
-          'service.vision': { plugins: ['dsh-eyes'], cardinality: 'single', read_only: true },
           'service.spatial': { plugins: ['spatial-patrol'], cardinality: 'single', read_only: true }
         },
         traces: [

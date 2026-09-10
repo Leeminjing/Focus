@@ -82,7 +82,7 @@ _BUILTINS: tuple[PluginInterface, ...] = (
 )
 
 # f18/f19: service.vision 为视觉能力提供接口(实现约定: async describe(data_url) -> str);
-# 视觉插件(如 dsh-eyes)提供实现,text-only 主模型的插件可依赖或判定该能力
+# 视觉插件提供实现,text-only 主模型的插件可依赖或判定该能力
 _SERVICES: tuple[PluginInterface, ...] = (
     PluginInterface(name="service.vision", cardinality="multi", mutability="read-only"),
 )

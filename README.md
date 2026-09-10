@@ -272,7 +272,17 @@ Each governed context operation collapses the model's freedom into a narrow arti
 
 **Requirements** — Python ≥ 3.11 (with `alembic` and `uvicorn`), `git`, `docker` (for the bundled PostgreSQL via `desktop/compose.yaml`), Node.js (for the Electron shell), and an OpenAI-compatible key (DeepSeek) in `OPENAI_API_KEY`.
 
-**Configure** — `cp .env.example .env` and set `OPENAI_API_KEY` (optional `VISION_API_KEY`, `FOCUS_DATABASE_URL`). Edit `config.yaml` (models / commitment / compression / checkpointer / database) and `extensions_config.json` (skills / mcpServers). `~/.focus/` is a global default layer, overlaid by the repo config.
+**Configure** — credentials and selection come from environment variables; structure comes from configuration files.
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `OPENAI_API_KEY` | yes | credential source for the model entries |
+| `FOCUS_MODEL` | no | overrides the default model; must name an existing `config.yaml` entry |
+| `FOCUS_DATABASE_URL` | no | overrides the database connection |
+
+Set them in `.env` (`cp .env.example .env`) or as OS environment variables, which take precedence: `setx OPENAI_API_KEY "sk-..."` on Windows, `export OPENAI_API_KEY=...` on macOS/Linux — both require a new terminal.
+
+Edit `config.yaml` (models / commitment / compression / checkpointer / database) and `extensions_config.json` (skills / mcpServers). `~/.focus/` is a global default layer, overlaid by the repo config.
 
 **Start the backend**
 

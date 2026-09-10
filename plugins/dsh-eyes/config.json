@@ -1,9 +1,0 @@
-{
-  "vision_model": "qwen3.7-plus",
-  "vision_endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-  "vision_api_key": "$VISION_API_KEY",
-  "vision_api_style": "auto",
-  "max_image_bytes": 15728640,
-  "attachment_max_bytes": 5242880,
-  "passthrough_models": []
-}
