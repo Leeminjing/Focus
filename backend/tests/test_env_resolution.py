@@ -1,5 +1,7 @@
 """环境变量引用解析契约测试：加载期软解析、使用期显式失败、非引用字面量不被误判。"""
 
+import os
+
 import pytest
 
 from focus.config.app_config import _load_layered_config
@@ -9,6 +11,7 @@ from focus.config.env import (
     resolve_env_vars,
     require_env_var,
 )
+from focus.config.layered import load_global_dotenv
 
 _MISSING = "FOCUS_TEST_UNSET_KEY"
 
@@ -140,3 +143,105 @@ def test_app_config_loads_with_dollar_literal(tmp_path, monkeypatch):
     app_config = _load_layered_config(str(config))
 
     assert app_config.get_model("demo").api_key == "$100"
+
+
+# === 密钥来源与优先级：进程环境变量优先于全局态 ~/.focus/.env ===
+
+
+def _seed_global_env(tmp_path, monkeypatch, content: str):
+    home = tmp_path / ".focus"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".env").write_text(content, encoding="utf-8")
+    monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(home))
+
+
+def test_global_dotenv_does_not_override_existing_environment(tmp_path, monkeypatch):
+    _seed_global_env(tmp_path, monkeypatch, "FOCUS_TEST_PRECEDENCE=from-file\n")
+    monkeypatch.setenv("FOCUS_TEST_PRECEDENCE", "from-env")
+
+    load_global_dotenv()
+
+    assert os.environ["FOCUS_TEST_PRECEDENCE"] == "from-env"
+
+
+def test_global_dotenv_fills_missing_key(tmp_path, monkeypatch):
+    _seed_global_env(tmp_path, monkeypatch, "FOCUS_TEST_FILLED=from-file\n")
+    monkeypatch.delenv("FOCUS_TEST_FILLED", raising=False)
+
+    load_global_dotenv()
+
+    assert os.environ["FOCUS_TEST_FILLED"] == "from-file"
+
+
+# === 使用期接线：MCP 服务器的环境变量引用 ===
+
+
+def test_mcp_stdio_env_var_missing_names_server_and_variable():
+    from focus.config.extensions_config import McpServerConfig
+    from focus.mcp.client import build_server_params
+
+    config = McpServerConfig(
+        enabled=True,
+        type="stdio",
+        description="demo",
+        command="npx",
+        env={"TOKEN": f"${_MISSING}"},
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        build_server_params("github", config)
+
+    message = str(excinfo.value)
+    assert "github" in message
+    assert _MISSING in message
+
+
+def test_mcp_stdio_env_var_resolved_when_present(monkeypatch):
+    from focus.config.extensions_config import McpServerConfig
+    from focus.mcp.client import build_server_params
+
+    monkeypatch.setenv("FOCUS_TEST_PRESENT_KEY", "resolved-value")
+    config = McpServerConfig(
+        enabled=True,
+        type="stdio",
+        description="demo",
+        command="npx",
+        env={"TOKEN": "$FOCUS_TEST_PRESENT_KEY"},
+    )
+
+    assert build_server_params("github", config)["env"] == {"TOKEN": "resolved-value"}
+
+
+# === 可选能力缺失不阻塞必需路径 ===
+
+
+def test_optional_capability_missing_key_does_not_block_default_model(tmp_path, monkeypatch):
+    """某项可选能力的密钥缺失时，配置加载成功且默认模型仍可装配。"""
+    monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(tmp_path / ".focus"))
+    monkeypatch.delenv("FOCUS_TEST_OPTIONAL_KEY", raising=False)
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "models:\n"
+        "  - name: main-model\n"
+        "    display_name: main\n"
+        "    use: focus.models.deepseek:DeepSeekChatOpenAI\n"
+        "    model: main-model\n"
+        "    api_key: test-key\n"
+        "    base_url: https://example.test\n"
+        "    default: true\n"
+        "  - name: optional-capability-model\n"
+        "    display_name: optional\n"
+        "    use: focus.models.deepseek:DeepSeekChatOpenAI\n"
+        "    model: optional-capability-model\n"
+        "    api_key: $FOCUS_TEST_OPTIONAL_KEY\n"
+        "    base_url: https://example.test\n",
+        encoding="utf-8",
+    )
+
+    app_config = _load_layered_config(str(config))
+
+    assert app_config.resolve_default_model_name() == "main-model"
+
+    from focus.models import create_chat_model
+
+    assert create_chat_model(app_config=app_config).model_name == "main-model"
