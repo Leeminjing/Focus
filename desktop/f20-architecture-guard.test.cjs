@@ -115,11 +115,20 @@ assert.match(main, /setWindowOpenHandler/);
 assert.match(main, /will-navigate/);
 assert.match(main, /new URL\(target\)\.origin === new URL\(apiBase\)\.origin/);
 assert.match(main, /focus:open-external/);
+// 整页缩放：主进程是缩放权威，经 IPC 设置/读取，并对级别做边界钳制。
+assert.match(main, /ipcMain\.handle\("focus:set-zoom-level"/);
+assert.match(main, /ipcMain\.handle\("focus:get-zoom-level"/);
+assert.match(main, /setZoomLevel\(/);
+assert.match(main, /ZOOM_LEVEL_MIN\s*=\s*-3/);
+assert.match(main, /ZOOM_LEVEL_MAX\s*=\s*5/);
 
 const preload = read("desktop/preload.cjs");
 assert.match(preload, /apiBase:\s*process\.env\.FOCUS_DESKTOP_API/);
 assert.match(preload, /openExternal:\s*url => ipcRenderer\.invoke\("focus:open-external", url\)/);
 assert.doesNotMatch(preload, /fetch\(|EventSource|proxy/i);
+// 缩放桥：仍只经 ipcRenderer.invoke，不引入第二套 Electron 访问机制。
+assert.match(preload, /setZoomLevel:\s*level => ipcRenderer\.invoke\("focus:set-zoom-level", level\)/);
+assert.match(preload, /getZoomLevel:\s*\(\) => ipcRenderer\.invoke\("focus:get-zoom-level"\)/);
 
 const renderer = read("desktop/app.js");
 const patrolPresence = read("desktop/patrol-presence.js");
@@ -141,6 +150,14 @@ assert.match(renderer, /FocusPatrolPresence/);
 assert.match(renderer, /action\.id === "quick-curate"[\s\S]*quickDeployContextCurator\(task\.task_id\)[\s\S]*action\.id === "configure"[\s\S]*openDraft\(task\.task_id\)[\s\S]*action\.id === "details"[\s\S]*openAgentDetails\(avatar\.agent_id\)/);
 assert.match(patrolPresence, /STANDBY_AVATAR_ID = "__standby__"/);
 assert.doesNotMatch(patrolPresence, /fetch\(|EventSource|XMLHttpRequest|\/desktop\/api\//);
+
+// 整页缩放：渲染器负责快捷键与持久化，经 preload 桥调用主进程；播报区无视觉百分比。
+assert.match(renderer, /ZOOM_LEVEL_KEY/);
+assert.match(renderer, /function normalizeZoomLevel/);
+assert.match(renderer, /function applyZoomLevel/);
+assert.match(renderer, /event\.ctrlKey \|\| event\.metaKey/);
+assert.match(renderer, /focusDesktop\?\.setZoomLevel/);
+assert.match(html, /id="zoomAnnouncement"[^>]*class="visually-hidden"[^>]*aria-live="polite"/);
 
 const migrationDirectory = path.join(root, "backend/packages/harness/focus/persistence/migrations/versions");
 const backendPatrolBoundary = [

@@ -14,6 +14,16 @@ const rootDir = path.resolve(desktopDir, "..");
 const migrationIni = path.join(rootDir, "backend", "packages", "harness", "focus", "persistence", "migrations", "alembic.ini");
 const focusIconPath = path.join(desktopDir, "assets", process.platform === "win32" ? "focus-icon.ico" : "focus-icon.png");
 
+// 整页缩放级别边界：Chromium zoomLevel 以 0 为原始大小，每级约 ×1.2，默认限制 50%~300%。
+const ZOOM_LEVEL_MIN = -3;
+const ZOOM_LEVEL_MAX = 5;
+
+function clampZoomLevel(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.min(ZOOM_LEVEL_MAX, Math.max(ZOOM_LEVEL_MIN, Math.round(numeric)));
+}
+
 function ensureFocusHome() {
   const home = process.env.FOCUS_GLOBAL_HOME || path.join(app.getPath("home"), ".focus");
   fs.mkdirSync(home, { recursive: true });
@@ -292,6 +302,20 @@ ipcMain.handle("focus:open-external", async (_event, value) => {
   if (!url) throw new Error("仅允许打开 HTTP(S) 外部链接");
   await shell.openExternal(url);
   return true;
+});
+
+// 整页缩放：主进程是缩放权威，对调用方窗口的 webContents 设置/读取级别并钳制。
+ipcMain.handle("focus:set-zoom-level", (event, value) => {
+  const level = clampZoomLevel(value);
+  const contents = BrowserWindow.fromWebContents(event.sender)?.webContents;
+  if (!contents) return level;
+  contents.setZoomLevel(level);
+  return level;
+});
+
+ipcMain.handle("focus:get-zoom-level", event => {
+  const contents = BrowserWindow.fromWebContents(event.sender)?.webContents;
+  return contents ? contents.getZoomLevel() : 0;
 });
 
 if (process.platform === "win32") app.setAppUserModelId("Focus.Desktop");

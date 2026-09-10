@@ -60,6 +60,12 @@ const SHELL_LAYOUT_BOUNDS = Object.freeze({
   workspaceMin: 320,
 });
 
+/* 整页缩放：渲染器持有快捷键与持久化，经 preload 桥由主进程应用（唯一缩放权威）。
+   级别沿用 Chromium zoomLevel 语义：0 为原始大小，每级约 ×1.2。 */
+const ZOOM_LEVEL_KEY = "focus-zoom-level";
+const ZOOM_LEVEL_MIN = -3;
+const ZOOM_LEVEL_MAX = 5;
+
 const state = {
   view: "focus",
   tasks: [],
@@ -128,6 +134,7 @@ const state = {
   filesPanel: null,   // f18:右侧文件面板当前打开的 material(relative_path 等)
   panelWidth: normalizePanelWidth(localStorage.getItem("focus-panel-width") || 400),
   shellLayout: normalizeShellLayout(readShellLayout(), window.innerWidth),
+  zoomLevel: normalizeZoomLevel(localStorage.getItem(ZOOM_LEVEL_KEY)),
 };
 
 const app = document.querySelector("#app");
@@ -335,6 +342,55 @@ function bindShellResizers() {
       node.addEventListener("lostpointercapture", finish);
     });
   }
+}
+
+// 恢复路径：缺失/非法/超出边界一律回落 100%（级别 0），避免脏数据破坏界面。
+function normalizeZoomLevel(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  const rounded = Math.round(numeric);
+  return rounded < ZOOM_LEVEL_MIN || rounded > ZOOM_LEVEL_MAX ? 0 : rounded;
+}
+
+// 步进路径：钳制到边界，使边界处继续按同方向快捷键不再改变界面。
+function clampZoomLevel(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.min(ZOOM_LEVEL_MAX, Math.max(ZOOM_LEVEL_MIN, Math.round(numeric)));
+}
+
+function zoomPercent(level) {
+  return Math.round(100 * (1.2 ** level));
+}
+
+// 不显示视觉百分比：仅把当前级别写入无障碍实时区域。
+function announceZoom(level) {
+  const node = document.querySelector("#zoomAnnouncement");
+  if (node) node.textContent = uiText("zoom.announce", "缩放 {percent}%", { percent: zoomPercent(level) });
+}
+
+// 应用缩放并持久化；主进程应用（唯一权威），渲染器只发起与记录。
+function applyZoomLevel(level, options = {}) {
+  const next = normalizeZoomLevel(level);
+  state.zoomLevel = next;
+  try { localStorage.setItem(ZOOM_LEVEL_KEY, String(next)); } catch { /* 只读存储忽略 */ }
+  try { window.focusDesktop?.setZoomLevel?.(next); } catch { /* 无桥环境忽略 */ }
+  if (options.announce !== false) announceZoom(next);
+  return next;
+}
+
+function changeZoomLevel(delta) {
+  const current = clampZoomLevel(state.zoomLevel ?? 0);
+  const next = clampZoomLevel(current + delta);
+  if (next === current) return current; // 已达边界：不发起无效调用
+  return applyZoomLevel(next);
+}
+
+// 启动恢复：读回持久化级别（非法/越界回落 0），启动时不播报以免打断。
+function restoreZoomLevel() {
+  let stored = null;
+  try { stored = localStorage.getItem(ZOOM_LEVEL_KEY); } catch { /* 只读存储忽略 */ }
+  return applyZoomLevel(normalizeZoomLevel(stored), { announce: false });
 }
 
 function nextContextUiKey() {
@@ -4816,6 +4872,13 @@ document.addEventListener("keydown", event => {
     setShellNavCollapsed(!state.shellLayout.navCollapsed);
     return;
   }
+  // 整页缩放：Ctrl/Cmd + -（缩小）、= / +（放大）、0（重置）。跨平台同时接受 Ctrl 与 Cmd。
+  if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+    const zoomKey = event.key;
+    if (zoomKey === "-" || zoomKey === "_") { event.preventDefault(); return changeZoomLevel(-1); }
+    if (zoomKey === "=" || zoomKey === "+") { event.preventDefault(); return changeZoomLevel(1); }
+    if (zoomKey === "0") { event.preventDefault(); return applyZoomLevel(0); }
+  }
   const mapTreeItem = event.target.closest?.(".map-collapsible-tree [role='treeitem'][data-tree-key]");
   if (mapTreeItem && handleMapTreeKeydown(event, mapTreeItem)) return;
   const inspectorTab = event.target.closest?.('[role="tab"][data-inspector-tab]');
@@ -5194,5 +5257,8 @@ document.addEventListener("focus:languagechange", () => {
 // 壳层三栏可拖拽：启动即应用持久化宽度/折叠态，并绑定两个 resizer 手柄。
 applyShellLayout(state.shellLayout);
 bindShellResizers();
+
+// 整页缩放：启动恢复持久化级别（非法/越界回落 100%），播报文案随语言切换。
+restoreZoomLevel();
 
 runUiAction(bootstrap);
