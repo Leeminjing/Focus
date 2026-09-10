@@ -21,9 +21,12 @@
     return value == null ? "" : JSON.stringify(value);
   }
 
-  function preview(value, limit = 110) {
+  function preview(value, limit = 110, mode = "start") {
     const compact = text(value).replace(/\s+/g, " ").trim();
-    return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
+    if (compact.length <= limit) return compact;
+    return mode === "latest"
+      ? `…${compact.slice(-(limit - 1))}`
+      : `${compact.slice(0, limit - 1)}…`;
   }
 
   function argumentSummary(args) {
@@ -86,10 +89,10 @@
     return records;
   }
 
-  function renderReasoning(event) {
+  function renderReasoning(event, options = {}) {
     const full = text(event.content);
     return `<details class="conversation-event is-reasoning" data-event-key="${escapeHtml(event.eventKey || "reasoning")}">
-      <summary><span class="conversation-event-mark" aria-hidden="true"><span class="ui-icon is-sm icon-brain-circuit"></span></span><strong>Think</strong><span class="conversation-event-preview">${escapeHtml(preview(full))}</span></summary>
+      <summary><span class="conversation-event-mark" aria-hidden="true"><span class="ui-icon is-sm icon-brain-circuit"></span></span><strong>Think</strong><span class="conversation-event-preview">${escapeHtml(preview(full, 110, options.previewMode))}</span></summary>
       <div class="conversation-event-detail"><pre>${escapeHtml(full)}</pre></div>
     </details>`;
   }
@@ -108,8 +111,8 @@
     </details>`;
   }
 
-  function renderEvent(event) {
-    if (event?.type === "reasoning") return renderReasoning(event);
+  function renderEvent(event, options) {
+    if (event?.type === "reasoning") return renderReasoning(event, options);
     if (event?.type === "tool") return renderTool(event);
     return "";
   }

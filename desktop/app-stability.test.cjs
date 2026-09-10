@@ -262,6 +262,27 @@ async function testConversationEventsAndKeyboardSubmit() {
   assert.match(rendered, /Think/);
   assert.match(rendered, /生成中/);
 
+  const lifecycleRendered = harness.vm.runInContext(`(() => {
+    const early = 'EARLY-REASONING';
+    const completeReasoning = early + '-' + 'x'.repeat(130) + '-LATEST-LIVE';
+    const historical = renderConversation({ messages: [
+      { role: 'ai', content: 'done', reasoning_content: completeReasoning },
+    ] }, { task_id: 'history-task', workspace_path: 'C:/workspace' });
+    const initial = renderStreamingContent({ text: '', reasoning: early });
+    const streaming = renderStreamingContent({
+      text: '',
+      reasoning: completeReasoning,
+    });
+    const summary = html => (html.match(/<summary>([\\s\\S]*?)<\\/summary>/) || [])[1] || '';
+    return { initial: summary(initial), historical: summary(historical), streaming: summary(streaming) };
+  })()`, harness.context);
+  assert.match(lifecycleRendered.initial, /EARLY-REASONING/, "首个 reasoning 增量立即可见");
+  assert.doesNotMatch(lifecycleRendered.initial, /LATEST-LIVE/, "首个增量不包含尚未到达的内容");
+  assert.match(lifecycleRendered.streaming, /LATEST-LIVE/, "活动 reasoning 展示最新进展");
+  assert.doesNotMatch(lifecycleRendered.streaming, /EARLY-REASONING/, "活动 reasoning 不固定显示开头");
+  assert.match(lifecycleRendered.historical, /EARLY-REASONING/, "历史 reasoning 保持稳定的开头摘要");
+  assert.doesNotMatch(lifecycleRendered.historical, /LATEST-LIVE/, "历史 reasoning 不继续使用活动流尾部窗口");
+
   const managedRendered = harness.vm.runInContext(`renderConversation({
     context: { managed_status: 'following' },
     messages: [

@@ -43,7 +43,11 @@ for (const icon of ["brain-circuit", "wrench", "terminal", "folder", "search", "
   assert.ok(fs.existsSync(path.join(root, "desktop", "assets", "icons", `${icon}.svg`)), `缺少本地图标 ${icon}`);
 }
 
-assert.equal((index.match(/class="app-nav-item"/g) || []).length, 5);
+assert.deepEqual(
+  [...index.matchAll(/class="app-nav-item"[^>]*data-nav-key="([^"]+)"/g)].map(match => match[1]),
+  ["focus", "map", "contexts", "agents", "plugins", "assembly", "memory"],
+  "主导航必须完整且按产品信息架构排序",
+);
 assert.doesNotMatch(index, /class="brand"|<header class="app-header">[\s\S]*<span>Focus<\/span>/, "应用头部仍包含重复 Focus 字标");
 assert.match(index, /class="app-mark"[\s\S]*assets\/focus-icon\.png/, "应用头部没有保留用户指定的品牌 Logo");
 assert.doesNotMatch(shell, /\.brand(?:\s|[.#:{])/, "壳层仍保留已删除品牌样式");
@@ -51,7 +55,7 @@ assert.match(rule(shell, ".app-header"), /grid-template-columns:\s*auto\s+minmax
 assert.match(rule(shell, ".app-header"), /-webkit-app-region:\s*drag/);
 assert.match(shell, /titlebar-area-width/);
 assert.match(main, /titleBarStyle:\s*"hidden"/);
-assert.match(main, /titleBarOverlay:\s*\{[\s\S]*height:\s*TITLEBAR_BASE_HEIGHT[\s\S]*\}/);
+assert.match(main, /if \(process\.platform !== "darwin"\) \{[\s\S]*mainWindowOptions\.titleBarOverlay\s*=\s*\{[\s\S]*height:\s*TITLEBAR_BASE_HEIGHT/);
 assert.doesNotMatch(splash, /splash-copy|splash-kicker|LOCAL AGENT WORKSPACE|<h1[^>]*>Focus<\/h1>/);
 assert.doesNotMatch(splashCss, /\.splash-(?:copy|kicker)|\.splash-copy\s+h1/);
 assert.doesNotMatch(index, /app-nav-icon|icon-(?:house|map|layers|bot|plug)/, "左侧导航仍包含图标或图标占位");
@@ -114,9 +118,9 @@ assert.deepEqual(Object.keys(packageJson.dependencies || {}), ["electron"]);
 assert.match(main, /loadURL\(`\$\{apiBase\}\/desktop\/`\)/);
 assert.match(app, /location\.origin/);
 
-assert.match(app, /<div class="map-toolbar"><button class="soldier-source"/);
+assert.match(app, /<div class="map-toolbar">\$\{presentationControls\}<button class="soldier-source"/);
 assert.doesNotMatch(app, /map-toolbar[^\n]*TASK MAP|map-toolbar[^\n]*按工作区与根 Context 浏览/);
-assert.match(app, /<header class="draft-heading"><span class="ui-meta">来源 checkpoint/);
+assert.match(app, /<header class="draft-heading"><span class="ui-meta">\$\{curator \? "跟踪起点" : "来源"\} checkpoint/);
 assert.doesNotMatch(app, /draft-heading[^\n]*AGENT DRAFT|draft-heading[^\n]*小兵草稿/);
 assert.match(app, /<header class="compression-heading">\s*<p class="compression-usage">/s);
 assert.doesNotMatch(app, /compression-heading[\s\S]{0,240}(?:CONTEXT COMPRESSION|<h1>上下文压缩<\/h1>)/);

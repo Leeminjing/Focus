@@ -1490,7 +1490,7 @@ function replaceConversation(task, messages) {
 
 function renderStreamingContent(buffer) {
   const reasoning = buffer.reasoning
-    ? `<section class="conversation-event-sequence" role="group" aria-label="执行过程">${conversationEvents.renderEvent({ type: "reasoning", content: buffer.reasoning })}</section>`
+    ? `<section class="conversation-event-sequence" role="group" aria-label="执行过程">${conversationEvents.renderEvent({ type: "reasoning", content: buffer.reasoning }, { previewMode: "latest" })}</section>`
     : "";
   const answer = buffer.text
     ? `<div class="message-content">${escapeHtml(buffer.text.replace(/\n{2,}/g, "\n"))}</div>`
