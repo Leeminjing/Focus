@@ -24,9 +24,15 @@
 """
 
 from langchain_core.language_models import BaseChatModel
+from langchain_openai import ChatOpenAI
 
 from focus.config import AppConfig, get_app_config
 from focus.config.env import require_env_var
+from focus.models.http_clients import (
+    ProxyFirstAsyncHttpClient,
+    ProxyFirstHttpClient,
+    environment_proxy_configured,
+)
 from focus.reflection.resolvers import resolve_class
 
 
@@ -58,5 +64,19 @@ def create_chat_model(
         "base_url": model_config.base_url,
     }
     params.update(kwargs)
+
+    # OpenAI 兼容模型在代理环境下优先遵循用户代理；代理发生传输错误时由
+    # 客户端透明回退到 trust_env=False 的直连。调用方显式传入网络客户端
+    # 或 openai_proxy 时保持其选择，不覆盖。
+    caller_controls_network = any(
+        key in kwargs for key in ("http_client", "http_async_client", "openai_proxy")
+    )
+    if (
+        issubclass(chat_model_cls, ChatOpenAI)
+        and environment_proxy_configured()
+        and not caller_controls_network
+    ):
+        params["http_client"] = ProxyFirstHttpClient()
+        params["http_async_client"] = ProxyFirstAsyncHttpClient()
 
     return chat_model_cls(**params)
