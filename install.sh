@@ -32,9 +32,8 @@ resolve_python_runtime() {
     fail "Python 3.11 or newer was not found."
 }
 
-# electron 43 的依赖链(@electron/get 5 为 ESM-only)声明 engines node >= 22.12.0;
-# 更低版本的 Node 会在 electron 的 postinstall 阶段以 ERR_REQUIRE_ESM 失败,
-# 留下没有二进制的残缺 node_modules —— 因此必须在安装前显式校验。
+# electron 43 的安装器依赖 @electron/get 5（ESM-only），要求 Node >= 22.12.0；
+# 更低版本无法执行安装器，会留下没有二进制的残缺 node_modules。
 require_node_runtime() {
     require_command node
     node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 12) ? 0 : 1)' >/dev/null 2>&1 ||

@@ -36,9 +36,8 @@ resolve_python_runtime() {
     fail "Python 3.11 or newer was not found. Install Python and run 'focus update' again."
 }
 
-# electron 43 的依赖链(@electron/get 5 为 ESM-only)声明 engines node >= 22.12.0;
-# 更低版本的 Node 会在 electron 的 postinstall 阶段以 ERR_REQUIRE_ESM 失败,
-# 留下没有二进制的残缺 node_modules —— 因此在同步依赖前显式校验。
+# electron 43 的安装器依赖 @electron/get 5（ESM-only），要求 Node >= 22.12.0；
+# 更低版本无法执行安装器，会留下没有二进制的残缺 node_modules。
 require_node_runtime() {
     require_command node
     node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 12) ? 0 : 1)' >/dev/null 2>&1 ||
@@ -141,12 +140,19 @@ ensure_python_environment() {
     "$python_runtime" -m venv "$venv_dir"
 }
 
+electron_runtime_ready() (
+    electron_dir="$desktop_dir/node_modules/electron"
+    electron_path_file="$electron_dir/path.txt"
+    [ -f "$electron_dir/package.json" ] || return 1
+    [ -f "$electron_path_file" ] || return 1
+    electron_relative_path="$(cat "$electron_path_file")" || return 1
+    [ -n "$electron_relative_path" ] || return 1
+    [ -f "$electron_dir/dist/$electron_relative_path" ]
+)
+
 dependencies_ready() {
     [ -x "$venv_python" ] || return 1
-    [ -f "$desktop_dir/node_modules/electron/package.json" ] || return 1
-    # package.json 只说明依赖被解析过;path.txt 才是 electron 二进制下载成功的标志,
-    # 缺失它意味着 postinstall 失败(如 Node 版本过低),此时启动必然失败。
-    [ -f "$desktop_dir/node_modules/electron/path.txt" ] || return 1
+    electron_runtime_ready || return 1
     "$venv_python" -c 'import alembic, asyncpg, fastapi, psycopg, uvicorn' >/dev/null 2>&1
 }
 
@@ -156,6 +162,12 @@ sync_focus_dependencies() {
     ensure_python_environment || return $?
     printf 'Updating desktop dependencies...\n'
     npm --prefix "$desktop_dir" ci || return $?
+    printf 'Installing Electron runtime...\n'
+    npm --prefix "$desktop_dir" run install:electron || return $?
+    if ! electron_runtime_ready; then
+        printf 'Electron runtime installation completed without a usable executable.\n' >&2
+        return 1
+    fi
     printf 'Updating Python dependencies...\n'
     "$venv_python" -m pip install --disable-pip-version-check -e "${harness_dir}[desktop]" || return $?
     "$venv_python" -c 'import alembic, asyncpg, fastapi, psycopg, uvicorn' || return $?

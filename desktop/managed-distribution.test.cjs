@@ -83,10 +83,12 @@ assert.match(macCli, /require_node_runtime/, "scripts/focus.sh must gate on the 
 assert.match(windowsInstaller, /Assert-NodeRuntime/, "install.ps1 must gate on the Node.js version");
 assert.match(windowsCli, /Assert-NodeRuntime/, "scripts/focus.ps1 must gate on the Node.js version");
 
-// 就绪检查必须验证 Electron 是否真的装好（二进制安装标志 path.txt），
+// 就绪检查必须同时验证 path.txt 和它指向的可执行文件，
 // 而不只是 node_modules/electron/package.json 存在——否则残缺安装会被判定为「就绪」。
-assert.match(macCli, /node_modules\/electron\/path\.txt/, "scripts/focus.sh readiness must check the Electron install marker");
-assert.match(windowsCli, /node_modules\\electron\\path\.txt/, "scripts/focus.ps1 readiness must check the Electron install marker");
+assert.match(macCli, /electron_path_file="\$electron_dir\/path\.txt"/, "scripts/focus.sh readiness must check the Electron install marker");
+assert.match(macCli, /electron_dir\/dist\/\$electron_relative_path/, "scripts/focus.sh readiness must check the Electron executable");
+assert.match(windowsCli, /Join-Path \$electronDir "path\.txt"/, "scripts/focus.ps1 readiness must check the Electron install marker");
+assert.match(windowsCli, /Join-Path \$electronDir "dist"/, "scripts/focus.ps1 readiness must check the Electron executable");
 
 // 依赖声明本身必须让 npm 在安装期就拒绝不满足 engines 的 Node。
 const desktopPackage = JSON.parse(read("desktop/package.json"));
@@ -94,6 +96,28 @@ assert.equal(
   desktopPackage.engines && desktopPackage.engines.node,
   ">=22.12.0",
   "desktop/package.json must declare the required Node.js engine"
+);
+assert.equal(
+  desktopPackage.scripts && desktopPackage.scripts["install:electron"],
+  "install-electron",
+  "desktop/package.json must expose Electron's binary installer"
+);
+
+// electron@43.2.0 不再声明依赖级 postinstall；npm ci 只安装 JS 包，必须由 Focus
+// 显式调用 install-electron，否则 path.txt 永远不会生成，focus/update 会形成死循环。
+const macNpmCi = 'npm --prefix "$desktop_dir" ci || return $?';
+const macElectronInstall = 'npm --prefix "$desktop_dir" run install:electron || return $?';
+assert.ok(macCli.includes(macElectronInstall), "scripts/focus.sh must explicitly install the Electron runtime");
+assert.ok(
+  macCli.indexOf(macNpmCi) < macCli.indexOf(macElectronInstall),
+  "scripts/focus.sh must install Electron after npm ci"
+);
+const windowsNpmCi = 'Invoke-Native $npm @("--prefix", $DesktopDir, "ci")';
+const windowsElectronInstall = 'Invoke-Native $npm @("--prefix", $DesktopDir, "run", "install:electron")';
+assert.ok(windowsCli.includes(windowsElectronInstall), "scripts/focus.ps1 must explicitly install the Electron runtime");
+assert.ok(
+  windowsCli.indexOf(windowsNpmCi) < windowsCli.indexOf(windowsElectronInstall),
+  "scripts/focus.ps1 must install Electron after npm ci"
 );
 assert.ok(
   fs.existsSync(path.join(root, "desktop", ".npmrc")),
