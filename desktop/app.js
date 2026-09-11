@@ -523,6 +523,44 @@ function renderAssistantContent(value) {
   return `<div class="message-rich">${mdRenderer.render(String(value))}</div>`;
 }
 
+// 生成中的正文按「顶层块」切分后逐块渲染。
+// 依据 markdown-it 的 token 契约:level 0 的 token 是成对(open/close)或单个块
+// (fence / hr / code_block / html_block),因此 level 0 即块边界。块一旦闭合,
+// 其渲染结果不再受后续增量影响(稳定段);只有最后一个尚未闭合的块可能被重新
+// 解释为另一种构造(暂定尾部)——markdown 并非前缀稳定格式,这是其本质限制。
+function splitTopLevelTokenBlocks(tokens) {
+  const groups = [];
+  let current = null;
+  for (const token of tokens) {
+    if (token.level !== 0) {
+      if (current) current.push(token);
+      continue;
+    }
+    if (token.nesting === 0) {
+      groups.push([token]);
+      current = null;
+    } else if (token.nesting === 1) {
+      current = [token];
+      groups.push(current);
+    } else {
+      if (current) current.push(token);
+      current = null;
+    }
+  }
+  return groups;
+}
+
+// 逐块渲染。渲染的是「全文解析所得 token 的子集」而非重新 parse 前缀子串:
+// 引用式链接定义在全文解析阶段才进入 env,重新 parse 前缀会丢失后文定义。
+function streamMarkdownBlocks(text) {
+  const source = String(text ?? "");
+  if (!source) return [];
+  const env = {};
+  return splitTopLevelTokenBlocks(mdRenderer.parse(source, env)).map(
+    group => mdRenderer.renderer.render(group, mdRenderer.options, env),
+  );
+}
+
 function setStatus(text, isError = false) {
   clearTimeout(state.statusTimer);
   statusNode.textContent = text;
@@ -1491,14 +1529,73 @@ function replaceConversation(task, messages) {
   if (pinned) conversation.scrollTop = conversation.scrollHeight;
 }
 
+const STREAMING_HEADER_HTML = `<header class="work-record-header"><span class="ui-badge is-active">生成中</span></header>`;
+
+function streamReasoningSection(reasoning) {
+  return reasoning
+    ? `<section class="conversation-event-sequence" role="group" aria-label="执行过程">${conversationEvents.renderEvent({ type: "reasoning", content: reasoning }, { previewMode: "latest" })}</section>`
+    : "";
+}
+
 function renderStreamingContent(buffer) {
-  const reasoning = buffer.reasoning
-    ? `<section class="conversation-event-sequence" role="group" aria-label="执行过程">${conversationEvents.renderEvent({ type: "reasoning", content: buffer.reasoning }, { previewMode: "latest" })}</section>`
-    : "";
+  // 生成中的正文与完成态共用同一富文本容器与同一渲染器,
+  // 使完整快照到达时的对账成为无操作,消除完成瞬间的整块替换与跳变。
   const answer = buffer.text
-    ? `<div class="message-content">${escapeHtml(buffer.text.replace(/\n{2,}/g, "\n"))}</div>`
+    ? `<div class="message-rich">${streamMarkdownBlocks(buffer.text).join("")}</div>`
     : "";
-  return `<header class="work-record-header"><span class="ui-badge is-active">生成中</span></header>${reasoning}${answer}`;
+  return `${STREAMING_HEADER_HTML}${streamReasoningSection(buffer.reasoning)}${answer}`;
+}
+
+// 正文逐块对账:只替换内容发生变化的块节点,未变化的块保留原 DOM 节点。
+// 这是流式期间不产生整段重排的关键——每帧只触碰真正变化的那一块。
+function syncStreamingBlocks(container, blocks, rendered) {
+  for (let index = 0; index < blocks.length; index += 1) {
+    if (rendered[index] === blocks[index]) continue;
+    const template = document.createElement("template");
+    template.innerHTML = blocks[index];
+    const node = template.content.firstElementChild;
+    const existing = container.children[index];
+    if (existing) existing.replaceWith(node);
+    else container.append(node);
+  }
+  while (container.children.length > blocks.length) {
+    container.lastElementChild.remove();
+  }
+  return blocks.slice();
+}
+
+// 把流式占位同步到当前缓冲。过程性信息(生成中徽标、reasoning 区)与正文分离,
+// 正文按顶层块对账;两者都只在内容真正变化时才写 DOM。
+function syncStreamingContent(article, buffer) {
+  if (!article.firstElementChild) article.insertAdjacentHTML("afterbegin", STREAMING_HEADER_HTML);
+
+  const reasoningHtml = streamReasoningSection(buffer.reasoning);
+  if (buffer.reasoningRendered !== reasoningHtml) {
+    const reasoning = article.querySelector(":scope > .conversation-event-sequence");
+    if (reasoningHtml) {
+      const template = document.createElement("template");
+      template.innerHTML = reasoningHtml;
+      const node = template.content.firstElementChild;
+      if (reasoning) reasoning.replaceWith(node);
+      else article.insertBefore(node, article.querySelector(":scope > .message-rich"));
+    } else if (reasoning) {
+      reasoning.remove();
+    }
+    buffer.reasoningRendered = reasoningHtml;
+  }
+
+  let body = article.querySelector(":scope > .message-rich");
+  if (!buffer.text) {
+    if (body) body.remove();
+    buffer.blocks = [];
+    return;
+  }
+  if (!body) {
+    body = document.createElement("div");
+    body.className = "message-rich";
+    article.append(body);
+  }
+  buffer.blocks = syncStreamingBlocks(body, streamMarkdownBlocks(buffer.text), buffer.blocks || []);
 }
 
 function appendStreamDelta(envelope, field) {
@@ -1527,7 +1624,7 @@ function appendStreamDelta(envelope, field) {
       article.dataset.streamRun = envelope.run_id;
       conversation.append(article);
     }
-    article.innerHTML = renderStreamingContent(buffer);
+    syncStreamingContent(article, buffer);
     if (pinned) conversation.scrollTop = conversation.scrollHeight;
   }));
 }
