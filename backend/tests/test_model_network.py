@@ -1,15 +1,23 @@
 import asyncio
+import importlib
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import httpx
+from openai import DefaultHttpxClient
 
 from focus.config.app_config import AppConfig
 from focus.models.factory import create_chat_model
 from focus.models.http_clients import (
     ProxyFirstAsyncHttpClient,
     ProxyFirstHttpClient,
+)
+
+
+# OpenAI 2.x 基于 httpx，3.x 基于 httpx2。测试必须使用 SDK 实际的
+# HTTP 栈，否则会在开发环境给出假阳性。
+_SDK_HTTPX = importlib.import_module(
+    DefaultHttpxClient.__mro__[1].__module__.partition(".")[0]
 )
 
 
@@ -42,15 +50,15 @@ def test_proxy_first_client_falls_back_to_direct_on_connection_failure():
 
     def proxy(_request):
         calls.append("proxy")
-        raise httpx.ConnectError("proxy unavailable")
+        raise _SDK_HTTPX.ConnectError("proxy unavailable")
 
     def direct(request):
         calls.append("direct")
-        return httpx.Response(200, json={"route": "direct"}, request=request)
+        return _SDK_HTTPX.Response(200, json={"route": "direct"}, request=request)
 
     with ProxyFirstHttpClient(
-        proxy_transport=httpx.MockTransport(proxy),
-        direct_transport=httpx.MockTransport(direct),
+        proxy_transport=_SDK_HTTPX.MockTransport(proxy),
+        direct_transport=_SDK_HTTPX.MockTransport(direct),
     ) as client:
         response = client.get("https://api.deepseek.com/models")
 
@@ -63,15 +71,15 @@ def test_proxy_first_client_keeps_successful_proxy_response():
 
     def proxy(request):
         calls.append("proxy")
-        return httpx.Response(200, json={"route": "proxy"}, request=request)
+        return _SDK_HTTPX.Response(200, json={"route": "proxy"}, request=request)
 
     def direct(request):
         calls.append("direct")
-        return httpx.Response(200, json={"route": "direct"}, request=request)
+        return _SDK_HTTPX.Response(200, json={"route": "direct"}, request=request)
 
     with ProxyFirstHttpClient(
-        proxy_transport=httpx.MockTransport(proxy),
-        direct_transport=httpx.MockTransport(direct),
+        proxy_transport=_SDK_HTTPX.MockTransport(proxy),
+        direct_transport=_SDK_HTTPX.MockTransport(direct),
     ) as client:
         response = client.get("https://api.deepseek.com/models")
 
@@ -84,15 +92,15 @@ def test_proxy_first_client_does_not_hide_http_errors():
 
     def proxy(request):
         calls.append("proxy")
-        return httpx.Response(503, request=request)
+        return _SDK_HTTPX.Response(503, request=request)
 
     def direct(request):
         calls.append("direct")
-        return httpx.Response(200, request=request)
+        return _SDK_HTTPX.Response(200, request=request)
 
     with ProxyFirstHttpClient(
-        proxy_transport=httpx.MockTransport(proxy),
-        direct_transport=httpx.MockTransport(direct),
+        proxy_transport=_SDK_HTTPX.MockTransport(proxy),
+        direct_transport=_SDK_HTTPX.MockTransport(direct),
     ) as client:
         response = client.get("https://api.deepseek.com/models")
 
@@ -105,16 +113,16 @@ def test_proxy_first_async_client_falls_back_to_direct():
 
     async def proxy(_request):
         calls.append("proxy")
-        raise httpx.ConnectError("proxy unavailable")
+        raise _SDK_HTTPX.ConnectError("proxy unavailable")
 
     async def direct(request):
         calls.append("direct")
-        return httpx.Response(200, json={"route": "direct"}, request=request)
+        return _SDK_HTTPX.Response(200, json={"route": "direct"}, request=request)
 
     async def exercise():
         async with ProxyFirstAsyncHttpClient(
-            proxy_transport=httpx.MockTransport(proxy),
-            direct_transport=httpx.MockTransport(direct),
+            proxy_transport=_SDK_HTTPX.MockTransport(proxy),
+            direct_transport=_SDK_HTTPX.MockTransport(direct),
         ) as client:
             return await client.get("https://api.deepseek.com/models")
 
