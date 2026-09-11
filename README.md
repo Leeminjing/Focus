@@ -31,7 +31,7 @@ Prevents Context Drift    Prevents Attention Drift
 
 ## Install on Windows / Windows 安装
 
-Prerequisites: Git, Python 3.11+, Node.js, and Docker Desktop. Then run once in PowerShell:
+Prerequisites: Git, Python 3.11+, Node.js 22.12+, and Docker Desktop. Then run once in PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/Leeminjing/Focus/main/install.ps1 | iex
@@ -48,7 +48,7 @@ The installer keeps application code in `%USERPROFILE%\.focus\app`, its managed 
 
 ## Install on macOS / macOS 安装
 
-Prerequisites: Git, Python 3.11+, Node.js, and a running Docker Desktop. Then run once in Terminal:
+Prerequisites: Git, Python 3.11+, Node.js 22.12+, and a running Docker Desktop. Then run once in Terminal:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Leeminjing/Focus/main/install.sh | sh
@@ -270,7 +270,7 @@ Each governed context operation collapses the model's freedom into a narrow arti
 
 ## Development setup / 开发环境
 
-**Requirements** — Python ≥ 3.11 (with `alembic` and `uvicorn`), `git`, `docker` (for the bundled PostgreSQL via `desktop/compose.yaml`), Node.js (for the Electron shell), and an OpenAI-compatible key (DeepSeek) in `OPENAI_API_KEY`.
+**Requirements** — Python ≥ 3.11 (with `alembic` and `uvicorn`), `git`, `docker` (for the bundled PostgreSQL via `desktop/compose.yaml`), Node.js ≥ 22.12.0 (required by Electron 43; older versions fail inside its installer), and an OpenAI-compatible key (DeepSeek) in `OPENAI_API_KEY`.
 
 **Configure** — credentials and selection come from environment variables; structure comes from configuration files.
 

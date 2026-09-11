@@ -24,6 +24,23 @@
         return $application.Source
     }
 
+    # electron 43 的依赖链(@electron/get 5 为 ESM-only)声明 engines node >= 22.12.0;
+    # 更低版本的 Node 会在 electron 的 postinstall 阶段以 ERR_REQUIRE_ESM 失败,
+    # 留下没有二进制的残缺 node_modules —— 因此在安装前显式校验。
+    function Assert-NodeRuntime {
+        $node = Get-ApplicationPath "node.exe"
+
+        $version = & $node -e "const [major, minor] = process.versions.node.split('.').map(Number); console.log(major + '.' + minor)" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $version) {
+            $parts = ([string]$version).Trim().Split(".")
+            if ([int]$parts[0] -gt 22 -or ([int]$parts[0] -eq 22 -and [int]$parts[1] -ge 12)) {
+                return $node
+            }
+        }
+
+        throw "Node.js 22.12.0 or newer is required (found $( & $node --version ))."
+    }
+
     function Invoke-Native {
         param(
             [Parameter(Mandatory = $true)][string]$FilePath,
@@ -84,7 +101,7 @@
     }
 
     $git = Get-ApplicationPath "git.exe"
-    Get-ApplicationPath "node.exe" | Out-Null
+    Assert-NodeRuntime | Out-Null
     Get-ApplicationPath "npm.cmd" | Out-Null
     Get-ApplicationPath "docker.exe" | Out-Null
 

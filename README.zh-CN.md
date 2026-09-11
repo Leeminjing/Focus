@@ -29,7 +29,7 @@ Prevents Context Drift    Prevents Attention Drift
 
 ## Windows 安装
 
-先准备 Git、Python 3.11+、Node.js 与 Docker Desktop，然后在 PowerShell 中执行一次：
+先准备 Git、Python 3.11+、Node.js 22.12+ 与 Docker Desktop，然后在 PowerShell 中执行一次：
 
 ```powershell
 irm https://raw.githubusercontent.com/Leeminjing/Focus/main/install.ps1 | iex
@@ -46,7 +46,7 @@ focus update   # 将受管理的已跟踪代码同步到 GitHub 最新 main
 
 ## macOS 安装
 
-先准备 Git、Python 3.11+、Node.js，并启动 Docker Desktop，然后在终端执行一次：
+先准备 Git、Python 3.11+、Node.js 22.12+，并启动 Docker Desktop，然后在终端执行一次：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Leeminjing/Focus/main/install.sh | sh
@@ -264,7 +264,7 @@ Patrol 不是上面这些机制的第五种——它是**委托执行者**，能
 
 ## 开发环境
 
-**要求** — Python ≥ 3.11（需可用 `alembic` 与 `uvicorn`）、`git`、`docker`（用于 `desktop/compose.yaml` 内置的 PostgreSQL）、Node.js（用于 Electron 壳）、以及配置在 `OPENAI_API_KEY` 里的 OpenAI 兼容 Key（DeepSeek）。
+**要求** — Python ≥ 3.11（需可用 `alembic` 与 `uvicorn`）、`git`、`docker`（用于 `desktop/compose.yaml` 内置的 PostgreSQL）、Node.js ≥ 22.12.0（Electron 43 的硬性要求，更低版本会在其安装阶段失败）、以及配置在 `OPENAI_API_KEY` 里的 OpenAI 兼容 Key（DeepSeek）。
 
 **配置** — 密钥与选择经环境变量提供，结构经配置文件提供。
 

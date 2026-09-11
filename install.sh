@@ -32,6 +32,15 @@ resolve_python_runtime() {
     fail "Python 3.11 or newer was not found."
 }
 
+# electron 43 的依赖链(@electron/get 5 为 ESM-only)声明 engines node >= 22.12.0;
+# 更低版本的 Node 会在 electron 的 postinstall 阶段以 ERR_REQUIRE_ESM 失败,
+# 留下没有二进制的残缺 node_modules —— 因此必须在安装前显式校验。
+require_node_runtime() {
+    require_command node
+    node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 12) ? 0 : 1)' >/dev/null 2>&1 ||
+        fail "Node.js 22.12.0 or newer is required (found $(node --version 2>/dev/null || printf 'unknown'))."
+}
+
 cleanup_staging() {
     case "$staging_app" in
         "$staging_root"/app-[0-9]*)
@@ -119,7 +128,7 @@ configure_shell_path() {
 
 [ "$(uname -s)" = "Darwin" ] || fail "This installer currently supports macOS only."
 require_command git
-require_command node
+require_node_runtime
 require_command npm
 require_command docker
 docker compose version >/dev/null 2>&1 || fail "Required command 'docker compose' is not available."

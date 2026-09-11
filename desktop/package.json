@@ -8,6 +8,9 @@
     "start": "electron .",
     "dev": "cd .. && python -m uvicorn backend.app.gateway.app:app --host 127.0.0.1 --port 8765"
   },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "dependencies": {
     "electron": "^43.2.0"
   }
