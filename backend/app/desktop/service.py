@@ -81,7 +81,20 @@ from focus.agents.commitment.middleware import commitment_subgraph_thread_id
 from focus.agents.commitment.workflow import _human_payload
 from focus.agents.compression import apply_compression_ranges, hit_keyword_message_ids
 from focus.agents.compression.schemas import validate_apply_decision
-from focus.agents.compression.tokens import estimate_raw_tokens
+from backend.app.desktop.material_files import (
+    EmptyUpload,
+    OversizedImage,
+    guard_upload,
+    prepare_attachment_target,
+    resolve_material_path,
+)
+from focus.agents.must_view import MUST_VIEW_CONTEXT_KEY, build_must_view_middleware
+from focus.images import image_mime_from_name, is_image_name
+from focus.messages import (
+    estimate_images_tokens,
+    estimate_raw_tokens,
+    strip_image_payloads,
+)
 from focus.agents.lead import make_lead_agent
 from focus.config.app_config import AppConfig
 from focus.runtime.runs.events import (
@@ -169,8 +182,10 @@ def _checkpoint_commitment_review(
 
 
 def estimate_tokens(system_prompt: str, messages: list[dict[str, Any]], final_message: str) -> int:
-    raw = system_prompt + final_message + json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
-    return estimate_raw_tokens(raw, len(messages))
+    image_tokens = estimate_images_tokens(messages)
+    counted = strip_image_payloads(messages) if image_tokens else messages
+    raw = system_prompt + final_message + json.dumps(counted, ensure_ascii=False, separators=(",", ":"))
+    return estimate_raw_tokens(raw, len(messages)) + image_tokens
 
 
 def prompt_with_skills(system_prompt: str, snapshots: list[dict[str, str]]) -> str:
@@ -725,6 +740,7 @@ class DesktopService:
         self, task_id: str, message: str | list[dict[str, Any]], model_name: str | None,
         permissions: list[str], skills: list[str], spatial_focus: dict[str, Any] | None = None,
         memory_ids: list[str] | None = None,
+        must_view_material_ids: list[str] | None = None,
     ) -> PreparedRun:
         async with self.session_factory() as session:
             task_row, workspace = await self._get_task_entities(session, task_id)
@@ -752,11 +768,15 @@ class DesktopService:
                     },
                 )
             snapshots = self._freeze_skills(workspace.path, skills)
+            must_view = await self._resolve_must_view_materials(
+                session, task_id, workspace.path, must_view_material_ids or []
+            )
             equipment = {
                 "model_name": model_name,
                 "skills": list(dict.fromkeys(skills)),
                 "skill_snapshots": snapshots,
                 "permissions": permissions,
+                "must_view_materials": must_view,
             }
             run = DesktopRun(
                 run_id=new_id(), task_id=task_id, agent_id=f"main:{task_id}", kind="main", status="pending",
@@ -1250,6 +1270,7 @@ class DesktopService:
         if checkpoint_id is not None:
             context["checkpoint_id"] = checkpoint_id
         context["uploads"] = uploads_tag
+        context[MUST_VIEW_CONTEXT_KEY] = equipment.get("must_view_materials") or []
         if allow_global_config:
             context["allow_global_config"] = True
         body = RunCreateRequest(
@@ -1325,8 +1346,10 @@ class DesktopService:
             else:
                 task_skill_names = None
                 middlewares = []
-            # 压缩门：仅主 Agent、按 compression.enabled 装配（patrol/swarm 不装配）
+            # 压缩门与必需图片注入：仅主 Agent、按角色装配（patrol/swarm 不装配）
             additional_middlewares = [build_tool_error_middleware()]
+            if agent_role == "main":
+                additional_middlewares.append(build_must_view_middleware())
             if agent_role == "main" and self.app_config.compression.enabled:
                 from focus.agents.compression.gate import build_compression_gate
 
@@ -2185,14 +2208,97 @@ class DesktopService:
 
     @staticmethod
     def _material_payload(material: DesktopMaterial, workspace_path: str) -> dict[str, Any]:
+        path = resolve_material_path(workspace_path, material.relative_path)
         return {
             "material_id": material.material_id, "task_id": material.task_id,
-            "path": str(Path(workspace_path, *Path(material.relative_path).parts)),
+            "path": str(path),
             "relative_path": material.relative_path, "reading_mode": material.reading_mode,
             "instruction_mode": material.instruction_mode, "retention": material.retention,
             "digest": material.digest, "git_ref": material.git_ref,
             "needs_confirmation": material.needs_confirmation,
+            "is_image": is_image_name(material.relative_path),
+            "size_bytes": path.stat().st_size if path.is_file() else 0,
         }
+
+    async def store_uploaded_material(
+        self, task_id: str, filename: str, data: bytes
+    ) -> dict[str, Any]:
+        """把上传/粘贴的文件写入工作区专用附件目录并登记为材料。
+
+        原图按原分辨率保存（缩放只发生在送模注入时），因此这里只把住原图体积上限：
+        超出即拒绝，不落盘、不留半成品文件。
+        """
+        if not data:
+            raise HTTPException(422, "上传文件为空")
+        name = Path(filename or "upload.bin").name
+        try:
+            guard_upload(name, data)
+        except EmptyUpload as error:
+            raise HTTPException(422, str(error)) from error
+        except OversizedImage as error:
+            raise HTTPException(413, str(error)) from error
+        async with self.session_factory() as session:
+            _, workspace = await self._get_task_entities(session, task_id)
+        try:
+            target = prepare_attachment_target(workspace.path, name)
+        except OSError as error:
+            raise HTTPException(500, f"无法创建材料附件目录: {error}") from error
+        try:
+            target.write_bytes(data)
+        except OSError as error:
+            raise HTTPException(500, f"无法写入材料附件: {error}") from error
+        return await self.enroll_material(task_id, MaterialCreate(path=str(target)))
+
+    async def read_material_content(self, material_id: str) -> tuple[str, bytes]:
+        """读取材料原始字节；返回 (媒体类型, 字节) 供前端直接展示图片。"""
+        async with self.session_factory() as session:
+            material, workspace = await self._get_material_entities(session, material_id)
+        path = resolve_material_path(workspace.path, material.relative_path)
+        if not path.is_file():
+            raise HTTPException(404, "材料文件不存在")
+        media_type = (
+            image_mime_from_name(material.relative_path) or "application/octet-stream"
+        )
+        return media_type, path.read_bytes()
+
+    async def _resolve_must_view_materials(
+        self, session: AsyncSession, task_id: str, workspace_path: str, material_ids: list[str]
+    ) -> list[dict[str, str]]:
+        """把本轮的必需图片标识解析为 [{material_id, relative_path}]。
+
+        勾选的冲突在发起运行前一次性拦下（不存在、非图片、内容为空），
+        使运行时只需面对「运行途中文件被抽走」这一种极端情况。
+        """
+        if not material_ids:
+            return []
+        unique = list(dict.fromkeys(material_ids))
+        rows = (
+            await session.scalars(
+                select(DesktopMaterial).where(
+                    DesktopMaterial.task_id == task_id,
+                    DesktopMaterial.material_id.in_(unique),
+                )
+            )
+        ).all()
+        by_id = {item.material_id: item for item in rows}
+        resolved: list[dict[str, str]] = []
+        for material_id in unique:
+            material = by_id.get(material_id)
+            if material is None:
+                raise HTTPException(422, f"「本轮必须看」的材料不存在: {material_id}")
+            if not is_image_name(material.relative_path):
+                raise HTTPException(
+                    422, f"「本轮必须看」只适用于图片材料: {material.relative_path}"
+                )
+            path = resolve_material_path(workspace_path, material.relative_path)
+            if not path.is_file() or path.stat().st_size == 0:
+                raise HTTPException(
+                    422, f"「本轮必须看」的图片内容为空或文件不存在: {material.relative_path}"
+                )
+            resolved.append(
+                {"material_id": material.material_id, "relative_path": material.relative_path}
+            )
+        return resolved
 
     @staticmethod
     def _version_payload(version: MaterialVersion) -> dict[str, Any]:

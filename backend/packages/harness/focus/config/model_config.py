@@ -17,6 +17,9 @@ class ModelConfig(BaseModel):
     default: bool = False
     """显式声明该条目为默认模型；取代原先依赖列表顺序的 models[0] 约定。"""
 
+    supports_image_input: bool = False
+    """显式声明该条目是否具备图像输入能力；未声明按不具备处理，取代依据模型名前缀推断。"""
+
     @model_validator(mode="after")
     def validate_curation_default(self) -> "ModelConfig":
         if self.curation_default and self.curation_output_method is None:

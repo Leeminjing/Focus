@@ -186,21 +186,20 @@ async function testAttachmentCommitBoundary() {
     state.activeTaskId = 'task-a';
     state.details.set('task-a', { messages: [], ui_state: { input: '带图消息', skills: [] }, active_run: null });
     state.contextTrees.set('workspace', []);
-    let commits = 0;
-    __dshEyesPeekPendingImages = () => [{ url: 'data:image/png;base64,AA==', name: 'retry.png' }];
-    __dshEyesCommitPendingImages = () => { commits += 1; };
+    state.materials.set('task-a', [{ material_id: 'm1', relative_path: '.focus/attachments/a.png', is_image: true, size_bytes: 10 }]);
+    state.mustView.set('task-a', ['m1']);
     renderFocus = () => {};
     persistFocusState = () => {};
     listenToRun = () => {};
     api = async () => { throw new Error('network down'); };
     await sendMain();
-    const afterFailure = commits;
+    const afterFailure = state.mustView.get('task-a').length;
     let apiCalls = 0;
     api = async () => { apiCalls += 1; return { run_id: 'run-ok', task_id: 'task-a', kind: 'main', status: 'pending' }; };
     await Promise.all([sendMain(), sendMain()]);
-    return { afterFailure, afterSuccess: commits, apiCalls };
+    return { afterFailure, afterSuccess: state.mustView.get('task-a').length, apiCalls };
   })()`, harness.context);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), { afterFailure: 0, afterSuccess: 1, apiCalls: 1 });
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), { afterFailure: 1, afterSuccess: 0, apiCalls: 1 });
 }
 
 async function testPluginAssetsAreIdempotent() {

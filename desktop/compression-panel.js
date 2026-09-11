@@ -162,6 +162,8 @@
             summary: messageText(message),
             count: block.source.length,
             deleted: Boolean(block.deleted),
+            // 来源原文：调用方据此还原被压缩内容里的图片材料缩略图（f37）
+            source: block.source,
           });
           walk(block.source, depth + 1);
           continue;

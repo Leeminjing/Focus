@@ -2,18 +2,16 @@
 本文件对外提供 desktop_router，作为桌面 PoC 的 HTTP 与 SSE 接口层。
 
 输入为带 `X-Focus-Session` 的桌面请求以及 models.py 定义的数据模型；输出为工作区、
-Context、任务、草稿、普通/策展 Patrol、运行、材料 JSON 或独立 SSE 流。具体工作流为
-校验本机会话后调用 DesktopService，并保持所有事件按 run_id 订阅。
+Context、任务、草稿、普通/策展 Patrol、运行、材料 JSON、材料原始字节或独立 SSE 流。具体工作流为
+校验本机会话后调用 DesktopService，并保持所有事件按 run_id 订阅；材料上传与粘贴落盘统一走
+DesktopService.store_uploaded_material（写工作区专用附件目录，不污染工作区根）。
 """
 
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-import uuid
-
 from fastapi import APIRouter, File, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from backend.app.desktop.models import (
     BatchDeleteRequest,
@@ -235,7 +233,7 @@ async def quick_deploy_context_curator(
 async def start_main_run(task_id: str, body: MainRunCreate, request: Request) -> dict:
     prepared = await request.app.state.desktop_service.start_main_run(
         task_id, body.message, body.model_name, body.permissions, body.skills,
-        body.spatial_focus, body.memory_ids,
+        body.spatial_focus, body.memory_ids, body.must_view_material_ids,
     )
     await _launch(request, prepared)
     return prepared.payload
@@ -358,14 +356,18 @@ async def enroll_material(task_id: str, body: MaterialCreate, request: Request) 
 @desktop_router.post("/tasks/{task_id}/materials/upload")
 async def upload_material(task_id: str, request: Request, file: UploadFile = File(...)) -> dict:
     service = request.app.state.desktop_service
-    task = await service.get_task(task_id)
-    filename = Path(file.filename or "upload.bin").name
-    target = service._resolve_workspace_path(task["workspace_path"], filename)
-    if target.exists():
-        stem, suffix = target.stem, target.suffix
-        target = target.with_name(f"{stem}-{uuid.uuid4().hex[:8]}{suffix}")
-    target.write_bytes(await file.read())
-    return await service.enroll_material(task_id, MaterialCreate(path=str(target)))
+    return await service.store_uploaded_material(
+        task_id, file.filename or "upload.bin", await file.read()
+    )
+
+
+@desktop_router.get("/materials/{material_id}/content")
+async def material_content(material_id: str, request: Request) -> Response:
+    """直接回吐材料原始字节，供前端 <img> 展示图片材料与压缩块缩略图。"""
+    media_type, data = await request.app.state.desktop_service.read_material_content(
+        material_id
+    )
+    return Response(content=data, media_type=media_type)
 
 
 @desktop_router.put("/materials/{material_id}")

@@ -23,6 +23,9 @@
         （压缩范围为块、restore 范围原位展开来源原文，均经 RemoveMessage 全量重建）
     (3) wrap_model_call 在每次模型调用前剥离 messages 的 compression 元数据，
         来源原文永不进入模型上下文
+    (4) 校验压缩范围时豁免本轮必需图片所依赖的消息：范围一旦覆盖这些消息即拒绝，
+        使「本轮必须看」的图片不会因压缩而从对话状态中消失；
+        必需清单取自 runtime.context，因此豁免作用域自然限于当前 run
 
 示例:
     middlewares = [build_compression_gate(context_window=131072, threshold_ratio=0.9)]
@@ -40,7 +43,8 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import interrupt
 
 from focus.agents.compression.schemas import validate_apply_decision
-from focus.agents.compression.tokens import estimate_messages_tokens
+from focus.agents.must_view import MUST_VIEW_CONTEXT_KEY
+from focus.messages import estimate_messages_tokens
 from focus.runtime.runs.events import (
     deserialize_messages,
     serialize_message,
@@ -280,7 +284,9 @@ class CompressionGate(AgentMiddleware):
             return None
         if decision.get("decision") != "apply":
             return None
-        ranges, error = validate_apply_decision(decision, messages)
+        ranges, error = validate_apply_decision(
+            decision, messages, _must_view_material_ids(runtime)
+        )
         if error:
             raise ValueError(f"压缩 apply 载荷非法: {error}")
         return apply_compression_ranges(messages, ranges)
@@ -296,3 +302,15 @@ def build_compression_gate(
     context_window: int | None, threshold_ratio: float = 0.9
 ) -> CompressionGate:
     return CompressionGate(context_window=context_window, threshold_ratio=threshold_ratio)
+
+
+def _must_view_material_ids(runtime: Any) -> tuple[str, ...]:
+    context = getattr(runtime, "context", None)
+    materials = context.get(MUST_VIEW_CONTEXT_KEY) if isinstance(context, dict) else None
+    if not isinstance(materials, list):
+        return ()
+    return tuple(
+        str(item["material_id"])
+        for item in materials
+        if isinstance(item, dict) and item.get("material_id")
+    )

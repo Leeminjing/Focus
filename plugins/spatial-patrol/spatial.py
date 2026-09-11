@@ -11,6 +11,9 @@
 观察语义(f18-spatial-patrol spec):
     PDF: pypdfium2 get_text_bounded 以锚点为中心逐圈取文字(纯文本,text-only 模型可读);
     图片: Pillow 按锚点裁剪,视觉模型描述。半径 r 为相对页/图尺寸的归一化值。
+
+视觉能力判定:主模型是否具备图像输入能力只依据模型条目的 supports_image_input 声明,
+不再依据模型名推断;声明缺失按不具备处理(纯文本保守语义)。
 """
 
 import base64
@@ -26,7 +29,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
-from focus.config import get_app_config
+from focus.config import AppConfig, get_app_config
 
 logger = logging.getLogger(__name__)
 
@@ -57,18 +60,13 @@ def _render_pdf_page_cached(
             bitmap.close()
 
 
-def _main_model_text_only() -> bool:
-    """主模型是否 text-only;配置不可得时按 text-only 保守处理。
-
-    ponytail: 以默认模型条目的 model 字段 deepseek 前缀判定(DeepSeek V4 text-only,
-    官方文档确认);未来接入多厂商时再在模型条目加显式 multimodal 标记。
-    """
+def _main_model_text_only(app_config: AppConfig | None = None) -> bool:
     try:
-        app_config = get_app_config("config.yaml")
-        model = app_config.get_model(app_config.resolve_default_model_name())
+        resolved = app_config or get_app_config("config.yaml")
+        model = resolved.get_model(resolved.resolve_default_model_name())
     except Exception:
         return True
-    return str(model.model or "").startswith("deepseek")
+    return not model.supports_image_input
 
 
 def init_service(plugin_config: dict, registry: Any = None) -> "ObservationService":

@@ -20,7 +20,8 @@
     (1) 工具调用时从 runtime.context 读取 workspace 与 permissions
     (2) 权限门控：未授权（如无 write 时调用 write_file）→ PermissionError
     (3) 路径 containment 校验：越界是模型可修正的 ToolException；真实权限错误继续传播
-    (4) read_file 按扩展名分发：.pdf/.docx/.doc → focus.readers 解析，其余 UTF-8 读取
+    (4) read_file 按内容分发：.pdf/.docx/.doc → focus.readers 解析；图片与二进制内容
+        → 抛可修正的 ToolException（绝不静默返回替换字符乱码）；其余按 UTF-8 读取
     (5) shell 工具：subprocess 在工作区目录下执行（timeout=120）
 
 示例:
@@ -38,6 +39,8 @@ from typing import Any
 
 from langchain.tools import ToolRuntime
 from langchain_core.tools import ToolException, tool
+
+from focus.images import is_image_name
 
 WORKSPACE_TOOL_NAMES = frozenset({"read_file", "list_files", "write_file", "bash", "powershell", "cmd", "sh"})
 
@@ -118,7 +121,21 @@ def read_file(path: str, runtime: ToolRuntime) -> str:
         if suffix == ".docx":
             return _read_docx(str(target))
         return _read_doc(str(target))
-    return target.read_text(encoding="utf-8", errors="replace")
+    raw = target.read_bytes()
+    if is_image_name(target.name):
+        raise ToolException(
+            f"{target.name} 是图片材料，无法按文本读取。它已登记在任务材料区；"
+            "若需要模型查看该图片，请在本轮勾选「本轮必须看」，图片会随本轮请求一并提供"
+        )
+    if _looks_binary(raw):
+        raise ToolException(
+            f"{target.name} 是二进制文件，无法按文本读取；请改用能解析该格式的工具"
+        )
+    return raw.decode("utf-8", errors="replace")
+
+
+def _looks_binary(raw: bytes) -> bool:
+    return b"\x00" in raw[:8192]
 
 
 @tool

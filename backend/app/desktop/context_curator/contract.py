@@ -6,6 +6,9 @@ CuratedContextPlan；输出为版本化模型 envelope、完整 authored_message
 具体工作流为严格解析判别联合，按计划顺序生成普通消息或原子工具交换，由系统分配稳定
 消息/调用 ID，并验证所有工具结果与来源证据一致。示例：
 `compiled = compile_curated_context(plan, snapshot)`。
+
+另对外提供 `estimate_curation_tokens`，按与压缩触发判定相同的口径折算策展输入的用量：
+内联图像载荷先替换为占位符再计入文本口径，图片本身按其尺寸单独折算。
 """
 
 from __future__ import annotations
@@ -19,7 +22,11 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.app.desktop.models import ContextCurationPolicy
-from focus.agents.compression.tokens import estimate_raw_tokens
+from focus.messages import (
+    estimate_images_tokens,
+    estimate_raw_tokens,
+    strip_image_payloads,
+)
 from focus.runtime.runs.events import validate_messages
 
 
@@ -137,9 +144,17 @@ def build_curation_input(
 
 
 def estimate_curation_tokens(payload: dict[str, Any]) -> int:
-    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     source = payload.get("source_snapshot") or {}
-    return estimate_raw_tokens(raw, len(source.get("messages") or []))
+    messages = source.get("messages") or []
+    image_tokens = estimate_images_tokens(messages)
+    counted = payload
+    if image_tokens:
+        counted = {
+            **payload,
+            "source_snapshot": {**source, "messages": strip_image_payloads(messages)},
+        }
+    raw = json.dumps(counted, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return estimate_raw_tokens(raw, len(messages)) + image_tokens
 
 
 def compile_curated_context(

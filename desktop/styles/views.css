@@ -173,7 +173,19 @@
 }
 .work-record .message-content { overflow-wrap: anywhere; }
 .work-record .message-file-cards,
-.work-record .dsh-eyes-message-images { margin: 0 0 var(--space-3); }
+.work-record .message-images { margin: 0 0 var(--space-3); }
+
+/* f37 图片材料:消息缩略图 / 材料列表缩略图 / 压缩块缩略图与放大查看 */
+.message-images { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.message-image { max-width: 220px; max-height: 160px; border-radius: 6px; border: 1px solid var(--line-soft); cursor: zoom-in; }
+.material-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; border: 1px solid var(--line-soft); }
+.material-row.is-image .material-title-button { display: flex; align-items: center; gap: var(--space-2); }
+.must-view-toggle[aria-pressed="true"] { color: var(--blue); font-weight: 600; }
+.image-lightbox { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-3); background: rgba(0, 0, 0, 0.72); }
+.image-lightbox img { max-width: 92vw; max-height: 82vh; border-radius: 8px; }
+.image-lightbox button { cursor: pointer; }
+.compression-block-images { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
+.compression-block-image { max-width: 140px; max-height: 100px; border-radius: 4px; border: 1px solid var(--line-soft); cursor: zoom-in; }
 
 .message-details { margin-top: var(--space-3); color: var(--text-secondary); font-size: 12px; }
 .message-details summary { width: fit-content; cursor: pointer; color: var(--text-secondary); }

@@ -402,10 +402,12 @@ class BatchDeleteRequest(StrictRequest):
 
 
 class MainRunCreate(StrictRequest):
-    # message 放行纯文本或含内容块列表(图片以 image_url 块随消息发送)。
-    # 原由插件剥离 hook 在模型调用前替换为文本引用;剥离方已随视觉能力下线,
-    # 该契约保留给后续接入多模态主模型时直接消费内容块。
     message: str | list[dict[str, Any]] = Field(min_length=1)
+    """消息正文。图片以引用标记留在文本里，像素由 MustViewImagesMiddleware 在请求层注入。"""
+
+    must_view_material_ids: list[str] = Field(default_factory=list)
+    """本轮必须查看的图片材料标识。属 (材料 × 轮次) 的按轮声明，不写入材料记录。"""
+
     model_name: str | None = None
     skills: list[str] = Field(default_factory=list)
     spatial_focus: dict[str, Any] | None = None

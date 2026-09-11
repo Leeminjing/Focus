@@ -28,7 +28,7 @@ from focus.agents.compression.gate import (
     build_compression_gate,
 )
 from focus.agents.compression.schemas import validate_apply_decision
-from focus.agents.compression.tokens import estimate_raw_tokens
+from focus.messages import estimate_raw_tokens
 from focus.runtime.runs.events import serialize_message, validate_messages
 
 

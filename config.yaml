@@ -7,6 +7,7 @@ models:
     curation_output_method: prompt_json
     curation_default: true
     default: true
+    supports_image_input: true
     api_key: $OPENAI_API_KEY
     base_url: https://api.deepseek.com
 

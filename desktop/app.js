@@ -73,6 +73,7 @@ const state = {
   details: new Map(),
   drafts: new Map(),
   materials: new Map(),
+  mustView: new Map(),
   agents: new Map(),
   skillCatalogs: new Map(),
   contextTrees: new Map(),
@@ -1190,17 +1191,23 @@ window.addEventListener("resize", () => {
   });
 });
 
-async function sha1Hex(text) {
-  const buffer = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(text));
-  return [...new Uint8Array(buffer)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+function materialContentUrl(materialId) {
+  return `${runtime.apiBase}/desktop/api/materials/${encodeURIComponent(materialId)}/content?session=${encodeURIComponent(runtime.session)}`;
 }
 
-// ponytail: 图片附件的后端路由随 dsh-eyes 插件一并移除,此处保留消息内图片引用解析与发送链路,
-// 显示来源待接入多模态主模型时重做(见 change consolidate-config-and-drop-vision);
-// 当前表现仅为图片加载失败,不抛异常。
-// f19 dsh-eyes:从消息内容提取图片 URL 列表(image_url 块 / 文本引用),
-// 图片渲染为消息框上方的独立缩略图行(对齐 image8:图片在消息框上面,不嵌入气泡)。
-const IMAGE_REF_RE = /【图片\d+ attachment_id=([0-9a-f]{12})】查看请调 view_image\(attachment_id=[0-9a-f]{12}\)/g;
+function contentPlainText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map(block => (block && typeof block === "object" && typeof block.text === "string" ? block.text : ""))
+      .join("");
+  }
+  return "";
+}
+
+function collectMessageImages(content) {
+  return imageMaterialPicker.materialRefIds(contentPlainText(content)).map(materialContentUrl);
+}
 
 // f18:消息文件卡片 —— 常见类型全部可点开(图片/PDF/docx/doc/md/txt),点击打开右侧文件面板
 const FILE_VIEWABLE_RE = /\.(png|jpe?g|webp|bmp|gif|pdf|docx?|md|txt)$/i;
@@ -1235,46 +1242,15 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function collectMessageImages(content) {
-  // 本地映射(本会话发送过的图片)优先;缺失时回退到后端附件接口
-  // (重启后历史消息的引用仍可还原为图片)。
-  // 引用可能位于字符串 content 或列表的 text 块中(后端剥离后列表形态)。
-  const urls = window.__dshEyesAttachmentUrls || {};
-  const threadId = state.details.get(state.activeTaskId)?.thread_id || "";
-  const backendUrl = id => `/desktop/api/plugin/dsh-eyes/attachments/${encodeURIComponent(id)}?thread_id=${encodeURIComponent(threadId)}`;
-  const images = [];
-  const collect = text => {
-    text.replace(IMAGE_REF_RE, (match, id) => {
-      images.push(urls[id] || backendUrl(id));
-      return match;
-    });
-  };
-  if (typeof content === "string") {
-    collect(content);
-  } else if (Array.isArray(content)) {
-    for (const block of content) {
-      if (!block || typeof block !== "object") continue;
-      if (block.type === "image_url") {
-        const url = block.image_url && typeof block.image_url === "object" ? block.image_url.url : null;
-        if (typeof url === "string" && url.startsWith("data:image/")) images.push(url);
-      } else if (block.type === "text" && typeof block.text === "string") {
-        collect(block.text);
-      }
-    }
-  }
-  return images;
-}
-
 function renderMessageImages(images) {
   if (!images.length) return "";
-  return `<div class="dsh-eyes-message-images">${images
-    .map(url => `<img class="dsh-eyes-message-image" src="${escapeHtml(url)}" alt="粘贴图片">`)
+  return `<div class="message-images">${images
+    .map(url => `<img class="message-image" src="${escapeHtml(url)}" alt="图片材料" data-action="zoom-image" data-image-url="${escapeHtml(url)}">`)
     .join("")}</div>`;
 }
 
-// 文本中移除图片引用标记(图片已提取到上方独立行,气泡内只留文字)
 function stripImageReferences(text) {
-  return text.replace(IMAGE_REF_RE, "");
+  return imageMaterialPicker.stripMaterialRefs(text);
 }
 
 function renderContentBlock(block) {
@@ -1318,7 +1294,6 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
   }
   const semantics = contextCuratorPresentation.messageSemantics(message);
   const kind = semantics.kind;
-  // f19 dsh-eyes:图片提取为消息框上方的独立缩略图行(对齐 image8),气泡内只留文字。
   // 安全:字符串 human 消息 MUST 转义(否则消息内 HTML 会注入 DOM,如 <style> 覆盖主题变量)。
   const messageImages = collectMessageImages(message.content);
   let content;
@@ -1345,6 +1320,30 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
   </article>`;
 }
 
+function collectImagesFromMessages(messages, depth = 0) {
+  if (depth > 8) return [];
+  const urls = [];
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (!message || typeof message !== "object") continue;
+    for (const url of collectMessageImages(message.content)) {
+      if (!urls.includes(url)) urls.push(url);
+    }
+    if (message.compression && Array.isArray(message.compression.source)) {
+      for (const url of collectImagesFromMessages(message.compression.source, depth + 1)) {
+        if (!urls.includes(url)) urls.push(url);
+      }
+    }
+  }
+  return urls;
+}
+
+function renderCompressionBlockImages(images) {
+  if (!images.length) return "";
+  return `<div class="compression-block-images">${images
+    .map(url => `<img class="compression-block-image" src="${escapeHtml(url)}" alt="被压缩的图片材料" data-action="zoom-image" data-image-url="${escapeHtml(url)}">`)
+    .join("")}</div>`;
+}
+
 function renderCompressionDivider(item) {
   // 压缩块/删除墓碑分界标记：原文已在其后原位展开显示；删除无摘要，仅提示
   const dividerKey = item.deleted ? `deleted:${item.block_id || item.count}` : `block:${item.block_id || item.count}`;
@@ -1353,6 +1352,7 @@ function renderCompressionDivider(item) {
   }
   return `<div class="compression-block-divider" data-divider-key="${escapeHtml(dividerKey)}">
     <details class="compression-block-summary"><summary><span class="ui-icon is-sm icon-package" aria-hidden="true"></span>压缩块 · 来源 ${item.count} 条</summary><div class="compression-block-summary-body">${escapeHtml(item.summary)}</div></details>
+    ${renderCompressionBlockImages(collectImagesFromMessages(item.source))}
   </div>`;
 }
 
@@ -1647,6 +1647,22 @@ function finalizeStreamingOnSnapshot(taskId, messages) {
     if (buffer.taskId !== taskId) continue;
     if (buffer.messageId && ids.has(buffer.messageId)) clearStreamBuffer(runId);
   }
+}
+
+function renderImageMaterial(material) {
+  const open = state.openMaterial === material.material_id;
+  const checked = mustViewSelection().includes(material.material_id);
+  const reason = imageMaterialPicker.mustViewBlockReason(material);
+  return `<article class="material-row is-image" data-material-id="${material.material_id}">
+    <header class="material-summary">
+      <button class="material-title-button" data-action="preview-image-material" title="放大查看"><img class="material-thumb" src="${escapeHtml(materialContentUrl(material.material_id))}" alt=""><span><strong class="material-name">${escapeHtml(material.relative_path)}</strong><small>图片材料 · ${formatBytes(material.size_bytes)}</small></span></button>
+      <button class="text-button" data-action="toggle-material" aria-expanded="${open}">${open ? "收起" : "管理"}</button>
+    </header>
+    <div class="material-policy-row"><button class="text-button must-view-toggle" data-action="toggle-must-view" aria-pressed="${checked}"${reason ? " disabled" : ""}>${checked ? "☑" : "☐"} 本轮必须看</button>${reason ? `<span class="muted tiny">${escapeHtml(reason)}</span>` : ""}</div>
+    ${open ? `<div class="material-editor">
+      <div class="material-source-meta"><span>来源</span><code>${escapeHtml(material.relative_path)}</code></div>
+      <span class="material-actions"><button class="text-button danger" data-action="delete-material">删除</button></span></div>` : ""}
+  </article>`;
 }
 
 function renderMaterial(material) {
@@ -3154,6 +3170,32 @@ async function deployDraft() {
   finally { state.deploying = false; updateTokenState(); }
 }
 
+function mustViewSelection() {
+  if (!state.mustView.has(state.activeTaskId)) state.mustView.set(state.activeTaskId, []);
+  return state.mustView.get(state.activeTaskId);
+}
+
+function selectedMustViewMaterials() {
+  const materials = state.materials.get(state.activeTaskId) || [];
+  const ids = imageMaterialPicker.syncMustView(mustViewSelection(), materials);
+  state.mustView.set(state.activeTaskId, ids);
+  return materials.filter(material => ids.includes(material.material_id));
+}
+
+function toggleMustView(materialId) {
+  const selected = mustViewSelection();
+  const next = selected.includes(materialId)
+    ? selected.filter(id => id !== materialId)
+    : [...selected, materialId];
+  state.mustView.set(state.activeTaskId, next);
+}
+
+function openImageLightbox(url, label) {
+  const root = document.querySelector("#overlayRoot");
+  if (!root) return;
+  root.innerHTML = `<div class="image-lightbox" role="dialog" aria-label="${escapeHtml(label)}"><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}"><button class="text-button" data-action="close-lightbox">关闭</button></div>`;
+}
+
 async function sendMainOnce() {
   adoptCommitmentContext();
   if (activeTaskHasCommitmentLock()) {
@@ -3195,30 +3237,15 @@ async function sendMainOnce() {
       return;
     }
   }
-  // f19 dsh-eyes:插件前端粘贴的待发图片以 image_url 内容块随消息发送
-  // (纯文本时保持原形态;取走即清空插件队列)
-  const pendingImages = typeof window.__dshEyesPeekPendingImages === "function"
-    ? window.__dshEyesPeekPendingImages()
-    : typeof window.__dshEyesTakePendingImages === "function"
-      ? window.__dshEyesTakePendingImages()
-    : [];
-  // f19 dsh-eyes:预计算 attachment_id(与后端剥离同算法 sha1(url) 前 12 位),
-  // 存本地映射供消息区把引用还原为缩略图(values 快照会用后端剥离后的引用覆盖本地消息)
-  window.__dshEyesAttachmentUrls = window.__dshEyesAttachmentUrls || {};
-  for (const image of pendingImages) {
-    const digest = await sha1Hex(image.url);
-    window.__dshEyesAttachmentUrls[digest.slice(0, 12)] = image.url;
-  }
-  const messagePayload = pendingImages.length
-    ? [{ type: "text", text: message },
-      ...pendingImages.map(image => ({ type: "image_url", image_url: { url: image.url } }))]
-    : message;
+  const outgoing = imageMaterialPicker.buildOutgoing(selectedMustViewMaterials(), message);
+  const messagePayload = outgoing.message;
   const detail = state.details.get(state.activeTaskId);
   try {
     const run = await api(`/desktop/api/tasks/${state.activeTaskId}/main/runs`, {
       method: "POST",
       body: JSON.stringify({
         message: messagePayload,
+        must_view_material_ids: outgoing.mustViewIds,
         skills: selectedSkills("main"),
         spatial_focus: spatialTarget?.focus || null,
       }),
@@ -3229,7 +3256,7 @@ async function sendMainOnce() {
     if (detail.context) detail.context.editable = false;
     // 运行已发起：立即暴露中断入口（否则运行中 active_run 仍为旧值，按钮不渲染）
     detail.active_run = run;
-    window.__dshEyesCommitPendingImages?.();
+    state.mustView.set(state.activeTaskId, []);
     state.composerErrors.delete(state.activeTaskId);
     detail.messages = [...(detail.messages || []), { role: "human", content: messagePayload }];
     detail.ui_state = { ...(detail.ui_state || {}), input: "", skills: [] };
@@ -4383,6 +4410,8 @@ async function handleMaterialAction(button) {
   const material = (state.materials.get(state.activeTaskId) || []).find(item => item.material_id === materialId);
   try {
   if (button.dataset.action === "toggle-material") { state.openMaterial = state.openMaterial === materialId ? null : materialId; return renderFocus(); }
+  if (button.dataset.action === "toggle-must-view") { toggleMustView(materialId); return renderFocus(); }
+  if (button.dataset.action === "preview-image-material") return openImageLightbox(materialContentUrl(materialId), material?.relative_path || "图片材料");
   if (button.dataset.action === "open-material") {
     // f18:材料「查看」→ 右侧文件面板(不再全屏替换)
     if (!material) return setStatus("材料不存在", true);
@@ -4416,11 +4445,15 @@ async function handleMaterialAction(button) {
     }
   }
   if (button.dataset.action === "clear-material" && confirm("保留文件路径并将内容置空？此操作会保存新版本。")) {
-    Object.assign(material, await api(`/desktop/api/materials/${materialId}/clear`, { method: "POST" })); renderFocus();
+    Object.assign(material, await api(`/desktop/api/materials/${materialId}/clear`, { method: "POST" }));
+    state.mustView.set(state.activeTaskId, imageMaterialPicker.syncMustView(mustViewSelection(), state.materials.get(state.activeTaskId)));
+    renderFocus();
   }
   if (button.dataset.action === "delete-material" && confirm("删除这个可移除文件？")) {
     await api(`/desktop/api/materials/${materialId}`, { method: "DELETE" });
-    state.materials.set(state.activeTaskId, state.materials.get(state.activeTaskId).filter(item => item.material_id !== materialId)); renderFocus();
+    state.materials.set(state.activeTaskId, state.materials.get(state.activeTaskId).filter(item => item.material_id !== materialId));
+    state.mustView.set(state.activeTaskId, imageMaterialPicker.syncMustView(mustViewSelection(), state.materials.get(state.activeTaskId)));
+    renderFocus();
   }
   if (button.dataset.action === "load-versions") {
     const versions = await api(`/desktop/api/materials/${materialId}/versions`);
@@ -4810,6 +4843,8 @@ async function handleDocumentClick(event) {
     if (state.soldierArmed) return openDraft(taskId);
     return switchTask(taskId);
   }
+  if (action === "zoom-image") return openImageLightbox(button.dataset.imageUrl, "图片");
+  if (action === "close-lightbox") { const root = document.querySelector("#overlayRoot"); if (root) root.innerHTML = ""; return; }
   if (action === "send-main") return sendMain();
   if (action === "toggle-compress-message") {
     state.compression.selected = compressionPanel.toggleSelect(
@@ -5325,14 +5360,29 @@ document.addEventListener("submit", event => {
   event.preventDefault();
   runUiAction(continueAgentDetails);
 });
-document.querySelector("#fileInput")?.addEventListener("change", () => {});
-document.addEventListener("change", async event => {
-  if (event.target.id !== "fileInput" || !event.target.files[0]) return;
-  const body = new FormData(); body.append("file", event.target.files[0]);
+async function uploadMaterialFile(file) {
+  if (!file) return;
+  if (!state.activeTaskId) return setStatus("请先选择任务，再粘贴图片", true);
+  const body = new FormData(); body.append("file", file);
   try {
     await api(`/desktop/api/tasks/${state.activeTaskId}/materials/upload`, { method: "POST", body });
     state.materials.set(state.activeTaskId, await api(`/desktop/api/tasks/${state.activeTaskId}/materials`)); renderFocus();
   } catch (error) { setStatus(error.message, true); }
+}
+
+document.addEventListener("change", event => {
+  if (event.target.id !== "fileInput" || !event.target.files[0]) return;
+  runUiAction(() => uploadMaterialFile(event.target.files[0]));
+});
+
+document.addEventListener("paste", event => {
+  const images = [...(event.clipboardData?.items || [])].filter(item => item.type.startsWith("image/"));
+  if (!images.length) return;
+  event.preventDefault();
+  for (const item of images) {
+    const file = item.getAsFile();
+    if (file) runUiAction(() => uploadMaterialFile(file));
+  }
 });
 
 function persistFocusState() {
