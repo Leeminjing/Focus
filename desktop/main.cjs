@@ -1,6 +1,10 @@
 /*
  * 本文件启动 Focus 桌面运行时。输入为本机 Python/Git/Docker 能力、品牌资源与环境变量，输出为
  * 本地启动动画、单一动态 loopback FastAPI 及同源隔离主窗口；失败时原子切换到带品牌的说明窗口。
+ *
+ * 单实例闸门在 app.whenReady 之前取得，且不通过即退出：启动链路会拉起 uvicorn、docker compose
+ * 与 alembic 迁移，若允许第二个实例进入，将重复起后端、重复迁移并再开一整套窗口。第二个实例的
+ * 启动请求改由首个实例接管——恢复并聚焦既有主窗口。
  */
 const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require("electron");
 const { execFileSync, spawn } = require("node:child_process");
@@ -338,8 +342,18 @@ ipcMain.handle("focus:get-zoom-level", event => {
 });
 
 if (process.platform === "win32") app.setAppUserModelId("Focus.Desktop");
-app.whenReady().then(start).catch(showFatalError);
-app.on("window-all-closed", () => app.quit());
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+  app.whenReady().then(start).catch(showFatalError);
+  app.on("window-all-closed", () => app.quit());
+}
 app.on("before-quit", () => {
   app.isQuitting = true;
   closeSplashWindow();
