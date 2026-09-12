@@ -3194,7 +3194,8 @@ function toggleMustView(materialId) {
 function openImageLightbox(url, label) {
   const root = document.querySelector("#overlayRoot");
   if (!root) return;
-  root.innerHTML = `<div class="image-lightbox" role="dialog" aria-label="${escapeHtml(label)}"><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}"><button class="text-button" data-action="close-lightbox">关闭</button></div>`;
+  // 整层可点即关（含点图片本身），避免用户找不到出口
+  root.innerHTML = `<div class="image-lightbox" role="dialog" aria-modal="true" aria-label="${escapeHtml(label)}" data-action="close-lightbox"><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}"><button class="text-button" data-action="close-lightbox">关闭</button></div>`;
 }
 
 async function sendMainOnce() {

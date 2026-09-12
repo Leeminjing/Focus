@@ -181,7 +181,8 @@
 .material-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; border: 1px solid var(--line-soft); }
 .material-row.is-image .material-title-button { display: flex; align-items: center; gap: var(--space-2); }
 .must-view-toggle[aria-pressed="true"] { color: var(--blue); font-weight: 600; }
-.image-lightbox { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-3); background: rgba(0, 0, 0, 0.72); }
+/* 容器 .overlay-root 是 pointer-events:none 的穿透层，交互式模态框必须自行声明可点击，否则可望不可点 */
+.image-lightbox { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-3); background: rgba(0, 0, 0, 0.72); pointer-events: auto; cursor: zoom-out; }
 .image-lightbox img { max-width: 92vw; max-height: 82vh; border-radius: 8px; }
 .image-lightbox button { cursor: pointer; }
 .compression-block-images { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
