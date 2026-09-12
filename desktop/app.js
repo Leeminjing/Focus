@@ -1666,6 +1666,7 @@ function renderImageMaterial(material) {
 }
 
 function renderMaterial(material) {
+  if (material.is_image) return renderImageMaterial(material);
   const open = state.openMaterial === material.material_id;
   const viewable = !!pluginViewForMaterial(material);
   const reading = material.reading_mode === "full" ? "完整阅读" : "粗略阅读";

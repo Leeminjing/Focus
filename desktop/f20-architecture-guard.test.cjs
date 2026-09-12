@@ -151,7 +151,7 @@ assert.match(renderer, /new EventSource\(`\$\{runtime\.apiBase\}\/desktop\/api\/
 assert.match(renderer, /script\.onerror = \(\) => \{[\s\S]*pluginScriptAssets\.delete\(src\)[\s\S]*console\.error\("插件脚本加载失败:"[\s\S]*resolve\(\)/);
 assert.match(renderer, /link\.onerror = \(\) => \{[\s\S]*pluginStyleAssets\.delete\(href\)[\s\S]*console\.error\("插件样式加载失败:"/);
 assert.match(renderer, /filter\(plugin => plugin\.status === "active"\)/);
-assert.match(html, /<script src="\.\/conversation-events\.js"><\/script>[\s\S]*<script src="\.\/context-curator-presentation\.js\?v=20260906a"><\/script>[\s\S]*<script src="\.\/patrol-presence\.js\?v=20260905b"><\/script>[\s\S]*<script src="\.\/patrol-avatar\.js\?v=20260905b"><\/script>[\s\S]*<script src="\.\/app\.js\?v=20260906b"><\/script>/);
+assert.match(html, /<script src="\.\/conversation-events\.js"><\/script>[\s\S]*<script src="\.\/context-curator-presentation\.js\?v=20260906a"><\/script>[\s\S]*<script src="\.\/patrol-presence\.js\?v=20260905b"><\/script>[\s\S]*<script src="\.\/patrol-avatar\.js\?v=20260905b"><\/script>[\s\S]*<script src="\.\/app\.js\?v=20260912a"><\/script>/);
 assert.match(html, /<link rel="stylesheet" href="\.\/styles\/patrol-avatar\.css\?v=20260905b">/);
 assert.match(renderer, /patrol_avatar_positions/);
 assert.match(renderer, /FocusPatrolAvatar/);

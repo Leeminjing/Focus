@@ -88,7 +88,12 @@ from backend.app.desktop.material_files import (
     prepare_attachment_target,
     resolve_material_path,
 )
-from focus.agents.must_view import MUST_VIEW_CONTEXT_KEY, build_must_view_middleware
+from focus.agents.must_view import (
+    MUST_VIEW_CONTEXT_KEY,
+    MODEL_IMAGE_INPUT_KEY,
+    MustViewReports,
+    build_must_view_middleware,
+)
 from focus.images import image_mime_from_name, is_image_name
 from focus.messages import (
     estimate_images_tokens,
@@ -179,6 +184,27 @@ def _checkpoint_commitment_review(
             if payload.get("type") == "commitment_review" and payload_stage == stage:
                 return dict(payload)
     return None
+
+
+def _must_view_prompt(materials: list[dict[str, str]]) -> str:
+    lines = "\n".join(
+        f"- {item['relative_path']} (material_id={item['material_id']})" for item in materials
+    )
+    return (
+        "\n\n<focus_must_view>\n"
+        "用户把以下图片标记为本轮必须查看。请在结构化输出中对每一张各给一条表态："
+        "成功读到该图片的内容即把 read 置为真。\n"
+        f"{lines}\n"
+        "</focus_must_view>"
+    )
+
+
+def _material_policy_line(path: Path, reading_mode: str, instruction_mode: str) -> str:
+    if is_image_name(path.name):
+        return f"- {path} | 图片材料"
+    reading = "优先完整阅读" if reading_mode == "full" else "优先粗略阅读，需要时仍可完整读取"
+    instruction = "严格遵守" if instruction_mode == "strict" else "仅供参考"
+    return f"- {path} | {reading} | {instruction}"
 
 
 def estimate_tokens(system_prompt: str, messages: list[dict[str, Any]], final_message: str) -> int:
@@ -1252,6 +1278,9 @@ class DesktopService:
                 由 services.start_run 透传给 worker 与工具（ToolRuntime）
         """
         material_context, uploads_tag = await self._material_context(run.task_id)
+        must_view = equipment.get("must_view_materials") or []
+        if must_view:
+            base_prompt = base_prompt + _must_view_prompt(must_view)
         factory = self._build_agent_factory(
             run.task_id, run.agent_id, workspace_path, equipment, base_prompt,
             material_context, agent_role,
@@ -1271,6 +1300,9 @@ class DesktopService:
             context["checkpoint_id"] = checkpoint_id
         context["uploads"] = uploads_tag
         context[MUST_VIEW_CONTEXT_KEY] = equipment.get("must_view_materials") or []
+        context[MODEL_IMAGE_INPUT_KEY] = self._model_supports_image_input(
+            equipment.get("model_name") or run.model_name
+        )
         if allow_global_config:
             context["allow_global_config"] = True
         body = RunCreateRequest(
@@ -1367,9 +1399,23 @@ class DesktopService:
                 additional_middlewares=additional_middlewares,
                 app_config=self.app_config,
                 middleware_skill_names=task_skill_names,
+                response_format=(
+                    MustViewReports
+                    if agent_role == "main" and equipment.get("must_view_materials")
+                    else None
+                ),
             )
 
         return factory
+
+    def _model_supports_image_input(self, model_name: str | None) -> bool:
+        try:
+            model = self.app_config.get_model(
+                model_name or self.app_config.resolve_default_model_name()
+            )
+        except (KeyError, ValueError):
+            return False
+        return bool(model.supports_image_input)
 
     def _compression_context_window(self, model_name: str | None) -> int | None:
         """按运行模型取上下文窗口；模型未知时返回 None（压缩门恒放行）。"""
@@ -1811,10 +1857,12 @@ class DesktopService:
         lines = []
         upload_names: list[str] = []
         for material in materials:
-            reading = "优先完整阅读" if material.reading_mode == "full" else "优先粗略阅读，需要时仍可完整读取"
-            instruction = "严格遵守" if material.instruction_mode == "strict" else "仅供参考"
             lines.append(
-                f"- {Path(workspace.path, *Path(material.relative_path).parts)} | {reading} | {instruction}"
+                _material_policy_line(
+                    resolve_material_path(workspace.path, material.relative_path),
+                    material.reading_mode,
+                    material.instruction_mode,
+                )
             )
             upload_names.append(material.relative_path)
         uploads_tag = (

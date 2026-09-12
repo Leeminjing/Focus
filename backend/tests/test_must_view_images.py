@@ -27,7 +27,9 @@ from config_helpers import app_config_for as _app_config
 from focus.agents.compression.schemas import validate_apply_decision
 from focus.agents.must_view import (
     MUST_VIEW_CONTEXT_KEY,
+    MODEL_IMAGE_INPUT_KEY,
     MustViewImagesMiddleware,
+    MustViewModelCannotReadImages,
     MustViewMaterialUnavailable,
 )
 from focus.images import (
@@ -62,8 +64,14 @@ def scratch():
 
 
 class _FakeRuntime:
-    def __init__(self, workspace: Path, materials: list[dict]) -> None:
-        self.context = {"workspace": str(workspace), MUST_VIEW_CONTEXT_KEY: materials}
+    def __init__(
+        self, workspace: Path, materials: list[dict], image_capable: bool = True
+    ) -> None:
+        self.context = {
+            "workspace": str(workspace),
+            MUST_VIEW_CONTEXT_KEY: materials,
+            MODEL_IMAGE_INPUT_KEY: image_capable,
+        }
 
 
 class _FakeRequest:
@@ -221,6 +229,29 @@ def test_empty_material_fails_diagnosably(scratch):
         _run(MustViewImagesMiddleware().awrap_model_call(request, _CapturingHandler()))
 
 
+def test_model_without_image_capability_is_rejected(scratch):
+    (scratch / "shot.png").write_bytes(_png(8, 8))
+    runtime = _FakeRuntime(
+        scratch,
+        [{"material_id": "m1", "relative_path": "shot.png"}],
+        image_capable=False,
+    )
+    request = _FakeRequest([HumanMessage(content="看这张")], runtime)
+    with pytest.raises(MustViewModelCannotReadImages) as info:
+        _run(MustViewImagesMiddleware().awrap_model_call(request, _CapturingHandler()))
+    assert "未声明具备图像输入能力" in str(info.value)
+
+
+def test_no_materials_skips_capability_check(scratch):
+    request = _FakeRequest(
+        [HumanMessage(content="普通一轮")],
+        _FakeRuntime(scratch, [], image_capable=False),
+    )
+    handler = _CapturingHandler()
+    _run(MustViewImagesMiddleware().awrap_model_call(request, handler))
+    assert handler.seen[0] == request.messages
+
+
 # === 4.4 压缩豁免 ===
 
 
@@ -283,7 +314,8 @@ def test_read_file_rejects_image_with_correctable_hint(scratch):
         read_file.func("shot.png", _ToolRuntime(scratch))
     detail = str(info.value)
     assert "shot.png" in detail
-    assert "必须看" in detail
+    assert "图片材料" in detail
+    assert "必须看" not in detail
 
 
 def test_read_file_rejects_binary_with_correctable_hint(scratch):
@@ -376,6 +408,7 @@ def test_agent_run_does_not_succeed_when_material_unreadable(scratch):
     context = {
         "workspace": str(workspace),
         MUST_VIEW_CONTEXT_KEY: [{"material_id": "m1", "relative_path": "gone.png"}],
+        MODEL_IMAGE_INPUT_KEY: True,
     }
     with pytest.raises(MustViewMaterialUnavailable):
         _run_graph(agent, [HumanMessage(content="看这张")], context, "must-view-missing")
@@ -442,3 +475,129 @@ def test_spatial_plugin_available_when_model_declares_vision(monkeypatch):
         spatial, "get_app_config", lambda _path: _app_config("some-vision-model", True)
     )
     assert spatial.init_service({"vision_model": ""}, registry=None) is not None
+
+
+# === N2 材料清单按类型分流 ===
+
+
+def test_material_policy_line_marks_images_without_text_policies():
+    from backend.app.desktop.service import _material_policy_line
+
+    line = _material_policy_line(Path("/w/.focus/attachments/a.png"), "full", "strict")
+    assert "图片材料" in line
+    assert "优先完整阅读" not in line
+    assert "严格遵守" not in line
+
+
+def test_material_policy_line_keeps_text_policies_unchanged():
+    from backend.app.desktop.service import _material_policy_line
+
+    assert _material_policy_line(Path("/w/notes.md"), "full", "strict").endswith(
+        "| 优先完整阅读 | 严格遵守"
+    )
+    assert _material_policy_line(Path("/w/notes.md"), "rough", "reference").endswith(
+        "| 优先粗略阅读，需要时仍可完整读取 | 仅供参考"
+    )
+
+
+# === D17 dsh-eyes 残骸已清除 ===
+
+
+def test_lead_agent_state_has_no_legacy_image_residue():
+    from focus.agents import lead_agent_state
+
+    assert not hasattr(lead_agent_state, "ViewedImageData")
+    assert not hasattr(lead_agent_state, "merge_viewed_images")
+    assert "viewed_images" not in lead_agent_state.LeadAgentState.__annotations__
+
+
+# === 组 9 逐图表态（结构化输出） ===
+
+
+class _Runtime:
+    def __init__(self, context: dict) -> None:
+        self.context = context
+
+
+def _reports_state(context: dict, reports: dict[str, bool] | None, reminders: int = 0) -> dict:
+    from focus.agents.must_view import MustViewImageReport, MustViewReports
+
+    messages = [HumanMessage(content="看这张")]
+    messages += [
+        HumanMessage(content=f"[focus-must-view] 催促 {index}") for index in range(reminders)
+    ]
+    structured = None
+    if reports is not None:
+        structured = MustViewReports(
+            images=[
+                MustViewImageReport(material_id=key, read=value)
+                for key, value in reports.items()
+            ]
+        )
+    return {"messages": messages, "structured_response": structured}
+
+
+TWO_IMAGES = [
+    {"material_id": "m1", "relative_path": "a.png"},
+    {"material_id": "m2", "relative_path": "b.png"},
+]
+
+
+def test_reports_schema_carries_material_and_read_flag():
+    from focus.agents.must_view import MustViewImageReport, MustViewReports
+
+    reports = MustViewReports(images=[MustViewImageReport(material_id="m1", read=True)])
+    assert reports.images[0].material_id == "m1"
+    assert reports.images[0].read is True
+
+
+def test_must_view_prompt_lists_materials_and_explains_read():
+    from backend.app.desktop.service import _must_view_prompt
+
+    text = _must_view_prompt([{"material_id": "m1", "relative_path": "a.png"}])
+    assert "a.png" in text
+    assert "material_id=m1" in text
+    assert "read" in text
+
+
+def test_after_model_passes_once_every_material_is_reported():
+    context = {"must_view_materials": TWO_IMAGES}
+    state = _reports_state(context, {"m1": True, "m2": True})
+    assert MustViewImagesMiddleware().after_model(state, _Runtime(context)) is None
+
+
+def test_after_model_refuses_to_end_with_missing_report():
+    context = {"must_view_materials": TWO_IMAGES}
+    state = _reports_state(context, {"m1": True})
+    result = MustViewImagesMiddleware().after_model(state, _Runtime(context))
+    assert result["jump_to"] == "model"
+    assert any("b.png" in str(message.content) for message in result["messages"])
+
+
+def test_after_model_ignores_runs_without_must_view():
+    context = {"must_view_materials": []}
+    state = _reports_state(context, None)
+    assert MustViewImagesMiddleware().after_model(state, _Runtime(context)) is None
+
+
+def test_after_model_escalates_when_model_reports_unread(monkeypatch):
+    import focus.agents.must_view as must_view
+
+    seen: dict = {}
+    monkeypatch.setattr(must_view, "interrupt", lambda payload: seen.update(payload))
+    context = {"must_view_materials": TWO_IMAGES}
+    state = _reports_state(context, {"m1": True, "m2": False})
+    MustViewImagesMiddleware().after_model(state, _Runtime(context))
+    assert seen["type"] == "must_view_report"
+    assert seen["unread"] == ["m2"]
+
+
+def test_after_model_escalates_after_reminder_limit(monkeypatch):
+    import focus.agents.must_view as must_view
+
+    seen: dict = {}
+    monkeypatch.setattr(must_view, "interrupt", lambda payload: seen.update(payload))
+    context = {"must_view_materials": TWO_IMAGES}
+    state = _reports_state(context, {"m1": True}, reminders=must_view._MAX_REMINDERS)
+    MustViewImagesMiddleware().after_model(state, _Runtime(context))
+    assert seen["missing"] == ["m2"]

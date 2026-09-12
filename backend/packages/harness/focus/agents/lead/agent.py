@@ -14,6 +14,9 @@
         system_prompt: str | None — 自定义系统提示词，非 None 时跳过技能扫描与模板生成
         middlewares: list[AgentMiddleware] | None — 自定义中间件链，非 None 时覆盖默认构建
         additional_middlewares: list[AgentMiddleware] | None — 追加到默认或自定义链末尾的中间件
+        response_format: Any — 结构化输出 schema（Pydantic 模型）；None 表示不要求结构化输出。
+            DeepSeek 无 json_schema，LangChain 会回落 ToolStrategy（以工具调用承载），
+            因此结构化载荷在收尾时产出，正文仍可流式输出
 
 输出:
     CompiledStateGraph — langchain.agents.create_agent() 产出的可执行 agent graph
@@ -42,6 +45,7 @@
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
@@ -160,6 +164,7 @@ async def make_lead_agent(
     additional_middlewares: list[AgentMiddleware] | None = None,
     app_config: AppConfig | None = None,
     middleware_skill_names: frozenset[str] | None = None,
+    response_format: Any = None,
 ) -> CompiledStateGraph:
     # (1) 创建模型
     model = create_chat_model(name=model_name, app_config=app_config)
@@ -221,4 +226,5 @@ async def make_lead_agent(
         middleware=middleware,
         system_prompt=system_prompt,
         state_schema=LeadAgentState,
+        response_format=response_format,
     )

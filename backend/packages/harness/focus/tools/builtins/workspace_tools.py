@@ -124,8 +124,7 @@ def read_file(path: str, runtime: ToolRuntime) -> str:
     raw = target.read_bytes()
     if is_image_name(target.name):
         raise ToolException(
-            f"{target.name} 是图片材料，无法按文本读取。它已登记在任务材料区；"
-            "若需要模型查看该图片，请在本轮勾选「本轮必须看」，图片会随本轮请求一并提供"
+            f"{target.name} 是图片材料，无法按文本读取；其内容只能由具备图像输入能力的模型处理"
         )
     if _looks_binary(raw):
         raise ToolException(
