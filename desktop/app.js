@@ -185,8 +185,6 @@ let memoryHydrationSequence = 0;
 let contextTreeRequestSequence = 0;
 let panelResizeFrame = null;
 let patrolAvatarController = null;
-const pluginStyleAssets = new Set();
-const pluginScriptAssets = new Map();
 
 function shellLayoutDefaults() {
   return {
@@ -464,22 +462,105 @@ async function api(path, options = {}) {
   return response.json();
 }
 
-function loadPluginScript(src) {
-  if (pluginScriptAssets.has(src)) return pluginScriptAssets.get(src);
-  const loading = new Promise(resolve => {
-    const script = document.createElement("script");
-    script.src = src;
-    script.onload = resolve;
-    script.onerror = () => {
-      pluginScriptAssets.delete(src);
-      script.remove();
-      console.error("插件脚本加载失败:", src);
-      resolve();
-    };
-    document.head.append(script);
-  });
-  pluginScriptAssets.set(src, loading);
-  return loading;
+// === 插件前端资源宿主：可安装，也可就地卸载 ===
+
+// 卸载是可逆的：脚本已执行留下的模块级全局无法撤回，但插件对宿主的全部接入点
+// （视图注册表条目、<script>/<link> 节点）都能精确移除，因此无需重载整页。
+function createPluginAssetHost(headDocument, registry) {
+  const pluginRecords = new Map();
+  const scriptLoads = new Map();
+
+  function cssHref(pluginName, file) {
+    return `/plugins/${encodeURIComponent(pluginName)}/desktop/${encodeURIComponent(file)}`;
+  }
+
+  function scriptSrc(pluginName, file) {
+    return `/plugins/${encodeURIComponent(pluginName)}/desktop/${encodeURIComponent(file)}`;
+  }
+
+  // 脚本按 src 记忆化：同一 src 只执行一次。卸载时删除条目，使重新启用能真正重新执行。
+  function loadScript(src) {
+    if (scriptLoads.has(src)) return scriptLoads.get(src);
+    const loading = new Promise(resolve => {
+      const script = headDocument.createElement("script");
+      script.src = src;
+      script.onload = resolve;
+      script.onerror = () => {
+        scriptLoads.delete(src);
+        script.remove();
+        console.error("插件脚本加载失败:", src);
+        resolve();
+      };
+      headDocument.head.append(script);
+    });
+    scriptLoads.set(src, loading);
+    return loading;
+  }
+
+  async function install(plugin) {
+    if (pluginRecords.has(plugin.name)) return;
+    const record = { styles: [], scripts: [], views: [] };
+    pluginRecords.set(plugin.name, record);
+    const files = plugin.desktop_assets || [];
+    // 样式先于脚本：视图渲染时其规则已就位，避免先渲染后跳版
+    for (const file of files.filter(name => name.endsWith(".css"))) {
+      const link = headDocument.createElement("link");
+      link.rel = "stylesheet";
+      link.href = cssHref(plugin.name, file);
+      link.onerror = () => {
+        link.remove();
+        record.styles = record.styles.filter(node => node !== link);
+        console.error("插件样式加载失败:", link.href);
+      };
+      headDocument.head.append(link);
+      record.styles.push(link);
+    }
+    const jsFiles = files
+      .filter(name => name.endsWith(".js"))
+      .sort((a, b) => (a === "entry.js") - (b === "entry.js"));
+    for (const file of jsFiles) {
+      const before = new Set(Object.keys(registry));
+      await loadScript(scriptSrc(plugin.name, file));
+      // 该脚本新增的视图条目即本插件所注册，卸载时按此精确移除
+      for (const name of Object.keys(registry)) {
+        if (!before.has(name)) record.views.push(name);
+      }
+      record.scripts.push(scriptSrc(plugin.name, file));
+    }
+  }
+
+  function uninstall(pluginName) {
+    const record = pluginRecords.get(pluginName);
+    if (!record) return;
+    for (const link of record.styles) link.remove();
+    for (const src of record.scripts) {
+      const script = headDocument.querySelector(`script[src="${src}"]`);
+      if (script) script.remove();
+      scriptLoads.delete(src);
+    }
+    for (const viewName of record.views) delete registry[viewName];
+    pluginRecords.delete(pluginName);
+  }
+
+  async function reconcile(plugins) {
+    const activeNames = plugins
+      .filter(plugin => plugin.status === "active")
+      .map(plugin => plugin.name);
+    for (const name of [...pluginRecords.keys()]) {
+      if (!activeNames.includes(name)) uninstall(name);
+    }
+    for (const plugin of plugins) {
+      if (plugin.status === "active") await install(plugin);
+    }
+  }
+
+  return { reconcile, uninstall, installed: () => [...pluginRecords.keys()] };
+}
+
+const pluginAssets = createPluginAssetHost(document, pluginViews);
+
+function applyPluginAssets(plugins) {
+  return pluginAssets.reconcile(plugins);
 }
 
 function cancelPendingViewRequests() {
@@ -490,35 +571,13 @@ function cancelPendingViewRequests() {
 }
 
 async function hydratePluginAssets(bootstrapPlugins = null) {
-  // f18: 按启用插件清单注入前端资源(css 并行、js 串行;entry.js 固定最后执行,
-  // 保证插件视图/打开器注册时其依赖模块已加载);失败不阻塞桌面
+  // f18: 按启用插件清单对账前端资源(css 先于 js;entry.js 固定最后执行,
+  // 保证插件视图/打开器注册时其依赖模块已加载);失败不阻塞桌面。
+  // 与「只追加」不同，这里会卸载本轮不再生效的插件，因此启停无需重载页面。
   try {
     const data = bootstrapPlugins == null
       ? await api("/desktop/api/plugins") : { plugins: bootstrapPlugins };
-    const active = (data.plugins || []).filter(plugin => plugin.status === "active");
-    for (const plugin of active) {
-      const files = plugin.desktop_assets || [];
-      for (const file of files.filter(name => name.endsWith(".css"))) {
-        const href = `/plugins/${encodeURIComponent(plugin.name)}/desktop/${encodeURIComponent(file)}`;
-        if (pluginStyleAssets.has(href)) continue;
-        pluginStyleAssets.add(href);
-        const link = document.createElement("link");
-        link.rel = "stylesheet";
-        link.href = href;
-        link.onerror = () => {
-          pluginStyleAssets.delete(href);
-          link.remove();
-          console.error("插件样式加载失败:", link.href);
-        };
-        document.head.append(link);
-      }
-      const jsFiles = files
-        .filter(name => name.endsWith(".js"))
-        .sort((a, b) => (a === "entry.js") - (b === "entry.js"));
-      for (const file of jsFiles) {
-        await loadPluginScript(`/plugins/${encodeURIComponent(plugin.name)}/desktop/${encodeURIComponent(file)}`);
-      }
-    }
+    await applyPluginAssets(data.plugins || []);
   } catch (error) {
     console.error("插件前端资源注入失败:", error);
     setStatus(`插件资源注入失败: ${error.message}`, true);
@@ -4889,15 +4948,20 @@ async function handleDocumentClick(event) {
     const enabled = button.dataset.pluginEnabled === "true";
     button.disabled = true;
     try {
-      await api(`/desktop/api/plugins/${encodeURIComponent(name)}/enabled`, {
+      const data = await api(`/desktop/api/plugins/${encodeURIComponent(name)}/enabled`, {
         method: "PUT", body: JSON.stringify({ enabled }),
       });
-      setStatus(enabled ? `已启用 ${name}，正在重载界面…` : `已停用 ${name}，正在重载界面…`);
-      // 插件前端资源一旦注入就无法从渲染器卸载（脚本已执行、视图已注册），
-      // 因此重载整页让注入集合与后端状态严格一致，而不是在页面上留下已停用插件的视图。
-      window.location.reload();
-      return;
-    } catch (error) { button.disabled = false; return setStatus(error.message, true); }
+      const plugins = data.plugins || [];
+      // 就地卸载/安装其前端资源与视图注册，保持当前所在视图不变
+      await applyPluginAssets(plugins);
+      state.plugins = { ...state.plugins, plugins, interfaces: data.interfaces || {} };
+      if (!plugins.some(item => item.name === state.plugins.selectedName)) {
+        state.plugins.selectedName = plugins[0]?.name || null;
+      }
+      setStatus(enabled ? `已启用 ${name}` : `已停用 ${name}`);
+      return renderPlugins();
+    } catch (error) { return setStatus(error.message, true); }
+    finally { button.disabled = false; }
   }
   if (action === "filter-plugins") {
     state.plugins.filter = button.dataset.pluginStatus || "all";

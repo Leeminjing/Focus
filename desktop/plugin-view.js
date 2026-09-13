@@ -69,14 +69,15 @@
     const disabledNote = plugin.status === "disabled"
       ? `<span class="plugin-reason">已被本机停用，不参与能力注入</span>`
       : "";
-    // 卡片本体与启停按钮必须是兄弟节点：button 不可嵌套 button
+    // 卡片本体与启停按钮必须是兄弟节点（button 不可嵌套 button）；
+    // 按钮独占卡片底行，避免与状态徽章在同一行争宽。
     return `<div class="plugin-card-shell${selected ? " is-selected" : ""}">
       <button type="button" class="plugin-card status-${escapeHtml(plugin.status)}" data-action="select-plugin" data-plugin-name="${escapeHtml(plugin.name)}" aria-pressed="${selected}">
         <span class="plugin-card-heading"><span><strong>${escapeHtml(plugin.name)}</strong><small>v${escapeHtml(plugin.version)}</small></span><span class="ui-badge is-${STATUS_TONES[plugin.status] || "neutral"}">${STATUS_BADGES[plugin.status] || escapeHtml(plugin.status)}</span></span>
         <span class="plugin-card-capabilities">${injected}</span>
         ${missing}${conflict}${reason}${disabledNote}
       </button>
-      ${renderToggle(plugin, "plugin-card-toggle")}
+      ${plugin.can_toggle ? `<span class="plugin-card-actions">${renderToggle(plugin)}</span>` : ""}
     </div>`;
   }
 

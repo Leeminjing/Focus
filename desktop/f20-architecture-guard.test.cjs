@@ -148,9 +148,23 @@ assert.match(renderer, /openAgentDetails\(agentId\)[\s\S]*openInspector\("agents
 assert.match(renderer, /location\.origin/);
 assert.match(renderer, /fetch\(`\$\{runtime\.apiBase\}\$\{path\}`/);
 assert.match(renderer, /new EventSource\(`\$\{runtime\.apiBase\}\/desktop\/api\/runs\//);
-assert.match(renderer, /script\.onerror = \(\) => \{[\s\S]*pluginScriptAssets\.delete\(src\)[\s\S]*console\.error\("插件脚本加载失败:"[\s\S]*resolve\(\)/);
-assert.match(renderer, /link\.onerror = \(\) => \{[\s\S]*pluginStyleAssets\.delete\(href\)[\s\S]*console\.error\("插件样式加载失败:"/);
-assert.match(renderer, /filter\(plugin => plugin\.status === "active"\)/);
+// 插件前端资源宿主：加载失败可见且不阻断桌面，样式先于脚本，entry.js 最后执行，
+// 只注入已生效插件，且能就地卸载（启停无需重载页面）。
+const pluginHost = renderer.slice(
+  renderer.indexOf("function createPluginAssetHost"),
+  renderer.indexOf("function cancelPendingViewRequests"),
+);
+assert.ok(pluginHost, "应能定位插件前端资源宿主");
+assert.match(pluginHost, /console\.error\("插件脚本加载失败:"/);
+assert.match(pluginHost, /console\.error\("插件样式加载失败:"/);
+assert.match(pluginHost, /name\.endsWith\("\.css"\)/);
+assert.match(pluginHost, /name\.endsWith\("\.js"\)/);
+assert.match(pluginHost, /\(a === "entry\.js"\) - \(b === "entry\.js"\)/);
+assert.match(pluginHost, /plugin\.status === "active"/);
+// 卸载：移除样式与脚本节点、清除脚本记忆化、删除本插件注册的视图
+assert.match(pluginHost, /function uninstall\(pluginName\)[\s\S]*link\.remove\(\)[\s\S]*script\.remove\(\)[\s\S]*scriptLoads\.delete\(src\)[\s\S]*delete registry\[viewName\]/);
+assert.match(pluginHost, /function reconcile\(plugins\)[\s\S]*uninstall\(name\)/);
+assert.doesNotMatch(renderer, /location\.reload\(\)/, "插件启停不得重载整页");
 assert.match(html, /<script src="\.\/conversation-events\.js"><\/script>[\s\S]*<script src="\.\/context-curator-presentation\.js\?v=20260906a"><\/script>[\s\S]*<script src="\.\/patrol-presence\.js\?v=20260905b"><\/script>[\s\S]*<script src="\.\/patrol-avatar\.js\?v=20260905b"><\/script>[\s\S]*<script src="\.\/app\.js\?v=20260912a"><\/script>/);
 assert.match(html, /<link rel="stylesheet" href="\.\/styles\/patrol-avatar\.css\?v=20260905b">/);
 assert.match(renderer, /patrol_avatar_positions/);
