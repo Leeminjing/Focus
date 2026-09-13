@@ -1,7 +1,7 @@
 /* 本文件对外提供任务、材料、对话、Composer 与其它工作流视图的布局样式。输入为 app.js
-   输出的语义 class 和公共设计 token，输出为可滚动工作区、可折叠材料组、常驻逐轮材料托盘
+   输出的语义 class 和公共设计 token，输出为可滚动工作区、可折叠材料组、材料项内逐轮备注框
    与历史材料卡片；工作流先应用通用视图骨架，再为具体工作流补充必要布局。示例：
-   .run-material-tray 将折叠材料区中的当前选择固定呈现在 Composer 上方。 */
+   .run-material-note 把本轮备注输入框就近排在其所属材料条目内。 */
 .focus-view,
 .map-view,
 .draft-view,
@@ -251,13 +251,8 @@
 
 .composer-context > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-context .text-button { min-height: 28px; margin-left: auto; }
-.run-material-tray { display: grid; max-height: 190px; gap: var(--space-2); padding: var(--space-2); overflow: auto; border-bottom: 1px solid var(--border-subtle); background: var(--surface-subtle); }
-.run-material-tray > header,
-.run-material-note > span { display: flex; min-width: 0; align-items: center; gap: var(--space-2); }
-.run-material-tray > header .ui-badge { margin-left: auto; }
-.run-material-note { display: grid; gap: var(--space-1); padding: var(--space-2); border-radius: var(--radius-control); background: var(--surface-base); }
-.run-material-note strong { min-width: 0; flex: 1; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.run-material-note textarea { min-height: 42px; resize: vertical; font-size: 11px; }
+.run-material-note { display: block; }
+.run-material-note textarea { width: 100%; min-height: 42px; resize: vertical; font-size: 11px; }
 .composer-shell .composer { border: 0; border-radius: 0; box-shadow: none; }
 .composer-shell .composer:focus-within { border-color: transparent; box-shadow: var(--focus-ring); }
 .composer-shell .send-button { min-height: 36px; padding-inline: var(--space-4); border-color: var(--accent-primary); background: var(--accent-primary); }

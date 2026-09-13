@@ -963,16 +963,12 @@ function renderInterruptButton(detail) {
   return `<button class="text-button danger" data-action="interrupt-main-run" data-run-id="${run.run_id}"${state.mainInterrupting ? " disabled" : ""}>${uiText("focus.interrupt", "中断")}</button>`;
 }
 
-function renderRunMaterialTray(taskId) {
-  const selection = materialSelection(taskId);
-  if (!selection.bindings.length) return "";
-  const byId = new Map((state.materials.get(taskId) || []).map(item => [item.material_id, item]));
-  return `<section class="run-material-tray" aria-label="本轮材料"><header><strong>本轮材料</strong><span class="ui-badge">${selection.bindings.length}</span></header>${selection.bindings.map(binding => {
-    const material = byId.get(binding.materialId);
-    if (!material) return "";
-    const required = selection.requiredImageIds.includes(binding.materialId);
-    return `<label class="run-material-note" data-run-material-id="${escapeHtml(binding.materialId)}"><span><strong>${escapeHtml(material.relative_path)}</strong>${material.is_image ? `<button type="button" class="text-button must-view-toggle" data-action="toggle-image-required">${required ? "☑" : "☐"} 必须看</button>` : ""}<button type="button" class="text-button" data-action="toggle-run-material">移除</button></span><textarea data-field="run-material-note" rows="2" placeholder="给这份材料添加本轮备注，可留空">${escapeHtml(binding.note)}</textarea></label>`;
-  }).join("")}</section>`;
+function renderRunMaterialNote(materialId) {
+  // 备注属于本轮材料绑定本身，只在此处渲染一次并由所属材料条目就近承载；未选材料返回空串，
+  // 取消勾选只隐藏输入框，备注草稿仍由 run-material-picker 按材料 ID 保留。
+  const binding = materialSelection().bindings.find(item => item.materialId === materialId);
+  if (!binding) return "";
+  return `<label class="run-material-note"><textarea data-field="run-material-note" rows="2" draggable="false" placeholder="给这份材料添加本轮备注，可留空">${escapeHtml(binding.note)}</textarea></label>`;
 }
 
 function renderMustViewRecovery(detail) {
@@ -1088,7 +1084,6 @@ function renderFocus(task = activeTask()) {
         <div class="focus-bottom">
           <div class="composer-shell">
             <div class="composer-context"><span class="ui-badge is-active">${uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
-            ${renderRunMaterialTray(task.task_id)}
             <div class="composer">
               ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(detail.ui_state?.input || "")}</textarea>`, true)}
               <div class="composer-actions"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div>
@@ -1750,6 +1745,7 @@ function renderImageMaterial(material) {
       <button class="text-button" data-action="toggle-material" aria-expanded="${open}">${open ? "收起" : "管理"}</button>
     </header>
     <div class="material-policy-row"><button class="text-button must-view-toggle" data-action="toggle-run-material" aria-pressed="${attached}"${reason ? " disabled" : ""}>${attached ? "☑" : "☐"} 本轮使用</button><button class="text-button must-view-toggle" data-action="toggle-image-required" aria-pressed="${required}"${!attached || reason ? " disabled" : ""}>${required ? "☑" : "☐"} 必须看</button>${reason ? `<span class="muted tiny">${escapeHtml(reason)}</span>` : ""}</div>
+    ${renderRunMaterialNote(material.material_id)}
     ${open ? `<div class="material-editor">
       <div class="material-source-meta"><span>来源</span><code>${escapeHtml(material.relative_path)}</code></div>
       <span class="material-actions"><button class="text-button" data-action="move-material-group">移动分组</button>${material.custom_group_id ? '<button class="text-button" data-action="restore-auto-group">恢复自动归类</button>' : ""}<button class="text-button danger" data-action="delete-material">删除</button></span>${renderMaterialUsageHistory(material.material_id)}</div>` : ""}
@@ -1771,6 +1767,7 @@ function renderMaterial(material) {
       <button class="text-button" data-action="toggle-material" aria-expanded="${open}">${open ? "收起" : "管理"}</button>
     </header>
     <div class="material-policy-row"><button class="text-button must-view-toggle" data-action="toggle-run-material" aria-pressed="${selected}"${unavailable ? " disabled" : ""}>${selected ? "☑" : "☐"} 本轮使用</button><span class="ui-badge">${reading}</span><span class="ui-badge${material.instruction_mode === "strict" ? " is-warning" : ""}">${instruction}</span><span class="ui-badge${material.retention === "irreplaceable" ? " is-success" : ""}">${retention}</span>${unavailable ? '<span class="muted tiny">内容不可用</span>' : ""}</div>
+    ${renderRunMaterialNote(material.material_id)}
     ${material.needs_confirmation ? `<div class="ui-notice is-warning"><strong>检测到外部删除</strong><span>Focus 已恢复文件，请从版本记录确认内容。</span></div>` : ""}
     ${open ? `<div class="material-editor">
       <label>阅读方式<select data-field="reading_mode"><option value="full" ${material.reading_mode === "full" ? "selected" : ""}>完整阅读</option><option value="rough" ${material.reading_mode === "rough" ? "selected" : ""}>粗略阅读</option></select></label>
@@ -5198,15 +5195,6 @@ async function handleDocumentClick(event) {
     draft.history_messages = draft.history_messages.filter((item, itemIndex) => itemIndex !== index && !callIds.has(item.tool_call_id) && !(item.tool_calls || []).some(call => callIds.has(call.id)));
     renderDraft(); scheduleDraftSave(); return;
   }
-  const runMaterialRow = button.closest("[data-run-material-id]");
-  if (runMaterialRow && action === "toggle-run-material") {
-    toggleRunMaterial(runMaterialRow.dataset.runMaterialId);
-    return renderFocus();
-  }
-  if (runMaterialRow && action === "toggle-image-required") {
-    await toggleImageRequired(runMaterialRow.dataset.runMaterialId);
-    return renderFocus();
-  }
   if (action === "set-material-grouping") {
     const detail = state.details.get(state.activeTaskId);
     detail.ui_state = { ...(detail.ui_state || {}), material_grouping_mode: button.dataset.mode };
@@ -5246,6 +5234,9 @@ document.addEventListener("click", event => {
 });
 
 document.addEventListener("dragstart", event => {
+  // 材料行可沿整行拖放重排；起点落在行内文本编辑控件（备注 textarea 等）时属于文本编辑手势，
+  // 不得转成材料拖放。刻意不排除 button：材料名称摘要本身就是 button，排除它会让重排无处可抓。
+  if (event.target.closest?.("input, textarea, select, [contenteditable]")) return;
   const row = event.target.closest?.("[data-material-id]");
   if (!row || !event.dataTransfer) return;
   event.dataTransfer.effectAllowed = "move";
@@ -5273,8 +5264,8 @@ document.addEventListener("drop", event => {
 document.addEventListener("input", event => {
   if (event.target.id === "mainInput") updateAtHighlight(event.target);
   if (event.target.matches('[data-field="run-material-note"]')) {
-    const row = event.target.closest("[data-run-material-id]");
-    if (row) updateRunMaterialNote(row.dataset.runMaterialId, event.target.value);
+    const row = event.target.closest("[data-material-id]");
+    if (row) updateRunMaterialNote(row.dataset.materialId, event.target.value);
   }
   if (event.target.matches("[data-skill-input]")) updateSkillMenu(event.target, true);
   if (event.target.matches("[data-draft-field],[data-message-field],[data-equipment],[data-permission],[data-curation-policy]")) scheduleDraftSave();
