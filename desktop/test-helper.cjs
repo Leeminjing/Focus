@@ -24,6 +24,8 @@ const BASE_GLOBALS = {
   location: { origin: "http://localhost", protocol: "http:" },
   requestAnimationFrame() {},
   setTimeout() {},
+  // 预览列用 Blob 地址承载按路径读到的字节，构造与回收都经 URL 这两个方法
+  URL: { createObjectURL: () => "blob:test", revokeObjectURL() {} },
   window: {},
 };
 

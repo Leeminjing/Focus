@@ -142,6 +142,34 @@ async function run() {
       if (kind.empty) failures.push(`${label} ${id} 出现空白预览区`);
       if (kind.mounted < 1) failures.push(`${label} ${id} 未挂载任何预览节点`);
     }
+
+    // 未登记为材料、且位于工作区之外的绝对路径同样必须可预览
+    const outside = await win.webContents.executeJavaScript(`(async () => {
+      resetFilePreviews();
+      render();
+      openFilePreview({ path: "C:/outside/workspace/notes/outside.md", relative_path: "notes/outside.md" });
+      await new Promise(resolve => setTimeout(resolve, 150));
+      const body = document.querySelector("#filePreviewBody");
+      return {
+        hidden: document.querySelector(".file-preview").hidden,
+        head: body.querySelector(".file-preview-head")?.textContent || "",
+        text: body.querySelector(".file-preview-text")?.textContent || "",
+        tabs: [...document.querySelectorAll(".file-preview-tab-label")].map(node => node.textContent),
+      };
+    })()`);
+    if (outside.hidden) failures.push(`${label} 工作区之外的绝对路径未能打开预览`);
+    if (!outside.head.includes("outside.md")) failures.push(`${label} 未呈现工作区之外文件的名称：${outside.head}`);
+    if (!outside.text.includes("按路径预览的正文")) failures.push(`${label} 未呈现按路径读取的正文：${outside.text}`);
+    if (!outside.tabs.some(name => name.includes("outside.md"))) failures.push(`${label} 未生成该文件的标签页`);
+
+    // 未登记为材料的文件卡片必须是可点按钮，而不是不可点占位
+    const card = await win.webContents.executeJavaScript(`(() => {
+      const task = state.tasks.find(item => item.task_id === state.activeTaskId) || state.tasks[0];
+      state.materials.set(task.task_id, []);
+      const markup = renderFileCard({ filename: "notes/unregistered.md", size: 12 }, task);
+      return { markup, isButton: markup.startsWith("<button"), plain: markup.includes("is-plain") };
+    })()`);
+    if (!card.isButton || card.plain) failures.push(`${label} 未登记文件卡片仍不是可点按钮：${card.markup.slice(0, 80)}`);
   }
 
   win.destroy();

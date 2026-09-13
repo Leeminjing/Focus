@@ -1,7 +1,13 @@
 /*
  * 本文件启动 Focus 桌面运行时。输入为本机 Python/Git/Docker 能力、品牌资源与环境变量，输出为
  * 本地启动动画、单一动态 loopback FastAPI 及同源隔离主窗口；失败时原子切换到带品牌的说明窗口。
- * 同时持有渲染器不可直接触达的两个边界：工作区内文件的「在系统中打开」，以及另存为写盘。
+ * 同时持有渲染器不可直接触达的三个边界：工作区内文件的「在系统中打开」、**任意路径的预览解析**
+ * 与另存为写盘。
+ *
+ * 关于任意路径预览：`resolvePreviewPath` 有意不做工作区包含性检查——按需求工作区之外的文件
+ * 同样必须可预览。它只保证目标是可读的普通文件并排除应用数据目录。该能力只经 Electron IPC
+ * 提供，因此调用者必须已经在本渲染器进程内；若改由后端 HTTP 暴露，就会成为任何本机进程都能
+ * 调用的任意文件读接口。真正的字节读取发生在渲染器（`fetch` 绝对路径），主进程只负责判定。
  *
  * 单实例闸门在 app.whenReady 之前取得，且不通过即退出：启动链路会拉起 uvicorn、docker compose
  * 与 alembic 迁移，若允许第二个实例进入，将重复起后端、重复迁移并再开一整套窗口。第二个实例的
@@ -347,6 +353,27 @@ ipcMain.handle("focus:open-path", async (_event, filePath, workspacePath) => {
   if (failure) throw new Error(failure);
   return true;
 });
+
+// 预览任意文件：**有意不做工作区包含性检查**——按需求，工作区之外的文件同样必须可预览。
+// 因此这里只保证「是个能读的普通文件」，并排除应用自身的数据目录（其中有会话令牌、
+// 数据库配置与插件偏好，预览没有理由暴露它们）。
+// 能力边界：这条按路径读取只经 Electron IPC 提供，绝不是绑定 loopback 的 HTTP 路由——
+// 后者会成为任何本机进程都能调用的任意文件读接口。
+function resolvePreviewPath(filePath) {
+  if (typeof filePath !== "string" || !filePath) return { ok: false, reason: "路径为空" };
+  if (!path.isAbsolute(filePath)) return { ok: false, reason: "仅接受绝对路径" };
+  const resolved = path.resolve(filePath);
+  if (resolved.startsWith(path.resolve(app.getPath("userData")) + path.sep)) {
+    return { ok: false, reason: "应用数据目录不可预览" };
+  }
+  const stat = fs.statSync(resolved, { throwIfNoEntry: false });
+  if (!stat) return { ok: false, reason: "文件不存在" };
+  if (stat.isDirectory()) return { ok: false, reason: "该路径是目录" };
+  if (!stat.isFile()) return { ok: false, reason: "该路径不是普通文件" };
+  return { ok: true, path: resolved, size: stat.size };
+}
+
+ipcMain.handle("focus:resolve-preview-path", async (_event, filePath) => resolvePreviewPath(filePath));
 
 // 另存为：由主进程弹出保存对话框并写盘，渲染器既拿不到目标路径也不接触文件系统。
 ipcMain.handle("focus:save-bytes", async (event, suggestedName, bytes) => {

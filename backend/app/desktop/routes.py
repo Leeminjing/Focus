@@ -363,11 +363,19 @@ async def upload_material(task_id: str, request: Request, file: UploadFile = Fil
 
 @desktop_router.get("/materials/{material_id}/content")
 async def material_content(material_id: str, request: Request) -> Response:
-    """直接回吐材料原始字节，供前端 <img> 展示图片材料与压缩块缩略图。"""
+    """回吐材料原始字节，供前端内联呈现图片、PDF 与其它载体。
+
+    显式声明 inline：个别平台对无法识别的类型会按附件处置（弹「另存为」），
+    而预览列需要的是内联呈现。
+    """
     media_type, data = await request.app.state.desktop_service.read_material_content(
         material_id
     )
-    return Response(content=data, media_type=media_type)
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={"Content-Disposition": "inline"},
+    )
 
 
 @desktop_router.get("/materials/{material_id}/preview")

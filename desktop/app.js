@@ -4,6 +4,11 @@
  * 常驻会话 Patrol 小兵，以及对话/Context/Agent/Commitment/压缩/插件等视图；
  * 工作流在任务列表替换时统一归一化活动 Context，并通过单一异步事件边界更新宿主挂载点及保留
  * 任务级草稿、滚动、化身位置、预览列标签页与运行状态。
+ *
+ * 文件预览列的职责边界：占位由 syncFilePreviewVisibility 随视图派生（在 render 的所有分支之前）；
+ * 正文按文件缓存于 contentByFile；已登记材料经材料标识入口取内容，未登记与工作区之外的文件经
+ * 主进程 focus:resolve-preview-path 放行后由渲染器取字节并解码——文本解码必须在渲染器完成，
+ * 因为主进程所用的 Node TextDecoder 不支持 gb18030，而浏览器支持。
  */
 "use strict";
 
@@ -138,8 +143,13 @@ const state = {
   plugins: { plugins: [], interfaces: {}, traces: [], filter: "all", selectedName: null },
   memory: { memories: [], selectedId: null, composing: false, draft: null, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], textSelection: "", textMessageId: null, textRange: null, editorRatio: 0.5, sourceRatio: 0.5, contentMode: "complete", segments: [], expandedGroups: [], mergeMode: false, selectedSourcesForMerge: [], sessionScrollTop: 0 },
   inspector: { open: window.innerWidth > 1100, tab: "context", returnFocus: null },
-  // 文件预览列：shelf 是标签页集合，loadedId 记录已取到内容的文件，避免每帧渲染都重新请求
-  filePreview: { shelf: filePreview.createShelf(), loadedId: null, content: null },
+  // 文件预览列：shelf 是标签页集合，contentByFile 按文件缓存已取得的内容，
+  // 使标签页之间来回切换不重复请求；objectUrls 统一持有并回收 Blob 地址。
+  filePreview: {
+    shelf: filePreview.createShelf(),
+    contentByFile: new Map(),
+    objectUrls: filePreview.createObjectUrls(URL),
+  },
   shellLayout: normalizeShellLayout(readShellLayout(), window.innerWidth),
   zoomLevel: normalizeZoomLevel(localStorage.getItem(ZOOM_LEVEL_KEY)),
 };
@@ -154,6 +164,7 @@ const dialog = document.querySelector("#taskDialog");
 const settingsDialog = document.querySelector("#settingsDialog");
 const filePreviewColumn = document.querySelector("#filePreview");
 const filePreviewTabs = document.querySelector("#filePreviewTabs");
+const filePreviewBody = document.querySelector("#filePreviewBody");
 const skillPicker = window.FocusSkillPicker;
 const contextEditor = window.FocusContextEditor;
 const compressionPanel = window.FocusCompressionPanel;
@@ -721,6 +732,8 @@ async function hydrateActive(taskId = state.activeTaskId) {
 function render() {
   document.body.dataset.view = state.view;
   renderShellChrome();
+  // 预览列占位与视图同源派生：必须在这里发生，而不是在会话页分支内
+  syncFilePreviewVisibility();
   if (!state.tasks.length) {
     app.replaceChildren(document.querySelector("#emptyTemplate").content.cloneNode(true));
     interfaceI18n.apply(app);
@@ -1136,89 +1149,169 @@ function renderFocus(task = activeTask()) {
 
 // === 文件预览列：宿主自有能力，不依赖任何插件 ===
 
-// 预览列只在会话页且已打开文件时占位；离开会话页不销毁标签页，切回来仍可恢复。
-function renderFilePreview() {
-  if (!filePreviewColumn) return;
+// 预览项的文件身份：与 file-preview.js 的标签页身份同序（材料标识 → 相对路径 → 路径），
+// 因此缓存键、标签页去重与「谁是当前文件」三处判断用的是同一个身份。
+function previewKeyOf(item) {
+  if (!item) return "";
+  return String(item.material_id || item.relative_path || item.path || "");
+}
+
+// 预览列的占位只由「当前视图 + 是否已打开文件」决定，因此在 render 的所有分支之前统一派生，
+// 不依赖会话页这条代码路径——否则切到其它视图后占位会停留在旧值。
+function syncFilePreviewVisibility() {
+  if (!filePreviewColumn) return false;
   const open = state.view === "focus" && !state.filePreview.shelf.isEmpty();
   filePreviewColumn.hidden = !open;
+  if (!open) {
+    // 列已不占位，正文不该继续留着上一个文件的内容
+    clearChildren(filePreviewTabs);
+    clearChildren(filePreviewBody);
+  }
   syncShellResizerVisibility();
-  if (!open) return;
+  return open;
+}
+
+// 替换容器全部子节点；容器不存在或测试替身未实现该方法时安全跳过。
+function clearChildren(node) {
+  if (typeof node?.replaceChildren === "function") node.replaceChildren();
+}
+
+// 会话页内的预览列渲染：占位由 syncFilePreviewVisibility 决定，这里只负责标签页与正文。
+function renderFilePreview() {
+  if (!filePreviewColumn || !syncFilePreviewVisibility()) return;
   filePreviewTabs.innerHTML = state.filePreview.shelf.list().map(renderFilePreviewTab).join("");
   renderFilePreviewBody();
 }
 
 function renderFilePreviewTab(item) {
-  const current = state.filePreview.shelf.active();
-  const isActive = current?.material_id === item.material_id;
+  const key = previewKeyOf(item);
+  const isActive = previewKeyOf(state.filePreview.shelf.active()) === key;
+  const label = fileNameFromLinkHref("", item.relative_path || item.path || "");
   return `<span class="file-preview-tab${isActive ? " is-active" : ""}">
-    <button type="button" class="file-preview-tab-label" role="tab" aria-selected="${isActive}" data-action="activate-file-preview" data-material-id="${escapeHtml(item.material_id || "")}">${escapeHtml(fileNameFromLinkHref("", item.relative_path || item.path || ""))}</button>
-    <button type="button" class="file-preview-tab-close" data-action="close-file-preview" data-material-id="${escapeHtml(item.material_id || "")}" aria-label="关闭预览">×</button>
+    <button type="button" class="file-preview-tab-label" role="tab" aria-selected="${isActive}" data-action="activate-file-preview" data-preview-key="${escapeHtml(key)}">${escapeHtml(label)}</button>
+    <button type="button" class="file-preview-tab-close" data-action="close-file-preview" data-preview-key="${escapeHtml(key)}" aria-label="关闭预览">×</button>
   </span>`;
 }
 
-// 图片与 PDF 直接指向字节流接口，文本类需要先取回正文再渲染。
+// 已登记材料：图片与 PDF 指向按材料标识的字节流接口，文本类按材料标识取正文。
+// 未登记文件：没有材料标识，改走按路径读取（见 readPathPreview）。
 function previewContentOf(item) {
+  if (!item.material_id) return null;
   if (item.kind === "image" || item.kind === "pdf") {
-    return { kind: item.kind, url: materialContentUrl(item.material_id), alt: item.relative_path || "" };
+    return { kind: item.kind, url: materialContentUrl(item.material_id), alt: item.relative_path || "", item };
   }
   return null;
 }
 
+// 按绝对路径读取预览：字节由主进程判定与放行，文本由渲染器解码。
+// 之所以不在主进程解码：Node 的 TextDecoder 不支持 gb18030，而浏览器支持；
+// 之所以不经 HTTP：后端是绑定 loopback 的服务，加一条按路径读路由等于开放任意文件读接口。
+async function readPathPreview(item, sequence) {
+  const target = item.path || item.relative_path || "";
+  const bridge = window.focusDesktop;
+  if (typeof bridge?.resolvePreviewPath !== "function") {
+    throw Object.assign(new Error("当前运行环境不支持按路径预览"), { status: 0 });
+  }
+  const resolved = await bridge.resolvePreviewPath(target);
+  if (!resolved?.ok) throw Object.assign(new Error(resolved?.reason || "无法读取该文件"), { status: 0 });
+  const response = await fetch(resolved.path);
+  if (!response.ok) throw Object.assign(new Error(`读取文件失败（${response.status}）`), { status: response.status });
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  const size = Number(resolved.size) || bytes.length;
+  const named = { ...item, size_bytes: size };
+  // 图片与 PDF 交给 Blob 地址；地址由宿主统一回收，避免持续占用内存
+  if (item.kind === "image" || item.kind === "pdf") {
+    const url = state.filePreview.objectUrls.urlFor(
+      previewKeyOf(item), bytes, filePreview.mediaTypeForName(item.relative_path || item.path || "")
+    );
+    return { kind: item.kind, url, alt: item.relative_path || "", item: named };
+  }
+  const { text, encoding } = filePreview.decodeText(bytes);
+  const view = { item: named, meta: { encoding } };
+  return item.kind === "markdown"
+    ? { ...view, kind: "markdown", html: renderAssistantContent(text) }
+    : { ...view, kind: "text", text };
+}
+
 // 每次渲染起一个新的序号，晚到的旧请求据此丢弃，避免切换标签页后被过期内容覆盖。
 async function renderFilePreviewBody() {
-  const body = document.querySelector("#filePreviewBody");
+  const body = filePreviewBody;
   const item = state.filePreview.shelf.active();
   if (!body || !item) return;
+  const key = previewKeyOf(item);
   const sequence = ++filePreviewLoadSequence;
   const direct = previewContentOf(item);
-  if (direct) {
-    state.filePreview.loadedId = item.material_id;
-    return filePreview.mount(body, state.filePreview.shelf, direct);
-  }
-  if (item.kind === "binary" || !item.material_id) {
-    state.filePreview.loadedId = item.material_id || null;
+  if (direct) return filePreview.mount(body, state.filePreview.shelf, direct);
+  if (item.kind === "binary") {
     return filePreview.mount(body, state.filePreview.shelf, { kind: "binary", item });
   }
-  if (state.filePreview.loadedId === item.material_id && state.filePreview.content) {
-    return filePreview.mount(body, state.filePreview.shelf, state.filePreview.content);
-  }
+  // 命中该文件自己的缓存即直接呈现：切换标签页不清缓存，因此切回时不重复请求
+  const cached = state.filePreview.contentByFile.get(key);
+  if (cached) return filePreview.mount(body, state.filePreview.shelf, cached);
   body.textContent = "加载中…";
   try {
-    const payload = await api(`/desktop/api/materials/${encodeURIComponent(item.material_id)}/preview`);
+    // 有材料标识走材料入口；未登记文件走按路径读取（含工作区之外的绝对路径）
+    const content = item.material_id
+      ? await readMaterialPreview(item)
+      : await readPathPreview(item, sequence);
     if (sequence !== filePreviewLoadSequence) return;
-    state.filePreview.loadedId = item.material_id;
-    state.filePreview.content = item.kind === "markdown"
-      ? { kind: "markdown", html: renderAssistantContent(payload.text || "") }
-      : { kind: "text", text: payload.text || "" };
-    filePreview.mount(body, state.filePreview.shelf, state.filePreview.content);
+    state.filePreview.contentByFile.set(key, content);
+    filePreview.mount(body, state.filePreview.shelf, content);
   } catch (error) {
     if (sequence !== filePreviewLoadSequence) return;
-    // 取不到文本（415 二进制、404 已删除等）落到信息卡，不留下空白或错误页
-    state.filePreview.loadedId = null;
-    state.filePreview.content = null;
+    // 取不到内容（不是文本、文件不存在、越界等）落到信息卡，不留下空白或错误页
     filePreview.mount(body, state.filePreview.shelf, { kind: "binary", item });
-    if (error.status && error.status !== 415) setStatus(`无法预览该文件：${error.message}`, true);
+    setStatus(describePreviewFailure(error, item), true);
   }
 }
 
-// 清空预览列：切换视图、切换任务与测试复位都经由这里，保证三处状态一起归零。
-function resetFilePreviews() {
-  state.filePreview.shelf = filePreview.createShelf();
-  state.filePreview.loadedId = null;
-  state.filePreview.content = null;
+// 已登记材料的正文：按材料标识取，解码与截断状态由后端给出。
+async function readMaterialPreview(item) {
+  const payload = await api(`/desktop/api/materials/${encodeURIComponent(item.material_id)}/preview`);
+  const meta = { encoding: payload?.encoding || "", truncated: Boolean(payload?.truncated) };
+  const named = { ...item, size_bytes: Number(payload?.size_bytes) || item.size_bytes };
+  return item.kind === "markdown"
+    ? { kind: "markdown", html: renderAssistantContent(payload?.text || ""), meta, item: named }
+    : { kind: "text", text: payload?.text || "", meta, item: named };
 }
 
-// 打开一个文件：已登记为材料则按材料记录，否则只按文件名给出信息卡。
+// 失败原因要可区分：用户据此判断「换个工具看」还是「文件没了」。
+function describePreviewFailure(error, item) {
+  if (error?.status === 415) return `${item.relative_path || "该文件"} 的内容无法按文本呈现，已改为展示文件信息`;
+  if (error?.status === 404) return `文件不存在：${item.relative_path || item.path || ""}`;
+  return `无法预览该文件：${error?.message || "未知原因"}`;
+}
+
+// 丢弃一个文件的预览缓存与其地址：关闭标签页与重新打开该文件时调用。
+function forgetFilePreview(item) {
+  const key = previewKeyOf(item);
+  if (!key) return;
+  state.filePreview.objectUrls.revoke(key);
+  state.filePreview.contentByFile.delete(key);
+}
+
+// 清空预览列：切换视图、切换任务与测试复位都经由这里，保证状态一起归零。
+function resetFilePreviews() {
+  for (const item of state.filePreview.shelf.list()) forgetFilePreview(item);
+  state.filePreview.shelf = filePreview.createShelf();
+  state.filePreview.contentByFile.clear();
+}
+
+// 打开一个文件：已登记为材料则按材料记录，否则按文件路径给出预览（含工作区之外的绝对路径）。
 function openFilePreview(record) {
   if (!record) return;
   const material = record.material_id
     ? record
-    : materialForFileName(state.activeTaskId, record.relative_path || record.path || "");
-  const item = material
-    ? { ...material, kind: filePreview.classify(material.relative_path || material.path || "") }
-    : { ...record, kind: filePreview.classify(record.relative_path || record.path || "") };
-  state.filePreview.loadedId = null;
-  state.filePreview.content = null;
+    : materialForFileName(state.activeTaskId, record.path || record.relative_path || "");
+  const source = material || record;
+  const name = source.relative_path || source.path || "";
+  if (!name) {
+    setStatus("无法定位该文件：既未登记为材料，也没有可用路径", true);
+    return;
+  }
+  const item = { ...source, kind: filePreview.classify(name) };
+  // 重新打开即视为要读当前内容：只失效这一个文件的缓存，其它标签页的缓存保留
+  forgetFilePreview(item);
   state.filePreview.shelf.open(item);
   if (state.view !== "focus") {
     state.view = "focus";
@@ -1245,45 +1338,75 @@ function handleFilePreviewAction(button) {
     const material = button.dataset.materialId
       ? (state.materials.get(state.activeTaskId) || []).find(item => item.material_id === button.dataset.materialId)
       : materialForFileName(state.activeTaskId, button.dataset.fileName);
+    // 未登记为材料时仍要打开：用文件名作为路径交给按路径读取，由它决定能否呈现
     openFilePreview(material || { relative_path: button.dataset.fileName, path: button.dataset.fileName });
     return true;
   }
   if (action === "open-preview-in-system") return openPreviewInSystem(), true;
   if (action === "download-preview-file") return downloadPreviewFile(), true;
   if (action !== "activate-file-preview" && action !== "close-file-preview") return false;
-  const item = state.filePreview.shelf.list().find(entry => entry.material_id === button.dataset.materialId);
+  const key = button.dataset.previewKey;
+  const item = state.filePreview.shelf.list().find(entry => previewKeyOf(entry) === key);
   if (!item) return true;
-  state.filePreview.loadedId = null;
-  state.filePreview.content = null;
-  if (action === "activate-file-preview") state.filePreview.shelf.activate(item);
-  else state.filePreview.shelf.close(item);
+  // 切换标签页只改「当前是谁」，不动任何缓存——否则切回已打开的文件会重新请求
+  if (action === "activate-file-preview") {
+    state.filePreview.shelf.activate(item);
+  } else {
+    state.filePreview.shelf.close(item);
+    forgetFilePreview(item);
+  }
   renderFilePreview();
   return true;
 }
 
-// 在系统默认应用中打开当前文件；工作区边界由主进程复核。
-function openPreviewInSystem() {
+// 在系统默认应用中打开当前文件。先经主进程按路径解析取得放行后的路径，再交给系统打开——
+// 预览已允许工作区之外的绝对路径，因此这里不能再套工作区容器校验，否则同一文件能预览却打不开。
+async function openPreviewInSystem() {
   const item = state.filePreview.shelf.active();
   const bridge = window.focusDesktop;
-  if (!item?.path || typeof bridge?.openPath !== "function") return setStatus("当前运行环境无法在系统中打开文件", true);
-  Promise.resolve(bridge.openPath(item.path, activeTask()?.workspace_path || ""))
-    .catch(error => setStatus(`无法在系统中打开：${error.message}`, true));
+  if (!item?.path || typeof bridge?.openPath !== "function") {
+    return setStatus("该文件没有可用于系统打开的绝对路径", true);
+  }
+  try {
+    const resolved = typeof bridge.resolvePreviewPath === "function"
+      ? await bridge.resolvePreviewPath(item.path)
+      : { ok: true, path: item.path };
+    if (!resolved?.ok) throw new Error(resolved?.reason || "无法定位该文件");
+    await bridge.openPath(resolved.path, activeTask()?.workspace_path || "");
+  } catch (error) {
+    setStatus(`无法在系统中打开：${error.message}`, true);
+  }
 }
 
-// 另存为：取材料原始字节后交给主进程写盘，渲染器不接触文件系统。
+// 另存为：取文件原始字节后交给主进程写盘，渲染器不接触文件系统。
+// 已登记材料按材料标识取；未登记文件按路径取。
 async function downloadPreviewFile() {
   const item = state.filePreview.shelf.active();
   const bridge = window.focusDesktop;
-  if (!item?.material_id || typeof bridge?.saveBytes !== "function") return setStatus("当前运行环境无法另存文件", true);
+  if (!item || typeof bridge?.saveBytes !== "function") return setStatus("当前运行环境无法另存文件", true);
   try {
-    const response = await fetch(materialContentUrl(item.material_id));
-    if (!response.ok) throw new Error(`读取材料失败（${response.status}）`);
-    const bytes = Array.from(new Uint8Array(await response.arrayBuffer()));
-    const saved = await bridge.saveBytes(item.relative_path || item.path || "material.bin", bytes);
+    const bytes = await readPreviewBytes(item);
+    const saved = await bridge.saveBytes(item.relative_path || item.path || "material.bin", Array.from(bytes));
     if (saved) setStatus("已另存文件");
   } catch (error) {
     setStatus(`另存失败：${error.message}`, true);
   }
+}
+
+// 取当前文件的原始字节：材料走字节流接口，未登记文件走按路径读取。
+async function readPreviewBytes(item) {
+  if (item.material_id) {
+    const response = await fetch(materialContentUrl(item.material_id));
+    if (!response.ok) throw new Error(`读取材料失败（${response.status}）`);
+    return new Uint8Array(await response.arrayBuffer());
+  }
+  const bridge = window.focusDesktop;
+  if (typeof bridge?.resolvePreviewPath !== "function") throw new Error("当前运行环境不支持按路径读取");
+  const resolved = await bridge.resolvePreviewPath(item.path || item.relative_path || "");
+  if (!resolved?.ok) throw new Error(resolved?.reason || "无法读取该文件");
+  const response = await fetch(resolved.path);
+  if (!response.ok) throw new Error(`读取文件失败（${response.status}）`);
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 // 记忆库编辑器：上下区（选源 vs 编辑）垂直分隔条 + 源/压缩区 水平分隔条，均可拖拽调高度/宽度。
@@ -1396,7 +1519,8 @@ function fileNameFromLinkHref(href, hostPart = "") {
   return decodeURIComponent(source.replace(/[?#].*$/, "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "");
 }
 
-// 消息里的文件名只有路径，能否预览取决于它是否已登记为材料（登记后才有 material_id 与真实路径）。
+// 消息里的文件名只有路径：已登记为材料时能拿到材料标识与真实路径，未登记时按文件名兜底。
+// 任何文件都可点——未登记不再是不可点的理由。
 function materialForFileName(taskId, fileName) {
   const materials = state.materials.get(taskId) || [];
   return materials.find(item => item.relative_path === fileName || item.path === fileName) || null;
@@ -1411,10 +1535,9 @@ function renderFileCard(file, task) {
   const size = file?.size ? ` · ${formatBytes(file.size)}` : "";
   const iconMarkup = `<span class="ui-icon is-sm icon-${icon}" aria-hidden="true"></span>`;
   const material = task ? materialForFileName(task.task_id, name) : null;
-  if (!material) {
-    return `<span class="file-card is-plain" title="该文件尚未登记为材料，无法在工作区内定位">${iconMarkup}<span>${escapeHtml(name)}${size}</span></span>`;
-  }
-  return `<button class="file-card" data-action="open-file-panel" data-material-id="${escapeHtml(material.material_id)}" title="点击打开文件预览">${iconMarkup}<span>${escapeHtml(name)}${size}</span></button>`;
+  const materialId = material ? ` data-material-id="${escapeHtml(material.material_id)}"` : "";
+  const title = material ? "点击打开文件预览" : "点击打开预览（未登记为材料，按路径读取）";
+  return `<button class="file-card" data-action="open-file-panel"${materialId} data-file-name="${escapeHtml(name)}" title="${title}">${iconMarkup}<span>${escapeHtml(name)}${size}</span></button>`;
 }
 
 function renderFileCards(message, task) {

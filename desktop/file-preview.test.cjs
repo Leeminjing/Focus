@@ -76,7 +76,7 @@ function createDocument() {
   return document;
 }
 
-const context = vm.createContext({});
+const context = vm.createContext({ TextDecoder, Blob });
 context.window = context;
 context.document = createDocument();
 new vm.Script(
@@ -85,7 +85,8 @@ new vm.Script(
 const preview = context.focusFilePreview;
 
 const plain = value => JSON.parse(JSON.stringify(value));
-const doc = createDocument();
+// 容器必须用模块所见的同一个 document 创建，否则 mount 取不到可用 document
+const doc = context.document;
 const mountInto = view => {
   const container = createElement(doc, "div");
   preview.mount(container, null, view);
@@ -202,40 +203,102 @@ assert.deepEqual(plain(preview.renderLineNumbers("a\n")), [
 // === 信息卡模型 ===
 
 assert.deepEqual(
-  plain(preview.binaryCardModel({ material_id: "m9", relative_path: "docs/report.docx", size_bytes: 2048 })),
-  { name: "report.docx", path: "docs/report.docx", suffix: "docx", sizeBytes: 2048, isImage: false, actionable: true }
+  plain(preview.binaryCardModel({ material_id: "m9", path: "C:\\ws\\docs\\report.docx", relative_path: "docs/report.docx", size_bytes: 2048 })),
+  { name: "report.docx", path: "docs/report.docx", openPath: "C:\\ws\\docs\\report.docx", suffix: "docx", sizeBytes: 2048, isImage: false }
 );
 assert.equal(preview.binaryCardModel({ relative_path: "x.bin" }).sizeBytes, 0);
-assert.equal(preview.binaryCardModel({ relative_path: "x.bin" }).actionable, false);
+assert.equal(preview.binaryCardModel({ relative_path: "x.bin" }).openPath, "");
 assert.equal(preview.binaryCardModel(null).name, "");
+
+// === 后缀 → Blob 地址用的媒体类型 ===
+
+assert.equal(preview.mediaTypeForName("shots/a.png"), "image/png");
+assert.equal(preview.mediaTypeForName("shots/a.JPG"), "image/jpeg");
+assert.equal(preview.mediaTypeForName("shots/a.svg"), "image/svg+xml");
+assert.equal(preview.mediaTypeForName("reports/a.pdf"), "application/pdf");
+assert.equal(preview.mediaTypeForName("deep/dir/reports/a.pdf"), "application/pdf");
+assert.equal(preview.mediaTypeForName("a.docx"), "");
+assert.equal(preview.mediaTypeForName("noextension"), "");
+
+// === 文本解码：与后端编码链同序（UTF-8 → GB18030） ===
+
+const GBK_TABLE = { 中: [0xd6, 0xd0], 文: [0xce, 0xc4], 测: [0xb2, 0xe2], 试: [0xca, 0xd4] };
+const encode = (text, encoding) => encoding === "gb18030"
+  ? new Uint8Array([...text].flatMap(char => GBK_TABLE[char] || [0x3f]))
+  : new TextEncoder().encode(text);
+
+assert.deepEqual(plain(preview.decodeText(encode("中文测试", "utf-8"))), { text: "中文测试", encoding: "utf-8" });
+assert.deepEqual(plain(preview.decodeText(encode("中文测试", "gb18030"))), { text: "中文测试", encoding: "gb18030" });
+assert.deepEqual(plain(preview.decodeText(new Uint8Array(0))), { text: "", encoding: "utf-8" });
+// 两种编码都无法解码时不抛错，而是给出尽力而为的正文
+const undecodable = preview.decodeText(new Uint8Array([0x81]));
+assert.equal(undecodable.encoding, "utf-8/replace");
+assert.equal(typeof undecodable.text, "string");
+
+// === 由字节构造的地址必须被回收 ===
+
+const revoked = [];
+const urls = preview.createObjectUrls({
+  createObjectURL: blob => `blob:test/${blob.type}/${revoked.length}`,
+  revokeObjectURL: url => revoked.push(url),
+});
+const firstUrl = urls.urlFor("k1", new Uint8Array([1]), "image/png");
+const secondUrl = urls.urlFor("k1", new Uint8Array([2]), "image/png");
+assert.notEqual(firstUrl, secondUrl);
+assert.deepEqual(revoked, [firstUrl], "同一键重新构造地址时必须先回收旧地址");
+assert.equal(urls.revoke("k1"), true);
+assert.deepEqual(revoked, [firstUrl, secondUrl]);
+assert.equal(urls.revoke("k1"), false, "重复回收应报告未命中");
+assert.deepEqual(plain(urls.keys()), []);
 
 // === 渲染分派 ===
 
-const textView = mountInto({ kind: "text", text: "第一行\n第二行" });
+const textView = mountInto({ kind: "text", text: "第一行\n第二行", item: { relative_path: "logs/run.log", size_bytes: 2048 } });
 const rows = textView.querySelectorAll(".file-preview-line");
 assert.equal(rows.length, 2);
 assert.equal(rows[0].querySelector(".file-preview-line-number").textContent, "1");
 assert.equal(rows[1].querySelector(".file-preview-line-body").textContent, "第二行");
+// 统一头部：名称与大小不依赖标签页即可确认正在看的文件
+assert.equal(textView.querySelector(".file-preview-name").textContent, "run.log");
+assert.equal(textView.querySelector(".file-preview-size").textContent, "2.0 KB");
 
-const markdownView = mountInto({ kind: "markdown", html: "<h1>标题</h1>" });
+// 截断与非默认编码必须在正文之外可见
+const flagged = mountInto({ kind: "text", text: "abc", item: { relative_path: "big.log" }, meta: { truncated: true, encoding: "gb18030" } });
+const flags = flagged.querySelectorAll(".file-preview-flag").map(node => node.textContent);
+assert.deepEqual(plain(flags), ["内容已截断", "gb18030"]);
+
+// 空文件给明确提示，而不是只有一个行号的空框
+const emptyText = mountInto({ kind: "text", text: "", item: { relative_path: "empty.txt", size_bytes: 0 } });
+assert.equal(emptyText.querySelectorAll(".file-preview-line").length, 0);
+assert.match(emptyText.querySelector(".file-preview-empty").textContent, /没有内容/);
+
+const markdownView = mountInto({ kind: "markdown", html: "<h1>标题</h1>", item: { relative_path: "notes/a.md" } });
 assert.equal(markdownView.querySelector(".file-preview-markdown").innerHTML, "<h1>标题</h1>");
 
-const imageView = mountInto({ kind: "image", url: "/api/thumb/1", alt: "图" });
+const imageView = mountInto({ kind: "image", url: "/api/thumb/1", alt: "图", item: { relative_path: "shots/a.png" } });
 const imageNode = imageView.querySelector(".file-preview-image");
 assert.equal(imageNode.src, "/api/thumb/1");
 assert.equal(imageNode.alt, "图");
 
-const pdfView = mountInto({ kind: "pdf", url: "/api/file/1" });
+// 图片缺少可用地址时改走信息卡，不产出指向空标识的图像请求
+const urlLessImage = mountInto({ kind: "image", url: "", item: { relative_path: "shots/a.png" } });
+assert.equal(urlLessImage.querySelector(".file-preview-image"), null);
+assert.equal(urlLessImage.querySelector(".file-preview-binary") !== null, true);
+
+const pdfView = mountInto({ kind: "pdf", url: "/api/file/1", item: { relative_path: "reports/a.pdf" } });
 assert.equal(pdfView.querySelector(".file-preview-document").src, "/api/file/1");
 
-const binaryView = mountInto({ kind: "binary", item: { material_id: "m9", relative_path: "docs/report.docx", size_bytes: 2048 } });
+const binaryView = mountInto({ kind: "binary", item: { material_id: "m9", path: "C:\\ws\\docs\\report.docx", relative_path: "docs/report.docx", size_bytes: 2048 } });
 assert.equal(binaryView.querySelector(".file-preview-binary-name").textContent, "report.docx");
 const metaText = binaryView.querySelectorAll(".file-preview-binary-meta dd").map(node => node.textContent);
 assert.deepEqual(plain(metaText), [".docx", "2048 B", "docs/report.docx"]);
 const actions = binaryView.querySelectorAll(".file-preview-binary-actions button").map(node => node.dataset.action);
 assert.deepEqual(plain(actions), ["open-preview-in-system", "download-preview-file"]);
+// 「在系统中打开」必须携带绝对路径
+const openButton = binaryView.querySelectorAll(".file-preview-binary-actions button")[0];
+assert.equal(openButton.dataset.filePath, "C:\\ws\\docs\\report.docx");
 
-// 未登记为材料的文件仍有名称与类型说明，但不给无法兑现的出路口
+// 没有绝对路径时不给无法兑现的出路口
 const namelessView = mountInto({ kind: "binary", item: { relative_path: "mystery.docx" } });
 assert.equal(namelessView.querySelector(".file-preview-binary-name").textContent, "mystery.docx");
 assert.equal(namelessView.querySelectorAll(".file-preview-binary-actions button").length, 0);

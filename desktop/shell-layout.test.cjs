@@ -1,13 +1,17 @@
 /*
- * 本文件验证壳层四栏宽度分配的钳制规则。输入为布局草稿与视口宽度，
- * 输出为归一化后的四栏宽度、工作区保底是否被守住、以及边界内外行为的断言；
- * 工作流在 VM 内执行 app.js 的真实实现，不访问网络也不渲染 DOM。
+ * 本文件验证壳层四栏宽度分配的钳制规则与覆盖断点。输入为布局草稿、视口宽度与壳层样式，
+ * 输出为归一化后的四栏宽度、工作区保底是否被守住、边界内外行为以及覆盖层形态的断言；
+ * 工作流在 VM 内执行 app.js 的真实实现并读取样式文本，不访问网络。
  */
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const vm = require("node:vm");
 const { createAppHarness, readAppSource } = require("./test-helper.cjs");
+
+const readShellCss = () => fs.readFileSync(path.join(__dirname, "styles", "shell.css"), "utf8");
 
 const { context } = createAppHarness();
 new vm.Script(readAppSource()).runInContext(context);
@@ -65,6 +69,18 @@ for (const viewport of [1200, 1100, 1000, 900, 800, 640]) {
   );
   assert.ok(tight.navWidth <= bounds.navMax && tight.previewWidth <= bounds.previewMax && tight.inspectorWidth <= bounds.inspectorMax);
 }
+
+// === 覆盖断点以下：预览列不参与宽度分配，因此不会被压没 ===
+// 1180px 及以下会话页预览列转为绝对定位覆盖层（shell.css），此时 --preview-width
+// 无论被钳制到多少都不影响呈现宽度，故不存在「列在而内容不可见」。
+
+const OVERLAY_BREAKPOINT = 1180;
+assert.ok(OVERLAY_BREAKPOINT > bounds.workspaceMin, "覆盖断点必须高于工作区保底，否则四栏会先互相挤压");
+const overlayShell = readShellCss();
+assert.match(overlayShell, /@media \(max-width: 1180px\)[\s\S]*?\.file-preview\s*\{[^}]*position:\s*absolute/s);
+assert.match(overlayShell, /@media \(max-width: 1180px\)[\s\S]*?\.file-preview\s*\{[^}]*width:\s*min\(/s);
+// 覆盖层形态下预览列不参与 flex 分配，故其最小宽度约束不适用于断点以下的视口
+assert.match(overlayShell, /@media \(max-width: 1180px\)[\s\S]*?\.file-preview\s*\{[^}]*flex:\s*none/s);
 
 // === 极窄视口：即便四栏最小值之和超过视口，也不出现负宽度 ===
 

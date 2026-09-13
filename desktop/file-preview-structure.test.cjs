@@ -54,9 +54,22 @@ assert.match(tokens, /--file-preview-max-width:\s*\d+px/);
 assert.match(app, /const filePreview = window\.focusFilePreview/);
 assert.doesNotMatch(app, /pluginViewForMaterial/, "预览路径不得再经插件注册表判定");
 assert.doesNotMatch(app, /mountFilePanel|bindPanelResizer|panelResizer/);
-assert.match(app, /function renderFilePreview\(\)\s*\{[^}]*state\.view === "focus"/s);
+// 可见性必须与视图同源派生：render() 在所有分支之前调用它，判定里含视图条件
+assert.match(app, /function syncFilePreviewVisibility\(\)\s*\{[^}]*state\.view === "focus"/s);
+assert.match(app, /function render\(\)\s*\{[\s\S]{0,240}syncFilePreviewVisibility\(\)/);
 assert.match(app, /function openFilePreview\(/);
 assert.match(app, /function resetFilePreviews\(/);
+// 缓存按文件分别保存，且切换标签页不得清缓存
+assert.match(app, /contentByFile: new Map\(\)/);
+assert.doesNotMatch(app, /state\.filePreview\.loadedId/, "旧的单值缓存字段不得复活");
+const activateAt = app.indexOf("if (action === \"activate-file-preview\") {");
+const activateBranch = app.slice(activateAt, app.indexOf("}", activateAt));
+assert.ok(activateBranch.startsWith("if (action === \"activate-file-preview\")"), "应能定位切换标签页分支");
+assert.doesNotMatch(activateBranch, /forgetFilePreview\(|contentByFile\.delete/, "切换标签页不得清缓存");
+// 关闭标签页必须丢弃该文件的缓存与地址
+const closeAt = app.indexOf("} else {", activateAt);
+const closeBranch = app.slice(closeAt, app.indexOf("renderFilePreview();", closeAt));
+assert.match(closeBranch, /forgetFilePreview\(item\)/, "关闭标签页必须丢弃该文件的缓存");
 
 // === 两个入口一律不得按扩展名设门 ===
 // 历史缺陷：消息文件卡片已对所有文件可点，正文链接却仍被 FILE_VIEWABLE_RE 拦住，
@@ -74,9 +87,32 @@ assert.ok(
   "外链与文件误解析的分流必须复用 classify，而不是自带后缀表"
 );
 assert.doesNotMatch(linkHandler, /\|jpe\?g\||\|docx\?\)/, "链接处理器不得自带扩展名集合");
-// 文件卡片只有「查得到材料」与「查不到退回不可点说明」两种结果，没有「类型不支持」分支
+// 未登记为材料也必须可点：卡片一律渲染为按钮，且不带「类型不支持」分支
 assert.match(app, /function renderFileCard\(file, task\)/);
-assert.match(app, /if \(!material\) \{/);
+assert.match(app, /data-action="open-file-panel"\$\{materialId\}/);
+assert.doesNotMatch(app, /file-card is-plain/, "未登记文件不得渲染为不可点占位");
+// 入口在没有可用路径时才拒绝，并给出可见说明而不是静默返回
+assert.match(app, /function openFilePreview\(record\)\s*\{[\s\S]{0,400}setStatus\("无法定位该文件/);
+// 失败原因必须可区分：415（不是文本）与 404（文件不存在）各自有说明
+assert.match(app, /function describePreviewFailure\(error, item\)/);
+assert.match(app, /error\?\.status === 415[\s\S]{0,160}无法按文本呈现/);
+assert.match(app, /error\?\.status === 404[\s\S]{0,160}文件不存在/);
+// 后端已回报的截断与编码必须接入呈现，而不是被丢弃
+assert.match(app, /truncated: Boolean\(payload\?\.truncated\)/);
+assert.match(app, /encoding: payload\?\.encoding/);
+
+// === 按路径读取只经主进程 IPC，不得暴露为 HTTP 路由 ===
+
+const mainSrc = read("main.cjs");
+const preloadSrc = read("preload.cjs");
+assert.match(mainSrc, /function resolvePreviewPath\(filePath\)/);
+assert.match(mainSrc, /ipcMain\.handle\("focus:resolve-preview-path"/);
+assert.match(mainSrc, /此处有意不做工作区包含性检查|有意不做工作区包含性检查/);
+assert.match(mainSrc, /应用数据目录不可预览/);
+assert.match(preloadSrc, /resolvePreviewPath: filePath => ipcRenderer\.invoke\("focus:resolve-preview-path"/);
+// 后端路由里不得出现按任意路径读取的入口
+const routesSrc = read("../backend/app/desktop/routes.py");
+assert.doesNotMatch(routesSrc, /preview-by-path|content-by-path|read_any_path/);
 
 // === 预览模块的值域封闭与兜底 ===
 
@@ -85,8 +121,18 @@ for (const exported of ["classify", "createShelf", "renderLineNumbers", "binaryC
   assert.match(previewModule, new RegExp(`\\b${exported}\\b`), `预览模块必须对外提供 ${exported}`);
 }
 assert.match(previewModule, /return KIND_BY_SUFFIX\.get\(suffixOf\(name\)\) \|\| "binary"/);
-// 未知类型走信息卡，保证任何文件都有呈现
-assert.match(previewModule, /const render = RENDERERS\[current\.kind\] \|\| renderBinaryCard/);
+// 未知类型走信息卡；图片缺少可用地址时同样落到信息卡，保证任何文件都有呈现
+assert.match(previewModule, /current\.kind === "image" && !current\.url[\s\S]{0,120}renderBinaryCard/);
+assert.match(previewModule, /RENDERERS\[current\.kind\] \|\| renderBinaryCard/);
+// 统一头部：名称/大小/截断/编码只渲染一次
+assert.match(previewModule, /function renderHeader\(container, document, view\)/);
+assert.match(previewModule, /file-preview-flag/);
+// 头部样式必须在壳层样式表内，否则标识不生效
+assert.match(read("styles/shell.css"), /\.file-preview-head\b/);
+// 由字节构造的地址必须可回收
+assert.match(previewModule, /function createObjectUrls\(urlApi\)[\s\S]{0,400}revokeObjectURL/);
+// 按路径读取的文本由渲染器解码：主进程的 TextDecoder 不支持 gb18030
+assert.match(previewModule, /DECODE_ENCODINGS = Object\.freeze\(\["utf-8", "gb18030"\]\)/);
 
 // === 旧面板样式保留为插件契约，宿主自身不再引用 ===
 

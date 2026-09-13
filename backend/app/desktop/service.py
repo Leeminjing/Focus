@@ -85,6 +85,7 @@ from backend.app.desktop.material_files import (
     EmptyUpload,
     OversizedImage,
     guard_upload,
+    media_type_for,
     prepare_attachment_target,
     read_material_text,
     resolve_material_path,
@@ -95,7 +96,7 @@ from focus.agents.must_view import (
     MustViewReports,
     build_must_view_middleware,
 )
-from focus.images import image_mime_from_name, is_image_name
+from focus.images import is_image_name
 from focus.messages import (
     estimate_images_tokens,
     estimate_raw_tokens,
@@ -2299,16 +2300,13 @@ class DesktopService:
         return await self.enroll_material(task_id, MaterialCreate(path=str(target)))
 
     async def read_material_content(self, material_id: str) -> tuple[str, bytes]:
-        """读取材料原始字节；返回 (媒体类型, 字节) 供前端直接展示图片。"""
+        """读取材料原始字节；返回 (媒体类型, 字节) 供前端内联展示图片、PDF 与其它载体。"""
         async with self.session_factory() as session:
             material, workspace = await self._get_material_entities(session, material_id)
         path = resolve_material_path(workspace.path, material.relative_path)
         if not path.is_file():
             raise HTTPException(404, "材料文件不存在")
-        media_type = (
-            image_mime_from_name(material.relative_path) or "application/octet-stream"
-        )
-        return media_type, path.read_bytes()
+        return media_type_for(material.relative_path), path.read_bytes()
 
     async def read_material_preview(self, material_id: str) -> dict[str, Any]:
         """按预览上限读取材料文本；非文本内容由 read_material_text 抛 UnicodeDecodeError。"""

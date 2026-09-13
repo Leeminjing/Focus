@@ -1,17 +1,42 @@
 """backend/tests/test_material_preview.py
 
-本文件验证材料文本预览的读取与解码边界。输入为磁盘上的材料文件（不同编码、不同体积）与读取上限，
-输出为 MaterialText 的正文、编码名、截断标记与真实体积断言；工作流不访问数据库、不启动 Gateway，
-仅以 tmp_path 造文件后直接调用纯读取函数。
+本文件验证材料文本预览的读取解码边界与按后缀判定媒体类型。输入为磁盘上的材料文件（不同编码、
+不同体积）与文件名，输出为 MaterialText 的正文/编码/截断/体积断言与媒体类型断言；
+工作流不访问数据库、不启动 Gateway，仅以 tmp_path 造文件后直接调用纯函数。
 """
 
 import pytest
 
 from backend.app.desktop.material_files import (
+    GENERIC_BINARY_MEDIA_TYPE,
     PREVIEW_TEXT_MAX_BYTES,
     TEXT_TRUNCATION_MARKER,
+    media_type_for,
     read_material_text,
 )
+
+
+def test_media_type_covers_types_the_image_only_list_missed():
+    """PDF 与 SVG 曾落回通用二进制，浏览器按未知文件处置（弹另存为）而不是内联呈现。"""
+    assert media_type_for("reports/summary.pdf") == "application/pdf"
+    assert media_type_for("diagrams/flow.svg") == "image/svg+xml"
+    assert media_type_for("notes/readme.md") in ("text/markdown", "text/x-markdown")
+
+
+def test_media_type_keeps_image_behaviour():
+    assert media_type_for("shots/cover.png") == "image/png"
+    assert media_type_for("shots/cover.jpg") == "image/jpeg"
+    assert media_type_for("shots/cover.webp") == "image/webp"
+
+
+def test_media_type_falls_back_to_generic_binary():
+    assert media_type_for("archive.unknownext") == GENERIC_BINARY_MEDIA_TYPE
+    assert media_type_for("noextension") == GENERIC_BINARY_MEDIA_TYPE
+    assert media_type_for("") == GENERIC_BINARY_MEDIA_TYPE
+
+
+def test_media_type_ignores_directories():
+    assert media_type_for("deep/nested/dir/report.pdf") == "application/pdf"
 
 
 def test_decodes_plain_utf8(tmp_path):
