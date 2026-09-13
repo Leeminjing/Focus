@@ -85,7 +85,7 @@ assert.match(app, /function absolutePathFromHref\(href\)/);
 assert.match(app, /const absolutePath = absolutePathFromHref\(href\)/);
 assert.match(app, /relative_path: fileName, path: absolutePath \|\| fileName/);
 // 相对路径由主进程结合工作区根解析，越界仍被拒绝
-assert.match(app, /resolvePreviewPath\(target, activeTask\(\)\?\.workspace_path \|\| ""\)/);
+assert.match(app, /readPreviewBytes\(previewPathOf\(item\), activeTask\(\)\?\.workspace_path \|\| ""\)/);
 assert.match(read("main.cjs"), /function resolvePreviewCandidate\(filePath, workspacePath\)/);
 assert.match(read("main.cjs"), /relative\.startsWith\("\.\."\)/);
 // host 不得再用自定义扩展名集合判定（classify 内部的后缀表是唯一来源）。
@@ -117,6 +117,15 @@ assert.match(app, /kind: "binary", item, note: reason/);
 assert.match(previewModule, /if \(view\.note\) appendText\(document, card, "p", "file-preview-empty", view\.note\)/);
 // 卡片不再重复文件名第二遍
 assert.doesNotMatch(previewModule, /file-preview-binary-name/);
+// 渲染器不得 fetch 本地绝对路径：fetch("C:/…") 不是可解析 URL（表现为 Failed to fetch），
+// 而 file:// 会让页面获得 Electron 安全指南劝阻的本机文件特权。字节一律经主进程读取。
+const fetchSites = (app.match(/fetch\(/g) || []).length;
+assert.equal(fetchSites, 2, `渲染器只应有 api() 与材料字节流两处 fetch，实际 ${fetchSites} 处`);
+assert.doesNotMatch(app, /fetch\(resolved\.path\)/);
+assert.match(app, /readPreviewBytes\(previewPathOf\(item\), activeTask\(\)\?\.workspace_path \|\| ""\)/);
+assert.match(read("main.cjs"), /ipcMain\.handle\("focus:read-preview-bytes"/);
+assert.match(read("main.cjs"), /fs\.promises\.readFile\(resolved\.path\)/);
+assert.match(read("preload.cjs"), /readPreviewBytes: \(filePath, workspacePath\) => ipcRenderer\.invoke\("focus:read-preview-bytes"/);
 // 后端已回报的截断与编码必须接入呈现，而不是被丢弃
 assert.match(app, /truncated: Boolean\(payload\?\.truncated\)/);
 assert.match(app, /encoding: payload\?\.encoding/);

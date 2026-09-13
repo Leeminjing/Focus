@@ -1203,23 +1203,13 @@ function previewContentOf(item) {
   return null;
 }
 
-// 按绝对路径读取预览：字节由主进程判定与放行，文本由渲染器解码。
-// 之所以不在主进程解码：Node 的 TextDecoder 不支持 gb18030，而浏览器支持；
-// 之所以不经 HTTP：后端是绑定 loopback 的服务，加一条按路径读路由等于开放任意文件读接口。
+// 按绝对路径读取预览：字节与放行都由主进程完成，渲染器只负责解码与呈现。
+// 渲染器不能自行读本地文件——把裸绝对路径交给 fetch 不是可解析的 URL（表现为 Failed to fetch），
+// 而改用 file:// 会让页面获得 Electron 安全指南明确劝阻的本机文件特权；
+// 也不能经 HTTP：后端是绑定 loopback 的服务，加一条按路径读路由等于开放任意文件读接口。
 async function readPathPreview(item, sequence) {
-  const target = previewPathOf(item);
-  const bridge = window.focusDesktop;
-  if (typeof bridge?.resolvePreviewPath !== "function") {
-    throw Object.assign(new Error("当前运行环境不支持按路径预览"), { status: 0 });
-  }
-  // 同时交出工作区根：只有相对路径时由主进程在工作区根下解析，越界仍被拒绝
-  const resolved = await bridge.resolvePreviewPath(target, activeTask()?.workspace_path || "");
-  if (!resolved?.ok) throw Object.assign(new Error(resolved?.reason || "无法读取该文件"), { status: 0 });
-  const response = await fetch(resolved.path);
-  if (!response.ok) throw Object.assign(new Error(`读取文件失败（${response.status}）`), { status: response.status });
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  const size = Number(resolved.size) || bytes.length;
-  const named = { ...item, path: resolved.path, size_bytes: size };
+  const { bytes, path: resolvedPath, size } = await readPathBytes(item);
+  const named = { ...item, path: resolvedPath, size_bytes: size };
   // 图片与 PDF 交给 Blob 地址；地址由宿主统一回收，避免持续占用内存
   if (item.kind === "image" || item.kind === "pdf") {
     const url = state.filePreview.objectUrls.urlFor(
@@ -1232,6 +1222,18 @@ async function readPathPreview(item, sequence) {
   return item.kind === "markdown"
     ? { ...view, kind: "markdown", html: renderAssistantContent(text) }
     : { ...view, kind: "text", text };
+}
+
+// 经主进程读取按路径文件的字节；解析与读取失败都以主进程给出的原因抛出。
+async function readPathBytes(item) {
+  const bridge = window.focusDesktop;
+  if (typeof bridge?.readPreviewBytes !== "function") {
+    throw Object.assign(new Error("当前运行环境不支持按路径预览"), { status: 0 });
+  }
+  // 同时交出工作区根：只有相对路径时由主进程在工作区根下解析，越界仍被拒绝
+  const result = await bridge.readPreviewBytes(previewPathOf(item), activeTask()?.workspace_path || "");
+  if (!result?.ok) throw Object.assign(new Error(result?.reason || "无法读取该文件"), { status: 0 });
+  return { bytes: new Uint8Array(result.bytes), path: result.path, size: Number(result.size) || 0 };
 }
 
 // 预览项要交给主进程的路径：优先绝对路径（材料记录或链接解析得来），否则退回相对路径，
@@ -1405,20 +1407,14 @@ async function downloadPreviewFile() {
   }
 }
 
-// 取当前文件的原始字节：材料走字节流接口，未登记文件走按路径读取。
+// 取当前文件的原始字节：材料走字节流接口，未登记文件经主进程按路径读取。
 async function readPreviewBytes(item) {
   if (item.material_id) {
     const response = await fetch(materialContentUrl(item.material_id));
     if (!response.ok) throw new Error(`读取材料失败（${response.status}）`);
     return new Uint8Array(await response.arrayBuffer());
   }
-  const bridge = window.focusDesktop;
-  if (typeof bridge?.resolvePreviewPath !== "function") throw new Error("当前运行环境不支持按路径读取");
-  const resolved = await bridge.resolvePreviewPath(item.path || item.relative_path || "");
-  if (!resolved?.ok) throw new Error(resolved?.reason || "无法读取该文件");
-  const response = await fetch(resolved.path);
-  if (!response.ok) throw new Error(`读取文件失败（${response.status}）`);
-  return new Uint8Array(await response.arrayBuffer());
+  return (await readPathBytes(item)).bytes;
 }
 
 // 记忆库编辑器：上下区（选源 vs 编辑）垂直分隔条 + 源/压缩区 水平分隔条，均可拖拽调高度/宽度。

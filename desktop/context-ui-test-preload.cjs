@@ -66,6 +66,16 @@ window.focusDesktop = {
     }
     return { ok: true, path: `${workspacePath}/${filePath}`, size: 128 };
   },
+  // 字节同样由主进程回传：渲染器不 fetch 本地绝对路径
+  readPreviewBytes: async (filePath, workspacePath) => {
+    if (typeof filePath !== "string" || !filePath) return { ok: false, reason: "路径为空" };
+    const absolute = /^([A-Za-z]:[\\/]|\/)/.test(filePath);
+    if (!absolute && (typeof workspacePath !== "string" || !workspacePath)) {
+      return { ok: false, reason: "相对路径需要同时提供工作区根，且不得越出工作区" };
+    }
+    const bytes = new TextEncoder().encode("按路径预览的正文\n第二行");
+    return { ok: true, path: absolute ? filePath : `${workspacePath}/${filePath}`, size: bytes.byteLength, bytes };
+  },
   openPath: async () => true,
   saveBytes: async () => true,
 };
@@ -89,10 +99,6 @@ window.fetch = async (input, options = {}) => {
     return json({ task_id: taskId, messages: conversationMessages(taskId), ui_state: uiStates.get(taskId) || {}, active_run: null, context });
   }
   if (/\/desktop\/api\/tasks\/[^/]+\/(materials|agents)$/.test(path)) return json([]);
-  // 按路径预览：字节由渲染器直接 fetch 绝对路径取得，这里给出确定性的文本内容
-  if (String(input).startsWith("C:/") || String(input).startsWith("/")) {
-    return new Response("按路径预览的正文\n第二行", { status: 200, headers: { "Content-Type": "text/plain" } });
-  }
   if (/\/desktop\/api\/plugin\/spatial-patrol\/tasks\/[^/]+\/anchors$/.test(path)) return json([]);
   if (path === "/desktop/api/plugin/spatial-patrol/metadata") return json({ page_count: 1 });
   if (path === "/desktop/api/plugin/spatial-patrol/text") return json({ content: "# 文件工作台\n\n这是一份用于视觉验收的 Markdown 材料。\n\n- 支持字符锚点\n- 保持重排和滚动坐标\n- 权限只在 DOCX 操作时显式选择\n\n## 说明\n\n文件工作台与任务记录并存，不会替换当前对话。" });

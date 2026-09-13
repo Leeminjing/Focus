@@ -7,7 +7,8 @@
  * 关于任意路径预览：`resolvePreviewPath` 有意不做工作区包含性检查——按需求工作区之外的文件
  * 同样必须可预览。它只保证目标是可读的普通文件并排除应用数据目录。该能力只经 Electron IPC
  * 提供，因此调用者必须已经在本渲染器进程内；若改由后端 HTTP 暴露，就会成为任何本机进程都能
- * 调用的任意文件读接口。真正的字节读取发生在渲染器（`fetch` 绝对路径），主进程只负责判定。
+ * 调用的任意文件读接口。字节同样由主进程读取（`focus:read-preview-bytes`）：渲染器既不能
+ * `fetch` 一个裸绝对路径，也不该为了读本地文件而让页面获得 `file://` 特权。
  *
  * 单实例闸门在 app.whenReady 之前取得，且不通过即退出：启动链路会拉起 uvicorn、docker compose
  * 与 alembic 迁移，若允许第二个实例进入，将重复起后端、重复迁移并再开一整套窗口。第二个实例的
@@ -391,6 +392,20 @@ function resolvePreviewCandidate(filePath, workspacePath) {
 ipcMain.handle("focus:resolve-preview-path", async (_event, filePath, workspacePath) => (
   resolvePreviewPath(filePath, workspacePath)
 ));
+
+// 按路径读取字节。渲染器不得自行读取本地文件：`fetch("C:/…")` 不是可解析的 URL（必然
+// Failed to fetch），而改用 file:// 会让页面获得 Electron 安全指南明确劝阻的本机文件特权。
+// 因此字节统一由主进程读取后回传，渲染器只负责解码与呈现。
+ipcMain.handle("focus:read-preview-bytes", async (_event, filePath, workspacePath) => {
+  const resolved = resolvePreviewPath(filePath, workspacePath);
+  if (!resolved.ok) return { ok: false, reason: resolved.reason };
+  try {
+    const data = await fs.promises.readFile(resolved.path);
+    return { ok: true, path: resolved.path, size: data.byteLength, bytes: new Uint8Array(data) };
+  } catch (error) {
+    return { ok: false, reason: `读取失败：${error.message}` };
+  }
+});
 
 // 另存为：由主进程弹出保存对话框并写盘，渲染器既拿不到目标路径也不接触文件系统。
 ipcMain.handle("focus:save-bytes", async (event, suggestedName, bytes) => {
