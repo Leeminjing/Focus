@@ -56,7 +56,7 @@ async function run() {
     const failures = await win.webContents.executeJavaScript(`(() => {
       state.view = 'focus';
       state.inspector.open = false;
-      state.filesPanel = null;
+      resetFilePreviews();
       render();
       const failures = [];
       const viewport = { width: innerWidth, height: innerHeight };

@@ -4,6 +4,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+pytest.importorskip(
+    "plugins.spatial_patrol.routes",
+    reason="spatial-patrol 已临时搁置（plugin.json enabled=false），回装后本文件自动恢复运行",
+)
+
 from plugins.spatial_patrol import routes
 
 

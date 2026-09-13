@@ -112,8 +112,7 @@ async function capture(size, outputDir) {
       const fileName = target === 'file-docx' ? 'reports/research-draft.docx' : 'specs/product-direction.md';
       const material = { material_id: 'm-file', relative_path: fileName, reading_mode: 'full', instruction_mode: 'strict', retention: 'irreplaceable', needs_confirmation: false };
       state.materials.set(state.activeTaskId, [material]);
-      state.filesPanel = material;
-      state.panelWidth = Math.min(520, Math.max(380, Math.round(window.innerWidth * 0.42)));
+      openFilePreview(material);
       state.inspector.open = false;
       state.view = 'focus';
       render();

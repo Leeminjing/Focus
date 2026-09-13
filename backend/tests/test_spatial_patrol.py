@@ -6,8 +6,16 @@ from pathlib import Path
 
 import pytest
 
+from conftest import plugin_manifest_enabled
 from focus.plugins.interfaces import builtin_catalog
 from focus.plugins.registry import PluginRegistry
+
+# 本文件全部用例都在验证 spatial-patrol 的装配与观察语义：插件搁置时整体跳过，
+# 回装（plugin.json enabled=true）后无需改动即自动恢复。
+pytestmark = pytest.mark.skipif(
+    not plugin_manifest_enabled("spatial-patrol"),
+    reason="spatial-patrol 已临时搁置（plugin.json enabled=false），回装后自动恢复",
+)
 
 PLUGIN_SOURCE = Path(__file__).resolve().parents[2] / "plugins" / "spatial-patrol"
 

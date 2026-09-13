@@ -805,17 +805,16 @@
 .version-list { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
 .version-list li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-2); border-radius: var(--radius-control); background: var(--surface-subtle); font-size: 10px; }
 
-/* 宿主文件工作台骨架不依赖任何插件样式；插件只填充内容载体与动作。 */
+/* 宿主文件工作台骨架不依赖任何插件样式；插件只填充内容载体与动作。
+   .file-panel* 是宿主对插件公开的挂载契约（spatial-patrol 的桌面样式整体建立在
+   .file-panel 根之上），会话页自身的文件预览列不再复用这些类，见 styles/shell.css。 */
 .file-panel { position: relative; display: grid; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr); border-left: 1px solid var(--border-default); background: var(--surface-base); }
 .file-panel-inner { display: grid; min-height: 0; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
-.panel-resizer { position: absolute; z-index: 5; top: 0; bottom: 0; left: -4px; width: 8px; cursor: col-resize; }
-.panel-resizer:hover { background: var(--surface-accent); }
 .file-panel-head { display: flex; min-width: 0; min-height: 46px; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border-subtle); background: var(--surface-base); }
 .file-panel-title { min-width: 0; flex: 1; overflow: hidden; color: var(--text-primary); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .file-panel-body { display: flex; min-height: 0; overflow: hidden; background: var(--surface-canvas); }
 .file-panel-foot { display: grid; gap: var(--space-3); padding: var(--space-3); border-top: 1px solid var(--border-subtle); background: var(--surface-base); }
 .file-panel-foot form { display: grid; gap: var(--space-2); }
-.file-panel-foot #spatialInstruction { width: 100%; }
 .message-file-cards { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: 0 0 var(--space-3); }
 .file-card { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border: 1px solid var(--border-default); border-radius: var(--radius-control); background: var(--surface-subtle); color: var(--text-secondary); font-size: 12px; }
 .file-card:hover { border-color: var(--border-accent); color: var(--text-accent); background: var(--surface-accent); }
@@ -872,10 +871,6 @@
 @media (max-width: 1100px) {
   .draft-step { grid-template-columns: 1fr; gap: var(--space-3); }
   .context-editor-view { grid-template-columns: minmax(260px, 4fr) minmax(380px, 7fr); }
-  .focus-shell:has(.file-panel) { grid-template-columns: minmax(0, 1fr) !important; }
-  .focus-shell:has(.file-panel) > .focus-view { display: none; }
-  .focus-shell:has(.file-panel) > .file-panel { grid-column: 1; border-left: 0; }
-  .focus-shell:has(.file-panel) .panel-resizer { display: none; }
 }
 
 @media (max-width: 900px) {

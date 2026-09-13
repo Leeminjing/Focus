@@ -1,8 +1,9 @@
 /*
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
- * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
- * 对话/Context/Agent/Commitment/压缩/插件等视图；工作流在任务列表替换时统一归一化活动
- * Context，并通过单一异步事件边界更新宿主挂载点及保留任务级草稿、滚动、化身位置与运行状态。
+ * preload 运行时信息和用户操作，输出为持久导航、会话区、会话页文件预览列、派生上下文检查器、
+ * 常驻会话 Patrol 小兵，以及对话/Context/Agent/Commitment/压缩/插件等视图；
+ * 工作流在任务列表替换时统一归一化活动 Context，并通过单一异步事件边界更新宿主挂载点及保留
+ * 任务级草稿、滚动、化身位置、预览列标签页与运行状态。
  */
 "use strict";
 
@@ -51,10 +52,12 @@ const mapViewPreferences = readMapViewPreferences();
    自定义属性，JS 只写入内联值；media query 只改其样式表默认值，因此用户偏好总是胜过断点。 */
 const SHELL_LAYOUT_KEY = "focus-shell-layout";
 
-// 壳层三栏拖拽边界：与 tokens.css 的 min/max 一致；导航可折叠到 0（collapse）即最小值 0。
+// 壳层四栏拖拽边界：与 tokens.css 的 min/max 一致；导航可折叠到 0（collapse）即最小值 0。
 const SHELL_LAYOUT_BOUNDS = Object.freeze({
   navMin: 0,
   navMax: 288,
+  previewMin: 280,
+  previewMax: 720,
   inspectorMin: 240,
   inspectorMax: 480,
   workspaceMin: 320,
@@ -65,6 +68,9 @@ const SHELL_LAYOUT_BOUNDS = Object.freeze({
 const ZOOM_LEVEL_KEY = "focus-zoom-level";
 const ZOOM_LEVEL_MIN = -3;
 const ZOOM_LEVEL_MAX = 5;
+
+// 文件预览模块在 state 之前取值：state 的初始化需要它来建立标签页集合。
+const filePreview = window.focusFilePreview;
 
 const state = {
   view: "focus",
@@ -132,8 +138,8 @@ const state = {
   plugins: { plugins: [], interfaces: {}, traces: [], filter: "all", selectedName: null },
   memory: { memories: [], selectedId: null, composing: false, draft: null, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], textSelection: "", textMessageId: null, textRange: null, editorRatio: 0.5, sourceRatio: 0.5, contentMode: "complete", segments: [], expandedGroups: [], mergeMode: false, selectedSourcesForMerge: [], sessionScrollTop: 0 },
   inspector: { open: window.innerWidth > 1100, tab: "context", returnFocus: null },
-  filesPanel: null,   // f18:右侧文件面板当前打开的 material(relative_path 等)
-  panelWidth: normalizePanelWidth(localStorage.getItem("focus-panel-width") || 400),
+  // 文件预览列：shelf 是标签页集合，loadedId 记录已取到内容的文件，避免每帧渲染都重新请求
+  filePreview: { shelf: filePreview.createShelf(), loadedId: null, content: null },
   shellLayout: normalizeShellLayout(readShellLayout(), window.innerWidth),
   zoomLevel: normalizeZoomLevel(localStorage.getItem(ZOOM_LEVEL_KEY)),
 };
@@ -146,6 +152,8 @@ const shellTaskTitle = document.querySelector("#shellTaskTitle");
 const shellTaskMeta = document.querySelector("#shellTaskMeta");
 const dialog = document.querySelector("#taskDialog");
 const settingsDialog = document.querySelector("#settingsDialog");
+const filePreviewColumn = document.querySelector("#filePreview");
+const filePreviewTabs = document.querySelector("#filePreviewTabs");
 const skillPicker = window.FocusSkillPicker;
 const contextEditor = window.FocusContextEditor;
 const compressionPanel = window.FocusCompressionPanel;
@@ -171,6 +179,7 @@ let compressionRequestSequence = 0;
 let draftOpenRequestSequence = 0;
 let pluginHydrationSequence = 0;
 let pluginViewRequestSequence = 0;
+let filePreviewLoadSequence = 0;
 let memoryViewRequestSequence = 0;
 let memoryHydrationSequence = 0;
 let contextTreeRequestSequence = 0;
@@ -179,20 +188,10 @@ let patrolAvatarController = null;
 const pluginStyleAssets = new Set();
 const pluginScriptAssets = new Map();
 
-function normalizePanelWidth(value, viewportWidth = window.innerWidth) {
-  const viewport = Number.isFinite(Number(viewportWidth)) && Number(viewportWidth) > 0
-    ? Number(viewportWidth)
-    : 1200;
-  const navigationWidth = viewport <= 1100 ? 72 : 188;
-  const workspaceWidth = Math.max(600, viewport - navigationWidth);
-  const maximum = Math.max(280, Math.min(720, workspaceWidth - 360));
-  const numeric = Number(value);
-  return Math.round(Math.min(maximum, Math.max(280, Number.isFinite(numeric) ? numeric : 400)));
-}
-
 function shellLayoutDefaults() {
   return {
     navWidth: 172,
+    previewWidth: clamp(window.innerWidth * 0.26, SHELL_LAYOUT_BOUNDS.previewMin, SHELL_LAYOUT_BOUNDS.previewMax),
     inspectorWidth: Math.round(Math.min(SHELL_LAYOUT_BOUNDS.inspectorMax, Math.max(SHELL_LAYOUT_BOUNDS.inspectorMin, window.innerWidth * 0.22))),
     navCollapsed: false,
     // 用户是否手动拖拽/折叠过；未定制时壳层完全由 CSS 断点默认驱动，不写内联宽度。
@@ -205,9 +204,11 @@ function readShellLayout() {
     const raw = localStorage.getItem(SHELL_LAYOUT_KEY);
     if (!raw) return shellLayoutDefaults();
     const parsed = JSON.parse(raw);
+    const defaults = shellLayoutDefaults();
     return {
-      navWidth: Number.isFinite(Number(parsed.navWidth)) ? Number(parsed.navWidth) : shellLayoutDefaults().navWidth,
-      inspectorWidth: Number.isFinite(Number(parsed.inspectorWidth)) ? Number(parsed.inspectorWidth) : shellLayoutDefaults().inspectorWidth,
+      navWidth: Number.isFinite(Number(parsed.navWidth)) ? Number(parsed.navWidth) : defaults.navWidth,
+      previewWidth: Number.isFinite(Number(parsed.previewWidth)) ? Number(parsed.previewWidth) : defaults.previewWidth,
+      inspectorWidth: Number.isFinite(Number(parsed.inspectorWidth)) ? Number(parsed.inspectorWidth) : defaults.inspectorWidth,
       navCollapsed: Boolean(parsed.navCollapsed),
       customized: true,
     };
@@ -216,29 +217,55 @@ function readShellLayout() {
   }
 }
 
-// 钳制三栏宽度：保证每栏在各自边界内，且三栏始终能容纳工作区保底宽度。
+// 钳制四栏宽度：保证每栏在各自边界内，且四栏始终能容纳工作区保底宽度。
 function normalizeShellLayout(layout, viewportWidth = window.innerWidth) {
   const bounds = SHELL_LAYOUT_BOUNDS;
   const width = Number.isFinite(Number(viewportWidth)) && Number(viewportWidth) > 0 ? Number(viewportWidth) : 1200;
   const navCollapsed = Boolean(layout?.navCollapsed);
-  let navWidth = Number.isFinite(Number(layout?.navWidth)) ? Number(layout.navWidth) : bounds.navMin;
-  let inspectorWidth = Number.isFinite(Number(layout?.inspectorWidth)) ? Number(layout.inspectorWidth) : bounds.inspectorMin;
-  navWidth = clamp(navWidth, navCollapsed ? 0 : bounds.navMin, bounds.navMax);
-  inspectorWidth = clamp(inspectorWidth, bounds.inspectorMin, bounds.inspectorMax);
-  // 三栏总和不能超出可用宽度，为工作区保留最小宽度；超出时优先挤压左、右栏。
-  const maxSides = Math.max(bounds.navMax + bounds.inspectorMax - 1, width - bounds.workspaceMin);
-  if (navWidth + inspectorWidth > maxSides) {
-    const scale = maxSides / (navWidth + inspectorWidth);
-    navWidth = Math.round(clamp(navWidth * scale, navCollapsed ? 0 : bounds.navMin, bounds.navMax));
-    inspectorWidth = Math.round(clamp(inspectorWidth * scale, bounds.inspectorMin, bounds.inspectorMax));
-    // 二次钳制：缩放到边界后若仍超出，回退到收缩侧的最小各自值。
-    if (navWidth + inspectorWidth > maxSides) {
-      const overflow = navWidth + inspectorWidth - maxSides;
-      if (navCollapsed) inspectorWidth -= overflow;
-      else inspectorWidth = Math.max(bounds.inspectorMin, inspectorWidth - overflow);
-    }
+  const sideMin = { navWidth: navCollapsed ? 0 : bounds.navMin, previewWidth: bounds.previewMin, inspectorWidth: bounds.inspectorMin };
+  const sideMax = { navWidth: bounds.navMax, previewWidth: bounds.previewMax, inspectorWidth: bounds.inspectorMax };
+  const sides = {
+    navWidth: Number.isFinite(Number(layout?.navWidth)) ? Number(layout.navWidth) : bounds.navMin,
+    previewWidth: Number.isFinite(Number(layout?.previewWidth)) ? Number(layout.previewWidth) : bounds.previewMin,
+    inspectorWidth: Number.isFinite(Number(layout?.inspectorWidth)) ? Number(layout.inspectorWidth) : bounds.inspectorMin,
+  };
+  for (const key of Object.keys(sides)) sides[key] = clamp(sides[key], sideMin[key], sideMax[key]);
+  // 侧栏可占用的上限：先扣掉工作区保底，再以三栏设计最大值之和封顶；视口极窄时上限随之为零。
+  const sideBudget = Math.max(0, Math.min(
+    width - bounds.workspaceMin,
+    bounds.navMax + bounds.previewMax + bounds.inspectorMax
+  ));
+  return {
+    ...settleSideWidths(sides, sideMin, sideBudget),
+    navCollapsed,
+    customized: Boolean(layout?.customized),
+  };
+}
+
+// 三块侧栏（导航/预览/检查器）共享上限：先按比例缩放，再按序回收超出的部分。
+// 全部触底仍超出时（视口极窄，四栏本就放不下）继续按最小宽度回收，绝不产生负的工作区宽度。
+function settleSideWidths(sides, min, budget) {
+  const keys = Object.keys(sides);
+  const total = keys.reduce((sum, key) => sum + sides[key], 0);
+  if (total > budget) {
+    const scale = budget / total;
+    for (const key of keys) sides[key] = clamp(sides[key] * scale, min[key], sides[key]);
   }
-  return { navWidth: Math.round(navWidth), inspectorWidth: Math.round(inspectorWidth), navCollapsed, customized: Boolean(layout?.customized) };
+  let overflow = keys.reduce((sum, key) => sum + sides[key], 0) - budget;
+  for (const key of ["inspectorWidth", "previewWidth", "navWidth"]) {
+    if (overflow <= 0) break;
+    const taken = Math.min(overflow, sides[key] - min[key]);
+    sides[key] -= taken;
+    overflow -= taken;
+  }
+  // 触底后仍超出：工作区保底优先于各栏最小宽度，继续从后往前回收。
+  for (const key of ["inspectorWidth", "previewWidth", "navWidth"]) {
+    if (overflow <= 0) break;
+    const taken = Math.min(overflow, sides[key]);
+    sides[key] -= taken;
+    overflow -= taken;
+  }
+  return Object.fromEntries(keys.map(key => [key, Math.round(sides[key])]));
 }
 
 function clamp(value, min, max) {
@@ -253,6 +280,7 @@ function applyShellLayout(layout) {
   if (layout.customized) {
     const navWidth = layout.navCollapsed ? 0 : layout.navWidth;
     shell.style.setProperty("--shell-nav-width", `${navWidth}px`);
+    shell.style.setProperty("--preview-width", `${layout.previewWidth}px`);
     shell.style.setProperty("--inspector-width", `${layout.inspectorWidth}px`);
   }
   shell.classList?.toggle("is-nav-collapsed", layout.navCollapsed);
@@ -266,13 +294,16 @@ function persistShellLayout() {
   } catch { /* 只读存储忽略 */ }
 }
 
-// 同步两个 resizer 手柄的可见性：导航折叠到 0 时隐藏导航侧手柄；
-// 检查器隐藏或窄屏覆盖态时隐藏检查器侧手柄（样式表也已用媒体查询覆盖窄屏）。
+// 同步三个 resizer 手柄的可见性：导航折叠到 0 时隐藏导航侧手柄；
+// 检查器隐藏时隐藏检查器侧手柄；预览列隐藏时隐藏预览手柄（样式表也已用媒体查询覆盖窄屏）。
 function syncShellResizerVisibility() {
   const shell = document.querySelector(".app-shell");
   if (!shell?.querySelector) return;
   const navResizer = shell.querySelector(".shell-resizer-nav");
   if (navResizer?.setAttribute) navResizer.setAttribute("aria-hidden", String(state.shellLayout.navCollapsed));
+  const previewResizer = shell.querySelector(".shell-resizer-preview");
+  const previewOpen = state.view === "focus" && !state.filePreview.shelf.isEmpty();
+  if (previewResizer?.setAttribute) previewResizer.setAttribute("aria-hidden", String(!previewOpen));
   const inspectorResizer = shell.querySelector(".shell-resizer-inspector");
   if (inspectorResizer?.setAttribute) inspectorResizer.setAttribute("aria-hidden", String(!state.inspector.open));
 }
@@ -295,54 +326,61 @@ function setShellNavCollapsed(navCollapsed) {
   persistShellLayout();
 }
 
-// 给两个 resizer 手柄绑定指针拖拽：把相邻栏宽度写回 .app-shell 内联自定义属性。
+// 分隔条与它调宽的那一栏：该栏在相邻栏的哪一侧，决定拖拽位移的正负。
+const SHELL_RESIZERS = Object.freeze([
+  { selector: ".shell-resizer-nav", target: "navWidth", direction: 1, bounds: "nav" },
+  { selector: ".shell-resizer-preview", target: "previewWidth", direction: -1, bounds: "preview" },
+  { selector: ".shell-resizer-inspector", target: "inspectorWidth", direction: -1, bounds: "inspector" },
+]);
+
+// 给三个 resizer 手柄绑定指针拖拽：把相邻栏宽度写回 .app-shell 内联自定义属性。
 function bindShellResizers() {
   const shell = document.querySelector(".app-shell");
   if (!shell?.querySelector) return;
-  const resizers = [
-    { node: shell.querySelector(".shell-resizer-nav"), target: "nav" },
-    { node: shell.querySelector(".shell-resizer-inspector"), target: "inspector" },
-  ];
-  for (const { node, target } of resizers) {
+  for (const spec of SHELL_RESIZERS) {
+    const node = shell.querySelector(spec.selector);
     if (!node || node.dataset.shellResizerBound) continue;
     node.dataset.shellResizerBound = "true";
-    let frame = null;
-    node.addEventListener("pointerdown", event => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      node.setPointerCapture?.(event.pointerId);
-      const startX = event.clientX;
-      const startNav = state.shellLayout.navWidth;
-      const startInspector = state.shellLayout.inspectorWidth;
-      const move = moveEvent => {
-        if (frame != null) cancelAnimationFrame(frame);
-        frame = requestAnimationFrame(() => {
-          frame = null;
-          const delta = moveEvent.clientX - startX;
-          const draft = { ...state.shellLayout, navCollapsed: false, customized: true };
-          // 导航↔工作区：向右拖(+)放大导航；工作区↔检查器：向左拖(-)放大检查器。
-          if (target === "nav") draft.navWidth = startNav + delta;
-          else draft.inspectorWidth = startInspector - delta;
-          state.shellLayout = normalizeShellLayout(draft, shell.clientWidth || window.innerWidth);
-          applyShellLayout(state.shellLayout);
-        });
-      };
-      const finish = () => {
-        if (frame != null) cancelAnimationFrame(frame);
-        frame = null;
-        try { node.releasePointerCapture?.(event.pointerId); } catch { /* ignore */ }
-        node.removeEventListener("pointermove", move);
-        node.removeEventListener("pointerup", finish);
-        node.removeEventListener("pointercancel", finish);
-        node.removeEventListener("lostpointercapture", finish);
-        persistShellLayout();
-      };
-      node.addEventListener("pointermove", move);
-      node.addEventListener("pointerup", finish);
-      node.addEventListener("pointercancel", finish);
-      node.addEventListener("lostpointercapture", finish);
-    });
+    bindShellResizer(node, shell, spec);
   }
+}
+
+function bindShellResizer(node, shell, spec) {
+  const min = SHELL_LAYOUT_BOUNDS[`${spec.bounds}Min`];
+  const max = SHELL_LAYOUT_BOUNDS[`${spec.bounds}Max`];
+  let frame = null;
+  node.addEventListener("pointerdown", event => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    node.setPointerCapture?.(event.pointerId);
+    const startX = event.clientX;
+    const startWidth = clamp(state.shellLayout[spec.target], min, max);
+    const move = moveEvent => {
+      if (frame != null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        const draft = { ...state.shellLayout, navCollapsed: false, customized: true };
+        // 先按边界钳制再交给整体钳制：拖到边界处手柄停住，且四栏合计仍为工作区保底。
+        draft[spec.target] = clamp(startWidth + spec.direction * (moveEvent.clientX - startX), min, max);
+        state.shellLayout = normalizeShellLayout(draft, shell.clientWidth || window.innerWidth);
+        applyShellLayout(state.shellLayout);
+      });
+    };
+    const finish = () => {
+      if (frame != null) cancelAnimationFrame(frame);
+      frame = null;
+      try { node.releasePointerCapture?.(event.pointerId); } catch { /* ignore */ }
+      node.removeEventListener("pointermove", move);
+      node.removeEventListener("pointerup", finish);
+      node.removeEventListener("pointercancel", finish);
+      node.removeEventListener("lostpointercapture", finish);
+      persistShellLayout();
+    };
+    node.addEventListener("pointermove", move);
+    node.addEventListener("pointerup", finish);
+    node.addEventListener("pointercancel", finish);
+    node.addEventListener("lostpointercapture", finish);
+  });
 }
 
 // 恢复路径：缺失/非法/超出边界一律回落 100%（级别 0），避免脏数据破坏界面。
@@ -492,18 +530,6 @@ window.__focusBackToFocus = () => {
   state.view = "focus";
   render();
 };
-
-// f18: 文件面板关闭钩子(viewer 面板内关闭按钮调用)
-window.__focusCloseFilePanel = () => {
-  state.filesPanel = null;
-  render();
-};
-
-function pluginViewForMaterial(material) {
-  return Object.values(pluginViews).find(view =>
-    typeof view.supportsMaterial === "function" && view.supportsMaterial(material)
-  ) || null;
-}
 
 function currentSpatialTarget() {
   for (const view of Object.values(pluginViews)) {
@@ -999,11 +1025,9 @@ function renderFocus(task = activeTask()) {
   const previousRailScrollTop = previousRail?.scrollTop;
   const wasPinned = previousConversation && previousConversation.scrollHeight - previousConversation.scrollTop - previousConversation.clientHeight < 80;
   const previousScrollTop = previousConversation?.scrollTop;
-  // F20:任务记录只占主工作区；Context、材料和 Agents 迁入持久检查器，文件仍使用专用画布。
-  // 显式行高约束 minmax(0,1fr):面板高度=工作区,内部文本视图可以独立滚动。
-  const panelOpen = !!state.filesPanel;
-  if (panelOpen) state.panelWidth = normalizePanelWidth(state.panelWidth);
-  const shellStyle = `grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr)${panelOpen ? ` ${state.panelWidth}px` : ""}`;
+  // F20:任务记录只占主工作区；Context、材料和 Agents 迁入持久检查器。
+  // 文件预览列已上移到 .app-shell 层，不再参与会话区内部的两列网格。
+  const shellStyle = "grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr)";
   patrolAvatarController?.destroy();
   patrolAvatarController = null;
   app.innerHTML = `
@@ -1029,7 +1053,6 @@ function renderFocus(task = activeTask()) {
           </div>
         </div>
       </section>
-      ${panelOpen ? `<aside class="file-panel" id="filePanel"><div class="panel-resizer" id="panelResizer" title="拖拽调整面板宽度"></div><div class="file-panel-inner"></div></aside>` : ""}
     </section>`;
   app.dataset.taskId = task.task_id;
   const conversation = document.querySelector("#conversation");
@@ -1048,50 +1071,160 @@ function renderFocus(task = activeTask()) {
   if (previousRailScrollTop != null && rail) rail.scrollTop = previousRailScrollTop;
   if (!previousConversation) requestAnimationFrame(() => rail?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "nearest" }));
   mountPatrolAvatarLayer(task, detail);
-  if (panelOpen) {
-    mountFilePanel();
-    bindPanelResizer();
-  }
+  renderFilePreview();
   renderInspector();
 }
 
-function mountFilePanel() {
-  const container = document.querySelector("#filePanel .file-panel-inner");
-  if (!container || !state.filesPanel) return;
-  const view = pluginViewForMaterial(state.filesPanel);
-  if (view?.mountPanel) view.mountPanel(container, state.filesPanel, state);
+// === 文件预览列：宿主自有能力，不依赖任何插件 ===
+
+// 预览列只在会话页且已打开文件时占位；离开会话页不销毁标签页，切回来仍可恢复。
+function renderFilePreview() {
+  if (!filePreviewColumn) return;
+  const open = state.view === "focus" && !state.filePreview.shelf.isEmpty();
+  filePreviewColumn.hidden = !open;
+  syncShellResizerVisibility();
+  if (!open) return;
+  filePreviewTabs.innerHTML = state.filePreview.shelf.list().map(renderFilePreviewTab).join("");
+  renderFilePreviewBody();
 }
 
-function bindPanelResizer() {
-  const resizer = document.querySelector("#panelResizer");
-  const shell = document.querySelector(".focus-shell");
-  if (!resizer || !shell) return;
-  resizer.addEventListener("pointerdown", event => {
-    event.preventDefault();
-    resizer.setPointerCapture(event.pointerId);
-    const startX = event.clientX;
-    const startWidth = state.panelWidth;
-    const move = moveEvent => {
-      // 面板左缘:向左拖(负位移)= 面板变宽。
-      const width = startWidth - (moveEvent.clientX - startX);
-      state.panelWidth = normalizePanelWidth(width);
-      shell.style.gridTemplateColumns = `minmax(0, 1fr) ${state.panelWidth}px`;
-    };
-    const finish = () => {
-      try {
-        if (resizer.hasPointerCapture?.(event.pointerId)) resizer.releasePointerCapture(event.pointerId);
-      } catch {}
-      resizer.removeEventListener("pointermove", move);
-      resizer.removeEventListener("pointerup", finish);
-      resizer.removeEventListener("pointercancel", finish);
-      resizer.removeEventListener("lostpointercapture", finish);
-      localStorage.setItem("focus-panel-width", String(state.panelWidth));
-    };
-    resizer.addEventListener("pointermove", move);
-    resizer.addEventListener("pointerup", finish);
-    resizer.addEventListener("pointercancel", finish);
-    resizer.addEventListener("lostpointercapture", finish);
-  });
+function renderFilePreviewTab(item) {
+  const current = state.filePreview.shelf.active();
+  const isActive = current?.material_id === item.material_id;
+  return `<span class="file-preview-tab${isActive ? " is-active" : ""}">
+    <button type="button" class="file-preview-tab-label" role="tab" aria-selected="${isActive}" data-action="activate-file-preview" data-material-id="${escapeHtml(item.material_id || "")}">${escapeHtml(fileNameFromLinkHref("", item.relative_path || item.path || ""))}</button>
+    <button type="button" class="file-preview-tab-close" data-action="close-file-preview" data-material-id="${escapeHtml(item.material_id || "")}" aria-label="关闭预览">×</button>
+  </span>`;
+}
+
+// 图片与 PDF 直接指向字节流接口，文本类需要先取回正文再渲染。
+function previewContentOf(item) {
+  if (item.kind === "image" || item.kind === "pdf") {
+    return { kind: item.kind, url: materialContentUrl(item.material_id), alt: item.relative_path || "" };
+  }
+  return null;
+}
+
+// 每次渲染起一个新的序号，晚到的旧请求据此丢弃，避免切换标签页后被过期内容覆盖。
+async function renderFilePreviewBody() {
+  const body = document.querySelector("#filePreviewBody");
+  const item = state.filePreview.shelf.active();
+  if (!body || !item) return;
+  const sequence = ++filePreviewLoadSequence;
+  const direct = previewContentOf(item);
+  if (direct) {
+    state.filePreview.loadedId = item.material_id;
+    return filePreview.mount(body, state.filePreview.shelf, direct);
+  }
+  if (item.kind === "binary" || !item.material_id) {
+    state.filePreview.loadedId = item.material_id || null;
+    return filePreview.mount(body, state.filePreview.shelf, { kind: "binary", item });
+  }
+  if (state.filePreview.loadedId === item.material_id && state.filePreview.content) {
+    return filePreview.mount(body, state.filePreview.shelf, state.filePreview.content);
+  }
+  body.textContent = "加载中…";
+  try {
+    const payload = await api(`/desktop/api/materials/${encodeURIComponent(item.material_id)}/preview`);
+    if (sequence !== filePreviewLoadSequence) return;
+    state.filePreview.loadedId = item.material_id;
+    state.filePreview.content = item.kind === "markdown"
+      ? { kind: "markdown", html: renderAssistantContent(payload.text || "") }
+      : { kind: "text", text: payload.text || "" };
+    filePreview.mount(body, state.filePreview.shelf, state.filePreview.content);
+  } catch (error) {
+    if (sequence !== filePreviewLoadSequence) return;
+    // 取不到文本（415 二进制、404 已删除等）落到信息卡，不留下空白或错误页
+    state.filePreview.loadedId = null;
+    state.filePreview.content = null;
+    filePreview.mount(body, state.filePreview.shelf, { kind: "binary", item });
+    if (error.status && error.status !== 415) setStatus(`无法预览该文件：${error.message}`, true);
+  }
+}
+
+// 清空预览列：切换视图、切换任务与测试复位都经由这里，保证三处状态一起归零。
+function resetFilePreviews() {
+  state.filePreview.shelf = filePreview.createShelf();
+  state.filePreview.loadedId = null;
+  state.filePreview.content = null;
+}
+
+// 打开一个文件：已登记为材料则按材料记录，否则只按文件名给出信息卡。
+function openFilePreview(record) {
+  if (!record) return;
+  const material = record.material_id
+    ? record
+    : materialForFileName(state.activeTaskId, record.relative_path || record.path || "");
+  const item = material
+    ? { ...material, kind: filePreview.classify(material.relative_path || material.path || "") }
+    : { ...record, kind: filePreview.classify(record.relative_path || record.path || "") };
+  state.filePreview.loadedId = null;
+  state.filePreview.content = null;
+  state.filePreview.shelf.open(item);
+  if (state.view !== "focus") {
+    state.view = "focus";
+    render();
+    return;
+  }
+  renderFilePreview();
+}
+
+// 材料在列表里的一句话说明：告诉用户点开后看到的是内容还是信息卡。
+function materialPreviewHint(material) {
+  return {
+    image: "图片材料",
+    markdown: "Markdown 文档",
+    text: "文本材料",
+    pdf: "PDF 文档",
+  }[filePreview.classify(material.relative_path || material.path || "")] || "文件信息卡";
+}
+
+// 预览列自身的交互（切换标签页、关闭标签页、信息卡的两个出路）；命中则接管本次点击。
+function handleFilePreviewAction(button) {
+  const action = button.dataset.action;
+  if (action === "open-file-panel") {
+    const material = button.dataset.materialId
+      ? (state.materials.get(state.activeTaskId) || []).find(item => item.material_id === button.dataset.materialId)
+      : materialForFileName(state.activeTaskId, button.dataset.fileName);
+    openFilePreview(material || { relative_path: button.dataset.fileName, path: button.dataset.fileName });
+    return true;
+  }
+  if (action === "open-preview-in-system") return openPreviewInSystem(), true;
+  if (action === "download-preview-file") return downloadPreviewFile(), true;
+  if (action !== "activate-file-preview" && action !== "close-file-preview") return false;
+  const item = state.filePreview.shelf.list().find(entry => entry.material_id === button.dataset.materialId);
+  if (!item) return true;
+  state.filePreview.loadedId = null;
+  state.filePreview.content = null;
+  if (action === "activate-file-preview") state.filePreview.shelf.activate(item);
+  else state.filePreview.shelf.close(item);
+  renderFilePreview();
+  return true;
+}
+
+// 在系统默认应用中打开当前文件；工作区边界由主进程复核。
+function openPreviewInSystem() {
+  const item = state.filePreview.shelf.active();
+  const bridge = window.focusDesktop;
+  if (!item?.path || typeof bridge?.openPath !== "function") return setStatus("当前运行环境无法在系统中打开文件", true);
+  Promise.resolve(bridge.openPath(item.path, activeTask()?.workspace_path || ""))
+    .catch(error => setStatus(`无法在系统中打开：${error.message}`, true));
+}
+
+// 另存为：取材料原始字节后交给主进程写盘，渲染器不接触文件系统。
+async function downloadPreviewFile() {
+  const item = state.filePreview.shelf.active();
+  const bridge = window.focusDesktop;
+  if (!item?.material_id || typeof bridge?.saveBytes !== "function") return setStatus("当前运行环境无法另存文件", true);
+  try {
+    const response = await fetch(materialContentUrl(item.material_id));
+    if (!response.ok) throw new Error(`读取材料失败（${response.status}）`);
+    const bytes = Array.from(new Uint8Array(await response.arrayBuffer()));
+    const saved = await bridge.saveBytes(item.relative_path || item.path || "material.bin", bytes);
+    if (saved) setStatus("已另存文件");
+  } catch (error) {
+    setStatus(`另存失败：${error.message}`, true);
+  }
 }
 
 // 记忆库编辑器：上下区（选源 vs 编辑）垂直分隔条 + 源/压缩区 水平分隔条，均可拖拽调高度/宽度。
@@ -1160,20 +1293,7 @@ function bindMemoryResizers() {
   }
 }
 
-window.addEventListener("resize", () => {
-  if (!state.filesPanel) return;
-  if (panelResizeFrame != null) cancelAnimationFrame(panelResizeFrame);
-  panelResizeFrame = requestAnimationFrame(() => {
-    panelResizeFrame = null;
-    const width = normalizePanelWidth(state.panelWidth);
-    if (width === state.panelWidth) return;
-    state.panelWidth = width;
-    const shell = document.querySelector(".focus-shell");
-    if (shell) shell.style.gridTemplateColumns = `minmax(0, 1fr) ${width}px`;
-  });
-});
-
-// 壳层三栏：窗口尺寸变化时对持久化的宽度做钳制并重新应用（内联自定义属性仍是唯一来源）。
+// 壳层四栏：窗口尺寸变化时对持久化的宽度做钳制并重新应用（内联自定义属性仍是唯一来源）。
 // 未定制用户不介入（让 CSS 断点默认值驱动），定制用户才跟随窗口重新钳制。
 window.addEventListener("resize", () => {
   if (panelResizeFrame != null) cancelAnimationFrame(panelResizeFrame);
@@ -1182,6 +1302,7 @@ window.addEventListener("resize", () => {
     if (!state.shellLayout.customized) return;
     const next = normalizeShellLayout(state.shellLayout, window.innerWidth);
     if (next.navWidth !== state.shellLayout.navWidth
+      || next.previewWidth !== state.shellLayout.previewWidth
       || next.inspectorWidth !== state.shellLayout.inspectorWidth
       || Boolean(next.navCollapsed) !== Boolean(state.shellLayout.navCollapsed)) {
       state.shellLayout = next;
@@ -1209,29 +1330,38 @@ function collectMessageImages(content) {
   return imageMaterialPicker.materialRefIds(contentPlainText(content)).map(materialContentUrl);
 }
 
-// f18:消息文件卡片 —— 常见类型全部可点开(图片/PDF/docx/doc/md/txt),点击打开右侧文件面板
-const FILE_VIEWABLE_RE = /\.(png|jpe?g|webp|bmp|gif|pdf|docx?|md|txt)$/i;
-
+// 消息文件卡片与正文文件链接共用同一条预览入口：任何文件都可点开，能否预览由 classify 决定，
+// 未知类型落到信息卡。此处不再按扩展名设门，否则 .json/.py/.svg 一类会点击后毫无反应。
 function fileNameFromLinkHref(href, hostPart = "") {
   const source = href.startsWith("file:") ? href : hostPart;
   return decodeURIComponent(source.replace(/[?#].*$/, "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "");
 }
 
-function renderFileCards(message) {
+// 消息里的文件名只有路径，能否预览取决于它是否已登记为材料（登记后才有 material_id 与真实路径）。
+function materialForFileName(taskId, fileName) {
+  const materials = state.materials.get(taskId) || [];
+  return materials.find(item => item.relative_path === fileName || item.path === fileName) || null;
+}
+
+function renderFileCard(file, task) {
+  const name = String(file?.filename || file?.name || "");
+  if (!name) return "";
+  const icon = /\.(png|jpe?g|webp|bmp|gif|svg|ico)$/i.test(name)
+    ? "file-image"
+    : /\.(pdf|docx?|md|txt)$/i.test(name) ? "file-text" : "file";
+  const size = file?.size ? ` · ${formatBytes(file.size)}` : "";
+  const iconMarkup = `<span class="ui-icon is-sm icon-${icon}" aria-hidden="true"></span>`;
+  const material = task ? materialForFileName(task.task_id, name) : null;
+  if (!material) {
+    return `<span class="file-card is-plain" title="该文件尚未登记为材料，无法在工作区内定位">${iconMarkup}<span>${escapeHtml(name)}${size}</span></span>`;
+  }
+  return `<button class="file-card" data-action="open-file-panel" data-material-id="${escapeHtml(material.material_id)}" title="点击打开文件预览">${iconMarkup}<span>${escapeHtml(name)}${size}</span></button>`;
+}
+
+function renderFileCards(message, task) {
   const files = message.files;
   if (!Array.isArray(files) || !files.length) return "";
-  const cards = files.map(file => {
-    const name = String(file?.filename || file?.name || "");
-    if (!name) return "";
-    const viewable = FILE_VIEWABLE_RE.test(name)
-      && !!pluginViewForMaterial({ relative_path: name, path: name });
-    const icon = /\.(png|jpe?g|webp|bmp|gif)$/i.test(name) ? "file-image" : /\.(pdf|docx?|md|txt)$/i.test(name) ? "file-text" : "file";
-    const size = file?.size ? ` · ${formatBytes(file.size)}` : "";
-    const iconMarkup = `<span class="ui-icon is-sm icon-${icon}" aria-hidden="true"></span>`;
-    return viewable
-      ? `<button class="file-card" data-action="open-file-panel" data-file-name="${escapeHtml(name)}" title="点击在右侧面板打开">${iconMarkup}<span>${escapeHtml(name)}${size}</span></button>`
-      : `<span class="file-card is-plain">${iconMarkup}<span>${escapeHtml(name)}${size}</span></span>`;
-  }).join("");
+  const cards = files.map(file => renderFileCard(file, task)).join("");
   return cards ? `<div class="message-file-cards">${cards}</div>` : "";
 }
 
@@ -1285,7 +1415,7 @@ function messageKeyOf(message, fallbackIndex) {
   return message?.id || message?.message_id || `${message?.role || "message"}:${fallbackIndex}`;
 }
 
-function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}) {
+function renderMessage(message, { showRoleHeader = false, fallbackKey = 0, task = null } = {}) {
   // 后端兜底降级消息按工具结果样式渲染，不泄露原始 XML 标签
   const degraded = compressionPanel.degradedParts(message);
   const messageKey = messageKeyOf(message, fallbackKey);
@@ -1314,7 +1444,7 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
   }
   return `<article class="work-record message ${kind}" data-message-key="${escapeHtml(messageKey)}">
     ${header}
-    ${renderMessageImages(messageImages)}${renderFileCards(message)}
+    ${renderMessageImages(messageImages)}${renderFileCards(message, task)}
     <div class="message-content">${renderedContent}</div>
     ${renderMessageDetails(message)}
   </article>`;
@@ -1364,7 +1494,7 @@ function renderConversation(detail, task) {
   let messageIndex = 0;
   const flushMessages = () => {
     if (roleStructured) {
-      for (const message of messageGroup) renderedParts.push(renderMessage(message, { showRoleHeader: true }));
+      for (const message of messageGroup) renderedParts.push(renderMessage(message, { showRoleHeader: true, task }));
       messageGroup = [];
       return;
     }
@@ -1377,7 +1507,7 @@ function renderConversation(detail, task) {
     for (const item of conversationEvents.normalize(messageGroup)) {
       if (item.type !== "message") { eventGroup.push(item); continue; }
       flushEvents();
-      renderedParts.push(renderMessage(item.message, { fallbackKey: messageIndex }));
+      renderedParts.push(renderMessage(item.message, { fallbackKey: messageIndex, task }));
       messageIndex += 1;
     }
     flushEvents();
@@ -1668,13 +1798,12 @@ function renderImageMaterial(material) {
 function renderMaterial(material) {
   if (material.is_image) return renderImageMaterial(material);
   const open = state.openMaterial === material.material_id;
-  const viewable = !!pluginViewForMaterial(material);
   const reading = material.reading_mode === "full" ? "完整阅读" : "粗略阅读";
   const instruction = material.instruction_mode === "strict" ? "严格约束" : "参考材料";
   const retention = material.retention === "irreplaceable" ? "版本保护" : "可移除";
   return `<article class="material-row" data-material-id="${material.material_id}">
     <header class="material-summary">
-      <button class="material-title-button" data-action="${viewable ? "open-material" : "toggle-material"}" title="${viewable ? "在文件工作台打开" : "查看材料规则"}"><span class="material-file-icon" aria-hidden="true"><span class="ui-icon is-sm icon-file-text"></span></span><span><strong class="material-name">${escapeHtml(material.relative_path)}</strong><small>${viewable ? "可在文件工作台查看" : "未启用匹配的查看器"}</small></span></button>
+      <button class="material-title-button" data-action="open-material" title="在文件预览列打开"><span class="material-file-icon" aria-hidden="true"><span class="ui-icon is-sm icon-file-text"></span></span><span><strong class="material-name">${escapeHtml(material.relative_path)}</strong><small>${escapeHtml(materialPreviewHint(material))}</small></span></button>
       <button class="text-button" data-action="toggle-material" aria-expanded="${open}">${open ? "收起" : "管理"}</button>
     </header>
     <div class="material-policy-row"><span class="ui-badge">${reading}</span><span class="ui-badge${material.instruction_mode === "strict" ? " is-warning" : ""}">${instruction}</span><span class="ui-badge${material.retention === "irreplaceable" ? " is-success" : ""}">${retention}</span></div>
@@ -4415,24 +4544,9 @@ async function handleMaterialAction(button) {
   if (button.dataset.action === "toggle-must-view") { toggleMustView(materialId); return renderFocus(); }
   if (button.dataset.action === "preview-image-material") return openImageLightbox(materialContentUrl(materialId), material?.relative_path || "图片材料");
   if (button.dataset.action === "open-material") {
-    // f18:材料「查看」→ 右侧文件面板(不再全屏替换)
+    // 材料「查看」→ 宿主文件预览列
     if (!material) return setStatus("材料不存在", true);
-    if (!pluginViewForMaterial(material)) return setStatus("当前没有启用的材料查看器", true);
-    state.filesPanel = { ...material };
-    render();
-  }
-  if (button.dataset.action === "open-file-panel") {
-    // f18:消息文件卡片 → 右侧文件面板打开(优先匹配已登记材料,否则按文件名)
-    const fileName = button.dataset.fileName;
-    const taskId = state.activeTaskId;
-    const material = (state.materials.get(taskId) || [])
-      .find(item => item.relative_path === fileName || item.path === fileName);
-    const target = material
-      ? { ...material }
-      : { relative_path: fileName, path: fileName };
-    if (!pluginViewForMaterial(target)) return setStatus("当前没有启用的文件查看器", true);
-    state.filesPanel = target;
-    render();
+    openFilePreview(material);
   }
   if (button.dataset.action === "save-material") {
     const body = Object.fromEntries([...row.querySelectorAll("select[data-field]")].map(select => [select.dataset.field, select.value]));
@@ -4473,7 +4587,8 @@ async function switchTask(taskId) {
   const requestId = ++taskSwitchSequence;
   cancelPendingViewRequests();
   if (state.view === "focus") persistFocusState();
-  state.filesPanel = null;
+  // 材料属于上一个任务，切换任务时清空预览列，避免残留其他任务的路径
+  resetFilePreviews();
   state.activeTaskId = taskId;
   state.view = "focus";
   render();
@@ -4630,19 +4745,21 @@ async function openSettings() {
 
 // f18:拦截消息内链接导航(避免 Electron 窗口跳转到本地路径白屏)。
 // capture 阶段拦截 + stopPropagation。判据:
-//   - file:// 链接:直接阻止导航,按文件打开面板;
-//   - http/https 链接:若 host 含中文或本地文件扩展结尾(markdown-it linkify 把
-//     file:///C:/.../中文名.md 误解析成 http://中文名.md/ 的形态)→ 视为文件误解析,
-//     阻止导航并从误解析的 host 提取文件名打开面板;真实外链放行。
+//   - file:// 链接:直接阻止导航,按文件打开预览列;
+//   - http/https 链接:markdown-it linkify 会把 file:///C:/.../中文名.md 误解析成
+//     http://中文名.md/ 的形态。判据为「host 含中文」或「host 本身像文件名」——
+//     后者复用预览模块的 classify，使「什么算文件名」只有一处判据，
+//     因此 http://data.json/ 这类误解析同样被还原成文件而不是当外链打开。
 document.addEventListener("click", event => {
   const anchor = event.target.closest("a[href]");
   if (!anchor) return;
   const href = anchor.getAttribute("href") || "";
   const isHttp = /^https?:\/\//i.test(href);
   const hostPart = isHttp ? href.replace(/^https?:\/\//i, "").split("/")[0] : "";
+  // 误解析出来的 host 自带末尾斜杠，故先剥掉再判定扩展名
   const looksLikeFileHost = isHttp && (
-    /\.(md|txt|png|jpe?g|pdf|docx?)$/i.test(hostPart)
-    || /[一-鿿]/.test(hostPart)
+    /[一-鿿]/.test(hostPart)
+    || filePreview.classify(hostPart.replace(/\/$/, "")) !== "binary"
   );
   if (!isHttp && !href.startsWith("file:")) return; // 非 http/file 链接不处理
   if (isHttp && !looksLikeFileHost) {
@@ -4655,15 +4772,10 @@ document.addEventListener("click", event => {
   event.preventDefault();
   event.stopPropagation();
   // 显示文字可能含图标/说明,路径只取自 href(file URL)或兼容分支的 host。
+  // 任何后缀都交给 classify 决定呈现方式；未登记为材料时退化为信息卡，因此不存在「点了没反应」。
   const fileName = fileNameFromLinkHref(href, hostPart);
-  if (FILE_VIEWABLE_RE.test(fileName)) {
-    const taskId = state.activeTaskId;
-    const material = (state.materials.get(taskId) || [])
-      .find(item => item.relative_path === fileName || item.path === fileName);
-    const target = material ? { ...material } : { relative_path: fileName, path: fileName };
-    if (!pluginViewForMaterial(target)) return setStatus("当前没有启用的文件查看器", true);
-    state.filesPanel = target;
-    render();
+  if (fileName) {
+    openFilePreview(materialForFileName(state.activeTaskId, fileName) || { relative_path: fileName, path: fileName });
   }
 }, true);
 
@@ -4903,6 +5015,7 @@ async function handleDocumentClick(event) {
     draft.history_messages = draft.history_messages.filter((item, itemIndex) => itemIndex !== index && !callIds.has(item.tool_call_id) && !(item.tool_calls || []).some(call => callIds.has(call.id)));
     renderDraft(); scheduleDraftSave(); return;
   }
+  if (handleFilePreviewAction(button)) return;
   if (button.closest("[data-material-id]")) return handleMaterialAction(button);
   if (action === "agent-details") return openAgentDetails(button.dataset.agentId);
   if (action === "agent-list") { state.agentDetails = { agentId: null, messages: [], curation: null, busy: false }; return renderInspector(); }

@@ -8,6 +8,11 @@ from docx import Document
 from langchain.tools import ToolRuntime
 from langchain_core.tools import ToolException
 
+pytest.importorskip(
+    "plugins.spatial_patrol.routes",
+    reason="spatial-patrol 已临时搁置（plugin.json enabled=false），回装后本文件自动恢复运行",
+)
+
 from plugins.spatial_patrol.docx_edit import (
     delete_docx_paragraph,
     observe_docx_delete_candidate,

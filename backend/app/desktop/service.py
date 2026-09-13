@@ -86,6 +86,7 @@ from backend.app.desktop.material_files import (
     OversizedImage,
     guard_upload,
     prepare_attachment_target,
+    read_material_text,
     resolve_material_path,
 )
 from focus.agents.must_view import (
@@ -2308,6 +2309,21 @@ class DesktopService:
             image_mime_from_name(material.relative_path) or "application/octet-stream"
         )
         return media_type, path.read_bytes()
+
+    async def read_material_preview(self, material_id: str) -> dict[str, Any]:
+        """按预览上限读取材料文本；非文本内容由 read_material_text 抛 UnicodeDecodeError。"""
+        async with self.session_factory() as session:
+            material, workspace = await self._get_material_entities(session, material_id)
+        path = resolve_material_path(workspace.path, material.relative_path)
+        if not path.is_file():
+            raise HTTPException(404, "材料文件不存在")
+        preview = read_material_text(path)
+        return {
+            "text": preview.text,
+            "encoding": preview.encoding,
+            "truncated": preview.truncated,
+            "size_bytes": preview.size_bytes,
+        }
 
     async def _resolve_must_view_materials(
         self, session: AsyncSession, task_id: str, workspace_path: str, material_ids: list[str]

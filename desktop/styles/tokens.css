@@ -71,6 +71,9 @@
   --shell-nav-collapsed: 96px;
   --shell-nav-max-width: 288px;
   --workspace-min-width: 320px;
+  --file-preview-min-width: 280px;
+  --file-preview-max-width: 720px;
+  --file-preview-width: clamp(var(--file-preview-min-width), 26vw, var(--file-preview-max-width));
   --inspector-min-width: 240px;
   --inspector-max-width: 480px;
   --inspector-width: clamp(var(--inspector-min-width), 22vw, var(--inspector-max-width));

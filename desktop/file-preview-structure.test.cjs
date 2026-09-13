@@ -1,0 +1,114 @@
+/*
+ * 本文件对外提供会话页文件预览列的结构守卫。输入为桌面 HTML、壳层样式、预览模块与宿主渲染源码，
+ * 输出为「挂载点位置、可见性契约、四栏尺寸与覆盖断点、无插件依赖」四类静态断言；
+ * 工作流只读源码文本，不启动 Electron、不访问网络，因此可在无桌面栈的环境下先拦截结构回退。
+ * 示例：`node file-preview-structure.test.cjs`
+ */
+"use strict";
+
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const read = relative => fs.readFileSync(path.join(__dirname, relative), "utf8");
+
+const index = read("index.html");
+const shell = read("styles/shell.css");
+const tokens = read("styles/tokens.css");
+const views = read("styles/views.css");
+const app = read("app.js");
+const previewModule = read("file-preview.js");
+
+// === 挂载点位于壳层，顺序为 导航 → 会话区 → 预览列 → 检查器 ===
+
+const shellBody = index.slice(index.indexOf('class="app-shell"'), index.indexOf("</div>\n    <span id=\"zoomAnnouncement\""));
+const order = ["app-navigation", "app-workspace", "filePreview", "appInspector"].map(marker => {
+  const at = shellBody.indexOf(marker);
+  assert.ok(at >= 0, `壳层缺少 ${marker}`);
+  return at;
+});
+assert.deepEqual([...order].sort((a, b) => a - b), order, "四块区域的 DOM 顺序必须是导航 → 会话区 → 预览列 → 检查器");
+assert.match(shellBody, /shell-resizer-preview/);
+
+// 未打开文件时预览列必须自带 hidden，避免首帧闪出空列
+assert.match(index, /<aside id="filePreview" class="file-preview" aria-label="文件预览" hidden>/);
+
+// 预览模块必须在 app.js 之前加载（app.js 初始化即需要其 createShelf）
+const moduleAt = index.indexOf("file-preview.js");
+const appAt = index.indexOf("app.js?v=");
+assert.ok(moduleAt >= 0 && appAt > moduleAt, "file-preview.js 必须先于 app.js 加载");
+
+// === 四栏尺寸与覆盖断点 ===
+
+assert.match(shell, /\.file-preview\s*\{[^}]*flex:\s*0 0 var\(--preview-width\)/s);
+assert.match(shell, /\.shell-resizer\.shell-resizer-preview\s*\{\s*left:\s*calc\(100% - var\(--inspector-width\) - var\(--preview-width\)/s);
+assert.match(shell, /@media \(max-width: 1180px\)[\s\S]*?\.file-preview\s*\{[^}]*position:\s*absolute/s);
+assert.match(shell, /@media \(max-width: 1180px\)[\s\S]*?\.shell-resizer\.shell-resizer-preview\s*\{\s*display:\s*none/s);
+// var() 不能用于媒体查询条件，断点必须是字面量
+assert.doesNotMatch(shell, /@media[^{]*var\(/);
+assert.match(tokens, /--file-preview-min-width:\s*\d+px/);
+assert.match(tokens, /--file-preview-max-width:\s*\d+px/);
+
+// === 宿主预览不依赖插件注册表 ===
+
+assert.match(app, /const filePreview = window\.focusFilePreview/);
+assert.doesNotMatch(app, /pluginViewForMaterial/, "预览路径不得再经插件注册表判定");
+assert.doesNotMatch(app, /mountFilePanel|bindPanelResizer|panelResizer/);
+assert.match(app, /function renderFilePreview\(\)\s*\{[^}]*state\.view === "focus"/s);
+assert.match(app, /function openFilePreview\(/);
+assert.match(app, /function resetFilePreviews\(/);
+
+// === 两个入口一律不得按扩展名设门 ===
+// 历史缺陷：消息文件卡片已对所有文件可点，正文链接却仍被 FILE_VIEWABLE_RE 拦住，
+// 导致 .json/.py/.svg 一类点击后毫无反应，违背「所有文件类型都有可用的呈现」。
+assert.doesNotMatch(app, /FILE_VIEWABLE_RE/, "链接入口不得再按扩展名设门");
+assert.doesNotMatch(app, /VIEWABLE_RE|VIEWABLE_PATTERN/);
+// 链接入口在取得文件名后必须无条件交给预览，不再有 test() 判定
+assert.match(app, /const fileName = fileNameFromLinkHref\(href, hostPart\);\s*\n\s*if \(fileName\) \{\s*\n\s*openFilePreview\(/);
+// host 不得再用自定义扩展名集合判定（classify 内部的后缀表是唯一来源）。
+// 只在链接处理器区块内断言：renderFileCard 里选择图标的扩展名正则是纯装饰，不是门。
+const linkHandler = app.slice(app.indexOf('document.addEventListener("click"'), app.indexOf('// 全局错误可见化'));
+assert.ok(linkHandler.length > 0, "应能定位链接处理器区块");
+assert.ok(
+  linkHandler.includes('filePreview.classify(hostPart.replace(/\\/$/, "")) !== "binary"'),
+  "外链与文件误解析的分流必须复用 classify，而不是自带后缀表"
+);
+assert.doesNotMatch(linkHandler, /\|jpe\?g\||\|docx\?\)/, "链接处理器不得自带扩展名集合");
+// 文件卡片只有「查得到材料」与「查不到退回不可点说明」两种结果，没有「类型不支持」分支
+assert.match(app, /function renderFileCard\(file, task\)/);
+assert.match(app, /if \(!material\) \{/);
+
+// === 预览模块的值域封闭与兜底 ===
+
+assert.match(previewModule, /global\.focusFilePreview = \{/);
+for (const exported of ["classify", "createShelf", "renderLineNumbers", "binaryCardModel", "mount"]) {
+  assert.match(previewModule, new RegExp(`\\b${exported}\\b`), `预览模块必须对外提供 ${exported}`);
+}
+assert.match(previewModule, /return KIND_BY_SUFFIX\.get\(suffixOf\(name\)\) \|\| "binary"/);
+// 未知类型走信息卡，保证任何文件都有呈现
+assert.match(previewModule, /const render = RENDERERS\[current\.kind\] \|\| renderBinaryCard/);
+
+// === 旧面板样式保留为插件契约，宿主自身不再引用 ===
+
+assert.match(views, /宿主对插件公开的挂载契约/);
+assert.match(views, /\.file-panel-head/);
+assert.doesNotMatch(app, /class="file-panel/);
+
+// === 信息卡的两个出路经受限 IPC，渲染器不接触文件系统 ===
+
+const main = read("main.cjs");
+const preload = read("preload.cjs");
+assert.match(main, /ipcMain\.handle\("focus:open-path"/);
+assert.match(main, /function containedMaterialPath\(/);
+assert.match(main, /ipcMain\.handle\("focus:save-bytes"/);
+assert.match(preload, /openPath: \(filePath, workspacePath\) => ipcRenderer\.invoke\("focus:open-path"/);
+assert.match(preload, /saveBytes: \(suggestedName, bytes\) => ipcRenderer\.invoke\("focus:save-bytes"/);
+// 信息卡的两个出路由预览模块标注，app.js 负责接线
+assert.match(app, /action === "open-preview-in-system"/);
+assert.match(app, /action === "download-preview-file"/);
+assert.match(previewModule, /dataset\.action = "open-preview-in-system"/);
+assert.match(previewModule, /dataset\.action = "download-preview-file"/);
+// 渲染器不得直接写文件系统
+assert.doesNotMatch(app, /require\("node:fs"\)|writeFileSync/);
+
+console.log("file-preview-structure: all assertions passed");

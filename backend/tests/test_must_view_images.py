@@ -24,6 +24,7 @@ from backend.app.desktop.material_files import (
     resolve_material_path,
 )
 from config_helpers import app_config_for as _app_config
+from conftest import plugin_manifest_enabled
 from focus.agents.compression.schemas import validate_apply_decision
 from focus.agents.must_view import (
     MUST_VIEW_CONTEXT_KEY,
@@ -456,6 +457,10 @@ def test_compression_gate_triggers_on_image_usage():
 # === W6 依赖视觉的插件可用性随模型声明而变 ===
 
 
+@pytest.mark.skipif(
+    not plugin_manifest_enabled("spatial-patrol"),
+    reason="spatial-patrol 已临时搁置（plugin.json enabled=false），回装后自动恢复",
+)
 def test_spatial_plugin_unavailable_when_model_is_text_only(monkeypatch):
     monkeypatch.delenv("FOCUS_MODEL", raising=False)
     import plugins.spatial_patrol.spatial as spatial
@@ -467,6 +472,10 @@ def test_spatial_plugin_unavailable_when_model_is_text_only(monkeypatch):
         spatial.init_service({"vision_model": ""}, registry=None)
 
 
+@pytest.mark.skipif(
+    not plugin_manifest_enabled("spatial-patrol"),
+    reason="spatial-patrol 已临时搁置（plugin.json enabled=false），回装后自动恢复",
+)
 def test_spatial_plugin_available_when_model_declares_vision(monkeypatch):
     monkeypatch.delenv("FOCUS_MODEL", raising=False)
     import plugins.spatial_patrol.spatial as spatial

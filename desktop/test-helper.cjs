@@ -1,7 +1,8 @@
 /*
- * 本文件对外提供 app-*.test.cjs 共用的 VM 测试脚手架。输入为选择器、状态记录、网络与额外全局
- * 配置，输出为带浏览器语义、localStorage、Markdown 渲染器和 Context helper 的隔离上下文；工作流
- * 统一测试环境并允许调用方覆盖差异点。示例：`createAppHarness({ fetch: true })`。
+ * 本文件对外提供 app-*.test.cjs 与 shell-layout.test.cjs 共用的 VM 测试脚手架。输入为选择器、状态记录、
+ * 网络与额外全局配置，输出为带浏览器语义、localStorage、Markdown 渲染器、Context helper 与文件预览
+ * 模块的隔离上下文；工作流统一测试环境并允许调用方覆盖差异点。
+ * 示例：`createAppHarness({ fetch: true })`。
  */
 "use strict";
 const fs = require("node:fs");
@@ -93,6 +94,7 @@ function createAppHarness(options = {}) {
   vm.runInContext(fs.readFileSync(require.resolve("./conversation-events.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./conversation-reconciler.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./image-material-picker.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("./file-preview.js"), "utf8"), context);
   return { vm, context, document, inert, statusNode, statusState, fetches, listeners };
 }
 

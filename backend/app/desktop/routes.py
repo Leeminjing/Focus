@@ -2,7 +2,7 @@
 本文件对外提供 desktop_router，作为桌面 PoC 的 HTTP 与 SSE 接口层。
 
 输入为带 `X-Focus-Session` 的桌面请求以及 models.py 定义的数据模型；输出为工作区、
-Context、任务、草稿、普通/策展 Patrol、运行、材料 JSON、材料原始字节或独立 SSE 流。具体工作流为
+Context、任务、草稿、普通/策展 Patrol、运行、材料 JSON、材料原始字节、材料文本预览或独立 SSE 流。具体工作流为
 校验本机会话后调用 DesktopService，并保持所有事件按 run_id 订阅；材料上传与粘贴落盘统一走
 DesktopService.store_uploaded_material（写工作区专用附件目录，不污染工作区根）。
 """
@@ -368,6 +368,15 @@ async def material_content(material_id: str, request: Request) -> Response:
         material_id
     )
     return Response(content=data, media_type=media_type)
+
+
+@desktop_router.get("/materials/{material_id}/preview")
+async def material_preview(material_id: str, request: Request) -> dict:
+    """回吐材料的文本预览；无法按已知编码读成文本时以 415 拒绝，由前端落到信息卡。"""
+    try:
+        return await request.app.state.desktop_service.read_material_preview(material_id)
+    except UnicodeDecodeError as error:
+        raise HTTPException(415, "该材料不是可读文本") from error
 
 
 @desktop_router.put("/materials/{material_id}")

@@ -64,7 +64,7 @@ async function run() {
     window.addEventListener('unhandledrejection', event => window.__f20AuditErrors.push('rejection:' + String(event.reason)));
     window.__f20PrepareAuditTarget = async target => {
       document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
-      state.filesPanel = null;
+      resetFilePreviews();
       state.inspector.open = false;
       state.inspector.returnFocus = null;
       state.contextDraft = null;
@@ -138,8 +138,7 @@ async function run() {
       } else if (target === 'file') {
         const material = { material_id: 'm-file', relative_path: 'specs/product-direction.md', reading_mode: 'full', instruction_mode: 'strict', retention: 'irreplaceable' };
         state.materials.set(task.task_id, [material]);
-        state.filesPanel = material;
-        state.panelWidth = 520;
+        openFilePreview(material);
         state.view = 'focus'; render();
       } else if (target === 'dialog') {
         state.view = 'focus'; render();
@@ -191,8 +190,7 @@ async function run() {
         const appRect = document.querySelector('#app').getBoundingClientRect();
         const workspaceRect = document.querySelector('.app-workspace').getBoundingClientRect();
         const mapCards = [...document.querySelectorAll('.map-root-group .task-card-shell')].slice(0, 2).map(node => node.getBoundingClientRect());
-        const focusShell = document.querySelector('.focus-shell');
-        const filePanel = document.querySelector('.file-panel');
+        const filePanel = document.querySelector('.file-preview');
         return {
           duplicateIds: ids.length - new Set(ids).size,
           unnamed: unnamed.length,
@@ -212,12 +210,12 @@ async function run() {
           contextEditorColumns: document.querySelector('.context-editor-view') ? getComputedStyle(document.querySelector('.context-editor-view')).gridTemplateColumns : '',
           pluginsWorkbenchColumns: document.querySelector('.plugins-workbench') ? getComputedStyle(document.querySelector('.plugins-workbench')).gridTemplateColumns : '',
           fileFocusDisplay: document.querySelector('.focus-view') ? getComputedStyle(document.querySelector('.focus-view')).display : '',
-          filePanelWidthDelta: focusShell && filePanel ? Math.abs(focusShell.getBoundingClientRect().width - filePanel.getBoundingClientRect().width) : 0,
+          filePreviewPosition: filePanel ? getComputedStyle(filePanel).position : '',
           errors: window.__f20AuditErrors.splice(0),
         };
       })()`);
       const problems = Object.entries(result)
-        .filter(([key, value]) => !["appWidth", "appHeight", "errors", "openDialogs", "duplicateContentTitles", "mapToolbarHeight", "mapCardsSameRow", "contextEditorColumns", "pluginsWorkbenchColumns", "fileFocusDisplay", "filePanelWidthDelta"].includes(key) && Number(value) > 0)
+        .filter(([key, value]) => !["appWidth", "appHeight", "errors", "openDialogs", "duplicateContentTitles", "mapToolbarHeight", "mapCardsSameRow", "contextEditorColumns", "pluginsWorkbenchColumns", "fileFocusDisplay", "filePreviewPosition"].includes(key) && Number(value) > 0)
         .map(([key, value]) => `${key}=${value}`);
       if (target === "dialog" ? result.openDialogs !== 1 : result.openDialogs !== 0) problems.push(`openDialogs=${result.openDialogs}`);
       if (result.appWidth < 300 || result.appHeight < 220) problems.push(`app=${result.appWidth}x${result.appHeight}`);
@@ -226,7 +224,8 @@ async function run() {
       if (item.width === 900 && item.zoom === 1.5 && target === "map" && result.mapCardsSameRow) problems.push("mapCards=still-two-columns");
       if (item.width === 900 && item.zoom === 1.5 && target === "context" && result.contextEditorColumns.trim().split(/\s+/).length !== 1) problems.push(`contextColumns=${result.contextEditorColumns}`);
       if (item.width === 900 && item.zoom === 1.5 && target === "plugins" && result.pluginsWorkbenchColumns.trim().split(/\s+/).length !== 1) problems.push(`pluginColumns=${result.pluginsWorkbenchColumns}`);
-      if ((item.width / item.zoom) <= 1100 && target === "file" && (result.fileFocusDisplay !== "none" || result.filePanelWidthDelta > 1)) problems.push(`fileSingleSurface=${result.fileFocusDisplay}/${result.filePanelWidthDelta}`);
+      // 窄屏下预览列转覆盖层，不得引起任何横向溢出（documentOverflow 已单独断言）
+      if ((item.width / item.zoom) <= 1180 && target === "file" && result.filePreviewPosition !== "absolute") problems.push(`filePreviewOverlay=${result.filePreviewPosition}`);
       if (result.errors.length) problems.push(`errors=${result.errors.join("|")}`);
       if (problems.length) failures.push(`${target} ${item.width}x${item.height}@${item.zoom}: ${problems.join(", ")}`);
       if (qaDir && (captureAllViewports || (item.width === 1440 && item.height === 1024 && item.zoom === 1))) {
