@@ -1,7 +1,9 @@
 <!doctype html>
 <!--
   本文档提供 Focus 桌面宿主的持久挂载结构。输入为 app.js 的同源数据与原生 DOM 更新，
-  输出为全局导航、任务上下文、工作区、检查器、常驻会话 Patrol 小兵、浮层、对话框和可复用模板。
+  输出为全局导航、任务上下文、工作区、检查器、材料 Blob 加载器、常驻会话 Patrol 小兵、
+  浮层、对话框和可复用模板。工作流为先加载无状态 UI 模块与认证材料 loader，再启动 app.js。
+  示例：浏览器加载 index.html 后由 app.js 挂载 #app。
 -->
 <html lang="zh-CN">
 <head>
@@ -64,11 +66,6 @@
       <section class="app-workspace">
         <main id="app" tabindex="-1" aria-live="polite"></main>
       </section>
-      <div class="shell-resizer shell-resizer-preview" role="separator" aria-orientation="vertical" aria-label="调整文件预览宽度" title="拖拽调整文件预览宽度"></div>
-      <aside id="filePreview" class="file-preview" aria-label="文件预览" hidden>
-        <div id="filePreviewTabs" class="file-preview-tabs" role="tablist" aria-label="已打开的文件"></div>
-        <div id="filePreviewBody" class="file-preview-body"></div>
-      </aside>
       <div class="shell-resizer shell-resizer-inspector" role="separator" aria-orientation="vertical" aria-label="调整检查器宽度" title="拖拽调整检查器宽度"></div>
       <aside id="appInspector" class="app-inspector" tabindex="-1" aria-label="任务检查器" hidden>
         <div class="inspector-tabs" role="tablist" aria-label="检查器内容">
@@ -180,11 +177,13 @@
   <script src="./conversation-events.js"></script>
   <script src="./conversation-reconciler.js?v=20260907a"></script>
   <script src="./context-curator-presentation.js?v=20260906a"></script>
-  <script src="./file-preview.js?v=20260912b"></script>
   <script src="./patrol-presence.js?v=20260905b"></script>
   <script src="./patrol-avatar.js?v=20260905b"></script>
   <script src="./map-collapsible-view.js?v=20260902"></script>
-  <script src="./image-material-picker.js?v=20260911a"></script>
+  <script src="./image-material-picker.js?v=20260912b"></script>
+  <script src="./run-material-picker.js?v=20260913a"></script>
+  <script src="./material-grouping.js?v=20260913a"></script>
+  <script src="./material-content-loader.js?v=20260912a"></script>
   <script src="./app.js?v=20260912a"></script>
 </body>
 </html>

@@ -103,35 +103,35 @@ def test_window_estimate_grows_with_image():
     assert estimate_tokens("", messages, "") > estimate_tokens("", [TEXT_MESSAGE], "")
 
 
-# === 1.2 视觉能力判定只依据显式声明（判定归属核心，不依赖任何插件） ===
+# === 1.2 视觉能力判定只依据显式声明 ===
 
 
 def test_vision_named_model_without_declaration_is_text_only(monkeypatch):
     monkeypatch.delenv("FOCUS_MODEL", raising=False)
-    from focus.models.capabilities import main_model_text_only
+    from plugins.spatial_patrol.spatial import _main_model_text_only
 
-    assert main_model_text_only(_app_config("deepseek-v4-flash-vision-exp", None)) is True
+    assert _main_model_text_only(_app_config("deepseek-v4-flash-vision-exp", None)) is True
 
 
 def test_plain_named_model_with_declaration_is_not_text_only(monkeypatch):
     monkeypatch.delenv("FOCUS_MODEL", raising=False)
-    from focus.models.capabilities import main_model_text_only
+    from plugins.spatial_patrol.spatial import _main_model_text_only
 
-    assert main_model_text_only(_app_config("some-text-model", True)) is False
+    assert _main_model_text_only(_app_config("some-text-model", True)) is False
 
 
 def test_missing_declaration_defaults_to_text_only(monkeypatch):
     monkeypatch.delenv("FOCUS_MODEL", raising=False)
-    from focus.models.capabilities import main_model_text_only
+    from plugins.spatial_patrol.spatial import _main_model_text_only
 
-    assert main_model_text_only(_app_config("deepseek-v4-flash", None)) is True
+    assert _main_model_text_only(_app_config("deepseek-v4-flash", None)) is True
 
 
 def test_unavailable_config_is_text_only(monkeypatch):
     monkeypatch.setenv("FOCUS_MODEL", "不存在的模型")
-    from focus.models.capabilities import main_model_text_only
+    from plugins.spatial_patrol.spatial import _main_model_text_only
 
-    assert main_model_text_only(_app_config("deepseek-v4-flash", True)) is True
+    assert _main_model_text_only(_app_config("deepseek-v4-flash", True)) is True
 
 
 # === 随本变更声明的默认模型 ===

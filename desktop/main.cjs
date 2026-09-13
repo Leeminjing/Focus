@@ -1,14 +1,6 @@
 /*
  * 本文件启动 Focus 桌面运行时。输入为本机 Python/Git/Docker 能力、品牌资源与环境变量，输出为
  * 本地启动动画、单一动态 loopback FastAPI 及同源隔离主窗口；失败时原子切换到带品牌的说明窗口。
- * 同时持有渲染器不可直接触达的三个边界：工作区内文件的「在系统中打开」、**任意路径的预览解析**
- * 与另存为写盘。
- *
- * 关于任意路径预览：`resolvePreviewPath` 有意不做工作区包含性检查——按需求工作区之外的文件
- * 同样必须可预览。它只保证目标是可读的普通文件并排除应用数据目录。该能力只经 Electron IPC
- * 提供，因此调用者必须已经在本渲染器进程内；若改由后端 HTTP 暴露，就会成为任何本机进程都能
- * 调用的任意文件读接口。字节同样由主进程读取（`focus:read-preview-bytes`）：渲染器既不能
- * `fetch` 一个裸绝对路径，也不该为了读本地文件而让页面获得 `file://` 特权。
  *
  * 单实例闸门在 app.whenReady 之前取得，且不通过即退出：启动链路会拉起 uvicorn、docker compose
  * 与 alembic 迁移，若允许第二个实例进入，将重复起后端、重复迁移并再开一整套窗口。第二个实例的
@@ -330,91 +322,6 @@ ipcMain.handle("focus:open-external", async (_event, value) => {
   const url = externalHttpUrl(value);
   if (!url) throw new Error("仅允许打开 HTTP(S) 外部链接");
   await shell.openExternal(url);
-  return true;
-});
-
-// 「在系统中打开」必须落在该材料所属工作区内：路径来自渲染器，因此这里只把它当成待校验的输入，
-// 拒绝越出工作区根、非普通文件与位于应用数据目录内的路径。工作区根同样来自渲染器，故这道边界
-// 防的是路径拼接失误与被注入的任意路径，不防持有渲染器控制权的攻击者。
-function containedMaterialPath(filePath, workspacePath) {
-  if (!filePath || !workspacePath) return null;
-  if (!path.isAbsolute(filePath) || !path.isAbsolute(workspacePath)) return null;
-  const resolved = path.resolve(filePath);
-  const root = path.resolve(workspacePath);
-  const relative = path.relative(root, resolved);
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
-  if (resolved.startsWith(path.resolve(app.getPath("userData")) + path.sep)) return null;
-  return fs.statSync(resolved, { throwIfNoEntry: false })?.isFile() ? resolved : null;
-}
-
-ipcMain.handle("focus:open-path", async (_event, filePath, workspacePath) => {
-  const resolved = containedMaterialPath(filePath, workspacePath);
-  if (!resolved) throw new Error("只能打开工作区内的文件");
-  const failure = await shell.openPath(resolved);
-  if (failure) throw new Error(failure);
-  return true;
-});
-
-// 预览任意文件：**有意不做工作区包含性检查**——按需求，工作区之外的文件同样必须可预览。
-// 因此这里只保证「是个能读的普通文件」，并排除应用自身的数据目录（其中有会话令牌、
-// 数据库配置与插件偏好，预览没有理由暴露它们）。
-// 能力边界：这条按路径读取只经 Electron IPC 提供，绝不是绑定 loopback 的 HTTP 路由——
-// 后者会成为任何本机进程都能调用的任意文件读接口。
-function resolvePreviewPath(filePath, workspacePath) {
-  if (typeof filePath !== "string" || !filePath) return { ok: false, reason: "路径为空" };
-  const candidate = resolvePreviewCandidate(filePath, workspacePath);
-  if (!candidate) return { ok: false, reason: "相对路径需要同时提供工作区根，且不得越出工作区" };
-  const resolved = candidate;
-  if (resolved.startsWith(path.resolve(app.getPath("userData")) + path.sep)) {
-    return { ok: false, reason: "应用数据目录不可预览" };
-  }
-  const stat = fs.statSync(resolved, { throwIfNoEntry: false });
-  if (!stat) return { ok: false, reason: "文件不存在" };
-  if (stat.isDirectory()) return { ok: false, reason: "该路径是目录" };
-  if (!stat.isFile()) return { ok: false, reason: "该路径不是普通文件" };
-  return { ok: true, path: resolved, size: stat.size };
-}
-
-// 把「绝对路径」或「工作区相对路径 + 工作区根」解析成一个待校验的绝对路径。
-// filePath 先按绝对路径试；不是绝对路径时，必须提供绝对的工作区根才继续，且拼接结果不得
-// 越出工作区根（`..` 逃逸在此拦下）。
-function resolvePreviewCandidate(filePath, workspacePath) {
-  if (typeof filePath !== "string" || !filePath) return null;
-  if (path.isAbsolute(filePath)) return path.resolve(filePath);
-  if (typeof workspacePath !== "string" || !path.isAbsolute(workspacePath)) return null;
-  const root = path.resolve(workspacePath);
-  const resolved = path.resolve(root, filePath);
-  const relative = path.relative(root, resolved);
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
-  return resolved;
-}
-
-ipcMain.handle("focus:resolve-preview-path", async (_event, filePath, workspacePath) => (
-  resolvePreviewPath(filePath, workspacePath)
-));
-
-// 按路径读取字节。渲染器不得自行读取本地文件：`fetch("C:/…")` 不是可解析的 URL（必然
-// Failed to fetch），而改用 file:// 会让页面获得 Electron 安全指南明确劝阻的本机文件特权。
-// 因此字节统一由主进程读取后回传，渲染器只负责解码与呈现。
-ipcMain.handle("focus:read-preview-bytes", async (_event, filePath, workspacePath) => {
-  const resolved = resolvePreviewPath(filePath, workspacePath);
-  if (!resolved.ok) return { ok: false, reason: resolved.reason };
-  try {
-    const data = await fs.promises.readFile(resolved.path);
-    return { ok: true, path: resolved.path, size: data.byteLength, bytes: new Uint8Array(data) };
-  } catch (error) {
-    return { ok: false, reason: `读取失败：${error.message}` };
-  }
-});
-
-// 另存为：由主进程弹出保存对话框并写盘，渲染器既拿不到目标路径也不接触文件系统。
-ipcMain.handle("focus:save-bytes", async (event, suggestedName, bytes) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  const result = await dialog.showSaveDialog(win ?? undefined, {
-    defaultPath: path.basename(String(suggestedName || "material.bin")),
-  });
-  if (result.canceled || !result.filePath) return false;
-  await fs.promises.writeFile(result.filePath, Buffer.from(bytes));
   return true;
 });
 

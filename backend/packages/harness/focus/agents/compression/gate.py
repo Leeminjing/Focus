@@ -17,15 +17,15 @@
     压缩元数据后的模型响应。
 
 具体工作流:
-    (1) before_model 估算当前 messages 用量；未达阈值、本轮已取消或窗口未知时放行
+    (1) before_model 估算 messages 与 run 图片附件组成的最终请求用量；未达阈值、
+        本轮已取消或窗口未知时放行
     (2) 达阈值时以 interrupt() 暂停图并发起 compression_request；resume 后：
         cancel → 记录该 run 后本轮放行；apply → 校验后按范围重建 messages
         （压缩范围为块、restore 范围原位展开来源原文，均经 RemoveMessage 全量重建）
     (3) wrap_model_call 在每次模型调用前剥离 messages 的 compression 元数据，
         来源原文永不进入模型上下文
-    (4) 校验压缩范围时豁免本轮必需图片所依赖的消息：范围一旦覆盖这些消息即拒绝，
-        使「本轮必须看」的图片不会因压缩而从对话状态中消失；
-        必需清单取自 runtime.context，因此豁免作用域自然限于当前 run
+    (4) 校验压缩范围时保护活动运行的 origin 用户材料消息，并继续豁免必看图片依赖消息；
+        身份取自 runtime.context，因此保护自然限于当前 run，运行完成后恢复既有压缩语义
 
 示例:
     middlewares = [build_compression_gate(context_window=131072, threshold_ratio=0.9)]
@@ -43,8 +43,8 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import interrupt
 
 from focus.agents.compression.schemas import validate_apply_decision
-from focus.agents.must_view import MUST_VIEW_CONTEXT_KEY
-from focus.messages import estimate_messages_tokens
+from focus.agents.material_inputs import RunMaterialInputs
+from focus.messages import estimate_model_request_tokens
 from focus.runtime.runs.events import (
     deserialize_messages,
     serialize_message,
@@ -265,7 +265,9 @@ class CompressionGate(AgentMiddleware):
         if run_id in _cancelled_runs:
             return None
         messages = list(state.get("messages", []))
-        usage = estimate_messages_tokens(messages)
+        run_materials = RunMaterialInputs.from_context(getattr(runtime, "context", None))
+        run_images = run_materials.images
+        usage = estimate_model_request_tokens(messages, run_images.attached)
         if usage < limit:
             return None
         decision = interrupt(
@@ -285,7 +287,10 @@ class CompressionGate(AgentMiddleware):
         if decision.get("decision") != "apply":
             return None
         ranges, error = validate_apply_decision(
-            decision, messages, _must_view_material_ids(runtime)
+            decision,
+            messages,
+            run_images.required_ids,
+            (run_materials.origin_message_id,) if run_materials.origin_message_id else (),
         )
         if error:
             raise ValueError(f"压缩 apply 载荷非法: {error}")
@@ -302,15 +307,3 @@ def build_compression_gate(
     context_window: int | None, threshold_ratio: float = 0.9
 ) -> CompressionGate:
     return CompressionGate(context_window=context_window, threshold_ratio=threshold_ratio)
-
-
-def _must_view_material_ids(runtime: Any) -> tuple[str, ...]:
-    context = getattr(runtime, "context", None)
-    materials = context.get(MUST_VIEW_CONTEXT_KEY) if isinstance(context, dict) else None
-    if not isinstance(materials, list):
-        return ()
-    return tuple(
-        str(item["material_id"])
-        for item in materials
-        if isinstance(item, dict) and item.get("material_id")
-    )

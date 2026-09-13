@@ -1,6 +1,5 @@
 """backend/tests 共享 fixture：隔离 PostgreSQL 与统一轮询等待入口。"""
 
-import json
 import os
 from pathlib import Path
 import time
@@ -72,17 +71,6 @@ def isolated_postgres_database():
         admin_engine.dispose()
 
 
-@pytest.fixture(autouse=True)
-def isolate_global_home(tmp_path_factory, monkeypatch):
-    """把每个用例的全局家目录指向独立临时目录。
-
-    插件启停偏好、全局配置与全局插件根都落在 ~/.focus 之下；不隔离会让用例
-    读到开发者本机的真实偏好（反之写脏它），且用例之间互相污染。
-    """
-    monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(tmp_path_factory.mktemp("focus-home")))
-    return None
-
-
 @pytest.fixture
 def wait_until():
     """轮询等待条件成立；超时抛 AssertionError。"""
@@ -102,21 +90,6 @@ def _memory_status(service, run_id):
     """运行中的状态（pending/running）只存在于内存 RunManager；DB 在 worker 结束才同步。"""
     record = service.run_manager.get(run_id)
     return record.status.value if record else None
-
-
-def plugin_manifest_enabled(name: str) -> bool:
-    """读取插件清单的 enabled 开关，供插件专属用例按开关自动跳过或恢复。"""
-    manifest = Path(__file__).parents[2] / "plugins" / name / "plugin.json"
-    if not manifest.is_file():
-        return False
-    return bool(json.loads(manifest.read_text(encoding="utf-8")).get("enabled"))
-
-
-# 插件被临时搁置时，其专属用例按 manifest 自动跳过；插件重新 enabled 后无需改动测试即恢复。
-plugin_shelved = pytest.mark.skipif(
-    not plugin_manifest_enabled("spatial-patrol"),
-    reason="spatial-patrol 已临时搁置（plugin.json enabled=false），回装后自动恢复",
-)
 
 
 @pytest.fixture

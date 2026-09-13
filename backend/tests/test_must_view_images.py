@@ -1,14 +1,17 @@
-"""必需图片注入、压缩豁免与二进制读取兜底的回归测试。
+"""必需图片交付、压缩豁免与二进制读取兜底的回归测试。
 
-覆盖:材料落盘到工作区专用目录且不覆盖同名、原图体积上限、必需材料清单的校验、
-中间件在请求层注入像素（清单来自 run 上下文而非消息）、必需材料不可读时以可诊断失败收场、
-压缩范围不得覆盖必需图片所依赖的消息、read_file 对图片与二进制内容给出可修正提示。
+输入为图片材料、运行上下文、模型请求和压缩决策；输出为请求层图片投影、必需材料完成门、
+路径边界、送模缩放、材料失效诊断和压缩保护断言。具体工作流不经桌面上传服务；上传资源、
+独占命名和补偿协议由 test_material_upload_lifecycle.py 覆盖。
+
+示例：python -m pytest backend/tests/test_must_view_images.py。
 """
 
 import asyncio
 import base64
 import io
 import shutil
+from types import SimpleNamespace
 import uuid
 from pathlib import Path
 
@@ -17,26 +20,22 @@ from langchain_core.messages import HumanMessage
 
 from backend.app.desktop.material_files import (
     MATERIAL_ATTACHMENTS_SUBDIR,
-    EmptyUpload,
-    OversizedImage,
-    guard_upload,
-    prepare_attachment_target,
     resolve_material_path,
 )
 from config_helpers import app_config_for as _app_config
-from conftest import plugin_manifest_enabled
 from focus.agents.compression.schemas import validate_apply_decision
+from focus.agents.image_attachment import (
+    ImageAttachmentProjectionMiddleware,
+    ImageMaterialUnavailable,
+    ImageModelCannotReadImages,
+)
 from focus.agents.must_view import (
     MUST_VIEW_CONTEXT_KEY,
     MODEL_IMAGE_INPUT_KEY,
-    MustViewImagesMiddleware,
-    MustViewModelCannotReadImages,
-    MustViewMaterialUnavailable,
+    MustViewCompletionMiddleware,
 )
 from focus.images import (
     IMAGE_MODEL_MAX_EDGE_PX,
-    ORIGINAL_IMAGE_MAX_BYTES,
-    image_exceeds_original_limit,
     measure_image_tokens,
     scale_for_model,
 )
@@ -94,29 +93,6 @@ class _CapturingHandler:
         return "ok"
 
 
-# === 2.2 落盘位置与唯一命名 ===
-
-
-def test_attachment_target_creates_dir_and_never_overwrites(scratch):
-    target = prepare_attachment_target(scratch, "shot.png")
-    assert target.parent.name == "attachments"
-    assert target.parent.is_dir()
-    assert not target.exists()
-    target.write_bytes(b"x")
-    second = prepare_attachment_target(scratch, "shot.png")
-    assert second != target
-    assert second.name.startswith("shot-")
-    assert second.suffix == ".png"
-    assert target.read_bytes() == b"x"
-    assert not second.exists()
-
-
-def test_attachment_target_strips_directory_components(scratch):
-    target = prepare_attachment_target(scratch, "../../escape.png")
-    assert target.parent.name == "attachments"
-    assert target.name == "escape.png"
-
-
 def test_attachments_subdir_is_hidden_and_nested():
     parts = MATERIAL_ATTACHMENTS_SUBDIR.split("/")
     assert MATERIAL_ATTACHMENTS_SUBDIR.startswith(".")
@@ -129,13 +105,9 @@ def test_resolve_material_path_is_workspace_relative(scratch):
     assert resolve_material_path(scratch, relative) == scratch.resolve() / ".focus" / "attachments" / "shot.png"
 
 
-# === 2.3 原图体积上限与送模缩放分离 ===
-
-
-def test_original_limit_only_applies_to_images():
-    assert image_exceeds_original_limit("shot.png", ORIGINAL_IMAGE_MAX_BYTES + 1) is True
-    assert image_exceeds_original_limit("shot.png", ORIGINAL_IMAGE_MAX_BYTES) is False
-    assert image_exceeds_original_limit("notes.md", ORIGINAL_IMAGE_MAX_BYTES + 1) is False
+def test_resolve_material_path_rejects_workspace_escape(scratch):
+    with pytest.raises(ValueError, match="超出工作区"):
+        resolve_material_path(scratch, "../escape.png")
 
 
 def test_scale_for_model_keeps_small_image_untouched():
@@ -177,16 +149,43 @@ def test_middleware_injects_image_block(scratch):
     runtime = _FakeRuntime(scratch, [{"material_id": "m1", "relative_path": "shot.png"}])
     request = _FakeRequest([HumanMessage(content="看这张")], runtime)
     handler = _CapturingHandler()
-    _run(MustViewImagesMiddleware().awrap_model_call(request, handler))
+    _run(ImageAttachmentProjectionMiddleware().awrap_model_call(request, handler))
     injected = handler.seen[0][-1]
     assert injected.content[1]["type"] == "image_url"
     assert injected.content[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
+def test_optional_attachment_is_projected_without_entering_state_or_completion_gate(scratch):
+    data = _png(32, 32)
+    (scratch / "shot.png").write_bytes(data)
+    context = {
+        "workspace": str(scratch),
+        "model_supports_image_input": True,
+        "run_image_inputs": {
+            "attached": [{
+                "material_id": "m1",
+                "relative_path": "shot.png",
+                "source_bytes": len(data),
+                "model_bytes": len(data),
+                "model_tokens": 1,
+            }],
+            "required_ids": [],
+        },
+    }
+    request = _FakeRequest([HumanMessage(content="普通附件")], SimpleNamespace(context=context))
+    handler = _CapturingHandler()
+    _run(ImageAttachmentProjectionMiddleware().awrap_model_call(request, handler))
+    assert len(request.messages) == 1
+    assert handler.seen[0][-1].content[1]["material_id"] == "m1"
+    assert MustViewCompletionMiddleware().after_model(
+        {"messages": request.messages}, SimpleNamespace(context=context)
+    ) is None
+
+
 def test_middleware_is_noop_without_materials(scratch):
     request = _middleware_request(scratch, [])
     handler = _CapturingHandler()
-    _run(MustViewImagesMiddleware().awrap_model_call(request, handler))
+    _run(ImageAttachmentProjectionMiddleware().awrap_model_call(request, handler))
     assert handler.seen[0] == request.messages
 
 
@@ -195,7 +194,7 @@ def test_middleware_injects_for_every_request(scratch):
     runtime = _FakeRuntime(scratch, [{"material_id": "m1", "relative_path": "shot.png"}])
     request = _FakeRequest([HumanMessage(content="看这张")], runtime)
     handler = _CapturingHandler()
-    middleware = MustViewImagesMiddleware()
+    middleware = ImageAttachmentProjectionMiddleware()
     _run(middleware.awrap_model_call(request, handler))
     _run(middleware.awrap_model_call(request, handler))
     assert len(handler.seen) == 2
@@ -209,25 +208,32 @@ def test_injection_survives_reference_being_compressed_away(scratch):
     runtime = _FakeRuntime(scratch, [{"material_id": "m1", "relative_path": "shot.png"}])
     request = _FakeRequest([HumanMessage(content="（这段已被压缩摘要替代）")], runtime)
     handler = _CapturingHandler()
-    _run(MustViewImagesMiddleware().awrap_model_call(request, handler))
+    _run(ImageAttachmentProjectionMiddleware().awrap_model_call(request, handler))
     assert handler.seen[0][-1].content[1]["type"] == "image_url"
 
 
 def test_missing_material_fails_diagnosably(scratch):
     runtime = _FakeRuntime(scratch, [{"material_id": "m7", "relative_path": "gone.png"}])
     request = _FakeRequest([HumanMessage(content="看这张")], runtime)
-    with pytest.raises(MustViewMaterialUnavailable) as info:
-        _run(MustViewImagesMiddleware().awrap_model_call(request, _CapturingHandler()))
+    with pytest.raises(ImageMaterialUnavailable) as info:
+        _run(ImageAttachmentProjectionMiddleware().awrap_model_call(request, _CapturingHandler()))
     assert "m7" in str(info.value)
     assert "gone.png" in str(info.value)
+
+
+def test_material_path_cannot_escape_workspace(scratch):
+    runtime = _FakeRuntime(scratch, [{"material_id": "m7", "relative_path": "../outside.png"}])
+    request = _FakeRequest([HumanMessage(content="看这张")], runtime)
+    with pytest.raises(ImageMaterialUnavailable, match="超出工作区"):
+        _run(ImageAttachmentProjectionMiddleware().awrap_model_call(request, _CapturingHandler()))
 
 
 def test_empty_material_fails_diagnosably(scratch):
     (scratch / "shot.png").write_bytes(b"")
     runtime = _FakeRuntime(scratch, [{"material_id": "m1", "relative_path": "shot.png"}])
     request = _FakeRequest([HumanMessage(content="看这张")], runtime)
-    with pytest.raises(MustViewMaterialUnavailable):
-        _run(MustViewImagesMiddleware().awrap_model_call(request, _CapturingHandler()))
+    with pytest.raises(ImageMaterialUnavailable):
+        _run(ImageAttachmentProjectionMiddleware().awrap_model_call(request, _CapturingHandler()))
 
 
 def test_model_without_image_capability_is_rejected(scratch):
@@ -238,8 +244,8 @@ def test_model_without_image_capability_is_rejected(scratch):
         image_capable=False,
     )
     request = _FakeRequest([HumanMessage(content="看这张")], runtime)
-    with pytest.raises(MustViewModelCannotReadImages) as info:
-        _run(MustViewImagesMiddleware().awrap_model_call(request, _CapturingHandler()))
+    with pytest.raises(ImageModelCannotReadImages) as info:
+        _run(ImageAttachmentProjectionMiddleware().awrap_model_call(request, _CapturingHandler()))
     assert "未声明具备图像输入能力" in str(info.value)
 
 
@@ -249,7 +255,7 @@ def test_no_materials_skips_capability_check(scratch):
         _FakeRuntime(scratch, [], image_capable=False),
     )
     handler = _CapturingHandler()
-    _run(MustViewImagesMiddleware().awrap_model_call(request, handler))
+    _run(ImageAttachmentProjectionMiddleware().awrap_model_call(request, handler))
     assert handler.seen[0] == request.messages
 
 
@@ -352,18 +358,6 @@ def test_data_url_round_trip():
     assert data == payload
 
 
-# === S3 落盘前把关是纯判定，不产生任何文件 ===
-
-
-def test_guard_upload_rejects_without_touching_the_filesystem(scratch):
-    with pytest.raises(OversizedImage):
-        guard_upload("shot.png", b"x" * (ORIGINAL_IMAGE_MAX_BYTES + 1))
-    with pytest.raises(EmptyUpload):
-        guard_upload("shot.png", b"")
-    assert not (scratch / ".focus").exists(), "被拒绝的上传不得留下任何文件"
-    guard_upload("notes.md", b"x" * (ORIGINAL_IMAGE_MAX_BYTES + 1))
-
-
 # === W4 图级别：必需材料不可读时运行不得成功 ===
 
 
@@ -403,7 +397,7 @@ def test_agent_run_does_not_succeed_when_material_unreadable(scratch):
     agent = create_agent(
         model=_fake_model(calls),
         tools=[],
-        middleware=[MustViewImagesMiddleware()],
+        middleware=[ImageAttachmentProjectionMiddleware(), MustViewCompletionMiddleware()],
         system_prompt="must-view",
     )
     context = {
@@ -411,7 +405,7 @@ def test_agent_run_does_not_succeed_when_material_unreadable(scratch):
         MUST_VIEW_CONTEXT_KEY: [{"material_id": "m1", "relative_path": "gone.png"}],
         MODEL_IMAGE_INPUT_KEY: True,
     }
-    with pytest.raises(MustViewMaterialUnavailable):
+    with pytest.raises(ImageMaterialUnavailable):
         _run_graph(agent, [HumanMessage(content="看这张")], context, "must-view-missing")
     assert not calls, "必需图片不可读时模型不应被调用"
 
@@ -457,10 +451,6 @@ def test_compression_gate_triggers_on_image_usage():
 # === W6 依赖视觉的插件可用性随模型声明而变 ===
 
 
-@pytest.mark.skipif(
-    not plugin_manifest_enabled("spatial-patrol"),
-    reason="spatial-patrol 已临时搁置（plugin.json enabled=false），回装后自动恢复",
-)
 def test_spatial_plugin_unavailable_when_model_is_text_only(monkeypatch):
     monkeypatch.delenv("FOCUS_MODEL", raising=False)
     import plugins.spatial_patrol.spatial as spatial
@@ -472,10 +462,6 @@ def test_spatial_plugin_unavailable_when_model_is_text_only(monkeypatch):
         spatial.init_service({"vision_model": ""}, registry=None)
 
 
-@pytest.mark.skipif(
-    not plugin_manifest_enabled("spatial-patrol"),
-    reason="spatial-patrol 已临时搁置（plugin.json enabled=false），回装后自动恢复",
-)
 def test_spatial_plugin_available_when_model_declares_vision(monkeypatch):
     monkeypatch.delenv("FOCUS_MODEL", raising=False)
     import plugins.spatial_patrol.spatial as spatial
@@ -572,13 +558,24 @@ def test_must_view_prompt_lists_materials_and_explains_read():
 def test_after_model_passes_once_every_material_is_reported():
     context = {"must_view_materials": TWO_IMAGES}
     state = _reports_state(context, {"m1": True, "m2": True})
-    assert MustViewImagesMiddleware().after_model(state, _Runtime(context)) is None
+    assert MustViewCompletionMiddleware().after_model(state, _Runtime(context)) is None
+
+
+def test_after_model_only_requires_required_subset():
+    context = {
+        "run_image_inputs": {
+            "attached": [*TWO_IMAGES, {"material_id": "m3", "relative_path": "optional.png"}],
+            "required_ids": ["m2"],
+        }
+    }
+    state = _reports_state(context, {"m2": True})
+    assert MustViewCompletionMiddleware().after_model(state, _Runtime(context)) is None
 
 
 def test_after_model_refuses_to_end_with_missing_report():
     context = {"must_view_materials": TWO_IMAGES}
     state = _reports_state(context, {"m1": True})
-    result = MustViewImagesMiddleware().after_model(state, _Runtime(context))
+    result = MustViewCompletionMiddleware().after_model(state, _Runtime(context))
     assert result["jump_to"] == "model"
     assert any("b.png" in str(message.content) for message in result["messages"])
 
@@ -586,7 +583,7 @@ def test_after_model_refuses_to_end_with_missing_report():
 def test_after_model_ignores_runs_without_must_view():
     context = {"must_view_materials": []}
     state = _reports_state(context, None)
-    assert MustViewImagesMiddleware().after_model(state, _Runtime(context)) is None
+    assert MustViewCompletionMiddleware().after_model(state, _Runtime(context)) is None
 
 
 def test_after_model_escalates_when_model_reports_unread(monkeypatch):
@@ -596,7 +593,7 @@ def test_after_model_escalates_when_model_reports_unread(monkeypatch):
     monkeypatch.setattr(must_view, "interrupt", lambda payload: seen.update(payload))
     context = {"must_view_materials": TWO_IMAGES}
     state = _reports_state(context, {"m1": True, "m2": False})
-    MustViewImagesMiddleware().after_model(state, _Runtime(context))
+    MustViewCompletionMiddleware().after_model(state, _Runtime(context))
     assert seen["type"] == "must_view_report"
     assert seen["unread"] == ["m2"]
 
@@ -608,5 +605,24 @@ def test_after_model_escalates_after_reminder_limit(monkeypatch):
     monkeypatch.setattr(must_view, "interrupt", lambda payload: seen.update(payload))
     context = {"must_view_materials": TWO_IMAGES}
     state = _reports_state(context, {"m1": True}, reminders=must_view._MAX_REMINDERS)
-    MustViewImagesMiddleware().after_model(state, _Runtime(context))
+    MustViewCompletionMiddleware().after_model(state, _Runtime(context))
     assert seen["missing"] == ["m2"]
+
+
+@pytest.mark.parametrize(
+    ("decision", "jump_to"),
+    [("retry", "model"), ("cancel", "end")],
+)
+def test_after_model_handles_report_recovery_decisions(monkeypatch, decision, jump_to):
+    import focus.agents.must_view as must_view
+
+    monkeypatch.setattr(
+        must_view,
+        "interrupt",
+        lambda _payload: {"type": "must_view_report", "decision": decision},
+    )
+    context = {"must_view_materials": TWO_IMAGES}
+    state = _reports_state(context, {"m1": True, "m2": False})
+    result = MustViewCompletionMiddleware().after_model(state, _Runtime(context))
+    assert result["jump_to"] == jump_to
+    assert bool(result.get("messages")) is (decision == "retry")

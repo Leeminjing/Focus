@@ -2,26 +2,23 @@
 本文件对外提供 load_plugins 插件目录加载函数，作为插件发现 → 构建 → 登记的加载入口。
 
 对外提供:
-    load_plugins(registry, root, resolve=True, seen_names=None, disabled=None) — 扫描插件目录、解析清单、构建声明、登记注册表
+    load_plugins(registry, root, resolve=True, seen_names=None) — 扫描插件目录、解析清单、构建声明、登记注册表
 
 输入:
     registry: PluginRegistry — 目标注入注册表
     root: str | Path — 插件根目录（默认 "plugins"）
-    disabled: set[str] | None — 用户停用的插件名；命中的插件只登记不装配
 
 输出:
-    None — 插件经 registry.register / register_disabled 登记，最后 registry.resolve_dependencies 解析依赖
+    None — 插件经 registry.register 登记，最后 registry.resolve_dependencies 解析依赖
 
 具体工作流:
-    (1) 目录按名字典序遍历（加载顺序 = 稳定顺序）
+    (1) 目录按名字典序遍历（加载顺序 = 稳定顺序），enabled=false 跳过
     (2) 解析 plugin.json → PluginManifest；清单非法 → 拒绝接入（Rejected，理由含解析错误）
-    (3) 清单 enabled=false（发布方默认关闭）或命中用户停用集合 → 以 disabled 登记但不装配，
-        使其仍可被调试视图看到并重新启用；两者语义不同故分开判断，用户无法翻转发布方默认值
-    (4) 读取 plugins/<name>/config.json 原样传入 PluginContext（系统不解释其含义）
-    (5) 以 importlib 按文件路径加载 entry 模块（独立模块名，不污染 sys.modules 命名空间），
+    (3) 读取 plugins/<name>/config.json 原样传入 PluginContext（系统不解释其含义）
+    (4) 以 importlib 按文件路径加载 entry 模块（独立模块名，不污染 sys.modules 命名空间），
         调用 build_plugin(context)；构建抛错 → Unavailable（插件自身环境/配置问题）
-    (6) build_plugin 返回非法对象或缺少 build_plugin → Rejected
-    (7) 全部登记完成后统一 resolve_dependencies（两阶段：依赖可指向任意加载序的插件）
+    (5) build_plugin 返回非法对象或缺少 build_plugin → Rejected
+    (6) 全部登记完成后统一 resolve_dependencies（两阶段：依赖可指向任意加载序的插件）
 
 示例:
     registry = PluginRegistry(builtin_catalog())
@@ -124,18 +121,10 @@ def load_plugins(
     *,
     resolve: bool = True,
     seen_names: set[str] | None = None,
-    disabled: set[str] | None = None,
 ) -> None:
-    """扫描 root 下的插件目录并登记。
-
-    `disabled` 是用户停用集合：命中的插件不参与装配（跳过资源收集与构建，不注入任何接口），
-    但仍以 disabled 状态登记，使调试视图能看到并重新启用它们。清单里的 enabled=false 是
-    开发者发布的默认值，同样只登记不装配，且用户无法翻转——两者语义不同，故分开判断。
-    """
     base = Path(root)
     if not base.is_dir():
         return
-    user_disabled = disabled or set()
     for plugin_dir in sorted(base.iterdir(), key=lambda path: path.name.casefold()):
         manifest_file = plugin_dir / "plugin.json"
         if not plugin_dir.is_dir() or not manifest_file.is_file():
@@ -153,12 +142,7 @@ def load_plugins(
         if manifest.name != plugin_dir.name:
             logger.warning("插件目录名与清单 name 不一致: %s != %s，已跳过", plugin_dir.name, manifest.name)
             continue
-        if not manifest.enabled or manifest.name in user_disabled:
-            # 同样占用跨根去重名额：更高优先级的根已声明该插件时，低优先级根不得重复登记。
-            # can_toggle 区分停用来源——发布方关闭的不可由用户翻转。
-            if seen_names is not None:
-                seen_names.add(manifest.name)
-            registry.register_disabled(manifest, can_toggle=manifest.name in user_disabled)
+        if not manifest.enabled:
             continue
         if seen_names is not None and manifest.name in seen_names:
             registry.register_failed(

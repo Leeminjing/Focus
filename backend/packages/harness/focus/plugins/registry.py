@@ -55,14 +55,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PluginRecord:
     manifest: PluginManifest
-    status: str  # pending | active | unavailable | rejected | disabled
+    status: str  # pending | active | unavailable | rejected
     reason: str | None = None
     injected: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
     conflict: dict[str, str] | None = None
-    # 用户能否翻转其启停：生效插件可停用；被用户停用的可重新启用；
-    # 发布方在清单里关闭（enabled=false）的不可翻转。
-    can_toggle: bool = False
 
 
 @dataclass(frozen=True)
@@ -114,46 +111,6 @@ class PluginRegistry:
             if name in active
         }
 
-    def register_disabled(self, manifest: PluginManifest, *, can_toggle: bool = False) -> PluginRecord:
-        """登记一个「已知但被停用」的插件，使其仍可被调试视图看到并重新启用。
-
-        停用插件不参与装配（不注入接口、不贡献工具与服务），因此与运行语义完全隔离；
-        但注入冲突仍按既有语义暴露，避免界面显示得比实际更可用。`can_toggle` 区分停用来源：
-        用户停用可翻转，发布方在清单里关闭则不可。
-        """
-        conflict = self._disabled_conflict(manifest)
-        if conflict is not None:
-            record = PluginRecord(
-                manifest=manifest, status="rejected",
-                reason=f"Injection Conflict: Interface={conflict['interface']}, "
-                       f"Current={conflict['current']}, New={manifest.name}",
-                conflict=conflict,
-            )
-            self._records.append(record)
-            return record
-        record = PluginRecord(manifest=manifest, status="disabled", can_toggle=can_toggle)
-        self._records.append(record)
-        return record
-
-    def _disabled_conflict(self, manifest: PluginManifest) -> dict[str, str] | None:
-        """停用插件是否与已生效插件争用同一 single 接口；返回冲突描述或 None。
-
-        只有 single 基数的接口才互斥：multi 基数（如 tool、多实现 hook）本就允许多个提供者，
-        停用其中一个不构成冲突，否则会把正常的多插件共存误报为冲突。
-        """
-        for name in manifest.provides:
-            interface = self.catalog.get(name)
-            if interface is None:
-                return {
-                    "interface": name, "current": "（未定义的接口）", "new": manifest.name,
-                }
-            if interface.cardinality != "single":
-                continue
-            current = self.declared_providers(name)
-            if current:
-                return {"interface": name, "current": current[0], "new": manifest.name}
-        return None
-
     def register(self, manifest: PluginManifest, declaration: PluginDeclaration) -> PluginRecord:
         invalid_requires = validate_requires(manifest, self.catalog)
         if invalid_requires:
@@ -168,7 +125,7 @@ class PluginRegistry:
         if reason is not None:
             record = PluginRecord(manifest=manifest, status="rejected", reason=reason, conflict=conflict)
         else:
-            record = PluginRecord(manifest=manifest, status="pending", can_toggle=True)
+            record = PluginRecord(manifest=manifest, status="pending")
             self._pending.append((record, declaration))
         self._records.append(record)
         return record
@@ -334,7 +291,6 @@ class PluginRegistry:
         return list(reversed(self._traces))
 
     def list_plugins(self) -> list[dict]:
-        """列出全部已知插件，含被停用者，供调试视图决定「启用」还是「停用」动作。"""
         result: list[dict] = []
         for record in self._records:
             result.append({
@@ -347,7 +303,6 @@ class PluginRegistry:
                 "conflict": record.conflict,
                 "reason": record.reason,
                 "desktop_assets": self._asset_files(record.manifest.name, record.status),
-                "can_toggle": record.can_toggle,
             })
         return result
 

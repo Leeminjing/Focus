@@ -92,7 +92,7 @@ for (const [name, body] of [
   ["inspector tab", rule(shell, '.inspector-tabs button[aria-selected="true"]')],
   ["context", rule(views, ".app-inspector .context-rail-card.is-current")],
   ["task", rule(views, ".task-card-shell:focus-within")],
-  ["plugin", rule(views, ".plugin-card-shell.is-selected")],
+  ["plugin", rule(views, ".plugin-card.is-selected")],
 ]) {
   assert.ok(body, `缺少 ${name} 选中规则`);
   assert.doesNotMatch(body, /box-shadow\s*:\s*inset|border-(left|bottom)[^;]*(accent|primary)/, `${name} 仍使用强调色半框`);
@@ -126,8 +126,8 @@ assert.match(app, /<header class="compression-heading">\s*<p class="compression-
 assert.doesNotMatch(app, /compression-heading[\s\S]{0,240}(?:CONTEXT COMPRESSION|<h1>上下文压缩<\/h1>)/);
 assert.match(views, /@media \(max-width: 720px\)[\s\S]*\.context-editor-view\s*\{[\s\S]*grid-template-columns:\s*1fr/s);
 assert.match(views, /@media \(max-width: 720px\)[\s\S]*\.plugins-workbench\s*\{\s*grid-template-columns:\s*1fr/s);
-assert.match(shell, /@media \(max-width: 1180px\)[\s\S]*\.file-preview\s*\{\s*position:\s*absolute/s);
-assert.match(shell, /@media \(max-width: 1180px\)[\s\S]*\.shell-resizer\.shell-resizer-preview\s*\{\s*display:\s*none/s);
+assert.match(views, /@media \(max-width: 1100px\)[\s\S]*\.focus-shell:has\(\.file-panel\)\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\) !important/s);
+assert.match(views, /\.focus-shell:has\(\.file-panel\) > \.focus-view\s*\{\s*display:\s*none/s);
 assert.match(rule(views, ".task-card"), /min-height:\s*0/);
 
 console.log("f22-premium-ui: 无半框、紧凑执行序列、单一顶栏任务上下文、高缩放单工作面与同源零依赖守卫通过");

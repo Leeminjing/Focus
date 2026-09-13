@@ -53,32 +53,7 @@ const conversationMessages = taskId => Array.from({ length: 12 }, (_value, index
   content: `${taskId} 独立消息 ${index}\n${"conversation content ".repeat(10)}`,
 }));
 
-// 按路径预览的桥：返回确定性的放行结果，使 e2e 能验证「未登记 / 工作区之外」这条链。
-// 同时模拟主进程的两种解析：绝对路径直接放行；相对路径必须配合工作区根，否则拒绝——
-// 后者正是「仅接受绝对路径」那类失败在测试里的等价形态。
-window.focusDesktop = {
-  runtime: () => ({ apiBase: "http://focus.test", session: "test-session" }),
-  resolvePreviewPath: async (filePath, workspacePath) => {
-    if (typeof filePath !== "string" || !filePath) return { ok: false, reason: "路径为空" };
-    if (/^([A-Za-z]:[\\/]|\/)/.test(filePath)) return { ok: true, path: filePath, size: 128 };
-    if (typeof workspacePath !== "string" || !workspacePath) {
-      return { ok: false, reason: "相对路径需要同时提供工作区根，且不得越出工作区" };
-    }
-    return { ok: true, path: `${workspacePath}/${filePath}`, size: 128 };
-  },
-  // 字节同样由主进程回传：渲染器不 fetch 本地绝对路径
-  readPreviewBytes: async (filePath, workspacePath) => {
-    if (typeof filePath !== "string" || !filePath) return { ok: false, reason: "路径为空" };
-    const absolute = /^([A-Za-z]:[\\/]|\/)/.test(filePath);
-    if (!absolute && (typeof workspacePath !== "string" || !workspacePath)) {
-      return { ok: false, reason: "相对路径需要同时提供工作区根，且不得越出工作区" };
-    }
-    const bytes = new TextEncoder().encode("按路径预览的正文\n第二行");
-    return { ok: true, path: absolute ? filePath : `${workspacePath}/${filePath}`, size: bytes.byteLength, bytes };
-  },
-  openPath: async () => true,
-  saveBytes: async () => true,
-};
+window.focusDesktop = { runtime: () => ({ apiBase: "http://focus.test", session: "test-session" }) };
 window.fetch = async (input, options = {}) => {
   const path = new URL(String(input), "http://focus.test").pathname;
   if (path === "/desktop/api/bootstrap") return json({ tasks, equipment: { models: [], tools: [], skills: [], permissions: [] } });

@@ -2,16 +2,18 @@
 本文件对外提供 desktop_router，作为桌面 PoC 的 HTTP 与 SSE 接口层。
 
 输入为带 `X-Focus-Session` 的桌面请求以及 models.py 定义的数据模型；输出为工作区、
-Context、任务、草稿、普通/策展 Patrol、运行、材料 JSON、材料原始字节、材料文本预览或独立 SSE 流。具体工作流为
-校验本机会话后调用 DesktopService，并保持所有事件按 run_id 订阅；材料上传与粘贴落盘统一走
-DesktopService.store_uploaded_material（写工作区专用附件目录，不污染工作区根）。
+Context、任务、草稿、普通/策展 Patrol、运行、材料/历史/分组 JSON、文件响应或独立 SSE 流。
+具体工作流为校验本机会话后调用 DesktopService，并保持所有事件按 run_id 订阅；上传把
+UploadFile 直接交给有界上传服务，内容读取在校验 task/material 归属后交给 FileResponse。
+
+示例：POST /desktop/api/tasks/{task_id}/main/runs。
 """
 
 from __future__ import annotations
 
 import asyncio
 from fastapi import APIRouter, File, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from backend.app.desktop.models import (
     BatchDeleteRequest,
@@ -24,6 +26,11 @@ from backend.app.desktop.models import (
     DraftUpdate,
     MainRunCreate,
     MaterialCreate,
+    MaterialGroupCreate,
+    MaterialGroupOrder,
+    MaterialGroupUpdate,
+    MaterialMembershipOrder,
+    MaterialMembershipUpdate,
     MaterialRestore,
     MaterialUpdate,
     ResumeRequest,
@@ -31,6 +38,7 @@ from backend.app.desktop.models import (
     WorkspaceCreate,
 )
 from backend.app.desktop.service import PreparedRun
+from backend.app.desktop.run_materials import RunMaterialRequest
 from backend.app.gateway.routers.thread_runs import sse_consumer
 from backend.app.gateway.services import start_run
 
@@ -232,8 +240,23 @@ async def quick_deploy_context_curator(
 @desktop_router.post("/tasks/{task_id}/main/runs")
 async def start_main_run(task_id: str, body: MainRunCreate, request: Request) -> dict:
     prepared = await request.app.state.desktop_service.start_main_run(
-        task_id, body.message, body.model_name, body.permissions, body.skills,
-        body.spatial_focus, body.memory_ids, body.must_view_material_ids,
+        task_id=task_id,
+        message=body.message,
+        model_name=body.model_name,
+        permissions=body.permissions,
+        skills=body.skills,
+        spatial_focus=body.spatial_focus,
+        memory_ids=body.memory_ids,
+        material_inputs=(
+            [
+                RunMaterialRequest(material_id=item.material_id, note=item.note)
+                for item in body.material_inputs
+            ]
+            if body.material_inputs is not None
+            else None
+        ),
+        attached_material_ids=body.attached_material_ids,
+        must_view_material_ids=body.must_view_material_ids,
     )
     await _launch(request, prepared)
     return prepared.payload
@@ -348,6 +371,62 @@ async def list_materials(task_id: str, request: Request) -> list[dict]:
     return await request.app.state.desktop_service.list_materials(task_id)
 
 
+@desktop_router.get("/tasks/{task_id}/material-history")
+async def list_material_history(
+    task_id: str, request: Request, material_id: str | None = Query(default=None)
+) -> list[dict]:
+    return await request.app.state.desktop_service.list_material_history(task_id, material_id)
+
+
+@desktop_router.get("/tasks/{task_id}/material-groups")
+async def list_material_groups(task_id: str, request: Request) -> list[dict]:
+    return await request.app.state.desktop_service.material_groups.list(task_id)
+
+
+@desktop_router.post("/tasks/{task_id}/material-groups")
+async def create_material_group(task_id: str, body: MaterialGroupCreate, request: Request) -> dict:
+    return await request.app.state.desktop_service.material_groups.create(task_id, body.name)
+
+
+@desktop_router.put("/tasks/{task_id}/material-groups/order")
+async def reorder_material_groups(task_id: str, body: MaterialGroupOrder, request: Request) -> list[dict]:
+    return await request.app.state.desktop_service.material_groups.reorder(task_id, body.group_ids)
+
+
+@desktop_router.put("/tasks/{task_id}/material-groups/{group_id}")
+async def rename_material_group(
+    task_id: str, group_id: str, body: MaterialGroupUpdate, request: Request
+) -> dict:
+    return await request.app.state.desktop_service.material_groups.rename(task_id, group_id, body.name)
+
+
+@desktop_router.delete("/tasks/{task_id}/material-groups/{group_id}")
+async def delete_material_group(
+    task_id: str, group_id: str, request: Request, confirm: bool = Query(default=False)
+) -> dict:
+    await request.app.state.desktop_service.material_groups.delete(task_id, group_id, confirm)
+    return {"ok": True}
+
+
+@desktop_router.put("/tasks/{task_id}/materials/{material_id}/group")
+async def move_material_to_group(
+    task_id: str, material_id: str, body: MaterialMembershipUpdate, request: Request
+) -> dict:
+    membership = await request.app.state.desktop_service.material_groups.move(
+        task_id, material_id, body.group_id, body.position
+    )
+    return {"membership": membership}
+
+
+@desktop_router.put("/tasks/{task_id}/material-groups/{group_id}/materials/order")
+async def reorder_material_group_members(
+    task_id: str, group_id: str, body: MaterialMembershipOrder, request: Request
+) -> list[dict]:
+    return await request.app.state.desktop_service.material_groups.reorder_members(
+        task_id, group_id, body.material_ids
+    )
+
+
 @desktop_router.post("/tasks/{task_id}/materials")
 async def enroll_material(task_id: str, body: MaterialCreate, request: Request) -> dict:
     return await request.app.state.desktop_service.enroll_material(task_id, body)
@@ -356,35 +435,25 @@ async def enroll_material(task_id: str, body: MaterialCreate, request: Request) 
 @desktop_router.post("/tasks/{task_id}/materials/upload")
 async def upload_material(task_id: str, request: Request, file: UploadFile = File(...)) -> dict:
     service = request.app.state.desktop_service
-    return await service.store_uploaded_material(
-        task_id, file.filename or "upload.bin", await file.read()
+    return await service.store_uploaded_material(task_id, file)
+
+
+@desktop_router.get("/tasks/{task_id}/materials/{material_id}/content")
+async def material_content(task_id: str, material_id: str, request: Request) -> FileResponse:
+    content = await request.app.state.desktop_service.resolve_material_content(
+        task_id, material_id
+    )
+    return FileResponse(
+        path=content.path,
+        media_type=content.media_type,
+        filename=content.filename,
+        content_disposition_type="inline",
     )
 
 
-@desktop_router.get("/materials/{material_id}/content")
-async def material_content(material_id: str, request: Request) -> Response:
-    """回吐材料原始字节，供前端内联呈现图片、PDF 与其它载体。
-
-    显式声明 inline：个别平台对无法识别的类型会按附件处置（弹「另存为」），
-    而预览列需要的是内联呈现。
-    """
-    media_type, data = await request.app.state.desktop_service.read_material_content(
-        material_id
-    )
-    return Response(
-        content=data,
-        media_type=media_type,
-        headers={"Content-Disposition": "inline"},
-    )
-
-
-@desktop_router.get("/materials/{material_id}/preview")
-async def material_preview(material_id: str, request: Request) -> dict:
-    """回吐材料的文本预览；无法按已知编码读成文本时以 415 拒绝，由前端落到信息卡。"""
-    try:
-        return await request.app.state.desktop_service.read_material_preview(material_id)
-    except UnicodeDecodeError as error:
-        raise HTTPException(415, "该材料不是可读文本") from error
+@desktop_router.get("/tasks/{task_id}/materials/{material_id}/image-validity")
+async def image_material_validity(task_id: str, material_id: str, request: Request) -> dict:
+    return await request.app.state.desktop_service.validate_image_material(task_id, material_id)
 
 
 @desktop_router.put("/materials/{material_id}")

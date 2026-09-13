@@ -1,19 +1,18 @@
-r"""
-本文件对外提供桌面 PoC、Recursive Context Forking 与 Context 策展 Patrol 的
-PostgreSQL ORM 模型和 API 数据模型。
+r"""本文件对外提供桌面工作区、运行材料历史与材料分组的 ORM 和 API 数据模型。
 
-输入为工作区、任务、草稿、运行和材料的结构化数据；输出为 SQLAlchemy 表定义与
-Pydantic 请求模型。具体工作流由 routes.py 校验请求、service.py 持久化这些对象。
+输入为工作区、任务、运行、材料、逐轮材料备注及自定义分组的结构化数据；输出为
+SQLAlchemy 表定义和严格 Pydantic 请求对象。具体工作流为：主运行请求用有序
+material_inputs 表达本轮材料，用独立 must_view_material_ids 表达图片完成约束；数据库用
+RunMaterialBinding 保存不可变运行快照，用 MaterialGroup 与 MaterialGroupMembership 保存
+用户主动组织事实，旧 attached_material_ids 仅在新字段缺失时作为兼容输入。
 
-示例:
-    workspace = DesktopWorkspace(path=r"C:\Users\name\project", display_name="project")
-    request = DraftUpdate(system_prompt="审查代码", history_messages=[])
+示例：request = MainRunCreate(message="比较", material_inputs=[{"material_id": "m1", "note": "看第三章"}])。
 """
 
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -282,6 +281,67 @@ class DesktopMaterial(Base):
     )
 
 
+class RunMaterialBinding(Base):
+    __tablename__ = "desktop_run_material_bindings"
+    __table_args__ = (
+        UniqueConstraint("run_id", "material_id_snapshot", name="uq_run_material_binding_material"),
+        UniqueConstraint("run_id", "ordinal", name="uq_run_material_binding_ordinal"),
+        CheckConstraint("ordinal >= 0", name="ck_run_material_binding_ordinal"),
+    )
+
+    binding_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_runs.run_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    message_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    material_id_snapshot: Mapped[str] = mapped_column(String(32), nullable=False)
+    relative_path_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    digest_snapshot: Mapped[str] = mapped_column(String(64), nullable=False)
+    material_kind_snapshot: Mapped[str] = mapped_column(String(24), nullable=False)
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    must_view_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MaterialGroup(Base):
+    __tablename__ = "desktop_material_groups"
+    __table_args__ = (
+        UniqueConstraint("task_id", "name", name="uq_desktop_material_group_name"),
+        CheckConstraint("position >= 0", name="ck_desktop_material_group_position"),
+    )
+
+    group_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MaterialGroupMembership(Base):
+    __tablename__ = "desktop_material_group_memberships"
+    __table_args__ = (CheckConstraint("position >= 0", name="ck_material_group_membership_position"),)
+
+    material_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_materials.material_id", ondelete="CASCADE"), primary_key=True
+    )
+    group_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_material_groups.group_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class MaterialVersion(Base):
     __tablename__ = "material_versions"
 
@@ -401,13 +461,16 @@ class BatchDeleteRequest(StrictRequest):
     cascade: bool = False
 
 
+class RunMaterialCreate(StrictRequest):
+    material_id: str = Field(min_length=1, max_length=32)
+    note: str = ""
+
+
 class MainRunCreate(StrictRequest):
     message: str | list[dict[str, Any]] = Field(min_length=1)
-    """消息正文。图片以引用标记留在文本里，像素由 MustViewImagesMiddleware 在请求层注入。"""
-
+    material_inputs: list[RunMaterialCreate] | None = None
+    attached_material_ids: list[str] | None = None
     must_view_material_ids: list[str] = Field(default_factory=list)
-    """本轮必须查看的图片材料标识。属 (材料 × 轮次) 的按轮声明，不写入材料记录。"""
-
     model_name: str | None = None
     skills: list[str] = Field(default_factory=list)
     spatial_focus: dict[str, Any] | None = None
@@ -415,6 +478,21 @@ class MainRunCreate(StrictRequest):
     permissions: list[Literal["read", "write", "host_command"]] = Field(
         default_factory=lambda: ["read", "write", "host_command"]
     )
+
+    @model_validator(mode="after")
+    def validate_material_inputs(self) -> "MainRunCreate":
+        if self.material_inputs is not None and self.attached_material_ids is not None:
+            raise ValueError("material_inputs 与 attached_material_ids 不能同时提交")
+        material_ids = (
+            [item.material_id for item in self.material_inputs]
+            if self.material_inputs is not None
+            else list(self.attached_material_ids or [])
+        )
+        if len(material_ids) != len(set(material_ids)):
+            raise ValueError("本轮材料不能重复")
+        if len(self.must_view_material_ids) != len(set(self.must_view_material_ids)):
+            raise ValueError("必须看图片不能重复")
+        return self
 
 
 class ContextCurationPolicy(StrictRequest):
@@ -490,3 +568,24 @@ class MaterialUpdate(StrictRequest):
 
 class MaterialRestore(StrictRequest):
     version_id: str
+
+
+class MaterialGroupCreate(StrictRequest):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class MaterialGroupUpdate(StrictRequest):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class MaterialGroupOrder(StrictRequest):
+    group_ids: list[str]
+
+
+class MaterialMembershipUpdate(StrictRequest):
+    group_id: str | None = None
+    position: int = Field(default=0, ge=0)
+
+
+class MaterialMembershipOrder(StrictRequest):
+    material_ids: list[str]
