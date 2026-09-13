@@ -236,10 +236,8 @@
   padding: var(--space-3);
 }
 
-/* 统一头部：名称/大小/截断/编码。五种策略共用，故由 mount 渲染一次。 */
-.file-preview-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); margin-bottom: var(--space-2); padding-bottom: var(--space-2); border-bottom: 1px solid var(--border-subtle); }
-.file-preview-name { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
-.file-preview-size { color: var(--text-secondary); font-size: 11px; }
+/* 状态标识条：只承载正文无法自述的状态（截断、非默认编码），不重复标签页上的文件名。 */
+.file-preview-flags { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-2); }
 .file-preview-flag { padding: 1px 6px; border-radius: var(--radius-round); background: var(--surface-muted); color: var(--text-secondary); font-size: 10px; }
 .file-preview-flag.is-warning { background: var(--surface-warning); color: var(--text-warning); }
 .file-preview-empty { margin: 0; color: var(--text-secondary); font-size: 12px; }

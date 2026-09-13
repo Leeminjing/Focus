@@ -16,7 +16,8 @@
  * 输出为渲染策略字符串、解码结果、标签页集合、可呈现地址，以及容器内的预览 DOM。
  * 具体工作流为：classify 先按扩展名决定呈现方式；宿主取得字节后交给 decodeText 或 createObjectUrls；
  * createShelf 维护「打开了哪些文件、当前看哪个」；宿主按当前标签页取得预览视图后交给 mount，
- * 由 mount 先渲染统一头部（名称 / 大小 / 截断 / 编码）再分派到图片、富文本、等宽文本、文档视口或信息卡。
+ * 由 mount 分派到图片、富文本、等宽文本、文档视口或信息卡，并把截断/编码状态挂在正文之上。
+ * 正文刻意不渲染「身份头部」：文件名已在标签页上，正文标题由内容提供，重复一遍只是对着标签打第二遍。
  * 呈现未知类型时一律落到信息卡，因此不存在无法预览的文件。
  *
  * 示例:
@@ -238,19 +239,19 @@
     return `${(value / 1024 / 1024).toFixed(1)} MB`;
   }
 
-  // 统一头部：五种策略都需要「我在看哪个文件」，因此身份与状态标识只在这里渲染一次。
-  function renderHeader(container, document, view) {
-    const model = binaryCardModel(view.item);
-    const header = element(document, "header", "file-preview-head");
-    appendText(document, header, "strong", "file-preview-name", model.name || "文件预览");
-    const size = formatBytes(model.sizeBytes);
-    if (size) appendText(document, header, "span", "file-preview-size", size);
-    const meta = view.meta || {};
-    if (meta.truncated) appendText(document, header, "span", "file-preview-flag is-warning", "内容已截断");
-    if (meta.encoding && meta.encoding !== "utf-8") {
-      appendText(document, header, "span", "file-preview-flag", meta.encoding);
+  // 截断与编码标识：挂在承载正文的节点上，而不是另起一行重复文件名的头部——
+  // 文件名已在标签页上，正文自身的标题由内容提供，再加一条就是对着标签重复。
+  function appendStatusFlags(parent, document, meta) {
+    const flags = [];
+    if (meta?.truncated) flags.push(["内容已截断", true]);
+    if (meta?.encoding && meta.encoding !== "utf-8") flags.push([meta.encoding, false]);
+    if (!flags.length) return;
+    const strip = element(document, "div", "file-preview-flags");
+    for (const [label, warning] of flags) {
+      appendText(document, strip, "span", `file-preview-flag${warning ? " is-warning" : ""}`, label);
     }
-    container.appendChild(header);
+    // 插到正文之前：状态先于内容可见，但不像头部那样另占一整行身份
+    parent.insertBefore(strip, parent.firstChild || null);
   }
 
   function renderImage(container, document, view) {
@@ -343,6 +344,7 @@
   };
 
   // 按当前标签页与视图内容重绘容器；容器无标签页时留空，由宿主负责隐藏整列。
+  // 正文不另起身份头部：文件名已在标签页上，正文标题由内容提供。
   // 图片缺少可用地址时改走信息卡：否则会产出指向空标识的图像请求。
   function mount(container, shelf, view) {
     if (!container) return;
@@ -351,11 +353,11 @@
     container.replaceChildren();
     const current = view && view.kind ? view : null;
     if (!current) return;
-    renderHeader(container, document, current);
     const render = current.kind === "image" && !current.url
       ? renderBinaryCard
       : RENDERERS[current.kind] || renderBinaryCard;
     render(container, document, current);
+    appendStatusFlags(container, document, current.meta);
   }
 
   global.focusFilePreview = {

@@ -153,11 +153,13 @@ assert.match(previewModule, /return KIND_BY_SUFFIX\.get\(suffixOf\(name\)\) \|\|
 // 未知类型走信息卡；图片缺少可用地址时同样落到信息卡，保证任何文件都有呈现
 assert.match(previewModule, /current\.kind === "image" && !current\.url[\s\S]{0,120}renderBinaryCard/);
 assert.match(previewModule, /RENDERERS\[current\.kind\] \|\| renderBinaryCard/);
-// 统一头部：名称/大小/截断/编码只渲染一次
-assert.match(previewModule, /function renderHeader\(container, document, view\)/);
-assert.match(previewModule, /file-preview-flag/);
-// 头部样式必须在壳层样式表内，否则标识不生效
-assert.match(read("styles/shell.css"), /\.file-preview-head\b/);
+// 正文不得再起「身份头部」：文件名已在标签页上，重复一遍就是对着标签打第二遍。
+// 截断与编码改成挂在正文上的状态条，不再需要头部。
+assert.doesNotMatch(previewModule, /renderHeader|file-preview-head|file-preview-name/);
+assert.match(previewModule, /function appendStatusFlags\(parent, document, meta\)/);
+assert.match(previewModule, /file-preview-flags/);
+assert.match(read("styles/shell.css"), /\.file-preview-flags\b/);
+assert.doesNotMatch(read("styles/shell.css"), /\.file-preview-name\b|\.file-preview-head\b/);
 // 由字节构造的地址必须可回收
 assert.match(previewModule, /function createObjectUrls\(urlApi\)[\s\S]{0,400}revokeObjectURL/);
 // 按路径读取的文本由渲染器解码：主进程的 TextDecoder 不支持 gb18030

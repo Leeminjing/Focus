@@ -27,6 +27,13 @@ function createElement(document, tagName, parent) {
       node.children.push(child);
       return child;
     },
+    insertBefore(child, before) {
+      child.parentNode = node;
+      const index = before ? node.children.indexOf(before) : -1;
+      if (index < 0) node.children.push(child);
+      else node.children.splice(index, 0, child);
+      return child;
+    },
     replaceChildren(...nodes) {
       node.children = [];
       for (const child of nodes) node.appendChild(child);
@@ -258,14 +265,17 @@ const rows = textView.querySelectorAll(".file-preview-line");
 assert.equal(rows.length, 2);
 assert.equal(rows[0].querySelector(".file-preview-line-number").textContent, "1");
 assert.equal(rows[1].querySelector(".file-preview-line-body").textContent, "第二行");
-// 统一头部：名称与大小不依赖标签页即可确认正在看的文件
-assert.equal(textView.querySelector(".file-preview-name").textContent, "run.log");
-assert.equal(textView.querySelector(".file-preview-size").textContent, "2.0 KB");
+// 正文里不得再出现一遍文件名：它已在标签页上，重复就是对着标签打第二遍
+assert.equal(textView.querySelectorAll(".file-preview-name").length, 0);
+assert.equal(textView.querySelectorAll(".file-preview-head").length, 0);
+assert.equal(textView.textContent.includes("run.log"), false);
 
-// 截断与非默认编码必须在正文之外可见
+// 截断与非默认编码必须在正文里可见，且不靠另起身份头部
 const flagged = mountInto({ kind: "text", text: "abc", item: { relative_path: "big.log" }, meta: { truncated: true, encoding: "gb18030" } });
 const flags = flagged.querySelectorAll(".file-preview-flag").map(node => node.textContent);
 assert.deepEqual(plain(flags), ["内容已截断", "gb18030"]);
+assert.deepEqual(plain(flagged.querySelectorAll(".file-preview-flags").length), 1);
+assert.equal(flagged.querySelectorAll(".file-preview-name").length, 0);
 
 // 空文件给明确提示，而不是只有一个行号的空框
 const emptyText = mountInto({ kind: "text", text: "", item: { relative_path: "empty.txt", size_bytes: 0 } });
@@ -289,9 +299,8 @@ const pdfView = mountInto({ kind: "pdf", url: "/api/file/1", item: { relative_pa
 assert.equal(pdfView.querySelector(".file-preview-document").src, "/api/file/1");
 
 const binaryView = mountInto({ kind: "binary", item: { material_id: "m9", path: "C:\\ws\\docs\\report.docx", relative_path: "docs/report.docx", size_bytes: 2048 } });
-// 名称只在统一头部出现一次，卡片内不再重复
-assert.equal(binaryView.querySelectorAll(".file-preview-name").length, 1);
-assert.equal(binaryView.querySelector(".file-preview-name").textContent, "report.docx");
+// 降级卡片的标识只出现一次，且不依赖已移除的身份头部
+assert.equal(binaryView.querySelectorAll(".file-preview-name").length, 0);
 assert.equal(binaryView.querySelectorAll(".file-preview-binary strong").length, 0);
 const metaText = binaryView.querySelectorAll(".file-preview-binary-meta dd").map(node => node.textContent);
 assert.deepEqual(plain(metaText), ["report.docx", ".docx", "2.0 KB", "docs/report.docx"]);
@@ -301,7 +310,7 @@ assert.deepEqual(plain(actions), ["open-preview-in-system", "download-preview-fi
 const openButton = binaryView.querySelectorAll(".file-preview-binary-actions button")[0];
 assert.equal(openButton.dataset.filePath, "C:\\ws\\docs\\report.docx");
 // 大小以人类可读单位呈现，而不是裸字节数
-assert.equal(binaryView.querySelector(".file-preview-size").textContent, "2.0 KB");
+assert.equal(binaryView.querySelectorAll(".file-preview-binary-meta dd")[2].textContent, "2.0 KB");
 
 // 降级原因必须在正文可见，而不是只给一张沉默的卡片
 const noted = mountInto({ kind: "binary", item: { relative_path: "x.md" }, note: "无法预览该文件：仅接受绝对路径" });
