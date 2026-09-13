@@ -77,7 +77,17 @@ assert.match(closeBranch, /forgetFilePreview\(item\)/, "关闭标签页必须丢
 assert.doesNotMatch(app, /FILE_VIEWABLE_RE/, "链接入口不得再按扩展名设门");
 assert.doesNotMatch(app, /VIEWABLE_RE|VIEWABLE_PATTERN/);
 // 链接入口在取得文件名后必须无条件交给预览，不再有 test() 判定
-assert.match(app, /const fileName = fileNameFromLinkHref\(href, hostPart\);\s*\n\s*if \(fileName\) \{\s*\n\s*openFilePreview\(/);
+assert.match(app, /const fileName = fileNameFromLinkHref\(href, hostPart\)/);
+assert.match(app, /if \(!fileName\) return;/);
+// 链接入口必须交出**绝对路径**，而不是只留 basename —— 丢掉它会让按路径读取拿不到可用路径，
+// 实测表现就是「仅接受绝对路径」并退化为信息卡。
+assert.match(app, /function absolutePathFromHref\(href\)/);
+assert.match(app, /const absolutePath = absolutePathFromHref\(href\)/);
+assert.match(app, /relative_path: fileName, path: absolutePath \|\| fileName/);
+// 相对路径由主进程结合工作区根解析，越界仍被拒绝
+assert.match(app, /resolvePreviewPath\(target, activeTask\(\)\?\.workspace_path \|\| ""\)/);
+assert.match(read("main.cjs"), /function resolvePreviewCandidate\(filePath, workspacePath\)/);
+assert.match(read("main.cjs"), /relative\.startsWith\("\.\."\)/);
 // host 不得再用自定义扩展名集合判定（classify 内部的后缀表是唯一来源）。
 // 只在链接处理器区块内断言：renderFileCard 里选择图标的扩展名正则是纯装饰，不是门。
 const linkHandler = app.slice(app.indexOf('document.addEventListener("click"'), app.indexOf('// 全局错误可见化'));
@@ -91,12 +101,22 @@ assert.doesNotMatch(linkHandler, /\|jpe\?g\||\|docx\?\)/, "链接处理器不得
 assert.match(app, /function renderFileCard\(file, task\)/);
 assert.match(app, /data-action="open-file-panel"\$\{materialId\}/);
 assert.doesNotMatch(app, /file-card is-plain/, "未登记文件不得渲染为不可点占位");
+// 卡片把消息项自带的绝对路径一并带出
+assert.match(app, /data-file-path="\$\{escapeHtml\(file\.path\)\}"/);
+// 材料匹配在精确等值未命中时按 basename 再匹配，避免丢掉 size_bytes 与真实路径
+assert.match(app, /const exact = materials\.find\(item => item\.relative_path === fileName/);
+assert.match(app, /basenameOf\(item\.relative_path\) === fileName/);
 // 入口在没有可用路径时才拒绝，并给出可见说明而不是静默返回
 assert.match(app, /function openFilePreview\(record\)\s*\{[\s\S]{0,400}setStatus\("无法定位该文件/);
 // 失败原因必须可区分：415（不是文本）与 404（文件不存在）各自有说明
-assert.match(app, /function describePreviewFailure\(error, item\)/);
+assert.match(app, /function previewFailureReason\(error, item\)/);
 assert.match(app, /error\?\.status === 415[\s\S]{0,160}无法按文本呈现/);
 assert.match(app, /error\?\.status === 404[\s\S]{0,160}文件不存在/);
+// 降级原因必须进入正文，而不是只给沉默的卡片
+assert.match(app, /kind: "binary", item, note: reason/);
+assert.match(previewModule, /if \(view\.note\) appendText\(document, card, "p", "file-preview-empty", view\.note\)/);
+// 卡片不再重复文件名第二遍
+assert.doesNotMatch(previewModule, /file-preview-binary-name/);
 // 后端已回报的截断与编码必须接入呈现，而不是被丢弃
 assert.match(app, /truncated: Boolean\(payload\?\.truncated\)/);
 assert.match(app, /encoding: payload\?\.encoding/);
@@ -105,11 +125,11 @@ assert.match(app, /encoding: payload\?\.encoding/);
 
 const mainSrc = read("main.cjs");
 const preloadSrc = read("preload.cjs");
-assert.match(mainSrc, /function resolvePreviewPath\(filePath\)/);
+assert.match(mainSrc, /function resolvePreviewPath\(filePath, workspacePath\)/);
 assert.match(mainSrc, /ipcMain\.handle\("focus:resolve-preview-path"/);
 assert.match(mainSrc, /此处有意不做工作区包含性检查|有意不做工作区包含性检查/);
 assert.match(mainSrc, /应用数据目录不可预览/);
-assert.match(preloadSrc, /resolvePreviewPath: filePath => ipcRenderer\.invoke\("focus:resolve-preview-path"/);
+assert.match(preloadSrc, /resolvePreviewPath: \(filePath, workspacePath\) => ipcRenderer\.invoke\("focus:resolve-preview-path"/);
 // 后端路由里不得出现按任意路径读取的入口
 const routesSrc = read("../backend/app/desktop/routes.py");
 assert.doesNotMatch(routesSrc, /preview-by-path|content-by-path|read_any_path/);

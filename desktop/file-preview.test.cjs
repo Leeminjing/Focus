@@ -289,20 +289,29 @@ const pdfView = mountInto({ kind: "pdf", url: "/api/file/1", item: { relative_pa
 assert.equal(pdfView.querySelector(".file-preview-document").src, "/api/file/1");
 
 const binaryView = mountInto({ kind: "binary", item: { material_id: "m9", path: "C:\\ws\\docs\\report.docx", relative_path: "docs/report.docx", size_bytes: 2048 } });
-assert.equal(binaryView.querySelector(".file-preview-binary-name").textContent, "report.docx");
+// 名称只在统一头部出现一次，卡片内不再重复
+assert.equal(binaryView.querySelectorAll(".file-preview-name").length, 1);
+assert.equal(binaryView.querySelector(".file-preview-name").textContent, "report.docx");
+assert.equal(binaryView.querySelectorAll(".file-preview-binary strong").length, 0);
 const metaText = binaryView.querySelectorAll(".file-preview-binary-meta dd").map(node => node.textContent);
-assert.deepEqual(plain(metaText), [".docx", "2048 B", "docs/report.docx"]);
+assert.deepEqual(plain(metaText), ["report.docx", ".docx", "2.0 KB", "docs/report.docx"]);
 const actions = binaryView.querySelectorAll(".file-preview-binary-actions button").map(node => node.dataset.action);
 assert.deepEqual(plain(actions), ["open-preview-in-system", "download-preview-file"]);
 // 「在系统中打开」必须携带绝对路径
 const openButton = binaryView.querySelectorAll(".file-preview-binary-actions button")[0];
 assert.equal(openButton.dataset.filePath, "C:\\ws\\docs\\report.docx");
+// 大小以人类可读单位呈现，而不是裸字节数
+assert.equal(binaryView.querySelector(".file-preview-size").textContent, "2.0 KB");
+
+// 降级原因必须在正文可见，而不是只给一张沉默的卡片
+const noted = mountInto({ kind: "binary", item: { relative_path: "x.md" }, note: "无法预览该文件：仅接受绝对路径" });
+assert.match(noted.querySelector(".file-preview-empty").textContent, /仅接受绝对路径/);
 
 // 没有绝对路径时不给无法兑现的出路口
-const namelessView = mountInto({ kind: "binary", item: { relative_path: "mystery.docx" } });
-assert.equal(namelessView.querySelector(".file-preview-binary-name").textContent, "mystery.docx");
-assert.equal(namelessView.querySelectorAll(".file-preview-binary-actions button").length, 0);
-assert.equal(namelessView.querySelectorAll(".file-preview-binary-actions .muted").length, 1);
+const noPathView = mountInto({ kind: "binary", item: { relative_path: "mystery.docx" } });
+assert.equal(noPathView.querySelector(".file-preview-binary-meta dd").textContent, "mystery.docx");
+assert.equal(noPathView.querySelectorAll(".file-preview-binary-actions button").length, 0);
+assert.equal(noPathView.querySelectorAll(".file-preview-binary-actions .muted").length, 1);
 
 // 视图缺失时容器为空，由宿主负责隐藏整列
 const emptyView = mountInto(null);

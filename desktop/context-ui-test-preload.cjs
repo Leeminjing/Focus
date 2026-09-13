@@ -53,14 +53,19 @@ const conversationMessages = taskId => Array.from({ length: 12 }, (_value, index
   content: `${taskId} 独立消息 ${index}\n${"conversation content ".repeat(10)}`,
 }));
 
-// 按路径预览的桥：返回确定性的放行结果，使 e2e 能验证「未登记 / 工作区之外」这条链
+// 按路径预览的桥：返回确定性的放行结果，使 e2e 能验证「未登记 / 工作区之外」这条链。
+// 同时模拟主进程的两种解析：绝对路径直接放行；相对路径必须配合工作区根，否则拒绝——
+// 后者正是「仅接受绝对路径」那类失败在测试里的等价形态。
 window.focusDesktop = {
   runtime: () => ({ apiBase: "http://focus.test", session: "test-session" }),
-  resolvePreviewPath: async filePath => (
-    typeof filePath === "string" && filePath.length
-      ? { ok: true, path: filePath, size: 128 }
-      : { ok: false, reason: "路径为空" }
-  ),
+  resolvePreviewPath: async (filePath, workspacePath) => {
+    if (typeof filePath !== "string" || !filePath) return { ok: false, reason: "路径为空" };
+    if (/^([A-Za-z]:[\\/]|\/)/.test(filePath)) return { ok: true, path: filePath, size: 128 };
+    if (typeof workspacePath !== "string" || !workspacePath) {
+      return { ok: false, reason: "相对路径需要同时提供工作区根，且不得越出工作区" };
+    }
+    return { ok: true, path: `${workspacePath}/${filePath}`, size: 128 };
+  },
   openPath: async () => true,
   saveBytes: async () => true,
 };

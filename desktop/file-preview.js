@@ -300,14 +300,16 @@
   }
 
   // 兜底：任何无法按内容呈现的文件都得到名称、位置、大小与可执行出路，不留空白。
+  // 名称已由统一头部呈现，这里不再重复；`view.note` 说明为什么只能看到文件信息。
   function renderBinaryCard(container, document, view) {
     const model = binaryCardModel(view.item);
     const card = element(document, "section", "file-preview-binary");
-    appendText(document, card, "strong", "file-preview-binary-name", model.name);
+    if (view.note) appendText(document, card, "p", "file-preview-empty", view.note);
     const list = element(document, "dl", "file-preview-binary-meta");
     const rows = [
+      ["文件", model.name],
       ["类型", model.suffix ? `.${model.suffix}` : "无扩展名"],
-      ["大小", model.sizeBytes ? `${model.sizeBytes} B` : "未知"],
+      ["大小", model.sizeBytes ? formatBytes(model.sizeBytes) : "未知"],
       ["位置", model.path || "—"],
     ];
     for (const [label, value] of rows) {

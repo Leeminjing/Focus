@@ -1207,18 +1207,19 @@ function previewContentOf(item) {
 // 之所以不在主进程解码：Node 的 TextDecoder 不支持 gb18030，而浏览器支持；
 // 之所以不经 HTTP：后端是绑定 loopback 的服务，加一条按路径读路由等于开放任意文件读接口。
 async function readPathPreview(item, sequence) {
-  const target = item.path || item.relative_path || "";
+  const target = previewPathOf(item);
   const bridge = window.focusDesktop;
   if (typeof bridge?.resolvePreviewPath !== "function") {
     throw Object.assign(new Error("当前运行环境不支持按路径预览"), { status: 0 });
   }
-  const resolved = await bridge.resolvePreviewPath(target);
+  // 同时交出工作区根：只有相对路径时由主进程在工作区根下解析，越界仍被拒绝
+  const resolved = await bridge.resolvePreviewPath(target, activeTask()?.workspace_path || "");
   if (!resolved?.ok) throw Object.assign(new Error(resolved?.reason || "无法读取该文件"), { status: 0 });
   const response = await fetch(resolved.path);
   if (!response.ok) throw Object.assign(new Error(`读取文件失败（${response.status}）`), { status: response.status });
   const bytes = new Uint8Array(await response.arrayBuffer());
   const size = Number(resolved.size) || bytes.length;
-  const named = { ...item, size_bytes: size };
+  const named = { ...item, path: resolved.path, size_bytes: size };
   // 图片与 PDF 交给 Blob 地址；地址由宿主统一回收，避免持续占用内存
   if (item.kind === "image" || item.kind === "pdf") {
     const url = state.filePreview.objectUrls.urlFor(
@@ -1231,6 +1232,13 @@ async function readPathPreview(item, sequence) {
   return item.kind === "markdown"
     ? { ...view, kind: "markdown", html: renderAssistantContent(text) }
     : { ...view, kind: "text", text };
+}
+
+// 预览项要交给主进程的路径：优先绝对路径（材料记录或链接解析得来），否则退回相对路径，
+// 由主进程结合工作区根解析。丢掉绝对路径正是此前「仅接受绝对路径」失败的根因。
+function previewPathOf(item) {
+  if (!item) return "";
+  return item.path || item.relative_path || "";
 }
 
 // 每次渲染起一个新的序号，晚到的旧请求据此丢弃，避免切换标签页后被过期内容覆盖。
@@ -1259,9 +1267,10 @@ async function renderFilePreviewBody() {
     filePreview.mount(body, state.filePreview.shelf, content);
   } catch (error) {
     if (sequence !== filePreviewLoadSequence) return;
-    // 取不到内容（不是文本、文件不存在、越界等）落到信息卡，不留下空白或错误页
-    filePreview.mount(body, state.filePreview.shelf, { kind: "binary", item });
-    setStatus(describePreviewFailure(error, item), true);
+    const reason = previewFailureReason(error, item);
+    // 取不到内容（不是文本、文件不存在、越界等）落到信息卡，并在正文说明原因，不留沉默的卡片
+    filePreview.mount(body, state.filePreview.shelf, { kind: "binary", item, note: reason });
+    setStatus(reason, true);
   }
 }
 
@@ -1276,9 +1285,11 @@ async function readMaterialPreview(item) {
 }
 
 // 失败原因要可区分：用户据此判断「换个工具看」还是「文件没了」。
-function describePreviewFailure(error, item) {
-  if (error?.status === 415) return `${item.relative_path || "该文件"} 的内容无法按文本呈现，已改为展示文件信息`;
-  if (error?.status === 404) return `文件不存在：${item.relative_path || item.path || ""}`;
+function previewFailureReason(error, item) {
+  const name = item.relative_path || item.path || "该文件";
+  if (error?.status === 415) return `${name} 的内容无法按文本呈现，已改为展示文件信息`;
+  if (error?.status === 404) return `文件不存在：${name}`;
+  if (!previewPathOf(item)) return "无法定位该文件：既未登记为材料，也没有可用路径";
   return `无法预览该文件：${error?.message || "未知原因"}`;
 }
 
@@ -1338,8 +1349,9 @@ function handleFilePreviewAction(button) {
     const material = button.dataset.materialId
       ? (state.materials.get(state.activeTaskId) || []).find(item => item.material_id === button.dataset.materialId)
       : materialForFileName(state.activeTaskId, button.dataset.fileName);
-    // 未登记为材料时仍要打开：用文件名作为路径交给按路径读取，由它决定能否呈现
-    openFilePreview(material || { relative_path: button.dataset.fileName, path: button.dataset.fileName });
+    // 未登记为材料时仍要打开：优先用消息项自带的绝对路径，否则退回文件名（由主进程结合工作区根解析）
+    const fallbackPath = button.dataset.filePath || button.dataset.fileName;
+    openFilePreview(material || { relative_path: button.dataset.fileName, path: fallbackPath });
     return true;
   }
   if (action === "open-preview-in-system") return openPreviewInSystem(), true;
@@ -1519,11 +1531,17 @@ function fileNameFromLinkHref(href, hostPart = "") {
   return decodeURIComponent(source.replace(/[?#].*$/, "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "");
 }
 
-// 消息里的文件名只有路径：已登记为材料时能拿到材料标识与真实路径，未登记时按文件名兜底。
-// 任何文件都可点——未登记不再是不可点的理由。
+// 消息里的文件名常常只是 basename（链接显示文字与文件卡片都如此），而材料记录里是工作区相对
+// 路径与绝对路径。只做精确等值会一律匹配失败，进而丢掉材料已有的 size_bytes 与真实路径，
+// 因此未命中时按 basename 与路径结尾再匹配一次。
 function materialForFileName(taskId, fileName) {
   const materials = state.materials.get(taskId) || [];
-  return materials.find(item => item.relative_path === fileName || item.path === fileName) || null;
+  const exact = materials.find(item => item.relative_path === fileName || item.path === fileName);
+  if (exact) return exact;
+  if (!fileName) return null;
+  const basenameOf = value => String(value || "").replace(/[?#].*$/, "").split(/[\\/]/).pop();
+  return materials.find(item => basenameOf(item.relative_path) === fileName
+    || basenameOf(item.path) === fileName) || null;
 }
 
 function renderFileCard(file, task) {
@@ -1536,8 +1554,10 @@ function renderFileCard(file, task) {
   const iconMarkup = `<span class="ui-icon is-sm icon-${icon}" aria-hidden="true"></span>`;
   const material = task ? materialForFileName(task.task_id, name) : null;
   const materialId = material ? ` data-material-id="${escapeHtml(material.material_id)}"` : "";
-  const title = material ? "点击打开文件预览" : "点击打开预览（未登记为材料，按路径读取）";
-  return `<button class="file-card" data-action="open-file-panel"${materialId} data-file-name="${escapeHtml(name)}" title="${title}">${iconMarkup}<span>${escapeHtml(name)}${size}</span></button>`;
+  // 消息项自带绝对路径时一并带出：没有材料记录也能凭它读到文件
+  const filePath = typeof file?.path === "string" && file.path ? ` data-file-path="${escapeHtml(file.path)}"` : "";
+  const title = material ? "点击打开文件预览" : "点击打开预览（按路径读取）";
+  return `<button class="file-card" data-action="open-file-panel"${materialId} data-file-name="${escapeHtml(name)}"${filePath} title="${title}">${iconMarkup}<span>${escapeHtml(name)}${size}</span></button>`;
 }
 
 function renderFileCards(message, task) {
@@ -4932,6 +4952,21 @@ async function openSettings() {
 //     http://中文名.md/ 的形态。判据为「host 含中文」或「host 本身像文件名」——
 //     后者复用预览模块的 classify，使「什么算文件名」只有一处判据，
 //     因此 http://data.json/ 这类误解析同样被还原成文件而不是当外链打开。
+// 从 file:// 链接还原磁盘绝对路径。链接形态为 file:///C:/a/b.md，去掉协议后是 /C:/a/b.md，
+// 需要去掉前导斜杠才是 Windows 绝对路径；非 file: 链接没有可还原的绝对路径。
+function absolutePathFromHref(href) {
+  if (!/^file:/i.test(href)) return "";
+  let raw = href.replace(/^file:\/\//i, "");
+  raw = raw.replace(/[?#].*$/, "");
+  try { raw = decodeURIComponent(raw); } catch { /* 保留原串，交由主进程判定存在性 */ }
+  if (/^\/[A-Za-z]:[\\/]/.test(raw)) raw = raw.slice(1);
+  if (raw.startsWith("/") && /^\/[^/]/.test(raw)) {
+    // POSIX 形态（file:///home/x）：保留前导斜杠
+    return raw;
+  }
+  return raw;
+}
+
 document.addEventListener("click", event => {
   const anchor = event.target.closest("a[href]");
   if (!anchor) return;
@@ -4953,12 +4988,15 @@ document.addEventListener("click", event => {
   }
   event.preventDefault();
   event.stopPropagation();
-  // 显示文字可能含图标/说明,路径只取自 href(file URL)或兼容分支的 host。
-  // 任何后缀都交给 classify 决定呈现方式；未登记为材料时退化为信息卡，因此不存在「点了没反应」。
+  // 显示文字可能含图标/说明；路径取自 href（file URL 可还原绝对路径）或兼容分支的 host。
+  // 任何后缀都交给 classify 决定呈现方式；未登记为材料时按路径读取，因此不存在「点了没反应」。
   const fileName = fileNameFromLinkHref(href, hostPart);
-  if (fileName) {
-    openFilePreview(materialForFileName(state.activeTaskId, fileName) || { relative_path: fileName, path: fileName });
-  }
+  if (!fileName) return;
+  const absolutePath = absolutePathFromHref(href);
+  const record = materialForFileName(state.activeTaskId, fileName)
+    // 未登记为材料时也要把绝对路径交出去：丢掉它会让按路径读取拿不到可用的磁盘路径
+    || { relative_path: fileName, path: absolutePath || fileName };
+  openFilePreview(record);
 }, true);
 
 // 全局错误可见化:任何未捕获异常显示在状态栏,避免白屏时无从排查

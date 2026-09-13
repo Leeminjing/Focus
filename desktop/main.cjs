@@ -359,10 +359,11 @@ ipcMain.handle("focus:open-path", async (_event, filePath, workspacePath) => {
 // 数据库配置与插件偏好，预览没有理由暴露它们）。
 // 能力边界：这条按路径读取只经 Electron IPC 提供，绝不是绑定 loopback 的 HTTP 路由——
 // 后者会成为任何本机进程都能调用的任意文件读接口。
-function resolvePreviewPath(filePath) {
+function resolvePreviewPath(filePath, workspacePath) {
   if (typeof filePath !== "string" || !filePath) return { ok: false, reason: "路径为空" };
-  if (!path.isAbsolute(filePath)) return { ok: false, reason: "仅接受绝对路径" };
-  const resolved = path.resolve(filePath);
+  const candidate = resolvePreviewCandidate(filePath, workspacePath);
+  if (!candidate) return { ok: false, reason: "相对路径需要同时提供工作区根，且不得越出工作区" };
+  const resolved = candidate;
   if (resolved.startsWith(path.resolve(app.getPath("userData")) + path.sep)) {
     return { ok: false, reason: "应用数据目录不可预览" };
   }
@@ -373,7 +374,23 @@ function resolvePreviewPath(filePath) {
   return { ok: true, path: resolved, size: stat.size };
 }
 
-ipcMain.handle("focus:resolve-preview-path", async (_event, filePath) => resolvePreviewPath(filePath));
+// 把「绝对路径」或「工作区相对路径 + 工作区根」解析成一个待校验的绝对路径。
+// filePath 先按绝对路径试；不是绝对路径时，必须提供绝对的工作区根才继续，且拼接结果不得
+// 越出工作区根（`..` 逃逸在此拦下）。
+function resolvePreviewCandidate(filePath, workspacePath) {
+  if (typeof filePath !== "string" || !filePath) return null;
+  if (path.isAbsolute(filePath)) return path.resolve(filePath);
+  if (typeof workspacePath !== "string" || !path.isAbsolute(workspacePath)) return null;
+  const root = path.resolve(workspacePath);
+  const resolved = path.resolve(root, filePath);
+  const relative = path.relative(root, resolved);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
+  return resolved;
+}
+
+ipcMain.handle("focus:resolve-preview-path", async (_event, filePath, workspacePath) => (
+  resolvePreviewPath(filePath, workspacePath)
+));
 
 // 另存为：由主进程弹出保存对话框并写盘，渲染器既拿不到目标路径也不接触文件系统。
 ipcMain.handle("focus:save-bytes", async (event, suggestedName, bytes) => {

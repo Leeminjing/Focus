@@ -250,10 +250,10 @@
 .file-preview-line { display: flex; gap: var(--space-2); }
 .file-preview-line-number { min-width: 3ch; color: var(--text-secondary); text-align: right; user-select: none; }
 .file-preview-line-body { white-space: pre-wrap; word-break: break-word; }
-.file-preview-binary { display: grid; gap: var(--space-3); }
-.file-preview-binary-name { overflow-wrap: anywhere; font-size: 14px; }
-.file-preview-binary-meta { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px var(--space-3); margin: 0; }
-.file-preview-binary-meta dt { color: var(--text-secondary); font-size: 12px; }
+/* 卡片顶部对齐（不再依赖已移除的重复名称节点），元数据用两列对齐呈现 */
+.file-preview-binary { display: grid; align-content: start; gap: var(--space-3); }
+.file-preview-binary-meta { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px var(--space-3); margin: 0; align-items: baseline; }
+.file-preview-binary-meta dt { color: var(--text-secondary); font-size: 12px; white-space: nowrap; }
 .file-preview-binary-meta dd { margin: 0; overflow-wrap: anywhere; font-size: 12px; }
 .file-preview-binary-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 

@@ -170,6 +170,32 @@ async function run() {
       return { markup, isButton: markup.startsWith("<button"), plain: markup.includes("is-plain") };
     })()`);
     if (!card.isButton || card.plain) failures.push(`${label} 未登记文件卡片仍不是可点按钮：${card.markup.slice(0, 80)}`);
+
+    // 回归：点击 file:// 正文链接必须真的读到文件。曾因入口只取 basename、丢掉绝对路径，
+    // 而让按路径读取报「仅接受绝对路径」并退化成一张没有内容的卡片。
+    const viaLink = await win.webContents.executeJavaScript(`(async () => {
+      resetFilePreviews();
+      render();
+      const task = state.tasks.find(item => item.task_id === state.activeTaskId) || state.tasks[0];
+      state.materials.set(task.task_id, []);
+      const anchor = document.createElement("a");
+      anchor.setAttribute("href", "file:///C:/workspace/%E6%96%87%E4%BB%B6%E5%88%97%E8%A1%A8.md");
+      anchor.textContent = "文件列表.md";
+      document.querySelector("#app").appendChild(anchor);
+      anchor.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      await new Promise(resolve => setTimeout(resolve, 180));
+      const body = document.querySelector("#filePreviewBody");
+      return {
+        path: state.filePreview.shelf.active()?.path || "",
+        text: body.querySelector(".file-preview-text")?.textContent || "",
+        note: body.querySelector(".file-preview-empty")?.textContent || "",
+      };
+    })()`);
+    if (!/^[A-Za-z]:/.test(viaLink.path)) {
+      failures.push(`${label} file:// 链接未交出绝对路径：${JSON.stringify(viaLink)}`);
+    }
+    if (viaLink.note) failures.push(`${label} file:// 链接仍降级并报错：${viaLink.note}`);
+    if (!viaLink.text) failures.push(`${label} file:// 链接未呈现正文：${JSON.stringify(viaLink)}`);
   }
 
   win.destroy();
