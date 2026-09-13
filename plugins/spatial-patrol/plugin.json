@@ -1,7 +1,7 @@
 {
   "name": "spatial-patrol",
   "version": "0.1.0",
-  "enabled": false,
+  "enabled": true,
   "provides": [],
   "requires": [],
   "entry": "entry.py",

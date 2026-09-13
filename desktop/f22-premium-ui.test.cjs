@@ -92,7 +92,7 @@ for (const [name, body] of [
   ["inspector tab", rule(shell, '.inspector-tabs button[aria-selected="true"]')],
   ["context", rule(views, ".app-inspector .context-rail-card.is-current")],
   ["task", rule(views, ".task-card-shell:focus-within")],
-  ["plugin", rule(views, ".plugin-card.is-selected")],
+  ["plugin", rule(views, ".plugin-card-shell.is-selected")],
 ]) {
   assert.ok(body, `缺少 ${name} 选中规则`);
   assert.doesNotMatch(body, /box-shadow\s*:\s*inset|border-(left|bottom)[^;]*(accent|primary)/, `${name} 仍使用强调色半框`);

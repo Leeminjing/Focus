@@ -4874,6 +4874,31 @@ async function handleDocumentClick(event) {
     return render();
   }
   if (action === "refresh-plugins") { await hydratePlugins(); return render(); }
+  if (action === "reload-plugins") {
+    try {
+      const data = await api("/desktop/api/plugins/reload", { method: "POST" });
+      const plugins = data.plugins || [];
+      state.plugins = { ...state.plugins, plugins, interfaces: data.interfaces || {} };
+      if (!plugins.some(item => item.name === state.plugins.selectedName)) state.plugins.selectedName = plugins[0]?.name || null;
+      setStatus("已重新加载插件");
+      return renderPlugins();
+    } catch (error) { return setStatus(error.message, true); }
+  }
+  if (action === "toggle-plugin") {
+    const name = button.dataset.pluginName;
+    const enabled = button.dataset.pluginEnabled === "true";
+    button.disabled = true;
+    try {
+      await api(`/desktop/api/plugins/${encodeURIComponent(name)}/enabled`, {
+        method: "PUT", body: JSON.stringify({ enabled }),
+      });
+      setStatus(enabled ? `已启用 ${name}，正在重载界面…` : `已停用 ${name}，正在重载界面…`);
+      // 插件前端资源一旦注入就无法从渲染器卸载（脚本已执行、视图已注册），
+      // 因此重载整页让注入集合与后端状态严格一致，而不是在页面上留下已停用插件的视图。
+      window.location.reload();
+      return;
+    } catch (error) { button.disabled = false; return setStatus(error.message, true); }
+  }
   if (action === "filter-plugins") {
     state.plugins.filter = button.dataset.pluginStatus || "all";
     const visible = state.plugins.plugins.filter(item => state.plugins.filter === "all" || item.status === state.plugins.filter);
