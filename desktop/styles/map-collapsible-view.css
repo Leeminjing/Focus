@@ -256,9 +256,6 @@
 .map-collapsible-root-meta { display: flex; min-width: 0; min-height: 30px; align-items: center; justify-content: space-between; gap: var(--space-3); padding: 0 var(--space-2) 0 24px; color: var(--text-secondary); font-size: 11px; }
 .map-collapsible-root-meta strong { min-width: 0; overflow: hidden; color: var(--text-primary); text-overflow: ellipsis; white-space: nowrap; }
 
-.map-collapsible-empty { display: grid; justify-items: center; gap: var(--space-1); padding: var(--space-10); color: var(--text-secondary); text-align: center; }
-.map-collapsible-empty strong { color: var(--text-primary); }
-
 @media (max-width: 900px) {
   .map-toolbar { flex-wrap: wrap; }
   .map-presentation-controls { width: 100%; }

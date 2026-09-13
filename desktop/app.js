@@ -734,7 +734,8 @@ function render() {
   renderShellChrome();
   // 预览列占位与视图同源派生：必须在这里发生，而不是在会话页分支内
   syncFilePreviewVisibility();
-  if (!state.tasks.length) {
+  // 全局空态只属于任务视图的兜底：全图没有活动 Context 时自行留白，不能被这里拦掉
+  if (!state.tasks.length && state.view !== "map") {
     app.replaceChildren(document.querySelector("#emptyTemplate").content.cloneNode(true));
     interfaceI18n.apply(app);
     return;
@@ -2681,8 +2682,8 @@ function setsEqual(left, right) {
   return left.size === right.size && [...left].every(value => right.has(value));
 }
 
-function prepareMapTreeModel() {
-  const model = mapCollapsibleView.buildModel(state.tasks, state.contextTrees);
+function prepareMapTreeModel(activeTasks) {
+  const model = mapCollapsibleView.buildModel(activeTasks, state.contextTrees);
   const validWorkspaceIds = new Set(model.workspaces.map(workspace => workspace.id));
   const validContextIds = new Set(model.contexts.keys());
   const workspaceIds = new Set([...state.mapExpandedWorkspaceIds].filter(id => validWorkspaceIds.has(id)));
@@ -2703,10 +2704,10 @@ function prepareMapTreeModel() {
   return model;
 }
 
-function renderMapTree() {
-  const model = prepareMapTreeModel();
+function renderMapTree(activeTasks) {
+  const model = prepareMapTreeModel(activeTasks);
   return mapCollapsibleView.render(model, {
-    tasks: state.tasks,
+    tasks: activeTasks,
     activeTaskId: state.activeTaskId,
     expandedWorkspaceIds: state.mapExpandedWorkspaceIds,
     expandedContextIds: state.mapExpandedContextIds,
@@ -2801,8 +2802,12 @@ function contextRootId(task, tree) {
   return current?.context_id || task.task_id;
 }
 
-function renderMapGroups() {
-  const ordered = contextEditor.orderTasksByTree(state.tasks, state.contextTrees);
+/*
+ * 输入仅为 active 任务（renderMap 已过滤）及其 Context tree，输出按工作区和根 Context 分组的卡片。
+ * 工作区与根 Context 组都由任务派生，因此全图不会出现「0 个 Context」的空工作区，也不需要空态分支。
+ */
+function renderMapGroups(activeTasks) {
+  const ordered = contextEditor.orderTasksByTree(activeTasks, state.contextTrees);
   const workspaces = new Map();
   ordered.forEach(task => {
     const tree = state.contextTrees.get(task.workspace_id) || [];
@@ -2813,27 +2818,27 @@ function renderMapGroups() {
     workspaces.set(task.workspace_id, workspace);
   });
   return [...workspaces.entries()].map(([workspaceId, workspace]) => {
-    const allActive = [...workspace.roots.values()].reduce(
-      (sum, tasks) => sum + tasks.filter(task => sessionLifecycle(task) === "active").length, 0
-    );
+    const contextCount = [...workspace.roots.values()].reduce((sum, tasks) => sum + tasks.length, 0);
     return `<section class="map-workspace-group" data-workspace-id="${escapeHtml(workspaceId)}">
-      <header><div><span class="workspace-kicker">WORKSPACE</span><h2>${escapeHtml(workspace.name)}</h2></div><span class="ui-badge">${allActive} 个 Context</span></header>
+      <header><div><span class="workspace-kicker">WORKSPACE</span><h2>${escapeHtml(workspace.name)}</h2></div><span class="ui-badge">${contextCount} 个 Context</span></header>
       <div class="map-root-groups">${[...workspace.roots.entries()].map(([rootId, tasks]) => {
-        const activeTasks = tasks.filter(task => sessionLifecycle(task) === "active");
         const root = tasks.find(task => task.task_id === rootId) || tasks[0];
-        const rootLifecycle = sessionLifecycle(root);
-        const headerLabel = rootLifecycle === "active"
-          ? (activeTasks.length === 1 ? "仅根 Context" : `${activeTasks.length - 1} 个派生`)
-          : `根 context 已${rootLifecycle === "archived" ? "归档" : "删除"} · ${activeTasks.length} 个派生`;
-        return `<section class="map-root-group"><header><strong>${escapeHtml(root?.title || rootId)}</strong><span>${escapeHtml(headerLabel)}</span></header><div class="task-grid">${activeTasks.map(task => taskCardMarkup(task)).join("")}</div></section>`;
+        const headerLabel = tasks.length === 1 ? "仅根 Context" : `${tasks.length - 1} 个派生`;
+        return `<section class="map-root-group"><header><strong>${escapeHtml(root?.title || rootId)}</strong><span>${escapeHtml(headerLabel)}</span></header><div class="task-grid">${tasks.map(task => taskCardMarkup(task)).join("")}</div></section>`;
       }).join("")}</div>
     </section>`;
   }).join("");
 }
 
+/*
+ * 全图是「活动 Context」的视图：归档与已删除的 Context 不参与展示，也不贡献工作区。
+ * 工作区与根 Context 组都是从任务反推的，所以过滤放在这里一处即可同时决定折叠视图与卡片视图，
+ * 并在没有活动 Context 时让整个页面留白（空工作区行、空态文案都不再需要）。
+ */
 function renderMap(focusKey = null) {
   const sel = state.selectedContextIds.size;
   const treeMode = state.mapViewMode === "tree";
+  const activeTasks = state.tasks.filter(task => sessionLifecycle(task) === "active");
   const presentationControls = `<div class="map-presentation-controls">
     <div class="map-presentation-switch" role="group" aria-label="全图展示方式">
       <button type="button" data-action="set-map-view" data-map-view="tree" aria-pressed="${treeMode}">折叠视图</button>
@@ -2847,9 +2852,11 @@ function renderMap(focusKey = null) {
       <button class="text-button" data-action="batch-cascade-delete-selected" ${sel ? "" : "disabled"}>级联删除</button>
       <button class="text-button" data-action="toggle-selection-mode">取消</button>`
     : `<button class="text-button" data-action="toggle-selection-mode">批量删除</button>`;
+  const toolbar = activeTasks.length
+    ? `<div class="map-toolbar">${presentationControls}<button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">${state.soldierArmed ? "已装备小兵 · 选择任务" : "装备小兵"}</button>${batchControls}</div>`
+    : "";
   app.innerHTML = `<section class="map-view">
-    <div class="map-toolbar">${presentationControls}<button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">${state.soldierArmed ? "已装备小兵 · 选择任务" : "装备小兵"}</button>${batchControls}</div>
-    <div class="${treeMode ? "map-tree-host" : "map-groups"}">${treeMode ? renderMapTree() : renderMapGroups()}</div>
+    ${toolbar}<div class="${treeMode ? "map-tree-host" : "map-groups"}">${activeTasks.length ? (treeMode ? renderMapTree(activeTasks) : renderMapGroups(activeTasks)) : ""}</div>
   </section>`;
   if (focusKey) {
     const target = [...app.querySelectorAll("[role='treeitem'][data-tree-key]")]

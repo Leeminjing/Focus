@@ -239,7 +239,6 @@
   }
 
   function render(model, rawOptions = {}) {
-    if (!model?.workspaces?.length) return '<section class="map-collapsible-empty"><strong>暂无工作区任务</strong><span>创建任务后会在这里显示。</span></section>';
     const options = {
       activeTaskId: rawOptions.activeTaskId || null,
       expandedWorkspaceIds: rawOptions.expandedWorkspaceIds instanceof Set ? rawOptions.expandedWorkspaceIds : new Set(rawOptions.expandedWorkspaceIds || []),
