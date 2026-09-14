@@ -3,29 +3,29 @@
  *
  * 对外提供:
  *   ACTIONS — 三个动作的稳定标识（仅允许这一次 / 拒绝 / 切换为完全权限）
- *   RISK_NOTICE_KEYS — 启用完全权限前必须说明的两点文案键
+ *   OPERATION_KEYS — 受治理目标的操作类型文案键
  *   isAccessReview(payload) — 中断载荷是否为准入待决
  *   isMainSubject(agentId) — 待决是否来自主执行身份（决定面板落在主流程还是后台待处理区）
  *   targetLines(payload) — 受治理目标按操作类型分行（读 / 写 / 执行命令），供面板逐行呈现
  *   approvalFields(payload) — 面板字段：工具、目标或命令、执行位置、发起角色、当前访问模式
- *   modeLabelKey(mode) — 访问模式的展示文案键
+ *     （访问模式字段只回传取值，展示文案由访问模式模块给出，此处不维护第二份映射）
+ *   switchedMode(action) — 该动作要把后续运行切到哪一档模式；不切换时为 null
  *   resumeValue(action) — 该动作对应的中断恢复值
- *   widensAccess(action) — 该动作是否要求把后续运行放宽到完全权限
  *
  * 输入: 中断载荷（`{type, tool, reads, writes, command, cwd, agent_role, access_mode}`）与动作标识。
- * 输出: 字段数组、目标分行、文案键与恢复值；不产生任何副作用。
+ * 输出: 字段数组、目标分行、目标模式与恢复值；不产生任何副作用。
  *
  * 具体工作流:
  *   (1) 字段只呈现判定所依据的事实：规范化真实目标或命令、执行位置、发起角色、当前访问模式，
  *       不从载荷里推断任何未提供的信息（缺失即留空，不填占位）
  *   (2) 受治理目标按操作类型分行：同一个真实路径可能被读、被写或两者兼有，
  *       「这个路径会不会被改写」正是人的判断依据，因此不合并成一张无标注的路径表
- *   (3) 恢复值只回答「这一次」：拒绝给 reject，其余给 approve；运行期的访问模式在运行开始时
- *       已由服务端派生，因此「切换为完全权限」不写入恢复值，而是由调用方另行持久化到后续运行
+ *   (3) 恢复值只回答「这一次」：拒绝给 reject，其余给 approve；「切换为完全权限」不写入恢复值，
+ *       而是由调用方经访问模式模块落盘到后续运行；是否需要风险确认也由该模块判定
  *   (4) 主执行身份的待决落在主流程面板，后台执行主体的待决落在后台待处理区，二者互不抢占
  *
  * 示例:
- *   fields = FocusAccessApproval.approvalFields(payload);
+ *   fields = FocusAccessApproval.approvalFields(payload, FocusAccessMode.labelKey);
  *   resume = { resume: FocusAccessApproval.resumeValue("approve_once") };
  */
 (function (root, factory) {
@@ -36,14 +36,7 @@
   "use strict";
 
   const ACTIONS = Object.freeze(["approve_once", "reject", "switch_full"]);
-  const RISK_NOTICE_KEYS = Object.freeze([
-    "access.risk_os_permissions",
-    "access.risk_other_reviews",
-  ]);
-  const MODE_LABELS = Object.freeze({
-    workspace: "access.mode_workspace",
-    full: "access.mode_full",
-  });
+  const SWITCHED_MODE = Object.freeze({ switch_full: "full" });
   const OPERATION_KEYS = Object.freeze({
     read: "access.operation_read",
     write: "access.operation_write",
@@ -95,33 +88,27 @@
         key: "access_mode",
         labelKey: "access.field_access_mode",
         value: String(value.access_mode || ""),
-        valueKey: modeLabelKey(value.access_mode),
+        mode: value.access_mode || null,
       },
     ];
-  }
-
-  function modeLabelKey(mode) {
-    return MODE_LABELS[String(mode || "")] || null;
   }
 
   function resumeValue(action) {
     return { decision: action === "reject" ? "reject" : "approve" };
   }
 
-  function widensAccess(action) {
-    return action === "switch_full";
+  function switchedMode(action) {
+    return SWITCHED_MODE[action] || null;
   }
 
   return {
     ACTIONS,
-    RISK_NOTICE_KEYS,
     OPERATION_KEYS,
     isAccessReview,
     isMainSubject,
     targetLines,
     approvalFields,
-    modeLabelKey,
+    switchedMode,
     resumeValue,
-    widensAccess,
   };
 });

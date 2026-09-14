@@ -51,6 +51,7 @@ from focus.runtime.runs.manager import RunManager, RunRecord
 from focus.runtime.runs.schemas import DisconnectMode, RunStatus
 from focus.runtime.stream_bridge.base import StreamBridge
 from focus.runtime.stream_bridge.schemas import StreamEvent
+from focus.security.policy import AccessMode
 
 
 logger = logging.getLogger(__name__)
@@ -161,6 +162,9 @@ class ContextPatrolService:
                     "model_name": draft.equipment.get("model_name"),
                     "permissions": ["read"],
                     "skills": [],
+                    # 访问模式随草稿装备一并承接（策展草稿由草稿规范化钉在工作区保护）；
+                    # 启动点不得丢掉它，否则会静默退回默认档
+                    "access_mode": draft.equipment.get("access_mode") or str(AccessMode.WORKSPACE),
                 },
                 source_checkpoint_id=source_checkpoint_id,
                 mode="context_curator",

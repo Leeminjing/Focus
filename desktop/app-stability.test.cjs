@@ -211,6 +211,8 @@ async function testAttachmentCommitBoundary() {
       must_view_material_ids: ["m1"],
       skills: [],
       spatial_focus: null,
+      // 访问模式随请求显式声明（未设置时为最严的工作区保护）
+      access_mode: "workspace",
     },
   });
 }

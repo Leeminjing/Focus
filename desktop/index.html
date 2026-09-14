@@ -165,15 +165,7 @@
         <button class="text-button reject-button" type="button" data-access-action="reject" data-i18n="access.reject">拒绝</button>
         <button class="text-button switch-full-button" type="button" data-access-action="switch_full" data-i18n="access.switch_full">切换为完全权限</button>
       </div>
-      <section class="access-review-risk" hidden>
-        <strong data-i18n="access.risk_title">启用完全权限前确认</strong>
-        <p data-i18n="access.risk_os_permissions"></p>
-        <p data-i18n="access.risk_other_reviews"></p>
-        <div class="access-review-risk-actions">
-          <button class="primary confirm-full-button" type="button" data-i18n="access.risk_confirm">确认切换</button>
-          <button class="text-button cancel-full-button" type="button" data-i18n="access.risk_cancel">取消</button>
-        </div>
-      </section>
+      <section class="access-review-risk" hidden></section>
     </article>
   </template>
   <template id="traceTemplate">
@@ -212,6 +204,7 @@
   <script src="./run-material-picker.js?v=20260913a"></script>
   <script src="./material-grouping.js?v=20260913a"></script>
   <script src="./material-content-loader.js?v=20260912a"></script>
+  <script src="./access-mode.js"></script>
   <script src="./access-approval.js"></script>
   <script src="./app.js?v=20260914a"></script>
 </body>

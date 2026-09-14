@@ -14,6 +14,7 @@ const vm = require("node:vm");
 const { createAppHarness, readAppSource } = require("./test-helper.cjs");
 
 const approval = require("./access-approval.js");
+const mode = require("./access-mode.js");
 
 const PAYLOAD = {
   type: "access_review",
@@ -49,7 +50,7 @@ assert.deepEqual(
 assert.equal(fields.find(field => field.key === "tool").value, "write_file");
 assert.equal(fields.find(field => field.key === "cwd").value, "C:/workspace");
 assert.equal(fields.find(field => field.key === "agent_role").value, "main");
-assert.equal(fields.find(field => field.key === "access_mode").valueKey, "access.mode_workspace");
+assert.equal(fields.find(field => field.key === "access_mode").mode, "workspace");
 assert.equal(
   approval.approvalFields({ type: "access_review", tool: "read_file" })
     .find(field => field.key === "cwd").value,
@@ -82,8 +83,9 @@ assert.deepEqual([...approval.ACTIONS], ["approve_once", "reject", "switch_full"
 assert.deepEqual(approval.resumeValue("approve_once"), { decision: "approve" });
 assert.deepEqual(approval.resumeValue("switch_full"), { decision: "approve" });
 assert.deepEqual(approval.resumeValue("reject"), { decision: "reject" });
-assert.equal(approval.widensAccess("switch_full"), true);
-assert.equal(approval.widensAccess("approve_once"), false);
+assert.equal(approval.switchedMode("switch_full"), "full");
+assert.equal(approval.switchedMode("approve_once"), null);
+assert.equal(approval.switchedMode("reject"), null);
 
 // 4) 主执行身份与后台执行主体的分流
 assert.equal(approval.isAccessReview(PAYLOAD), true);
@@ -110,7 +112,7 @@ assert.match(zh, /"access\.risk_other_reviews": "[^"]*其他人工审核机制/)
 assert.match(en, /"access\.risk_os_permissions": "[^"]*operating system/);
 assert.match(en, /"access\.risk_other_reviews": "[^"]*other human review/);
 for (const key of [
-  ...approval.RISK_NOTICE_KEYS,
+  ...mode.RISK_NOTICE_KEYS,
   ...Object.values(approval.OPERATION_KEYS),
   "access.subject_main",
   "access.badge",
@@ -240,12 +242,15 @@ const flush = async () => {
   assert.equal(accessPending.children.length, 0, "待处理区不再保留该面板");
   assert.equal(accessPending.hidden, true, "待处理区收起");
 
-  // 7c) 放宽范围先出确认，未确认不提交
+  // 7c) 放宽范围先出确认，未确认不提交；风险说明由访问模式模块注入（同一份文案与结构）
   actionButton("switch_full").click();
-  assert.equal(panel.querySelector(".access-review-risk").hidden, false, "点击放宽动作先显示风险确认");
+  const riskNode = panel.querySelector(".access-review-risk");
+  assert.equal(riskNode.hidden, false, "点击放宽动作先显示风险确认");
+  assert.match(riskNode.innerHTML, /操作系统自身的权限/);
+  assert.match(riskNode.innerHTML, /其他人工审核机制/);
+  assert.match(riskNode.innerHTML, /data-action="confirm-access-review-full"/, "确认动作属于批准面板");
+  assert.match(riskNode.innerHTML, /data-action="cancel-access-mode"/, "取消动作与选择器共用");
   assert.equal(fetches.length, 0, "未确认前不发起恢复请求");
-  panel.querySelector(".cancel-full-button").click();
-  assert.equal(panel.querySelector(".access-review-risk").hidden, true, "取消确认后收起风险段落");
 
   // 7d) 「仅允许这一次」→ 只提交 approve
   actionButton("approve_once").click();
@@ -255,12 +260,14 @@ const flush = async () => {
   assert.deepEqual(JSON.parse(fetches[0].options.body), { resume: { decision: "approve" } });
   assert.match(harness.statusNode.textContent, /已允许这一次/);
 
-  // 7e) 确认放宽 → 提交 approve 并把后续运行切到完全权限
+  // 7e) 确认放宽 → 提交 approve 并把后续运行切到完全权限（模式落盘走访问模式模块）
   seedTask();
   fetches.length = 0;
   open("main:task");
   actionButton("switch_full").click();
-  panel.querySelector(".confirm-full-button").click();
+  harness.context.__accessPanel = panel;
+  new vm.Script("confirmAccessReviewFull({ closest: () => __accessPanel });")
+    .runInContext(harness.context);
   await flush();
   assert.deepEqual(JSON.parse(fetches[0].options.body), { resume: { decision: "approve" } });
   assert.match(harness.statusNode.textContent, /后续运行按完全权限执行/);

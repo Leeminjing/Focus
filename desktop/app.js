@@ -177,6 +177,7 @@ const contextCuratorPresentation = window.FocusContextCuratorPresentation;
 const patrolAvatar = window.FocusPatrolAvatar;
 const runMaterialPicker = window.runMaterialPicker;
 const materialGrouping = window.materialGrouping;
+const accessMode = window.FocusAccessMode;
 const accessApproval = window.FocusAccessApproval;
 interfaceI18n.apply(document);
 // f18 插件视图宿主:插件前端脚本加载后经此注册视图与材料打开器
@@ -1094,7 +1095,7 @@ function renderFocus(task = activeTask()) {
             <div class="composer-context"><span class="ui-badge is-active">${uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
             <div class="composer">
               ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(detail.ui_state?.input || "")}</textarea>`, true)}
-              <div class="composer-actions"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div>
+              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}</div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
             </div>
             <p id="composerFeedback" class="composer-feedback is-${feedback.kind}" role="status">${escapeHtml(feedback.text)}</p>
           </div>
@@ -3100,6 +3101,7 @@ function renderEquipment(draft) {
   return `<div class="equipment-grid">
     <label>模型<select data-equipment="model_name">${state.equipment.models.map(model => `<option value="${model.name}" ${model.name === equipment.model_name ? "selected" : ""}>${escapeHtml(model.display_name)}</option>`).join("")}</select></label>
     <div><span class="tiny muted">权限</span><div class="check-line">${state.equipment.permissions.map(permission => `<label><input type="checkbox" data-permission="${permission}" ${permissions.includes(permission) ? "checked" : ""}>${permission}</label>`).join("")}</div></div>
+    <div><span class="tiny muted">访问模式</span>${renderAccessModePicker("draft")}</div>
     ${renderEquipmentTools()}
     <p class="tiny danger">无沙箱：写入或命令权限会直接影响真实宿主机。命令权限可绕过文件工具规则。</p>
   </div>`;
@@ -3191,9 +3193,13 @@ function syncDraftFromDom() {
   if (draft.mode === "context_curator") {
     draft.equipment.permissions = ["read"];
     draft.equipment.skills = [];
+    // 策展小兵的访问模式由服务端钉在工作区保护，界面不给选择，这里如实写回同一取值
+    draft.equipment = accessMode.writeMode(draft.equipment, accessMode.DEFAULT_MODE);
   } else {
     draft.equipment.permissions = [...document.querySelectorAll("[data-permission]:checked")].map(input => input.dataset.permission);
     draft.equipment.skills = normalizeSkillNames(draft.equipment.skills);
+    const mode = readAccessModeFromDom("draft");
+    if (mode) draft.equipment = accessMode.writeMode(draft.equipment, mode);
   }
   return draft;
 }
@@ -3398,7 +3404,7 @@ async function sendMainOnce() {
         must_view_material_ids: outgoing.requiredImageIds,
         skills: selectedSkills("main"),
         spatial_focus: spatialTarget?.focus || null,
-        ...(detail.ui_state?.access_mode === "full" ? { access_mode: "full" } : {}),
+        ...accessMode.requestBody(accessModeOf("main")),
       }),
     });
     const contextNode = (state.contextTrees.get(activeTask().workspace_id) || [])
@@ -4060,6 +4066,120 @@ async function resumeMustView(decision) {
   }
 }
 
+// === 本机资源访问模式 ===
+
+const ACCESS_MODE_TARGETS = {
+  main: {
+    holder: taskId => state.details.get(taskId || state.activeTaskId)?.ui_state,
+    set: (taskId, holder) => {
+      const detail = state.details.get(taskId || state.activeTaskId);
+      if (detail) detail.ui_state = holder;
+    },
+    persist: taskId => persistUiState(taskId),
+    pinned: () => false,
+  },
+  draft: {
+    holder: () => state.drafts.get(state.activeTaskId)?.equipment,
+    set: (_taskId, holder) => {
+      const draft = state.drafts.get(state.activeTaskId);
+      if (draft) draft.equipment = holder;
+    },
+    persist: () => { scheduleDraftSave(); return Promise.resolve(); },
+    // 策展草稿的访问模式由服务端钉在工作区保护，界面因此不给可点的选择，只如实显示
+    pinned: () => state.drafts.get(state.activeTaskId)?.mode === "context_curator",
+  },
+};
+
+function accessModeOf(target, taskId) {
+  return accessMode.readMode(ACCESS_MODE_TARGETS[target].holder(taskId));
+}
+
+function renderAccessModePicker(target) {
+  const config = ACCESS_MODE_TARGETS[target];
+  const mode = accessModeOf(target);
+  const label = uiText(accessMode.labelKey(mode), accessMode.labelFallback(mode));
+  const shield = `<span class="access-mode-shield" aria-hidden="true"></span>`;
+  if (config.pinned()) {
+    return `<span class="access-mode-picker is-pinned" data-access-mode-target="${target}" data-mode="${mode}">
+      <span class="access-mode-chip is-pinned" title="${escapeHtml(uiText("access.mode_pinned_curator", "策展小兵固定为工作区保护"))}">${shield}<span class="access-mode-label">${escapeHtml(label)}</span></span>
+    </span>`;
+  }
+  const options = accessMode.MODES.map(value => `
+    <button type="button" role="menuitemradio" aria-checked="${value === mode}" class="access-mode-option${value === mode ? " is-active" : ""}" data-action="select-access-mode" data-access-mode-target="${target}" data-access-mode-value="${value}">${escapeHtml(uiText(accessMode.labelKey(value), accessMode.labelFallback(value)))}</button>`).join("");
+  return `<span class="access-mode-picker" data-access-mode-target="${target}" data-mode="${mode}">
+    <button type="button" class="access-mode-chip is-${mode}" data-action="toggle-access-mode" data-access-mode-target="${target}" aria-haspopup="menu" aria-expanded="false" title="${escapeHtml(uiText("access.mode_switch_hint", "切换本机资源访问模式"))}">${shield}<span class="access-mode-label">${escapeHtml(label)}</span><span class="access-mode-caret" aria-hidden="true">▾</span></button>
+    <div class="access-mode-menu" role="menu" hidden>
+      ${options}
+      <section class="access-mode-risk" hidden>${accessMode.riskNoticeHtml(uiText, { confirm: "confirm-access-mode", cancel: "cancel-access-mode" })}</section>
+    </div>
+  </span>`;
+}
+
+function readAccessModeFromDom(target) {
+  const picker = document.querySelector(`.access-mode-picker[data-access-mode-target="${target}"]`);
+  const selected = picker?.querySelector(".access-mode-option.is-active");
+  return selected ? accessMode.normalize(selected.dataset.accessModeValue) : null;
+}
+
+function closeAccessModeMenus() {
+  document.querySelectorAll(".access-mode-menu").forEach(menu => { menu.hidden = true; });
+  document.querySelectorAll('[data-action="toggle-access-mode"]').forEach(button => {
+    button.setAttribute("aria-expanded", "false");
+  });
+}
+
+function toggleAccessModeMenu(button) {
+  const picker = button.closest(".access-mode-picker");
+  const menu = picker?.querySelector(".access-mode-menu");
+  if (!menu) return;
+  const open = menu.hidden;
+  closeAccessModeMenus();
+  menu.hidden = !open;
+  button.setAttribute("aria-expanded", String(open));
+  const risk = picker.querySelector(".access-mode-risk");
+  if (risk) risk.hidden = true;
+}
+
+function selectAccessMode(button) {
+  const picker = button.closest(".access-mode-picker");
+  const target = button.dataset.accessModeTarget;
+  const wanted = button.dataset.accessModeValue;
+  // 放宽访问范围前必须确认：风险说明由访问模式模块渲染，此处不另写一份文案
+  if (accessMode.widens(accessModeOf(target), wanted) && picker?.querySelector(".access-mode-risk")) {
+    picker.querySelector(".access-mode-risk").hidden = false;
+    return;
+  }
+  closeAccessModeMenus();
+  applyAccessMode(target, wanted);
+}
+
+function confirmAccessMode(button) {
+  const target = button.closest(".access-mode-picker")?.dataset.accessModeTarget;
+  closeAccessModeMenus();
+  if (target) applyAccessMode(target, "full");
+}
+
+function cancelAccessMode(button) {
+  const risk = button.closest(".access-mode-risk");
+  if (risk) risk.hidden = true;
+}
+
+function applyAccessMode(target, mode, taskId) {
+  const config = ACCESS_MODE_TARGETS[target];
+  if (config.pinned()) return;
+  const current = config.holder(taskId);
+  if (!current) return;
+  const next = accessMode.writeMode(current, mode);
+  config.set(taskId, next);
+  config.persist(taskId);
+  const changed = accessMode.readMode(next);
+  setStatus(uiText(
+    changed === "full" ? "access.mode_changed_full" : "access.mode_changed_workspace",
+    changed === "full" ? "已启用本机完全权限" : "已切回工作区保护",
+  ));
+  render();
+}
+
 // === 本机资源访问批准面板 ===
 
 const ACCESS_OPERATION_FALLBACKS = { read: "读取", write: "写入", command: "执行" };
@@ -4127,8 +4247,9 @@ function renderAccessReviewFields(panel, payload) {
   const cells = accessApproval.approvalFields(payload).map(field => {
     const label = `<dt data-i18n="${escapeHtml(field.labelKey)}">${escapeHtml(uiText(field.labelKey, field.labelKey))}</dt>`;
     let value;
-    if (field.valueKey) {
-      value = `<dd data-i18n="${escapeHtml(field.valueKey)}">${escapeHtml(uiText(field.valueKey, field.value))}</dd>`;
+    if (field.mode) {
+      // 访问模式的展示文案只来自访问模式模块
+      value = `<dd data-i18n="${escapeHtml(accessMode.labelKey(field.mode))}">${escapeHtml(uiText(accessMode.labelKey(field.mode), accessMode.labelFallback(field.mode)))}</dd>`;
     } else if (field.lines?.length) {
       // 逐行标注操作类型：人据此判断这个路径会不会被改写
       value = `<dd>${field.lines.map(line => `
@@ -4143,21 +4264,31 @@ function renderAccessReviewFields(panel, payload) {
 
 function bindAccessReview(panel, task, payload) {
   const risk = panel.querySelector(".access-review-risk");
+  // 风险说明由访问模式模块渲染：批准面板与作曲区的模式选择器共用同一份文案与结构，
+  // 只有「确认之后做什么」不同——这里还要放行当前这次调用
+  risk.innerHTML = accessMode.riskNoticeHtml(uiText, {
+    confirm: "confirm-access-review-full",
+    cancel: "cancel-access-mode",
+  });
   panel.querySelectorAll("[data-access-action]").forEach(button => {
     button.addEventListener("click", () => {
       const action = button.dataset.accessAction;
+      const switched = accessApproval.switchedMode(action);
       // 放宽访问范围前先确认：确认步骤本身就是风险提示的载体
-      if (accessApproval.widensAccess(action)) {
+      if (switched && accessMode.widens(accessModeOf("main", task.task_id), switched)) {
         risk.hidden = false;
         return;
       }
       resumeAccessReview(task, payload, action);
     });
   });
-  panel.querySelector(".cancel-full-button").addEventListener("click", () => { risk.hidden = true; });
-  panel.querySelector(".confirm-full-button").addEventListener("click", () => {
-    resumeAccessReview(task, payload, "switch_full");
-  });
+}
+
+function confirmAccessReviewFull(button) {
+  const panel = button.closest(".access-review-panel");
+  const task = state.tasks.find(item => item.task_id === panel?.dataset.taskId);
+  if (!task || !state.accessReviews.payload) return;
+  resumeAccessReview(task, state.accessReviews.payload, "switch_full");
 }
 
 function closeAccessReview() {
@@ -4170,17 +4301,18 @@ async function resumeAccessReview(task, payload, action) {
   if (state.accessReviews.busy) return;
   state.accessReviews.busy = true;
   const tool = String(payload?.tool || "");
+  const switched = accessApproval.switchedMode(action);
   try {
     const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
       method: "POST",
       body: JSON.stringify({ resume: accessApproval.resumeValue(action) }),
     });
-    if (accessApproval.widensAccess(action)) rememberFullAccess(task);
+    if (switched) applyAccessMode("main", switched, task.task_id);
     closeAccessReview();
     listenToRun(run);
     if (action === "reject") {
       setStatus(uiText("access.denied", "已拒绝：{tool} 未执行，模型将收到可读的失败结果", { tool }));
-    } else if (accessApproval.widensAccess(action)) {
+    } else if (switched) {
       setStatus(uiText("access.switched_full", "已允许本次调用；后续运行按完全权限执行"));
     } else {
       setStatus(uiText("access.approved", "已允许这一次：{tool}", { tool }));
@@ -4191,16 +4323,6 @@ async function resumeAccessReview(task, payload, action) {
     return;
   }
   state.accessReviews.busy = false;
-}
-
-function rememberFullAccess(task) {
-  const detail = state.details.get(task.task_id);
-  if (!detail) return;
-  detail.ui_state = { ...(detail.ui_state || {}), access_mode: "full" };
-  const previous = state.activeTaskId;
-  state.activeTaskId = task.task_id;
-  persistFocusState();
-  state.activeTaskId = previous;
 }
 
 function reconcileAccessReview(detail) {
@@ -5352,6 +5474,11 @@ async function handleDocumentClick(event) {
   if (action === "confirm-compression") return confirmCompression();
   if (action === "cancel-compression") return cancelCompression();
   if (action === "abandon-commitment") return abandonCommitment();
+  if (action === "toggle-access-mode") return toggleAccessModeMenu(button);
+  if (action === "select-access-mode") return selectAccessMode(button);
+  if (action === "confirm-access-mode") return confirmAccessMode(button);
+  if (action === "confirm-access-review-full") return confirmAccessReviewFull(button);
+  if (action === "cancel-access-mode") return cancelAccessMode(button);
   if (action === "exit-draft") { if (await saveDraft(state.activeTaskId)) { state.view = "map"; return render(); } return; }
   if (action === "set-patrol-mode") {
     const draft = syncDraftFromDom();
@@ -5916,6 +6043,12 @@ document.addEventListener("paste", event => {
   });
 });
 
+function persistUiState(taskId = state.activeTaskId) {
+  const detail = state.details.get(taskId);
+  if (!detail) return Promise.resolve();
+  return api(`/desktop/api/tasks/${taskId}/ui-state`, { method: "PUT", body: JSON.stringify(detail.ui_state) }).catch(() => {});
+}
+
 function persistFocusState() {
   const detail = state.details.get(state.activeTaskId);
   if (!detail) return;
@@ -5925,7 +6058,7 @@ function persistFocusState() {
     skills: selectedSkills("main"),
     scrollTop: document.querySelector("#conversation")?.scrollTop || 0,
   };
-  return api(`/desktop/api/tasks/${state.activeTaskId}/ui-state`, { method: "PUT", body: JSON.stringify(detail.ui_state) }).catch(() => {});
+  return persistUiState(state.activeTaskId);
 }
 
 document.addEventListener("focus:languagechange", () => {

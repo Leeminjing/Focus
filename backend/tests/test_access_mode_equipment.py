@@ -161,6 +161,30 @@ async def _identity(prompt):
     return prompt
 
 
+def test_every_launch_takes_the_mode_from_the_subject_equipment():
+    """所有启动点都从被启动主体的装备取访问模式：任一处丢掉它都会静默退回最严档。"""
+    import ast
+
+    root = Path(__file__).parents[1]
+    desktop = root / "app" / "desktop"
+    calls = [
+        node
+        for node in ast.walk(ast.parse((desktop / "service.py").read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_governed_context"
+    ]
+    assert len(calls) >= 3, "主 run、resume 与 swarm 都应经同一派生入口"
+    for call in calls:
+        keywords = {keyword.arg for keyword in call.keywords}
+        assert "access_mode" in keywords, f"启动点缺少访问模式：行 {call.lineno}"
+
+    curator = (desktop / "context_patrol_service.py").read_text(encoding="utf-8")
+    assert '"access_mode": draft.equipment.get("access_mode")' in curator, (
+        "策展小兵的启动点必须承接草稿装备里的访问模式"
+    )
+
+
 def test_run_request_model_round_trips_access_mode():
     """运行请求模型保留模式取值；缺失或无法识别的取值由服务归一为工作区保护。"""
     body = MainRunCreate(message="你好", access_mode="full")
