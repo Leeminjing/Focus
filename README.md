@@ -277,12 +277,23 @@ Each governed context operation collapses the model's freedom into a narrow arti
 | Variable | Required | Purpose |
 |---|---|---|
 | `OPENAI_API_KEY` | yes | credential source for the model entries |
-| `FOCUS_MODEL` | no | overrides the default model; must name an existing `config.yaml` entry |
+| `FOCUS_MODEL` | no | CI / one-off override: must name an entry in the effective catalog; an unknown name fails at startup and the error lists every available entry |
 | `FOCUS_DATABASE_URL` | no | overrides the database connection |
 
 Set them in `.env` (`cp .env.example .env`) or as OS environment variables, which take precedence: `setx OPENAI_API_KEY "sk-..."` on Windows, `export OPENAI_API_KEY=...` on macOS/Linux — both require a new terminal.
 
-Edit `config.yaml` (models / commitment / compression / checkpointer / database) and `extensions_config.json` (skills / mcpServers). `~/.focus/` is a global default layer, overlaid by the repo config.
+**Configuring models** — open the desktop app's *Settings → Models*: add, edit or delete entries, pick the default and curation-default model, enter or rotate credentials, test the connection; saving applies immediately without a restart or a terminal. Hand-editing the configuration files stays supported.
+
+Configuration is resolved from two file layers, the later one winning:
+
+1. file layer `<cwd>/config.yaml` — the defaults shipped with this build (for an installed app that is `~/.focus/app/config.yaml`, replaced wholesale on upgrade);
+2. user preference layer `~/.focus/config.yaml` — written by the settings panel, survives upgrades, and **takes precedence over the file layer**.
+
+The environment (`.env` and the process environment) participates through exactly two channels and is **not** a generic per-key override layer: `$VAR` references inside configuration values are resolved at use time, and two configuration items have documented override keys — `FOCUS_MODEL` (default model selection) and `FOCUS_DATABASE_URL` (database connection) — which win over both file layers. No other configuration item is rewritten by a same-named environment variable.
+
+`models` merges per entry `name`: entries declared by the user preference layer override same-named defaults, defaults the user did not declare survive, and deletions are recorded in an explicit `removed_models` list (so they are not resurrected by a build update). `default` and `curation_default` are owned by the highest layer that declares them.
+
+The remaining sections (`commitment` / `compression` / `checkpointer` / `database`) and `extensions_config.json` (skills / mcpServers) follow the same layer order.
 
 **Start the backend**
 

@@ -77,6 +77,7 @@ from backend.app.desktop.must_view_recovery import (
     validate_must_view_resume,
 )
 from backend.app.desktop.models import (
+    MAIN_RUN_EQUIPMENT_KEY,
     AgentBoardTask,
     AgentMessage,
     DesktopMaterial,
@@ -162,7 +163,7 @@ from backend.app.desktop.prompts import (
 
 logger = logging.getLogger(__name__)
 
-_MAIN_RUNTIME_EQUIPMENT_KEY = "_main_run_equipment"
+_MAIN_RUNTIME_EQUIPMENT_KEY = MAIN_RUN_EQUIPMENT_KEY
 _TERMINAL_STATUSES = frozenset({"success", "error", "interrupted"})
 _ACCESS_DECISIONS = frozenset({"approve", "reject"})
 
@@ -360,21 +361,16 @@ class DesktopService:
         await asyncio.gather(*background, return_exceptions=True)
 
     async def equipment(self) -> dict[str, Any]:
+        from backend.app.desktop.model_settings import catalog_snapshot
+
         try:
             raw = json.loads(Path("extensions_config.json").read_text(encoding="utf-8"))
             skills = sorted(name for name, cfg in raw.get("skills", {}).items() if cfg.get("enabled"))
         except (OSError, json.JSONDecodeError):
             skills = []
         return {
-            "models": [
-                {
-                    "name": model.name,
-                    "display_name": model.display_name,
-                    "context_window": model.context_window,
-                    "curation_default": model.curation_default,
-                }
-                for model in self.app_config.models
-            ],
+            # 读模型与设置页共用同一份：装备下拉与设置列表不会出现两套字段定义
+            "models": catalog_snapshot(self.app_config),
             "skills": skills,
             "permissions": ["read", "write", "host_command"],
             "tools": await self._equipment_tools(),
@@ -2246,8 +2242,35 @@ class DesktopService:
                 if not path or not self._resolve_workspace_path(workspace.path, path).exists():
                     raise HTTPException(422, f"附件引用失效: {path}")
 
+    def _require_model(self, model_name: str | None):
+        """取运行需要的条目；条目已被删除或未声明时抛可读的 422，而不是 KeyError。
+
+        删除条目是设置面板允许的动作，因此「旧任务引用了已删除条目」是必须解释的正常路径：
+        运行发起前给出可读原因，界面据此要求重新选择；MUST NOT 静默回退到别的条目。
+        """
+        try:
+            return self.app_config.get_model(
+                model_name or self.app_config.resolve_default_model_name()
+            )
+        except ValueError as exc:
+            raise HTTPException(422, {"code": "model_entry_missing", "message": str(exc)}) from exc
+        except KeyError as exc:
+            from focus.config.app_config import available_model_names
+
+            raise HTTPException(
+                422,
+                {
+                    "code": "model_entry_missing",
+                    "model_name": model_name,
+                    "message": (
+                        f"模型条目已不存在: '{model_name}'，请在界面重新选择模型；"
+                        f"可用条目: {available_model_names(self.app_config)}"
+                    ),
+                },
+            ) from exc
+
     def _validate_model_window(self, model_name: str | None, estimate: int) -> None:
-        model = self.app_config.get_model(model_name or self.app_config.resolve_default_model_name())
+        model = self._require_model(model_name)
         if model.context_window is not None and estimate > model.context_window:
             raise HTTPException(422, {"code": "context_window_exceeded", "estimate": estimate, "limit": model.context_window})
 
@@ -2269,7 +2292,7 @@ class DesktopService:
 
     def _normalize_equipment(self, equipment: dict[str, Any]) -> dict[str, Any]:
         model_name = equipment.get("model_name") or self.app_config.resolve_default_model_name()
-        self.app_config.get_model(model_name)
+        self._require_model(model_name)
         raw_permissions = equipment.get("permissions")
         permissions = list(dict.fromkeys(["read"] if raw_permissions is None else raw_permissions))
         invalid = set(permissions) - {"read", "write", "host_command"}

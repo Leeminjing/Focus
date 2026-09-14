@@ -10,6 +10,8 @@ dependencies = [
     "langgraph>=0.3.0",
     "langchain-openai>=0.3.0",
     "pyyaml>=6.0",
+    # 用户偏好层配置的往返读写：保住用户手写注释与键顺序（PyYAML 回写会静默删除注释）
+    "ruamel.yaml>=0.18",
     "sqlalchemy[asyncio]>=2.0",
     "alembic>=1.0",
     "pypdf>=5.0",

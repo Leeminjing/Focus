@@ -29,8 +29,9 @@ def mount_desktop(app) -> None:
         (1) include_router(desktop_router) — 提供 /desktop/api 全部接口
         (2) include_router(compression_router) — 提供压缩摘要与消息快照接口
         (3) include_router(plugins_router) — 提供插件调试视图查询接口
-        (4) mount_plugin_assets(app) — 挂载 Active 插件的桌面 API 路由与前端静态资源
-        (5) app.mount("/desktop", StaticFiles(...)) — 提供 index.html / app.js / styles.css
+        (4) include_router(model_settings_router) — 提供模型设置的读取/保存/测试/引用查询接口
+        (5) mount_plugin_assets(app) — 挂载 Active 插件的桌面 API 路由与前端静态资源
+        (6) app.mount("/desktop", StaticFiles(...)) — 提供 index.html / app.js / styles.css
 
     路由注册先于静态挂载，确保 /desktop/api/* 优先由 API 路由处理，静态挂载兜底。
     """
@@ -38,6 +39,7 @@ def mount_desktop(app) -> None:
 
     from backend.app.desktop.compression_routes import compression_router
     from backend.app.desktop.memory_routes import memory_router
+    from backend.app.desktop.model_settings_routes import model_settings_router
     from backend.app.desktop.plugins_routes import plugins_router
     from backend.app.desktop.routes import desktop_router
 
@@ -45,6 +47,7 @@ def mount_desktop(app) -> None:
     app.include_router(compression_router)
     app.include_router(plugins_router)
     app.include_router(memory_router)
+    app.include_router(model_settings_router)
     mount_plugin_assets(app)
     app.mount("/desktop", StaticFiles(directory=str(DESKTOP_DIR), html=True), name="desktop")
     logger.info("桌面路由与静态资源已挂载 (/desktop/api, /desktop)")

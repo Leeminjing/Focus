@@ -42,24 +42,25 @@ def test_global_home_overrides(tmp_path, monkeypatch):
     assert global_home() == (tmp_path / "g").resolve()
 
 
-def test_load_layered_map_repo_wins(global_home_dir, tmp_path):
-    repo = tmp_path / "extensions_config.json"
+def test_load_layered_map_user_preference_wins(global_home_dir, tmp_path):
+    file_layer = tmp_path / "extensions_config.json"
     _write(global_home_dir / "extensions_config.json", {"mcpServers": {"a": {"enabled": True, "type": "http", "url": "g"}}})
-    _write(repo, {"mcpServers": {"a": {"enabled": False, "type": "http", "url": "r"}, "b": {"enabled": True, "type": "http", "url": "rb"}}})
-    merged = load_layered_map("extensions_config.json", str(repo))
+    _write(file_layer, {"mcpServers": {"a": {"enabled": False, "type": "http", "url": "r"}, "b": {"enabled": True, "type": "http", "url": "rb"}}})
+    merged = load_layered_map("extensions_config.json", str(file_layer))
     servers = merged["mcpServers"]
-    # 仓库态优先：a 被 repo 覆盖；b 仅仓库有
-    assert servers["a"]["url"] == "r"
+    # 用户偏好层优先：a 被用户偏好层覆盖；b 仅文件层有，保留
+    assert servers["a"]["url"] == "g"
     assert servers["b"]["url"] == "rb"
 
 
-def test_load_layered_map_global_fallback(global_home_dir, tmp_path):
-    repo = tmp_path / "config.yaml"
-    repo.write_text("models: []\n", encoding="utf-8")
+def test_load_layered_map_file_layer_supplies_unset_keys(global_home_dir, tmp_path):
+    file_layer = tmp_path / "config.yaml"
+    file_layer.write_text("models: []\n", encoding="utf-8")
     (global_home_dir / "config.yaml").write_text("commitment:\n  enabled: true\n", encoding="utf-8")
-    merged = load_layered_map("config.yaml", str(repo))
-    # 全局态兜底：commitment 仅在全局态定义
+    merged = load_layered_map("config.yaml", str(file_layer))
+    # 两层各自的键都保留：用户偏好层补 commitment，文件层补 models
     assert merged["commitment"]["enabled"] is True
+    assert merged["models"] == []
 
 
 def test_layered_mtime_max(global_home_dir, tmp_path):

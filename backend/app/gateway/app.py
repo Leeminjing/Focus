@@ -52,15 +52,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from focus.config import get_app_config
 
     app_config = get_app_config("config.yaml")
-    # FOCUS_DATABASE_URL 环境变量覆写数据库 URL（Electron 启动链传入，与独立桌面入口行为一致）
+    # FOCUS_DATABASE_URL 环境变量覆写数据库 URL（Electron 启动链传入，与独立桌面入口行为一致）。
+    # 就地赋值而非 model_copy：Pydantic v2 的 model_copy(update=...) 不触发校验，且会造出第二个
+    # 配置对象。配置必须在启动期定型为单一对象身份——随后 langgraph_runtime 与 DesktopService
+    # 共享它，运行期保存设置才能就地生效（见 apply_app_config 的说明）。
     database_url = os.getenv("FOCUS_DATABASE_URL")
     if database_url and app_config.database is not None:
         from focus.config.database_config import DatabaseConfig
 
-        app_config = app_config.model_copy(update={
-            "database": DatabaseConfig.model_validate({
-                **app_config.database.model_dump(), "url": database_url,
-            }),
+        app_config.database = DatabaseConfig.model_validate({
+            **app_config.database.model_dump(), "url": database_url,
         })
     # 启动自检：装配显式声明的默认模型。装配即解析其密钥引用，使必需凭据的缺失在启动期
     # 以带上下文的错误暴露，而不是推迟到首次请求；未被消费的可选能力不受影响。

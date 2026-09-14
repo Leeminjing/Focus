@@ -271,12 +271,23 @@ Patrol 不是上面这些机制的第五种——它是**委托执行者**，能
 | 变量 | 必填 | 说明 |
 |---|---|---|
 | `OPENAI_API_KEY` | 是 | 模型条目的密钥来源 |
-| `FOCUS_MODEL` | 否 | 覆盖默认模型，取 `config.yaml` models 中已存在的条目名 |
+| `FOCUS_MODEL` | 否 | CI / 一次性覆盖：取生效目录中已存在的条目名；写成不存在的名字会在启动期失败，错误信息会列出全部可用条目名 |
 | `FOCUS_DATABASE_URL` | 否 | 覆盖数据库连接 |
 
 变量可写入 `.env`（`cp .env.example .env`），也可用操作系统环境变量提供（优先级更高）：Windows `setx OPENAI_API_KEY "sk-..."`，macOS/Linux `export OPENAI_API_KEY=...`；两者都需新开终端生效。
 
-编辑 `config.yaml`（models / commitment / compression / checkpointer / database）与 `extensions_config.json`（skills / mcpServers）。`~/.focus/` 是全局默认层，由仓库态配置覆盖。
+**模型怎么配** — 打开桌面应用的「设置 → 模型」：新增/编辑/删除条目、指定默认与策展默认、录入或轮换密钥、测试连接，保存后立即生效，不需要重启或用终端。手动编辑配置文件同样受支持。
+
+配置按两层由低到高解析，高者覆盖低者：
+
+1. 文件层 `<cwd>/config.yaml` —— 这份程序自带的默认（安装版即 `~/.focus/app/config.yaml`，升级会整体替换）；
+2. 用户偏好层 `~/.focus/config.yaml` —— 设置面板写入，升级不丢，**优先于文件层**。
+
+环境（`.env` 与进程环境）只经两条通道参与，**不是**通用的逐键覆盖层：配置值里的 `$VAR` 引用在使用期解析；以及有文档化覆写键的两项 —— `FOCUS_MODEL`（默认模型选择）与 `FOCUS_DATABASE_URL`（数据库连接），它们优先于上面两层。其它配置项不会被同名环境变量改写。
+
+`models` 按条目 `name` 逐条合并：用户偏好层声明的条目覆盖同名默认条目，未声明的默认条目保留，删除用显式的 `removed_models` 名单记录（发行层更新后不会复活）。`default` 与 `curation_default` 由声明它的最高层独占。
+
+配置文件还有 `commitment` / `compression` / `checkpointer` / `database` 段，`extensions_config.json` 负责 skills / mcpServers；这些同样以用户偏好层优先。
 
 **启动后端**
 

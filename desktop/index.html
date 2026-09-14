@@ -101,6 +101,7 @@
     </header>
     <nav class="settings-sections" role="tablist" aria-label="设置区块">
       <button role="tab" data-action="settings-tab" data-settings-tab="general" aria-selected="true" class="is-active" data-i18n="settings.general">常规</button>
+      <button role="tab" data-action="settings-tab" data-settings-tab="models" aria-selected="false" data-i18n="settings.models">模型</button>
       <button role="tab" data-action="settings-tab" data-settings-tab="data" aria-selected="false" data-i18n="settings.data">数据</button>
     </nav>
     <section class="settings-pane" data-settings-pane="general">
@@ -110,6 +111,11 @@
         <button type="button" data-action="set-language" data-locale="en-US" data-i18n="settings.english">English</button>
       </div>
       <p class="muted tiny settings-language-help" data-i18n="settings.language_help">切换后立即应用，并保存在本机。</p>
+    </section>
+    <section class="settings-pane" data-settings-pane="models" hidden>
+      <h3 data-i18n="settings.models">模型</h3>
+      <p class="muted tiny" data-i18n="settings.models_help">模型条目、默认选择与密钥都在这里配置；保存后立即生效，无需重启。</p>
+      <div id="modelSettingsHost" class="model-settings-host" data-i18n-aria-label="settings.models" aria-label="模型"></div>
     </section>
     <section class="settings-pane" data-settings-pane="data" hidden>
       <h3 data-i18n="settings.data">数据</h3>

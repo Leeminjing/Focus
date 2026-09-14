@@ -19,6 +19,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from focus.persistence.base import Base
 
+MAIN_RUN_EQUIPMENT_KEY = "_main_run_equipment"
+"""desktop_threads.ui_state 中主运行装备快照的键名（跨服务共享的存储约定）。"""
+
 
 class DesktopWorkspace(Base):
     __tablename__ = "desktop_workspaces"

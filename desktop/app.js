@@ -5169,8 +5169,323 @@ async function batchDeleteSessions(cascade) {
   } catch (error) { return setStatus(error.message, true); }
 }
 
+// === 模型设置面板：读取 / 编辑 / 保存 / 测试连接 / 删除 ===
+// 草稿与快照放在模块级对象而不是 state：设置对话框在每次 render() 时会被重新打开，
+// 未保存的编辑必须活过重渲染。
+const modelSettings = {
+  snapshot: null,
+  error: null,
+  draft: null,        // { index }：正在编辑/新增的条目在当前目录中的下标
+  errors: {},         // 后端返回的字段级错误（键形如 models[0].base_url）
+  test: null,         // { state: "running" | "ok" | "fail", reason }
+  credentialValue: "", // 密钥输入框的当前值：只进不出，任何响应都不回填
+  dirty: false,
+  saving: false,
+};
+
+const MODEL_NUMERIC_FIELDS = ["context_window", "curation_max_output_tokens"];
+const MODEL_FLAG_FIELDS = ["default", "curation_default", "supports_image_input"];
+
+function modelEntryPayload(entry) {
+  const fields = modelSettings.snapshot?.editable_fields || [];
+  const payload = {};
+  fields.forEach(field => { payload[field] = entry[field] ?? null; });
+  MODEL_FLAG_FIELDS.forEach(field => { payload[field] = Boolean(entry[field]); });
+  return payload;
+}
+
+function modelEntrySource(entry) {
+  if (entry.source === "user_added") return uiText("settings.model_source_user_added", "你新增的");
+  if (entry.source === "user_modified") return uiText("settings.model_source_user_modified", "已由你修改");
+  return uiText("settings.model_source_shipped", "发行自带");
+}
+
+function modelCredentialState(entry) {
+  if (entry.api_key_literal) return uiText("settings.model_key_literal", "已内联字面量（不建议）");
+  if (entry.api_key_set ?? Boolean(entry.api_key)) return uiText("settings.model_key_set", "已设置");
+  return uiText("settings.model_key_unset", "未设置");
+}
+
+function modelFieldError(field) {
+  if (modelSettings.draft) {
+    const indexed = modelSettings.errors[`models[${modelSettings.draft.index}].${field}`];
+    if (indexed) return indexed;
+  }
+  return modelSettings.errors[field] || "";
+}
+
+function modelEntryRow(entry, index) {
+  const badges = [
+    entry.default ? `<span class="model-badge is-default">${uiText("settings.model_field_default", "默认模型")}</span>` : "",
+    entry.curation_default ? `<span class="model-badge">${uiText("settings.model_field_curation_default", "策展默认模型")}</span>` : "",
+    entry.supports_image_input ? `<span class="model-badge">${uiText("settings.model_field_supports_image", "支持图像输入")}</span>` : "",
+  ].join("");
+  return `<div class="settings-model-row${modelSettings.draft?.index === index ? " is-editing" : ""}" data-model-index="${index}">
+    <div class="settings-model-info">
+      <div class="settings-model-title"><strong>${escapeHtml(entry.display_name || entry.name || "")}</strong>${badges}</div>
+      <div class="muted tiny">${escapeHtml(entry.name || "")} · ${escapeHtml(entry.model || "")} · ${escapeHtml(entry.base_url || "")}</div>
+      <div class="muted tiny">${escapeHtml(modelEntrySource(entry))} · ${uiText("settings.model_field_context_window", "上下文窗口")}: ${escapeHtml(String(entry.context_window ?? uiText("settings.model_unknown", "未知")))} · ${uiText("settings.model_field_api_key", "密钥来源变量")}: ${escapeHtml(modelCredentialState(entry))}</div>
+    </div>
+    <div class="settings-model-row-actions">
+      <button class="text-button" data-action="model-edit" data-model-index="${index}">${uiText("settings.model_edit", "编辑")}</button>
+      <button class="text-button danger" data-action="model-remove" data-model-index="${index}">${uiText("settings.model_remove", "删除")}</button>
+    </div>
+  </div>`;
+}
+
+function modelTextField(label, field, entry, options = {}) {
+  const error = modelFieldError(field);
+  const value = entry[field] ?? "";
+  const control = options.select
+    ? `<select data-model-field="${field}">${options.select.map(option => `<option value="${escapeHtml(option.value)}" ${option.value === value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select>`
+    : `<input type="${options.type || "text"}" data-model-field="${field}" value="${escapeHtml(String(value))}" ${options.placeholder ? `placeholder="${escapeHtml(options.placeholder)}"` : ""}>`;
+  return `<label class="settings-model-field${error ? " has-error" : ""}">${escapeHtml(label)}${control}${error ? `<span class="field-error">${escapeHtml(error)}</span>` : ""}</label>`;
+}
+
+function modelFlagField(label, field, entry) {
+  return `<label class="settings-model-flag"><input type="checkbox" data-model-field="${field}" ${entry[field] ? "checked" : ""}>${escapeHtml(label)}</label>`;
+}
+
+function renderModelDraft() {
+  const entry = modelSettings.snapshot.models[modelSettings.draft.index];
+  if (!entry) return "";
+  const adapters = (modelSettings.snapshot.adapters || []).map(adapter => ({ value: adapter.use, label: adapter.label }));
+  const methods = [{ value: "", label: uiText("settings.model_curation_method_none", "不用于策展") }]
+    .concat((modelSettings.snapshot.curation_output_methods || []).map(name => ({ value: name, label: name })));
+  return `<section class="settings-model-editor">
+    <header><strong>${uiText(modelSettings.draft.isNew ? "settings.model_add" : "settings.model_edit", modelSettings.draft.isNew ? "新增模型" : "编辑")}</strong><span class="muted tiny">${escapeHtml(entry.name || "")}</span></header>
+    <div class="settings-model-grid">
+      ${modelTextField(uiText("settings.model_field_name", "条目名（查表键）"), "name", entry)}
+      ${modelTextField(uiText("settings.model_field_display_name", "显示名"), "display_name", entry)}
+      ${modelTextField(uiText("settings.model_field_model", "模型标识"), "model", entry)}
+      ${modelTextField(uiText("settings.model_field_use", "适配器"), "use", entry, { select: adapters })}
+      ${modelTextField(uiText("settings.model_field_base_url", "端点"), "base_url", entry)}
+      ${modelTextField(uiText("settings.model_field_context_window", "上下文窗口"), "context_window", entry, { type: "number" })}
+      ${modelTextField(uiText("settings.model_field_curation_method", "策展输出方式"), "curation_output_method", entry, { select: methods })}
+      ${modelTextField(uiText("settings.model_field_curation_tokens", "策展输出上限"), "curation_max_output_tokens", entry, { type: "number" })}
+      <label class="settings-model-field${modelFieldError("api_key") ? " has-error" : ""}">${uiText("settings.model_field_api_key", "密钥来源变量")}
+        <input type="text" data-model-field="api_key" value="${escapeHtml(String(entry.api_key || ""))}" placeholder="$OPENAI_API_KEY">
+        ${modelFieldError("api_key") ? `<span class="field-error">${escapeHtml(modelFieldError("api_key"))}</span>` : ""}
+      </label>
+      <label class="settings-model-field">${uiText("settings.model_field_key_value", "密钥值")} · ${escapeHtml(modelCredentialState(entry))}
+        <input type="password" data-model-credential value="${escapeHtml(modelSettings.credentialValue)}" autocomplete="off" placeholder="${escapeHtml(uiText("settings.model_key_placeholder", "留空表示不修改"))}">
+      </label>
+    </div>
+    <div class="settings-model-flags">
+      ${modelFlagField(uiText("settings.model_field_default", "默认模型"), "default", entry)}
+      ${modelFlagField(uiText("settings.model_field_curation_default", "策展默认模型"), "curation_default", entry)}
+      ${modelFlagField(uiText("settings.model_field_supports_image", "支持图像输入"), "supports_image_input", entry)}
+    </div>
+    <div class="settings-model-editor-actions">
+      <button class="text-button" data-action="model-test">${modelSettings.test?.state === "running" ? uiText("settings.model_testing", "正在测试…") : uiText("settings.model_test", "测试连接")}</button>
+      <button class="text-button" data-action="model-cancel">${uiText("settings.model_cancel", "取消")}</button>
+    </div>
+  </section>`;
+}
+
+function renderModelSettings() {
+  const host = document.querySelector("#modelSettingsHost");
+  if (!host) return;
+  const snapshot = modelSettings.snapshot;
+  if (!snapshot) {
+    host.innerHTML = `<p class="muted tiny settings-model-empty">${escapeHtml(modelSettings.error || "")}</p>`;
+    return;
+  }
+
+  const banners = [];
+  if (snapshot.default_error) {
+    banners.push(`<p class="settings-model-banner is-error">${escapeHtml(uiText("settings.model_default_error", "默认模型无法解析：{message}", { message: snapshot.default_error }))}</p>`);
+  }
+  if (modelSettings.test) {
+    const ok = modelSettings.test.state === "ok";
+    const running = modelSettings.test.state === "running";
+    const text = running
+      ? uiText("settings.model_testing", "正在测试…")
+      : ok ? uiText("settings.model_test_ok", "连接成功")
+        : uiText("settings.model_test_fail", "连接失败：{reason}", { reason: modelSettings.test.reason || "" });
+    banners.push(`<p class="settings-model-banner${ok ? " is-ok" : running ? "" : " is-error"}">${escapeHtml(text)}</p>`);
+  }
+  if (modelSettings.dirty) {
+    banners.push(`<p class="settings-model-banner is-warn">${escapeHtml(uiText("settings.model_dirty", "有未保存的改动"))}</p>`);
+  }
+  if (snapshot.removed_models?.length) {
+    banners.push(`<p class="muted tiny">${escapeHtml(uiText("settings.model_removed_note", "已删除：{names}", { names: snapshot.removed_models.join(", ") }))}</p>`);
+  }
+  const errorKeys = Object.keys(modelSettings.errors);
+  if (errorKeys.length) {
+    banners.push(`<ul class="settings-model-errors">${errorKeys.map(key => `<li>${escapeHtml(`${key}: ${modelSettings.errors[key]}`)}</li>`).join("")}</ul>`);
+  }
+
+  const rows = snapshot.models.length
+    ? snapshot.models.map((entry, index) => modelEntryRow(entry, index)).join("")
+    : `<p class="muted tiny settings-model-empty">${escapeHtml(uiText("settings.model_empty", "当前没有可用模型条目，请新增一个。"))}</p>`;
+
+  host.innerHTML = `
+    ${banners.join("")}
+    <div class="settings-model-actions">
+      <button class="text-button" data-action="model-add">${uiText("settings.model_add", "新增模型")}</button>
+      <button class="text-button" data-action="model-reset">${uiText("settings.model_reset", "恢复发行默认")}</button>
+      <button class="primary" data-action="model-save" ${modelSettings.saving ? "disabled" : ""}>${uiText("settings.model_save", "保存并立即生效")}</button>
+    </div>
+    <div class="settings-model-list">${rows}</div>
+    ${modelSettings.draft ? renderModelDraft() : ""}`;
+  interfaceI18n.apply(host);
+}
+
+async function loadModelSettings({ force = false } = {}) {
+  if (modelSettings.snapshot && !force) return modelSettings.snapshot;
+  const snapshot = await api("/desktop/api/settings/models");
+  modelSettings.snapshot = snapshot;
+  modelSettings.error = null;
+  modelSettings.errors = {};
+  return snapshot;
+}
+
+function startModelDraft(index, isNew = false) {
+  const entry = modelSettings.snapshot?.models?.[index];
+  modelSettings.draft = { index, isNew, before: entry ? JSON.parse(JSON.stringify(entry)) : null };
+  modelSettings.errors = {};
+  modelSettings.test = null;
+  modelSettings.credentialValue = "";
+  renderModelSettings();
+}
+
+function cancelModelDraft() {
+  const draft = modelSettings.draft;
+  if (!draft) return;
+  if (draft.isNew) modelSettings.snapshot.models.splice(draft.index, 1);
+  else if (draft.before) modelSettings.snapshot.models[draft.index] = draft.before;
+  modelSettings.draft = null;
+  modelSettings.errors = {};
+  modelSettings.test = null;
+  modelSettings.credentialValue = "";
+  renderModelSettings();
+}
+
+function addModelEntry() {
+  const template = (modelSettings.snapshot.shipped_models || [])[0] || {};
+  const entry = {
+    name: "", display_name: "", use: template.use || ((modelSettings.snapshot.adapters || [])[0]?.use ?? ""),
+    model: "", api_key: template.api_key || "$OPENAI_API_KEY", base_url: template.base_url || "",
+    context_window: template.context_window ?? null, curation_output_method: template.curation_output_method ?? null,
+    curation_max_output_tokens: template.curation_max_output_tokens ?? 8192,
+    curation_default: false, default: false, supports_image_input: false, source: "user_added",
+  };
+  modelSettings.snapshot.models.push(entry);
+  modelSettings.dirty = true;
+  startModelDraft(modelSettings.snapshot.models.length - 1, true);
+}
+
+function removeModelEntry(index) {
+  modelSettings.snapshot.models.splice(index, 1);
+  modelSettings.draft = null;
+  modelSettings.dirty = true;
+  modelSettings.errors = {};
+  renderModelSettings();
+}
+
+function restoreShippedModels() {
+  if (!confirm(uiText("settings.model_reset", "恢复发行默认"))) return;
+  modelSettings.snapshot.models = (modelSettings.snapshot.shipped_models || []).map(entry => ({ ...entry, source: "shipped" }));
+  modelSettings.draft = null;
+  modelSettings.dirty = true;
+  modelSettings.errors = {};
+  renderModelSettings();
+}
+
+function updateModelField(target) {
+  const entry = modelSettings.snapshot?.models?.[modelSettings.draft?.index];
+  if (!entry) return;
+  const field = target.dataset.modelField;
+  if (MODEL_FLAG_FIELDS.includes(field)) {
+    entry[field] = target.checked;
+    modelSettings.dirty = true;
+    renderModelSettings();
+    return;
+  }
+  let value = target.value;
+  if (MODEL_NUMERIC_FIELDS.includes(field)) {
+    const trimmed = String(value).trim();
+    value = trimmed === "" ? null : (Number.isNaN(Number(trimmed)) ? value : Number(trimmed));
+  }
+  entry[field] = value;
+  modelSettings.dirty = true;
+}
+
+async function putModelSettings(payload, acknowledge = false) {
+  const body = { ...payload };
+  if (acknowledge) body.acknowledge_references = true;
+  return api("/desktop/api/settings/models", { method: "PUT", body: JSON.stringify(body) });
+}
+
+async function saveModelSettings() {
+  if (!modelSettings.snapshot || modelSettings.saving) return;
+  modelSettings.saving = true;
+  modelSettings.errors = {};
+  const payload = { models: modelSettings.snapshot.models.map(modelEntryPayload) };
+  // 凭据写入哪个变量以**当前编辑值**为准：用户可能刚把 api_key 改成另一个 $VAR
+  const editing = modelSettings.snapshot.models[modelSettings.draft?.index ?? -1];
+  const reference = String(editing?.api_key || "");
+  const credentialVariable = reference.startsWith("$")
+    ? reference.slice(1)
+    : (editing?.api_key_variable || "");
+  if (modelSettings.credentialValue && credentialVariable) {
+    payload.credentials = { [credentialVariable]: modelSettings.credentialValue };
+  }
+  try {
+    let snapshot;
+    try {
+      snapshot = await putModelSettings(payload);
+    } catch (error) {
+      const references = error.status === 409 ? error.detail?.references || {} : null;
+      if (!references) throw error;
+      const names = Object.keys(references).join(", ");
+      if (!confirm(uiText("settings.model_referenced", "这些条目仍被任务或运行引用：{names}。仍要删除吗？", { names }))) {
+        throw Object.assign(new Error(""), { silent: true });
+      }
+      snapshot = await putModelSettings(payload, true);
+    }
+    modelSettings.snapshot = snapshot;
+    modelSettings.draft = null;
+    modelSettings.credentialValue = "";
+    modelSettings.dirty = false;
+    state.equipment = { ...state.equipment, models: snapshot.models };
+    setStatus(uiText("settings.model_saved", "已保存并立即生效"));
+  } catch (error) {
+    if (error.silent) return;
+    if (error.status === 422 && error.detail?.errors) modelSettings.errors = error.detail.errors;
+    else setStatus(error.message, true);
+  } finally {
+    modelSettings.saving = false;
+    renderModelSettings();
+  }
+}
+
+async function testModelConnection() {
+  const entry = modelSettings.snapshot?.models?.[modelSettings.draft?.index];
+  if (!entry) return;
+  modelSettings.test = { state: "running" };
+  modelSettings.errors = {};
+  renderModelSettings();
+  try {
+    const result = await api("/desktop/api/settings/models/test", {
+      method: "POST",
+      body: JSON.stringify({ entry: modelEntryPayload(entry), api_key_value: modelSettings.credentialValue || undefined }),
+    });
+    modelSettings.test = { state: result.ok ? "ok" : "fail", reason: result.reason };
+  } catch (error) {
+    if (error.status === 422 && error.detail?.errors) {
+      modelSettings.errors = error.detail.errors;
+      modelSettings.test = null;
+    } else {
+      modelSettings.test = { state: "fail", reason: error.message };
+    }
+  }
+  renderModelSettings();
+}
+
 function selectSettingsTab(tab) {
-  const selected = ["general", "data"].includes(tab) ? tab : "general";
+  const selected = ["general", "models", "data"].includes(tab) ? tab : "general";
   document.querySelectorAll("[data-settings-tab]").forEach(button => {
     const active = button.dataset.settingsTab === selected;
     button.classList.toggle("is-active", active);
@@ -5180,6 +5495,13 @@ function selectSettingsTab(tab) {
   document.querySelectorAll("[data-settings-pane]").forEach(pane => {
     pane.hidden = pane.dataset.settingsPane !== selected;
   });
+  if (selected === "models") {
+    return runUiAction(async () => {
+      try { await loadModelSettings(); } catch (error) { modelSettings.error = error.message; }
+      renderModelSettings();
+    });
+  }
+  return undefined;
 }
 
 function syncLanguageControls() {
@@ -5211,6 +5533,12 @@ async function openSettings() {
         : `<p class="muted tiny" style="padding:var(--space-3)">${uiText("common.no_archived", "暂无已归档会话")}</p>`;
     }
   } catch (error) { setStatus(error.message, true); }
+  try {
+    await loadModelSettings();
+  } catch (error) {
+    modelSettings.error = error.message;
+  }
+  renderModelSettings();
   syncLanguageControls();
   interfaceI18n.apply(settingsDialog);
   if (!settingsDialog?.open) settingsDialog?.showModal();
@@ -5365,6 +5693,13 @@ async function handleDocumentClick(event) {
   if (action === "open-settings") return openSettings();
   if (action === "close-settings") return settingsDialog.close();
   if (action === "settings-tab") return selectSettingsTab(button.dataset.settingsTab);
+  if (action === "model-add") return runUiAction(addModelEntry);
+  if (action === "model-edit") return runUiAction(() => startModelDraft(Number(button.dataset.modelIndex)));
+  if (action === "model-remove") return runUiAction(() => removeModelEntry(Number(button.dataset.modelIndex)));
+  if (action === "model-reset") return runUiAction(restoreShippedModels);
+  if (action === "model-cancel") return runUiAction(cancelModelDraft);
+  if (action === "model-save") return runUiAction(saveModelSettings);
+  if (action === "model-test") return runUiAction(testModelConnection);
   if (action === "set-language") {
     interfaceI18n.setLocale(button.dataset.locale);
     syncLanguageControls();
@@ -5583,6 +5918,9 @@ document.addEventListener("input", event => {
       refreshCompressionStats();
     }
   }
+  if (event.target.matches("[data-model-field]")) updateModelField(event.target);
+  // 密钥输入只进内存、不回填：任何响应都不携带凭据值
+  if (event.target.matches("[data-model-credential]")) modelSettings.credentialValue = event.target.value;
 });
 
 // 主输入框滚动时同步 @命令高亮 backdrop（textarea 的 scroll 不冒泡，用捕获监听）。
