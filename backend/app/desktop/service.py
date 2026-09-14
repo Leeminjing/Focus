@@ -105,8 +105,8 @@ from focus.agents.image_attachment import build_image_attachment_middleware
 from focus.agents.image_inputs import RunImageInputs
 from focus.agents.material_inputs import RunMaterialInputs, project_run_material_context
 from focus.agents.must_view import (
-    MustViewReports,
     build_must_view_completion_middleware,
+    report_must_view_images,
 )
 from focus.images import is_image_name
 from focus.messages import (
@@ -208,7 +208,8 @@ def _must_view_prompt(materials: list[dict[str, str]]) -> str:
     )
     return (
         "\n\n<focus_must_view>\n"
-        "用户把以下图片标记为本轮必须查看。请在结构化输出中对每一张各给一条表态："
+        "用户把以下图片标记为本轮必须查看。请逐张查看，并调用 "
+        f"{report_must_view_images.name} 为每一张各给一条声明："
         "成功读到该图片的内容即把 read 置为真。\n"
         f"{lines}\n"
         "</focus_must_view>"
@@ -1535,6 +1536,9 @@ class DesktopService:
                     additional_middlewares.append(build_image_attachment_middleware())
                 if image_inputs.required_ids:
                     additional_middlewares.append(build_must_view_completion_middleware())
+                    # 逐图表态由普通工具承载：只在有必需图片时装配，且不做任何强制工具选择，
+                    # 以免与 thinking 模型互斥（见 drop-forced-tool-choice-for-must-view）。
+                    tools = [*tools, report_must_view_images]
             if agent_role == "main" and self.app_config.compression.enabled:
                 from focus.agents.compression.gate import build_compression_gate
 
@@ -1552,12 +1556,6 @@ class DesktopService:
                 additional_middlewares=additional_middlewares,
                 app_config=self.app_config,
                 middleware_skill_names=task_skill_names,
-                response_format=(
-                    MustViewReports
-                    if agent_role == "main"
-                    and RunMaterialInputs.from_equipment(equipment).required_image_ids
-                    else None
-                ),
             )
 
         return factory

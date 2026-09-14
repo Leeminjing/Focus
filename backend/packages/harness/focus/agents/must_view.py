@@ -1,11 +1,15 @@
-"""本文件对外提供必看图片结构化报告、完成门中间件与兼容入口。
+"""本文件对外提供必看图片的逐图声明工具、完成门中间件与兼容入口。
 
-输入为 runtime context 中 RunImageInputs 的 required 子集和 state.structured_response；输出为
-正常放行、回到 model 的有界补报请求，或 type=must_view_report 的人工中断。具体工作流为：
-只校验 required 图片，缺项最多提醒两次，read=false 或提醒耗尽时携带材料与原因中断；本文件
-不读取或注入像素，read 仅表示模型声明，图片像素交付由 image_attachment.py 独立负责。
+输入为 runtime context 中 RunImageInputs 的 required 子集，以及模型对 report_must_view_images
+工具的调用参数；输出为正常放行、回到 model 的有界补报请求，或 type=must_view_report 的人工中断。
+具体工作流为：只校验 required 图片，按消息从新到旧取模型最近一次逐图声明，缺项最多提醒两次，
+read=false 或提醒耗尽时携带材料与原因中断；本文件不读取或注入像素，read 仅表示模型声明，图片
+像素交付由 image_attachment.py 独立负责。
 
-示例：response_format=MustViewReports; middleware=build_must_view_completion_middleware()。
+逐图表态刻意用普通工具承载，而不是 provider 结构化输出：后者会让 LangChain 给整轮运行绑定
+ToolStrategy 并强制 tool_choice，与 thinking 模型互斥，且把每一轮的输出形式都改成结构化应答。
+
+示例：middleware=build_must_view_completion_middleware(); tools=[report_must_view_images]。
 """
 
 from __future__ import annotations
@@ -13,9 +17,10 @@ from __future__ import annotations
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, hook_config
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import tool
 from langgraph.types import interrupt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from focus.agents.image_inputs import (
     MODEL_IMAGE_INPUT_KEY,
@@ -35,6 +40,15 @@ class MustViewImageReport(BaseModel):
 
 class MustViewReports(BaseModel):
     images: list[MustViewImageReport] = Field(description="本轮每一张必看图片的模型声明")
+
+
+@tool("report_must_view_images")
+def report_must_view_images(images: list[MustViewImageReport]) -> str:
+    """声明本轮每张必须查看的图片是否已读到。
+
+    对每一张必看图片各给一条声明：成功读到该图片内容即把 read 置为真。只表态，不读取图片内容。
+    """
+    return f"已记录 {len(images)} 张必看图片的逐图声明。"
 
 
 class MustViewCompletionMiddleware(AgentMiddleware):
@@ -63,15 +77,26 @@ def build_must_view_completion_middleware() -> MustViewCompletionMiddleware:
 
 
 def _reports_of(state: Any) -> dict[str, bool]:
-    reports = state.get("structured_response") if isinstance(state, dict) else None
-    images = getattr(reports, "images", None)
-    if not isinstance(images, list):
+    """取模型最近一次逐图表态；只认 AI 消息上的报告工具调用，催促语不算表态。"""
+    messages = state.get("messages") if isinstance(state, dict) else None
+    if not isinstance(messages, list):
         return {}
-    return {
-        str(item.material_id): bool(item.read)
-        for item in images
-        if getattr(item, "material_id", None)
-    }
+    for message in reversed(messages):
+        if not isinstance(message, AIMessage):
+            continue
+        for call in reversed(list(getattr(message, "tool_calls", None) or [])):
+            if call.get("name") != report_must_view_images.name:
+                continue
+            try:
+                reports = MustViewReports.model_validate(call.get("args") or {})
+            except ValidationError:
+                continue
+            return {
+                str(item.material_id): bool(item.read)
+                for item in reports.images
+                if item.material_id
+            }
+    return {}
 
 
 def _reminder_count(state: Any) -> int:
@@ -92,7 +117,7 @@ def _reminder_text(missing: list[Any]) -> str:
     )
     return (
         f"{_REMINDER_MARKER} 还有以下必须查看的图片没有表态，本轮不能结束。"
-        f"请在结构化输出中为它们各补一条：\n{lines}"
+        f"请调用 {report_must_view_images.name} 为它们各补一条声明：\n{lines}"
     )
 
 
@@ -138,4 +163,5 @@ __all__ = [
     "MustViewImageReport",
     "MustViewReports",
     "build_must_view_completion_middleware",
+    "report_must_view_images",
 ]

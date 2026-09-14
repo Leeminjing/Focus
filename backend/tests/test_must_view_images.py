@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from backend.app.desktop.material_files import (
     MATERIAL_ATTACHMENTS_SUBDIR,
@@ -506,7 +506,7 @@ def test_lead_agent_state_has_no_legacy_image_residue():
     assert "viewed_images" not in lead_agent_state.LeadAgentState.__annotations__
 
 
-# === 组 9 逐图表态（结构化输出） ===
+# === 组 9 逐图表态（报告工具） ===
 
 
 class _Runtime:
@@ -514,22 +514,30 @@ class _Runtime:
         self.context = context
 
 
-def _reports_state(context: dict, reports: dict[str, bool] | None, reminders: int = 0) -> dict:
-    from focus.agents.must_view import MustViewImageReport, MustViewReports
+def _report_message(reports: dict[str, bool]) -> AIMessage:
+    return AIMessage(
+        content="已逐张查看。",
+        tool_calls=[{
+            "name": "report_must_view_images",
+            "args": {
+                "images": [
+                    {"material_id": key, "read": value} for key, value in reports.items()
+                ]
+            },
+            "id": "report-must-view",
+            "type": "tool_call",
+        }],
+    )
 
+
+def _reports_state(context: dict, reports: dict[str, bool] | None, reminders: int = 0) -> dict:
     messages = [HumanMessage(content="看这张")]
     messages += [
         HumanMessage(content=f"[focus-must-view] 催促 {index}") for index in range(reminders)
     ]
-    structured = None
     if reports is not None:
-        structured = MustViewReports(
-            images=[
-                MustViewImageReport(material_id=key, read=value)
-                for key, value in reports.items()
-            ]
-        )
-    return {"messages": messages, "structured_response": structured}
+        messages.append(_report_message(reports))
+    return {"messages": messages}
 
 
 TWO_IMAGES = [
@@ -546,13 +554,102 @@ def test_reports_schema_carries_material_and_read_flag():
     assert reports.images[0].read is True
 
 
-def test_must_view_prompt_lists_materials_and_explains_read():
+def test_must_view_prompt_lists_materials_and_names_report_tool():
     from backend.app.desktop.service import _must_view_prompt
 
     text = _must_view_prompt([{"material_id": "m1", "relative_path": "a.png"}])
     assert "a.png" in text
     assert "material_id=m1" in text
     assert "read" in text
+    assert "report_must_view_images" in text
+
+
+def test_report_tool_advertises_material_and_read_fields():
+    """表态工具的 schema 就是提示与门之间的契约：字段名必须一致。"""
+    from focus.agents.must_view import MustViewImageReport, report_must_view_images
+
+    assert report_must_view_images.name == "report_must_view_images"
+    field = report_must_view_images.args_schema.model_fields["images"]
+    assert field.annotation == list[MustViewImageReport]
+    assert set(MustViewImageReport.model_fields) == {"material_id", "read"}
+    assert "read" in report_must_view_images.description
+
+
+def test_report_tool_binds_without_forcing_tool_choice():
+    """根因回归：表态走普通工具，绑定后的请求载荷不得出现被强制的 tool_choice。
+
+    改回 provider 结构化输出（ToolStrategy）时 LangChain 会把 tool_choice 置为 required，
+    与 thinking 模型互斥（400 Thinking mode does not support this tool_choice）。
+    """
+    from focus.agents.must_view import report_must_view_images
+    from focus.models.deepseek import DeepSeekChatOpenAI
+
+    model = DeepSeekChatOpenAI(
+        model="deepseek-v4-flash-vision-exp",
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+    )
+    bound = model.bind_tools([report_must_view_images])
+    assert "tool_choice" not in bound.kwargs, "表态工具不得给本轮模型调用带来强制工具选择"
+    tools = bound.kwargs["tools"]
+    assert tools[0]["function"]["name"] == "report_must_view_images"
+    assert "material_id" in str(tools[0]["function"]["parameters"])
+
+
+def test_after_model_reads_report_alongside_other_tool_calls():
+    """模型同一轮里既查文件又表态时，表态必须被采纳。"""
+    context = {"must_view_materials": TWO_IMAGES}
+    message = _report_message({"m1": True, "m2": True})
+    message.tool_calls.append({"name": "read_file", "args": {"path": "a.md"}, "id": "call-1"})
+    state = {"messages": [HumanMessage(content="看这张"), message]}
+    assert MustViewCompletionMiddleware().after_model(state, _Runtime(context)) is None
+
+
+def test_after_model_ignores_other_tool_calls():
+    context = {"must_view_materials": TWO_IMAGES}
+    message = AIMessage(
+        content="先读文件",
+        tool_calls=[{"name": "read_file", "args": {"path": "a.md"}, "id": "call-1"}],
+    )
+    state = {"messages": [HumanMessage(content="看这张"), message]}
+    result = MustViewCompletionMiddleware().after_model(state, _Runtime(context))
+    assert result["jump_to"] == "model"
+    assert any("a.png" in str(item.content) for item in result["messages"])
+
+
+def test_after_model_ignores_malformed_report_args():
+    """工具参数不合逐图声明结构时按「未表态」处理，MUST NOT 把整轮判为失败。"""
+    context = {"must_view_materials": TWO_IMAGES}
+    message = AIMessage(
+        content="表态",
+        tool_calls=[{
+            "name": "report_must_view_images",
+            "args": {"images": [{"material_id": "m1"}]},
+            "id": "call-1",
+        }],
+    )
+    state = {"messages": [HumanMessage(content="看这张"), message]}
+    result = MustViewCompletionMiddleware().after_model(state, _Runtime(context))
+    assert result["jump_to"] == "model"
+
+
+def test_after_model_keeps_declaration_from_earlier_message():
+    """模型先给出完整表态、后续轮次不再重复时，门仍应放行。"""
+    context = {"must_view_materials": TWO_IMAGES}
+    state = _reports_state(context, {"m1": True, "m2": True})
+    state["messages"].append(AIMessage(content="继续干活"))
+    assert MustViewCompletionMiddleware().after_model(state, _Runtime(context)) is None
+
+
+def test_after_model_does_not_read_its_own_reminder_as_declaration():
+    """催促语里带着工具名；它属于 HumanMessage，绝不能被算作本轮表态。"""
+    context = {"must_view_materials": TWO_IMAGES}
+    state = _reports_state(context, None)
+    reminder = MustViewCompletionMiddleware().after_model(state, _Runtime(context))
+    assert reminder["jump_to"] == "model"
+    state = {"messages": [*state["messages"], *reminder["messages"]]}
+    again = MustViewCompletionMiddleware().after_model(state, _Runtime(context))
+    assert again["jump_to"] == "model", "催促语里的模板不得被当作模型表态"
 
 
 def test_after_model_passes_once_every_material_is_reported():

@@ -1,8 +1,8 @@
 """本文件验证主 Agent 与小兵的角色装配、图片中间件组合和 Mailbox 注入。
 
 输入为真实桌面 API、数据库、图片上传和可捕获的 Agent 工厂；输出为无图片、普通附件、
-附件加必看三种 middleware/response_format 组合及协作工具断言。具体工作流保留
-start_run/worker/StreamBridge/DB，只替换外部工具池和模型图构建，避免网络依赖。
+附件加必看三种 middleware 组合及协作工具断言，并锁定主运行不得绑定 provider 结构化输出。
+具体工作流保留 start_run/worker/StreamBridge/DB，只替换外部工具池和模型图构建，避免网络依赖。
 
 示例：python -m pytest backend/tests/test_subagent_assembly.py。
 """
@@ -128,7 +128,8 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
                     "publish_task", "list_board_tasks", "send_message",
                     "approve_plan", "respond_shutdown",
                     "list_patrol_agents", "read_patrol_agent_history",
-                    "read_swarm_agent_history"} <= main_names
+                    "read_swarm_agent_history",
+                    "report_must_view_images"} <= main_names
             assert main_cfg["middlewares"] is None
             assert len(main_cfg["additional_middlewares"]) == 4
             names = [
@@ -140,7 +141,10 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
             assert "CompressionGate" in names
             assert names.index("ImageAttachmentProjectionMiddleware") < names.index("CompressionGate")
             assert names.index("MustViewCompletionMiddleware") < names.index("CompressionGate")
-            assert main_cfg["response_format"].__name__ == "MustViewReports"
+            assert "response_format" not in main_cfg, (
+                "主运行 MUST NOT 绑定 provider 结构化输出：有必需图片时 LangChain 会回落 "
+                "ToolStrategy 并强制 tool_choice=required，与 thinking 模型互斥"
+            )
             assert "claim_task" not in main_names
             assert "<agent_messages>" in main_cfg["system_prompt"]
             assert 'from="patrol-x"' in main_cfg["system_prompt"]
@@ -161,7 +165,10 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
             assert [
                 item.__class__.__name__ for item in empty_cfg["additional_middlewares"]
             ] == ["handle_tool_errors", "CompressionGate"]
-            assert empty_cfg["response_format"] is None
+            assert "response_format" not in empty_cfg
+            assert "report_must_view_images" not in {
+                item.name for item in empty_cfg["tools"]
+            }, "无必需图片时不得装配逐图表态工具"
 
             captured.clear()
             attached_equipment = {
@@ -188,7 +195,10 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
             assert [
                 item.__class__.__name__ for item in attached_cfg["additional_middlewares"]
             ] == ["handle_tool_errors", "ImageAttachmentProjectionMiddleware", "CompressionGate"]
-            assert attached_cfg["response_format"] is None
+            assert "response_format" not in attached_cfg
+            assert "report_must_view_images" not in {
+                item.name for item in attached_cfg["tools"]
+            }, "只有普通附件、没有必需图片时不得装配逐图表态工具"
 
             # 小兵链路：open_draft → update → deploy
             captured.clear()
