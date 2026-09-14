@@ -35,6 +35,7 @@ from backend.app.desktop.service import (  # noqa: E402
     _resolve_access_mode,
     DesktopService,
 )
+from focus.agents.material_inputs import RunMaterialInputs  # noqa: E402
 from focus.security.policy import AccessMode  # noqa: E402
 
 _MIGRATION_NAME = "a1b2c3d4e5f6_add_swarm_agent_access_mode.py"
@@ -125,6 +126,14 @@ async def _stub_prepare(self, run, thread_id, workspace_id, workspace_path, mess
     return SimpleNamespace(equipment=equipment)
 
 
+async def _stub_resolve_materials(*_args, **_kwargs):
+    return RunMaterialInputs.empty()
+
+
+async def _stub_checkpoint_messages(*_args, **_kwargs):
+    return []
+
+
 def _seed_service(monkeypatch) -> DesktopService:
     import backend.app.desktop.service as service_module
 
@@ -134,11 +143,15 @@ def _seed_service(monkeypatch) -> DesktopService:
     service._get_task_entities = _stub_task_entities
     service._commitment_recovery_payload = _stub_none
     service._freeze_skills = lambda *_: {}
-    service._resolve_must_view_materials = _stub_none
     service._apply_memory_block = lambda prompt, _ids: _identity(prompt)
     service._prepare = _stub_prepare.__get__(service, DesktopService)
+    service.get_checkpoint_messages = _stub_checkpoint_messages
+    service._validate_model_window = lambda *_: None
     service.contexts = SimpleNamespace(ensure_runnable=_stub_none)
+    service.run_materials = SimpleNamespace(resolve=_stub_resolve_materials)
+    service.run_material_history = SimpleNamespace(add=lambda *_: None)
     monkeypatch.setattr(service_module, "compression_recovery_payload", _stub_none)
+    monkeypatch.setattr(service_module, "must_view_recovery_payload", _stub_none)
     monkeypatch.setattr(service_module, "main_pending_interrupt", _stub_none)
     monkeypatch.setattr(service_module, "select_checkpoint_base", _stub_none)
     return service

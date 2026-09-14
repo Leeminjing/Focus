@@ -3,7 +3,6 @@
 
 对外提供:
     get_plugin_registry(root=None) — 默认合并仓库内置插件与 ~/.focus/plugins；显式 root 时只加载该目录
-    reload_plugins(root=None) — 重建注册表并替换缓存（插件启停后调用）
 
 输入:
     root: str | Path | None — 显式插件根；None 表示仓库内置根 + 全局用户根
@@ -14,9 +13,7 @@
 具体工作流:
     (1) 首次调用时构造 builtin_catalog() 目录与 PluginRegistry
     (2) 默认依次扫描仓库内置 root 与全局用户 root，再统一解析跨根依赖
-    (3) 用户停用偏好（全局家目录的 plugins-disabled.json）对所有根一致生效：
-        命中的插件只登记为 disabled 供界面重新启用，不参与装配
-    (4) 实例按 root 缓存于模块级字典；与 get_app_config / get_mcp_tools_cached 同模式，
+    (3) 实例按 root 缓存于模块级字典；与 get_app_config / get_mcp_tools_cached 同模式，
         不经 FastAPI lifespan，装配与调试接口共享同一实例
 
 示例:
@@ -46,13 +43,10 @@ def _plugin_roots(root: str | Path | None) -> tuple[str, list[Path]]:
 def _build_registry(roots: list[Path]) -> PluginRegistry:
     registry = PluginRegistry(builtin_catalog())
     from focus.plugins.loader import load_plugins
-    from focus.plugins.preferences import disabled_plugins
 
-    # 用户停用集合是全局偏好，与具体插件根无关：多根扫描时对所有根一致生效
-    disabled = disabled_plugins()
     seen_names: set[str] = set()
     for plugin_root in roots:
-        load_plugins(registry, plugin_root, resolve=False, seen_names=seen_names, disabled=disabled)
+        load_plugins(registry, plugin_root, resolve=False, seen_names=seen_names)
     registry.resolve_dependencies()
     return registry
 

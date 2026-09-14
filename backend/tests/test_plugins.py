@@ -37,30 +37,6 @@ def _manifest(name: str, provides=(), requires=(), version: str = "1.0.0") -> Pl
     return PluginManifest(name=name, version=version, provides=list(provides), requires=list(requires))
 
 
-def _write_tool_plugin(root: Path, name: str, *, enabled: bool = True) -> Path:
-    """在 root 下写一个声明单个 tool 接口的最小可加载插件，返回其目录。"""
-    plugin_dir = root / name
-    plugin_dir.mkdir(parents=True, exist_ok=True)
-    (plugin_dir / "plugin.json").write_text(
-        json.dumps({
-            "name": name, "version": "1.0.0", "enabled": enabled,
-            "provides": ["tool"], "entry": "plugin.py",
-        }),
-        encoding="utf-8",
-    )
-    symbol = name.replace("-", "_")
-    (plugin_dir / "plugin.py").write_text(
-        "from langchain_core.tools import tool\n"
-        "from focus.plugins.schemas import PluginDeclaration\n"
-        f"@tool\ndef tool_{symbol}(x: str) -> str:\n"
-        f"    '''{name} 工具。'''\n    return x\n"
-        "def build_plugin(context):\n"
-        f"    return PluginDeclaration(tools=[tool_{symbol}])\n",
-        encoding="utf-8",
-    )
-    return plugin_dir
-
-
 @tool
 def plugin_browser(url: str) -> str:
     """测试插件工具：返回传入的 url。"""
@@ -190,10 +166,26 @@ def test_multi_service_aggregates_and_dependent_sees_all():
 def test_revocation_removes_only_that_plugin(tmp_path):
     root = tmp_path / "plugins"
     for name in ("b-plugin", "a-plugin"):
-        _write_tool_plugin(root, name)
+        plugin_dir = root / name
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.json").write_text(
+            json.dumps({
+                "name": name, "version": "1.0.0", "enabled": True,
+                "provides": ["tool"], "entry": "plugin.py",
+            }), encoding="utf-8",
+        )
+        (plugin_dir / "plugin.py").write_text(
+            "from langchain_core.tools import tool\n"
+            "from focus.plugins.schemas import PluginDeclaration\n"
+            f"@tool\ndef tool_{name.replace('-', '_')}(x: str) -> str:\n"
+            f"    '''{name} 工具。'''\n    return x\n"
+            f"def build_plugin(context):\n"
+            f"    return PluginDeclaration(tools=[tool_{name.replace('-', '_')}])\n",
+            encoding="utf-8",
+        )
     registry = get_plugin_registry(root=root)
     assert [tool_.name for tool_ in registry.tools()] == ["tool_a_plugin", "tool_b_plugin"]
-    # 撤销 B：关闭其启用开关后重新加载，仅 B 不再装配
+    # 撤销 B：关闭其启用开关后重新加载，仅 B 消失
     manifest_file = root / "b-plugin" / "plugin.json"
     manifest_file.write_text(
         json.dumps({"name": "b-plugin", "version": "1.0.0", "enabled": False, "provides": ["tool"]}),
@@ -204,56 +196,6 @@ def test_revocation_removes_only_that_plugin(tmp_path):
 
     load_plugins(reloaded, root)
     assert [tool_.name for tool_ in reloaded.tools()] == ["tool_a_plugin"]
-    # 撤销的插件不再装配，但仍以 disabled 登记，界面据此提供「启用」入口
-    revoked = {item["name"]: item for item in reloaded.list_plugins()}
-    assert revoked["b-plugin"]["status"] == "disabled"
-    assert revoked["b-plugin"]["can_toggle"] is False
-
-
-def test_user_disabled_plugin_registered_but_not_assembled(tmp_path):
-    """用户停用与发布方关闭语义不同：前者可被界面重新启用，后者不可。"""
-    root = tmp_path / "plugins"
-    _write_tool_plugin(root, "togglable")
-    manifest = json.loads((root / "togglable" / "plugin.json").read_text(encoding="utf-8"))
-    assert manifest.get("enabled", True) is True
-
-    from focus.plugins.loader import load_plugins
-
-    registry = PluginRegistry(builtin_catalog())
-    load_plugins(registry, root, disabled={"togglable"})
-    record = {item["name"]: item for item in registry.list_plugins()}["togglable"]
-    assert record["status"] == "disabled"
-    assert record["can_toggle"] is True
-    assert registry.tools() == []
-
-    # 同一注册表在未停用时正常装配，证明差异只来自停用集合
-    active_registry = PluginRegistry(builtin_catalog())
-    load_plugins(active_registry, root, disabled=set())
-    active = {item["name"]: item for item in active_registry.list_plugins()}["togglable"]
-    assert active["status"] == "active"
-    assert active["can_toggle"] is True
-    assert [tool_.name for tool_ in active_registry.tools()] == ["tool_togglable"]
-
-
-def test_unknown_interface_disabled_plugin_rejected_not_disabled(tmp_path):
-    """停用插件若声明了不存在的接口，仍按拒绝暴露，避免界面显示得比实际更可用。"""
-    root = tmp_path / "plugins"
-    directory = root / "ghost"
-    directory.mkdir(parents=True)
-    (directory / "plugin.json").write_text(
-        json.dumps({
-            "name": "ghost", "version": "1", "enabled": True,
-            "provides": ["hook.not_a_real_point"],
-        }),
-        encoding="utf-8",
-    )
-    from focus.plugins.loader import load_plugins
-
-    registry = PluginRegistry(builtin_catalog())
-    load_plugins(registry, root, disabled={"ghost"})
-    record = {item["name"]: item for item in registry.list_plugins()}["ghost"]
-    assert record["status"] == "rejected"
-    assert record["can_toggle"] is False
 
 
 def test_build_failure_marks_unavailable_without_blocking_others(tmp_path):
@@ -832,71 +774,6 @@ def test_plugins_routes_serve_registry_data(monkeypatch):
     assert traces[0]["status"] == "success"
 
 
-def test_toggle_plugin_persists_preference_and_rebuilds(monkeypatch, tmp_path):
-    """停用写入偏好并重建注册表；未知插件名一律 404，不写脏偏好文件。"""
-    registry = PluginRegistry(builtin_catalog())
-    registry.register(_manifest("p1", provides=["tool"]), PluginDeclaration(tools=[plugin_browser]))
-    registry.resolve_dependencies()
-    monkeypatch.setattr("backend.app.desktop.plugins_routes.get_plugin_registry", lambda: registry)
-
-    rebuilt: list[set[str]] = []
-
-    def fake_reload():
-        from focus.plugins.preferences import disabled_plugins
-
-        rebuilt.append(disabled_plugins())
-        # 真实 reload 会按偏好重建；这里返回一个已按偏好停用的注册表
-        fresh = PluginRegistry(builtin_catalog())
-        fresh.register_disabled(_manifest("p1", provides=["tool"]), can_toggle=True)
-        fresh.resolve_dependencies()
-        return fresh
-
-    monkeypatch.setattr("backend.app.desktop.plugins_routes.reload_plugins", fake_reload)
-
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from backend.app.desktop.plugins_routes import plugins_router
-
-    app = FastAPI()
-    app.include_router(plugins_router)
-    client = TestClient(app)
-
-    response = client.put("/desktop/api/plugins/p1/enabled", json={"enabled": False})
-    assert response.status_code == 200
-    body = response.json()
-    assert rebuilt == [{"p1"}]
-    assert body["disabled"] == ["p1"]
-    assert Path(body["preference_path"]).is_file()
-    record = {item["name"]: item for item in body["plugins"]}["p1"]
-    assert record["status"] == "disabled"
-    assert record["can_toggle"] is True
-
-    assert client.put("/desktop/api/plugins/ghost/enabled", json={"enabled": False}).status_code == 404
-    # 未知名字不得写脏偏好文件
-    from focus.plugins.preferences import disabled_plugins
-
-    assert disabled_plugins() == {"p1"}
-
-
-def test_preference_roundtrip_ignores_corrupt_file(tmp_path):
-    """偏好文件损坏时按「无停用项」处理，绝不因偏好异常阻断插件加载。"""
-    from focus.plugins import preferences
-
-    assert preferences.disabled_plugins() == set()
-    preferences.set_plugin_disabled("alpha", True)
-    preferences.set_plugin_disabled("beta", True)
-    assert preferences.disabled_plugins() == {"alpha", "beta"}
-    preferences.set_plugin_disabled("alpha", False)
-    assert preferences.disabled_plugins() == {"beta"}
-
-    preferences.preference_path().write_text("{ 不是 JSON", encoding="utf-8")
-    assert preferences.disabled_plugins() == set()
-    # 损坏后可继续写入并恢复到一致状态
-    preferences.set_plugin_disabled("gamma", True)
-    assert preferences.disabled_plugins() == {"gamma"}
-
-
 def _fake_app_config():
     from focus.config.app_config import AppConfig
 
@@ -1005,10 +882,6 @@ def test_assets_collected_for_active_plugin(tmp_path):
 def test_assets_disabled_plugin_not_mounted(tmp_path):
     _asset_plugin(tmp_path, "off", enabled=False)
     registry = _load(tmp_path)
-    # 发布方关闭的插件不装配，但仍登记为 disabled，使界面能看到（且不提供启停入口）
-    records = {item["name"]: item for item in registry.list_plugins()}
-    assert records["off"]["status"] == "disabled"
-    assert records["off"]["can_toggle"] is False
     assert registry.active_assets() == {}
     assert all(item["desktop_assets"] == [] for item in registry.list_plugins())
 

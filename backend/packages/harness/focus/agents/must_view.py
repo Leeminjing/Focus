@@ -1,165 +1,108 @@
-"""本文件对外提供必需图片的注入中间件、逐图表态的输出结构与相关失败类型。
+"""本文件对外提供必看图片的逐图声明工具、完成门中间件与兼容入口。
 
-语义:（材料 × 轮次）的「本轮必须看」——用户每轮勾选哪些图片是本轮的必要输入。
-中间件保证这些图片出现在本轮每一次模型请求中，并要求模型在结构化输出里对每张图逐条表态；
-表态未齐或声明"未读到"时不以成功状态收场。
+输入为 runtime context 中 RunImageInputs 的 required 子集，以及模型对 report_must_view_images
+工具的调用参数；输出为正常放行、回到 model 的有界补报请求，或 type=must_view_report 的人工中断。
+具体工作流为：只校验 required 图片，按消息从新到旧取模型最近一次逐图声明，缺项最多提醒两次，
+read=false 或提醒耗尽时携带材料与原因中断；本文件不读取或注入像素，read 仅表示模型声明，图片
+像素交付由 image_attachment.py 独立负责。
 
-对外提供:
-    MUST_VIEW_CONTEXT_KEY — run 上下文里承载必需材料清单的键名
-    MODEL_IMAGE_INPUT_KEY — run 上下文里承载本轮模型是否具备图像输入能力的键名
-    MustViewImageReport / MustViewReports — 逐图表态的输出结构
-    MustViewMaterialUnavailable — 必需材料不可读时抛出的失败类型（携带材料标识）
-    MustViewModelCannotReadImages — 本轮模型不具备图像输入能力时抛出的失败类型
-    MustViewImagesMiddleware — 注入必需图片并校验逐图表态的中间件
-    build_must_view_middleware — 构造该中间件
+逐图表态刻意用普通工具承载，而不是 provider 结构化输出：后者会让 LangChain 给整轮运行绑定
+ToolStrategy 并强制 tool_choice，与 thinking 模型互斥，且把每一轮的输出形式都改成结构化应答。
 
-输入:
-    runtime.context["workspace"]: str — 工作区路径，材料相对路径的解析根
-    runtime.context[MUST_VIEW_CONTEXT_KEY]: list[dict] — 每项含 material_id 与 relative_path
-    runtime.context[MODEL_IMAGE_INPUT_KEY]: bool — 本轮模型是否声明具备图像输入能力
-    request.messages / state["structured_response"] — 当前对话与模型的结构化表态
-
-输出:
-    每次模型调用前追加一条携带图像内容块的 human 消息（只在 request 层，不进 state）；
-    after_model 阶段校验表态完整性，未齐则把控制流送回模型节点，超限或声明未读到则升级为人工介入
-
-具体工作流:
-    (1) 清单只从 runtime.context 读取，不扫消息推断——因此与压缩门的装配顺序无关，
-        也保证承载引用的消息被压缩摘要掉之后，必需项依然存在
-    (2) 注入前先确认本轮模型声明了图像输入能力：未声明时图片不可能被处理，
-        该轮必须以可诊断失败收场，而不是照样成功结束
-    (3) 逐项按工作区解析路径、读取原图字节，经 focus.images.scale_for_model 缩小后组装图像内容块
-    (4) 全量注入：每次请求都带齐全部必需图片，这正是「本轮必须看」的语义
-    (5) 任一必需材料不可读即抛 MustViewMaterialUnavailable，使本轮以可诊断失败结束
-    (6) after_model 校验表态：把 structured_response 里的表态与必需清单比对，
-        缺项则拒绝结束并送回模型补齐（有界）；超限或出现"未读到"则 interrupt 交人工处置
-    (7) 表态是模型的声明，其真伪不可验证；本文件不据此断言图片确已被读取
-
-示例:
-    Middleware 在 backend/app/desktop/service.py 的 additional_middlewares 中与压缩门并列装配，仅主 Agent 生效。
+示例：middleware=build_must_view_completion_middleware(); tools=[report_must_view_images]。
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, hook_config
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import tool
 from langgraph.types import interrupt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
+from focus.agents.image_inputs import (
+    MODEL_IMAGE_INPUT_KEY,
+    RUN_IMAGE_INPUTS_CONTEXT_KEY,
+    RunImageInputs,
+)
 from focus.security.governed import declare_governed_keys
-from focus.images import scale_for_model, to_data_url
 
 MUST_VIEW_CONTEXT_KEY = "must_view_materials"
 
-MODEL_IMAGE_INPUT_KEY = "model_supports_image_input"
-"""本轮所用模型是否声明具备图像输入能力；由 service 侧按模型条目写入 run 上下文。"""
-
-# 必需图片清单与模型图像能力都用参与决策：前者决定注入与豁免，后者决定该轮是否可成功收场
-declare_governed_keys(MUST_VIEW_CONTEXT_KEY, MODEL_IMAGE_INPUT_KEY)
-
-_INJECTION_PREAMBLE = "以下是本轮必须查看的图片材料："
+# 必需图片清单、模型图像能力与轮次图片输入都参与决策：分别决定注入与豁免、能否成功收场、
+# 以及像素从哪些材料来，因此三者都只能由服务端派生
+declare_governed_keys(MUST_VIEW_CONTEXT_KEY, MODEL_IMAGE_INPUT_KEY, RUN_IMAGE_INPUTS_CONTEXT_KEY)
 
 _REMINDER_MARKER = "[focus-must-view]"
-
 _MAX_REMINDERS = 2
-"""允许拒绝结束并催促补齐的次数上限；超过即交人工处置，避免无限循环。"""
 
 
 class MustViewImageReport(BaseModel):
     material_id: str = Field(description="本轮必须查看的图片材料标识")
-    read: bool = Field(description="是否成功读到该图片的内容；成功读到即置为真")
+    read: bool = Field(description="模型是否声明已成功读到该图片内容")
 
 
 class MustViewReports(BaseModel):
-    images: list[MustViewImageReport] = Field(
-        description="对本轮每一张必须查看的图片各给一条表态"
-    )
+    images: list[MustViewImageReport] = Field(description="本轮每一张必看图片的模型声明")
 
 
-class MustViewMaterialUnavailable(RuntimeError):
-    """必需的图片材料不可读；失败信息指明是哪一份材料。"""
+@tool("report_must_view_images")
+def report_must_view_images(images: list[MustViewImageReport]) -> str:
+    """声明本轮每张必须查看的图片是否已读到。
 
-    def __init__(self, material_id: str, relative_path: str, reason: str) -> None:
-        self.material_id = material_id
-        self.relative_path = relative_path
-        super().__init__(
-            f"本轮必须查看的图片材料不可读: {relative_path} (material_id={material_id})，{reason}"
-        )
+    对每一张必看图片各给一条声明：成功读到该图片内容即把 read 置为真。只表态，不读取图片内容。
+    """
+    return f"已记录 {len(images)} 张必看图片的逐图声明。"
 
 
-class MustViewModelCannotReadImages(RuntimeError):
-    """本轮模型不具备图像输入能力，必需图片不可能被处理；该轮不得以成功状态结束。"""
-
-    def __init__(self, model_name: str) -> None:
-        self.model_name = model_name
-        super().__init__(
-            f"本轮存在必须查看的图片，但模型 '{model_name}' 未声明具备图像输入能力，"
-            "图片无法被处理；请在模型条目声明 supports_image_input 或改用具备图像输入的模型"
-        )
-
-
-class MustViewImagesMiddleware(AgentMiddleware):
-    """注入 run 作用域的必需图片，并校验模型的逐图表态。"""
-
-    def wrap_model_call(self, request: Any, handler: Any) -> Any:
-        return handler(self._inject(request))
-
-    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
-        return await handler(self._inject(request))
-
-    @hook_config(can_jump_to=["model"])
+class MustViewCompletionMiddleware(AgentMiddleware):
+    @hook_config(can_jump_to=["model", "end"])
     def after_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
-        materials = _must_view_materials_from_context(_context_of_runtime(runtime))
-        if not materials:
+        required = list(RunImageInputs.from_context(_context_of_runtime(runtime)).required)
+        if not required:
             return None
         reports = _reports_of(state)
-        missing = [item for item in materials if item["material_id"] not in reports]
-        unread = [
-            item
-            for item in materials
-            if reports.get(item["material_id"]) is False
-        ]
+        missing = [item for item in required if item.material_id not in reports]
+        unread = [item for item in required if reports.get(item.material_id) is False]
         if unread:
             return _escalate(missing, unread)
         if not missing:
             return None
         if _reminder_count(state) >= _MAX_REMINDERS:
-            return _escalate(missing, [])
+            return _escalate(missing, ())
         return {
             "jump_to": "model",
             "messages": [HumanMessage(content=_reminder_text(missing))],
         }
 
-    def _inject(self, request: Any) -> Any:
-        context = _context_of(request)
-        materials = _must_view_materials_from_context(context)
-        if not materials:
-            return request
-        _require_image_capable_model(context)
-        workspace = _workspace_of(context)
-        content: list[dict[str, Any]] = [{"type": "text", "text": _INJECTION_PREAMBLE}]
-        for material in materials:
-            content.append(_image_block(workspace, material))
-        return request.override(messages=[*request.messages, HumanMessage(content=content)])
 
-
-def build_must_view_middleware() -> MustViewImagesMiddleware:
-    return MustViewImagesMiddleware()
+def build_must_view_completion_middleware() -> MustViewCompletionMiddleware:
+    return MustViewCompletionMiddleware()
 
 
 def _reports_of(state: Any) -> dict[str, bool]:
-    reports = state.get("structured_response") if isinstance(state, dict) else None
-    images = getattr(reports, "images", None)
-    if not isinstance(images, list):
+    """取模型最近一次逐图表态；只认 AI 消息上的报告工具调用，催促语不算表态。"""
+    messages = state.get("messages") if isinstance(state, dict) else None
+    if not isinstance(messages, list):
         return {}
-    return {
-        str(item.material_id): bool(item.read)
-        for item in images
-        if getattr(item, "material_id", None)
-    }
+    for message in reversed(messages):
+        if not isinstance(message, AIMessage):
+            continue
+        for call in reversed(list(getattr(message, "tool_calls", None) or [])):
+            if call.get("name") != report_must_view_images.name:
+                continue
+            try:
+                reports = MustViewReports.model_validate(call.get("args") or {})
+            except ValidationError:
+                continue
+            return {
+                str(item.material_id): bool(item.read)
+                for item in reports.images
+                if item.material_id
+            }
+    return {}
 
 
 def _reminder_count(state: Any) -> int:
@@ -174,67 +117,57 @@ def _reminder_count(state: Any) -> int:
     )
 
 
-def _reminder_text(missing: list[dict[str, Any]]) -> str:
+def _reminder_text(missing: list[Any]) -> str:
     lines = "\n".join(
-        f"- {item['relative_path']} (material_id={item['material_id']})" for item in missing
+        f"- {item.relative_path} (material_id={item.material_id})" for item in missing
     )
     return (
         f"{_REMINDER_MARKER} 还有以下必须查看的图片没有表态，本轮不能结束。"
-        f"请在结构化输出中为它们各补一条：\n{lines}"
+        f"请调用 {report_must_view_images.name} 为它们各补一条声明：\n{lines}"
     )
 
 
-def _escalate(
-    missing: list[dict[str, Any]], unread: list[dict[str, Any]]
-) -> None:
-    interrupt(
+def _escalate(missing: list[Any], unread: Any) -> dict[str, Any] | None:
+    unread_items = list(unread)
+    decision = interrupt(
         {
             "type": "must_view_report",
-            "missing": [item["material_id"] for item in missing],
-            "unread": [item["material_id"] for item in unread],
+            "missing": [item.material_id for item in missing],
+            "unread": [item.material_id for item in unread_items],
+            "materials": [
+                {
+                    "material_id": item.material_id,
+                    "relative_path": item.relative_path,
+                    "reason": "unread" if item in unread_items else "missing",
+                }
+                for item in [*missing, *unread_items]
+            ],
+            "actions": ["retry", "cancel"],
         }
     )
+    if not isinstance(decision, dict) or decision.get("type") != "must_view_report":
+        return None
+    if decision.get("decision") == "cancel":
+        return {"jump_to": "end"}
+    if decision.get("decision") == "retry":
+        return {
+            "jump_to": "model",
+            "messages": [HumanMessage(content=_reminder_text([*missing, *unread_items]))],
+        }
     return None
-
-
-def _must_view_materials_from_context(context: Any) -> list[dict[str, Any]]:
-    materials = context.get(MUST_VIEW_CONTEXT_KEY) if isinstance(context, dict) else None
-    if not isinstance(materials, list):
-        return []
-    return [item for item in materials if isinstance(item, dict) and item.get("relative_path")]
-
-
-def _context_of(request: Any) -> Any:
-    return _context_of_runtime(getattr(request, "runtime", None))
 
 
 def _context_of_runtime(runtime: Any) -> Any:
     return getattr(runtime, "context", None)
 
 
-def _require_image_capable_model(context: Any) -> None:
-    if isinstance(context, dict) and context.get(MODEL_IMAGE_INPUT_KEY) is True:
-        return
-    model_name = context.get("model_name") if isinstance(context, dict) else None
-    raise MustViewModelCannotReadImages(str(model_name or "未知模型"))
-
-
-def _workspace_of(context: Any) -> Path:
-    workspace = context.get("workspace") if isinstance(context, dict) else None
-    if not workspace:
-        raise MustViewMaterialUnavailable("-", "-", "缺少工作区上下文")
-    return Path(str(workspace)).resolve()
-
-
-def _image_block(workspace: Path, material: dict[str, Any]) -> dict[str, Any]:
-    material_id = str(material.get("material_id") or "-")
-    relative_path = str(material["relative_path"])
-    path = Path(workspace, *Path(relative_path).parts)
-    try:
-        original = path.read_bytes()
-    except OSError as error:
-        raise MustViewMaterialUnavailable(material_id, relative_path, str(error)) from error
-    if not original:
-        raise MustViewMaterialUnavailable(material_id, relative_path, "材料内容为空")
-    mime, scaled = scale_for_model(original)
-    return {"type": "image_url", "image_url": {"url": to_data_url(mime, scaled)}}
+__all__ = [
+    "MODEL_IMAGE_INPUT_KEY",
+    "MUST_VIEW_CONTEXT_KEY",
+    "RUN_IMAGE_INPUTS_CONTEXT_KEY",
+    "MustViewCompletionMiddleware",
+    "MustViewImageReport",
+    "MustViewReports",
+    "build_must_view_completion_middleware",
+    "report_must_view_images",
+]

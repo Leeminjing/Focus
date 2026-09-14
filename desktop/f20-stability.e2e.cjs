@@ -82,28 +82,29 @@ async function run() {
   const panel = await evaluate(win, `(() => {
     state.inspector.open = false;
     state.view = 'focus';
-    openFilePreview({ material_id: 'e2e-file', relative_path: 'README.md', path: 'README.md', kind: 'text' });
+    state.panelWidth = 9999;
+    state.filesPanel = { relative_path: 'README.md', path: 'README.md' };
+    render();
     const mainNode = document.querySelector('.focus-view');
     const main = mainNode.getBoundingClientRect();
-    const previewNode = document.querySelector('.file-preview');
-    const file = previewNode.getBoundingClientRect();
+    const file = document.querySelector('.file-panel').getBoundingClientRect();
     const shell = document.querySelector('.focus-shell').getBoundingClientRect();
     return {
       mainWidth: main.width,
       mainDisplay: getComputedStyle(mainNode).display,
-      previewWidth: file.width,
-      previewPosition: getComputedStyle(previewNode).position,
+      fileWidth: file.width,
       shellWidth: shell.width,
       viewport: innerWidth,
       overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      stored: state.panelWidth,
     };
   })()`);
-  if (panel.mainDisplay === "none" || !(panel.previewWidth > 0) || panel.overflow > 1) {
-    failures.push(`会话页文件预览列没有与会话区并排：${JSON.stringify(panel)}`);
+  if (panel.mainDisplay !== "none" || Math.abs(panel.fileWidth - panel.shellWidth) > 1 || panel.overflow > 1 || !Number.isFinite(panel.stored)) {
+    failures.push(`中小窗口文件工作台没有保持单工作面：${JSON.stringify(panel)}`);
   }
 
   const fallback = await evaluate(win, `(() => {
-    resetFilePreviews();
+    state.filesPanel = null;
     state.view = 'missing-plugin-view';
     try { render(); return { threw: false, view: state.view, hasFocus: Boolean(document.querySelector('.focus-view')) }; }
     catch (error) { return { threw: true, message: error.message }; }
@@ -111,7 +112,7 @@ async function run() {
   if (fallback.threw || fallback.view !== "focus" || !fallback.hasFocus) failures.push(`未知插件视图没有安全回退：${JSON.stringify(fallback)}`);
 
   const compression = await evaluate(win, `(async () => {
-    resetFilePreviews();
+    state.filesPanel = null;
     state.compression = {
       taskId: state.activeTaskId,
       messages: [

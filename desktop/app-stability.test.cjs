@@ -1,6 +1,7 @@
 /*
  * 本文件验证宿主稳定性边界。输入为真实 app.js VM 与可控异步 API，输出为单次错误 body 解析和
  * task-scoped hydrate 断言；工作流确保纯文本错误不被覆盖、旧任务响应不污染当前任务。
+ * 示例：node desktop/app-stability.test.cjs。
  */
 "use strict";
 
@@ -187,19 +188,31 @@ async function testAttachmentCommitBoundary() {
     state.details.set('task-a', { messages: [], ui_state: { input: '带图消息', skills: [] }, active_run: null });
     state.contextTrees.set('workspace', []);
     state.materials.set('task-a', [{ material_id: 'm1', relative_path: '.focus/attachments/a.png', is_image: true, size_bytes: 10 }]);
-    state.mustView.set('task-a', ['m1']);
+    state.materialSelections.set('task-a', { bindings: [{ materialId: 'm1', note: '重点' }], requiredImageIds: ['m1'], notes: { m1: '重点' } });
     renderFocus = () => {};
     persistFocusState = () => {};
     listenToRun = () => {};
     api = async () => { throw new Error('network down'); };
     await sendMain();
-    const afterFailure = state.mustView.get('task-a').length;
+    const afterFailure = state.materialSelections.get('task-a').bindings.length;
     let apiCalls = 0;
-    api = async () => { apiCalls += 1; return { run_id: 'run-ok', task_id: 'task-a', kind: 'main', status: 'pending' }; };
+    let sentBody = null;
+    api = async (_path, options) => { apiCalls += 1; sentBody = JSON.parse(options.body); return { run_id: 'run-ok', message_id: 'msg-ok', task_id: 'task-a', kind: 'main', status: 'pending' }; };
     await Promise.all([sendMain(), sendMain()]);
-    return { afterFailure, afterSuccess: state.mustView.get('task-a').length, apiCalls };
+    return { afterFailure, afterSuccess: state.materialSelections.get('task-a').bindings.length, apiCalls, sentBody };
   })()`, harness.context);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), { afterFailure: 1, afterSuccess: 0, apiCalls: 1 });
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), {
+    afterFailure: 1,
+    afterSuccess: 0,
+    apiCalls: 1,
+    sentBody: {
+      message: "带图消息",
+      material_inputs: [{ material_id: "m1", note: "重点" }],
+      must_view_material_ids: ["m1"],
+      skills: [],
+      spatial_focus: null,
+    },
+  });
 }
 
 async function testPluginAssetsAreIdempotent() {

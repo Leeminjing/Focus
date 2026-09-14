@@ -4,7 +4,6 @@
     image_dimensions — 从图像字节解析像素宽高
     image_mime_from_name — 由文件名推断图像 MIME
     is_image_name — 判定文件名是否为受支持的图像
-    image_exceeds_original_limit — 判定原图是否超出可接受体积上限
     measure_image_tokens — 按 patch 网格把像素宽高折算为 token 数
     scale_for_model — 把原图等比缩小到送模尺寸上限，返回 (mime, 缩放后字节)
     to_data_url — 组装内联 data URL
@@ -56,18 +55,11 @@ IMAGE_MODEL_MAX_EDGE_PX = 1568
 IMAGE_MODEL_MAX_BYTES = 4 * 1024 * 1024
 """单张图片送入模型的字节上限。"""
 
-ORIGINAL_IMAGE_MAX_BYTES = 20 * 1024 * 1024
-"""粘贴原图可接受的字节上限；超出直接拒绝，不落盘。"""
-
 DEFAULT_IMAGE_MIME = "image/png"
 
 
 def is_image_name(name: str) -> bool:
     return Path(name).suffix.lower() in IMAGE_MIME_BY_SUFFIX
-
-
-def image_exceeds_original_limit(name: str, size: int) -> bool:
-    return is_image_name(name) and size > ORIGINAL_IMAGE_MAX_BYTES
 
 
 def image_mime_from_name(name: str) -> str | None:

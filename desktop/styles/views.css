@@ -1,4 +1,7 @@
-/* F20 视图迁移覆盖层：按工作流逐步收敛旧样式，最终仅保留无法由公共组件表达的布局。 */
+/* 本文件对外提供任务、材料、对话、Composer 与其它工作流视图的布局样式。输入为 app.js
+   输出的语义 class 和公共设计 token，输出为可滚动工作区、可折叠材料组、材料项内逐轮备注框
+   与历史材料卡片；工作流先应用通用视图骨架，再为具体工作流补充必要布局。示例：
+   .run-material-note 把本轮备注输入框就近排在其所属材料条目内。 */
 .focus-view,
 .map-view,
 .draft-view,
@@ -248,6 +251,8 @@
 
 .composer-context > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-context .text-button { min-height: 28px; margin-left: auto; }
+.run-material-note { display: block; }
+.run-material-note textarea { width: 100%; min-height: 42px; resize: vertical; font-size: 11px; }
 .composer-shell .composer { border: 0; border-radius: 0; box-shadow: none; }
 .composer-shell .composer:focus-within { border-color: transparent; box-shadow: var(--focus-ring); }
 .composer-shell .send-button { min-height: 36px; padding-inline: var(--space-4); border-color: var(--accent-primary); background: var(--accent-primary); }
@@ -787,6 +792,13 @@
 
 /* 材料检查器：策略在列表层可扫描，危险与版本动作只在展开管理区出现。 */
 .materials-inspector .inspector-description { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
+.material-group-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.material-group { display: grid; gap: var(--space-1); }
+.material-group-header { display: flex; min-width: 0; align-items: center; gap: var(--space-1); padding-top: var(--space-2); }
+.material-group-toggle { min-width: 0; flex: 1; overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.material-group-actions { display: inline-flex; align-items: center; gap: 2px; }
+.material-group-body { display: grid; min-width: 0; }
+.material-group-body[hidden] { display: none; }
 .material-row { display: grid; gap: var(--space-2); padding: var(--space-3) 0; border: 0; border-bottom: 1px solid var(--border-subtle); border-radius: 0; background: var(--surface-base); }
 .material-summary { display: flex; min-width: 0; align-items: flex-start; justify-content: space-between; gap: var(--space-2); }
 .material-title-button { display: flex; min-width: 0; flex: 1; align-items: flex-start; gap: var(--space-2); padding: 0; border: 0; background: transparent; text-align: left; }
@@ -804,18 +816,30 @@
 .material-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
 .version-list { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
 .version-list li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-2); border-radius: var(--radius-control); background: var(--surface-subtle); font-size: 10px; }
+.material-usage-history summary { cursor: pointer; color: var(--text-secondary); font-size: 11px; }
+.material-usage-history ol { display: grid; gap: var(--space-2); margin: var(--space-2) 0 0; padding-left: var(--space-5); }
+.material-usage-history li { color: var(--text-secondary); font-size: 10px; }
+.material-usage-history p { margin: 2px 0 0; white-space: pre-wrap; }
 
-/* 宿主文件工作台骨架不依赖任何插件样式；插件只填充内容载体与动作。
-   .file-panel* 是宿主对插件公开的挂载契约（spatial-patrol 的桌面样式整体建立在
-   .file-panel 根之上），会话页自身的文件预览列不再复用这些类，见 styles/shell.css。 */
+/* 宿主文件工作台骨架不依赖任何插件样式；插件只填充内容载体与动作。 */
 .file-panel { position: relative; display: grid; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr); border-left: 1px solid var(--border-default); background: var(--surface-base); }
 .file-panel-inner { display: grid; min-height: 0; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
+.panel-resizer { position: absolute; z-index: 5; top: 0; bottom: 0; left: -4px; width: 8px; cursor: col-resize; }
+.panel-resizer:hover { background: var(--surface-accent); }
 .file-panel-head { display: flex; min-width: 0; min-height: 46px; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border-subtle); background: var(--surface-base); }
 .file-panel-title { min-width: 0; flex: 1; overflow: hidden; color: var(--text-primary); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .file-panel-body { display: flex; min-height: 0; overflow: hidden; background: var(--surface-canvas); }
 .file-panel-foot { display: grid; gap: var(--space-3); padding: var(--space-3); border-top: 1px solid var(--border-subtle); background: var(--surface-base); }
 .file-panel-foot form { display: grid; gap: var(--space-2); }
+.file-panel-foot #spatialInstruction { width: 100%; }
 .message-file-cards { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: 0 0 var(--space-3); }
+.message-materials { display: grid; gap: var(--space-2); margin: 0 0 var(--space-3); }
+.message-materials > header { display: flex; align-items: center; gap: var(--space-2); }
+.message-material-card { display: flex; min-width: 0; gap: var(--space-2); padding: var(--space-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); background: var(--surface-subtle); }
+.message-material-thumb { width: 44px; height: 44px; flex: 0 0 auto; border-radius: var(--radius-control); object-fit: cover; }
+.message-material-card > span:last-child { display: flex; min-width: 0; flex: 1; flex-wrap: wrap; align-items: center; gap: var(--space-1); }
+.message-material-card strong { width: 100%; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.message-material-card p { width: 100%; margin: 0; color: var(--text-secondary); font-size: 11px; white-space: pre-wrap; }
 .file-card { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border: 1px solid var(--border-default); border-radius: var(--radius-control); background: var(--surface-subtle); color: var(--text-secondary); font-size: 12px; }
 .file-card:hover { border-color: var(--border-accent); color: var(--text-accent); background: var(--surface-accent); }
 .file-card.is-plain { cursor: default; opacity: .68; }
@@ -834,13 +858,9 @@
 .plugins-list { display: grid; grid-template-rows: auto minmax(0, 1fr); padding: 0; }
 .plugins-list > header { display: flex; min-height: 48px; align-items: center; justify-content: space-between; padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border-subtle); background: var(--surface-subtle); font-size: 12px; }
 .plugin-list-scroll { display: grid; align-content: start; gap: var(--space-2); min-height: 0; overflow: auto; padding: var(--space-2); }
-.plugin-card-shell { display: grid; grid-template-columns: minmax(0, 1fr); overflow: hidden; border-radius: var(--radius-control); }
-.plugin-card-shell:hover { background: var(--surface-subtle); }
-.plugin-card-shell.is-selected { background: var(--surface-selected); }
-.plugin-card { display: grid; width: 100%; justify-content: stretch; justify-items: stretch; gap: var(--space-2); padding: var(--space-3) var(--space-3) 0; border: 0; border-radius: 0; background: transparent; color: var(--text-primary); text-align: left; }
-/* 启停动作独占卡片底行、右对齐：不占据标题行，避免与状态徽章并排拥挤 */
-.plugin-card-actions { display: flex; justify-content: flex-end; padding: 0 var(--space-3) var(--space-2); }
-.plugin-detail-actions { display: flex; align-items: center; gap: var(--space-2); }
+.plugin-card { display: grid; width: 100%; justify-content: stretch; justify-items: stretch; gap: var(--space-2); padding: var(--space-3); border: 0; border-radius: var(--radius-control); background: transparent; color: var(--text-primary); text-align: left; }
+.plugin-card:hover { background: var(--surface-subtle); }
+.plugin-card.is-selected { color: var(--text-primary); background: var(--surface-selected); box-shadow: none; }
 .plugin-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); }
 .plugin-card-heading > span:first-child { display: grid; gap: 1px; min-width: 0; }
 .plugin-card-heading strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
@@ -875,6 +895,10 @@
 @media (max-width: 1100px) {
   .draft-step { grid-template-columns: 1fr; gap: var(--space-3); }
   .context-editor-view { grid-template-columns: minmax(260px, 4fr) minmax(380px, 7fr); }
+  .focus-shell:has(.file-panel) { grid-template-columns: minmax(0, 1fr) !important; }
+  .focus-shell:has(.file-panel) > .focus-view { display: none; }
+  .focus-shell:has(.file-panel) > .file-panel { grid-column: 1; border-left: 0; }
+  .focus-shell:has(.file-panel) .panel-resizer { display: none; }
 }
 
 @media (max-width: 900px) {

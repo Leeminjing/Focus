@@ -1,15 +1,17 @@
-"""本文件对外提供消息列表的 token 用量估算，作为压缩触发判定与上下文窗口校验的唯一口径来源。
+"""本文件对外提供最终模型请求的 token 用量估算，作为压缩门与窗口预检的唯一口径。
 
 对外提供:
     estimate_raw_tokens — 纯文本启发式：CJK 记 1、其余非空白字符除 4、每条消息加 12
     estimate_image_tokens — 单张图片按像素尺寸折算的 token 数
     estimate_images_tokens — 消息列表里全部图片的折算 token 数
     estimate_messages_tokens — 消息列表整体 token 数（文本口径 + 图片口径）
+    estimate_model_request_tokens — 合并消息与 run 级 request-only 图片预算并按材料身份去重
 
 输入:
     raw: str — 已拼接的原始文本；message_count: int — 消息条数
     width: int / height: int — 图片像素宽高
     messages: list[Any] — dict 或 langchain BaseMessage 的消息列表
+    request_images: iterable — 含 material_id/model_tokens 的 RunImageInput 或映射
 
 输出:
     int — 估算的 token 数，仅用于触发压缩与界面展示，不追求与具体 provider 精确一致
@@ -19,14 +21,15 @@
     (2) 图片口径委托 focus.images.measure_image_tokens（像素维度折算，与编码字节数无关）
     (3) 内联载荷本身不计入文本口径：编码体积与等长文本的用量必须可区分
     (4) 载荷缺失、无法解析或尺寸非正时按文档化的名义尺寸折算，保证图片永不被计为零
+    (5) request-only 图片按 material_id 与消息中带身份的图片块去重，再累加其送模 token
 
 示例:
-    estimate_messages_tokens(state["messages"])
+    estimate_model_request_tokens(state["messages"], run_images.attached)
     estimate_image_tokens(3840, 2160) → 长边归一至送模上限后按 patch 网格折算
 """
 
 import base64
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 from focus.images import image_dimensions, measure_image_tokens
 from focus.messages.blocks import content_text, image_blocks, image_inline_payload
@@ -62,6 +65,31 @@ def estimate_images_tokens(messages: list[Any]) -> int:
 def estimate_messages_tokens(messages: list[Any]) -> int:
     raw = "\n".join(content_text(message) for message in messages)
     return estimate_raw_tokens(raw, len(messages)) + estimate_images_tokens(messages)
+
+
+def estimate_model_request_tokens(
+    messages: list[Any], request_images: Iterable[Any] = ()
+) -> int:
+    identities = {
+        str(block.get("material_id"))
+        for message in messages
+        for block in image_blocks(message)
+        if isinstance(block, dict) and block.get("material_id")
+    }
+    extra = 0
+    for image in request_images:
+        material_id = _image_field(image, "material_id")
+        if not material_id or material_id in identities:
+            continue
+        identities.add(material_id)
+        extra += max(0, int(_image_field(image, "model_tokens") or 0))
+    return estimate_messages_tokens(messages) + extra
+
+
+def _image_field(image: Any, name: str) -> Any:
+    if isinstance(image, Mapping):
+        return image.get(name)
+    return getattr(image, name, None)
 
 
 def _nominal_image_tokens() -> int:

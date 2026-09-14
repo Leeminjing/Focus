@@ -1,7 +1,7 @@
 """add swarm agent access mode column
 
 Revision ID: a1b2c3d4e5f6
-Revises: f7b8c9d0e1f2
+Revises: a8b9c0d1e2f3
 Create Date: 2026-09-14
 
 持久派生 Agent 的本地访问模式：spawn 时从父级安全上下文继承，wake 沿用（不放大）。
@@ -15,7 +15,7 @@ import sqlalchemy as sa
 
 
 revision: str = "a1b2c3d4e5f6"
-down_revision: Union[str, Sequence[str], None] = "f7b8c9d0e1f2"
+down_revision: Union[str, Sequence[str], None] = "a8b9c0d1e2f3"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

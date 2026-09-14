@@ -38,7 +38,6 @@ from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
 from focus.config import AppConfig, get_app_config
-from focus.models.capabilities import main_model_text_only
 from focus.security import (
     AccessDecision,
     AccessOperation,
@@ -48,7 +47,6 @@ from focus.security import (
     policy_from_context,
     restrictive_policy,
 )
-
 from focus.security.effects import ResolvedFsEffect, declare_all_effects, structured_fs
 from focus.security.governed import declare_governed_keys
 
@@ -85,8 +83,12 @@ def _render_pdf_page_cached(
 
 
 def _main_model_text_only(app_config: AppConfig | None = None) -> bool:
-    """兼容入口：判定已上移到核心 focus.models.capabilities.main_model_text_only。"""
-    return main_model_text_only(app_config)
+    try:
+        resolved = app_config or get_app_config("config.yaml")
+        model = resolved.get_model(resolved.resolve_default_model_name())
+    except Exception:
+        return True
+    return not model.supports_image_input
 
 
 def init_service(plugin_config: dict, registry: Any = None) -> "ObservationService":

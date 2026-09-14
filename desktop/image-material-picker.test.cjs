@@ -1,6 +1,7 @@
 /*
- * 本文件验证图片材料的「本轮必须看」判定与发送载荷组装。输入为材料 payload 与输入框文本，
- * 输出为可勾选性、勾选集对齐结果与 {message, mustViewIds} 载荷断言；工作流不访问网络或真实 DOM。
+ * 本文件验证旧图片引用兼容与新逐轮材料草稿纯函数。输入为任意材料、有序绑定、备注缓存和
+ * 图片必看集合；输出为旧引用可读、新载荷结构、取消再勾选备注恢复及子集不变量断言。
+ * 具体工作流独立加载两个无 DOM 模块并比较可序列化结果。示例：node --test image-material-picker.test.cjs。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -8,82 +9,43 @@ const vm = require("node:vm");
 
 const context = vm.createContext({});
 context.window = context;
-new vm.Script(
-  fs.readFileSync(require.resolve("./image-material-picker.js"), "utf8")
-).runInContext(context);
-const picker = context.imageMaterialPicker;
-
-// 跨 VM realm 的数组/对象原型不同，比较前先归一为宿主 realm 的普通值
+for (const file of ["./image-material-picker.js", "./run-material-picker.js"]) {
+  new vm.Script(fs.readFileSync(require.resolve(file), "utf8")).runInContext(context);
+}
+const legacy = context.imageMaterialPicker;
+const picker = context.runMaterialPicker;
 const plain = value => JSON.parse(JSON.stringify(value));
+const image = (id, size = 1024) => ({ material_id: id, relative_path: `${id}.png`, is_image: true, size_bytes: size });
+const text = id => ({ material_id: id, relative_path: `${id}.md`, is_image: false, size_bytes: 10 });
+const materials = [image("m1"), text("m2"), image("empty", 0)];
 
-const imageMaterial = (id, size = 1024) => ({
-  material_id: id,
-  relative_path: `.focus/attachments/${id}.png`,
-  is_image: true,
-  size_bytes: size,
-});
-const textMaterial = id => ({
-  material_id: id,
-  relative_path: `notes-${id}.md`,
-  is_image: false,
-  size_bytes: 2048,
-});
+assert.equal(legacy.formatMaterialRef(1, "m1"), "【图片1 material_id=m1】");
+assert.deepEqual(plain(legacy.materialRefIds("a【图片1 material_id=m1】【图片2 material_id=m1】")), ["m1"]);
+assert.equal(legacy.stripMaterialRefs("a【图片1 material_id=m1】"), "a");
 
-// 引用标记与后端 focus/messages/material_refs.py 必须同形
-assert.equal(picker.formatMaterialRef(1, "ab12"), "【图片1 material_id=ab12】");
-assert.deepEqual(
-  plain(picker.materialRefIds("看这张【图片1 material_id=ab12】再看【图片2 material_id=cd34】")),
-  ["ab12", "cd34"]
-);
-assert.deepEqual(
-  plain(picker.materialRefIds("看这张【图片1 material_id=ab12】再看【图片2 material_id=ab12】")),
-  ["ab12"]
-);
-assert.equal(picker.stripMaterialRefs("看这张【图片1 material_id=ab12】"), "看这张");
-
-// 只有非空图片材料可勾选
-assert.equal(picker.canMustView(imageMaterial("m1")), true);
-assert.equal(picker.canMustView(imageMaterial("m2", 0)), false);
-assert.equal(picker.canMustView(textMaterial("m3")), false);
-assert.equal(picker.canMustView(null), false);
-assert.match(picker.mustViewBlockReason(textMaterial("m3")), /只适用于图片材料/);
-assert.match(picker.mustViewBlockReason(imageMaterial("m2", 0)), /内容为空/);
-
-// 勾选集与最新材料列表对齐：被删除或置空的材料自动失效
-assert.deepEqual(
-  plain(
-    picker.syncMustView(
-      ["m1", "m2", "m3"],
-      [imageMaterial("m1"), imageMaterial("m2", 0), textMaterial("m3")]
-    )
-  ),
-  ["m1"]
-);
-assert.deepEqual(plain(picker.syncMustView(["m9"], [imageMaterial("m1")])), []);
-assert.deepEqual(plain(picker.syncMustView(undefined, [imageMaterial("m1")])), []);
-
-// 未勾选时不产生引用标记，也不带必需清单
-assert.deepEqual(plain(picker.buildOutgoing([textMaterial("m3")], "帮我看看")), {
-  message: "帮我看看",
-  mustViewIds: [],
-});
-assert.deepEqual(plain(picker.buildOutgoing([], "帮我看看")), {
-  message: "帮我看看",
-  mustViewIds: [],
+let selection = picker.empty();
+selection = picker.toggleMaterial(selection, "m2");
+selection = picker.setNote(selection, "m2", "只看第三章\n保留原文 <tag>");
+selection = picker.toggleMaterial(selection, "m1");
+selection = picker.toggleRequired(selection, "m1", materials);
+assert.deepEqual(plain(picker.buildOutgoing(materials, "比较", selection)), {
+  message: "比较",
+  materialInputs: [
+    { material_id: "m2", note: "只看第三章\n保留原文 <tag>" },
+    { material_id: "m1", note: "" },
+  ],
+  requiredImageIds: ["m1"],
 });
 
-// 勾选后引用标记追加到文本尾部，必需清单与标记一一对应
-assert.deepEqual(plain(picker.buildOutgoing([imageMaterial("m1"), imageMaterial("m2")], "看这两张")), {
-  message: "看这两张\n【图片1 material_id=m1】【图片2 material_id=m2】",
-  mustViewIds: ["m1", "m2"],
-});
-assert.deepEqual(plain(picker.buildOutgoing([imageMaterial("m1")], "")), {
-  message: "【图片1 material_id=m1】",
-  mustViewIds: ["m1"],
-});
+selection = picker.toggleMaterial(selection, "m2");
+selection = picker.toggleMaterial(selection, "m2");
+assert.equal(selection.bindings.at(-1).note, "只看第三章\n保留原文 <tag>");
+assert.deepEqual(plain(picker.toggleRequired(selection, "m2", materials).requiredImageIds), ["m1"]);
+assert.deepEqual(plain(picker.toggleRequired(selection, "empty", materials).requiredImageIds), ["m1"]);
 
-// 组装出的载荷可被自身回读
-const outgoing = plain(picker.buildOutgoing([imageMaterial("m1"), imageMaterial("m2")], "看这两张"));
-assert.deepEqual(plain(picker.materialRefIds(outgoing.message)), outgoing.mustViewIds);
+const normalized = picker.normalizeSelection(selection, [image("m1")]);
+assert.deepEqual(plain(normalized.bindings.map(item => item.materialId)), ["m1"]);
+assert.deepEqual(plain(normalized.requiredImageIds), ["m1"]);
+assert.equal(Object.hasOwn(normalized.notes, "m2"), false);
 
-console.log("image-material-picker: all assertions passed");
+console.log("run-material-picker: all assertions passed");

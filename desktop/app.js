@@ -1,14 +1,10 @@
 /*
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
- * preload 运行时信息和用户操作，输出为持久导航、会话区、会话页文件预览列、派生上下文检查器、
- * 常驻会话 Patrol 小兵，以及对话/Context/Agent/Commitment/压缩/插件等视图；
- * 工作流在任务列表替换时统一归一化活动 Context，并通过单一异步事件边界更新宿主挂载点及保留
- * 任务级草稿、滚动、化身位置、预览列标签页与运行状态。
- *
- * 文件预览列的职责边界：占位由 syncFilePreviewVisibility 随视图派生（在 render 的所有分支之前）；
- * 正文按文件缓存于 contentByFile；已登记材料经材料标识入口取内容，未登记与工作区之外的文件经
- * 主进程 focus:resolve-preview-path 放行后由渲染器取字节并解码——文本解码必须在渲染器完成，
- * 因为主进程所用的 Node TextDecoder 不支持 gb18030，而浏览器支持。
+ * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
+ * 对话/Context/Agent/Commitment/压缩/插件等视图；逐轮材料以有序 binding 草稿和独立图片必看
+ * 集合表达，自定义分组是服务端事实，分组模式与折叠是任务 UI 偏好。工作流在任务切换时加载
+ * 材料、历史和分组，用纯函数规范化选择/分组，再通过单一异步事件边界更新 DOM 和运行状态。
+ * 示例：renderFocus(activeTask()); await sendMain()。
  */
 "use strict";
 
@@ -37,6 +33,15 @@ const runtime = window.focusDesktop?.runtime?.() || {
   apiBase: location.protocol === "file:" ? "http://127.0.0.1:8765" : location.origin,
   session: "focus-dev-session",
 };
+const materialContentLoader = window.MaterialContentLoader
+  ? new window.MaterialContentLoader(runtime)
+  : {
+      bindAll: async () => {},
+      load: async () => { throw new Error("材料内容加载器不可用"); },
+      releaseMaterial() {},
+      releaseTask() {},
+      releaseAll() {},
+    };
 
 const MAP_VIEW_PREFERENCES_KEY = "focus-map-view-v1";
 
@@ -60,12 +65,10 @@ const mapViewPreferences = readMapViewPreferences();
    自定义属性，JS 只写入内联值；media query 只改其样式表默认值，因此用户偏好总是胜过断点。 */
 const SHELL_LAYOUT_KEY = "focus-shell-layout";
 
-// 壳层四栏拖拽边界：与 tokens.css 的 min/max 一致；导航可折叠到 0（collapse）即最小值 0。
+// 壳层三栏拖拽边界：与 tokens.css 的 min/max 一致；导航可折叠到 0（collapse）即最小值 0。
 const SHELL_LAYOUT_BOUNDS = Object.freeze({
   navMin: 0,
   navMax: 288,
-  previewMin: 280,
-  previewMax: 720,
   inspectorMin: 240,
   inspectorMax: 480,
   workspaceMin: 320,
@@ -77,9 +80,6 @@ const ZOOM_LEVEL_KEY = "focus-zoom-level";
 const ZOOM_LEVEL_MIN = -3;
 const ZOOM_LEVEL_MAX = 5;
 
-// 文件预览模块在 state 之前取值：state 的初始化需要它来建立标签页集合。
-const filePreview = window.focusFilePreview;
-
 const state = {
   view: "focus",
   tasks: [],
@@ -87,7 +87,9 @@ const state = {
   details: new Map(),
   drafts: new Map(),
   materials: new Map(),
-  mustView: new Map(),
+  materialSelections: new Map(),
+  materialGroups: new Map(),
+  materialHistory: new Map(),
   agents: new Map(),
   skillCatalogs: new Map(),
   contextTrees: new Map(),
@@ -147,13 +149,8 @@ const state = {
   plugins: { plugins: [], interfaces: {}, traces: [], filter: "all", selectedName: null },
   memory: { memories: [], selectedId: null, composing: false, draft: null, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], textSelection: "", textMessageId: null, textRange: null, editorRatio: 0.5, sourceRatio: 0.5, contentMode: "complete", segments: [], expandedGroups: [], mergeMode: false, selectedSourcesForMerge: [], sessionScrollTop: 0 },
   inspector: { open: window.innerWidth > 1100, tab: "context", returnFocus: null },
-  // 文件预览列：shelf 是标签页集合，contentByFile 按文件缓存已取得的内容，
-  // 使标签页之间来回切换不重复请求；objectUrls 统一持有并回收 Blob 地址。
-  filePreview: {
-    shelf: filePreview.createShelf(),
-    contentByFile: new Map(),
-    objectUrls: filePreview.createObjectUrls(URL),
-  },
+  filesPanel: null,   // f18:右侧文件面板当前打开的 material(relative_path 等)
+  panelWidth: normalizePanelWidth(localStorage.getItem("focus-panel-width") || 400),
   shellLayout: normalizeShellLayout(readShellLayout(), window.innerWidth),
   zoomLevel: normalizeZoomLevel(localStorage.getItem(ZOOM_LEVEL_KEY)),
 };
@@ -167,9 +164,6 @@ const shellTaskTitle = document.querySelector("#shellTaskTitle");
 const shellTaskMeta = document.querySelector("#shellTaskMeta");
 const dialog = document.querySelector("#taskDialog");
 const settingsDialog = document.querySelector("#settingsDialog");
-const filePreviewColumn = document.querySelector("#filePreview");
-const filePreviewTabs = document.querySelector("#filePreviewTabs");
-const filePreviewBody = document.querySelector("#filePreviewBody");
 const skillPicker = window.FocusSkillPicker;
 const contextEditor = window.FocusContextEditor;
 const compressionPanel = window.FocusCompressionPanel;
@@ -181,6 +175,8 @@ const conversationReconciler = window.FocusConversationReconciler;
 const patrolPresence = window.FocusPatrolPresence;
 const contextCuratorPresentation = window.FocusContextCuratorPresentation;
 const patrolAvatar = window.FocusPatrolAvatar;
+const runMaterialPicker = window.runMaterialPicker;
+const materialGrouping = window.materialGrouping;
 const accessApproval = window.FocusAccessApproval;
 interfaceI18n.apply(document);
 // f18 插件视图宿主:插件前端脚本加载后经此注册视图与材料打开器
@@ -196,17 +192,28 @@ let compressionRequestSequence = 0;
 let draftOpenRequestSequence = 0;
 let pluginHydrationSequence = 0;
 let pluginViewRequestSequence = 0;
-let filePreviewLoadSequence = 0;
 let memoryViewRequestSequence = 0;
 let memoryHydrationSequence = 0;
 let contextTreeRequestSequence = 0;
 let panelResizeFrame = null;
 let patrolAvatarController = null;
+const pluginStyleAssets = new Set();
+const pluginScriptAssets = new Map();
+
+function normalizePanelWidth(value, viewportWidth = window.innerWidth) {
+  const viewport = Number.isFinite(Number(viewportWidth)) && Number(viewportWidth) > 0
+    ? Number(viewportWidth)
+    : 1200;
+  const navigationWidth = viewport <= 1100 ? 72 : 188;
+  const workspaceWidth = Math.max(600, viewport - navigationWidth);
+  const maximum = Math.max(280, Math.min(720, workspaceWidth - 360));
+  const numeric = Number(value);
+  return Math.round(Math.min(maximum, Math.max(280, Number.isFinite(numeric) ? numeric : 400)));
+}
 
 function shellLayoutDefaults() {
   return {
     navWidth: 172,
-    previewWidth: clamp(window.innerWidth * 0.26, SHELL_LAYOUT_BOUNDS.previewMin, SHELL_LAYOUT_BOUNDS.previewMax),
     inspectorWidth: Math.round(Math.min(SHELL_LAYOUT_BOUNDS.inspectorMax, Math.max(SHELL_LAYOUT_BOUNDS.inspectorMin, window.innerWidth * 0.22))),
     navCollapsed: false,
     // 用户是否手动拖拽/折叠过；未定制时壳层完全由 CSS 断点默认驱动，不写内联宽度。
@@ -219,11 +226,9 @@ function readShellLayout() {
     const raw = localStorage.getItem(SHELL_LAYOUT_KEY);
     if (!raw) return shellLayoutDefaults();
     const parsed = JSON.parse(raw);
-    const defaults = shellLayoutDefaults();
     return {
-      navWidth: Number.isFinite(Number(parsed.navWidth)) ? Number(parsed.navWidth) : defaults.navWidth,
-      previewWidth: Number.isFinite(Number(parsed.previewWidth)) ? Number(parsed.previewWidth) : defaults.previewWidth,
-      inspectorWidth: Number.isFinite(Number(parsed.inspectorWidth)) ? Number(parsed.inspectorWidth) : defaults.inspectorWidth,
+      navWidth: Number.isFinite(Number(parsed.navWidth)) ? Number(parsed.navWidth) : shellLayoutDefaults().navWidth,
+      inspectorWidth: Number.isFinite(Number(parsed.inspectorWidth)) ? Number(parsed.inspectorWidth) : shellLayoutDefaults().inspectorWidth,
       navCollapsed: Boolean(parsed.navCollapsed),
       customized: true,
     };
@@ -232,55 +237,29 @@ function readShellLayout() {
   }
 }
 
-// 钳制四栏宽度：保证每栏在各自边界内，且四栏始终能容纳工作区保底宽度。
+// 钳制三栏宽度：保证每栏在各自边界内，且三栏始终能容纳工作区保底宽度。
 function normalizeShellLayout(layout, viewportWidth = window.innerWidth) {
   const bounds = SHELL_LAYOUT_BOUNDS;
   const width = Number.isFinite(Number(viewportWidth)) && Number(viewportWidth) > 0 ? Number(viewportWidth) : 1200;
   const navCollapsed = Boolean(layout?.navCollapsed);
-  const sideMin = { navWidth: navCollapsed ? 0 : bounds.navMin, previewWidth: bounds.previewMin, inspectorWidth: bounds.inspectorMin };
-  const sideMax = { navWidth: bounds.navMax, previewWidth: bounds.previewMax, inspectorWidth: bounds.inspectorMax };
-  const sides = {
-    navWidth: Number.isFinite(Number(layout?.navWidth)) ? Number(layout.navWidth) : bounds.navMin,
-    previewWidth: Number.isFinite(Number(layout?.previewWidth)) ? Number(layout.previewWidth) : bounds.previewMin,
-    inspectorWidth: Number.isFinite(Number(layout?.inspectorWidth)) ? Number(layout.inspectorWidth) : bounds.inspectorMin,
-  };
-  for (const key of Object.keys(sides)) sides[key] = clamp(sides[key], sideMin[key], sideMax[key]);
-  // 侧栏可占用的上限：先扣掉工作区保底，再以三栏设计最大值之和封顶；视口极窄时上限随之为零。
-  const sideBudget = Math.max(0, Math.min(
-    width - bounds.workspaceMin,
-    bounds.navMax + bounds.previewMax + bounds.inspectorMax
-  ));
-  return {
-    ...settleSideWidths(sides, sideMin, sideBudget),
-    navCollapsed,
-    customized: Boolean(layout?.customized),
-  };
-}
-
-// 三块侧栏（导航/预览/检查器）共享上限：先按比例缩放，再按序回收超出的部分。
-// 全部触底仍超出时（视口极窄，四栏本就放不下）继续按最小宽度回收，绝不产生负的工作区宽度。
-function settleSideWidths(sides, min, budget) {
-  const keys = Object.keys(sides);
-  const total = keys.reduce((sum, key) => sum + sides[key], 0);
-  if (total > budget) {
-    const scale = budget / total;
-    for (const key of keys) sides[key] = clamp(sides[key] * scale, min[key], sides[key]);
+  let navWidth = Number.isFinite(Number(layout?.navWidth)) ? Number(layout.navWidth) : bounds.navMin;
+  let inspectorWidth = Number.isFinite(Number(layout?.inspectorWidth)) ? Number(layout.inspectorWidth) : bounds.inspectorMin;
+  navWidth = clamp(navWidth, navCollapsed ? 0 : bounds.navMin, bounds.navMax);
+  inspectorWidth = clamp(inspectorWidth, bounds.inspectorMin, bounds.inspectorMax);
+  // 三栏总和不能超出可用宽度，为工作区保留最小宽度；超出时优先挤压左、右栏。
+  const maxSides = Math.max(bounds.navMax + bounds.inspectorMax - 1, width - bounds.workspaceMin);
+  if (navWidth + inspectorWidth > maxSides) {
+    const scale = maxSides / (navWidth + inspectorWidth);
+    navWidth = Math.round(clamp(navWidth * scale, navCollapsed ? 0 : bounds.navMin, bounds.navMax));
+    inspectorWidth = Math.round(clamp(inspectorWidth * scale, bounds.inspectorMin, bounds.inspectorMax));
+    // 二次钳制：缩放到边界后若仍超出，回退到收缩侧的最小各自值。
+    if (navWidth + inspectorWidth > maxSides) {
+      const overflow = navWidth + inspectorWidth - maxSides;
+      if (navCollapsed) inspectorWidth -= overflow;
+      else inspectorWidth = Math.max(bounds.inspectorMin, inspectorWidth - overflow);
+    }
   }
-  let overflow = keys.reduce((sum, key) => sum + sides[key], 0) - budget;
-  for (const key of ["inspectorWidth", "previewWidth", "navWidth"]) {
-    if (overflow <= 0) break;
-    const taken = Math.min(overflow, sides[key] - min[key]);
-    sides[key] -= taken;
-    overflow -= taken;
-  }
-  // 触底后仍超出：工作区保底优先于各栏最小宽度，继续从后往前回收。
-  for (const key of ["inspectorWidth", "previewWidth", "navWidth"]) {
-    if (overflow <= 0) break;
-    const taken = Math.min(overflow, sides[key]);
-    sides[key] -= taken;
-    overflow -= taken;
-  }
-  return Object.fromEntries(keys.map(key => [key, Math.round(sides[key])]));
+  return { navWidth: Math.round(navWidth), inspectorWidth: Math.round(inspectorWidth), navCollapsed, customized: Boolean(layout?.customized) };
 }
 
 function clamp(value, min, max) {
@@ -295,7 +274,6 @@ function applyShellLayout(layout) {
   if (layout.customized) {
     const navWidth = layout.navCollapsed ? 0 : layout.navWidth;
     shell.style.setProperty("--shell-nav-width", `${navWidth}px`);
-    shell.style.setProperty("--preview-width", `${layout.previewWidth}px`);
     shell.style.setProperty("--inspector-width", `${layout.inspectorWidth}px`);
   }
   shell.classList?.toggle("is-nav-collapsed", layout.navCollapsed);
@@ -309,16 +287,13 @@ function persistShellLayout() {
   } catch { /* 只读存储忽略 */ }
 }
 
-// 同步三个 resizer 手柄的可见性：导航折叠到 0 时隐藏导航侧手柄；
-// 检查器隐藏时隐藏检查器侧手柄；预览列隐藏时隐藏预览手柄（样式表也已用媒体查询覆盖窄屏）。
+// 同步两个 resizer 手柄的可见性：导航折叠到 0 时隐藏导航侧手柄；
+// 检查器隐藏或窄屏覆盖态时隐藏检查器侧手柄（样式表也已用媒体查询覆盖窄屏）。
 function syncShellResizerVisibility() {
   const shell = document.querySelector(".app-shell");
   if (!shell?.querySelector) return;
   const navResizer = shell.querySelector(".shell-resizer-nav");
   if (navResizer?.setAttribute) navResizer.setAttribute("aria-hidden", String(state.shellLayout.navCollapsed));
-  const previewResizer = shell.querySelector(".shell-resizer-preview");
-  const previewOpen = state.view === "focus" && !state.filePreview.shelf.isEmpty();
-  if (previewResizer?.setAttribute) previewResizer.setAttribute("aria-hidden", String(!previewOpen));
   const inspectorResizer = shell.querySelector(".shell-resizer-inspector");
   if (inspectorResizer?.setAttribute) inspectorResizer.setAttribute("aria-hidden", String(!state.inspector.open));
 }
@@ -341,61 +316,54 @@ function setShellNavCollapsed(navCollapsed) {
   persistShellLayout();
 }
 
-// 分隔条与它调宽的那一栏：该栏在相邻栏的哪一侧，决定拖拽位移的正负。
-const SHELL_RESIZERS = Object.freeze([
-  { selector: ".shell-resizer-nav", target: "navWidth", direction: 1, bounds: "nav" },
-  { selector: ".shell-resizer-preview", target: "previewWidth", direction: -1, bounds: "preview" },
-  { selector: ".shell-resizer-inspector", target: "inspectorWidth", direction: -1, bounds: "inspector" },
-]);
-
-// 给三个 resizer 手柄绑定指针拖拽：把相邻栏宽度写回 .app-shell 内联自定义属性。
+// 给两个 resizer 手柄绑定指针拖拽：把相邻栏宽度写回 .app-shell 内联自定义属性。
 function bindShellResizers() {
   const shell = document.querySelector(".app-shell");
   if (!shell?.querySelector) return;
-  for (const spec of SHELL_RESIZERS) {
-    const node = shell.querySelector(spec.selector);
+  const resizers = [
+    { node: shell.querySelector(".shell-resizer-nav"), target: "nav" },
+    { node: shell.querySelector(".shell-resizer-inspector"), target: "inspector" },
+  ];
+  for (const { node, target } of resizers) {
     if (!node || node.dataset.shellResizerBound) continue;
     node.dataset.shellResizerBound = "true";
-    bindShellResizer(node, shell, spec);
-  }
-}
-
-function bindShellResizer(node, shell, spec) {
-  const min = SHELL_LAYOUT_BOUNDS[`${spec.bounds}Min`];
-  const max = SHELL_LAYOUT_BOUNDS[`${spec.bounds}Max`];
-  let frame = null;
-  node.addEventListener("pointerdown", event => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    node.setPointerCapture?.(event.pointerId);
-    const startX = event.clientX;
-    const startWidth = clamp(state.shellLayout[spec.target], min, max);
-    const move = moveEvent => {
-      if (frame != null) cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
+    let frame = null;
+    node.addEventListener("pointerdown", event => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      node.setPointerCapture?.(event.pointerId);
+      const startX = event.clientX;
+      const startNav = state.shellLayout.navWidth;
+      const startInspector = state.shellLayout.inspectorWidth;
+      const move = moveEvent => {
+        if (frame != null) cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(() => {
+          frame = null;
+          const delta = moveEvent.clientX - startX;
+          const draft = { ...state.shellLayout, navCollapsed: false, customized: true };
+          // 导航↔工作区：向右拖(+)放大导航；工作区↔检查器：向左拖(-)放大检查器。
+          if (target === "nav") draft.navWidth = startNav + delta;
+          else draft.inspectorWidth = startInspector - delta;
+          state.shellLayout = normalizeShellLayout(draft, shell.clientWidth || window.innerWidth);
+          applyShellLayout(state.shellLayout);
+        });
+      };
+      const finish = () => {
+        if (frame != null) cancelAnimationFrame(frame);
         frame = null;
-        const draft = { ...state.shellLayout, navCollapsed: false, customized: true };
-        // 先按边界钳制再交给整体钳制：拖到边界处手柄停住，且四栏合计仍为工作区保底。
-        draft[spec.target] = clamp(startWidth + spec.direction * (moveEvent.clientX - startX), min, max);
-        state.shellLayout = normalizeShellLayout(draft, shell.clientWidth || window.innerWidth);
-        applyShellLayout(state.shellLayout);
-      });
-    };
-    const finish = () => {
-      if (frame != null) cancelAnimationFrame(frame);
-      frame = null;
-      try { node.releasePointerCapture?.(event.pointerId); } catch { /* ignore */ }
-      node.removeEventListener("pointermove", move);
-      node.removeEventListener("pointerup", finish);
-      node.removeEventListener("pointercancel", finish);
-      node.removeEventListener("lostpointercapture", finish);
-      persistShellLayout();
-    };
-    node.addEventListener("pointermove", move);
-    node.addEventListener("pointerup", finish);
-    node.addEventListener("pointercancel", finish);
-    node.addEventListener("lostpointercapture", finish);
-  });
+        try { node.releasePointerCapture?.(event.pointerId); } catch { /* ignore */ }
+        node.removeEventListener("pointermove", move);
+        node.removeEventListener("pointerup", finish);
+        node.removeEventListener("pointercancel", finish);
+        node.removeEventListener("lostpointercapture", finish);
+        persistShellLayout();
+      };
+      node.addEventListener("pointermove", move);
+      node.addEventListener("pointerup", finish);
+      node.addEventListener("pointercancel", finish);
+      node.addEventListener("lostpointercapture", finish);
+    });
+  }
 }
 
 // 恢复路径：缺失/非法/超出边界一律回落 100%（级别 0），避免脏数据破坏界面。
@@ -479,105 +447,22 @@ async function api(path, options = {}) {
   return response.json();
 }
 
-// === 插件前端资源宿主：可安装，也可就地卸载 ===
-
-// 卸载是可逆的：脚本已执行留下的模块级全局无法撤回，但插件对宿主的全部接入点
-// （视图注册表条目、<script>/<link> 节点）都能精确移除，因此无需重载整页。
-function createPluginAssetHost(headDocument, registry) {
-  const pluginRecords = new Map();
-  const scriptLoads = new Map();
-
-  function cssHref(pluginName, file) {
-    return `/plugins/${encodeURIComponent(pluginName)}/desktop/${encodeURIComponent(file)}`;
-  }
-
-  function scriptSrc(pluginName, file) {
-    return `/plugins/${encodeURIComponent(pluginName)}/desktop/${encodeURIComponent(file)}`;
-  }
-
-  // 脚本按 src 记忆化：同一 src 只执行一次。卸载时删除条目，使重新启用能真正重新执行。
-  function loadScript(src) {
-    if (scriptLoads.has(src)) return scriptLoads.get(src);
-    const loading = new Promise(resolve => {
-      const script = headDocument.createElement("script");
-      script.src = src;
-      script.onload = resolve;
-      script.onerror = () => {
-        scriptLoads.delete(src);
-        script.remove();
-        console.error("插件脚本加载失败:", src);
-        resolve();
-      };
-      headDocument.head.append(script);
-    });
-    scriptLoads.set(src, loading);
-    return loading;
-  }
-
-  async function install(plugin) {
-    if (pluginRecords.has(plugin.name)) return;
-    const record = { styles: [], scripts: [], views: [] };
-    pluginRecords.set(plugin.name, record);
-    const files = plugin.desktop_assets || [];
-    // 样式先于脚本：视图渲染时其规则已就位，避免先渲染后跳版
-    for (const file of files.filter(name => name.endsWith(".css"))) {
-      const link = headDocument.createElement("link");
-      link.rel = "stylesheet";
-      link.href = cssHref(plugin.name, file);
-      link.onerror = () => {
-        link.remove();
-        record.styles = record.styles.filter(node => node !== link);
-        console.error("插件样式加载失败:", link.href);
-      };
-      headDocument.head.append(link);
-      record.styles.push(link);
-    }
-    const jsFiles = files
-      .filter(name => name.endsWith(".js"))
-      .sort((a, b) => (a === "entry.js") - (b === "entry.js"));
-    for (const file of jsFiles) {
-      const before = new Set(Object.keys(registry));
-      await loadScript(scriptSrc(plugin.name, file));
-      // 该脚本新增的视图条目即本插件所注册，卸载时按此精确移除
-      for (const name of Object.keys(registry)) {
-        if (!before.has(name)) record.views.push(name);
-      }
-      record.scripts.push(scriptSrc(plugin.name, file));
-    }
-  }
-
-  function uninstall(pluginName) {
-    const record = pluginRecords.get(pluginName);
-    if (!record) return;
-    for (const link of record.styles) link.remove();
-    for (const src of record.scripts) {
-      const script = headDocument.querySelector(`script[src="${src}"]`);
-      if (script) script.remove();
-      scriptLoads.delete(src);
-    }
-    for (const viewName of record.views) delete registry[viewName];
-    pluginRecords.delete(pluginName);
-  }
-
-  async function reconcile(plugins) {
-    const activeNames = plugins
-      .filter(plugin => plugin.status === "active")
-      .map(plugin => plugin.name);
-    for (const name of [...pluginRecords.keys()]) {
-      if (!activeNames.includes(name)) uninstall(name);
-    }
-    for (const plugin of plugins) {
-      if (plugin.status === "active") await install(plugin);
-    }
-  }
-
-  return { reconcile, uninstall, installed: () => [...pluginRecords.keys()] };
-}
-
-const pluginAssets = createPluginAssetHost(document, pluginViews);
-
-function applyPluginAssets(plugins) {
-  return pluginAssets.reconcile(plugins);
+function loadPluginScript(src) {
+  if (pluginScriptAssets.has(src)) return pluginScriptAssets.get(src);
+  const loading = new Promise(resolve => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.onload = resolve;
+    script.onerror = () => {
+      pluginScriptAssets.delete(src);
+      script.remove();
+      console.error("插件脚本加载失败:", src);
+      resolve();
+    };
+    document.head.append(script);
+  });
+  pluginScriptAssets.set(src, loading);
+  return loading;
 }
 
 function cancelPendingViewRequests() {
@@ -588,13 +473,35 @@ function cancelPendingViewRequests() {
 }
 
 async function hydratePluginAssets(bootstrapPlugins = null) {
-  // f18: 按启用插件清单对账前端资源(css 先于 js;entry.js 固定最后执行,
-  // 保证插件视图/打开器注册时其依赖模块已加载);失败不阻塞桌面。
-  // 与「只追加」不同，这里会卸载本轮不再生效的插件，因此启停无需重载页面。
+  // f18: 按启用插件清单注入前端资源(css 并行、js 串行;entry.js 固定最后执行,
+  // 保证插件视图/打开器注册时其依赖模块已加载);失败不阻塞桌面
   try {
     const data = bootstrapPlugins == null
       ? await api("/desktop/api/plugins") : { plugins: bootstrapPlugins };
-    await applyPluginAssets(data.plugins || []);
+    const active = (data.plugins || []).filter(plugin => plugin.status === "active");
+    for (const plugin of active) {
+      const files = plugin.desktop_assets || [];
+      for (const file of files.filter(name => name.endsWith(".css"))) {
+        const href = `/plugins/${encodeURIComponent(plugin.name)}/desktop/${encodeURIComponent(file)}`;
+        if (pluginStyleAssets.has(href)) continue;
+        pluginStyleAssets.add(href);
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = href;
+        link.onerror = () => {
+          pluginStyleAssets.delete(href);
+          link.remove();
+          console.error("插件样式加载失败:", link.href);
+        };
+        document.head.append(link);
+      }
+      const jsFiles = files
+        .filter(name => name.endsWith(".js"))
+        .sort((a, b) => (a === "entry.js") - (b === "entry.js"));
+      for (const file of jsFiles) {
+        await loadPluginScript(`/plugins/${encodeURIComponent(plugin.name)}/desktop/${encodeURIComponent(file)}`);
+      }
+    }
   } catch (error) {
     console.error("插件前端资源注入失败:", error);
     setStatus(`插件资源注入失败: ${error.message}`, true);
@@ -606,6 +513,18 @@ window.__focusBackToFocus = () => {
   state.view = "focus";
   render();
 };
+
+// f18: 文件面板关闭钩子(viewer 面板内关闭按钮调用)
+window.__focusCloseFilePanel = () => {
+  state.filesPanel = null;
+  render();
+};
+
+function pluginViewForMaterial(material) {
+  return Object.values(pluginViews).find(view =>
+    typeof view.supportsMaterial === "function" && view.supportsMaterial(material)
+  ) || null;
+}
 
 function currentSpatialTarget() {
   for (const view of Object.values(pluginViews)) {
@@ -712,16 +631,20 @@ async function bootstrap() {
 
 async function hydrateActive(taskId = state.activeTaskId) {
   if (!taskId) return;
-  const [detail, materials, agents, catalog] = await Promise.all([
+  const [detail, materials, agents, catalog, materialGroups, materialHistory] = await Promise.all([
     api(`/desktop/api/tasks/${taskId}`),
     api(`/desktop/api/tasks/${taskId}/materials`),
     api(`/desktop/api/tasks/${taskId}/agents`),
     api(`/desktop/api/tasks/${taskId}/skills`),
+    api(`/desktop/api/tasks/${taskId}/material-groups`),
+    api(`/desktop/api/tasks/${taskId}/material-history`),
   ]);
   state.details.set(taskId, detail);
   state.materials.set(taskId, materials);
   state.agents.set(taskId, agents);
   state.skillCatalogs.set(taskId, catalog.skills);
+  state.materialGroups.set(taskId, materialGroups);
+  state.materialHistory.set(taskId, materialHistory);
   if (state.activeTaskId === taskId) {
     reconcileCommitmentRecovery(detail);
     reconcileCompressionRecovery(detail);
@@ -739,9 +662,6 @@ async function hydrateActive(taskId = state.activeTaskId) {
 function render() {
   document.body.dataset.view = state.view;
   renderShellChrome();
-  // 预览列占位与视图同源派生：必须在这里发生，而不是在会话页分支内
-  syncFilePreviewVisibility();
-  // 全局空态只属于任务视图的兜底：全图没有活动 Context 时自行留白，不能被这里拦掉
   if (!state.tasks.length && state.view !== "map") {
     app.replaceChildren(document.querySelector("#emptyTemplate").content.cloneNode(true));
     interfaceI18n.apply(app);
@@ -771,6 +691,7 @@ function render() {
     else renderFocus(task);
   }
   interfaceI18n.apply(app);
+  materialContentLoader.bindAll(app);
 }
 
 function renderNoActiveTask() {
@@ -816,6 +737,29 @@ function presentRunStatus(status) {
   return { label: status && !RUN_STATUS_PRESENTATION[status] ? status : uiText(item.key, item.fallback), tone: item.tone };
 }
 
+function materialGroupingProjection(task) {
+  const detail = state.details.get(task.task_id) || {};
+  const mode = detail.ui_state?.material_grouping_mode === "type" ? "type" : "run";
+  const projection = materialGrouping.project(
+    state.materials.get(task.task_id) || [],
+    state.materialGroups.get(task.task_id) || [],
+    mode,
+    detail.ui_state?.collapsed_material_groups || [],
+    materialSelection(task.task_id)
+  );
+  detail.ui_state = { ...(detail.ui_state || {}), material_grouping_mode: mode, collapsed_material_groups: projection.collapsedKeys };
+  return { ...projection, mode };
+}
+
+function renderMaterialGroups(task) {
+  const projection = materialGroupingProjection(task);
+  const groups = projection.groups.map(group => `<section class="material-group" data-material-group-key="${escapeHtml(group.key)}">
+    <header class="material-group-header"><button class="text-button material-group-toggle" data-action="toggle-material-group" data-group-key="${escapeHtml(group.key)}" aria-expanded="${!group.collapsed}">${group.collapsed ? "▸" : "▾"} ${escapeHtml(group.label)}</button><span class="ui-badge">${group.materials.length}${group.selectedCount ? ` · 已选 ${group.selectedCount}` : ""}</span>${group.source === "custom" ? `<span class="material-group-actions"><button class="text-button" data-action="move-material-group-order" data-group-id="${escapeHtml(group.key.slice(7))}" data-direction="-1" title="上移">↑</button><button class="text-button" data-action="move-material-group-order" data-group-id="${escapeHtml(group.key.slice(7))}" data-direction="1" title="下移">↓</button><button class="text-button" data-action="rename-material-group" data-group-id="${escapeHtml(group.key.slice(7))}">改名</button><button class="text-button danger" data-action="delete-material-group" data-group-id="${escapeHtml(group.key.slice(7))}">删除</button></span>` : ""}</header>
+    <div class="material-group-body"${group.collapsed ? " hidden" : ""} data-drop-group-id="${group.source === "custom" ? escapeHtml(group.key.slice(7)) : ""}">${group.materials.map(renderMaterial).join("") || '<p class="muted tiny">空分组</p>'}</div>
+  </section>`).join("");
+  return `<div class="material-group-toolbar"><span class="segmented" role="group" aria-label="材料自动分组"><button data-action="set-material-grouping" data-mode="run" class="${projection.mode === "run" ? "active" : ""}">按 Run</button><button data-action="set-material-grouping" data-mode="type" class="${projection.mode === "type" ? "active" : ""}">按类型</button></span><button class="text-button" data-action="create-material-group">新建分组</button></div>${groups}`;
+}
+
 function renderInspector() {
   if (!appInspector?.setAttribute || !inspectorContent) return;
   appInspector.hidden = !state.inspector.open;
@@ -840,7 +784,7 @@ function renderInspector() {
   if (tab === "materials") {
     const materials = state.materials.get(task.task_id) || [];
     const protectedCount = materials.filter(item => item.retention === "irreplaceable").length;
-    inspectorContent.innerHTML = `<section class="inspector-section materials-inspector"><header><div><span class="workspace-kicker">TASK SOURCES</span><h3>任务材料</h3></div><span class="ui-badge">${materials.length}</span></header><p class="inspector-description">阅读策略、约束级别和版本保护只作用于当前任务。</p>${protectedCount ? `<div class="ui-notice is-success"><strong>${protectedCount} 份材料受版本保护</strong><span>不可遗失材料可置空或从历史版本恢复，但不会直接删除。</span></div>` : ""}<div class="inspector-list">${materials.length ? materials.map(renderMaterial).join("") : '<section class="ui-empty-state"><h1>暂无材料</h1><p>从 Composer 添加文件后，可在这里配置阅读和保留策略。</p></section>'}</div></section>`;
+    inspectorContent.innerHTML = `<section class="inspector-section materials-inspector"><header><div><span class="workspace-kicker">TASK SOURCES</span><h3>任务材料</h3></div><span class="ui-badge">${materials.length}</span></header><p class="inspector-description">每轮选择与长期策略互不覆盖；手动分组始终优先于自动分组。</p>${protectedCount ? `<div class="ui-notice is-success"><strong>${protectedCount} 份材料受版本保护</strong><span>不可遗失材料可置空或从历史版本恢复，但不会直接删除。</span></div>` : ""}<div class="inspector-list">${materials.length || (state.materialGroups.get(task.task_id) || []).length ? renderMaterialGroups(task) : '<section class="ui-empty-state"><h1>暂无材料</h1><p>从 Composer 添加文件后，可在这里配置阅读和保留策略。</p></section>'}</div></section>`;
     return;
   }
   if (tab === "agents") {
@@ -1026,12 +970,31 @@ function renderInterruptButton(detail) {
   return `<button class="text-button danger" data-action="interrupt-main-run" data-run-id="${run.run_id}"${state.mainInterrupting ? " disabled" : ""}>${uiText("focus.interrupt", "中断")}</button>`;
 }
 
+function renderRunMaterialNote(materialId) {
+  // 备注属于本轮材料绑定本身，只在此处渲染一次并由所属材料条目就近承载；未选材料返回空串，
+  // 取消勾选只隐藏输入框，备注草稿仍由 run-material-picker 按材料 ID 保留。
+  const binding = materialSelection().bindings.find(item => item.materialId === materialId);
+  if (!binding) return "";
+  return `<label class="run-material-note"><textarea data-field="run-material-note" rows="2" draggable="false" placeholder="给这份材料添加本轮备注，可留空">${escapeHtml(binding.note)}</textarea></label>`;
+}
+
+function renderMustViewRecovery(detail) {
+  const report = detail?.pending_must_view_report;
+  if (!report) return "";
+  const rows = (Array.isArray(report.materials) ? report.materials : []).map(item => {
+    const reason = item.reason === "unread" ? "模型声明未读到" : "模型缺少逐图表态";
+    return `<li><strong>${escapeHtml(item.relative_path || item.material_id)}</strong><span>${reason}</span></li>`;
+  }).join("");
+  return `<section class="review-panel must-view-report" aria-label="必看图片报告"><header><span class="review-kicker">必看图片</span><h3>需要人工处理</h3><span class="review-badge">已暂停</span></header><ul class="review-draft">${rows || "<li>必看图片报告不完整</li>"}</ul><div class="review-actions"><button class="primary" data-action="retry-must-view">重试</button><button class="text-button danger" data-action="cancel-must-view">取消本轮</button></div></section>`;
+}
+
 function composerFeedback(detail, projectionBlocked) {
   const error = state.composerErrors.get(state.activeTaskId);
   if (error) return { kind: "danger", text: `发送失败：${error}` };
   if (projectionBlocked) return { kind: "warning", text: "该 Context 需要完成执行投影决断后才能继续。" };
   if (activeTaskHasCommitmentLock()) return { kind: "warning", text: "当前任务正在等待 Commitment 审批，请先处理上方审批区。" };
   if (detail?.pending_compression) return { kind: "warning", text: "存在待确认的压缩计划，请先确认或取消。" };
+  if (detail?.pending_must_view_report) return { kind: "warning", text: "必看图片报告等待重试或取消。" };
   if (detail?.pending_access_review) return { kind: "warning", text: "存在待批准的本机资源访问请求，请先批准或拒绝。" };
   if (["pending", "running"].includes(detail?.active_run?.status)) return { kind: "active", text: "主 Agent 正在运行；你可以查看运行详情或中断。" };
   return { kind: "muted", text: uiText("focus.enter_hint", "Enter 发送 · Shift+Enter 换行") };
@@ -1106,9 +1069,11 @@ function renderFocus(task = activeTask()) {
   const previousRailScrollTop = previousRail?.scrollTop;
   const wasPinned = previousConversation && previousConversation.scrollHeight - previousConversation.scrollTop - previousConversation.clientHeight < 80;
   const previousScrollTop = previousConversation?.scrollTop;
-  // F20:任务记录只占主工作区；Context、材料和 Agents 迁入持久检查器。
-  // 文件预览列已上移到 .app-shell 层，不再参与会话区内部的两列网格。
-  const shellStyle = "grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr)";
+  // F20:任务记录只占主工作区；Context、材料和 Agents 迁入持久检查器，文件仍使用专用画布。
+  // 显式行高约束 minmax(0,1fr):面板高度=工作区,内部文本视图可以独立滚动。
+  const panelOpen = !!state.filesPanel;
+  if (panelOpen) state.panelWidth = normalizePanelWidth(state.panelWidth);
+  const shellStyle = `grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr)${panelOpen ? ` ${state.panelWidth}px` : ""}`;
   patrolAvatarController?.destroy();
   patrolAvatarController = null;
   app.innerHTML = `
@@ -1121,6 +1086,7 @@ function renderFocus(task = activeTask()) {
         </div>
         <div class="conversation" id="conversation">
           ${renderConversation(detail, task)}
+          ${renderMustViewRecovery(detail)}
         </div>
         <div class="patrol-avatar-layer" id="patrolAvatarLayer" aria-label="会话 Patrol 小兵"></div>
         <div class="focus-bottom">
@@ -1134,6 +1100,7 @@ function renderFocus(task = activeTask()) {
           </div>
         </div>
       </section>
+      ${panelOpen ? `<aside class="file-panel" id="filePanel"><div class="panel-resizer" id="panelResizer" title="拖拽调整面板宽度"></div><div class="file-panel-inner"></div></aside>` : ""}
     </section>`;
   app.dataset.taskId = task.task_id;
   const conversation = document.querySelector("#conversation");
@@ -1141,7 +1108,8 @@ function renderFocus(task = activeTask()) {
   restoreCommitmentPanels(conversation);
   restoreAccessReviewPanels(conversation);
   const commitmentBlocked = activeTaskHasCommitmentLock() || projectionBlocked
-    || !!detail.pending_compression || !!detail.pending_access_review;
+    || !!detail.pending_compression || !!detail.pending_must_view_report
+    || !!detail.pending_access_review;
   const mainInput = document.querySelector("#mainInput");
   const sendButton = document.querySelector('[data-action="send-main"]');
   if (mainInput) mainInput.disabled = commitmentBlocked;
@@ -1154,278 +1122,50 @@ function renderFocus(task = activeTask()) {
   if (previousRailScrollTop != null && rail) rail.scrollTop = previousRailScrollTop;
   if (!previousConversation) requestAnimationFrame(() => rail?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "nearest" }));
   mountPatrolAvatarLayer(task, detail);
-  renderFilePreview();
+  if (panelOpen) {
+    mountFilePanel();
+    bindPanelResizer();
+  }
   renderInspector();
 }
 
-// === 文件预览列：宿主自有能力，不依赖任何插件 ===
-
-// 预览项的文件身份：与 file-preview.js 的标签页身份同序（材料标识 → 相对路径 → 路径），
-// 因此缓存键、标签页去重与「谁是当前文件」三处判断用的是同一个身份。
-function previewKeyOf(item) {
-  if (!item) return "";
-  return String(item.material_id || item.relative_path || item.path || "");
+function mountFilePanel() {
+  const container = document.querySelector("#filePanel .file-panel-inner");
+  if (!container || !state.filesPanel) return;
+  const view = pluginViewForMaterial(state.filesPanel);
+  if (view?.mountPanel) view.mountPanel(container, state.filesPanel, state);
 }
 
-// 预览列的占位只由「当前视图 + 是否已打开文件」决定，因此在 render 的所有分支之前统一派生，
-// 不依赖会话页这条代码路径——否则切到其它视图后占位会停留在旧值。
-function syncFilePreviewVisibility() {
-  if (!filePreviewColumn) return false;
-  const open = state.view === "focus" && !state.filePreview.shelf.isEmpty();
-  filePreviewColumn.hidden = !open;
-  if (!open) {
-    // 列已不占位，正文不该继续留着上一个文件的内容
-    clearChildren(filePreviewTabs);
-    clearChildren(filePreviewBody);
-  }
-  syncShellResizerVisibility();
-  return open;
-}
-
-// 替换容器全部子节点；容器不存在或测试替身未实现该方法时安全跳过。
-function clearChildren(node) {
-  if (typeof node?.replaceChildren === "function") node.replaceChildren();
-}
-
-// 会话页内的预览列渲染：占位由 syncFilePreviewVisibility 决定，这里只负责标签页与正文。
-function renderFilePreview() {
-  if (!filePreviewColumn || !syncFilePreviewVisibility()) return;
-  filePreviewTabs.innerHTML = state.filePreview.shelf.list().map(renderFilePreviewTab).join("");
-  renderFilePreviewBody();
-}
-
-function renderFilePreviewTab(item) {
-  const key = previewKeyOf(item);
-  const isActive = previewKeyOf(state.filePreview.shelf.active()) === key;
-  const label = fileNameFromLinkHref("", item.relative_path || item.path || "");
-  return `<span class="file-preview-tab${isActive ? " is-active" : ""}">
-    <button type="button" class="file-preview-tab-label" role="tab" aria-selected="${isActive}" data-action="activate-file-preview" data-preview-key="${escapeHtml(key)}">${escapeHtml(label)}</button>
-    <button type="button" class="file-preview-tab-close" data-action="close-file-preview" data-preview-key="${escapeHtml(key)}" aria-label="关闭预览">×</button>
-  </span>`;
-}
-
-// 已登记材料：图片与 PDF 指向按材料标识的字节流接口，文本类按材料标识取正文。
-// 未登记文件：没有材料标识，改走按路径读取（见 readPathPreview）。
-function previewContentOf(item) {
-  if (!item.material_id) return null;
-  if (item.kind === "image" || item.kind === "pdf") {
-    return { kind: item.kind, url: materialContentUrl(item.material_id), alt: item.relative_path || "", item };
-  }
-  return null;
-}
-
-// 按绝对路径读取预览：字节与放行都由主进程完成，渲染器只负责解码与呈现。
-// 渲染器不能自行读本地文件——把裸绝对路径交给 fetch 不是可解析的 URL（表现为 Failed to fetch），
-// 而改用 file:// 会让页面获得 Electron 安全指南明确劝阻的本机文件特权；
-// 也不能经 HTTP：后端是绑定 loopback 的服务，加一条按路径读路由等于开放任意文件读接口。
-async function readPathPreview(item, sequence) {
-  const { bytes, path: resolvedPath, size } = await readPathBytes(item);
-  const named = { ...item, path: resolvedPath, size_bytes: size };
-  // 图片与 PDF 交给 Blob 地址；地址由宿主统一回收，避免持续占用内存
-  if (item.kind === "image" || item.kind === "pdf") {
-    const url = state.filePreview.objectUrls.urlFor(
-      previewKeyOf(item), bytes, filePreview.mediaTypeForName(item.relative_path || item.path || "")
-    );
-    return { kind: item.kind, url, alt: item.relative_path || "", item: named };
-  }
-  const { text, encoding } = filePreview.decodeText(bytes);
-  const view = { item: named, meta: { encoding } };
-  return item.kind === "markdown"
-    ? { ...view, kind: "markdown", html: renderAssistantContent(text) }
-    : { ...view, kind: "text", text };
-}
-
-// 经主进程读取按路径文件的字节；解析与读取失败都以主进程给出的原因抛出。
-async function readPathBytes(item) {
-  const bridge = window.focusDesktop;
-  if (typeof bridge?.readPreviewBytes !== "function") {
-    throw Object.assign(new Error("当前运行环境不支持按路径预览"), { status: 0 });
-  }
-  // 同时交出工作区根：只有相对路径时由主进程在工作区根下解析，越界仍被拒绝
-  const result = await bridge.readPreviewBytes(previewPathOf(item), activeTask()?.workspace_path || "");
-  if (!result?.ok) throw Object.assign(new Error(result?.reason || "无法读取该文件"), { status: 0 });
-  return { bytes: new Uint8Array(result.bytes), path: result.path, size: Number(result.size) || 0 };
-}
-
-// 预览项要交给主进程的路径：优先绝对路径（材料记录或链接解析得来），否则退回相对路径，
-// 由主进程结合工作区根解析。丢掉绝对路径正是此前「仅接受绝对路径」失败的根因。
-function previewPathOf(item) {
-  if (!item) return "";
-  return item.path || item.relative_path || "";
-}
-
-// 每次渲染起一个新的序号，晚到的旧请求据此丢弃，避免切换标签页后被过期内容覆盖。
-async function renderFilePreviewBody() {
-  const body = filePreviewBody;
-  const item = state.filePreview.shelf.active();
-  if (!body || !item) return;
-  const key = previewKeyOf(item);
-  const sequence = ++filePreviewLoadSequence;
-  const direct = previewContentOf(item);
-  if (direct) return filePreview.mount(body, state.filePreview.shelf, direct);
-  if (item.kind === "binary") {
-    return filePreview.mount(body, state.filePreview.shelf, { kind: "binary", item });
-  }
-  // 命中该文件自己的缓存即直接呈现：切换标签页不清缓存，因此切回时不重复请求
-  const cached = state.filePreview.contentByFile.get(key);
-  if (cached) return filePreview.mount(body, state.filePreview.shelf, cached);
-  body.textContent = "加载中…";
-  try {
-    // 有材料标识走材料入口；未登记文件走按路径读取（含工作区之外的绝对路径）
-    const content = item.material_id
-      ? await readMaterialPreview(item)
-      : await readPathPreview(item, sequence);
-    if (sequence !== filePreviewLoadSequence) return;
-    state.filePreview.contentByFile.set(key, content);
-    filePreview.mount(body, state.filePreview.shelf, content);
-  } catch (error) {
-    if (sequence !== filePreviewLoadSequence) return;
-    const reason = previewFailureReason(error, item);
-    // 取不到内容（不是文本、文件不存在、越界等）落到信息卡，并在正文说明原因，不留沉默的卡片
-    filePreview.mount(body, state.filePreview.shelf, { kind: "binary", item, note: reason });
-    setStatus(reason, true);
-  }
-}
-
-// 已登记材料的正文：按材料标识取，解码与截断状态由后端给出。
-async function readMaterialPreview(item) {
-  const payload = await api(`/desktop/api/materials/${encodeURIComponent(item.material_id)}/preview`);
-  const meta = { encoding: payload?.encoding || "", truncated: Boolean(payload?.truncated) };
-  const named = { ...item, size_bytes: Number(payload?.size_bytes) || item.size_bytes };
-  return item.kind === "markdown"
-    ? { kind: "markdown", html: renderAssistantContent(payload?.text || ""), meta, item: named }
-    : { kind: "text", text: payload?.text || "", meta, item: named };
-}
-
-// 失败原因要可区分：用户据此判断「换个工具看」还是「文件没了」。
-function previewFailureReason(error, item) {
-  const name = item.relative_path || item.path || "该文件";
-  if (error?.status === 415) return `${name} 的内容无法按文本呈现，已改为展示文件信息`;
-  if (error?.status === 404) return `文件不存在：${name}`;
-  if (!previewPathOf(item)) return "无法定位该文件：既未登记为材料，也没有可用路径";
-  return `无法预览该文件：${error?.message || "未知原因"}`;
-}
-
-// 丢弃一个文件的预览缓存与其地址：关闭标签页与重新打开该文件时调用。
-function forgetFilePreview(item) {
-  const key = previewKeyOf(item);
-  if (!key) return;
-  state.filePreview.objectUrls.revoke(key);
-  state.filePreview.contentByFile.delete(key);
-}
-
-// 清空预览列：切换视图、切换任务与测试复位都经由这里，保证状态一起归零。
-function resetFilePreviews() {
-  for (const item of state.filePreview.shelf.list()) forgetFilePreview(item);
-  state.filePreview.shelf = filePreview.createShelf();
-  state.filePreview.contentByFile.clear();
-}
-
-// 打开一个文件：已登记为材料则按材料记录，否则按文件路径给出预览（含工作区之外的绝对路径）。
-function openFilePreview(record) {
-  if (!record) return;
-  const material = record.material_id
-    ? record
-    : materialForFileName(state.activeTaskId, record.path || record.relative_path || "");
-  const source = material || record;
-  const name = source.relative_path || source.path || "";
-  if (!name) {
-    setStatus("无法定位该文件：既未登记为材料，也没有可用路径", true);
-    return;
-  }
-  const item = { ...source, kind: filePreview.classify(name) };
-  // 重新打开即视为要读当前内容：只失效这一个文件的缓存，其它标签页的缓存保留
-  forgetFilePreview(item);
-  state.filePreview.shelf.open(item);
-  if (state.view !== "focus") {
-    state.view = "focus";
-    render();
-    return;
-  }
-  renderFilePreview();
-}
-
-// 材料在列表里的一句话说明：告诉用户点开后看到的是内容还是信息卡。
-function materialPreviewHint(material) {
-  return {
-    image: "图片材料",
-    markdown: "Markdown 文档",
-    text: "文本材料",
-    pdf: "PDF 文档",
-  }[filePreview.classify(material.relative_path || material.path || "")] || "文件信息卡";
-}
-
-// 预览列自身的交互（切换标签页、关闭标签页、信息卡的两个出路）；命中则接管本次点击。
-function handleFilePreviewAction(button) {
-  const action = button.dataset.action;
-  if (action === "open-file-panel") {
-    const material = button.dataset.materialId
-      ? (state.materials.get(state.activeTaskId) || []).find(item => item.material_id === button.dataset.materialId)
-      : materialForFileName(state.activeTaskId, button.dataset.fileName);
-    // 未登记为材料时仍要打开：优先用消息项自带的绝对路径，否则退回文件名（由主进程结合工作区根解析）
-    const fallbackPath = button.dataset.filePath || button.dataset.fileName;
-    openFilePreview(material || { relative_path: button.dataset.fileName, path: fallbackPath });
-    return true;
-  }
-  if (action === "open-preview-in-system") return openPreviewInSystem(), true;
-  if (action === "download-preview-file") return downloadPreviewFile(), true;
-  if (action !== "activate-file-preview" && action !== "close-file-preview") return false;
-  const key = button.dataset.previewKey;
-  const item = state.filePreview.shelf.list().find(entry => previewKeyOf(entry) === key);
-  if (!item) return true;
-  // 切换标签页只改「当前是谁」，不动任何缓存——否则切回已打开的文件会重新请求
-  if (action === "activate-file-preview") {
-    state.filePreview.shelf.activate(item);
-  } else {
-    state.filePreview.shelf.close(item);
-    forgetFilePreview(item);
-  }
-  renderFilePreview();
-  return true;
-}
-
-// 在系统默认应用中打开当前文件。先经主进程按路径解析取得放行后的路径，再交给系统打开——
-// 预览已允许工作区之外的绝对路径，因此这里不能再套工作区容器校验，否则同一文件能预览却打不开。
-async function openPreviewInSystem() {
-  const item = state.filePreview.shelf.active();
-  const bridge = window.focusDesktop;
-  if (!item?.path || typeof bridge?.openPath !== "function") {
-    return setStatus("该文件没有可用于系统打开的绝对路径", true);
-  }
-  try {
-    const resolved = typeof bridge.resolvePreviewPath === "function"
-      ? await bridge.resolvePreviewPath(item.path)
-      : { ok: true, path: item.path };
-    if (!resolved?.ok) throw new Error(resolved?.reason || "无法定位该文件");
-    await bridge.openPath(resolved.path, activeTask()?.workspace_path || "");
-  } catch (error) {
-    setStatus(`无法在系统中打开：${error.message}`, true);
-  }
-}
-
-// 另存为：取文件原始字节后交给主进程写盘，渲染器不接触文件系统。
-// 已登记材料按材料标识取；未登记文件按路径取。
-async function downloadPreviewFile() {
-  const item = state.filePreview.shelf.active();
-  const bridge = window.focusDesktop;
-  if (!item || typeof bridge?.saveBytes !== "function") return setStatus("当前运行环境无法另存文件", true);
-  try {
-    const bytes = await readPreviewBytes(item);
-    const saved = await bridge.saveBytes(item.relative_path || item.path || "material.bin", Array.from(bytes));
-    if (saved) setStatus("已另存文件");
-  } catch (error) {
-    setStatus(`另存失败：${error.message}`, true);
-  }
-}
-
-// 取当前文件的原始字节：材料走字节流接口，未登记文件经主进程按路径读取。
-async function readPreviewBytes(item) {
-  if (item.material_id) {
-    const response = await fetch(materialContentUrl(item.material_id));
-    if (!response.ok) throw new Error(`读取材料失败（${response.status}）`);
-    return new Uint8Array(await response.arrayBuffer());
-  }
-  return (await readPathBytes(item)).bytes;
+function bindPanelResizer() {
+  const resizer = document.querySelector("#panelResizer");
+  const shell = document.querySelector(".focus-shell");
+  if (!resizer || !shell) return;
+  resizer.addEventListener("pointerdown", event => {
+    event.preventDefault();
+    resizer.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    const startWidth = state.panelWidth;
+    const move = moveEvent => {
+      // 面板左缘:向左拖(负位移)= 面板变宽。
+      const width = startWidth - (moveEvent.clientX - startX);
+      state.panelWidth = normalizePanelWidth(width);
+      shell.style.gridTemplateColumns = `minmax(0, 1fr) ${state.panelWidth}px`;
+    };
+    const finish = () => {
+      try {
+        if (resizer.hasPointerCapture?.(event.pointerId)) resizer.releasePointerCapture(event.pointerId);
+      } catch {}
+      resizer.removeEventListener("pointermove", move);
+      resizer.removeEventListener("pointerup", finish);
+      resizer.removeEventListener("pointercancel", finish);
+      resizer.removeEventListener("lostpointercapture", finish);
+      localStorage.setItem("focus-panel-width", String(state.panelWidth));
+    };
+    resizer.addEventListener("pointermove", move);
+    resizer.addEventListener("pointerup", finish);
+    resizer.addEventListener("pointercancel", finish);
+    resizer.addEventListener("lostpointercapture", finish);
+  });
 }
 
 // 记忆库编辑器：上下区（选源 vs 编辑）垂直分隔条 + 源/压缩区 水平分隔条，均可拖拽调高度/宽度。
@@ -1494,7 +1234,20 @@ function bindMemoryResizers() {
   }
 }
 
-// 壳层四栏：窗口尺寸变化时对持久化的宽度做钳制并重新应用（内联自定义属性仍是唯一来源）。
+window.addEventListener("resize", () => {
+  if (!state.filesPanel) return;
+  if (panelResizeFrame != null) cancelAnimationFrame(panelResizeFrame);
+  panelResizeFrame = requestAnimationFrame(() => {
+    panelResizeFrame = null;
+    const width = normalizePanelWidth(state.panelWidth);
+    if (width === state.panelWidth) return;
+    state.panelWidth = width;
+    const shell = document.querySelector(".focus-shell");
+    if (shell) shell.style.gridTemplateColumns = `minmax(0, 1fr) ${width}px`;
+  });
+});
+
+// 壳层三栏：窗口尺寸变化时对持久化的宽度做钳制并重新应用（内联自定义属性仍是唯一来源）。
 // 未定制用户不介入（让 CSS 断点默认值驱动），定制用户才跟随窗口重新钳制。
 window.addEventListener("resize", () => {
   if (panelResizeFrame != null) cancelAnimationFrame(panelResizeFrame);
@@ -1503,7 +1256,6 @@ window.addEventListener("resize", () => {
     if (!state.shellLayout.customized) return;
     const next = normalizeShellLayout(state.shellLayout, window.innerWidth);
     if (next.navWidth !== state.shellLayout.navWidth
-      || next.previewWidth !== state.shellLayout.previewWidth
       || next.inspectorWidth !== state.shellLayout.inspectorWidth
       || Boolean(next.navCollapsed) !== Boolean(state.shellLayout.navCollapsed)) {
       state.shellLayout = next;
@@ -1513,8 +1265,9 @@ window.addEventListener("resize", () => {
   });
 });
 
-function materialContentUrl(materialId) {
-  return `${runtime.apiBase}/desktop/api/materials/${encodeURIComponent(materialId)}/content?session=${encodeURIComponent(runtime.session)}`;
+function materialImageMarkup(materialId, className, alt, action = "zoom-image") {
+  const actionAttr = action ? ` data-action="${action}"` : "";
+  return `<img class="${className}" alt="${escapeHtml(alt)}"${actionAttr} data-material-task-id="${escapeHtml(state.activeTaskId || "")}" data-material-content-id="${escapeHtml(materialId)}">`;
 }
 
 function contentPlainText(content) {
@@ -1528,49 +1281,32 @@ function contentPlainText(content) {
 }
 
 function collectMessageImages(content) {
-  return imageMaterialPicker.materialRefIds(contentPlainText(content)).map(materialContentUrl);
+  return imageMaterialPicker.materialRefIds(contentPlainText(content));
 }
 
-// 消息文件卡片与正文文件链接共用同一条预览入口：任何文件都可点开，能否预览由 classify 决定，
-// 未知类型落到信息卡。此处不再按扩展名设门，否则 .json/.py/.svg 一类会点击后毫无反应。
+// f18:消息文件卡片 —— 常见类型全部可点开(图片/PDF/docx/doc/md/txt),点击打开右侧文件面板
+const FILE_VIEWABLE_RE = /\.(png|jpe?g|webp|bmp|gif|pdf|docx?|md|txt)$/i;
+
 function fileNameFromLinkHref(href, hostPart = "") {
   const source = href.startsWith("file:") ? href : hostPart;
   return decodeURIComponent(source.replace(/[?#].*$/, "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "");
 }
 
-// 消息里的文件名常常只是 basename（链接显示文字与文件卡片都如此），而材料记录里是工作区相对
-// 路径与绝对路径。只做精确等值会一律匹配失败，进而丢掉材料已有的 size_bytes 与真实路径，
-// 因此未命中时按 basename 与路径结尾再匹配一次。
-function materialForFileName(taskId, fileName) {
-  const materials = state.materials.get(taskId) || [];
-  const exact = materials.find(item => item.relative_path === fileName || item.path === fileName);
-  if (exact) return exact;
-  if (!fileName) return null;
-  const basenameOf = value => String(value || "").replace(/[?#].*$/, "").split(/[\\/]/).pop();
-  return materials.find(item => basenameOf(item.relative_path) === fileName
-    || basenameOf(item.path) === fileName) || null;
-}
-
-function renderFileCard(file, task) {
-  const name = String(file?.filename || file?.name || "");
-  if (!name) return "";
-  const icon = /\.(png|jpe?g|webp|bmp|gif|svg|ico)$/i.test(name)
-    ? "file-image"
-    : /\.(pdf|docx?|md|txt)$/i.test(name) ? "file-text" : "file";
-  const size = file?.size ? ` · ${formatBytes(file.size)}` : "";
-  const iconMarkup = `<span class="ui-icon is-sm icon-${icon}" aria-hidden="true"></span>`;
-  const material = task ? materialForFileName(task.task_id, name) : null;
-  const materialId = material ? ` data-material-id="${escapeHtml(material.material_id)}"` : "";
-  // 消息项自带绝对路径时一并带出：没有材料记录也能凭它读到文件
-  const filePath = typeof file?.path === "string" && file.path ? ` data-file-path="${escapeHtml(file.path)}"` : "";
-  const title = material ? "点击打开文件预览" : "点击打开预览（按路径读取）";
-  return `<button class="file-card" data-action="open-file-panel"${materialId} data-file-name="${escapeHtml(name)}"${filePath} title="${title}">${iconMarkup}<span>${escapeHtml(name)}${size}</span></button>`;
-}
-
-function renderFileCards(message, task) {
+function renderFileCards(message) {
   const files = message.files;
   if (!Array.isArray(files) || !files.length) return "";
-  const cards = files.map(file => renderFileCard(file, task)).join("");
+  const cards = files.map(file => {
+    const name = String(file?.filename || file?.name || "");
+    if (!name) return "";
+    const viewable = FILE_VIEWABLE_RE.test(name)
+      && !!pluginViewForMaterial({ relative_path: name, path: name });
+    const icon = /\.(png|jpe?g|webp|bmp|gif)$/i.test(name) ? "file-image" : /\.(pdf|docx?|md|txt)$/i.test(name) ? "file-text" : "file";
+    const size = file?.size ? ` · ${formatBytes(file.size)}` : "";
+    const iconMarkup = `<span class="ui-icon is-sm icon-${icon}" aria-hidden="true"></span>`;
+    return viewable
+      ? `<button class="file-card" data-action="open-file-panel" data-file-name="${escapeHtml(name)}" title="点击在右侧面板打开">${iconMarkup}<span>${escapeHtml(name)}${size}</span></button>`
+      : `<span class="file-card is-plain">${iconMarkup}<span>${escapeHtml(name)}${size}</span></span>`;
+  }).join("");
   return cards ? `<div class="message-file-cards">${cards}</div>` : "";
 }
 
@@ -1584,7 +1320,7 @@ function formatBytes(bytes) {
 function renderMessageImages(images) {
   if (!images.length) return "";
   return `<div class="message-images">${images
-    .map(url => `<img class="message-image" src="${escapeHtml(url)}" alt="图片材料" data-action="zoom-image" data-image-url="${escapeHtml(url)}">`)
+    .map(materialId => materialImageMarkup(materialId, "message-image", "图片材料"))
     .join("")}</div>`;
 }
 
@@ -1592,13 +1328,32 @@ function stripImageReferences(text) {
   return imageMaterialPicker.stripMaterialRefs(text);
 }
 
-function renderContentBlock(block) {
+function messageMaterialHistory(message) {
+  const messageId = message?.id || message?.message_id;
+  if (!messageId) return [];
+  return (state.materialHistory.get(state.activeTaskId) || [])
+    .filter(item => item.message_id === messageId)
+    .sort((a, b) => Number(a.ordinal) - Number(b.ordinal));
+}
+
+function stripRunMaterialProtocol(text, message) {
+  if (!messageMaterialHistory(message).length) return text;
+  return String(text).replace(/(?:\n\n)?<focus_run_materials>\n[\s\S]*?\n<\/focus_run_materials>/g, "");
+}
+
+function renderRunMaterialCards(message) {
+  const rows = messageMaterialHistory(message);
+  if (!rows.length) return "";
+  return `<section class="message-materials"><header><strong>本轮材料</strong><span class="ui-badge">${rows.length}</span></header>${rows.map(item => `<article class="message-material-card">${item.material_kind === "image" && item.current_available ? materialImageMarkup(item.material_id, "message-material-thumb", item.relative_path) : `<span class="ui-icon is-sm icon-${item.material_kind === "image" ? "file-image" : "file"}" aria-hidden="true"></span>`}<span><strong>${escapeHtml(item.relative_path)}</strong>${item.note ? `<p>${escapeHtml(item.note)}</p>` : '<small class="muted">无备注</small>'}${item.must_view_requested ? '<small class="ui-badge is-warning">必须看</small>' : ""}${!item.current_available ? '<small class="muted">当前内容不可用</small>' : ""}</span></article>`).join("")}</section>`;
+}
+
+function renderContentBlock(block, message = null) {
   if (!block || typeof block !== "object") return escapeHtml(String(block ?? ""));
   if (block.type === "image_url") {
     return ""; // 图片已由 collectMessageImages 提取到消息框上方,气泡内不输出
   }
   // text 块:移除图片引用(图片已提取到上方行),其余转义
-  return stripImageReferences(escapeHtml(String(block.text ?? "")));
+  return escapeHtml(stripImageReferences(stripRunMaterialProtocol(String(block.text ?? ""), message)));
 }
 
 function renderMessageDetails(message) {
@@ -1624,7 +1379,7 @@ function messageKeyOf(message, fallbackIndex) {
   return message?.id || message?.message_id || `${message?.role || "message"}:${fallbackIndex}`;
 }
 
-function renderMessage(message, { showRoleHeader = false, fallbackKey = 0, task = null } = {}) {
+function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}) {
   // 后端兜底降级消息按工具结果样式渲染，不泄露原始 XML 标签
   const degraded = compressionPanel.degradedParts(message);
   const messageKey = messageKeyOf(message, fallbackKey);
@@ -1637,9 +1392,9 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0, task 
   const messageImages = collectMessageImages(message.content);
   let content;
   if (typeof message.content === "string") {
-    content = kind === "ai" ? message.content : stripImageReferences(escapeHtml(message.content));
+    content = kind === "ai" ? message.content : escapeHtml(stripImageReferences(stripRunMaterialProtocol(message.content, message)));
   } else if (Array.isArray(message.content)) {
-    content = message.content.map(renderContentBlock).join("\n");
+    content = message.content.map(block => renderContentBlock(block, message)).join("\n");
   } else {
     content = escapeHtml(JSON.stringify(message.content, null, 2));
   }
@@ -1653,7 +1408,7 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0, task 
   }
   return `<article class="work-record message ${kind}" data-message-key="${escapeHtml(messageKey)}">
     ${header}
-    ${renderMessageImages(messageImages)}${renderFileCards(message, task)}
+    ${renderMessageImages(messageImages)}${renderFileCards(message)}${renderRunMaterialCards(message)}
     <div class="message-content">${renderedContent}</div>
     ${renderMessageDetails(message)}
   </article>`;
@@ -1679,7 +1434,7 @@ function collectImagesFromMessages(messages, depth = 0) {
 function renderCompressionBlockImages(images) {
   if (!images.length) return "";
   return `<div class="compression-block-images">${images
-    .map(url => `<img class="compression-block-image" src="${escapeHtml(url)}" alt="被压缩的图片材料" data-action="zoom-image" data-image-url="${escapeHtml(url)}">`)
+    .map(materialId => materialImageMarkup(materialId, "compression-block-image", "被压缩的图片材料"))
     .join("")}</div>`;
 }
 
@@ -1703,7 +1458,7 @@ function renderConversation(detail, task) {
   let messageIndex = 0;
   const flushMessages = () => {
     if (roleStructured) {
-      for (const message of messageGroup) renderedParts.push(renderMessage(message, { showRoleHeader: true, task }));
+      for (const message of messageGroup) renderedParts.push(renderMessage(message, { showRoleHeader: true }));
       messageGroup = [];
       return;
     }
@@ -1716,7 +1471,7 @@ function renderConversation(detail, task) {
     for (const item of conversationEvents.normalize(messageGroup)) {
       if (item.type !== "message") { eventGroup.push(item); continue; }
       flushEvents();
-      renderedParts.push(renderMessage(item.message, { fallbackKey: messageIndex, task }));
+      renderedParts.push(renderMessage(item.message, { fallbackKey: messageIndex }));
       messageIndex += 1;
     }
     flushEvents();
@@ -1866,6 +1621,7 @@ function replaceConversation(task, messages) {
   reconcileConversationMarkup(conversation, renderConversation(detail, task));
   restoreCommitmentPanels(conversation);
   restoreAccessReviewPanels(conversation);
+  materialContentLoader.bindAll(conversation);
   if (pinned) conversation.scrollTop = conversation.scrollHeight;
 }
 
@@ -1991,43 +1747,56 @@ function finalizeStreamingOnSnapshot(taskId, messages) {
 
 function renderImageMaterial(material) {
   const open = state.openMaterial === material.material_id;
-  const checked = mustViewSelection().includes(material.material_id);
-  const reason = imageMaterialPicker.mustViewBlockReason(material);
-  return `<article class="material-row is-image" data-material-id="${material.material_id}">
+  const selection = materialSelection();
+  const attached = selection.bindings.some(item => item.materialId === material.material_id);
+  const required = selection.requiredImageIds.includes(material.material_id);
+  const reason = material.size_bytes ? "" : "该材料内容为空，无法用于本轮";
+  return `<article class="material-row is-image" draggable="true" data-material-id="${material.material_id}">
     <header class="material-summary">
-      <button class="material-title-button" data-action="preview-image-material" title="放大查看"><img class="material-thumb" src="${escapeHtml(materialContentUrl(material.material_id))}" alt=""><span><strong class="material-name">${escapeHtml(material.relative_path)}</strong><small>图片材料 · ${formatBytes(material.size_bytes)}</small></span></button>
+      <button class="material-title-button" data-action="preview-image-material" title="放大查看">${materialImageMarkup(material.material_id, "material-thumb", "", null)}<span><strong class="material-name">${escapeHtml(material.relative_path)}</strong><small>图片材料 · ${formatBytes(material.size_bytes)}</small></span></button>
       <button class="text-button" data-action="toggle-material" aria-expanded="${open}">${open ? "收起" : "管理"}</button>
     </header>
-    <div class="material-policy-row"><button class="text-button must-view-toggle" data-action="toggle-must-view" aria-pressed="${checked}"${reason ? " disabled" : ""}>${checked ? "☑" : "☐"} 本轮必须看</button>${reason ? `<span class="muted tiny">${escapeHtml(reason)}</span>` : ""}</div>
+    <div class="material-policy-row"><button class="text-button must-view-toggle" data-action="toggle-run-material" aria-pressed="${attached}"${reason ? " disabled" : ""}>${attached ? "☑" : "☐"} 本轮使用</button><button class="text-button must-view-toggle" data-action="toggle-image-required" aria-pressed="${required}"${!attached || reason ? " disabled" : ""}>${required ? "☑" : "☐"} 必须看</button>${reason ? `<span class="muted tiny">${escapeHtml(reason)}</span>` : ""}</div>
+    ${renderRunMaterialNote(material.material_id)}
     ${open ? `<div class="material-editor">
       <div class="material-source-meta"><span>来源</span><code>${escapeHtml(material.relative_path)}</code></div>
-      <span class="material-actions"><button class="text-button danger" data-action="delete-material">删除</button></span></div>` : ""}
+      <span class="material-actions"><button class="text-button" data-action="move-material-group">移动分组</button>${material.custom_group_id ? '<button class="text-button" data-action="restore-auto-group">恢复自动归类</button>' : ""}<button class="text-button danger" data-action="delete-material">删除</button></span>${renderMaterialUsageHistory(material.material_id)}</div>` : ""}
   </article>`;
 }
 
 function renderMaterial(material) {
   if (material.is_image) return renderImageMaterial(material);
   const open = state.openMaterial === material.material_id;
+  const viewable = !!pluginViewForMaterial(material);
   const reading = material.reading_mode === "full" ? "完整阅读" : "粗略阅读";
   const instruction = material.instruction_mode === "strict" ? "严格约束" : "参考材料";
   const retention = material.retention === "irreplaceable" ? "版本保护" : "可移除";
-  return `<article class="material-row" data-material-id="${material.material_id}">
+  const selected = materialSelection().bindings.some(item => item.materialId === material.material_id);
+  const unavailable = !material.size_bytes;
+  return `<article class="material-row" draggable="true" data-material-id="${material.material_id}">
     <header class="material-summary">
-      <button class="material-title-button" data-action="open-material" title="在文件预览列打开"><span class="material-file-icon" aria-hidden="true"><span class="ui-icon is-sm icon-file-text"></span></span><span><strong class="material-name">${escapeHtml(material.relative_path)}</strong><small>${escapeHtml(materialPreviewHint(material))}</small></span></button>
+      <button class="material-title-button" data-action="${viewable ? "open-material" : "toggle-material"}" title="${viewable ? "在文件工作台打开" : "查看材料规则"}"><span class="material-file-icon" aria-hidden="true"><span class="ui-icon is-sm icon-file-text"></span></span><span><strong class="material-name">${escapeHtml(material.relative_path)}</strong><small>${viewable ? "可在文件工作台查看" : "未启用匹配的查看器"}</small></span></button>
       <button class="text-button" data-action="toggle-material" aria-expanded="${open}">${open ? "收起" : "管理"}</button>
     </header>
-    <div class="material-policy-row"><span class="ui-badge">${reading}</span><span class="ui-badge${material.instruction_mode === "strict" ? " is-warning" : ""}">${instruction}</span><span class="ui-badge${material.retention === "irreplaceable" ? " is-success" : ""}">${retention}</span></div>
+    <div class="material-policy-row"><button class="text-button must-view-toggle" data-action="toggle-run-material" aria-pressed="${selected}"${unavailable ? " disabled" : ""}>${selected ? "☑" : "☐"} 本轮使用</button><span class="ui-badge">${reading}</span><span class="ui-badge${material.instruction_mode === "strict" ? " is-warning" : ""}">${instruction}</span><span class="ui-badge${material.retention === "irreplaceable" ? " is-success" : ""}">${retention}</span>${unavailable ? '<span class="muted tiny">内容不可用</span>' : ""}</div>
+    ${renderRunMaterialNote(material.material_id)}
     ${material.needs_confirmation ? `<div class="ui-notice is-warning"><strong>检测到外部删除</strong><span>Focus 已恢复文件，请从版本记录确认内容。</span></div>` : ""}
     ${open ? `<div class="material-editor">
       <label>阅读方式<select data-field="reading_mode"><option value="full" ${material.reading_mode === "full" ? "selected" : ""}>完整阅读</option><option value="rough" ${material.reading_mode === "rough" ? "selected" : ""}>粗略阅读</option></select></label>
       <label>约束<select data-field="instruction_mode"><option value="reference" ${material.instruction_mode === "reference" ? "selected" : ""}>仅供参考</option><option value="strict" ${material.instruction_mode === "strict" ? "selected" : ""}>严格遵守</option></select></label>
       <label>文件规则<select data-field="retention"><option value="removable" ${material.retention === "removable" ? "selected" : ""}>可移除</option><option value="irreplaceable" ${material.retention === "irreplaceable" ? "selected" : ""}>不可遗失</option></select></label>
       <div class="material-source-meta"><span>来源</span><code>${escapeHtml(material.relative_path)}</code></div>
-      <span class="material-actions"><button class="primary" data-action="save-material">保存规则</button>
+      <span class="material-actions"><button class="primary" data-action="save-material">保存规则</button><button class="text-button" data-action="move-material-group">移动分组</button>${material.custom_group_id ? '<button class="text-button" data-action="restore-auto-group">恢复自动归类</button>' : ""}
       ${material.retention === "irreplaceable" ? `<button class="text-button" data-action="clear-material">置空</button><button class="text-button" data-action="load-versions">版本</button>` : `<button class="text-button danger" data-action="delete-material">删除</button>`}</span>
-      <ul class="version-list" data-versions></ul>
+      <ul class="version-list" data-versions></ul>${renderMaterialUsageHistory(material.material_id)}
     </div>` : ""}
   </article>`;
+}
+
+function renderMaterialUsageHistory(materialId) {
+  const rows = (state.materialHistory.get(state.activeTaskId) || []).filter(item => item.material_id === materialId);
+  if (!rows.length) return '<p class="muted tiny">线程内尚未使用</p>';
+  return `<details class="material-usage-history"><summary>线程内使用记录 · ${rows.length}</summary><ol>${rows.map(item => `<li><span>Run ${escapeHtml(String(item.run_id).slice(0, 8))}${item.must_view_requested ? " · 必须看" : ""}</span>${item.note ? `<p>${escapeHtml(item.note)}</p>` : '<small class="muted">无备注</small>'}</li>`).join("")}</ol></details>`;
 }
 
 function renderAgentStrip(taskId) {
@@ -3516,24 +3285,49 @@ async function deployDraft() {
   finally { state.deploying = false; updateTokenState(); }
 }
 
-function mustViewSelection() {
-  if (!state.mustView.has(state.activeTaskId)) state.mustView.set(state.activeTaskId, []);
-  return state.mustView.get(state.activeTaskId);
+function materialSelection(taskId = state.activeTaskId) {
+  if (!state.materialSelections.has(taskId)) {
+    state.materialSelections.set(taskId, runMaterialPicker.empty());
+  }
+  const materials = state.materials.get(taskId) || [];
+  const normalized = runMaterialPicker.normalizeSelection(
+    state.materialSelections.get(taskId), materials
+  );
+  state.materialSelections.set(taskId, normalized);
+  return normalized;
 }
 
-function selectedMustViewMaterials() {
-  const materials = state.materials.get(state.activeTaskId) || [];
-  const ids = imageMaterialPicker.syncMustView(mustViewSelection(), materials);
-  state.mustView.set(state.activeTaskId, ids);
-  return materials.filter(material => ids.includes(material.material_id));
+function toggleRunMaterial(materialId) {
+  const selection = materialSelection();
+  state.materialSelections.set(
+    state.activeTaskId,
+    runMaterialPicker.toggleMaterial(selection, materialId)
+  );
 }
 
-function toggleMustView(materialId) {
-  const selected = mustViewSelection();
-  const next = selected.includes(materialId)
-    ? selected.filter(id => id !== materialId)
-    : [...selected, materialId];
-  state.mustView.set(state.activeTaskId, next);
+async function toggleImageRequired(materialId) {
+  const selection = materialSelection();
+  if (!selection.bindings.some(item => item.materialId === materialId)) {
+    return setStatus("请先把图片选为本轮材料", true);
+  }
+  if (!selection.requiredImageIds.includes(materialId)) {
+    await api(`/desktop/api/tasks/${state.activeTaskId}/materials/${materialId}/image-validity`);
+  }
+  state.materialSelections.set(
+    state.activeTaskId,
+    runMaterialPicker.toggleRequired(
+      selection,
+      materialId,
+      state.materials.get(state.activeTaskId) || []
+    )
+  );
+}
+
+function updateRunMaterialNote(materialId, note) {
+  state.materialSelections.set(
+    state.activeTaskId,
+    runMaterialPicker.setNote(materialSelection(), materialId, note)
+  );
 }
 
 function openImageLightbox(url, label) {
@@ -3550,6 +3344,9 @@ async function sendMainOnce() {
   }
   if (state.details.get(state.activeTaskId)?.pending_compression) {
     return setStatus("存在待确认的压缩请求，请先完成压缩或取消", true);
+  }
+  if (state.details.get(state.activeTaskId)?.pending_must_view_report) {
+    return setStatus("存在待处理的必看图片报告，请先重试或取消", true);
   }
   if (state.accessReviews.panel) {
     return setStatus("存在待批准的本机资源访问请求，请先批准或拒绝", true);
@@ -3587,7 +3384,9 @@ async function sendMainOnce() {
       return;
     }
   }
-  const outgoing = imageMaterialPicker.buildOutgoing(selectedMustViewMaterials(), message);
+  const outgoing = runMaterialPicker.buildOutgoing(
+    state.materials.get(state.activeTaskId) || [], message, materialSelection()
+  );
   const messagePayload = outgoing.message;
   const detail = state.details.get(state.activeTaskId);
   try {
@@ -3595,7 +3394,8 @@ async function sendMainOnce() {
       method: "POST",
       body: JSON.stringify({
         message: messagePayload,
-        must_view_material_ids: outgoing.mustViewIds,
+        material_inputs: outgoing.materialInputs,
+        must_view_material_ids: outgoing.requiredImageIds,
         skills: selectedSkills("main"),
         spatial_focus: spatialTarget?.focus || null,
         ...(detail.ui_state?.access_mode === "full" ? { access_mode: "full" } : {}),
@@ -3607,9 +3407,28 @@ async function sendMainOnce() {
     if (detail.context) detail.context.editable = false;
     // 运行已发起：立即暴露中断入口（否则运行中 active_run 仍为旧值，按钮不渲染）
     detail.active_run = run;
-    state.mustView.set(state.activeTaskId, []);
+    const byMaterialId = new Map((state.materials.get(state.activeTaskId) || []).map(item => [item.material_id, item]));
+    const optimisticHistory = outgoing.materialInputs.map((item, ordinal) => ({
+      binding_id: `optimistic:${run.run_id}:${ordinal}`,
+      run_id: run.run_id,
+      task_id: state.activeTaskId,
+      message_id: run.message_id,
+      material_id: item.material_id,
+      relative_path: byMaterialId.get(item.material_id)?.relative_path || item.material_id,
+      material_kind: byMaterialId.get(item.material_id)?.material_kind || "other",
+      note: item.note,
+      ordinal,
+      must_view_requested: outgoing.requiredImageIds.includes(item.material_id),
+      current_available: true,
+      run_status: run.status,
+    }));
+    state.materialHistory.set(state.activeTaskId, [
+      ...(state.materialHistory.get(state.activeTaskId) || []),
+      ...optimisticHistory,
+    ]);
+    state.materialSelections.set(state.activeTaskId, runMaterialPicker.empty());
     state.composerErrors.delete(state.activeTaskId);
-    detail.messages = [...(detail.messages || []), { role: "human", content: messagePayload }];
+    detail.messages = [...(detail.messages || []), { role: "human", content: messagePayload, id: run.message_id }];
     detail.ui_state = { ...(detail.ui_state || {}), input: "", skills: [] };
     renderFocus();
     persistFocusState();
@@ -3688,6 +3507,16 @@ function listenToRun(run) {
       openCompressionView(task, value);
       return;
     }
+    if (value.type === "must_view_report") {
+      const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
+      if (!task) return;
+      const detail = state.details.get(task.task_id) || {};
+      detail.pending_must_view_report = value;
+      detail.must_view_recovery = { status: "resumable", request: value };
+      state.details.set(task.task_id, detail);
+      if (state.activeTaskId === task.task_id) render();
+      return;
+    }
     if (accessApproval.isAccessReview(value)) {
       const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
       if (!task) return;
@@ -3714,7 +3543,12 @@ function listenToRun(run) {
       : state.tasks.find(item => item.thread_id === run.thread_id);
     if (task) settleCommitmentRun(task.task_id, terminal);
     render();
-    if (wasMainInterrupted && !state.commitment.review && !state.commitment.recovery) {
+    const detail = task ? state.details.get(task.task_id) : null;
+    if (wasMainInterrupted
+        && !state.commitment.review
+        && !state.commitment.recovery
+        && !detail?.pending_compression
+        && !detail?.pending_must_view_report) {
       setStatus("主 Agent 已中断，可继续对话");
     }
   });
@@ -4205,6 +4039,27 @@ async function resumeRun(payload) {
   finally { state.commitment.busy = false; }
 }
 
+async function resumeMustView(decision) {
+  const task = activeTask();
+  if (!task) return setStatus("当前没有活动任务", true);
+  try {
+    const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
+      method: "POST",
+      body: JSON.stringify({ resume: { type: "must_view_report", decision } }),
+    });
+    const detail = state.details.get(task.task_id);
+    if (detail) {
+      detail.pending_must_view_report = null;
+      detail.must_view_recovery = null;
+      detail.active_run = run;
+    }
+    listenToRun(run);
+    render();
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
 // === 本机资源访问批准面板 ===
 
 const ACCESS_OPERATION_FALLBACKS = { read: "读取", write: "写入", command: "执行" };
@@ -4370,6 +4225,7 @@ function reconcileCommitmentRecovery(detail) {
     // 当前任务无承诺流程：若残留的是其它任务的承诺状态，或已恢复，统一复位
     if (state.commitment.taskId && state.commitment.taskId !== state.activeTaskId) {
       resetCommitment();
+      setStatus("");
     } else if (state.commitment.taskId === state.activeTaskId && state.commitment.recoveryRestored) {
       resetCommitment();
     }
@@ -4377,6 +4233,7 @@ function reconcileCommitmentRecovery(detail) {
   }
   if (state.commitment.taskId && state.commitment.taskId !== state.activeTaskId) {
     resetCommitment();
+    setStatus("");
   }
   state.commitment.taskId = state.activeTaskId;
   state.commitment.stage = Number(recovery.stage || 0);
@@ -4921,12 +4778,45 @@ async function handleMaterialAction(button) {
   const material = (state.materials.get(state.activeTaskId) || []).find(item => item.material_id === materialId);
   try {
   if (button.dataset.action === "toggle-material") { state.openMaterial = state.openMaterial === materialId ? null : materialId; return renderFocus(); }
-  if (button.dataset.action === "toggle-must-view") { toggleMustView(materialId); return renderFocus(); }
-  if (button.dataset.action === "preview-image-material") return openImageLightbox(materialContentUrl(materialId), material?.relative_path || "图片材料");
+  if (button.dataset.action === "toggle-run-material") { toggleRunMaterial(materialId); return renderFocus(); }
+  if (button.dataset.action === "toggle-image-required") { await toggleImageRequired(materialId); return renderFocus(); }
+  if (button.dataset.action === "move-material-group") {
+    const groups = state.materialGroups.get(state.activeTaskId) || [];
+    if (!groups.length) return setStatus("请先新建自定义分组", true);
+    const requested = prompt(`输入目标分组名称：\n${groups.map(item => item.name).join("、")}`, groups.find(item => item.group_id === material?.custom_group_id)?.name || groups[0].name);
+    if (requested === null) return;
+    const group = groups.find(item => item.name === requested.trim());
+    if (!group) return setStatus("没有这个分组", true);
+    await moveMaterialMembership(materialId, group.group_id);
+    return;
+  }
+  if (button.dataset.action === "restore-auto-group") {
+    await moveMaterialMembership(materialId, null);
+    return;
+  }
+  if (button.dataset.action === "preview-image-material") {
+    const url = await materialContentLoader.load(state.activeTaskId, materialId);
+    return openImageLightbox(url, material?.relative_path || "图片材料");
+  }
   if (button.dataset.action === "open-material") {
-    // 材料「查看」→ 宿主文件预览列
+    // f18:材料「查看」→ 右侧文件面板(不再全屏替换)
     if (!material) return setStatus("材料不存在", true);
-    openFilePreview(material);
+    if (!pluginViewForMaterial(material)) return setStatus("当前没有启用的材料查看器", true);
+    state.filesPanel = { ...material };
+    render();
+  }
+  if (button.dataset.action === "open-file-panel") {
+    // f18:消息文件卡片 → 右侧文件面板打开(优先匹配已登记材料,否则按文件名)
+    const fileName = button.dataset.fileName;
+    const taskId = state.activeTaskId;
+    const material = (state.materials.get(taskId) || [])
+      .find(item => item.relative_path === fileName || item.path === fileName);
+    const target = material
+      ? { ...material }
+      : { relative_path: fileName, path: fileName };
+    if (!pluginViewForMaterial(target)) return setStatus("当前没有启用的文件查看器", true);
+    state.filesPanel = target;
+    render();
   }
   if (button.dataset.action === "save-material") {
     const body = Object.fromEntries([...row.querySelectorAll("select[data-field]")].map(select => [select.dataset.field, select.value]));
@@ -4942,13 +4832,20 @@ async function handleMaterialAction(button) {
   }
   if (button.dataset.action === "clear-material" && confirm("保留文件路径并将内容置空？此操作会保存新版本。")) {
     Object.assign(material, await api(`/desktop/api/materials/${materialId}/clear`, { method: "POST" }));
-    state.mustView.set(state.activeTaskId, imageMaterialPicker.syncMustView(mustViewSelection(), state.materials.get(state.activeTaskId)));
+    state.materialSelections.set(
+      state.activeTaskId,
+      runMaterialPicker.normalizeSelection(materialSelection(), state.materials.get(state.activeTaskId))
+    );
     renderFocus();
   }
   if (button.dataset.action === "delete-material" && confirm("删除这个可移除文件？")) {
     await api(`/desktop/api/materials/${materialId}`, { method: "DELETE" });
+    materialContentLoader.releaseMaterial(state.activeTaskId, materialId);
     state.materials.set(state.activeTaskId, state.materials.get(state.activeTaskId).filter(item => item.material_id !== materialId));
-    state.mustView.set(state.activeTaskId, imageMaterialPicker.syncMustView(mustViewSelection(), state.materials.get(state.activeTaskId)));
+    state.materialSelections.set(
+      state.activeTaskId,
+      runMaterialPicker.normalizeSelection(materialSelection(), state.materials.get(state.activeTaskId))
+    );
     renderFocus();
   }
   if (button.dataset.action === "load-versions") {
@@ -4963,12 +4860,86 @@ async function handleMaterialAction(button) {
   }
 }
 
+async function refreshMaterialOrganization() {
+  const taskId = state.activeTaskId;
+  const [materials, groups, history] = await Promise.all([
+    api(`/desktop/api/tasks/${taskId}/materials`),
+    api(`/desktop/api/tasks/${taskId}/material-groups`),
+    api(`/desktop/api/tasks/${taskId}/material-history`),
+  ]);
+  state.materials.set(taskId, materials);
+  state.materialGroups.set(taskId, groups);
+  state.materialHistory.set(taskId, history);
+  state.materialSelections.set(taskId, runMaterialPicker.normalizeSelection(materialSelection(taskId), materials));
+  renderFocus();
+}
+
+async function moveMaterialMembership(materialId, groupId) {
+  const group = (state.materialGroups.get(state.activeTaskId) || []).find(item => item.group_id === groupId);
+  await api(`/desktop/api/tasks/${state.activeTaskId}/materials/${materialId}/group`, {
+    method: "PUT",
+    body: JSON.stringify({ group_id: groupId, position: group?.memberships?.length || 0 }),
+  });
+  await refreshMaterialOrganization();
+}
+
+async function dropMaterialMembership(materialId, groupId, beforeMaterialId) {
+  const group = (state.materialGroups.get(state.activeTaskId) || []).find(item => item.group_id === groupId);
+  const ordered = (group?.memberships || []).map(item => item.material_id).filter(id => id !== materialId);
+  const target = beforeMaterialId ? ordered.indexOf(beforeMaterialId) : -1;
+  await api(`/desktop/api/tasks/${state.activeTaskId}/materials/${materialId}/group`, {
+    method: "PUT",
+    body: JSON.stringify({ group_id: groupId, position: target < 0 ? ordered.length : target }),
+  });
+  await refreshMaterialOrganization();
+}
+
+async function createMaterialGroup() {
+  const name = prompt("新分组名称");
+  if (name === null || !name.trim()) return;
+  await api(`/desktop/api/tasks/${state.activeTaskId}/material-groups`, {
+    method: "POST", body: JSON.stringify({ name: name.trim() }),
+  });
+  await refreshMaterialOrganization();
+}
+
+async function renameMaterialGroup(groupId) {
+  const group = (state.materialGroups.get(state.activeTaskId) || []).find(item => item.group_id === groupId);
+  if (!group) return;
+  const name = prompt("新的分组名称", group.name);
+  if (name === null || !name.trim() || name.trim() === group.name) return;
+  await api(`/desktop/api/tasks/${state.activeTaskId}/material-groups/${groupId}`, {
+    method: "PUT", body: JSON.stringify({ name: name.trim() }),
+  });
+  await refreshMaterialOrganization();
+}
+
+async function deleteMaterialGroup(groupId) {
+  const group = (state.materialGroups.get(state.activeTaskId) || []).find(item => item.group_id === groupId);
+  if (!group || !confirm(`删除分组“${group.name}”？材料将恢复自动归类，材料本身和历史不会删除。`)) return;
+  await api(`/desktop/api/tasks/${state.activeTaskId}/material-groups/${groupId}?confirm=true`, { method: "DELETE" });
+  await refreshMaterialOrganization();
+}
+
+async function moveMaterialGroupOrder(groupId, direction) {
+  const groups = [...(state.materialGroups.get(state.activeTaskId) || [])].sort((a, b) => a.position - b.position);
+  const index = groups.findIndex(item => item.group_id === groupId);
+  const target = index + Number(direction);
+  if (index < 0 || target < 0 || target >= groups.length) return;
+  [groups[index], groups[target]] = [groups[target], groups[index]];
+  await api(`/desktop/api/tasks/${state.activeTaskId}/material-groups/order`, {
+    method: "PUT", body: JSON.stringify({ group_ids: groups.map(item => item.group_id) }),
+  });
+  await refreshMaterialOrganization();
+}
+
 async function switchTask(taskId) {
   const requestId = ++taskSwitchSequence;
   cancelPendingViewRequests();
   if (state.view === "focus") persistFocusState();
-  // 材料属于上一个任务，切换任务时清空预览列，避免残留其他任务的路径
-  resetFilePreviews();
+  const previousTaskId = state.activeTaskId;
+  if (previousTaskId && previousTaskId !== taskId) materialContentLoader.releaseTask(previousTaskId);
+  state.filesPanel = null;
   state.activeTaskId = taskId;
   state.view = "focus";
   render();
@@ -5125,36 +5096,19 @@ async function openSettings() {
 
 // f18:拦截消息内链接导航(避免 Electron 窗口跳转到本地路径白屏)。
 // capture 阶段拦截 + stopPropagation。判据:
-//   - file:// 链接:直接阻止导航,按文件打开预览列;
-//   - http/https 链接:markdown-it linkify 会把 file:///C:/.../中文名.md 误解析成
-//     http://中文名.md/ 的形态。判据为「host 含中文」或「host 本身像文件名」——
-//     后者复用预览模块的 classify，使「什么算文件名」只有一处判据，
-//     因此 http://data.json/ 这类误解析同样被还原成文件而不是当外链打开。
-// 从 file:// 链接还原磁盘绝对路径。链接形态为 file:///C:/a/b.md，去掉协议后是 /C:/a/b.md，
-// 需要去掉前导斜杠才是 Windows 绝对路径；非 file: 链接没有可还原的绝对路径。
-function absolutePathFromHref(href) {
-  if (!/^file:/i.test(href)) return "";
-  let raw = href.replace(/^file:\/\//i, "");
-  raw = raw.replace(/[?#].*$/, "");
-  try { raw = decodeURIComponent(raw); } catch { /* 保留原串，交由主进程判定存在性 */ }
-  if (/^\/[A-Za-z]:[\\/]/.test(raw)) raw = raw.slice(1);
-  if (raw.startsWith("/") && /^\/[^/]/.test(raw)) {
-    // POSIX 形态（file:///home/x）：保留前导斜杠
-    return raw;
-  }
-  return raw;
-}
-
+//   - file:// 链接:直接阻止导航,按文件打开面板;
+//   - http/https 链接:若 host 含中文或本地文件扩展结尾(markdown-it linkify 把
+//     file:///C:/.../中文名.md 误解析成 http://中文名.md/ 的形态)→ 视为文件误解析,
+//     阻止导航并从误解析的 host 提取文件名打开面板;真实外链放行。
 document.addEventListener("click", event => {
   const anchor = event.target.closest("a[href]");
   if (!anchor) return;
   const href = anchor.getAttribute("href") || "";
   const isHttp = /^https?:\/\//i.test(href);
   const hostPart = isHttp ? href.replace(/^https?:\/\//i, "").split("/")[0] : "";
-  // 误解析出来的 host 自带末尾斜杠，故先剥掉再判定扩展名
   const looksLikeFileHost = isHttp && (
-    /[一-鿿]/.test(hostPart)
-    || filePreview.classify(hostPart.replace(/\/$/, "")) !== "binary"
+    /\.(md|txt|png|jpe?g|pdf|docx?)$/i.test(hostPart)
+    || /[一-鿿]/.test(hostPart)
   );
   if (!isHttp && !href.startsWith("file:")) return; // 非 http/file 链接不处理
   if (isHttp && !looksLikeFileHost) {
@@ -5166,15 +5120,17 @@ document.addEventListener("click", event => {
   }
   event.preventDefault();
   event.stopPropagation();
-  // 显示文字可能含图标/说明；路径取自 href（file URL 可还原绝对路径）或兼容分支的 host。
-  // 任何后缀都交给 classify 决定呈现方式；未登记为材料时按路径读取，因此不存在「点了没反应」。
+  // 显示文字可能含图标/说明,路径只取自 href(file URL)或兼容分支的 host。
   const fileName = fileNameFromLinkHref(href, hostPart);
-  if (!fileName) return;
-  const absolutePath = absolutePathFromHref(href);
-  const record = materialForFileName(state.activeTaskId, fileName)
-    // 未登记为材料时也要把绝对路径交出去：丢掉它会让按路径读取拿不到可用的磁盘路径
-    || { relative_path: fileName, path: absolutePath || fileName };
-  openFilePreview(record);
+  if (FILE_VIEWABLE_RE.test(fileName)) {
+    const taskId = state.activeTaskId;
+    const material = (state.materials.get(taskId) || [])
+      .find(item => item.relative_path === fileName || item.path === fileName);
+    const target = material ? { ...material } : { relative_path: fileName, path: fileName };
+    if (!pluginViewForMaterial(target)) return setStatus("当前没有启用的文件查看器", true);
+    state.filesPanel = target;
+    render();
+  }
 }, true);
 
 // 全局错误可见化:任何未捕获异常显示在状态栏,避免白屏时无从排查
@@ -5272,36 +5228,6 @@ async function handleDocumentClick(event) {
     return render();
   }
   if (action === "refresh-plugins") { await hydratePlugins(); return render(); }
-  if (action === "reload-plugins") {
-    try {
-      const data = await api("/desktop/api/plugins/reload", { method: "POST" });
-      const plugins = data.plugins || [];
-      state.plugins = { ...state.plugins, plugins, interfaces: data.interfaces || {} };
-      if (!plugins.some(item => item.name === state.plugins.selectedName)) state.plugins.selectedName = plugins[0]?.name || null;
-      setStatus("已重新加载插件");
-      return renderPlugins();
-    } catch (error) { return setStatus(error.message, true); }
-  }
-  if (action === "toggle-plugin") {
-    const name = button.dataset.pluginName;
-    const enabled = button.dataset.pluginEnabled === "true";
-    button.disabled = true;
-    try {
-      const data = await api(`/desktop/api/plugins/${encodeURIComponent(name)}/enabled`, {
-        method: "PUT", body: JSON.stringify({ enabled }),
-      });
-      const plugins = data.plugins || [];
-      // 就地卸载/安装其前端资源与视图注册，保持当前所在视图不变
-      await applyPluginAssets(plugins);
-      state.plugins = { ...state.plugins, plugins, interfaces: data.interfaces || {} };
-      if (!plugins.some(item => item.name === state.plugins.selectedName)) {
-        state.plugins.selectedName = plugins[0]?.name || null;
-      }
-      setStatus(enabled ? `已启用 ${name}` : `已停用 ${name}`);
-      return renderPlugins();
-    } catch (error) { return setStatus(error.message, true); }
-    finally { button.disabled = false; }
-  }
   if (action === "filter-plugins") {
     state.plugins.filter = button.dataset.pluginStatus || "all";
     const visible = state.plugins.plugins.filter(item => state.plugins.filter === "all" || item.status === state.plugins.filter);
@@ -5385,8 +5311,10 @@ async function handleDocumentClick(event) {
     if (state.soldierArmed) return openDraft(taskId);
     return switchTask(taskId);
   }
-  if (action === "zoom-image") return openImageLightbox(button.dataset.imageUrl, "图片");
+  if (action === "zoom-image" && button.dataset.imageUrl) return openImageLightbox(button.dataset.imageUrl, "图片");
   if (action === "close-lightbox") { const root = document.querySelector("#overlayRoot"); if (root) root.innerHTML = ""; return; }
+  if (action === "retry-must-view") return resumeMustView("retry");
+  if (action === "cancel-must-view") return resumeMustView("cancel");
   if (action === "send-main") return sendMain();
   if (action === "toggle-compress-message") {
     state.compression.selected = compressionPanel.toggleSelect(
@@ -5443,7 +5371,25 @@ async function handleDocumentClick(event) {
     draft.history_messages = draft.history_messages.filter((item, itemIndex) => itemIndex !== index && !callIds.has(item.tool_call_id) && !(item.tool_calls || []).some(call => callIds.has(call.id)));
     renderDraft(); scheduleDraftSave(); return;
   }
-  if (handleFilePreviewAction(button)) return;
+  if (action === "set-material-grouping") {
+    const detail = state.details.get(state.activeTaskId);
+    detail.ui_state = { ...(detail.ui_state || {}), material_grouping_mode: button.dataset.mode };
+    renderInspector();
+    return persistFocusState();
+  }
+  if (action === "toggle-material-group") {
+    const detail = state.details.get(state.activeTaskId);
+    const collapsed = new Set(detail.ui_state?.collapsed_material_groups || []);
+    if (collapsed.has(button.dataset.groupKey)) collapsed.delete(button.dataset.groupKey);
+    else collapsed.add(button.dataset.groupKey);
+    detail.ui_state = { ...(detail.ui_state || {}), collapsed_material_groups: [...collapsed] };
+    renderInspector();
+    return persistFocusState();
+  }
+  if (action === "create-material-group") return createMaterialGroup();
+  if (action === "rename-material-group") return renameMaterialGroup(button.dataset.groupId);
+  if (action === "delete-material-group") return deleteMaterialGroup(button.dataset.groupId);
+  if (action === "move-material-group-order") return moveMaterialGroupOrder(button.dataset.groupId, button.dataset.direction);
   if (button.closest("[data-material-id]")) return handleMaterialAction(button);
   if (action === "agent-details") return openAgentDetails(button.dataset.agentId);
   if (action === "agent-list") { state.agentDetails = { agentId: null, messages: [], curation: null, busy: false }; return renderInspector(); }
@@ -5463,8 +5409,40 @@ document.addEventListener("click", event => {
   runUiAction(() => handleDocumentClick(event));
 });
 
+document.addEventListener("dragstart", event => {
+  // 材料行可沿整行拖放重排；起点落在行内文本编辑控件（备注 textarea 等）时属于文本编辑手势，
+  // 不得转成材料拖放。刻意不排除 button：材料名称摘要本身就是 button，排除它会让重排无处可抓。
+  if (event.target.closest?.("input, textarea, select, [contenteditable]")) return;
+  const row = event.target.closest?.("[data-material-id]");
+  if (!row || !event.dataTransfer) return;
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/focus-material-id", row.dataset.materialId);
+});
+
+document.addEventListener("dragover", event => {
+  if (event.target.closest?.("[data-drop-group-id]")) event.preventDefault();
+});
+
+document.addEventListener("drop", event => {
+  const target = event.target.closest?.("[data-drop-group-id]");
+  if (!target || !event.dataTransfer) return;
+  event.preventDefault();
+  const materialId = event.dataTransfer.getData("text/focus-material-id");
+  if (!materialId) return;
+  const beforeMaterialId = event.target.closest?.("[data-material-id]")?.dataset.materialId;
+  runUiAction(() => dropMaterialMembership(
+    materialId,
+    target.dataset.dropGroupId || null,
+    beforeMaterialId && beforeMaterialId !== materialId ? beforeMaterialId : null
+  ));
+});
+
 document.addEventListener("input", event => {
   if (event.target.id === "mainInput") updateAtHighlight(event.target);
+  if (event.target.matches('[data-field="run-material-note"]')) {
+    const row = event.target.closest("[data-material-id]");
+    if (row) updateRunMaterialNote(row.dataset.materialId, event.target.value);
+  }
   if (event.target.matches("[data-skill-input]")) updateSkillMenu(event.target, true);
   if (event.target.matches("[data-draft-field],[data-message-field],[data-equipment],[data-permission],[data-curation-policy]")) scheduleDraftSave();
   if (event.target.matches("[data-memory-field]")) syncMemoryField(event.target.dataset.memoryField, event.target.value);
@@ -5914,18 +5892,28 @@ async function uploadMaterialFile(file) {
 }
 
 document.addEventListener("change", event => {
-  if (event.target.id !== "fileInput" || !event.target.files[0]) return;
-  runUiAction(() => uploadMaterialFile(event.target.files[0]));
+  if (event.target.id !== "fileInput") return;
+  const input = event.target;
+  const file = input.files[0];
+  if (!file) return;
+  runUiAction(async () => {
+    try { await uploadMaterialFile(file); }
+    finally { input.value = ""; }
+  });
 });
 
 document.addEventListener("paste", event => {
+  if (event.target !== document.querySelector("#mainInput")) return;
   const images = [...(event.clipboardData?.items || [])].filter(item => item.type.startsWith("image/"));
   if (!images.length) return;
   event.preventDefault();
-  for (const item of images) {
-    const file = item.getAsFile();
-    if (file) runUiAction(() => uploadMaterialFile(file));
-  }
+  if (!state.activeTaskId) return setStatus("请先选择任务，再粘贴图片", true);
+  runUiAction(async () => {
+    for (const item of images) {
+      const file = item.getAsFile();
+      if (file) await uploadMaterialFile(file);
+    }
+  });
 });
 
 function persistFocusState() {
@@ -5946,6 +5934,8 @@ document.addEventListener("focus:languagechange", () => {
   syncLanguageControls();
   if (settingsDialog?.open) runUiAction(openSettings);
 });
+
+window.addEventListener("beforeunload", () => materialContentLoader.releaseAll());
 
 // 壳层三栏可拖拽：启动即应用持久化宽度/折叠态，并绑定两个 resizer 手柄。
 applyShellLayout(state.shellLayout);

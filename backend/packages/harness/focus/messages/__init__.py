@@ -17,6 +17,7 @@
     estimate_image_tokens — 单张图片按尺寸折算的 token 数
     estimate_images_tokens — 消息列表里全部图片的折算 token 数
     estimate_messages_tokens — 消息列表整体 token 数
+    estimate_model_request_tokens — 消息与 run 级请求图片合并后的最终请求 token 数
 
 工作流:
     包内三个模块各司一职：blocks 只认识内容块的形状，material_refs 只承载
@@ -47,6 +48,7 @@ from focus.messages.usage import (
     estimate_image_tokens,
     estimate_images_tokens,
     estimate_messages_tokens,
+    estimate_model_request_tokens,
     estimate_raw_tokens,
 )
 
@@ -57,6 +59,7 @@ __all__ = [
     "estimate_image_tokens",
     "estimate_images_tokens",
     "estimate_messages_tokens",
+    "estimate_model_request_tokens",
     "estimate_raw_tokens",
     "format_material_ref",
     "image_blocks",

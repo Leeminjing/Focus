@@ -1,3 +1,8 @@
+/*
+ * 本文件验证主运行中断与必看报告恢复 UI。输入为可控运行状态、SSE/HTTP 载荷和桌面 DOM；
+ * 输出为中断按钮状态、取消竞态、必看报告原因及 retry/cancel 恢复请求断言。
+ * 具体工作流在 VM 中执行 app.js 并记录同源 API 调用。示例：node desktop/app-interrupt.test.cjs。
+ */
 const assert = require("node:assert/strict");
 const vm = require("node:vm");
 const { createAppHarness, readAppSource } = require("./test-helper.cjs");
@@ -106,6 +111,38 @@ for (const status of ["success", "error", "interrupted"]) {
   const activeRunId = new vm.Script(`state.details.get("task").active_run.run_id`).runInContext(context);
   assert.equal(activeRunId, "run-9", "active_run 已更新");
   assert.equal(lastHtml.includes('data-action="interrupt-main-run"'), true, "运行中渲染中断按钮");
+
+  new vm.Script(`
+    state.tasks = [{ task_id: "task", thread_id: "thread", workspace_path: "C:/workspace", workspace_name: "workspace" }];
+    state.details.set("task", {
+      messages: [], ui_state: {}, active_run: { run_id: "run-mv", status: "interrupted", kind: "main" },
+      pending_must_view_report: {
+        type: "must_view_report",
+        materials: [{ material_id: "m1", relative_path: "shot.png", reason: "unread" }],
+      },
+    });
+    renderFocus();
+  `).runInContext(context);
+  assert.match(lastHtml, /必看图片报告/);
+  assert.match(lastHtml, /shot\.png/);
+  assert.match(lastHtml, /模型声明未读到/);
+  assert.match(lastHtml, /data-action="retry-must-view"/);
+  assert.match(lastHtml, /data-action="cancel-must-view"/);
+
+  fetches.length = 0;
+  setGlobal("fetch", async (path, options) => {
+    fetches.push({ url: path, options });
+    return { ok: true, status: 200, json: async () => ({ run_id: "run-mv-retry", status: "pending", kind: "main", task_id: "task" }) };
+  });
+  await new vm.Script(`resumeMustView("retry")`).runInContext(context);
+  assert.ok(fetches[0].url.endsWith("/desktop/api/threads/thread/runs/resume"));
+  assert.deepEqual(JSON.parse(fetches[0].options.body).resume, {
+    type: "must_view_report", decision: "retry",
+  });
+  assert.equal(
+    new vm.Script(`state.details.get("task").pending_must_view_report`).runInContext(context),
+    null,
+  );
 
   console.log("app-interrupt.test.cjs OK");
 })().catch(error => { console.error(error); process.exit(1); });

@@ -1,8 +1,6 @@
 /*
  * 本文件对外提供插件中心的纯渲染器。输入为插件清单、接口注册表、执行轨迹与本地筛选/选中状态，
- * 输出为主从插件工作台 HTML 与启停按钮；工作流只呈现插件解析结果，不改变注入顺序和插件生命周期
- * （启停由宿主调用 API 完成，本文件只负责表达「当前可执行什么动作」）。
- * 示例：`FocusPluginView.render(plugins, interfaces, traces, { filter: "disabled" })`。
+ * 输出为主从插件工作台 HTML；工作流只呈现插件解析结果，不改变注入顺序和插件生命周期。
  */
 (function (root, factory) {
   const api = factory();
@@ -17,7 +15,6 @@
 
   const STATUS_BADGES = {
     active: "已生效",
-    disabled: "已停用",
     unavailable: "不可用",
     rejected: "已拒绝",
     pending: "待解析",
@@ -25,20 +22,10 @@
 
   const STATUS_TONES = {
     active: "success",
-    disabled: "neutral",
     unavailable: "warning",
     rejected: "danger",
     pending: "neutral",
   };
-
-  // 启停入口：只有「生效」与「停用」两种状态可以被用户翻转。
-  // 发布方在清单里关闭（enabled=false）的插件不出现此按钮——用户无法翻转发布方默认值。
-  function renderToggle(plugin, className = "") {
-    if (!plugin.can_toggle) return "";
-    const willDisable = plugin.status === "active";
-    const label = willDisable ? "停用" : "启用";
-    return `<button type="button" class="text-button ${willDisable ? "danger" : "primary"} ${className}" data-action="toggle-plugin" data-plugin-name="${escapeHtml(plugin.name)}" data-plugin-enabled="${willDisable ? "false" : "true"}" title="${willDisable ? "停止注入该插件的接口与工具" : "重新注入该插件的接口与工具"}">${label}</button>`;
-  }
 
   // 接口视图：编号顺序 + 只读标注（Read-only extension point）
   function renderInterfaces(interfaces) {
@@ -66,19 +53,11 @@
       ? `<span class="plugin-reason danger">Injection Conflict — Interface: ${escapeHtml(plugin.conflict.interface)} · Current: ${escapeHtml(plugin.conflict.current)} · New: ${escapeHtml(plugin.conflict.new)}</span>`
       : "";
     const reason = !missing && !conflict && plugin.reason ? `<span class="plugin-reason">${escapeHtml(plugin.reason)}</span>` : "";
-    const disabledNote = plugin.status === "disabled"
-      ? `<span class="plugin-reason">已被本机停用，不参与能力注入</span>`
-      : "";
-    // 卡片本体与启停按钮必须是兄弟节点（button 不可嵌套 button）；
-    // 按钮独占卡片底行，避免与状态徽章在同一行争宽。
-    return `<div class="plugin-card-shell${selected ? " is-selected" : ""}">
-      <button type="button" class="plugin-card status-${escapeHtml(plugin.status)}" data-action="select-plugin" data-plugin-name="${escapeHtml(plugin.name)}" aria-pressed="${selected}">
-        <span class="plugin-card-heading"><span><strong>${escapeHtml(plugin.name)}</strong><small>v${escapeHtml(plugin.version)}</small></span><span class="ui-badge is-${STATUS_TONES[plugin.status] || "neutral"}">${STATUS_BADGES[plugin.status] || escapeHtml(plugin.status)}</span></span>
-        <span class="plugin-card-capabilities">${injected}</span>
-        ${missing}${conflict}${reason}${disabledNote}
-      </button>
-      ${plugin.can_toggle ? `<span class="plugin-card-actions">${renderToggle(plugin)}</span>` : ""}
-    </div>`;
+    return `<button type="button" class="plugin-card status-${escapeHtml(plugin.status)}${selected ? " is-selected" : ""}" data-action="select-plugin" data-plugin-name="${escapeHtml(plugin.name)}" aria-pressed="${selected}">
+      <span class="plugin-card-heading"><span><strong>${escapeHtml(plugin.name)}</strong><small>v${escapeHtml(plugin.version)}</small></span><span class="ui-badge is-${STATUS_TONES[plugin.status] || "neutral"}">${STATUS_BADGES[plugin.status] || escapeHtml(plugin.status)}</span></span>
+      <span class="plugin-card-capabilities">${injected}</span>
+      ${missing}${conflict}${reason}
+    </button>`;
   }
 
   function renderTraces(traces) {
@@ -104,9 +83,8 @@
     return `<section class="plugin-detail status-${escapeHtml(plugin.status)}">
       <header class="plugin-detail-heading">
         <div><span class="workspace-kicker">PLUGIN DETAIL</span><h2>${escapeHtml(plugin.name)}</h2><p>版本 ${escapeHtml(plugin.version)} · ${STATUS_BADGES[plugin.status] || escapeHtml(plugin.status)}</p></div>
-        <span class="plugin-detail-actions"><span class="ui-badge is-${STATUS_TONES[plugin.status] || "neutral"}">${STATUS_BADGES[plugin.status] || escapeHtml(plugin.status)}</span>${renderToggle(plugin, "plugin-detail-toggle")}</span>
+        <span class="ui-badge is-${STATUS_TONES[plugin.status] || "neutral"}">${STATUS_BADGES[plugin.status] || escapeHtml(plugin.status)}</span>
       </header>
-      ${plugin.status === "disabled" ? `<div class="ui-notice"><strong>该插件已被本机停用</strong><span>它当前不注入任何接口、工具与服务；点「启用」后立刻恢复。正在运行中的任务使用装配时快照，不受影响。</span></div>` : ""}
       ${plugin.conflict ? `<div class="ui-notice is-danger"><strong>接口注入冲突</strong><span>${escapeHtml(plugin.conflict.interface)} 已由 ${escapeHtml(plugin.conflict.current)} 注册，无法再注入 ${escapeHtml(plugin.conflict.new)}。</span></div>` : ""}
       ${missing.length ? `<div class="ui-notice is-warning"><strong>缺少依赖</strong><span>${escapeHtml(missing.join(", "))}</span></div>` : ""}
       ${plugin.reason && !plugin.conflict && !missing.length ? `<div class="ui-notice is-warning"><strong>插件不可用</strong><span>${escapeHtml(plugin.reason)}</span></div>` : ""}
@@ -123,7 +101,7 @@
     const filtered = all.filter(plugin => filter === "all" || plugin.status === filter);
     const selected = filtered.find(plugin => plugin.name === options.selectedName) || filtered[0] || null;
     const filters = [
-      ["all", "全部"], ["active", "已生效"], ["disabled", "已停用"], ["unavailable", "不可用"], ["rejected", "已拒绝"],
+      ["all", "全部"], ["active", "已生效"], ["unavailable", "不可用"], ["rejected", "已拒绝"],
     ].map(([status, label]) => {
       const count = status === "all" ? all.length : all.filter(plugin => plugin.status === status).length;
       return `<button type="button" class="${filter === status ? "active" : ""}" data-action="filter-plugins" data-plugin-status="${status}" aria-pressed="${filter === status}">${label} <span>${count}</span></button>`;
@@ -142,5 +120,5 @@
     </section>`;
   }
 
-  return { render, renderInterfaces, renderPluginCard, renderPluginDetail, renderTraces, renderToggle };
+  return { render, renderInterfaces, renderPluginCard, renderPluginDetail, renderTraces };
 });

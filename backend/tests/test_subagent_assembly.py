@@ -1,9 +1,13 @@
-"""Subagent 三种模式装配集成测试：主 Agent/小兵按角色装配协作工具 + Mailbox 回合注入。
+"""本文件验证主 Agent 与小兵的角色装配、图片中间件组合和 Mailbox 注入。
 
-真实链路（start_run/worker/StreamBridge/DB），仅替换 make_lead_agent 为捕获型 fake 图。
-独立文件：poc 文件内的嵌套 TestClient lifespan 会污染 app.state，隔离避免顺序依赖。
+输入为真实桌面 API、数据库、图片上传和可捕获的 Agent 工厂；输出为无图片、普通附件、
+附件加必看三种 middleware 组合及协作工具断言，并锁定主运行不得绑定 provider 结构化输出。
+具体工作流保留 start_run/worker/StreamBridge/DB，只替换外部工具池和模型图构建，避免网络依赖。
+
+示例：python -m pytest backend/tests/test_subagent_assembly.py。
 """
 
+import base64
 import os
 import uuid
 
@@ -61,8 +65,13 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
         captured.append(kwargs)
         return FakeGraph()
 
+    async def fake_get_available_tools():
+        return []
+
     original = svc.make_lead_agent
+    original_tools = svc.get_available_tools
     svc.make_lead_agent = fake_make_lead_agent
+    svc.get_available_tools = fake_get_available_tools
     try:
         with _client() as client:
             workspace_folder = tmp_path / "ws"
@@ -89,9 +98,27 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
 
             client.portal.call(seed_mailbox)
 
+            image = client.post(
+                f"/desktop/api/tasks/{task_id}/materials/upload",
+                headers=SESSION,
+                files={
+                    "file": (
+                        "shot.png",
+                        base64.b64decode(
+                            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                        ),
+                        "image/png",
+                    )
+                },
+            ).json()
             run = client.post(
                 f"/desktop/api/tasks/{task_id}/main/runs", headers=SESSION,
-                json={"message": "继续", "permissions": ["read"]},
+                json={
+                    "message": "继续",
+                    "permissions": ["read"],
+                    "attached_material_ids": [image["material_id"]],
+                    "must_view_material_ids": [image["material_id"]],
+                },
             ).json()
             assert run["status"] == "pending"
             wait_until(lambda: captured, timeout=15, message="主 Agent 装配未被捕获")
@@ -102,20 +129,77 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
                     "publish_task", "list_board_tasks", "send_message",
                     "approve_plan", "respond_shutdown",
                     "list_patrol_agents", "read_patrol_agent_history",
-                    "read_swarm_agent_history"} <= main_names
+                    "read_swarm_agent_history",
+                    "report_must_view_images"} <= main_names
             assert main_cfg["middlewares"] is None
-            # 主 Agent：工具错误 middleware + 必需图片注入 + 压缩门（均为仅 main 装配）
-            assert len(main_cfg["additional_middlewares"]) == 3
+            assert len(main_cfg["additional_middlewares"]) == 4
             names = [
                 middleware.__class__.__name__
                 for middleware in main_cfg["additional_middlewares"]
             ]
-            assert "MustViewImagesMiddleware" in names
+            assert "ImageAttachmentProjectionMiddleware" in names
+            assert "MustViewCompletionMiddleware" in names
             assert "CompressionGate" in names
-            assert names.index("MustViewImagesMiddleware") < names.index("CompressionGate")
+            assert names.index("ImageAttachmentProjectionMiddleware") < names.index("CompressionGate")
+            assert names.index("MustViewCompletionMiddleware") < names.index("CompressionGate")
+            assert "response_format" not in main_cfg, (
+                "主运行 MUST NOT 绑定 provider 结构化输出：有必需图片时 LangChain 会回落 "
+                "ToolStrategy 并强制 tool_choice=required，与 thinking 模型互斥"
+            )
             assert "claim_task" not in main_names
             assert "<agent_messages>" in main_cfg["system_prompt"]
             assert 'from="patrol-x"' in main_cfg["system_prompt"]
+
+            base_equipment = {
+                "model_name": None,
+                "skills": [],
+                "skill_snapshots": [],
+                "permissions": ["read"],
+            }
+            captured.clear()
+            empty_factory = service._build_agent_factory(
+                task_id, f"main:{task_id}", str(workspace_folder), base_equipment,
+                "prompt", "", "main",
+            )
+            client.portal.call(empty_factory)
+            empty_cfg = captured[-1]
+            assert [
+                item.__class__.__name__ for item in empty_cfg["additional_middlewares"]
+            ] == ["handle_tool_errors", "CompressionGate"]
+            assert "response_format" not in empty_cfg
+            assert "report_must_view_images" not in {
+                item.name for item in empty_cfg["tools"]
+            }, "无必需图片时不得装配逐图表态工具"
+
+            captured.clear()
+            attached_equipment = {
+                **base_equipment,
+                "run_image_inputs": {
+                    "attached": [{
+                        "material_id": image["material_id"],
+                        "relative_path": image["relative_path"],
+                        "source_bytes": len(base64.b64decode(
+                            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                        )),
+                        "model_bytes": 1,
+                        "model_tokens": 1,
+                    }],
+                    "required_ids": [],
+                },
+            }
+            attached_factory = service._build_agent_factory(
+                task_id, f"main:{task_id}", str(workspace_folder), attached_equipment,
+                "prompt", "", "main",
+            )
+            client.portal.call(attached_factory)
+            attached_cfg = captured[-1]
+            assert [
+                item.__class__.__name__ for item in attached_cfg["additional_middlewares"]
+            ] == ["handle_tool_errors", "ImageAttachmentProjectionMiddleware", "CompressionGate"]
+            assert "response_format" not in attached_cfg
+            assert "report_must_view_images" not in {
+                item.name for item in attached_cfg["tools"]
+            }, "只有普通附件、没有必需图片时不得装配逐图表态工具"
 
             # 小兵链路：open_draft → update → deploy
             captured.clear()
@@ -263,3 +347,4 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
             cleanup()
     finally:
         svc.make_lead_agent = original
+        svc.get_available_tools = original_tools

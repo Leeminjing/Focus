@@ -1,30 +1,33 @@
 """
-本文件对外提供 DesktopService，聚合桌面工作区、Context、普通 Patrol、Context 策展 Patrol、
-材料版本与 Claude Code 三套 subagent 机制（树形 spawn / Swarm / Coordinator）业务。
+本文件对外提供 DesktopService 与 PreparedRun，编排桌面工作区、Context、Patrol、材料、
+主运行和三套 subagent 机制（树形 spawn / Swarm / Coordinator）业务。
 
 输入为已初始化的 PostgreSQL session factory、LangGraph checkpointer/store、StreamBridge、
 RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以及 PreparedRun（统一
 编排入口 start_run 的输入 + agent_factory 闭包）。
 具体工作流为：登记真实宿主机工作区与线程，复制已提交 checkpoint 形成冻结草稿，
-准备无沙箱工作区 Agent 的装配参数（经统一执行链路 worker.run_agent 执行，
-独立 checkpoint namespace 隔离），并用 Git 隐藏引用保护不可遗失材料。
+准备无沙箱工作区 Agent 的装配参数（经统一执行链路 worker.run_agent 执行），并把上传、
+内容读取、逐轮材料解析/历史/投影和自定义分组分别委托给单一职责服务；主运行在同一事务
+持久化稳定用户消息与有序材料绑定，图片是通用材料聚合的派生视图，初始与恢复路径使用同一
+投影，图片交付、必看完成门和压缩门按职责独立装配。
+Agent 运行使用独立 checkpoint namespace 隔离，并用 Git 隐藏引用保护不可遗失材料。
 四套机制装配边界经 agent_role 区分：main（spawn 三件套 + 协作工具 + Mailbox 注入
 + 联网工具 web_search/web_fetch + MCP 远端工具 + 压缩门）、teammate/worker（持久派生
 Agent，协作工具 + Mailbox 注入 + 联网工具）、patrol（小兵机制，工作区工具仅，无联网
 无 MCP）。持久派生（spawn_teammate/spawn_worker）创建 SwarmAgent 身份并经
 _launch_swarm_run 启动独立命名空间的后台 run；工具错误 middleware 保证可恢复调用闭合，
 主任务运行前的 checkpoint preflight 可从最近合法祖先恢复受损历史；主 Agent 中断恢复
-经 resume_run 按载荷分派承诺层、压缩流程与本机资源准入。
+经 resume_run 按载荷分派承诺层、必看报告、压缩流程与本机资源准入。
 执行身份：三个持久化启动点（主 run、resume、swarm）与本 UI 状态恢复路径统一经
 _governed_context 由执行身份档案派生受治理上下文（工作根、能力权限、访问模式、
-执行主体角色、执行命名空间），launcher 只提供身份材料；访问模式（工作区保护 /
-本机完全权限）随装备持久化，与能力权限正交。
+执行主体角色、执行命名空间），launcher 只提供身份材料；材料与图片投影在该上下文之上
+由装配层写入；访问模式（工作区保护 / 本机完全权限）随装备持久化，与能力权限正交。
 
 路径归属：本文件的 _resolve_workspace_path 服务于材料登记，即人在界面侧把工作区文件登记为
 材料，属于界面侧入口，不受 Agent 本地访问策略约束；Agent 侧的路径解释与准入判定统一由
 focus.security 承担（见 openspec add-local-access-policy）。
 
-示例：`service = DesktopService(...); await service.open_draft(task_id)`。
+示例：service = DesktopService(...); await service.start_main_run(task_id, message, ...)。
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ import subprocess
 from typing import Any, Awaitable, Callable
 import uuid
 
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 from langchain.tools import ToolRuntime
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool, tool
@@ -63,6 +66,16 @@ from backend.app.desktop.context_curator import (
     estimate_curation_tokens,
 )
 from backend.app.desktop.memory import MemoryService, _MAIN_RUNTIME_MEMORY_KEY
+from backend.app.desktop.material_content import MaterialContentService, ResolvedMaterialContent
+from backend.app.desktop.material_context import MaterialContextProjector
+from backend.app.desktop.material_groups import MaterialGroupService
+from backend.app.desktop.material_kinds import MaterialKindClassifier
+from backend.app.desktop.material_snapshots import MaterialSnapshotVerifier
+from backend.app.desktop.material_upload import MaterialUploadService
+from backend.app.desktop.must_view_recovery import (
+    must_view_recovery_payload,
+    validate_must_view_resume,
+)
 from backend.app.desktop.models import (
     AgentBoardTask,
     AgentMessage,
@@ -75,11 +88,17 @@ from backend.app.desktop.models import (
     MaterialCreate,
     MaterialUpdate,
     MaterialVersion,
+    RunMaterialBinding,
     PatrolAgent,
     PatrolDraft,
     SwarmAgent,
 )
 from backend.app.desktop.skills import build_task_skill_catalog, resolve_task_skills
+from backend.app.desktop.resource_limits import ImageResourceLimits
+from backend.app.desktop.run_images import RunImageResolver
+from backend.app.desktop.run_material_history import RunMaterialHistoryRepository
+from backend.app.desktop.run_material_message import RunMaterialMessageProjector
+from backend.app.desktop.run_materials import RunMaterialRequest, RunMaterialResolver
 from backend.app.desktop.storage_values import normalize_json_storage_value
 from backend.app.desktop.tool_error_provider import build_tool_error_middleware
 from focus.runtime.checkpointer.namespaced import NamespacedCheckpointer
@@ -99,32 +118,27 @@ from focus.security.context import (
     derive_security_context,
     security_context_of,
 )
-from focus.security.policy import AccessMode, workspace_roots
-from focus.security.governed import strip_governed
 from focus.security.effects import (
     DELEGATED_EXECUTION_EFFECT,
     NO_LOCAL_EFFECT,
     declare_all_effects,
     declare_effect,
 )
-from backend.app.desktop.material_files import (
-    EmptyUpload,
-    OversizedImage,
-    guard_upload,
-    media_type_for,
-    prepare_attachment_target,
-    read_material_text,
-    resolve_material_path,
-)
+from focus.security.governed import strip_governed
+from focus.security.policy import AccessMode, workspace_roots
+from backend.app.desktop.material_files import resolve_material_path
+from focus.agents.image_attachment import build_image_attachment_middleware
+from focus.agents.image_inputs import RunImageInputs
+from focus.agents.material_inputs import RunMaterialInputs, project_run_material_context
 from focus.agents.must_view import (
-    MUST_VIEW_CONTEXT_KEY,
-    MODEL_IMAGE_INPUT_KEY,
-    MustViewReports,
-    build_must_view_middleware,
+    build_must_view_completion_middleware,
+    report_must_view_images,
 )
 from focus.images import is_image_name
 from focus.messages import (
     estimate_images_tokens,
+    estimate_messages_tokens,
+    estimate_model_request_tokens,
     estimate_raw_tokens,
     strip_image_payloads,
 )
@@ -244,7 +258,8 @@ def _must_view_prompt(materials: list[dict[str, str]]) -> str:
     )
     return (
         "\n\n<focus_must_view>\n"
-        "用户把以下图片标记为本轮必须查看。请在结构化输出中对每一张各给一条表态："
+        "用户把以下图片标记为本轮必须查看。请逐张查看，并调用 "
+        f"{report_must_view_images.name} 为每一张各给一条声明："
         "成功读到该图片的内容即把 read 置为真。\n"
         f"{lines}\n"
         "</focus_must_view>"
@@ -259,11 +274,20 @@ def _material_policy_line(path: Path, reading_mode: str, instruction_mode: str) 
     return f"- {path} | {reading} | {instruction}"
 
 
-def estimate_tokens(system_prompt: str, messages: list[dict[str, Any]], final_message: str) -> int:
+def estimate_tokens(
+    system_prompt: str,
+    messages: list[dict[str, Any]],
+    final_message: str,
+    run_images: RunImageInputs | None = None,
+) -> int:
     image_tokens = estimate_images_tokens(messages)
     counted = strip_image_payloads(messages) if image_tokens else messages
     raw = system_prompt + final_message + json.dumps(counted, ensure_ascii=False, separators=(",", ":"))
-    return estimate_raw_tokens(raw, len(messages)) + image_tokens
+    state_total = estimate_raw_tokens(raw, len(messages)) + image_tokens
+    if run_images is None:
+        return state_total
+    request_extra = estimate_model_request_tokens(messages, run_images.attached) - estimate_messages_tokens(messages)
+    return state_total + request_extra
 
 
 def prompt_with_skills(system_prompt: str, snapshots: list[dict[str, str]]) -> str:
@@ -291,6 +315,14 @@ class DesktopService:
         self.bridge = bridge
         self.app_config = app_config
         self.run_manager = run_manager
+        self.image_limits = ImageResourceLimits()
+        self.material_uploads = MaterialUploadService(session_factory, self.image_limits)
+        self.material_contents = MaterialContentService(session_factory, self.image_limits)
+        self.run_images = RunImageResolver(self.image_limits)
+        self.run_materials = RunMaterialResolver(self.image_limits)
+        self.run_material_history = RunMaterialHistoryRepository()
+        self.material_groups = MaterialGroupService(session_factory)
+        self.material_snapshots = MaterialSnapshotVerifier()
         self.contexts = ContextService(session_factory, checkpointer, app_config)
         self.context_patrol = ContextPatrolService(
             session_factory, self.contexts, checkpointer, store, bridge, run_manager, app_config
@@ -821,6 +853,8 @@ class DesktopService:
         self, task_id: str, message: str | list[dict[str, Any]], model_name: str | None,
         permissions: list[str], skills: list[str], spatial_focus: dict[str, Any] | None = None,
         memory_ids: list[str] | None = None,
+        material_inputs: list[RunMaterialRequest] | None = None,
+        attached_material_ids: list[str] | None = None,
         must_view_material_ids: list[str] | None = None,
         access_mode: str | None = None,
     ) -> PreparedRun:
@@ -849,7 +883,20 @@ class DesktopService:
                         "message": "存在待确认的压缩请求，请先完成压缩或取消后继续",
                     },
                 )
-            # 未决中断的阻塞以主执行身份为粒度：以下三次探测都只读主图命名空间（外加承诺子图），
+            must_view_recovery = await must_view_recovery_payload(
+                session, task_row, self.checkpointer
+            )
+            if must_view_recovery is not None:
+                raise HTTPException(
+                    409,
+                    {
+                        "code": "must_view_report_pending",
+                        "recovery": must_view_recovery["status"],
+                        "request": must_view_recovery["request"],
+                        "message": "存在待处理的必看报告，请先重试或取消当前运行",
+                    },
+                )
+            # 未决中断的阻塞以主执行身份为粒度：以下探测都只读主图命名空间（外加承诺子图），
             # 后台执行主体（swarm / patrol / spatial）的中断位于各自命名空间，不阻塞主运行
             access_recovery = await main_pending_interrupt(
                 session, task_row, self.checkpointer, APPROVAL_TYPE
@@ -864,8 +911,17 @@ class DesktopService:
                     },
                 )
             snapshots = self._freeze_skills(workspace.path, skills)
-            must_view = await self._resolve_must_view_materials(
-                session, task_id, workspace.path, must_view_material_ids or []
+            run_id = new_id()
+            message_id = new_id()
+            run_materials = await self.run_materials.resolve(
+                session,
+                task_id,
+                workspace.path,
+                run_id,
+                message_id,
+                material_inputs,
+                attached_material_ids,
+                must_view_material_ids or [],
             )
             equipment = {
                 "model_name": model_name,
@@ -873,13 +929,21 @@ class DesktopService:
                 "skill_snapshots": snapshots,
                 "permissions": permissions,
                 "access_mode": str(_resolve_access_mode(access_mode)),
-                "must_view_materials": must_view,
+                **run_materials.to_equipment(),
             }
-            run = DesktopRun(
-                run_id=new_id(), task_id=task_id, agent_id=f"main:{task_id}", kind="main", status="pending",
-                input_messages=[{"role": "human", "content": message}], model_name=model_name,
+            history = await self.get_checkpoint_messages(task_row.thread_id, "")
+            current_message = RunMaterialMessageProjector.project(message, run_materials)
+            self._validate_model_window(
+                model_name,
+                estimate_tokens(_MAIN_SYSTEM_PROMPT, [*history, current_message], "", run_materials.images),
             )
+            run = DesktopRun(
+                run_id=run_id, task_id=task_id, agent_id=f"main:{task_id}", kind="main", status="pending",
+                input_messages=[current_message], model_name=model_name,
+            )
+            run.origin_message_id = message_id
             session.add(run)
+            self.run_material_history.add(session, run, run_materials)
             task_row.ui_state = {
                 **(task_row.ui_state or {}),
                 _MAIN_RUNTIME_EQUIPMENT_KEY: equipment,
@@ -983,6 +1047,19 @@ class DesktopService:
                     session, task, await self._resume_workspace(session, task), resume
                 )
 
+            must_view_recovery = await must_view_recovery_payload(
+                session, task, self.checkpointer
+            )
+            if must_view_recovery is not None:
+                if must_view_recovery["status"] != "resumable":
+                    raise HTTPException(409, "必看报告中断当前不可恢复")
+                return await self._prepare_main_resume(
+                    session,
+                    task,
+                    await self._resume_workspace(session, task),
+                    validate_must_view_resume(resume),
+                )
+
             compression_recovery = await compression_recovery_payload(
                 session, task, self.checkpointer
             )
@@ -1067,6 +1144,12 @@ class DesktopService:
                 "skill_snapshots": self._freeze_skills(workspace.path, skills),
                 "permissions": ["read"],
             }
+        run_materials = RunMaterialInputs.from_equipment(equipment)
+        if any(item.digest != "legacy" for item in run_materials.attached):
+            run_materials = await self.material_snapshots.verify(session, run_materials, workspace.path)
+        equipment.pop("must_view_materials", None)
+        equipment.pop("run_image_inputs", None)
+        equipment.update(run_materials.to_equipment())
         run = DesktopRun(
             run_id=new_id(),
             task_id=task.task_id,
@@ -1078,41 +1161,53 @@ class DesktopService:
         )
         session.add(run)
         await session.commit()
-        material_context, uploads_tag = await self._material_context(task.task_id)
+        projection = MaterialContextProjector.project(run_materials, workspace.path)
+        material_context, uploads_tag = projection.policy_text, projection.uploads_tag
         resume_memory_ids = list(
             (task.ui_state or {}).get(_MAIN_RUNTIME_MEMORY_KEY) or []
         )
         memory_base_prompt = await self._apply_memory_block(
             _MAIN_SYSTEM_PROMPT, resume_memory_ids
         )
+        required = list(run_materials.images.required)
+        if required:
+            memory_base_prompt += _must_view_prompt(
+                [
+                    {"material_id": item.material_id, "relative_path": item.relative_path}
+                    for item in required
+                ]
+            )
         factory = self._build_agent_factory(
             task.task_id, run.agent_id, workspace.path, equipment, memory_base_prompt,
             material_context, "main",
         )
+        context = self._governed_context(
+            thread_id=task.thread_id,
+            run=run,
+            workspace_id=workspace.workspace_id,
+            workspace_path=workspace.path,
+            permissions=list(equipment.get("permissions") or ["read"]),
+            access_mode=equipment.get("access_mode"),
+            checkpoint_ns="",
+            agent_role="main",
+            model_name=equipment.get("model_name"),
+            allow_global_config=task.thread_id == _ASSEMBLY_THREAD_ID,
+            extras={
+                "task_id": task.task_id,
+                "skills": equipment.get("skills") or [],
+                "uploads": uploads_tag,
+            },
+        )
+        # 材料与图片投影由装配层写入受治理上下文之上（受治理键的服务端生产者）
+        project_run_material_context(
+            context,
+            run_materials,
+            self._model_supports_image_input(equipment.get("model_name")),
+        )
         body = RunCreateRequest(
             input=None,
             resume=resume,
-            context=self._governed_context(
-                thread_id=task.thread_id,
-                run=run,
-                workspace_id=workspace.workspace_id,
-                workspace_path=workspace.path,
-                permissions=list(equipment.get("permissions") or ["read"]),
-                access_mode=equipment.get("access_mode"),
-                checkpoint_ns="",
-                agent_role="main",
-                model_name=equipment.get("model_name"),
-                allow_global_config=task.thread_id == _ASSEMBLY_THREAD_ID,
-                extras={
-                    "task_id": task.task_id,
-                    "skills": equipment.get("skills") or [],
-                    "uploads": uploads_tag,
-                    MUST_VIEW_CONTEXT_KEY: equipment.get("must_view_materials") or [],
-                    MODEL_IMAGE_INPUT_KEY: self._model_supports_image_input(
-                        equipment.get("model_name")
-                    ),
-                },
-            ),
+            context=context,
             stream_mode=["messages-tuple", "values"],
         )
         return PreparedRun(
@@ -1299,7 +1394,43 @@ class DesktopService:
                     select(DesktopMaterial).where(DesktopMaterial.task_id == task_id).order_by(DesktopMaterial.created_at)
                 )
             ).all()
-            return [self._material_payload(item, workspace.path) for item in materials]
+            payloads = [self._material_payload(item, workspace.path) for item in materials]
+        groups = await self.material_groups.list(task_id)
+        memberships = {
+            membership["material_id"]: membership
+            for group in groups
+            for membership in group["memberships"]
+        }
+        history = await self.list_material_history(task_id)
+        first_use: dict[str, dict[str, Any]] = {}
+        for item in history:
+            first_use.setdefault(item["material_id"], item)
+        for payload in payloads:
+            membership = memberships.get(payload["material_id"])
+            source = first_use.get(payload["material_id"])
+            payload["custom_group_id"] = membership["group_id"] if membership else None
+            payload["custom_position"] = membership["position"] if membership else None
+            payload["first_run_id"] = source["run_id"] if source else None
+            payload["first_run_created_at"] = source["created_at"] if source else None
+        return payloads
+
+    async def list_material_history(
+        self, task_id: str, material_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        async with self.session_factory() as session:
+            await self._get_task_entities(session, task_id)
+            if material_id is not None:
+                material = await session.get(DesktopMaterial, material_id)
+                if material is not None and material.task_id != task_id:
+                    raise HTTPException(404, "材料不存在或不属于当前任务")
+                historical_task_id = await session.scalar(
+                    select(RunMaterialBinding.task_id).where(
+                        RunMaterialBinding.material_id_snapshot == material_id
+                    ).limit(1)
+                )
+                if historical_task_id is not None and historical_task_id != task_id:
+                    raise HTTPException(404, "材料历史不存在或不属于当前任务")
+            return await self.run_material_history.list_for_task(session, task_id, material_id)
 
     async def update_material(self, material_id: str, body: MaterialUpdate) -> dict[str, Any]:
         async with self.session_factory() as session:
@@ -1382,10 +1513,25 @@ class DesktopService:
             (3) context 携带 workspace/workspace_id/agent_id/task_id/permissions/skills/checkpoint_ns，
                 由 services.start_run 透传给 worker 与工具（ToolRuntime）
         """
-        material_context, uploads_tag = await self._material_context(run.task_id)
-        must_view = equipment.get("must_view_materials") or []
-        if must_view:
-            base_prompt = base_prompt + _must_view_prompt(must_view)
+        run_materials = RunMaterialInputs.from_equipment(equipment)
+        if agent_role == "main":
+            if any(item.digest != "legacy" for item in run_materials.attached):
+                async with self.session_factory() as session:
+                    run_materials = await self.material_snapshots.verify(session, run_materials, workspace_path)
+                equipment = {**equipment, **run_materials.to_equipment()}
+            projection = MaterialContextProjector.project(run_materials, workspace_path)
+            material_context, uploads_tag = projection.policy_text, projection.uploads_tag
+        else:
+            material_context, uploads_tag = await self._material_context(run.task_id)
+        image_inputs = run_materials.images
+        required = list(image_inputs.required)
+        if required:
+            base_prompt = base_prompt + _must_view_prompt(
+                [
+                    {"material_id": item.material_id, "relative_path": item.relative_path}
+                    for item in required
+                ]
+            )
         factory = self._build_agent_factory(
             run.task_id, run.agent_id, workspace_path, equipment, base_prompt,
             material_context, agent_role,
@@ -1405,12 +1551,14 @@ class DesktopService:
                 "task_id": run.task_id,
                 "skills": equipment.get("skills") or [],
                 "uploads": uploads_tag,
-                MUST_VIEW_CONTEXT_KEY: equipment.get("must_view_materials") or [],
-                MODEL_IMAGE_INPUT_KEY: self._model_supports_image_input(
-                    equipment.get("model_name") or run.model_name
-                ),
                 **({"checkpoint_id": checkpoint_id} if checkpoint_id is not None else {}),
             },
+        )
+        # 材料与图片投影由装配层写入受治理上下文之上（受治理键的服务端生产者）
+        project_run_material_context(
+            context,
+            run_materials,
+            self._model_supports_image_input(equipment.get("model_name") or run.model_name),
         )
         body = RunCreateRequest(
             input={"messages": messages},
@@ -1524,10 +1672,16 @@ class DesktopService:
             else:
                 task_skill_names = None
                 middlewares = []
-            # 压缩门与必需图片注入：仅主 Agent、按角色装配（patrol/swarm 不装配）
             additional_middlewares = [build_tool_error_middleware()]
             if agent_role == "main":
-                additional_middlewares.append(build_must_view_middleware())
+                image_inputs = RunMaterialInputs.from_equipment(equipment).images
+                if image_inputs.attached:
+                    additional_middlewares.append(build_image_attachment_middleware())
+                if image_inputs.required_ids:
+                    additional_middlewares.append(build_must_view_completion_middleware())
+                    # 逐图表态由普通工具承载：只在有必需图片时装配，且不做任何强制工具选择，
+                    # 以免与 thinking 模型互斥（见 drop-forced-tool-choice-for-must-view）。
+                    tools = [*tools, report_must_view_images]
             if agent_role == "main" and self.app_config.compression.enabled:
                 from focus.agents.compression.gate import build_compression_gate
 
@@ -1545,11 +1699,6 @@ class DesktopService:
                 additional_middlewares=additional_middlewares,
                 app_config=self.app_config,
                 middleware_skill_names=task_skill_names,
-                response_format=(
-                    MustViewReports
-                    if agent_role == "main" and equipment.get("must_view_materials")
-                    else None
-                ),
             )
 
         return factory
@@ -2314,6 +2463,9 @@ class DesktopService:
         compression_recovery = await compression_recovery_payload(
             session, task, self.checkpointer
         )
+        must_view_recovery = await must_view_recovery_payload(
+            session, task, self.checkpointer
+        )
         access_recovery = await main_pending_interrupt(
             session, task, self.checkpointer, APPROVAL_TYPE
         )
@@ -2337,6 +2489,12 @@ class DesktopService:
                 else None
             ),
             "compression_recovery": compression_recovery,
+            "pending_must_view_report": (
+                must_view_recovery["request"]
+                if must_view_recovery and must_view_recovery["status"] in ("resumable", "orphaned")
+                else None
+            ),
+            "must_view_recovery": must_view_recovery,
             "pending_access_review": (
                 access_recovery["request"]
                 if access_recovery and access_recovery["status"] in ("resumable", "orphaned")
@@ -2430,6 +2588,7 @@ class DesktopService:
             "model_name": run.model_name, "error": run.error,
             "prompt_input_tokens": run.prompt_input_tokens,
             "prompt_cache_hit_tokens": run.prompt_cache_hit_tokens,
+            "message_id": getattr(run, "origin_message_id", None),
         }
 
     @staticmethod
@@ -2443,100 +2602,28 @@ class DesktopService:
             "digest": material.digest, "git_ref": material.git_ref,
             "needs_confirmation": material.needs_confirmation,
             "is_image": is_image_name(material.relative_path),
+            "material_kind": MaterialKindClassifier.classify(material.relative_path),
             "size_bytes": path.stat().st_size if path.is_file() else 0,
         }
 
     async def store_uploaded_material(
-        self, task_id: str, filename: str, data: bytes
+        self, task_id: str, upload: UploadFile
     ) -> dict[str, Any]:
-        """把上传/粘贴的文件写入工作区专用附件目录并登记为材料。
+        stored = await self.material_uploads.store(task_id, upload)
+        return self._material_payload(stored.material, stored.workspace_path)
 
-        原图按原分辨率保存（缩放只发生在送模注入时），因此这里只把住原图体积上限：
-        超出即拒绝，不落盘、不留半成品文件。
-        """
-        if not data:
-            raise HTTPException(422, "上传文件为空")
-        name = Path(filename or "upload.bin").name
-        try:
-            guard_upload(name, data)
-        except EmptyUpload as error:
-            raise HTTPException(422, str(error)) from error
-        except OversizedImage as error:
-            raise HTTPException(413, str(error)) from error
+    async def resolve_material_content(
+        self, task_id: str, material_id: str
+    ) -> ResolvedMaterialContent:
+        return await self.material_contents.resolve(task_id, material_id)
+
+    async def validate_image_material(self, task_id: str, material_id: str) -> dict[str, Any]:
         async with self.session_factory() as session:
             _, workspace = await self._get_task_entities(session, task_id)
-        try:
-            target = prepare_attachment_target(workspace.path, name)
-        except OSError as error:
-            raise HTTPException(500, f"无法创建材料附件目录: {error}") from error
-        try:
-            target.write_bytes(data)
-        except OSError as error:
-            raise HTTPException(500, f"无法写入材料附件: {error}") from error
-        return await self.enroll_material(task_id, MaterialCreate(path=str(target)))
-
-    async def read_material_content(self, material_id: str) -> tuple[str, bytes]:
-        """读取材料原始字节；返回 (媒体类型, 字节) 供前端内联展示图片、PDF 与其它载体。"""
-        async with self.session_factory() as session:
-            material, workspace = await self._get_material_entities(session, material_id)
-        path = resolve_material_path(workspace.path, material.relative_path)
-        if not path.is_file():
-            raise HTTPException(404, "材料文件不存在")
-        return media_type_for(material.relative_path), path.read_bytes()
-
-    async def read_material_preview(self, material_id: str) -> dict[str, Any]:
-        """按预览上限读取材料文本；非文本内容由 read_material_text 抛 UnicodeDecodeError。"""
-        async with self.session_factory() as session:
-            material, workspace = await self._get_material_entities(session, material_id)
-        path = resolve_material_path(workspace.path, material.relative_path)
-        if not path.is_file():
-            raise HTTPException(404, "材料文件不存在")
-        preview = read_material_text(path)
-        return {
-            "text": preview.text,
-            "encoding": preview.encoding,
-            "truncated": preview.truncated,
-            "size_bytes": preview.size_bytes,
-        }
-
-    async def _resolve_must_view_materials(
-        self, session: AsyncSession, task_id: str, workspace_path: str, material_ids: list[str]
-    ) -> list[dict[str, str]]:
-        """把本轮的必需图片标识解析为 [{material_id, relative_path}]。
-
-        勾选的冲突在发起运行前一次性拦下（不存在、非图片、内容为空），
-        使运行时只需面对「运行途中文件被抽走」这一种极端情况。
-        """
-        if not material_ids:
-            return []
-        unique = list(dict.fromkeys(material_ids))
-        rows = (
-            await session.scalars(
-                select(DesktopMaterial).where(
-                    DesktopMaterial.task_id == task_id,
-                    DesktopMaterial.material_id.in_(unique),
-                )
+            inputs = await self.run_images.resolve(
+                session, task_id, workspace.path, [material_id], []
             )
-        ).all()
-        by_id = {item.material_id: item for item in rows}
-        resolved: list[dict[str, str]] = []
-        for material_id in unique:
-            material = by_id.get(material_id)
-            if material is None:
-                raise HTTPException(422, f"「本轮必须看」的材料不存在: {material_id}")
-            if not is_image_name(material.relative_path):
-                raise HTTPException(
-                    422, f"「本轮必须看」只适用于图片材料: {material.relative_path}"
-                )
-            path = resolve_material_path(workspace_path, material.relative_path)
-            if not path.is_file() or path.stat().st_size == 0:
-                raise HTTPException(
-                    422, f"「本轮必须看」的图片内容为空或文件不存在: {material.relative_path}"
-                )
-            resolved.append(
-                {"material_id": material.material_id, "relative_path": material.relative_path}
-            )
-        return resolved
+        return inputs.attached[0].to_json()
 
     @staticmethod
     def _version_payload(version: MaterialVersion) -> dict[str, Any]:
