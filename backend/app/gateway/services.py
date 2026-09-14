@@ -1,4 +1,4 @@
-﻿"""
+"""
 本文件对外提供 `start_run` 异步函数，作为统一 agent 链路的编排层核心。
 
 对外提供:
@@ -35,7 +35,7 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
@@ -48,6 +48,7 @@ from focus.runtime.runs.manager import RunManager, RunRecord
 from focus.runtime.runs.schemas import DisconnectMode
 from focus.runtime.runs.worker import run_agent
 from focus.runtime.stream_bridge.base import StreamBridge
+from focus.security.context import has_security_context
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,17 @@ async def start_run(
 
     # (3) 从 context 提取运行参数
     context = _context_dict(body)
+    # 受治理字段只能由服务端登记的执行身份派生。调用方提供的运行上下文不携带安全上下文即
+    # 拒绝，因此伪造访问模式 / 能力权限 / 工作根 / 执行命名空间都不生效；校验先于登记运行，
+    # 被拒的请求不会留下运行记录
+    if not has_security_context(context):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "execution_profile_required",
+                "message": "运行上下文必须来自服务端登记的执行身份；调用方不得自行提供受治理字段",
+            },
+        )
     model_name = context.get("model_name")
     checkpoint_ns = context.get("checkpoint_ns")
 
@@ -120,12 +132,9 @@ async def start_run(
     if checkpoint_id is not None:
         runnable_config["configurable"]["checkpoint_id"] = checkpoint_id
 
-    # LangGraph context（透传桌面参数 + user_id）
+    # LangGraph context：受治理字段已在校验通过，此处只补服务端随行句柄
     langgraph_context: dict = {**context}
-    langgraph_context.setdefault("model_name", model_name)
     langgraph_context.setdefault("app_config", app_config)
-    current_user = getattr(request.state, "current_user", None)
-    langgraph_context.setdefault("user_id", str(current_user.id) if current_user is not None else None)
 
     # (5) checkpoint_ns 非空时包装 checkpointer（小兵命名空间隔离）
     if checkpoint_ns:

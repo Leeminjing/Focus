@@ -10,6 +10,9 @@ SendMessage（点对点/广播）、任务板（Coordinator CAS 机械协议）�
     load_unread_messages(agent_id, task_id) — 查询未读消息并按 kind 分拣组装注入块，随后标记已读
     create_swarm_agent / list_swarm_agent_ids / is_agent_stopped — 持久 Agent 身份管理
 
+效果声明：协作工具只读写会话数据库，不产生受治理的本地文件副作用，由 build_collab_tools
+统一签发为无本地效果。
+
 具体工作流为：send_message 落表（from=当前 agent，kind 区分文本与协议消息，to_agent="*" 广播）；
 目标 agent 下一次 run 装配时 load_unread_messages 按 kind 分拣——"message" 进 <agent_messages>
 文本块，协议 kind 进 <agent_protocol> 块（from/kind 标签），统一读后标已读（消费即销毁，防膨胀）；
@@ -37,11 +40,16 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.models import AgentBoardTask, AgentMessage, SwarmAgent
+from focus.security.effects import NO_LOCAL_EFFECT, declare_all_effects
+from focus.security.governed import declare_governed_keys
 
 logger = logging.getLogger(__name__)
 
 # 消息驱动自动唤醒的深度上限（防 A→B→A→B 乒乓；超限只落表排队等主 Agent wake）
 _SWARM_DEPTH_LIMIT = 3
+
+# 协作层用于决策的上下文字段：身份决定消息归属，深度决定是否截断自动唤醒
+declare_governed_keys("agent_id", "task_id", "swarm_depth")
 
 _MESSAGE_KINDS = frozenset({
     "message",
@@ -106,7 +114,15 @@ class AgentCollab:
 
         输出:
             list[BaseTool] — 该角色可用的协作工具
+
+        工作流:
+            (1) 按角色取该角色的协作工具集合
+            (2) 统一签发无本地效果契约：协作只读写会话数据库，不产生受治理的本地文件副作用
         """
+        return declare_all_effects(self._role_tools(role), NO_LOCAL_EFFECT)
+
+    def _role_tools(self, role: str) -> list[BaseTool]:
+        """按角色列出协作工具，不签发效果契约。"""
         if role == "main":
             return [
                 self.build_send_message_tool(),
@@ -358,14 +374,17 @@ class AgentCollab:
     # === 持久 Agent 身份（机制③④）===
 
     async def create_swarm_agent(
-        self, agent_id: str, task_id: str, role: str, permissions: list[str] | None = None
+        self, agent_id: str, task_id: str, role: str, permissions: list[str] | None = None,
+        access_mode: str = "workspace",
     ) -> None:
-        """创建持久 Agent 身份行（checkpoint_ns=swarm:{agent_id}，status=active，permissions 持久化供 wake 沿用）。"""
+        """创建持久 Agent 身份行（checkpoint_ns=swarm:{agent_id}，status=active，permissions 与
+        access_mode 持久化供 wake 沿用——两者都只在 spawn 时从父级继承，wake 不放大）。"""
         async with self.session_factory() as session:
             session.add(SwarmAgent(
                 agent_id=agent_id, task_id=task_id, role=role,
                 checkpoint_ns=f"swarm:{agent_id}", status="active",
                 permissions=permissions or ["read"],
+                access_mode=access_mode,
             ))
             await session.commit()
 

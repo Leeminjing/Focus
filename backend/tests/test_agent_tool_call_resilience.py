@@ -235,10 +235,36 @@ def test_checkpoint_preflight_selects_latest_valid_base():
     asyncio.run(run())
 
 
+def _governed_context() -> dict:
+    """构造携带安全上下文的运行上下文：网关只接受由服务端执行身份派生的上下文。"""
+    from pathlib import Path
+
+    from focus.security.context import (
+        AuthorizationIdentity,
+        ExecutionProfile,
+        RoutingIdentity,
+        derive_security_context,
+    )
+    from focus.security.policy import AccessMode, workspace_roots
+
+    workspace = Path.cwd()
+    return derive_security_context(
+        ExecutionProfile(
+            authorization=AuthorizationIdentity(
+                workspace=workspace,
+                roots=workspace_roots(workspace),
+                permissions=("read",),
+                access_mode=AccessMode.WORKSPACE,
+                agent_role="main",
+            ),
+            routing=RoutingIdentity("thread-1", "ws-1", "main:task-1", ""),
+        )
+    ).to_runtime_context()
+
+
 def test_gateway_transmits_checkpoint_id_to_runnable_config(monkeypatch):
     import backend.app.gateway.services as gateway_services
     from focus.runtime.runs.limits import DEFAULT_AGENT_RECURSION_LIMIT
-
     captured = {}
 
     async def fake_run_agent(**kwargs):
@@ -258,7 +284,8 @@ def test_gateway_transmits_checkpoint_id_to_runnable_config(monkeypatch):
     )
     body = RunCreateRequest(
         input={"messages": [{"role": "human", "content": "继续"}]},
-        context={"run_id": "run-1", "checkpoint_id": "valid-base"},
+        # 网关要求运行上下文来自服务端登记的执行身份；执行提示（run_id / checkpoint_id）随行
+        context={**_governed_context(), "run_id": "run-1", "checkpoint_id": "valid-base"},
     )
     monkeypatch.setattr(gateway_services, "run_agent", fake_run_agent)
 

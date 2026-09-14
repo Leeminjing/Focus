@@ -17,6 +17,8 @@
         env: dict[str, str] | None — 仅 stdio，注入子进程的环境变量
         url: str | None            — 仅 sse/http，远程端点地址
         headers: dict[str, str] | None — 仅 sse/http，HTTP 请求头
+        trust: dict[str, str] | None — 用户显式信任覆盖：工具名（`*` 为全部）→ 取值名；
+            取值域窄于效果分类，只允许 no_local_effect / opaque_local，越界取值被拒并保持最严
 
 输出:
     get_extensions_config → ExtensionsConfig 实例，含递归解析后的环境变量
@@ -57,6 +59,7 @@ class McpServerConfig(BaseModel):
     env: dict[str, str] | None = None
     url: str | None = None
     headers: dict[str, str] | None = None
+    trust: dict[str, str] | None = None
 
 
 class ExtensionsConfig(BaseModel):

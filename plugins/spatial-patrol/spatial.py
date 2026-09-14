@@ -1,8 +1,15 @@
 """spatial-patrol 插件的空间服务:载体解析、坐标换算、从锚点向外观察、观察工具构建。
 
 对外提供:
-    ObservationService — 观察服务(路径校验 / PDF 扩张取文 / 图片裁剪视觉描述)
+    ObservationService — 观察服务(载体解析 / PDF 扩张取文 / 图片裁剪视觉描述)
+    ObservationService.carrier_path(workspace, content_ref) — 领域解析:只回答"是哪一个文件"
+    ObservationService.resolve_path(workspace, content_ref, context) — 领域解析 + 准入判定
+    CARRIER_READ_EFFECT — 观察工具的读取效果契约(受治理目标来自受治理上下文)
     build_observation_tools(service) — observe_anchor / expand_observation 两个工具
+
+载体归属:载体引用到真实宿主路径的解释与准入判定委托 focus.security;本模块不自行比较工作根。
+过渡期说明:准入中间件成为权威之前,待决在 resolve_path 处以 ValueError 呈现
+(见 openspec tasks 3.4)。
 
 输入:
     plugin_config: dict — config.json 原样内容(observe_radius_start/growth/max_radius)
@@ -20,6 +27,7 @@ import base64
 import inspect
 import io
 import logging
+from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -31,6 +39,21 @@ from langchain_core.tools import tool
 
 from focus.config import AppConfig, get_app_config
 from focus.models.capabilities import main_model_text_only
+from focus.security import (
+    AccessDecision,
+    AccessOperation,
+    AccessPolicy,
+    canonical_target,
+    decide_path_access,
+    policy_from_context,
+    restrictive_policy,
+)
+
+from focus.security.effects import ResolvedFsEffect, declare_all_effects, structured_fs
+from focus.security.governed import declare_governed_keys
+
+# 空间观察的受治理目标与坐标来自上下文：锚点身份决定"观察谁"，坐标决定"看哪里"
+declare_governed_keys("spatial_id", "content_ref", "page", "x", "y", "workspace")
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +128,24 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def _policy_or_restrictive(context: object, root: Path) -> AccessPolicy:
+    """由受治理上下文构造访问策略;上下文不可用时退回最严的工作区策略。"""
+    if isinstance(context, dict) and context.get("workspace"):
+        return policy_from_context(context)
+    return restrictive_policy(root)
+
+
+def _carrier_read_targets(args: Mapping[str, Any], context: Mapping[str, Any]) -> ResolvedFsEffect:
+    """空间观察的受治理目标就是受治理上下文里的那个载体。"""
+    target = ObservationService.carrier_path(
+        str(context.get("workspace") or ""), str(context.get("content_ref") or "")
+    )
+    return ResolvedFsEffect(reads=(target,))
+
+
+CARRIER_READ_EFFECT = structured_fs(_carrier_read_targets)
+
+
 class ObservationService:
     """从空间锚点向外观察:载体解析 + 坐标换算 + 内容取样。"""
 
@@ -125,11 +166,22 @@ class ObservationService:
     # === 路径与载体 ===
 
     @staticmethod
-    def resolve_path(workspace: str, content_ref: str) -> Path:
-        """解析载体路径并执行工作区 containment 校验(越界抛 ValueError)。"""
+    def carrier_path(workspace: str, content_ref: str) -> Path:
+        """领域解析:把载体引用解释为真实宿主路径,不做准入判定。"""
+        return canonical_target(Path(workspace).resolve(), content_ref)
+
+    @staticmethod
+    def resolve_path(workspace: str, content_ref: str, context: object = None) -> Path:
+        """领域解析后按访问策略判定是否放行。
+
+        准入判定委托 focus.security,本函数不自行比较工作根。过渡实现:
+        准入中间件成为权威之前,待决在这里以 ValueError 呈现(见 openspec tasks 3.4);
+        界面侧调用方不传受治理上下文,因此得到最严的工作区策略。
+        """
         root = Path(workspace).resolve()
-        target = (root / content_ref).resolve() if not Path(content_ref).is_absolute() else Path(content_ref).resolve()
-        if target != root and root not in target.parents:
+        target = ObservationService.carrier_path(workspace, content_ref)
+        policy = _policy_or_restrictive(context, root)
+        if decide_path_access(policy, target, AccessOperation.READ) is not AccessDecision.ALLOW:
             raise ValueError("载体路径不属于当前工作区")
         return target
 
@@ -361,7 +413,7 @@ def build_observation_tools(service: ObservationService):
             int(context["page"]), float(context["x"]), float(context["y"]), radius,
         )
 
-    return [observe_anchor, expand_observation]
+    return declare_all_effects([observe_anchor, expand_observation], CARRIER_READ_EFFECT)
 
 
 def _anchor_context(runtime: ToolRuntime) -> dict[str, Any]:

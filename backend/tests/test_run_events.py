@@ -150,7 +150,9 @@ def test_start_run_uses_long_task_recursion_budget(monkeypatch):
         state=SimpleNamespace(current_user=None),
     )
     body = SimpleNamespace(
-        context={"run_id": "run-long-task", "agent_id": "main:task-a"},
+        context=_governed_context(
+            SimpleNamespace(thread_id="thread-a"), "workspace-a", "main:task-a"
+        ),
         input={"messages": [{"role": "human", "content": "build a web app"}]},
         resume=None,
         stream_mode=["messages-tuple", "values"],
@@ -163,6 +165,41 @@ def test_start_run_uses_long_task_recursion_budget(monkeypatch):
     asyncio.run(exercise())
 
     assert captured["runnable_config"]["recursion_limit"] == 2000
+
+
+def _governed_context(record, workspace_id: str, agent_id: str) -> dict:
+    """构造携带安全上下文的运行上下文；路由身份与 record 的 thread 保持一致。
+
+    执行层已强制要求合法安全上下文，因此直接驱动 run_agent 的用例必须提供它。
+    """
+    from pathlib import Path
+
+    from focus.security.context import (
+        AuthorizationIdentity,
+        ExecutionProfile,
+        RoutingIdentity,
+        derive_security_context,
+    )
+    from focus.security.policy import AccessMode, workspace_roots
+
+    workspace = Path.cwd()
+    return derive_security_context(
+        ExecutionProfile(
+            authorization=AuthorizationIdentity(
+                workspace=workspace,
+                roots=workspace_roots(workspace),
+                permissions=("read",),
+                access_mode=AccessMode.WORKSPACE,
+                agent_role="main",
+            ),
+            routing=RoutingIdentity(
+                thread_id=record.thread_id,
+                workspace_id=workspace_id,
+                agent_id=agent_id,
+                checkpoint_ns="",
+            ),
+        )
+    ).to_runtime_context()
 
 
 def _run_with_failing_agent_factory(graph_input):
@@ -184,10 +221,9 @@ def _run_with_failing_agent_factory(graph_input):
             graph_input=graph_input,
             runnable_config={"configurable": {"thread_id": record.thread_id}},
             agent_factory=failing_factory,
-            langgraph_context={
-                "workspace_id": "workspace-agent-factory",
-                "agent_id": "main:task-agent-factory",
-            },
+            langgraph_context=_governed_context(
+                record, "workspace-agent-factory", "main:task-agent-factory"
+            ),
         )
     )
     return record, bridge
@@ -260,7 +296,7 @@ def test_run_agent_accumulates_standard_cache_usage():
             runnable_config={"configurable": {"thread_id": record.thread_id}},
             stream_modes=["messages"],
             agent_factory=factory,
-            langgraph_context={"workspace_id": "workspace-usage", "agent_id": "main:usage"},
+            langgraph_context=_governed_context(record, "workspace-usage", "main:usage"),
         )
     )
 
@@ -314,7 +350,7 @@ def test_run_agent_forks_checkpoint_input_from_graph_start():
             },
             stream_modes=["messages"],
             agent_factory=factory,
-            langgraph_context={"workspace_id": "workspace-checkpoint", "agent_id": "main:checkpoint"},
+            langgraph_context=_governed_context(record, "workspace-checkpoint", "main:checkpoint"),
         )
     )
 
@@ -323,3 +359,65 @@ def test_run_agent_forks_checkpoint_input_from_graph_start():
     assert agent.update["as_node"] == "__start__"
     assert agent.received_input is None
     assert agent.received_config["configurable"]["checkpoint_id"] == "forked-checkpoint"
+
+
+def test_run_agent_refuses_without_governed_security_context():
+    """缺失合法安全上下文即拒绝执行；错误事件是这一拒绝的唯一可见出口。"""
+    manager = RunManager()
+    record = manager.create("thread-no-security", run_id="run-no-security")
+    bridge = _RecordingBridge()
+
+    async def factory():
+        raise AssertionError("缺失安全上下文时不得装配 agent")
+
+    asyncio.run(
+        run_agent(
+            record=record,
+            bridge=bridge,
+            run_manager=manager,
+            app_config=SimpleNamespace(models=[], commitment=SimpleNamespace(enabled=False)),
+            graph_input={"messages": [HumanMessage(content="x")]},
+            runnable_config={"configurable": {"thread_id": record.thread_id}},
+            agent_factory=factory,
+            langgraph_context={"workspace": "C:/ws", "permissions": ["read"]},
+        )
+    )
+
+    assert record.status is RunStatus.error
+    assert "安全上下文" in (record.error or "")
+    assert [event.event for event in bridge.events] == ["error"]
+
+
+def test_envelope_identity_comes_from_the_security_context():
+    """信封身份取自安全上下文；扁平键被改写成别的值也不影响事件归属。"""
+    manager = RunManager()
+    record = manager.create("thread-envelope", run_id="run-envelope")
+    bridge = _RecordingBridge()
+    context = _governed_context(record, "workspace-real", "main:real")
+    context["workspace_id"] = "workspace-forged"
+    context["agent_id"] = "main:forged"
+
+    class PlainAgent:
+        async def astream(self, *_args, **_kwargs):
+            if False:
+                yield None
+
+    async def factory():
+        return PlainAgent()
+
+    asyncio.run(
+        run_agent(
+            record=record,
+            bridge=bridge,
+            run_manager=manager,
+            app_config=SimpleNamespace(models=[], commitment=SimpleNamespace(enabled=False)),
+            graph_input={"messages": [HumanMessage(content="x")]},
+            runnable_config={"configurable": {"thread_id": record.thread_id}},
+            agent_factory=factory,
+            langgraph_context=context,
+        )
+    )
+
+    metadata = next(event for event in bridge.events if event.event == "metadata")
+    assert metadata.data["workspace_id"] == "workspace-real"
+    assert metadata.data["agent_id"] == "main:real"

@@ -80,3 +80,25 @@ test("settings exposes both languages and loads localization before the applicat
   assert.match(index, /data-action="set-language" data-locale="en-US"/);
   assert.ok(index.indexOf("./i18n.js") < index.indexOf("./app.js"));
 });
+
+test("every message key exists in both languages", () => {
+  const source = fs.readFileSync(path.join(__dirname, "i18n.js"), "utf8");
+  const [zhPart, enPart] = source.split('"en-US": Object.freeze({');
+  const keys = part => [...part.matchAll(/^\s*"([\w.]+)":/gm)].map(match => match[1]);
+
+  const zhKeys = keys(zhPart);
+  const enKeys = keys(enPart);
+
+  assert.ok(zhKeys.length > 0 && enKeys.length > 0, "两种语言都必须有文案");
+  assert.deepEqual(enKeys, zhKeys);
+  for (const key of [
+    "access.panel_title",
+    "access.approve_once",
+    "access.reject",
+    "access.switch_full",
+    "access.risk_os_permissions",
+    "access.risk_other_reviews",
+  ]) {
+    assert.ok(zhKeys.includes(key), `${key} 缺少文案`);
+  }
+});

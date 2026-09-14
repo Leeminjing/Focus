@@ -318,6 +318,31 @@ dialog::backdrop { background: rgba(15, 20, 30, .24); }
 .revision-footer { display: flex; justify-content: flex-end; gap: 8px; }
 .review-panel.review-submitted { opacity: 0.6; }
 
+/* 本机资源访问批准面板与后台待处理区 */
+.access-review-panel { margin: 8px 0 16px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: white; flex-shrink: 0; }
+.access-review-panel > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 16px; border-bottom: 1px solid var(--line-soft); background: rgb(70 120 240 / 6%); }
+.access-review-kicker { color: var(--blue); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.access-review-panel h3 { margin: 3px 0 0; font-size: 15px; }
+.access-review-badge { flex: 0 0 auto; border: 1px solid rgb(70 120 240 / 40%); border-radius: 12px; padding: 3px 8px; color: var(--blue); background: white; font-size: 10px; }
+.access-review-fields { margin: 0; padding: 12px 16px; display: grid; gap: 8px; }
+.access-review-field { display: grid; grid-template-columns: 96px 1fr; gap: 10px; align-items: baseline; }
+.access-review-field dt { color: var(--muted, #6f746f); font-size: 11px; }
+.access-review-field dd { margin: 0; font-size: 12px; word-break: break-all; }
+.access-review-target { display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px; }
+.access-review-target:last-child { margin-bottom: 0; }
+.access-review-op { flex: 0 0 auto; border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; color: var(--muted, #6f746f); font-size: 10px; }
+.access-review-target code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.access-review-error { margin: 0; padding: 0 16px; color: var(--danger, #c0392b); font-size: 12px; }
+.access-review-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px 16px; }
+.access-review-risk { display: grid; gap: 8px; margin: 0; padding: 12px 16px 16px; border-top: 1px solid var(--line-soft); background: rgb(240 180 70 / 8%); }
+.access-review-risk[hidden] { display: none; }
+.access-review-risk strong { font-size: 12px; }
+.access-review-risk p { margin: 0; color: var(--text, #222); font-size: 12px; line-height: 1.6; }
+.access-review-risk-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.access-pending { display: grid; gap: 8px; padding: 8px 16px 0; }
+.access-pending[hidden] { display: none; }
+.access-pending .access-review-panel { margin: 0; }
+
 
 /* 閹佃儻顕棃銏℃緲閸?flex 鐎电鐦藉ù浣疯厬缁備焦顒涢弨鍓佺級閿涘潵verflow:hidden 娴兼艾顕遍懛?min-height:0 鐞氼偄甯囨繅宀嬬礆 */
 .review-panel, .trace-panel { flex-shrink: 0; }

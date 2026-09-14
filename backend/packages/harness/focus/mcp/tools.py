@@ -1,17 +1,20 @@
-﻿"""
+"""
 本文件对外提供 get_mcp_tools 异步函数，连接已启用的 MCP Server 并获取远端工具列表，
 转换为 LangChain BaseTool 列表供 lead_agent 绑定调用。
 
 对外提供:
     get_mcp_tools(): 异步函数，返回所有已启用 MCP Server 的工具列表
+    load_mcp_tools(servers_config, overrides): 连接一组 server 并在摄取边界签发效果契约
+    close_mcp_sessions(): 应用退出时关闭全部常驻 session
 
-本文件负责: 加载配置 → 翻译 → 连接 → 获取工具 的完整链路。
+本文件负责: 加载配置 → 翻译 → 连接 → 获取工具 → 信任分层 的完整链路。
 
 输入:
     无参数 — 函数内部自行调用 get_extensions_config() 加载 extensions_config.json
+    overrides — server 名到「工具名 → 效果契约」的映射，来自用户显式信任覆盖
 
 输出:
-    list[BaseTool] — MCP Server 远端工具转换后的 LangChain Tool 列表
+    list[BaseTool] — MCP Server 远端工具转换后的 LangChain Tool 列表，效果契约已按三层信任签发
 
 工作流:
     (1) 调用 get_extensions_config() 加载 extensions_config.json
@@ -26,6 +29,8 @@
         绑定 session 后工具复用同一连接与浏览器实例，同时不污染 HTTP 请求任务的
         AnyIO cancel scope 栈
     (5) 单 server 连接失败 log warn 跳过，不抛异常
+    (6) 每个 server 的工具经 trust_tools 签发效果契约：先清除外来自声明，
+        再按随版本契约、用户显式覆盖的顺序落定，都没有命中即保持不透明
 
     close_mcp_sessions(): 在应用退出时关闭全部常驻 session
 
@@ -42,6 +47,7 @@ from langchain_core.tools import BaseTool
 
 from focus.config.extensions_config import get_extensions_config
 from focus.mcp.client import build_servers_config
+from focus.security.trust import parse_trust_override, trust_tools
 
 logger = logging.getLogger(__name__)
 
@@ -107,8 +113,15 @@ async def close_mcp_sessions() -> None:
         await asyncio.gather(*(session.close() for session in sessions))
 
 
-async def load_mcp_tools(servers_config: dict[str, dict]) -> list[BaseTool]:
-    """连接一组 MCP server；单个 server 失败时跳过，其余 server 继续加载。"""
+async def load_mcp_tools(
+    servers_config: dict[str, dict],
+    overrides: dict[str, dict] | None = None,
+) -> list[BaseTool]:
+    """连接一组 MCP server；单个 server 失败时跳过，其余 server 继续加载。
+
+    这是外部工具的唯一摄取边界：每个 server 的工具在此按三层信任签发效果契约，
+    因此随版本契约覆盖本系统自接的 server，用户覆盖只作用于其显式声明的 server。
+    """
     try:
         from langchain_mcp_adapters.client import MultiServerMCPClient
         from langchain_mcp_adapters.tools import load_mcp_tools as load_tools_from_session
@@ -116,6 +129,7 @@ async def load_mcp_tools(servers_config: dict[str, dict]) -> list[BaseTool]:
         logger.warning("langchain-mcp-adapters 未安装，MCP 工具不可用")
         return []
 
+    trusted_overrides = overrides or {}
     tools: list[BaseTool] = []
     for server_name, params in servers_config.items():
         try:
@@ -128,7 +142,7 @@ async def load_mcp_tools(servers_config: dict[str, dict]) -> list[BaseTool]:
                 raise
             _MCP_CLIENTS.append(client)
             _MCP_SESSIONS.append(owner)
-            tools.extend(server_tools)
+            tools.extend(trust_tools(server_name, server_tools, trusted_overrides.get(server_name)))
             logger.info("MCP Server '%s' 连接成功，获取 %d 个工具", server_name, len(server_tools))
         except Exception:
             logger.warning("MCP Server '%s' 连接失败，已跳过", server_name, exc_info=True)
@@ -148,4 +162,9 @@ async def get_mcp_tools() -> list[BaseTool]:
 
     if not servers_config:
         return []
-    return await load_mcp_tools(servers_config)
+    overrides = {
+        name: parse_trust_override(name, server.trust)
+        for name, server in extensions_config.mcp_servers.items()
+        if server.trust
+    }
+    return await load_mcp_tools(servers_config, overrides)

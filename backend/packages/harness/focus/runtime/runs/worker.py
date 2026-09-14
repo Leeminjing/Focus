@@ -14,8 +14,9 @@
     stream_modes: list[str] | str | None — 前端传入的 stream mode（messages-tuple → tokens 事件，values → events 事件）
     agent_name: str | None — agent 名称（缺省装配路径使用）
     tool_groups: list[str] | None — 工具分组过滤（缺省装配路径使用）
-    langgraph_context: dict | None — LangGraph context，传给 agent.astream(context=...)；
-        其中 user_id 传给 make_lead_agent，workspace_id/agent_id 用于组装事件信封
+    langgraph_context: dict | None — 运行上下文，传给 agent.astream(context=...)；
+        必须携带服务端派生的安全上下文（其中 owner 传给 make_lead_agent，路由身份用于组装
+        事件信封）；缺失合法安全上下文即拒绝执行
     agent_factory: Callable | None — 自定义装配函数（await 后返回 CompiledStateGraph），
         缺省使用 make_lead_agent；桌面经此注入模型、工具、prompt 与 checkpoint 包装
     checkpointer: BaseCheckpointSaver | None — checkpoint 持久化器，None 时不启用
@@ -25,6 +26,7 @@
     统一信封 SSE 事件流 → bridge → 前端；最终状态 → run_manager
 
 具体工作流:
+    (0) 强制边界：校验运行上下文携带合法安全上下文，缺失即拒绝执行并落到 error 终态
     (1) 设置 run 状态为 running，发布信封 metadata 事件
     (2) 读取当前 thread 的旧 checkpoint 保存为 rollback 快照（checkpointer 可用时）
     (3) 通过 agent_factory（缺省 make_lead_agent）创建 agent
@@ -71,6 +73,11 @@ from focus.runtime.runs.manager import RunManager, RunRecord
 from focus.runtime.runs.schemas import RunStatus
 from focus.runtime.stream_bridge.base import StreamBridge
 from focus.runtime.stream_bridge.schemas import StreamEvent
+from focus.security.context import (
+    SecurityContext,
+    has_security_context,
+    security_context_of,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,20 +127,40 @@ def _map_stream_modes(stream_modes: list[str] | str | None) -> list[str] | str |
     return mapped
 
 
-def _envelope_base(record: RunRecord, langgraph_context: dict | None) -> dict[str, Any]:
+def _envelope_base(record: RunRecord, security: SecurityContext) -> dict[str, Any]:
     """组装统一事件信封的基础字段（workspace_id/thread_id/agent_id/run_id）。
 
     输入:
         record: RunRecord — 当前 run
-        langgraph_context: dict | None — 运行上下文，提供 workspace_id/agent_id
+        security: SecurityContext — 受治理安全上下文
 
     输出:
         dict — 信封基础字段
+
+    具体工作流:
+        路由身份（会话 / 工作区 / 执行主体）与准入判定取自同一个可信对象，因此事件归属
+        不可能与准入判定分叉；run_id 是本次运行自身的标识，不属于身份。
     """
     return {
-        "workspace_id": langgraph_context.get("workspace_id") if langgraph_context else None,
+        "workspace_id": security.routing.workspace_id,
+        "thread_id": security.routing.thread_id,
+        "agent_id": security.routing.agent_id,
+        "run_id": record.run_id,
+    }
+
+
+def _error_envelope_base(record: RunRecord, langgraph_context: dict | None) -> dict[str, Any]:
+    """错误终态的信封身份。
+
+    安全上下文校验失败时它并不存在，此时退回记录自身可确定的字段——错误事件是
+    「为什么这次执行没有开始」的唯一可见出口，不能因为它而发布不出来。
+    """
+    if has_security_context(langgraph_context):
+        return _envelope_base(record, security_context_of(langgraph_context))
+    return {
+        "workspace_id": None,
         "thread_id": record.thread_id,
-        "agent_id": langgraph_context.get("agent_id") if langgraph_context else record.run_id,
+        "agent_id": record.run_id,
         "run_id": record.run_id,
     }
 
@@ -174,11 +201,15 @@ async def run_agent(
 ) -> None:
     agent_ready = False
     try:
+        # (0) 强制执行边界：会执行工具的调用必须在服务端派生的安全上下文下运行，
+        #     缺失即拒绝执行，绝不以宽松默认值继续
+        security = security_context_of(langgraph_context)
+
         # (1) 置 running，发信封 metadata 事件
         run_manager.update(record.run_id, status=RunStatus.running)
         logger.info("run '%s' 状态 → running", record.run_id)
 
-        env_base = _envelope_base(record, langgraph_context)
+        env_base = _envelope_base(record, security)
         metadata_event = StreamEvent(
             id="",
             event="metadata",
@@ -206,7 +237,7 @@ async def run_agent(
         # (3) 通过 agent_factory（缺省 make_lead_agent）创建 agent
         model_name = record.model_name
         mapped_stream_modes = _map_stream_modes(stream_modes)
-        user_id = langgraph_context.get("user_id") if langgraph_context else None
+        user_id = security.owner
 
         if agent_factory is not None:
             agent = await agent_factory()
@@ -256,9 +287,10 @@ async def run_agent(
 
         # (4) agent.astream 主循环（统一列表模式 → (mode, chunk) 元组）
         stream_modes_list = list(mapped_stream_modes) if isinstance(mapped_stream_modes, list) else [mapped_stream_modes]
-        # 承诺层开启时强制追加 values（interrupt 快照与 lead 状态）与 custom（各角色消息轨迹）
-        if app_config.commitment.enabled:
-            stream_modes_list = list(dict.fromkeys([*stream_modes_list, "values", "custom"]))
+        # 执行层恒强制追加 values 与 custom：准入门在所有角色与内联子执行上无条件生效，
+        # 任何工具调用都可能产生中断，因此中断的可观测性不得依赖 commitment.enabled；
+        # custom 承载承诺层各角色的消息轨迹
+        stream_modes_list = list(dict.fromkeys([*stream_modes_list, "values", "custom"]))
         graph_interrupted = False
         async for mode, chunk in agent.astream(
             stream_input,
@@ -339,12 +371,13 @@ async def run_agent(
                 "run '%s' resume 装配失败，保留 interrupted checkpoint",
                 record.run_id,
             )
+        error_envelope = _error_envelope_base(record, langgraph_context)
         error_event = StreamEvent(
             id="",
             event="error",
             data=build_envelope(
-                env_base["workspace_id"], env_base["thread_id"], env_base["agent_id"],
-                record.run_id, "error", {"error": str(exc)},
+                error_envelope["workspace_id"], error_envelope["thread_id"],
+                error_envelope["agent_id"], record.run_id, "error", {"error": str(exc)},
             ),
         )
         try:

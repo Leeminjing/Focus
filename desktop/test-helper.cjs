@@ -98,6 +98,7 @@ function createAppHarness(options = {}) {
   // 全图折叠视图与 index.html 的脚本顺序一致：app.js 经 window.FocusMapCollapsibleView 依赖它
   vm.runInContext(fs.readFileSync(require.resolve("./map-collapsible-view.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./image-material-picker.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("./access-approval.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./file-preview.js"), "utf8"), context);
   return { vm, context, document, inert, statusNode, statusState, fetches, listeners };
 }

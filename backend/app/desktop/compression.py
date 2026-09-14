@@ -21,16 +21,14 @@
 具体工作流:
     (1) 摘要：消息按 role 分节格式化（跳过协议占位、剥离 compression
         元数据），以中文概括 system prompt 单次 ainvoke
-    (2) 恢复投影：读主图 checkpoint（checkpoint_ns=""）pending_writes 的 __interrupt__
-        channel，取最新 type=compression_request 的 Interrupt.value；再按最近一次 main
-        run 状态判定 processing/resumable/orphaned
+    (2) 恢复投影：未决中断的枚举与状态归一委托 backend.app.desktop.pending_interrupts，
+        只读主图命名空间，因此压缩与准入两条待决共用同一份投影
 
 示例:
     summary = await summarize_messages(messages, None, app_config)
     recovery = await compression_recovery_payload(session, task, checkpointer)
 """
 
-import logging
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -38,7 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from focus.models import create_chat_model
 
-logger = logging.getLogger(__name__)
+from backend.app.desktop.pending_interrupts import main_pending_interrupt
 
 _SUMMARY_SYSTEM_PROMPT = """你是上下文压缩器。把给定对话片段概括为一段中文文本，作为该片段在后续对话中的唯一记忆。
 
@@ -169,51 +167,15 @@ async def summarize_messages(
     return _scrub_terms(text.strip(), forbid_terms)
 
 
-def _checkpoint_compression_request(checkpoint: Any) -> dict[str, Any] | None:
-    """从 checkpoint pending_writes 读取最新 compression_request interrupt 载荷。"""
-    pending_writes = list(getattr(checkpoint, "pending_writes", None) or [])
-    for _task_id, channel, raw_value in reversed(pending_writes):
-        if channel != "__interrupt__":
-            continue
-        values = raw_value if isinstance(raw_value, (list, tuple)) else [raw_value]
-        for item in reversed(values):
-            payload = getattr(item, "value", item)
-            if isinstance(payload, dict) and payload.get("type") == "compression_request":
-                return dict(payload)
-    return None
+COMPRESSION_INTERRUPT_TYPE = "compression_request"
 
 
 async def compression_recovery_payload(
     session: Any, task: Any, checkpointer: Any
 ) -> dict[str, Any] | None:
-    config = {"configurable": {"thread_id": task.thread_id, "checkpoint_ns": ""}}
-    try:
-        checkpoint = await checkpointer.aget_tuple(config)
-    except Exception:
-        logger.warning(
-            "读取主图 checkpoint 失败: thread_id=%s", task.thread_id, exc_info=True
-        )
-        return None
-    if checkpoint is None:
-        return None
-    request = _checkpoint_compression_request(checkpoint)
-    if request is None:
-        return None
-    from backend.app.desktop.models import DesktopRun
-    from sqlalchemy import select
+    """主图上的待确认压缩请求。
 
-    latest = await session.scalar(
-        select(DesktopRun)
-        .where(
-            DesktopRun.task_id == task.task_id,
-            DesktopRun.agent_id == f"main:{task.task_id}",
-        )
-        .order_by(DesktopRun.created_at.desc())
-    )
-    if latest is not None and latest.status in {"pending", "running"}:
-        status = "processing"
-    elif latest is not None and latest.status == "interrupted":
-        status = "resumable"
-    else:
-        status = "orphaned"
-    return {"status": status, "request": request}
+    未决中断的枚举与状态归一由 backend.app.desktop.pending_interrupts 统一承担，
+    因此压缩与准入两条待决走的是同一份投影。
+    """
+    return await main_pending_interrupt(session, task, checkpointer, COMPRESSION_INTERRUPT_TYPE)

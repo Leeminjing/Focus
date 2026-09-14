@@ -18,6 +18,7 @@ pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 from backend.app.gateway.app import app  # noqa: E402
 from backend.app.desktop.models import (  # noqa: E402
     AgentMessage,
+    DesktopRun,
     DesktopThread,
     DesktopWorkspace,
     SwarmAgent,
@@ -172,15 +173,23 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
             captured.clear()
             wake_agent_id = uuid.uuid4().hex
 
+            def wake_context() -> dict:
+                """父执行上下文按服务端唯一派生构造：wake 沿用父级能力权限与访问模式。"""
+                run = DesktopRun(
+                    run_id=uuid.uuid4().hex, task_id=task_id, agent_id=f"main:{task_id}",
+                    kind="main", status="pending",
+                )
+                return service._governed_context(
+                    thread_id=task["thread_id"], run=run, workspace_id=ws["workspace_id"],
+                    workspace_path=str(workspace_folder), permissions=["read"],
+                    access_mode="workspace", checkpoint_ns="", agent_role="main",
+                    model_name=None, allow_global_config=False, extras={"task_id": task_id},
+                )
+
             async def inspect_wake() -> str:
                 await service.agent_collab.create_swarm_agent(wake_agent_id, task_id, "teammate", ["read"])
-                return await service._wake_swarm(wake_agent_id, "继续调研竞品定价", wake_ctx)
+                return await service._wake_swarm(wake_agent_id, "继续调研竞品定价", wake_context())
 
-            wake_ctx = {
-                "workspace_id": ws["workspace_id"], "workspace": str(workspace_folder),
-                "model_name": None, "task_id": task_id,
-                "agent_id": f"main:{task_id}", "permissions": ["read"],
-            }
             wake_run_id = client.portal.call(inspect_wake)
             wait_until(lambda: captured, timeout=15, message="wake 装配未被捕获")
             assert wake_run_id
@@ -207,7 +216,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
             async def stop_and_wake() -> Exception | None:
                 await service.agent_collab._stop_swarm_agent(wake_agent_id)
                 try:
-                    await service._wake_swarm(wake_agent_id, "再干一轮", wake_ctx)
+                    await service._wake_swarm(wake_agent_id, "再干一轮", wake_context())
                 except Exception as exc:
                     return exc
                 return None

@@ -1,4 +1,29 @@
-"""Workspace-safe, single-writer DOCX session lifecycle."""
+"""本文件对外提供 DOCX 编辑会话的工作区安全生命周期与单写者约束。
+
+对外提供:
+    resolve_workspace_docx — 把会话的载体引用解释为真实宿主 DOCX 路径
+    document_id — 由任务与载体引用派生的稳定文档标识
+    DocxSessionManager — 会话的创建 / 续用 / 查询 / 更新 / 关闭
+
+输入:
+    workspace: str | Path — 任务工作区根；content_ref: str — 工作区内的相对载体引用
+    task_id / mode — 会话所属任务与打开方式（view / edit）
+
+输出:
+    Path — 已解析的真实 DOCX 路径
+    DocxEditorSession — 持久化会话记录；SessionError / SessionConflict — 领域失败
+
+具体工作流:
+    (1) 领域约束先行：引用必须是工作区内相对路径，且目标必须是已存在的 .docx
+    (2) 载体归属判定委托 focus.security，本模块不自行比较工作根；准入中间件成为权威前，
+        待决在解析处以 SessionError 呈现（见 openspec tasks 3.4）
+    (3) 会话按（任务 + 载体）唯一化，同任务同载体续用既有会话
+    (4) 单写者：同一载体同时只允许一个编辑会话，过期与终态按状态集合判定
+
+示例:
+    path = resolve_workspace_docx(workspace, "reports/a.docx")
+    session = await DocxSessionManager().create(task_id=..., content_ref=..., mode="edit")
+"""
 
 from __future__ import annotations
 
@@ -12,6 +37,13 @@ from typing import Any
 
 from sqlalchemy import select
 
+from focus.security import (
+    AccessDecision,
+    AccessOperation,
+    canonical_target,
+    decide_path_access,
+    restrictive_policy,
+)
 from plugins.spatial_patrol import docx_db
 from plugins.spatial_patrol.docx_models import DocxEditorSession
 from plugins.spatial_patrol.docx_storage import file_sha256, validate_docx
@@ -34,14 +66,14 @@ def utcnow() -> datetime:
 
 
 def resolve_workspace_docx(workspace: str | Path, content_ref: str) -> Path:
+    """把载体引用解释为真实 DOCX 路径；领域约束保留在本函数，归属判定委托 focus.security。"""
     if not content_ref or Path(content_ref).is_absolute():
         raise SessionError("DOCX 路径必须是工作区内相对路径")
     root = Path(workspace).resolve()
-    candidate = (root / content_ref).resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError as exc:
-        raise SessionError("DOCX 路径越出工作区") from exc
+    candidate = canonical_target(root, content_ref)
+    policy = restrictive_policy(root)
+    if decide_path_access(policy, candidate, AccessOperation.READ) is not AccessDecision.ALLOW:
+        raise SessionError("DOCX 路径越出工作区")
     if candidate.suffix.lower() != ".docx":
         raise SessionError("仅支持 .docx 编辑会话")
     if not candidate.is_file():

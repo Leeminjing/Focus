@@ -1,4 +1,4 @@
-﻿"""
+"""
 本文件对外提供 build_describe_skill_tool 工厂函数，创建 describe_skill 工具供 agent 按需查询 skill 元数据。
 
 对外提供:
@@ -8,12 +8,13 @@
     catalog: SkillCatalog — 已启用的 skill 检索索引
 
 输出:
-    StructuredTool — 工具名 "describe_skill", 接受 name: str 参数
+    StructuredTool — 工具名 "describe_skill", 接受 name: str 参数；
+    效果契约为「无受治理本地效果」（只读检索内存索引，不读写工作区）
 
 具体工作流:
     describe_skill(name):
     (1) 调用 catalog.search(name) 查找匹配的 Skill
-    (2) 精确匹配(name 相等) → 返回 description / allowed_tools / SKILL.md 虚拟路径
+    (2) 精确匹配(name 相等) → 返回 description / allowed_tools / SKILL.md 的真实宿主路径
     (3) 模糊匹配 → 返回可能的 skill 名称列表，提示 agent 精确指定
     (4) 无匹配 → 返回错误信息，提示检查 <skill_index>
 
@@ -34,12 +35,10 @@ import logging
 
 from langchain_core.tools import StructuredTool
 
+from focus.security.effects import NO_LOCAL_EFFECT, declare_effect
 from focus.skills.catalog import SkillCatalog
 
 logger = logging.getLogger(__name__)
-
-# skill 文件虚拟路径前缀 — skill SKILL.md 在沙箱中的挂载前缀
-_SKILL_VROOT = "/mnt/skills"
 
 
 def build_describe_skill_tool(catalog: SkillCatalog) -> StructuredTool:
@@ -80,7 +79,7 @@ def build_describe_skill_tool(catalog: SkillCatalog) -> StructuredTool:
         exact = [s for s in results if s.name.lower() == name.strip().lower()]
         if exact:
             s = exact[0]
-            location = f"{_SKILL_VROOT}/{s.category.value}/{s.relative_path}/SKILL.md"
+            location = str(s.skill_file)
             parts = [
                 f"Skill: {s.name}",
                 f"Description: {s.description}",
@@ -97,8 +96,11 @@ def build_describe_skill_tool(catalog: SkillCatalog) -> StructuredTool:
             "Please specify the exact skill name."
         )
 
-    return StructuredTool.from_function(
-        func=describe_skill,
-        name="describe_skill",
-        description=describe_skill.__doc__,
+    return declare_effect(
+        StructuredTool.from_function(
+            func=describe_skill,
+            name="describe_skill",
+            description=describe_skill.__doc__,
+        ),
+        NO_LOCAL_EFFECT,
     )

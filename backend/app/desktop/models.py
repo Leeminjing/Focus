@@ -307,6 +307,7 @@ class SwarmAgent(Base):
     checkpoint_ns: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")  # active | stopped
     permissions: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)  # spawn 时的权限（wake 沿用，不放大）
+    access_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="workspace")  # spawn 时继承的模式（wake 沿用，不放大）
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -415,6 +416,8 @@ class MainRunCreate(StrictRequest):
     permissions: list[Literal["read", "write", "host_command"]] = Field(
         default_factory=lambda: ["read", "write", "host_command"]
     )
+    access_mode: Literal["workspace", "full"] | None = None
+    """本机资源访问模式：能做什么由 permissions 决定，能在哪里做由它决定；None 按最严处理。"""
 
 
 class ContextCurationPolicy(StrictRequest):

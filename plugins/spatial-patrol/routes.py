@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -30,6 +31,13 @@ from focus.runtime.checkpointer.namespaced import NamespacedCheckpointer
 from focus.runtime.runs.limits import DEFAULT_AGENT_RECURSION_LIMIT
 from focus.runtime.runs.schemas import DisconnectMode
 from focus.runtime.runs.worker import run_agent
+from focus.security.context import (
+    AuthorizationIdentity,
+    ExecutionProfile,
+    RoutingIdentity,
+    derive_security_context,
+)
+from focus.security.policy import AccessMode, workspace_roots
 from focus.tools.builtins.workspace_tools import select_workspace_tools
 
 from plugins.spatial_patrol import spatial
@@ -592,7 +600,7 @@ async def _launch_spatial_run(
     state = request.app.state
     run_manager = state.run_manager
     checkpointer = state.checkpointer
-    checkpoint_ns = f"patrol:{anchor.spatial_id}"
+    checkpoint_ns = anchor.checkpoint_ns
     checkpoint_id = await select_checkpoint_base(checkpointer, thread_id, checkpoint_ns)
     requires_verified_change = _is_docx_write(anchor.content_ref, permissions)
     is_docx_session = anchor.content_ref.lower().endswith(".docx")
@@ -678,17 +686,28 @@ async def _launch_spatial_run(
     if checkpoint_id is not None:
         runnable_config["configurable"]["checkpoint_id"] = checkpoint_id
     langgraph_context: dict[str, Any] = {
-        "model_name": model_name,
-        "workspace_id": workspace_id,
-        "agent_id": anchor.spatial_id,
+        **derive_security_context(
+            ExecutionProfile(
+                authorization=AuthorizationIdentity(
+                    workspace=Path(workspace_path),
+                    roots=workspace_roots(Path(workspace_path)),
+                    permissions=tuple(permissions),
+                    access_mode=AccessMode.WORKSPACE,
+                    agent_role="patrol",
+                ),
+                routing=RoutingIdentity(
+                    thread_id=thread_id,
+                    workspace_id=workspace_id,
+                    agent_id=anchor.spatial_id,
+                    checkpoint_ns=checkpoint_ns,
+                    run_id=run_id,
+                ),
+                model_name=model_name,
+            )
+        ).to_runtime_context(),
         "task_id": anchor.task_id,
-        "permissions": permissions,
-        "workspace": workspace_path,
-        "checkpoint_ns": checkpoint_ns,
-        "run_id": run_id,
         "app_config": app_config,
-        "user_id": None,
-        # 空间上下文:观察工具经 runtime.context 读取
+        # 空间上下文:观察工具与 docx 工具经 runtime.context 读取
         "spatial_id": anchor.spatial_id,
         "content_ref": anchor.content_ref,
         "page": anchor.page,

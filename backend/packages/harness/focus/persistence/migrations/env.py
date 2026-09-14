@@ -1,10 +1,12 @@
-﻿"""
+"""
 Alembic 迁移环境配置。
 
 本文件由 alembic init 自动生成骨架，在此基础上修改：
   - 绑定 target_metadata = Base.metadata 以支持 autogenerate
   - 仅保留 online 异步迁移路径（run_migrations_online），删除 offline 分支
   - 使用 create_async_engine 建立异步数据库连接
+  - 应用日志配置时保留既有 logger：迁移会在应用进程内执行，停用既有 logger
+    会让应用自身的 focus.* 日志在一次迁移后永久静默
 
 输入: 无（Alembic CLI 自动加载并执行）
 输出: 无（通过 context.run_migrations() 执行迁移）
@@ -40,9 +42,9 @@ from focus.persistence.base import Base
 # Alembic Config 对象
 config = context.config
 
-# 日志配置
+# 应用日志配置；迁移在应用进程内执行，因此不得停用既有 logger
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # autogenerate 支持：绑定声明式基类的 metadata
 target_metadata = Base.metadata

@@ -1,4 +1,30 @@
-"""DOCX 锚点段落删除工具：精确定位、原子保存并返回变更证据。"""
+"""本文件对外提供 DOCX 锚点段落删除工具：精确定位、原子保存并返回变更证据。
+
+对外提供:
+    observe_docx_delete_candidate — 观察锚点对应段落并生成仅本次运行可用的删除候选
+    delete_docx_paragraph — 凭候选标识删除该段落并返回变更证据
+
+输入:
+    两个工具都声明 `runtime: ToolRuntime` 参数；受治理的空间上下文（workspace /
+    content_ref / y）与本次运行的变更证据经 `runtime.context` 提供。
+
+输出:
+    观察返回候选标识、段落序号与段落文本；删除返回变更前后的哈希与段落序号。
+
+具体工作流:
+    (1) 由受治理上下文取载体引用与锚点纵坐标，并校验 write 权限
+    (2) 载体归属判定委托 focus.security（经 ObservationService 解析），本模块不自行比较工作根
+    (3) 复刻 focus.readers 的段落顺序定位目标段落，要求文本在文档中唯一
+    (4) 原子替换：同目录临时文件写好后替换，并复核删除后的段落序列
+    (5) 确定性拒绝记入本次运行的变更证据，失败以可修正的 ToolException 收口
+
+效果声明：观察者只读载体，删除者读并写同一份载体；两者都声明为可结构化枚举，目标来自受治理
+上下文而非工具参数。观察者不得声明写效果——过度声明会为并不存在的写操作请求批准。
+
+示例:
+    observed = observe_docx_delete_candidate.func(runtime=runtime)
+    delete_docx_paragraph.func(candidate_id=observed["candidate_id"], runtime=runtime)
+"""
 
 from __future__ import annotations
 
@@ -8,11 +34,19 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from collections.abc import Mapping
+
 from docx import Document
 from langchain.tools import ToolRuntime
 from langchain_core.tools import ToolException, tool
 
+from focus.security import canonical_target
+from focus.security.effects import ResolvedFsEffect, declare_all_effects, structured_fs
+from focus.security.governed import declare_governed_keys
 from plugins.spatial_patrol.spatial import ObservationService
+
+# 变更证据与候选存储参与决策：前者判定"是否已产生可验证变更"，后者限定"本次运行可删哪些段落"
+declare_governed_keys("docx_change_evidence", "docx_observation_candidates")
 
 
 def _sha256(data: bytes) -> str:
@@ -111,7 +145,7 @@ def _require_write_target(context: dict[str, Any]) -> Path:
     content_ref = str(context["content_ref"])
     if Path(content_ref).suffix.lower() != ".docx":
         raise ToolException("当前仅支持 DOCX 结构化修改；.doc 及其他载体保持只读")
-    target = ObservationService.resolve_path(str(context["workspace"]), content_ref)
+    target = ObservationService.resolve_path(str(context["workspace"]), content_ref, context)
     if not target.is_file():
         raise ToolException(f"DOCX 文件不存在: {content_ref}")
     return target
@@ -250,3 +284,25 @@ def _recoverable_docx_error(error: ToolException) -> str:
 
 observe_docx_delete_candidate.handle_tool_error = _recoverable_docx_error
 delete_docx_paragraph.handle_tool_error = _recoverable_docx_error
+
+
+def _docx_carrier(context: Mapping[str, Any]) -> Path:
+    """领域解析：本次删除作用在哪一份 DOCX 上。"""
+    workspace = str(context.get("workspace") or "")
+    content_ref = str(context.get("content_ref") or "")
+    if not workspace or not content_ref:
+        raise RuntimeError("缺少受治理的载体上下文: workspace / content_ref")
+    return canonical_target(Path(workspace).resolve(), content_ref)
+
+
+def _docx_read_targets(args: Mapping[str, Any], context: Mapping[str, Any]) -> ResolvedFsEffect:
+    return ResolvedFsEffect(reads=(_docx_carrier(context),))
+
+
+def _docx_edit_targets(args: Mapping[str, Any], context: Mapping[str, Any]) -> ResolvedFsEffect:
+    target = _docx_carrier(context)
+    return ResolvedFsEffect(reads=(target,), writes=(target,))
+
+
+declare_all_effects([observe_docx_delete_candidate], structured_fs(_docx_read_targets))
+declare_all_effects([delete_docx_paragraph], structured_fs(_docx_edit_targets))

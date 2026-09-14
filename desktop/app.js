@@ -27,7 +27,10 @@ const interfaceI18n = window.FocusI18n || {
 
 function uiText(key, fallback, variables = {}) {
   const translated = interfaceI18n.t(key, variables);
-  return translated === key ? fallback : translated;
+  // 文案表不可用时回落中文文案，但占位符替换必须与走文案表时一致，
+  // 否则同一条提示在两种路径下会呈现未替换的 {name}
+  return (translated === key ? fallback : translated)
+    .replace(/\{(\w+)\}/g, (_match, name) => String(variables[name] ?? `{${name}}`));
 }
 
 const runtime = window.focusDesktop?.runtime?.() || {
@@ -140,6 +143,7 @@ const state = {
     busy: false,
     recovery: null,
   },
+  accessReviews: { panel: null, payload: null, taskId: null, key: null, busy: false },
   plugins: { plugins: [], interfaces: {}, traces: [], filter: "all", selectedName: null },
   memory: { memories: [], selectedId: null, composing: false, draft: null, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], textSelection: "", textMessageId: null, textRange: null, editorRatio: 0.5, sourceRatio: 0.5, contentMode: "complete", segments: [], expandedGroups: [], mergeMode: false, selectedSourcesForMerge: [], sessionScrollTop: 0 },
   inspector: { open: window.innerWidth > 1100, tab: "context", returnFocus: null },
@@ -156,6 +160,7 @@ const state = {
 
 const app = document.querySelector("#app");
 const statusNode = document.querySelector("#globalStatus");
+const accessPendingNode = document.querySelector("#accessPending");
 const appInspector = document.querySelector("#appInspector");
 const inspectorContent = document.querySelector("#inspectorContent");
 const shellTaskTitle = document.querySelector("#shellTaskTitle");
@@ -176,6 +181,7 @@ const conversationReconciler = window.FocusConversationReconciler;
 const patrolPresence = window.FocusPatrolPresence;
 const contextCuratorPresentation = window.FocusContextCuratorPresentation;
 const patrolAvatar = window.FocusPatrolAvatar;
+const accessApproval = window.FocusAccessApproval;
 interfaceI18n.apply(document);
 // f18 插件视图宿主:插件前端脚本加载后经此注册视图与材料打开器
 window.__focusPluginViews = window.__focusPluginViews || {};
@@ -719,6 +725,7 @@ async function hydrateActive(taskId = state.activeTaskId) {
   if (state.activeTaskId === taskId) {
     reconcileCommitmentRecovery(detail);
     reconcileCompressionRecovery(detail);
+    reconcileAccessReview(detail);
   }
   if (detail.active_run?.status === "pending" || detail.active_run?.status === "running") {
     listenToRun(detail.active_run);
@@ -1025,6 +1032,7 @@ function composerFeedback(detail, projectionBlocked) {
   if (projectionBlocked) return { kind: "warning", text: "该 Context 需要完成执行投影决断后才能继续。" };
   if (activeTaskHasCommitmentLock()) return { kind: "warning", text: "当前任务正在等待 Commitment 审批，请先处理上方审批区。" };
   if (detail?.pending_compression) return { kind: "warning", text: "存在待确认的压缩计划，请先确认或取消。" };
+  if (detail?.pending_access_review) return { kind: "warning", text: "存在待批准的本机资源访问请求，请先批准或拒绝。" };
   if (["pending", "running"].includes(detail?.active_run?.status)) return { kind: "active", text: "主 Agent 正在运行；你可以查看运行详情或中断。" };
   return { kind: "muted", text: uiText("focus.enter_hint", "Enter 发送 · Shift+Enter 换行") };
 }
@@ -1131,7 +1139,9 @@ function renderFocus(task = activeTask()) {
   const conversation = document.querySelector("#conversation");
   mountCommitmentRecovery(detail);
   restoreCommitmentPanels(conversation);
-  const commitmentBlocked = activeTaskHasCommitmentLock() || projectionBlocked || !!detail.pending_compression;
+  restoreAccessReviewPanels(conversation);
+  const commitmentBlocked = activeTaskHasCommitmentLock() || projectionBlocked
+    || !!detail.pending_compression || !!detail.pending_access_review;
   const mainInput = document.querySelector("#mainInput");
   const sendButton = document.querySelector('[data-action="send-main"]');
   if (mainInput) mainInput.disabled = commitmentBlocked;
@@ -1855,6 +1865,7 @@ function replaceConversation(task, messages) {
   const pinned = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 80;
   reconcileConversationMarkup(conversation, renderConversation(detail, task));
   restoreCommitmentPanels(conversation);
+  restoreAccessReviewPanels(conversation);
   if (pinned) conversation.scrollTop = conversation.scrollHeight;
 }
 
@@ -3540,6 +3551,9 @@ async function sendMainOnce() {
   if (state.details.get(state.activeTaskId)?.pending_compression) {
     return setStatus("存在待确认的压缩请求，请先完成压缩或取消", true);
   }
+  if (state.accessReviews.panel) {
+    return setStatus("存在待批准的本机资源访问请求，请先批准或拒绝", true);
+  }
   setStatus("");
   const input = document.querySelector("#mainInput");
   const message = input.value.trim();
@@ -3584,6 +3598,7 @@ async function sendMainOnce() {
         must_view_material_ids: outgoing.mustViewIds,
         skills: selectedSkills("main"),
         spatial_focus: spatialTarget?.focus || null,
+        ...(detail.ui_state?.access_mode === "full" ? { access_mode: "full" } : {}),
       }),
     });
     const contextNode = (state.contextTrees.get(activeTask().workspace_id) || [])
@@ -3671,6 +3686,12 @@ function listenToRun(run) {
       const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
       if (!task) return;
       openCompressionView(task, value);
+      return;
+    }
+    if (accessApproval.isAccessReview(value)) {
+      const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
+      if (!task) return;
+      showAccessReview(task, value, envelope.agent_id);
     }
   });
   source.addEventListener("error", event => {
@@ -4182,6 +4203,160 @@ async function resumeRun(payload) {
     removeReviewPanel();
   } catch (error) { setStatus(error.message, true); }
   finally { state.commitment.busy = false; }
+}
+
+// === 本机资源访问批准面板 ===
+
+const ACCESS_OPERATION_FALLBACKS = { read: "读取", write: "写入", command: "执行" };
+
+function accessReviewKey(taskId, payload) {
+  const reads = Array.isArray(payload?.reads) ? payload.reads.join("|") : "";
+  const writes = Array.isArray(payload?.writes) ? payload.writes.join("|") : "";
+  return [taskId, payload?.tool || "", payload?.command || "", reads, writes].join("::");
+}
+
+function showAccessReview(task, payload, agentId) {
+  const key = accessReviewKey(task.task_id, payload);
+  if (state.accessReviews.key === key && state.accessReviews.panel?.isConnected) return;
+
+  const fragment = document.querySelector("#accessReviewTemplate").content.cloneNode(true);
+  const panel = fragment.querySelector(".access-review-panel");
+  const mainSubject = accessApproval.isMainSubject(agentId);
+  panel.dataset.subject = mainSubject ? "main" : "background";
+  panel.dataset.taskId = task.task_id;
+  panel.querySelector(".access-review-subject").textContent = mainSubject
+    ? uiText("access.subject_main", "主 Agent")
+    : String(agentId || uiText("access.background_title", "后台执行主体请求本机资源"));
+  renderAccessReviewFields(panel, payload);
+  // 后台执行主体的访问模式随其装备（spawn 时写入）持久化，本面板只决定「这一次」，
+  // 因此放宽动作仅对主执行身份开放；避免给出一个当下无法兑现的按钮
+  panel.querySelector(".switch-full-button").hidden = !mainSubject;
+  bindAccessReview(panel, task, payload);
+
+  closeAccessReview();
+  state.accessReviews = { panel, payload, taskId: task.task_id, key, busy: false };
+  attachAccessReviewPanel(panel, mainSubject);
+  setStatus(uiText("access.badge", "等待批准"), false);
+}
+
+function attachAccessReviewPanel(panel, mainSubject) {
+  // 主执行身份的待决优先落在主流程面板；会话视图不可用时退回始终存在的待处理区，
+  // 待决因此不会因为用户当前不在会话页而被静默丢弃
+  const host = mainSubject ? conversationNode() || accessPendingNode : accessPendingNode;
+  if (!host) return;
+  host.append(panel);
+  if (host === accessPendingNode) {
+    accessPendingNode.hidden = false;
+    return;
+  }
+  hideAccessPendingWhenEmpty();
+  scrollConversation();
+}
+
+function restoreAccessReviewPanels(conversation) {
+  // 会话视图重新渲染后，把仍属于当前任务的主执行待决移回会话区
+  const panel = state.accessReviews.panel;
+  if (!conversation || !panel) return;
+  if (state.accessReviews.taskId !== state.activeTaskId) return;
+  if (panel.dataset.subject !== "main") return;
+  conversation.append(panel);
+  hideAccessPendingWhenEmpty();
+}
+
+function hideAccessPendingWhenEmpty() {
+  if (accessPendingNode?.querySelector(".access-review-panel")) return;
+  accessPendingNode.hidden = true;
+}
+
+function renderAccessReviewFields(panel, payload) {
+  const cells = accessApproval.approvalFields(payload).map(field => {
+    const label = `<dt data-i18n="${escapeHtml(field.labelKey)}">${escapeHtml(uiText(field.labelKey, field.labelKey))}</dt>`;
+    let value;
+    if (field.valueKey) {
+      value = `<dd data-i18n="${escapeHtml(field.valueKey)}">${escapeHtml(uiText(field.valueKey, field.value))}</dd>`;
+    } else if (field.lines?.length) {
+      // 逐行标注操作类型：人据此判断这个路径会不会被改写
+      value = `<dd>${field.lines.map(line => `
+        <span class="access-review-target"><span class="access-review-op" data-i18n="${escapeHtml(line.operationKey)}">${escapeHtml(uiText(line.operationKey, ACCESS_OPERATION_FALLBACKS[line.operation] || line.operation))}</span><code>${escapeHtml(line.value)}</code></span>`).join("")}</dd>`;
+    } else {
+      value = `<dd>${escapeHtml(field.value)}</dd>`;
+    }
+    return `<div class="access-review-field">${label}${value}</div>`;
+  }).join("");
+  panel.querySelector(".access-review-fields").innerHTML = cells;
+}
+
+function bindAccessReview(panel, task, payload) {
+  const risk = panel.querySelector(".access-review-risk");
+  panel.querySelectorAll("[data-access-action]").forEach(button => {
+    button.addEventListener("click", () => {
+      const action = button.dataset.accessAction;
+      // 放宽访问范围前先确认：确认步骤本身就是风险提示的载体
+      if (accessApproval.widensAccess(action)) {
+        risk.hidden = false;
+        return;
+      }
+      resumeAccessReview(task, payload, action);
+    });
+  });
+  panel.querySelector(".cancel-full-button").addEventListener("click", () => { risk.hidden = true; });
+  panel.querySelector(".confirm-full-button").addEventListener("click", () => {
+    resumeAccessReview(task, payload, "switch_full");
+  });
+}
+
+function closeAccessReview() {
+  state.accessReviews.panel?.remove();
+  state.accessReviews = { panel: null, payload: null, taskId: null, key: null, busy: false };
+  hideAccessPendingWhenEmpty();
+}
+
+async function resumeAccessReview(task, payload, action) {
+  if (state.accessReviews.busy) return;
+  state.accessReviews.busy = true;
+  const tool = String(payload?.tool || "");
+  try {
+    const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
+      method: "POST",
+      body: JSON.stringify({ resume: accessApproval.resumeValue(action) }),
+    });
+    if (accessApproval.widensAccess(action)) rememberFullAccess(task);
+    closeAccessReview();
+    listenToRun(run);
+    if (action === "reject") {
+      setStatus(uiText("access.denied", "已拒绝：{tool} 未执行，模型将收到可读的失败结果", { tool }));
+    } else if (accessApproval.widensAccess(action)) {
+      setStatus(uiText("access.switched_full", "已允许本次调用；后续运行按完全权限执行"));
+    } else {
+      setStatus(uiText("access.approved", "已允许这一次：{tool}", { tool }));
+    }
+  } catch (error) {
+    state.accessReviews.busy = false;
+    setStatus(error.message, true);
+    return;
+  }
+  state.accessReviews.busy = false;
+}
+
+function rememberFullAccess(task) {
+  const detail = state.details.get(task.task_id);
+  if (!detail) return;
+  detail.ui_state = { ...(detail.ui_state || {}), access_mode: "full" };
+  const previous = state.activeTaskId;
+  state.activeTaskId = task.task_id;
+  persistFocusState();
+  state.activeTaskId = previous;
+}
+
+function reconcileAccessReview(detail) {
+  const pending = detail?.pending_access_review || null;
+  if (!pending) {
+    if (state.accessReviews.taskId === state.activeTaskId) closeAccessReview();
+    return;
+  }
+  const task = state.tasks.find(item => item.task_id === state.activeTaskId);
+  if (!task) return;
+  showAccessReview(task, pending, `main:${task.task_id}`);
 }
 
 function activeTaskHasCommitmentLock() {

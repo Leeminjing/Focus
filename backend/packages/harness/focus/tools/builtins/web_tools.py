@@ -2,6 +2,9 @@
 本文件对外提供 web_search 与 web_fetch 两个免 API key 的联网内置工具，供 main /
 teammate / worker 角色装配（patrol 与承诺层内部 Worker/Evaluator 不装配）。
 
+效果声明：两个工具只发网络请求并返回内存文本，不产生受治理的本地副作用，因此由本模块
+声明为无本地副作用；访问模式不限制网络，因此该声明与访问模式无关。
+
 输入:
     web_search(query, max_results=5) — 关键词与结果数上限；默认实现为 ddgs
         （DuckDuckGo Search 库），经 asyncio.to_thread 异步化
@@ -32,6 +35,8 @@ import os
 from typing import Any
 
 from langchain_core.tools import ToolException, tool
+
+from focus.security.effects import NO_LOCAL_EFFECT, declare_effect
 
 _WEB_FETCH_TIMEOUT_SECONDS = 30
 _WEB_FETCH_MAX_CHARS = 30000
@@ -108,3 +113,9 @@ async def web_fetch(url: str) -> str:
     except httpx.HTTPError as exc:
         raise ToolException(f"抓取失败：{exc}") from exc
     return _truncate(response.text)
+
+
+declare_effect(web_search, NO_LOCAL_EFFECT)
+declare_effect(web_fetch, NO_LOCAL_EFFECT)
+
+WEB_TOOLS: list[Any] = [web_search, web_fetch]

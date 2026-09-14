@@ -80,22 +80,15 @@ def test_read_file_denied_without_read(tmp_path):
         read_file.func(path="a.txt", runtime=_runtime(tmp_path, []))
 
 
-def test_read_file_outside_workspace(tmp_path):
+def test_read_file_does_not_decide_path_access(tmp_path):
+    """准入判定已上移到唯一准入点；工具体只做路径解释与 IO。
+
+    越界在这里不再被判为「模型可修正的错误」，也不再抛异常——是否允许访问由
+    AccessPolicyMiddleware 判定（其用例见 test_access_middleware.py）。
+    """
     outside = tmp_path.parent / "outside.txt"
     outside.write_text("secret", encoding="utf-8")
-    with pytest.raises(ToolException, match="不属于当前工作区"):
-        read_file.func(path=str(outside), runtime=_runtime(tmp_path, ["read"]))
-
-    result = asyncio.run(read_file.ainvoke({
-        "type": "tool_call",
-        "id": "outside-workspace",
-        "name": "read_file",
-        "args": {"path": str(outside), "runtime": _runtime(tmp_path, ["read"])},
-    }))
-    assert isinstance(result, ToolMessage)
-    assert result.status == "error"
-    assert result.tool_call_id == "outside-workspace"
-    assert "不属于当前工作区" in result.content
+    assert read_file.func(path=str(outside), runtime=_runtime(tmp_path, ["read"])) == "secret"
 
 
 def test_write_file_permission_gate(tmp_path):

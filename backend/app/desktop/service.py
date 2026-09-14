@@ -14,7 +14,16 @@ Agent，协作工具 + Mailbox 注入 + 联网工具）、patrol（小兵机制�
 无 MCP）。持久派生（spawn_teammate/spawn_worker）创建 SwarmAgent 身份并经
 _launch_swarm_run 启动独立命名空间的后台 run；工具错误 middleware 保证可恢复调用闭合，
 主任务运行前的 checkpoint preflight 可从最近合法祖先恢复受损历史；主 Agent 中断恢复
-经 resume_run 按载荷分派承诺层与压缩流程。
+经 resume_run 按载荷分派承诺层、压缩流程与本机资源准入。
+执行身份：三个持久化启动点（主 run、resume、swarm）与本 UI 状态恢复路径统一经
+_governed_context 由执行身份档案派生受治理上下文（工作根、能力权限、访问模式、
+执行主体角色、执行命名空间），launcher 只提供身份材料；访问模式（工作区保护 /
+本机完全权限）随装备持久化，与能力权限正交。
+
+路径归属：本文件的 _resolve_workspace_path 服务于材料登记，即人在界面侧把工作区文件登记为
+材料，属于界面侧入口，不受 Agent 本地访问策略约束；Agent 侧的路径解释与准入判定统一由
+focus.security 承担（见 openspec add-local-access-policy）。
+
 示例：`service = DesktopService(...); await service.open_draft(task_id)`。
 """
 
@@ -44,6 +53,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.desktop.collab import AgentCollab
 from backend.app.desktop.checkpoint_recovery import select_checkpoint_base
 from backend.app.desktop.compression import compression_recovery_payload
+from backend.app.desktop.pending_interrupts import main_pending_interrupt
 from backend.app.desktop.context_service import ContextService
 from backend.app.desktop.context_patrol_service import ContextPatrolService
 from backend.app.desktop.context_curator import (
@@ -81,6 +91,22 @@ from focus.agents.commitment.middleware import commitment_subgraph_thread_id
 from focus.agents.commitment.workflow import _human_payload
 from focus.agents.compression import apply_compression_ranges, hit_keyword_message_ids
 from focus.agents.compression.schemas import validate_apply_decision
+from focus.security.approval import APPROVAL_TYPE
+from focus.security.context import (
+    AuthorizationIdentity,
+    ExecutionProfile,
+    RoutingIdentity,
+    derive_security_context,
+    security_context_of,
+)
+from focus.security.policy import AccessMode, workspace_roots
+from focus.security.governed import strip_governed
+from focus.security.effects import (
+    DELEGATED_EXECUTION_EFFECT,
+    NO_LOCAL_EFFECT,
+    declare_all_effects,
+    declare_effect,
+)
 from backend.app.desktop.material_files import (
     EmptyUpload,
     OversizedImage,
@@ -124,6 +150,30 @@ logger = logging.getLogger(__name__)
 
 _MAIN_RUNTIME_EQUIPMENT_KEY = "_main_run_equipment"
 _TERMINAL_STATUSES = frozenset({"success", "error", "interrupted"})
+_ACCESS_DECISIONS = frozenset({"approve", "reject"})
+
+
+def _resolve_access_mode(value: str | None) -> AccessMode:
+    """把请求里的访问模式归一到策略取值；缺失或无法识别按最严的工作区保护处理。"""
+    if not value:
+        return AccessMode.WORKSPACE
+    try:
+        return AccessMode(str(value))
+    except ValueError:
+        logger.warning("无法识别的访问模式 %r，已按最严的工作区保护处理", value)
+        return AccessMode.WORKSPACE
+
+
+def _identity_unregistered(what: str) -> HTTPException:
+    """未登记的执行身份：拒绝请求，并把它与「资源不存在」区分开。
+
+    身份材料的来源校验在网关（调用方自带上下文 → 422 `execution_profile_required`）；
+    这里回答的是另一半：被指向的持久身份行不存在，因此无法据此派生安全上下文。
+    """
+    return HTTPException(
+        404,
+        {"code": "execution_identity_unregistered", "message": f"执行身份未登记：{what}"},
+    )
 
 
 _ASSEMBLY_WORKSPACE_DISPLAY = "无工作区模式"
@@ -536,6 +586,7 @@ class DesktopService:
                 "model_name": default_model,
                 "skills": [],
                 "permissions": ["read"],
+                "access_mode": str(AccessMode.WORKSPACE),
             }
             draft = PatrolDraft(
                 draft_id=new_id(),
@@ -666,6 +717,8 @@ class DesktopService:
             "model_name": model_name,
             "skills": [],
             "permissions": ["read"],
+            # 小兵是用户的委托观察者与上下文操作员，访问模式钉在工作区保护
+            "access_mode": str(AccessMode.WORKSPACE),
         }
         draft.source_checkpoint_id = checkpoint_id
         draft.token_estimate = estimate
@@ -769,9 +822,10 @@ class DesktopService:
         permissions: list[str], skills: list[str], spatial_focus: dict[str, Any] | None = None,
         memory_ids: list[str] | None = None,
         must_view_material_ids: list[str] | None = None,
+        access_mode: str | None = None,
     ) -> PreparedRun:
         async with self.session_factory() as session:
-            task_row, workspace = await self._get_task_entities(session, task_id)
+            task_row, workspace = await self._execution_entities(session, task_id)
             authoritative_checkpoint_id = await self.contexts.ensure_runnable(session, task_id)
             recovery = await self._commitment_recovery_payload(session, task_row)
             if recovery is not None:
@@ -795,6 +849,20 @@ class DesktopService:
                         "message": "存在待确认的压缩请求，请先完成压缩或取消后继续",
                     },
                 )
+            # 未决中断的阻塞以主执行身份为粒度：以下三次探测都只读主图命名空间（外加承诺子图），
+            # 后台执行主体（swarm / patrol / spatial）的中断位于各自命名空间，不阻塞主运行
+            access_recovery = await main_pending_interrupt(
+                session, task_row, self.checkpointer, APPROVAL_TYPE
+            )
+            if access_recovery is not None:
+                raise HTTPException(
+                    409,
+                    {
+                        "code": "access_review_pending",
+                        "recovery": access_recovery["status"],
+                        "message": "存在待批准的本机资源访问请求，请先批准或拒绝后继续",
+                    },
+                )
             snapshots = self._freeze_skills(workspace.path, skills)
             must_view = await self._resolve_must_view_materials(
                 session, task_id, workspace.path, must_view_material_ids or []
@@ -804,6 +872,7 @@ class DesktopService:
                 "skills": list(dict.fromkeys(skills)),
                 "skill_snapshots": snapshots,
                 "permissions": permissions,
+                "access_mode": str(_resolve_access_mode(access_mode)),
                 "must_view_materials": must_view,
             }
             run = DesktopRun(
@@ -884,72 +953,97 @@ class DesktopService:
         return thread
 
     async def resume_run(self, thread_id: str, resume: dict[str, Any]) -> PreparedRun:
-        """主 Agent 中断恢复：按 resume 载荷分派承诺层或压缩流程。
+        """主 Agent 中断恢复：按主执行上的未决中断类型分派。
 
         输入:
             thread_id: str — 桌面任务登记的唯一 thread 标识
-            resume: dict — 承诺层 {decision: approve|revise, feedback?, replacement?}
-                或压缩 {"type": "compression", "decision": apply|cancel, ...}
+            resume: dict — 承诺层 {decision: approve|revise, feedback?, replacement?}、
+                压缩 {"type": "compression", "decision": apply|cancel, ...}、
+                或准入 {"decision": approve|reject}（仅允许这一次）
 
         输出:
             PreparedRun — 携带 RunCreateRequest(resume=...) 与主 Agent 装配闭包
 
         工作流:
-            (1) 先按承诺子图 checkpoint 探测承诺审批；命中走承诺校验原路
-            (2) 否则按主图 checkpoint 探测压缩请求；命中且载荷为 compression 类型时走压缩校验
-            (3) 皆无可恢复时 409；校验通过后经 _prepare_main_resume 组装主 Agent resume run
+            (1) 依次探测主执行上的三类未决中断：承诺子图审批、压缩请求、准入待决
+            (2) 命中后要求 resume 载荷与该类型匹配，并按收敛状态区分「处理中」与「已失去父图」
+            (3) 皆无未决时 409；校验通过后经 _prepare_main_resume 组装主 Agent resume run
         """
         async with self.session_factory() as session:
             task = await session.scalar(
                 select(DesktopThread).where(DesktopThread.thread_id == thread_id)
             )
             if not task:
-                raise HTTPException(404, "任务不存在")
+                raise _identity_unregistered(f"会话 {thread_id}")
+
             recovery = await self._commitment_recovery_payload(session, task)
-            if recovery is None:
-                compression_recovery = await compression_recovery_payload(
-                    session, task, self.checkpointer
+            if recovery is not None:
+                self._require_resumable(recovery, "commitment_review")
+                return await self._prepare_main_resume(
+                    session, task, await self._resume_workspace(session, task), resume
                 )
-                if (
-                    compression_recovery is None
-                    or not isinstance(resume, dict)
-                    or resume.get("type") != "compression"
-                ):
-                    raise HTTPException(409, "无可恢复的承诺流程")
-                if compression_recovery["status"] == "processing":
+
+            compression_recovery = await compression_recovery_payload(
+                session, task, self.checkpointer
+            )
+            if compression_recovery is not None:
+                if not isinstance(resume, dict) or resume.get("type") != "compression":
                     raise HTTPException(
                         409,
                         {
-                            "code": "compression_request_processing",
-                            "message": "压缩请求正在处理，请等待当前运行结束",
+                            "code": "compression_request_pending",
+                            "message": "存在待确认的压缩请求，请以压缩载荷恢复",
                         },
                     )
-                workspace = await session.get(DesktopWorkspace, task.workspace_id)
-                if not workspace:
-                    raise HTTPException(404, "工作区不存在")
-                return await self._prepare_main_resume(session, task, workspace, resume)
-            if recovery["status"] != "resumable":
-                code = (
-                    "commitment_review_processing"
-                    if recovery["status"] == "processing"
-                    else "commitment_review_orphaned"
+                self._require_resumable(compression_recovery, "compression_request")
+                return await self._prepare_main_resume(
+                    session, task, await self._resume_workspace(session, task), resume
                 )
-                message = (
-                    "承诺审批正在处理，请等待当前运行结束"
-                    if recovery["status"] == "processing"
-                    else "父图已无法恢复旧承诺审批，请先显式放弃旧流程并重开"
+
+            access_recovery = await main_pending_interrupt(
+                session, task, self.checkpointer, APPROVAL_TYPE
+            )
+            if access_recovery is not None:
+                if not isinstance(resume, dict) or resume.get("decision") not in _ACCESS_DECISIONS:
+                    raise HTTPException(
+                        409,
+                        {
+                            "code": "access_review_pending",
+                            "message": "存在待批准的本机资源访问，请以批准或拒绝载荷恢复",
+                        },
+                    )
+                self._require_resumable(access_recovery, "access_review")
+                return await self._prepare_main_resume(
+                    session, task, await self._resume_workspace(session, task), resume
                 )
-                raise HTTPException(
-                    409,
-                    {
-                        "code": code,
-                        "message": message,
-                    },
-                )
-            workspace = await session.get(DesktopWorkspace, task.workspace_id)
-            if not workspace:
-                raise HTTPException(404, "工作区不存在")
-            return await self._prepare_main_resume(session, task, workspace, resume)
+
+            raise HTTPException(409, "无可恢复的人工决定")
+
+    @staticmethod
+    def _require_resumable(recovery: dict[str, Any], code_prefix: str) -> None:
+        """未决中断必须可恢复；「处理中」与「已失去父图」是两种不同的拒绝。"""
+        if recovery["status"] == "resumable":
+            return
+        processing = recovery["status"] == "processing"
+        raise HTTPException(
+            409,
+            {
+                "code": f"{code_prefix}_{recovery['status']}",
+                "message": (
+                    "该人工决定正在处理，请等待当前运行结束"
+                    if processing
+                    else "父图已无法恢复该人工决定，请先显式放弃旧流程并重开"
+                ),
+            },
+        )
+
+    @staticmethod
+    async def _resume_workspace(session: AsyncSession, task: DesktopThread) -> DesktopWorkspace:
+        """取出 resume 所需的工作区；缺失即 404。"""
+        workspace = await session.get(DesktopWorkspace, task.workspace_id)
+        if not workspace:
+            raise HTTPException(404, "工作区不存在")
+        return workspace
 
     async def _prepare_main_resume(
         self,
@@ -998,18 +1092,27 @@ class DesktopService:
         body = RunCreateRequest(
             input=None,
             resume=resume,
-            context={
-                "model_name": equipment.get("model_name"),
-                "workspace_id": workspace.workspace_id,
-                "agent_id": run.agent_id,
-                "task_id": task.task_id,
-                "permissions": equipment.get("permissions") or ["read"],
-                "skills": equipment.get("skills") or [],
-                "workspace": workspace.path,
-                "uploads": uploads_tag,
-                "checkpoint_ns": "",
-                "run_id": run.run_id,
-            },
+            context=self._governed_context(
+                thread_id=task.thread_id,
+                run=run,
+                workspace_id=workspace.workspace_id,
+                workspace_path=workspace.path,
+                permissions=list(equipment.get("permissions") or ["read"]),
+                access_mode=equipment.get("access_mode"),
+                checkpoint_ns="",
+                agent_role="main",
+                model_name=equipment.get("model_name"),
+                allow_global_config=task.thread_id == _ASSEMBLY_THREAD_ID,
+                extras={
+                    "task_id": task.task_id,
+                    "skills": equipment.get("skills") or [],
+                    "uploads": uploads_tag,
+                    MUST_VIEW_CONTEXT_KEY: equipment.get("must_view_materials") or [],
+                    MODEL_IMAGE_INPUT_KEY: self._model_supports_image_input(
+                        equipment.get("model_name")
+                    ),
+                },
+            ),
             stream_mode=["messages-tuple", "values"],
         )
         return PreparedRun(
@@ -1287,32 +1390,73 @@ class DesktopService:
             run.task_id, run.agent_id, workspace_path, equipment, base_prompt,
             material_context, agent_role,
         )
-        context = {
-            "model_name": equipment.get("model_name") or run.model_name,
-            "workspace_id": workspace_id,
-            "agent_id": run.agent_id,
-            "task_id": run.task_id,
-            "permissions": equipment.get("permissions") or ["read"],
-            "skills": equipment.get("skills") or [],
-            "workspace": workspace_path,
-            "checkpoint_ns": checkpoint_ns,
-            "run_id": run.run_id,
-        }
-        if checkpoint_id is not None:
-            context["checkpoint_id"] = checkpoint_id
-        context["uploads"] = uploads_tag
-        context[MUST_VIEW_CONTEXT_KEY] = equipment.get("must_view_materials") or []
-        context[MODEL_IMAGE_INPUT_KEY] = self._model_supports_image_input(
-            equipment.get("model_name") or run.model_name
+        context = self._governed_context(
+            thread_id=thread_id,
+            run=run,
+            workspace_id=workspace_id,
+            workspace_path=workspace_path,
+            permissions=list(equipment.get("permissions") or ["read"]),
+            access_mode=equipment.get("access_mode"),
+            checkpoint_ns=checkpoint_ns,
+            agent_role=agent_role,
+            model_name=equipment.get("model_name") or run.model_name,
+            allow_global_config=allow_global_config,
+            extras={
+                "task_id": run.task_id,
+                "skills": equipment.get("skills") or [],
+                "uploads": uploads_tag,
+                MUST_VIEW_CONTEXT_KEY: equipment.get("must_view_materials") or [],
+                MODEL_IMAGE_INPUT_KEY: self._model_supports_image_input(
+                    equipment.get("model_name") or run.model_name
+                ),
+                **({"checkpoint_id": checkpoint_id} if checkpoint_id is not None else {}),
+            },
         )
-        if allow_global_config:
-            context["allow_global_config"] = True
         body = RunCreateRequest(
             input={"messages": messages},
             context=context,
             stream_mode=["messages-tuple", "values"],
         )
         return PreparedRun(body=body, thread_id=thread_id, agent_factory=factory, payload=self._run_payload(run))
+
+    def _governed_context(
+        self,
+        *,
+        thread_id: str,
+        run: DesktopRun,
+        workspace_id: str,
+        workspace_path: str,
+        permissions: list[str],
+        access_mode: str | None,
+        checkpoint_ns: str,
+        agent_role: str,
+        model_name: str | None,
+        allow_global_config: bool,
+        extras: dict[str, Any],
+    ) -> dict[str, Any]:
+        """由执行身份档案派生运行上下文。
+
+        受治理字段（工作根、能力权限、访问模式、执行主体角色、执行命名空间）一律来自档案，
+        附加载荷只是随行数据；因此调用方无法通过附加载荷改写安全决策。
+        """
+        profile = ExecutionProfile(
+            authorization=AuthorizationIdentity(
+                workspace=Path(workspace_path),
+                roots=workspace_roots(Path(workspace_path), allow_global_config=allow_global_config),
+                permissions=tuple(permissions),
+                access_mode=AccessMode(str(access_mode)) if access_mode else AccessMode.WORKSPACE,
+                agent_role=agent_role,
+            ),
+            routing=RoutingIdentity(
+                thread_id=thread_id,
+                workspace_id=workspace_id,
+                agent_id=run.agent_id,
+                checkpoint_ns=checkpoint_ns,
+                run_id=run.run_id,
+            ),
+            model_name=model_name,
+        )
+        return {**derive_security_context(profile).to_runtime_context(), **strip_governed(extras)}
 
     def _build_agent_factory(
         self, task_id: str, agent_id: str, workspace_path: str, equipment: dict[str, Any],
@@ -1485,7 +1629,10 @@ class DesktopService:
             snapshot = await self._wait_for_swarm(task_id, agent_ids, timeout_seconds)
             return json.dumps(snapshot, ensure_ascii=False)
 
-        return [spawn_teammate, spawn_worker, wake_agent, wait_for_swarm]
+        return [
+            *declare_all_effects([spawn_teammate, spawn_worker, wake_agent], DELEGATED_EXECUTION_EFFECT),
+            declare_effect(wait_for_swarm, NO_LOCAL_EFFECT),
+        ]
 
     async def _wait_for_swarm(
         self, task_id: str, agent_ids: list[str], timeout_seconds: int
@@ -1615,28 +1762,28 @@ class DesktopService:
         输出:
             str — 新 Agent 的 agent_id
         """
-        context = runtime.context
-        if not isinstance(context, dict) or not context.get("workspace"):
-            raise RuntimeError("缺少工作区上下文: runtime.context['workspace']")
-        permissions = list(context.get("permissions") or ["read"])
-        model_name = context.get("model_name")
-        task_id = context.get("task_id")
-        workspace_id = context.get("workspace_id")
-        workspace_path = context.get("workspace")
+        parent = security_context_of(runtime.context)
+        task_id = runtime.context.get("task_id")
+        workspace_id = parent.routing.workspace_id
         if not task_id or not workspace_id:
             raise RuntimeError("缺少协作上下文: runtime.context['task_id'] / ['workspace_id']")
 
         agent_id = new_id()
-        await self.agent_collab.create_swarm_agent(agent_id, task_id, role, permissions)
+        await self.agent_collab.create_swarm_agent(
+            agent_id, task_id, role, list(parent.authorization.permissions),
+            access_mode=str(parent.authorization.access_mode),
+        )
         equipment = {
-            "model_name": model_name,
+            "model_name": parent.model_name,
             "skills": [],
             "skill_snapshots": [],
-            "permissions": permissions,
+            "permissions": list(parent.authorization.permissions),
+            "access_mode": str(parent.authorization.access_mode),
         }
         prompt = system_prompt or (self._TEAMMATE_PROMPT if role == "teammate" else self._WORKER_PROMPT)
         run_id = await self._launch_swarm_run(
-            task_id, agent_id, role, task, prompt, workspace_id, workspace_path, equipment,
+            task_id, agent_id, role, task, prompt, workspace_id,
+            str(parent.authorization.workspace), equipment,
         )
         logger.info("持久 Agent 已派生: agent_id='%s' role=%s run_id='%s'", agent_id, role, run_id)
         return agent_id
@@ -1654,24 +1801,27 @@ class DesktopService:
 
         工作流:
             (1) 校验持久 Agent 存在且未 stopped（409）
-            (2) equipment 沿用 spawn 时持久化的 permissions（不放大）
+            (2) equipment 沿用 spawn 时持久化的 permissions 与 access_mode（两者都不放大），
+                工作区身份取自发起唤醒的父级安全上下文
             (3) 复用 _launch_swarm_run（同一 checkpoint 命名空间 → 多轮历史连贯）
         """
         agent_row = await self.agent_collab.get_swarm_agent(agent_id)
         if agent_row is None:
-            raise HTTPException(404, "该 Agent 不存在")
+            raise _identity_unregistered(f"派生执行主体 {agent_id}")
         if agent_row.status == "stopped":
             raise HTTPException(409, "该 Agent 已停止")
+        parent = security_context_of(context)
         equipment = {
-            "model_name": context.get("model_name"),
+            "model_name": parent.model_name,
             "skills": [],
             "skill_snapshots": [],
             "permissions": list(agent_row.permissions or ["read"]),
+            "access_mode": agent_row.access_mode,
         }
         prompt = self._TEAMMATE_PROMPT if agent_row.role == "teammate" else self._WORKER_PROMPT
         run_id = await self._launch_swarm_run(
             agent_row.task_id, agent_id, agent_row.role, message, prompt,
-            context.get("workspace_id"), context.get("workspace"), equipment,
+            parent.routing.workspace_id, str(parent.authorization.workspace), equipment,
         )
         logger.info("持久 Agent 已唤醒: agent_id='%s' run_id='%s'", agent_id, run_id)
         return run_id
@@ -1751,7 +1901,12 @@ class DesktopService:
         async with self.session_factory() as session:
             task_row = await session.get(DesktopThread, task_id)
             if not task_row:
-                raise HTTPException(404, "任务不存在")
+                raise _identity_unregistered(f"任务 {task_id}")
+            agent_row = await session.get(SwarmAgent, agent_id)
+            if agent_row is None:
+                raise _identity_unregistered(f"派生执行主体 {agent_id}")
+            # 执行命名空间以持久化身份为准：它是身份的一部分，不由启动点临时拼接
+            checkpoint_ns = agent_row.checkpoint_ns
             thread_id = task_row.thread_id
             run = DesktopRun(
                 run_id=new_id(), task_id=task_id, agent_id=agent_id, kind=role,
@@ -1761,7 +1916,6 @@ class DesktopService:
             session.add(run)
             await session.commit()
 
-        checkpoint_ns = f"swarm:{agent_id}"
         checkpoint_id = await select_checkpoint_base(
             self.checkpointer, thread_id, checkpoint_ns,
         )
@@ -1777,20 +1931,24 @@ class DesktopService:
         }
         if checkpoint_id is not None:
             runnable_config["configurable"]["checkpoint_id"] = checkpoint_id
-        langgraph_context = {
-            "model_name": equipment.get("model_name") or run.model_name,
-            "workspace_id": workspace_id,
-            "agent_id": agent_id,
-            "task_id": task_id,
-            "permissions": equipment.get("permissions") or ["read"],
-            "skills": equipment.get("skills") or [],
-            "workspace": workspace_path,
-            "checkpoint_ns": checkpoint_ns,
-            "run_id": run.run_id,
-            "swarm_depth": swarm_depth,
-            "app_config": self.app_config,
-            "user_id": None,
-        }
+        langgraph_context = self._governed_context(
+            thread_id=thread_id,
+            run=run,
+            workspace_id=workspace_id,
+            workspace_path=workspace_path,
+            permissions=list(equipment.get("permissions") or ["read"]),
+            access_mode=equipment.get("access_mode"),
+            checkpoint_ns=checkpoint_ns,
+            agent_role=role,
+            model_name=equipment.get("model_name") or run.model_name,
+            allow_global_config=False,
+            extras={
+                "task_id": task_id,
+                "skills": equipment.get("skills") or [],
+                "swarm_depth": swarm_depth,
+                "app_config": self.app_config,
+            },
+        )
         checkpointer = NamespacedCheckpointer(self.checkpointer, checkpoint_ns)
         record = self.run_manager.create(
             thread_id=thread_id, run_id=run.run_id,
@@ -1888,7 +2046,7 @@ class DesktopService:
                 raise ValueError("该小兵不属于当前任务")
             return json.dumps(await self.agent_history(agent_id), ensure_ascii=False)
 
-        return [list_patrol_agents, read_patrol_agent_history]
+        return declare_all_effects([list_patrol_agents, read_patrol_agent_history], NO_LOCAL_EFFECT)
 
     def _build_swarm_reader_tools(self, task_id: str) -> list[BaseTool]:
         @tool
@@ -1901,7 +2059,7 @@ class DesktopService:
             messages = await self.get_checkpoint_messages(thread_id, agent.checkpoint_ns)
             return json.dumps(messages, ensure_ascii=False)
 
-        return [read_swarm_agent_history]
+        return declare_all_effects([read_swarm_agent_history], NO_LOCAL_EFFECT)
 
     async def _task_thread_id(self, task_id: str) -> str:
         async with self.session_factory() as session:
@@ -1984,6 +2142,15 @@ class DesktopService:
         if not workspace:
             raise HTTPException(404, "工作区不存在")
         return task, workspace
+
+    async def _execution_entities(
+        self, session: AsyncSession, task_id: str
+    ) -> tuple[DesktopThread, DesktopWorkspace]:
+        """主执行身份解析：供启动点使用，未登记以可识别的错误码拒绝。"""
+        try:
+            return await self._get_task_entities(session, task_id)
+        except HTTPException as exc:
+            raise _identity_unregistered(f"任务 {task_id}") from exc
 
     async def _get_material_entities(
         self, session: AsyncSession, material_id: str
@@ -2147,6 +2314,9 @@ class DesktopService:
         compression_recovery = await compression_recovery_payload(
             session, task, self.checkpointer
         )
+        access_recovery = await main_pending_interrupt(
+            session, task, self.checkpointer, APPROVAL_TYPE
+        )
         return {
             "task_id": task.task_id, "workspace_id": task.workspace_id, "workspace_path": workspace.path,
             "workspace_name": workspace.display_name, "thread_id": task.thread_id, "title": task.title,
@@ -2167,6 +2337,12 @@ class DesktopService:
                 else None
             ),
             "compression_recovery": compression_recovery,
+            "pending_access_review": (
+                access_recovery["request"]
+                if access_recovery and access_recovery["status"] in ("resumable", "orphaned")
+                else None
+            ),
+            "access_recovery": access_recovery,
         }
 
     async def _commitment_recovery_payload(

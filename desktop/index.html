@@ -32,6 +32,7 @@
       <span id="globalStatus" class="global-status" role="status" aria-atomic="true"></span>
       <button class="quiet-button" data-action="new-task"><span class="ui-icon is-sm icon-plus" aria-hidden="true"></span><span data-i18n="header.new_task">新增任务</span></button>
     </header>
+    <section id="accessPending" class="access-pending" role="region" aria-label="后台执行主体的本机资源请求" data-i18n-aria-label="access.background_title" hidden></section>
     <div class="app-shell">
       <nav id="appNavigation" class="app-navigation" aria-label="全局导航">
         <button class="app-nav-item" data-action="focus-home" data-nav-key="focus">
@@ -151,6 +152,33 @@
       </form>
     </article>
   </template>
+  <template id="accessReviewTemplate">
+    <article class="access-review-panel" data-subject="main">
+      <header>
+        <div>
+          <span class="access-review-kicker" data-i18n="access.panel_title">本机资源访问请求</span>
+          <h3 class="access-review-subject"></h3>
+        </div>
+        <span class="access-review-badge" data-i18n="access.badge">等待批准</span>
+      </header>
+      <dl class="access-review-fields"></dl>
+      <p class="access-review-error" role="alert"></p>
+      <div class="access-review-actions">
+        <button class="primary approve-once-button" type="button" data-access-action="approve_once" data-i18n="access.approve_once">仅允许这一次</button>
+        <button class="text-button reject-button" type="button" data-access-action="reject" data-i18n="access.reject">拒绝</button>
+        <button class="text-button switch-full-button" type="button" data-access-action="switch_full" data-i18n="access.switch_full">切换为完全权限</button>
+      </div>
+      <section class="access-review-risk" hidden>
+        <strong data-i18n="access.risk_title">启用完全权限前确认</strong>
+        <p data-i18n="access.risk_os_permissions"></p>
+        <p data-i18n="access.risk_other_reviews"></p>
+        <div class="access-review-risk-actions">
+          <button class="primary confirm-full-button" type="button" data-i18n="access.risk_confirm">确认切换</button>
+          <button class="text-button cancel-full-button" type="button" data-i18n="access.risk_cancel">取消</button>
+        </div>
+      </section>
+    </article>
+  </template>
   <template id="traceTemplate">
     <details class="trace-panel is-live" open>
       <summary>
@@ -185,6 +213,7 @@
   <script src="./patrol-avatar.js?v=20260905b"></script>
   <script src="./map-collapsible-view.js?v=20260902"></script>
   <script src="./image-material-picker.js?v=20260911a"></script>
+  <script src="./access-approval.js"></script>
   <script src="./app.js?v=20260912a"></script>
 </body>
 </html>

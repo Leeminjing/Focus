@@ -1,16 +1,53 @@
-"""The only Agent-facing tools for active rich DOCX editor sessions."""
+"""本文件对外提供活动 DOCX 编辑会话中唯一面向 Agent 的工具：观察语义目标与施加富格式操作。
+
+对外提供:
+    observe_docx_target — 观察一个语义目标的内容、格式、类型、版本与页面投影
+    apply_docx_edit — 对一个语义目标施加一次可撤销的富文本操作
+
+输入:
+    两个工具都声明 `runtime: ToolRuntime`；受治理上下文提供 workspace / content_ref（载体）、
+    docx_session_id / docx_document_id / docx_document_version，以及本次运行的变更证据。
+
+输出:
+    观察返回目标的内容与投影；编辑返回是否产生变更、变更后的文档版本与失败原因。
+
+具体工作流:
+    (1) 由受治理上下文取载体与编辑会话标识，缺一即失败
+    (2) 载体的归属判定委托 focus.security；本模块只做领域解析（载体是哪一个文件）
+    (3) 观察经命令代理向编辑器索取目标快照，不整篇读取
+    (4) 编辑先按操作名做参数校验，再作为单个可撤销历史点提交给编辑器
+    (5) 变更证据按失败键记入本次运行，重复的确定性失败直接拒绝而不再提交
+
+示例:
+    observed = await observe_docx_target.ainvoke({"target_id": t, "runtime": runtime})
+    evidence = await apply_docx_edit.ainvoke({"operation": "replace_text", "arguments": {...}})
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Literal
 
 from langchain.tools import ToolRuntime
 from langchain_core.tools import ToolException, tool
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from focus.security import canonical_target
+from focus.security.effects import ResolvedFsEffect, declare_all_effects, structured_fs
+from focus.security.governed import declare_governed_keys
 from plugins.spatial_patrol.docx_broker import BrokerError, broker
+
+# DOCX 编辑的受治理目标与编辑身份来自上下文：会话身份决定改哪份文档、改到第几版
+declare_governed_keys(
+    "workspace",
+    "content_ref",
+    "docx_session_id",
+    "docx_document_id",
+    "docx_document_version",
+)
 
 
 class _Arguments(BaseModel):
@@ -252,3 +289,25 @@ def _recoverable(error: ToolException) -> str:
 
 observe_docx_target.handle_tool_error = _recoverable
 apply_docx_edit.handle_tool_error = _recoverable
+
+
+def _docx_carrier(context: Mapping[str, Any]) -> Path:
+    """领域解析：本次编辑会话作用的真实 DOCX 载体。"""
+    workspace = str(context.get("workspace") or "")
+    content_ref = str(context.get("content_ref") or "")
+    if not workspace or not content_ref:
+        raise RuntimeError("缺少受治理的载体上下文: workspace / content_ref")
+    return canonical_target(Path(workspace).resolve(), content_ref)
+
+
+def _docx_read_targets(args: Mapping[str, Any], context: Mapping[str, Any]) -> ResolvedFsEffect:
+    return ResolvedFsEffect(reads=(_docx_carrier(context),))
+
+
+def _docx_edit_targets(args: Mapping[str, Any], context: Mapping[str, Any]) -> ResolvedFsEffect:
+    target = _docx_carrier(context)
+    return ResolvedFsEffect(reads=(target,), writes=(target,))
+
+
+declare_all_effects([observe_docx_target], structured_fs(_docx_read_targets))
+declare_all_effects([apply_docx_edit], structured_fs(_docx_edit_targets))

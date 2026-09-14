@@ -1,5 +1,4 @@
-"""
-本文件对外提供工作区内置工具（原沙箱工具改造迁移），供桌面 Agent 在真实宿主机工作区执行。
+"""本文件对外提供工作区内置工具，供桌面 Agent 在真实宿主机工作区执行。
 
 对外提供:
     WORKSPACE_TOOLS — 全部工作区内置工具列表（read_file/list_files/write_file/bash/powershell/cmd/sh）
@@ -7,9 +6,9 @@
     select_workspace_tools(permissions) — 按权限过滤工具
 
 输入:
-    所有工具声明 `runtime: ToolRuntime` 参数，由 LangGraph 注入；per-run 的
-    `workspace`（真实工作区路径）与 `permissions`（read/write/host_command）经
-    `runtime.context` 获取——worker 已将 langgraph_context 透传给 agent.astream(context=...)。
+    所有工具声明 `runtime: ToolRuntime` 参数，由 LangGraph 注入；每次运行的 `workspace`
+    与 `permissions`（read/write/host_command）以及 `access_mode` 经 `runtime.context`
+    提供，由执行层在运行起点派生，工具自身不拼装这些字段。
 
 输出:
     read_file/list_files → 文件文本/目录列表
@@ -17,12 +16,18 @@
     bash/powershell/cmd/sh → 命令执行输出（截断至 30000 字符）
 
 具体工作流:
-    (1) 工具调用时从 runtime.context 读取 workspace 与 permissions
+    (1) 工具调用时经 focus.security 构造访问策略并读取权限集合
     (2) 权限门控：未授权（如无 write 时调用 write_file）→ PermissionError
-    (3) 路径 containment 校验：越界是模型可修正的 ToolException；真实权限错误继续传播
+    (3) 路径解释委托 focus.security；准入判定不在这里——唯一准入点是最外层中间件，
+        本文件因此只做路径解释与 IO，判定与参数改写由 AccessPolicyMiddleware 完成
     (4) read_file 按内容分发：.pdf/.docx/.doc → focus.readers 解析；图片与二进制内容
         → 抛可修正的 ToolException（绝不静默返回替换字符乱码）；其余按 UTF-8 读取
-    (5) shell 工具：subprocess 在工作区目录下执行（timeout=120）
+    (5) shell 工具以工作区为执行目录启动子进程（timeout=120）。宿主命令的本地副作用在
+        执行前无法完整证明，按不透明效果处理并交由准入中间件逐次交回人类批准；
+        本文件不尝试通过分析命令文本来判断其是否会越界
+
+效果声明：三个文件工具的目标就是参数里的 path，可由确定性解析完整枚举，故声明为可结构化
+枚举；四个 shell 的副作用无法在执行前证明，显式声明为不透明（不依赖默认值，使分类可审计）。
 
 示例:
     tools = select_workspace_tools(["read", "write"])
@@ -31,9 +36,9 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +46,14 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import ToolException, tool
 
 from focus.images import is_image_name
+from focus.security import AccessPolicy, canonical_target, policy_from_context
+from focus.security.effects import (
+    OPAQUE_LOCAL_EFFECT,
+    ResolvedFsEffect,
+    declare_all_effects,
+    declare_effect,
+    structured_fs,
+)
 
 WORKSPACE_TOOL_NAMES = frozenset({"read_file", "list_files", "write_file", "bash", "powershell", "cmd", "sh"})
 
@@ -51,63 +64,52 @@ TOOL_NAMES_BY_PERMISSION: dict[str, list[str]] = {
 }
 
 
-def _runtime_values(runtime: ToolRuntime) -> tuple[Path, frozenset[str], list[Path]]:
-    """从 runtime.context 提取工作区路径、权限集合与额外可写根。
-
-    装配模式（context.allow_global_config=True）时把全局态 `~/.focus` 加入额外可写根，
-    使工作区工具在不新增工具的前提下可写入全局配置目录。
-    """
+def _runtime_values(runtime: ToolRuntime) -> tuple[AccessPolicy, frozenset[str]]:
+    """从 runtime.context 提取访问策略与权限集合。"""
     context = runtime.context
-    workspace = context.get("workspace") if isinstance(context, dict) else None
-    if not workspace:
-        raise RuntimeError("缺少工作区上下文: runtime.context['workspace']")
+    policy = policy_from_context(context)
     raw_permissions = context.get("permissions") if isinstance(context, dict) else None
     permissions = frozenset(["read"] if raw_permissions is None else raw_permissions)
-    extra_roots: list[Path] = []
-    if context.get("allow_global_config"):
-        from focus.config.layered import global_home
-
-        extra_roots.append(global_home().resolve())
-    return Path(workspace).resolve(), permissions, extra_roots
+    return policy, permissions
 
 
-def _canonical_path_text(path: Path) -> str:
-    """统一 Windows 普通路径与扩展路径前缀的等价表示。"""
-    value = str(path)
-    if os.name == "nt":
-        if value.startswith("\\\\?\\UNC\\"):
-            value = "\\\\" + value[8:]
-        elif value.startswith("\\\\?\\"):
-            value = value[4:]
-    return os.path.normcase(os.path.normpath(value))
+def _interpret_target(policy: AccessPolicy, value: str) -> Path:
+    """把路径值解释为真实目标。
+
+    只做路径解释与 IO；是否允许访问由唯一准入点（AccessPolicyMiddleware）判定，
+    因此本文件不出现任何准入调用。
+    """
+    return canonical_target(policy.workspace, value)
 
 
-def _is_workspace_path(root: Path, target: Path) -> bool:
-    root_text = _canonical_path_text(root)
-    target_text = _canonical_path_text(target)
-    try:
-        return os.path.commonpath((root_text, target_text)) == root_text
-    except ValueError:
-        return False
+def _declared_target(args: Mapping[str, Any], context: Mapping[str, Any]) -> Path:
+    """解析一次调用唯一的结构化本地目标；解析基准由受治理上下文提供。"""
+    policy = policy_from_context(context)
+    return canonical_target(policy.workspace, str(args.get("path") or ""))
 
 
-def _resolve_workspace_path(root: Path, value: str, extra_roots: list[Path] | None = None) -> Path:
-    """解析工具路径并校验位于工作区或额外可写根（装配模式全局配置目录）内。"""
-    candidate = Path(value).expanduser()
-    target = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
-    roots = [root, *(extra_roots or [])]
-    if not any(_is_workspace_path(candidate_root, target) for candidate_root in roots):
-        raise ToolException(f"路径不属于当前工作区: {value}")
-    return target
+def _stamped_args(args: Mapping[str, Any], target: Path) -> Mapping[str, Any]:
+    """把目标参数替换为规范化真实路径，随解析结果一并交给准入点下发。"""
+    return {**args, "path": str(target)}
+
+
+def _read_targets(args: Mapping[str, Any], context: Mapping[str, Any]) -> ResolvedFsEffect:
+    target = _declared_target(args, context)
+    return ResolvedFsEffect(reads=(target,), args=_stamped_args(args, target))
+
+
+def _write_targets(args: Mapping[str, Any], context: Mapping[str, Any]) -> ResolvedFsEffect:
+    target = _declared_target(args, context)
+    return ResolvedFsEffect(writes=(target,), args=_stamped_args(args, target))
 
 
 @tool
 def read_file(path: str, runtime: ToolRuntime) -> str:
     """读取当前工作区内文件；path 可以是绝对路径或相对工作区路径，支持 .pdf/.docx/.doc。"""
-    workspace, permissions, extra_roots = _runtime_values(runtime)
+    policy, permissions = _runtime_values(runtime)
     if "read" not in permissions:
         raise PermissionError("当前运行未授权 read")
-    target = _resolve_workspace_path(workspace, path, extra_roots)
+    target = _interpret_target(policy, path)
     if target.is_dir():
         raise ToolException(f"目标是目录，请改用 list_files: {target}")
     if not target.is_file():
@@ -140,10 +142,10 @@ def _looks_binary(raw: bytes) -> bool:
 @tool
 def list_files(path: str, runtime: ToolRuntime) -> str:
     """列出当前工作区内目录；path 可以是绝对路径或相对工作区路径。"""
-    workspace, permissions, extra_roots = _runtime_values(runtime)
+    policy, permissions = _runtime_values(runtime)
     if "read" not in permissions:
         raise PermissionError("当前运行未授权 read")
-    target = _resolve_workspace_path(workspace, path, extra_roots)
+    target = _interpret_target(policy, path)
     if target.is_file():
         raise ToolException(f"目标是文件，请改用 read_file: {target}")
     if not target.is_dir():
@@ -162,18 +164,18 @@ list_files.handle_tool_error = _recoverable_path_error
 @tool
 def write_file(path: str, content: str, runtime: ToolRuntime) -> str:
     """在当前工作区写入 UTF-8 文本；只有用户授权 write 时才会被装配。"""
-    workspace, permissions, extra_roots = _runtime_values(runtime)
+    policy, permissions = _runtime_values(runtime)
     if "write" not in permissions:
         raise PermissionError("当前运行未授权 write")
-    target = _resolve_workspace_path(workspace, path, extra_roots)
+    target = _interpret_target(policy, path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return f"已写入真实宿主机路径: {target}"
 
 
 def _run_shell(command: str, runtime: ToolRuntime, exe_name: str, args: list[str]) -> str:
-    """在工作区内执行 shell 命令（权限门控 + subprocess）。"""
-    workspace, permissions, extra_roots = _runtime_values(runtime)
+    """以工作区为执行目录启动一个宿主命令子进程（权限门控 + subprocess）。"""
+    policy, permissions = _runtime_values(runtime)
     if "host_command" not in permissions:
         raise PermissionError("当前运行未授权 host_command")
     if not isinstance(command, str) or not command.strip():
@@ -183,7 +185,7 @@ def _run_shell(command: str, runtime: ToolRuntime, exe_name: str, args: list[str
         raise RuntimeError(f"Shell '{exe_name}' not found in PATH")
     result = subprocess.run(
         [exe_path, *args, command],
-        cwd=workspace, capture_output=True, text=True, timeout=120, shell=False,
+        cwd=policy.workspace, capture_output=True, text=True, timeout=120, shell=False,
         errors="replace",
     )
     return (result.stdout + result.stderr)[-30000:]
@@ -234,3 +236,12 @@ def select_workspace_tools(permissions: list[str]) -> list[Any]:
     for permission in normalized:
         names.update(TOOL_NAMES_BY_PERMISSION.get(permission, []))
     return [tool_ for tool_ in WORKSPACE_TOOLS if tool_.name in names]
+
+
+READ_TARGET_EFFECT = structured_fs(_read_targets)
+WRITE_TARGET_EFFECT = structured_fs(_write_targets)
+
+declare_effect(read_file, READ_TARGET_EFFECT)
+declare_effect(list_files, READ_TARGET_EFFECT)
+declare_effect(write_file, WRITE_TARGET_EFFECT)
+declare_all_effects([bash, powershell, cmd, sh], OPAQUE_LOCAL_EFFECT)

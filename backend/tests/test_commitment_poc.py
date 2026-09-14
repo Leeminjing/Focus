@@ -198,8 +198,11 @@ def test_make_lead_agent_defers_context7_until_loader_is_called(monkeypatch):
     assert context7_calls == 1
     assert captured["url"] == "https://mcp.context7.com/mcp"
     assert captured["skill_names"] == frozenset({"docx"})
-    # 插件桥接位于最终链最末端（既有中间件保持原位置）
-    assert captured["middleware"][:2] == [commitment_middleware, tool_error_middleware]
+    # 准入中间件位于最终链最外层；既有中间件保持原顺序，插件桥接位于最末端
+    from focus.security.middleware import AccessPolicyMiddleware
+
+    assert isinstance(captured["middleware"][0], AccessPolicyMiddleware)
+    assert captured["middleware"][1:3] == [commitment_middleware, tool_error_middleware]
     assert isinstance(captured["middleware"][-1], PluginBridgeMiddleware)
 
 

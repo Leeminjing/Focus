@@ -1,4 +1,4 @@
-"""装配模式：两层配置聚合与工作区工具 containment 放行的测试。"""
+"""装配模式：两层配置聚合与访问策略对全局配置家目录放行的测试。"""
 
 import json
 import threading
@@ -11,8 +11,12 @@ from focus.config.layered import (
     layered_mtime,
     load_layered_map,
 )
-from focus.tools.builtins.workspace_tools import (
-    _resolve_workspace_path,
+from focus.security import (
+    AccessDecision,
+    AccessOperation,
+    canonical_target,
+    decide_path_access,
+    policy_from_context,
 )
 
 _GLOBAL_ENV = "FOCUS_GLOBAL_HOME"
@@ -72,18 +76,24 @@ def test_layered_mtime_none():
 
 
 def test_containment_allows_global_root(global_home_dir, tmp_path):
+    """工作根内放行、根外待决；装配模式把全局配置家目录并入工作根。"""
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     global_file = global_home_dir / "plugins" / "demo" / "plugin.py"
-    # 在 workspace 内：允许
-    inside = _resolve_workspace_path(workspace, "a.txt", [])
+    plain = policy_from_context({"workspace": str(workspace)})
+
+    inside = canonical_target(workspace, "a.txt")
     assert inside == (workspace / "a.txt").resolve()
-    # workspace 外（无额外根）：拒绝
-    with pytest.raises(Exception):
-        _resolve_workspace_path(workspace, str(global_file), [])
-    # 装配模式放行全局根：允许写 ~/.focus 下
-    allowed = _resolve_workspace_path(workspace, str(global_file), [global_home().resolve()])
-    assert allowed == global_file.resolve()
+    assert decide_path_access(plain, inside, AccessOperation.WRITE) is AccessDecision.ALLOW
+
+    outside = canonical_target(workspace, str(global_file))
+    assert decide_path_access(plain, outside, AccessOperation.WRITE) is AccessDecision.ASK
+
+    scoped = policy_from_context({"workspace": str(workspace), "allow_global_config": True})
+    assert global_home().resolve() in scoped.roots
+    scratch = canonical_target(workspace, str(global_home_dir / "scratch" / "note.txt"))
+    assert decide_path_access(scoped, scratch, AccessOperation.WRITE) is AccessDecision.ALLOW
+    assert decide_path_access(scoped, outside, AccessOperation.WRITE) is AccessDecision.ASK
 
 
 def test_assembly_prompt_constants():
@@ -94,13 +104,13 @@ def test_assembly_prompt_constants():
 
 
 def test_assembly_run_sets_allow_global_config():
-    """装配运行走 _prepare(..., allow_global_config=True)，context 应带 allow_global_config。"""
-    from backend.app.desktop.service import _prepare  # noqa: F401 仅为可用性断言
-
+    """装配运行把全局配置家目录并入工作根：装配位显式传 allow_global_config。"""
     import inspect
 
-    sig = inspect.signature(_prepare)
-    assert "allow_global_config" in sig.parameters
+    from backend.app.desktop.service import DesktopService
+
+    assert "allow_global_config" in inspect.signature(DesktopService._prepare).parameters
+    assert "allow_global_config=is_assembly" in inspect.getsource(DesktopService.start_main_run)
 
 
 def test_regression_global_empty_equals_repo(tmp_path, monkeypatch):
@@ -169,7 +179,7 @@ def test_mcp_cache_refresh_on_mtime(monkeypatch, tmp_path):
     previous_tools, previous_mtime = cache._mcp_tools, cache._mtime
     cache._mcp_tools, cache._mtime = None, None
 
-    def fake_get_tools():
+    async def fake_get_tools():
         calls["n"] += 1
         return []
 

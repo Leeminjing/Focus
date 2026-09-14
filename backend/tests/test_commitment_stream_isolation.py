@@ -19,6 +19,30 @@ from focus.agents.commitment.workflow import _build_supervisor
 from focus.agents.commitment.delegation import ReviewedDelegator
 
 
+def _governed_context(workspace: str = "C:/tmp") -> dict:
+    """承诺层的父执行上下文：受治理字段一律来自服务端派生的安全上下文。"""
+    from focus.security.context import (
+        AuthorizationIdentity,
+        ExecutionProfile,
+        RoutingIdentity,
+        derive_security_context,
+    )
+    from focus.security.policy import AccessMode, workspace_roots
+
+    workspace_path = Path(workspace)
+    profile = ExecutionProfile(
+        authorization=AuthorizationIdentity(
+            workspace=workspace_path,
+            roots=workspace_roots(workspace_path),
+            permissions=("read", "write", "host_command"),
+            access_mode=AccessMode.WORKSPACE,
+            agent_role="main",
+        ),
+        routing=RoutingIdentity("dbg-s1", "ws-1", "main:dbg-s1", ""),
+    )
+    return {**derive_security_context(profile).to_runtime_context(), "uploads": ""}
+
+
 class _ScriptedDelegator:
     def __init__(self):
         self.calls = []
@@ -78,7 +102,7 @@ def test_commitment_period_stream_modes():
     saver = InMemorySaver()
     agent.checkpointer = saver
     config = {"configurable": {"thread_id": "dbg-s1"}}
-    ctx = {"workspace": "C:/tmp", "uploads": ""}
+    ctx = _governed_context()
 
     from focus.runtime.runs.events import chunk_to_events
 

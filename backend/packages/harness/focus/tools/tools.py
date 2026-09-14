@@ -14,7 +14,8 @@
 具体工作流:
     (1) builtin: 代码级内置工具（工作区/联网），source="builtin"
     (2) custom: 经 ToolRegistry 扫描 ~/.focus/tools/<name>/（source="custom"）
-    (3) mcp: 经 get_mcp_tools_cached()（source="mcp"）
+    (3) mcp: 经 get_mcp_tools_cached()（source="mcp"）；效果契约已在摄取边界
+        （focus/mcp/tools.load_mcp_tools）按信任分层签发，此处不再改动
     (4) plugin: 经 get_plugin_registry().tools()（source="plugin"）
     (5) 各来源包装为 ToolInfo 后合并返回；单个来源失败仅记录日志，不中断其余来源
 
@@ -47,10 +48,10 @@ def _wrap_as_toolinfo(base_tool: BaseTool, source: str) -> ToolInfo:
 async def _builtin_tools() -> list[ToolInfo]:
     """从代码级内置工具池收集（工作区 + 联网），source="builtin"。"""
     try:
+        from focus.tools.builtins.web_tools import WEB_TOOLS
         from focus.tools.builtins.workspace_tools import WORKSPACE_TOOLS
-        from focus.tools.builtins.web_tools import web_fetch, web_search
 
-        builtin = [*WORKSPACE_TOOLS, web_search, web_fetch]
+        builtin = [*WORKSPACE_TOOLS, *WEB_TOOLS]
         return [_wrap_as_toolinfo(tool_, "builtin") for tool_ in builtin]
     except Exception:
         logger.error("内置工具加载失败", exc_info=True)
@@ -69,7 +70,7 @@ async def _custom_tools() -> list[ToolInfo]:
 
 
 async def _mcp_tools() -> list[ToolInfo]:
-    """从 MCP 缓存获取远端工具（source="mcp"）。"""
+    """从 MCP 缓存获取远端工具（source="mcp"）；效果契约已在摄取边界按信任分层签发。"""
     try:
         from focus.mcp.cache import get_mcp_tools_cached
 

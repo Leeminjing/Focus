@@ -5,6 +5,7 @@
     global_home() — 全局态 `.focus` 家目录 (Path)
     load_global_dotenv() — 启动期加载 `~/.focus/.env` 全局密钥（仅补缺，不覆盖已设置值）
     load_layered_map(config_name, repo_path) — 读取并合并 全局态 + 仓库态 同名配置为 dict（仓库态优先）
+    layered_candidate_paths(config_name, repo_path) — 该配置的物理候选路径（全局态 + 仓库态）
     layered_mtime(config_name, repo_path) — 全局态/仓库态候选文件的最大 mtime（用于 MCP 缓存刷新判定）
 
 输入:
@@ -12,7 +13,8 @@
     repo_path: str — 仓库态文件路径（cwd 相对或绝对）
 
 输出:
-    global_home → Path；load_global_dotenv → None；load_layered_map → dict；layered_mtime → float | None
+    global_home → Path；load_global_dotenv → None；load_layered_map → dict；
+    layered_candidate_paths → tuple[str, ...]；layered_mtime → float | None
 
 具体工作流:
     (1) global_home 解析用户主目录下 `.focus`（可用环境变量 FOCUS_GLOBAL_HOME 覆盖，便于测试）。
@@ -20,6 +22,9 @@
         （缺失则空 dict），以仓库态为 overlay 深合并（仓库态优先），返回合并后的 dict。
     (3) layered_mtime 取全局态与仓库态候选文件中存在者的最大 mtime；皆不存在返回 None。
     (4) load_global_dotenv 在 os.environ 中仅补缺地注入 `~/.focus/.env` 键值。
+    (5) layered_candidate_paths 报出该配置的全部物理候选路径（两层各一），不区分是否存在——
+        「新建一个配置文件」同样会改变未来的执行，因此权柄面判定的依据是加载器会去看哪里，
+        而不是它这次找到了什么。
 
 示例:
     cfg = load_layered_map("config.yaml", "config.yaml")
@@ -84,6 +89,11 @@ def load_layered_map(config_name: str, repo_path: str) -> dict:
     global_map = _read_yaml_map(global_home() / config_name)
     repo_map = _read_yaml_map(Path(repo_path))
     return _deep_merge(global_map, repo_map)
+
+
+def layered_candidate_paths(config_name: str, repo_path: str) -> tuple[Path, ...]:
+    """报出该配置的全部物理候选路径（全局态、仓库态各一），不区分是否存在。"""
+    return (global_home() / config_name, Path(repo_path))
 
 
 def layered_mtime(config_name: str, repo_path: str) -> float | None:

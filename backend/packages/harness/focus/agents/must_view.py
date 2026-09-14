@@ -49,12 +49,16 @@ from langchain_core.messages import HumanMessage
 from langgraph.types import interrupt
 from pydantic import BaseModel, Field
 
+from focus.security.governed import declare_governed_keys
 from focus.images import scale_for_model, to_data_url
 
 MUST_VIEW_CONTEXT_KEY = "must_view_materials"
 
 MODEL_IMAGE_INPUT_KEY = "model_supports_image_input"
 """本轮所用模型是否声明具备图像输入能力；由 service 侧按模型条目写入 run 上下文。"""
+
+# 必需图片清单与模型图像能力都用参与决策：前者决定注入与豁免，后者决定该轮是否可成功收场
+declare_governed_keys(MUST_VIEW_CONTEXT_KEY, MODEL_IMAGE_INPUT_KEY)
 
 _INJECTION_PREAMBLE = "以下是本轮必须查看的图片材料："
 

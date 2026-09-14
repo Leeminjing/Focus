@@ -855,6 +855,27 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
     desktop_routes.start_run = original_start_run  # 恢复 patch，避免污染后续测试
 
 
+def test_unregistered_execution_identity_is_refused_with_a_distinct_code():
+    """未登记的执行身份：以可识别的错误码拒绝，与「资源不存在」区分开。"""
+    with _client() as client:
+        missing = uuid.uuid4().hex
+        run = client.post(
+            f"/desktop/api/tasks/{missing}/main/runs",
+            headers=SESSION,
+            json={"message": "你好", "permissions": ["read"]},
+        )
+        assert run.status_code == 404
+        assert run.json()["detail"]["code"] == "execution_identity_unregistered"
+
+        resume = client.post(
+            f"/desktop/api/threads/missing-{missing}/runs/resume",
+            headers=SESSION,
+            json={"resume": {"decision": "approve"}},
+        )
+        assert resume.status_code == 404
+        assert resume.json()["detail"]["code"] == "execution_identity_unregistered"
+
+
 def test_main_run_permissions(tmp_path):
     """主对话权限默认全开 + host_command 装配 shell 工具（fix-shell-tool-unavailable）。
 

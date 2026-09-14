@@ -21,6 +21,30 @@ from focus.agents.commitment.workflow import _build_supervisor
 from focus.agents.commitment.delegation import ReviewedDelegator
 
 
+def _governed_context(workspace: str = "C:/tmp") -> dict:
+    """承诺层的父执行上下文：受治理字段一律来自服务端派生的安全上下文。"""
+    from focus.security.context import (
+        AuthorizationIdentity,
+        ExecutionProfile,
+        RoutingIdentity,
+        derive_security_context,
+    )
+    from focus.security.policy import AccessMode, workspace_roots
+
+    workspace_path = Path(workspace)
+    profile = ExecutionProfile(
+        authorization=AuthorizationIdentity(
+            workspace=workspace_path,
+            roots=workspace_roots(workspace_path),
+            permissions=("read", "write", "host_command"),
+            access_mode=AccessMode.WORKSPACE,
+            agent_role="main",
+        ),
+        routing=RoutingIdentity("dbg-1", "ws-1", "main:dbg-1", ""),
+    )
+    return {**derive_security_context(profile).to_runtime_context(), "uploads": ""}
+
+
 class _ScriptedDelegator:
     def __init__(self):
         self.calls = []
@@ -71,7 +95,7 @@ def test_parent_resume_detection():
     config = {"configurable": {"thread_id": "dbg-1"}}
 
     # 首次执行：/commit 触发承诺 → 子图阶段 3 中断 → middleware raise GraphInterrupt → 父图中断
-    ctx = {"workspace": "C:/tmp", "uploads": ""}
+    ctx = _governed_context()
     result = asyncio.run(agent.ainvoke(
         {"messages": [HumanMessage(content="/commit 做X", id="m1")]},
         config=config,

@@ -2,6 +2,8 @@
 
 对外提供:
     SpatialAnchor — spatial_anchors 表 ORM(锚点先行成立,投放后升格为小兵记录)
+    SpatialAnchor.checkpoint_ns — 执行命名空间(由持久化的 spatial_id 派生)
+    SpatialAnchor.to_payload — 前端载荷
 
 输入:
     spatial_id: str — 锚点/小兵唯一 id(32 位 hex)
@@ -51,6 +53,11 @@ class SpatialAnchor(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+    @property
+    def checkpoint_ns(self) -> str:
+        """执行命名空间：由持久化的 spatial_id 派生，属于锚点身份而非运行期临时拼接。"""
+        return f"patrol:{self.spatial_id}"
 
     def to_payload(self) -> dict[str, Any]:
         return {

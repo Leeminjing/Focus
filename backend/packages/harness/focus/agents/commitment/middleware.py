@@ -5,7 +5,8 @@
     model — 承诺层内部 Worker 和 Evaluator 使用的 BaseChatModel。
     context7_tools_loader — 承诺阶段首次使用 Context7 时调用的异步工具加载函数。
     skill_names — 当前任务可用技能名集合，用于剥离消息前导的 /name skill token。
-    AgentState / runtime — lead agent 当前消息状态和包含 thread_id 的运行时信息。
+    AgentState / runtime — lead agent 当前消息状态和运行时信息；受治理安全上下文经
+        runtime.context 携带，承诺子图的身份由它单调派生，不从扁平上下文搬运。
 
 输出:
     None — 已存在 task_contract、没有消息或未显式输入 /commit 指令时跳过承诺层。
@@ -19,6 +20,8 @@
         /commit 前置历史不进入子图，指令经 source_text 传递；阶段4 的上传清单
         来自 runtime.context 的 uploads（桌面材料系统）或指令文本中的
         <current_uploads> 标签，经 uploads_tag 显式传递。
+    (2.5) 承诺子图是本进程内的派生执行，由父级安全上下文单调派生自己的安全上下文
+        （能力权限、工作根、访问模式都不放宽），子图以该上下文运行，落盘位置也取自它。
     (3) 按子图 checkpoint 存在性区分首次执行与 resume：首次从 stage 0 种子化；
         resume 时从父图 config 读取 resume 载荷并 Command(resume=...) 转发，
         子图从上次中断点继续，不重放已完成阶段。
@@ -52,8 +55,18 @@ from focus.agents.commitment.delegation import ReviewedDelegator
 from focus.agents.commitment.schemas import CommitmentState
 from focus.agents.commitment.tracing import _write_commitment_messages
 from focus.agents.commitment.workflow import _build_supervisor
+from focus.security.context import (
+    ChildRole,
+    derive_child_security_context,
+    security_context_of,
+)
+from focus.security.governed import declare_governed_keys
 
 _SUBGRAPH_THREAD_SUFFIX = ":commitment"
+
+# 承诺层读取的受治理字段：上传清单是阶段4的核对依据，工作区决定知识/合同落盘位置，
+# thread 决定承诺子图的隔离命名空间
+declare_governed_keys("uploads", "workspace", "thread_id")
 
 _UPLOADS_TAG_RE = re.compile(
     r"<current_uploads>.*?</current_uploads>", re.DOTALL
@@ -243,11 +256,12 @@ class CommitmentMiddleware(AgentMiddleware):
         runtime_context = getattr(runtime, "context", None)
         if isinstance(runtime_context, dict) and runtime_context.get("uploads"):
             uploads_tag = str(runtime_context["uploads"])
-        workspace = ""
-        if isinstance(runtime_context, dict):
-            workspace = str(runtime_context.get("workspace", ""))
-        if not workspace:
-            raise ValueError("CommitmentMiddleware 无法获取 workspace")
+        # 承诺子图是本进程内的派生执行：身份由父级安全上下文单调派生，
+        # 落盘位置与工具上下文都取自这一份来源，不再从扁平上下文搬运受治理字段
+        child_security = derive_child_security_context(
+            security_context_of(runtime_context), ChildRole.COMMITMENT_WORKER
+        )
+        workspace = str(child_security.authorization.workspace)
         subgraph_config = _subgraph_config(str(thread_id))
 
         # 区分首次执行与 resume：父图 resume 重执行时 config 携带 resume 载荷，
@@ -287,6 +301,7 @@ class CommitmentMiddleware(AgentMiddleware):
         async for mode, chunk in self._supervisor.astream(
             subgraph_input,
             config=subgraph_config,
+            context=child_security.to_runtime_context(),
             stream_mode=["values", "custom"],
         ):
             if mode == "custom":
