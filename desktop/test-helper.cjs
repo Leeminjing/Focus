@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 app-*.test.cjs 共用的 VM 测试脚手架。输入为选择器、状态记录、网络与额外全局
- * 配置，输出为带浏览器语义、localStorage、Markdown 渲染器和 Context helper 的隔离上下文；工作流
- * 统一测试环境并允许调用方覆盖差异点。示例：`createAppHarness({ fetch: true })`。
+ * 配置，输出为带浏览器语义、事件广播、localStorage、Markdown 渲染器和 Context helper 的隔离上下文；工作流
+ * 统一测试环境、按浏览器语义向同类型全部监听器派发事件并允许调用方覆盖差异点。示例：`createAppHarness({ fetch: true })`。
  */
 "use strict";
 const fs = require("node:fs");
@@ -80,6 +80,9 @@ function createAppHarness(options = {}) {
     globals.FormData = class {};
   }
   const context = vm.createContext(globals);
+  const dispatch = (type, event) => {
+    for (const handler of listeners.get(type) || []) handler(event);
+  };
   // window === globalThis(浏览器语义):app.js 经 window.markdownit 访问渲染器
   context.window = context;
   // markdown-it(vendor):与浏览器一致,script 内容在 context 内执行,暴露全局 markdownit
@@ -100,7 +103,7 @@ function createAppHarness(options = {}) {
   vm.runInContext(fs.readFileSync(require.resolve("./material-content-loader.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./access-mode.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./access-approval.js"), "utf8"), context);
-  return { vm, context, document, inert, statusNode, statusState, fetches, listeners };
+  return { vm, context, document, inert, statusNode, statusState, fetches, listeners, dispatch };
 }
 
 module.exports = { createAppHarness, readAppSource, inert };

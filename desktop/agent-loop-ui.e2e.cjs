@@ -1,8 +1,9 @@
 /*
- * 本文件对外提供 Context-governed Agent Loop 的真实 Electron 长流程回归。
+ * 本文件对外提供 Context-governed Agent Loop 的真实 Electron 长流程与终止态退出回归。
  * 输入为确定性 Loop/Console API、真实 index.html/app.js 与用户表单动作；输出为 Context 图、完整会话、
- * 三类介入、恢复重连、用户接管、完成路径和事实抽屉断言。具体工作流为在隐藏 BrowserWindow 中执行
- * 完整交互并检查请求与 DOM；示例：`npx electron agent-loop-ui.e2e.cjs`。
+ * 三类介入、恢复重连、用户接管、完成路径、事实表和可选视觉基线截图。具体工作流为在隐藏 BrowserWindow 中执行
+ * 完整交互并检查请求与 DOM；设置 `FOCUS_AGENT_LOOP_SCREENSHOT` 时输出真实页面截图供设计 QA 使用。
+ * 示例：`npx electron agent-loop-ui.e2e.cjs`。
  */
 "use strict";
 
@@ -30,7 +31,7 @@ async function waitFor(win, expression, label) {
 
 async function run() {
   const win = new BrowserWindow({
-    show: false,
+    show: Boolean(process.env.FOCUS_AGENT_LOOP_SCREENSHOT),
     width: 1440,
     height: 960,
     webPreferences: {
@@ -66,6 +67,16 @@ async function run() {
   })()`);
   if (!started.stored || started.body?.initial_run_id !== "run-initial" || started.body?.budgets?.max_contexts !== 24 || started.body?.budgets?.max_providers !== 5 || started.body?.budgets?.max_model_calls !== 300) throw new Error(`启动或预算契约失败: ${JSON.stringify(started)}`);
   for (const text of ["round-12", "observing", "继续实现", "测试与故障分析", "架构审查", "需求偏航检查", "Patrol delegated", "暂停修改代码", "Input 8192", "Output 2048", "Retries 2", "Contexts 5 / 24", "Providers 2 / 5", "撤销 Patrol 授权"]) if (!started.text.includes(text)) throw new Error(`Loop 控制台缺少 ${text}`);
+  if (process.env.FOCUS_AGENT_LOOP_SCREENSHOT) {
+    await win.webContents.executeJavaScript(`(async () => {
+      document.querySelector('[data-action="loop-select-context"][data-context-id="child"]').click();
+      for (let count = 0; count < 150 && !document.querySelector('[data-loop-transcript]')?.textContent.includes('12 passed'); count += 1) await new Promise(next => setTimeout(next, 20));
+      await new Promise(next => requestAnimationFrame(() => requestAnimationFrame(next)));
+    })()`);
+    const screenshotPath = path.resolve(process.env.FOCUS_AGENT_LOOP_SCREENSHOT);
+    fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
+    fs.writeFileSync(screenshotPath, (await win.webContents.capturePage()).toPNG());
+  }
 
   const interventions = await win.webContents.executeJavaScript(`(async () => {
     document.querySelector('[data-action="loop-select-context"][data-context-id="child"]').click();
@@ -128,7 +139,27 @@ async function run() {
   })()`);
   if (completed.controls !== 0 || completed.result.final_path[0].revision_id !== "root-r7" || completed.result.unadopted_lanes[0].lane_id !== "abandoned" || !completed.text.includes("completed")) throw new Error(`完成与未采用路径保留失败: ${JSON.stringify(completed)}`);
 
-  console.log("agent-loop-ui-e2e: 启动离开、重连、多 Lane、委托来源、接管、等待与完成通过");
+  const exited = await win.webContents.executeJavaScript(`(async () => {
+    const exit = document.querySelector('[data-action="loop-exit"]');
+    const readonlyBefore = !document.querySelector('#loopInterventionForm') && document.querySelector('.loop-intervention.is-readonly');
+    exit.click();
+    for (let count = 0; count < 150 && !document.querySelector('.loop-empty'); count += 1) await new Promise(next => setTimeout(next, 20));
+    state.view = 'focus';
+    render();
+    await openLoopView();
+    for (let count = 0; count < 150 && !document.querySelector('.loop-empty'); count += 1) await new Promise(next => setTimeout(next, 20));
+    return {
+      readonlyBefore: Boolean(readonlyBefore),
+      loopId: state.loop.loopId,
+      stored: localStorage.getItem('focus-agent-loop:root'),
+      hasStart: Boolean(document.querySelector('#agentLoopStartForm')),
+      startDisabled: document.querySelector('#agentLoopStartForm button[type="submit"]')?.disabled,
+      guidance: document.querySelector('.loop-start-gate')?.textContent || '',
+    };
+  })()`);
+  if (!exited.readonlyBefore || exited.loopId !== null || exited.stored !== null || !exited.hasStart || !exited.startDisabled || !exited.guidance.includes("新的用户消息")) throw new Error(`终止 Loop 退出、重新进入或后继 Run 门禁失败: ${JSON.stringify(exited)}`);
+
+  console.log("agent-loop-ui-e2e: 启动离开、重连、多 Lane、委托来源、接管、等待、完成与退出通过");
   win.destroy();
 }
 

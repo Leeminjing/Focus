@@ -95,14 +95,13 @@ assert.match(result.message, /第一行\n第二行/);
 assert.doesNotMatch(result.message, /focus_run_materials/);
 
 // 备注输入：事件委托经最近的 [data-material-id] 解析材料身份，不再依赖托盘专属属性。
-const inputHandler = harness.listeners.get("input").at(-1);
 const noteField = {
   value: "改写后的备注",
   id: "",
   matches: selector => selector === '[data-field="run-material-note"]',
   closest: selector => selector === "[data-material-id]" ? { dataset: { materialId: "t1" } } : null,
 };
-inputHandler({ target: noteField });
+harness.dispatch("input", { target: noteField });
 assert.equal(harness.vm.runInContext('state.materialSelections.get("task").notes.t1', harness.context), "改写后的备注");
 
 // 拖放隔离：从备注输入框起点拖拽不得产生材料拖放，从材料行非交互区域拖拽仍然生效。

@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Context Portfolio 的稳定拓扑图视图。
- * 输入为轻量 nodes/edges、选中 Context 与 Loop 状态；输出为带主题、方向、Run 状态和派生连线的可交互 HTML。
- * 具体工作流为仅在拓扑指纹变化时重算确定性分层坐标，状态刷新沿用原坐标，避免节点跳动。
+ * 输入为轻量 nodes/edges、选中 Context 与 Loop 状态；输出为带主题、方向、Run 状态和派生连线的纵向可交互演化图。
+ * 具体工作流为仅在拓扑指纹变化时重算确定性分层坐标，同层节点围绕画布中心展开，状态刷新沿用原坐标以避免节点跳动。
  * 示例：`FocusPortfolioMapView.render(manifest, selectedId)`。
  */
 (function (root, factory) {
@@ -12,7 +12,7 @@
   "use strict";
 
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
-  let cache = { fingerprint: "", positions: new Map(), width: 760, height: 420 };
+  let cache = { fingerprint: "", positions: new Map(), width: 880, height: 520 };
 
   function layout(nodes, edges) {
     const fingerprint = JSON.stringify({ nodes: nodes.map(node => node.context_id).sort(), edges: edges.map(edge => [edge.source_context_id, edge.target_context_id]).sort() });
@@ -46,16 +46,22 @@
       layers.get(key).push(id);
     });
     const positions = new Map();
-    const xGap = 260;
-    const yGap = 150;
-    [...layers.entries()].sort((a, b) => a[0] - b[0]).forEach(([column, layer]) => {
-      layer.sort().forEach((id, row) => positions.set(id, { x: 32 + column * xGap, y: 32 + row * yGap }));
+    const cardWidth = 220;
+    const xGap = 34;
+    const yGap = 154;
+    const largestLayer = Math.max(1, ...[...layers.values()].map(layer => layer.length));
+    const width = Math.max(880, 72 + largestLayer * cardWidth + (largestLayer - 1) * xGap);
+    [...layers.entries()].sort((a, b) => a[0] - b[0]).forEach(([row, layer]) => {
+      layer.sort();
+      const rowWidth = layer.length * cardWidth + Math.max(0, layer.length - 1) * xGap;
+      const start = (width - rowWidth) / 2;
+      layer.forEach((id, column) => positions.set(id, { x: start + column * (cardWidth + xGap), y: 54 + row * yGap }));
     });
     cache = {
       fingerprint,
       positions,
-      width: Math.max(640, 80 + (Math.max(0, ...depth.values()) + 1) * xGap),
-      height: Math.max(390, 80 + Math.max(1, ...[...layers.values()].map(layer => layer.length)) * yGap),
+      width,
+      height: Math.max(520, 96 + (Math.max(0, ...depth.values()) + 1) * yGap),
     };
     return cache;
   }
@@ -69,14 +75,14 @@
       const source = geometry.positions.get(edge.source_context_id);
       const target = geometry.positions.get(edge.target_context_id);
       if (!source || !target) return "";
-      const x1 = source.x + 210;
-      const y1 = source.y + 52;
-      const x2 = target.x;
-      const y2 = target.y + 52;
-      const middle = (x1 + x2) / 2;
-      return `<path d="M ${x1} ${y1} C ${middle} ${y1}, ${middle} ${y2}, ${x2} ${y2}" />`;
+      const x1 = source.x + 110;
+      const y1 = source.y + 112;
+      const x2 = target.x + 110;
+      const y2 = target.y;
+      const middle = (y1 + y2) / 2;
+      return `<path d="M ${x1} ${y1} C ${x1} ${middle}, ${x2} ${middle}, ${x2} ${y2}" />`;
     }).join("");
-    const cards = nodes.map(node => {
+    const cards = nodes.map((node, index) => {
       const point = geometry.positions.get(node.context_id) || { x: 0, y: 0 };
       const run = node.latest_run;
       const evidence = [
@@ -84,9 +90,9 @@
         node.counts?.workspace_changes ? `${escape(node.counts.workspace_changes)} changes` : "",
         node.counts?.artifacts ? `${escape(node.counts.artifacts)} artifacts` : "",
       ].filter(Boolean).join(" · ");
-      return `<button type="button" class="portfolio-context-node${node.context_id === selectedId ? " is-selected" : ""}" style="left:${point.x}px;top:${point.y}px" data-action="loop-select-context" data-context-id="${escape(node.context_id)}"><span class="context-node-top"><strong>${escape(node.topic || node.title)}</strong><i class="run-dot is-${escape(run?.status || node.status)}" aria-hidden="true"></i></span><span class="context-node-purpose">${escape(node.purpose)}</span><span class="context-node-meta">R${escape(node.revision?.generation || "—")} · ${escape(run?.status || node.status)} · ${evidence}</span></button>`;
+      return `<button type="button" class="portfolio-context-node${node.context_id === selectedId ? " is-selected" : ""}" style="left:${point.x}px;top:${point.y}px" data-action="loop-select-context" data-context-id="${escape(node.context_id)}"><span class="context-node-eyebrow">#${index} ${escape(node.role || "Context")}<span><i class="run-dot is-${escape(run?.status || node.status)}" aria-hidden="true"></i>${escape(run?.status || node.status)}</span></span><span class="context-node-top"><strong>${escape(node.topic || node.title)}</strong></span><span class="context-node-purpose">${escape(node.purpose)}</span><span class="context-node-meta">R${escape(node.revision?.generation || "—")} · ${evidence || "暂无运行证据"}</span></button>`;
     }).join("");
-    return `<section class="portfolio-map" aria-label="Context Portfolio"><header><div><span class="loop-kicker">Context Portfolio</span><h3>${escape(nodes.length)} 个 Context 正在演化</h3></div><span class="portfolio-health is-${escape(manifest.health)}">Patrol ${escape(manifest.health)}</span></header><div class="portfolio-map-scroll"><div class="portfolio-map-canvas" style="width:${geometry.width}px;height:${geometry.height}px"><svg width="${geometry.width}" height="${geometry.height}" aria-hidden="true">${lines}</svg>${cards}</div></div></section>`;
+    return `<section class="portfolio-map" aria-label="Context Portfolio"><div class="portfolio-map-toolbar"><span><strong>${escape(nodes.length)}</strong> 个 Context · Evolution Graph</span><span class="portfolio-health is-${escape(manifest.health)}">Patrol ${escape(manifest.health)}</span></div><div class="portfolio-map-scroll"><div class="portfolio-map-canvas" style="width:${geometry.width}px;height:${geometry.height}px"><svg width="${geometry.width}" height="${geometry.height}" aria-hidden="true">${lines}</svg>${cards}</div></div></section>`;
   }
 
   return Object.freeze({ render });

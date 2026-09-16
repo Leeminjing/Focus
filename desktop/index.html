@@ -1,14 +1,15 @@
 <!doctype html>
 <!--
   本文档提供 Focus 桌面宿主的持久挂载结构。输入为 app.js 的同源数据与原生 DOM 更新，
-  输出为全局导航、任务上下文、工作区、Loop Portfolio 控制台、检查器、材料 Blob 加载器、
-  浮层、对话框和可复用模板。工作流为先加载无状态 UI、Loop Store/Controller 与材料 loader，再启动 app.js。
+  输出为受内容安全策略保护的全局导航、任务上下文、工作区、Loop Portfolio 控制台、检查器、
+  材料 Blob 加载器、浮层、对话框和可复用模板。工作流为先约束资源来源，再加载无状态 UI、Loop Store/Controller 与材料 loader，最后启动 app.js。
   示例：浏览器加载 index.html 后由 app.js 挂载 #app。
 -->
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http: https: ws: wss:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'">
   <title>Focus</title>
   <link rel="icon" href="./assets/focus-icon.png">
   <link rel="stylesheet" href="./styles.css">
@@ -22,7 +23,7 @@
   <link rel="stylesheet" href="./styles/map-collapsible-view.css?v=20260902">
   <link rel="stylesheet" href="./styles/conversation-events.css">
   <link rel="stylesheet" href="./styles/patrol-avatar.css?v=20260905b">
-  <link rel="stylesheet" href="./styles/loop-console.css?v=20260916a">
+  <link rel="stylesheet" href="./styles/loop-console.css?v=20260916b">
 </head>
 <body>
   <div class="app-frame">
@@ -220,11 +221,11 @@
   <script src="./loop-store.js?v=20260915a"></script>
   <script src="./loop-console-store.js?v=20260916a"></script>
   <script src="./loop-console-controller.js?v=20260916a"></script>
-  <script src="./portfolio-map-view.js?v=20260916a"></script>
-  <script src="./context-conversation-view.js?v=20260916a"></script>
-  <script src="./loop-facts-view.js?v=20260916a"></script>
-  <script src="./loop-console-view.js?v=20260916a"></script>
-  <script src="./loop-view.js?v=20260916a"></script>
+  <script src="./portfolio-map-view.js?v=20260916b"></script>
+  <script src="./context-conversation-view.js?v=20260916b"></script>
+  <script src="./loop-facts-view.js?v=20260916b"></script>
+  <script src="./loop-console-view.js?v=20260916b"></script>
+  <script src="./loop-view.js?v=20260916b"></script>
   <script src="./portfolio-view.js?v=20260915a"></script>
   <script src="./context-evolution-view.js?v=20260915a"></script>
   <script src="./message-provenance-view.js?v=20260915a"></script>

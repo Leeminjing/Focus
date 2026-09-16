@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Loop Control Console 的组合视图和分区增量补丁函数。
- * 输入为 Console Store 快照；输出为左侧 Context Portfolio、右侧完整会话和底部事实抽屉的统一布局。
- * 具体工作流为只组合专用视图，不发请求、不持有领域状态，并按拓扑、会话、事实签名独立补丁且恢复滚动与输入焦点。
+ * 输入为 Console Store 快照与 Loop 生命周期；输出为左侧 Context Portfolio/事实工作区和右侧完整会话的统一布局。
+ * 具体工作流为只组合专用视图，不发请求、不持有领域状态，并按拓扑、会话、事实签名独立补丁且恢复滚动与输入焦点；终止态由生命周期输入关闭介入面板。
  * 示例：首次调用 `FocusLoopConsoleView.render(state)`，后续调用 `patch(container, state)`。
  */
 (function (root, factory) {
@@ -17,7 +17,7 @@
     const map = globalThis.FocusPortfolioMapView?.render(state.manifest, state.selectedContextId) || "";
     const conversation = globalThis.FocusContextConversationView?.render(state) || "";
     const facts = globalThis.FocusLoopFactsView?.render(state) || "";
-    return `<section class="loop-console"><div class="loop-console-main"><div class="loop-console-map">${map}</div><div class="loop-console-divider" data-loop-console-resizer role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整 Context 图与完整会话宽度" aria-valuemin="32" aria-valuemax="68" aria-valuenow="52"></div><div class="loop-console-conversation">${conversation}</div></div>${facts}${state.error ? `<p class="loop-error" role="alert">${escape(state.error)}</p>` : ""}</section>`;
+    return `<section class="loop-console"><div class="loop-console-main"><div class="loop-console-workspace"><div class="loop-console-map">${map}</div>${facts}</div><div class="loop-console-divider" data-loop-console-resizer role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整 Context 图与完整会话宽度" aria-valuemin="32" aria-valuemax="68" aria-valuenow="52"></div><div class="loop-console-conversation">${conversation}</div></div>${state.error ? `<p class="loop-error" role="alert">${escape(state.error)}</p>` : ""}</section>`;
   }
 
   function patch(container, state) {
@@ -54,6 +54,7 @@
       filter: state.messageFilter,
       search: state.messageSearch,
       pending: state.pending,
+      terminal: state.terminal,
     });
     if (!host || signatures.get(host) === signature) return;
     const transcript = host.querySelector("[data-loop-transcript]");

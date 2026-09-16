@@ -1,8 +1,8 @@
 /*
- * 本文件验证 Loop Store/Console Store、API/完整会话协议、Portfolio 图、事实和 provenance 外置渲染。
- * 输入为重复/乱序事件、模拟 fetch、Lane revisions 和多父边；输出为幂等 cursor、正确请求、完整
- * secondary source 与不污染消息正文的 badge 断言。具体工作流为直接加载无 DOM UMD 模块并调用
- * 纯函数；示例：`node --test desktop/agent-loop-modules.test.js`。
+ * 本文件验证 Loop Store/Console Store、API/完整会话协议、Portfolio 图、事实、终止态只读和 provenance 外置渲染。
+ * 输入为重复/乱序事件、千条会话页、模拟 fetch、Lane revisions 和多父边；输出为幂等 cursor、固定
+ * 消息窗口、视口恢复、正确请求、完整 secondary source 与不污染消息正文的 badge 断言。具体工作流为
+ * 直接加载无 DOM UMD 模块并调用纯函数；示例：`node --test desktop/agent-loop-modules.test.js`。
  */
 
 "use strict";
@@ -103,6 +103,42 @@ test("console store prepends history without duplicating message indices", () =>
 });
 
 
+test("console store keeps a fixed message bound while paging through thousands of messages", () => {
+  const store = ConsoleStore.create();
+  store.loadManifest({ initial_context_id: "c1", nodes: [{ context_id: "c1", revision: { revision_id: "r1" } }] });
+  store.loadConversation({ context_id: "c1", revision: { revision_id: "r1" }, total: 1000, messages: Array.from({ length: 48 }, (_, offset) => ({ index: 952 + offset })), range: { start: 952, end: 1000 } });
+  for (let end = 952; end > 0; end -= 48) {
+    const start = Math.max(0, end - 48);
+    store.mergeConversation({ context_id: "c1", revision: { revision_id: "r1" }, total: 1000, messages: Array.from({ length: end - start }, (_, offset) => ({ index: start + offset })), range: { start, end } }, "older");
+    assert.ok(store.get().conversation.messages.length <= ConsoleStore.MAX_CONVERSATION_MESSAGES);
+  }
+  assert.equal(store.get().conversation.range.start, 0);
+  assert.equal(store.get().conversation.has_more, false);
+  assert.equal(store.get().conversation.has_newer, true);
+  assert.equal(store.get().conversation.messages.length, ConsoleStore.MAX_CONVERSATION_MESSAGES);
+});
+
+
+test("console store restores each revision window and viewport when returning to a Context", () => {
+  const store = ConsoleStore.create();
+  store.loadManifest({
+    initial_context_id: "c1",
+    nodes: [
+      { context_id: "c1", revision: { revision_id: "r1" } },
+      { context_id: "c2", revision: { revision_id: "r2" } },
+    ],
+  });
+  store.loadConversation({ context_id: "c1", revision: { revision_id: "r1" }, total: 4, messages: [{ index: 2 }, { index: 3 }], range: { start: 2, end: 4 } });
+  store.saveViewport("c1", { scrollTop: 321 });
+  store.selectContext("c2");
+  store.loadConversation({ context_id: "c2", revision: { revision_id: "r2" }, total: 1, messages: [{ index: 0 }], range: { start: 0, end: 1 } });
+  store.saveViewport("c2", { scrollTop: 17 });
+  store.selectContext("c1");
+  assert.deepEqual(store.get().conversation.messages.map(item => item.index), [2, 3]);
+  assert.equal(store.get().conversationViewport.scrollTop, 321);
+});
+
+
 test("console store paginates facts without duplicating stable fact ids", () => {
   const store = ConsoleStore.create();
   store.loadFacts({ facts: [{ fact_id: "f3" }, { fact_id: "f4" }], range: { start: 2, end: 4 }, has_more: true, next_before: 2 });
@@ -155,6 +191,7 @@ test("console controller ignores a stale conversation after rapid Context select
   const controller = ConsoleController.create({ api, store });
   try {
     await controller.load("l1");
+    store.loadManifest({ initial_context_id: "c1", nodes: [{ context_id: "c1", revision: { revision_id: "r2" } }, { context_id: "c2" }], edges: [] });
     slow = true;
     const stale = controller.selectContext("c1");
     const current = controller.selectContext("c2");
@@ -257,8 +294,16 @@ test("console controller binds and disconnects native pagination and resize obse
     disconnect() { this.disconnected = true; }
   };
   const historySentinel = {};
+  const newerSentinel = {};
   const factSentinel = {};
-  const transcript = { querySelector: selector => selector === "[data-loop-history-sentinel]" ? historySentinel : null };
+  const transcript = {
+    dataset: { contextId: "c1" },
+    scrollTop: 0,
+    querySelector: selector => ({
+      "[data-loop-history-sentinel]": historySentinel,
+      "[data-loop-newer-sentinel]": newerSentinel,
+    })[selector] || null,
+  };
   const factList = { querySelector: selector => selector === "[data-loop-fact-sentinel]" ? factSentinel : null };
   const layout = { style: { gridTemplateColumns: "", removeProperty() {} }, getBoundingClientRect: () => ({ left: 0, width: 1000 }) };
   const listeners = new Map();
@@ -282,9 +327,10 @@ test("console controller binds and disconnects native pagination and resize obse
   const controller = ConsoleController.create({ api: {}, store });
   try {
     controller.bind(container);
-    assert.equal(intersections.length, 2);
+    assert.equal(intersections.length, 3);
     assert.equal(intersections[0].options.root, transcript);
-    assert.equal(intersections[1].options.root, factList);
+    assert.equal(intersections[1].options.root, transcript);
+    assert.equal(intersections[2].options.root, factList);
     assert.equal(resizes.length, 1);
     assert.equal(resizes[0].target, layout);
   } finally {
@@ -329,7 +375,7 @@ test("portfolio map renders every source edge for a multi-parent Context", () =>
   };
   const html = PortfolioMap.render(manifest, "release");
   assert.equal((html.match(/<path /g) || []).length, 2);
-  assert.match(html, /3 个 Context 正在演化/);
+  assert.match(html, /3<\/strong> 个 Context · Evolution Graph/);
 });
 
 
@@ -392,4 +438,52 @@ test("loop view exposes every hard portfolio budget", () => {
   for (const label of ["Rounds 2 / 20", "Duration 90 / 3600s", "Calls 4 / 200", "Input 512 / 10000", "Output 128 / 2000", "Retries 1 / 4", "Lanes 3 / 8", "Contexts 5 / 16", "Providers 2 / 4", "撤销 Patrol 授权"]) {
     assert.match(dashboard, new RegExp(label));
   }
+});
+
+
+test("loop view keeps long goals compact and terminal history has explicit exits", () => {
+  const longGoal = "修复 Teleport Kubernetes Service 中 kubectl exec 交互会话失败及相关 Forwarder 生命周期问题。".repeat(8);
+  const state = {
+    snapshot: {
+      loop_id: "terminal-loop",
+      status: "stopped",
+      health: "idle",
+      goal_revision: 1,
+      authority_revision: 1,
+      goal: { goal: longGoal, task_contract: "保留现有行为", acceptance_criteria: [{ criterion_id: "c1", text: "测试通过" }] },
+      usage: { rounds: 1, model_calls: 3, contexts: 1 },
+      grant: { budgets: { max_rounds: 20, max_model_calls: 150 } },
+    },
+    related: {},
+  };
+  const html = LoopView.render(state, {}, { manifest: { nodes: [{ context_id: "root" }] } });
+  assert.match(html, /<h2>Portfolio Map<\/h2>/);
+  assert.match(html, /<details class="loop-goal-disclosure">/);
+  assert.doesNotMatch(html, new RegExp(`<h2>${longGoal}`));
+  assert.match(html, /data-action="loop-exit"/);
+  assert.match(html, /data-action="loop-prepare-new"/);
+  assert.match(html, /退出不会删除审计记录/);
+});
+
+
+test("terminal conversation is read-only and a successor needs an unbound direct run", () => {
+  const manifest = { nodes: [{ context_id: "c1", title: "Primary", purpose: "Execute", status: "success", counts: {} }] };
+  const terminal = Conversation.render({
+    manifest,
+    selectedContextId: "c1",
+    terminal: true,
+    interventionMode: "direct_context_message",
+    messageFilter: "all",
+    messageSearch: "",
+    conversation: { messages: [], range: { start: 0 }, total: 0, has_more: false },
+  });
+  assert.match(terminal, /历史只读/);
+  assert.doesNotMatch(terminal, /id="loopInterventionForm"/);
+
+  const blocked = LoopView.render(null, { title: "Next", latest_direct_user_run: { run_id: "used", origin: "direct_user", loop_id: "old-loop" } });
+  assert.match(blocked, /旧 Run 已归属于历史 Loop/);
+  assert.match(blocked, /disabled>授权 Patrol 并启动/);
+  const ready = LoopView.render(null, { title: "Next", latest_direct_user_run: { run_id: "fresh", origin: "direct_user", loop_id: null } });
+  assert.match(ready, /fresh（unknown）/);
+  assert.doesNotMatch(ready, /disabled>授权 Patrol 并启动/);
 });

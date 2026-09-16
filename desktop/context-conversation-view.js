@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Loop 中单个 Context 的完整会话与三类介入面板。
- * 输入为分页会话、选中节点、来源审计、搜索/角色筛选与介入模式；输出为 Human/AI/Tool 全记录和命令表单。
- * 具体工作流为来源徽标只渲染在审计栏，消息正文保持模型原始可见内容，压缩源按规范化消息契约展示；历史页可持续向前加载。
+ * 输入为分页会话、选中节点、来源审计、搜索/角色筛选、介入模式与 Loop 生命周期；输出为紧凑状态摘要、Human/AI/Tool 全记录和运行期命令表单。
+ * 具体工作流为来源徽标只渲染在审计栏，消息正文保持模型原始可见内容，压缩源按规范化消息契约展示；会话以固定上限窗口双向分页，终止态只读且不显示介入表单。
  * 示例：`FocusContextConversationView.render(consoleState)`。
  */
 (function (root, factory) {
@@ -37,6 +37,16 @@
     return `<article class="loop-message is-${escape(itemRole)}" data-message-index="${item.index}" data-message-role="${escape(itemRole)}"><header><strong>${escape(itemRole)}</strong>${source}<span>#${item.index + 1}</span></header><pre>${escape(content(message))}</pre>${toolMeta}${compressed}</article>`;
   }
 
+  function contextMetrics(node) {
+    const counts = node.counts || {};
+    return [
+      [counts.runs, "Runs"],
+      [counts.delegated_messages, "Patrol 指令"],
+      [counts.workspace_changes, "工作区变更"],
+      [counts.artifacts, "产物"],
+    ].map(([value, label]) => `<div><strong>${escape(value || 0)}</strong><span>${label}</span></div>`).join("");
+  }
+
   function render(state) {
     const manifest = state.manifest;
     const node = manifest?.nodes?.find(item => item.context_id === state.selectedContextId);
@@ -53,7 +63,13 @@
     const historyControl = conversation?.has_more
       ? `<div class="history-sentinel" data-loop-history-sentinel aria-hidden="true"></div><button type="button" class="load-history" data-action="loop-load-older">加载更早消息（还有 ${conversation.range.start} 条）</button>`
       : '<p class="history-boundary">已到达该 revision 的会话起点</p>';
-    return `<section class="context-conversation"><header class="conversation-head"><div><span class="loop-kicker">完整 Context 会话</span><h3>${escape(node.topic || node.title)}</h3><p>${escape(node.purpose)} · R${escape(conversation?.revision?.generation || node.revision?.generation || "—")} · ${escape(conversation?.total ?? "…")} 条消息</p></div><span class="context-run-state is-${escape(node.latest_run?.status || node.status)}">${escape(node.latest_run?.status || node.status)}</span></header><div class="conversation-tools"><input type="search" data-loop-message-search value="${escape(state.messageSearch)}" placeholder="搜索当前已加载会话"><div class="conversation-filters">${filters.map(value => `<button type="button" data-action="loop-message-filter" data-filter="${value}" class="${state.messageFilter === value ? "is-active" : ""}">${value}</button>`).join("")}</div></div><div class="loop-transcript" data-loop-transcript data-range-start="${escape(conversation?.range?.start ?? 0)}">${historyControl}${messages.map(messageCard).join("") || '<p class="history-boundary">没有匹配的消息</p>'}</div><form id="loopInterventionForm" class="loop-intervention"><div class="intervention-modes" role="tablist">${modes.map(item => `<button type="button" role="tab" data-action="loop-intervention-mode" data-mode="${item[0]}" aria-selected="${state.interventionMode === item[0]}" class="${state.interventionMode === item[0] ? "is-active" : ""}">${item[1]}</button>`).join("")}</div><p>${escape(mode[2])}</p><textarea name="content" required rows="3" placeholder="${escape(mode[0] === "direct_context_message" ? "向这个 Context 发送新的 HumanMessage" : "表达你的意图，Patrol 将在下次判断中处理")}"></textarea><button class="primary" type="submit" ${state.pending === "intervention" ? "disabled" : ""}>${state.pending === "intervention" ? "提交中…" : "提交介入"}</button></form></section>`;
+    const newerControl = conversation?.has_newer
+      ? `<button type="button" class="load-history" data-action="loop-load-newer">加载更新消息（还有 ${conversation.total - conversation.range.end} 条）</button><div class="history-sentinel" data-loop-newer-sentinel aria-hidden="true"></div>`
+      : '<p class="history-boundary">已到达该 revision 的最新消息</p>';
+    const composer = state.terminal
+      ? '<div class="loop-intervention is-readonly"><strong>历史只读</strong><span>该 Loop 已结束，退出后可在当前 Context 发送新的用户消息并创建后继 Loop。</span></div>'
+      : `<form id="loopInterventionForm" class="loop-intervention"><div class="intervention-modes" role="tablist">${modes.map(item => `<button type="button" role="tab" data-action="loop-intervention-mode" data-mode="${item[0]}" aria-selected="${state.interventionMode === item[0]}" class="${state.interventionMode === item[0] ? "is-active" : ""}">${item[1]}</button>`).join("")}</div><p>${escape(mode[2])}</p><div class="intervention-composer"><textarea name="content" required rows="3" placeholder="${escape(mode[0] === "direct_context_message" ? "向这个 Context 发送新的 HumanMessage" : "表达你的意图，Patrol 将在下次判断中处理")}"></textarea><button class="primary" type="submit" ${state.pending === "intervention" ? "disabled" : ""}>${state.pending === "intervention" ? "提交中…" : "发送"}</button></div></form>`;
+    return `<section class="context-conversation"><header class="conversation-head"><div><span class="loop-kicker">完整 Context 会话</span><h3>${escape(node.topic || node.title)}</h3><p>${escape(node.purpose)} · R${escape(conversation?.revision?.generation || node.revision?.generation || "—")} · ${escape(conversation?.total ?? "…")} 条消息</p></div><span class="context-run-state is-${escape(node.latest_run?.status || node.status)}">${escape(node.latest_run?.status || node.status)}</span></header><div class="context-metrics">${contextMetrics(node)}</div><div class="conversation-tools"><input type="search" data-loop-message-search value="${escape(state.messageSearch)}" placeholder="搜索消息内容、工具调用、文件名…"><div class="conversation-filters">${filters.map(value => `<button type="button" data-action="loop-message-filter" data-filter="${value}" class="${state.messageFilter === value ? "is-active" : ""}">${value}</button>`).join("")}</div></div><div class="loop-transcript" data-loop-transcript data-context-id="${escape(node.context_id)}" data-range-start="${escape(conversation?.range?.start ?? 0)}">${historyControl}${messages.map(messageCard).join("") || '<p class="history-boundary">没有匹配的消息</p>'}${newerControl}</div>${composer}</section>`;
   }
 
   return Object.freeze({ render });

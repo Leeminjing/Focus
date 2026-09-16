@@ -2,7 +2,7 @@ r"""本文件对外提供 ContextConversationQueryService 的完整会话分页�
 
 输入为 Loop/Context id、可选 revision、反向游标与页大小；输出为按原始顺序排列的消息页、总数、
 下一游标和独立 provenance。具体工作流为校验 Loop membership，精确读取不可变 revision display
-投影，再从尾部向前分页并按 message id 关联审计来源；正文不注入来源标签。
+投影，再从尾部向前切出有界页并只按该页 message id 关联审计来源；正文不注入来源标签。
 示例：`await service.read(session, loop_id, context_id, before=None, limit=40)`。
 """
 
@@ -60,39 +60,54 @@ class ContextConversationQueryService:
             raise HTTPException(404, "Context revision 不存在") from exc
         if revision is None or revision.ref.context_id != context_id:
             raise HTTPException(404, "Context revision 不属于目标 Context")
-        view = await self._reader.read(session, revision.ref, "display")
-        messages = list(view.messages)
-        total = len(messages)
-        end = total if before is None else min(max(before, 0), total)
-        start = max(0, end - limit)
-        page = messages[start:end]
-        provenance = await self._provenance(session, revision.ref.revision_id)
+        page = await self._reader.read_message_page(
+            revision,
+            before=before,
+            limit=limit,
+        )
+        message_ids = tuple(
+            str(message["id"])
+            for message in page.messages
+            if message.get("id") is not None
+        )
+        provenance = await self._provenance(
+            session,
+            revision.ref.revision_id,
+            message_ids,
+        )
         return {
             "loop_id": loop_id,
             "context_id": context_id,
             "revision": revision.ref.model_dump(mode="json"),
             "projection_status": revision.projection_status.value,
-            "total": total,
-            "range": {"start": start, "end": end},
-            "next_before": start if start > 0 else None,
-            "has_more": start > 0,
+            "total": page.total,
+            "range": {"start": page.start, "end": page.end},
+            "next_before": page.start if page.start > 0 else None,
+            "has_more": page.start > 0,
             "messages": [
                 {
-                    "index": start + offset,
+                    "index": page.start + offset,
                     "message": message,
                     "provenance": provenance.get(str(message.get("id"))),
                 }
-                for offset, message in enumerate(page)
+                for offset, message in enumerate(page.messages)
             ],
         }
 
     @staticmethod
-    async def _provenance(session: AsyncSession, revision_id: str) -> dict[str, dict]:
+    async def _provenance(
+        session: AsyncSession,
+        revision_id: str,
+        message_ids: tuple[str, ...],
+    ) -> dict[str, dict]:
+        if not message_ids:
+            return {}
         rows = list(
             (
                 await session.scalars(
                     select(MessageProvenance).where(
-                        MessageProvenance.context_revision_id == revision_id
+                        MessageProvenance.context_revision_id == revision_id,
+                        MessageProvenance.message_id.in_(message_ids),
                     )
                 )
             ).all()

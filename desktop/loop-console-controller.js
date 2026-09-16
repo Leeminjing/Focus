@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Agent Loop 控制台的请求与交互控制器。
- * 输入为 Loop API、Console Store 与重绘回调；输出为加载拓扑、切换 Context、分页、事实筛选、可调布局和三类介入命令。
- * 具体工作流为 Context 切换时取消旧会话请求，事实按作用域、类型和异常状态从服务端游标加载，通知与拖拽通过动画帧合并。
+ * 输入为 Loop API、Console Store 与重绘回调；输出为加载拓扑、切换 Context、双向分页、视口恢复、事实筛选、可调布局和三类介入命令。
+ * 具体工作流为切换前保存当前 Context 视口，优先恢复 revision 缓存，缺页时取消旧请求并双向补页；事实查询、通知与拖拽分别按游标和动画帧协调。
  * 示例：`controller.load(loopId)` 后由 Store 驱动纯视图渲染。
  */
 (function (root, factory) {
@@ -22,6 +22,7 @@
     let olderLoading = false;
     let factsLoading = false;
     let factsRevision = 0;
+    let boundContainer = null;
     const schedule = () => {
       if (frame !== null) return;
       frame = requestAnimationFrame(() => { frame = null; onChange(store.get()); });
@@ -60,10 +61,16 @@
 
     async function selectContext(contextId, options = {}) {
       if (!loopId || !contextId) return;
+      captureViewport();
       conversationAbort?.abort();
       factsAbort?.abort();
       conversationAbort = new AbortController();
       if (!options.preserveSelection) store.selectContext(contextId);
+      const cached = store.get().conversation;
+      if (cached?.context_id === contextId) {
+        if (store.get().factScope === "current") await loadFacts();
+        return;
+      }
       try {
         const page = await api.conversation(loopId, contextId, { signal: conversationAbort.signal });
         if (store.get().selectedContextId === contextId) {
@@ -87,7 +94,31 @@
         });
         const current = store.get();
         if (current.selectedContextId === conversation.context_id && current.conversation?.revision?.revision_id === conversation.revision?.revision_id) {
-          store.prependConversation(page);
+          store.mergeConversation(page, "older");
+        }
+        store.complete();
+      } catch (error) {
+        if (error?.name !== "AbortError") store.fail(error);
+      } finally {
+        olderLoading = false;
+      }
+    }
+
+    async function loadNewer() {
+      const conversation = store.get().conversation;
+      if (!loopId || olderLoading || !conversation?.has_newer || conversation.next_after == null) return;
+      olderLoading = true;
+      store.begin("newer-messages");
+      try {
+        const pageSize = Math.max(24, conversation.range.end - conversation.range.start);
+        const page = await api.conversation(loopId, conversation.context_id, {
+          before: Math.min(conversation.total, conversation.next_after + pageSize),
+          limit: pageSize,
+          signal: conversationAbort?.signal,
+        });
+        const current = store.get();
+        if (current.selectedContextId === conversation.context_id && current.conversation?.revision?.revision_id === conversation.revision?.revision_id) {
+          store.mergeConversation(page, "newer");
         }
         store.complete();
       } catch (error) {
@@ -188,11 +219,13 @@
 
     function bind(container) {
       resizeCleanup?.();
+      boundContainer = container || null;
       const layout = container?.querySelector?.(".loop-console-main");
       const handle = container?.querySelector?.("[data-loop-console-resizer]");
       if (!layout || !handle) return;
       let resizeFrame = null;
       let historyObserver = null;
+      let newerObserver = null;
       let factsObserver = null;
       let resizeObserver = null;
       const applyRatio = value => {
@@ -245,11 +278,18 @@
       if (typeof IntersectionObserver === "function") {
         const transcript = container.querySelector("[data-loop-transcript]");
         const historySentinel = transcript?.querySelector("[data-loop-history-sentinel]");
+        const newerSentinel = transcript?.querySelector("[data-loop-newer-sentinel]");
         if (transcript && historySentinel) {
           historyObserver = new IntersectionObserver(entries => {
             if (entries.some(entry => entry.isIntersecting)) void loadOlder();
           }, { root: transcript, rootMargin: "240px 0px 0px", threshold: 0.01 });
           historyObserver.observe(historySentinel);
+        }
+        if (transcript && newerSentinel) {
+          newerObserver = new IntersectionObserver(entries => {
+            if (entries.some(entry => entry.isIntersecting)) void loadNewer();
+          }, { root: transcript, rootMargin: "0px 0px 240px", threshold: 0.01 });
+          newerObserver.observe(newerSentinel);
         }
         const factList = container.querySelector("[data-loop-fact-list]");
         const factSentinel = factList?.querySelector("[data-loop-fact-sentinel]");
@@ -262,6 +302,7 @@
       }
       resizeCleanup = () => {
         historyObserver?.disconnect();
+        newerObserver?.disconnect();
         factsObserver?.disconnect();
         resizeObserver?.disconnect();
         if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
@@ -273,16 +314,23 @@
       };
     }
 
+    function captureViewport() {
+      const transcript = boundContainer?.querySelector?.("[data-loop-transcript]");
+      const contextId = transcript?.dataset?.contextId || store.get().selectedContextId;
+      if (transcript && contextId) store.saveViewport(contextId, { scrollTop: transcript.scrollTop });
+    }
+
     function destroy() {
       loadRevision += 1;
       conversationAbort?.abort();
       factsAbort?.abort();
       if (frame !== null) cancelAnimationFrame(frame);
       resizeCleanup?.();
+      boundContainer = null;
       unsubscribe();
     }
 
-    return Object.freeze({ load, refresh, selectContext, loadOlder, loadOlderFacts, setFactScope, setFactFilter, setFactStatus, submit, bind, destroy });
+    return Object.freeze({ load, refresh, selectContext, loadOlder, loadNewer, loadOlderFacts, setFactScope, setFactFilter, setFactStatus, submit, bind, destroy });
   }
 
   return Object.freeze({ create });

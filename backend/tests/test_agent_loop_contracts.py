@@ -1,12 +1,15 @@
 r"""本文件验证 Agent Loop 的纯合同、用户介入、Patrol 选择性读取和预算边界。
 
 输入为 delegated directive、Patrol cognitive step、workspace adoption action 与 budget usage；输出为模型侧
-纯 HumanMessage、reads/decision 互斥校验、闭合 action 解析和硬预算裁决。具体工作流为仅构造严格 schema，
-不依赖数据库或模型调用。示例：`pytest test_agent_loop_contracts.py`。
+纯 HumanMessage、真实 OpenAI-compatible 请求、reads/decision 互斥校验、闭合 action 解析和硬预算裁决。
+具体工作流为构造严格 schema，并在无网络的 ChatOpenAI invoke 边界截获 provider payload。示例：`pytest test_agent_loop_contracts.py`。
 """
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from langchain_openai import ChatOpenAI
 from pydantic import ValidationError
 import pytest
 
@@ -52,6 +55,64 @@ def test_delegated_model_message_contains_no_provenance_marker() -> None:
     assert message.response_metadata == {}
     assert "patrol" not in str(message.content).lower()
     assert "delegat" not in str(message.content).lower()
+
+
+def test_delegated_message_reaches_provider_as_plain_user_message() -> None:
+    directive = LoopDirective(
+        directive_id="directive-provider",
+        loop_id="loop-1",
+        round_id="round-1",
+        decision_id="decision-1",
+        action_id="action-1",
+        target_context_id="context-1",
+        target_context_revision_id="revision-1",
+        message_id="message-provider",
+        content="Run only the focused integration tests.",
+        content_hash="b" * 64,
+        actor_kind="patrol",
+        actor_id="patrol-1",
+        grant_id="grant-1",
+        grant_revision=1,
+        goal_revision=1,
+        status="created",
+        idempotency_key="directive-provider-key",
+    )
+    captured: dict = {}
+    response = {
+        "id": "provider-response",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "contract-test",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "done"},
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+    def create_response(**payload):
+        captured.update(payload)
+        return SimpleNamespace(parse=lambda: response, headers={})
+
+    model = ChatOpenAI(
+        model="contract-test",
+        api_key="test",
+        base_url="https://example.test",
+    )
+    model.client = SimpleNamespace(
+        with_raw_response=SimpleNamespace(create=create_response)
+    )
+    result = model.invoke([DelegatedDirectiveFactory.to_model_message(directive)])
+
+    assert result.content == "done"
+    assert captured["messages"] == [
+        {"role": "user", "content": directive.content}
+    ]
+    assert "patrol" not in str(captured["messages"]).lower()
+    assert "delegat" not in str(captured["messages"]).lower()
 
 
 def test_patrol_cognitive_step_requires_reads_xor_decision() -> None:

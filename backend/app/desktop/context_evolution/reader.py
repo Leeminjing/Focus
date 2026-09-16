@@ -1,14 +1,15 @@
 r"""本文件对外提供当前、历史及多来源 Context revision 的统一只读端口。
 
-输入为唯一 `ContextRevisionRef`、读取视图和调用方 AsyncSession；输出为 authored、execution、
-display、checkpoint、historical、frontier-summary 或 deleted-source 投影。具体工作流为从不可变
-repository 解析 revision，按 payload mode 加载精确 checkpoint，再以同一稳定映射生成各消费面；
-读取器不追随“最新 checkpoint”且不修改任何历史。示例：`await reader.read(session, ref, "display")`。
+输入为唯一 `ContextRevisionRef`、读取视图、可选分页边界和调用方 AsyncSession；输出为 authored、
+execution、display、display page、checkpoint、historical、frontier-summary 或 deleted-source 投影。
+具体工作流为从不可变 repository 解析 revision，按 payload mode 加载精确 checkpoint；分页读取只
+序列化命中页，完整读取保持原稳定映射，且不追随最新 checkpoint。示例：`await reader.read(session, ref, "display")`。
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,6 +54,15 @@ ContextRevisionReadResult = (
 )
 
 
+@dataclass(frozen=True)
+class ContextRevisionMessagePage:
+    ref: ContextRevisionRef
+    messages: tuple[dict[str, Any], ...]
+    total: int
+    start: int
+    end: int
+
+
 class ContextRevisionReader:
     def __init__(self, repository: ContextRevisionRepository, checkpointer: Any) -> None:
         self._repository = repository
@@ -77,6 +87,53 @@ class ContextRevisionReader:
     ) -> ContextRevisionReadResult:
         revision = await self._repository.get(session, ref)
         return await self._read_contract(session, revision, view)
+
+    async def read_message_page(
+        self,
+        revision: ContextRevisionContract,
+        *,
+        before: int | None,
+        limit: int,
+    ) -> ContextRevisionMessagePage:
+        runtime = await self._runtime_message_objects(revision.ref)
+        if revision.ref.payload_mode is ContextRevisionPayloadMode.CHECKPOINT:
+            total = len(runtime)
+            end = total if before is None else min(max(before, 0), total)
+            start = max(0, end - limit)
+            messages = tuple(serialize_message(message) for message in runtime[start:end])
+            return ContextRevisionMessagePage(revision.ref, messages, total, start, end)
+
+        authored = revision.authored_messages
+        initial_ids = set(revision.initial_message_ids)
+        runtime_total = sum(
+            1 for message in runtime if self._message_id(message) not in initial_ids
+        )
+        total = len(authored) + runtime_total
+        end = total if before is None else min(max(before, 0), total)
+        start = max(0, end - limit)
+        selected: list[dict[str, Any]] = []
+        authored_end = min(end, len(authored))
+        if start < authored_end:
+            selected.extend(deepcopy(authored[start:authored_end]))
+        suffix_start = max(0, start - len(authored))
+        suffix_end = max(0, end - len(authored))
+        if suffix_start < suffix_end:
+            suffix_index = 0
+            for message in runtime:
+                if self._message_id(message) in initial_ids:
+                    continue
+                if suffix_index >= suffix_end:
+                    break
+                if suffix_index >= suffix_start:
+                    selected.append(serialize_message(message))
+                suffix_index += 1
+        return ContextRevisionMessagePage(
+            revision.ref,
+            tuple(selected),
+            total,
+            start,
+            end,
+        )
 
     async def _read_contract(
         self,
@@ -189,6 +246,18 @@ class ContextRevisionReader:
         self,
         ref: ContextRevisionRef,
     ) -> ContextRevisionCheckpointView | None:
+        checkpoint = await self._checkpoint_tuple(ref)
+        if checkpoint is None:
+            return None
+        values = checkpoint.checkpoint.get("channel_values", {})
+        messages = tuple(serialize_message(message) for message in values.get("messages", []))
+        return ContextRevisionCheckpointView(
+            ref=ref,
+            messages=messages,
+            metadata=deepcopy(getattr(checkpoint, "metadata", {}) or {}),
+        )
+
+    async def _checkpoint_tuple(self, ref: ContextRevisionRef) -> Any | None:
         if not ref.is_runnable:
             return None
         checkpoint = await self._checkpointer.aget_tuple(ref.checkpoint_config())
@@ -201,17 +270,26 @@ class ContextRevisionReader:
             raise ContextRevisionIdentityMismatch(
                 f"checkpoint 不属于 revision: expected={ref.checkpoint_id}, actual={actual_id}"
             )
+        return checkpoint
+
+    async def _runtime_message_objects(self, ref: ContextRevisionRef) -> tuple[Any, ...]:
+        checkpoint = await self._checkpoint_tuple(ref)
+        if checkpoint is None:
+            return ()
         values = checkpoint.checkpoint.get("channel_values", {})
-        messages = tuple(serialize_message(message) for message in values.get("messages", []))
-        return ContextRevisionCheckpointView(
-            ref=ref,
-            messages=messages,
-            metadata=deepcopy(getattr(checkpoint, "metadata", {}) or {}),
-        )
+        return tuple(values.get("messages", ()))
 
     async def _runtime_messages(self, ref: ContextRevisionRef) -> list[dict[str, Any]]:
-        checkpoint = await self._checkpoint(ref)
-        return list(deepcopy(checkpoint.messages)) if checkpoint is not None else []
+        messages = await self._runtime_message_objects(ref)
+        return [serialize_message(message) for message in messages]
+
+    @staticmethod
+    def _message_id(message: Any) -> str | None:
+        if isinstance(message, dict):
+            value = message.get("id")
+        else:
+            value = getattr(message, "id", None)
+        return str(value) if value is not None else None
 
     @staticmethod
     def _definition_display(
