@@ -1,7 +1,8 @@
 r"""本文件对外提供桌面工作区、运行材料历史与材料分组的 ORM 和 API 数据模型。
 
-输入为工作区、任务、运行、材料、逐轮材料备注及自定义分组的结构化数据；输出为
-SQLAlchemy 表定义和严格 Pydantic 请求对象。具体工作流为：主运行请求用有序
+输入为工作区、任务、可审计运行身份、材料、逐轮材料备注及自定义分组的结构化数据；输出为
+SQLAlchemy 表定义和严格 Pydantic 请求对象。具体工作流为：Run 冻结 origin、Context revision、
+触发消息、Loop/action、equipment 与 workspace anchor；主运行请求再用有序
 material_inputs 表达本轮材料，用独立 must_view_material_ids 表达图片完成约束；数据库用
 RunMaterialBinding 保存不可变运行快照，用 MaterialGroup 与 MaterialGroupMembership 保存
 用户主动组织事实，旧 attached_material_ids 仅在新字段缺失时作为兼容输入。
@@ -13,7 +14,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -41,6 +42,17 @@ class DesktopThread(Base):
         String(32), ForeignKey("desktop_workspaces.workspace_id", ondelete="CASCADE"), nullable=False
     )
     thread_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    current_revision_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey(
+            "desktop_context_revisions.revision_id",
+            name="fk_desktop_thread_current_revision",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
+        nullable=True,
+        index=True,
+    )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     ui_state: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -49,49 +61,6 @@ class DesktopThread(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
-
-
-class DesktopContextDefinition(Base):
-    __tablename__ = "desktop_context_definitions"
-
-    context_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), primary_key=True
-    )
-    authored_messages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
-    execution_messages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
-    repair_manifest: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
-    issues: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
-    definition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    projection_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    projection_status: Mapped[str] = mapped_column(String(32), nullable=False)
-    initial_message_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
-    initial_checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    decision: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    decided_definition_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    decided_projection_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-
-class DesktopContextSource(Base):
-    __tablename__ = "desktop_context_sources"
-    __table_args__ = (
-        UniqueConstraint("context_id", "position", name="uq_desktop_context_source_position"),
-    )
-
-    source_id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    context_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    parent_context_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("desktop_threads.task_id", ondelete="RESTRICT"), nullable=False, index=True
-    )
-    source_checkpoint_id: Mapped[str] = mapped_column(Text, nullable=False)
-    position: Mapped[int] = mapped_column(Integer, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class PatrolDraft(Base):
@@ -243,6 +212,25 @@ class PatrolContextAttempt(Base):
 
 class DesktopRun(Base):
     __tablename__ = "desktop_runs"
+    __table_args__ = (
+        Index(
+            "uq_desktop_active_main_execution",
+            "task_id",
+            "execution_thread_id",
+            "checkpoint_ns",
+            unique=True,
+            postgresql_where=text(
+                "kind = 'main' AND status IN ('pending', 'running') "
+                "AND execution_thread_id IS NOT NULL"
+            ),
+        ),
+        Index(
+            "uq_desktop_run_idempotency_key",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+    )
 
     run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     task_id: Mapped[str] = mapped_column(
@@ -252,10 +240,39 @@ class DesktopRun(Base):
     deployment_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    origin: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="direct_user", server_default="direct_user"
+    )
+    execution_thread_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    checkpoint_ns: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    context_revision_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("desktop_context_revisions.revision_id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    context_checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    origin_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    directive_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    loop_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    round_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    action_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    equipment: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    workspace_anchor: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(160), nullable=True)
     input_messages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
     model_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     prompt_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     prompt_cache_hit_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    final_checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    workspace_result: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

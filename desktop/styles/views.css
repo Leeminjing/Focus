@@ -1016,6 +1016,23 @@
 
 }
 
+.loop-dashboard, .portfolio-view, .evolution-graph, .workspace-slots { display: grid; gap: var(--space-4); padding: var(--space-5); }
+.loop-dashboard > header, .portfolio-view > header, .workspace-slot > header, .portfolio-lane > header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.loop-kicker { color: var(--text-secondary); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+.loop-status, .message-source { display: inline-flex; align-items: center; border: 1px solid var(--border-default); border-radius: 999px; padding: 3px 9px; font-size: 12px; }
+.loop-status.is-running { border-color: var(--border-accent); color: var(--text-accent); }
+.loop-status.is-waiting_user, .slot-conflict, .loop-error { color: var(--text-danger); }
+.loop-facts, .workspace-slot dl, .portfolio-lane dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--space-3); margin: 0; }
+.loop-facts div, .workspace-slot, .portfolio-lane { border: 1px solid var(--border-subtle); border-radius: var(--radius-card); padding: var(--space-3); background: var(--surface-subtle); }
+.loop-facts dt, .workspace-slot dt, .portfolio-lane dt { color: var(--text-secondary); font-size: 11px; }
+.loop-facts dd, .workspace-slot dd, .portfolio-lane dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.loop-budget, .loop-controls, .portfolio-lanes { display: flex; flex-wrap: wrap; gap: var(--space-3); }
+.loop-budget h3 { flex-basis: 100%; margin: 0; }
+.portfolio-lane, .workspace-slot { flex: 1 1 260px; }
+.message-source.is-delegated { border-color: var(--border-accent); background: var(--surface-active); }
+.provenance-details { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-2) var(--space-3); }
+.provenance-details dd { margin: 0; overflow-wrap: anywhere; }
+
 @media (max-width: 900px) {
   .conversation { padding: var(--space-5) var(--space-5) var(--space-3); }
   .work-record.human { max-inline-size: min(88%, 680px); }
@@ -1168,4 +1185,108 @@
   .memory-workbench { grid-template-columns: 1fr; }
   .memory-list { max-height: 360px; border-right: 0; }
   .memory-detail { overflow: visible; }
+}
+.loop-start-form {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 760px;
+  margin-top: var(--space-5);
+}
+
+.loop-start-form > label,
+.loop-start-budget label {
+  display: grid;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+}
+
+.loop-start-form textarea,
+.loop-start-form input {
+  width: 100%;
+}
+
+.loop-start-form .loop-delegation-option {
+  grid-template-columns: auto 1fr;
+  align-items: start;
+}
+
+.loop-start-form .loop-delegation-option input {
+  width: auto;
+  margin-top: 3px;
+}
+
+.loop-override {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  padding: var(--space-3);
+}
+
+.loop-override form {
+  display: grid;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+}
+
+.loop-override label {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.context-first-parent-tree li {
+  margin-inline-start: calc(var(--context-depth, 0) * var(--space-4));
+}
+
+.evolution-graph li.is-adopted {
+  border-inline-start: 3px solid var(--border-accent);
+  padding-inline-start: var(--space-2);
+}
+
+.loop-revision-snapshot {
+  position: fixed;
+  inset: 5rem 2rem 2rem auto;
+  z-index: 30;
+  width: min(42rem, calc(100vw - 4rem));
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-base);
+  box-shadow: 0 1.25rem 4rem rgb(0 0 0 / 24%);
+  padding: var(--space-4);
+}
+
+.loop-revision-snapshot > header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.loop-revision-snapshot dl {
+  display: grid;
+  gap: var(--space-2);
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+}
+
+.loop-revision-snapshot ol {
+  display: grid;
+  gap: var(--space-3);
+  padding-left: var(--space-4);
+}
+
+.loop-revision-snapshot pre {
+  margin: var(--space-1) 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  color: var(--text-secondary);
+}
+
+.loop-start-budget {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+@media (max-width: 720px) {
+  .loop-start-budget { grid-template-columns: 1fr; }
 }

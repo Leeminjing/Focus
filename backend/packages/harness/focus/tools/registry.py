@@ -139,9 +139,10 @@ class ToolRegistry:
 
 def get_tool_registry(root: str | Path | None = None) -> ToolRegistry:
     """返回指定根目录的用户自定义工具注册表单例（同一 root 多次调用返回同一实例）。"""
-    key = str(root) if root is not None else "default"
+    resolved_root = Path(root) if root is not None else (global_home() / "tools")
+    key = str(resolved_root.expanduser().resolve())
     if key not in _registries:
-        _registries[key] = ToolRegistry(root)
+        _registries[key] = ToolRegistry(resolved_root)
     return _registries[key]
 
 
@@ -150,7 +151,8 @@ def reload_tool_registry(root: str | Path | None = None) -> ToolRegistry:
 
     正在运行的 run 使用装配时快照，不受影响；下一次 run 装配时读到新注册表。
     """
-    key = str(root) if root is not None else "default"
-    registry = ToolRegistry(root)
+    resolved_root = Path(root) if root is not None else (global_home() / "tools")
+    key = str(resolved_root.expanduser().resolve())
+    registry = ToolRegistry(resolved_root)
     _registries[key] = registry
     return registry

@@ -98,9 +98,11 @@ async function run() {
     if (map.tagName !== 'BUTTON' || contexts.tagName !== 'BUTTON' || map.disabled || contexts.disabled) return false;
     map.focus();
     map.click();
+    await new Promise(resolve => setTimeout(resolve, 0));
     if (state.view !== 'map') return false;
     contexts.focus();
     contexts.click();
+    await new Promise(resolve => setTimeout(resolve, 0));
     await new Promise(resolve => requestAnimationFrame(resolve));
     return !document.querySelector('#appInspector').hidden;
   })()`);

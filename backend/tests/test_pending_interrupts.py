@@ -1,8 +1,8 @@
 """未决人工中断的投影与主运行阻塞粒度用例。
 
 输入为检查点、桌面线程与运行状态；输出为未决中断的类型、载荷与收敛状态。
-工作流先锁定按类型取载荷与状态归一，再锁定投影只读主执行命名空间——后台执行主体的
-待决位于各自命名空间，因此不会阻塞主运行，最后在服务入口断言主执行存在待决时新运行被拒。
+工作流先锁定按类型取载荷与状态归一，再锁定投影读取最近主 Run 的 execution thread/namespace；
+后台执行主体身份不同而不会阻塞主运行，最后在服务入口断言主执行存在待决时新运行被拒。
 """
 
 import asyncio
@@ -110,6 +110,25 @@ def test_main_pending_interrupt_reports_type_and_status():
     assert pending["request"]["type"] == APPROVAL_TYPE
 
 
+def test_revision_execution_identity_selects_its_checkpoint_namespace():
+    checkpointer = _Checkpointer(
+        {"context-revision-shadow": _Checkpoint(_ACCESS)}
+    )
+    session = _Session(
+        SimpleNamespace(
+            status="interrupted",
+            execution_thread_id="shadow:context:revision",
+            checkpoint_ns="context-revision-shadow",
+            context_revision_id="revision",
+        )
+    )
+    pending = asyncio.run(
+        main_pending_interrupt(session, _task(), checkpointer, APPROVAL_TYPE)
+    )
+    assert pending["status"] == "resumable"
+    assert checkpointer.asked == ["context-revision-shadow"]
+
+
 def test_main_pending_kinds_preserves_requested_order():
     checkpointer = _Checkpointer({MAIN_CHECKPOINT_NAMESPACE: _Checkpoint(_ACCESS)})
     kinds = asyncio.run(
@@ -155,12 +174,19 @@ async def _stub_pending_access(_session, _task, _checkpointer, _payload_type):
 def _stub_service(monkeypatch):
     import backend.app.desktop.service as service_module
 
+    class _RevisionRepository:
+        async def current(self, _session, _context_id):
+            return None
+
     service = service_module.DesktopService.__new__(service_module.DesktopService)
     service.session_factory = _Session
     service.checkpointer = None
     service._get_task_entities = _stub_task_entities
     service._commitment_recovery_payload = _stub_no_commitment
     service.contexts = SimpleNamespace(ensure_runnable=_stub_ensure_runnable)
+    monkeypatch.setattr(
+        service_module, "ContextRevisionRepository", _RevisionRepository
+    )
     monkeypatch.setattr(service_module, "compression_recovery_payload", _stub_no_compression)
     monkeypatch.setattr(service_module, "main_pending_interrupt", _stub_pending_access)
     return service

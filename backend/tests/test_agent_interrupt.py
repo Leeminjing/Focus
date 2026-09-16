@@ -1,8 +1,9 @@
-"""主 Agent 中断（cancel）与中断后继续对话的端到端回归。
+"""本文件对外提供主 Agent 中断与基于 checkpoint 继续对话的端到端回归。
 
-仅替换装配工厂为可控图（首轮慢图模拟长运行，后续正常图），其余
-（RunManager/worker/StreamBridge/SSE/checkpoint/attach sync/cancel 链路）
-全部真实执行。
+输入为可控的首轮慢图、后续正常图和空外部工具池；输出为中断状态、消息历史与恢复回复断言。
+具体工作流为替换 Agent 装配与外部工具发现边界，真实执行 RunManager、统一 worker、
+StreamBridge、checkpoint、cancel 与续跑链路，避免用户 MCP 配置或网络状态污染运行时验证。
+示例：`python -m pytest backend/tests/test_agent_interrupt.py -q`。
 """
 
 import asyncio
@@ -65,8 +66,13 @@ def test_interrupted_main_run_resumes_conversation_from_checkpoint(tmp_path, wai
         calls["n"] += 1
         return _build_graph(slow=calls["n"] == 1)  # 首轮慢图（被中断），后续正常图
 
+    async def fake_get_available_tools():
+        return []
+
     original = svc.make_lead_agent
+    original_get_available_tools = svc.get_available_tools
     svc.make_lead_agent = fake_make_lead_agent
+    svc.get_available_tools = fake_get_available_tools
     thread_id = f"desktop-interrupt-e2e-{uuid.uuid4().hex}"
     try:
         with _client() as client:
@@ -134,3 +140,4 @@ def test_interrupted_main_run_resumes_conversation_from_checkpoint(tmp_path, wai
             )
     finally:
         svc.make_lead_agent = original
+        svc.get_available_tools = original_get_available_tools

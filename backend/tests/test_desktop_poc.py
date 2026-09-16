@@ -1,3 +1,10 @@
+"""本文件对外提供 Desktop Gateway、Run、Patrol、Context 与权限主链路的集成回归。
+
+输入为真实 FastAPI/TestClient、PostgreSQL、LangGraph checkpoint 与受控 Agent 图；输出为 HTTP、
+SSE、持久 Run、恢复、投放和权限装配断言。具体工作流为自动隔离用户 MCP/插件工具发现，测试内
+按场景替换模型图，其余 Desktop 执行脊柱保持真实；示例：`python -m pytest backend/tests/test_desktop_poc.py -q`。
+"""
+
 import asyncio
 import os
 from pathlib import Path
@@ -29,6 +36,13 @@ pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 # 决策 1：桌面功能内嵌 Gateway，测试目标为唯一 FastAPI 应用
 from backend.app.gateway.app import app  # noqa: E402
+from backend.app.desktop.context_evolution import (  # noqa: E402
+    ContextRevisionOriginKind,
+    ContextRevisionPrepareRequest,
+    ContextRevisionPublisher,
+    ContextRevisionRepository,
+    LangGraphContextCheckpointWriter,
+)
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace  # noqa: E402
 from backend.app.desktop.service import (  # noqa: E402
     DesktopService,
@@ -40,6 +54,16 @@ from backend.app.gateway.routers.thread_runs import sse_consumer  # noqa: E402
 
 
 SESSION = {"X-Focus-Session": "focus-dev-session"}
+
+
+@pytest.fixture(autouse=True)
+def _isolated_external_tool_pool(monkeypatch):
+    import backend.app.desktop.service as service_module
+
+    async def empty_tools():
+        return []
+
+    monkeypatch.setattr(service_module, "get_available_tools", empty_tools)
 
 
 def _client():
@@ -290,6 +314,80 @@ def test_unified_pipeline_main_run_end_to_end(tmp_path, wait_until):
         svc.make_lead_agent = original
 
 
+def test_main_run_uses_current_revision_execution_identity(
+    tmp_path, monkeypatch, wait_for_memory_status
+):
+    import backend.app.desktop.service as svc
+
+    async def fake_make_lead_agent(**kwargs):
+        graph = StateGraph(MessagesState)
+
+        async def keep_running(_state):
+            await asyncio.sleep(30)
+
+        graph.add_node("keep_running", keep_running)
+        graph.add_edge(START, "keep_running")
+        graph.add_edge("keep_running", END)
+        return graph.compile()
+
+    async def publish_shadow(service, context_id):
+        repository = ContextRevisionRepository()
+        publisher = ContextRevisionPublisher(
+            repository,
+            LangGraphContextCheckpointWriter(
+                service.contexts.make_state_graph,
+                service.checkpointer,
+            ),
+        )
+        async with service.session_factory.begin() as session:
+            current = await repository.current(session, context_id)
+            candidate = await publisher.prepare(
+                session,
+                ContextRevisionPrepareRequest(
+                    context_id=context_id,
+                    expected_base=current.ref if current else None,
+                    authored_messages=(
+                        {"role": "human", "content": "策展后的执行起点"},
+                    ),
+                    sources=(),
+                    origin_kind=ContextRevisionOriginKind.CURATION,
+                    origin_id="portfolio-candidate",
+                ),
+            )
+            await publisher.publish(session, candidate)
+            return candidate.revision.ref
+
+    monkeypatch.setattr(svc, "make_lead_agent", fake_make_lead_agent)
+    with _client() as client:
+        workspace_folder = tmp_path / "workspace"
+        workspace_folder.mkdir()
+        workspace = client.post(
+            "/desktop/api/workspaces",
+            headers=SESSION,
+            json={"path": str(workspace_folder)},
+        ).json()
+        task = client.post(
+            f"/desktop/api/workspaces/{workspace['workspace_id']}/threads",
+            headers=SESSION,
+            json={
+                "thread_id": f"identity-{uuid.uuid4().hex}",
+                "title": "revision identity",
+            },
+        ).json()
+        service = app.state.desktop_service
+        ref = client.portal.call(publish_shadow, service, task["task_id"])
+        run = client.post(
+            f"/desktop/api/tasks/{task['task_id']}/main/runs",
+            headers=SESSION,
+            json={"message": "继续执行", "permissions": ["read"]},
+        ).json()
+        assert run["execution_thread_id"] == ref.execution_thread_id
+        assert run["checkpoint_ns"] == ref.checkpoint_ns
+        assert run["context_checkpoint_id"] == ref.checkpoint_id
+        wait_for_memory_status(client, service, run["run_id"], {"running"})
+        client.post(f"/desktop/api/runs/{run['run_id']}/cancel", headers=SESSION)
+
+
 def test_desktop_resume_run_is_immediately_streamable(tmp_path, monkeypatch, wait_until):
     """公共 HTTP 回归：resume 返回的 run_id 必须立即拥有可订阅 SSE。"""
     import backend.app.desktop.service as svc
@@ -428,6 +526,8 @@ async def _set_desktop_run_status(
     async with service.session_factory() as session:
         run = await session.get(DesktopRun, run_id)
         run.status = status
+        if status in {"pending", "running"}:
+            run.settled_at = None
         await session.commit()
 
 
@@ -701,8 +801,9 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
             future = asyncio.Future()
             future.set_result(None)
             return SimpleNamespace(
-                run_id=uuid.uuid4().hex, thread_id=thread_id,
-                status=SimpleNamespace(value="pending"), task=future,
+                run_id=body.context["run_id"], thread_id=thread_id,
+                status=SimpleNamespace(value="success"), error=None,
+                prompt_input_tokens=0, prompt_cache_hit_tokens=0, task=future,
             )
 
         import backend.app.desktop.routes as desktop_routes
@@ -843,6 +944,9 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
         assert _git(workspace_folder, "status", "--porcelain") == status_before
 
         orphan_run_id = retried["run_id"]
+        client.portal.call(
+            _set_desktop_run_status, service, orphan_run_id, "pending"
+        )
 
     with _client() as restarted:
         assert restarted.get(
@@ -915,6 +1019,11 @@ def test_main_run_permissions(tmp_path):
             assert prepared.body.context["permissions"] == ["read", "write", "host_command"]
             shell_names = {t.name for t in select_workspace_tools(prepared.body.context["permissions"])}
             assert {"bash", "powershell", "cmd", "sh"} <= shell_names
+            client.portal.call(
+                service.run_lifecycle.abort_prepared,
+                prepared.body.context["run_id"],
+                "test inspection complete",
+            )
 
             # 显式传参仍生效（最小权限集）
             prepared_limited = client.portal.call(
@@ -923,6 +1032,11 @@ def test_main_run_permissions(tmp_path):
             assert prepared_limited.body.context["permissions"] == ["read", "write"]
             limited_names = {t.name for t in select_workspace_tools(prepared_limited.body.context["permissions"])}
             assert not ({"bash", "powershell", "cmd", "sh"} & limited_names)
+            client.portal.call(
+                service.run_lifecycle.abort_prepared,
+                prepared_limited.body.context["run_id"],
+                "test inspection complete",
+            )
 
             # MainRunCreate 默认值：不带 permissions 时默认全开（host_command 默认开启，shell 可装配）
             from backend.app.desktop.models import MainRunCreate

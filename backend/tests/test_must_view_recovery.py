@@ -2,7 +2,8 @@
 
 输入为内存 checkpoint tuple、最近主运行状态、旧/新 equipment 与 retry/cancel 载荷；输出为
 processing/resumable/orphaned 状态、非法载荷拒绝，以及初始运行和任意主运行恢复使用完全相同的
-材料顺序/备注、图片派生、required、模型能力与预算断言。具体工作流不启动模型或后台 worker。
+材料投影并保留被中断 Revision 的执行身份。具体工作流断言顺序/备注、图片、required、模型能力、
+execution thread/namespace 与 revision id，不启动模型或后台 worker。
 
 示例：python -m pytest backend/tests/test_must_view_recovery.py。
 """
@@ -42,11 +43,15 @@ class ScalarSession:
 
 
 class CommitSession:
-    def __init__(self):
+    def __init__(self, latest=None):
         self.added = []
+        self.latest = latest
 
     def add(self, value):
         self.added.append(value)
+
+    async def scalar(self, _query):
+        return self.latest
 
     async def commit(self):
         return None
@@ -166,10 +171,23 @@ def test_initial_and_resume_paths_project_identical_material_context(tmp_path) -
         ui_state={"_main_run_equipment": equipment},
     )
     workspace = SimpleNamespace(workspace_id="workspace", path=workspace_path)
+    interrupted = DesktopRun(
+        run_id="interrupted",
+        task_id="task",
+        agent_id="main:task",
+        kind="main",
+        status="interrupted",
+        input_messages=[],
+        model_name="vision-model",
+        execution_thread_id="shadow:task:revision",
+        checkpoint_ns="context-revision-shadow",
+        context_revision_id="revision",
+        context_checkpoint_id="checkpoint",
+    )
     resumed = asyncio.run(
         DesktopService._prepare_main_resume(
             service,
-            CommitSession(),
+            CommitSession(interrupted),
             task,
             workspace,
             {"type": "must_view_report", "decision": "retry"},
@@ -180,3 +198,6 @@ def test_initial_and_resume_paths_project_identical_material_context(tmp_path) -
     assert resumed.body.context["run_material_inputs"]["attached"][0]["note"] == "逐像素核对"
     assert initial.body.context["model_supports_image_input"] is True
     assert resumed.body.context["model_supports_image_input"] is True
+    assert resumed.thread_id == "shadow:task:revision"
+    assert resumed.body.context["checkpoint_ns"] == "context-revision-shadow"
+    assert resumed.payload["context_revision_id"] == "revision"

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 # asyncpg 连接池绑定事件循环：模块级共享一个 loop，不得 set_event_loop（避免污染 TestClient）
@@ -27,8 +27,11 @@ _SESSION_FACTORY = async_sessionmaker(_ENGINE, expire_on_commit=False)
 atexit.register(lambda: _LOOP.run_until_complete(_ENGINE.dispose()))
 
 from backend.app.desktop.context_service import ContextService  # noqa: E402
+from backend.app.desktop.context_evolution.models import (  # noqa: E402
+    ContextRevision,
+    ContextRevisionSource,
+)
 from backend.app.desktop.models import (  # noqa: E402
-    DesktopContextSource,
     DesktopRun,
     DesktopThread,
     DesktopWorkspace,
@@ -81,11 +84,45 @@ async def _seed_thread(session, workspace_id: str, title: str) -> str:
 
 
 async def _link_child(session, child_task_id: str, parent_task_id: str) -> None:
-    session.add(DesktopContextSource(
-        source_id=f"src-{uuid.uuid4().hex[:10]}", context_id=child_task_id,
-        parent_context_id=parent_task_id, source_checkpoint_id="ckp-1", position=0,
-    ))
+    parent = await _ensure_revision(session, parent_task_id)
+    child = await _ensure_revision(session, child_task_id)
+    session.add(
+        ContextRevisionSource(
+            source_edge_id=uuid.uuid4().hex,
+            target_revision_id=child.revision_id,
+            source_context_id=parent_task_id,
+            source_revision_id=parent.revision_id,
+            source_checkpoint_id=parent.checkpoint_id,
+            position=0,
+        )
+    )
     await session.flush()
+
+
+async def _ensure_revision(session, context_id: str) -> ContextRevision:
+    current = await session.scalar(
+        select(ContextRevision).where(ContextRevision.context_id == context_id)
+    )
+    if current is not None:
+        return current
+    task = await session.get(DesktopThread, context_id)
+    revision = ContextRevision(
+        revision_id=uuid.uuid4().hex,
+        context_id=context_id,
+        generation=1,
+        execution_thread_id=task.thread_id,
+        checkpoint_ns="",
+        checkpoint_id=f"checkpoint-{context_id}",
+        payload_mode="checkpoint",
+        content_hash=uuid.uuid4().hex * 2,
+        projection_status="valid",
+        origin_kind="root",
+    )
+    session.add(revision)
+    await session.flush()
+    task.current_revision_id = revision.revision_id
+    await session.flush()
+    return revision
 
 
 async def _seed_main_run(session, task_id: str, status: str = "pending") -> None:
@@ -98,9 +135,17 @@ async def _seed_main_run(session, task_id: str, status: str = "pending") -> None
 
 async def _cleanup(workspace_id: str, task_ids: list[str]) -> None:
     async with _SESSION_FACTORY() as session:
-        # 先删后代 source 行，避免 parent RESTRICT 拦截
         await session.execute(
-            delete(DesktopContextSource).where(DesktopContextSource.parent_context_id.in_(task_ids))
+            delete(ContextRevisionSource).where(
+                or_(
+                    ContextRevisionSource.source_context_id.in_(task_ids),
+                    ContextRevisionSource.target_revision_id.in_(
+                        select(ContextRevision.revision_id).where(
+                            ContextRevision.context_id.in_(task_ids)
+                        )
+                    ),
+                )
+            )
         )
         for tid in task_ids:
             await session.execute(delete(DesktopThread).where(DesktopThread.task_id == tid))
@@ -207,11 +252,14 @@ def test_delete_with_descendant_keeps_tombstone_and_preserves_child():
                 child_row = await session.get(DesktopThread, child)
                 assert parent_row is not None and parent_row.deleted_at is not None
                 assert child_row is not None and child_row.deleted_at is None and child_row.archived_at is None
-                # 后代 source 行保留（血缘不断）
                 source = await session.scalar(
-                    select(DesktopContextSource).where(DesktopContextSource.parent_context_id == parent)
+                    select(ContextRevisionSource).where(
+                        ContextRevisionSource.source_context_id == parent
+                    )
                 )
-                assert source is not None and source.context_id == child
+                assert source is not None
+                target = await session.get(ContextRevision, source.target_revision_id)
+                assert target.context_id == child
             assert checkpointer.deleted_threads == [parent_thread_id]
         finally:
             await _cleanup(ws, [parent, child])
@@ -320,9 +368,13 @@ def test_batch_delete_with_descendant_keeps_tombstone_and_preserves_child():
                 assert child_row is not None and child_row.deleted_at is None
                 assert leaf_row is None
                 source = await session.scalar(
-                    select(DesktopContextSource).where(DesktopContextSource.parent_context_id == parent)
+                    select(ContextRevisionSource).where(
+                        ContextRevisionSource.source_context_id == parent
+                    )
                 )
-                assert source is not None and source.context_id == child
+                assert source is not None
+                target = await session.get(ContextRevision, source.target_revision_id)
+                assert target.context_id == child
             assert set(checkpointer.deleted_threads) == {parent_thread_id, leaf_thread_id}
         finally:
             await _cleanup(ws, [parent, child, leaf])

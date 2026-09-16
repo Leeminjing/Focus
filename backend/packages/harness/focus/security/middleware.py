@@ -17,7 +17,8 @@
     (4) 待决在产生任何副作用之前中断，载荷由 ApprovalRequest 组装，读目标与写目标分开承载
     (5) 获批只作用于当前这一次调用：放行来自中断的恢复值，不建授权表、不设有效期
     (6) 可结构化枚举的调用改用解析器交出的规范化参数下发，使判定目标与执行目标同一
-    (7) 未获批准返回工具错误消息，使该次执行得到可理解的结果而非静默跳过
+    (7) Loop workspace lease 存在时，每次工具调用前重新验证 fencing token
+    (8) 未获批准返回工具错误消息，使该次执行得到可理解的结果而非静默跳过
 
 示例:
     middlewares = [AccessPolicyMiddleware(), *其他中间件]
@@ -76,6 +77,7 @@ class AccessPolicyMiddleware(AgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolResult],
     ) -> ToolResult:
+        _reject_sync_workspace_lease(request)
         admission = _admit(request)
         if admission.asked and not _approved(admission):
             return _denied(request, admission)
@@ -86,10 +88,25 @@ class AccessPolicyMiddleware(AgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolResult]],
     ) -> ToolResult:
+        await _assert_workspace_lease(request)
         admission = _admit(request)
         if admission.asked and not _approved(admission):
             return _denied(request, admission)
         return await handler(_with_args(request, admission.args))
+
+
+async def _assert_workspace_lease(request: ToolCallRequest) -> None:
+    context = _context_of(request)
+    lease = context.get("workspace_lease")
+    guard = context.get("workspace_lease_guard")
+    if not isinstance(lease, Mapping) or not callable(guard):
+        return
+    await guard(str(lease["lease_id"]), int(lease["fencing_token"]))
+
+
+def _reject_sync_workspace_lease(request: ToolCallRequest) -> None:
+    if isinstance(_context_of(request).get("workspace_lease"), Mapping):
+        raise RuntimeError("Loop workspace lease 必须通过异步工具边界验证")
 
 
 def _approved(admission: _Admission) -> bool:

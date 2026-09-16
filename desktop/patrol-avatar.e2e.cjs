@@ -150,8 +150,9 @@ async function run() {
     const avatar = document.querySelector('[data-agent-id="patrol-running-0001"]');
     const trigger = avatar.querySelector('.patrol-avatar__button');
     trigger.click();
+    await new Promise(resolve => setTimeout(resolve, 0));
     const opened = !avatar.querySelector('.patrol-avatar__bubble').hidden && trigger.getAttribute('aria-expanded') === 'true';
-    avatar.querySelector('.patrol-avatar__detail').click();
+    avatar.querySelector('.patrol-avatar__action').click();
     for (let count = 0; count < 80 && state.agentDetails.messages.length !== 2; count += 1) {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
@@ -350,6 +351,7 @@ async function run() {
     const avatar = document.querySelector('.patrol-avatar');
     const trigger = avatar.querySelector('.patrol-avatar__button');
     trigger.click();
+    await new Promise(resolve => setTimeout(resolve, 0));
     const bubble = avatar.querySelector('.patrol-avatar__bubble');
     return {
       count: document.querySelectorAll('.patrol-avatar').length,
@@ -360,7 +362,7 @@ async function run() {
       heading: bubble.querySelector('strong').textContent,
       status: bubble.querySelector('.patrol-avatar__status').textContent,
       message: bubble.querySelector('.patrol-avatar__message').textContent,
-      action: bubble.querySelector('.patrol-avatar__detail').textContent,
+      action: bubble.querySelector('.patrol-avatar__action').textContent,
       agentDetailsId: state.agentDetails.agentId,
       backendAgents: window.__patrolAvatarTest.agents.empty.length,
     };
@@ -381,6 +383,7 @@ async function run() {
     const avatar = document.querySelector('[data-avatar-id="__standby__"]');
     const trigger = avatar.querySelector('.patrol-avatar__button');
     trigger.click();
+    await new Promise(resolve => setTimeout(resolve, 0));
     const before = avatar.getBoundingClientRect();
     trigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 18, pointerType: 'mouse', isPrimary: true, button: 0, clientX: before.left + 30, clientY: before.top + 30 }));
     trigger.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, pointerId: 18, pointerType: 'mouse', isPrimary: true, buttons: 1, clientX: before.left + 170, clientY: before.top - 60 }));
@@ -408,7 +411,8 @@ async function run() {
   const draftEntry = await win.webContents.executeJavaScript(`(async () => {
     const avatar = document.querySelector('[data-avatar-id="__standby__"]');
     avatar.querySelector('.patrol-avatar__button').click();
-    avatar.querySelector('.patrol-avatar__detail').click();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    avatar.querySelector('.patrol-avatar__action').click();
     for (let count = 0; count < 80 && state.view !== 'draft'; count += 1) await new Promise(resolve => setTimeout(resolve, 10));
     return { view: state.view, openCalls: [...window.__patrolAvatarTest.draftOpenCalls], agentDetailsId: state.agentDetails.agentId };
   })()`);

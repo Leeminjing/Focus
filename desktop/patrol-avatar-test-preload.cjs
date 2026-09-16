@@ -98,6 +98,8 @@ window.fetch = async (input, options = {}) => {
     return json(body);
   }
   if (/\/desktop\/api\/tasks\/[^/]+\/materials$/.test(requestPath)) return json([]);
+  if (/\/desktop\/api\/tasks\/[^/]+\/material-groups$/.test(requestPath)) return json([]);
+  if (/\/desktop\/api\/tasks\/[^/]+\/material-history$/.test(requestPath)) return json([]);
   if (/\/desktop\/api\/tasks\/[^/]+\/skills$/.test(requestPath)) return json({ skills: [] });
   const historyMatch = requestPath.match(/^\/desktop\/api\/agents\/([^/]+)\/history$/);
   if (historyMatch) return json([

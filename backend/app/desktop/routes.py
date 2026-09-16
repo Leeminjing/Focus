@@ -12,6 +12,7 @@ UploadFile 直接交给有界上传服务，内容读取在校验 task/material 
 from __future__ import annotations
 
 import asyncio
+import uuid
 from fastapi import APIRouter, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
@@ -39,6 +40,7 @@ from backend.app.desktop.models import (
 )
 from backend.app.desktop.service import PreparedRun
 from backend.app.desktop.run_materials import RunMaterialRequest
+from backend.app.desktop.run_orchestration import RunLauncher
 from backend.app.gateway.routers.thread_runs import sse_consumer
 from backend.app.gateway.services import start_run
 
@@ -46,8 +48,6 @@ from backend.app.gateway.services import start_run
 # 决策 10：桌面 API 只接受 loopback 对等连接（含 host_command 真实宿主机命令）。
 # 保护由 AuthMiddleware（统一会话保护）统一承担，本路由不再挂独立依赖。
 desktop_router = APIRouter(prefix="/desktop/api")
-
-
 @desktop_router.get("/bootstrap")
 async def bootstrap(request: Request) -> dict:
     service = request.app.state.desktop_service
@@ -205,12 +205,7 @@ async def _launch(request: Request, prepared: PreparedRun | None) -> None:
         request: Request — FastAPI 请求（提供 app.state 资源）
         prepared: PreparedRun | None — 编排输入；None 表示幂等命中已有 run，无需发起
     """
-    if prepared is None or prepared.agent_factory is None:
-        return  # 幂等命中已有 run，无需发起
-    record = await start_run(
-        prepared.body, prepared.thread_id, request, agent_factory=prepared.agent_factory
-    )
-    request.app.state.desktop_service.attach_run_sync(record)
+    await RunLauncher(start_run).launch(prepared, request)
 
 
 @desktop_router.post("/drafts/{draft_id}/deploy")
@@ -239,28 +234,65 @@ async def quick_deploy_context_curator(
 
 @desktop_router.post("/tasks/{task_id}/main/runs")
 async def start_main_run(task_id: str, body: MainRunCreate, request: Request) -> dict:
-    prepared = await request.app.state.desktop_service.start_main_run(
-        task_id=task_id,
-        message=body.message,
-        model_name=body.model_name,
-        permissions=body.permissions,
-        skills=body.skills,
-        spatial_focus=body.spatial_focus,
-        memory_ids=body.memory_ids,
-        material_inputs=(
-            [
-                RunMaterialRequest(material_id=item.material_id, note=item.note)
-                for item in body.material_inputs
-            ]
-            if body.material_inputs is not None
-            else None
-        ),
-        attached_material_ids=body.attached_material_ids,
-        must_view_material_ids=body.must_view_material_ids,
-        access_mode=body.access_mode,
+    message_id = uuid.uuid4().hex
+    loop_service = getattr(request.app.state, "agent_loop_service", None)
+    loop_binding = await loop_service.user_message(task_id, _loop_message_text(body.message)) if loop_service else None
+    loop_workspace = getattr(request.app.state, "agent_loop_workspace", None)
+    execution_workspace_path = (
+        await loop_workspace.execution_root(loop_binding["loop_id"])
+        if loop_binding and loop_workspace
+        else None
     )
-    await _launch(request, prepared)
+    prepared = None
+    try:
+        prepared = await request.app.state.desktop_service.start_main_run(
+            task_id=task_id,
+            message=body.message,
+            model_name=body.model_name,
+            permissions=body.permissions,
+            skills=body.skills,
+            spatial_focus=body.spatial_focus,
+            memory_ids=body.memory_ids,
+            material_inputs=(
+                [
+                    RunMaterialRequest(material_id=item.material_id, note=item.note)
+                    for item in body.material_inputs
+                ]
+                if body.material_inputs is not None
+                else None
+            ),
+            attached_material_ids=body.attached_material_ids,
+            must_view_material_ids=body.must_view_material_ids,
+            access_mode=body.access_mode,
+            run_identity={"message_id": message_id, "origin": "direct_user", "loop_id": loop_binding["loop_id"] if loop_binding else None, "round_id": loop_binding["round_id"] if loop_binding else None, "idempotency_key": f"direct-user:{message_id}"},
+            execution_workspace_path=execution_workspace_path,
+        )
+        if loop_binding and loop_workspace:
+            await loop_workspace.bind(
+                run_id=str(prepared.body.context["run_id"]),
+                loop_id=loop_binding["loop_id"],
+                body=prepared.body,
+            )
+        await _launch(request, prepared)
+    except Exception as exc:
+        if prepared is not None:
+            await request.app.state.desktop_service.run_lifecycle.abort_prepared(
+                str(prepared.body.context["run_id"]), str(exc)
+            )
+        if loop_binding and loop_service:
+            await loop_service.fail_user_message_round(loop_binding["loop_id"], loop_binding["round_id"], str(exc))
+        raise
     return prepared.payload
+
+
+def _loop_message_text(message: str | list[dict]) -> str:
+    if isinstance(message, str):
+        return message
+    return "\n".join(
+        str(block.get("text") or "")
+        for block in message
+        if isinstance(block, dict) and block.get("type") == "text"
+    ).strip() or "[用户提交了非文本消息内容]"
 
 
 @desktop_router.get("/assembly/task")
@@ -275,10 +307,9 @@ async def resume_run(thread_id: str, body: ResumeRequest, request: Request) -> d
     prepared = await request.app.state.desktop_service.resume_run(thread_id, body.resume)
     if prepared.agent_factory is None:
         raise HTTPException(409, "无可恢复的承诺流程")
-    record = await start_run(
-        prepared.body, prepared.thread_id, request, agent_factory=prepared.agent_factory
-    )
-    request.app.state.desktop_service.attach_run_sync(record)
+    record = await RunLauncher(start_run).launch(prepared, request)
+    if record is None:
+        raise HTTPException(409, "无可恢复的承诺流程")
     return {
         "run_id": record.run_id,
         "thread_id": prepared.thread_id,

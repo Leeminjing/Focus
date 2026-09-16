@@ -1,6 +1,6 @@
 """
 本文件对外提供 DesktopService 与 PreparedRun，编排桌面工作区、Context、Patrol、材料、
-主运行和三套 subagent 机制（树形 spawn / Swarm / Coordinator）业务。
+主运行、Context revision 终态和三套 subagent 机制（树形 spawn / Swarm / Coordinator）业务。
 
 输入为已初始化的 PostgreSQL session factory、LangGraph checkpointer/store、StreamBridge、
 RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以及 PreparedRun（统一
@@ -9,7 +9,9 @@ RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以
 准备无沙箱工作区 Agent 的装配参数（经统一执行链路 worker.run_agent 执行），并把上传、
 内容读取、逐轮材料解析/历史/投影和自定义分组分别委托给单一职责服务；主运行在同一事务
 持久化稳定用户消息与有序材料绑定，图片是通用材料聚合的派生视图，初始与恢复路径使用同一
-投影，图片交付、必看完成门和压缩门按职责独立装配。
+投影，图片交付、必看完成门和压缩门按职责独立装配；压缩通过 Context Evolution 迁移端口发布，
+稳定 Run 则由 RunLifecycleFinalizer 在同一事务收敛终态、Context revision 与 durable outbox；Loop
+后台启动可把受治理工具根切换到 Kernel 选择的持久 Workspace Slot，数据库锚点与真实作用路径一致。
 Agent 运行使用独立 checkpoint namespace 隔离，并用 Git 隐藏引用保护不可遗失材料。
 四套机制装配边界经 agent_role 区分：main（spawn 三件套 + 协作工具 + Mailbox 注入
 + 联网工具 web_search/web_fetch + MCP 远端工具 + 压缩门）、teammate/worker（持久派生
@@ -17,7 +19,9 @@ Agent，协作工具 + Mailbox 注入 + 联网工具）、patrol（小兵机制�
 无 MCP）。持久派生（spawn_teammate/spawn_worker）创建 SwarmAgent 身份并经
 _launch_swarm_run 启动独立命名空间的后台 run；工具错误 middleware 保证可恢复调用闭合，
 主任务运行前的 checkpoint preflight 可从最近合法祖先恢复受损历史；主 Agent 中断恢复
-经 resume_run 按载荷分派承诺层、必看报告、压缩流程与本机资源准入。
+经 resume_run 按载荷分派承诺层、必看报告、压缩流程与本机资源准入，并沿用被中断 Run 的
+Context revision execution thread/namespace；快捷压缩也在 current revision 的物理 namespace
+原位生成后继 checkpoint，防止恢复或 Context 手术退回 UI 线程的旧历史。
 执行身份：三个持久化启动点（主 run、resume、swarm）与本 UI 状态恢复路径统一经
 _governed_context 由执行身份档案派生受治理上下文（工作根、能力权限、访问模式、
 执行主体角色、执行命名空间），launcher 只提供身份材料；材料与图片投影在该上下文之上
@@ -33,7 +37,6 @@ focus.security 承担（见 openspec add-local-access-policy）。
 from __future__ import annotations
 
 import asyncio
-from contextvars import Context
 import hashlib
 import json
 import logging
@@ -58,6 +61,7 @@ from backend.app.desktop.checkpoint_recovery import select_checkpoint_base
 from backend.app.desktop.compression import compression_recovery_payload
 from backend.app.desktop.pending_interrupts import main_pending_interrupt
 from backend.app.desktop.context_service import ContextService
+from backend.app.desktop.context_evolution import ContextRevisionOriginKind, ContextRevisionRepository
 from backend.app.desktop.context_patrol_service import ContextPatrolService
 from backend.app.desktop.context_curator import (
     CurationEngineError,
@@ -72,6 +76,11 @@ from backend.app.desktop.material_groups import MaterialGroupService
 from backend.app.desktop.material_kinds import MaterialKindClassifier
 from backend.app.desktop.material_snapshots import MaterialSnapshotVerifier
 from backend.app.desktop.material_upload import MaterialUploadService
+from backend.app.desktop.main_execution_identity import (
+    identity_from_main_run,
+    latest_main_run,
+    resolve_main_execution_identity,
+)
 from backend.app.desktop.must_view_recovery import (
     must_view_recovery_payload,
     validate_must_view_resume,
@@ -94,17 +103,16 @@ from backend.app.desktop.models import (
     PatrolDraft,
     SwarmAgent,
 )
+from backend.app.desktop.agent_loop.models import MessageProvenance
 from backend.app.desktop.skills import build_task_skill_catalog, resolve_task_skills
 from backend.app.desktop.resource_limits import ImageResourceLimits
 from backend.app.desktop.run_images import RunImageResolver
 from backend.app.desktop.run_material_history import RunMaterialHistoryRepository
 from backend.app.desktop.run_material_message import RunMaterialMessageProjector
 from backend.app.desktop.run_materials import RunMaterialRequest, RunMaterialResolver
+from backend.app.desktop.run_orchestration import RunExecutionResources, RunLifecycleFinalizer, execute_prepared_run
 from backend.app.desktop.storage_values import normalize_json_storage_value
 from backend.app.desktop.tool_error_provider import build_tool_error_middleware
-from focus.runtime.checkpointer.namespaced import NamespacedCheckpointer
-from focus.runtime.runs.schemas import DisconnectMode
-from focus.runtime.runs.worker import run_agent
 from focus.tools.builtins.spawn_agent_tool import build_spawn_agent_tool
 from backend.app.gateway.routers.thread_runs import RunCreateRequest
 from focus.agents.commitment.middleware import commitment_subgraph_thread_id
@@ -145,13 +153,14 @@ from focus.messages import (
 )
 from focus.agents.lead import make_lead_agent
 from focus.config.app_config import AppConfig
+from focus.runtime.checkpointer.namespaced import NamespacedCheckpointer
 from focus.runtime.runs.events import (
     deserialize_messages,
     serialize_message,
     validate_messages,
 )
-from focus.runtime.runs.limits import DEFAULT_AGENT_RECURSION_LIMIT
 from focus.runtime.runs.manager import RunManager, RunRecord
+from focus.runtime.runs.worker import run_agent
 from focus.runtime.stream_bridge.base import StreamBridge
 from focus.tools import get_available_tools
 from focus.tools.builtins.web_tools import web_fetch, web_search
@@ -328,6 +337,7 @@ class DesktopService:
         self.context_patrol = ContextPatrolService(
             session_factory, self.contexts, checkpointer, store, bridge, run_manager, app_config
         )
+        self.run_lifecycle = RunLifecycleFinalizer(session_factory, checkpointer)
         # Agent 协作（Mailbox 消息 / 任务板）：工具构建与未读消息回合注入；
         # swarm_launcher 注入消息驱动自动唤醒（send_message/publish_task 落表后触发目标 run）
         self.agent_collab = AgentCollab(session_factory, swarm_launcher=self._auto_wake_swarm)
@@ -339,13 +349,7 @@ class DesktopService:
         self._material_watch_failures: set[str] = set()
 
     async def start(self) -> None:
-        async with self.session_factory() as session:
-            await session.execute(
-                update(DesktopRun)
-                .where(DesktopRun.status.in_(["pending", "running"]))
-                .values(status="interrupted", error="桌面后端重启，原运行无法继续")
-            )
-            await session.commit()
+        await self.run_lifecycle.reconcile_active("桌面后端重启，原运行无法继续")
         await self.context_patrol.start()
         self._watcher = asyncio.create_task(self._watch_materials())
 
@@ -511,7 +515,23 @@ class DesktopService:
         """
         async with self.session_factory() as session:
             task, _ = await self._get_task_entities(session, task_id)
-        messages = await self.get_checkpoint_messages(task.thread_id, "")
+            await self.contexts.ensure_runnable(session, task_id)
+            current_revision = await ContextRevisionRepository().current(
+                session, task_id
+            )
+            execution_thread_id = (
+                current_revision.ref.execution_thread_id
+                if current_revision is not None
+                else task.thread_id
+            )
+            execution_checkpoint_ns = (
+                current_revision.ref.checkpoint_ns
+                if current_revision is not None
+                else ""
+            )
+        messages = await self.get_checkpoint_messages(
+            execution_thread_id, execution_checkpoint_ns
+        )
         hit_ids = hit_keyword_message_ids(messages, keyword, case_sensitive)
         hit_set = set(hit_ids)
         hit_messages = [message for message in messages if message.get("id") in hit_set]
@@ -537,6 +557,19 @@ class DesktopService:
         """
         async with self.session_factory() as session:
             task, _ = await self._get_task_entities(session, task_id)
+            current_revision = await ContextRevisionRepository().current(
+                session, task_id
+            ) if hasattr(self, "contexts") else None
+            execution_thread_id = (
+                current_revision.ref.execution_thread_id
+                if current_revision is not None
+                else task.thread_id
+            )
+            execution_checkpoint_ns = (
+                current_revision.ref.checkpoint_ns
+                if current_revision is not None
+                else ""
+            )
             active = await session.scalar(
                 select(DesktopRun.run_id)
                 .where(
@@ -554,7 +587,9 @@ class DesktopService:
                         "message": "主 Agent 正在运行，请先等待其结束或取消后再执行快捷压缩",
                     },
                 )
-        messages = await self.get_checkpoint_messages(task.thread_id, "")
+        messages = await self.get_checkpoint_messages(
+            execution_thread_id, execution_checkpoint_ns
+        )
         base_messages = deserialize_messages(messages)
         # 状态一致性：范围引用的 source_ids 必须是当前顶层消息，否则面板快照已过期（上下文已变化）
         current_ids = {m.id for m in base_messages if m.id}
@@ -577,14 +612,41 @@ class DesktopService:
         if error:
             raise HTTPException(422, f"快捷压缩范围非法: {error}")
         update = apply_compression_ranges(base_messages, normalized)
-        config = {"configurable": {"thread_id": task.thread_id, "checkpoint_ns": ""}}
+        config = {"configurable": {"thread_id": execution_thread_id}}
         graph = await make_lead_agent(
             tools=[], system_prompt="", middlewares=[], app_config=self.app_config
         )
-        graph.checkpointer = self.checkpointer
-        await graph.aupdate_state(config, update)
+        graph.checkpointer = (
+            NamespacedCheckpointer(self.checkpointer, execution_checkpoint_ns)
+            if execution_checkpoint_ns
+            else self.checkpointer
+        )
+        updated_config = await graph.aupdate_state(config, update)
+        if hasattr(self, "contexts"):
+            checkpoint_id = (
+                updated_config.get("configurable", {}).get("checkpoint_id")
+                if isinstance(updated_config, dict)
+                else None
+            )
+            if not checkpoint_id:
+                raise RuntimeError("快捷压缩写入后未返回 checkpoint_id")
+            revision_origin = (
+                ContextRevisionOriginKind.COMPRESSION_RESTORE
+                if any(item.get("restore") for item in normalized)
+                else ContextRevisionOriginKind.COMPRESSION
+            )
+            await self.contexts.evolution.publish_checkpoint(
+                task_id,
+                checkpoint_id,
+                revision_origin,
+                origin_id=checkpoint_id,
+            )
         await self.context_patrol.notify_stable_context_checkpoint(task_id)
-        return {"messages": await self.get_checkpoint_messages(task.thread_id, "")}
+        return {
+            "messages": await self.get_checkpoint_messages(
+                execution_thread_id, execution_checkpoint_ns
+            )
+        }
 
     async def open_draft(self, task_id: str) -> dict[str, Any]:
         async with self.session_factory() as session:
@@ -633,7 +695,7 @@ class DesktopService:
             draft = await session.get(PatrolDraft, draft_id)
             if not draft or draft.status != "editing":
                 raise HTTPException(404, "可编辑草稿不存在")
-            _, workspace = await self._get_task_entities(session, draft.task_id)
+            task_row, workspace = await self._get_task_entities(session, draft.task_id)
             equipment = normalize_json_storage_value(
                 self._normalize_equipment(body.equipment)
             )
@@ -795,7 +857,7 @@ class DesktopService:
             if not draft.final_human_message.strip():
                 raise HTTPException(422, "最后一条 HumanMessage 不能为空")
             validate_messages(draft.history_messages)
-            _, workspace = await self._get_task_entities(session, draft.task_id)
+            task_row, workspace = await self._get_task_entities(session, draft.task_id)
             snapshots = self._freeze_skills(workspace.path, draft.equipment.get("skills", []))
             equipment = {**draft.equipment, "skill_snapshots": snapshots}
             estimate = estimate_tokens(
@@ -822,6 +884,15 @@ class DesktopService:
                 run_id=new_id(), task_id=draft.task_id, agent_id=agent_id, deployment_id=deployment_id,
                 kind="patrol", status="pending", input_messages=frozen,
                 model_name=equipment.get("model_name"),
+                origin="direct_user", execution_thread_id=task_row.thread_id,
+                checkpoint_ns=agent.checkpoint_ns,
+                context_revision_id=task_row.current_revision_id,
+                context_checkpoint_id=draft.source_checkpoint_id,
+                equipment=equipment,
+                workspace_anchor={
+                    "workspace_id": workspace.workspace_id,
+                    "workspace_path": workspace.path,
+                },
             )
             draft.status = "deployed"
             session.add_all([agent, run])
@@ -836,7 +907,6 @@ class DesktopService:
                         agent_factory=None, payload=self._run_payload(winner),
                     )
                 raise
-            task_row = await session.get(DesktopThread, draft.task_id)
             thread_id = task_row.thread_id
             workspace_id = workspace.workspace_id
             workspace_path = workspace.path
@@ -853,12 +923,27 @@ class DesktopService:
         attached_material_ids: list[str] | None = None,
         must_view_material_ids: list[str] | None = None,
         access_mode: str | None = None,
+        run_identity: dict[str, Any] | None = None,
+        execution_workspace_path: str | None = None,
     ) -> PreparedRun:
+        identity = run_identity or {}
         async with self.session_factory() as session:
             task_row, workspace = await self._execution_entities(session, task_id)
-            authoritative_checkpoint_id = await self.contexts.ensure_runnable(session, task_id)
+            await self.contexts.ensure_runnable(session, task_id)
+            current_revision = await ContextRevisionRepository().current(session, task_id)
+            revision_ref = current_revision.ref if current_revision is not None else None
+            execution_thread_id = (
+                revision_ref.execution_thread_id if revision_ref is not None else task_row.thread_id
+            )
+            execution_checkpoint_ns = (
+                revision_ref.checkpoint_ns if revision_ref is not None else ""
+            )
+            authoritative_checkpoint_id = (
+                revision_ref.checkpoint_id if revision_ref is not None else None
+            )
             recovery = await self._commitment_recovery_payload(session, task_row)
             if recovery is not None:
+                await self._project_loop_pending_decision(identity, "commitment", recovery)
                 raise HTTPException(
                     409,
                     {
@@ -871,6 +956,7 @@ class DesktopService:
                 session, task_row, self.checkpointer
             )
             if compression_recovery is not None:
+                await self._project_loop_pending_decision(identity, "compression", compression_recovery)
                 raise HTTPException(
                     409,
                     {
@@ -883,6 +969,7 @@ class DesktopService:
                 session, task_row, self.checkpointer
             )
             if must_view_recovery is not None:
+                await self._project_loop_pending_decision(identity, "must_view", must_view_recovery)
                 raise HTTPException(
                     409,
                     {
@@ -898,6 +985,7 @@ class DesktopService:
                 session, task_row, self.checkpointer, APPROVAL_TYPE
             )
             if access_recovery is not None:
+                await self._project_loop_pending_decision(identity, "access_approval", access_recovery)
                 raise HTTPException(
                     409,
                     {
@@ -906,9 +994,14 @@ class DesktopService:
                         "message": "存在待批准的本机资源访问请求，请先批准或拒绝后继续",
                     },
                 )
+            execution_path = (
+                self._execution_workspace_path(execution_workspace_path)
+                if execution_workspace_path is not None
+                else workspace.path
+            )
             snapshots = self._freeze_skills(workspace.path, skills)
-            run_id = new_id()
-            message_id = new_id()
+            run_id = str(identity.get("run_id") or new_id())
+            message_id = str(identity.get("message_id") or new_id())
             run_materials = await self.run_materials.resolve(
                 session,
                 task_id,
@@ -927,7 +1020,9 @@ class DesktopService:
                 "access_mode": str(_resolve_access_mode(access_mode)),
                 **run_materials.to_equipment(),
             }
-            history = await self.get_checkpoint_messages(task_row.thread_id, "")
+            history = await self.get_checkpoint_messages(
+                execution_thread_id, execution_checkpoint_ns
+            )
             current_message = RunMaterialMessageProjector.project(message, run_materials)
             self._validate_model_window(
                 model_name,
@@ -936,8 +1031,18 @@ class DesktopService:
             run = DesktopRun(
                 run_id=run_id, task_id=task_id, agent_id=f"main:{task_id}", kind="main", status="pending",
                 input_messages=[current_message], model_name=model_name,
+                origin=str(identity.get("origin") or "direct_user"), execution_thread_id=execution_thread_id,
+                checkpoint_ns=execution_checkpoint_ns, context_revision_id=task_row.current_revision_id,
+                context_checkpoint_id=authoritative_checkpoint_id,
+                origin_message_id=message_id, equipment=equipment,
+                directive_id=identity.get("directive_id"), loop_id=identity.get("loop_id"),
+                round_id=identity.get("round_id"), action_id=identity.get("action_id"),
+                idempotency_key=identity.get("idempotency_key"),
+                workspace_anchor={
+                    "workspace_id": workspace.workspace_id,
+                    "workspace_path": execution_path,
+                },
             )
-            run.origin_message_id = message_id
             session.add(run)
             self.run_material_history.add(session, run, run_materials)
             task_row.ui_state = {
@@ -948,20 +1053,56 @@ class DesktopService:
                 state = dict(task_row.ui_state or {})
                 state[_MAIN_RUNTIME_MEMORY_KEY] = list(dict.fromkeys(memory_ids))
                 task_row.ui_state = state
-            await session.commit()
-            thread_id = task_row.thread_id
+            try:
+                await session.commit()
+            except IntegrityError as exc:
+                await session.rollback()
+                active = await session.scalar(
+                    select(DesktopRun).where(
+                        DesktopRun.task_id == task_id,
+                        DesktopRun.execution_thread_id == execution_thread_id,
+                        DesktopRun.checkpoint_ns == execution_checkpoint_ns,
+                        DesktopRun.kind == "main",
+                        DesktopRun.status.in_(["pending", "running"]),
+                    )
+                )
+                if active is not None:
+                    raise HTTPException(
+                        409,
+                        {
+                            "code": "main_run_active",
+                            "run_id": active.run_id,
+                            "message": "当前 Context 已有主 Agent 正在运行",
+                        },
+                    ) from exc
+                raise
+            thread_id = execution_thread_id
             workspace_id = workspace.workspace_id
-            workspace_path = workspace.path
+            workspace_path = execution_path
         checkpoint_id = authoritative_checkpoint_id or await select_checkpoint_base(
-            self.checkpointer, thread_id
+            self.checkpointer, thread_id, execution_checkpoint_ns
         )
         is_assembly = task_row.thread_id == _ASSEMBLY_THREAD_ID
         base_prompt = (_ASSEMBLY_SYSTEM_PROMPT if is_assembly else _MAIN_SYSTEM_PROMPT) + _spatial_focus_prompt(spatial_focus)
         base_prompt = await self._apply_memory_block(base_prompt, memory_ids)
         return await self._prepare(
             run, thread_id, workspace_id, workspace_path, run.input_messages,
-            base_prompt, equipment, "", "main", checkpoint_id, allow_global_config=is_assembly,
+            base_prompt, equipment, execution_checkpoint_ns, "main", checkpoint_id, allow_global_config=is_assembly,
         )
+
+    async def _project_loop_pending_decision(
+        self,
+        identity: dict[str, Any],
+        kind: str,
+        recovery: dict[str, Any],
+    ) -> None:
+        loop_id = identity.get("loop_id")
+        projector = getattr(self, "pending_decision_projector", None)
+        if loop_id and projector is not None:
+            await projector.project(
+                str(loop_id),
+                {"type": kind, "recovery": recovery},
+            )
 
     async def ensure_assembly_task(self) -> dict[str, Any]:
         """确保「无工作区模式」保留工作区与其任务存在，返回该任务 payload。
@@ -1127,6 +1268,8 @@ class DesktopService:
     ) -> PreparedRun:
         """组装主 Agent resume run 的公共尾部：equipment 沿用、新建 DesktopRun、
         agent_factory 与 RunCreateRequest(resume=...)。"""
+        interrupted_run = await latest_main_run(session, task)
+        execution_identity = identity_from_main_run(task, interrupted_run)
         equipment = dict(
             (task.ui_state or {}).get(_MAIN_RUNTIME_EQUIPMENT_KEY) or {}
         )
@@ -1154,6 +1297,18 @@ class DesktopService:
             status="pending",
             input_messages=[],
             model_name=equipment.get("model_name"),
+            origin="resume",
+            execution_thread_id=execution_identity.thread_id,
+            checkpoint_ns=execution_identity.checkpoint_ns,
+            context_revision_id=execution_identity.context_revision_id,
+            context_checkpoint_id=(
+                interrupted_run.context_checkpoint_id if interrupted_run else None
+            ),
+            equipment=equipment,
+            workspace_anchor={
+                "workspace_id": workspace.workspace_id,
+                "workspace_path": workspace.path,
+            },
         )
         session.add(run)
         await session.commit()
@@ -1178,13 +1333,13 @@ class DesktopService:
             material_context, "main",
         )
         context = self._governed_context(
-            thread_id=task.thread_id,
+            thread_id=execution_identity.thread_id,
             run=run,
             workspace_id=workspace.workspace_id,
             workspace_path=workspace.path,
             permissions=list(equipment.get("permissions") or ["read"]),
             access_mode=equipment.get("access_mode"),
-            checkpoint_ns="",
+            checkpoint_ns=execution_identity.checkpoint_ns,
             agent_role="main",
             model_name=equipment.get("model_name"),
             allow_global_config=task.thread_id == _ASSEMBLY_THREAD_ID,
@@ -1208,10 +1363,17 @@ class DesktopService:
         )
         return PreparedRun(
             body=body,
-            thread_id=task.thread_id,
+            thread_id=execution_identity.thread_id,
             agent_factory=factory,
             payload=self._run_payload(run),
         )
+
+    @staticmethod
+    def _execution_workspace_path(value: str) -> str:
+        path = Path(value).resolve(strict=True)
+        if not path.is_dir():
+            raise HTTPException(422, "执行 Workspace Slot 路径不是目录")
+        return str(path)
 
     async def abandon_commitment(self, thread_id: str) -> dict[str, Any]:
         """显式废弃待确认承诺子图；只删除派生 thread checkpoint。"""
@@ -1230,8 +1392,9 @@ class DesktopService:
             )
             if active:
                 raise HTTPException(409, "主 Agent 仍在运行，不能废弃承诺流程")
+            execution_identity = await resolve_main_execution_identity(session, task)
         await self.checkpointer.adelete_thread(
-            commitment_subgraph_thread_id(thread_id)
+            commitment_subgraph_thread_id(execution_identity.thread_id)
         )
         return {"ok": True, "thread_id": thread_id}
 
@@ -1242,15 +1405,26 @@ class DesktopService:
                 raise HTTPException(404, "小兵不存在")
             if agent.mode == "context_curator":
                 raise HTTPException(409, "Context 策展 Patrol 由根 checkpoint 自动触发，不能手工重试")
+            task_row = await session.get(DesktopThread, agent.task_id)
+            workspace_row = await session.get(DesktopWorkspace, task_row.workspace_id)
             run = DesktopRun(
                 run_id=new_id(), task_id=agent.task_id, agent_id=agent.agent_id, kind="patrol",
                 status="pending", input_messages=agent.frozen_messages,
                 model_name=agent.equipment.get("model_name"),
+                origin="retry", execution_thread_id=task_row.thread_id,
+                checkpoint_ns=agent.checkpoint_ns,
+                context_revision_id=task_row.current_revision_id,
+                context_checkpoint_id=agent.source_checkpoint_id,
+                equipment=agent.equipment,
+                workspace_anchor={
+                    "workspace_id": workspace_row.workspace_id,
+                    "workspace_path": workspace_row.path,
+                },
             )
             session.add(run)
+            if run.origin == "direct_user" and run.context_revision_id is not None:
+                session.add(MessageProvenance(provenance_id=new_id(), context_revision_id=run.context_revision_id, message_id=message_id, source_kind="direct_user", actor_id="user", audit={"loop_id": run.loop_id, "round_id": run.round_id}))
             await session.commit()
-            task_row = await session.get(DesktopThread, agent.task_id)
-            workspace_row = await session.get(DesktopWorkspace, task_row.workspace_id)
             thread_id = task_row.thread_id
             workspace_id = workspace_row.workspace_id
             workspace_path = workspace_row.path
@@ -1266,15 +1440,23 @@ class DesktopService:
                 raise HTTPException(404, "小兵不存在")
             if agent.mode == "context_curator":
                 raise HTTPException(409, "Context 策展 Patrol 不接受普通继续消息")
+            task_row = await session.get(DesktopThread, agent.task_id)
+            workspace_row = await session.get(DesktopWorkspace, task_row.workspace_id)
             input_messages = [{"role": "human", "content": message}]
             run = DesktopRun(
                 run_id=new_id(), task_id=agent.task_id, agent_id=agent.agent_id, kind="patrol",
                 status="pending", input_messages=input_messages, model_name=agent.equipment.get("model_name"),
+                origin="direct_user", execution_thread_id=task_row.thread_id,
+                checkpoint_ns=agent.checkpoint_ns,
+                context_revision_id=task_row.current_revision_id,
+                equipment=agent.equipment,
+                workspace_anchor={
+                    "workspace_id": workspace_row.workspace_id,
+                    "workspace_path": workspace_row.path,
+                },
             )
             session.add(run)
             await session.commit()
-            task_row = await session.get(DesktopThread, agent.task_id)
-            workspace_row = await session.get(DesktopWorkspace, task_row.workspace_id)
             thread_id = task_row.thread_id
             workspace_id = workspace_row.workspace_id
             workspace_path = workspace_row.path
@@ -2039,7 +2221,7 @@ class DesktopService:
         工作流:
             (1) stopped 检查（关机后拒绝新 run）
             (2) 登记 DesktopRun 与 RunRecord，组装 run_agent 参数（参考 services.start_run）
-            (3) 按角色构建 agent_factory（含 Mailbox 注入），NamespacedCheckpointer 隔离命名空间
+            (3) 按角色构建 agent_factory（含 Mailbox 注入），经唯一 execute_prepared_run 脊柱启动
         """
         if await self.agent_collab.is_agent_stopped(agent_id):
             raise HTTPException(409, "该 Agent 已停止")
@@ -2057,6 +2239,14 @@ class DesktopService:
                 run_id=new_id(), task_id=task_id, agent_id=agent_id, kind=role,
                 status="pending", input_messages=[{"role": "human", "content": task_text}],
                 model_name=equipment.get("model_name"),
+                origin="swarm", execution_thread_id=thread_id,
+                checkpoint_ns=checkpoint_ns,
+                context_revision_id=task_row.current_revision_id,
+                equipment=equipment,
+                workspace_anchor={
+                    "workspace_id": workspace_id,
+                    "workspace_path": workspace_path,
+                },
             )
             session.add(run)
             await session.commit()
@@ -2067,15 +2257,6 @@ class DesktopService:
         factory = self._build_agent_factory(
             task_id, agent_id, workspace_path, equipment, system_prompt, "", role,
         )
-        graph_input = {"messages": [HumanMessage(content=task_text)]}
-        runnable_config = {
-            "max_concurrency": None,
-            "recursion_limit": DEFAULT_AGENT_RECURSION_LIMIT,
-            "metadata": {"run_id": run.run_id},
-            "configurable": {"thread_id": thread_id, "run_id": run.run_id, "checkpoint_ns": checkpoint_ns},
-        }
-        if checkpoint_id is not None:
-            runnable_config["configurable"]["checkpoint_id"] = checkpoint_id
         langgraph_context = self._governed_context(
             thread_id=thread_id,
             run=run,
@@ -2091,25 +2272,27 @@ class DesktopService:
                 "task_id": task_id,
                 "skills": equipment.get("skills") or [],
                 "swarm_depth": swarm_depth,
+                "checkpoint_id": checkpoint_id,
                 "app_config": self.app_config,
             },
         )
-        checkpointer = NamespacedCheckpointer(self.checkpointer, checkpoint_ns)
-        record = self.run_manager.create(
-            thread_id=thread_id, run_id=run.run_id,
-            on_disconnect=DisconnectMode.cancel, model_name=equipment.get("model_name"),
-        )
-        task = asyncio.create_task(
-            run_agent(
-                record=record, bridge=self.bridge, run_manager=self.run_manager,
-                app_config=self.app_config, graph_input=graph_input,
-                runnable_config=runnable_config, stream_modes=["values"],
-                langgraph_context=langgraph_context, agent_factory=factory,
-                checkpointer=checkpointer, store=self.store,
+        record = await execute_prepared_run(
+            RunCreateRequest(
+                input={"messages": [{"role": "human", "content": task_text}]},
+                context=langgraph_context,
+                stream_mode=["values"],
             ),
-            context=Context(),
+            thread_id,
+            RunExecutionResources(
+                bridge=self.bridge,
+                run_manager=self.run_manager,
+                checkpointer=self.checkpointer,
+                store=self.store,
+                app_config=self.app_config,
+            ),
+            factory,
+            runner=run_agent,
         )
-        record.task = task
         self.attach_run_sync(record)
         return run.run_id
 
@@ -2125,22 +2308,36 @@ class DesktopService:
             pass  # RunManager.cancel 已置 interrupted
         finally:
             try:
-                synced = await self._set_run_status(
-                    record.run_id,
-                    record.status.value,
-                    record.error,
-                    record.prompt_input_tokens,
-                    record.prompt_cache_hit_tokens,
-                )
-                if synced is not None and synced[0] == "main":
+                if not hasattr(self, "run_lifecycle") and hasattr(self, "_set_run_status"):
+                    kind, task_id = await self._set_run_status(
+                        record.run_id,
+                        record.status.value,
+                        record.error,
+                        record.prompt_input_tokens,
+                        record.prompt_cache_hit_tokens,
+                    )
+                    if kind == "main":
+                        await self.contexts.evolution.publish_latest_checkpoint(
+                            task_id,
+                            ContextRevisionOriginKind.RUN_SETTLED,
+                            origin_id=record.run_id,
+                        )
+                        await self.context_patrol.notify_stable_context_checkpoint(task_id)
+                    return
+                settlement = await self.run_lifecycle.finalize(record)
+                if settlement.kind == "main":
                     try:
-                        await self.context_patrol.notify_stable_context_checkpoint(synced[1])
+                        await self.context_patrol.notify_stable_context_checkpoint(
+                            settlement.task_id
+                        )
                     except Exception:
                         logger.warning(
                             "登记稳定 Context checkpoint 失败: context_id=%s",
-                            synced[1],
+                            settlement.task_id,
                             exc_info=True,
                         )
+            except Exception:
+                logger.exception("收敛 Run 终态失败: run_id=%s", record.run_id)
             finally:
                 self._sync_tasks.discard(asyncio.current_task())
 
@@ -2212,25 +2409,6 @@ class DesktopService:
             if task is None:
                 raise ValueError("任务不存在")
             return task.thread_id
-
-    async def _set_run_status(
-        self,
-        run_id: str,
-        status: str,
-        error: str | None = None,
-        prompt_input_tokens: int = 0,
-        prompt_cache_hit_tokens: int = 0,
-    ) -> tuple[str, str] | None:
-        async with self.session_factory() as session:
-            run = await session.get(DesktopRun, run_id)
-            if run:
-                run.status = status
-                run.error = error
-                run.prompt_input_tokens = prompt_input_tokens
-                run.prompt_cache_hit_tokens = prompt_cache_hit_tokens
-                await session.commit()
-                return run.kind, run.task_id
-        return None
 
     async def _validate_attachments(
         self, session: AsyncSession, task_id: str, messages: list[dict[str, Any]]
@@ -2530,9 +2708,13 @@ class DesktopService:
         self, session: AsyncSession, task: DesktopThread
     ) -> dict[str, Any] | None:
         """从承诺子图 checkpoint 投影桌面审批恢复状态。"""
+        latest = await latest_main_run(session, task)
+        execution_identity = identity_from_main_run(task, latest)
         config = {
             "configurable": {
-                "thread_id": commitment_subgraph_thread_id(task.thread_id),
+                "thread_id": commitment_subgraph_thread_id(
+                    execution_identity.thread_id
+                ),
             }
         }
         try:
@@ -2540,7 +2722,7 @@ class DesktopService:
         except Exception:
             logger.warning(
                 "读取承诺子图 checkpoint 失败: thread_id=%s",
-                task.thread_id,
+                execution_identity.thread_id,
                 exc_info=True,
             )
             return None
@@ -2553,14 +2735,6 @@ class DesktopService:
             return None
         if stage < 1 or stage > 9:
             return None
-        latest = await session.scalar(
-            select(DesktopRun)
-            .where(
-                DesktopRun.task_id == task.task_id,
-                DesktopRun.agent_id == f"main:{task.task_id}",
-            )
-            .order_by(DesktopRun.created_at.desc())
-        )
         if latest is not None and latest.status in {"pending", "running"}:
             status = "processing"
         elif latest is not None and latest.status == "interrupted":
@@ -2611,7 +2785,22 @@ class DesktopService:
             "model_name": run.model_name, "error": run.error,
             "prompt_input_tokens": run.prompt_input_tokens,
             "prompt_cache_hit_tokens": run.prompt_cache_hit_tokens,
-            "message_id": getattr(run, "origin_message_id", None),
+            "message_id": run.origin_message_id,
+            "origin": run.origin,
+            "execution_thread_id": run.execution_thread_id,
+            "checkpoint_ns": run.checkpoint_ns,
+            "context_revision_id": run.context_revision_id,
+            "context_checkpoint_id": run.context_checkpoint_id,
+            "directive_id": run.directive_id,
+            "loop_id": run.loop_id,
+            "round_id": run.round_id,
+            "action_id": run.action_id,
+            "equipment": run.equipment,
+            "workspace_anchor": run.workspace_anchor,
+            "idempotency_key": run.idempotency_key,
+            "final_checkpoint_id": run.final_checkpoint_id,
+            "workspace_result": run.workspace_result,
+            "settled_at": run.settled_at.isoformat() if run.settled_at else None,
         }
 
     @staticmethod

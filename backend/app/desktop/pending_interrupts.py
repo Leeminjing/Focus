@@ -1,4 +1,4 @@
-"""本文件对外提供未决人工中断的统一投影：按（会话标识 + 执行命名空间）枚举并分类。
+"""本文件对外提供未决人工中断的统一投影：按最近主 Run 的执行身份枚举并分类。
 
 对外提供:
     pending_interrupt_payload(checkpoint, payload_type) — 从检查点取指定类型的最新中断载荷
@@ -18,8 +18,8 @@
     main_pending_kinds → list[str]（按传入顺序，仅含确实未决者）
 
 具体工作流:
-    (1) 只读主图命名空间（checkpoint_ns=""）——它是主执行身份的一部分；后台执行主体
-        （swarm / patrol / spatial）的中断位于各自命名空间，不属于主执行，因此不会阻塞主运行
+    (1) 从最近主 Run 还原 execution_thread_id 与 checkpoint_ns；历史 Run 缺字段时回退任务根身份。
+        后台执行主体（swarm / patrol / spatial）的身份不同，不属于主执行，因此不会阻塞主运行
     (2) 在 pending_writes 的 __interrupt__ 通道上倒序取最新一条匹配类型的载荷
     (3) 用主执行最近一次运行的状态把未决归一为 processing / resumable / orphaned，
         使「正在处理」与「父图已无法恢复」在调用方是两种不同的拒绝
@@ -34,14 +34,15 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sqlalchemy import select
-
-from backend.app.desktop.models import DesktopRun
+from backend.app.desktop.main_execution_identity import (
+    latest_main_run,
+    resolve_main_execution_identity,
+)
 
 logger = logging.getLogger(__name__)
 
 MAIN_CHECKPOINT_NAMESPACE = ""
-"""主执行的检查点命名空间；后台执行主体各自另有一个，互不阻塞。"""
+"""没有持久化 Run identity 时使用的历史根命名空间。"""
 
 _ACTIVE_STATUSES = frozenset({"pending", "running"})
 _RESUMABLE_STATUS = "interrupted"
@@ -64,14 +65,7 @@ def pending_interrupt_payload(checkpoint: Any, payload_type: str) -> dict[str, A
 
 async def main_run_status(session: Any, task: Any) -> str:
     """主执行最近一次运行归一的收敛状态。"""
-    latest = await session.scalar(
-        select(DesktopRun)
-        .where(
-            DesktopRun.task_id == task.task_id,
-            DesktopRun.agent_id == f"main:{task.task_id}",
-        )
-        .order_by(DesktopRun.created_at.desc())
-    )
+    latest = await latest_main_run(session, task)
     if latest is not None and latest.status in _ACTIVE_STATUSES:
         return "processing"
     if latest is not None and latest.status == _RESUMABLE_STATUS:
@@ -82,8 +76,8 @@ async def main_run_status(session: Any, task: Any) -> str:
 async def main_pending_interrupt(
     session: Any, task: Any, checkpointer: Any, payload_type: str
 ) -> dict[str, Any] | None:
-    """主执行身份上指定类型的未决中断；只读主图命名空间。"""
-    checkpoint = await _main_checkpoint(task, checkpointer)
+    """主执行身份上指定类型的未决中断。"""
+    checkpoint = await _main_checkpoint(session, task, checkpointer)
     if checkpoint is None:
         return None
     request = pending_interrupt_payload(checkpoint, payload_type)
@@ -96,22 +90,28 @@ async def main_pending_kinds(
     session: Any, task: Any, checkpointer: Any, payload_types: Any
 ) -> list[str]:
     """主执行身份上全部未决中断的类型，按传入顺序返回。"""
-    checkpoint = await _main_checkpoint(task, checkpointer)
+    checkpoint = await _main_checkpoint(session, task, checkpointer)
     if checkpoint is None:
         return []
     return [kind for kind in payload_types if pending_interrupt_payload(checkpoint, kind) is not None]
 
 
-async def _main_checkpoint(task: Any, checkpointer: Any) -> Any | None:
+async def _main_checkpoint(session: Any, task: Any, checkpointer: Any) -> Any | None:
     """读取主图检查点；读取失败按无未决处理并留下告警。"""
+    identity = await resolve_main_execution_identity(session, task)
     config = {
         "configurable": {
-            "thread_id": task.thread_id,
-            "checkpoint_ns": MAIN_CHECKPOINT_NAMESPACE,
+            "thread_id": identity.thread_id,
+            "checkpoint_ns": identity.checkpoint_ns,
         }
     }
     try:
         return await checkpointer.aget_tuple(config)
     except Exception:
-        logger.warning("读取主图 checkpoint 失败: thread_id=%s", task.thread_id, exc_info=True)
+        logger.warning(
+            "读取主图 checkpoint 失败: thread_id=%s checkpoint_ns=%s",
+            identity.thread_id,
+            identity.checkpoint_ns,
+            exc_info=True,
+        )
         return None

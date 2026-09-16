@@ -1,10 +1,9 @@
-r"""
-本文件对外提供 ContextPatrolService，编排 Context 策展 Patrol 的耐久观察与单次模型调用。
+r"""本文件对外提供 ContextPatrolService，编排 Context 策展 Patrol 的耐久观察与模型调用。
 
-输入为数据库 session factory、ContextService、StreamBridge、RunManager 与 AppConfig；输出为
-部署、稳定 checkpoint 通知、控制状态、审计详情和启动/关闭方法。具体工作流为先用短事务
-提交 root checkpoint 事实，再依次执行安全来源投影、CurationEngine、CuratedContextCompiler
-和受管 Context CAS 发布；Revision 表示来源版本，Attempt 表示可重复的模型调用。
+输入为数据库 session factory、ContextService、StreamBridge、RunManager 与 AppConfig；输出为部署、
+稳定 checkpoint 通知、控制状态、审计详情和启动/关闭方法。具体工作流为持久化来源观察与兼容调度
+游标，执行安全来源投影和 CurationEngine，再把候选交给通用单 Lane Program 的原子 Portfolio 发布
+路径；旧 binding/revision/attempt 只承载现有 API 调度与审计，不再镜像或提交 Portfolio 权威状态。
 示例：`await service.notify_stable_context_checkpoint(context_id)`。
 """
 
@@ -34,9 +33,10 @@ from backend.app.desktop.context_curator import (
     require_curation_model,
 )
 from backend.app.desktop.context_service import ContextService
+from backend.app.desktop.context_curation import SingleLaneCurationProgramService
+from backend.app.desktop.context_evolution import ContextRevisionRepository
 from backend.app.desktop.models import (
     ContextCurationPolicy,
-    DesktopContextDefinition,
     DesktopRun,
     DesktopThread,
     PatrolAgent,
@@ -84,6 +84,7 @@ class ContextPatrolService:
         self.app_config = app_config
         self.projector = CurationSourceProjector()
         self.engine = CurationEngine(app_config)
+        self.programs = SingleLaneCurationProgramService()
         self._event = asyncio.Event()
         self._coordinator_task: asyncio.Task | None = None
         self._run_tasks: set[asyncio.Task] = set()
@@ -190,6 +191,7 @@ class ContextPatrolService:
             draft.status = "deployed"
             session.add_all([agent, binding, revision])
             try:
+                await self.programs.provision(session, binding)
                 await session.commit()
             except IntegrityError:
                 await session.rollback()
@@ -306,6 +308,7 @@ class ContextPatrolService:
                     latest.base_binding_revision = binding.revision
             elif target in {"paused", "stopped"}:
                 binding.health_state = "idle"
+            await self.programs.set_control_state(session, binding, target)
             await session.commit()
         if target == "following":
             self._event.set()
@@ -490,6 +493,13 @@ class ContextPatrolService:
                 status="pending",
                 input_messages=[],
                 model_name=model.name,
+                origin="patrol_curation",
+                execution_thread_id=root.thread_id,
+                checkpoint_ns=agent.checkpoint_ns,
+                context_revision_id=root.current_revision_id,
+                context_checkpoint_id=revision.source_checkpoint_id,
+                equipment=agent.equipment,
+                workspace_anchor={"workspace_id": root.workspace_id},
             )
             attempt = PatrolContextAttempt(
                 attempt_id=_new_id(),
@@ -525,11 +535,16 @@ class ContextPatrolService:
             revision = await session.get(PatrolContextRevision, attempt.revision_id)
             binding = await session.get(PatrolContextBinding, revision.binding_id)
             agent = await session.get(PatrolAgent, binding.agent_id)
-            definition = (
-                await session.get(DesktopContextDefinition, binding.managed_context_id)
-                if binding.managed_context_id else None
+            current = (
+                await ContextRevisionRepository().current(
+                    session, binding.managed_context_id
+                )
+                if binding.managed_context_id
+                else None
             )
-            published = deepcopy(definition.authored_messages) if definition else []
+            published = (
+                deepcopy(list(current.authored_messages)) if current is not None else []
+            )
             policy = ContextCurationPolicy.model_validate(agent.curation_policy or {})
             model_name = attempt.model_name
             checkpoint_id = revision.source_checkpoint_id
@@ -692,6 +707,7 @@ class ContextPatrolService:
         )
         async with self.session_factory() as session:
             attempt = await session.get(PatrolContextAttempt, attempt_id)
+            binding_id: str | None = None
             if attempt is not None:
                 attempt.completed_at = datetime.now(timezone.utc)
                 if outcome == "superseded":
@@ -708,7 +724,13 @@ class ContextPatrolService:
                     attempt.status = "success"
                     attempt.error_kind = None
                     attempt.error = None
-                await session.commit()
+                revision = await session.get(PatrolContextRevision, attempt.revision_id)
+                binding_id = revision.binding_id
+                run = await session.get(DesktopRun, attempt.run_id)
+                if run is not None and run.status not in _TERMINAL_RUN_STATUSES:
+                    run.status = "success" if outcome not in {"invalid", "error"} else "error"
+                    run.error = None if run.status == "success" else attempt.error
+            await session.commit()
         return outcome
 
     @staticmethod
@@ -939,8 +961,11 @@ class ContextPatrolService:
             cls._revision_payload(item, attempts.get(item.revision_id, []))
             for item in revisions
         ]
+        program_ids = SingleLaneCurationProgramService.identities(binding.binding_id)
         return {
             "agent_id": binding.agent_id,
+            "curation_program_id": program_ids.program_id,
+            "curation_lane_id": program_ids.lane_id,
             "control_state": binding.control_state,
             "health_state": binding.health_state,
             "root_context": (

@@ -2,7 +2,7 @@
 
 输入为任务 ID、FastAPI UploadFile、数据库 session factory 和 ImageResourceLimits；输出为
 已提交的 DesktopMaterial 与工作区路径。具体工作流为：分块写入本次请求独占的暂存文件并
-实时限制字节数，按实际内容验证图片格式、MIME、解码和像素，独占保留最终文件名后原子提升，
+实时限制字节数，按实际内容验证图片格式、MIME、解码和像素，以同目录原子硬链接抢占最终文件名，
 在数据库事务中登记材料；任一阶段失败都会回滚并只清理本次请求拥有的暂存/最终文件。
 
 示例：stored = await MaterialUploadService(factory, limits).store(task_id, upload_file)。
@@ -60,8 +60,7 @@ class MaterialUploadService:
             size = await self._receive(upload, temporary, filename)
             image = inspect_image_file(temporary, self._limits.image_pixels)
             self._validate_claims(filename, upload.content_type, size, image)
-            final = self._reserve_final(directory, filename)
-            os.replace(temporary, final)
+            final = self._promote(temporary, directory, filename)
             material = await self._register(task_id, workspace_path, final)
             return StoredMaterial(material=material, workspace_path=workspace_path)
         except HTTPException:
@@ -133,14 +132,14 @@ class MaterialUploadService:
         if content_type and content_type not in {image.mime, "application/octet-stream"}:
             raise HTTPException(422, f"图片 MIME 与实际格式不一致: {filename}")
 
-    def _reserve_final(self, directory: Path, filename: str) -> Path:
+    def _promote(self, temporary: Path, directory: Path, filename: str) -> Path:
         base = directory / filename
         for candidate in _candidate_paths(base):
             try:
-                descriptor = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.link(temporary, candidate)
             except FileExistsError:
                 continue
-            os.close(descriptor)
+            temporary.unlink()
             return candidate
         raise HTTPException(409, "无法为上传文件分配唯一名称")
 

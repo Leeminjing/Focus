@@ -1,3 +1,11 @@
+"""本文件验证 spatial-patrol DOCX 会话表与单写者生命周期。
+
+输入为测试套件提供的隔离 PostgreSQL 和临时 DOCX 工作区；输出为幂等建表、编辑会话复用、
+读写权限、过期恢复及脏会话关闭断言。具体工作流为每个同步测试在独立事件循环中初始化
+Focus 数据库引擎，执行插件会话操作，并在离开事件循环前通过公开释放端口清空进程级引擎。
+例如，第二个写会话会被拒绝，而过期写会话允许由新的会话接管。
+"""
+
 import asyncio
 import uuid
 import zipfile
@@ -9,17 +17,19 @@ from sqlalchemy import text
 def test_docx_session_table_is_created_idempotently_in_plugin_database():
     async def scenario():
         from focus.config import get_app_config
-        from focus.persistence.engine import get_session_factory, init_engine
+        from focus.persistence.engine import dispose_engine, get_session_factory, init_engine
         from plugins.spatial_patrol import docx_db
 
-        engine = init_engine(get_app_config("config.yaml"))
-        docx_db._ready = False
-        await docx_db.ensure_tables()
-        await docx_db.ensure_tables()
-        async with get_session_factory()() as session:
-            name = await session.scalar(text("select to_regclass('public.docx_editor_sessions')"))
-        assert name == "docx_editor_sessions"
-        await engine.dispose()
+        init_engine(get_app_config("config.yaml"))
+        try:
+            docx_db._ready = False
+            await docx_db.ensure_tables()
+            await docx_db.ensure_tables()
+            async with get_session_factory()() as session:
+                name = await session.scalar(text("select to_regclass('public.docx_editor_sessions')"))
+            assert name == "docx_editor_sessions"
+        finally:
+            await dispose_engine()
 
     asyncio.run(scenario())
 
@@ -29,7 +39,7 @@ def test_session_manager_enforces_single_writer_expiry_and_recovery(tmp_path):
         from sqlalchemy import delete
         from backend.app.desktop.models import DesktopThread, DesktopWorkspace
         from focus.config import get_app_config
-        from focus.persistence.engine import get_session_factory, init_engine
+        from focus.persistence.engine import dispose_engine, get_session_factory, init_engine
         from plugins.spatial_patrol import docx_db
         from plugins.spatial_patrol.docx_models import DocxEditorSession
         from plugins.spatial_patrol.docx_sessions import (
@@ -107,5 +117,6 @@ def test_session_manager_enforces_single_writer_expiry_and_recovery(tmp_path):
                     DesktopWorkspace.workspace_id == workspace_id
                 ))
                 await session.commit()
+            await dispose_engine()
 
     asyncio.run(scenario())

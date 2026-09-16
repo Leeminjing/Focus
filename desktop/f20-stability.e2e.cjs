@@ -124,11 +124,13 @@ async function run() {
     state.view = 'compress';
     render();
     document.querySelector('[data-action="toggle-compress-message"][data-index="0"]').click();
+    await new Promise(resolve => setTimeout(resolve, 0));
     document.querySelector('[data-action="compression-delete-selection"]').click();
     await new Promise(resolve => setTimeout(resolve, 30));
     const deleted = JSON.parse(JSON.stringify(state.compression.ranges));
     const firstDisabled = document.querySelector('[data-action="toggle-compress-message"][data-index="0"]').disabled;
     document.querySelector('[data-action="toggle-compress-message"][data-index="1"]').click();
+    await new Promise(resolve => setTimeout(resolve, 0));
     document.querySelector('[data-action="compression-join-selection"]').click();
     await new Promise(resolve => setTimeout(resolve, 30));
     const uniqueIds = state.compression.ranges.flatMap(range => range.source_ids);

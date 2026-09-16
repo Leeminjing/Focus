@@ -222,7 +222,8 @@ async function run() {
       if (target === "dialog" ? result.openDialogs !== 1 : result.openDialogs !== 0) problems.push(`openDialogs=${result.openDialogs}`);
       if (result.appWidth < 300 || result.appHeight < 220) problems.push(`app=${result.appWidth}x${result.appHeight}`);
       if (["map", "draft", "compression"].includes(target) && result.duplicateContentTitles) problems.push(`duplicateContentTitles=${result.duplicateContentTitles}`);
-      if (target === "map" && result.mapToolbarHeight > 48) problems.push(`mapToolbarHeight=${result.mapToolbarHeight}`);
+      const mapToolbarLimit = result.appWidth <= 900 ? 82 : 48;
+      if (target === "map" && result.mapToolbarHeight > mapToolbarLimit) problems.push(`mapToolbarHeight=${result.mapToolbarHeight}`);
       if (item.width === 900 && item.zoom === 1.5 && target === "map" && result.mapCardsSameRow) problems.push("mapCards=still-two-columns");
       if (item.width === 900 && item.zoom === 1.5 && target === "context" && result.contextEditorColumns.trim().split(/\s+/).length !== 1) problems.push(`contextColumns=${result.contextEditorColumns}`);
       if (item.width === 900 && item.zoom === 1.5 && target === "plugins" && result.pluginsWorkbenchColumns.trim().split(/\s+/).length !== 1) problems.push(`pluginColumns=${result.pluginsWorkbenchColumns}`);

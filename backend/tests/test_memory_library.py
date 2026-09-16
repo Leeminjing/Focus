@@ -152,12 +152,15 @@ def test_memory_crud_and_injection(monkeypatch):
             assert await service._apply_memory_block("BASEPROMPT", []) == "BASEPROMPT"
 
             # start_main_run 持久化 memory_ids → ui_state
-            await service.start_main_run(
+            prepared = await service.start_main_run(
                 task_id, "请开始", None, ["read"], [], None, [mem["memory_id"]],
             )
             async with service.session_factory() as session:
                 task = await session.get(DesktopThread, task_id)
                 assert (task.ui_state or {}).get(_MAIN_RUNTIME_MEMORY_KEY) == [mem["memory_id"]]
+            await service.run_lifecycle.abort_prepared(
+                prepared.body.context["run_id"], "test inspection complete"
+            )
 
             # 端到端：最终 system_prompt 含 <memory> 且为编辑后文本
             import backend.app.desktop.service as svc

@@ -73,9 +73,12 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
         done = asyncio.Future()
         done.set_result(None)
         return SimpleNamespace(
-            run_id=uuid.uuid4().hex,
+            run_id=body.context["run_id"],
             thread_id=thread_id,
-            status=SimpleNamespace(value="pending"),
+            status=SimpleNamespace(value="success"),
+            error=None,
+            prompt_input_tokens=0,
+            prompt_cache_hit_tokens=0,
             task=done,
         )
 
@@ -229,9 +232,10 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
             )
             assert too_many.status_code == 413
 
-            active_before_failure = client.get(
-                f"/desktop/api/tasks/{first_id}", headers=SESSION
-            ).json()["active_run"]["run_id"]
+            history_before_failure = len(client.get(
+                f"/desktop/api/tasks/{first_id}/material-history?material_id={text_id}",
+                headers=SESSION,
+            ).json())
             original_history_add = service.run_material_history.add
             service.run_material_history.add = lambda *_args: (_ for _ in ()).throw(RuntimeError("binding failure"))
             with pytest.raises(RuntimeError, match="binding failure"):
@@ -241,9 +245,10 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
                     json={"message": "transaction", "material_inputs": [{"material_id": text_id}]},
                 )
             service.run_material_history.add = original_history_add
-            assert client.get(
-                f"/desktop/api/tasks/{first_id}", headers=SESSION
-            ).json()["active_run"]["run_id"] == active_before_failure
+            assert len(client.get(
+                f"/desktop/api/tasks/{first_id}/material-history?material_id={text_id}",
+                headers=SESSION,
+            ).json()) == history_before_failure
 
             original_limits = service.run_materials._images._limits
             service.run_materials._images._limits = ImageResourceLimits(run_model_bytes=1)

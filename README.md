@@ -257,6 +257,38 @@ Each governed context operation collapses the model's freedom into a narrow arti
 
 ---
 
+## Context-governed Agent Loop
+
+Traditional agent loops iterate prompts. Focus iterates **contexts**. A long-running Loop maintains an evolving Context Portfolio whose Lanes may continue, split, merge, pause, or retire across immutable Context revisions.
+
+```text
+User (root authority)
+  └─ revocable LoopDelegationGrant
+       └─ one Portfolio Patrol (sole delegated authority holder)
+            ├─ observes a bounded Portfolio frontier
+            ├─ judges whether to continue, curate, derive, merge, wait, or stop
+            ├─ may ask parallel Lane Curators or an independent Completion Verifier
+            └─ submits one typed decision intent
+                 └─ deterministic Kernel validates and commits
+                      ├─ atomic Portfolio publication
+                      ├─ ordinary HumanMessage directives
+                      └─ concurrency-safe Agent Runs
+```
+
+Patrol owns judgment; Workers are optional cognitive tools. Workers return candidates or evidence and have no state-mutation port. The Kernel is the only commit boundary. The invariant is: **many readers, many advisors, many candidate producers, one authoritative publisher per Portfolio**.
+
+Delegated instructions enter the model as exactly `HumanMessage(id, content)`. Patrol identity, grant, authority, and audit metadata are stored in separate provenance tables and never added to message content, `additional_kwargs`, or the system prompt. The Desktop history can still distinguish direct and delegated HumanMessages.
+
+Workspace execution follows one-Writer/many-Readers leases with fencing tokens. Multiple authorized Writers use Lane-owned Git worktrees from a common clean baseline; their results remain isolated until Patrol explicitly adopts one against the current authoritative revision. Non-Git or dirty workspaces fall back to one Writer. Interrupted Readers may retry only when reconciliation proves the fingerprint unchanged; Writers are never retried blindly.
+
+Completion is not self-certified. An independent Completion Verifier returns criterion-level evidence; Patrol decides whether to request completion; the Completion Guard checks evidence freshness, pending gates/Runs, Portfolio integrity, workspace adoption, and the final path. Unknown or conflicted evidence enters `waiting_user`.
+
+In the Desktop task view, open **Agent Loop**, provide a goal, Task Contract, acceptance criteria, and budgets, then grant Patrol control. The console exposes lifecycle, round, Portfolio generation, complete revision graph, first-parent compatibility tree, Runs, workspace slots/leases/adoption, delegated-message provenance, and cursor-replayed SSE events. A direct user message or **User takeover** advances goal and authority revisions and supersedes uncommitted Patrol work.
+
+Current operational limits: isolated parallel writing requires Git and a clean baseline; access expansion and other non-delegable gates always require the user; Context revision history and abandoned Lanes are retained for audit until lifecycle cleanup policy allows removal.
+
+---
+
 ## Tech stack / 技术栈
 
 - **Language/framework**: Python · LangChain · LangGraph (`create_agent`).
@@ -318,6 +350,11 @@ npm install && npm start        # electron .
 ```
 backend/
   app/desktop/                context · patrol · memory · compression services
+    agent_loop/               delegated authority · Patrol · Kernel · coordinator
+    context_evolution/        immutable revisions · DAG reader/publisher
+    context_curation/         multi-context Programs · Lanes · Portfolio publication
+    run_orchestration/        the single PreparedRun → run_agent execution spine
+    workspace_coordination/   slots · leases · fencing · worktrees · adoption
   app/gateway/                unified run interface (SSE / session / auth)
   packages/harness/focus/
     agents/                   lead assembly · commitment (9-stage) · compression gate

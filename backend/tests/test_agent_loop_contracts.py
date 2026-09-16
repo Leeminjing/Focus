@@ -1,0 +1,131 @@
+r"""本文件验证 Agent Loop 的纯合同、Patrol 选择性读取和预算边界。
+
+输入为 delegated directive、Patrol cognitive step、workspace adoption action 与 budget usage；输出为模型侧
+纯 HumanMessage、reads/decision 互斥校验、闭合 action 解析和硬预算裁决。具体工作流为仅构造严格 schema，
+不依赖数据库或模型调用。示例：`pytest test_agent_loop_contracts.py`。
+"""
+
+from __future__ import annotations
+
+from pydantic import ValidationError
+import pytest
+
+from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count
+from backend.app.desktop.agent_loop.models import LoopDirective
+from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
+from backend.app.desktop.agent_loop.round_orchestration import (
+    PatrolCognitiveStep,
+    PatrolDecisionProposal,
+    PatrolReadRequest,
+)
+from backend.app.desktop.agent_loop.schemas import LoopBudgetContract, PATROL_ACTION_ADAPTER
+
+
+def test_delegated_model_message_contains_no_provenance_marker() -> None:
+    directive = LoopDirective(
+        directive_id="directive-1",
+        loop_id="loop-1",
+        round_id="round-1",
+        decision_id="decision-1",
+        action_id="action-1",
+        target_context_id="context-1",
+        target_context_revision_id="revision-1",
+        message_id="message-1",
+        content="Run the focused tests and fix only relevant failures.",
+        content_hash="a" * 64,
+        actor_kind="patrol",
+        actor_id="patrol-1",
+        grant_id="grant-1",
+        grant_revision=1,
+        goal_revision=1,
+        status="created",
+        idempotency_key="directive-key-1",
+    )
+
+    message = DelegatedDirectiveFactory.to_model_message(directive)
+
+    assert message.type == "human"
+    assert message.id == "message-1"
+    assert message.content == directive.content
+    assert message.additional_kwargs == {}
+    assert message.response_metadata == {}
+    assert "patrol" not in str(message.content).lower()
+    assert "delegat" not in str(message.content).lower()
+
+
+def test_patrol_cognitive_step_requires_reads_xor_decision() -> None:
+    read = PatrolReadRequest(context_id="context-1", revision_id="revision-1")
+    decision = PatrolDecisionProposal(
+        rationale="The current Context is sufficient.",
+        actions=(
+            {
+                "action": "continue_context",
+                "context_id": "context-1",
+                "context_revision_id": "revision-1",
+                "message": "Run the focused tests.",
+            },
+        ),
+    )
+
+    assert PatrolCognitiveStep(reads=(read,)).reads == (read,)
+    assert PatrolCognitiveStep(decision=decision).decision == decision
+    with pytest.raises(ValidationError):
+        PatrolCognitiveStep()
+    with pytest.raises(ValidationError):
+        PatrolCognitiveStep(reads=(read,), decision=decision)
+
+
+def test_workspace_adoption_is_a_closed_patrol_action() -> None:
+    action = PATROL_ACTION_ADAPTER.validate_python(
+        {
+            "action": "adopt_workspace_result",
+            "source_slot_id": "slot-1",
+            "source_revision": 3,
+            "rationale": "Tests passed on the isolated result.",
+        }
+    )
+
+    assert action.action == "adopt_workspace_result"
+    with pytest.raises(ValidationError):
+        PATROL_ACTION_ADAPTER.validate_python(
+            {"action": "worker_commit_workspace", "source_slot_id": "slot-1"}
+        )
+
+
+def test_duration_and_no_progress_budgets_block_new_dispatch() -> None:
+    guard = LoopBudgetGuard()
+
+    exhausted = guard.evaluate(
+        {"duration_seconds": 60, "no_progress_count": 0},
+        {"max_duration_seconds": 60},
+        "continue_context",
+    )
+    redirected = guard.evaluate(
+        {"duration_seconds": 10, "no_progress_count": 3},
+        {"max_duration_seconds": 60, "max_no_progress": 3},
+        "continue_context",
+    )
+
+    assert exhausted.status == "exhausted"
+    assert exhausted.reasons == ("duration_seconds_budget",)
+    assert redirected.status == "change_direction"
+
+
+def test_context_and_provider_budgets_are_explicit_hard_limits() -> None:
+    budgets = LoopBudgetContract(max_contexts=2, max_providers=2).model_dump()
+    guard = LoopBudgetGuard()
+
+    contexts = guard.evaluate({"contexts": 2}, budgets, "create_lane")
+    providers = guard.evaluate({"providers": 2}, budgets, "dispatch")
+
+    assert contexts.status == "exhausted"
+    assert contexts.reasons == ("contexts_budget",)
+    assert providers.status == "exhausted"
+    assert providers.reasons == ("providers_budget",)
+    assert configured_provider_count(
+        {
+            "model_name": "main-model",
+            "curator_model_name": "curator-model",
+            "verifier_model_name": "main-model",
+        }
+    ) == 2

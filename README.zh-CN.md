@@ -251,6 +251,38 @@ Patrol 不是上面这些机制的第五种——它是**委托执行者**，能
 
 ---
 
+## Context-governed Agent Loop
+
+传统 Agent Loop 迭代下一条 Prompt；Focus 迭代**下一轮 Agent 应进入哪些 Context**。一个长时程 Loop 持续维护 Context Portfolio，其中稳定 Lane 可以跨不可变 Context Revision 继续、分叉、合并、暂停或退出。
+
+```text
+用户（根权力）
+  └─ 可撤销的 LoopDelegationGrant
+       └─ 一个 Portfolio Patrol（唯一委托权力持有者）
+            ├─ 观察有界的 Portfolio frontier
+            ├─ 自己判断继续、策展、派生、合并、等待或停止
+            ├─ 必要时调用并行 Lane Curator 或独立 Completion Verifier
+            └─ 提交一份严格 decision intent
+                 └─ 确定性 Kernel 校验并提交
+                      ├─ 原子 Portfolio publication
+                      ├─ 普通 HumanMessage 指令
+                      └─ 并发安全的 Agent Run
+```
+
+Patrol 拥有判断权；Worker 只是可选外脑。Worker 只能返回候选 Context 或验证证据，没有任何状态提交端口；Kernel 是唯一 commit 边界。核心不变量是：**多 reader、多 advisor、多 candidate producer，但每个 Portfolio 只有一个权威 publisher**。
+
+委托指令进入模型时严格只有 `HumanMessage(id, content)`。Patrol 身份、grant、authority 和审计信息保存在外部 provenance 表，不会写进正文、`additional_kwargs` 或 system prompt；Desktop 历史仍能向用户区分直接与委托 HumanMessage。
+
+Workspace 使用带 fencing token 的单 Writer/多 Reader lease。多个获授权 Writer 从同一个干净 Git 基线进入 Lane 专属 worktree；结果保持隔离，直到 Patrol 针对当前权威 revision 明确采用其中一个。非 Git 或脏工作区退化为单 Writer。中断 Reader 只有在 fingerprint 证明未变化时才能重试，Writer 永不盲目重试。
+
+完成不能由 Patrol 自证。独立 Completion Verifier 逐条返回验收证据；Patrol 判断是否请求结束；Completion Guard 再检查证据新鲜度、未决 gate/Run、Portfolio 完整性、workspace adoption 与最终路径。任何 unknown 或 conflict 都进入 `waiting_user`。
+
+在 Desktop 任务页打开 **Agent Loop**，填写目标、Task Contract、验收条件和预算后授权 Patrol。控制台会展示生命周期、轮次、Portfolio generation、完整 revision 图、第一父链兼容树、Run、workspace slot/lease/adoption、委托消息来源和可按 cursor 重放的 SSE 事件。用户直接发送新消息或使用“用户接管”时，会推进 goal/authority revision，并使未提交的 Patrol 工作失效。
+
+当前运行限制：并行隔离写入需要 Git 且基线干净；扩大访问范围等不可委托 gate 永远等待用户；Context revision 历史和未采用 Lane 会为审计保留，直到生命周期清理策略允许删除。
+
+---
+
 ## 技术栈
 
 - **语言/框架**: Python · LangChain · LangGraph（`create_agent`）。
@@ -312,6 +344,11 @@ npm install && npm start        # electron .
 ```
 backend/
   app/desktop/                context · patrol · memory · compression 服务
+    agent_loop/               委托权力 · Patrol · Kernel · coordinator
+    context_evolution/        不可变 revision · DAG reader/publisher
+    context_curation/         多 Context Program · Lane · Portfolio 原子发布
+    run_orchestration/        唯一 PreparedRun → run_agent 执行脊柱
+    workspace_coordination/   slot · lease · fencing · worktree · adoption
   app/gateway/                统一运行接口 (SSE/会话/鉴权)
   packages/harness/focus/
     agents/                   lead 装配 · 承诺层(九阶段) · 压缩门

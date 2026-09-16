@@ -1,16 +1,12 @@
 """
-本文件是桌面功能的内嵌挂载入口，不再创建第二个 FastAPI app。
+本文件对外提供 mount_desktop，把桌面能力内嵌到唯一 FastAPI Gateway。
 
-Gateway（`backend.app.gateway.app`）作为唯一 FastAPI 应用（设计决策 1）：
-  - 挂载 `/desktop/api` 路由（desktop_router，含 loopback 会话密钥与对等地址校验）
-  - 挂载 `/desktop/` 静态资源（desktop/index.html、app.js、styles.css）
-
-页面与 API 同源，无需 CORS。DesktopService 在 gateway lifespan 内构造并挂到
-app.state（复用 langgraph_runtime 的 checkpointer / store / stream_bridge 与全局
-数据库 engine）。
-
-开发模式：`python -m uvicorn backend.app.gateway.app:app --host 127.0.0.1 --port 8765`
-（与 Electron 生产模式同为 Gateway 应用）
+输入为已经创建的 Gateway `FastAPI` 实例；输出为挂载完成的 `/desktop/api` 路由、插件资产和
+`/desktop/` 静态页面。具体工作流为先注册 Context、Loop、压缩、Memory、模型设置与插件 API，
+再挂载插件前端和 Desktop 静态目录，从而保持页面与 API 同源且不创建第二个后端。
+DesktopService 由 Gateway lifespan 构造并复用同一数据库、checkpointer、store 和 StreamBridge。
+示例：`mount_desktop(app)`；开发时运行
+`python -m uvicorn backend.app.gateway.app:app --host 127.0.0.1 --port 8765`。
 """
 
 import logging
@@ -42,8 +38,12 @@ def mount_desktop(app) -> None:
     from backend.app.desktop.model_settings_routes import model_settings_router
     from backend.app.desktop.plugins_routes import plugins_router
     from backend.app.desktop.routes import desktop_router
+    from backend.app.desktop.agent_loop.routes import agent_loop_router
+    from backend.app.desktop.agent_loop.query_routes import loop_query_router
 
     app.include_router(desktop_router)
+    app.include_router(agent_loop_router)
+    app.include_router(loop_query_router)
     app.include_router(compression_router)
     app.include_router(plugins_router)
     app.include_router(memory_router)

@@ -226,7 +226,7 @@ def test_receive_and_promotion_failures_clean_only_owned_files(workspace, monkey
     directory = workspace / ".focus" / "attachments"
     assert not list(directory.iterdir())
 
-    monkeypatch.setattr(os, "replace", lambda _source, _target: (_ for _ in ()).throw(OSError("move")))
+    monkeypatch.setattr(os, "link", lambda _source, _target: (_ for _ in ()).throw(OSError("move")))
     with pytest.raises(HTTPException):
         asyncio.run(UploadService(workspace).store("task", upload("x.txt", b"x", "text/plain")))
     assert not list(directory.iterdir())

@@ -79,7 +79,9 @@ def test_migration_adds_the_column_with_the_strictest_default():
     revisions = [revision for revision, _ in declared]
     downs = {parent for _, parents in declared for parent in parents}
     assert len(revisions) == len(set(revisions))
-    assert set(revisions) - downs == {"a1b2c3d4e5f6"}
+    heads = set(revisions) - downs
+    assert len(heads) == 1
+    assert "a1b2c3d4e5f6" in downs
 
 
 def test_reapplying_migrations_is_a_no_op():

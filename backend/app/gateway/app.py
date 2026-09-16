@@ -1,6 +1,9 @@
 """
 本文件对外提供 FastAPI 应用实例 app，作为 backend 网关的统一入口。
 
+输入为 `config.yaml`、进程环境变量与 lifespan 注入的数据库/checkpointer/store/stream bridge；
+输出为同源挂载 Gateway、Desktop API、Agent Loop coordinator 和静态页面的 `FastAPI` 实例。
+
 对外提供:
     app: FastAPI — 已绑定 lifespan 的 FastAPI 应用实例
 
@@ -10,8 +13,10 @@
     (3) async with langgraph_runtime(app, app_config) 管理核心资源生命周期
     (4) 在同一 lifespan 内构造 DesktopService 并挂载到 app.state（决策 1、8、11）
     (5) 创建 FastAPI 实例并传入 lifespan
-    (6) 注册统一会话保护中间件与路由，并挂载桌面路由与 /desktop/ 静态资源（决策 1）
-    (7) 模块级导出 app 实例，供 uvicorn 等 ASGI server 直接引用
+    (6) 通过 Desktop persistence registry 注册各领域 ORM 模型
+    (7) 注册统一会话保护中间件与路由，并挂载桌面路由与 /desktop/ 静态资源（决策 1）
+    (8) 构造 AgentLoopService、LoopKernel 与 LoopCoordinator 作为独立权力边界
+    (9) 模块级导出 app 实例，供 uvicorn 等 ASGI server 直接引用
 
 示例:
     uvicorn backend.app.gateway.app:app --host 0.0.0.0 --port 8000
@@ -30,8 +35,7 @@ from fastapi import FastAPI
 
 from backend.app.gateway.deps import langgraph_runtime
 
-# 导入 desktop models 以注册到 Base.metadata（供 Alembic autogenerate 发现）
-import backend.app.desktop.models  # noqa: F401
+import backend.app.desktop.persistence_registry  # noqa: F401
 
 # 在所有配置加载之前注入 .env 环境变量
 load_dotenv()
@@ -93,11 +97,39 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_manager=app.state.run_manager,
         )
         app.state.desktop_service = service
+        from backend.app.desktop.agent_loop import AgentLoopService, CompletionEvidenceService, DesktopDirectiveLaunchPort, LoopCoordinator, LoopCoordinatorRuntime, LoopKernel, LoopPortfolioPublicationService, LoopRoundOrchestrator, LoopRunWorkspaceBinder, LoopWaveDispatcher, LoopWorkerRuntime, LoopWorkspaceAdoptionService, PendingDecisionProjector
+        from backend.app.desktop.run_orchestration import RunOutboxConsumer
+
+        app.state.agent_loop_service = AgentLoopService(sessions, app.state.run_manager)
+        app.state.agent_loop_workspace = LoopRunWorkspaceBinder(sessions)
+        app.state.agent_loop_gates = PendingDecisionProjector(sessions)
+        service.pending_decision_projector = app.state.agent_loop_gates
+        app.state.agent_loop_portfolios = LoopPortfolioPublicationService(sessions, service.contexts)
+        app.state.agent_loop_adoption = LoopWorkspaceAdoptionService(sessions)
+        app.state.agent_loop_kernel = LoopKernel(
+            sessions,
+            app.state.agent_loop_portfolios,
+            app.state.agent_loop_adoption,
+        )
+        app.state.agent_loop_coordinator = LoopCoordinator(sessions)
+        app.state.agent_loop_runtime = LoopCoordinatorRuntime(
+            app.state.agent_loop_coordinator,
+            RunOutboxConsumer(sessions),
+            LoopWaveDispatcher(
+                sessions,
+                DesktopDirectiveLaunchPort(sessions, service),
+            ),
+            LoopRoundOrchestrator(sessions, app_config, app.state.agent_loop_kernel, app.state.checkpointer),
+            LoopWorkerRuntime(sessions, app_config),
+        )
+        app.state.agent_loop_completion = CompletionEvidenceService(sessions)
         app.state.session_key = os.getenv("FOCUS_DESKTOP_SESSION", "focus-dev-session")
         await service.start()
+        await app.state.agent_loop_runtime.start()
         try:
             yield
         finally:
+            await app.state.agent_loop_runtime.close()
             await service.close()
 
     logger.info("FastAPI lifespan 关闭，agent 核心资源已释放")

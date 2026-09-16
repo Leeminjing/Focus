@@ -17,8 +17,6 @@ os.environ.setdefault("OPENAI_API_KEY", "context-test")
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 from backend.app.desktop.models import (  # noqa: E402
-    DesktopContextDefinition,
-    DesktopContextSource,
     DesktopMaterial,
     DesktopRun,
     DesktopThread,
@@ -78,13 +76,11 @@ async def _insert_main_run(
             )
         )
         await session.commit()
-    await service._set_run_status(
-        run_id,
-        "success",
-        None,
-        input_tokens,
-        cache_hit_tokens,
-    )
+    async with service.session_factory() as session:
+        run = await session.get(DesktopRun, run_id)
+        run.prompt_input_tokens = input_tokens
+        run.prompt_cache_hit_tokens = cache_hit_tokens
+        await session.commit()
 
 
 async def _context_extras(service, context_id: str) -> tuple[dict, int, int]:
@@ -103,12 +99,6 @@ async def _cleanup(service, context_ids: list[str], workspace_ids: list[str], th
     for thread_id in thread_ids:
         await service.checkpointer.adelete_thread(thread_id)
     async with service.session_factory() as session:
-        await session.execute(
-            delete(DesktopContextSource).where(
-                DesktopContextSource.context_id.in_(context_ids)
-                | DesktopContextSource.parent_context_id.in_(context_ids)
-            )
-        )
         await session.execute(delete(DesktopThread).where(DesktopThread.task_id.in_(context_ids)))
         await session.execute(delete(DesktopWorkspace).where(DesktopWorkspace.workspace_id.in_(workspace_ids)))
         await session.commit()
