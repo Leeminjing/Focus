@@ -2,8 +2,8 @@ r"""本文件对外提供 ContextPatrolService，编排 Context 策展 Patrol �
 
 输入为数据库 session factory、ContextService、StreamBridge、RunManager 与 AppConfig；输出为部署、
 稳定 checkpoint 通知、控制状态、审计详情和启动/关闭方法。具体工作流为持久化来源观察与兼容调度
-游标，执行安全来源投影和 CurationEngine，再把候选交给通用单 Lane Program 的原子 Portfolio 发布
-路径；旧 binding/revision/attempt 只承载现有 API 调度与审计，不再镜像或提交 Portfolio 权威状态。
+游标，执行安全来源投影和 CurationEngine，再把候选与 attempt identity 交给通用单 Lane Program 的
+原子 Portfolio 发布路径；旧 binding/revision/attempt 只承载现有 API 调度与审计，不再镜像权威状态。
 示例：`await service.notify_stable_context_checkpoint(context_id)`。
 """
 
@@ -704,6 +704,7 @@ class ContextPatrolService:
             compiled.authored_messages,
             compiled.disposition_manifest,
             outcome=compiled.outcome,
+            attempt_id=attempt_id,
         )
         async with self.session_factory() as session:
             attempt = await session.get(PatrolContextAttempt, attempt_id)

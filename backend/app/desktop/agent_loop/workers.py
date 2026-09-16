@@ -14,6 +14,7 @@ import json
 from typing import Any
 import uuid
 
+from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
@@ -23,10 +24,12 @@ from backend.app.desktop.agent_loop.completion import CompletionEvidenceService
 from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopContextMembership, LoopDelegationGrant, LoopEventOutbox, LoopGoalRevision, LoopRound, LoopWorkerRequest
 from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract, CriterionVerification
+from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.models import DesktopRun
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
 from focus.config.app_config import AppConfig
 from focus.models.factory import create_chat_model
+from focus.runtime.runs.usage import ModelUsage, callback_usage
 
 
 class CompletionProposal(BaseModel):
@@ -48,6 +51,7 @@ class _StructuredWorker:
     def __init__(self, app_config: AppConfig, model_name: str | None = None) -> None:
         self._app_config = app_config
         self._model_name = model_name
+        self.usage = ModelUsage()
 
     async def invoke(self, schema, system: str, payload: dict[str, Any]):
         config = self._app_config.get_model(self._model_name or self._app_config.resolve_default_model_name())
@@ -55,17 +59,23 @@ class _StructuredWorker:
         document = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         json_schema = json.dumps(schema.model_json_schema(), ensure_ascii=False, separators=(",", ":"))
         messages = [SystemMessage(content=system), HumanMessage(content=f"<worker_input>{document}</worker_input>\nJSON Schema: {json_schema}")]
-        if config.curation_output_method == "prompt_json":
-            response = await model.ainvoke(messages)
-            content = getattr(response, "content", response)
-            text = content if isinstance(content, str) else "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
-            candidate = text.strip()
-            if candidate.startswith("```"):
-                lines = candidate.splitlines()
-                candidate = "\n".join(lines[1:-1]).strip()
-            return schema.model_validate(json.loads(candidate))
-        response = await model.with_structured_output(schema, method=config.curation_output_method).ainvoke(messages)
-        return response if isinstance(response, schema) else schema.model_validate(response)
+        callback = UsageMetadataCallbackHandler()
+        try:
+            invoke_config = {"callbacks": [callback]}
+            if config.curation_output_method == "prompt_json":
+                response = await model.ainvoke(messages, config=invoke_config)
+                content = getattr(response, "content", response)
+                text = content if isinstance(content, str) else "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
+                candidate = text.strip()
+                if candidate.startswith("```"):
+                    lines = candidate.splitlines()
+                    candidate = "\n".join(lines[1:-1]).strip()
+                return schema.model_validate(json.loads(candidate))
+            response = await model.with_structured_output(schema, method=config.curation_output_method).ainvoke(messages, config=invoke_config)
+            return response if isinstance(response, schema) else schema.model_validate(response)
+        finally:
+            measured = callback_usage(callback)
+            self.usage += measured if measured.model_calls else ModelUsage(model_calls=1)
 
 
 class StructuredCompletionVerifier:
@@ -98,23 +108,16 @@ class LoopWorkerRuntime:
         return len(requests)
 
     async def _run_one(self, request: LoopWorkerRequest) -> None:
-        counted = False
-        model_attempted = False
         try:
             await self._require_budget(request)
-            model_attempted = True
             if request.kind == "completion_verifier":
                 await self._verify_completion(request)
             elif request.kind == "lane_curator":
                 await self._advise_lanes(request)
             else:
                 raise ValueError(f"未知 Loop Worker: {request.kind}")
-            await self._count_model_call(request.loop_id)
-            counted = True
             await self._advance(request.loop_id, request.round_id)
         except Exception as exc:
-            if model_attempted and not counted and request.kind in {"completion_verifier", "lane_curator"}:
-                await self._count_model_call(request.loop_id)
             await self._fail(request, exc)
 
     async def _require_budget(self, request: LoopWorkerRequest) -> None:
@@ -148,7 +151,12 @@ class LoopWorkerRuntime:
                 )
                 or 0
             )
-            if grant is None or LoopBudgetGuard().evaluate(usage_values, grant.budgets, request.kind).status == "exhausted":
+            if grant is None or LoopBudgetGuard().evaluate(
+                usage_values,
+                grant.budgets,
+                request.kind,
+                {"model_calls": 1},
+            ).status == "exhausted":
                 raise RuntimeError("Loop Worker budget 已耗尽或 delegation 已撤销")
 
     async def _claim_many(self, limit: int = 8) -> tuple[LoopWorkerRequest, ...]:
@@ -168,28 +176,36 @@ class LoopWorkerRuntime:
                 row.status = "running"
             return tuple(rows)
 
-    async def _count_model_call(self, loop_id: str) -> None:
-        async with self._sessions.begin() as session:
-            usage = await session.get(LoopBudgetUsage, loop_id, with_for_update=True)
-            if usage is not None:
-                usage.model_calls += 1
-
     async def _verify_completion(self, request: LoopWorkerRequest) -> None:
         payload, loop, round_row = await self._evidence(request)
         model_name = (loop.equipment or {}).get("verifier_model_name") or (loop.equipment or {}).get("model_name")
-        proposal = await StructuredCompletionVerifier(_StructuredWorker(self._app_config, model_name)).verify(payload)
+        worker = _StructuredWorker(self._app_config, model_name)
+        try:
+            proposal = await StructuredCompletionVerifier(worker).verify(payload)
+        finally:
+            await self._record_usage(loop.loop_id, worker.usage)
         contract = CompletionVerificationContract(verification_id=uuid.uuid4().hex, loop_id=loop.loop_id, round_id=round_row.round_id, goal_revision=loop.goal_revision, frontier_hash=round_row.frontier_hash, workspace_revision=round_row.workspace_revision, criteria=proposal.criteria, conclusion=proposal.conclusion, unresolved=proposal.unresolved)
         await self._completion.record(contract, request.worker_request_id)
 
     async def _advise_lanes(self, request: LoopWorkerRequest) -> None:
         payload, loop, _ = await self._evidence(request)
         model_name = (loop.equipment or {}).get("curator_model_name") or (loop.equipment or {}).get("model_name")
-        result = await StructuredLaneAdvisor(_StructuredWorker(self._app_config, model_name)).advise({**payload, "assignments": request.scope.get("assignments", [])})
+        worker = _StructuredWorker(self._app_config, model_name)
+        try:
+            result = await StructuredLaneAdvisor(worker).advise({**payload, "assignments": request.scope.get("assignments", [])})
+        finally:
+            await self._record_usage(loop.loop_id, worker.usage)
         async with self._sessions.begin() as session:
             row = await session.get(LoopWorkerRequest, request.worker_request_id, with_for_update=True)
             row.status = "success"
             row.result = result.model_dump(mode="json")
             row.completed_at = datetime.now(UTC)
+
+    async def _record_usage(self, loop_id: str, usage: ModelUsage) -> None:
+        await LoopUsageLedger(self._sessions).record(
+            loop_id,
+            LoopUsageDelta.from_model_usage(usage),
+        )
 
     async def _evidence(self, request: LoopWorkerRequest) -> tuple[dict[str, Any], AgentLoop, LoopRound]:
         async with self._sessions() as session:

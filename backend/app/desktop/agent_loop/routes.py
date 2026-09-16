@@ -1,4 +1,4 @@
-r"""本文件对外提供 agent_loop_router，作为 Loop、Kernel decision、控制、覆盖与事件 HTTP 边界。
+r"""本文件对外提供 agent_loop_router，作为 Loop、授权、Kernel decision、控制、覆盖与事件 HTTP 边界。
 
 输入为已通过 Desktop 会话认证的严格 schema；输出为 Loop snapshot、Kernel result 或 cursor event。
 具体工作流为从 app.state 取得 AgentLoopService/LoopKernel，不在路由中写领域状态或运行模型。
@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract, LoopCreateRequest, PatrolDecisionIntent
+from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract, LoopCreateRequest, LoopGrantMutationRequest, PatrolDecisionIntent
 from backend.app.desktop.agent_loop.kernel import KernelRejected
 
 
@@ -58,6 +58,12 @@ async def get_loop(loop_id: str, request: Request) -> dict:
 @agent_loop_router.post("/{loop_id}/control")
 async def control_loop(loop_id: str, body: LoopControlRequest, request: Request) -> dict:
     return await request.app.state.agent_loop_service.control(loop_id, body.command)
+
+
+@agent_loop_router.post("/{loop_id}/grant")
+async def mutate_loop_grant(loop_id: str, body: LoopGrantMutationRequest, request: Request) -> dict:
+    await request.app.state.agent_loop_authority.mutate(loop_id, body)
+    return await request.app.state.agent_loop_service.get(loop_id)
 
 
 @agent_loop_router.post("/{loop_id}/override")

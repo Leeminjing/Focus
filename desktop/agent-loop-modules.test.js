@@ -43,6 +43,18 @@ test("api sends session header and cursor", async () => {
 });
 
 
+test("api sends grant mutations through the authority boundary", async () => {
+  const calls = [];
+  const api = LoopApi.create({ apiBase: "http://focus", session: "secret" }, async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, json: async () => ({ loop_id: "l1" }) };
+  });
+  await api.mutateGrant("loop one", { command: "revoke" });
+  assert.equal(calls[0].url, "http://focus/desktop/api/agent-loops/loop%20one/grant");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { command: "revoke" });
+});
+
+
 test("api reads an immutable historical revision outside the Loop route prefix", async () => {
   const calls = [];
   const api = LoopApi.create({ apiBase: "http://focus", session: "secret" }, async (url, options) => {
@@ -94,20 +106,24 @@ test("delegated source badge stays outside message content", () => {
 
 
 test("loop view exposes every hard portfolio budget", () => {
-  const start = LoopView.render(null, { title: "Ship Focus" });
-  for (const field of ["maxRounds", "maxModelCalls", "maxLanes", "maxContexts", "maxProviders", "maxConcurrentRuns"]) {
+  const start = LoopView.render(null, { title: "Ship Focus", active_run: { run_id: "run-initial" } });
+  for (const field of ["maxRounds", "maxDurationSeconds", "maxModelCalls", "maxInputTokens", "maxOutputTokens", "maxRetries", "maxLanes", "maxContexts", "maxProviders", "maxNewLanesPerRound", "maxConcurrentRuns", "maxNoProgress"]) {
     assert.match(start, new RegExp(`name="${field}"`));
   }
+  assert.doesNotMatch(start, /disabled>授权 Patrol 并启动/);
+  const terminalStart = LoopView.render(null, { title: "Ship Focus", latest_direct_user_run: { run_id: "run-finished", status: "success" } });
+  assert.match(terminalStart, /run-finished（success）/);
+  assert.doesNotMatch(terminalStart, /disabled>授权 Patrol 并启动/);
   const dashboard = LoopView.render({
     snapshot: {
       loop_id: "l1", status: "running", health: "observing", holder_id: "patrol:l1",
       goal_revision: 1, authority_revision: 1, goal: { goal: "Ship Focus" },
-      usage: { rounds: 2, model_calls: 4, tokens: 512, lanes: 3, contexts: 5, providers: 2 },
-      grant: { budgets: { max_rounds: 20, max_model_calls: 200, max_tokens: 10000, max_lanes: 8, max_contexts: 16, max_providers: 4 } },
+      usage: { rounds: 2, duration_seconds: 90, model_calls: 4, input_tokens: 512, output_tokens: 128, retries: 1, lanes: 3, contexts: 5, providers: 2 },
+      grant: { capabilities: ["continue_context"], context_scope: ["c1"], permission_scope: ["read"], delegable_gates: [], budgets: { max_rounds: 20, max_duration_seconds: 3600, max_model_calls: 200, max_input_tokens: 10000, max_output_tokens: 2000, max_retries: 4, max_lanes: 8, max_contexts: 16, max_providers: 4, max_new_lanes_per_round: 3, max_concurrent_runs: 4, max_no_progress: 3 } },
     },
     related: {},
   });
-  for (const label of ["Rounds 2 / 20", "Calls 4 / 200", "Tokens 512 / 10000", "Lanes 3 / 8", "Contexts 5 / 16", "Providers 2 / 4"]) {
+  for (const label of ["Rounds 2 / 20", "Duration 90 / 3600s", "Calls 4 / 200", "Input 512 / 10000", "Output 128 / 2000", "Retries 1 / 4", "Lanes 3 / 8", "Contexts 5 / 16", "Providers 2 / 4", "撤销 Patrol 授权"]) {
     assert.match(dashboard, new RegExp(label));
   }
 });

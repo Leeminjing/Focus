@@ -133,10 +133,35 @@ class LoopBudgetContract(StrictModel):
     max_no_progress: int = Field(default=3, ge=1, le=20)
 
 
+class NarrowLoopGrantRequest(StrictModel):
+    command: Literal["narrow"]
+    capabilities: tuple[str, ...] = Field(min_length=1)
+    context_scope: tuple[str, ...] = Field(min_length=1)
+    permission_scope: tuple[str, ...]
+    delegable_gates: tuple[str, ...] = ()
+    expires_at: str | None = None
+
+
+class AdjustLoopBudgetsRequest(StrictModel):
+    command: Literal["adjust_budgets"]
+    budgets: LoopBudgetContract
+
+
+class RevokeLoopGrantRequest(StrictModel):
+    command: Literal["revoke"]
+
+
+LoopGrantMutationRequest = Annotated[
+    NarrowLoopGrantRequest | AdjustLoopBudgetsRequest | RevokeLoopGrantRequest,
+    Field(discriminator="command"),
+]
+
+
 class LoopCreateRequest(StrictModel):
     loop_id: str
     workspace_id: str
     initial_context_id: str
+    initial_run_id: str
     holder_id: str
     goal: str = Field(min_length=1)
     task_contract: str = Field(min_length=1)

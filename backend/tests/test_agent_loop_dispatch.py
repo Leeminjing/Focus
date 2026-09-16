@@ -20,15 +20,17 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import backend.app.desktop.persistence_registry
 from backend.app.desktop.agent_loop import (
     AgentLoopService,
+    AgentLoopRecovery,
     LoopCreateRequest,
     LoopCoordinator,
+    LoopCoordinatorRuntime,
     LoopKernel,
     LoopRunWorkspaceBinder,
     LoopWaveDispatcher,
     PatrolDecisionIntent,
 )
 from backend.app.desktop.agent_loop.models import LoopCoordinatorLease
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective, LoopRound, LoopWorkerRequest
+from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDirective, LoopRound, LoopWorkerRequest
 from backend.app.desktop.context_evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
@@ -38,10 +40,43 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRepository,
 )
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.run_orchestration import RunOutboxConsumer
 from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor, WorkspaceLease
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
+
+
+def test_runtime_runs_comprehensive_recovery_before_polling() -> None:
+    class Coordinator:
+        async def recover(self):
+            raise AssertionError("comprehensive recovery must own startup reconciliation")
+
+        async def claim(self, _owner):
+            return None
+
+    class RunEvents:
+        async def recover(self):
+            raise AssertionError("comprehensive recovery must own outbox reconciliation")
+
+        async def drain(self, _consumer, _handler):
+            return 0
+
+    class Recovery:
+        def __init__(self):
+            self.calls = 0
+
+        async def reconcile(self):
+            self.calls += 1
+
+    async def run() -> None:
+        recovery = Recovery()
+        runtime = LoopCoordinatorRuntime(Coordinator(), RunEvents(), recovery=recovery, poll_seconds=0.001)
+        await runtime.start()
+        assert recovery.calls == 1
+        await runtime.close()
+
+    asyncio.run(run())
 
 
 def test_dispatch_claims_once_and_direct_user_uses_the_same_workspace_contract(tmp_path) -> None:
@@ -95,6 +130,7 @@ def test_dispatch_claims_once_and_direct_user_uses_the_same_workspace_contract(t
                     ),
                 )
                 await repository.switch_current(session, ref, None)
+                session.add(DesktopRun(run_id=f"initial-{suffix}", task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, settled_at=datetime.now(UTC)))
 
             service = AgentLoopService(sessions)
             snapshot = await service.start(
@@ -102,6 +138,7 @@ def test_dispatch_claims_once_and_direct_user_uses_the_same_workspace_contract(t
                     loop_id=loop_id,
                     workspace_id=workspace_id,
                     initial_context_id=context_id,
+                    initial_run_id=f"initial-{suffix}",
                     holder_id="patrol-1",
                     goal="Finish the task",
                     task_contract="Stay in scope",
@@ -226,7 +263,13 @@ def test_dispatch_claims_once_and_direct_user_uses_the_same_workspace_contract(t
                         expires_at=datetime.now(UTC) - timedelta(seconds=1),
                     )
                 )
-            assert await LoopCoordinator(sessions).recover() == 1
+            report = await AgentLoopRecovery(
+                sessions,
+                LoopCoordinator(sessions),
+                RunOutboxConsumer(sessions),
+            ).reconcile()
+            assert report.coordinator_leases == 1
+            assert report.worker_attempts == 1
             async with sessions() as session:
                 recovered_directive = await session.get(
                     LoopDirective, committed.directive_ids[0]
@@ -237,8 +280,11 @@ def test_dispatch_claims_once_and_direct_user_uses_the_same_workspace_contract(t
                 recovered_lease = await session.get(
                     LoopCoordinatorLease, recovery_lease_id
                 )
+                recovered_usage = await session.get(LoopBudgetUsage, loop_id)
                 assert recovered_directive.status == "created"
                 assert recovered_worker.status == "pending"
+                assert recovered_worker.attempt == 2
+                assert recovered_usage.retries == 2
                 assert recovered_lease is None
         finally:
             async with sessions() as session:

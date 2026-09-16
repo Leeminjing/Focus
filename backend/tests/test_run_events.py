@@ -264,7 +264,7 @@ def test_run_agent_accumulates_standard_cache_usage():
                         "input_token_details": {"cache_read": 25},
                     },
                 ),
-                {"langgraph_node": "model"},
+                {"langgraph_node": "model", "langgraph_step": 1},
             )
             yield "messages", (
                 AIMessageChunk(
@@ -276,7 +276,7 @@ def test_run_agent_accumulates_standard_cache_usage():
                         "input_token_details": {"cache_read": 40},
                     },
                 ),
-                {"langgraph_node": "model"},
+                {"langgraph_node": "model", "langgraph_step": 2},
             )
 
     manager = RunManager()
@@ -300,7 +300,9 @@ def test_run_agent_accumulates_standard_cache_usage():
         )
     )
 
+    assert record.model_call_count == 2
     assert record.prompt_input_tokens == 180
+    assert record.prompt_output_tokens == 18
     assert record.prompt_cache_hit_tokens == 65
 
 

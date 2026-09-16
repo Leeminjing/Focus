@@ -15,6 +15,7 @@ def test_agent_loop_openapi_surface_is_complete() -> None:
         "/desktop/api/agent-loops": "post",
         "/desktop/api/agent-loops/{loop_id}": "get",
         "/desktop/api/agent-loops/{loop_id}/control": "post",
+        "/desktop/api/agent-loops/{loop_id}/grant": "post",
         "/desktop/api/agent-loops/{loop_id}/override": "post",
         "/desktop/api/agent-loops/{loop_id}/decisions": "post",
         "/desktop/api/agent-loops/{loop_id}/events": "get",
@@ -39,6 +40,7 @@ def test_loop_mutation_routes_require_documented_request_bodies() -> None:
     for path in (
         "/desktop/api/agent-loops",
         "/desktop/api/agent-loops/{loop_id}/control",
+        "/desktop/api/agent-loops/{loop_id}/grant",
         "/desktop/api/agent-loops/{loop_id}/override",
         "/desktop/api/agent-loops/{loop_id}/decisions",
         "/desktop/api/agent-loops/{loop_id}/completion-evidence",

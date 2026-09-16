@@ -2,7 +2,7 @@ r"""本文件对外提供 RunLifecycleFinalizer 与 RunSettlement。
 
 输入为已结束 RunRecord或未启动成功的持久 Run、最终 checkpoint 和 workspace result；输出为终态 Run、
 新 Context revision 与 MainRunSettled event identity。具体工作流为先在事务外精确读取执行 checkpoint，
-再在单事务中锁 Run、保存终态/用量、按 base revision CAS 发布 checkpoint revision、按 lease 模式结算
+再在单事务中锁 Run、保存终态及完整模型用量、按 base revision CAS 发布 checkpoint revision、按 lease 模式结算
 workspace effect、释放 lease 并 enqueue outbox；Reader 只记录并发变化，隔离 Writer 保留待采用结果，
 权威 Writer 才推进权威 slot。重复 finalize 返回同一事实，陈旧 Context 不覆盖用户的新 current pointer。
 示例：`settlement = await finalizer.finalize(record)`。
@@ -89,7 +89,9 @@ class RunLifecycleFinalizer:
                 terminal_error = terminal_error or "Run task 已结束但未产生终态"
             locked.status = terminal_status
             locked.error = terminal_error
+            locked.model_call_count = record.model_call_count
             locked.prompt_input_tokens = record.prompt_input_tokens
+            locked.prompt_output_tokens = record.prompt_output_tokens
             locked.prompt_cache_hit_tokens = record.prompt_cache_hit_tokens
             locked.final_checkpoint_id = checkpoint_id
             locked.workspace_result = await self._settle_workspace(session, locked, workspace_result, captured)

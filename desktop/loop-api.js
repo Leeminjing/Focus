@@ -47,6 +47,7 @@
       findByContext: contextId => request(`/by-context/${encodeURIComponent(contextId)}`),
       get: loopId => request(`/${encodeURIComponent(loopId)}`),
       control: (loopId, command) => request(`/${encodeURIComponent(loopId)}/control`, { method: "POST", body: JSON.stringify({ command }) }),
+      mutateGrant: (loopId, body) => request(`/${encodeURIComponent(loopId)}/grant`, { method: "POST", body: JSON.stringify(body) }),
       override: (loopId, body) => request(`/${encodeURIComponent(loopId)}/override`, { method: "POST", body: JSON.stringify(body) }),
       events: (loopId, after = 0) => request(`/${encodeURIComponent(loopId)}/events?after=${Number(after) || 0}`),
       revision: async revisionId => {

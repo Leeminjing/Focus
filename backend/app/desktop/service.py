@@ -11,7 +11,8 @@ RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以
 持久化稳定用户消息与有序材料绑定，图片是通用材料聚合的派生视图，初始与恢复路径使用同一
 投影，图片交付、必看完成门和压缩门按职责独立装配；压缩通过 Context Evolution 迁移端口发布，
 稳定 Run 则由 RunLifecycleFinalizer 在同一事务收敛终态、Context revision 与 durable outbox；Loop
-后台启动可把受治理工具根切换到 Kernel 选择的持久 Workspace Slot，数据库锚点与真实作用路径一致。
+后台启动可把受治理工具根切换到 Kernel 选择的持久 Workspace Slot，任务详情同时公开最新直接用户
+Main Run 供 Loop 绑定首轮，数据库锚点与真实作用路径一致。
 Agent 运行使用独立 checkpoint namespace 隔离，并用 Git 隐藏引用保护不可遗失材料。
 四套机制装配边界经 agent_role 区分：main（spawn 三件套 + 协作工具 + Mailbox 注入
 + 联网工具 web_search/web_fetch + MCP 远端工具 + 压缩门）、teammate/worker（持久派生
@@ -2658,6 +2659,15 @@ class DesktopService:
             )
             .order_by(DesktopRun.created_at.desc())
         )
+        latest_direct_user = await session.scalar(
+            select(DesktopRun)
+            .where(
+                DesktopRun.task_id == task.task_id,
+                DesktopRun.agent_id == f"main:{task.task_id}",
+                DesktopRun.origin == "direct_user",
+            )
+            .order_by(DesktopRun.created_at.desc(), DesktopRun.run_id.desc())
+        )
         ui_state = dict(task.ui_state or {})
         ui_state.pop(_MAIN_RUNTIME_EQUIPMENT_KEY, None)
         recovery = await self._commitment_recovery_payload(session, task)
@@ -2679,7 +2689,9 @@ class DesktopService:
                 else "archived" if task.archived_at is not None
                 else "active"
             ),
-            "ui_state": ui_state, "active_run": self._run_payload(active) if active else None,
+            "ui_state": ui_state,
+            "active_run": self._run_payload(active) if active else None,
+            "latest_direct_user_run": self._run_payload(latest_direct_user) if latest_direct_user else None,
             "pending_commitment_review": (
                 recovery["review"] if recovery and recovery["status"] == "resumable" else None
             ),
@@ -2783,7 +2795,9 @@ class DesktopService:
             "run_id": run.run_id, "task_id": run.task_id, "agent_id": run.agent_id,
             "deployment_id": run.deployment_id, "kind": run.kind, "status": run.status,
             "model_name": run.model_name, "error": run.error,
+            "model_call_count": run.model_call_count,
             "prompt_input_tokens": run.prompt_input_tokens,
+            "prompt_output_tokens": run.prompt_output_tokens,
             "prompt_cache_hit_tokens": run.prompt_cache_hit_tokens,
             "message_id": run.origin_message_id,
             "origin": run.origin,

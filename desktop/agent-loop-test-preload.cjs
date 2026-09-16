@@ -17,6 +17,7 @@ const loop = {
   snapshot: null,
   startBody: null,
   overrides: [],
+  grantMutations: [],
   controls: [],
   cursor: 0,
 };
@@ -39,8 +40,8 @@ function runningSnapshot(body) {
       task_contract: body.task_contract,
       acceptance_criteria: body.acceptance_criteria,
     },
-    grant: { budgets: body.budgets, capabilities: body.capabilities },
-    usage: { rounds: 12, model_calls: 41, tokens: 8192, lanes: 4, contexts: 5, providers: 2 },
+    grant: { budgets: body.budgets, capabilities: body.capabilities, context_scope: body.context_scope, permission_scope: body.permission_scope, delegable_gates: body.delegable_gates, expires_at: null },
+    usage: { rounds: 12, duration_seconds: 180, model_calls: 41, input_tokens: 8192, output_tokens: 2048, retries: 2, lanes: 4, contexts: 5, providers: 2 },
     memberships: [
       { context_id: "root", lane_id: "implementation", state: "active" },
       { context_id: "child", lane_id: "testing", state: "active" },
@@ -96,6 +97,7 @@ window.__agentLoopTest = loop;
 window.fetch = async (input, options = {}) => {
   const url = new URL(String(input), "http://focus.test");
   const path = url.pathname;
+  if (path === "/desktop/api/tasks/root") return json({ task_id: "root", messages: [], ui_state: {}, active_run: { run_id: "run-initial", status: "success" }, context: null });
   if (path === "/desktop/api/agent-loops/by-context/root") return json(loop.snapshot);
   if (path === "/desktop/api/agent-loops" && options.method === "POST") {
     loop.startBody = JSON.parse(options.body);
@@ -113,6 +115,18 @@ window.fetch = async (input, options = {}) => {
     const body = JSON.parse(options.body);
     loop.overrides.push(body);
     loop.snapshot = { ...loop.snapshot, status: "running", goal_revision: loop.snapshot.goal_revision + 1, authority_revision: loop.snapshot.authority_revision + 1, goal: body, health: "observing", waiting_reason: null };
+    return json(loop.snapshot);
+  }
+  if (/\/desktop\/api\/agent-loops\/[^/]+\/grant$/.test(path) && options.method === "POST") {
+    const body = JSON.parse(options.body);
+    loop.grantMutations.push(body);
+    if (body.command === "revoke") {
+      loop.snapshot = { ...loop.snapshot, status: "waiting_user", health: "idle", authority_revision: loop.snapshot.authority_revision + 1, grant: null, waiting_reason: "用户已撤销 Patrol delegation" };
+    } else if (body.command === "adjust_budgets") {
+      loop.snapshot = { ...loop.snapshot, authority_revision: loop.snapshot.authority_revision + 1, grant: { ...loop.snapshot.grant, budgets: body.budgets } };
+    } else {
+      loop.snapshot = { ...loop.snapshot, authority_revision: loop.snapshot.authority_revision + 1, grant: { ...loop.snapshot.grant, ...body } };
+    }
     return json(loop.snapshot);
   }
   if (/\/desktop\/api\/agent-loops\/[^/]+\/events$/.test(path)) return json([]);

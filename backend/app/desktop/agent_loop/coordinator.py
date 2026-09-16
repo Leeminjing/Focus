@@ -2,8 +2,8 @@ r"""本文件对外提供 LoopCoordinator、CoordinatorClaim 与 LoopCoordinator
 
 输入为数据库中的 running Loop、未决 round、Worker/Run/outbox 事实和 coordinator identity；输出为带
 lease 的唯一 round claim 与恢复计数。具体工作流为 skip-locked 领取、fencing stale attempt、由数据库
-状态推进 health；Runtime 消费持久 outbox 并通过 Coordinator 原子派发 ready wave，进程内 wake 只缩短
-延迟。示例：`runtime = LoopCoordinatorRuntime(coordinator, outbox, dispatcher)`。
+状态推进 health；Runtime 启动时执行完整 AgentLoopRecovery，随后消费持久 outbox 并通过 Coordinator
+原子派发 ready wave，进程内 wake 只缩短延迟。示例：`runtime = LoopCoordinatorRuntime(...)`。
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopAction, LoopBudgetUsage, LoopContextMembership, LoopCoordinatorLease, LoopDirective, LoopEventOutbox, LoopRound, LoopWorkerRequest, MessageProvenance
 from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count, no_progress_fingerprint
+from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.agent_loop.models import LoopDelegationGrant
 from backend.app.desktop.models import DesktopRun, DesktopThread
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
@@ -46,6 +47,10 @@ class RoundOrchestratorPort(Protocol):
 
 class WorkerRuntimePort(Protocol):
     async def drain(self) -> int: ...
+
+
+class RecoveryPort(Protocol):
+    async def reconcile(self): ...
 
 
 class LoopCoordinator:
@@ -96,7 +101,6 @@ class LoopCoordinator:
             rows = list((await session.scalars(select(LoopCoordinatorLease).where(LoopCoordinatorLease.expires_at <= now))).all())
             for row in rows:
                 await session.delete(row)
-            await session.execute(update(LoopWorkerRequest).where(LoopWorkerRequest.status == "running").values(status="pending"))
             await self._recover_launching_directives(session)
             return len(rows)
 
@@ -112,6 +116,7 @@ class LoopCoordinator:
                 )
             ).all()
         )
+        retries_by_loop: dict[str, int] = {}
         for directive in directives:
             run = await session.scalar(
                 select(DesktopRun)
@@ -121,14 +126,20 @@ class LoopCoordinator:
             )
             if run is None:
                 directive.status = "created"
+                retries_by_loop[directive.loop_id] = retries_by_loop.get(directive.loop_id, 0) + 1
                 continue
             reconciliation = (run.workspace_result or {}).get("reconciliation") or {}
             if run.status == "interrupted" and reconciliation.get("retry_safe") is True:
                 directive.status = "created"
                 directive.launched_run_id = None
+                retries_by_loop[directive.loop_id] = retries_by_loop.get(directive.loop_id, 0) + 1
                 continue
             directive.status = "launched" if run.status in {"pending", "running", "success"} else "blocked"
             directive.launched_run_id = run.run_id
+        for loop_id, retries in retries_by_loop.items():
+            usage = await session.get(LoopBudgetUsage, loop_id, with_for_update=True)
+            if usage is not None:
+                LoopUsageLedger.apply(usage, LoopUsageDelta(retries=retries))
         return len(directives)
 
     async def dispatch_ready(
@@ -206,11 +217,18 @@ class LoopCoordinator:
                 provenance.context_revision_id = revision_id
         round_row = await session.get(LoopRound, run.round_id, with_for_update=True)
         loop = await session.get(AgentLoop, run.loop_id, with_for_update=True)
-        if round_row is None or loop is None or loop.status != "running":
+        if round_row is None or loop is None or loop.status != "running" or round_row.status != "running":
             return
         usage = await session.get(LoopBudgetUsage, loop.loop_id, with_for_update=True)
         if usage is not None:
-            usage.input_tokens += int(run.prompt_input_tokens or 0)
+            LoopUsageLedger.apply(
+                usage,
+                LoopUsageDelta(
+                    model_calls=int(run.model_call_count or 0),
+                    input_tokens=int(run.prompt_input_tokens or 0),
+                    output_tokens=int(run.prompt_output_tokens or 0),
+                ),
+            )
         active = await session.scalar(select(func.count()).select_from(DesktopRun).where(DesktopRun.round_id == run.round_id, DesktopRun.status.in_(["pending", "running"])))
         if active:
             round_row.status = "running"
@@ -264,12 +282,13 @@ class LoopCoordinator:
 
 
 class LoopCoordinatorRuntime:
-    def __init__(self, coordinator: LoopCoordinator, run_events: RunOutboxConsumer, dispatcher: LoopWaveDispatcher | None = None, orchestrator: RoundOrchestratorPort | None = None, workers: WorkerRuntimePort | None = None, poll_seconds: float = 1.0) -> None:
+    def __init__(self, coordinator: LoopCoordinator, run_events: RunOutboxConsumer, dispatcher: LoopWaveDispatcher | None = None, orchestrator: RoundOrchestratorPort | None = None, workers: WorkerRuntimePort | None = None, recovery: RecoveryPort | None = None, poll_seconds: float = 1.0) -> None:
         self._coordinator = coordinator
         self._run_events = run_events
         self._dispatcher = dispatcher
         self._orchestrator = orchestrator
         self._workers = workers
+        self._recovery = recovery
         self._poll_seconds = poll_seconds
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
@@ -277,8 +296,11 @@ class LoopCoordinatorRuntime:
     async def start(self) -> None:
         if self._task is not None:
             return
-        await self._run_events.recover()
-        await self._coordinator.recover()
+        if self._recovery is not None:
+            await self._recovery.reconcile()
+        else:
+            await self._run_events.recover()
+            await self._coordinator.recover()
         self._stop.clear()
         self._task = asyncio.create_task(self._run())
 

@@ -747,7 +747,13 @@ function renderLoop() {
     app.innerHTML = '<section class="empty-state"><h1>Agent Loop</h1><p>Loop 视图模块不可用。</p></section>';
     return;
   }
-  app.innerHTML = loopView.render(loopStore.get(), activeTask() || {});
+  const task = activeTask();
+  const detail = task ? state.details.get(task.task_id) : null;
+  app.innerHTML = loopView.render(loopStore.get(), task ? {
+    ...task,
+    active_run: detail?.active_run || task.active_run,
+    latest_direct_user_run: detail?.latest_direct_user_run,
+  } : {});
   if (state.loop.revisionSnapshot) {
     const revision = state.loop.revisionSnapshot;
     const messages = revision.messages || revision.authored_messages || revision.execution_messages || [];
@@ -844,6 +850,9 @@ async function startAgentLoop(form) {
   const values = new FormData(form);
   const criteria = String(values.get("criteria") || "").split(/\r?\n/).map(value => value.trim()).filter(Boolean);
   if (!criteria.length) return setStatus("至少需要一条验收条件", true);
+  const taskDetail = state.details.get(task.task_id);
+  const initialRunId = taskDetail?.active_run?.run_id || task.active_run?.run_id || taskDetail?.latest_direct_user_run?.run_id;
+  if (!initialRunId) return setStatus("请先在当前 Context 发送初始任务", true);
   const loopId = crypto.randomUUID().replaceAll("-", "");
   const detail = state.details.get(task.task_id) || {};
   const saved = detail.ui_state?._main_run_equipment || detail.ui_state || {};
@@ -856,6 +865,7 @@ async function startAgentLoop(form) {
     loop_id: loopId,
     workspace_id: task.workspace_id,
     initial_context_id: task.task_id,
+    initial_run_id: initialRunId,
     holder_id: `patrol:${loopId}`,
     goal: String(values.get("goal") || "").trim(),
     task_contract: String(values.get("taskContract") || "").trim(),
@@ -864,7 +874,7 @@ async function startAgentLoop(form) {
     context_scope: [task.task_id],
     permission_scope: permissions,
     delegable_gates: [],
-    budgets: { max_rounds: Number(values.get("maxRounds")), max_model_calls: Number(values.get("maxModelCalls") || 200), max_lanes: Number(values.get("maxLanes")), max_contexts: Number(values.get("maxContexts") || 16), max_providers: Number(values.get("maxProviders") || 4), max_concurrent_runs: Number(values.get("maxConcurrentRuns")) },
+    budgets: loopBudgetPayload(values),
     equipment: { model_name: saved.model_name || null, patrol_model_name: saved.model_name || null, permissions, skills: Array.isArray(saved.skills) ? saved.skills : [], access_mode: saved.access_mode || null },
   };
   state.loop.loading = true;
@@ -882,6 +892,58 @@ async function startAgentLoop(form) {
   } finally {
     state.loop.loading = false;
   }
+}
+
+function loopBudgetPayload(values) {
+  return {
+    max_rounds: Number(values.get("maxRounds")),
+    max_duration_seconds: Number(values.get("maxDurationSeconds")),
+    max_model_calls: Number(values.get("maxModelCalls")),
+    max_input_tokens: Number(values.get("maxInputTokens")),
+    max_output_tokens: Number(values.get("maxOutputTokens")),
+    max_retries: Number(values.get("maxRetries")),
+    max_lanes: Number(values.get("maxLanes")),
+    max_contexts: Number(values.get("maxContexts")),
+    max_providers: Number(values.get("maxProviders")),
+    max_new_lanes_per_round: Number(values.get("maxNewLanesPerRound")),
+    max_concurrent_runs: Number(values.get("maxConcurrentRuns")),
+    max_no_progress: Number(values.get("maxNoProgress")),
+  };
+}
+
+function loopListValue(values, name) {
+  return String(values.get(name) || "").split(",").map(value => value.trim()).filter(Boolean);
+}
+
+async function mutateAgentLoopGrant(body) {
+  const loopId = state.loop.loopId;
+  if (!loopId || !loopApi) return;
+  loopStore.beginControl(body.command);
+  renderLoop();
+  try {
+    const snapshot = await loopApi.mutateGrant(loopId, body);
+    loopStore.reconcile(snapshot);
+    loopStore.reconcileRelated(await loopApi.related(snapshot));
+  } catch (error) {
+    loopStore.fail(error);
+  }
+  renderLoop();
+}
+
+function narrowAgentLoopGrant(form) {
+  const values = new FormData(form);
+  return mutateAgentLoopGrant({
+    command: "narrow",
+    capabilities: loopListValue(values, "capabilities"),
+    context_scope: loopListValue(values, "contextScope"),
+    permission_scope: loopListValue(values, "permissionScope"),
+    delegable_gates: loopListValue(values, "delegableGates"),
+    expires_at: String(values.get("expiresAt") || "").trim() || null,
+  });
+}
+
+function adjustAgentLoopBudgets(form) {
+  return mutateAgentLoopGrant({ command: "adjust_budgets", budgets: loopBudgetPayload(new FormData(form)) });
 }
 
 async function controlLoop(command) {
@@ -5943,6 +6005,7 @@ async function handleDocumentClick(event) {
   if (action === "show-agents") return openInspector("agents", button);
   if (action === "show-loop") return openLoopView();
   if (action === "loop-control") return controlLoop(button.dataset.loopControl);
+  if (action === "loop-revoke-grant") return mutateAgentLoopGrant({ command: "revoke" });
   if (action === "open-loop-revision") return openLoopRevision(button.dataset.openRevision);
   if (action === "close-loop-revision") { state.loop.revisionSnapshot = null; return renderLoop(); }
   if (action === "open-inspector-tab") return openInspector(button.dataset.inspectorTab, button);
@@ -6649,6 +6712,16 @@ document.addEventListener("submit", event => {
   if (event.target.id === "agentLoopOverrideForm") {
     event.preventDefault();
     runUiAction(() => overrideAgentLoop(event.target));
+    return;
+  }
+  if (event.target.id === "agentLoopGrantForm") {
+    event.preventDefault();
+    runUiAction(() => narrowAgentLoopGrant(event.target));
+    return;
+  }
+  if (event.target.id === "agentLoopBudgetForm") {
+    event.preventDefault();
+    runUiAction(() => adjustAgentLoopBudgets(event.target));
     return;
   }
   if (event.target.id !== "agentInspectorContinueForm") return;

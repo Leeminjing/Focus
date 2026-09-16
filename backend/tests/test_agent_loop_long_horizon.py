@@ -46,7 +46,7 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRepository,
     ContextRevisionSourceContract,
 )
-from backend.app.desktop.models import DesktopThread, DesktopWorkspace
+from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
 
 
@@ -120,6 +120,7 @@ def test_long_horizon_trace_is_replayable_and_preserves_unadopted_synthesis(
                         ),
                     )
                     await repository.switch_current(session, ref, None)
+                session.add(DesktopRun(run_id=f"initial-{suffix}", task_id=root_id, agent_id=f"main:{root_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{root_id}", context_revision_id=refs[root_id].revision_id, settled_at=datetime.now(UTC)))
 
             service = AgentLoopService(sessions)
             started = await service.start(
@@ -127,6 +128,7 @@ def test_long_horizon_trace_is_replayable_and_preserves_unadopted_synthesis(
                     loop_id=loop_id,
                     workspace_id=workspace_id,
                     initial_context_id=root_id,
+                    initial_run_id=f"initial-{suffix}",
                     holder_id=f"patrol-{suffix}",
                     goal="Deliver the scoped change safely",
                     task_contract="Correct drift, investigate repeated failures, and pass tests",

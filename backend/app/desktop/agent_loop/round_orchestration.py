@@ -13,13 +13,14 @@ import json
 from typing import Any
 import uuid
 
+from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
-from backend.app.desktop.agent_loop.budgets import configured_provider_count
+from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count
 from backend.app.desktop.agent_loop.kernel import KernelCommitResult, LoopKernel
 from backend.app.desktop.agent_loop.models import (
     AgentLoop,
@@ -36,11 +37,13 @@ from backend.app.desktop.agent_loop.models import (
 from backend.app.desktop.agent_loop.observation import LoopObservationBuilder, observation_hash
 from backend.app.desktop.agent_loop.patrol import PortfolioPatrol
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope, PatrolAction, PatrolDecisionIntent
+from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.context_evolution import ContextRevisionReader, ContextRevisionRepository
 from backend.app.desktop.models import DesktopRun, DesktopThread
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
 from focus.config.app_config import AppConfig
 from focus.models.factory import create_chat_model
+from focus.runtime.runs.usage import ModelUsage, callback_usage
 
 
 PATROL_SYSTEM_CONTRACT = """你是 Focus Portfolio Patrol，是用户当前 Agent Loop 的唯一可撤销委托权力持有者。
@@ -241,6 +244,7 @@ class StructuredPatrolDecisionModel:
         self._model_name = model_name
         self._reader = reader
         self.call_count = 0
+        self.usage = ModelUsage()
         self._remaining_calls = 1
 
     async def __call__(self, observation: LoopObservationEnvelope) -> PatrolDecisionIntent:
@@ -306,19 +310,28 @@ class StructuredPatrolDecisionModel:
         if self.call_count >= self._remaining_calls:
             raise RuntimeError("Patrol model-call budget 已耗尽")
         self.call_count += 1
-        if method == "prompt_json":
-            schema_text = json.dumps(schema.model_json_schema(), ensure_ascii=False, separators=(",", ":"))
-            response = await model.ainvoke([*messages, HumanMessage(content=f"只返回符合此 JSON Schema 的 JSON：{schema_text}")])
-            content = getattr(response, "content", response)
-            text = content if isinstance(content, str) else "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
-            candidate = text.strip()
-            if candidate.startswith("```"):
-                lines = candidate.splitlines()
-                candidate = "\n".join(lines[1:-1]).strip()
-            return schema.model_validate(json.loads(candidate))
-        runnable = model.with_structured_output(schema, method=method)
-        raw = await runnable.ainvoke(messages)
-        return raw if isinstance(raw, schema) else schema.model_validate(raw)
+        callback = UsageMetadataCallbackHandler()
+        try:
+            invoke_config = {"callbacks": [callback]}
+            if method == "prompt_json":
+                schema_text = json.dumps(schema.model_json_schema(), ensure_ascii=False, separators=(",", ":"))
+                response = await model.ainvoke(
+                    [*messages, HumanMessage(content=f"只返回符合此 JSON Schema 的 JSON：{schema_text}")],
+                    config=invoke_config,
+                )
+                content = getattr(response, "content", response)
+                text = content if isinstance(content, str) else "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
+                candidate = text.strip()
+                if candidate.startswith("```"):
+                    lines = candidate.splitlines()
+                    candidate = "\n".join(lines[1:-1]).strip()
+                return schema.model_validate(json.loads(candidate))
+            runnable = model.with_structured_output(schema, method=method)
+            raw = await runnable.ainvoke(messages, config=invoke_config)
+            return raw if isinstance(raw, schema) else schema.model_validate(raw)
+        finally:
+            measured = callback_usage(callback)
+            self.usage += measured if measured.model_calls else ModelUsage(model_calls=1)
 
 class LoopRoundOrchestrator:
     def __init__(self, sessions: async_sessionmaker[AsyncSession], app_config: AppConfig, kernel: LoopKernel, checkpointer) -> None:
@@ -345,6 +358,15 @@ class LoopRoundOrchestrator:
         if publishing_intent is not None:
             return await self._kernel.commit(publishing_intent)
         observation = await self._observations.capture(claim.loop_id, claim.round_id)
+        budget = LoopBudgetGuard().evaluate(
+            observation.budget.get("usage") or {},
+            observation.budget.get("limits") or {},
+            "patrol_decision",
+            {"model_calls": 1},
+        )
+        if budget.status == "exhausted":
+            await self._budget_exhausted(claim, budget.reasons)
+            return None
         decision_model = StructuredPatrolDecisionModel(
             self._app_config,
             model_name,
@@ -354,21 +376,32 @@ class LoopRoundOrchestrator:
         try:
             intent = await patrol.decide(observation, holder_id)
         except Exception as exc:
-            await self._count_model_call(claim.loop_id, max(1, decision_model.call_count))
+            await self._record_usage(claim.loop_id, decision_model.usage)
             await self._fail(claim, exc)
             raise
-        await self._count_model_call(claim.loop_id, decision_model.call_count)
+        await self._record_usage(claim.loop_id, decision_model.usage)
         try:
             return await self._kernel.commit(intent)
         except Exception as exc:
             await self._fail(claim, exc)
             raise
 
-    async def _count_model_call(self, loop_id: str, count: int = 1) -> None:
+    async def _record_usage(self, loop_id: str, usage: ModelUsage) -> None:
+        await LoopUsageLedger(self._sessions).record(
+            loop_id,
+            LoopUsageDelta.from_model_usage(usage),
+        )
+
+    async def _budget_exhausted(self, claim: CoordinatorClaim, reasons: tuple[str, ...]) -> None:
         async with self._sessions.begin() as session:
-            usage = await session.get(LoopBudgetUsage, loop_id, with_for_update=True)
-            if usage is not None:
-                usage.model_calls += count
+            round_row = await session.get(LoopRound, claim.round_id, with_for_update=True)
+            loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True)
+            if round_row is not None and round_row.status == "observed":
+                round_row.status = "error"
+            if loop is not None and loop.status == "running":
+                loop.status = "waiting_user"
+                loop.health = "degraded"
+                loop.waiting_reason = "Loop hard budget 已耗尽: " + ", ".join(reasons)
 
     async def _fail(self, claim: CoordinatorClaim, exc: Exception) -> None:
         async with self._sessions.begin() as session:

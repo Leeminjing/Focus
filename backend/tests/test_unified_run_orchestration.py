@@ -217,7 +217,9 @@ def test_finalization_is_atomic_idempotent_and_restart_consumer_drains() -> None
             thread_id=ref.execution_thread_id,
             status=RunStatus.success,
             on_disconnect=DisconnectMode.cancel,
+            model_call_count=3,
             prompt_input_tokens=91,
+            prompt_output_tokens=23,
             prompt_cache_hit_tokens=17,
         )
         failing = RunLifecycleFinalizer(
@@ -273,7 +275,9 @@ def test_finalization_is_atomic_idempotent_and_restart_consumer_drains() -> None
                 receipts = list((await session.scalars(select(RunOutboxDelivery))).all())
                 assert persisted.status == "success"
                 assert persisted.final_checkpoint_id == "final-checkpoint"
+                assert persisted.model_call_count == 3
                 assert persisted.prompt_input_tokens == 91
+                assert persisted.prompt_output_tokens == 23
                 assert persisted.workspace_result["coordinator_wakes"] == 1
                 assert current.ref.checkpoint_id == "final-checkpoint"
                 assert current.ref.checkpoint_ns == "context-revision-shadow"

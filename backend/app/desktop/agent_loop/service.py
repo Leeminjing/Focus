@@ -1,8 +1,8 @@
 r"""本文件对外提供 AgentLoopService 创建、查询、控制、用户覆盖与事件读取用例。
 
 输入为认证后的 LoopCreateRequest、Loop id、控制动作或直接用户新目标；输出为完整 Loop 快照与
-持久事件。具体工作流为 start 原子创建 goal/grant/holder/membership/budget/首轮，pause/resume/stop
-推进 revision，stop 撤销未派发指令并中断活动 Run，override 使未提交 Patrol 工作 superseded 并建立
+持久事件。具体工作流为 start 原子绑定初始用户 Run 并创建 goal/grant/holder/membership/budget/首轮，pause/resume/stop
+推进 revision，失败轮恢复时新建观察轮并累计 retry；stop 撤销未派发指令并中断活动 Run，override 使未提交 Patrol 工作 superseded 并建立
 新观察轮。示例：`await service.start(body)`。
 """
 
@@ -20,12 +20,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopContextMembership, LoopDecision, LoopDelegationGrant, LoopDirective, LoopEventOutbox, LoopGoalRevision, LoopRound
 from backend.app.desktop.agent_loop.schemas import LoopCreateRequest
+from backend.app.desktop.agent_loop.rounds import create_observation_round
 from backend.app.desktop.context_curation.models import CurationLane, CurationProgram, CurationSourceSubscription, PortfolioLaneCandidate, PortfolioRevision
 from backend.app.desktop.context_evolution.models import ContextRevision
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
 from backend.app.desktop.workspace_coordination.fingerprints import WorkspaceFingerprinter
 from backend.app.desktop.workspace_coordination.models import WorkspaceLease, WorkspaceSlot
 from backend.app.desktop.agent_loop.budgets import configured_provider_count
+from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 
 
 class AgentLoopService:
@@ -49,6 +51,7 @@ class AgentLoopService:
             context_revision = await session.get(ContextRevision, context.current_revision_id)
             if context_revision is None:
                 raise HTTPException(409, "初始 Context revision 不存在")
+            initial_run = await self._initial_run(session, request)
             program_id = uuid.uuid4().hex
             lane_id = uuid.uuid4().hex
             portfolio_id = uuid.uuid4().hex
@@ -90,9 +93,27 @@ class AgentLoopService:
                     revision=1,
                 )
                 session.add(slot)
-            round_row = LoopRound(round_id=uuid.uuid4().hex, loop_id=loop.loop_id, number=1, authority_revision=1, goal_revision=1, frontier_hash=frontier_hash, workspace_revision=slot.revision)
-            loop.current_round_id = round_row.round_id
-            session.add_all([goal, grant, candidate, membership, round_row, LoopBudgetUsage(loop_id=loop.loop_id), LoopEventOutbox(event_id=uuid.uuid4().hex, loop_id=loop.loop_id, sequence=1, event_type="LoopStarted", payload={"round_id": round_row.round_id, "program_id": program_id, "portfolio_revision_id": portfolio_id}, idempotency_key=f"loop:{loop.loop_id}:started")])
+            active_initial_run = initial_run.status in {"pending", "running"}
+            round_row = LoopRound(round_id=uuid.uuid4().hex, loop_id=loop.loop_id, number=1, status="running" if active_initial_run else "settled", authority_revision=1, goal_revision=1, frontier_hash=frontier_hash, workspace_revision=slot.revision, settled_at=None if active_initial_run else datetime.now(UTC))
+            initial_run.loop_id = loop.loop_id
+            initial_run.round_id = round_row.round_id
+            usage = LoopBudgetUsage(
+                loop_id=loop.loop_id,
+                rounds=0 if active_initial_run else 1,
+                model_calls=0 if active_initial_run else int(initial_run.model_call_count or 0),
+                input_tokens=0 if active_initial_run else int(initial_run.prompt_input_tokens or 0),
+                output_tokens=0 if active_initial_run else int(initial_run.prompt_output_tokens or 0),
+            )
+            current_round = round_row
+            if active_initial_run:
+                loop.health = "waiting_runs"
+            else:
+                current_round = LoopRound(round_id=uuid.uuid4().hex, loop_id=loop.loop_id, number=2, authority_revision=1, goal_revision=1, frontier_hash=frontier_hash, workspace_revision=slot.revision)
+            loop.current_round_id = current_round.round_id
+            rows = [goal, grant, candidate, membership, round_row, usage, LoopEventOutbox(event_id=uuid.uuid4().hex, loop_id=loop.loop_id, sequence=1, event_type="LoopStarted", payload={"round_id": round_row.round_id, "current_round_id": current_round.round_id, "initial_run_id": initial_run.run_id, "program_id": program_id, "portfolio_revision_id": portfolio_id}, idempotency_key=f"loop:{loop.loop_id}:started")]
+            if current_round is not round_row:
+                rows.append(current_round)
+            session.add_all(rows)
             await session.flush()
             return await self._snapshot(session, loop)
 
@@ -125,8 +146,10 @@ class AgentLoopService:
                 return None
             current_goal = await session.scalar(select(LoopGoalRevision).where(LoopGoalRevision.loop_id == loop.loop_id, LoopGoalRevision.revision == loop.goal_revision))
             current_grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.loop_id == loop.loop_id, LoopDelegationGrant.status == "active").with_for_update())
-            if current_goal is None or current_grant is None:
-                raise HTTPException(409, "Agent Loop 缺少当前 goal 或 grant")
+            if current_grant is None:
+                return None
+            if current_goal is None:
+                raise HTTPException(409, "Agent Loop 缺少当前 goal")
             loop.revision += 1
             loop.goal_revision += 1
             loop.authority_revision += 1
@@ -180,6 +203,24 @@ class AgentLoopService:
             allowed, target = transitions[command]
             if loop.status not in allowed:
                 raise HTTPException(409, f"Loop 状态 {loop.status} 不允许 {command}")
+            if command == "resume":
+                grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.loop_id == loop_id, LoopDelegationGrant.status == "active"))
+                if grant is None:
+                    raise HTTPException(409, "Patrol delegation 已撤销，不能恢复无人值守 Loop")
+                current = await session.get(LoopRound, loop.current_round_id, with_for_update=True) if loop.current_round_id else None
+                if current is None or current.status in {"settled", "superseded", "error"}:
+                    resumed = await create_observation_round(
+                        session,
+                        loop,
+                        current,
+                        self._hash({"initial_context_id": loop.initial_context_id}),
+                    )
+                    session.add(resumed)
+                    loop.current_round_id = resumed.round_id
+                    if current is not None and current.status == "error":
+                        usage = await session.get(LoopBudgetUsage, loop.loop_id, with_for_update=True)
+                        if usage is not None:
+                            LoopUsageLedger.apply(usage, LoopUsageDelta(retries=1))
             loop.status = target
             loop.health = "idle" if target != "running" else "observing"
             loop.revision += 1
@@ -275,9 +316,46 @@ class AgentLoopService:
             rows = list((await session.scalars(select(LoopEventOutbox).where(LoopEventOutbox.loop_id == loop_id, LoopEventOutbox.sequence > after).order_by(LoopEventOutbox.sequence).limit(limit))).all())
             return [{"event_id": row.event_id, "cursor": row.sequence, "type": row.event_type, "payload": row.payload, "created_at": row.created_at.isoformat()} for row in rows]
 
+    @staticmethod
+    async def _initial_run(session: AsyncSession, request: LoopCreateRequest) -> DesktopRun:
+        run = await session.get(DesktopRun, request.initial_run_id, with_for_update=True)
+        if run is None:
+            raise HTTPException(422, "初始用户 Run 不存在")
+        if (
+            run.task_id != request.initial_context_id
+            or run.agent_id != f"main:{request.initial_context_id}"
+            or run.kind != "main"
+            or run.origin != "direct_user"
+        ):
+            raise HTTPException(422, "初始 Run 必须是当前 Context 的直接用户 Main Run")
+        latest_run_id = await session.scalar(
+            select(DesktopRun.run_id)
+            .where(
+                DesktopRun.task_id == request.initial_context_id,
+                DesktopRun.agent_id == f"main:{request.initial_context_id}",
+                DesktopRun.kind == "main",
+                DesktopRun.origin == "direct_user",
+            )
+            .order_by(DesktopRun.created_at.desc(), DesktopRun.run_id.desc())
+            .limit(1)
+        )
+        if latest_run_id != run.run_id:
+            raise HTTPException(409, "初始 Run 必须是当前 Context 最新的直接用户 Main Run")
+        if run.loop_id is not None:
+            raise HTTPException(409, "初始 Run 已属于另一个 Agent Loop")
+        if run.status not in {"pending", "running", "success", "error", "interrupted"}:
+            raise HTTPException(409, f"初始 Run 状态 {run.status} 不可绑定")
+        return run
+
     async def _snapshot(self, session, loop: AgentLoop) -> dict:
         goal = await session.scalar(select(LoopGoalRevision).where(LoopGoalRevision.loop_id == loop.loop_id, LoopGoalRevision.revision == loop.goal_revision))
-        grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.loop_id == loop.loop_id, LoopDelegationGrant.revision == loop.authority_revision))
+        grant = await session.scalar(
+            select(LoopDelegationGrant).where(
+                LoopDelegationGrant.loop_id == loop.loop_id,
+                LoopDelegationGrant.revision == loop.authority_revision,
+                LoopDelegationGrant.status == "active",
+            )
+        )
         usage = await session.get(LoopBudgetUsage, loop.loop_id)
         context_count = int(
             await session.scalar(
@@ -288,7 +366,9 @@ class AgentLoopService:
             )
             or 0
         )
-        return {"loop_id": loop.loop_id, "workspace_id": loop.workspace_id, "initial_context_id": loop.initial_context_id, "program_id": loop.program_id, "status": loop.status, "health": loop.health, "revision": loop.revision, "goal_revision": loop.goal_revision, "authority_revision": loop.authority_revision, "holder_id": loop.holder_id, "current_round_id": loop.current_round_id, "current_portfolio_revision_id": loop.current_portfolio_revision_id, "waiting_reason": loop.waiting_reason, "equipment": loop.equipment, "goal": None if goal is None else {"goal": goal.goal, "task_contract": goal.task_contract, "acceptance_criteria": goal.acceptance_criteria}, "grant": None if grant is None else {"grant_id": grant.grant_id, "status": grant.status, "capabilities": grant.capabilities, "context_scope": grant.context_scope, "permission_scope": grant.permission_scope, "budgets": grant.budgets}, "usage": None if usage is None else {"rounds": usage.rounds, "model_calls": usage.model_calls, "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens, "retries": usage.retries, "lanes": usage.lanes, "contexts": context_count, "providers": configured_provider_count(loop.equipment or {}), "no_progress_count": usage.no_progress_count}, "final_result": loop.final_result}
+        created_at = loop.created_at if loop.created_at.tzinfo else loop.created_at.replace(tzinfo=UTC)
+        duration_seconds = max(0, int((datetime.now(UTC) - created_at).total_seconds()))
+        return {"loop_id": loop.loop_id, "workspace_id": loop.workspace_id, "initial_context_id": loop.initial_context_id, "program_id": loop.program_id, "status": loop.status, "health": loop.health, "revision": loop.revision, "goal_revision": loop.goal_revision, "authority_revision": loop.authority_revision, "holder_id": loop.holder_id, "current_round_id": loop.current_round_id, "current_portfolio_revision_id": loop.current_portfolio_revision_id, "waiting_reason": loop.waiting_reason, "equipment": loop.equipment, "goal": None if goal is None else {"goal": goal.goal, "task_contract": goal.task_contract, "acceptance_criteria": goal.acceptance_criteria}, "grant": None if grant is None else {"grant_id": grant.grant_id, "status": grant.status, "capabilities": grant.capabilities, "context_scope": grant.context_scope, "permission_scope": grant.permission_scope, "budgets": grant.budgets, "delegable_gates": grant.delegable_gates, "expires_at": grant.expires_at.isoformat() if grant.expires_at else None}, "usage": None if usage is None else {"rounds": usage.rounds, "duration_seconds": duration_seconds, "model_calls": usage.model_calls, "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens, "retries": usage.retries, "lanes": usage.lanes, "contexts": context_count, "providers": configured_provider_count(loop.equipment or {}), "no_progress_count": usage.no_progress_count}, "final_result": loop.final_result}
 
     @staticmethod
     async def _revoke(session, loop) -> None:

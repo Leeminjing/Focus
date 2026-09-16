@@ -266,7 +266,9 @@ class DesktopRun(Base):
     idempotency_key: Mapped[str | None] = mapped_column(String(160), nullable=True)
     input_messages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
     model_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    model_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     prompt_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    prompt_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     prompt_cache_hit_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     final_checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     workspace_result: Mapped[dict[str, Any]] = mapped_column(

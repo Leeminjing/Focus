@@ -6,6 +6,7 @@ Patrol judges、optional Workers return、Kernel commits。示例：`from ...age
 """
 
 from backend.app.desktop.agent_loop.authority import AuthorityViolation, DelegatedAuthorityGuard
+from backend.app.desktop.agent_loop.authority_control import LoopAuthorityService
 from backend.app.desktop.agent_loop.completion import CompletionEvidenceService, CompletionGuard, CompletionGuardResult, CompletionVerifierPort
 from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim, LoopCoordinator, LoopCoordinatorRuntime
 from backend.app.desktop.agent_loop.kernel import KernelCommitResult, KernelRejected, LoopKernel
@@ -24,7 +25,7 @@ from backend.app.desktop.agent_loop.schemas import CompletionVerificationContrac
 from backend.app.desktop.agent_loop.service import AgentLoopService
 
 __all__ = [
-    "AgentLoopService", "AuthorityViolation", "CompletionEvidenceService", "CompletionGuard", "CompletionGuardResult",
+    "AgentLoopService", "LoopAuthorityService", "AuthorityViolation", "CompletionEvidenceService", "CompletionGuard", "CompletionGuardResult",
     "CompletionVerificationContract", "CompletionVerifierPort", "CoordinatorClaim", "CriterionVerification",
     "DelegatedAuthorityGuard", "DelegatedDirectiveFactory", "KernelCommitResult", "KernelRejected",
     "DesktopDirectiveLaunchPort", "DirectiveLaunchPort", "LoopRunWorkspaceBinder", "LoopBudgetContract", "LoopCoordinator", "LoopCoordinatorRuntime", "LoopCreateRequest", "LoopKernel", "LoopObservationBuilder",

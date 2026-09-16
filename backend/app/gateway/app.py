@@ -97,10 +97,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_manager=app.state.run_manager,
         )
         app.state.desktop_service = service
-        from backend.app.desktop.agent_loop import AgentLoopService, CompletionEvidenceService, DesktopDirectiveLaunchPort, LoopCoordinator, LoopCoordinatorRuntime, LoopKernel, LoopPortfolioPublicationService, LoopRoundOrchestrator, LoopRunWorkspaceBinder, LoopWaveDispatcher, LoopWorkerRuntime, LoopWorkspaceAdoptionService, PendingDecisionProjector
+        from backend.app.desktop.agent_loop import AgentLoopRecovery, AgentLoopService, CompletionEvidenceService, DesktopDirectiveLaunchPort, LoopAuthorityService, LoopCoordinator, LoopCoordinatorRuntime, LoopKernel, LoopPortfolioPublicationService, LoopRoundOrchestrator, LoopRunWorkspaceBinder, LoopWaveDispatcher, LoopWorkerRuntime, LoopWorkspaceAdoptionService, PendingDecisionProjector
         from backend.app.desktop.run_orchestration import RunOutboxConsumer
 
         app.state.agent_loop_service = AgentLoopService(sessions, app.state.run_manager)
+        app.state.agent_loop_authority = LoopAuthorityService(sessions, app.state.run_manager)
         app.state.agent_loop_workspace = LoopRunWorkspaceBinder(sessions)
         app.state.agent_loop_gates = PendingDecisionProjector(sessions)
         service.pending_decision_projector = app.state.agent_loop_gates
@@ -112,15 +113,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             app.state.agent_loop_adoption,
         )
         app.state.agent_loop_coordinator = LoopCoordinator(sessions)
+        app.state.agent_loop_run_events = RunOutboxConsumer(sessions)
+        app.state.agent_loop_recovery = AgentLoopRecovery(
+            sessions,
+            app.state.agent_loop_coordinator,
+            app.state.agent_loop_run_events,
+        )
         app.state.agent_loop_runtime = LoopCoordinatorRuntime(
             app.state.agent_loop_coordinator,
-            RunOutboxConsumer(sessions),
+            app.state.agent_loop_run_events,
             LoopWaveDispatcher(
                 sessions,
                 DesktopDirectiveLaunchPort(sessions, service),
             ),
             LoopRoundOrchestrator(sessions, app_config, app.state.agent_loop_kernel, app.state.checkpointer),
             LoopWorkerRuntime(sessions, app_config),
+            app.state.agent_loop_recovery,
         )
         app.state.agent_loop_completion = CompletionEvidenceService(sessions)
         app.state.session_key = os.getenv("FOCUS_DESKTOP_SESSION", "focus-dev-session")

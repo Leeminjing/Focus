@@ -4,8 +4,8 @@
 输入为 session factory、LangGraph checkpointer、AppConfig 和 Context 请求模型；输出为 API 可序列化
 的 current/historical revision、Evolution Graph、display messages 与生命周期结果。具体工作流为把
 手工派生和审批交给 ContextEvolutionService，把一对一 Curator 先映射成单 Lane Curation Program，
-再经 SingleLanePortfolioPublisher 原子发布；已有受管 Context 的真实运行后缀会从旧 revision 提取并
-接到新 authored/execution 前缀之后。删除时由 retention planner 保留仍被后代引用的最小 tombstone，
+再经 SingleLanePortfolioPublisher 原子发布，发布游标与发起它的 Patrol attempt 在同一事务完成；已有
+受管 Context 的真实运行后缀会从旧 revision 提取并接到新 authored/execution 前缀之后。删除时由 retention planner 保留仍被后代引用的最小 tombstone，
 本服务不再读写 identity-level definition/source 权威表。示例：`context = await service.derive(body)`。
 """
 
@@ -50,6 +50,7 @@ from backend.app.desktop.models import (
     DesktopThread,
     DesktopWorkspace,
     PatrolAgent,
+    PatrolContextAttempt,
     PatrolContextBinding,
     PatrolContextRevision,
     PatrolDraft,
@@ -257,6 +258,7 @@ class ContextService:
         dispositions: list[dict[str, Any]],
         *,
         outcome: Literal["replace", "no_change"] = "replace",
+        attempt_id: str | None = None,
     ) -> str:
         if outcome == "no_change" and messages:
             raise ValueError("no_change 不得携带 authored messages")
@@ -288,6 +290,7 @@ class ContextService:
             dispositions,
             published.context_revision.checkpoint_id,
             outcome,
+            attempt_id,
         )
 
     async def _prepare_managed_portfolio_publication(
@@ -356,6 +359,7 @@ class ContextService:
         dispositions: list[dict[str, Any]],
         checkpoint_id: str | None,
         outcome: Literal["replace", "no_change"],
+        attempt_id: str | None,
     ) -> str:
         async with self.session_factory.begin() as session:
             revision = await session.get(PatrolContextRevision, revision_id)
@@ -398,6 +402,21 @@ class ContextService:
             revision.error = None
             revision.completed_at = datetime.now(timezone.utc)
             revision.published_at = datetime.now(timezone.utc)
+            if attempt_id is not None:
+                attempt = await session.scalar(
+                    select(PatrolContextAttempt)
+                    .where(
+                        PatrolContextAttempt.attempt_id == attempt_id,
+                        PatrolContextAttempt.revision_id == revision_id,
+                    )
+                    .with_for_update()
+                )
+                if attempt is None:
+                    raise HTTPException(409, "策展发布缺少对应 Patrol attempt")
+                attempt.status = "success"
+                attempt.error_kind = None
+                attempt.error = None
+                attempt.completed_at = datetime.now(timezone.utc)
         return "published" if outcome == "replace" else "unchanged"
 
     async def _supersede_managed_revision(self, revision_id: str) -> str:

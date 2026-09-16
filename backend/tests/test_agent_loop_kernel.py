@@ -21,7 +21,7 @@ import backend.app.desktop.persistence_registry
 from backend.app.desktop.agent_loop import AgentLoopService, CompletionEvidenceService, CompletionGuard, CompletionVerificationContract, CriterionVerification, DelegatedDirectiveFactory, LoopCreateRequest, LoopKernel, PatrolDecisionIntent, PendingDecisionProjector
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective, LoopRound, LoopWorkerRequest, MessageProvenance
 from backend.app.desktop.context_evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
-from backend.app.desktop.models import DesktopThread, DesktopWorkspace
+from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
 
 
@@ -53,8 +53,9 @@ def test_zero_worker_delegated_directive_and_user_override(tmp_path) -> None:
                 ref = ContextRevisionRef(context_id=context_id, revision_id=revision_id, generation=1, execution_thread_id=f"thread-{suffix}", checkpoint_ns="", checkpoint_id="checkpoint-1", payload_mode=ContextRevisionPayloadMode.CHECKPOINT)
                 await ContextRevisionRepository().insert(session, ContextRevisionContract(ref=ref, content_hash="a" * 64, projection_status=ContextRevisionProjectionStatus.VALID, origin_kind=ContextRevisionOriginKind.ROOT, created_at=datetime.now(UTC)))
                 await ContextRevisionRepository().switch_current(session, ref, None)
+                session.add(DesktopRun(run_id=f"initial-{suffix}", task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, settled_at=datetime.now(UTC)))
             service = AgentLoopService(sessions)
-            snapshot = await service.start(LoopCreateRequest(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, holder_id="patrol-1", goal="Implement the feature", task_contract="Stay in scope and pass tests", acceptance_criteria=({"criterion_id": "tests", "text": "tests pass"},), capabilities=("continue_context", "request_completion_verifier", "request_completion", "wait_for_user", "stop_loop"), context_scope=(context_id,), permission_scope=("read", "write"), delegable_gates=("compression",)))
+            snapshot = await service.start(LoopCreateRequest(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id="patrol-1", goal="Implement the feature", task_contract="Stay in scope and pass tests", acceptance_criteria=({"criterion_id": "tests", "text": "tests pass"},), capabilities=("continue_context", "request_completion_verifier", "request_completion", "wait_for_user", "stop_loop"), context_scope=(context_id,), permission_scope=("read", "write"), delegable_gates=("compression",)))
             compression = await PendingDecisionProjector(sessions).project(loop_id, {"type": "compression", "checkpoint_id": "checkpoint-1"})
             assert compression.delegable is True
             assert (await service.get(loop_id))["status"] == "running"
@@ -125,8 +126,9 @@ def test_independent_verifier_is_required_before_completion_and_final_result_is_
                 repository = ContextRevisionRepository()
                 await repository.insert(session, ContextRevisionContract(ref=ref, content_hash="b" * 64, projection_status=ContextRevisionProjectionStatus.VALID, origin_kind=ContextRevisionOriginKind.ROOT, created_at=datetime.now(UTC)))
                 await repository.switch_current(session, ref, None)
+                session.add(DesktopRun(run_id=f"initial-{suffix}", task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, settled_at=datetime.now(UTC)))
             service = AgentLoopService(sessions)
-            snapshot = await service.start(LoopCreateRequest(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, holder_id="patrol-complete", goal="Finish safely", task_contract="Tests must pass", acceptance_criteria=({"criterion_id": "tests", "text": "tests pass", "required": True},), capabilities=("request_completion_verifier", "request_completion"), context_scope=(context_id,), permission_scope=("read",)))
+            snapshot = await service.start(LoopCreateRequest(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id="patrol-complete", goal="Finish safely", task_contract="Tests must pass", acceptance_criteria=({"criterion_id": "tests", "text": "tests pass", "required": True},), capabilities=("request_completion_verifier", "request_completion"), context_scope=(context_id,), permission_scope=("read",)))
             async with sessions.begin() as session:
                 round_row = await session.get(LoopRound, snapshot["current_round_id"])
                 slot = await session.scalar(select(WorkspaceSlot).where(WorkspaceSlot.workspace_id == workspace_id, WorkspaceSlot.kind == "authoritative"))

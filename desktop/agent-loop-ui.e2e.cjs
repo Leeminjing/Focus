@@ -48,6 +48,7 @@ async function run() {
 
   const started = await win.webContents.executeJavaScript(`(async () => {
     state.activeTaskId = 'root';
+    await hydrateActive('root');
     await openLoopView();
     const form = document.querySelector('#agentLoopStartForm');
     form.elements.goal.value = '交付 Context-governed Agent Loop';
@@ -63,8 +64,8 @@ async function run() {
     for (let count = 0; count < 150 && !document.querySelector('.loop-dashboard')?.textContent.includes('继续实现'); count += 1) await new Promise(next => setTimeout(next, 20));
     return { body: window.__agentLoopTest.startBody, text: document.querySelector('.loop-dashboard')?.textContent || '', stored: localStorage.getItem('focus-agent-loop:root') };
   })()`);
-  if (!started.stored || started.body?.budgets?.max_contexts !== 24 || started.body?.budgets?.max_providers !== 5 || started.body?.budgets?.max_model_calls !== 300) throw new Error(`启动或预算契约失败: ${JSON.stringify(started)}`);
-  for (const text of ["round-12", "observing", "继续实现", "测试与故障分析", "架构审查", "需求偏航检查", "Patrol 依据授权生成", "暂停修改代码", "Contexts 5 / 24", "Providers 2 / 5"]) if (!started.text.includes(text)) throw new Error(`Loop 控制台缺少 ${text}`);
+  if (!started.stored || started.body?.initial_run_id !== "run-initial" || started.body?.budgets?.max_contexts !== 24 || started.body?.budgets?.max_providers !== 5 || started.body?.budgets?.max_model_calls !== 300) throw new Error(`启动或预算契约失败: ${JSON.stringify(started)}`);
+  for (const text of ["round-12", "observing", "继续实现", "测试与故障分析", "架构审查", "需求偏航检查", "Patrol 依据授权生成", "暂停修改代码", "Input 8192", "Output 2048", "Retries 2", "Contexts 5 / 24", "Providers 2 / 5", "撤销 Patrol 授权"]) if (!started.text.includes(text)) throw new Error(`Loop 控制台缺少 ${text}`);
 
   const resumed = await win.webContents.executeJavaScript(`(async () => {
     state.view = 'focus'; render();
@@ -73,6 +74,15 @@ async function run() {
     return { loopId: state.loop.loopId, cursor: loopStore.get().cursor, text: document.querySelector('.loop-dashboard')?.textContent || '' };
   })()`);
   if (!resumed.loopId || resumed.cursor !== 1 || !resumed.text.includes("已放弃探索")) throw new Error(`离开后恢复或事件重连失败: ${JSON.stringify(resumed)}`);
+
+  const adjusted = await win.webContents.executeJavaScript(`(async () => {
+    const form = document.querySelector('#agentLoopBudgetForm');
+    form.elements.maxOutputTokens.value = '700000';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    for (let count = 0; count < 150 && window.__agentLoopTest.grantMutations.length === 0; count += 1) await new Promise(next => setTimeout(next, 20));
+    return { mutations: window.__agentLoopTest.grantMutations, revision: loopStore.get().snapshot.authority_revision };
+  })()`);
+  if (adjusted.mutations[0]?.command !== "adjust_budgets" || adjusted.mutations[0]?.budgets?.max_output_tokens !== 700000 || adjusted.revision !== 2) throw new Error(`授权预算变更失败: ${JSON.stringify(adjusted)}`);
 
   const takeover = await win.webContents.executeJavaScript(`(async () => {
     window.__agentLoopTest.snapshot = { ...window.__agentLoopTest.snapshot, status: 'waiting_user', health: 'blocked', waiting_reason: '必须由用户决定是否接受冲突结果' };
@@ -85,7 +95,7 @@ async function run() {
     for (let count = 0; count < 150 && !document.querySelector('.loop-dashboard')?.textContent.includes('优先完成测试与发布'); count += 1) await new Promise(next => setTimeout(next, 20));
     return { overrides: window.__agentLoopTest.overrides, snapshot: loopStore.get().snapshot, text: document.querySelector('.loop-dashboard')?.textContent || '' };
   })()`);
-  if (takeover.overrides.length !== 1 || takeover.snapshot.goal_revision !== 2 || takeover.snapshot.authority_revision !== 2 || takeover.snapshot.status !== "running") throw new Error(`用户接管优先级失败: ${JSON.stringify(takeover)}`);
+  if (takeover.overrides.length !== 1 || takeover.snapshot.goal_revision !== 2 || takeover.snapshot.authority_revision !== 3 || takeover.snapshot.status !== "running") throw new Error(`用户接管优先级失败: ${JSON.stringify(takeover)}`);
 
   const completed = await win.webContents.executeJavaScript(`(() => {
     const final = { ...window.__agentLoopTest.snapshot, status: 'completed', health: 'idle', current_round_id: 'round-14', final_result: { final_path: [{ context_id: 'root', revision_id: 'root-r7' }], unadopted_lanes: [{ lane_id: 'abandoned', context_id: 'extra-1', reason: '未采用探索' }] } };

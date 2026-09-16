@@ -71,6 +71,7 @@ from focus.runtime.runs.events import (
 )
 from focus.runtime.runs.manager import RunManager, RunRecord
 from focus.runtime.runs.schemas import RunStatus
+from focus.runtime.runs.usage import StreamUsageAccumulator
 from focus.runtime.stream_bridge.base import StreamBridge
 from focus.runtime.stream_bridge.schemas import StreamEvent
 from focus.security.context import (
@@ -163,24 +164,6 @@ def _error_envelope_base(record: RunRecord, langgraph_context: dict | None) -> d
         "agent_id": record.run_id,
         "run_id": record.run_id,
     }
-
-
-def _accumulate_usage(record: RunRecord, mode: str, chunk: Any) -> None:
-    if mode != "messages":
-        return
-    try:
-        message, _metadata = chunk
-    except (TypeError, ValueError):
-        return
-    usage = getattr(message, "usage_metadata", None)
-    if not usage:
-        return
-    input_tokens = usage.get("input_tokens")
-    cache_read = (usage.get("input_token_details") or {}).get("cache_read")
-    if isinstance(input_tokens, int):
-        record.prompt_input_tokens += input_tokens
-    if isinstance(cache_read, int):
-        record.prompt_cache_hit_tokens += cache_read
 
 
 async def run_agent(
@@ -286,11 +269,12 @@ async def run_agent(
             stream_input = None
 
         # (4) agent.astream 主循环（统一列表模式 → (mode, chunk) 元组）
-        stream_modes_list = list(mapped_stream_modes) if isinstance(mapped_stream_modes, list) else [mapped_stream_modes]
+        requested_stream_modes = list(mapped_stream_modes) if isinstance(mapped_stream_modes, list) else [mapped_stream_modes]
         # 执行层恒强制追加 values 与 custom：准入门在所有角色与内联子执行上无条件生效，
         # 任何工具调用都可能产生中断，因此中断的可观测性不得依赖 commitment.enabled；
         # custom 承载承诺层各角色的消息轨迹
-        stream_modes_list = list(dict.fromkeys([*stream_modes_list, "values", "custom"]))
+        stream_modes_list = list(dict.fromkeys([*requested_stream_modes, "messages", "values", "custom"]))
+        usage = StreamUsageAccumulator()
         graph_interrupted = False
         async for mode, chunk in agent.astream(
             stream_input,
@@ -298,7 +282,12 @@ async def run_agent(
             context=langgraph_context,
             stream_mode=stream_modes_list,
         ):
-            _accumulate_usage(record, mode, chunk)
+            usage.observe(mode, chunk)
+            current_usage = usage.total()
+            record.model_call_count = current_usage.model_calls
+            record.prompt_input_tokens = current_usage.input_tokens
+            record.prompt_output_tokens = current_usage.output_tokens
+            record.prompt_cache_hit_tokens = current_usage.cache_read_input_tokens
             # (5) abort 中断检查
             if record.abort_event.is_set():
                 logger.info("run '%s' 收到 abort 信号，停止执行", record.run_id)
@@ -324,6 +313,8 @@ async def run_agent(
                 continue
 
             # 每个 chunk 经 events 模块转换为统一信封事件 publish 到 bridge
+            if mode not in requested_stream_modes and mode == "messages":
+                continue
             for chunk_event in chunk_to_events(mode, chunk, env_base):
                 bridge.publish(record.run_id, chunk_event)
 
