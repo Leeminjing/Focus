@@ -31,6 +31,20 @@ _test_database_url = _database_source_url.set(database=_test_database_name)
 os.environ["FOCUS_DATABASE_URL"] = _test_database_url.render_as_string(hide_password=False)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_default_model_override(monkeypatch):
+    """隔离宿主机/CI 的 `FOCUS_MODEL`。
+
+    它是默认模型的**最高优先级**来源（高于任何配置文件），而大量用例会构造自己的小型模型
+    目录（`main-model`、`deepseek-test` 之类）再断言「声明的默认生效」。宿主机一旦设置了它
+    ——这是文档允许、开发者常做的事——这些用例就会以一句让人摸不着头脑的
+    「FOCUS_MODEL 指向不存在的模型条目」集体失败，看起来像代码坏了。
+
+    因此统一在本层清空；确实需要它的用例自行 `monkeypatch.setenv("FOCUS_MODEL", ...)`。
+    """
+    monkeypatch.delenv("FOCUS_MODEL", raising=False)
+
+
 @pytest.fixture(scope="session")
 def isolated_postgres_database():
     """为 PostgreSQL 集成测试创建、迁移并最终销毁独立数据库。"""
