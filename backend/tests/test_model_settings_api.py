@@ -136,6 +136,31 @@ def test_settings_round_trip_applies_without_restart(desktop):
     assert "rotated-test-key" not in preference
 
 
+def test_saving_works_when_the_preference_file_only_has_comments(desktop):
+    """复刻全新安装：安装器种下的用户偏好层只有一行注释，第一次保存必须成功。
+
+    这是真实故障：ruamel 在流模式下把「只有注释」的文件判为 0 个文档，若按异常处理，
+    新装用户第一次点保存就会被永久卡住。
+    """
+    client, _service, home, _file_map, _file_bytes = desktop
+    (home / "config.yaml").write_text(
+        "# Focus 全局配置默认层（仓库/项目态优先）\n", encoding="utf-8"
+    )
+    snapshot = client.get("/desktop/api/settings/models", headers=SESSION).json()
+    catalog = [
+        {field: entry[field] for field in snapshot["editable_fields"]}
+        for entry in snapshot["models"]
+    ]
+    catalog[0]["context_window"] = 65536
+
+    response = client.put("/desktop/api/settings/models", headers=SESSION, json={"models": catalog})
+
+    assert response.status_code == 200, response.text
+    text = (home / "config.yaml").read_text(encoding="utf-8")
+    assert "# Focus 全局配置默认层（仓库/项目态优先）" in text  # 注释没被抹掉
+    assert "context_window: 65536" in text
+
+
 def test_repeated_saves_keep_the_user_file_intact(desktop):
     client, _service, home, _file_map, _file_bytes = desktop
     snapshot = client.get("/desktop/api/settings/models", headers=SESSION).json()

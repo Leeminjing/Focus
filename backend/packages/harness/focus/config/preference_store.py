@@ -104,10 +104,20 @@ def read_preference_config(config_name: str = "config.yaml"):
     except Exception as exc:  # ruamel 的解析异常族较杂，统一转成可读错误
         raise PreferenceWriteError(f"用户偏好层配置无法解析，已拒绝写入: {path}") from exc
 
-    if len(documents) != 1:
+    if len(documents) > 1:
         raise PreferenceWriteError(
             f"用户偏好层配置包含 {len(documents)} 个 YAML 文档，无法安全读写: {path}"
         )
+
+    if not documents:
+        # 「只有注释、没有任何节点」的文件在流模式下会被 ruamel 判为 0 个文档。这是安装器
+        # 种下的占位配置（`# Focus 全局配置默认层…`）的正常形态，不是异常——若按异常处理，
+        # 全新安装的用户会在第一次保存时被永久卡住。这里按空配置处理，并把原文作为起始注释
+        # 原样保留，避免覆写时抹掉用户手写的说明。
+        document = CommentedMap()
+        if text.strip():
+            document.yaml_set_start_comment(text.rstrip("\n"))
+        return document
 
     document = documents[0]
     if document is None:

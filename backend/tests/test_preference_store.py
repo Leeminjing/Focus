@@ -101,6 +101,33 @@ def test_missing_file_is_created(focus_home):
     assert list(document["removed_models"]) == ["legacy"]
 
 
+def test_comment_only_file_is_not_treated_as_broken(focus_home):
+    """安装器种下的占位文件只有注释、没有任何节点。
+
+    ruamel 在流模式下把这种文件判为 0 个文档；若把它当异常，全新安装的用户会在第一次保存时被
+    永久卡住（真实故障）。它必须按空配置处理，同时把那句注释原样留在文件顶部。
+    """
+    path = focus_home / "config.yaml"
+    path.write_text("# Focus 全局配置默认层（仓库/项目态优先）\n", encoding="utf-8")
+
+    write_models_preference([_entry("fresh")], [], "config.yaml")
+
+    text = path.read_text(encoding="utf-8")
+    assert "# Focus 全局配置默认层（仓库/项目态优先）" in text
+    assert "fresh" in text
+    document = read_preference_config("config.yaml")
+    assert [entry["name"] for entry in document["models"]] == ["fresh"]
+
+
+def test_whitespace_only_file_is_treated_as_empty(focus_home):
+    path = focus_home / "config.yaml"
+    path.write_text("   \n\n\t\n", encoding="utf-8")
+
+    write_models_preference([_entry("fresh")], [], "config.yaml")
+
+    assert read_preference_config("config.yaml")["models"][0]["name"] == "fresh"
+
+
 def test_unparsable_file_is_refused_and_left_alone(focus_home):
     path = focus_home / "config.yaml"
     broken = "models: [\n  - name: 'unterminated\n"
