@@ -1,8 +1,8 @@
 /*
  * 本文件对外提供 Agent Loop Electron 回归页的确定性本地 API。
- * 输入为真实 Desktop 页面发出的 Loop、Portfolio、Evolution、audit 与 workspace-slot 请求；输出为
- * 可变的长期 Loop 快照和审计投影。具体工作流为复用 Context 测试 API，再拦截 Loop 领域路由，
- * 记录启动、控制和用户覆盖请求而不访问网络或数据库；示例：在 BrowserWindow preload 中加载本文件。
+ * 输入为真实 Desktop 页面发出的 Loop、Console、完整会话、事实、介入与 workspace 请求；输出为
+ * 可变的长期 Loop 快照、Context Portfolio 和审计投影。具体工作流为复用 Context 测试 API，再拦截
+ * Loop 领域路由，记录三类用户介入而不访问网络或数据库；示例：在 BrowserWindow preload 中加载本文件。
  */
 "use strict";
 
@@ -19,6 +19,8 @@ const loop = {
   overrides: [],
   grantMutations: [],
   controls: [],
+  interventions: [],
+  directMessages: [],
   cursor: 0,
 };
 
@@ -93,11 +95,51 @@ const audit = {
   ],
 };
 
+const consoleManifest = {
+  loop_id: "loop-test",
+  loop_revision: 1,
+  status: "running",
+  health: "observing",
+  current_round_id: "round-12",
+  initial_context_id: "root",
+  nodes: [
+    { context_id: "root", title: "实现", topic: "继续实现", purpose: "完成核心功能", role: "primary", status: "active", lane_id: "implementation", revision: { revision_id: "root-r5", generation: 5, projection_status: "valid" }, latest_run: { run_id: "run-root", status: "success" }, counts: { runs: 5, delegated_messages: 2 } },
+    { context_id: "child", title: "测试", topic: "测试与故障分析", purpose: "定位失败并验证修复", role: "derived", status: "active", lane_id: "testing", revision: { revision_id: "test-r1", generation: 1, projection_status: "valid" }, latest_run: { run_id: "run-testing", status: "running" }, counts: { runs: 3, delegated_messages: 1 } },
+    { context_id: "merged", title: "架构", topic: "架构审查", purpose: "反方审查设计风险", role: "derived", status: "active", lane_id: "architecture", revision: { revision_id: "arch-r1", generation: 1, projection_status: "valid" }, latest_run: { run_id: "run-architecture", status: "success" }, counts: { runs: 1, delegated_messages: 1 } },
+    { context_id: "sibling", title: "需求", topic: "需求偏航检查", purpose: "对照 Task Contract", role: "derived", status: "active", lane_id: "requirements", revision: { revision_id: "req-r1", generation: 1, projection_status: "valid" }, latest_run: null, counts: { runs: 0, delegated_messages: 0 } },
+    { context_id: "extra-1", title: "探索", topic: "已放弃探索", purpose: "保留但不再采用", role: "side", status: "paused", lane_id: "abandoned", revision: { revision_id: "old-r2", generation: 2, projection_status: "valid" }, latest_run: null, counts: { runs: 1, delegated_messages: 1 } },
+  ],
+  edges: [
+    { source_context_id: "root", source_revision_id: "root-r5", target_context_id: "child", target_revision_id: "test-r1", position: 0 },
+    { source_context_id: "root", source_revision_id: "root-r5", target_context_id: "merged", target_revision_id: "arch-r1", position: 0 },
+    { source_context_id: "child", source_revision_id: "test-r1", target_context_id: "merged", target_revision_id: "arch-r1", position: 1 },
+    { source_context_id: "root", source_revision_id: "root-r5", target_context_id: "sibling", target_revision_id: "req-r1", position: 0 },
+  ],
+  user_intents: [],
+};
+
+function conversation(contextId) {
+  const messages = contextId === "child" ? [
+    { index: 0, message: { id: "test-human", role: "human", content: "只定位三个失败测试的共同原因。" }, provenance: { source_kind: "delegated_patrol", actor_id: "patrol:loop-test" } },
+    { index: 1, message: { id: "test-tool", role: "tool", name: "pytest", tool_call_id: "call-test", content: "12 passed, 2 failed, 1 skipped" }, provenance: null },
+  ] : [
+    { index: 0, message: { id: "root-human", role: "human", content: "暂停修改代码，只分析过去三轮失败的共同原因。" }, provenance: { source_kind: "delegated_patrol", actor_id: "patrol:loop-test" } },
+    { index: 1, message: { id: "root-ai", role: "assistant", content: "已完成当前阶段并记录证据。" }, provenance: null },
+  ];
+  return { context_id: contextId, revision: { revision_id: `${contextId}-revision`, generation: 1 }, projection_status: "valid", total: messages.length, range: { start: 0, end: messages.length }, next_before: null, has_more: false, messages };
+}
+
+const factRows = [
+  { fact_id: "fact-run", context_id: "root", kind: "run", status: "success", title: "Agent Run success", summary: "完成实现阶段", metrics: {}, evidence: { run_id: "run-root" }, occurred_at: "2026-09-16T01:00:00Z" },
+  { fact_id: "fact-test", context_id: "child", kind: "test", status: "failed", title: "测试结果", summary: "12 passed · 2 failed · 1 skipped", metrics: { passed: 12, failed: 2, skipped: 1, count_status: "exact" }, evidence: { message_id: "test-tool", tool_name: "pytest" }, occurred_at: "2026-09-16T01:01:00Z" },
+];
+
 window.__agentLoopTest = loop;
 window.fetch = async (input, options = {}) => {
   const url = new URL(String(input), "http://focus.test");
   const path = url.pathname;
   if (path === "/desktop/api/tasks/root") return json({ task_id: "root", messages: [], ui_state: {}, active_run: { run_id: "run-initial", status: "success" }, context: null });
+  if (/^\/desktop\/api\/tasks\/[^/]+$/.test(path)) return json({ task_id: decodeURIComponent(path.split("/").at(-1)), messages: [], ui_state: { _main_run_equipment: { permissions: ["read", "write"], skills: [], access_mode: "workspace" } }, context: null });
   if (path === "/desktop/api/agent-loops/by-context/root") return json(loop.snapshot);
   if (path === "/desktop/api/agent-loops" && options.method === "POST") {
     loop.startBody = JSON.parse(options.body);
@@ -105,6 +147,23 @@ window.fetch = async (input, options = {}) => {
     return json(loop.snapshot);
   }
   if (/^\/desktop\/api\/agent-loops\/[^/]+$/.test(path)) return json(loop.snapshot);
+  if (/\/desktop\/api\/agent-loops\/[^/]+\/console$/.test(path)) return json({ ...consoleManifest, loop_id: loop.snapshot?.loop_id || consoleManifest.loop_id, status: loop.snapshot?.status || "running", health: loop.snapshot?.health || "observing" });
+  if (/\/desktop\/api\/agent-loops\/[^/]+\/contexts\/[^/]+\/conversation$/.test(path)) return json(conversation(decodeURIComponent(path.split("/").at(-2))));
+  if (/\/desktop\/api\/agent-loops\/[^/]+\/facts$/.test(path)) {
+    const contextId = url.searchParams.get("context_id");
+    const facts = contextId ? factRows.filter(item => item.context_id === contextId) : factRows;
+    return json({ total: facts.length, range: { start: 0, end: facts.length }, next_before: null, has_more: false, facts });
+  }
+  if (/\/desktop\/api\/agent-loops\/[^/]+\/interventions$/.test(path) && options.method === "POST") {
+    const body = JSON.parse(options.body);
+    loop.interventions.push(body);
+    return json({ intent_id: `intent-${loop.interventions.length}`, scope: body.mode === "patrol_context_intent" ? "context" : "portfolio", status: "pending" });
+  }
+  if (/\/desktop\/api\/tasks\/[^/]+\/main\/runs$/.test(path) && options.method === "POST") {
+    const body = JSON.parse(options.body);
+    loop.directMessages.push({ context_id: decodeURIComponent(path.split("/").at(-3)), ...body });
+    return json({ run_id: `direct-${loop.directMessages.length}`, status: "pending" });
+  }
   if (/\/desktop\/api\/agent-loops\/[^/]+\/control$/.test(path) && options.method === "POST") {
     const command = JSON.parse(options.body).command;
     loop.controls.push(command);

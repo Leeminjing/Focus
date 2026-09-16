@@ -463,7 +463,9 @@ The Completion Guard checks evidence freshness, pending gates and Runs, Portfoli
 
 In the Desktop task view, open **Agent Loop**, provide a goal, Task Contract, acceptance criteria, and budgets, then grant Patrol control.
 
-The console exposes lifecycle, round, Portfolio generation, the complete Revision graph, Runs, workspace slots, leases, adoption, and provenance.
+The Loop Control Console keeps the evolving Context Portfolio and the selected Context's complete conversation on one screen. Every node carries its topic, purpose, revision, Run state, and evidence counts; stable multi-source edges show how the current worlds were derived. Selecting a node opens its full Human/Assistant/Tool history with provenance kept outside the model-visible body, while the facts drawer lists traceable Runs, tool outcomes, and conservative test counts across one or all Contexts.
+
+The user can intervene through three explicit authority paths: send a direct HumanMessage into the selected Context, give Patrol an opinion scoped to that Context, or reshape the whole Portfolio. Patrol opinions are persisted and audited as external user intents, then enter Patrol's next frozen observation; they are never smuggled into an execution Agent's message history.
 
 Loop events are replayable over cursor-based SSE. A direct message or **User takeover** advances the goal and authority revisions, superseding any uncommitted Patrol work formed under the previous authority.
 

@@ -1,16 +1,19 @@
-r"""本文件对外提供 Context Evolution、Curation Portfolio、Loop audit、message provenance 与 workspace slot 查询路由。
+r"""本文件对外提供 Loop Console、完整会话、事实、Context Evolution 与 workspace slot 查询路由。
 
-输入为 Desktop 会话下的 workspace/Context/Program/Loop identity 与游标；输出为只读 revision graph、
-Portfolio generations、决策证据、消息来源和执行 slot。具体工作流为从统一 session factory 查询各领域
-权威表并序列化，不修改 Context 或模型输入。示例：`app.include_router(loop_query_router)`。
+输入为 Desktop 会话下的 workspace/Context/Program/Loop identity、过滤器与游标；输出为轻量 Portfolio
+拓扑、分页完整会话、可追溯事实、revision graph 和执行 slot。具体工作流为路由把只读参数交给专用
+query service，不修改 Context 或模型输入。示例：`app.include_router(loop_query_router)`。
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import select
 
 from backend.app.desktop.agent_loop.models import LoopAction, LoopDecision, LoopDirective, LoopPatrolAttempt, LoopWorkerRequest, MessageProvenance
+from backend.app.desktop.agent_loop.console_query import LoopConsoleQueryService
+from backend.app.desktop.agent_loop.conversation_query import ContextConversationQueryService
+from backend.app.desktop.agent_loop.fact_projection import LoopFactProjectionService
 from backend.app.desktop.context_curation.models import CurationLane, CurationProgram, PortfolioLaneCandidate, PortfolioRevision
 from backend.app.desktop.context_evolution import ContextEvolutionQueryService, ContextRevisionNotFound, ContextRevisionReader, ContextRevisionRepository
 from backend.app.desktop.context_evolution.models import ContextRevision
@@ -19,6 +22,58 @@ from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor
 
 
 loop_query_router = APIRouter(prefix="/desktop/api", tags=["agent-loop-observability"])
+
+
+@loop_query_router.get("/agent-loops/{loop_id}/console")
+async def loop_console(loop_id: str, request: Request) -> dict:
+    async with request.app.state.desktop_service.session_factory() as session:
+        return await LoopConsoleQueryService().read(session, loop_id)
+
+
+@loop_query_router.get("/agent-loops/{loop_id}/contexts/{context_id}/conversation")
+async def context_conversation(
+    loop_id: str,
+    context_id: str,
+    request: Request,
+    revision_id: str | None = None,
+    before: int | None = Query(default=None, ge=0),
+    limit: int = Query(default=48, ge=1, le=120),
+) -> dict:
+    async with request.app.state.desktop_service.session_factory() as session:
+        return await ContextConversationQueryService(
+            request.app.state.desktop_service.checkpointer
+        ).read(
+            session,
+            loop_id,
+            context_id,
+            revision_id=revision_id,
+            before=before,
+            limit=limit,
+        )
+
+
+@loop_query_router.get("/agent-loops/{loop_id}/facts")
+async def loop_facts(
+    loop_id: str,
+    request: Request,
+    context_id: str | None = None,
+    kind: str | None = None,
+    status: str | None = None,
+    before: int | None = Query(default=None, ge=0),
+    limit: int = Query(default=80, ge=1, le=200),
+) -> dict:
+    async with request.app.state.desktop_service.session_factory() as session:
+        return await LoopFactProjectionService(
+            request.app.state.desktop_service.checkpointer
+        ).read(
+            session,
+            loop_id,
+            context_id=context_id,
+            kind=kind,
+            status=status,
+            before=before,
+            limit=limit,
+        )
 
 
 @loop_query_router.get("/workspaces/{workspace_id}/context-evolution")

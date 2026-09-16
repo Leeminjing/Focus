@@ -15,7 +15,7 @@
     (5) 创建 FastAPI 实例并传入 lifespan
     (6) 通过 Desktop persistence registry 注册各领域 ORM 模型
     (7) 注册统一会话保护中间件与路由，并挂载桌面路由与 /desktop/ 静态资源（决策 1）
-    (8) 构造 AgentLoopService、LoopKernel 与 LoopCoordinator 作为独立权力边界
+    (8) 构造 AgentLoopService、LoopInterventionService、LoopKernel 与 LoopCoordinator 作为独立权力边界
     (9) 模块级导出 app 实例，供 uvicorn 等 ASGI server 直接引用
 
 示例:
@@ -98,9 +98,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.desktop_service = service
         from backend.app.desktop.agent_loop import AgentLoopRecovery, AgentLoopService, CompletionEvidenceService, DesktopDirectiveLaunchPort, LoopAuthorityService, LoopCoordinator, LoopCoordinatorRuntime, LoopKernel, LoopPortfolioPublicationService, LoopRoundOrchestrator, LoopRunWorkspaceBinder, LoopWaveDispatcher, LoopWorkerRuntime, LoopWorkspaceAdoptionService, PendingDecisionProjector
+        from backend.app.desktop.agent_loop.interventions import LoopInterventionService
         from backend.app.desktop.run_orchestration import RunOutboxConsumer
 
         app.state.agent_loop_service = AgentLoopService(sessions, app.state.run_manager)
+        app.state.agent_loop_interventions = LoopInterventionService(sessions)
         app.state.agent_loop_authority = LoopAuthorityService(sessions, app.state.run_manager)
         app.state.agent_loop_workspace = LoopRunWorkspaceBinder(sessions)
         app.state.agent_loop_gates = PendingDecisionProjector(sessions)

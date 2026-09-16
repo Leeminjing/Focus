@@ -1,7 +1,8 @@
-r"""本文件对外提供 Agent Loop API、observation、completion 与 Patrol decision 封闭判别联合。
+r"""本文件对外提供 Agent Loop API、用户介入、observation、completion 与 Patrol decision 封闭判别联合。
 
 输入为用户目标、grant、冻结版本、Patrol action 和 verifier evidence；输出为拒绝未知字段的不可变
-合同。具体工作流为 action 依 discriminator 解析，envelope 绑定所有控制 revision，Kernel 只接受
+合同。具体工作流为介入请求区分 Context/Portfolio 作用域，action 依 discriminator 解析，
+envelope 绑定所有控制 revision 与未处理用户意图，Kernel 只接受
 PatrolDecisionIntent。示例：`intent = PatrolDecisionIntent.model_validate(payload)`。
 """
 
@@ -175,6 +176,15 @@ class LoopCreateRequest(StrictModel):
     expires_at: str | None = None
 
 
+class LoopInterventionRequest(StrictModel):
+    mode: Literal["patrol_context_intent", "patrol_portfolio_intent"]
+    content: str = Field(min_length=1, max_length=12000)
+    context_id: str | None = None
+
+    def scope(self) -> str:
+        return "context" if self.mode == "patrol_context_intent" else "portfolio"
+
+
 class LoopObservationEnvelope(StrictModel):
     loop_id: str
     loop_revision: int
@@ -190,6 +200,7 @@ class LoopObservationEnvelope(StrictModel):
     budget: dict[str, Any]
     pending_decisions: tuple[dict[str, Any], ...] = ()
     worker_results: tuple[dict[str, Any], ...] = ()
+    user_intents: tuple[dict[str, Any], ...] = ()
     expansion_handles: tuple[dict[str, str], ...] = ()
 
 

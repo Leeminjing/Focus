@@ -3,7 +3,8 @@ r"""本文件对外提供 LoopKernel、KernelCommitResult 与 KernelRejected 唯
 输入为 PatrolDecisionIntent 和当前数据库事实；输出为幂等 committed/superseded/rejected 结果。
 具体工作流为稳定锁定 Loop/round/grant，按版本、权力、frontier、workspace、预算、active Run、gate
 顺序校验；普通动作单事务提交，Context Portfolio 与 workspace adoption 先持久授权意图，再由专用
-Kernel port 执行外部准备并原子收口权威状态；Worker 无提交端口。示例：
+Kernel port 执行外部准备并原子收口权威状态，提交成功后收口该 round 已观察的用户意图；
+Worker 无提交端口。示例：
 `result = await kernel.commit(intent)`。
 """
 
@@ -22,7 +23,7 @@ from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_p
 from backend.app.desktop.agent_loop.models import (
     AgentLoop, CompletionVerification, LoopAction, LoopBudgetUsage, LoopContextMembership, LoopDecision, LoopGoalRevision,
     LoopDelegationGrant, LoopDirective, LoopEventOutbox, LoopPendingDecision,
-    LoopRound, LoopWorkerRequest,
+    LoopRound, LoopUserIntent, LoopWorkerRequest,
 )
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
 from backend.app.desktop.agent_loop.schemas import PatrolDecisionIntent
@@ -85,7 +86,10 @@ class LoopKernel:
             if self._workspace_adoption is None:
                 return await self._fail_deferred(deferred_id, "Kernel 未配置 Workspace adoption port")
             try:
-                return await self._workspace_adoption.adopt(deferred_id)
+                result = await self._workspace_adoption.adopt(deferred_id)
+                if result.status == "committed":
+                    await self._address_deferred_user_intents(deferred_id)
+                return result
             except Exception as exc:
                 return await self._fail_deferred(deferred_id, str(exc))
         if self._portfolio_publication is None:
@@ -96,6 +100,7 @@ class LoopKernel:
             return await self._fail_deferred(deferred_id, str(exc), superseded=True)
         except Exception as exc:
             return await self._fail_deferred(deferred_id, str(exc))
+        await self._address_deferred_user_intents(deferred_id)
         async with self._sessions() as session:
             decision = await session.get(LoopDecision, deferred_id)
             result = await self._result(session, decision)
@@ -167,8 +172,28 @@ class LoopKernel:
         round_row.status = self._round_status(intent)
         loop.health = self._health(intent)
         loop.revision += 1
+        await self._address_user_intents(session, round_row.round_id)
         await self._event(session, loop.loop_id, "LoopDecisionCommitted", {"decision_id": decision.decision_id, "round_id": round_row.round_id}, f"decision:{decision.decision_id}")
         return None, None, KernelCommitResult(decision.decision_id, "committed", tuple(action_ids), tuple(directive_ids))
+
+    @staticmethod
+    async def _address_user_intents(session: AsyncSession, round_id: str) -> None:
+        await session.execute(
+            update(LoopUserIntent)
+            .where(
+                LoopUserIntent.observed_round_id == round_id,
+                LoopUserIntent.status == "observed",
+            )
+            .values(status="addressed", addressed_at=datetime.now(UTC))
+        )
+
+    async def _address_deferred_user_intents(self, decision_id: str) -> None:
+        async with self._sessions.begin() as session:
+            round_id = await session.scalar(
+                select(LoopDecision.round_id).where(LoopDecision.decision_id == decision_id)
+            )
+            if round_id:
+                await self._address_user_intents(session, round_id)
 
     @staticmethod
     def _stale_reason(loop: AgentLoop | None, round_row: LoopRound | None, intent: PatrolDecisionIntent) -> str | None:

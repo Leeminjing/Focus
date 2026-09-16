@@ -1,8 +1,9 @@
-r"""本文件对外提供 Agent Loop、delegation、round、coordinator lease、directive、completion 与 audit ORM 实体。
+r"""本文件对外提供 Agent Loop、delegation、user intent、round、directive、completion 与 audit ORM 实体。
 
 输入为用户目标、版本化授权、Context/Workspace frontier、Patrol 判断和 Kernel 结果；输出为可恢复、
 可审计且具单 writer 约束的 Loop 状态。具体工作流为 goal/grant 定义权力，round/observation 冻结事实，
-decision/action 记录判断，directive/provenance 驱动 Run，completion/outbox 收敛生命周期。
+decision/action 记录判断，user intent 保存用户对 Context 或 Portfolio 的外部控制意见，
+directive/provenance 驱动 Run，completion/outbox 收敛生命周期。
 示例：`loop = AgentLoop(loop_id="l1", status="running", ...)`。
 """
 
@@ -104,6 +105,36 @@ class LoopContextMembership(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", server_default="active")
     required_barrier: Mapped[bool] = mapped_column(nullable=False, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LoopUserIntent(Base):
+    __tablename__ = "loop_user_intents"
+    __table_args__ = (
+        CheckConstraint("scope IN ('context','portfolio')", name="ck_loop_user_intent_scope"),
+        CheckConstraint("status IN ('pending','observed','addressed','superseded')", name="ck_loop_user_intent_status"),
+        CheckConstraint(
+            "(scope = 'context' AND target_context_id IS NOT NULL) OR "
+            "(scope = 'portfolio' AND target_context_id IS NULL)",
+            name="ck_loop_user_intent_target",
+        ),
+        Index("ix_loop_user_intent_pending", "loop_id", "status", "created_at"),
+    )
+
+    intent_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    loop_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("agent_loops.loop_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    target_context_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("desktop_threads.task_id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", server_default="pending")
+    goal_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    authority_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    observed_round_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    addressed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class LoopRound(Base):

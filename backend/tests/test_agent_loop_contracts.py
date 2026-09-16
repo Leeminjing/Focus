@@ -1,4 +1,4 @@
-r"""本文件验证 Agent Loop 的纯合同、Patrol 选择性读取和预算边界。
+r"""本文件验证 Agent Loop 的纯合同、用户介入、Patrol 选择性读取和预算边界。
 
 输入为 delegated directive、Patrol cognitive step、workspace adoption action 与 budget usage；输出为模型侧
 纯 HumanMessage、reads/decision 互斥校验、闭合 action 解析和硬预算裁决。具体工作流为仅构造严格 schema，
@@ -18,7 +18,8 @@ from backend.app.desktop.agent_loop.round_orchestration import (
     PatrolDecisionProposal,
     PatrolReadRequest,
 )
-from backend.app.desktop.agent_loop.schemas import LoopBudgetContract, PATROL_ACTION_ADAPTER
+from backend.app.desktop.agent_loop.schemas import LoopBudgetContract, LoopInterventionRequest, PATROL_ACTION_ADAPTER
+from backend.app.desktop.agent_loop.fact_projection import LoopFactProjectionService
 
 
 def test_delegated_model_message_contains_no_provenance_marker() -> None:
@@ -129,3 +130,34 @@ def test_context_and_provider_budgets_are_explicit_hard_limits() -> None:
             "verifier_model_name": "main-model",
         }
     ) == 2
+
+
+def test_user_intervention_preserves_external_scope() -> None:
+    context = LoopInterventionRequest(
+        mode="patrol_context_intent",
+        context_id="context-1",
+        content="保留测试方向，但停止扩展实现范围。",
+    )
+    portfolio = LoopInterventionRequest(
+        mode="patrol_portfolio_intent",
+        content="合并重复 Lane，并保留独立架构审查。",
+    )
+
+    assert context.scope() == "context"
+    assert portfolio.scope() == "portfolio"
+    assert "Patrol" not in context.content
+
+
+def test_fact_projection_only_claims_explicit_test_counts() -> None:
+    exact = LoopFactProjectionService._test_fact("12 passed, 2 failed, 1 skipped in 4.2s")
+    unknown = LoopFactProjectionService._test_fact("pytest finished; inspect the report")
+    unrelated = LoopFactProjectionService._test_fact("build finished with 1 failed target", "exec")
+
+    assert exact == {
+        "summary": "12 passed · 2 failed · 1 skipped",
+        "metrics": {"passed": 12, "failed": 2, "skipped": 1, "count_status": "exact"},
+        "status": "failed",
+    }
+    assert unknown["metrics"]["count_status"] == "unknown"
+    assert unknown["status"] == "unknown"
+    assert unrelated is None

@@ -1,8 +1,8 @@
 /*
  * 本文件对外提供 Context-governed Agent Loop 的真实 Electron 长流程回归。
- * 输入为确定性 Loop API、真实 index.html/app.js 与用户表单动作；输出为启动离开、恢复重连、
- * 多 Lane、委托来源、用户接管、waiting-user、完成路径和未采用分支的界面断言。
- * 具体工作流为在隐藏 BrowserWindow 中执行完整交互并检查请求与 DOM；示例：`npx electron agent-loop-ui.e2e.cjs`。
+ * 输入为确定性 Loop/Console API、真实 index.html/app.js 与用户表单动作；输出为 Context 图、完整会话、
+ * 三类介入、恢复重连、用户接管、完成路径和事实抽屉断言。具体工作流为在隐藏 BrowserWindow 中执行
+ * 完整交互并检查请求与 DOM；示例：`npx electron agent-loop-ui.e2e.cjs`。
  */
 "use strict";
 
@@ -65,7 +65,28 @@ async function run() {
     return { body: window.__agentLoopTest.startBody, text: document.querySelector('.loop-dashboard')?.textContent || '', stored: localStorage.getItem('focus-agent-loop:root') };
   })()`);
   if (!started.stored || started.body?.initial_run_id !== "run-initial" || started.body?.budgets?.max_contexts !== 24 || started.body?.budgets?.max_providers !== 5 || started.body?.budgets?.max_model_calls !== 300) throw new Error(`启动或预算契约失败: ${JSON.stringify(started)}`);
-  for (const text of ["round-12", "observing", "继续实现", "测试与故障分析", "架构审查", "需求偏航检查", "Patrol 依据授权生成", "暂停修改代码", "Input 8192", "Output 2048", "Retries 2", "Contexts 5 / 24", "Providers 2 / 5", "撤销 Patrol 授权"]) if (!started.text.includes(text)) throw new Error(`Loop 控制台缺少 ${text}`);
+  for (const text of ["round-12", "observing", "继续实现", "测试与故障分析", "架构审查", "需求偏航检查", "Patrol delegated", "暂停修改代码", "Input 8192", "Output 2048", "Retries 2", "Contexts 5 / 24", "Providers 2 / 5", "撤销 Patrol 授权"]) if (!started.text.includes(text)) throw new Error(`Loop 控制台缺少 ${text}`);
+
+  const interventions = await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('[data-action="loop-select-context"][data-context-id="child"]').click();
+    for (let count = 0; count < 150 && !document.querySelector('[data-loop-transcript]')?.textContent.includes('12 passed'); count += 1) await new Promise(next => setTimeout(next, 20));
+    let form = document.querySelector('#loopInterventionForm');
+    form.elements.content.value = '直接继续测试修复';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    for (let count = 0; count < 150 && window.__agentLoopTest.directMessages.length === 0; count += 1) await new Promise(next => setTimeout(next, 20));
+    document.querySelector('[data-action="loop-intervention-mode"][data-mode="patrol_context_intent"]').click();
+    form = document.querySelector('#loopInterventionForm');
+    form.elements.content.value = '这个 Context 只分析测试失败';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    for (let count = 0; count < 150 && window.__agentLoopTest.interventions.length < 1; count += 1) await new Promise(next => setTimeout(next, 20));
+    document.querySelector('[data-action="loop-intervention-mode"][data-mode="patrol_portfolio_intent"]').click();
+    form = document.querySelector('#loopInterventionForm');
+    form.elements.content.value = '整体保留测试和架构两个方向';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    for (let count = 0; count < 150 && window.__agentLoopTest.interventions.length < 2; count += 1) await new Promise(next => setTimeout(next, 20));
+    return { direct: window.__agentLoopTest.directMessages, intents: window.__agentLoopTest.interventions, text: document.querySelector('.loop-dashboard')?.textContent || '' };
+  })()`);
+  if (interventions.direct[0]?.context_id !== "child" || interventions.intents[0]?.mode !== "patrol_context_intent" || interventions.intents[0]?.context_id !== "child" || interventions.intents[1]?.mode !== "patrol_portfolio_intent" || interventions.intents[1]?.context_id !== null || !interventions.text.includes("12 passed")) throw new Error(`三类介入或完整会话失败: ${JSON.stringify(interventions)}`);
 
   const resumed = await win.webContents.executeJavaScript(`(async () => {
     state.view = 'focus'; render();

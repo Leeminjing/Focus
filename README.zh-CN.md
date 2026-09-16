@@ -425,7 +425,9 @@ Workspace 使用带 fencing token 的单 Writer/多 Reader lease。多个获授�
 
 ### 可观察、可接管、可恢复
 
-在 Desktop 任务页打开 **Agent Loop**，填写目标、Task Contract、验收条件和预算后授权 Patrol。控制台展示生命周期、轮次、Portfolio generation、完整 Revision 图、Run、workspace slot、lease、adoption 与消息来源。
+在 Desktop 任务页打开 **Agent Loop**，填写目标、Task Contract、验收条件和预算后授权 Patrol。Loop Control Console 把持续演化的 Context Portfolio 与当前选中 Context 的完整会话放在同一个页面：每个节点都有主题、职责、revision、Run 状态和证据计数；稳定的多来源连线展示当前世界如何派生。点击节点即可查看完整 Human/Assistant/Tool 记录，来源审计始终位于模型正文之外；事实抽屉则按单个或全部 Context 展示可追溯 Run、工具结果与保守统计的测试事实。
+
+用户有三条明确的介入路径：直接向选中 Context 发送 HumanMessage；向 Patrol 表达只针对该 Context 的意见；或调整整个 Portfolio 的布局。给 Patrol 的意见会作为外部用户意图持久化、审计，并进入下一次冻结 observation，绝不会被偷塞进执行 Agent 的消息历史。
 
 所有 Loop 事件都通过 cursor 可重放的 SSE 输出。用户直接发送新消息或使用“用户接管”时，系统推进 goal 与 authority revision，并使基于旧授权且尚未提交的 Patrol 工作失效。
 

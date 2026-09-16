@@ -1,5 +1,5 @@
 /*
- * 本文件验证 Loop Store 游标恢复、API/历史快照协议、Portfolio diff、多来源图与 provenance 外置渲染。
+ * 本文件验证 Loop Store/Console Store、API/完整会话协议、Portfolio 图、事实和 provenance 外置渲染。
  * 输入为重复/乱序事件、模拟 fetch、Lane revisions 和多父边；输出为幂等 cursor、正确请求、完整
  * secondary source 与不污染消息正文的 badge 断言。具体工作流为直接加载无 DOM UMD 模块并调用
  * 纯函数；示例：`node --test desktop/agent-loop-modules.test.js`。
@@ -15,6 +15,11 @@ const LoopView = require("./loop-view.js");
 const Portfolio = require("./portfolio-view.js");
 const Evolution = require("./context-evolution-view.js");
 const Provenance = require("./message-provenance-view.js");
+const ConsoleStore = require("./loop-console-store.js");
+const PortfolioMap = require("./portfolio-map-view.js");
+const Conversation = require("./context-conversation-view.js");
+const Facts = require("./loop-facts-view.js");
+const ConsoleController = require("./loop-console-controller.js");
 
 
 test("store replays cursor events once and reconciles stale controls", () => {
@@ -64,6 +69,267 @@ test("api reads an immutable historical revision outside the Loop route prefix",
   const revision = await api.revision("r one");
   assert.equal(calls[0].url, "http://focus/desktop/api/context-revisions/r%20one");
   assert.equal(revision.ref.revision_id, "r one");
+});
+
+
+test("console api exposes topology, paginated conversation, facts and scoped intervention", async () => {
+  const calls = [];
+  const api = LoopApi.create({ apiBase: "http://focus", session: "secret" }, async (url, options = {}) => {
+    calls.push({ url, options });
+    return { ok: true, json: async () => url.endsWith("/tasks/c%2F1") ? { ui_state: { _main_run_equipment: { permissions: ["read"], skills: ["testing"], access_mode: "workspace" } } } : {} };
+  });
+  await api.console("l 1");
+  await api.conversation("l 1", "c/1", { before: 48, limit: 24 });
+  await api.facts("l 1", { contextId: "c/1", kind: "test" });
+  await api.intervene("l 1", { mode: "patrol_context_intent", context_id: "c/1", content: "Run tests" });
+  await api.directMessage("c/1", "Continue the run");
+  assert.equal(calls[0].url, "http://focus/desktop/api/agent-loops/l%201/console");
+  assert.match(calls[1].url, /conversation\?before=48&limit=24$/);
+  assert.match(calls[2].url, /facts\?context_id=c%2F1&kind=test$/);
+  assert.deepEqual(JSON.parse(calls[3].options.body), { mode: "patrol_context_intent", context_id: "c/1", content: "Run tests" });
+  assert.equal(calls[4].url, "http://focus/desktop/api/tasks/c%2F1");
+  assert.equal(calls[5].url, "http://focus/desktop/api/tasks/c%2F1/main/runs");
+  assert.deepEqual(JSON.parse(calls[5].options.body), { message: "Continue the run", model_name: null, skills: ["testing"], permissions: ["read"], access_mode: "workspace" });
+});
+
+
+test("console store prepends history without duplicating message indices", () => {
+  const store = ConsoleStore.create();
+  store.loadManifest({ initial_context_id: "c1", nodes: [{ context_id: "c1" }] });
+  store.loadConversation({ context_id: "c1", messages: [{ index: 2 }, { index: 3 }], range: { start: 2, end: 4 }, has_more: true, next_before: 2 });
+  store.prependConversation({ context_id: "c1", messages: [{ index: 0 }, { index: 1 }, { index: 2 }], range: { start: 0, end: 3 }, has_more: false, next_before: null });
+  assert.deepEqual(store.get().conversation.messages.map(item => item.index), [0, 1, 2, 3]);
+  assert.equal(store.get().conversation.has_more, false);
+});
+
+
+test("console store paginates facts without duplicating stable fact ids", () => {
+  const store = ConsoleStore.create();
+  store.loadFacts({ facts: [{ fact_id: "f3" }, { fact_id: "f4" }], range: { start: 2, end: 4 }, has_more: true, next_before: 2 });
+  store.prependFacts({ facts: [{ fact_id: "f1" }, { fact_id: "f2" }, { fact_id: "f3" }], range: { start: 0, end: 3 }, has_more: false, next_before: null });
+  assert.deepEqual(store.get().facts.facts.map(item => item.fact_id), ["f1", "f2", "f3", "f4"]);
+  assert.equal(store.get().facts.has_more, false);
+});
+
+
+test("console controller batches bursty store changes into one animation frame", () => {
+  const originalFrame = global.requestAnimationFrame;
+  const originalCancel = global.cancelAnimationFrame;
+  const frames = [];
+  global.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
+  global.cancelAnimationFrame = () => {};
+  const store = ConsoleStore.create();
+  let renders = 0;
+  const controller = ConsoleController.create({ api: {}, store, onChange: () => { renders += 1; } });
+  try {
+    store.setFactFilter("test");
+    store.setFactScope("all");
+    store.setMessageFilter("tool");
+    assert.equal(frames.length, 1);
+    frames.shift()();
+    assert.equal(renders, 1);
+  } finally {
+    controller.destroy();
+    global.requestAnimationFrame = originalFrame;
+    global.cancelAnimationFrame = originalCancel;
+  }
+});
+
+
+test("console controller ignores a stale conversation after rapid Context selection", async () => {
+  const originalFrame = global.requestAnimationFrame;
+  const originalCancel = global.cancelAnimationFrame;
+  global.requestAnimationFrame = callback => { callback(); return 1; };
+  global.cancelAnimationFrame = () => {};
+  const store = ConsoleStore.create();
+  let slow = false;
+  let release;
+  const api = {
+    console: async () => ({ initial_context_id: "c1", nodes: [{ context_id: "c1" }, { context_id: "c2" }], edges: [] }),
+    facts: async () => ({ facts: [] }),
+    conversation: async (_loopId, contextId) => {
+      if (slow && contextId === "c1") await new Promise(resolve => { release = resolve; });
+      return { context_id: contextId, messages: [], range: { start: 0, end: 0 }, has_more: false };
+    },
+  };
+  const controller = ConsoleController.create({ api, store });
+  try {
+    await controller.load("l1");
+    slow = true;
+    const stale = controller.selectContext("c1");
+    const current = controller.selectContext("c2");
+    await current;
+    release();
+    await stale;
+    assert.equal(store.get().selectedContextId, "c2");
+    assert.equal(store.get().conversation.context_id, "c2");
+  } finally {
+    controller.destroy();
+    global.requestAnimationFrame = originalFrame;
+    global.cancelAnimationFrame = originalCancel;
+  }
+});
+
+
+test("console controller follows the fact run cursor and prepends older evidence", async () => {
+  const originalFrame = global.requestAnimationFrame;
+  const originalCancel = global.cancelAnimationFrame;
+  global.requestAnimationFrame = callback => { callback(); return 1; };
+  global.cancelAnimationFrame = () => {};
+  const store = ConsoleStore.create();
+  const beforeValues = [];
+  const api = {
+    console: async () => ({ initial_context_id: "c1", nodes: [{ context_id: "c1" }], edges: [] }),
+    conversation: async () => ({ context_id: "c1", revision: { revision_id: "r1" }, messages: [], range: { start: 0, end: 0 }, has_more: false }),
+    facts: async (_loopId, options) => {
+      beforeValues.push(options.before ?? null);
+      return options.before == null
+        ? { facts: [{ fact_id: "f2" }], range: { start: 1, end: 2 }, has_more: true, next_before: 1 }
+        : { facts: [{ fact_id: "f1" }], range: { start: 0, end: 1 }, has_more: false, next_before: null };
+    },
+  };
+  const controller = ConsoleController.create({ api, store });
+  try {
+    await controller.load("l1");
+    await controller.loadOlderFacts();
+    assert.deepEqual(beforeValues, [null, 1]);
+    assert.deepEqual(store.get().facts.facts.map(item => item.fact_id), ["f1", "f2"]);
+  } finally {
+    controller.destroy();
+    global.requestAnimationFrame = originalFrame;
+    global.cancelAnimationFrame = originalCancel;
+  }
+});
+
+
+test("console controller reloads authoritative facts for type and abnormal status filters", async () => {
+  const originalFrame = global.requestAnimationFrame;
+  const originalCancel = global.cancelAnimationFrame;
+  global.requestAnimationFrame = callback => { callback(); return 1; };
+  global.cancelAnimationFrame = () => {};
+  const store = ConsoleStore.create();
+  const requests = [];
+  const api = {
+    console: async () => ({ initial_context_id: "c1", nodes: [{ context_id: "c1" }], edges: [] }),
+    conversation: async () => ({ context_id: "c1", revision: { revision_id: "r1" }, messages: [], range: { start: 0, end: 0 }, has_more: false }),
+    facts: async (_loopId, options) => {
+      requests.push({ kind: options.kind ?? null, status: options.status ?? null });
+      return { facts: [], range: { start: 0, end: 0 }, has_more: false, next_before: null };
+    },
+  };
+  const controller = ConsoleController.create({ api, store });
+  try {
+    await controller.load("l1");
+    await controller.setFactFilter("test");
+    await controller.setFactStatus("failed");
+    assert.deepEqual(requests, [
+      { kind: null, status: null },
+      { kind: "test", status: null },
+      { kind: "test", status: "failed" },
+    ]);
+  } finally {
+    controller.destroy();
+    global.requestAnimationFrame = originalFrame;
+    global.cancelAnimationFrame = originalCancel;
+  }
+});
+
+
+test("console controller binds and disconnects native pagination and resize observers", () => {
+  const originals = {
+    frame: global.requestAnimationFrame,
+    cancel: global.cancelAnimationFrame,
+    intersection: global.IntersectionObserver,
+    resize: global.ResizeObserver,
+  };
+  global.requestAnimationFrame = callback => { callback(); return 1; };
+  global.cancelAnimationFrame = () => {};
+  const intersections = [];
+  const resizes = [];
+  global.IntersectionObserver = class {
+    constructor(callback, options) { this.callback = callback; this.options = options; this.disconnected = false; intersections.push(this); }
+    observe(target) { this.target = target; }
+    disconnect() { this.disconnected = true; }
+  };
+  global.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; this.disconnected = false; resizes.push(this); }
+    observe(target) { this.target = target; }
+    disconnect() { this.disconnected = true; }
+  };
+  const historySentinel = {};
+  const factSentinel = {};
+  const transcript = { querySelector: selector => selector === "[data-loop-history-sentinel]" ? historySentinel : null };
+  const factList = { querySelector: selector => selector === "[data-loop-fact-sentinel]" ? factSentinel : null };
+  const layout = { style: { gridTemplateColumns: "", removeProperty() {} }, getBoundingClientRect: () => ({ left: 0, width: 1000 }) };
+  const listeners = new Map();
+  const handle = {
+    addEventListener(type, callback) { listeners.set(type, callback); },
+    removeEventListener(type) { listeners.delete(type); },
+    setAttribute() {},
+    hasPointerCapture() { return false; },
+  };
+  const container = {
+    querySelector(selector) {
+      return ({
+        ".loop-console-main": layout,
+        "[data-loop-console-resizer]": handle,
+        "[data-loop-transcript]": transcript,
+        "[data-loop-fact-list]": factList,
+      })[selector] || null;
+    },
+  };
+  const store = ConsoleStore.create();
+  const controller = ConsoleController.create({ api: {}, store });
+  try {
+    controller.bind(container);
+    assert.equal(intersections.length, 2);
+    assert.equal(intersections[0].options.root, transcript);
+    assert.equal(intersections[1].options.root, factList);
+    assert.equal(resizes.length, 1);
+    assert.equal(resizes[0].target, layout);
+  } finally {
+    controller.destroy();
+    assert.ok(intersections.every(observer => observer.disconnected));
+    assert.ok(resizes.every(observer => observer.disconnected));
+    global.requestAnimationFrame = originals.frame;
+    global.cancelAnimationFrame = originals.cancel;
+    global.IntersectionObserver = originals.intersection;
+    global.ResizeObserver = originals.resize;
+  }
+});
+
+
+test("portfolio, conversation and facts views expose selected Context without polluting message body", () => {
+  const manifest = { health: "observing", nodes: [{ context_id: "c1", title: "Tests", topic: "Testing", purpose: "Verify failures", status: "active", revision: { generation: 2 }, counts: { runs: 3 } }], edges: [] };
+  const map = PortfolioMap.render(manifest, "c1");
+  assert.match(map, /Testing/);
+  assert.match(map, /data-action="loop-select-context"/);
+  const state = { manifest, selectedContextId: "c1", interventionMode: "direct_context_message", messageFilter: "all", messageSearch: "", factFilter: "all", factScope: "current", conversation: { revision: { generation: 2 }, total: 1, has_more: false, messages: [{ index: 0, message: { role: "human", content: "Run tests" }, provenance: { source_kind: "delegated_patrol" } }] }, facts: { facts: [{ fact_id: "f1", context_id: "c1", kind: "test", status: "verified", title: "测试结果", summary: "12 passed", metrics: { passed: 12, failed: 0, skipped: 0, count_status: "exact" }, evidence: { message_id: "m1" } }] } };
+  const conversation = Conversation.render(state);
+  assert.match(conversation, /完整 Context 会话/);
+  assert.match(conversation, /Patrol delegated/);
+  assert.match(conversation, />Run tests</);
+  const facts = Facts.render(state);
+  assert.match(facts, /12 passed/);
+});
+
+
+test("portfolio map renders every source edge for a multi-parent Context", () => {
+  const manifest = {
+    health: "observing",
+    nodes: [
+      { context_id: "implementation", topic: "Implementation", purpose: "Build", status: "active", counts: {} },
+      { context_id: "testing", topic: "Testing", purpose: "Verify", status: "active", counts: {} },
+      { context_id: "release", topic: "Release", purpose: "Synthesize", status: "active", counts: {} },
+    ],
+    edges: [
+      { source_context_id: "implementation", target_context_id: "release" },
+      { source_context_id: "testing", target_context_id: "release" },
+    ],
+  };
+  const html = PortfolioMap.render(manifest, "release");
+  assert.equal((html.match(/<path /g) || []).length, 2);
+  assert.match(html, /3 个 Context 正在演化/);
 });
 
 

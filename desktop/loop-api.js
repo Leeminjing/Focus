@@ -1,7 +1,8 @@
 /*
  * 本文件对外提供 Agent Loop HTTP 与持久事件协议入口。
- * 输入为桌面运行时、Loop 请求和事件游标；输出为规范化响应与可恢复事件订阅。
- * 具体工作流为封装同源 API、校验事件信封并交给 Loop Store；示例：`FocusLoopApi.create(runtime)`。
+ * 输入为桌面运行时、Loop 请求、控制台查询和事件游标；输出为规范化响应、分页会话、事实与可恢复事件订阅。
+ * 具体工作流为封装同源 API，Context 直接发言复用 Main Run，Patrol 意图走独立介入端口。
+ * 示例：`FocusLoopApi.create(runtime)`。
  */
 (function (root, factory) {
   const api = factory();
@@ -49,6 +50,44 @@
       control: (loopId, command) => request(`/${encodeURIComponent(loopId)}/control`, { method: "POST", body: JSON.stringify({ command }) }),
       mutateGrant: (loopId, body) => request(`/${encodeURIComponent(loopId)}/grant`, { method: "POST", body: JSON.stringify(body) }),
       override: (loopId, body) => request(`/${encodeURIComponent(loopId)}/override`, { method: "POST", body: JSON.stringify(body) }),
+      intervene: (loopId, body) => request(`/${encodeURIComponent(loopId)}/interventions`, { method: "POST", body: JSON.stringify(body) }),
+      console: loopId => request(`/${encodeURIComponent(loopId)}/console`),
+      conversation: (loopId, contextId, options = {}) => {
+        const query = new URLSearchParams();
+        if (options.revisionId) query.set("revision_id", options.revisionId);
+        if (options.before != null) query.set("before", String(options.before));
+        if (options.limit) query.set("limit", String(options.limit));
+        return request(`/${encodeURIComponent(loopId)}/contexts/${encodeURIComponent(contextId)}/conversation${query.size ? `?${query}` : ""}`, { signal: options.signal });
+      },
+      facts: (loopId, options = {}) => {
+        const query = new URLSearchParams();
+        if (options.contextId) query.set("context_id", options.contextId);
+        if (options.kind) query.set("kind", options.kind);
+        if (options.status) query.set("status", options.status);
+        if (options.before != null) query.set("before", String(options.before));
+        if (options.limit) query.set("limit", String(options.limit));
+        return request(`/${encodeURIComponent(loopId)}/facts${query.size ? `?${query}` : ""}`, { signal: options.signal });
+      },
+      async directMessage(contextId, content) {
+        const taskResponse = await fetchImpl(`${root}/tasks/${encodeURIComponent(contextId)}`, { headers });
+        const task = await taskResponse.json();
+        if (!taskResponse.ok) throw new Error(task?.detail || "Context 装备读取失败");
+        const equipment = task?.ui_state?._main_run_equipment || {};
+        const response = await fetchImpl(`${root}/tasks/${encodeURIComponent(contextId)}/main/runs`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            message: content,
+            model_name: equipment.model_name || null,
+            skills: Array.isArray(equipment.skills) ? equipment.skills : [],
+            permissions: Array.isArray(equipment.permissions) && equipment.permissions.length ? equipment.permissions : ["read", "write"],
+            access_mode: equipment.access_mode || "workspace",
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload?.detail?.message || payload?.detail || "Context 消息发送失败");
+        return payload;
+      },
       events: (loopId, after = 0) => request(`/${encodeURIComponent(loopId)}/events?after=${Number(after) || 0}`),
       revision: async revisionId => {
         const response = await fetchImpl(`${root}/context-revisions/${encodeURIComponent(revisionId)}`, { headers });

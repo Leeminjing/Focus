@@ -1,7 +1,8 @@
 r"""本文件对外提供 LoopObservationService、StructuredPatrolDecisionModel 与 LoopRoundOrchestrator。
 
 输入为持久 Loop/round/goal/grant、bounded Context frontier、Run/workspace/Worker 事实和模型配置；输出为
-不可变 observation、Patrol decision intent 与 Kernel commit 结果。具体工作流为系统冻结并持久化观察，
+不可变 observation、Patrol decision intent 与 Kernel commit 结果。具体工作流为系统冻结 Context frontier、
+待处理用户意图与持久事实并保存观察，
 模型只返回无权 proposal，系统绑定唯一 holder 和全部版本，PortfolioPatrol 记录 attempt，最后 Kernel
 校验并提交。示例：`await orchestrator.process(claim)`。
 """
@@ -32,6 +33,7 @@ from backend.app.desktop.agent_loop.models import (
     LoopObservation,
     LoopPendingDecision,
     LoopRound,
+    LoopUserIntent,
     LoopWorkerRequest,
 )
 from backend.app.desktop.agent_loop.observation import LoopObservationBuilder, observation_hash
@@ -48,6 +50,8 @@ from focus.runtime.runs.usage import ModelUsage, callback_usage
 
 PATROL_SYSTEM_CONTRACT = """你是 Focus Portfolio Patrol，是用户当前 Agent Loop 的唯一可撤销委托权力持有者。
 你负责观察 Context Portfolio、判断下一步、决定是否复用或派生 Context，并生成代表用户控制域的下一条指令。
+observation.user_intents 是用户在系统审计层直接交给你的新意见：context scope 只约束目标 Context，
+portfolio scope 约束整体分工；它们优先于你此前尚未提交的判断，但不会作为消息注入执行 Agent。
 正常情况由你直接判断；只有并行策展多个 Lane 或独立完成验证确有必要时才请求 Worker。
 create/update/merge 的 plan 必须只引用 observation 中带完整命名空间的 immutable revision 和 message_id；
 你选择引用与编排方式，Focus 会从真实 revision 重建 evidence 并确定性编译，不能在 plan 中伪造消息正文。
@@ -127,6 +131,22 @@ class LoopObservationService:
         usage = await session.get(LoopBudgetUsage, loop.loop_id)
         pending = list((await session.scalars(select(LoopPendingDecision).where(LoopPendingDecision.loop_id == loop.loop_id, LoopPendingDecision.status == "pending"))).all())
         workers = list((await session.scalars(select(LoopWorkerRequest).where(LoopWorkerRequest.loop_id == loop.loop_id, LoopWorkerRequest.status.in_(["success", "error"])).order_by(LoopWorkerRequest.created_at.desc()).limit(16))).all())
+        user_intents = list(
+            (
+                await session.scalars(
+                    select(LoopUserIntent)
+                    .where(
+                        LoopUserIntent.loop_id == loop.loop_id,
+                        LoopUserIntent.status == "pending",
+                    )
+                    .order_by(LoopUserIntent.created_at)
+                    .limit(32)
+                )
+            ).all()
+        )
+        for intent in user_intents:
+            intent.status = "observed"
+            intent.observed_round_id = round_row.round_id
         slot = await session.scalar(select(WorkspaceSlot).where(WorkspaceSlot.workspace_id == loop.workspace_id, WorkspaceSlot.kind == "authoritative", WorkspaceSlot.lifecycle != "deleted"))
         return self._builder.build(
             loop_id=loop.loop_id,
@@ -143,6 +163,17 @@ class LoopObservationService:
             budget={"limits": grant.budgets, "usage": self._usage(usage, loop, len(memberships))},
             pending_decisions=tuple({"kind": row.kind, "delegable": row.delegable, "payload": row.payload} for row in pending),
             worker_results=tuple({"request_id": row.worker_request_id, "kind": row.kind, "status": row.status, "result": row.result} for row in workers),
+            user_intents=tuple(
+                {
+                    "intent_id": row.intent_id,
+                    "scope": row.scope,
+                    "context_id": row.target_context_id,
+                    "content": row.content,
+                    "goal_revision": row.goal_revision,
+                    "authority_revision": row.authority_revision,
+                }
+                for row in user_intents
+            ),
             expansion_handles=tuple({"context_id": item["context_id"], "revision_id": item["revision_id"]} for item in frontier if item.get("revision_id")),
         )
 

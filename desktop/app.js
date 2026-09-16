@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
  * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
- * 对话/Context/Agent/Commitment/压缩/插件与 Agent Loop 等视图；逐轮材料以有序 binding 草稿和独立图片必看
+ * 对话/Context/Agent/Commitment/压缩/插件与模块化 Agent Loop Portfolio 控制台等视图；逐轮材料以有序 binding 草稿和独立图片必看
  * 集合表达，自定义分组是服务端事实，分组模式与折叠是任务 UI 偏好。工作流在任务切换时加载
  * 材料、历史和分组，用纯函数规范化选择/分组，再通过单一异步事件边界更新 DOM 和运行状态；
  * 对话增量对账会保留同 key 工具事件的 DOM 身份与展开状态，仅同步变化后的状态和内容。
@@ -183,6 +183,16 @@ const accessMode = window.FocusAccessMode;
 const loopApi = window.FocusLoopApi?.create(runtime);
 const loopStore = window.FocusLoopStore?.create();
 const loopView = window.FocusLoopView;
+const loopConsoleView = window.FocusLoopConsoleView;
+const loopConsoleStore = window.FocusLoopConsoleStore?.create();
+const loopConsoleController = loopApi && loopConsoleStore && window.FocusLoopConsoleController
+  ? window.FocusLoopConsoleController.create({
+      api: loopApi,
+      store: loopConsoleStore,
+      onChange: () => { if (state.view === "loop") patchLoopConsole(); },
+    })
+  : null;
+let loopLifecycleFrame = null;
 const accessApproval = window.FocusAccessApproval;
 interfaceI18n.apply(document);
 // f18 插件视图宿主:插件前端脚本加载后经此注册视图与材料打开器
@@ -714,7 +724,10 @@ async function openLoopView() {
   state.inspector.open = false;
   const task = activeTask();
   state.loop.loopId = task ? localStorage.getItem(`focus-agent-loop:${task.task_id}`) : null;
-  if (!state.loop.loopId) loopStore?.load(null);
+  if (!state.loop.loopId) {
+    loopStore?.load(null);
+    loopConsoleStore?.reset();
+  }
   render();
   if (!task || !loopApi) return;
   state.loop.loading = true;
@@ -732,6 +745,7 @@ async function openLoopView() {
     loopStore.reconcile(snapshot);
     loopStore.apply(await loopApi.events(state.loop.loopId, loopStore.get().cursor));
     loopStore.reconcileRelated(await loopApi.related(snapshot));
+    await loopConsoleController?.load(state.loop.loopId);
     startLoopStream();
     scheduleLoopPoll();
   } catch (error) {
@@ -747,13 +761,59 @@ function renderLoop() {
     app.innerHTML = '<section class="empty-state"><h1>Agent Loop</h1><p>Loop 视图模块不可用。</p></section>';
     return;
   }
+  const priorTranscript = app.querySelector?.("[data-loop-transcript]");
+  const priorMap = app.querySelector?.(".portfolio-map-scroll");
+  const priorSearch = app.querySelector?.("[data-loop-message-search]");
+  const priorComposer = app.querySelector?.("#loopInterventionForm textarea");
+  const focusedLoopField = document.activeElement === priorSearch ? "search" : document.activeElement === priorComposer ? "composer" : null;
+  const viewport = {
+    transcriptTop: priorTranscript?.scrollTop || 0,
+    transcriptHeight: priorTranscript?.scrollHeight || 0,
+    transcriptRangeStart: Number(priorTranscript?.dataset.rangeStart || 0),
+    transcriptNearBottom: priorTranscript ? priorTranscript.scrollHeight - priorTranscript.scrollTop - priorTranscript.clientHeight < 48 : true,
+    mapTop: priorMap?.scrollTop || 0,
+    mapLeft: priorMap?.scrollLeft || 0,
+    search: priorSearch?.value || "",
+    composer: priorComposer?.value || "",
+    focusedLoopField,
+    selectionStart: focusedLoopField ? document.activeElement.selectionStart : null,
+    selectionEnd: focusedLoopField ? document.activeElement.selectionEnd : null,
+  };
   const task = activeTask();
   const detail = task ? state.details.get(task.task_id) : null;
   app.innerHTML = loopView.render(loopStore.get(), task ? {
     ...task,
     active_run: detail?.active_run || task.active_run,
     latest_direct_user_run: detail?.latest_direct_user_run,
-  } : {});
+  } : {}, loopConsoleStore?.get());
+  const nextTranscript = app.querySelector?.("[data-loop-transcript]");
+  const nextMap = app.querySelector?.(".portfolio-map-scroll");
+  const nextSearch = app.querySelector?.("[data-loop-message-search]");
+  const nextComposer = app.querySelector?.("#loopInterventionForm textarea");
+  if (nextSearch && viewport.search) {
+    nextSearch.value = viewport.search;
+    const query = viewport.search.trim().toLowerCase();
+    app.querySelectorAll("[data-loop-transcript] .loop-message").forEach(message => {
+      message.hidden = !message.textContent.toLowerCase().includes(query);
+    });
+  }
+  if (nextComposer && viewport.composer) nextComposer.value = viewport.composer;
+  const nextFocused = viewport.focusedLoopField === "search" ? nextSearch : viewport.focusedLoopField === "composer" ? nextComposer : null;
+  if (nextFocused) {
+    nextFocused.focus({ preventScroll: true });
+    nextFocused.setSelectionRange(viewport.selectionStart, viewport.selectionEnd);
+  }
+  if (nextTranscript) {
+    const prepended = Number(nextTranscript.dataset.rangeStart || 0) < viewport.transcriptRangeStart;
+    nextTranscript.scrollTop = viewport.transcriptNearBottom
+      ? nextTranscript.scrollHeight
+      : viewport.transcriptTop + (prepended ? Math.max(0, nextTranscript.scrollHeight - viewport.transcriptHeight) : 0);
+  }
+  if (nextMap) {
+    nextMap.scrollTop = viewport.mapTop;
+    nextMap.scrollLeft = viewport.mapLeft;
+  }
+  loopConsoleController?.bind(app);
   if (state.loop.revisionSnapshot) {
     const revision = state.loop.revisionSnapshot;
     const messages = revision.messages || revision.authored_messages || revision.execution_messages || [];
@@ -761,6 +821,24 @@ function renderLoop() {
   }
   const error = loopStore.get().error;
   if (error) app.insertAdjacentHTML("beforeend", `<p class="loop-error" role="alert">${escapeHtml(error)}</p>`);
+}
+
+function patchLoopConsole() {
+  if (state.view !== "loop") return;
+  if (!loopConsoleView?.patch?.(app, loopConsoleStore?.get())) {
+    renderLoop();
+    return;
+  }
+  loopConsoleController?.bind(app);
+}
+
+function scheduleLoopLifecyclePatch() {
+  if (loopLifecycleFrame !== null) return;
+  loopLifecycleFrame = requestAnimationFrame(() => {
+    loopLifecycleFrame = null;
+    if (state.view !== "loop") return;
+    if (!loopView?.patchLifecycle?.(app, loopStore?.get())) renderLoop();
+  });
 }
 
 async function openLoopRevision(revisionId) {
@@ -783,6 +861,7 @@ function scheduleLoopPoll() {
       loopStore.reconcile(snapshot);
       loopStore.apply(await loopApi.events(loopId, loopStore.get().cursor));
       loopStore.reconcileRelated(await loopApi.related(snapshot));
+      await loopConsoleController?.refresh();
       renderLoop();
     } catch (error) {
       loopStore.fail(error);
@@ -814,14 +893,14 @@ function startLoopStream() {
       try {
         await loopApi.stream(loopId, loopStore.get().cursor, events => {
           loopStore.apply(events);
-          renderLoop();
+          scheduleLoopLifecyclePatch();
           scheduleLoopRefresh(loopId);
         }, controller.signal);
         retryDelay = 500;
       } catch (error) {
         if (controller.signal.aborted || error?.name === "AbortError") return;
         loopStore.fail(error);
-        renderLoop();
+        scheduleLoopLifecyclePatch();
       }
       await new Promise(resolve => setTimeout(resolve, retryDelay));
       retryDelay = Math.min(retryDelay * 2, 5000);
@@ -837,10 +916,11 @@ function scheduleLoopRefresh(loopId) {
       const snapshot = await loopApi.get(loopId);
       loopStore.reconcile(snapshot);
       loopStore.reconcileRelated(await loopApi.related(snapshot));
+      await loopConsoleController?.refresh();
     } catch (error) {
       loopStore.fail(error);
     }
-    renderLoop();
+    scheduleLoopLifecyclePatch();
   }, 120);
 }
 
@@ -883,6 +963,7 @@ async function startAgentLoop(form) {
     state.loop.loopId = snapshot.loop_id;
     localStorage.setItem(`focus-agent-loop:${task.task_id}`, snapshot.loop_id);
     loopStore.load(snapshot);
+    await loopConsoleController?.load(snapshot.loop_id);
     renderLoop();
     startLoopStream();
     scheduleLoopPoll();
@@ -6008,6 +6089,14 @@ async function handleDocumentClick(event) {
   if (action === "show-agents") return openInspector("agents", button);
   if (action === "show-loop") return openLoopView();
   if (action === "loop-control") return controlLoop(button.dataset.loopControl);
+  if (action === "loop-select-context") return loopConsoleController?.selectContext(button.dataset.contextId);
+  if (action === "loop-load-older") return loopConsoleController?.loadOlder();
+  if (action === "loop-load-older-facts") return loopConsoleController?.loadOlderFacts();
+  if (action === "loop-intervention-mode") return loopConsoleStore?.setMode(button.dataset.mode);
+  if (action === "loop-message-filter") return loopConsoleStore?.setMessageFilter(button.dataset.filter);
+  if (action === "loop-fact-filter") return loopConsoleController?.setFactFilter(button.dataset.filter);
+  if (action === "loop-fact-status") return loopConsoleController?.setFactStatus(button.dataset.status);
+  if (action === "loop-fact-scope") return loopConsoleController?.setFactScope(button.dataset.scope);
   if (action === "loop-revoke-grant") return mutateAgentLoopGrant({ command: "revoke" });
   if (action === "open-loop-revision") return openLoopRevision(button.dataset.openRevision);
   if (action === "close-loop-revision") { state.loop.revisionSnapshot = null; return renderLoop(); }
@@ -6727,6 +6816,15 @@ document.addEventListener("submit", event => {
     runUiAction(() => adjustAgentLoopBudgets(event.target));
     return;
   }
+  if (event.target.id === "loopInterventionForm") {
+    event.preventDefault();
+    const form = event.target;
+    runUiAction(async () => {
+      await loopConsoleController?.submit(new FormData(form).get("content"));
+      form.reset();
+    });
+    return;
+  }
   if (event.target.id !== "agentInspectorContinueForm") return;
   event.preventDefault();
   runUiAction(continueAgentDetails);
@@ -6749,6 +6847,14 @@ document.addEventListener("change", event => {
   runUiAction(async () => {
     try { await uploadMaterialFile(file); }
     finally { input.value = ""; }
+  });
+});
+
+document.addEventListener("input", event => {
+  if (!event.target.matches?.("[data-loop-message-search]")) return;
+  const query = event.target.value.trim().toLowerCase();
+  app.querySelectorAll("[data-loop-transcript] .loop-message").forEach(message => {
+    message.hidden = Boolean(query) && !message.textContent.toLowerCase().includes(query);
   });
 });
 
@@ -6793,6 +6899,8 @@ document.addEventListener("focus:languagechange", () => {
 
 window.addEventListener("beforeunload", () => {
   stopLoopStream();
+  if (loopLifecycleFrame !== null) cancelAnimationFrame(loopLifecycleFrame);
+  loopConsoleController?.destroy();
   materialContentLoader.releaseAll();
 });
 

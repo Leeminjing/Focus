@@ -1,4 +1,4 @@
-r"""本文件对外提供 Context-Governed Agent Loop 模块边界与声明式文件头静态测试。
+r"""本文件对外提供 Context-Governed Agent Loop 后端、Console 模块边界与声明式文件头静态测试。
 
 输入为新增后端领域模块和 Desktop 入口源码；输出为文件头完整性与依赖方向断言。
 具体工作流为扫描每个约定文件、解析 Python import，并拒绝缺失说明或越层依赖。
@@ -34,6 +34,12 @@ DESKTOP_MODULES = (
     "context-evolution-view.js",
     "message-provenance-view.js",
     "workspace-slots-view.js",
+    "loop-console-store.js",
+    "loop-console-controller.js",
+    "portfolio-map-view.js",
+    "context-conversation-view.js",
+    "loop-facts-view.js",
+    "loop-console-view.js",
 )
 HEADER_MARKERS = ("本文件对外提供", "输入为", "输出为", "具体工作流为", "示例")
 
