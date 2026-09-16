@@ -49,6 +49,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -206,6 +207,18 @@ def _default_state(app_config: AppConfig) -> tuple[str | None, str | None]:
         return None, str(exc)
 
 
+def _default_model_override() -> str | None:
+    """当前生效的 FOCUS_MODEL 覆盖值（未设置时 None）。
+
+    它是最高优先级的默认模型来源，所以界面 MUST 能看见它在起作用——否则勾了「默认模型」
+    的人会以为自己说了算，实际跑的是环境变量指的那个条目。
+    """
+    from focus.config.app_config import DEFAULT_MODEL_ENV_VAR
+
+    value = (os.environ.get(DEFAULT_MODEL_ENV_VAR) or "").strip()
+    return value or None
+
+
 def settings_snapshot(app_config: AppConfig, config_name: str = CONFIG_FILE_NAME) -> dict:
     """设置页所需的完整快照。"""
     default_name, default_error = _default_state(app_config)
@@ -224,6 +237,8 @@ def settings_snapshot(app_config: AppConfig, config_name: str = CONFIG_FILE_NAME
         "curation_output_methods": list(_CURATION_OUTPUT_METHODS),
         "default_model_name": default_name,
         "default_error": default_error,
+        # 环境变量压过面板里的默认选择时必须可见：否则界面显示的「默认」徽标会骗人
+        "default_model_override": _default_model_override(),
         "curation_default_model_name": curated[0] if curated else None,
         "config_file": str(Path(config_name)),
     }
@@ -548,25 +563,54 @@ async def probe_model_connection(entry: dict, api_key_value: str | None = None) 
     return {"ok": True, "reason": "连接成功"}
 
 
+def _provider_message(exc: Exception) -> str:
+    """取供应商自己给出的错误原文（通常一句话就点明了原因），没有则返回空串。
+
+    必须带上它：不同兼容层对同一类问题的状态码并不一致——例如「模型不存在」既可能是
+    404，也可能是 400 + `Model Not Exist`。只报状态码会让人无从下手。
+    """
+    response = getattr(exc, "response", None)
+    payload = None
+    if response is not None:
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+    for candidate in (payload, getattr(exc, "body", None)):
+        if not isinstance(candidate, dict):
+            continue
+        error = candidate.get("error")
+        if isinstance(error, dict) and isinstance(error.get("message"), str):
+            return error["message"].strip()
+        if isinstance(error, str) and error.strip():
+            return error.strip()
+        if isinstance(candidate.get("message"), str) and candidate["message"].strip():
+            return candidate["message"].strip()
+    return ""
+
+
 def _describe_failure(exc: Exception) -> str:
-    """把供应商/网络异常转成可读原因，不泄漏请求细节。"""
+    """把供应商/网络异常转成可读原因：状态码 + 供应商原文，不泄漏请求细节。"""
     try:
         import openai
     except ImportError:  # pragma: no cover - openai 是 langchain-openai 的依赖
         return f"{type(exc).__name__}: 连接失败"
 
+    detail = _provider_message(exc)
+    suffix = f"：{detail[:200]}" if detail else ""
+
     if isinstance(exc, openai.AuthenticationError):
-        return "凭据被拒绝（401），请检查密钥"
+        return f"凭据被拒绝（401），请检查密钥{suffix}"
     if isinstance(exc, openai.PermissionDeniedError):
-        return "凭据无权访问该模型（403）"
+        return f"凭据无权访问该模型（403）{suffix}"
     if isinstance(exc, openai.NotFoundError):
-        return "模型标识或端点路径不存在（404）"
+        return f"模型标识或端点路径不存在（404）{suffix}"
     if isinstance(exc, openai.RateLimitError):
-        return "请求被限流（429），请稍后重试"
+        return f"请求被限流（429），请稍后重试{suffix}"
     if isinstance(exc, openai.APITimeoutError):
         return "请求超时，端点无响应"
     if isinstance(exc, openai.APIConnectionError):
         return "端点不可达，请检查地址与网络"
     if isinstance(exc, openai.APIStatusError):
-        return f"端点返回 {exc.status_code}"
+        return f"端点返回 {exc.status_code}（常见于模型标识或请求参数不被接受）{suffix}"
     return f"{type(exc).__name__}: 连接失败"

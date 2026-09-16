@@ -5653,6 +5653,9 @@ function renderModelSettings() {
   if (snapshot.default_error) {
     banners.push(`<p class="settings-model-banner is-error">${escapeHtml(uiText("settings.model_default_error", "默认模型无法解析：{message}", { message: snapshot.default_error }))}</p>`);
   }
+  if (snapshot.default_model_override) {
+    banners.push(`<p class="settings-model-banner is-warn">${escapeHtml(uiText("settings.model_env_override", "环境变量 FOCUS_MODEL 正在覆盖默认模型：{name}；它优先于这里的默认选择。", { name: snapshot.default_model_override }))}</p>`);
+  }
   if (modelSettings.test) {
     const ok = modelSettings.test.state === "ok";
     const running = modelSettings.test.state === "running";

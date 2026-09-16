@@ -140,10 +140,16 @@ const SNAPSHOT = `
     renderModelSettings();
     const emptyHtml = document.querySelector("#modelSettingsHost").innerHTML;
 
+    modelSettings.snapshot = JSON.parse(JSON.stringify(snapshot));
+    modelSettings.snapshot.default_model_override = "deepseek-v4-flash-vision-exp";
+    modelSettings.draft = null;
+    renderModelSettings();
+    const overrideHtml = document.querySelector("#modelSettingsHost").innerHTML;
+
     return {
       listHtml, editorHtml, errorHtml, afterSave, validationErrors, attempted, confirmations,
       afterDelete, afterReset, probeHtml, probes, addedName, addTemplate: addTemplate.use,
-      afterCancel, emptyHtml,
+      afterCancel, emptyHtml, overrideHtml,
     };
   })()`, harness.context);
 
@@ -212,6 +218,9 @@ const SNAPSHOT = `
   // 空目录要给出可理解的引导，而不是空白
   assert.match(result.emptyHtml, /当前没有可用模型条目/);
   assert.match(result.emptyHtml, /data-action="model-add"/);
+
+  // 环境变量覆盖默认模型时必须显式告知：否则「默认模型」徽标会骗人
+  assert.match(result.overrideHtml, /FOCUS_MODEL 正在覆盖默认模型：deepseek-v4-flash-vision-exp/);
 
   console.log("model-settings-ui: all assertions passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

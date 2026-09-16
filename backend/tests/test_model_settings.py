@@ -26,10 +26,20 @@ from backend.app.desktop.model_settings import (
     validate_catalog,
 )
 from backend.app.desktop.model_settings_routes import model_settings_router
-from focus.config.app_config import build_app_config
+from focus.config.app_config import DEFAULT_MODEL_ENV_VAR, build_app_config
 
 _GLOBAL_ENV = "FOCUS_GLOBAL_HOME"
 _KEY_VAR = "FOCUS_TEST_MODEL_KEY"
+
+
+@pytest.fixture(autouse=True)
+def _clear_default_model_override(monkeypatch):
+    """测试 MUST NOT 依赖宿主的 FOCUS_MODEL。
+
+    它是最高优先级的默认模型来源，宿主（或 CI）一旦设置，所有「声明的默认生效」断言都会失真——
+    这不是代码缺陷而是测试的隐式环境依赖，必须在本模块内显式清掉。
+    """
+    monkeypatch.delenv(DEFAULT_MODEL_ENV_VAR, raising=False)
 
 _FILE_CONFIG = """\
 # 发行自带的默认层：程序不该改写这份文件。
@@ -257,6 +267,17 @@ def test_settings_snapshot_reports_effective_defaults(workspace):
     assert snapshot["default_model_name"] == "alpha"
     assert snapshot["curation_default_model_name"] == "alpha"
     assert snapshot["removed_models"] == []
+    assert snapshot["default_model_override"] is None
+
+
+def test_settings_snapshot_exposes_the_env_override(workspace, monkeypatch):
+    """FOCUS_MODEL 压过面板里的默认选择时必须可见，否则界面显示的默认徽标会骗人。"""
+    monkeypatch.setenv(DEFAULT_MODEL_ENV_VAR, "beta")
+
+    snapshot = settings_snapshot(_app_config())
+
+    assert snapshot["default_model_override"] == "beta"
+    assert snapshot["default_model_name"] == "beta"  # 覆盖确实生效了
 
 
 # --- 校验 -----------------------------------------------------------------
@@ -541,6 +562,52 @@ def test_probe_connection_maps_timeout(workspace, monkeypatch):
 
     assert result["ok"] is False
     assert "超时" in result["reason"]
+
+
+def test_probe_connection_surfaces_the_provider_message(workspace, monkeypatch):
+    """「模型不存在」在不同兼容层既可能是 404 也可能是 400 + 原文，必须把原文带出来。"""
+    import httpx
+    import openai
+
+    request = httpx.Request("POST", "https://api.example.com/chat/completions")
+    response = httpx.Response(
+        400,
+        request=request,
+        json={"error": {"message": "Model Not Exist", "type": "invalid_request_error"}},
+    )
+    error = openai.BadRequestError(
+        "bad request", response=response, body={"error": {"message": "Model Not Exist"}}
+    )
+    _patch_model(monkeypatch, error=error)
+
+    result = asyncio.run(probe_model_connection(_entry("alpha")))
+
+    assert result["ok"] is False
+    assert "400" in result["reason"]
+    assert "Model Not Exist" in result["reason"]
+
+
+def test_probe_connection_redacts_the_provider_message_too(workspace, monkeypatch):
+    import httpx
+    import openai
+
+    request = httpx.Request("POST", "https://api.example.com/chat/completions")
+    response = httpx.Response(
+        401,
+        request=request,
+        json={"error": {"message": "invalid api key pending-secret"}},
+    )
+    error = openai.AuthenticationError(
+        "unauthorized",
+        response=response,
+        body={"error": {"message": "invalid api key pending-secret"}},
+    )
+    _patch_model(monkeypatch, error=error)
+
+    result = asyncio.run(probe_model_connection(_entry("alpha"), api_key_value="pending-secret"))
+
+    assert "pending-secret" not in result["reason"]
+    assert "***" in result["reason"]
 
 
 def test_probe_connection_rejects_an_invalid_entry(workspace):

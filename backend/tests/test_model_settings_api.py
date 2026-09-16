@@ -20,7 +20,11 @@ os.environ.setdefault("OPENAI_API_KEY", "desktop-test")
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 from backend.app.gateway.app import app  # noqa: E402
-from focus.config.app_config import apply_app_config, build_app_config  # noqa: E402
+from focus.config.app_config import (  # noqa: E402
+    DEFAULT_MODEL_ENV_VAR,
+    apply_app_config,
+    build_app_config,
+)
 from focus.config.layered import load_layered_maps  # noqa: E402
 
 SESSION = {"X-Focus-Session": "focus-dev-session"}
@@ -31,6 +35,12 @@ stream_bridge:
   type: memory
   queue_maxsize: 512
 """
+
+
+@pytest.fixture(autouse=True)
+def _clear_default_model_override(monkeypatch):
+    """同 test_model_settings.py：宿主的 FOCUS_MODEL 会盖过配置声明的默认，且能让启动自检失败。"""
+    monkeypatch.delenv(DEFAULT_MODEL_ENV_VAR, raising=False)
 
 
 @pytest.fixture
