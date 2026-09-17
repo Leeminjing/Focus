@@ -1,6 +1,6 @@
 r"""本文件对外提供 LoopCoordinator、CoordinatorClaim 与 LoopCoordinatorRuntime。
 
-输入为数据库中的 running Loop、未决 round、Worker/Run/outbox 事实和 coordinator identity；输出为带
+输入为数据库中的 running Loop、未决 round、Worker/Run/outbox 事实、稳定 compression gate 和 coordinator identity；输出为带
 lease 的唯一 round claim 与恢复计数。具体工作流为 skip-locked 领取、fencing stale attempt、由数据库
 状态推进 health；Runtime 启动时执行完整 AgentLoopRecovery，随后消费持久 outbox 并通过 Coordinator
 原子派发 ready wave，进程内 wake 只缩短延迟。示例：`runtime = LoopCoordinatorRuntime(...)`。
@@ -53,10 +53,28 @@ class RecoveryPort(Protocol):
     async def reconcile(self): ...
 
 
+class CompressionGateProjectionPort(Protocol):
+    async def project_settled(self, session, event, run, loop): ...
+
+
+class CompressionResolutionPort(Protocol):
+    async def drain(self) -> int: ...
+    async def reconcile(self) -> int: ...
+    async def settle_run(self, session, event, run, loop) -> str | None: ...
+
+
 class LoopCoordinator:
-    def __init__(self, sessions: async_sessionmaker[AsyncSession], ttl_seconds: int = 60) -> None:
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        ttl_seconds: int = 60,
+        compression_gates: CompressionGateProjectionPort | None = None,
+        compression_resolutions: CompressionResolutionPort | None = None,
+    ) -> None:
         self._sessions = sessions
         self._ttl = ttl_seconds
+        self._compression_gates = compression_gates
+        self._compression_resolutions = compression_resolutions
 
     async def claim(self, owner_id: str) -> CoordinatorClaim | None:
         now = datetime.now(UTC)
@@ -217,8 +235,18 @@ class LoopCoordinator:
                 provenance.context_revision_id = revision_id
         round_row = await session.get(LoopRound, run.round_id, with_for_update=True)
         loop = await session.get(AgentLoop, run.loop_id, with_for_update=True)
-        if round_row is None or loop is None or loop.status != "running" or round_row.status != "running":
+        if round_row is None or loop is None or loop.status != "running":
             return
+        resolution_state = None
+        if self._compression_resolutions is not None:
+            resolution_state = await self._compression_resolutions.settle_run(session, event, run, loop)
+        if resolution_state == "failed":
+            return
+        if round_row.status != "running":
+            return
+        projected_gate = None
+        if self._compression_gates is not None:
+            projected_gate = await self._compression_gates.project_settled(session, event, run, loop)
         usage = await session.get(LoopBudgetUsage, loop.loop_id, with_for_update=True)
         if usage is not None:
             LoopUsageLedger.apply(
@@ -233,6 +261,10 @@ class LoopCoordinator:
         if active:
             round_row.status = "running"
             loop.health = "waiting_runs"
+            return
+        if projected_gate is not None and not projected_gate.delegable:
+            round_row.status = "settled"
+            round_row.settled_at = datetime.now(UTC)
             return
         queued = await session.scalar(select(func.count()).select_from(LoopDirective).where(LoopDirective.round_id == run.round_id, LoopDirective.status == "created"))
         if queued:
@@ -282,13 +314,14 @@ class LoopCoordinator:
 
 
 class LoopCoordinatorRuntime:
-    def __init__(self, coordinator: LoopCoordinator, run_events: RunOutboxConsumer, dispatcher: LoopWaveDispatcher | None = None, orchestrator: RoundOrchestratorPort | None = None, workers: WorkerRuntimePort | None = None, recovery: RecoveryPort | None = None, poll_seconds: float = 1.0) -> None:
+    def __init__(self, coordinator: LoopCoordinator, run_events: RunOutboxConsumer, dispatcher: LoopWaveDispatcher | None = None, orchestrator: RoundOrchestratorPort | None = None, workers: WorkerRuntimePort | None = None, recovery: RecoveryPort | None = None, compression_resolutions: CompressionResolutionPort | None = None, poll_seconds: float = 1.0) -> None:
         self._coordinator = coordinator
         self._run_events = run_events
         self._dispatcher = dispatcher
         self._orchestrator = orchestrator
         self._workers = workers
         self._recovery = recovery
+        self._compression_resolutions = compression_resolutions
         self._poll_seconds = poll_seconds
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
@@ -301,6 +334,8 @@ class LoopCoordinatorRuntime:
         else:
             await self._run_events.recover()
             await self._coordinator.recover()
+        if self._compression_resolutions is not None:
+            await self._compression_resolutions.reconcile()
         self._stop.clear()
         self._task = asyncio.create_task(self._run())
 
@@ -316,6 +351,8 @@ class LoopCoordinatorRuntime:
                 await self._run_events.drain(
                     "agent-loop-coordinator", self._coordinator.handle_run_settled
                 )
+                if self._compression_resolutions is not None:
+                    await self._compression_resolutions.drain()
                 if self._workers is not None:
                     await self._workers.drain()
                 await self._process_round()

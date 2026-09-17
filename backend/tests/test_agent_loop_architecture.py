@@ -48,7 +48,7 @@ def _python_files() -> list[Path]:
     return [
         path
         for package in BACKEND_PACKAGES
-        for path in (BACKEND_ROOT / package).glob("*.py")
+        for path in (BACKEND_ROOT / package).rglob("*.py")
     ]
 
 
@@ -73,7 +73,7 @@ def test_new_domain_files_have_declarative_headers() -> None:
 def test_new_backend_domains_follow_dependency_direction() -> None:
     violations: list[str] = []
     for source_package, allowed in BACKEND_PACKAGES.items():
-        for path in (BACKEND_ROOT / source_package).glob("*.py"):
+        for path in (BACKEND_ROOT / source_package).rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
                 modules = []
@@ -86,3 +86,33 @@ def test_new_backend_domains_follow_dependency_direction() -> None:
                     if target and target != source_package and target not in allowed:
                         violations.append(f"{path.name}: {source_package} -> {target}")
     assert not violations, "非法领域依赖：" + ", ".join(sorted(violations))
+
+
+def test_compression_policy_is_a_pure_domain_module() -> None:
+    path = BACKEND_ROOT / "agent_loop" / "compression_authority" / "policy.py"
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(path))
+    imports = {
+        module
+        for node in ast.walk(tree)
+        for module in (
+            [node.module] if isinstance(node, ast.ImportFrom) else
+            [alias.name for alias in node.names] if isinstance(node, ast.Import) else []
+        )
+        if module
+    }
+    forbidden = ("sqlalchemy", "fastapi", "langchain", "langgraph", "backend.app.gateway", "backend.app.desktop.service")
+    assert not [module for module in imports if module.startswith(forbidden)]
+
+
+def test_compression_authority_keeps_core_methods_bounded() -> None:
+    package = BACKEND_ROOT / "agent_loop" / "compression_authority"
+    oversized: list[str] = []
+    for path in package.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.end_lineno:
+                lines = node.end_lineno - node.lineno + 1
+                if lines > 90:
+                    oversized.append(f"{path.name}:{node.name}={lines}")
+    assert not oversized, "compression authority 出现超长方法：" + ", ".join(oversized)

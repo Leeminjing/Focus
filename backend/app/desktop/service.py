@@ -20,7 +20,8 @@ Agent，协作工具 + Mailbox 注入 + 联网工具）、patrol（小兵机制�
 无 MCP）。持久派生（spawn_teammate/spawn_worker）创建 SwarmAgent 身份并经
 _launch_swarm_run 启动独立命名空间的后台 run；工具错误 middleware 保证可恢复调用闭合，
 主任务运行前的 checkpoint preflight 可从最近合法祖先恢复受损历史；主 Agent 中断恢复
-经 resume_run 按载荷分派承诺层、必看报告、压缩流程与本机资源准入，并沿用被中断 Run 的
+经 resume_run 按载荷分派承诺层、必看报告、压缩流程与本机资源准入；Patrol 自主压缩可附带稳定
+resolution Run identity，但仍沿用被中断 Run 的
 Context revision execution thread/namespace；快捷压缩也在 current revision 的物理 namespace
 原位生成后继 checkpoint，防止恢复或 Context 手术退回 UI 线程的旧历史。
 执行身份：三个持久化启动点（主 run、resume、swarm）与本 UI 状态恢复路径统一经
@@ -1154,7 +1155,12 @@ class DesktopService:
             await session.flush()
         return thread
 
-    async def resume_run(self, thread_id: str, resume: dict[str, Any]) -> PreparedRun:
+    async def resume_run(
+        self,
+        thread_id: str,
+        resume: dict[str, Any],
+        run_identity: dict[str, Any] | None = None,
+    ) -> PreparedRun:
         """主 Agent 中断恢复：按主执行上的未决中断类型分派。
 
         输入:
@@ -1169,7 +1175,8 @@ class DesktopService:
         工作流:
             (1) 依次探测主执行上的三类未决中断：承诺子图审批、压缩请求、准入待决
             (2) 命中后要求 resume 载荷与该类型匹配，并按收敛状态区分「处理中」与「已失去父图」
-            (3) 皆无未决时 409；校验通过后经 _prepare_main_resume 组装主 Agent resume run
+            (3) 皆无未决时 409；校验通过后经 _prepare_main_resume 组装主 Agent resume run；内部
+                autonomous caller 可提供持久 run_identity，普通 API 调用保持直接用户 resume 身份
         """
         async with self.session_factory() as session:
             task = await session.scalar(
@@ -1182,7 +1189,7 @@ class DesktopService:
             if recovery is not None:
                 self._require_resumable(recovery, "commitment_review")
                 return await self._prepare_main_resume(
-                    session, task, await self._resume_workspace(session, task), resume
+                    session, task, await self._resume_workspace(session, task), resume, run_identity
                 )
 
             must_view_recovery = await must_view_recovery_payload(
@@ -1196,6 +1203,7 @@ class DesktopService:
                     task,
                     await self._resume_workspace(session, task),
                     validate_must_view_resume(resume),
+                    run_identity,
                 )
 
             compression_recovery = await compression_recovery_payload(
@@ -1212,7 +1220,7 @@ class DesktopService:
                     )
                 self._require_resumable(compression_recovery, "compression_request")
                 return await self._prepare_main_resume(
-                    session, task, await self._resume_workspace(session, task), resume
+                    session, task, await self._resume_workspace(session, task), resume, run_identity
                 )
 
             access_recovery = await main_pending_interrupt(
@@ -1229,7 +1237,7 @@ class DesktopService:
                     )
                 self._require_resumable(access_recovery, "access_review")
                 return await self._prepare_main_resume(
-                    session, task, await self._resume_workspace(session, task), resume
+                    session, task, await self._resume_workspace(session, task), resume, run_identity
                 )
 
             raise HTTPException(409, "无可恢复的人工决定")
@@ -1266,9 +1274,10 @@ class DesktopService:
         task: DesktopThread,
         workspace: DesktopWorkspace,
         resume: dict[str, Any],
+        run_identity: dict[str, Any] | None = None,
     ) -> PreparedRun:
         """组装主 Agent resume run 的公共尾部：equipment 沿用、新建 DesktopRun、
-        agent_factory 与 RunCreateRequest(resume=...)。"""
+        agent_factory 与 RunCreateRequest(resume=...)；可选 run_identity 为自治恢复保留稳定审计身份。"""
         interrupted_run = await latest_main_run(session, task)
         execution_identity = identity_from_main_run(task, interrupted_run)
         equipment = dict(
@@ -1290,25 +1299,40 @@ class DesktopService:
         equipment.pop("must_view_materials", None)
         equipment.pop("run_image_inputs", None)
         equipment.update(run_materials.to_equipment())
-        run = DesktopRun(
-            run_id=new_id(),
+        identity = dict(run_identity or {})
+        requested_run_id = str(identity.get("run_id") or new_id())
+        run = await session.get(DesktopRun, requested_run_id) if identity.get("run_id") else None
+        if run is not None and run.status != "pending":
+            raise HTTPException(409, "自治恢复 Run 已经启动或终止")
+        run = run or DesktopRun(
+            run_id=requested_run_id,
             task_id=task.task_id,
             agent_id=f"main:{task.task_id}",
             kind="main",
             status="pending",
             input_messages=[],
             model_name=equipment.get("model_name"),
-            origin="resume",
+            origin=str(identity.get("origin") or "resume"),
+            loop_id=identity.get("loop_id"),
+            round_id=identity.get("round_id"),
+            action_id=identity.get("action_id"),
+            idempotency_key=identity.get("idempotency_key"),
             execution_thread_id=execution_identity.thread_id,
             checkpoint_ns=execution_identity.checkpoint_ns,
             context_revision_id=execution_identity.context_revision_id,
             context_checkpoint_id=(
                 interrupted_run.context_checkpoint_id if interrupted_run else None
             ),
+            origin_message_id=(
+                interrupted_run.origin_message_id
+                if interrupted_run is not None
+                else run_materials.origin_message_id
+            ),
             equipment=equipment,
             workspace_anchor={
                 "workspace_id": workspace.workspace_id,
                 "workspace_path": workspace.path,
+                **({"compression_resolution_id": identity["resolution_id"]} if identity.get("resolution_id") else {}),
             },
         )
         session.add(run)

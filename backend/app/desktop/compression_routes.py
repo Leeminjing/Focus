@@ -1,7 +1,8 @@
 """本文件对外提供 compression_router，作为 human-in-the-loop 压缩与关键字快捷压缩的 HTTP 接口层。
 
 输入为带 X-Focus-Session 的桌面请求与 SummarizeRequest / 关键字预览与应用请求；输出为候选
-摘要 JSON、压缩面板消息快照或关键字命中预览/应用结果。消息快照复用
+摘要 JSON、压缩面板消息快照或关键字命中预览/应用结果。具体工作流为快捷 apply 先让用户决定
+取代同一 Loop 的 Patrol 压缩，再复用 DesktopService 的规范压缩编译与 revision 发布；消息快照复用
 DesktopService.get_checkpoint_messages（checkpoint_ns=""）。示例：
 `app.include_router(compression_router)`。
 """
@@ -67,6 +68,9 @@ async def quick_apply(body: QuickApplyRequest, request: Request) -> dict:
     """关键字快捷压缩应用：先按 scrub_terms 机械剥离禁用词，再校验范围写回主图 checkpoint。"""
     service = request.app.state.desktop_service
     try:
+        async with service.session_factory() as session:
+            task, _ = await service._get_task_entities(session, body.task_id)
+        await request.app.state.agent_loop_service.user_resolved_compression_gate(task.thread_id)
         return await service.quick_compression_apply(
             body.task_id, body.ranges, scrub_terms=body.scrub_terms
         )

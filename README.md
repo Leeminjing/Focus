@@ -453,6 +453,16 @@ Their results remain isolated until Patrol explicitly adopts one against the cur
 
 Interrupted Readers may retry only when reconciliation proves the fingerprint unchanged. Writers are never retried blindly.
 
+### Patrol can compress a Context without taking ownership away from the user
+
+New Loops explicitly enable **Allow Patrol to autonomously compress Contexts** by default. This grant is recoverable and revocable: unchecking it creates or narrows a grant without compression authority, and any direct user message, manual compression, goal override, grant change, pause/stop, or newer Context revision supersedes stale Patrol work.
+
+Autonomous compression has four hard stages. `CompressionGate` only raises a stable interrupt. Patrol may inspect a body-free manifest and request bounded exact ranges, while the existing summarizer prepares a non-authoritative candidate. The Kernel rechecks the exact Loop, grant, goal, round, Context revision, checkpoint, frontier, policy, protected anchors, budgets, expiry, and token reduction before it atomically commits one resolution. A leased coordinator then resumes the original LangGraph interrupt through the same `DesktopService.resume_run → execute_prepared_run → RunLifecycleFinalizer` spine used by manual compression.
+
+The existing `apply_compression_ranges` compiler remains the sole message transformer. The checkpoint retains the complete serialized source for restore, while provider requests receive only ordinary summary text: candidate ids, Patrol identity, grant data, resolution metadata, and deleted tombstones never enter model-visible messages.
+
+The Loop console exposes `prepared → accepted/committed → resuming → applied`, plus `expired`, `superseded`, and `failed`, with Context, ranges, estimated/actual reduction, Run, checkpoint, and resulting revision links. Operators can reconcile an expired lease by restarting the gateway; the database determines whether to resume, observe an existing Run, supersede changed-frontier work, or require the user. Rolling back the migration removes only autonomous-compression records and the versioned policy column; it does not alter existing compressed checkpoints or their restore sources.
+
 ### Completion is not self-certification
 
 Completion is not self-certified. An independent Completion Verifier returns criterion-level evidence, and Patrol decides whether to request completion.
@@ -469,7 +479,7 @@ The user can intervene through three explicit authority paths: send a direct Hum
 
 Loop events are replayable over cursor-based SSE. A direct message or **User takeover** advances the goal and authority revisions, superseding any uncommitted Patrol work formed under the previous authority.
 
-Current operational limits: isolated parallel writing requires Git and a clean baseline. Access expansion and other non-delegable gates always require the user.
+Current operational limits: isolated parallel writing requires Git and a clean baseline. Access expansion and other non-delegable gates always require the user. Existing Loop grants are not silently upgraded to autonomous compression; only a root-user grant containing the compression gate, closed capability, and versioned policy can use it.
 
 Context revision history and abandoned Lanes are retained for audit until lifecycle cleanup policy allows removal.
 

@@ -83,6 +83,7 @@ test("console api exposes topology, paginated conversation, facts and scoped int
   await api.facts("l 1", { contextId: "c/1", kind: "test" });
   await api.intervene("l 1", { mode: "patrol_context_intent", context_id: "c/1", content: "Run tests" });
   await api.directMessage("c/1", "Continue the run");
+  await api.restoreCompression("c/1", "compressed-message");
   assert.equal(calls[0].url, "http://focus/desktop/api/agent-loops/l%201/console");
   assert.match(calls[1].url, /conversation\?before=48&limit=24$/);
   assert.match(calls[2].url, /facts\?context_id=c%2F1&kind=test$/);
@@ -90,6 +91,8 @@ test("console api exposes topology, paginated conversation, facts and scoped int
   assert.equal(calls[4].url, "http://focus/desktop/api/tasks/c%2F1");
   assert.equal(calls[5].url, "http://focus/desktop/api/tasks/c%2F1/main/runs");
   assert.deepEqual(JSON.parse(calls[5].options.body), { message: "Continue the run", model_name: null, skills: ["testing"], permissions: ["read"], access_mode: "workspace" });
+  assert.equal(calls[6].url, "http://focus/desktop/api/compression/quick-apply");
+  assert.deepEqual(JSON.parse(calls[6].options.body).ranges, [{ source_ids: ["compressed-message"], restore: true }]);
 });
 
 
@@ -350,11 +353,13 @@ test("portfolio, conversation and facts views expose selected Context without po
   const map = PortfolioMap.render(manifest, "c1");
   assert.match(map, /Testing/);
   assert.match(map, /data-action="loop-select-context"/);
-  const state = { manifest, selectedContextId: "c1", interventionMode: "direct_context_message", messageFilter: "all", messageSearch: "", factFilter: "all", factScope: "current", conversation: { revision: { generation: 2 }, total: 1, has_more: false, messages: [{ index: 0, message: { role: "human", content: "Run tests" }, provenance: { source_kind: "delegated_patrol" } }] }, facts: { facts: [{ fact_id: "f1", context_id: "c1", kind: "test", status: "verified", title: "测试结果", summary: "12 passed", metrics: { passed: 12, failed: 0, skipped: 0, count_status: "exact" }, evidence: { message_id: "m1" } }] } };
+  const state = { manifest, selectedContextId: "c1", interventionMode: "direct_context_message", messageFilter: "all", messageSearch: "", factFilter: "all", factScope: "current", conversation: { revision: { generation: 2 }, total: 2, has_more: false, messages: [{ index: 0, message: { role: "human", content: "Run tests" }, provenance: { source_kind: "delegated_patrol" } }, { index: 1, message: { id: "compressed-1", role: "human", content: "Prior summary", compression: { source: [{ id: "old-1", role: "tool", content: "large output" }] } } }] }, facts: { facts: [{ fact_id: "f1", context_id: "c1", kind: "test", status: "verified", title: "测试结果", summary: "12 passed", metrics: { passed: 12, failed: 0, skipped: 0, count_status: "exact" }, evidence: { message_id: "m1" } }] } };
   const conversation = Conversation.render(state);
   assert.match(conversation, /完整 Context 会话/);
   assert.match(conversation, /Patrol delegated/);
   assert.match(conversation, />Run tests</);
+  assert.match(conversation, /data-action="loop-restore-compression"/);
+  assert.match(conversation, /data-context-id="c1" data-message-id="compressed-1"/);
   const facts = Facts.render(state);
   assert.match(facts, /12 passed/);
 });
@@ -419,6 +424,8 @@ test("delegated source badge stays outside message content", () => {
 
 test("loop view exposes every hard portfolio budget", () => {
   const start = LoopView.render(null, { title: "Ship Focus", active_run: { run_id: "run-initial" } });
+  assert.match(start, /name="autonomousCompression" type="checkbox" checked/);
+  assert.match(start, /原文保留可恢复，授权可随时撤销/);
   for (const field of ["maxRounds", "maxDurationSeconds", "maxModelCalls", "maxInputTokens", "maxOutputTokens", "maxRetries", "maxLanes", "maxContexts", "maxProviders", "maxNewLanesPerRound", "maxConcurrentRuns", "maxNoProgress"]) {
     assert.match(start, new RegExp(`name="${field}"`));
   }
@@ -438,6 +445,29 @@ test("loop view exposes every hard portfolio budget", () => {
   for (const label of ["Rounds 2 / 20", "Duration 90 / 3600s", "Calls 4 / 200", "Input 512 / 10000", "Output 128 / 2000", "Retries 1 / 4", "Lanes 3 / 8", "Contexts 5 / 16", "Providers 2 / 4", "撤销 Patrol 授权"]) {
     assert.match(dashboard, new RegExp(label));
   }
+});
+
+test("loop view exposes autonomous compression status without injecting it into conversation", () => {
+  const html = LoopView.render({
+    snapshot: {
+      loop_id: "l-compression", status: "running", health: "resuming", goal_revision: 1, authority_revision: 1,
+      goal: { goal: "Long task" }, usage: {},
+      grant: { capabilities: ["apply_context_compression"], context_scope: ["context-1"], permission_scope: ["read"], delegable_gates: ["compression"], compression_policy: { version: 1 }, budgets: {} },
+    },
+    related: { audit: {
+      pending_decisions: [{ pending_decision_id: "pending-1", kind: "compression", status: "resolving", payload: { context_id: "context-1" } }],
+      decisions: [{ decision_id: "decision-1", rationale: "Keep this execution identity and remove obsolete debugging history." }],
+      compression_candidates: [{ candidate_id: "candidate-1", context_id: "context-1", status: "accepted", estimated_reduction: 1400, before_tokens: 2000, after_tokens: 600, protection_evidence: [{ reason: "current_direct_user_message", overlap: false }], source_ranges: [{ source_ids: ["m1", "m2"] }] }],
+      compression_resolutions: [{ resolution_id: "resolution-1", decision_id: "decision-1", run_id: "run-1", status: "resuming", actual_reduction: null }],
+    } },
+  }, {}, { manifest: { nodes: [] } });
+  assert.match(html, /Patrol Context 压缩 · 正在恢复 Run/);
+  assert.match(html, /减少约 1400 tokens/);
+  assert.match(html, /current_direct_user_message/);
+  assert.match(html, /Keep this execution identity/);
+  assert.match(html, /打开完整 Context 会话并查看\/恢复来源/);
+  assert.match(html, /允许 Patrol 自主压缩当前 Context/);
+  assert.doesNotMatch(html, /Delegated HumanMessage.*compression/s);
 });
 
 

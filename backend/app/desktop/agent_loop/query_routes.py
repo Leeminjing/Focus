@@ -2,7 +2,8 @@ r"""本文件对外提供 Loop Console、完整会话、事实、Context Evoluti
 
 输入为 Desktop 会话下的 workspace/Context/Program/Loop identity、过滤器与游标；输出为轻量 Portfolio
 拓扑、分页完整会话、可追溯事实、revision graph 和执行 slot。具体工作流为路由把只读参数交给专用
-query service，不修改 Context 或模型输入。示例：`app.include_router(loop_query_router)`。
+query service，不修改 Context 或模型输入；自主压缩 audit 连接 gate、candidate、resolution、Run 与 revision。
+示例：`app.include_router(loop_query_router)`。
 """
 
 from __future__ import annotations
@@ -10,7 +11,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import select
 
-from backend.app.desktop.agent_loop.models import LoopAction, LoopDecision, LoopDirective, LoopPatrolAttempt, LoopWorkerRequest, MessageProvenance
+from backend.app.desktop.agent_loop.models import LoopAction, LoopDecision, LoopDirective, LoopPatrolAttempt, LoopPendingDecision, LoopWorkerRequest, MessageProvenance
+from backend.app.desktop.agent_loop.compression_authority.models import LoopCompressionCandidate, LoopCompressionResolution
 from backend.app.desktop.agent_loop.console_query import LoopConsoleQueryService
 from backend.app.desktop.agent_loop.conversation_query import ContextConversationQueryService
 from backend.app.desktop.agent_loop.fact_projection import LoopFactProjectionService
@@ -139,7 +141,20 @@ async def loop_audit(loop_id: str, request: Request) -> dict:
         attempts = list((await session.scalars(select(LoopPatrolAttempt).where(LoopPatrolAttempt.loop_id == loop_id).order_by(LoopPatrolAttempt.created_at))).all())
         workers = list((await session.scalars(select(LoopWorkerRequest).where(LoopWorkerRequest.loop_id == loop_id).order_by(LoopWorkerRequest.created_at))).all())
         runs = list((await session.scalars(select(DesktopRun).where(DesktopRun.loop_id == loop_id).order_by(DesktopRun.created_at))).all())
-        return {"decisions": [{"decision_id": row.decision_id, "round_id": row.round_id, "rationale": row.rationale, "evidence": row.evidence, "status": row.status, "rejection": row.rejection} for row in decisions], "actions": [{"action_id": row.action_id, "decision_id": row.decision_id, "type": row.action_type, "payload": row.payload, "status": row.status, "result": row.result} for row in actions], "directives": [{"directive_id": row.directive_id, "round_id": row.round_id, "decision_id": row.decision_id, "action_id": row.action_id, "message_id": row.message_id, "target_context_id": row.target_context_id, "target_context_revision_id": row.target_context_revision_id, "content": row.content, "actor_kind": row.actor_kind, "actor_id": row.actor_id, "grant_id": row.grant_id, "grant_revision": row.grant_revision, "goal_revision": row.goal_revision, "status": row.status, "launched_run_id": row.launched_run_id} for row in directives], "patrol_attempts": [{"attempt_id": row.patrol_attempt_id, "round_id": row.round_id, "attempt": row.attempt, "status": row.status, "error": row.error} for row in attempts], "workers": [{"worker_request_id": row.worker_request_id, "round_id": row.round_id, "kind": row.kind, "scope": row.scope, "status": row.status, "result": row.result} for row in workers], "runs": [{"run_id": row.run_id, "round_id": row.round_id, "action_id": row.action_id, "directive_id": row.directive_id, "context_id": row.task_id, "context_revision_id": row.context_revision_id, "status": row.status, "workspace_anchor": row.workspace_anchor, "workspace_result": row.workspace_result, "error": row.error} for row in runs]}
+        pending_decisions = list((await session.scalars(select(LoopPendingDecision).where(LoopPendingDecision.loop_id == loop_id).order_by(LoopPendingDecision.created_at))).all())
+        candidates = list((await session.scalars(select(LoopCompressionCandidate).where(LoopCompressionCandidate.loop_id == loop_id).order_by(LoopCompressionCandidate.created_at))).all())
+        resolutions = list((await session.scalars(select(LoopCompressionResolution).where(LoopCompressionResolution.loop_id == loop_id).order_by(LoopCompressionResolution.created_at))).all())
+        return {
+            "decisions": [{"decision_id": row.decision_id, "round_id": row.round_id, "rationale": row.rationale, "evidence": row.evidence, "status": row.status, "rejection": row.rejection} for row in decisions],
+            "actions": [{"action_id": row.action_id, "decision_id": row.decision_id, "type": row.action_type, "payload": row.payload, "status": row.status, "result": row.result} for row in actions],
+            "directives": [{"directive_id": row.directive_id, "round_id": row.round_id, "decision_id": row.decision_id, "action_id": row.action_id, "message_id": row.message_id, "target_context_id": row.target_context_id, "target_context_revision_id": row.target_context_revision_id, "content": row.content, "actor_kind": row.actor_kind, "actor_id": row.actor_id, "grant_id": row.grant_id, "grant_revision": row.grant_revision, "goal_revision": row.goal_revision, "status": row.status, "launched_run_id": row.launched_run_id} for row in directives],
+            "patrol_attempts": [{"attempt_id": row.patrol_attempt_id, "round_id": row.round_id, "attempt": row.attempt, "status": row.status, "error": row.error} for row in attempts],
+            "workers": [{"worker_request_id": row.worker_request_id, "round_id": row.round_id, "kind": row.kind, "scope": row.scope, "status": row.status, "result": row.result} for row in workers],
+            "runs": [{"run_id": row.run_id, "round_id": row.round_id, "action_id": row.action_id, "directive_id": row.directive_id, "context_id": row.task_id, "context_revision_id": row.context_revision_id, "status": row.status, "workspace_anchor": row.workspace_anchor, "workspace_result": row.workspace_result, "error": row.error} for row in runs],
+            "pending_decisions": [{"pending_decision_id": row.pending_decision_id, "kind": row.kind, "delegable": row.delegable, "status": row.status, "payload": row.payload} for row in pending_decisions],
+            "compression_candidates": [{"candidate_id": row.candidate_id, "pending_decision_id": row.pending_decision_id, "round_id": row.round_id, "context_id": row.context_id, "base_context_revision_id": row.base_context_revision_id, "base_checkpoint_id": row.base_checkpoint_id, "source_ranges": row.normalized_ranges, "before_tokens": row.before_tokens, "after_tokens": row.after_tokens, "estimated_reduction": row.before_tokens - row.after_tokens, "protection_evidence": row.protection_evidence, "status": row.status, "expires_at": row.expires_at.isoformat()} for row in candidates],
+            "compression_resolutions": [{"resolution_id": row.resolution_id, "pending_decision_id": row.pending_decision_id, "candidate_id": row.candidate_id, "decision_id": row.decision_id, "action_id": row.action_id, "run_id": row.resume_run_id, "status": row.status, "result_checkpoint_id": row.result_checkpoint_id, "result_context_revision_id": row.result_context_revision_id, "actual_reduction": None if row.actual_before_tokens is None or row.actual_after_tokens is None else row.actual_before_tokens - row.actual_after_tokens, "error": row.error_evidence} for row in resolutions],
+        }
 
 
 @loop_query_router.get("/context-revisions/{revision_id}/message-provenance")

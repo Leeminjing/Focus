@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Agent Loop HTTP 与持久事件协议入口。
- * 输入为桌面运行时、Loop 请求、控制台查询和事件游标；输出为规范化响应、分页会话、事实与可恢复事件订阅。
- * 具体工作流为封装同源 API，Context 直接发言复用 Main Run，Patrol 意图走独立介入端口。
+ * 输入为桌面运行时、Loop 请求、控制台查询和事件游标；输出为规范化响应、分页会话、事实、压缩来源恢复与可恢复事件订阅。
+ * 具体工作流为封装同源 API，Context 直接发言复用 Main Run，Patrol 意图走独立介入端口，来源恢复复用规范 quick-apply。
  * 示例：`FocusLoopApi.create(runtime)`。
  */
 (function (root, factory) {
@@ -86,6 +86,16 @@
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload?.detail?.message || payload?.detail || "Context 消息发送失败");
+        return payload;
+      },
+      async restoreCompression(contextId, messageId) {
+        const response = await fetchImpl(`${root}/compression/quick-apply`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ task_id: contextId, ranges: [{ source_ids: [messageId], restore: true }], scrub_terms: [] }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload?.detail?.message || payload?.detail || "压缩来源恢复失败");
         return payload;
       },
       events: (loopId, after = 0) => request(`/${encodeURIComponent(loopId)}/events?after=${Number(after) || 0}`),

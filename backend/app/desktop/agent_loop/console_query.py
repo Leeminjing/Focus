@@ -1,7 +1,7 @@
 r"""本文件对外提供 LoopConsoleQueryService 的轻量 Context Portfolio 读模型。
 
 输入为 Loop id 与只读 AsyncSession；输出为 Context identity 节点、当前 revision 来源边、Lane 主题、
-最新 Run、事实计数和待处理用户意见。具体工作流为批量读取权威表后在内存按 id 归并，不加载完整
+最新 Run、事实计数、压缩 resolution 状态和待处理用户意见。具体工作流为批量读取权威表后在内存按 id 归并，不加载完整
 消息历史，从而让拓扑图可高频刷新。示例：`await service.read(session, loop_id)`。
 """
 
@@ -20,6 +20,7 @@ from backend.app.desktop.agent_loop.models import (
     LoopUserIntent,
 )
 from backend.app.desktop.agent_loop.fact_sources import LoopFactBuilder
+from backend.app.desktop.agent_loop.compression_authority.models import LoopCompressionCandidate, LoopCompressionResolution
 from backend.app.desktop.context_curation.models import CurationLane
 from backend.app.desktop.context_evolution.models import ContextRevision, ContextRevisionSource
 from backend.app.desktop.models import DesktopRun, DesktopThread
@@ -56,6 +57,12 @@ class LoopConsoleQueryService:
                     .limit(40)
                 )
             ).all()
+        )
+        compression_candidates = list(
+            (await session.scalars(select(LoopCompressionCandidate).where(LoopCompressionCandidate.loop_id == loop_id).order_by(LoopCompressionCandidate.created_at.desc()).limit(8))).all()
+        )
+        compression_resolutions = list(
+            (await session.scalars(select(LoopCompressionResolution).where(LoopCompressionResolution.loop_id == loop_id).order_by(LoopCompressionResolution.created_at.desc()).limit(8))).all()
         )
         nodes = []
         for membership in memberships:
@@ -123,6 +130,22 @@ class LoopConsoleQueryService:
             "current_round_id": loop.current_round_id,
             "current_portfolio_revision_id": loop.current_portfolio_revision_id,
             "initial_context_id": loop.initial_context_id,
+            "compression": {
+                "candidate": None if not compression_candidates else {
+                    "candidate_id": compression_candidates[0].candidate_id,
+                    "context_id": compression_candidates[0].context_id,
+                    "status": compression_candidates[0].status,
+                    "before_tokens": compression_candidates[0].before_tokens,
+                    "after_tokens": compression_candidates[0].after_tokens,
+                },
+                "resolution": None if not compression_resolutions else {
+                    "resolution_id": compression_resolutions[0].resolution_id,
+                    "status": compression_resolutions[0].status,
+                    "run_id": compression_resolutions[0].resume_run_id,
+                    "result_context_revision_id": compression_resolutions[0].result_context_revision_id,
+                    "error": compression_resolutions[0].error_evidence,
+                },
+            },
             "nodes": nodes,
             "edges": edges,
             "user_intents": [

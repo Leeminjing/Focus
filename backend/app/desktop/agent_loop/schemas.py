@@ -2,7 +2,7 @@ r"""本文件对外提供 Agent Loop API、用户介入、observation、completi
 
 输入为用户目标、grant、冻结版本、Patrol action 和 verifier evidence；输出为拒绝未知字段的不可变
 合同。具体工作流为介入请求区分 Context/Portfolio 作用域，action 依 discriminator 解析，
-envelope 绑定所有控制 revision 与未处理用户意图，Kernel 只接受
+envelope 绑定所有控制 revision 与未处理用户意图；自主压缩 action 只能引用已持久化候选，Kernel 只接受
 PatrolDecisionIntent。示例：`intent = PatrolDecisionIntent.model_validate(payload)`。
 """
 
@@ -15,6 +15,10 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from backend.app.desktop.context_curation.contracts import (
     CreateLanePlan,
     UpdateLanePlan,
+)
+from backend.app.desktop.agent_loop.compression_authority.contracts import (
+    ApplyContextCompressionAction,
+    AutonomousCompressionPolicy,
 )
 
 
@@ -96,7 +100,7 @@ PatrolAction = Annotated[
     ContinueContextAction | CreateLaneAction | UpdateLaneAction | MergeContextsAction |
     PauseLaneAction | DiscardMembershipAction | RequestLaneCuratorAction |
     RequestCompletionVerifierAction | RequestCompletionAction | AdoptWorkspaceResultAction |
-    WaitForUserAction | StopLoopAction,
+    ApplyContextCompressionAction | WaitForUserAction | StopLoopAction,
     Field(discriminator="action"),
 ]
 PATROL_ACTION_ADAPTER = TypeAdapter(PatrolAction)
@@ -140,6 +144,7 @@ class NarrowLoopGrantRequest(StrictModel):
     context_scope: tuple[str, ...] = Field(min_length=1)
     permission_scope: tuple[str, ...]
     delegable_gates: tuple[str, ...] = ()
+    compression_policy: AutonomousCompressionPolicy | None = None
     expires_at: str | None = None
 
 
@@ -171,6 +176,7 @@ class LoopCreateRequest(StrictModel):
     context_scope: tuple[str, ...] = Field(min_length=1)
     permission_scope: tuple[str, ...]
     delegable_gates: tuple[str, ...] = ()
+    compression_policy: AutonomousCompressionPolicy | None = None
     budgets: LoopBudgetContract = Field(default_factory=LoopBudgetContract)
     equipment: dict[str, Any] = Field(default_factory=dict)
     expires_at: str | None = None

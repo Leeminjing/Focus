@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Agent Loop 控制台的请求与交互控制器。
- * 输入为 Loop API、Console Store 与重绘回调；输出为加载拓扑、切换 Context、双向分页、视口恢复、事实筛选、可调布局和三类介入命令。
- * 具体工作流为切换前保存当前 Context 视口，优先恢复 revision 缓存，缺页时取消旧请求并双向补页；事实查询、通知与拖拽分别按游标和动画帧协调。
+ * 输入为 Loop API、Console Store 与重绘回调；输出为加载拓扑、切换或强制刷新 Context、双向分页、视口恢复、事实筛选、可调布局和三类介入命令。
+ * 具体工作流为切换前保存当前 Context 视口，通常优先恢复 revision 缓存，来源恢复后可强制读取新 revision；事实查询、通知与拖拽分别按游标和动画帧协调。
  * 示例：`controller.load(loopId)` 后由 Store 驱动纯视图渲染。
  */
 (function (root, factory) {
@@ -67,7 +67,7 @@
       conversationAbort = new AbortController();
       if (!options.preserveSelection) store.selectContext(contextId);
       const cached = store.get().conversation;
-      if (cached?.context_id === contextId) {
+      if (cached?.context_id === contextId && !options.force) {
         if (store.get().factScope === "current") await loadFacts();
         return;
       }

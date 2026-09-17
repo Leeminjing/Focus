@@ -15,7 +15,7 @@
     (5) 创建 FastAPI 实例并传入 lifespan
     (6) 通过 Desktop persistence registry 注册各领域 ORM 模型
     (7) 注册统一会话保护中间件与路由，并挂载桌面路由与 /desktop/ 静态资源（决策 1）
-    (8) 构造 AgentLoopService、LoopInterventionService、LoopKernel 与 LoopCoordinator 作为独立权力边界
+    (8) 构造 AgentLoopService、LoopInterventionService、LoopKernel、压缩 resolution 与 LoopCoordinator 作为独立权力边界
     (9) 模块级导出 app 实例，供 uvicorn 等 ASGI server 直接引用
 
 示例:
@@ -99,6 +99,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.desktop_service = service
         from backend.app.desktop.agent_loop import AgentLoopRecovery, AgentLoopService, CompletionEvidenceService, DesktopDirectiveLaunchPort, LoopAuthorityService, LoopCoordinator, LoopCoordinatorRuntime, LoopKernel, LoopPortfolioPublicationService, LoopRoundOrchestrator, LoopRunWorkspaceBinder, LoopWaveDispatcher, LoopWorkerRuntime, LoopWorkspaceAdoptionService, PendingDecisionProjector
         from backend.app.desktop.agent_loop.interventions import LoopInterventionService
+        from backend.app.desktop.agent_loop.compression_authority.gate_projector import LoopCompressionGateProjector
+        from backend.app.desktop.agent_loop.compression_authority.resolution import CompressionResolutionCoordinator
         from backend.app.desktop.run_orchestration import RunOutboxConsumer
 
         app.state.agent_loop_service = AgentLoopService(sessions, app.state.run_manager)
@@ -114,7 +116,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             app.state.agent_loop_portfolios,
             app.state.agent_loop_adoption,
         )
-        app.state.agent_loop_coordinator = LoopCoordinator(sessions)
+        app.state.agent_loop_compression_resolutions = CompressionResolutionCoordinator(sessions, service)
+        app.state.agent_loop_compression_gates = LoopCompressionGateProjector(
+            app.state.checkpointer,
+            app.state.agent_loop_gates,
+        )
+        app.state.agent_loop_coordinator = LoopCoordinator(
+            sessions,
+            compression_gates=app.state.agent_loop_compression_gates,
+            compression_resolutions=app.state.agent_loop_compression_resolutions,
+        )
         app.state.agent_loop_run_events = RunOutboxConsumer(sessions)
         app.state.agent_loop_recovery = AgentLoopRecovery(
             sessions,
@@ -131,6 +142,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             LoopRoundOrchestrator(sessions, app_config, app.state.agent_loop_kernel, app.state.checkpointer),
             LoopWorkerRuntime(sessions, app_config),
             app.state.agent_loop_recovery,
+            app.state.agent_loop_compression_resolutions,
         )
         app.state.agent_loop_completion = CompletionEvidenceService(sessions)
         app.state.session_key = os.getenv("FOCUS_DESKTOP_SESSION", "focus-dev-session")

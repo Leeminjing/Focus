@@ -423,6 +423,16 @@ Workspace 使用带 fencing token 的单 Writer/多 Reader lease。多个获授�
 
 完成不能由 Patrol 自证。独立 Completion Verifier 逐条返回验收证据；Patrol 判断是否请求结束；Completion Guard 再检查证据新鲜度、未决 gate/Run、Portfolio 完整性、workspace adoption 与最终路径。任何 unknown 或 conflict 都进入 `waiting_user`。
 
+### Patrol 可以自主压缩，但用户始终保有定义权
+
+新建 Loop 时默认显式勾选 **“允许 Patrol 自主压缩 Context”**。这份权力可恢复、可撤销：取消勾选会创建或收窄为不含压缩权力的 grant；用户直接发消息、手工压缩、覆盖目标、修改授权、暂停/停止 Loop，或发布更新的 Context revision，都会让旧候选立即失效。
+
+自治压缩分成四个硬边界。`CompressionGate` 只产生稳定 interrupt；Patrol 先查看不含消息正文的有界 manifest，只能请求受授权的精确范围，既有摘要能力再生成不具权威性的 candidate；Kernel 对 Loop/grant/goal/round、Context revision、checkpoint、frontier、policy、保护锚点、预算、过期时间和 token 减量全部做 compare-and-set 校验，然后原子提交唯一 resolution；带 lease 与 fencing 的 coordinator 最后沿用手工压缩同一条 `DesktopService.resume_run → execute_prepared_run → RunLifecycleFinalizer` 执行脊柱恢复 LangGraph。
+
+`apply_compression_ranges` 仍是手工、快捷和自治入口唯一的消息变换编译器。Checkpoint 保存完整序列化 source，用户可恢复原文；下一次 provider 请求只看普通摘要正文，candidate id、Patrol 身份、grant、resolution 审计元数据和删除墓碑都不会进入模型上下文。
+
+Loop Console 展示 `prepared → accepted/committed → resuming → applied`，也展示 `expired`、`superseded`、`failed`，并串联目标 Context、范围、预计/实际 token 减量、Run、checkpoint 和最终 revision。进程重启时由数据库事实与过期 lease 决定继续恢复、观察已存在 Run、淘汰陈旧 frontier，还是等待用户；迁移回滚只删除自治压缩的 policy/candidate/resolution 结构，不会改写已经存在的压缩 checkpoint 或恢复源。
+
 ### 可观察、可接管、可恢复
 
 在 Desktop 任务页打开 **Agent Loop**，填写目标、Task Contract、验收条件和预算后授权 Patrol。Loop Control Console 把持续演化的 Context Portfolio 与当前选中 Context 的完整会话放在同一个页面：每个节点都有主题、职责、revision、Run 状态和证据计数；稳定的多来源连线展示当前世界如何派生。点击节点即可查看完整 Human/Assistant/Tool 记录，来源审计始终位于模型正文之外；事实抽屉则按单个或全部 Context 展示可追溯 Run、工具结果与保守统计的测试事实。
@@ -431,7 +441,7 @@ Workspace 使用带 fencing token 的单 Writer/多 Reader lease。多个获授�
 
 所有 Loop 事件都通过 cursor 可重放的 SSE 输出。用户直接发送新消息或使用“用户接管”时，系统推进 goal 与 authority revision，并使基于旧授权且尚未提交的 Patrol 工作失效。
 
-当前运行限制：并行隔离写入需要 Git 且基线干净；扩大访问范围等不可委托 gate 永远等待用户；Context revision 历史和未采用 Lane 会为审计保留，直到生命周期清理策略允许删除。
+当前运行限制：并行隔离写入需要 Git 且基线干净；扩大访问范围等不可委托 gate 永远等待用户；旧 Loop grant 不会被静默升级为自治压缩，只有根用户明确授予 compression gate、closed capability 与版本化 policy 才能启用；Context revision 历史和未采用 Lane 会为审计保留，直到生命周期清理策略允许删除。
 
 ---
 

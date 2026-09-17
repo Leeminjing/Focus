@@ -1,6 +1,6 @@
 r"""本文件对外提供 LoopAuthorityService，承接用户对 Patrol delegation 的根权力变更。
 
-输入为 Loop id 与 narrow、adjust_budgets 或 revoke 的封闭请求；输出为新的 authority revision 与
+输入为 Loop id 与 narrow、adjust_budgets 或 revoke 的封闭请求（含可撤销压缩 policy）；输出为新的 authority revision 与
 活动 Run 处理结果。具体工作流为锁定 Loop/grant，撤销旧 grant，使旧 Patrol 工作失效，安全中断旧
 authority 下的 Run；narrow/adjust 创建新 grant 和观察轮，revoke 则进入 waiting_user。
 示例：`await service.mutate(loop_id, request)`。
@@ -28,6 +28,8 @@ from backend.app.desktop.agent_loop.models import (
 )
 from backend.app.desktop.agent_loop.schemas import AdjustLoopBudgetsRequest, LoopGrantMutationRequest, NarrowLoopGrantRequest
 from backend.app.desktop.agent_loop.rounds import create_observation_round
+from backend.app.desktop.agent_loop.compression_authority.contracts import AutonomousCompressionPolicy
+from backend.app.desktop.agent_loop.compression_authority.repository import CompressionAuthorityRepository
 from backend.app.desktop.models import DesktopRun
 from backend.app.desktop.workspace_coordination.models import WorkspaceLease
 
@@ -58,6 +60,7 @@ class LoopAuthorityService:
             grant.status = "revoked"
             grant.revoked_at = datetime.now(UTC)
             await self._supersede_uncommitted(session, loop_id)
+            await CompressionAuthorityRepository().supersede(session, loop_id, "authority_changed")
             interrupted = await self._interrupt_active_runs(session, loop_id)
             if replacement is None:
                 loop.status = "waiting_user"
@@ -97,6 +100,7 @@ class LoopAuthorityService:
         context_scope = list(grant.context_scope)
         permission_scope = list(grant.permission_scope)
         delegable_gates = list(grant.delegable_gates)
+        compression_policy = dict(grant.compression_policy or {})
         budgets = dict(grant.budgets)
         expires_at = grant.expires_at
         if isinstance(request, NarrowLoopGrantRequest):
@@ -108,6 +112,14 @@ class LoopAuthorityService:
             context_scope = list(request.context_scope)
             permission_scope = list(request.permission_scope)
             delegable_gates = list(request.delegable_gates)
+            if "compression" not in delegable_gates:
+                compression_policy = {}
+            elif request.compression_policy is not None:
+                LoopAuthorityService._require_narrower_compression(
+                    request.compression_policy,
+                    AutonomousCompressionPolicy.model_validate(grant.compression_policy),
+                )
+                compression_policy = request.compression_policy.model_dump(mode="json")
             if request.expires_at is not None:
                 candidate = LoopAuthorityService._as_utc(datetime.fromisoformat(request.expires_at.replace("Z", "+00:00")))
                 current_expiry = LoopAuthorityService._as_utc(grant.expires_at) if grant.expires_at else None
@@ -126,6 +138,7 @@ class LoopAuthorityService:
             permission_scope=permission_scope,
             budgets=budgets,
             delegable_gates=delegable_gates,
+            compression_policy=compression_policy,
             expires_at=expires_at,
         )
 
@@ -138,6 +151,20 @@ class LoopAuthorityService:
         extra = set(requested) - set(current)
         if extra:
             raise HTTPException(422, {"code": "grant_not_narrower", "field": name, "extra": sorted(extra)})
+
+    @staticmethod
+    def _require_narrower_compression(requested: AutonomousCompressionPolicy, current: AutonomousCompressionPolicy) -> None:
+        invalid = (
+            (requested.allow_delete and not current.allow_delete)
+            or requested.max_source_messages > current.max_source_messages
+            or requested.max_source_tokens > current.max_source_tokens
+            or requested.max_attempts_per_gate > current.max_attempts_per_gate
+            or requested.candidate_ttl_seconds > current.candidate_ttl_seconds
+            or requested.min_reduction_tokens < current.min_reduction_tokens
+            or not set(requested.protected_anchors).issuperset(current.protected_anchors)
+        )
+        if invalid:
+            raise HTTPException(422, {"code": "compression_policy_not_narrower"})
 
     async def _interrupt_active_runs(self, session: AsyncSession, loop_id: str) -> list[str]:
         runs = list((await session.scalars(select(DesktopRun).where(DesktopRun.loop_id == loop_id, DesktopRun.status.in_(["pending", "running"])).with_for_update())).all())

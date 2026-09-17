@@ -4,7 +4,7 @@ r"""本文件对外提供 LoopKernel、KernelCommitResult 与 KernelRejected 唯
 具体工作流为稳定锁定 Loop/round/grant，按版本、权力、frontier、workspace、预算、active Run、gate
 顺序校验；普通动作单事务提交，Context Portfolio 与 workspace adoption 先持久授权意图，再由专用
 Kernel port 执行外部准备并原子收口权威状态，提交成功后收口该 round 已观察的用户意图；
-Worker 无提交端口。示例：
+自主压缩由专用 committer 在同一事务内只提交 resolution、不触碰 graph；Worker 无提交端口。示例：
 `result = await kernel.commit(intent)`。
 """
 
@@ -27,6 +27,7 @@ from backend.app.desktop.agent_loop.models import (
 )
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
 from backend.app.desktop.agent_loop.schemas import PatrolDecisionIntent
+from backend.app.desktop.agent_loop.compression_authority.commit import CompressionAuthorityCommitter, CompressionCommitRejected
 from backend.app.desktop.context_curation.models import CurationLane, CurationProgram, PortfolioLaneCandidate, PortfolioRevision
 from backend.app.desktop.context_curation.portfolio_publisher import PortfolioSuperseded
 from backend.app.desktop.context_evolution.models import ContextRevision
@@ -67,6 +68,7 @@ class LoopKernel:
         self._workspace_adoption = workspace_adoption
         self._authority = DelegatedAuthorityGuard()
         self._directives = DelegatedDirectiveFactory()
+        self._compression = CompressionAuthorityCommitter()
 
     async def commit(self, intent: PatrolDecisionIntent) -> KernelCommitResult:
         deferred_id: str | None = None
@@ -122,6 +124,11 @@ class LoopKernel:
         grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.grant_id == intent.grant_id).with_for_update())
         if loop is None or round_row is None or round_row.loop_id != intent.loop_id:
             raise KernelRejected("Loop 或 round 不存在")
+        existing = await session.scalar(
+            select(LoopDecision).where(LoopDecision.idempotency_key == intent.idempotency_key)
+        )
+        if existing is not None:
+            return None, None, await self._result(session, existing)
         stale = self._stale_reason(loop, round_row, intent)
         if stale is not None:
             decision = self._decision(intent, "superseded", {"reason": stale})
@@ -284,6 +291,8 @@ class LoopKernel:
                 raise KernelRejected("待采用 workspace slot 不属于当前 Loop 或 revision 已变化")
             if "adopt_workspace_result" not in set(grant.capabilities or []):
                 raise KernelRejected("delegation 未授权 workspace result adoption")
+        if any(action.action == "apply_context_compression" for action in intent.actions) and len(intent.actions) != 1:
+            raise KernelRejected("autonomous compression 必须独立提交")
         for action in intent.actions:
             if action.action == "request_completion":
                 await self._validate_completion(session, loop, round_row, action, active, human_gate)
@@ -395,6 +404,21 @@ class LoopKernel:
                 raise KernelRejected("Lane mutation 必须经过原子 Portfolio publication")
             elif intent_action.action == "adopt_workspace_result":
                 raise KernelRejected("Workspace adoption 必须经过专用 adoption port")
+            elif intent_action.action == "apply_context_compression":
+                try:
+                    resolution = await self._compression.commit(
+                        session,
+                        loop,
+                        round_row,
+                        grant,
+                        decision,
+                        action,
+                        intent_action,
+                        f"{intent.idempotency_key}:compression:{position}",
+                    )
+                except CompressionCommitRejected as exc:
+                    raise KernelRejected(str(exc)) from exc
+                action.result = {"resolution_id": resolution.resolution_id, "candidate_id": resolution.candidate_id}
             elif intent_action.action == "pause_lane":
                 lane = await self._owned_lane(session, loop, intent_action.lane_id)
                 lane.lifecycle = "paused"
@@ -605,6 +629,8 @@ class LoopKernel:
 
     @staticmethod
     def _round_status(intent: PatrolDecisionIntent) -> str:
+        if any(action.action == "apply_context_compression" for action in intent.actions):
+            return "resolving_gate"
         if any(action.action.startswith("request_") for action in intent.actions):
             return "waiting_workers"
         if any(action.action in {"continue_context", "create_lane", "update_lane", "merge_contexts"} for action in intent.actions):
@@ -613,6 +639,8 @@ class LoopKernel:
 
     @staticmethod
     def _health(intent: PatrolDecisionIntent) -> str:
+        if any(action.action == "apply_context_compression" for action in intent.actions):
+            return "resuming"
         if any(action.action.startswith("request_") for action in intent.actions):
             return "waiting_workers"
         if any(action.action in {"continue_context", "create_lane", "update_lane", "merge_contexts"} for action in intent.actions):

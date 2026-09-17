@@ -1,5 +1,5 @@
 /*
- * 本样式表对外提供 Portfolio Map 紧凑控制栏、纵向 Context 演化图、完整会话、事实表与终止态出口的自适应视觉层级。
+ * 本样式表对外提供 Portfolio Map 紧凑控制栏、自主压缩状态、纵向 Context 演化图、完整会话、事实表与终止态出口的自适应视觉层级。
  * 输入为 Loop 生命周期外壳及各专用视图的语义 class；输出为宽屏左图表/右会话工作台、窄屏纵向布局、稳定滚动区和离屏渲染抑制。
  * 具体工作流为命令栏固定信息密度，图/事实/会话各自滚动，长消息与事实行使用内容可见性和固有尺寸降低长时程页面重绘成本。
  * 示例：`.loop-console-main` 在宽屏按可调比例分栏，在 1100px 以下自动切换为单列。
@@ -143,6 +143,31 @@
 .loop-terminal-notice { display: flex; align-items: center; gap: 10px; border-color: #dce4ef; background: #f7f9fc; color: #5c6e86; }
 .loop-terminal-notice strong { color: #223652; }
 .loop-error { border-color: #f2c3c6; background: #fff4f5; color: #a52f39; }
+
+.loop-compression-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0;
+  border-bottom: 1px solid #cfe1ff;
+  padding: 9px 18px;
+  background: #eef5ff;
+  color: #24558f;
+  font-size: 12px;
+}
+.loop-compression-status strong { color: #163f72; }
+.loop-compression-status small { margin-left: auto; color: #637d9d; }
+.loop-compression-status > details { flex: 1 0 100%; padding-top: 4px; border-top: 1px solid #d5e3f4; }
+.loop-compression-status > details > summary { cursor: pointer; color: #315f94; }
+.loop-compression-status dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 9px 0; }
+.loop-compression-status dl > div { min-width: 0; padding: 7px 8px; border-radius: 6px; background: rgba(255, 255, 255, .72); }
+.loop-compression-status dt { color: #71839a; font-size: 9px; text-transform: uppercase; }
+.loop-compression-status dd { margin: 3px 0 0; overflow-wrap: anywhere; color: #294664; font-size: 10px; }
+.loop-compression-status.is-preparing { border-color: #c5dbf5; background: #f4f9ff; }
+.loop-compression-status.is-failed { border-color: #f2c3c6; background: #fff4f5; color: #a52f39; }
+.loop-compression-status.is-superseded,
+.loop-compression-status.is-expired { border-color: #e0e5ed; background: #f7f9fc; color: #65758b; }
 
 .loop-console {
   flex: 1;
@@ -372,6 +397,7 @@
   .loop-facts-drawer > header { grid-template-columns: 1fr; }
   .fact-filters { justify-content: flex-start; }
   .loop-start-gate { grid-template-columns: 1fr; }
+  .loop-compression-status dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,6 +1,6 @@
 r"""本文件对外提供 Agent Loop、delegation、user intent、round、directive、completion 与 audit ORM 实体。
 
-输入为用户目标、版本化授权、Context/Workspace frontier、Patrol 判断和 Kernel 结果；输出为可恢复、
+输入为用户目标、版本化授权（含自主压缩 policy）、Context/Workspace frontier、Patrol 判断和 Kernel 结果；输出为可恢复、
 可审计且具单 writer 约束的 Loop 状态。具体工作流为 goal/grant 定义权力，round/observation 冻结事实，
 decision/action 记录判断，user intent 保存用户对 Context 或 Portfolio 的外部控制意见，
 directive/provenance 驱动 Run，completion/outbox 收敛生命周期。
@@ -87,6 +87,7 @@ class LoopDelegationGrant(Base):
     permission_scope: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     budgets: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     delegable_gates: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    compression_policy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", server_default="active")
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
  * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
- * 对话/Context/Agent/Commitment/压缩/插件与模块化 Agent Loop Portfolio 控制台、终止 Loop 退出/后继 Loop 准备等视图；逐轮材料以有序 binding 草稿和独立图片必看
+ * 对话/Context/Agent/Commitment/压缩/插件与模块化 Agent Loop Portfolio 控制台、自主压缩授权/审计/来源恢复、终止 Loop 退出/后继 Loop 准备等视图；逐轮材料以有序 binding 草稿和独立图片必看
  * 集合表达，自定义分组是服务端事实，分组模式与折叠是任务 UI 偏好。工作流在任务切换时加载
  * 材料、历史和分组，用纯函数规范化选择/分组，再通过单一异步事件边界更新 DOM 和运行状态；
  * 对话增量对账会保留同 key 工具事件的 DOM 身份与展开状态，仅同步变化后的状态和内容。
@@ -988,6 +988,8 @@ async function startAgentLoop(form) {
   const saved = detail.ui_state?._main_run_equipment || detail.ui_state || {};
   const permissions = Array.isArray(saved.permissions) && saved.permissions.length ? saved.permissions : ["read", "write"];
   const capabilities = ["continue_context", "create_lane", "update_lane", "merge_contexts", "pause_lane", "discard_membership", "request_lane_curator", "request_completion_verifier", "request_completion", "wait_for_user", "stop_loop"];
+  const autonomousCompression = values.get("autonomousCompression") === "on";
+  if (autonomousCompression) capabilities.push("apply_context_compression");
   if (values.get("isolatedWrites") === "on" && permissions.includes("write")) {
     capabilities.push("isolate_workspace", "adopt_workspace_result");
   }
@@ -1003,7 +1005,18 @@ async function startAgentLoop(form) {
     capabilities,
     context_scope: [task.task_id],
     permission_scope: permissions,
-    delegable_gates: [],
+    delegable_gates: autonomousCompression ? ["compression"] : [],
+    compression_policy: autonomousCompression ? {
+      version: 1,
+      allow_replace: true,
+      allow_delete: false,
+      protected_anchors: ["task_contract", "acceptance_criteria", "latest_direct_user_message", "unconsumed_material", "active_tool_protocol", "system_safety"],
+      max_source_messages: 64,
+      max_source_tokens: 60000,
+      max_attempts_per_gate: 3,
+      candidate_ttl_seconds: 900,
+      min_reduction_tokens: 256,
+    } : null,
     budgets: loopBudgetPayload(values),
     equipment: { model_name: saved.model_name || null, patrol_model_name: saved.model_name || null, permissions, skills: Array.isArray(saved.skills) ? saved.skills : [], access_mode: saved.access_mode || null },
   };
@@ -1019,6 +1032,7 @@ async function startAgentLoop(form) {
       state.details.set(task.task_id, taskDetail);
     }
     loopStore.load(snapshot);
+    loopStore.reconcileRelated(await loopApi.related(snapshot));
     await loopConsoleController?.load(snapshot.loop_id);
     renderLoop();
     startLoopStream();
@@ -1069,12 +1083,16 @@ async function mutateAgentLoopGrant(body) {
 
 function narrowAgentLoopGrant(form) {
   const values = new FormData(form);
+  const compressionEnabled = values.get("autonomousCompression") === "on";
+  const capabilities = loopListValue(values, "capabilities").filter(value => compressionEnabled || value !== "apply_context_compression");
+  const gates = loopListValue(values, "delegableGates").filter(value => compressionEnabled || value !== "compression");
   return mutateAgentLoopGrant({
     command: "narrow",
-    capabilities: loopListValue(values, "capabilities"),
+    capabilities,
     context_scope: loopListValue(values, "contextScope"),
     permission_scope: loopListValue(values, "permissionScope"),
-    delegable_gates: loopListValue(values, "delegableGates"),
+    delegable_gates: gates,
+    compression_policy: compressionEnabled ? state.loop.snapshot?.grant?.compression_policy || null : null,
     expires_at: String(values.get("expiresAt") || "").trim() || null,
   });
 }
@@ -6148,6 +6166,11 @@ async function handleDocumentClick(event) {
   if (action === "loop-exit") return exitAgentLoop(false);
   if (action === "loop-prepare-new" || action === "loop-new-run") return exitAgentLoop(true);
   if (action === "loop-select-context") return loopConsoleController?.selectContext(button.dataset.contextId);
+  if (action === "loop-restore-compression") return runUiAction(async () => {
+    await loopApi.restoreCompression(button.dataset.contextId, button.dataset.messageId);
+    await loopConsoleController?.selectContext(button.dataset.contextId, { preserveSelection: true, force: true });
+    setStatus("压缩来源已恢复并发布新 Context Revision");
+  });
   if (action === "loop-load-older") return loopConsoleController?.loadOlder();
   if (action === "loop-load-newer") return loopConsoleController?.loadNewer();
   if (action === "loop-load-older-facts") return loopConsoleController?.loadOlderFacts();

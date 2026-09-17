@@ -1,6 +1,6 @@
 r"""本文件对外提供 LoopObservationService、StructuredPatrolDecisionModel 与 LoopRoundOrchestrator。
 
-输入为持久 Loop/round/goal/grant、bounded Context frontier、Run/workspace/Worker 事实和模型配置；输出为
+输入为持久 Loop/round/goal/grant、bounded Context frontier、压缩候选请求、Run/workspace/Worker 事实和模型配置；输出为
 不可变 observation、Patrol decision intent 与 Kernel commit 结果。具体工作流为系统冻结 Context frontier、
 待处理用户意图与持久事实并保存观察，
 模型只返回无权 proposal，系统绑定唯一 holder 和全部版本，PortfolioPatrol 记录 attempt，最后 Kernel
@@ -39,6 +39,8 @@ from backend.app.desktop.agent_loop.models import (
 from backend.app.desktop.agent_loop.observation import LoopObservationBuilder, observation_hash
 from backend.app.desktop.agent_loop.patrol import PortfolioPatrol
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope, PatrolAction, PatrolDecisionIntent
+from backend.app.desktop.agent_loop.compression_authority.contracts import CompressionCandidateRequest
+from backend.app.desktop.agent_loop.compression_authority.candidates import CompressionCandidateService
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.context_evolution import ContextRevisionReader, ContextRevisionRepository
 from backend.app.desktop.models import DesktopRun, DesktopThread
@@ -53,6 +55,9 @@ PATROL_SYSTEM_CONTRACT = """你是 Focus Portfolio Patrol，是用户当前 Agen
 observation.user_intents 是用户在系统审计层直接交给你的新意见：context scope 只约束目标 Context，
 portfolio scope 约束整体分工；它们优先于你此前尚未提交的判断，但不会作为消息注入执行 Agent。
 正常情况由你直接判断；只有并行策展多个 Lane 或独立完成验证确有必要时才请求 Worker。
+当 observation 中存在已授权 compression pending decision 时，先以空 source_message_ids 请求
+compression_candidate 获取无正文 manifest，再以 manifest 中的精确 message id 请求候选；最后以
+apply_context_compression 引用返回的 candidate，不得自行编造 ranges、摘要或 candidate identity。
 create/update/merge 的 plan 必须只引用 observation 中带完整命名空间的 immutable revision 和 message_id；
 你选择引用与编排方式，Focus 会从真实 revision 重建 evidence 并确定性编译，不能在 plan 中伪造消息正文。
 只有确实需要改变 Agent 将看到的过去时才新建 Lane；已有 Context 足够时使用 continue_context。
@@ -82,12 +87,14 @@ class PatrolCognitiveStep(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     reads: tuple[PatrolReadRequest, ...] = Field(default=(), max_length=4)
+    compression_candidate: CompressionCandidateRequest | None = None
     decision: PatrolDecisionProposal | None = None
 
     @model_validator(mode="after")
     def _one_output(self):
-        if bool(self.reads) == (self.decision is not None):
-            raise ValueError("Patrol step 必须选择 selective reads 或 final decision 之一")
+        branches = int(bool(self.reads)) + int(self.compression_candidate is not None) + int(self.decision is not None)
+        if branches != 1:
+            raise ValueError("Patrol step 必须选择 selective reads、compression candidate 或 final decision 之一")
         return self
 
 
@@ -156,12 +163,12 @@ class LoopObservationService:
             authority_revision=loop.authority_revision,
             observed_frontier_hash=round_row.frontier_hash,
             goal={"goal": goal.goal, "task_contract": goal.task_contract, "acceptance_criteria": goal.acceptance_criteria},
-            grant={"grant_id": grant.grant_id, "holder_id": grant.holder_id, "revision": grant.revision, "capabilities": grant.capabilities, "context_scope": grant.context_scope, "permission_scope": grant.permission_scope, "budgets": grant.budgets, "expires_at": grant.expires_at.isoformat() if grant.expires_at else None},
+            grant={"grant_id": grant.grant_id, "holder_id": grant.holder_id, "revision": grant.revision, "capabilities": grant.capabilities, "context_scope": grant.context_scope, "permission_scope": grant.permission_scope, "delegable_gates": grant.delegable_gates, "compression_policy": grant.compression_policy, "budgets": grant.budgets, "expires_at": grant.expires_at.isoformat() if grant.expires_at else None},
             portfolio_frontier=frontier,
             stable_results=tuple({"run_id": row.run_id, "context_id": row.task_id, "status": row.status, "error": row.error, "final_checkpoint_id": row.final_checkpoint_id, "workspace_result": row.workspace_result} for row in runs),
             workspace={"slot_id": slot.slot_id if slot else None, "revision": slot.revision if slot else round_row.workspace_revision, "fingerprint": slot.current_fingerprint if slot else None},
             budget={"limits": grant.budgets, "usage": self._usage(usage, loop, len(memberships))},
-            pending_decisions=tuple({"kind": row.kind, "delegable": row.delegable, "payload": row.payload} for row in pending),
+            pending_decisions=tuple({"pending_decision_id": row.pending_decision_id, "kind": row.kind, "delegable": row.delegable, "status": row.status, "payload": row.payload} for row in pending),
             worker_results=tuple({"request_id": row.worker_request_id, "kind": row.kind, "status": row.status, "result": row.result} for row in workers),
             user_intents=tuple(
                 {
@@ -270,10 +277,12 @@ class LoopObservationService:
 
 
 class StructuredPatrolDecisionModel:
-    def __init__(self, app_config: AppConfig, model_name: str | None = None, reader=None) -> None:
+    def __init__(self, app_config: AppConfig, model_name: str | None = None, reader=None, candidate_manifest=None, candidate_preparer=None) -> None:
         self._app_config = app_config
         self._model_name = model_name
         self._reader = reader
+        self._candidate_manifest = candidate_manifest
+        self._candidate_preparer = candidate_preparer
         self.call_count = 0
         self.usage = ModelUsage()
         self._remaining_calls = 1
@@ -315,7 +324,7 @@ class StructuredPatrolDecisionModel:
         for _ in range(2):
             if step.decision is not None:
                 return step.decision
-            evidence = await self._reader(observation, step.reads)
+            evidence = await self._cognitive_evidence(observation, step)
             messages = [
                 *messages,
                 HumanMessage(
@@ -323,19 +332,43 @@ class StructuredPatrolDecisionModel:
                         "<selected_context_evidence>"
                         + json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                         + "</selected_context_evidence>\n"
-                        "现在可以返回 final decision；仅确有必要时再请求一次 selective read。"
+                        "现在可以返回 final decision；仅确有必要时再请求一次 selective read 或 compression candidate。"
                     )
                 ),
             ]
             step = await self._invoke(model, messages, method, PatrolCognitiveStep)
         if step.decision is not None:
             return step.decision
-        evidence = await self._reader(observation, step.reads)
+        evidence = await self._cognitive_evidence(observation, step)
         messages = [
             *messages,
             HumanMessage(content="<selected_context_evidence>" + json.dumps(evidence, ensure_ascii=False, separators=(",", ":")) + "</selected_context_evidence>\n必须返回 final decision，不得再请求读取。"),
         ]
         return await self._invoke(model, messages, method, PatrolDecisionProposal)
+
+    async def _cognitive_evidence(self, observation, step: PatrolCognitiveStep):
+        if step.compression_candidate is not None:
+            if not step.compression_candidate.source_message_ids:
+                if self._candidate_manifest is None:
+                    raise RuntimeError("Patrol 未配置 compression manifest")
+                manifest = await self._candidate_manifest(observation, step.compression_candidate)
+                return ({"kind": "compression_manifest", **manifest},)
+            if self._candidate_preparer is None:
+                raise RuntimeError("Patrol 未配置 compression candidate preparation")
+            candidate = await self._candidate_preparer(observation, step.compression_candidate)
+            return ({
+                "kind": "compression_candidate",
+                "candidate_id": candidate.candidate_id,
+                "pending_decision_id": candidate.pending_decision_id,
+                "context_id": candidate.context_id,
+                "context_revision_id": candidate.base_context_revision_id,
+                "checkpoint_id": candidate.base_checkpoint_id,
+                "source_ranges": candidate.normalized_ranges,
+                "before_tokens": candidate.before_tokens,
+                "after_tokens": candidate.after_tokens,
+                "expires_at": candidate.expires_at.isoformat(),
+            },)
+        return await self._reader(observation, step.reads)
 
     async def _invoke(self, model, messages, method: str, schema):
         if self.call_count >= self._remaining_calls:
@@ -370,6 +403,7 @@ class LoopRoundOrchestrator:
         self._observations = LoopObservationService(sessions, checkpointer)
         self._app_config = app_config
         self._kernel = kernel
+        self._compression_candidates = CompressionCandidateService(sessions, checkpointer, app_config)
 
     async def process(self, claim: CoordinatorClaim) -> KernelCommitResult | None:
         publishing_intent: PatrolDecisionIntent | None = None
@@ -402,6 +436,8 @@ class LoopRoundOrchestrator:
             self._app_config,
             model_name,
             self._observations.selective_read,
+            self._compression_manifest,
+            self._prepare_compression_candidate,
         )
         patrol = PortfolioPatrol(self._sessions, decision_model)
         try:
@@ -416,6 +452,12 @@ class LoopRoundOrchestrator:
         except Exception as exc:
             await self._fail(claim, exc)
             raise
+
+    async def _prepare_compression_candidate(self, observation, request):
+        return await self._compression_candidates.prepare(observation.loop_id, request)
+
+    async def _compression_manifest(self, observation, request):
+        return await self._compression_candidates.manifest(observation.loop_id, request)
 
     async def _record_usage(self, loop_id: str, usage: ModelUsage) -> None:
         await LoopUsageLedger(self._sessions).record(

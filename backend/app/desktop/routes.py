@@ -2,7 +2,7 @@
 本文件对外提供 desktop_router，作为桌面 PoC 的 HTTP 与 SSE 接口层。
 
 输入为带 `X-Focus-Session` 的桌面请求以及 models.py 定义的数据模型；输出为工作区、
-Context、任务、草稿、普通/策展 Patrol、运行、材料/历史/分组 JSON、文件响应或独立 SSE 流。
+Context、任务、草稿、普通/策展 Patrol、运行、材料/历史/分组 JSON、手工压缩优先权、文件响应或独立 SSE 流。
 具体工作流为校验本机会话后调用 DesktopService，并保持所有事件按 run_id 订阅；上传把
 UploadFile 直接交给有界上传服务，内容读取在校验 task/material 归属后交给 FileResponse。
 
@@ -304,6 +304,8 @@ async def get_assembly_task(request: Request) -> dict:
 @desktop_router.post("/threads/{thread_id}/runs/resume")
 async def resume_run(thread_id: str, body: ResumeRequest, request: Request) -> dict:
     """承诺层人工确认恢复：以相同 thread_id resume，返回新 run 供前端订阅 SSE。"""
+    if isinstance(body.resume, dict) and body.resume.get("type") == "compression":
+        await request.app.state.agent_loop_service.user_resolved_compression_gate(thread_id)
     prepared = await request.app.state.desktop_service.resume_run(thread_id, body.resume)
     if prepared.agent_factory is None:
         raise HTTPException(409, "无可恢复的承诺流程")

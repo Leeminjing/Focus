@@ -1,8 +1,8 @@
 /*
  * 本文件对外提供 Agent Loop Electron 回归页的确定性本地 API。
- * 输入为真实 Desktop 页面发出的 Loop、Console、完整会话、事实、介入与 workspace 请求；输出为
+ * 输入为真实 Desktop 页面发出的 Loop、Console、完整会话、事实、介入、压缩恢复与 workspace 请求；输出为
  * 可变的长期 Loop 快照、Context Portfolio 和审计投影。具体工作流为复用 Context 测试 API，再拦截
- * Loop 领域路由，记录三类用户介入并回放终止 Loop 退出后的已绑定首轮 Run，而不访问网络或数据库；示例：在 BrowserWindow preload 中加载本文件。
+ * Loop 领域路由，模拟阈值、候选、Kernel commit、自动 resume/新 revision，记录来源恢复与三类用户介入，而不访问网络或数据库；示例：在 BrowserWindow preload 中加载本文件。
  */
 "use strict";
 
@@ -21,6 +21,8 @@ const loop = {
   controls: [],
   interventions: [],
   directMessages: [],
+  restores: [],
+  compressionRestored: false,
   cursor: 0,
 };
 
@@ -42,8 +44,8 @@ function runningSnapshot(body) {
       task_contract: body.task_contract,
       acceptance_criteria: body.acceptance_criteria,
     },
-    grant: { budgets: body.budgets, capabilities: body.capabilities, context_scope: body.context_scope, permission_scope: body.permission_scope, delegable_gates: body.delegable_gates, expires_at: null },
-    usage: { rounds: 12, duration_seconds: 180, model_calls: 41, input_tokens: 8192, output_tokens: 2048, retries: 2, lanes: 4, contexts: 5, providers: 2 },
+    grant: { budgets: body.budgets, capabilities: body.capabilities, context_scope: body.context_scope, permission_scope: body.permission_scope, delegable_gates: body.delegable_gates, compression_policy: body.compression_policy, expires_at: null },
+    usage: { rounds: 13, duration_seconds: 180, model_calls: 43, input_tokens: 14192, output_tokens: 2304, retries: 2, lanes: 4, contexts: 5, providers: 2 },
     memberships: [
       { context_id: "root", lane_id: "implementation", state: "active" },
       { context_id: "child", lane_id: "testing", state: "active" },
@@ -86,6 +88,18 @@ const evolution = {
 };
 
 const audit = {
+  pending_decisions: [
+    { pending_decision_id: "compression-pending-1", kind: "compression", delegable: true, status: "resolved", payload: { context_id: "root", context_revision_id: "root-r5", checkpoint_id: "checkpoint-before" } },
+  ],
+  decisions: [
+    { decision_id: "compression-decision-1", round_id: "round-12", rationale: "继续当前实现身份，但将已解决调试历史压缩为可恢复摘要。", status: "committed" },
+  ],
+  compression_candidates: [
+    { candidate_id: "compression-candidate-1", pending_decision_id: "compression-pending-1", context_id: "root", status: "accepted", before_tokens: 6000, after_tokens: 900, estimated_reduction: 5100, source_ranges: [{ source_ids: ["debug-1", "debug-2", "debug-3"] }], protection_evidence: [{ message_id: "root-human", reason: "current_direct_user_message", overlap: false }] },
+  ],
+  compression_resolutions: [
+    { resolution_id: "compression-resolution-1", candidate_id: "compression-candidate-1", decision_id: "compression-decision-1", run_id: "compression-resume-1", status: "applied", result_checkpoint_id: "checkpoint-after", result_context_revision_id: "root-r6", actual_reduction: 5100 },
+  ],
   directives: [
     { directive_id: "directive-12", round_id: "round-12", status: "launched", content: "暂停修改代码，只分析过去三轮失败的共同原因。" },
   ],
@@ -122,9 +136,15 @@ function conversation(contextId) {
   const messages = contextId === "child" ? [
     { index: 0, message: { id: "test-human", role: "human", content: "只定位三个失败测试的共同原因。" }, provenance: { source_kind: "delegated_patrol", actor_id: "patrol:loop-test" } },
     { index: 1, message: { id: "test-tool", role: "tool", name: "pytest", tool_call_id: "call-test", content: "12 passed, 2 failed, 1 skipped" }, provenance: null },
+  ] : loop.compressionRestored ? [
+    { index: 0, message: { id: "root-human", role: "human", content: "暂停修改代码，只分析过去三轮失败的共同原因。" }, provenance: { source_kind: "delegated_patrol", actor_id: "patrol:loop-test" } },
+    { index: 1, message: { id: "debug-1", role: "tool", content: "first failed trace" }, provenance: null },
+    { index: 2, message: { id: "debug-2", role: "assistant", content: "second debugging attempt" }, provenance: null },
+    { index: 3, message: { id: "debug-3", role: "tool", content: "third failed trace" }, provenance: null },
   ] : [
     { index: 0, message: { id: "root-human", role: "human", content: "暂停修改代码，只分析过去三轮失败的共同原因。" }, provenance: { source_kind: "delegated_patrol", actor_id: "patrol:loop-test" } },
-    { index: 1, message: { id: "root-ai", role: "assistant", content: "已完成当前阶段并记录证据。" }, provenance: null },
+    { index: 1, message: { id: "compression-block-1", role: "human", content: "三轮调试均未改变同一个 session uploader 初始化失败。", compression: { source: [{ id: "debug-1", role: "tool", content: "first failed trace" }, { id: "debug-2", role: "assistant", content: "second debugging attempt" }, { id: "debug-3", role: "tool", content: "third failed trace" }] } }, provenance: null },
+    { index: 2, message: { id: "root-ai", role: "assistant", content: "压缩恢复后已继续下一轮并记录证据。" }, provenance: null },
   ];
   return { context_id: contextId, revision: { revision_id: `${contextId}-revision`, generation: 1 }, projection_status: "valid", total: messages.length, range: { start: 0, end: messages.length }, next_before: null, has_more: false, messages };
 }
@@ -163,6 +183,12 @@ window.fetch = async (input, options = {}) => {
     const body = JSON.parse(options.body);
     loop.directMessages.push({ context_id: decodeURIComponent(path.split("/").at(-3)), ...body });
     return json({ run_id: `direct-${loop.directMessages.length}`, status: "pending" });
+  }
+  if (path === "/desktop/api/compression/quick-apply" && options.method === "POST") {
+    const body = JSON.parse(options.body);
+    loop.restores.push(body);
+    loop.compressionRestored = Boolean(body.ranges?.some(item => item.restore));
+    return json({ messages: conversation(body.task_id).messages.map(item => item.message) });
   }
   if (/\/desktop\/api\/agent-loops\/[^/]+\/control$/.test(path) && options.method === "POST") {
     const command = JSON.parse(options.body).command;

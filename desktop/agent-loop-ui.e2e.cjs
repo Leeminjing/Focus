@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Context-governed Agent Loop 的真实 Electron 长流程与终止态退出回归。
  * 输入为确定性 Loop/Console API、真实 index.html/app.js 与用户表单动作；输出为 Context 图、完整会话、
- * 三类介入、恢复重连、用户接管、完成路径、事实表和可选视觉基线截图。具体工作流为在隐藏 BrowserWindow 中执行
+ * 三类介入、自主压缩阈值到 resume 后续轮次、来源恢复、恢复重连、用户接管、完成路径、事实表和可选视觉基线截图。具体工作流为在隐藏 BrowserWindow 中执行
  * 完整交互并检查请求与 DOM；设置 `FOCUS_AGENT_LOOP_SCREENSHOT` 时输出真实页面截图供设计 QA 使用。
  * 示例：`npx electron agent-loop-ui.e2e.cjs`。
  */
@@ -62,11 +62,21 @@ async function run() {
     form.elements.maxProviders.value = '5';
     form.elements.maxConcurrentRuns.value = '6';
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    for (let count = 0; count < 150 && !document.querySelector('.loop-dashboard')?.textContent.includes('继续实现'); count += 1) await new Promise(next => setTimeout(next, 20));
+    for (let count = 0; count < 150 && !document.querySelector('.loop-dashboard')?.textContent.includes('压缩已应用'); count += 1) await new Promise(next => setTimeout(next, 20));
     return { body: window.__agentLoopTest.startBody, text: document.querySelector('.loop-dashboard')?.textContent || '', stored: localStorage.getItem('focus-agent-loop:root') };
   })()`);
   if (!started.stored || started.body?.initial_run_id !== "run-initial" || started.body?.budgets?.max_contexts !== 24 || started.body?.budgets?.max_providers !== 5 || started.body?.budgets?.max_model_calls !== 300) throw new Error(`启动或预算契约失败: ${JSON.stringify(started)}`);
-  for (const text of ["round-12", "observing", "继续实现", "测试与故障分析", "架构审查", "需求偏航检查", "Patrol delegated", "暂停修改代码", "Input 8192", "Output 2048", "Retries 2", "Contexts 5 / 24", "Providers 2 / 5", "撤销 Patrol 授权"]) if (!started.text.includes(text)) throw new Error(`Loop 控制台缺少 ${text}`);
+  for (const text of ["round-12", "observing", "继续实现", "测试与故障分析", "架构审查", "需求偏航检查", "Patrol delegated", "暂停修改代码", "Input 14192", "Output 2304", "Retries 2", "Contexts 5 / 24", "Providers 2 / 5", "撤销 Patrol 授权"]) if (!started.text.includes(text)) throw new Error(`Loop 控制台缺少 ${text}`);
+  const compression = await win.webContents.executeJavaScript(`(async () => {
+    document.querySelector('[data-action="loop-select-context"][data-context-id="root"]').click();
+    for (let count = 0; count < 150 && !document.querySelector('[data-action="loop-restore-compression"]'); count += 1) await new Promise(next => setTimeout(next, 20));
+    const before = document.querySelector('.loop-dashboard')?.textContent || '';
+    document.querySelector('[data-action="loop-restore-compression"]').click();
+    for (let count = 0; count < 150 && window.__agentLoopTest.restores.length === 0; count += 1) await new Promise(next => setTimeout(next, 20));
+    for (let count = 0; count < 150 && (document.querySelector('[data-action="loop-restore-compression"]') || document.querySelectorAll('[data-loop-transcript] .loop-message').length < 4); count += 1) await new Promise(next => setTimeout(next, 20));
+    return { before, restores: window.__agentLoopTest.restores, transcript: document.querySelector('[data-loop-transcript]')?.textContent || '' };
+  })()`);
+  if (!compression.before.includes("压缩已应用") || !compression.before.includes("5100 tokens") || compression.restores[0]?.ranges?.[0]?.restore !== true || !compression.transcript.includes("third failed trace")) throw new Error(`自主压缩、续跑或来源恢复失败: ${JSON.stringify(compression)}`);
   if (process.env.FOCUS_AGENT_LOOP_SCREENSHOT) {
     await win.webContents.executeJavaScript(`(async () => {
       document.querySelector('[data-action="loop-select-context"][data-context-id="child"]').click();
