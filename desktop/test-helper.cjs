@@ -2,11 +2,14 @@
  * 本文件对外提供 app-*.test.cjs 共用的 VM 测试脚手架。输入为选择器、状态记录、网络与额外全局
  * 配置，输出为带浏览器语义、事件广播、localStorage、Markdown 渲染器、Context helper 与
  * app/会话容器节点语义的隔离上下文；工作流统一测试环境、按浏览器语义向同类型全部监听器派发事件、
- * 让 #app 读取时按页面整体语义拼回会话容器内容，并允许调用方覆盖差异点。示例：`createAppHarness({ fetch: true })`。
+ * 让 #app 读取时按页面整体语义拼回会话容器内容，并允许调用方覆盖差异点。
+ * 会话容器默认使用 test-dom.cjs 的最小真实 DOM（子节点数组、插入/替换/删除与选择器查询均有真实
+ * 效果），使会话写入路径的对账行为可被断言；其余节点仍是惰性桩。示例：`createAppHarness({ fetch: true })`。
  */
 "use strict";
 const fs = require("node:fs");
 const vm = require("node:vm");
+const { createDocument, createElement, createTextNode, parseHtml } = require("./test-dom.cjs");
 
 // 惰性 stub:任何属性/方法访问都安全
 const inert = {
@@ -89,24 +92,34 @@ function createAppHarness(options = {}) {
         }
       : { textContent: "", classList: { toggle() {} } };
   const selectors = { "#globalStatus": statusNode, ...(options.selectors || {}) };
-  const conversationNode = createNode();
+  const conversationOverride = options.selectors?.["#conversation"];
+  const defaultConversation = createElement("div");
+  defaultConversation.rootMarker = true;
+  const resolveConversation = () => {
+    if (conversationOverride === undefined) return defaultConversation;
+    return typeof conversationOverride === "function" ? conversationOverride() : conversationOverride;
+  };
+  const foldingConversation = () => resolveConversation() || defaultConversation;
   const appHtml = { value: "" };
   const appNode = createNode({
     get innerHTML() {
-      return appHtml.value + conversationNode.innerHTML;
+      return appHtml.value + (foldingConversation().innerHTML || "");
     },
     set innerHTML(value) {
       appHtml.value = String(value);
-      conversationNode.innerHTML = "";
+      foldingConversation().innerHTML = "";
     },
-    querySelector: selector => (selector === "#conversation" ? conversationNode : inert),
+    querySelector: selector => (selector === "#conversation" ? resolveConversation() : inert),
     querySelectorAll: () => [],
   });
   selectors["#app"] = options.selectors?.["#app"] || appNode;
-  selectors["#conversation"] = options.selectors?.["#conversation"] || conversationNode;
+  selectors["#conversation"] = options.selectors?.["#conversation"] || defaultConversation;
   const listeners = new Map();
   const document = {
     body: { dataset: {} },
+    createElement,
+    createTextNode,
+    parseHtml,
     addEventListener(type, handler) {
       const handlers = listeners.get(type) || [];
       handlers.push(handler);
@@ -114,6 +127,7 @@ function createAppHarness(options = {}) {
     },
     querySelector(selector) {
       const value = selectors[selector];
+      if (selector === "#conversation") return conversationOverride === undefined ? defaultConversation : resolveConversation();
       return typeof value === "function" ? value() : value || inert;
     },
     querySelectorAll() { return []; },

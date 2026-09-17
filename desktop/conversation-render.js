@@ -5,8 +5,13 @@
  * 输入为 detail、task、渲染依赖（renderMessage、renderDivider、events 归一、expandMessages、markdown 渲染器）
  * 与运行态快照（activeTaskId、streamBuffers、materialHistory、pluginViewCount）；输出为单元列表、会话 HTML、
  * 流式块 HTML 与统计计数。具体工作流为按窗口截取消息 → 逐段归一为单元 → 按内容签名命中缓存 →
- * 未命中才调用传入的渲染函数；流式正文解析全文但只渲染未闭合尾块。示例：
- * `renderConversation({ detail, task, state, markdown, renderMessage, renderDivider, events, expandMessages })`。
+ * 未命中才调用传入的渲染函数；流式正文解析全文但只渲染未闭合尾块。
+ * 对账身份约定：单元键与写入侧一一对应，并落到 DOM 的 `data-unit-key` 上——事件序列、加载更早入口与其余
+ * 顶层单元都带键，因此写入侧无需靠"有没有事件子节点"反推身份。无消息 id 时回退身份取该消息在**完整消息
+ * 列表**中的绝对下标（而非窗口内相对序号），使窗口滑动不改名。流式占位的身份类名由
+ * `STREAMING_PLACEHOLDER_CLASS` 统一提供，供写入侧就地创建占位时保持属性逐字一致——两者属性不一致会让
+ * 对账因签名不符把占位整块替换。
+ * 示例：`renderConversation({ detail, task, state, markdown, renderMessage, renderDivider, events, expandMessages })`。
  */
 (function (root, factory) {
   const api = factory();
@@ -17,6 +22,7 @@
 
   const WINDOW_MESSAGES = 80;
   const STREAMING_HEADER_HTML = `<header class="work-record-header"><span class="ui-badge is-active">生成中</span></header>`;
+  const STREAMING_PLACEHOLDER_CLASS = "work-record message ai streaming";
 
   const cache = new Map();
   const stats = { built: 0, reused: 0, streamingBuilt: 0, streamingReused: 0 };
@@ -34,6 +40,12 @@
 
   function _join(parts) {
     return parts.map(part => (part == null ? "" : String(part))).join("|");
+  }
+
+  function escapeAttribute(value) {
+    return String(value).replace(/[&<>"']/g, char => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    })[char]);
   }
 
   function _unitHtml(key, signature, build) {
@@ -95,14 +107,29 @@
     return start;
   }
 
-  function _messageUnit(message, roleStructured, messageIndex, input) {
-    const key = `message:${message.id || message.message_id || `${message.role || "message"}:${messageIndex}`}`;
+  function _messagePositions(messages) {
+    const positions = new Map();
+    for (const [index, message] of (messages || []).entries()) {
+      if (message && typeof message === "object") positions.set(message, index);
+    }
+    return positions;
+  }
+
+  function _fallbackIndex(message, countedIndex, state) {
+    const absolute = state.messagePositions?.get(message);
+    return absolute === undefined ? countedIndex : absolute;
+  }
+
+  function _messageUnit(message, roleStructured, countedIndex, input) {
+    const fallbackKey = _fallbackIndex(message, countedIndex, input.state);
+    const identity = message.id || message.message_id || `${message.role || "message"}:${fallbackKey}`;
+    const key = `message:${identity}`;
     const signature = _messageSignature(message, roleStructured, input.state);
     return {
       key,
       html: _unitHtml(key, signature, () => (roleStructured
-        ? input.renderMessage(message, { showRoleHeader: true })
-        : input.renderMessage(message, { fallbackKey: messageIndex }))),
+        ? input.renderMessage(message, { showRoleHeader: true, fallbackKey })
+        : input.renderMessage(message, { fallbackKey }))),
     };
   }
 
@@ -124,7 +151,7 @@
     const key = `earlier:${hiddenCount}`;
     return {
       key,
-      html: _unitHtml(key, _join(["earlier", hiddenCount]), () => `<div class="conversation-earlier"><button type="button" class="text-button" data-action="load-earlier-conversation">加载更早的 ${hiddenCount} 条消息</button></div>`),
+      html: _unitHtml(key, _join(["earlier", hiddenCount]), () => `<div class="conversation-earlier" data-unit-key="${escapeAttribute(key)}"><button type="button" class="text-button" data-action="load-earlier-conversation">加载更早的 ${hiddenCount} 条消息</button></div>`),
     };
   }
 
@@ -141,7 +168,7 @@
       const key = `seq:${events[0].eventKey}`;
       state.units.push({
         key,
-        html: _unitHtml(key, _eventSignature(events), () => `<section class="conversation-event-sequence" role="group" aria-label="执行过程">${events.map(input.events.renderEvent).join("")}</section>`),
+        html: _unitHtml(key, _eventSignature(events), () => `<section class="conversation-event-sequence" data-unit-key="${escapeAttribute(key)}" role="group" aria-label="执行过程">${events.map(input.events.renderEvent).join("")}</section>`),
       });
       eventGroup = [];
     };
@@ -163,7 +190,12 @@
     const allMessages = detail.messages || [];
     const start = windowStartIndex(allMessages, input.windowLimit ?? WINDOW_MESSAGES);
     const visible = start > 0 ? allMessages.slice(start) : allMessages;
-    const state = { units: [], eventIndex: new Map(), messageIndex: 0 };
+    const state = {
+      units: [],
+      eventIndex: new Map(),
+      messageIndex: start,
+      messagePositions: _messagePositions(allMessages),
+    };
     const roleStructured = Boolean(detail.context?.managed_status);
     if (start > 0) state.units.push(_earlierUnit(start));
     let messageGroup = [];
@@ -181,7 +213,7 @@
       const key = `stream:${runId}`;
       state.units.push({
         key,
-        html: _unitHtml(key, _streamingSignature(runId, buffer), () => `<article class="work-record message ai streaming" data-stream-run="${runId}">${streamingContent(input.markdown, input.events, buffer)}</article>`),
+        html: _unitHtml(key, _streamingSignature(runId, buffer), () => `<article class="${STREAMING_PLACEHOLDER_CLASS}" data-stream-run="${runId}">${streamingContent(input.markdown, input.events, buffer)}</article>`),
       });
     }
     return { units: state.units, eventIndex: state.eventIndex };
@@ -265,6 +297,7 @@
   return {
     WINDOW_MESSAGES,
     STREAMING_HEADER_HTML,
+    STREAMING_PLACEHOLDER_CLASS,
     buildUnits,
     renderConversation,
     markdownBlocks,

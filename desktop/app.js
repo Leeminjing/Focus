@@ -4,13 +4,15 @@
  * 对话/Context/Agent/Commitment/压缩/插件与模块化 Agent Loop Portfolio 控制台、自主压缩授权/审计/来源恢复、终止 Loop 退出/后继 Loop 准备等视图；逐轮材料以有序 binding 草稿和独立图片必看
  * 集合表达，自定义分组是服务端事实，分组模式与折叠是任务 UI 偏好。工作流在任务切换时加载
  * 材料、历史和分组，用纯函数规范化选择/分组，再通过单一异步事件边界更新 DOM 和运行状态；
- * 任务详情刷新带请求身份守卫，迟到或跨 Context 的响应不得覆盖更新的会话状态；会话区只有一个
- * 写者：顶层重建先接管既有会话节点，随即统一经对账写入内容，从而保留同 key 工具事件的 DOM
- * 身份与展开状态；流式占位按消息身份换段，不叠加同一 Run 内前一条消息的正文与推理；会话只呈现
- * 人类可读摘要，工具参数、工具输出与推理全文均不进入 DOM，由 mountConversationLazyDetails 在用户
- * 展开时按 conversationEventIndex 按需生成；会话渲染走两步：buildConversationUnits 产出带内容签名的
- * 单元，_unitHtml 按签名命中 conversationUnitCache，因此连续相同帧为零重建、增量帧只重建变化单元；
- * 流式正文按顶层块缓存，只重渲染未闭合尾块；同一 tick 内的多次状态变化由 scheduleRender 合并为一次。
+ * 任务详情刷新带请求身份守卫，迟到或跨 Context 的响应不得覆盖更新的会话状态；会话容器只有一个
+ * 写者——DOM 写入侧：顶层重建先接管既有会话节点，随即统一经对账写入内容（写入侧分只读的"计划"与唯一
+ * 改动 DOM 的"应用"两个阶段，决策前不改动活动树）；对账单元以身份键匹配，承诺轨迹面板与审批/恢复面板
+ * 作为显式保留节点原位存活，流式占位也由写入侧按 run 身份就地创建并同步，本文件不直接向会话容器增删
+ * 子节点；快照是该 run 的权威状态，命中消息 id 或同一 run 即回收流式占位，占位不叠加同一 Run 内前一条
+ * 消息的正文与推理；会话只呈现人类可读摘要，工具参数、工具输出与推理全文均不进入 DOM，由会话视图在
+ * 用户展开时按 conversationEventIndex 按需生成；会话渲染走两步：buildUnits 产出带内容签名的单元，
+ * _unitHtml 按签名命中缓存，因此连续相同帧为零重建、增量帧只重建变化单元；流式正文按顶层块缓存，
+ * 只重渲染未闭合尾块；同一 tick 内的多次状态变化由 scheduleRender 合并为一次。
  * 示例：renderFocus(activeTask()); await sendMain()。
  */
 "use strict";
@@ -1422,7 +1424,7 @@ function renderMustViewRecovery(detail) {
     const reason = item.reason === "unread" ? "模型声明未读到" : "模型缺少逐图表态";
     return `<li><strong>${escapeHtml(item.relative_path || item.material_id)}</strong><span>${reason}</span></li>`;
   }).join("");
-  return `<section class="review-panel must-view-report" aria-label="必看图片报告"><header><span class="review-kicker">必看图片</span><h3>需要人工处理</h3><span class="review-badge">已暂停</span></header><ul class="review-draft">${rows || "<li>必看图片报告不完整</li>"}</ul><div class="review-actions"><button class="primary" data-action="retry-must-view">重试</button><button class="text-button danger" data-action="cancel-must-view">取消本轮</button></div></section>`;
+  return `<section class="review-panel must-view-report" data-unit-key="must-view-recovery" aria-label="必看图片报告"><header><span class="review-kicker">必看图片</span><h3>需要人工处理</h3><span class="review-badge">已暂停</span></header><ul class="review-draft">${rows || "<li>必看图片报告不完整</li>"}</ul><div class="review-actions"><button class="primary" data-action="retry-must-view">重试</button><button class="text-button danger" data-action="cancel-must-view">取消本轮</button></div></section>`;
 }
 
 function composerFeedback(detail, projectionBlocked) {
@@ -1917,7 +1919,8 @@ function reconcileConversationMarkup(conversation, html) {
   conversationView.reconcile(conversation, html);
 }
 
-function replaceConversation(task, messages) {
+function replaceConversation(task, messages, snapshotRunId) {
+  finalizeStreamingOnSnapshot(task.task_id, messages, snapshotRunId);
   const detail = state.details.get(task.task_id) || {};
   detail.messages = messages;
   state.details.set(task.task_id, detail);
@@ -1946,12 +1949,6 @@ function renderStreamingContent(buffer) {
   return conversationRender.streamingContent(mdRenderer, conversationEvents, buffer);
 }
 
-// 正文逐块对账:只替换内容发生变化的块节点,未变化的块保留原 DOM 节点。
-// 这是流式期间不产生整段重排的关键——每帧只触碰真正变化的那一块。
-function syncStreamingContent(article, buffer) {
-  conversationView.syncStreaming(article, buffer);
-}
-
 function appendStreamDelta(envelope, field) {
   const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
   const content = envelope.data?.content;
@@ -1978,14 +1975,7 @@ function appendStreamDelta(envelope, field) {
     const conversation = document.querySelector("#conversation");
     if (!conversation) return;
     const pinned = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 80;
-    let article = conversation.querySelector(`[data-stream-run="${envelope.run_id}"]`);
-    if (!article) {
-      article = document.createElement("article");
-      article.className = "work-record message ai streaming";
-      article.dataset.streamRun = envelope.run_id;
-      conversation.append(article);
-    }
-    syncStreamingContent(article, buffer);
+    conversationView.syncStreamingPlaceholder(conversation, envelope.run_id, buffer);
     if (pinned) conversation.scrollTop = conversation.scrollHeight;
   }));
 }
@@ -2000,13 +1990,14 @@ function clearStreamBuffer(runId) {
   state.streamBuffers.delete(runId);
 }
 
-function finalizeStreamingOnSnapshot(taskId, messages) {
-  // 快照确认消息完整后清理流式缓冲：当 buffer 记录的 messageId 已出现在快照中，
-  // 说明该 AI 消息已完成，流式占位由快照对账原位转为完成态，缓冲不再需要。
+function finalizeStreamingOnSnapshot(taskId, messages, snapshotRunId) {
+  // 快照是该 run 的权威状态：命中缓冲记录的消息 id 或命中同一 run 时，
+  // 流式占位已由快照中的完成态取代，缓冲不再需要。信封不带 message_id 时靠 run 身份回收。
   const ids = new Set((messages || []).map(message => message && (message.id || message.message_id)).filter(Boolean));
   for (const [runId, buffer] of state.streamBuffers) {
     if (buffer.taskId !== taskId) continue;
-    if (buffer.messageId && ids.has(buffer.messageId)) clearStreamBuffer(runId);
+    if (buffer.messageId && ids.has(buffer.messageId)) { clearStreamBuffer(runId); continue; }
+    if (snapshotRunId && runId === snapshotRunId) clearStreamBuffer(runId);
   }
 }
 
@@ -3757,8 +3748,7 @@ function listenToRun(run) {
     const task = state.tasks.find(item => item.thread_id === envelope.thread_id && item.workspace_id === envelope.workspace_id);
     if (task && messages && envelope.agent_id.startsWith("main:")) {
       beginLeadExecution(task.task_id);
-      finalizeStreamingOnSnapshot(task.task_id, messages);
-      replaceConversation(task, messages);
+      replaceConversation(task, messages, envelope.run_id);
     }
   });
   source.addEventListener("interrupt", event => {
