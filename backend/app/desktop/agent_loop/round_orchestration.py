@@ -1,7 +1,8 @@
 r"""本文件对外提供 LoopObservationService、StructuredPatrolDecisionModel 与 LoopRoundOrchestrator。
 
 输入为持久 Loop/round/goal/grant、bounded Context frontier、压缩候选请求、Run/workspace/Worker 事实和模型配置；输出为
-不可变 observation、Patrol decision intent 与 Kernel commit 结果。具体工作流为系统冻结 Context frontier、
+不可变 observation、Patrol decision intent 与 Kernel commit 结果。具体工作流为系统先拒绝已终结或已有落定
+决策的 round（终局短路，不产生观察与认知调用），再冻结 Context frontier、
 待处理用户意图与持久事实并保存观察，
 模型只返回无权 proposal，系统绑定唯一 holder 和全部版本，PortfolioPatrol 记录 attempt；回答形状不合法时
 在同一冻结观察上做有界重试，用尽才收敛为 waiting_user，最后 Kernel 校验并提交。
@@ -39,6 +40,7 @@ from backend.app.desktop.agent_loop.models import (
 )
 from backend.app.desktop.agent_loop.observation import LoopObservationBuilder, observation_hash
 from backend.app.desktop.agent_loop.patrol import PatrolContractViolation, PortfolioPatrol
+from backend.app.desktop.agent_loop.rounds import TERMINAL_ROUND_STATUSES, UNDECIDED_ROUND_STATUSES, terminate_round
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope, PatrolAction, PatrolDecisionIntent
 from backend.app.desktop.agent_loop.compression_authority.contracts import CompressionCandidateRequest
 from backend.app.desktop.agent_loop.compression_authority.candidates import CompressionCandidateService
@@ -437,10 +439,13 @@ class LoopRoundOrchestrator:
 
     async def process(self, claim: CoordinatorClaim) -> KernelCommitResult | None:
         publishing_intent: PatrolDecisionIntent | None = None
+        decided_decision_id: str | None = None
         async with self._sessions() as session:
             loop = await session.get(AgentLoop, claim.loop_id)
             round_row = await session.get(LoopRound, claim.round_id)
             if loop is None or round_row is None:
+                return None
+            if round_row.status in TERMINAL_ROUND_STATUSES:
                 return None
             if round_row.status in {"publishing", "adopting"}:
                 decision = await session.get(LoopDecision, round_row.decision_id) if round_row.decision_id else None
@@ -448,8 +453,15 @@ class LoopRoundOrchestrator:
             elif round_row.status != "observed":
                 return None
             else:
-                holder_id = loop.holder_id
-                model_name = (loop.equipment or {}).get("patrol_model_name") or (loop.equipment or {}).get("model_name")
+                settled = await session.scalar(select(LoopDecision.decision_id).where(LoopDecision.round_id == round_row.round_id))
+                if settled is not None:
+                    decided_decision_id = settled
+                else:
+                    holder_id = loop.holder_id
+                    model_name = (loop.equipment or {}).get("patrol_model_name") or (loop.equipment or {}).get("model_name")
+        if decided_decision_id is not None:
+            await self._terminate_decided_round(claim, decided_decision_id)
+            return None
         if publishing_intent is not None:
             return await self._kernel.commit(publishing_intent)
         observation = await self._observations.capture(claim.loop_id, claim.round_id)
@@ -524,20 +536,23 @@ class LoopRoundOrchestrator:
         async with self._sessions.begin() as session:
             round_row = await session.get(LoopRound, claim.round_id, with_for_update=True)
             loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True)
-            if round_row is not None and round_row.status == "observed":
-                round_row.status = "error"
-            if loop is not None and loop.status == "running":
-                loop.status = "waiting_user"
-                loop.health = "degraded"
-                loop.waiting_reason = "Loop hard budget 已耗尽: " + ", ".join(reasons)
+            if round_row is None:
+                return
+            await terminate_round(session, loop, round_row, category="budget", reason="Loop hard budget 已耗尽: " + ", ".join(reasons), allowed_statuses=UNDECIDED_ROUND_STATUSES)
+
+    async def _terminate_decided_round(self, claim: CoordinatorClaim, decision_id: str) -> bool:
+        """收敛已有落定决策却仍可领取的 round：不再观察、不再调用认知模型。"""
+        async with self._sessions.begin() as session:
+            round_row = await session.get(LoopRound, claim.round_id, with_for_update=True)
+            loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True)
+            if round_row is None:
+                return False
+            return await terminate_round(session, loop, round_row, category="already_decided", reason="Round 已有落定决策，未再进入认知决策", decision_id=decision_id, allowed_statuses=UNDECIDED_ROUND_STATUSES)
 
     async def _fail(self, claim: CoordinatorClaim, exc: Exception) -> None:
         async with self._sessions.begin() as session:
             round_row = await session.get(LoopRound, claim.round_id, with_for_update=True)
             loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True)
-            if round_row is not None and round_row.status == "observed":
-                round_row.status = "error"
-            if loop is not None and loop.status == "running":
-                loop.status = "waiting_user"
-                loop.health = "degraded"
-                loop.waiting_reason = f"Portfolio Patrol 调用失败: {str(exc)[:1000]}"
+            if round_row is None:
+                return
+            await terminate_round(session, loop, round_row, category="patrol_failed", reason=f"Portfolio Patrol 调用失败: {str(exc)[:1000]}", allowed_statuses=UNDECIDED_ROUND_STATUSES)

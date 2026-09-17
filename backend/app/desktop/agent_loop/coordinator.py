@@ -1,14 +1,17 @@
 r"""本文件对外提供 LoopCoordinator、CoordinatorClaim 与 LoopCoordinatorRuntime。
 
-输入为数据库中的 running Loop、未决 round、Worker/Run/outbox 事实、稳定 compression gate 和 coordinator identity；输出为带
-lease 的唯一 round claim 与恢复计数。具体工作流为 skip-locked 领取、fencing stale attempt、由数据库
-状态推进 health；Runtime 启动时执行完整 AgentLoopRecovery，随后消费持久 outbox 并通过 Coordinator
-原子派发 ready wave，进程内 wake 只缩短延迟。示例：`runtime = LoopCoordinatorRuntime(...)`。
+输入为数据库中的 running Loop、可领取 round、租约事实、Worker/Run/outbox 事实、稳定 compression gate 和
+coordinator identity；输出为带 lease 的唯一 round claim、停滞 round 的收敛结果与恢复计数。具体工作流为
+skip-locked 领取**未被有效租约持有**的候选 round（过期租约即时清除）、fencing stale attempt、由数据库
+状态推进 health；运行期在领取前先收敛已无进展的 round 并释放其名额，Runtime 启动时执行完整
+AgentLoopRecovery，随后消费持久 outbox 并通过 Coordinator 原子派发 ready wave，进程内 wake 只缩短延迟。
+示例：`runtime = LoopCoordinatorRuntime(...)`。
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import hashlib
@@ -17,11 +20,12 @@ import logging
 import uuid
 from typing import Protocol
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopAction, LoopBudgetUsage, LoopContextMembership, LoopCoordinatorLease, LoopDirective, LoopEventOutbox, LoopRound, LoopWorkerRequest, MessageProvenance
 from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count, no_progress_fingerprint
+from backend.app.desktop.agent_loop.rounds import CLAIMABLE_ROUND_STATUSES, RoundStallLimits, terminate_round, terminate_stalled_rounds
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.agent_loop.models import LoopDelegationGrant
 from backend.app.desktop.models import DesktopRun, DesktopThread
@@ -63,6 +67,10 @@ class CompressionResolutionPort(Protocol):
     async def settle_run(self, session, event, run, loop) -> str | None: ...
 
 
+class RoundMaintenancePort(Protocol):
+    async def maintain_rounds(self) -> tuple[str, ...]: ...
+
+
 class LoopCoordinator:
     def __init__(
         self,
@@ -70,24 +78,41 @@ class LoopCoordinator:
         ttl_seconds: int = 60,
         compression_gates: CompressionGateProjectionPort | None = None,
         compression_resolutions: CompressionResolutionPort | None = None,
+        stall_limits: RoundStallLimits | None = None,
     ) -> None:
         self._sessions = sessions
         self._ttl = ttl_seconds
         self._compression_gates = compression_gates
         self._compression_resolutions = compression_resolutions
+        self._stall_limits = stall_limits or RoundStallLimits()
+
+    @property
+    def stall_limits(self) -> RoundStallLimits:
+        """恢复路径复用同一套无进展界限，避免运行期与启动期判定分叉。"""
+        return self._stall_limits
+
+    @staticmethod
+    def _candidate_statement(now: datetime):
+        """可领取候选：loop 仍 running、round 未终结且未被有效租约持有，按轮起点 FIFO。"""
+        return (
+            select(LoopRound)
+            .join(AgentLoop, AgentLoop.loop_id == LoopRound.loop_id)
+            .outerjoin(LoopCoordinatorLease, LoopCoordinatorLease.round_id == LoopRound.round_id)
+            .where(
+                AgentLoop.status == "running",
+                LoopRound.status.in_(CLAIMABLE_ROUND_STATUSES),
+                or_(LoopCoordinatorLease.lease_id.is_(None), LoopCoordinatorLease.expires_at <= now),
+            )
+            .order_by(LoopRound.started_at)
+            .with_for_update(of=LoopRound, skip_locked=True)
+            .limit(1)
+        )
 
     async def claim(self, owner_id: str) -> CoordinatorClaim | None:
         now = datetime.now(UTC)
         async with self._sessions.begin() as session:
-            await session.execute(update(LoopCoordinatorLease).where(LoopCoordinatorLease.expires_at <= now).values(expires_at=now))
-            round_row = await session.scalar(
-                select(LoopRound)
-                .join(AgentLoop, AgentLoop.loop_id == LoopRound.loop_id)
-                .where(AgentLoop.status == "running", LoopRound.status.in_(["observed", "publishing", "adopting", "ready"]))
-                .order_by(LoopRound.started_at)
-                .with_for_update(skip_locked=True)
-                .limit(1)
-            )
+            await session.execute(delete(LoopCoordinatorLease).where(LoopCoordinatorLease.expires_at <= now))
+            round_row = await session.scalar(self._candidate_statement(now))
             if round_row is None:
                 return None
             lease = await session.scalar(select(LoopCoordinatorLease).where(LoopCoordinatorLease.round_id == round_row.round_id).with_for_update())
@@ -104,6 +129,23 @@ class LoopCoordinator:
             if loop is not None:
                 loop.health = "deciding" if round_row.status == "observed" else loop.health
             return CoordinatorClaim(lease.lease_id, round_row.loop_id, round_row.round_id, lease.fencing_token)
+
+    async def maintain_rounds(self) -> tuple[str, ...]:
+        """运行期看门狗：收敛已无进展的 round 并释放其名额，使后续候选在同一轮内可被领取。"""
+        now = datetime.now(UTC)
+        async with self._sessions.begin() as session:
+            terminated = await terminate_stalled_rounds(session, self._stall_limits, now, category="watchdog")
+        if terminated:
+            await self.release_rounds(terminated)
+        return tuple(terminated)
+
+    async def release_rounds(self, round_ids: Sequence[str]) -> int:
+        """清除指定 round 的租约行：收敛本身已使其不再是候选，此处保证租约表只保留真实持有者。"""
+        if not round_ids:
+            return 0
+        async with self._sessions.begin() as session:
+            result = await session.execute(delete(LoopCoordinatorLease).where(LoopCoordinatorLease.round_id.in_(list(round_ids))))
+            return int(result.rowcount or 0)
 
     async def release(self, claim: CoordinatorClaim) -> bool:
         async with self._sessions.begin() as session:
@@ -195,12 +237,8 @@ class LoopCoordinator:
             async with self._sessions.begin() as session:
                 current = await session.get(LoopRound, claim.round_id, with_for_update=True)
                 current_loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True)
-                if current is not None and current.status == "ready":
-                    current.status = "error"
-                if current_loop is not None and current_loop.status == "running":
-                    current_loop.status = "waiting_user"
-                    current_loop.health = "degraded"
-                    current_loop.waiting_reason = "Loop hard budget 已耗尽，未启动新的 Run"
+                if current is not None:
+                    await terminate_round(session, current_loop, current, category="budget", reason="Loop hard budget 已耗尽，未启动新的 Run", allowed_statuses=("ready",))
             return ()
         configured = int((grant.budgets if grant else {}).get("max_concurrent_runs", concurrency))
         run_ids = await dispatcher.dispatch(claim.loop_id, claim.round_id, min(concurrency, configured))
@@ -314,7 +352,7 @@ class LoopCoordinator:
 
 
 class LoopCoordinatorRuntime:
-    def __init__(self, coordinator: LoopCoordinator, run_events: RunOutboxConsumer, dispatcher: LoopWaveDispatcher | None = None, orchestrator: RoundOrchestratorPort | None = None, workers: WorkerRuntimePort | None = None, recovery: RecoveryPort | None = None, compression_resolutions: CompressionResolutionPort | None = None, poll_seconds: float = 1.0) -> None:
+    def __init__(self, coordinator: LoopCoordinator, run_events: RunOutboxConsumer, dispatcher: LoopWaveDispatcher | None = None, orchestrator: RoundOrchestratorPort | None = None, workers: WorkerRuntimePort | None = None, recovery: RecoveryPort | None = None, compression_resolutions: CompressionResolutionPort | None = None, poll_seconds: float = 1.0, maintenance: RoundMaintenancePort | None = None) -> None:
         self._coordinator = coordinator
         self._run_events = run_events
         self._dispatcher = dispatcher
@@ -322,6 +360,7 @@ class LoopCoordinatorRuntime:
         self._workers = workers
         self._recovery = recovery
         self._compression_resolutions = compression_resolutions
+        self._maintenance = maintenance
         self._poll_seconds = poll_seconds
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
@@ -355,6 +394,8 @@ class LoopCoordinatorRuntime:
                     await self._compression_resolutions.drain()
                 if self._workers is not None:
                     await self._workers.drain()
+                if self._maintenance is not None:
+                    await self._maintenance.maintain_rounds()
                 await self._process_round()
             except Exception:
                 logger.exception("Agent Loop coordinator 消费 Run 事件失败")

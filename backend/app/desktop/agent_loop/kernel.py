@@ -1,11 +1,11 @@
 r"""本文件对外提供 LoopKernel、KernelCommitResult 与 KernelRejected 唯一确定性提交边界。
 
-输入为 PatrolDecisionIntent 和当前数据库事实；输出为幂等 committed/superseded/rejected 结果。
-具体工作流为稳定锁定 Loop/round/grant，按版本、权力、frontier、workspace、预算、active Run、gate
-顺序校验；普通动作单事务提交，Context Portfolio 与 workspace adoption 先持久授权意图，再由专用
-Kernel port 执行外部准备并原子收口权威状态，提交成功后收口该 round 已观察的用户意图；
-自主压缩由专用 committer 在同一事务内只提交 resolution、不触碰 graph；Worker 无提交端口。示例：
-`result = await kernel.commit(intent)`。
+输入为 PatrolDecisionIntent 和当前数据库事实；输出为幂等 committed/superseded/rejected 结果。具体工作流为
+稳定锁定 Loop/round/grant，按版本、权力、frontier、workspace、预算、active Run、gate 顺序校验；普通动作
+单事务提交，Context Portfolio 与 workspace adoption 先持久授权意图，再由专用 Kernel port 执行外部准备并
+原子收口权威状态；被拒绝或被取代的决策必须在同一事务内把该 round 收敛为终态（拒绝还会把当前轮所属
+Loop 交回用户），提交成功后收口该 round 已观察的用户意图；自主压缩由专用 committer 在同一事务内只提交
+resolution、不触碰 graph；Worker 无提交端口。示例：`result = await kernel.commit(intent)`。
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from backend.app.desktop.agent_loop.models import (
     LoopRound, LoopUserIntent, LoopWorkerRequest,
 )
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
+from backend.app.desktop.agent_loop.rounds import UNDECIDED_ROUND_STATUSES, terminate_round
 from backend.app.desktop.agent_loop.schemas import PatrolDecisionIntent
 from backend.app.desktop.agent_loop.compression_authority.commit import CompressionAuthorityCommitter, CompressionCommitRejected
 from backend.app.desktop.context_curation.models import CurationLane, CurationProgram, PortfolioLaneCandidate, PortfolioRevision
@@ -133,6 +134,7 @@ class LoopKernel:
         if stale is not None:
             decision = self._decision(intent, "superseded", {"reason": stale})
             session.add(decision)
+            await terminate_round(session, loop, round_row, category="superseded", reason=stale, decision_id=decision.decision_id, wait_for_user=False, allowed_statuses=UNDECIDED_ROUND_STATUSES)
             return None, None, KernelCommitResult(intent.decision_id, "superseded", (), (), stale)
         try:
             self._authority.validate(loop, grant, intent)
@@ -140,12 +142,7 @@ class LoopKernel:
         except (AuthorityViolation, KernelRejected) as exc:
             decision = self._decision(intent, "rejected", {"reason": str(exc)})
             session.add(decision)
-            if any(action.action == "request_completion" for action in intent.actions):
-                loop.status = "waiting_user"
-                loop.health = "degraded"
-                loop.waiting_reason = f"Completion Guard 未通过: {str(exc)[:1000]}"
-                round_row.decision_id = decision.decision_id
-                round_row.status = "error"
+            await terminate_round(session, loop, round_row, category="rejected", reason=self._rejection_reason(intent, exc), decision_id=decision.decision_id, allowed_statuses=UNDECIDED_ROUND_STATUSES)
             return None, None, KernelCommitResult(intent.decision_id, "rejected", (), (), str(exc))
         deferred_status = "publishing" if self._has_lane_mutation(intent) else "adopting" if self._has_adoption(intent) else None
         if deferred_status is not None:
@@ -622,6 +619,12 @@ class LoopKernel:
         slot = await session.get(WorkspaceSlot, action.final_slot_id)
         if slot is None or slot.kind != "authoritative" or slot.revision != round_row.workspace_revision:
             raise KernelRejected("最终 workspace 未采用到当前权威 revision")
+
+    @staticmethod
+    def _rejection_reason(intent: PatrolDecisionIntent, exc: Exception) -> str:
+        if any(action.action == "request_completion" for action in intent.actions):
+            return f"Completion Guard 未通过: {str(exc)[:1000]}"
+        return str(exc)
 
     @staticmethod
     def _decision(intent: PatrolDecisionIntent, status: str, rejection: dict) -> LoopDecision:
