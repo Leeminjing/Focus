@@ -12,7 +12,7 @@ from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim, LoopCoo
 from backend.app.desktop.agent_loop.kernel import KernelCommitResult, KernelRejected, LoopKernel
 from backend.app.desktop.agent_loop.observation import LoopObservationBuilder, observation_hash
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory, MessageHistoryProjector
-from backend.app.desktop.agent_loop.patrol import PatrolDecisionModel, PortfolioPatrol
+from backend.app.desktop.agent_loop.patrol import PatrolContractViolation, PatrolDecisionModel, PortfolioPatrol
 from backend.app.desktop.agent_loop.dispatch import DesktopDirectiveLaunchPort, DirectiveLaunchPort, LoopRunWorkspaceBinder, LoopWaveDispatcher
 from backend.app.desktop.agent_loop.gates import PendingDecisionContract, PendingDecisionProjector
 from backend.app.desktop.agent_loop.budgets import BudgetDecision, LoopBudgetGuard, no_progress_fingerprint
@@ -31,7 +31,7 @@ __all__ = [
     "DelegatedAuthorityGuard", "DelegatedDirectiveFactory", "KernelCommitResult", "KernelRejected",
     "DesktopDirectiveLaunchPort", "DirectiveLaunchPort", "LoopRunWorkspaceBinder", "LoopBudgetContract", "LoopCoordinator", "LoopCoordinatorRuntime", "LoopCreateRequest", "LoopKernel", "LoopObservationBuilder",
     "LoopObservationEnvelope", "MessageHistoryProjector", "PatrolAction", "PatrolDecisionIntent", "observation_hash",
-    "PatrolDecisionModel", "PortfolioPatrol", "LoopWaveDispatcher",
+    "PatrolDecisionModel", "PortfolioPatrol", "PatrolContractViolation", "LoopWaveDispatcher",
     "PendingDecisionContract", "PendingDecisionProjector",
     "BudgetDecision", "LoopBudgetGuard", "no_progress_fingerprint",
     "AgentLoopRecovery", "LoopRecoveryReport",

@@ -1,8 +1,9 @@
-r"""本文件对外提供 PortfolioPatrol、PatrolDecisionModel 与 PatrolAttemptResult。
+r"""本文件对外提供 PortfolioPatrol、PatrolDecisionModel 与 PatrolContractViolation。
 
 输入为一个不可变 bounded LoopObservationEnvelope、当前 holder/grant 身份和独立模型调用；输出为恰好
-一个 PatrolDecisionIntent。具体工作流为每轮创建隔离 attempt identity，模型可自行判断并可选择请求
-Worker，结果先持久化为 proposal，再由 Kernel commit；Patrol 本身拥有判断而 Worker 非必经。
+一个 PatrolDecisionIntent，或携带模型原始输出的可重试合同违例。具体工作流为每轮创建隔离 attempt
+identity，模型可自行判断并可选择请求 Worker，结果先持久化为 proposal，再由 Kernel commit；模型回答
+形状不合法时抛出 PatrolContractViolation，attempt 记为 error 并保留原始输出，是否重试由调用方决定。
 示例：`result = await patrol.decide(envelope, identity)`。
 """
 
@@ -24,6 +25,14 @@ class PatrolDecisionModel(Protocol):
     async def __call__(self, observation: LoopObservationEnvelope) -> PatrolDecisionIntent: ...
 
 
+class PatrolContractViolation(RuntimeError):
+    """模型回答不符合 Patrol 认知步骤合同；携带原始输出供审计与重试判断。"""
+
+    def __init__(self, message: str, raw_output: str | None = None) -> None:
+        super().__init__(message)
+        self.raw_output = raw_output
+
+
 class PortfolioPatrol:
     def __init__(self, sessions: async_sessionmaker[AsyncSession], model: PatrolDecisionModel) -> None:
         self._sessions = sessions
@@ -35,7 +44,8 @@ class PortfolioPatrol:
             intent = await self._model(observation)
             self._validate_output(intent, observation, holder_id)
         except Exception as exc:
-            await self._finish(attempt, "error", {}, str(exc))
+            raw_output = getattr(exc, "raw_output", None)
+            await self._finish(attempt, "error", {"raw_text": raw_output} if raw_output else {}, str(exc))
             raise
         await self._finish(attempt, "success", intent.model_dump(mode="json"), None)
         return intent
