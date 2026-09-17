@@ -372,7 +372,7 @@ def test_worker_streams_interrupt_snapshots_regardless_of_commitment():
     """中断可观测性不得依赖承诺层开关：准入门与承诺层无关。"""
     path = Path(__file__).parents[1] / "packages" / "harness" / "focus" / "runtime" / "runs" / "worker.py"
     source = path.read_text(encoding="utf-8")
-    forcing = 'stream_modes_list = list(dict.fromkeys([*stream_modes_list, "values", "custom"]))'
+    forcing = 'stream_modes_list = list(dict.fromkeys([*requested_stream_modes, "messages", "values", "custom"]))'
     assert forcing in source
     assert "if app_config.commitment.enabled:" not in source.split(forcing)[0][-400:]
 

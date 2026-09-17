@@ -1,8 +1,9 @@
-r"""本文件验证 Patrol 自主压缩的领域契约、事务提交、迁移往返与用户优先级。
+r"""本文件验证 Patrol 自主压缩的领域契约、候选/结果证据、事务提交、迁移往返与用户优先级。
 
 输入为消息协议组、保护锚点、版本化授权 facts、并发 Kernel intent 与隔离 PostgreSQL；输出为 bounded
-manifest、纯 policy、唯一 resolution、无 Context 副作用及可逆 schema 的确定性断言。具体工作流为先
-验证无正文 manifest 和 closed action，再在真实数据库中覆盖并发提交、用户 supersession 及
+manifest、纯 policy、唯一 resolution、内容哈希、无 Context 副作用及可逆 schema 的确定性断言。
+具体工作流为先验证无正文 manifest、closed action 和 checkpoint evidence，再以真实候选服务覆盖
+候选持久化、并发提交、用户 supersession 及
 `head → down_revision → head` 迁移。示例：`pytest test_agent_loop_compression_authority.py`。
 """
 
@@ -19,6 +20,8 @@ from alembic.config import Config
 from pydantic import ValidationError
 
 from backend.app.desktop.agent_loop.compression_authority.contracts import AutonomousCompressionPolicy, CompressionCandidateRequest
+from backend.app.desktop.agent_loop.compression_authority.candidates import CompressionCandidateService
+from backend.app.desktop.agent_loop.compression_authority.evidence import CompressionCheckpointEvidence, CompressionEvidenceVerifier
 from backend.app.desktop.agent_loop.compression_authority.manifest import CompressionManifestBuilder
 from backend.app.desktop.agent_loop.compression_authority.policy import CompressionAuthorityFacts, CompressionAuthorityPolicy
 from backend.app.desktop.agent_loop.round_orchestration import PatrolCognitiveStep, StructuredPatrolDecisionModel
@@ -121,6 +124,36 @@ def test_manifest_rejects_duplicate_message_identity() -> None:
     )
     with pytest.raises(ValueError, match="重复 message id"):
         CompressionManifestBuilder().page(messages)
+
+
+def test_checkpoint_evidence_requires_matching_source_and_replacement_hashes() -> None:
+    source = (
+        {"id": "m1", "role": "human", "content": "old context"},
+        {"id": "m2", "role": "ai", "content": "old answer"},
+    )
+    ranges = CompressionEvidenceVerifier.bind_ranges(
+        source,
+        [{"source_ids": ["m1", "m2"], "replacement": "verified summary"}],
+    )
+    block = {
+        "id": "block",
+        "role": "human",
+        "content": "verified summary",
+        "compression": {"block_id": "block", "source": list(source)},
+    }
+
+    matched = CompressionEvidenceVerifier.verify((block,), ranges)
+    assert matched.matched is True
+    assert matched.reason == "matched"
+    assert matched.actual_before_tokens > matched.actual_after_tokens
+
+    changed_source = {
+        **block,
+        "compression": {"block_id": "block", "source": [{**source[0], "content": "changed"}, source[1]]},
+    }
+    assert CompressionEvidenceVerifier.verify((changed_source,), ranges).reason == "compressed_source_hash_mismatch"
+    assert CompressionEvidenceVerifier.verify(({**block, "content": "changed"},), ranges).reason == "compression_replacement_hash_mismatch"
+    assert CompressionEvidenceVerifier.verify((block,), [{"source_ids": ["m1", "m2"], "replacement": "verified summary"}]).reason == "candidate_evidence_missing"
 
 
 def test_autonomous_compression_policy_round_trips_with_strict_safe_defaults() -> None:
@@ -346,6 +379,10 @@ def test_resolution_recovery_observes_running_run_then_reconciles_applied_checkp
     async def exercise() -> None:
         coordinator = CompressionResolutionCoordinator(Sessions(), None)
         coordinator._revisions = Revisions()
+        class Evidence:
+            async def inspect(self, *_args):
+                return CompressionCheckpointEvidence(True, "matched", 1800, 300)
+        coordinator._evidence = Evidence()
         assert await coordinator.reconcile() == 0
         assert resolution.status == "resuming"
         run.status = "pending"
@@ -506,29 +543,41 @@ def test_kernel_commits_one_resolution_without_mutating_context_and_user_overrid
             assert projected is not None and projected.delegable is True
             assert projected.payload["origin_message_id"] == "direct-message"
             assert projected.payload["round_id"] == snapshot["current_round_id"]
-            async with sessions.begin() as session:
-                round_row = await session.get(LoopRound, snapshot["current_round_id"])
-                candidate = LoopCompressionCandidate(
-                    candidate_id=uuid.uuid4().hex,
-                    loop_id=loop_id,
+            class RevisionReader:
+                async def read(self, *_args):
+                    return SimpleNamespace(
+                        messages=(
+                            {"id": "m1", "role": "human", "content": "old context " * 200},
+                            {"id": "m2", "role": "ai", "content": "old answer " * 200},
+                            {"id": "m3", "role": "human", "content": "current instruction"},
+                        )
+                    )
+
+            candidate_service = CompressionCandidateService(sessions, None, None)
+            candidate_service._reader = RevisionReader()
+
+            async def summarize(*_args):
+                return "summary"
+
+            monkeypatch.setattr(
+                "backend.app.desktop.agent_loop.compression_authority.candidates.summarize_messages",
+                summarize,
+            )
+            candidate = await candidate_service.prepare(
+                loop_id,
+                CompressionCandidateRequest(
                     pending_decision_id=projected.pending_decision_id,
-                    round_id=round_row.round_id,
                     context_id=context_id,
-                    base_context_revision_id=revision_id,
-                    base_checkpoint_id="checkpoint-1",
-                    frontier_hash=round_row.frontier_hash,
-                    authority_revision=1,
-                    goal_revision=1,
-                    policy_revision=1,
-                    normalized_ranges=[{"source_ids": ["m1", "m2"], "replacement": "summary"}],
-                    replacement_hash="b" * 64,
-                    candidate_hash=uuid.uuid4().hex + uuid.uuid4().hex,
-                    before_tokens=2000,
-                    after_tokens=400,
-                    protection_evidence=[],
-                    expires_at=datetime.now(UTC) + timedelta(minutes=5),
-                )
-                session.add(candidate)
+                    context_revision_id=revision_id,
+                    source_message_ids=("m1", "m2"),
+                ),
+            )
+            async with sessions() as session:
+                round_row = await session.get(LoopRound, snapshot["current_round_id"])
+                persisted_candidate = await session.get(LoopCompressionCandidate, candidate.candidate_id)
+                assert persisted_candidate.status == "prepared"
+                assert persisted_candidate.normalized_ranges[0]["source_hash"]
+                assert persisted_candidate.normalized_ranges[0]["replacement_hash"] == persisted_candidate.replacement_hash
             intent = PatrolDecisionIntent(
                 decision_id=uuid.uuid4().hex,
                 idempotency_key=f"compression:{suffix}",

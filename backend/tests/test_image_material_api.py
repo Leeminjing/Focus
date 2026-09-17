@@ -11,7 +11,6 @@ import asyncio
 import io
 import os
 from pathlib import Path
-from types import SimpleNamespace
 import uuid
 
 from fastapi import HTTPException
@@ -23,6 +22,8 @@ pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 from backend.app.desktop.resource_limits import ImageResourceLimits  # noqa: E402
 from backend.app.gateway.app import app  # noqa: E402
+from focus.runtime.runs.manager import RunRecord  # noqa: E402
+from focus.runtime.runs.schemas import DisconnectMode, RunStatus  # noqa: E402
 
 
 SESSION = {"X-Focus-Session": "focus-dev-session"}
@@ -72,13 +73,11 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
         launched.append((body, thread_id, agent_factory))
         done = asyncio.Future()
         done.set_result(None)
-        return SimpleNamespace(
+        return RunRecord(
             run_id=body.context["run_id"],
             thread_id=thread_id,
-            status=SimpleNamespace(value="success"),
-            error=None,
-            prompt_input_tokens=0,
-            prompt_cache_hit_tokens=0,
+            status=RunStatus.success,
+            on_disconnect=DisconnectMode.continue_,
             task=done,
         )
 

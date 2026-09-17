@@ -458,16 +458,33 @@ test("loop view exposes autonomous compression status without injecting it into 
       pending_decisions: [{ pending_decision_id: "pending-1", kind: "compression", status: "resolving", payload: { context_id: "context-1" } }],
       decisions: [{ decision_id: "decision-1", rationale: "Keep this execution identity and remove obsolete debugging history." }],
       compression_candidates: [{ candidate_id: "candidate-1", context_id: "context-1", status: "accepted", estimated_reduction: 1400, before_tokens: 2000, after_tokens: 600, protection_evidence: [{ reason: "current_direct_user_message", overlap: false }], source_ranges: [{ source_ids: ["m1", "m2"] }] }],
-      compression_resolutions: [{ resolution_id: "resolution-1", decision_id: "decision-1", run_id: "run-1", status: "resuming", actual_reduction: null }],
+      compression_resolutions: [{ resolution_id: "resolution-1", decision_id: "decision-1", run_id: "run-1", status: "resuming", actual_before_tokens: null, actual_after_tokens: null, actual_reduction: null }],
     } },
   }, {}, { manifest: { nodes: [] } });
   assert.match(html, /Patrol Context 压缩 · 正在恢复 Run/);
-  assert.match(html, /减少约 1400 tokens/);
+  assert.match(html, /预计减少 1400 tokens/);
+  assert.match(html, /等待稳定 checkpoint 证据/);
   assert.match(html, /current_direct_user_message/);
   assert.match(html, /Keep this execution identity/);
   assert.match(html, /打开完整 Context 会话并查看\/恢复来源/);
   assert.match(html, /允许 Patrol 自主压缩当前 Context/);
   assert.doesNotMatch(html, /Delegated HumanMessage.*compression/s);
+});
+
+test("loop view labels checkpoint-derived compression usage as actual", () => {
+  const html = LoopView.render({
+    snapshot: {
+      loop_id: "l-compression", status: "running", health: "observing", goal_revision: 1, authority_revision: 1,
+      goal: { goal: "Long task" }, usage: {}, grant: { budgets: {} },
+    },
+    related: { audit: {
+      compression_candidates: [{ candidate_id: "candidate-1", context_id: "context-1", status: "accepted", estimated_reduction: 1400, before_tokens: 2000, after_tokens: 600, source_ranges: [{ source_ids: ["m1", "m2"] }] }],
+      compression_resolutions: [{ resolution_id: "resolution-1", status: "applied", actual_before_tokens: 1800, actual_after_tokens: 320, actual_reduction: 1480 }],
+    } },
+  }, {}, { manifest: { nodes: [] } });
+  assert.match(html, /实际减少 1480 tokens/);
+  assert.match(html, /1800 → 320/);
+  assert.doesNotMatch(html, /等待稳定 checkpoint 证据/);
 });
 
 

@@ -18,7 +18,8 @@ Agent 运行使用独立 checkpoint namespace 隔离，并用 Git 隐藏引用�
 + 联网工具 web_search/web_fetch + MCP 远端工具 + 压缩门）、teammate/worker（持久派生
 Agent，协作工具 + Mailbox 注入 + 联网工具）、patrol（小兵机制，工作区工具仅，无联网
 无 MCP）。持久派生（spawn_teammate/spawn_worker）创建 SwarmAgent 身份并经
-_launch_swarm_run 启动独立命名空间的后台 run；工具错误 middleware 保证可恢复调用闭合，
+_launch_swarm_run 启动独立命名空间的后台 run；Swarm 等待快照在同一 repeatable-read 视图中
+读取 Run、任务板和未读消息，避免组合出跨事务时刻的伪状态；工具错误 middleware 保证可恢复调用闭合，
 主任务运行前的 checkpoint preflight 可从最近合法祖先恢复受损历史；主 Agent 中断恢复
 经 resume_run 按载荷分派承诺层、必看报告、压缩流程与本机资源准入；Patrol 自主压缩可附带稳定
 resolution Run identity，但仍沿用被中断 Run 的
@@ -2032,6 +2033,14 @@ class DesktopService:
     async def _swarm_snapshot(self, task_id: str, agent_ids: list[str]) -> dict[str, Any]:
         """组装非消费式协调快照。"""
         async with self.session_factory() as session:
+            await session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+            runs = (
+                await session.execute(
+                    select(DesktopRun)
+                    .where(DesktopRun.agent_id.in_(agent_ids))
+                    .order_by(DesktopRun.created_at.desc(), DesktopRun.run_id.desc())
+                )
+            ).scalars().all()
             board_tasks = (
                 await session.execute(
                     select(AgentBoardTask)
@@ -2048,14 +2057,6 @@ class DesktopService:
                         AgentMessage.read_at.is_(None),
                     )
                     .order_by(AgentMessage.created_at, AgentMessage.message_id)
-                )
-            ).scalars().all()
-            # 运行状态最后读取，避免状态与消息在相邻查询间提交时返回过时的 busy 状态。
-            runs = (
-                await session.execute(
-                    select(DesktopRun)
-                    .where(DesktopRun.agent_id.in_(agent_ids))
-                    .order_by(DesktopRun.created_at.desc(), DesktopRun.run_id.desc())
                 )
             ).scalars().all()
 

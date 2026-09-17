@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.compression_authority.contracts import AutonomousCompressionPolicy, CompressionCandidateRequest
+from backend.app.desktop.agent_loop.compression_authority.evidence import CompressionEvidenceVerifier
 from backend.app.desktop.agent_loop.compression_authority.manifest import CompressionManifestBuilder
 from backend.app.desktop.agent_loop.compression_authority.models import LoopCompressionCandidate
 from backend.app.desktop.agent_loop.compression_authority.repository import CompressionAuthorityRepository
@@ -103,7 +104,10 @@ class CompressionCandidateService:
         if normalized.before_tokens - after_tokens < policy.min_reduction_tokens:
             await self._record_failed_attempt(loop_id, normalized.before_tokens, after_tokens)
             raise ValueError("候选摘要未达到 delegation policy 的最小 token 减量")
-        ranges = [{"source_ids": list(normalized.source_ids), "replacement": summary}]
+        ranges = CompressionEvidenceVerifier.bind_ranges(
+            normalized.messages,
+            [{"source_ids": list(normalized.source_ids), "replacement": summary}],
+        )
         replacement_hash = hashlib.sha256(summary.encode("utf-8")).hexdigest()
         candidate_hash = hashlib.sha256(
             json.dumps({**frozen, "ranges": ranges, "policy": policy.model_dump(mode="json")}, sort_keys=True, ensure_ascii=False).encode("utf-8")

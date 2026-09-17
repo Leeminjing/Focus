@@ -24,6 +24,7 @@ from focus.config.app_config import (  # noqa: E402
     DEFAULT_MODEL_ENV_VAR,
     apply_app_config,
     build_app_config,
+    get_app_config,
 )
 from focus.config.layered import load_layered_maps  # noqa: E402
 
@@ -52,8 +53,9 @@ def desktop(tmp_path, monkeypatch):
     (home / "config.yaml").write_text(_ANNOTATED_PREFERENCE, encoding="utf-8")
     original_key = os.environ.get("OPENAI_API_KEY")
 
-    file_map, _ = load_layered_maps("config.yaml", "config.yaml")
+    file_map, preference_map = load_layered_maps("config.yaml", "config.yaml")
     file_bytes = Path("config.yaml").read_bytes()
+    apply_app_config(get_app_config("config.yaml"), build_app_config(file_map, preference_map))
 
     client = TestClient(app, client=("127.0.0.1", 50000))
     with client:

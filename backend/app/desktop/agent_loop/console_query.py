@@ -143,6 +143,8 @@ class LoopConsoleQueryService:
                     "status": compression_resolutions[0].status,
                     "run_id": compression_resolutions[0].resume_run_id,
                     "result_context_revision_id": compression_resolutions[0].result_context_revision_id,
+                    "actual_before_tokens": compression_resolutions[0].actual_before_tokens,
+                    "actual_after_tokens": compression_resolutions[0].actual_after_tokens,
                     "error": compression_resolutions[0].error_evidence,
                 },
             },

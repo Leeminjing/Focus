@@ -36,6 +36,12 @@ class CompressionAuthorityCommitter:
             raise CompressionCommitRejected("compression_authority_fact_missing")
         if context.workspace_id != loop.workspace_id:
             raise CompressionCommitRejected("workspace_mismatch")
+        if any(
+            not isinstance(item.get("source_hash"), str)
+            or not isinstance(item.get("replacement_hash"), str)
+            for item in (candidate.normalized_ranges or ())
+        ):
+            raise CompressionCommitRejected("candidate_evidence_missing")
         policy = AutonomousCompressionPolicy.model_validate(grant.compression_policy)
         facts = CompressionAuthorityFacts(
             loop_status=loop.status,
