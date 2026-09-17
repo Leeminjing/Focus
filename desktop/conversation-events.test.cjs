@@ -58,15 +58,30 @@ const liveReasoningHtml = events.renderEvent(
 const liveSummary = liveReasoningHtml.match(/<summary>([\s\S]*?)<\/summary>/)?.[1] || "";
 assert.match(liveSummary, /最新进展&lt;&amp;&gt;/, "活动流 summary 显示最新片段并安全转义");
 assert.doesNotMatch(liveSummary, /最早的思考/, "活动流 summary 不固定在最早内容");
-assert.match(liveReasoningHtml, /最早的思考/, "展开详情保留最早内容");
-assert.match(liveReasoningHtml, /最新进展&lt;&amp;&gt;/, "展开详情保留最新内容并安全转义");
+assert.doesNotMatch(liveReasoningHtml, /最早的思考/, "摘要行不常驻推理全文");
+assert.match(liveReasoningHtml, /data-detail-lazy="1"/, "推理详情按需生成");
+
+const liveDetail = events.renderEventDetail({ type: "reasoning", content: longReasoning });
+assert.match(liveDetail, /最早的思考/, "按需详情保留最早内容");
+assert.match(liveDetail, /最新进展&lt;&amp;&gt;/, "按需详情保留最新内容并安全转义");
 
 const errorHtml = events.renderEvent(normalized[2]);
 assert.match(errorHtml, /失败/);
 assert.match(errorHtml, /路径不属于当前工作区/);
 assert.doesNotMatch(errorHtml, /<outside>/);
 assert.match(errorHtml, /&lt;outside&gt;/);
-assert.match(errorHtml, /<pre/);
+assert.doesNotMatch(errorHtml, /<pre/, "工具摘要行不常驻输出正文");
+
+const errorDetail = events.renderEventDetail(normalized[2]);
+assert.match(errorDetail, /<pre/);
+assert.match(errorDetail, /路径不属于当前工作区/);
+assert.doesNotMatch(errorDetail, /<outside>/);
+assert.match(errorDetail, /&lt;outside&gt;/);
+
+const pendingHtml = events.renderEvent(normalized[1]);
+assert.match(pendingHtml, /list_files/, "摘要行保留工具名");
+assert.match(pendingHtml, /docs/, "摘要行保留参数摘要");
+assert.doesNotMatch(pendingHtml, /tool_call_id|<pre/, "摘要行不写原始载荷");
 
 const eventStyles = fs.readFileSync(path.join(__dirname, "styles", "conversation-events.css"), "utf8");
 const previewRule = eventStyles.match(/\.conversation-event-preview,\s*\n\.conversation-event-error\s*\{([\s\S]*?)\}/)?.[1] || "";
@@ -75,4 +90,4 @@ assert.match(previewRule, /overflow:\s*hidden/, "预览隐藏横向溢出");
 assert.match(previewRule, /text-overflow:\s*ellipsis/, "预览使用省略号表达截断");
 assert.match(previewRule, /white-space:\s*nowrap/, "折叠预览保持单行");
 
-console.log("conversation-events: reasoning、pending、失败结果、无重复与安全展开通过");
+console.log("conversation-events: reasoning、pending、失败结果、无重复与按需详情通过");

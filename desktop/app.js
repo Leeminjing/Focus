@@ -6,7 +6,11 @@
  * 材料、历史和分组，用纯函数规范化选择/分组，再通过单一异步事件边界更新 DOM 和运行状态；
  * 任务详情刷新带请求身份守卫，迟到或跨 Context 的响应不得覆盖更新的会话状态；会话区只有一个
  * 写者：顶层重建先接管既有会话节点，随即统一经对账写入内容，从而保留同 key 工具事件的 DOM
- * 身份与展开状态；流式占位按消息身份换段，不叠加同一 Run 内前一条消息的正文与推理。
+ * 身份与展开状态；流式占位按消息身份换段，不叠加同一 Run 内前一条消息的正文与推理；会话只呈现
+ * 人类可读摘要，工具参数、工具输出与推理全文均不进入 DOM，由 mountConversationLazyDetails 在用户
+ * 展开时按 conversationEventIndex 按需生成；会话渲染走两步：buildConversationUnits 产出带内容签名的
+ * 单元，_unitHtml 按签名命中 conversationUnitCache，因此连续相同帧为零重建、增量帧只重建变化单元；
+ * 流式正文按顶层块缓存，只重渲染未闭合尾块；同一 tick 内的多次状态变化由 scheduleRender 合并为一次。
  * 示例：renderFocus(activeTask()); await sendMain()。
  */
 "use strict";
@@ -176,6 +180,21 @@ const mapCollapsibleView = window.FocusMapCollapsibleView;
 const memoryView = window.FocusMemoryView;
 const conversationEvents = window.FocusConversationEvents;
 const conversationReconciler = window.FocusConversationReconciler;
+const conversationRender = window.FocusConversationRender;
+const conversationView = window.FocusConversationView;
+const conversationEventIndex = new Map();
+let renderScheduled = false;
+
+function scheduleRender() {
+  if (renderScheduled) return;
+  renderScheduled = true;
+  const flush = () => {
+    renderScheduled = false;
+    render();
+  };
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(flush);
+  else flush();
+}
 const patrolPresence = window.FocusPatrolPresence;
 const contextCuratorPresentation = window.FocusContextCuratorPresentation;
 const patrolAvatar = window.FocusPatrolAvatar;
@@ -569,37 +588,8 @@ function renderAssistantContent(value) {
 // (fence / hr / code_block / html_block),因此 level 0 即块边界。块一旦闭合,
 // 其渲染结果不再受后续增量影响(稳定段);只有最后一个尚未闭合的块可能被重新
 // 解释为另一种构造(暂定尾部)——markdown 并非前缀稳定格式,这是其本质限制。
-function splitTopLevelTokenBlocks(tokens) {
-  const groups = [];
-  let current = null;
-  for (const token of tokens) {
-    if (token.level !== 0) {
-      if (current) current.push(token);
-      continue;
-    }
-    if (token.nesting === 0) {
-      groups.push([token]);
-      current = null;
-    } else if (token.nesting === 1) {
-      current = [token];
-      groups.push(current);
-    } else {
-      if (current) current.push(token);
-      current = null;
-    }
-  }
-  return groups;
-}
-
-// 逐块渲染。渲染的是「全文解析所得 token 的子集」而非重新 parse 前缀子串:
-// 引用式链接定义在全文解析阶段才进入 env,重新 parse 前缀会丢失后文定义。
 function streamMarkdownBlocks(text) {
-  const source = String(text ?? "");
-  if (!source) return [];
-  const env = {};
-  return splitTopLevelTokenBlocks(mdRenderer.parse(source, env)).map(
-    group => mdRenderer.renderer.render(group, mdRenderer.options, env),
-  );
+  return conversationRender.markdownBlocks(mdRenderer, text);
 }
 
 function setStatus(text, isError = false) {
@@ -1805,25 +1795,6 @@ function renderContentBlock(block, message = null) {
   return escapeHtml(stripImageReferences(stripRunMaterialProtocol(String(block.text ?? ""), message)));
 }
 
-function renderMessageDetails(message) {
-  const metadata = [];
-  const id = message.id || message.message_id;
-  if (id) metadata.push(["消息 ID", id]);
-  if (message.tool_call_id) metadata.push(["工具调用 ID", message.tool_call_id]);
-  if (message.name) metadata.push(["工具名称", message.name]);
-  if (message.checkpoint_id) metadata.push(["Checkpoint", message.checkpoint_id]);
-  if (message.created_at) metadata.push(["时间", message.created_at]);
-  if (Array.isArray(message.tool_calls) && message.tool_calls.length) {
-    metadata.push(["工具参数", JSON.stringify(message.tool_calls, null, 2)]);
-  }
-  if (message.additional_kwargs && Object.keys(message.additional_kwargs).length) {
-    metadata.push(["附加数据", JSON.stringify(message.additional_kwargs, null, 2)]);
-  }
-  if (!metadata.length) return "";
-  if (metadata.length === 1 && id) return `<span class="visually-hidden">消息 ID：${escapeHtml(String(id))}</span>`;
-  return `<details class="message-details"><summary>技术详情</summary><dl>${metadata.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd><pre>${escapeHtml(String(value))}</pre></dd></div>`).join("")}</dl></details>`;
-}
-
 function messageKeyOf(message, fallbackIndex) {
   return message?.id || message?.message_id || `${message?.role || "message"}:${fallbackIndex}`;
 }
@@ -1859,7 +1830,6 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
     ${header}
     ${renderMessageImages(messageImages)}${renderFileCards(message)}${renderRunMaterialCards(message)}
     <div class="message-content">${renderedContent}</div>
-    ${renderMessageDetails(message)}
   </article>`;
 }
 
@@ -1899,239 +1869,52 @@ function renderCompressionDivider(item) {
   </div>`;
 }
 
-function renderConversation(detail, task) {
-  // 压缩块展开为来源原文渲染（保留原会话视觉），仅跳过执行协议占位
-  const renderedParts = [];
-  let messageGroup = [];
-  const roleStructured = Boolean(detail.context?.managed_status);
-  let messageIndex = 0;
-  const flushMessages = () => {
-    if (roleStructured) {
-      for (const message of messageGroup) renderedParts.push(renderMessage(message, { showRoleHeader: true }));
-      messageGroup = [];
-      return;
-    }
-    let eventGroup = [];
-    const flushEvents = () => {
-      if (!eventGroup.length) return;
-      renderedParts.push(`<section class="conversation-event-sequence" role="group" aria-label="执行过程">${eventGroup.map(conversationEvents.renderEvent).join("")}</section>`);
-      eventGroup = [];
-    };
-    for (const item of conversationEvents.normalize(messageGroup)) {
-      if (item.type !== "message") { eventGroup.push(item); continue; }
-      flushEvents();
-      renderedParts.push(renderMessage(item.message, { fallbackKey: messageIndex }));
-      messageIndex += 1;
-    }
-    flushEvents();
-    messageGroup = [];
+function _conversationRenderInput(detail, task) {
+  return {
+    detail,
+    task,
+    state: {
+      activeTaskId: state.activeTaskId,
+      streamBuffers: state.streamBuffers,
+      materialHistory: state.materialHistory,
+      pluginViewCount: Object.keys(pluginViews).length,
+    },
+    markdown: mdRenderer,
+    events: conversationEvents,
+    expandMessages: compressionPanel.expandForConversation,
+    renderMessage,
+    renderDivider: renderCompressionDivider,
+    escapeHtml,
+    windowLimit: conversationView.windowLimit(task.task_id),
   };
-  for (const item of compressionPanel.expandForConversation(detail.messages || [])) {
-    if (!item.divider) { messageGroup.push(item); continue; }
-    flushMessages();
-    renderedParts.push(renderCompressionDivider(item));
-  }
-  flushMessages();
-  const rendered = renderedParts.join("");
-  const messages = detail.messages?.length
-    ? rendered
-    : (task.harness_mode === "assembly"
-      ? `<div class="assembly-empty">
-          <p class="assembly-empty-title">无工作区模式</p>
-          <p>配置全局 skill、mcp tools、插件等</p>
-          <p>创造插件</p>
-        </div>`
-      : `<article class="work-record message system"><header class="work-record-header"><span class="work-record-kicker">READY</span><span class="message-role">任务已就绪</span></header><div class="message-content"><span class="muted">这是该工作区与线程的第一页。输入任务即可开始。</span><details class="message-details"><summary>工作区路径</summary><pre>${escapeHtml(task.workspace_path)}</pre></details></div></article>`);
-  const streaming = [...state.streamBuffers.entries()]
-    .filter(([, buffer]) => buffer.taskId === task.task_id && (buffer.text || buffer.reasoning))
-    .map(([runId, buffer]) => `<article class="work-record message ai streaming" data-stream-run="${runId}">${renderStreamingContent(buffer)}</article>`)
-    .join("");
-  return messages + streaming;
 }
 
-function _unitFromNode(node) {
-  if (node.dataset?.streamRun !== undefined) {
-    return { kind: "streaming", key: `stream:${node.dataset.streamRun}`, signature: node.outerHTML || "" };
-  }
-  if (node.dataset?.messageKey !== undefined) {
-    return { kind: "message", key: node.dataset.messageKey, signature: node.outerHTML || "" };
-  }
-  if (node.dataset?.dividerKey !== undefined) {
-    return { kind: "divider", key: node.dataset.dividerKey, signature: node.outerHTML || "" };
-  }
-  if (node.classList?.contains("conversation-event-sequence")) {
-    const first = node.querySelector?.(".conversation-event[data-event-key]");
-    return first
-      ? { kind: "event", key: `seq:${first.dataset.eventKey}`, signature: _eventSequenceSignature(node) }
-      : null;
-  }
-  // 无稳定 key 的顶层节点（占位 article、assembly-empty 等）以内容签名作 key，随内容变化整体替换。
-  return { kind: "unkeyed", key: null, signature: node.outerHTML || "" };
+function renderConversation(detail, task) {
+  const { units, eventIndex } = conversationRender.buildUnits(_conversationRenderInput(detail, task));
+  for (const [key, value] of eventIndex) conversationEventIndex.set(key, value);
+  return units.map(unit => unit.html).join("");
 }
 
-function _eventSequenceSignature(node) {
-  // 事件序列的 open 状态是交互态而非内容，签名需剔除，否则用户展开会误判为内容变化。
-  return (node.outerHTML || "").replace(/\s+open(="[^"]*")?/g, "");
+function conversationRenderStats() {
+  return conversationRender.stats();
 }
 
-function _syncElementAttributes(current, next) {
-  for (const attribute of [...current.attributes]) {
-    if (!next.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
-  }
-  for (const attribute of [...next.attributes]) current.setAttribute(attribute.name, attribute.value);
+function loadEarlierConversation() {
+  const task = activeTask();
+  if (!task) return;
+  const conversation = document.querySelector("#conversation");
+  const detail = state.details.get(task.task_id);
+  conversationView.loadEarlier(conversation, task.task_id, () => {
+    if (detail) conversationView.reconcile(conversation, renderConversation(detail, task));
+  });
 }
 
-function _syncEventElement(current, next) {
-  if (_eventSequenceSignature(current) === _eventSequenceSignature(next)) return;
-  const wasOpen = current.open;
-  _syncElementAttributes(current, next);
-  current.replaceChildren(...next.childNodes);
-  current.open = wasOpen;
-}
-
-function _transplantStableConversationEvents(currentNodes, nextNodes) {
-  const currentByKey = new Map();
-  const ambiguous = new Set();
-  for (const node of currentNodes) {
-    for (const event of node.querySelectorAll?.(".conversation-event[data-event-key]") || []) {
-      const key = event.dataset.eventKey;
-      if (currentByKey.has(key)) ambiguous.add(key);
-      else currentByKey.set(key, event);
-    }
-  }
-  for (const key of ambiguous) currentByKey.delete(key);
-  const consumed = new Set();
-  for (const node of nextNodes) {
-    for (const nextEvent of [...(node.querySelectorAll?.(".conversation-event[data-event-key]") || [])]) {
-      const key = nextEvent.dataset.eventKey;
-      const currentEvent = currentByKey.get(key);
-      if (!currentEvent || consumed.has(key)) continue;
-      consumed.add(key);
-      _syncEventElement(currentEvent, nextEvent);
-      nextEvent.replaceWith(currentEvent);
-    }
-  }
-}
-
-function _reconcileEventSequence(current, next) {
-  if (!current.matches?.(".conversation-event-sequence") || !next.matches?.(".conversation-event-sequence")) return false;
-  const currentEvents = [...current.children];
-  const nextEvents = [...next.children];
-  if ([...currentEvents, ...nextEvents].some(node => !node.matches?.(".conversation-event[data-event-key]"))) return false;
-  const currentByKey = new Map();
-  for (const event of currentEvents) {
-    if (currentByKey.has(event.dataset.eventKey)) return false;
-    currentByKey.set(event.dataset.eventKey, event);
-  }
-  const nextKeys = new Set();
-  const reconciled = [];
-  for (const nextEvent of nextEvents) {
-    const key = nextEvent.dataset.eventKey;
-    if (nextKeys.has(key)) return false;
-    nextKeys.add(key);
-    const currentEvent = currentByKey.get(key);
-    if (!currentEvent) {
-      reconciled.push(nextEvent);
-      continue;
-    }
-    _syncEventElement(currentEvent, nextEvent);
-    reconciled.push(currentEvent);
-  }
-  _syncElementAttributes(current, next);
-  current.replaceChildren(...reconciled);
-  return true;
+function conversationWindowLimit(taskId) {
+  return conversationView.windowLimit(taskId);
 }
 
 function reconcileConversationMarkup(conversation, html) {
-  const template = document.createElement?.("template");
-  if (!template?.content || !conversation.replaceChildren || !conversationReconciler) {
-    conversation.innerHTML = html;
-    return;
-  }
-  template.innerHTML = html;
-
-  const prevNodes = [...(conversation.children || [])];
-  const nextNodes = [...(template.content.children || [])];
-
-  const prevUnits = [];
-  const prevNodeByIndex = [];
-  for (const node of prevNodes) {
-    const unit = _unitFromNode(node);
-    if (unit === null) continue;
-    prevUnits.push(unit);
-    prevNodeByIndex.push(node);
-  }
-  _transplantStableConversationEvents(prevNodes, nextNodes);
-  const nextUnits = [];
-  const nextNodeByIndex = [];
-  for (const node of nextNodes) {
-    const unit = _unitFromNode(node);
-    if (unit === null) continue;
-    nextUnits.push(unit);
-    nextNodeByIndex.push(node);
-  }
-
-  let patches;
-  try {
-    patches = conversationReconciler.diffUnits(prevUnits, nextUnits);
-  } catch (error) {
-    conversation.innerHTML = html;
-    return;
-  }
-
-  // 事件序列内的 <details open> 状态：update 时从旧节点迁移到新节点。
-  const openStatesByEventKey = new Map();
-  for (const node of prevNodes) {
-    for (const evt of node.querySelectorAll?.(".conversation-event[data-event-key]") || []) {
-      openStatesByEventKey.set(evt.dataset.eventKey, evt.open);
-    }
-  }
-
-  // 目标节点序列（按 next 顺序）：keep 复用 prev 节点，update/append 用 next 节点。
-  const nextToNode = new Array(nextUnits.length).fill(null);
-  const keptPrev = new Set();
-  for (const patch of patches) {
-    if (patch.op === "keep") {
-      nextToNode[patch.nextIndex] = prevNodeByIndex[patch.prevIndex];
-      keptPrev.add(patch.prevIndex);
-    } else if (patch.op === "update") {
-      const currentNode = prevNodeByIndex[patch.prevIndex];
-      const nextNode = nextNodeByIndex[patch.nextIndex];
-      if (_reconcileEventSequence(currentNode, nextNode)) {
-        nextToNode[patch.nextIndex] = currentNode;
-        keptPrev.add(patch.prevIndex);
-        continue;
-      }
-      for (const evt of nextNode.querySelectorAll?.(".conversation-event[data-event-key]") || []) {
-        if (openStatesByEventKey.has(evt.dataset.eventKey)) evt.open = openStatesByEventKey.get(evt.dataset.eventKey);
-      }
-      nextToNode[patch.nextIndex] = nextNode;
-    } else if (patch.op === "append") {
-      nextToNode[patch.nextIndex] = nextNodeByIndex[patch.nextIndex];
-    }
-    // remove：不填 nextToNode，旧节点稍后统一移除。
-  }
-  // 兜底：未被任何 patch 放置的 next 位置用 next 节点补入（防御 diff 遗漏）。
-  for (let j = 0; j < nextToNode.length; j++) {
-    if (nextToNode[j] == null) nextToNode[j] = nextNodeByIndex[j];
-  }
-
-  // 移除 prev 中未被 keep 的节点（含 remove 与 update 掉的旧节点）。
-  for (let i = 0; i < prevNodeByIndex.length; i++) {
-    if (!keptPrev.has(i)) prevNodeByIndex[i].remove();
-  }
-
-  // 按 next 顺序逐节点就位：已在正确位置的节点不动，其余用 insertBefore 移动/插入。
-  let anchor = null;
-  for (let j = 0; j < nextToNode.length; j++) {
-    const node = nextToNode[j];
-    if (anchor === null) {
-      if (conversation.firstChild !== node) conversation.insertBefore(node, conversation.firstChild);
-    } else if (anchor.nextSibling !== node) {
-      conversation.insertBefore(node, anchor.nextSibling);
-    }
-    anchor = node;
-  }
+  conversationView.reconcile(conversation, html);
 }
 
 function replaceConversation(task, messages) {
@@ -2149,73 +1932,24 @@ function replaceConversation(task, messages) {
   if (pinned) conversation.scrollTop = conversation.scrollHeight;
 }
 
-const STREAMING_HEADER_HTML = `<header class="work-record-header"><span class="ui-badge is-active">生成中</span></header>`;
-
-function streamReasoningSection(reasoning) {
-  return reasoning
-    ? `<section class="conversation-event-sequence" role="group" aria-label="执行过程">${conversationEvents.renderEvent({ type: "reasoning", content: reasoning }, { previewMode: "latest" })}</section>`
-    : "";
-}
+conversationView.configure({
+  reconciler: conversationReconciler,
+  events: conversationEvents,
+  render: conversationRender,
+  markdown: mdRenderer,
+  eventIndex: conversationEventIndex,
+});
 
 function renderStreamingContent(buffer) {
   // 生成中的正文与完成态共用同一富文本容器与同一渲染器,
   // 使完整快照到达时的对账成为无操作,消除完成瞬间的整块替换与跳变。
-  const answer = buffer.text
-    ? `<div class="message-rich">${streamMarkdownBlocks(buffer.text).join("")}</div>`
-    : "";
-  return `${STREAMING_HEADER_HTML}${streamReasoningSection(buffer.reasoning)}${answer}`;
+  return conversationRender.streamingContent(mdRenderer, conversationEvents, buffer);
 }
 
 // 正文逐块对账:只替换内容发生变化的块节点,未变化的块保留原 DOM 节点。
 // 这是流式期间不产生整段重排的关键——每帧只触碰真正变化的那一块。
-function syncStreamingBlocks(container, blocks, rendered) {
-  for (let index = 0; index < blocks.length; index += 1) {
-    if (rendered[index] === blocks[index]) continue;
-    const template = document.createElement("template");
-    template.innerHTML = blocks[index];
-    const node = template.content.firstElementChild;
-    const existing = container.children[index];
-    if (existing) existing.replaceWith(node);
-    else container.append(node);
-  }
-  while (container.children.length > blocks.length) {
-    container.lastElementChild.remove();
-  }
-  return blocks.slice();
-}
-
-// 把流式占位同步到当前缓冲。过程性信息(生成中徽标、reasoning 区)与正文分离,
-// 正文按顶层块对账;两者都只在内容真正变化时才写 DOM。
 function syncStreamingContent(article, buffer) {
-  if (!article.firstElementChild) article.insertAdjacentHTML("afterbegin", STREAMING_HEADER_HTML);
-
-  const reasoningHtml = streamReasoningSection(buffer.reasoning);
-  if (buffer.reasoningRendered !== reasoningHtml) {
-    const reasoning = article.querySelector(":scope > .conversation-event-sequence");
-    if (reasoningHtml) {
-      const template = document.createElement("template");
-      template.innerHTML = reasoningHtml;
-      const node = template.content.firstElementChild;
-      if (reasoning) reasoning.replaceWith(node);
-      else article.insertBefore(node, article.querySelector(":scope > .message-rich"));
-    } else if (reasoning) {
-      reasoning.remove();
-    }
-    buffer.reasoningRendered = reasoningHtml;
-  }
-
-  let body = article.querySelector(":scope > .message-rich");
-  if (!buffer.text) {
-    if (body) body.remove();
-    buffer.blocks = [];
-    return;
-  }
-  if (!body) {
-    body = document.createElement("div");
-    body.className = "message-rich";
-    article.append(body);
-  }
-  buffer.blocks = syncStreamingBlocks(body, streamMarkdownBlocks(buffer.text), buffer.blocks || []);
+  conversationView.syncStreaming(article, buffer);
 }
 
 function appendStreamDelta(envelope, field) {
@@ -2232,6 +1966,7 @@ function appendStreamDelta(envelope, field) {
     buffer.text = "";
     buffer.reasoning = "";
     buffer.blocks = [];
+    buffer.blockEntries = [];
     buffer.reasoningRendered = undefined;
   }
   buffer[field] = (buffer[field] || "") + content;
@@ -4049,7 +3784,7 @@ function listenToRun(run) {
       detail.pending_must_view_report = value;
       detail.must_view_recovery = { status: "resumable", request: value };
       state.details.set(task.task_id, detail);
-      if (state.activeTaskId === task.task_id) render();
+      if (state.activeTaskId === task.task_id) scheduleRender();
       return;
     }
     if (accessApproval.isAccessReview(value)) {
@@ -4077,7 +3812,7 @@ function listenToRun(run) {
       ? state.tasks.find(item => item.task_id === run.task_id)
       : state.tasks.find(item => item.thread_id === run.thread_id);
     if (task) settleCommitmentRun(task.task_id, terminal);
-    render();
+    scheduleRender();
     const detail = task ? state.details.get(task.task_id) : null;
     if (wasMainInterrupted
         && !state.commitment.review
@@ -6326,6 +6061,7 @@ async function handleDocumentClick(event) {
   if (action === "retry-must-view") return resumeMustView("retry");
   if (action === "cancel-must-view") return resumeMustView("cancel");
   if (action === "send-main") return sendMain();
+  if (action === "load-earlier-conversation") return loadEarlierConversation();
   if (action === "toggle-compress-message") {
     state.compression.selected = compressionPanel.toggleSelect(
       state.compression.selected, Number(button.dataset.index)

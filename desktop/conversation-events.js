@@ -1,6 +1,9 @@
 /*
  * 本文件把 reasoning、pending tool call 与 ToolMessage 归一为带稳定键和本地图标的紧凑会话事件。
- * 输入为已序列化消息；输出为无重复的逻辑记录及安全 HTML，不持有应用状态。
+ * 输入为已序列化消息；输出为无重复的逻辑记录、安全 HTML，以及"摘要常驻、详情按需"的两段式标记：
+ * 摘要行只保留一行预览（正文与完整输出不进入 DOM），详情体由 renderEventDetail 在用户展开时生成。
+ * 工作流为 normalize 归一去重 → renderEvent 产出摘要行 → 展开时渲染详情体。不持有应用状态。
+ * 示例：`renderEvent(normalize(messages)[0])`；`renderEventDetail(event)`。
  */
 (function (root, factory) {
   const api = factory();
@@ -89,11 +92,15 @@
     return records;
   }
 
+  function lazyDetailMarkup() {
+    return '<div class="conversation-event-detail" data-detail-lazy="1"></div>';
+  }
+
   function renderReasoning(event, options = {}) {
     const full = text(event.content);
     return `<details class="conversation-event is-reasoning" data-event-key="${escapeHtml(event.eventKey || "reasoning")}">
       <summary><span class="conversation-event-mark" aria-hidden="true"><span class="ui-icon is-sm icon-brain-circuit"></span></span><strong>Think</strong><span class="conversation-event-preview">${escapeHtml(preview(full, 110, options.previewMode))}</span></summary>
-      <div class="conversation-event-detail"><pre>${escapeHtml(full)}</pre></div>
+      ${lazyDetailMarkup()}
     </details>`;
   }
 
@@ -107,8 +114,21 @@
     const name = call.name || event.result?.name || "tool";
     return `<details class="conversation-event is-tool is-${escapeHtml(status)}" data-event-key="${escapeHtml(event.eventKey || `tool:${call.id || name}`)}">
       <summary><span class="conversation-event-mark" aria-hidden="true"><span class="ui-icon is-sm icon-${toolIcon(name)}"></span></span><strong>${escapeHtml(name)}</strong><span class="conversation-event-preview">${escapeHtml(argumentSummary(args) || error)}</span><span class="conversation-event-status"><span class="ui-icon icon-${statusIcon(status)}" aria-hidden="true"></span><span>${escapeHtml(statusLabel)}</span></span>${error ? `<span class="conversation-event-error">${escapeHtml(error)}</span>` : ""}</summary>
-      <div class="conversation-event-detail"><dl><div><dt>参数</dt><dd><pre>${escapeHtml(JSON.stringify(args, null, 2))}</pre></dd></div>${event.result ? `<div><dt>输出</dt><dd><pre>${escapeHtml(output)}</pre></dd></div>` : ""}</dl></div>
+      ${lazyDetailMarkup()}
     </details>`;
+  }
+
+  function renderEventDetail(event) {
+    if (event?.type === "reasoning") {
+      return `<pre>${escapeHtml(text(event.content))}</pre>`;
+    }
+    if (event?.type === "tool") {
+      const call = event.call || {};
+      const args = call.args || {};
+      const output = text(event.result?.content);
+      return `<dl><div><dt>参数</dt><dd><pre>${escapeHtml(JSON.stringify(args, null, 2))}</pre></dd></div>${event.result ? `<div><dt>输出</dt><dd><pre>${escapeHtml(output)}</pre></dd></div>` : ""}</dl>`;
+    }
+    return "";
   }
 
   function renderEvent(event, options) {
@@ -117,5 +137,5 @@
     return "";
   }
 
-  return { normalize, renderEvent, preview };
+  return { normalize, renderEvent, renderEventDetail, preview };
 });

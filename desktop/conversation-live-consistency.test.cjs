@@ -87,7 +87,7 @@ test("同一份消息的渲染结果与调用路径无关，且会话区只由�
   assert.strictEqual(renderConversation(harness, LIVE), renderConversation(harness, LIVE));
 
   const source = readAppSource();
-  assert.strictEqual(source.split("renderConversation(").length - 1, 3, "会话渲染应只有一个定义与两处调用");
+  assert.strictEqual(source.split("renderConversation(").length - 1, 4, "会话渲染应只有一个定义与三处调用（初始渲染、运行流更新、加载更早内容）");
   assert.strictEqual(source.split('<div class="conversation" id="conversation"></div>').length - 1, 1, "顶层骨架必须留空会话容器");
   assert.strictEqual(source.split("reconcileConversationMarkup(").length - 1, 3, "会话内容只经对账写入");
 });

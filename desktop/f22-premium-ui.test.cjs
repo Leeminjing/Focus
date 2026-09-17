@@ -19,6 +19,7 @@ const rule = (source, selector) => {
 const index = read("desktop/index.html");
 const app = read("desktop/app.js");
 const eventsJs = read("desktop/conversation-events.js");
+const conversationRenderJs = read("desktop/conversation-render.js");
 const legacyStyles = read("desktop/styles.css");
 const tokens = read("desktop/styles/tokens.css");
 const base = read("desktop/styles/base.css");
@@ -98,7 +99,7 @@ for (const [name, body] of [
   assert.doesNotMatch(body, /box-shadow\s*:\s*inset|border-(left|bottom)[^;]*(accent|primary)/, `${name} 仍使用强调色半框`);
 }
 
-assert.match(app, /conversation-event-sequence/);
+assert.match(conversationRenderJs, /conversation-event-sequence/);
 assert.match(app, /reconcileConversationMarkup/);
 assert.match(eventsJs, /data-event-key/);
 assert.match(events, /\.conversation-event-sequence/);

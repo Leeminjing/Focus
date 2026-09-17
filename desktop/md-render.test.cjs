@@ -52,9 +52,9 @@ const renderMessage = message =>
 html = renderMessage({ id: "message-1", role: "ai", content: "**完成**", tool_calls: [{ id: "call-1", name: "search", args: { q: "x" } }] });
 assert.match(html, /class="work-record message ai"/, "AI 使用统一工作记录骨架");
 assert.match(html, /<strong>完成<\/strong>/, "工作记录继续使用安全 Markdown");
-assert.match(html, /<details class="message-details">/, "技术字段默认进入折叠详情");
-assert.match(html, /message-1/, "折叠详情保留完整消息 ID");
-assert.match(html, /call-1/, "折叠详情保留完整工具调用载荷");
+assert.ok(!html.includes("message-details"), "助手消息不再渲染原始载荷折叠面");
+assert.ok(!html.includes("技术详情"), "助手消息不再出现技术详情入口");
+assert.ok(!html.includes("call-1"), "助手消息不再把工具调用载荷写进 DOM");
 
 html = renderMessage({ role: "human", content: "<img src=x onerror=alert(1)>" });
 assert.match(html, /class="work-record message human"/, "Human 使用统一工作记录骨架");
@@ -62,6 +62,7 @@ assert.ok(!html.includes("<img src=x"), "Human 工作记录仍转义原始 HTML"
 
 html = renderMessage({ role: "tool", name: "powershell", tool_call_id: "call-tool", content: "done" });
 assert.match(html, /class="work-record message tool"/, "Tool 使用统一工作记录骨架");
-assert.match(html, /工具调用 ID/, "Tool ID 进入技术详情");
+assert.ok(!html.includes("call-tool"), "工具消息不把 tool_call_id 载荷写进 DOM");
+assert.ok(!html.includes("<pre>"), "工具消息正文不再以原始 pre 常驻");
 
 console.log("md-render.test.cjs OK");

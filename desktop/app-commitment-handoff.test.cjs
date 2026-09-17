@@ -50,24 +50,27 @@ const result = new vm.Script(`
     conversation.children = [oldLead];
     restoreCommitmentPanels(conversation);
 
+    const toolItems = conversationEvents.normalize([
+      {
+        role: "ai",
+        content: "",
+        tool_calls: [
+          { name: "write_file", id: "call-1", args: { path: "src/app.tsx" } },
+          { name: "write_file", id: "call-2", args: { path: "src/test.ts" } },
+          { name: "list_files", id: "call-3", args: { path: "src" } },
+        ],
+      },
+      { role: "tool", name: "write_file", tool_call_id: "call-1", status: "success", content: "已写入 src/app.tsx" },
+    ]).filter(item => item.type === "tool");
+
     return {
       handoffStarted: state.commitment.handoffStarted,
       open: tracePanel.open,
       order: conversation.children.map(node => node.name),
       progress,
       labels,
-      toolEvents: conversationEvents.normalize([
-        {
-          role: "ai",
-          content: "",
-          tool_calls: [
-            { name: "write_file", id: "call-1", args: { path: "src/app.tsx" } },
-            { name: "write_file", id: "call-2", args: { path: "src/test.ts" } },
-            { name: "list_files", id: "call-3", args: { path: "src" } },
-          ],
-        },
-        { role: "tool", name: "write_file", tool_call_id: "call-1", status: "success", content: "已写入 src/app.tsx" },
-      ]).filter(item => item.type === "tool").map(item => conversationEvents.renderEvent(item)),
+      toolEvents: toolItems.map(item => conversationEvents.renderEvent(item)),
+      toolDetails: toolItems.map(item => conversationEvents.renderEventDetail(item)),
     };
   })()
 `).runInContext(context);
@@ -81,4 +84,8 @@ assert.ok(result.progress.every(call => call.stage === 9 && call.visible === fal
 assert.equal(result.toolEvents.length, 3);
 assert.equal(result.toolEvents.filter(html => /write_file/.test(html)).length, 2);
 assert.equal(result.toolEvents.filter(html => /list_files/.test(html)).length, 1);
-assert.ok(result.toolEvents.some(html => /完成/.test(html) && /已写入 src\/app\.tsx/.test(html)));
+assert.ok(result.toolEvents.some(html => /完成/.test(html)), "工具摘要行保留完成状态");
+assert.ok(
+  result.toolDetails.some(html => /已写入 src\/app\.tsx/.test(html)),
+  "工具输出在按需详情里可见",
+);
