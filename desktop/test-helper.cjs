@@ -1,7 +1,8 @@
 /*
  * 本文件对外提供 app-*.test.cjs 共用的 VM 测试脚手架。输入为选择器、状态记录、网络与额外全局
- * 配置，输出为带浏览器语义、事件广播、localStorage、Markdown 渲染器和 Context helper 的隔离上下文；工作流
- * 统一测试环境、按浏览器语义向同类型全部监听器派发事件并允许调用方覆盖差异点。示例：`createAppHarness({ fetch: true })`。
+ * 配置，输出为带浏览器语义、事件广播、localStorage、Markdown 渲染器、Context helper 与
+ * app/会话容器节点语义的隔离上下文；工作流统一测试环境、按浏览器语义向同类型全部监听器派发事件、
+ * 让 #app 读取时按页面整体语义拼回会话容器内容，并允许调用方覆盖差异点。示例：`createAppHarness({ fetch: true })`。
  */
 "use strict";
 const fs = require("node:fs");
@@ -26,6 +27,46 @@ const BASE_GLOBALS = {
   window: {},
 };
 
+// 最小 DOM 节点语义：app 与会话容器共用。
+function createNode(extra = {}) {
+  return {
+    innerHTML: "",
+    dataset: {},
+    classList: { contains: () => false, toggle() {} },
+    children: [],
+    childNodes: [],
+    firstChild: null,
+    attributes: [],
+    scrollTop: 0,
+    scrollHeight: 0,
+    clientHeight: 0,
+    value: "",
+    hidden: false,
+    disabled: false,
+    open: false,
+    style: {},
+    querySelector: () => inert,
+    querySelectorAll: () => [],
+    closest: () => null,
+    matches: () => false,
+    focus() {},
+    setSelectionRange() {},
+    setAttribute() {},
+    removeAttribute() {},
+    hasAttribute: () => false,
+    replaceChildren() {},
+    insertBefore() {},
+    insertAdjacentHTML() {},
+    append() {},
+    appendChild() {},
+    remove() {},
+    replaceWith() {},
+    addEventListener() {},
+    removeEventListener() {},
+    ...extra,
+  };
+}
+
 function readAppSource() {
   return fs
     .readFileSync(require.resolve("./app.js"), "utf8")
@@ -47,7 +88,22 @@ function createAppHarness(options = {}) {
           classList: { toggle(cls, on) { if (cls === "danger") statusState.danger = on; } },
         }
       : { textContent: "", classList: { toggle() {} } };
-  const selectors = { "#app": { dataset: {} }, "#globalStatus": statusNode, ...(options.selectors || {}) };
+  const selectors = { "#globalStatus": statusNode, ...(options.selectors || {}) };
+  const conversationNode = createNode();
+  const appHtml = { value: "" };
+  const appNode = createNode({
+    get innerHTML() {
+      return appHtml.value + conversationNode.innerHTML;
+    },
+    set innerHTML(value) {
+      appHtml.value = String(value);
+      conversationNode.innerHTML = "";
+    },
+    querySelector: selector => (selector === "#conversation" ? conversationNode : inert),
+    querySelectorAll: () => [],
+  });
+  selectors["#app"] = options.selectors?.["#app"] || appNode;
+  selectors["#conversation"] = options.selectors?.["#conversation"] || conversationNode;
   const listeners = new Map();
   const document = {
     body: { dataset: {} },

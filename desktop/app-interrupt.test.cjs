@@ -1,7 +1,8 @@
 /*
  * 本文件验证主运行中断与必看报告恢复 UI。输入为可控运行状态、SSE/HTTP 载荷和桌面 DOM；
  * 输出为中断按钮状态、取消竞态、必看报告原因及 retry/cancel 恢复请求断言。
- * 具体工作流在 VM 中执行 app.js 并记录同源 API 调用。示例：node desktop/app-interrupt.test.cjs。
+ * 具体工作流在 VM 中执行 app.js 并记录同源 API 调用；桌面 DOM 桩把会话容器内容并回整页 HTML，
+ * 使整页断言在"会话区由对账写入"之后仍然成立。示例：node desktop/app-interrupt.test.cjs。
  */
 const assert = require("node:assert/strict");
 const vm = require("node:vm");
@@ -19,6 +20,8 @@ const conversation = {
   scrollTop: 0,
   isConnected: false,
   prepend() {}, insertBefore() {}, append() {},
+  set innerHTML(value) { lastHtml += value; },
+  get innerHTML() { return ""; },
 };
 
 const harness = createAppHarness({

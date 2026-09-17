@@ -4,7 +4,9 @@
  * 对话/Context/Agent/Commitment/压缩/插件与模块化 Agent Loop Portfolio 控制台、自主压缩授权/审计/来源恢复、终止 Loop 退出/后继 Loop 准备等视图；逐轮材料以有序 binding 草稿和独立图片必看
  * 集合表达，自定义分组是服务端事实，分组模式与折叠是任务 UI 偏好。工作流在任务切换时加载
  * 材料、历史和分组，用纯函数规范化选择/分组，再通过单一异步事件边界更新 DOM 和运行状态；
- * 对话增量对账会保留同 key 工具事件的 DOM 身份与展开状态，仅同步变化后的状态和内容。
+ * 任务详情刷新带请求身份守卫，迟到或跨 Context 的响应不得覆盖更新的会话状态；会话区只有一个
+ * 写者：顶层重建先接管既有会话节点，随即统一经对账写入内容，从而保留同 key 工具事件的 DOM
+ * 身份与展开状态；流式占位按消息身份换段，不叠加同一 Run 内前一条消息的正文与推理。
  * 示例：renderFocus(activeTask()); await sendMain()。
  */
 "use strict";
@@ -204,6 +206,7 @@ let contextPointerDrag = null;
 let contextUndoTimer = null;
 let agentDetailsRequestSequence = 0;
 let taskSwitchSequence = 0;
+const taskDetailRequestIds = new Map();
 let compressionRequestSequence = 0;
 let draftOpenRequestSequence = 0;
 let pluginHydrationSequence = 0;
@@ -617,6 +620,9 @@ function activeTask() {
 
 function replaceTasks(tasks) {
   state.tasks = Array.isArray(tasks) ? tasks : [];
+  for (const taskId of [...taskDetailRequestIds.keys()]) {
+    if (!state.tasks.some(task => task.task_id === taskId)) taskDetailRequestIds.delete(taskId);
+  }
   const selected = state.tasks.find(task =>
     task.task_id === state.activeTaskId && sessionLifecycle(task) === "active"
   );
@@ -647,6 +653,8 @@ async function bootstrap() {
 
 async function hydrateActive(taskId = state.activeTaskId) {
   if (!taskId) return;
+  const requestId = (taskDetailRequestIds.get(taskId) || 0) + 1;
+  taskDetailRequestIds.set(taskId, requestId);
   const [detail, materials, agents, catalog, materialGroups, materialHistory] = await Promise.all([
     api(`/desktop/api/tasks/${taskId}`),
     api(`/desktop/api/tasks/${taskId}/materials`),
@@ -655,6 +663,7 @@ async function hydrateActive(taskId = state.activeTaskId) {
     api(`/desktop/api/tasks/${taskId}/material-groups`),
     api(`/desktop/api/tasks/${taskId}/material-history`),
   ]);
+  if (taskDetailRequestIds.get(taskId) !== requestId) return;
   state.details.set(taskId, detail);
   state.materials.set(taskId, materials);
   state.agents.set(taskId, agents);
@@ -1522,10 +1531,7 @@ function renderFocus(task = activeTask()) {
           <div class="progress-heading"><strong>任务合同</strong><span id="progressLabel"></span></div>
           <ol id="progressSteps"></ol>
         </div>
-        <div class="conversation" id="conversation">
-          ${renderConversation(detail, task)}
-          ${renderMustViewRecovery(detail)}
-        </div>
+        <div class="conversation" id="conversation"></div>
         <div class="patrol-avatar-layer" id="patrolAvatarLayer" aria-label="会话 Patrol 小兵"></div>
         <div class="focus-bottom">
           <div class="composer-shell">
@@ -1541,7 +1547,12 @@ function renderFocus(task = activeTask()) {
       ${panelOpen ? `<aside class="file-panel" id="filePanel"><div class="panel-resizer" id="panelResizer" title="拖拽调整面板宽度"></div><div class="file-panel-inner"></div></aside>` : ""}
     </section>`;
   app.dataset.taskId = task.task_id;
+  const freshConversation = document.querySelector("#conversation");
+  if (previousConversation && freshConversation && typeof freshConversation.replaceWith === "function") {
+    freshConversation.replaceWith(previousConversation);
+  }
   const conversation = document.querySelector("#conversation");
+  reconcileConversationMarkup(conversation, `${renderConversation(detail, task)}${renderMustViewRecovery(detail)}`);
   mountCommitmentRecovery(detail);
   restoreCommitmentPanels(conversation);
   restoreAccessReviewPanels(conversation);
@@ -2216,7 +2227,13 @@ function appendStreamDelta(envelope, field) {
   if (!task || !content || !envelope.agent_id.startsWith("main:")) return;
   beginLeadExecution(task.task_id);
   const buffer = state.streamBuffers.get(envelope.run_id) || { taskId: task.task_id, text: "", reasoning: "", messageId: null };
-  if (typeof messageId === "string" && messageId) buffer.messageId = messageId;
+  if (typeof messageId === "string" && messageId && messageId !== buffer.messageId) {
+    buffer.messageId = messageId;
+    buffer.text = "";
+    buffer.reasoning = "";
+    buffer.blocks = [];
+    buffer.reasoningRendered = undefined;
+  }
   buffer[field] = (buffer[field] || "") + content;
   state.streamBuffers.set(envelope.run_id, buffer);
   if (state.streamFrames.has(envelope.run_id)) return;

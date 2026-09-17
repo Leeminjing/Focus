@@ -1,12 +1,14 @@
 """
-本文件对外提供 ContextService，协调桌面 Context 的快照、派生、投影审批、受管发布与生命周期。
+本文件对外提供 ContextService，协调桌面 Context 的快照、活跃执行视图、派生、投影审批、受管发布与生命周期。
 
 输入为 session factory、LangGraph checkpointer、AppConfig 和 Context 请求模型；输出为 API 可序列化
-的 current/historical revision、Evolution Graph、display messages 与生命周期结果。具体工作流为把
-手工派生和审批交给 ContextEvolutionService，把一对一 Curator 先映射成单 Lane Curation Program，
+的 current/historical revision、Evolution Graph、display messages、执行身份上的最新执行状态视图与生命周期结果。
+具体工作流为把手工派生和审批交给 ContextEvolutionService，把一对一 Curator 先映射成单 Lane Curation Program，
 再经 SingleLanePortfolioPublisher 原子发布，发布游标与发起它的 Patrol attempt 在同一事务完成；已有
-受管 Context 的真实运行后缀会从旧 revision 提取并接到新 authored/execution 前缀之后。删除时由 retention planner 保留仍被后代引用的最小 tombstone，
-本服务不再读写 identity-level definition/source 权威表。示例：`context = await service.derive(body)`。
+受管 Context 的真实运行后缀会从旧 revision 提取并接到新 authored/execution 前缀之后；任务页读取会话时
+声明活跃执行视图，其实现只读取当前 revision 执行身份上的最新 checkpoint，不写入任何权威状态。
+删除时由 retention planner 保留仍被后代引用的最小 tombstone，本服务不再读写 identity-level definition/source 权威表。
+示例：`context = await service.derive(body)`；`view = await service.live_conversation(context_id)`。
 """
 
 from __future__ import annotations
@@ -129,11 +131,61 @@ class ContextService:
         return {
             "context_id": context_id,
             "checkpoint_id": actual_id,
-            "messages": [
-                serialize_message(message)
-                for message in checkpoint.checkpoint.get("channel_values", {}).get("messages", [])
-            ],
+            "messages": self._checkpoint_messages(checkpoint),
         }
+
+    async def live_conversation(self, context_id: str) -> dict[str, Any]:
+        """任务页会话视图：优先返回当前 revision 执行身份上更新的执行状态。
+
+        输出与 `snapshot` 同形（context_id / checkpoint_id / messages）；当执行身份上没有比当前
+        revision 更新的状态时，逐字回退到 `snapshot` 的已发布视图。
+        """
+        async with self.session_factory() as session:
+            task = await session.get(DesktopThread, context_id)
+            if not task:
+                raise HTTPException(404, "Context 不存在")
+            revision = await self.evolution.current(session, context_id)
+        if not self._is_checkpoint_revision(revision):
+            return await self.snapshot(context_id)
+        checkpoint = await self._latest_execution_checkpoint(revision.ref)
+        if checkpoint is None or self._checkpoint_id(checkpoint) == revision.ref.checkpoint_id:
+            return await self.snapshot(context_id)
+        return {
+            "context_id": context_id,
+            "checkpoint_id": self._checkpoint_id(checkpoint),
+            "messages": self._checkpoint_messages(checkpoint),
+        }
+
+    @staticmethod
+    def _is_checkpoint_revision(revision: ContextRevisionContract | None) -> bool:
+        return bool(
+            revision is not None
+            and revision.ref.payload_mode is ContextRevisionPayloadMode.CHECKPOINT
+            and revision.ref.checkpoint_id
+        )
+
+    @staticmethod
+    def _checkpoint_id(checkpoint: Any) -> str | None:
+        config = getattr(checkpoint, "config", None) or {}
+        return config.get("configurable", {}).get("checkpoint_id")
+
+    @staticmethod
+    def _checkpoint_messages(checkpoint: Any) -> list[dict[str, Any]]:
+        values = getattr(checkpoint, "checkpoint", None) or {}
+        return [
+            serialize_message(message)
+            for message in values.get("channel_values", {}).get("messages", [])
+        ]
+
+    async def _latest_execution_checkpoint(self, ref: ContextRevisionRef) -> Any | None:
+        return await self.checkpointer.aget_tuple(
+            {
+                "configurable": {
+                    "thread_id": ref.execution_thread_id,
+                    "checkpoint_ns": ref.checkpoint_ns,
+                }
+            }
+        )
 
     async def resolve_chat_root(self, context_id: str) -> str:
         async with self.session_factory() as session:

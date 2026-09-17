@@ -12,7 +12,8 @@ RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以
 投影，图片交付、必看完成门和压缩门按职责独立装配；压缩通过 Context Evolution 迁移端口发布，
 稳定 Run 则由 RunLifecycleFinalizer 在同一事务收敛终态、Context revision 与 durable outbox；Loop
 后台启动可把受治理工具根切换到 Kernel 选择的持久 Workspace Slot，任务详情同时公开最新直接用户
-Main Run 供 Loop 绑定首轮，数据库锚点与真实作用路径一致。
+Main Run 供 Loop 绑定首轮，并按活跃执行视图返回该 Context 的会话消息（执行身份上有更新状态时与运行流同源，
+否则与已发布 revision 一致），数据库锚点与真实作用路径一致。
 Agent 运行使用独立 checkpoint namespace 隔离，并用 Git 隐藏引用保护不可遗失材料。
 四套机制装配边界经 agent_role 区分：main（spawn 三件套 + 协作工具 + Mailbox 注入
 + 联网工具 web_search/web_fetch + MCP 远端工具 + 压缩门）、teammate/worker（持久派生
@@ -462,7 +463,7 @@ class DesktopService:
         async with self.session_factory() as session:
             task, workspace = await self._get_task_entities(session, task_id)
             payload = await self._task_payload(session, task, workspace)
-        snapshot = await self.contexts.snapshot(task_id)
+        snapshot = await self.contexts.live_conversation(task_id)
         payload["messages"] = snapshot["messages"]
         payload["context"] = await self.contexts.get(task_id)
         return payload
