@@ -6,6 +6,7 @@
  * reconcile 分两个阶段——只读的**计划**（归类容器子节点，交给对账器产出 keep/update/append/remove）与
  * 唯一改动 DOM 的**应用**（复用、原地更新、移入新节点、按目标顺序就位）；syncStreamingPlaceholder 按 run
  * 身份找到或就地创建占位并随即同步其内容（占位属性取自渲染模块的身份常量，保证与渲染侧单元逐字一致；
+ * 占位不渲染专用徽标或头部——它的可见形态与其落成形态一致，因此写入侧只按渲染模块给出的形态落 DOM；
  * 可见正文该不该渲染由渲染模块的 visibleStreamBlocks 判定——越限正文不产出块，写入侧只把结果同步进 DOM）；
  * loadEarlier 在提高窗口后按高度差回填滚动位置。
  * 子节点归类约定：带身份键者参与对账（`data-unit-key`，或消息/分界/流式的既有键；没有显式键的事件序列
@@ -495,8 +496,6 @@
   }
 
   function syncStreaming(article, buffer) {
-    const header = deps?.render?.STREAMING_HEADER_HTML || "";
-    if (!article.firstElementChild) article.insertAdjacentHTML("afterbegin", header);
     const reasoningHtml = buffer.reasoning
       ? `<section class="conversation-event-sequence" role="group" aria-label="执行过程">${deps.events.renderEvent({ type: "reasoning", content: buffer.reasoning }, { previewMode: "latest" })}</section>`
       : "";

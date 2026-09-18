@@ -175,6 +175,7 @@ function createAppHarness(options = {}) {
   vm.runInContext(fs.readFileSync(require.resolve("./material-content-loader.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./access-mode.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./access-approval.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("./composer-draft.js"), "utf8"), context);
   return { vm, context, document, inert, statusNode, statusState, fetches, listeners, dispatch };
 }
 

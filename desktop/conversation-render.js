@@ -19,7 +19,9 @@
  * （`seq#<序位>`）而非首行事件键：窗口上边界前移会换掉首行，取首行键会让写入侧把同一段序列判成新单元并
  * 整体重建。无消息 id 时回退身份取该消息在**完整消息列表**中的绝对下标（而非窗口内相对序号），使窗口滑动
  * 不改名。流式占位的身份类名由 `STREAMING_PLACEHOLDER_CLASS` 统一提供，供写入侧就地创建占位时保持属性
- * 逐字一致——两者属性不一致会让对账因签名不符把占位整块替换。
+ * 逐字一致——两者属性不一致会让对账因签名不符把占位整块替换。占位不渲染只属于流式期间的徽标或头部，
+ * 其可见形态跟随它将要落成的形态：正文共用 `.message-rich` 与同一 markdown 渲染器，推理共用
+ * `conversation-events.renderEvent` 的同一行渲染器，因此交接不引入落成形态没有的盒子或装饰。
  * 示例：`renderConversation({ detail, task, state, markdown, renderMessage, renderDivider, events, expandMessages })`。
  */
 (function (root, factory) {
@@ -33,7 +35,6 @@
   const WINDOW_ROWS = 90;
   const CACHE_LIMIT = 4000;
   const STREAM_TEXT_LIMIT = 64 * 1024;
-  const STREAMING_HEADER_HTML = `<header class="work-record-header"><span class="ui-badge is-active">生成中</span></header>`;
   const STREAMING_PLACEHOLDER_CLASS = "work-record message ai streaming";
 
   const cache = new Map();
@@ -392,14 +393,13 @@
     const answer = blocks.length
       ? `<div class="message-rich">${blocks.map(entry => entry.html).join("")}</div>`
       : "";
-    return `${STREAMING_HEADER_HTML}${_reasoningSection(events, buffer.reasoning)}${answer}`;
+    return `${_reasoningSection(events, buffer.reasoning)}${answer}`;
   }
 
   return {
     WINDOW_MESSAGES,
     WINDOW_ROWS,
     STREAM_TEXT_LIMIT,
-    STREAMING_HEADER_HTML,
     STREAMING_PLACEHOLDER_CLASS,
     buildUnits,
     renderConversation,

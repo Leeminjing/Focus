@@ -15,7 +15,9 @@
  * 只重渲染未闭合尾块，且累积与可见渲染都以 `STREAM_TEXT_LIMIT` 为界（越限不再并入缓冲、也不进入可见
  * DOM，避免越界或超长正文把单帧变成解析与插入长任务）；同一 tick 内的多次状态变化由 scheduleRender
  * 合并为一次；快照帧在写入前先登记滚动基线（此时的高度与贴底判定才是写入前的状态），写入后由写入侧按
- * 阅读意图与阅读锚点决定跟随或回正。
+ * 阅读意图与阅读锚点决定跟随或回正；作曲区未发送内容的事实来源是按任务归属的草稿镜像
+ * （`FocusComposerDraft`），输入事件即镜像、去抖落盘、页面隐藏与卸载流程各补一次落盘，因此任何界面重建
+ * 与模式切换都不丢内容，也不依赖 `beforeunload`。
  * 示例：renderFocus(activeTask()); await sendMain()。
  */
 "use strict";
@@ -206,6 +208,7 @@ const patrolAvatar = window.FocusPatrolAvatar;
 const runMaterialPicker = window.runMaterialPicker;
 const materialGrouping = window.materialGrouping;
 const accessMode = window.FocusAccessMode;
+const composerDraft = window.FocusComposerDraft;
 const loopApi = window.FocusLoopApi?.create(runtime);
 const loopStore = window.FocusLoopStore?.create();
 const loopView = window.FocusLoopView;
@@ -1532,7 +1535,7 @@ function renderFocus(task = activeTask()) {
           <div class="composer-shell">
             <div class="composer-context"><span class="ui-badge is-active">${uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
             <div class="composer">
-              ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(detail.ui_state?.input || "")}</textarea>`, true)}
+              ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(composerDraft.value(task.task_id, detail.ui_state?.input || ""))}</textarea>`, true)}
               <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}</div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
             </div>
             <p id="composerFeedback" class="composer-feedback is-${feedback.kind}" role="status">${escapeHtml(feedback.text)}</p>
@@ -3645,6 +3648,7 @@ async function sendMainOnce() {
     const task = activeTask();
     if (!task) return setStatus("当前没有活动任务", true);
     input.value = "";
+    composerDraft.release(state.activeTaskId);
     return openCompressionView(task, null, keyword);
   }
   setComposerError();
@@ -3654,6 +3658,7 @@ async function sendMainOnce() {
     try {
       if (await spatialTarget.view.sendFocusedMessage(message)) {
         input.value = "";
+        composerDraft.release(state.activeTaskId);
         updateAtHighlight(input);
         const focusedDetail = state.details.get(state.activeTaskId);
         focusedDetail.ui_state = { ...(focusedDetail.ui_state || {}), input: "" };
@@ -3713,6 +3718,7 @@ async function sendMainOnce() {
     state.composerErrors.delete(state.activeTaskId);
     detail.messages = [...(detail.messages || []), { role: "human", content: messagePayload, id: run.message_id }];
     detail.ui_state = { ...(detail.ui_state || {}), input: "", skills: [] };
+    composerDraft.release(state.activeTaskId);
     renderFocus();
     persistFocusState();
     listenToRun(run);
@@ -6201,7 +6207,11 @@ document.addEventListener("drop", event => {
 });
 
 document.addEventListener("input", event => {
-  if (event.target.id === "mainInput") updateAtHighlight(event.target);
+  if (event.target.id === "mainInput") {
+    updateAtHighlight(event.target);
+    composerDraft.claim(state.activeTaskId, event.target.value);
+    scheduleComposerPersist();
+  }
   if (event.target.matches('[data-field="run-material-note"]')) {
     const row = event.target.closest("[data-material-id]");
     if (row) updateRunMaterialNote(row.dataset.materialId, event.target.value);
@@ -6726,16 +6736,51 @@ function persistUiState(taskId = state.activeTaskId) {
 }
 
 function persistFocusState() {
-  const detail = state.details.get(state.activeTaskId);
-  if (!detail) return;
+  const taskId = state.activeTaskId;
+  const detail = state.details.get(taskId);
+  if (!detail) return Promise.resolve();
+  const input = document.querySelector("#mainInput");
+  if (input) composerDraft.claim(taskId, input.value);
+  const conversation = document.querySelector("#conversation");
   detail.ui_state = {
     ...(detail.ui_state || {}),
-    input: document.querySelector("#mainInput")?.value || "",
+    input: composerDraft.value(taskId, detail.ui_state?.input ?? ""),
     skills: selectedSkills("main"),
-    scrollTop: document.querySelector("#conversation")?.scrollTop || 0,
+    scrollTop: conversation ? (conversation.scrollTop || 0) : (detail.ui_state?.scrollTop || 0),
   };
-  return persistUiState(state.activeTaskId);
+  return persistUiState(taskId);
 }
+
+const COMPOSER_PERSIST_DELAY = 400;
+let composerPersistTimer = null;
+
+function scheduleComposerPersist() {
+  if (composerPersistTimer !== null) return;
+  composerPersistTimer = setTimeout(() => {
+    composerPersistTimer = null;
+    void persistFocusState();
+  }, COMPOSER_PERSIST_DELAY);
+}
+
+function flushComposerPersist() {
+  if (composerPersistTimer !== null) {
+    clearTimeout(composerPersistTimer);
+    composerPersistTimer = null;
+  }
+  const taskId = state.activeTaskId;
+  const detail = state.details.get(taskId);
+  if (!detail) return Promise.resolve();
+  const input = document.querySelector("#mainInput");
+  if (input) composerDraft.claim(taskId, input.value);
+  const unsent = composerDraft.value(taskId, null);
+  if (unsent !== null) detail.ui_state = { ...(detail.ui_state || {}), input: unsent };
+  return persistUiState(taskId);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") void flushComposerPersist();
+});
+window.addEventListener("pagehide", () => { void flushComposerPersist(); });
 
 document.addEventListener("focus:languagechange", () => {
   render();

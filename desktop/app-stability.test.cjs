@@ -274,7 +274,8 @@ async function testConversationEventsAndKeyboardSubmit() {
   assert.doesNotMatch(rendered, />你的指令</);
   assert.doesNotMatch(rendered, />助手</);
   assert.match(rendered, /Think/);
-  assert.match(rendered, /生成中/);
+  assert.match(rendered, /data-stream-run=/, "流式期间仍应有占位");
+  assert.doesNotMatch(rendered, /生成中/, "占位不得渲染专用徽标");
 
   const lifecycleRendered = harness.vm.runInContext(`(() => {
     const early = 'EARLY-REASONING';

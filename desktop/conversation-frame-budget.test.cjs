@@ -3,7 +3,8 @@
  * 没有可见正文）、可注入布局属性的会话容器节点与 app.js 的真实写入路径；输出为七类断言结果：
  * 滚动策略只按阅读意图与高度差决策（三情形）、一帧内布局读取与滚动写入各不超过一次、未贴底帧写入后
  * 不再读布局、常驻 DOM 按行数受限且不切断工具调用组、窗口滑动不整体重建执行序列且阅读位置不变、
- * 可见正文以 `STREAM_TEXT_LIMIT` 为界（越限不进入可见 DOM 且该帧不渲染正文）、会话容器的锚点策略显式声明。
+ * 可见正文以 `STREAM_TEXT_LIMIT` 为界（越限不进入可见 DOM 且该帧不渲染正文）、占位不渲染专用徽标且推理行
+ * 与成稿执行行同形、会话容器的锚点策略显式声明。
  * 工作流只构造数据并调用既有函数，不修改运行时代码。示例：`node desktop/conversation-frame-budget.test.cjs`。
  */
 "use strict";
@@ -372,7 +373,8 @@ test("越限的流式正文不进入可见 DOM，且该帧不解析正文", () =
       textBytes: __big.length,
       visibleBody: Boolean(placeholder && placeholder.querySelector(".message-rich")),
       leaksIntoConversation: conv.textContent.includes(__big.slice(0, 64)),
-      badge: placeholder ? (placeholder.querySelector(".ui-badge") || {}).textContent : null,
+      hasPlaceholder: Boolean(placeholder),
+      badges: placeholder ? placeholder.querySelectorAll(".ui-badge").length : null,
       streamingBuilt: after.streamingBuilt - before.streamingBuilt,
       streamingReused: after.streamingReused - before.streamingReused,
     };
@@ -380,7 +382,8 @@ test("越限的流式正文不进入可见 DOM，且该帧不解析正文", () =
   assert.ok(measured.textBytes > measured.limit, `该用例必须真的越限（${measured.textBytes} > ${measured.limit}）`);
   assert.equal(measured.visibleBody, false, "越限正文不得进入可见 DOM");
   assert.equal(measured.leaksIntoConversation, false, "越限正文不得出现在会话文本里");
-  assert.equal(measured.badge, "生成中", "占位指示仍在，只是不呈现正文");
+  assert.equal(measured.hasPlaceholder, true, "占位仍在（只是不渲染徽标与正文）");
+  assert.equal(measured.badges, 0, "占位不得渲染专用徽标");
   assert.equal(
     measured.streamingBuilt + measured.streamingReused, 0,
     "越限正文不得交给 markdown 渲染（该帧不产生任何块级渲染工作）",
@@ -444,6 +447,52 @@ test("流式累积以可见正文上限为界，上限内照常渲染且落定�
   assert.equal(result.settled.placeholders, 0, "快照落定后占位必须回收");
   assert.equal(result.settled.toolRows, 1, "工具结果按正式形态呈现为一行工具行");
   assert.equal(result.settled.detailHasFullOutput, true, "完整输出仍可按需展开得到");
+});
+
+test("占位不渲染专用徽标，推理行与成稿执行行同形", () => {
+  const harness = newHarness();
+  renderFresh(harness, [{ id: "h-1", role: "human", content: "开始" }]);
+  const parity = harness.vm.runInContext(`(() => {
+    const conv = document.querySelector("#conversation");
+    const buffer = { taskId: __task.task_id, text: "", reasoning: "正在想第一步", messageId: "m-1", blocks: [], blockEntries: [] };
+    state.streamBuffers.set("run-p", buffer);
+    conversationView.syncStreamingPlaceholder(conv, "run-p", buffer);
+    const placeholder = conv.querySelector("[data-stream-run]");
+    const streamingRow = placeholder.querySelector(".conversation-event.is-reasoning");
+
+    replaceConversation(__task, [
+      { id: "h-1", role: "human", content: "开始" },
+      { id: "m-1", role: "ai", content: "", reasoning_content: "正在想第一步" },
+    ]);
+    const settledRow = conv.querySelector(".conversation-event.is-reasoning");
+    const shape = row => ({
+      tag: row.tagName,
+      className: row.className,
+      summaryChildren: [...row.querySelector("summary").children].map(child => child.tagName + "." + child.className),
+      lazyDetail: Boolean(row.querySelector(".conversation-event-detail[data-detail-lazy='1']")),
+    });
+    return {
+      hasPlaceholderBefore: Boolean(placeholder),
+      badges: placeholder.querySelectorAll(".ui-badge").length,
+      headers: placeholder.querySelectorAll(".work-record-header").length,
+      headerExport: FocusConversationRender.STREAMING_HEADER_HTML,
+      streaming: shape(streamingRow),
+      settled: shape(settledRow),
+      placeholdersAfter: conv.querySelectorAll("[data-stream-run]").length,
+    };
+  })()`, harness.context);
+  assert.equal(parity.hasPlaceholderBefore, true, "前置：流式期间有占位");
+  assert.equal(parity.badges, 0, "占位不得渲染专用徽标");
+  assert.equal(parity.headers, 0, "占位不得渲染专用头部");
+  assert.equal(parity.headerExport, undefined, "渲染模块不得再对外提供占位专用头部常量");
+  assert.deepStrictEqual(parity.streaming.tag, parity.settled.tag, "推理行与成稿执行行同标签");
+  assert.deepStrictEqual(parity.streaming.className, parity.settled.className, "推理行与成稿执行行同类名");
+  assert.deepStrictEqual(
+    parity.streaming.summaryChildren, parity.settled.summaryChildren,
+    "推理行与成稿执行行由同一渲染器产出（摘要结构一致）",
+  );
+  assert.equal(parity.streaming.lazyDetail, parity.settled.lazyDetail, "详情体同为按需占位");
+  assert.equal(parity.placeholdersAfter, 0, "成稿到达后占位被回收");
 });
 
 test("会话容器显式声明锚点策略，且不扩散到全局", () => {
