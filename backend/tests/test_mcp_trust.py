@@ -28,6 +28,7 @@ from focus.security.policy import (
     AccessMode,
     decide_path_access,
 )
+from backend.tests.runtime_context_support import tool_runtime
 from focus.security.trust import (
     CONTEXT7_SERVER,
     TRUST_VALUES,
@@ -231,9 +232,8 @@ def test_promise_stage_external_queries_do_not_ask(monkeypatch):
     from langchain.tools import ToolRuntime
     from langchain.tools.tool_node import ToolCallRequest
 
-    runtime = ToolRuntime(
-        state={}, context={"workspace": str(Path.cwd())}, config={}, stream_writer=None,
-        tool_call_id=None, store=None, tools=[],
+    runtime = tool_runtime(
+        agent_id="main:t-mcp", task_id="t-mcp", workspace=str(Path.cwd()),
     )
     for tool_ in loaded:
         request = ToolCallRequest(

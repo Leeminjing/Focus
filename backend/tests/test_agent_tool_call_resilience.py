@@ -257,7 +257,7 @@ def _governed_context() -> dict:
                 access_mode=AccessMode.WORKSPACE,
                 agent_role="main",
             ),
-            routing=RoutingIdentity("thread-1", "ws-1", "main:task-1", ""),
+            routing=RoutingIdentity("thread-1", "ws-1", "main:task-1", "task-1", ""),
         )
     ).to_runtime_context()
 

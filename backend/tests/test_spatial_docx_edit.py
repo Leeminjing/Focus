@@ -11,6 +11,7 @@ from plugins.spatial_patrol.docx_edit import (
     delete_docx_paragraph,
     observe_docx_delete_candidate,
 )
+from backend.tests.spatial_context_support import spatial_tool_runtime
 
 
 def _runtime(
@@ -20,20 +21,10 @@ def _runtime(
     evidence=None,
     candidates=None,
 ) -> ToolRuntime:
-    return ToolRuntime(
-        state={},
-        context={
-            "workspace": str(workspace),
-            "content_ref": "sample.docx",
-            "page": 1,
-            "x": 0.5,
-            "y": y,
-            "permissions": permissions,
-            "run_id": "run-docx",
-            "docx_change_evidence": evidence if evidence is not None else {},
-            "docx_observation_candidates": candidates if candidates is not None else {},
-        },
-        config={}, stream_writer=None, tool_call_id=None, store=None, tools=[],
+    return spatial_tool_runtime(
+        workspace=workspace, y=y, permissions=tuple(permissions), run_id="run-docx",
+        change_evidence=evidence if evidence is not None else {},
+        docx_candidates=candidates if candidates is not None else {},
     )
 
 

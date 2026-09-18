@@ -41,18 +41,12 @@ from focus.runtime.runs.manager import RunManager  # noqa: E402
 from focus.runtime.runs.limits import DEFAULT_AGENT_RECURSION_LIMIT  # noqa: E402
 from focus.runtime.runs.schemas import RunStatus  # noqa: E402
 from focus.runtime.stream_bridge.memory import MemoryStreamBridge  # noqa: E402
+from backend.tests.runtime_context_support import tool_runtime  # noqa: E402
 
 
 def _runtime(task_id: str) -> ToolRuntime:
-    return ToolRuntime(
-        state={},
-        context={"agent_id": f"main:{task_id}", "task_id": task_id},
-        config={},
-        stream_writer=None,
-        tool_call_id=None,
-        store=None,
-        tools=[],
-    )
+    """经与生产同源的组装入口构造协作上下文，不手写受治理键。"""
+    return tool_runtime(agent_id=f"main:{task_id}", task_id=task_id)
 
 
 async def _seed() -> tuple[str, str, str]:

@@ -3,7 +3,9 @@
 SendMessage（点对点/广播）、任务板（Coordinator CAS 机械协议）、计划审批与关机机械协议、
 未读消息回合注入（按 kind 分拣）。
 
-输入为已初始化的 PostgreSQL session factory；输出为：
+输入为已初始化的 PostgreSQL session factory；协作工具另需运行上下文提供执行主体身份与任务身份
+（`runtime.context` 的 `agent_id` / `task_id`）以及唤醒链深度 `swarm_depth`——三者都是受治理键，缺失即
+显式失败并指明是哪一个键，绝不取默认值。输出为：
     build_collab_tools(role) — 按角色构建协作工具列表（main: send/approve_plan/respond_shutdown/
                               publish_task/list_board_tasks；teammate: send/request_plan_approval/
                               request_shutdown；worker: send/claim_task/complete_task；patrol: 空）
@@ -42,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.desktop.models import AgentBoardTask, AgentMessage, SwarmAgent
 from focus.security.effects import NO_LOCAL_EFFECT, declare_all_effects
 from focus.security.governed import declare_governed_keys
+from focus.security.launch import SWARM_DEPTH_CONTEXT_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -74,15 +77,24 @@ def _escape(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _collab_values(runtime: ToolRuntime) -> tuple[str, str]:
-    """从 runtime.context 提取当前 agent_id 与 task_id。"""
-    context = runtime.context
+def _context_value(context: object, key: str, label: str) -> str:
+    """取一个受治理的协作上下文字段；缺失即失败并指明是哪一个键。
+
+    受治理键不允许"取不到就用默认值"的静默降级：缺键意味着启动点没把身份带进来，
+    必须显式失败，且失败信息只提缺失的那个键。
+    """
     if not isinstance(context, dict):
         raise RuntimeError("缺少协作上下文: runtime.context 必须为 dict")
-    agent_id = context.get("agent_id")
-    task_id = context.get("task_id")
-    if not agent_id or not task_id:
-        raise RuntimeError("缺少协作上下文: runtime.context['agent_id'] / ['task_id']")
+    if key not in context or context[key] in (None, ""):
+        raise RuntimeError(f"缺少协作上下文: runtime.context['{key}']（{label}）")
+    return str(context[key])
+
+
+def _collab_values(runtime: ToolRuntime) -> tuple[str, str]:
+    """从 runtime.context 提取当前 agent_id 与 task_id，逐键校验。"""
+    context = runtime.context
+    agent_id = _context_value(context, "agent_id", "执行主体身份")
+    task_id = _context_value(context, "task_id", "任务身份")
     return agent_id, task_id
 
 
@@ -166,7 +178,7 @@ class AgentCollab:
                 await session.commit()
             if to_agent == "*":
                 return f"广播已发送给 {len(targets)} 个 Agent"
-            source_depth = runtime.context.get("swarm_depth", 0) if isinstance(runtime.context, dict) else 0
+            source_depth = _context_value(runtime.context, SWARM_DEPTH_CONTEXT_KEY, "唤醒链深度")
             self._maybe_auto_wake(task_id, to_agent, content, int(source_depth) + 1)
             return f"消息已发送给 {to_agent}"
 

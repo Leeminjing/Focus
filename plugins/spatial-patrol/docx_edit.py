@@ -44,6 +44,7 @@ from focus.security import canonical_target
 from focus.security.effects import ResolvedFsEffect, declare_all_effects, structured_fs
 from focus.security.governed import declare_governed_keys
 from plugins.spatial_patrol.spatial import ObservationService
+from plugins.spatial_patrol.spatial_context import require_carrier_field, require_spatial_value
 
 # 变更证据与候选存储参与决策：前者判定"是否已产生可验证变更"，后者限定"本次运行可删哪些段落"
 declare_governed_keys("docx_change_evidence", "docx_observation_candidates")
@@ -122,14 +123,15 @@ def _failure_key(context: dict[str, Any], candidate_id: str) -> str:
 
 
 def _record_rejection(context: dict[str, Any], candidate_id: str, error: ToolException) -> None:
-    evidence = context.get("docx_change_evidence")
-    if isinstance(evidence, dict):
-        evidence.clear()
-        evidence.update({
-            "changed": False,
-            "error": f"DOCX 修改未执行：{error}",
-            "failure_key": _failure_key(context, candidate_id),
-        })
+    evidence = require_spatial_value(context, "docx_change_evidence")
+    if not isinstance(evidence, dict):
+        raise RuntimeError("受治理的 DOCX 变更证据必须是 dict")
+    evidence.clear()
+    evidence.update({
+        "changed": False,
+        "error": f"DOCX 修改未执行：{error}",
+        "failure_key": _failure_key(context, candidate_id),
+    })
 
 
 def _candidate_id(file_hash: str, paragraph_index: int, text: str) -> str:
@@ -155,7 +157,7 @@ def _require_write_target(context: dict[str, Any]) -> Path:
 def observe_docx_delete_candidate(runtime: ToolRuntime) -> dict[str, Any]:
     """观察锚点对应的 DOCX 正文段落，并生成仅本次运行可用的删除候选标识。"""
     context = _runtime_context(runtime)
-    run_evidence = context.get("docx_change_evidence")
+    run_evidence = require_spatial_value(context, "docx_change_evidence")
     failure_key = _failure_key(context, "observe")
     if isinstance(run_evidence, dict) and run_evidence.get("failure_key") == failure_key:
         raise ToolException(
@@ -178,9 +180,9 @@ def observe_docx_delete_candidate(runtime: ToolRuntime) -> dict[str, Any]:
         raise
 
     candidate_id = _candidate_id(file_hash, paragraph_index, text)
-    candidates = context.get("docx_observation_candidates")
+    candidates = require_spatial_value(context, "docx_observation_candidates")
     if not isinstance(candidates, dict):
-        raise RuntimeError("缺少本次运行的 DOCX 候选存储")
+        raise RuntimeError("本次运行的 DOCX 候选存储必须是 dict")
     candidates[candidate_id] = {
         "content_ref": str(context["content_ref"]),
         "file_hash": file_hash,
@@ -288,10 +290,8 @@ delete_docx_paragraph.handle_tool_error = _recoverable_docx_error
 
 def _docx_carrier(context: Mapping[str, Any]) -> Path:
     """领域解析：本次删除作用在哪一份 DOCX 上。"""
-    workspace = str(context.get("workspace") or "")
-    content_ref = str(context.get("content_ref") or "")
-    if not workspace or not content_ref:
-        raise RuntimeError("缺少受治理的载体上下文: workspace / content_ref")
+    workspace = str(require_carrier_field(context, "workspace"))
+    content_ref = str(require_carrier_field(context, "content_ref"))
     return canonical_target(Path(workspace).resolve(), content_ref)
 
 

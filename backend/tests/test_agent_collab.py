@@ -30,14 +30,12 @@ from backend.app.desktop.models import (
     DesktopThread,
     DesktopWorkspace,
 )
+from backend.tests.runtime_context_support import tool_runtime
 
 
 def _runtime(agent_id: str, task_id: str) -> ToolRuntime:
-    """构造带协作上下文的 ToolRuntime（工具直接 ainvoke 时注入 runtime 字段）。"""
-    return ToolRuntime(
-        state={}, context={"agent_id": agent_id, "task_id": task_id},
-        config={}, stream_writer=None, tool_call_id=None, store=None, tools=[],
-    )
+    """构造带协作上下文的 ToolRuntime——经与生产同源的组装入口，不手写受治理键。"""
+    return tool_runtime(agent_id=agent_id, task_id=task_id)
 
 
 async def _seed(collab: AgentCollab) -> str:

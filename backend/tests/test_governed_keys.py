@@ -44,9 +44,9 @@ def test_governed_keys_are_the_union_of_consumer_declarations():
         "model_supports_image_input",
         "task_id",
         "swarm_depth",
-        "uploads",
     ):
         assert expected in keys, expected
+    assert "uploads" not in keys, "已退役的扁平上传清单键不得再作为受治理字段"
 
 
 def test_governed_set_is_not_a_hand_written_list():
@@ -84,7 +84,7 @@ def test_strip_governed_keeps_only_payload():
             "workspace": "C:/",
             "permissions": ["read", "write", "host_command"],
             "checkpoint_ns": "swarm:victim",
-            "uploads": "<current_uploads/>",
+            "task_id": "another-task",
             "skills": ["a"],
         }
     )
@@ -124,7 +124,7 @@ def test_governed_payload_cannot_overwrite_the_flat_projection():
                 access_mode=AccessMode.WORKSPACE,
                 agent_role="main",
             ),
-            routing=RoutingIdentity("thread-1", "ws-1", "main:task-1", ""),
+            routing=RoutingIdentity("thread-1", "ws-1", "main:task-1", "task-1", ""),
         )
     ).to_runtime_context()
     forged = {

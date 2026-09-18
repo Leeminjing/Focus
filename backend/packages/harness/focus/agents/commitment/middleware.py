@@ -18,8 +18,8 @@
         消息前导的 skill token（如 /docx）先剥离再匹配，剥离的 token 不进入承诺任务文本。
     (2) 只把指令 HumanMessage（沿用触发消息 id）种子化隔离的九阶段子图；
         /commit 前置历史不进入子图，指令经 source_text 传递；阶段4 的上传清单
-        来自 runtime.context 的 uploads（桌面材料系统）或指令文本中的
-        <current_uploads> 标签，经 uploads_tag 显式传递。
+        优先取自 runtime.context 的 run_material_inputs（材料投影的服务端生产者），
+        其次兼容指令文本中的 <current_uploads> 标签，经 uploads_tag 显式传递。
     (2.5) 承诺子图是本进程内的派生执行，由父级安全上下文单调派生自己的安全上下文
         （能力权限、工作根、访问模式都不放宽），子图以该上下文运行，落盘位置也取自它。
     (3) 按子图 checkpoint 存在性区分首次执行与 resume：首次从 stage 0 种子化；
@@ -64,9 +64,9 @@ from focus.security.governed import declare_governed_keys
 
 _SUBGRAPH_THREAD_SUFFIX = ":commitment"
 
-# 承诺层读取的受治理字段：上传清单是阶段4的核对依据，工作区决定知识/合同落盘位置，
-# thread 决定承诺子图的隔离命名空间
-declare_governed_keys("uploads", "workspace", "thread_id")
+# 承诺层读取的受治理字段：工作区决定知识/合同落盘位置，thread 决定承诺子图的隔离命名空间；
+# 上传清单不在此列——它由 run_material_inputs 这一已有生产者的键承载（见 _uploads_tag）
+declare_governed_keys("workspace", "thread_id")
 
 _UPLOADS_TAG_RE = re.compile(
     r"<current_uploads>.*?</current_uploads>", re.DOTALL
@@ -76,6 +76,24 @@ _UPLOADS_TAG_RE = re.compile(
 def commitment_subgraph_thread_id(thread_id: str) -> str:
     """返回承诺子图使用的派生 thread id。"""
     return f"{thread_id}{_SUBGRAPH_THREAD_SUFFIX}"
+
+
+def _uploads_tag(context: object) -> str:
+    """从运行上下文取本轮上传清单：由 run_material_inputs（已有服务端生产者的键）构造。
+
+    输入:
+        context: object — 父级的运行上下文
+
+    输出:
+        str — <current_uploads> 标签；本轮没有已选材料时为空串
+
+    工作流:
+        (1) 由 run_material_inputs 读回不可变材料聚合（缺失时为空聚合）
+        (2) 交给材料聚合的唯一标签构造点，避免与桌面材料的策略投影各写一遍格式
+    """
+    from focus.agents.material_inputs import RunMaterialInputs
+
+    return RunMaterialInputs.from_context(context).uploads_tag
 
 
 def _strip_leading_skill_tokens(text: str, skill_names: frozenset[str]) -> str:
@@ -250,12 +268,8 @@ class CommitmentMiddleware(AgentMiddleware):
         if thread_id is None:
             raise ValueError("CommitmentMiddleware 无法获取 thread_id")
         instruction, tag = _extract_uploads_tag(instruction)
-        # 本土化：阶段4 上传清单优先来自 langgraph_context（桌面材料系统注入），
-        # 其次兼容指令文本中的 <current_uploads> 标签。
-        uploads_tag = tag
         runtime_context = getattr(runtime, "context", None)
-        if isinstance(runtime_context, dict) and runtime_context.get("uploads"):
-            uploads_tag = str(runtime_context["uploads"])
+        uploads_tag = _uploads_tag(runtime_context) or tag
         # 承诺子图是本进程内的派生执行：身份由父级安全上下文单调派生，
         # 落盘位置与工具上下文都取自这一份来源，不再从扁平上下文搬运受治理字段
         child_security = derive_child_security_context(

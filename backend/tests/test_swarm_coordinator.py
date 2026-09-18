@@ -29,13 +29,12 @@ from backend.app.desktop.models import (  # noqa: E402
     DesktopWorkspace,
     SwarmAgent,
 )
+from backend.tests.runtime_context_support import tool_runtime  # noqa: E402
 
 
 def _runtime(agent_id: str, task_id: str) -> ToolRuntime:
-    return ToolRuntime(
-        state={}, context={"agent_id": agent_id, "task_id": task_id},
-        config={}, stream_writer=None, tool_call_id=None, store=None, tools=[],
-    )
+    """经与生产同源的组装入口构造协作上下文，不手写受治理键。"""
+    return tool_runtime(agent_id=agent_id, task_id=task_id)
 
 
 async def _seed(collab: AgentCollab) -> tuple[str, list[str]]:
@@ -166,10 +165,7 @@ def test_message_driven_auto_wakeup():
             assert (teammate_b, "帮我查定价", 1) in calls
 
             # 来源 depth=2 → 触发 depth=3 达上限 → 仅落表不触发（防环截断）
-            deep_ctx = ToolRuntime(
-                state={}, context={"agent_id": teammate_a, "task_id": task_id, "swarm_depth": 2},
-                config={}, stream_writer=None, tool_call_id=None, store=None, tools=[],
-            )
+            deep_ctx = tool_runtime(agent_id=teammate_a, task_id=task_id, swarm_depth=2)
             await send.ainvoke({"to_agent": teammate_b, "content": "再查一轮", "runtime": deep_ctx})
             assert not any(call[2] >= 3 for call in calls)
 

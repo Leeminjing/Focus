@@ -167,10 +167,11 @@ def test_start_run_uses_long_task_recursion_budget(monkeypatch):
     assert captured["runnable_config"]["recursion_limit"] == 2000
 
 
-def _governed_context(record, workspace_id: str, agent_id: str) -> dict:
+def _governed_context(record, workspace_id: str, agent_id: str, task_id: str | None = None) -> dict:
     """构造携带安全上下文的运行上下文；路由身份与 record 的 thread 保持一致。
 
-    执行层已强制要求合法安全上下文，因此直接驱动 run_agent 的用例必须提供它。
+    执行层已强制要求合法安全上下文，因此直接驱动 run_agent 的用例必须提供它。任务身份来自服务端
+    登记记录（本 helper 以显式参数或 thread 代替 RunRecord 上并不存在的字段）。
     """
     from pathlib import Path
 
@@ -196,6 +197,7 @@ def _governed_context(record, workspace_id: str, agent_id: str) -> dict:
                 thread_id=record.thread_id,
                 workspace_id=workspace_id,
                 agent_id=agent_id,
+                task_id=task_id or record.thread_id,
                 checkpoint_ns="",
             ),
         )

@@ -24,6 +24,7 @@ from plugins.spatial_patrol.routes import (
 )
 from focus.plugins.loader import _collect_assets
 from focus.plugins.schemas import PluginManifest
+from backend.tests.spatial_context_support import spatial_tool_runtime
 
 
 def _save_document(path: Path, paragraphs: list[str]) -> None:
@@ -34,20 +35,9 @@ def _save_document(path: Path, paragraphs: list[str]) -> None:
 
 
 def _runtime(workspace: Path, y: float, evidence: dict) -> ToolRuntime:
-    return ToolRuntime(
-        state={},
-        context={
-            "workspace": str(workspace),
-            "content_ref": "sample.docx",
-            "page": 1,
-            "x": 0.5,
-            "y": y,
-            "permissions": ["read", "write"],
-            "run_id": "run-anchor-failure",
-            "docx_change_evidence": evidence,
-            "docx_observation_candidates": {},
-        },
-        config={}, stream_writer=None, tool_call_id=None, store=None, tools=[],
+    return spatial_tool_runtime(
+        workspace=workspace, y=y, run_id="run-anchor-failure",
+        change_evidence=evidence,
     )
 
 

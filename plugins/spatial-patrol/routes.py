@@ -35,8 +35,8 @@ from focus.security.context import (
     AuthorizationIdentity,
     ExecutionProfile,
     RoutingIdentity,
-    derive_security_context,
 )
+from focus.security.launch import assemble_run_context
 from focus.security.policy import AccessMode, workspace_roots
 from focus.tools.builtins.workspace_tools import select_workspace_tools
 
@@ -47,6 +47,7 @@ from plugins.spatial_patrol.docx_semantic import DOCX_COORDINATE_SPACE
 from plugins.spatial_patrol.docx_sessions import SessionError, session_manager as docx_sessions
 from plugins.spatial_patrol.docx_tools import apply_docx_edit, observe_docx_target
 from plugins.spatial_patrol.models import SpatialAnchor
+from plugins.spatial_patrol.spatial_context import project_spatial_context
 
 
 @asynccontextmanager
@@ -685,41 +686,35 @@ async def _launch_spatial_run(
     }
     if checkpoint_id is not None:
         runnable_config["configurable"]["checkpoint_id"] = checkpoint_id
-    langgraph_context: dict[str, Any] = {
-        **derive_security_context(
-            ExecutionProfile(
-                authorization=AuthorizationIdentity(
-                    workspace=Path(workspace_path),
-                    roots=workspace_roots(Path(workspace_path)),
-                    permissions=tuple(permissions),
-                    access_mode=AccessMode.WORKSPACE,
-                    agent_role="patrol",
-                ),
-                routing=RoutingIdentity(
-                    thread_id=thread_id,
-                    workspace_id=workspace_id,
-                    agent_id=anchor.spatial_id,
-                    checkpoint_ns=checkpoint_ns,
-                    run_id=run_id,
-                ),
-                model_name=model_name,
-            )
-        ).to_runtime_context(),
-        "task_id": anchor.task_id,
-        "app_config": app_config,
-        # 空间上下文:观察工具与 docx 工具经 runtime.context 读取
-        "spatial_id": anchor.spatial_id,
-        "content_ref": anchor.content_ref,
-        "page": anchor.page,
-        "x": anchor.x,
-        "y": anchor.y,
-        "docx_change_evidence": change_evidence,
-        "docx_observation_candidates": docx_observation_candidates,
-        "docx_session_id": docx_session.session_id if docx_session else None,
-        "docx_document_id": docx_session.document_id if docx_session else None,
-        "docx_document_version": docx_session.document_version if docx_session else None,
-        "docx_target_id": docx_target_id,
-    }
+    langgraph_context = assemble_run_context(
+        ExecutionProfile(
+            authorization=AuthorizationIdentity(
+                workspace=Path(workspace_path),
+                roots=workspace_roots(Path(workspace_path)),
+                permissions=tuple(permissions),
+                access_mode=AccessMode.WORKSPACE,
+                agent_role="patrol",
+            ),
+            routing=RoutingIdentity(
+                thread_id=thread_id,
+                workspace_id=workspace_id,
+                agent_id=anchor.spatial_id,
+                task_id=anchor.task_id,
+                checkpoint_ns=checkpoint_ns,
+                run_id=run_id,
+            ),
+            model_name=model_name,
+        ),
+        {"app_config": app_config, "docx_target_id": docx_target_id},
+    )
+    # 空间上下文由本模块作为服务端生产者写回（观察工具与 docx 工具经 runtime.context 读取）
+    project_spatial_context(
+        langgraph_context,
+        anchor,
+        change_evidence=change_evidence,
+        docx_candidates=docx_observation_candidates,
+        docx_session=docx_session,
+    )
     namespaced = NamespacedCheckpointer(checkpointer, checkpoint_ns)
     record = run_manager.create(
         thread_id=thread_id, run_id=run_id,

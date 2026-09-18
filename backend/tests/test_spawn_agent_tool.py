@@ -46,7 +46,7 @@ def _governed_context(permissions, model_name="deepseek-v4-flash") -> dict:
                 access_mode=AccessMode.WORKSPACE,
                 agent_role="main",
             ),
-            routing=RoutingIdentity("thread-1", "ws-1", "main:task-1", ""),
+            routing=RoutingIdentity("thread-1", "ws-1", "main:task-1", "task-1", ""),
             model_name=model_name,
         )
     ).to_runtime_context()

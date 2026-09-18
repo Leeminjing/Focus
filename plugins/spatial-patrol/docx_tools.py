@@ -39,6 +39,7 @@ from focus.security import canonical_target
 from focus.security.effects import ResolvedFsEffect, declare_all_effects, structured_fs
 from focus.security.governed import declare_governed_keys
 from plugins.spatial_patrol.docx_broker import BrokerError, broker
+from plugins.spatial_patrol.spatial_context import require_carrier_field, require_spatial_value
 
 # DOCX 编辑的受治理目标与编辑身份来自上下文：会话身份决定改哪份文档、改到第几版
 declare_governed_keys(
@@ -192,10 +193,11 @@ def _context(runtime: ToolRuntime) -> dict[str, Any]:
 
 
 def _record_evidence(context: dict[str, Any], evidence: dict[str, Any]) -> None:
-    target = context.get("docx_change_evidence")
-    if isinstance(target, dict):
-        target.clear()
-        target.update(evidence)
+    target = require_spatial_value(context, "docx_change_evidence")
+    if not isinstance(target, dict):
+        raise RuntimeError("受治理的 DOCX 变更证据必须是 dict")
+    target.clear()
+    target.update(evidence)
 
 
 @tool
@@ -243,7 +245,7 @@ async def apply_docx_edit(
     failure_key = hashlib.sha256(json.dumps(
         [target_id, operation, validated, version], sort_keys=True, ensure_ascii=False
     ).encode()).hexdigest()
-    previous = context.get("docx_change_evidence")
+    previous = require_spatial_value(context, "docx_change_evidence")
     if isinstance(previous, dict) and previous.get("failure_key") == failure_key:
         raise ToolException("相同 DOCX 操作已被确定性拒绝，请先重新观察目标")
     try:
@@ -293,10 +295,8 @@ apply_docx_edit.handle_tool_error = _recoverable
 
 def _docx_carrier(context: Mapping[str, Any]) -> Path:
     """领域解析：本次编辑会话作用的真实 DOCX 载体。"""
-    workspace = str(context.get("workspace") or "")
-    content_ref = str(context.get("content_ref") or "")
-    if not workspace or not content_ref:
-        raise RuntimeError("缺少受治理的载体上下文: workspace / content_ref")
+    workspace = str(require_carrier_field(context, "workspace"))
+    content_ref = str(require_carrier_field(context, "content_ref"))
     return canonical_target(Path(workspace).resolve(), content_ref)
 
 

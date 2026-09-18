@@ -14,17 +14,14 @@ from focus.tools.builtins.workspace_tools import (
     select_workspace_tools,
     write_file,
 )
+from backend.tests.runtime_context_support import tool_runtime
 
 
 def _runtime(workspace, permissions):
-    return ToolRuntime(
-        state={},
-        context={"workspace": str(workspace), "permissions": permissions},
-        config={},
-        stream_writer=None,
-        tool_call_id=None,
-        store=None,
-        tools=[],
+    """经与生产同源的组装入口构造工作区上下文，不手写受治理键。"""
+    return tool_runtime(
+        agent_id="main:t-workspace", task_id="t-workspace",
+        workspace=str(workspace), permissions=tuple(permissions),
     )
 
 

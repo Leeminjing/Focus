@@ -2,10 +2,11 @@
 
 对外提供:
     AuthorizationIdentity — 准入身份：工作根、权柄面、能力权限、访问模式、执行主体角色
-    RoutingIdentity — 路由身份：会话、工作区、执行主体、执行命名空间
+    RoutingIdentity — 路由身份：会话、工作区、执行主体、所属任务、执行命名空间
     ExecutionProfile — 服务端拥有的执行身份档案（两类身份 + 归属 + 模型），启动点只提供它
     SecurityContext — 一次执行的受治理安全上下文
     ChildRole — 允许从父级单调派生的内联执行角色
+    RUNTIME_CONTEXT_KEYS — 本模块投影到运行上下文的全部扁平键（生产者声明与投影实现共用）
     derive_security_context(profile) — 唯一派生：由档案算出安全上下文
     derive_child_security_context(parent, role, ...) — 内联执行的单调派生
     security_context_of(context) — 从运行上下文取回安全上下文；缺失即失败
@@ -45,15 +46,14 @@ from pathlib import Path
 from typing import Any
 
 from focus.security.authority import authority_surfaces
-from focus.security.governed import declare_governed_keys
+from focus.security.governed import declare_governed_keys, declare_governed_producer
 from focus.security.paths import is_within
 from focus.security.policy import AccessMode, AccessPolicy
 
 SECURITY_CONTEXT_KEY = "security_context"
 """运行上下文里承载 SecurityContext 的保留键。"""
 
-# 本模块是这些扁平键的唯一生产者；它们全部由 to_runtime_context 机械投影产生
-declare_governed_keys(
+RUNTIME_CONTEXT_KEYS: tuple[str, ...] = (
     SECURITY_CONTEXT_KEY,
     "workspace",
     "permissions",
@@ -62,11 +62,18 @@ declare_governed_keys(
     "thread_id",
     "workspace_id",
     "agent_id",
+    "task_id",
     "checkpoint_ns",
     "run_id",
     "user_id",
     "model_name",
 )
+"""本模块投影到运行上下文的全部扁平键；生产者声明与投影实现共用它，避免两处漂移。"""
+
+# 本模块是这些扁平键的唯一生产者：它们全部由 to_runtime_context 机械投影产生
+declare_governed_keys(*RUNTIME_CONTEXT_KEYS)
+for _key in RUNTIME_CONTEXT_KEYS:
+    declare_governed_producer(_key, "focus.security.context.to_runtime_context")
 
 _EMPTY = ()
 
@@ -92,8 +99,10 @@ class AuthorizationIdentity:
 
 @dataclass(frozen=True)
 class RoutingIdentity:
-    """路由身份：决定事件归属与检查点空间。
+    """路由身份：决定事件归属、数据作用域与检查点空间。
 
+    task_id 是执行所属任务（会话数据的作用域判据），与 thread_id / workspace_id 同源——都来自
+    服务端登记记录，因此不由调用方载荷供给。
     run_id 是本次运行的标识（事件归属与用量记账用它），默认空值只为便于测试构造；
     受支持的启动路径都从服务端记录显式传入。
     """
@@ -101,6 +110,7 @@ class RoutingIdentity:
     thread_id: str
     workspace_id: str
     agent_id: str
+    task_id: str
     checkpoint_ns: str
     run_id: str = ""
 
@@ -139,6 +149,7 @@ class SecurityContext:
             "thread_id": self.routing.thread_id,
             "workspace_id": self.routing.workspace_id,
             "agent_id": self.routing.agent_id,
+            "task_id": self.routing.task_id,
             "checkpoint_ns": self.routing.checkpoint_ns,
             "run_id": self.routing.run_id,
         }

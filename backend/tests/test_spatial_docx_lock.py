@@ -12,23 +12,13 @@ from plugins.spatial_patrol.docx_edit import (
     observe_docx_delete_candidate,
 )
 from plugins.spatial_patrol.routes import _anchor_payload, _spatial_terminal_status
+from backend.tests.spatial_context_support import spatial_tool_runtime
 
 
 def _runtime(workspace: Path, y: float, evidence: dict, candidates: dict) -> ToolRuntime:
-    return ToolRuntime(
-        state={},
-        context={
-            "workspace": str(workspace),
-            "content_ref": "sample.docx",
-            "page": 1,
-            "x": 0.5,
-            "y": y,
-            "permissions": ["read", "write"],
-            "run_id": "run-locked",
-            "docx_change_evidence": evidence,
-            "docx_observation_candidates": candidates,
-        },
-        config={}, stream_writer=None, tool_call_id=None, store=None, tools=[],
+    return spatial_tool_runtime(
+        workspace=workspace, y=y, run_id="run-locked",
+        change_evidence=evidence, docx_candidates=candidates,
     )
 
 

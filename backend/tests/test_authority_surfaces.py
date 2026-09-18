@@ -163,7 +163,7 @@ def _runtime(mode: str, workspace: Path, permissions: tuple[str, ...]) -> ToolRu
                     access_mode=AccessMode(mode),
                     agent_role="main",
                 ),
-                routing=RoutingIdentity("thread-1", "ws-1", "main:task-1", ""),
+                routing=RoutingIdentity("thread-1", "ws-1", "main:task-1", "task-1", ""),
             )
         ).to_runtime_context(),
         config={}, stream_writer=None, tool_call_id=None, store=None, tools=[],

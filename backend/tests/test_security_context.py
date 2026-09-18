@@ -40,7 +40,7 @@ def _profile(**overrides) -> ExecutionProfile:
         authority=("tools",),
     )
     routing = RoutingIdentity(
-        thread_id="thread-1", workspace_id="ws-1", agent_id="main:task-1", checkpoint_ns=""
+        thread_id="thread-1", workspace_id="ws-1", agent_id="main:task-1", task_id="task-1", checkpoint_ns=""
     )
     values = {"authorization": authorization, "routing": routing, "owner": "user-1"}
     values.update(overrides)
@@ -60,7 +60,7 @@ def _parent(mode: AccessMode = AccessMode.WORKSPACE, **overrides) -> SecurityCon
     return derive_security_context(
         ExecutionProfile(
             authorization=authorization,
-            routing=RoutingIdentity("thread-1", "ws-1", "main:task-1", ""),
+            routing=RoutingIdentity("thread-1", "ws-1", "main:task-1", "task-1", ""),
             owner="user-1",
         )
     )
@@ -70,7 +70,7 @@ def test_derivation_carries_both_identities_and_owner():
     context = derive_security_context(_profile())
     assert context.authorization.agent_role == "main"
     assert context.authorization.access_mode is AccessMode.WORKSPACE
-    assert context.routing == RoutingIdentity("thread-1", "ws-1", "main:task-1", "")
+    assert context.routing == RoutingIdentity("thread-1", "ws-1", "main:task-1", "task-1", "")
     assert context.owner == "user-1"
 
 
@@ -83,7 +83,7 @@ def test_derivation_normalises_roots_with_workspace_first():
         agent_role="main",
     )
     context = derive_security_context(
-        ExecutionProfile(authorization=authorization, routing=RoutingIdentity("t", "w", "a", ""))
+        ExecutionProfile(authorization=authorization, routing=RoutingIdentity("t", "w", "a", "task", ""))
     )
     assert context.authorization.roots == (WORKSPACE,)
     assert context.authorization.permissions == ("read",)
@@ -99,7 +99,7 @@ def test_derivation_rejects_relative_workspace():
     )
     with pytest.raises(ValueError, match="绝对路径"):
         derive_security_context(
-            ExecutionProfile(authorization=authorization, routing=RoutingIdentity("t", "w", "a", ""))
+            ExecutionProfile(authorization=authorization, routing=RoutingIdentity("t", "w", "a", "task", ""))
         )
 
 
@@ -221,14 +221,17 @@ def test_spawn_agent_source_holds_no_manual_context_assembly():
 
 
 def test_launch_points_derive_the_governed_context():
-    """三个持久化启动点都改走派生：不再手工拼装受治理字段或执行命名空间。"""
+    """两个启动面（桌面服务与空间插件）都改走统一组装入口：不再手工拼装受治理字段或执行命名空间。"""
     root = Path(__file__).parents[2]
     desktop = (root / "backend/app/desktop/service.py").read_text(encoding="utf-8")
     spatial = (root / "plugins/spatial-patrol/routes.py").read_text(encoding="utf-8")
 
     assert "langgraph_context = {" not in desktop
     assert desktop.count("self._governed_context(") >= 3
-    assert "**derive_security_context(" in spatial
+    # 插件启动点同样经统一组装入口 + 自己的服务端生产者写回，不再铺开身份投影
+    assert "assemble_run_context(" in spatial
+    assert "project_spatial_context(" in spatial
+    assert "**derive_security_context(" not in spatial
     assert '"permissions": permissions,' not in spatial
 
 

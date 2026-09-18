@@ -24,12 +24,7 @@ class MaterialContextProjector:
     @classmethod
     def project(cls, inputs: RunMaterialInputs, workspace_path: str) -> MaterialContextProjection:
         policy = "\n".join(cls._policy_line(item, workspace_path) for item in inputs.attached)
-        uploads = [item.relative_path for item in inputs.attached]
-        uploads_tag = (
-            "<current_uploads>\n" + "\n".join(uploads) + "\n</current_uploads>"
-            if uploads else ""
-        )
-        return MaterialContextProjection(policy, uploads_tag)
+        return MaterialContextProjection(policy, inputs.uploads_tag)
 
     @staticmethod
     def _policy_line(item: RunMaterialInput, workspace_path: str) -> str:

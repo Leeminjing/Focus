@@ -128,7 +128,6 @@ from focus.security.context import (
     AuthorizationIdentity,
     ExecutionProfile,
     RoutingIdentity,
-    derive_security_context,
     security_context_of,
 )
 from focus.security.effects import (
@@ -137,7 +136,7 @@ from focus.security.effects import (
     declare_all_effects,
     declare_effect,
 )
-from focus.security.governed import strip_governed
+from focus.security.launch import assemble_run_context
 from focus.security.policy import AccessMode, workspace_roots
 from backend.app.desktop.material_files import resolve_material_path
 from focus.agents.image_attachment import build_image_attachment_middleware
@@ -1340,7 +1339,7 @@ class DesktopService:
         session.add(run)
         await session.commit()
         projection = MaterialContextProjector.project(run_materials, workspace.path)
-        material_context, uploads_tag = projection.policy_text, projection.uploads_tag
+        material_context = projection.policy_text
         resume_memory_ids = list(
             (task.ui_state or {}).get(_MAIN_RUNTIME_MEMORY_KEY) or []
         )
@@ -1371,9 +1370,7 @@ class DesktopService:
             model_name=equipment.get("model_name"),
             allow_global_config=task.thread_id == _ASSEMBLY_THREAD_ID,
             extras={
-                "task_id": task.task_id,
                 "skills": equipment.get("skills") or [],
-                "uploads": uploads_tag,
             },
         )
         # 材料与图片投影由装配层写入受治理上下文之上（受治理键的服务端生产者）
@@ -1725,9 +1722,9 @@ class DesktopService:
                     run_materials = await self.material_snapshots.verify(session, run_materials, workspace_path)
                 equipment = {**equipment, **run_materials.to_equipment()}
             projection = MaterialContextProjector.project(run_materials, workspace_path)
-            material_context, uploads_tag = projection.policy_text, projection.uploads_tag
+            material_context = projection.policy_text
         else:
-            material_context, uploads_tag = await self._material_context(run.task_id)
+            material_context, _ = await self._material_context(run.task_id)
         image_inputs = run_materials.images
         required = list(image_inputs.required)
         if required:
@@ -1753,9 +1750,7 @@ class DesktopService:
             model_name=equipment.get("model_name") or run.model_name,
             allow_global_config=allow_global_config,
             extras={
-                "task_id": run.task_id,
                 "skills": equipment.get("skills") or [],
-                "uploads": uploads_tag,
                 **({"checkpoint_id": checkpoint_id} if checkpoint_id is not None else {}),
             },
         )
@@ -1786,11 +1781,13 @@ class DesktopService:
         model_name: str | None,
         allow_global_config: bool,
         extras: dict[str, Any],
+        swarm_depth: int = 0,
     ) -> dict[str, Any]:
-        """由执行身份档案派生运行上下文。
+        """由执行身份档案派生运行上下文（委托统一组装入口）。
 
-        受治理字段（工作根、能力权限、访问模式、执行主体角色、执行命名空间）一律来自档案，
-        附加载荷只是随行数据；因此调用方无法通过附加载荷改写安全决策。
+        受治理字段（工作根、能力权限、访问模式、执行主体角色、所属任务、执行命名空间）一律来自档案，
+        附加载荷只是随行数据；因此调用方无法通过附加载荷改写安全决策。唤醒链深度属执行提示，由
+        统一组装入口的生产者写回（用户驱动的主 run 为 0）。
         """
         profile = ExecutionProfile(
             authorization=AuthorizationIdentity(
@@ -1804,12 +1801,13 @@ class DesktopService:
                 thread_id=thread_id,
                 workspace_id=workspace_id,
                 agent_id=run.agent_id,
+                task_id=run.task_id,
                 checkpoint_ns=checkpoint_ns,
                 run_id=run.run_id,
             ),
             model_name=model_name,
         )
-        return {**derive_security_context(profile).to_runtime_context(), **strip_governed(extras)}
+        return assemble_run_context(profile, extras, dispatch_hints={"swarm_depth": swarm_depth})
 
     def _build_agent_factory(
         self, task_id: str, agent_id: str, workspace_path: str, equipment: dict[str, Any],
@@ -2119,8 +2117,10 @@ class DesktopService:
         parent = security_context_of(runtime.context)
         task_id = runtime.context.get("task_id")
         workspace_id = parent.routing.workspace_id
-        if not task_id or not workspace_id:
-            raise RuntimeError("缺少协作上下文: runtime.context['task_id'] / ['workspace_id']")
+        if not task_id:
+            raise RuntimeError("缺少协作上下文: runtime.context['task_id']（任务身份）")
+        if not workspace_id:
+            raise RuntimeError("缺少协作上下文: security_context.routing.workspace_id（工作区身份）")
 
         agent_id = new_id()
         await self.agent_collab.create_swarm_agent(
@@ -2296,12 +2296,11 @@ class DesktopService:
             model_name=equipment.get("model_name") or run.model_name,
             allow_global_config=False,
             extras={
-                "task_id": task_id,
                 "skills": equipment.get("skills") or [],
-                "swarm_depth": swarm_depth,
                 "checkpoint_id": checkpoint_id,
                 "app_config": self.app_config,
             },
+            swarm_depth=swarm_depth,
         )
         record = await execute_prepared_run(
             RunCreateRequest(
@@ -2371,8 +2370,9 @@ class DesktopService:
     async def _material_context(self, task_id: str) -> tuple[str, str]:
         """返回 (材料策略文本, 上传清单标签)。
 
-        上传清单以 <current_uploads> 标签形式返回（承诺层阶段4 据此核对文件名），
-        经 run context 的 uploads 字段显式传给承诺子图，不依赖 lead 历史。
+        上传清单以 <current_uploads> 标签形式返回（承诺层阶段4 据此核对文件名）。该标签的**运行期**通道
+        是 run context 的 run_material_inputs（由材料投影生产者写回），本方法的返回值只用于桌面侧展示与
+        兼容调用方，不再经扁平 uploads 字段投喂给承诺子图。
         """
         async with self.session_factory() as session:
             _, workspace = await self._get_task_entities(session, task_id)

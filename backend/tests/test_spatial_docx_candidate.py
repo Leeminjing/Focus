@@ -13,23 +13,14 @@ from plugins.spatial_patrol.docx_edit import (
     observe_docx_delete_candidate,
 )
 from plugins.spatial_patrol.routes import _launch_spatial_run
+from backend.tests.spatial_context_support import spatial_tool_runtime
 
 
 def _runtime(workspace: Path, y: float, candidates: dict, evidence=None) -> ToolRuntime:
-    return ToolRuntime(
-        state={},
-        context={
-            "workspace": str(workspace),
-            "content_ref": "sample.docx",
-            "page": 1,
-            "x": 0.5,
-            "y": y,
-            "permissions": ["read", "write"],
-            "run_id": "run-candidate",
-            "docx_change_evidence": evidence if evidence is not None else {},
-            "docx_observation_candidates": candidates,
-        },
-        config={}, stream_writer=None, tool_call_id=None, store=None, tools=[],
+    return spatial_tool_runtime(
+        workspace=workspace, y=y, run_id="run-candidate",
+        change_evidence=evidence if evidence is not None else {},
+        docx_candidates=candidates,
     )
 
 
@@ -55,7 +46,9 @@ def test_agent_tools_expose_candidate_id_protocol():
     assert set(delete_schema["properties"]) == {"candidate_id"}
     assert "expected_text" not in delete_schema["properties"]
     assert "observe_docx_delete_candidate" in launch_source
-    assert '"docx_observation_candidates"' in launch_source
+    # 候选集合经插件的服务端生产者写回运行上下文（启动点不再手拼受治理键）
+    assert "project_spatial_context(" in launch_source
+    assert "docx_candidates=docx_observation_candidates" in launch_source
 
 
 def test_candidate_id_deletes_original_curly_quote_paragraph(tmp_path):

@@ -1,9 +1,10 @@
 """本文件对外提供 RunMaterialInput、RunMaterialInputs 与统一运行材料上下文投影函数。
 
 输入为服务端已验证的材料快照、稳定 origin run/message 身份和独立 required 图片 ID；输出为
-不可变运行材料聚合、单向兼容读取的 equipment JSON、派生 RunImageInputs 及 runtime context。
-具体工作流为保留用户顺序和备注原文，拒绝重复材料与非图片必看项，新写入只使用
-run_material_inputs；旧 run_image_inputs 或 must_view_materials 仅在读取时提升为通用结构。
+不可变运行材料聚合、单向兼容读取的 equipment JSON、派生 RunImageInputs、<current_uploads> 标签
+及 runtime context。具体工作流为保留用户顺序和备注原文，拒绝重复材料与非图片必看项，新写入只使用
+run_material_inputs（并在此声明它作为 run_image_inputs / model_supports_image_input 两个受治理键的
+服务端生产者）；旧 run_image_inputs 或 must_view_materials 仅在读取时提升为通用结构。
 
 示例：inputs = RunMaterialInputs.build("r1", "msg1", materials, ["image1"])。
 """
@@ -13,10 +14,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
-from focus.agents.image_inputs import RunImageInput, RunImageInputs, project_run_image_context
+from focus.agents.image_inputs import (
+    MODEL_IMAGE_INPUT_KEY,
+    RUN_IMAGE_INPUTS_CONTEXT_KEY,
+    RunImageInput,
+    RunImageInputs,
+    project_run_image_context,
+)
+from focus.security.governed import declare_governed_producer
 
 
 RUN_MATERIAL_INPUTS_KEY = "run_material_inputs"
+
+PRODUCER = "focus.agents.material_inputs.project_run_material_context"
+"""本模块作为服务端生产者的稳定标识。"""
+
+# 材料与图片投影是这两个受治理键的唯一服务端生产者：它们只在本模块写回运行上下文
+declare_governed_producer(RUN_IMAGE_INPUTS_CONTEXT_KEY, PRODUCER)
+declare_governed_producer(MODEL_IMAGE_INPUT_KEY, PRODUCER)
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +176,18 @@ class RunMaterialInputs:
             ),
             self.required_image_ids,
         )
+
+    @property
+    def uploads_tag(self) -> str:
+        """本轮已选材料的 <current_uploads> 标签；无材料时为空串。
+
+        这是该标签的唯一构造点：桌面材料的策略投影与承诺子图的上传清单都取自它，
+        避免同一份事实在两处各写一遍格式。
+        """
+        paths = [item.relative_path for item in self.attached]
+        if not paths:
+            return ""
+        return "<current_uploads>\n" + "\n".join(paths) + "\n</current_uploads>"
 
     def to_json(self) -> dict[str, Any]:
         return {
