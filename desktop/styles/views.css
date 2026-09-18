@@ -92,6 +92,9 @@
   padding: var(--space-5) clamp(var(--space-4), 8vw, 112px) var(--space-3);
   overscroll-behavior: contain;
   scroll-padding-block: var(--space-6);
+  /* 滚动锚点由会话写入侧按阅读意图与高度差自管（见 conversation-view 的 syncScrollAfterWrite），
+     显式退出浏览器锚定，避免两套机制互相拉扯。 */
+  overflow-anchor: none;
 }
 
 .work-record.message {

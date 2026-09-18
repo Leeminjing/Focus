@@ -39,8 +39,69 @@ function buildExecutionFlow(cycles = 8) {
   return messages;
 }
 
-function newHarness() {
-  const harness = createAppHarness({ fetch: true });
+// 只有工具调用与推理、没有可见正文的会话（真实载荷形态：所有执行行落在同一个序列内）
+function buildEventOnlyFlow(cycles = 12) {
+  const messages = [{ id: "h-0", role: "human", content: "开始" }];
+  for (let index = 0; index < cycles; index += 1) {
+    messages.push({
+      id: `ai-${index}`,
+      role: "ai",
+      content: "",
+      reasoning_content: `Think ${index}`,
+      tool_calls: [{ id: `call-${index}`, name: "read_file", args: { path: `f-${index}.txt` } }],
+    });
+    messages.push({
+      id: `tool-${index}`,
+      role: "tool",
+      tool_call_id: `call-${index}`,
+      name: "read_file",
+      status: "success",
+      content: `结果 ${index}`,
+    });
+  }
+  return messages;
+}
+
+const DOM_PROTOTYPE = Object.getPrototypeOf(require(path.resolve(__dirname, "test-dom.cjs")).createElement("div"));
+
+// 记录一次调用期间真实发生的 DOM 写入（插入/整体替换/移除），用于断言"只触碰变化的部分"。
+function trackDomWrites(run) {
+  const ops = { insertBefore: [], replaceChildren: [], remove: [] };
+  const originals = {
+    insertBefore: DOM_PROTOTYPE.insertBefore,
+    replaceChildren: DOM_PROTOTYPE.replaceChildren,
+    remove: DOM_PROTOTYPE.remove,
+  };
+  DOM_PROTOTYPE.insertBefore = function (node, reference) {
+    ops.insertBefore.push({ container: this, node, reference });
+    return originals.insertBefore.call(this, node, reference);
+  };
+  DOM_PROTOTYPE.replaceChildren = function (...nodes) {
+    ops.replaceChildren.push({ container: this, count: nodes.length });
+    return originals.replaceChildren.apply(this, nodes);
+  };
+  DOM_PROTOTYPE.remove = function () {
+    ops.remove.push({ node: this });
+    return originals.remove.call(this);
+  };
+  try {
+    run();
+  } finally {
+    DOM_PROTOTYPE.insertBefore = originals.insertBefore;
+    DOM_PROTOTYPE.replaceChildren = originals.replaceChildren;
+    DOM_PROTOTYPE.remove = originals.remove;
+  }
+  return ops;
+}
+
+function sequenceRows(harness) {
+  return harness.vm.runInContext(
+    "[...document.querySelector('#conversation').querySelectorAll('.conversation-event-sequence > .conversation-event')]",
+    harness.context,
+  );
+}
+
+function newHarness() {  const harness = createAppHarness({ fetch: true });
   harness.vm.runInContext(readAppSource(), harness.context);
   harness.vm.runInContext(`
     globalThis.__task = {
@@ -195,7 +256,7 @@ test("声明保留的节点不被写入过程删除且位置不变", () => {
   assert.equal(kept.first, true, "保留节点的位置不得被写入过程改变");
 });
 
-test("快照到达后流式占位被回收且不出现重复正文", () => {
+test("流式占位只在快照确实包含其正文时回收，中途快照不得回收", () => {
   const harness = newHarness();
   const flow = buildExecutionFlow(1);
   renderFresh(harness, flow.slice(0, 3));
@@ -207,19 +268,204 @@ test("快照到达后流式占位被回收且不出现重复正文", () => {
     __frames.forEach(frame => frame());
     __frames.length = 0;
   `, harness.context);
+  const placeholders = () => harness.vm.runInContext(
+    "document.querySelector('#conversation').querySelectorAll('[data-stream-run]').length", harness.context,
+  );
+  assert.equal(placeholders(), 1, "基线：流式追加应产生一个占位");
+
+  // 1) 中途快照：正文尚未落定，占位必须留存（否则会先消失、再被下一条增量重建，流式正文只剩尾巴）
+  applySnapshot(harness, flow.slice(0, 4), "run-z");
+  assert.equal(placeholders(), 1, "中途快照不得回收占位");
+  assert.deepStrictEqual(
+    [...harness.vm.runInContext("state.streamBuffers.keys()", harness.context)],
+    ["run-z"],
+    "中途快照不得清掉流式缓冲",
+  );
+
+  // 2) 快照包含该缓冲的正文：占位被回收且正文只出现一次
+  const finalized = [...flow.slice(0, 4), {
+    id: "ai-fin", role: "ai", content: "正在分析文件，随后读取 forwarder.go。", tool_calls: [],
+  }];
+  applySnapshot(harness, finalized, "run-z");
+  assert.equal(placeholders(), 0, "正文已落定的快照必须回收占位");
+  assert.equal(harness.vm.runInContext("state.streamBuffers.size", harness.context), 0, "流式缓冲必须被清理");
+  const occurrences = harness.vm.runInContext(
+    "(document.querySelector('#conversation').textContent.match(/正在分析文件/g) || []).length",
+    harness.context,
+  );
+  assert.equal(occurrences, 1, "落定后正文不得在会话里出现两次");
+});
+
+test("信封带消息 id 时按 id 命中回收占位", () => {
+  const harness = newHarness();
+  const flow = buildExecutionFlow(1);
+  renderFresh(harness, flow.slice(0, 3));
+  harness.vm.runInContext(`
+    appendToken({
+      thread_id: __task.thread_id, workspace_id: __task.workspace_id, agent_id: "main:" + __task.task_id,
+      run_id: "run-id", data: { content: "另一次生成", message_id: "m-new" },
+    });
+    __frames.forEach(frame => frame());
+    __frames.length = 0;
+  `, harness.context);
   assert.equal(
     harness.vm.runInContext("document.querySelector('#conversation').querySelectorAll('[data-stream-run]').length", harness.context),
     1,
-    "基线：流式追加应产生一个占位",
+    "基线：产生了占位",
   );
-
-  applySnapshot(harness, flow.slice(0, 4), "run-z");
+  applySnapshot(harness, [...flow.slice(0, 4), { id: "m-new", role: "ai", content: "另一次生成", tool_calls: [] }], "run-id");
   assert.equal(
     harness.vm.runInContext("document.querySelector('#conversation').querySelectorAll('[data-stream-run]').length", harness.context),
     0,
-    "快照已包含该 run 的完成态，流式占位必须被回收",
+    "快照含该消息 id 时应按 id 回收占位",
   );
-  assert.equal(harness.vm.runInContext("state.streamBuffers.size", harness.context), 0, "流式缓冲必须被清理");
+});
+
+test("尾部追加一行只插入该行，既有行不被重建", () => {
+  const harness = newHarness();
+  const flow = buildEventOnlyFlow(12);
+  renderFresh(harness, flow);
+  const before = [...sequenceRows(harness)];
+  assert.ok(before.length >= 24, `基线应有 24 行事件，实际 ${before.length}`);
+
+  const ops = trackDomWrites(() => {
+    applySnapshot(harness, [...flow, {
+      id: "ai-x", role: "ai", content: "",
+      tool_calls: [{ id: "call-x", name: "read_file", args: { path: "x.txt" } }],
+    }]);
+  });
+
+  const sequenceRebuilds = ops.replaceChildren.filter(op => String(op.container?.className || "").includes("conversation-event-sequence"));
+  assert.equal(sequenceRebuilds.length, 0, "尾部追加不得整段重建执行序列");
+  const existing = new Set(before);
+  const reinserted = ops.insertBefore.filter(op => existing.has(op.node));
+  assert.equal(reinserted.length, 0, "既有行不得被重新插入");
+  const after = [...sequenceRows(harness)];
+  assert.equal(after.length, before.length + 1, "只应新增一行");
+  assert.ok(before.every(row => after.includes(row)), "既有行的节点身份必须保持");
+});
+
+test("单行内容变化只更新该行，其余行保持节点身份", () => {
+  const harness = newHarness();
+  const flow = buildEventOnlyFlow(12);
+  renderFresh(harness, flow);
+  const before = [...sequenceRows(harness)];
+  assert.ok(before.length >= 24, `基线应有 24 行事件，实际 ${before.length}`);
+  const targetKey = "reasoning:ai-5";
+  const targetRow = before.find(row => row.dataset.eventKey === targetKey);
+  assert.ok(targetRow, "夹具必须包含被改动的推理行");
+  const summaryBefore = targetRow.querySelector("summary").outerHTML;
+
+  // 改推理正文：摘要行（推理预览）随之变化，而工具输出在展开时才按需生成
+  const changed = flow.map(message => (
+    message.id === "ai-5" ? { ...message, reasoning_content: "Think 5（第二版，明显更长的推理）" } : message
+  ));
+  const ops = trackDomWrites(() => applySnapshot(harness, changed));
+
+  const sequenceRebuilds = ops.replaceChildren.filter(op => String(op.container?.className || "").includes("conversation-event-sequence"));
+  assert.equal(sequenceRebuilds.length, 0, "单行变化不得整段重建执行序列");
+  const existing = new Set(before);
+  const reinserted = ops.insertBefore.filter(op => existing.has(op.node));
+  assert.equal(reinserted.length, 0, "未变化的行不得被重新插入");
+
+  const after = [...sequenceRows(harness)];
+  assert.equal(after.length, before.length, "单行内容变化不改变行数");
+  assert.ok(
+    before.filter(row => row.dataset.eventKey !== targetKey).every(row => after.includes(row)),
+    "未变化的行必须保持节点身份",
+  );
+  const afterTarget = after.find(row => row.dataset.eventKey === targetKey);
+  assert.equal(afterTarget, targetRow, "被改动的行应原地更新而不是换节点");
+  assert.notEqual(afterTarget.querySelector("summary").outerHTML, summaryBefore, "被改动的行摘要必须更新");
+});
+
+test("状态不变的一帧不在会话容器内产生任何 DOM 写入", () => {
+  const harness = newHarness();
+  const flow = buildEventOnlyFlow(12);
+  renderFresh(harness, flow);
+  const ops = trackDomWrites(() => applySnapshot(harness, flow));
+  // 模板解析会把目标 HTML 写进游离的 DocumentFragment，其子节点类名同样以 conversation- 开头；
+  // 因此按"祖先链上是否出现会话容器节点本身"判断，而不是按类名。
+  const conversation = harness.document.querySelector("#conversation");
+  const inside = node => {
+    let current = node;
+    for (let depth = 0; current && depth < 64; depth += 1) {
+      if (current === conversation) return true;
+      if (current.parentNode === current) break;
+      current = current.parentNode;
+    }
+    return false;
+  };
+  const inContainer = list => list.filter(op => inside(op.container || op.node));
+  const describe = list => list.map(op => {
+    const node = op.container || op.node;
+    return `${node?.tagName || "?"}.${String(node?.className || "")}`;
+  }).join(", ");
+  assert.equal(inContainer(ops.replaceChildren).length, 0, `无变化帧不得整体替换：${describe(inContainer(ops.replaceChildren))}`);
+  assert.equal(inContainer(ops.insertBefore).length, 0, `无变化帧不得插入或重排节点：${describe(inContainer(ops.insertBefore))}`);
+  assert.equal(inContainer(ops.remove).length, 0, `无变化帧不得移除节点：${describe(inContainer(ops.remove))}`);
+});
+
+test("中间插入一行与窗口滑出时，只有涉及的行变化", () => {
+  const harness = newHarness();
+  const flow = buildEventOnlyFlow(6);
+  const head = flow.slice(0, flow.length - 2);
+  const tail = flow.slice(flow.length - 2);
+  renderFresh(harness, [...head, ...tail]);
+  const before = [...sequenceRows(harness)];
+  const beforeKeys = before.map(row => row.dataset.eventKey);
+
+  // 在中间插入一步（ai + tool 两行）
+  const inserted = [
+    { id: "ai-mid", role: "ai", content: "", reasoning_content: "Think mid", tool_calls: [{ id: "call-mid", name: "read_file", args: { path: "mid.txt" } }] },
+    { id: "tool-mid", role: "tool", tool_call_id: "call-mid", name: "read_file", status: "success", content: "结果 mid" },
+  ];
+  const middle = [...head.slice(0, 2), ...inserted, ...head.slice(2), ...tail];
+  applySnapshot(harness, middle);
+  const after = [...sequenceRows(harness)];
+  assert.equal(after.length, before.length + 2, "中间插入应新增两行");
+  const afterKeys = after.map(row => row.dataset.eventKey);
+  for (const key of beforeKeys) assert.ok(afterKeys.includes(key), `既有行 ${key} 不得消失`);
+  const preserved = after.filter(row => before.includes(row)).length;
+  assert.equal(preserved, before.length, "中间插入不得重建任何既有行");
+
+  // 窗口滑出：把窗口压到最小，前部行被移除而其余行保持身份（用长会话触发）
+  const long = newHarness();
+  const many = buildEventOnlyFlow(60);
+  renderFresh(long, many);
+  const windowedBefore = [...sequenceRows(long)];
+  applySnapshot(long, [...many, { id: "ai-z", role: "ai", content: "", tool_calls: [{ id: "call-z", name: "read_file", args: {} }] }]);
+  const windowedAfter = [...sequenceRows(long)];
+  const kept = windowedBefore.filter(row => windowedAfter.includes(row)).length;
+  assert.ok(kept >= windowedBefore.length - 4, "窗口滑动只应移除边界上的少数行，其余行保持身份");
+});
+
+test("同一序列内出现重复身份键时退化为保守替换且不丢行", () => {
+  const harness = newHarness();
+  const flow = buildEventOnlyFlow(6);
+  renderFresh(harness, flow);
+  const before = sequenceRows(harness);
+  const rowCount = before.length;
+
+  harness.vm.runInContext(`
+    (() => {
+      const sequence = document.querySelector("#conversation").querySelector(".conversation-event-sequence");
+      const clone = sequence.firstElementChild.cloneNode(true);
+      sequence.append(clone);
+    })()
+  `, harness.context);
+  assert.equal(sequenceRows(harness).length, rowCount + 1, "基线：容器内存在两行同键");
+
+  applySnapshot(harness, flow);
+  const after = sequenceRows(harness);
+  assert.equal(after.length, rowCount, "重复键时必须退化为按目标状态重建，且不丢行");
+  const reference = newHarness();
+  renderFresh(reference, flow);
+  assert.deepStrictEqual(
+    [...after.map(row => row.dataset.eventKey)],
+    [...sequenceRows(reference).map(row => row.dataset.eventKey)],
+    "退化路径的最终行序列必须与一次性写入一致",
+  );
 });
 
 test("展开态与按需详情体在无关更新中保持，在自身内容变化后重新挂载", () => {

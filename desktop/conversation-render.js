@@ -1,16 +1,21 @@
 /*
  * 本文件对外提供会话渲染的单元模型、内容签名与渲染缓存：buildUnits/renderConversation（消息 → 带签名的
  * 单元 → 缓存命中的 HTML）、streamingContent/streamingBlocks（流式正文按顶层块渲染并复用已闭合块）、
- * windowStartIndex/WINDOW_MESSAGES（长会话窗口边界）、stats/resetStats（渲染计数，供预算检查）。
+ * windowStartIndex/WINDOW_MESSAGES/WINDOW_ROWS（长会话窗口边界：消息条数与已挂载行数两个上限同时生效，
+ * 并按"完整工具调用组"回退到安全起点）、stats/resetStats（渲染计数与缓存规模，供预算检查）。
  * 输入为 detail、task、渲染依赖（renderMessage、renderDivider、events 归一、expandMessages、markdown 渲染器）
  * 与运行态快照（activeTaskId、streamBuffers、materialHistory、pluginViewCount）；输出为单元列表、会话 HTML、
  * 流式块 HTML 与统计计数。具体工作流为按窗口截取消息 → 逐段归一为单元 → 按内容签名命中缓存 →
  * 未命中才调用传入的渲染函数；流式正文解析全文但只渲染未闭合尾块。
+ * 记忆化粒度：单元级（消息/分界/流式/加载更早）与**行级**（执行过程的事件行）两层。行级缓存以
+ * "行身份 + 行签名"为键，因此容器内其它行的变化不会使本行失效——尾部追加一行只重建那一行；
+ * 缓存按 `CACHE_LIMIT` 淘汰最久未命中的条目，条目数与会话长度无关。
  * 对账身份约定：单元键与写入侧一一对应，并落到 DOM 的 `data-unit-key` 上——事件序列、加载更早入口与其余
- * 顶层单元都带键，因此写入侧无需靠"有没有事件子节点"反推身份。无消息 id 时回退身份取该消息在**完整消息
- * 列表**中的绝对下标（而非窗口内相对序号），使窗口滑动不改名。流式占位的身份类名由
- * `STREAMING_PLACEHOLDER_CLASS` 统一提供，供写入侧就地创建占位时保持属性逐字一致——两者属性不一致会让
- * 对账因签名不符把占位整块替换。
+ * 顶层单元都带键，因此写入侧无需靠"有没有事件子节点"反推身份。事件序列的身份取"在单元序列中的序位"
+ * （`seq#<序位>`）而非首行事件键：窗口上边界前移会换掉首行，取首行键会让写入侧把同一段序列判成新单元并
+ * 整体重建。无消息 id 时回退身份取该消息在**完整消息列表**中的绝对下标（而非窗口内相对序号），使窗口滑动
+ * 不改名。流式占位的身份类名由 `STREAMING_PLACEHOLDER_CLASS` 统一提供，供写入侧就地创建占位时保持属性
+ * 逐字一致——两者属性不一致会让对账因签名不符把占位整块替换。
  * 示例：`renderConversation({ detail, task, state, markdown, renderMessage, renderDivider, events, expandMessages })`。
  */
 (function (root, factory) {
@@ -21,19 +26,23 @@
   "use strict";
 
   const WINDOW_MESSAGES = 80;
+  const WINDOW_ROWS = 90;
+  const CACHE_LIMIT = 4000;
   const STREAMING_HEADER_HTML = `<header class="work-record-header"><span class="ui-badge is-active">生成中</span></header>`;
   const STREAMING_PLACEHOLDER_CLASS = "work-record message ai streaming";
 
   const cache = new Map();
-  const stats = { built: 0, reused: 0, streamingBuilt: 0, streamingReused: 0 };
+  const stats = { built: 0, reused: 0, rowsBuilt: 0, rowsReused: 0, streamingBuilt: 0, streamingReused: 0 };
 
   function snapshotStats() {
-    return { ...stats };
+    return { ...stats, cached: cache.size, cacheLimit: CACHE_LIMIT };
   }
 
   function resetStats() {
     stats.built = 0;
     stats.reused = 0;
+    stats.rowsBuilt = 0;
+    stats.rowsReused = 0;
     stats.streamingBuilt = 0;
     stats.streamingReused = 0;
   }
@@ -48,6 +57,15 @@
     })[char]);
   }
 
+  // 缓存按容量上限淘汰最久未命中的条目：行级缓存条目数因此与会话长度无关。
+  function _evict() {
+    while (cache.size > CACHE_LIMIT) {
+      const oldest = cache.keys().next();
+      if (oldest.done) return;
+      cache.delete(oldest.value);
+    }
+  }
+
   function _unitHtml(key, signature, build) {
     const cached = cache.get(key);
     if (cached && cached.signature === signature) {
@@ -55,8 +73,24 @@
       return cached.html;
     }
     const html = build();
+    cache.delete(key);
     cache.set(key, { signature, html });
+    _evict();
     stats.built += 1;
+    return html;
+  }
+
+  function _rowHtml(key, signature, build) {
+    const cached = cache.get(key);
+    if (cached && cached.signature === signature) {
+      stats.rowsReused += 1;
+      return cached.html;
+    }
+    const html = build();
+    cache.delete(key);
+    cache.set(key, { signature, html });
+    _evict();
+    stats.rowsBuilt += 1;
     return html;
   }
 
@@ -78,11 +112,23 @@
     ]);
   }
 
-  function _eventSignature(events) {
+  function _rowSignature(event) {
     return _join([
-      "events",
-      events.map(event => `${event.eventKey}:${event.status || ""}:${String(event.content || "").length}:${String(event.result?.content || "").length}`).join(","),
+      "row", event.eventKey,
+      event.status || "",
+      String(event.content || "").length,
+      String(event.result?.content || "").length,
     ]);
+  }
+
+  function _eventsSignature(events) {
+    return _join(["events", events.map(_rowSignature).join(",")]);
+  }
+
+  // 事件行的 HTML 按"行身份 + 行签名"记忆化：容器里其它行的变化不影响本行缓存，
+  // 因此"尾部追加一行"只重建那一行。
+  function _eventRowHtml(event, input) {
+    return _rowHtml(`event:${event.eventKey}`, _rowSignature(event), () => input.events.renderEvent(event));
   }
 
   function _dividerSignature(item) {
@@ -93,18 +139,55 @@
     return _join(["streaming", runId, buffer.messageId || "", String(buffer.text || "").length, String(buffer.reasoning || "").length]);
   }
 
-  function windowStartIndex(messages, limit = WINDOW_MESSAGES) {
-    const list = Array.isArray(messages) ? messages : [];
-    if (!limit || limit <= 0 || list.length <= limit) return 0;
-    let start = list.length - limit;
-    while (start > 0) {
-      const message = list[start] || {};
-      const isReset = message.role === "human" || message.role === "user";
-      const isSpeech = (message.role === "ai" || message.role === "assistant") && String(message.content ?? "").trim().length > 0;
-      if (isReset || isSpeech) break;
-      start -= 1;
+  // 一条消息在执行序列里占几行：助手消息按"推理 + 正文 + 未决工具调用"计，工具结果各占一行。
+  // 未决判定与 events 归一同口径（已被工具结果回应的调用不再在助手消息处计行）。
+  function _messageRowCount(message, resolvedCalls) {
+    const role = message?.role;
+    if (role === "tool") return 1;
+    if (role !== "ai" && role !== "assistant") return 1;
+    let rows = 0;
+    if (message.reasoning_content) rows += 1;
+    if (String(message.content ?? "").trim()) rows += 1;
+    for (const call of (Array.isArray(message.tool_calls) ? message.tool_calls : [])) {
+      if (call?.id && !resolvedCalls.has(call.id)) rows += 1;
     }
+    return Math.max(rows, 1);
+  }
+
+  function _resolvedCallIds(messages) {
+    const resolved = new Set();
+    for (const message of messages) {
+      if (message?.role === "tool" && message.tool_call_id) resolved.add(message.tool_call_id);
+    }
+    return resolved;
+  }
+
+  // 窗口起点必须落在完整的工具调用组上：起点若是工具结果，其调用消息在窗口之外，
+  // 首行就成了"没有来源的工具结果"。人类消息、带正文的助手消息、以及工具调用消息都是完整组起点，
+  // 只有连续的工具结果需要连同其调用消息一起纳入（长工具批次的回退量是其长度，不随会话长度增长）。
+  function _safeStart(list, from) {
+    let start = from;
+    while (start > 0 && (list[start] || {}).role === "tool") start -= 1;
     return start;
+  }
+
+  // 窗口边界同时受两个上限约束：消息条数（既有口径）与**已挂载行数**（真实工作量口径）。
+  // 只按消息计会被"助手消息无可见正文"的形态击穿——上百行事件挤在少数几条消息里。
+  function windowStartIndex(messages, limit = WINDOW_MESSAGES, rowLimit = WINDOW_ROWS) {
+    const list = Array.isArray(messages) ? messages : [];
+    const byMessages = limit && limit > 0 && list.length > limit ? list.length - limit : 0;
+    let byRows = 0;
+    if (rowLimit && rowLimit > 0) {
+      const resolved = _resolvedCallIds(list);
+      let rows = 0;
+      let index = list.length;
+      while (index > 0 && rows < rowLimit) {
+        index -= 1;
+        rows += _messageRowCount(list[index] || {}, resolved);
+      }
+      byRows = index;
+    }
+    return _safeStart(list, Math.max(byMessages, byRows));
   }
 
   function _messagePositions(messages) {
@@ -165,10 +248,13 @@
     const flushEvents = () => {
       if (!eventGroup.length) return;
       const events = eventGroup;
-      const key = `seq:${events[0].eventKey}`;
+      // 序列身份取"在单元序列中的序位"，不取首行键：窗口上边界前移会换掉首行，
+      // 取首行键会把同一段执行序列判成新单元并整体重建（既有契约要求身份稳定的单元不因滑动被重建）。
+      const key = `seq#${state.sequenceIndex}`;
+      state.sequenceIndex += 1;
       state.units.push({
         key,
-        html: _unitHtml(key, _eventSignature(events), () => `<section class="conversation-event-sequence" data-unit-key="${escapeAttribute(key)}" role="group" aria-label="执行过程">${events.map(input.events.renderEvent).join("")}</section>`),
+        html: _unitHtml(key, _eventsSignature(events), () => `<section class="conversation-event-sequence" data-unit-key="${escapeAttribute(key)}" role="group" aria-label="执行过程">${events.map(event => _eventRowHtml(event, input)).join("")}</section>`),
       });
       eventGroup = [];
     };
@@ -188,12 +274,13 @@
     const detail = input.detail || {};
     const task = input.task || {};
     const allMessages = detail.messages || [];
-    const start = windowStartIndex(allMessages, input.windowLimit ?? WINDOW_MESSAGES);
+    const start = windowStartIndex(allMessages, input.windowLimit ?? WINDOW_MESSAGES, input.windowRows ?? WINDOW_ROWS);
     const visible = start > 0 ? allMessages.slice(start) : allMessages;
     const state = {
       units: [],
       eventIndex: new Map(),
       messageIndex: start,
+      sequenceIndex: 0,
       messagePositions: _messagePositions(allMessages),
     };
     const roleStructured = Boolean(detail.context?.managed_status);
@@ -296,6 +383,7 @@
 
   return {
     WINDOW_MESSAGES,
+    WINDOW_ROWS,
     STREAMING_HEADER_HTML,
     STREAMING_PLACEHOLDER_CLASS,
     buildUnits,

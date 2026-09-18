@@ -112,6 +112,97 @@ test("工具行摘要保留可读信息，完整输出在展开时按需生成",
   assert.ok(detail.includes("x".repeat(20000)), "详情体在按需渲染时给出完整输出正文");
 });
 
+test("尾部追加一条事件行只重建该行，容器内其余行命中缓存", () => {
+  const harness = newHarness();
+  const rows = size => {
+    const messages = [{ id: "h-0", role: "human", content: "开始" }];
+    for (let i = 0; i < size; i += 1) {
+      messages.push({
+        id: `ai-${i}`, role: "ai", content: "", reasoning_content: `Think ${i}`,
+        tool_calls: [{ id: `c-${i}`, name: "read_file", args: { path: `f-${i}.txt` } }],
+      });
+      messages.push({ id: `t-${i}`, role: "tool", tool_call_id: `c-${i}`, name: "read_file", status: "success", content: `结果 ${i}` });
+    }
+    return messages;
+  };
+  const base = rows(12);
+  const baseHtml = renderConversation(harness, base);
+  const afterBase = stats(harness);
+  assert.ok(afterBase.rowsBuilt >= 24, `基线应产出全部事件行（12 对 = 24 行），实际 ${afterBase.rowsBuilt}`);
+  assert.equal(
+    (baseHtml.match(/class="conversation-event-sequence"/g) || []).length,
+    1,
+    "无可见正文的助手消息应聚成同一个执行序列（真实载荷形态）",
+  );
+
+  // 追加一条只有未决工具调用的助手消息：只多出一行，且落在同一个序列内
+  renderConversation(harness, [...base, {
+    id: "ai-x", role: "ai", content: "", tool_calls: [{ id: "c-x", name: "read_file", args: { path: "x.txt" } }],
+  }]);
+  const afterAppend = stats(harness);
+  assert.equal(afterAppend.rowsBuilt - afterBase.rowsBuilt, 1, "追加一行只应重建这一行");
+  assert.ok(afterAppend.rowsReused - afterBase.rowsReused >= 24, "容器内其余行必须命中行级缓存");
+});
+
+test("长行容器上连续相同帧零行级渲染", () => {
+  const harness = newHarness();
+  const messages = [{ id: "h-0", role: "human", content: "开始" }];
+  for (let i = 0; i < 12; i += 1) {
+    messages.push({
+      id: `ai-${i}`, role: "ai", content: "", reasoning_content: `Think ${i}`,
+      tool_calls: [{ id: `c-${i}`, name: "read_file", args: { path: `f-${i}.txt` } }],
+    });
+    messages.push({ id: `t-${i}`, role: "tool", tool_call_id: `c-${i}`, name: "read_file", status: "success", content: `结果 ${i}` });
+  }
+  renderConversation(harness, messages);
+  const afterFirst = stats(harness);
+  assert.ok(afterFirst.rowsBuilt >= 24, `基线应产出 24 行事件，实际 ${afterFirst.rowsBuilt}`);
+
+  for (let frame = 0; frame < 20; frame += 1) renderConversation(harness, messages);
+  const afterTwenty = stats(harness);
+  assert.equal(afterTwenty.rowsBuilt, afterFirst.rowsBuilt, "连续相同帧不得重新产出任何行");
+  assert.equal(afterTwenty.built, afterFirst.built, "连续相同帧不得重建任何单元");
+  // 相同帧由单元级缓存整体吸收（序列 HTML 命中），行级循环因此根本不被触及——比"逐行命中"更强。
+  assert.ok(
+    afterTwenty.reused - afterFirst.reused >= 20,
+    `相同帧必须命中单元级缓存（复用增量 ${afterTwenty.reused - afterFirst.reused}）`,
+  );
+});
+
+test("行级缓存有条目上限，不随会话历史增长", () => {
+  const harness = newHarness();
+  const messages = [{ id: "h-0", role: "human", content: "开始" }];
+  for (let i = 0; i < 2600; i += 1) {
+    messages.push({
+      id: `ai-${i}`, role: "ai", content: "", reasoning_content: `Think ${i}`,
+      tool_calls: [{ id: `c-${i}`, name: "read_file", args: { path: `f-${i}.txt` } }],
+    });
+    messages.push({ id: `t-${i}`, role: "tool", tool_call_id: `c-${i}`, name: "read_file", status: "success", content: `结果 ${i}` });
+  }
+  const rendered = harness.vm.runInContext(
+    `(() => {
+       const task = __task;
+       const detail = { messages: ${JSON.stringify(messages)} };
+       const input = _conversationRenderInput(detail, task);
+       input.windowLimit = 100000;
+       input.windowRows = 100000;
+       const html = FocusConversationRender.renderConversation(input);
+       return { html: html.length, stats: conversationRenderStats() };
+     })()`,
+    harness.context,
+  );
+  assert.ok(rendered.html > 1000000, "该用例应真的渲染出上千行");
+  assert.ok(rendered.stats.cacheLimit > 0, "缓存上限必须可观测");
+  assert.ok(
+    rendered.stats.cached <= rendered.stats.cacheLimit,
+    `缓存条目数应受上限约束，实际 ${rendered.stats.cached} > ${rendered.stats.cacheLimit}`,
+  );
+  assert.ok(
+    rendered.stats.rowsBuilt > rendered.stats.cacheLimit,
+    "本用例必须真的产出了超过上限的行，否则没有验证到淘汰",
+  );
+});
+
 test("连续相同帧零重建，追加一条消息只重建一个单元", () => {
   const harness = newHarness();
   const base = [{ id: "h-1", role: "human", content: "开始" }, { id: "a-1", role: "ai", content: "第一段" }];

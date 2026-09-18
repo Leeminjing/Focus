@@ -12,7 +12,8 @@
  * 消息的正文与推理；会话只呈现人类可读摘要，工具参数、工具输出与推理全文均不进入 DOM，由会话视图在
  * 用户展开时按 conversationEventIndex 按需生成；会话渲染走两步：buildUnits 产出带内容签名的单元，
  * _unitHtml 按签名命中缓存，因此连续相同帧为零重建、增量帧只重建变化单元；流式正文按顶层块缓存，
- * 只重渲染未闭合尾块；同一 tick 内的多次状态变化由 scheduleRender 合并为一次。
+ * 只重渲染未闭合尾块；同一 tick 内的多次状态变化由 scheduleRender 合并为一次；快照帧在写入前先登记
+ * 滚动基线（此时的高度与贴底判定才是写入前的状态），写入后由写入侧按阅读意图与阅读锚点决定跟随或回正。
  * 示例：renderFocus(activeTask()); await sendMain()。
  */
 "use strict";
@@ -1559,6 +1560,7 @@ function renderFocus(task = activeTask()) {
   conversation.scrollTop = previousConversation
     ? (wasPinned ? conversation.scrollHeight : previousScrollTop)
     : (detail.ui_state?.scrollTop ?? conversation.scrollHeight);
+  conversationView.rememberScroll(conversation);
   const rail = document.querySelector(".context-rail-list");
   if (previousRailScrollTop != null && rail) rail.scrollTop = previousRailScrollTop;
   if (!previousConversation) requestAnimationFrame(() => rail?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "nearest" }));
@@ -1927,12 +1929,12 @@ function replaceConversation(task, messages, snapshotRunId) {
   if (state.view !== "focus" || state.activeTaskId !== task.task_id) return;
   const conversation = document.querySelector("#conversation");
   if (!conversation) return;
-  const pinned = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 80;
+  conversationView.trackScroll(conversation);
   reconcileConversationMarkup(conversation, renderConversation(detail, task));
   restoreCommitmentPanels(conversation);
   restoreAccessReviewPanels(conversation);
   materialContentLoader.bindAll(conversation);
-  if (pinned) conversation.scrollTop = conversation.scrollHeight;
+  conversationView.syncScrollAfterWrite(conversation);
 }
 
 conversationView.configure({
@@ -1974,9 +1976,8 @@ function appendStreamDelta(envelope, field) {
     if (state.view !== "focus" || state.activeTaskId !== task.task_id) return;
     const conversation = document.querySelector("#conversation");
     if (!conversation) return;
-    const pinned = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 80;
     conversationView.syncStreamingPlaceholder(conversation, envelope.run_id, buffer);
-    if (pinned) conversation.scrollTop = conversation.scrollHeight;
+    conversationView.syncScrollAfterWrite(conversation);
   }));
 }
 
@@ -1991,14 +1992,32 @@ function clearStreamBuffer(runId) {
 }
 
 function finalizeStreamingOnSnapshot(taskId, messages, snapshotRunId) {
-  // 快照是该 run 的权威状态：命中缓冲记录的消息 id 或命中同一 run 时，
-  // 流式占位已由快照中的完成态取代，缓冲不再需要。信封不带 message_id 时靠 run 身份回收。
+  // 快照是该 run 的权威状态：命中缓冲记录的消息 id，或快照里确实出现了该缓冲的正文（信封不带
+  // message_id 时的判据）时，流式占位已由完成态取代，缓冲不再需要。中途快照不得回收缓冲——
+  // 否则占位会先消失、再被下一条增量重建，流式正文只剩尾巴。
   const ids = new Set((messages || []).map(message => message && (message.id || message.message_id)).filter(Boolean));
   for (const [runId, buffer] of state.streamBuffers) {
     if (buffer.taskId !== taskId) continue;
     if (buffer.messageId && ids.has(buffer.messageId)) { clearStreamBuffer(runId); continue; }
-    if (snapshotRunId && runId === snapshotRunId) clearStreamBuffer(runId);
+    if (snapshotRunId && runId === snapshotRunId && _snapshotCarriesStreamedText(messages, buffer)) clearStreamBuffer(runId);
   }
+}
+
+function _streamedPrefix(value, limit = 40) {
+  const compact = String(value || "").trim();
+  return compact.length <= limit ? compact : compact.slice(0, limit);
+}
+
+function _snapshotCarriesStreamedText(messages, buffer) {
+  const text = _streamedPrefix(buffer.text);
+  const reasoning = _streamedPrefix(buffer.reasoning);
+  if (!text && !reasoning) return false;
+  return (messages || []).some(message => {
+    if (!message || (message.role !== "ai" && message.role !== "assistant")) return false;
+    const content = String(message.content || "");
+    const think = String(message.reasoning_content || "");
+    return (!text || content.includes(text)) && (!reasoning || think.includes(reasoning));
+  });
 }
 
 function renderImageMaterial(material) {

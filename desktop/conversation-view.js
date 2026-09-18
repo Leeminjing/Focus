@@ -7,14 +7,18 @@
  * 唯一改动 DOM 的**应用**（复用、原地更新、移入新节点、按目标顺序就位）；syncStreamingPlaceholder 按 run
  * 身份找到或就地创建占位并随即同步其内容（占位属性取自渲染模块的身份常量，保证与渲染侧单元逐字一致）；
  * loadEarlier 在提高窗口后按高度差回填滚动位置。
- * 子节点归类约定：带身份键者参与对账（`data-unit-key`，或消息/分界/流式的既有键，或事件序列的首事件键）；
- * 声明保留者（`data-conversation-preserved` 或 PRESERVED_SELECTORS 命中，且自身没有身份键）不参与对账，
- * 应用阶段不触碰其位置与内容（排序锚点一律取非保留节点，整体重建的回落路径也把保留节点留回容器）；其余
- * 无键节点按"显式丢弃后重建"处理——不存在既不清算也不移除的中间态。事件节点的搬运只在决策完成后、对已判为
- * update 的单元进行，因此不会出现"活动节点被搬空后又被复用"的情形。交给对账器的单元沿用其契约字段
- * （kind / key / signature；本模块始终给出 signature，kind 仅为契约完整性保留）。
+ * 子节点归类约定：带身份键者参与对账（`data-unit-key`，或消息/分界/流式的既有键；没有显式键的事件序列
+ * 回退取首事件键）；声明保留者（`data-conversation-preserved` 或 PRESERVED_SELECTORS 命中，且自身没有
+ * 身份键）不参与对账，应用阶段不触碰其位置与内容（排序锚点一律取非保留节点，整体重建的回落路径也把保留
+ * 节点留回容器）；其余无键节点按"显式丢弃后重建"处理——不存在既不清算也不移除的中间态。事件节点的搬运只在
+ * 决策完成后、对已判为 update 的单元进行，因此不会出现"活动节点被搬空后又被复用"的情形。交给对账器的单元
+ * 沿用其契约字段（kind / key / signature；本模块始终给出 signature，kind 仅为契约完整性保留）。
  * 阅读态约定：展开态与按需挂载的详情体属于交互态，事件与事件序列的签名只取摘要行（剔除 `open` 与详情体），
  * 因此无关更新不触碰它们；自身内容变化时保留展开态并按当前记录重新挂载详情体。
+ * 滚动约定：登记（`trackScroll`）发生在写入之前，因此首次建立基线时读到的是写入前的高度；贴底且内容增长时
+ * 按高度差跟随；不在底部时按**阅读锚点**（写入前记录的、视口内最上面几条执行行的视口坐标）在写入后把滚动
+ * 位置回正，使窗口上边界前移不打扰正在向上阅读的用户。锚点记录在 `rememberScroll`（用户滚动或显式定位）时
+ * 作废，避免用过期基点回正。
  * 示例：`configure({ reconciler, events, render, markdown, eventIndex }); reconcile(conversation, html)`。
  */
 (function (root, factory) {
@@ -28,10 +32,15 @@
   const PRESERVED_SELECTORS = [".trace-panel", ".review-panel", ".access-review-panel"];
   const EVENT_SELECTOR = ".conversation-event[data-event-key]";
   const SEQUENCE_CLASS = "conversation-event-sequence";
+  const BOTTOM_THRESHOLD = 80;
+  const READING_ANCHORS = 3;
 
   let deps = null;
   const windows = new Map();
   const lazyDetailHosts = new WeakSet();
+  const scrollHosts = new WeakSet();
+  const scrollState = new WeakMap();
+  const pendingAnchors = new WeakMap();
 
   function configure(next) {
     deps = next;
@@ -55,6 +64,118 @@
     increaseWindow(taskId);
     if (typeof reconcileFn === "function") reconcileFn();
     conversation.scrollTop = previousTop + Math.max(0, (conversation.scrollHeight || 0) - previousHeight);
+    rememberScroll(conversation);
+  }
+
+  // === 滚动锚点 ===
+
+  function _atBottom(conversation) {
+    return (conversation.scrollHeight || 0) - (conversation.scrollTop || 0) - (conversation.clientHeight || 0) < BOTTOM_THRESHOLD;
+  }
+
+  function rememberScroll(conversation) {
+    if (!conversation) return;
+    pendingAnchors.delete(conversation);
+    scrollState.set(conversation, {
+      height: conversation.scrollHeight || 0,
+      pinned: _atBottom(conversation),
+    });
+  }
+
+  function _registerScrollHost(conversation) {
+    if (!conversation || typeof conversation.addEventListener !== "function") return;
+    if (scrollHosts.has(conversation)) return;
+    scrollHosts.add(conversation);
+    conversation.addEventListener("scroll", () => rememberScroll(conversation), { passive: true });
+  }
+
+  // 写入前登记：注册滚动监听，并在尚未记录过基线时补一次引导读取（未走 renderFocus 的容器）。
+  // 顺序有意义——引导读取必须发生在写入之前，否则读到的是写入后的高度，
+  // 会把"贴底跟随"误判为"用户正在向上阅读"。稳态下基线由上一次写入与滚动事件维护，本函数不再读取。
+  function trackScroll(conversation) {
+    _registerScrollHost(conversation);
+    if (conversation && !scrollState.has(conversation)) rememberScroll(conversation);
+  }
+
+  function scrollStateOf(conversation) {
+    const state = scrollState.get(conversation);
+    return state ? { ...state } : null;
+  }
+
+  // 阅读锚点：不在底部时记下视口内最上面的几条执行行（没有可见行时取顶层单元），
+  // 写入后按同一节点的位移把滚动位置原样回正。不按"被移除节点的高度"计量：等高替换（"加载更早"入口的
+  // 计数变化）、行间距、上方内容变高都会让那个假设失真；锚点位移由浏览器算出，与内容如何变化无关。
+  // 记录发生在只读的计划阶段之后、任何 DOM 改动之前。
+  function noteReadingAnchor(host, units) {
+    if (!host || !units?.length) return null;
+    const state = scrollState.get(host);
+    if (!state || state.pinned) return null;
+    const viewportTop = host.getBoundingClientRect?.().top;
+    if (viewportTop === undefined) return null;
+    const candidates = [
+      ...[...(host.querySelectorAll?.(EVENT_SELECTOR) || [])].map(node => ({ kind: "row", key: node.dataset.eventKey, node })),
+      ...units.map(node => ({ kind: "unit", key: _explicitKey(node) || _sequenceKey(node), node })),
+    ];
+    const anchors = [];
+    for (const candidate of candidates) {
+      const box = candidate.node.getBoundingClientRect?.();
+      if (!box || box.bottom <= viewportTop) continue;
+      anchors.push({ kind: candidate.kind, key: candidate.key, top: box.top });
+      if (anchors.length >= READING_ANCHORS) break;
+    }
+    if (!anchors.length) return null;
+    pendingAnchors.set(host, anchors);
+    return anchors;
+  }
+
+  function _anchorNode(host, anchor) {
+    if (anchor.kind === "row") {
+      for (const node of host.querySelectorAll?.(EVENT_SELECTOR) || []) {
+        if (node.dataset.eventKey === anchor.key) return node;
+      }
+      return null;
+    }
+    for (const node of host.children || []) {
+      if ((_explicitKey(node) || _sequenceKey(node)) === anchor.key) return node;
+    }
+    return null;
+  }
+
+  function _syncReadingAnchor(host) {
+    const anchors = pendingAnchors.get(host);
+    pendingAnchors.delete(host);
+    if (!anchors) return 0;
+    for (const anchor of anchors) {
+      const node = _anchorNode(host, anchor);
+      if (!node) continue;
+      const top = node.getBoundingClientRect?.().top;
+      if (top === undefined) return 0;
+      const shift = top - anchor.top;
+      if (!shift) return 0;
+      host.scrollTop = Math.max(0, (host.scrollTop || 0) + shift);
+      return shift;
+    }
+    return 0;
+  }
+
+  // 写入后的滚动跟随：一次布局读取与至多一次滚动写入。
+  // 用户在底部且本次是内容增长才跟随（按高度差回填）；不在底部时按阅读锚点回正，使阅读位置落在同一行。
+  // 净高度减少不跟随时由浏览器自身的 clamp 收口，因此不会额外产生一次由本模块发起的位移。
+  function syncScrollAfterWrite(conversation) {
+    if (!conversation) return 0;
+    _registerScrollHost(conversation);
+    const height = conversation.scrollHeight || 0;
+    const previous = scrollState.get(conversation) || { height, pinned: true };
+    const grew = height > previous.height;
+    let delta = 0;
+    if (previous.pinned && grew) {
+      delta = height - previous.height;
+      conversation.scrollTop = height;
+    } else if (!previous.pinned) {
+      delta = _syncReadingAnchor(conversation);
+    }
+    scrollState.set(conversation, { height, pinned: previous.pinned });
+    return delta;
   }
 
   function _explicitKey(node) {
@@ -168,34 +289,64 @@
     if (wasOpen) _fillDetail(current, current.querySelector?.(".conversation-event-detail"));
   }
 
-  function _sameChildren(container, nodes) {
-    const current = [...(container.children || [])];
-    return current.length === nodes.length && current.every((node, index) => node === nodes[index]);
+  function _rowUnit(node) {
+    return { kind: "row", key: node.dataset.eventKey, signature: _eventSignature(node) };
   }
 
-  function _reconcileEventSequence(current, next) {
+  function _applyRowPatches(container, patches, plan, removals) {
+    const { prevRows, nextRows } = plan;
+    const nextToNode = new Array(nextRows.length).fill(null);
+    const keptPrev = new Set();
+    for (const patch of patches) {
+      if (patch.op === "keep") {
+        nextToNode[patch.nextIndex] = prevRows[patch.prevIndex];
+        keptPrev.add(patch.prevIndex);
+        continue;
+      }
+      if (patch.op === "update") {
+        _syncEventElement(prevRows[patch.prevIndex], nextRows[patch.nextIndex]);
+        nextToNode[patch.nextIndex] = prevRows[patch.prevIndex];
+        keptPrev.add(patch.prevIndex);
+        continue;
+      }
+      if (patch.op === "append") nextToNode[patch.nextIndex] = nextRows[patch.nextIndex];
+    }
+    for (let index = 0; index < nextToNode.length; index += 1) {
+      if (nextToNode[index] == null) nextToNode[index] = nextRows[index];
+    }
+    for (let index = 0; index < prevRows.length; index += 1) {
+      if (!keptPrev.has(index)) removals.push(prevRows[index]);
+    }
+    let anchor = null;
+    for (const node of nextToNode) {
+      if (anchor === null) {
+        if (container.firstChild !== node) container.insertBefore(node, container.firstChild);
+      } else if (anchor.nextSibling !== node) {
+        container.insertBefore(node, anchor.nextSibling);
+      }
+      anchor = node;
+    }
+  }
+
+  function _uniqueKeys(nodes) {
+    const keys = new Set();
+    for (const node of nodes) {
+      const key = node.dataset.eventKey;
+      if (keys.has(key)) return false;
+      keys.add(key);
+    }
+    return true;
+  }
+
+  function _reconcileEventSequence(current, next, removals) {
     if (!current.matches?.(`.${SEQUENCE_CLASS}`) || !next.matches?.(`.${SEQUENCE_CLASS}`)) return false;
-    const currentEvents = [...current.children];
-    const nextEvents = [...next.children];
-    if ([...currentEvents, ...nextEvents].some(node => !node.matches?.(EVENT_SELECTOR))) return false;
-    const currentByKey = new Map();
-    for (const event of currentEvents) {
-      if (currentByKey.has(event.dataset.eventKey)) return false;
-      currentByKey.set(event.dataset.eventKey, event);
-    }
-    const nextKeys = new Set();
-    const reconciled = [];
-    for (const nextEvent of nextEvents) {
-      const key = nextEvent.dataset.eventKey;
-      if (nextKeys.has(key)) return false;
-      nextKeys.add(key);
-      const currentEvent = currentByKey.get(key);
-      if (!currentEvent) { reconciled.push(nextEvent); continue; }
-      _syncEventElement(currentEvent, nextEvent);
-      reconciled.push(currentEvent);
-    }
+    const prevRows = [...current.children];
+    const nextRows = [...next.children];
+    if ([...prevRows, ...nextRows].some(node => !node.matches?.(EVENT_SELECTOR))) return false;
+    if (!_uniqueKeys(prevRows) || !_uniqueKeys(nextRows)) return false;
     _syncElementAttributes(current, next);
-    if (!_sameChildren(current, reconciled)) current.replaceChildren(...reconciled);
+    const patches = deps.reconciler.diffUnits(prevRows.map(_rowUnit), nextRows.map(_rowUnit));
+    _applyRowPatches(current, patches, { prevRows, nextRows }, removals);
     return true;
   }
 
@@ -209,8 +360,8 @@
     }
   }
 
-  function _updateUnit(current, incoming, openStates) {
-    if (_reconcileEventSequence(current, incoming)) return current;
+  function _updateUnit(current, incoming, openStates, removals) {
+    if (_reconcileEventSequence(current, incoming, removals)) return current;
     _transplantEvents(current, incoming);
     for (const event of _eventNodes(incoming)) {
       if (openStates.has(event.dataset.eventKey)) event.open = openStates.get(event.dataset.eventKey);
@@ -238,7 +389,14 @@
     }
   }
 
-  function _apply(conversation, patches, plan) {
+  // 回收被淘汰的节点。阅读位置的补偿由写入侧按锚点位移完成，与这里的移除动作无关。
+  function _discardCollected(removals) {
+    if (!removals.length) return;
+    for (const node of removals) node.remove();
+    removals.length = 0;
+  }
+
+  function _apply(conversation, patches, plan, removals) {
     const { prevNodes, nextNodes } = plan;
     const openStates = _openStates(prevNodes);
     const nextToNode = new Array(nextNodes.length).fill(null);
@@ -251,7 +409,7 @@
       }
       if (patch.op === "update") {
         const current = prevNodes[patch.prevIndex];
-        const resolved = _updateUnit(current, nextNodes[patch.nextIndex], openStates);
+        const resolved = _updateUnit(current, nextNodes[patch.nextIndex], openStates, removals);
         if (resolved === current) keptPrev.add(patch.prevIndex);
         nextToNode[patch.nextIndex] = resolved;
         continue;
@@ -262,8 +420,9 @@
       if (nextToNode[index] == null) nextToNode[index] = nextNodes[index];
     }
     for (let index = 0; index < prevNodes.length; index += 1) {
-      if (!keptPrev.has(index)) prevNodes[index].remove();
+      if (!keptPrev.has(index)) removals.push(prevNodes[index]);
     }
+    _discardCollected(removals);
     _order(conversation, nextToNode);
   }
 
@@ -300,7 +459,8 @@
       _rebuild(conversation, html);
       return;
     }
-    _apply(conversation, patches, plan);
+    noteReadingAnchor(conversation, plan.prevNodes);
+    _apply(conversation, patches, plan, []);
     mountLazyDetails(conversation);
   }
 
@@ -378,6 +538,10 @@
     syncStreaming,
     syncStreamingPlaceholder,
     syncBlocks,
+    trackScroll,
+    rememberScroll,
+    scrollStateOf,
+    syncScrollAfterWrite,
     windowLimit,
     increaseWindow,
     loadEarlier,
