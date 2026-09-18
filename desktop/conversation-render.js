@@ -1,12 +1,16 @@
 /*
  * 本文件对外提供会话渲染的单元模型、内容签名与渲染缓存：buildUnits/renderConversation（消息 → 带签名的
- * 单元 → 缓存命中的 HTML）、streamingContent/streamingBlocks（流式正文按顶层块渲染并复用已闭合块）、
+ * 单元 → 缓存命中的 HTML）、streamingContent/streamingBlocks/visibleStreamBlocks（流式正文按顶层块渲染
+ * 并复用已闭合块；可见正文以 `STREAM_TEXT_LIMIT` 为界，越限不产出正文块）、
  * windowStartIndex/WINDOW_MESSAGES/WINDOW_ROWS（长会话窗口边界：消息条数与已挂载行数两个上限同时生效，
  * 并按"完整工具调用组"回退到安全起点）、stats/resetStats（渲染计数与缓存规模，供预算检查）。
  * 输入为 detail、task、渲染依赖（renderMessage、renderDivider、events 归一、expandMessages、markdown 渲染器）
  * 与运行态快照（activeTaskId、streamBuffers、materialHistory、pluginViewCount）；输出为单元列表、会话 HTML、
  * 流式块 HTML 与统计计数。具体工作流为按窗口截取消息 → 逐段归一为单元 → 按内容签名命中缓存 →
  * 未命中才调用传入的渲染函数；流式正文解析全文但只渲染未闭合尾块。
+ * 可见正文边界约定：可见渲染与缓冲语义分离——缓冲照旧累积（完成态判据取正文前缀），而超过
+ * `STREAM_TEXT_LIMIT` 的正文不交给 markdown 渲染、也不进入可见 DOM，使越界或超长正文既有界又不会以
+ * "助手正在生成"的形态出现在会话里（工具结果只经快照以工具行呈现）。
  * 记忆化粒度：单元级（消息/分界/流式/加载更早）与**行级**（执行过程的事件行）两层。行级缓存以
  * "行身份 + 行签名"为键，因此容器内其它行的变化不会使本行失效——尾部追加一行只重建那一行；
  * 缓存按 `CACHE_LIMIT` 淘汰最久未命中的条目，条目数与会话长度无关。
@@ -28,6 +32,7 @@
   const WINDOW_MESSAGES = 80;
   const WINDOW_ROWS = 90;
   const CACHE_LIMIT = 4000;
+  const STREAM_TEXT_LIMIT = 64 * 1024;
   const STREAMING_HEADER_HTML = `<header class="work-record-header"><span class="ui-badge is-active">生成中</span></header>`;
   const STREAMING_PLACEHOLDER_CLASS = "work-record message ai streaming";
 
@@ -374,9 +379,18 @@
       : "";
   }
 
+  // 可见正文的体积边界：越限不产出正文块，使"越界或超长的流式正文"不会把单帧变成解析+插入长任务；
+  // 缓冲本身不受影响（"快照是否已携带该正文"的判据取的是正文前缀），完成态仍按正式消息呈现。
+  function visibleStreamBlocks(markdown, buffer) {
+    const text = String(buffer?.text ?? "");
+    if (!text || text.length > STREAM_TEXT_LIMIT) return [];
+    return streamingBlocks(markdown, buffer);
+  }
+
   function streamingContent(markdown, events, buffer) {
-    const answer = buffer.text
-      ? `<div class="message-rich">${streamingBlocks(markdown, buffer).map(entry => entry.html).join("")}</div>`
+    const blocks = visibleStreamBlocks(markdown, buffer);
+    const answer = blocks.length
+      ? `<div class="message-rich">${blocks.map(entry => entry.html).join("")}</div>`
       : "";
     return `${STREAMING_HEADER_HTML}${_reasoningSection(events, buffer.reasoning)}${answer}`;
   }
@@ -384,12 +398,14 @@
   return {
     WINDOW_MESSAGES,
     WINDOW_ROWS,
+    STREAM_TEXT_LIMIT,
     STREAMING_HEADER_HTML,
     STREAMING_PLACEHOLDER_CLASS,
     buildUnits,
     renderConversation,
     markdownBlocks,
     streamingBlocks,
+    visibleStreamBlocks,
     streamingContent,
     windowStartIndex,
     stats: snapshotStats,

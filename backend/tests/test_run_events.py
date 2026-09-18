@@ -82,25 +82,37 @@ def test_stream_text():
 
 
 def test_chunk_to_events_tokens():
-    class FakeMessage:
-        content = "增量"
-        id = "chunk-1"
-
+    chunk = AIMessageChunk(content="增量", id="chunk-1")
     base = {"workspace_id": "ws-1", "thread_id": "th-1", "agent_id": "main:th-1", "run_id": "run-1"}
-    events = chunk_to_events("messages", (FakeMessage(), {"langgraph_node": "model"}), base)
+    events = chunk_to_events("messages", (chunk, {"langgraph_node": "model"}), base)
     assert len(events) == 1
     assert events[0].event == "tokens"
     assert events[0].data["data"] == {"content": "增量", "message_id": "chunk-1", "node": "model"}
     assert events[0].data["event"] == "tokens"
     assert events[0].data["workspace_id"] == "ws-1"
 
-    # 空文本 chunk 不发布
-    class EmptyMessage:
-        content = ""
-        id = "chunk-empty"
-
-    assert chunk_to_events("messages", (EmptyMessage(), {"langgraph_node": "model"}), base) == []
+    empty = AIMessageChunk(content="", id="chunk-empty")
+    assert chunk_to_events("messages", (empty, {"langgraph_node": "model"}), base) == []
     assert chunk_to_events("messages", ("not-a-tuple",), base) == []
+
+
+def test_chunk_to_events_only_assistant_messages_reach_visible_channels():
+    base = {"workspace_id": "ws-1", "thread_id": "th-1", "agent_id": "main:th-1", "run_id": "run-1"}
+    tool_output = "文件正文\n" * 20000
+    non_assistant = [
+        (ToolMessage(content=tool_output, tool_call_id="c1", name="read_file", id="m-tool"), {"langgraph_node": "tools"}),
+        (HumanMessage(content="用户消息", id="m-human"), {"langgraph_node": "human"}),
+        (SystemMessage(content="系统消息", id="m-system"), {"langgraph_node": "model"}),
+    ]
+    for message, metadata in non_assistant:
+        assert chunk_to_events("messages", (message, metadata), base) == [], f"{type(message).__name__} 不得进入可见通道"
+
+    # values 快照仍是工具结果的正式来源：同一内容以 role=tool 送达
+    snapshot = chunk_to_events("values", {"messages": [ToolMessage(content=tool_output, tool_call_id="c1", name="read_file", id="m-tool")]}, base)
+    assert len(snapshot) == 1 and snapshot[0].event == "events"
+    serialized = snapshot[0].data["data"]["messages"][0]
+    assert serialized["role"] == "tool" and serialized["tool_call_id"] == "c1"
+    assert serialized["content"] == tool_output
 
 
 def test_chunk_to_events_reasoning_is_separate_from_visible_tokens():

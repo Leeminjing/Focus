@@ -1,8 +1,9 @@
 /*
  * 本文件对外提供会话区"每帧工作量"的预算检查。输入为按真实载荷形态合成的会话（只有工具调用与推理、
- * 没有可见正文）、可注入布局属性的会话容器节点与 app.js 的真实写入路径；输出为五类断言结果：
- * 滚动策略只按阅读意图与高度差决策（三情形）、一帧内布局读取与滚动写入各不超过一次、常驻 DOM 按行数
- * 受限且不切断工具调用组、会话容器的锚点策略显式声明、以及行级缓存的规模上限。
+ * 没有可见正文）、可注入布局属性的会话容器节点与 app.js 的真实写入路径；输出为七类断言结果：
+ * 滚动策略只按阅读意图与高度差决策（三情形）、一帧内布局读取与滚动写入各不超过一次、未贴底帧写入后
+ * 不再读布局、常驻 DOM 按行数受限且不切断工具调用组、窗口滑动不整体重建执行序列且阅读位置不变、
+ * 可见正文以 `STREAM_TEXT_LIMIT` 为界（越限不进入可见 DOM 且该帧不渲染正文）、会话容器的锚点策略显式声明。
  * 工作流只构造数据并调用既有函数，不修改运行时代码。示例：`node desktop/conversation-frame-budget.test.cjs`。
  */
 "use strict";
@@ -352,6 +353,97 @@ test("窗口上边界前移时，向上阅读的位置落在同一行", () => {
     sameSequence, true,
     "窗口滑动 MUST NOT 整体重建执行序列（身份不取首行键）",
   );
+});
+
+test("越限的流式正文不进入可见 DOM，且该帧不解析正文", () => {
+  const harness = newHarness();
+  renderFresh(harness, [{ id: "h-1", role: "human", content: "开始" }]);
+  harness.context.__big = "文件正文行内容\n".repeat(10000);
+  const measured = harness.vm.runInContext(`(() => {
+    const conv = document.querySelector("#conversation");
+    const before = conversationRenderStats();
+    const buffer = { taskId: __task.task_id, text: __big, reasoning: "", messageId: "m-big", blocks: [], blockEntries: [] };
+    state.streamBuffers.set("run-big", buffer);
+    conversationView.syncStreamingPlaceholder(conv, "run-big", buffer);
+    const after = conversationRenderStats();
+    const placeholder = conv.querySelector("[data-stream-run]");
+    return {
+      limit: FocusConversationRender.STREAM_TEXT_LIMIT,
+      textBytes: __big.length,
+      visibleBody: Boolean(placeholder && placeholder.querySelector(".message-rich")),
+      leaksIntoConversation: conv.textContent.includes(__big.slice(0, 64)),
+      badge: placeholder ? (placeholder.querySelector(".ui-badge") || {}).textContent : null,
+      streamingBuilt: after.streamingBuilt - before.streamingBuilt,
+      streamingReused: after.streamingReused - before.streamingReused,
+    };
+  })()`, harness.context);
+  assert.ok(measured.textBytes > measured.limit, `该用例必须真的越限（${measured.textBytes} > ${measured.limit}）`);
+  assert.equal(measured.visibleBody, false, "越限正文不得进入可见 DOM");
+  assert.equal(measured.leaksIntoConversation, false, "越限正文不得出现在会话文本里");
+  assert.equal(measured.badge, "生成中", "占位指示仍在，只是不呈现正文");
+  assert.equal(
+    measured.streamingBuilt + measured.streamingReused, 0,
+    "越限正文不得交给 markdown 渲染（该帧不产生任何块级渲染工作）",
+  );
+});
+
+test("流式累积以可见正文上限为界，上限内照常渲染且落定后按需可展开", () => {
+  const harness = newHarness();
+  renderFresh(harness, [{ id: "h-1", role: "human", content: "开始" }]);
+  const result = harness.vm.runInContext(`(() => {
+    const conv = document.querySelector("#conversation");
+    const envelope = (content, messageId) => ({
+      thread_id: __task.thread_id, workspace_id: __task.workspace_id,
+      agent_id: "main:" + __task.task_id, run_id: "run-a", data: { content, message_id: messageId },
+    });
+    appendToken(envelope("第 1 段正文\\n\\n第 2 段正文\\n\\n", "m-a"));
+    const buffer = state.streamBuffers.get("run-a");
+    conversationView.syncStreamingPlaceholder(conv, "run-a", buffer);
+    const under = {
+      textBytes: buffer.text.length,
+      visibleBody: Boolean(conv.querySelector("[data-stream-run] .message-rich")),
+      shown: conv.querySelector("[data-stream-run] .message-rich").textContent.includes("第 1 段正文"),
+    };
+
+    // 真实形态：工具消息 id 变化使缓冲重置，随后一段超长正文到达
+    const limit = FocusConversationRender.STREAM_TEXT_LIMIT;
+    appendToken(envelope("超长正文".repeat(Math.ceil(limit / 4) + 1000), "m-tool"));
+    const afterBig = state.streamBuffers.get("run-a").text.length;
+    appendToken(envelope("越限之后仍不断到达的增量", "m-tool"));
+    const afterMore = state.streamBuffers.get("run-a").text.length;
+    conversationView.syncStreamingPlaceholder(conv, "run-a", state.streamBuffers.get("run-a"));
+    const over = {
+      grown: afterBig > limit,
+      stoppedGrowing: afterMore === afterBig,
+      visibleBody: Boolean(conv.querySelector("[data-stream-run] .message-rich")),
+    };
+
+    const blob = __big;
+    replaceConversation(__task, [
+      { id: "h-1", role: "human", content: "开始" },
+      { id: "ai-1", role: "ai", content: "", reasoning_content: "准备读取", tool_calls: [{ id: "c1", name: "read_file", args: { path: "f.txt" } }] },
+      { id: "m-tool", role: "tool", tool_call_id: "c1", name: "read_file", status: "success", content: blob },
+    ]);
+    const row = conv.querySelector(".conversation-event.is-tool");
+    row.open = true;
+    row.dispatchEvent({ type: "toggle" });
+    const settled = {
+      placeholders: conv.querySelectorAll("[data-stream-run]").length,
+      toolRows: conv.querySelectorAll(".conversation-event.is-tool").length,
+      summary: row.querySelector("summary").textContent,
+      detailHasFullOutput: row.querySelector(".conversation-event-detail").textContent.includes(blob.slice(0, 40)),
+      detailBytes: row.querySelector(".conversation-event-detail").textContent.length,
+    };
+    return { under, over, settled };
+  })()`, (() => { harness.context.__big = "工具输出正文行\n".repeat(3000); return harness.context; })());
+  assert.equal(result.under.visibleBody, true, "上限内的正文必须照常渲染");
+  assert.equal(result.under.shown, true, "上限内的正文内容必须真的进入可见 DOM");
+  assert.equal(result.over.grown, true, "越限后累积正文必须确实超过上限");
+  assert.equal(result.over.stoppedGrowing, true, "越限后不再并入后续增量（累积有界）");
+  assert.equal(result.over.visibleBody, false, "越限后可见正文必须退出 DOM");
+  assert.equal(result.settled.placeholders, 0, "快照落定后占位必须回收");
+  assert.equal(result.settled.toolRows, 1, "工具结果按正式形态呈现为一行工具行");
+  assert.equal(result.settled.detailHasFullOutput, true, "完整输出仍可按需展开得到");
 });
 
 test("会话容器显式声明锚点策略，且不扩散到全局", () => {

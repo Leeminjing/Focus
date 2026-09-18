@@ -9,7 +9,9 @@
     stream_text — 从 LangChain message chunk 提取可见文本
     build_envelope — 组装统一事件信封 {workspace_id, thread_id, agent_id, run_id, event, data}
     chunk_to_events — 将 astream 的 (mode, chunk) 转换为 StreamEvent 列表:
-        messages 模式 → tokens 事件（data: {content, message_id, node}）
+        messages 模式 → **仅助手消息**的 reasoning 事件（独立思考增量）与 tokens 事件（可见正文增量）；
+            工具结果、人类消息、系统消息与其它节点输出不产出任何事件——它们只经快照以角色化消息送达，
+            且承诺子图（Supervisor）冒泡的消息以其节点名/消息 id 前缀先行排除
         values 模式 → events 事件（data: 完整序列化状态快照）
 
 输入:
@@ -23,8 +25,9 @@
     deserialize_messages → list[BaseMessage]（结构非法时抛 ValueError）
 
 具体工作流:
-    (1) messages 模式: chunk 为 (message_chunk, metadata) 元组 → stream_text 提取增量文本
-        → 组装 tokens 事件（node 取 metadata.langgraph_node）
+    (1) messages 模式: chunk 为 (message_chunk, metadata) 元组 → 排除承诺子图消息与非助手消息
+        → stream_reasoning 取独立思考增量组装 reasoning 事件、stream_text 取可见正文组装 tokens 事件
+        （node 取 metadata.langgraph_node）
     (2) values 模式: chunk 为完整状态 dict → serialize_value 递归序列化 → events 事件
     (3) 所有事件 data 为 build_envelope 信封，前端按 run_id 独立路由
     (4) deserialize_messages: validate_messages 校验 tool call 关联完整性 → 按角色还原 BaseMessage
@@ -303,6 +306,8 @@ def chunk_to_events(mode: str, chunk: Any, envelope: dict[str, Any]) -> list[Str
         if node in _COMMITMENT_SUBGRAPH_NODES or (
             isinstance(message_id, str) and message_id.startswith("commitment-stage-")
         ):
+            return []
+        if not isinstance(message, AIMessage):
             return []
         events: list[StreamEvent] = []
         reasoning = stream_reasoning(message)

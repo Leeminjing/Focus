@@ -12,8 +12,10 @@
  * 消息的正文与推理；会话只呈现人类可读摘要，工具参数、工具输出与推理全文均不进入 DOM，由会话视图在
  * 用户展开时按 conversationEventIndex 按需生成；会话渲染走两步：buildUnits 产出带内容签名的单元，
  * _unitHtml 按签名命中缓存，因此连续相同帧为零重建、增量帧只重建变化单元；流式正文按顶层块缓存，
- * 只重渲染未闭合尾块；同一 tick 内的多次状态变化由 scheduleRender 合并为一次；快照帧在写入前先登记
- * 滚动基线（此时的高度与贴底判定才是写入前的状态），写入后由写入侧按阅读意图与阅读锚点决定跟随或回正。
+ * 只重渲染未闭合尾块，且累积与可见渲染都以 `STREAM_TEXT_LIMIT` 为界（越限不再并入缓冲、也不进入可见
+ * DOM，避免越界或超长正文把单帧变成解析与插入长任务）；同一 tick 内的多次状态变化由 scheduleRender
+ * 合并为一次；快照帧在写入前先登记滚动基线（此时的高度与贴底判定才是写入前的状态），写入后由写入侧按
+ * 阅读意图与阅读锚点决定跟随或回正。
  * 示例：renderFocus(activeTask()); await sendMain()。
  */
 "use strict";
@@ -1968,7 +1970,8 @@ function appendStreamDelta(envelope, field) {
     buffer.blockEntries = [];
     buffer.reasoningRendered = undefined;
   }
-  buffer[field] = (buffer[field] || "") + content;
+  const accumulated = buffer[field] || "";
+  if (accumulated.length < conversationRender.STREAM_TEXT_LIMIT) buffer[field] = accumulated + content;
   state.streamBuffers.set(envelope.run_id, buffer);
   if (state.streamFrames.has(envelope.run_id)) return;
   state.streamFrames.set(envelope.run_id, requestAnimationFrame(() => {

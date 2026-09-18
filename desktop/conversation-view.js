@@ -5,7 +5,8 @@
  * 以及一次只触碰变化节点的流式写入。具体工作流为 configure 注入对账器、事件归一、渲染模块与 markdown；
  * reconcile 分两个阶段——只读的**计划**（归类容器子节点，交给对账器产出 keep/update/append/remove）与
  * 唯一改动 DOM 的**应用**（复用、原地更新、移入新节点、按目标顺序就位）；syncStreamingPlaceholder 按 run
- * 身份找到或就地创建占位并随即同步其内容（占位属性取自渲染模块的身份常量，保证与渲染侧单元逐字一致）；
+ * 身份找到或就地创建占位并随即同步其内容（占位属性取自渲染模块的身份常量，保证与渲染侧单元逐字一致；
+ * 可见正文该不该渲染由渲染模块的 visibleStreamBlocks 判定——越限正文不产出块，写入侧只把结果同步进 DOM）；
  * loadEarlier 在提高窗口后按高度差回填滚动位置。
  * 子节点归类约定：带身份键者参与对账（`data-unit-key`，或消息/分界/流式的既有键；没有显式键的事件序列
  * 回退取首事件键）；声明保留者（`data-conversation-preserved` 或 PRESERVED_SELECTORS 命中，且自身没有
@@ -514,7 +515,8 @@
     }
 
     let body = article.querySelector(":scope > .message-rich");
-    if (!buffer.text) {
+    const blocks = deps.render.visibleStreamBlocks(deps.markdown, buffer).map(entry => entry.html);
+    if (!blocks.length) {
       if (body) body.remove();
       buffer.blocks = [];
       buffer.blockEntries = [];
@@ -525,7 +527,6 @@
       body.className = "message-rich";
       article.append(body);
     }
-    const blocks = deps.render.streamingBlocks(deps.markdown, buffer).map(entry => entry.html);
     buffer.blocks = syncBlocks(body, blocks, buffer.blocks || []);
   }
 
