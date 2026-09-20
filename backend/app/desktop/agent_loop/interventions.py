@@ -26,6 +26,8 @@ from backend.app.desktop.agent_loop.models import (
     LoopUserIntent,
 )
 from backend.app.desktop.agent_loop.schemas import LoopInterventionRequest
+from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
+from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
 from backend.app.desktop.models import DesktopRun
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
 
@@ -33,6 +35,8 @@ from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
 class LoopInterventionService:
     def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = sessions
+        self._directives = DirectiveLifecycleRepository()
+        self._lifecycle = InterventionLifecycleRepository()
 
     async def submit(self, loop_id: str, request: LoopInterventionRequest) -> dict:
         content = request.content.strip()
@@ -69,16 +73,20 @@ class LoopInterventionService:
                 )
                 if membership is None:
                     raise HTTPException(422, "目标 Context 不属于当前 Loop")
+            intent_id = uuid.uuid4().hex
             intent = LoopUserIntent(
-                intent_id=uuid.uuid4().hex,
+                intent_id=intent_id,
                 loop_id=loop_id,
                 scope=scope,
                 target_context_id=request.context_id,
                 content=content,
                 goal_revision=loop.goal_revision,
                 authority_revision=loop.authority_revision,
+                correlation_id=intent_id,
             )
             session.add(intent)
+            await self._lifecycle.register(session, intent)
+            await self._lifecycle.transition(session, intent.intent_id, "accepted")
             await self._supersede_uncommitted(session, loop_id)
             loop.revision += 1
             loop.status = "running"
@@ -121,13 +129,12 @@ class LoopInterventionService:
                 "waits_for_active_runs": bool(active_runs),
             }
 
-    @staticmethod
-    async def _supersede_uncommitted(session: AsyncSession, loop_id: str) -> None:
+    async def _supersede_uncommitted(self, session: AsyncSession, loop_id: str) -> None:
         await session.execute(
             update(LoopRound)
             .where(
                 LoopRound.loop_id == loop_id,
-                LoopRound.status.in_(["observed", "ready", "waiting_workers", "publishing", "adopting"]),
+                LoopRound.status.in_(["observed", "curated", "ready", "waiting_workers", "publishing", "adopting"]),
             )
             .values(status="superseded")
         )
@@ -139,14 +146,7 @@ class LoopInterventionService:
             )
             .values(status="superseded")
         )
-        await session.execute(
-            update(LoopDirective)
-            .where(
-                LoopDirective.loop_id == loop_id,
-                LoopDirective.status.in_(["created", "launching"]),
-            )
-            .values(status="cancelled")
-        )
+        await self._directives.cancel_active(session, loop_id, "user_intervention")
 
     @staticmethod
     async def _new_round(session: AsyncSession, loop: AgentLoop) -> LoopRound:

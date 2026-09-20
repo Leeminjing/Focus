@@ -1,6 +1,7 @@
-"""Patrol 认知步骤合同测试：扁平判断折叠、非法形状仍被拒、形状违例可重试。
+"""本文件验证 Patrol 认知步骤的 Mission 引用、扁平判断折叠、非法形状拒绝与有界重试。
 
-测试只构造合同与调度对象，不访问数据库也不调用模型网络。
+输入为脚本化模型 JSON 与协调器桩；输出为语义引用、折叠结果及重试计数断言。具体工作流为在
+无网络条件下调用结构化解析边界与调度重试。示例：`pytest test_patrol_cognitive_contract.py`。
 """
 
 import asyncio
@@ -20,8 +21,8 @@ from backend.app.desktop.agent_loop.round_orchestration import (
 )
 from backend.tests.config_helpers import app_config_for
 
-_DECISION = {"rationale": "继续推进", "evidence": [], "actions": [{"action": "wait_for_user", "reason": "等用户"}]}
-_FLAT = {"rationale": _DECISION["rationale"], "evidence": [], "actions": _DECISION["actions"]}
+_DECISION = {"rationale": "继续推进", "evidence": [], "mission_references": [{"role": "outcome", "reference_id": "outcome"}], "actions": [{"action": "wait_for_user", "reason": "等用户"}]}
+_FLAT = {"rationale": _DECISION["rationale"], "evidence": [], "mission_references": _DECISION["mission_references"], "actions": _DECISION["actions"]}
 
 
 def _run(coro):

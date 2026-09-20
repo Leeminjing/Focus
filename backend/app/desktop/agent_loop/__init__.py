@@ -1,8 +1,8 @@
 r"""本文件对外提供 Context-governed Agent Loop 领域的稳定公共入口。
 
 输入为用户 goal/grant、bounded observation、Patrol decision 和 completion evidence；输出为持久 Loop、
-唯一 Kernel commit、可审计用户意图、纯 HumanMessage directive 与可恢复 coordinator。具体工作流为 User delegates、
-Patrol judges、optional Workers return、Kernel commits。示例：`from ...agent_loop import LoopKernel`。
+唯一 Kernel commit、可审计用户意图、纯 HumanMessage directive、独立发布/Curator/Context 池与可恢复 coordinator。
+具体工作流为 User delegates、Patrol judges、Kernel authorizes、各持久队列独立推进。示例：`from ...agent_loop import LoopKernel`。
 """
 
 from backend.app.desktop.agent_loop.authority import AuthorityViolation, DelegatedAuthorityGuard
@@ -20,6 +20,8 @@ from backend.app.desktop.agent_loop.recovery import AgentLoopRecovery, LoopRecov
 from backend.app.desktop.agent_loop.round_orchestration import LoopObservationService, LoopRoundOrchestrator, StructuredPatrolDecisionModel
 from backend.app.desktop.agent_loop.workers import LoopWorkerRuntime, StructuredCompletionVerifier, StructuredLaneAdvisor
 from backend.app.desktop.agent_loop.portfolio_publication import LoopPortfolioPublicationService
+from backend.app.desktop.agent_loop.publication_queue import LoopPortfolioPublicationQueue
+from backend.app.desktop.agent_loop.context_run_pool import ContextRunPool
 from backend.app.desktop.agent_loop.workspace_adoption import LoopWorkspaceAdoptionService
 from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract, CriterionVerification, LoopBudgetContract, LoopCreateRequest, LoopObservationEnvelope, PatrolAction, PatrolDecisionIntent
 from backend.app.desktop.agent_loop.service import AgentLoopService
@@ -37,6 +39,6 @@ __all__ = [
     "AgentLoopRecovery", "LoopRecoveryReport",
     "LoopObservationService", "LoopRoundOrchestrator", "StructuredPatrolDecisionModel",
     "LoopWorkerRuntime", "StructuredCompletionVerifier", "StructuredLaneAdvisor",
-    "LoopPortfolioPublicationService",
+    "LoopPortfolioPublicationService", "LoopPortfolioPublicationQueue", "ContextRunPool",
     "LoopWorkspaceAdoptionService",
 ]

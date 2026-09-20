@@ -1,6 +1,6 @@
 r"""本文件对外提供 LoopObservationBuilder 与 observation_hash。
 
-输入为当前 goal/grant、bounded Portfolio frontier、稳定 Run/workspace 结果、预算、gate 和 Worker 返回；
+输入为当前结构化 Mission/grant、bounded Portfolio frontier、稳定 Run/workspace 结果、预算、gate 和 Worker 返回；
 输出为不可变 LoopObservationEnvelope 及确定性哈希。具体工作流为限制集合长度和文本大小、只保留
 显式事实与展开句柄，排除私有思维链和未请求全历史。示例：`envelope = builder.build(**facts)`。
 """

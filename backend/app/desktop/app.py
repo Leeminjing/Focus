@@ -1,7 +1,7 @@
 """
 本文件对外提供 mount_desktop，把桌面能力内嵌到唯一 FastAPI Gateway。
 
-输入为已经创建的 Gateway `FastAPI` 实例；输出为挂载完成的 `/desktop/api` 路由、插件资产和
+输入为已经创建的 Gateway `FastAPI` 实例；输出为挂载完成的 `/desktop/api` 普通/Live 路由、插件资产和
 `/desktop/` 静态页面。具体工作流为先注册 Context、Loop、压缩、Memory、模型设置与插件 API，
 再挂载插件前端和 Desktop 静态目录，从而保持页面与 API 同源且不创建第二个后端。
 DesktopService 由 Gateway lifespan 构造并复用同一数据库、checkpointer、store 和 StreamBridge。
@@ -40,10 +40,12 @@ def mount_desktop(app) -> None:
     from backend.app.desktop.routes import desktop_router
     from backend.app.desktop.agent_loop.routes import agent_loop_router
     from backend.app.desktop.agent_loop.query_routes import loop_query_router
+    from backend.app.desktop.agent_loop.live_routes import live_loop_router
 
     app.include_router(desktop_router)
     app.include_router(agent_loop_router)
     app.include_router(loop_query_router)
+    app.include_router(live_loop_router)
     app.include_router(compression_router)
     app.include_router(plugins_router)
     app.include_router(memory_router)

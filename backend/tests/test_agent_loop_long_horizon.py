@@ -285,7 +285,7 @@ def test_long_horizon_trace_is_replayable_and_preserves_unadopted_synthesis(
                         CriterionVerification(
                             criterion_id="tests",
                             status="satisfied",
-                            evidence=({"kind": "test_run", "status": "passed"},),
+                            evidence=({"kind": "fact", "source_id": f"initial-{suffix}", "summary": "The deterministic suite passed."},),
                             explanation="The required deterministic suite passed.",
                         ),
                     ),
@@ -320,7 +320,7 @@ def test_long_horizon_trace_is_replayable_and_preserves_unadopted_synthesis(
             events = await service.events(loop_id)
             assert [event["cursor"] for event in events] == list(range(1, len(events) + 1))
             assert len({event["event_id"] for event in events}) == len(events)
-            assert {"LoopStarted", "UserOverride", "LoopDecisionCommitted"}.issubset(
+            assert {"LoopStarted", "MissionRevisionActivated", "LoopDecisionCommitted"}.issubset(
                 {event["type"] for event in events}
             )
             async with sessions() as session:

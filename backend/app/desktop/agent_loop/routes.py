@@ -1,7 +1,8 @@
-r"""本文件对外提供 agent_loop_router，作为 Loop、授权、用户介入、Kernel decision、控制与事件 HTTP 边界。
+r"""本文件对外提供 agent_loop_router，作为 Loop、Mission、授权、用户介入、Kernel decision、控制与事件 HTTP 边界。
 
-输入为已通过 Desktop 会话认证的严格 schema；输出为 Loop snapshot、持久用户意图、Kernel result
-或 cursor event。具体工作流为从 app.state 取得专用 service/Kernel，不在路由中写领域状态或运行模型。
+输入为已通过 Desktop 会话认证的结构化 Mission 或兼容旧字段及其它严格 schema；输出为 Loop snapshot、
+持久用户意图、Kernel result 或 cursor event。具体工作流为路由解析 Mission 后从 app.state 取得专用
+service/Kernel，不在 HTTP 边界写领域状态或运行模型。
 示例：`app.include_router(agent_loop_router)`。
 """
 
@@ -9,13 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract, LoopCreateRequest, LoopGrantMutationRequest, LoopInterventionRequest, PatrolDecisionIntent
+from backend.app.desktop.agent_loop.mission_contract import LegacyMissionAdapter, LoopMissionContract
 from backend.app.desktop.agent_loop.kernel import KernelRejected
 
 
@@ -29,9 +31,29 @@ class LoopControlRequest(BaseModel):
 
 class LoopOverrideRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    goal: str = Field(min_length=1)
-    task_contract: str = Field(min_length=1)
-    acceptance_criteria: list[dict[str, Any]] = Field(min_length=1)
+    mission: LoopMissionContract | None = None
+    goal: str | None = Field(default=None, min_length=1)
+    task_contract: str | None = Field(default=None, min_length=1)
+    acceptance_criteria: list[dict[str, Any]] | None = Field(default=None, min_length=1)
+
+    def resolved_mission(self) -> LoopMissionContract:
+        if self.mission is not None:
+            if any(value is not None for value in (self.goal, self.task_contract, self.acceptance_criteria)):
+                raise ValueError("mission 与旧覆盖字段不能同时提交")
+            return self.mission
+        if self.goal is None or self.task_contract is None or self.acceptance_criteria is None:
+            raise ValueError("必须提交 mission 或完整旧覆盖字段")
+        return LegacyMissionAdapter.convert(
+            goal=self.goal,
+            task_contract=self.task_contract,
+            acceptance_criteria=self.acceptance_criteria,
+        )
+
+
+class LoopMissionRevisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmation: Literal["activate"]
+    mission: LoopMissionContract
 
 
 class CompletionEvidenceRequest(BaseModel):
@@ -68,7 +90,20 @@ async def mutate_loop_grant(loop_id: str, body: LoopGrantMutationRequest, reques
 
 @agent_loop_router.post("/{loop_id}/override")
 async def override_loop(loop_id: str, body: LoopOverrideRequest, request: Request) -> dict:
-    return await request.app.state.agent_loop_service.override(loop_id, body.goal, body.task_contract, body.acceptance_criteria)
+    try:
+        mission = body.resolved_mission()
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return await request.app.state.agent_loop_service.override(loop_id, mission=mission)
+
+
+@agent_loop_router.post("/{loop_id}/missions")
+async def activate_loop_mission(
+    loop_id: str,
+    body: LoopMissionRevisionRequest,
+    request: Request,
+) -> dict:
+    return await request.app.state.agent_loop_service.override(loop_id, mission=body.mission)
 
 
 @agent_loop_router.post("/{loop_id}/interventions")

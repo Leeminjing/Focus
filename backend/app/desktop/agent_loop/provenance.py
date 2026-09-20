@@ -32,10 +32,14 @@ class DelegatedDirectiveFactory:
         grant_revision: int,
         goal_revision: int,
         idempotency_key: str,
+        origin_kind: str = "patrol",
+        correlation_id: str | None = None,
+        causation_event_id: str | None = None,
     ) -> tuple[LoopDirective, MessageProvenance]:
         message_id = uuid.uuid4().hex
+        directive_id = uuid.uuid4().hex
         directive = LoopDirective(
-            directive_id=uuid.uuid4().hex,
+            directive_id=directive_id,
             loop_id=loop_id,
             round_id=round_id,
             decision_id=decision_id,
@@ -46,6 +50,9 @@ class DelegatedDirectiveFactory:
             content=content,
             content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
             actor_id=actor_id,
+            origin_kind=origin_kind,
+            correlation_id=correlation_id or directive_id,
+            causation_event_id=causation_event_id,
             grant_id=grant_id,
             grant_revision=grant_revision,
             goal_revision=goal_revision,

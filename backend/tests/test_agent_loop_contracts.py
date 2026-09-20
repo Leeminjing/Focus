@@ -1,7 +1,7 @@
-r"""本文件验证 Agent Loop 的纯合同、用户介入、Patrol 选择性读取和预算边界。
+r"""本文件验证 Agent Loop 的纯合同、Mission 引用、用户介入、Patrol 选择性读取和预算边界。
 
 输入为 delegated directive、Patrol cognitive step、workspace adoption action 与 budget usage；输出为模型侧
-纯 HumanMessage、真实 OpenAI-compatible 请求、reads/decision 互斥校验、闭合 action 解析和硬预算裁决。
+纯 HumanMessage、真实 OpenAI-compatible 请求、按角色引用 Mission、reads/decision 互斥校验、闭合 action 解析和硬预算裁决。
 具体工作流为构造严格 schema，并在无网络的 ChatOpenAI invoke 边界截获 provider payload。示例：`pytest test_agent_loop_contracts.py`。
 """
 
@@ -20,6 +20,7 @@ from backend.app.desktop.agent_loop.round_orchestration import (
     PatrolCognitiveStep,
     PatrolDecisionProposal,
     PatrolReadRequest,
+    StructuredPatrolDecisionModel,
 )
 from backend.app.desktop.agent_loop.schemas import LoopBudgetContract, LoopInterventionRequest, PATROL_ACTION_ADAPTER
 from backend.app.desktop.agent_loop.fact_projection import LoopFactProjectionService
@@ -119,6 +120,7 @@ def test_patrol_cognitive_step_requires_reads_xor_decision() -> None:
     read = PatrolReadRequest(context_id="context-1", revision_id="revision-1")
     decision = PatrolDecisionProposal(
         rationale="The current Context is sufficient.",
+        mission_references=({"role": "outcome", "reference_id": "outcome"},),
         actions=(
             {
                 "action": "continue_context",
@@ -135,6 +137,30 @@ def test_patrol_cognitive_step_requires_reads_xor_decision() -> None:
         PatrolCognitiveStep()
     with pytest.raises(ValidationError):
         PatrolCognitiveStep(reads=(read,), decision=decision)
+
+
+def test_patrol_proposal_references_mission_by_semantic_role() -> None:
+    normal = PatrolDecisionProposal(
+        rationale="继续实现最终结果。",
+        mission_references=({"role": "boundary", "reference_id": "in_scope"},),
+        actions=({"action": "wait_for_user", "reason": "需要用户输入"},),
+    )
+    completion = PatrolDecisionProposal(
+        rationale="验证声明的完成检查。",
+        mission_references=({"role": "completion_check", "reference_id": "tests"},),
+        actions=({"action": "request_completion_verifier", "candidate_context_ids": ["context-1"]},),
+    )
+    observation = SimpleNamespace(mission={"completion_checks": [{"check_id": "tests"}]})
+
+    StructuredPatrolDecisionModel._validate_mission_references(normal, observation)
+    StructuredPatrolDecisionModel._validate_mission_references(completion, observation)
+    invalid = PatrolDecisionProposal(
+        rationale="引用了不存在的检查。",
+        mission_references=({"role": "completion_check", "reference_id": "invented"},),
+        actions=({"action": "request_completion_verifier", "candidate_context_ids": ["context-1"]},),
+    )
+    with pytest.raises(Exception, match="稳定 check_id"):
+        StructuredPatrolDecisionModel._validate_mission_references(invalid, observation)
 
 
 def test_workspace_adoption_is_a_closed_patrol_action() -> None:

@@ -1,8 +1,8 @@
 /*
  * 本文件对外提供 Agent Loop Electron 回归页的确定性本地 API。
- * 输入为真实 Desktop 页面发出的 Loop、Console、完整会话、事实、介入、压缩恢复与 workspace 请求；输出为
+ * 输入为真实 Desktop 页面发出的结构化 Mission、Loop、Console、完整会话、事实、介入、压缩恢复与 workspace 请求；输出为
  * 可变的长期 Loop 快照、Context Portfolio 和审计投影。具体工作流为复用 Context 测试 API，再拦截
- * Loop 领域路由，模拟阈值、候选、Kernel commit、自动 resume/新 revision，记录来源恢复与三类用户介入，而不访问网络或数据库；示例：在 BrowserWindow preload 中加载本文件。
+ * Loop 领域路由，模拟阈值、候选、Kernel commit、自动 resume/显式 Mission revision，记录来源恢复与三类用户介入，而不访问网络或数据库；示例：在 BrowserWindow preload 中加载本文件。
  */
 "use strict";
 
@@ -27,6 +27,7 @@ const loop = {
 };
 
 function runningSnapshot(body) {
+  const mission = body.mission;
   return {
     loop_id: body.loop_id,
     workspace_id: body.workspace_id,
@@ -39,10 +40,12 @@ function runningSnapshot(body) {
     goal_revision: 1,
     authority_revision: 1,
     current_round_id: "round-12",
+    mission,
+    active_mission_revision: 1,
     goal: {
-      goal: body.goal,
-      task_contract: body.task_contract,
-      acceptance_criteria: body.acceptance_criteria,
+      goal: mission.outcome,
+      task_contract: [...mission.boundaries.in_scope, ...mission.boundaries.required_invariants, ...mission.boundaries.prohibited_actions].join("\n"),
+      acceptance_criteria: mission.completion_checks.map(item => ({ criterion_id: item.check_id, text: item.claim, required: item.required })),
     },
     grant: { budgets: body.budgets, capabilities: body.capabilities, context_scope: body.context_scope, permission_scope: body.permission_scope, delegable_gates: body.delegable_gates, compression_policy: body.compression_policy, expires_at: null },
     usage: { rounds: 13, duration_seconds: 180, model_calls: 43, input_tokens: 14192, output_tokens: 2304, retries: 2, lanes: 4, contexts: 5, providers: 2 },
@@ -154,6 +157,51 @@ const factRows = [
   { fact_id: "fact-test", context_id: "child", kind: "test", status: "failed", title: "测试结果", summary: "12 passed · 2 failed · 1 skipped", metrics: { passed: 12, failed: 2, skipped: 1, count_status: "exact" }, evidence: { message_id: "test-tool", tool_name: "pytest" }, occurred_at: "2026-09-16T01:01:00Z" },
 ];
 
+function liveSnapshot() {
+  const envelope = (entityId, state, revision = 1) => ({ entity_id: entityId, revision, updated_sequence: 1, state });
+  const contexts = Object.fromEntries(consoleManifest.nodes.map(node => [node.context_id, envelope(node.context_id, {
+    title: node.title,
+    role: node.role,
+    status: node.status,
+    lane_id: node.lane_id,
+    current_revision_id: node.revision?.revision_id,
+  })]));
+  const runs = Object.fromEntries(audit.runs.map(run => [run.run_id, envelope(run.run_id, {
+    ...run,
+    tool_name: run.status === "running" ? "pytest" : "analysis",
+    workspace_changes: run.status === "running" ? 2 : 0,
+    input_tokens: run.status === "running" ? 4200 : 1800,
+    output_tokens: run.status === "running" ? 620 : 240,
+  })]));
+  const directives = Object.fromEntries(audit.directives.map(item => [item.directive_id, envelope(item.directive_id, {
+    ...item,
+    target_context_id: "child",
+    correlation_id: item.directive_id,
+  })]));
+  const facts = Object.fromEntries(factRows.map(item => [item.fact_id, envelope(item.fact_id, item)]));
+  const mission = loop.snapshot.mission;
+  return {
+    loop_id: loop.snapshot.loop_id,
+    last_sequence: 1,
+    loop: envelope(loop.snapshot.loop_id, loop.snapshot, loop.snapshot.authority_revision || 1),
+    mission: envelope(`mission-${loop.snapshot.goal_revision || 1}`, mission),
+    patrol_session: envelope("patrol-session-12", { state: "observing", phase: "collecting", safe_summary: "正在观察多个 Context 并汇总证据" }),
+    round: envelope("round-12", { round_id: "round-12", number: 13, state: "running" }),
+    contexts,
+    runs,
+    curators: {
+      "curator-testing": envelope("curator-testing", { lane_id: "testing", state: "analyzing", safe_summary: "正在检查测试证据" }),
+      "curator-architecture": envelope("curator-architecture", { lane_id: "architecture", state: "reading", safe_summary: "正在比较 Context 设计" }),
+    },
+    directives,
+    facts,
+    portfolio: envelope("portfolio-12", { generation: 12, status: "published" }),
+    activity_timeline: [{ event_id: "live-event-1", sequence: 1, kind: "patrol.directive.delivered", entity_type: "directive", entity_id: "directive-12", summary: "Patrol 指令已送达 Testing Context", occurred_at: "2026-09-16T01:01:00Z", correlation_id: "directive-12", causation_id: null, detail: { context_id: "child", directive_id: "directive-12", status: "launched" } }],
+    unknown_kinds: [],
+    diagnostics: { journal_last_sequence: 1, projector_last_sequence: 1, lag: 0, rebuilt: false, updated_at: "2026-09-16T01:01:00Z" },
+  };
+}
+
 window.__agentLoopTest = loop;
 window.fetch = async (input, options = {}) => {
   const url = new URL(String(input), "http://focus.test");
@@ -167,6 +215,15 @@ window.fetch = async (input, options = {}) => {
     return json(loop.snapshot);
   }
   if (/^\/desktop\/api\/agent-loops\/[^/]+$/.test(path)) return json(loop.snapshot);
+  if (/\/desktop\/api\/agent-loops\/[^/]+\/live$/.test(path)) return json(liveSnapshot());
+  if (/\/desktop\/api\/agent-loops\/[^/]+\/live\/stream$/.test(path)) {
+    const body = new ReadableStream({
+      start(controller) {
+        options.signal?.addEventListener("abort", () => controller.error(new DOMException("Aborted", "AbortError")), { once: true });
+      },
+    });
+    return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  }
   if (/\/desktop\/api\/agent-loops\/[^/]+\/console$/.test(path)) return json({ ...consoleManifest, loop_id: loop.snapshot?.loop_id || consoleManifest.loop_id, status: loop.snapshot?.status || "running", health: loop.snapshot?.health || "observing" });
   if (/\/desktop\/api\/agent-loops\/[^/]+\/contexts\/[^/]+\/conversation$/.test(path)) return json(conversation(decodeURIComponent(path.split("/").at(-2))));
   if (/\/desktop\/api\/agent-loops\/[^/]+\/facts$/.test(path)) {
@@ -196,10 +253,11 @@ window.fetch = async (input, options = {}) => {
     loop.snapshot = { ...loop.snapshot, status: command === "resume" ? "running" : command === "pause" ? "paused" : "stopped", health: command === "resume" ? "observing" : "idle" };
     return json(loop.snapshot);
   }
-  if (/\/desktop\/api\/agent-loops\/[^/]+\/override$/.test(path) && options.method === "POST") {
+  if (/\/desktop\/api\/agent-loops\/[^/]+\/(?:override|missions)$/.test(path) && options.method === "POST") {
     const body = JSON.parse(options.body);
     loop.overrides.push(body);
-    loop.snapshot = { ...loop.snapshot, status: "running", goal_revision: loop.snapshot.goal_revision + 1, authority_revision: loop.snapshot.authority_revision + 1, goal: body, health: "observing", waiting_reason: null };
+    const mission = body.mission || body;
+    loop.snapshot = { ...loop.snapshot, status: "running", goal_revision: loop.snapshot.goal_revision + 1, authority_revision: loop.snapshot.authority_revision + 1, mission, goal: { goal: mission.outcome, task_contract: "", acceptance_criteria: mission.completion_checks || [] }, health: "observing", waiting_reason: null };
     return json(loop.snapshot);
   }
   if (/\/desktop\/api\/agent-loops\/[^/]+\/grant$/.test(path) && options.method === "POST") {

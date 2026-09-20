@@ -1,8 +1,8 @@
-r"""本文件验证 Loop Control Console 的拓扑、完整会话、事实投影与用户介入闭环。
+r"""本文件验证 Loop Control Console 的拓扑、完整会话、事实投影与不改写 Mission 的用户介入闭环。
 
 输入为真实 PostgreSQL Loop、不可变 Context revision、模拟 checkpoint 和 Portfolio 用户意见；输出为
-轻量节点图、可分页 Human/Tool 会话、精确测试事实及 observation 中外置 user_intent 的断言。
-具体工作流为启动 Loop、读取三个 query service、提交 Portfolio 意见并冻结下一轮观察。
+轻量节点图、可分页 Human/Tool 会话、精确测试事实、Mission 恒等及 observation 中外置 user_intent 的断言。
+具体工作流为启动 Loop、读取三个 query service、提交临时 Portfolio 意见并冻结下一轮观察。
 示例：`pytest test_agent_loop_console.py`。
 """
 
@@ -26,7 +26,7 @@ from backend.app.desktop.agent_loop.console_query import LoopConsoleQueryService
 from backend.app.desktop.agent_loop.conversation_query import ContextConversationQueryService
 from backend.app.desktop.agent_loop.fact_projection import LoopFactProjectionService
 from backend.app.desktop.agent_loop.interventions import LoopInterventionService
-from backend.app.desktop.agent_loop.models import LoopUserIntent
+from backend.app.desktop.agent_loop.models import LoopInterventionTransition, LoopUserIntent
 from backend.app.desktop.agent_loop.round_orchestration import LoopObservationService
 from backend.app.desktop.agent_loop.schemas import LoopInterventionRequest
 from backend.app.desktop.context_evolution import (
@@ -231,12 +231,23 @@ def test_console_queries_and_portfolio_intent_reach_next_observation(tmp_path) -
                 ),
             )
             assert result["round_id"] != started["current_round_id"]
+            after_intent = await service.get(loop_id)
+            assert after_intent["goal_revision"] == started["goal_revision"]
+            assert after_intent["mission"] == started["mission"]
             observation = await LoopObservationService(sessions, checkpointer).capture(loop_id, result["round_id"])
+            assert observation.mission["outcome"] == "Verify the implementation"
+            assert observation.mission["boundaries"]["legacy_text"] == "Use evidence"
+            assert observation.mission["completion_checks"][0]["check_id"] == "tests"
+            assert observation.goal is None
             assert observation.user_intents[0]["scope"] == "portfolio"
             assert observation.user_intents[0]["content"] == "保留测试 Lane，暂停重复实现 Lane。"
             async with sessions() as session:
                 intent = await session.scalar(select(LoopUserIntent).where(LoopUserIntent.intent_id == result["intent_id"]))
+                lifecycle = tuple((await session.scalars(select(LoopInterventionTransition).where(LoopInterventionTransition.intent_id == intent.intent_id).order_by(LoopInterventionTransition.revision))).all())
                 assert intent.status == "observed"
+                assert intent.origin_kind == "user"
+                assert intent.delivery_state == "observed"
+                assert [item.to_state for item in lifecycle] == ["submitted", "accepted", "observed"]
                 assert intent.observed_round_id == result["round_id"]
         finally:
             await engine.dispose()

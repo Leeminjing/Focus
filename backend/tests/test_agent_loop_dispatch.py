@@ -14,6 +14,7 @@ import os
 from types import SimpleNamespace
 import uuid
 
+from langchain_core.messages import ToolMessage
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -30,7 +31,10 @@ from backend.app.desktop.agent_loop import (
     PatrolDecisionIntent,
 )
 from backend.app.desktop.agent_loop.models import LoopCoordinatorLease
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDirective, LoopRound, LoopWorkerRequest
+from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDirective, LoopDirectiveTransition, LoopRound, LoopWorkerRequest
+from backend.app.desktop.agent_loop.directive_causality import DirectiveCausalityQuery
+from backend.app.desktop.agent_loop.fact_projector import FactProjector
+from sqlalchemy import select
 from backend.app.desktop.context_evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
@@ -47,19 +51,25 @@ from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 
+class _CausalCheckpointer:
+    async def aget_tuple(self, config):
+        checkpoint_id = config["configurable"]["checkpoint_id"]
+        return SimpleNamespace(config={"configurable": {"checkpoint_id": checkpoint_id}}, checkpoint={"channel_values": {"messages": [ToolMessage(content="18 passed, 0 failed", tool_call_id="causal-test", name="pytest", id="causal-tool")] }}, metadata={})
+
+
 def test_runtime_runs_comprehensive_recovery_before_polling() -> None:
     class Coordinator:
         async def recover(self):
             raise AssertionError("comprehensive recovery must own startup reconciliation")
 
-        async def claim(self, _owner):
-            return None
+        async def running_loop_ids(self):
+            return ()
 
     class RunEvents:
         async def recover(self):
             raise AssertionError("comprehensive recovery must own outbox reconciliation")
 
-        async def drain(self, _consumer, _handler):
+        async def drain(self, _consumer, _handler, *, loop_id=None):
             return 0
 
     class Recovery:
@@ -199,6 +209,13 @@ def test_dispatch_claims_once_and_direct_user_uses_the_same_workspace_contract(t
             assert sorted((first, second), key=len) == [(), ("fake-run",)]
             assert len(calls) == 1
             assert calls[0][0] == committed.directive_ids[0]
+            async with sessions() as session:
+                delivered = await session.get(LoopDirective, committed.directive_ids[0])
+                delivery_history = tuple((await session.scalars(select(LoopDirectiveTransition).where(LoopDirectiveTransition.directive_id == delivered.directive_id).order_by(LoopDirectiveTransition.revision))).all())
+            assert delivered.lifecycle_state == "run_started"
+            assert [item.to_state for item in delivery_history] == ["proposed", "authorized", "delivering", "delivered", "run_started"]
+            assert await LoopWaveDispatcher(sessions, launch).dispatch(loop_id, round_row.round_id, 1) == ()
+            assert len(calls) == 1
 
             direct_run_id = uuid.uuid4().hex
             async with sessions.begin() as session:
@@ -233,6 +250,10 @@ def test_dispatch_claims_once_and_direct_user_uses_the_same_workspace_contract(t
                 assert body.context["workspace_lease"]["lease_id"] == lease.lease_id
                 assert callable(body.context["workspace_lease_guard"])
                 assert callable(body.context["workspace_lease_renew"])
+            async with sessions.begin() as session:
+                direct_run = await session.get(DesktopRun, direct_run_id, with_for_update=True)
+                direct_run.status = "success"
+                direct_run.settled_at = datetime.now(UTC)
 
             recovery_worker_id = uuid.uuid4().hex
             recovery_lease_id = uuid.uuid4().hex
@@ -286,6 +307,89 @@ def test_dispatch_claims_once_and_direct_user_uses_the_same_workspace_contract(t
                 assert recovered_worker.attempt == 2
                 assert recovered_usage.retries == 2
                 assert recovered_lease is None
+
+            causal_run_id = uuid.uuid4().hex
+            causal_revision_id = uuid.uuid4().hex
+
+            async def causal_launch(directive, _message, _slot_id):
+                async with sessions.begin() as session:
+                    active_round = await session.get(LoopRound, round_row.round_id, with_for_update=True)
+                    active_round.status = "running"
+                    causal_ref = ContextRevisionRef(context_id=context_id, revision_id=causal_revision_id, generation=2, execution_thread_id=f"thread-{suffix}", checkpoint_ns="", checkpoint_id=f"causal-checkpoint-{suffix}", payload_mode=ContextRevisionPayloadMode.CHECKPOINT)
+                    await ContextRevisionRepository().insert(session, ContextRevisionContract(ref=causal_ref, content_hash="b" * 64, projection_status=ContextRevisionProjectionStatus.VALID, origin_kind=ContextRevisionOriginKind.RUN_SETTLED, origin_id=causal_run_id, created_at=datetime.now(UTC)))
+                    session.add(
+                        DesktopRun(
+                            run_id=causal_run_id,
+                            task_id=context_id,
+                            agent_id=f"main:{context_id}",
+                            kind="main",
+                            status="success",
+                            origin="delegated_patrol",
+                            execution_thread_id=f"thread-{suffix}",
+                            context_revision_id=causal_revision_id,
+                            final_checkpoint_id=f"causal-checkpoint-{suffix}",
+                            directive_id=directive.directive_id,
+                            loop_id=loop_id,
+                            round_id=round_row.round_id,
+                            workspace_result={"revision": 2, "files_changed": 1},
+                            settled_at=datetime.now(UTC),
+                        )
+                    )
+                return causal_run_id
+
+            assert await LoopWaveDispatcher(sessions, causal_launch).dispatch(loop_id, round_row.round_id, 1) == (causal_run_id,)
+            event = SimpleNamespace(event_id=uuid.uuid4().hex, run_id=causal_run_id, payload={})
+            async with sessions.begin() as session:
+                await LoopCoordinator(sessions).handle_run_settled(event, session)
+            assert await FactProjector(sessions, _CausalCheckpointer()).project_loop(loop_id) >= 1
+            async with sessions() as session:
+                chain = await DirectiveCausalityQuery().read(session, committed.directive_ids[0])
+            assert [item["state"] for item in chain["transitions"]][-5:] == ["authorized", "delivering", "delivered", "run_started", "settled"]
+            assert {item["kind"] for item in chain["events"]} >= {
+                "directive.authorized",
+                "context.run.started",
+                "context.tool.completed",
+                "context.run.settled",
+                "context.workspace.changed",
+                "fact.upserted",
+            }
+            assert chain["runs"][-1]["run_id"] == causal_run_id
+
+            next_snapshot = await service.get(loop_id)
+            async with sessions() as session:
+                next_round = await session.get(LoopRound, next_snapshot["current_round_id"])
+            failing_intent = PatrolDecisionIntent(
+                decision_id=uuid.uuid4().hex,
+                idempotency_key=f"delivery-failure-{suffix}",
+                loop_id=loop_id,
+                loop_revision=next_snapshot["revision"],
+                round_id=next_round.round_id,
+                holder_id="patrol-1",
+                grant_id=next_snapshot["grant"]["grant_id"],
+                grant_revision=next_snapshot["authority_revision"],
+                goal_revision=next_snapshot["goal_revision"],
+                observed_frontier_hash=next_round.frontier_hash,
+                observed_workspace_revision=next_round.workspace_revision,
+                rationale="Attempt a delivery that will fail before Run start.",
+                actions=({"action": "continue_context", "context_id": context_id, "context_revision_id": revision_id, "message": "Continue."},),
+            )
+            failing = await LoopKernel(sessions).commit(failing_intent)
+            async with sessions.begin() as session:
+                directive = await session.get(LoopDirective, failing.directive_ids[0], with_for_update=True)
+                directive.max_attempts = 1
+
+            async def fail_launch(*_args):
+                raise LookupError("target disappeared before Run start")
+
+            with pytest.raises(LookupError):
+                await LoopWaveDispatcher(sessions, fail_launch).dispatch(loop_id, next_round.round_id, 1)
+            async with sessions() as session:
+                failed_directive = await session.get(LoopDirective, failing.directive_ids[0])
+                failed_history = tuple((await session.scalars(select(LoopDirectiveTransition).where(LoopDirectiveTransition.directive_id == failed_directive.directive_id).order_by(LoopDirectiveTransition.revision))).all())
+            assert failed_directive.status == "blocked"
+            assert failed_directive.lifecycle_state == "delivery_failed"
+            assert "target disappeared" in failed_directive.terminal_reason
+            assert failed_history[-1].to_state == "delivery_failed"
         finally:
             async with sessions() as session:
                 loop = await session.get(AgentLoop, loop_id)

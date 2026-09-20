@@ -264,7 +264,7 @@ async def start_main_run(task_id: str, body: MainRunCreate, request: Request) ->
             attached_material_ids=body.attached_material_ids,
             must_view_material_ids=body.must_view_material_ids,
             access_mode=body.access_mode,
-            run_identity={"message_id": message_id, "origin": "direct_user", "loop_id": loop_binding["loop_id"] if loop_binding else None, "round_id": loop_binding["round_id"] if loop_binding else None, "idempotency_key": f"direct-user:{message_id}"},
+            run_identity={"message_id": message_id, "origin": "direct_user", "loop_id": loop_binding["loop_id"] if loop_binding else None, "round_id": loop_binding["round_id"] if loop_binding else None, "user_intent_id": loop_binding["intent_id"] if loop_binding else None, "idempotency_key": f"direct-user:{message_id}"},
             execution_workspace_path=execution_workspace_path,
         )
         if loop_binding and loop_workspace:
@@ -274,6 +274,8 @@ async def start_main_run(task_id: str, body: MainRunCreate, request: Request) ->
                 body=prepared.body,
             )
         await _launch(request, prepared)
+        if loop_binding and loop_service:
+            await loop_service.bind_user_message_run(loop_binding["intent_id"], str(prepared.body.context["run_id"]))
     except Exception as exc:
         if prepared is not None:
             await request.app.state.desktop_service.run_lifecycle.abort_prepared(

@@ -1,6 +1,8 @@
 /*
- * 本文件以真实 Electron 复现 F20 隐蔽稳定性缺陷。输入为确定性 preload 和真实 DOM 事件，输出为
- * Composer 状态、对话框取消、Inspector roving focus、文件面板边界、未知视图回退及全局 DOM 守卫。
+ * 本文件对外提供 F20 桌面稳定性 Electron 验收入口。
+ * 输入为确定性 preload、真实 DOM 事件和紧凑窗口；输出为 Composer、取消、焦点、面板、失败摘要、安全载荷与全局 DOM 断言。
+ * 具体工作流为在隐藏 BrowserWindow 中依次驱动关键交互，并验证会话只呈现可读摘要而不挂载原始工具载荷。
+ * 示例：`.\\node_modules\\.bin\\electron.cmd f20-stability.e2e.cjs`。
  */
 "use strict";
 
@@ -157,18 +159,17 @@ async function run() {
     const events = [...conversation.querySelectorAll('.conversation-event')];
     const text = conversation.textContent;
     const rect = events[1]?.getBoundingClientRect();
-    events[1]?.querySelector('summary')?.click();
     return {
       count: events.length,
       hasFailure: text.includes('失败') && text.includes('路径不属于当前工作区'),
       hasLegacyRole: /YOU|你的指令|FOCUS|助手/.test(text),
-      hasDetails: Boolean(events[1]?.querySelector('pre')),
+      hasRawDetails: Boolean(events[1]?.querySelector('pre')),
       overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
       eventRight: rect?.right || 0,
       viewport: innerWidth,
     };
   })()`);
-  if (compactConversation.count !== 2 || !compactConversation.hasFailure || compactConversation.hasLegacyRole || !compactConversation.hasDetails || compactConversation.overflow > 1 || compactConversation.eventRight > compactConversation.viewport + 1) {
+  if (compactConversation.count !== 2 || !compactConversation.hasFailure || compactConversation.hasLegacyRole || compactConversation.hasRawDetails || compactConversation.overflow > 1 || compactConversation.eventRight > compactConversation.viewport + 1) {
     failures.push(`900×680@150% 紧凑会话事件失败：${JSON.stringify(compactConversation)}`);
   }
   win.webContents.setZoomFactor(1);

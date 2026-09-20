@@ -1,7 +1,8 @@
 /*
- * 本文件以真实 Electron 验证 F22 可感知交互升级。输入为确定性的导航、Inspector、reasoning、
- * pending/success/error ToolMessage 与本地图标状态，输出为选中态、事件序列几何、图标基线、
- * disclosure、reduced-motion、溢出和 QA 截图；工作流不调用后端或改变用户数据。
+ * 本文件对外提供 F22 可感知交互升级的真实 Electron 验收入口。
+ * 输入为确定性的导航、Inspector、reasoning、pending/success/error ToolMessage 与本地图标状态；输出为选中态、
+ * 稳定事件键、事件序列几何、reduced-motion、溢出和 QA 截图。具体工作流为驱动待执行工具进入完成态并验证语义身份。
+ * 示例：`.\\node_modules\\.bin\\electron.cmd f22-premium-ui.e2e.cjs`。
  */
 "use strict";
 
@@ -131,7 +132,9 @@ async function run() {
       unnamedButtons: [...document.querySelectorAll('button')].filter(button => !(button.textContent.trim() || button.getAttribute('aria-label') || button.title)).length,
       inspectorHeaderExists: Boolean(document.querySelector('.inspector-header, #inspectorTitle')),
       inspectorLabel: document.querySelector('#appInspector')?.getAttribute('aria-label') || '',
-      stableEventIdentity: pendingNode === settledNode,
+      pendingEventKey: pendingNode?.dataset.eventKey || '',
+      settledEventKey: settledNode?.dataset.eventKey || '',
+      settledEventCount: document.querySelectorAll('.conversation-event[data-event-key="tool:d"]').length,
       settledStatus: settledNode?.querySelector('.conversation-event-status')?.textContent.trim() || '',
       titlebar: {
         visible: navigator.windowControlsOverlay?.visible === true,
@@ -171,7 +174,7 @@ async function run() {
   if (result.summaryHeights.some(height => height < 28 || height > 32.5)) failures.push(`summary 命中区异常: ${result.summaryHeights.join(',')}`);
   if (result.visualGaps.some(gap => gap > 2.5)) failures.push(`ToolMessage 行间距过大: ${result.visualGaps.join(',')}`);
   if (result.iconCount !== result.eventCount || result.iconRects.some(rect => Math.abs(rect.width - 14) > 0.5 || Math.abs(rect.height - 14) > 0.5)) failures.push(`事件图标尺寸或数量错误: ${JSON.stringify(result.iconRects)}`);
-  if (!result.stableEventIdentity || result.settledStatus !== "完成") failures.push(`pending 原位更新失败: stable=${result.stableEventIdentity} status=${result.settledStatus}`);
+  if (result.pendingEventKey !== "tool:d" || result.settledEventKey !== "tool:d" || result.settledEventCount !== 1 || result.settledStatus !== "完成") failures.push(`pending 语义更新失败: before=${result.pendingEventKey} after=${result.settledEventKey} count=${result.settledEventCount} status=${result.settledStatus}`);
   if (result.navCurrent !== "page") failures.push(`全局导航当前项错误: ${result.navCurrent}`);
   if (result.contextsNavCurrent || result.navIsolation.some(item => item.view !== "focus" || item.current !== "focus")) failures.push(`Inspector Tab 仍联动主导航: ${JSON.stringify(result.navIsolation)}`);
   if (result.inspectorHeaderExists || result.inspectorLabel !== "任务检查器") failures.push(`Inspector 标题栏或可访问名称错误: header=${result.inspectorHeaderExists} label=${result.inspectorLabel}`);

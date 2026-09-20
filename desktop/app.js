@@ -1,8 +1,8 @@
 /*
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
  * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
- * 对话/Context/Agent/Commitment/压缩/插件与模块化 Agent Loop Portfolio 控制台、自主压缩授权/审计/来源恢复、终止 Loop 退出/后继 Loop 准备等视图；逐轮材料以有序 binding 草稿和独立图片必看
- * 集合表达，自定义分组是服务端事实，分组模式与折叠是任务 UI 偏好。工作流在任务切换时加载
+ * 对话/Context/Agent/Commitment/压缩/插件与模块化 Agent Loop Portfolio 控制台、结构化 Mission 编辑、自主压缩授权/审计/来源恢复、终止 Loop 退出/后继 Loop 准备等视图；逐轮材料以有序 binding 草稿和独立图片必看
+ * 集合表达，自定义分组是服务端事实，分组模式与折叠是任务 UI 偏好。具体工作流在任务切换时加载
  * 材料、历史和分组，用纯函数规范化选择/分组，再通过单一异步事件边界更新 DOM 和运行状态；
  * 任务详情刷新带请求身份守卫，迟到或跨 Context 的响应不得覆盖更新的会话状态；会话容器只有一个
  * 写者——DOM 写入侧：顶层重建先接管既有会话节点，随即统一经对账写入内容（写入侧分只读的"计划"与唯一
@@ -17,7 +17,8 @@
  * 合并为一次；快照帧在写入前先登记滚动基线（此时的高度与贴底判定才是写入前的状态），写入后由写入侧按
  * 阅读意图与阅读锚点决定跟随或回正；作曲区未发送内容的事实来源是按任务归属的草稿镜像
  * （`FocusComposerDraft`），输入事件即镜像、去抖落盘、页面隐藏与卸载流程各补一次落盘，因此任何界面重建
- * 与模式切换都不丢内容，也不依赖 `beforeunload`。
+ * 与模式切换都不丢内容，也不依赖 `beforeunload`；Agent Loop 的 snapshot、sequence reducer、断线重放和重同步
+ * 由独立 Live Store/Connection 负责，本文件只组合页面生命周期和控制请求。
  * 示例：renderFocus(activeTask()); await sendMain()。
  */
 "use strict";
@@ -162,7 +163,7 @@ const state = {
   accessReviews: { panel: null, payload: null, taskId: null, key: null, busy: false },
   plugins: { plugins: [], interfaces: {}, traces: [], filter: "all", selectedName: null },
   memory: { memories: [], selectedId: null, composing: false, draft: null, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], textSelection: "", textMessageId: null, textRange: null, editorRatio: 0.5, sourceRatio: 0.5, contentMode: "complete", segments: [], expandedGroups: [], mergeMode: false, selectedSourcesForMerge: [], sessionScrollTop: 0 },
-  loop: { loopId: null, loading: false, pollTimer: null, refreshTimer: null, streamAbort: null, streamLoopId: null, revisionSnapshot: null },
+  loop: { loopId: null, loading: false, revisionSnapshot: null },
   inspector: { open: window.innerWidth > 1100, tab: "context", returnFocus: null },
   filesPanel: null,   // f18:右侧文件面板当前打开的 material(relative_path 等)
   panelWidth: normalizePanelWidth(localStorage.getItem("focus-panel-width") || 400),
@@ -210,8 +211,11 @@ const materialGrouping = window.materialGrouping;
 const accessMode = window.FocusAccessMode;
 const composerDraft = window.FocusComposerDraft;
 const loopApi = window.FocusLoopApi?.create(runtime);
+const loopLiveSelectors = window.FocusLoopLiveSelectors;
+const loopLiveStore = window.FocusLoopLiveStore?.create();
 const loopStore = window.FocusLoopStore?.create();
 const loopView = window.FocusLoopView;
+const loopMissionEditor = window.FocusLoopMissionEditor;
 const loopConsoleView = window.FocusLoopConsoleView;
 const loopConsoleStore = window.FocusLoopConsoleStore?.create();
 const loopConsoleController = loopApi && loopConsoleStore && window.FocusLoopConsoleController
@@ -221,6 +225,19 @@ const loopConsoleController = loopApi && loopConsoleStore && window.FocusLoopCon
       onChange: () => { if (state.view === "loop") patchLoopConsole(); },
     })
   : null;
+const loopLiveConnection = loopApi && loopLiveStore && window.FocusLoopLiveConnection
+  ? window.FocusLoopLiveConnection.create({ api: loopApi, store: loopLiveStore })
+  : null;
+const loopLegacyConnection = loopApi && loopStore && window.FocusLoopLegacyConnection
+  ? window.FocusLoopLegacyConnection.create({ api: loopApi, loopStore, consoleController: loopConsoleController, onChange: scheduleLoopLifecyclePatch })
+  : null;
+const loopConnection = runtime.features?.liveLoopProjection === false ? loopLegacyConnection : loopLiveConnection;
+loopLiveStore?.subscribe(liveState => {
+  if (!liveState.projection) return;
+  loopStore?.projectLive(liveState.projection, liveState.connection);
+  loopConsoleStore?.projectLive(liveState.projection, loopLiveSelectors);
+  scheduleLoopLifecyclePatch();
+});
 let loopLifecycleFrame = null;
 const accessApproval = window.FocusAccessApproval;
 interfaceI18n.apply(document);
@@ -683,7 +700,7 @@ async function hydrateActive(taskId = state.activeTaskId) {
 }
 
 function render() {
-  if (state.view !== "loop") stopLoopStream();
+  if (state.view !== "loop") loopConnection?.stop();
   document.body.dataset.view = state.view;
   renderShellChrome();
   if (!state.tasks.length && state.view !== "map") {
@@ -750,11 +767,9 @@ async function openLoopView() {
     if (!state.loop.loopId) return;
     const snapshot = await loopApi.get(state.loop.loopId);
     loopStore.reconcile(snapshot);
-    loopStore.apply(await loopApi.events(state.loop.loopId, loopStore.get().cursor));
     loopStore.reconcileRelated(await loopApi.related(snapshot));
     await loopConsoleController?.load(state.loop.loopId);
-    startLoopStream();
-    scheduleLoopPoll();
+    void loopConnection?.start(state.loop.loopId);
   } catch (error) {
     loopStore.fail(error);
   } finally {
@@ -870,91 +885,17 @@ async function openLoopRevision(revisionId) {
   renderLoop();
 }
 
-function scheduleLoopPoll() {
-  clearTimeout(state.loop.pollTimer);
-  const loopId = state.loop.loopId;
-  state.loop.pollTimer = setTimeout(async () => {
-    if (state.view !== "loop" || !loopId || loopId !== state.loop.loopId) return;
-    try {
-      const snapshot = await loopApi.get(loopId);
-      loopStore.reconcile(snapshot);
-      loopStore.apply(await loopApi.events(loopId, loopStore.get().cursor));
-      loopStore.reconcileRelated(await loopApi.related(snapshot));
-      await loopConsoleController?.refresh();
-      renderLoop();
-    } catch (error) {
-      loopStore.fail(error);
-      renderLoop();
-    }
-    scheduleLoopPoll();
-  }, 15000);
-}
-
-function stopLoopStream() {
-  clearTimeout(state.loop.refreshTimer);
-  state.loop.refreshTimer = null;
-  state.loop.streamAbort?.abort();
-  state.loop.streamAbort = null;
-  state.loop.streamLoopId = null;
-}
-
-function startLoopStream() {
-  const loopId = state.loop.loopId;
-  if (!loopApi || !loopId || state.view !== "loop") return;
-  if (state.loop.streamLoopId === loopId && state.loop.streamAbort && !state.loop.streamAbort.signal.aborted) return;
-  stopLoopStream();
-  const controller = new AbortController();
-  state.loop.streamAbort = controller;
-  state.loop.streamLoopId = loopId;
-  void (async () => {
-    let retryDelay = 500;
-    while (!controller.signal.aborted && state.view === "loop" && state.loop.loopId === loopId) {
-      try {
-        await loopApi.stream(loopId, loopStore.get().cursor, events => {
-          loopStore.apply(events);
-          scheduleLoopLifecyclePatch();
-          scheduleLoopRefresh(loopId);
-        }, controller.signal);
-        retryDelay = 500;
-      } catch (error) {
-        if (controller.signal.aborted || error?.name === "AbortError") return;
-        loopStore.fail(error);
-        scheduleLoopLifecyclePatch();
-      }
-      await new Promise(resolve => setTimeout(resolve, retryDelay));
-      retryDelay = Math.min(retryDelay * 2, 5000);
-    }
-  })();
-}
-
-function scheduleLoopRefresh(loopId) {
-  clearTimeout(state.loop.refreshTimer);
-  state.loop.refreshTimer = setTimeout(async () => {
-    if (state.view !== "loop" || state.loop.loopId !== loopId) return;
-    try {
-      const snapshot = await loopApi.get(loopId);
-      loopStore.reconcile(snapshot);
-      loopStore.reconcileRelated(await loopApi.related(snapshot));
-      await loopConsoleController?.refresh();
-    } catch (error) {
-      loopStore.fail(error);
-    }
-    scheduleLoopLifecyclePatch();
-  }, 120);
-}
-
 async function exitAgentLoop(prepareNew = false) {
   const task = activeTask();
   const exitedLoopId = state.loop.loopId;
-  stopLoopStream();
-  clearTimeout(state.loop.pollTimer);
-  state.loop.pollTimer = null;
+  loopConnection?.stop();
   if (loopLifecycleFrame !== null) cancelAnimationFrame(loopLifecycleFrame);
   loopLifecycleFrame = null;
   if (task) localStorage.removeItem(`focus-agent-loop:${task.task_id}`);
   state.loop.loopId = null;
   state.loop.revisionSnapshot = null;
   loopStore?.load(null);
+  loopLiveStore?.reset();
   loopConsoleStore?.reset();
   if (task) {
     const cached = state.details.get(task.task_id);
@@ -983,8 +924,7 @@ async function startAgentLoop(form) {
   const task = activeTask();
   if (!task || !loopApi) return;
   const values = new FormData(form);
-  const criteria = String(values.get("criteria") || "").split(/\r?\n/).map(value => value.trim()).filter(Boolean);
-  if (!criteria.length) return setStatus("至少需要一条验收条件", true);
+  const mission = loopMissionEditor.read(form);
   const taskDetail = state.details.get(task.task_id);
   const initialRun = [taskDetail?.active_run, task.active_run, taskDetail?.latest_direct_user_run]
     .find(run => run?.run_id && !run.loop_id && (!run.origin || run.origin === "direct_user"));
@@ -1006,9 +946,7 @@ async function startAgentLoop(form) {
     initial_context_id: task.task_id,
     initial_run_id: initialRunId,
     holder_id: `patrol:${loopId}`,
-    goal: String(values.get("goal") || "").trim(),
-    task_contract: String(values.get("taskContract") || "").trim(),
-    acceptance_criteria: criteria.map((text, index) => ({ criterion_id: `criterion-${index + 1}`, text, required: true })),
+    mission,
     capabilities,
     context_scope: [task.task_id],
     permission_scope: permissions,
@@ -1017,7 +955,7 @@ async function startAgentLoop(form) {
       version: 1,
       allow_replace: true,
       allow_delete: false,
-      protected_anchors: ["task_contract", "acceptance_criteria", "latest_direct_user_message", "unconsumed_material", "active_tool_protocol", "system_safety"],
+      protected_anchors: ["mission", "task_contract", "acceptance_criteria", "latest_direct_user_message", "unconsumed_material", "active_tool_protocol", "system_safety"],
       max_source_messages: 64,
       max_source_tokens: 60000,
       max_attempts_per_gate: 3,
@@ -1042,8 +980,7 @@ async function startAgentLoop(form) {
     loopStore.reconcileRelated(await loopApi.related(snapshot));
     await loopConsoleController?.load(snapshot.loop_id);
     renderLoop();
-    startLoopStream();
-    scheduleLoopPoll();
+    void loopConnection?.start(snapshot.loop_id);
   } catch (error) {
     loopStore.fail(error);
     renderLoop();
@@ -1124,17 +1061,11 @@ async function controlLoop(command) {
 async function overrideAgentLoop(form) {
   const loopId = state.loop.loopId;
   if (!loopId || !loopApi) return;
-  const values = new FormData(form);
-  const criteria = String(values.get("criteria") || "").split(/\r?\n/).map(value => value.trim()).filter(Boolean);
-  if (!criteria.length) return setStatus("至少需要一条验收条件", true);
+  const mission = loopMissionEditor.read(form);
   loopStore.beginControl("override");
   renderLoop();
   try {
-    const snapshot = await loopApi.override(loopId, {
-      goal: String(values.get("goal") || "").trim(),
-      task_contract: String(values.get("taskContract") || "").trim(),
-      acceptance_criteria: criteria.map((text, index) => ({ criterion_id: `criterion-${index + 1}`, text, required: true })),
-    });
+    const snapshot = await loopApi.reviseMission(loopId, mission);
     loopStore.reconcile(snapshot);
     loopStore.reconcileRelated(await loopApi.related(snapshot));
   } catch (error) {
@@ -5932,6 +5863,7 @@ async function handleDocumentClick(event) {
   if (action === "show-contexts") return openInspector("context", button);
   if (action === "show-agents") return openInspector("agents", button);
   if (action === "show-loop") return openLoopView();
+  if (loopMissionEditor?.handleAction(button)) return;
   if (action === "loop-control") return controlLoop(button.dataset.loopControl);
   if (action === "loop-exit") return exitAgentLoop(false);
   if (action === "loop-prepare-new" || action === "loop-new-run") return exitAgentLoop(true);
@@ -6790,7 +6722,7 @@ document.addEventListener("focus:languagechange", () => {
 });
 
 window.addEventListener("beforeunload", () => {
-  stopLoopStream();
+  loopConnection?.stop();
   if (loopLifecycleFrame !== null) cancelAnimationFrame(loopLifecycleFrame);
   loopConsoleController?.destroy();
   materialContentLoader.releaseAll();

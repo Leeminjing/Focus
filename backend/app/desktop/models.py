@@ -254,6 +254,7 @@ class DesktopRun(Base):
     context_checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     origin_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     directive_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    user_intent_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     loop_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     round_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     action_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)

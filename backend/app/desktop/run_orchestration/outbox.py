@@ -1,6 +1,6 @@
 r"""本文件对外提供 RunOutboxRepository 与可重启 RunOutboxConsumer。
 
-输入为事务内 MainRunSettled 事实、consumer identity 和领域 handler；输出为稳定事件、领取结果与
+输入为事务内 MainRunSettled 事实、consumer identity、可选 Loop scope 和领域 handler；输出为稳定事件、领取结果与
 首次消费布尔值。具体工作流为 finalizer 同事务 enqueue，consumer 启动先释放遗留 claim，再直接
 扫描数据库并以 event row lock + delivery receipt 去重处理；进程内 wake 只降低延迟而不承载事实。
 示例：`count = await consumer.drain("loop-coordinator", handler)`。
@@ -17,6 +17,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.run_orchestration.models import RunOutboxDelivery, RunOutboxEvent
+from backend.app.desktop.models import DesktopRun
 
 
 RunEventHandler = Callable[[RunOutboxEvent, AsyncSession], Awaitable[None] | None]
@@ -48,14 +49,19 @@ class RunOutboxRepository:
         self,
         session: AsyncSession,
         consumer_id: str,
+        loop_id: str | None = None,
     ) -> RunOutboxEvent | None:
-        event = await session.scalar(
+        statement = (
             select(RunOutboxEvent)
+            .join(DesktopRun, DesktopRun.run_id == RunOutboxEvent.run_id)
             .where(or_(RunOutboxEvent.status == "pending", RunOutboxEvent.status == "error"))
             .order_by(RunOutboxEvent.created_at, RunOutboxEvent.event_id)
             .with_for_update(skip_locked=True)
             .limit(1)
         )
+        if loop_id is not None:
+            statement = statement.where(DesktopRun.loop_id == loop_id)
+        event = await session.scalar(statement)
         if event is None:
             return None
         event.status = "claimed"
@@ -139,11 +145,12 @@ class RunOutboxConsumer:
         handler: RunEventHandler,
         *,
         limit: int = 100,
+        loop_id: str | None = None,
     ) -> int:
         delivered = 0
         for _ in range(limit):
             async with self._sessions.begin() as session:
-                event = await self._repository.claim_next(session, consumer_id)
+                event = await self._repository.claim_next(session, consumer_id, loop_id)
                 if event is None:
                     break
                 event_id = event.event_id

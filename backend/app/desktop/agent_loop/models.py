@@ -1,9 +1,9 @@
-r"""本文件对外提供 Agent Loop、delegation、user intent、round、directive、completion 与 audit ORM 实体。
+r"""本文件对外提供 Agent Loop、delegation、fencing、round、directive、completion 与 audit ORM 实体。
 
 输入为用户目标、版本化授权（含自主压缩 policy）、Context/Workspace frontier、Patrol 判断和 Kernel 结果；输出为可恢复、
 可审计且具单 writer 约束的 Loop 状态。具体工作流为 goal/grant 定义权力，round/observation 冻结事实，
-decision/action 记录判断，user intent 保存用户对 Context 或 Portfolio 的外部控制意见，
-directive/provenance 驱动 Run，completion/outbox 收敛生命周期。
+decision/action 记录判断与异步发布尝试，user intent 保存用户对 Context 或 Portfolio 的外部控制意见，
+directive/provenance 以可见排队原因驱动 Run，fencing counter 拒绝旧 owner，completion/outbox 收敛生命周期。
 示例：`loop = AgentLoop(loop_id="l1", status="running", ...)`。
 """
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -55,6 +55,18 @@ class LoopCoordinatorLease(Base):
     owner_id: Mapped[str] = mapped_column(String(120), nullable=False)
     fencing_token: Mapped[str] = mapped_column(String(32), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LoopCoordinatorFence(Base):
+    __tablename__ = "loop_coordinator_fences"
+
+    round_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("loop_rounds.round_id", ondelete="CASCADE"), primary_key=True
+    )
+    fencing_token: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class LoopGoalRevision(Base):
@@ -131,11 +143,32 @@ class LoopUserIntent(Base):
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", server_default="pending")
+    delivery_state: Mapped[str] = mapped_column(String(24), nullable=False, default="submitted", server_default="submitted")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    origin_kind: Mapped[str] = mapped_column(String(24), nullable=False, default="user", server_default="user")
+    correlation_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    resulting_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    terminal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     goal_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     authority_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     observed_round_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     addressed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class LoopInterventionTransition(Base):
+    __tablename__ = "loop_intervention_transitions"
+    __table_args__ = (UniqueConstraint("intent_id", "revision", name="uq_loop_intervention_transition_revision"),)
+
+    transition_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    intent_id: Mapped[str] = mapped_column(String(32), ForeignKey("loop_user_intents.intent_id", ondelete="CASCADE"), nullable=False, index=True)
+    loop_id: Mapped[str] = mapped_column(String(32), ForeignKey("agent_loops.loop_id", ondelete="CASCADE"), nullable=False, index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    from_state: Mapped[str] = mapped_column(String(24), nullable=False)
+    to_state: Mapped[str] = mapped_column(String(24), nullable=False)
+    run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class LoopRound(Base):
@@ -165,6 +198,8 @@ class LoopObservation(Base):
     round_id: Mapped[str] = mapped_column(String(32), ForeignKey("loop_rounds.round_id", ondelete="CASCADE"), nullable=False, unique=True)
     envelope: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     envelope_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    projection_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    base_entity_revisions: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -200,6 +235,9 @@ class LoopDecision(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
     rejection: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    fencing_token: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    deferred_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    queued_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -237,9 +275,35 @@ class LoopDirective(Base):
     grant_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     goal_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="created", server_default="created")
+    lifecycle_state: Mapped[str] = mapped_column(String(24), nullable=False, default="proposed", server_default="proposed")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    origin_kind: Mapped[str] = mapped_column(String(24), nullable=False, default="patrol", server_default="patrol")
+    correlation_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    causation_event_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    terminal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     launched_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    queued_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3, server_default="3")
     idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LoopDirectiveTransition(Base):
+    __tablename__ = "loop_directive_transitions"
+    __table_args__ = (UniqueConstraint("directive_id", "revision", name="uq_loop_directive_transition_revision"),)
+
+    transition_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    directive_id: Mapped[str] = mapped_column(String(32), ForeignKey("loop_directives.directive_id", ondelete="CASCADE"), nullable=False, index=True)
+    loop_id: Mapped[str] = mapped_column(String(32), ForeignKey("agent_loops.loop_id", ondelete="CASCADE"), nullable=False, index=True)
+    round_id: Mapped[str] = mapped_column(String(32), ForeignKey("loop_rounds.round_id", ondelete="CASCADE"), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    from_state: Mapped[str] = mapped_column(String(24), nullable=False)
+    to_state: Mapped[str] = mapped_column(String(24), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    caused_by_event_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class MessageProvenance(Base):
@@ -281,6 +345,8 @@ class LoopWorkerRequest(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", server_default="pending")
     result: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3, server_default="3")
+    retry_identity: Mapped[str | None] = mapped_column(String(160), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

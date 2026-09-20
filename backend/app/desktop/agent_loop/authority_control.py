@@ -16,6 +16,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count
+from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
 from backend.app.desktop.agent_loop.models import (
     AgentLoop,
     LoopBudgetUsage,
@@ -38,6 +39,7 @@ class LoopAuthorityService:
     def __init__(self, sessions: async_sessionmaker[AsyncSession], run_manager=None) -> None:
         self._sessions = sessions
         self._run_manager = run_manager
+        self._directives = DirectiveLifecycleRepository()
 
     async def mutate(self, loop_id: str, request: LoopGrantMutationRequest) -> dict:
         async with self._sessions.begin() as session:
@@ -180,11 +182,10 @@ class LoopAuthorityService:
                     lease.released_at = datetime.now(UTC)
         return [run.run_id for run in runs]
 
-    @staticmethod
-    async def _supersede_uncommitted(session: AsyncSession, loop_id: str) -> None:
+    async def _supersede_uncommitted(self, session: AsyncSession, loop_id: str) -> None:
         await session.execute(update(LoopDecision).where(LoopDecision.loop_id == loop_id, LoopDecision.status.in_(["pending", "publishing", "adopting"])).values(status="superseded"))
-        await session.execute(update(LoopRound).where(LoopRound.loop_id == loop_id, LoopRound.status.in_(["observed", "ready", "waiting_workers", "publishing", "adopting"])).values(status="superseded"))
-        await session.execute(update(LoopDirective).where(LoopDirective.loop_id == loop_id, LoopDirective.status.in_(["created", "launching"])).values(status="cancelled"))
+        await session.execute(update(LoopRound).where(LoopRound.loop_id == loop_id, LoopRound.status.in_(["observed", "curated", "ready", "waiting_workers", "publishing", "adopting"])).values(status="superseded"))
+        await self._directives.cancel_active(session, loop_id, "authority_changed")
 
     @staticmethod
     async def _exhausted_budgets(session: AsyncSession, loop: AgentLoop, budgets: dict) -> tuple[str, ...]:

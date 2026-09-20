@@ -3,7 +3,7 @@ r"""本文件对外提供 LoopPortfolioPublicationService 与 LoopPortfolioAutho
 输入为 Kernel 已授权的 Loop decision、结构化 Lane plan、精确多来源 evidence 和冻结控制版本；输出为
 原子发布的 Portfolio revision、Loop membership 与 delegated directives。具体工作流为预登记稳定 Lane，
 调用统一 compiler 生成候选，在 shadow checkpoint 准备全部 Context revision，再由 authority hook 在
-AtomicPortfolioPublisher 的同一事务内重验 Loop/grant/workspace 并提交所有 Loop 侧指针和指令。
+AtomicPortfolioPublisher 的同一事务内重验 Loop/grant/workspace，并提交所有 Loop 侧指针、指令与 `portfolio.published` 规范事件。
 示例：`result = await service.publish(decision_id)`。
 """
 
@@ -26,6 +26,8 @@ from backend.app.desktop.agent_loop.models import (
     LoopRound,
 )
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
+from backend.app.desktop.agent_loop.ownership import LoopFencingGuard
+from backend.app.desktop.agent_loop.portfolio_events import PortfolioPublicationEventRecorder
 from backend.app.desktop.agent_loop.schemas import PATROL_ACTION_ADAPTER
 from backend.app.desktop.context_curation import (
     AtomicPortfolioPublisher,
@@ -85,8 +87,10 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
         controls: PortfolioControlRevisions,
     ) -> None:
         decision = await session.get(LoopDecision, self._decision_id, with_for_update=True)
-        if decision is None or decision.status != "publishing":
+        if decision is None or decision.status not in {"publishing", "publishing_run"}:
             raise PortfolioSuperseded("Loop decision 已失效")
+        if decision.fencing_token:
+            await LoopFencingGuard().validate_current(session, decision.round_id, decision.fencing_token)
         loop = await session.get(AgentLoop, decision.loop_id, with_for_update=True)
         round_row = await session.get(LoopRound, decision.round_id, with_for_update=True)
         if loop is None or round_row is None or round_row.decision_id != decision.decision_id:
@@ -159,6 +163,15 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
             "LoopDecisionCommitted",
             {"decision_id": decision.decision_id, "round_id": round_row.round_id, "portfolio_revision_id": portfolio.portfolio_revision_id},
             f"decision:{decision.decision_id}",
+        )
+        await PortfolioPublicationEventRecorder().record(
+            session,
+            loop_id=loop.loop_id,
+            portfolio_id=portfolio.portfolio_revision_id,
+            generation=portfolio.generation,
+            round_id=round_row.round_id,
+            decision_id=decision.decision_id,
+            directive_ids=tuple(self.directive_ids),
         )
 
     @staticmethod
@@ -322,7 +335,7 @@ class LoopPortfolioPublicationService:
     async def _build(self, decision_id: str):
         async with self._sessions.begin() as session:
             decision = await session.get(LoopDecision, decision_id, with_for_update=True)
-            if decision is None or decision.status != "publishing":
+            if decision is None or decision.status not in {"publishing", "publishing_run"}:
                 raise PortfolioSuperseded("Loop decision 不处于 publishing")
             loop = await session.get(AgentLoop, decision.loop_id, with_for_update=True)
             round_row = await session.get(LoopRound, decision.round_id, with_for_update=True)

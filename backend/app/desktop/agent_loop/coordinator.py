@@ -1,10 +1,10 @@
-r"""本文件对外提供 LoopCoordinator、CoordinatorClaim 与 LoopCoordinatorRuntime。
+r"""本文件对外提供 LoopCoordinator、CoordinatorClaim 与基于 per-Loop 独立组件监督的 LoopCoordinatorRuntime。
 
 输入为数据库中的 running Loop、可领取 round、租约事实、Worker/Run/outbox 事实、稳定 compression gate 和
 coordinator identity；输出为带 lease 的唯一 round claim、停滞 round 的收敛结果与恢复计数。具体工作流为
 skip-locked 领取**未被有效租约持有**的候选 round（过期租约即时清除）、fencing stale attempt、由数据库
 状态推进 health；运行期在领取前先收敛已无进展的 round 并释放其名额，Runtime 启动时执行完整
-AgentLoopRecovery，随后消费持久 outbox 并通过 Coordinator 原子派发 ready wave，进程内 wake 只缩短延迟。
+AgentLoopRecovery，随后由 registry 为每个 running Loop 建立独立 Supervisor，分别消费 Run、Worker、publication、Context Run、Fact 与 round。
 示例：`runtime = LoopCoordinatorRuntime(...)`。
 """
 
@@ -16,14 +16,21 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
-import logging
 import uuid
 from typing import Protocol
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopAction, LoopBudgetUsage, LoopContextMembership, LoopCoordinatorLease, LoopDirective, LoopEventOutbox, LoopRound, LoopWorkerRequest, MessageProvenance
+from backend.app.desktop.agent_loop.models import AgentLoop, LoopAction, LoopBudgetUsage, LoopContextMembership, LoopCoordinatorFence, LoopCoordinatorLease, LoopDirective, LoopEventOutbox, LoopPatrolAttempt, LoopRound, LoopUserIntent, LoopWorkerRequest, MessageProvenance
+from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
+from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
+from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
+from backend.app.desktop.agent_loop.directive_causality import DirectiveCausalityRecorder
+from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
+from backend.app.desktop.agent_loop.patrol_session_models import LoopPatrolSession
+from backend.app.desktop.agent_loop.patrol_session_repository import PatrolSessionRepository
+from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, PatrolPhase
 from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count, no_progress_fingerprint
 from backend.app.desktop.agent_loop.rounds import CLAIMABLE_ROUND_STATUSES, RoundStallLimits, terminate_round, terminate_stalled_rounds
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
@@ -32,9 +39,8 @@ from backend.app.desktop.models import DesktopRun, DesktopThread
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
 from backend.app.desktop.run_orchestration import RunOutboxConsumer
 from backend.app.desktop.agent_loop.dispatch import LoopWaveDispatcher
-
-
-logger = logging.getLogger(__name__)
+from backend.app.desktop.agent_loop.supervisor import LoopSupervisor, SupervisorComponent
+from backend.app.desktop.agent_loop.supervisor_registry import LoopSupervisorRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +77,11 @@ class RoundMaintenancePort(Protocol):
     async def maintain_rounds(self) -> tuple[str, ...]: ...
 
 
+class SupervisedQueuePort(Protocol):
+    async def drain(self) -> int: ...
+    async def close(self) -> None: ...
+
+
 class LoopCoordinator:
     def __init__(
         self,
@@ -85,16 +96,23 @@ class LoopCoordinator:
         self._compression_gates = compression_gates
         self._compression_resolutions = compression_resolutions
         self._stall_limits = stall_limits or RoundStallLimits()
+        self._patrol_sessions = PatrolSessionRepository()
+        self._directive_lifecycle = DirectiveLifecycleRepository()
+        self._interventions = InterventionLifecycleRepository()
+        self._directive_causality = DirectiveCausalityRecorder()
 
     @property
     def stall_limits(self) -> RoundStallLimits:
         """恢复路径复用同一套无进展界限，避免运行期与启动期判定分叉。"""
         return self._stall_limits
 
+    @property
+    def renewal_interval(self) -> float:
+        return max(0.1, self._ttl / 3)
+
     @staticmethod
-    def _candidate_statement(now: datetime):
-        """可领取候选：loop 仍 running、round 未终结且未被有效租约持有，按轮起点 FIFO。"""
-        return (
+    def _candidate_statement(now: datetime, loop_id: str | None = None):
+        statement = (
             select(LoopRound)
             .join(AgentLoop, AgentLoop.loop_id == LoopRound.loop_id)
             .outerjoin(LoopCoordinatorLease, LoopCoordinatorLease.round_id == LoopRound.round_id)
@@ -107,28 +125,81 @@ class LoopCoordinator:
             .with_for_update(of=LoopRound, skip_locked=True)
             .limit(1)
         )
+        return statement if loop_id is None else statement.where(LoopRound.loop_id == loop_id)
 
     async def claim(self, owner_id: str) -> CoordinatorClaim | None:
+        return await self._claim(owner_id, None)
+
+    async def claim_for_loop(self, loop_id: str, owner_id: str) -> CoordinatorClaim | None:
+        return await self._claim(owner_id, loop_id)
+
+    async def running_loop_ids(self) -> tuple[str, ...]:
+        async with self._sessions() as session:
+            return tuple((await session.scalars(select(AgentLoop.loop_id).where(AgentLoop.status == "running").order_by(AgentLoop.loop_id))).all())
+
+    async def _claim(self, owner_id: str, loop_id: str | None) -> CoordinatorClaim | None:
         now = datetime.now(UTC)
         async with self._sessions.begin() as session:
             await session.execute(delete(LoopCoordinatorLease).where(LoopCoordinatorLease.expires_at <= now))
-            round_row = await session.scalar(self._candidate_statement(now))
+            round_row = await session.scalar(self._candidate_statement(now, loop_id))
             if round_row is None:
                 return None
             lease = await session.scalar(select(LoopCoordinatorLease).where(LoopCoordinatorLease.round_id == round_row.round_id).with_for_update())
             if lease is not None and lease.expires_at > now:
                 return None
+            fence = await session.get(LoopCoordinatorFence, round_row.round_id, with_for_update=True)
+            if fence is None:
+                fence = LoopCoordinatorFence(round_id=round_row.round_id, fencing_token=1)
+                session.add(fence)
+            else:
+                fence.fencing_token += 1
+            token = str(fence.fencing_token)
             if lease is None:
-                lease = LoopCoordinatorLease(lease_id=uuid.uuid4().hex, round_id=round_row.round_id, owner_id=owner_id, fencing_token=uuid.uuid4().hex, expires_at=now + timedelta(seconds=self._ttl))
+                lease = LoopCoordinatorLease(lease_id=uuid.uuid4().hex, round_id=round_row.round_id, owner_id=owner_id, fencing_token=token, expires_at=now + timedelta(seconds=self._ttl))
                 session.add(lease)
             else:
                 lease.owner_id = owner_id
-                lease.fencing_token = uuid.uuid4().hex
+                lease.fencing_token = token
                 lease.expires_at = now + timedelta(seconds=self._ttl)
             loop = await session.get(AgentLoop, round_row.loop_id)
             if loop is not None:
                 loop.health = "deciding" if round_row.status == "observed" else loop.health
             return CoordinatorClaim(lease.lease_id, round_row.loop_id, round_row.round_id, lease.fencing_token)
+
+    async def ownership_lost(self, claim: CoordinatorClaim, reason: str = "lease_renewal_failed") -> None:
+        async with self._sessions.begin() as session:
+            fence = await session.get(LoopCoordinatorFence, claim.round_id, with_for_update=True)
+            token = int(claim.fencing_token) if claim.fencing_token.isdecimal() else 0
+            terminal = "superseded" if fence is not None and fence.fencing_token > token else "interrupted"
+            attempts = list(
+                (
+                    await session.scalars(
+                        select(LoopPatrolAttempt)
+                        .where(
+                            LoopPatrolAttempt.round_id == claim.round_id,
+                            LoopPatrolAttempt.status.in_(("pending", "running")),
+                        )
+                        .with_for_update()
+                    )
+                ).all()
+            )
+            now = datetime.now(UTC)
+            for attempt in attempts:
+                attempt.status = terminal
+                attempt.error = reason
+                attempt.completed_at = now
+            await LoopEventJournal().append(
+                session,
+                claim.loop_id,
+                CanonicalEventDraft(
+                    kind=f"patrol.session.{terminal}",
+                    entity_type="patrol_session",
+                    entity_id=attempts[-1].patrol_attempt_id if attempts else claim.round_id,
+                    entity_revision=max(1, attempts[-1].attempt if attempts else token),
+                    payload={"status": terminal, "reason": reason, "round_id": claim.round_id},
+                    idempotency_key=f"ownership-lost:{claim.round_id}:{claim.fencing_token}",
+                ),
+            )
 
     async def maintain_rounds(self) -> tuple[str, ...]:
         """运行期看门狗：收敛已无进展的 round 并释放其名额，使后续候选在同一轮内可被领取。"""
@@ -155,6 +226,15 @@ class LoopCoordinator:
             await session.delete(lease)
             return True
 
+    async def renew(self, claim: CoordinatorClaim) -> bool:
+        now = datetime.now(UTC)
+        async with self._sessions.begin() as session:
+            lease = await session.scalar(select(LoopCoordinatorLease).where(LoopCoordinatorLease.lease_id == claim.lease_id).with_for_update())
+            if lease is None or lease.fencing_token != claim.fencing_token or lease.expires_at <= now:
+                return False
+            lease.expires_at = now + timedelta(seconds=self._ttl)
+            return True
+
     async def recover(self) -> int:
         now = datetime.now(UTC)
         async with self._sessions.begin() as session:
@@ -164,8 +244,7 @@ class LoopCoordinator:
             await self._recover_launching_directives(session)
             return len(rows)
 
-    @staticmethod
-    async def _recover_launching_directives(session: AsyncSession) -> int:
+    async def _recover_launching_directives(self, session: AsyncSession) -> int:
         directives = list(
             (
                 await session.scalars(
@@ -186,16 +265,24 @@ class LoopCoordinator:
             )
             if run is None:
                 directive.status = "created"
+                await self._directive_lifecycle.transition(session, directive.directive_id, "authorized", reason="process_restarted")
                 retries_by_loop[directive.loop_id] = retries_by_loop.get(directive.loop_id, 0) + 1
                 continue
             reconciliation = (run.workspace_result or {}).get("reconciliation") or {}
             if run.status == "interrupted" and reconciliation.get("retry_safe") is True:
                 directive.status = "created"
                 directive.launched_run_id = None
+                await self._directive_lifecycle.transition(session, directive.directive_id, "authorized", reason="retry_safe_recovery")
                 retries_by_loop[directive.loop_id] = retries_by_loop.get(directive.loop_id, 0) + 1
                 continue
             directive.status = "launched" if run.status in {"pending", "running", "success"} else "blocked"
             directive.launched_run_id = run.run_id
+            if directive.lifecycle_state == "delivering":
+                if directive.status == "launched":
+                    await self._directive_lifecycle.transition(session, directive.directive_id, "delivered", run_id=run.run_id, reason="recovered_delivery")
+                    await self._directive_lifecycle.transition(session, directive.directive_id, "run_started", run_id=run.run_id, reason="recovered_run")
+                else:
+                    await self._directive_lifecycle.transition(session, directive.directive_id, "delivery_failed", run_id=run.run_id, reason=run.error or "recovered_failed_run")
         for loop_id, retries in retries_by_loop.items():
             usage = await session.get(LoopBudgetUsage, loop_id, with_for_update=True)
             if usage is not None:
@@ -247,8 +334,17 @@ class LoopCoordinator:
             loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True)
             if current is None or loop is None or current.status != "ready":
                 return None
-            current.status = "running" if run_ids else "error"
-            loop.health = "waiting_runs" if run_ids else "degraded"
+            queued = int(
+                await session.scalar(
+                    select(func.count()).select_from(LoopDirective).where(
+                        LoopDirective.round_id == claim.round_id,
+                        LoopDirective.status == "created",
+                    )
+                )
+                or 0
+            )
+            current.status = "running" if run_ids else "ready" if queued else "error"
+            loop.health = "waiting_runs" if run_ids else "dispatching" if queued else "degraded"
         return run_ids
 
     async def _context_count(self, loop_id: str) -> int:
@@ -266,6 +362,16 @@ class LoopCoordinator:
         run = await session.get(DesktopRun, event.run_id)
         if run is None or run.loop_id is None or run.round_id is None:
             return
+        if run.user_intent_id:
+            intent = await session.get(LoopUserIntent, run.user_intent_id, with_for_update=True)
+            if intent is not None and intent.delivery_state == "run_started":
+                await self._interventions.transition(
+                    session,
+                    intent.intent_id,
+                    "settled" if run.status == "success" else "failed",
+                    run_id=run.run_id,
+                    reason=run.error,
+                )
         revision_id = ((event.payload or {}).get("context_revision") or {}).get("revision_id")
         if revision_id and run.origin_message_id:
             provenance = await session.scalar(select(MessageProvenance).where(MessageProvenance.message_id == run.origin_message_id).with_for_update())
@@ -275,6 +381,18 @@ class LoopCoordinator:
         loop = await session.get(AgentLoop, run.loop_id, with_for_update=True)
         if round_row is None or loop is None or loop.status != "running":
             return
+        if run.directive_id:
+            directive = await session.get(LoopDirective, run.directive_id, with_for_update=True)
+            if directive is not None and directive.lifecycle_state == "run_started":
+                await self._directive_lifecycle.transition(
+                    session,
+                    directive.directive_id,
+                    "settled" if run.status == "success" else "failed",
+                    run_id=run.run_id,
+                    reason=run.error,
+                    caused_by_event_id=getattr(event, "event_id", None),
+                )
+                await self._directive_causality.run_settled(session, directive, run, getattr(event, "event_id", None))
         resolution_state = None
         if self._compression_resolutions is not None:
             resolution_state = await self._compression_resolutions.settle_run(session, event, run, loop)
@@ -303,6 +421,7 @@ class LoopCoordinator:
         if projected_gate is not None and not projected_gate.delegable:
             round_row.status = "settled"
             round_row.settled_at = datetime.now(UTC)
+            await self._complete_patrol_session(session, round_row.round_id, run.run_id)
             return
         queued = await session.scalar(select(func.count()).select_from(LoopDirective).where(LoopDirective.round_id == run.round_id, LoopDirective.status == "created"))
         if queued:
@@ -313,6 +432,7 @@ class LoopCoordinator:
             return
         round_row.status = "settled"
         round_row.settled_at = datetime.now(UTC)
+        await self._complete_patrol_session(session, round_row.round_id, run.run_id)
         number = int(await session.scalar(select(func.max(LoopRound.number)).where(LoopRound.loop_id == loop.loop_id)) or 0) + 1
         frontier_hash = await self._current_frontier_hash(session, loop.loop_id)
         slot = await session.scalar(select(WorkspaceSlot).where(WorkspaceSlot.workspace_id == loop.workspace_id, WorkspaceSlot.kind == "authoritative", WorkspaceSlot.lifecycle != "deleted"))
@@ -340,6 +460,22 @@ class LoopCoordinator:
         sequence = int(await session.scalar(select(func.coalesce(func.max(LoopEventOutbox.sequence), 0)).where(LoopEventOutbox.loop_id == loop.loop_id)) or 0) + 1
         session.add(LoopEventOutbox(event_id=uuid.uuid4().hex, loop_id=loop.loop_id, sequence=sequence, event_type="RoundObserved", payload={"round_id": next_round.round_id, "settled_run_id": run.run_id}, idempotency_key=f"run-settled:{run.run_id}"))
 
+    async def _complete_patrol_session(self, session: AsyncSession, round_id: str, run_id: str) -> None:
+        patrol = await session.scalar(
+            select(LoopPatrolSession)
+            .where(LoopPatrolSession.round_id == round_id, LoopPatrolSession.status == "active")
+            .with_for_update()
+        )
+        if patrol is None:
+            return
+        await self._patrol_sessions.transition(
+            session,
+            patrol.session_id,
+            PatrolPhase.COMPLETED,
+            PatrolActivity(summary="Context Run 证据已返回，本轮 Patrol 等待结束"),
+            terminal_outcome={"status": "completed", "evidence_run_id": run_id},
+        )
+
     @staticmethod
     async def _current_frontier_hash(session: AsyncSession, loop_id: str) -> str:
         memberships = list((await session.scalars(select(LoopContextMembership).where(LoopContextMembership.loop_id == loop_id, LoopContextMembership.status == "active").order_by(LoopContextMembership.membership_id))).all())
@@ -352,7 +488,22 @@ class LoopCoordinator:
 
 
 class LoopCoordinatorRuntime:
-    def __init__(self, coordinator: LoopCoordinator, run_events: RunOutboxConsumer, dispatcher: LoopWaveDispatcher | None = None, orchestrator: RoundOrchestratorPort | None = None, workers: WorkerRuntimePort | None = None, recovery: RecoveryPort | None = None, compression_resolutions: CompressionResolutionPort | None = None, poll_seconds: float = 1.0, maintenance: RoundMaintenancePort | None = None) -> None:
+    def __init__(
+        self,
+        coordinator: LoopCoordinator,
+        run_events: RunOutboxConsumer,
+        dispatcher: LoopWaveDispatcher | None = None,
+        orchestrator: RoundOrchestratorPort | None = None,
+        workers: WorkerRuntimePort | None = None,
+        recovery: RecoveryPort | None = None,
+        compression_resolutions: CompressionResolutionPort | None = None,
+        poll_seconds: float = 1.0,
+        maintenance: RoundMaintenancePort | None = None,
+        max_concurrent_loops: int = 4,
+        portfolio_publications: SupervisedQueuePort | None = None,
+        context_runs: SupervisedQueuePort | None = None,
+        fact_projector: SupervisedQueuePort | None = None,
+    ) -> None:
         self._coordinator = coordinator
         self._run_events = run_events
         self._dispatcher = dispatcher
@@ -361,12 +512,21 @@ class LoopCoordinatorRuntime:
         self._recovery = recovery
         self._compression_resolutions = compression_resolutions
         self._maintenance = maintenance
+        self._portfolio_publications = portfolio_publications
+        self._context_runs = context_runs
+        self._fact_projector = fact_projector
         self._poll_seconds = poll_seconds
-        self._task: asyncio.Task | None = None
-        self._stop = asyncio.Event()
+        self._max_concurrent_loops = max(1, max_concurrent_loops)
+        self._supervisor: LoopSupervisor | None = None
+        self._registry = LoopSupervisorRegistry(self._components_for_loop)
+        self._round_slots = asyncio.Semaphore(self._max_concurrent_loops)
+
+    @property
+    def supervised_loop_ids(self) -> tuple[str, ...]:
+        return self._registry.loop_ids
 
     async def start(self) -> None:
-        if self._task is not None:
+        if self._supervisor is not None:
             return
         if self._recovery is not None:
             await self._recovery.reconcile()
@@ -375,45 +535,102 @@ class LoopCoordinatorRuntime:
             await self._coordinator.recover()
         if self._compression_resolutions is not None:
             await self._compression_resolutions.reconcile()
-        self._stop.clear()
-        self._task = asyncio.create_task(self._run())
+        if self._portfolio_publications is not None:
+            recover = getattr(self._portfolio_publications, "recover", None)
+            if recover is not None:
+                await recover()
+        if self._fact_projector is not None:
+            reconcile = getattr(self._fact_projector, "reconcile", None)
+            if reconcile is not None:
+                await reconcile()
+        await self._reconcile_supervisors()
+        components = [SupervisorComponent("loop_registry", self._reconcile_supervisors, self._poll_seconds)]
+        if self._compression_resolutions is not None:
+            components.append(SupervisorComponent("compression_resolutions", self._compression_resolutions.drain, self._poll_seconds))
+        if self._maintenance is not None:
+            components.append(SupervisorComponent("maintenance", self._maintenance.maintain_rounds, self._poll_seconds))
+        self._supervisor = LoopSupervisor("agent-loop-admission", components)
+        await self._supervisor.start()
 
     async def close(self) -> None:
-        self._stop.set()
-        if self._task is not None:
-            await self._task
-            self._task = None
+        if self._supervisor is not None:
+            await self._supervisor.close()
+            self._supervisor = None
+        await self._registry.close()
+        for component in (self._workers, self._portfolio_publications, self._context_runs, self._fact_projector):
+            close = getattr(component, "close", None)
+            if close is not None:
+                await close()
 
-    async def _run(self) -> None:
-        while not self._stop.is_set():
-            try:
-                await self._run_events.drain(
-                    "agent-loop-coordinator", self._coordinator.handle_run_settled
-                )
-                if self._compression_resolutions is not None:
-                    await self._compression_resolutions.drain()
-                if self._workers is not None:
-                    await self._workers.drain()
-                if self._maintenance is not None:
-                    await self._maintenance.maintain_rounds()
-                await self._process_round()
-            except Exception:
-                logger.exception("Agent Loop coordinator 消费 Run 事件失败")
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self._poll_seconds)
-            except TimeoutError:
-                pass
+    def _components_for_loop(self, loop_id: str) -> tuple[SupervisorComponent, ...]:
+        components = [
+            SupervisorComponent("run_events", lambda: self._drain_run_events(loop_id), self._poll_seconds),
+            SupervisorComponent("rounds", lambda: self._process_round(loop_id), self._poll_seconds),
+        ]
+        if self._workers is not None:
+            components.append(SupervisorComponent("workers", lambda: self._workers.drain(loop_id), self._poll_seconds))
+        if self._portfolio_publications is not None:
+            components.append(SupervisorComponent("portfolio_publications", lambda: self._portfolio_publications.drain(loop_id), self._poll_seconds))
+        if self._context_runs is not None:
+            components.append(SupervisorComponent("context_runs", lambda: self._context_runs.drain(loop_id), self._poll_seconds))
+        if self._fact_projector is not None:
+            components.append(SupervisorComponent("fact_projector", lambda: self._fact_projector.project_loop(loop_id), self._poll_seconds))
+        return tuple(components)
 
-    async def _process_round(self) -> None:
-        claim = await self._coordinator.claim("agent-loop-coordinator")
-        if claim is None:
-            return
+    async def _reconcile_supervisors(self) -> tuple[str, ...]:
+        return await self._registry.reconcile(await self._coordinator.running_loop_ids())
+
+    async def _drain_run_events(self, loop_id: str) -> int:
+        return await self._run_events.drain(
+            f"agent-loop-run-events:{loop_id}",
+            self._coordinator.handle_run_settled,
+            loop_id=loop_id,
+        )
+
+    async def _process_round(self, loop_id: str) -> None:
+        async with self._round_slots:
+            claim = await self._coordinator.claim_for_loop(loop_id, f"agent-loop-coordinator:{loop_id}")
+            if claim is not None:
+                await self._execute_claim(claim)
+
+    async def _execute_claim(self, claim: CoordinatorClaim) -> None:
+        work = asyncio.create_task(self._perform_claim(claim))
+        renew = getattr(self._coordinator, "renew", None)
+        renewal = asyncio.create_task(self._renew_claim(claim, renew)) if renew is not None else None
         try:
-            if self._orchestrator is not None:
-                result = await self._orchestrator.process(claim)
-                if result is not None:
-                    return
-            if self._dispatcher is not None:
-                await self._coordinator.dispatch_ready(claim, self._dispatcher, 4)
+            if renewal is None:
+                await work
+                return
+            done, _ = await asyncio.wait((work, renewal), return_when=asyncio.FIRST_COMPLETED)
+            if renewal in done and renewal.result() is False and not work.done():
+                work.cancel()
+                await asyncio.gather(work, return_exceptions=True)
+                ownership_lost = getattr(self._coordinator, "ownership_lost", None)
+                if ownership_lost is not None:
+                    await ownership_lost(claim)
+                return
+            if work in done:
+                await work
         finally:
+            if renewal is not None:
+                renewal.cancel()
+                await asyncio.gather(renewal, return_exceptions=True)
+            if not work.done():
+                work.cancel()
+                await asyncio.gather(work, return_exceptions=True)
             await self._coordinator.release(claim)
+
+    async def _perform_claim(self, claim: CoordinatorClaim) -> None:
+        if self._orchestrator is not None:
+            result = await self._orchestrator.process(claim)
+            if result is not None:
+                return
+        if self._dispatcher is not None and self._context_runs is None:
+            await self._coordinator.dispatch_ready(claim, self._dispatcher, 4)
+
+    async def _renew_claim(self, claim: CoordinatorClaim, renew) -> bool:
+        interval = float(getattr(self._coordinator, "renewal_interval", max(self._poll_seconds, 0.1)))
+        while True:
+            await asyncio.sleep(interval)
+            if not await renew(claim):
+                return False

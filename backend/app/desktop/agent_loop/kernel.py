@@ -1,9 +1,9 @@
 r"""本文件对外提供 LoopKernel、KernelCommitResult 与 KernelRejected 唯一确定性提交边界。
 
-输入为 PatrolDecisionIntent 和当前数据库事实；输出为幂等 committed/superseded/rejected 结果。具体工作流为
-稳定锁定 Loop/round/grant，按版本、权力、frontier、workspace、预算、active Run、gate 顺序校验；普通动作
+输入为含 fencing token 的 PatrolDecisionIntent 和当前数据库事实；输出为幂等 committed/superseded/rejected 结果。具体工作流为
+稳定锁定 Loop/round/grant，先验证活动 owner，再按 Mission revision、机器边界、权力、frontier、workspace、预算、active Run、gate 顺序校验；普通动作
 单事务提交，Context Portfolio 与 workspace adoption 先持久授权意图，再由专用 Kernel port 执行外部准备并
-原子收口权威状态；被拒绝或被取代的决策必须在同一事务内把该 round 收敛为终态（拒绝还会把当前轮所属
+原子收口权威状态；配置异步 publication 时只提交持久授权并交给独立发布队列，拒绝或被取代的决策必须在同一事务内把该 round 收敛为终态（拒绝还会把当前轮所属
 Loop 交回用户），提交成功后收口该 round 已观察的用户意图；自主压缩由专用 committer 在同一事务内只提交
 resolution、不触碰 graph；Worker 无提交端口。示例：`result = await kernel.commit(intent)`。
 """
@@ -20,14 +20,23 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.authority import AuthorityViolation, DelegatedAuthorityGuard
 from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count
+from backend.app.desktop.agent_loop.completion_policy import CompletionCheckPolicy
+from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
+from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
+from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
+from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
+from backend.app.desktop.agent_loop.mission_contract import LegacyMissionAdapter
+from backend.app.desktop.agent_loop.mission_authority import MissionAuthorityGuard, MissionAuthorityViolation
+from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
+from backend.app.desktop.agent_loop.ownership import KernelFencingRejected, LoopFencingGuard
 from backend.app.desktop.agent_loop.models import (
     AgentLoop, CompletionVerification, LoopAction, LoopBudgetUsage, LoopContextMembership, LoopDecision, LoopGoalRevision,
     LoopDelegationGrant, LoopDirective, LoopEventOutbox, LoopPendingDecision,
-    LoopRound, LoopUserIntent, LoopWorkerRequest,
+    LoopObservation, LoopRound, LoopUserIntent, LoopWorkerRequest,
 )
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
 from backend.app.desktop.agent_loop.rounds import UNDECIDED_ROUND_STATUSES, terminate_round
-from backend.app.desktop.agent_loop.schemas import PatrolDecisionIntent
+from backend.app.desktop.agent_loop.schemas import CriterionVerification, PatrolDecisionIntent
 from backend.app.desktop.agent_loop.compression_authority.commit import CompressionAuthorityCommitter, CompressionCommitRejected
 from backend.app.desktop.context_curation.models import CurationLane, CurationProgram, PortfolioLaneCandidate, PortfolioRevision
 from backend.app.desktop.context_curation.portfolio_publisher import PortfolioSuperseded
@@ -63,12 +72,22 @@ class LoopKernel:
         sessions: async_sessionmaker[AsyncSession],
         portfolio_publication: LoopPortfolioPublicationPort | None = None,
         workspace_adoption: LoopWorkspaceAdoptionPort | None = None,
+        *,
+        queue_portfolio_publication: bool = False,
+        require_fencing: bool = False,
     ) -> None:
         self._sessions = sessions
         self._portfolio_publication = portfolio_publication
         self._workspace_adoption = workspace_adoption
+        self._queue_portfolio_publication = queue_portfolio_publication
+        self._require_fencing = require_fencing
+        self._fencing = LoopFencingGuard()
         self._authority = DelegatedAuthorityGuard()
+        self._mission_authority = MissionAuthorityGuard()
         self._directives = DelegatedDirectiveFactory()
+        self._directive_lifecycle = DirectiveLifecycleRepository()
+        self._journal = LoopEventJournal()
+        self._interventions = InterventionLifecycleRepository()
         self._compression = CompressionAuthorityCommitter()
 
     async def commit(self, intent: PatrolDecisionIntent) -> KernelCommitResult:
@@ -81,7 +100,11 @@ class LoopKernel:
                     return await self._result(session, existing)
                 deferred_id = existing.decision_id
                 deferred_kind = existing.status
+                if self._require_fencing:
+                    await self._fencing.validate_active(session, intent.round_id, intent.fencing_token)
             if deferred_id is None:
+                if self._require_fencing:
+                    await self._fencing.validate_active(session, intent.round_id, intent.fencing_token)
                 deferred_id, deferred_kind, immediate = await self._commit_new(session, intent)
                 if immediate is not None:
                     return immediate
@@ -95,6 +118,10 @@ class LoopKernel:
                 return result
             except Exception as exc:
                 return await self._fail_deferred(deferred_id, str(exc))
+        if deferred_kind == "publishing" and self._queue_portfolio_publication:
+            async with self._sessions() as session:
+                decision = await session.get(LoopDecision, deferred_id)
+                return await self._result(session, decision)
         if self._portfolio_publication is None:
             return await self._fail_deferred(deferred_id, "Kernel 未配置原子 Portfolio publication port")
         try:
@@ -130,23 +157,38 @@ class LoopKernel:
         )
         if existing is not None:
             return None, None, await self._result(session, existing)
+        if round_row.decision_id is not None:
+            return None, None, KernelCommitResult(
+                intent.decision_id,
+                "superseded",
+                (),
+                (),
+                "round_already_decided",
+            )
         stale = self._stale_reason(loop, round_row, intent)
+        if stale is None:
+            stale = await self._observation_stale_reason(session, loop, round_row, intent)
         if stale is not None:
             decision = self._decision(intent, "superseded", {"reason": stale})
             session.add(decision)
             await terminate_round(session, loop, round_row, category="superseded", reason=stale, decision_id=decision.decision_id, wait_for_user=False, allowed_statuses=UNDECIDED_ROUND_STATUSES)
             return None, None, KernelCommitResult(intent.decision_id, "superseded", (), (), stale)
         try:
+            await self._mission_authority.validate(session, loop, round_row, intent)
             self._authority.validate(loop, grant, intent)
             await self._validate_runtime(session, loop, round_row, grant, intent)
-        except (AuthorityViolation, KernelRejected) as exc:
+        except (AuthorityViolation, MissionAuthorityViolation, KernelRejected) as exc:
             decision = self._decision(intent, "rejected", {"reason": str(exc)})
             session.add(decision)
+            await session.flush()
+            action_ids, directive_ids = await self._record_rejected_actions(session, loop, round_row, grant, decision, intent, str(exc))
             await terminate_round(session, loop, round_row, category="rejected", reason=self._rejection_reason(intent, exc), decision_id=decision.decision_id, allowed_statuses=UNDECIDED_ROUND_STATUSES)
-            return None, None, KernelCommitResult(intent.decision_id, "rejected", (), (), str(exc))
+            return None, None, KernelCommitResult(intent.decision_id, "rejected", tuple(action_ids), tuple(directive_ids), str(exc))
         deferred_status = "publishing" if self._has_lane_mutation(intent) else "adopting" if self._has_adoption(intent) else None
         if deferred_status is not None:
             decision = self._decision(intent, deferred_status, {})
+            if deferred_status == "publishing" and self._queue_portfolio_publication:
+                decision.queued_reason = "awaiting_publication_component"
             session.add(decision)
             await session.flush()
             action_ids = self._authorize_actions(session, loop, decision, intent)
@@ -171,7 +213,17 @@ class LoopKernel:
         except (KernelRejected, ValueError, LookupError) as exc:
             decision.status = "rejected"
             decision.rejection = {"reason": str(exc)}
-            return None, None, KernelCommitResult(decision.decision_id, "rejected", (), (), str(exc))
+            action_ids, directive_ids = await self._record_rejected_actions(session, loop, round_row, grant, decision, intent, str(exc))
+            await terminate_round(
+                session,
+                loop,
+                round_row,
+                category="rejected",
+                reason=self._rejection_reason(intent, exc),
+                decision_id=decision.decision_id,
+                allowed_statuses=UNDECIDED_ROUND_STATUSES,
+            )
+            return None, None, KernelCommitResult(decision.decision_id, "rejected", tuple(action_ids), tuple(directive_ids), str(exc))
         round_row.decision_id = decision.decision_id
         round_row.status = self._round_status(intent)
         loop.health = self._health(intent)
@@ -180,16 +232,20 @@ class LoopKernel:
         await self._event(session, loop.loop_id, "LoopDecisionCommitted", {"decision_id": decision.decision_id, "round_id": round_row.round_id}, f"decision:{decision.decision_id}")
         return None, None, KernelCommitResult(decision.decision_id, "committed", tuple(action_ids), tuple(directive_ids))
 
-    @staticmethod
-    async def _address_user_intents(session: AsyncSession, round_id: str) -> None:
-        await session.execute(
-            update(LoopUserIntent)
-            .where(
-                LoopUserIntent.observed_round_id == round_id,
-                LoopUserIntent.status == "observed",
-            )
-            .values(status="addressed", addressed_at=datetime.now(UTC))
+    async def _address_user_intents(self, session: AsyncSession, round_id: str) -> None:
+        intents = tuple(
+            (
+                await session.scalars(
+                    select(LoopUserIntent)
+                    .where(LoopUserIntent.observed_round_id == round_id, LoopUserIntent.status == "observed")
+                    .with_for_update()
+                )
+            ).all()
         )
+        for intent in intents:
+            intent.status = "addressed"
+            if intent.delivery_state == "observed":
+                await self._interventions.transition(session, intent.intent_id, "addressed")
 
     async def _address_deferred_user_intents(self, decision_id: str) -> None:
         async with self._sessions.begin() as session:
@@ -201,6 +257,8 @@ class LoopKernel:
 
     @staticmethod
     def _stale_reason(loop: AgentLoop | None, round_row: LoopRound | None, intent: PatrolDecisionIntent) -> str | None:
+        if round_row.goal_revision != loop.goal_revision or intent.goal_revision != loop.goal_revision:
+            return "mission_revision_changed"
         if loop.revision != intent.loop_revision:
             return "loop_revision_changed"
         if round_row.decision_id is not None:
@@ -209,6 +267,32 @@ class LoopKernel:
             return "frontier_changed"
         if round_row.workspace_revision != intent.observed_workspace_revision:
             return "workspace_revision_changed"
+        return None
+
+    @staticmethod
+    async def _observation_stale_reason(
+        session: AsyncSession,
+        loop: AgentLoop,
+        round_row: LoopRound,
+        intent: PatrolDecisionIntent,
+    ) -> str | None:
+        observation = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == round_row.round_id))
+        if observation is None:
+            return "observation_missing" if intent.observed_projection_sequence else None
+        if intent.observed_projection_sequence != observation.projection_sequence:
+            return "observation_sequence_changed"
+        if intent.base_entity_revisions != observation.base_entity_revisions:
+            return "observation_base_revisions_changed"
+        current = {
+            "loop": loop.revision,
+            "mission": loop.goal_revision,
+            "grant": loop.authority_revision,
+            "workspace": round_row.workspace_revision,
+        }
+        for key, revision in current.items():
+            observed = intent.base_entity_revisions.get(key)
+            if observed is not None and observed != revision:
+                return f"{key}_base_revision_changed"
         return None
 
     async def _validate_runtime(self, session, loop, round_row, grant, intent) -> None:
@@ -396,6 +480,9 @@ class LoopKernel:
                     goal_revision=loop.goal_revision, idempotency_key=f"{intent.idempotency_key}:directive:{position}",
                 )
                 session.add_all([directive, provenance])
+                await session.flush()
+                await self._directive_lifecycle.register(session, directive)
+                await self._directive_lifecycle.transition(session, directive.directive_id, "authorized")
                 directive_ids.append(directive.directive_id)
             elif intent_action.action in {"create_lane", "update_lane", "merge_contexts"}:
                 raise KernelRejected("Lane mutation 必须经过原子 Portfolio publication")
@@ -436,14 +523,7 @@ class LoopKernel:
                 loop.status = "waiting_user"
                 loop.waiting_reason = intent_action.reason
             elif intent_action.action == "stop_loop":
-                await session.execute(
-                    update(LoopDirective)
-                    .where(
-                        LoopDirective.loop_id == loop.loop_id,
-                        LoopDirective.status.in_(["created", "launching"]),
-                    )
-                    .values(status="cancelled")
-                )
+                await self._directive_lifecycle.cancel_active(session, loop.loop_id, "patrol_stop_loop")
                 loop.status = "stopped"
                 loop.health = "idle"
                 loop.completed_at = datetime.now(UTC)
@@ -456,6 +536,77 @@ class LoopKernel:
                 loop.final_result = await self._completion_result(session, loop, intent_action)
                 grant.status = "revoked"
                 grant.revoked_at = loop.completed_at
+        return action_ids, directive_ids
+
+    async def _record_rejected_actions(self, session, loop, round_row, grant, decision, intent, reason: str):
+        action_ids: list[str] = []
+        directive_ids: list[str] = []
+        for position, intent_action in enumerate(intent.actions):
+            action_id = uuid.uuid5(uuid.NAMESPACE_URL, f"loop-action:{decision.decision_id}:{position}").hex
+            session.add(
+                LoopAction(
+                    action_id=action_id,
+                    decision_id=decision.decision_id,
+                    loop_id=loop.loop_id,
+                    position=position,
+                    action_type=intent_action.action,
+                    payload=intent_action.model_dump(mode="json"),
+                    status="rejected",
+                    result={"reason": reason[:2000]},
+                )
+            )
+            action_ids.append(action_id)
+            if intent_action.action != "continue_context":
+                continue
+            directive_id = uuid.uuid5(uuid.NAMESPACE_URL, f"loop-directive:{decision.decision_id}:{position}").hex
+            context = await session.get(DesktopThread, intent_action.context_id)
+            revision = await session.get(ContextRevision, intent_action.context_revision_id)
+            if context is None or revision is None:
+                await self._journal.append(
+                    session,
+                    loop.loop_id,
+                    CanonicalEventDraft(
+                        kind="directive.rejected",
+                        entity_type="directive",
+                        entity_id=directive_id,
+                        entity_revision=1,
+                        correlation_id=round_row.round_id,
+                        payload={
+                            "directive_id": directive_id,
+                            "round_id": round_row.round_id,
+                            "decision_id": decision.decision_id,
+                            "origin": "patrol",
+                            "target_context_id": intent_action.context_id,
+                            "state": "rejected",
+                            "reason": reason[:2000],
+                        },
+                        idempotency_key=f"directive:{directive_id}:rejected",
+                    ),
+                )
+                directive_ids.append(directive_id)
+                continue
+            directive, provenance = self._directives.create(
+                loop_id=loop.loop_id,
+                round_id=round_row.round_id,
+                decision_id=decision.decision_id,
+                action_id=action_id,
+                context_id=intent_action.context_id,
+                context_revision_id=intent_action.context_revision_id,
+                content=intent_action.message,
+                actor_id=intent.holder_id,
+                grant_id=intent.grant_id,
+                grant_revision=intent.grant_revision,
+                goal_revision=intent.goal_revision,
+                idempotency_key=f"{intent.idempotency_key}:directive:{position}",
+            )
+            directive.directive_id = directive_id
+            provenance.directive_id = directive_id
+            directive.status = "blocked"
+            session.add_all([directive, provenance])
+            await session.flush()
+            await self._directive_lifecycle.register(session, directive)
+            await self._directive_lifecycle.transition(session, directive.directive_id, "rejected", reason=reason)
+            directive_ids.append(directive.directive_id)
         return action_ids, directive_ids
 
     @staticmethod
@@ -563,9 +714,19 @@ class LoopKernel:
             raise KernelRejected("Completion criteria 未全部满足")
         if verification.unresolved:
             raise KernelRejected("Completion verification 仍有 unresolved 项")
-        goal = await session.scalar(select(LoopGoalRevision).where(LoopGoalRevision.loop_id == loop.loop_id, LoopGoalRevision.revision == loop.goal_revision))
-        required = {str(item.get("criterion_id")) for item in (goal.acceptance_criteria if goal else []) if item.get("required", True)}
-        satisfied = {str(item.get("criterion_id")) for item in verification.criteria if item.get("status") == "satisfied"}
+        mission = await session.scalar(select(LoopMissionRevision).where(LoopMissionRevision.loop_id == loop.loop_id, LoopMissionRevision.revision == loop.goal_revision))
+        goal = None if mission is not None else await session.scalar(select(LoopGoalRevision).where(LoopGoalRevision.loop_id == loop.loop_id, LoopGoalRevision.revision == loop.goal_revision))
+        checks = (
+            mission.completion_checks
+            if mission is not None
+            else [item.model_dump(mode="json") for item in LegacyMissionAdapter.convert(goal=goal.goal, task_contract=goal.task_contract, acceptance_criteria=goal.acceptance_criteria).completion_checks]
+            if goal is not None
+            else []
+        )
+        criteria = tuple(CriterionVerification.model_validate(item) for item in verification.criteria)
+        CompletionCheckPolicy().validate(checks, criteria)
+        required = {str(item.get("check_id")) for item in checks if item.get("required", True)}
+        satisfied = {item.check_id for item in criteria if item.status == "satisfied"}
         if not required or not required.issubset(satisfied):
             raise KernelRejected("Completion verification 未覆盖全部必需验收条件")
         if active or human_gate:
@@ -628,7 +789,7 @@ class LoopKernel:
 
     @staticmethod
     def _decision(intent: PatrolDecisionIntent, status: str, rejection: dict) -> LoopDecision:
-        return LoopDecision(decision_id=intent.decision_id, loop_id=intent.loop_id, round_id=intent.round_id, holder_id=intent.holder_id, intent=intent.model_dump(mode="json"), rationale=intent.rationale, evidence=list(intent.evidence), status=status, idempotency_key=intent.idempotency_key, rejection=rejection)
+        return LoopDecision(decision_id=intent.decision_id, loop_id=intent.loop_id, round_id=intent.round_id, holder_id=intent.holder_id, intent=intent.model_dump(mode="json"), rationale=intent.rationale, evidence=list(intent.evidence), status=status, idempotency_key=intent.idempotency_key, rejection=rejection, fencing_token=intent.fencing_token)
 
     @staticmethod
     def _round_status(intent: PatrolDecisionIntent) -> str:

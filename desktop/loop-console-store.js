@@ -1,7 +1,7 @@
 /*
- * 本文件对外提供 Agent Loop 控制台的独立客户端 Store。
- * 输入为 Portfolio manifest、选中 Context 的分页会话、视口位置、事实页、筛选与介入状态；输出为不可变快照和订阅通知。
- * 具体工作流为按 Context revision 缓存固定上限的双向消息窗口，切换 Context 时恢复消息窗口与视口，并将事实和 Loop 生命周期状态保持在独立 Store。
+ * 本文件对外提供 Agent Loop 控制台的界面状态与分页会话缓存。
+ * 输入为一次性 Portfolio manifest、权威 Live projection 派生的 Context/Run/Fact、分页会话、视口和筛选；输出为现有控制台视图的不可变读模型。
+ * 具体工作流为 Live projection 更新拓扑活动和事实，Store 仅保留选择、筛选、草稿相关状态及有界会话窗口，不再拥有 Loop 领域状态。
  * 示例：`const store = FocusLoopConsoleStore.create(); store.loadManifest(payload)`。
  */
 (function (root, factory) {
@@ -19,6 +19,9 @@
     conversation: null,
     conversationViewport: null,
     facts: null,
+    patrol: null,
+    graphActivity: Object.freeze([]),
+    causality: Object.freeze([]),
     interventionMode: "direct_context_message",
     messageFilter: "all",
     messageSearch: "",
@@ -102,6 +105,52 @@
           selectedContextId,
           conversation: conversations.get(selectedKey) || null,
           conversationViewport: viewports.get(selectedKey) || null,
+          error: null,
+        });
+      },
+      projectLive(projection, selectors) {
+        if (!projection || !selectors) return current;
+        const cards = selectors.selectContextCards(projection);
+        const priorNodes = new Map((current.manifest?.nodes || []).map(node => [node.context_id, node]));
+        const nodes = cards.map(card => {
+          const prior = priorNodes.get(card.id) || {};
+          return {
+            ...prior,
+            context_id: card.id,
+            title: card.title || prior.title || card.id,
+            topic: prior.topic || card.title || card.id,
+            purpose: prior.purpose || card.role || "Context",
+            role: card.role || prior.role || "worker",
+            status: card.status || prior.status || "active",
+            lane_id: card.lane_id || prior.lane_id || null,
+            revision: card.current_revision_id ? { ...(prior.revision || {}), revision_id: card.current_revision_id } : prior.revision,
+            latest_run: card.latest_run ? { ...(prior.latest_run || {}), run_id: card.latest_run.id, ...card.latest_run } : prior.latest_run || null,
+          };
+        });
+        const loop = projection.loop?.state || {};
+        const round = projection.round?.state || null;
+        const manifest = current.manifest ? {
+          ...current.manifest,
+          loop_id: projection.loop_id,
+          status: loop.status,
+          health: loop.health,
+          waiting_reason: loop.waiting_reason,
+          current_round: round,
+          current_round_id: round?.round_id || projection.round?.entity_id || loop.current_round_id,
+          initial_context_id: loop.initial_context_id || current.manifest.initial_context_id,
+          nodes,
+        } : null;
+        const contextId = current.factScope === "all" ? null : current.selectedContextId;
+        const kind = current.factFilter === "all" ? null : current.factFilter;
+        const status = current.factStatus === "all" ? null : current.factStatus;
+        const factRows = selectors.selectFacts(projection, { contextId, kind, status });
+        const facts = { facts: factRows, range: { start: 0, end: factRows.length }, has_more: false, next_before: null, total: factRows.length };
+        return publish({
+          manifest,
+          facts,
+          patrol: selectors.selectPatrol(projection),
+          graphActivity: selectors.selectGraphActivity(projection),
+          causality: selectors.selectCausality(projection, current.selectedContextId),
           error: null,
         });
       },

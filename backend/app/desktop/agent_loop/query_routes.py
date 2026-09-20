@@ -1,7 +1,7 @@
-r"""本文件对外提供 Loop Console、完整会话、事实、Context Evolution 与 workspace slot 查询路由。
+r"""本文件对外提供 Loop Console、Mission 历史、完整会话、物化事实、Context Evolution 与 workspace slot 查询路由。
 
 输入为 Desktop 会话下的 workspace/Context/Program/Loop identity、过滤器与游标；输出为轻量 Portfolio
-拓扑、分页完整会话、可追溯事实、revision graph 和执行 slot。具体工作流为路由把只读参数交给专用
+拓扑、分页完整会话、可追溯 current facts/历史、revision graph 和执行 slot。具体工作流为路由把只读参数交给专用
 query service，不修改 Context 或模型输入；自主压缩 audit 连接 gate、candidate、resolution、Run 与 revision。
 示例：`app.include_router(loop_query_router)`。
 """
@@ -15,7 +15,10 @@ from backend.app.desktop.agent_loop.models import LoopAction, LoopDecision, Loop
 from backend.app.desktop.agent_loop.compression_authority.models import LoopCompressionCandidate, LoopCompressionResolution
 from backend.app.desktop.agent_loop.console_query import LoopConsoleQueryService
 from backend.app.desktop.agent_loop.conversation_query import ContextConversationQueryService
+from backend.app.desktop.agent_loop.materialized_fact_query import MaterializedFactQueryService
 from backend.app.desktop.agent_loop.fact_projection import LoopFactProjectionService
+from backend.app.desktop.agent_loop.feature_flags import LoopFeatureFlags
+from backend.app.desktop.agent_loop.mission_history import MissionHistoryQueryService
 from backend.app.desktop.context_curation.models import CurationLane, CurationProgram, PortfolioLaneCandidate, PortfolioRevision
 from backend.app.desktop.context_evolution import ContextEvolutionQueryService, ContextRevisionNotFound, ContextRevisionReader, ContextRevisionRepository
 from backend.app.desktop.context_evolution.models import ContextRevision
@@ -30,6 +33,12 @@ loop_query_router = APIRouter(prefix="/desktop/api", tags=["agent-loop-observabi
 async def loop_console(loop_id: str, request: Request) -> dict:
     async with request.app.state.desktop_service.session_factory() as session:
         return await LoopConsoleQueryService().read(session, loop_id)
+
+
+@loop_query_router.get("/agent-loops/{loop_id}/missions")
+async def loop_mission_history(loop_id: str, request: Request) -> dict:
+    async with request.app.state.desktop_service.session_factory() as session:
+        return await MissionHistoryQueryService().read(session, loop_id)
 
 
 @loop_query_router.get("/agent-loops/{loop_id}/contexts/{context_id}/conversation")
@@ -65,9 +74,9 @@ async def loop_facts(
     limit: int = Query(default=80, ge=1, le=200),
 ) -> dict:
     async with request.app.state.desktop_service.session_factory() as session:
-        return await LoopFactProjectionService(
-            request.app.state.desktop_service.checkpointer
-        ).read(
+        flags = getattr(request.app.state, "loop_feature_flags", None) or LoopFeatureFlags()
+        service = MaterializedFactQueryService() if flags.materialized_fact_reads else LoopFactProjectionService(request.app.state.desktop_service.checkpointer)
+        return await service.read(
             session,
             loop_id,
             context_id=context_id,
@@ -76,6 +85,15 @@ async def loop_facts(
             before=before,
             limit=limit,
         )
+
+
+@loop_query_router.get("/agent-loops/{loop_id}/facts/{fact_id}")
+async def loop_fact_detail(loop_id: str, fact_id: str, request: Request) -> dict:
+    flags = getattr(request.app.state, "loop_feature_flags", None) or LoopFeatureFlags()
+    if not flags.materialized_fact_reads:
+        raise HTTPException(404, "旧版事实端口不提供稳定 fact detail")
+    async with request.app.state.desktop_service.session_factory() as session:
+        return await MaterializedFactQueryService().detail(session, loop_id, fact_id)
 
 
 @loop_query_router.get("/workspaces/{workspace_id}/context-evolution")
@@ -144,7 +162,9 @@ async def loop_audit(loop_id: str, request: Request) -> dict:
         pending_decisions = list((await session.scalars(select(LoopPendingDecision).where(LoopPendingDecision.loop_id == loop_id).order_by(LoopPendingDecision.created_at))).all())
         candidates = list((await session.scalars(select(LoopCompressionCandidate).where(LoopCompressionCandidate.loop_id == loop_id).order_by(LoopCompressionCandidate.created_at))).all())
         resolutions = list((await session.scalars(select(LoopCompressionResolution).where(LoopCompressionResolution.loop_id == loop_id).order_by(LoopCompressionResolution.created_at))).all())
+        mission_history = await MissionHistoryQueryService().read(session, loop_id)
         return {
+            "mission_history": mission_history,
             "decisions": [{"decision_id": row.decision_id, "round_id": row.round_id, "rationale": row.rationale, "evidence": row.evidence, "status": row.status, "rejection": row.rejection} for row in decisions],
             "actions": [{"action_id": row.action_id, "decision_id": row.decision_id, "type": row.action_type, "payload": row.payload, "status": row.status, "result": row.result} for row in actions],
             "directives": [{"directive_id": row.directive_id, "round_id": row.round_id, "decision_id": row.decision_id, "action_id": row.action_id, "message_id": row.message_id, "target_context_id": row.target_context_id, "target_context_revision_id": row.target_context_revision_id, "content": row.content, "actor_kind": row.actor_kind, "actor_id": row.actor_id, "grant_id": row.grant_id, "grant_revision": row.grant_revision, "goal_revision": row.goal_revision, "status": row.status, "launched_run_id": row.launched_run_id} for row in directives],

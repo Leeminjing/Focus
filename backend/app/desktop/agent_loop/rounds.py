@@ -31,9 +31,9 @@ from backend.app.desktop.agent_loop.models import (
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
 
 
-CLAIMABLE_ROUND_STATUSES = ("observed", "publishing", "adopting", "ready")
-STALL_SCAN_ROUND_STATUSES = ("observed", "publishing", "adopting")
-UNDECIDED_ROUND_STATUSES = ("observed",)
+CLAIMABLE_ROUND_STATUSES = ("observed", "curated", "adopting", "ready")
+STALL_SCAN_ROUND_STATUSES = ("observed", "curated", "publishing", "adopting")
+UNDECIDED_ROUND_STATUSES = ("observed", "curated")
 TERMINAL_ROUND_STATUSES = frozenset({"settled", "error", "superseded"})
 TERMINATION_EVENT = "RoundTerminated"
 _TERMINATION_KEY = "round-terminated:{round_id}"

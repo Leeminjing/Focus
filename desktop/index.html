@@ -1,8 +1,8 @@
 <!doctype html>
 <!--
-  本文档提供 Focus 桌面宿主的持久挂载结构。输入为 app.js 的同源数据与原生 DOM 更新，
+  本文件提供 Focus 桌面宿主的持久挂载结构。输入为 app.js 的同源数据与原生 DOM 更新，
   输出为受内容安全策略保护的全局导航、任务上下文、工作区、Loop Portfolio 控制台、检查器、
-  材料 Blob 加载器、浮层、对话框和可复用模板。工作流为先约束资源来源，再加载无状态 UI、Loop Store/Controller 与材料 loader，最后启动 app.js。
+  材料 Blob 加载器、浮层、对话框和可复用模板。具体工作流为先约束资源来源，再加载无状态 UI、Live Loop schema/reducer/连接器、兼容读模型与材料 loader，最后启动 app.js。
   示例：浏览器加载 index.html 后由 app.js 挂载 #app。
 -->
 <html lang="zh-CN">
@@ -220,7 +220,14 @@
   <script src="./access-mode.js"></script>
   <script src="./access-approval.js"></script>
   <script src="./composer-draft.js"></script>
+  <script src="./loop-live-schema.js?v=20260919a"></script>
+  <script src="./loop-live-reducer.js?v=20260919a"></script>
+  <script src="./loop-live-selectors.js?v=20260919a"></script>
+  <script src="./loop-live-store.js?v=20260919a"></script>
+  <script src="./loop-live-connection.js?v=20260919a"></script>
+  <script src="./loop-legacy-connection.js?v=20260919a"></script>
   <script src="./loop-api.js?v=20260916a"></script>
+  <script src="./loop-mission-editor.js?v=20260919a"></script>
   <script src="./loop-store.js?v=20260915a"></script>
   <script src="./loop-console-store.js?v=20260916a"></script>
   <script src="./loop-console-controller.js?v=20260916a"></script>

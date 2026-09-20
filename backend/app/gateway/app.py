@@ -15,7 +15,7 @@
     (5) 创建 FastAPI 实例并传入 lifespan
     (6) 通过 Desktop persistence registry 注册各领域 ORM 模型
     (7) 注册统一会话保护中间件与路由，并挂载桌面路由与 /desktop/ 静态资源（决策 1）
-    (8) 构造 AgentLoopService、LoopInterventionService、LoopKernel、压缩 resolution 与 LoopCoordinator 作为独立权力边界
+    (8) 读取独立 Loop 切换开关，构造 AgentLoopService、LoopKernel、发布/Curator/Context/Fact 监督组件；仅在 supervisor 开关启用时启动运行期
     (9) 模块级导出 app 实例，供 uvicorn 等 ASGI server 直接引用
 
 示例:
@@ -97,12 +97,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_manager=app.state.run_manager,
         )
         app.state.desktop_service = service
-        from backend.app.desktop.agent_loop import AgentLoopRecovery, AgentLoopService, CompletionEvidenceService, DesktopDirectiveLaunchPort, LoopAuthorityService, LoopCoordinator, LoopCoordinatorRuntime, LoopKernel, LoopPortfolioPublicationService, LoopRoundOrchestrator, LoopRunWorkspaceBinder, LoopWaveDispatcher, LoopWorkerRuntime, LoopWorkspaceAdoptionService, PendingDecisionProjector
+        from backend.app.desktop.agent_loop import AgentLoopRecovery, AgentLoopService, CompletionEvidenceService, ContextRunPool, DesktopDirectiveLaunchPort, LoopAuthorityService, LoopCoordinator, LoopCoordinatorRuntime, LoopKernel, LoopPortfolioPublicationQueue, LoopPortfolioPublicationService, LoopRoundOrchestrator, LoopRunWorkspaceBinder, LoopWaveDispatcher, LoopWorkerRuntime, LoopWorkspaceAdoptionService, PendingDecisionProjector
         from backend.app.desktop.agent_loop.interventions import LoopInterventionService
+        from backend.app.desktop.agent_loop.fact_projector import FactProjector
+        from backend.app.desktop.agent_loop.feature_flags import LoopFeatureFlags
         from backend.app.desktop.agent_loop.compression_authority.gate_projector import LoopCompressionGateProjector
         from backend.app.desktop.agent_loop.compression_authority.resolution import CompressionResolutionCoordinator
         from backend.app.desktop.run_orchestration import RunOutboxConsumer
 
+        app.state.loop_feature_flags = LoopFeatureFlags.from_env()
         app.state.agent_loop_service = AgentLoopService(sessions, app.state.run_manager)
         app.state.agent_loop_interventions = LoopInterventionService(sessions)
         app.state.agent_loop_authority = LoopAuthorityService(sessions, app.state.run_manager)
@@ -115,6 +118,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             sessions,
             app.state.agent_loop_portfolios,
             app.state.agent_loop_adoption,
+            queue_portfolio_publication=True,
+            require_fencing=True,
         )
         app.state.agent_loop_compression_resolutions = CompressionResolutionCoordinator(sessions, service)
         app.state.agent_loop_compression_gates = LoopCompressionGateProjector(
@@ -132,23 +137,38 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             app.state.agent_loop_coordinator,
             app.state.agent_loop_run_events,
         )
+        dispatcher = LoopWaveDispatcher(
+            sessions,
+            DesktopDirectiveLaunchPort(sessions, service),
+        )
+        app.state.agent_loop_publication_queue = LoopPortfolioPublicationQueue(
+            sessions,
+            app.state.agent_loop_portfolios,
+        )
+        app.state.agent_loop_context_runs = ContextRunPool(
+            sessions,
+            app.state.agent_loop_coordinator,
+            dispatcher,
+        )
+        app.state.agent_loop_fact_projector = FactProjector(sessions, app.state.checkpointer)
         app.state.agent_loop_runtime = LoopCoordinatorRuntime(
             app.state.agent_loop_coordinator,
             app.state.agent_loop_run_events,
-            LoopWaveDispatcher(
-                sessions,
-                DesktopDirectiveLaunchPort(sessions, service),
-            ),
+            dispatcher,
             LoopRoundOrchestrator(sessions, app_config, app.state.agent_loop_kernel, app.state.checkpointer),
             LoopWorkerRuntime(sessions, app_config),
             app.state.agent_loop_recovery,
             app.state.agent_loop_compression_resolutions,
             maintenance=app.state.agent_loop_coordinator,
+            portfolio_publications=app.state.agent_loop_publication_queue,
+            context_runs=app.state.agent_loop_context_runs,
+            fact_projector=app.state.agent_loop_fact_projector,
         )
         app.state.agent_loop_completion = CompletionEvidenceService(sessions)
         app.state.session_key = os.getenv("FOCUS_DESKTOP_SESSION", "focus-dev-session")
         await service.start()
-        await app.state.agent_loop_runtime.start()
+        if app.state.loop_feature_flags.supervisor_scheduling:
+            await app.state.agent_loop_runtime.start()
         try:
             yield
         finally:

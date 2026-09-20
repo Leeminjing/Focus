@@ -52,6 +52,7 @@ class RunRegistrationRequest(BaseModel):
     context_checkpoint_id: str | None = None
     origin_message_id: str | None = None
     directive_id: str | None = None
+    user_intent_id: str | None = None
     loop_id: str | None = None
     round_id: str | None = None
     action_id: str | None = None
@@ -89,6 +90,7 @@ class RunRegistrar:
                 context_checkpoint_id=request.context_checkpoint_id,
                 origin_message_id=request.origin_message_id,
                 directive_id=request.directive_id,
+                user_intent_id=request.user_intent_id,
                 loop_id=request.loop_id,
                 round_id=request.round_id,
                 action_id=request.action_id,

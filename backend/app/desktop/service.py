@@ -1039,6 +1039,7 @@ class DesktopService:
                 context_checkpoint_id=authoritative_checkpoint_id,
                 origin_message_id=message_id, equipment=equipment,
                 directive_id=identity.get("directive_id"), loop_id=identity.get("loop_id"),
+                user_intent_id=identity.get("user_intent_id"),
                 round_id=identity.get("round_id"), action_id=identity.get("action_id"),
                 idempotency_key=identity.get("idempotency_key"),
                 workspace_anchor={

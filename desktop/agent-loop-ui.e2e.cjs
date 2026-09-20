@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Context-governed Agent Loop 的真实 Electron 长流程与终止态退出回归。
- * 输入为确定性 Loop/Console API、真实 index.html/app.js 与用户表单动作；输出为 Context 图、完整会话、
- * 三类介入、自主压缩阈值到 resume 后续轮次、来源恢复、恢复重连、用户接管、完成路径、事实表和可选视觉基线截图。具体工作流为在隐藏 BrowserWindow 中执行
+ * 输入为确定性 Loop/Console API、真实 index.html/app.js 与结构化 Mission 表单动作；输出为 Context 图、完整会话、
+ * 三类介入、自主压缩阈值到 resume 后续轮次、来源恢复、恢复重连、用户确认 Mission 修订、完成路径、事实表和可选视觉基线截图。具体工作流为在隐藏 BrowserWindow 中执行
  * 完整交互并检查请求与 DOM；设置 `FOCUS_AGENT_LOOP_SCREENSHOT` 时输出真实页面截图供设计 QA 使用。
  * 示例：`npx electron agent-loop-ui.e2e.cjs`。
  */
@@ -52,9 +52,9 @@ async function run() {
     await hydrateActive('root');
     await openLoopView();
     const form = document.querySelector('#agentLoopStartForm');
-    form.elements.goal.value = '交付 Context-governed Agent Loop';
-    form.elements.taskContract.value = '保持单 Patrol 权威并通过完整回归';
-    form.elements.criteria.value = '多 Context 可并行推进\\n完成必须独立验证';
+    form.querySelector('[data-mission-outcome]').value = '交付 Context-governed Agent Loop';
+    form.querySelector('[data-mission-boundary="required_invariants"]').value = '保持单 Patrol 权威';
+    form.querySelector('[data-check-claim]').value = '多 Context 可并行推进并通过完整回归';
     form.elements.maxRounds.value = '80';
     form.elements.maxModelCalls.value = '300';
     form.elements.maxLanes.value = '12';
@@ -130,9 +130,9 @@ async function run() {
     window.__agentLoopTest.snapshot = { ...window.__agentLoopTest.snapshot, status: 'waiting_user', health: 'blocked', waiting_reason: '必须由用户决定是否接受冲突结果' };
     await openLoopView();
     const form = document.querySelector('#agentLoopOverrideForm');
-    form.elements.goal.value = '优先完成测试与发布';
-    form.elements.taskContract.value = '停止非关键优化';
-    form.elements.criteria.value = '测试通过\\n发布证据完整';
+    form.querySelector('[data-mission-outcome]').value = '优先完成测试与发布';
+    form.querySelector('[data-mission-boundary="required_invariants"]').value = '停止非关键优化';
+    form.querySelector('[data-check-claim]').value = '测试通过';
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     for (let count = 0; count < 150 && !document.querySelector('.loop-dashboard')?.textContent.includes('优先完成测试与发布'); count += 1) await new Promise(next => setTimeout(next, 20));
     return { overrides: window.__agentLoopTest.overrides, snapshot: loopStore.get().snapshot, text: document.querySelector('.loop-dashboard')?.textContent || '' };

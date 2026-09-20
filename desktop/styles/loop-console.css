@@ -1,7 +1,7 @@
 /*
- * 本样式表对外提供 Portfolio Map 紧凑控制栏、自主压缩状态、纵向 Context 演化图、完整会话、事实表与终止态出口的自适应视觉层级。
- * 输入为 Loop 生命周期外壳及各专用视图的语义 class；输出为宽屏左图表/右会话工作台、窄屏纵向布局、稳定滚动区和离屏渲染抑制。
- * 具体工作流为命令栏固定信息密度，图/事实/会话各自滚动，长消息与事实行使用内容可见性和固有尺寸降低长时程页面重绘成本。
+ * 本文件对外提供 Option 3 Live Workspace 的 Patrol 活动轨、真实因果图、Context 实时卡、会话因果带、事实表与终止态视觉层级。
+ * 输入为 Loop 生命周期及专用视图语义 class；输出为宽屏左图表/右会话工作台、活动抽屉、窄屏布局、稳定滚动区和 reduced-motion 等价呈现。
+ * 具体工作流为命令栏与活动轨固定信息密度，图/事实/会话各自滚动，活动效果仅响应实体状态，长列表使用有界内容与原位更新降低重绘成本。
  * 示例：`.loop-console-main` 在宽屏按可调比例分栏，在 1100px 以下自动切换为单列。
  */
 .loop-dashboard.console-shell {
@@ -75,8 +75,13 @@
 
 .loop-goal-detail h3 { margin: 0 0 6px; font-size: 12px; color: #14223a; }
 .loop-goal-detail h3:not(:first-child) { margin-top: 14px; }
+.loop-goal-detail h4 { margin: 9px 0 4px; font-size: 11px; color: #53627a; }
 .loop-goal-detail p { margin: 0; line-height: 1.55; white-space: pre-wrap; }
 .loop-goal-detail ul { margin: 0; padding-left: 18px; }
+.loop-mission-history > div { display: grid; gap: 7px; margin-top: 8px; }
+.loop-mission-history-item { padding: 8px 10px; border: 1px solid #dfe5ee; border-radius: 8px; background: #fff; }
+.loop-mission-history-item.is-active { border-color: #78a8f6; background: #f4f8ff; }
+.loop-mission-history-item p, .loop-mission-history-item pre { margin: 5px 0 0; white-space: pre-wrap; }
 
 .loop-command-metrics {
   display: flex;
@@ -128,6 +133,41 @@
 
 .loop-primary-controls button { border: 1px solid #cfd9e7; border-radius: 8px; padding: 8px 13px; background: #fff; color: #29415f; white-space: nowrap; }
 .loop-primary-controls button.primary { border-color: #176ef5; background: #176ef5; color: #fff; }
+
+.patrol-activity-rail {
+  position: relative;
+  z-index: 12;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 7px 16px;
+  border-bottom: 1px solid #d9e4f2;
+  background: linear-gradient(90deg, #f5f9ff, #fff);
+}
+.patrol-activity-now { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 2px 10px; min-width: 0; }
+.patrol-activity-now .loop-kicker { grid-row: 1 / 3; align-self: center; color: #1769d2; }
+.patrol-activity-now strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.patrol-activity-now small { color: #718198; font-size: 10px; }
+.live-connection { display: inline-flex; align-items: center; gap: 6px; color: #63758d; font-size: 10px; }
+.live-connection i { width: 7px; height: 7px; border-radius: 50%; background: #9aa8b8; }
+.live-connection.is-live i { background: #16ae68; box-shadow: 0 0 0 3px rgba(22, 174, 104, .12); }
+.live-connection.is-reconnecting i,
+.live-connection.is-resyncing i { background: #e49620; }
+.patrol-activity-drawer > summary { cursor: pointer; list-style: none; border: 1px solid #cbd9ea; border-radius: 7px; padding: 5px 9px; background: #fff; color: #315a8a; font-size: 10px; }
+.patrol-activity-drawer > summary::-webkit-details-marker { display: none; }
+.patrol-drawer-panel { position: absolute; z-index: 40; top: calc(100% + 6px); right: 12px; width: min(520px, calc(100vw - 280px)); max-height: 65vh; overflow: auto; border: 1px solid #d6e0ed; border-radius: 11px; background: #fff; box-shadow: 0 18px 50px rgba(25, 46, 76, .2); }
+.patrol-drawer-panel > header { display: flex; justify-content: space-between; align-items: center; padding: 13px 15px; border-bottom: 1px solid #e7ecf3; }
+.patrol-drawer-panel h3 { margin: 2px 0 0; font-size: 15px; }
+.patrol-drawer-panel section { padding: 10px 15px; }
+.patrol-drawer-panel h4 { margin: 0 0 7px; color: #61738b; font-size: 10px; text-transform: uppercase; }
+.patrol-drawer-panel ol,
+.patrol-drawer-panel ul { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.patrol-drawer-panel li { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 3px 9px; padding: 7px 0; border-bottom: 1px solid #edf1f5; font-size: 11px; }
+.patrol-drawer-panel li time,
+.patrol-drawer-panel li .curator-state { grid-row: 1 / 3; color: #76879b; font-size: 9px; }
+.patrol-drawer-panel li small { color: #8694a6; font-size: 9px; }
 
 .loop-waiting,
 .loop-terminal-notice,
@@ -232,11 +272,21 @@
 .portfolio-map-canvas { position: relative; min-width: 100%; min-height: 100%; }
 .portfolio-map-canvas svg { position: absolute; inset: 0; pointer-events: none; }
 .portfolio-map-canvas path { fill: none; stroke: #9fb0c7; stroke-width: 1.6; }
+.portfolio-map-canvas .directive-path path { stroke: #a8b8cb; stroke-dasharray: 4 4; }
+.portfolio-map-canvas .directive-path circle { fill: #a8b8cb; }
+.portfolio-map-canvas .directive-path.is-authorized path,
+.portfolio-map-canvas .directive-path.is-delivered path,
+.portfolio-map-canvas .directive-path.is-active path { stroke: #397fe8; stroke-width: 2.2; }
+.portfolio-map-canvas .directive-path.is-authorized circle,
+.portfolio-map-canvas .directive-path.is-delivered circle,
+.portfolio-map-canvas .directive-path.is-active circle { fill: #1977ed; }
+.portfolio-map-canvas .directive-path.is-rejected path,
+.portfolio-map-canvas .directive-path.is-failed path { stroke: #cf4c56; }
 .portfolio-context-node {
   position: absolute;
   display: block;
   width: 220px;
-  min-height: 112px;
+  min-height: 142px;
   padding: 11px 13px;
   text-align: left;
   border: 1px solid #cfd9e7;
@@ -253,6 +303,7 @@
 .context-node-top { display: block; margin-top: 7px; }
 .context-node-top strong { font-size: 14px; }
 .context-node-purpose { display: block; margin-top: 6px; color: #4c5f78; font-size: 11px; line-height: 1.35; }
+.context-node-live { display: grid; gap: 2px; margin-top: 7px; padding: 5px 6px; border-radius: 5px; background: #f2f7ff; color: #35608f; font-size: 9px; }
 .context-node-meta { display: block; margin-top: 8px; color: #8592a4; font-size: 9px; }
 .run-dot { width: 7px; height: 7px; border-radius: 50%; background: #98a6b8; }
 .run-dot.is-running,
@@ -263,7 +314,7 @@
 
 .context-conversation {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
   height: 100%;
   min-height: 0;
   background: #fff;
@@ -282,6 +333,12 @@
 .context-metrics > div { display: flex; align-items: baseline; gap: 6px; padding: 8px 9px; border: 1px solid #e1e7f0; border-radius: 8px; background: #fbfcfe; }
 .context-metrics strong { color: #1a3152; font-size: 14px; }
 .context-metrics span { color: #738299; font-size: 9px; }
+.context-causality { padding: 7px 14px; border-bottom: 1px solid #e8edf3; background: #f8fbff; overflow-x: auto; }
+.context-causality ol { display: flex; align-items: center; gap: 5px; margin: 4px 0 0; padding: 0; list-style: none; }
+.context-causality li { display: grid; grid-template-columns: auto auto; gap: 1px 5px; min-width: 145px; padding: 5px 7px; border: 1px solid #dbe7f6; border-radius: 6px; background: #fff; font-size: 9px; }
+.context-causality li i { grid-row: 1 / 3; width: 6px; height: 6px; align-self: center; border-radius: 50%; background: #3882ea; }
+.context-causality li span { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #566b84; }
+.context-causality li small { grid-column: 2; color: #8997a8; }
 .conversation-tools { display: flex; gap: 9px; align-items: center; padding: 8px 14px; border-bottom: 1px solid #edf0f5; }
 .conversation-tools input { flex: 1; min-width: 120px; height: 31px; }
 .conversation-filters,
@@ -398,9 +455,15 @@
   .fact-filters { justify-content: flex-start; }
   .loop-start-gate { grid-template-columns: 1fr; }
   .loop-compression-status dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .patrol-activity-rail { grid-template-columns: 1fr auto; }
+  .live-connection { display: none; }
+  .patrol-drawer-panel { right: 6px; width: calc(100vw - 24px); }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .portfolio-context-node,
   .loop-transcript { transition: none; scroll-behavior: auto; }
+  .loop-live-dot,
+  .run-dot,
+  .live-connection i { box-shadow: none; }
 }

@@ -1,7 +1,8 @@
 /*
- * 本文件以真实 Electron 验证 F21 主会话的流动密度。输入为确定性的短/长用户消息、reasoning、
- * pending/success/error 工具事件与展开详情，输出为内容驱动尺寸、状态邻近、轻量表面、可访问 disclosure、
- * 页面溢出和 QA 截图；工作流不调用后端或改变用户数据。示例：`node f21-fluid-ui.e2e.cjs`。
+ * 本文件对外提供 F21 主会话流动密度的真实 Electron 验收入口。
+ * 输入为确定性的短/长用户消息、reasoning 与 pending/success/error 工具事件；输出为内容驱动尺寸、状态邻近、
+ * 轻量表面、安全摘要、页面溢出和 QA 截图。具体工作流为渲染四类事件并确认原始工具载荷不进入会话 DOM。
+ * 示例：`.\\node_modules\\.bin\\electron.cmd f21-fluid-ui.e2e.cjs`。
  */
 "use strict";
 
@@ -87,7 +88,7 @@ async function run() {
       conversationWidth: document.querySelector('.conversation').getBoundingClientRect().width,
       eventMetrics,
       eventCount: eventNodes.length,
-      openPreCount: document.querySelectorAll('.conversation-event[open] pre').length,
+      rawPreCount: document.querySelectorAll('.conversation-event pre').length,
       focusBorder: getComputedStyle(focus).borderTopWidth,
       composerShadow: getComputedStyle(composer).boxShadow,
       documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
@@ -115,12 +116,12 @@ async function run() {
     if (metric.height > 28) failures.push(`事件折叠行过高: ${metric.text} ${metric.height}`);
     if (metric.statusGap > 20) failures.push(`状态离内容过远: ${metric.text} gap=${metric.statusGap}`);
   }
-  if (result.openPreCount < 4) failures.push(`展开详情不完整: ${result.openPreCount}`);
+  if (result.rawPreCount !== 0) failures.push(`会话泄露原始工具载荷: ${result.rawPreCount}`);
   if (result.focusBorder !== "0px") failures.push(`Focus 仍使用大面板边框: ${result.focusBorder}`);
   if (result.composerShadow !== "none") failures.push(`Composer 仍使用常驻阴影: ${result.composerShadow}`);
   if (result.documentOverflow > 1 || result.unnamedButtons) failures.push(`溢出或无名控件: ${JSON.stringify(result)}`);
   if (failures.length) throw new Error(`F21 fluid audit:\n- ${failures.join("\n- ")}`);
-  console.log("f21-fluid-ui-e2e: 用户气泡、四类事件、展开详情、轻量表面与溢出通过");
+  console.log("f21-fluid-ui-e2e: 用户气泡、四类事件、安全摘要、轻量表面与溢出通过");
 }
 
 app.whenReady().then(run).then(() => app.quit()).catch(error => {

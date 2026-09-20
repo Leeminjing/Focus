@@ -1,7 +1,7 @@
 r"""本文件对外提供 LoopConsoleQueryService 的轻量 Context Portfolio 读模型。
 
 输入为 Loop id 与只读 AsyncSession；输出为 Context identity 节点、当前 revision 来源边、Lane 主题、
-最新 Run、事实计数、压缩 resolution 状态、待处理用户意见，以及 Loop 的等待原因与当前 round 终态。
+最新 Run、事实计数、当前 Mission revision、压缩 resolution 状态、待处理用户意见，以及 Loop 的等待原因与当前 round 终态。
 具体工作流为批量读取权威表后在内存按 id 归并，不加载完整消息历史，从而让拓扑图可高频刷新，并让"运行中却
 零进展"的停顿可被控制台解释。示例：`await service.read(session, loop_id)`。
 """
@@ -128,6 +128,7 @@ class LoopConsoleQueryService:
         return {
             "loop_id": loop.loop_id,
             "loop_revision": loop.revision,
+            "mission_revision": loop.goal_revision,
             "status": loop.status,
             "health": loop.health,
             "waiting_reason": loop.waiting_reason,

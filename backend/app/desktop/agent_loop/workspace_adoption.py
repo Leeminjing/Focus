@@ -1,7 +1,7 @@
 r"""本文件对外提供 LoopWorkspaceAdoptionService。
 
 输入为 Kernel 已授权的单个 adopt_workspace_result decision；输出为 adopted 或 conflict 的 Kernel 结果。
-具体工作流为重验当前用户 delegation、来源 slot 所有权和目标 workspace revision，调用可恢复的
+具体工作流为重验当前 fencing、用户 delegation、来源 slot 所有权和目标 workspace revision，调用可恢复的
 WorkspaceAdopter 应用隔离 Git 结果，再提交 action/decision/anchor、推进新观察轮并写持久事件；Worker
 和 Patrol 模型都不能直接改权威文件。示例：`result = await service.adopt(decision_id)`。
 """
@@ -23,6 +23,7 @@ from backend.app.desktop.agent_loop.models import (
     LoopRound,
 )
 from backend.app.desktop.agent_loop.schemas import AdoptWorkspaceResultAction
+from backend.app.desktop.agent_loop.ownership import LoopFencingGuard
 from backend.app.desktop.workspace_coordination import (
     GitWorkspaceResultApplier,
     RunExecutionAnchor,
@@ -101,6 +102,8 @@ class LoopWorkspaceAdoptionService:
         round_row = await session.get(LoopRound, decision.round_id, with_for_update=True) if decision else None
         if decision is None or action is None or loop is None or round_row is None:
             raise RuntimeError("Workspace adoption completion identity 不完整")
+        if decision.fencing_token:
+            await LoopFencingGuard().validate_current(session, decision.round_id, decision.fencing_token)
         if decision.status == "committed":
             return KernelCommitResult(decision_id, "committed", (action.action_id,), ())
         anchors = list(

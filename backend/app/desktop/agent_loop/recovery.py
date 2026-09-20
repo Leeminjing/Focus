@@ -3,7 +3,7 @@ r"""本文件对外提供 AgentLoopRecovery 与 LoopRecoveryReport。
 输入为重启后的持久 decision lease、Worker/Patrol attempt、停滞 round、shadow publication、directive、Run
 outbox 和 workspace lease 状态；输出为可重试、需观察、已恢复与已收敛 round 的计数。具体工作流为只重置提交前
 计算状态、保留已 commit 权威事实、收敛已不可能推进的 round（已有落定 decision 或越过无进展界限）并释放其
-租约，Writer 副作用进入 observation 而不盲重跑。示例：`await recovery.reconcile()`。
+租约，Worker 仅在自己的持久最大尝试数内重排队，Writer 副作用进入 observation 而不盲重跑。示例：`await recovery.reconcile()`。
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
-from backend.app.desktop.agent_loop.models import LoopBudgetUsage, LoopDirective, LoopPatrolAttempt, LoopWorkerRequest
+from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDirective, LoopPatrolAttempt, LoopWorkerRequest
 from backend.app.desktop.agent_loop.rounds import terminate_stalled_rounds
 from backend.app.desktop.context_curation.models import PortfolioLaneCandidate, PortfolioPublicationAttempt
 from backend.app.desktop.run_orchestration import RunOutboxConsumer
@@ -61,9 +61,20 @@ class AgentLoopRecovery:
                 row.completed_at = datetime.now(UTC)
                 retries_by_loop[row.loop_id] = retries_by_loop.get(row.loop_id, 0) + 1
             for row in worker_rows:
-                row.status = "pending"
-                row.attempt += 1
-                retries_by_loop[row.loop_id] = retries_by_loop.get(row.loop_id, 0) + 1
+                loop = await session.get(AgentLoop, row.loop_id)
+                if loop is None or loop.status != "running":
+                    row.status = "cancelled"
+                    row.result = {"reason": "process_restarted_while_loop_inactive"}
+                    row.completed_at = datetime.now(UTC)
+                elif row.attempt < row.max_attempts:
+                    row.status = "pending"
+                    row.attempt += 1
+                    row.retry_identity = f"worker:{row.worker_request_id}:attempt:{row.attempt}"
+                    retries_by_loop[row.loop_id] = retries_by_loop.get(row.loop_id, 0) + 1
+                else:
+                    row.status = "error"
+                    row.result = {"error": "process_restarted", "retrying": False}
+                    row.completed_at = datetime.now(UTC)
             for loop_id, retries in retries_by_loop.items():
                 usage = await session.get(LoopBudgetUsage, loop_id, with_for_update=True)
                 if usage is not None:

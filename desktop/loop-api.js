@@ -1,7 +1,7 @@
 /*
- * 本文件对外提供 Agent Loop HTTP 与持久事件协议入口。
- * 输入为桌面运行时、Loop 请求、控制台查询和事件游标；输出为规范化响应、分页会话、事实、压缩来源恢复与可恢复事件订阅。
- * 具体工作流为封装同源 API，Context 直接发言复用 Main Run，Patrol 意图走独立介入端口，来源恢复复用规范 quick-apply。
+ * 本文件对外提供 Agent Loop HTTP、Live Snapshot 与可恢复事件协议入口。
+ * 输入为桌面运行时、Loop 请求、控制台查询和 sequence 游标；输出为规范化响应、分页会话、事实、压缩来源恢复与单路 Live 订阅。
+ * 具体工作流为封装同源 API，Live 通道解析 canonical SSE 与重同步控制帧，Context 直接发言复用 Main Run，其余权威动作进入各自端口。
  * 示例：`FocusLoopApi.create(runtime)`。
  */
 (function (root, factory) {
@@ -43,6 +43,30 @@
         if (chunk.done) return cursor;
       }
     }
+    async function liveStream(loopId, afterSequence, onFrame, signal) {
+      const response = await fetchImpl(`${base}/${encodeURIComponent(loopId)}/live/stream?after_sequence=${Number(afterSequence) || 0}`, { headers, signal });
+      if (!response.ok || !response.body) throw new Error("Live Loop 事件流连接失败");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const chunk = await reader.read();
+        buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done }).replace(/\r\n/g, "\n");
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() || "";
+        for (const frame of frames) {
+          const data = frame.split("\n").filter(line => line.startsWith("data: ")).map(line => line.slice(6)).join("\n");
+          if (!data) continue;
+          const payload = JSON.parse(data);
+          if (["snapshot_required", "resync_required"].includes(payload?.status)) {
+            onFrame(payload);
+            return { resync: true, reason: payload.status };
+          }
+          onFrame(payload);
+        }
+        if (chunk.done) return { resync: false };
+      }
+    }
     return Object.freeze({
       start: body => request("", { method: "POST", body: JSON.stringify(body) }),
       findByContext: contextId => request(`/by-context/${encodeURIComponent(contextId)}`),
@@ -50,6 +74,7 @@
       control: (loopId, command) => request(`/${encodeURIComponent(loopId)}/control`, { method: "POST", body: JSON.stringify({ command }) }),
       mutateGrant: (loopId, body) => request(`/${encodeURIComponent(loopId)}/grant`, { method: "POST", body: JSON.stringify(body) }),
       override: (loopId, body) => request(`/${encodeURIComponent(loopId)}/override`, { method: "POST", body: JSON.stringify(body) }),
+      reviseMission: (loopId, mission) => request(`/${encodeURIComponent(loopId)}/missions`, { method: "POST", body: JSON.stringify({ confirmation: "activate", mission }) }),
       intervene: (loopId, body) => request(`/${encodeURIComponent(loopId)}/interventions`, { method: "POST", body: JSON.stringify(body) }),
       console: loopId => request(`/${encodeURIComponent(loopId)}/console`),
       conversation: (loopId, contextId, options = {}) => {
@@ -68,6 +93,8 @@
         if (options.limit) query.set("limit", String(options.limit));
         return request(`/${encodeURIComponent(loopId)}/facts${query.size ? `?${query}` : ""}`, { signal: options.signal });
       },
+      liveSnapshot: loopId => request(`/${encodeURIComponent(loopId)}/live`),
+      liveStream,
       async directMessage(contextId, content) {
         const taskResponse = await fetchImpl(`${root}/tasks/${encodeURIComponent(contextId)}`, { headers });
         const task = await taskResponse.json();
