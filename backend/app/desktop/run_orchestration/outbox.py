@@ -1,6 +1,6 @@
 r"""本文件对外提供 RunOutboxRepository 与可重启 RunOutboxConsumer。
 
-输入为事务内 MainRunSettled 事实、consumer identity、可选 Loop scope 和领域 handler；输出为稳定事件、领取结果与
+输入为事务内 MainRunSettled 事实、consumer identity、可选 Loop scope 和领域 handler；输出为安全规范化的稳定事件、领取结果与
 首次消费布尔值。具体工作流为 finalizer 同事务 enqueue，consumer 启动先释放遗留 claim，再直接
 扫描数据库并以 event row lock + delivery receipt 去重处理；进程内 wake 只降低延迟而不承载事实。
 示例：`count = await consumer.drain("loop-coordinator", handler)`。
@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.run_orchestration.models import RunOutboxDelivery, RunOutboxEvent
 from backend.app.desktop.models import DesktopRun
+from backend.app.desktop.persistence_safety import PersistencePayloadNormalizer
 
 
 RunEventHandler = Callable[[RunOutboxEvent, AsyncSession], Awaitable[None] | None]
@@ -34,11 +35,15 @@ class RunOutboxRepository:
         event = await session.get(RunOutboxEvent, event_id)
         if event is not None:
             return event
+        normalized = PersistencePayloadNormalizer.normalize(payload, "run-outbox.payload")
+        safe_payload = normalized.value
+        if normalized.replacement_count:
+            safe_payload = {**safe_payload, "_persistence_safety": normalized.metadata()}
         event = RunOutboxEvent(
             event_id=event_id,
             run_id=run_id,
             event_type="MainRunSettled",
-            payload=payload,
+            payload=safe_payload,
             status="pending",
         )
         session.add(event)

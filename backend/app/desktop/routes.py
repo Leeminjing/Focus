@@ -233,8 +233,19 @@ async def quick_deploy_context_curator(
 
 
 @desktop_router.post("/tasks/{task_id}/main/runs")
-async def start_main_run(task_id: str, body: MainRunCreate, request: Request) -> dict:
-    message_id = uuid.uuid4().hex
+async def start_main_run(
+    task_id: str,
+    body: MainRunCreate,
+    request: Request,
+    idempotency_header: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict:
+    request_identity = body.idempotency_key or idempotency_header or uuid.uuid4().hex
+    idempotency_key = f"direct-user:{request_identity}"
+    existing = await request.app.state.desktop_service.run_by_idempotency(idempotency_key)
+    if existing is not None:
+        request.app.state.desktop_service.notify_run_dispatch()
+        return existing
+    message_id = uuid.uuid5(uuid.NAMESPACE_URL, f"focus:direct-user-message:{request_identity}").hex
     loop_service = getattr(request.app.state, "agent_loop_service", None)
     loop_binding = await loop_service.user_message(task_id, _loop_message_text(body.message)) if loop_service else None
     loop_workspace = getattr(request.app.state, "agent_loop_workspace", None)
@@ -264,22 +275,16 @@ async def start_main_run(task_id: str, body: MainRunCreate, request: Request) ->
             attached_material_ids=body.attached_material_ids,
             must_view_material_ids=body.must_view_material_ids,
             access_mode=body.access_mode,
-            run_identity={"message_id": message_id, "origin": "direct_user", "loop_id": loop_binding["loop_id"] if loop_binding else None, "round_id": loop_binding["round_id"] if loop_binding else None, "user_intent_id": loop_binding["intent_id"] if loop_binding else None, "idempotency_key": f"direct-user:{message_id}"},
+            run_identity={"message_id": message_id, "origin": "direct_user", "loop_id": loop_binding["loop_id"] if loop_binding else None, "round_id": loop_binding["round_id"] if loop_binding else None, "user_intent_id": loop_binding["intent_id"] if loop_binding else None, "idempotency_key": idempotency_key},
             execution_workspace_path=execution_workspace_path,
         )
-        if loop_binding and loop_workspace:
-            await loop_workspace.bind(
-                run_id=str(prepared.body.context["run_id"]),
-                loop_id=loop_binding["loop_id"],
-                body=prepared.body,
-            )
-        await _launch(request, prepared)
+        request.app.state.desktop_service.notify_run_dispatch()
         if loop_binding and loop_service:
-            await loop_service.bind_user_message_run(loop_binding["intent_id"], str(prepared.body.context["run_id"]))
+            await loop_service.bind_user_message_run(loop_binding["intent_id"], str(prepared.payload["run_id"]))
     except Exception as exc:
         if prepared is not None:
             await request.app.state.desktop_service.run_lifecycle.abort_prepared(
-                str(prepared.body.context["run_id"]), str(exc)
+                str(prepared.payload["run_id"]), str(exc)
             )
         if loop_binding and loop_service:
             await loop_service.fail_user_message_round(loop_binding["loop_id"], loop_binding["round_id"], str(exc))
@@ -329,8 +334,7 @@ async def abandon_commitment(thread_id: str, request: Request) -> dict:
 
 @desktop_router.get("/runs/{run_id}")
 async def get_run(run_id: str, request: Request) -> dict:
-    run = await request.app.state.desktop_service.get_run(run_id)
-    return request.app.state.desktop_service._run_payload(run)
+    return await request.app.state.desktop_service.get_run_payload(run_id)
 
 
 @desktop_router.post("/runs/{run_id}/cancel")

@@ -1,6 +1,6 @@
 r"""本文件对外提供 FactObservation、FactLifecycleRepository 与 FactTransitionRejected。
 
-输入为确定性事实身份、展示字段、类型化证据、观察/验证主体、原因事件和目标生命周期；输出为当前事实、不可变修订、
+输入为确定性事实身份、展示字段、类型化证据、观察/验证主体、原因事件和目标生命周期；输出为安全规范化的当前事实、不可变修订、
 关系记录及 `fact.upserted` 规范事件。具体工作流为先持久化 observed，同 identity 的新语义或状态追加同生命周期修订，
 再按验证策略推进；新观察可显式 supersede 或
 contradict 同 subject 的旧事实，历史从不删除。示例：`fact = await repository.observe(session, observation)`。
@@ -21,6 +21,7 @@ from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
 from backend.app.desktop.agent_loop.fact_identity import FactIdentity
 from backend.app.desktop.agent_loop.fact_models import LoopFact, LoopFactRelationship, LoopFactRevision
 from backend.app.desktop.agent_loop.fact_verification import FactActor, FactEvidenceReference, FactVerificationDecision
+from backend.app.desktop.persistence_safety import PersistencePayloadNormalizer
 
 
 class FactTransitionRejected(ValueError):
@@ -58,6 +59,7 @@ class FactLifecycleRepository:
         fact = await session.get(LoopFact, observation.identity.fact_id, with_for_update=True)
         if fact is not None:
             return fact
+        presentation, evidence, observer = self._safe_observation(observation)
         fact = LoopFact(
             fact_id=observation.identity.fact_id,
             loop_id=observation.loop_id,
@@ -68,9 +70,9 @@ class FactLifecycleRepository:
             source_context_id=observation.source_context_id,
             source_run_id=observation.source_run_id,
             correlation_id=observation.correlation_id,
-            presentation=observation.presentation,
-            evidence=[item.model_dump(mode="json") for item in observation.evidence],
-            observer=observation.observer.model_dump(mode="json"),
+            presentation=presentation,
+            evidence=evidence,
+            observer=observer,
             occurred_at=observation.occurred_at,
         )
         session.add(fact)
@@ -82,8 +84,7 @@ class FactLifecycleRepository:
         fact = await session.get(LoopFact, observation.identity.fact_id, with_for_update=True)
         if fact is None:
             return await self.observe(session, observation)
-        presentation = observation.presentation
-        evidence = [item.model_dump(mode="json") for item in observation.evidence]
+        presentation, evidence, observer = self._safe_observation(observation)
         if fact.presentation == presentation and fact.evidence == evidence:
             return fact
         fact.presentation = presentation
@@ -91,7 +92,7 @@ class FactLifecycleRepository:
         fact.source_context_id = observation.source_context_id
         fact.source_run_id = observation.source_run_id
         fact.correlation_id = observation.correlation_id
-        fact.observer = observation.observer.model_dump(mode="json")
+        fact.observer = observer
         fact.occurred_at = observation.occurred_at
         return await self._append_revision(
             session,
@@ -213,6 +214,19 @@ class FactLifecycleRepository:
             "metrics": presentation.get("metrics") or {},
         }
         return json.dumps(comparable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _safe_observation(observation: FactObservation) -> tuple[dict, list[dict], dict]:
+        presentation = PersistencePayloadNormalizer.normalize(
+            observation.presentation, "loop-fact.presentation"
+        ).value
+        evidence = PersistencePayloadNormalizer.normalize(
+            [item.model_dump(mode="json") for item in observation.evidence], "loop-fact.evidence"
+        ).value
+        observer = PersistencePayloadNormalizer.normalize(
+            observation.observer.model_dump(mode="json"), "loop-fact.observer"
+        ).value
+        return presentation, evidence, observer
 
     @staticmethod
     def _payload(fact: LoopFact) -> dict:

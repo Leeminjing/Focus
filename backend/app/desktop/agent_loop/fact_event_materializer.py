@@ -1,8 +1,8 @@
 r"""本文件对外提供 FactEventMaterializer。
 
 输入为按 sequence 提交的 Run、Tool、Workspace、Artifact、Context revision、Directive 与 verification 规范事件；输出为
-确定 identity 的事实修订和 policy 驱动的生命周期状态。具体工作流为把同一领域实体的连续事件归并为同一 Fact，先追加
-观察修订，再用类型化证据推进验证；verification 事件只作用于明确引用的 Fact。示例：
+确定 identity、携带 persistence-safety provenance 的事实修订和 policy 驱动的生命周期状态。具体工作流为把同一领域实体的连续事件归并为同一 Fact，先追加
+观察修订与规范化披露，再用类型化证据推进验证；verification 事件只作用于明确引用的 Fact。示例：
 `fact = await materializer.materialize(session, event)`。
 """
 
@@ -117,6 +117,7 @@ class FactEventMaterializer:
             "summary": payload.get("summary") or payload.get("reason") or f"{event.kind} 已提交",
             "metrics": payload.get("metrics") or {},
             "outcome_status": status,
+            "persistence_safety": payload.get("_persistence_safety") or {},
         }
 
     @staticmethod
@@ -138,6 +139,6 @@ class FactEventMaterializer:
                 entity_id=event.entity_id,
                 run_id=str(event.payload.get("run_id")) if event.payload.get("run_id") else None,
                 context_revision_id=str(event.payload.get("context_revision_id")) if event.payload.get("context_revision_id") else None,
-                metadata={"event_id": event.event_id, "kind": event.kind, "sequence": event.sequence},
+                metadata={"event_id": event.event_id, "kind": event.kind, "sequence": event.sequence, "persistence_safety": event.payload.get("_persistence_safety") or {}},
             ),
         )

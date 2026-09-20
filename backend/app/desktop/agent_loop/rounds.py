@@ -29,6 +29,7 @@ from backend.app.desktop.agent_loop.models import (
     LoopRound,
 )
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+from backend.app.desktop.agent_loop.wait_requests import open_recovery_wait
 
 
 CLAIMABLE_ROUND_STATUSES = ("observed", "curated", "adopting", "ready")
@@ -176,9 +177,15 @@ async def terminate_round(
     if decision_id is not None:
         round_row.decision_id = decision_id
     if wait_for_user and loop is not None and loop.status == "running" and loop.current_round_id == round_row.round_id:
-        loop.status = "waiting_user"
         loop.health = "degraded"
-        loop.waiting_reason = reason[:_WAITING_REASON_LIMIT]
+        await open_recovery_wait(
+            session,
+            loop,
+            reason[:_WAITING_REASON_LIMIT],
+            source="round-termination",
+            round_id=round_row.round_id,
+            scope={"category": category, "decision_id": decision_id},
+        )
     await _append_termination_event(session, round_row.loop_id, round_row.round_id, category, reason)
     return True
 

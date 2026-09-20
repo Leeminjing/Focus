@@ -1,6 +1,6 @@
 r"""本文件对外提供 RunLifecycleFinalizer 与 RunSettlement。
 
-输入为已结束 RunRecord或未启动成功的持久 Run、最终 checkpoint 和 workspace result；输出为终态 Run、
+输入为已结束 RunRecord或未启动成功的持久 Run、最终 checkpoint 和 workspace result；输出为安全规范化的终态 Run、
 新 Context revision 与 MainRunSettled event identity。具体工作流为先在事务外精确读取执行 checkpoint，
 再在单事务中锁 Run、保存终态及完整模型用量、按 base revision CAS 发布 checkpoint revision、按 lease 模式结算
 workspace effect、释放 lease 并 enqueue outbox；Reader 只记录并发变化，隔离 Writer 保留待采用结果，
@@ -34,6 +34,7 @@ from backend.app.desktop.models import DesktopRun, DesktopThread
 from backend.app.desktop.workspace_coordination.fingerprints import WorkspaceFingerprinter
 from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor, WorkspaceLease, WorkspaceSlot
 from backend.app.desktop.run_orchestration.outbox import RunOutboxRepository
+from backend.app.desktop.persistence_safety import PersistencePayloadNormalizer
 from focus.runtime.runs.manager import RunRecord
 
 
@@ -88,13 +89,16 @@ class RunLifecycleFinalizer:
                 terminal_status = "error"
                 terminal_error = terminal_error or "Run task 已结束但未产生终态"
             locked.status = terminal_status
-            locked.error = terminal_error
+            locked.error = self._safe_text(terminal_error, "desktop-run.error")
             locked.model_call_count = record.model_call_count
             locked.prompt_input_tokens = record.prompt_input_tokens
             locked.prompt_output_tokens = record.prompt_output_tokens
             locked.prompt_cache_hit_tokens = record.prompt_cache_hit_tokens
             locked.final_checkpoint_id = checkpoint_id
-            locked.workspace_result = await self._settle_workspace(session, locked, workspace_result, captured)
+            locked.workspace_result = self._safe_json(
+                await self._settle_workspace(session, locked, workspace_result, captured),
+                "desktop-run.workspace-result",
+            )
             locked.settled_at = datetime.now(UTC)
             await self._release_workspace_lease(session, locked)
             revision, publication = await self._publish_context_checkpoint(
@@ -116,12 +120,16 @@ class RunLifecycleFinalizer:
                 event_id=event.event_id,
             )
 
-    async def reconcile_active(self, reason: str) -> int:
+    async def reconcile_active(self, reason: str, *, exclude_run_ids: set[str] | None = None) -> int:
+        excluded = exclude_run_ids or set()
         async with self._sessions() as session:
             identities = list(
                 (
                     await session.scalars(
-                        select(DesktopRun).where(DesktopRun.status.in_(["pending", "running"]))
+                        select(DesktopRun).where(
+                            DesktopRun.status.in_(["pending", "running"]),
+                            DesktopRun.run_id.not_in(excluded) if excluded else True,
+                        )
                     )
                 ).all()
             )
@@ -134,7 +142,10 @@ class RunLifecycleFinalizer:
                 (
                     await session.scalars(
                         select(DesktopRun)
-                        .where(DesktopRun.status.in_(["pending", "running"]))
+                        .where(
+                            DesktopRun.status.in_(["pending", "running"]),
+                            DesktopRun.run_id.not_in(excluded) if excluded else True,
+                        )
                         .order_by(DesktopRun.run_id)
                         .with_for_update()
                     )
@@ -142,18 +153,18 @@ class RunLifecycleFinalizer:
             )
             for run in runs:
                 run.status = "interrupted"
-                run.error = reason
+                run.error = self._safe_text(reason, "desktop-run.error")
                 run.settled_at = datetime.now(UTC)
                 reconciliation = await self._reconcile_workspace_evidence(
                     session,
                     run,
                     captured_by_run.get(run.run_id),
                 )
-                run.workspace_result = {
+                run.workspace_result = self._safe_json({
                     **(run.workspace_result or {}),
                     "context_publication": "unknown_after_restart",
                     "reconciliation": reconciliation,
-                }
+                }, "desktop-run.workspace-result")
                 await self._release_workspace_lease(session, run)
                 await self._outbox.enqueue_settled(
                     session,
@@ -200,13 +211,13 @@ class RunLifecycleFinalizer:
             if run is None or run.settled_at is not None:
                 return False
             run.status = "error"
-            run.error = reason
+            run.error = self._safe_text(reason, "desktop-run.error")
             run.settled_at = datetime.now(UTC)
-            run.workspace_result = {
+            run.workspace_result = self._safe_json({
                 **(run.workspace_result or {}),
                 "context_publication": "not_started",
                 "launch_error": reason,
-            }
+            }, "desktop-run.workspace-result")
             await self._release_workspace_lease(session, run)
             await self._outbox.enqueue_settled(
                 session,
@@ -430,3 +441,13 @@ class RunLifecycleFinalizer:
             "action_id": run.action_id,
             "directive_id": run.directive_id,
         }
+
+    @staticmethod
+    def _safe_json(value: Any, source: str) -> Any:
+        return PersistencePayloadNormalizer.normalize(value, source).value
+
+    @staticmethod
+    def _safe_text(value: str | None, source: str) -> str | None:
+        if value is None:
+            return None
+        return str(PersistencePayloadNormalizer.normalize(value, source).value)

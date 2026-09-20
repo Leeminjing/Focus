@@ -492,6 +492,7 @@ class RunMaterialCreate(StrictRequest):
 
 class MainRunCreate(StrictRequest):
     message: str | list[dict[str, Any]] = Field(min_length=1)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=160)
     material_inputs: list[RunMaterialCreate] | None = None
     attached_material_ids: list[str] | None = None
     must_view_material_ids: list[str] = Field(default_factory=list)

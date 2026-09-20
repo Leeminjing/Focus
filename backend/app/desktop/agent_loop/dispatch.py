@@ -215,8 +215,9 @@ class LoopRunWorkspaceBinder:
                 "fencing_token": lease.fencing_token,
                 "mode": lease.mode.value if hasattr(lease.mode, "value") else str(lease.mode),
             }
-            session.add(
-                RunExecutionAnchor(
+            anchor = await session.get(RunExecutionAnchor, run_id, with_for_update=True)
+            if anchor is None:
+                anchor = RunExecutionAnchor(
                     run_id=run_id,
                     context_revision_id=run.context_revision_id,
                     checkpoint_id=run.context_checkpoint_id,
@@ -226,7 +227,13 @@ class LoopRunWorkspaceBinder:
                     observed_workspace_revision=slot.revision,
                     observed_fingerprint=slot.current_fingerprint,
                 )
-            )
+                session.add(anchor)
+            else:
+                anchor.slot_id = slot.slot_id
+                anchor.lease_id = lease.lease_id
+                anchor.directive_id = directive_id
+                anchor.observed_workspace_revision = slot.revision
+                anchor.observed_fingerprint = slot.current_fingerprint
 
 
 class DesktopDirectiveLaunchPort:

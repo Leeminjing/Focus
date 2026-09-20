@@ -34,7 +34,13 @@
   }
 
   function freshDirectRun(context) {
-    return [context.active_run, context.latest_direct_user_run].find(run => run?.run_id && !run.loop_id && (!run.origin || run.origin === "direct_user")) || null;
+    const eligibility = context.loop_activation;
+    if (eligibility && !eligibility.eligible) return null;
+    const candidateId = eligibility?.candidate_run_id;
+    const candidates = [context.latest_direct_user_run, context.active_run];
+    const candidate = candidates.find(run => run?.run_id === candidateId)
+      || candidates.find(run => run?.run_id && !run.loop_id && (!run.origin || run.origin === "direct_user"));
+    return candidate || (candidateId ? { run_id: candidateId, status: eligibility.candidate_status, origin: "direct_user" } : null);
   }
 
   function budgetPercent(usage, budgets) {
@@ -57,12 +63,22 @@
   function startView(context) {
     const defaults = { max_rounds: 50, max_duration_seconds: 86400, max_model_calls: 200, max_input_tokens: 2000000, max_output_tokens: 500000, max_retries: 20, max_lanes: 8, max_contexts: 16, max_providers: 4, max_new_lanes_per_round: 3, max_concurrent_runs: 4, max_no_progress: 3 };
     const initialRun = freshDirectRun(context);
-    const linkedRun = context.active_run?.loop_id || context.latest_direct_user_run?.loop_id;
+    const linkedRun = context.latest_direct_user_run?.loop_id || context.active_run?.loop_id;
+    const eligibility = context.loop_activation || null;
+    const reasonLabel = ({
+      no_direct_user_run: "还没有直接用户 Run",
+      newest_run_already_bound: "最新直接用户 Run 已属于另一个 Loop",
+      newest_run_status_ineligible: "最新直接用户 Run 尚未被执行系统接受",
+      nonterminal_predecessor: "这个 Context 仍有未结束的 Loop",
+    })[eligibility?.reason] || eligibility?.reason || "还没有可用于首轮的直接用户 Run";
+    const blockedDetail = eligibility
+      ? [eligibility.candidate_run_id && `候选 Run：${eligibility.candidate_run_id}（${eligibility.candidate_status || "unknown"}）`, eligibility.predecessor_loop_id && `前置 Loop：${eligibility.predecessor_loop_id}`].filter(Boolean).join(" · ")
+      : "";
     const readiness = initialRun
       ? `<p class="loop-ready" role="status">首轮将绑定直接用户 Run：${escape(initialRun.run_id)}（${escape(initialRun.status || "unknown")}）</p>`
-      : `<div class="loop-start-gate" role="status"><strong>${linkedRun ? "旧 Run 已归属于历史 Loop" : "还没有可用于首轮的直接用户 Run"}</strong><span>请回到当前 Context 发送一条新的用户消息，再创建后继 Loop。</span><button type="button" data-action="loop-new-run">返回 Context 发送消息</button></div>`;
+      : `<div class="loop-start-gate" role="status" data-eligibility-reason="${escape(eligibility?.reason || "unknown")}"><strong>${escape(linkedRun && !eligibility ? "旧 Run 已归属于历史 Loop" : reasonLabel)}</strong>${blockedDetail ? `<small>${escape(blockedDetail)}</small>` : ""}<span>${eligibility?.reason === "nonterminal_predecessor" ? "请先处理或停止现有 Loop；系统不会覆盖它。" : "请回到当前 Context 发送一条新的用户消息，再创建后继 Loop。"}</span><button type="button" data-action="loop-new-run">返回 Context 发送消息</button></div>`;
     const editor = globalThis.FocusLoopMissionEditor?.render({ outcome: context.title || "" }) || "";
-    return `<section class="loop-empty"><header><span class="loop-kicker">Context Loop</span><h2>启动长期 Agent Loop</h2><p>用户保留根权力；Portfolio Patrol 在授权范围内持续判断、策展 Context 并发送普通 HumanMessage。</p></header>${readiness}<form id="agentLoopStartForm" class="loop-start-form">${editor}<label class="loop-delegation-option"><input name="autonomousCompression" type="checkbox" checked>允许 Patrol 自主压缩 Context；原文保留可恢复，授权可随时撤销</label><label class="loop-delegation-option"><input name="isolatedWrites" type="checkbox" checked>允许 Patrol 为并行写实验创建隔离 Git worktree，并在明确选择后采用结果</label><div class="loop-start-budget">${budgetInputs(defaults)}</div><button class="primary" type="submit"${initialRun ? "" : " disabled"}>授权 Patrol 并启动</button></form></section>`;
+    return `<section class="loop-empty"><header><span class="loop-kicker">Context Loop</span><h2>启动长期 Agent Loop</h2><p>用户保留根权力；Portfolio Patrol 在授权范围内持续判断、策展 Context 并发送普通 HumanMessage。</p></header>${readiness}<form id="agentLoopStartForm" class="loop-start-form">${editor}<label class="loop-delegation-option"><input name="autonomousCompression" type="checkbox" checked>允许 Patrol 自主压缩 Context；原文保留可恢复，授权可随时撤销</label><label class="loop-delegation-option"><input name="isolatedWrites" type="checkbox" checked>允许 Patrol 为并行写实验创建隔离 Git worktree，并在明确选择后采用结果</label><div class="loop-start-budget">${budgetInputs(defaults)}</div><p data-loop-start-status role="status"></p><button class="primary" type="submit"${initialRun ? "" : " disabled"}>授权 Patrol 并启动</button></form></section>`;
   }
 
   function compressionStatus(related) {
@@ -104,7 +120,7 @@
     const budgets = loop.grant?.budgets || {};
     const contextCount = consoleState?.manifest?.nodes?.length ?? usage.contexts ?? 0;
     const terminal = TERMINAL.has(loop.status);
-    const controls = loop.status === "running" ? ["pause", "stop"] : loop.status === "paused" || loop.status === "waiting_user" ? [...(loop.grant ? ["resume"] : []), "stop"] : [];
+    const controls = loop.status === "running" ? ["pause", "stop"] : loop.status === "paused" ? [...(loop.grant ? ["resume"] : []), "stop"] : loop.status === "waiting_user" ? ["stop"] : [];
     const percent = budgetPercent(usage, budgets);
     return `<header class="loop-command-bar"><div class="loop-command-title"><h2>Portfolio Map</h2>${goalDisclosure(loop)}</div><div class="loop-command-metrics"><div class="loop-command-metric"><span class="loop-live-dot is-${escape(loop.status)}" aria-hidden="true"></span><div><strong>${escape(loop.status)}</strong><small>Loop 状态</small></div></div><div class="loop-command-metric"><strong>Round ${escape(usage.rounds || 0)}</strong><small>/ ${escape(budgets.max_rounds || "∞")}</small></div><div class="loop-command-metric"><strong>${escape(contextCount)} 个 Context</strong><small>真实 Portfolio</small></div><div class="loop-command-metric"><strong>Portfolio Patrol</strong><small>${escape(loop.health || "idle")}</small></div><div class="loop-budget-ring" style="--loop-budget-progress:${percent}%" role="img" aria-label="预算已使用 ${percent}%"><span>${percent}%</span></div></div><div class="loop-primary-controls">${controls.map(command => `<button type="button" data-action="loop-control" data-loop-control="${command}">${({ pause: "暂停", resume: "恢复", stop: "停止" })[command]}</button>`).join("")}${terminal ? '<button type="button" data-action="loop-exit">退出当前 Loop</button><button class="primary" type="button" data-action="loop-prepare-new">新建 Loop</button>' : ""}</div></header>`;
   }
@@ -146,7 +162,7 @@
     existing.forEach(item => item.remove());
   }
 
-  function render(state, context = {}, consoleState = null) {
+  function render(state, context = {}, consoleState = null, waitUi = {}) {
     const loop = state?.snapshot;
     if (!loop) return startView(context);
     const usage = loop.usage || {};
@@ -159,7 +175,8 @@
     const override = ["running", "paused", "waiting_user"].includes(loop.status) ? `<details class="loop-override"><summary>用户接管 / 修订 Mission</summary><form id="agentLoopOverrideForm">${missionEditor}<button class="primary" type="submit">确认新 Mission revision</button></form></details>` : "";
     const budgetDetails = `<div class="loop-budget"><span>Rounds ${escape(usage.rounds || 0)} / ${escape(budgets.max_rounds || "∞")}</span><span>Duration ${escape(usage.duration_seconds || 0)} / ${escape(budgets.max_duration_seconds || "∞")}s</span><span>Calls ${escape(usage.model_calls || 0)} / ${escape(budgets.max_model_calls || "∞")}</span><span>Input ${escape(usage.input_tokens || 0)} / ${escape(budgets.max_input_tokens || "∞")}</span><span>Output ${escape(usage.output_tokens || 0)} / ${escape(budgets.max_output_tokens || "∞")}</span><span>Retries ${escape(usage.retries || 0)} / ${escape(budgets.max_retries ?? "∞")}</span><span>Lanes ${escape(usage.lanes || 0)} / ${escape(budgets.max_lanes || "∞")}</span><span>Contexts ${escape(usage.contexts || 0)} / ${escape(budgets.max_contexts || "∞")}</span><span>Providers ${escape(usage.providers || 0)} / ${escape(budgets.max_providers || "∞")}</span></div>`;
     const consoleHtml = globalThis.FocusLoopConsoleView?.render({ ...consoleState, loopStatus: loop.status, terminal }) || '<section class="loop-console-loading">控制台模块不可用</section>';
-    return `<section class="loop-dashboard console-shell" data-loop-id="${escape(loop.loop_id)}" data-loop-status="${escape(loop.status)}">${commandBar(loop, consoleState)}${patrolActivity(state)}${loop.waiting_reason ? `<p class="loop-waiting" data-loop-waiting role="status">${escape(loop.waiting_reason)}</p>` : ""}${compressionStatus({ ...related, snapshot: loop })}${terminal ? `<div class="loop-terminal-notice" role="status"><strong>该 Loop 已${loop.status === "completed" ? "完成" : loop.status === "failed" ? "失败" : "停止"}</strong><span>历史 Context、完整会话和事实证据仍可查看；退出不会删除审计记录。</span></div>` : ""}${consoleHtml}<details class="loop-advanced"><summary>授权、预算与目标控制</summary>${budgetDetails}${grantControls(loop)}${history}${override}<p class="muted tiny">当前轮次 ${escape(loop.current_round_id || "—")} · 活动 Run ${escape(activeRuns.length)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)} · Authority R${escape(loop.authority_revision)}</p></details></section>`;
+    const waitRequest = globalThis.FocusLoopWaitRequestView?.render(loop.wait_request, waitUi, escape) || (loop.waiting_reason ? `<p class="loop-waiting" data-loop-waiting role="status">${escape(loop.waiting_reason)}</p>` : "");
+    return `<section class="loop-dashboard console-shell" data-loop-id="${escape(loop.loop_id)}" data-loop-status="${escape(loop.status)}">${commandBar(loop, consoleState)}${patrolActivity(state)}${waitRequest}${compressionStatus({ ...related, snapshot: loop })}${terminal ? `<div class="loop-terminal-notice" role="status"><strong>该 Loop 已${loop.status === "completed" ? "完成" : loop.status === "failed" ? "失败" : "停止"}</strong><span>历史 Context、完整会话和事实证据仍可查看；退出不会删除审计记录。</span></div>` : ""}${consoleHtml}<details class="loop-advanced"><summary>授权、预算与目标控制</summary>${budgetDetails}${grantControls(loop)}${history}${override}<p class="muted tiny">当前轮次 ${escape(loop.current_round_id || "—")} · 活动 Run ${escape(activeRuns.length)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)} · Authority R${escape(loop.authority_revision)}</p></details></section>`;
   }
 
   function patchLifecycle(container, state) {
@@ -167,9 +184,8 @@
     const shell = container?.querySelector?.(".loop-dashboard.console-shell");
     if (!loop || !shell || shell.dataset.loopId !== loop.loop_id) return false;
     if (shell.dataset.loopStatus !== loop.status) return false;
-    const waiting = shell.querySelector("[data-loop-waiting]");
-    if (Boolean(waiting) !== Boolean(loop.waiting_reason)) return false;
-    if (waiting) waiting.textContent = loop.waiting_reason;
+    if (shell.querySelector("[data-wait-request-id]")?.dataset.waitRequestId !== loop.wait_request?.request_id) return false;
+    if (loop.wait_request) return false;
     const commandTemplate = document.createElement("template");
     commandTemplate.innerHTML = commandBar(loop, null);
     const metrics = shell.querySelector(".loop-command-metrics");

@@ -1,4 +1,4 @@
-r"""本文件对外提供 agent_loop_router，作为 Loop、Mission、授权、用户介入、Kernel decision、控制与事件 HTTP 边界。
+r"""本文件对外提供 agent_loop_router，作为 Loop、Mission、授权、类型化等待响应、用户介入、Kernel decision、控制与事件 HTTP 边界。
 
 输入为已通过 Desktop 会话认证的结构化 Mission 或兼容旧字段及其它严格 schema；输出为 Loop snapshot、
 持久用户意图、Kernel result 或 cursor event。具体工作流为路由解析 Mission 后从 app.state 取得专用
@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract, LoopCreateRequest, LoopGrantMutationRequest, LoopInterventionRequest, PatrolDecisionIntent
+from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract, LoopCreateRequest, LoopGrantMutationRequest, LoopInterventionRequest, LoopWaitResponseRequest, PatrolDecisionIntent
 from backend.app.desktop.agent_loop.mission_contract import LegacyMissionAdapter, LoopMissionContract
 from backend.app.desktop.agent_loop.kernel import KernelRejected
 
@@ -72,9 +72,34 @@ async def get_active_loop_for_context(context_id: str, request: Request) -> dict
     return await request.app.state.agent_loop_service.active_for_context(context_id)
 
 
+@agent_loop_router.get("/activation-eligibility/by-context/{context_id}")
+async def get_loop_activation_eligibility(context_id: str, request: Request) -> dict:
+    return await request.app.state.agent_loop_service.activation_eligibility(context_id)
+
+
 @agent_loop_router.get("/{loop_id}")
 async def get_loop(loop_id: str, request: Request) -> dict:
     return await request.app.state.agent_loop_service.get(loop_id)
+
+
+@agent_loop_router.get("/{loop_id}/wait-request")
+async def get_loop_wait_request(loop_id: str, request: Request) -> dict | None:
+    return await request.app.state.agent_loop_service.active_wait_request(loop_id)
+
+
+@agent_loop_router.post("/{loop_id}/wait-requests/{request_id}/responses")
+async def respond_to_loop_wait_request(
+    loop_id: str,
+    request_id: str,
+    body: LoopWaitResponseRequest,
+    request: Request,
+) -> dict:
+    return await request.app.state.agent_loop_service.resolve_wait_request(
+        loop_id,
+        request_id,
+        body,
+        actor_id="user",
+    )
 
 
 @agent_loop_router.post("/{loop_id}/control")

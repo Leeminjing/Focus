@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopEventOutbox, LoopPendingDecision
+from backend.app.desktop.agent_loop.wait_requests import open_recovery_wait
 
 
 class PendingDecisionContract(BaseModel):
@@ -66,9 +67,14 @@ class PendingDecisionProjector:
         if loop is None:
             raise LookupError("pending decision 所属 Loop 不存在")
         if not delegable and loop.status in {"running", "paused"}:
-            loop.status = "waiting_user"
             loop.health = "blocked"
-            loop.waiting_reason = f"存在不可委托的 {kind} 决策，必须由用户处理"
+            await open_recovery_wait(
+                session,
+                loop,
+                f"存在不可委托的 {kind} 决策，必须由用户处理",
+                source="pending-decision-gate",
+                scope={"kind": kind, "pending_decision_id": identity},
+            )
         sequence = int(
             await session.scalar(
                 select(func.coalesce(func.max(LoopEventOutbox.sequence), 0)).where(

@@ -33,6 +33,7 @@ from backend.app.desktop.agent_loop.compression_authority.contracts import Auton
 from backend.app.desktop.agent_loop.compression_authority.repository import CompressionAuthorityRepository
 from backend.app.desktop.models import DesktopRun
 from backend.app.desktop.workspace_coordination.models import WorkspaceLease
+from backend.app.desktop.agent_loop.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService
 
 
 class LoopAuthorityService:
@@ -65,9 +66,14 @@ class LoopAuthorityService:
             await CompressionAuthorityRepository().supersede(session, loop_id, "authority_changed")
             interrupted = await self._interrupt_active_runs(session, loop_id)
             if replacement is None:
-                loop.status = "waiting_user"
                 loop.health = "idle"
-                loop.waiting_reason = "用户已撤销 Patrol delegation"
+                await LoopWaitRequestService().open(
+                    session,
+                    loop,
+                    LoopWaitRequestFactory.legacy_recovery("用户已撤销 Patrol delegation"),
+                    created_by="authority-control",
+                    correlation_id=f"grant-revoked:{loop.loop_id}:{loop.authority_revision}",
+                )
                 event_type = "LoopGrantRevoked"
             else:
                 replacement.revision = loop.authority_revision
@@ -75,10 +81,19 @@ class LoopAuthorityService:
                 expired = replacement.expires_at is not None and self._as_utc(replacement.expires_at) <= datetime.now(UTC)
                 exhausted = ("delegation_expired",) if expired else await self._exhausted_budgets(session, loop, replacement.budgets)
                 if exhausted:
-                    loop.status = "waiting_user"
                     loop.health = "degraded"
-                    loop.waiting_reason = "更新后的 Loop hard budget 已耗尽: " + ", ".join(exhausted)
+                    reason = "更新后的 Loop hard budget 已耗尽: " + ", ".join(exhausted)
+                    await LoopWaitRequestService().open(
+                        session,
+                        loop,
+                        LoopWaitRequestFactory.budget_action(reason, replacement.budgets or {}),
+                        created_by="authority-control",
+                        correlation_id=f"budget:{loop.loop_id}:{loop.authority_revision}",
+                    )
                 else:
+                    active_wait = await LoopWaitRequestService().active(session, loop_id, lock=True)
+                    if active_wait is not None:
+                        await LoopWaitRequestService().cancel(session, active_wait.request_id, superseded=True)
                     round_row = await create_observation_round(session, loop, prior_round, "0" * 64)
                     loop.current_round_id = round_row.round_id
                     loop.status = "running"

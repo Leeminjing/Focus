@@ -34,6 +34,8 @@
           loop_id: projection.loop_id,
           mission: mission ? { outcome: mission.outcome, boundaries: mission.boundaries || {}, completion_checks: mission.completion_checks || [] } : current.snapshot?.mission,
           active_mission_revision: loop.active_mission_revision || loop.goal_revision,
+          wait_request: globalThis.FocusLoopLiveSelectors?.selectActiveWaitRequest(projection) || null,
+          projection_diagnostics: projection.diagnostics,
         };
         return publish({ snapshot, live: projection, connection, cursor: projection.last_sequence, pendingControl: null, error: null });
       },

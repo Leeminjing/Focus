@@ -17,7 +17,16 @@ class ProjectionSequenceGap(RuntimeError):
 
 class LoopLiveProjectionReducer:
     _SINGULAR = frozenset({"loop", "mission", "patrol_session", "round", "portfolio"})
-    _COLLECTIONS = {"context": "contexts", "run": "runs", "context_run": "runs", "curator": "curators", "directive": "directives", "fact": "facts"}
+    _COLLECTIONS = {
+        "context": "contexts",
+        "run": "runs",
+        "context_run": "runs",
+        "curator": "curators",
+        "directive": "directives",
+        "fact": "facts",
+        "loop_wait_request": "wait_requests",
+        "loop_wait_response": "wait_responses",
+    }
 
     def __init__(self, timeline_limit: int = 200) -> None:
         self._timeline_limit = max(1, timeline_limit)

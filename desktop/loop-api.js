@@ -15,10 +15,17 @@
     const root = `${String(runtime.apiBase || "").replace(/\/$/, "")}/desktop/api`;
     const base = `${root}/agent-loops`;
     const headers = { "Content-Type": "application/json", "X-Focus-Session": runtime.session };
+    const errorMessage = detail => {
+      if (typeof detail === "string") return detail;
+      if (!detail || typeof detail !== "object") return "Agent Loop 请求失败";
+      const eligibility = detail.eligibility || {};
+      const identity = [eligibility.candidate_run_id && `Run ${eligibility.candidate_run_id}`, eligibility.predecessor_loop_id && `Loop ${eligibility.predecessor_loop_id}`].filter(Boolean).join(" · ");
+      return [detail.message || detail.code || "Agent Loop 请求失败", identity].filter(Boolean).join("：");
+    };
     async function request(path, options = {}) {
       const response = await fetchImpl(`${base}${path}`, { ...options, headers: { ...headers, ...(options.headers || {}) } });
       const payload = await response.json();
-      if (!response.ok) throw Object.assign(new Error(payload?.detail?.message || payload?.detail || "Agent Loop 请求失败"), { status: response.status, payload });
+      if (!response.ok) throw Object.assign(new Error(errorMessage(payload?.detail)), { status: response.status, payload, detail: payload?.detail });
       return payload;
     }
     async function stream(loopId, after, onEvents, signal) {
@@ -69,8 +76,11 @@
     }
     return Object.freeze({
       start: body => request("", { method: "POST", body: JSON.stringify(body) }),
+      activationEligibility: contextId => request(`/activation-eligibility/by-context/${encodeURIComponent(contextId)}`),
       findByContext: contextId => request(`/by-context/${encodeURIComponent(contextId)}`),
       get: loopId => request(`/${encodeURIComponent(loopId)}`),
+      waitRequest: loopId => request(`/${encodeURIComponent(loopId)}/wait-request`),
+      resolveWait: (loopId, requestId, body) => request(`/${encodeURIComponent(loopId)}/wait-requests/${encodeURIComponent(requestId)}/responses`, { method: "POST", body: JSON.stringify(body) }),
       control: (loopId, command) => request(`/${encodeURIComponent(loopId)}/control`, { method: "POST", body: JSON.stringify({ command }) }),
       mutateGrant: (loopId, body) => request(`/${encodeURIComponent(loopId)}/grant`, { method: "POST", body: JSON.stringify(body) }),
       override: (loopId, body) => request(`/${encodeURIComponent(loopId)}/override`, { method: "POST", body: JSON.stringify(body) }),

@@ -50,6 +50,8 @@ class LoopLiveRedactionPolicy:
             "curators": {key: redact(value) for key, value in projection.curators.items()},
             "directives": {key: redact(value) for key, value in projection.directives.items()},
             "facts": {key: redact(value) for key, value in projection.facts.items()},
+            "wait_requests": {key: redact(value) for key, value in projection.wait_requests.items()},
+            "wait_responses": {key: redact(value) for key, value in projection.wait_responses.items()},
         })
 
     @classmethod

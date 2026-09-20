@@ -43,6 +43,7 @@ from backend.app.desktop.context_curation.portfolio_publisher import PortfolioSu
 from backend.app.desktop.context_evolution.models import ContextRevision
 from backend.app.desktop.models import DesktopRun, DesktopThread
 from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor, WorkspaceSlot
+from backend.app.desktop.agent_loop.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService, open_recovery_wait
 
 
 @dataclass(frozen=True, slots=True)
@@ -458,9 +459,15 @@ class LoopKernel:
             if round_row is not None and round_row.status in {"publishing", "adopting"}:
                 round_row.status = "superseded" if superseded else "error"
             if loop is not None and loop.status == "running" and not superseded:
-                loop.status = "waiting_user"
                 loop.health = "degraded"
-                loop.waiting_reason = f"Loop deferred commit 失败: {reason[:1000]}"
+                await open_recovery_wait(
+                    session,
+                    loop,
+                    f"Loop deferred commit 失败: {reason[:1000]}",
+                    source="kernel-deferred-commit",
+                    round_id=decision.round_id,
+                    scope={"decision_id": decision_id},
+                )
             return KernelCommitResult(decision_id, status, tuple(item.action_id for item in actions), (), reason)
 
     async def _apply_actions(self, session, loop, round_row, grant, decision, intent):
@@ -520,8 +527,14 @@ class LoopKernel:
             elif intent_action.action in {"request_lane_curator", "request_completion_verifier"}:
                 session.add(LoopWorkerRequest(worker_request_id=uuid.uuid4().hex, loop_id=loop.loop_id, round_id=round_row.round_id, kind=intent_action.action.removeprefix("request_"), scope=intent_action.model_dump(mode="json")))
             elif intent_action.action == "wait_for_user":
-                loop.status = "waiting_user"
-                loop.waiting_reason = intent_action.reason
+                await LoopWaitRequestService().open(
+                    session,
+                    loop,
+                    LoopWaitRequestFactory.clarification(intent_action.reason, {"decision_id": decision.decision_id}),
+                    created_by="portfolio-patrol",
+                    correlation_id=decision.decision_id,
+                    round_id=round_row.round_id,
+                )
             elif intent_action.action == "stop_loop":
                 await self._directive_lifecycle.cancel_active(session, loop.loop_id, "patrol_stop_loop")
                 loop.status = "stopped"

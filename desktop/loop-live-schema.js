@@ -10,7 +10,7 @@
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
 
-  const COLLECTIONS = Object.freeze(["contexts", "runs", "curators", "directives", "facts"]);
+  const COLLECTIONS = Object.freeze(["contexts", "runs", "curators", "directives", "facts", "wait_requests", "wait_responses"]);
   const SINGULAR = Object.freeze(["loop", "mission", "patrol_session", "round", "portfolio"]);
 
   function record(value, path) {
@@ -57,10 +57,12 @@
       curators: Object.freeze({}),
       directives: Object.freeze({}),
       facts: Object.freeze({}),
+      wait_requests: Object.freeze({}),
+      wait_responses: Object.freeze({}),
       portfolio: null,
       activity_timeline: Object.freeze([]),
       unknown_kinds: Object.freeze([]),
-      diagnostics: Object.freeze({ journal_last_sequence: 0, projector_last_sequence: 0, lag: 0, rebuilt: false, updated_at: null }),
+      diagnostics: Object.freeze({ journal_last_sequence: 0, projector_last_sequence: 0, lag: 0, rebuilt: false, recovery_status: "healthy", degraded_scope: Object.freeze([]), quarantined_units: Object.freeze([]), updated_at: null }),
     });
   }
 
@@ -75,7 +77,8 @@
     if (!Array.isArray(source.unknown_kinds ?? [])) throw new TypeError("snapshot.unknown_kinds 必须是数组");
     result.activity_timeline = Object.freeze([...(source.activity_timeline ?? [])].slice(-200).map(item => Object.freeze({ ...record(item, "snapshot.activity_timeline[]") })));
     result.unknown_kinds = Object.freeze([...(source.unknown_kinds ?? [])]);
-    result.diagnostics = Object.freeze({ ...(source.diagnostics || emptyProjection().diagnostics) });
+    const diagnostics = source.diagnostics || emptyProjection().diagnostics;
+    result.diagnostics = Object.freeze({ ...emptyProjection().diagnostics, ...diagnostics, degraded_scope: Object.freeze([...(diagnostics.degraded_scope || [])]), quarantined_units: Object.freeze([...(diagnostics.quarantined_units || [])]) });
     return Object.freeze(result);
   }
 

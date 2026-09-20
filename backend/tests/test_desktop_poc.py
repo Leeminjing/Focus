@@ -803,13 +803,25 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
             return SimpleNamespace(
                 run_id=body.context["run_id"], thread_id=thread_id,
                 status=SimpleNamespace(value="success"), error=None,
-                prompt_input_tokens=0, prompt_cache_hit_tokens=0, task=future,
+                model_call_count=0, prompt_input_tokens=0,
+                prompt_output_tokens=0, prompt_cache_hit_tokens=0, task=future,
             )
 
         import backend.app.desktop.routes as desktop_routes
 
         original_start_run = desktop_routes.start_run
+        original_dispatch_start = service._run_dispatch_worker._starter
+
+        async def fake_dispatch_start(assembly):
+            return await fake_start_run(
+                assembly.body,
+                assembly.thread_id,
+                None,
+                assembly.agent_factory,
+            )
+
         desktop_routes.start_run = fake_start_run
+        service._run_dispatch_worker._starter = fake_dispatch_start
         main = client.post(
             f"/desktop/api/tasks/{task['task_id']}/main/runs",
             headers=SESSION,
@@ -821,6 +833,7 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
             },
         )
         assert main.status_code == 200
+        wait_until(lambda: bool(launched), message="durable Main Run dispatch did not start")
         main_body, main_thread, main_factory = launched[-1]
         assert main_thread == thread_id
         assert main_body.context["skills"] == ["two", "one"]
@@ -944,9 +957,16 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
         assert _git(workspace_folder, "status", "--porcelain") == status_before
 
         orphan_run_id = retried["run_id"]
+        wait_until(
+            lambda: client.get(
+                f"/desktop/api/runs/{orphan_run_id}", headers=SESSION
+            ).json()["status"] == "success",
+            message="fake retried Run did not settle before restart setup",
+        )
         client.portal.call(
             _set_desktop_run_status, service, orphan_run_id, "pending"
         )
+        service._run_dispatch_worker._starter = original_dispatch_start
 
     with _client() as restarted:
         assert restarted.get(
@@ -956,7 +976,7 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
             _cleanup, app.state.desktop_service, task["task_id"], workspace["workspace_id"], thread_id
         )
 
-    desktop_routes.start_run = original_start_run  # 恢复 patch，避免污染后续测试
+    desktop_routes.start_run = original_start_run
 
 
 def test_unregistered_execution_identity_is_refused_with_a_distinct_code():

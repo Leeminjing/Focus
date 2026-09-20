@@ -22,6 +22,7 @@ from backend.app.desktop.agent_loop.models import AgentLoop, LoopAction, LoopPen
 from backend.app.desktop.context_evolution import ContextRevisionRepository
 from backend.app.desktop.models import DesktopRun, DesktopThread
 from backend.app.desktop.run_orchestration import RunExecutionResources, RunLifecycleFinalizer, execute_prepared_run
+from backend.app.desktop.agent_loop.wait_requests import open_recovery_wait
 
 
 logger = logging.getLogger(__name__)
@@ -72,9 +73,15 @@ class CompressionResolutionCoordinator:
                 action.result = {"resolution_id": resolution.resolution_id, "error": run.error or run.status}
             if round_row is not None:
                 round_row.status = "error"
-            loop.status = "waiting_user"
             loop.health = "degraded"
-            loop.waiting_reason = "Patrol 自主压缩恢复失败，需要用户决定"
+            await open_recovery_wait(
+                session,
+                loop,
+                "Patrol 自主压缩恢复失败，需要用户决定",
+                source="compression-resolution",
+                round_id=round_row.round_id if round_row is not None else None,
+                scope={"resolution_id": resolution.resolution_id, "run_id": run.run_id},
+            )
             return "failed"
         candidate = await session.get(LoopCompressionCandidate, resolution.candidate_id)
         current = await self._revisions.current(session, run.task_id)
@@ -243,9 +250,15 @@ class CompressionResolutionCoordinator:
             action.result = {"resolution_id": resolution.resolution_id, "error": reason}
         if round_row is not None:
             round_row.status = "error"
-        loop.status = "waiting_user"
         loop.health = "degraded"
-        loop.waiting_reason = "Patrol 自主压缩结果证据不完整，需要用户决定"
+        await open_recovery_wait(
+            session,
+            loop,
+            "Patrol 自主压缩结果证据不完整，需要用户决定",
+            source="compression-resolution",
+            round_id=round_row.round_id if round_row is not None else None,
+            scope={"resolution_id": resolution.resolution_id, "failure": reason},
+        )
 
     async def _claim(self) -> tuple[str, str] | None:
         now = datetime.now(UTC)
@@ -344,6 +357,11 @@ class CompressionResolutionCoordinator:
             if action is not None:
                 action.status = "failed"
             if loop is not None and loop.status == "running":
-                loop.status = "waiting_user"
                 loop.health = "degraded"
-                loop.waiting_reason = "Patrol 自主压缩无法恢复，请由用户处理"
+                await open_recovery_wait(
+                    session,
+                    loop,
+                    "Patrol 自主压缩无法恢复，请由用户处理",
+                    source="compression-resolution",
+                    scope={"resolution_id": resolution.resolution_id, "error": str(exc)[:1000]},
+                )

@@ -1,6 +1,6 @@
 r"""本文件对外提供 LoopEventJournal、ReplayUnavailable 与 StaleEntityRevision。
 
-输入为调用方事务中的 AsyncSession、Loop id、CanonicalEventDraft、replay cursor、保留配置和 canonical emission 开关；输出为原子分配的
+输入为调用方事务中的 AsyncSession、Loop id、CanonicalEventDraft、replay cursor、保留配置和 canonical emission 开关；输出为安全规范化后原子分配的
 CanonicalEventEnvelope/显式跳过、严格有序分页或 snapshot-required 错误。具体工作流为开关启用时锁定每 Loop sequence 行，
 在同一事务内复查幂等/实体 revision 后追加事件；读取先核对 retention，清理只推进最早可重放边界。
 示例：`event = await journal.append(session, loop_id, draft)`。
@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft, CanonicalEventEnvelope, EventVisibility
 from backend.app.desktop.agent_loop.feature_flags import LoopFeatureFlags
 from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent, LoopJournalSequence, LoopReplayRetention
+from backend.app.desktop.persistence_safety import PersistencePayloadNormalizer
 
 
 class ReplayUnavailable(RuntimeError):
@@ -45,6 +46,13 @@ class LoopEventJournal:
         existing = await self._existing(session, loop_id, draft)
         if existing is not None:
             return self._envelope(existing)
+        visibility = PersistencePayloadNormalizer.normalize(
+            draft.visibility.model_dump(mode="json"), "loop-journal.visibility"
+        )
+        payload = PersistencePayloadNormalizer.normalize(draft.payload, "loop-journal.payload")
+        safe_payload = payload.value
+        if payload.replacement_count and isinstance(safe_payload, dict):
+            safe_payload = {**safe_payload, "_persistence_safety": payload.metadata()}
         await session.execute(insert(LoopJournalSequence).values(loop_id=loop_id, last_sequence=0).on_conflict_do_nothing(index_elements=["loop_id"]))
         sequence_row = await session.get(LoopJournalSequence, loop_id, with_for_update=True)
         existing = await self._existing(session, loop_id, draft)
@@ -71,8 +79,8 @@ class LoopEventJournal:
             entity_revision=draft.entity_revision,
             correlation_id=draft.correlation_id,
             causation_id=draft.causation_id,
-            visibility=draft.visibility.model_dump(mode="json"),
-            payload=draft.payload,
+            visibility=visibility.value,
+            payload=safe_payload,
             idempotency_key=draft.idempotency_key,
             retained_until=draft.retained_until,
         )

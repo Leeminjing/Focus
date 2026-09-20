@@ -1,6 +1,6 @@
 r"""本文件对外提供 LoopLiveProjection、ProjectedEntity、ActivityEntry 与 ProjectionDiagnostics。
 
-输入为规范事件归并后的 Loop、Patrol、round、Context/Run、curator、directive、fact、portfolio 状态；输出为
+输入为规范事件归并后的 Loop、Patrol、round、wait、Context/Run、curator、directive、fact、portfolio 状态；输出为
 可序列化的单边界 Live Snapshot。具体工作流为每个实体保留 revision/sequence，timeline 有界保存安全摘要，
 last_sequence 标记整个快照的提交边界。示例：`LoopLiveProjection(loop_id="l1")`。
 """
@@ -42,6 +42,9 @@ class ProjectionDiagnostics(_ProjectionModel):
     projector_last_sequence: int = 0
     lag: int = 0
     rebuilt: bool = False
+    recovery_status: str = "healthy"
+    degraded_scope: tuple[str, ...] = ()
+    quarantined_units: tuple[str, ...] = ()
     updated_at: datetime | None = None
 
 
@@ -57,6 +60,8 @@ class LoopLiveProjection(_ProjectionModel):
     curators: dict[str, ProjectedEntity] = Field(default_factory=dict)
     directives: dict[str, ProjectedEntity] = Field(default_factory=dict)
     facts: dict[str, ProjectedEntity] = Field(default_factory=dict)
+    wait_requests: dict[str, ProjectedEntity] = Field(default_factory=dict)
+    wait_responses: dict[str, ProjectedEntity] = Field(default_factory=dict)
     portfolio: ProjectedEntity | None = None
     activity_timeline: tuple[ActivityEntry, ...] = ()
     unknown_kinds: tuple[str, ...] = ()

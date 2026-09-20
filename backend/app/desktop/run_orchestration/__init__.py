@@ -18,6 +18,10 @@ from backend.app.desktop.run_orchestration.launcher import (
     RunStarter,
 )
 from backend.app.desktop.run_orchestration.models import RunOutboxDelivery, RunOutboxEvent
+from backend.app.desktop.run_orchestration.models import RunDispatch
+from backend.app.desktop.run_orchestration.admission import RunAdmissionConflict, RunAdmissionResult, RunAdmissionService
+from backend.app.desktop.run_orchestration.assembler import RunExecutionAssembler, RunExecutionAssembly
+from backend.app.desktop.run_orchestration.dispatch import DurableRunDispatchWorker, RunDispatchRecovery, RunDispatchRecoveryReport, RunDispatchRepository, StaleDispatchFence
 from backend.app.desktop.run_orchestration.lifecycle import (
     RunLifecycleFinalizer,
     RunSettlement,
@@ -40,6 +44,17 @@ __all__ = [
     "RunOutboxDelivery",
     "RunOutboxEvent",
     "RunOutboxRepository",
+    "RunDispatch",
+    "RunAdmissionConflict",
+    "RunAdmissionResult",
+    "RunAdmissionService",
+    "RunExecutionAssembler",
+    "RunExecutionAssembly",
+    "DurableRunDispatchWorker",
+    "RunDispatchRecovery",
+    "RunDispatchRecoveryReport",
+    "RunDispatchRepository",
+    "StaleDispatchFence",
     "RunRegistrar",
     "RunRegistrationConflict",
     "RunRegistrationRequest",

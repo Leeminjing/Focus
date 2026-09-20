@@ -4,13 +4,14 @@
 
 输入为已初始化的 PostgreSQL session factory、LangGraph checkpointer/store、StreamBridge、
 RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以及 PreparedRun（统一
-编排入口 start_run 的输入 + agent_factory 闭包）。
+编排入口 start_run 的输入 + agent_factory 闭包）以及可从持久 Run 重建的 dispatch 装配源。
+示例：`service = DesktopService(...); await service.start_main_run(task_id, message, ...)`。
 具体工作流为：登记真实宿主机工作区与线程，复制已提交 checkpoint 形成冻结草稿，
 准备无沙箱工作区 Agent 的装配参数（经统一执行链路 worker.run_agent 执行），并把上传、
 内容读取、逐轮材料解析/历史/投影和自定义分组分别委托给单一职责服务；主运行在同一事务
 持久化稳定用户消息与有序材料绑定，图片是通用材料聚合的派生视图，初始与恢复路径使用同一
 投影，图片交付、必看完成门和压缩门按职责独立装配；压缩通过 Context Evolution 迁移端口发布，
-稳定 Run 则由 RunLifecycleFinalizer 在同一事务收敛终态、Context revision 与 durable outbox；Loop
+稳定 Run 则由 RunLifecycleFinalizer 在同一事务收敛终态、Context revision 与 durable outbox；主 Run 先原子写入 accepted dispatch，后台 worker 通过 lease/fencing 领取并从持久装备重建 Agent，HTTP 确认不再依赖内存 task 接力；Loop
 后台启动可把受治理工具根切换到 Kernel 选择的持久 Workspace Slot，任务详情同时公开最新直接用户
 Main Run 供 Loop 绑定首轮，并按活跃执行视图返回该 Context 的会话消息（执行身份上有更新状态时与运行流同源，
 否则与已发布 revision 一致），数据库锚点与真实作用路径一致。
@@ -35,7 +36,6 @@ _governed_context 由执行身份档案派生受治理上下文（工作根、�
 材料，属于界面侧入口，不受 Agent 本地访问策略约束；Agent 侧的路径解释与准入判定统一由
 focus.security 承担（见 openspec add-local-access-policy）。
 
-示例：service = DesktopService(...); await service.start_main_run(task_id, message, ...)。
 """
 
 from __future__ import annotations
@@ -114,7 +114,19 @@ from backend.app.desktop.run_images import RunImageResolver
 from backend.app.desktop.run_material_history import RunMaterialHistoryRepository
 from backend.app.desktop.run_material_message import RunMaterialMessageProjector
 from backend.app.desktop.run_materials import RunMaterialRequest, RunMaterialResolver
-from backend.app.desktop.run_orchestration import RunExecutionResources, RunLifecycleFinalizer, execute_prepared_run
+from backend.app.desktop.run_orchestration import (
+    DurableRunDispatchWorker,
+    RunAdmissionConflict,
+    RunAdmissionService,
+    RunDispatchRecovery,
+    RunDispatchRepository,
+    RunDispatch,
+    RunExecutionAssembler,
+    RunExecutionAssembly,
+    RunExecutionResources,
+    RunLifecycleFinalizer,
+    execute_prepared_run,
+)
 from backend.app.desktop.storage_values import normalize_json_storage_value
 from backend.app.desktop.tool_error_provider import build_tool_error_middleware
 from focus.tools.builtins.spawn_agent_tool import build_spawn_agent_tool
@@ -176,6 +188,7 @@ from backend.app.desktop.prompts import (
 logger = logging.getLogger(__name__)
 
 _MAIN_RUNTIME_EQUIPMENT_KEY = MAIN_RUN_EQUIPMENT_KEY
+_RUN_DISPATCH_EQUIPMENT_KEY = "_durable_dispatch_execution"
 _TERMINAL_STATUSES = frozenset({"success", "error", "interrupted"})
 _ACCESS_DECISIONS = frozenset({"approve", "reject"})
 
@@ -341,6 +354,20 @@ class DesktopService:
             session_factory, self.contexts, checkpointer, store, bridge, run_manager, app_config
         )
         self.run_lifecycle = RunLifecycleFinalizer(session_factory, checkpointer)
+        self._run_admission = RunAdmissionService()
+        self._run_dispatch_repository = RunDispatchRepository()
+        self._run_dispatch_recovery = RunDispatchRecovery(session_factory)
+        self._run_dispatch_wakeup = asyncio.Event()
+        self._run_dispatch_worker = DurableRunDispatchWorker(
+            session_factory,
+            f"desktop-main:{uuid.uuid4().hex}",
+            RunExecutionAssembler(self),
+            self._start_dispatched_run,
+            self._run_dispatch_repository,
+            on_started=self.attach_run_sync,
+            on_failed=self.run_lifecycle.abort_prepared,
+        )
+        self._run_dispatch_task: asyncio.Task | None = None
         # Agent 协作（Mailbox 消息 / 任务板）：工具构建与未读消息回合注入；
         # swarm_launcher 注入消息驱动自动唤醒（send_message/publish_task 落表后触发目标 run）
         self.agent_collab = AgentCollab(session_factory, swarm_launcher=self._auto_wake_swarm)
@@ -352,13 +379,23 @@ class DesktopService:
         self._material_watch_failures: set[str] = set()
 
     async def start(self) -> None:
-        await self.run_lifecycle.reconcile_active("桌面后端重启，原运行无法继续")
+        dispatch_recovery = await self._run_dispatch_recovery.reconcile()
+        await self.run_lifecycle.reconcile_active(
+            "桌面后端重启，原运行无法继续",
+            exclude_run_ids=set(dispatch_recovery.safe_run_ids),
+        )
         await self.context_patrol.start()
         self._watcher = asyncio.create_task(self._watch_materials())
+        self._run_dispatch_task = asyncio.create_task(self._run_dispatch_loop(), name="desktop-main-run-dispatch")
+        self._run_dispatch_wakeup.set()
 
     async def close(self) -> None:
         await self.context_patrol.close()
         background = list(self._sync_tasks)
+        if self._run_dispatch_task:
+            self._run_dispatch_task.cancel()
+            background.append(self._run_dispatch_task)
+            self._run_dispatch_task = None
         if self._watcher:
             self._watcher.cancel()
             background.append(self._watcher)
@@ -366,6 +403,83 @@ class DesktopService:
             if not task.done():
                 task.cancel()
         await asyncio.gather(*background, return_exceptions=True)
+
+    def notify_run_dispatch(self) -> None:
+        self._run_dispatch_wakeup.set()
+
+    async def _run_dispatch_loop(self) -> None:
+        while True:
+            self._run_dispatch_wakeup.clear()
+            try:
+                await self._run_dispatch_worker.drain(limit=4)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("durable Main Run dispatch cycle failed")
+            try:
+                await asyncio.wait_for(self._run_dispatch_wakeup.wait(), timeout=0.5)
+            except TimeoutError:
+                continue
+
+    async def _start_dispatched_run(self, assembly: RunExecutionAssembly) -> RunRecord:
+        return await execute_prepared_run(
+            assembly.body,
+            assembly.thread_id,
+            RunExecutionResources(
+                bridge=self.bridge,
+                run_manager=self.run_manager,
+                checkpointer=self.checkpointer,
+                store=self.store,
+                app_config=self.app_config,
+            ),
+            assembly.agent_factory,
+        )
+
+    async def assemble_run(self, run_id: str) -> RunExecutionAssembly:
+        loop_id = None
+        async with self.session_factory() as session:
+            run = await session.get(DesktopRun, run_id)
+            if run is None:
+                raise LookupError(f"Run 不存在: {run_id}")
+            task = await session.get(DesktopThread, run.task_id)
+            if task is None:
+                raise LookupError(f"Run Context 不存在: {run.task_id}")
+            workspace = await session.get(DesktopWorkspace, task.workspace_id)
+            if workspace is None:
+                raise LookupError(f"Run Workspace 不存在: {task.workspace_id}")
+            equipment = dict(run.equipment or {})
+            execution = dict(equipment.get(_RUN_DISPATCH_EQUIPMENT_KEY) or {})
+            if run.status != "pending" or execution.get("agent_role") != "main":
+                raise RuntimeError(f"Run 不可由 durable dispatch 装配: {run.run_id}@{run.status}")
+            workspace_path = str((run.workspace_anchor or {}).get("workspace_path") or workspace.path)
+            slot_id = (run.workspace_anchor or {}).get("slot_id")
+            if slot_id:
+                from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+
+                slot = await session.get(WorkspaceSlot, slot_id)
+                if slot is not None:
+                    workspace_path = slot.root_path
+            loop_id = run.loop_id
+            prepared = await self._prepare(
+                run,
+                str(run.execution_thread_id or task.thread_id),
+                str((run.workspace_anchor or {}).get("workspace_id") or workspace.workspace_id),
+                workspace_path,
+                list(run.input_messages or []),
+                str(execution["base_prompt"]),
+                equipment,
+                run.checkpoint_ns or "",
+                "main",
+                execution.get("checkpoint_id"),
+                bool(execution.get("allow_global_config")),
+            )
+        if loop_id:
+            from backend.app.desktop.agent_loop.dispatch import LoopRunWorkspaceBinder
+
+            await LoopRunWorkspaceBinder(self.session_factory).bind(run_id=run_id, loop_id=loop_id, body=prepared.body)
+        if prepared.agent_factory is None:
+            raise RuntimeError(f"Run 装配未生成 Agent factory: {run_id}")
+        return RunExecutionAssembly(run_id=run_id, body=prepared.body, thread_id=prepared.thread_id, agent_factory=prepared.agent_factory)
 
     async def equipment(self) -> dict[str, Any]:
         from backend.app.desktop.model_settings import catalog_snapshot
@@ -382,6 +496,22 @@ class DesktopService:
             "permissions": ["read", "write", "host_command"],
             "tools": await self._equipment_tools(),
         }
+
+    async def run_by_idempotency(self, idempotency_key: str) -> dict[str, Any] | None:
+        async with self.session_factory() as session:
+            run = await session.scalar(select(DesktopRun).where(DesktopRun.idempotency_key == idempotency_key))
+            if run is None:
+                return None
+            dispatch = await session.scalar(select(RunDispatch).where(RunDispatch.run_id == run.run_id))
+            return self._run_payload_with_dispatch(run, dispatch)
+
+    async def get_run_payload(self, run_id: str) -> dict[str, Any]:
+        async with self.session_factory() as session:
+            run = await session.get(DesktopRun, run_id)
+            if run is None:
+                raise HTTPException(404, "运行不存在")
+            dispatch = await session.scalar(select(RunDispatch).where(RunDispatch.run_id == run_id))
+            return self._run_payload_with_dispatch(run, dispatch)
 
     async def _equipment_tools(self) -> list[dict[str, Any]]:
         """返回装备信息中的工具清单（含 name/label/source），供前端区分内置与自定义工具。
@@ -931,6 +1061,16 @@ class DesktopService:
     ) -> PreparedRun:
         identity = run_identity or {}
         async with self.session_factory() as session:
+            idempotency_key = identity.get("idempotency_key")
+            if idempotency_key:
+                existing = await session.scalar(select(DesktopRun).where(DesktopRun.idempotency_key == idempotency_key))
+                if existing is not None:
+                    return PreparedRun(
+                        body=RunCreateRequest(input={"messages": []}, context={"run_id": existing.run_id}),
+                        thread_id=str(existing.execution_thread_id or ""),
+                        agent_factory=None,
+                        payload=self._run_payload(existing),
+                    )
             task_row, workspace = await self._execution_entities(session, task_id)
             await self.contexts.ensure_runnable(session, task_id)
             current_revision = await ContextRevisionRepository().current(session, task_id)
@@ -1027,6 +1167,18 @@ class DesktopService:
                 execution_thread_id, execution_checkpoint_ns
             )
             current_message = RunMaterialMessageProjector.project(message, run_materials)
+            checkpoint_id = authoritative_checkpoint_id or await select_checkpoint_base(
+                self.checkpointer, execution_thread_id, execution_checkpoint_ns
+            )
+            is_assembly = task_row.thread_id == _ASSEMBLY_THREAD_ID
+            base_prompt = (_ASSEMBLY_SYSTEM_PROMPT if is_assembly else _MAIN_SYSTEM_PROMPT) + _spatial_focus_prompt(spatial_focus)
+            base_prompt = await self._apply_memory_block(base_prompt, memory_ids)
+            equipment[_RUN_DISPATCH_EQUIPMENT_KEY] = {
+                "agent_role": "main",
+                "base_prompt": base_prompt,
+                "checkpoint_id": checkpoint_id,
+                "allow_global_config": is_assembly,
+            }
             self._validate_model_window(
                 model_name,
                 estimate_tokens(_MAIN_SYSTEM_PROMPT, [*history, current_message], "", run_materials.images),
@@ -1047,7 +1199,18 @@ class DesktopService:
                     "workspace_path": execution_path,
                 },
             )
-            session.add(run)
+            try:
+                admission = await getattr(self, "_run_admission", RunAdmissionService()).admit(session, run)
+            except RunAdmissionConflict as exc:
+                raise HTTPException(409, {"code": "main_run_active", "message": str(exc)}) from exc
+            if not admission.created:
+                await session.rollback()
+                return PreparedRun(
+                    body=RunCreateRequest(input={"messages": []}, context={"run_id": admission.run.run_id}),
+                    thread_id=str(admission.run.execution_thread_id or ""),
+                    agent_factory=None,
+                    payload=self._run_payload(admission.run),
+                )
             self.run_material_history.add(session, run, run_materials)
             task_row.ui_state = {
                 **(task_row.ui_state or {}),
@@ -1081,18 +1244,21 @@ class DesktopService:
                     ) from exc
                 raise
             thread_id = execution_thread_id
-            workspace_id = workspace.workspace_id
-            workspace_path = execution_path
-        checkpoint_id = authoritative_checkpoint_id or await select_checkpoint_base(
-            self.checkpointer, thread_id, execution_checkpoint_ns
+        prepared = await self._prepare(
+            run,
+            thread_id,
+            str((run.workspace_anchor or {}).get("workspace_id") or ""),
+            str((run.workspace_anchor or {}).get("workspace_path") or ""),
+            list(run.input_messages or []),
+            base_prompt,
+            equipment,
+            execution_checkpoint_ns,
+            "main",
+            checkpoint_id,
+            allow_global_config=is_assembly,
         )
-        is_assembly = task_row.thread_id == _ASSEMBLY_THREAD_ID
-        base_prompt = (_ASSEMBLY_SYSTEM_PROMPT if is_assembly else _MAIN_SYSTEM_PROMPT) + _spatial_focus_prompt(spatial_focus)
-        base_prompt = await self._apply_memory_block(base_prompt, memory_ids)
-        return await self._prepare(
-            run, thread_id, workspace_id, workspace_path, run.input_messages,
-            base_prompt, equipment, execution_checkpoint_ns, "main", checkpoint_id, allow_global_config=is_assembly,
-        )
+        prepared.payload["dispatch"] = {"dispatch_id": admission.dispatch.dispatch_id, "status": admission.dispatch.status, "attempt": admission.dispatch.attempt}
+        return prepared
 
     async def _project_loop_pending_decision(
         self,
@@ -2352,6 +2518,8 @@ class DesktopService:
                         await self.context_patrol.notify_stable_context_checkpoint(task_id)
                     return
                 settlement = await self.run_lifecycle.finalize(record)
+                async with self.session_factory.begin() as session:
+                    await self._run_dispatch_repository.settle_by_run(session, record.run_id)
                 if settlement.kind == "main":
                     try:
                         await self.context_patrol.notify_stable_context_checkpoint(
@@ -2843,6 +3011,19 @@ class DesktopService:
             "workspace_result": run.workspace_result,
             "settled_at": run.settled_at.isoformat() if run.settled_at else None,
         }
+
+    @classmethod
+    def _run_payload_with_dispatch(cls, run: DesktopRun, dispatch: RunDispatch | None) -> dict[str, Any]:
+        payload = cls._run_payload(run)
+        payload["dispatch"] = None if dispatch is None else {
+            "dispatch_id": dispatch.dispatch_id,
+            "status": dispatch.status,
+            "attempt": dispatch.attempt,
+            "error": dispatch.error,
+            "claimed_by": dispatch.claimed_by,
+            "fencing_token": dispatch.fencing_token,
+        }
+        return payload
 
     @staticmethod
     def _material_payload(material: DesktopMaterial, workspace_path: str) -> dict[str, Any]:

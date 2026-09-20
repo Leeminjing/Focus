@@ -2,7 +2,7 @@
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
  * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
  * 对话/Context/Agent/Commitment/压缩/插件与模块化 Agent Loop Portfolio 控制台、结构化 Mission 编辑、自主压缩授权/审计/来源恢复、终止 Loop 退出/后继 Loop 准备等视图；逐轮材料以有序 binding 草稿和独立图片必看
- * 集合表达，自定义分组是服务端事实，分组模式与折叠是任务 UI 偏好。具体工作流在任务切换时加载
+ * 集合表达，自定义分组是服务端事实，分组模式与折叠是任务 UI 偏好。具体工作流为在任务切换时加载
  * 材料、历史和分组，用纯函数规范化选择/分组，再通过单一异步事件边界更新 DOM 和运行状态；
  * 任务详情刷新带请求身份守卫，迟到或跨 Context 的响应不得覆盖更新的会话状态；会话容器只有一个
  * 写者——DOM 写入侧：顶层重建先接管既有会话节点，随即统一经对账写入内容（写入侧分只读的"计划"与唯一
@@ -10,7 +10,8 @@
  * 作为显式保留节点原位存活，流式占位也由写入侧按 run 身份就地创建并同步，本文件不直接向会话容器增删
  * 子节点；快照是该 run 的权威状态，命中消息 id 或同一 run 即回收流式占位，占位不叠加同一 Run 内前一条
  * 消息的正文与推理；会话只呈现人类可读摘要，工具参数、工具输出与推理全文均不进入 DOM，由会话视图在
- * 用户展开时按 conversationEventIndex 按需生成；会话渲染走两步：buildUnits 产出带内容签名的单元，
+ * 用户展开时按 conversationEventIndex 按需生成；Main Run 提交与流状态按 task/run identity 隔离，Loop wait request
+ * 使用独立响应面和按 request identity 持久草稿；会话渲染走两步：buildUnits 产出带内容签名的单元，
  * _unitHtml 按签名命中缓存，因此连续相同帧为零重建、增量帧只重建变化单元；流式正文按顶层块缓存，
  * 只重渲染未闭合尾块，且累积与可见渲染都以 `STREAM_TEXT_LIMIT` 为界（越限不再并入缓冲、也不进入可见
  * DOM，避免越界或超长正文把单帧变成解析与插入长任务）；同一 tick 内的多次状态变化由 scheduleRender
@@ -129,7 +130,6 @@ const state = {
   deploying: false,
   quickCuratingTaskIds: new Set(),
   mainInterrupting: false,
-  mainSubmitting: false,
   streams: new Map(),
   streamBuffers: new Map(),
   streamFrames: new Map(),
@@ -210,7 +210,10 @@ const runMaterialPicker = window.runMaterialPicker;
 const materialGrouping = window.materialGrouping;
 const accessMode = window.FocusAccessMode;
 const composerDraft = window.FocusComposerDraft;
+const taskRunOperations = window.FocusTaskRunOperations?.create();
 const loopApi = window.FocusLoopApi?.create(runtime);
+const loopWaitDrafts = window.FocusLoopWaitRequestView?.createDraftStore();
+const loopWaitUi = new Map();
 const loopLiveSelectors = window.FocusLoopLiveSelectors;
 const loopLiveStore = window.FocusLoopLiveStore?.create();
 const loopStore = window.FocusLoopStore?.create();
@@ -764,7 +767,12 @@ async function openLoopView() {
         loopStore.load(found);
       }
     }
-    if (!state.loop.loopId) return;
+    if (!state.loop.loopId) {
+      const detail = state.details.get(task.task_id) || {};
+      detail.loop_activation = await loopApi.activationEligibility(task.task_id);
+      state.details.set(task.task_id, detail);
+      return;
+    }
     const snapshot = await loopApi.get(state.loop.loopId);
     loopStore.reconcile(snapshot);
     loopStore.reconcileRelated(await loopApi.related(snapshot));
@@ -787,6 +795,9 @@ function renderLoop() {
   const priorMap = app.querySelector?.(".portfolio-map-scroll");
   const priorSearch = app.querySelector?.("[data-loop-message-search]");
   const priorComposer = app.querySelector?.("#loopInterventionForm textarea");
+  const priorWaitForm = app.querySelector?.("[data-loop-wait-response]");
+  const priorWaitId = priorWaitForm?.closest?.("[data-wait-request-id]")?.dataset.waitRequestId;
+  if (priorWaitId && loopWaitDrafts) loopWaitDrafts.set(priorWaitId, serializeWaitDraft(priorWaitForm));
   const focusedLoopField = document.activeElement === priorSearch ? "search" : document.activeElement === priorComposer ? "composer" : null;
   const viewport = {
     transcriptContextId: priorTranscript?.dataset.contextId || null,
@@ -805,11 +816,16 @@ function renderLoop() {
   const task = activeTask();
   const detail = task ? state.details.get(task.task_id) : null;
   const consoleState = currentLoopConsoleState();
-  app.innerHTML = loopView.render(loopStore.get(), task ? {
+  const loopState = loopStore.get();
+  const waitRequest = loopState.snapshot?.wait_request;
+  const waitRequestId = waitRequest?.request_id;
+  const waitUi = waitRequestId ? { ...(loopWaitUi.get(waitRequestId) || {}), draft: loopWaitDrafts?.get(waitRequestId) || "" } : {};
+  app.innerHTML = loopView.render(loopState, task ? {
     ...task,
     active_run: detail?.active_run || task.active_run,
     latest_direct_user_run: detail?.latest_direct_user_run,
-  } : {}, consoleState);
+    loop_activation: detail?.loop_activation,
+  } : {}, consoleState, waitUi);
   const nextTranscript = app.querySelector?.("[data-loop-transcript]");
   const nextMap = app.querySelector?.(".portfolio-map-scroll");
   const nextSearch = app.querySelector?.("[data-loop-message-search]");
@@ -926,11 +942,30 @@ async function startAgentLoop(form) {
   const values = new FormData(form);
   const mission = loopMissionEditor.read(form);
   const taskDetail = state.details.get(task.task_id);
-  const initialRun = [taskDetail?.active_run, task.active_run, taskDetail?.latest_direct_user_run]
-    .find(run => run?.run_id && !run.loop_id && (!run.origin || run.origin === "direct_user"));
-  const initialRunId = initialRun?.run_id;
-  if (!initialRunId) return setStatus("请先在当前 Context 发送初始任务", true);
-  const loopId = crypto.randomUUID().replaceAll("-", "");
+  const submit = form.querySelector('button[type="submit"]');
+  const status = form.querySelector("[data-loop-start-status]");
+  if (submit?.disabled) return;
+  if (submit) submit.disabled = true;
+  if (status) status.textContent = "正在复核最新直接用户 Run…";
+  let eligibility;
+  try {
+    eligibility = await loopApi.activationEligibility(task.task_id);
+  } catch (error) {
+    if (submit) submit.disabled = false;
+    if (status) status.textContent = `复核失败：${error.message}`;
+    return;
+  }
+  if (taskDetail) taskDetail.loop_activation = eligibility;
+  if (!eligibility.eligible || !eligibility.candidate_run_id) {
+    if (submit) submit.disabled = false;
+    if (status) status.textContent = `当前不能启动：${eligibility.reason || "没有可用 Run"}`;
+    return;
+  }
+  const initialRunId = eligibility.candidate_run_id;
+  const loopId = form.dataset.loopId || crypto.randomUUID().replaceAll("-", "");
+  const activationKey = form.dataset.activationKey || `loop-activation:${initialRunId}`;
+  form.dataset.loopId = loopId;
+  form.dataset.activationKey = activationKey;
   const detail = state.details.get(task.task_id) || {};
   const saved = detail.ui_state?._main_run_equipment || detail.ui_state || {};
   const permissions = Array.isArray(saved.permissions) && saved.permissions.length ? saved.permissions : ["read", "write"];
@@ -945,6 +980,8 @@ async function startAgentLoop(form) {
     workspace_id: task.workspace_id,
     initial_context_id: task.task_id,
     initial_run_id: initialRunId,
+    readiness_token: eligibility.consistency_token,
+    activation_key: activationKey,
     holder_id: `patrol:${loopId}`,
     mission,
     capabilities,
@@ -966,6 +1003,7 @@ async function startAgentLoop(form) {
     equipment: { model_name: saved.model_name || null, patrol_model_name: saved.model_name || null, permissions, skills: Array.isArray(saved.skills) ? saved.skills : [], access_mode: saved.access_mode || null },
   };
   state.loop.loading = true;
+  if (status) status.textContent = `正在授权 Run ${initialRunId}…`;
   try {
     const snapshot = await loopApi.start(body);
     state.loop.loopId = snapshot.loop_id;
@@ -983,9 +1021,32 @@ async function startAgentLoop(form) {
     void loopConnection?.start(snapshot.loop_id);
   } catch (error) {
     loopStore.fail(error);
-    renderLoop();
+    if (status) status.textContent = `授权失败：${error.message}`;
   } finally {
     state.loop.loading = false;
+    if (submit?.isConnected) submit.disabled = false;
+  }
+}
+
+async function respondToLoopWait(request, answer) {
+  const loopId = state.loop.loopId;
+  if (!loopId || !request?.request_id) return;
+  const requestId = request.request_id;
+  loopWaitUi.set(requestId, { pending: true, error: null });
+  renderLoop();
+  try {
+    await loopApi.resolveWait(loopId, requestId, {
+      request_revision: request.revision,
+      idempotency_key: crypto.randomUUID(),
+      answer,
+    });
+    loopWaitDrafts?.delete(requestId);
+    loopWaitUi.delete(requestId);
+    loopStore.reconcile(await loopApi.get(loopId));
+    renderLoop();
+  } catch (error) {
+    loopWaitUi.set(requestId, { pending: false, error: error.message, draft: loopWaitDrafts?.get(requestId) || "" });
+    renderLoop();
   }
 }
 
@@ -1376,9 +1437,10 @@ function composerFeedback(detail, projectionBlocked) {
   return { kind: "muted", text: uiText("focus.enter_hint", "Enter 发送 · Shift+Enter 换行") };
 }
 
-function setComposerError(error = null) {
-  if (error) state.composerErrors.set(state.activeTaskId, String(error));
-  else state.composerErrors.delete(state.activeTaskId);
+function setComposerError(error = null, taskId = state.activeTaskId) {
+  if (error) state.composerErrors.set(taskId, String(error));
+  else state.composerErrors.delete(taskId);
+  if (taskId !== state.activeTaskId) return;
   const node = document.querySelector("#composerFeedback");
   if (!node) return;
   node.className = error ? "composer-feedback is-danger" : "composer-feedback is-muted";
@@ -3554,15 +3616,17 @@ function openImageLightbox(url, label) {
   root.innerHTML = `<div class="image-lightbox" role="dialog" aria-modal="true" aria-label="${escapeHtml(label)}" data-action="close-lightbox"><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}"><button class="text-button" data-action="close-lightbox">关闭</button></div>`;
 }
 
-async function sendMainOnce() {
+async function sendMainOnce(taskId, requestId) {
+  const task = state.tasks.find(item => item.task_id === taskId);
+  if (!task) return setStatus("当前没有活动任务", true);
   adoptCommitmentContext();
   if (activeTaskHasCommitmentLock()) {
     return setStatus("存在尚未处理的承诺流程，请先处理审批面板", true);
   }
-  if (state.details.get(state.activeTaskId)?.pending_compression) {
+  if (state.details.get(taskId)?.pending_compression) {
     return setStatus("存在待确认的压缩请求，请先完成压缩或取消", true);
   }
-  if (state.details.get(state.activeTaskId)?.pending_must_view_report) {
+  if (state.details.get(taskId)?.pending_must_view_report) {
     return setStatus("存在待处理的必看图片报告，请先重试或取消", true);
   }
   if (state.accessReviews.panel) {
@@ -3576,10 +3640,8 @@ async function sendMainOnce() {
   const quickKeyword = keywordCommand.parse(message);
   if (quickKeyword !== null) {
     const keyword = quickKeyword;
-    const task = activeTask();
-    if (!task) return setStatus("当前没有活动任务", true);
     input.value = "";
-    composerDraft.release(state.activeTaskId);
+    composerDraft.release(taskId);
     return openCompressionView(task, null, keyword);
   }
   setComposerError();
@@ -3589,9 +3651,9 @@ async function sendMainOnce() {
     try {
       if (await spatialTarget.view.sendFocusedMessage(message)) {
         input.value = "";
-        composerDraft.release(state.activeTaskId);
+        composerDraft.release(taskId);
         updateAtHighlight(input);
-        const focusedDetail = state.details.get(state.activeTaskId);
+        const focusedDetail = state.details.get(taskId);
         focusedDetail.ui_state = { ...(focusedDetail.ui_state || {}), input: "" };
         persistFocusState();
         setStatus("后续指令已交给当前空间小兵");
@@ -3604,13 +3666,14 @@ async function sendMainOnce() {
     }
   }
   const outgoing = runMaterialPicker.buildOutgoing(
-    state.materials.get(state.activeTaskId) || [], message, materialSelection()
+    state.materials.get(taskId) || [], message, materialSelection(taskId)
   );
   const messagePayload = outgoing.message;
-  const detail = state.details.get(state.activeTaskId);
+  const detail = state.details.get(taskId) || {};
   try {
-    const run = await api(`/desktop/api/tasks/${state.activeTaskId}/main/runs`, {
+    const run = await api(`/desktop/api/tasks/${taskId}/main/runs`, {
       method: "POST",
+      headers: { "Idempotency-Key": requestId },
       body: JSON.stringify({
         message: messagePayload,
         material_inputs: outgoing.materialInputs,
@@ -3620,17 +3683,18 @@ async function sendMainOnce() {
         ...accessMode.requestBody(accessModeOf("main")),
       }),
     });
-    const contextNode = (state.contextTrees.get(activeTask().workspace_id) || [])
-      .find(item => item.context_id === state.activeTaskId);
+    taskRunOperations?.accept(taskId, requestId, run);
+    const contextNode = (state.contextTrees.get(task.workspace_id) || [])
+      .find(item => item.context_id === taskId);
     if (contextNode) contextNode.editable = false;
     if (detail.context) detail.context.editable = false;
     // 运行已发起：立即暴露中断入口（否则运行中 active_run 仍为旧值，按钮不渲染）
     detail.active_run = run;
-    const byMaterialId = new Map((state.materials.get(state.activeTaskId) || []).map(item => [item.material_id, item]));
+    const byMaterialId = new Map((state.materials.get(taskId) || []).map(item => [item.material_id, item]));
     const optimisticHistory = outgoing.materialInputs.map((item, ordinal) => ({
       binding_id: `optimistic:${run.run_id}:${ordinal}`,
       run_id: run.run_id,
-      task_id: state.activeTaskId,
+      task_id: taskId,
       message_id: run.message_id,
       material_id: item.material_id,
       relative_path: byMaterialId.get(item.material_id)?.relative_path || item.material_id,
@@ -3641,25 +3705,38 @@ async function sendMainOnce() {
       current_available: true,
       run_status: run.status,
     }));
-    state.materialHistory.set(state.activeTaskId, [
-      ...(state.materialHistory.get(state.activeTaskId) || []),
+    state.materialHistory.set(taskId, [
+      ...(state.materialHistory.get(taskId) || []),
       ...optimisticHistory,
     ]);
-    state.materialSelections.set(state.activeTaskId, runMaterialPicker.empty());
-    state.composerErrors.delete(state.activeTaskId);
+    state.materialSelections.set(taskId, runMaterialPicker.empty());
+    state.composerErrors.delete(taskId);
     detail.messages = [...(detail.messages || []), { role: "human", content: messagePayload, id: run.message_id }];
     detail.ui_state = { ...(detail.ui_state || {}), input: "", skills: [] };
-    composerDraft.release(state.activeTaskId);
-    renderFocus();
-    persistFocusState();
+    composerDraft.release(taskId);
+    state.details.set(taskId, detail);
+    if (state.activeTaskId === taskId && state.view === "focus") {
+      renderFocus();
+      persistFocusState();
+    }
     listenToRun(run);
-  } catch (error) { setStatus(error.message, true); setComposerError(error.message); }
+  } catch (error) {
+    taskRunOperations?.fail(taskId, requestId, error.message);
+    setStatus(error.message, true);
+    setComposerError(error.message, taskId);
+  }
 }
 
 function sendMain() {
-  if (state.mainSubmitting) return Promise.resolve();
-  state.mainSubmitting = true;
-  return sendMainOnce().finally(() => { state.mainSubmitting = false; });
+  const taskId = state.activeTaskId;
+  if (!taskId) return Promise.resolve();
+  if (taskRunOperations?.get(taskId).submission?.status === "pending") {
+    setStatus("这条消息正在提交，请稍候；其他 Context 仍可独立发送。", false);
+    return Promise.resolve();
+  }
+  const requestId = crypto.randomUUID();
+  taskRunOperations?.begin(taskId, requestId);
+  return sendMainOnce(taskId, requestId).finally(() => taskRunOperations?.finish(taskId, requestId));
 }
 
 const COMMITMENT_STAGE_NAMES = {
@@ -3670,6 +3747,8 @@ const TRACE_ACTORS = { supervisor: "Supervisor", worker: "Worker", evaluator: "E
 
 function listenToRun(run) {
   if (state.streams.has(run.run_id)) return;
+  const ownerTaskId = run.task_id || state.activeTaskId;
+  if (ownerTaskId) taskRunOperations?.updateRun(ownerTaskId, run.run_id, run);
   syncPatrolRunState(run, run.status || "pending", run.error || null);
   let runError = null;
   const parseEvent = (event, fallback = null) => {
@@ -3685,7 +3764,10 @@ function listenToRun(run) {
   state.streams.set(run.run_id, source);
   source.addEventListener("metadata", event => {
     const envelope = parseEvent(event);
-    if (envelope?.data?.status) syncPatrolRunState(run, envelope.data.status);
+    if (envelope?.data?.status) {
+      syncPatrolRunState(run, envelope.data.status);
+      if (ownerTaskId) taskRunOperations?.updateRun(ownerTaskId, run.run_id, { status: envelope.data.status });
+    }
   });
   source.addEventListener("tokens", event => {
     const token = parseEvent(event);
@@ -3747,16 +3829,18 @@ function listenToRun(run) {
     const error = parseEvent(event)?.data?.error || "运行失败";
     runError = error;
     syncPatrolRunState(run, "error", error);
+    if (ownerTaskId) taskRunOperations?.updateRun(ownerTaskId, run.run_id, { status: "error", error });
     setStatus(error, true);
   });
   source.addEventListener("end", async event => {
     const terminal = parseEvent(event, { status: "error", error: "运行流异常结束" });
     if (!terminal.error && runError) terminal.error = runError;
     syncPatrolRunState(run, terminal.status, terminal.error || null);
+    if (ownerTaskId) taskRunOperations?.updateRun(ownerTaskId, run.run_id, { status: terminal.status, error: terminal.error || null });
     // 主动中断判定：主 Agent run 终态 interrupted 且无错误、且非承诺审批（审批面板已接管界面状态）
     const wasMainInterrupted = run.kind === "main" && terminal.status === "interrupted" && !terminal.error;
     source.close(); state.streams.delete(run.run_id); clearStreamBuffer(run.run_id);
-    await refreshActiveAfterTxn();
+    await refreshTaskAfterTxn(ownerTaskId);
     const task = run.task_id
       ? state.tasks.find(item => item.task_id === run.task_id)
       : state.tasks.find(item => item.thread_id === run.thread_id);
@@ -5079,6 +5163,21 @@ async function refreshActiveAfterTxn() {
   if (state.activeTaskId) await hydrateActive();
 }
 
+async function refreshTaskAfterTxn(taskId) {
+  await refreshTasks();
+  await hydrateContextTrees();
+  if (!taskId) return;
+  if (state.activeTaskId === taskId) {
+    await hydrateActive();
+    return;
+  }
+  try {
+    state.details.set(taskId, await api(`/desktop/api/tasks/${taskId}`));
+  } catch (error) {
+    taskRunOperations?.updateRun(taskId, taskRunOperations.get(taskId).active_run?.run_id || "unknown", { refresh_error: error.message });
+  }
+}
+
 async function createTask(event) {
   event.preventDefault();
   if (state.creatingTask) return;
@@ -5865,6 +5964,18 @@ async function handleDocumentClick(event) {
   if (action === "show-loop") return openLoopView();
   if (loopMissionEditor?.handleAction(button)) return;
   if (action === "loop-control") return controlLoop(button.dataset.loopControl);
+  if (button.dataset.waitAction) {
+    const request = loopStore?.get().snapshot?.wait_request;
+    if (!request) return;
+    const answer = { action: button.dataset.waitAction };
+    if (answer.action === "revise_budget") {
+      const form = button.closest("[data-loop-wait-response]");
+      answer.budgets = Object.fromEntries(
+        [...form.querySelectorAll('[name^="budget:"]')].map(input => [input.name.slice(7), Number(input.value)])
+      );
+    }
+    return respondToLoopWait(request, answer);
+  }
   if (action === "loop-exit") return exitAgentLoop(false);
   if (action === "loop-prepare-new" || action === "loop-new-run") return exitAgentLoop(true);
   if (action === "loop-select-context") return loopConsoleController?.selectContext(button.dataset.contextId);
@@ -6585,6 +6696,19 @@ function moveMessageGroup(messages, from, to) {
 
 document.querySelector("#taskForm").addEventListener("submit", createTask);
 document.addEventListener("submit", event => {
+  if (event.target.matches("[data-loop-wait-response]")) {
+    event.preventDefault();
+    const request = loopStore?.get().snapshot?.wait_request;
+    if (!request) return;
+    const values = new FormData(event.target);
+    let answer;
+    if (request.response_mode === "text") answer = { text: String(values.get("answer") || "") };
+    else if (request.response_mode === "multiple_choice") answer = { choices: values.getAll("choice") };
+    else if (request.response_mode === "single_choice") answer = { choice: values.get("choice") };
+    else answer = Object.fromEntries(values.entries());
+    respondToLoopWait(request, answer);
+    return;
+  }
   if (event.target.id === "agentLoopStartForm") {
     event.preventDefault();
     runUiAction(() => startAgentLoop(event.target));
@@ -6618,6 +6742,26 @@ document.addEventListener("submit", event => {
   event.preventDefault();
   runUiAction(continueAgentDetails);
 });
+document.addEventListener("input", event => {
+  const form = event.target.closest?.("[data-loop-wait-response]");
+  const requestId = form?.closest?.("[data-wait-request-id]")?.dataset.waitRequestId;
+  if (requestId) loopWaitDrafts?.set(requestId, serializeWaitDraft(form));
+});
+document.addEventListener("change", event => {
+  const form = event.target.closest?.("[data-loop-wait-response]");
+  const requestId = form?.closest?.("[data-wait-request-id]")?.dataset.waitRequestId;
+  if (requestId) loopWaitDrafts?.set(requestId, serializeWaitDraft(form));
+});
+
+function serializeWaitDraft(form) {
+  const values = new FormData(form);
+  const draft = {};
+  for (const [name, value] of values.entries()) {
+    if (Object.prototype.hasOwnProperty.call(draft, name)) draft[name] = Array.isArray(draft[name]) ? [...draft[name], String(value)] : [draft[name], String(value)];
+    else draft[name] = String(value);
+  }
+  return JSON.stringify(draft);
+}
 async function uploadMaterialFile(file) {
   if (!file) return;
   if (!state.activeTaskId) return setStatus("请先选择任务，再粘贴图片", true);

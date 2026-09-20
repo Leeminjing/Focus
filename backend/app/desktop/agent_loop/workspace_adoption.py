@@ -24,6 +24,7 @@ from backend.app.desktop.agent_loop.models import (
 )
 from backend.app.desktop.agent_loop.schemas import AdoptWorkspaceResultAction
 from backend.app.desktop.agent_loop.ownership import LoopFencingGuard
+from backend.app.desktop.agent_loop.wait_requests import open_recovery_wait
 from backend.app.desktop.workspace_coordination import (
     GitWorkspaceResultApplier,
     RunExecutionAnchor,
@@ -124,9 +125,16 @@ class LoopWorkspaceAdoptionService:
             decision.status = "rejected"
             decision.rejection = adoption.conflict
             round_row.status = "error"
-            loop.status = "waiting_user"
             loop.health = "degraded"
-            loop.waiting_reason = f"Workspace adoption 冲突: {adoption.conflict.get('reason', 'unknown')}"
+            reason = f"Workspace adoption 冲突: {adoption.conflict.get('reason', 'unknown')}"
+            await open_recovery_wait(
+                session,
+                loop,
+                reason,
+                source="workspace-adoption",
+                round_id=round_row.round_id,
+                scope={"adoption_id": adoption.adoption_id, "conflict": adoption.conflict},
+            )
             await self._event(session, loop.loop_id, "WorkspaceAdoptionConflict", action.result, f"adoption-conflict:{adoption.adoption_id}")
             return KernelCommitResult(decision_id, "rejected", (action.action_id,), (), loop.waiting_reason)
         for anchor in anchors:

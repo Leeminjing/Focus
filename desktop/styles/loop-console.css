@@ -184,6 +184,28 @@
 .loop-terminal-notice strong { color: #223652; }
 .loop-error { border-color: #f2c3c6; background: #fff4f5; color: #a52f39; }
 
+.loop-wait-request {
+  display: grid;
+  gap: 10px;
+  border-bottom: 1px solid #d8c785;
+  padding: 12px 18px;
+  background: #fff9e8;
+  color: #4b4327;
+}
+.loop-wait-request > header { display: flex; align-items: baseline; gap: 8px; }
+.loop-wait-request > header span { font-weight: 700; color: #5f4b0d; }
+.loop-wait-request > header small { color: #8a7840; }
+.loop-wait-request > p { margin: 0; line-height: 1.55; }
+.loop-wait-meta { display: flex; flex-wrap: wrap; gap: 8px 18px; color: #806f3d; font-size: 10px; }
+.loop-wait-request form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.loop-wait-request textarea,
+.loop-wait-request input:not([type="radio"]):not([type="checkbox"]),
+.loop-wait-request select { min-width: min(520px, 100%); }
+.loop-wait-request textarea { min-height: 72px; resize: vertical; }
+.loop-wait-request label { display: inline-flex; align-items: center; gap: 6px; }
+.loop-wait-request button { min-width: 92px; }
+.loop-wait-error { flex-basis: 100%; margin: 0; color: #a52f39; }
+
 .loop-compression-status {
   display: flex;
   flex-wrap: wrap;

@@ -20,6 +20,7 @@ from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, 
 from backend.app.desktop.agent_loop.patrol_runtime import PatrolSessionLifecycle
 from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
 from backend.app.desktop.context_curation.portfolio_publisher import PortfolioSuperseded
+from backend.app.desktop.agent_loop.wait_requests import open_recovery_wait
 
 
 class PortfolioPublicationPort(Protocol):
@@ -170,9 +171,15 @@ class LoopPortfolioPublicationQueue:
             if round_row is not None and round_row.status == "publishing":
                 round_row.status = "superseded" if status == "superseded" else "error"
             if loop is not None and loop.status == "running" and status == "rejected":
-                loop.status = "waiting_user"
                 loop.health = "degraded"
-                loop.waiting_reason = f"Portfolio publication 失败: {reason[:1000]}"
+                await open_recovery_wait(
+                    session,
+                    loop,
+                    f"Portfolio publication 失败: {reason[:1000]}",
+                    source="portfolio-publication",
+                    round_id=round_row.round_id if round_row is not None else None,
+                    scope={"decision_id": decision_id},
+                )
             return True
 
     async def _settle_patrol(

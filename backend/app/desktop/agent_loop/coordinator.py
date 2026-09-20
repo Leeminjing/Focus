@@ -540,9 +540,9 @@ class LoopCoordinatorRuntime:
             if recover is not None:
                 await recover()
         if self._fact_projector is not None:
-            reconcile = getattr(self._fact_projector, "reconcile", None)
-            if reconcile is not None:
-                await reconcile()
+            start = getattr(self._fact_projector, "start", None)
+            if start is not None:
+                await start()
         await self._reconcile_supervisors()
         components = [SupervisorComponent("loop_registry", self._reconcile_supervisors, self._poll_seconds)]
         if self._compression_resolutions is not None:

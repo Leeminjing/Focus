@@ -34,6 +34,7 @@ from backend.app.desktop.agent_loop.patrol_session_repository import PatrolSessi
 from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, PatrolPhase
 from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract, CriterionVerification
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
+from backend.app.desktop.agent_loop.wait_requests import open_recovery_wait
 from backend.app.desktop.models import DesktopRun
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
 from focus.config.app_config import AppConfig
@@ -399,9 +400,15 @@ class LoopWorkerRuntime:
             row.completed_at = datetime.now(UTC)
             await self._mark_curator_terminal(session, row.worker_request_id, row.status, exc)
             if loop is not None and loop.status == "running":
-                loop.status = "waiting_user"
                 loop.health = "degraded"
-                loop.waiting_reason = f"{request.kind} Worker 失败: {str(exc)[:1000]}"
+                await open_recovery_wait(
+                    session,
+                    loop,
+                    f"{request.kind} Worker 失败: {str(exc)[:1000]}",
+                    source="loop-worker",
+                    round_id=request.round_id,
+                    scope={"worker_request_id": request.worker_request_id, "worker_kind": request.kind},
+                )
 
     async def _cancel(self, request: LoopWorkerRequest, reason: str) -> None:
         async with self._sessions.begin() as session:

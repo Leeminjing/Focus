@@ -1,4 +1,4 @@
-r"""本文件对外提供 Agent Loop API、Mission、用户介入、observation、completion 与 Patrol decision 封闭判别联合。
+r"""本文件对外提供 Agent Loop API、Mission、类型化等待响应、用户介入、observation、completion 与 Patrol decision 封闭判别联合。
 
 输入为用户 Mission 或兼容旧目标、grant、冻结版本、Patrol action 和 verifier evidence；输出为拒绝未知字段的不可变
 合同。具体工作流为创建请求先解析结构化 Mission 或无损适配旧三字段，介入请求区分 Context/Portfolio 作用域，action 依 discriminator 解析，
@@ -172,6 +172,8 @@ class LoopCreateRequest(StrictModel):
     workspace_id: str
     initial_context_id: str
     initial_run_id: str
+    readiness_token: str | None = Field(default=None, min_length=64, max_length=64)
+    activation_key: str | None = Field(default=None, min_length=1, max_length=160)
     holder_id: str
     mission: LoopMissionContract | None = None
     goal: str | None = Field(default=None, min_length=1)
@@ -212,6 +214,12 @@ class LoopInterventionRequest(StrictModel):
 
     def scope(self) -> str:
         return "context" if self.mode == "patrol_context_intent" else "portfolio"
+
+
+class LoopWaitResponseRequest(StrictModel):
+    request_revision: int = Field(gt=0)
+    idempotency_key: str = Field(min_length=1, max_length=160)
+    answer: dict[str, Any]
 
 
 class LoopObservationEnvelope(StrictModel):
