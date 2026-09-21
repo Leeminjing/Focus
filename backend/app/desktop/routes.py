@@ -41,7 +41,7 @@ from backend.app.desktop.models import (
 from backend.app.desktop.service import PreparedRun
 from backend.app.desktop.run_materials import RunMaterialRequest
 from backend.app.desktop.run_orchestration import RunLauncher
-from backend.app.gateway.routers.thread_runs import sse_consumer
+from backend.app.desktop.run_stream import durable_run_sse_consumer
 from backend.app.gateway.services import start_run
 
 
@@ -348,14 +348,10 @@ async def stream_run(
     request: Request,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
-    # 统一 SSE 消费：复用 thread_runs.sse_consumer（信封格式帧，断线重连/心跳）
     service = request.app.state.desktop_service
-    await service.get_run(run_id)
-    record = service.run_manager.get(run_id)
-    if record is None:
-        raise HTTPException(404, "运行不存在（流已过期）")
+    durable_run = await service.get_run(run_id)
     return StreamingResponse(
-        sse_consumer(service.bridge, record, request, service.run_manager),
+        durable_run_sse_consumer(service, durable_run, request),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
