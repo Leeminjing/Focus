@@ -3,7 +3,7 @@ r"""本文件验证 Agent Loop round 的活性契约：领取公平性、决策�
 输入为真实 PostgreSQL 中的同工作区多 Loop、可由他人占用的与已过期的 coordinator 租约、停滞 round 的
 attempt 计数、legacy 落定 decision 与 Kernel/Coordinator/Recovery 真实调用；输出为"队头被占用仍顺延领取"
 "过期租约即时清除""拒绝即终结 round 并交回用户""已有落定 decision 的 round 零认知调用收敛""看门狗收敛
-停滞队头而不误伤健康 round""恢复收敛存量僵尸且不改写已提交事实""终结事件只追加一次且控制台可读原因"断言。
+停滞队头而不误伤健康 round""在飞决策的 round 不被看门狗收敛""恢复收敛存量僵尸且不改写已提交事实""终结事件只追加一次且控制台可读原因"断言。
 具体工作流为播种最小 Context revision 与已 settle 初始 Run、经 AgentLoopService.start 建 Loop，再直接驱动
 coordinator/orchestrator/kernel/recovery 并读取只读控制台投影。
 示例：`python -m pytest backend/tests/test_agent_loop_round_liveness.py -q`。
@@ -666,6 +666,60 @@ def test_watchdog_converges_stalled_publishing_round(tmp_path: Path) -> None:
         finally:
             if fixture is not None:
                 await _stop(fixture["service"], fixture["loop_id"])
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_watchdog_keeps_round_whose_decision_is_still_in_flight(tmp_path: Path) -> None:
+    """在飞决策不算落定：等待发布组件的 round 留给其所有者；已终止决策的僵尸 round 仍必须收敛。"""
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        in_flight = zombie = None
+        try:
+            in_flight = await _seed_loop(sessions, tmp_path, label="in-flight", started_at=datetime.now(UTC))
+            zombie = await _seed_loop(sessions, tmp_path, label="settled-zombie", started_at=datetime.now(UTC))
+            async with sessions.begin() as session:
+                for fixture, decision_status, round_status in (
+                    (in_flight, "publishing", "publishing"),
+                    (zombie, "committed", "observed"),
+                ):
+                    session.add(
+                        LoopDecision(
+                            decision_id=uuid.uuid4().hex,
+                            loop_id=fixture["loop_id"],
+                            round_id=fixture["round_id"],
+                            holder_id=fixture["snapshot"]["holder_id"],
+                            intent={},
+                            rationale=f"{decision_status} decision",
+                            status=decision_status,
+                            idempotency_key=f"patrol:{fixture['round_id']}:{decision_status}",
+                        )
+                    )
+                    round_row = await session.get(LoopRound, fixture["round_id"], with_for_update=True)
+                    round_row.status = round_status
+            coordinator = LoopCoordinator(
+                sessions,
+                stall_limits=RoundStallLimits(max_round_seconds=1800, max_patrol_attempts=12, max_no_progress=5),
+            )
+
+            terminated = await coordinator.maintain_rounds()
+
+            assert in_flight["round_id"] not in terminated, "决策仍在 publishing 不算落定，看门狗不得收敛该 round"
+            async with sessions() as session:
+                in_flight_round = await session.get(LoopRound, in_flight["round_id"])
+                in_flight_loop = await session.get(AgentLoop, in_flight["loop_id"])
+            assert in_flight_round.status == "publishing"
+            assert in_flight_loop.status == "running" and in_flight_loop.waiting_reason is None
+            assert zombie["round_id"] in terminated, "已终止决策却仍停留在可领取状态的 round 仍必须收敛"
+            async with sessions() as session:
+                zombie_loop = await session.get(AgentLoop, zombie["loop_id"])
+            assert "已有落定决策" in (zombie_loop.waiting_reason or "")
+        finally:
+            for fixture in (in_flight, zombie):
+                if fixture is not None:
+                    await _stop(fixture["service"], fixture["loop_id"])
             await engine.dispose()
 
     asyncio.run(run())

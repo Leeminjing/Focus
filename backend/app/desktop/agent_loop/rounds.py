@@ -5,7 +5,8 @@ authority、goal 与 workspace revision 的新 LoopRound，或把 round 与 loop
 确定性状态转移。具体工作流为：create_observation_round 读取权威 Workspace Slot 并分配单调轮号；
 stall_reasons 依轮内尝试次数、同状态停留时长与无进展计数判定越界；terminate_round 只收敛调用方显式声明
 前置状态的 round（置为 error，仅当其仍是 loop 当前轮时把 loop 交回用户，并追加 round-terminated 事件）；
-select_stalled_rounds 在排除仍被有效租约持有的候选后给出可收敛集合。本模块只做状态转移与只读筛选，
+select_stalled_rounds 只把生命周期已终止的决策计为落定（publishing/adopting 表示专职组件仍在推进该决策，
+不构成落定），再在排除仍被有效租约持有的候选后给出可收敛集合。本模块只做状态转移与只读筛选，
 不提交事务。示例：`await terminate_round(session, loop, round_row, category="rejected", reason="...", allowed_statuses=UNDECIDED_ROUND_STATUSES)`。
 """
 
@@ -36,6 +37,7 @@ CLAIMABLE_ROUND_STATUSES = ("observed", "curated", "adopting", "ready")
 STALL_SCAN_ROUND_STATUSES = ("observed", "curated", "publishing", "adopting")
 UNDECIDED_ROUND_STATUSES = ("observed", "curated")
 TERMINAL_ROUND_STATUSES = frozenset({"settled", "error", "superseded"})
+SETTLED_DECISION_STATUSES = ("committed", "rejected", "superseded")
 TERMINATION_EVENT = "RoundTerminated"
 _TERMINATION_KEY = "round-terminated:{round_id}"
 _WAITING_REASON_LIMIT = 2000
@@ -79,12 +81,12 @@ async def select_stalled_rounds(session: AsyncSession, limits: RoundStallLimits,
         return []
     round_ids = [row.round_id for row in rounds]
     attempts = await _attempt_counts(session, round_ids)
-    decided = await _decided_decisions(session, round_ids)
+    settled = await _settled_decisions(session, round_ids)
     progress = await _no_progress_counts(session, [row.loop_id for row in rounds])
     stalled: list[StalledRound] = []
     for row in rounds:
-        if row.round_id in decided:
-            stalled.append(StalledRound(row.round_id, row.loop_id, ("round_already_decided",), decided[row.round_id]))
+        if row.round_id in settled:
+            stalled.append(StalledRound(row.round_id, row.loop_id, ("round_already_settled",), settled[row.round_id]))
             continue
         reasons = stall_reasons(
             status=row.status,
@@ -150,7 +152,7 @@ async def terminate_stalled_rounds(
 
 
 def _stall_reason_text(reasons: tuple[str, ...]) -> str:
-    if "round_already_decided" in reasons:
+    if "round_already_settled" in reasons:
         return "Round 已有落定决策却仍停留在可领取状态，已收敛为终态"
     return f"Round 无进展（{'、'.join(reasons)}），已收敛为终态"
 
@@ -244,8 +246,14 @@ async def _attempt_counts(session: AsyncSession, round_ids: list[str]) -> dict[s
     return {round_id: int(count) for round_id, count in rows.all()}
 
 
-async def _decided_decisions(session: AsyncSession, round_ids: list[str]) -> dict[str, str]:
-    rows = await session.execute(select(LoopDecision.round_id, LoopDecision.decision_id).where(LoopDecision.round_id.in_(round_ids)))
+async def _settled_decisions(session: AsyncSession, round_ids: list[str]) -> dict[str, str]:
+    """只承认生命周期已终止的决策：publishing/adopting 表示专职组件仍在推进，不算落定。"""
+    rows = await session.execute(
+        select(LoopDecision.round_id, LoopDecision.decision_id).where(
+            LoopDecision.round_id.in_(round_ids),
+            LoopDecision.status.in_(SETTLED_DECISION_STATUSES),
+        )
+    )
     return {round_id: decision_id for round_id, decision_id in rows.all()}
 
 
