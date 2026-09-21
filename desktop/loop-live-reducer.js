@@ -13,7 +13,7 @@
   "use strict";
 
   const SINGULAR = new Set(Schema.SINGULAR);
-  const COLLECTION_BY_ENTITY = Object.freeze({ context: "contexts", run: "runs", context_run: "runs", curator: "curators", directive: "directives", fact: "facts", loop_wait_request: "wait_requests", loop_wait_response: "wait_responses" });
+  const COLLECTION_BY_ENTITY = Object.freeze({ context: "contexts", run: "runs", context_run: "runs", curator: "curators", context_expansion: "expansions", directive: "directives", fact: "facts", loop_wait_request: "wait_requests", loop_wait_response: "wait_responses" });
 
   class SequenceGapError extends Error {
     constructor(expected, actual) {
@@ -35,7 +35,7 @@
       occurred_at: event.occurred_at || null,
       correlation_id: event.correlation_id || null,
       causation_id: event.causation_id || null,
-      detail: Object.freeze(Object.fromEntries(["context_id", "run_id", "tool_name", "status", "directive_id"].filter(key => event.payload[key] != null).map(key => [key, event.payload[key]]))),
+      detail: Object.freeze(Object.fromEntries(["context_id", "source_context_id", "run_id", "tool_name", "status", "directive_id", "opportunity_id", "blocker_code"].filter(key => event.payload[key] != null).map(key => [key, event.payload[key]]))),
     });
   }
 
@@ -46,6 +46,7 @@
     }
     if (entityType === "patrol_session") return Object.freeze({ ...payload, safe_summary: payload.safe_summary || payload.summary || null });
     if (entityType === "curator") return Object.freeze({ ...payload, safe_summary: payload.safe_summary || payload.result_summary || payload.summary || null });
+    if (entityType === "context_expansion") return Object.freeze({ ...payload, safe_summary: payload.safe_summary || payload.summary || payload.state || null });
     return payload;
   }
 

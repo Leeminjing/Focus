@@ -10,7 +10,7 @@
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
 
-  const COLLECTIONS = Object.freeze(["contexts", "runs", "curators", "directives", "facts", "wait_requests", "wait_responses"]);
+  const COLLECTIONS = Object.freeze(["contexts", "runs", "curators", "expansions", "directives", "facts", "wait_requests", "wait_responses"]);
   const SINGULAR = Object.freeze(["loop", "mission", "patrol_session", "round", "portfolio"]);
 
   function record(value, path) {
@@ -55,6 +55,7 @@
       contexts: Object.freeze({}),
       runs: Object.freeze({}),
       curators: Object.freeze({}),
+      expansions: Object.freeze({}),
       directives: Object.freeze({}),
       facts: Object.freeze({}),
       wait_requests: Object.freeze({}),

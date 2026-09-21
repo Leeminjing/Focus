@@ -1,10 +1,10 @@
 r"""本文件对外提供 PortfolioFreezer、PortfolioCandidatePreparer 与 AtomicPortfolioPublisher。
 
-输入为当前 Program、精确 source revision frontier、Lane 意图、compiled candidates 和控制版本；输出为
-可复现冻结记录、隔离 shadow Context revisions 与完整发布结果。具体工作流为短事务冻结所有输入，
-逐 Lane 准备且持久化不可路由 revision，可为持续受管 Lane 保留当前 definition 之后的运行后缀，最后
-按 workspace/program/portfolio/lane/context 稳定锁序重验 CAS 并一次切换全部 Context/Portfolio
-指针，同时写入幂等 outbox；任一失败保留旧 Portfolio。
+输入为当前 Program、精确 source revision frontier、Lane 意图、compiled candidates、可选稳定 Portfolio identity
+和控制版本；输出为可复现冻结记录、隔离 shadow Context revisions 与完整发布结果。具体工作流为短事务
+幂等冻结所有输入，逐 Lane 可重入地准备并持久化不可路由 revision，可为持续受管 Lane 保留当前 definition 之后的运行后缀，最后
+按可选 authority/loop/round、workspace/program/portfolio/lane/context 稳定锁序重验 CAS，并为每次数据库重试初始化独立
+authority attempt，再一次切换全部 Context/Portfolio 指针并写入幂等 outbox；任一失败保留旧 Portfolio。
 示例：`published = await publisher.publish(portfolio_id, current_controls)`。
 """
 
@@ -18,6 +18,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.context_curation.compiler import CompiledLaneCandidate
@@ -129,6 +130,10 @@ class PortfolioSuperseded(PortfolioPublicationError):
 
 
 class PortfolioAuthorityCommitHook(Protocol):
+    def begin_attempt(self) -> None: ...
+
+    async def lock_authority(self, session: AsyncSession) -> None: ...
+
     async def commit(
         self,
         session: AsyncSession,
@@ -205,13 +210,27 @@ class PortfolioFreezer:
         self._contexts = context_revisions
         self._portfolios = portfolios or PortfolioRepository()
 
-    async def freeze(self, request: PortfolioFreezeRequest) -> FrozenPortfolio:
+    async def freeze(
+        self,
+        request: PortfolioFreezeRequest,
+        *,
+        portfolio_revision_id: str | None = None,
+    ) -> FrozenPortfolio:
         async with self._sessions.begin() as session:
             program = await self._lock_program(session, request.program_id)
+            if portfolio_revision_id is not None:
+                existing = await session.get(
+                    PortfolioRevision,
+                    portfolio_revision_id,
+                    with_for_update=True,
+                )
+                if existing is not None:
+                    self._verify_existing_freeze(existing, request)
+                    return await self._frozen(session, existing)
             await self._verify_frontier(session, request.source_frontier, program.workspace_id)
             lanes = await self._lock_lanes(session, request)
             generation = await self._next_generation(session, program.program_id)
-            portfolio_id = uuid.uuid4().hex
+            portfolio_id = portfolio_revision_id or uuid.uuid4().hex
             controls = self._controls(request, program)
             targets = await self._targets(
                 session,
@@ -258,6 +277,54 @@ class PortfolioFreezer:
                 controls=controls,
                 candidate_ids=tuple(candidate_ids),
             )
+
+    def _verify_existing_freeze(
+        self,
+        portfolio: PortfolioRevision,
+        request: PortfolioFreezeRequest,
+    ) -> None:
+        controls = PortfolioControlRevisions.model_validate(portfolio.control_revisions)
+        if portfolio.program_id != request.program_id:
+            raise PortfolioPreparationError("稳定 Portfolio identity 已绑定其他 Program")
+        if portfolio.frontier_hash != self._hash_refs(request.source_frontier):
+            raise PortfolioPreparationError("稳定 Portfolio identity 的 source frontier 不一致")
+        if (
+            controls.workspace_revision != request.workspace_revision
+            or controls.loop_revision != request.loop_revision
+            or controls.grant_revision != request.grant_revision
+        ):
+            raise PortfolioPreparationError("稳定 Portfolio identity 的控制 revision 不一致")
+
+    @staticmethod
+    async def _frozen(
+        session: AsyncSession,
+        portfolio: PortfolioRevision,
+    ) -> FrozenPortfolio:
+        candidate_ids = tuple(
+            (
+                await session.scalars(
+                    select(PortfolioLaneCandidate.candidate_id)
+                    .where(
+                        PortfolioLaneCandidate.portfolio_revision_id
+                        == portfolio.portfolio_revision_id
+                    )
+                    .order_by(PortfolioLaneCandidate.lane_id)
+                )
+            ).all()
+        )
+        return FrozenPortfolio(
+            portfolio_revision_id=portfolio.portfolio_revision_id,
+            program_id=portfolio.program_id,
+            generation=portfolio.generation,
+            source_frontier=tuple(
+                ContextRevisionRef.model_validate(item)
+                for item in portfolio.source_frontier
+            ),
+            controls=PortfolioControlRevisions.model_validate(
+                portfolio.control_revisions
+            ),
+            candidate_ids=candidate_ids,
+        )
 
     async def _lock_program(
         self,
@@ -462,6 +529,8 @@ class PortfolioCandidatePreparer:
         suffix_messages: dict[str, tuple[dict[str, Any], ...]] | None = None,
     ) -> tuple[ContextRevisionRef, ...]:
         candidate_ids = await self._candidate_ids(portfolio_revision_id)
+        if candidate_ids is None:
+            return ()
         prepared: list[ContextRevisionRef] = []
         try:
             for candidate_id in candidate_ids:
@@ -479,10 +548,17 @@ class PortfolioCandidatePreparer:
         await self._ready(portfolio_revision_id)
         return tuple(prepared)
 
-    async def _candidate_ids(self, portfolio_id: str) -> list[str]:
+    async def _candidate_ids(self, portfolio_id: str) -> list[str] | None:
         async with self._sessions() as session:
             portfolio = await session.get(PortfolioRevision, portfolio_id)
-            if portfolio is None or portfolio.status != PortfolioRevisionStatus.PREPARING.value:
+            if portfolio is None:
+                raise PortfolioPreparationError("Portfolio 不存在")
+            if portfolio.status in {
+                PortfolioRevisionStatus.READY.value,
+                PortfolioRevisionStatus.PUBLISHED.value,
+            }:
+                return None
+            if portfolio.status != PortfolioRevisionStatus.PREPARING.value:
                 raise PortfolioPreparationError("Portfolio 不处于 preparing")
             return list(
                 (
@@ -585,7 +661,20 @@ class PortfolioCandidatePreparer:
 
     async def _ready(self, portfolio_id: str) -> None:
         async with self._sessions.begin() as session:
-            portfolio = await session.get(PortfolioRevision, portfolio_id)
+            portfolio = await session.get(
+                PortfolioRevision,
+                portfolio_id,
+                with_for_update=True,
+            )
+            if portfolio is None:
+                raise PortfolioPreparationError("Portfolio 不存在")
+            if portfolio.status in {
+                PortfolioRevisionStatus.READY.value,
+                PortfolioRevisionStatus.PUBLISHED.value,
+            }:
+                return
+            if portfolio.status != PortfolioRevisionStatus.PREPARING.value:
+                raise PortfolioPreparationError("Portfolio 不处于 preparing")
             attempt = await self._attempt(session, portfolio_id)
             portfolio.status = PortfolioRevisionStatus.READY.value
             attempt.status = PortfolioPublicationAttemptStatus.READY.value
@@ -645,21 +734,26 @@ class AtomicPortfolioPublisher:
         current_controls: PortfolioControlRevisions,
         authority_hook: PortfolioAuthorityCommitHook | None = None,
     ) -> PortfolioPublicationResult:
-        try:
-            async with self._sessions.begin() as session:
-                result = await self._commit(
-                    session,
-                    portfolio_revision_id,
-                    current_controls,
-                    authority_hook,
-                )
-                return result
-        except PortfolioSuperseded as exc:
-            await self._record_failure(portfolio_revision_id, str(exc), superseded=True)
-            raise
-        except Exception as exc:
-            await self._record_failure(portfolio_revision_id, str(exc), superseded=False)
-            raise PortfolioPublicationError(str(exc)) from exc
+        for attempt in range(3):
+            try:
+                if authority_hook is not None:
+                    authority_hook.begin_attempt()
+                async with self._sessions.begin() as session:
+                    return await self._commit(
+                        session,
+                        portfolio_revision_id,
+                        current_controls,
+                        authority_hook,
+                    )
+            except PortfolioSuperseded as exc:
+                await self._record_failure(portfolio_revision_id, str(exc), superseded=True)
+                raise
+            except Exception as exc:
+                if attempt < 2 and self._retryable_transaction_error(exc):
+                    continue
+                await self._record_failure(portfolio_revision_id, str(exc), superseded=False)
+                raise PortfolioPublicationError(str(exc)) from exc
+        raise PortfolioPublicationError("Portfolio publication retry exhausted")
 
     async def recover(self, portfolio_revision_id: str) -> Literal[
         "published", "retryable", "failed"
@@ -724,6 +818,8 @@ class AtomicPortfolioPublisher:
         current_controls: PortfolioControlRevisions,
         authority_hook: PortfolioAuthorityCommitHook | None,
     ) -> PortfolioPublicationResult:
+        if authority_hook is not None:
+            await authority_hook.lock_authority(session)
         probe = await session.get(PortfolioRevision, portfolio_id)
         if probe is None:
             raise PortfolioPublicationError("Portfolio 不存在")
@@ -788,6 +884,14 @@ class AtomicPortfolioPublisher:
         program.revision += 1
         await self._finalize_committed(session, program, portfolio, attempt=attempt)
         return await self._result(session, portfolio, refs=refs)
+
+    @staticmethod
+    def _retryable_transaction_error(exc: Exception) -> bool:
+        if not isinstance(exc, DBAPIError):
+            return False
+        original = getattr(exc, "orig", None)
+        code = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+        return code in {"40001", "40P01"}
 
     async def _lock_lanes(
         self,

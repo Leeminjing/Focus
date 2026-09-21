@@ -1,7 +1,7 @@
 r"""本文件对外提供 LoopWorkerRuntime、仅验证声明检查的 StructuredCompletionVerifier 与 StructuredLaneAdvisor。
 
 输入为 Patrol 已提交的可选 Worker request、可选 Loop scope、当前 Mission/round/Portfolio/workspace 证据和模型配置；输出为
-无工具、无状态提交能力的完成证据或 Lane 建议。具体工作流为独立有界池持久领取 request、记录 attempt identity、
+无工具、无状态提交能力的完成证据或 Bootstrap/Lane expansion 候选。具体工作流为独立有界池持久领取 request、记录 attempt identity、
 后台执行模型调用并严格解析结果，Curator 生命周期逐步提交且部分结果立即可见，失败有界重试；Patrol Session
 所属 Curator 全部结束后将同一 round 标为 curated，旧式 Worker 批次仍创建新 observation round，最终判断仍归 Portfolio Patrol。
 示例：`await runtime.drain()`。
@@ -12,16 +12,17 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 import json
-from typing import Any, ClassVar
+from typing import Any
 import uuid
 
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.completion import CompletionEvidenceService
+from backend.app.desktop.agent_loop.context_expansion.contracts import CuratorExpansionProposal
 from backend.app.desktop.agent_loop.completion_policy import CompletionCheckPolicy
 from backend.app.desktop.agent_loop.curator_assignments import CuratorAssignmentRepository
 from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count
@@ -52,32 +53,9 @@ class CompletionProposal(BaseModel):
 
 class LaneAdviceProposal(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    _FORBIDDEN_EFFECTS: ClassVar[frozenset[str]] = frozenset(
-        {"send_directive", "publish_portfolio", "change_mission", "change_contract", "verify_fact"}
-    )
 
     rationale: str = Field(min_length=1, max_length=4000)
-    proposals: tuple[dict[str, Any], ...]
-
-    @model_validator(mode="after")
-    def reject_authoritative_effects(self) -> "LaneAdviceProposal":
-        for proposal in self.proposals:
-            self._validate_unprivileged(proposal)
-        return self
-
-    @classmethod
-    def _validate_unprivileged(cls, value: Any) -> None:
-        if isinstance(value, dict):
-            for key, item in value.items():
-                normalized = str(key).strip().lower()
-                if normalized in cls._FORBIDDEN_EFFECTS and bool(item):
-                    raise ValueError(f"Curator proposal 不得执行权威 effect: {normalized}")
-                if normalized in {"execute", "commit", "command", "authority_effect"} and str(item).strip().lower() in cls._FORBIDDEN_EFFECTS:
-                    raise ValueError(f"Curator proposal 不得执行权威 effect: {item}")
-                cls._validate_unprivileged(item)
-        elif isinstance(value, (list, tuple)):
-            for item in value:
-                cls._validate_unprivileged(item)
+    proposals: tuple[CuratorExpansionProposal, ...]
 
 
 class _StructuredWorker:
@@ -124,7 +102,7 @@ class StructuredLaneAdvisor:
         self._worker = worker
 
     async def advise(self, payload: dict[str, Any]) -> LaneAdviceProposal:
-        return await self._worker.invoke(LaneAdviceProposal, "你是无权 Lane Curator Worker。只针对 Patrol 分配的 Lane 和来源提供候选策展建议，不得请求运行、修改 Context、发布 Portfolio 或扩大范围。", payload)
+        return await self._worker.invoke(LaneAdviceProposal, "你是无权 Context Expansion Curator Worker。bootstrap 模式为单 Context 发现首个独立方向，lane 模式检查现有分工缺口。你只能返回带 source_context_id、purpose、work_order、completion_check、workspace_mode、independence_key、evidence_hints 与 required 的候选，不得请求运行、修改 Context、创建 Directive、发布 Portfolio 或扩大范围。", payload)
 
 
 class LoopWorkerRuntime:

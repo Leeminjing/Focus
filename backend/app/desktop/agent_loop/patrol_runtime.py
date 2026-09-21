@@ -1,8 +1,8 @@
 r"""本文件对外提供 PatrolSessionLifecycle、CuratorCoordinationStage 与 PatrolOutcomeStage。
 
-输入为 coordinator claim、冻结 observation、Kernel result 和持久 Session；输出为原子 phase 事件、每 Context
-Curator assignment、可供 Patrol 消费的部分结果及等待/终态。具体工作流为 Lifecycle 管理 Session 边界，
-Curator stage 只负责扇出/收集/消费，Outcome stage 只把 Kernel 结果映射为 delivery、waiting、publication 或终态。
+输入为 coordinator claim、冻结 observation、Kernel result 和持久 Session；输出为原子 phase 事件、单 Context Bootstrap 或
+多 Context Lane Curator assignment、可供 Patrol 消费的部分结果及等待/终态。具体工作流为 Lifecycle 管理 Session 边界，
+Curator stage 按 Portfolio 形态有界扇出、收集和消费，Outcome stage 只把 Kernel 结果映射为 delivery、waiting、publication 或终态。
 示例：`handle = await lifecycle.begin(claim)`。
 """
 
@@ -79,10 +79,12 @@ class CuratorCoordinationStage:
 
     def scopes(self, observation: LoopObservationEnvelope) -> tuple[dict, ...]:
         eligible = tuple(item for item in observation.portfolio_frontier if item.get("revision_id"))
-        if len(eligible) < 2:
+        if not eligible:
             return ()
+        mode = "bootstrap" if len(eligible) == 1 else "lane"
         return tuple(
             {
+                "mode": mode,
                 "lane_id": item.get("lane_id"),
                 "context_id": item["context_id"],
                 "revision_id": item["revision_id"],
@@ -105,7 +107,7 @@ class CuratorCoordinationStage:
                         loop_id=patrol.loop_id,
                         round_id=patrol.round_id,
                         kind="lane_curator",
-                        scope={"assignments": [scope], "patrol_session_id": session_id},
+                        scope={"assignments": [scope], "curator_mode": scope["mode"], "patrol_session_id": session_id},
                     )
                     session.add(request)
                     await session.flush()

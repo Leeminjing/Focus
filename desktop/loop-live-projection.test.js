@@ -1,5 +1,5 @@
 /*
- * 本文件验证前端 Live Loop schema、纯 reducer、序列防护、单连接恢复、选择器与界面状态保留。
+ * 本文件验证前端 Live Loop schema、纯 reducer、序列防护、单连接恢复、选择器、Context 卡片提交门禁与界面状态保留。
  * 输入为有效/畸形 snapshot、重复/陈旧/缺口事件和模拟 Live API；输出为确定性 projection、原子重同步及无重复连接断言。
  * 具体工作流为使用 Node test 直接加载 UMD 模块并驱动 Store/Connection；示例：`node --test desktop/loop-live-projection.test.js`。
  */
@@ -13,6 +13,7 @@ const Reducer = require("./loop-live-reducer.js");
 const Selectors = require("./loop-live-selectors.js");
 const LiveStore = require("./loop-live-store.js");
 const Connection = require("./loop-live-connection.js");
+const PortfolioMap = require("./portfolio-map-view.js");
 
 const entity = (id, revision, sequence, state = {}) => ({ entity_id: id, revision, updated_sequence: sequence, state });
 const snapshot = (sequence = 0, patch = {}) => ({
@@ -25,6 +26,7 @@ const snapshot = (sequence = 0, patch = {}) => ({
   contexts: {},
   runs: {},
   curators: {},
+  expansions: {},
   directives: {},
   facts: {},
   portfolio: null,
@@ -86,6 +88,109 @@ test("fact upserts normalize event payloads to the snapshot read model", () => {
     payload: { fact_type: "test", state: "verified", source_context_id: "c1", source_run_id: "r1", presentation: { title: "Regression", summary: "18 passed", metrics: { passed: 18 } } },
   }));
   assert.deepEqual(Selectors.selectFacts(next), [{ fact_id: "f1", revision: 2, fact_type: "test", state: "verified", source_context_id: "c1", source_run_id: "r1", presentation: { title: "Regression", summary: "18 passed", metrics: { passed: 18 } }, kind: "test", status: "verified", context_id: "c1", run_id: "r1", title: "Regression", summary: "18 passed", metrics: { passed: 18 }, outcome_status: undefined, correlation_id: "corr-1" }]);
+});
+
+test("context expansion lifecycle is projected with stable blocker and causal state", () => {
+  const initial = Schema.validateSnapshot(snapshot());
+  const detected = Reducer.reduce(initial, event(1, {
+    kind: "context_expansion.detected",
+    entity_type: "context_expansion",
+    entity_id: "x1",
+    entity_revision: 1,
+    payload: { opportunity_id: "o1", source_context_id: "c1", state: "detected", safe_summary: "发现独立测试方向" },
+  }));
+  const blocked = Reducer.reduce(detected, event(2, {
+    kind: "context_expansion.blocked",
+    entity_type: "context_expansion",
+    entity_id: "x1",
+    entity_revision: 2,
+    payload: { state: "blocked", blocker_code: "workspace_isolation_unavailable", safe_summary: "无法分配隔离 Worktree" },
+  }));
+
+  assert.deepEqual(Selectors.selectExpansions(blocked), [{
+    expansion_id: "x1",
+    revision: 2,
+    opportunity_id: "o1",
+    source_context_id: "c1",
+    state: "blocked",
+    safe_summary: "无法分配隔离 Worktree",
+    correlation_id: "corr-1",
+    blocker_code: "workspace_isolation_unavailable",
+  }]);
+  assert.equal(blocked.activity_timeline[1].detail.blocker_code, "workspace_isolation_unavailable");
+});
+
+test("derived Context card appears only after the committed context event", () => {
+  const initial = Schema.validateSnapshot(snapshot(1, {
+    contexts: {
+      root: entity("root", 1, 1, { title: "Root", role: "primary", status: "active", lane_id: "primary" }),
+    },
+  }));
+  const proposed = Reducer.reduce(initial, event(2, {
+    kind: "context_expansion.proposed",
+    entity_type: "context_expansion",
+    entity_id: "expansion-1",
+    entity_revision: 1,
+    payload: { state: "proposed", summary: "Patrol 提议测试分支", context_id: "derived" },
+  }));
+  const committed = Reducer.reduce(proposed, event(3, {
+    kind: "context_expansion.committed",
+    entity_type: "context_expansion",
+    entity_id: "expansion-1",
+    entity_revision: 2,
+    payload: { state: "committed", summary: "Context 已原子提交", context_id: "derived" },
+  }));
+  const beforeManifest = {
+    health: "publishing",
+    nodes: Selectors.selectContextCards(committed).map(card => ({ context_id: card.id, ...card })),
+    edges: [],
+  };
+  assert.doesNotMatch(PortfolioMap.render(beforeManifest, "root"), /data-context-id="derived"/);
+
+  const visible = Reducer.reduce(committed, event(4, {
+    kind: "context.created",
+    entity_type: "context",
+    entity_id: "derived",
+    entity_revision: 1,
+    payload: {
+      title: "Independent verification",
+      role: "side",
+      status: "active",
+      lane_id: "testing",
+      current_revision_id: "derived-r1",
+    },
+  }));
+  const afterManifest = {
+    health: "dispatching",
+    nodes: Selectors.selectContextCards(visible).map(card => ({ context_id: card.id, ...card })),
+    edges: [{ source_context_id: "root", target_context_id: "derived", target_revision_id: "derived-r1" }],
+  };
+  assert.match(PortfolioMap.render(afterManifest, "root"), /data-context-id="derived"/);
+});
+
+test("all stable no-expansion and terminal reasons survive the projection boundary", () => {
+  const reasonCodes = ["context_budget_exhausted", "duplicate_expansion", "workspace_isolation_unavailable", "stale_source", "compiler_failed"];
+  let projection = Schema.validateSnapshot(snapshot());
+  reasonCodes.forEach((blockerCode, index) => {
+    projection = Reducer.reduce(projection, event(index + 1, {
+      kind: "context_expansion.blocked",
+      entity_type: "context_expansion",
+      entity_id: `x${index}`,
+      entity_revision: 1,
+      payload: { state: "blocked", blocker_code: blockerCode, safe_summary: `blocked:${blockerCode}` },
+    }));
+  });
+  projection = Reducer.reduce(projection, event(reasonCodes.length + 1, {
+    kind: "context_expansion.superseded",
+    entity_type: "context_expansion",
+    entity_id: "xs",
+    entity_revision: 1,
+    payload: { state: "superseded", safe_summary: "equivalent Lane won" },
+  }));
+
+  const expansions = Selectors.selectExpansions(projection);
+  assert.deepEqual(new Set(expansions.map(item => item.blocker_code).filter(Boolean)), new Set(reasonCodes));
+  assert.equal(expansions.find(item => item.expansion_id === "xs").state, "superseded");
 });
 
 test("reducer pauses on a sequence gap and remains forward compatible with unknown entities", () => {

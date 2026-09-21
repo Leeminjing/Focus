@@ -1,6 +1,6 @@
 /*
  * 本文件对外提供 Live Loop projection 的只读选择器。
- * 输入为规范化 projection 与可选 Context identity；输出为 Patrol、等待请求、图活动、Context 卡片、因果链、事实和摘要指标。
+ * 输入为规范化 projection 与可选 Context identity；输出为 Patrol、等待请求、Expansion、图活动、Context 卡片、因果链、事实和摘要指标。
  * 具体工作流为仅从实体 state 派生稳定展示模型，不持有领域状态；示例：`selectContextCards(projection)`。
  */
 (function (root, factory) {
@@ -25,6 +25,12 @@
     const directives = values(projection?.directives).sort((left, right) => right.updated_sequence - left.updated_sequence).slice(0, MAX_VISIBLE_GRAPH_ACTIVITY).map(entity => ({ id: entity.entity_id, revision: entity.revision, ...entity.state }));
     const correlated = new Map(values(projection?.runs).filter(entity => entity.state.directive_id).map(entity => [entity.state.directive_id, entity]));
     return Object.freeze(directives.map(item => Object.freeze({ ...item, run: stateOf(correlated.get(item.id)) })));
+  }
+
+  function selectExpansions(projection) {
+    return Object.freeze(values(projection?.expansions)
+      .sort((left, right) => right.updated_sequence - left.updated_sequence)
+      .map(entity => Object.freeze({ expansion_id: entity.entity_id, revision: entity.revision, ...entity.state })));
   }
 
   function selectContextCards(projection) {
@@ -77,5 +83,5 @@
     });
   }
 
-  return Object.freeze({ MAX_VISIBLE_GRAPH_ACTIVITY, MAX_VISIBLE_FACTS, selectPatrol, selectActiveWaitRequest, selectGraphActivity, selectContextCards, selectCausality, selectFacts, selectSummary });
+  return Object.freeze({ MAX_VISIBLE_GRAPH_ACTIVITY, MAX_VISIBLE_FACTS, selectPatrol, selectActiveWaitRequest, selectExpansions, selectGraphActivity, selectContextCards, selectCausality, selectFacts, selectSummary });
 });

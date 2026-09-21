@@ -1,9 +1,10 @@
 r"""本文件对外提供 LoopPortfolioPublicationService 与 LoopPortfolioAuthorityHook。
 
 输入为 Kernel 已授权的 Loop decision、结构化 Lane plan、精确多来源 evidence 和冻结控制版本；输出为
-原子发布的 Portfolio revision、Loop membership 与 delegated directives。具体工作流为预登记稳定 Lane，
-调用统一 compiler 生成候选，在 shadow checkpoint 准备全部 Context revision，再由 authority hook 在
-AtomicPortfolioPublisher 的同一事务内重验 Loop/grant/workspace，并提交所有 Loop 侧指针、指令与 `portfolio.published` 规范事件。
+原子发布的 Portfolio revision、Loop membership、Expansion transition 与 delegated directives。具体工作流为预登记稳定 Lane 与
+Decision 唯一的 Portfolio identity，调用统一 compiler 生成候选，在 shadow checkpoint 幂等准备全部 Context revision，再由 authority hook 在
+AtomicPortfolioPublisher 的每次独立事务尝试内重验 Loop/grant/workspace，并提交所有 Loop 侧指针、指令、Context projection 与
+`portfolio.published` 规范事件；服务只从最终已提交数据库事实返回 Directive identity，失败重试的内存状态不会泄漏。
 示例：`result = await service.publish(decision_id)`。
 """
 
@@ -22,12 +23,16 @@ from backend.app.desktop.agent_loop.models import (
     LoopContextMembership,
     LoopDecision,
     LoopDelegationGrant,
+    LoopDirective,
     LoopEventOutbox,
     LoopRound,
 )
+from backend.app.desktop.agent_loop.context_expansion.models import LoopContextExpansion
+from backend.app.desktop.agent_loop.context_expansion.repository import ContextExpansionRepository
+from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
 from backend.app.desktop.agent_loop.ownership import LoopFencingGuard
-from backend.app.desktop.agent_loop.portfolio_events import PortfolioPublicationEventRecorder
+from backend.app.desktop.agent_loop.portfolio_events import ContextPublicationEventRecorder, PortfolioPublicationEventRecorder
 from backend.app.desktop.agent_loop.schemas import PATROL_ACTION_ADAPTER
 from backend.app.desktop.context_curation import (
     AtomicPortfolioPublisher,
@@ -76,7 +81,34 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
     def __init__(self, decision_id: str) -> None:
         self._decision_id = decision_id
         self._directives = DelegatedDirectiveFactory()
-        self.directive_ids: list[str] = []
+        self._directive_ids: list[str] = []
+        self._directive_lifecycle = DirectiveLifecycleRepository()
+        self._expansions = ContextExpansionRepository()
+        self._context_events = ContextPublicationEventRecorder()
+
+    @property
+    def directive_ids(self) -> tuple[str, ...]:
+        return tuple(self._directive_ids)
+
+    def begin_attempt(self) -> None:
+        self._directive_ids.clear()
+
+    async def lock_authority(self, session: AsyncSession) -> None:
+        decision = await session.get(LoopDecision, self._decision_id)
+        if decision is None:
+            raise PortfolioSuperseded("Loop decision 已失效")
+        loop = await session.get(AgentLoop, decision.loop_id, with_for_update=True)
+        round_row = await session.get(LoopRound, decision.round_id, with_for_update=True)
+        if loop is None or round_row is None:
+            raise PortfolioSuperseded("Loop/round authority identity 已变化")
+        await session.scalar(
+            select(LoopDelegationGrant)
+            .where(
+                LoopDelegationGrant.loop_id == loop.loop_id,
+                LoopDelegationGrant.revision == loop.authority_revision,
+            )
+            .with_for_update()
+        )
 
     async def commit(
         self,
@@ -121,14 +153,14 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
             if parsed.action in _LANE_MUTATIONS:
                 await self._commit_lane(session, loop, round_row, grant, decision, action_row, parsed, by_lane)
             elif parsed.action == "continue_context":
-                self._add_directive(
+                await self._add_directive(
                     session, loop, round_row, grant, decision, action_row,
                     parsed.context_id, parsed.context_revision_id, parsed.message,
                 )
                 action_row.status = "applied"
                 action_row.result = {
                     **action_row.result,
-                    "directive_id": self.directive_ids[-1],
+                    "directive_id": self._directive_ids[-1],
                 }
             elif parsed.action == "pause_lane":
                 await self._set_memberships(session, loop.loop_id, parsed.lane_id, "paused")
@@ -154,8 +186,8 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
                 )
                 or 0
             )
-        loop.health = "dispatching" if self.directive_ids else "idle"
-        round_row.status = "ready" if self.directive_ids else "settled"
+        loop.health = "dispatching" if self._directive_ids else "idle"
+        round_row.status = "ready" if self._directive_ids else "settled"
         decision.status = "committed"
         await self._event(
             session,
@@ -171,7 +203,7 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
             generation=portfolio.generation,
             round_id=round_row.round_id,
             decision_id=decision.decision_id,
-            directive_ids=tuple(self.directive_ids),
+            directive_ids=tuple(self._directive_ids),
         )
 
     @staticmethod
@@ -236,7 +268,7 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
             membership.lane_id = lane_id
             membership.status = "active"
         grant.context_scope = list(dict.fromkeys([*grant.context_scope, candidate.target_context_id]))
-        self._add_directive(
+        await self._add_directive(
             session, loop, round_row, grant, decision, action_row,
             candidate.target_context_id, candidate.candidate_context_revision_id, action.message,
         )
@@ -245,10 +277,36 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
             **action_row.result,
             "context_id": candidate.target_context_id,
             "context_revision_id": candidate.candidate_context_revision_id,
-            "directive_id": self.directive_ids[-1],
+            "directive_id": self._directive_ids[-1],
         }
+        expansion_id = action.plan.lane_policy.get("expansion_id")
+        if expansion_id:
+            expansion = await session.get(LoopContextExpansion, str(expansion_id), with_for_update=True)
+            if expansion is not None and expansion.state == "authorized":
+                await self._expansions.transition(
+                    session,
+                    expansion.expansion_id,
+                    "committed",
+                    "Context、Lane、Membership、Grant Scope 与 Directive 已原子提交",
+                    result={
+                        "lane_id": lane_id,
+                        "context_id": candidate.target_context_id,
+                        "context_revision_id": candidate.candidate_context_revision_id,
+                        "directive_id": self._directive_ids[-1],
+                        "portfolio_revision_id": candidate.portfolio_revision_id,
+                    },
+                )
+                context = await session.get(DesktopThread, candidate.target_context_id)
+                if context is not None:
+                    await self._context_events.record(
+                        session,
+                        loop_id=loop.loop_id,
+                        decision_id=decision.decision_id,
+                        context=context,
+                        membership=membership,
+                    )
 
-    def _add_directive(self, session, loop, round_row, grant, decision, action_row, context_id, revision_id, message) -> None:
+    async def _add_directive(self, session, loop, round_row, grant, decision, action_row, context_id, revision_id, message) -> None:
         directive, provenance = self._directives.create(
             loop_id=loop.loop_id,
             round_id=round_row.round_id,
@@ -264,7 +322,9 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
             idempotency_key=f"{decision.idempotency_key}:directive:{action_row.position}",
         )
         session.add_all([directive, provenance])
-        self.directive_ids.append(directive.directive_id)
+        await self._directive_lifecycle.register(session, directive)
+        await self._directive_lifecycle.transition(session, directive.directive_id, "authorized")
+        self._directive_ids.append(directive.directive_id)
 
     @staticmethod
     async def _set_memberships(session, loop_id: str, lane_id: str, status: str) -> None:
@@ -312,12 +372,15 @@ class LoopPortfolioPublicationService:
         self._publisher = AtomicPortfolioPublisher(sessions, self._revisions)
 
     async def publish(self, decision_id: str) -> LoopPortfolioPublishResult:
-        request, compiled, existing_id = await self._build(decision_id)
-        if existing_id is None:
-            frozen = await self._freezer.freeze(request)
-            await self._remember_portfolio(decision_id, frozen.portfolio_revision_id)
-        else:
-            frozen = await self._frozen(existing_id)
+        request, compiled, portfolio_id = await self._build(decision_id)
+        frozen = (
+            await self._frozen(portfolio_id)
+            if request is None
+            else await self._freezer.freeze(
+                request,
+                portfolio_revision_id=portfolio_id,
+            )
+        )
         by_lane = await self._candidate_ids(frozen.portfolio_revision_id)
         if await self._portfolio_status(frozen.portfolio_revision_id) == "preparing":
             await self._preparer.prepare(
@@ -330,18 +393,25 @@ class LoopPortfolioPublicationService:
             frozen.controls,
             hook,
         )
-        return LoopPortfolioPublishResult(result, tuple(hook.directive_ids))
+        return LoopPortfolioPublishResult(result, await self._committed_directive_ids(decision_id))
+
+    async def _committed_directive_ids(self, decision_id: str) -> tuple[str, ...]:
+        async with self._sessions() as session:
+            return tuple(
+                (
+                    await session.scalars(
+                        select(LoopDirective.directive_id)
+                        .where(LoopDirective.decision_id == decision_id)
+                        .order_by(LoopDirective.created_at, LoopDirective.directive_id)
+                    )
+                ).all()
+            )
 
     async def _build(self, decision_id: str):
         async with self._sessions.begin() as session:
             decision = await session.get(LoopDecision, decision_id, with_for_update=True)
-            if decision is None or decision.status not in {"publishing", "publishing_run"}:
-                raise PortfolioSuperseded("Loop decision 不处于 publishing")
-            loop = await session.get(AgentLoop, decision.loop_id, with_for_update=True)
-            round_row = await session.get(LoopRound, decision.round_id, with_for_update=True)
-            program = await session.get(CurationProgram, loop.program_id, with_for_update=True) if loop else None
-            if loop is None or round_row is None or program is None:
-                raise PortfolioSuperseded("Loop publication identity 不完整")
+            if decision is None:
+                raise PortfolioSuperseded("Loop decision 不存在")
             actions = list(
                 (
                     await session.scalars(
@@ -352,6 +422,25 @@ class LoopPortfolioPublicationService:
                     )
                 ).all()
             )
+            existing_id = next(
+                (
+                    str(item.result["portfolio_revision_id"])
+                    for item in actions
+                    if item.result.get("portfolio_revision_id")
+                ),
+                None,
+            )
+            if decision.status == "committed":
+                if existing_id is None:
+                    raise PortfolioSuperseded("已提交 Loop decision 缺少 Portfolio identity")
+                return None, {}, existing_id
+            if decision.status not in {"publishing", "publishing_run"}:
+                raise PortfolioSuperseded("Loop decision 不处于 publishing")
+            loop = await session.get(AgentLoop, decision.loop_id, with_for_update=True)
+            round_row = await session.get(LoopRound, decision.round_id, with_for_update=True)
+            program = await session.get(CurationProgram, loop.program_id, with_for_update=True) if loop else None
+            if loop is None or round_row is None or program is None:
+                raise PortfolioSuperseded("Loop publication identity 不完整")
             parsed = [PATROL_ACTION_ADAPTER.validate_python(item) for item in decision.intent["actions"]]
             changed, compiled = await self._ensure_lanes(session, loop, actions, parsed)
             lanes = list(
@@ -406,15 +495,21 @@ class LoopPortfolioPublicationService:
                 loop_revision=loop.revision,
                 grant_revision=loop.authority_revision,
             )
-            existing_id = next(
-                (
-                    str(item.result["portfolio_revision_id"])
-                    for item in actions
-                    if item.result.get("portfolio_revision_id")
-                ),
-                None,
-            )
+            if existing_id is None:
+                existing_id = self._portfolio_identity(decision_id)
+                for action in actions:
+                    action.result = {
+                        **action.result,
+                        "portfolio_revision_id": existing_id,
+                    }
             return request, compiled, existing_id
+
+    @staticmethod
+    def _portfolio_identity(decision_id: str) -> str:
+        return uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"focus:loop-portfolio:{decision_id}",
+        ).hex
 
     async def _ensure_lanes(self, session, loop, action_rows, actions):
         changed = {}
@@ -442,10 +537,14 @@ class LoopPortfolioPublicationService:
                     raise PortfolioSuperseded("update_lane 不得隐式改变稳定 Lane purpose")
             else:
                 normalized = CurationProgramRepository.normalize_purpose(plan.purpose)
+                semantic_fingerprint = str(plan.lane_policy.get("semantic_fingerprint") or "")
                 duplicate = await session.scalar(
                     select(CurationLane).where(
                         CurationLane.program_id == loop.program_id,
-                        CurationLane.normalized_purpose == normalized,
+                        (
+                            (CurationLane.normalized_purpose == normalized)
+                            | (CurationLane.current_semantic_fingerprint == semantic_fingerprint)
+                        ),
                         CurationLane.lifecycle != "retired",
                     )
                 )
@@ -520,18 +619,6 @@ class LoopPortfolioPublicationService:
             )
             return {row.lane_id: row.candidate_id for row in rows}
 
-    async def _remember_portfolio(self, decision_id: str, portfolio_id: str) -> None:
-        async with self._sessions.begin() as session:
-            actions = list(
-                (
-                    await session.scalars(
-                        select(LoopAction).where(LoopAction.decision_id == decision_id).with_for_update()
-                    )
-                ).all()
-            )
-            for action in actions:
-                action.result = {**action.result, "portfolio_revision_id": portfolio_id}
-
     async def _frozen(self, portfolio_id: str):
         async with self._sessions() as session:
             portfolio = await session.get(PortfolioRevision, portfolio_id)
@@ -560,6 +647,6 @@ class LoopPortfolioPublicationService:
             status = await session.scalar(
                 select(PortfolioRevision.status).where(PortfolioRevision.portfolio_revision_id == portfolio_id)
             )
-            if status not in {"preparing", "ready"}:
+            if status not in {"preparing", "ready", "published"}:
                 raise PortfolioSuperseded(f"Portfolio publication 不可恢复: {status}")
             return str(status)

@@ -1,8 +1,9 @@
 r"""本文件对外提供 DelegatedDirectiveFactory 与 MessageHistoryProjector。
 
 输入为已授权 directive 事实或持久消息/provenance；输出为模型可见的纯 HumanMessage 与 UI 可见的
-来源投影。具体工作流为来源只写外部表，to_model_message 仅设置 id/content，绝不加入 Patrol、grant、
-delegated metadata 或 system prompt。示例：`message = factory.to_model_message(directive)`。
+来源投影。具体工作流为 create 从授权幂等键确定性生成 Directive、Message 与 provenance identity，来源只写外部表；
+to_model_message 仅设置 id/content，绝不加入 Patrol、grant、delegated metadata 或 system prompt。
+示例：`message = factory.to_model_message(directive)`。
 """
 
 from __future__ import annotations
@@ -36,8 +37,8 @@ class DelegatedDirectiveFactory:
         correlation_id: str | None = None,
         causation_event_id: str | None = None,
     ) -> tuple[LoopDirective, MessageProvenance]:
-        message_id = uuid.uuid4().hex
-        directive_id = uuid.uuid4().hex
+        message_id = DelegatedDirectiveFactory._identity("message", idempotency_key)
+        directive_id = DelegatedDirectiveFactory._identity("directive", idempotency_key)
         directive = LoopDirective(
             directive_id=directive_id,
             loop_id=loop_id,
@@ -59,7 +60,7 @@ class DelegatedDirectiveFactory:
             idempotency_key=idempotency_key,
         )
         provenance = MessageProvenance(
-            provenance_id=uuid.uuid4().hex,
+            provenance_id=DelegatedDirectiveFactory._identity("provenance", idempotency_key),
             context_revision_id=context_revision_id,
             message_id=message_id,
             source_kind="delegated_patrol",
@@ -68,6 +69,10 @@ class DelegatedDirectiveFactory:
             audit={"loop_id": loop_id, "round_id": round_id, "grant_revision": grant_revision},
         )
         return directive, provenance
+
+    @staticmethod
+    def _identity(kind: str, idempotency_key: str) -> str:
+        return uuid.uuid5(uuid.NAMESPACE_URL, f"focus:{kind}:{idempotency_key}").hex
 
     @staticmethod
     def to_model_message(directive: LoopDirective) -> HumanMessage:

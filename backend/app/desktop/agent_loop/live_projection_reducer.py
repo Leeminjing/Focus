@@ -22,6 +22,7 @@ class LoopLiveProjectionReducer:
         "run": "runs",
         "context_run": "runs",
         "curator": "curators",
+        "context_expansion": "expansions",
         "directive": "directives",
         "fact": "facts",
         "loop_wait_request": "wait_requests",
@@ -84,10 +85,12 @@ class LoopLiveProjectionReducer:
             return {**payload, "safe_summary": payload.get("safe_summary") or payload.get("summary")}
         if entity_type == "curator":
             return {**payload, "safe_summary": payload.get("safe_summary") or payload.get("result_summary") or payload.get("summary")}
+        if entity_type == "context_expansion":
+            return {**payload, "safe_summary": payload.get("safe_summary") or payload.get("summary") or payload.get("state")}
         return payload
 
     @staticmethod
     def _activity(event: CanonicalEventEnvelope) -> ActivityEntry:
         summary = event.payload.get("summary") or event.payload.get("status") or event.kind
-        detail = {key: event.payload.get(key) for key in ("context_id", "run_id", "tool_name", "status", "directive_id") if event.payload.get(key) is not None}
+        detail = {key: event.payload.get(key) for key in ("context_id", "source_context_id", "run_id", "tool_name", "status", "directive_id", "opportunity_id", "blocker_code") if event.payload.get(key) is not None}
         return ActivityEntry(event_id=event.event_id, sequence=event.sequence, kind=event.kind, entity_type=event.entity_type, entity_id=event.entity_id, summary=str(summary)[:500], occurred_at=event.occurred_at, correlation_id=event.correlation_id, causation_id=event.causation_id, detail=detail)
