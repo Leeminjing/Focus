@@ -1,7 +1,7 @@
 r"""本文件验证 Context Portfolio 的冻结、shadow 准备、CAS 原子发布、恢复与 outbox 去重。
 
 输入为两个更新 Lane、一个 keep Lane、精确 source frontier 和控制 revision；输出为可复现冻结记录、
-失败时零指针切换、成功时整代指针切换、陈旧发布拒绝和单次消费断言。具体工作流为在隔离 PostgreSQL
+失败时零指针切换、成功时整代指针切换、陈旧发布拒绝、单次消费与新建受管 Context 标题不越列表宽断言。具体工作流为在隔离 PostgreSQL
 中建立 revision/Program，使用内存 checkpoint writer 准备 shadow，再验证事务边界和历史事实。
 示例：`pytest backend/tests/test_atomic_portfolio_publication.py`。
 """
@@ -49,7 +49,7 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRef,
     ContextRevisionRepository,
 )
-from backend.app.desktop.models import DesktopThread, DesktopWorkspace
+from backend.app.desktop.models import THREAD_TITLE_LIMIT, DesktopThread, DesktopWorkspace
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
@@ -455,6 +455,63 @@ def test_stale_controls_supersede_without_partial_switch() -> None:
                     )
                 )
                 assert failure.payload["superseded"] is True
+        finally:
+            await _cleanup(sessions, workspace_id)
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_create_lane_bounds_managed_context_title_to_column_width() -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        revisions = ContextRevisionRepository()
+        programs = CurationProgramRepository()
+        freezer = PortfolioFreezer(sessions, revisions)
+        workspace_id, program_id, source, _bases, _lanes = await _seed(
+            sessions, uuid.uuid4().hex[:8]
+        )
+        long_purpose = "建立与实现方独立的测试与验收体系：" + "覆盖配置持久化、System Prompt 注入、工具调用与关键状态转换；" * 6
+        try:
+            async with sessions.begin() as session:
+                lane = await programs.add_lane(
+                    session,
+                    program_id,
+                    long_purpose,
+                    lane_id=f"lane-long-{uuid.uuid4().hex[:8]}",
+                )
+            await freezer.freeze(
+                PortfolioFreezeRequest(
+                    program_id=program_id,
+                    source_frontier=(source.ref,),
+                    lane_intents=(
+                        PortfolioLaneIntent(
+                            lane_id=lane.lane_id,
+                            action=PortfolioLaneAction.CREATE,
+                            purpose=long_purpose,
+                            source_allocation=(source.ref,),
+                            semantic_fingerprint="e" * 64,
+                        ),
+                    ),
+                    workspace_revision="workspace-r1",
+                )
+            )
+
+            async with sessions() as session:
+                created = list(
+                    (
+                        await session.scalars(
+                            select(DesktopThread).where(
+                                DesktopThread.workspace_id == workspace_id,
+                                DesktopThread.thread_id.like("curation:%"),
+                            )
+                        )
+                    ).all()
+                )
+            assert len(created) == 1, "CREATE Lane 必须新建一个受管 Context"
+            assert created[0].title == long_purpose[:THREAD_TITLE_LIMIT]
+            assert len(created[0].title) == THREAD_TITLE_LIMIT, "整段 lane purpose 必须收进列宽"
         finally:
             await _cleanup(sessions, workspace_id)
             await engine.dispose()

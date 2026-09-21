@@ -5,6 +5,7 @@ r"""本文件对外提供 PortfolioFreezer、PortfolioCandidatePreparer 与 Atom
 幂等冻结所有输入，逐 Lane 可重入地准备并持久化不可路由 revision，可为持续受管 Lane 保留当前 definition 之后的运行后缀，最后
 按可选 authority/loop/round、workspace/program/portfolio/lane/context 稳定锁序重验 CAS，并为每次数据库重试初始化独立
 authority attempt，再一次切换全部 Context/Portfolio 指针并写入幂等 outbox；任一失败保留旧 Portfolio。
+新建受管 Context 的标题取自 Lane purpose，写库前经 bounded_thread_title 收进 desktop_threads.title 的列宽。
 示例：`published = await publisher.publish(portfolio_id, current_controls)`。
 """
 
@@ -43,7 +44,7 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRepository,
     ContextRevisionSourceContract,
 )
-from backend.app.desktop.models import DesktopThread, DesktopWorkspace
+from backend.app.desktop.models import DesktopThread, DesktopWorkspace, bounded_thread_title
 
 
 class _FrozenModel(BaseModel):
@@ -489,7 +490,7 @@ class PortfolioFreezer:
                     task_id=context_id,
                     workspace_id=program.workspace_id,
                     thread_id=f"curation:{context_id}",
-                    title=intent.purpose,
+                    title=bounded_thread_title(intent.purpose),
                     ui_state={"staged_by_portfolio": portfolio_id},
                 )
             )

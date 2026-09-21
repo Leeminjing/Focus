@@ -8,6 +8,7 @@
 受管 Context 的真实运行后缀会从旧 revision 提取并接到新 authored/execution 前缀之后；任务页读取会话时
 声明活跃执行视图，其实现只读取当前 revision 执行身份上的最新 checkpoint，不写入任何权威状态。
 删除时由 retention planner 保留仍被后代引用的最小 tombstone，本服务不再读写 identity-level definition/source 权威表。
+由根 Context 派生的受管 Context 标题经 bounded_thread_title 收进 desktop_threads.title 的列宽。
 示例：`context = await service.derive(body)`；`view = await service.live_conversation(context_id)`。
 """
 
@@ -54,6 +55,7 @@ from backend.app.desktop.models import (
     PatrolAgent,
     PatrolContextAttempt,
     PatrolContextBinding,
+    bounded_thread_title,
     PatrolContextRevision,
     PatrolDraft,
     SwarmAgent,
@@ -601,7 +603,7 @@ class ContextService:
             task_id=context_id,
             workspace_id=root.workspace_id,
             thread_id=_new_id(),
-            title=f"{root.title} · 策展 Context",
+            title=bounded_thread_title(f"{root.title} · 策展 Context"),
             ui_state={},
         )
         session.add(task)
