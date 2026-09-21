@@ -6,6 +6,8 @@ SQLAlchemy 表定义和严格 Pydantic 请求对象。具体工作流为：Run �
 material_inputs 表达本轮材料，用独立 must_view_material_ids 表达图片完成约束；数据库用
 RunMaterialBinding 保存不可变运行快照，用 MaterialGroup 与 MaterialGroupMembership 保存
 用户主动组织事实，旧 attached_material_ids 仅在新字段缺失时作为兼容输入。
+desktop_threads.title 是 THREAD_TITLE_LIMIT 有界列：用户输入的标题由请求模型拒绝超长值，
+从散文派生的标题经 bounded_thread_title 收进该界，二者的界同源于列宽。
 
 示例：request = MainRunCreate(message="比较", material_inputs=[{"material_id": "m1", "note": "看第三章"}])。
 """
@@ -22,6 +24,14 @@ from focus.persistence.base import Base
 
 MAIN_RUN_EQUIPMENT_KEY = "_main_run_equipment"
 """desktop_threads.ui_state 中主运行装备快照的键名（跨服务共享的存储约定）。"""
+
+THREAD_TITLE_LIMIT = 200
+"""desktop_threads.title 的列宽；从散文派生的标题必须先经 bounded_thread_title 收进该界。"""
+
+
+def bounded_thread_title(text: str) -> str:
+    """把从散文派生的 Context 标题收进列宽，避免超长标题让整个发布事务失败。"""
+    return str(text or "")[:THREAD_TITLE_LIMIT]
 
 
 class DesktopWorkspace(Base):
@@ -53,7 +63,7 @@ class DesktopThread(Base):
         nullable=True,
         index=True,
     )
-    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    title: Mapped[str] = mapped_column(String(THREAD_TITLE_LIMIT), nullable=False)
     ui_state: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -456,7 +466,7 @@ class WorkspaceCreate(StrictRequest):
 
 class ThreadCreate(StrictRequest):
     thread_id: str | None = None
-    title: str = "新任务"
+    title: str = Field(default="新任务", max_length=THREAD_TITLE_LIMIT)
 
 
 class ContextSourceRef(StrictRequest):
@@ -465,7 +475,7 @@ class ContextSourceRef(StrictRequest):
 
 
 class ContextDeriveCreate(StrictRequest):
-    title: str = Field(default="新 Context", min_length=1, max_length=200)
+    title: str = Field(default="新 Context", min_length=1, max_length=THREAD_TITLE_LIMIT)
     sources: list[ContextSourceRef] = Field(min_length=1)
     messages: list[dict[str, Any]] = Field(default_factory=list)
 
