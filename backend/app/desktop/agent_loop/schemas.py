@@ -1,8 +1,8 @@
 r"""本文件对外提供 Agent Loop API、Mission、类型化等待响应、用户介入、observation、completion 与 Patrol decision 封闭判别联合。
 
 输入为用户 Mission 或兼容旧目标、grant、冻结版本、Expansion assessment、Patrol action 和 verifier evidence；输出为拒绝未知字段的不可变
-合同。具体工作流为创建请求先解析结构化 Mission 或无损适配旧三字段，介入请求区分 Context/Portfolio 作用域，模型只以 semantic spawn/decline
-表达 Context 派生，持久 legacy create 仅由兼容 adapter 解析，其余 action 依 discriminator 解析，
+合同。具体工作流为创建请求先解析结构化 Mission 或无损适配旧三字段，介入请求区分 Context/Portfolio 作用域，模型只以 identity
+选择（spawn_context）或结构化拒绝（decline_expansion）表达 Context 派生、语义字段由服务端从冻结 opportunity 取用，持久 legacy create 仅由兼容 adapter 解析，其余 action 依 discriminator 解析，
 envelope 绑定所有控制 revision 与未处理用户意图，completion 以稳定 check_id 绑定类型化证据；自主压缩 action 只能引用已持久化候选，Kernel 只接受
 PatrolDecisionIntent。示例：`intent = PatrolDecisionIntent.model_validate(payload)`。
 """
@@ -45,11 +45,6 @@ class CreateLaneAction(StrictModel):
 class SpawnContextAction(StrictModel):
     action: Literal["spawn_context"]
     opportunity_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    source_context_id: str = Field(min_length=1)
-    purpose: str = Field(min_length=1, max_length=1000)
-    work_order: str = Field(min_length=1, max_length=8000)
-    completion_check: str = Field(min_length=1, max_length=4000)
-    workspace_mode: Literal["read_only", "isolated_write"]
 
 
 class DeclineExpansionAction(StrictModel):

@@ -1,7 +1,8 @@
 r"""本文件验证可恢复 Patrol Session 状态机、结构化历史与安全事件 payload。
 
 输入为真实 Loop round、合法/非法 phase、等待目标和受禁止的隐藏字段；输出为重启后历史一致、重复 phase 合法、
-终态封闭及隐私合同拒绝断言。具体工作流为跨两个 Repository 实例写入并读取同一 session。
+终态封闭、隐私合同拒绝、合同违例逐次留痕与派生评估可回读断言。具体工作流为跨两个 Repository 实例写入并读取同一 session，
+并以真实数据库核对 Patrol attempt 与 observation 的持久化事实。
 示例：`pytest backend/tests/test_patrol_session.py`。
 """
 
@@ -22,13 +23,15 @@ from backend.app.desktop.agent_loop import AgentLoopService, LoopCreateRequest, 
 from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
 from backend.app.desktop.agent_loop.curator_assignments import CuratorAssignmentRepository, CuratorScope
 from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective, LoopObservation, LoopRound, LoopWorkerRequest
+from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective, LoopObservation, LoopPatrolAttempt, LoopRound, LoopWorkerRequest
+from backend.app.desktop.agent_loop.patrol import PatrolContractViolation, PortfolioPatrol
 from backend.app.desktop.agent_loop.patrol_audit import PatrolAuditRepository
 from backend.app.desktop.agent_loop.patrol_runtime import CuratorCoordinationStage, PatrolSessionLifecycle
 from backend.app.desktop.agent_loop.patrol_session_models import LoopCuratorAssignment
 from backend.app.desktop.agent_loop.patrol_session_repository import PatrolSessionRepository
 from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, PatrolEvidenceReference, PatrolPhase, PatrolSessionStateMachine, PatrolTransitionRejected, PatrolWaitTarget
-from backend.app.desktop.agent_loop.round_orchestration import LoopRoundOrchestrator
+from backend.app.desktop.agent_loop.observation import observation_hash
+from backend.app.desktop.agent_loop.round_orchestration import LoopObservationService, LoopRoundOrchestrator
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 from backend.app.desktop.agent_loop.workers import LaneAdviceProposal, LoopWorkerRuntime
 from backend.app.desktop.context_evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
@@ -275,6 +278,124 @@ def test_kernel_rejects_forged_and_newer_observation_base_revisions(tmp_path) ->
             await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_semantic_contract_violation_is_persisted_with_raw_output(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        service, snapshot = await _create_loop(sessions, tmp_path)
+        try:
+            observation = LoopObservationEnvelope(
+                loop_id=snapshot["loop_id"],
+                loop_revision=snapshot["revision"],
+                round_id=snapshot["current_round_id"],
+                goal_revision=1,
+                authority_revision=1,
+                observed_frontier_hash="a" * 64,
+                mission={"outcome": "finish"},
+                grant={},
+                portfolio_frontier=(),
+                workspace={"revision": 1},
+                budget={},
+            )
+
+            class ViolatingModel:
+                def __init__(self) -> None:
+                    self.calls = 0
+
+                async def __call__(self, envelope):
+                    self.calls += 1
+                    raise PatrolContractViolation("spawn_context 引用了当前 assessment 之外的 opportunity", raw_output=f"raw-model-text-{self.calls}")
+
+            patrol = PortfolioPatrol(sessions, ViolatingModel())
+            for _ in range(2):
+                with pytest.raises(PatrolContractViolation):
+                    await patrol.decide(observation, snapshot["holder_id"])
+
+            async with sessions() as session:
+                attempts = (
+                    await session.scalars(
+                        select(LoopPatrolAttempt).where(LoopPatrolAttempt.loop_id == snapshot["loop_id"]).order_by(LoopPatrolAttempt.attempt)
+                    )
+                ).all()
+            assert [row.attempt for row in attempts] == [1, 2]
+            assert [row.status for row in attempts] == ["error", "error"]
+            assert [row.raw_output for row in attempts] == [{"raw_text": "raw-model-text-1"}, {"raw_text": "raw-model-text-2"}]
+            assert all("assessment 之外" in (row.error or "") for row in attempts)
+        finally:
+            loop = await service.get(snapshot["loop_id"])
+            if loop["status"] in {"running", "paused", "waiting_user"}:
+                await service.control(snapshot["loop_id"], "stop")
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_expansion_assessment_is_persisted_and_readable(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        service, snapshot = await _create_loop(sessions, tmp_path)
+        loop_id, round_id = snapshot["loop_id"], snapshot["current_round_id"]
+        try:
+            envelope = _observation_envelope(loop_id, round_id)
+            async with sessions.begin() as session:
+                session.add(
+                    LoopObservation(
+                        observation_id=uuid.uuid4().hex,
+                        loop_id=loop_id,
+                        round_id=round_id,
+                        envelope=envelope.model_dump(mode="json"),
+                        envelope_hash="b" * 64,
+                        projection_sequence=0,
+                        base_entity_revisions={},
+                    )
+                )
+
+            observations = LoopObservationService(sessions, None)
+            async with sessions() as session:
+                row = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == round_id))
+                assert row.envelope["expansion_assessment"] is None
+
+            empty = {"level": "not_applicable", "opportunities": [], "blockers": []}
+            await observations.attach_expansion_assessment(loop_id, round_id, empty)
+            async with sessions() as session:
+                row = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == round_id))
+                assert row.envelope["expansion_assessment"] == empty
+
+            required = {"level": "required", "opportunities": [{"opportunity_id": "a" * 64}], "blockers": []}
+            updated = await observations.attach_expansion_assessment(loop_id, round_id, required)
+
+            assert updated.expansion_assessment == required
+            async with sessions() as session:
+                row = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == round_id))
+                assert row.envelope["expansion_assessment"] == required
+                assert row.envelope_hash == observation_hash(updated)
+            assert (await observations.capture(loop_id, round_id)).expansion_assessment == required
+        finally:
+            loop = await service.get(loop_id)
+            if loop["status"] in {"running", "paused", "waiting_user"}:
+                await service.control(loop_id, "stop")
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def _observation_envelope(loop_id: str, round_id: str) -> LoopObservationEnvelope:
+    return LoopObservationEnvelope(
+        loop_id=loop_id,
+        loop_revision=1,
+        round_id=round_id,
+        goal_revision=1,
+        authority_revision=1,
+        observed_frontier_hash="a" * 64,
+        mission={"outcome": "finish"},
+        grant={},
+        portfolio_frontier=(),
+        workspace={"revision": 1},
+        budget={},
+    )
 
 
 async def _create_loop(sessions, tmp_path):

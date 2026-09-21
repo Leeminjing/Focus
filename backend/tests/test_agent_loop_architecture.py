@@ -105,6 +105,15 @@ def test_compression_policy_is_a_pure_domain_module() -> None:
     assert not [module for module in imports if module.startswith(forbidden)]
 
 
+def test_patrol_decision_contract_is_not_reclaimed_by_orchestration() -> None:
+    contract = (BACKEND_ROOT / "agent_loop" / "patrol_contract.py").read_text(encoding="utf-8")
+    orchestration = (BACKEND_ROOT / "agent_loop" / "round_orchestration.py").read_text(encoding="utf-8")
+    assert "round_orchestration" not in contract
+    assert "_validate_expansion_decision" not in orchestration
+    assert "_validate_mission_references" not in orchestration
+    assert "opportunity_id" in contract
+
+
 def test_compression_authority_keeps_core_methods_bounded() -> None:
     package = BACKEND_ROOT / "agent_loop" / "compression_authority"
     oversized: list[str] = []

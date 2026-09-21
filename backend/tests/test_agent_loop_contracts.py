@@ -1,7 +1,7 @@
 r"""本文件验证 Agent Loop 的纯合同、Mission 引用、用户介入、Patrol 选择性读取和预算边界。
 
 输入为 delegated directive、Patrol cognitive step、workspace adoption action 与 budget usage；输出为模型侧
-纯 HumanMessage、真实 OpenAI-compatible 请求、按角色引用 Mission、reads/decision 互斥校验、闭合 action 解析和硬预算裁决。
+纯 HumanMessage、真实 OpenAI-compatible 请求、按角色且取值封闭的 Mission 引用、reads/decision 互斥校验、闭合 action 解析和硬预算裁决。
 具体工作流为构造严格 schema，并在无网络的 ChatOpenAI invoke 边界截获 provider payload。示例：`pytest test_agent_loop_contracts.py`。
 """
 
@@ -15,12 +15,12 @@ import pytest
 
 from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count
 from backend.app.desktop.agent_loop.models import LoopDirective
+from backend.app.desktop.agent_loop.patrol_contract import PatrolDecisionContract
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
 from backend.app.desktop.agent_loop.round_orchestration import (
     PatrolCognitiveStep,
     PatrolDecisionProposal,
     PatrolReadRequest,
-    StructuredPatrolDecisionModel,
 )
 from backend.app.desktop.agent_loop.schemas import LoopBudgetContract, LoopInterventionRequest, PATROL_ACTION_ADAPTER
 from backend.app.desktop.agent_loop.fact_projection import LoopFactProjectionService
@@ -150,17 +150,33 @@ def test_patrol_proposal_references_mission_by_semantic_role() -> None:
         mission_references=({"role": "completion_check", "reference_id": "tests"},),
         actions=({"action": "request_completion_verifier", "candidate_context_ids": ["context-1"]},),
     )
-    observation = SimpleNamespace(mission={"completion_checks": [{"check_id": "tests"}]})
+    observation = SimpleNamespace(mission={"completion_checks": [{"check_id": "tests"}]}, expansion_assessment=None)
+    contract = PatrolDecisionContract()
 
-    StructuredPatrolDecisionModel._validate_mission_references(normal, observation)
-    StructuredPatrolDecisionModel._validate_mission_references(completion, observation)
+    contract.validate(actions=normal.actions, mission_references=normal.mission_references, observation=observation)
+    contract.validate(actions=completion.actions, mission_references=completion.mission_references, observation=observation)
     invalid = PatrolDecisionProposal(
         rationale="引用了不存在的检查。",
         mission_references=({"role": "completion_check", "reference_id": "invented"},),
         actions=({"action": "request_completion_verifier", "candidate_context_ids": ["context-1"]},),
     )
     with pytest.raises(Exception, match="稳定 check_id"):
-        StructuredPatrolDecisionModel._validate_mission_references(invalid, observation)
+        contract.validate(actions=invalid.actions, mission_references=invalid.mission_references, observation=observation)
+
+
+def test_patrol_boundary_reference_is_a_closed_set() -> None:
+    with pytest.raises(ValidationError):
+        PatrolDecisionProposal(
+            rationale="引用了未声明的 boundary 分组。",
+            mission_references=({"role": "boundary", "reference_id": "boundary"},),
+            actions=({"action": "wait_for_user", "reason": "需要用户输入"},),
+        )
+    with pytest.raises(ValidationError):
+        PatrolDecisionProposal(
+            rationale="outcome 引用不得自选取值。",
+            mission_references=({"role": "outcome", "reference_id": "final"},),
+            actions=({"action": "wait_for_user", "reason": "需要用户输入"},),
+        )
 
 
 def test_workspace_adoption_is_a_closed_patrol_action() -> None:

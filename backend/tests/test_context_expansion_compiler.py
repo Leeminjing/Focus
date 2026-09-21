@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from backend.app.desktop.agent_loop.context_expansion.compiler import ContextExpansionPlanCompiler, DeterministicExpansionPlanCompiler
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 from backend.app.desktop.agent_loop.context_expansion.contracts import ExpansionBlocker, ExpansionOpportunity, SpawnContextIntent
-from backend.app.desktop.context_curation import ToolExchange
+from backend.app.desktop.context_curation import ComposeMessage, ToolExchange
 from backend.app.desktop.context_evolution import ContextRevisionPayloadMode, ContextRevisionRef
 
 
@@ -45,14 +45,7 @@ def _opportunity() -> ExpansionOpportunity:
 
 
 def _intent(opportunity: ExpansionOpportunity) -> SpawnContextIntent:
-    return SpawnContextIntent(
-        opportunity_id=opportunity.opportunity_id,
-        source_context_id=opportunity.source.context_id,
-        purpose=opportunity.purpose,
-        work_order=opportunity.work_order,
-        completion_check=opportunity.completion_check,
-        workspace_mode=opportunity.workspace_mode,
-    )
+    return SpawnContextIntent(opportunity_id=opportunity.opportunity_id)
 
 
 def _messages() -> tuple[dict, ...]:
@@ -92,6 +85,22 @@ def test_compiler_closes_complete_tool_exchange_and_is_deterministic() -> None:
     assert first.plan.lane_policy["independence_key"] == "verification:tests"
 
 
+def test_compiled_plan_carries_the_frozen_work_order() -> None:
+    opportunity = _opportunity()
+    revision = SimpleNamespace(projection_hash="a" * 64, content_hash="b" * 64)
+
+    compiled = DeterministicExpansionPlanCompiler().compile(opportunity, _intent(opportunity), revision, _messages())
+
+    assert not isinstance(compiled, ExpansionBlocker)
+    composed = next(item for item in compiled.plan.items if isinstance(item, ComposeMessage))
+    assert opportunity.work_order in composed.content
+    assert opportunity.completion_check in composed.content
+    assert opportunity.workspace_mode in composed.content
+    assert compiled.plan.purpose == opportunity.purpose
+    assert compiled.plan.lane_policy["completion_check"] == opportunity.completion_check
+    assert compiled.plan.lane_policy["workspace_mode"] == opportunity.workspace_mode
+
+
 def test_compiler_returns_stable_blocker_for_incomplete_protocol() -> None:
     opportunity = _opportunity()
     compiler = DeterministicExpansionPlanCompiler()
@@ -126,8 +135,8 @@ def test_source_validation_rejects_stale_and_out_of_scope_without_fallback() -> 
         budget={},
     )
 
-    stale = ContextExpansionPlanCompiler._validate_source(observation, opportunity, _intent(opportunity))
-    scoped = ContextExpansionPlanCompiler._validate_source(
+    stale = ContextExpansionPlanCompiler._validate_frozen_source(observation, opportunity, _intent(opportunity))
+    scoped = ContextExpansionPlanCompiler._validate_frozen_source(
         observation.model_copy(
             update={
                 "portfolio_frontier": (
