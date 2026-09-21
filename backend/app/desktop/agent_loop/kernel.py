@@ -5,7 +5,7 @@ r"""本文件对外提供 LoopKernel、KernelCommitResult 与 KernelRejected 唯
 单事务提交，Context Portfolio 与 workspace adoption 先持久授权意图，再由专用 Kernel port 执行外部准备并
 原子收口权威状态；配置异步 publication 时只提交持久授权并交给独立发布队列，拒绝或被取代的决策必须在同一事务内把该 round 收敛为终态（拒绝还会把当前轮所属
 Loop 交回用户），提交成功后收口该 round 已观察的用户意图；自主压缩由专用 committer 在同一事务内只提交
-resolution、不触碰 graph；Worker 无提交端口。示例：`result = await kernel.commit(intent)`。
+resolution、不触碰 graph；completed/stopped/failed 委托 TerminalLifecycle 原子收敛并释放策展所有权；Worker 无提交端口。示例：`result = await kernel.commit(intent)`。
 """
 
 from __future__ import annotations
@@ -44,6 +44,7 @@ from backend.app.desktop.context_evolution.models import ContextRevision
 from backend.app.desktop.models import DesktopRun, DesktopThread
 from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor, WorkspaceSlot
 from backend.app.desktop.agent_loop.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService, open_recovery_wait
+from backend.app.desktop.agent_loop.terminal_lifecycle import LoopTerminalLifecycle
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +91,7 @@ class LoopKernel:
         self._journal = LoopEventJournal()
         self._interventions = InterventionLifecycleRepository()
         self._compression = CompressionAuthorityCommitter()
+        self._terminal = LoopTerminalLifecycle()
 
     async def commit(self, intent: PatrolDecisionIntent) -> KernelCommitResult:
         deferred_id: str | None = None
@@ -536,19 +538,16 @@ class LoopKernel:
                     round_id=round_row.round_id,
                 )
             elif intent_action.action == "stop_loop":
-                await self._directive_lifecycle.cancel_active(session, loop.loop_id, "patrol_stop_loop")
-                loop.status = "stopped"
-                loop.health = "idle"
-                loop.completed_at = datetime.now(UTC)
-                grant.status = "revoked"
-                grant.revoked_at = loop.completed_at
+                await self._terminal.finalize(session, loop, "stopped", "patrol_stop_loop")
             elif intent_action.action == "request_completion":
-                loop.status = "completed"
-                loop.health = "idle"
-                loop.completed_at = datetime.now(UTC)
-                loop.final_result = await self._completion_result(session, loop, intent_action)
-                grant.status = "revoked"
-                grant.revoked_at = loop.completed_at
+                final_result = await self._completion_result(session, loop, intent_action)
+                await self._terminal.finalize(
+                    session,
+                    loop,
+                    "completed",
+                    "patrol_request_completion",
+                    final_result=final_result,
+                )
         return action_ids, directive_ids
 
     async def _record_rejected_actions(self, session, loop, round_row, grant, decision, intent, reason: str):

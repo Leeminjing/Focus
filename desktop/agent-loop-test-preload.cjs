@@ -2,7 +2,7 @@
  * 本文件对外提供 Agent Loop Electron 回归页的确定性本地 API。
  * 输入为真实 Desktop 页面发出的结构化 Mission、Loop、Console、完整会话、事实、介入、压缩恢复与 workspace 请求；输出为
  * 可变的长期 Loop 快照、Context Portfolio 和审计投影。具体工作流为复用 Context 测试 API，再拦截
- * Loop 领域路由，模拟后继激活 eligibility、阈值、候选、Kernel commit、自动 resume/显式 Mission revision，记录来源恢复与三类用户介入，而不访问网络或数据库；示例：在 BrowserWindow preload 中加载本文件。
+ * Loop 领域路由，模拟后继激活 eligibility、阈值、候选、Kernel commit、终止后直接用户 Run、自动 resume/显式 Mission revision，记录来源恢复与三类用户介入，而不访问网络或数据库；示例：在 BrowserWindow preload 中加载本文件。
  */
 "use strict";
 
@@ -16,6 +16,8 @@ const json = (value, status = 200) => new Response(JSON.stringify(value), {
 const loop = {
   snapshot: null,
   startBody: null,
+  startBodies: [],
+  latestRunId: "run-initial",
   overrides: [],
   grantMutations: [],
   controls: [],
@@ -206,12 +208,20 @@ window.__agentLoopTest = loop;
 window.fetch = async (input, options = {}) => {
   const url = new URL(String(input), "http://focus.test");
   const path = url.pathname;
-  if (path === "/desktop/api/tasks/root") return json({ task_id: "root", messages: [], ui_state: {}, active_run: { run_id: "run-initial", status: "success", origin: "direct_user", loop_id: loop.snapshot?.loop_id || null }, latest_direct_user_run: { run_id: "run-initial", status: "success", origin: "direct_user", loop_id: loop.snapshot?.loop_id || null }, context: null });
+  if (path === "/desktop/api/tasks/root") {
+    const boundLoopId = loop.startBody?.initial_run_id === loop.latestRunId ? loop.snapshot?.loop_id || null : null;
+    const latestRun = { run_id: loop.latestRunId, status: "success", origin: "direct_user", loop_id: boundLoopId };
+    return json({ task_id: "root", messages: [], ui_state: {}, active_run: latestRun, latest_direct_user_run: latestRun, context: null });
+  }
   if (/^\/desktop\/api\/tasks\/[^/]+$/.test(path)) return json({ task_id: decodeURIComponent(path.split("/").at(-1)), messages: [], ui_state: { _main_run_equipment: { permissions: ["read", "write"], skills: [], access_mode: "workspace" } }, context: null });
-  if (path === "/desktop/api/agent-loops/activation-eligibility/by-context/root") return json({ context_id: "root", eligible: !loop.snapshot, candidate_run_id: "run-initial", candidate_status: "success", predecessor_loop_id: loop.snapshot?.loop_id || null, reason: loop.snapshot ? "newest_run_already_bound" : null, consistency_token: "a".repeat(64) });
+  if (path === "/desktop/api/agent-loops/activation-eligibility/by-context/root") {
+    const alreadyBound = loop.startBody?.initial_run_id === loop.latestRunId;
+    return json({ context_id: "root", eligible: !alreadyBound, candidate_run_id: loop.latestRunId, candidate_status: "success", predecessor_loop_id: loop.snapshot?.loop_id || null, reason: alreadyBound ? "newest_run_already_bound" : null, consistency_token: "a".repeat(64) });
+  }
   if (path === "/desktop/api/agent-loops/by-context/root") return json(["running", "pausing", "paused", "waiting_user", "completing"].includes(loop.snapshot?.status) ? loop.snapshot : null);
   if (path === "/desktop/api/agent-loops" && options.method === "POST") {
     loop.startBody = JSON.parse(options.body);
+    loop.startBodies.push(loop.startBody);
     loop.snapshot = runningSnapshot(loop.startBody);
     return json(loop.snapshot);
   }
@@ -239,8 +249,11 @@ window.fetch = async (input, options = {}) => {
   }
   if (/\/desktop\/api\/tasks\/[^/]+\/main\/runs$/.test(path) && options.method === "POST") {
     const body = JSON.parse(options.body);
-    loop.directMessages.push({ context_id: decodeURIComponent(path.split("/").at(-3)), ...body });
-    return json({ run_id: `direct-${loop.directMessages.length}`, status: "pending" });
+    const contextId = decodeURIComponent(path.split("/").at(-3));
+    const runId = `direct-${loop.directMessages.length + 1}`;
+    loop.directMessages.push({ context_id: contextId, ...body });
+    if (contextId === "root") loop.latestRunId = runId;
+    return json({ run_id: runId, message_id: `message-${runId}`, status: "pending" });
   }
   if (path === "/desktop/api/compression/quick-apply" && options.method === "POST") {
     const body = JSON.parse(options.body);

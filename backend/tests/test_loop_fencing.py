@@ -35,10 +35,10 @@ def test_monotonic_token_and_commit_time_rejection(tmp_path) -> None:
         service, snapshot, context_id, revision_id = await _create_loop(sessions, tmp_path)
         coordinator = LoopCoordinator(sessions)
         try:
-            first = await coordinator.claim("owner-a")
+            first = await coordinator.claim_for_loop(snapshot["loop_id"], "owner-a")
             assert first is not None
             assert await coordinator.release(first) is True
-            second = await coordinator.claim("owner-b")
+            second = await coordinator.claim_for_loop(snapshot["loop_id"], "owner-b")
             assert second is not None
             assert int(second.fencing_token) > int(first.fencing_token)
             await coordinator.ownership_lost(first)
@@ -98,7 +98,10 @@ def test_duplicate_claim_restart_and_expiry_are_fenced(tmp_path) -> None:
         service, snapshot, _, _ = await _create_loop(sessions, tmp_path)
         coordinator = LoopCoordinator(sessions, ttl_seconds=30)
         try:
-            claims = await asyncio.gather(coordinator.claim("owner-a"), coordinator.claim("owner-b"))
+            claims = await asyncio.gather(
+                coordinator.claim_for_loop(snapshot["loop_id"], "owner-a"),
+                coordinator.claim_for_loop(snapshot["loop_id"], "owner-b"),
+            )
             winner = next(item for item in claims if item is not None)
             assert sum(item is not None for item in claims) == 1
             async with sessions.begin() as session:
@@ -110,7 +113,7 @@ def test_duplicate_claim_restart_and_expiry_are_fenced(tmp_path) -> None:
             assert await coordinator.renew(winner) is False
             await coordinator.ownership_lost(winner)
             await coordinator.recover()
-            replacement = await coordinator.claim("owner-c")
+            replacement = await coordinator.claim_for_loop(snapshot["loop_id"], "owner-c")
             assert replacement is not None
             assert int(replacement.fencing_token) > int(winner.fencing_token)
             async with sessions() as session:

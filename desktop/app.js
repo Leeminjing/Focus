@@ -19,7 +19,7 @@
  * 阅读意图与阅读锚点决定跟随或回正；作曲区未发送内容的事实来源是按任务归属的草稿镜像
  * （`FocusComposerDraft`），输入事件即镜像、去抖落盘、页面隐藏与卸载流程各补一次落盘，因此任何界面重建
  * 与模式切换都不丢内容，也不依赖 `beforeunload`；Agent Loop 的 snapshot、sequence reducer、断线重放和重同步
- * 由独立 Live Store/Connection 负责，本文件只组合页面生命周期和控制请求。
+ * 由独立 Live Store/Connection 负责；普通 API 响应统一委托无 DOM 的 FocusHttpResponse 解码，本文件只组合页面生命周期和控制请求。
  * 示例：renderFocus(activeTask()); await sendMain()。
  */
 "use strict";
@@ -491,26 +491,20 @@ async function api(path, options = {}) {
   headers.set("X-Focus-Session", runtime.session);
   if (options.body && !(options.body instanceof FormData)) headers.set("Content-Type", "application/json");
   const response = await fetch(`${runtime.apiBase}${path}`, { ...options, headers });
-  if (!response.ok) {
-    const raw = await response.text().catch(() => "");
-    let detail = raw;
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw);
-        detail = parsed && Object.prototype.hasOwnProperty.call(parsed, "detail") ? parsed.detail : parsed;
-      } catch { /* 纯文本错误直接使用原文 */ }
+  try {
+    return await window.FocusHttpResponse.decodeResponse(response, { operation: `${options.method || "GET"} ${path}` });
+  } catch (error) {
+    if (error instanceof window.FocusHttpResponse.DesktopApiError) {
+      const detail = error.detail;
+      const fallback = `HTTP ${error.status}${error.statusText ? ` ${error.statusText}` : ""}`;
+      error.message = typeof detail === "string"
+        ? (detail.trim() || fallback)
+        : detail && typeof detail === "object"
+          ? JSON.stringify(detail)
+          : (error.bodyExcerpt.trim() || fallback);
     }
-    const fallback = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
-    const message = typeof detail === "string"
-      ? (detail.trim() || fallback)
-      : detail == null ? fallback : JSON.stringify(detail);
-    const error = new Error(message);
-    error.status = response.status;
-    error.detail = detail;
     throw error;
   }
-  if (response.status === 204) return null;
-  return response.json();
 }
 
 function loadPluginScript(src) {

@@ -1,8 +1,8 @@
 r"""本文件对外提供 AgentLoopService 创建、查询、Mission 修订、类型化等待响应、控制、临时用户介入与事件读取用例。
 
 输入为认证后的 LoopCreateRequest、Loop id、控制动作或用户确认的 Mission；输出为完整 Loop 快照与
-持久事件。具体工作流为 start 原子绑定初始用户 Run 并双写兼容 Goal 与结构化 Mission，再创建 grant/holder/membership/budget/首轮，pause/resume/stop
-推进 revision，并由 RuntimeConvergence 原子收敛未提交 round、Worker、directive 和活动 Run；失败轮恢复时新建观察轮并累计 retry；直接用户消息只建立一次性 intent 并以 authority revision
+持久事件。具体工作流为 start 先锁 Context、核验后继资格并经策展所有权边界释放已终态 predecessor，再原子绑定初始用户 Run、创建 grant/holder/membership/budget/首轮；pause/resume 推进 revision，stop
+统一委托 TerminalLifecycle 原子收敛运行时并释放 Lane；失败轮恢复时新建观察轮并累计 retry；直接用户消息只建立一次性 intent 并以 authority revision
 隔离旧 Patrol 工作，不改写 Mission；override 仅在用户确认后创建 Mission revision。示例：`await service.start(body)`。
 """
 
@@ -16,6 +16,7 @@ import uuid
 
 from fastapi import HTTPException
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopContextMembership, LoopDecision, LoopDelegationGrant, LoopDirective, LoopEventOutbox, LoopGoalRevision, LoopPendingDecision, LoopRound, LoopUserIntent
@@ -26,6 +27,8 @@ from backend.app.desktop.agent_loop.mission_service import MissionRevisionServic
 from backend.app.desktop.agent_loop.compression_authority.repository import CompressionAuthorityRepository
 from backend.app.desktop.agent_loop.rounds import create_observation_round
 from backend.app.desktop.agent_loop.runtime_convergence import LoopRuntimeConvergence
+from backend.app.desktop.agent_loop.curation_ownership import CurationOwnershipConflict, CurationOwnershipRepository, CurationOwnershipState
+from backend.app.desktop.agent_loop.terminal_lifecycle import LoopTerminalLifecycle
 from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
 from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
@@ -49,6 +52,8 @@ class AgentLoopService:
         self._run_manager = run_manager
         self._missions = MissionRevisionService()
         self._convergence = LoopRuntimeConvergence()
+        self._ownership = CurationOwnershipRepository()
+        self._terminal = LoopTerminalLifecycle(self._convergence, self._ownership)
         self._directives = DirectiveLifecycleRepository()
         self._interventions = InterventionLifecycleRepository()
         self._journal = LoopEventJournal()
@@ -70,6 +75,10 @@ class AgentLoopService:
             existing = await session.get(AgentLoop, request.loop_id)
             if existing is not None:
                 return await self._snapshot(session, existing)
+            context = await self._ownership.lock_context(session, request.initial_context_id)
+            workspace = await session.get(DesktopWorkspace, request.workspace_id)
+            if context is None or workspace is None or context.workspace_id != workspace.workspace_id:
+                raise HTTPException(422, "初始 Context 与 workspace 不匹配")
             activation_key = request.activation_key or f"loop-activation:{request.initial_run_id}"
             await session.execute(select(func.pg_advisory_xact_lock(self._activation_lock_key(request.initial_run_id))))
             existing_activation = await session.scalar(
@@ -82,11 +91,21 @@ class AgentLoopService:
                 existing_loop = await session.get(AgentLoop, existing_activation.loop_id)
                 if existing_loop is None:
                     raise HTTPException(409, "Loop activation lineage 指向不存在的 Loop")
-                return await self._snapshot(session, existing_loop)
-            context = await session.get(DesktopThread, request.initial_context_id)
-            workspace = await session.get(DesktopWorkspace, request.workspace_id)
-            if context is None or workspace is None or context.workspace_id != workspace.workspace_id:
-                raise HTTPException(422, "初始 Context 与 workspace 不匹配")
+                equivalent = (
+                    existing_activation.activation_key == activation_key
+                    and existing_activation.selected_run_id == request.initial_run_id
+                )
+                if equivalent:
+                    return await self._snapshot(session, existing_loop)
+                raise HTTPException(409, {
+                    "code": "loop_activation_conflict",
+                    "message": "当前 Context 已提交另一项后继 Loop 授权",
+                    "context_id": request.initial_context_id,
+                    "owner_loop_id": existing_loop.loop_id,
+                    "selected_run_id": existing_activation.selected_run_id,
+                    "activation_key": existing_activation.activation_key,
+                    "reason": "committed_successor_won",
+                })
             if context.current_revision_id is None:
                 raise HTTPException(409, "初始 Context 尚无可执行 revision")
             context_revision = await session.get(ContextRevision, context.current_revision_id)
@@ -96,8 +115,19 @@ class AgentLoopService:
             if request.readiness_token is not None and request.readiness_token != eligibility.consistency_token:
                 raise HTTPException(409, {"code": "stale_loop_readiness", "eligibility": self._activation_payload(eligibility)})
             if not eligibility.eligible or eligibility.candidate_run_id != request.initial_run_id:
+                ownership = await self._ownership.live_owner(session, context.task_id)
+                if ownership.state in {CurationOwnershipState.OWNED, CurationOwnershipState.INCONSISTENT}:
+                    raise HTTPException(409, CurationOwnershipConflict(ownership).detail())
                 raise HTTPException(409, {"code": eligibility.reason or "initial_run_changed", "eligibility": self._activation_payload(eligibility)})
             initial_run = await self._initial_run(session, request)
+            try:
+                predecessor_ownership = await self._ownership.prepare_successor(
+                    session,
+                    context.task_id,
+                    reason="successor_authorization",
+                )
+            except CurationOwnershipConflict as exc:
+                raise HTTPException(409, exc.detail()) from exc
             program_id = uuid.uuid4().hex
             lane_id = uuid.uuid4().hex
             portfolio_id = uuid.uuid4().hex
@@ -133,8 +163,24 @@ class AgentLoopService:
             grant = LoopDelegationGrant(grant_id=uuid.uuid4().hex, loop_id=loop.loop_id, revision=1, holder_id=request.holder_id, capabilities=list(request.capabilities), context_scope=list(request.context_scope), permission_scope=list(request.permission_scope), budgets=request.budgets.model_dump(), delegable_gates=list(request.delegable_gates), compression_policy=compression_policy, expires_at=datetime.fromisoformat(request.expires_at) if request.expires_at else None)
             subscription = CurationSourceSubscription(subscription_id=uuid.uuid4().hex, program_id=program_id, source_context_id=context.task_id, source_role="initial", selection_policy={}, position=0)
             lane = CurationLane(lane_id=lane_id, program_id=program_id, managed_context_id=context.task_id, purpose="Primary execution", normalized_purpose="primary execution", lane_policy={}, current_source_frontier_hash=frontier_hash, current_semantic_fingerprint=context_revision.content_hash)
-            session.add_all([subscription, lane])
-            await session.flush()
+            try:
+                async with session.begin_nested():
+                    session.add_all([subscription, lane])
+                    await session.flush()
+            except IntegrityError as exc:
+                original = getattr(exc, "orig", None)
+                constraint = getattr(original, "constraint_name", None) or getattr(getattr(original, "diag", None), "constraint_name", None)
+                if constraint != "uq_curation_lane_managed_publisher":
+                    raise
+                ownership = await self._ownership.live_owner(session, context.task_id)
+                raise HTTPException(409, CurationOwnershipConflict(ownership).detail()) from exc
+            await self._ownership.record_acquisition(
+                session,
+                loop,
+                lane,
+                predecessor=predecessor_ownership,
+                reason="successor_authorization",
+            )
             portfolio = PortfolioRevision(portfolio_revision_id=portfolio_id, program_id=program_id, generation=1, source_frontier=frontier, frontier_hash=frontier_hash, base_program_revision=1, control_revisions={"loop_revision": 1, "grant_revision": 1, "workspace_revision": "1"}, target_lanes=[{"lane_id": lane_id, "action": "keep"}], status="published", completed_at=datetime.now(UTC), published_at=datetime.now(UTC))
             session.add(portfolio)
             await session.flush()
@@ -245,11 +291,9 @@ class AgentLoopService:
                 raise HTTPException(404, "Agent Loop 不存在")
             action = str(body.answer.get("action") or "")
             if action == "stop":
-                loop.status = "stopped"
-                loop.health = "idle"
-                loop.completed_at = datetime.now(UTC)
-                await self._revoke(session, loop)
-                await self._convergence.converge(session, loop, "wait_request_stop")
+                if created:
+                    loop.revision += 1
+                await self._terminal.finalize(session, loop, "stopped", "wait_request_stop")
             elif action == "revise_budget":
                 await self._apply_wait_budget_revision(session, loop, body.answer)
             if created:
@@ -395,7 +439,8 @@ class AgentLoopService:
                 raise HTTPException(409, f"Loop 状态 {loop.status} 不允许 {command}")
             if command == "resume" and loop.status == "waiting_user":
                 active_wait = await self._waits.active(session, loop_id, lock=True)
-                raise HTTPException(409, {"code": "wait_response_required", "request_id": active_wait.request_id if active_wait else None})
+                if active_wait is not None:
+                    raise HTTPException(409, {"code": "wait_response_required", "request_id": active_wait.request_id})
             if command == "resume":
                 grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.loop_id == loop_id, LoopDelegationGrant.status == "active"))
                 if grant is None:
@@ -414,21 +459,23 @@ class AgentLoopService:
                         usage = await session.get(LoopBudgetUsage, loop.loop_id, with_for_update=True)
                         if usage is not None:
                             LoopUsageLedger.apply(usage, LoopUsageDelta(retries=1))
-            loop.status = target
-            loop.health = "idle" if target != "running" else "observing"
+            run_ids: tuple[str, ...] = ()
             loop.revision += 1
             if command == "pause":
+                loop.status = target
+                loop.health = "idle"
                 await self._cancel_autonomous_compression_runs(session, loop_id)
                 await CompressionAuthorityRepository().supersede(session, loop_id, "loop_paused")
                 run_ids = await self._convergence.converge(session, loop, "loop_paused")
-            if target == "stopped":
+            elif command == "stop":
                 active_wait = await self._waits.active(session, loop_id, lock=True)
                 if active_wait is not None:
                     await self._waits.cancel(session, active_wait.request_id)
-                loop.completed_at = datetime.now(UTC)
-                await self._revoke(session, loop)
-                await CompressionAuthorityRepository().supersede(session, loop_id, "loop_stopped")
-                run_ids = await self._convergence.converge(session, loop, "loop_stopped")
+                finalized = await self._terminal.finalize(session, loop, "stopped", "loop_stopped")
+                run_ids = finalized.cancelled_run_ids
+            else:
+                loop.status = target
+                loop.health = "observing"
             if command in {"pause", "stop"} and self._run_manager is not None:
                 for run_id in run_ids:
                     self._run_manager.cancel(run_id, action="interrupt")
