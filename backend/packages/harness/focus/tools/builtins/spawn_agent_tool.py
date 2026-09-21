@@ -18,7 +18,11 @@
     (3) 独立装配子 Agent：make_lead_agent（工具=按子级权限过滤的工作区工具，不含 spawn_agent 防递归）
     (4) child.astream(values) 收集最终消息，取最后一条 AI 消息文本；子图以子级安全上下文运行，
         因此其工具调用各自接受同一准入判定
-    (5) 子 Agent 不发布 SSE、不持久化 checkpoint，完成后即销毁，结果返回主 Agent
+    (5) 子 Agent 不发布 SSE、不持久化 checkpoint，完成后即销毁，结果返回主 Agent；子执行以显式
+        声明的执行身份运行（独立 thread/namespace），因此不继承父 Context 的会话身份，其输入与
+        中间状态都不会写入父 Context 的消息通道
+    (6) 子执行失败（模型请求被拒、超时或异常）收口为一条失败说明文本，由调用方作为工具结果回填
+        父 Context，使父 Context 不留下未被工具结果收口的 tool_calls；取消信号照常向上传播
 
 示例:
     from focus.tools.builtins.spawn_agent_tool import build_spawn_agent_tool
@@ -26,6 +30,9 @@
 """
 
 from __future__ import annotations
+
+import asyncio
+import uuid
 
 from typing import Any
 
@@ -47,6 +54,7 @@ _DEFAULT_CHILD_PROMPT = (
     "你是 Focus 的辅助子 Agent。独立完成用户交给你的任务，使用工作区工具。"
     "完成后用简洁的中文汇报结果，不要描述过程。"
 )
+_CHILD_NAMESPACE = "spawn-agent"
 
 
 def build_spawn_agent_tool() -> BaseTool:
@@ -66,19 +74,25 @@ def build_spawn_agent_tool() -> BaseTool:
         )
 
         final_text = ""
-        async for _mode, chunk in child.astream(
-            {"messages": [HumanMessage(content=task)]},
-            context=child_security.to_runtime_context(),
-            stream_mode=["values"],
-        ):
-            if not isinstance(chunk, dict):
-                continue
-            messages = chunk.get("messages") or []
-            if not messages:
-                continue
-            last = messages[-1]
-            if isinstance(last, AIMessage):
-                final_text = stream_text(last.content)
+        try:
+            async for _mode, chunk in child.astream(
+                {"messages": [HumanMessage(content=task)]},
+                config={"configurable": {"thread_id": f"spawn:{uuid.uuid4().hex}", "checkpoint_ns": _CHILD_NAMESPACE}},
+                context=child_security.to_runtime_context(),
+                stream_mode=["values"],
+            ):
+                if not isinstance(chunk, dict):
+                    continue
+                messages = chunk.get("messages") or []
+                if not messages:
+                    continue
+                last = messages[-1]
+                if isinstance(last, AIMessage):
+                    final_text = stream_text(last.content)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return f"（子 Agent 执行失败：{type(exc).__name__}: {str(exc)[:500]}）"
         return final_text or "（子 Agent 未产生回答）"
 
     return declare_effect(spawn_agent, DELEGATED_EXECUTION_EFFECT)

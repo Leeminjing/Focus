@@ -2,7 +2,8 @@
  * 本文件对外提供 Context Portfolio 的稳定拓扑图视图。
  * 输入为轻量 nodes/edges、选中 Context 与 canonical directive/Run 活动；输出为带真实并行状态、因果连线的纵向可交互演化图。
  * 具体工作流为仅在拓扑变化时重算坐标，普通状态沿用位置；活动效果严格由 directive lifecycle 和 Run state 驱动，空闲时不循环播放；
- * 节点卡只显示一次描述文字，purpose 与节点名称相同时不再重复渲染。
+ * 节点卡只显示一次描述文字，purpose 与节点名称相同时不再重复渲染；层级只由跨 Context 依赖决定（自环不参与），
+ * 无依赖的 Context 位于根层，每条派生连线带方向标记。
  * 示例：`FocusPortfolioMapView.render(manifest, selectedId, graphActivity)`。
  */
 (function (root, factory) {
@@ -22,6 +23,7 @@
     const incoming = new Map(ids.map(id => [id, 0]));
     const outgoing = new Map(ids.map(id => [id, []]));
     edges.forEach(edge => {
+      if (edge.source_context_id === edge.target_context_id) return;
       if (!incoming.has(edge.target_context_id) || !outgoing.has(edge.source_context_id)) return;
       incoming.set(edge.target_context_id, incoming.get(edge.target_context_id) + 1);
       outgoing.get(edge.source_context_id).push(edge.target_context_id);
@@ -39,7 +41,7 @@
         if (incoming.get(target) === 0) queue.push(target);
       }
     }
-    ids.filter(id => !visited.has(id)).forEach((id, index) => depth.set(id, Math.max(depth.get(id) || 0, index ? 1 : 0)));
+    ids.filter(id => !visited.has(id)).forEach(id => depth.set(id, 0));
     const layers = new Map();
     ids.forEach(id => {
       const key = depth.get(id) || 0;
@@ -73,6 +75,7 @@
     if (!nodes.length) return '<section class="loop-map-empty">尚无 Context</section>';
     const geometry = layout(nodes, edges);
     const lines = edges.map(edge => {
+      if (edge.source_context_id === edge.target_context_id) return "";
       const source = geometry.positions.get(edge.source_context_id);
       const target = geometry.positions.get(edge.target_context_id);
       if (!source || !target) return "";
@@ -81,7 +84,7 @@
       const x2 = target.x + 110;
       const y2 = target.y;
       const middle = (y1 + y2) / 2;
-      return `<path data-edge-id="${escape(`${edge.source_context_id}:${edge.target_context_id}:${edge.target_revision_id || "current"}`)}" d="M ${x1} ${y1} C ${x1} ${middle}, ${x2} ${middle}, ${x2} ${y2}" />`;
+      return `<path data-edge-id="${escape(`${edge.source_context_id}:${edge.target_context_id}:${edge.target_revision_id || "current"}`)}" marker-end="url(#portfolio-edge-arrow)" d="M ${x1} ${y1} C ${x1} ${middle}, ${x2} ${middle}, ${x2} ${y2}" />`;
     }).join("");
     const activityLines = graphActivity.map(item => {
       const target = geometry.positions.get(item.target_context_id);
@@ -106,7 +109,7 @@
       const purpose = node.purpose && node.purpose !== name ? `<span class="context-node-purpose">${escape(node.purpose)}</span>` : "";
       return `<button type="button" class="portfolio-context-node${node.context_id === selectedId ? " is-selected" : ""}" style="left:${point.x}px;top:${point.y}px" data-action="loop-select-context" data-context-id="${escape(node.context_id)}"><span class="context-node-eyebrow">#${index} ${escape(node.role || "Context")}<span><i class="run-dot is-${escape(run?.status || node.status)}" aria-hidden="true"></i>${escape(run?.status || node.status)}</span></span><span class="context-node-top"><strong>${escape(name)}</strong></span>${purpose}${live}<span class="context-node-meta">R${escape(node.revision?.generation || "—")} · ${evidence || "暂无运行证据"}</span></button>`;
     }).join("");
-    return `<section class="portfolio-map" aria-label="Context Portfolio"><div class="portfolio-map-toolbar"><span><strong>${escape(nodes.length)}</strong> 个 Context · Evolution Graph · Live</span><span class="portfolio-health is-${escape(manifest.health)}">Patrol ${escape(manifest.health)}</span></div><div class="portfolio-map-scroll"><div class="portfolio-map-canvas" style="width:${geometry.width}px;height:${geometry.height}px"><svg width="${geometry.width}" height="${geometry.height}" aria-label="Patrol 与 Context 的真实因果关系">${lines}${activityLines}</svg>${cards}</div></div></section>`;
+    return `<section class="portfolio-map" aria-label="Context Portfolio"><div class="portfolio-map-toolbar"><span><strong>${escape(nodes.length)}</strong> 个 Context · Evolution Graph · Live</span><span class="portfolio-health is-${escape(manifest.health)}">Patrol ${escape(manifest.health)}</span></div><div class="portfolio-map-scroll"><div class="portfolio-map-canvas" style="width:${geometry.width}px;height:${geometry.height}px"><svg width="${geometry.width}" height="${geometry.height}" aria-label="Patrol 与 Context 的真实因果关系"><defs><marker id="portfolio-edge-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><polygon points="0 0, 10 5, 0 10" /></marker></defs>${lines}${activityLines}</svg>${cards}</div></div></section>`;
   }
 
   function reconcile(host, manifest, selectedId, graphActivity = []) {

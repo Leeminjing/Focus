@@ -22,10 +22,10 @@ mission_models mission_repository mission_service ownership patrol_audit patrol_
 patrol_session_repository patrol_session_state patrol_contract publication_queue runtime_convergence supervisor
 """.split()
 LOOP_TEST_MODULES = """
-test_loop_architecture_acceptance test_loop_event_journal test_loop_fact_source_resilience test_loop_feature_flags
-test_loop_fencing test_loop_live_acceptance test_loop_live_api_contract test_loop_live_projection
+test_loop_architecture_acceptance test_loop_event_journal test_loop_execution_ownership test_loop_fact_source_resilience
+test_loop_feature_flags test_loop_fencing test_loop_live_acceptance test_loop_live_api_contract test_loop_live_projection
 test_loop_materialized_facts test_loop_mission_contract test_loop_multi_concurrency test_loop_runtime_pools
-test_loop_supervisor
+test_loop_settlement_and_lineage test_loop_supervisor
 """.split()
 DESKTOP_MODULES = """
 loop-legacy-connection loop-live-connection loop-live-projection.test loop-live-reducer loop-live-schema
