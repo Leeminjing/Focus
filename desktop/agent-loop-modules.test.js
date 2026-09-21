@@ -80,6 +80,20 @@ test("api sends session header and cursor", async () => {
   assert.equal(calls[0].options.headers["X-Focus-Session"], "secret");
 });
 
+test("api preserves a plain-text HTTP failure instead of exposing JSON syntax errors", async () => {
+  const api = LoopApi.create({ apiBase: "http://focus", session: "secret" }, async () => new Response("Internal Server Error", {
+    status: 500,
+    statusText: "Internal Server Error",
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  }));
+  await assert.rejects(api.start({}), error => {
+    assert.equal(error.status, 500);
+    assert.match(error.message, /Internal Server Error/);
+    assert.doesNotMatch(error.message, /Unexpected token|JSON/);
+    return true;
+  });
+});
+
 
 test("api sends grant mutations through the authority boundary", async () => {
   const calls = [];

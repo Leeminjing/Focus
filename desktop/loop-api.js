@@ -1,14 +1,15 @@
 /*
  * 本文件对外提供 Agent Loop HTTP、Live Snapshot 与可恢复事件协议入口。
- * 输入为桌面运行时、Loop 请求、控制台查询和 sequence 游标；输出为规范化响应、分页会话、事实、压缩来源恢复与单路 Live 订阅。
- * 具体工作流为封装同源 API，Live 通道解析 canonical SSE 与重同步控制帧，Context 直接发言复用 Main Run，其余权威动作进入各自端口。
+ * 输入为桌面运行时、Loop 请求、控制台查询和 sequence 游标；输出为共享响应解码后的规范化结果、分页会话、事实、压缩来源恢复与单路 Live 订阅。
+ * 具体工作流为封装同源 API，所有普通响应先经纯 HTTP decoder 保留 JSON/文本失败因果，再做 Loop identity 格式化；Live 通道解析 canonical SSE 与重同步控制帧，Context 直接发言复用 Main Run。
  * 示例：`FocusLoopApi.create(runtime)`。
  */
 (function (root, factory) {
-  const api = factory();
+  const responseApi = root?.FocusHttpResponse || (typeof require === "function" ? require("./http-response.js") : null);
+  const api = factory(responseApi);
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.FocusLoopApi = api;
-})(typeof globalThis === "object" ? globalThis : this, function () {
+})(typeof globalThis === "object" ? globalThis : this, function (HttpResponse) {
   "use strict";
 
   function create(runtime, fetchImpl = globalThis.fetch) {
@@ -22,11 +23,20 @@
       const identity = [eligibility.candidate_run_id && `Run ${eligibility.candidate_run_id}`, eligibility.predecessor_loop_id && `Loop ${eligibility.predecessor_loop_id}`].filter(Boolean).join(" · ");
       return [detail.message || detail.code || "Agent Loop 请求失败", identity].filter(Boolean).join("：");
     };
+    async function decode(response, operation) {
+      try {
+        return await HttpResponse.decodeResponse(response, { operation });
+      } catch (error) {
+        if (error instanceof HttpResponse.DesktopApiError && error.detail != null) {
+          const message = errorMessage(error.detail);
+          if (message !== "Agent Loop 请求失败") error.message = `${message}（HTTP ${error.status}）`;
+        }
+        throw error;
+      }
+    }
     async function request(path, options = {}) {
       const response = await fetchImpl(`${base}${path}`, { ...options, headers: { ...headers, ...(options.headers || {}) } });
-      const payload = await response.json();
-      if (!response.ok) throw Object.assign(new Error(errorMessage(payload?.detail)), { status: response.status, payload, detail: payload?.detail });
-      return payload;
+      return decode(response, `Agent Loop ${options.method || "GET"} ${path || "/"}`);
     }
     async function stream(loopId, after, onEvents, signal) {
       const response = await fetchImpl(`${base}/${encodeURIComponent(loopId)}/events/stream?after=${Number(after) || 0}`, { headers, signal });
@@ -107,8 +117,7 @@
       liveStream,
       async directMessage(contextId, content) {
         const taskResponse = await fetchImpl(`${root}/tasks/${encodeURIComponent(contextId)}`, { headers });
-        const task = await taskResponse.json();
-        if (!taskResponse.ok) throw new Error(task?.detail || "Context 装备读取失败");
+        const task = await decode(taskResponse, "读取 Context 装备");
         const equipment = task?.ui_state?._main_run_equipment || {};
         const response = await fetchImpl(`${root}/tasks/${encodeURIComponent(contextId)}/main/runs`, {
           method: "POST",
@@ -121,9 +130,7 @@
             access_mode: equipment.access_mode || "workspace",
           }),
         });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload?.detail?.message || payload?.detail || "Context 消息发送失败");
-        return payload;
+        return decode(response, "发送 Context 消息");
       },
       async restoreCompression(contextId, messageId) {
         const response = await fetchImpl(`${root}/compression/quick-apply`, {
@@ -131,24 +138,18 @@
           headers,
           body: JSON.stringify({ task_id: contextId, ranges: [{ source_ids: [messageId], restore: true }], scrub_terms: [] }),
         });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload?.detail?.message || payload?.detail || "压缩来源恢复失败");
-        return payload;
+        return decode(response, "恢复压缩来源");
       },
       events: (loopId, after = 0) => request(`/${encodeURIComponent(loopId)}/events?after=${Number(after) || 0}`),
       revision: async revisionId => {
         const response = await fetchImpl(`${root}/context-revisions/${encodeURIComponent(revisionId)}`, { headers });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload?.detail || "Context revision 请求失败");
-        return payload;
+        return decode(response, "读取 Context revision");
       },
       stream,
       async related(snapshot) {
         const requestRoot = async path => {
           const response = await fetchImpl(`${root}${path}`, { headers });
-          const payload = await response.json();
-          if (!response.ok) throw new Error(payload?.detail || "Agent Loop 关联数据请求失败");
-          return payload;
+          return decode(response, `读取 Agent Loop 关联数据 ${path}`);
         };
         const [portfolio, evolution, tree, audit, slots] = await Promise.all([
           snapshot.program_id ? requestRoot(`/curation-programs/${encodeURIComponent(snapshot.program_id)}`) : null,

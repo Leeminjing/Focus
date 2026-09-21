@@ -15,7 +15,7 @@
     (5) 创建 FastAPI 实例并传入 lifespan
     (6) 通过 Desktop persistence registry 注册各领域 ORM 模型
     (7) 注册统一会话保护中间件与路由，并挂载桌面路由与 /desktop/ 静态资源（决策 1）
-    (8) 读取独立 Loop 切换开关，构造 AgentLoopService、LoopKernel、发布/Curator/Context/Fact 监督组件；仅在 supervisor 开关启用时启动运行期
+    (8) 读取独立 Loop 切换开关，构造 AgentLoopService、LoopKernel、发布/Curator/Context/Fact 监督组件，并异步修复终态 Loop 遗留策展所有权；仅在 supervisor 开关启用时启动运行期
     (9) 模块级导出 app 实例，供 uvicorn 等 ASGI server 直接引用
 
 示例:
@@ -101,6 +101,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         from backend.app.desktop.agent_loop.interventions import LoopInterventionService
         from backend.app.desktop.agent_loop.fact_projector import FactProjector
         from backend.app.desktop.agent_loop.feature_flags import LoopFeatureFlags
+        from backend.app.desktop.agent_loop.curation_ownership import CurationOwnershipRecovery
         from backend.app.desktop.agent_loop.compression_authority.gate_projector import LoopCompressionGateProjector
         from backend.app.desktop.agent_loop.compression_authority.resolution import CompressionResolutionCoordinator
         from backend.app.desktop.run_orchestration import RunOutboxConsumer
@@ -167,12 +168,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.agent_loop_completion = CompletionEvidenceService(sessions)
         app.state.session_key = os.getenv("FOCUS_DESKTOP_SESSION", "focus-dev-session")
         await service.start()
+        app.state.agent_loop_ownership_repair_task = asyncio.create_task(
+            CurationOwnershipRecovery(sessions).reconcile(),
+            name="agent-loop-curation-ownership-repair",
+        )
         if app.state.loop_feature_flags.supervisor_scheduling:
             await app.state.agent_loop_runtime.start()
         try:
             yield
         finally:
             await app.state.agent_loop_runtime.close()
+            repair_results = await asyncio.gather(app.state.agent_loop_ownership_repair_task, return_exceptions=True)
+            if repair_results and isinstance(repair_results[0], Exception):
+                logger.error("Agent Loop curation ownership repair failed: %s", repair_results[0])
             await service.close()
 
     logger.info("FastAPI lifespan 关闭，agent 核心资源已释放")

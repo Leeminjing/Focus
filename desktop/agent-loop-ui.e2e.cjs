@@ -1,8 +1,8 @@
 /*
- * 本文件对外提供 Context-governed Agent Loop 的真实 Electron 长流程与终止态退出回归。
+ * 本文件对外提供 Context-governed Agent Loop 的真实 Electron 长流程、终止态退出与后继 Loop 激活回归。
  * 输入为确定性 Loop/Console API、真实 index.html/app.js 与结构化 Mission 表单动作；输出为 Context 图、完整会话、
  * 三类介入、自主压缩阈值到 resume 后续轮次、来源恢复、恢复重连、用户确认 Mission 修订、完成路径、事实表和可选视觉基线截图。具体工作流为在隐藏 BrowserWindow 中执行
- * 完整交互并检查请求与 DOM；设置 `FOCUS_AGENT_LOOP_SCREENSHOT` 时输出真实页面截图供设计 QA 使用。
+ * 完整交互并检查请求与 DOM，并执行停止 Loop、在同一 Context 发送新直接用户消息、授权和观察后继 Loop；设置 `FOCUS_AGENT_LOOP_SCREENSHOT` 时输出真实页面截图供设计 QA 使用。
  * 示例：`npx electron agent-loop-ui.e2e.cjs`。
  */
 "use strict";
@@ -169,7 +169,47 @@ async function run() {
   })()`);
   if (!exited.readonlyBefore || exited.loopId !== null || exited.stored !== null || !exited.hasStart || !exited.startDisabled || !exited.guidance.includes("新的用户消息")) throw new Error(`终止 Loop 退出、重新进入或后继 Run 门禁失败: ${JSON.stringify(exited)}`);
 
-  console.log("agent-loop-ui-e2e: 启动离开、重连、多 Lane、委托来源、接管、等待、完成与退出通过");
+  const firstSuccessor = await win.webContents.executeJavaScript(`(async () => {
+    state.view = 'focus';
+    render();
+    const input = document.querySelector('#mainInput');
+    input.value = '为同一个 Context 创建后继 Loop';
+    document.querySelector('[data-action="send-main"]').click();
+    for (let count = 0; count < 150 && window.__agentLoopTest.latestRunId === 'run-initial'; count += 1) await new Promise(next => setTimeout(next, 20));
+    await openLoopView();
+    for (let count = 0; count < 150 && !document.querySelector('#agentLoopStartForm'); count += 1) await new Promise(next => setTimeout(next, 20));
+    const form = document.querySelector('#agentLoopStartForm');
+    form.querySelector('[data-mission-outcome]').value = '验证后继 Loop';
+    form.querySelector('[data-check-claim]').value = '后继 Loop 成功启动';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    for (let count = 0; count < 150 && window.__agentLoopTest.startBodies.length < 2; count += 1) await new Promise(next => setTimeout(next, 20));
+    return { bodies: window.__agentLoopTest.startBodies, snapshot: window.__agentLoopTest.snapshot, text: document.querySelector('.loop-dashboard')?.textContent || '' };
+  })()`);
+  if (firstSuccessor.bodies.length !== 2 || firstSuccessor.bodies[1].initial_run_id === "run-initial" || firstSuccessor.bodies[1].loop_id === firstSuccessor.bodies[0].loop_id || firstSuccessor.snapshot.status !== "running" || !firstSuccessor.text.includes("验证后继 Loop")) throw new Error(`同一 Context 的首个后继 Loop 激活失败: ${JSON.stringify(firstSuccessor)}`);
+
+  const stoppedSuccessor = await win.webContents.executeJavaScript(`(async () => {
+    await controlLoop('stop');
+    for (let count = 0; count < 150 && window.__agentLoopTest.snapshot?.status !== 'stopped'; count += 1) await new Promise(next => setTimeout(next, 20));
+    await exitAgentLoop(true);
+    const input = document.querySelector('#mainInput');
+    input.value = '停止后继续在同一 Context 工作';
+    document.querySelector('[data-action="send-main"]').click();
+    const priorRunId = window.__agentLoopTest.startBodies[1].initial_run_id;
+    for (let count = 0; count < 150 && window.__agentLoopTest.latestRunId === priorRunId; count += 1) await new Promise(next => setTimeout(next, 20));
+    await openLoopView();
+    for (let count = 0; count < 150 && !document.querySelector('#agentLoopStartForm'); count += 1) await new Promise(next => setTimeout(next, 20));
+    const form = document.querySelector('#agentLoopStartForm');
+    form.querySelector('[data-mission-outcome]').value = '停止后再次授权后继 Loop';
+    form.querySelector('[data-check-claim]').value = '无需重启应用即可运行';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    for (let count = 0; count < 150 && window.__agentLoopTest.startBodies.length < 3; count += 1) await new Promise(next => setTimeout(next, 20));
+    return { controls: window.__agentLoopTest.controls, bodies: window.__agentLoopTest.startBodies, snapshot: window.__agentLoopTest.snapshot, loopId: state.loop.loopId, text: document.querySelector('.loop-dashboard')?.textContent || '' };
+  })()`);
+  const predecessor = stoppedSuccessor.bodies[1];
+  const successor = stoppedSuccessor.bodies[2];
+  if (!stoppedSuccessor.controls.includes("stop") || stoppedSuccessor.bodies.length !== 3 || successor.initial_run_id === predecessor.initial_run_id || successor.loop_id === predecessor.loop_id || stoppedSuccessor.snapshot.status !== "running" || stoppedSuccessor.loopId !== successor.loop_id || !stoppedSuccessor.text.includes("停止后再次授权后继 Loop")) throw new Error(`停止、发送新消息与再次授权后继 Loop 失败: ${JSON.stringify(stoppedSuccessor)}`);
+
+  console.log("agent-loop-ui-e2e: 启动离开、重连、多 Lane、委托来源、接管、等待、完成、停止与后继激活通过");
   win.destroy();
 }
 

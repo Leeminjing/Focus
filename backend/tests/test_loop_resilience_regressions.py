@@ -15,6 +15,7 @@ import uuid
 
 from alembic import command
 from alembic.config import Config
+from fastapi import HTTPException
 import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.engine import make_url
@@ -39,10 +40,12 @@ from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest, LoopWait
 from backend.app.desktop.agent_loop.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService, WaitRequestConflict
 from backend.app.desktop.agent_loop.schemas import LoopCreateRequest, LoopWaitResponseRequest
 from backend.app.desktop.agent_loop.service import AgentLoopService
+from backend.app.desktop.context_curation.models import CurationLane, CurationProgram
 from backend.app.desktop.context_evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
 from backend.app.desktop.run_orchestration.admission import RunAdmissionService
 from backend.app.desktop.run_orchestration.models import RunDispatch
+from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
@@ -441,6 +444,133 @@ def test_wait_response_resumes_once_while_unrelated_task_admits(tmp_path: Path) 
     asyncio.run(run())
 
 
+def test_successor_retires_terminal_predecessor_lane_before_acquiring_context(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        workspace_id = uuid.uuid4().hex
+        context_id = uuid.uuid4().hex
+        predecessor_id = uuid.uuid4().hex
+        predecessor_program_id = uuid.uuid4().hex
+        predecessor_lane_id = uuid.uuid4().hex
+        run_id = uuid.uuid4().hex
+        revision_id = uuid.uuid4().hex
+        service = AgentLoopService(sessions)
+        try:
+            async with sessions.begin() as session:
+                session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(tmp_path), display_name="successor-ownership"))
+                await session.flush()
+                session.add(DesktopThread(task_id=context_id, workspace_id=workspace_id, thread_id=f"thread-{context_id}", title="successor-ownership"))
+                await session.flush()
+                ref = ContextRevisionRef(context_id=context_id, revision_id=revision_id, generation=1, execution_thread_id=f"thread-{context_id}", checkpoint_ns="", checkpoint_id=f"checkpoint-{context_id}", payload_mode=ContextRevisionPayloadMode.CHECKPOINT)
+                await ContextRevisionRepository().insert(session, ContextRevisionContract(ref=ref, content_hash="b" * 64, projection_status=ContextRevisionProjectionStatus.VALID, origin_kind=ContextRevisionOriginKind.RUN_SETTLED, origin_id=run_id, created_at=datetime.now(UTC)))
+                await ContextRevisionRepository().switch_current(session, ref, None)
+                session.add_all([
+                    DesktopRun(run_id=run_id, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{context_id}", context_revision_id=revision_id, final_checkpoint_id=ref.checkpoint_id, settled_at=datetime.now(UTC)),
+                    CurationProgram(program_id=predecessor_program_id, workspace_id=workspace_id, control_state="stopped", policy={"owner_loop_id": predecessor_id}, revision=1),
+                    WorkspaceSlot(slot_id=uuid.uuid4().hex, workspace_id=workspace_id, kind="authoritative", root_path=str(tmp_path), provider="local", current_fingerprint="c" * 64, revision=1),
+                ])
+                await session.flush()
+                session.add_all([
+                    AgentLoop(loop_id=predecessor_id, workspace_id=workspace_id, initial_context_id=context_id, program_id=predecessor_program_id, holder_id="patrol", status="stopped", health="idle", completed_at=datetime.now(UTC)),
+                    CurationLane(lane_id=predecessor_lane_id, program_id=predecessor_program_id, managed_context_id=context_id, purpose="Primary execution", normalized_purpose="primary execution", lane_policy={}, lifecycle="active", publisher_epoch=1, current_source_frontier_hash="d" * 64, current_semantic_fingerprint="b" * 64),
+                ])
+            async with sessions() as session:
+                readiness = await LoopActivationEligibilityResolver().resolve(session, context_id)
+            successor_id = uuid.uuid4().hex
+            snapshot = await service.start(LoopCreateRequest(
+                loop_id=successor_id,
+                workspace_id=workspace_id,
+                initial_context_id=context_id,
+                initial_run_id=run_id,
+                readiness_token=readiness.consistency_token,
+                activation_key=f"successor:{run_id}",
+                holder_id=f"patrol:{successor_id}",
+                goal="Finish successor work",
+                task_contract="Keep history",
+                acceptance_criteria=({"criterion_id": "done", "text": "done"},),
+                capabilities=("request_completion",),
+                context_scope=(context_id,),
+                permission_scope=("read",),
+            ))
+            assert snapshot["loop_id"] == successor_id
+            async with sessions() as session:
+                predecessor_lane = await session.get(CurationLane, predecessor_lane_id)
+                live_lanes = tuple((await session.scalars(select(CurationLane).where(CurationLane.managed_context_id == context_id, CurationLane.lifecycle != "retired"))).all())
+                assert predecessor_lane.lifecycle == "retired"
+                assert len(live_lanes) == 1
+                assert live_lanes[0].program_id == snapshot["program_id"]
+        finally:
+            current = await service.active_for_context(context_id)
+            if current is not None:
+                await service.control(current["loop_id"], "stop")
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_successor_reports_structured_nonterminal_lane_owner_conflict(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        workspace_id = uuid.uuid4().hex
+        context_id = uuid.uuid4().hex
+        owner_id = uuid.uuid4().hex
+        program_id = uuid.uuid4().hex
+        lane_id = uuid.uuid4().hex
+        run_id = uuid.uuid4().hex
+        revision_id = uuid.uuid4().hex
+        service = AgentLoopService(sessions)
+        try:
+            async with sessions.begin() as session:
+                session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(tmp_path), display_name="ownership-conflict"))
+                await session.flush()
+                session.add(DesktopThread(task_id=context_id, workspace_id=workspace_id, thread_id=f"thread-{context_id}", title="ownership-conflict"))
+                await session.flush()
+                ref = ContextRevisionRef(context_id=context_id, revision_id=revision_id, generation=1, execution_thread_id=f"thread-{context_id}", checkpoint_ns="", checkpoint_id=f"checkpoint-{context_id}", payload_mode=ContextRevisionPayloadMode.CHECKPOINT)
+                await ContextRevisionRepository().insert(session, ContextRevisionContract(ref=ref, content_hash="e" * 64, projection_status=ContextRevisionProjectionStatus.VALID, origin_kind=ContextRevisionOriginKind.RUN_SETTLED, origin_id=run_id, created_at=datetime.now(UTC)))
+                await ContextRevisionRepository().switch_current(session, ref, None)
+                session.add_all([
+                    DesktopRun(run_id=run_id, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{context_id}", context_revision_id=revision_id, final_checkpoint_id=ref.checkpoint_id, settled_at=datetime.now(UTC)),
+                    CurationProgram(program_id=program_id, workspace_id=workspace_id, policy={"owner_loop_id": owner_id}, revision=1),
+                    WorkspaceSlot(slot_id=uuid.uuid4().hex, workspace_id=workspace_id, kind="authoritative", root_path=str(tmp_path), provider="local", current_fingerprint="f" * 64, revision=1),
+                ])
+                await session.flush()
+                session.add_all([
+                    AgentLoop(loop_id=owner_id, workspace_id=workspace_id, initial_context_id=context_id, program_id=program_id, holder_id="patrol", status="waiting_user", health="idle"),
+                    CurationLane(lane_id=lane_id, program_id=program_id, managed_context_id=context_id, purpose="Primary execution", normalized_purpose="primary execution", lane_policy={}),
+                ])
+            async with sessions() as session:
+                readiness = await LoopActivationEligibilityResolver().resolve(session, context_id)
+            with pytest.raises(HTTPException) as captured:
+                await service.start(LoopCreateRequest(
+                    loop_id=uuid.uuid4().hex,
+                    workspace_id=workspace_id,
+                    initial_context_id=context_id,
+                    initial_run_id=run_id,
+                    readiness_token=readiness.consistency_token,
+                    activation_key=f"conflict:{run_id}",
+                    holder_id="patrol:new",
+                    goal="Should conflict",
+                    task_contract="Keep owner",
+                    acceptance_criteria=({"criterion_id": "done", "text": "done"},),
+                    capabilities=("request_completion",),
+                    context_scope=(context_id,),
+                    permission_scope=("read",),
+                ))
+            assert captured.value.status_code == 409
+            assert captured.value.detail["code"] == "curation_ownership_conflict"
+            assert captured.value.detail["context_id"] == context_id
+            assert captured.value.detail["owner_loop_id"] == owner_id
+            assert captured.value.detail["lane_id"] == lane_id
+            assert "uq_curation_lane" not in str(captured.value.detail)
+            assert "INSERT" not in str(captured.value.detail)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_concurrent_equivalent_loop_authorization_creates_one_successor(tmp_path: Path) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
@@ -473,6 +603,51 @@ def test_concurrent_equivalent_loop_authorization_creates_one_successor(tmp_path
                 assert await session.scalar(select(func.count()).select_from(AgentLoop).where(AgentLoop.initial_context_id == context_id)) == 1
                 bound = await session.get(DesktopRun, run_id)
                 assert bound.loop_id == first["loop_id"]
+        finally:
+            current = await service.active_for_context(context_id)
+            if current is not None:
+                await service.control(current["loop_id"], "stop")
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_concurrent_non_equivalent_loop_authorization_reports_committed_winner(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        workspace_id = uuid.uuid4().hex
+        context_id = uuid.uuid4().hex
+        run_id = uuid.uuid4().hex
+        revision_id = uuid.uuid4().hex
+        service = AgentLoopService(sessions)
+        try:
+            async with sessions.begin() as session:
+                session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(tmp_path), display_name="activation-race-conflict"))
+                await session.flush()
+                session.add(DesktopThread(task_id=context_id, workspace_id=workspace_id, thread_id=f"thread-{context_id}", title="activation-race-conflict"))
+                await session.flush()
+                ref = ContextRevisionRef(context_id=context_id, revision_id=revision_id, generation=1, execution_thread_id=f"thread-{context_id}", checkpoint_ns="", checkpoint_id=f"checkpoint-{context_id}", payload_mode=ContextRevisionPayloadMode.CHECKPOINT)
+                await ContextRevisionRepository().insert(session, ContextRevisionContract(ref=ref, content_hash="9" * 64, projection_status=ContextRevisionProjectionStatus.VALID, origin_kind=ContextRevisionOriginKind.RUN_SETTLED, origin_id=run_id, created_at=datetime.now(UTC)))
+                await ContextRevisionRepository().switch_current(session, ref, None)
+                session.add(DesktopRun(run_id=run_id, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{context_id}", context_revision_id=revision_id, final_checkpoint_id=ref.checkpoint_id, settled_at=datetime.now(UTC)))
+            async with sessions() as session:
+                readiness = await LoopActivationEligibilityResolver().resolve(session, context_id)
+            base = dict(workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=run_id, readiness_token=readiness.consistency_token, holder_id="patrol", goal="Finish", task_contract="Keep scope", acceptance_criteria=({"criterion_id": "done", "text": "done"},), capabilities=("request_completion",), context_scope=(context_id,), permission_scope=("read",))
+            results = await asyncio.gather(
+                service.start(LoopCreateRequest(loop_id=uuid.uuid4().hex, activation_key="authorization-a", **base)),
+                service.start(LoopCreateRequest(loop_id=uuid.uuid4().hex, activation_key="authorization-b", **base)),
+                return_exceptions=True,
+            )
+            snapshots = [item for item in results if isinstance(item, dict)]
+            conflicts = [item for item in results if isinstance(item, HTTPException)]
+            assert len(snapshots) == len(conflicts) == 1
+            assert conflicts[0].status_code == 409
+            assert conflicts[0].detail["code"] == "loop_activation_conflict"
+            assert conflicts[0].detail["owner_loop_id"] == snapshots[0]["loop_id"]
+            async with sessions() as session:
+                assert await session.scalar(select(func.count()).select_from(LoopActivation).where(LoopActivation.selected_run_id == run_id)) == 1
+                assert await session.scalar(select(func.count()).select_from(CurationLane).where(CurationLane.managed_context_id == context_id, CurationLane.lifecycle != "retired")) == 1
         finally:
             current = await service.active_for_context(context_id)
             if current is not None:
