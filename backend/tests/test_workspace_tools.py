@@ -1,6 +1,7 @@
 import asyncio
 import os
 from pathlib import Path
+import warnings
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -40,6 +41,17 @@ def test_read_file_within_workspace(tmp_path):
     runtime = _runtime(tmp_path, ["read"])
     assert read_file.func(path="hello.txt", runtime=runtime) == "内容"
     assert read_file.func(path=str(target), runtime=runtime) == "内容"
+
+
+def test_read_file_tool_accepts_dict_runtime_context_without_serializer_warning(tmp_path):
+    target = tmp_path / "hello.txt"
+    target.write_text("内容", encoding="utf-8")
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="Pydantic serializer warnings:.*")
+        result = read_file.invoke({"path": "hello.txt", "runtime": _runtime(tmp_path, ["read"])})
+
+    assert result == "内容"
 
 
 def test_workspace_path_type_errors_are_recoverable_tool_messages(tmp_path):

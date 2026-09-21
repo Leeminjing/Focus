@@ -391,7 +391,7 @@ def build_observation_tools(service: ObservationService):
     """
 
     @tool
-    async def observe_anchor(radius: float | None = None, runtime: ToolRuntime = None) -> str:
+    async def observe_anchor(radius: float | None = None, runtime: ToolRuntime[dict] = None) -> str:
         """从你的空间锚点观察周围内容:返回锚点附近半径内的文字或图像描述。radius 为相对页尺寸的归一化半径(0..1),留空则从初始半径开始。"""
         context = _anchor_context(runtime)
         radius = float(radius) if radius is not None else service.radius_start
@@ -402,7 +402,7 @@ def build_observation_tools(service: ObservationService):
         )
 
     @tool
-    async def expand_observation(radius: float | None = None, runtime: ToolRuntime = None) -> str:
+    async def expand_observation(radius: float | None = None, runtime: ToolRuntime[dict] = None) -> str:
         """扩大观察半径再看一圈:radius 为相对页尺寸的归一化半径(0..1),留空则使用初始半径的下一圈。"""
         context = _anchor_context(runtime)
         run_key = str(context.get("run_id") or context["spatial_id"])
@@ -418,7 +418,7 @@ def build_observation_tools(service: ObservationService):
     return declare_all_effects([observe_anchor, expand_observation], CARRIER_READ_EFFECT)
 
 
-def _anchor_context(runtime: ToolRuntime) -> dict[str, Any]:
+def _anchor_context(runtime: ToolRuntime[dict]) -> dict[str, Any]:
     context = runtime.context
     if not isinstance(context, dict):
         raise RuntimeError("缺少空间上下文: runtime.context 必须为 dict")

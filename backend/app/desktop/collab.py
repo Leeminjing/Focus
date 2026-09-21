@@ -90,7 +90,7 @@ def _context_value(context: object, key: str, label: str) -> str:
     return str(context[key])
 
 
-def _collab_values(runtime: ToolRuntime) -> tuple[str, str]:
+def _collab_values(runtime: ToolRuntime[dict]) -> tuple[str, str]:
     """从 runtime.context 提取当前 agent_id 与 task_id，逐键校验。"""
     context = runtime.context
     agent_id = _context_value(context, "agent_id", "执行主体身份")
@@ -160,7 +160,7 @@ class AgentCollab:
     def build_send_message_tool(self) -> BaseTool:
         @tool
         async def send_message(
-            to_agent: str, content: str, runtime: ToolRuntime, kind: str = "message"
+            to_agent: str, content: str, runtime: ToolRuntime[dict], kind: str = "message"
         ) -> str:
             """给指定 Agent 发送消息；to_agent="*" 广播给主 Agent 与全部协作 Agent。对方下一次运行时读取，每条消息只被消费一次。"""
             agent_id, task_id = _collab_values(runtime)
@@ -212,7 +212,7 @@ class AgentCollab:
 
     def build_request_plan_approval_tool(self) -> BaseTool:
         @tool
-        async def request_plan_approval(plan: str, runtime: ToolRuntime) -> str:
+        async def request_plan_approval(plan: str, runtime: ToolRuntime[dict]) -> str:
             """向主 Agent 提交计划审批请求；主 Agent 下一次运行时可看到并批准或拒绝。"""
             agent_id, task_id = _collab_values(runtime)
             async with self.session_factory() as session:
@@ -227,7 +227,7 @@ class AgentCollab:
 
     def build_request_shutdown_tool(self) -> BaseTool:
         @tool
-        async def request_shutdown(reason: str, runtime: ToolRuntime) -> str:
+        async def request_shutdown(reason: str, runtime: ToolRuntime[dict]) -> str:
             """请求主 Agent 批准关机（停止你的后续运行）；主 Agent 下一次运行时可批准或拒绝。"""
             agent_id, task_id = _collab_values(runtime)
             async with self.session_factory() as session:
@@ -243,7 +243,7 @@ class AgentCollab:
     def build_approve_plan_tool(self) -> BaseTool:
         @tool
         async def approve_plan(
-            agent_id: str, approved: bool, runtime: ToolRuntime, feedback: str | None = None
+            agent_id: str, approved: bool, runtime: ToolRuntime[dict], feedback: str | None = None
         ) -> str:
             """批准或拒绝某 Agent 的计划审批请求；结果该 Agent 下一次运行时可见。"""
             _, task_id = _collab_values(runtime)
@@ -263,7 +263,7 @@ class AgentCollab:
 
     def build_respond_shutdown_tool(self) -> BaseTool:
         @tool
-        async def respond_shutdown(agent_id: str, approved: bool, runtime: ToolRuntime) -> str:
+        async def respond_shutdown(agent_id: str, approved: bool, runtime: ToolRuntime[dict]) -> str:
             """批准或拒绝某 Agent 的关机请求；批准时立即停止该 Agent 后续运行（代码层），拒绝时该 Agent 下一次运行可见。"""
             _, task_id = _collab_values(runtime)
             if approved:
@@ -281,7 +281,7 @@ class AgentCollab:
 
     def build_publish_task_tool(self) -> BaseTool:
         @tool
-        async def publish_task(description: str, runtime: ToolRuntime, requirements: str | None = None) -> str:
+        async def publish_task(description: str, runtime: ToolRuntime[dict], requirements: str | None = None) -> str:
             """发布任务到任务板（status=pending），Worker 可认领执行；发布后空闲 Worker 会被自动唤醒。"""
             _, task_id = _collab_values(runtime)
             board = AgentBoardTask(
@@ -307,7 +307,7 @@ class AgentCollab:
 
     def build_list_board_tasks_tool(self) -> BaseTool:
         @tool
-        async def list_board_tasks(runtime: ToolRuntime) -> str:
+        async def list_board_tasks(runtime: ToolRuntime[dict]) -> str:
             """查看任务板全部任务的状态、认领者与结果。"""
             _, task_id = _collab_values(runtime)
             async with self.session_factory() as session:
@@ -338,7 +338,7 @@ class AgentCollab:
 
     def build_claim_task_tool(self) -> BaseTool:
         @tool
-        async def claim_task(board_task_id: str, runtime: ToolRuntime) -> str:
+        async def claim_task(board_task_id: str, runtime: ToolRuntime[dict]) -> str:
             """认领任务板上一个 pending 任务；已被认领或不属于当前任务时认领失败。"""
             agent_id, task_id = _collab_values(runtime)
             async with self.session_factory() as session:
@@ -361,7 +361,7 @@ class AgentCollab:
 
     def build_complete_task_tool(self) -> BaseTool:
         @tool
-        async def complete_task(board_task_id: str, result: str, runtime: ToolRuntime) -> str:
+        async def complete_task(board_task_id: str, result: str, runtime: ToolRuntime[dict]) -> str:
             """完成自己认领的任务并提交结果；仅认领者本人可完成。"""
             agent_id, task_id = _collab_values(runtime)
             async with self.session_factory() as session:

@@ -2119,17 +2119,17 @@ class DesktopService:
         """构建持久派生、唤醒与有界等待工具（仅 main 装配）。"""
 
         @tool
-        async def spawn_teammate(task: str, runtime: ToolRuntime, system_prompt: str | None = None) -> str:
+        async def spawn_teammate(task: str, runtime: ToolRuntime[dict], system_prompt: str | None = None) -> str:
             """派生一个持续存在的 Teammate 独立执行任务（后台运行），返回其 agent_id；它完成工作后会经消息向你汇报。"""
             return await self._spawn_swarm(task, system_prompt, "teammate", runtime)
 
         @tool
-        async def spawn_worker(task: str, runtime: ToolRuntime, system_prompt: str | None = None) -> str:
+        async def spawn_worker(task: str, runtime: ToolRuntime[dict], system_prompt: str | None = None) -> str:
             """派生一个持续存在的 Worker（后台运行），返回其 agent_id；它可认领并完成任务板任务。"""
             return await self._spawn_swarm(task, system_prompt, "worker", runtime)
 
         @tool
-        async def wake_agent(agent_id: str, message: str, runtime: ToolRuntime) -> str:
+        async def wake_agent(agent_id: str, message: str, runtime: ToolRuntime[dict]) -> str:
             """唤醒一个常驻 Agent（teammate/worker）并下达新指令；其历史与权限自动延续，可继续工作。"""
             context = runtime.context
             if not isinstance(context, dict) or not context.get("workspace"):
@@ -2138,7 +2138,7 @@ class DesktopService:
 
         @tool
         async def wait_for_swarm(
-            agent_ids: list[str], runtime: ToolRuntime, timeout_seconds: int = 30
+            agent_ids: list[str], runtime: ToolRuntime[dict], timeout_seconds: int = 30
         ) -> str:
             """有界等待 Teammate/Worker 状态变化，返回运行、任务板和主 Agent 未读消息快照。"""
             context = runtime.context

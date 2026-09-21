@@ -53,7 +53,7 @@ def build_spawn_agent_tool() -> BaseTool:
     """构建 spawn_agent 工具（仅装配给主 Agent，子 Agent 不再携带以限制派生深度为 1 层）。"""
 
     @tool
-    async def spawn_agent(task: str, runtime: ToolRuntime, system_prompt: str | None = None) -> str:
+    async def spawn_agent(task: str, runtime: ToolRuntime[dict], system_prompt: str | None = None) -> str:
         """派生一个临时子 Agent 独立完成子任务并返回其最终回答；子 Agent 完成后即销毁。"""
         child_security = derive_child_security_context(
             security_context_of(runtime.context), ChildRole.SPAWN_AGENT

@@ -64,7 +64,7 @@ TOOL_NAMES_BY_PERMISSION: dict[str, list[str]] = {
 }
 
 
-def _runtime_values(runtime: ToolRuntime) -> tuple[AccessPolicy, frozenset[str]]:
+def _runtime_values(runtime: ToolRuntime[dict]) -> tuple[AccessPolicy, frozenset[str]]:
     """从 runtime.context 提取访问策略与权限集合。"""
     context = runtime.context
     policy = policy_from_context(context)
@@ -104,7 +104,7 @@ def _write_targets(args: Mapping[str, Any], context: Mapping[str, Any]) -> Resol
 
 
 @tool
-def read_file(path: str, runtime: ToolRuntime) -> str:
+def read_file(path: str, runtime: ToolRuntime[dict]) -> str:
     """读取当前工作区内文件；path 可以是绝对路径或相对工作区路径，支持 .pdf/.docx/.doc。"""
     policy, permissions = _runtime_values(runtime)
     if "read" not in permissions:
@@ -140,7 +140,7 @@ def _looks_binary(raw: bytes) -> bool:
 
 
 @tool
-def list_files(path: str, runtime: ToolRuntime) -> str:
+def list_files(path: str, runtime: ToolRuntime[dict]) -> str:
     """列出当前工作区内目录；path 可以是绝对路径或相对工作区路径。"""
     policy, permissions = _runtime_values(runtime)
     if "read" not in permissions:
@@ -162,7 +162,7 @@ list_files.handle_tool_error = _recoverable_path_error
 
 
 @tool
-def write_file(path: str, content: str, runtime: ToolRuntime) -> str:
+def write_file(path: str, content: str, runtime: ToolRuntime[dict]) -> str:
     """在当前工作区写入 UTF-8 文本；只有用户授权 write 时才会被装配。"""
     policy, permissions = _runtime_values(runtime)
     if "write" not in permissions:
@@ -173,7 +173,7 @@ def write_file(path: str, content: str, runtime: ToolRuntime) -> str:
     return f"已写入真实宿主机路径: {target}"
 
 
-def _run_shell(command: str, runtime: ToolRuntime, exe_name: str, args: list[str]) -> str:
+def _run_shell(command: str, runtime: ToolRuntime[dict], exe_name: str, args: list[str]) -> str:
     """以工作区为执行目录启动一个宿主命令子进程（权限门控 + subprocess）。"""
     policy, permissions = _runtime_values(runtime)
     if "host_command" not in permissions:
@@ -192,25 +192,25 @@ def _run_shell(command: str, runtime: ToolRuntime, exe_name: str, args: list[str
 
 
 @tool
-def bash(command: str, runtime: ToolRuntime) -> str:
+def bash(command: str, runtime: ToolRuntime[dict]) -> str:
     """在工作区目录下执行 Bash 命令；需要 host_command 权限。"""
     return _run_shell(command, runtime, "bash", ["-c"])
 
 
 @tool
-def sh(command: str, runtime: ToolRuntime) -> str:
+def sh(command: str, runtime: ToolRuntime[dict]) -> str:
     """在工作区目录下执行 POSIX sh 命令；需要 host_command 权限。"""
     return _run_shell(command, runtime, "sh", ["-c"])
 
 
 @tool
-def cmd(command: str, runtime: ToolRuntime) -> str:
+def cmd(command: str, runtime: ToolRuntime[dict]) -> str:
     """在工作区目录下执行 Windows CMD 命令；需要 host_command 权限。"""
     return _run_shell(command, runtime, "cmd.exe", ["/c"])
 
 
 @tool
-def powershell(command: str, runtime: ToolRuntime) -> str:
+def powershell(command: str, runtime: ToolRuntime[dict]) -> str:
     """在工作区目录下执行 PowerShell 命令；需要 host_command 权限。"""
     return _run_shell(command, runtime, "powershell.exe", ["-NoProfile", "-Command"])
 
