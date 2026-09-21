@@ -443,6 +443,24 @@ test("portfolio map renders every source edge for a multi-parent Context", () =>
 });
 
 
+test("portfolio node and conversation header render a shared descriptor only once", () => {
+  const descriptor = "建立一个可构建、可安装、可加载的 Obsidian 插件最小仓库骨架和测试基线";
+  const manifest = { health: "observing", nodes: [{ context_id: "c1", title: descriptor, topic: descriptor, purpose: descriptor, status: "active", revision: { generation: 1 }, counts: { runs: 1 } }], edges: [] };
+
+  const map = PortfolioMap.render(manifest, "c1");
+  assert.equal(map.split(descriptor).length - 1, 1, "拓扑图节点不得重复渲染同一段描述");
+  assert.doesNotMatch(map, /context-node-purpose/);
+
+  const state = { manifest, selectedContextId: "c1", interventionMode: "direct_context_message", messageFilter: "all", messageSearch: "", factFilter: "all", factScope: "current", conversation: { revision: { generation: 1 }, total: 1, has_more: false, messages: [] } };
+  const conversation = Conversation.render(state);
+  assert.equal(conversation.split(descriptor).length - 1, 1, "会话页头不得重复渲染同一段描述");
+  assert.match(conversation, /条消息/);
+
+  const distinct = PortfolioMap.render({ health: "observing", nodes: [{ context_id: "c2", topic: "Testing", purpose: "Verify failures", status: "active", counts: {} }], edges: [] }, "c2");
+  assert.match(distinct, /context-node-purpose/, "名称与描述不同时必须保留描述行");
+});
+
+
 test("api replays persisted SSE frames by cursor", async () => {
   const encoder = new TextEncoder();
   const body = new ReadableStream({

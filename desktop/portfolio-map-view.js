@@ -1,7 +1,8 @@
 /*
  * 本文件对外提供 Context Portfolio 的稳定拓扑图视图。
  * 输入为轻量 nodes/edges、选中 Context 与 canonical directive/Run 活动；输出为带真实并行状态、因果连线的纵向可交互演化图。
- * 具体工作流为仅在拓扑变化时重算坐标，普通状态沿用位置；活动效果严格由 directive lifecycle 和 Run state 驱动，空闲时不循环播放。
+ * 具体工作流为仅在拓扑变化时重算坐标，普通状态沿用位置；活动效果严格由 directive lifecycle 和 Run state 驱动，空闲时不循环播放；
+ * 节点卡只显示一次描述文字，purpose 与节点名称相同时不再重复渲染。
  * 示例：`FocusPortfolioMapView.render(manifest, selectedId, graphActivity)`。
  */
 (function (root, factory) {
@@ -101,7 +102,9 @@
         node.counts?.artifacts ? `${escape(node.counts.artifacts)} artifacts` : "",
       ].filter(Boolean).join(" · ");
       const live = run ? `<span class="context-node-live"><span>${escape(node.live_action?.detail?.tool_name || node.live_action?.summary || `${run.status || "idle"} · ${run.origin || "run"}`)}</span><span>${escape(workspaceChanges)} workspace changes · ${escape(Number(run.input_tokens || 0) + Number(run.output_tokens || 0))} tokens</span></span>` : "";
-      return `<button type="button" class="portfolio-context-node${node.context_id === selectedId ? " is-selected" : ""}" style="left:${point.x}px;top:${point.y}px" data-action="loop-select-context" data-context-id="${escape(node.context_id)}"><span class="context-node-eyebrow">#${index} ${escape(node.role || "Context")}<span><i class="run-dot is-${escape(run?.status || node.status)}" aria-hidden="true"></i>${escape(run?.status || node.status)}</span></span><span class="context-node-top"><strong>${escape(node.topic || node.title)}</strong></span><span class="context-node-purpose">${escape(node.purpose)}</span>${live}<span class="context-node-meta">R${escape(node.revision?.generation || "—")} · ${evidence || "暂无运行证据"}</span></button>`;
+      const name = node.topic || node.title;
+      const purpose = node.purpose && node.purpose !== name ? `<span class="context-node-purpose">${escape(node.purpose)}</span>` : "";
+      return `<button type="button" class="portfolio-context-node${node.context_id === selectedId ? " is-selected" : ""}" style="left:${point.x}px;top:${point.y}px" data-action="loop-select-context" data-context-id="${escape(node.context_id)}"><span class="context-node-eyebrow">#${index} ${escape(node.role || "Context")}<span><i class="run-dot is-${escape(run?.status || node.status)}" aria-hidden="true"></i>${escape(run?.status || node.status)}</span></span><span class="context-node-top"><strong>${escape(name)}</strong></span>${purpose}${live}<span class="context-node-meta">R${escape(node.revision?.generation || "—")} · ${evidence || "暂无运行证据"}</span></button>`;
     }).join("");
     return `<section class="portfolio-map" aria-label="Context Portfolio"><div class="portfolio-map-toolbar"><span><strong>${escape(nodes.length)}</strong> 个 Context · Evolution Graph · Live</span><span class="portfolio-health is-${escape(manifest.health)}">Patrol ${escape(manifest.health)}</span></div><div class="portfolio-map-scroll"><div class="portfolio-map-canvas" style="width:${geometry.width}px;height:${geometry.height}px"><svg width="${geometry.width}" height="${geometry.height}" aria-label="Patrol 与 Context 的真实因果关系">${lines}${activityLines}</svg>${cards}</div></div></section>`;
   }
