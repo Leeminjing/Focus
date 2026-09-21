@@ -1,4 +1,4 @@
-r"""本文件对外提供 CuratorScope、CuratorAssignmentRepository 与 CuratorAssignmentRejected。
+r"""本文件对外提供 Bootstrap/Lane CuratorScope、CuratorAssignmentRepository 与 CuratorAssignmentRejected。
 
 输入为 Patrol Session、Worker request、稳定 assignment key、受限 scope、安全摘要和 evidence references；输出为
 queued/reading/analyzing/proposed/consumed/failed/cancelled 的持久 Curator 当前状态与规范事件。具体工作流为
@@ -14,6 +14,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
 
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
 from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
@@ -24,6 +25,7 @@ from backend.app.desktop.agent_loop.patrol_session_state import PatrolEvidenceRe
 class CuratorScope(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    mode: Literal["bootstrap", "lane"]
     lane_id: str | None = Field(default=None, max_length=120)
     context_id: str = Field(min_length=1, max_length=120)
     revision_id: str = Field(min_length=1, max_length=120)

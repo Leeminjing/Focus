@@ -1,7 +1,8 @@
 r"""本文件对外提供 LoopKernel、KernelCommitResult 与 KernelRejected 唯一确定性提交边界。
 
 输入为含 fencing token 的 PatrolDecisionIntent 和当前数据库事实；输出为幂等 committed/superseded/rejected 结果。具体工作流为
-稳定锁定 Loop/round/grant，先验证活动 owner，再按 Mission revision、机器边界、权力、frontier、workspace、预算、active Run、gate 顺序校验；普通动作
+稳定锁定 Loop/round/grant，先验证活动 owner，再按 Mission revision、机器边界、权力、frontier、workspace、预算、active Run、gate 顺序校验；
+无副作用 decline_expansion 仅形成审计 action，普通动作
 单事务提交，Context Portfolio 与 workspace adoption 先持久授权意图，再由专用 Kernel port 执行外部准备并
 原子收口权威状态；配置异步 publication 时只提交持久授权并交给独立发布队列，拒绝或被取代的决策必须在同一事务内把该 round 收敛为终态（拒绝还会把当前轮所属
 Loop 交回用户），提交成功后收口该 round 已观察的用户意图；自主压缩由专用 committer 在同一事务内只提交
@@ -38,6 +39,8 @@ from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
 from backend.app.desktop.agent_loop.rounds import UNDECIDED_ROUND_STATUSES, terminate_round
 from backend.app.desktop.agent_loop.schemas import CriterionVerification, PatrolDecisionIntent
 from backend.app.desktop.agent_loop.compression_authority.commit import CompressionAuthorityCommitter, CompressionCommitRejected
+from backend.app.desktop.agent_loop.context_expansion.repository import ContextExpansionRepository
+from backend.app.desktop.agent_loop.context_expansion.models import LoopContextExpansion
 from backend.app.desktop.context_curation.models import CurationLane, CurationProgram, PortfolioLaneCandidate, PortfolioRevision
 from backend.app.desktop.context_curation.portfolio_publisher import PortfolioSuperseded
 from backend.app.desktop.context_evolution.models import ContextRevision
@@ -92,6 +95,7 @@ class LoopKernel:
         self._interventions = InterventionLifecycleRepository()
         self._compression = CompressionAuthorityCommitter()
         self._terminal = LoopTerminalLifecycle()
+        self._expansions = ContextExpansionRepository()
 
     async def commit(self, intent: PatrolDecisionIntent) -> KernelCommitResult:
         deferred_id: str | None = None
@@ -161,6 +165,12 @@ class LoopKernel:
         if existing is not None:
             return None, None, await self._result(session, existing)
         if round_row.decision_id is not None:
+            await self._terminate_expansions(
+                session,
+                intent.model_dump(mode="json"),
+                "superseded",
+                "round_already_decided",
+            )
             return None, None, KernelCommitResult(
                 intent.decision_id,
                 "superseded",
@@ -175,6 +185,12 @@ class LoopKernel:
             decision = self._decision(intent, "superseded", {"reason": stale})
             session.add(decision)
             await terminate_round(session, loop, round_row, category="superseded", reason=stale, decision_id=decision.decision_id, wait_for_user=False, allowed_statuses=UNDECIDED_ROUND_STATUSES)
+            await self._terminate_expansions(
+                session,
+                intent.model_dump(mode="json"),
+                "superseded",
+                stale,
+            )
             return None, None, KernelCommitResult(intent.decision_id, "superseded", (), (), stale)
         try:
             await self._mission_authority.validate(session, loop, round_row, intent)
@@ -195,6 +211,7 @@ class LoopKernel:
             session.add(decision)
             await session.flush()
             action_ids = self._authorize_actions(session, loop, decision, intent)
+            await self._authorize_expansions(session, intent, decision.decision_id)
             round_row.decision_id = decision.decision_id
             round_row.status = deferred_status
             loop.health = deferred_status
@@ -347,8 +364,19 @@ class LoopKernel:
         ]
         if len(direct_targets) != len(set(direct_targets)):
             raise KernelRejected("同一 round 不得向同一 Context 派发多个并行 Run")
-        if active and any(action.action in {"continue_context", "create_lane", "update_lane", "merge_contexts", "pause_lane"} for action in intent.actions):
+        unsafe_while_active = {"continue_context", "update_lane", "merge_contexts", "pause_lane"}
+        if active and any(action.action in unsafe_while_active for action in intent.actions):
             raise KernelRejected("Loop 已有活动 Run")
+        created = tuple(action for action in intent.actions if action.action == "create_lane")
+        if active and int(active) + len(created) > int(budgets.get("max_concurrent_runs", 4)):
+            raise KernelRejected("并行 Run 预算已耗尽")
+        for action in created:
+            workspace_mode = str(action.plan.lane_policy.get("workspace_mode") or "read_only")
+            if workspace_mode == "isolated_write" and (
+                "write" not in set(grant.permission_scope or [])
+                or "adopt_workspace_result" not in set(grant.capabilities or [])
+            ):
+                raise KernelRejected("隔离写入派生缺少 workspace write/adoption 授权")
         if active and self._has_adoption(intent):
             raise KernelRejected("仍有活动 Run，不能采用隔离 workspace 结果")
         if active and any(action.action == "stop_loop" for action in intent.actions):
@@ -430,6 +458,23 @@ class LoopKernel:
             action_ids.append(action_id)
         return action_ids
 
+    async def _authorize_expansions(self, session: AsyncSession, intent: PatrolDecisionIntent, decision_id: str) -> None:
+        for action in intent.actions:
+            if action.action != "create_lane":
+                continue
+            expansion_id = action.plan.lane_policy.get("expansion_id")
+            if not expansion_id:
+                continue
+            row = await session.get(LoopContextExpansion, str(expansion_id))
+            if row is not None and row.state == "compiled":
+                await self._expansions.transition(
+                    session,
+                    row.expansion_id,
+                    "authorized",
+                    "Kernel 已授权 Context expansion publication",
+                    result={"decision_id": decision_id},
+                )
+
     async def _fail_deferred(
         self,
         decision_id: str,
@@ -456,6 +501,12 @@ class LoopKernel:
             for action in actions:
                 if action.status == "authorized":
                     action.status = status
+            await self._terminate_expansions(
+                session,
+                decision.intent,
+                "superseded" if superseded else "failed",
+                reason,
+            )
             round_row = await session.get(LoopRound, decision.round_id, with_for_update=True)
             loop = await session.get(AgentLoop, decision.loop_id, with_for_update=True)
             if round_row is not None and round_row.status in {"publishing", "adopting"}:
@@ -471,6 +522,21 @@ class LoopKernel:
                     scope={"decision_id": decision_id},
                 )
             return KernelCommitResult(decision_id, status, tuple(item.action_id for item in actions), (), reason)
+
+    async def _terminate_expansions(self, session: AsyncSession, raw_intent: dict, target: str, reason: str) -> None:
+        intent = PatrolDecisionIntent.model_validate(raw_intent)
+        for action in intent.actions:
+            if action.action != "create_lane":
+                continue
+            expansion_id = action.plan.lane_policy.get("expansion_id")
+            expansion = await session.get(LoopContextExpansion, str(expansion_id), with_for_update=True) if expansion_id else None
+            if expansion is not None and not self._expansions.is_terminal(expansion.state):
+                await self._expansions.transition(
+                    session,
+                    expansion.expansion_id,
+                    target,
+                    reason[:1000],
+                )
 
     async def _apply_actions(self, session, loop, round_row, grant, decision, intent):
         action_ids: list[str] = []
@@ -512,6 +578,8 @@ class LoopKernel:
                 except CompressionCommitRejected as exc:
                     raise KernelRejected(str(exc)) from exc
                 action.result = {"resolution_id": resolution.resolution_id, "candidate_id": resolution.candidate_id}
+            elif intent_action.action == "decline_expansion":
+                action.status = "applied"
             elif intent_action.action == "pause_lane":
                 lane = await self._owned_lane(session, loop, intent_action.lane_id)
                 lane.lifecycle = "paused"

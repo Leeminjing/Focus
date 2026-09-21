@@ -166,7 +166,12 @@
 .patrol-drawer-panel ul { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
 .patrol-drawer-panel li { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 3px 9px; padding: 7px 0; border-bottom: 1px solid #edf1f5; font-size: 11px; }
 .patrol-drawer-panel li time,
-.patrol-drawer-panel li .curator-state { grid-row: 1 / 3; color: #76879b; font-size: 9px; }
+.patrol-drawer-panel li .curator-state,
+.patrol-drawer-panel li .expansion-state { grid-row: 1 / 3; color: #76879b; font-size: 9px; }
+.patrol-drawer-panel li .expansion-state.is-committed,
+.patrol-drawer-panel li .expansion-state.is-dispatched { color: #148857; }
+.patrol-drawer-panel li .expansion-state.is-blocked,
+.patrol-drawer-panel li .expansion-state.is-failed { color: #bd3844; }
 .patrol-drawer-panel li small { color: #8694a6; font-size: 9px; }
 
 .loop-waiting,

@@ -1,7 +1,8 @@
 r"""本文件对外提供 Agent Loop API、Mission、类型化等待响应、用户介入、observation、completion 与 Patrol decision 封闭判别联合。
 
-输入为用户 Mission 或兼容旧目标、grant、冻结版本、Patrol action 和 verifier evidence；输出为拒绝未知字段的不可变
-合同。具体工作流为创建请求先解析结构化 Mission 或无损适配旧三字段，介入请求区分 Context/Portfolio 作用域，action 依 discriminator 解析，
+输入为用户 Mission 或兼容旧目标、grant、冻结版本、Expansion assessment、Patrol action 和 verifier evidence；输出为拒绝未知字段的不可变
+合同。具体工作流为创建请求先解析结构化 Mission 或无损适配旧三字段，介入请求区分 Context/Portfolio 作用域，模型只以 semantic spawn/decline
+表达 Context 派生，持久 legacy create 仅由兼容 adapter 解析，其余 action 依 discriminator 解析，
 envelope 绑定所有控制 revision 与未处理用户意图，completion 以稳定 check_id 绑定类型化证据；自主压缩 action 只能引用已持久化候选，Kernel 只接受
 PatrolDecisionIntent。示例：`intent = PatrolDecisionIntent.model_validate(payload)`。
 """
@@ -39,6 +40,37 @@ class CreateLaneAction(StrictModel):
     action: Literal["create_lane"]
     plan: CreateLanePlan
     message: str = Field(min_length=1)
+
+
+class SpawnContextAction(StrictModel):
+    action: Literal["spawn_context"]
+    opportunity_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_context_id: str = Field(min_length=1)
+    purpose: str = Field(min_length=1, max_length=1000)
+    work_order: str = Field(min_length=1, max_length=8000)
+    completion_check: str = Field(min_length=1, max_length=4000)
+    workspace_mode: Literal["read_only", "isolated_write"]
+
+
+class DeclineExpansionAction(StrictModel):
+    action: Literal["decline_expansion"]
+    opportunity_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    blocker_code: Literal[
+        "not_independent",
+        "authority_missing",
+        "source_out_of_scope",
+        "source_unreadable",
+        "context_budget_exhausted",
+        "lane_budget_exhausted",
+        "round_lane_budget_exhausted",
+        "concurrency_budget_exhausted",
+        "workspace_conflict",
+        "workspace_isolation_unavailable",
+        "duplicate_expansion",
+        "stale_source",
+        "compiler_failed",
+    ]
+    reason: str = Field(min_length=1, max_length=2000)
 
 
 class UpdateLaneAction(StrictModel):
@@ -98,13 +130,22 @@ class StopLoopAction(StrictModel):
 
 
 PatrolAction = Annotated[
-    ContinueContextAction | CreateLaneAction | UpdateLaneAction | MergeContextsAction |
+    ContinueContextAction | CreateLaneAction | SpawnContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
     PauseLaneAction | DiscardMembershipAction | RequestLaneCuratorAction |
     RequestCompletionVerifierAction | RequestCompletionAction | AdoptWorkspaceResultAction |
     ApplyContextCompressionAction | WaitForUserAction | StopLoopAction,
     Field(discriminator="action"),
 ]
 PATROL_ACTION_ADAPTER = TypeAdapter(PatrolAction)
+
+PatrolModelAction = Annotated[
+    ContinueContextAction | SpawnContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
+    PauseLaneAction | DiscardMembershipAction | RequestLaneCuratorAction |
+    RequestCompletionVerifierAction | RequestCompletionAction | AdoptWorkspaceResultAction |
+    ApplyContextCompressionAction | WaitForUserAction | StopLoopAction,
+    Field(discriminator="action"),
+]
+PATROL_MODEL_ACTION_ADAPTER = TypeAdapter(PatrolModelAction)
 
 
 class PatrolDecisionIntent(StrictModel):
@@ -242,6 +283,7 @@ class LoopObservationEnvelope(StrictModel):
     worker_results: tuple[dict[str, Any], ...] = ()
     user_intents: tuple[dict[str, Any], ...] = ()
     expansion_handles: tuple[dict[str, str], ...] = ()
+    expansion_assessment: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def require_mission_or_legacy_goal(self) -> "LoopObservationEnvelope":

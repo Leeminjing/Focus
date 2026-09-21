@@ -4,7 +4,8 @@ r"""本文件对外提供 LoopWaveDispatcher、LoopRunWorkspaceBinder、DesktopD
 绑定 round/action 的 DesktopRun。具体工作流为 Dispatcher 先以行锁认领 directive，WorkspaceRunPlanner
 再把 Reader、权威 Writer 与授权的 Git 隔离 Writer 分配到不冲突的 slot；Binder 为所有 Loop Run 建立
 lease/anchor，容量不足时持久记录 queued_reason，LaunchPort 在持有 Loop、directive、Run 权力锁时启动统一执行脊柱，
-并以透明 activity bridge 将当前 Run 的 Tool/Artifact 生命周期提交 journal 后写入 launched 状态。
+并以透明 activity bridge 将当前 Run 的 Tool/Artifact 生命周期提交 journal 后写入 launched 状态；属于 Context expansion 的
+Directive 在同一 delivery 事务把 expansion 推进为 dispatched。
 受治理工具根绑定真实 slot，来源元数据不进入模型消息。
 示例：`run_ids = await dispatcher.dispatch(loop_id, round_id)`。
 """
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopDirective
 from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
 from backend.app.desktop.agent_loop.directive_causality import DirectiveCausalityRecorder
+from backend.app.desktop.agent_loop.context_expansion.repository import ContextExpansionRepository
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
 from backend.app.desktop.models import DesktopRun
 from backend.app.desktop.run_orchestration import RunExecutionResources, RunLifecycleFinalizer, execute_prepared_run
@@ -42,6 +44,7 @@ class LoopWaveDispatcher:
         self._workspaces = WorkspaceRunPlanner(sessions)
         self._lifecycle = DirectiveLifecycleRepository()
         self._causality = DirectiveCausalityRecorder()
+        self._expansions = ContextExpansionRepository()
 
     async def dispatch(self, loop_id: str, round_id: str, concurrency: int) -> tuple[str, ...]:
         directives = await self._claim(loop_id, round_id, concurrency)
@@ -85,6 +88,15 @@ class LoopWaveDispatcher:
                 await self._lifecycle.transition(session, directive_id, "delivered", run_id=run_id)
                 await self._lifecycle.transition(session, directive_id, "run_started", run_id=run_id)
                 await self._causality.run_started(session, directive, run_id)
+                expansion = await self._expansions.by_directive(session, directive.directive_id)
+                if expansion is not None and expansion.state == "committed":
+                    await self._expansions.transition(
+                        session,
+                        expansion.expansion_id,
+                        "dispatched",
+                        "Expansion Directive 已交付并启动 Context Run",
+                        result={"run_id": run_id},
+                    )
 
     async def _claim(self, loop_id: str, round_id: str, concurrency: int) -> tuple[LoopDirective, ...]:
         async with self._sessions.begin() as session:

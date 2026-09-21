@@ -1,10 +1,12 @@
-r"""本文件对外提供 LoopObservationService、带 Mission 引用的 StructuredPatrolDecisionModel 与 LoopRoundOrchestrator。
+r"""本文件对外提供 LoopObservationService、带 Mission/Expansion 引用的 StructuredPatrolDecisionModel 与 LoopRoundOrchestrator。
 
 输入为持久 Loop/round/Mission/grant、bounded Context frontier、压缩候选请求、Run/workspace/Worker 事实和模型配置；输出为
 不可变 observation、Patrol decision intent 与 Kernel commit 结果。具体工作流为系统先拒绝已终结或已有落定
 决策的 round（终局短路，不产生观察与认知调用），再冻结 Context frontier、
-待处理用户意图与持久事实并保存观察，Patrol Session collaborator 扇出并独立收集 Curator assignment；
-模型只返回无权 proposal，系统绑定唯一 holder 和全部版本，PortfolioPatrol 记录 attempt；回答形状不合法时
+待处理用户意图与持久事实并保存观察，Patrol Session collaborator 扇出并独立收集 Curator assignment，
+ContextExpansionStage 评估结构化派生机会；模型只返回无权 proposal 或 semantic spawn/decline，Stage 再确定性编译内部
+LanePlan；编译 blocker 会先终结 round 并持久化 Patrol 失败结果，避免 Supervisor 重试终态 opportunity。系统随后绑定唯一 holder
+和全部版本，PortfolioPatrol 记录 attempt；回答形状不合法时
 在同一冻结观察上做有界重试，用尽才收敛为 waiting_user，最后 Kernel 校验并提交。
 示例：`await orchestrator.process(claim)`。
 """
@@ -23,6 +25,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
+from backend.app.desktop.agent_loop.context_expansion.contracts import ExpansionBlocker
+from backend.app.desktop.agent_loop.context_expansion.coordinator import ContextExpansionStage
 from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count
 from backend.app.desktop.agent_loop.journal_models import LoopJournalSequence
 from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
@@ -48,7 +52,7 @@ from backend.app.desktop.agent_loop.patrol import PatrolContractViolation, Portf
 from backend.app.desktop.agent_loop.patrol_runtime import CuratorCoordinationStage, PatrolOutcomeStage, PatrolSessionLifecycle
 from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, PatrolPhase
 from backend.app.desktop.agent_loop.rounds import TERMINAL_ROUND_STATUSES, UNDECIDED_ROUND_STATUSES, terminate_round
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope, PatrolAction, PatrolDecisionIntent
+from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope, PatrolDecisionIntent, PatrolModelAction
 from backend.app.desktop.agent_loop.compression_authority.contracts import CompressionCandidateRequest
 from backend.app.desktop.agent_loop.compression_authority.candidates import CompressionCandidateService
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
@@ -68,7 +72,9 @@ portfolio scope 约束整体分工；它们优先于你此前尚未提交的判�
 当 observation 中存在已授权 compression pending decision 时，先以空 source_message_ids 请求
 compression_candidate 获取无正文 manifest，再以 manifest 中的精确 message id 请求候选；最后以
 apply_context_compression 引用返回的 candidate，不得自行编造 ranges、摘要或 candidate identity。
-create/update/merge 的 plan 必须只引用 observation 中带完整命名空间的 immutable revision 和 message_id；
+创建新 Context 时只能从 observation.expansion_assessment 选择 opportunity 并返回 semantic spawn_context，或以允许的稳定原因
+返回 decline_expansion；不得直接生成 create_lane 或手工组装 CreateLanePlan。update/merge 的 plan 必须只引用 observation 中带完整
+命名空间的 immutable revision 和 message_id；
 你选择引用与编排方式，Focus 会从真实 revision 重建 evidence 并确定性编译，不能在 plan 中伪造消息正文。
 只有确实需要改变 Agent 将看到的过去时才新建 Lane；已有 Context 足够时使用 continue_context。
 隔离 workspace 结果不会自动进入主工作区；仅在证据充分且授权包含 adoption 时提交 adopt_workspace_result。
@@ -96,7 +102,7 @@ class PatrolDecisionProposal(BaseModel):
     rationale: str = Field(min_length=1, max_length=4000)
     evidence: tuple[dict[str, Any], ...] = ()
     mission_references: tuple[MissionReference, ...] = Field(min_length=1)
-    actions: tuple[PatrolAction, ...] = Field(min_length=1)
+    actions: tuple[PatrolModelAction, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
     def require_references_for_action_role(self) -> "PatrolDecisionProposal":
@@ -372,6 +378,7 @@ class StructuredPatrolDecisionModel:
         messages = [SystemMessage(content=PATROL_SYSTEM_CONTRACT), HumanMessage(content=f"<loop_observation>{prompt}</loop_observation>")]
         proposal = await self._decide(model, messages, config.curation_output_method, observation)
         self._validate_mission_references(proposal, observation)
+        self._validate_expansion_decision(proposal, observation)
         grant = observation.grant
         return PatrolDecisionIntent(
             decision_id=uuid.uuid4().hex,
@@ -391,6 +398,34 @@ class StructuredPatrolDecisionModel:
             evidence=(*proposal.evidence, *(reference.model_dump(mode="json") | {"kind": "mission_reference"} for reference in proposal.mission_references)),
             actions=proposal.actions,
         )
+
+    @staticmethod
+    def _validate_expansion_decision(proposal: PatrolDecisionProposal, observation: LoopObservationEnvelope) -> None:
+        assessment = observation.expansion_assessment or {}
+        opportunities = {str(item.get("opportunity_id")): item for item in assessment.get("opportunities") or ()}
+        blockers = {
+            (item.get("opportunity_id"), item.get("code"))
+            for item in assessment.get("blockers") or ()
+        }
+        expansion_actions = tuple(action for action in proposal.actions if action.action in {"spawn_context", "decline_expansion"})
+        if assessment.get("level") == "required" and not expansion_actions:
+            raise PatrolContractViolation("required Context expansion 必须 spawn_context 或结构化 decline_expansion")
+        for action in expansion_actions:
+            if action.action == "spawn_context":
+                opportunity = opportunities.get(action.opportunity_id)
+                if opportunity is None:
+                    raise PatrolContractViolation("spawn_context 引用了当前 assessment 之外的 opportunity")
+                expected = {
+                    "source_context_id": (opportunity.get("source") or {}).get("context_id"),
+                    "purpose": opportunity.get("purpose"),
+                    "work_order": opportunity.get("work_order"),
+                    "completion_check": opportunity.get("completion_check"),
+                    "workspace_mode": opportunity.get("workspace_mode"),
+                }
+                if any(getattr(action, key) != value for key, value in expected.items()):
+                    raise PatrolContractViolation("spawn_context 必须原样引用冻结 opportunity 的语义字段")
+            elif (action.opportunity_id, action.blocker_code) not in blockers:
+                raise PatrolContractViolation("decline_expansion 必须引用当前策略允许的 blocker")
 
     @staticmethod
     def _validate_mission_references(proposal: PatrolDecisionProposal, observation: LoopObservationEnvelope) -> None:
@@ -506,6 +541,7 @@ class LoopRoundOrchestrator:
         self._patrol_sessions = PatrolSessionLifecycle(sessions)
         self._curators = CuratorCoordinationStage(sessions)
         self._outcomes = PatrolOutcomeStage(self._patrol_sessions)
+        self._expansions = ContextExpansionStage(sessions, checkpointer)
 
     async def process(self, claim: CoordinatorClaim) -> KernelCommitResult | None:
         publishing_intent: PatrolDecisionIntent | None = None
@@ -547,6 +583,10 @@ class LoopRoundOrchestrator:
         observation = await self._prepare_observation(claim, patrol_session.session_id, round_status or "observed")
         if observation is None:
             return None
+        expansion_assessment = await self._expansions.assess(observation)
+        observation = observation.model_copy(
+            update={"expansion_assessment": expansion_assessment.model_dump(mode="json")}
+        )
         budget = LoopBudgetGuard().evaluate(
             observation.budget.get("usage") or {},
             observation.budget.get("limits") or {},
@@ -557,6 +597,13 @@ class LoopRoundOrchestrator:
             await self._budget_exhausted(claim, budget.reasons)
             return None
         intent = self._bind_fencing(await self._decide_patrol(claim, model_name, holder_id, observation), claim)
+        resolution = await self._expansions.resolve(observation, intent)
+        if resolution.blocker is not None:
+            await self._settle_expansion_blocker(claim, patrol_session.session_id, resolution.blocker)
+            return None
+        if resolution.intent is None:
+            raise RuntimeError("Context expansion resolution 缺少 intent 与 blocker")
+        intent = resolution.intent
         current_session = await self._patrol_sessions.current(claim.round_id)
         if current_session is not None and current_session.phase == PatrolPhase.PROPOSING:
             await self._patrol_sessions.transition(
@@ -689,6 +736,39 @@ class LoopRoundOrchestrator:
             if round_row is None:
                 return
             await terminate_round(session, loop, round_row, category="budget", reason="Loop hard budget 已耗尽: " + ", ".join(reasons), allowed_statuses=UNDECIDED_ROUND_STATUSES)
+
+    async def _settle_expansion_blocker(
+        self,
+        claim: CoordinatorClaim,
+        session_id: str,
+        blocker: ExpansionBlocker,
+    ) -> None:
+        reason = f"Context expansion blocked [{blocker.code}]: {blocker.summary}"
+        async with self._sessions.begin() as session:
+            round_row = await session.get(LoopRound, claim.round_id, with_for_update=True)
+            loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True)
+            if round_row is not None:
+                await terminate_round(
+                    session,
+                    loop,
+                    round_row,
+                    category="context_expansion_blocked",
+                    reason=reason,
+                    allowed_statuses=UNDECIDED_ROUND_STATUSES,
+                )
+        current = await self._patrol_sessions.get(session_id)
+        if current is not None and current.phase not in {
+            PatrolPhase.COMPLETED,
+            PatrolPhase.FAILED,
+            PatrolPhase.INTERRUPTED,
+            PatrolPhase.SUPERSEDED,
+        }:
+            await self._patrol_sessions.transition(
+                session_id,
+                PatrolPhase.FAILED,
+                PatrolActivity(summary="Context 派生计划无法安全编译"),
+                terminal_outcome={"status": "blocked", "reason_code": blocker.code, "reason": blocker.summary},
+            )
 
     async def _terminate_decided_round(self, claim: CoordinatorClaim, decision_id: str) -> bool:
         """收敛已有落定决策却仍可领取的 round：不再观察、不再调用认知模型。"""

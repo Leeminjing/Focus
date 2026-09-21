@@ -136,13 +136,15 @@
     const patrol = live?.patrol_session?.state;
     if (!live || !patrol) return "";
     const round = live.round?.state?.number || "—";
-    const entries = (live.activity_timeline || []).filter(item => ["patrol_session", "curator", "directive"].includes(item.entity_type)).slice(-12).reverse();
+    const entries = (live.activity_timeline || []).filter(item => ["patrol_session", "curator", "context_expansion", "directive"].includes(item.entity_type)).slice(-16).reverse();
     const curators = Object.values(live.curators || {}).sort((left, right) => right.updated_sequence - left.updated_sequence);
+    const expansions = Object.values(live.expansions || {}).sort((left, right) => right.updated_sequence - left.updated_sequence);
     const connection = state.connection || { status: "idle" };
     const connectionLabel = ({ live: "实时", syncing: "同步中", connecting: "连接中", reconnecting: "重连中", resyncing: "重同步", idle: "离线" })[connection.status] || connection.status;
     const rows = entries.map(item => `<li data-event-id="${escape(item.event_id)}"><time>${escape(timeLabel(item.occurred_at))}</time><span>${escape(item.summary)}</span><small>${escape(item.kind)}</small></li>`).join("");
     const workers = curators.map(item => `<li data-curator-id="${escape(item.entity_id)}"><span class="curator-state is-${escape(item.state.state)}">${escape(item.state.state)}</span><strong>${escape(item.state.scope || item.entity_id)}</strong><small>${escape(item.state.safe_summary || "等待结构化结果")}</small></li>`).join("");
-    return `<section class="patrol-activity-rail" aria-label="Patrol 实时活动"><div class="patrol-activity-now" aria-live="polite" aria-atomic="true"><span class="loop-kicker">Round ${escape(round)} · Patrol</span><strong>${escape(patrol.safe_summary || patrol.summary || patrol.phase || patrol.status)}</strong><small>${escape(patrol.wait_reason || `阶段：${patrol.phase || "observing"}`)}</small></div><span class="live-connection is-${escape(connection.status)}"><i aria-hidden="true"></i>${escape(connectionLabel)}</span><details class="patrol-activity-drawer"><summary>查看记录</summary><div class="patrol-drawer-panel"><header><div><span class="loop-kicker">Patrol Activity</span><h3>Round ${escape(round)} · ${escape(patrol.phase || patrol.status)}</h3></div><span>${escape(patrol.status)}</span></header><section><h4>结构化活动</h4><ol>${rows || "<li><span>尚无已提交活动</span></li>"}</ol></section><section><h4>并行 Curators</h4><ul>${workers || "<li><span>本轮未分派 Curator</span></li>"}</ul></section></div></details></section>`;
+    const expansionRows = expansions.map(item => `<li data-expansion-id="${escape(item.entity_id)}"><span class="expansion-state is-${escape(item.state.state)}">${escape(item.state.state)}</span><strong>${escape(item.state.safe_summary || item.state.independence_key || item.entity_id)}</strong><small>${escape(item.state.blocker_code || item.state.workspace_mode || item.state.level || "等待下一阶段")}</small></li>`).join("");
+    return `<section class="patrol-activity-rail" aria-label="Patrol 实时活动"><div class="patrol-activity-now" aria-live="polite" aria-atomic="true"><span class="loop-kicker">Round ${escape(round)} · Patrol</span><strong>${escape(patrol.safe_summary || patrol.summary || patrol.phase || patrol.status)}</strong><small>${escape(patrol.wait_reason || `阶段：${patrol.phase || "observing"}`)}</small></div><span class="live-connection is-${escape(connection.status)}"><i aria-hidden="true"></i>${escape(connectionLabel)}</span><details class="patrol-activity-drawer"><summary>查看记录</summary><div class="patrol-drawer-panel"><header><div><span class="loop-kicker">Patrol Activity</span><h3>Round ${escape(round)} · ${escape(patrol.phase || patrol.status)}</h3></div><span>${escape(patrol.status)}</span></header><section><h4>结构化活动</h4><ol>${rows || "<li><span>尚无已提交活动</span></li>"}</ol></section><section><h4>Context Expansions</h4><ul data-expansion-list>${expansionRows || "<li><span>尚无派生评估</span></li>"}</ul></section><section><h4>并行 Curators</h4><ul data-curator-list>${workers || "<li><span>本轮未分派 Curator</span></li>"}</ul></section></div></details></section>`;
   }
 
   function reconcileKeyedList(current, next, attribute) {
@@ -203,7 +205,8 @@
       const nextDrawer = replacement.querySelector(".patrol-activity-drawer");
       drawer?.querySelector("header")?.replaceWith(nextDrawer?.querySelector("header"));
       reconcileKeyedList(drawer?.querySelector("ol"), nextDrawer?.querySelector("ol"), "data-event-id");
-      reconcileKeyedList(drawer?.querySelector("ul"), nextDrawer?.querySelector("ul"), "data-curator-id");
+      reconcileKeyedList(drawer?.querySelector("[data-expansion-list]"), nextDrawer?.querySelector("[data-expansion-list]"), "data-expansion-id");
+      reconcileKeyedList(drawer?.querySelector("[data-curator-list]"), nextDrawer?.querySelector("[data-curator-list]"), "data-curator-id");
     } else if (Boolean(activity) !== Boolean(nextActivityHtml)) {
       return false;
     }
