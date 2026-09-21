@@ -162,6 +162,55 @@ test("流式占位按消息身份换段，并在消息进入权威列表后收�
   );
 });
 
+test("SSE 未收到 end 就断开时从运行 API 对账终态并刷新会话", async () => {
+  let source = null;
+  class TestEventSource {
+    constructor() {
+      source = this;
+      this.listeners = new Map();
+      this.closed = false;
+    }
+    addEventListener(type, handler) { this.listeners.set(type, handler); }
+    emit(type, event = {}) { this.listeners.get(type)?.(event); }
+    close() { this.closed = true; }
+  }
+  const harness = createAppHarness({ fetch: true, globals: { EventSource: TestEventSource } });
+  const { context } = harness;
+  context.EventSource = TestEventSource;
+  harness.vm.runInContext(readAppSource(), context);
+  context.__task = {
+    task_id: TASK_ID,
+    thread_id: THREAD_ID,
+    workspace_id: WORKSPACE_ID,
+    title: "任务",
+  };
+  context.__run = {
+    run_id: "run-disconnected",
+    task_id: TASK_ID,
+    thread_id: THREAD_ID,
+    kind: "main",
+    status: "running",
+  };
+  const refreshed = [];
+  context.api = async path => {
+    assert.strictEqual(path, "/desktop/api/runs/run-disconnected");
+    return { ...context.__run, status: "success" };
+  };
+  context.refreshTaskAfterTxn = async taskId => { refreshed.push(taskId); };
+  context.scheduleRender = () => {};
+  harness.vm.runInContext(
+    "state.tasks = [__task]; state.activeTaskId = __task.task_id; state.details.set(__task.task_id, { active_run: __run, messages: [] }); listenToRun(__run);",
+    context,
+  );
+
+  source.emit("error");
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepStrictEqual(refreshed, [TASK_ID]);
+  assert.strictEqual(source.closed, true);
+  assert.strictEqual(harness.vm.runInContext("state.streams.has(__run.run_id)", context), false);
+});
+
 test("切换 Context 后返回的旧响应只落它自己的缓存，当前会话状态不被改写", async () => {
   const harness = newHarness();
   const { context } = harness;

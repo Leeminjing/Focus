@@ -54,7 +54,7 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _runtime_context(runtime: ToolRuntime) -> dict[str, Any]:
+def _runtime_context(runtime: ToolRuntime[dict]) -> dict[str, Any]:
     context = getattr(runtime, "context", None)
     if not isinstance(context, dict):
         raise RuntimeError("缺少空间上下文: runtime.context 必须为 dict")
@@ -154,7 +154,7 @@ def _require_write_target(context: dict[str, Any]) -> Path:
 
 
 @tool
-def observe_docx_delete_candidate(runtime: ToolRuntime) -> dict[str, Any]:
+def observe_docx_delete_candidate(runtime: ToolRuntime[dict]) -> dict[str, Any]:
     """观察锚点对应的 DOCX 正文段落，并生成仅本次运行可用的删除候选标识。"""
     context = _runtime_context(runtime)
     run_evidence = require_spatial_value(context, "docx_change_evidence")
@@ -197,7 +197,7 @@ def observe_docx_delete_candidate(runtime: ToolRuntime) -> dict[str, Any]:
 
 
 @tool
-def delete_docx_paragraph(candidate_id: str, runtime: ToolRuntime) -> dict[str, Any]:
+def delete_docx_paragraph(candidate_id: str, runtime: ToolRuntime[dict]) -> dict[str, Any]:
     """凭本次运行的候选标识删除空间锚点对应的整个 DOCX 正文段落。"""
     context = _runtime_context(runtime)
     run_evidence = context.get("docx_change_evidence")

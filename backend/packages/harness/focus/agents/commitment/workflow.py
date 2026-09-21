@@ -315,7 +315,7 @@ def build_delegate_with_review_tool(delegator: ReviewedDelegator) -> BaseTool:
         instruction: str,
         context: dict[str, Any],
         acceptance_criteria: list[str],
-        runtime: ToolRuntime,
+        runtime: ToolRuntime[dict],
     ) -> Command:
         state = dict(runtime.state)
         artifacts = dict(state.get("artifacts", {}))

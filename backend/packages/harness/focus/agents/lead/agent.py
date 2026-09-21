@@ -229,4 +229,5 @@ async def make_lead_agent(
         middleware=middleware,
         system_prompt=system_prompt,
         state_schema=LeadAgentState,
+        context_schema=dict,
     )

@@ -181,7 +181,7 @@ OPERATION_ARGUMENTS: dict[str, type[_Arguments]] = {
 }
 
 
-def _context(runtime: ToolRuntime) -> dict[str, Any]:
+def _context(runtime: ToolRuntime[dict]) -> dict[str, Any]:
     context = getattr(runtime, "context", None)
     if not isinstance(context, dict):
         raise ToolException("缺少 DOCX 编辑器上下文")
@@ -201,7 +201,7 @@ def _record_evidence(context: dict[str, Any], evidence: dict[str, Any]) -> None:
 
 
 @tool
-async def observe_docx_target(target_id: str, runtime: ToolRuntime = None) -> dict[str, Any]:
+async def observe_docx_target(target_id: str, runtime: ToolRuntime[dict] = None) -> dict[str, Any]:
     """Observe one semantic editor target: content, formatting, type, version and page projection. Start with the anchor target; do not read the whole document."""
     context = _context(runtime)
     session_id = str(context["docx_session_id"])
@@ -228,7 +228,7 @@ async def apply_docx_edit(
     target_id: str,
     operation: str,
     arguments: dict[str, Any],
-    runtime: ToolRuntime = None,
+    runtime: ToolRuntime[dict] = None,
 ) -> dict[str, Any]:
     """Apply one validated rich Word operation to one semantic target as one undoable editor history point."""
     context = _context(runtime)

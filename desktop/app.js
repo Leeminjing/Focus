@@ -3738,6 +3738,50 @@ const COMMITMENT_STAGE_NAMES = {
   5: "技术版本", 6: "官方知识", 7: "合同落盘", 8: "产出合同", 9: "交接准备",
 };
 const TRACE_ACTORS = { supervisor: "Supervisor", worker: "Worker", evaluator: "Evaluator" };
+const TERMINAL_RUN_STATUSES = new Set(["success", "error", "interrupted"]);
+
+async function settleRunStream(run, source, ownerTaskId, terminal) {
+  if (state.streams.get(run.run_id) !== source) return;
+  syncPatrolRunState(run, terminal.status, terminal.error || null);
+  if (ownerTaskId) {
+    taskRunOperations?.updateRun(ownerTaskId, run.run_id, {
+      status: terminal.status,
+      error: terminal.error || null,
+    });
+  }
+  const wasMainInterrupted = run.kind === "main"
+    && terminal.status === "interrupted"
+    && !terminal.error;
+  source.close();
+  state.streams.delete(run.run_id);
+  clearStreamBuffer(run.run_id);
+  await refreshTaskAfterTxn(ownerTaskId);
+  const task = run.task_id
+    ? state.tasks.find(item => item.task_id === run.task_id)
+    : state.tasks.find(item => item.thread_id === run.thread_id);
+  if (task) settleCommitmentRun(task.task_id, terminal);
+  scheduleRender();
+  const detail = task ? state.details.get(task.task_id) : null;
+  if (wasMainInterrupted
+      && !state.commitment.review
+      && !state.commitment.recovery
+      && !detail?.pending_compression
+      && !detail?.pending_must_view_report) {
+    setStatus("主 Agent 已中断，可继续对话");
+  } else if (terminal.status === "error" && terminal.error) {
+    setStatus(terminal.error, true);
+  }
+}
+
+async function reconcileDisconnectedRun(run, source, ownerTaskId) {
+  try {
+    const terminal = await api(`/desktop/api/runs/${run.run_id}`);
+    if (!TERMINAL_RUN_STATUSES.has(terminal?.status)) return;
+    await settleRunStream(run, source, ownerTaskId, terminal);
+  } catch {
+    // EventSource 会自行重连；服务暂时不可达时保留当前流，不用另一套轮询状态机。
+  }
+}
 
 function listenToRun(run) {
   if (state.streams.has(run.run_id)) return;
@@ -3819,7 +3863,10 @@ function listenToRun(run) {
     }
   });
   source.addEventListener("error", event => {
-    if (!event.data) return;
+    if (!event.data) {
+      void reconcileDisconnectedRun(run, source, ownerTaskId);
+      return;
+    }
     const error = parseEvent(event)?.data?.error || "运行失败";
     runError = error;
     syncPatrolRunState(run, "error", error);
@@ -3829,25 +3876,7 @@ function listenToRun(run) {
   source.addEventListener("end", async event => {
     const terminal = parseEvent(event, { status: "error", error: "运行流异常结束" });
     if (!terminal.error && runError) terminal.error = runError;
-    syncPatrolRunState(run, terminal.status, terminal.error || null);
-    if (ownerTaskId) taskRunOperations?.updateRun(ownerTaskId, run.run_id, { status: terminal.status, error: terminal.error || null });
-    // 主动中断判定：主 Agent run 终态 interrupted 且无错误、且非承诺审批（审批面板已接管界面状态）
-    const wasMainInterrupted = run.kind === "main" && terminal.status === "interrupted" && !terminal.error;
-    source.close(); state.streams.delete(run.run_id); clearStreamBuffer(run.run_id);
-    await refreshTaskAfterTxn(ownerTaskId);
-    const task = run.task_id
-      ? state.tasks.find(item => item.task_id === run.task_id)
-      : state.tasks.find(item => item.thread_id === run.thread_id);
-    if (task) settleCommitmentRun(task.task_id, terminal);
-    scheduleRender();
-    const detail = task ? state.details.get(task.task_id) : null;
-    if (wasMainInterrupted
-        && !state.commitment.review
-        && !state.commitment.recovery
-        && !detail?.pending_compression
-        && !detail?.pending_must_view_report) {
-      setStatus("主 Agent 已中断，可继续对话");
-    }
+    await settleRunStream(run, source, ownerTaskId, terminal);
   });
 }
 
