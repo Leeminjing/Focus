@@ -1,7 +1,8 @@
 /*
  * 本文件对外提供 Loop 中单个 Context 的完整会话、真实 directive 因果带与三类介入面板。
  * 输入为分页会话、选中节点、canonical causality、来源审计、筛选与 Loop 生命周期；输出为状态摘要、Patrol/用户来源分明的因果事件、完整消息和运行期命令表单。
- * 具体工作流为因果带只读取已提交事件，来源徽标保持在审计栏，正文不被元数据污染；会话维持有界双向分页，终止态只读。
+ * 具体工作流为因果带只读取已提交事件，来源徽标保持在审计栏，正文不被元数据污染；会话维持有界双向分页，终止态只读；
+ * 标题与描述同源时只显示一次，不在页头重复渲染同一段 purpose。
  * 示例：`FocusContextConversationView.render(consoleState)`。
  */
 (function (root, factory) {
@@ -65,6 +66,8 @@
     ];
     const mode = modes.find(item => item[0] === state.interventionMode) || modes[0];
     const messages = visibleMessages(state);
+    const name = node.topic || node.title;
+    const purpose = node.purpose && node.purpose !== name ? `${escape(node.purpose)} · ` : "";
     const filters = ["all", "human", "assistant", "tool"];
     const historyControl = conversation?.has_more
       ? `<div class="history-sentinel" data-loop-history-sentinel aria-hidden="true"></div><button type="button" class="load-history" data-action="loop-load-older">加载更早消息（还有 ${conversation.range.start} 条）</button>`
@@ -75,7 +78,7 @@
     const composer = state.terminal
       ? '<div class="loop-intervention is-readonly"><strong>历史只读</strong><span>该 Loop 已结束，退出后可在当前 Context 发送新的用户消息并创建后继 Loop。</span></div>'
       : `<form id="loopInterventionForm" class="loop-intervention"><div class="intervention-modes" role="tablist">${modes.map(item => `<button type="button" role="tab" data-action="loop-intervention-mode" data-mode="${item[0]}" aria-selected="${state.interventionMode === item[0]}" class="${state.interventionMode === item[0] ? "is-active" : ""}">${item[1]}</button>`).join("")}</div><p>${escape(mode[2])}</p><div class="intervention-composer"><textarea name="content" required rows="3" placeholder="${escape(mode[0] === "direct_context_message" ? "向这个 Context 发送新的 HumanMessage" : "表达你的意图，Patrol 将在下次判断中处理")}"></textarea><button class="primary" type="submit" ${state.pending === "intervention" ? "disabled" : ""}>${state.pending === "intervention" ? "提交中…" : "发送"}</button></div></form>`;
-    return `<section class="context-conversation"><header class="conversation-head"><div><span class="loop-kicker">完整 Context 会话</span><h3>${escape(node.topic || node.title)}</h3><p>${escape(node.purpose)} · R${escape(conversation?.revision?.generation || node.revision?.generation || "—")} · ${escape(conversation?.total ?? "…")} 条消息</p></div><span class="context-run-state is-${escape(node.latest_run?.status || node.status)}">${escape(node.latest_run?.status || node.status)}</span></header><div class="context-metrics">${contextMetrics(node)}</div>${causality(state.causality)}<div class="conversation-tools"><input type="search" data-loop-message-search value="${escape(state.messageSearch)}" placeholder="搜索消息内容、工具调用、文件名…"><div class="conversation-filters">${filters.map(value => `<button type="button" data-action="loop-message-filter" data-filter="${value}" class="${state.messageFilter === value ? "is-active" : ""}">${value}</button>`).join("")}</div></div><div class="loop-transcript" data-loop-transcript data-context-id="${escape(node.context_id)}" data-range-start="${escape(conversation?.range?.start ?? 0)}">${historyControl}${messages.map(item => messageCard({ ...item, context_id: node.context_id })).join("") || '<p class="history-boundary">没有匹配的消息</p>'}${newerControl}</div>${composer}</section>`;
+    return `<section class="context-conversation"><header class="conversation-head"><div><span class="loop-kicker">完整 Context 会话</span><h3>${escape(name)}</h3><p>${purpose}R${escape(conversation?.revision?.generation || node.revision?.generation || "—")} · ${escape(conversation?.total ?? "…")} 条消息</p></div><span class="context-run-state is-${escape(node.latest_run?.status || node.status)}">${escape(node.latest_run?.status || node.status)}</span></header><div class="context-metrics">${contextMetrics(node)}</div>${causality(state.causality)}<div class="conversation-tools"><input type="search" data-loop-message-search value="${escape(state.messageSearch)}" placeholder="搜索消息内容、工具调用、文件名…"><div class="conversation-filters">${filters.map(value => `<button type="button" data-action="loop-message-filter" data-filter="${value}" class="${state.messageFilter === value ? "is-active" : ""}">${value}</button>`).join("")}</div></div><div class="loop-transcript" data-loop-transcript data-context-id="${escape(node.context_id)}" data-range-start="${escape(conversation?.range?.start ?? 0)}">${historyControl}${messages.map(item => messageCard({ ...item, context_id: node.context_id })).join("") || '<p class="history-boundary">没有匹配的消息</p>'}${newerControl}</div>${composer}</section>`;
   }
 
   return Object.freeze({ render });
