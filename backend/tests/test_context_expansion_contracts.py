@@ -1,8 +1,9 @@
 r"""本文件对外提供 Context expansion 合同、detector、policy、coordinator 与状态机的纯测试。
 
 输入为冻结 Observation fixture、稳定 Revision、Mission checks、失败/Token/授权预算和 Curator proposal；输出为
-确定 identity、候选、required/recommended/not_applicable assessment、blocker 与合法状态转换断言。具体工作流为
-不连接数据库地穿过 ContextExpansionCoordinator 的公开 interface。示例：`pytest backend/tests/test_context_expansion_contracts.py`。
+确定 identity、候选、required/recommended/not_applicable assessment、blocker、决策合同（identity 选择、required 出口、
+封闭引用取值）与合法状态转换断言。具体工作流为
+不连接数据库地穿过 ContextExpansionCoordinator 与 PatrolDecisionContract 的公开 interface。示例：`pytest backend/tests/test_context_expansion_contracts.py`。
 """
 
 from __future__ import annotations
@@ -17,7 +18,8 @@ from backend.app.desktop.agent_loop.context_expansion import ContextExpansionCoo
 from backend.app.desktop.agent_loop.context_expansion.contracts import CuratorExpansionProposal, SpawnContextIntent
 from backend.app.desktop.agent_loop.context_expansion.lifecycle import ExpansionLifecycleStateMachine, ExpansionTransitionRejected
 from backend.app.desktop.agent_loop.context_expansion.policy import ExpansionAdmissionPolicy
-from backend.app.desktop.agent_loop.round_orchestration import MissionReference, PatrolContractViolation, PatrolDecisionProposal, StructuredPatrolDecisionModel
+from backend.app.desktop.agent_loop.patrol_contract import PatrolDecisionContract
+from backend.app.desktop.agent_loop.round_orchestration import PatrolContractViolation, PatrolDecisionProposal
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 from backend.app.desktop.context_evolution import ContextRevisionPayloadMode, ContextRevisionRef
 
@@ -97,14 +99,7 @@ def test_opportunity_identity_is_stable_and_semantic_contract_is_strict() -> Non
     assert first.opportunity_id == second.opportunity_id
     assert first.semantic_fingerprint == second.semantic_fingerprint
     assert restored == first
-    assert SpawnContextIntent(
-        opportunity_id=first.opportunity_id,
-        source_context_id=source.context_id,
-        purpose=first.purpose,
-        work_order=first.work_order,
-        completion_check=first.completion_check,
-        workspace_mode=first.workspace_mode,
-    ).action == "spawn_context"
+    assert SpawnContextIntent(opportunity_id=first.opportunity_id).action == "spawn_context"
     with pytest.raises(ValidationError):
         SpawnContextIntent.model_validate({**first.model_dump(), "action": "spawn_context", "unknown": True})
     with pytest.raises(ValidationError):
@@ -349,7 +344,7 @@ def test_required_assessment_cannot_be_bypassed_by_continue_context() -> None:
     observation = observation.model_copy(update={"expansion_assessment": assessment.model_dump(mode="json")})
     proposal = PatrolDecisionProposal(
         rationale="Continue without acknowledging expansion.",
-        mission_references=(MissionReference(role="outcome", reference_id="outcome"),),
+        mission_references=({"role": "outcome", "reference_id": "outcome"},),
         actions=(
             {
                 "action": "continue_context",
@@ -361,37 +356,173 @@ def test_required_assessment_cannot_be_bypassed_by_continue_context() -> None:
     )
 
     with pytest.raises(PatrolContractViolation, match="required Context expansion"):
-        StructuredPatrolDecisionModel._validate_expansion_decision(proposal, observation)
+        PatrolDecisionContract().validate(
+            actions=proposal.actions,
+            mission_references=proposal.mission_references,
+            observation=observation,
+        )
 
 
-def test_patrol_spawn_must_reference_frozen_opportunity_verbatim() -> None:
+def test_required_assessment_accepts_wait_for_user_as_exit() -> None:
+    observation = _observation()
+    assessment = asyncio.run(ContextExpansionCoordinator().assess(observation))
+    observation = observation.model_copy(update={"expansion_assessment": assessment.model_dump(mode="json")})
+    proposal = PatrolDecisionProposal(
+        rationale="Derivation is required but cannot be prepared in this round.",
+        mission_references=({"role": "outcome", "reference_id": "outcome"},),
+        actions=({"action": "wait_for_user", "reason": "需要用户决定是否派生"},),
+    )
+
+    PatrolDecisionContract().validate(
+        actions=proposal.actions,
+        mission_references=proposal.mission_references,
+        observation=observation,
+    )
+
+
+def test_patrol_spawn_selects_frozen_opportunity_by_identity() -> None:
     observation = _observation()
     assessment = asyncio.run(ContextExpansionCoordinator().assess(observation))
     opportunity = assessment.opportunities[0]
     observation = observation.model_copy(update={"expansion_assessment": assessment.model_dump(mode="json")})
     valid = PatrolDecisionProposal(
         rationale="Delegate independent verification.",
-        mission_references=(MissionReference(role="outcome", reference_id="outcome"),),
+        mission_references=({"role": "outcome", "reference_id": "outcome"},),
+        actions=({"action": "spawn_context", "opportunity_id": opportunity.opportunity_id},),
+    )
+
+    PatrolDecisionContract().validate(
+        actions=valid.actions,
+        mission_references=valid.mission_references,
+        observation=observation,
+    )
+
+    unknown = PatrolDecisionProposal(
+        rationale="Reference an opportunity outside the frozen assessment.",
+        mission_references=({"role": "outcome", "reference_id": "outcome"},),
+        actions=({"action": "spawn_context", "opportunity_id": "b" * 64},),
+    )
+    with pytest.raises(PatrolContractViolation, match="assessment 之外"):
+        PatrolDecisionContract().validate(
+            actions=unknown.actions,
+            mission_references=unknown.mission_references,
+            observation=observation,
+        )
+
+
+def test_spawn_context_rejects_semantic_fields() -> None:
+    with pytest.raises(ValidationError):
+        PatrolDecisionProposal(
+            rationale="Try to restate the frozen semantics.",
+            mission_references=({"role": "outcome", "reference_id": "outcome"},),
+            actions=(
+                {
+                    "action": "spawn_context",
+                    "opportunity_id": "a" * 64,
+                    "purpose": "Rewrite the purpose.",
+                    "work_order": "Rewrite the work order.",
+                },
+            ),
+        )
+
+
+def test_contract_holds_for_whitespace_normalized_numbered_work_order() -> None:
+    opportunity = ExpansionOpportunity.create(
+        loop_id="loop-expansion",
+        round_id="round-expansion",
+        source=_revision(),
+        purpose="独立验证编号清单",
+        work_order="1. 先跑聚焦测试。\n2.   再读失败日志。\n3. 汇总可复现证据。",
+        completion_check="聚焦测试全绿",
+        workspace_mode="read_only",
+        independence_key="verification:numbered-list",
+        triggers=("curator_proposal",),
+        required=True,
+    )
+    assert "\n" not in opportunity.work_order
+    observation = _observation().model_copy(
+        update={
+            "expansion_assessment": {
+                "loop_id": "loop-expansion",
+                "round_id": "round-expansion",
+                "frontier_hash": "a" * 64,
+                "policy_version": "context-expansion-v1",
+                "level": "required",
+                "opportunities": (opportunity.model_dump(mode="json"),),
+                "blockers": (),
+            }
+        }
+    )
+    proposal = PatrolDecisionProposal(
+        rationale="按 identity 选择已冻结的派生机会。",
+        mission_references=({"role": "outcome", "reference_id": "outcome"},),
+        actions=({"action": "spawn_context", "opportunity_id": opportunity.opportunity_id},),
+    )
+
+    PatrolDecisionContract().validate(
+        actions=proposal.actions,
+        mission_references=proposal.mission_references,
+        observation=observation,
+    )
+
+
+def test_completion_reference_follows_current_mission_revision() -> None:
+    observation = _observation()
+    contract = PatrolDecisionContract()
+    current = PatrolDecisionProposal(
+        rationale="引用当前 revision 的完成检查。",
+        mission_references=(
+            {"role": "outcome", "reference_id": "outcome"},
+            {"role": "completion_check", "reference_id": "tests"},
+        ),
+        actions=({"action": "wait_for_user", "reason": "需要用户输入"},),
+    )
+    contract.validate(actions=current.actions, mission_references=current.mission_references, observation=observation)
+
+    revised = observation.model_copy(
+        update={
+            "mission": {
+                **observation.mission,
+                "completion_checks": (
+                    {"check_id": "tests-v2", "claim": "Focused tests pass", "required": True, "expected_evidence_kinds": ("test",)},
+                ),
+            }
+        }
+    )
+    with pytest.raises(PatrolContractViolation, match="合法集合为 tests-v2"):
+        contract.validate(actions=current.actions, mission_references=current.mission_references, observation=revised)
+
+
+def test_unknown_boundary_group_names_the_declared_groups() -> None:
+    with pytest.raises(ValidationError, match="已声明分组之一"):
+        PatrolDecisionProposal(
+            rationale="引用未声明的 boundary 分组。",
+            mission_references=({"role": "boundary", "reference_id": "boundary"},),
+            actions=({"action": "wait_for_user", "reason": "需要用户输入"},),
+        )
+
+
+def test_decline_expansion_requires_policy_blocker() -> None:
+    observation = _observation()
+    assessment = asyncio.run(ContextExpansionCoordinator().assess(observation))
+    opportunity = assessment.opportunities[0]
+    observation = observation.model_copy(update={"expansion_assessment": assessment.model_dump(mode="json")})
+    declined = PatrolDecisionProposal(
+        rationale="The opportunity is blocked by policy.",
+        mission_references=({"role": "outcome", "reference_id": "outcome"},),
         actions=(
             {
-                "action": "spawn_context",
+                "action": "decline_expansion",
                 "opportunity_id": opportunity.opportunity_id,
-                "source_context_id": opportunity.source.context_id,
-                "purpose": opportunity.purpose,
-                "work_order": opportunity.work_order,
-                "completion_check": opportunity.completion_check,
-                "workspace_mode": opportunity.workspace_mode,
+                "blocker_code": "not_independent",
+                "reason": "Policy did not register this blocker.",
             },
         ),
     )
 
-    StructuredPatrolDecisionModel._validate_expansion_decision(valid, observation)
-    forged = valid.model_copy(
-        update={
-            "actions": (
-                valid.actions[0].model_copy(update={"work_order": "Invent a different task."}),
-            )
-        }
-    )
-    with pytest.raises(PatrolContractViolation, match="原样引用"):
-        StructuredPatrolDecisionModel._validate_expansion_decision(forged, observation)
+    with pytest.raises(PatrolContractViolation, match="blocker"):
+        PatrolDecisionContract().validate(
+            actions=declined.actions,
+            mission_references=declined.mission_references,
+            observation=observation,
+        )

@@ -1,7 +1,7 @@
-"""本文件验证 Patrol 认知步骤的 Mission 引用、扁平判断折叠、非法形状拒绝与有界重试。
+"""本文件验证 Patrol 认知步骤的 Mission 引用、扁平判断折叠、非法形状与语义违例的原文留痕，以及有界重试。
 
-输入为脚本化模型 JSON 与协调器桩；输出为语义引用、折叠结果及重试计数断言。具体工作流为在
-无网络条件下调用结构化解析边界与调度重试。示例：`pytest test_patrol_cognitive_contract.py`。
+输入为脚本化模型 JSON 与协调器桩；输出为语义引用、折叠结果、违例携带的模型原始输出及重试计数断言。具体工作流为在
+无网络条件下调用结构化解析边界、决策合同与调度重试。示例：`pytest test_patrol_cognitive_contract.py`。
 """
 
 import asyncio
@@ -19,6 +19,7 @@ from backend.app.desktop.agent_loop.round_orchestration import (
     PatrolCognitiveStep,
     StructuredPatrolDecisionModel,
 )
+from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 from backend.tests.config_helpers import app_config_for
 
 _DECISION = {"rationale": "继续推进", "evidence": [], "mission_references": [{"role": "outcome", "reference_id": "outcome"}], "actions": [{"action": "wait_for_user", "reason": "等用户"}]}
@@ -76,6 +77,25 @@ def test_invalid_shape_raises_retryable_violation_with_raw_output():
     assert error.value.raw_output == payload
 
 
+def test_semantic_contract_violation_carries_raw_output(monkeypatch):
+    payload = json.dumps(
+        {
+            "rationale": "选择一个不在 assessment 内的 opportunity",
+            "mission_references": [{"role": "outcome", "reference_id": "outcome"}],
+            "actions": [{"action": "spawn_context", "opportunity_id": "b" * 64}],
+        }
+    )
+    model = _scripted_model(payload)
+    decision_model = StructuredPatrolDecisionModel(_prompt_json_config())
+    monkeypatch.setattr(module, "create_chat_model", lambda **kwargs: model)
+
+    with pytest.raises(PatrolContractViolation) as error:
+        _run(decision_model(_required_expansion_observation()))
+
+    assert error.value.raw_output == payload
+    assert "assessment 之外" in str(error.value)
+
+
 def test_contract_violation_is_retried_then_succeeds(monkeypatch):
     orchestrator, calls = _orchestrator(monkeypatch, [PatrolContractViolation("形状非法"), None])
 
@@ -113,6 +133,37 @@ def _scripted_model(content: str):
     from backend.tests.config_helpers import ToolCapableFakeChatModel
 
     return ToolCapableFakeChatModel(scripted=[AIMessage(content=content)])
+
+
+def _prompt_json_config():
+    config = app_config_for("patrol-test", None)
+    entry = config.models[0].model_copy(update={"curation_output_method": "prompt_json"})
+    return config.model_copy(update={"models": [entry]})
+
+
+def _required_expansion_observation() -> LoopObservationEnvelope:
+    return LoopObservationEnvelope(
+        loop_id="loop-1",
+        loop_revision=1,
+        round_id="round-1",
+        goal_revision=1,
+        authority_revision=1,
+        observed_frontier_hash="a" * 64,
+        mission={"outcome": "finish"},
+        grant={},
+        portfolio_frontier=(),
+        workspace={"revision": 1},
+        budget={},
+        expansion_assessment={
+            "loop_id": "loop-1",
+            "round_id": "round-1",
+            "frontier_hash": "a" * 64,
+            "policy_version": "context-expansion-v1",
+            "level": "required",
+            "opportunities": ({"opportunity_id": "a" * 64},),
+            "blockers": (),
+        },
+    )
 
 
 def _claim() -> CoordinatorClaim:

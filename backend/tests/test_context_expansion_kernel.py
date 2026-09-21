@@ -270,11 +270,6 @@ def test_read_only_expansion_retries_atomically_and_dispatches_once_after_restar
                         {
                             "action": "spawn_context",
                             "opportunity_id": opportunity.opportunity_id,
-                            "source_context_id": opportunity.source.context_id,
-                            "purpose": opportunity.purpose,
-                            "work_order": opportunity.work_order,
-                            "completion_check": opportunity.completion_check,
-                            "workspace_mode": opportunity.workspace_mode,
                         }
                     ],
                 }
@@ -758,11 +753,6 @@ async def _semantic_intent(
                 {
                     "action": "spawn_context",
                     "opportunity_id": opportunity.opportunity_id,
-                    "source_context_id": opportunity.source.context_id,
-                    "purpose": opportunity.purpose,
-                    "work_order": opportunity.work_order,
-                    "completion_check": opportunity.completion_check,
-                    "workspace_mode": opportunity.workspace_mode,
                 }
             ],
         }

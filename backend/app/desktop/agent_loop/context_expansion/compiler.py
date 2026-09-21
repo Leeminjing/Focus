@@ -1,8 +1,8 @@
 r"""本文件对外提供 ExpansionPlanCompilerPort、ContextExpansionPlanCompiler 与 DeterministicExpansionPlanCompiler。
 
 输入为冻结 observation、ExpansionOpportunity 与 SpawnContextIntent；输出为 CompiledExpansion 或 ExpansionBlocker。
-具体工作流为 production adapter 精确读取不可变 Revision，纯 compiler 选择最小相关证据、补齐完整 Tool Exchange、追加工作指令，
-调用既有 Lane compiler 验证 shadow checkpoint 后返回内部 CreateLanePlan；失败只返回稳定 blocker。
+具体工作流为 production adapter 精确读取不可变 Revision，纯 compiler 从冻结 opportunity 取用派生语义与工作指令、选择最小相关证据、补齐完整 Tool Exchange、追加工作指令，
+调用既有 Lane compiler 验证 shadow checkpoint 后返回内部 CreateLanePlan；派生意图只用于记录模型选择，失败只返回稳定 blocker。
 示例：`compiled = await compiler.compile(observation, opportunity, intent)`。
 """
 
@@ -60,7 +60,7 @@ class ContextExpansionPlanCompiler:
         opportunity: ExpansionOpportunity,
         intent: SpawnContextIntent,
     ) -> CompiledExpansion | ExpansionBlocker:
-        blocker = self._validate_source(observation, opportunity, intent)
+        blocker = self._validate_frozen_source(observation, opportunity, intent)
         if blocker is not None:
             return blocker
         try:
@@ -72,20 +72,13 @@ class ContextExpansionPlanCompiler:
         return self._compiler.compile(opportunity, intent, revision, tuple(view.messages))
 
     @staticmethod
-    def _validate_source(
+    def _validate_frozen_source(
         observation: LoopObservationEnvelope,
         opportunity: ExpansionOpportunity,
         intent: SpawnContextIntent,
     ) -> ExpansionBlocker | None:
-        if intent.opportunity_id != opportunity.opportunity_id or intent.source_context_id != opportunity.source.context_id:
+        if intent.opportunity_id != opportunity.opportunity_id:
             return ContextExpansionPlanCompiler._blocked(opportunity, "stale_source", "semantic intent 与冻结 opportunity 不一致")
-        if (
-            intent.purpose != opportunity.purpose
-            or intent.work_order != opportunity.work_order
-            or intent.completion_check != opportunity.completion_check
-            or intent.workspace_mode != opportunity.workspace_mode
-        ):
-            return ContextExpansionPlanCompiler._blocked(opportunity, "stale_source", "semantic intent 改写了冻结 opportunity")
         frontier = {
             (
                 str(item.get("context_id")),
@@ -123,7 +116,7 @@ class DeterministicExpansionPlanCompiler:
     ) -> CompiledExpansion | ExpansionBlocker:
         try:
             evidence = self._evidence(opportunity, revision, messages)
-            plan = self._plan(opportunity, intent, evidence)
+            plan = self._plan(opportunity, evidence)
             compiled_lane = compile_lane(plan.model_dump(mode="json"), evidence)
         except (ValueError, KeyError, TypeError) as exc:
             return ExpansionBlocker(
@@ -174,7 +167,6 @@ class DeterministicExpansionPlanCompiler:
     def _plan(
         self,
         opportunity: ExpansionOpportunity,
-        intent: SpawnContextIntent,
         evidence: MultiSourceEvidence,
     ) -> CreateLanePlan:
         source_messages = evidence.sources[0].messages
@@ -210,25 +202,25 @@ class DeterministicExpansionPlanCompiler:
                 type="compose_message",
                 role="human",
                 content=(
-                    f"Purpose: {intent.purpose}\n"
-                    f"Work order: {intent.work_order}\n"
-                    f"Completion check: {intent.completion_check}\n"
-                    f"Workspace mode: {intent.workspace_mode}"
+                    f"Purpose: {opportunity.purpose}\n"
+                    f"Work order: {opportunity.work_order}\n"
+                    f"Completion check: {opportunity.completion_check}\n"
+                    f"Workspace mode: {opportunity.workspace_mode}"
                 ),
                 sources=lineage,
             )
         )
         return CreateLanePlan(
             action="create",
-            purpose=intent.purpose,
+            purpose=opportunity.purpose,
             source_frontier=(opportunity.source,),
             items=tuple(items),
             lane_policy={
                 "expansion_id": opportunity.opportunity_id,
                 "independence_key": opportunity.independence_key,
                 "semantic_fingerprint": opportunity.semantic_fingerprint,
-                "workspace_mode": intent.workspace_mode,
-                "completion_check": intent.completion_check,
+                "workspace_mode": opportunity.workspace_mode,
+                "completion_check": opportunity.completion_check,
             },
         )
 

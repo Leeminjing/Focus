@@ -3,7 +3,7 @@ r"""本文件对外提供 ContextExpansionCoordinator、ContextExpansionStage �
 输入为冻结 LoopObservationEnvelope、可选无权威 Curator adapter 与已存在 independence keys；输出为确定性
 ExpansionAssessment。具体工作流为 detector 先生成结构化候选，Curator 可补充语义提案，coordinator 将提案绑定
 冻结 source 后交给 policy admission；Stage 记录 assessment lifecycle，并把编译成功 intent 或结构化终态 blocker 返回编排层，
-不持有 Kernel 或 Portfolio 提交能力。示例：`resolution = await stage.resolve(observation, intent)`。
+派生计划的工作指令与语义字段一律取自冻结 opportunity，不持有 Kernel 或 Portfolio 提交能力。示例：`resolution = await stage.resolve(observation, intent)`。
 """
 
 from __future__ import annotations
@@ -170,7 +170,7 @@ class ContextExpansionStage:
                 "compiler_version": compiled.compiler_version,
             },
         )
-        return CreateLaneAction(action="create_lane", plan=compiled.plan, message=action.work_order)
+        return CreateLaneAction(action="create_lane", plan=compiled.plan, message=opportunity.work_order)
 
     @staticmethod
     def _terminalized_assessment(assessment: ExpansionAssessment, prior: tuple) -> ExpansionAssessment:

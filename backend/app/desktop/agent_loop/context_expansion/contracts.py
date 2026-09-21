@@ -2,7 +2,8 @@ r"""本文件对外提供 Context expansion 的不可变语义合同与稳定 id
 
 输入为 Loop/round、精确来源 Revision、派生目的、工作指令、完成检查和工作区模式；输出为 opportunity、assessment、
 spawn/decline intent、编译结果、blocker 与 outcome。具体工作流为规范化语义字段并对其 canonical JSON 求哈希，
-使模型重试、进程重启和幂等提交共享同一 identity。示例：`opportunity = ExpansionOpportunity.create(...)`。
+使模型重试、进程重启和幂等提交共享同一 identity；派生意图只承载冻结 opportunity 的 identity，语义字段一律由
+调用方从 opportunity 读取，编译结果因此不可能被模型改写。示例：`opportunity = ExpansionOpportunity.create(...)`。
 """
 
 from __future__ import annotations
@@ -183,11 +184,6 @@ class ExpansionAssessment(_ExpansionModel):
 class SpawnContextIntent(_ExpansionModel):
     action: Literal["spawn_context"] = "spawn_context"
     opportunity_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    source_context_id: str = Field(min_length=1)
-    purpose: str = Field(min_length=1, max_length=1000)
-    work_order: str = Field(min_length=1, max_length=8000)
-    completion_check: str = Field(min_length=1, max_length=4000)
-    workspace_mode: WorkspaceMode
 
 
 class DeclineExpansionIntent(_ExpansionModel):
