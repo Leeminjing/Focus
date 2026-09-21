@@ -5,6 +5,8 @@ coordinator identity；输出为带 lease 的唯一 round claim、停滞 round �
 skip-locked 领取**未被有效租约持有**的候选 round（过期租约即时清除）、fencing stale attempt、由数据库
 状态推进 health；运行期在领取前先收敛已无进展的 round 并释放其名额，Runtime 启动时执行完整
 AgentLoopRecovery，随后由 registry 为每个 running Loop 建立独立 Supervisor，分别消费 Run、Worker、publication、Context Run、Fact 与 round。
+Run 结算只推进与该 Directive 当前绑定尝试一致的 Directive：结算的 Run 不是当前绑定时（已被取代的尝试），
+只记录该 Run 自身的事实，不改写 Directive 生命周期与绑定。
 示例：`runtime = LoopCoordinatorRuntime(...)`。
 """
 
@@ -383,7 +385,7 @@ class LoopCoordinator:
             return
         if run.directive_id:
             directive = await session.get(LoopDirective, run.directive_id, with_for_update=True)
-            if directive is not None and directive.lifecycle_state == "run_started":
+            if directive is not None and directive.lifecycle_state == "run_started" and directive.launched_run_id == run.run_id:
                 await self._directive_lifecycle.transition(
                     session,
                     directive.directive_id,

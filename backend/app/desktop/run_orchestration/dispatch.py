@@ -2,6 +2,7 @@ r"""本文件对外提供 RunDispatchRepository、RunDispatchRecovery 与 Durabl
 
 输入为 accepted/遗留 dispatch、worker identity、租约、fencing token、执行装配器与启动函数；输出为有界领取、running/settled、显式启动失败或重启分类状态。
 具体工作流为 repository 使用 skip-locked 领取并递增 fencing，worker 在租约内装配和启动；recovery 只把带完整 durable Main 执行快照且可证明未启动的工作恢复为 accepted，并把旧 Patrol 或不确定执行标为 interrupted；后续转换必须携带当前 token，旧 owner 无法提交。
+repository 另有按 Run 定向认领入口，使用同一状态列与 fencing 语义，使已有启动者的 Run（例如 directive 启动端口负责的 Run）不会被队列消费者重复认领。
 示例：`processed = await worker.drain(limit=4)`。
 """
 
@@ -34,19 +35,53 @@ class RunDispatchRepository:
         *,
         lease_seconds: int = 60,
     ) -> RunDispatch | None:
-        now = datetime.now(UTC)
         row = await session.scalar(
             select(RunDispatch).where(
-                or_(
-                    RunDispatch.status == "accepted",
-                    (RunDispatch.status == "claimed") & (RunDispatch.lease_expires_at < now),
-                )
+                self._claimable()
             ).order_by(RunDispatch.accepted_at, RunDispatch.dispatch_id).with_for_update(skip_locked=True).limit(1)
         )
         if row is None:
             return None
+        return await self._mark_claimed(session, row, worker_id, lease_seconds=lease_seconds)
+
+    async def claim_run(
+        self,
+        session: AsyncSession,
+        run_id: str,
+        owner_id: str,
+        *,
+        lease_seconds: int = 60,
+    ) -> RunDispatch | None:
+        """按 Run 定向认领：让该 Run 的启动者成为唯一持有者，语义与队列认领一致（同一状态列与 fencing token）。"""
+
+        row = await session.scalar(
+            select(RunDispatch).where(
+                RunDispatch.run_id == run_id,
+                self._claimable(),
+            ).with_for_update(skip_locked=True)
+        )
+        if row is None:
+            return None
+        return await self._mark_claimed(session, row, owner_id, lease_seconds=lease_seconds)
+
+    @staticmethod
+    def _claimable() -> Any:
+        return or_(
+            RunDispatch.status == "accepted",
+            (RunDispatch.status == "claimed") & (RunDispatch.lease_expires_at < datetime.now(UTC)),
+        )
+
+    @staticmethod
+    async def _mark_claimed(
+        session: AsyncSession,
+        row: RunDispatch,
+        owner_id: str,
+        *,
+        lease_seconds: int,
+    ) -> RunDispatch:
+        now = datetime.now(UTC)
         row.status = "claimed"
-        row.claimed_by = worker_id
+        row.claimed_by = owner_id
         row.attempt += 1
         row.fencing_token += 1
         row.claimed_at = now
@@ -54,6 +89,9 @@ class RunDispatchRepository:
         row.error = None
         await session.flush()
         return row
+
+    async def by_run(self, session: AsyncSession, run_id: str) -> RunDispatch | None:
+        return await session.scalar(select(RunDispatch).where(RunDispatch.run_id == run_id))
 
     async def renew(
         self,

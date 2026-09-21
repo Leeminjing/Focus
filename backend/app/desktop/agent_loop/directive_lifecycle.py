@@ -2,7 +2,9 @@ r"""本文件对外提供 DirectiveLifecycleRepository 与 DirectiveTransitionRe
 
 输入为同事务内已锁定的 LoopDirective、目标 lifecycle state、可选 Run/原因/causation；输出为递增 revision、
 不可变 transition 与规范 journal event。具体工作流为 register 记录 proposed，transition 验证 authorized、delivery、
-Run 与 terminal 单向状态，再把 current row、history、event 原子提交。示例：`await repository.authorize(session, directive)`。
+Run 与 terminal 单向状态，再把 current row、history、event 原子提交；当前尝试身份只在交付与启动类转换上记录，
+终态转换即使携带外来 Run 也不改写它（该次转换携带的 Run 仍写入不可变 history 供审计）。
+示例：`await repository.authorize(session, directive)`。
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ class DirectiveTransitionRejected(ValueError):
 
 class DirectiveLifecycleRepository:
     _TERMINAL = frozenset({"rejected", "delivery_failed", "settled", "failed", "cancelled"})
+    _RUN_BINDING_STATES = frozenset({"delivered", "run_started"})
     _EDGES = {
         "proposed": frozenset({"authorized", "rejected", "cancelled"}),
         "authorized": frozenset({"delivering", "cancelled"}),
@@ -68,7 +71,7 @@ class DirectiveLifecycleRepository:
             raise DirectiveTransitionRejected(f"非法 Directive transition: {current} -> {target}")
         directive.revision += 1
         directive.lifecycle_state = target
-        if run_id is not None:
+        if run_id is not None and target in self._RUN_BINDING_STATES:
             directive.launched_run_id = run_id
         if target in self._TERMINAL:
             directive.terminal_reason = reason
