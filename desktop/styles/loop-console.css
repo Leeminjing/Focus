@@ -299,6 +299,7 @@
 .portfolio-map-canvas { position: relative; min-width: 100%; min-height: 100%; }
 .portfolio-map-canvas svg { position: absolute; inset: 0; pointer-events: none; }
 .portfolio-map-canvas path { fill: none; stroke: #9fb0c7; stroke-width: 1.6; }
+.portfolio-map-canvas marker polygon { fill: #9fb0c7; }
 .portfolio-map-canvas .directive-path path { stroke: #a8b8cb; stroke-dasharray: 4 4; }
 .portfolio-map-canvas .directive-path circle { fill: #a8b8cb; }
 .portfolio-map-canvas .directive-path.is-authorized path,

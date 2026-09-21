@@ -461,6 +461,33 @@ test("portfolio node and conversation header render a shared descriptor only onc
 });
 
 
+test("portfolio map derives layers from cross-context edges and renders direction", () => {
+  const manifest = {
+    health: "observing",
+    nodes: [
+      { context_id: "primary", topic: "Primary execution", purpose: "Primary execution", status: "active", counts: {} },
+      { context_id: "derived", topic: "Derived work", purpose: "Derived work", status: "active", counts: {} },
+      { context_id: "isolated", topic: "Independent work", purpose: "Independent work", status: "active", counts: {} },
+    ],
+    edges: [
+      { source_context_id: "primary", target_context_id: "primary", target_revision_id: "rev-self" },
+      { source_context_id: "primary", target_context_id: "derived", target_revision_id: "rev-derived" },
+    ],
+  };
+  const html = PortfolioMap.render(manifest, "derived");
+
+  assert.doesNotMatch(html, /data-edge-id="primary:primary/, "自环不得作为拓扑连线渲染");
+  assert.match(html, /data-edge-id="primary:derived:rev-derived"/);
+  assert.match(html, /marker-end="url\(#portfolio-edge-arrow\)"/, "派生连线必须带方向标记");
+  const topOf = id => {
+    const tag = new RegExp(`<button[^>]*data-context-id="${id}"[^>]*>`).exec(html)[0];
+    return Number(/top:(\d+)px/.exec(tag)[1]);
+  };
+  assert.ok(topOf("derived") > topOf("primary"), "派生 Context 的层级必须严格深于来源");
+  assert.equal(topOf("isolated"), topOf("primary"), "不参与任何派生依赖的 Context 必须稳定落在根层");
+});
+
+
 test("api replays persisted SSE frames by cursor", async () => {
   const encoder = new TextEncoder();
   const body = new ReadableStream({
