@@ -46,6 +46,7 @@ class LoopLiveRedactionPolicy:
             "round": redact(projection.round),
             "portfolio": redact(projection.portfolio),
             "contexts": {key: redact(value) for key, value in projection.contexts.items()},
+            "lineage": {key: redact(value) for key, value in projection.lineage.items()},
             "runs": {key: redact(value) for key, value in projection.runs.items()},
             "curators": {key: redact(value) for key, value in projection.curators.items()},
             "directives": {key: redact(value) for key, value in projection.directives.items()},

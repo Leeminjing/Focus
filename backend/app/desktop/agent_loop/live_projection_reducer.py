@@ -1,8 +1,9 @@
 r"""本文件对外提供 LoopLiveProjectionReducer 与 ProjectionSequenceGap。
 
 输入为不可变 LoopLiveProjection 和下一条 CanonicalEventEnvelope；输出为确定性新投影。具体工作流为先执行
-sequence 去重/缺口检查，再按 entity_type 调用单实体或实体集合 reducer，拒绝陈旧 entity revision，最后追加
-有界安全活动摘要；未知 kind 保持前向兼容但不修改已知实体。示例：`next_state = reducer.reduce(state, event)`。
+sequence 去重/缺口检查，再按 entity_type 调用单实体或实体集合 reducer（含 Context 派生边集合），拒绝陈旧
+entity revision，最后追加有界安全活动摘要；未知 kind 保持前向兼容但不修改已知实体。
+示例：`next_state = reducer.reduce(state, event)`。
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ class LoopLiveProjectionReducer:
     _SINGULAR = frozenset({"loop", "mission", "patrol_session", "round", "portfolio"})
     _COLLECTIONS = {
         "context": "contexts",
+        "context_lineage": "lineage",
         "run": "runs",
         "context_run": "runs",
         "curator": "curators",

@@ -1,14 +1,17 @@
-r"""本文件验证 Directive 启动 Run 绑定的不可改写性与控制台 Context 派生边（lineage）的解析规则。
+r"""本文件验证 Directive 启动 Run 绑定的不可改写性、崩溃恢复的重新绑定，以及跨 Context 派生关系从权威 revision
+来源到 Live 投影的完整链路。
 
-本文件对外提供三项回归证据：终态转换不改写 directive.launched_run_id、被取代 Run 的迟到结算不改写 directive
-的状态与绑定、LoopConsoleQueryService 的 edges 只表达跨 Context 派生且按 (source, target) 去重。输入为真实
+本文件对外提供五类回归证据：终态转换不改写 directive.launched_run_id、被取代 Run 的迟到结算不改写 directive
+的状态与绑定、启动前 launching Directive 的恢复绑定、ContextLineageResolver 与 LoopConsoleQueryService 的派生边
+解析规则、以及派生边在 revision 落库时产出 journal 事件并经 reducer/overlay 进入 Live 投影。输入为真实
 PostgreSQL 中经 _seed_loop 播种的 Loop 与最小 Directive/Decision/Action/Run 行，以及真实的
-DirectiveLifecycleRepository、LoopCoordinator.handle_run_settled、LoopConsoleQueryService.read/_lineage 调用；
-输出为「run_started 上携带外来 Run 的 failed 转换保持 runA 绑定、且不可变 transition 仍记录 runB」「runB 的
-迟到结算后 directive 仍为 run_started/runA，runA 的失败结算才把它转为 failed」「第 N 代目标仍返回跨 Context
-派生边、同 Context revision 链零边、重复来源只出现一次」断言。
-具体工作流为复用 round liveness 的播种入口建立 Loop，再直接驱动生命周期仓储与协调者；lineage 用例另以
-ContextRevisionRepository 建立多 Context revision 图后分别调用 _lineage 与 read。示例：
+DirectiveLifecycleRepository、LoopCoordinator、ContextLineageResolver、LoopEventJournal、LoopLiveProjectionReducer、
+LoopLiveProjectionOverlay 与 LoopConsoleQueryService 调用；输出为「run_started 上携带外来 Run 的 failed 转换保持
+runA 绑定、且不可变 transition 仍记录 runB」「迟到结算后 directive 仍为 run_started/runA」「恢复后绑定指向被观察
+Run / 可重试中断清空绑定」「第 N 代目标仍返回跨 Context 派生边、同 Context revision 链零边、重复来源只出现一次」
+「跨 Context 来源落库即产出 context.lineage.derived 事件并归约进投影 lineage，同链来源不产事件」断言。
+具体工作流为复用 round liveness 的播种入口建立 Loop，再直接驱动生命周期仓储、协调者与 lineage 链路；lineage 用例
+另以 ContextRevisionRepository 建立多 Context revision 图后分别调用解析器、read、reducer 与 overlay。示例：
 `python -m pytest backend/tests/test_loop_settlement_and_lineage.py -q`。
 """
 
@@ -29,6 +32,11 @@ import backend.app.desktop.persistence_registry
 from backend.app.desktop.agent_loop import LoopCoordinator
 from backend.app.desktop.agent_loop.console_query import LoopConsoleQueryService
 from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
+from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
+from backend.app.desktop.agent_loop.lineage_events import ContextLineageEventRecorder
+from backend.app.desktop.agent_loop.live_projection_contract import LoopLiveProjection
+from backend.app.desktop.agent_loop.live_projection_reducer import LoopLiveProjectionReducer
+from backend.app.desktop.agent_loop.live_snapshot_overlay import LoopLiveProjectionOverlay
 from backend.app.desktop.agent_loop.models import (
     AgentLoop,
     LoopAction,
@@ -37,6 +45,7 @@ from backend.app.desktop.agent_loop.models import (
     LoopDirective,
 )
 from backend.app.desktop.context_evolution import (
+    ContextLineageResolver,
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -213,7 +222,7 @@ def _edges_between(edges: list[dict], source_context_id: str, target_context_id:
     return [
         edge
         for edge in edges
-        if edge["source_context_id"] == source_context_id and edge["target_context_id"] == target_context_id
+        if edge.source_context_id == source_context_id and edge.target_context_id == target_context_id
     ]
 
 
@@ -451,6 +460,176 @@ def test_recovery_clears_binding_for_retry_safe_interrupted_run(tmp_path: Path) 
     asyncio.run(run())
 
 
+async def _derive_context_from_external_source(sessions, fixture: dict, *, label: str) -> dict:
+    """为 fixture 的 Context 造一条带外部来源的 revision，并让来源 Context 成为同一 Loop 成员。"""
+
+    source = f"{label}-source-{uuid.uuid4().hex[:8]}"
+    async with sessions.begin() as session:
+        loop = await session.get(AgentLoop, fixture["loop_id"])
+        session.add(
+            DesktopThread(
+                task_id=source,
+                workspace_id=loop.workspace_id,
+                thread_id=f"thread-{source}",
+                title=source,
+            )
+        )
+        await session.flush()
+        repository = ContextRevisionRepository()
+        target_gen1 = await repository.current(session, fixture["context_id"])
+        source_gen1 = _context_revision(source, 1, ContextRevisionOriginKind.ROOT)
+        target_gen2 = _context_revision(
+            fixture["context_id"],
+            2,
+            ContextRevisionOriginKind.RUN_SETTLED,
+            (_source(source_gen1, 0), _source(target_gen1, 1)),
+        )
+        await repository.insert_many(session, (source_gen1, target_gen2))
+        await repository.switch_current(session, target_gen2.ref, target_gen1.ref)
+        await repository.switch_current(session, source_gen1.ref, None)
+        session.add(
+            LoopContextMembership(
+                membership_id=uuid.uuid4().hex,
+                loop_id=fixture["loop_id"],
+                context_id=source,
+                lane_id=None,
+                role="contributor",
+                status="active",
+                required_barrier=False,
+            )
+        )
+    return {
+        "source_context_id": source,
+        "source_revision_id": source_gen1.ref.revision_id,
+        "target_revision_id": target_gen2.ref.revision_id,
+        "target_generation": target_gen2.ref.generation,
+    }
+
+
+def test_derived_revision_records_lineage_event_for_loop(tmp_path: Path) -> None:
+    """Loop 登记成员的派生事实时，必须在同一 Loop 的 journal 留下可归约的派生边事件。"""
+
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = _sessions_for(engine)
+        fixture = None
+        try:
+            fixture = await _seed_loop(sessions, tmp_path, label="lineage-event", started_at=datetime.now(UTC))
+            derived = await _derive_context_from_external_source(sessions, fixture, label="lineage-event")
+            async with sessions.begin() as session:
+                recorded_count = await ContextLineageEventRecorder().record_loop_members(
+                    session, loop_id=fixture["loop_id"]
+                )
+            assert recorded_count == 1, "一个带外部来源的成员只登记一条派生边"
+
+            async with sessions() as session:
+                events = await LoopEventJournal().read(session, fixture["loop_id"], 0, 100)
+
+            recorded = [event for event in events if event.kind == ContextLineageEventRecorder.KIND]
+            assert len(recorded) == 1, "一条跨 Context 来源只登记一条派生边事件"
+            edge = recorded[0]
+            assert edge.entity_type == "context_lineage"
+            assert edge.entity_id == f"{derived['source_context_id']}:{fixture['context_id']}"
+            assert edge.entity_revision == derived["target_generation"]
+            assert edge.payload["source_context_id"] == derived["source_context_id"]
+            assert edge.payload["source_revision_id"] == derived["source_revision_id"]
+            assert edge.payload["target_context_id"] == fixture["context_id"]
+            assert edge.payload["target_revision_id"] == derived["target_revision_id"]
+
+            projection = LoopLiveProjection(loop_id=fixture["loop_id"])
+            for item in events:
+                projection = LoopLiveProjectionReducer().reduce(projection, item)
+            assert edge.entity_id in projection.lineage, "派生边事件必须归约进 Live 投影的 lineage 集合"
+            assert projection.lineage[edge.entity_id].state["source_context_id"] == derived["source_context_id"]
+        finally:
+            if fixture is not None:
+                await _stop(fixture["service"], fixture["loop_id"])
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_same_context_revision_records_no_lineage_event(tmp_path: Path) -> None:
+    """同一 Context 的 revision 链不得登记派生边事件。"""
+
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = _sessions_for(engine)
+        fixture = None
+        try:
+            fixture = await _seed_loop(sessions, tmp_path, label="lineage-chain", started_at=datetime.now(UTC))
+            async with sessions.begin() as session:
+                repository = ContextRevisionRepository()
+                target_gen1 = await repository.current(session, fixture["context_id"])
+                target_gen2 = _context_revision(
+                    fixture["context_id"],
+                    2,
+                    ContextRevisionOriginKind.RUN_SETTLED,
+                    (_source(target_gen1, 0),),
+                )
+                await repository.insert_many(session, (target_gen2,))
+                await repository.switch_current(session, target_gen2.ref, target_gen1.ref)
+            async with sessions.begin() as session:
+                recorded_count = await ContextLineageEventRecorder().record_loop_members(
+                    session, loop_id=fixture["loop_id"]
+                )
+            assert recorded_count == 0, "只有一个成员的 Loop 不产生派生边"
+
+            async with sessions() as session:
+                events = await LoopEventJournal().read(session, fixture["loop_id"], 0, 100)
+
+            assert [event for event in events if event.kind == ContextLineageEventRecorder.KIND] == []
+        finally:
+            if fixture is not None:
+                await _stop(fixture["service"], fixture["loop_id"])
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_loop_entry_points_record_lineage_facts() -> None:
+    """Loop 纳成员（创建）与发布 portfolio 两条入口都必须登记成员派生事实。"""
+
+    root = Path(__file__).resolve().parents[2] / "backend" / "app" / "desktop" / "agent_loop"
+    for name in ("service.py", "portfolio_publication.py"):
+        source = (root / name).read_text(encoding="utf-8")
+        assert "record_loop_members" in source, f"{name} 必须在 Loop 拓扑变化时登记 lineage 事实"
+
+
+def test_live_snapshot_overlay_projects_lineage_baseline(tmp_path: Path) -> None:
+    """快照边界上的权威 overlay 必须给出完整派生边，使新连接的客户端无需先回读控制台。"""
+
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = _sessions_for(engine)
+        fixture = None
+        try:
+            fixture = await _seed_loop(sessions, tmp_path, label="lineage-overlay", started_at=datetime.now(UTC))
+            derived = await _derive_context_from_external_source(sessions, fixture, label="lineage-overlay")
+
+            async with sessions() as session:
+                snapshot = await LoopLiveProjectionOverlay().apply(
+                    session,
+                    LoopLiveProjection(loop_id=fixture["loop_id"]),
+                    1,
+                )
+
+            key = f"{derived['source_context_id']}:{fixture['context_id']}"
+            assert key in snapshot.lineage, "快照必须携带跨 Context 派生边"
+            entity = snapshot.lineage[key]
+            assert entity.state["source_context_id"] == derived["source_context_id"]
+            assert entity.state["source_revision_id"] == derived["source_revision_id"]
+            assert entity.state["target_context_id"] == fixture["context_id"]
+            assert entity.revision == derived["target_generation"]
+            assert all(":" in item and item.split(":")[0] != item.split(":")[1] for item in snapshot.lineage), "快照不得包含自环边"
+        finally:
+            if fixture is not None:
+                await _stop(fixture["service"], fixture["loop_id"])
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_lineage_keeps_cross_context_edge_after_target_advanced_generation(tmp_path: Path) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
@@ -477,14 +656,16 @@ def test_lineage_keeps_cross_context_edge_after_target_advanced_generation(tmp_p
             )
 
             async with sessions() as session:
-                edges = await LoopConsoleQueryService._lineage(session, current)
+                edges = await ContextLineageResolver().resolve(
+                    session, {context_id: revision.revision_id for context_id, revision in current.items()}
+                )
 
             assert len(edges) == 1, "目标推进到 run_settled 产生的 gen2 后仍必须返回唯一一条跨 Context 派生边"
             edge = edges[0]
-            assert edge["source_context_id"] == source, "派生边必须指向真实来源 Context"
-            assert edge["target_context_id"] == target
-            assert edge["source_revision_id"] == source_gen1.ref.revision_id
-            assert edge["target_revision_id"] == target_gen2.ref.revision_id, "边记录来源首次出现的位置，与目标代次无关"
+            assert edge.source_context_id == source, "派生边必须指向真实来源 Context"
+            assert edge.target_context_id == target
+            assert edge.source_revision_id == source_gen1.ref.revision_id
+            assert edge.target_revision_id == target_gen2.ref.revision_id, "边记录来源首次出现的位置，与目标代次无关"
         finally:
             await engine.dispose()
 
@@ -516,14 +697,16 @@ def test_lineage_reports_source_for_target_without_any_run(tmp_path: Path) -> No
             )
 
             async with sessions() as session:
-                edges = await LoopConsoleQueryService._lineage(session, current)
+                edges = await ContextLineageResolver().resolve(
+                    session, {context_id: revision.revision_id for context_id, revision in current.items()}
+                )
 
             assert len(edges) == 1, "目标尚无 Run、只有 gen1 时仍必须返回派生边"
             edge = edges[0]
-            assert edge["source_context_id"] == source
-            assert edge["target_context_id"] == target
-            assert edge["source_revision_id"] == source_gen1.ref.revision_id
-            assert edge["target_revision_id"] == target_gen1.ref.revision_id
+            assert edge.source_context_id == source
+            assert edge.target_context_id == target
+            assert edge.source_revision_id == source_gen1.ref.revision_id
+            assert edge.target_revision_id == target_gen1.ref.revision_id
         finally:
             await engine.dispose()
 
@@ -554,9 +737,11 @@ def test_lineage_ignores_same_context_revision_chain(tmp_path: Path) -> None:
             )
 
             async with sessions() as session:
-                edges = await LoopConsoleQueryService._lineage(session, current)
+                edges = await ContextLineageResolver().resolve(
+                    session, {context_id: revision.revision_id for context_id, revision in current.items()}
+                )
 
-            assert edges == [], "同一 Context 的 revision 链不得成为拓扑边"
+            assert edges == (), "同一 Context 的 revision 链不得成为拓扑边"
         finally:
             await engine.dispose()
 
@@ -591,14 +776,16 @@ def test_lineage_deduplicates_repeated_source_context(tmp_path: Path) -> None:
             )
 
             async with sessions() as session:
-                edges = await LoopConsoleQueryService._lineage(session, current)
+                edges = await ContextLineageResolver().resolve(
+                    session, {context_id: revision.revision_id for context_id, revision in current.items()}
+                )
 
-            pairs = [(edge["source_context_id"], edge["target_context_id"]) for edge in edges]
+            pairs = [(edge.source_context_id, edge.target_context_id) for edge in edges]
             assert len(pairs) == 2, "两个来源 Context 必须各产生一条边，同一来源 Context 不得重复"
             assert set(pairs) == {(source_a, target), (source_b, target)}
             from_a = _edges_between(edges, source_a, target)
             assert len(from_a) == 1, "同一 (source, target) 只允许出现一次"
-            assert from_a[0]["source_revision_id"] == a_gen1.ref.revision_id, "去重保留按 position 排序后的首个来源 revision"
+            assert from_a[0].source_revision_id == a_gen1.ref.revision_id, "去重保留按 position 排序后的首个来源 revision"
         finally:
             await engine.dispose()
 
