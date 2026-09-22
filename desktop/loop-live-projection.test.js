@@ -62,6 +62,29 @@ test("schema loads a normalized snapshot and rejects malformed required state", 
   assert.throws(() => Schema.validateSnapshot(snapshot(2, { contexts: { wrong: entity("c1", 1, 2) } })), /集合键不一致/);
 });
 
+test("lineage events land in the projection and selectors drop self edges and missing endpoints", () => {
+  const lineage = {
+    "c1:c1": entity("c1:c1", 2, 3, { source_context_id: "c1", target_context_id: "c1" }),
+    "c1:c2": entity("c1:c2", 2, 3, { source_context_id: "c1", target_context_id: "c2", source_revision_id: "r1", target_revision_id: "r2" }),
+    "c9:c2": entity("c9:c2", 2, 3, { source_context_id: "c9", target_context_id: "c2" }),
+  };
+  const initial = Schema.validateSnapshot(
+    snapshot(3, { contexts: { c1: entity("c1", 1, 1), c2: entity("c2", 1, 1) }, lineage }),
+  );
+  assert.equal(initial.lineage["c1:c2"].state.source_context_id, "c1", "快照必须保留权威 lineage 集合");
+  assert.deepEqual(Selectors.selectLineage(initial), [
+    { source_context_id: "c1", target_context_id: "c2", source_revision_id: "r1", target_revision_id: "r2" },
+  ], "选择器必须去掉自环与来源已不在 portfolio 的边");
+
+  const reduced = Reducer.reduce(
+    Schema.validateSnapshot(snapshot(3, { contexts: { c1: entity("c1", 1, 1), c2: entity("c2", 1, 1), c3: entity("c3", 1, 3) } })),
+    event(4, { kind: "context.lineage.derived", entity_type: "context_lineage", entity_id: "c2:c3", entity_revision: 2, payload: { source_context_id: "c2", target_context_id: "c3", source_revision_id: "r2", target_revision_id: "r3" } }),
+  );
+  assert.equal(reduced.lineage["c2:c3"].state.target_context_id, "c3", "lineage 事件必须归约进 lineage 集合");
+  assert.equal(reduced.unknown_kinds.length, 0, "context_lineage 是已知实体类型，不得记为未知 kind");
+});
+
+
 test("reducer is deterministic, deduplicates sequence and ignores stale entity revisions", () => {
   const initial = Schema.validateSnapshot(snapshot());
   const first = Reducer.reduce(initial, event(1));

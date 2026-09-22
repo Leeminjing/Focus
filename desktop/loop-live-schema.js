@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 validateSnapshot、validateEvent 与 emptyProjection 函数。
  * 输入为 Live Loop API 返回的未知 JSON 值；输出为结构规范、可安全归约的 projection 或带字段路径的 TypeError。
- * 具体工作流为校验根边界与所有实体信封、复制集合和时间线并冻结顶层结果；示例：`validateSnapshot(await api.liveSnapshot(loopId))`。
+ * 具体工作流为校验根边界与所有实体信封（含 contexts 与 lineage 派生边集合）、复制集合和时间线并冻结顶层结果；示例：`validateSnapshot(await api.liveSnapshot(loopId))`。
  */
 (function (root, factory) {
   const api = factory();
@@ -10,7 +10,7 @@
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
 
-  const COLLECTIONS = Object.freeze(["contexts", "runs", "curators", "expansions", "directives", "facts", "wait_requests", "wait_responses"]);
+  const COLLECTIONS = Object.freeze(["contexts", "lineage", "runs", "curators", "expansions", "directives", "facts", "wait_requests", "wait_responses"]);
   const SINGULAR = Object.freeze(["loop", "mission", "patrol_session", "round", "portfolio"]);
 
   function record(value, path) {
@@ -53,6 +53,7 @@
       patrol_session: null,
       round: null,
       contexts: Object.freeze({}),
+      lineage: Object.freeze({}),
       runs: Object.freeze({}),
       curators: Object.freeze({}),
       expansions: Object.freeze({}),
