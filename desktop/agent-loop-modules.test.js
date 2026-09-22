@@ -165,6 +165,48 @@ test("console store prepends history without duplicating message indices", () =>
 });
 
 
+test("console store takes topology edges from the live projection once a snapshot exists", () => {
+  const LiveSelectors = require("./loop-live-selectors.js");
+  const projection = lastSequence => ({
+    loop_id: "l1",
+    last_sequence: lastSequence,
+    loop: { entity_id: "l1", revision: 1, updated_sequence: 1, state: { status: "running", health: "observing" } },
+    round: null,
+    contexts: {
+      c1: { entity_id: "c1", revision: 1, updated_sequence: 1, state: { title: "Primary", role: "primary" } },
+      c2: { entity_id: "c2", revision: 1, updated_sequence: 2, state: { title: "Derived", role: "contributor" } },
+    },
+    lineage: {
+      "c1:c1": { entity_id: "c1:c1", revision: 2, updated_sequence: 2, state: { source_context_id: "c1", target_context_id: "c1" } },
+      "c1:c2": { entity_id: "c1:c2", revision: 2, updated_sequence: 3, state: { source_context_id: "c1", target_context_id: "c2", source_revision_id: "r1", target_revision_id: "r2" } },
+    },
+    runs: {}, curators: {}, expansions: {}, directives: {}, facts: {}, wait_requests: {}, wait_responses: {},
+    activity_timeline: [], unknown_kinds: [], diagnostics: {},
+  });
+  const store = ConsoleStore.create();
+  store.loadManifest({
+    initial_context_id: "c1",
+    nodes: [{ context_id: "c1" }],
+    edges: [{ source_context_id: "stale", target_context_id: "c1" }],
+  });
+
+  store.projectLive(projection(7), LiveSelectors);
+  assert.deepEqual(store.get().manifest.nodes.map(node => node.context_id), ["c1", "c2"], "Live 投影必须补齐新派生的 Context 节点");
+  assert.deepEqual(store.get().manifest.edges, [
+    { source_context_id: "c1", target_context_id: "c2", source_revision_id: "r1", target_revision_id: "r2" },
+  ], "有快照后拓扑边必须改由 Live 投影的 lineage 提供，并取代 manifest 里的一次性边集合");
+
+  const early = ConsoleStore.create();
+  early.loadManifest({
+    initial_context_id: "c1",
+    nodes: [{ context_id: "c1" }],
+    edges: [{ source_context_id: "c9", target_context_id: "c1" }],
+  });
+  early.projectLive(projection(0), LiveSelectors);
+  assert.deepEqual(early.get().manifest.edges, [{ source_context_id: "c9", target_context_id: "c1" }], "尚无快照时保留 manifest 的边，避免首帧丢掉派生关系");
+});
+
+
 test("console store keeps a fixed message bound while paging through thousands of messages", () => {
   const store = ConsoleStore.create();
   store.loadManifest({ initial_context_id: "c1", nodes: [{ context_id: "c1", revision: { revision_id: "r1" } }] });

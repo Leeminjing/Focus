@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Live Loop projection 的只读选择器。
- * 输入为规范化 projection 与可选 Context identity；输出为 Patrol、等待请求、Expansion、图活动、Context 卡片、因果链、事实和摘要指标。
- * 具体工作流为仅从实体 state 派生稳定展示模型，不持有领域状态；示例：`selectContextCards(projection)`。
+ * 输入为规范化 projection 与可选 Context identity；输出为 Patrol、等待请求、Expansion、图活动、Context 卡片、跨 Context 派生边、因果链、事实和摘要指标。
+ * 具体工作流为仅从实体 state 派生稳定展示模型（派生边只保留两端仍是当前 Context 的去重对，不含自环），不持有领域状态；示例：`selectContextCards(projection)`。
  */
 (function (root, factory) {
   const api = factory();
@@ -44,6 +44,29 @@
     }));
   }
 
+  function selectLineage(projection) {
+    const contexts = projection?.contexts || {};
+    const seen = new Set();
+    const edges = [];
+    for (const entity of values(projection?.lineage)) {
+      const state = entity.state || {};
+      const source = state.source_context_id;
+      const target = state.target_context_id;
+      if (!source || !target || source === target) continue;
+      if (!contexts[source] || !contexts[target]) continue;
+      const key = `${source}:${target}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push(Object.freeze({
+        source_context_id: source,
+        target_context_id: target,
+        source_revision_id: state.source_revision_id || null,
+        target_revision_id: state.target_revision_id || null,
+      }));
+    }
+    return Object.freeze(edges);
+  }
+
   function selectCausality(projection, contextId) {
     const directives = values(projection?.directives).filter(entity => !contextId || entity.state.target_context_id === contextId);
     const ids = new Set(directives.map(entity => entity.entity_id));
@@ -83,5 +106,5 @@
     });
   }
 
-  return Object.freeze({ MAX_VISIBLE_GRAPH_ACTIVITY, MAX_VISIBLE_FACTS, selectPatrol, selectActiveWaitRequest, selectExpansions, selectGraphActivity, selectContextCards, selectCausality, selectFacts, selectSummary });
+  return Object.freeze({ MAX_VISIBLE_GRAPH_ACTIVITY, MAX_VISIBLE_FACTS, selectPatrol, selectActiveWaitRequest, selectExpansions, selectGraphActivity, selectContextCards, selectLineage, selectCausality, selectFacts, selectSummary });
 });

@@ -13,7 +13,7 @@
   "use strict";
 
   const SINGULAR = new Set(Schema.SINGULAR);
-  const COLLECTION_BY_ENTITY = Object.freeze({ context: "contexts", run: "runs", context_run: "runs", curator: "curators", context_expansion: "expansions", directive: "directives", fact: "facts", loop_wait_request: "wait_requests", loop_wait_response: "wait_responses" });
+  const COLLECTION_BY_ENTITY = Object.freeze({ context: "contexts", context_lineage: "lineage", run: "runs", context_run: "runs", curator: "curators", context_expansion: "expansions", directive: "directives", fact: "facts", loop_wait_request: "wait_requests", loop_wait_response: "wait_responses" });
 
   class SequenceGapError extends Error {
     constructor(expected, actual) {
