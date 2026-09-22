@@ -3,14 +3,14 @@ r"""本文件对外提供 LoopConsoleQueryService 的轻量 Context Portfolio �
 输入为 Loop id 与只读 AsyncSession；输出为 Context identity 节点、跨 Context 派生边（lineage）、最新 Run、事实计数、
 当前 Mission revision、压缩 resolution 状态、待处理用户意见，以及 Loop 的等待原因与当前 round 终态。
 具体工作流为批量读取权威表后在内存按 id 归并，不加载完整消息历史，从而让拓扑图可高频刷新，并让"运行中却
-零进展"的停顿可被控制台解释；派生边沿每个 Context 自身 revision 链回溯到外部来源，因此与目标是第几代 revision 无关，
-同一 Context 的 revision 链不会成为拓扑边。示例：`await service.read(session, loop_id)`。
+零进展"的停顿可被控制台解释；派生边由 ContextLineageResolver 解析（沿每个 Context 自身 revision 链回溯到外部
+来源），因此与目标是第几代 revision 无关，同一 Context 的 revision 链不会成为拓扑边。
+示例：`await service.read(session, loop_id)`。
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -26,12 +26,16 @@ from backend.app.desktop.agent_loop.models import (
 from backend.app.desktop.agent_loop.fact_sources import LoopFactBuilder
 from backend.app.desktop.agent_loop.compression_authority.models import LoopCompressionCandidate, LoopCompressionResolution
 from backend.app.desktop.context_curation.models import CurationLane
-from backend.app.desktop.context_evolution.models import ContextRevision, ContextRevisionSource
+from backend.app.desktop.context_evolution.lineage import ContextLineageResolver
+from backend.app.desktop.context_evolution.models import ContextRevision
 from backend.app.desktop.models import DesktopRun, DesktopThread
 from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor
 
 
 class LoopConsoleQueryService:
+    def __init__(self, lineage: ContextLineageResolver | None = None) -> None:
+        self._lineage = lineage or ContextLineageResolver()
+
     async def read(self, session: AsyncSession, loop_id: str) -> dict:
         loop = await session.get(AgentLoop, loop_id)
         if loop is None:
@@ -50,7 +54,12 @@ class LoopConsoleQueryService:
         contexts = await self._contexts(session, context_ids)
         lanes = await self._lanes(session, [row.lane_id for row in memberships if row.lane_id])
         revisions = await self._revisions(session, contexts)
-        edges = await self._lineage(session, revisions)
+        edges = [
+            edge.payload()
+            for edge in await self._lineage.resolve(
+                session, {context_id: revision.revision_id for context_id, revision in revisions.items()}
+            )
+        ]
         latest_runs, run_counts, evidence_counts = await self._runs(session, loop_id)
         directive_counts = await self._directive_counts(session, loop_id)
         intents = list(
@@ -194,67 +203,6 @@ class LoopConsoleQueryService:
             (await session.scalars(select(ContextRevision).where(ContextRevision.revision_id.in_(revision_ids)))).all()
         )
         return {row.context_id: row for row in rows}
-
-    @staticmethod
-    async def _lineage(
-        session: AsyncSession,
-        revisions: dict[str, ContextRevision],
-    ) -> list[dict[str, Any]]:
-        """解析跨 Context 的派生关系：沿每个 Context 自身 revision 链回溯到属于其它 Context 的来源。
-
-        输入为各 Context 的当前 revision；输出为去重的来源/目标 Context 对（含该来源首次出现的位置与 revision 身份）。
-        同一 Context 的 revision 链不构成拓扑边，因此结果中不存在自环；与目标是第几代 revision 无关。
-        """
-
-        if not revisions:
-            return []
-        owners = {row.revision_id: context_id for context_id, row in revisions.items()}
-        origins: dict[str, dict[str, dict[str, Any]]] = {}
-        pending = list(owners)
-        walked: set[str] = set()
-        while pending:
-            walked.update(pending)
-            rows = list(
-                (
-                    await session.scalars(
-                        select(ContextRevisionSource)
-                        .where(ContextRevisionSource.target_revision_id.in_(pending))
-                        .order_by(ContextRevisionSource.target_revision_id, ContextRevisionSource.position)
-                    )
-                ).all()
-            )
-            unknown = {row.source_revision_id for row in rows} - set(owners)
-            if unknown:
-                known = list(
-                    (
-                        await session.scalars(
-                            select(ContextRevision).where(ContextRevision.revision_id.in_(unknown))
-                        )
-                    ).all()
-                )
-                owners.update({row.revision_id: row.context_id for row in known})
-            pending = []
-            for row in rows:
-                target_owner = owners.get(row.target_revision_id)
-                source_owner = owners.get(row.source_revision_id) or row.source_context_id
-                if target_owner is None or source_owner is None:
-                    continue
-                if source_owner == target_owner:
-                    if row.source_revision_id not in walked:
-                        pending.append(row.source_revision_id)
-                    continue
-                if source_owner not in revisions:
-                    continue
-                origins.setdefault(target_owner, {}).setdefault(
-                    source_owner,
-                    {
-                        "source_context_id": source_owner,
-                        "source_revision_id": row.source_revision_id,
-                        "target_context_id": target_owner,
-                        "target_revision_id": row.target_revision_id,
-                    },
-                )
-        return [edge for target in origins.values() for edge in target.values()]
 
     @staticmethod
     async def _runs(

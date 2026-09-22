@@ -4,7 +4,7 @@ r"""本文件对外提供 LoopPortfolioPublicationService 与 LoopPortfolioAutho
 原子发布的 Portfolio revision、Loop membership、Expansion transition 与 delegated directives。具体工作流为预登记稳定 Lane 与
 Decision 唯一的 Portfolio identity，调用统一 compiler 生成候选，在 shadow checkpoint 幂等准备全部 Context revision，再由 authority hook 在
 AtomicPortfolioPublisher 的每次独立事务尝试内重验 Loop/grant/workspace，并提交所有 Loop 侧指针、指令、Context projection 与
-`portfolio.published` 规范事件；服务只从最终已提交数据库事实返回 Directive identity，失败重试的内存状态不会泄漏。
+`portfolio.published` 规范事件与成员派生事实；服务只从最终已提交数据库事实返回 Directive identity，失败重试的内存状态不会泄漏。
 示例：`result = await service.publish(decision_id)`。
 """
 
@@ -33,6 +33,7 @@ from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycl
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
 from backend.app.desktop.agent_loop.ownership import LoopFencingGuard
 from backend.app.desktop.agent_loop.portfolio_events import ContextPublicationEventRecorder, PortfolioPublicationEventRecorder
+from backend.app.desktop.agent_loop.lineage_events import ContextLineageEventRecorder
 from backend.app.desktop.agent_loop.schemas import PATROL_ACTION_ADAPTER
 from backend.app.desktop.context_curation import (
     AtomicPortfolioPublisher,
@@ -85,6 +86,7 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
         self._directive_lifecycle = DirectiveLifecycleRepository()
         self._expansions = ContextExpansionRepository()
         self._context_events = ContextPublicationEventRecorder()
+        self._lineage_events = ContextLineageEventRecorder()
 
     @property
     def directive_ids(self) -> tuple[str, ...]:
@@ -205,6 +207,7 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
             decision_id=decision.decision_id,
             directive_ids=tuple(self._directive_ids),
         )
+        await self._lineage_events.record_loop_members(session, loop_id=loop.loop_id)
 
     @staticmethod
     async def _validate_authority(session, loop, round_row, grant, controls) -> None:

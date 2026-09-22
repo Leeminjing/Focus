@@ -1,7 +1,8 @@
 r"""本文件对外提供 LoopLiveProjectionOverlay。
 
-输入为 journal 投影、单一 sequence 边界和当前物化领域表；输出为补齐 Loop、Mission、Wait、Context/Run、Curator、Expansion、Directive、Fact、恢复诊断与 Portfolio 的完整 snapshot。
-具体工作流为批量读取各 current entity，按统一 ProjectedEntity 信封归并，并附加渲染所需授权与预算字段；示例：`await overlay.apply(session, projection, boundary)`。
+输入为 journal 投影、单一 sequence 边界和当前物化领域表；输出为补齐 Loop、Mission、Wait、Context/Run、Context 派生边、Curator、Expansion、Directive、Fact、恢复诊断与 Portfolio 的完整 snapshot。
+具体工作流为批量读取各 current entity，按统一 ProjectedEntity 信封归并，并附加渲染所需授权与预算字段；派生边由
+ContextLineageResolver 从权威 revision 来源解析，作为客户端在快照边界上的基线。示例：`await overlay.apply(session, projection, boundary)`。
 """
 
 from __future__ import annotations
@@ -21,11 +22,15 @@ from backend.app.desktop.agent_loop.patrol_session_models import LoopCuratorAssi
 from backend.app.desktop.agent_loop.projection_models import LoopProjectionFailure
 from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest, LoopWaitResponse
 from backend.app.desktop.context_curation.models import PortfolioRevision
+from backend.app.desktop.context_evolution.lineage import ContextLineageEdge, ContextLineageResolver
 from backend.app.desktop.models import DesktopRun, DesktopThread
 from backend.app.desktop.run_orchestration.models import RunDispatch
 
 
 class LoopLiveProjectionOverlay:
+    def __init__(self, lineage: ContextLineageResolver | None = None) -> None:
+        self._lineage = lineage or ContextLineageResolver()
+
     async def apply(self, session: AsyncSession, projection: LoopLiveProjection, sequence: int) -> LoopLiveProjection:
         loop = await session.get(AgentLoop, projection.loop_id)
         mission = await session.scalar(select(LoopMissionRevision).where(LoopMissionRevision.loop_id == projection.loop_id, LoopMissionRevision.revision == loop.goal_revision))
@@ -50,12 +55,25 @@ class LoopLiveProjectionOverlay:
         grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.loop_id == projection.loop_id).order_by(LoopDelegationGrant.revision.desc()).limit(1))
         usage = await session.get(LoopBudgetUsage, projection.loop_id)
         portfolio = await session.get(PortfolioRevision, loop.current_portfolio_revision_id) if loop.current_portfolio_revision_id else None
+        lineage = await self._lineage.resolve(
+            session,
+            {row.task_id: row.current_revision_id for row in contexts if row.current_revision_id},
+        )
         return projection.model_copy(update={
             "loop": self._entity(loop.loop_id, loop.revision, sequence, {"loop_id": loop.loop_id, "workspace_id": loop.workspace_id, "initial_context_id": loop.initial_context_id, "program_id": loop.program_id, "status": loop.status, "health": loop.health, "revision": loop.revision, "authority_revision": loop.authority_revision, "goal_revision": loop.goal_revision, "active_mission_revision": loop.goal_revision, "current_round_id": loop.current_round_id, "current_portfolio_revision_id": loop.current_portfolio_revision_id, "waiting_reason": loop.waiting_reason, "equipment": loop.equipment, "final_result": loop.final_result, "grant": self._grant(grant), "usage": self._usage(usage, len(contexts))}),
             "mission": None if mission is None else self._entity(mission.mission_revision_id, mission.revision, sequence, {"outcome": mission.outcome, "boundaries": mission.boundaries, "completion_checks": mission.completion_checks, "authored_by": mission.authored_by}),
             "round": None if round_row is None else self._entity(round_row.round_id, max(1, round_row.number), sequence, {"number": round_row.number, "status": round_row.status, "frontier_hash": round_row.frontier_hash, "workspace_revision": round_row.workspace_revision}),
             "patrol_session": None if patrol is None else self._entity(patrol.session_id, patrol.revision, sequence, {"round_id": patrol.round_id, "phase": patrol.current_phase, "status": patrol.status, "safe_summary": patrol.safe_summary, "wait_reason": patrol.wait_reason, "wait_targets": patrol.wait_targets, "terminal_outcome": patrol.terminal_outcome}),
             "contexts": {row.task_id: self._entity(row.task_id, 1, sequence, {"title": row.title, "current_revision_id": row.current_revision_id, "deleted": row.deleted_at is not None, "membership_id": membership_by_context[row.task_id].membership_id, "lane_id": membership_by_context[row.task_id].lane_id, "role": membership_by_context[row.task_id].role, "status": membership_by_context[row.task_id].status, "required_barrier": membership_by_context[row.task_id].required_barrier}) for row in contexts},
+            "lineage": {
+                edge.entity_id: self._entity(
+                    edge.entity_id,
+                    max(1, edge.target_generation),
+                    sequence,
+                    edge.payload(),
+                )
+                for edge in lineage
+            },
             "runs": {row.run_id: self._entity(row.run_id, 2 if row.status in {"success", "error", "interrupted"} else 1, sequence, {"context_id": row.task_id, "status": row.status, "origin": row.origin, "directive_id": row.directive_id, "user_intent_id": row.user_intent_id, "workspace_result": row.workspace_result, "model_calls": row.model_call_count, "input_tokens": row.prompt_input_tokens, "output_tokens": row.prompt_output_tokens, "dispatch": None if dispatch_by_run.get(row.run_id) is None else {"dispatch_id": dispatch_by_run[row.run_id].dispatch_id, "status": dispatch_by_run[row.run_id].status, "attempt": dispatch_by_run[row.run_id].attempt, "error": dispatch_by_run[row.run_id].error}}) for row in runs},
             "curators": {row.assignment_id: self._entity(row.assignment_id, row.revision, sequence, {"round_id": row.round_id, "scope": row.scope, "state": row.state, "safe_summary": row.result_summary, "evidence_references": row.evidence_refs}) for row in curators},
             "expansions": {row.expansion_id: self._entity(row.expansion_id, row.revision, sequence, {"opportunity_id": row.opportunity_id, "round_id": row.round_id, "source_context_id": row.source_context_id, "source_revision_id": row.source_revision_id, "state": row.state, "level": row.level, "policy_version": row.policy_version, "workspace_mode": row.workspace_mode, "independence_key": row.independence_key, "safe_summary": row.safe_summary, "blocker_code": row.blocker_code, "result": row.result}) for row in expansions},

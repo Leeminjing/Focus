@@ -34,6 +34,7 @@ from backend.app.desktop.context_curation import (
 from backend.app.desktop.context_evolution import (
     ContextEvolutionQueryService,
     ContextEvolutionService,
+    ContextLineageResolver,
     ContextRevisionContract,
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
@@ -89,6 +90,7 @@ class ContextService:
         self.evolution_queries = ContextEvolutionQueryService(
             ContextRevisionRepository()
         )
+        self.context_lineage = ContextLineageResolver()
         self.revision_retention = ContextRevisionRetentionPlanner()
         self.single_lane_programs = SingleLaneCurationProgramService()
         self.single_lane_publications = SingleLanePortfolioPublisher(
@@ -1137,25 +1139,7 @@ class ContextService:
         session: AsyncSession,
         revision: ContextRevisionContract | None,
     ) -> tuple[ContextRevisionRef, ...]:
-        if revision is None:
-            return ()
-        repository = ContextRevisionRepository()
-        found: list[ContextRevisionRef] = []
-        visited: set[str] = set()
-
-        async def visit(candidate: ContextRevisionContract) -> None:
-            if candidate.ref.revision_id in visited:
-                return
-            visited.add(candidate.ref.revision_id)
-            for edge in candidate.sources:
-                if edge.source.context_id != revision.ref.context_id:
-                    if edge.source.revision_id not in {item.revision_id for item in found}:
-                        found.append(edge.source)
-                    continue
-                await visit(await repository.get(session, edge.source))
-
-        await visit(revision)
-        return tuple(found)
+        return await self.context_lineage.external_source_refs(session, revision)
 
     @staticmethod
     def _revision_source_payload(

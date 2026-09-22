@@ -13,6 +13,11 @@ from backend.app.desktop.context_evolution.checkpoint_writer import (
     LangGraphContextCheckpointWriter,
 )
 from backend.app.desktop.context_evolution.graph import ContextEvolutionQueryService
+from backend.app.desktop.context_evolution.lineage import (
+    ContextLineageEdge,
+    ContextLineageResolver,
+    ContextLineageSource,
+)
 from backend.app.desktop.context_evolution.lifecycle import (
     ContextCleanupPlan,
     ContextRevisionRetentionPlanner,
@@ -72,6 +77,9 @@ __all__ = [
     "ContextFirstParentNode",
     "ContextFirstParentTree",
     "ContextFrontierSummary",
+    "ContextLineageEdge",
+    "ContextLineageResolver",
+    "ContextLineageSource",
     "ContextRevisionCheckpointView",
     "ContextRevisionContract",
     "ContextIdentityNotFound",

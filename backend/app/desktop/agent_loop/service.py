@@ -1,7 +1,7 @@
 r"""本文件对外提供 AgentLoopService 创建、查询、Mission 修订、类型化等待响应、控制、临时用户介入与事件读取用例。
 
 输入为认证后的 LoopCreateRequest、Loop id、控制动作或用户确认的 Mission；输出为完整 Loop 快照与
-持久事件。具体工作流为 start 先锁 Context、核验后继资格并经策展所有权边界释放已终态 predecessor，再原子绑定初始用户 Run、创建 grant/holder/membership/budget/首轮；pause/resume 推进 revision，stop
+持久事件。具体工作流为 start 先锁 Context、核验后继资格并经策展所有权边界释放已终态 predecessor，再原子绑定初始用户 Run、创建 grant/holder/membership/budget/首轮并登记成员派生事实；pause/resume 推进 revision，stop
 统一委托 TerminalLifecycle 原子收敛运行时并释放 Lane；失败轮恢复时新建观察轮并累计 retry；直接用户消息只建立一次性 intent 并以 authority revision
 隔离旧 Patrol 工作，不改写 Mission；override 仅在用户确认后创建 Mission revision。示例：`await service.start(body)`。
 """
@@ -31,6 +31,7 @@ from backend.app.desktop.agent_loop.curation_ownership import CurationOwnershipC
 from backend.app.desktop.agent_loop.terminal_lifecycle import LoopTerminalLifecycle
 from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
+from backend.app.desktop.agent_loop.lineage_events import ContextLineageEventRecorder
 from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
 from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
 from backend.app.desktop.context_curation.models import CurationLane, CurationProgram, CurationSourceSubscription, PortfolioLaneCandidate, PortfolioRevision
@@ -57,6 +58,7 @@ class AgentLoopService:
         self._directives = DirectiveLifecycleRepository()
         self._interventions = InterventionLifecycleRepository()
         self._journal = LoopEventJournal()
+        self._lineage_events = ContextLineageEventRecorder()
         self._waits = LoopWaitRequestService()
         self._activation = LoopActivationEligibilityResolver()
 
@@ -227,6 +229,7 @@ class AgentLoopService:
                 rows.append(current_round)
             session.add_all(rows)
             await session.flush()
+            await self._lineage_events.record_loop_members(session, loop_id=loop.loop_id)
             if not active_initial_run:
                 await self._journal.append(
                     session,
