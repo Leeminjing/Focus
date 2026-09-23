@@ -12,17 +12,34 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.desktop.agent_loop.fact_models import LoopFact
 from backend.app.desktop.agent_loop.context_expansion.models import LoopContextExpansion
-from backend.app.desktop.agent_loop.live_projection_contract import LoopLiveProjection, ProjectedEntity
-from backend.app.desktop.agent_loop.materialized_fact_query import MaterializedFactQueryService
+from backend.app.desktop.agent_loop.fact_models import LoopFact
+from backend.app.desktop.agent_loop.live_projection_contract import (
+    LoopLiveProjection,
+    ProjectedEntity,
+)
+from backend.app.desktop.agent_loop.materialized_fact_query import (
+    MaterializedFactQueryService,
+)
 from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopContextMembership, LoopDelegationGrant, LoopDirective, LoopRound
-from backend.app.desktop.agent_loop.patrol_session_models import LoopCuratorAssignment, LoopPatrolSession
+from backend.app.desktop.agent_loop.models import (
+    AgentLoop,
+    LoopBudgetUsage,
+    LoopContextMembership,
+    LoopDelegationGrant,
+    LoopDirective,
+    LoopRound,
+)
+from backend.app.desktop.agent_loop.patrol_session_models import (
+    LoopCuratorAssignment,
+    LoopPatrolSession,
+)
 from backend.app.desktop.agent_loop.projection_models import LoopProjectionFailure
 from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest, LoopWaitResponse
 from backend.app.desktop.context_curation.models import PortfolioRevision
-from backend.app.desktop.context_evolution.lineage import ContextLineageEdge, ContextLineageResolver
+from backend.app.desktop.context_evolution.lineage import (
+    ContextLineageResolver,
+)
 from backend.app.desktop.models import DesktopRun, DesktopThread
 from backend.app.desktop.run_orchestration.models import RunDispatch
 
@@ -76,7 +93,7 @@ class LoopLiveProjectionOverlay:
             },
             "runs": {row.run_id: self._entity(row.run_id, 2 if row.status in {"success", "error", "interrupted"} else 1, sequence, {"context_id": row.task_id, "status": row.status, "origin": row.origin, "directive_id": row.directive_id, "user_intent_id": row.user_intent_id, "workspace_result": row.workspace_result, "model_calls": row.model_call_count, "input_tokens": row.prompt_input_tokens, "output_tokens": row.prompt_output_tokens, "dispatch": None if dispatch_by_run.get(row.run_id) is None else {"dispatch_id": dispatch_by_run[row.run_id].dispatch_id, "status": dispatch_by_run[row.run_id].status, "attempt": dispatch_by_run[row.run_id].attempt, "error": dispatch_by_run[row.run_id].error}}) for row in runs},
             "curators": {row.assignment_id: self._entity(row.assignment_id, row.revision, sequence, {"round_id": row.round_id, "scope": row.scope, "state": row.state, "safe_summary": row.result_summary, "evidence_references": row.evidence_refs}) for row in curators},
-            "expansions": {row.expansion_id: self._entity(row.expansion_id, row.revision, sequence, {"opportunity_id": row.opportunity_id, "round_id": row.round_id, "source_context_id": row.source_context_id, "source_revision_id": row.source_revision_id, "state": row.state, "level": row.level, "policy_version": row.policy_version, "workspace_mode": row.workspace_mode, "independence_key": row.independence_key, "safe_summary": row.safe_summary, "blocker_code": row.blocker_code, "result": row.result}) for row in expansions},
+            "expansions": {row.expansion_id: self._entity(row.expansion_id, row.revision, sequence, {"opportunity_id": row.opportunity_id, "round_id": row.round_id, "work_spec": row.work_spec, "manifest_ids": row.manifest_ids, "source_frontier": row.source_frontier, "resolution": row.resolution, "evidence_frontier": row.evidence_frontier, "stage_identities": row.stage_identities, "definition_hash": row.definition_hash, "state": row.state, "level": row.level, "policy_version": row.policy_version, "workspace_mode": row.workspace_mode, "independence_key": row.independence_key, "safe_summary": row.safe_summary, "blocker_code": row.blocker_code, "result": row.result}) for row in expansions},
             "directives": {row.directive_id: self._entity(row.directive_id, max(1, row.revision), sequence, {"round_id": row.round_id, "origin": row.origin_kind, "target_context_id": row.target_context_id, "state": row.lifecycle_state, "run_id": row.launched_run_id, "reason": row.terminal_reason, "correlation_id": row.correlation_id}) for row in directives},
             "facts": {row.fact_id: self._entity(row.fact_id, row.current_revision, sequence, MaterializedFactQueryService.serialize(row)) for row in facts},
             "wait_requests": {row.request_id: self._entity(row.request_id, row.revision, sequence, {"request_id": row.request_id, "round_id": row.round_id, "kind": row.kind, "prompt": row.prompt, "response_mode": row.response_mode, "response_contract": row.response_contract, "scope": row.scope, "status": row.status, "correlation_id": row.correlation_id, "causation_id": row.causation_id, "created_by": row.created_by, "created_at": row.created_at.isoformat() if row.created_at else None}) for row in wait_requests},

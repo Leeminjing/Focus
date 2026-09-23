@@ -2,7 +2,8 @@
 
 输入为两个任务、真实上传、结构化 material_inputs、独立必看图片和分组操作；输出为任务隔离、
 备注历史、删除后快照、单事务失败回滚、图片预算、稳定 origin 身份和分组优先级断言。具体
-工作流只替换网关后台启动函数，桌面服务、数据库、迁移和文件链路保持真实。
+工作流只替换 durable dispatch 的执行启动边界，并等待持久 Run 收敛终态；桌面服务、数据库、
+迁移和文件链路保持真实。
 
 示例：python -m pytest backend/tests/test_image_material_api.py。
 """
@@ -10,21 +11,23 @@
 import asyncio
 import io
 import os
-from pathlib import Path
+import time
 import uuid
+from pathlib import Path
 
+import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-import pytest
 
 os.environ.setdefault("OPENAI_API_KEY", "desktop-test")
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
-from backend.app.desktop.resource_limits import ImageResourceLimits  # noqa: E402
-from backend.app.gateway.app import app  # noqa: E402
-from focus.runtime.runs.manager import RunRecord  # noqa: E402
-from focus.runtime.runs.schemas import DisconnectMode, RunStatus  # noqa: E402
+from focus.runtime.runs.manager import RunRecord
+from focus.runtime.runs.schemas import DisconnectMode, RunStatus
 
+from backend.app.desktop.resource_limits import ImageResourceLimits
+from backend.app.desktop.service import DesktopService
+from backend.app.gateway.app import app
 
 SESSION = {"X-Focus-Session": "focus-dev-session"}
 
@@ -64,27 +67,33 @@ def _upload(client: TestClient, task_id: str, name: str, data: bytes, mime: str)
     )
 
 
-def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -> None:
-    import backend.app.desktop.routes as desktop_routes
+def _wait_run_status(client: TestClient, run_id: str, status: str) -> dict:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        payload = client.get(f"/desktop/api/runs/{run_id}", headers=SESSION).json()
+        if payload["status"] == status:
+            return payload
+        time.sleep(0.02)
+    raise AssertionError(f"run {run_id} 未在期限内进入 {status}")
 
+
+def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -> None:
     launched = []
 
-    async def fake_start_run(body, thread_id, request, agent_factory=None):
-        launched.append((body, thread_id, agent_factory))
+    async def fake_start_run(_service, assembly):
+        launched.append((assembly.body, assembly.thread_id, assembly.agent_factory))
         done = asyncio.Future()
         done.set_result(None)
         return RunRecord(
-            run_id=body.context["run_id"],
-            thread_id=thread_id,
+            run_id=assembly.body.context["run_id"],
+            thread_id=assembly.thread_id,
             status=RunStatus.success,
             on_disconnect=DisconnectMode.continue_,
             task=done,
         )
 
-    original_start_run = desktop_routes.start_run
-    desktop_routes.start_run = fake_start_run
-    try:
-        with _client() as client:
+    monkeypatch.setattr(DesktopService, "_start_dispatched_run", fake_start_run)
+    with _client() as client:
             _, first = _workspace_and_task(client, tmp_path / "first", "first")
             _, second = _workspace_and_task(client, tmp_path / "second", "second")
             first_id, second_id = first["task_id"], second["task_id"]
@@ -197,12 +206,14 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
                 json={"message": "x", "material_inputs": [{"material_id": text_id, "note": "只看标题"}]},
             )
             assert non_image.status_code == 200
+            _wait_run_status(client, non_image.json()["run_id"], "success")
             second_text_use = client.post(
                 f"/desktop/api/tasks/{first_id}/main/runs",
                 headers=SESSION,
                 json={"message": "x2", "material_inputs": [{"material_id": text_id, "note": "第二轮备注"}]},
             )
             assert second_text_use.status_code == 200
+            _wait_run_status(client, second_text_use.json()["run_id"], "success")
             text_history = client.get(
                 f"/desktop/api/tasks/{first_id}/material-history?material_id={text_id}", headers=SESSION
             ).json()
@@ -268,6 +279,7 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
                 json={"message": "x"},
             )
             assert plain.status_code == 200
+            _wait_run_status(client, plain.json()["run_id"], "success")
             plain_tokens = measured[-1]
 
             def enforce_plain_window(_model, used):
@@ -302,6 +314,7 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
                 },
             )
             assert accepted.status_code == 200
+            _wait_run_status(client, accepted.json()["run_id"], "success")
             context = launched[-1][0].context["run_image_inputs"]
             assert [item["material_id"] for item in context["attached"]] == [image_id]
             assert context["required_ids"] == [image_id]
@@ -346,5 +359,3 @@ def test_image_material_api_contract_and_run_boundaries(tmp_path, monkeypatch) -
                 f"/desktop/api/tasks/{first_id}/materials/{stale['material_id']}/content",
                 headers=SESSION,
             ).status_code == 404
-    finally:
-        desktop_routes.start_run = original_start_run

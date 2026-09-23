@@ -1,27 +1,47 @@
 r"""本文件对外提供 PatrolSessionLifecycle、CuratorCoordinationStage 与 PatrolOutcomeStage。
 
 输入为 coordinator claim、冻结 observation、Kernel result 和持久 Session；输出为原子 phase 事件、单 Context Bootstrap 或
-多 Context Lane Curator assignment、可供 Patrol 消费的部分结果及等待/终态。具体工作流为 Lifecycle 管理 Session 边界，
-Curator stage 按 Portfolio 形态有界扇出、收集和消费，Outcome stage 只把 Kernel 结果映射为 delivery、waiting、publication 或终态。
+多 Context Cognitive Planner assignment、可供 Patrol 消费的结构化 work specs 及等待/终态。具体工作流为 Lifecycle 管理 Session 边界，
+Curator stage 把冻结 Mission、带精确 unit identity 的 semantic manifests、Run/Workspace facts 按 Portfolio 形态有界扇出、
+收集和消费，Outcome stage
+只把 Kernel 结果映射为 delivery、waiting、publication 或终态。
 示例：`handle = await lifecycle.begin(claim)`。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import uuid
+from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.desktop.agent_loop.context_expansion.semantic_manifest import (
+    SemanticManifestProjector,
+)
 from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
-from backend.app.desktop.agent_loop.curator_assignments import CuratorAssignmentRepository
+from backend.app.desktop.agent_loop.curator_assignments import (
+    CuratorAssignmentRepository,
+)
 from backend.app.desktop.agent_loop.kernel import KernelCommitResult
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopRound, LoopWorkerRequest
+from backend.app.desktop.agent_loop.models import (
+    AgentLoop,
+    LoopRound,
+    LoopWorkerRequest,
+)
 from backend.app.desktop.agent_loop.patrol_session_models import LoopPatrolSession
-from backend.app.desktop.agent_loop.patrol_session_repository import PatrolSessionRepository
-from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, PatrolPhase, PatrolWaitTarget
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope, PatrolDecisionIntent
+from backend.app.desktop.agent_loop.patrol_session_repository import (
+    PatrolSessionRepository,
+)
+from backend.app.desktop.agent_loop.patrol_session_state import (
+    PatrolActivity,
+    PatrolPhase,
+    PatrolWaitTarget,
+)
+from backend.app.desktop.agent_loop.schemas import (
+    LoopObservationEnvelope,
+    PatrolDecisionIntent,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +127,12 @@ class CuratorCoordinationStage:
                         loop_id=patrol.loop_id,
                         round_id=patrol.round_id,
                         kind="lane_curator",
-                        scope={"assignments": [scope], "curator_mode": scope["mode"], "patrol_session_id": session_id},
+                        scope={
+                            "assignments": [scope],
+                            "curator_mode": scope["mode"],
+                            "patrol_session_id": session_id,
+                            "derivation_input": self._derivation_input(observation),
+                        },
                     )
                     session.add(request)
                     await session.flush()
@@ -140,6 +165,20 @@ class CuratorCoordinationStage:
                     ),
                 )
             return len(existing)
+
+    @staticmethod
+    def _derivation_input(observation: LoopObservationEnvelope) -> dict:
+        manifests = SemanticManifestProjector().project(observation)
+        return {
+            "mission": observation.mission or observation.goal,
+            "portfolio_frontier": observation.portfolio_frontier,
+            "semantic_manifests": tuple(item.model_dump(mode="json") for item in manifests),
+            "stable_results": observation.stable_results,
+            "user_intents": observation.user_intents,
+            "workspace": observation.workspace,
+            "budget": observation.budget,
+            "context_scope": tuple((observation.grant or {}).get("context_scope") or ()),
+        }
 
     async def results(self, session_id: str) -> tuple[dict, ...]:
         async with self._sessions() as session:

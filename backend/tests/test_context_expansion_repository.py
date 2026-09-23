@@ -8,22 +8,37 @@ expansion。示例：`pytest backend/tests/test_context_expansion_repository.py`
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import os
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
 from backend.app.desktop.agent_loop import AgentLoopService, LoopCreateRequest
-from backend.app.desktop.agent_loop.context_expansion.contracts import ExpansionOpportunity
-from backend.app.desktop.agent_loop.context_expansion.models import LoopContextExpansion, LoopContextExpansionTransition
-from backend.app.desktop.agent_loop.context_expansion.repository import ContextExpansionRepository, ExpansionRepositoryRejected
-from backend.app.desktop.context_evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
+from backend.app.desktop.agent_loop.context_expansion.contracts import (
+    EvidenceRequirement,
+    ExpansionOpportunity,
+    WorkContextSpec,
+)
+from backend.app.desktop.agent_loop.context_expansion.models import (
+    LoopContextExpansion,
+    LoopContextExpansionTransition,
+)
+from backend.app.desktop.agent_loop.context_expansion.repository import (
+    ContextExpansionRepository,
+    ExpansionRepositoryRejected,
+)
+from backend.app.desktop.context_evolution import (
+    ContextRevisionContract,
+    ContextRevisionOriginKind,
+    ContextRevisionPayloadMode,
+    ContextRevisionProjectionStatus,
+    ContextRevisionRef,
+    ContextRevisionRepository,
+)
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -33,26 +48,37 @@ def test_expansion_repository_is_idempotent_and_recoverable(tmp_path) -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         service, snapshot, source = await _create_loop(sessions, tmp_path)
+        work_spec = WorkContextSpec.create(
+            planner_version="planner-v1",
+            objective="Independently verify focused tests.",
+            separation_reason="Verification needs an independent evidence history.",
+            questions=("Do the focused tests pass reproducibly?",),
+            completion_criteria=("Focused tests pass with reproducible output.",),
+            workspace_requirement="read_only",
+            evidence_requirements=(
+                EvidenceRequirement(
+                    requirement_id="tests",
+                    role="test",
+                    question="What do the focused tests establish?",
+                    coverage_criterion="Exact test evidence is available.",
+                ),
+            ),
+        )
         opportunity = ExpansionOpportunity.create(
             loop_id=snapshot["loop_id"],
             round_id=snapshot["current_round_id"],
-            source=source,
-            purpose="Independent verification",
-            work_order="Run focused tests without modifying the primary workspace.",
-            completion_check="Focused tests pass with reproducible output.",
-            workspace_mode="read_only",
-            independence_key="completion-check:tests",
-            triggers=("independent_verification",),
+            observation_hash="a" * 64,
+            work_spec=work_spec,
+            manifest_sources=(source,),
             required=True,
         )
         repository = ContextExpansionRepository()
         try:
             async with sessions.begin() as session:
-                first = await repository.create(session, opportunity, policy_version="context-expansion-v1", level="required")
-                second = await repository.create(session, opportunity, policy_version="context-expansion-v1", level="required")
+                first = await repository.create(session, opportunity, policy_version="semantic-expansion-admission-v2", level="required")
+                second = await repository.create(session, opportunity, policy_version="semantic-expansion-admission-v2", level="required")
                 assert first.expansion_id == second.expansion_id
             async with sessions.begin() as session:
-                await ContextExpansionRepository().transition(session, opportunity.opportunity_id, "curated", "Bootstrap Curator 已形成候选")
                 await ContextExpansionRepository().transition(session, opportunity.opportunity_id, "proposed", "Patrol 已提出派生")
                 await ContextExpansionRepository().transition(session, opportunity.opportunity_id, "blocked", "Context 预算已耗尽", blocker_code="context_budget_exhausted")
             async with sessions() as session:
@@ -60,13 +86,20 @@ def test_expansion_repository_is_idempotent_and_recoverable(tmp_path) -> None:
                 history = tuple((await session.scalars(select(LoopContextExpansionTransition).where(LoopContextExpansionTransition.expansion_id == opportunity.opportunity_id).order_by(LoopContextExpansionTransition.revision))).all())
                 keys = await ContextExpansionRepository().active_independence_keys(session, snapshot["loop_id"])
             assert row.state == "blocked"
-            assert row.revision == 4
+            assert row.revision == 6
             assert row.blocker_code == "context_budget_exhausted"
-            assert [item.to_state for item in history] == ["detected", "curated", "proposed", "blocked"]
+            assert [item.to_state for item in history] == [
+                "signals_collected",
+                "portfolio_projected",
+                "work_planned",
+                "admitted",
+                "proposed",
+                "blocked",
+            ]
             assert keys == frozenset()
             async with sessions.begin() as session:
                 same = await ContextExpansionRepository().transition(session, opportunity.opportunity_id, "blocked", "ignored duplicate")
-                assert same.revision == 4
+                assert same.revision == 6
                 with pytest.raises(ExpansionRepositoryRejected):
                     await ContextExpansionRepository().transition(session, opportunity.opportunity_id, "proposed", "illegal restart")
         finally:

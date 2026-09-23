@@ -9,34 +9,72 @@ r"""本文件验证可恢复 Patrol Session 状态机、结构化历史与安全
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import os
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.agent_loop import AgentLoopService, LoopCreateRequest, LoopKernel, PatrolDecisionIntent
+from backend.app.desktop.agent_loop import (
+    AgentLoopService,
+    LoopCreateRequest,
+    LoopKernel,
+    PatrolDecisionIntent,
+)
 from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
-from backend.app.desktop.agent_loop.curator_assignments import CuratorAssignmentRepository, CuratorScope
+from backend.app.desktop.agent_loop.curator_assignments import (
+    CuratorAssignmentRepository,
+    CuratorScope,
+)
 from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective, LoopObservation, LoopPatrolAttempt, LoopRound, LoopWorkerRequest
-from backend.app.desktop.agent_loop.patrol import PatrolContractViolation, PortfolioPatrol
-from backend.app.desktop.agent_loop.patrol_audit import PatrolAuditRepository
-from backend.app.desktop.agent_loop.patrol_runtime import CuratorCoordinationStage, PatrolSessionLifecycle
-from backend.app.desktop.agent_loop.patrol_session_models import LoopCuratorAssignment
-from backend.app.desktop.agent_loop.patrol_session_repository import PatrolSessionRepository
-from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, PatrolEvidenceReference, PatrolPhase, PatrolSessionStateMachine, PatrolTransitionRejected, PatrolWaitTarget
+from backend.app.desktop.agent_loop.models import (
+    AgentLoop,
+    LoopDirective,
+    LoopObservation,
+    LoopPatrolAttempt,
+    LoopRound,
+    LoopWorkerRequest,
+)
 from backend.app.desktop.agent_loop.observation import observation_hash
-from backend.app.desktop.agent_loop.round_orchestration import LoopObservationService, LoopRoundOrchestrator
+from backend.app.desktop.agent_loop.patrol import (
+    PatrolContractViolation,
+    PortfolioPatrol,
+)
+from backend.app.desktop.agent_loop.patrol_audit import PatrolAuditRepository
+from backend.app.desktop.agent_loop.patrol_runtime import (
+    CuratorCoordinationStage,
+    PatrolSessionLifecycle,
+)
+from backend.app.desktop.agent_loop.patrol_session_models import LoopCuratorAssignment
+from backend.app.desktop.agent_loop.patrol_session_repository import (
+    PatrolSessionRepository,
+)
+from backend.app.desktop.agent_loop.patrol_session_state import (
+    PatrolActivity,
+    PatrolEvidenceReference,
+    PatrolPhase,
+    PatrolSessionStateMachine,
+    PatrolTransitionRejected,
+    PatrolWaitTarget,
+)
+from backend.app.desktop.agent_loop.round_orchestration import (
+    LoopObservationService,
+    LoopRoundOrchestrator,
+)
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 from backend.app.desktop.agent_loop.workers import LaneAdviceProposal, LoopWorkerRuntime
-from backend.app.desktop.context_evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
+from backend.app.desktop.context_evolution import (
+    ContextRevisionContract,
+    ContextRevisionOriginKind,
+    ContextRevisionPayloadMode,
+    ContextRevisionProjectionStatus,
+    ContextRevisionRef,
+    ContextRevisionRepository,
+)
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -145,7 +183,7 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
                 )
                 worker = await session.get(LoopWorkerRequest, claimed[0].worker_request_id, with_for_update=True)
                 worker.status = "success"
-                worker.result = {"rationale": "tests reveal one failure", "proposals": []}
+                worker.result = {"rationale": "tests reveal one failure", "work_specs": []}
                 worker.completed_at = datetime.now(UTC)
             async with sessions() as session:
                 states = set((await session.scalars(select(LoopCuratorAssignment.state).where(LoopCuratorAssignment.session_id == patrol.session_id))).all())
@@ -180,7 +218,7 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
                     await assignments.transition(session, assignment.assignment_id, "proposed", "Curator proposal 已提交", result_summary="safe proposal")
                     worker = await session.get(LoopWorkerRequest, assignment.worker_request_id, with_for_update=True)
                     worker.status = "success"
-                    worker.result = {"rationale": "safe proposal", "proposals": []}
+                    worker.result = {"rationale": "safe proposal", "work_specs": []}
                     worker.completed_at = datetime.now(UTC)
                 round_row = await session.get(LoopRound, snapshot["current_round_id"], with_for_update=True)
                 round_row.status = "curated"
@@ -214,7 +252,7 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
 def test_curator_proposal_rejects_direct_authoritative_effects() -> None:
     for effect in ("send_directive", "publish_portfolio", "change_contract", "verify_fact"):
         with pytest.raises(ValidationError):
-            LaneAdviceProposal(rationale="attempt", proposals=({"execute": effect},))
+            LaneAdviceProposal(rationale="attempt", work_specs=({"execute": effect},))
     with pytest.raises(ValidationError):
         CuratorScope.model_validate({"context_id": "c", "revision_id": "r", "raw_prompt": "secret"})
     with pytest.raises(ValidationError):

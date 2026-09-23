@@ -12,6 +12,7 @@ import os
 import uuid
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 from sqlalchemy import delete
@@ -19,16 +20,15 @@ from sqlalchemy import delete
 os.environ.setdefault("OPENAI_API_KEY", "desktop-test")
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
-from backend.app.gateway.app import app  # noqa: E402
-from backend.app.desktop.models import (  # noqa: E402
+from backend.app.desktop.models import (
     AgentMessage,
     DesktopRun,
     DesktopThread,
     DesktopWorkspace,
     SwarmAgent,
 )
-from backend.app.desktop.service import DesktopService  # noqa: E402
-
+from backend.app.desktop.service import DesktopService
+from backend.app.gateway.app import app
 
 SESSION = {"X-Focus-Session": "focus-dev-session"}
 
@@ -121,8 +121,19 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
                 },
             ).json()
             assert run["status"] == "pending"
-            wait_until(lambda: captured, timeout=15, message="主 Agent 装配未被捕获")
-            main_cfg = captured[-1]
+            wait_until(
+                lambda: any(
+                    "report_must_view_images" in {tool.name for tool in config["tools"]}
+                    for config in captured
+                ),
+                timeout=15,
+                message="主 Agent 必看图片装配未被捕获",
+            )
+            main_cfg = next(
+                config
+                for config in reversed(captured)
+                if "report_must_view_images" in {tool.name for tool in config["tools"]}
+            )
             main_names = {tool.name for tool in main_cfg["tools"]}
             assert {"spawn_agent", "spawn_teammate", "spawn_worker", "wake_agent",
                     "wait_for_swarm",
@@ -285,6 +296,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
             # 消息直接进输入，不落 mailbox（避免回合注入重复带入）
             async def check_no_mailbox_copy() -> bool:
                 from sqlalchemy import func, select
+
                 from backend.app.desktop.models import AgentMessage
 
                 async with service.session_factory() as session:
@@ -301,7 +313,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
                 await service.agent_collab._stop_swarm_agent(wake_agent_id)
                 try:
                     await service._wake_swarm(wake_agent_id, "再干一轮", wake_context())
-                except Exception as exc:
+                except HTTPException as exc:
                     return exc
                 return None
 

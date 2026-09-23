@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import delete, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 if os.name == "nt":
@@ -24,19 +24,21 @@ _ENGINE = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
 _SESSION_FACTORY = async_sessionmaker(_ENGINE, expire_on_commit=False)
 atexit.register(lambda: _LOOP.run_until_complete(_ENGINE.dispose()))
 
-from backend.app.desktop.models import (  # noqa: E402
+from focus.agents.material_inputs import RunMaterialInputs
+from focus.security.policy import AccessMode
+
+from backend.app.desktop.models import (
+    DesktopRun,
     DesktopThread,
     DesktopWorkspace,
     MainRunCreate,
     SwarmAgent,
 )
-from backend.app.desktop.service import (  # noqa: E402
+from backend.app.desktop.service import (
     _MAIN_RUNTIME_EQUIPMENT_KEY,
-    _resolve_access_mode,
     DesktopService,
+    _resolve_access_mode,
 )
-from focus.agents.material_inputs import RunMaterialInputs  # noqa: E402
-from focus.security.policy import AccessMode  # noqa: E402
 
 _MIGRATION_NAME = "a1b2c3d4e5f6_add_swarm_agent_access_mode.py"
 _VERSIONS = (
@@ -125,7 +127,7 @@ async def _stub_none(*_args, **_kwargs):
 
 async def _stub_prepare(self, run, thread_id, workspace_id, workspace_path, messages, prompt,
                         equipment, _ns, _kind, checkpoint_id, **_kwargs):
-    return SimpleNamespace(equipment=equipment)
+    return SimpleNamespace(equipment=equipment, payload={})
 
 
 async def _stub_resolve_materials(*_args, **_kwargs):
@@ -222,7 +224,14 @@ def test_equipment_round_trip_keeps_access_mode(monkeypatch):
         await service.start_main_run(task_id, "你好", None, ["read"], [], access_mode="full")
         async with _SESSION_FACTORY() as session:
             thread = await session.get(DesktopThread, task_id)
-            return dict(thread.ui_state or {})[_MAIN_RUNTIME_EQUIPMENT_KEY]
+            equipment = dict(thread.ui_state or {})[_MAIN_RUNTIME_EQUIPMENT_KEY]
+            await session.execute(delete(DesktopRun).where(DesktopRun.task_id == task_id))
+            await session.execute(delete(DesktopThread).where(DesktopThread.task_id == task_id))
+            await session.execute(
+                delete(DesktopWorkspace).where(DesktopWorkspace.workspace_id == workspace_id)
+            )
+            await session.commit()
+            return equipment
 
     assert _LOOP.run_until_complete(_run())["access_mode"] == "full"
 
@@ -262,6 +271,13 @@ def test_derived_agent_records_keep_access_mode():
         async with _SESSION_FACTORY() as session:
             default = await session.get(SwarmAgent, "agent-default")
             widened = await session.get(SwarmAgent, "agent-full")
-            return default.access_mode, widened.access_mode
+            access_modes = (default.access_mode, widened.access_mode)
+            await session.execute(delete(SwarmAgent).where(SwarmAgent.task_id == task_id))
+            await session.execute(delete(DesktopThread).where(DesktopThread.task_id == task_id))
+            await session.execute(
+                delete(DesktopWorkspace).where(DesktopWorkspace.workspace_id == "ws-derived")
+            )
+            await session.commit()
+            return access_modes
 
     assert _LOOP.run_until_complete(_run()) == ("workspace", "full")

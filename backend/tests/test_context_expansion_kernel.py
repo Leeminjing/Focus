@@ -1,57 +1,99 @@
 r"""本文件对外提供 additive Context expansion 的 Kernel、并发发布、事务重试与提交后恢复集成测试。
 
-输入为真实 PostgreSQL 中带活动 Run 的 Loop、冻结来源 Revision、read-only 或 isolated-write 内部 CreateLanePlan；
-输出为边界 assessment、只读增量派生获授权、原子创建第二 Context、Directive 交付、双 Run 并存、并发发布收敛、
-serialization 重试不泄漏身份、提交后重启仅派发一次、compiler blocker 终结 Round，以及未授权隔离写入被拒绝的断言。
-具体工作流为播种 Loop、登记 expansion lifecycle、提交 Kernel intent、注入首次提交回滚或同时发布、从新连接恢复 Outbox 派发，
-并核对持久身份、终态历史与释放后的独立性覆盖。
+输入为真实 PostgreSQL 中带活动 Run 的 Loop、冻结单源或多源 Revision、Mission/Run evidence，以及 read-only 或
+isolated-write 内部 CreateLanePlan；输出为边界 assessment、R3/R8/R5/F2 精确四角色 provenance、只读增量派生获授权、
+原子创建第二 Context、Directive 交付、双 Run 并存、并发发布收敛、serialization 重试不泄漏身份、提交后重启仅派发一次、
+compiler blocker 终结 Round，以及未授权隔离写入被拒绝的断言。具体工作流为播种 Loop 与冻结来源、登记完整 expansion
+lifecycle、提交 Kernel intent、注入首次提交回滚或同时发布、从新连接恢复 Outbox 派发，并核对持久计划、来源边与终态历史。
 示例：`pytest backend/tests/test_context_expansion_kernel.py`。
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import os
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-import uuid
 
-from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.base import BaseCheckpointSaver
 import pytest
+from config_helpers import app_config_for
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from test_agent_loop_round_liveness import _seed_loop, _stop
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.agent_loop import LoopKernel, LoopWaveDispatcher, PatrolDecisionIntent
-from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
-from backend.app.desktop.agent_loop.context_expansion.coordinator import ContextExpansionStage
-from backend.app.desktop.agent_loop.context_expansion.contracts import ExpansionBlocker, ExpansionOpportunity
+from backend.app.desktop.agent_loop import (
+    LoopKernel,
+    LoopWaveDispatcher,
+    PatrolDecisionIntent,
+)
+from backend.app.desktop.agent_loop.context_expansion.contracts import (
+    EvidenceRequirement,
+    ExpansionBlocker,
+    ExpansionOpportunity,
+    SemanticEvidenceUnit,
+    WorkContextSpec,
+)
+from backend.app.desktop.agent_loop.context_expansion.coordinator import (
+    ContextExpansionStage,
+)
 from backend.app.desktop.agent_loop.context_expansion.models import LoopContextExpansion
-from backend.app.desktop.agent_loop.context_expansion.repository import ContextExpansionRepository
+from backend.app.desktop.agent_loop.context_expansion.repository import (
+    ContextExpansionRepository,
+)
+from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
 from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopContextMembership, LoopDelegationGrant, LoopDirective, LoopRound
+from backend.app.desktop.agent_loop.live_projection_projector import (
+    LoopLiveSnapshotProjector,
+)
+from backend.app.desktop.agent_loop.live_snapshot_overlay import (
+    LoopLiveProjectionOverlay,
+)
+from backend.app.desktop.agent_loop.models import (
+    AgentLoop,
+    LoopContextMembership,
+    LoopDelegationGrant,
+    LoopDirective,
+    LoopRound,
+)
 from backend.app.desktop.agent_loop.patrol_runtime import PatrolSessionLifecycle
-from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, PatrolPhase
-from backend.app.desktop.agent_loop.portfolio_publication import LoopPortfolioAuthorityHook, LoopPortfolioPublicationService
+from backend.app.desktop.agent_loop.patrol_session_state import (
+    PatrolActivity,
+    PatrolPhase,
+)
+from backend.app.desktop.agent_loop.portfolio_publication import (
+    LoopPortfolioAuthorityHook,
+    LoopPortfolioPublicationService,
+)
 from backend.app.desktop.agent_loop.round_orchestration import LoopRoundOrchestrator
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
-from backend.app.desktop.context_curation import ComposeMessage, CreateLanePlan, CurationLane, NamespacedMessageRef
-from backend.app.desktop.context_evolution import ContextRevisionPayloadMode, ContextRevisionRef
+from backend.app.desktop.context_curation import (
+    ComposeMessage,
+    CreateLanePlan,
+    CurationLane,
+    NamespacedMessageRef,
+)
+from backend.app.desktop.context_evolution import (
+    ContextRevisionContract,
+    ContextRevisionOriginKind,
+    ContextRevisionPayloadMode,
+    ContextRevisionProjectionStatus,
+    ContextRevisionRef,
+    ContextRevisionRepository,
+)
 from backend.app.desktop.models import DesktopRun, DesktopThread
-
-from test_agent_loop_round_liveness import _seed_loop, _stop
-from config_helpers import app_config_for
-
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 
 class _SourceCheckpointer(BaseCheckpointSaver):
-    def __init__(self) -> None:
+    def __init__(self, messages_by_checkpoint: dict[str, list] | None = None) -> None:
         super().__init__()
+        self._messages_by_checkpoint = messages_by_checkpoint or {}
 
     async def aget_tuple(self, config):
         checkpoint_id = config["configurable"]["checkpoint_id"]
@@ -60,9 +102,14 @@ class _SourceCheckpointer(BaseCheckpointSaver):
             checkpoint={
                 "channel_values": {
                     "messages": [
-                        HumanMessage(
-                            content="Implement the feature and preserve independent verification evidence.",
-                            id="source-evidence",
+                        *self._messages_by_checkpoint.get(
+                            checkpoint_id,
+                            [
+                                HumanMessage(
+                                    content="Implement the feature and preserve independent verification evidence.",
+                                    id="source-evidence",
+                                )
+                            ],
                         )
                     ]
                 }
@@ -137,20 +184,9 @@ def test_isolated_write_expansion_requires_workspace_adoption_authority(tmp_path
     asyncio.run(run())
 
 
-@pytest.mark.parametrize(
-    ("case", "expected_level", "expected_code"),
-    (
-        ("no_split", "not_applicable", "not_independent"),
-        ("context_budget", "not_applicable", "context_budget_exhausted"),
-        ("token_pressure", "required", None),
-        ("duplicate", "not_applicable", "duplicate_expansion"),
-    ),
-)
-def test_persisted_assessment_pipeline_covers_expansion_boundaries(
-    tmp_path: Path,
-    case: str,
-    expected_level: str,
-    expected_code: str | None,
+@pytest.mark.parametrize(("case", "expected_level", "expected_code"), (("planned", "required", None), ("no_plan", "not_applicable", "not_independent"), ("context_budget", "not_applicable", "context_budget_exhausted")))
+def test_persisted_semantic_assessment_obeys_planning_and_budget(
+    tmp_path: Path, case: str, expected_level: str, expected_code: str | None
 ) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
@@ -159,12 +195,10 @@ def test_persisted_assessment_pipeline_covers_expansion_boundaries(
         try:
             await _grant_create_lane_and_add_active_run(sessions, seeded)
             observation = _expansion_observation(seeded)
-            if case in {"no_split", "token_pressure"}:
-                mission = {
-                    **observation.mission,
-                    "completion_checks": observation.mission["completion_checks"][:1],
-                }
-                observation = observation.model_copy(update={"mission": mission})
+            if case == "no_plan":
+                observation = observation.model_copy(
+                    update={"worker_results": ({"kind": "lane_curator", "status": "success", "result": {"work_specs": []}},)}
+                )
             if case == "context_budget":
                 observation = observation.model_copy(
                     update={
@@ -174,64 +208,17 @@ def test_persisted_assessment_pipeline_covers_expansion_boundaries(
                         }
                     }
                 )
-            elif case == "token_pressure":
-                observation = observation.model_copy(
-                    update={
-                        "budget": {
-                            **observation.budget,
-                            "usage": {**observation.budget["usage"], "input_tokens": 950},
-                        }
-                    }
-                )
-            elif case == "duplicate":
-                prior_round_id = uuid.uuid4().hex
-                async with sessions.begin() as session:
-                    current = await session.get(LoopRound, seeded["round_id"])
-                    session.add(
-                        LoopRound(
-                            round_id=prior_round_id,
-                            loop_id=seeded["loop_id"],
-                            number=0,
-                            status="settled",
-                            authority_revision=current.authority_revision,
-                            goal_revision=current.goal_revision,
-                            frontier_hash=current.frontier_hash,
-                            workspace_revision=current.workspace_revision,
-                            settled_at=datetime.now(UTC),
-                        )
-                    )
-                    await session.flush()
-                    for check in observation.mission["completion_checks"]:
-                        prior = ExpansionOpportunity.create(
-                            loop_id=seeded["loop_id"],
-                            round_id=prior_round_id,
-                            source=_source_ref(seeded),
-                            purpose=f"Earlier independent {check['check_id']}",
-                            work_order="Verify independently.",
-                            completion_check=check["claim"],
-                            workspace_mode="read_only",
-                            independence_key=f"completion-check:{check['check_id']}",
-                            triggers=("independent_verification",),
-                            required=True,
-                        )
-                        await ContextExpansionRepository().create(
-                            session,
-                            prior,
-                            policy_version="context-expansion-v1",
-                            level="required",
-                        )
-
             assessment = await ContextExpansionStage(sessions, _SourceCheckpointer()).assess(observation)
             async with sessions() as session:
                 rows = await ContextExpansionRepository().by_round(session, seeded["round_id"])
 
             assert assessment.level == expected_level
             if expected_code is None:
-                assert {item.independence_key for item in assessment.opportunities} == {"token-pressure-continuation"}
-                assert rows and all(row.state in {"detected", "curated"} for row in rows)
+                assert len(assessment.opportunities) == 2
+                assert rows and all(row.state == "admitted" for row in rows)
             else:
                 assert expected_code in {item.code for item in assessment.blockers}
-                if case == "no_split":
+                if case == "no_plan":
                     assert rows == ()
                 else:
                     assert rows and all(row.state == "blocked" for row in rows)
@@ -253,14 +240,14 @@ def test_read_only_expansion_retries_atomically_and_dispatches_once_after_restar
             stage = ContextExpansionStage(sessions, context_service.checkpointer)
             observation = _expansion_observation(seeded)
             assessment = await stage.assess(observation)
-            assert {item.independence_key for item in assessment.opportunities} == {
-                "completion-check:implementation",
-                "completion-check:verification",
+            assert {item.work_spec.objective for item in assessment.opportunities} == {
+                "Analyze the implementation evidence independently.",
+                "Verify the behavior independently.",
             }
             opportunity = next(
                 item
                 for item in assessment.opportunities
-                if item.independence_key == "completion-check:verification"
+                if item.work_spec.objective == "Verify the behavior independently."
             )
             base_intent = await _create_lane_intent(sessions, seeded, "read_only")
             semantic_intent = PatrolDecisionIntent.model_validate(
@@ -412,8 +399,13 @@ def test_read_only_expansion_retries_atomically_and_dispatches_once_after_restar
             assert len(persisted_directives) == 1
             assert [item.kind for item in context_events] == ["context.created"]
             assert [item.kind for item in expansion_events] == [
-                "context_expansion.detected",
+                "context_expansion.signals_collected",
+                "context_expansion.portfolio_projected",
+                "context_expansion.work_planned",
+                "context_expansion.admitted",
                 "context_expansion.proposed",
+                "context_expansion.evidence_resolved",
+                    "context_expansion.dossier_built",
                 "context_expansion.compiled",
                 "context_expansion.authorized",
                 "context_expansion.committed",
@@ -443,6 +435,135 @@ def test_read_only_expansion_retries_atomically_and_dispatches_once_after_restar
     asyncio.run(run())
 
 
+def test_multi_source_failure_analysis_commits_exact_four_role_provenance(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        seeded = await _seed_loop(sessions, tmp_path, label="four-role", started_at=datetime.now(UTC))
+        try:
+            testing = await _add_testing_source(sessions, seeded)
+            await _grant_create_lane_and_add_active_run(sessions, seeded)
+            checkpointer = _SourceCheckpointer(
+                {
+                    f"checkpoint-{seeded['context_id']}": [
+                        AIMessage(
+                            content="R8: persistence increments the failure counter before evaluating the lock.",
+                            id="R8",
+                        )
+                    ],
+                    testing.checkpoint_id: [
+                        AIMessage(
+                            content="Run the R5 account-lock assertion.",
+                            id="R5-call",
+                            tool_calls=[{"id": "call-R5", "name": "pytest", "args": {"test": "R5"}}],
+                        ),
+                        ToolMessage(
+                            content="Expected lock after the third failure; observed no lock.",
+                            tool_call_id="call-R5",
+                            name="pytest",
+                            status="error",
+                            id="R5",
+                        ),
+                    ],
+                }
+            )
+            context_service = _ContextService()
+            context_service.checkpointer = checkpointer
+            stage = ContextExpansionStage(sessions, checkpointer)
+            observation = _multi_source_expansion_observation(seeded, testing)
+            assessment = await stage.assess(observation)
+            assert len(assessment.opportunities) == 1
+            opportunity = assessment.opportunities[0]
+            resolution = await stage.resolve(
+                observation.model_copy(update={"expansion_assessment": assessment.model_dump(mode="json")}),
+                await _semantic_intent(sessions, seeded, opportunity),
+            )
+            assert resolution.blocker is None
+            assert resolution.intent is not None
+
+            committed = await LoopKernel(
+                sessions,
+                LoopPortfolioPublicationService(sessions, context_service),
+            ).commit(resolution.intent)
+            assert committed.status == "committed", committed.reason
+
+            async with sessions() as session:
+                expansion = await session.get(LoopContextExpansion, opportunity.opportunity_id)
+                created_revision = await ContextRevisionRepository().get_by_id(
+                    session,
+                    expansion.result["context_revision_id"],
+                )
+                memberships = tuple(
+                    (
+                        await session.scalars(
+                            select(LoopContextMembership).where(
+                                LoopContextMembership.loop_id == seeded["loop_id"]
+                            )
+                        )
+                    ).all()
+                )
+                journal_projection = await LoopLiveSnapshotProjector().project(
+                    session,
+                    seeded["loop_id"],
+                )
+                snapshot = await LoopLiveProjectionOverlay().apply(
+                    session,
+                    journal_projection,
+                    journal_projection.last_sequence,
+                )
+
+            items = expansion.resolution["items"]
+            assert {item["requirement_id"] for item in items} == {"R3", "R8", "R5", "F2"}
+            assert {item["ref"].get("kind", "context_message") for item in items} == {
+                "mission",
+                "context_message",
+                "run_result",
+            }
+            assert {source["revision_id"] for source in expansion.source_frontier} == {
+                seeded["revision_id"],
+                testing.revision_id,
+            }
+            assert {source.source.revision_id for source in created_revision.sources} == {
+                seeded["revision_id"],
+                testing.revision_id,
+            }
+            assert len(memberships) == 2
+            assert expansion.state == "committed"
+            assert expansion.definition_hash
+            assert expansion.result["dossier_id"]
+            assert any(
+                item.get("content", "").startswith("Evidence-grounded Dossier")
+                for item in expansion.compiled_plan["items"]
+                if item["type"] == "compose_message"
+            )
+            assert set(expansion.result["stage_records"]) == {
+                "signal_collection",
+                "portfolio_projection",
+                "cognitive_planning",
+                "admission",
+                "evidence_resolution",
+                "dossier_synthesis",
+                "compilation",
+            }
+            assert all(
+                record["duration_ms"] >= 0
+                and record["input_identities"]
+                and record["version"]
+                for record in expansion.result["stage_records"].values()
+            )
+            assert expansion.compiled_plan["evidence_frontier"] == expansion.evidence_frontier
+            projected = snapshot.expansions[opportunity.opportunity_id].state
+            assert projected["state"] == "committed"
+            assert projected["work_spec"]["objective"] == opportunity.work_spec.objective
+            assert projected["resolution"]["resolution_id"] == expansion.resolution["resolution_id"]
+            assert projected["safe_summary"] == expansion.safe_summary
+        finally:
+            await _stop(seeded["service"], seeded["loop_id"])
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_concurrent_expansion_publication_converges_on_one_context(tmp_path: Path) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
@@ -457,7 +578,7 @@ def test_concurrent_expansion_publication_converges_on_one_context(tmp_path: Pat
             opportunity = next(
                 item
                 for item in assessment.opportunities
-                if item.independence_key == "completion-check:verification"
+                if item.work_spec.objective == "Verify the behavior independently."
             )
             semantic = await _semantic_intent(sessions, seeded, opportunity)
             resolution = await stage.resolve(
@@ -519,19 +640,20 @@ def test_goal_revision_supersedes_compiled_expansion_before_authorization(tmp_pa
             opportunity = ExpansionOpportunity.create(
                 loop_id=seeded["loop_id"],
                 round_id=seeded["round_id"],
-                source=_source_ref(seeded),
-                purpose="Independent verification",
-                work_order="Verify the original goal independently.",
-                completion_check="Report reproducible evidence for the original goal.",
-                workspace_mode="read_only",
-                independence_key="completion-check:goal-revision",
-                triggers=("independent_verification",),
+                observation_hash="a" * 64,
+                work_spec=_work_spec(
+                    "Verify the original goal independently.",
+                    "Report reproducible evidence for the original goal.",
+                ),
+                manifest_sources=(_source_ref(seeded),),
                 required=True,
             )
             repository = ContextExpansionRepository()
             async with sessions.begin() as session:
-                await repository.create(session, opportunity, policy_version="context-expansion-v1", level="required")
+                await repository.create(session, opportunity, policy_version="semantic-expansion-admission-v2", level="required")
                 await repository.transition(session, opportunity.opportunity_id, "proposed", "Patrol 已提出派生")
+                await repository.transition(session, opportunity.opportunity_id, "evidence_resolved", "已解析 evidence")
+                await repository.transition(session, opportunity.opportunity_id, "synthesis_omitted", "无需 dossier")
                 await repository.transition(session, opportunity.opportunity_id, "compiled", "已编译可运行 LanePlan")
             stale_intent = await _create_lane_intent(
                 sessions,
@@ -574,7 +696,7 @@ def test_compiler_blocker_settles_round_and_terminal_history_prevents_retry(tmp_
             opportunity = next(
                 item
                 for item in assessment.opportunities
-                if item.independence_key == "completion-check:verification"
+                if item.work_spec.objective == "Verify the behavior independently."
             )
             semantic = await _semantic_intent(sessions, seeded, opportunity)
             blocker = ExpansionBlocker(
@@ -628,6 +750,20 @@ def test_compiler_blocker_settles_round_and_terminal_history_prevents_retry(tmp_
             assert loop.status == "waiting_user"
             assert "compiler_failed" in (loop.waiting_reason or "")
             assert patrol_state.phase == PatrolPhase.FAILED
+            async with sessions.begin() as session:
+                journal_projection = await LoopLiveSnapshotProjector().project(
+                    session,
+                    seeded["loop_id"],
+                )
+                snapshot = await LoopLiveProjectionOverlay().apply(
+                    session,
+                    journal_projection,
+                    journal_projection.last_sequence,
+                )
+            projected = snapshot.expansions[opportunity.opportunity_id].state
+            assert projected["state"] == "blocked"
+            assert projected["blocker_code"] == "compiler_failed"
+            assert projected["safe_summary"] == expansion.safe_summary
         finally:
             await _stop(seeded["service"], seeded["loop_id"])
             await engine.dispose()
@@ -660,6 +796,50 @@ async def _grant_create_lane_and_add_active_run(sessions, seeded: dict) -> None:
         )
 
 
+async def _add_testing_source(sessions, seeded: dict) -> ContextRevisionRef:
+    context_id = f"context-testing-{uuid.uuid4().hex[:8]}"
+    revision_id = uuid.uuid4().hex
+    ref = ContextRevisionRef(
+        context_id=context_id,
+        revision_id=revision_id,
+        generation=1,
+        execution_thread_id=f"thread-{context_id}",
+        checkpoint_ns="",
+        checkpoint_id=f"checkpoint-{context_id}",
+        payload_mode=ContextRevisionPayloadMode.CHECKPOINT,
+    )
+    async with sessions.begin() as session:
+        source = await session.get(DesktopThread, seeded["context_id"])
+        session.add(
+            DesktopThread(
+                task_id=context_id,
+                workspace_id=source.workspace_id,
+                thread_id=f"thread-{context_id}",
+                title="Testing evidence",
+            )
+        )
+        await session.flush()
+        await ContextRevisionRepository().insert(
+            session,
+            ContextRevisionContract(
+                ref=ref,
+                content_hash="b" * 64,
+                projection_status=ContextRevisionProjectionStatus.VALID,
+                origin_kind=ContextRevisionOriginKind.ROOT,
+                created_at=datetime.now(UTC),
+            ),
+        )
+        await ContextRevisionRepository().switch_current(session, ref, None)
+        grant = await session.scalar(
+            select(LoopDelegationGrant).where(
+                LoopDelegationGrant.loop_id == seeded["loop_id"],
+                LoopDelegationGrant.revision == seeded["snapshot"]["authority_revision"],
+            )
+        )
+        grant.context_scope = [*grant.context_scope, context_id]
+    return ref
+
+
 def _source_ref(seeded: dict) -> ContextRevisionRef:
     return ContextRevisionRef(
         context_id=seeded["context_id"],
@@ -672,9 +852,192 @@ def _source_ref(seeded: dict) -> ContextRevisionRef:
     )
 
 
+def _multi_source_expansion_observation(
+    seeded: dict,
+    testing: ContextRevisionRef,
+) -> LoopObservationEnvelope:
+    implementation = _source_ref(seeded)
+    snapshot = seeded["snapshot"]
+    implementation_unit = SemanticEvidenceUnit.create(
+        kind="implementation_effect",
+        authority="confirmed",
+        statement="R8: persistence increments the failure counter before evaluating the lock.",
+        evidence_refs=(NamespacedMessageRef(source=implementation, message_id="R8"),),
+    )
+    test_unit = SemanticEvidenceUnit.create(
+        kind="verification_result",
+        authority="confirmed",
+        statement="Expected lock after the third failure; observed no lock.",
+        evidence_refs=(NamespacedMessageRef(source=testing, message_id="R5"),),
+    )
+    work_spec = WorkContextSpec.create(
+        planner_version="worker-cognitive-planner-v1",
+        objective="Determine the falsifiable root cause of the failed account lock behavior.",
+        separation_reason="The investigation requires requirement, implementation, test, and runtime failure evidence.",
+        questions=("Which implementation assumption contradicts the observed failure?",),
+        completion_criteria=("A root-cause hypothesis is tied to reproducible evidence.",),
+        workspace_requirement="read_only",
+        evidence_requirements=(
+            EvidenceRequirement(
+                requirement_id="R3",
+                role="requirement",
+                question="What behavior is required?",
+                coverage_criterion="The exact mission requirement is available.",
+            ),
+            EvidenceRequirement(
+                requirement_id="R8",
+                role="implementation",
+                question="What implementation enforces the behavior?",
+                coverage_criterion="The exact implementation evidence is available.",
+                candidate_unit_ids=(implementation_unit.unit_id,),
+            ),
+            EvidenceRequirement(
+                requirement_id="R5",
+                role="test",
+                question="What test asserts the required behavior?",
+                coverage_criterion="The exact test result is available.",
+                candidate_unit_ids=(test_unit.unit_id,),
+            ),
+            EvidenceRequirement(
+                requirement_id="F2",
+                role="failure",
+                question="How did the run fail?",
+                coverage_criterion="The stable failure result is available.",
+            ),
+        ),
+    )
+    return LoopObservationEnvelope.model_validate(
+        {
+            "loop_id": seeded["loop_id"],
+            "loop_revision": snapshot["revision"],
+            "round_id": seeded["round_id"],
+            "goal_revision": snapshot["goal_revision"],
+            "authority_revision": snapshot["authority_revision"],
+            "observed_frontier_hash": "e" * 64,
+            "mission": {
+                "outcome": "Lock the account after the third failed attempt",
+                "boundaries": {
+                    "in_scope": [],
+                    "required_invariants": [],
+                    "prohibited_actions": [],
+                },
+                "completion_checks": [
+                    {
+                        "check_id": "R3",
+                        "claim": "Lock the account after the third failed attempt.",
+                        "required": True,
+                        "expected_evidence_kinds": ["test"],
+                    }
+                ],
+            },
+            "grant": {
+                "capabilities": ["continue_context", "create_lane"],
+                "context_scope": [seeded["context_id"], testing.context_id],
+                "permission_scope": ["read"],
+            },
+            "portfolio_frontier": [
+                {
+                    "lane_id": "lane-implementation",
+                    "context_id": seeded["context_id"],
+                    "revision_id": seeded["revision_id"],
+                    "revision": implementation.model_dump(mode="json"),
+                    "role": "implementation",
+                    "content_hash": "a" * 64,
+                    "message_evidence_preview": [
+                        {
+                            "message_id": "R8",
+                            "role": "ai",
+                            "content": "R8: persistence increments the failure counter before evaluating the lock.",
+                            "semantic_kind": "implementation_effect",
+                        }
+                    ],
+                },
+                {
+                    "lane_id": "lane-testing",
+                    "context_id": testing.context_id,
+                    "revision_id": testing.revision_id,
+                    "revision": testing.model_dump(mode="json"),
+                    "role": "testing",
+                    "content_hash": "b" * 64,
+                    "message_evidence_preview": [
+                        {
+                            "message_id": "R5-call",
+                            "role": "ai",
+                            "content": "Run the R5 account-lock assertion.",
+                        },
+                        {
+                            "message_id": "R5",
+                            "role": "tool",
+                            "content": "Expected lock after the third failure; observed no lock.",
+                            "status": "error",
+                            "semantic_kind": "verification_result",
+                        },
+                    ],
+                },
+            ],
+            "stable_results": [
+                {
+                    "run_id": "run-F2",
+                    "context_id": testing.context_id,
+                    "result_id": "F2",
+                    "status": "failed",
+                    "error": "account remained unlocked",
+                    "attempt": 3,
+                }
+            ],
+            "workspace": {"revision": 1},
+            "budget": {
+                "limits": {
+                    "max_contexts": 16,
+                    "max_lanes": 8,
+                    "max_new_lanes_per_round": 3,
+                    "max_concurrent_runs": 4,
+                    "max_input_tokens": 1000,
+                    "max_expansion_evidence_items": 32,
+                },
+                "usage": {
+                    "contexts": 2,
+                    "lanes": 2,
+                    "rounds": 1,
+                    "input_tokens": 100,
+                    "no_progress_count": 2,
+                },
+            },
+            "worker_results": [
+                {
+                    "kind": "lane_curator",
+                    "status": "success",
+                    "result": {
+                        "work_specs": [
+                            {
+                                "objective": work_spec.objective,
+                                "separation_reason": work_spec.separation_reason,
+                                "questions": work_spec.questions,
+                                "completion_criteria": work_spec.completion_criteria,
+                                "workspace_requirement": work_spec.workspace_requirement,
+                                "evidence_requirements": [
+                                    item.model_dump(mode="json")
+                                    for item in work_spec.evidence_requirements
+                                ],
+                                "required": True,
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+    )
+
+
 def _expansion_observation(seeded: dict) -> LoopObservationEnvelope:
     source = _source_ref(seeded)
     snapshot = seeded["snapshot"]
+    source_unit = SemanticEvidenceUnit.create(
+        kind="claim",
+        authority="confirmed",
+        statement="Implement the feature and preserve independent verification evidence.",
+        evidence_refs=(NamespacedMessageRef(source=source, message_id="source-evidence"),),
+    )
     return LoopObservationEnvelope.model_validate(
         {
             "loop_id": seeded["loop_id"],
@@ -717,6 +1080,14 @@ def _expansion_observation(seeded: dict) -> LoopObservationEnvelope:
                     "revision_id": seeded["revision_id"],
                     "revision": source.model_dump(mode="json"),
                     "role": "primary",
+                    "content_hash": "a" * 64,
+                    "message_evidence_preview": [
+                        {
+                            "message_id": "source-evidence",
+                            "role": "human",
+                            "content": "Implement the feature and preserve independent verification evidence.",
+                        }
+                    ],
                 }
             ],
             "workspace": {"revision": 1},
@@ -736,8 +1107,69 @@ def _expansion_observation(seeded: dict) -> LoopObservationEnvelope:
                     "no_progress_count": 0,
                 },
             },
+            "worker_results": [
+                {
+                    "kind": "lane_curator",
+                    "status": "success",
+                    "result": {
+                        "work_specs": [
+                            _work_spec_draft(
+                                "Analyze the implementation evidence independently.",
+                                "Explain the implementation boundary from exact evidence.",
+                                source_unit.unit_id,
+                            ),
+                            _work_spec_draft(
+                                "Verify the behavior independently.",
+                                "Report reproducible verification evidence.",
+                                source_unit.unit_id,
+                            ),
+                        ]
+                    },
+                }
+            ],
         }
     )
+
+
+def _work_spec(
+    objective: str,
+    completion: str,
+    candidate_unit_id: str | None = None,
+) -> WorkContextSpec:
+    return WorkContextSpec.create(
+        planner_version="worker-cognitive-planner-v1",
+        objective=objective,
+        separation_reason="This work needs an independent evidence history.",
+        questions=("What does the exact frozen evidence establish?",),
+        completion_criteria=(completion,),
+        workspace_requirement="read_only",
+        evidence_requirements=(
+            EvidenceRequirement(
+                requirement_id="source",
+                role="conversation",
+                question="What source evidence frames the work?",
+                coverage_criterion="An exact frozen Context message is available.",
+                candidate_unit_ids=(candidate_unit_id,) if candidate_unit_id else (),
+            ),
+        ),
+    )
+
+
+def _work_spec_draft(
+    objective: str,
+    completion: str,
+    candidate_unit_id: str | None = None,
+) -> dict:
+    spec = _work_spec(objective, completion, candidate_unit_id)
+    return {
+        "objective": spec.objective,
+        "separation_reason": spec.separation_reason,
+        "questions": spec.questions,
+        "completion_criteria": spec.completion_criteria,
+        "workspace_requirement": spec.workspace_requirement,
+        "evidence_requirements": [item.model_dump(mode="json") for item in spec.evidence_requirements],
+        "required": True,
+    }
 
 
 async def _semantic_intent(
@@ -745,7 +1177,7 @@ async def _semantic_intent(
     seeded: dict,
     opportunity: ExpansionOpportunity,
 ) -> PatrolDecisionIntent:
-    base = await _create_lane_intent(sessions, seeded, opportunity.workspace_mode)
+    base = await _create_lane_intent(sessions, seeded, opportunity.work_spec.workspace_requirement)
     return PatrolDecisionIntent.model_validate(
         {
             **base.model_dump(mode="json"),

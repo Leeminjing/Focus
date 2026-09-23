@@ -1,16 +1,16 @@
 r"""本文件对外提供 compile_lane、CompiledLaneCandidate、MessageLineage 与 SourceDisposition。
 
-输入为严格 create/update Lane plan 和命名空间 MultiSourceEvidence；输出为确定性 authored/execution
-消息、投影哈希、逐消息外部 lineage 与完整来源处置。具体工作流为验证每个来源四元键，系统生成
-消息及 tool-call 身份，调用统一 Context projection，且只接受无需隐藏修补的 valid 候选。
-示例：`compiled = compile_lane(plan, evidence)`。
+输入为严格 create/update Lane plan、Context message 与类型化结构证据组成的 `MultiSourceEvidence`；输出为
+确定性 authored/execution 消息、Context/evidence frontier、投影哈希、逐消息 lineage 与完整证据处置。
+具体工作流为分别校验 Context lineage 和 evidence frontier，限制 Copy/ToolExchange 使用精确消息引用，系统生成
+消息及 tool-call identity，调用统一 Context projection，且只接受无需隐藏修补的 valid 候选。示例：`compiled = compile_lane(plan, evidence)`。
 """
 
 from __future__ import annotations
 
-from copy import deepcopy
 import hashlib
 import json
+from copy import deepcopy
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -19,13 +19,16 @@ from backend.app.desktop.context_curation.contracts import (
     ComposeMessage,
     CopyMessage,
     CreateLanePlan,
+    EvidenceRef,
     LanePlan,
     MultiSourceEvidence,
     NamespacedMessageRef,
     SourceMessageEvidence,
+    StructuredEvidence,
     ToolExchange,
     ToolExchangeCall,
     UpdateLanePlan,
+    evidence_ref_key,
 )
 from backend.app.desktop.context_evolution import ContextRevisionRef
 from backend.app.desktop.context_projection import compile_context_messages
@@ -42,11 +45,11 @@ class _FrozenModel(BaseModel):
 class MessageLineage(_FrozenModel):
     target_message_id: str
     operation: Literal["copy_message", "compose_message", "tool_exchange"]
-    sources: tuple[NamespacedMessageRef, ...]
+    sources: tuple[EvidenceRef, ...]
 
 
 class SourceDisposition(_FrozenModel):
-    source: NamespacedMessageRef
+    source: EvidenceRef
     action: Literal["used", "discarded"]
     target_message_ids: tuple[str, ...]
     plan_item_indexes: tuple[int, ...]
@@ -57,6 +60,7 @@ class CompiledLaneCandidate(_FrozenModel):
     lane_id: str | None
     purpose: str
     source_frontier: tuple[ContextRevisionRef, ...]
+    evidence_frontier: tuple[EvidenceRef, ...] = ()
     authored_messages: tuple[dict[str, Any], ...]
     execution_messages: tuple[dict[str, Any], ...]
     message_lineage: tuple[MessageLineage, ...]
@@ -81,10 +85,10 @@ def compile_lane(
     mutation = parsed_plan.root
     if not isinstance(mutation, (CreateLanePlan, UpdateLanePlan)):
         raise LaneCompilationError(f"{mutation.action} 不生成新的 Context projection")
-    available = _selected_evidence(mutation.source_frontier, parsed_evidence)
+    available = _selected_evidence(mutation, parsed_evidence)
     messages: list[dict[str, Any]] = []
     lineage: list[MessageLineage] = []
-    usage: dict[tuple[str, str, str, str], list[tuple[str, int]]] = {}
+    usage: dict[tuple[str, ...], list[tuple[str, int]]] = {}
     for item_index, item in enumerate(mutation.items):
         compiled = _compile_item(mutation, item_index, item, available)
         messages.extend(message for message, _ in compiled)
@@ -98,7 +102,7 @@ def compile_lane(
                 )
             )
             for source in sources:
-                usage.setdefault(source.key, []).append((target_id, item_index))
+                usage.setdefault(evidence_ref_key(source), []).append((target_id, item_index))
     projection = compile_context_messages(messages)
     if projection.status != "valid":
         raise LaneCompilationError(
@@ -113,6 +117,9 @@ def compile_lane(
             "source_frontier": [
                 source.model_dump(mode="json") for source in mutation.source_frontier
             ],
+            "evidence_frontier": [
+                source.model_dump(mode="json") for source in mutation.evidence_frontier
+            ],
             "authored_messages": projection.authored_messages,
             "lineage": [item.model_dump(mode="json") for item in lineage],
         }
@@ -123,6 +130,7 @@ def compile_lane(
         lane_id=mutation.lane_id,
         purpose=mutation.purpose,
         source_frontier=mutation.source_frontier,
+        evidence_frontier=mutation.evidence_frontier,
         authored_messages=tuple(projection.authored_messages),
         execution_messages=tuple(projection.execution_messages),
         message_lineage=tuple(lineage),
@@ -136,31 +144,39 @@ def compile_lane(
 
 
 def _selected_evidence(
-    frontier: tuple[ContextRevisionRef, ...],
+    mutation: CreateLanePlan | UpdateLanePlan,
     evidence: MultiSourceEvidence,
-) -> dict[tuple[str, str, str, str], SourceMessageEvidence]:
+) -> dict[tuple[str, ...], SourceMessageEvidence | StructuredEvidence]:
     bundles = {bundle.source: bundle for bundle in evidence.sources}
-    missing = [source for source in frontier if source not in bundles]
+    missing = [source for source in mutation.source_frontier if source not in bundles]
     if missing:
         raise LaneCompilationError(
             "Lane candidate 缺少 source frontier evidence: "
             + ", ".join(source.revision_id for source in missing)
         )
-    return {
-        message.ref.key: message
-        for source in frontier
+    available: dict[tuple[str, ...], SourceMessageEvidence | StructuredEvidence] = {
+        evidence_ref_key(message.ref): message
+        for source in mutation.source_frontier
         for message in bundles[source].messages
     }
+    available.update({evidence_ref_key(item.ref): item for item in evidence.structured})
+    if mutation.evidence_frontier:
+        selected = {evidence_ref_key(ref) for ref in mutation.evidence_frontier}
+        missing_refs = selected.difference(available)
+        if missing_refs:
+            raise LaneCompilationError("Lane candidate 缺少 evidence frontier 内容")
+        return {key: value for key, value in available.items() if key in selected}
+    return available
 
 
 def _compile_item(
     mutation: CreateLanePlan | UpdateLanePlan,
     item_index: int,
     item: CopyMessage | ComposeMessage | ToolExchange,
-    available: dict[tuple[str, str, str, str], SourceMessageEvidence],
-) -> list[tuple[dict[str, Any], tuple[NamespacedMessageRef, ...]]]:
+    available: dict[tuple[str, ...], SourceMessageEvidence | StructuredEvidence],
+) -> list[tuple[dict[str, Any], tuple[EvidenceRef, ...]]]:
     if isinstance(item, CopyMessage):
-        source = _require_source(item.source, available, "CopyMessage")
+        source = _require_message_source(item.source, available, "CopyMessage")
         if source.role == "tool" or source.tool_calls:
             raise LaneCompilationError("CopyMessage 不能拆散来源工具交换")
         message = _message(
@@ -190,9 +206,9 @@ def _compile_tool_exchange(
     mutation: CreateLanePlan | UpdateLanePlan,
     item_index: int,
     item: ToolExchange,
-    available: dict[tuple[str, str, str, str], SourceMessageEvidence],
+    available: dict[tuple[str, ...], SourceMessageEvidence | StructuredEvidence],
 ) -> list[tuple[dict[str, Any], tuple[NamespacedMessageRef, ...]]]:
-    sources = _require_sources(item.sources, available, "ToolExchange")
+    sources = _require_message_sources(item.sources, available, "ToolExchange")
     callers = [source for source in sources if source.role == "ai" and source.tool_calls]
     if len(callers) != 1:
         raise LaneCompilationError("ToolExchange 必须引用且只能引用一个 tool-calling AIMessage")
@@ -247,7 +263,8 @@ def _verify_call(
     results: dict[str, SourceMessageEvidence],
     position: int,
 ) -> tuple[ToolExchangeCall, SourceMessageEvidence]:
-    result = results.get(source_call.get("id"))
+    source_call_id = source_call.get("id")
+    result = results.get(str(source_call_id)) if source_call_id else None
     if result is None:
         raise LaneCompilationError("ToolExchange 缺少来源 ToolMessage")
     source_status = result.status or "success"
@@ -262,22 +279,41 @@ def _verify_call(
 
 
 def _require_source(
+    ref: EvidenceRef,
+    available: dict[tuple[str, ...], SourceMessageEvidence | StructuredEvidence],
+    operation: str,
+) -> SourceMessageEvidence | StructuredEvidence:
+    source = available.get(evidence_ref_key(ref))
+    if source is None:
+        raise LaneCompilationError(f"{operation} 引用不存在的 evidence: {evidence_ref_key(ref)}")
+    return source
+
+
+def _require_message_source(
     ref: NamespacedMessageRef,
-    available: dict[tuple[str, str, str, str], SourceMessageEvidence],
+    available: dict[tuple[str, ...], SourceMessageEvidence | StructuredEvidence],
     operation: str,
 ) -> SourceMessageEvidence:
-    source = available.get(ref.key)
-    if source is None:
-        raise LaneCompilationError(f"{operation} 引用不存在的命名空间 evidence: {ref.key}")
+    source = _require_source(ref, available, operation)
+    if not isinstance(source, SourceMessageEvidence):
+        raise LaneCompilationError(f"{operation} 只能引用 Context message evidence")
     return source
 
 
 def _require_sources(
+    refs: tuple[EvidenceRef, ...],
+    available: dict[tuple[str, ...], SourceMessageEvidence | StructuredEvidence],
+    operation: str,
+) -> tuple[SourceMessageEvidence | StructuredEvidence, ...]:
+    return tuple(_require_source(ref, available, operation) for ref in refs)
+
+
+def _require_message_sources(
     refs: tuple[NamespacedMessageRef, ...],
-    available: dict[tuple[str, str, str, str], SourceMessageEvidence],
+    available: dict[tuple[str, ...], SourceMessageEvidence | StructuredEvidence],
     operation: str,
 ) -> tuple[SourceMessageEvidence, ...]:
-    return tuple(_require_source(ref, available, operation) for ref in refs)
+    return tuple(_require_message_source(ref, available, operation) for ref in refs)
 
 
 def _message(
@@ -286,7 +322,7 @@ def _message(
     message_index: int,
     role: str,
     content: Any,
-    sources: tuple[NamespacedMessageRef, ...],
+    sources: tuple[EvidenceRef, ...],
     **extra: Any,
 ) -> dict[str, Any]:
     message_id = _stable_id(
@@ -303,8 +339,8 @@ def _message(
 
 
 def _dispositions(
-    available: dict[tuple[str, str, str, str], SourceMessageEvidence],
-    usage: dict[tuple[str, str, str, str], list[tuple[str, int]]],
+    available: dict[tuple[str, ...], SourceMessageEvidence | StructuredEvidence],
+    usage: dict[tuple[str, ...], list[tuple[str, int]]],
 ) -> tuple[SourceDisposition, ...]:
     result: list[SourceDisposition] = []
     for key, source in available.items():

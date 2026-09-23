@@ -1,7 +1,7 @@
 r"""本文件对外提供 ExpansionAdmissionPolicy。
 
-输入为冻结 observation、ExpansionOpportunity 集合和已持久化 independence keys；输出为版本化 ExpansionAssessment。
-具体工作流为逐候选检查来源、授权、预算、重复与工作区安全，保留可执行候选并为每个拒绝生成稳定 blocker，
+输入为冻结 observation、携带 WorkContextSpec 的 ExpansionOpportunity 集合和已持久化 work-spec identities；输出为版本化
+ExpansionAssessment。具体工作流为逐候选检查可判定性、多 manifest 来源、授权、预算、重复与工作区安全，保留可执行候选并为每个拒绝生成稳定 blocker，
 最后确定 required、recommended 或 not_applicable。示例：`assessment = policy.evaluate(observation, opportunities)`。
 """
 
@@ -18,7 +18,7 @@ from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 
 
 class ExpansionAdmissionPolicy:
-    VERSION = "context-expansion-v1"
+    VERSION = "semantic-expansion-admission-v2"
 
     def evaluate(
         self,
@@ -76,26 +76,29 @@ class ExpansionAdmissionPolicy:
             for item in observation.portfolio_frontier
         }
         scope = set(grant.get("context_scope") or source_ids)
-        source_identity = (
-            opportunity.source.context_id,
-            opportunity.source.revision_id,
-            opportunity.source.checkpoint_id or "",
-        )
+        source_identities = {
+            (source.context_id, source.revision_id, source.checkpoint_id or "")
+            for source in opportunity.manifest_sources
+        }
+        manifest_context_ids = {source.context_id for source in opportunity.manifest_sources}
         duplicate_keys = {item.casefold() for item in existing_independence_keys}
         isolation_available = bool(observation.workspace.get("isolation_available", True))
+        workspace_mode = opportunity.work_spec.workspace_requirement
         checks = (
             ("create_lane" not in capabilities and "spawn_context" not in capabilities, "authority_missing", "当前 delegation 未授权创建派生 Context", False),
-            (opportunity.source.context_id not in source_ids, "source_unreadable", "派生来源不在冻结 Portfolio frontier", False),
-            (opportunity.source.context_id in source_ids and source_identity not in exact_sources, "stale_source", "派生来源 Revision 已不再是冻结 frontier 的精确来源", False),
-            (opportunity.source.context_id not in scope, "source_out_of_scope", "派生来源不在 delegation context scope", False),
+            (not opportunity.work_spec.separation_reason, "not_independent", "工作规格未声明独立认知边界", False),
+            (not opportunity.work_spec.completion_criteria, "completion_not_decidable", "工作规格没有可判定完成条件", False),
+            (bool(manifest_context_ids - source_ids), "source_unreadable", "manifest 来源不在冻结 Portfolio frontier", False),
+            (bool(source_identities - exact_sources), "stale_source", "manifest Revision 已不再是冻结 frontier 的精确来源", False),
+            (bool(manifest_context_ids - scope), "source_out_of_scope", "manifest 来源不在 delegation context scope", False),
             (int(usage.get("contexts", len(source_ids)) or 0) >= int(limits.get("max_contexts", 16) or 16), "context_budget_exhausted", "Context 预算已耗尽", True),
             (int(usage.get("lanes", len(source_ids)) or 0) >= int(limits.get("max_lanes", 8) or 8), "lane_budget_exhausted", "Lane 预算已耗尽", True),
             (int(limits.get("max_new_lanes_per_round", 3) or 0) < 1, "round_lane_budget_exhausted", "本轮不允许新增 Lane", True),
             (self._active_runs(observation) >= int(limits.get("max_concurrent_runs", 4) or 4), "concurrency_budget_exhausted", "并行 Run 预算已耗尽", True),
             (opportunity.independence_key.casefold() in duplicate_keys, "duplicate_expansion", "等价 expansion 已存在", False),
-            (opportunity.workspace_mode == "isolated_write" and "write" not in permissions, "workspace_conflict", "派生写入未获得 write permission", False),
-            (opportunity.workspace_mode == "isolated_write" and "adopt_workspace_result" not in capabilities, "workspace_isolation_unavailable", "delegation 未授权隔离写入与结果采用", True),
-            (opportunity.workspace_mode == "isolated_write" and not isolation_available, "workspace_isolation_unavailable", "当前 workspace 无法分配隔离 Worktree", True),
+            (workspace_mode == "isolated_write" and "write" not in permissions, "workspace_conflict", "派生写入未获得 write permission", False),
+            (workspace_mode == "isolated_write" and "adopt_workspace_result" not in capabilities, "workspace_isolation_unavailable", "delegation 未授权隔离写入与结果采用", True),
+            (workspace_mode == "isolated_write" and not isolation_available, "workspace_isolation_unavailable", "当前 workspace 无法分配隔离 Worktree", True),
         )
         for failed, code, summary, retryable in checks:
             if failed:

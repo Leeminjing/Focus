@@ -1,8 +1,9 @@
 r"""本文件对外提供 LoopPortfolioPublicationService 与 LoopPortfolioAuthorityHook。
 
-输入为 Kernel 已授权的 Loop decision、结构化 Lane plan、精确多来源 evidence 和冻结控制版本；输出为
+输入为 Kernel 已授权的 Loop decision、结构化 Lane plan、已冻结 expansion resolution 或精确 Context evidence 和控制版本；输出为
 原子发布的 Portfolio revision、Loop membership、Expansion transition 与 delegated directives。具体工作流为预登记稳定 Lane 与
-Decision 唯一的 Portfolio identity，调用统一 compiler 生成候选，在 shadow checkpoint 幂等准备全部 Context revision，再由 authority hook 在
+Decision 唯一的 Portfolio identity；自动派生复用并核验持久化 resolution，其他 Lane 从精确 Revision 读取 evidence，随后调用统一
+compiler 生成候选，在 shadow checkpoint 幂等准备全部 Context revision，再由 authority hook 在
 AtomicPortfolioPublisher 的每次独立事务尝试内重验 Loop/grant/workspace，并提交所有 Loop 侧指针、指令、Context projection 与
 `portfolio.published` 规范事件与成员派生事实；服务只从最终已提交数据库事实返回 Directive identity，失败重试的内存状态不会泄漏。
 示例：`result = await service.publish(decision_id)`。
@@ -10,12 +11,23 @@ AtomicPortfolioPublisher 的每次独立事务尝试内重验 Loop/grant/workspa
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import uuid
+from dataclasses import dataclass
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.desktop.agent_loop.context_expansion.contracts import (
+    ResolvedEvidenceBundle,
+)
+from backend.app.desktop.agent_loop.context_expansion.models import LoopContextExpansion
+from backend.app.desktop.agent_loop.context_expansion.repository import (
+    ContextExpansionRepository,
+)
+from backend.app.desktop.agent_loop.directive_lifecycle import (
+    DirectiveLifecycleRepository,
+)
+from backend.app.desktop.agent_loop.lineage_events import ContextLineageEventRecorder
 from backend.app.desktop.agent_loop.models import (
     AgentLoop,
     LoopAction,
@@ -27,27 +39,26 @@ from backend.app.desktop.agent_loop.models import (
     LoopEventOutbox,
     LoopRound,
 )
-from backend.app.desktop.agent_loop.context_expansion.models import LoopContextExpansion
-from backend.app.desktop.agent_loop.context_expansion.repository import ContextExpansionRepository
-from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
-from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
 from backend.app.desktop.agent_loop.ownership import LoopFencingGuard
-from backend.app.desktop.agent_loop.portfolio_events import ContextPublicationEventRecorder, PortfolioPublicationEventRecorder
-from backend.app.desktop.agent_loop.lineage_events import ContextLineageEventRecorder
+from backend.app.desktop.agent_loop.portfolio_events import (
+    ContextPublicationEventRecorder,
+    PortfolioPublicationEventRecorder,
+)
+from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
 from backend.app.desktop.agent_loop.schemas import PATROL_ACTION_ADAPTER
 from backend.app.desktop.context_curation import (
     AtomicPortfolioPublisher,
     CurationLane,
     CurationProgram,
     CurationProgramRepository,
+    FrozenPortfolio,
     MultiSourceEvidence,
     NamespacedMessageRef,
-    FrozenPortfolio,
     PortfolioAuthorityCommitHook,
     PortfolioCandidatePreparer,
     PortfolioControlRevisions,
-    PortfolioFreezeRequest,
     PortfolioFreezer,
+    PortfolioFreezeRequest,
     PortfolioLaneAction,
     PortfolioLaneCandidate,
     PortfolioLaneIntent,
@@ -67,7 +78,6 @@ from backend.app.desktop.context_evolution import (
 )
 from backend.app.desktop.models import DesktopThread
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
-
 
 _LANE_MUTATIONS = frozenset({"create_lane", "update_lane", "merge_contexts"})
 
@@ -521,7 +531,8 @@ class LoopPortfolioPublicationService:
             if action.action not in _LANE_MUTATIONS:
                 continue
             plan = action.plan
-            candidate = compile_lane(plan, await self._evidence(session, plan.source_frontier))
+            evidence = await self._evidence_for_plan(session, loop.loop_id, plan)
+            candidate = compile_lane(plan, evidence)
             remembered_lane_id = row.result.get("lane_id")
             if remembered_lane_id:
                 lane = await session.get(CurationLane, str(remembered_lane_id), with_for_update=True)
@@ -576,6 +587,33 @@ class LoopPortfolioPublicationService:
             changed[lane.lane_id] = action
             compiled[lane.lane_id] = candidate
         return changed, compiled
+
+    async def _evidence_for_plan(
+        self,
+        session: AsyncSession,
+        loop_id: str,
+        plan,
+    ) -> MultiSourceEvidence:
+        expansion_id = str(plan.lane_policy.get("expansion_id") or "")
+        if not expansion_id:
+            return await self._evidence(session, plan.source_frontier)
+        expansion = await session.get(LoopContextExpansion, expansion_id)
+        if expansion is None or expansion.loop_id != loop_id:
+            raise PortfolioSuperseded("自动派生 Lane 缺少已授权 expansion")
+        if expansion.state not in {"compiled", "authorized", "committed", "dispatched"}:
+            raise PortfolioSuperseded("自动派生 expansion 尚未冻结可发布计划")
+        if not expansion.resolution or not expansion.compiled_plan:
+            raise PortfolioSuperseded("自动派生 expansion 缺少冻结 resolution 或 compiled plan")
+        bundle = ResolvedEvidenceBundle.model_validate(expansion.resolution)
+        if str(plan.lane_policy.get("resolution_id") or "") != bundle.resolution_id:
+            raise PortfolioSuperseded("自动派生 Lane resolution identity 已变化")
+        if plan.model_dump(mode="json") != expansion.compiled_plan:
+            raise PortfolioSuperseded("自动派生 Lane plan 与冻结 compiled plan 不一致")
+        if plan.source_frontier != bundle.source_frontier:
+            raise PortfolioSuperseded("自动派生 Lane source frontier 与冻结 resolution 不一致")
+        if plan.evidence_frontier != bundle.evidence_frontier:
+            raise PortfolioSuperseded("自动派生 Lane evidence frontier 与冻结 resolution 不一致")
+        return bundle.evidence
 
     async def _evidence(
         self,

@@ -1,43 +1,65 @@
 r"""本文件对外提供 ContextExpansionCoordinator、ContextExpansionStage 与 ExpansionResolution。
 
-输入为冻结 LoopObservationEnvelope、可选无权威 Curator adapter 与已存在 independence keys；输出为确定性
-ExpansionAssessment。具体工作流为 detector 先生成结构化候选，Curator 可补充语义提案，coordinator 将提案绑定
-冻结 source 后交给 policy admission；Stage 记录 assessment lifecycle，并把编译成功 intent 或结构化终态 blocker 返回编排层，
-派生计划的工作指令与语义字段一律取自冻结 opportunity，不持有 Kernel 或 Portfolio 提交能力。示例：`resolution = await stage.resolve(observation, intent)`。
+输入为冻结 LoopObservationEnvelope、可替换的 signal/projector/planner/policy 阶段与已存在 work-spec identities；输出为
+确定性 ExpansionAssessment。具体工作流为 façade 依次传递不可变 signals、semantic manifests、WorkContextSpec 和 admission
+结果；Stage 记录 lifecycle，并把 identity-only Patrol 选择编译为内部 LanePlan，不持有 Kernel 或 Portfolio 提交能力。
+示例：`resolution = await stage.resolve(observation, intent)`。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from backend.app.desktop.agent_loop.context_expansion.compiler import ContextExpansionPlanCompiler
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.desktop.agent_loop.context_expansion.compiler import (
+    ContextExpansionPlanCompiler,
+)
 from backend.app.desktop.agent_loop.context_expansion.contracts import (
-    CuratorExpansionProposal,
+    DerivationStageRecord,
     ExpansionAssessment,
     ExpansionBlocker,
     ExpansionOpportunity,
     SpawnContextIntent,
 )
-from backend.app.desktop.agent_loop.context_expansion.curator import ExpansionCuratorPort, NoopExpansionCurator, WorkerResultExpansionCurator
-from backend.app.desktop.agent_loop.context_expansion.detector import ExpansionOpportunityDetector
-from backend.app.desktop.agent_loop.context_expansion.policy import ExpansionAdmissionPolicy
-from backend.app.desktop.agent_loop.context_expansion.repository import ContextExpansionRepository
-from backend.app.desktop.agent_loop.schemas import CreateLaneAction, LoopObservationEnvelope, PatrolDecisionIntent
-from backend.app.desktop.context_evolution import ContextRevisionRef
+from backend.app.desktop.agent_loop.context_expansion.manifest_adapter import (
+    CompositeSemanticManifestProjector,
+)
+from backend.app.desktop.agent_loop.context_expansion.planner import (
+    CognitivePlannerPort,
+    WorkerResultCognitivePlanner,
+)
+from backend.app.desktop.agent_loop.context_expansion.policy import (
+    ExpansionAdmissionPolicy,
+)
+from backend.app.desktop.agent_loop.context_expansion.repository import (
+    ContextExpansionRepository,
+)
+from backend.app.desktop.agent_loop.context_expansion.signals import (
+    ExpansionSignalCollector,
+)
+from backend.app.desktop.agent_loop.context_expansion.stage_telemetry import (
+    DerivationStageTimer,
+)
+from backend.app.desktop.agent_loop.schemas import (
+    CreateLaneAction,
+    LoopObservationEnvelope,
+    PatrolDecisionIntent,
+)
 
 
 class ContextExpansionCoordinator:
     def __init__(
         self,
-        detector: ExpansionOpportunityDetector | None = None,
+        signals: ExpansionSignalCollector | None = None,
+        projector: CompositeSemanticManifestProjector | None = None,
+        planner: CognitivePlannerPort | None = None,
         policy: ExpansionAdmissionPolicy | None = None,
-        curator: ExpansionCuratorPort | None = None,
     ) -> None:
-        self._detector = detector or ExpansionOpportunityDetector()
+        self._signals = signals or ExpansionSignalCollector()
+        self._projector = projector or CompositeSemanticManifestProjector()
+        self._planner = planner or WorkerResultCognitivePlanner()
         self._policy = policy or ExpansionAdmissionPolicy()
-        self._curator = curator or NoopExpansionCurator()
 
     async def assess(
         self,
@@ -45,49 +67,111 @@ class ContextExpansionCoordinator:
         *,
         existing_independence_keys: frozenset[str] = frozenset(),
     ) -> ExpansionAssessment:
-        detected = self._detector.detect(observation)
-        proposals = await self._curator.propose(observation, detected)
-        opportunities = self._merge(observation, detected, proposals)
-        return self._policy.evaluate(
+        records: list[DerivationStageRecord] = []
+        signal_timer = DerivationStageTimer(
+            "signal_collection",
+            (observation.observed_frontier_hash,),
+            self._signals.VERSION,
+        )
+        signals = self._signals.collect(observation)
+        records.append(
+            signal_timer.finish(
+                tuple(item.signal_id for item in signals.signals),
+                f"已收集 {len(signals.signals)} 项结构化派生信号",
+            )
+        )
+        projection_timer = DerivationStageTimer(
+            "portfolio_projection",
+            (signals.observation_hash,),
+            self._projector.VERSION,
+        )
+        try:
+            manifests = self._projector.project(observation)
+        except (TypeError, ValueError) as exc:
+            records.append(projection_timer.finish((), "Portfolio semantic projection 失败"))
+            return self._failed_assessment(
+                observation,
+                "portfolio_projection_failed",
+                f"冻结 Portfolio 无法投影为可信 semantic manifests：{exc}",
+                stage_records=tuple(records),
+            )
+        records.append(
+            projection_timer.finish(
+                tuple(item.manifest_id for item in manifests),
+                f"已冻结 {len(manifests)} 个 semantic manifests",
+            )
+        )
+        planning_timer = DerivationStageTimer(
+            "cognitive_planning",
+            tuple(item.manifest_id for item in manifests),
+            self._planner.VERSION,
+        )
+        planned = await self._planner.plan(observation, signals, manifests)
+        if planned.failure is not None:
+            records.append(planning_timer.finish((), planned.failure.summary))
+            return self._failed_assessment(
+                observation,
+                "cognitive_planning_failed",
+                planned.failure.summary,
+                retryable=planned.failure.retryable,
+                stage_records=tuple(records),
+            )
+        records.append(
+            planning_timer.finish(
+                tuple(item.work_spec_id for item in planned.work_specs),
+                f"已规划 {len(planned.work_specs)} 项独立认知工作",
+            )
+        )
+        opportunities = tuple(
+            ExpansionOpportunity.create(
+                loop_id=observation.loop_id,
+                round_id=observation.round_id,
+                observation_hash=signals.observation_hash,
+                work_spec=work_spec,
+                manifest_sources=tuple(manifest.source for manifest in manifests),
+                manifest_ids=tuple(manifest.manifest_id for manifest in manifests),
+                projector_versions=tuple(manifest.projector_version for manifest in manifests),
+                signal_ids=tuple(signal.signal_id for signal in signals.signals),
+                required=work_spec.work_spec_id in planned.required_work_spec_ids,
+            )
+            for work_spec in planned.work_specs
+        )
+        admission_timer = DerivationStageTimer(
+            "admission",
+            tuple(item.work_spec_id for item in planned.work_specs),
+            self._policy.VERSION,
+        )
+        assessment = self._policy.evaluate(
             observation,
             opportunities,
             existing_independence_keys=existing_independence_keys,
         )
-
-    @staticmethod
-    def _merge(
-        observation: LoopObservationEnvelope,
-        detected: tuple[ExpansionOpportunity, ...],
-        proposals: tuple[CuratorExpansionProposal, ...],
-    ) -> tuple[ExpansionOpportunity, ...]:
-        by_key = {item.independence_key.casefold(): item for item in detected}
-        sources = {
-            item.source.context_id: item.source
-            for item in detected
-        }
-        for frontier in observation.portfolio_frontier:
-            if frontier.get("revision"):
-                source = ContextRevisionRef.model_validate(frontier["revision"])
-                sources.setdefault(source.context_id, source)
-        for proposal in proposals:
-            source = sources.get(proposal.source_context_id)
-            if source is None:
-                continue
-            opportunity = ExpansionOpportunity.create(
-                loop_id=observation.loop_id,
-                round_id=observation.round_id,
-                source=source,
-                purpose=proposal.purpose,
-                work_order=proposal.work_order,
-                completion_check=proposal.completion_check,
-                workspace_mode=proposal.workspace_mode,
-                independence_key=proposal.independence_key,
-                triggers=("curator_proposal",),
-                evidence_hints=proposal.evidence_hints,
-                required=proposal.required,
+        records.append(
+            admission_timer.finish(
+                tuple(item.opportunity_id for item in assessment.opportunities),
+                f"Admission 结果为 {assessment.level}",
             )
-            by_key.setdefault(opportunity.independence_key.casefold(), opportunity)
-        return tuple(by_key.values())
+        )
+        return assessment.model_copy(update={"stage_records": tuple(records)})
+
+    def _failed_assessment(
+        self,
+        observation: LoopObservationEnvelope,
+        code: str,
+        summary: str,
+        *,
+        retryable: bool = False,
+        stage_records: tuple[DerivationStageRecord, ...] = (),
+    ) -> ExpansionAssessment:
+        return ExpansionAssessment(
+            loop_id=observation.loop_id,
+            round_id=observation.round_id,
+            frontier_hash=observation.observed_frontier_hash,
+            policy_version=self._policy.VERSION,
+            level="not_applicable",
+            blockers=(ExpansionBlocker(code=code, summary=summary, retryable=retryable),),
+            stage_records=stage_records,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +184,7 @@ class ContextExpansionStage:
     def __init__(self, sessions: async_sessionmaker[AsyncSession], checkpointer) -> None:
         self._sessions = sessions
         self._repository = ContextExpansionRepository()
-        self._coordinator = ContextExpansionCoordinator(curator=WorkerResultExpansionCurator())
+        self._coordinator = ContextExpansionCoordinator()
         self._compiler = ContextExpansionPlanCompiler(sessions, checkpointer)
 
     async def assess(self, observation: LoopObservationEnvelope) -> ExpansionAssessment:
@@ -151,15 +235,54 @@ class ContextExpansionStage:
                 summary="spawn_context 引用了当前 assessment 之外的 opportunity",
                 opportunity_id=action.opportunity_id,
             )
-        await self._transition(opportunity.opportunity_id, "proposed", f"Patrol 提议派生：{opportunity.purpose}")
+        await self._transition(opportunity.opportunity_id, "proposed", f"Patrol 提议派生：{opportunity.work_spec.objective}")
         compiled = await self._compiler.compile(
             observation,
             opportunity,
             SpawnContextIntent.model_validate(action.model_dump(mode="json")),
         )
         if isinstance(compiled, ExpansionBlocker):
-            await self._transition(opportunity.opportunity_id, "blocked", compiled.summary, blocker=compiled)
+            await self._transition(
+                opportunity.opportunity_id,
+                "blocked",
+                compiled.summary,
+                blocker=compiled,
+                result={
+                    "stage_records_append": [
+                        item.model_dump(mode="json") for item in compiled.stage_records
+                    ]
+                },
+            )
             return compiled
+        records = {item.stage: item.model_dump(mode="json") for item in compiled.stage_records}
+        await self._transition(
+            opportunity.opportunity_id,
+            "evidence_resolved",
+            f"已解析 {len(compiled.resolution.items)} 项 requirement evidence",
+            result={
+                "resolution": compiled.resolution.model_dump(mode="json"),
+                "resolution_id": compiled.resolution.resolution_id,
+                "evidence_frontier": [
+                    ref.model_dump(mode="json")
+                    for ref in compiled.resolution.evidence_frontier
+                ],
+                "resolver_version": "multi-source-evidence-resolver-v1",
+                "stage_record": records["evidence_resolution"],
+            },
+        )
+        synthesis_state = "synthesis_omitted" if compiled.synthesis_omitted else "dossier_built"
+        await self._transition(
+            opportunity.opportunity_id,
+            synthesis_state,
+            "Dossier synthesis 已省略，原始 evidence 保持权威"
+            if compiled.synthesis_omitted
+            else "已构建带引用的 evidence-grounded dossier",
+            result={
+                "dossier_id": compiled.dossier_id,
+                "synthesis_omitted": compiled.synthesis_omitted,
+                "stage_record": records["dossier_synthesis"],
+            },
+        )
         await self._transition(
             opportunity.opportunity_id,
             "compiled",
@@ -168,9 +291,11 @@ class ContextExpansionStage:
                 "compiled_expansion_id": compiled.expansion_id,
                 "definition_hash": compiled.definition_hash,
                 "compiler_version": compiled.compiler_version,
+                "compiled_plan": compiled.plan.model_dump(mode="json"),
+                "stage_record": records["compilation"],
             },
         )
-        return CreateLaneAction(action="create_lane", plan=compiled.plan, message=opportunity.work_order)
+        return CreateLaneAction(action="create_lane", plan=compiled.plan, message=opportunity.work_spec.objective)
 
     @staticmethod
     def _terminalized_assessment(assessment: ExpansionAssessment, prior: tuple) -> ExpansionAssessment:
@@ -231,6 +356,7 @@ class ContextExpansionStage:
                     policy_version=assessment.policy_version,
                     level=assessment.level,
                     correlation_id=observation.round_id,
+                    stage_records=assessment.stage_records,
                 )
                 blocker = blockers.get(opportunity.opportunity_id)
                 if blocker is not None and not self._repository.is_terminal(row.state):
@@ -240,13 +366,6 @@ class ContextExpansionStage:
                         "blocked",
                         blocker.summary,
                         blocker_code=blocker.code,
-                    )
-                elif "curator_proposal" in opportunity.triggers and row.state == "detected":
-                    await self._repository.transition(
-                        session,
-                        row.expansion_id,
-                        "curated",
-                        f"Curator 提出 Context 派生候选：{opportunity.purpose}",
                     )
 
     async def _transition(

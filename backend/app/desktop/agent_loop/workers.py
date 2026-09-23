@@ -1,7 +1,7 @@
 r"""本文件对外提供 LoopWorkerRuntime、仅验证声明检查的 StructuredCompletionVerifier 与 StructuredLaneAdvisor。
 
 输入为 Patrol 已提交的可选 Worker request、可选 Loop scope、当前 Mission/round/Portfolio/workspace 证据和模型配置；输出为
-无工具、无状态提交能力的完成证据或 Bootstrap/Lane expansion 候选。具体工作流为独立有界池持久领取 request、记录 attempt identity、
+无工具、无状态提交能力的完成证据或 `WorkContextDraft` 认知工作候选。具体工作流为独立有界池持久领取 request、记录 attempt identity、
 后台执行模型调用并严格解析结果，Curator 生命周期逐步提交且部分结果立即可见，失败有界重试；Patrol Session
 所属 Curator 全部结束后将同一 round 标为 curated，旧式 Worker 批次仍创建新 observation round，最终判断仍归 Portfolio Patrol。
 示例：`await runtime.drain()`。
@@ -10,37 +10,64 @@ r"""本文件对外提供 LoopWorkerRuntime、仅验证声明检查的 Structure
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import json
-from typing import Any
 import uuid
+from datetime import UTC, datetime
+from typing import Any
 
+from focus.config.app_config import AppConfig
+from focus.models.factory import create_chat_model
+from focus.runtime.runs.usage import ModelUsage, callback_usage
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.desktop.agent_loop.budgets import (
+    LoopBudgetGuard,
+    configured_provider_count,
+)
 from backend.app.desktop.agent_loop.completion import CompletionEvidenceService
-from backend.app.desktop.agent_loop.context_expansion.contracts import CuratorExpansionProposal
 from backend.app.desktop.agent_loop.completion_policy import CompletionCheckPolicy
-from backend.app.desktop.agent_loop.curator_assignments import CuratorAssignmentRepository
-from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count
+from backend.app.desktop.agent_loop.context_expansion.contracts import WorkContextDraft
+from backend.app.desktop.agent_loop.context_expansion.manifest_adapter import (
+    ManifestUnitDraft,
+)
+from backend.app.desktop.agent_loop.curator_assignments import (
+    CuratorAssignmentRepository,
+)
 from backend.app.desktop.agent_loop.mission_contract import LegacyMissionAdapter
 from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopContextMembership, LoopDelegationGrant, LoopEventOutbox, LoopGoalRevision, LoopRound, LoopWorkerRequest
-from backend.app.desktop.agent_loop.patrol_session_models import LoopCuratorAssignment
-from backend.app.desktop.agent_loop.patrol_session_models import LoopPatrolSession
-from backend.app.desktop.agent_loop.patrol_session_repository import PatrolSessionRepository
-from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, PatrolPhase
-from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract, CriterionVerification
+from backend.app.desktop.agent_loop.models import (
+    AgentLoop,
+    LoopBudgetUsage,
+    LoopContextMembership,
+    LoopDelegationGrant,
+    LoopEventOutbox,
+    LoopGoalRevision,
+    LoopRound,
+    LoopWorkerRequest,
+)
+from backend.app.desktop.agent_loop.patrol_session_models import (
+    LoopCuratorAssignment,
+    LoopPatrolSession,
+)
+from backend.app.desktop.agent_loop.patrol_session_repository import (
+    PatrolSessionRepository,
+)
+from backend.app.desktop.agent_loop.patrol_session_state import (
+    PatrolActivity,
+    PatrolPhase,
+)
+from backend.app.desktop.agent_loop.schemas import (
+    CompletionVerificationContract,
+    CriterionVerification,
+)
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.agent_loop.wait_requests import open_recovery_wait
 from backend.app.desktop.models import DesktopRun
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
-from focus.config.app_config import AppConfig
-from focus.models.factory import create_chat_model
-from focus.runtime.runs.usage import ModelUsage, callback_usage
 
 
 class CompletionProposal(BaseModel):
@@ -55,7 +82,8 @@ class LaneAdviceProposal(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     rationale: str = Field(min_length=1, max_length=4000)
-    proposals: tuple[CuratorExpansionProposal, ...]
+    manifest_units: tuple[ManifestUnitDraft, ...] = ()
+    work_specs: tuple[WorkContextDraft, ...]
 
 
 class _StructuredWorker:
@@ -102,7 +130,7 @@ class StructuredLaneAdvisor:
         self._worker = worker
 
     async def advise(self, payload: dict[str, Any]) -> LaneAdviceProposal:
-        return await self._worker.invoke(LaneAdviceProposal, "你是无权 Context Expansion Curator Worker。bootstrap 模式为单 Context 发现首个独立方向，lane 模式检查现有分工缺口。你只能返回带 source_context_id、purpose、work_order、completion_check、workspace_mode、independence_key、evidence_hints 与 required 的候选，不得请求运行、修改 Context、创建 Directive、发布 Portfolio 或扩大范围。", payload)
+        return await self._worker.invoke(LaneAdviceProposal, "你是无权 Cognitive Work Planner。阅读冻结 Mission、完整 Portfolio message evidence previews、semantic manifests、Run evidence、用户意图与 Workspace facts，先输出 manifest_units，把有证据支持的 decision、claim、hypothesis、unresolved_question、implementation_effect、verification_result 与 failure 绑定到精确 revision_id/message_ids；confirmed statement 必须是所引原文可验证的片段。再判断任务认知结构是否出现需要独立历史、职责或验证路径的工作，并返回零个或多个 WorkContextDraft：目标、分离原因、问题、完成条件、Workspace 需求与按角色划分的 evidence requirements。不得按阈值或关键词直接套模板，不得选择单一父 Context，不得请求运行、修改 Context、创建 Directive、发布 Portfolio 或扩大范围。Context message evidence requirement 必须通过 candidate_unit_ids 引用输入 semantic_manifests 中与问题及 coverage criterion 语义一致的 unit identity；不得仅凭 Context role 或词语命中。Mission、Run、Material 与 Workspace 等结构化 evidence 可以使用其权威对象 identity 作为 requirement_id 交由 resolver 精确绑定。", payload)
 
 
 class LoopWorkerRuntime:
@@ -409,15 +437,7 @@ class LoopWorkerRuntime:
         assignment = await self._curator_assignments.by_worker(session, worker_request_id, lock=True)
         if assignment is None:
             return
-        if assignment.state == "reading":
-            await self._curator_assignments.transition(
-                session,
-                assignment.assignment_id,
-                "analyzing",
-                "Curator 分析失败，已安排有界重试",
-                failure=str(exc),
-            )
-        elif assignment.state == "analyzing":
+        if assignment.state == "reading" or assignment.state == "analyzing":
             await self._curator_assignments.transition(
                 session,
                 assignment.assignment_id,

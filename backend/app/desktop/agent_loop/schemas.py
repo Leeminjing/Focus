@@ -11,17 +11,28 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
-
-from backend.app.desktop.context_curation.contracts import (
-    CreateLanePlan,
-    UpdateLanePlan,
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    model_validator,
 )
+
 from backend.app.desktop.agent_loop.compression_authority.contracts import (
     ApplyContextCompressionAction,
     AutonomousCompressionPolicy,
 )
-from backend.app.desktop.agent_loop.mission_contract import EvidenceKind, LegacyMissionAdapter, LoopMissionContract
+from backend.app.desktop.agent_loop.mission_contract import (
+    EvidenceKind,
+    LegacyMissionAdapter,
+    LoopMissionContract,
+)
+from backend.app.desktop.context_curation.contracts import (
+    CreateLanePlan,
+    UpdateLanePlan,
+)
 
 
 class StrictModel(BaseModel):
@@ -51,10 +62,16 @@ class DeclineExpansionAction(StrictModel):
     action: Literal["decline_expansion"]
     opportunity_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     blocker_code: Literal[
+        "portfolio_projection_failed",
+        "cognitive_planning_failed",
         "not_independent",
+        "completion_not_decidable",
         "authority_missing",
         "source_out_of_scope",
         "source_unreadable",
+        "required_evidence_unresolved",
+        "evidence_budget_exhausted",
+        "dossier_invalid",
         "context_budget_exhausted",
         "lane_budget_exhausted",
         "round_lane_budget_exhausted",
@@ -225,7 +242,7 @@ class LoopCreateRequest(StrictModel):
     expires_at: str | None = None
 
     @model_validator(mode="after")
-    def require_one_mission_shape(self) -> "LoopCreateRequest":
+    def require_one_mission_shape(self) -> LoopCreateRequest:
         legacy = (self.goal, self.task_contract, self.acceptance_criteria)
         if self.mission is not None and any(value is not None for value in legacy):
             raise ValueError("mission 与旧 goal/task_contract/acceptance_criteria 不能同时提交")
@@ -281,7 +298,7 @@ class LoopObservationEnvelope(StrictModel):
     expansion_assessment: dict[str, Any] | None = None
 
     @model_validator(mode="after")
-    def require_mission_or_legacy_goal(self) -> "LoopObservationEnvelope":
+    def require_mission_or_legacy_goal(self) -> LoopObservationEnvelope:
         if self.mission is None and self.goal is None:
             raise ValueError("observation 必须包含结构化 Mission 或旧 Goal")
         return self
@@ -300,7 +317,7 @@ class CriterionVerification(StrictModel):
     explanation: str
 
     @model_validator(mode="after")
-    def require_evidence_for_satisfied_check(self) -> "CriterionVerification":
+    def require_evidence_for_satisfied_check(self) -> CriterionVerification:
         if self.status == "satisfied" and not self.evidence:
             raise ValueError("satisfied 完成检查必须包含类型化证据")
         return self
@@ -318,7 +335,7 @@ class CompletionVerificationContract(StrictModel):
     unresolved: tuple[str, ...] = ()
 
     @model_validator(mode="after")
-    def require_unique_declared_check_ids(self) -> "CompletionVerificationContract":
+    def require_unique_declared_check_ids(self) -> CompletionVerificationContract:
         check_ids = [item.check_id for item in self.criteria]
         if len(check_ids) != len(set(check_ids)):
             raise ValueError("Completion verification check_id 必须唯一")

@@ -1,14 +1,14 @@
 r"""本文件对外提供 ExpansionPlanCompilerPort、ContextExpansionPlanCompiler 与 DeterministicExpansionPlanCompiler。
 
-输入为冻结 observation、ExpansionOpportunity 与 SpawnContextIntent；输出为 CompiledExpansion 或 ExpansionBlocker。
-具体工作流为 production adapter 精确读取不可变 Revision，纯 compiler 从冻结 opportunity 取用派生语义与工作指令、选择最小相关证据、补齐完整 Tool Exchange、追加工作指令，
-调用既有 Lane compiler 验证 shadow checkpoint 后返回内部 CreateLanePlan；派生意图只用于记录模型选择，失败只返回稳定 blocker。
-示例：`compiled = await compiler.compile(observation, opportunity, intent)`。
+输入为冻结 observation、identity-only SpawnContextIntent、WorkContext opportunity、resolved multi-source evidence 与可选 dossier；
+输出为 CompiledExpansion 或阶段专属 ExpansionBlocker。具体工作流为 production façade 重建并验证 manifests、读取授权 corpus、
+解析 required evidence、尝试 dossier synthesis，再由纯 compiler 按 Work Contract、Evidence Ledger、Dossier、Primary Evidence 顺序
+生成 CreateLanePlan 并调用通用 lane compiler；本文件不选择最近消息、不做 substring coverage。示例：
+`compiled = await compiler.compile(observation, opportunity, intent)`。
 """
 
 from __future__ import annotations
 
-from hashlib import sha256
 import json
 from typing import Any, Protocol
 
@@ -16,10 +16,31 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.context_expansion.contracts import (
     CompiledExpansion,
+    DerivationStageRecord,
     ExpansionBlocker,
     ExpansionOpportunity,
+    ResolvedEvidenceBundle,
     SpawnContextIntent,
     stable_expansion_hash,
+)
+from backend.app.desktop.agent_loop.context_expansion.dossier import (
+    DossierSynthesizerPort,
+    EvidenceGroundedDossier,
+    ResolvedEvidenceDossierSynthesizer,
+    render_dossier,
+)
+from backend.app.desktop.agent_loop.context_expansion.evidence_corpus import (
+    EvidenceCorpusReadError,
+    FrozenEvidenceCorpusReader,
+)
+from backend.app.desktop.agent_loop.context_expansion.evidence_resolver import (
+    MultiSourceEvidenceResolver,
+)
+from backend.app.desktop.agent_loop.context_expansion.manifest_adapter import (
+    CompositeSemanticManifestProjector,
+)
+from backend.app.desktop.agent_loop.context_expansion.stage_telemetry import (
+    DerivationStageTimer,
 )
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 from backend.app.desktop.context_curation import (
@@ -27,15 +48,11 @@ from backend.app.desktop.context_curation import (
     CopyMessage,
     CreateLanePlan,
     MultiSourceEvidence,
-    NamespacedMessageRef,
-    SourceMessageEvidence,
-    SourceRevisionEvidence,
     ToolExchange,
     ToolExchangeCall,
     compile_lane,
+    evidence_ref_key,
 )
-from backend.app.desktop.context_evolution import ContextRevisionReader, ContextRevisionRepository
-from backend.app.desktop.context_evolution.repository import ContextRevisionNotFound
 
 
 class ExpansionPlanCompilerPort(Protocol):
@@ -48,10 +65,19 @@ class ExpansionPlanCompilerPort(Protocol):
 
 
 class ContextExpansionPlanCompiler:
-    def __init__(self, sessions: async_sessionmaker[AsyncSession], checkpointer: Any) -> None:
-        self._sessions = sessions
-        self._repository = ContextRevisionRepository()
-        self._reader = ContextRevisionReader(self._repository, checkpointer)
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        checkpointer: Any,
+        *,
+        projector: CompositeSemanticManifestProjector | None = None,
+        resolver: MultiSourceEvidenceResolver | None = None,
+        synthesizer: DossierSynthesizerPort | None = None,
+    ) -> None:
+        self._projector = projector or CompositeSemanticManifestProjector()
+        self._reader = FrozenEvidenceCorpusReader(sessions, checkpointer)
+        self._resolver = resolver or MultiSourceEvidenceResolver()
+        self._synthesizer = synthesizer or ResolvedEvidenceDossierSynthesizer()
         self._compiler = DeterministicExpansionPlanCompiler()
 
     async def compile(
@@ -60,74 +86,108 @@ class ContextExpansionPlanCompiler:
         opportunity: ExpansionOpportunity,
         intent: SpawnContextIntent,
     ) -> CompiledExpansion | ExpansionBlocker:
-        blocker = self._validate_frozen_source(observation, opportunity, intent)
-        if blocker is not None:
-            return blocker
-        try:
-            async with self._sessions() as session:
-                revision = await self._repository.get(session, opportunity.source)
-                view = await self._reader.read(session, opportunity.source, "execution")
-        except ContextRevisionNotFound:
-            return self._blocked(opportunity, "source_unreadable", "冻结来源 Revision 或 Checkpoint 已不可读取")
-        return self._compiler.compile(opportunity, intent, revision, tuple(view.messages))
-
-    @staticmethod
-    def _validate_frozen_source(
-        observation: LoopObservationEnvelope,
-        opportunity: ExpansionOpportunity,
-        intent: SpawnContextIntent,
-    ) -> ExpansionBlocker | None:
         if intent.opportunity_id != opportunity.opportunity_id:
-            return ContextExpansionPlanCompiler._blocked(opportunity, "stale_source", "semantic intent 与冻结 opportunity 不一致")
-        frontier = {
-            (
-                str(item.get("context_id")),
-                str(item.get("revision_id")),
-                str(item.get("checkpoint_id") or (item.get("revision") or {}).get("checkpoint_id") or ""),
-            )
-            for item in observation.portfolio_frontier
-        }
-        identity = (
-            opportunity.source.context_id,
-            opportunity.source.revision_id,
-            opportunity.source.checkpoint_id or "",
+            return self._blocked(opportunity, "stale_source", "semantic intent 与冻结 opportunity 不一致")
+        records: list[DerivationStageRecord] = []
+        resolution_timer = DerivationStageTimer(
+            "evidence_resolution",
+            (opportunity.work_spec.work_spec_id, *opportunity.manifest_ids),
+            self._resolver.VERSION,
         )
-        if identity not in frontier:
-            return ContextExpansionPlanCompiler._blocked(opportunity, "stale_source", "冻结来源已不在 observation frontier")
-        scope = set((observation.grant or {}).get("context_scope") or ())
-        if scope and opportunity.source.context_id not in scope:
-            return ContextExpansionPlanCompiler._blocked(opportunity, "source_out_of_scope", "冻结来源超出 delegation scope")
-        return None
+        try:
+            manifests = self._projector.project(observation)
+            corpus = await self._reader.read(observation, opportunity, manifests)
+        except EvidenceCorpusReadError as exc:
+            records.append(resolution_timer.finish((), exc.summary))
+            return self._blocked(opportunity, exc.code, exc.summary, tuple(records))
+        except (TypeError, ValueError) as exc:
+            records.append(resolution_timer.finish((), "Evidence corpus projection 失败"))
+            return self._blocked(opportunity, "portfolio_projection_failed", str(exc), tuple(records))
+        limit = int((observation.budget.get("limits") or {}).get("max_expansion_evidence_items", 128) or 128)
+        resolved = self._resolver.resolve(opportunity, manifests, corpus, max_items=max(1, limit))
+        if isinstance(resolved, ExpansionBlocker):
+            record = resolution_timer.finish((), resolved.summary)
+            return resolved.model_copy(update={"stage_records": (*resolved.stage_records, record)})
+        records.append(
+            resolution_timer.finish(
+                (resolved.resolution_id,),
+                f"已解析 {len(resolved.items)} 项 requirement evidence",
+            )
+        )
+        dossier_timer = DerivationStageTimer(
+            "dossier_synthesis",
+            (resolved.resolution_id,),
+            type(self._synthesizer).__name__,
+        )
+        dossier_result = await self._synthesizer.synthesize(observation, resolved)
+        records.append(
+            dossier_timer.finish(
+                (dossier_result.dossier.dossier_id,) if dossier_result.dossier else (),
+                dossier_result.omitted_reason or "已构建带引用的 evidence-grounded dossier",
+            )
+        )
+        compilation_timer = DerivationStageTimer(
+            "compilation",
+            (resolved.resolution_id, *(record.output_identities[0] for record in records[-1:] if record.output_identities)),
+            self._compiler.VERSION,
+        )
+        compiled = self._compiler.compile(
+            opportunity,
+            intent,
+            resolved,
+            dossier=dossier_result.dossier,
+            synthesis_omitted=dossier_result.dossier is None,
+            stage_records=tuple(records),
+        )
+        if isinstance(compiled, ExpansionBlocker):
+            record = compilation_timer.finish((), compiled.summary)
+            return compiled.model_copy(update={"stage_records": (*compiled.stage_records, record)})
+        record = compilation_timer.finish((compiled.definition_hash,), "已编译确定性 LanePlan")
+        return compiled.model_copy(update={"stage_records": (*compiled.stage_records, record)})
 
     @staticmethod
-    def _blocked(opportunity: ExpansionOpportunity, code: str, summary: str) -> ExpansionBlocker:
-        return ExpansionBlocker(code=code, summary=summary, opportunity_id=opportunity.opportunity_id)
+    def _blocked(
+        opportunity: ExpansionOpportunity,
+        code: str,
+        summary: str,
+        stage_records: tuple[DerivationStageRecord, ...] = (),
+    ) -> ExpansionBlocker:
+        return ExpansionBlocker(
+            code=code,
+            summary=summary[:2000],
+            opportunity_id=opportunity.opportunity_id,
+            stage_records=stage_records,
+        )
 
 
 class DeterministicExpansionPlanCompiler:
-    VERSION = "context-expansion-compiler-v1"
+    VERSION = "semantic-context-compiler-v2"
 
     def compile(
         self,
         opportunity: ExpansionOpportunity,
         intent: SpawnContextIntent,
-        revision: Any,
-        messages: tuple[dict[str, Any], ...],
+        bundle: ResolvedEvidenceBundle,
+        *,
+        dossier: EvidenceGroundedDossier | None = None,
+        synthesis_omitted: bool = False,
+        stage_records: tuple[DerivationStageRecord, ...] = (),
     ) -> CompiledExpansion | ExpansionBlocker:
         try:
-            evidence = self._evidence(opportunity, revision, messages)
-            plan = self._plan(opportunity, evidence)
-            compiled_lane = compile_lane(plan.model_dump(mode="json"), evidence)
-        except (ValueError, KeyError, TypeError) as exc:
+            plan = self._plan(opportunity, bundle, dossier)
+            compiled_lane = compile_lane(plan.model_dump(mode="json"), bundle.evidence)
+        except (KeyError, TypeError, ValueError) as exc:
             return ExpansionBlocker(
                 code="compiler_failed",
-                summary=f"无法从冻结来源编译可运行 Context：{str(exc)[:1200]}",
+                summary=f"无法从 resolved evidence 编译可运行 Context：{str(exc)[:1200]}",
                 opportunity_id=opportunity.opportunity_id,
             )
         expansion_id = stable_expansion_hash(
-            "compiled-expansion",
+            "compiled-expansion-v2",
             opportunity.opportunity_id,
             intent.model_dump(mode="json"),
+            bundle.resolution_id,
+            dossier.dossier_id if dossier else None,
             compiled_lane.definition_hash,
             self.VERSION,
         )
@@ -135,157 +195,153 @@ class DeterministicExpansionPlanCompiler:
             expansion_id=expansion_id,
             opportunity=opportunity,
             intent=intent,
+            resolution=bundle,
             plan=plan,
             definition_hash=compiled_lane.definition_hash,
             compiler_version=self.VERSION,
-        )
-
-    def _evidence(
-        self,
-        opportunity: ExpansionOpportunity,
-        revision: Any,
-        messages: tuple[dict[str, Any], ...],
-    ) -> MultiSourceEvidence:
-        normalized = tuple(self._message(opportunity, item) for item in messages if item.get("id") and item.get("role"))
-        if not normalized:
-            raise ValueError("来源 Revision 没有可引用消息")
-        selected = self._selected_indexes(opportunity, normalized)
-        closed = self._protocol_closure(normalized, selected)
-        projection_hash = getattr(revision, "projection_hash", None) or self._hash(messages)
-        content_hash = getattr(revision, "content_hash", None) or self._hash((opportunity.source.model_dump(mode="json"), messages))
-        return MultiSourceEvidence(
-            sources=(
-                SourceRevisionEvidence(
-                    source=opportunity.source,
-                    projection_hash=projection_hash,
-                    content_hash=content_hash,
-                    messages=tuple(normalized[index] for index in sorted(closed)),
-                ),
-            )
+            dossier_id=dossier.dossier_id if dossier else None,
+            synthesis_omitted=synthesis_omitted,
+            stage_records=stage_records,
         )
 
     def _plan(
         self,
         opportunity: ExpansionOpportunity,
-        evidence: MultiSourceEvidence,
+        bundle: ResolvedEvidenceBundle,
+        dossier: EvidenceGroundedDossier | None,
     ) -> CreateLanePlan:
-        source_messages = evidence.sources[0].messages
-        items: list[CopyMessage | ComposeMessage | ToolExchange] = []
-        consumed: set[str] = set()
-        by_call_id = {item.tool_call_id: item for item in source_messages if item.role == "tool" and item.tool_call_id}
-        for message in source_messages:
-            if message.ref.message_id in consumed:
-                continue
-            if message.role == "ai" and message.tool_calls:
-                results = tuple(by_call_id.get(str(call.get("id"))) for call in message.tool_calls)
-                if any(result is None for result in results):
-                    raise ValueError("Tool Call 缺少对应 Tool Result")
-                refs = (message.ref, *(result.ref for result in results if result is not None))
-                calls = tuple(
-                    ToolExchangeCall(
-                        name=str(call.get("name") or ""),
-                        args=dict(call.get("args") or {}),
-                        result_content=result.content,
-                        status=result.status or "success",
-                    )
-                    for call, result in zip(message.tool_calls, results, strict=True)
-                    if result is not None
-                )
-                items.append(ToolExchange(type="tool_exchange", assistant_content=str(message.content or ""), calls=calls, sources=refs))
-                consumed.update(ref.message_id for ref in refs)
-            elif message.role != "tool":
-                items.append(CopyMessage(type="copy_message", source=message.ref))
-                consumed.add(message.ref.message_id)
-        lineage = tuple(message.ref for message in source_messages)
-        items.append(
+        if not bundle.evidence_frontier:
+            raise ValueError("自动派生 Context 至少需要一项 resolved evidence")
+        items: list[ComposeMessage | CopyMessage | ToolExchange] = [
             ComposeMessage(
                 type="compose_message",
-                role="human",
-                content=(
-                    f"Purpose: {opportunity.purpose}\n"
-                    f"Work order: {opportunity.work_order}\n"
-                    f"Completion check: {opportunity.completion_check}\n"
-                    f"Workspace mode: {opportunity.workspace_mode}"
-                ),
-                sources=lineage,
+                role="system",
+                content=self._work_contract(opportunity),
+                sources=bundle.evidence_frontier,
+            ),
+            ComposeMessage(
+                type="compose_message",
+                role="system",
+                content=self._evidence_ledger(opportunity, bundle),
+                sources=bundle.evidence_frontier,
+            ),
+        ]
+        if dossier is not None and dossier.statements:
+            dossier_sources = tuple(
+                sorted(
+                    {
+                        evidence_ref_key(ref): ref
+                        for statement in dossier.statements
+                        for ref in statement.citations
+                    }.values(),
+                    key=evidence_ref_key,
+                )
             )
-        )
+            items.append(
+                ComposeMessage(
+                    type="compose_message",
+                    role="system",
+                    content=render_dossier(dossier),
+                    sources=dossier_sources,
+                )
+            )
+        items.extend(self._primary_evidence(bundle.evidence))
         return CreateLanePlan(
             action="create",
-            purpose=opportunity.purpose,
-            source_frontier=(opportunity.source,),
+            purpose=opportunity.work_spec.objective,
+            source_frontier=bundle.source_frontier,
+            evidence_frontier=bundle.evidence_frontier,
             items=tuple(items),
             lane_policy={
                 "expansion_id": opportunity.opportunity_id,
-                "independence_key": opportunity.independence_key,
-                "semantic_fingerprint": opportunity.semantic_fingerprint,
-                "workspace_mode": opportunity.workspace_mode,
-                "completion_check": opportunity.completion_check,
+                "work_spec_id": opportunity.work_spec.work_spec_id,
+                "resolution_id": bundle.resolution_id,
+                "dossier_id": dossier.dossier_id if dossier else None,
+                "workspace_mode": opportunity.work_spec.workspace_requirement,
+                "completion_criteria": opportunity.work_spec.completion_criteria,
             },
         )
 
     @staticmethod
-    def _message(opportunity: ExpansionOpportunity, message: dict[str, Any]) -> SourceMessageEvidence:
-        return SourceMessageEvidence(
-            ref=NamespacedMessageRef(source=opportunity.source, message_id=str(message["id"])),
-            role=str(message["role"]),
-            content=message.get("content", ""),
-            tool_calls=tuple(message.get("tool_calls") or ()),
-            tool_call_id=message.get("tool_call_id"),
-            name=message.get("name"),
-            status=message.get("status"),
+    def _work_contract(opportunity: ExpansionOpportunity) -> str:
+        spec = opportunity.work_spec
+        questions = "\n".join(f"- {item}" for item in spec.questions)
+        completion = "\n".join(f"- {item}" for item in spec.completion_criteria)
+        return (
+            "Work Contract\n"
+            f"Objective: {spec.objective}\n"
+            f"Separation reason: {spec.separation_reason}\n"
+            f"Workspace requirement: {spec.workspace_requirement}\n"
+            f"Questions:\n{questions}\n"
+            f"Completion criteria:\n{completion}"
         )
 
     @staticmethod
-    def _selected_indexes(
+    def _evidence_ledger(
         opportunity: ExpansionOpportunity,
-        messages: tuple[SourceMessageEvidence, ...],
-    ) -> set[int]:
-        hints = tuple(item.casefold() for item in opportunity.evidence_hints if item)
-        selected = {
-            index
-            for index, message in enumerate(messages)
-            if message.ref.message_id.casefold() in hints
-            or any(hint in str(message.content).casefold() for hint in hints)
-        }
-        if not selected:
-            selected.add(len(messages) - 1)
-            for index in range(len(messages) - 1, -1, -1):
-                if messages[index].role in {"human", "system"}:
-                    selected.add(index)
-                    break
-        return selected
+        bundle: ResolvedEvidenceBundle,
+    ) -> str:
+        by_requirement: dict[str, list[str]] = {}
+        for item in bundle.items:
+            by_requirement.setdefault(item.requirement_id, []).append("/".join(evidence_ref_key(item.ref)))
+        lines = ["Evidence Ledger"]
+        for requirement in opportunity.work_spec.evidence_requirements:
+            refs = sorted(by_requirement.get(requirement.requirement_id, ()))
+            rendered = ", ".join(refs) if refs else "omitted (optional)"
+            lines.append(f"- {requirement.requirement_id} [{requirement.role}/{requirement.necessity}]: {rendered}")
+        return "\n".join(lines)
 
     @staticmethod
-    def _protocol_closure(
-        messages: tuple[SourceMessageEvidence, ...],
-        selected: set[int],
-    ) -> set[int]:
-        callers: dict[str, int] = {}
-        results: dict[str, int] = {}
-        caller_calls: dict[int, tuple[str, ...]] = {}
-        for index, message in enumerate(messages):
-            ids = tuple(str(call.get("id")) for call in message.tool_calls if call.get("id"))
-            if ids:
-                caller_calls[index] = ids
-                callers.update({call_id: index for call_id in ids})
-            if message.tool_call_id:
-                results[message.tool_call_id] = index
-        closed = set(selected)
-        for index in tuple(selected):
-            message = messages[index]
-            caller_index = callers.get(message.tool_call_id or "") if message.role == "tool" else index if index in caller_calls else None
-            if caller_index is None:
-                continue
-            closed.add(caller_index)
-            for call_id in caller_calls[caller_index]:
-                result_index = results.get(call_id)
-                if result_index is None:
-                    raise ValueError("来源 Tool Exchange 不完整")
-                closed.add(result_index)
-        return closed
-
-    @staticmethod
-    def _hash(value: Any) -> str:
-        payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-        return sha256(payload.encode("utf-8")).hexdigest()
+    def _primary_evidence(
+        evidence: MultiSourceEvidence,
+    ) -> tuple[ComposeMessage | CopyMessage | ToolExchange, ...]:
+        items: list[ComposeMessage | CopyMessage | ToolExchange] = []
+        for source in evidence.sources:
+            results = {message.tool_call_id: message for message in source.messages if message.tool_call_id}
+            consumed: set[tuple[str, str, str, str]] = set()
+            for message in source.messages:
+                if message.ref.key in consumed or message.role == "tool":
+                    continue
+                if message.tool_calls:
+                    siblings = tuple(results.get(str(call.get("id") or "")) for call in message.tool_calls)
+                    if any(result is None for result in siblings):
+                        raise ValueError("resolved Tool Exchange 不完整")
+                    calls = tuple(
+                        ToolExchangeCall(
+                            name=str(call.get("name") or ""),
+                            args=dict(call.get("args") or {}),
+                            result_content=result.content,
+                            status=result.status or "success",
+                        )
+                        for call, result in zip(message.tool_calls, siblings, strict=True)
+                        if result is not None
+                    )
+                    refs = (message.ref, *(result.ref for result in siblings if result is not None))
+                    items.append(
+                        ToolExchange(
+                            type="tool_exchange",
+                            assistant_content=str(message.content or ""),
+                            calls=calls,
+                            sources=refs,
+                        )
+                    )
+                    consumed.update(ref.key for ref in refs)
+                else:
+                    items.append(CopyMessage(type="copy_message", source=message.ref))
+                    consumed.add(message.ref.key)
+        for item in sorted(evidence.structured, key=lambda value: evidence_ref_key(value.ref)):
+            content = item.content if isinstance(item.content, str) else json.dumps(
+                item.content,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            items.append(
+                ComposeMessage(
+                    type="compose_message",
+                    role="system",
+                    content=f"Primary structured evidence [{'/'.join(evidence_ref_key(item.ref))}]:\n{content}",
+                    sources=(item.ref,),
+                )
+            )
+        return tuple(items)
