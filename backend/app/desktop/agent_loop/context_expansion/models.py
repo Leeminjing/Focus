@@ -1,8 +1,8 @@
 r"""本文件对外提供 Context expansion 当前状态与不可变 transition ORM 实体。
 
-输入为稳定 expansion/opportunity identity、Loop/round/source identity、语义合同、安全摘要和结果引用；输出为可恢复的
-`LoopContextExpansion` 当前记录与 `LoopContextExpansionTransition` 历史。具体工作流为当前行保存最新 revision，
-每次合法转换追加同 revision 的历史行，终态保留但不再推进。示例：`row = LoopContextExpansion(...)`。
+输入为稳定 expansion/opportunity identity、Loop/round、冻结 work spec、source/evidence frontiers、阶段 identity、编译计划与结果引用；
+输出为可恢复的 `LoopContextExpansion` 当前记录与 `LoopContextExpansionTransition` 历史。具体工作流为当前行保存最新 revision
+和恢复所需不可变合同，每次合法转换追加同 revision 的历史行，终态保留但不再推进。示例：`row = LoopContextExpansion(...)`。
 """
 
 from __future__ import annotations
@@ -10,11 +10,18 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from focus.persistence.base import Base
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
-
-from focus.persistence.base import Base
 
 
 class LoopContextExpansion(Base):
@@ -27,9 +34,9 @@ class LoopContextExpansion(Base):
     opportunity_id: Mapped[str] = mapped_column(String(64), nullable=False)
     loop_id: Mapped[str] = mapped_column(String(32), ForeignKey("agent_loops.loop_id", ondelete="CASCADE"), nullable=False, index=True)
     round_id: Mapped[str] = mapped_column(String(32), ForeignKey("loop_rounds.round_id", ondelete="CASCADE"), nullable=False, index=True)
-    source_context_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_threads.task_id", ondelete="RESTRICT"), nullable=False, index=True)
-    source_revision_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_context_revisions.revision_id", ondelete="RESTRICT"), nullable=False)
-    state: Mapped[str] = mapped_column(String(24), nullable=False, default="detected", server_default="detected")
+    source_context_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("desktop_threads.task_id", ondelete="RESTRICT"), nullable=True, index=True)
+    source_revision_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("desktop_context_revisions.revision_id", ondelete="RESTRICT"), nullable=True)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="signals_collected", server_default="signals_collected")
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
     level: Mapped[str] = mapped_column(String(24), nullable=False)
@@ -37,6 +44,17 @@ class LoopContextExpansion(Base):
     semantic_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     workspace_mode: Mapped[str] = mapped_column(String(24), nullable=False)
     opportunity: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    work_spec: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    manifest_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    source_frontier: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    resolution: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    evidence_frontier: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    stage_identities: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    compiled_plan: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    definition_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    planner_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    projector_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resolver_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     blocker_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     safe_summary: Mapped[str] = mapped_column(Text, nullable=False)
     result: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")

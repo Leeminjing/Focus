@@ -9,34 +9,60 @@ Portfolio event producer；输出为三路同时运行、授权 Directive 改变
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import os
 import uuid
+from datetime import UTC, datetime
 
 import pytest
+from focus.runtime.stream_bridge.memory import MemoryStreamBridge
+from focus.runtime.stream_bridge.schemas import StreamEvent
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.agent_loop import AgentLoopService, LoopCreateRequest, LoopKernel, PatrolDecisionIntent
+from backend.app.desktop.agent_loop import (
+    AgentLoopService,
+    LoopCreateRequest,
+    LoopKernel,
+    PatrolDecisionIntent,
+)
 from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
-from backend.app.desktop.agent_loop.curator_assignments import CuratorAssignmentRepository
+from backend.app.desktop.agent_loop.curator_assignments import (
+    CuratorAssignmentRepository,
+)
 from backend.app.desktop.agent_loop.dispatch import LoopWaveDispatcher
 from backend.app.desktop.agent_loop.fact_models import LoopFact, LoopFactRevision
 from backend.app.desktop.agent_loop.fact_projector import FactProjector
 from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.live_projection_projector import LoopLiveSnapshotProjector
-from backend.app.desktop.agent_loop.models import LoopDirective, LoopRound, LoopWorkerRequest
-from backend.app.desktop.agent_loop.patrol_runtime import CuratorCoordinationStage, PatrolSessionLifecycle
-from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, PatrolPhase
-from backend.app.desktop.agent_loop.portfolio_events import PortfolioPublicationEventRecorder
+from backend.app.desktop.agent_loop.live_projection_projector import (
+    LoopLiveSnapshotProjector,
+)
+from backend.app.desktop.agent_loop.models import (
+    LoopDirective,
+    LoopRound,
+    LoopWorkerRequest,
+)
+from backend.app.desktop.agent_loop.patrol_runtime import (
+    CuratorCoordinationStage,
+    PatrolSessionLifecycle,
+)
+from backend.app.desktop.agent_loop.patrol_session_state import (
+    PatrolActivity,
+    PatrolPhase,
+)
+from backend.app.desktop.agent_loop.portfolio_events import (
+    PortfolioPublicationEventRecorder,
+)
 from backend.app.desktop.agent_loop.run_activity_bridge import LoopRunActivityBridge
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
-from backend.app.desktop.context_evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
+from backend.app.desktop.context_evolution import (
+    ContextRevisionContract,
+    ContextRevisionOriginKind,
+    ContextRevisionPayloadMode,
+    ContextRevisionProjectionStatus,
+    ContextRevisionRef,
+    ContextRevisionRepository,
+)
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from focus.runtime.stream_bridge.memory import MemoryStreamBridge
-from focus.runtime.stream_bridge.schemas import StreamEvent
-
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -172,7 +198,7 @@ async def _fan_out_curators(sessions, snapshot, context_ids, revision_ids, roles
             await assignments.transition(session, assignment.assignment_id, "proposed", "Curator proposal 已提交", result_summary=f"{assignment.scope['role']} evidence ready")
             worker = await session.get(LoopWorkerRequest, assignment.worker_request_id, with_for_update=True)
             worker.status = "success"
-            worker.result = {"rationale": f"{assignment.scope['role']} evidence ready", "proposals": []}
+            worker.result = {"rationale": f"{assignment.scope['role']} evidence ready", "work_specs": []}
             worker.completed_at = datetime.now(UTC)
         round_row = await session.get(LoopRound, snapshot["current_round_id"], with_for_update=True)
         round_row.status = "curated"

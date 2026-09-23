@@ -1,25 +1,35 @@
 r"""本文件对外提供 ContextExpansionRepository 与 ExpansionRepositoryRejected。
 
-输入为 AsyncSession、ExpansionOpportunity、policy level、目标 lifecycle state、安全摘要和结果引用；输出为幂等持久化的
-LoopContextExpansion 与追加 transition/journal 事件。具体工作流为 create 先按稳定 expansion identity 查重，transition
-行锁当前记录并用状态机验证；活动覆盖只包含未决 expansion 或仍具 active Lane/Membership 的 dispatched expansion，随后同步
-当前投影、历史和规范事件。示例：`row = await repository.create(session, opportunity, ...)`。
+输入为 AsyncSession、冻结 WorkContext opportunity、policy level、目标 lifecycle state、阶段合同与结果引用；输出为幂等持久化的
+LoopContextExpansion 与追加 transition/journal 事件。具体工作流为 create 按稳定 identity 查重并依次记录 signals、projection、
+planning、admission，transition 行锁记录并验证后冻结 resolution/compiled plan；活动覆盖只包含未决或仍具 active Lane 的 expansion。
+示例：`row = await repository.create(session, opportunity, ...)`。
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.desktop.agent_loop.context_expansion.contracts import ExpansionBlockerCode, ExpansionOpportunity
-from backend.app.desktop.agent_loop.context_expansion.lifecycle import ExpansionLifecycleStateMachine, ExpansionTransitionRejected
-from backend.app.desktop.agent_loop.context_expansion.models import LoopContextExpansion, LoopContextExpansionTransition
-from backend.app.desktop.agent_loop.models import LoopContextMembership
+from backend.app.desktop.agent_loop.context_expansion.contracts import (
+    DerivationStageRecord,
+    ExpansionBlockerCode,
+    ExpansionOpportunity,
+)
+from backend.app.desktop.agent_loop.context_expansion.lifecycle import (
+    ExpansionLifecycleStateMachine,
+    ExpansionTransitionRejected,
+)
+from backend.app.desktop.agent_loop.context_expansion.models import (
+    LoopContextExpansion,
+    LoopContextExpansionTransition,
+)
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
 from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
+from backend.app.desktop.agent_loop.models import LoopContextMembership
 from backend.app.desktop.context_curation.models import CurationLane
 
 
@@ -47,27 +57,46 @@ class ContextExpansionRepository:
         level: str,
         correlation_id: str | None = None,
         causation_id: str | None = None,
+        stage_records: tuple[DerivationStageRecord, ...] = (),
     ) -> LoopContextExpansion:
         existing = await session.get(LoopContextExpansion, opportunity.opportunity_id, with_for_update=True)
         if existing is not None:
             return existing
-        summary = f"发现 Context 派生机会：{opportunity.purpose}"[:1000]
+        summary = f"已收集 Context 派生 signals：{opportunity.work_spec.objective}"[:1000]
+        first_source = opportunity.manifest_sources[0] if opportunity.manifest_sources else None
+        records = self._stage_records(opportunity, policy_version, stage_records)
+        record_payloads = {item.stage: item.model_dump(mode="json") for item in records}
         row = LoopContextExpansion(
             expansion_id=opportunity.opportunity_id,
             opportunity_id=opportunity.opportunity_id,
             loop_id=opportunity.loop_id,
             round_id=opportunity.round_id,
-            source_context_id=opportunity.source.context_id,
-            source_revision_id=opportunity.source.revision_id,
+            source_context_id=first_source.context_id if first_source else None,
+            source_revision_id=first_source.revision_id if first_source else None,
+            state="signals_collected",
             policy_version=policy_version,
             level=level,
             independence_key=opportunity.independence_key,
             semantic_fingerprint=opportunity.semantic_fingerprint,
-            workspace_mode=opportunity.workspace_mode,
+            workspace_mode=opportunity.work_spec.workspace_requirement,
             opportunity=opportunity.model_dump(mode="json"),
+            work_spec=opportunity.work_spec.model_dump(mode="json"),
+            manifest_ids=list(opportunity.manifest_ids),
+            source_frontier=[source.model_dump(mode="json") for source in opportunity.manifest_sources],
+            planner_version=opportunity.work_spec.planner_version,
+            projector_version=opportunity.projector_versions[0] if len(opportunity.projector_versions) == 1 else None,
+            stage_identities={
+                "observation_hash": opportunity.observation_hash,
+                "signal_ids": list(opportunity.signal_ids),
+                "manifest_ids": list(opportunity.manifest_ids),
+                "projector_versions": list(opportunity.projector_versions),
+                "work_spec_id": opportunity.work_spec.work_spec_id,
+                "stages": record_payloads,
+            },
             safe_summary=summary,
             correlation_id=correlation_id or opportunity.opportunity_id,
             causation_id=causation_id,
+            result={"stage_records": {"signal_collection": record_payloads["signal_collection"]}},
         )
         session.add(row)
         await session.flush()
@@ -78,12 +107,34 @@ class ContextExpansionRepository:
                 loop_id=row.loop_id,
                 round_id=row.round_id,
                 revision=1,
-                from_state="detected",
-                to_state="detected",
+                from_state="signals_collected",
+                to_state="signals_collected",
                 safe_summary=summary,
+                result=row.result,
             )
         )
         await self._event(session, row)
+        row = await self.transition(
+            session,
+            row.expansion_id,
+            "portfolio_projected",
+            f"已冻结 {len(opportunity.manifest_ids)} 个 semantic manifests",
+            result={"stage_record": record_payloads["portfolio_projection"]},
+        )
+        row = await self.transition(
+            session,
+            row.expansion_id,
+            "work_planned",
+            f"已冻结 WorkContextSpec：{opportunity.work_spec.work_spec_id}",
+            result={"stage_record": record_payloads["cognitive_planning"]},
+        )
+        row = await self.transition(
+            session,
+            row.expansion_id,
+            "admitted",
+            f"Admission policy 接受派生：{opportunity.work_spec.objective}",
+            result={"stage_record": record_payloads["admission"]},
+        )
         return row
 
     async def transition(
@@ -111,7 +162,33 @@ class ContextExpansionRepository:
         row.safe_summary = summary[:1000]
         row.blocker_code = blocker_code
         if result is not None:
-            row.result = {**(row.result or {}), **result}
+            appended_records = tuple(result.get("stage_records_append") or ())
+            stage_record = result.get("stage_record")
+            public_result = {
+                key: value
+                for key, value in result.items()
+                if key not in {"stage_record", "stage_records_append"}
+            }
+            stage_results = dict((row.result or {}).get("stage_records") or {})
+            if stage_record is not None:
+                stage_results[str(stage_record["stage"])] = stage_record
+            for appended in appended_records:
+                stage_results[str(appended["stage"])] = appended
+            if stage_record is not None or appended_records:
+                identities = dict(row.stage_identities or {})
+                identities["stages"] = {**dict(identities.get("stages") or {}), **stage_results}
+                row.stage_identities = identities
+            row.result = {**(row.result or {}), **public_result, "stage_records": stage_results}
+            if result.get("resolution") is not None:
+                row.resolution = result["resolution"]
+            if result.get("evidence_frontier") is not None:
+                row.evidence_frontier = result["evidence_frontier"]
+            if result.get("resolver_version") is not None:
+                row.resolver_version = result["resolver_version"]
+            if result.get("compiled_plan") is not None:
+                row.compiled_plan = result["compiled_plan"]
+            if result.get("definition_hash") is not None:
+                row.definition_hash = result["definition_hash"]
         if target in self._TERMINAL:
             row.completed_at = datetime.now(UTC)
         session.add(
@@ -130,6 +207,49 @@ class ContextExpansionRepository:
         )
         await self._event(session, row)
         return row
+
+    @staticmethod
+    def _stage_records(
+        opportunity: ExpansionOpportunity,
+        policy_version: str,
+        supplied: tuple[DerivationStageRecord, ...],
+    ) -> tuple[DerivationStageRecord, ...]:
+        by_stage = {item.stage: item for item in supplied}
+        defaults = (
+            DerivationStageRecord(
+                stage="signal_collection",
+                input_identities=(opportunity.observation_hash,),
+                output_identities=opportunity.signal_ids,
+                version="semantic-expansion-signals-v1",
+                duration_ms=0,
+                safe_summary="已收集结构化派生信号",
+            ),
+            DerivationStageRecord(
+                stage="portfolio_projection",
+                input_identities=(opportunity.observation_hash,),
+                output_identities=opportunity.manifest_ids,
+                version=opportunity.projector_versions[0] if opportunity.projector_versions else "semantic-manifest-projector-v1",
+                duration_ms=0,
+                safe_summary="已冻结 semantic manifests",
+            ),
+            DerivationStageRecord(
+                stage="cognitive_planning",
+                input_identities=opportunity.manifest_ids,
+                output_identities=(opportunity.work_spec.work_spec_id,),
+                version=opportunity.work_spec.planner_version,
+                duration_ms=0,
+                safe_summary="已冻结 WorkContextSpec",
+            ),
+            DerivationStageRecord(
+                stage="admission",
+                input_identities=(opportunity.work_spec.work_spec_id,),
+                output_identities=(opportunity.opportunity_id,),
+                version=policy_version,
+                duration_ms=0,
+                safe_summary="Admission policy 接受派生",
+            ),
+        )
+        return tuple(by_stage.get(item.stage, item) for item in defaults)
 
     async def by_round(self, session: AsyncSession, round_id: str) -> tuple[LoopContextExpansion, ...]:
         return tuple(
@@ -197,8 +317,10 @@ class ContextExpansionRepository:
                     "expansion_id": row.expansion_id,
                     "opportunity_id": row.opportunity_id,
                     "round_id": row.round_id,
-                    "source_context_id": row.source_context_id,
-                    "source_revision_id": row.source_revision_id,
+                    "source_frontier": row.source_frontier,
+                    "evidence_frontier": row.evidence_frontier,
+                    "work_spec_id": row.work_spec.get("work_spec_id"),
+                    "stage_identities": row.stage_identities,
                     "state": row.state,
                     "level": row.level,
                     "policy_version": row.policy_version,
