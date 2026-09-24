@@ -31,6 +31,8 @@ class DerivationStageTimer:
         self,
         output_identities: tuple[str, ...],
         safe_summary: str,
+        *,
+        failure_code: str | None = None,
     ) -> DerivationStageRecord:
         duration_ms = max(0.0, (perf_counter_ns() - self._started_ns) / 1_000_000)
         return DerivationStageRecord(
@@ -40,4 +42,5 @@ class DerivationStageTimer:
             version=self._version,
             duration_ms=duration_ms,
             safe_summary=safe_summary,
+            failure_code=failure_code,
         )

@@ -1,10 +1,9 @@
 r"""本文件对外提供 PatrolSessionLifecycle、CuratorCoordinationStage 与 PatrolOutcomeStage。
 
 输入为 coordinator claim、冻结 observation、Kernel result 和持久 Session；输出为原子 phase 事件、单 Context Bootstrap 或
-多 Context Cognitive Planner assignment、可供 Patrol 消费的结构化 work specs 及等待/终态。具体工作流为 Lifecycle 管理 Session 边界，
-Curator stage 把冻结 Mission、带精确 unit identity 的 semantic manifests、Run/Workspace facts 按 Portfolio 形态有界扇出、
-收集和消费，Outcome stage
-只把 Kernel 结果映射为 delivery、waiting、publication 或终态。
+多 Context Cognitive Planner assignment、可供 Patrol 消费的结构化 work specs 及等待/终态。具体工作流为 Lifecycle 管理 Session
+边界，Curator stage 先为完整冻结 Revisions 建立可恢复 semantic indexes/catalog，再按 Portfolio 形态有界扇出 retrieval-backed
+规划、收集和消费；生产 request 只携带 catalog 与 index identities，Outcome stage 只映射 Kernel 结果。
 示例：`handle = await lifecycle.begin(claim)`。
 """
 
@@ -13,16 +12,18 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
+from focus.config.app_config import AppConfig
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.desktop.agent_loop.context_expansion.semantic_manifest import (
-    SemanticManifestProjector,
+from backend.app.desktop.agent_loop.context_expansion.portfolio_index import (
+    PortfolioSemanticIndexService,
 )
 from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
 from backend.app.desktop.agent_loop.curator_assignments import (
     CuratorAssignmentRepository,
 )
+from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
 from backend.app.desktop.agent_loop.kernel import KernelCommitResult
 from backend.app.desktop.agent_loop.models import (
     AgentLoop,
@@ -91,11 +92,32 @@ class PatrolSessionLifecycle:
 
 
 class CuratorCoordinationStage:
-    def __init__(self, sessions: async_sessionmaker[AsyncSession], max_assignments: int = 8) -> None:
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        checkpointer=None,
+        max_assignments: int = 8,
+        *,
+        index_service: PortfolioSemanticIndexService | None = None,
+        app_config: AppConfig | None = None,
+    ) -> None:
         self._sessions = sessions
         self._max_assignments = max(1, max_assignments)
         self._assignments = CuratorAssignmentRepository()
         self._sessions_repository = PatrolSessionRepository()
+        self._index_service = index_service or (
+            PortfolioSemanticIndexService(
+                sessions,
+                checkpointer,
+                semantic_projector_factory=(
+                    (lambda: RoleBoundStructuredModel(app_config, "semantic_index_projector"))
+                    if app_config is not None
+                    else None
+                ),
+            )
+            if checkpointer is not None
+            else None
+        )
 
     def scopes(self, observation: LoopObservationEnvelope) -> tuple[dict, ...]:
         eligible = tuple(item for item in observation.portfolio_frontier if item.get("revision_id"))
@@ -114,6 +136,7 @@ class CuratorCoordinationStage:
         )
 
     async def dispatch(self, session_id: str, observation: LoopObservationEnvelope, scopes: tuple[dict, ...]) -> int:
+        derivation_input = await self._derivation_input(observation)
         async with self._sessions.begin() as session:
             existing = await self._assignments.by_session(session, session_id)
             if not existing:
@@ -131,7 +154,7 @@ class CuratorCoordinationStage:
                             "assignments": [scope],
                             "curator_mode": scope["mode"],
                             "patrol_session_id": session_id,
-                            "derivation_input": self._derivation_input(observation),
+                            "derivation_input": derivation_input,
                         },
                     )
                     session.add(request)
@@ -166,13 +189,20 @@ class CuratorCoordinationStage:
                 )
             return len(existing)
 
-    @staticmethod
-    def _derivation_input(observation: LoopObservationEnvelope) -> dict:
-        manifests = SemanticManifestProjector().project(observation)
+    async def _derivation_input(self, observation: LoopObservationEnvelope) -> dict:
+        if self._index_service is None:
+            raise RuntimeError("CuratorCoordinationStage 缺少完整 Revision semantic index service")
+        built = await self._index_service.build(observation)
+        if built.catalog is None:
+            raise ValueError(
+                f"{built.blocker_code or 'portfolio_index_failed'}: "
+                f"{built.blocker_summary or 'Portfolio semantic index 不可用'}"
+            )
         return {
             "mission": observation.mission or observation.goal,
-            "portfolio_frontier": observation.portfolio_frontier,
-            "semantic_manifests": tuple(item.model_dump(mode="json") for item in manifests),
+            "portfolio_index_catalog": built.catalog.model_dump(mode="json"),
+            "semantic_index_ids": tuple(item.index_id for item in built.indexes),
+            "portfolio_index_stage": built.stage_record.model_dump(mode="json") if built.stage_record else None,
             "stable_results": observation.stable_results,
             "user_intents": observation.user_intents,
             "workspace": observation.workspace,

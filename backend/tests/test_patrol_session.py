@@ -12,6 +12,7 @@ import asyncio
 import os
 import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -134,10 +135,32 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         service, snapshot = await _create_loop(sessions, tmp_path)
         lifecycle = PatrolSessionLifecycle(sessions)
-        coordination = CuratorCoordinationStage(sessions)
+        class Catalog:
+            @staticmethod
+            def model_dump(mode="json"):
+                return {
+                    "catalog_id": "1" * 64,
+                    "frontier_hash": "a" * 64,
+                    "descriptors": (),
+                    "segment_catalog": (),
+                }
+
+        class IndexService:
+            @staticmethod
+            async def build(observation):
+                return SimpleNamespace(
+                    catalog=Catalog(),
+                    indexes=(),
+                    stage_record=None,
+                    blocker_code=None,
+                    blocker_summary=None,
+                )
+
+        coordination = CuratorCoordinationStage(sessions, index_service=IndexService())
         assignments = CuratorAssignmentRepository()
         runtime = LoopWorkerRuntime(sessions, object(), concurrency=2)
         orchestrator = LoopRoundOrchestrator(sessions, object(), None, None)
+        orchestrator._curators = coordination
         try:
             claim = CoordinatorClaim("lease-1", snapshot["loop_id"], snapshot["current_round_id"], "1")
             patrol = await lifecycle.begin(claim)

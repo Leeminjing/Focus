@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app.desktop.agent_loop import AgentLoopService, LoopCreateRequest
 from backend.app.desktop.agent_loop.context_expansion.contracts import (
+    DerivationStageRecord,
     EvidenceRequirement,
     ExpansionOpportunity,
     WorkContextSpec,
@@ -75,8 +76,8 @@ def test_expansion_repository_is_idempotent_and_recoverable(tmp_path) -> None:
         repository = ContextExpansionRepository()
         try:
             async with sessions.begin() as session:
-                first = await repository.create(session, opportunity, policy_version="semantic-expansion-admission-v2", level="required")
-                second = await repository.create(session, opportunity, policy_version="semantic-expansion-admission-v2", level="required")
+                first = await repository.create(session, opportunity, policy_version="semantic-expansion-admission-v2", level="required", stage_records=_stage_records(opportunity))
+                second = await repository.create(session, opportunity, policy_version="semantic-expansion-admission-v2", level="required", stage_records=_stage_records(opportunity))
                 assert first.expansion_id == second.expansion_id
             async with sessions.begin() as session:
                 await ContextExpansionRepository().transition(session, opportunity.opportunity_id, "proposed", "Patrol 已提出派生")
@@ -86,12 +87,15 @@ def test_expansion_repository_is_idempotent_and_recoverable(tmp_path) -> None:
                 history = tuple((await session.scalars(select(LoopContextExpansionTransition).where(LoopContextExpansionTransition.expansion_id == opportunity.opportunity_id).order_by(LoopContextExpansionTransition.revision))).all())
                 keys = await ContextExpansionRepository().active_independence_keys(session, snapshot["loop_id"])
             assert row.state == "blocked"
-            assert row.revision == 6
+            assert row.revision == 9
             assert row.blocker_code == "context_budget_exhausted"
             assert [item.to_state for item in history] == [
                 "signals_collected",
+                "indexes_ready",
                 "portfolio_projected",
+                "retrieval_planned",
                 "work_planned",
+                "work_reconciled",
                 "admitted",
                 "proposed",
                 "blocked",
@@ -99,7 +103,7 @@ def test_expansion_repository_is_idempotent_and_recoverable(tmp_path) -> None:
             assert keys == frozenset()
             async with sessions.begin() as session:
                 same = await ContextExpansionRepository().transition(session, opportunity.opportunity_id, "blocked", "ignored duplicate")
-                assert same.revision == 6
+                assert same.revision == 9
                 with pytest.raises(ExpansionRepositoryRejected):
                     await ContextExpansionRepository().transition(session, opportunity.opportunity_id, "proposed", "illegal restart")
         finally:
@@ -109,6 +113,29 @@ def test_expansion_repository_is_idempotent_and_recoverable(tmp_path) -> None:
             await engine.dispose()
 
     asyncio.run(run())
+
+
+def _stage_records(opportunity: ExpansionOpportunity) -> tuple[DerivationStageRecord, ...]:
+    stages = (
+        "signal_collection",
+        "portfolio_indexing",
+        "portfolio_projection",
+        "retrieval_planning",
+        "cognitive_planning",
+        "work_reconciliation",
+        "admission",
+    )
+    return tuple(
+        DerivationStageRecord(
+            stage=stage,
+            input_identities=(opportunity.observation_hash,),
+            output_identities=(opportunity.opportunity_id,),
+            version=f"test-{stage}-v1",
+            duration_ms=index + 1,
+            safe_summary=f"test recorded {stage}",
+        )
+        for index, stage in enumerate(stages)
+    )
 
 
 async def _create_loop(sessions, tmp_path):

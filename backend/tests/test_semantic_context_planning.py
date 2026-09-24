@@ -268,14 +268,14 @@ def test_manifest_model_adapter_accepts_valid_and_empty_structured_output() -> N
     assert empty_result.manifests[0].units == ()
 
 
-def test_composite_manifest_adds_validated_curator_semantics_to_production_projection() -> None:
-    observation = _observation(
+def test_composite_manifest_accepts_only_retrieval_backed_curator_semantics() -> None:
+    draft_observation = _observation(
         worker_results=(
             {
-                "kind": "lane_curator",
+                "kind": "semantic_manifest_projector",
                 "status": "success",
                 "result": {
-                    "manifest_units": [
+                    "units": [
                         {
                             "revision_id": "revision-planning-1",
                             "kind": "implementation_effect",
@@ -283,6 +283,21 @@ def test_composite_manifest_adds_validated_curator_semantics_to_production_proje
                             "statement": "The counter is incremented after persistence.",
                             "message_ids": ["implementation-R8"],
                         }
+                    ],
+                },
+            },
+        )
+    )
+    projected = WorkerResultManifestProjector().project(draft_observation)
+    assert projected.failure is None
+    observation = _observation(
+        worker_results=(
+            {
+                "kind": "lane_curator",
+                "status": "success",
+                "result": {
+                    "retrieved_manifests": [
+                        item.model_dump(mode="json") for item in projected.manifests
                     ],
                     "work_specs": [],
                 },
@@ -294,6 +309,20 @@ def test_composite_manifest_adds_validated_curator_semantics_to_production_proje
 
     assert "implementation_effect" in {unit.kind for unit in manifest.units}
     assert all(unit.evidence_refs for unit in manifest.units)
+
+    preview_only = observation.model_copy(
+        update={
+            "worker_results": (
+                {
+                    "kind": "lane_curator",
+                    "status": "success",
+                    "result": {"manifest_units": [], "work_specs": []},
+                },
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="retrieval-backed"):
+        CompositeSemanticManifestProjector().project(preview_only)
 
 
 def test_manifest_model_adapter_rejects_malformed_and_unsupported_output() -> None:
