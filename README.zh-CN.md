@@ -83,11 +83,11 @@ Scope Drift    R2  ────────────→ 退出
                                   Release        R1  （新建）
 ```
 
-这里的“一”指一个 authority holder，不是只允许一次模型调用。Patrol 可以自己完成观察、判断与策展；只有需要并行构造多个 Lane 或独立验证完成状态时，才调用临时 Worker。
+这里的“一”指一个 authority holder，不是只允许一次模型调用。Patrol 可以自己完成观察、判断与策展；需要并行构造 Lane、建立语义索引、基于证据进行合成、独立评估质量或验证完成状态时，才调用临时 Worker。
 
 > **Patrol owns judgment. Workers are optional cognitive tools.**
 
-Worker 只返回候选 Context 或证据，不能改变 Portfolio、不能启动 Run、不能写入 delegated Human channel。无论 Worker 多强，最终都遵守同一条原则：**Workers return. Patrol commits.**
+Worker 只返回类型化的候选、semantic unit、合成 claim 或验证 verdict。每种角色只能读取自己的冻结输入，不能改变 Portfolio、不能启动 Run、不能写入 delegated Human channel。无论 Worker 多强，最终都遵守同一条原则：**Workers return. Patrol commits.**
 
 ### Patrol 决定往哪里走，Derived Context 决定带着什么过去
 
@@ -110,7 +110,9 @@ Implementation R7
 Architecture R5
 ```
 
-Portfolio 是索引，不是超级上下文。Patrol 默认只读取每个 Lane 的 purpose、revision、freshness、summary、fingerprint 和最近结果；只有判断需要深入时，才加载对应 Context 的完整内容。
+Portfolio 是索引，不是超级上下文。Patrol 的普通控制观察仍保持有界，只读取每个 Lane 的 purpose、revision、freshness、summary、fingerprint 和最近结果。
+
+但自动 Context 派生不会再基于截断的尾部消息预览进行规划。系统会把每个不可变 source Revision 完整索引为 protocol-safe segments 与有原文依据的 semantic units；Planner 从紧凑的 Portfolio catalog 出发，在授权索引中检索候选，并在生成 `WorkContextSpec` 前执行有预算的精确读取。完整历史始终可达，但不会被整段塞进每一次模型调用。
 
 ### 多对一、多对多持续策展
 
@@ -393,7 +395,7 @@ Patrol 不是上面这些机制的第五种——它是**委托执行者**，能
        └─ 一个 Portfolio Patrol（唯一委托权力持有者）
             ├─ 观察有界的 Portfolio frontier
             ├─ 自己判断继续、策展、派生、合并、等待或停止
-            ├─ 必要时调用并行 Lane Curator 或独立 Completion Verifier
+            ├─ 必要时调用角色受限的索引、规划、合成与验证 Worker
             └─ 提交一份严格 decision intent
                  └─ 确定性 Kernel 校验并提交
                       ├─ 原子 Portfolio publication
@@ -401,7 +403,27 @@ Patrol 不是上面这些机制的第五种——它是**委托执行者**，能
                       └─ 并发安全的 Agent Run
 ```
 
-Patrol 拥有判断权；Worker 只是可选外脑。Worker 只能返回候选 Context 或验证证据，没有任何状态提交端口；Kernel 是唯一 commit 边界。核心不变量是：**多 reader、多 advisor、多 candidate producer，但每个 Portfolio 只有一个权威 publisher**。
+Patrol 拥有判断权；Worker 只是可选外脑。Worker 只能返回类型化产物，没有任何状态提交端口；Kernel 是唯一 commit 边界。核心不变量是：**多 reader、多 advisor、多 candidate producer，但每个 Portfolio 只有一个权威 publisher**。
+
+### 有证据约束的语义 Context 派生
+
+自动派生是一条 fail-closed 的阶段流水线，不再是关键词路由或最近消息切片：
+
+```text
+完整不可变 Revisions
+  → protocol-safe semantic indexes
+  → Portfolio 范围内的有界检索与精确读取
+  → WorkContextSpec 规划与语义 reconciliation
+  → 精确的多源 evidence resolution
+  → claim 级 dossier synthesis 与 grounding verification
+  → minimality · sufficiency · coherence Quality Gate
+  → 确定性 Context compilation
+  → Kernel admission 与 commit
+```
+
+每个阶段都由 semantic identity 与 source hash 串联。Required evidence 必须解析到精确 source unit；tool call/result 必须保持闭合；相互冲突的 WorkSpec 不会被静默合并；无原文支持的 claim 或任一 unknown 质量结论都会阻止编译。系统持久化模型调用尝试、实际 token 用量、阶段耗时、版本、输出、重试与稳定失败码，用于审计和重放。
+
+同一条派生链可以运行在 observe-only shadow mode，只生成对比产物，不创建 Context，也不改变 Portfolio。运维可设置 `FOCUS_LOOP_AUTOMATIC_CONTEXT_EXPANSION_WRITES=false` 关闭自动派生写入；规划与诊断仍会继续，但权威写入路径保持关闭。
 
 ### 原子 Portfolio 发布
 
