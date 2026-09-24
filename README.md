@@ -97,11 +97,11 @@ Scope Drift    R2  ────────────→ retired
 
 “One” means one authority holder, not one model call. Patrol normally observes, judges, and curates by itself.
 
-It calls temporary Workers only when it wants parallel Lane construction or completion verification independent from its own judgment.
+It calls temporary Workers when it needs parallel Lane construction, semantic indexing, evidence-grounded synthesis, independent quality review, or completion verification outside its own judgment.
 
 > **Patrol owns judgment. Workers are optional cognitive tools.**
 
-Workers return candidate Contexts or evidence. They cannot mutate the Portfolio, start Runs, or write to the delegated Human channel. Regardless of how capable a Worker is, the governing rule remains: **Workers return. Patrol commits.**
+Workers return typed candidates, semantic units, synthesized claims, or verification verdicts. Each role receives only its frozen input and has no Portfolio mutation, Run-start, or delegated-Human write port. Regardless of how capable a Worker is, the governing rule remains: **Workers return. Patrol commits.**
 
 ### Patrol chooses where to go; Derived Context chooses what past to carry
 
@@ -126,7 +126,9 @@ Implementation R7
 Architecture R5
 ```
 
-The Portfolio is an index, not a super-context. Patrol first sees each Lane's purpose, revision, freshness, summary, fingerprint, and latest result. It loads a complete Context only when its judgment requires a deeper read.
+The Portfolio is an index, not a super-context. Patrol's ordinary control observation stays bounded to each Lane's purpose, revision, freshness, summary, fingerprint, and latest result.
+
+Automatic Context derivation does not plan from a truncated tail preview. Every immutable source Revision is completely indexed into protocol-safe segments and grounded semantic units. A planner starts from the compact Portfolio catalog, searches authorized indexes, and performs bounded exact reads before it proposes a `WorkContextSpec`. Full histories remain reachable without being dumped wholesale into every model call.
 
 ### Continuous many-to-one and many-to-many curation
 
@@ -419,7 +421,7 @@ User (root authority)
        └─ one Portfolio Patrol (sole delegated authority holder)
             ├─ observes a bounded Portfolio frontier
             ├─ judges whether to continue, curate, derive, merge, wait, or stop
-            ├─ may ask parallel Lane Curators or an independent Completion Verifier
+            ├─ may invoke role-bound indexing, planning, synthesis, and verification Workers
             └─ submits one typed decision intent
                  └─ deterministic Kernel validates and commits
                       ├─ atomic Portfolio publication
@@ -427,9 +429,29 @@ User (root authority)
                       └─ concurrency-safe Agent Runs
 ```
 
-Patrol owns judgment; Workers are optional cognitive tools. Workers return candidates or evidence and have no state-mutation port. The Kernel is the only commit boundary.
+Patrol owns judgment; Workers are optional cognitive tools. Workers return typed artifacts and have no state-mutation port. The Kernel is the only commit boundary.
 
 The invariant is: **many readers, many advisors, many candidate producers, one authoritative publisher per Portfolio**.
+
+### Grounded semantic Context derivation
+
+Automatic derivation is a staged, fail-closed pipeline rather than keyword routing or recent-message slicing:
+
+```text
+complete immutable Revisions
+  → protocol-safe semantic indexes
+  → bounded search and exact reads across the Portfolio
+  → WorkContextSpec planning and semantic reconciliation
+  → exact multi-source evidence resolution
+  → claim-level dossier synthesis and grounding verification
+  → minimality · sufficiency · coherence quality gate
+  → deterministic Context compilation
+  → Kernel admission and commit
+```
+
+Semantic identities and source hashes connect every stage. Required evidence must resolve to exact source units; tool calls and results remain closed; conflicting WorkSpecs do not merge silently; unsupported claims and any unknown quality verdict block compilation. Model-call attempts, actual token usage, stage duration, versions, outputs, retries, and stable failure codes are persisted for audit and replay.
+
+The same derivation path can run in observe-only shadow mode, producing comparison artifacts without creating a Context or changing the Portfolio. Operators can disable automatic expansion writes with `FOCUS_LOOP_AUTOMATIC_CONTEXT_EXPANSION_WRITES=false`; planning and diagnostics continue while the authoritative write path remains closed.
 
 ### Atomic Portfolio publication
 
