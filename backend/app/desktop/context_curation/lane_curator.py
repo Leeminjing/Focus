@@ -1,16 +1,16 @@
 r"""本文件对外提供 LaneCuratorAssignment、LaneCuratorRunner、Worker backend 与结果合同。
 
 输入为 Patrol 主动创建的单 Lane purpose、精确来源、策略、预算和 candidate identity；输出为不可
-提交的 CompiledLaneCandidate 或持久化错误证据。具体工作流为每个 assignment 独立记录 attempt，
-并行调用无权 backend，严格校验输出与 scope 后编译；Worker 夹带的 mutation 字段整体拒绝。
+提交的 CompiledLaneCandidate 或持久化错误证据。具体工作流为先为整批 assignments 登记独立 attempts，再并行调用无权 backend，
+严格校验输出与 scope 后编译并分别终结审计；Worker 夹带的 mutation 字段整体拒绝。
 示例：`outcomes = await runner.run_many(assignments)`。
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import json
+from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -124,10 +124,27 @@ class LaneCuratorRunner:
         self,
         assignments: tuple[LaneCuratorAssignment, ...],
     ) -> tuple[LaneCuratorOutcome, ...]:
-        return tuple(await asyncio.gather(*(self._run_one(item) for item in assignments)))
+        started = []
+        for assignment in assignments:
+            started.append((assignment, await self._start_attempt(assignment)))
+        return tuple(
+            await asyncio.gather(
+                *(
+                    self._run_started(assignment, attempt_id)
+                    for assignment, attempt_id in started
+                )
+            )
+        )
 
     async def _run_one(self, assignment: LaneCuratorAssignment) -> LaneCuratorOutcome:
         attempt_id = await self._start_attempt(assignment)
+        return await self._run_started(assignment, attempt_id)
+
+    async def _run_started(
+        self,
+        assignment: LaneCuratorAssignment,
+        attempt_id: str,
+    ) -> LaneCuratorOutcome:
         raw: dict[str, Any] = {}
         try:
             raw = await self._backend.curate(assignment)
@@ -141,7 +158,7 @@ class LaneCuratorRunner:
                 attempt_id=attempt_id,
                 candidate=candidate,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             await self._finish_attempt(attempt_id, raw, None, str(exc))
             return LaneCuratorOutcome(
                 request_id=assignment.request_id,

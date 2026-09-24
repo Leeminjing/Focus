@@ -1,4 +1,4 @@
-r"""本文件验证 Live Loop 五个发布阶段可以独立切换。
+r"""本文件验证 Live Loop 发布阶段与自动 Context expansion 写入可以独立切换。
 
 输入为逐项环境映射、禁用的 canonical journal 与 Live API policy；输出为每个开关互不影响、非法值失败、禁用事件不访问数据库的断言。
 具体工作流为纯配置解析后对中央 journal gate 做一次异步调用；示例：`pytest backend/tests/test_loop_feature_flags.py`。
@@ -23,6 +23,10 @@ from backend.app.desktop.agent_loop.feature_flags import LoopFeatureFlags
         ("FOCUS_LOOP_MATERIALIZED_FACTS", "materialized_fact_reads"),
         ("FOCUS_LOOP_LIVE_API", "live_api"),
         ("FOCUS_LOOP_FRONTEND_PROJECTION", "frontend_projection"),
+        (
+            "FOCUS_LOOP_AUTOMATIC_CONTEXT_EXPANSION_WRITES",
+            "automatic_context_expansion_writes",
+        ),
     ),
 )
 def test_each_loop_stage_can_be_disabled_independently(environment_key: str, field: str) -> None:
@@ -33,6 +37,7 @@ def test_each_loop_stage_can_be_disabled_independently(environment_key: str, fie
         "materialized_fact_reads": flags.materialized_fact_reads,
         "live_api": flags.live_api,
         "frontend_projection": flags.frontend_projection,
+        "automatic_context_expansion_writes": flags.automatic_context_expansion_writes,
     }
     assert values[field] is False
     assert all(value is True for key, value in values.items() if key != field)

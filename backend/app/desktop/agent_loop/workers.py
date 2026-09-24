@@ -1,25 +1,20 @@
-r"""本文件对外提供 LoopWorkerRuntime、仅验证声明检查的 StructuredCompletionVerifier 与 StructuredLaneAdvisor。
+r"""本文件对外提供 LoopWorkerRuntime、StructuredCompletionVerifier、测试兼容 StructuredLaneAdvisor 与 production worker 调度。
 
 输入为 Patrol 已提交的可选 Worker request、可选 Loop scope、当前 Mission/round/Portfolio/workspace 证据和模型配置；输出为
-无工具、无状态提交能力的完成证据或 `WorkContextDraft` 认知工作候选。具体工作流为独立有界池持久领取 request、记录 attempt identity、
-后台执行模型调用并严格解析结果，Curator 生命周期逐步提交且部分结果立即可见，失败有界重试；Patrol Session
-所属 Curator 全部结束后将同一 round 标为 curated，旧式 Worker 批次仍创建新 observation round，最终判断仍归 Portfolio Patrol。
-示例：`await runtime.drain()`。
+无工具、无状态提交能力的完成证据、retrieval-session 约束的 WorkContextDraft 或角色专属结构化派生产物。具体工作流为独立有界池领取
+request，lane curator 查询完整 Revision indexes；index/reconciliation/synthesis/claim/quality 角色绑定独立 schema、authority、重试、
+attempt 与模型用量审计；最终状态判断和提交权仍归 Portfolio Patrol/Kernel。示例：`await runtime.drain()`。
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 from focus.config.app_config import AppConfig
-from focus.models.factory import create_chat_model
-from focus.runtime.runs.usage import ModelUsage, callback_usage
-from langchain_core.callbacks import UsageMetadataCallbackHandler
-from langchain_core.messages import HumanMessage, SystemMessage
+from focus.runtime.runs.usage import ModelUsage
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -30,13 +25,43 @@ from backend.app.desktop.agent_loop.budgets import (
 )
 from backend.app.desktop.agent_loop.completion import CompletionEvidenceService
 from backend.app.desktop.agent_loop.completion_policy import CompletionCheckPolicy
-from backend.app.desktop.agent_loop.context_expansion.contracts import WorkContextDraft
-from backend.app.desktop.agent_loop.context_expansion.manifest_adapter import (
-    ManifestUnitDraft,
+from backend.app.desktop.agent_loop.context_expansion.artifact_repository import (
+    SemanticDerivationArtifactRepository,
+)
+from backend.app.desktop.agent_loop.context_expansion.contracts import (
+    DerivationStageRecord,
+    WorkContextSpec,
+    stable_expansion_hash,
+)
+from backend.app.desktop.agent_loop.context_expansion.quality_verifier import (
+    QualityWorkerProposal,
+)
+from backend.app.desktop.agent_loop.context_expansion.reconciliation import (
+    StructuredWorkSpecRelationEvaluator,
+)
+from backend.app.desktop.agent_loop.context_expansion.retrieval_planner import (
+    LaneAdviceProposal,
+    RetrievalBackedCognitiveAdvisor,
+)
+from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
+    SemanticProjectionProposal,
+)
+from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
+    PlanningRetrievalSession,
+    PortfolioIndexCatalog,
+    RetrievalBudget,
+)
+from backend.app.desktop.agent_loop.context_expansion.stage_telemetry import (
+    DerivationStageTimer,
+)
+from backend.app.desktop.agent_loop.context_expansion.synthesis import (
+    ClaimSupportProposal,
+    ContextSynthesisWorkerDraft,
 )
 from backend.app.desktop.agent_loop.curator_assignments import (
     CuratorAssignmentRepository,
 )
+from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
 from backend.app.desktop.agent_loop.mission_contract import LegacyMissionAdapter
 from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
 from backend.app.desktop.agent_loop.models import (
@@ -64,6 +89,7 @@ from backend.app.desktop.agent_loop.schemas import (
     CompletionVerificationContract,
     CriterionVerification,
 )
+from backend.app.desktop.agent_loop.structured_worker import StructuredWorkerModel
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.agent_loop.wait_requests import open_recovery_wait
 from backend.app.desktop.models import DesktopRun
@@ -78,47 +104,8 @@ class CompletionProposal(BaseModel):
     unresolved: tuple[str, ...] = ()
 
 
-class LaneAdviceProposal(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    rationale: str = Field(min_length=1, max_length=4000)
-    manifest_units: tuple[ManifestUnitDraft, ...] = ()
-    work_specs: tuple[WorkContextDraft, ...]
-
-
-class _StructuredWorker:
-    def __init__(self, app_config: AppConfig, model_name: str | None = None) -> None:
-        self._app_config = app_config
-        self._model_name = model_name
-        self.usage = ModelUsage()
-
-    async def invoke(self, schema, system: str, payload: dict[str, Any]):
-        config = self._app_config.get_model(self._model_name or self._app_config.resolve_default_model_name())
-        model = create_chat_model(name=config.name, app_config=self._app_config, max_tokens=config.curation_max_output_tokens)
-        document = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        json_schema = json.dumps(schema.model_json_schema(), ensure_ascii=False, separators=(",", ":"))
-        messages = [SystemMessage(content=system), HumanMessage(content=f"<worker_input>{document}</worker_input>\nJSON Schema: {json_schema}")]
-        callback = UsageMetadataCallbackHandler()
-        try:
-            invoke_config = {"callbacks": [callback]}
-            if config.curation_output_method == "prompt_json":
-                response = await model.ainvoke(messages, config=invoke_config)
-                content = getattr(response, "content", response)
-                text = content if isinstance(content, str) else "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
-                candidate = text.strip()
-                if candidate.startswith("```"):
-                    lines = candidate.splitlines()
-                    candidate = "\n".join(lines[1:-1]).strip()
-                return schema.model_validate(json.loads(candidate))
-            response = await model.with_structured_output(schema, method=config.curation_output_method).ainvoke(messages, config=invoke_config)
-            return response if isinstance(response, schema) else schema.model_validate(response)
-        finally:
-            measured = callback_usage(callback)
-            self.usage += measured if measured.model_calls else ModelUsage(model_calls=1)
-
-
 class StructuredCompletionVerifier:
-    def __init__(self, worker: _StructuredWorker) -> None:
+    def __init__(self, worker: StructuredWorkerModel) -> None:
         self._worker = worker
 
     async def verify(self, payload: dict[str, Any]) -> CompletionProposal:
@@ -126,11 +113,11 @@ class StructuredCompletionVerifier:
 
 
 class StructuredLaneAdvisor:
-    def __init__(self, worker: _StructuredWorker) -> None:
+    def __init__(self, worker: StructuredWorkerModel) -> None:
         self._worker = worker
 
     async def advise(self, payload: dict[str, Any]) -> LaneAdviceProposal:
-        return await self._worker.invoke(LaneAdviceProposal, "你是无权 Cognitive Work Planner。阅读冻结 Mission、完整 Portfolio message evidence previews、semantic manifests、Run evidence、用户意图与 Workspace facts，先输出 manifest_units，把有证据支持的 decision、claim、hypothesis、unresolved_question、implementation_effect、verification_result 与 failure 绑定到精确 revision_id/message_ids；confirmed statement 必须是所引原文可验证的片段。再判断任务认知结构是否出现需要独立历史、职责或验证路径的工作，并返回零个或多个 WorkContextDraft：目标、分离原因、问题、完成条件、Workspace 需求与按角色划分的 evidence requirements。不得按阈值或关键词直接套模板，不得选择单一父 Context，不得请求运行、修改 Context、创建 Directive、发布 Portfolio 或扩大范围。Context message evidence requirement 必须通过 candidate_unit_ids 引用输入 semantic_manifests 中与问题及 coverage criterion 语义一致的 unit identity；不得仅凭 Context role 或词语命中。Mission、Run、Material 与 Workspace 等结构化 evidence 可以使用其权威对象 identity 作为 requirement_id 交由 resolver 精确绑定。", payload)
+        return await self._worker.invoke(LaneAdviceProposal, "你是无权 Cognitive Work Planner 测试适配器。只返回 WorkContextDraft；不得创建 Context、修改状态、运行工具或扩大 scope。生产路径使用冻结 semantic index 的 retrieval-backed planner。", payload)
 
 
 class LoopWorkerRuntime:
@@ -146,6 +133,7 @@ class LoopWorkerRuntime:
         self._completion = CompletionEvidenceService(sessions)
         self._curator_assignments = CuratorAssignmentRepository()
         self._patrol_sessions = PatrolSessionRepository()
+        self._derivation_artifacts = SemanticDerivationArtifactRepository()
         self._concurrency = max(1, concurrency)
         self._tasks: dict[str, asyncio.Task] = {}
 
@@ -172,15 +160,23 @@ class LoopWorkerRuntime:
             await self._require_budget(request)
             if request.kind == "completion_verifier":
                 await self._verify_completion(request)
-            elif request.kind == "lane_curator":
+            elif request.kind == "lane_curator" or request.kind == "retrieval_cognitive_planner":
                 await self._advise_lanes(request)
+            elif request.kind in {
+                "semantic_index_projector",
+                "work_spec_reconciler",
+                "dossier_synthesizer",
+                "claim_verifier",
+                "context_quality_verifier",
+            }:
+                await self._run_derivation_role(request)
             else:
                 raise ValueError(f"未知 Loop Worker: {request.kind}")
             await self._advance(request.loop_id, request.round_id)
         except asyncio.CancelledError:
             await self._cancel(request, "component_stopped")
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             await self._fail(request, exc)
 
     async def _require_budget(self, request: LoopWorkerRequest) -> None:
@@ -263,7 +259,11 @@ class LoopWorkerRuntime:
         checks = tuple(payload["mission"]["completion_checks"])
         verifier_payload = {key: value for key, value in payload.items() if key != "mission"} | {"completion_checks": checks}
         model_name = (loop.equipment or {}).get("verifier_model_name") or (loop.equipment or {}).get("model_name")
-        worker = _StructuredWorker(self._app_config, model_name)
+        worker = RoleBoundStructuredModel(
+            self._app_config,
+            request.kind,
+            model_name,
+        )
         try:
             proposal = await StructuredCompletionVerifier(worker).verify(verifier_payload)
         finally:
@@ -276,9 +276,25 @@ class LoopWorkerRuntime:
         await self._start_curator_analysis(request.worker_request_id)
         payload, loop, _ = await self._evidence(request)
         model_name = (loop.equipment or {}).get("curator_model_name") or (loop.equipment or {}).get("model_name")
-        worker = _StructuredWorker(self._app_config, model_name)
+        worker = StructuredWorkerModel(self._app_config, model_name)
         try:
-            result = await StructuredLaneAdvisor(worker).advise({**payload, "assignments": request.scope.get("assignments", [])})
+            index_ids = tuple(
+                (request.scope.get("derivation_input") or {}).get("semantic_index_ids") or ()
+            )
+            if index_ids:
+                result_payload = await self._retrieval_backed_advice(
+                    request,
+                    payload,
+                    worker,
+                    index_ids,
+                )
+                rationale = str(result_payload.get("rationale") or "retrieval-backed planning blocked")
+            else:
+                result = await StructuredLaneAdvisor(worker).advise(
+                    {**payload, "assignments": request.scope.get("assignments", [])}
+                )
+                result_payload = result.model_dump(mode="json")
+                rationale = result.rationale
         finally:
             await self._record_usage(loop.loop_id, worker.usage)
         async with self._sessions.begin() as session:
@@ -291,7 +307,7 @@ class LoopWorkerRuntime:
                     row.completed_at = datetime.now(UTC)
                 return
             row.status = "success"
-            row.result = result.model_dump(mode="json")
+            row.result = result_payload
             row.completed_at = datetime.now(UTC)
             assignment = await self._curator_assignments.by_worker(session, row.worker_request_id, lock=True)
             if assignment is not None and assignment.state == "analyzing":
@@ -300,8 +316,191 @@ class LoopWorkerRuntime:
                     assignment.assignment_id,
                     "proposed",
                     "Curator proposal 已提交，等待 Patrol 消费",
-                    result_summary=result.rationale,
+                    result_summary=rationale,
                 )
+
+    async def _retrieval_backed_advice(
+        self,
+        request: LoopWorkerRequest,
+        payload: dict[str, Any],
+        worker: StructuredWorkerModel,
+        index_ids: tuple[str, ...],
+    ) -> dict[str, Any]:
+        derivation = dict(request.scope.get("derivation_input") or {})
+        catalog = PortfolioIndexCatalog.model_validate(derivation["portfolio_index_catalog"])
+        budget_payload = dict((derivation.get("budget") or {}).get("limits") or {})
+        budget = RetrievalBudget(
+            max_queries=int(budget_payload.get("max_expansion_retrieval_queries", 6) or 6),
+            max_candidates=int(budget_payload.get("max_expansion_retrieval_candidates", 64) or 64),
+            max_exact_reads=int(budget_payload.get("max_expansion_exact_reads", 24) or 24),
+            max_model_calls=int(budget_payload.get("max_expansion_planner_model_calls", 3) or 3),
+            max_tokens=int(budget_payload.get("max_expansion_planner_tokens", 24000) or 24000),
+        )
+        observation_hash = stable_expansion_hash(
+            "retrieval-planning-observation",
+            request.loop_id,
+            request.round_id,
+            payload.get("frontier_hash"),
+            derivation.get("mission"),
+            tuple(request.scope.get("assignments") or ()),
+        )
+        planning = PlanningRetrievalSession.create(
+            observation_hash=observation_hash,
+            frontier_hash=str(payload.get("frontier_hash") or catalog.frontier_hash),
+            catalog=catalog,
+            planner_version=RetrievalBackedCognitiveAdvisor.VERSION,
+            retrieval_version="authorized-lexical-retriever-v1",
+            budget=budget,
+        )
+        async with self._sessions.begin() as session:
+            existing = await self._derivation_artifacts.get_session(session, planning.session_id)
+            indexes = await self._derivation_artifacts.indexes_by_ids(session, index_ids)
+            planning = existing or planning
+            if planning.frontier_hash != str(payload.get("frontier_hash") or catalog.frontier_hash):
+                raise ValueError("planning retrieval session frontier 已 stale")
+            await self._derivation_artifacts.save_session(
+                session,
+                planning,
+                loop_id=request.loop_id,
+                round_id=request.round_id,
+                attempt_records=({"attempt": request.attempt, "outcome": "started"},),
+            )
+        async def checkpoint(current: PlanningRetrievalSession) -> None:
+            async with self._sessions.begin() as session:
+                await self._derivation_artifacts.save_session(
+                    session,
+                    current,
+                    loop_id=request.loop_id,
+                    round_id=request.round_id,
+                    attempt_records=({"attempt": request.attempt, "outcome": current.state},),
+                )
+
+        timer = DerivationStageTimer(
+            "retrieval_planning",
+            (planning.session_id, *index_ids),
+            RetrievalBackedCognitiveAdvisor.VERSION,
+        )
+        result = await RetrievalBackedCognitiveAdvisor(
+            worker,
+            checkpoint=checkpoint,
+        ).plan(
+            {**payload, "assignments": request.scope.get("assignments", [])},
+            planning,
+            indexes,
+        )
+        stage_record = timer.finish(
+            (result.session.session_id,),
+            result.blocker_summary or "已完成冻结 hierarchical retrieval",
+            failure_code=result.blocker_code,
+        )
+        async with self._sessions.begin() as session:
+            await self._derivation_artifacts.save_session(
+                session,
+                result.session,
+                loop_id=request.loop_id,
+                round_id=request.round_id,
+                attempt_records=({"attempt": request.attempt, "outcome": result.session.state},),
+            )
+            existing_stage = await self._derivation_artifacts.stage_artifact(
+                session,
+                loop_id=request.loop_id,
+                round_id=request.round_id,
+                stage=stage_record.stage,
+                input_identities=stage_record.input_identities,
+                version=stage_record.version,
+            )
+            if existing_stage is None:
+                await self._derivation_artifacts.put_stage_artifact(
+                    session,
+                    loop_id=request.loop_id,
+                    round_id=request.round_id,
+                    stage=stage_record.stage,
+                    input_identities=stage_record.input_identities,
+                    version=stage_record.version,
+                    outcome="blocked" if result.blocker_code else "ready",
+                    payload=stage_record.model_dump(mode="json"),
+                    attempt_records=({"attempt": request.attempt, "outcome": result.session.state},),
+                )
+            else:
+                stage_record = DerivationStageRecord.model_validate(existing_stage.payload)
+        if result.proposal is None:
+            return {
+                "rationale": result.blocker_summary,
+                "work_specs": [],
+                "planning_blocker": {
+                    "code": result.blocker_code,
+                    "summary": result.blocker_summary,
+                },
+                "planning_session": result.session.model_dump(mode="json"),
+                "portfolio_index_stage": derivation.get("portfolio_index_stage"),
+                "retrieval_stage_record": stage_record.model_dump(mode="json"),
+            }
+        return {
+            **result.proposal.model_dump(mode="json"),
+            "planning_session": result.session.model_dump(mode="json"),
+            "retrieval_candidates": tuple(item.model_dump(mode="json") for item in result.candidates),
+            "exact_reads": tuple(item.model_dump(mode="json") for item in result.reads),
+            "retrieved_manifests": tuple(item.model_dump(mode="json") for item in result.manifests),
+            "portfolio_index_stage": derivation.get("portfolio_index_stage"),
+            "retrieval_stage_record": stage_record.model_dump(mode="json"),
+        }
+
+    async def _run_derivation_role(self, request: LoopWorkerRequest) -> None:
+        _payload, loop, _ = await self._evidence(request)
+        model_name = (loop.equipment or {}).get("curator_model_name") or (loop.equipment or {}).get("model_name")
+        worker = RoleBoundStructuredModel(
+            self._app_config,
+            request.kind,
+            model_name,
+        )
+        role_payload = dict(request.scope.get("payload") or {})
+        try:
+            if request.kind == "semantic_index_projector":
+                result = await worker.invoke(
+                    SemanticProjectionProposal,
+                    "你是无权 semantic_index_projector。只从输入冻结 segment 原文抽取原子 semantic units，并绑定输入中已有 message_ids；不得生成 WorkSpec、查询外部历史或执行状态变更。",
+                    role_payload,
+                )
+            elif request.kind == "work_spec_reconciler":
+                candidates = tuple(
+                    WorkContextSpec.model_validate(item)
+                    for item in tuple(role_payload.get("candidates") or ())
+                )
+                relations = await StructuredWorkSpecRelationEvaluator(worker).evaluate(candidates)
+                result = {"relations": tuple(item.model_dump(mode="json") for item in relations)}
+            elif request.kind == "dossier_synthesizer":
+                result = await worker.invoke(
+                    ContextSynthesisWorkerDraft,
+                    "你是无权 dossier_synthesizer。只基于输入冻结 WorkSpec 与 resolved evidence 输出原子 claim graph；不得访问外部历史、改写工作或执行状态变更。",
+                    role_payload,
+                )
+            elif request.kind == "claim_verifier":
+                result = await worker.invoke(
+                    ClaimSupportProposal,
+                    "你是无权 claim_verifier。只判断输入 confirmed claims 是否被指定 citations 直接支持；不得补充证据、改写 claim 或执行工作。",
+                    role_payload,
+                )
+            else:
+                result = await worker.invoke(
+                    QualityWorkerProposal,
+                    "你是无权 context_quality_verifier。只返回 minimality、sufficiency、coherence 三维 verdict 与输入 identities；不得改写 work、dossier、evidence 或状态。",
+                    role_payload,
+                )
+        finally:
+            await self._record_usage(loop.loop_id, worker.usage)
+        result_payload = result if isinstance(result, dict) else result.model_dump(mode="json")
+        result_payload = {
+            **result_payload,
+            "worker_attempts": worker.last_attempt_records,
+        }
+        async with self._sessions.begin() as session:
+            row = await session.get(LoopWorkerRequest, request.worker_request_id, with_for_update=True)
+            loop_row = await session.get(AgentLoop, request.loop_id, with_for_update=True)
+            if row is None or row.status != "running" or loop_row is None or loop_row.status != "running":
+                return
+            row.status = "success"
+            row.result = result_payload
+            row.completed_at = datetime.now(UTC)
 
     async def _start_curator_analysis(self, worker_request_id: str) -> None:
         async with self._sessions.begin() as session:

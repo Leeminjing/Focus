@@ -1,7 +1,8 @@
 r"""本文件对外提供 semantic Context derivation lifecycle 的纯状态机测试。
 
-输入为 planning、resolution、dossier omission、compilation、authorization 与 publication 状态序列；输出为合法顺序、终态封闭和
-跳阶段拒绝断言。具体工作流为逐步调用 ExpansionLifecycleStateMachine，不连接数据库。示例：
+输入为 indexing、retrieval、reconciliation、resolution、synthesis、quality、compilation、authorization 与 publication 状态序列；
+输出为合法顺序、缺失 synthesis 阻断、终态封闭和跳阶段拒绝断言。具体工作流为逐步调用
+ExpansionLifecycleStateMachine，不连接数据库。示例：
 `pytest backend/tests/test_semantic_context_lifecycle.py -q`。
 """
 
@@ -15,17 +16,20 @@ from backend.app.desktop.agent_loop.context_expansion.lifecycle import (
 )
 
 
-@pytest.mark.parametrize("synthesis_state", ("dossier_built", "synthesis_omitted"))
-def test_semantic_lifecycle_records_each_causal_stage(synthesis_state: str) -> None:
+def test_semantic_lifecycle_records_each_causal_stage() -> None:
     machine = ExpansionLifecycleStateMachine()
     sequence = (
         "signals_collected",
+        "indexes_ready",
         "portfolio_projected",
+        "retrieval_planned",
         "work_planned",
+        "work_reconciled",
         "admitted",
         "proposed",
         "evidence_resolved",
-        synthesis_state,
+        "dossier_built",
+        "quality_verified",
         "compiled",
         "authorized",
         "committed",
@@ -47,3 +51,8 @@ def test_lifecycle_rejects_compilation_before_resolution_and_synthesis() -> None
 
     with pytest.raises(ExpansionTransitionRejected):
         machine.validate("dispatched", "proposed")
+
+    with pytest.raises(ExpansionTransitionRejected):
+        machine.validate("synthesis_omitted", "compiled")
+
+    assert machine.validate("synthesis_omitted", "blocked") == "blocked"

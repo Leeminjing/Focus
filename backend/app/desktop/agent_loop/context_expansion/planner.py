@@ -1,8 +1,9 @@
 r"""本文件对外提供 CognitivePlannerPort 与 WorkerResultCognitivePlanner。
 
-输入为冻结 observation、结构化 signal 集合、evidence-grounded manifests 以及受监督 Curator worker 的结构化结果；
-输出为 `CognitivePlanResult` 中零个、一个或多个稳定 `WorkContextSpec`，或显式 planning failure。具体工作流为
-严格解析 `WorkContextDraft`、校验 candidate semantic-unit identity、冻结 planner version 并去重，不选择最终证据或提交 Context。
+输入为冻结 observation、结构化 signal 集合、retrieval-session 验证的 manifests 以及受监督 Curator worker 的结构化结果；
+输出为 `CognitivePlanResult` 中零个、一个或多个稳定 `WorkContextSpec`，或显式 planning failure。具体工作流为先传播显式 retrieval
+blocker，再严格解析 `WorkContextDraft`、校验每个 candidate unit 来自同一 session 的 retrieved manifests 并冻结 planner version；
+本层不选择最终证据、不做同义归并或提交 Context。
 示例：`result = await WorkerResultCognitivePlanner().plan(observation, signals, manifests)`。
 """
 
@@ -37,7 +38,7 @@ class CognitivePlannerPort(Protocol):
 
 
 class WorkerResultCognitivePlanner:
-    VERSION = "worker-cognitive-planner-v1"
+    VERSION = "retrieval-worker-cognitive-planner-v2"
 
     async def plan(
         self,
@@ -62,6 +63,14 @@ class WorkerResultCognitivePlanner:
         )
         if not payloads and failures:
             return self._failure("planner_worker_failed", "全部 cognitive planner worker 均失败", True)
+        blockers = tuple(payload.get("planning_blocker") for payload in payloads if payload.get("planning_blocker"))
+        if blockers:
+            first = dict(blockers[0] or {})
+            return self._failure(
+                str(first.get("code") or "retrieval_planning_failed"),
+                str(first.get("summary") or "retrieval-backed planning blocked")[:1800],
+                False,
+            )
         try:
             drafts = tuple(
                 draft
@@ -86,14 +95,14 @@ class WorkerResultCognitivePlanner:
                 "planner 引用了冻结 manifests 中不存在的 semantic unit: " + ", ".join(invented[:8]),
                 False,
             )
-        by_identity: dict[str, WorkContextSpec] = {}
+        specs: list[WorkContextSpec] = []
         required: set[str] = set()
         for draft in drafts:
             spec = draft.freeze(self.VERSION)
-            by_identity.setdefault(spec.work_spec_id, spec)
+            specs.append(spec)
             if draft.required:
                 required.add(spec.work_spec_id)
-        work_specs = tuple(sorted(by_identity.values(), key=lambda item: item.work_spec_id))
+        work_specs = tuple(sorted(specs, key=lambda item: item.work_spec_id))
         return CognitivePlanResult(
             work_specs=work_specs,
             required_work_spec_ids=tuple(sorted(required)),

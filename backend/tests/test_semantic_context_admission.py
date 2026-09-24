@@ -50,6 +50,16 @@ def _authorized_observation(*, worker_results=()):
     )
 
 
+def _curator_result(base, work_specs: list[dict]) -> dict:
+    manifests = SemanticManifestProjector().project(base)
+    return {
+        "work_specs": work_specs,
+        "retrieved_manifests": tuple(
+            item.model_dump(mode="json") for item in manifests
+        ),
+    }
+
+
 def _spec(*, workspace="read_only", objective="Investigate the failure.") -> WorkContextSpec:
     return WorkContextSpec.create(
         planner_version="planner-v1",
@@ -119,7 +129,7 @@ def test_coordinator_returns_multiple_model_planned_opportunities() -> None:
             {
                 "kind": "lane_curator",
                 "status": "success",
-                "result": {"work_specs": [_draft(known), second]},
+                "result": _curator_result(base, [_draft(known), second]),
             },
         )
     )
@@ -132,9 +142,14 @@ def test_coordinator_returns_multiple_model_planned_opportunities() -> None:
 
 
 def test_token_pressure_and_user_paraphrase_can_still_produce_no_op() -> None:
+    base = _authorized_observation()
     observation = _authorized_observation(
         worker_results=(
-            {"kind": "lane_curator", "status": "success", "result": {"work_specs": []}},
+            {
+                "kind": "lane_curator",
+                "status": "success",
+                "result": _curator_result(base, []),
+            },
         )
     )
     observation = observation.model_copy(
@@ -163,15 +178,16 @@ def test_user_requested_parallel_work_is_admitted_only_from_semantic_plan() -> N
             {
                 "kind": "lane_curator",
                 "status": "success",
-                "result": {
-                    "work_specs": [
+                "result": _curator_result(
+                    base,
+                    [
                         _draft(known)
                         | {
                             "objective": "Audit the frozen implementation evidence independently.",
                             "separation_reason": "The user requested an independent line of inquiry with its own completion boundary.",
                         }
-                    ]
-                },
+                    ],
+                ),
             },
         )
     ).model_copy(
@@ -204,7 +220,11 @@ def test_repeated_failure_can_be_planned_without_canonical_marker_words() -> Non
     }
     observation = _authorized_observation(
         worker_results=(
-            {"kind": "lane_curator", "status": "success", "result": {"work_specs": [draft]}},
+            {
+                "kind": "lane_curator",
+                "status": "success",
+                "result": _curator_result(base, [draft]),
+            },
         )
     )
 

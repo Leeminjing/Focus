@@ -46,17 +46,28 @@ SemanticUnitKind = Literal[
 ]
 DerivationStage = Literal[
     "signal_collection",
+    "portfolio_indexing",
     "portfolio_projection",
+    "retrieval_planning",
     "cognitive_planning",
+    "work_reconciliation",
     "admission",
     "evidence_resolution",
     "dossier_synthesis",
+    "context_quality",
     "compilation",
+    "shadow_comparison",
 ]
 ExpansionLevel = Literal["required", "recommended", "not_applicable"]
 ExpansionBlockerCode = Literal[
     "portfolio_projection_failed",
+    "portfolio_index_failed",
+    "portfolio_catalog_overflow",
+    "retrieval_budget_exhausted",
+    "retrieval_session_stale",
     "cognitive_planning_failed",
+    "work_reconciliation_failed",
+    "work_spec_conflict",
     "not_independent",
     "completion_not_decidable",
     "authority_missing",
@@ -65,6 +76,12 @@ ExpansionBlockerCode = Literal[
     "required_evidence_unresolved",
     "evidence_budget_exhausted",
     "dossier_invalid",
+    "synthesis_worker_missing",
+    "synthesis_invalid",
+    "quality_preflight_failed",
+    "quality_worker_missing",
+    "quality_contract_invalid",
+    "context_quality_failed",
     "context_budget_exhausted",
     "lane_budget_exhausted",
     "round_lane_budget_exhausted",
@@ -74,16 +91,21 @@ ExpansionBlockerCode = Literal[
     "duplicate_expansion",
     "stale_source",
     "compiler_failed",
+    "automatic_expansion_disabled",
 ]
 ExpansionLifecycleState = Literal[
     "signals_collected",
+    "indexes_ready",
     "portfolio_projected",
+    "retrieval_planned",
     "work_planned",
+    "work_reconciled",
     "admitted",
     "proposed",
     "evidence_resolved",
     "dossier_built",
     "synthesis_omitted",
+    "quality_verified",
     "compiled",
     "authorized",
     "committed",
@@ -463,6 +485,7 @@ class DerivationStageRecord(_ExpansionModel):
     version: str = Field(min_length=1, max_length=120)
     duration_ms: float = Field(ge=0)
     safe_summary: str = Field(min_length=1, max_length=1000)
+    failure_code: str | None = Field(default=None, min_length=1, max_length=120)
 
     @field_validator("input_identities", "output_identities", mode="before")
     @classmethod
@@ -616,6 +639,7 @@ class ExpansionAssessment(_ExpansionModel):
     blockers: tuple[ExpansionBlocker, ...] = ()
     decision_deadline_round: int | None = Field(default=None, ge=1)
     stage_records: tuple[DerivationStageRecord, ...] = ()
+    reconciliation: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def require_consistent_level(self) -> Self:
@@ -655,6 +679,9 @@ class CompiledExpansion(_ExpansionModel):
     compiler_version: str = Field(min_length=1, max_length=64)
     dossier_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     synthesis_omitted: bool = False
+    quality_assessment_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    dossier_payload: dict[str, Any] | None = None
+    quality_assessment_payload: dict[str, Any] | None = None
     stage_records: tuple[DerivationStageRecord, ...] = ()
 
 

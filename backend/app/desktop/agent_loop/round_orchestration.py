@@ -16,33 +16,48 @@ patrol_contract.PatrolDecisionContract 校验，形状或合同不合法时在�
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import json
-from typing import Any
 import uuid
+from datetime import UTC, datetime
+from typing import Any
 
+from focus.config.app_config import AppConfig
+from focus.models.factory import create_chat_model
+from focus.runtime.runs.usage import ModelUsage, callback_usage
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
+from backend.app.desktop.agent_loop.budgets import (
+    LoopBudgetGuard,
+    configured_provider_count,
+)
+from backend.app.desktop.agent_loop.compression_authority.candidates import (
+    CompressionCandidateService,
+)
+from backend.app.desktop.agent_loop.compression_authority.contracts import (
+    CompressionCandidateRequest,
+)
 from backend.app.desktop.agent_loop.context_expansion.contracts import ExpansionBlocker
-from backend.app.desktop.agent_loop.context_expansion.coordinator import ContextExpansionStage
-from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count
+from backend.app.desktop.agent_loop.context_expansion.coordinator import (
+    ContextExpansionStage,
+)
+from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
+from backend.app.desktop.agent_loop.intervention_lifecycle import (
+    InterventionLifecycleRepository,
+)
 from backend.app.desktop.agent_loop.journal_models import LoopJournalSequence
-from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
 from backend.app.desktop.agent_loop.kernel import KernelCommitResult, LoopKernel
-from backend.app.desktop.agent_loop.ownership import KernelFencingRejected
 from backend.app.desktop.agent_loop.mission_contract import LegacyMissionAdapter
 from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
 from backend.app.desktop.agent_loop.models import (
     AgentLoop,
     LoopBudgetUsage,
     LoopContextMembership,
-    LoopDelegationGrant,
     LoopDecision,
+    LoopDelegationGrant,
     LoopGoalRevision,
     LoopObservation,
     LoopPendingDecision,
@@ -50,23 +65,45 @@ from backend.app.desktop.agent_loop.models import (
     LoopUserIntent,
     LoopWorkerRequest,
 )
-from backend.app.desktop.agent_loop.observation import LoopObservationBuilder, observation_hash
-from backend.app.desktop.agent_loop.patrol import PatrolContractViolation, PortfolioPatrol
-from backend.app.desktop.agent_loop.patrol_contract import MissionReference, PatrolDecisionContract
-from backend.app.desktop.agent_loop.patrol_runtime import CuratorCoordinationStage, PatrolOutcomeStage, PatrolSessionLifecycle
-from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, PatrolPhase
-from backend.app.desktop.agent_loop.rounds import TERMINAL_ROUND_STATUSES, UNDECIDED_ROUND_STATUSES, terminate_round
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope, PatrolDecisionIntent, PatrolModelAction
-from backend.app.desktop.agent_loop.compression_authority.contracts import CompressionCandidateRequest
-from backend.app.desktop.agent_loop.compression_authority.candidates import CompressionCandidateService
+from backend.app.desktop.agent_loop.observation import (
+    LoopObservationBuilder,
+    observation_hash,
+)
+from backend.app.desktop.agent_loop.ownership import KernelFencingRejected
+from backend.app.desktop.agent_loop.patrol import (
+    PatrolContractViolation,
+    PortfolioPatrol,
+)
+from backend.app.desktop.agent_loop.patrol_contract import (
+    MissionReference,
+    PatrolDecisionContract,
+)
+from backend.app.desktop.agent_loop.patrol_runtime import (
+    CuratorCoordinationStage,
+    PatrolOutcomeStage,
+    PatrolSessionLifecycle,
+)
+from backend.app.desktop.agent_loop.patrol_session_state import (
+    PatrolActivity,
+    PatrolPhase,
+)
+from backend.app.desktop.agent_loop.rounds import (
+    TERMINAL_ROUND_STATUSES,
+    UNDECIDED_ROUND_STATUSES,
+    terminate_round,
+)
+from backend.app.desktop.agent_loop.schemas import (
+    LoopObservationEnvelope,
+    PatrolDecisionIntent,
+    PatrolModelAction,
+)
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
-from backend.app.desktop.context_evolution import ContextRevisionReader, ContextRevisionRepository
+from backend.app.desktop.context_evolution import (
+    ContextRevisionReader,
+    ContextRevisionRepository,
+)
 from backend.app.desktop.models import DesktopRun, DesktopThread
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
-from focus.config.app_config import AppConfig
-from focus.models.factory import create_chat_model
-from focus.runtime.runs.usage import ModelUsage, callback_usage
-
 
 PATROL_SYSTEM_CONTRACT = """你是 Focus Portfolio Patrol，是用户当前 Agent Loop 的唯一可撤销委托权力持有者。
 你负责观察 Context Portfolio、判断下一步、决定是否复用或派生 Context，并生成代表用户控制域的下一条指令。
@@ -104,7 +141,7 @@ class PatrolDecisionProposal(BaseModel):
     actions: tuple[PatrolModelAction, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def require_references_for_action_role(self) -> "PatrolDecisionProposal":
+    def require_references_for_action_role(self) -> PatrolDecisionProposal:
         completion = any(action.action in {"request_completion_verifier", "request_completion"} for action in self.actions)
         roles = {reference.role for reference in self.mission_references}
         if completion and "completion_check" not in roles:
@@ -133,7 +170,6 @@ class PatrolCognitiveStep(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _fold_flat_proposal(cls, value: Any) -> Any:
-        """把顶层 rationale/evidence/actions 折进 decision：同一份判断的扁平写法等价于嵌套写法。"""
         if not isinstance(value, dict):
             return value
         flat = {key: value[key] for key in ("rationale", "evidence", "mission_references", "actions") if key in value}
@@ -189,8 +225,6 @@ class LoopObservationService:
         round_id: str,
         assessment: dict[str, Any],
     ) -> LoopObservationEnvelope:
-        """把模型实际消费的派生评估写回该轮 observation，使持久化内容与模型消费内容一致。"""
-
         async with self._sessions.begin() as session:
             row = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == round_id).with_for_update())
             if row is None or row.loop_id != loop_id:
@@ -512,7 +546,6 @@ class StructuredPatrolDecisionModel:
 
     @staticmethod
     def _validated(schema, payload: Any):
-        """按 schema 解析模型回答；形状不合法时抛出携带原始输出的可重试合同违例。"""
         try:
             if isinstance(payload, str):
                 return schema.model_validate(json.loads(payload))
@@ -529,9 +562,9 @@ class LoopRoundOrchestrator:
         self._kernel = kernel
         self._compression_candidates = CompressionCandidateService(sessions, checkpointer, app_config)
         self._patrol_sessions = PatrolSessionLifecycle(sessions)
-        self._curators = CuratorCoordinationStage(sessions)
+        self._curators = CuratorCoordinationStage(sessions, checkpointer, app_config=app_config)
         self._outcomes = PatrolOutcomeStage(self._patrol_sessions)
-        self._expansions = ContextExpansionStage(sessions, checkpointer)
+        self._expansions = ContextExpansionStage(sessions, checkpointer, app_config)
 
     async def process(self, claim: CoordinatorClaim) -> KernelCommitResult | None:
         publishing_intent: PatrolDecisionIntent | None = None
@@ -686,7 +719,6 @@ class LoopRoundOrchestrator:
         holder_id: str,
         observation: LoopObservationEnvelope,
     ) -> PatrolDecisionIntent:
-        """在同一冻结观察上有界重试形状违例；其余异常与重试用尽交由调用方路径收敛。"""
         for attempt in range(1, _PATROL_CONTRACT_ATTEMPTS + 1):
             decision_model = self._decision_model(model_name)
             try:
@@ -763,7 +795,6 @@ class LoopRoundOrchestrator:
             )
 
     async def _terminate_decided_round(self, claim: CoordinatorClaim, decision_id: str) -> bool:
-        """收敛已有落定决策却仍可领取的 round：不再观察、不再调用认知模型。"""
         async with self._sessions.begin() as session:
             round_row = await session.get(LoopRound, claim.round_id, with_for_update=True)
             loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True)

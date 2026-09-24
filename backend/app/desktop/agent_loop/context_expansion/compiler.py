@@ -1,9 +1,9 @@
 r"""本文件对外提供 ExpansionPlanCompilerPort、ContextExpansionPlanCompiler 与 DeterministicExpansionPlanCompiler。
 
-输入为冻结 observation、identity-only SpawnContextIntent、WorkContext opportunity、resolved multi-source evidence 与可选 dossier；
-输出为 CompiledExpansion 或阶段专属 ExpansionBlocker。具体工作流为 production façade 重建并验证 manifests、读取授权 corpus、
-解析 required evidence、尝试 dossier synthesis，再由纯 compiler 按 Work Contract、Evidence Ledger、Dossier、Primary Evidence 顺序
-生成 CreateLanePlan 并调用通用 lane compiler；本文件不选择最近消息、不做 substring coverage。示例：
+输入为冻结 observation、identity-only SpawnContextIntent、WorkContext opportunity、resolved multi-source evidence、validated claim dossier
+与三维 quality assessment；输出为 CompiledExpansion 或阶段专属 ExpansionBlocker。具体工作流为 production façade 重建 manifests、
+读取授权 corpus、解析 required evidence、调用受监督 synthesis 与独立 quality gate，再由纯 compiler 只接受 identity 匹配且三维 pass
+的 package，按 Work Contract、Ledger、Dossier、Primary Evidence 编译；不存在 extractive fallback 或 quality bypass。示例：
 `compiled = await compiler.compile(observation, opportunity, intent)`。
 """
 
@@ -12,8 +12,12 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol
 
+from focus.config.app_config import AppConfig
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.desktop.agent_loop.context_expansion.artifact_repository import (
+    SemanticDerivationArtifactRepository,
+)
 from backend.app.desktop.agent_loop.context_expansion.contracts import (
     CompiledExpansion,
     DerivationStageRecord,
@@ -22,12 +26,6 @@ from backend.app.desktop.agent_loop.context_expansion.contracts import (
     ResolvedEvidenceBundle,
     SpawnContextIntent,
     stable_expansion_hash,
-)
-from backend.app.desktop.agent_loop.context_expansion.dossier import (
-    DossierSynthesizerPort,
-    EvidenceGroundedDossier,
-    ResolvedEvidenceDossierSynthesizer,
-    render_dossier,
 )
 from backend.app.desktop.agent_loop.context_expansion.evidence_corpus import (
     EvidenceCorpusReadError,
@@ -39,10 +37,31 @@ from backend.app.desktop.agent_loop.context_expansion.evidence_resolver import (
 from backend.app.desktop.agent_loop.context_expansion.manifest_adapter import (
     CompositeSemanticManifestProjector,
 )
+from backend.app.desktop.agent_loop.context_expansion.quality import (
+    ContextQualityAssessment,
+    ContextQualityPreflight,
+    ContextQualityResult,
+)
+from backend.app.desktop.agent_loop.context_expansion.quality_verifier import (
+    DeterministicTestContextQualityService,
+    StructuredContextQualityService,
+)
 from backend.app.desktop.agent_loop.context_expansion.stage_telemetry import (
     DerivationStageTimer,
 )
+from backend.app.desktop.agent_loop.context_expansion.synthesis import (
+    ContextSynthesisResult,
+    ContextSynthesizerPort,
+    ValidatedContextDossier,
+    render_context_dossier,
+)
+from backend.app.desktop.agent_loop.context_expansion.synthesis_service import (
+    DeterministicTestContextSynthesisService,
+    StructuredContextSynthesisService,
+)
+from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
+from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.context_curation import (
     ComposeMessage,
     CopyMessage,
@@ -64,20 +83,49 @@ class ExpansionPlanCompilerPort(Protocol):
     ) -> CompiledExpansion | ExpansionBlocker: ...
 
 
+class ContextQualityServicePort(Protocol):
+    async def verify(
+        self,
+        work_spec,
+        bundle,
+        dossier,
+    ): ...
+
+
 class ContextExpansionPlanCompiler:
     def __init__(
         self,
         sessions: async_sessionmaker[AsyncSession],
         checkpointer: Any,
         *,
+        app_config: AppConfig | None = None,
         projector: CompositeSemanticManifestProjector | None = None,
         resolver: MultiSourceEvidenceResolver | None = None,
-        synthesizer: DossierSynthesizerPort | None = None,
+        synthesizer: ContextSynthesizerPort | None = None,
+        quality_service: ContextQualityServicePort | None = None,
     ) -> None:
         self._projector = projector or CompositeSemanticManifestProjector()
+        self._sessions = sessions
+        self._artifacts = SemanticDerivationArtifactRepository()
         self._reader = FrozenEvidenceCorpusReader(sessions, checkpointer)
         self._resolver = resolver or MultiSourceEvidenceResolver()
-        self._synthesizer = synthesizer or ResolvedEvidenceDossierSynthesizer()
+        if synthesizer is not None:
+            self._synthesizer = synthesizer
+        elif app_config is not None:
+            self._synthesizer = StructuredContextSynthesisService(
+                RoleBoundStructuredModel(app_config, "dossier_synthesizer"),
+                RoleBoundStructuredModel(app_config, "claim_verifier"),
+            )
+        else:
+            self._synthesizer = DeterministicTestContextSynthesisService()
+        if quality_service is not None:
+            self._quality = quality_service
+        elif app_config is not None:
+            self._quality = StructuredContextQualityService(
+                RoleBoundStructuredModel(app_config, "context_quality_verifier")
+            )
+        else:
+            self._quality = DeterministicTestContextQualityService()
         self._compiler = DeterministicExpansionPlanCompiler()
 
     async def compile(
@@ -85,6 +133,9 @@ class ContextExpansionPlanCompiler:
         observation: LoopObservationEnvelope,
         opportunity: ExpansionOpportunity,
         intent: SpawnContextIntent,
+        *,
+        artifact_expansion_id: str | None = None,
+        persist_artifacts: bool = True,
     ) -> CompiledExpansion | ExpansionBlocker:
         if intent.opportunity_id != opportunity.opportunity_id:
             return self._blocked(opportunity, "stale_source", "semantic intent 与冻结 opportunity 不一致")
@@ -94,20 +145,45 @@ class ContextExpansionPlanCompiler:
             (opportunity.work_spec.work_spec_id, *opportunity.manifest_ids),
             self._resolver.VERSION,
         )
-        try:
-            manifests = self._projector.project(observation)
-            corpus = await self._reader.read(observation, opportunity, manifests)
-        except EvidenceCorpusReadError as exc:
-            records.append(resolution_timer.finish((), exc.summary))
-            return self._blocked(opportunity, exc.code, exc.summary, tuple(records))
-        except (TypeError, ValueError) as exc:
-            records.append(resolution_timer.finish((), "Evidence corpus projection 失败"))
-            return self._blocked(opportunity, "portfolio_projection_failed", str(exc), tuple(records))
-        limit = int((observation.budget.get("limits") or {}).get("max_expansion_evidence_items", 128) or 128)
-        resolved = self._resolver.resolve(opportunity, manifests, corpus, max_items=max(1, limit))
-        if isinstance(resolved, ExpansionBlocker):
-            record = resolution_timer.finish((), resolved.summary)
-            return resolved.model_copy(update={"stage_records": (*resolved.stage_records, record)})
+        resolution_inputs = (opportunity.work_spec.work_spec_id, *opportunity.manifest_ids)
+        recovered_resolution = await self._artifact_payload(
+            opportunity,
+            "evidence_resolution",
+            resolution_inputs,
+            self._resolver.VERSION,
+        ) if persist_artifacts else None
+        if recovered_resolution is not None:
+            resolved = ResolvedEvidenceBundle.model_validate(recovered_resolution)
+        else:
+            try:
+                manifests = self._projector.project(observation)
+                corpus = await self._reader.read(observation, opportunity, manifests)
+            except EvidenceCorpusReadError as exc:
+                records.append(resolution_timer.finish((), exc.summary, failure_code=exc.code))
+                return self._blocked(opportunity, exc.code, exc.summary, tuple(records))
+            except (TypeError, ValueError) as exc:
+                records.append(
+                    resolution_timer.finish(
+                        (),
+                        "Evidence corpus projection 失败",
+                        failure_code="portfolio_projection_failed",
+                    )
+                )
+                return self._blocked(opportunity, "portfolio_projection_failed", str(exc), tuple(records))
+            limit = int((observation.budget.get("limits") or {}).get("max_expansion_evidence_items", 128) or 128)
+            resolved = self._resolver.resolve(opportunity, manifests, corpus, max_items=max(1, limit))
+            if isinstance(resolved, ExpansionBlocker):
+                record = resolution_timer.finish((), resolved.summary, failure_code=resolved.code)
+                return resolved.model_copy(update={"stage_records": (*resolved.stage_records, record)})
+            if persist_artifacts:
+                await self._save_artifact(
+                    opportunity,
+                    "evidence_resolution",
+                    resolution_inputs,
+                    self._resolver.VERSION,
+                    resolved.model_dump(mode="json"),
+                    expansion_id=artifact_expansion_id,
+                )
         records.append(
             resolution_timer.finish(
                 (resolved.resolution_id,),
@@ -119,16 +195,142 @@ class ContextExpansionPlanCompiler:
             (resolved.resolution_id,),
             type(self._synthesizer).__name__,
         )
-        dossier_result = await self._synthesizer.synthesize(observation, resolved)
+        dossier_inputs = (resolved.resolution_id,)
+        synthesizer_version = str(getattr(self._synthesizer, "VERSION", type(self._synthesizer).__name__))
+        recovered_dossier = await self._artifact_payload(
+            opportunity,
+            "dossier_synthesis",
+            dossier_inputs,
+            synthesizer_version,
+        ) if persist_artifacts else None
+        if recovered_dossier is not None:
+            dossier = ValidatedContextDossier.model_validate(recovered_dossier)
+            dossier_result = ContextSynthesisResult(dossier=dossier)
+        else:
+            dossier_result = await self._synthesizer.synthesize(
+                observation,
+                opportunity.work_spec,
+                resolved,
+            )
+            await self._record_attempt_usage(opportunity.loop_id, dossier_result.attempt_records)
+            if dossier_result.dossier is not None and persist_artifacts:
+                await self._save_artifact(
+                    opportunity,
+                    "dossier_synthesis",
+                    dossier_inputs,
+                    synthesizer_version,
+                    dossier_result.dossier.model_dump(mode="json"),
+                    expansion_id=artifact_expansion_id,
+                    attempt_records=dossier_result.attempt_records,
+                )
+            elif dossier_result.dossier is None and persist_artifacts:
+                await self._save_artifact(
+                    opportunity,
+                    "dossier_synthesis",
+                    dossier_inputs,
+                    synthesizer_version,
+                    {
+                        "blocker_code": dossier_result.blocker_code,
+                        "blocker_summary": dossier_result.blocker_summary,
+                    },
+                    outcome="blocked",
+                    expansion_id=artifact_expansion_id,
+                    attempt_records=dossier_result.attempt_records,
+                )
         records.append(
             dossier_timer.finish(
                 (dossier_result.dossier.dossier_id,) if dossier_result.dossier else (),
-                dossier_result.omitted_reason or "已构建带引用的 evidence-grounded dossier",
+                dossier_result.blocker_summary or "已构建 claim-level evidence-grounded dossier",
+                failure_code=dossier_result.blocker_code,
             )
         )
+        if dossier_result.dossier is None:
+            return self._blocked(
+                opportunity,
+                dossier_result.blocker_code or "synthesis_invalid",
+                dossier_result.blocker_summary or "dossier synthesis 未产生有效结果",
+                tuple(records),
+            )
+        quality_timer = DerivationStageTimer(
+            "context_quality",
+            (opportunity.work_spec.work_spec_id, resolved.resolution_id, dossier_result.dossier.dossier_id),
+            type(self._quality).__name__,
+        )
+        quality_inputs = (
+            opportunity.work_spec.work_spec_id,
+            resolved.resolution_id,
+            dossier_result.dossier.dossier_id,
+        )
+        quality_version = str(getattr(self._quality, "VERSION", type(self._quality).__name__))
+        recovered_quality = await self._artifact_payload(
+            opportunity,
+            "context_quality",
+            quality_inputs,
+            quality_version,
+        ) if persist_artifacts else None
+        if recovered_quality is not None:
+            assessment = ContextQualityAssessment.model_validate(recovered_quality)
+            preflight = ContextQualityPreflight(
+                preflight_id=assessment.preflight_id,
+                work_spec_id=assessment.work_spec_id,
+                resolution_id=assessment.resolution_id,
+                dossier_id=assessment.dossier_id,
+                eligible=True,
+            )
+            quality_result = ContextQualityResult(preflight=preflight, assessment=assessment)
+        else:
+            quality_result = await self._quality.verify(
+                opportunity.work_spec,
+                resolved,
+                dossier_result.dossier,
+            )
+            await self._record_attempt_usage(opportunity.loop_id, quality_result.attempt_records)
+            if quality_result.assessment is not None and persist_artifacts:
+                await self._save_artifact(
+                    opportunity,
+                    "context_quality",
+                    quality_inputs,
+                    quality_version,
+                    quality_result.assessment.model_dump(mode="json"),
+                    expansion_id=artifact_expansion_id,
+                    attempt_records=quality_result.attempt_records,
+                )
+            elif quality_result.assessment is None and persist_artifacts:
+                await self._save_artifact(
+                    opportunity,
+                    "context_quality",
+                    quality_inputs,
+                    quality_version,
+                    {
+                        "preflight": quality_result.preflight.model_dump(mode="json"),
+                        "blocker_code": quality_result.blocker_code,
+                        "blocker_summary": quality_result.blocker_summary,
+                    },
+                    outcome="blocked",
+                    expansion_id=artifact_expansion_id,
+                    attempt_records=quality_result.attempt_records,
+                )
+        records.append(
+            quality_timer.finish(
+                (quality_result.assessment.assessment_id,) if quality_result.assessment else (),
+                quality_result.blocker_summary or "minimality、sufficiency、coherence 均已通过",
+                failure_code=quality_result.blocker_code,
+            )
+        )
+        if quality_result.assessment is None or not quality_result.assessment.passes:
+            return self._blocked(
+                opportunity,
+                quality_result.blocker_code or "context_quality_failed",
+                quality_result.blocker_summary or "derived Context quality 未通过",
+                tuple(records),
+            )
         compilation_timer = DerivationStageTimer(
             "compilation",
-            (resolved.resolution_id, *(record.output_identities[0] for record in records[-1:] if record.output_identities)),
+            (
+                resolved.resolution_id,
+                dossier_result.dossier.dossier_id,
+                quality_result.assessment.assessment_id,
+            ),
             self._compiler.VERSION,
         )
         compiled = self._compiler.compile(
@@ -136,11 +338,11 @@ class ContextExpansionPlanCompiler:
             intent,
             resolved,
             dossier=dossier_result.dossier,
-            synthesis_omitted=dossier_result.dossier is None,
+            quality_assessment=quality_result.assessment,
             stage_records=tuple(records),
         )
         if isinstance(compiled, ExpansionBlocker):
-            record = compilation_timer.finish((), compiled.summary)
+            record = compilation_timer.finish((), compiled.summary, failure_code=compiled.code)
             return compiled.model_copy(update={"stage_records": (*compiled.stage_records, record)})
         record = compilation_timer.finish((compiled.definition_hash,), "已编译确定性 LanePlan")
         return compiled.model_copy(update={"stage_records": (*compiled.stage_records, record)})
@@ -159,9 +361,70 @@ class ContextExpansionPlanCompiler:
             stage_records=stage_records,
         )
 
+    async def _artifact_payload(
+        self,
+        opportunity: ExpansionOpportunity,
+        stage: str,
+        input_identities: tuple[str, ...],
+        version: str,
+    ) -> dict | None:
+        async with self._sessions() as session:
+            row = await self._artifacts.stage_artifact(
+                session,
+                loop_id=opportunity.loop_id,
+                round_id=opportunity.round_id,
+                stage=stage,
+                input_identities=input_identities,
+                version=version,
+            )
+            return None if row is None or row.outcome != "ready" else row.payload
+
+    async def _save_artifact(
+        self,
+        opportunity: ExpansionOpportunity,
+        stage: str,
+        input_identities: tuple[str, ...],
+        version: str,
+        payload: dict,
+        *,
+        outcome: str = "ready",
+        expansion_id: str | None = None,
+        attempt_records: tuple[dict[str, Any], ...] = (),
+    ) -> None:
+        async with self._sessions.begin() as session:
+            await self._artifacts.put_stage_artifact(
+                session,
+                loop_id=opportunity.loop_id,
+                round_id=opportunity.round_id,
+                expansion_id=expansion_id,
+                stage=stage,
+                input_identities=input_identities,
+                version=version,
+                outcome=outcome,
+                payload=payload,
+                attempt_records=attempt_records,
+            )
+
+    async def _record_attempt_usage(
+        self,
+        loop_id: str,
+        attempts: tuple[dict[str, Any], ...],
+    ) -> None:
+        if not attempts:
+            return
+        await LoopUsageLedger(self._sessions).record(
+            loop_id,
+            LoopUsageDelta(
+                model_calls=sum(max(0, int(item.get("model_calls") or 0)) for item in attempts),
+                input_tokens=sum(max(0, int(item.get("input_tokens") or 0)) for item in attempts),
+                output_tokens=sum(max(0, int(item.get("output_tokens") or 0)) for item in attempts),
+                retries=sum(1 for item in attempts if int(item.get("attempt") or 1) > 1),
+            ),
+        )
+
 
 class DeterministicExpansionPlanCompiler:
-    VERSION = "semantic-context-compiler-v2"
+    VERSION = "quality-gated-semantic-context-compiler-v3"
 
     def compile(
         self,
@@ -169,12 +432,18 @@ class DeterministicExpansionPlanCompiler:
         intent: SpawnContextIntent,
         bundle: ResolvedEvidenceBundle,
         *,
-        dossier: EvidenceGroundedDossier | None = None,
-        synthesis_omitted: bool = False,
+        dossier: ValidatedContextDossier | None = None,
+        quality_assessment: ContextQualityAssessment | None = None,
         stage_records: tuple[DerivationStageRecord, ...] = (),
     ) -> CompiledExpansion | ExpansionBlocker:
         try:
-            plan = self._plan(opportunity, bundle, dossier)
+            verified_dossier, verified_quality = self._require_verified_package(
+                opportunity,
+                bundle,
+                dossier,
+                quality_assessment,
+            )
+            plan = self._plan(opportunity, bundle, verified_dossier)
             compiled_lane = compile_lane(plan.model_dump(mode="json"), bundle.evidence)
         except (KeyError, TypeError, ValueError) as exc:
             return ExpansionBlocker(
@@ -183,11 +452,12 @@ class DeterministicExpansionPlanCompiler:
                 opportunity_id=opportunity.opportunity_id,
             )
         expansion_id = stable_expansion_hash(
-            "compiled-expansion-v2",
+            "compiled-expansion-v3",
             opportunity.opportunity_id,
             intent.model_dump(mode="json"),
             bundle.resolution_id,
-            dossier.dossier_id if dossier else None,
+            verified_dossier.dossier_id,
+            verified_quality.assessment_id,
             compiled_lane.definition_hash,
             self.VERSION,
         )
@@ -199,16 +469,50 @@ class DeterministicExpansionPlanCompiler:
             plan=plan,
             definition_hash=compiled_lane.definition_hash,
             compiler_version=self.VERSION,
-            dossier_id=dossier.dossier_id if dossier else None,
-            synthesis_omitted=synthesis_omitted,
+            dossier_id=verified_dossier.dossier_id,
+            synthesis_omitted=False,
+            quality_assessment_id=verified_quality.assessment_id,
+            dossier_payload=verified_dossier.model_dump(mode="json"),
+            quality_assessment_payload=verified_quality.model_dump(mode="json"),
             stage_records=stage_records,
         )
+
+    @staticmethod
+    def _require_verified_package(
+        opportunity: ExpansionOpportunity,
+        bundle: ResolvedEvidenceBundle,
+        dossier: ValidatedContextDossier | None,
+        quality_assessment: ContextQualityAssessment | None,
+    ) -> tuple[ValidatedContextDossier, ContextQualityAssessment]:
+        if dossier is None:
+            raise ValueError("automatic expansion 缺少 validated claim dossier")
+        if quality_assessment is None:
+            raise ValueError("automatic expansion 缺少 ContextQualityAssessment")
+        if not quality_assessment.passes:
+            raise ValueError("ContextQualityAssessment 未通过全部 required dimensions")
+        expected = (
+            opportunity.work_spec.work_spec_id,
+            bundle.resolution_id,
+            dossier.dossier_id,
+        )
+        actual = (
+            quality_assessment.work_spec_id,
+            quality_assessment.resolution_id,
+            quality_assessment.dossier_id,
+        )
+        if expected != actual:
+            raise ValueError("quality assessment identities 与 compilation package 不一致")
+        if bundle.work_spec_id != opportunity.work_spec.work_spec_id:
+            raise ValueError("resolved evidence 与 opportunity WorkSpec identity 不一致")
+        if dossier.work_spec_id != opportunity.work_spec.work_spec_id or dossier.resolution_id != bundle.resolution_id:
+            raise ValueError("validated dossier 与 compilation package identity 不一致")
+        return dossier, quality_assessment
 
     def _plan(
         self,
         opportunity: ExpansionOpportunity,
         bundle: ResolvedEvidenceBundle,
-        dossier: EvidenceGroundedDossier | None,
+        dossier: ValidatedContextDossier,
     ) -> CreateLanePlan:
         if not bundle.evidence_frontier:
             raise ValueError("自动派生 Context 至少需要一项 resolved evidence")
@@ -226,13 +530,13 @@ class DeterministicExpansionPlanCompiler:
                 sources=bundle.evidence_frontier,
             ),
         ]
-        if dossier is not None and dossier.statements:
+        if dossier.claims:
             dossier_sources = tuple(
                 sorted(
                     {
                         evidence_ref_key(ref): ref
-                        for statement in dossier.statements
-                        for ref in statement.citations
+                    for claim in dossier.claims
+                    for ref in claim.citations
                     }.values(),
                     key=evidence_ref_key,
                 )
@@ -241,7 +545,7 @@ class DeterministicExpansionPlanCompiler:
                 ComposeMessage(
                     type="compose_message",
                     role="system",
-                    content=render_dossier(dossier),
+                    content=render_context_dossier(dossier),
                     sources=dossier_sources,
                 )
             )
@@ -256,7 +560,7 @@ class DeterministicExpansionPlanCompiler:
                 "expansion_id": opportunity.opportunity_id,
                 "work_spec_id": opportunity.work_spec.work_spec_id,
                 "resolution_id": bundle.resolution_id,
-                "dossier_id": dossier.dossier_id if dossier else None,
+                "dossier_id": dossier.dossier_id,
                 "workspace_mode": opportunity.work_spec.workspace_requirement,
                 "completion_criteria": opportunity.work_spec.completion_criteria,
             },

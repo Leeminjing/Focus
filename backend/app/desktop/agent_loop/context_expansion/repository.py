@@ -1,8 +1,8 @@
 r"""本文件对外提供 ContextExpansionRepository 与 ExpansionRepositoryRejected。
 
-输入为 AsyncSession、冻结 WorkContext opportunity、policy level、目标 lifecycle state、阶段合同与结果引用；输出为幂等持久化的
-LoopContextExpansion 与追加 transition/journal 事件。具体工作流为 create 按稳定 identity 查重并依次记录 signals、projection、
-planning、admission，transition 行锁记录并验证后冻结 resolution/compiled plan；活动覆盖只包含未决或仍具 active Lane 的 expansion。
+输入为 AsyncSession、冻结 WorkContext opportunity、policy level、七个真实阶段记录、目标 lifecycle state 与结果引用；输出为幂等持久化的
+LoopContextExpansion 与追加 transition/journal 事件。具体工作流为 create 拒绝缺失或重复 telemetry，按稳定 identity 查重并依次记录
+signals、index、projection、retrieval、planning、reconciliation、admission，transition 行锁记录并验证后冻结后续结果；活动覆盖只包含未决或仍具 active Lane 的 expansion。
 示例：`row = await repository.create(session, opportunity, ...)`。
 """
 
@@ -117,6 +117,13 @@ class ContextExpansionRepository:
         row = await self.transition(
             session,
             row.expansion_id,
+            "indexes_ready",
+            "已冻结完整 Revision semantic indexes",
+            result={"stage_record": record_payloads["portfolio_indexing"]},
+        )
+        row = await self.transition(
+            session,
+            row.expansion_id,
             "portfolio_projected",
             f"已冻结 {len(opportunity.manifest_ids)} 个 semantic manifests",
             result={"stage_record": record_payloads["portfolio_projection"]},
@@ -124,9 +131,23 @@ class ContextExpansionRepository:
         row = await self.transition(
             session,
             row.expansion_id,
+            "retrieval_planned",
+            "已完成冻结 Portfolio hierarchical retrieval",
+            result={"stage_record": record_payloads["retrieval_planning"]},
+        )
+        row = await self.transition(
+            session,
+            row.expansion_id,
             "work_planned",
             f"已冻结 WorkContextSpec：{opportunity.work_spec.work_spec_id}",
             result={"stage_record": record_payloads["cognitive_planning"]},
+        )
+        row = await self.transition(
+            session,
+            row.expansion_id,
+            "work_reconciled",
+            "已完成 WorkSpec semantic reconciliation",
+            result={"stage_record": record_payloads["work_reconciliation"]},
         )
         row = await self.transition(
             session,
@@ -214,42 +235,24 @@ class ContextExpansionRepository:
         policy_version: str,
         supplied: tuple[DerivationStageRecord, ...],
     ) -> tuple[DerivationStageRecord, ...]:
-        by_stage = {item.stage: item for item in supplied}
-        defaults = (
-            DerivationStageRecord(
-                stage="signal_collection",
-                input_identities=(opportunity.observation_hash,),
-                output_identities=opportunity.signal_ids,
-                version="semantic-expansion-signals-v1",
-                duration_ms=0,
-                safe_summary="已收集结构化派生信号",
-            ),
-            DerivationStageRecord(
-                stage="portfolio_projection",
-                input_identities=(opportunity.observation_hash,),
-                output_identities=opportunity.manifest_ids,
-                version=opportunity.projector_versions[0] if opportunity.projector_versions else "semantic-manifest-projector-v1",
-                duration_ms=0,
-                safe_summary="已冻结 semantic manifests",
-            ),
-            DerivationStageRecord(
-                stage="cognitive_planning",
-                input_identities=opportunity.manifest_ids,
-                output_identities=(opportunity.work_spec.work_spec_id,),
-                version=opportunity.work_spec.planner_version,
-                duration_ms=0,
-                safe_summary="已冻结 WorkContextSpec",
-            ),
-            DerivationStageRecord(
-                stage="admission",
-                input_identities=(opportunity.work_spec.work_spec_id,),
-                output_identities=(opportunity.opportunity_id,),
-                version=policy_version,
-                duration_ms=0,
-                safe_summary="Admission policy 接受派生",
-            ),
+        expected = (
+            "signal_collection",
+            "portfolio_indexing",
+            "portfolio_projection",
+            "retrieval_planning",
+            "cognitive_planning",
+            "work_reconciliation",
+            "admission",
         )
-        return tuple(by_stage.get(item.stage, item) for item in defaults)
+        by_stage = {item.stage: item for item in supplied}
+        if len(by_stage) != len(supplied):
+            raise ExpansionRepositoryRejected("Context expansion 阶段 telemetry 含重复 stage")
+        missing = tuple(stage for stage in expected if stage not in by_stage)
+        if missing:
+            raise ExpansionRepositoryRejected(
+                f"Context expansion 缺少真实阶段 telemetry：{', '.join(missing)}"
+            )
+        return tuple(by_stage[stage] for stage in expected)
 
     async def by_round(self, session: AsyncSession, round_id: str) -> tuple[LoopContextExpansion, ...]:
         return tuple(

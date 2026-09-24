@@ -12,6 +12,7 @@ import asyncio
 import os
 import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from focus.runtime.stream_bridge.memory import MemoryStreamBridge
@@ -188,7 +189,28 @@ async def _fan_out_curators(sessions, snapshot, context_ids, revision_ids, roles
     patrol = await lifecycle.transition(patrol.session_id, PatrolPhase.OBSERVING, PatrolActivity(summary="发现 3 个活动 Context"))
     patrol = await lifecycle.transition(patrol.session_id, PatrolPhase.DISPATCHING_CURATORS, PatrolActivity(summary="向 3 个 Curator 分派证据检查"))
     observation = LoopObservationEnvelope(loop_id=snapshot["loop_id"], loop_revision=snapshot["revision"], round_id=snapshot["current_round_id"], goal_revision=snapshot["goal_revision"], authority_revision=snapshot["authority_revision"], observed_frontier_hash=await _round_frontier(sessions, snapshot["current_round_id"]), mission={"outcome": "Expose simultaneous Context work"}, grant={}, portfolio_frontier=tuple({"lane_id": role, "context_id": context_id, "revision_id": revision_id, "role": role} for role, context_id, revision_id in zip(roles, context_ids, revision_ids, strict=True)), workspace={"revision": 1}, budget={})
-    curators = CuratorCoordinationStage(sessions)
+    class Catalog:
+        @staticmethod
+        def model_dump(mode="json"):
+            return {
+                "catalog_id": "1" * 64,
+                "frontier_hash": observation.observed_frontier_hash,
+                "descriptors": (),
+                "segment_catalog": (),
+            }
+
+    class IndexService:
+        @staticmethod
+        async def build(frozen_observation):
+            return SimpleNamespace(
+                catalog=Catalog(),
+                indexes=(),
+                stage_record=None,
+                blocker_code=None,
+                blocker_summary=None,
+            )
+
+    curators = CuratorCoordinationStage(sessions, index_service=IndexService())
     assert await curators.dispatch(patrol.session_id, observation, curators.scopes(observation)) == 3
     assignments = CuratorAssignmentRepository()
     async with sessions.begin() as session:
