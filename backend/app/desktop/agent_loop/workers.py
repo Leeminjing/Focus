@@ -458,7 +458,7 @@ class LoopWorkerRuntime:
             if request.kind == "semantic_index_projector":
                 result = await worker.invoke(
                     SemanticProjectionProposal,
-                    "你是无权 semantic_index_projector。只从输入冻结 segment 原文抽取原子 semantic units，并绑定输入中已有 message_ids；不得生成 WorkSpec、查询外部历史或执行状态变更。",
+                    "你是无权 semantic_index_projector。只从输入冻结 segment 原文抽取原子 semantic units；分别输出自然语言 statement 与精确 supports，每个 support 的 message_id 必须来自输入且 quote 必须逐字复制原文。不得生成 WorkSpec、查询外部历史或执行状态变更。",
                     role_payload,
                 )
             elif request.kind == "work_spec_reconciler":

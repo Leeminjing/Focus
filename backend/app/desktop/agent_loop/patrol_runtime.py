@@ -2,7 +2,7 @@ r"""本文件对外提供 PatrolSessionLifecycle、CuratorCoordinationStage 与 
 
 输入为 coordinator claim、冻结 observation、Kernel result 和持久 Session；输出为原子 phase 事件、单 Context Bootstrap 或
 多 Context Cognitive Planner assignment、可供 Patrol 消费的结构化 work specs 及等待/终态。具体工作流为 Lifecycle 管理 Session
-边界，Curator stage 先为完整冻结 Revisions 建立可恢复 semantic indexes/catalog，再按 Portfolio 形态有界扇出 retrieval-backed
+边界，Curator stage 先为完整冻结 Revisions 建立含独立 claim-support 判定且可恢复的 semantic indexes/catalog，再按 Portfolio 形态有界扇出 retrieval-backed
 规划、收集和消费；生产 request 只携带 catalog 与 index identities，Outcome stage 只映射 Kernel 结果。
 示例：`handle = await lifecycle.begin(claim)`。
 """
@@ -111,6 +111,11 @@ class CuratorCoordinationStage:
                 checkpointer,
                 semantic_projector_factory=(
                     (lambda: RoleBoundStructuredModel(app_config, "semantic_index_projector"))
+                    if app_config is not None
+                    else None
+                ),
+                semantic_claim_verifier_factory=(
+                    (lambda: RoleBoundStructuredModel(app_config, "claim_verifier"))
                     if app_config is not None
                     else None
                 ),

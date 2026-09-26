@@ -1,7 +1,7 @@
 r"""本文件对外提供 LoopKernel、KernelCommitResult 与 KernelRejected 唯一确定性提交边界。
 
 输入为含 fencing token 的 PatrolDecisionIntent 和当前数据库事实；输出为幂等 committed/superseded/rejected 结果。具体工作流为
-稳定锁定 Loop/round/grant，先验证活动 owner，再按 Mission revision、机器边界、权力、frontier、workspace、预算、active Run、gate 顺序校验；
+稳定锁定 Loop/round/grant，先验证活动 owner，再按 Mission revision、机器边界、权力、frontier、workspace、恢复机会、预算、active Run、gate 顺序校验；
 无副作用 decline_expansion 仅形成审计 action，普通动作
 单事务提交，Context Portfolio 与 workspace adoption 先持久授权意图，再由专用 Kernel port 执行外部准备并
 原子收口权威状态；配置异步 publication 时只提交持久授权并交给独立发布队列，拒绝或被取代的决策必须在同一事务内把该 round 收敛为终态（拒绝还会把当前轮所属
@@ -41,6 +41,11 @@ from backend.app.desktop.agent_loop.schemas import CriterionVerification, Patrol
 from backend.app.desktop.agent_loop.compression_authority.commit import CompressionAuthorityCommitter, CompressionCommitRejected
 from backend.app.desktop.agent_loop.context_expansion.repository import ContextExpansionRepository
 from backend.app.desktop.agent_loop.context_expansion.models import LoopContextExpansion
+from backend.app.desktop.agent_loop.context_recovery import (
+    ContextRecoveryAuthorityError,
+    ContextRecoveryAuthorityValidator,
+    ContextRecoveryOpportunityRepository,
+)
 from backend.app.desktop.context_curation.models import CurationLane, CurationProgram, PortfolioLaneCandidate, PortfolioRevision
 from backend.app.desktop.context_curation.portfolio_publisher import PortfolioSuperseded
 from backend.app.desktop.context_evolution.models import ContextRevision
@@ -93,6 +98,8 @@ class LoopKernel:
         self._directive_lifecycle = DirectiveLifecycleRepository()
         self._journal = LoopEventJournal()
         self._interventions = InterventionLifecycleRepository()
+        self._recovery_opportunities = ContextRecoveryOpportunityRepository()
+        self._recovery_authority = ContextRecoveryAuthorityValidator()
         self._compression = CompressionAuthorityCommitter()
         self._terminal = LoopTerminalLifecycle()
         self._expansions = ContextExpansionRepository()
@@ -417,14 +424,23 @@ class LoopKernel:
     def _has_adoption(intent: PatrolDecisionIntent) -> bool:
         return any(action.action == "adopt_workspace_result" for action in intent.actions)
 
-    @staticmethod
-    async def _validate_lane_sources(session, loop, grant, intent) -> None:
+    async def _validate_lane_sources(self, session, loop, grant, intent) -> None:
         scope = set(grant.context_scope)
         for action in intent.actions:
             if action.action not in {"create_lane", "update_lane", "merge_contexts"}:
                 continue
             if action.action == "merge_contexts" and len(action.plan.source_frontier) < 2:
                 raise KernelRejected("merge_contexts 至少需要两个精确来源 revision")
+            recovery_id = str(action.plan.lane_policy.get("recovery_opportunity_id") or "")
+            if recovery_id:
+                await self._validate_recovery_opportunity(
+                    session,
+                    loop,
+                    grant,
+                    intent,
+                    action.plan,
+                    recovery_id,
+                )
             for ref in action.plan.source_frontier:
                 revision = await session.get(ContextRevision, ref.revision_id)
                 context = await session.get(DesktopThread, ref.context_id)
@@ -438,6 +454,37 @@ class LoopKernel:
                     raise KernelRejected("Lane plan 引用了无效或跨 workspace 的 revision")
                 if ref.context_id not in scope:
                     raise KernelRejected("Lane source Context 不在 delegation scope")
+
+    async def _validate_recovery_opportunity(
+        self,
+        session,
+        loop,
+        grant,
+        intent,
+        plan,
+        opportunity_id: str,
+    ) -> None:
+        opportunity = await self._recovery_opportunities.get_contract(session, opportunity_id)
+        if opportunity is None:
+            raise KernelRejected("Context recovery opportunity 不存在或已消费")
+        current = await session.get(DesktopThread, opportunity.source.context_id)
+        try:
+            self._recovery_authority.validate(
+                opportunity,
+                loop_id=loop.loop_id,
+                goal_revision=loop.goal_revision,
+                workspace_revision=intent.observed_workspace_revision,
+                authority_revision=loop.authority_revision,
+                grant_id=grant.grant_id,
+                grant_revision=grant.revision,
+                frontier_hash=intent.observed_frontier_hash,
+                current_source_revision_id=(
+                    current.current_revision_id if current is not None else None
+                ),
+                plan=plan,
+            )
+        except ContextRecoveryAuthorityError as exc:
+            raise KernelRejected(str(exc)) from exc
 
     @staticmethod
     def _authorize_actions(session, loop, decision, intent) -> list[str]:

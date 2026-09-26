@@ -421,9 +421,17 @@ Patrol 拥有判断权；Worker 只是可选外脑。Worker 只能返回类型�
   → Kernel admission 与 commit
 ```
 
-每个阶段都由 semantic identity 与 source hash 串联。Required evidence 必须解析到精确 source unit；tool call/result 必须保持闭合；相互冲突的 WorkSpec 不会被静默合并；无原文支持的 claim 或任一 unknown 质量结论都会阻止编译。系统持久化模型调用尝试、实际 token 用量、阶段耗时、版本、输出、重试与稳定失败码，用于审计和重放。
+每个阶段都由 semantic identity 与 source hash 串联。投影 statement 可以是忠实改写，但每个 confirmed unit 都必须携带冻结原文中的精确 support spans，并经过独立的 `supported | unsupported | unknown` 判定。单个可选 unit 失败会进入 rejection ledger，确定性 segment coverage 仍使 Revision index 保持 ready。Index artifact 记录被接受投影的 unit ID 和精确 fallback segment ID；descriptor 暴露两者数量，并将只有 segment coverage 的结果标为 `degraded`，而非 `complete`。Revision identity、content hash、scope 与 stale-source 错误仍整体阻断。Required evidence 必须解析到精确 source unit；tool call/result 必须保持闭合；相互冲突的 WorkSpec 不会被静默合并；无原文支持的 claim 或任一 unknown 质量结论都会阻止编译。系统持久化模型调用尝试、实际 token 用量、阶段耗时、schema/projector 版本、输出、重试与稳定失败码，用于审计和重放。旧 semantic cache 不会被重新解释；版本化 cache key 会触发确定性重建，immutable source Revision 不被改写。
 
 同一条派生链可以运行在 observe-only shadow mode，只生成对比产物，不创建 Context，也不改变 Portfolio。运维可设置 `FOCUS_LOOP_AUTOMATIC_CONTEXT_EXPANSION_WRITES=false` 关闭自动派生写入；规划与诊断仍会继续，但权威写入路径保持关闭。
+
+### Tool 协议修复与单来源恢复
+
+Checkpoint authored history 是不可变审计事实。Run settlement 发布可运行 Revision 前，共享 tool-exchange compiler 会另外生成 provider-facing execution view。已证明 interrupted/cancelled 的调用只会获得一个确定性的 `status=error` ToolMessage，保留原 call id 与 tool name；repair manifest 记录 source Run、source Revision、原因、compiler version 与 synthetic message。归属证明包含精确来源 checkpoint：后续 Provider 故障不能把继承的旧调用认作本次中断。无法证明原因的缺失 call/result 保持 `approval_required`，绝不伪装为成功。
+
+当旧 Context 或 Provider 拒绝后的 Context 无法继续，但某一个权威 Revision 存在安全且保留证据的子集时，Loop 会持久化 `ContextRecoveryOpportunity`。可信恢复编译器只隔离没有部分结果的终端未闭合交换，保留来源引用，并明确记录工具副作用未知；非终端或部分完成的交换需要人工批准。重复发现保留机会首次记录的到期时间。Patrol 只能选择 `recover_context(opportunity_id=...)`，可信服务负责构造单来源 `CreateLanePlan`。Kernel 重新校验 source frontier、goal、workspace、authority、grant、compiler version、expiry、消费状态和当前 source Revision；opportunity 消费与 Lane/Portfolio publication 位于同一事务，因此 stale 或 replay 不会发布部分状态。若协议合法性与必要证据无法同时保留，observation 会给出明确等待原因，指出缺失证据或所需批准。
+
+追加迁移为 `6a7b8c9d0e1f`。回滚只删除尚存的 recovery opportunity 表，不改写 authored checkpoint、已记录的 repaired Revision、既有 Context lineage 或已发布 Portfolio。若部署需要跨该边界回滚，应先禁用新 reader/action，再执行 downgrade。
 
 ### 原子 Portfolio 发布
 

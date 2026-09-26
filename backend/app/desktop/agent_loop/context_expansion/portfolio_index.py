@@ -2,8 +2,8 @@ r"""本文件对外提供 PortfolioSemanticIndexService 与 PortfolioIndexBuildR
 
 输入为冻结 LoopObservationEnvelope、Context Revision repository/checkpointer、受监督 projector factory 和并发上限；输出为全部授权
 Revision 的 ready semantic indexes、PortfolioIndexCatalog 与真实 stage/attempt telemetry，或显式 blocker。具体工作流为并发读取精确
-Revision，命中版本化缓存或覆盖全部消息并调用无权 projector，累计模型用量，只有全部成功后才原子发布；取消、重试耗尽和 stale
-source 不发布部分 ready 结果。示例：`result = await service.build(observation)`。
+Revision，命中版本化缓存或覆盖全部消息，依次调用无权 projector 和独立 claim verifier，隔离可选 unit 故障并累计真实模型用量，
+只有权威来源均成功后才原子发布；取消、重试耗尽和 stale source 不发布部分结果。示例：`result = await service.build(observation)`。
 """
 
 from __future__ import annotations
@@ -27,6 +27,10 @@ from backend.app.desktop.agent_loop.context_expansion.semantic_index import (
 from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
     RevisionSemanticIndexer,
     SupervisedSegmentSemanticProjector,
+)
+from backend.app.desktop.agent_loop.context_expansion.semantic_grounding import (
+    SemanticGroundingValidator,
+    SupervisedSemanticClaimSupportVerifier,
 )
 from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
     PortfolioIndexCatalog,
@@ -57,7 +61,7 @@ class PortfolioIndexBuildResult(BaseModel):
 
 
 class PortfolioSemanticIndexService:
-    VERSION = "portfolio-semantic-index-service-v1"
+    VERSION = "portfolio-semantic-index-service-v2"
 
     def __init__(
         self,
@@ -68,6 +72,7 @@ class PortfolioSemanticIndexService:
         max_attempts: int = 2,
         catalog_max_descriptor_chars: int = 64000,
         semantic_projector_factory: Callable[[], Any] | None = None,
+        semantic_claim_verifier_factory: Callable[[], Any] | None = None,
     ) -> None:
         self._sessions = sessions
         self._revision_repository = ContextRevisionRepository()
@@ -78,6 +83,7 @@ class PortfolioSemanticIndexService:
         self._max_attempts = max(1, max_attempts)
         self._catalog_max_descriptor_chars = max(1, catalog_max_descriptor_chars)
         self._semantic_projector_factory = semantic_projector_factory
+        self._semantic_claim_verifier_factory = semantic_claim_verifier_factory
         self._projection_attempts: dict[str, tuple[dict[str, Any], ...]] = {}
 
     async def build(self, observation: LoopObservationEnvelope) -> PortfolioIndexBuildResult:
@@ -208,6 +214,7 @@ class PortfolioSemanticIndexService:
                     raise
                 except (ContextRevisionNotFound, ContextRevisionIdentityMismatch, KeyError, TypeError, ValueError) as exc:
                     last_error = exc
+                    category, retryable = self._failure_policy(exc)
                     self._append_attempt(
                         revision_id,
                         {
@@ -215,8 +222,12 @@ class PortfolioSemanticIndexService:
                             "attempt": attempt,
                             "outcome": "error",
                             "error_type": type(exc).__name__,
+                            "failure_category": category,
+                            "retryable": retryable,
                         },
                     )
+                    if not retryable:
+                        raise
             if last_error is None:
                 raise RuntimeError("semantic index attempt 未执行")
             raise last_error
@@ -263,6 +274,25 @@ class PortfolioSemanticIndexService:
                 finally:
                     for attempt in projector.attempt_records:
                         self._append_attempt(source.revision_id, attempt)
+                assessments = ()
+                confirmed = tuple(
+                    draft
+                    for draft in drafts
+                    if draft.authority == "confirmed"
+                    and SemanticGroundingValidator.structurally_valid(
+                        self._indexer.message_contents(index.messages),
+                        draft,
+                    )
+                )
+                if confirmed and self._semantic_claim_verifier_factory is not None:
+                    verifier = SupervisedSemanticClaimSupportVerifier(
+                        self._semantic_claim_verifier_factory()
+                    )
+                    try:
+                        assessments = await verifier.verify(confirmed)
+                    finally:
+                        for attempt in verifier.attempt_records:
+                            self._append_attempt(source.revision_id, attempt)
                 index = self._indexer.index(
                     source=source,
                     source_content_hash=frozen_hash,
@@ -270,6 +300,7 @@ class PortfolioSemanticIndexService:
                     active_objective=objective,
                     raw_messages=tuple(view.messages),
                     unit_drafts=drafts,
+                    claim_support_assessments=assessments,
                 )
             return index
 
@@ -278,6 +309,21 @@ class PortfolioSemanticIndexService:
             *self._projection_attempts.get(revision_id, ()),
             attempt,
         )
+
+    @staticmethod
+    def _failure_policy(exc: Exception) -> tuple[str, bool]:
+        if isinstance(exc, ContextRevisionNotFound):
+            return "source_not_found", False
+        if isinstance(exc, ContextRevisionIdentityMismatch):
+            return "stale_source", False
+        message = str(exc).casefold()
+        if "stale" in message:
+            return "stale_source", False
+        if "scope" in message or "越出" in message or "超出" in message:
+            return "source_out_of_scope", False
+        if isinstance(exc, (KeyError, TypeError)):
+            return "model_schema_error", True
+        return "projection_error", True
 
     async def _record_attempt_usage(
         self,

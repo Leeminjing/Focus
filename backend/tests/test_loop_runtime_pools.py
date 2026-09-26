@@ -2,7 +2,7 @@ r"""本文件验证发布队列、Context Run 排队、Curator 重试与 pause �
 
 输入为真实 PostgreSQL Loop、阻塞发布、耗尽的 Context 容量、失败 Worker 和 pause 控制；输出为独立进度、
 持久 queued_reason、有界 attempt identity 及全部活动工作终态断言。具体工作流为创建最小 Loop 后逐一驱动
-三个独立运行路径，并从持久实体读取结果。示例：`pytest backend/tests/test_loop_runtime_pools.py`。
+三个独立运行路径，以提交后的完成事件同步 Worker，再从持久实体读取结果。示例：`pytest backend/tests/test_loop_runtime_pools.py`。
 """
 
 from __future__ import annotations
@@ -212,7 +212,9 @@ def test_curator_pool_has_its_own_bounded_capacity(tmp_path) -> None:
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         service, snapshot, _, _ = await _create_loop(sessions, tmp_path)
         release = asyncio.Event()
+        completed = asyncio.Event()
         started: list[str] = []
+        finished: list[str] = []
         try:
             request_ids = (uuid.uuid4().hex, uuid.uuid4().hex)
             async with sessions.begin() as session:
@@ -227,6 +229,9 @@ def test_curator_pool_has_its_own_bounded_capacity(tmp_path) -> None:
                     row = await session.get(LoopWorkerRequest, request.worker_request_id, with_for_update=True)
                     row.status = "success"
                     row.completed_at = datetime.now(UTC)
+                finished.append(request.worker_request_id)
+                if len(finished) == len(request_ids):
+                    completed.set()
 
             runtime._run_one = hold
             assert await runtime.drain() == 1
@@ -244,7 +249,7 @@ def test_curator_pool_has_its_own_bounded_capacity(tmp_path) -> None:
                     break
                 await asyncio.sleep(0.01)
             assert claimed == 1
-            await asyncio.sleep(0.02)
+            await asyncio.wait_for(completed.wait(), timeout=5)
             await runtime.close()
             async with sessions() as session:
                 statuses = set((await session.scalars(select(LoopWorkerRequest.status).where(LoopWorkerRequest.worker_request_id.in_(request_ids)))).all())

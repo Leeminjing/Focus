@@ -1,10 +1,10 @@
 r"""本文件对外提供 LoopPortfolioPublicationService 与 LoopPortfolioAuthorityHook。
 
-输入为 Kernel 已授权的 Loop decision、结构化 Lane plan、已冻结 expansion resolution 或精确 Context evidence 和控制版本；输出为
-原子发布的 Portfolio revision、Loop membership、Expansion transition 与 delegated directives。具体工作流为预登记稳定 Lane 与
+输入为 Kernel 已授权的 Loop decision、结构化 Lane plan、已冻结 expansion/recovery opportunity 或精确 Context evidence 和控制版本；输出为
+原子发布的 Portfolio revision、Loop membership、opportunity transition 与 delegated directives。具体工作流为预登记稳定 Lane 与
 Decision 唯一的 Portfolio identity；自动派生复用并核验持久化 resolution，其他 Lane 从精确 Revision 读取 evidence，随后调用统一
 compiler 生成候选，在 shadow checkpoint 幂等准备全部 Context revision，再由 authority hook 在
-AtomicPortfolioPublisher 的每次独立事务尝试内重验 Loop/grant/workspace，并提交所有 Loop 侧指针、指令、Context projection 与
+AtomicPortfolioPublisher 的每次独立事务尝试内重验 Loop/grant/workspace，并原子消费 recovery opportunity、提交所有 Loop 侧指针、指令、Context projection 与
 `portfolio.published` 规范事件与成员派生事实；服务只从最终已提交数据库事实返回 Directive identity，失败重试的内存状态不会泄漏。
 示例：`result = await service.publish(decision_id)`。
 """
@@ -24,6 +24,7 @@ from backend.app.desktop.agent_loop.context_expansion.models import LoopContextE
 from backend.app.desktop.agent_loop.context_expansion.repository import (
     ContextExpansionRepository,
 )
+from backend.app.desktop.agent_loop.context_recovery import ContextRecoveryOpportunityRepository
 from backend.app.desktop.agent_loop.directive_lifecycle import (
     DirectiveLifecycleRepository,
 )
@@ -95,6 +96,7 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
         self._directive_ids: list[str] = []
         self._directive_lifecycle = DirectiveLifecycleRepository()
         self._expansions = ContextExpansionRepository()
+        self._recoveries = ContextRecoveryOpportunityRepository()
         self._context_events = ContextPublicationEventRecorder()
         self._lineage_events = ContextLineageEventRecorder()
 
@@ -292,6 +294,18 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
             "context_revision_id": candidate.candidate_context_revision_id,
             "directive_id": self._directive_ids[-1],
         }
+        recovery_id = str(action.plan.lane_policy.get("recovery_opportunity_id") or "")
+        if recovery_id:
+            try:
+                await self._recoveries.consume(
+                    session,
+                    recovery_id,
+                    decision_id=decision.decision_id,
+                    lane_id=lane_id,
+                    context_id=candidate.target_context_id,
+                )
+            except ValueError as exc:
+                raise PortfolioSuperseded(str(exc)) from exc
         expansion_id = action.plan.lane_policy.get("expansion_id")
         if expansion_id:
             expansion = await session.get(LoopContextExpansion, str(expansion_id), with_for_update=True)
@@ -374,6 +388,7 @@ class LoopPortfolioPublicationService:
     def __init__(self, sessions: async_sessionmaker[AsyncSession], context_service) -> None:
         self._sessions = sessions
         self._revisions = ContextRevisionRepository()
+        self._recoveries = ContextRecoveryOpportunityRepository()
         self._reader = ContextRevisionReader(self._revisions, context_service.checkpointer)
         writer = LangGraphContextCheckpointWriter(context_service.make_state_graph, context_service.checkpointer)
         self._freezer = PortfolioFreezer(sessions, self._revisions)
@@ -594,6 +609,23 @@ class LoopPortfolioPublicationService:
         loop_id: str,
         plan,
     ) -> MultiSourceEvidence:
+        recovery_id = str(plan.lane_policy.get("recovery_opportunity_id") or "")
+        if recovery_id:
+            opportunity = await self._recoveries.get_contract(session, recovery_id)
+            if opportunity is None or opportunity.status != "pending":
+                raise PortfolioSuperseded("恢复 Lane 缺少有效 recovery opportunity")
+            actual = plan.model_copy(
+                update={
+                    "lane_policy": {
+                        key: value
+                        for key, value in plan.lane_policy.items()
+                        if key != "recovery_opportunity_id"
+                    }
+                }
+            )
+            if actual != opportunity.plan or plan.source_frontier != (opportunity.source,):
+                raise PortfolioSuperseded("恢复 Lane plan 与冻结 recovery opportunity 不一致")
+            return await self._evidence(session, plan.source_frontier)
         expansion_id = str(plan.lane_policy.get("expansion_id") or "")
         if not expansion_id:
             return await self._evidence(session, plan.source_frontier)
