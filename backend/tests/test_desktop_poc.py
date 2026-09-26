@@ -1,11 +1,12 @@
 """本文件对外提供 Desktop Gateway、Run、Patrol、Context 与权限主链路的集成回归。
 
-输入为真实 FastAPI/TestClient、PostgreSQL、LangGraph checkpoint 与受控 Agent 图；输出为 HTTP、
-SSE、持久 Run、恢复、投放和权限装配断言。具体工作流为自动隔离用户 MCP/插件工具发现，测试内
+输入为真实 FastAPI/TestClient、PostgreSQL、LangGraph checkpoint、受控 Agent 图与受保护材料；输出为 HTTP、
+SSE、持久 Run、恢复、投放、权限装配和精确材料版本断言。具体工作流为自动隔离用户 MCP/插件工具发现，测试内
 按场景替换模型图，其余 Desktop 执行脊柱保持真实；示例：`python -m pytest backend/tests/test_desktop_poc.py -q`。
 """
 
 import asyncio
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -937,10 +938,15 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
         ).status_code == 409
 
         material_file.write_text("external version", encoding="utf-8")
+        external_digest = hashlib.sha256(b"external version").hexdigest()
         wait_until(
-            lambda: len(client.get(
-                f"/desktop/api/materials/{material['material_id']}/versions", headers=SESSION
-            ).json()) >= len(versions) + 3,
+            lambda: any(
+                version["digest"] == external_digest
+                for version in client.get(
+                    f"/desktop/api/materials/{material['material_id']}/versions",
+                    headers=SESSION,
+                ).json()
+            ),
             timeout=7, interval=0.25, message="external material change was not versioned",
         )
 

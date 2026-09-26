@@ -1,9 +1,10 @@
 r"""本文件对外提供 RunLifecycleFinalizer 与 RunSettlement。
 
-输入为已结束 RunRecord或未启动成功的持久 Run、最终 checkpoint 和 workspace result；输出为安全规范化的终态 Run、
+输入为已结束 RunRecord 或未启动成功的持久 Run、最终 checkpoint 和 workspace result；输出为安全规范化的终态 Run、
 新 Context revision 与 MainRunSettled event identity。具体工作流为先在事务外精确读取执行 checkpoint，
-再在单事务中锁 Run、保存终态及完整模型用量、按 base revision CAS 发布 checkpoint revision、按 lease 模式结算
-workspace effect、释放 lease 并 enqueue outbox；Reader 只记录并发变化，隔离 Writer 保留待采用结果，
+再在单事务中锁 Run、保存终态及完整模型用量；仅以精确 source checkpoint 的消息 identity 证明终端未闭合调用属于当前 Run，
+来源不可读时不授予自动修复因果；随后用共享协议编译器验证 execution view，按 base revision CAS 发布合法 revision，
+按 lease 模式结算 workspace effect、释放 lease 并 enqueue outbox；Reader 只记录并发变化，隔离 Writer 保留待采用结果，
 权威 Writer 才推进权威 slot。重复 finalize 返回同一事实，陈旧 Context 不覆盖用户的新 current pointer。
 示例：`settlement = await finalizer.finalize(record)`。
 """
@@ -27,14 +28,22 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionPayloadMode,
     ContextRevisionProjectionStatus,
     ContextRevisionRef,
+    ContextRevisionReader,
     ContextRevisionRepository,
     ContextRevisionSourceContract,
+)
+from backend.app.desktop.context_projection import ProtocolRepairContext, compile_context_messages
+from backend.app.desktop.context_protocol import ToolExchangeInspector
+from backend.app.desktop.context_evolution.repository import (
+    ContextRevisionIdentityMismatch,
+    ContextRevisionNotFound,
 )
 from backend.app.desktop.models import DesktopRun, DesktopThread
 from backend.app.desktop.workspace_coordination.fingerprints import WorkspaceFingerprinter
 from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor, WorkspaceLease, WorkspaceSlot
 from backend.app.desktop.run_orchestration.outbox import RunOutboxRepository
 from backend.app.desktop.persistence_safety import PersistencePayloadNormalizer
+from focus.runtime.runs.events import serialize_message
 from focus.runtime.runs.manager import RunRecord
 
 
@@ -71,7 +80,9 @@ class RunLifecycleFinalizer:
         workspace_result: dict[str, Any] | None = None,
     ) -> RunSettlement:
         run, thread = await self._identity(record.run_id)
-        checkpoint_id = await self._latest_checkpoint(run, thread)
+        checkpoint = await self._latest_checkpoint(run, thread)
+        checkpoint_id = self._checkpoint_id(checkpoint)
+        checkpoint_messages = self._checkpoint_messages(checkpoint)
         captured = await self._capture_workspace(run)
         async with self._sessions.begin() as session:
             locked = await session.scalar(
@@ -102,7 +113,11 @@ class RunLifecycleFinalizer:
             locked.settled_at = datetime.now(UTC)
             await self._release_workspace_lease(session, locked)
             revision, publication = await self._publish_context_checkpoint(
-                session, locked, thread, checkpoint_id
+                session,
+                locked,
+                thread,
+                checkpoint_id,
+                checkpoint_messages,
             )
             event = await self._outbox.enqueue_settled(
                 session,
@@ -240,7 +255,7 @@ class RunLifecycleFinalizer:
         self,
         run: DesktopRun,
         thread: DesktopThread,
-    ) -> str | None:
+    ) -> Any | None:
         execution_thread = run.execution_thread_id or thread.thread_id
         checkpoint = await self._checkpointer.aget_tuple(
             {
@@ -250,9 +265,7 @@ class RunLifecycleFinalizer:
                 }
             }
         )
-        if checkpoint is None:
-            return None
-        return checkpoint.config.get("configurable", {}).get("checkpoint_id")
+        return checkpoint
 
     async def _publish_context_checkpoint(
         self,
@@ -260,6 +273,7 @@ class RunLifecycleFinalizer:
         run: DesktopRun,
         thread: DesktopThread,
         checkpoint_id: str | None,
+        checkpoint_messages: tuple[dict[str, Any], ...],
     ) -> tuple[ContextRevisionRef | None, str]:
         if run.kind != "main" or checkpoint_id is None:
             return None, "not_applicable"
@@ -287,20 +301,117 @@ class RunLifecycleFinalizer:
             if expected is not None
             else ()
         )
+        inherited_message_ids, source_available = (
+            await self._inherited_message_ids(session, current)
+            if run.status in {"interrupted", "cancelled", "error"}
+            and ToolExchangeInspector.terminal_unresolved_calls(list(checkpoint_messages)) is not None
+            else (set(), False)
+        )
+        repair_context = self._repair_context(
+            run,
+            checkpoint_messages=checkpoint_messages,
+            inherited_message_ids=inherited_message_ids,
+            source_revision_id=revision_id,
+            source_bound=(
+                current is not None
+                and source_available
+                and run.context_revision_id == current.ref.revision_id
+            ),
+        )
+        projection = compile_context_messages(
+            list(checkpoint_messages),
+            repair_context,
+        )
+        status = {
+            "valid": ContextRevisionProjectionStatus.VALID,
+            "repaired": ContextRevisionProjectionStatus.REPAIRED,
+            "approval_required": ContextRevisionProjectionStatus.APPROVAL_REQUIRED,
+        }[projection.status]
         contract = ContextRevisionContract(
             ref=ref,
             sources=sources,
+            authored_messages=tuple(projection.authored_messages),
+            execution_messages=tuple(projection.execution_messages),
+            repair_manifest=tuple(projection.repair_manifest),
+            issues=tuple(projection.issues),
+            initial_message_ids=tuple(
+                str(message.get("id"))
+                for message in projection.execution_messages
+                if message.get("id") is not None
+            ),
+            definition_hash=projection.definition_hash,
+            projection_hash=projection.projection_hash,
             content_hash=hashlib.sha256(
-                f"run-settled:{run.run_id}:{checkpoint_id}".encode()
+                f"run-settled:{run.run_id}:{checkpoint_id}:{projection.projection_hash}".encode()
             ).hexdigest(),
-            projection_status=ContextRevisionProjectionStatus.VALID,
+            projection_status=status,
             origin_kind=ContextRevisionOriginKind.RUN_SETTLED,
             origin_id=run.run_id,
             created_at=datetime.now(UTC),
         )
         await self._contexts.insert(session, contract)
+        if status is ContextRevisionProjectionStatus.APPROVAL_REQUIRED:
+            return ref, "approval_required"
         await self._contexts.switch_current(session, ref, expected)
         return ref, "published"
+
+    @staticmethod
+    def _checkpoint_id(checkpoint: Any | None) -> str | None:
+        if checkpoint is None:
+            return None
+        return checkpoint.config.get("configurable", {}).get("checkpoint_id")
+
+    @staticmethod
+    def _checkpoint_messages(checkpoint: Any | None) -> tuple[dict[str, Any], ...]:
+        if checkpoint is None:
+            return ()
+        values = getattr(checkpoint, "checkpoint", {}).get("channel_values", {})
+        return tuple(serialize_message(message) for message in values.get("messages", ()))
+
+    @staticmethod
+    def _repair_context(
+        run: DesktopRun,
+        *,
+        checkpoint_messages: tuple[dict[str, Any], ...],
+        inherited_message_ids: set[str],
+        source_revision_id: str | None = None,
+        source_bound: bool = True,
+    ) -> ProtocolRepairContext | None:
+        if run.status not in {"interrupted", "cancelled", "error"} or not source_bound:
+            return None
+        terminal = ToolExchangeInspector.terminal_unresolved_calls(list(checkpoint_messages))
+        if terminal is None or terminal[0] in inherited_message_ids:
+            return None
+        status = "cancelled" if run.status == "cancelled" else "interrupted"
+        return ProtocolRepairContext.interrupted(
+            run.run_id,
+            call_ids=terminal[1],
+            status=status,
+            reason=run.error or f"Run settled with status {run.status} before the tool returned.",
+            source_revision_id=source_revision_id,
+        )
+
+    async def _inherited_message_ids(
+        self,
+        session: AsyncSession,
+        current: ContextRevisionContract | None,
+    ) -> tuple[set[str], bool]:
+        if current is None:
+            return set(), False
+        inherited = {
+            str(message.get("id"))
+            for message in (*current.authored_messages, *current.execution_messages)
+            if message.get("id")
+        }
+        inherited.update(current.initial_message_ids)
+        try:
+            authored = await ContextRevisionReader(self._contexts, self._checkpointer).read(
+                session, current.ref, "authored"
+            )
+        except (ContextRevisionNotFound, ContextRevisionIdentityMismatch):
+            return inherited, False
+        inherited.update(str(message["id"]) for message in authored.messages if message.get("id"))
+        return inherited, True
 
     async def _settlement(
         self,

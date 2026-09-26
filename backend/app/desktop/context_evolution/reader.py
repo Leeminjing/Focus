@@ -2,8 +2,9 @@ r"""本文件对外提供当前、历史及多来源 Context revision 的统一�
 
 输入为唯一 `ContextRevisionRef`、读取视图、可选分页边界和调用方 AsyncSession；输出为 authored、
 execution、display、display page、checkpoint、historical、frontier-summary 或 deleted-source 投影。
-具体工作流为从不可变 repository 解析 revision，按 payload mode 加载精确 checkpoint；分页读取只
-序列化命中页，完整读取保持原稳定映射，且不追随最新 checkpoint。示例：`await reader.read(session, ref, "display")`。
+具体工作流为从不可变 repository 解析 revision，按 payload mode 加载精确 checkpoint；checkpoint-backed revision 的 authored/display
+保留原始 checkpoint，execution 优先使用 settlement 时持久化的协议合法投影；分页读取只序列化命中页，且不追随最新 checkpoint。
+示例：`await reader.read(session, ref, "display")`。
 """
 
 from __future__ import annotations
@@ -165,7 +166,11 @@ class ContextRevisionReader:
     ) -> ContextRevisionMessageView:
         runtime = await self._runtime_messages(revision.ref)
         if revision.ref.payload_mode is ContextRevisionPayloadMode.CHECKPOINT:
-            messages = runtime
+            messages = (
+                list(deepcopy(revision.execution_messages))
+                if view == "execution" and revision.execution_messages
+                else runtime
+            )
         elif view == "authored":
             messages = list(deepcopy(revision.authored_messages))
         elif view == "execution":

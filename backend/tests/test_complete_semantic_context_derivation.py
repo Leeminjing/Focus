@@ -1,8 +1,8 @@
 r"""本文件对外提供完整 semantic Context derivation 的核心合同与纯领域回归测试。
 
-输入为 150 条冻结历史、Tool Exchange、真实 model usage、retrieval budgets、受监督角色重试、关系变体、R3/R8/R5/F2 bundle 与
-claim/quality fixtures；输出为完整覆盖、旧证据可达、版本 provenance、scope/budget fail-closed、顺序无关 reconciliation、
-attempt audit、claim graph identity 和 quality-gated compilation 断言。
+输入为 150 条冻结历史、生产三消息、Tool Exchange、真实 model usage、retrieval budgets、受监督角色重试、关系变体、R3/R8/R5/F2
+bundle 与 claim/quality fixtures；输出为完整覆盖、旧证据可达、版本 provenance、scope/budget fail-closed、受限 verifier 输入、
+降级 catalog 的 Curator 连续性、顺序无关 reconciliation、attempt audit、claim graph identity 和 quality-gated compilation 断言。
 具体工作流为仅调用公开领域接口，不依赖模型或权威提交；数据库恢复另由 persistence integration 覆盖。示例：
 `pytest backend/tests/test_complete_semantic_context_derivation.py -q`。
 """
@@ -50,6 +50,12 @@ from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
     RevisionSemanticIndexer,
     SegmentSemanticUnitDraft,
 )
+from backend.app.desktop.agent_loop.context_expansion.semantic_index import RevisionSemanticIndex
+from backend.app.desktop.agent_loop.context_expansion.semantic_grounding import (
+    SemanticClaimSupportAssessment,
+    SemanticSupportSpan,
+    SupervisedSemanticClaimSupportVerifier,
+)
 from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
     AuthorizedSemanticRetriever,
     PlanningRetrievalSession,
@@ -68,7 +74,10 @@ from backend.app.desktop.agent_loop.context_expansion.synthesis import (
 from backend.app.desktop.agent_loop.context_expansion.synthesis_service import (
     DeterministicTestContextSynthesisService,
 )
-from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.agent_loop.derivation_worker import (
+    RoleBoundStructuredModel,
+    StructuredResultValidationError,
+)
 from backend.app.desktop.context_curation import evidence_ref_key
 from backend.app.desktop.context_evolution import (
     ContextRevisionPayloadMode,
@@ -230,21 +239,358 @@ def test_index_identity_changes_with_content_or_projector_version() -> None:
     replay = RevisionSemanticIndexer().index(source=_source("versioned"), source_content_hash="2" * 64, context_role="context", active_objective="Version", raw_messages=messages)
 
     class NewProjector(RevisionSemanticIndexer):
-        PROJECTOR_VERSION = "supervised-segment-projector-v2"
+        PROJECTOR_VERSION = "supervised-segment-projector-v3"
 
     changed_content = RevisionSemanticIndexer().index(source=_source("versioned"), source_content_hash="3" * 64, context_role="context", active_objective="Version", raw_messages=messages)
     changed_version = NewProjector().index(source=_source("versioned"), source_content_hash="2" * 64, context_role="context", active_objective="Version", raw_messages=messages)
     assert first.index_id == replay.index_id
     assert len({first.index_id, changed_content.index_id, changed_version.index_id}) == 3
-    with pytest.raises(ValueError, match="confirmed"):
-        RevisionSemanticIndexer().index(
-            source=_source("unsupported"),
-            source_content_hash="1" * 64,
-            context_role="context",
-            active_objective="Reject unsupported",
-            raw_messages=({"id": "m", "role": "human", "content": "actual text"},),
-            unit_drafts=(SegmentSemanticUnitDraft(kind="claim", authority="confirmed", statement="invented text", message_ids=("m",)),),
+    unsupported = SegmentSemanticUnitDraft(
+        kind="claim",
+        authority="confirmed",
+        statement="invented text",
+        supports=(SemanticSupportSpan(message_id="m", quote="fabricated quote"),),
+    )
+    degraded = RevisionSemanticIndexer().index(
+        source=_source("unsupported"),
+        source_content_hash="1" * 64,
+        context_role="context",
+        active_objective="Reject unsupported",
+        raw_messages=({"id": "m", "role": "human", "content": "actual text"},),
+        unit_drafts=(unsupported,),
+    )
+    assert degraded.quality_state == "degraded"
+    assert degraded.rejected_units[0].code == "semantic_support_error"
+    assert degraded.coverage.message_ids == ("m",)
+
+
+def test_production_intro_paraphrase_remains_grounded_by_frozen_messages() -> None:
+    messages = (
+        {"id": "human-1", "role": "human", "content": "你好"},
+        {"id": "human-2", "role": "human", "content": "你好"},
+        {
+            "id": "assistant-1",
+            "role": "assistant",
+            "content": "我是 Focus 的主 Agent，一个编排你的通用工程助手，当前工作在你的真实宿主机工作区。",
+        },
+    )
+
+    draft = SegmentSemanticUnitDraft(
+        kind="claim",
+        authority="confirmed",
+        statement="Focus 主 Agent 是在用户真实宿主机工作区运行的通用工程编排助手。",
+        supports=(
+            SemanticSupportSpan(
+                message_id="assistant-1",
+                quote="我是 Focus 的主 Agent，一个编排你的通用工程助手，当前工作在你的真实宿主机工作区。",
+            ),
+        ),
+    )
+    index = RevisionSemanticIndexer().index(
+        source=_source("production-intro"),
+        source_content_hash="9" * 64,
+        context_role="primary",
+        active_objective="Build the requested Obsidian plugin",
+        raw_messages=messages,
+        unit_drafts=(draft,),
+        claim_support_assessments=(
+            SemanticClaimSupportAssessment(
+                claim_key=draft.claim_key,
+                verdict="supported",
+                reason="The exact frozen introduction directly supports the paraphrase.",
+            ),
+        ),
+    )
+
+    assert any(unit.authority == "confirmed" for unit in index.semantic_units)
+    assert index.coverage.message_ids == ("human-1", "human-2", "assistant-1")
+
+
+def test_multi_message_claim_requires_all_exact_supports_and_supported_verdict() -> None:
+    draft = SegmentSemanticUnitDraft(
+        kind="claim",
+        authority="confirmed",
+        statement="The requirement and runtime observation disagree.",
+        supports=(
+            SemanticSupportSpan(message_id="requirement", quote="Lock after three failures"),
+            SemanticSupportSpan(message_id="runtime", quote="remained unlocked"),
+        ),
+    )
+    assessment = SemanticClaimSupportAssessment(
+        claim_key=draft.claim_key,
+        verdict="supported",
+        reason="Both frozen excerpts are required for the comparison.",
+    )
+
+    index = RevisionSemanticIndexer().index(
+        source=_source("multi-support"),
+        source_content_hash="8" * 64,
+        context_role="failure-analysis",
+        active_objective="Compare requirement and runtime behavior",
+        raw_messages=(
+            {"id": "requirement", "role": "human", "content": "Lock after three failures"},
+            {"id": "runtime", "role": "assistant", "content": "The account remained unlocked"},
+        ),
+        unit_drafts=(draft,),
+        claim_support_assessments=(assessment,),
+    )
+
+    assert index.quality_state == "complete"
+    confirmed = next(unit for unit in index.semantic_units if unit.authority == "confirmed")
+    assert {ref.message_id for ref in confirmed.evidence_refs} == {"requirement", "runtime"}
+    for remaining_support in draft.supports:
+        reduced = draft.model_copy(update={"supports": (remaining_support,)})
+        rejected = RevisionSemanticIndexer().index(
+            source=_source(f"missing-{remaining_support.message_id}"),
+            source_content_hash="3" * 64,
+            context_role="failure-analysis",
+            active_objective="Require both sides of the comparison",
+            raw_messages=(
+                {"id": "requirement", "role": "human", "content": "Lock after three failures"},
+                {"id": "runtime", "role": "assistant", "content": "The account remained unlocked"},
+            ),
+            unit_drafts=(reduced,),
+            claim_support_assessments=(
+                SemanticClaimSupportAssessment(
+                    claim_key=reduced.claim_key,
+                    verdict="unsupported",
+                    reason="One excerpt cannot establish the cross-message comparison.",
+                ),
+            ),
         )
+        assert all(unit.authority != "confirmed" for unit in rejected.semantic_units)
+        assert rejected.rejected_units[0].code == "claim_support_unsupported"
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected_code"),
+    (("unsupported", "claim_support_unsupported"), ("unknown", "claim_support_unknown")),
+)
+def test_confirmed_claim_requires_supported_assessment(verdict: str, expected_code: str) -> None:
+    draft = SegmentSemanticUnitDraft(
+        kind="claim",
+        authority="confirmed",
+        statement="The source requires a stable interface.",
+        supports=(SemanticSupportSpan(message_id="requirement", quote="stable interface"),),
+    )
+    assessment = SemanticClaimSupportAssessment(
+        claim_key=draft.claim_key,
+        verdict=verdict,
+        reason=f"Verifier returned {verdict}.",
+    )
+
+    index = RevisionSemanticIndexer().index(
+        source=_source(f"claim-{verdict}"),
+        source_content_hash="6" * 64,
+        context_role="requirements",
+        active_objective="Validate claim support",
+        raw_messages=({"id": "requirement", "role": "human", "content": "Preserve the stable interface."},),
+        unit_drafts=(draft,),
+        claim_support_assessments=(assessment,),
+    )
+
+    assert index.quality_state == "degraded"
+    assert index.rejected_units[0].code == expected_code
+    assert all(unit.authority != "confirmed" for unit in index.semantic_units)
+
+
+def test_grounding_contract_round_trip_and_unknown_message_are_explicit() -> None:
+    draft = SegmentSemanticUnitDraft.model_validate(
+        {
+            "kind": "claim",
+            "authority": "confirmed",
+            "statement": "A grounded paraphrase.",
+            "supports": [{"message_id": "missing", "quote": "exact quote"}],
+        }
+    )
+    assert SegmentSemanticUnitDraft.model_validate_json(draft.model_dump_json()) == draft
+    assessment = SemanticClaimSupportAssessment(
+        claim_key=draft.claim_key,
+        verdict="supported",
+        reason="The cited excerpt supports the claim.",
+    )
+
+    index = RevisionSemanticIndexer().index(
+        source=_source("unknown-support"),
+        source_content_hash="7" * 64,
+        context_role="context",
+        active_objective="Validate support identity",
+        raw_messages=({"id": "known", "role": "human", "content": "exact quote"},),
+        unit_drafts=(draft,),
+        claim_support_assessments=(assessment,),
+    )
+
+    assert index.quality_state == "degraded"
+    assert index.rejected_units[0].code == "unknown_message_ref"
+    assert index.coverage.message_ids == ("known",)
+
+
+def test_claim_support_verifier_receives_only_claim_and_verified_excerpts() -> None:
+    captured = {}
+
+    class Model:
+        async def invoke(self, schema, system, payload):
+            captured.update(payload)
+            claim = payload["claims"][0]
+            return schema.model_validate(
+                {
+                    "assessments": (
+                        {
+                            "claim_key": claim["claim_key"],
+                            "verdict": "supported",
+                            "reason": "The frozen excerpt directly supports the statement.",
+                        },
+                    )
+                }
+            )
+
+    draft = SegmentSemanticUnitDraft(
+        kind="claim",
+        authority="confirmed",
+        statement="Focus runs in the real host workspace.",
+        supports=(
+            SemanticSupportSpan(
+                message_id="assistant-1",
+                quote="当前工作在你的真实宿主机工作区",
+            ),
+        ),
+    )
+
+    assessments = asyncio.run(SupervisedSemanticClaimSupportVerifier(Model()).verify((draft,)))
+
+    assert assessments[0].verdict == "supported"
+    assert set(captured) == {"claims"}
+    assert set(captured["claims"][0]) == {"claim_key", "statement", "supports"}
+    assert captured["claims"][0]["supports"] == (
+        {"message_id": "assistant-1", "quote": "当前工作在你的真实宿主机工作区"},
+    )
+
+
+def test_all_invalid_production_projection_still_supports_curator_planning() -> None:
+    messages = (
+        {"id": "human-1", "role": "human", "content": "你好"},
+        {"id": "human-2", "role": "human", "content": "你好"},
+        {
+            "id": "assistant-1",
+            "role": "assistant",
+            "content": "我是 Focus 的主 Agent，一个编排你的通用工程助手，当前工作在你的真实宿主机工作区。",
+        },
+    )
+    invalid = SegmentSemanticUnitDraft(
+        kind="claim",
+        authority="confirmed",
+        statement="Focus is a desktop pet implementation.",
+        supports=(SemanticSupportSpan(message_id="assistant-1", quote="不存在的原文"),),
+    )
+    index = RevisionSemanticIndexer().index(
+        source=_source("production-degraded"),
+        source_content_hash="4" * 64,
+        context_role="primary",
+        active_objective="Build the requested Obsidian plugin",
+        raw_messages=messages,
+        unit_drafts=(invalid,),
+    )
+    catalog = PortfolioIndexCatalog.create(frontier_hash="5" * 64, indexes=(index,))
+    session = PlanningRetrievalSession.create(
+        observation_hash="6" * 64,
+        frontier_hash="5" * 64,
+        catalog=catalog,
+        planner_version=RetrievalBackedCognitiveAdvisor.VERSION,
+        retrieval_version=AuthorizedSemanticRetriever.VERSION,
+        budget=RetrievalBudget(
+            max_queries=2,
+            max_candidates=16,
+            max_exact_reads=4,
+            max_model_calls=3,
+            max_tokens=1000,
+        ),
+    )
+
+    class Model:
+        async def invoke(self, schema, system, payload):
+            if schema is PlannerQueryProposal:
+                return schema.model_validate(
+                    {
+                        "rationale": "Find the surviving frozen source evidence.",
+                        "queries": ({"text": "Focus 主 Agent", "limit": 8},),
+                    }
+                )
+            if schema is PlannerReadProposal:
+                candidate = next(
+                    item for item in payload["candidates"] if item["entry_kind"] == "semantic_unit"
+                )
+                return schema(
+                    rationale="Read one exact fallback candidate.",
+                    candidate_ids=(candidate["candidate_id"],),
+                )
+            assert schema is LaneAdviceProposal
+            unit_id = payload["allowed_candidate_unit_ids"][0]
+            return schema.model_validate(
+                {
+                    "rationale": "The frozen primary context supports a bounded implementation lane.",
+                    "work_specs": (
+                        {
+                            "objective": "Implement the Obsidian plugin from frozen requirements.",
+                            "separation_reason": "The implementation can proceed from the preserved primary evidence.",
+                            "questions": ("Which requirements remain authoritative?",),
+                            "completion_criteria": ("The implementation follows the frozen requirements.",),
+                            "workspace_requirement": "isolated_write",
+                            "evidence_requirements": (
+                                {
+                                    "requirement_id": "primary",
+                                    "role": "requirement",
+                                    "question": "What did the primary Context establish?",
+                                    "coverage_criterion": "The exact frozen primary evidence is available.",
+                                    "candidate_unit_ids": (unit_id,),
+                                },
+                            ),
+                        },
+                    ),
+                }
+            )
+
+    async def run():
+        return await RetrievalBackedCognitiveAdvisor(Model()).plan(
+            {
+                "mission": {"outcome": "Build the requested Obsidian plugin"},
+                "frontier_hash": "5" * 64,
+                "scope": {"derivation_input": {"portfolio_index_catalog": catalog.model_dump(mode="json")}},
+            },
+            session,
+            (index,),
+        )
+
+    result = asyncio.run(run())
+
+    assert index.quality_state == "degraded"
+    assert len(index.rejected_units) == 1
+    assert index.coverage.message_ids == ("human-1", "human-2", "assistant-1")
+    assert result.session.state == "planned", (result.blocker_code, result.blocker_summary)
+    assert result.proposal is not None
+    assert result.proposal.work_specs[0].objective.startswith("Implement the Obsidian plugin")
+
+
+def test_segment_only_index_exposes_zero_projected_units_and_exact_fallback_coverage() -> None:
+    index = RevisionSemanticIndexer().index(
+        source=_source("fallback-only"),
+        source_content_hash="7" * 64,
+        context_role="primary",
+        active_objective="Preserve the frozen task",
+        raw_messages=(
+            {"id": "first", "role": "human", "content": "Keep the original requirement."},
+            {"id": "second", "role": "ai", "content": "I will keep it."},
+        ),
+    )
+
+    assert index.quality_state == "degraded"
+    assert index.projected_unit_ids == ()
+    assert index.fallback_segment_ids == tuple(segment.segment_id for segment in index.segments)
+    assert index.descriptor().projected_unit_count == 0
+    assert index.descriptor().fallback_segment_count == len(index.segments)
+    assert RevisionSemanticIndex.model_validate(index.model_dump(mode="json")) == index
+    tampered = {**index.model_dump(mode="json"), "fallback_segment_ids": ["0" * 64]}
+    with pytest.raises(ValueError, match="fallback segment inventory"):
+        RevisionSemanticIndex.model_validate(tampered)
 
 
 def test_portfolio_index_build_is_bounded_retried_and_atomically_published() -> None:
@@ -307,12 +653,28 @@ def test_portfolio_index_build_is_bounded_retried_and_atomically_published() -> 
                 if name == self._permanently_fail or (name == "revision-retry" and self.attempts[name] == 1):
                     raise ValueError("transient projection failure")
                 source = ContextRevisionRef.model_validate(frontier_item["revision"])
+                drafts = ()
+                if name == "revision-degraded":
+                    drafts = (
+                        SegmentSemanticUnitDraft(
+                            kind="claim",
+                            authority="confirmed",
+                            statement="Invented optional projection.",
+                            supports=(
+                                SemanticSupportSpan(
+                                    message_id=f"message-{name}",
+                                    quote="fabricated quote",
+                                ),
+                            ),
+                        ),
+                    )
                 return RevisionSemanticIndexer().index(
                     source=source,
                     source_content_hash=frontier_item["content_hash"],
                     context_role="context",
                     active_objective="Bounded build",
                     raw_messages=({"id": f"message-{name}", "role": "human", "content": name},),
+                    unit_drafts=drafts,
                 )
             finally:
                 self._active -= 1
@@ -333,13 +695,16 @@ def test_portfolio_index_build_is_bounded_retried_and_atomically_published() -> 
 
     async def run():
         service = ProbeService()
-        result = await service.build(observation(("one", "retry", "three", "four")))
+        result = await service.build(observation(("one", "retry", "degraded", "four")))
         assert result.blocker_code is None
         assert len(result.indexes) == 4
+        assert next(
+            item for item in result.indexes if item.source.revision_id == "revision-degraded"
+        ).quality_state == "degraded"
         assert service.max_active == 2
         assert service.attempts["revision-retry"] == 2
         assert len(service._artifacts.published) == 4
-        replay = await service.build(observation(("one", "retry", "three", "four")))
+        replay = await service.build(observation(("one", "retry", "degraded", "four")))
         assert replay.stage_record == result.stage_record
 
         failed = ProbeService(permanently_fail="revision-fail")
@@ -602,6 +967,7 @@ def test_retrieval_planner_accounts_real_tokens_and_stops_before_followup_calls(
 def test_role_bound_worker_retries_with_per_attempt_usage_audit(monkeypatch) -> None:
     class Worker:
         created = 0
+        payloads = []
 
         def __init__(self, app_config, model_name=None) -> None:
             type(self).created += 1
@@ -609,6 +975,7 @@ def test_role_bound_worker_retries_with_per_attempt_usage_audit(monkeypatch) -> 
             self.usage = ModelUsage()
 
         async def invoke(self, schema, system, payload):
+            type(self).payloads.append(payload)
             self.usage = ModelUsage(model_calls=1, input_tokens=10 * self.ordinal, output_tokens=2)
             if self.ordinal == 1:
                 raise ValueError("first structured response was invalid")
@@ -637,7 +1004,72 @@ def test_role_bound_worker_retries_with_per_attempt_usage_audit(monkeypatch) -> 
             "success",
         )
         assert all(item["role"] == "semantic_index_projector" for item in model.last_attempt_records)
+        assert "previous_attempt_failure" not in Worker.payloads[0]
+        assert Worker.payloads[1]["previous_attempt_failure"]["category"] == "model_schema_error"
+        assert "first structured response was invalid" in Worker.payloads[1]["previous_attempt_failure"]["message"]
         assert model.last_usage == ModelUsage(model_calls=2, input_tokens=30, output_tokens=4)
+
+    asyncio.run(run())
+
+
+def test_role_bound_worker_retries_result_validation_with_unit_feedback(monkeypatch) -> None:
+    class Worker:
+        payloads = []
+
+        def __init__(self, app_config, model_name=None) -> None:
+            self.usage = ModelUsage(model_calls=1, input_tokens=7, output_tokens=3)
+
+        async def invoke(self, schema, system, payload):
+            type(self).payloads.append(payload)
+            return schema.model_validate(
+                {
+                    "rationale": "Return one bounded semantic query.",
+                    "queries": ({"text": "frozen evidence", "limit": 1},),
+                }
+            )
+
+    monkeypatch.setattr(
+        "backend.app.desktop.agent_loop.derivation_worker.StructuredWorkerModel",
+        Worker,
+    )
+
+    calls = 0
+
+    def validate(result) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise StructuredResultValidationError(
+                "semantic_support_error",
+                "duplicate semantic identity",
+                unit_identity="claim-1",
+                violated_rule="each claim identity must appear exactly once",
+            )
+
+    async def run():
+        model = RoleBoundStructuredModel(
+            SimpleNamespace(),
+            "semantic_index_projector",
+            max_attempts=2,
+        )
+        result = await model.invoke_validated(
+            PlannerQueryProposal,
+            "authority",
+            {"frozen": True},
+            validate,
+        )
+
+        assert result.queries[0].text == "frozen evidence"
+        assert tuple(item["outcome"] for item in model.last_attempt_records) == ("error", "success")
+        assert model.last_attempt_records[0]["failure_category"] == "semantic_support_error"
+        assert model.last_attempt_records[0]["validation_feedback"]["unit_identity"] == "claim-1"
+        assert Worker.payloads[1]["previous_attempt_failure"] == {
+            "category": "semantic_support_error",
+            "error_type": "StructuredResultValidationError",
+            "message": "duplicate semantic identity",
+            "unit_identity": "claim-1",
+            "violated_rule": "each claim identity must appear exactly once",
+        }
 
     asyncio.run(run())
 

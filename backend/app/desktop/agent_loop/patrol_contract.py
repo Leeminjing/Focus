@@ -1,11 +1,11 @@
 r"""本文件对外提供 Patrol 决策合同：MissionReference 封闭引用、OutcomeReference、BoundaryReference、CompletionCheckReference 与 PatrolDecisionContract。
 
-输入为模型返回的 action 序列、mission 引用序列与冻结的 LoopObservationEnvelope（含 Mission 与 expansion
+输入为模型返回的 action 序列、mission 引用序列与冻结的 LoopObservationEnvelope（含 Mission、expansion 与 recovery
 assessment）；输出为合同通过，或携带稳定拒绝原因的 PatrolContractViolation。具体工作流为先用封闭类型声明
 不可枚举之外的引用取值（outcome 固定 identity、execution boundary 分组固定枚举且以中文列出合法分组），使其随 schema 对模型可见；
-再校验 completion check 的动态合法集合（当前 Mission revision 的稳定 check identity）；最后校验派生决策：
+再校验 completion check 的动态合法集合（当前 Mission revision 的稳定 check identity）；最后校验派生与恢复决策：
 派生只能按 identity 选择冻结 opportunity，拒绝必须引用策略已登记的 blocker，且 required 评估必须给出
-派生、策略允许的拒绝或交回用户三者之一。
+派生、策略允许的拒绝或交回用户三者之一；单来源恢复只能引用 observation 中已持久化的 opportunity identity。
 
 示例：`PatrolDecisionContract().validate(actions=proposal.actions, mission_references=proposal.mission_references, observation=observation)`。
 """
@@ -17,7 +17,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.app.desktop.agent_loop.patrol import PatrolContractViolation
-from backend.app.desktop.agent_loop.schemas import DeclineExpansionAction, LoopObservationEnvelope, PatrolModelAction, SpawnContextAction
+from backend.app.desktop.agent_loop.schemas import DeclineExpansionAction, LoopObservationEnvelope, PatrolModelAction, RecoverContextAction, SpawnContextAction
 
 
 BoundaryGroup = Literal["in_scope", "required_invariants", "prohibited_actions", "legacy_text"]
@@ -76,6 +76,7 @@ class PatrolDecisionContract:
     ) -> None:
         self._validate_mission_references(mission_references, observation)
         self._validate_expansion_decision(actions, observation)
+        self._validate_recovery_decision(actions, observation)
 
     def _validate_mission_references(
         self,
@@ -108,6 +109,20 @@ class PatrolDecisionContract:
                 self._validate_decline(action, blockers)
         if assessment.get("level") == "required" and not self._has_required_exit(actions, expansion_actions):
             raise PatrolContractViolation("required Context expansion 必须提供合法出口：" + _EXPANSION_EXITS)
+
+    @staticmethod
+    def _validate_recovery_decision(
+        actions: tuple[PatrolModelAction, ...],
+        observation: LoopObservationEnvelope,
+    ) -> None:
+        opportunities = {
+            str(item.get("opportunity_id"))
+            for item in getattr(observation, "recovery_opportunities", ())
+            if item.get("opportunity_id")
+        }
+        for action in actions:
+            if isinstance(action, RecoverContextAction) and action.opportunity_id not in opportunities:
+                raise PatrolContractViolation("recover_context 引用了当前 observation 之外的 opportunity")
 
     @staticmethod
     def _validate_spawn(action: SpawnContextAction, opportunities: frozenset[str]) -> None:

@@ -3,7 +3,8 @@ r"""本文件验证唯一 RunLauncher、持久 Run identity、活跃 main fencin
 输入为并发注册请求、假 PreparedRun/Request、已完成 RunRecord 和假 checkpoint；输出为单次 launch、
 单持久 Run、完整历史字段、非根 namespace checkpoint publication、事务回滚后可重试的 settlement，
 以及重启后恰好一次消费断言。具体工作流为使用隔离 PostgreSQL 建立 Context revision，再分别穿过
-registrar、launcher、finalizer 和 consumer。
+registrar、launcher、finalizer 和 consumer，并验证中断 tool call 的 authored/execution 双视图与可审计 repair manifest。
+集成续跑用严格 provider 合同校验 repaired execution，再发布下一代 Context；错误 Run 不能认领继承调用的中断因果。
 示例：`pytest backend/tests/test_unified_run_orchestration.py`。
 """
 
@@ -18,6 +19,7 @@ import uuid
 import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from langchain_core.messages import AIMessage, ToolMessage
 
 from backend.app.desktop.context_evolution import (
     ContextRevisionContract,
@@ -26,6 +28,7 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionProjectionStatus,
     ContextRevisionRef,
     ContextRevisionRepository,
+    ContextRevisionReader,
 )
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
 from backend.app.desktop.run_orchestration import (
@@ -40,6 +43,7 @@ from backend.app.desktop.run_orchestration import (
     RunRegistrationRequest,
 )
 from focus.runtime.runs.manager import RunRecord
+from focus.runtime.runs.events import serialize_message, validate_messages
 from focus.runtime.runs.schemas import DisconnectMode, RunStatus
 
 
@@ -47,18 +51,25 @@ pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 
 class _Checkpoint:
-    def __init__(self, checkpoint_id: str) -> None:
+    def __init__(self, checkpoint_id: str, messages=()) -> None:
         self.config = {"configurable": {"checkpoint_id": checkpoint_id}}
+        self.checkpoint = {"channel_values": {"messages": list(messages)}}
 
 
 class _Checkpointer:
-    def __init__(self, checkpoint_id: str) -> None:
+    def __init__(self, checkpoint_id: str, messages=(), source_messages=(), source_checkpoint_id=None) -> None:
         self.checkpoint_id = checkpoint_id
+        self.messages = messages
+        self.source_messages = source_messages
+        self.source_checkpoint_id = source_checkpoint_id
         self.configs = []
 
     async def aget_tuple(self, config):
         self.configs.append(config)
-        return _Checkpoint(self.checkpoint_id)
+        source_id = config["configurable"].get("checkpoint_id")
+        if source_id is not None and source_id != self.checkpoint_id:
+            return _Checkpoint(self.source_checkpoint_id or source_id, self.source_messages)
+        return _Checkpoint(self.checkpoint_id, self.messages)
 
 
 class _FailingOutbox(RunOutboxRepository):
@@ -292,6 +303,173 @@ def test_finalization_is_atomic_idempotent_and_restart_consumer_drains() -> None
                     delete(DesktopWorkspace).where(
                         DesktopWorkspace.workspace_id == workspace_id
                     )
+                )
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_interrupted_run_publishes_repaired_execution_without_mutating_checkpoint_history() -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        workspace_id, context_id, ref = await _seed(sessions, uuid.uuid4().hex[:8])
+        run_id = uuid.uuid4().hex
+        registrar = RunRegistrar(sessions)
+        await registrar.register(_registration(context_id, ref, run_id, "interrupted-settle"))
+        dangling = AIMessage(
+            id="assistant-dangling",
+            content="",
+            tool_calls=[
+                {
+                    "id": "browser_run_code_unsafe",
+                    "name": "browser_run_code_unsafe",
+                    "args": {"code": "return await inspectPage()"},
+                }
+            ],
+        )
+        checkpointer = _Checkpointer("interrupted-checkpoint", (dangling,))
+        record = RunRecord(
+            run_id=run_id,
+            thread_id=ref.execution_thread_id,
+            status=RunStatus.error,
+            error="Run interrupted while the browser tool was executing",
+            on_disconnect=DisconnectMode.cancel,
+        )
+        try:
+            settlement = await RunLifecycleFinalizer(sessions, checkpointer).finalize(record)
+            assert settlement.context_publication == "published"
+            assert settlement.context_revision is not None
+            async with sessions() as session:
+                repository = ContextRevisionRepository()
+                contract = await repository.get(session, settlement.context_revision)
+                reader = ContextRevisionReader(repository, checkpointer)
+                authored = await reader.read(session, settlement.context_revision, "authored")
+                execution = await reader.read(session, settlement.context_revision, "execution")
+            assert contract.projection_status is ContextRevisionProjectionStatus.REPAIRED
+            assert authored.messages[0]["tool_calls"][0]["id"] == "browser_run_code_unsafe"
+            assert len(authored.messages) == 1
+            assert execution.messages[-1]["tool_call_id"] == "browser_run_code_unsafe"
+            assert execution.messages[-1]["status"] == "error"
+            assert execution.messages[-1]["focus_interruption_status"] == "interrupted"
+            assert contract.repair_manifest[0]["source_run_id"] == run_id
+            assert contract.repair_manifest[0]["cause"] == "interrupted"
+
+            async def strict_provider(messages):
+                validate_messages(list(messages))
+                return AIMessage(id="provider-continuation", content="The interrupted call is accounted for.")
+
+            response = await strict_provider(execution.messages)
+            assert response.content == "The interrupted call is accounted for."
+            continuation_id = uuid.uuid4().hex
+            await registrar.register(
+                _registration(context_id, settlement.context_revision, continuation_id, "continued-settle")
+            )
+            tool = execution.messages[-1]
+            continuation_messages = (
+                dangling,
+                ToolMessage(
+                    id=tool["id"],
+                    content=tool["content"],
+                    name=tool["name"],
+                    tool_call_id=tool["tool_call_id"],
+                    status="error",
+                ),
+                response,
+            )
+            validate_messages([serialize_message(item) for item in continuation_messages])
+            continued = await RunLifecycleFinalizer(
+                sessions,
+                _Checkpointer("continuation-checkpoint", continuation_messages),
+            ).finalize(
+                RunRecord(
+                    run_id=continuation_id,
+                    thread_id=ref.execution_thread_id,
+                    status=RunStatus.success,
+                    on_disconnect=DisconnectMode.cancel,
+                )
+            )
+            assert continued.context_publication == "published"
+            assert continued.context_revision.generation == settlement.context_revision.generation + 1
+        finally:
+            async with sessions.begin() as session:
+                await session.execute(
+                    delete(DesktopWorkspace).where(
+                        DesktopWorkspace.workspace_id == workspace_id
+                    )
+                )
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_provider_error_cannot_prove_an_inherited_tool_call_was_interrupted() -> None:
+    run = SimpleNamespace(
+        run_id="later-run",
+        status="error",
+        error="provider 400: insufficient tool messages",
+    )
+    checkpoint_messages = (
+        {
+            "role": "ai",
+            "id": "earlier-caller",
+            "content": "",
+            "tool_calls": [{"id": "earlier-call", "name": "write_file", "args": {}}],
+        },
+    )
+
+    context = RunLifecycleFinalizer._repair_context(
+        run,
+        checkpoint_messages=checkpoint_messages,
+        inherited_message_ids={"earlier-caller"},
+        source_revision_id="later-revision",
+    )
+
+    assert context is None
+
+
+@pytest.mark.parametrize("source_checkpoint_available", (True, False))
+def test_later_provider_error_cannot_repair_call_in_source_checkpoint(source_checkpoint_available: bool) -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        workspace_id, context_id, ref = await _seed(sessions, uuid.uuid4().hex[:8])
+        run_id = uuid.uuid4().hex
+        await RunRegistrar(sessions).register(_registration(context_id, ref, run_id, "inherited-call"))
+        inherited = AIMessage(
+            id="earlier-caller",
+            content="",
+            tool_calls=[{"id": "earlier-call", "name": "write_file", "args": {"path": "note.md"}}],
+        )
+        checkpointer = _Checkpointer(
+            "provider-error-checkpoint",
+            (inherited,),
+            source_messages=(inherited,),
+            source_checkpoint_id=None if source_checkpoint_available else "mismatched-source",
+        )
+        try:
+            settlement = await RunLifecycleFinalizer(sessions, checkpointer).finalize(
+                RunRecord(
+                    run_id=run_id,
+                    thread_id=ref.execution_thread_id,
+                    status=RunStatus.error,
+                    error="provider 400: insufficient tool messages",
+                    on_disconnect=DisconnectMode.cancel,
+                )
+            )
+            assert settlement.context_publication == "approval_required"
+            async with sessions() as session:
+                repository = ContextRevisionRepository()
+                current = await repository.current(session, context_id)
+                proposed = await repository.get(session, settlement.context_revision)
+            assert current.ref == ref
+            assert proposed.projection_status is ContextRevisionProjectionStatus.APPROVAL_REQUIRED
+            assert proposed.repair_manifest[0]["cause"] == "ambiguous"
+            assert proposed.repair_manifest[0]["source_run_id"] is None
+        finally:
+            async with sessions.begin() as session:
+                await session.execute(
+                    delete(DesktopWorkspace).where(DesktopWorkspace.workspace_id == workspace_id)
                 )
             await engine.dispose()
 

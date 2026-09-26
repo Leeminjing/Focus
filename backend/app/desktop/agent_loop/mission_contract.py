@@ -20,6 +20,7 @@ MACHINE_ACTION_TYPES = frozenset({
     "create_lane",
     "update_lane",
     "merge_contexts",
+    "recover_context",
     "pause_lane",
     "discard_membership",
     "request_lane_curator",

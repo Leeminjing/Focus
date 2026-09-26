@@ -1,4 +1,9 @@
-"""验证 Context 派生树、审批边界和独立 LangGraph checkpoint。"""
+r"""本文件对外提供 Context 派生树、协议审批边界和独立 LangGraph checkpoint 集成测试。
+
+输入为真实 workspace、来源 checkpoint、合法或歧义的 authored messages 及哈希绑定审批；输出为派生 revision、不可变 authored
+snapshot、approval_required 阻断、接受/拒绝与 stale decision 断言。具体工作流为通过 Desktop API 派生多层 Context，验证无中断因果的
+Tool Exchange 不会被自动解释，再检查审批和 checkpoint 隔离。示例：`pytest backend/tests/test_recursive_context_forking.py -q`。
+"""
 
 import asyncio
 import os
@@ -298,7 +303,7 @@ def test_degradation_requires_hash_bound_decision(tmp_path: Path, monkeypatch):
                 "tool_call_id": "kept-call",
                 "name": "search",
             }
-            repaired = client.post(
+            ambiguous = client.post(
                 "/desktop/api/contexts/derive",
                 headers=SESSION,
                 json={
@@ -307,11 +312,11 @@ def test_degradation_requires_hash_bound_decision(tmp_path: Path, monkeypatch):
                     "messages": [authored_tool],
                 },
             ).json()
-            context_ids.append(repaired["context_id"])
-            thread_ids.append(repaired["thread_id"])
-            assert repaired["projection_status"] == "repaired"
+            context_ids.append(ambiguous["context_id"])
+            thread_ids.append(ambiguous["thread_id"])
+            assert ambiguous["projection_status"] == "approval_required"
             repaired_snapshot = client.get(
-                f"/desktop/api/contexts/{repaired['context_id']}/snapshot", headers=SESSION
+                f"/desktop/api/contexts/{ambiguous['context_id']}/snapshot", headers=SESSION
             ).json()
             assert repaired_snapshot["messages"] == [authored_tool]
             blocked = client.post(

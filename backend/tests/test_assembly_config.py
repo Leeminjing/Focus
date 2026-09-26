@@ -1,6 +1,12 @@
-"""装配模式：两层配置聚合与访问策略对全局配置家目录放行的测试。"""
+r"""本文件对外提供两层配置聚合、MCP mtime cache 与全局配置家目录访问策略测试。
+
+输入为隔离的全局/工作区配置文件、显式纳秒 mtime、路径访问请求与并发读取；输出为配置优先级、缓存刷新和访问决策断言。
+具体工作流为在临时目录构造两层配置，固定文件时间因果后调用公开读取/cache 接口，并验证同一快照和变更快照的行为。
+示例：`pytest backend/tests/test_assembly_config.py -q`。
+"""
 
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -189,7 +195,9 @@ def test_mcp_cache_refresh_on_mtime(monkeypatch, tmp_path):
         asyncio.run(get_mcp_tools_cached())
         asyncio.run(get_mcp_tools_cached())
         assert calls["n"] == 1  # mtime 未变 → 命中缓存
+        previous_ns = config_file.stat().st_mtime_ns
         config_file.write_text('{"mcpServers": {"a": {"enabled": true}}}', encoding="utf-8")
+        os.utime(config_file, ns=(previous_ns + 2_000_000_000, previous_ns + 2_000_000_000))
         asyncio.run(get_mcp_tools_cached())
         assert calls["n"] == 2  # mtime 变化 → 刷新
     finally:

@@ -1,12 +1,12 @@
-r"""本文件对外提供 LoopObservationService、带 Mission/Expansion 引用的 StructuredPatrolDecisionModel 与 LoopRoundOrchestrator。
+r"""本文件对外提供 LoopObservationService、带 Mission/Expansion/Recovery 引用的 StructuredPatrolDecisionModel 与 LoopRoundOrchestrator。
 
 输入为持久 Loop/round/Mission/grant、bounded Context frontier、压缩候选请求、Run/workspace/Worker 事实和模型配置；输出为
 不可变 observation、Patrol decision intent 与 Kernel commit 结果。具体工作流为系统先拒绝已终结或已有落定
 决策的 round（终局短路，不产生观察与认知调用），再冻结 Context frontier、
-待处理用户意图与持久事实并保存观察，Patrol Session collaborator 扇出并独立收集 Curator assignment，
+待处理用户意图、持久单来源 recovery opportunity 与事实并保存观察，Patrol Session collaborator 扇出并独立收集 Curator assignment，
 ContextExpansionStage 评估结构化派生机会并把该评估写回同一观察（模型消费内容与持久化内容一致），
 写回时刷新该观察的内容哈希——它是决策幂等键与 Patrol attempt 记录绑定同一份 observation 的依据；
-模型只返回无权 proposal 或 identity 级 semantic spawn/decline，Stage 再确定性编译内部
+模型只返回无权 proposal 或 identity 级 semantic spawn/decline/recover，Stage 再确定性编译内部
 LanePlan；编译 blocker 会先终结 round 并持久化 Patrol 失败结果，避免 Supervisor 重试终态 opportunity。系统随后绑定唯一 holder
 和全部版本，PortfolioPatrol 记录 attempt；决策合同（mission 引用取值与 required 派生出口）由
 patrol_contract.PatrolDecisionContract 校验，形状或合同不合法时在同一冻结观察上做有界重试、违例携带模型原始输出，
@@ -43,6 +43,10 @@ from backend.app.desktop.agent_loop.compression_authority.contracts import (
 from backend.app.desktop.agent_loop.context_expansion.contracts import ExpansionBlocker
 from backend.app.desktop.agent_loop.context_expansion.coordinator import (
     ContextExpansionStage,
+)
+from backend.app.desktop.agent_loop.context_recovery import (
+    ContextRecoveryOpportunityService,
+    ContextRecoveryStage,
 )
 from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
 from backend.app.desktop.agent_loop.intervention_lifecycle import (
@@ -96,6 +100,7 @@ from backend.app.desktop.agent_loop.schemas import (
     LoopObservationEnvelope,
     PatrolDecisionIntent,
     PatrolModelAction,
+    WaitForUserAction,
 )
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.context_evolution import (
@@ -117,6 +122,8 @@ apply_context_compression 引用返回的 candidate，不得自行编造 ranges�
 不得复述或改写 opportunity 的语义字段，Focus 会从冻结 opportunity 取用 purpose、work_order、completion_check 与 workspace_mode；
 只有策略已登记的稳定 blocker 才能用于 decline_expansion。不得直接生成 create_lane 或手工组装 CreateLanePlan。update/merge 的 plan 必须只引用 observation 中带完整
 命名空间的 immutable revision 和 message_id；
+当 observation.recovery_opportunities 非空时，可返回 {"action":"recover_context","opportunity_id":...}；该动作只能引用公开 identity，
+不得提供 source、selector 或 plan。observation.recovery_waiting_reason 非空且没有安全 opportunity 时应使用 wait_for_user 并原样说明缺失证据或批准要求。
 你选择引用与编排方式，Focus 会从真实 revision 重建 evidence 并确定性编译，不能在 plan 中伪造消息正文。
 只有确实需要改变 Agent 将看到的过去时才新建 Lane；已有 Context 足够时使用 continue_context。
 隔离 workspace 结果不会自动进入主工作区；仅在证据充分且授权包含 adoption 时提交 adopt_workspace_result。
@@ -194,6 +201,7 @@ class LoopObservationService:
         self._revisions = ContextRevisionRepository()
         self._reader = ContextRevisionReader(self._revisions, checkpointer)
         self._interventions = InterventionLifecycleRepository()
+        self._recoveries = ContextRecoveryOpportunityService(self._reader)
 
     async def capture(self, loop_id: str, round_id: str) -> LoopObservationEnvelope:
         async with self._sessions.begin() as session:
@@ -270,6 +278,15 @@ class LoopObservationService:
             if intent.delivery_state == "accepted":
                 await self._interventions.transition(session, intent.intent_id, "observed")
         slot = await session.scalar(select(WorkspaceSlot).where(WorkspaceSlot.workspace_id == loop.workspace_id, WorkspaceSlot.kind == "authoritative", WorkspaceSlot.lifecycle != "deleted"))
+        recovery = await self._recoveries.discover(
+            session,
+            loop=loop,
+            round_row=round_row,
+            grant=grant,
+            workspace_revision=slot.revision if slot else round_row.workspace_revision,
+            frontier=frontier,
+            runs=tuple(runs),
+        )
         journal_sequence = await session.get(LoopJournalSequence, loop.loop_id)
         base_entity_revisions = {
             "loop": loop.revision,
@@ -310,6 +327,8 @@ class LoopObservationService:
                 for row in user_intents
             ),
             expansion_handles=tuple({"context_id": item["context_id"], "revision_id": item["revision_id"]} for item in frontier if item.get("revision_id")),
+            recovery_opportunities=recovery.opportunities,
+            recovery_waiting_reason=recovery.waiting_reason,
         )
 
     async def _frontier(self, session: AsyncSession, memberships: list[LoopContextMembership]) -> tuple[dict[str, Any], ...]:
@@ -565,6 +584,7 @@ class LoopRoundOrchestrator:
         self._curators = CuratorCoordinationStage(sessions, checkpointer, app_config=app_config)
         self._outcomes = PatrolOutcomeStage(self._patrol_sessions)
         self._expansions = ContextExpansionStage(sessions, checkpointer, app_config)
+        self._recoveries = ContextRecoveryStage(sessions)
 
     async def process(self, claim: CoordinatorClaim) -> KernelCommitResult | None:
         publishing_intent: PatrolDecisionIntent | None = None
@@ -622,6 +642,20 @@ class LoopRoundOrchestrator:
             await self._budget_exhausted(claim, budget.reasons)
             return None
         intent = self._bind_fencing(await self._decide_patrol(claim, model_name, holder_id, observation), claim)
+        recovery_resolution = await self._recoveries.resolve(observation, intent)
+        if recovery_resolution.waiting_reason is not None:
+            intent = intent.model_copy(
+                update={
+                    "actions": (
+                        WaitForUserAction(
+                            action="wait_for_user",
+                            reason=recovery_resolution.waiting_reason,
+                        ),
+                    )
+                }
+            )
+        elif recovery_resolution.intent is not None:
+            intent = recovery_resolution.intent
         resolution = await self._expansions.resolve(observation, intent)
         if resolution.blocker is not None:
             await self._settle_expansion_blocker(claim, patrol_session.session_id, resolution.blocker)

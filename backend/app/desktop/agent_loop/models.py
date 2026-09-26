@@ -1,8 +1,8 @@
-r"""本文件对外提供 Agent Loop、delegation、fencing、round、directive、completion 与 audit ORM 实体。
+r"""本文件对外提供 Agent Loop、delegation、fencing、round、directive、recovery opportunity、completion 与 audit ORM 实体。
 
 输入为用户目标、版本化授权（含自主压缩 policy）、Context/Workspace frontier、Patrol 判断和 Kernel 结果；输出为可恢复、
 可审计且具单 writer 约束的 Loop 状态。具体工作流为 goal/grant 定义权力，round/observation 冻结事实，
-decision/action 记录判断与异步发布尝试，user intent 保存用户对 Context 或 Portfolio 的外部控制意见，
+decision/action 记录判断与异步发布尝试，recovery opportunity 冻结单来源恢复 authority 并记录原子消费，user intent 保存用户对 Context 或 Portfolio 的外部控制意见，
 directive/provenance 以可见排队原因驱动 Run，fencing counter 拒绝旧 owner，completion/outbox 收敛生命周期。
 示例：`loop = AgentLoop(loop_id="l1", status="running", ...)`。
 """
@@ -201,6 +201,56 @@ class LoopObservation(Base):
     projection_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     base_entity_revisions: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LoopContextRecoveryOpportunity(Base):
+    __tablename__ = "loop_context_recovery_opportunities"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','consumed','stale','blocked')",
+            name="ck_loop_context_recovery_status",
+        ),
+        UniqueConstraint(
+            "loop_id",
+            "source_revision_id",
+            "source_run_id",
+            "compiler_version",
+            name="uq_loop_context_recovery_source",
+        ),
+        Index("ix_loop_context_recovery_round_status", "round_id", "status"),
+    )
+
+    opportunity_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    loop_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("agent_loops.loop_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    round_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("loop_rounds.round_id", ondelete="CASCADE"), nullable=False
+    )
+    source_context_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_threads.task_id", ondelete="RESTRICT"), nullable=False
+    )
+    source_revision_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("desktop_context_revisions.revision_id", ondelete="RESTRICT"), nullable=False
+    )
+    source_frontier_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    goal_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    workspace_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    authority_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    grant_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    grant_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_run_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    compiler_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", server_default="pending")
+    safe_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    consumed_by_decision_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("loop_decisions.decision_id", ondelete="SET NULL"), nullable=True
+    )
+    result: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class LoopPatrolAttempt(Base):

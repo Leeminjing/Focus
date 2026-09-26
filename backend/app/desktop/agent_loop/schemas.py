@@ -1,8 +1,8 @@
 r"""本文件对外提供 Agent Loop API、Mission、类型化等待响应、用户介入、observation、completion 与 Patrol decision 封闭判别联合。
 
-输入为用户 Mission 或兼容旧目标、grant、冻结版本、Expansion assessment、Patrol action 和 verifier evidence；输出为拒绝未知字段的不可变
+输入为用户 Mission 或兼容旧目标、grant、冻结版本、Expansion/recovery opportunity、Patrol action 和 verifier evidence；输出为拒绝未知字段的不可变
 合同。具体工作流为创建请求先解析结构化 Mission 或无损适配旧三字段，介入请求区分 Context/Portfolio 作用域，模型只以 identity
-选择（spawn_context）或结构化拒绝（decline_expansion）表达 Context 派生、语义字段由服务端从冻结 opportunity 取用，持久 legacy create 仅由兼容 adapter 解析，其余 action 依 discriminator 解析，
+选择（spawn_context/recover_context）或结构化拒绝（decline_expansion）表达 Context 派生与恢复、可信 plan 由服务端从冻结 opportunity 取用，持久 legacy create 仅由兼容 adapter 解析，其余 action 依 discriminator 解析，
 envelope 绑定所有控制 revision 与未处理用户意图，completion 以稳定 check_id 绑定类型化证据；自主压缩 action 只能引用已持久化候选，Kernel 只接受
 PatrolDecisionIntent。示例：`intent = PatrolDecisionIntent.model_validate(payload)`。
 """
@@ -55,6 +55,11 @@ class CreateLaneAction(StrictModel):
 
 class SpawnContextAction(StrictModel):
     action: Literal["spawn_context"]
+    opportunity_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class RecoverContextAction(StrictModel):
+    action: Literal["recover_context"]
     opportunity_id: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
@@ -142,7 +147,7 @@ class StopLoopAction(StrictModel):
 
 
 PatrolAction = Annotated[
-    ContinueContextAction | CreateLaneAction | SpawnContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
+    ContinueContextAction | CreateLaneAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
     PauseLaneAction | DiscardMembershipAction | RequestLaneCuratorAction |
     RequestCompletionVerifierAction | RequestCompletionAction | AdoptWorkspaceResultAction |
     ApplyContextCompressionAction | WaitForUserAction | StopLoopAction,
@@ -151,7 +156,7 @@ PatrolAction = Annotated[
 PATROL_ACTION_ADAPTER = TypeAdapter(PatrolAction)
 
 PatrolModelAction = Annotated[
-    ContinueContextAction | SpawnContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
+    ContinueContextAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
     PauseLaneAction | DiscardMembershipAction | RequestLaneCuratorAction |
     RequestCompletionVerifierAction | RequestCompletionAction | AdoptWorkspaceResultAction |
     ApplyContextCompressionAction | WaitForUserAction | StopLoopAction,
@@ -296,6 +301,8 @@ class LoopObservationEnvelope(StrictModel):
     user_intents: tuple[dict[str, Any], ...] = ()
     expansion_handles: tuple[dict[str, str], ...] = ()
     expansion_assessment: dict[str, Any] | None = None
+    recovery_opportunities: tuple[dict[str, Any], ...] = ()
+    recovery_waiting_reason: str | None = None
 
     @model_validator(mode="after")
     def require_mission_or_legacy_goal(self) -> LoopObservationEnvelope:
