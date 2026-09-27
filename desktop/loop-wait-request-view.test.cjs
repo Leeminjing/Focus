@@ -13,8 +13,10 @@ const path = require("node:path");
 const storage = new Map();
 const context = { window: { localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) } } };
 vm.createContext(context);
+vm.runInContext(readFileSync(path.join(__dirname, "loop-wait-recovery.js"), "utf8"), context);
 vm.runInContext(readFileSync(path.join(__dirname, "loop-wait-request-view.js"), "utf8"), context);
 const WaitView = context.window.FocusLoopWaitRequestView;
+const WaitRecovery = context.window.FocusLoopWaitRecovery;
 const LiveSchema = require("./loop-live-schema.js");
 const LiveReducer = require("./loop-live-reducer.js");
 const LiveSelectors = require("./loop-live-selectors.js");
@@ -26,6 +28,44 @@ test("renders text and typed action requests without magic chat text", () => {
   assert.match(text, /textarea/);
   assert.match(action, /data-wait-action="revise_budget"/);
   assert.match(action, /data-wait-action="stop"/);
+});
+
+test("renders explicit current-Mission recovery only for goal/input clarification", () => {
+  const missingGoal = WaitView.render({ request_id: "w-mission", revision: 1, kind: "clarification", prompt: "重复目标", response_mode: "text", response_contract: {}, scope: { cause: "missing_goal", evidence_identity: { kind: "mission", reference_id: "outcome", revision: 1 } } });
+  const permission = WaitView.render({ request_id: "w-permission", kind: "clarification", prompt: "授权写入", response_mode: "text", response_contract: {}, scope: { cause: "permission" } });
+  const legacyPermission = WaitView.render({ request_id: "w-legacy", revision: 1, kind: "clarification", prompt: "请批准写入", response_mode: "text", response_contract: {}, scope: {} });
+  const missingInput = WaitView.render({ request_id: "w-input", revision: 1, kind: "clarification", prompt: "请补充输入", response_mode: "text", response_contract: {}, scope: { cause: "missing_input" } });
+  const budget = WaitView.render({ request_id: "w-budget", kind: "budget_action", prompt: "预算", response_mode: "action", response_contract: { actions: [] }, scope: {} });
+  assert.match(missingGoal, /data-action="loop-resume-current-mission"/);
+  assert.doesNotMatch(permission, /loop-resume-current-mission/);
+  assert.doesNotMatch(legacyPermission, /loop-resume-current-mission/);
+  assert.doesNotMatch(missingInput, /loop-resume-current-mission/);
+  assert.doesNotMatch(budget, /loop-resume-current-mission/);
+});
+
+test("current-Mission recovery requires confirmation and only invokes the dedicated endpoint", async () => {
+  const request = { request_id: "wait-1", revision: 3, status: "open", kind: "clarification", response_mode: "text", scope: { cause: "missing_goal", evidence_identity: { kind: "mission", reference_id: "outcome", revision: 1 } } };
+  const calls = [];
+  const submit = async (...args) => calls.push(args);
+  const refused = await WaitRecovery.confirmAndResume({ request, loopId: "loop-1", confirm: () => false, submit });
+  assert.equal(refused, false);
+  assert.equal(calls.length, 0);
+  const resumed = await WaitRecovery.confirmAndResume({ request, loopId: "loop-1", confirm: prompt => {
+    assert.match(prompt, /不会发送一条普通聊天消息/);
+    return true;
+  }, submit });
+  assert.equal(resumed, true);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0])), ["loop-1", "wait-1", {
+    confirmation: "resume_with_current_mission",
+    request_revision: 3,
+    idempotency_key: "resume-with-current-mission:wait-1:3",
+  }]);
+  const permission = await WaitRecovery.confirmAndResume({
+    request: { ...request, scope: { cause: "permission" } }, loopId: "loop-1", confirm: () => true, submit,
+  });
+  assert.equal(permission, false);
+  assert.equal(calls.length, 1);
 });
 
 test("renders choice and structured modes with source, scope and restored values", () => {

@@ -1,4 +1,4 @@
-"""本文件验证 Patrol 认知步骤的 Mission 引用、扁平判断折叠、非法形状与语义违例的原文留痕，以及有界重试。
+"""本文件验证 Patrol 认知步骤的单一有效 Mission、语义引用、扁平判断折叠、非法形状与有界重试。
 
 输入为脚本化模型 JSON 与协调器桩；输出为语义引用、折叠结果、违例携带的模型原始输出及重试计数断言。具体工作流为在
 无网络条件下调用结构化解析边界、决策合同与调度重试。示例：`pytest test_patrol_cognitive_contract.py`。
@@ -6,6 +6,7 @@
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -19,10 +20,11 @@ from backend.app.desktop.agent_loop.round_orchestration import (
     PatrolCognitiveStep,
     StructuredPatrolDecisionModel,
 )
+from backend.app.desktop.agent_loop.patrol_runtime import CuratorCoordinationStage
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 from backend.tests.config_helpers import app_config_for
 
-_DECISION = {"rationale": "继续推进", "evidence": [], "mission_references": [{"role": "outcome", "reference_id": "outcome"}], "actions": [{"action": "wait_for_user", "reason": "等用户"}]}
+_DECISION = {"rationale": "继续推进", "evidence": [], "mission_references": [{"role": "outcome", "reference_id": "outcome"}], "actions": [{"action": "continue_context", "context_id": "context-1", "context_revision_id": "revision-1", "message": "继续既有工作"}]}
 _FLAT = {"rationale": _DECISION["rationale"], "evidence": [], "mission_references": _DECISION["mission_references"], "actions": _DECISION["actions"]}
 
 
@@ -40,7 +42,7 @@ def test_flat_proposal_folds_into_decision():
 def test_nested_proposal_keeps_shape():
     step = PatrolCognitiveStep.model_validate({"decision": _DECISION})
     assert step.decision is not None
-    assert step.decision.actions[0].action == "wait_for_user"
+    assert step.decision.actions[0].action == "continue_context"
 
 
 def test_unknown_top_level_key_is_still_rejected():
@@ -64,6 +66,42 @@ def test_flat_answer_is_accepted_at_the_model_call_seam():
 
     assert step.decision is not None
     assert step.decision.rationale == "继续推进"
+
+
+def test_patrol_model_receives_only_one_effective_mission(monkeypatch):
+    model = _scripted_model(json.dumps(_DECISION, ensure_ascii=False))
+    decision_model = StructuredPatrolDecisionModel(_prompt_json_config())
+    monkeypatch.setattr(module, "create_chat_model", lambda **kwargs: model)
+    observation = _required_expansion_observation().model_copy(update={
+        "grant": {"grant_id": "grant-1", "holder_id": "patrol-1"},
+        "expansion_assessment": None,
+    })
+
+    _run(decision_model(observation))
+
+    payload = json.loads(str(model.received[0][1].content).removeprefix("<loop_observation>").removesuffix("</loop_observation>"))
+    assert payload["effective_mission"] == {"outcome": "finish"}
+    assert "goal" not in payload
+    assert "mission" not in payload
+
+
+def test_curator_input_projects_legacy_goal_to_one_mission():
+    class CatalogService:
+        async def build(self, observation):
+            return SimpleNamespace(catalog=SimpleNamespace(model_dump=lambda **kwargs: {"catalog_id": "catalog"}), indexes=(), stage_record=None)
+
+    stage = CuratorCoordinationStage(object(), index_service=CatalogService())
+    observation = _required_expansion_observation().model_copy(update={
+        "mission": None,
+        "goal": {"goal": "旧目标", "task_contract": "边界原文", "acceptance_criteria": [{"criterion_id": "tests", "text": "测试通过"}]},
+    })
+
+    payload = _run(stage._derivation_input(observation))
+
+    assert payload["mission"]["outcome"] == "旧目标"
+    assert payload["mission"]["boundaries"]["legacy_text"] == "边界原文"
+    assert payload["mission"]["completion_checks"][0]["check_id"] == "tests"
+    assert "goal" not in payload
 
 
 def test_invalid_shape_raises_retryable_violation_with_raw_output():
@@ -105,6 +143,47 @@ def test_contract_violation_is_retried_then_succeeds(monkeypatch):
     assert calls["decide"] == 2
     assert calls["retry"] == 1
     assert calls["fail"] == 0
+
+
+def test_retry_feedback_repairs_malformed_proposal_on_frozen_observation(monkeypatch):
+    from backend.tests.config_helpers import ToolCapableFakeChatModel
+
+    model = ToolCapableFakeChatModel(scripted=[
+        AIMessage(content=json.dumps({"decision": {"rationale": "缺少 actions"}})),
+        AIMessage(content=json.dumps({"decision": _DECISION}, ensure_ascii=False)),
+    ])
+    monkeypatch.setattr(module, "create_chat_model", lambda **kwargs: model)
+    observation = _required_expansion_observation().model_copy(update={
+        "grant": {"grant_id": "grant-1", "holder_id": "patrol:1"},
+        "expansion_assessment": None,
+    })
+
+    class DirectPatrol:
+        def __init__(self, sessions, decision_model):
+            self._decision_model = decision_model
+
+        async def decide(self, frozen_observation, holder_id):
+            assert frozen_observation is observation
+            return await self._decision_model(frozen_observation)
+
+    monkeypatch.setattr(module, "PortfolioPatrol", DirectPatrol)
+    orchestrator = LoopRoundOrchestrator(sessions=None, app_config=_prompt_json_config(), kernel=None, checkpointer=None)
+
+    async def no_op(*args):
+        return None
+
+    orchestrator._record_usage = no_op
+    orchestrator._record_retry = no_op
+    orchestrator._fail = no_op
+
+    intent = _run(orchestrator._decide_patrol(_claim(), None, "patrol:1", observation))
+
+    assert intent.actions[0].action == "continue_context"
+    assert len(model.received) == 2
+    assert model.received[0][1].content == model.received[1][1].content
+    feedback = " ".join(str(message.content) for message in model.received[1][2:])
+    assert "actions" in feedback and "missing" in feedback
+    assert "缺少 actions" not in feedback
 
 
 def test_contract_violation_exhausts_attempts(monkeypatch):

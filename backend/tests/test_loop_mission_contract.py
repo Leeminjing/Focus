@@ -1,4 +1,4 @@
-r"""本文件对外提供 Loop Mission contract 的迁移、领域验证、机器边界、类型化完成证据、旧契约转换与修订服务回归测试。
+r"""本文件对外提供 Loop Mission contract 的迁移、有效投影、冻结分区证据、领域验证、机器边界、类型化完成证据、旧契约转换与修订服务回归测试。
 
 输入为旧 Goal revision、新 Mission contract 请求及隔离 PostgreSQL；输出为 schema 往返、无损 legacy
 边界、稳定完成检查标识与用户修订约束的断言。具体工作流为先验证 additive 迁移，再覆盖纯领域转换与
@@ -7,6 +7,7 @@ Repository/Service 事务行为。示例：`pytest backend/tests/test_loop_missi
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 from alembic import command
 from alembic.config import Config
@@ -23,7 +24,10 @@ from backend.app.desktop.agent_loop.mission_contract import (
 )
 from backend.app.desktop.agent_loop.completion_policy import CompletionCheckPolicy
 from backend.app.desktop.agent_loop.mission_service import MissionRevisionService
+from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
+from backend.app.desktop.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog, MissionSectionMismatch
 from backend.app.desktop.agent_loop.schemas import CriterionVerification, LoopCreateRequest
+from backend.app.desktop.context_curation.contracts import MissionEvidenceRef, evidence_ref_key
 
 
 def test_mission_contract_migration_is_additive_and_reversible(isolated_postgres_database) -> None:
@@ -82,6 +86,64 @@ def test_legacy_contract_is_lossless_and_check_ids_are_stable() -> None:
     assert first.completion_checks[0].check_id == "tests"
     assert first.completion_checks[1].check_id == second.completion_checks[1].check_id
     assert first.completion_checks[1].user_verification is True
+
+
+def test_effective_mission_projection_preserves_sections_and_legacy_source() -> None:
+    structured = SimpleNamespace(
+        revision=3,
+        outcome="交付插件",
+        boundaries={"in_scope": ["测试 Vault"], "required_invariants": ["保留 Kernel"], "prohibited_actions": [], "legacy_text": None},
+        completion_checks=[{"check_id": "build", "claim": "构建通过", "expected_evidence_kinds": ["test"]}],
+    )
+    legacy = SimpleNamespace(
+        revision=2,
+        goal="旧目标",
+        task_contract="保留原始\n换行",
+        acceptance_criteria=[{"criterion_id": "tests", "text": "测试通过", "required": True}],
+    )
+
+    current = EffectiveMissionProjector.from_rows(structured=structured, legacy=legacy)
+    old = EffectiveMissionProjector.from_rows(structured=None, legacy=legacy)
+
+    assert current.revision == 3
+    assert current.section_hashes.keys() == {"outcome", "boundary:in_scope", "boundary:required_invariants", "completion_check:build"}
+    assert current.completion_checks[0]["check_id"] == "build"
+    assert current.legacy_source is None
+    assert old.legacy_source == {"goal": legacy.goal, "task_contract": legacy.task_contract, "acceptance_criteria": legacy.acceptance_criteria}
+    assert old.boundaries["legacy_text"] == legacy.task_contract
+    assert "legacy_source" not in old.model_payload()
+    assert old.section_hashes["completion_check:tests"] != old.section_hashes["outcome"]
+
+
+def test_frozen_mission_section_refs_reject_wrong_section_revision_and_hash() -> None:
+    structured = SimpleNamespace(
+        revision=3,
+        outcome="交付插件",
+        boundaries={"in_scope": ["测试 Vault"], "required_invariants": [], "prohibited_actions": [], "legacy_text": None},
+        completion_checks=[{"check_id": "outcome", "claim": "构建通过", "expected_evidence_kinds": ["test"]}],
+    )
+    mission = EffectiveMissionProjector.from_rows(structured=structured, legacy=None)
+    catalog = FrozenMissionSectionCatalog.from_mission("loop-1", mission)
+    refs = {(entry.ref.section_kind, entry.ref.item_id): entry.ref for entry in catalog.entries}
+    outcome = refs[("outcome", "outcome")]
+    check = refs[("completion_check", "outcome")]
+
+    assert catalog.resolve(outcome).content == "交付插件"
+    assert catalog.resolve(refs[("boundary", "in_scope")]).content == ["测试 Vault"]
+    assert catalog.resolve(check).content["claim"] == "构建通过"
+    assert evidence_ref_key(outcome) != evidence_ref_key(check)
+    with pytest.raises(MissionSectionMismatch, match="revision"):
+        catalog.resolve(outcome.model_copy(update={"goal_revision": 2}))
+    with pytest.raises(MissionSectionMismatch, match="content hash"):
+        catalog.resolve(outcome.model_copy(update={"content_hash": "f" * 64}))
+    with pytest.raises(MissionSectionMismatch, match="section identity"):
+        catalog.resolve(outcome.model_copy(update={"section_kind": "boundary"}))
+    tampered = catalog.model_dump(mode="json")
+    tampered["entries"][0]["content"] = "伪造的 Mission 内容"
+    with pytest.raises(ValidationError, match="内容与来源哈希不一致"):
+        FrozenMissionSectionCatalog.model_validate(tampered)
+    with pytest.raises(ValidationError, match="boundary identity"):
+        MissionEvidenceRef(identity_version="mission-section-v2", loop_id="loop-1", goal_revision=3, section_kind="boundary", item_id="invented", content_hash="a" * 64)
 
 
 def test_mission_contract_rejects_cross_section_duplicates() -> None:

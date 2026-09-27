@@ -1,6 +1,6 @@
 /*
  * 本文件对外提供 Agent Loop 生命周期外壳、Option 3 Patrol 活动轨、Mission 表单、Expansion 资源状态、授权控制与轻量生命周期补丁函数。
- * 输入为兼容 Loop 读模型、有效 Expansion 预算快照、权威 Live projection、连接状态、当前 Context 与 Console 读模型；输出为紧凑顶栏、资源/阻断状态及现有图/会话/事实工作区。
+ * 输入为兼容 Loop 读模型、Mission 交付与有效 Expansion 预算快照、权威 Live projection、连接状态、当前 Context 与 Console 读模型；输出为紧凑顶栏、交付/资源/阻断状态及现有图/会话/事实工作区。
  * 具体工作流为启动态编辑 Mission 与显式 Expansion 容量；运行态展示同一 API 的策略、用量和阻断，再把图、会话、事实交给专用视图。
  * 示例：`FocusLoopView.render(loopState, context, consoleState)`；SSE 到达时调用 `patchLifecycle(container, state)`。
  */
@@ -105,6 +105,13 @@
     return `<section class="loop-compression-status is-${escape(status)}" role="status" aria-live="polite"><strong>Patrol Context 压缩 · ${escape(labels[status] || status)}</strong><span>${escape(contextId || "当前 Context")}${Number.isFinite(Number(reduction)) ? ` · ${reductionKind}减少 ${escape(reduction)} tokens` : ""}</span>${candidate ? `<small>${escape(ranges.map(item => `${(item.source_ids || []).length} 条消息`).join("，"))}</small>` : ""}${detail}</section>`;
   }
 
+  function missionDeliveryStatus(loop) {
+    const delivery = loop.mission_delivery;
+    if (!delivery || delivery.state === "not_required") return "";
+    const labels = { pending: "待交付 Primary Context", authorized: "已授权，等待启动 Run", delivered: "已交付并启动 Run", blocked: "交付受阻" };
+    return `<section class="loop-mission-delivery is-${escape(delivery.state)}" data-mission-delivery="${escape(delivery.state)}" role="status"><strong>Mission R${escape(delivery.mission_revision)} · ${escape(labels[delivery.state] || delivery.state)}</strong>${delivery.reason ? `<span>${escape(delivery.reason)}</span>` : ""}${delivery.run_id ? `<small>Run ${escape(delivery.run_id)}</small>` : ""}</section>`;
+  }
+
   function goalDisclosure(loop) {
     const mission = globalThis.FocusLoopMissionEditor?.normalizeMission(loop.mission || { goal: loop.goal }) || { outcome: loop.goal?.goal || "Agent Loop", boundaries: {}, completion_checks: [] };
     const boundaryGroups = [["允许触及的范围", mission.boundaries.in_scope], ["必须保持", mission.boundaries.required_invariants], ["禁止 / 超范围", mission.boundaries.prohibited_actions]].filter(([, items]) => items?.length);
@@ -182,7 +189,7 @@
     const budgetDetails = `<div class="loop-budget"><span>Rounds ${escape(usage.rounds || 0)} / ${escape(budgets.max_rounds || "∞")}</span><span>Duration ${escape(usage.duration_seconds || 0)} / ${escape(budgets.max_duration_seconds || "∞")}s</span><span>Calls ${escape(usage.model_calls || 0)} / ${escape(budgets.max_model_calls || "∞")}</span><span>Input ${escape(usage.input_tokens || 0)} / ${escape(budgets.max_input_tokens || "∞")}</span><span>Output ${escape(usage.output_tokens || 0)} / ${escape(budgets.max_output_tokens || "∞")}</span><span>Retries ${escape(usage.retries || 0)} / ${escape(budgets.max_retries ?? "∞")}</span><span>Lanes ${escape(usage.lanes || 0)} / ${escape(budgets.max_lanes || "∞")}</span><span>Contexts ${escape(usage.contexts || 0)} / ${escape(budgets.max_contexts || "∞")}</span><span>Providers ${escape(usage.providers || 0)} / ${escape(budgets.max_providers || "∞")}</span></div>`;
     const consoleHtml = globalThis.FocusLoopConsoleView?.render({ ...consoleState, loopStatus: loop.status, terminal }) || '<section class="loop-console-loading">控制台模块不可用</section>';
     const waitRequest = globalThis.FocusLoopWaitRequestView?.render(loop.wait_request, waitUi, escape) || (loop.waiting_reason ? `<p class="loop-waiting" data-loop-waiting role="status">${escape(loop.waiting_reason)}</p>` : "");
-    return `<section class="loop-dashboard console-shell" data-loop-id="${escape(loop.loop_id)}" data-loop-status="${escape(loop.status)}">${commandBar(loop, consoleState)}${patrolActivity(state)}${waitRequest}${expansionBudget.renderStatus(loop.expansion_resources)}${compressionStatus({ ...related, snapshot: loop })}${terminal ? `<div class="loop-terminal-notice" role="status"><strong>该 Loop 已${loop.status === "completed" ? "完成" : loop.status === "failed" ? "失败" : "停止"}</strong><span>历史 Context、完整会话和事实证据仍可查看；退出不会删除审计记录。</span></div>` : ""}${consoleHtml}<details class="loop-advanced"><summary>授权、预算与目标控制</summary>${budgetDetails}${grantControls(loop)}${history}${override}<p class="muted tiny">当前轮次 ${escape(loop.current_round_id || "—")} · 活动 Run ${escape(activeRuns.length)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)} · Authority R${escape(loop.authority_revision)}</p></details></section>`;
+    return `<section class="loop-dashboard console-shell" data-loop-id="${escape(loop.loop_id)}" data-loop-status="${escape(loop.status)}">${commandBar(loop, consoleState)}${patrolActivity(state)}${missionDeliveryStatus(loop)}${waitRequest}${expansionBudget.renderStatus(loop.expansion_resources)}${compressionStatus({ ...related, snapshot: loop })}${terminal ? `<div class="loop-terminal-notice" role="status"><strong>该 Loop 已${loop.status === "completed" ? "完成" : loop.status === "failed" ? "失败" : "停止"}</strong><span>历史 Context、完整会话和事实证据仍可查看；退出不会删除审计记录。</span></div>` : ""}${consoleHtml}<details class="loop-advanced"><summary>授权、预算与目标控制</summary>${budgetDetails}${grantControls(loop)}${history}${override}<p class="muted tiny">当前轮次 ${escape(loop.current_round_id || "—")} · 活动 Run ${escape(activeRuns.length)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)} · Authority R${escape(loop.authority_revision)}</p></details></section>`;
   }
 
   function patchLifecycle(container, state) {
@@ -190,6 +197,9 @@
     const shell = container?.querySelector?.(".loop-dashboard.console-shell");
     if (!loop || !shell || shell.dataset.loopId !== loop.loop_id) return false;
     if (shell.dataset.loopStatus !== loop.status) return false;
+    const renderedDelivery = shell.querySelector("[data-mission-delivery]")?.dataset.missionDelivery || null;
+    const nextDelivery = loop.mission_delivery?.state === "not_required" ? null : loop.mission_delivery?.state || null;
+    if (renderedDelivery !== nextDelivery) return false;
     if (shell.querySelector("[data-wait-request-id]")?.dataset.waitRequestId !== loop.wait_request?.request_id) return false;
     if (loop.wait_request) return false;
     const commandTemplate = document.createElement("template");

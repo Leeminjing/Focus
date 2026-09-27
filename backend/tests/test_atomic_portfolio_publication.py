@@ -1,7 +1,7 @@
 r"""本文件验证 Context Portfolio 的冻结、shadow 准备、CAS 原子发布、恢复与 outbox 去重。
 
 输入为两个更新 Lane、一个 keep Lane、精确 source frontier 和控制 revision；输出为可复现冻结记录、
-失败时零指针切换、成功时整代指针切换、陈旧发布拒绝、单次消费与新建受管 Context 标题不越列表宽断言。具体工作流为在隔离 PostgreSQL
+失败时零指针切换、成功时整代指针切换、Mission 引用穿透编译/发布、陈旧发布拒绝、单次消费与新建受管 Context 标题不越列表宽断言。具体工作流为在隔离 PostgreSQL
 中建立 revision/Program，使用内存 checkpoint writer 准备 shadow，再验证事务边界和历史事实。
 示例：`pytest backend/tests/test_atomic_portfolio_publication.py`。
 """
@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from hashlib import sha256
+import json
 import os
 import uuid
 
@@ -19,6 +21,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app.desktop.context_curation import (
     AtomicPortfolioPublisher,
+    ComposeMessage,
     CompiledLaneCandidate,
     CurationLane,
     CurationOutboxDelivery,
@@ -26,6 +29,13 @@ from backend.app.desktop.context_curation import (
     CurationOutboxRepository,
     CurationProgram,
     CurationProgramRepository,
+    MissionEvidenceRef,
+    MultiSourceEvidence,
+    SourceRevisionEvidence,
+    StructuredEvidence,
+    UpdateLanePlan,
+    compile_lane,
+    evidence_ref_key,
     FrozenPortfolio,
     PortfolioCandidatePreparer,
     PortfolioControlRevisions,
@@ -280,12 +290,35 @@ def test_atomic_publish_is_idempotent_and_outbox_consumes_once() -> None:
             frozen: FrozenPortfolio = await freezer.freeze(
                 _freeze_request(program_id, source, lanes)
             )
+            mission_content = {"check_id": "vault", "claim": "Vault tools require explicit authorization"}
+            mission_ref = MissionEvidenceRef(
+                identity_version="mission-section-v2",
+                loop_id=f"loop-{program_id}", goal_revision=2,
+                section_kind="completion_check", item_id="vault",
+                content_hash=sha256(json.dumps(mission_content, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            )
+            mission_evidence = MultiSourceEvidence(
+                sources=(SourceRevisionEvidence(
+                    source=source.ref, projection_hash="p" * 64,
+                    content_hash=source.content_hash, messages=(),
+                ),),
+                structured=(StructuredEvidence(ref=mission_ref, content=mission_content),),
+                evidence_frontier=(mission_ref,),
+            )
+            mission_candidate = compile_lane(UpdateLanePlan(
+                action="update", lane_id=lanes[0].lane_id, purpose=lanes[0].purpose,
+                base_context_revision=bases[0].ref, publisher_epoch=1,
+                source_frontier=(source.ref,), evidence_frontier=(mission_ref,),
+                items=(ComposeMessage(
+                    type="compose_message", role="system",
+                    content="Mission requires explicit Vault authorization before implementation.",
+                    sources=(mission_ref,),
+                ),),
+            ).model_dump(mode="json"), mission_evidence)
             await preparer.prepare(
                 frozen.portfolio_revision_id,
                 {
-                    frozen.candidate_ids[0]: _compiled(
-                        lanes[0].lane_id, lanes[0].purpose, source.ref, "implementation r2"
-                    ),
+                    frozen.candidate_ids[0]: mission_candidate,
                     frozen.candidate_ids[1]: _compiled(
                         lanes[1].lane_id, lanes[1].purpose, source.ref, "testing r2"
                     ),
@@ -331,6 +364,9 @@ def test_atomic_publish_is_idempotent_and_outbox_consumes_once() -> None:
                 assert event.status == "delivered"
                 assert len(receipts) == 1
                 assert attempt.status == "published"
+                mission_published = await session.get(PortfolioLaneCandidate, frozen.candidate_ids[0])
+                assert mission_published.status == "published"
+                assert evidence_ref_key(MissionEvidenceRef.model_validate(mission_published.message_lineage[0]["sources"][0])) == evidence_ref_key(mission_ref)
         finally:
             await _cleanup(sessions, workspace_id)
             await engine.dispose()

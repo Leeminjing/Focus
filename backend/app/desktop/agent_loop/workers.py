@@ -2,7 +2,7 @@ r"""本文件对外提供 LoopWorkerRuntime、StructuredCompletionVerifier、测
 
 输入为 Patrol 已提交的可选 Worker request、可选 Loop scope、当前 Mission/round/Portfolio/workspace 证据和模型配置；输出为
 无工具、无状态提交能力的完成证据、retrieval-session 约束的 WorkContextDraft 或角色专属结构化派生产物。具体工作流为独立有界池领取
-request，lane curator 查询完整 Revision indexes；index/reconciliation/synthesis/claim/quality 角色绑定独立 schema、authority、重试、
+request，Worker 统一投影当前有效 Mission，lane curator 查询完整 Revision indexes 与冻结 Mission sections；index/reconciliation/synthesis/claim/quality 角色绑定独立 schema、authority、重试、
 attempt 与模型用量审计；最终状态判断和提交权仍归 Portfolio Patrol/Kernel。示例：`await runtime.drain()`。
 """
 
@@ -47,6 +47,7 @@ from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
     SemanticProjectionProposal,
 )
 from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
+    AuthorizedSemanticRetriever,
     PlanningRetrievalSession,
     PortfolioIndexCatalog,
     RetrievalBudget,
@@ -63,8 +64,8 @@ from backend.app.desktop.agent_loop.curator_assignments import (
 )
 from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
 from backend.app.desktop.agent_loop.expansion_resource_policy import FrozenExpansionResources
-from backend.app.desktop.agent_loop.mission_contract import LegacyMissionAdapter
 from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
+from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
 from backend.app.desktop.agent_loop.models import (
     AgentLoop,
     LoopBudgetUsage,
@@ -389,6 +390,7 @@ class LoopWorkerRuntime:
         )
         result = await RetrievalBackedCognitiveAdvisor(
             worker,
+            retriever=AuthorizedSemanticRetriever(catalog.mission_catalog),
             checkpoint=checkpoint,
         ).plan(
             {**payload, "assignments": request.scope.get("assignments", [])},
@@ -536,11 +538,7 @@ class LoopWorkerRuntime:
             goal = None if mission is not None else await session.scalar(select(LoopGoalRevision).where(LoopGoalRevision.loop_id == loop.loop_id, LoopGoalRevision.revision == loop.goal_revision))
             if mission is None and goal is None:
                 raise LookupError("Worker 所属 Loop 缺少当前 Mission")
-            mission_payload = (
-                {"revision": mission.revision, "outcome": mission.outcome, "boundaries": mission.boundaries, "completion_checks": mission.completion_checks, "source_format": "structured"}
-                if mission is not None
-                else {**LegacyMissionAdapter.convert(goal=goal.goal, task_contract=goal.task_contract, acceptance_criteria=goal.acceptance_criteria).model_dump(mode="json"), "revision": goal.revision, "source_format": "legacy_adapter"}
-            )
+            mission_payload = EffectiveMissionProjector.from_rows(structured=mission, legacy=goal).model_payload()
             runs = list((await session.scalars(select(DesktopRun).where(DesktopRun.loop_id == loop.loop_id).order_by(DesktopRun.created_at.desc()).limit(32))).all())
             slot = await session.scalar(select(WorkspaceSlot).where(WorkspaceSlot.workspace_id == loop.workspace_id, WorkspaceSlot.kind == "authoritative", WorkspaceSlot.lifecycle != "deleted"))
             payload = {"mission": mission_payload, "scope": request.scope, "frontier_hash": round_row.frontier_hash, "workspace": {"revision": slot.revision if slot else round_row.workspace_revision, "fingerprint": slot.current_fingerprint if slot else None}, "run_evidence": [{"run_id": row.run_id, "context_id": row.task_id, "status": row.status, "error": row.error, "workspace_result": row.workspace_result, "final_checkpoint_id": row.final_checkpoint_id} for row in runs]}

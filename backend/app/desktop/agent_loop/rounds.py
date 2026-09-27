@@ -1,8 +1,9 @@
 r"""本文件对外提供 round 的创建、无进展判定、终态收敛与停滞候选筛选。
 
-输入为已锁定的 AgentLoop/LoopRound、权威 Workspace Slot、租约事实与轮内进度计数；输出为绑定当前
+输入为已锁定的 AgentLoop/LoopRound、当前活跃 Context revisions、权威 Workspace Slot、租约事实与轮内进度计数；输出为绑定当前
 authority、goal 与 workspace revision 的新 LoopRound，或把 round 与 loop 收敛到终态并追加幂等终结事件的
-确定性状态转移。具体工作流为：create_observation_round 读取权威 Workspace Slot 并分配单调轮号；
+确定性状态转移。具体工作流为：current_frontier_hash 读取活跃 Context 的当前 revisions，create_observation_round
+据此读取权威 Workspace Slot 并分配单调轮号；
 stall_reasons 依轮内尝试次数、同状态停留时长与无进展计数判定越界；terminate_round 只收敛调用方显式声明
 前置状态的 round（置为 error，仅当其仍是 loop 当前轮时把 loop 交回用户，并追加 round-terminated 事件）；
 select_stalled_rounds 只把生命周期已终止的决策计为落定（publishing/adopting 表示专职组件仍在推进该决策，
@@ -15,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from collections.abc import Collection
+import hashlib
+import json
 import uuid
 
 from sqlalchemy import func, or_, select
@@ -24,12 +27,14 @@ from backend.app.desktop.agent_loop.models import (
     AgentLoop,
     LoopBudgetUsage,
     LoopCoordinatorLease,
+    LoopContextMembership,
     LoopDecision,
     LoopEventOutbox,
     LoopPatrolAttempt,
     LoopRound,
 )
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+from backend.app.desktop.models import DesktopThread
 from backend.app.desktop.agent_loop.wait_requests import open_recovery_wait
 
 
@@ -215,9 +220,23 @@ async def create_observation_round(
         number=number,
         authority_revision=loop.authority_revision,
         goal_revision=loop.goal_revision,
-        frontier_hash=prior.frontier_hash if prior else fallback_frontier_hash,
+        frontier_hash=await current_frontier_hash(session, loop.loop_id) or (prior.frontier_hash if prior else fallback_frontier_hash),
         workspace_revision=slot.revision if slot else 1,
     )
+
+
+async def current_frontier_hash(session: AsyncSession, loop_id: str) -> str | None:
+    memberships = tuple((await session.scalars(select(LoopContextMembership).where(
+        LoopContextMembership.loop_id == loop_id, LoopContextMembership.status == "active",
+    ).order_by(LoopContextMembership.membership_id))).all())
+    if not memberships:
+        return None
+    frontier = []
+    for membership in memberships:
+        context = await session.get(DesktopThread, membership.context_id)
+        frontier.append({"context_id": membership.context_id, "revision_id": context.current_revision_id if context else None})
+    payload = json.dumps(frontier, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 async def _append_termination_event(session: AsyncSession, loop_id: str, round_id: str, category: str, reason: str) -> None:

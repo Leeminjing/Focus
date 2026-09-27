@@ -3,7 +3,7 @@ r"""本文件对外提供 PatrolSessionLifecycle、CuratorCoordinationStage 与 
 输入为 coordinator claim、冻结 observation、Kernel result 和持久 Session；输出为原子 phase 事件、单 Context Bootstrap 或
 多 Context Cognitive Planner assignment、可供 Patrol 消费的结构化 work specs 及等待/终态。具体工作流为 Lifecycle 管理 Session
 边界，Curator stage 先为完整冻结 Revisions 建立含独立 claim-support 判定且可恢复的 semantic indexes/catalog，再按 Portfolio 形态有界扇出 retrieval-backed
-规划、收集和消费；生产 request 携带 catalog、index identities 与授权修订冻结的 Expansion 资源策略，Outcome stage 只映射 Kernel 结果。
+规划、收集和消费；生产 request 携带单一有效 Mission、catalog、index identities 与授权修订冻结的 Expansion 资源策略，Outcome stage 只映射 Kernel 结果。
 示例：`handle = await lifecycle.begin(claim)`。
 """
 
@@ -26,6 +26,7 @@ from backend.app.desktop.agent_loop.curator_assignments import (
 from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
 from backend.app.desktop.agent_loop.expansion_resource_policy import resolve_expansion_resources
 from backend.app.desktop.agent_loop.kernel import KernelCommitResult
+from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
 from backend.app.desktop.agent_loop.models import (
     AgentLoop,
     LoopRound,
@@ -205,7 +206,7 @@ class CuratorCoordinationStage:
                 f"{built.blocker_summary or 'Portfolio semantic index 不可用'}"
             )
         return {
-            "mission": observation.mission or observation.goal,
+            "mission": EffectiveMissionProjector.observation_payload(observation)["effective_mission"],
             "portfolio_index_catalog": built.catalog.model_dump(mode="json"),
             "semantic_index_ids": tuple(item.index_id for item in built.indexes),
             "portfolio_index_stage": built.stage_record.model_dump(mode="json") if built.stage_record else None,

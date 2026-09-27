@@ -1,8 +1,9 @@
 r"""本文件对外提供类型化证据引用、Context frontier、Lane 计划与多来源证据合同。
 
-输入为 Context message、Mission、Run result、Material 或 Workspace effect 的精确版本引用，以及一个或多个
+输入为 Context message、带 section 类型与冻结 revision 的 Mission、Run result、Material 或 Workspace effect 的精确版本引用，以及一个或多个
 Context revision 证据；输出为严格的 `EvidenceRef`、`MultiSourceEvidence` 与 Lane plan。具体工作流为分别验证
-Context lineage 和 evidence frontier，拒绝裸 message id、未知证据类型和越界引用，再把可验证计划交给 compiler。
+Context lineage 和 evidence frontier，旧 completion-check identity 保持可读，新 Mission identity 区分 outcome、boundary 和 check，
+拒绝裸 message id、未知证据类型和越界引用，再把可验证计划交给 compiler。
 示例：`plan = LanePlan.model_validate({"action": "create", ...})`。
 """
 
@@ -41,10 +42,23 @@ class NamespacedMessageRef(_StrictModel):
 
 class MissionEvidenceRef(_StrictModel):
     kind: Literal["mission"] = "mission"
+    identity_version: Literal["legacy-check-v1", "mission-section-v2"] = "legacy-check-v1"
     loop_id: str = Field(min_length=1)
     goal_revision: int = Field(ge=1)
+    section_kind: Literal["outcome", "boundary", "completion_check"] = "completion_check"
     item_id: str = Field(min_length=1)
     content_hash: str = Field(min_length=64, max_length=64)
+
+    @model_validator(mode="after")
+    def require_declared_section(self) -> Self:
+        if self.identity_version == "legacy-check-v1" and self.section_kind != "completion_check":
+            raise ValueError("旧版 Mission 引用只能指向 completion check")
+        if self.identity_version == "mission-section-v2":
+            if self.section_kind == "outcome" and self.item_id != "outcome":
+                raise ValueError("Mission outcome identity 必须是 outcome")
+            if self.section_kind == "boundary" and self.item_id not in {"in_scope", "required_invariants", "prohibited_actions", "legacy_text"}:
+                raise ValueError("Mission boundary identity 不是已声明分组")
+        return self
 
 
 class RunResultEvidenceRef(_StrictModel):
@@ -83,7 +97,9 @@ def evidence_ref_key(ref: EvidenceRef) -> tuple[str, ...]:
     if isinstance(ref, NamespacedMessageRef):
         return ("context_message", *ref.key)
     if isinstance(ref, MissionEvidenceRef):
-        return (ref.kind, ref.loop_id, str(ref.goal_revision), ref.item_id, ref.content_hash)
+        if ref.identity_version == "legacy-check-v1":
+            return (ref.kind, ref.loop_id, str(ref.goal_revision), ref.item_id, ref.content_hash)
+        return (ref.kind, ref.identity_version, ref.loop_id, str(ref.goal_revision), ref.section_kind, ref.item_id, ref.content_hash)
     if isinstance(ref, RunResultEvidenceRef):
         return (ref.kind, ref.run_id, ref.context_id, ref.result_id, ref.content_hash)
     if isinstance(ref, MaterialEvidenceRef):

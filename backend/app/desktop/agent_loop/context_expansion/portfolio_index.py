@@ -3,7 +3,8 @@ r"""本文件对外提供 PortfolioSemanticIndexService 与 PortfolioIndexBuildR
 输入为冻结 LoopObservationEnvelope、Context Revision repository/checkpointer、受监督 projector factory 和并发上限；输出为全部授权
 Revision 的 ready semantic indexes、PortfolioIndexCatalog 与真实 stage/attempt telemetry，或显式 blocker。具体工作流为并发读取精确
 Revision，命中版本化缓存或覆盖全部消息，依次调用无权 projector 和独立 claim verifier，隔离可选 unit 故障并累计真实模型用量，
-只有权威来源均成功后才原子发布；取消、重试耗尽和 stale source 不发布部分结果。示例：`result = await service.build(observation)`。
+将冻结 Mission section catalog 纳入检索入口；只有权威来源均成功后才原子发布，取消、重试耗尽和 stale source 不发布部分结果。
+示例：`result = await service.build(observation)`。
 """
 
 from __future__ import annotations
@@ -36,6 +37,8 @@ from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import 
     PortfolioIndexCatalog,
     PortfolioIndexCatalogOverflow,
 )
+from backend.app.desktop.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog
+from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
 from backend.app.desktop.agent_loop.context_expansion.stage_telemetry import (
     DerivationStageTimer,
 )
@@ -110,6 +113,15 @@ class PortfolioSemanticIndexService:
             catalog = PortfolioIndexCatalog.create(
                 frontier_hash=observation.observed_frontier_hash,
                 indexes=tuple(indexes),
+                mission_catalog=(
+                    FrozenMissionSectionCatalog.from_mission(
+                        observation.loop_id,
+                        EffectiveMissionProjector.from_observation(observation),
+                    )
+                    if (getattr(observation, "mission", None) or {}).get("completion_checks")
+                    or (getattr(observation, "goal", None) or {}).get("acceptance_criteria")
+                    else None
+                ),
                 max_descriptor_chars=self._catalog_capacity(observation),
             )
             async with self._sessions.begin() as session:

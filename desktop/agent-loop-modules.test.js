@@ -729,6 +729,24 @@ test("option 3 renders committed Patrol activity and connection recovery without
   assert.match(html, /重同步/);
 });
 
+test("Mission delivery status distinguishes pending, authorized, delivered and concrete blocker", () => {
+  const base = {
+    loop_id: "loop-mission", status: "running", health: "observing",
+    mission: { outcome: "交付插件", boundaries: {}, completion_checks: [] },
+    active_mission_revision: 2, goal_revision: 2, authority_revision: 1,
+    usage: { rounds: 1, contexts: 1 },
+    grant: { budgets: { max_rounds: 50 }, capabilities: [], context_scope: [], permission_scope: [], delegable_gates: [] },
+  };
+  const render = mission_delivery => LoopView.render({ snapshot: { ...base, mission_delivery }, related: {} }, {}, { manifest: { nodes: [], edges: [] }, facts: { facts: [] } });
+  assert.match(render({ state: "pending", mission_revision: 2 }), /待交付 Primary Context/);
+  assert.match(render({ state: "authorized", mission_revision: 2 }), /已授权，等待启动 Run/);
+  assert.match(render({ state: "delivered", mission_revision: 2, run_id: "run-2" }), /已交付并启动 Run/);
+  const blocked = render({ state: "blocked", mission_revision: 2, reason: "continue_context_not_authorized" });
+  assert.match(blocked, /交付受阻/);
+  assert.match(blocked, /continue_context_not_authorized/);
+  assert.doesNotMatch(blocked, /请用户重新说明目标/);
+});
+
 test("option 3 shows three simultaneous Context states and real directive causality", () => {
   const manifest = {
     health: "observing",

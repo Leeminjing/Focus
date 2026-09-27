@@ -1,7 +1,7 @@
 r"""本文件对外提供 DirectiveLifecycleRepository 与 DirectiveTransitionRejected。
 
 输入为同事务内已锁定的 LoopDirective、目标 lifecycle state、可选 Run/原因/causation；输出为递增 revision、
-不可变 transition 与规范 journal event。具体工作流为 register 记录 proposed，transition 验证 authorized、delivery、
+不可变 transition 与含 Mission revision/来源的规范 journal event。具体工作流为 register 记录 proposed，transition 验证 authorized、delivery、
 Run 与 terminal 单向状态，再把 current row、history、event 原子提交；当前尝试身份只在交付与启动类转换上记录，
 终态转换即使携带外来 Run 也不改写它（该次转换携带的 Run 仍写入不可变 history 供审计）。
 示例：`await repository.authorize(session, directive)`。
@@ -156,6 +156,7 @@ class DirectiveLifecycleRepository:
                     "round_id": directive.round_id,
                     "decision_id": directive.decision_id,
                     "origin": directive.origin_kind,
+                    "mission_revision": directive.goal_revision,
                     "actor_id": directive.actor_id,
                     "target_context_id": directive.target_context_id,
                     "state": target,

@@ -2,7 +2,7 @@ r"""本文件对外提供 CognitivePlannerPort 与 WorkerResultCognitivePlanner�
 
 输入为冻结 observation、结构化 signal 集合、retrieval-session 验证的 manifests 以及受监督 Curator worker 的结构化结果；
 输出为 `CognitivePlanResult` 中零个、一个或多个稳定 `WorkContextSpec`，或显式 planning failure。具体工作流为先传播显式 retrieval
-blocker，再严格解析 `WorkContextDraft`、校验新版 session 的每个 candidate unit 已在同一冻结来源内精读并冻结 planner version；
+blocker，再严格解析 `WorkContextDraft`、校验新版 session 的 Context unit 与类型化 Mission candidate 已在同一冻结来源内精读并冻结 planner version；
 本层不选择最终证据、不做同义归并或提交 Context。
 示例：`result = await WorkerResultCognitivePlanner().plan(observation, signals, manifests)`。
 """
@@ -134,7 +134,13 @@ class WorkerResultCognitivePlanner:
         reads = tuple(ExactEvidenceRead.model_validate(item) for item in payload.get("exact_reads") or ())
         if reads != session.reads:
             raise ValueError("planning result exact reads 与冻结 session 不一致")
-        allowed = {item.entry_id for item in reads}
+        allowed = {item.entry_id for item in reads if item.source_type == "context"}
+        read_ids = {item.candidate_id for item in reads}
+        read_candidates = {
+            item.candidate_id: item.evidence_identity()
+            for item in session.candidates
+            if item.candidate_id in read_ids
+        }
         if any(
             unit_id not in allowed
             for draft in drafts
@@ -142,6 +148,17 @@ class WorkerResultCognitivePlanner:
             for unit_id in requirement.candidate_unit_ids
         ):
             raise PlannerEvidenceIdentityError("WorkSpec candidate unit 未在同一 session 精读")
+        if any(
+            read_candidates.get(ref.candidate_id) != ref
+            or (ref.mission_ref is not None and (
+                ref.mission_ref.loop_id != observation.loop_id
+                or ref.mission_ref.goal_revision != observation.goal_revision
+            ))
+            for draft in drafts
+            for requirement in draft.evidence_requirements
+            for ref in requirement.candidate_refs
+        ):
+            raise PlannerEvidenceIdentityError("WorkSpec candidate 来源未在当前 Mission/session 精读")
         return drafts
 
     @staticmethod

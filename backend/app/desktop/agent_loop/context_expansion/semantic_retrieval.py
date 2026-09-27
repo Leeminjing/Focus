@@ -1,9 +1,10 @@
 r"""本文件对外提供 PortfolioIndexCatalog、SemanticRetrievalQuery、RetrievalCandidate、RetrievalQueryHit、CandidateDescriptorPage、
 ExactEvidenceRead、PlanningRetrievalSession、AuthorizedSemanticRetriever 与 PlanningRetrievalSessionController。
 
-输入为冻结 RevisionSemanticIndex 集合、授权 index identities、结构化查询与硬预算；输出为有理由的有界候选、精确 evidence reads
-及可持久化的 planning session。具体工作流为先构建不丢 index identity 的有界目录，再在授权 scope 内稳定排序 segment/unit，
-将唯一 evidence entry 与每次 query hit 分离、冻结候选页面，按 candidate identity 精读内容并用操作账本核算 query/read/model/token 消耗；阻断保留阶段、边界和操作身份，越权、stale、超预算或非法状态均显式失败。
+输入为冻结 RevisionSemanticIndex 与 Mission section catalog、授权 index identities、结构化查询与硬预算；输出为有理由的
+有界 Context/Mission 候选、来源类型化精确 evidence reads 及可持久化 planning session。具体工作流为构建冻结目录，
+在授权 scope 内稳定排序 Context segment/unit 与 Mission section，将唯一 entry 与 query hit 分离、冻结候选页面，
+按来源身份精读并以操作账本核算 query/read/model/token 消耗；越权、stale、超预算或非法状态均显式失败。
 示例：`candidates = retriever.retrieve(session, query, indexes)`。
 """
 
@@ -16,19 +17,21 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from backend.app.desktop.agent_loop.context_expansion.contracts import (
+    CandidateEvidenceIdentity,
     stable_expansion_hash,
 )
 from backend.app.desktop.agent_loop.expansion_resource_policy import ExpansionResourcePolicy, FrozenExpansionResources
 from backend.app.desktop.agent_loop.expansion_usage import ExpansionUsageCharge, ExpansionUsageLedger
+from backend.app.desktop.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog
 from backend.app.desktop.agent_loop.context_expansion.semantic_index import (
-    IndexEntryKind,
     RevisionIndexDescriptor,
     RevisionSemanticIndex,
 )
-from backend.app.desktop.context_curation import EvidenceRef, NamespacedMessageRef
+from backend.app.desktop.context_curation import EvidenceRef, MissionEvidenceRef, NamespacedMessageRef
 from backend.app.desktop.context_evolution import ContextRevisionRef
 
 PlanningSessionState = Literal["created", "queried", "evidence_read", "planned", "blocked", "stale"]
+RetrievalEntryKind = Literal["segment", "semantic_unit", "mission_section"]
 
 
 class _RetrievalModel(BaseModel):
@@ -63,7 +66,7 @@ class SemanticRetrievalQuery(_RetrievalModel):
     query_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     text: str = Field(min_length=1, max_length=4000)
     index_ids: tuple[str, ...] = ()
-    kinds: tuple[IndexEntryKind, ...] = ("semantic_unit", "segment")
+    kinds: tuple[RetrievalEntryKind, ...] = ("semantic_unit", "segment")
     limit: int = Field(default=16, ge=1, le=128)
 
     @field_validator("index_ids", "kinds", mode="before")
@@ -84,7 +87,7 @@ class SemanticRetrievalQuery(_RetrievalModel):
         *,
         text: str,
         index_ids: tuple[str, ...] = (),
-        kinds: tuple[IndexEntryKind, ...] = ("semantic_unit", "segment"),
+        kinds: tuple[RetrievalEntryKind, ...] = ("semantic_unit", "segment"),
         limit: int = 16,
     ) -> Self:
         normalized_indexes = tuple(sorted(set(index_ids)))
@@ -111,8 +114,10 @@ class RetrievalCandidate(_RetrievalModel):
     query_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     index_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     entry_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    entry_kind: IndexEntryKind
-    source: ContextRevisionRef
+    entry_kind: RetrievalEntryKind
+    source_type: Literal["context", "mission"] = "context"
+    source: ContextRevisionRef | None = None
+    mission_ref: MissionEvidenceRef | None = None
     source_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     index_schema_version: str = Field(min_length=1, max_length=64)
     segmenter_version: str = Field(min_length=1, max_length=64)
@@ -124,6 +129,13 @@ class RetrievalCandidate(_RetrievalModel):
 
     @model_validator(mode="after")
     def require_stable_identity(self) -> Self:
+        if self.source_type == "mission":
+            if self.entry_kind != "mission_section" or self.source is not None or self.mission_ref is None or self.mission_ref.identity_version != "mission-section-v2":
+                raise ValueError("Mission retrieval candidate 缺少精确 section 来源")
+            if self.source_content_hash != self.mission_ref.content_hash:
+                raise ValueError("Mission retrieval candidate 来源 hash 不一致")
+        elif self.entry_kind == "mission_section" or self.source is None or self.mission_ref is not None:
+            raise ValueError("Context retrieval candidate 缺少精确 Revision 来源")
         if self.identity_version == "entry-scoped-v2" and self.session_id is None:
             raise ValueError("新版 retrieval candidate 缺少冻结 session provenance")
         expected = (
@@ -146,6 +158,20 @@ class RetrievalCandidate(_RetrievalModel):
         if self.candidate_id != expected:
             raise ValueError("retrieval candidate identity 与来源不一致")
         return self
+
+    def evidence_identity(self) -> CandidateEvidenceIdentity:
+        if self.identity_version != "entry-scoped-v2" or self.entry_kind not in {"semantic_unit", "mission_section"}:
+            raise ValueError("只有新版可精读 candidate 能进入 WorkSpec")
+        return CandidateEvidenceIdentity(
+            candidate_id=self.candidate_id,
+            index_id=self.index_id,
+            entry_id=self.entry_id,
+            entry_kind=self.entry_kind,
+            source_type=self.source_type,
+            source=self.source,
+            mission_ref=self.mission_ref,
+            source_content_hash=self.source_content_hash,
+        )
 
 
 class RetrievalQueryHit(_RetrievalModel):
@@ -199,7 +225,9 @@ class ExactEvidenceRead(_RetrievalModel):
     candidate_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     index_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     entry_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    source: ContextRevisionRef
+    source_type: Literal["context", "mission"] = "context"
+    source: ContextRevisionRef | None = None
+    mission_ref: MissionEvidenceRef | None = None
     source_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     index_schema_version: str = Field(min_length=1, max_length=64)
     segmenter_version: str = Field(min_length=1, max_length=64)
@@ -209,6 +237,11 @@ class ExactEvidenceRead(_RetrievalModel):
 
     @model_validator(mode="after")
     def require_stable_identity(self) -> Self:
+        if self.source_type == "mission":
+            if self.source is not None or self.mission_ref is None or self.evidence_refs != (self.mission_ref,):
+                raise ValueError("Mission exact read 未保留唯一 Mission 来源")
+        elif self.source is None or self.mission_ref is not None:
+            raise ValueError("Context exact read 缺少 Revision 来源")
         expected = stable_expansion_hash(
             "exact-evidence-read",
             self.session_id,
@@ -228,7 +261,7 @@ def exact_read_matches_candidate(read: ExactEvidenceRead, candidate: RetrievalCa
     return read.candidate_id == candidate.candidate_id and all(
         getattr(read, field) == getattr(candidate, field)
         for field in (
-            "index_id", "entry_id", "source", "source_content_hash", "index_schema_version",
+            "index_id", "entry_id", "source_type", "source", "mission_ref", "source_content_hash", "index_schema_version",
             "segmenter_version", "projector_version",
         )
     )
@@ -239,6 +272,7 @@ class PortfolioIndexCatalog(_RetrievalModel):
     frontier_hash: str = Field(min_length=1)
     descriptors: tuple[RevisionIndexDescriptor, ...]
     segment_catalog: tuple[dict[str, Any], ...]
+    mission_catalog: FrozenMissionSectionCatalog | None = None
 
     @classmethod
     def create(
@@ -246,6 +280,7 @@ class PortfolioIndexCatalog(_RetrievalModel):
         *,
         frontier_hash: str,
         indexes: tuple[RevisionSemanticIndex, ...],
+        mission_catalog: FrozenMissionSectionCatalog | None = None,
         max_descriptor_chars: int = ExpansionResourcePolicy().max_catalog_descriptor_chars,
     ) -> Self:
         descriptors = tuple(sorted((item.descriptor() for item in indexes), key=lambda item: item.index_id))
@@ -260,20 +295,23 @@ class PortfolioIndexCatalog(_RetrievalModel):
             for index in sorted(indexes, key=lambda item: item.index_id)
             for segment in index.segments
         )
-        size = len(json.dumps(segments, ensure_ascii=False, separators=(",", ":")))
+        catalog_payload = (
+            {"segments": segments, "mission": mission_catalog.model_dump(mode="json")}
+            if mission_catalog else segments
+        )
+        size = len(json.dumps(catalog_payload, ensure_ascii=False, separators=(",", ":")))
         if size > max_descriptor_chars:
             raise PortfolioIndexCatalogOverflow("portfolio index catalog 超出预算，不能静默截断授权 index")
-        identity = stable_expansion_hash(
-            "portfolio-index-catalog",
-            frontier_hash,
-            tuple(item.index_id for item in descriptors),
-            segments,
-        )
+        identity_parts = (frontier_hash, tuple(item.index_id for item in descriptors), segments)
+        if mission_catalog is not None:
+            identity_parts += (mission_catalog.catalog_id,)
+        identity = stable_expansion_hash("portfolio-index-catalog", *identity_parts)
         return cls(
             catalog_id=identity,
             frontier_hash=frontier_hash,
             descriptors=descriptors,
             segment_catalog=segments,
+            mission_catalog=mission_catalog,
         )
 
 
@@ -402,8 +440,8 @@ class PlanningRetrievalSession(_RetrievalModel):
                 raise ValueError("新版 planning session read page 超出冻结候选")
             if self.read_pages and tuple(
                 candidate_id for page in self.read_pages for candidate_id in page.candidate_ids
-            ) != tuple(item.candidate_id for item in self.candidates if item.entry_kind == "semantic_unit"):
-                raise ValueError("新版 planning session read pages 未完整覆盖冻结 semantic candidates")
+            ) != tuple(item.candidate_id for item in self.candidates if item.entry_kind in {"semantic_unit", "mission_section"}):
+                raise ValueError("新版 planning session read pages 未完整覆盖冻结可精读 candidates")
         if self.read_ids != tuple(sorted(item.read_id for item in self.reads)):
             raise ValueError("planning session exact-read audit 与 identities 不一致")
         if any(item.session_id != self.session_id for item in self.reads):
@@ -424,7 +462,7 @@ class PlanningRetrievalSession(_RetrievalModel):
         budget: RetrievalBudget,
         frozen_resources: FrozenExpansionResources | None = None,
     ) -> Self:
-        index_ids = tuple(item.index_id for item in catalog.descriptors)
+        index_ids = tuple(item.index_id for item in catalog.descriptors) + ((catalog.mission_catalog.catalog_id,) if catalog.mission_catalog else ())
         identity_parts: tuple[Any, ...] = (
             observation_hash,
             frontier_hash,
@@ -460,6 +498,9 @@ class PlanningRetrievalSession(_RetrievalModel):
 class AuthorizedSemanticRetriever:
     VERSION = "authorized-lexical-retriever-v1"
 
+    def __init__(self, mission_catalog: FrozenMissionSectionCatalog | None = None) -> None:
+        self._mission_catalog = mission_catalog
+
     def retrieve(
         self,
         session: PlanningRetrievalSession,
@@ -490,11 +531,17 @@ class AuthorizedSemanticRetriever:
                 continue
             if "segment" in query.kinds:
                 for segment in index.segments:
-                    ranked.append(self._ranked(index, "segment", segment.segment_id, segment.descriptor, query_terms))
+                    ranked.append((self._score(segment.descriptor, query_terms), index.index_id, "segment", segment.segment_id, segment.descriptor, index, None))
             if "semantic_unit" in query.kinds:
                 for unit in index.semantic_units:
-                    ranked.append(self._ranked(index, "semantic_unit", unit.unit_id, unit.statement, query_terms))
-        ranked.sort(key=lambda item: (-item[0], item[1].index_id, item[2], item[3]))
+                    ranked.append((self._score(unit.statement, query_terms), index.index_id, "semantic_unit", unit.unit_id, unit.statement, index, None))
+        mission = self._mission_catalog
+        if session.schema_version == "retrieval-session-v2" and mission is not None and mission.catalog_id in requested and "mission_section" in query.kinds:
+            for item, descriptor in zip(mission.entries, mission.descriptors(), strict=True):
+                entry_id = stable_expansion_hash("mission-retrieval-entry", item.ref.model_dump(mode="json"))
+                text = str(descriptor["descriptor"])
+                ranked.append((self._score(text, query_terms), mission.catalog_id, "mission_section", entry_id, text, None, item))
+        ranked.sort(key=lambda item: (-item[0], item[1], item[2], item[3]))
         selected = tuple((rank, *item) for rank, item in enumerate(ranked[:query.limit], start=1))
         if session.schema_version == "retrieval-session-v1":
             if remaining <= 0:
@@ -503,37 +550,40 @@ class AuthorizedSemanticRetriever:
         else:
             known = set(session.candidate_ids)
             bounded = []
-            for rank, score, index, kind, entry_id, descriptor in selected:
-                identity = stable_expansion_hash("retrieval-candidate-v2", index.index_id, kind, entry_id, index.source_content_hash)
+            for rank, score, index_id, kind, entry_id, descriptor, index, mission_item in selected:
+                digest = mission_item.ref.content_hash if mission_item else index.source_content_hash
+                identity = stable_expansion_hash("retrieval-candidate-v2", index_id, kind, entry_id, digest)
                 if identity in known or remaining > 0:
-                    bounded.append((rank, score, index, kind, entry_id, descriptor))
+                    bounded.append((rank, score, index_id, kind, entry_id, descriptor, index, mission_item))
                     if identity not in known:
                         remaining -= 1
             selected = bounded
         candidates = tuple(
             RetrievalCandidate(
                 candidate_id=(
-                    stable_expansion_hash("retrieval-candidate-v2", index.index_id, kind, entry_id, index.source_content_hash)
+                    stable_expansion_hash("retrieval-candidate-v2", index_id, kind, entry_id, mission_item.ref.content_hash if mission_item else index.source_content_hash)
                     if session.schema_version == "retrieval-session-v2"
-                    else stable_expansion_hash("retrieval-candidate", query.query_id, index.index_id, kind, entry_id)
+                    else stable_expansion_hash("retrieval-candidate", query.query_id, index_id, kind, entry_id)
                 ),
                 identity_version="entry-scoped-v2" if session.schema_version == "retrieval-session-v2" else "query-scoped-v1",
                 session_id=session.session_id if session.schema_version == "retrieval-session-v2" else None,
                 query_id=query.query_id,
-                index_id=index.index_id,
+                index_id=index_id,
                 entry_id=entry_id,
                 entry_kind=kind,
-                source=index.source,
-                source_content_hash=index.source_content_hash,
-                index_schema_version=index.index_schema_version,
-                segmenter_version=index.segmenter_version,
-                projector_version=index.projector_version,
+                source_type="mission" if mission_item else "context",
+                source=index.source if index else None,
+                mission_ref=mission_item.ref if mission_item else None,
+                source_content_hash=mission_item.ref.content_hash if mission_item else index.source_content_hash,
+                index_schema_version=index.index_schema_version if index else "mission-section-v2",
+                segmenter_version=index.segmenter_version if index else "mission-section-v2",
+                projector_version=index.projector_version if index else "mission-section-v2",
                 descriptor=descriptor,
                 rank=rank,
                 score=score,
                 reasons=("normalized lexical overlap",) if score > 0 else ("authorized catalog fallback",),
             )
-            for rank, score, index, kind, entry_id, descriptor in selected
+            for rank, score, index_id, kind, entry_id, descriptor, index, mission_item in selected
         )
         coverage = RetrievalQueryCoverage(
             query_id=query.query_id,
@@ -546,17 +596,10 @@ class AuthorizedSemanticRetriever:
         return candidates, coverage
 
     @staticmethod
-    def _ranked(
-        index: RevisionSemanticIndex,
-        kind: IndexEntryKind,
-        entry_id: str,
-        descriptor: str,
-        query_terms: frozenset[str],
-    ) -> tuple[float, RevisionSemanticIndex, IndexEntryKind, str, str]:
+    def _score(descriptor: str, query_terms: frozenset[str]) -> float:
         terms = AuthorizedSemanticRetriever._terms(descriptor)
         union = query_terms | terms
-        score = len(query_terms & terms) / len(union) if union else 0.0
-        return score, index, kind, entry_id, descriptor
+        return len(query_terms & terms) / len(union) if union else 0.0
 
     @staticmethod
     def _terms(value: str) -> frozenset[str]:
@@ -577,7 +620,7 @@ class AuthorizedSemanticRetriever:
             if candidate.session_id != session.session_id or any(
                 getattr(candidate, field) != getattr(stored, field)
                 for field in (
-                    "identity_version", "index_id", "entry_id", "entry_kind", "source", "source_content_hash",
+                    "identity_version", "index_id", "entry_id", "entry_kind", "source_type", "source", "mission_ref", "source_content_hash",
                     "index_schema_version", "segmenter_version", "projector_version", "descriptor",
                 )
             ):
@@ -589,6 +632,8 @@ class AuthorizedSemanticRetriever:
                 raise ValueError("retrieval candidate query hit 未在同一 session 中返回")
         if session.usage.exact_reads + 1 > session.budget.max_exact_reads:
             raise ValueError("exact evidence read budget exhausted")
+        if candidate.source_type == "mission":
+            return self._read_mission(session, candidate)
         index = next((item for item in indexes if item.index_id == candidate.index_id), None)
         if index is None or index.source != candidate.source or index.source_content_hash != candidate.source_content_hash:
             raise ValueError("retrieval candidate 的冻结 index 不可用")
@@ -633,6 +678,31 @@ class AuthorizedSemanticRetriever:
             projector_version=index.projector_version,
             evidence_refs=refs,
             content=content,
+        )
+
+    def _read_mission(self, session: PlanningRetrievalSession, candidate: RetrievalCandidate) -> ExactEvidenceRead:
+        catalog = self._mission_catalog
+        if catalog is None or candidate.index_id != catalog.catalog_id or candidate.mission_ref is None:
+            raise ValueError("Mission retrieval candidate 的冻结 catalog 不可用")
+        item = catalog.resolve(candidate.mission_ref)
+        if candidate.entry_id != stable_expansion_hash("mission-retrieval-entry", item.ref.model_dump(mode="json")):
+            raise ValueError("Mission retrieval candidate section identity 不一致")
+        refs = (item.ref,)
+        payload = (session.session_id, candidate.candidate_id, candidate.index_id, candidate.entry_id, item.ref.content_hash, refs, item.content)
+        return ExactEvidenceRead(
+            read_id=stable_expansion_hash("exact-evidence-read", *payload),
+            session_id=session.session_id,
+            candidate_id=candidate.candidate_id,
+            index_id=candidate.index_id,
+            entry_id=candidate.entry_id,
+            source_type="mission",
+            mission_ref=item.ref,
+            source_content_hash=item.ref.content_hash,
+            index_schema_version="mission-section-v2",
+            segmenter_version="mission-section-v2",
+            projector_version="mission-section-v2",
+            evidence_refs=refs,
+            content=item.content,
         )
 
 

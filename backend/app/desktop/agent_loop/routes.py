@@ -1,4 +1,4 @@
-r"""本文件对外提供 agent_loop_router，作为 Loop、Mission、授权、类型化等待响应、用户介入、Kernel decision、控制与事件 HTTP 边界。
+r"""本文件对外提供 agent_loop_router，作为 Loop、Mission、授权、类型化等待响应、沿用当前 Mission 的显式恢复确认、用户介入、Kernel decision、控制与事件 HTTP 边界。
 
 输入为已通过 Desktop 会话认证的结构化 Mission 或兼容旧字段及其它严格 schema；输出为 Loop snapshot、
 持久用户意图、Kernel result 或 cursor event。具体工作流为路由解析 Mission 后从 app.state 取得专用
@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract, LoopCreateRequest, LoopGrantMutationRequest, LoopInterventionRequest, LoopWaitResponseRequest, PatrolDecisionIntent
+from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract, LoopCreateRequest, LoopGrantMutationRequest, LoopInterventionRequest, LoopWaitResponseRequest, PatrolDecisionIntent, ResumeWithCurrentMissionRequest
 from backend.app.desktop.agent_loop.mission_contract import LegacyMissionAdapter, LoopMissionContract
 from backend.app.desktop.agent_loop.kernel import KernelRejected
 
@@ -100,6 +100,16 @@ async def respond_to_loop_wait_request(
         body,
         actor_id="user",
     )
+
+
+@agent_loop_router.post("/{loop_id}/wait-requests/{request_id}/resume-with-current-mission")
+async def resume_with_current_mission(
+    loop_id: str,
+    request_id: str,
+    body: ResumeWithCurrentMissionRequest,
+    request: Request,
+) -> dict:
+    return await request.app.state.agent_loop_service.resume_with_current_mission(loop_id, request_id, body, actor_id="user")
 
 
 @agent_loop_router.post("/{loop_id}/control")

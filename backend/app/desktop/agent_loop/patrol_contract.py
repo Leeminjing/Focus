@@ -5,7 +5,8 @@ assessment）；输出为合同通过，或携带稳定拒绝原因的 PatrolCon
 不可枚举之外的引用取值（outcome 固定 identity、execution boundary 分组固定枚举且以中文列出合法分组），使其随 schema 对模型可见；
 再校验 completion check 的动态合法集合（当前 Mission revision 的稳定 check identity）；最后校验派生与恢复决策：
 派生只能按 identity 选择冻结 opportunity，拒绝必须引用策略已登记的 blocker，且 required 评估必须给出
-派生、策略允许的拒绝或交回用户三者之一；单来源恢复只能引用 observation 中已持久化的 opportunity identity。
+派生、策略允许的拒绝或交回用户三者之一；单来源恢复只能引用 observation 中已持久化的 opportunity identity；
+澄清动作还要通过共享准入策略核对冻结的 Mission、授权、gate、预算和可安全继续的 Context。
 
 示例：`PatrolDecisionContract().validate(actions=proposal.actions, mission_references=proposal.mission_references, observation=observation)`。
 """
@@ -16,8 +17,9 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from backend.app.desktop.agent_loop.clarification_admission import ClarificationAdmissionPolicy, ClarificationFacts, ClarificationRejected
 from backend.app.desktop.agent_loop.patrol import PatrolContractViolation
-from backend.app.desktop.agent_loop.schemas import DeclineExpansionAction, LoopObservationEnvelope, PatrolModelAction, RecoverContextAction, SpawnContextAction
+from backend.app.desktop.agent_loop.schemas import DeclineExpansionAction, LoopObservationEnvelope, PatrolModelAction, RecoverContextAction, SpawnContextAction, WaitForUserAction
 
 
 BoundaryGroup = Literal["in_scope", "required_invariants", "prohibited_actions", "legacy_text"]
@@ -77,6 +79,19 @@ class PatrolDecisionContract:
         self._validate_mission_references(mission_references, observation)
         self._validate_expansion_decision(actions, observation)
         self._validate_recovery_decision(actions, observation)
+        self._validate_clarification(actions, observation)
+
+    @staticmethod
+    def _validate_clarification(actions: tuple[PatrolModelAction, ...], observation: LoopObservationEnvelope) -> None:
+        waits = tuple(action for action in actions if isinstance(action, WaitForUserAction))
+        if not waits:
+            return
+        facts = ClarificationFacts.from_observation(observation)
+        for action in waits:
+            try:
+                ClarificationAdmissionPolicy().validate(action, facts)
+            except ClarificationRejected as exc:
+                raise PatrolContractViolation(str(exc)) from exc
 
     def _validate_mission_references(
         self,

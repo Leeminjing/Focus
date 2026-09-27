@@ -40,6 +40,7 @@ DESKTOP_MODULES = (
     "context-conversation-view.js",
     "loop-facts-view.js",
     "loop-console-view.js",
+    "loop-wait-recovery.js",
 )
 HEADER_MARKERS = ("本文件对外提供", "输入为", "输出为", "具体工作流为", "示例")
 

@@ -1,6 +1,6 @@
 r"""本文件对外提供 Context expansion 的工作规格、语义证据、阶段结果与稳定 identity 合同。
 
-输入为冻结 Loop identity、认知工作目标、证据需求、语义 manifest、精确证据 frontier 与 Workspace 需求；输出为
+输入为冻结 Loop identity、认知工作目标、版本化候选来源、证据需求、语义 manifest、精确证据 frontier 与 Workspace 需求；输出为
 `WorkContextSpec`、`ContextSemanticManifest`、`ResolvedEvidenceBundle`、opportunity、assessment、intent 与 outcome。
 具体工作流为把 identity-bearing 数据规范化为深度不可变结构，对 canonical JSON 求哈希，并验证 confirmed statement、
 required coverage、引用 frontier 与编译证据用量账本，使规划、解析、重放和提交共享同一语义身份。示例：`spec = WorkContextSpec.create(...)`。
@@ -18,6 +18,7 @@ from backend.app.desktop.agent_loop.expansion_usage import ExpansionUsageCharge,
 from backend.app.desktop.context_curation import (
     CreateLanePlan,
     EvidenceRef,
+    MissionEvidenceRef,
     MultiSourceEvidence,
     evidence_ref_key,
 )
@@ -153,6 +154,33 @@ class EvidenceSourceConstraints(_ExpansionModel):
         return tuple(sorted({_normalized(str(item)).casefold() for item in (values or ()) if _normalized(str(item))}))
 
 
+class CandidateEvidenceIdentity(_ExpansionModel):
+    identity_version: Literal["candidate-source-v2"] = "candidate-source-v2"
+    candidate_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    index_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    entry_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    entry_kind: Literal["semantic_unit", "mission_section"]
+    source_type: Literal["context", "mission"]
+    source: ContextRevisionRef | None = None
+    mission_ref: MissionEvidenceRef | None = None
+    source_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def require_exact_source(self) -> Self:
+        if self.source_type == "mission":
+            if self.entry_kind != "mission_section" or self.source is not None or self.mission_ref is None:
+                raise ValueError("Mission candidate 必须引用精确 section")
+            if self.mission_ref.identity_version != "mission-section-v2" or self.source_content_hash != self.mission_ref.content_hash:
+                raise ValueError("Mission candidate 来源版本或哈希不一致")
+        elif self.entry_kind != "semantic_unit" or self.source is None or self.mission_ref is not None:
+            raise ValueError("Context candidate 必须引用精确 Revision semantic unit")
+        if self.candidate_id != stable_expansion_hash(
+            "retrieval-candidate-v2", self.index_id, self.entry_kind, self.entry_id, self.source_content_hash,
+        ):
+            raise ValueError("candidate identity 与来源不一致")
+        return self
+
+
 class EvidenceRequirement(_ExpansionModel):
     requirement_id: str = Field(min_length=1, max_length=120)
     role: EvidenceRole
@@ -161,6 +189,7 @@ class EvidenceRequirement(_ExpansionModel):
     necessity: EvidenceNecessity = "required"
     source_constraints: EvidenceSourceConstraints = Field(default_factory=EvidenceSourceConstraints)
     candidate_unit_ids: tuple[str, ...] = ()
+    candidate_refs: tuple[CandidateEvidenceIdentity, ...] = ()
 
     @field_validator("requirement_id", "question", "coverage_criterion", mode="before")
     @classmethod
@@ -172,8 +201,20 @@ class EvidenceRequirement(_ExpansionModel):
     def normalize_candidates(cls, values: Any) -> tuple[str, ...]:
         return tuple(sorted({_normalized(str(item)) for item in (values or ()) if _normalized(str(item))}))
 
+    @field_validator("candidate_refs", mode="before")
+    @classmethod
+    def order_candidate_refs(cls, values: Any) -> tuple[Any, ...]:
+        return tuple(sorted(values or (), key=lambda item: str(item.get("candidate_id") if isinstance(item, dict) else item.candidate_id)))
+
+    @model_validator(mode="after")
+    def require_unique_candidates(self) -> Self:
+        ids = tuple(item.candidate_id for item in self.candidate_refs)
+        if len(ids) != len(set(ids)):
+            raise ValueError("evidence requirement 包含重复 candidate identity")
+        return self
+
     def identity_payload(self) -> dict[str, Any]:
-        return self.model_dump(mode="json")
+        return self.model_dump(mode="json", exclude={"candidate_refs"} if not self.candidate_refs else None)
 
 
 class WorkContextSpec(_ExpansionModel):

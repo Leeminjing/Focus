@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供旧 Loop 视图所需的兼容读模型 Store。
  * 输入为一次性旧快照/关联数据、权威 Live projection 和本地控制结果；输出为现有视图可读取但不再拥有 Live 领域状态的快照。
- * 具体工作流为启动时装载兼容字段，运行中只从 Live projection 投影生命周期；旧游标接口仅保留给回归测试和回滚路径。示例：`store.projectLive(projection)`。
+ * 具体工作流为启动时装载兼容字段，运行中从 Live projection 投影生命周期和 Mission 交付状态；旧游标接口仅保留给回归测试和回滚路径。示例：`store.projectLive(projection)`。
  */
 (function (root, factory) {
   const api = factory();
@@ -28,12 +28,24 @@
         if (!projection?.loop) return current;
         const loop = projection.loop.state;
         const mission = projection.mission?.state;
+        const missionRevision = loop.active_mission_revision || loop.goal_revision;
+        const deliveryEvent = Object.values(projection.directives || {}).find(item => item.state?.origin === "mission_bootstrap" && item.state?.mission_revision === missionRevision);
+        const delivery = deliveryEvent ? {
+          state: deliveryEvent.state.run_id ? "delivered" : deliveryEvent.state.state === "delivery_failed" ? "blocked" : "authorized",
+          mission_revision: missionRevision,
+          reason: deliveryEvent.state.reason || null,
+          directive_id: deliveryEvent.entity_id,
+          run_id: deliveryEvent.state.run_id || null,
+        } : current.snapshot?.mission_delivery?.mission_revision === missionRevision
+          ? current.snapshot.mission_delivery
+          : { state: "pending", mission_revision: missionRevision, reason: null, directive_id: null, run_id: null };
         const snapshot = {
           ...(current.snapshot || {}),
           ...loop,
           loop_id: projection.loop_id,
           mission: mission ? { outcome: mission.outcome, boundaries: mission.boundaries || {}, completion_checks: mission.completion_checks || [] } : current.snapshot?.mission,
           active_mission_revision: loop.active_mission_revision || loop.goal_revision,
+          mission_delivery: delivery,
           wait_request: globalThis.FocusLoopLiveSelectors?.selectActiveWaitRequest(projection) || null,
           projection_diagnostics: projection.diagnostics,
         };

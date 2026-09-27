@@ -2,7 +2,7 @@ r"""本文件对外提供 FrozenEvidenceCorpus、CorpusEvidenceItem、FrozenEvid
 
 输入为冻结 Loop observation、semantic manifests、WorkContext opportunity、精确 Context Revision 存储与 checkpointer；
 输出为只含授权版本的不可变 evidence corpus。具体工作流为校验 frontier/scope/hash，读取每个精确 Revision 的完整消息，
-再把 Mission、Run 与 Workspace 事实编码为类型化 evidence，并用 manifest unit 保留语义角色。示例：
+再把版本化 Mission sections、Run 与 Workspace 事实编码为类型化 evidence，并用 manifest unit 保留语义角色。示例：
 `corpus = await reader.read(observation, opportunity, manifests)`。
 """
 
@@ -19,6 +19,8 @@ from backend.app.desktop.agent_loop.context_expansion.contracts import (
     ExpansionOpportunity,
     stable_expansion_hash,
 )
+from backend.app.desktop.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog
+from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 from backend.app.desktop.context_curation import (
     EvidenceRef,
@@ -64,6 +66,13 @@ class CorpusEvidenceItem(_CorpusModel):
     @classmethod
     def order_values(cls, values: Any) -> tuple[Any, ...]:
         return tuple(sorted(set(values or ())))
+
+    @model_validator(mode="after")
+    def require_mission_section_hash(self) -> CorpusEvidenceItem:
+        if isinstance(self.ref, MissionEvidenceRef) and self.ref.identity_version == "mission-section-v2":
+            if self.content_hash != self.ref.content_hash or self.ref.content_hash != EffectiveMissionProjector.section_hash(self.content):
+                raise ValueError("Mission corpus section 内容与冻结来源哈希不一致")
+        return self
 
 
 class FrozenEvidenceCorpus(_CorpusModel):
@@ -227,19 +236,25 @@ class FrozenEvidenceCorpusReader:
     @staticmethod
     def _structured(observation: LoopObservationEnvelope) -> tuple[StructuredEvidence, ...]:
         mission = observation.mission or observation.goal or {}
-        mission_items = tuple(
-            StructuredEvidence(
-                ref=MissionEvidenceRef(
-                    loop_id=observation.loop_id,
-                    goal_revision=observation.goal_revision,
-                    item_id=str(item.get("check_id") or item.get("criterion_id")),
-                    content_hash=stable_expansion_hash("mission-evidence", item),
-                ),
-                content=item,
+        if isinstance(observation.mission, dict) and "section_hashes" in observation.mission:
+            catalog = FrozenMissionSectionCatalog.from_mission(
+                observation.loop_id, EffectiveMissionProjector.from_observation(observation),
             )
-            for item in tuple(mission.get("completion_checks") or ())
-            if item.get("check_id") or item.get("criterion_id")
-        )
+            mission_items = tuple(StructuredEvidence(ref=item.ref, content=item.content) for item in catalog.entries)
+        else:
+            mission_items = tuple(
+                StructuredEvidence(
+                    ref=MissionEvidenceRef(
+                        loop_id=observation.loop_id,
+                        goal_revision=observation.goal_revision,
+                        item_id=str(item.get("check_id") or item.get("criterion_id")),
+                        content_hash=stable_expansion_hash("mission-evidence", item),
+                    ),
+                    content=item,
+                )
+                for item in tuple(mission.get("completion_checks") or ())
+                if item.get("check_id") or item.get("criterion_id")
+            )
         run_items = tuple(
             StructuredEvidence(
                 ref=RunResultEvidenceRef(

@@ -16,8 +16,6 @@ import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-import hashlib
-import json
 import uuid
 from typing import Protocol
 
@@ -34,7 +32,7 @@ from backend.app.desktop.agent_loop.patrol_session_models import LoopPatrolSessi
 from backend.app.desktop.agent_loop.patrol_session_repository import PatrolSessionRepository
 from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, PatrolPhase
 from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count, no_progress_fingerprint
-from backend.app.desktop.agent_loop.rounds import CLAIMABLE_ROUND_STATUSES, RoundStallLimits, terminate_round, terminate_stalled_rounds
+from backend.app.desktop.agent_loop.rounds import CLAIMABLE_ROUND_STATUSES, RoundStallLimits, current_frontier_hash, terminate_round, terminate_stalled_rounds
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.agent_loop.models import LoopDelegationGrant
 from backend.app.desktop.models import DesktopRun, DesktopThread
@@ -480,13 +478,10 @@ class LoopCoordinator:
 
     @staticmethod
     async def _current_frontier_hash(session: AsyncSession, loop_id: str) -> str:
-        memberships = list((await session.scalars(select(LoopContextMembership).where(LoopContextMembership.loop_id == loop_id, LoopContextMembership.status == "active").order_by(LoopContextMembership.membership_id))).all())
-        frontier = []
-        for membership in memberships:
-            context = await session.get(DesktopThread, membership.context_id)
-            frontier.append({"context_id": membership.context_id, "revision_id": context.current_revision_id if context else None})
-        payload = json.dumps(frontier, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        value = await current_frontier_hash(session, loop_id)
+        if value is None:
+            raise ValueError("当前 Loop 没有活跃 Context frontier")
+        return value
 
 
 class LoopCoordinatorRuntime:

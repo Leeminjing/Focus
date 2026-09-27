@@ -342,6 +342,12 @@ class WorkSpecReconciler:
                         "candidate_unit_ids": tuple(
                             sorted({unit_id for item in variants for unit_id in item.candidate_unit_ids})
                         ),
+                        "candidate_refs": tuple(
+                            sorted(
+                                {ref.candidate_id: ref for item in variants for ref in item.candidate_refs}.values(),
+                                key=lambda ref: ref.candidate_id,
+                            )
+                        ),
                     }
                 )
             )

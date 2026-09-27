@@ -1,9 +1,9 @@
-r"""本文件对外提供 Agent Loop API、版本化 Expansion 预算、Mission、类型化等待响应、用户介入、observation、completion 与 Patrol decision 封闭判别联合。
+r"""本文件对外提供 Agent Loop API、版本化 Expansion 预算、Mission、类型化等待原因/响应、用户介入、observation、completion 与 Patrol decision 封闭判别联合。
 
 输入为用户 Mission 或兼容旧目标、grant、冻结版本、Expansion/recovery opportunity、Patrol action 和 verifier evidence；输出为拒绝未知字段的不可变
 合同。具体工作流为预算合同验证 Expansion 子策略并标记来源，创建请求再解析结构化 Mission 或无损适配旧三字段，介入请求区分 Context/Portfolio 作用域，模型只以 identity
 选择（spawn_context/recover_context）或结构化拒绝（decline_expansion）表达 Context 派生与恢复、可信 plan 由服务端从冻结 opportunity 取用，持久 legacy create 仅由兼容 adapter 解析，其余 action 依 discriminator 解析，
-envelope 绑定所有控制 revision 与未处理用户意图，completion 以稳定 check_id 绑定类型化证据；自主压缩 action 只能引用已持久化候选，Kernel 只接受
+envelope 绑定所有控制 revision 与未处理用户意图，completion 以稳定 check_id 绑定类型化证据；bootstrap intent 有模型外来源标识，自主压缩 action 只能引用已持久化候选，Kernel 只接受
 PatrolDecisionIntent。示例：`intent = PatrolDecisionIntent.model_validate(payload)`。
 """
 
@@ -137,9 +137,18 @@ class AdoptWorkspaceResultAction(StrictModel):
     rationale: str = Field(min_length=1, max_length=2000)
 
 
+class WaitEvidenceIdentity(StrictModel):
+    kind: Literal["mission", "gate", "capability", "budget", "external", "input"]
+    reference_id: str = Field(min_length=1, max_length=160)
+    revision: int | None = Field(default=None, gt=0)
+
+
 class WaitForUserAction(StrictModel):
     action: Literal["wait_for_user"]
     reason: str = Field(min_length=1)
+    cause: Literal["missing_goal", "missing_input", "human_gate", "permission", "budget", "external_blocker"] | None = None
+    required_input: str | None = Field(default=None, min_length=1, max_length=1000)
+    evidence_identity: WaitEvidenceIdentity | None = None
 
 
 class StopLoopAction(StrictModel):
@@ -169,6 +178,7 @@ PATROL_MODEL_ACTION_ADAPTER = TypeAdapter(PatrolModelAction)
 class PatrolDecisionIntent(StrictModel):
     decision_id: str
     idempotency_key: str
+    origin_kind: Literal["patrol", "mission_bootstrap"] = "patrol"
     loop_id: str
     loop_revision: int = Field(gt=0)
     round_id: str
@@ -296,6 +306,12 @@ class LoopWaitResponseRequest(StrictModel):
     request_revision: int = Field(gt=0)
     idempotency_key: str = Field(min_length=1, max_length=160)
     answer: dict[str, Any]
+
+
+class ResumeWithCurrentMissionRequest(StrictModel):
+    confirmation: Literal["resume_with_current_mission"]
+    request_revision: int = Field(gt=0)
+    idempotency_key: str = Field(min_length=1, max_length=160)
 
 
 class LoopObservationEnvelope(StrictModel):

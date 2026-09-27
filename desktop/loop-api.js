@@ -1,6 +1,6 @@
 /*
  * 本文件对外提供 Agent Loop HTTP、Live Snapshot 与可恢复事件协议入口。
- * 输入为桌面运行时、Loop 请求、控制台查询和 sequence 游标；输出为共享响应解码后的规范化结果、分页会话、事实、压缩来源恢复与单路 Live 订阅。
+ * 输入为桌面运行时、Loop 请求、控制台查询和 sequence 游标；输出为共享响应解码后的规范化结果、分页会话、事实、显式沿用当前 Mission 的等待恢复、压缩来源恢复与单路 Live 订阅。
  * 具体工作流为封装同源 API，所有普通响应先经纯 HTTP decoder 保留 JSON/文本失败因果，再做 Loop identity 格式化；Live 通道解析 canonical SSE 与重同步控制帧，Context 直接发言复用 Main Run。
  * 示例：`FocusLoopApi.create(runtime)`。
  */
@@ -91,6 +91,7 @@
       get: loopId => request(`/${encodeURIComponent(loopId)}`),
       waitRequest: loopId => request(`/${encodeURIComponent(loopId)}/wait-request`),
       resolveWait: (loopId, requestId, body) => request(`/${encodeURIComponent(loopId)}/wait-requests/${encodeURIComponent(requestId)}/responses`, { method: "POST", body: JSON.stringify(body) }),
+      resumeWithCurrentMission: (loopId, requestId, body) => request(`/${encodeURIComponent(loopId)}/wait-requests/${encodeURIComponent(requestId)}/resume-with-current-mission`, { method: "POST", body: JSON.stringify(body) }),
       control: (loopId, command) => request(`/${encodeURIComponent(loopId)}/control`, { method: "POST", body: JSON.stringify({ command }) }),
       mutateGrant: (loopId, body) => request(`/${encodeURIComponent(loopId)}/grant`, { method: "POST", body: JSON.stringify(body) }),
       override: (loopId, body) => request(`/${encodeURIComponent(loopId)}/override`, { method: "POST", body: JSON.stringify(body) }),

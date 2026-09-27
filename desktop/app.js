@@ -11,7 +11,7 @@
  * 子节点；快照是该 run 的权威状态，命中消息 id 或同一 run 即回收流式占位，占位不叠加同一 Run 内前一条
  * 消息的正文与推理；会话只呈现人类可读摘要，工具参数、工具输出与推理全文均不进入 DOM，由会话视图在
  * 用户展开时按 conversationEventIndex 按需生成；Main Run 提交与流状态按 task/run identity 隔离，Loop wait request
- * 使用独立响应面和按 request identity 持久草稿；会话渲染走两步：buildUnits 产出带内容签名的单元，
+ * 使用独立响应面和按 request identity 持久草稿，沿用当前 Mission 的恢复需显式确认且不发送普通聊天消息；会话渲染走两步：buildUnits 产出带内容签名的单元，
  * _unitHtml 按签名命中缓存，因此连续相同帧为零重建、增量帧只重建变化单元；流式正文按顶层块缓存，
  * 只重渲染未闭合尾块，且累积与可见渲染都以 `STREAM_TEXT_LIMIT` 为界（越限不再并入缓冲、也不进入可见
  * DOM，避免越界或超长正文把单帧变成解析与插入长任务）；同一 tick 内的多次状态变化由 scheduleRender
@@ -1040,6 +1040,30 @@ async function respondToLoopWait(request, answer) {
     renderLoop();
   } catch (error) {
     loopWaitUi.set(requestId, { pending: false, error: error.message, draft: loopWaitDrafts?.get(requestId) || "" });
+    renderLoop();
+  }
+}
+
+async function resumeLoopWithCurrentMission(request) {
+  const loopId = state.loop.loopId;
+  try {
+    const resumed = await window.FocusLoopWaitRecovery.confirmAndResume({
+      request,
+      loopId,
+      confirm: prompt => window.confirm(prompt),
+      submit: (id, requestId, body) => loopApi.resumeWithCurrentMission(id, requestId, body),
+      beforeSubmit: () => {
+        loopWaitUi.set(request.request_id, { pending: true, error: null });
+        renderLoop();
+      },
+    });
+    if (!resumed) return;
+    loopWaitDrafts?.delete(request.request_id);
+    loopWaitUi.delete(request.request_id);
+    loopStore.reconcile(await loopApi.get(loopId));
+    renderLoop();
+  } catch (error) {
+    loopWaitUi.set(request.request_id, { pending: false, error: error.message, draft: loopWaitDrafts?.get(request.request_id) || "" });
     renderLoop();
   }
 }
@@ -5988,6 +6012,7 @@ async function handleDocumentClick(event) {
   if (action === "show-loop") return openLoopView();
   if (loopMissionEditor?.handleAction(button)) return;
   if (action === "loop-control") return controlLoop(button.dataset.loopControl);
+  if (action === "loop-resume-current-mission") return resumeLoopWithCurrentMission(loopStore?.get().snapshot?.wait_request);
   if (button.dataset.waitAction) {
     const request = loopStore?.get().snapshot?.wait_request;
     if (!request) return;

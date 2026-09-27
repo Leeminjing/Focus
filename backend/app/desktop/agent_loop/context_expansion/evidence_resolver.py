@@ -2,7 +2,8 @@ r"""本文件对外提供 SemanticEvidenceSelectorPort、IdentityBoundedEvidence
 
 输入为冻结 WorkContextSpec、semantic manifests、授权 FrozenEvidenceCorpus 与 evidence item budget；输出为完整
 ResolvedEvidenceBundle 或结构化 ExpansionBlocker。具体工作流为先验证 planner 明确指认的 semantic units，再仅以结构化权威
-对象的精确 identity 补足未覆盖 requirement，按角色与 source constraints 验证 coverage，并扩展完整 Tool Exchange；
+对象的精确 identity 补足未覆盖 requirement；新版 Mission candidate 直接按 revision/section/hash 解析，
+再按角色与 source constraints 验证 coverage，并扩展完整 Tool Exchange；
 同 role 消息、关键词和最近消息都不能独立证明 coverage。
 示例：`result = resolver.resolve(opportunity, manifests, corpus, max_items=policy.max_compiled_evidence_items)`。
 """
@@ -113,7 +114,7 @@ class MultiSourceEvidenceResolver:
         selected_refs: dict[tuple[str, ...], EvidenceRef] = {}
         for requirement in opportunity.work_spec.evidence_requirements:
             candidates = self._candidate_items(requirement, unit_refs, corpus)
-            if not candidates:
+            if not candidates and not requirement.candidate_refs:
                 candidates = self._selector.select(requirement, corpus, limit=max_items)
             candidates = tuple(item for item in candidates if self._covers(requirement, item))
             if not candidates:
@@ -185,6 +186,23 @@ class MultiSourceEvidenceResolver:
             for ref in unit_refs.get(unit_id, ())
         )
         result = []
+        for candidate in requirement.candidate_refs:
+            if candidate.source_type == "mission":
+                try:
+                    item = corpus.item(candidate.mission_ref)
+                except KeyError:
+                    continue
+                if item.content_hash == candidate.source_content_hash:
+                    result.append(item)
+                continue
+            result.extend(
+                item
+                for item in corpus.items
+                if candidate.entry_id in item.semantic_unit_ids
+                and isinstance(item.ref, NamespacedMessageRef)
+                and item.ref.source == candidate.source
+                and item.content_hash == candidate.source_content_hash
+            )
         for ref in refs:
             try:
                 result.append(corpus.item(ref))

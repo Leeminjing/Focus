@@ -1,8 +1,8 @@
 r"""本文件对外提供 RetrievalBackedCognitiveAdvisor 及其分步 worker schemas。
 
-输入为冻结 mission/workspace facts、PortfolioIndexCatalog、授权 RevisionSemanticIndex、planning session 与只提供结构化调用的模型端口；
-输出为 WorkContextDraft 候选、同 session 已验证的 semantic manifests、exact reads 和终态 session。具体工作流为模型先提交经整体容量检查的查询，
-服务端在授权索引内召回去重候选，模型按持久分页选择 semantic-unit candidates，服务端精读并以实际用量记账；失败尝试可从稳定操作身份恢复，
+输入为冻结 Mission/workspace facts、PortfolioIndexCatalog、授权 Context index/Mission catalog、planning session 与结构化模型端口；
+输出为 WorkContextDraft 候选、同 session 已验证的 semantic manifests、来源类型化 exact reads 和终态 session。具体工作流为模型先提交经整体容量检查的查询，
+服务端在授权索引内召回去重候选，模型按持久分页选择 Context/Mission candidates，服务端精读并以实际用量记账；失败尝试可从稳定操作身份恢复，
 最终模型按单请求窗口分页处理所有精读证据，只能引用所在批次已精读 unit identity 生成工作候选，同一职责跨页归并且保留全部引用，资源与请求窗口阻断保留因果代码。示例：`result = await advisor.plan(payload, session, indexes)`。
 """
 
@@ -23,6 +23,7 @@ from backend.app.desktop.agent_loop.context_expansion.candidate_paging import (
     ProviderRequestWindowError,
 )
 from backend.app.desktop.agent_loop.context_expansion.evidence_read_paging import EvidenceReadPager
+from backend.app.desktop.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog
 from backend.app.desktop.agent_loop.context_expansion.query_admission import (
     QueryPlanAdmission,
     QueryPlanAdmissionError,
@@ -48,7 +49,7 @@ class _PlannerModel(BaseModel):
 class RetrievalQueryDraft(_PlannerModel):
     text: str = Field(min_length=1, max_length=4000)
     index_ids: tuple[str, ...] = ()
-    kinds: tuple[str, ...] = ("semantic_unit", "segment")
+    kinds: tuple[str, ...] = ("semantic_unit", "segment", "mission_section")
     limit: int = Field(default=16, ge=1, le=128)
 
 
@@ -179,20 +180,13 @@ class RetrievalBackedCognitiveAdvisor:
                         **self._planning_input(payload),
                         "exact_reads": tuple(item.model_dump(mode="json") for item in reads),
                         "semantic_manifests": tuple(item.model_dump(mode="json") for item in manifests),
-                        "allowed_candidate_unit_ids": tuple(item.entry_id for item in selected),
+                        "allowed_candidate_unit_ids": tuple(item.entry_id for item in selected if item.source_type == "context"),
                     },
                     operation_id="work_spec",
                 )
             if session.state == "blocked":
                 return await self._budget_blocked(session)
-            invented = {
-                unit_id
-                for draft in proposal.work_specs
-                for requirement in draft.evidence_requirements
-                for unit_id in requirement.candidate_unit_ids
-                if unit_id not in {item.entry_id for item in selected}
-            }
-            if invented:
+            if self._unknown_citations(proposal, selected):
                 return self._blocked(session, "planner_evidence_identity_unknown", "Planner 引用了未在同一 session 精读的 candidate identity")
             session = self._controller.finish(
                 session,
@@ -282,7 +276,7 @@ class RetrievalBackedCognitiveAdvisor:
         selected = tuple(by_candidate.get(candidate_id) for candidate_id in proposal.candidate_ids)
         if any(item is None for item in selected):
             return self._controller.block(session, "planner_candidate_unknown")
-        if any(item.entry_kind != "semantic_unit" for item in selected):
+        if any(item.entry_kind not in {"semantic_unit", "mission_section"} for item in selected):
             return self._controller.block(session, "planner_read_kind_invalid")
         reads = tuple(self._retriever.read(session, item, indexes) for item in selected)
         session = self._controller.record_reads(session, reads)
@@ -296,7 +290,7 @@ class RetrievalBackedCognitiveAdvisor:
         indexes: tuple[RevisionSemanticIndex, ...],
     ) -> PlanningRetrievalSession:
         planning_input = self._planning_input(payload)
-        candidates = tuple(item for item in session.candidates if item.entry_kind == "semantic_unit")
+        candidates = tuple(item for item in session.candidates if item.entry_kind in {"semantic_unit", "mission_section"})
         pages = session.read_pages
         if not pages:
             pages = CandidateDescriptorPager().pages(
@@ -357,7 +351,9 @@ class RetrievalBackedCognitiveAdvisor:
         )
         proposals: list[LaneAdviceProposal] = []
         for page in pages:
-            allowed = {item.entry_id for item in page.reads}
+            page_candidates = tuple(item for item in session.candidates if item.candidate_id in {read.candidate_id for read in page.reads})
+            allowed = {item.entry_id for item in page_candidates if item.source_type == "context"}
+            allowed_refs = tuple(item.evidence_identity().model_dump(mode="json") for item in page_candidates)
             proposal, session = await self._invoke(
                 session,
                 LaneAdviceProposal,
@@ -367,17 +363,13 @@ class RetrievalBackedCognitiveAdvisor:
                     "evidence_page": {"page_id": page.page_id, "ordinal": page.ordinal, "count": len(pages)},
                     "exact_reads": tuple(item.model_dump(mode="json") for item in page.reads),
                     "allowed_candidate_unit_ids": tuple(sorted(allowed)),
+                    "allowed_candidate_refs": allowed_refs,
                 },
                 operation_id="work_spec" if len(pages) == 1 else f"work_page:{page.page_id}",
             )
             if session.state == "blocked":
                 return None, session
-            if any(
-                unit_id not in allowed
-                for draft in proposal.work_specs
-                for requirement in draft.evidence_requirements
-                for unit_id in requirement.candidate_unit_ids
-            ):
+            if self._unknown_citations(proposal, page_candidates):
                 return None, self._controller.block(session, "planner_evidence_identity_unknown", stage="work_spec", boundary="exact_read_identity", operation_id=f"work_page:{page.page_id}")
             proposals.append(proposal)
         distinct: dict[str, WorkContextDraft] = {}
@@ -392,6 +384,20 @@ class RetrievalBackedCognitiveAdvisor:
     async def _save(self, session: PlanningRetrievalSession) -> None:
         if self._checkpoint is not None:
             await self._checkpoint(session)
+
+    @staticmethod
+    def _unknown_citations(proposal: LaneAdviceProposal, selected: tuple[RetrievalCandidate, ...]) -> bool:
+        context_units = {item.entry_id for item in selected if item.source_type == "context"}
+        typed = {
+            item.candidate_id: item.evidence_identity()
+            for item in selected if item.identity_version == "entry-scoped-v2"
+        }
+        return any(
+            any(unit_id not in context_units for unit_id in requirement.candidate_unit_ids)
+            or any(typed.get(ref.candidate_id) != ref for ref in requirement.candidate_refs)
+            for draft in proposal.work_specs
+            for requirement in draft.evidence_requirements
+        )
 
     async def _invoke(self, session, schema, authority: str, payload: dict[str, Any], *, operation_id: str):
         is_v2 = session.schema_version == "retrieval-session-v2"
@@ -508,10 +514,16 @@ class RetrievalBackedCognitiveAdvisor:
         derivation.pop("frozen_expansion_resources", None)
         catalog = derivation.get("portfolio_index_catalog")
         if isinstance(catalog, dict):
+            mission_catalog = FrozenMissionSectionCatalog.model_validate(catalog["mission_catalog"]) if catalog.get("mission_catalog") else None
             derivation["portfolio_index_catalog"] = {
                 "catalog_id": catalog.get("catalog_id"),
                 "frontier_hash": catalog.get("frontier_hash"),
                 "descriptors": catalog.get("descriptors") or (),
+                "mission_catalog": {
+                    "catalog_id": mission_catalog.catalog_id,
+                    "mission_revision": mission_catalog.mission_revision,
+                    "descriptors": mission_catalog.descriptors(),
+                } if mission_catalog else None,
             }
         scope["derivation_input"] = derivation
         return {
@@ -567,12 +579,12 @@ class RetrievalBackedCognitiveAdvisor:
 
     @staticmethod
     def _query_authority() -> str:
-        return "你是无权 Retrieval Query Planner。只根据冻结 Mission、Portfolio index catalog、Run 与 Workspace facts 提交少量语义查询；不得生成 WorkSpec、evidence、执行指令或状态变更。查询只能选择输入 catalog 中的 index_id。"
+        return "你是无权 Retrieval Query Planner。只根据冻结 Mission、Portfolio index catalog、Run 与 Workspace facts 提交少量语义查询；不得生成 WorkSpec、evidence、执行指令或状态变更。查询可选择授权 Context index_id 或 Mission catalog_id，kinds 可含 mission_section。"
 
     @staticmethod
     def _read_authority() -> str:
-        return "你是无权 Evidence Read Selector。只从服务端返回的 candidates 中选择必须精读的 semantic_unit candidate_id；不得选择 segment、发明 identity、生成 WorkSpec 或执行指令。"
+        return "你是无权 Evidence Read Selector。只从服务端返回的 candidates 中选择必须精读的 semantic_unit 或 mission_section candidate_id；不得选择 segment、发明 identity、生成 WorkSpec 或执行指令。"
 
     @staticmethod
     def _work_authority() -> str:
-        return "你是无权 Cognitive Work Planner。只使用本 planning session 已精确读取的 evidence 和 allowed_candidate_unit_ids 生成零个或多个 WorkContextDraft；Context evidence requirement 必须引用允许的 unit identity。按真实认知职责决定是否需要独立历史，不得按关键词/阈值套模板，不得创建 Context、修改状态、运行工具或扩大 scope。"
+        return "你是无权 Cognitive Work Planner。只使用本 planning session 已精确读取的 evidence 生成零个或多个 WorkContextDraft；Mission 引用必须完整复制 allowed_candidate_refs 中的版本化来源身份，旧版 Context unit 可使用 allowed_candidate_unit_ids。按真实认知职责决定是否需要独立历史，不得按关键词/阈值套模板，不得创建 Context、修改状态、运行工具或扩大 scope。"

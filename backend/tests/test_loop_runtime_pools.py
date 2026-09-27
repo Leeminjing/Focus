@@ -122,7 +122,7 @@ def test_context_capacity_is_visible_and_pause_converges_work(tmp_path) -> None:
                 object(),
                 concurrency=baseline_active + 1,
             )
-            assert await pool.drain() == 0
+            assert await pool.drain(snapshot["loop_id"]) == 0
             async with sessions() as session:
                 directive = await session.get(LoopDirective, result.directive_ids[0])
                 assert directive.queued_reason == "global_context_capacity"
@@ -143,7 +143,7 @@ def test_context_capacity_is_visible_and_pause_converges_work(tmp_path) -> None:
                 object(),
                 concurrency=baseline_active + 1,
             )
-            assert await ready_pool.drain() == 1
+            assert await ready_pool.drain(snapshot["loop_id"]) == 1
             await asyncio.wait_for(launched.wait(), timeout=1)
             await ready_pool.close()
             async with sessions.begin() as session:
@@ -158,7 +158,7 @@ def test_context_capacity_is_visible_and_pause_converges_work(tmp_path) -> None:
                 assert worker.status == "cancelled"
                 assert round_row.status == "superseded"
                 assert run_row is not None
-            assert await pool.drain() == 0
+            assert await pool.drain(snapshot["loop_id"]) == 0
             await pool.close()
         finally:
             loop = await service.get(snapshot["loop_id"])

@@ -143,7 +143,7 @@ def test_patrol_proposal_references_mission_by_semantic_role() -> None:
     normal = PatrolDecisionProposal(
         rationale="继续实现最终结果。",
         mission_references=({"role": "boundary", "reference_id": "in_scope"},),
-        actions=({"action": "wait_for_user", "reason": "需要用户输入"},),
+        actions=({"action": "continue_context", "context_id": "context-1", "context_revision_id": "revision-1", "message": "继续执行现有工作"},),
     )
     completion = PatrolDecisionProposal(
         rationale="验证声明的完成检查。",
@@ -169,13 +169,13 @@ def test_patrol_boundary_reference_is_a_closed_set() -> None:
         PatrolDecisionProposal(
             rationale="引用了未声明的 boundary 分组。",
             mission_references=({"role": "boundary", "reference_id": "boundary"},),
-            actions=({"action": "wait_for_user", "reason": "需要用户输入"},),
+            actions=({"action": "continue_context", "context_id": "context-1", "context_revision_id": "revision-1", "message": "继续执行现有工作"},),
         )
     with pytest.raises(ValidationError):
         PatrolDecisionProposal(
             rationale="outcome 引用不得自选取值。",
             mission_references=({"role": "outcome", "reference_id": "final"},),
-            actions=({"action": "wait_for_user", "reason": "需要用户输入"},),
+            actions=({"action": "continue_context", "context_id": "context-1", "context_revision_id": "revision-1", "message": "继续执行现有工作"},),
         )
 
 

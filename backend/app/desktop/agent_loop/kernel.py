@@ -2,9 +2,10 @@ r"""本文件对外提供 LoopKernel、KernelCommitResult 与 KernelRejected 唯
 
 输入为含 fencing token 的 PatrolDecisionIntent 和当前数据库事实；输出为幂等 committed/superseded/rejected 结果。具体工作流为
 稳定锁定 Loop/round/grant，先验证活动 owner，再按 Mission revision、机器边界、权力、frontier、workspace、恢复机会、预算、active Run、gate 顺序校验；
+澄清动作在同一事务内根据当前事实再次验证 cause 与 evidence identity，只有准入后才写等待请求；
 无副作用 decline_expansion 仅形成审计 action，普通动作
 单事务提交，Context Portfolio 与 workspace adoption 先持久授权意图，再由专用 Kernel port 执行外部准备并
-原子收口权威状态；配置异步 publication 时只提交持久授权并交给独立发布队列，拒绝或被取代的决策必须在同一事务内把该 round 收敛为终态（拒绝还会把当前轮所属
+原子收口权威状态；Mission bootstrap 与 Patrol 共用 continuation 提交边界且只在外部记录来源；配置异步 publication 时只提交持久授权并交给独立发布队列，拒绝或被取代的决策必须在同一事务内把该 round 收敛为终态（拒绝还会把当前轮所属
 Loop 交回用户），提交成功后收口该 round 已观察的用户意图；自主压缩由专用 committer 在同一事务内只提交
 resolution、不触碰 graph；completed/stopped/failed 委托 TerminalLifecycle 原子收敛并释放策展所有权；Worker 无提交端口。示例：`result = await kernel.commit(intent)`。
 """
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.authority import AuthorityViolation, DelegatedAuthorityGuard
 from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count
+from backend.app.desktop.agent_loop.clarification_admission import ClarificationAdmissionPolicy, ClarificationFactsReader, ClarificationRejected
 from backend.app.desktop.agent_loop.completion_policy import CompletionCheckPolicy
 from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
@@ -103,6 +105,8 @@ class LoopKernel:
         self._compression = CompressionAuthorityCommitter()
         self._terminal = LoopTerminalLifecycle()
         self._expansions = ContextExpansionRepository()
+        self._clarification_facts = ClarificationFactsReader()
+        self._clarification_policy = ClarificationAdmissionPolicy()
 
     async def commit(self, intent: PatrolDecisionIntent) -> KernelCommitResult:
         deferred_id: str | None = None
@@ -323,6 +327,14 @@ class LoopKernel:
         return None
 
     async def _validate_runtime(self, session, loop, round_row, grant, intent) -> None:
+        wait_actions = tuple(action for action in intent.actions if action.action == "wait_for_user")
+        if wait_actions:
+            facts = await self._clarification_facts.read(session, loop, grant, round_row)
+            for action in wait_actions:
+                try:
+                    self._clarification_policy.validate(action, facts)
+                except ClarificationRejected as exc:
+                    raise KernelRejected(str(exc)) from exc
         usage = await session.get(LoopBudgetUsage, loop.loop_id)
         budgets = grant.budgets
         usage_values = {
@@ -600,6 +612,7 @@ class LoopKernel:
                     context_revision_id=intent_action.context_revision_id, content=intent_action.message,
                     actor_id=intent.holder_id, grant_id=grant.grant_id, grant_revision=grant.revision,
                     goal_revision=loop.goal_revision, idempotency_key=f"{intent.idempotency_key}:directive:{position}",
+                    origin_kind=intent.origin_kind,
                 )
                 session.add_all([directive, provenance])
                 await session.flush()
@@ -647,7 +660,13 @@ class LoopKernel:
                 await LoopWaitRequestService().open(
                     session,
                     loop,
-                    LoopWaitRequestFactory.clarification(intent_action.reason, {"decision_id": decision.decision_id}),
+                    LoopWaitRequestFactory.clarification(intent_action.reason, {
+                        "decision_id": decision.decision_id,
+                        "cause": intent_action.cause,
+                        "required_input": intent_action.required_input,
+                        "evidence_identity": intent_action.evidence_identity.model_dump(mode="json") if intent_action.evidence_identity else None,
+                        "mission_revision": loop.goal_revision,
+                    }),
                     created_by="portfolio-patrol",
                     correlation_id=decision.decision_id,
                     round_id=round_row.round_id,

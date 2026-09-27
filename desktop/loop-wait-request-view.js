@@ -1,7 +1,7 @@
 /**
  * 本文件对外提供 FocusLoopWaitRequestView 的 WaitRequest 渲染与草稿 store。
  * 输入为类型化等待请求、逐请求 UI 状态和转义函数；输出为绑定 request id 的安全控件 HTML 与隔离草稿。
- * 具体工作流为按 response_mode 选择 text/choice/structured/action 控件，展示来源与作用域，提交状态只禁用本请求，草稿按 request id 持久保存并恢复。
+ * 具体工作流为按 response_mode 选择 text/choice/structured/action 控件，展示来源与作用域，只有证据身份明确的缺失目标澄清另呈显式沿用当前 Mission 的恢复按钮，提交状态只禁用本请求，草稿按 request id 持久保存并恢复。
  * 示例：`FocusLoopWaitRequestView.render(request, { pending: false })`。
  */
 
@@ -61,8 +61,10 @@
     } else {
       control = `<p class="loop-wait-unsupported">当前客户端暂不支持响应模式 ${escape(request.response_mode)}</p>`;
     }
+    const recoverable = global.FocusLoopWaitRecovery?.canResume(request);
+    const recovery = recoverable ? `<button type="button" data-action="loop-resume-current-mission"${disabled}>确认沿用当前 Mission 并继续</button>` : "";
     const scope = request.scope && Object.keys(request.scope).length ? escape(JSON.stringify(request.scope)) : "当前 Loop";
-    return `<section class="loop-wait-request" data-wait-request-id="${id}" data-response-mode="${escape(request.response_mode)}"><header><span>等待你的决定</span><small>${escape(request.kind || "clarification")}</small></header><p>${escape(request.prompt)}</p><div class="loop-wait-meta"><span>来源：${escape(request.created_by || "Patrol")}</span><span>范围：${scope}</span></div><form data-loop-wait-response>${control}</form>${ui.error ? `<p class="loop-wait-error">${escape(ui.error)}</p>` : ""}</section>`;
+    return `<section class="loop-wait-request" data-wait-request-id="${id}" data-response-mode="${escape(request.response_mode)}"><header><span>等待你的决定</span><small>${escape(request.kind || "clarification")}</small></header><p>${escape(request.prompt)}</p><div class="loop-wait-meta"><span>来源：${escape(request.created_by || "Patrol")}</span><span>范围：${scope}</span></div><form data-loop-wait-response>${control}${recovery}</form>${ui.error ? `<p class="loop-wait-error">${escape(ui.error)}</p>` : ""}</section>`;
   }
 
   function parseDraft(value) {
