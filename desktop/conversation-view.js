@@ -39,6 +39,7 @@
 
   let deps = null;
   const windows = new Map();
+  const rowWindows = new Map();
   const lazyDetailHosts = new WeakSet();
   const scrollHosts = new WeakSet();
   const scrollState = new WeakMap();
@@ -52,18 +53,33 @@
     return windows.get(taskId) || (deps?.render?.WINDOW_MESSAGES ?? 80);
   }
 
-  function increaseWindow(taskId) {
+  function windowRows(taskId) {
+    return rowWindows.get(taskId) || (deps?.render?.WINDOW_ROWS ?? 90);
+  }
+
+  function increaseWindow(taskId, messages) {
     const step = deps?.render?.WINDOW_MESSAGES ?? 80;
-    const next = windowLimit(taskId) + step;
+    const rowStep = deps?.render?.WINDOW_ROWS ?? 90;
+    const previousStart = Array.isArray(messages)
+      ? deps.render.windowStartIndex(messages, windowLimit(taskId), windowRows(taskId))
+      : 0;
+    let next = windowLimit(taskId) + step;
+    let nextRows = windowRows(taskId) + rowStep;
+    // 两个上限都能决定窗口起点；大工具调用组可能跨过一个步长，继续扩大直到本次点击有进展。
+    while (previousStart > 0 && deps.render.windowStartIndex(messages, next, nextRows) >= previousStart) {
+      next = Math.min(messages.length, next * 2);
+      nextRows = Math.min(Number.MAX_SAFE_INTEGER, nextRows * 2);
+    }
     windows.set(taskId, next);
+    rowWindows.set(taskId, nextRows);
     return next;
   }
 
-  function loadEarlier(conversation, taskId, reconcileFn) {
+  function loadEarlier(conversation, taskId, reconcileFn, messages) {
     if (!conversation) return;
     const previousHeight = conversation.scrollHeight || 0;
     const previousTop = conversation.scrollTop || 0;
-    increaseWindow(taskId);
+    increaseWindow(taskId, messages);
     if (typeof reconcileFn === "function") reconcileFn();
     conversation.scrollTop = previousTop + Math.max(0, (conversation.scrollHeight || 0) - previousHeight);
     rememberScroll(conversation);
@@ -543,6 +559,7 @@
     scrollStateOf,
     syncScrollAfterWrite,
     windowLimit,
+    windowRows,
     increaseWindow,
     loadEarlier,
   };

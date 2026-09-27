@@ -7,7 +7,7 @@
  * 输入为 detail、task、渲染依赖（renderMessage、renderDivider、events 归一、expandMessages、markdown 渲染器）
  * 与运行态快照（activeTaskId、streamBuffers、materialHistory、pluginViewCount）；输出为单元列表、会话 HTML、
  * 流式块 HTML 与统计计数。具体工作流为按窗口截取消息 → 逐段归一为单元 → 按内容签名命中缓存 →
- * 未命中才调用传入的渲染函数；流式正文解析全文但只渲染未闭合尾块。
+ * 未命中才调用传入的渲染函数；普通段落的流式正文从已结束的空行边界续解析，复杂语法从最近安全边界重解析。
  * 可见正文边界约定：可见渲染与缓冲语义分离——缓冲照旧累积（完成态判据取正文前缀），而超过
  * `STREAM_TEXT_LIMIT` 的正文不交给 markdown 渲染、也不进入可见 DOM，使越界或超长正文既有界又不会以
  * "助手正在生成"的形态出现在会话里（工具结果只经快照以工具行呈现）。
@@ -347,8 +347,7 @@
     );
   }
 
-  function streamingBlocks(markdown, buffer) {
-    const source = String(buffer.text ?? "");
+  function _streamingEntries(markdown, source) {
     const entries = [];
     if (source) {
       const env = {};
@@ -360,10 +359,37 @@
         entries.push({ source: lines.slice(start, end).join("\n"), html: markdown.renderer.render(group, markdown.options, env) });
       }
     }
+    return entries;
+  }
+
+  // 只在普通段落的空行后设检查点。Markdown 的列表、围栏代码和引用定义可能让后文改变
+  // 前文的解析结果；这些形态从最近安全边界重解析，避免把错误 HTML 固定在缓存中。
+  function _plainParagraphs(source) {
+    if (/[\\`*_#\[\]<>!|~]/.test(source)) return false;
+    return !/^(?: {4}|\t| {0,3}(?:[-+]\s|\d+[.)]\s|[-=]{3,}\s*$))/m.test(source);
+  }
+
+  function streamingBlocks(markdown, buffer) {
+    const source = String(buffer.text ?? "");
+    const checkpoint = buffer.streamCheckpoint;
+    const active = checkpoint && source.startsWith(checkpoint.prefix) ? checkpoint : null;
+    const prefix = active?.prefix || "";
+    const priorEntries = active?.entries || [];
+    const tail = source.slice(prefix.length);
+    const boundary = tail.lastIndexOf("\n\n") + 2;
+    let entries;
+    if (boundary >= 2 && _plainParagraphs(tail.slice(0, boundary))) {
+      const completed = priorEntries.concat(_streamingEntries(markdown, tail.slice(0, boundary)));
+      buffer.streamCheckpoint = { prefix: source.slice(0, prefix.length + boundary), entries: completed };
+      entries = completed.concat(_streamingEntries(markdown, tail.slice(boundary)));
+    } else {
+      if (!active) buffer.streamCheckpoint = null;
+      entries = priorEntries.concat(_streamingEntries(markdown, tail));
+    }
     const previous = buffer.blockEntries || [];
     const next = entries.map((entry, index) => {
       const prior = previous[index];
-      if (prior && prior.source === entry.source) {
+      if (prior && prior.source === entry.source && prior.html === entry.html) {
         stats.streamingReused += 1;
         return prior;
       }

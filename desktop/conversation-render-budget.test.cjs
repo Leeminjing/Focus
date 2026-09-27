@@ -235,6 +235,57 @@ test("长会话按窗口挂载，加载更早内容提高窗口", () => {
   assert.ok(unitsAfter > units, `提高窗口后应挂载更多单元（${units} → ${unitsAfter}）`);
 });
 
+test("行数上限占主导时点击加载更早确实显示旧消息", () => {
+  const harness = newHarness();
+  harness.context.__messages = Array.from({ length: 194 }, (_, index) => ({
+    id: `m-${index}`, role: "human", content: `第 ${index} 条消息`,
+  }));
+  const result = harness.vm.runInContext(`(() => {
+    state.view = "focus";
+    state.details.set(__task.task_id, { messages: __messages });
+    const formerlyStuckAt = FocusConversationRender.windowStartIndex(__messages, 160, 90);
+    replaceConversation(__task, __messages);
+    const conversation = document.querySelector("#conversation");
+    const before = conversation.querySelector('[data-action="load-earlier-conversation"]').textContent;
+    const mountedBefore = conversation.querySelectorAll('[data-message-key]').length;
+    loadEarlierConversation();
+    const afterFirst = conversation.querySelector('[data-action="load-earlier-conversation"]')?.textContent;
+    const mountedAfterFirst = conversation.querySelectorAll('[data-message-key]').length;
+    loadEarlierConversation();
+    return {
+      formerlyStuckAt,
+      before,
+      afterFirst,
+      afterSecond: conversation.querySelector('[data-action="load-earlier-conversation"]')?.textContent,
+      mountedBefore,
+      mountedAfterFirst,
+      mountedAfterSecond: conversation.querySelectorAll('[data-message-key]').length,
+    };
+  })()`, harness.context);
+  assert.equal(result.formerlyStuckAt, 104, "fixture 应覆盖截图中曾卡住的行数边界");
+  assert.equal(result.before, "加载更早的 114 条消息");
+  assert.ok(result.mountedAfterFirst > result.mountedBefore, "第一次点击应挂载更多旧消息");
+  assert.ok(result.mountedAfterSecond > result.mountedAfterFirst, "第二次点击应继续挂载旧消息");
+  assert.equal(result.afterSecond, undefined, "全部消息显示后入口应消失");
+});
+
+test("超长工具调用组跨过分页步长时点击仍向前推进", () => {
+  const harness = newHarness();
+  const messages = Array.from({ length: 200 }, (_, index) => ({ id: `h-${index}`, role: "human", content: `前文 ${index}` }));
+  messages.push({ id: "ai-batch", role: "ai", content: "", tool_calls: Array.from({ length: 500 }, (_, index) => ({ id: `call-${index}`, name: "read_file" })) });
+  for (let index = 0; index < 500; index += 1) messages.push({ id: `tool-${index}`, role: "tool", tool_call_id: `call-${index}`, content: "ok" });
+  for (let index = 0; index < 10; index += 1) messages.push({ id: `tail-${index}`, role: "human", content: `尾部 ${index}` });
+  harness.context.__messages = messages;
+  const result = harness.vm.runInContext(`(() => {
+    const before = FocusConversationRender.windowStartIndex(__messages, conversationView.windowLimit(__task.task_id), conversationView.windowRows(__task.task_id));
+    conversationView.increaseWindow(__task.task_id, __messages);
+    const after = FocusConversationRender.windowStartIndex(__messages, conversationView.windowLimit(__task.task_id), conversationView.windowRows(__task.task_id));
+    return { before, after };
+  })()`, harness.context);
+  assert.equal(result.before, 200, "初始边界应回退到完整工具调用组");
+  assert.ok(result.after < result.before, "点击必须越过该调用组并显示更早消息");
+});
+
 test("流式追加只重建未闭合尾块，已闭合块复用", () => {
   const harness = newHarness();
   const buffer = { taskId: "t-budget", text: "", reasoning: "", messageId: "msg-stream", blocks: [], blockEntries: [] };
@@ -251,6 +302,60 @@ test("流式追加只重建未闭合尾块，已闭合块复用", () => {
   const reused = after.streamingReused - before.streamingReused;
   assert.ok(built <= 60 + 60, `已闭合块不得重渲染：块渲染次数 ${built} 应接近帧数`);
   assert.ok(reused >= 60, `闭合块必须命中复用：复用次数 ${reused}`);
+});
+
+test("普通段落流式追加只解析增长的尾部，输出与完整解析一致", () => {
+  const harness = newHarness();
+  const result = harness.vm.runInContext(`(() => {
+    const originalParse = mdRenderer.parse;
+    const parsedLengths = [];
+    mdRenderer.parse = function (source, env) {
+      parsedLengths.push(source.length);
+      return originalParse.call(this, source, env);
+    };
+    const buffer = { text: "", blockEntries: [] };
+    for (let index = 0; index < 80; index += 1) {
+      buffer.text += "这是第 " + index + " 段普通正文，内容持续增长。\\n\\n";
+      FocusConversationRender.streamingBlocks(mdRenderer, buffer);
+    }
+    const lastParseLength = parsedLengths.at(-1);
+    mdRenderer.parse = originalParse;
+    return {
+      totalLength: buffer.text.length,
+      lastParseLength,
+      html: buffer.blockEntries.map(entry => entry.html).join(""),
+      expected: mdRenderer.render(buffer.text),
+    };
+  })()`, harness.context);
+  assert.equal(result.html, result.expected, "增量解析必须保持完整 Markdown 输出");
+  assert.ok(result.lastParseLength < result.totalLength / 4,
+    `末帧应只解析尾部，实际解析 ${result.lastParseLength}/${result.totalLength} 字符`);
+});
+
+test("增量解析遇到复杂 Markdown 与消息重置时保持完整解析结果", () => {
+  const harness = newHarness();
+  const sequences = [
+    ["普通正文。\n\n", "另一段普通正文。\n\n", "# 标题\n\n", "- 列表一\n- 列表二\n"],
+    ["不同正文。\n\n", "```js\n", "console.log(1);\n", "```\n\n", "结尾正文。"],
+    ["[链接]\n\n", "[链接]: https://example.com\n"],
+  ];
+  harness.context.__sequences = sequences;
+  const failures = harness.vm.runInContext(`(() => {
+    const failures = [];
+    const buffer = { text: "", blockEntries: [] };
+    for (const chunks of __sequences) {
+      buffer.text = "";
+      buffer.blockEntries = [];
+      for (const chunk of chunks) {
+        buffer.text += chunk;
+        const actual = FocusConversationRender.streamingBlocks(mdRenderer, buffer).map(entry => entry.html).join("");
+        const expected = mdRenderer.render(buffer.text);
+        if (actual !== expected) failures.push({ source: buffer.text, actual, expected });
+      }
+    }
+    return failures;
+  })()`, harness.context);
+  assert.equal(failures.length, 0, JSON.stringify(failures));
 });
 
 test("同一帧内多次状态变化只触发一次渲染", () => {

@@ -1907,6 +1907,7 @@ function _conversationRenderInput(detail, task) {
     renderDivider: renderCompressionDivider,
     escapeHtml,
     windowLimit: conversationView.windowLimit(task.task_id),
+    windowRows: conversationView.windowRows(task.task_id),
   };
 }
 
@@ -1927,7 +1928,7 @@ function loadEarlierConversation() {
   const detail = state.details.get(task.task_id);
   conversationView.loadEarlier(conversation, task.task_id, () => {
     if (detail) conversationView.reconcile(conversation, renderConversation(detail, task));
-  });
+  }, detail?.messages);
 }
 
 function conversationWindowLimit(taskId) {
@@ -1983,6 +1984,7 @@ function appendStreamDelta(envelope, field) {
     buffer.reasoning = "";
     buffer.blocks = [];
     buffer.blockEntries = [];
+    buffer.streamCheckpoint = null;
     buffer.reasoningRendered = undefined;
   }
   const accumulated = buffer[field] || "";
