@@ -144,7 +144,7 @@ class LoopAuthorityService:
                     raise HTTPException(422, "narrow 不得延长 delegation 到期时间")
                 expires_at = candidate
         elif isinstance(request, AdjustLoopBudgetsRequest):
-            budgets = request.budgets.model_dump()
+            budgets = request.budgets.as_grant_budgets(grant.budgets)
         return LoopDelegationGrant(
             grant_id=uuid.uuid4().hex,
             loop_id=loop.loop_id,

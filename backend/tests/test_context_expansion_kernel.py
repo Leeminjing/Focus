@@ -1,9 +1,9 @@
 r"""本文件对外提供 additive Context expansion 的 Kernel、shadow/rollback、并发发布、事务重试与提交后恢复集成测试。
 
-输入为真实 PostgreSQL 中带活动 Run 的 Loop、冻结单源或多源 Revision、Mission/Run evidence，以及 read-only 或
+输入为真实 PostgreSQL 中带活动 Run 的 Loop、冻结单源或多源 Revision、普通或跨七工作域 Mission/Run evidence，以及 read-only 或
 isolated-write 内部 CreateLanePlan；输出为边界 assessment、R3/R8/R5/F2 精确四角色 provenance、只读增量派生获授权、
 原子创建第二 Context、Directive 交付、双 Run 并存、并发发布收敛、serialization 重试不泄漏身份、提交后重启仅派发一次、
-compiler blocker 终结 Round，以及未授权隔离写入被拒绝的断言。具体工作流为播种 Loop 与冻结来源、登记完整 expansion
+七工作域六查询/超过旧预算的真实规划及真实 Worker 的资源/证据/窗口 blocker 在缺少检索 manifests 时仍保持 Portfolio 不变、compiler blocker 终结 Round，以及未授权隔离写入被拒绝的断言。具体工作流为播种 Loop 与冻结来源、登记完整 expansion
 lifecycle、执行 observe-only 与部署回滚、提交 Kernel intent、注入首次提交回滚或同时发布、从新连接恢复 Outbox 派发，并核对
 comparison artifact、持久计划、来源边与终态历史。
 示例：`pytest backend/tests/test_context_expansion_kernel.py`。
@@ -22,6 +22,7 @@ import pytest
 from config_helpers import app_config_for
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from focus.runtime.runs.usage import ModelUsage
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -32,6 +33,7 @@ from backend.app.desktop.agent_loop import (
     LoopWaveDispatcher,
     PatrolDecisionIntent,
 )
+from backend.app.desktop.agent_loop.context_expansion.artifact_repository import SemanticDerivationArtifactRepository
 from backend.app.desktop.agent_loop.context_expansion.contracts import (
     ContextSemanticManifest,
     DerivationStageRecord,
@@ -43,6 +45,19 @@ from backend.app.desktop.agent_loop.context_expansion.contracts import (
 )
 from backend.app.desktop.agent_loop.context_expansion.coordinator import (
     ContextExpansionStage,
+)
+from backend.app.desktop.agent_loop.context_expansion.retrieval_planner import (
+    LaneAdviceProposal,
+    PlannerQueryProposal,
+    PlannerReadProposal,
+    RetrievalBackedCognitiveAdvisor,
+)
+from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import RevisionSemanticIndexer
+from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
+    AuthorizedSemanticRetriever,
+    PlanningRetrievalSession,
+    PortfolioIndexCatalog,
+    RetrievalBudget,
 )
 from backend.app.desktop.agent_loop.context_expansion.models import (
     LoopContextDerivationArtifact,
@@ -65,7 +80,9 @@ from backend.app.desktop.agent_loop.models import (
     LoopDelegationGrant,
     LoopDirective,
     LoopRound,
+    LoopWorkerRequest,
 )
+from backend.app.desktop.agent_loop.expansion_resource_policy import ExpansionResourcePolicy, resolve_expansion_resources
 from backend.app.desktop.agent_loop.patrol_runtime import PatrolSessionLifecycle
 from backend.app.desktop.agent_loop.patrol_session_state import (
     PatrolActivity,
@@ -76,7 +93,8 @@ from backend.app.desktop.agent_loop.portfolio_publication import (
     LoopPortfolioPublicationService,
 )
 from backend.app.desktop.agent_loop.round_orchestration import LoopRoundOrchestrator
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
+from backend.app.desktop.agent_loop.schemas import LoopBudgetContract, LoopObservationEnvelope
+from backend.app.desktop.agent_loop.workers import LoopWorkerRuntime
 from backend.app.desktop.context_curation import (
     ComposeMessage,
     CreateLanePlan,
@@ -241,8 +259,12 @@ def test_persisted_semantic_assessment_obeys_planning_and_budget(
             assessment = await ContextExpansionStage(sessions, _SourceCheckpointer()).assess(observation)
             async with sessions() as session:
                 rows = await ContextExpansionRepository().by_round(session, seeded["round_id"])
+                memberships = tuple((await session.scalars(
+                    select(LoopContextMembership).where(LoopContextMembership.loop_id == seeded["loop_id"])
+                )).all())
 
             assert assessment.level == expected_level
+            assert len(memberships) == 1
             if expected_code is None:
                 assert len(assessment.opportunities) == 2
                 assert rows and all(row.state == "admitted" for row in rows)
@@ -252,6 +274,163 @@ def test_persisted_semantic_assessment_obeys_planning_and_budget(
                     assert rows == ()
                 else:
                     assert rows and all(row.state == "blocked" for row in rows)
+        finally:
+            await _stop(seeded["service"], seeded["loop_id"])
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "blocker_code",
+    ("expansion_policy_limit", "global_grant_exhausted", "evidence_insufficient", "provider_request_window"),
+)
+def test_planning_blocker_leaves_portfolio_unchanged(tmp_path: Path, blocker_code: str) -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        seeded = await _seed_loop(sessions, tmp_path, label=f"exp-{blocker_code[:9]}", started_at=datetime.now(UTC))
+        try:
+            await _grant_create_lane_and_add_active_run(sessions, seeded)
+            observation = _expansion_observation(seeded)
+            worker = observation.worker_results[0]
+            blocked_worker = {
+                **worker,
+                "result": {
+                    **worker["result"],
+                    "planning_blocker": {"code": blocker_code, "summary": "Frozen planning boundary reached"},
+                    "work_specs": (),
+                },
+            }
+            observation = observation.model_copy(update={"worker_results": (blocked_worker,)})
+            async with sessions() as session:
+                original = await session.get(AgentLoop, seeded["loop_id"])
+                original_revision = original.current_portfolio_revision_id
+            assessment = await ContextExpansionStage(sessions, _SourceCheckpointer()).assess(observation)
+            async with sessions() as session:
+                current = await session.get(AgentLoop, seeded["loop_id"])
+                memberships = tuple((await session.scalars(
+                    select(LoopContextMembership).where(LoopContextMembership.loop_id == seeded["loop_id"])
+                )).all())
+                expansions = await ContextExpansionRepository().by_round(session, seeded["round_id"])
+            assert assessment.level == "blocked"
+            assert blocker_code in {item.code for item in assessment.blockers}
+            assert current.current_portfolio_revision_id == original_revision
+            assert len(memberships) == 1
+            assert expansions == ()
+        finally:
+            await _stop(seeded["service"], seeded["loop_id"])
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_level", "expected_code"),
+    (
+        ("low_policy", "blocked", "expansion_policy_limit"),
+        ("global_grant", "blocked", "global_grant_exhausted"),
+        ("provider_window", "blocked", "provider_request_window"),
+        ("insufficient_evidence", "blocked", "evidence_insufficient"),
+        ("no_independent_work", "not_applicable", "not_independent"),
+    ),
+)
+def test_real_worker_negative_planning_preserves_portfolio(
+    tmp_path: Path, case: str, expected_level: str, expected_code: str,
+) -> None:
+    class _NegativePlanningModel:
+        def __init__(self) -> None:
+            self.last_usage = ModelUsage()
+            self.last_usage_reported = True
+
+        async def invoke(self, schema, system, payload):
+            self.last_usage = ModelUsage(model_calls=1, input_tokens=1200, output_tokens=100)
+            if case == "provider_window":
+                error = RuntimeError("private provider payload")
+                error.code = "context_length_exceeded"
+                raise error
+            if schema is PlannerQueryProposal:
+                return schema(rationale="Find the frozen requirement", queries=({
+                    "text": "durable lock", "kinds": ("semantic_unit",), "limit": 2,
+                },))
+            if schema is PlannerReadProposal:
+                return schema(
+                    rationale="Read exact evidence when required",
+                    candidate_ids=() if case == "insufficient_evidence" else (payload["candidates"][0]["candidate_id"],),
+                )
+            assert schema is LaneAdviceProposal
+            return schema(rationale="No separate work is justified", work_specs=())
+
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        seeded = await _seed_loop(sessions, tmp_path, label=f"rn-{case[:5]}", started_at=datetime.now(UTC))
+        try:
+            await _grant_create_lane_and_add_active_run(sessions, seeded)
+            observation = _expansion_observation(seeded)
+            source = _source_ref(seeded)
+            messages = (HumanMessage(content="The durable lock requirement must be verified.", id="source-evidence"),)
+            checkpointer = _SourceCheckpointer({source.checkpoint_id: messages})
+            index = RevisionSemanticIndexer().index(
+                source=source,
+                source_content_hash="a" * 64,
+                context_role="requirements",
+                active_objective="Verify the durable lock requirement",
+                raw_messages=({"id": "source-evidence", "role": "human", "content": messages[0].content},),
+            )
+            async with sessions.begin() as session:
+                await SemanticDerivationArtifactRepository().put_index(session, index)
+            catalog = PortfolioIndexCatalog.create(frontier_hash=observation.observed_frontier_hash, indexes=(index,))
+            policy = ExpansionResourcePolicy(max_unique_candidates=1, max_exact_reads=1) if case == "low_policy" else ExpansionResourcePolicy()
+            budgets = LoopBudgetContract(expansion_resources=policy).as_grant_budgets()
+            global_usage = {"model_calls": budgets["max_model_calls"]} if case == "global_grant" else {}
+            frozen = resolve_expansion_resources(budgets, observation.authority_revision, global_usage)
+            request = LoopWorkerRequest(
+                worker_request_id=uuid.uuid4().hex,
+                loop_id=seeded["loop_id"],
+                round_id=seeded["round_id"],
+                kind="lane_curator",
+                scope={"derivation_input": {
+                    "portfolio_index_catalog": catalog.model_dump(mode="json"),
+                    "frozen_expansion_resources": frozen.model_dump(mode="json"),
+                    "semantic_index_ids": (index.index_id,),
+                }},
+                attempt=1,
+            )
+            worker_result = await LoopWorkerRuntime(
+                sessions, app_config_for("real-negative", None),
+            )._retrieval_backed_advice(
+                request,
+                {"mission": observation.mission, "frontier_hash": observation.observed_frontier_hash},
+                _NegativePlanningModel(),
+                (index.index_id,),
+                observation.authority_revision,
+            )
+            async with sessions() as session:
+                persisted = await SemanticDerivationArtifactRepository().get_session(
+                    session, worker_result["planning_session"]["session_id"],
+                )
+                original = await session.get(AgentLoop, seeded["loop_id"])
+                original_portfolio = original.current_portfolio_revision_id
+            assert persisted is not None
+            assert persisted.model_dump(mode="json") == worker_result["planning_session"]
+            if expected_level == "blocked":
+                assert worker_result["planning_blocker"]["code"] == expected_code
+                assert worker_result.get("retrieved_manifests") is None
+            assessment = await ContextExpansionStage(sessions, checkpointer).assess(
+                observation.model_copy(update={"worker_results": ({
+                    "kind": "lane_curator", "status": "success", "result": worker_result,
+                },)}),
+            )
+            assert assessment.level == expected_level, (assessment.level, tuple((item.code, item.summary) for item in assessment.blockers))
+            assert expected_code in {item.code for item in assessment.blockers}
+            assert "portfolio_projection_failed" not in {item.code for item in assessment.blockers}
+            assert any(item.stage == "retrieval_planning" for item in assessment.stage_records)
+            async with sessions() as session:
+                loop = await session.get(AgentLoop, seeded["loop_id"])
+                expansions = await ContextExpansionRepository().by_round(session, seeded["round_id"])
+            assert loop.current_portfolio_revision_id == original_portfolio
+            assert expansions == ()
         finally:
             await _stop(seeded["service"], seeded["loop_id"])
             await engine.dispose()
@@ -430,7 +609,10 @@ def test_failed_projection_persists_round_stage_failure_without_opportunity(tmp_
     asyncio.run(run())
 
 
-def test_read_only_expansion_retries_atomically_and_dispatches_once_after_restart(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("multi_domain", (False, True))
+def test_read_only_expansion_retries_atomically_and_dispatches_once_after_restart(
+    tmp_path: Path, monkeypatch, multi_domain: bool,
+) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -438,8 +620,14 @@ def test_read_only_expansion_retries_atomically_and_dispatches_once_after_restar
         try:
             await _grant_create_lane_and_add_active_run(sessions, seeded)
             context_service = _ContextService()
+            observation = _expansion_observation(seeded, multi_domain=multi_domain)
+            if multi_domain:
+                observation = await _production_scale_observation(seeded, observation, context_service)
+                assert all(
+                    domain in observation.mission["outcome"]
+                    for domain in ("UI", "Agent Runtime", "Model Adapter", "Vault Tools", "Persistence", "Testing", "Packaging")
+                )
             stage = ContextExpansionStage(sessions, context_service.checkpointer)
-            observation = _expansion_observation(seeded)
             assessment = await stage.assess(observation)
             assert {item.work_spec.objective for item in assessment.opportunities} == {
                 "Analyze the implementation evidence independently.",
@@ -855,7 +1043,10 @@ def test_concurrent_expansion_publication_converges_on_one_context(tmp_path: Pat
     asyncio.run(run())
 
 
-def test_goal_revision_supersedes_compiled_expansion_before_authorization(tmp_path: Path) -> None:
+@pytest.mark.parametrize("stale_boundary", ("mission", "frontier"))
+def test_stale_source_supersedes_compiled_expansion_before_authorization(
+    tmp_path: Path, stale_boundary: str,
+) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -894,20 +1085,27 @@ def test_goal_revision_supersedes_compiled_expansion_before_authorization(tmp_pa
                 expansion_id=opportunity.opportunity_id,
             )
 
-            await seeded["service"].override(
-                seeded["loop_id"],
-                "Deliver the revised goal",
-                "Do not execute work derived from the previous Mission revision",
-                [{"criterion_id": "revised", "text": "revised evidence exists"}],
-            )
+            if stale_boundary == "mission":
+                await seeded["service"].override(
+                    seeded["loop_id"],
+                    "Deliver the revised goal",
+                    "Do not execute work derived from the previous Mission revision",
+                    [{"criterion_id": "revised", "text": "revised evidence exists"}],
+                )
+            else:
+                stale_intent = stale_intent.model_copy(update={"observed_frontier_hash": "b" * 64})
             result = await LoopKernel(sessions, queue_portfolio_publication=True).commit(stale_intent)
 
             async with sessions() as session:
                 expansion = await session.get(LoopContextExpansion, opportunity.opportunity_id)
+                membership_count = len(tuple((await session.scalars(
+                    select(LoopContextMembership).where(LoopContextMembership.loop_id == seeded["loop_id"])
+                )).all()))
             assert result.status == "superseded"
-            assert result.reason == "mission_revision_changed"
+            assert result.reason == ("mission_revision_changed" if stale_boundary == "mission" else "frontier_changed")
             assert expansion.state == "superseded"
-            assert expansion.safe_summary == "mission_revision_changed"
+            assert expansion.safe_summary == result.reason
+            assert membership_count == 1
         finally:
             await _stop(seeded["service"], seeded["loop_id"])
             await engine.dispose()
@@ -1283,7 +1481,104 @@ def _multi_source_expansion_observation(
     )
 
 
-def _expansion_observation(seeded: dict) -> LoopObservationEnvelope:
+class _LargeTaskPlanningModel:
+    def __init__(self) -> None:
+        self.last_usage = ModelUsage()
+
+    async def invoke(self, schema, system, payload):
+        self.last_usage = ModelUsage(
+            model_calls=1, input_tokens=25_000 if schema is PlannerQueryProposal else 2_000, output_tokens=100,
+        )
+        if schema is PlannerQueryProposal:
+            return schema(
+                rationale="Six work domains need separate historical retrieval.",
+                queries=tuple(
+                    {"text": f"domain {domain} requirement", "kinds": ("semantic_unit",), "limit": 16}
+                    for domain in ("ui", "runtime", "model", "tools", "persistence", "testing")
+                ),
+            )
+        if schema is PlannerReadProposal:
+            matching = next(item for item in payload["candidates"] if "durable lock" in item["descriptor"])
+            return schema(rationale="Read the frozen requirement.", candidate_ids=(matching["candidate_id"],))
+        assert schema is LaneAdviceProposal
+        unit_id = payload["allowed_candidate_unit_ids"][0]
+        return schema(
+            rationale="Independent implementation and verification require separate evidence trails.",
+            work_specs=(
+                _work_spec_draft("Analyze the implementation evidence independently.", "Explain the implementation boundary from exact evidence.", unit_id),
+                _work_spec_draft("Verify the behavior independently.", "Report reproducible verification evidence.", unit_id),
+            ),
+        )
+
+
+def _large_task_session(index, observation: LoopObservationEnvelope) -> PlanningRetrievalSession:
+    catalog = PortfolioIndexCatalog.create(frontier_hash=observation.observed_frontier_hash, indexes=(index,))
+    frozen = resolve_expansion_resources(LoopBudgetContract().as_grant_budgets(), observation.authority_revision)
+    policy = frozen.policy
+    return PlanningRetrievalSession.create(
+        observation_hash="c" * 64,
+        frontier_hash=observation.observed_frontier_hash,
+        catalog=catalog,
+        planner_version=RetrievalBackedCognitiveAdvisor.VERSION,
+        retrieval_version=AuthorizedSemanticRetriever.VERSION,
+        budget=RetrievalBudget(
+            max_queries=policy.max_queries,
+            max_candidates=policy.max_unique_candidates,
+            max_exact_reads=policy.max_exact_reads,
+            max_model_calls=policy.max_planner_model_calls,
+            max_tokens=policy.max_planner_tokens,
+        ),
+        frozen_resources=frozen,
+    )
+
+
+async def _production_scale_observation(
+    seeded: dict,
+    observation: LoopObservationEnvelope,
+    context_service: _ContextService,
+) -> LoopObservationEnvelope:
+    source = _source_ref(seeded)
+    messages = [HumanMessage(content="Implement the feature and preserve independent verification evidence.", id="source-evidence")]
+    messages.extend(
+        HumanMessage(
+            content="historical requirement R3 requires durable lock" if number == 30 else f"message {number}",
+            id=f"msg-{number}",
+        )
+        for number in range(1, 150)
+    )
+    context_service.checkpointer = _SourceCheckpointer({source.checkpoint_id: messages})
+    index = RevisionSemanticIndexer().index(
+        source=source,
+        source_content_hash="a" * 64,
+        context_role="requirements",
+        active_objective="Implement and independently verify the multi-domain change",
+        raw_messages=tuple({"id": message.id, "role": "human", "content": message.content} for message in messages),
+    )
+    planned = await RetrievalBackedCognitiveAdvisor(_LargeTaskPlanningModel()).plan(
+        {"mission": observation.mission, "frontier_hash": observation.observed_frontier_hash},
+        _large_task_session(index, observation),
+        (index,),
+    )
+    assert planned.session.state == "planned", (planned.blocker_code, planned.blocker_summary)
+    assert planned.proposal is not None and len(planned.proposal.work_specs) == 2
+    assert planned.session.usage.queries == 6
+    assert len(planned.session.query_hits) > 64
+    assert planned.session.usage.candidates < len(planned.session.query_hits)
+    assert planned.session.usage.tokens > 24_000
+    assert planned.session.usage.exact_reads > 0
+    return observation.model_copy(update={"worker_results": ({
+        "kind": "lane_curator",
+        "status": "success",
+        "result": {
+            "planning_session": planned.session.model_dump(mode="json"),
+            "work_specs": tuple(item.model_dump(mode="json") for item in planned.proposal.work_specs),
+            "retrieved_manifests": tuple(item.model_dump(mode="json") for item in planned.manifests),
+            "exact_reads": tuple(item.model_dump(mode="json") for item in planned.reads),
+        },
+    },)})
+
+
+def _expansion_observation(seeded: dict, *, multi_domain: bool = False) -> LoopObservationEnvelope:
     source = _source_ref(seeded)
     snapshot = seeded["snapshot"]
     source_unit = SemanticEvidenceUnit.create(
@@ -1309,7 +1604,11 @@ def _expansion_observation(seeded: dict) -> LoopObservationEnvelope:
             "authority_revision": snapshot["authority_revision"],
             "observed_frontier_hash": "a" * 64,
             "mission": {
-                "outcome": "Implement and independently verify the change",
+                "outcome": (
+                    "Implement and independently verify UI, Agent Runtime, Model Adapter, Vault Tools, "
+                    "Persistence, Testing, and Packaging"
+                    if multi_domain else "Implement and independently verify the change"
+                ),
                 "boundaries": {
                     "in_scope": [],
                     "required_invariants": [],

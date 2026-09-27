@@ -3,7 +3,7 @@ r"""本文件对外提供 Context expansion 的工作规格、语义证据、阶
 输入为冻结 Loop identity、认知工作目标、证据需求、语义 manifest、精确证据 frontier 与 Workspace 需求；输出为
 `WorkContextSpec`、`ContextSemanticManifest`、`ResolvedEvidenceBundle`、opportunity、assessment、intent 与 outcome。
 具体工作流为把 identity-bearing 数据规范化为深度不可变结构，对 canonical JSON 求哈希，并验证 confirmed statement、
-required coverage 与引用 frontier，使规划、解析、重放和提交共享同一语义身份。示例：`spec = WorkContextSpec.create(...)`。
+required coverage、引用 frontier 与编译证据用量账本，使规划、解析、重放和提交共享同一语义身份。示例：`spec = WorkContextSpec.create(...)`。
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from backend.app.desktop.agent_loop.expansion_usage import ExpansionUsageCharge, ExpansionUsageLedger
 from backend.app.desktop.context_curation import (
     CreateLanePlan,
     EvidenceRef,
@@ -58,12 +59,17 @@ DerivationStage = Literal[
     "compilation",
     "shadow_comparison",
 ]
-ExpansionLevel = Literal["required", "recommended", "not_applicable"]
+ExpansionLevel = Literal["required", "recommended", "not_applicable", "blocked"]
 ExpansionBlockerCode = Literal[
     "portfolio_projection_failed",
     "portfolio_index_failed",
     "portfolio_catalog_overflow",
     "retrieval_budget_exhausted",
+    "expansion_policy_limit",
+    "global_grant_exhausted",
+    "provider_request_window",
+    "evidence_insufficient",
+    "model_usage_unavailable",
     "retrieval_session_stale",
     "cognitive_planning_failed",
     "work_reconciliation_failed",
@@ -407,6 +413,7 @@ class ResolvedEvidenceBundle(_ExpansionModel):
     items: tuple[ResolvedEvidenceItem, ...] = ()
     required_requirement_ids: tuple[str, ...] = ()
     evidence: MultiSourceEvidence
+    usage_ledger: ExpansionUsageLedger | None = None
 
     @model_validator(mode="after")
     def require_complete_coverage(self) -> Self:
@@ -424,6 +431,15 @@ class ResolvedEvidenceBundle(_ExpansionModel):
             raise ValueError("required evidence requirement 未全部满足")
         if self.resolution_id != self._identity():
             raise ValueError("resolution identity 与精确证据不一致")
+        if self.usage_ledger is not None:
+            expected_operations = {
+                stable_expansion_hash("compiled-evidence-item", self.resolution_id, evidence_ref_key(ref))
+                for ref in self.evidence_frontier
+            }
+            if self.usage_ledger.ledger_id != self.resolution_id or {
+                charge.operation_id for charge in self.usage_ledger.charges
+            } != expected_operations or self.usage_ledger.total("compiled_evidence_item") != len(expected_operations):
+                raise ValueError("resolved evidence usage ledger 与冻结 frontier 不一致")
         return self
 
     def _identity(self) -> str:
@@ -460,6 +476,12 @@ class ResolvedEvidenceBundle(_ExpansionModel):
             tuple(evidence_ref_key(ref) for ref in evidence_frontier),
             tuple(item.model_dump(mode="json") for item in ordered_items),
         )
+        ledger = ExpansionUsageLedger(ledger_id=identity)
+        for ref in evidence_frontier:
+            ledger = ledger.record(ExpansionUsageCharge(
+                operation_id=stable_expansion_hash("compiled-evidence-item", identity, evidence_ref_key(ref)),
+                kind="compiled_evidence_item",
+            ))
         return cls(
             resolution_id=identity,
             work_spec_id=work_spec.work_spec_id,
@@ -468,6 +490,7 @@ class ResolvedEvidenceBundle(_ExpansionModel):
             items=ordered_items,
             required_requirement_ids=required,
             evidence=evidence,
+            usage_ledger=ledger,
         )
 
 
@@ -647,6 +670,8 @@ class ExpansionAssessment(_ExpansionModel):
             raise ValueError("required assessment 必须包含 opportunity")
         if self.level == "not_applicable" and self.opportunities and not self.blockers:
             raise ValueError("带候选的 not_applicable assessment 必须解释 blocker")
+        if self.level == "blocked" and (self.opportunities or not self.blockers):
+            raise ValueError("blocked assessment 必须仅包含因果 blocker")
         return self
 
     @property

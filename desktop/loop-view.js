@@ -1,7 +1,7 @@
 /*
- * 本文件对外提供 Agent Loop 生命周期外壳、Option 3 Patrol 活动轨、Mission 表单、授权控制与轻量生命周期补丁函数。
- * 输入为兼容 Loop 读模型、权威 Live projection、连接状态、当前 Context 与 Console 读模型；输出为紧凑顶栏、结构化 Patrol 记录抽屉及现有图/会话/事实工作区。
- * 具体工作流为启动态编辑 Mission；运行态只呈现已提交 Patrol/curator 活动和最后一致 projection，并把图、会话、事实交给专用视图。
+ * 本文件对外提供 Agent Loop 生命周期外壳、Option 3 Patrol 活动轨、Mission 表单、Expansion 资源状态、授权控制与轻量生命周期补丁函数。
+ * 输入为兼容 Loop 读模型、有效 Expansion 预算快照、权威 Live projection、连接状态、当前 Context 与 Console 读模型；输出为紧凑顶栏、资源/阻断状态及现有图/会话/事实工作区。
+ * 具体工作流为启动态编辑 Mission 与显式 Expansion 容量；运行态展示同一 API 的策略、用量和阻断，再把图、会话、事实交给专用视图。
  * 示例：`FocusLoopView.render(loopState, context, consoleState)`；SSE 到达时调用 `patchLifecycle(container, state)`。
  */
 (function (root, factory) {
@@ -10,6 +10,8 @@
   if (root) root.FocusLoopView = api;
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
+
+  const expansionBudget = typeof module === "object" && module.exports ? require("./loop-expansion-budget.js") : globalThis.FocusLoopExpansionBudget;
 
   const TERMINAL = new Set(["completed", "stopped", "failed"]);
   const escape = value => String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
@@ -30,8 +32,10 @@
       field("maxNewLanesPerRound", "每轮最大新 Lane", "max_new_lanes_per_round", 0, 16),
       field("maxConcurrentRuns", "最大并行 Run", "max_concurrent_runs", 1, 32),
       field("maxNoProgress", "最大无进展轮次", "max_no_progress", 1, 20),
-    ].join("");
+    ].join("") + expansionBudget.renderInputs(budgets.expansion_resources || DEFAULT_EXPANSION_POLICY);
   }
+
+  const DEFAULT_EXPANSION_POLICY = expansionBudget.DEFAULTS;
 
   function freshDirectRun(context) {
     const eligibility = context.loop_activation;
@@ -178,7 +182,7 @@
     const budgetDetails = `<div class="loop-budget"><span>Rounds ${escape(usage.rounds || 0)} / ${escape(budgets.max_rounds || "∞")}</span><span>Duration ${escape(usage.duration_seconds || 0)} / ${escape(budgets.max_duration_seconds || "∞")}s</span><span>Calls ${escape(usage.model_calls || 0)} / ${escape(budgets.max_model_calls || "∞")}</span><span>Input ${escape(usage.input_tokens || 0)} / ${escape(budgets.max_input_tokens || "∞")}</span><span>Output ${escape(usage.output_tokens || 0)} / ${escape(budgets.max_output_tokens || "∞")}</span><span>Retries ${escape(usage.retries || 0)} / ${escape(budgets.max_retries ?? "∞")}</span><span>Lanes ${escape(usage.lanes || 0)} / ${escape(budgets.max_lanes || "∞")}</span><span>Contexts ${escape(usage.contexts || 0)} / ${escape(budgets.max_contexts || "∞")}</span><span>Providers ${escape(usage.providers || 0)} / ${escape(budgets.max_providers || "∞")}</span></div>`;
     const consoleHtml = globalThis.FocusLoopConsoleView?.render({ ...consoleState, loopStatus: loop.status, terminal }) || '<section class="loop-console-loading">控制台模块不可用</section>';
     const waitRequest = globalThis.FocusLoopWaitRequestView?.render(loop.wait_request, waitUi, escape) || (loop.waiting_reason ? `<p class="loop-waiting" data-loop-waiting role="status">${escape(loop.waiting_reason)}</p>` : "");
-    return `<section class="loop-dashboard console-shell" data-loop-id="${escape(loop.loop_id)}" data-loop-status="${escape(loop.status)}">${commandBar(loop, consoleState)}${patrolActivity(state)}${waitRequest}${compressionStatus({ ...related, snapshot: loop })}${terminal ? `<div class="loop-terminal-notice" role="status"><strong>该 Loop 已${loop.status === "completed" ? "完成" : loop.status === "failed" ? "失败" : "停止"}</strong><span>历史 Context、完整会话和事实证据仍可查看；退出不会删除审计记录。</span></div>` : ""}${consoleHtml}<details class="loop-advanced"><summary>授权、预算与目标控制</summary>${budgetDetails}${grantControls(loop)}${history}${override}<p class="muted tiny">当前轮次 ${escape(loop.current_round_id || "—")} · 活动 Run ${escape(activeRuns.length)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)} · Authority R${escape(loop.authority_revision)}</p></details></section>`;
+    return `<section class="loop-dashboard console-shell" data-loop-id="${escape(loop.loop_id)}" data-loop-status="${escape(loop.status)}">${commandBar(loop, consoleState)}${patrolActivity(state)}${waitRequest}${expansionBudget.renderStatus(loop.expansion_resources)}${compressionStatus({ ...related, snapshot: loop })}${terminal ? `<div class="loop-terminal-notice" role="status"><strong>该 Loop 已${loop.status === "completed" ? "完成" : loop.status === "failed" ? "失败" : "停止"}</strong><span>历史 Context、完整会话和事实证据仍可查看；退出不会删除审计记录。</span></div>` : ""}${consoleHtml}<details class="loop-advanced"><summary>授权、预算与目标控制</summary>${budgetDetails}${grantControls(loop)}${history}${override}<p class="muted tiny">当前轮次 ${escape(loop.current_round_id || "—")} · 活动 Run ${escape(activeRuns.length)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)} · Authority R${escape(loop.authority_revision)}</p></details></section>`;
   }
 
   function patchLifecycle(container, state) {

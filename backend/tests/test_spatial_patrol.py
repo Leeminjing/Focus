@@ -1,4 +1,8 @@
-"""spatial-patrol 插件测试:观察服务单元、载体解析、插件接入校验(视觉硬性要求)。"""
+"""本文件对外提供 spatial-patrol 的非 DOCX 观察、载体和插件接入回归测试。
+
+输入为测试工作区、PDF/图片等载体与模拟模型配置；输出为路径边界、观察能力和视觉模型接入断言。
+具体工作流为在隔离目录装载插件并核对非 DOCX 观察与授权行为。示例：`pytest backend/tests/test_spatial_patrol.py -q`。
+"""
 
 import json
 import shutil
@@ -78,7 +82,6 @@ def test_is_viewable_suffixes():
     assert service.is_viewable("a.pdf")
     assert service.is_viewable("b.PNG")
     assert service.is_viewable("c.jpg")
-    assert service.is_viewable("d.docx")
     assert service.is_viewable("e.txt")
     assert service.is_viewable("f.md")
     assert not service.is_viewable("g.bin")
@@ -133,43 +136,12 @@ def test_supports_spatial_types():
     from plugins.spatial_patrol.spatial import ObservationService
 
     service = ObservationService({}, None)
-    assert service.is_viewable("a.docx")
     assert service.is_viewable("b.md")
     assert service.is_viewable("c.txt")
-    assert service.supports_spatial("a.docx")
-    assert service.supports_spatial("a.doc")
     assert not service.supports_spatial("b.md")  # md/txt 纯预览,无空间能力
     assert not service.supports_spatial("c.txt")
     assert service.supports_spatial("d.pdf")
     assert service.supports_spatial("e.png")
-
-
-def test_observe_docx_text_window(tmp_path):
-    """docx 文本载体观察:锚点字符位置前后窗口(半径扩窗)。"""
-    import asyncio
-
-    from docx import Document
-
-    doc_path = tmp_path / "sample.docx"
-    document = Document()
-    document.add_paragraph("段落A" * 100)
-    document.add_paragraph("段落B" * 100)
-    document.save(str(doc_path))
-
-    from plugins.spatial_patrol.spatial import ObservationService
-
-    service = ObservationService({"max_radius": 0.5}, None)
-
-    async def run():
-        text = await service.observe(str(tmp_path), "sample.docx", 1, 0.5, 0.5, 0.1)
-        assert "附近文本" in text
-        assert "锚点字符位置" in text
-        # 半径扩大 → 窗口更大
-        small = await service.observe(str(tmp_path), "sample.docx", 1, 0.5, 0.5, 0.05)
-        large = await service.observe(str(tmp_path), "sample.docx", 1, 0.5, 0.5, 0.2)
-        assert len(large) > len(small)
-
-    asyncio.run(run())
 
 
 def test_observe_md_not_spatial(tmp_path):

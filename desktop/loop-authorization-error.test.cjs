@@ -10,6 +10,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createAppHarness, readAppSource } = require("./test-helper.cjs");
+const ExpansionBudget = require("./loop-expansion-budget.js");
 
 
 test("authorization conflict stays beside the button and preserves mission plus retry identity", async () => {
@@ -39,7 +40,10 @@ test("authorization conflict stays beside the button and preserves mission plus 
   harness.vm.runInContext(readAppSource(), harness.context);
   const form = {
     dataset: {},
-    values: { outcome: "保留我的 Mission", autonomousCompression: "on", isolatedWrites: "off" },
+    values: {
+      outcome: "保留我的 Mission", autonomousCompression: "on", isolatedWrites: "off",
+      ...Object.fromEntries(Object.entries(ExpansionBudget.DEFAULTS).filter(([key]) => key !== "version").map(([key, value]) => [`expansion_${key}`, String(value)])),
+    },
     querySelector(selector) {
       if (selector === 'button[type="submit"]') return submit;
       if (selector === "[data-loop-start-status]") return status;

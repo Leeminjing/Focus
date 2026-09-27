@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
  * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
- * 对话/Context/Agent/Commitment/压缩/插件与模块化 Agent Loop Portfolio 控制台、结构化 Mission 编辑、自主压缩授权/审计/来源恢复、终止 Loop 退出/后继 Loop 准备等视图；逐轮材料以有序 binding 草稿和独立图片必看
+ * 对话/Context/Agent/Commitment/压缩/插件与模块化 Agent Loop Portfolio 控制台、结构化 Mission 编辑、Context Expansion 资源授权/状态、自主压缩授权/审计/来源恢复、终止 Loop 退出/后继 Loop 准备等视图；逐轮材料以有序 binding 草稿和独立图片必看
  * 集合表达，自定义分组是服务端事实，分组模式与折叠是任务 UI 偏好。具体工作流为在任务切换时加载
  * 材料、历史和分组，用纯函数规范化选择/分组，再通过单一异步事件边界更新 DOM 和运行状态；
  * 任务详情刷新带请求身份守卫，迟到或跨 Context 的响应不得覆盖更新的会话状态；会话容器只有一个
@@ -19,7 +19,7 @@
  * 阅读意图与阅读锚点决定跟随或回正；作曲区未发送内容的事实来源是按任务归属的草稿镜像
  * （`FocusComposerDraft`），输入事件即镜像、去抖落盘、页面隐藏与卸载流程各补一次落盘，因此任何界面重建
  * 与模式切换都不丢内容，也不依赖 `beforeunload`；Agent Loop 的 snapshot、sequence reducer、断线重放和重同步
- * 由独立 Live Store/Connection 负责；普通 API 响应统一委托无 DOM 的 FocusHttpResponse 解码，本文件只组合页面生命周期和控制请求。
+ * 由独立 Live Store/Connection 负责；Expansion 表单和阻断视图委托 FocusLoopExpansionBudget，普通 API 响应统一委托无 DOM 的 FocusHttpResponse 解码，本文件只组合页面生命周期和控制请求。
  * 示例：renderFocus(activeTask()); await sendMain()。
  */
 "use strict";
@@ -993,7 +993,7 @@ async function startAgentLoop(form) {
       candidate_ttl_seconds: 900,
       min_reduction_tokens: 256,
     } : null,
-    budgets: loopBudgetPayload(values),
+    budgets: loopBudgetPayload(values, true),
     equipment: { model_name: saved.model_name || null, patrol_model_name: saved.model_name || null, permissions, skills: Array.isArray(saved.skills) ? saved.skills : [], access_mode: saved.access_mode || null },
   };
   state.loop.loading = true;
@@ -1044,7 +1044,7 @@ async function respondToLoopWait(request, answer) {
   }
 }
 
-function loopBudgetPayload(values) {
+function loopBudgetPayload(values, starting = false) {
   return {
     max_rounds: Number(values.get("maxRounds")),
     max_duration_seconds: Number(values.get("maxDurationSeconds")),
@@ -1058,6 +1058,7 @@ function loopBudgetPayload(values) {
     max_new_lanes_per_round: Number(values.get("maxNewLanesPerRound")),
     max_concurrent_runs: Number(values.get("maxConcurrentRuns")),
     max_no_progress: Number(values.get("maxNoProgress")),
+    ...window.FocusLoopExpansionBudget.submission(values, starting),
   };
 }
 

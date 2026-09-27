@@ -2,7 +2,7 @@ r"""本文件对外提供 CognitivePlannerPort 与 WorkerResultCognitivePlanner�
 
 输入为冻结 observation、结构化 signal 集合、retrieval-session 验证的 manifests 以及受监督 Curator worker 的结构化结果；
 输出为 `CognitivePlanResult` 中零个、一个或多个稳定 `WorkContextSpec`，或显式 planning failure。具体工作流为先传播显式 retrieval
-blocker，再严格解析 `WorkContextDraft`、校验每个 candidate unit 来自同一 session 的 retrieved manifests 并冻结 planner version；
+blocker，再严格解析 `WorkContextDraft`、校验新版 session 的每个 candidate unit 已在同一冻结来源内精读并冻结 planner version；
 本层不选择最终证据、不做同义归并或提交 Context。
 示例：`result = await WorkerResultCognitivePlanner().plan(observation, signals, manifests)`。
 """
@@ -21,9 +21,14 @@ from backend.app.desktop.agent_loop.context_expansion.contracts import (
     WorkContextSpec,
 )
 from backend.app.desktop.agent_loop.context_expansion.signals import ExpansionSignalSet
+from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import ExactEvidenceRead, PlanningRetrievalSession
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 
 _DRAFTS = TypeAdapter(tuple[WorkContextDraft, ...])
+
+
+class PlannerEvidenceIdentityError(ValueError):
+    pass
 
 
 class CognitivePlannerPort(Protocol):
@@ -75,10 +80,14 @@ class WorkerResultCognitivePlanner:
             drafts = tuple(
                 draft
                 for payload in payloads
-                for draft in _DRAFTS.validate_python(payload.get("work_specs") or ())
+                for draft in self._drafts_from_payload(payload, observation)
             )
+        except PlannerEvidenceIdentityError:
+            return self._failure("planner_evidence_identity_unknown", "planner 引用了同一冻结 session 未精读的 semantic unit", False)
         except ValidationError as exc:
             return self._failure("planner_contract_invalid", str(exc)[:1800], False)
+        except ValueError:
+            return self._failure("planner_contract_invalid", "新版 planning result 与冻结 session provenance 不一致", False)
         known_units = {unit.unit_id for manifest in manifests for unit in manifest.units}
         invented = sorted(
             {
@@ -107,6 +116,33 @@ class WorkerResultCognitivePlanner:
             work_specs=work_specs,
             required_work_spec_ids=tuple(sorted(required)),
         )
+
+    @staticmethod
+    def _drafts_from_payload(payload: dict, observation: LoopObservationEnvelope) -> tuple[WorkContextDraft, ...]:
+        drafts = _DRAFTS.validate_python(payload.get("work_specs") or ())
+        raw_session = payload.get("planning_session") or {}
+        if raw_session.get("schema_version") != "retrieval-session-v2":
+            return drafts
+        session = PlanningRetrievalSession.model_validate(raw_session)
+        if session.state != "planned" or session.frontier_hash != observation.observed_frontier_hash:
+            raise ValueError("planning result frontier/state 不一致")
+        if session.frozen_resources.grant_revision != observation.authority_revision:
+            raise ValueError("planning result grant revision 已过期")
+        visible_contexts = {item.get("context_id") for item in observation.portfolio_frontier}
+        if not set(session.source_context_ids).issubset(visible_contexts):
+            raise ValueError("planning result source Context 越界")
+        reads = tuple(ExactEvidenceRead.model_validate(item) for item in payload.get("exact_reads") or ())
+        if reads != session.reads:
+            raise ValueError("planning result exact reads 与冻结 session 不一致")
+        allowed = {item.entry_id for item in reads}
+        if any(
+            unit_id not in allowed
+            for draft in drafts
+            for requirement in draft.evidence_requirements
+            for unit_id in requirement.candidate_unit_ids
+        ):
+            raise PlannerEvidenceIdentityError("WorkSpec candidate unit 未在同一 session 精读")
+        return drafts
 
     @staticmethod
     def _failure(code: str, summary: str, retryable: bool) -> CognitivePlanResult:

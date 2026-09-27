@@ -2,7 +2,7 @@ r"""本文件对外提供 ExpansionPlanCompilerPort、ContextExpansionPlanCompil
 
 输入为冻结 observation、identity-only SpawnContextIntent、WorkContext opportunity、resolved multi-source evidence、validated claim dossier
 与三维 quality assessment；输出为 CompiledExpansion 或阶段专属 ExpansionBlocker。具体工作流为 production façade 重建 manifests、
-读取授权 corpus、解析 required evidence、调用受监督 synthesis 与独立 quality gate，再由纯 compiler 只接受 identity 匹配且三维 pass
+读取授权 corpus、按冻结资源策略解析 required evidence 并记录证据账本、调用受监督 synthesis 与独立 quality gate，再由纯 compiler 只接受 identity 匹配且三维 pass
 的 package，按 Work Contract、Ledger、Dossier、Primary Evidence 编译；不存在 extractive fallback 或 quality bypass。示例：
 `compiled = await compiler.compile(observation, opportunity, intent)`。
 """
@@ -60,6 +60,7 @@ from backend.app.desktop.agent_loop.context_expansion.synthesis_service import (
     StructuredContextSynthesisService,
 )
 from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.agent_loop.expansion_resource_policy import resolve_expansion_resources
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.context_curation import (
@@ -170,8 +171,17 @@ class ContextExpansionPlanCompiler:
                     )
                 )
                 return self._blocked(opportunity, "portfolio_projection_failed", str(exc), tuple(records))
-            limit = int((observation.budget.get("limits") or {}).get("max_expansion_evidence_items", 128) or 128)
-            resolved = self._resolver.resolve(opportunity, manifests, corpus, max_items=max(1, limit))
+            resources = resolve_expansion_resources(
+                dict(observation.budget.get("limits") or {}),
+                observation.authority_revision,
+                dict(observation.budget.get("usage") or {}),
+            )
+            resolved = self._resolver.resolve(
+                opportunity,
+                manifests,
+                corpus,
+                max_items=resources.policy.max_compiled_evidence_items,
+            )
             if isinstance(resolved, ExpansionBlocker):
                 record = resolution_timer.finish((), resolved.summary, failure_code=resolved.code)
                 return resolved.model_copy(update={"stage_records": (*resolved.stage_records, record)})

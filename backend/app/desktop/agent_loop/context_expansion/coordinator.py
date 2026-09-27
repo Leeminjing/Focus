@@ -1,7 +1,7 @@
 r"""本文件对外提供 ContextExpansionCoordinator、ContextExpansionStage 与 ExpansionResolution。
 
 输入为冻结 LoopObservationEnvelope、可替换的 signal/projector/planner/reconciler/policy 阶段与已存在 work-spec identities；输出为
-确定性 ExpansionAssessment。具体工作流为 façade 汇总完整-index retrieval sessions，依次传递 signals、retrieved manifests、
+确定性 ExpansionAssessment。具体工作流为 façade 汇总完整-index retrieval sessions，先传播已持久化的 planning blocker，再依次传递 signals、retrieved manifests、
 WorkContextSpec、relation reconciliation 与 admission；Stage 记录 lifecycle，并把 identity-only Patrol 选择编译为经 synthesis/quality
 验证的内部 LanePlan；Stage 另提供不创建 expansion/Context/Portfolio mutation 的 observe-only comparison，并可通过部署开关停止自动写入。
 示例：`resolution = await stage.resolve(observation, intent)`。
@@ -145,6 +145,17 @@ class ContextExpansionCoordinator:
                     f"已完成 {len(planning_sessions)} 个冻结 planning retrieval sessions",
                 )
             )
+        planning_blockers = tuple(
+            item["planning_blocker"] for item in planning_payloads if item.get("planning_blocker")
+        )
+        if planning_blockers:
+            first = planning_blockers[0]
+            return self._failed_assessment(
+                observation,
+                str(first.get("code") or "retrieval_planning_failed"),
+                str(first.get("summary") or "retrieval-backed planning blocked")[:1800],
+                stage_records=tuple(records),
+            )
         projection_timer = DerivationStageTimer(
             "portfolio_projection",
             (signals.observation_hash,),
@@ -188,7 +199,7 @@ class ContextExpansionCoordinator:
             )
             return self._failed_assessment(
                 observation,
-                "cognitive_planning_failed",
+                planned.failure.code if planned.failure.code in {"retrieval_budget_exhausted", "expansion_policy_limit", "global_grant_exhausted", "provider_request_window", "evidence_insufficient", "model_usage_unavailable"} else "cognitive_planning_failed",
                 planned.failure.summary,
                 retryable=planned.failure.retryable,
                 stage_records=tuple(records),
@@ -329,7 +340,7 @@ class ContextExpansionCoordinator:
             round_id=observation.round_id,
             frontier_hash=observation.observed_frontier_hash,
             policy_version=self._policy.VERSION,
-            level="not_applicable",
+            level="blocked" if code in {"retrieval_budget_exhausted", "expansion_policy_limit", "global_grant_exhausted", "provider_request_window", "evidence_insufficient", "model_usage_unavailable"} else "not_applicable",
             blockers=(ExpansionBlocker(code=code, summary=summary, retryable=retryable),),
             stage_records=stage_records,
             reconciliation=reconciliation,
@@ -644,7 +655,7 @@ class ContextExpansionStage:
             )
         return assessment.model_copy(
             update={
-                "level": assessment.level if opportunities else "not_applicable",
+                "level": assessment.level if opportunities or assessment.level == "blocked" else "not_applicable",
                 "opportunities": opportunities,
                 "blockers": tuple(blockers.values()),
                 "decision_deadline_round": assessment.decision_deadline_round if opportunities else None,

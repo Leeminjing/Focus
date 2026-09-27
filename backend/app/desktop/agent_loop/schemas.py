@@ -1,7 +1,7 @@
-r"""本文件对外提供 Agent Loop API、Mission、类型化等待响应、用户介入、observation、completion 与 Patrol decision 封闭判别联合。
+r"""本文件对外提供 Agent Loop API、版本化 Expansion 预算、Mission、类型化等待响应、用户介入、observation、completion 与 Patrol decision 封闭判别联合。
 
 输入为用户 Mission 或兼容旧目标、grant、冻结版本、Expansion/recovery opportunity、Patrol action 和 verifier evidence；输出为拒绝未知字段的不可变
-合同。具体工作流为创建请求先解析结构化 Mission 或无损适配旧三字段，介入请求区分 Context/Portfolio 作用域，模型只以 identity
+合同。具体工作流为预算合同验证 Expansion 子策略并标记来源，创建请求再解析结构化 Mission 或无损适配旧三字段，介入请求区分 Context/Portfolio 作用域，模型只以 identity
 选择（spawn_context/recover_context）或结构化拒绝（decline_expansion）表达 Context 派生与恢复、可信 plan 由服务端从冻结 opportunity 取用，持久 legacy create 仅由兼容 adapter 解析，其余 action 依 discriminator 解析，
 envelope 绑定所有控制 revision 与未处理用户意图，completion 以稳定 check_id 绑定类型化证据；自主压缩 action 只能引用已持久化候选，Kernel 只接受
 PatrolDecisionIntent。示例：`intent = PatrolDecisionIntent.model_validate(payload)`。
@@ -24,6 +24,7 @@ from backend.app.desktop.agent_loop.compression_authority.contracts import (
     ApplyContextCompressionAction,
     AutonomousCompressionPolicy,
 )
+from backend.app.desktop.agent_loop.expansion_resource_policy import ExpansionResourcePolicy
 from backend.app.desktop.agent_loop.mission_contract import (
     EvidenceKind,
     LegacyMissionAdapter,
@@ -198,6 +199,23 @@ class LoopBudgetContract(StrictModel):
     max_new_lanes_per_round: int = Field(default=3, ge=0, le=16)
     max_concurrent_runs: int = Field(default=4, ge=1, le=32)
     max_no_progress: int = Field(default=3, ge=1, le=20)
+    expansion_resources: ExpansionResourcePolicy = Field(default_factory=ExpansionResourcePolicy)
+    expansion_resources_source: Literal["default", "explicit"] = "default"
+
+    def as_grant_budgets(self, previous: dict[str, Any] | None = None) -> dict[str, Any]:
+        budgets = self.model_dump(mode="json")
+        if previous:
+            for name in type(self).model_fields:
+                if name not in self.model_fields_set and name in previous:
+                    budgets[name] = previous[name]
+        if "expansion_resources" in self.model_fields_set:
+            budgets["expansion_resources_source"] = "explicit"
+        elif previous and previous.get("expansion_resources"):
+            budgets["expansion_resources"] = ExpansionResourcePolicy.model_validate(budgets["expansion_resources"]).model_dump(mode="json")
+            budgets["expansion_resources_source"] = previous.get("expansion_resources_source", "explicit")
+        else:
+            budgets["expansion_resources_source"] = "default"
+        return budgets
 
 
 class NarrowLoopGrantRequest(StrictModel):

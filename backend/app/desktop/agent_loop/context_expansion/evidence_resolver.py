@@ -4,13 +4,14 @@ r"""本文件对外提供 SemanticEvidenceSelectorPort、IdentityBoundedEvidence
 ResolvedEvidenceBundle 或结构化 ExpansionBlocker。具体工作流为先验证 planner 明确指认的 semantic units，再仅以结构化权威
 对象的精确 identity 补足未覆盖 requirement，按角色与 source constraints 验证 coverage，并扩展完整 Tool Exchange；
 同 role 消息、关键词和最近消息都不能独立证明 coverage。
-示例：`result = resolver.resolve(opportunity, manifests, corpus, max_items=64)`。
+示例：`result = resolver.resolve(opportunity, manifests, corpus, max_items=policy.max_compiled_evidence_items)`。
 """
 
 from __future__ import annotations
 
 from typing import Protocol
 
+from backend.app.desktop.agent_loop.expansion_resource_policy import ExpansionResourcePolicy
 from backend.app.desktop.agent_loop.context_expansion.contracts import (
     ContextSemanticManifest,
     EvidenceRequirement,
@@ -105,7 +106,7 @@ class MultiSourceEvidenceResolver:
         manifests: tuple[ContextSemanticManifest, ...],
         corpus: FrozenEvidenceCorpus,
         *,
-        max_items: int = 128,
+        max_items: int = ExpansionResourcePolicy().max_compiled_evidence_items,
     ) -> ResolvedEvidenceBundle | ExpansionBlocker:
         unit_refs = self._unit_refs(manifests, corpus)
         resolved: list[ResolvedEvidenceItem] = []

@@ -1,6 +1,6 @@
 r"""本文件对外提供 AgentLoopService 创建、查询、Mission 修订、类型化等待响应、控制、临时用户介入与事件读取用例。
 
-输入为认证后的 LoopCreateRequest、Loop id、控制动作或用户确认的 Mission；输出为完整 Loop 快照与
+输入为认证后的 LoopCreateRequest、Loop id、控制动作或用户确认的 Mission；输出为包含有效 Expansion 策略、用量和阻断的 Loop 快照与
 持久事件。具体工作流为 start 先锁 Context、核验后继资格并经策展所有权边界释放已终态 predecessor，再原子绑定初始用户 Run、创建 grant/holder/membership/budget/首轮并登记成员派生事实；pause/resume 推进 revision，stop
 统一委托 TerminalLifecycle 原子收敛运行时并释放 Lane；失败轮恢复时新建观察轮并累计 retry；直接用户消息只建立一次性 intent 并以 authority revision
 隔离旧 Patrol 工作，不改写 Mission；override 仅在用户确认后创建 Mission revision。示例：`await service.start(body)`。
@@ -20,7 +20,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopContextMembership, LoopDecision, LoopDelegationGrant, LoopDirective, LoopEventOutbox, LoopGoalRevision, LoopPendingDecision, LoopRound, LoopUserIntent
-from backend.app.desktop.agent_loop.schemas import LoopCreateRequest, LoopWaitResponseRequest
+from backend.app.desktop.agent_loop.schemas import LoopBudgetContract, LoopCreateRequest, LoopWaitResponseRequest
+from backend.app.desktop.agent_loop.expansion_resource_projection import expansion_resource_view, planning_session_view
+from backend.app.desktop.agent_loop.context_expansion.models import LoopPlanningRetrievalSession
 from backend.app.desktop.agent_loop.mission_contract import LegacyMissionAdapter, LoopMissionContract
 from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
 from backend.app.desktop.agent_loop.mission_service import MissionRevisionService
@@ -162,7 +164,7 @@ class AgentLoopService:
                 authored_by="user",
                 legacy_goal_revision_id=goal.goal_revision_id,
             )
-            grant = LoopDelegationGrant(grant_id=uuid.uuid4().hex, loop_id=loop.loop_id, revision=1, holder_id=request.holder_id, capabilities=list(request.capabilities), context_scope=list(request.context_scope), permission_scope=list(request.permission_scope), budgets=request.budgets.model_dump(), delegable_gates=list(request.delegable_gates), compression_policy=compression_policy, expires_at=datetime.fromisoformat(request.expires_at) if request.expires_at else None)
+            grant = LoopDelegationGrant(grant_id=uuid.uuid4().hex, loop_id=loop.loop_id, revision=1, holder_id=request.holder_id, capabilities=list(request.capabilities), context_scope=list(request.context_scope), permission_scope=list(request.permission_scope), budgets=request.budgets.as_grant_budgets(), delegable_gates=list(request.delegable_gates), compression_policy=compression_policy, expires_at=datetime.fromisoformat(request.expires_at) if request.expires_at else None)
             subscription = CurationSourceSubscription(subscription_id=uuid.uuid4().hex, program_id=program_id, source_context_id=context.task_id, source_role="initial", selection_policy={}, position=0)
             lane = CurationLane(lane_id=lane_id, program_id=program_id, managed_context_id=context.task_id, purpose="Primary execution", normalized_purpose="primary execution", lane_policy={}, current_source_frontier_hash=frontier_hash, current_semantic_fingerprint=context_revision.content_hash)
             try:
@@ -683,7 +685,20 @@ class AgentLoopService:
         duration_seconds = max(0, int((datetime.now(UTC) - created_at).total_seconds()))
         mission_payload = None if mission is None else {"mission_revision_id": mission.mission_revision_id, "revision": mission.revision, "active": True, "outcome": mission.outcome, "boundaries": mission.boundaries, "completion_checks": mission.completion_checks, "authored_by": mission.authored_by, "legacy_goal_revision_id": mission.legacy_goal_revision_id}
         wait_request = await self._waits.active(session, loop.loop_id)
-        return {"loop_id": loop.loop_id, "workspace_id": loop.workspace_id, "initial_context_id": loop.initial_context_id, "program_id": loop.program_id, "status": loop.status, "health": loop.health, "revision": loop.revision, "goal_revision": loop.goal_revision, "active_mission_revision": loop.goal_revision, "authority_revision": loop.authority_revision, "holder_id": loop.holder_id, "current_round_id": loop.current_round_id, "current_portfolio_revision_id": loop.current_portfolio_revision_id, "waiting_reason": loop.waiting_reason, "wait_request": None if wait_request is None else self._wait_request_payload(wait_request), "equipment": loop.equipment, "mission": mission_payload, "goal": None if goal is None else {"goal": goal.goal, "task_contract": goal.task_contract, "acceptance_criteria": goal.acceptance_criteria}, "grant": None if grant is None else {"grant_id": grant.grant_id, "status": grant.status, "capabilities": grant.capabilities, "context_scope": grant.context_scope, "permission_scope": grant.permission_scope, "budgets": grant.budgets, "delegable_gates": grant.delegable_gates, "compression_policy": grant.compression_policy, "expires_at": grant.expires_at.isoformat() if grant.expires_at else None}, "usage": None if usage is None else {"rounds": usage.rounds, "duration_seconds": duration_seconds, "model_calls": usage.model_calls, "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens, "retries": usage.retries, "lanes": usage.lanes, "contexts": context_count, "providers": configured_provider_count(loop.equipment or {}), "no_progress_count": usage.no_progress_count}, "final_result": loop.final_result}
+        planning_rows = list((await session.execute(
+            select(LoopPlanningRetrievalSession, LoopRound.number)
+            .join(LoopRound, LoopRound.round_id == LoopPlanningRetrievalSession.round_id)
+            .where(LoopPlanningRetrievalSession.loop_id == loop.loop_id)
+            .order_by(LoopRound.number.desc(), LoopPlanningRetrievalSession.updated_at.desc(), LoopPlanningRetrievalSession.session_id.desc())
+            .limit(24)
+        )).all())
+        expansion_resources = None if grant is None else expansion_resource_view(
+            grant.budgets,
+            grant.revision,
+            {} if usage is None else {"model_calls": usage.model_calls, "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens},
+            tuple(planning_session_view(row.payload, round_id=row.round_id, round_number=number) for row, number in reversed(planning_rows)),
+        )
+        return {"loop_id": loop.loop_id, "workspace_id": loop.workspace_id, "initial_context_id": loop.initial_context_id, "program_id": loop.program_id, "status": loop.status, "health": loop.health, "revision": loop.revision, "goal_revision": loop.goal_revision, "active_mission_revision": loop.goal_revision, "authority_revision": loop.authority_revision, "holder_id": loop.holder_id, "current_round_id": loop.current_round_id, "current_portfolio_revision_id": loop.current_portfolio_revision_id, "waiting_reason": loop.waiting_reason, "wait_request": None if wait_request is None else self._wait_request_payload(wait_request), "equipment": loop.equipment, "mission": mission_payload, "goal": None if goal is None else {"goal": goal.goal, "task_contract": goal.task_contract, "acceptance_criteria": goal.acceptance_criteria}, "grant": None if grant is None else {"grant_id": grant.grant_id, "status": grant.status, "capabilities": grant.capabilities, "context_scope": grant.context_scope, "permission_scope": grant.permission_scope, "budgets": grant.budgets, "delegable_gates": grant.delegable_gates, "compression_policy": grant.compression_policy, "expires_at": grant.expires_at.isoformat() if grant.expires_at else None}, "usage": None if usage is None else {"rounds": usage.rounds, "duration_seconds": duration_seconds, "model_calls": usage.model_calls, "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens, "retries": usage.retries, "lanes": usage.lanes, "contexts": context_count, "providers": configured_provider_count(loop.equipment or {}), "no_progress_count": usage.no_progress_count}, "expansion_resources": expansion_resources, "final_result": loop.final_result}
 
     @staticmethod
     def _wait_request_payload(request: LoopWaitRequest) -> dict:
@@ -728,7 +743,12 @@ class AgentLoopService:
         grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.loop_id == loop.loop_id, LoopDelegationGrant.status == "active").with_for_update())
         if grant is None:
             raise HTTPException(409, "Loop 没有 active grant")
-        grant.budgets = {**(grant.budgets or {}), **budgets}
+        revised = LoopBudgetContract.model_validate({**(grant.budgets or {}), **budgets})
+        payload = revised.model_dump(mode="json")
+        payload["expansion_resources_source"] = (
+            "explicit" if "expansion_resources" in budgets else (grant.budgets or {}).get("expansion_resources_source", "default")
+        )
+        grant.budgets = payload
 
     async def _resume_after_wait(
         self,

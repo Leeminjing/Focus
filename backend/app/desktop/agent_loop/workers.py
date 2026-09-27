@@ -62,6 +62,7 @@ from backend.app.desktop.agent_loop.curator_assignments import (
     CuratorAssignmentRepository,
 )
 from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.agent_loop.expansion_resource_policy import FrozenExpansionResources
 from backend.app.desktop.agent_loop.mission_contract import LegacyMissionAdapter
 from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
 from backend.app.desktop.agent_loop.models import (
@@ -287,6 +288,7 @@ class LoopWorkerRuntime:
                     payload,
                     worker,
                     index_ids,
+                    loop.authority_revision,
                 )
                 rationale = str(result_payload.get("rationale") or "retrieval-backed planning blocked")
             else:
@@ -325,16 +327,20 @@ class LoopWorkerRuntime:
         payload: dict[str, Any],
         worker: StructuredWorkerModel,
         index_ids: tuple[str, ...],
+        authority_revision: int,
     ) -> dict[str, Any]:
         derivation = dict(request.scope.get("derivation_input") or {})
         catalog = PortfolioIndexCatalog.model_validate(derivation["portfolio_index_catalog"])
-        budget_payload = dict((derivation.get("budget") or {}).get("limits") or {})
+        frozen = FrozenExpansionResources.model_validate(derivation["frozen_expansion_resources"])
+        if frozen.grant_revision != authority_revision:
+            raise ValueError("retrieval_session_stale: grant revision 已变化")
+        policy = frozen.policy
         budget = RetrievalBudget(
-            max_queries=int(budget_payload.get("max_expansion_retrieval_queries", 6) or 6),
-            max_candidates=int(budget_payload.get("max_expansion_retrieval_candidates", 64) or 64),
-            max_exact_reads=int(budget_payload.get("max_expansion_exact_reads", 24) or 24),
-            max_model_calls=int(budget_payload.get("max_expansion_planner_model_calls", 3) or 3),
-            max_tokens=int(budget_payload.get("max_expansion_planner_tokens", 24000) or 24000),
+            max_queries=policy.max_queries,
+            max_candidates=policy.max_unique_candidates,
+            max_exact_reads=policy.max_exact_reads,
+            max_model_calls=policy.max_planner_model_calls,
+            max_tokens=policy.max_planner_tokens,
         )
         observation_hash = stable_expansion_hash(
             "retrieval-planning-observation",
@@ -351,6 +357,7 @@ class LoopWorkerRuntime:
             planner_version=RetrievalBackedCognitiveAdvisor.VERSION,
             retrieval_version="authorized-lexical-retriever-v1",
             budget=budget,
+            frozen_resources=frozen,
         )
         async with self._sessions.begin() as session:
             existing = await self._derivation_artifacts.get_session(session, planning.session_id)

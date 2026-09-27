@@ -39,6 +39,7 @@ from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import 
 from backend.app.desktop.agent_loop.context_expansion.stage_telemetry import (
     DerivationStageTimer,
 )
+from backend.app.desktop.agent_loop.expansion_resource_policy import resolve_expansion_resources
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.context_evolution import (
@@ -70,7 +71,7 @@ class PortfolioSemanticIndexService:
         *,
         concurrency: int = 4,
         max_attempts: int = 2,
-        catalog_max_descriptor_chars: int = 64000,
+        catalog_max_descriptor_chars: int | None = None,
         semantic_projector_factory: Callable[[], Any] | None = None,
         semantic_claim_verifier_factory: Callable[[], Any] | None = None,
     ) -> None:
@@ -81,7 +82,7 @@ class PortfolioSemanticIndexService:
         self._indexer = RevisionSemanticIndexer()
         self._concurrency = max(1, concurrency)
         self._max_attempts = max(1, max_attempts)
-        self._catalog_max_descriptor_chars = max(1, catalog_max_descriptor_chars)
+        self._catalog_max_descriptor_chars = catalog_max_descriptor_chars
         self._semantic_projector_factory = semantic_projector_factory
         self._semantic_claim_verifier_factory = semantic_claim_verifier_factory
         self._projection_attempts: dict[str, tuple[dict[str, Any], ...]] = {}
@@ -109,7 +110,7 @@ class PortfolioSemanticIndexService:
             catalog = PortfolioIndexCatalog.create(
                 frontier_hash=observation.observed_frontier_hash,
                 indexes=tuple(indexes),
-                max_descriptor_chars=self._catalog_max_descriptor_chars,
+                max_descriptor_chars=self._catalog_capacity(observation),
             )
             async with self._sessions.begin() as session:
                 for index in indexes:
@@ -140,6 +141,15 @@ class PortfolioSemanticIndexService:
             indexes=tuple(indexes),
             catalog=catalog,
         )
+
+    def _catalog_capacity(self, observation: LoopObservationEnvelope) -> int:
+        observed_budget = getattr(observation, "budget", {}) or {}
+        policy = resolve_expansion_resources(
+            dict(observed_budget.get("limits") or {}),
+            getattr(observation, "authority_revision", 1),
+            dict(observed_budget.get("usage") or {}),
+        ).policy
+        return min(policy.max_catalog_descriptor_chars, self._catalog_max_descriptor_chars) if self._catalog_max_descriptor_chars is not None else policy.max_catalog_descriptor_chars
 
     async def _result(
         self,

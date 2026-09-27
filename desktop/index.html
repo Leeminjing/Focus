@@ -2,7 +2,7 @@
 <!--
   本文件提供 Focus 桌面宿主的持久挂载结构。输入为 app.js 的同源数据与原生 DOM 更新，
   输出为受内容安全策略保护的全局导航、任务上下文、工作区、Loop Portfolio 控制台、检查器、
-  材料 Blob 加载器、浮层、对话框和可复用模板。具体工作流为先约束资源来源，再加载无状态 UI、Live Loop schema/reducer/连接器、兼容读模型与材料 loader，最后启动 app.js。
+  材料 Blob 加载器、浮层、对话框和可复用模板。具体工作流为先约束资源来源，再加载 Expansion 预算模块、无状态 UI、Live Loop schema/reducer/连接器、兼容读模型与材料 loader，最后启动 app.js。
   示例：浏览器加载 index.html 后由 app.js 挂载 #app。
 -->
 <html lang="zh-CN">
@@ -238,11 +238,12 @@
   <script src="./context-conversation-view.js?v=20260916b"></script>
   <script src="./loop-facts-view.js?v=20260916b"></script>
   <script src="./loop-console-view.js?v=20260916b"></script>
-  <script src="./loop-view.js?v=20260916b"></script>
+  <script src="./loop-expansion-budget.js?v=20260926a"></script>
+  <script src="./loop-view.js?v=20260926a"></script>
   <script src="./portfolio-view.js?v=20260915a"></script>
   <script src="./context-evolution-view.js?v=20260915a"></script>
   <script src="./message-provenance-view.js?v=20260915a"></script>
   <script src="./workspace-slots-view.js?v=20260915a"></script>
-  <script src="./app.js?v=20260914a"></script>
+  <script src="./app.js?v=20260926b"></script>
 </body>
 </html>

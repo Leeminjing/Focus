@@ -1,8 +1,8 @@
 """本文件对外提供主 Agent 中断与基于 checkpoint 继续对话的端到端回归。
 
-输入为可控的首轮慢图、后续正常图和空外部工具池；输出为中断状态、消息历史与恢复回复断言。
+输入为可控的首轮慢图、后续正常图和空外部工具池；输出为中断状态、消息历史、恢复回复与持久 Run 收尾断言。
 具体工作流为替换 Agent 装配与外部工具发现边界，真实执行 RunManager、统一 worker、
-StreamBridge、checkpoint、cancel 与续跑链路，避免用户 MCP 配置或网络状态污染运行时验证。
+StreamBridge、checkpoint、cancel 与续跑链路，确认数据库收尾后再删除测试线程，避免用户 MCP 配置、网络状态或并发清理污染验证。
 示例：`python -m pytest backend/tests/test_agent_interrupt.py -q`。
 """
 
@@ -134,6 +134,16 @@ def test_interrupted_main_run_resumes_conversation_from_checkpoint(tmp_path, wai
             assert messages_final[0]["content"] == "第一轮任务"
             assert messages_final[1]["content"] == "继续第二轮"
             assert messages_final[2]["content"] == "replied-after-interrupt"
+
+            wait_until(
+                lambda: (
+                    client.portal.call(service.get_run, run1["run_id"]).status == "interrupted"
+                    and client.portal.call(service.get_run, run2["run_id"]).status == "success"
+                ),
+                timeout=10,
+                interval=0.1,
+                message="Run 的持久终态未完成，不能清理测试线程",
+            )
 
             client.portal.call(
                 _cleanup, service, task["task_id"], workspace["workspace_id"], thread_id

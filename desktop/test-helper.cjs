@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 app-*.test.cjs 共用的 VM 测试脚手架。输入为选择器、状态记录、网络与额外全局
  * 配置，输出为带浏览器语义、事件广播、localStorage、Markdown 渲染器、Context helper 与
- * app/会话容器节点语义的隔离上下文；具体工作流为统一测试环境、按 index 顺序加载纯 HTTP 解码器、按浏览器语义向同类型全部监听器派发事件、
+ * app/会话容器节点语义的隔离上下文；具体工作流为统一测试环境、按 index 顺序加载预算与纯 HTTP 解码器、按浏览器语义向同类型全部监听器派发事件、
  * 让 #app 读取时按页面整体语义拼回会话容器内容，并允许调用方覆盖差异点。
  * 会话容器默认使用 test-dom.cjs 的最小真实 DOM（子节点数组、插入/替换/删除与选择器查询均有真实
  * 效果），使会话写入路径的对账行为可被断言；其余节点仍是惰性桩。示例：`createAppHarness({ fetch: true })`。
@@ -157,6 +157,7 @@ function createAppHarness(options = {}) {
   };
   // window === globalThis(浏览器语义):app.js 经 window.markdownit 访问渲染器
   context.window = context;
+  vm.runInContext(fs.readFileSync(require.resolve("./loop-expansion-budget.js"), "utf8"), context);
   // markdown-it(vendor):与浏览器一致,script 内容在 context 内执行,暴露全局 markdownit
   vm.runInContext(fs.readFileSync(require.resolve("./vendor/markdown-it.min.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./skill-picker.js"), "utf8"), context);

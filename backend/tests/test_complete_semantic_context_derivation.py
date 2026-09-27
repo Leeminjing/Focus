@@ -2,7 +2,7 @@ r"""本文件对外提供完整 semantic Context derivation 的核心合同与�
 
 输入为 150 条冻结历史、生产三消息、Tool Exchange、真实 model usage、retrieval budgets、受监督角色重试、关系变体、R3/R8/R5/F2
 bundle 与 claim/quality fixtures；输出为完整覆盖、旧证据可达、版本 provenance、scope/budget fail-closed、受限 verifier 输入、
-降级 catalog 的 Curator 连续性、顺序无关 reconciliation、attempt audit、claim graph identity 和 quality-gated compilation 断言。
+降级 catalog 的 Curator 连续性、顺序无关 reconciliation、attempt audit、证据项账本、claim graph identity 和 quality-gated compilation 断言。
 具体工作流为仅调用公开领域接口，不依赖模型或权威提交；数据库恢复另由 persistence integration 覆盖。示例：
 `pytest backend/tests/test_complete_semantic_context_derivation.py -q`。
 """
@@ -1147,6 +1147,9 @@ def test_compilation_requires_matching_passing_quality_assessment() -> None:
     async def run():
         spec, evidence, items = failure_analysis_fixture()
         bundle = ResolvedEvidenceBundle.create(work_spec=spec, evidence=evidence, items=items)
+        assert bundle.usage_ledger is not None
+        assert bundle.usage_ledger.total("compiled_evidence_item") == len(bundle.evidence_frontier)
+        assert ResolvedEvidenceBundle.model_validate_json(bundle.model_dump_json()).usage_ledger == bundle.usage_ledger
         opportunity = ExpansionOpportunity.create(
             loop_id="loop",
             round_id="round",
