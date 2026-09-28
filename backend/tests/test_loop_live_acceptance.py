@@ -1,4 +1,4 @@
-r"""本文件验证 Live Loop Execution Plane 的真实生产组件验收场景。
+r"""本文件对外提供 Live Loop Execution Plane 生产组件的验收测试。
 
 输入为真实 PostgreSQL Loop、三个 Context、生产 Patrol/Curator/Kernel/Dispatcher、Run activity bridge、FactProjector 与
 Portfolio event producer；输出为三路同时运行、授权 Directive 改变目标 Context 当前动作、Fact 生命周期和 Portfolio 发布的
@@ -31,6 +31,8 @@ from backend.app.desktop.agent_loop.curator_assignments import (
     CuratorAssignmentRepository,
 )
 from backend.app.desktop.agent_loop.dispatch import LoopWaveDispatcher
+from backend.app.desktop.agent_loop.directive_causality import DirectiveCausalityRecorder
+from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
 from backend.app.desktop.agent_loop.fact_models import LoopFact, LoopFactRevision
 from backend.app.desktop.agent_loop.fact_projector import FactProjector
 from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
@@ -126,6 +128,11 @@ def test_production_components_drive_the_complete_live_multi_context_story(tmp_p
             assert len(committed.directive_ids) == 3
             launched = await LoopWaveDispatcher(sessions, _RunningRunLauncher(sessions)).dispatch(loop_id, snapshot["current_round_id"], 3)
             assert len(launched) == 3
+            async with sessions.begin() as session:
+                for directive_id in committed.directive_ids:
+                    directive = await session.get(LoopDirective, directive_id, with_for_update=True)
+                    await DirectiveLifecycleRepository().transition(session, directive_id, "run_started", run_id=directive.launched_run_id)
+                    await DirectiveCausalityRecorder().run_started(session, directive, directive.launched_run_id)
             async with sessions() as session:
                 directives = tuple((await session.scalars(select(LoopDirective).where(LoopDirective.directive_id.in_(committed.directive_ids)).order_by(LoopDirective.created_at))).all())
                 runs = tuple((await session.scalars(select(DesktopRun).where(DesktopRun.run_id.in_(launched)))).all())

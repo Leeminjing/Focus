@@ -151,7 +151,11 @@ function conversation(contextId) {
     { index: 1, message: { id: "compression-block-1", role: "human", content: "三轮调试均未改变同一个 session uploader 初始化失败。", compression: { source: [{ id: "debug-1", role: "tool", content: "first failed trace" }, { id: "debug-2", role: "assistant", content: "second debugging attempt" }, { id: "debug-3", role: "tool", content: "third failed trace" }] } }, provenance: null },
     { index: 2, message: { id: "root-ai", role: "assistant", content: "压缩恢复后已继续下一轮并记录证据。" }, provenance: null },
   ];
-  return { context_id: contextId, revision: { revision_id: `${contextId}-revision`, generation: 1 }, projection_status: "valid", total: messages.length, range: { start: 0, end: messages.length }, next_before: null, has_more: false, messages };
+  const node = consoleManifest.nodes.find(item => item.context_id === contextId);
+  const revision = contextId === "root" && loop.compressionRestored
+    ? { ...node.revision, revision_id: "root-r6", generation: 6 }
+    : node.revision;
+  return { context_id: contextId, revision, projection_status: "valid", total: messages.length, range: { start: 0, end: messages.length }, next_before: null, has_more: false, messages };
 }
 
 const factRows = [
@@ -235,7 +239,7 @@ window.fetch = async (input, options = {}) => {
     });
     return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
   }
-  if (/\/desktop\/api\/agent-loops\/[^/]+\/console$/.test(path)) return json({ ...consoleManifest, loop_id: loop.snapshot?.loop_id || consoleManifest.loop_id, status: loop.snapshot?.status || "running", health: loop.snapshot?.health || "observing" });
+  if (/\/desktop\/api\/agent-loops\/[^/]+\/console$/.test(path)) return json({ ...consoleManifest, nodes: consoleManifest.nodes.map(node => node.context_id === "root" && loop.compressionRestored ? { ...node, revision: { ...node.revision, revision_id: "root-r6", generation: 6 } } : node), loop_id: loop.snapshot?.loop_id || consoleManifest.loop_id, status: loop.snapshot?.status || "running", health: loop.snapshot?.health || "observing" });
   if (/\/desktop\/api\/agent-loops\/[^/]+\/contexts\/[^/]+\/conversation$/.test(path)) return json(conversation(decodeURIComponent(path.split("/").at(-2))));
   if (/\/desktop\/api\/agent-loops\/[^/]+\/facts$/.test(path)) {
     const contextId = url.searchParams.get("context_id");

@@ -1,7 +1,7 @@
 /*
- * 本文件对外提供 Loop 中单个 Context 的完整会话、真实 directive 因果带与三类介入面板。
+ * 本文件对外提供 Loop 中单个 Context 的固定 revision 会话、当前执行活动、真实 directive 因果带与三类介入面板。
  * 输入为分页会话、选中节点、canonical causality、来源审计、筛选与 Loop 生命周期；输出为状态摘要、Patrol/用户来源分明的因果事件、完整消息和运行期命令表单。
- * 具体工作流为因果带只读取已提交事件，来源徽标保持在审计栏，正文不被元数据污染；会话维持有界双向分页，终止态只读；
+ * 具体工作流为当前执行活动读取 Live projection，固定 revision 历史会话维持有界双向分页；因果带只读取已提交事件，来源徽标保持在审计栏，正文不被元数据污染，终止态只读；
  * 标题与描述同源时只显示一次，不在页头重复渲染同一段 purpose。
  * 示例：`FocusContextConversationView.render(consoleState)`。
  */
@@ -54,6 +54,16 @@
     return `<section class="context-causality" aria-label="指令因果链"><span class="loop-kicker">Live causality</span><ol>${visible.map(item => `<li data-causality-id="${escape(item.event_id)}" class="is-${escape(item.entity_type)}"><i aria-hidden="true"></i><strong>${escape(item.entity_type === "directive" ? "Patrol directive" : item.entity_type)}</strong><span>${escape(item.summary)}</span><small>${escape(item.kind)}</small></li>`).join("")}</ol></section>`;
   }
 
+  function executionActivity(node) {
+    const run = node.active_run;
+    if (!run) return '<section class="context-execution-activity" aria-label="当前执行活动"><span class="loop-kicker">当前执行活动</span><strong>当前没有运行中的 Context Run</strong></section>';
+    const action = node.live_action?.detail?.run_id === run.id ? node.live_action : null;
+    const summary = run.last_activity_summary || action?.summary || (run.status === "pending" ? "Run 已交付，等待执行" : "Run 正在执行，等待首个已确认活动");
+    const occurredAt = run.last_activity_at || action?.occurred_at;
+    const time = occurredAt ? new Date(occurredAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "尚无已确认活动";
+    return `<section class="context-execution-activity" aria-label="当前执行活动" aria-live="polite"><span class="loop-kicker">当前执行活动 · ${escape(run.status)}</span><strong>${escape(summary)}</strong><small>${escape(time)} · Run ${escape(run.id)}</small></section>`;
+  }
+
   function render(state) {
     const manifest = state.manifest;
     const node = manifest?.nodes?.find(item => item.context_id === state.selectedContextId);
@@ -78,8 +88,17 @@
     const composer = state.terminal
       ? '<div class="loop-intervention is-readonly"><strong>历史只读</strong><span>该 Loop 已结束，退出后可在当前 Context 发送新的用户消息并创建后继 Loop。</span></div>'
       : `<form id="loopInterventionForm" class="loop-intervention"><div class="intervention-modes" role="tablist">${modes.map(item => `<button type="button" role="tab" data-action="loop-intervention-mode" data-mode="${item[0]}" aria-selected="${state.interventionMode === item[0]}" class="${state.interventionMode === item[0] ? "is-active" : ""}">${item[1]}</button>`).join("")}</div><p>${escape(mode[2])}</p><div class="intervention-composer"><textarea name="content" required rows="3" placeholder="${escape(mode[0] === "direct_context_message" ? "向这个 Context 发送新的 HumanMessage" : "表达你的意图，Patrol 将在下次判断中处理")}"></textarea><button class="primary" type="submit" ${state.pending === "intervention" ? "disabled" : ""}>${state.pending === "intervention" ? "提交中…" : "发送"}</button></div></form>`;
-    return `<section class="context-conversation"><header class="conversation-head"><div><span class="loop-kicker">完整 Context 会话</span><h3>${escape(name)}</h3><p>${purpose}R${escape(conversation?.revision?.generation || node.revision?.generation || "—")} · ${escape(conversation?.total ?? "…")} 条消息</p></div><span class="context-run-state is-${escape(node.latest_run?.status || node.status)}">${escape(node.latest_run?.status || node.status)}</span></header><div class="context-metrics">${contextMetrics(node)}</div>${causality(state.causality)}<div class="conversation-tools"><input type="search" data-loop-message-search value="${escape(state.messageSearch)}" placeholder="搜索消息内容、工具调用、文件名…"><div class="conversation-filters">${filters.map(value => `<button type="button" data-action="loop-message-filter" data-filter="${value}" class="${state.messageFilter === value ? "is-active" : ""}">${value}</button>`).join("")}</div></div><div class="loop-transcript" data-loop-transcript data-context-id="${escape(node.context_id)}" data-range-start="${escape(conversation?.range?.start ?? 0)}">${historyControl}${messages.map(item => messageCard({ ...item, context_id: node.context_id })).join("") || '<p class="history-boundary">没有匹配的消息</p>'}${newerControl}</div>${composer}</section>`;
+    return `<section class="context-conversation"><header class="conversation-head"><div><span class="loop-kicker">Context · 固定 Revision 历史会话</span><h3>${escape(name)}</h3><p>${purpose}R${escape(conversation?.revision?.generation || node.revision?.generation || "—")} · ${escape(conversation?.total ?? "…")} 条消息</p></div><span class="context-run-state is-${escape(node.latest_run?.status || node.status)}">${escape(node.latest_run?.status || node.status)}</span></header>${executionActivity(node)}<div class="context-metrics">${contextMetrics(node)}</div>${causality(state.causality)}<div class="conversation-tools"><input type="search" data-loop-message-search value="${escape(state.messageSearch)}" placeholder="搜索消息内容、工具调用、文件名…"><div class="conversation-filters">${filters.map(value => `<button type="button" data-action="loop-message-filter" data-filter="${value}" class="${state.messageFilter === value ? "is-active" : ""}">${value}</button>`).join("")}</div></div><div class="loop-transcript" data-loop-transcript data-context-id="${escape(node.context_id)}" data-range-start="${escape(conversation?.range?.start ?? 0)}">${historyControl}${messages.map(item => messageCard({ ...item, context_id: node.context_id })).join("") || '<p class="history-boundary">没有匹配的消息</p>'}${newerControl}</div>${composer}</section>`;
   }
 
-  return Object.freeze({ render });
+  function renderExecutionActivity(state) {
+    const node = state.manifest?.nodes?.find(item => item.context_id === state.selectedContextId);
+    return node ? executionActivity(node) : "";
+  }
+
+  function renderCausality(state) {
+    return causality(state.causality);
+  }
+
+  return Object.freeze({ render, renderExecutionActivity, renderCausality });
 });

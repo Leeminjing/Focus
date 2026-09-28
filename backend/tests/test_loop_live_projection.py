@@ -1,4 +1,4 @@
-r"""本文件验证后端 LoopLiveProjection schema、实体 reducers、单边界 snapshot、rebuild 与 lag diagnostics。
+r"""本文件对外提供后端 LoopLiveProjection schema、实体 reducers、snapshot、rebuild 与 lag diagnostics 的回归测试。
 
 输入为 active/idle/paused/completed 状态、重复/陈旧/缺口事件和隔离 PostgreSQL journal；输出为确定性实体状态、
 有界 timeline、byte-equivalent rebuild、cursor 与零 lag 断言。具体工作流为先纯归约合同，再追加真实事件并投影。
@@ -51,6 +51,24 @@ def test_reducer_is_deterministic_for_duplicates_stale_revisions_and_gaps() -> N
     assert state.unknown_kinds == ("future.widget.changed",)
     with pytest.raises(ProjectionSequenceGap):
         reducer.reduce(LoopLiveProjection(loop_id="l1", last_sequence=1), _envelope(3, "context.updated", "context", "c2", 1, {}))
+
+
+def test_run_activity_time_tracks_confirmed_events_not_transport_heartbeat() -> None:
+    reducer = LoopLiveProjectionReducer()
+    state = reducer.reduce(LoopLiveProjection(loop_id="l1"), _envelope(
+        1, "context.run.started", "context_run", "run-1", 1,
+        {"run_id": "run-1", "context_id": "c1", "status": "running"},
+    ))
+    model = _envelope(
+        2, "context.model.completed", "model_call", "message-1", 1,
+        {"run_id": "run-1", "context_id": "c1", "summary": "模型已完成一次响应"},
+    ).model_copy(update={"occurred_at": datetime(2026, 1, 1, 0, 1, tzinfo=UTC)})
+    state = reducer.reduce(state, model)
+    assert state.runs["run-1"].state["last_activity_at"] == "2026-01-01T00:01:00+00:00"
+    assert state.runs["run-1"].state["last_activity_kind"] == "context.model.completed"
+    heartbeat = _envelope(3, "transport.heartbeat", "transport", "connection-1", 1, {})
+    state = reducer.reduce(state, heartbeat)
+    assert state.runs["run-1"].state["last_activity_at"] == "2026-01-01T00:01:00+00:00"
 
 
 def test_snapshot_projector_and_rebuild_share_one_committed_boundary(tmp_path: Path) -> None:

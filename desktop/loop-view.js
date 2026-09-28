@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Agent Loop 生命周期外壳、Option 3 Patrol 活动轨、Mission 表单、Expansion 资源状态、授权控制与轻量生命周期补丁函数。
  * 输入为兼容 Loop 读模型、Mission 交付与有效 Expansion 预算快照、权威 Live projection、连接状态、当前 Context 与 Console 读模型；输出为紧凑顶栏、交付/资源/阻断状态及现有图/会话/事实工作区。
- * 具体工作流为启动态编辑 Mission 与显式 Expansion 容量；运行态展示同一 API 的策略、用量和阻断，再把图、会话、事实交给专用视图。
+ * 具体工作流为启动态编辑 Mission 与显式 Expansion 容量；运行态以当前 Live round 显示轮次、以已结算用量计算预算，再把图、会话、事实交给专用视图。
  * 示例：`FocusLoopView.render(loopState, context, consoleState)`；SSE 到达时调用 `patchLifecycle(container, state)`。
  */
 (function (root, factory) {
@@ -126,14 +126,15 @@
     return `<details class="loop-mission-history"><summary>Mission 历史 · ${escape(revisions.length)} 个 revision</summary><div>${revisions.map(item => item.kind === "structured_mission" ? `<article class="loop-mission-history-item${item.active ? " is-active" : ""}"><strong>Mission R${escape(item.revision)}${item.active ? " · 当前" : ""}</strong><p>${escape(item.outcome)}</p></article>` : `<article class="loop-mission-history-item${item.active ? " is-active" : ""}"><strong>旧版 Goal Contract R${escape(item.revision)}${item.active ? " · 当前" : ""}</strong><p>${escape(item.goal)}</p><h4>旧版 Task Contract 原文</h4><pre>${escape(item.task_contract)}</pre></article>`).join("")}</div></details>`;
   }
 
-  function commandBar(loop, consoleState) {
+  function commandBar(loop, consoleState, currentRound) {
     const usage = loop.usage || {};
     const budgets = loop.grant?.budgets || {};
     const contextCount = consoleState?.manifest?.nodes?.length ?? usage.contexts ?? 0;
     const terminal = TERMINAL.has(loop.status);
     const controls = loop.status === "running" ? ["pause", "stop"] : loop.status === "paused" ? [...(loop.grant ? ["resume"] : []), "stop"] : loop.status === "waiting_user" ? ["stop"] : [];
     const percent = budgetPercent(usage, budgets);
-    return `<header class="loop-command-bar"><div class="loop-command-title"><h2>Portfolio Map</h2>${goalDisclosure(loop)}</div><div class="loop-command-metrics"><div class="loop-command-metric"><span class="loop-live-dot is-${escape(loop.status)}" aria-hidden="true"></span><div><strong>${escape(loop.status)}</strong><small>Loop 状态</small></div></div><div class="loop-command-metric"><strong>Round ${escape(usage.rounds || 0)}</strong><small>/ ${escape(budgets.max_rounds || "∞")}</small></div><div class="loop-command-metric"><strong>${escape(contextCount)} 个 Context</strong><small>真实 Portfolio</small></div><div class="loop-command-metric"><strong>Portfolio Patrol</strong><small>${escape(loop.health || "idle")}</small></div><div class="loop-budget-ring" style="--loop-budget-progress:${percent}%" role="img" aria-label="预算已使用 ${percent}%"><span>${percent}%</span></div></div><div class="loop-primary-controls">${controls.map(command => `<button type="button" data-action="loop-control" data-loop-control="${command}">${({ pause: "暂停", resume: "恢复", stop: "停止" })[command]}</button>`).join("")}${terminal ? '<button type="button" data-action="loop-exit">退出当前 Loop</button><button class="primary" type="button" data-action="loop-prepare-new">新建 Loop</button>' : ""}</div></header>`;
+    const round = terminal ? Number(usage.rounds || 0) : Number(currentRound || usage.rounds || 0);
+    return `<header class="loop-command-bar"><div class="loop-command-title"><h2>Portfolio Map</h2>${goalDisclosure(loop)}</div><div class="loop-command-metrics"><div class="loop-command-metric"><span class="loop-live-dot is-${escape(loop.status)}" aria-hidden="true"></span><div><strong>${escape(loop.status)}</strong><small>Loop 状态</small></div></div><div class="loop-command-metric"><strong>Round ${escape(round)}</strong><small>/ ${escape(budgets.max_rounds || "∞")}</small></div><div class="loop-command-metric"><strong>${escape(contextCount)} 个 Context</strong><small>真实 Portfolio</small></div><div class="loop-command-metric"><strong>Portfolio Patrol</strong><small>${escape(loop.health || "idle")}</small></div><div class="loop-budget-ring" style="--loop-budget-progress:${percent}%" role="img" aria-label="预算已使用 ${percent}%"><span>${percent}%</span></div></div><div class="loop-primary-controls">${controls.map(command => `<button type="button" data-action="loop-control" data-loop-control="${command}">${({ pause: "暂停", resume: "恢复", stop: "停止" })[command]}</button>`).join("")}${terminal ? '<button type="button" data-action="loop-exit">退出当前 Loop</button><button class="primary" type="button" data-action="loop-prepare-new">新建 Loop</button>' : ""}</div></header>`;
   }
 
   function timeLabel(value) {
@@ -142,20 +143,56 @@
     return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   }
 
+  function activityAge(activityAt, createdAt) {
+    const source = activityAt || createdAt;
+    if (!source) return "尚无已确认模型或工具活动";
+    const age = Math.max(0, Date.now() - new Date(source).getTime());
+    const stale = Number.isFinite(age) && age >= 300000
+      ? ` · 已 ${Math.floor(age / 60000)} 分钟无新的已确认活动`
+      : "";
+    return `最近确认活动：${timeLabel(source)}${stale}`;
+  }
+
+  function currentActivity(live) {
+    const runs = Object.values(live.runs || {}).filter(item => ["pending", "running"].includes(item.state?.status)).sort((left, right) => right.updated_sequence - left.updated_sequence);
+    const active = runs[0];
+    if (active) {
+      const last = [...(live.activity_timeline || [])].reverse().find(item => item.detail?.run_id === active.entity_id && ["context_run", "model_call", "tool", "artifact"].includes(item.entity_type));
+      const activityAt = active.state.last_activity_at || last?.occurred_at;
+      return {
+        label: `Context Run · ${active.state.status}`,
+        summary: active.state.last_activity_summary || last?.summary || (active.state.status === "pending" ? "Context Run 已交付，等待执行" : "Context Run 正在执行，等待首个已确认活动"),
+        detail: activityAge(activityAt, active.state.created_at),
+      };
+    }
+    const patrol = live.patrol_session?.state;
+    if (patrol) return {
+      label: `Patrol · ${patrol.phase || patrol.status}`,
+      summary: patrol.safe_summary || patrol.summary || patrol.phase || patrol.status,
+      detail: patrol.wait_reason || `阶段：${patrol.phase || "observing"}`,
+    };
+    return {
+      label: "Loop 状态",
+      summary: live.loop?.state?.waiting_reason || live.loop?.state?.health || "等待首轮活动",
+      detail: "尚无已确认模型或工具活动",
+    };
+  }
+
   function patrolActivity(state) {
     const live = state.live;
     const patrol = live?.patrol_session?.state;
-    if (!live || !patrol) return "";
+    if (!live) return "";
     const round = live.round?.state?.number || "—";
-    const entries = (live.activity_timeline || []).filter(item => ["patrol_session", "curator", "context_expansion", "directive"].includes(item.entity_type)).slice(-16).reverse();
+    const entries = (live.activity_timeline || []).filter(item => ["patrol_session", "curator", "context_expansion", "directive", "context_run", "model_call", "tool", "artifact"].includes(item.entity_type)).slice(-16).reverse();
     const curators = Object.values(live.curators || {}).sort((left, right) => right.updated_sequence - left.updated_sequence);
     const expansions = Object.values(live.expansions || {}).sort((left, right) => right.updated_sequence - left.updated_sequence);
     const connection = state.connection || { status: "idle" };
     const connectionLabel = ({ live: "实时", syncing: "同步中", connecting: "连接中", reconnecting: "重连中", resyncing: "重同步", idle: "离线" })[connection.status] || connection.status;
+    const current = currentActivity(live);
     const rows = entries.map(item => `<li data-event-id="${escape(item.event_id)}"><time>${escape(timeLabel(item.occurred_at))}</time><span>${escape(item.summary)}</span><small>${escape(item.kind)}</small></li>`).join("");
     const workers = curators.map(item => `<li data-curator-id="${escape(item.entity_id)}"><span class="curator-state is-${escape(item.state.state)}">${escape(item.state.state)}</span><strong>${escape(item.state.scope || item.entity_id)}</strong><small>${escape(item.state.safe_summary || "等待结构化结果")}</small></li>`).join("");
     const expansionRows = expansions.map(item => `<li data-expansion-id="${escape(item.entity_id)}"><span class="expansion-state is-${escape(item.state.state)}">${escape(item.state.state)}</span><strong>${escape(item.state.safe_summary || item.state.independence_key || item.entity_id)}</strong><small>${escape(item.state.blocker_code || item.state.workspace_mode || item.state.level || "等待下一阶段")}</small></li>`).join("");
-    return `<section class="patrol-activity-rail" aria-label="Patrol 实时活动"><div class="patrol-activity-now" aria-live="polite" aria-atomic="true"><span class="loop-kicker">Round ${escape(round)} · Patrol</span><strong>${escape(patrol.safe_summary || patrol.summary || patrol.phase || patrol.status)}</strong><small>${escape(patrol.wait_reason || `阶段：${patrol.phase || "observing"}`)}</small></div><span class="live-connection is-${escape(connection.status)}"><i aria-hidden="true"></i>${escape(connectionLabel)}</span><details class="patrol-activity-drawer"><summary>查看记录</summary><div class="patrol-drawer-panel"><header><div><span class="loop-kicker">Patrol Activity</span><h3>Round ${escape(round)} · ${escape(patrol.phase || patrol.status)}</h3></div><span>${escape(patrol.status)}</span></header><section><h4>结构化活动</h4><ol>${rows || "<li><span>尚无已提交活动</span></li>"}</ol></section><section><h4>Context Expansions</h4><ul data-expansion-list>${expansionRows || "<li><span>尚无派生评估</span></li>"}</ul></section><section><h4>并行 Curators</h4><ul data-curator-list>${workers || "<li><span>本轮未分派 Curator</span></li>"}</ul></section></div></details></section>`;
+    return `<section class="patrol-activity-rail" aria-label="Loop 实时活动"><div class="patrol-activity-now" aria-live="polite" aria-atomic="true"><span class="loop-kicker">Round ${escape(round)} · ${escape(current.label)}</span><strong>${escape(current.summary)}</strong><small>${escape(current.detail)}</small></div><span class="live-connection is-${escape(connection.status)}"><i aria-hidden="true"></i>${escape(connectionLabel)}</span><details class="patrol-activity-drawer"><summary>查看记录</summary><div class="patrol-drawer-panel"><header><div><span class="loop-kicker">Loop Activity</span><h3>Round ${escape(round)} · ${escape(current.label)}</h3></div><span>${escape(patrol?.status || live.loop?.state?.status || "waiting")}</span></header><section><h4>结构化活动</h4><ol>${rows || "<li><span>尚无已提交活动</span></li>"}</ol></section><section><h4>Context Expansions</h4><ul data-expansion-list>${expansionRows || "<li><span>尚无派生评估</span></li>"}</ul></section><section><h4>并行 Curators</h4><ul data-curator-list>${workers || "<li><span>本轮未分派 Curator</span></li>"}</ul></section></div></details></section>`;
   }
 
   function reconcileKeyedList(current, next, attribute) {
@@ -189,7 +226,7 @@
     const budgetDetails = `<div class="loop-budget"><span>Rounds ${escape(usage.rounds || 0)} / ${escape(budgets.max_rounds || "∞")}</span><span>Duration ${escape(usage.duration_seconds || 0)} / ${escape(budgets.max_duration_seconds || "∞")}s</span><span>Calls ${escape(usage.model_calls || 0)} / ${escape(budgets.max_model_calls || "∞")}</span><span>Input ${escape(usage.input_tokens || 0)} / ${escape(budgets.max_input_tokens || "∞")}</span><span>Output ${escape(usage.output_tokens || 0)} / ${escape(budgets.max_output_tokens || "∞")}</span><span>Retries ${escape(usage.retries || 0)} / ${escape(budgets.max_retries ?? "∞")}</span><span>Lanes ${escape(usage.lanes || 0)} / ${escape(budgets.max_lanes || "∞")}</span><span>Contexts ${escape(usage.contexts || 0)} / ${escape(budgets.max_contexts || "∞")}</span><span>Providers ${escape(usage.providers || 0)} / ${escape(budgets.max_providers || "∞")}</span></div>`;
     const consoleHtml = globalThis.FocusLoopConsoleView?.render({ ...consoleState, loopStatus: loop.status, terminal }) || '<section class="loop-console-loading">控制台模块不可用</section>';
     const waitRequest = globalThis.FocusLoopWaitRequestView?.render(loop.wait_request, waitUi, escape) || (loop.waiting_reason ? `<p class="loop-waiting" data-loop-waiting role="status">${escape(loop.waiting_reason)}</p>` : "");
-    return `<section class="loop-dashboard console-shell" data-loop-id="${escape(loop.loop_id)}" data-loop-status="${escape(loop.status)}">${commandBar(loop, consoleState)}${patrolActivity(state)}${missionDeliveryStatus(loop)}${waitRequest}${expansionBudget.renderStatus(loop.expansion_resources)}${compressionStatus({ ...related, snapshot: loop })}${terminal ? `<div class="loop-terminal-notice" role="status"><strong>该 Loop 已${loop.status === "completed" ? "完成" : loop.status === "failed" ? "失败" : "停止"}</strong><span>历史 Context、完整会话和事实证据仍可查看；退出不会删除审计记录。</span></div>` : ""}${consoleHtml}<details class="loop-advanced"><summary>授权、预算与目标控制</summary>${budgetDetails}${grantControls(loop)}${history}${override}<p class="muted tiny">当前轮次 ${escape(loop.current_round_id || "—")} · 活动 Run ${escape(activeRuns.length)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)} · Authority R${escape(loop.authority_revision)}</p></details></section>`;
+    return `<section class="loop-dashboard console-shell" data-loop-id="${escape(loop.loop_id)}" data-loop-status="${escape(loop.status)}">${commandBar(loop, consoleState, state.live?.round?.state?.number)}${patrolActivity(state)}${missionDeliveryStatus(loop)}${waitRequest}${expansionBudget.renderStatus(loop.expansion_resources)}${compressionStatus({ ...related, snapshot: loop })}${terminal ? `<div class="loop-terminal-notice" role="status"><strong>该 Loop 已${loop.status === "completed" ? "完成" : loop.status === "failed" ? "失败" : "停止"}</strong><span>历史 Context、完整会话和事实证据仍可查看；退出不会删除审计记录。</span></div>` : ""}${consoleHtml}<details class="loop-advanced"><summary>授权、预算与目标控制</summary>${budgetDetails}${grantControls(loop)}${history}${override}<p class="muted tiny">当前轮次 ${escape(loop.current_round_id || "—")} · 活动 Run ${escape(activeRuns.length)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)} · Authority R${escape(loop.authority_revision)}</p></details></section>`;
   }
 
   function patchLifecycle(container, state) {
@@ -203,7 +240,7 @@
     if (shell.querySelector("[data-wait-request-id]")?.dataset.waitRequestId !== loop.wait_request?.request_id) return false;
     if (loop.wait_request) return false;
     const commandTemplate = document.createElement("template");
-    commandTemplate.innerHTML = commandBar(loop, null);
+    commandTemplate.innerHTML = commandBar(loop, null, state.live?.round?.state?.number);
     const metrics = shell.querySelector(".loop-command-metrics");
     const nextMetrics = commandTemplate.content.querySelector(".loop-command-metrics");
     if (metrics && nextMetrics) metrics.replaceWith(nextMetrics);

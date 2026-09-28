@@ -30,7 +30,7 @@ class DirectiveLifecycleRepository:
         "proposed": frozenset({"authorized", "rejected", "cancelled"}),
         "authorized": frozenset({"delivering", "cancelled"}),
         "delivering": frozenset({"authorized", "delivered", "delivery_failed", "cancelled"}),
-        "delivered": frozenset({"run_started", "delivery_failed", "cancelled"}),
+        "delivered": frozenset({"authorized", "run_started", "delivery_failed", "cancelled"}),
         "run_started": frozenset({"authorized", "settled", "failed", "cancelled"}),
     }
 

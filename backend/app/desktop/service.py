@@ -12,7 +12,7 @@ RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以
 持久化稳定用户消息与有序材料绑定，图片是通用材料聚合的派生视图，初始与恢复路径使用同一
 投影，图片交付、必看完成门和压缩门按职责独立装配；压缩通过 Context Evolution 迁移端口发布，
 稳定 Run 则由 RunLifecycleFinalizer 在同一事务收敛终态、Context revision 与 durable outbox；主 Run 先原子写入 accepted dispatch，后台 worker 通过 lease/fencing 领取并从持久装备重建 Agent，HTTP 确认不再依赖内存 task 接力；Loop
-后台启动可把受治理工具根切换到 Kernel 选择的持久 Workspace Slot，任务详情同时公开最新直接用户
+后台启动把计划 Workspace Slot 与 Run 一同持久化，再把受治理工具根绑定到该 Slot；任务详情同时公开最新直接用户
 Main Run 供 Loop 绑定首轮，并按活跃执行视图返回该 Context 的会话消息（执行身份上有更新状态时与运行流同源，
 否则与已发布 revision 一致），数据库锚点与真实作用路径一致。
 Agent 运行使用独立 checkpoint namespace 隔离，并用 Git 隐藏引用保护不可遗失材料。
@@ -425,17 +425,26 @@ class DesktopService:
                 continue
 
     async def _start_dispatched_run(self, assembly: RunExecutionAssembly) -> RunRecord:
+        resources = RunExecutionResources(
+            bridge=self.bridge,
+            run_manager=self.run_manager,
+            checkpointer=self.checkpointer,
+            store=self.store,
+            app_config=self.app_config,
+        )
+        async with self.session_factory() as session:
+            run = await session.get(DesktopRun, assembly.run_id)
+            if run is None:
+                raise LookupError(f"Run 不存在: {assembly.run_id}")
+            loop_id = run.loop_id
+        if loop_id:
+            from backend.app.desktop.agent_loop.run_execution import LoopRunExecutionBoundary
+
+            return await LoopRunExecutionBoundary(self.session_factory).start(
+                assembly, resources, execute_prepared_run
+            )
         return await execute_prepared_run(
-            assembly.body,
-            assembly.thread_id,
-            RunExecutionResources(
-                bridge=self.bridge,
-                run_manager=self.run_manager,
-                checkpointer=self.checkpointer,
-                store=self.store,
-                app_config=self.app_config,
-            ),
-            assembly.agent_factory,
+            assembly.body, assembly.thread_id, resources, assembly.agent_factory
         )
 
     async def assemble_run(self, run_id: str) -> RunExecutionAssembly:
@@ -456,6 +465,8 @@ class DesktopService:
                 raise RuntimeError(f"Run 不可由 durable dispatch 装配: {run.run_id}@{run.status}")
             workspace_path = str((run.workspace_anchor or {}).get("workspace_path") or workspace.path)
             slot_id = (run.workspace_anchor or {}).get("slot_id")
+            if run.directive_id and not slot_id:
+                raise RuntimeError(f"Loop directive Run 缺少计划 workspace slot: {run.run_id}")
             if slot_id:
                 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
 
@@ -463,6 +474,10 @@ class DesktopService:
                 if slot is not None:
                     workspace_path = slot.root_path
             loop_id = run.loop_id
+            if loop_id:
+                from backend.app.desktop.agent_loop.run_execution import LoopRunExecutionBoundary
+
+                await LoopRunExecutionBoundary(self.session_factory).validate(run_id)
             prepared = await self._prepare(
                 run,
                 str(run.execution_thread_id or task.thread_id),
@@ -479,7 +494,13 @@ class DesktopService:
         if loop_id:
             from backend.app.desktop.agent_loop.dispatch import LoopRunWorkspaceBinder
 
-            await LoopRunWorkspaceBinder(self.session_factory).bind(run_id=run_id, loop_id=loop_id, body=prepared.body)
+            await LoopRunWorkspaceBinder(self.session_factory).bind(
+                run_id=run_id,
+                loop_id=loop_id,
+                body=prepared.body,
+                slot_id=slot_id,
+                directive_id=run.directive_id,
+            )
         if prepared.agent_factory is None:
             raise RuntimeError(f"Run 装配未生成 Agent factory: {run_id}")
         return RunExecutionAssembly(run_id=run_id, body=prepared.body, thread_id=prepared.thread_id, agent_factory=prepared.agent_factory)
@@ -1084,8 +1105,12 @@ class DesktopService:
         access_mode: str | None = None,
         run_identity: dict[str, Any] | None = None,
         execution_workspace_path: str | None = None,
+        execution_slot_id: str | None = None,
+        admit_only: bool = False,
     ) -> PreparedRun:
         identity = run_identity or {}
+        if identity.get("directive_id") and (not identity.get("loop_id") or not execution_slot_id):
+            raise ValueError("Loop directive Run 必须携带 Loop identity 与计划 workspace slot")
         async with self.session_factory() as session:
             idempotency_key = identity.get("idempotency_key")
             if idempotency_key:
@@ -1098,6 +1123,22 @@ class DesktopService:
                         payload=self._run_payload(existing),
                     )
             task_row, workspace = await self._execution_entities(session, task_id)
+            if identity.get("loop_id") and not execution_slot_id:
+                from backend.app.desktop.agent_loop.models import AgentLoop
+                from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+
+                loop = await session.get(AgentLoop, identity["loop_id"])
+                if loop is None or loop.workspace_id != workspace.workspace_id:
+                    raise LookupError("Loop Run workspace 身份不匹配")
+                slot = await session.scalar(select(WorkspaceSlot).where(
+                    WorkspaceSlot.workspace_id == workspace.workspace_id,
+                    WorkspaceSlot.kind == "authoritative",
+                    WorkspaceSlot.lifecycle == "active",
+                ))
+                if slot is None:
+                    raise LookupError("Loop Run 缺少可用权威 workspace slot")
+                execution_slot_id = slot.slot_id
+                execution_workspace_path = slot.root_path
             await self.contexts.ensure_runnable(session, task_id)
             current_revision = await ContextRevisionRepository().current(session, task_id)
             revision_ref = current_revision.ref if current_revision is not None else None
@@ -1223,6 +1264,7 @@ class DesktopService:
                 workspace_anchor={
                     "workspace_id": workspace.workspace_id,
                     "workspace_path": execution_path,
+                    **({"slot_id": execution_slot_id} if execution_slot_id else {}),
                 },
             )
             try:
@@ -1271,6 +1313,16 @@ class DesktopService:
                     ) from exc
                 raise
             thread_id = execution_thread_id
+        if admit_only:
+            return PreparedRun(
+                body=RunCreateRequest(input={"messages": []}, context={"run_id": run.run_id}),
+                thread_id=thread_id,
+                agent_factory=None,
+                payload={
+                    **self._run_payload(run),
+                    "dispatch": {"dispatch_id": admission.dispatch.dispatch_id, "status": admission.dispatch.status, "attempt": admission.dispatch.attempt},
+                },
+            )
         prepared = await self._prepare(
             run,
             thread_id,
@@ -2557,6 +2609,12 @@ class DesktopService:
             pass  # RunManager.cancel 已置 interrupted
         finally:
             try:
+                activity_task = getattr(record, "loop_activity_task", None)
+                if activity_task is not None:
+                    try:
+                        await activity_task
+                    except Exception:
+                        logger.exception("Loop Run 活动事件提交失败: run_id=%s", record.run_id)
                 if not hasattr(self, "run_lifecycle") and hasattr(self, "_set_run_status"):
                     kind, task_id = await self._set_run_status(
                         record.run_id,

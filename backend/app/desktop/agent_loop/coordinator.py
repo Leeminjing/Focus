@@ -28,6 +28,7 @@ from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
 from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
 from backend.app.desktop.agent_loop.directive_causality import DirectiveCausalityRecorder
 from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
+from backend.app.desktop.agent_loop.user_run_events import LoopUserRunEventRecorder
 from backend.app.desktop.agent_loop.patrol_session_models import LoopPatrolSession
 from backend.app.desktop.agent_loop.patrol_session_repository import PatrolSessionRepository
 from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, PatrolPhase
@@ -100,6 +101,7 @@ class LoopCoordinator:
         self._directive_lifecycle = DirectiveLifecycleRepository()
         self._interventions = InterventionLifecycleRepository()
         self._directive_causality = DirectiveCausalityRecorder()
+        self._user_run_events = LoopUserRunEventRecorder()
 
     @property
     def stall_limits(self) -> RoundStallLimits:
@@ -280,9 +282,10 @@ class LoopCoordinator:
             if directive.lifecycle_state == "delivering":
                 if directive.status == "launched":
                     await self._directive_lifecycle.transition(session, directive.directive_id, "delivered", run_id=run.run_id, reason="recovered_delivery")
-                    await self._directive_lifecycle.transition(session, directive.directive_id, "run_started", run_id=run.run_id, reason="recovered_run")
                 else:
                     await self._directive_lifecycle.transition(session, directive.directive_id, "delivery_failed", run_id=run.run_id, reason=run.error or "recovered_failed_run")
+            if directive.lifecycle_state == "delivered" and run.status in {"running", "success"}:
+                await self._directive_lifecycle.transition(session, directive.directive_id, "run_started", run_id=run.run_id, reason="recovered_run")
         for loop_id, retries in retries_by_loop.items():
             usage = await session.get(LoopBudgetUsage, loop_id, with_for_update=True)
             if usage is not None:
@@ -364,7 +367,11 @@ class LoopCoordinator:
             return
         if run.user_intent_id:
             intent = await session.get(LoopUserIntent, run.user_intent_id, with_for_update=True)
-            if intent is not None and intent.delivery_state == "run_started":
+            if intent is not None and run.status == "error" and intent.delivery_state in {"accepted", "delivered"}:
+                if intent.delivery_state == "accepted":
+                    await self._interventions.transition(session, intent.intent_id, "delivered", run_id=run.run_id)
+                await self._interventions.transition(session, intent.intent_id, "delivery_failed", run_id=run.run_id, reason=run.error)
+            elif intent is not None and intent.delivery_state == "run_started":
                 await self._interventions.transition(
                     session,
                     intent.intent_id,
@@ -372,6 +379,10 @@ class LoopCoordinator:
                     run_id=run.run_id,
                     reason=run.error,
                 )
+            if intent is not None:
+                await self._user_run_events.settled(session, intent, run, getattr(event, "event_id", None))
+        elif run.origin == "direct_user":
+            await self._user_run_events.settled(session, None, run, getattr(event, "event_id", None))
         revision_id = ((event.payload or {}).get("context_revision") or {}).get("revision_id")
         if revision_id and run.origin_message_id:
             provenance = await session.scalar(select(MessageProvenance).where(MessageProvenance.message_id == run.origin_message_id).with_for_update())
@@ -383,7 +394,16 @@ class LoopCoordinator:
             return
         if run.directive_id:
             directive = await session.get(LoopDirective, run.directive_id, with_for_update=True)
-            if directive is not None and directive.lifecycle_state == "run_started" and directive.launched_run_id == run.run_id:
+            if directive is not None and directive.lifecycle_state in {"delivering", "delivered"} and run.status == "error":
+                directive.status = "blocked"
+                directive.queued_reason = run.error or "run_start_failed"
+                await self._directive_lifecycle.transition(
+                    session, directive.directive_id, "delivery_failed",
+                    run_id=run.run_id, reason=directive.queued_reason,
+                    caused_by_event_id=getattr(event, "event_id", None),
+                )
+                await self._directive_causality.run_settled(session, directive, run, getattr(event, "event_id", None))
+            elif directive is not None and directive.lifecycle_state == "run_started" and directive.launched_run_id == run.run_id:
                 await self._directive_lifecycle.transition(
                     session,
                     directive.directive_id,

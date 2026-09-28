@@ -1,8 +1,8 @@
 r"""本文件对外提供 LoopRunActivityBridge。
 
-输入为既有 StreamBridge、Loop/Context/Run/Directive identity 和 Agent values 事件；输出为不改变原流的转发以及持久化的
-Tool started/completed 与 Artifact observed 规范事件。具体工作流为只读取当前指令消息之后的序列化消息，按 tool-call identity
-去重，将安全摘要串行写入 per-Loop journal，close 等待队列提交。示例：`bridge.publish(run_id, stream_event)`。
+输入为既有 StreamBridge、Loop/Context/Run 身份和 Agent values 事件；输出为原流转发及持久化的模型、工具与工作区活动事件。
+具体工作流为只读取当前指令消息之后的已确认消息，按消息或 tool-call 身份去重，将安全摘要串行写入 per-Loop journal；失败由 Writer 重试并记录降级，close 等待提交并报告未恢复的失败。
+示例：`bridge.publish(run_id, stream_event)`。
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft, EventVisibility
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
+from backend.app.desktop.agent_loop.run_activity_writer import LoopRunActivityWriter
 from focus.runtime.stream_bridge.base import StreamBridge
 from focus.runtime.stream_bridge.schemas import StreamEvent
 
@@ -36,15 +36,14 @@ class LoopRunActivityBridge(StreamBridge):
         anchor_message_id: str,
     ) -> None:
         self._delegate = delegate
-        self._sessions = sessions
-        self._loop_id = loop_id
         self._context_id = context_id
         self._run_id = run_id
         self._correlation_id = correlation_id
         self._anchor_message_id = anchor_message_id
-        self._journal = LoopEventJournal()
+        self._writer = LoopRunActivityWriter(sessions, loop_id)
         self._seen: set[tuple[str, str]] = set()
         self._event_ids: dict[tuple[str, str], str] = {}
+        self._failures: dict[str, Exception] = {}
         self._queue: asyncio.Queue[CanonicalEventDraft | None] = asyncio.Queue()
         self._worker = asyncio.create_task(self._persist(), name=f"loop-run-activity:{run_id}")
         self._closed = False
@@ -76,6 +75,8 @@ class LoopRunActivityBridge(StreamBridge):
         await self._queue.join()
         self._queue.put_nowait(None)
         await self._worker
+        if self._failures:
+            raise RuntimeError(f"Loop Run activity journal has {len(self._failures)} unpersisted event(s)") from next(iter(self._failures.values()))
 
     def _drafts(self, event: StreamEvent) -> tuple[CanonicalEventDraft, ...]:
         if event.event != "events" or not isinstance(event.data, dict):
@@ -91,6 +92,10 @@ class LoopRunActivityBridge(StreamBridge):
         for message in messages[anchor + 1:]:
             if not isinstance(message, dict):
                 continue
+            if message.get("role") in {"assistant", "ai"} and message.get("id"):
+                draft = self._model_completed(str(message["id"]))
+                if draft is not None:
+                    drafts.append(draft)
             for call in message.get("tool_calls") or ():
                 if isinstance(call, dict) and call.get("id"):
                     draft = self._tool_started(str(call["id"]), str(call.get("name") or "tool"))
@@ -103,6 +108,20 @@ class LoopRunActivityBridge(StreamBridge):
                 drafts.extend(self._artifacts(message))
         return tuple(drafts)
 
+    def _model_completed(self, message_id: str) -> CanonicalEventDraft | None:
+        if not self._new("model", message_id):
+            return None
+        return CanonicalEventDraft(
+            kind="context.model.completed",
+            entity_type="model_call",
+            entity_id=message_id,
+            entity_revision=1,
+            correlation_id=self._correlation_id,
+            visibility=EventVisibility(),
+            payload={"run_id": self._run_id, "context_id": self._context_id, "status": "completed", "summary": "模型已完成一次响应", "source": "run_stream"},
+            idempotency_key=f"context-model:{self._run_id}:{message_id}:completed",
+        )
+
     def _tool_started(self, call_id: str, tool_name: str) -> CanonicalEventDraft | None:
         if not self._new("started", call_id):
             return None
@@ -112,7 +131,7 @@ class LoopRunActivityBridge(StreamBridge):
             entity_id=call_id,
             entity_revision=1,
             correlation_id=self._correlation_id,
-            visibility=EventVisibility(evidence_fields=("summary",)),
+            visibility=EventVisibility(),
             payload={"run_id": self._run_id, "context_id": self._context_id, "tool_name": tool_name, "status": "running", "summary": f"{tool_name} 正在执行", "source": "run_stream"},
             idempotency_key=f"context-tool:{self._run_id}:{call_id}:started",
         )
@@ -129,7 +148,7 @@ class LoopRunActivityBridge(StreamBridge):
             entity_id=call_id,
             entity_revision=2,
             correlation_id=self._correlation_id,
-            visibility=EventVisibility(evidence_fields=("summary",)),
+            visibility=EventVisibility(),
             payload={"run_id": self._run_id, "context_id": self._context_id, "tool_name": tool_name, "status": status, "summary": f"{tool_name} {status}", "source": "run_stream"},
             idempotency_key=f"context-tool:{self._run_id}:{call_id}:completed",
         )
@@ -148,8 +167,8 @@ class LoopRunActivityBridge(StreamBridge):
                     entity_id=entity_id,
                     entity_revision=1,
                     correlation_id=self._correlation_id,
-                    visibility=EventVisibility(evidence_fields=("summary", "artifact")),
-                    payload={"run_id": self._run_id, "context_id": self._context_id, "status": "observed", "summary": artifact, "artifact": artifact},
+                    visibility=EventVisibility(),
+                    payload={"run_id": self._run_id, "context_id": self._context_id, "status": "observed", "summary": "工作区文件活动已确认"},
                     idempotency_key=f"context-artifact:{self._run_id}:{entity_id}",
                 )
             )
@@ -163,11 +182,15 @@ class LoopRunActivityBridge(StreamBridge):
                     return
                 if draft.kind == "context.tool.completed":
                     draft = draft.model_copy(update={"causation_id": self._event_ids.get(("started", draft.entity_id))})
-                async with self._sessions.begin() as session:
-                    event = await self._journal.append(session, self._loop_id, draft)
-                phase = "started" if draft.kind == "context.tool.started" else "completed" if draft.kind == "context.tool.completed" else "artifact"
+                event = await self._writer.write(draft)
+                if event is None:
+                    continue
+                phase = self._phase(draft.kind)
                 self._event_ids[(phase, draft.entity_id)] = event.event_id
-            except Exception:
+                self._failures.pop(draft.idempotency_key, None)
+            except Exception as exc:
+                self._seen.discard((self._phase(draft.kind), draft.entity_id))
+                self._failures[draft.idempotency_key] = exc
                 logger.exception("Loop Run activity event persist failed: %s", self._run_id)
             finally:
                 self._queue.task_done()
@@ -178,3 +201,7 @@ class LoopRunActivityBridge(StreamBridge):
             return False
         self._seen.add(key)
         return True
+
+    @staticmethod
+    def _phase(kind: str) -> str:
+        return "started" if kind == "context.tool.started" else "completed" if kind == "context.tool.completed" else "model" if kind == "context.model.completed" else "artifact"

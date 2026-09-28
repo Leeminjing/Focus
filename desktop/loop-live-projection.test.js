@@ -1,5 +1,5 @@
 /*
- * 本文件验证前端 Live Loop schema、纯 reducer、序列防护、单连接恢复、选择器、Context 卡片提交门禁与界面状态保留。
+ * 本文件对外提供前端 Live Loop schema、reducer、序列防护、连接恢复、选择器与界面状态的回归测试。
  * 输入为有效/畸形 snapshot、重复/陈旧/缺口事件和模拟 Live API；输出为确定性 projection、原子重同步及无重复连接断言。
  * 具体工作流为使用 Node test 直接加载 UMD 模块并驱动 Store/Connection；示例：`node --test desktop/loop-live-projection.test.js`。
  */
@@ -94,6 +94,22 @@ test("reducer is deterministic, deduplicates sequence and ignores stale entity r
   assert.equal(stale.last_sequence, 2);
   const replayed = Reducer.reduceBatch(initial, [event(1), event(2, { entity_revision: 2, payload: { context_id: "c1", status: "success" } })]);
   assert.deepEqual(replayed, Reducer.reduceBatch(initial, [event(1), event(2, { entity_revision: 2, payload: { context_id: "c1", status: "success" } })]));
+});
+
+test("Run activity updates only from confirmed model and tool events", () => {
+  let state = Reducer.reduce(snapshot(), event(1, { entity_revision: 1 }));
+  state = Reducer.reduce(state, event(2, {
+    kind: "context.model.completed",
+    entity_type: "model_call",
+    entity_id: "message-1",
+    entity_revision: 1,
+    payload: { run_id: "r1", context_id: "c1", summary: "模型已完成一次响应" },
+    occurred_at: "2026-09-19T00:01:00Z",
+  }));
+  assert.equal(state.runs.r1.state.last_activity_at, "2026-09-19T00:01:00Z");
+  assert.equal(state.runs.r1.state.last_activity_kind, "context.model.completed");
+  state = Reducer.reduce(state, event(3, { kind: "transport.heartbeat", entity_type: "transport", entity_id: "connection", payload: {} }));
+  assert.equal(state.runs.r1.state.last_activity_at, "2026-09-19T00:01:00Z");
 });
 
 test("entity reducers merge transition payloads without erasing snapshot card fields", () => {
@@ -325,6 +341,6 @@ test("live workspace exposes semantic labels and a reduced-motion equivalent", (
   const styles = fs.readFileSync(require.resolve("./styles/loop-console.css"), "utf8");
   const view = fs.readFileSync(require.resolve("./loop-view.js"), "utf8");
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
-  assert.match(view, /aria-label="Patrol 实时活动"/);
+  assert.match(view, /aria-label="Loop 实时活动"/);
   assert.match(view, /aria-live="polite"/);
 });

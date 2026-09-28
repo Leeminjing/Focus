@@ -124,6 +124,8 @@
             status: card.status || prior.status || "active",
             lane_id: card.lane_id || prior.lane_id || null,
             revision: card.current_revision_id ? { ...(prior.revision || {}), revision_id: card.current_revision_id } : prior.revision,
+            active_run: card.active_run || null,
+            live_action: card.live_action || null,
             latest_run: card.latest_run ? { ...(prior.latest_run || {}), run_id: card.latest_run.id, ...card.latest_run } : prior.latest_run || null,
           };
         });
@@ -144,6 +146,14 @@
           nodes,
           edges,
         } : null;
+        const selectedNode = nodes.find(node => node.context_id === current.selectedContextId);
+        const selectedKey = key(current.selectedContextId, revisionId(selectedNode));
+        const revisionChanged = current.conversation && conversationKey(current.conversation) !== selectedKey;
+        if (revisionChanged) {
+          for (const cacheKey of conversations.keys()) {
+            if (cacheKey.startsWith(`${current.selectedContextId}:`) && cacheKey !== selectedKey) conversations.delete(cacheKey);
+          }
+        }
         const contextId = current.factScope === "all" ? null : current.selectedContextId;
         const kind = current.factFilter === "all" ? null : current.factFilter;
         const status = current.factStatus === "all" ? null : current.factStatus;
@@ -151,6 +161,8 @@
         const facts = { facts: factRows, range: { start: 0, end: factRows.length }, has_more: false, next_before: null, total: factRows.length };
         return publish({
           manifest,
+          conversation: revisionChanged ? conversations.get(selectedKey) || null : current.conversation,
+          conversationViewport: revisionChanged ? viewports.get(selectedKey) || null : current.conversationViewport,
           facts,
           patrol: selectors.selectPatrol(projection),
           graphActivity: selectors.selectGraphActivity(projection),
@@ -168,6 +180,7 @@
         });
       },
       loadConversation(conversation) {
+        if (expectedKey(conversation.context_id) !== conversationKey(conversation)) return current;
         const normalized = normalizeConversation(conversation);
         conversations.set(conversationKey(normalized), normalized);
         return publish({ conversation: normalized, error: null });

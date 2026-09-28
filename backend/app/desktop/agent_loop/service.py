@@ -477,10 +477,12 @@ class AgentLoopService:
     async def bind_user_message_run(self, intent_id: str, run_id: str) -> None:
         async with self._sessions.begin() as session:
             intent = await session.get(LoopUserIntent, intent_id, with_for_update=True)
-            if intent is None or intent.origin_kind != "user" or intent.delivery_state != "accepted":
+            if intent is None or intent.origin_kind != "user":
                 raise LookupError("直接用户消息 intent 已失效")
-            await self._interventions.transition(session, intent_id, "delivered", run_id=run_id)
-            await self._interventions.transition(session, intent_id, "run_started", run_id=run_id)
+            if intent.delivery_state == "accepted":
+                await self._interventions.transition(session, intent_id, "delivered", run_id=run_id)
+            elif intent.delivery_state not in {"delivered", "run_started"} or intent.resulting_run_id != run_id:
+                raise LookupError("直接用户消息 intent 已绑定其他 Run")
 
     async def control(self, loop_id: str, command: str) -> dict:
         transitions = {"pause": ({"running"}, "paused"), "resume": ({"paused", "waiting_user"}, "running"), "stop": ({"running", "paused", "waiting_user"}, "stopped")}

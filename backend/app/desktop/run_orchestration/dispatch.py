@@ -1,8 +1,7 @@
 r"""本文件对外提供 RunDispatchRepository、RunDispatchRecovery 与 DurableRunDispatchWorker。
 
 输入为 accepted/遗留 dispatch、worker identity、租约、fencing token、执行装配器与启动函数；输出为有界领取、running/settled、显式启动失败或重启分类状态。
-具体工作流为 repository 使用 skip-locked 领取并递增 fencing，worker 在租约内装配和启动；recovery 只把带完整 durable Main 执行快照且可证明未启动的工作恢复为 accepted，并把旧 Patrol 或不确定执行标为 interrupted；后续转换必须携带当前 token，旧 owner 无法提交。
-repository 另有按 Run 定向认领入口，使用同一状态列与 fencing 语义，使已有启动者的 Run（例如 directive 启动端口负责的 Run）不会被队列消费者重复认领。
+具体工作流为 repository 使用 skip-locked 领取并递增 fencing，唯一 durable worker 在租约内装配和启动；recovery 只把带完整 durable Main 执行快照且可证明未启动的工作恢复为 accepted，并把不确定执行标为 interrupted；后续转换必须携带当前 token，旧 owner 无法提交。
 示例：`processed = await worker.drain(limit=4)`。
 """
 
@@ -43,26 +42,6 @@ class RunDispatchRepository:
         if row is None:
             return None
         return await self._mark_claimed(session, row, worker_id, lease_seconds=lease_seconds)
-
-    async def claim_run(
-        self,
-        session: AsyncSession,
-        run_id: str,
-        owner_id: str,
-        *,
-        lease_seconds: int = 60,
-    ) -> RunDispatch | None:
-        """按 Run 定向认领：让该 Run 的启动者成为唯一持有者，语义与队列认领一致（同一状态列与 fencing token）。"""
-
-        row = await session.scalar(
-            select(RunDispatch).where(
-                RunDispatch.run_id == run_id,
-                self._claimable(),
-            ).with_for_update(skip_locked=True)
-        )
-        if row is None:
-            return None
-        return await self._mark_claimed(session, row, owner_id, lease_seconds=lease_seconds)
 
     @staticmethod
     def _claimable() -> Any:
@@ -203,7 +182,11 @@ class RunDispatchRecovery:
     @staticmethod
     def _restart_safe(run: DesktopRun) -> bool:
         execution = (run.equipment or {}).get("_durable_dispatch_execution")
-        return run.kind == "main" and run.status == "pending" and isinstance(execution, dict) and execution.get("agent_role") == "main"
+        if run.kind != "main" or run.status != "pending" or not isinstance(execution, dict) or execution.get("agent_role") != "main":
+            return False
+        if run.loop_id:
+            return bool((run.workspace_anchor or {}).get("slot_id") and run.context_revision_id)
+        return True
 
 RunAssemblyStarter = Callable[[RunExecutionAssembly], Awaitable[Any]]
 RunStartedObserver = Callable[[Any], None]

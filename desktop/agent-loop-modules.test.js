@@ -1,5 +1,5 @@
 /*
- * 本文件验证 Loop Mission 编辑器、Store/Console Store、API/完整会话协议、Portfolio 图、事实、终止态只读和 provenance 外置渲染。
+ * 本文件对外提供 Loop Mission、Store/Console Store、API/完整会话协议、Portfolio、事实、终止态和 provenance 的回归测试。
  * 输入为重复/乱序事件、千条会话页、模拟 fetch、Lane revisions 和多父边；输出为幂等 cursor、固定
  * 消息窗口、视口恢复、正确请求、完整 secondary source 与不污染消息正文的 badge 断言。具体工作流为
  * 直接加载无 DOM UMD 模块并调用纯函数；示例：`node --test desktop/agent-loop-modules.test.js`。
@@ -242,6 +242,26 @@ test("console store restores each revision window and viewport when returning to
   assert.equal(store.get().conversationViewport.scrollTop, 321);
 });
 
+test("live revision change invalidates only the historical conversation window", () => {
+  const store = ConsoleStore.create();
+  store.loadManifest({ initial_context_id: "c1", nodes: [{ context_id: "c1", revision: { revision_id: "r1" } }] });
+  store.loadConversation({ context_id: "c1", revision: { revision_id: "r1" }, messages: [{ index: 0, message: { content: "old" } }], total: 1 });
+  const selectors = {
+    selectContextCards: () => [{ id: "c1", current_revision_id: "r2", title: "Context", status: "active" }],
+    selectLineage: () => [],
+    selectFacts: () => [],
+    selectPatrol: () => null,
+    selectGraphActivity: () => [],
+    selectCausality: () => [],
+  };
+  store.projectLive({ loop_id: "loop", last_sequence: 2, loop: { state: { status: "running" } }, round: null }, selectors);
+  assert.equal(store.get().conversation, null);
+  store.loadConversation({ context_id: "c1", revision: { revision_id: "r1" }, messages: [{ index: 0, message: { content: "stale" } }], total: 1 });
+  assert.equal(store.get().conversation, null);
+  store.loadConversation({ context_id: "c1", revision: { revision_id: "r2" }, messages: [{ index: 0, message: { content: "new" } }], total: 1 });
+  assert.equal(store.get().conversation.revision.revision_id, "r2");
+});
+
 
 test("console store paginates facts without duplicating stable fact ids", () => {
   const store = ConsoleStore.create();
@@ -456,7 +476,7 @@ test("portfolio, conversation and facts views expose selected Context without po
   assert.match(map, /data-action="loop-select-context"/);
   const state = { manifest, selectedContextId: "c1", interventionMode: "direct_context_message", messageFilter: "all", messageSearch: "", factFilter: "all", factScope: "current", conversation: { revision: { generation: 2 }, total: 2, has_more: false, messages: [{ index: 0, message: { role: "human", content: "Run tests" }, provenance: { source_kind: "delegated_patrol" } }, { index: 1, message: { id: "compressed-1", role: "human", content: "Prior summary", compression: { source: [{ id: "old-1", role: "tool", content: "large output" }] } } }] }, facts: { facts: [{ fact_id: "f1", context_id: "c1", kind: "test", status: "verified", title: "测试结果", summary: "12 passed", metrics: { passed: 12, failed: 0, skipped: 0, count_status: "exact" }, evidence: { message_id: "m1" } }] } };
   const conversation = Conversation.render(state);
-  assert.match(conversation, /完整 Context 会话/);
+  assert.match(conversation, /固定 Revision 历史会话/);
   assert.match(conversation, /Patrol delegated/);
   assert.match(conversation, />Run tests</);
   assert.match(conversation, /data-action="loop-restore-compression"/);
@@ -727,6 +747,58 @@ test("option 3 renders committed Patrol activity and connection recovery without
   assert.match(html, /查看记录/);
   assert.match(html, /Testing Curator 正在分析/);
   assert.match(html, /重同步/);
+});
+
+test("first round displays committed Context Run activity before Patrol exists", () => {
+  const html = LoopView.render({
+    snapshot: {
+      loop_id: "loop-first", status: "running", health: "waiting_runs",
+      mission: { outcome: "测试", boundaries: {}, completion_checks: [] },
+      goal_revision: 1, authority_revision: 1,
+      usage: { rounds: 0, contexts: 1 },
+      grant: { budgets: { max_rounds: 5 }, capabilities: [], context_scope: [], permission_scope: [], delegable_gates: [] },
+    },
+    related: {},
+    connection: { status: "reconnecting" },
+    live: {
+      round: { state: { number: 1 } },
+      patrol_session: null,
+      runs: { "run-1": { entity_id: "run-1", updated_sequence: 4, state: { status: "running", last_activity_at: "2026-09-27T11:38:55Z", last_activity_summary: "pytest 正在执行" } } },
+      activity_timeline: [{ event_id: "e1", kind: "context.tool.started", entity_type: "tool", summary: "pytest 正在执行", occurred_at: "2026-09-27T11:38:55Z", detail: { run_id: "run-1" } }],
+      curators: {}, expansions: {},
+    },
+  }, {}, { manifest: { nodes: [{ context_id: "c1" }] } });
+  assert.match(html, /Context Run · running/);
+  assert.match(html, /Round 1/);
+  assert.match(html, /pytest 正在执行/);
+  assert.match(html, /最近确认活动/);
+  assert.match(html, /重连中/);
+});
+
+test("connection heartbeat does not reset the five minute Run inactivity warning", () => {
+  const originalNow = Date.now;
+  Date.now = () => Date.parse("2026-09-27T11:45:00Z");
+  try {
+    const html = LoopView.render({
+      snapshot: {
+        loop_id: "loop-idle", status: "running", health: "waiting_runs",
+        mission: { outcome: "测试", boundaries: {}, completion_checks: [] },
+        goal_revision: 1, authority_revision: 1, usage: { rounds: 1, contexts: 1 },
+        grant: { budgets: { max_rounds: 5 }, capabilities: [], context_scope: [], permission_scope: [], delegable_gates: [] },
+      },
+      related: {}, connection: { status: "live" },
+      live: {
+        round: { state: { number: 1 } }, patrol_session: null,
+        runs: { "run-1": { entity_id: "run-1", updated_sequence: 3, state: { status: "running", last_activity_at: "2026-09-27T11:38:55Z", last_activity_summary: "模型已完成一次响应" } } },
+        activity_timeline: [{ event_id: "heartbeat", entity_type: "transport", kind: "transport.heartbeat", summary: "connected", occurred_at: "2026-09-27T11:44:59Z" }],
+        curators: {}, expansions: {},
+      },
+    }, {}, { manifest: { nodes: [{ context_id: "c1" }] } });
+    assert.match(html, /已 6 分钟无新的已确认活动/);
+    assert.match(html, /实时/);
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("Mission delivery status distinguishes pending, authorized, delivered and concrete blocker", () => {

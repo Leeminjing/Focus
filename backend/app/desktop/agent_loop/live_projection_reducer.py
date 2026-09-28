@@ -18,6 +18,7 @@ class ProjectionSequenceGap(RuntimeError):
 
 class LoopLiveProjectionReducer:
     _SINGULAR = frozenset({"loop", "mission", "patrol_session", "round", "portfolio"})
+    _ACTIVITY_ONLY = frozenset({"tool", "artifact", "model_call"})
     _COLLECTIONS = {
         "context": "contexts",
         "context_lineage": "lineage",
@@ -44,7 +45,7 @@ class LoopLiveProjectionReducer:
         changes = self._entity_change(projection, event)
         timeline = (*projection.activity_timeline, self._activity(event))[-self._timeline_limit :]
         unknown = projection.unknown_kinds
-        if event.entity_type not in self._SINGULAR and event.entity_type not in self._COLLECTIONS:
+        if event.entity_type not in self._SINGULAR and event.entity_type not in self._COLLECTIONS and event.entity_type not in self._ACTIVITY_ONLY:
             unknown = tuple(dict.fromkeys((*unknown, event.kind)))
         return projection.model_copy(update={**changes, "last_sequence": event.sequence, "activity_timeline": timeline, "unknown_kinds": unknown})
 
@@ -59,6 +60,20 @@ class LoopLiveProjectionReducer:
             return {} if current is not None and current.revision >= entity.revision else {event.entity_type: entity}
         field = self._COLLECTIONS.get(event.entity_type)
         if field is None:
+            if event.entity_type in self._ACTIVITY_ONLY:
+                run_id = event.payload.get("run_id")
+                prior = projection.runs.get(run_id) if run_id else None
+                if prior is not None:
+                    updated = prior.model_copy(update={
+                        "updated_sequence": event.sequence,
+                        "state": {
+                            **prior.state,
+                            "last_activity_at": event.occurred_at.isoformat(),
+                            "last_activity_kind": event.kind,
+                            "last_activity_summary": event.payload.get("summary") or event.kind,
+                        },
+                    })
+                    return {"runs": {**projection.runs, run_id: updated}}
             return {}
         current = getattr(projection, field)
         prior = current.get(event.entity_id)

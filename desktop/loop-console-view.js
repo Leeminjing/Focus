@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Loop Control Console 的组合视图和分区增量补丁函数。
  * 输入为 Console Store 快照与 Loop 生命周期；输出为左侧 Context Portfolio/事实工作区和右侧完整会话的统一布局。
- * 具体工作流为只组合专用视图，不发请求、不持有领域状态；图与会话按签名补丁，事实按 fact_id 原位对账并保持滚动，终止态关闭介入面板。
+ * 具体工作流为只组合专用视图，不发请求、不持有领域状态；当前执行活动与因果带只更新各自的小块，固定会话按 revision 签名补丁，事实按 fact_id 原位对账并保持滚动，终止态关闭介入面板。
  * 示例：首次调用 `FocusLoopConsoleView.render(state)`，后续调用 `patch(container, state)`。
  */
 (function (root, factory) {
@@ -12,12 +12,28 @@
   "use strict";
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
   const signatures = new WeakMap();
+  function conversationSignature(state) {
+    return JSON.stringify({
+      context: state.selectedContextId,
+      conversation: state.conversation,
+      mode: state.interventionMode,
+      filter: state.messageFilter,
+      search: state.messageSearch,
+      pending: state.pending,
+      terminal: state.terminal,
+    });
+  }
+  function signatureToken(value) {
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index += 1) hash = Math.imul(hash ^ value.charCodeAt(index), 16777619);
+    return `${value.length}:${hash >>> 0}`;
+  }
   function render(state) {
     if (!state?.manifest) return '<section class="loop-console-loading">正在建立 Context Portfolio…</section>';
     const map = globalThis.FocusPortfolioMapView?.render(state.manifest, state.selectedContextId, state.graphActivity) || "";
     const conversation = globalThis.FocusContextConversationView?.render(state) || "";
     const facts = globalThis.FocusLoopFactsView?.render(state) || "";
-    return `<section class="loop-console"><div class="loop-console-main"><div class="loop-console-workspace"><div class="loop-console-map">${map}</div>${facts}</div><div class="loop-console-divider" data-loop-console-resizer role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整 Context 图与完整会话宽度" aria-valuemin="32" aria-valuemax="68" aria-valuenow="52"></div><div class="loop-console-conversation">${conversation}</div></div>${state.error ? `<p class="loop-error" role="alert">${escape(state.error)}</p>` : ""}</section>`;
+    return `<section class="loop-console" data-conversation-signature="${signatureToken(conversationSignature(state))}"><div class="loop-console-main"><div class="loop-console-workspace"><div class="loop-console-map">${map}</div>${facts}</div><div class="loop-console-divider" data-loop-console-resizer role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整 Context 图与完整会话宽度" aria-valuemin="32" aria-valuemax="68" aria-valuenow="52"></div><div class="loop-console-conversation">${conversation}</div></div>${state.error ? `<p class="loop-error" role="alert">${escape(state.error)}</p>` : ""}</section>`;
   }
 
   function patch(container, state) {
@@ -50,16 +66,9 @@
   function patchConversation(consoleNode, state) {
     const host = consoleNode.querySelector(".loop-console-conversation");
     patchCausality(host, state);
-    const signature = JSON.stringify({
-      context: state.selectedContextId,
-      conversation: state.conversation,
-      mode: state.interventionMode,
-      filter: state.messageFilter,
-      search: state.messageSearch,
-      pending: state.pending,
-      terminal: state.terminal,
-    });
-    if (!host || signatures.get(host) === signature) return;
+    patchExecutionActivity(host, state);
+    const signature = signatureToken(conversationSignature(state));
+    if (!host || (signatures.get(host) || consoleNode.dataset.conversationSignature) === signature) return;
     const transcript = host.querySelector("[data-loop-transcript]");
     const search = host.querySelector("[data-loop-message-search]");
     const composer = host.querySelector("#loopInterventionForm textarea");
@@ -93,12 +102,13 @@
       nextFocused.setSelectionRange(viewport.selectionStart, viewport.selectionEnd);
     }
     signatures.set(host, signature);
+    consoleNode.dataset.conversationSignature = signature;
   }
 
   function patchCausality(host, state) {
     if (!host || typeof document !== "object") return;
     const template = document.createElement("template");
-    template.innerHTML = globalThis.FocusContextConversationView?.render(state) || "";
+    template.innerHTML = globalThis.FocusContextConversationView?.renderCausality(state) || "";
     const next = template.content.querySelector(".context-causality");
     const current = host.querySelector(".context-causality");
     if (!next) {
@@ -123,6 +133,21 @@
       }
     }
     existing.forEach(item => item.remove());
+  }
+
+  function patchExecutionActivity(host, state) {
+    if (!host || typeof document !== "object") return;
+    const html = globalThis.FocusContextConversationView?.renderExecutionActivity(state) || "";
+    const current = host.querySelector(".context-execution-activity");
+    if (!html) {
+      current?.remove();
+      return;
+    }
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    const next = template.content.firstElementChild;
+    if (!current) host.querySelector(".conversation-head")?.after(next);
+    else if (current.innerHTML !== next.innerHTML) current.innerHTML = next.innerHTML;
   }
 
   function patchFacts(consoleNode, state) {

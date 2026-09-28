@@ -342,7 +342,7 @@
 
 .context-conversation {
   display: grid;
-  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto;
   height: 100%;
   min-height: 0;
   background: #fff;
@@ -357,6 +357,9 @@
 }
 .conversation-head h3 { margin: 2px 0 0; font-size: 17px; }
 .conversation-head p { margin: 4px 0 0; color: #78889d; font-size: 11px; }
+.context-execution-activity { display: grid; gap: 3px; padding: 9px 15px; border-bottom: 1px solid #dbe7f6; background: #f3f8ff; color: #25446d; }
+.context-execution-activity strong { font-size: 12px; }
+.context-execution-activity small { color: #677d99; font-size: 10px; }
 .context-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; padding: 10px 15px; border-bottom: 1px solid #e9edf3; }
 .context-metrics > div { display: flex; align-items: baseline; gap: 6px; padding: 8px 9px; border: 1px solid #e1e7f0; border-radius: 8px; background: #fbfcfe; }
 .context-metrics strong { color: #1a3152; font-size: 14px; }

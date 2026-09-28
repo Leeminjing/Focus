@@ -13,6 +13,7 @@
   "use strict";
 
   const SINGULAR = new Set(Schema.SINGULAR);
+  const ACTIVITY_ONLY = new Set(["tool", "artifact", "model_call"]);
   const COLLECTION_BY_ENTITY = Object.freeze({ context: "contexts", context_lineage: "lineage", run: "runs", context_run: "runs", curator: "curators", context_expansion: "expansions", directive: "directives", fact: "facts", loop_wait_request: "wait_requests", loop_wait_response: "wait_responses" });
 
   class SequenceGapError extends Error {
@@ -68,6 +69,22 @@
         const prior = projection[field][event.entity_id];
         const incoming = Object.freeze({ entity_id: event.entity_id, revision: event.entity_revision, updated_sequence: event.sequence, state: Object.freeze({ ...(prior?.state || {}), ...payload }) });
         if (!prior || prior.revision < incoming.revision) next[field] = Object.freeze({ ...projection[field], [event.entity_id]: incoming });
+      } else if (ACTIVITY_ONLY.has(event.entity_type)) {
+        const runId = event.payload.run_id;
+        const prior = runId && projection.runs[runId];
+        if (prior) next.runs = Object.freeze({
+          ...projection.runs,
+          [runId]: Object.freeze({
+            ...prior,
+            updated_sequence: event.sequence,
+            state: Object.freeze({
+              ...prior.state,
+              last_activity_at: event.occurred_at || null,
+              last_activity_kind: event.kind,
+              last_activity_summary: event.payload.summary || event.kind,
+            }),
+          }),
+        });
       } else {
         next.unknown_kinds = Object.freeze([...new Set([...projection.unknown_kinds, event.kind])]);
       }

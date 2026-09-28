@@ -1,44 +1,26 @@
 r"""本文件对外提供 LoopWaveDispatcher、LoopRunWorkspaceBinder、DesktopDirectiveLaunchPort 与 DirectiveLaunchPort。
 
-输入为 committed LoopDirective、Context revision、workspace slot/lease 和运行预算；输出为一波零到多条
-绑定 round/action 的 DesktopRun。具体工作流为 Dispatcher 先以行锁认领 directive，WorkspaceRunPlanner
-再把 Reader、权威 Writer 与授权的 Git 隔离 Writer 分配到不冲突的 slot；Binder 为所有 Loop Run 建立
-lease/anchor，容量不足时持久记录 queued_reason，LaunchPort 在持有 Loop、directive、Run 权力锁时启动统一执行脊柱，
-并以透明 activity bridge 将当前 Run 的 Tool/Artifact 生命周期提交 journal 后写入 launched 状态；属于 Context expansion 的
-Directive 在同一 delivery 事务把 expansion 推进为 dispatched。
-LaunchPort 是该 Directive 所派发 Run 的唯一启动者：它在绑定工作区之前先按 Run 定向认领该 Run 的调度记录，
-通用 dispatch 消费者因此不会重复认领；启动前复检区分「权力或目标已失效」（拒绝启动）与「该 Run 已被启动」
-（幂等接受，不中止、不退回重试）。
-认领失败本身不携带成因（SKIP LOCKED 只跳过行），因此认领不可用时必须读回调度记录自身的状态：仍处于
-accepted/claimed/running 说明有启动者正在接手，按幂等接受处理；已终结或记录缺失说明没有启动者会跑这条 Run，
-按拒绝启动处理并终结该 Run。复检遇到并非由本端口启动的 Run 时，本端口持有的认领随该 Run 收口（running 则
-随其进入 running，已终结则按 settled 关闭），避免租约过期后队列把已结束的 Run 重新启动。释放认领时若该记录
-已被并发路径结算或已失去 fencing，视为已释放，不覆盖正在上抛的原始启动失败原因。
-受治理工具根绑定真实 slot，来源元数据不进入模型消息。
+输入为已授权 Directive、规划出的 workspace slot 与 Run 请求；输出为持久的 Run/dispatch 交付和启动时的 workspace lease。
+具体工作流为 Dispatcher 认领 directive 并分配 slot，LaunchPort 将计划随 Run 准入原子提交，通用 durable worker 在启动边界调用 Binder 获取 lease；交付状态与实际启动状态分别记录。
 示例：`run_ids = await dispatcher.dispatch(loop_id, round_id)`。
 """
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Protocol
 import uuid
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopDirective
+from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective
 from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
-from backend.app.desktop.agent_loop.directive_causality import DirectiveCausalityRecorder
 from backend.app.desktop.agent_loop.context_expansion.repository import ContextExpansionRepository
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
 from backend.app.desktop.models import DesktopRun
-from backend.app.desktop.run_orchestration import RunExecutionResources, RunLifecycleFinalizer, execute_prepared_run
-from backend.app.desktop.run_orchestration.dispatch import RunDispatchRepository, StaleDispatchFence
 from backend.app.desktop.workspace_coordination.leases import WorkspaceLeaseManager
 from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor, WorkspaceSlot
 from backend.app.desktop.agent_loop.workspace_planning import WorkspaceRunPlanner
-from backend.app.desktop.agent_loop.run_activity_bridge import LoopRunActivityBridge
 from backend.app.desktop.workspace_coordination.schemas import WorkspaceIntentDeriver, WorkspaceLeaseRequest
 
 
@@ -52,7 +34,6 @@ class LoopWaveDispatcher:
         self._launcher = launcher
         self._workspaces = WorkspaceRunPlanner(sessions)
         self._lifecycle = DirectiveLifecycleRepository()
-        self._causality = DirectiveCausalityRecorder()
         self._expansions = ContextExpansionRepository()
 
     async def dispatch(self, loop_id: str, round_id: str, concurrency: int) -> tuple[str, ...]:
@@ -95,8 +76,6 @@ class LoopWaveDispatcher:
                 directive.launched_run_id = run_id
             if directive.lifecycle_state == "delivering":
                 await self._lifecycle.transition(session, directive_id, "delivered", run_id=run_id)
-                await self._lifecycle.transition(session, directive_id, "run_started", run_id=run_id)
-                await self._causality.run_started(session, directive, run_id)
                 expansion = await self._expansions.by_directive(session, directive.directive_id)
                 if expansion is not None and expansion.state == "committed":
                     await self._expansions.transition(
@@ -258,14 +237,10 @@ class LoopRunWorkspaceBinder:
 
 
 class DesktopDirectiveLaunchPort:
-    _LIVE_DISPATCH_STATES = frozenset({"accepted", "claimed", "running"})
-
     def __init__(self, sessions: async_sessionmaker[AsyncSession], desktop_service) -> None:
         self._sessions = sessions
         self._desktop = desktop_service
         self._workspace = LoopRunWorkspaceBinder(sessions)
-        self._lifecycle = DirectiveLifecycleRepository()
-        self._dispatches = RunDispatchRepository()
 
     async def __call__(self, directive: LoopDirective, message, slot_id: str) -> str:
         async with self._sessions() as session:
@@ -300,144 +275,7 @@ class DesktopDirectiveLaunchPort:
                 "idempotency_key": f"directive:{directive.directive_id}:attempt:{prior_attempts + 1}",
             },
             execution_workspace_path=await self._workspace.execution_root(directive.loop_id, slot_id),
+            execution_slot_id=slot_id,
+            admit_only=True,
         )
-        claim = await self._claim_launch(run_id, directive)
-        if claim is None:
-            return await self._resolve_unclaimed_run(run_id)
-        try:
-            activity_bridge = LoopRunActivityBridge(
-                self._desktop.bridge,
-                self._sessions,
-                loop_id=directive.loop_id,
-                context_id=directive.target_context_id,
-                run_id=run_id,
-                correlation_id=directive.correlation_id,
-                anchor_message_id=directive.message_id,
-            )
-            await self._workspace.bind(
-                run_id=run_id,
-                loop_id=directive.loop_id,
-                body=prepared.body,
-                slot_id=slot_id,
-                directive_id=directive.directive_id,
-            )
-            async with self._sessions.begin() as session:
-                current = await session.get(LoopDirective, directive.directive_id, with_for_update=True)
-                current_loop = await session.get(AgentLoop, directive.loop_id, with_for_update=True)
-                run = await session.get(DesktopRun, run_id, with_for_update=True)
-                grant = await session.scalar(
-                    select(LoopDelegationGrant).where(
-                        LoopDelegationGrant.loop_id == directive.loop_id,
-                        LoopDelegationGrant.revision == directive.grant_revision,
-                        LoopDelegationGrant.status == "active",
-                    )
-                )
-                if (
-                    current is None
-                    or current.status != "launching"
-                    or current_loop is None
-                    or current_loop.status != "running"
-                    or current_loop.authority_revision != directive.grant_revision
-                    or current_loop.goal_revision != directive.goal_revision
-                    or grant is None
-                    or run is None
-                ):
-                    raise LookupError("delegated directive 在启动前已被用户权力或新状态取代")
-                if run.status != "pending":
-                    await self._retire_claim_for_existing_run(session, claim, run)
-                    return run_id
-                await self._dispatches.transition(session, claim[0], claim[1], "running")
-                record = await execute_prepared_run(
-                    prepared.body,
-                    prepared.thread_id,
-                    RunExecutionResources(
-                        bridge=activity_bridge,
-                        run_manager=self._desktop.run_manager,
-                        checkpointer=self._desktop.checkpointer,
-                        store=self._desktop.store,
-                        app_config=self._desktop.app_config,
-                    ),
-                    prepared.agent_factory,
-                )
-                current.status = "launched"
-                current.launched_run_id = record.run_id
-            activity_task = asyncio.create_task(self._finish_activity(record, activity_bridge), name=f"loop-run-activity-flush:{record.run_id}")
-            setattr(record, "loop_activity_task", activity_task)
-            self._desktop.attach_run_sync(record)
-            return record.run_id
-        except Exception as exc:
-            self._desktop.run_manager.cancel(run_id, action="interrupt")
-            if "record" in locals() and record.task is not None:
-                await asyncio.gather(record.task, return_exceptions=True)
-            if "activity_bridge" in locals():
-                await activity_bridge.close()
-            await RunLifecycleFinalizer(self._sessions, self._desktop.checkpointer).abort_prepared(run_id, str(exc))
-            await self._release_launch_claim(claim, str(exc))
-            raise
-
-    async def _claim_launch(self, run_id: str, directive: LoopDirective) -> tuple[str, int] | None:
-        """按 Run 定向认领调度记录：抢在通用消费者之前成为唯一启动者；认领不可用时返回 None。
-
-        输入为待启动 Run 与发起 directive，输出为 (dispatch_id, fencing_token)。None 不表达成因，调用方必须经
-        `_resolve_unclaimed_run` 读回记录状态，才能区分「他人正在接手」与「尝试已终结」。
-        """
-
-        async with self._sessions.begin() as session:
-            claim = await self._dispatches.claim_run(session, run_id, f"directive-launch:{directive.loop_id}")
-            if claim is None:
-                return None
-            return claim.dispatch_id, claim.fencing_token
-
-    async def _resolve_unclaimed_run(self, run_id: str) -> str:
-        """认领不可用时按调度记录自身状态收敛：仍被持有则幂等接受，已终结则拒绝启动并终结该 Run。
-
-        输入为未被本端口认领的 Run；输出为可继续交给既有交付路径绑定的 run_id，或在没有任何启动者会接手该
-        Run 时终结它并抛出 LookupError，使 Directive 按既有生命周期收敛。
-        """
-
-        state = await self._dispatch_state(run_id)
-        if state in self._LIVE_DISPATCH_STATES:
-            return run_id
-        reason = f"delegated directive 派发的 Run 没有可用启动者接手（dispatch={state or 'missing'}）"
-        await RunLifecycleFinalizer(self._sessions, self._desktop.checkpointer).abort_prepared(run_id, reason)
-        raise LookupError(reason)
-
-    async def _dispatch_state(self, run_id: str) -> str | None:
-        """读取该 Run 的调度状态；None 表示没有调度记录。"""
-
-        async with self._sessions() as session:
-            row = await self._dispatches.by_run(session, run_id)
-            return None if row is None else row.status
-
-    async def _retire_claim_for_existing_run(self, session: AsyncSession, claim: tuple[str, int], run: DesktopRun) -> None:
-        """复检发现该 Run 并非由本端口启动时收口本次认领，使调度记录与该 Run 的真实状态一致。
-
-        输入为本端口持有的认领与已存在状态的 Run；输出为把记录推进为 running（Run 运行中）或 settled（Run 已
-        终结），避免租约过期后队列消费者重新启动一条已结束的 Run。
-        """
-
-        if run.status == "running":
-            await self._dispatches.transition(session, claim[0], claim[1], "running")
-            return
-        await self._dispatches.settle_by_run(session, run.run_id)
-
-    async def _release_launch_claim(self, claim: tuple[str, int], reason: str) -> None:
-        """拒绝启动时释放调度认领，使该 Run 不会被恢复路径当作可恢复的未启动工作。
-
-        输入为本端口持有的认领与失败原因；输出为把该记录推进到 failed_to_start。记录已被并发路径结算或已
-        失去 fencing 时视为已释放，不覆盖调用方正在上抛的原始启动失败原因。
-        """
-
-        try:
-            async with self._sessions.begin() as session:
-                await self._dispatches.transition(session, claim[0], claim[1], "failed_to_start", error=reason[:4000])
-        except (StaleDispatchFence, ValueError):
-            return
-
-    @staticmethod
-    async def _finish_activity(record, activity_bridge: LoopRunActivityBridge) -> None:
-        try:
-            if record.task is not None:
-                await record.task
-        finally:
-            await activity_bridge.close()
+        return str(prepared.payload.get("run_id") or run_id)

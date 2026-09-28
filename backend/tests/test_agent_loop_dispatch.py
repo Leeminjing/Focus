@@ -1,4 +1,4 @@
-r"""本文件验证 Loop directive 并发认领与直接用户 Run 的统一 workspace 绑定。
+r"""本文件对外提供 Loop directive 并发认领与直接用户 Run 工作区绑定的回归测试。
 
 输入为真实 PostgreSQL Loop、一个 committed directive、两个并发 Dispatcher 与待启动 DesktopRun；输出为
 恰好一次 launch、稳定 directive 状态及同一 lease/anchor 合同。具体工作流为创建最小 Context revision，
@@ -32,7 +32,8 @@ from backend.app.desktop.agent_loop import (
 )
 from backend.app.desktop.agent_loop.models import LoopCoordinatorLease
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDirective, LoopDirectiveTransition, LoopRound, LoopWorkerRequest
-from backend.app.desktop.agent_loop.directive_causality import DirectiveCausalityQuery
+from backend.app.desktop.agent_loop.directive_causality import DirectiveCausalityQuery, DirectiveCausalityRecorder
+from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
 from backend.app.desktop.agent_loop.fact_projector import FactProjector
 from sqlalchemy import select
 from backend.app.desktop.context_evolution import (
@@ -212,8 +213,8 @@ def test_dispatch_claims_once_and_direct_user_uses_the_same_workspace_contract(t
             async with sessions() as session:
                 delivered = await session.get(LoopDirective, committed.directive_ids[0])
                 delivery_history = tuple((await session.scalars(select(LoopDirectiveTransition).where(LoopDirectiveTransition.directive_id == delivered.directive_id).order_by(LoopDirectiveTransition.revision))).all())
-            assert delivered.lifecycle_state == "run_started"
-            assert [item.to_state for item in delivery_history] == ["proposed", "authorized", "delivering", "delivered", "run_started"]
+            assert delivered.lifecycle_state == "delivered"
+            assert [item.to_state for item in delivery_history] == ["proposed", "authorized", "delivering", "delivered"]
             assert await LoopWaveDispatcher(sessions, launch).dispatch(loop_id, round_row.round_id, 1) == ()
             assert len(calls) == 1
 
@@ -338,6 +339,10 @@ def test_dispatch_claims_once_and_direct_user_uses_the_same_workspace_contract(t
                 return causal_run_id
 
             assert await LoopWaveDispatcher(sessions, causal_launch).dispatch(loop_id, round_row.round_id, 1) == (causal_run_id,)
+            async with sessions.begin() as session:
+                current = await session.get(LoopDirective, committed.directive_ids[0], with_for_update=True)
+                await DirectiveLifecycleRepository().transition(session, current.directive_id, "run_started", run_id=causal_run_id)
+                await DirectiveCausalityRecorder().run_started(session, current, causal_run_id)
             event = SimpleNamespace(event_id=uuid.uuid4().hex, run_id=causal_run_id, payload={})
             async with sessions.begin() as session:
                 await LoopCoordinator(sessions).handle_run_settled(event, session)

@@ -4,7 +4,7 @@
  * 对话/Context/Agent/Commitment/压缩/插件与模块化 Agent Loop Portfolio 控制台、结构化 Mission 编辑、Context Expansion 资源授权/状态、自主压缩授权/审计/来源恢复、终止 Loop 退出/后继 Loop 准备等视图；逐轮材料以有序 binding 草稿和独立图片必看
  * 集合表达，自定义分组是服务端事实，分组模式与折叠是任务 UI 偏好。具体工作流为在任务切换时加载
  * 材料、历史和分组，用纯函数规范化选择/分组，再通过单一异步事件边界更新 DOM 和运行状态；
- * 任务详情刷新带请求身份守卫，迟到或跨 Context 的响应不得覆盖更新的会话状态；会话容器只有一个
+ * Loop 运行活动由 journal 增量投影到选中 Context 的当前执行区，分钟计时只刷新活动栏而不重取历史会话；任务详情刷新带请求身份守卫，迟到或跨 Context 的响应不得覆盖更新的会话状态；会话容器只有一个
  * 写者——DOM 写入侧：顶层重建先接管既有会话节点，随即统一经对账写入内容（写入侧分只读的"计划"与唯一
  * 改动 DOM 的"应用"两个阶段，决策前不改动活动树）；对账单元以身份键匹配，承诺轨迹面板与审批/恢复面板
  * 作为显式保留节点原位存活，流式占位也由写入侧按 run 身份就地创建并同步，本文件不直接向会话容器增删
@@ -240,7 +240,11 @@ const loopConnection = runtime.features?.liveLoopProjection === false ? loopLega
 loopLiveStore?.subscribe(liveState => {
   if (!liveState.projection) return;
   loopStore?.projectLive(liveState.projection, liveState.connection);
-  loopConsoleStore?.projectLive(liveState.projection, loopLiveSelectors);
+  const previousConversation = loopConsoleStore?.get().conversation;
+  const nextConsole = loopConsoleStore?.projectLive(liveState.projection, loopLiveSelectors);
+  if (previousConversation && nextConsole?.selectedContextId === previousConversation.context_id && !nextConsole.conversation) {
+    void loopConsoleController?.selectContext(nextConsole.selectedContextId, { preserveSelection: true });
+  }
   scheduleLoopLifecyclePatch();
 });
 let loopLifecycleFrame = null;
@@ -886,6 +890,12 @@ function scheduleLoopLifecyclePatch() {
     if (!loopView?.patchLifecycle?.(app, loopStore?.get())) renderLoop();
   });
 }
+
+setInterval(() => {
+  if (state.view !== "loop") return;
+  const runs = Object.values(loopStore?.get().live?.runs || {});
+  if (runs.some(item => ["pending", "running"].includes(item.state?.status))) scheduleLoopLifecyclePatch();
+}, 60000);
 
 async function openLoopRevision(revisionId) {
   if (!loopApi || !revisionId) return;

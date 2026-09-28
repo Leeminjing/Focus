@@ -91,7 +91,7 @@ class LoopLiveProjectionOverlay:
                 )
                 for edge in lineage
             },
-            "runs": {row.run_id: self._entity(row.run_id, 2 if row.status in {"success", "error", "interrupted"} else 1, sequence, {"context_id": row.task_id, "status": row.status, "origin": row.origin, "directive_id": row.directive_id, "user_intent_id": row.user_intent_id, "workspace_result": row.workspace_result, "model_calls": row.model_call_count, "input_tokens": row.prompt_input_tokens, "output_tokens": row.prompt_output_tokens, "dispatch": None if dispatch_by_run.get(row.run_id) is None else {"dispatch_id": dispatch_by_run[row.run_id].dispatch_id, "status": dispatch_by_run[row.run_id].status, "attempt": dispatch_by_run[row.run_id].attempt, "error": dispatch_by_run[row.run_id].error}}) for row in runs},
+            "runs": {row.run_id: self._run_entity(row, dispatch_by_run.get(row.run_id), sequence, projection.runs.get(row.run_id)) for row in runs},
             "curators": {row.assignment_id: self._entity(row.assignment_id, row.revision, sequence, {"round_id": row.round_id, "scope": row.scope, "state": row.state, "safe_summary": row.result_summary, "evidence_references": row.evidence_refs}) for row in curators},
             "expansions": {row.expansion_id: self._entity(row.expansion_id, row.revision, sequence, {"opportunity_id": row.opportunity_id, "round_id": row.round_id, "work_spec": row.work_spec, "manifest_ids": row.manifest_ids, "source_frontier": row.source_frontier, "resolution": row.resolution, "evidence_frontier": row.evidence_frontier, "stage_identities": row.stage_identities, "definition_hash": row.definition_hash, "state": row.state, "level": row.level, "policy_version": row.policy_version, "workspace_mode": row.workspace_mode, "independence_key": row.independence_key, "safe_summary": row.safe_summary, "blocker_code": row.blocker_code, "result": row.result}) for row in expansions},
             "directives": {row.directive_id: self._entity(row.directive_id, max(1, row.revision), sequence, {"round_id": row.round_id, "origin": row.origin_kind, "target_context_id": row.target_context_id, "state": row.lifecycle_state, "run_id": row.launched_run_id, "reason": row.terminal_reason, "correlation_id": row.correlation_id}) for row in directives},
@@ -105,6 +105,33 @@ class LoopLiveProjectionOverlay:
                 "quarantined_units": tuple(sorted(row.unit_id for row in failures if row.status == "quarantined")),
             }),
         })
+
+    @staticmethod
+    def _run_entity(run: DesktopRun, dispatch: RunDispatch | None, sequence: int, prior: ProjectedEntity | None) -> ProjectedEntity:
+        state = {
+            "context_id": run.task_id,
+            "status": run.status,
+            "origin": run.origin,
+            "directive_id": run.directive_id,
+            "user_intent_id": run.user_intent_id,
+            "workspace_result": run.workspace_result,
+            "model_calls": run.model_call_count,
+            "input_tokens": run.prompt_input_tokens,
+            "output_tokens": run.prompt_output_tokens,
+            "created_at": run.created_at.isoformat() if run.created_at else None,
+            "dispatch": None if dispatch is None else {
+                "dispatch_id": dispatch.dispatch_id,
+                "status": dispatch.status,
+                "attempt": dispatch.attempt,
+                "error": dispatch.error,
+            },
+            "last_activity_at": None if prior is None else prior.state.get("last_activity_at"),
+            "last_activity_kind": None if prior is None else prior.state.get("last_activity_kind"),
+            "last_activity_summary": None if prior is None else prior.state.get("last_activity_summary"),
+        }
+        return LoopLiveProjectionOverlay._entity(
+            run.run_id, 2 if run.status in {"success", "error", "interrupted"} else 1, sequence, state
+        )
 
     @staticmethod
     def _entity(entity_id: str, revision: int, sequence: int, state: dict[str, Any]) -> ProjectedEntity:
