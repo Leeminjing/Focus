@@ -500,7 +500,7 @@ def test_one_run_reaches_live_sse_and_real_electron_before_settlement(tmp_path: 
             else:
                 raise AssertionError(f"Live backend did not start: {log_path.read_text(encoding='utf-8')}")
 
-            screenshot = repo / "openspec" / "changes" / "unify-loop-run-dispatch-and-live-observability" / "evidence" / "first-round.png"
+            screenshot = tmp_path / "first-round.png"
             result_path = tmp_path / "desktop-result.json"
             env["FOCUS_LOOP_E2E_RESULT_FILE"] = str(result_path)
             desktop_log = (tmp_path / "desktop.log").open("w", encoding="utf-8")
