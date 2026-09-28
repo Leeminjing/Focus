@@ -22,6 +22,7 @@
  * 三档模式分别保存新会话默认与当前会话常驻值，
  * 当前会话模式经独立 API 串行保存，成功后才更新界面及后续运行策略；
  * 沙箱状态视图展示已准备或曾尝试准备的工作区及持久限制；
+ * 主任务 Composer 仅在存在错误或执行提示时显示反馈，不为默认快捷键说明预留空行；
  * 审批弹窗区分单次放宽和常驻切换；Agent Loop 的 snapshot、sequence reducer、断线重放和重同步
  * 由独立 Live Store/Connection 负责；Expansion 表单和阻断视图委托 FocusLoopExpansionBudget，普通 API 响应统一委托无 DOM 的 FocusHttpResponse 解码，本文件只组合页面生命周期和控制请求。
  * 示例：renderFocus(activeTask()); await sendMain()。
@@ -1467,7 +1468,7 @@ function composerFeedback(detail, projectionBlocked) {
   if (detail?.pending_must_view_report) return { kind: "warning", text: "必看图片报告等待重试或取消。" };
   if (detail?.pending_access_review) return { kind: "warning", text: "存在待批准的本机资源访问请求，请先批准或拒绝。" };
   if (["pending", "running"].includes(detail?.active_run?.status)) return { kind: "active", text: "主 Agent 正在运行；你可以查看运行详情或中断。" };
-  return { kind: "muted", text: uiText("focus.enter_hint", "Enter 发送 · Shift+Enter 换行") };
+  return null;
 }
 
 function setComposerError(error = null, taskId = state.activeTaskId) {
@@ -1476,8 +1477,13 @@ function setComposerError(error = null, taskId = state.activeTaskId) {
   if (taskId !== state.activeTaskId) return;
   const node = document.querySelector("#composerFeedback");
   if (!node) return;
-  node.className = error ? "composer-feedback is-danger" : "composer-feedback is-muted";
-  node.textContent = error ? `发送失败：${error}` : uiText("focus.enter_hint", "Enter 发送 · Shift+Enter 换行");
+  const detail = state.details.get(taskId);
+  const projectionStatus = detail?.context?.projection_status || "root";
+  const projectionBlocked = !["root", "valid", "repaired", "approved"].includes(projectionStatus);
+  const feedback = composerFeedback(detail, projectionBlocked);
+  node.hidden = !feedback;
+  node.className = feedback ? `composer-feedback is-${feedback.kind}` : "composer-feedback";
+  node.textContent = feedback?.text || "";
 }
 
 function renderContextRail(task) {
@@ -1564,7 +1570,7 @@ function renderFocus(task = activeTask()) {
               ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(composerDraft.value(task.task_id, detail.ui_state?.input || ""))}</textarea>`, true)}
               <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
             </div>
-            <p id="composerFeedback" class="composer-feedback is-${feedback.kind}" role="status">${escapeHtml(feedback.text)}</p>
+            <p id="composerFeedback" class="composer-feedback${feedback ? ` is-${feedback.kind}` : ""}" role="status"${feedback ? "" : " hidden"}>${feedback ? escapeHtml(feedback.text) : ""}</p>
           </div>
         </div>
       </section>

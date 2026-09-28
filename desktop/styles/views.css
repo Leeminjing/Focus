@@ -1,6 +1,6 @@
 /* 本文件对外提供任务、材料、对话、Composer、Loop Mission 与其它工作流视图的布局样式。输入为 app.js
    输出的语义 class 和公共设计 token，输出为可滚动工作区、职责分离的 Mission 编辑器、可折叠材料组、材料项内逐轮备注框
-   与历史材料卡片；Composer 输入与操作分行，文件模式菜单显示清楚的选择层级。工作流先应用通用视图骨架，再为具体工作流补充必要布局。示例：
+   与历史材料卡片；Composer 输入与操作分行，反馈仅在有内容时占位，文件模式菜单显示清楚的选择层级。工作流先应用通用视图骨架，再为具体工作流补充必要布局。示例：
    .run-material-note 把本轮备注输入框就近排在其所属材料条目内。 */
 .focus-view,
 .map-view,
@@ -231,7 +231,7 @@
 .message-rich th,
 .message-rich td { padding: var(--space-2) var(--space-3); border-color: var(--border-default); }
 
-.focus-bottom { padding: 0 var(--space-3) var(--space-3); }
+.focus-bottom { padding: 0 var(--space-3); }
 .composer-shell {
   border: 0;
   border-top: 1px solid var(--border-default);
@@ -413,7 +413,7 @@
   font-weight: 650;
 }
 .send-button:hover { background: var(--accent-hover); }
-.composer-feedback { min-height: 28px; margin: 0; padding: var(--space-1) var(--space-3) var(--space-2); color: var(--text-secondary); font-size: 11px; }
+.composer-feedback { margin: 0; padding: var(--space-1) var(--space-3) var(--space-2); color: var(--text-secondary); font-size: 11px; }
 .composer-feedback.is-active { color: var(--text-accent); }
 .composer-feedback.is-warning { color: var(--text-warning); }
 .composer-feedback.is-danger { color: var(--text-danger); }
