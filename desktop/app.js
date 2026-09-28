@@ -21,6 +21,7 @@
  * 与模式切换都不丢内容，也不依赖 `beforeunload`；作曲区输入与操作分行，文件模式使用紧凑菜单；
  * 三档模式分别保存新会话默认与当前会话常驻值，
  * 当前会话模式经独立 API 串行保存，成功后才更新界面及后续运行策略；
+ * 沙箱状态视图展示已准备或曾尝试准备的工作区及持久限制；
  * 审批弹窗区分单次放宽和常驻切换；Agent Loop 的 snapshot、sequence reducer、断线重放和重同步
  * 由独立 Live Store/Connection 负责；Expansion 表单和阻断视图委托 FocusLoopExpansionBudget，普通 API 响应统一委托无 DOM 的 FocusHttpResponse 解码，本文件只组合页面生命周期和控制请求。
  * 示例：renderFocus(activeTask()); await sendMain()。
@@ -5970,7 +5971,7 @@ function renderSandboxStatus(status) {
   const limitations = Array.isArray(status?.limitations) ? status.limitations : [];
   return `<p>${escapeHtml(status?.limited_label || "受限后端不可用")}</p>
     <p>${escapeHtml(uiText("sandbox.unrestricted", "完全访问：未应用文件沙箱"))}</p>
-    <h4>${escapeHtml(uiText("sandbox.prepared", "已准备过的工作区"))}</h4>
+    <h4>${escapeHtml(uiText("sandbox.prepared", "已准备或曾尝试准备的工作区"))}</h4>
     ${prepared.length ? `<ul>${prepared.map(path => `<li><code>${escapeHtml(path)}</code></li>`).join("")}</ul>` : `<p>${escapeHtml(uiText("sandbox.none_prepared", "暂无"))}</p>`}
     <h4>${escapeHtml(uiText("sandbox.limitations", "实际限制"))}</h4>
     <ul>${limitations.map((item, index) => `<li>${escapeHtml(uiText(`sandbox.limit_${index + 1}`, String(item)))}</li>`).join("")}</ul>`;

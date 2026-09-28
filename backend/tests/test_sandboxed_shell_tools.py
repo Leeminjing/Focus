@@ -43,7 +43,18 @@ def test_powershell_uses_bound_workspace_and_mode(windows_sandbox_roots, monkeyp
             command=command, runtime=_runtime(roots.workspace_a, AccessMode.WORKSPACE_WRITE),
         ))
         assert writable["backend_applied"] is True
+        assert writable["enforcement"] == "partial"
         assert writable["mode"] == "workspace-write"
+        assert writable["run_id"] == "run-1"
+        assert writable["session_id"] == "thread-1"
+        assert writable["call_id"] == "call-1"
+        assert writable["agent_id"] == "agent-1"
+        assert writable["workspace"] == str(roots.workspace_a)
+        assert writable["mode_source"] == "execution-profile"
+        assert writable["status"] == "exited"
+        assert writable["approval_id"] is None
+        assert writable["truncated"] is False
+        assert writable["cleanup_warnings"] == []
         assert writable["exit_code"] == 0
         assert target.read_text() == "written"
         readonly = json.loads(workspace_tools.powershell.func(
@@ -95,6 +106,7 @@ def test_cmd_is_confined_and_full_access_is_explicit(windows_sandbox_roots, monk
         assert full["backend_applied"] is False
         assert full["enforcement"] == "none"
         assert full["mode"] == "danger-full-access"
+        assert full["status"] == "exited"
         assert full["exit_code"] == 0
         assert roots.outside_file.read_text() == "full access"
     finally:

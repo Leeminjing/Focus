@@ -1,7 +1,7 @@
 """本文件对外提供本机 Shell 沙箱请求、结果和基础设施失败类型。
 
 输入为不可变调用绑定、可执行文件、参数及超时；输出为逐调用执行事实或 SandboxUnavailable。
-具体工作流为调用方构造请求，后端返回目标退出与输出，同时保留实际模式和后端状态。
+具体工作流为调用方构造请求，后端返回目标退出与输出，同时保留实际模式、后端状态和独立清理告警。
 示例：ShellExecutionRequest(binding, "cmd.exe", ("/c", "echo ok"))。
 """
 
@@ -44,3 +44,4 @@ class ShellExecutionResult:
     status: str
     truncated: bool = False
     approval_id: str | None = None
+    cleanup_warnings: tuple[str, ...] = ()

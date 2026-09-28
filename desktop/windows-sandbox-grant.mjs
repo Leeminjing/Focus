@@ -1,62 +1,32 @@
 /**
- * 本文件对外提供固定 DSH ACL 授权的 prepare 与 release 命令。
- * 输入为服务端确认的真实工作区和独立私有临时目录；释放时只需私有临时目录。
- * 输出为两者的规范路径及能力 SID，
- * 或包含具体 Win32 诊断的失败状态。具体工作流为 prepare 按固定 DSH 原语写入常驻
- * 工作区授权和可撤销临时授权，release 撤销临时授权而保留工作区授权。
- * 示例：node windows-sandbox-grant.mjs prepare C:\work C:\temp\private。
+ * 本文件对外提供 Focus 自有 Windows 授权的 prepare 与 release 命令。
+ * 输入为真实 Workspace 与私有临时目录；输出为两处能力 SID 及授权事实，或带原生诊断的失败。
+ * 具体工作流为先确认路径与隔离，再给 Workspace 持久授权、给 private temp 独立授权；释放时只撤销 private temp 授权。
+ * 示例：node windows-sandbox-grant.mjs prepare C:\\work C:\\temp\\focus-sandbox-1。
  */
 import { realpathSync } from "node:fs";
-import { isAbsolute, relative, sep } from "node:path";
-import {
-  AclWriteGrant,
-  assertTempRootOutsideWorkspace,
-  tempWriteSid,
-  workspaceWriteSid,
-} from "@deepseek-ai/dsh-sandbox-windows-acl";
-
-function paths(workspaceInput, tempInput) {
-  const workspace = realpathSync.native(workspaceInput);
-  const temp = realpathSync.native(tempInput);
-  assertTempRootOutsideWorkspace(workspace, temp);
-  const relation = relative(temp, workspace);
-  if (relation === "" || (!isAbsolute(relation) && relation !== ".." && !relation.startsWith(`..${sep}`))) {
-    throw new Error("private temp and workspace overlap");
-  }
-  return { workspace, temp, writeSid: workspaceWriteSid(workspace), tempWriteSid: tempWriteSid(temp) };
-}
-
-function prepare(boundary) {
-  const workspaceGrant = AclWriteGrant.create(boundary.writeSid);
-  workspaceGrant.add(boundary.workspace, true);
-  const tempGrant = AclWriteGrant.create(boundary.tempWriteSid);
-  try {
-    tempGrant.add(boundary.temp);
-  } catch (error) {
-    tempGrant.dispose();
-    throw error;
-  }
-  process.stdout.write(`${JSON.stringify(boundary)}\n`);
-}
-
-function release(boundary) {
-  const tempGrant = AclWriteGrant.create(boundary.tempWriteSid);
-  tempGrant.add(boundary.temp);
-  tempGrant.dispose();
-  process.stdout.write(`${JSON.stringify({ released: boundary.temp })}\n`);
-}
+import { dirname } from "node:path";
+import { privateTempSid, resolveBoundary } from "./windows-sandbox/boundary.mjs";
+import { prepareGrant, releaseGrant } from "./windows-sandbox/grants.mjs";
 
 const [action, workspaceInput, tempInput] = process.argv.slice(2);
+
 try {
   if (!tempInput) throw new Error("private temp is required");
   if (action === "prepare") {
-    if (!workspaceInput) throw new Error("workspace is required");
-    prepare(paths(workspaceInput, tempInput));
+    if (!workspaceInput) throw new Error("Workspace is required");
+    const boundary = resolveBoundary(workspaceInput, dirname(tempInput), tempInput);
+    prepareGrant(boundary.temp, boundary.tempWriteSid);
+    prepareGrant(boundary.workspace, boundary.writeSid);
+    process.stdout.write(`${JSON.stringify({
+      workspace: boundary.workspace, temp: boundary.temp,
+      writeSid: boundary.writeSid, tempWriteSid: boundary.tempWriteSid,
+    })}\n`);
   } else if (action === "release") {
     const temp = realpathSync.native(tempInput);
-    release({ temp, tempWriteSid: tempWriteSid(temp) });
-  }
-  else throw new Error(`unknown action: ${action}`);
+    releaseGrant(temp, privateTempSid(temp));
+    process.stdout.write(`${JSON.stringify({ released: temp })}\n`);
+  } else throw new Error(`Unknown grant action: ${action}`);
 } catch (error) {
   process.stderr.write(`windows-sandbox-grant: ${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;

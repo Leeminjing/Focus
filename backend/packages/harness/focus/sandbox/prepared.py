@@ -1,8 +1,8 @@
-"""本文件对外提供 PreparedWorkspaceRegistry，登记仍带常驻 Windows ACL 调整的工作区。
+"""本文件对外提供 PreparedWorkspaceRegistry，登记已开始安全准备的真实工作区。
 
-输入为真实工作区路径及本机注册表文件；输出为持久的已准备根清单。
-具体工作流为在授权成功后以原子替换写入去重列表，查询时读取保存内容；
-记录只用于告知持久影响，不参与本次令牌授权或决定文件访问。
+输入为真实工作区路径及本机注册表文件；输出为持久的准备记录清单。
+具体工作流为在 ACL 调整前拒绝与已登记根重叠的工作区，再以原子替换记录准备尝试；
+记录同时防止嵌套工作区的能力继承扩大边界，并告知可能持久保留的安全影响。
 示例：registry.record(Path("C:/ws"))；registry.list() 返回此前准备过的真实路径。
 """
 
@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 
 from focus.sandbox.contracts import SandboxUnavailable
+from focus.security.paths import canonical_text, is_within
 
 
 class PreparedWorkspaceRegistry:
@@ -27,7 +28,14 @@ class PreparedWorkspaceRegistry:
         root = str(workspace.resolve(strict=True))
         with self._lock:
             roots = set(self.list())
-            if root in roots:
+            recorded = False
+            for previous in roots:
+                if canonical_text(Path(previous)) == canonical_text(Path(root)):
+                    recorded = True
+                    continue
+                if is_within(Path(previous), Path(root)) or is_within(Path(root), Path(previous)):
+                    raise SandboxUnavailable(f"工作区与已登记的沙箱工作区重叠: {root} / {previous}")
+            if recorded:
                 return
             roots.add(root)
             try:

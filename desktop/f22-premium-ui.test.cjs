@@ -117,8 +117,7 @@ assert.match(base, /prefers-reduced-motion:\s*reduce/);
 assert.match(base, /\(update:\s*slow\)/);
 
 assert.deepEqual(Object.keys(packageJson.dependencies || {}), [
-  "@deepseek-ai/cordis", "@deepseek-ai/dsh-sandbox-windows-acl",
-  "@deepseek-ai/dsh-subprocess", "electron",
+  "electron", "koffi",
 ]);
 assert.match(main, /loadURL\(`\$\{apiBase\}\/desktop\/`\)/);
 assert.match(app, /location\.origin/);

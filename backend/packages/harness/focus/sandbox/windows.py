@@ -1,9 +1,9 @@
-"""本文件对外提供 WindowsAclBackend，以固定 DSH 原语执行本机受限 Shell。
+"""本文件对外提供 WindowsAclBackend，以 Focus 自有 Windows 后端执行本机受限 Shell。
 
-输入为服务端绑定的模式、真实工作区、目标参数和固定 DSH Node 依赖。
-输出为目标输出与退出事实；后端缺失、授权失败或独立状态通道异常时抛 SandboxUnavailable。
-具体工作流为验证后端、为可写会话准备独立临时授权，创建普通临时根下的状态文件，
-再用无 Shell 插值的 argv 启动适配器；适配器借固定 DSH 创建受限令牌和受管理子进程，
+输入为服务端绑定的模式、真实工作区、目标参数和 Focus 自有 Node 桥。
+输出为目标输出、退出或启动后控制故障事实；启动前后端缺失或授权失败时抛 SandboxUnavailable。
+具体工作流为验证后端、先登记并排除重叠工作区、再准备独立临时授权，创建状态文件，
+再用无 Shell 插值的 argv 启动适配器；适配器构造 Low 限制令牌和受管理子进程，
 状态文件区分目标退出与准备故障，超时关闭其 Job 以终止进程树。
 示例：WindowsAclBackend().run(ShellExecutionRequest(binding, "cmd.exe", ("/c", "echo ok")))。
 """
@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -23,6 +24,9 @@ from focus.sandbox.contracts import SandboxUnavailable, ShellExecutionRequest, S
 from focus.sandbox.prepared import PreparedWorkspaceRegistry
 from focus.sandbox.session_temp import SessionTempRegistry
 from focus.security.policy import AccessMode
+
+
+_log = logging.getLogger(__name__)
 
 
 class WindowsAclBackend:
@@ -61,8 +65,8 @@ class WindowsAclBackend:
             helper = self._grant_helper_path.resolve()
             if not helper.is_file():
                 raise SandboxUnavailable(f"未找到 Windows ACL 授权适配器: {helper}")
+            self._prepared.record(workspace)
             grant = self._registry.prepare(request.binding, node, helper, temp_root)
-            self._prepared.record(grant.workspace)
             workspace = grant.workspace
             temp_dir = grant.temp_dir
             sid_args = [grant.write_sid, grant.temp_write_sid]
@@ -97,18 +101,45 @@ class WindowsAclBackend:
             try:
                 status, stdout, stderr = self._wait(process, request)
                 if status != "exited":
+                    fact = self._read_status(status_path)
+                    if fact.get("phase") not in ("started", "exited"):
+                        raise SandboxUnavailable(f"Windows ACL 目标未确认受限启动: {fact}")
                     return self._result(request, stdout, stderr, None, status)
                 fact = self._read_status(status_path)
                 if fact.get("phase") == "failed":
                     raise SandboxUnavailable(str(fact.get("error") or "Windows ACL 准备失败"))
-                if fact.get("phase") != "exited" or fact.get("exitCode") != process.returncode:
+                if fact.get("phase") == "control_failed" or (
+                    fact.get("phase") == "started" and process.returncode == 126
+                ):
+                    code = fact.get("exitCode")
+                    warning = str(fact.get("error") or "Windows ACL 控制端在目标启动后失败")
+                    return self._result(
+                        request, stdout, stderr, code if type(code) is int else None,
+                        "control_failed", (warning,),
+                    )
+                if fact.get("phase") != "exited":
                     raise SandboxUnavailable(f"Windows ACL runner 未完成目标退出协议: {fact}")
-                return self._result(request, stdout, stderr, process.returncode, status)
+                if type(fact.get("exitCode")) is not int:
+                    raise SandboxUnavailable(f"Windows ACL 目标退出码协议无效: {fact}")
+                if fact.get("exitCode") != process.returncode and process.returncode != 126:
+                    raise SandboxUnavailable(f"Windows ACL runner 退出码与目标结果不一致: {fact}")
+                warnings = fact.get("cleanupWarnings", [])
+                if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
+                    raise SandboxUnavailable("Windows ACL 清理告警协议无效")
+                if process.returncode == 126 and fact["exitCode"] != 126:
+                    warnings.append("Windows ACL 控制端在目标退出后发生故障")
+                for warning in warnings:
+                    _log.warning("Windows sandbox cleanup: %s", warning)
+                return self._result(request, stdout, stderr, fact["exitCode"], status, tuple(warnings))
             finally:
                 with self._lock:
                     self._active.discard(process)
         finally:
-            status_path.unlink(missing_ok=True)
+            for cleanup_path in (status_path, status_path.with_name(status_path.name + ".pending")):
+                try:
+                    cleanup_path.unlink(missing_ok=True)
+                except OSError as error:
+                    _log.warning("Windows sandbox status cleanup: %s", error)
 
     def close(self) -> tuple[str, ...]:
         with self._lock:
@@ -126,8 +157,12 @@ class WindowsAclBackend:
                 pass
         node = self._node_binary or shutil.which("node")
         if not node:
-            return ("无法撤销私有临时授权：Node 运行时不可用",)
-        return self._registry.close(node, self._grant_helper_path.resolve(), self._temp_root.resolve())
+            warnings = ("无法撤销私有临时授权：Node 运行时不可用",)
+        else:
+            warnings = self._registry.close(node, self._grant_helper_path.resolve(), self._temp_root.resolve())
+        for warning in warnings:
+            _log.warning("Windows sandbox cleanup: %s", warning)
+        return warnings
 
     def prepared_workspaces(self) -> tuple[str, ...]:
         return self._prepared.list()
@@ -174,9 +209,12 @@ class WindowsAclBackend:
         runner = self._runner_path.resolve()
         if not runner.is_file():
             raise SandboxUnavailable(f"未找到 Windows ACL runner: {runner}")
-        dsh_package = self._default_dsh_package()
-        if not dsh_package.is_file():
-            raise SandboxUnavailable(f"未找到固定 DSH Windows ACL 依赖: {dsh_package}")
+        native_module = self._default_native_module()
+        if not native_module.is_file():
+            raise SandboxUnavailable(f"未找到 Focus Windows 原生模块: {native_module}")
+        koffi_package = self._default_koffi_package()
+        if not koffi_package.is_file():
+            raise SandboxUnavailable(f"未找到 Focus Windows Koffi 依赖: {koffi_package}")
         try:
             temp_root = self._temp_root.resolve(strict=True)
         except OSError as error:
@@ -190,11 +228,12 @@ class WindowsAclBackend:
         return Path(__file__).resolve().parents[5] / "desktop" / "windows-sandbox-run.mjs"
 
     @staticmethod
-    def _default_dsh_package() -> Path:
-        return (
-            Path(__file__).resolve().parents[5] / "desktop" / "node_modules"
-            / "@deepseek-ai" / "dsh-sandbox-windows-acl" / "lib" / "index.js"
-        )
+    def _default_native_module() -> Path:
+        return Path(__file__).resolve().parents[5] / "desktop" / "windows-sandbox" / "win32.mjs"
+
+    @staticmethod
+    def _default_koffi_package() -> Path:
+        return Path(__file__).resolve().parents[5] / "desktop" / "node_modules" / "koffi" / "package.json"
 
     @staticmethod
     def _default_grant_helper() -> Path:
@@ -203,7 +242,7 @@ class WindowsAclBackend:
     @staticmethod
     def _result(
         request: ShellExecutionRequest, stdout: bytes, stderr: bytes,
-        exit_code: int | None, status: str,
+        exit_code: int | None, status: str, cleanup_warnings: tuple[str, ...] = (),
     ) -> ShellExecutionResult:
         return ShellExecutionResult(
             mode=request.binding.mode, workspace=request.binding.workspace,
@@ -212,4 +251,5 @@ class WindowsAclBackend:
             stderr=stderr.decode("utf-8", errors="replace"),
             exit_code=exit_code, status=status,
             approval_id=request.binding.approval_id,
+            cleanup_warnings=cleanup_warnings,
         )

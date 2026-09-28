@@ -1,6 +1,6 @@
 /*
  * 本文件对外提供 F20 前端架构静态守卫。输入为桌面清单、Electron 主进程、Gateway 挂载、
- * HTML、渲染入口与 Patrol presence 源码，输出为固定沙箱依赖、零外部 CDN、同一 loopback
+ * HTML、渲染入口与 Patrol presence 源码，输出为 Focus 自有沙箱依赖、零外部 CDN、同一 loopback
  * Origin、无 CORS/代理和无待命后端副作用的断言结果；工作流只读取仓库文件并在约束被
  * 破坏时退出失败。示例：`node f20-architecture-guard.test.cjs`。
  */
@@ -15,10 +15,8 @@ const read = relative => fs.readFileSync(path.join(root, relative), "utf8");
 
 const packageJson = JSON.parse(read("desktop/package.json"));
 assert.deepStrictEqual(packageJson.dependencies, {
-  "@deepseek-ai/cordis": "4.0.4",
-  "@deepseek-ai/dsh-sandbox-windows-acl": "0.1.7-rc.2",
-  "@deepseek-ai/dsh-subprocess": "0.1.7-rc.2",
   electron: "^43.2.0",
+  koffi: "3.3.1",
 });
 assert.strictEqual(packageJson.devDependencies, undefined);
 

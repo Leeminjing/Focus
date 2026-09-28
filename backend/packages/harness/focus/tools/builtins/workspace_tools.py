@@ -13,7 +13,7 @@
 输出:
     read_file/list_files → 文件文本/目录列表
     write_file → 写入结果说明
-    bash/powershell/cmd/sh → 含实际模式、受限状态、退出状态及截断标记的执行事实
+    bash/powershell/cmd/sh → 含实际模式、受限状态、退出状态、截断标记与独立清理告警的执行事实
 
 具体工作流:
     (1) 工具调用时验证 SecurityContext 和现存工作区，从签发身份构造策略并读取权限集合
@@ -22,7 +22,7 @@
         本文件因此只做路径解释与 IO，判定与参数改写由 AccessPolicyMiddleware 完成
     (4) read_file 按内容分发：.pdf/.docx/.doc → focus.readers 解析；图片与二进制内容
         → 抛可修正的 ToolException（绝不静默返回替换字符乱码）；其余按 UTF-8 读取
-    (5) Shell 先排除 Windows WSL 启动器，再绑定服务端执行身份和本次调用；受限模式经固定 Windows ACL 后端执行，
+    (5) Shell 先排除 Windows WSL 启动器，再绑定服务端执行身份和本次调用；受限模式经 Focus Windows ACL 后端执行，
         完全访问模式明确跳过文件沙箱；后端失败时不启动未受限替代命令
 
 效果声明：三个文件工具的目标就是参数里的 path，可由确定性解析完整枚举，故声明为可结构化
@@ -219,7 +219,7 @@ def _run_shell(command: str, runtime: ToolRuntime[dict], exe_name: str, args: li
         return _shell_fact(binding, False, "SANDBOX_UNAVAILABLE", None, "", str(error))
     return _shell_fact(
         binding, result.backend_applied, result.status, result.exit_code,
-        result.stdout, result.stderr,
+        result.stdout, result.stderr, result.cleanup_warnings,
     )
 
 
@@ -233,7 +233,10 @@ def _is_wsl_launcher(executable: str) -> bool:
     return path.parent in {(windows / name).resolve() for name in ("System32", "SysWOW64", "Sysnative")}
 
 
-def _shell_fact(binding: Any, applied: bool, status: str, exit_code: int | None, stdout: str, stderr: str) -> str:
+def _shell_fact(
+    binding: Any, applied: bool, status: str, exit_code: int | None,
+    stdout: str, stderr: str, cleanup_warnings: tuple[str, ...] = (),
+) -> str:
     output = stdout + stderr
     truncated = len(output) > 30000
     shown_stdout = stdout[-15000:] if truncated else stdout
@@ -251,6 +254,7 @@ def _shell_fact(binding: Any, applied: bool, status: str, exit_code: int | None,
         "stdout": shown_stdout, "stderr": shown_stderr,
         "output": output[-30000:] if truncated else output,
         "truncated": truncated, "approval_id": binding.approval_id,
+        "cleanup_warnings": list(cleanup_warnings),
     }, ensure_ascii=False)
 
 

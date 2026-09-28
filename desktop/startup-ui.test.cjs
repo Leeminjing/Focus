@@ -76,8 +76,7 @@ assert.match(main, /FOCUS_DISABLE_HARDWARE_ACCELERATION[\s\S]*app\.disableHardwa
 
 const packageJson = JSON.parse(text("package.json"));
 assert.deepEqual(Object.keys(packageJson.dependencies || {}), [
-  "@deepseek-ai/cordis", "@deepseek-ai/dsh-sandbox-windows-acl",
-  "@deepseek-ai/dsh-subprocess", "electron",
+  "electron", "koffi",
 ]);
 
 console.log("startup-ui: 原始图标、Windows ICO、启动阶段、动画降级与固定依赖通过");

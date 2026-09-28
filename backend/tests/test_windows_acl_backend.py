@@ -2,9 +2,9 @@
 
 输入为受治理调用绑定、独立 NTFS 工作区和可替换的 Node 适配器路径。
 输出为缺失后端时目标未运行、独立状态通道不被目标输出伪造，以及两种受限模式的文件效果，
-包括跨根重命名、现存目录联接越界与只读新建文件拒绝。
-具体工作流为先验证准备失败零副作用与退出码 127 的程序事实，再用真实子进程尝试越界写入，
-每个测试结束时撤销该测试会话的私有临时授权。
+包括嵌套根拒绝、跨根重命名、目录联接越界、只读新建文件及四种解释器的写删效果。
+具体工作流为先验证启动前失败零执行、启动后控制故障仍保留目标事实，再尝试越界写入，
+每个测试结束时撤销该测试会话的私有临时授权，并核对清理失败只产生独立告警。
 示例：运行 python -m pytest backend/tests/test_windows_acl_backend.py。
 """
 
@@ -82,6 +82,25 @@ def test_grant_failure_does_not_start_target(windows_sandbox_roots, tmp_path):
         ("-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')", str(marker)),
     )
     with pytest.raises(SandboxUnavailable, match="授权失败"):
+        backend.run(request)
+    assert not marker.exists()
+    assert backend.close() == ()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 授权协议失败关闭验收")
+def test_invalid_grant_response_is_infrastructure_failure(windows_sandbox_roots, tmp_path):
+    roots = windows_sandbox_roots
+    helper = tmp_path / "invalid-grant.mjs"
+    helper.write_text("process.stdout.write('{}')", encoding="utf-8")
+    backend = WindowsAclBackend(
+        grant_helper_path=helper, prepared_registry_path=tmp_path / "prepared.json",
+    )
+    marker = roots.workspace_a / "must-not-run.txt"
+    request = ShellExecutionRequest(
+        _binding(roots.workspace_a), sys.executable,
+        ("-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')", str(marker)),
+    )
+    with pytest.raises(SandboxUnavailable, match="边界字段"):
         backend.run(request)
     assert not marker.exists()
     assert backend.close() == ()
@@ -217,16 +236,18 @@ def test_existing_junction_does_not_widen_workspace_boundary(windows_sandbox_roo
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows 独立状态通道验收")
-def test_program_can_exit_127_and_print_runner_signature_without_being_misclassified(
-    windows_sandbox_roots, acl_backend,
+@pytest.mark.parametrize("exit_code", (126, 127))
+def test_program_exit_code_and_runner_signature_are_not_misclassified(
+    windows_sandbox_roots, acl_backend, exit_code,
 ):
     result = acl_backend.run(ShellExecutionRequest(
         _binding(windows_sandbox_roots.workspace_a), sys.executable,
-        ("-c", "import sys; print('windows-acl-run: imitation', file=sys.stderr); sys.exit(127)"),
+        ("-c", f"import sys; print('windows-acl-run: imitation', file=sys.stderr); sys.exit({exit_code})"),
     ))
-    assert result.exit_code == 127
+    assert result.exit_code == exit_code
     assert result.status == "exited"
     assert "windows-acl-run: imitation" in result.stderr
+    assert not result.cleanup_warnings
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows 独立状态通道验收")
@@ -236,6 +257,69 @@ def test_target_create_failure_is_distinct_from_program_exit(windows_sandbox_roo
         acl_backend.run(ShellExecutionRequest(
             _binding(root), str(root / "missing-program.exe"), (),
         ))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 状态通道启动前失败验收")
+def test_started_status_failure_cannot_run_target(windows_sandbox_roots, acl_backend, tmp_path, monkeypatch):
+    preload = tmp_path / "fail-started-status.cjs"
+    preload.write_text(
+        "const fs = require('node:fs');"
+        "const { syncBuiltinESMExports } = require('node:module');"
+        "let count = 0;"
+        "const original = fs.renameSync;"
+        "fs.renameSync = (...args) => {"
+        " if (++count === 2) throw new Error('INJECTED_STARTED_STATUS_FAILURE');"
+        " return original(...args);"
+        "};"
+        "syncBuiltinESMExports();",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NODE_OPTIONS", f"--require={preload}")
+    marker = windows_sandbox_roots.workspace_a / "status-failure-ran.txt"
+    with pytest.raises(SandboxUnavailable, match="INJECTED_STARTED_STATUS_FAILURE"):
+        acl_backend.run(ShellExecutionRequest(
+            _binding(windows_sandbox_roots.workspace_a), sys.executable,
+            ("-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')", str(marker)),
+        ))
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 启动后状态故障验收")
+@pytest.mark.parametrize("persistent", (False, True))
+def test_post_start_status_failure_preserves_target_fact(
+    windows_sandbox_roots, acl_backend, tmp_path, monkeypatch, persistent,
+):
+    preload = tmp_path / "fail-post-start-status.cjs"
+    condition = "count >= 3" if persistent else "count === 3"
+    preload.write_text(
+        "const fs = require('node:fs');"
+        "const { syncBuiltinESMExports } = require('node:module');"
+        "let count = 0;"
+        "const original = fs.renameSync;"
+        "fs.renameSync = (...args) => {"
+        " count++;"
+        f" if ({condition}) throw new Error('INJECTED_POST_START_STATUS_FAILURE');"
+        " return original(...args);"
+        "};"
+        "syncBuiltinESMExports();",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NODE_OPTIONS", f"--require={preload}")
+    marker = windows_sandbox_roots.workspace_a / "post-start-ran.txt"
+    result = acl_backend.run(ShellExecutionRequest(
+        _binding(windows_sandbox_roots.workspace_a), sys.executable,
+        (
+            "-c",
+            "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran'); print('TARGET_DONE')",
+            str(marker),
+        ),
+    ))
+    assert marker.read_text() == "ran"
+    assert "TARGET_DONE" in result.stdout
+    assert result.backend_applied and result.enforcement == "partial"
+    assert result.status == "control_failed"
+    assert result.exit_code == (None if persistent else 0)
+    assert result.cleanup_warnings
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows 受限令牌验收")
@@ -263,6 +347,56 @@ def test_prepared_workspace_does_not_authorize_another_root_or_its_deletion(wind
     assert "write_DENIED" in result.stdout
     assert "delete_DENIED" in result.stdout
     assert victim.read_text(encoding="utf-8") == "prepared"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 嵌套工作区验收")
+@pytest.mark.parametrize("first", ("parent", "child"))
+def test_nested_prepared_workspace_is_rejected_before_target(
+    windows_sandbox_roots, acl_backend, first,
+):
+    parent = windows_sandbox_roots.workspace_a
+    child = parent / "nested-workspace"
+    child.mkdir()
+    roots = {"parent": parent, "child": child}
+    prepared = acl_backend.run(ShellExecutionRequest(
+        _binding(roots[first]), sys.executable, ("-c", "print('PREPARED')"),
+    ))
+    assert prepared.exit_code == 0, prepared.stderr
+    marker = child / "must-not-run.txt"
+    other = roots["child" if first == "parent" else "parent"]
+    with pytest.raises(SandboxUnavailable, match="重叠"):
+        acl_backend.run(ShellExecutionRequest(
+            _binding(other), sys.executable,
+            ("-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')", str(marker)),
+        ))
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 工作区登记失败验收")
+def test_registry_failure_prevents_acl_helper_and_target(windows_sandbox_roots, tmp_path):
+    helper_marker = tmp_path / "helper-ran.txt"
+    helper = tmp_path / "grant-helper.mjs"
+    helper.write_text(
+        "import { writeFileSync } from 'node:fs';"
+        f"writeFileSync({str(helper_marker)!r}, 'ran');",
+        encoding="utf-8",
+    )
+    registry_directory = tmp_path / "registry-is-directory"
+    registry_directory.mkdir()
+    backend = WindowsAclBackend(
+        grant_helper_path=helper, prepared_registry_path=registry_directory,
+    )
+    target_marker = windows_sandbox_roots.workspace_a / "must-not-run.txt"
+    try:
+        with pytest.raises(SandboxUnavailable, match="登记不可读"):
+            backend.run(ShellExecutionRequest(
+                _binding(windows_sandbox_roots.workspace_a), sys.executable,
+                ("-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')", str(target_marker)),
+            ))
+        assert not helper_marker.exists()
+        assert not target_marker.exists()
+    finally:
+        assert backend.close() == ()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows 受限令牌验收")
@@ -539,3 +673,83 @@ def test_runner_exit_closes_managed_process_tree(windows_sandbox_roots, acl_back
             future.result(timeout=10)
     time.sleep(1.6)
     assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 清理告警验收")
+def test_cleanup_failure_does_not_rewrite_target_result(windows_sandbox_roots, tmp_path, monkeypatch):
+    root = windows_sandbox_roots.workspace_a
+    backend = WindowsAclBackend(prepared_registry_path=tmp_path / "prepared.json")
+    result = backend.run(ShellExecutionRequest(
+        _binding(root), sys.executable,
+        ("-c", "print('TARGET_OK')"),
+    ))
+    grant = next(iter(backend._registry._grants.values()))
+    def fail_release(*_args):
+        raise RuntimeError("injected cleanup failure")
+
+    monkeypatch.setattr(backend._registry, "_invoke", fail_release)
+    try:
+        warnings = backend.close()
+        assert len(warnings) == 1
+        assert "injected cleanup failure" in warnings[0]
+        assert result.exit_code == 0
+        assert result.status == "exited"
+        assert result.stdout == "TARGET_OK\r\n"
+        assert result.stderr == ""
+        assert str(root) in backend.prepared_workspaces()
+        assert not grant.temp_dir.exists()
+    finally:
+        if grant.temp_dir.exists():
+            shutil.rmtree(grant.temp_dir)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 解释器一致性验收")
+@pytest.mark.parametrize("interpreter", ["cmd", "powershell", "python", "node"])
+def test_interpreters_share_write_and_delete_boundary(windows_sandbox_roots, acl_backend, interpreter):
+    roots = windows_sandbox_roots
+    created = roots.workspace_a / "created.txt"
+    removable = roots.workspace_a / "remove-me.txt"
+    removable.write_text("remove", encoding="utf-8")
+    outside = roots.outside_file
+    if interpreter == "cmd":
+        script = roots.workspace_a / "effects.cmd"
+        script.write_text(
+            f'@echo off\necho inside > "{created}"\n'
+            f'echo escaped > "{outside}"\n'
+            f'del /q "{removable}"\ndel /q "{outside}"\n',
+            encoding="utf-8",
+        )
+        executable, args = "cmd.exe", ("/c", str(script))
+    elif interpreter == "powershell":
+        command = (
+            f"[IO.File]::WriteAllText('{created}', 'inside'); "
+            f"try {{ [IO.File]::WriteAllText('{outside}', 'escaped') }} catch {{ }}; "
+            f"Remove-Item -LiteralPath '{removable}'; "
+            f"try {{ Remove-Item -LiteralPath '{outside}' -ErrorAction Stop }} catch {{ }}"
+        )
+        executable, args = "powershell.exe", ("-NoProfile", "-Command", command)
+    elif interpreter == "python":
+        command = (
+            "from pathlib import Path; import sys; "
+            "Path(sys.argv[1]).write_text('inside'); "
+            "exec(\"try:\\n Path(sys.argv[2]).write_text('escaped')\\nexcept OSError: pass\"); "
+            "Path(sys.argv[3]).unlink(); "
+            "exec(\"try:\\n Path(sys.argv[2]).unlink()\\nexcept OSError: pass\")"
+        )
+        executable, args = sys.executable, ("-c", command, str(created), str(outside), str(removable))
+    else:
+        command = (
+            "const fs=require('fs'); const [inside,outside,remove]=process.argv.slice(1); "
+            "fs.writeFileSync(inside,'inside'); "
+            "try { fs.writeFileSync(outside,'escaped') } catch {} "
+            "fs.unlinkSync(remove); try { fs.unlinkSync(outside) } catch {}"
+        )
+        executable, args = shutil.which("node"), ("-e", command, str(created), str(outside), str(removable))
+    result = acl_backend.run(ShellExecutionRequest(
+        _binding(roots.workspace_a), executable, args,
+    ))
+    assert result.backend_applied and result.enforcement == "partial"
+    assert created.exists(), (result.exit_code, result.stdout, result.stderr)
+    assert created.read_text(encoding="utf-8").strip() == "inside"
+    assert not removable.exists()
+    assert outside.read_text(encoding="utf-8") == "outside unchanged"

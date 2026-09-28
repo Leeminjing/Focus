@@ -2,7 +2,7 @@
 
 输入为独立 NTFS 测试根和真实受限子进程。
 输出为硬链接文件对象、CIM/WMI、子进程管道及受保护目录的实际退出与文件效果。
-具体工作流为逐项启动固定 Windows ACL 后端，打印环境相关的观察值，并断言
+具体工作流为逐项启动 Focus Windows ACL 后端，打印环境相关的观察值，并断言
 调用始终应用部分约束且硬链接两名始终对应同一个文件对象。
 示例：运行 python -m pytest backend/tests/test_windows_sandbox_special_boundaries.py -s。
 """
