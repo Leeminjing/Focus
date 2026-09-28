@@ -1,5 +1,5 @@
 /*
- * 本文件对外提供 Loop Mission、Store/Console Store、API/完整会话协议、Portfolio、事实、终止态和 provenance 的回归测试。
+ * 本文件对外提供 Loop Mission、Store/Console Store、API/完整会话协议、连接提示、Portfolio、事实、终止态和 provenance 的回归测试。
  * 输入为重复/乱序事件、千条会话页、模拟 fetch、Lane revisions 和多父边；输出为幂等 cursor、固定
  * 消息窗口、视口恢复、正确请求、完整 secondary source 与不污染消息正文的 badge 断言。具体工作流为
  * 直接加载无 DOM UMD 模块并调用纯函数；示例：`node --test desktop/agent-loop-modules.test.js`。
@@ -611,6 +611,18 @@ test("loop view exposes every hard portfolio budget", () => {
   for (const label of ["Rounds 2 / 20", "Duration 90 / 3600s", "Calls 4 / 200", "Input 512 / 10000", "Output 128 / 2000", "Retries 1 / 4", "Lanes 3 / 8", "Contexts 5 / 16", "Providers 2 / 4", "撤销 Patrol 授权"]) {
     assert.match(dashboard, new RegExp(label));
   }
+});
+
+test("loop view shows a connection failure separately from a running Loop", () => {
+  const base = {
+    snapshot: { loop_id: "l1", status: "running", health: "observing", goal_revision: 1, authority_revision: 1, usage: {}, grant: { budgets: {} } },
+    related: {},
+  };
+  const disconnected = LoopView.render({ ...base, connection: { status: "reconnecting", error: "HTTP 500" } });
+  assert.match(disconnected, /data-loop-status="running"/);
+  assert.match(disconnected, /Live 连接重试中：HTTP 500/);
+  const recovered = LoopView.render({ ...base, connection: { status: "live", error: null } });
+  assert.doesNotMatch(recovered, /loop-connection-status/);
 });
 
 test("loop view shows one active mission revision and labels legacy history", () => {

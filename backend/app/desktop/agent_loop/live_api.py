@@ -1,7 +1,7 @@
-r"""本文件对外提供 LoopLiveSnapshotService 与 LoopLiveEventFeed。
+r"""本文件对外提供 LoopLiveSnapshotService.read 与 LoopLiveEventFeed.read_batch。
 
 输入为 Loop identity、journal cursor、当前授权和物化领域实体；输出为单 sequence 边界完整 snapshot、已脱敏且 sequence 连续的有序事件批次、
-snapshot-required 或 resync-required 协议结果。具体工作流为 snapshot 锁定 per-Loop sequence 后组合数据库 current state 与
+snapshot-required 或 resync-required 协议结果。具体工作流为 snapshot 在调用方稳定的只读事务内读取一次 per-Loop sequence 边界，再组合数据库 current state 与
 journal timeline；Loop/current Context state 同时携带渲染所需的授权、预算和 membership 字段；feed 每批复查授权、限制 backlog/page，
 未授权事件转换为无敏感 identity 的同 sequence 占位信封，避免客户端 cursor 卡住或误判 gap。
 示例：`batch = await feed.read_batch(loop_id, 12)`。
@@ -27,12 +27,12 @@ class LoopLiveSnapshotService:
         self._overlay = LoopLiveProjectionOverlay()
 
     async def read(self, session: AsyncSession, loop_id: str) -> dict:
-        sequence = await session.get(LoopJournalSequence, loop_id, with_for_update=True)
+        sequence = await session.get(LoopJournalSequence, loop_id)
         if sequence is None:
             raise HTTPException(404, "Loop 尚无 Live journal")
         boundary = int(sequence.last_sequence)
         access = await self._access.resolve(session, loop_id)
-        projected = await self._projector.project(session, loop_id)
+        projected = await self._projector.project(session, loop_id, boundary=boundary)
         projection = await self._overlay.apply(session, projected, boundary)
         return LoopLiveRedactionPolicy.apply(projection, access.permissions).model_dump(mode="json")
 

@@ -1,7 +1,7 @@
-r"""本文件对外提供 Loop Run 通用调度路径的实时活动回归测试。
+r"""本文件对外提供 Loop Run 通用调度路径与真实桌面首个 Live GET 故障恢复的回归测试。
 
-输入为隔离 PostgreSQL 中已授权的 Loop directive、带稳定消息身份的 Main Run，以及模拟的 LangGraph values 里程碑；输出为 Run 尚未结算时可按 Loop/Run 身份读取的工具活动事件。
-具体工作流为令通用 durable worker 认领 Run，通过 DesktopService 的共同启动入口发布工具调用，再查询 per-Loop journal。示例：`pytest backend/tests/test_loop_run_live_dispatch.py -q`。
+输入为隔离 PostgreSQL 中已授权的 Loop directive、带稳定消息身份的 Main Run、模拟的 LangGraph values 里程碑和一次注入的 HTTP 500；输出为 Run 尚未结算时可按 Loop/Run 身份读取的工具活动事件与桌面恢复证据。
+具体工作流为令通用 durable worker 认领 Run，通过 DesktopService 的共同启动入口发布工具调用，再以真实 Electron 检查首次 Live 失败后恢复并查询 per-Loop journal。示例：`pytest backend/tests/test_loop_run_live_dispatch.py -q`。
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from backend.app.desktop.agent_loop import AgentLoopService, LoopCreateRequest
 from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
 from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
 from backend.app.desktop.agent_loop.live_api import LoopLiveEventFeed, LoopLiveSnapshotService
-from backend.app.desktop.agent_loop.models import LoopDirective
+from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective
 from backend.app.desktop.agent_loop.projection_models import LoopProjectionFailure
 from backend.app.desktop.agent_loop.run_activity_bridge import LoopRunActivityBridge
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
@@ -477,6 +477,7 @@ def test_one_run_reaches_live_sse_and_real_electron_before_settlement(tmp_path: 
             env["FOCUS_LOOP_E2E_LOOP_ID"] = fixture["loop_id"]
             env["FOCUS_LOOP_E2E_CONTEXT_ID"] = fixture["context_id"]
             env["FOCUS_LOOP_E2E_RUN_ID"] = run_id
+            env["FOCUS_LOOP_E2E_FAIL_FIRST_LIVE"] = "1"
             env["FOCUS_LOOP_E2E_SERVER"] = f"http://127.0.0.1:{port}"
             env["FOCUS_LOOP_E2E_HISTORY"] = json.dumps([
                 {"role": "human", "id": "history-human", "content": "开始首轮测试"},
@@ -530,6 +531,9 @@ def test_one_run_reaches_live_sse_and_real_electron_before_settlement(tmp_path: 
 
             ready = await read_desktop_payload("ready")
             assert ready["run_id"] == run_id
+            async with sessions() as session:
+                loop_after_recovery = await session.get(AgentLoop, fixture["loop_id"])
+                assert loop_after_recovery.status == "running"
             live_bridge["value"].publish(run_id, StreamEvent(
                 id="", event="events", data={"data": {"messages": [
                     {"role": "human", "id": fixture["anchor_message_id"], "content": "开始首轮测试"},

@@ -1,7 +1,7 @@
-r"""本文件对外提供 live_loop_router 的 Live Snapshot 与 resumable SSE 传输边界。
+r"""本文件对外提供 live_loop_router、live_loop_snapshot 与 live_loop_stream。
 
-输入为 Loop id、`after_sequence`、桌面会话和断连信号；输出为完整 Live projection 或 multiplexed SSE 事件、heartbeat、
-snapshot-required/resync-required 控制帧。具体工作流为 snapshot 在短事务内生成，stream 逐批读取且不维护无界内存队列，
+输入为 Loop id、`after_sequence`、桌面会话和断连信号；输出为一致的 Live projection 或 multiplexed SSE 事件、heartbeat、
+snapshot-required/resync-required 控制帧。具体工作流为 snapshot 首先设置只读 Repeatable Read 事务，再调用服务读取；stream 逐批读取且不维护无界内存队列，
 断连即停止轮询。示例：`app.include_router(live_loop_router)`。
 """
 
@@ -12,6 +12,7 @@ import json
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy import text
 
 from backend.app.desktop.agent_loop.live_api import LoopLiveEventFeed, LoopLiveSnapshotService
 from backend.app.desktop.agent_loop.feature_flags import LoopFeatureFlags
@@ -25,6 +26,7 @@ async def live_loop_snapshot(loop_id: str, request: Request) -> dict:
     _require_live_api(request)
     sessions = request.app.state.desktop_service.session_factory
     async with sessions.begin() as session:
+        await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
         return await LoopLiveSnapshotService().read(session, loop_id)
 
 

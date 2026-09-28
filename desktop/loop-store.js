@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供旧 Loop 视图所需的兼容读模型 Store。
- * 输入为一次性旧快照/关联数据、权威 Live projection 和本地控制结果；输出为现有视图可读取但不再拥有 Live 领域状态的快照。
- * 具体工作流为启动时装载兼容字段，运行中从 Live projection 投影生命周期和 Mission 交付状态；旧游标接口仅保留给回归测试和回滚路径。示例：`store.projectLive(projection)`。
+ * 输入为一次性旧快照/关联数据、权威 Live projection、独立连接状态和本地控制结果；输出为现有视图可读取但不再拥有 Live 领域状态的快照。
+ * 具体工作流为启动时装载兼容字段，运行中分别投影连接状态与领域生命周期；停止连接时清除旧 Live 视图，旧游标接口仅保留给回归测试和回滚路径。示例：`store.clearLive(connection)`。
  */
 (function (root, factory) {
   const api = factory();
@@ -24,6 +24,8 @@
       subscribe(listener) { listeners.add(listener); listener(current); return () => listeners.delete(listener); },
       load(snapshot) { eventIds.clear(); return publish({ snapshot, related: null, live: null, connection: null, events: [], cursor: 0, pendingControl: null, error: null }); },
       reconcile(snapshot) { return publish({ snapshot, pendingControl: null, error: null }); },
+      projectConnection(connection) { return publish({ connection }); },
+      clearLive(connection) { return publish({ live: null, connection, cursor: 0 }); },
       projectLive(projection, connection = null) {
         if (!projection?.loop) return current;
         const loop = projection.loop.state;
@@ -49,7 +51,7 @@
           wait_request: globalThis.FocusLoopLiveSelectors?.selectActiveWaitRequest(projection) || null,
           projection_diagnostics: projection.diagnostics,
         };
-        return publish({ snapshot, live: projection, connection, cursor: projection.last_sequence, pendingControl: null, error: null });
+        return publish({ snapshot, live: projection, connection, cursor: projection.last_sequence, pendingControl: null });
       },
       reconcileRelated(related) { return publish({ related, error: null }); },
       beginControl(command) { return publish({ pendingControl: command, error: null }); },

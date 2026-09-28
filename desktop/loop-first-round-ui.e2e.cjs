@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供同一持久 Run 的真实 Electron 首轮页面验收入口。
- * 输入为测试后端 URL、Loop/Context/Run 身份和截图路径；输出为真实 HTTP/SSE 驱动的活动可见性、固定 revision 保持与截图证据。
- * 具体工作流为加载实际桌面应用，通过 preload 请求隔离库上的生产 Loop API，等待正在执行的 Run 活动出现在页面，并核对会话与输入不被 Live 更新覆盖。示例：`electron loop-first-round-ui.e2e.cjs evidence/first-round.png`。
+ * 输入为测试后端 URL、Loop/Context/Run 身份和截图路径；输出为真实 HTTP/SSE 驱动的活动可见性、首次故障恢复、固定 revision 保持与截图证据。
+ * 具体工作流为加载实际桌面应用，通过 preload 请求隔离库上的生产 Loop API，等待首个 Live GET 暂时失败后重连并显示正在执行的 Run 活动，再核对会话与输入不被更新覆盖。示例：`electron loop-first-round-ui.e2e.cjs evidence/first-round.png`。
  */
 "use strict";
 
@@ -51,6 +51,8 @@ async function run() {
     await openLoopView();
   })()`);
   await waitFor(win, "loopLiveStore.get().connection.status === 'live'", "首轮 Live SSE 未连接");
+  const unhandled = await win.webContents.executeJavaScript("document.querySelector('#globalStatus')?.textContent || ''");
+  if (unhandled.includes("未处理 Promise")) throw new Error(`首次 Live GET 失败产生未处理 Promise：${unhandled}`);
   const resultPath = process.env.FOCUS_LOOP_E2E_RESULT_FILE;
   const afterSequence = await win.webContents.executeJavaScript("loopLiveStore.get().projection.last_sequence");
   fs.writeFileSync(resultPath, JSON.stringify({ ready: true, run_id: runId, after_sequence: afterSequence }));

@@ -65,4 +65,4 @@ def test_desktop_composition_root_does_not_reclaim_live_domain_logic() -> None:
     source = (ROOT / "desktop/app.js").read_text(encoding="utf-8")
     for forbidden in ("function startLoopStream", "function scheduleLoopRefresh", "function scheduleLoopPoll", "loopStore.apply(", "loopApi.events("):
         assert forbidden not in source
-    assert "loopConnection?.start" in source
+    assert "loopConnection.start(loopId).catch" in source

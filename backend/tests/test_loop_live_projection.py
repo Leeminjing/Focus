@@ -1,7 +1,7 @@
-r"""本文件对外提供后端 LoopLiveProjection schema、实体 reducers、snapshot、rebuild 与 lag diagnostics 的回归测试。
+r"""本文件对外提供 Loop Live schema、reducer、snapshot、只读事务与并发锁顺序的回归测试。
 
-输入为 active/idle/paused/completed 状态、重复/陈旧/缺口事件和隔离 PostgreSQL journal；输出为确定性实体状态、
-有界 timeline、byte-equivalent rebuild、cursor 与零 lag 断言。具体工作流为先纯归约合同，再追加真实事件并投影。
+输入为各 Loop 状态、重复/陈旧/缺口事件和隔离 PostgreSQL journal；输出为确定性实体状态、有界 timeline、
+byte-equivalent rebuild、无 Live 游标写入、只读事务及无死锁断言。具体工作流为先纯归约，再以独立数据库驱动读写事务竞争。
 示例：`pytest backend/tests/test_loop_live_projection.py`。
 """
 
@@ -11,19 +11,23 @@ import asyncio
 from datetime import UTC, datetime
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import uuid
 
 import pytest
+from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import backend.app.desktop.persistence_registry
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft, CanonicalEventEnvelope
 from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.journal_models import LoopProjectorCursor
-from backend.app.desktop.agent_loop.live_api import LoopLiveEventFeed
+from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent, LoopProjectorCursor
+from backend.app.desktop.agent_loop.live_api import LoopLiveEventFeed, LoopLiveSnapshotService
 from backend.app.desktop.agent_loop.live_projection_contract import LoopLiveProjection, ProjectedEntity
 from backend.app.desktop.agent_loop.live_projection_projector import LoopLiveSnapshotProjector
 from backend.app.desktop.agent_loop.live_projection_reducer import LoopLiveProjectionReducer, ProjectionSequenceGap
+from backend.app.desktop.agent_loop.live_routes import live_loop_snapshot
 from backend.app.desktop.agent_loop.models import AgentLoop
 from backend.app.desktop.models import DesktopThread, DesktopWorkspace
 
@@ -108,8 +112,154 @@ def test_snapshot_projector_and_rebuild_share_one_committed_boundary(tmp_path: P
                 rebuilt = await projector.rebuild(session, loop_id)
                 cursor = await session.get(LoopProjectorCursor, (loop_id, "live_snapshot"))
             assert snapshot.model_dump(mode="json", exclude={"diagnostics"}) == rebuilt.model_dump(mode="json", exclude={"diagnostics"})
-            assert cursor.last_sequence == len(drafts)
+            assert cursor is None
         finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_live_route_starts_read_only_repeatable_read_before_service_query(tmp_path: Path, monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        loop_id = await _seed_loop(sessions, tmp_path)
+
+        async def inspect_transaction(_self, session, target_loop_id):
+            assert target_loop_id == loop_id
+            isolation = await session.scalar(text("SHOW transaction_isolation"))
+            read_only = await session.scalar(text("SHOW transaction_read_only"))
+            with pytest.raises(DBAPIError):
+                async with session.begin_nested():
+                    await session.execute(text("UPDATE agent_loops SET health = health WHERE loop_id = :loop_id"), {"loop_id": loop_id})
+            return {"isolation": isolation, "read_only": read_only}
+
+        monkeypatch.setattr(LoopLiveSnapshotService, "read", inspect_transaction)
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+            desktop_service=SimpleNamespace(session_factory=sessions),
+            loop_feature_flags=SimpleNamespace(live_api=True),
+        )))
+        try:
+            result = await live_loop_snapshot(loop_id, request)
+            assert result == {"isolation": "repeatable read", "read_only": "on"}
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_repeated_live_reads_leave_loop_journal_and_cursors_unchanged(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        loop_id = await _seed_loop(sessions, tmp_path)
+        async with sessions.begin() as session:
+            await LoopEventJournal(enabled=True).append(session, loop_id, CanonicalEventDraft(
+                kind="loop.lifecycle.changed", entity_type="loop", entity_id=loop_id,
+                entity_revision=1, payload={"status": "running"}, idempotency_key="read-only",
+            ))
+
+        async def persistent_state():
+            async with sessions() as session:
+                loop = await session.get(AgentLoop, loop_id)
+                journal = tuple((await session.scalars(select(LoopJournalEvent).where(LoopJournalEvent.loop_id == loop_id))).all())
+                cursors = tuple((await session.scalars(select(LoopProjectorCursor).where(LoopProjectorCursor.loop_id == loop_id))).all())
+                return (loop.status, loop.health, loop.revision, tuple((row.event_id, row.sequence, row.payload) for row in journal), tuple((row.projector_name, row.last_sequence) for row in cursors))
+
+        try:
+            before = await persistent_state()
+            for _ in range(2):
+                async with sessions.begin() as session:
+                    await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+                    snapshot = await LoopLiveSnapshotService().read(session, loop_id)
+                    assert snapshot["last_sequence"] == 1
+            assert await persistent_state() == before
+            assert before[-1] == ()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_live_database_read_failure_keeps_committed_loop_state(tmp_path: Path, monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        loop_id = await _seed_loop(sessions, tmp_path)
+
+        async def failed_read(_self, session, _loop_id):
+            await session.execute(text("SELECT 1 / 0"))
+
+        monkeypatch.setattr(LoopLiveSnapshotService, "read", failed_read)
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+            desktop_service=SimpleNamespace(session_factory=sessions),
+            loop_feature_flags=SimpleNamespace(live_api=True),
+        )))
+        try:
+            with pytest.raises(DBAPIError):
+                await live_loop_snapshot(loop_id, request)
+            async with sessions() as session:
+                loop = await session.get(AgentLoop, loop_id)
+                assert (loop.status, loop.health) == ("running", "observing")
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_live_snapshot_does_not_reverse_writer_lock_order(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        loop_id = await _seed_loop(sessions, tmp_path)
+        journal = LoopEventJournal(enabled=True)
+        async with sessions.begin() as session:
+            await journal.append(session, loop_id, CanonicalEventDraft(
+                kind="loop.lifecycle.changed", entity_type="loop", entity_id=loop_id,
+                entity_revision=1, payload={"status": "running"}, idempotency_key="initial",
+            ))
+        snapshot_ready = asyncio.Event()
+        writer_attempting = asyncio.Event()
+        release_snapshot = asyncio.Event()
+
+        class GatedProjector(LoopLiveSnapshotProjector):
+            async def project(self, session, target_loop_id, *args, **kwargs):
+                snapshot_ready.set()
+                await release_snapshot.wait()
+                return await super().project(session, target_loop_id, *args, **kwargs)
+
+        async def snapshot_read():
+            async with sessions.begin() as session:
+                await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+                return await LoopLiveSnapshotService(GatedProjector()).read(session, loop_id)
+
+        async def writer():
+            async with sessions.begin() as session:
+                loop = await session.scalar(select(AgentLoop).where(AgentLoop.loop_id == loop_id).with_for_update())
+                loop.health = "executing"
+                writer_attempting.set()
+                await journal.append(session, loop_id, CanonicalEventDraft(
+                    kind="loop.lifecycle.changed", entity_type="loop", entity_id=loop_id,
+                    entity_revision=2, payload={"status": "running", "health": "executing"}, idempotency_key="concurrent",
+                ))
+
+        try:
+            snapshot_task = asyncio.create_task(snapshot_read())
+            await asyncio.wait_for(snapshot_ready.wait(), 5)
+            writer_task = asyncio.create_task(writer())
+            await asyncio.wait_for(writer_attempting.wait(), 5)
+            await asyncio.sleep(0.1)
+            release_snapshot.set()
+            result, _ = await asyncio.wait_for(asyncio.gather(snapshot_task, writer_task), 10)
+            assert result["last_sequence"] == 1
+            assert result["loop"]["state"]["health"] == "observing"
+            async with sessions.begin() as session:
+                await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+                latest = await LoopLiveSnapshotService().read(session, loop_id)
+            assert latest["last_sequence"] == 2
+            assert latest["loop"]["state"]["health"] == "executing"
+        finally:
+            release_snapshot.set()
             await engine.dispose()
 
     asyncio.run(run())

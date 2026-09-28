@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供前端 Live Loop schema、reducer、序列防护、连接恢复、选择器与界面状态的回归测试。
- * 输入为有效/畸形 snapshot、重复/陈旧/缺口事件和模拟 Live API；输出为确定性 projection、原子重同步及无重复连接断言。
- * 具体工作流为使用 Node test 直接加载 UMD 模块并驱动 Store/Connection；示例：`node --test desktop/loop-live-projection.test.js`。
+ * 输入为有效/畸形 snapshot、重复/陈旧/缺口事件、HTTP 故障和模拟 Live API；输出为确定性 projection、原子重同步、取消信号、退避及单连接断言。
+ * 具体工作流为使用 Node test 直接加载 UMD 模块并驱动 Store/Connection/API；示例：`node --test desktop/loop-live-projection.test.js`。
  */
 "use strict";
 
@@ -13,6 +13,8 @@ const Reducer = require("./loop-live-reducer.js");
 const Selectors = require("./loop-live-selectors.js");
 const LiveStore = require("./loop-live-store.js");
 const Connection = require("./loop-live-connection.js");
+const LoopApi = require("./loop-api.js");
+const LoopStore = require("./loop-store.js");
 const PortfolioMap = require("./portfolio-map-view.js");
 
 const entity = (id, revision, sequence, state = {}) => ({ entity_id: id, revision, updated_sequence: sequence, state });
@@ -304,11 +306,265 @@ test("connection owns one stream and atomically resynchronizes a recoverable gap
   await first;
 });
 
+test("initial HTTP 500 stays in connection state and recovers on the next snapshot", async () => {
+  const store = LiveStore.create();
+  let reads = 0;
+  let streams = 0;
+  let release;
+  const api = {
+    liveSnapshot: async () => {
+      reads += 1;
+      if (reads === 1) throw Object.assign(new Error("Internal Server Error"), { status: 500 });
+      return snapshot(1);
+    },
+    liveStream: async (_loopId, _after, _onFrame, signal) => {
+      streams += 1;
+      await new Promise(resolve => {
+        release = resolve;
+        signal.addEventListener("abort", resolve, { once: true });
+      });
+    },
+  };
+  const connection = Connection.create({ api, store, wait: async () => {} });
+  const started = connection.start("l1");
+  for (let index = 0; index < 30 && streams < 1; index += 1) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reads, 2);
+  assert.equal(streams, 1);
+  assert.equal(store.get().connection.status, "live");
+  assert.equal(store.get().connection.error, null);
+  connection.stop();
+  release?.();
+  await started;
+});
+
+test("repeated snapshot failures use bounded backoff without changing Loop business state", async () => {
+  const store = LiveStore.create();
+  const legacy = LoopStore.create();
+  legacy.load({ loop_id: "l1", status: "running" });
+  legacy.beginControl("pause");
+  const waits = [];
+  let connection;
+  connection = Connection.create({
+    api: { liveSnapshot: async () => { throw Object.assign(new Error("暂时不可用"), { status: 503 }); } },
+    store,
+    maxBackoff: 500,
+    wait: async milliseconds => {
+      waits.push(milliseconds);
+      legacy.projectConnection(store.get().connection);
+      if (waits.length === 3) connection.stop();
+    },
+  });
+  await connection.start("l1");
+  assert.deepEqual(waits, [250, 500, 500]);
+  assert.equal(legacy.get().snapshot.status, "running");
+  assert.equal(legacy.get().pendingControl, "pause");
+});
+
+test("nonretryable snapshot failures stop at one request", async () => {
+  for (const status of [401, 403, 404, 422]) {
+    const store = LiveStore.create();
+    let reads = 0;
+    const connection = Connection.create({
+      api: { liveSnapshot: async () => { reads += 1; throw Object.assign(new Error(`HTTP ${status}`), { status }); } },
+      store,
+      wait: async () => assert.fail("terminal error must not retry"),
+    });
+    await connection.start("l1");
+    assert.equal(reads, 1);
+    assert.equal(store.get().connection.status, "unavailable");
+  }
+});
+
+test("network and HTTP 429 snapshot failures retry and recover", async () => {
+  for (const status of [null, 429]) {
+    const store = LiveStore.create();
+    let reads = 0;
+    let observedSequence = null;
+    let connection;
+    connection = Connection.create({
+      api: {
+        liveSnapshot: async () => {
+          reads += 1;
+          if (reads === 1) throw Object.assign(new Error("temporary"), status === null ? {} : { status });
+          return snapshot(1);
+        },
+        liveStream: async () => { observedSequence = store.get().projection.last_sequence; connection.stop(); },
+      },
+      store,
+      wait: async () => {},
+    });
+    await connection.start("l1");
+    assert.equal(reads, 2);
+    assert.equal(observedSequence, 1);
+  }
+});
+
+test("stopping an initial snapshot aborts its request and ignores a late response", async () => {
+  const store = LiveStore.create();
+  let release;
+  let requestSignal;
+  const connection = Connection.create({
+    api: {
+      liveSnapshot: (_loopId, signal) => new Promise(resolve => { requestSignal = signal; release = resolve; }),
+      liveStream: async () => assert.fail("stopped snapshot must not open SSE"),
+    },
+    store,
+  });
+  const started = connection.start("l1");
+  connection.stop();
+  assert.equal(requestSignal.aborted, true);
+  release(snapshot(1));
+  await started;
+  assert.equal(store.get().projection, null);
+  assert.equal(store.get().connection.status, "idle");
+});
+
+test("switching Loops rejects the previous snapshot and opens only the new stream", async () => {
+  const store = LiveStore.create();
+  let releaseOld;
+  const streams = [];
+  const connection = Connection.create({
+    api: {
+      liveSnapshot: loopId => loopId === "l1"
+        ? new Promise(resolve => { releaseOld = resolve; })
+        : Promise.resolve({ ...snapshot(2), loop_id: "l2" }),
+      liveStream: async (loopId, _after, _onFrame, signal) => {
+        streams.push(loopId);
+        await new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }));
+      },
+    },
+    store,
+  });
+  const old = connection.start("l1");
+  const current = connection.start("l2");
+  releaseOld(snapshot(1));
+  for (let index = 0; index < 20 && !streams.length; index += 1) await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(streams, ["l2"]);
+  assert.equal(store.get().projection.loop_id, "l2");
+  connection.stop();
+  await Promise.all([old, current]);
+});
+
+test("switching Loops clears the old projection before the new snapshot arrives", async () => {
+  const store = LiveStore.create();
+  let releaseNew;
+  let releaseStream;
+  const connection = Connection.create({
+    api: {
+      liveSnapshot: loopId => loopId === "l1"
+        ? Promise.resolve(snapshot(1))
+        : new Promise(resolve => { releaseNew = resolve; }),
+      liveStream: async (_loopId, _after, _onFrame, signal) => new Promise(resolve => {
+        releaseStream = resolve;
+        signal.addEventListener("abort", resolve, { once: true });
+      }),
+    },
+    store,
+  });
+  const old = connection.start("l1");
+  for (let index = 0; index < 20 && !releaseStream; index += 1) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(store.get().projection.loop_id, "l1");
+  const current = connection.start("l2");
+  assert.equal(store.get().projection, null);
+  releaseNew({ ...snapshot(2), loop_id: "l2" });
+  for (let index = 0; index < 20 && store.get().projection?.loop_id !== "l2"; index += 1) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(store.get().projection.loop_id, "l2");
+  connection.stop();
+  releaseStream?.();
+  await Promise.all([old, current]);
+});
+
+test("switching during retry wait cancels the old Loop retry", async () => {
+  const store = LiveStore.create();
+  const reads = [];
+  let waiting;
+  let releaseStream;
+  const connection = Connection.create({
+    api: {
+      liveSnapshot: async loopId => {
+        reads.push(loopId);
+        if (loopId === "l1") throw Object.assign(new Error("temporary"), { status: 500 });
+        return { ...snapshot(2), loop_id: "l2" };
+      },
+      liveStream: async (_loopId, _after, _onFrame, signal) => new Promise(resolve => {
+        releaseStream = resolve;
+        signal.addEventListener("abort", resolve, { once: true });
+      }),
+    },
+    store,
+    wait: (_milliseconds, signal) => new Promise(resolve => {
+      waiting = true;
+      signal.addEventListener("abort", resolve, { once: true });
+    }),
+  });
+  const old = connection.start("l1");
+  for (let index = 0; index < 20 && !waiting; index += 1) await new Promise(resolve => setImmediate(resolve));
+  const current = connection.start("l2");
+  for (let index = 0; index < 20 && !releaseStream; index += 1) await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(reads, ["l1", "l2"]);
+  assert.equal(store.get().projection.loop_id, "l2");
+  connection.stop();
+  releaseStream?.();
+  await Promise.all([old, current]);
+});
+
+test("clearing Live state leaves the committed Loop snapshot intact", () => {
+  const legacy = LoopStore.create();
+  legacy.load({ loop_id: "l1", status: "running" });
+  legacy.projectLive(snapshot(1), { status: "live" });
+  legacy.clearLive({ status: "syncing" });
+  assert.equal(legacy.get().snapshot.status, "running");
+  assert.equal(legacy.get().live, null);
+  assert.equal(legacy.get().connection.status, "syncing");
+});
+
+test("gap resynchronization retries a transient snapshot error and resumes once", async () => {
+  const store = LiveStore.create();
+  let reads = 0;
+  let streams = 0;
+  let observedSequence = null;
+  const starts = [];
+  let connection;
+  connection = Connection.create({
+    api: {
+      liveSnapshot: async () => {
+        reads += 1;
+        if (reads === 2) throw Object.assign(new Error("暂时失败"), { status: 500 });
+        return snapshot(reads === 1 ? 1 : 3);
+      },
+      liveStream: async (_id, after, onFrame) => {
+        streams += 1;
+        starts.push(after);
+        if (streams === 1) onFrame(event(3));
+        observedSequence = store.get().projection.last_sequence;
+        connection.stop();
+      },
+    },
+    store,
+    wait: async () => {},
+  });
+  await connection.start("l1");
+  assert.equal(reads, 3);
+  assert.deepEqual(starts, [1, 3]);
+  assert.equal(observedSequence, 3);
+});
+
+test("Live Snapshot forwards the connection abort signal through the HTTP API", async () => {
+  let signalReceived;
+  const api = LoopApi.create({ apiBase: "http://localhost", session: "session" }, async (_url, options) => {
+    signalReceived = options.signal;
+    return Response.json(snapshot(1));
+  });
+  const controller = new AbortController();
+  await api.liveSnapshot("l1", controller.signal);
+  assert.equal(signalReceived, controller.signal);
+});
+
 test("app delegates Loop domain reduction and stream recovery to dedicated modules", () => {
   const source = fs.readFileSync(require.resolve("./app.js"), "utf8");
   assert.doesNotMatch(source, /function startLoopStream|function scheduleLoopRefresh|function scheduleLoopPoll/);
   assert.doesNotMatch(source, /loopApi\.events\(|loopStore\.apply\(/);
-  assert.match(source, /loopConnection\?\.start/);
+  assert.match(source, /loopConnection\.start\(loopId\)\.catch/);
 });
 
 test("long-running selectors bound graph effects and fact rows while durable state remains queryable", () => {

@@ -24,7 +24,7 @@
  * 沙箱状态视图展示已准备或曾尝试准备的工作区及持久限制；
  * 主任务 Composer 仅在存在错误或需处理的提醒时显示反馈，不为常态和运行提示预留空行；
  * 审批弹窗区分单次放宽和常驻切换；Agent Loop 的 snapshot、sequence reducer、断线重放和重同步
- * 由独立 Live Store/Connection 负责；Expansion 表单和阻断视图委托 FocusLoopExpansionBudget，普通 API 响应统一委托无 DOM 的 FocusHttpResponse 解码，本文件只组合页面生命周期和控制请求。
+ * 由独立 Live Store/Connection 负责，切换 Loop 时清除旧投影，启动边界观察意外连接拒绝并归入连接状态；Expansion 表单和阻断视图委托 FocusLoopExpansionBudget，普通 API 响应统一委托无 DOM 的 FocusHttpResponse 解码，本文件只组合页面生命周期和控制请求。
  * 示例：renderFocus(activeTask()); await sendMain()。
  */
 "use strict";
@@ -240,8 +240,21 @@ const loopLegacyConnection = loopApi && loopStore && window.FocusLoopLegacyConne
   ? window.FocusLoopLegacyConnection.create({ api: loopApi, loopStore, consoleController: loopConsoleController, onChange: scheduleLoopLifecyclePatch })
   : null;
 const loopConnection = runtime.features?.liveLoopProjection === false ? loopLegacyConnection : loopLiveConnection;
+let loopLifecycleFrame = null;
+let projectedLoopState = null;
 loopLiveStore?.subscribe(liveState => {
-  if (!liveState.projection) return;
+  if (!liveState.projection) {
+    projectedLoopState = null;
+    loopStore?.clearLive(liveState.connection);
+    scheduleLoopLifecyclePatch();
+    return;
+  }
+  if (projectedLoopState === liveState.projection) {
+    loopStore?.projectConnection(liveState.connection);
+    scheduleLoopLifecyclePatch();
+    return;
+  }
+  projectedLoopState = liveState.projection;
   loopStore?.projectLive(liveState.projection, liveState.connection);
   const previousConversation = loopConsoleStore?.get().conversation;
   const nextConsole = loopConsoleStore?.projectLive(liveState.projection, loopLiveSelectors);
@@ -250,7 +263,6 @@ loopLiveStore?.subscribe(liveState => {
   }
   scheduleLoopLifecyclePatch();
 });
-let loopLifecycleFrame = null;
 const accessApproval = window.FocusAccessApproval;
 interfaceI18n.apply(document);
 // f18 插件视图宿主:插件前端脚本加载后经此注册视图与材料打开器
@@ -747,13 +759,31 @@ function renderNoActiveTask() {
   app.innerHTML = `<section class="empty-state"><h1>${english ? "No active Context" : "暂无活动 Context"}</h1><p>${english ? "There is no active Context. Create a task or restore an archived Context from Settings." : "当前没有可进入的活动 Context。可以新建任务，或从设置中恢复已归档的 Context。"}</p><div class="ui-toolbar"><button class="primary" data-action="new-task">${uiText("header.new_task", "新增任务")}</button><button class="text-button" data-action="open-settings">${english ? "View Archived Contexts" : "查看已归档 Context"}</button></div></section>`;
 }
 
+function observeLoopConnection(loopId) {
+  if (!loopConnection) return;
+  void loopConnection.start(loopId).catch(error => {
+    if (state.view !== "loop" || state.loop.loopId !== loopId) return;
+    if (loopConnection === loopLiveConnection) {
+      loopLiveStore.setConnection("unavailable", { error: String(error?.message || error) });
+    } else {
+      loopStore?.fail(error);
+    }
+  });
+}
+
 async function openLoopView() {
   if (state.view === "focus") persistFocusState();
   state.view = "loop";
   state.loop.revisionSnapshot = null;
   state.inspector.open = false;
   const task = activeTask();
+  const previousLoopId = state.loop.loopId;
   state.loop.loopId = task ? localStorage.getItem(`focus-agent-loop:${task.task_id}`) : null;
+  if (previousLoopId && previousLoopId !== state.loop.loopId) {
+    loopConnection?.stop();
+    loopStore?.load(null);
+    loopConsoleStore?.reset();
+  }
   if (!state.loop.loopId) {
     loopStore?.load(null);
     loopConsoleStore?.reset();
@@ -780,7 +810,7 @@ async function openLoopView() {
     loopStore.reconcile(snapshot);
     loopStore.reconcileRelated(await loopApi.related(snapshot));
     await loopConsoleController?.load(state.loop.loopId);
-    void loopConnection?.start(state.loop.loopId);
+    observeLoopConnection(state.loop.loopId);
   } catch (error) {
     loopStore.fail(error);
   } finally {
@@ -1027,7 +1057,7 @@ async function startAgentLoop(form) {
     loopStore.reconcileRelated(await loopApi.related(snapshot));
     await loopConsoleController?.load(snapshot.loop_id);
     renderLoop();
-    void loopConnection?.start(snapshot.loop_id);
+    observeLoopConnection(snapshot.loop_id);
   } catch (error) {
     loopStore.fail(error);
     if (status) status.textContent = `授权失败：${error.message}`;

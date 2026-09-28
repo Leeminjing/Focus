@@ -1,19 +1,18 @@
-r"""本文件对外提供 LoopLiveSnapshotProjector。
+r"""本文件对外提供 LoopLiveSnapshotProjector.project 与 rebuild。
 
-输入为 AsyncSession、Loop id、可选已有投影与规范 journal；输出为截止单一已提交 sequence 的 LoopLiveProjection。
-具体工作流为先冻结 journal last_sequence，分页归约不超过该边界的事件，再推进 projector cursor 并附加 lag/
-rebuild 诊断；rebuild 从保留历史的起点重复同一 reducer。示例：`snapshot = await projector.project(session, loop_id)`。
+输入为 AsyncSession、Loop id、可选 sequence 边界、已有投影与规范 journal；输出为截止该边界的 LoopLiveProjection。
+具体工作流为直接使用调用方边界，或在独立投影时读取一次 journal last_sequence，再分页归约并附加 lag/
+rebuild 诊断，不写持久游标；rebuild 从保留历史的起点重复同一 reducer。示例：`snapshot = await projector.project(session, loop_id, boundary=12)`。
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.journal_models import LoopJournalSequence, LoopProjectorCursor
+from backend.app.desktop.agent_loop.journal_models import LoopJournalSequence
 from backend.app.desktop.agent_loop.live_projection_contract import LoopLiveProjection, ProjectionDiagnostics
 from backend.app.desktop.agent_loop.live_projection_reducer import LoopLiveProjectionReducer
 
@@ -24,12 +23,12 @@ class LoopLiveSnapshotProjector:
         self._reducer = reducer or LoopLiveProjectionReducer()
         self._page_size = max(1, min(page_size, 1000))
 
-    async def project(self, session: AsyncSession, loop_id: str, base: LoopLiveProjection | None = None) -> LoopLiveProjection:
+    async def project(self, session: AsyncSession, loop_id: str, base: LoopLiveProjection | None = None, *, boundary: int | None = None) -> LoopLiveProjection:
         projection = base or LoopLiveProjection(loop_id=loop_id)
-        sequence_row = await session.get(LoopJournalSequence, loop_id)
-        boundary = int(sequence_row.last_sequence if sequence_row is not None else 0)
+        if boundary is None:
+            sequence_row = await session.get(LoopJournalSequence, loop_id)
+            boundary = int(sequence_row.last_sequence if sequence_row is not None else 0)
         projection = await self._reduce_to(session, projection, boundary)
-        await self._record_cursor(session, loop_id, projection.last_sequence)
         diagnostics = ProjectionDiagnostics(journal_last_sequence=boundary, projector_last_sequence=projection.last_sequence, lag=max(0, boundary - projection.last_sequence), rebuilt=base is None, updated_at=datetime.now(UTC))
         return projection.model_copy(update={"diagnostics": diagnostics})
 
@@ -45,14 +44,3 @@ class LoopLiveSnapshotProjector:
             for event in page:
                 projection = self._reducer.reduce(projection, event)
         return projection
-
-    @staticmethod
-    async def _record_cursor(session: AsyncSession, loop_id: str, last_sequence: int) -> None:
-        await session.execute(
-            insert(LoopProjectorCursor)
-            .values(loop_id=loop_id, projector_name="live_snapshot", last_sequence=last_sequence)
-            .on_conflict_do_update(
-                index_elements=["loop_id", "projector_name"],
-                set_={"last_sequence": last_sequence, "updated_at": datetime.now(UTC)},
-            )
-        )

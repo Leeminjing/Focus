@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Agent Loop 生命周期外壳、Option 3 Patrol 活动轨、Mission 表单、Expansion 资源状态、授权控制与轻量生命周期补丁函数。
- * 输入为兼容 Loop 读模型、Mission 交付与有效 Expansion 预算快照、权威 Live projection、连接状态、当前 Context 与 Console 读模型；输出为紧凑顶栏、交付/资源/阻断状态及现有图/会话/事实工作区。
- * 具体工作流为启动态编辑 Mission 与显式 Expansion 容量；运行态以当前 Live round 显示轮次、以已结算用量计算预算，再把图、会话、事实交给专用视图。
+ * 输入为兼容 Loop 读模型、Mission 交付与有效 Expansion 预算快照、权威 Live projection、连接状态、当前 Context 与 Console 读模型；输出为紧凑顶栏、独立连接提示、交付/资源/阻断状态及现有图/会话/事实工作区。
+ * 具体工作流为启动态编辑 Mission 与显式 Expansion 容量；运行态以当前 Live round 显示轮次、以已结算用量计算预算，连接提示随生命周期补丁更新，再把图、会话、事实交给专用视图。
  * 示例：`FocusLoopView.render(loopState, context, consoleState)`；SSE 到达时调用 `patchLifecycle(container, state)`。
  */
 (function (root, factory) {
@@ -195,6 +195,13 @@
     return `<section class="patrol-activity-rail" aria-label="Loop 实时活动"><div class="patrol-activity-now" aria-live="polite" aria-atomic="true"><span class="loop-kicker">Round ${escape(round)} · ${escape(current.label)}</span><strong>${escape(current.summary)}</strong><small>${escape(current.detail)}</small></div><span class="live-connection is-${escape(connection.status)}"><i aria-hidden="true"></i>${escape(connectionLabel)}</span><details class="patrol-activity-drawer"><summary>查看记录</summary><div class="patrol-drawer-panel"><header><div><span class="loop-kicker">Loop Activity</span><h3>Round ${escape(round)} · ${escape(current.label)}</h3></div><span>${escape(patrol?.status || live.loop?.state?.status || "waiting")}</span></header><section><h4>结构化活动</h4><ol>${rows || "<li><span>尚无已提交活动</span></li>"}</ol></section><section><h4>Context Expansions</h4><ul data-expansion-list>${expansionRows || "<li><span>尚无派生评估</span></li>"}</ul></section><section><h4>并行 Curators</h4><ul data-curator-list>${workers || "<li><span>本轮未分派 Curator</span></li>"}</ul></section></div></details></section>`;
   }
 
+  function connectionNotice(state) {
+    const connection = state.connection;
+    if (!["syncing", "reconnecting", "resyncing", "unavailable"].includes(connection?.status)) return "";
+    const label = ({ syncing: "Live 同步中", reconnecting: "Live 连接重试中", resyncing: "Live 重同步中", unavailable: "Live 连接不可用" })[connection.status];
+    return `<p class="loop-connection-status" role="status">${escape(label)}${connection.error ? `：${escape(connection.error)}` : ""}</p>`;
+  }
+
   function reconcileKeyedList(current, next, attribute) {
     if (!current || !next) return;
     const existing = new Map([...current.children].map(item => [item.getAttribute(attribute), item]));
@@ -226,7 +233,7 @@
     const budgetDetails = `<div class="loop-budget"><span>Rounds ${escape(usage.rounds || 0)} / ${escape(budgets.max_rounds || "∞")}</span><span>Duration ${escape(usage.duration_seconds || 0)} / ${escape(budgets.max_duration_seconds || "∞")}s</span><span>Calls ${escape(usage.model_calls || 0)} / ${escape(budgets.max_model_calls || "∞")}</span><span>Input ${escape(usage.input_tokens || 0)} / ${escape(budgets.max_input_tokens || "∞")}</span><span>Output ${escape(usage.output_tokens || 0)} / ${escape(budgets.max_output_tokens || "∞")}</span><span>Retries ${escape(usage.retries || 0)} / ${escape(budgets.max_retries ?? "∞")}</span><span>Lanes ${escape(usage.lanes || 0)} / ${escape(budgets.max_lanes || "∞")}</span><span>Contexts ${escape(usage.contexts || 0)} / ${escape(budgets.max_contexts || "∞")}</span><span>Providers ${escape(usage.providers || 0)} / ${escape(budgets.max_providers || "∞")}</span></div>`;
     const consoleHtml = globalThis.FocusLoopConsoleView?.render({ ...consoleState, loopStatus: loop.status, terminal }) || '<section class="loop-console-loading">控制台模块不可用</section>';
     const waitRequest = globalThis.FocusLoopWaitRequestView?.render(loop.wait_request, waitUi, escape) || (loop.waiting_reason ? `<p class="loop-waiting" data-loop-waiting role="status">${escape(loop.waiting_reason)}</p>` : "");
-    return `<section class="loop-dashboard console-shell" data-loop-id="${escape(loop.loop_id)}" data-loop-status="${escape(loop.status)}">${commandBar(loop, consoleState, state.live?.round?.state?.number)}${patrolActivity(state)}${missionDeliveryStatus(loop)}${waitRequest}${expansionBudget.renderStatus(loop.expansion_resources)}${compressionStatus({ ...related, snapshot: loop })}${terminal ? `<div class="loop-terminal-notice" role="status"><strong>该 Loop 已${loop.status === "completed" ? "完成" : loop.status === "failed" ? "失败" : "停止"}</strong><span>历史 Context、完整会话和事实证据仍可查看；退出不会删除审计记录。</span></div>` : ""}${consoleHtml}<details class="loop-advanced"><summary>授权、预算与目标控制</summary>${budgetDetails}${grantControls(loop)}${history}${override}<p class="muted tiny">当前轮次 ${escape(loop.current_round_id || "—")} · 活动 Run ${escape(activeRuns.length)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)} · Authority R${escape(loop.authority_revision)}</p></details></section>`;
+    return `<section class="loop-dashboard console-shell" data-loop-id="${escape(loop.loop_id)}" data-loop-status="${escape(loop.status)}">${commandBar(loop, consoleState, state.live?.round?.state?.number)}${connectionNotice(state)}${patrolActivity(state)}${missionDeliveryStatus(loop)}${waitRequest}${expansionBudget.renderStatus(loop.expansion_resources)}${compressionStatus({ ...related, snapshot: loop })}${terminal ? `<div class="loop-terminal-notice" role="status"><strong>该 Loop 已${loop.status === "completed" ? "完成" : loop.status === "failed" ? "失败" : "停止"}</strong><span>历史 Context、完整会话和事实证据仍可查看；退出不会删除审计记录。</span></div>` : ""}${consoleHtml}<details class="loop-advanced"><summary>授权、预算与目标控制</summary>${budgetDetails}${grantControls(loop)}${history}${override}<p class="muted tiny">当前轮次 ${escape(loop.current_round_id || "—")} · 活动 Run ${escape(activeRuns.length)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)} · Authority R${escape(loop.authority_revision)}</p></details></section>`;
   }
 
   function patchLifecycle(container, state) {
@@ -239,6 +246,11 @@
     if (renderedDelivery !== nextDelivery) return false;
     if (shell.querySelector("[data-wait-request-id]")?.dataset.waitRequestId !== loop.wait_request?.request_id) return false;
     if (loop.wait_request) return false;
+    const priorNotice = shell.querySelector(".loop-connection-status");
+    const nextNotice = connectionNotice(state);
+    if (priorNotice && nextNotice) priorNotice.outerHTML = nextNotice;
+    else if (priorNotice) priorNotice.remove();
+    else if (nextNotice) shell.insertAdjacentHTML("beforeend", nextNotice);
     const commandTemplate = document.createElement("template");
     commandTemplate.innerHTML = commandBar(loop, null, state.live?.round?.state?.number);
     const metrics = shell.querySelector(".loop-command-metrics");
