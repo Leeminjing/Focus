@@ -1,6 +1,6 @@
 /* 本文件对外提供任务、材料、对话、Composer、Loop Mission 与其它工作流视图的布局样式。输入为 app.js
    输出的语义 class 和公共设计 token，输出为可滚动工作区、职责分离的 Mission 编辑器、可折叠材料组、材料项内逐轮备注框
-   与历史材料卡片；工作流先应用通用视图骨架，再为具体工作流补充必要布局。示例：
+   与历史材料卡片；Composer 输入与操作分行，文件模式菜单显示清楚的选择层级。工作流先应用通用视图骨架，再为具体工作流补充必要布局。示例：
    .run-material-note 把本轮备注输入框就近排在其所属材料条目内。 */
 .focus-view,
 .map-view,
@@ -262,16 +262,15 @@
 .composer-shell .send-button:hover { background: var(--accent-hover); }
 .composer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
-  min-height: 52px;
-  align-items: center;
+  align-items: stretch;
   overflow: visible;
   background: var(--surface-base);
 }
 .composer textarea {
   min-width: 0;
-  min-height: 50px;
+  min-height: 56px;
   max-height: 132px;
   padding: var(--space-3) var(--space-4);
   resize: none;
@@ -279,50 +278,99 @@
   outline: 0;
   background: transparent;
 }
-.composer-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding-right: var(--space-3); }
-.composer-actions-left, .composer-actions-right { display: flex; align-items: center; gap: var(--space-2); }
-/* 本机资源访问模式：作曲区与草稿装备共用的同一个选择器 */
-.access-mode-picker { position: relative; display: inline-flex; }
+.composer-actions {
+  display: flex;
+  min-width: 0;
+  min-height: 52px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+.composer-actions-left, .composer-actions-right { display: flex; min-width: 0; align-items: center; gap: var(--space-3); }
+.composer-actions-left { flex: 1 1 auto; flex-wrap: wrap; }
+.composer-actions-right { flex: 0 0 auto; margin-left: auto; }
+.access-mode-picker { position: relative; display: inline-flex; flex: 0 0 auto; }
 .access-mode-chip {
   display: inline-flex;
+  min-height: 32px;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 999px;
-  background: var(--surface-subtle);
-  color: var(--text-secondary);
+  gap: var(--space-2);
+  padding: 5px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+  color: var(--text-primary);
   font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  box-shadow: var(--shadow-raised);
   cursor: pointer;
 }
-.access-mode-chip:hover { border-color: var(--border-strong, var(--border-subtle)); color: var(--text-primary); }
-.access-mode-chip.is-danger-full-access { border-color: rgb(240 180 70 / 55%); background: rgb(240 180 70 / 12%); color: var(--text-warning, #8a6100); }
-.access-mode-chip.is-pinned { cursor: default; opacity: .8; }
-.access-mode-shield { width: 12px; height: 12px; border: 1.5px solid currentColor; border-radius: 3px 3px 6px 6px; }
-.access-mode-caret { font-size: 9px; opacity: .7; }
+.access-mode-chip:hover { border-color: var(--border-strong); background: var(--surface-subtle); }
+.access-mode-chip:focus-visible, .access-mode-option:focus-visible { outline: 2px solid var(--border-accent); outline-offset: 2px; }
+.access-mode-chip.is-workspace-write { border-color: var(--border-accent); background: var(--surface-accent); color: var(--text-accent); }
+.access-mode-chip.is-danger-full-access { border-color: var(--border-warning); background: var(--surface-warning); color: var(--text-warning); }
+.access-mode-chip.is-pinned { cursor: default; box-shadow: none; }
+.access-mode-shield { width: 16px; height: 16px; flex: 0 0 auto; }
+.access-mode-caret { margin-left: 2px; color: var(--text-tertiary); font-size: 10px; }
+.access-mode-impact { display: inline-flex; min-width: 0; align-items: center; gap: 6px; color: var(--text-tertiary); font-size: 11px; line-height: 1.4; }
+.access-mode-impact-icon { display: inline-grid; width: 14px; height: 14px; flex: 0 0 auto; place-items: center; border: 1px solid var(--border-strong); border-radius: 50%; font-size: 10px; font-weight: 700; font-style: normal; }
 .access-mode-menu {
   position: absolute;
-  bottom: calc(100% + 6px);
+  bottom: calc(100% + 10px);
   left: 0;
-  z-index: 30;
-  display: grid;
-  gap: 4px;
-  min-width: 200px;
-  padding: 6px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-control, 8px);
-  background: var(--surface-raised, #fff);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+  z-index: 40;
+  width: min(336px, calc(100vw - 32px));
+  max-height: min(70vh, 540px);
+  overflow-y: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-panel);
+  background: var(--surface-base);
+  box-shadow: var(--shadow-overlay);
+  overscroll-behavior: contain;
 }
 .access-mode-menu[hidden] { display: none; }
-.access-mode-option { padding: 7px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text-primary); font-size: 12px; text-align: left; cursor: pointer; }
+.access-mode-menu-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); padding: 14px 14px 10px; }
+.access-mode-menu-head strong { color: var(--text-primary); font-size: 13px; }
+.access-mode-menu-head span { color: var(--text-tertiary); font-size: 11px; }
+.access-mode-options { display: grid; gap: 4px; padding: 0 8px 8px; }
+.access-mode-option {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) 16px;
+  min-height: 58px;
+  align-items: start;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
 .access-mode-option:hover { background: var(--surface-subtle); }
-.access-mode-option.is-active { background: var(--surface-selected, #e9eef4); font-weight: 600; }
-.access-mode-risk { display: grid; gap: 8px; padding: 10px; border-top: 1px solid var(--border-subtle); background: rgb(240 180 70 / 8%); }
+.access-mode-option.is-active { border-color: var(--border-accent); background: var(--surface-accent); }
+.access-mode-option.is-danger-full-access.is-active { border-color: var(--border-warning); background: var(--surface-warning); }
+.access-mode-option-mark { width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: var(--status-neutral); }
+.access-mode-option.is-workspace-write .access-mode-option-mark { background: var(--accent-primary); }
+.access-mode-option.is-danger-full-access .access-mode-option-mark { background: var(--status-warning); }
+.access-mode-option-copy { display: grid; gap: 3px; min-width: 0; }
+.access-mode-option-title { font-size: 12px; font-weight: 600; line-height: 1.3; }
+.access-mode-option-copy small { color: var(--text-secondary); font-size: 11px; font-weight: 400; line-height: 1.4; }
+.access-mode-option-check { display: none; color: var(--text-accent); font-size: 14px; line-height: 1.1; }
+.access-mode-option.is-active .access-mode-option-check { display: block; }
+.access-mode-option.is-danger-full-access.is-active .access-mode-option-check { color: var(--text-warning); }
+.access-mode-menu-note { margin: 0; padding: 10px 14px 12px; border-top: 1px solid var(--border-subtle); background: var(--surface-subtle); color: var(--text-tertiary); font-size: 11px; line-height: 1.45; }
+.access-mode-menu[data-confirming="true"] .access-mode-options,
+.access-mode-menu[data-confirming="true"] .access-mode-menu-note { display: none; }
+.access-mode-risk { display: grid; gap: var(--space-2); padding: 12px 14px 14px; border-top: 1px solid var(--border-subtle); background: var(--surface-warning); }
 .access-mode-risk[hidden] { display: none; }
-.access-mode-risk strong { font-size: 12px; }
-.access-mode-risk p { margin: 0; color: var(--text-primary); font-size: 12px; line-height: 1.55; }
-.access-mode-risk-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.access-mode-risk strong { color: var(--text-warning); font-size: 12px; }
+.access-mode-risk p { margin: 0; color: var(--text-primary); font-size: 11px; line-height: 1.5; }
+.access-mode-risk-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); padding-top: var(--space-1); }
 /* 本机资源访问批准面板与后台待处理区 */
 .access-review-panel { margin: 8px 0 16px; border: 1px solid var(--border-subtle); border-radius: 8px; overflow: hidden; background: var(--surface-raised, #fff); flex-shrink: 0; }
 .access-review-panel > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 16px; border-bottom: 1px solid var(--border-subtle); background: var(--surface-subtle); }

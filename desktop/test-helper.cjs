@@ -1,6 +1,6 @@
 /*
  * 本文件对外提供 app-*.test.cjs 共用的 VM 测试脚手架。输入为选择器、状态记录、网络与额外全局
- * 配置，输出为带浏览器语义、事件广播、localStorage、Markdown 渲染器、Context helper 与
+ * 配置，输出为带浏览器语义、定时器占位、事件广播、localStorage、Markdown 渲染器、Context helper 与
  * app/会话容器节点语义的隔离上下文；具体工作流为统一测试环境、按 index 顺序加载预算与纯 HTTP 解码器、按浏览器语义向同类型全部监听器派发事件、
  * 让 #app 读取时按页面整体语义拼回会话容器内容，并允许调用方覆盖差异点。
  * 会话容器默认使用 test-dom.cjs 的最小真实 DOM（子节点数组、插入/替换/删除与选择器查询均有真实
@@ -28,6 +28,7 @@ const BASE_GLOBALS = {
   crypto: webcrypto,
   location: { origin: "http://localhost", protocol: "http:" },
   requestAnimationFrame() {},
+  setInterval() {},
   setTimeout() {},
   window: {},
 };

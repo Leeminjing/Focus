@@ -12,6 +12,7 @@
  *   readNewSessionDefault(storage) / saveNewSessionDefault(storage, mode) — 只影响未来会话的本机默认值
  *   labelKey(mode) — 模式展示文案键
  *   labelFallback(mode) — 文案表不可用时的中文兜底（文案归属与文案键放在一起）
+ *   descriptionKey(mode) / descriptionFallback(mode) — 菜单说明文案，解释每档文件修改边界
  *   RISK_NOTICE_KEYS — 放宽前必须说明的两点文案键
  *   riskNoticeHtml(t, actions) — 风险说明的结构与两个按钮；确认动作由调用方命名
  *
@@ -44,9 +45,9 @@
   const DEFAULT_MODE = "workspace-write";
   const DEFAULT_STORAGE_KEY = "focus-new-session-file-mode-v1";
   const MODE_LABELS = Object.freeze({
-    "read-only": Object.freeze({ key: "access.mode_read_only", fallback: "只读执行" }),
-    "workspace-write": Object.freeze({ key: "access.mode_workspace_write", fallback: "工作区可写" }),
-    "danger-full-access": Object.freeze({ key: "access.mode_danger_full_access", fallback: "未应用文件沙箱" }),
+    "read-only": Object.freeze({ key: "access.mode_read_only", fallback: "只读执行", descriptionKey: "access.mode_read_only_description", description: "允许读取，禁止修改文件" }),
+    "workspace-write": Object.freeze({ key: "access.mode_workspace_write", fallback: "工作区可写", descriptionKey: "access.mode_workspace_write_description", description: "允许修改工作区文件；Shell 使用私有临时目录" }),
+    "danger-full-access": Object.freeze({ key: "access.mode_danger_full_access", fallback: "未应用文件沙箱", descriptionKey: "access.mode_danger_full_access_description", description: "文件修改不受沙箱限制，仍受系统权限约束" }),
   });
   const RISK_TITLE = Object.freeze({ key: "access.risk_title", fallback: "启用完全权限前确认" });
   const RISK_NOTICE = Object.freeze([
@@ -119,6 +120,14 @@
     return MODE_LABELS[normalize(mode)].fallback;
   }
 
+  function descriptionKey(mode) {
+    return MODE_LABELS[normalize(mode)].descriptionKey;
+  }
+
+  function descriptionFallback(mode) {
+    return MODE_LABELS[normalize(mode)].description;
+  }
+
   function riskNoticeHtml(t, actions) {
     const strong = t(RISK_TITLE.key, RISK_TITLE.fallback);
     const paragraphs = RISK_NOTICE.map(item => `<p>${t(item.key, item.fallback)}</p>`).join("");
@@ -144,6 +153,8 @@
     saveNewSessionDefault,
     labelKey,
     labelFallback,
+    descriptionKey,
+    descriptionFallback,
     riskNoticeHtml,
   };
 });

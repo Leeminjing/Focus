@@ -18,7 +18,8 @@
  * 合并为一次；快照帧在写入前先登记滚动基线（此时的高度与贴底判定才是写入前的状态），写入后由写入侧按
  * 阅读意图与阅读锚点决定跟随或回正；作曲区未发送内容的事实来源是按任务归属的草稿镜像
  * （`FocusComposerDraft`），输入事件即镜像、去抖落盘、页面隐藏与卸载流程各补一次落盘，因此任何界面重建
- * 与模式切换都不丢内容，也不依赖 `beforeunload`；三档模式分别保存新会话默认与当前会话常驻值，
+ * 与模式切换都不丢内容，也不依赖 `beforeunload`；作曲区输入与操作分行，文件模式使用紧凑菜单；
+ * 三档模式分别保存新会话默认与当前会话常驻值，
  * 当前会话模式经独立 API 串行保存，成功后才更新界面及后续运行策略；
  * 审批弹窗区分单次放宽和常驻切换；Agent Loop 的 snapshot、sequence reducer、断线重放和重同步
  * 由独立 Live Store/Connection 负责；Expansion 表单和阻断视图委托 FocusLoopExpansionBudget，普通 API 响应统一委托无 DOM 的 FocusHttpResponse 解码，本文件只组合页面生命周期和控制请求。
@@ -1560,7 +1561,7 @@ function renderFocus(task = activeTask()) {
             <div class="composer-context"><span class="ui-badge is-active">${uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
             <div class="composer">
               ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(composerDraft.value(task.task_id, detail.ui_state?.input || ""))}</textarea>`, true)}
-              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}</div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
+              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
             </div>
             <p id="composerFeedback" class="composer-feedback is-${feedback.kind}" role="status">${escapeHtml(feedback.text)}</p>
           </div>
@@ -3409,7 +3410,7 @@ function renderEquipment(draft) {
     <div><span class="tiny muted">权限</span><div class="check-line">${state.equipment.permissions.map(permission => `<label><input type="checkbox" data-permission="${permission}" ${permissions.includes(permission) ? "checked" : ""}>${permission}</label>`).join("")}</div></div>
     <div><span class="tiny muted">访问模式</span>${renderAccessModePicker("draft")}</div>
     ${renderEquipmentTools()}
-    <p class="tiny danger">无沙箱：写入或命令权限会直接影响真实宿主机。命令权限可绕过文件工具规则。</p>
+    <p class="tiny muted">${escapeHtml(uiText("access.ability_boundary", "工具是否可用与进程文件边界分别生效"))}</p>
   </div>`;
 }
 
@@ -4460,23 +4461,27 @@ function renderAccessModePicker(target) {
   const config = ACCESS_MODE_TARGETS[target];
   const mode = accessModeOf(target);
   const label = uiText(accessMode.labelKey(mode), accessMode.labelFallback(mode));
-  const shield = `<span class="access-mode-shield" aria-hidden="true"></span>`;
+  const shield = `<svg class="access-mode-shield" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 2.4 16 4.8v4.6c0 4-2.4 6.8-6 8.2-3.6-1.4-6-4.2-6-8.2V4.8L10 2.4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
   if (config.pinned()) {
-    return `<span class="access-mode-picker is-pinned" data-access-mode-target="${target}" data-mode="${mode}">
+    return `<div class="access-mode-picker is-pinned" data-access-mode-target="${target}" data-mode="${mode}">
       <span class="access-mode-chip is-pinned" title="${escapeHtml(uiText("access.mode_pinned_curator", "策展小兵固定为工作区保护"))}">${shield}<span class="access-mode-label">${escapeHtml(label)}</span></span>
-    </span>`;
+    </div>`;
   }
   const options = accessMode.MODES.map(value => `
-    <button type="button" role="menuitemradio" aria-checked="${value === mode}" class="access-mode-option${value === mode ? " is-active" : ""}" data-action="select-access-mode" data-access-mode-target="${target}" data-access-mode-value="${value}">${escapeHtml(uiText(accessMode.labelKey(value), accessMode.labelFallback(value)))}</button>`).join("");
-  return `<span class="access-mode-picker" data-access-mode-target="${target}" data-mode="${mode}">
+    <button type="button" role="menuitemradio" aria-checked="${value === mode}" class="access-mode-option is-${value}${value === mode ? " is-active" : ""}" data-action="select-access-mode" data-access-mode-target="${target}" data-access-mode-value="${value}">
+      <span class="access-mode-option-mark" aria-hidden="true"></span>
+      <span class="access-mode-option-copy"><span class="access-mode-option-title">${escapeHtml(uiText(accessMode.labelKey(value), accessMode.labelFallback(value)))}</span><small>${escapeHtml(uiText(accessMode.descriptionKey(value), accessMode.descriptionFallback(value)))}</small></span>
+      <span class="access-mode-option-check" aria-hidden="true">✓</span>
+    </button>`).join("");
+  return `<div class="access-mode-picker" data-access-mode-target="${target}" data-mode="${mode}">
     <button type="button" class="access-mode-chip is-${mode}" data-action="toggle-access-mode" data-access-mode-target="${target}" aria-haspopup="menu" aria-expanded="false" title="${escapeHtml(uiText("access.mode_switch_hint", "切换本机资源访问模式"))}">${shield}<span class="access-mode-label">${escapeHtml(label)}</span><span class="access-mode-caret" aria-hidden="true">▾</span></button>
-    <span class="muted tiny access-mode-impact">${escapeHtml(uiText("access.persistent_impact", "首次受限执行会持久调整工作区 ACL"))}</span>
     <div class="access-mode-menu" role="menu" hidden>
-      ${options}
-      <p class="muted tiny">${escapeHtml(uiText("access.ability_boundary", "工具是否可用与进程文件边界分别生效"))}</p>
+      <div class="access-mode-menu-head"><strong>${escapeHtml(uiText("access.mode_menu_title", "文件访问模式"))}</strong><span>${escapeHtml(uiText("access.mode_menu_scope", "当前会话"))}</span></div>
+      <div class="access-mode-options">${options}</div>
+      <p class="access-mode-menu-note">${escapeHtml(uiText("access.ability_boundary", "工具是否可用与进程文件边界分别生效"))}</p>
       <section class="access-mode-risk" hidden>${accessMode.riskNoticeHtml(uiText, { confirm: "confirm-access-mode", cancel: "cancel-access-mode" })}</section>
     </div>
-  </span>`;
+  </div>`;
 }
 
 function readAccessModeFromDom(target) {
@@ -4486,7 +4491,12 @@ function readAccessModeFromDom(target) {
 }
 
 function closeAccessModeMenus() {
-  document.querySelectorAll(".access-mode-menu").forEach(menu => { menu.hidden = true; });
+  document.querySelectorAll(".access-mode-menu").forEach(menu => {
+    menu.hidden = true;
+    menu.dataset.confirming = "false";
+    const risk = menu.querySelector(".access-mode-risk");
+    if (risk) risk.hidden = true;
+  });
   document.querySelectorAll('[data-action="toggle-access-mode"]').forEach(button => {
     button.setAttribute("aria-expanded", "false");
   });
@@ -4508,9 +4518,9 @@ function selectAccessMode(button) {
   const picker = button.closest(".access-mode-picker");
   const target = button.dataset.accessModeTarget;
   const wanted = button.dataset.accessModeValue;
-  // 放宽访问范围前必须确认：风险说明由访问模式模块渲染，此处不另写一份文案
   if (accessMode.widens(accessModeOf(target), wanted) && picker?.querySelector(".access-mode-risk")) {
     picker.dataset.pendingMode = wanted;
+    picker.querySelector(".access-mode-menu").dataset.confirming = "true";
     picker.querySelector(".access-mode-risk").hidden = false;
     return;
   }
@@ -4526,7 +4536,10 @@ function confirmAccessMode(button) {
 
 function cancelAccessMode(button) {
   const risk = button.closest(".access-mode-risk");
-  if (risk) risk.hidden = true;
+  if (risk) {
+    risk.hidden = true;
+    risk.closest(".access-mode-menu").dataset.confirming = "false";
+  }
 }
 
 async function applyAccessMode(target, mode, taskId) {
