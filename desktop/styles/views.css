@@ -414,7 +414,6 @@
 }
 .send-button:hover { background: var(--accent-hover); }
 .composer-feedback { margin: 0; padding: var(--space-1) var(--space-3) var(--space-2); color: var(--text-secondary); font-size: 11px; }
-.composer-feedback.is-active { color: var(--text-accent); }
 .composer-feedback.is-warning { color: var(--text-warning); }
 .composer-feedback.is-danger { color: var(--text-danger); }
 /* @命令 高亮叠加层：与 textarea 同字体/内边距/换行；textarea 正文透明、由 backdrop 显示，@命令片段蓝字。 */

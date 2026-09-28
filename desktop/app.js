@@ -22,7 +22,7 @@
  * 三档模式分别保存新会话默认与当前会话常驻值，
  * 当前会话模式经独立 API 串行保存，成功后才更新界面及后续运行策略；
  * 沙箱状态视图展示已准备或曾尝试准备的工作区及持久限制；
- * 主任务 Composer 仅在存在错误或执行提示时显示反馈，不为默认快捷键说明预留空行；
+ * 主任务 Composer 仅在存在错误或需处理的提醒时显示反馈，不为常态和运行提示预留空行；
  * 审批弹窗区分单次放宽和常驻切换；Agent Loop 的 snapshot、sequence reducer、断线重放和重同步
  * 由独立 Live Store/Connection 负责；Expansion 表单和阻断视图委托 FocusLoopExpansionBudget，普通 API 响应统一委托无 DOM 的 FocusHttpResponse 解码，本文件只组合页面生命周期和控制请求。
  * 示例：renderFocus(activeTask()); await sendMain()。
@@ -1467,7 +1467,6 @@ function composerFeedback(detail, projectionBlocked) {
   if (detail?.pending_compression) return { kind: "warning", text: "存在待确认的压缩计划，请先确认或取消。" };
   if (detail?.pending_must_view_report) return { kind: "warning", text: "必看图片报告等待重试或取消。" };
   if (detail?.pending_access_review) return { kind: "warning", text: "存在待批准的本机资源访问请求，请先批准或拒绝。" };
-  if (["pending", "running"].includes(detail?.active_run?.status)) return { kind: "active", text: "主 Agent 正在运行；你可以查看运行详情或中断。" };
   return null;
 }
 
