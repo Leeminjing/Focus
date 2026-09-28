@@ -18,7 +18,9 @@
  * 合并为一次；快照帧在写入前先登记滚动基线（此时的高度与贴底判定才是写入前的状态），写入后由写入侧按
  * 阅读意图与阅读锚点决定跟随或回正；作曲区未发送内容的事实来源是按任务归属的草稿镜像
  * （`FocusComposerDraft`），输入事件即镜像、去抖落盘、页面隐藏与卸载流程各补一次落盘，因此任何界面重建
- * 与模式切换都不丢内容，也不依赖 `beforeunload`；Agent Loop 的 snapshot、sequence reducer、断线重放和重同步
+ * 与模式切换都不丢内容，也不依赖 `beforeunload`；三档模式分别保存新会话默认与当前会话常驻值，
+ * 当前会话模式经独立 API 串行保存，成功后才更新界面及后续运行策略；
+ * 审批弹窗区分单次放宽和常驻切换；Agent Loop 的 snapshot、sequence reducer、断线重放和重同步
  * 由独立 Live Store/Connection 负责；Expansion 表单和阻断视图委托 FocusLoopExpansionBudget，普通 API 响应统一委托无 DOM 的 FocusHttpResponse 解码，本文件只组合页面生命周期和控制请求。
  * 示例：renderFocus(activeTask()); await sendMain()。
  */
@@ -4422,7 +4424,9 @@ const ACCESS_MODE_TARGETS = {
       const detail = state.details.get(taskId || state.activeTaskId);
       if (detail) detail.ui_state = holder;
     },
-    persist: taskId => persistUiState(taskId),
+    persist: (taskId, mode) => api(`/desktop/api/tasks/${taskId}/access-mode`, {
+      method: "PUT", body: JSON.stringify({ access_mode: mode }),
+    }),
     pinned: () => false,
   },
   draft: {
@@ -4436,6 +4440,7 @@ const ACCESS_MODE_TARGETS = {
     pinned: () => state.drafts.get(state.activeTaskId)?.mode === "context_curator",
   },
 };
+const accessModeSaves = new Map();
 
 function accessModeOf(target, taskId) {
   return accessMode.readMode(ACCESS_MODE_TARGETS[target].holder(taskId));
@@ -4455,8 +4460,10 @@ function renderAccessModePicker(target) {
     <button type="button" role="menuitemradio" aria-checked="${value === mode}" class="access-mode-option${value === mode ? " is-active" : ""}" data-action="select-access-mode" data-access-mode-target="${target}" data-access-mode-value="${value}">${escapeHtml(uiText(accessMode.labelKey(value), accessMode.labelFallback(value)))}</button>`).join("");
   return `<span class="access-mode-picker" data-access-mode-target="${target}" data-mode="${mode}">
     <button type="button" class="access-mode-chip is-${mode}" data-action="toggle-access-mode" data-access-mode-target="${target}" aria-haspopup="menu" aria-expanded="false" title="${escapeHtml(uiText("access.mode_switch_hint", "切换本机资源访问模式"))}">${shield}<span class="access-mode-label">${escapeHtml(label)}</span><span class="access-mode-caret" aria-hidden="true">▾</span></button>
+    <span class="muted tiny access-mode-impact">${escapeHtml(uiText("access.persistent_impact", "首次受限执行会持久调整工作区 ACL"))}</span>
     <div class="access-mode-menu" role="menu" hidden>
       ${options}
+      <p class="muted tiny">${escapeHtml(uiText("access.ability_boundary", "工具是否可用与进程文件边界分别生效"))}</p>
       <section class="access-mode-risk" hidden>${accessMode.riskNoticeHtml(uiText, { confirm: "confirm-access-mode", cancel: "cancel-access-mode" })}</section>
     </div>
   </span>`;
@@ -4493,6 +4500,7 @@ function selectAccessMode(button) {
   const wanted = button.dataset.accessModeValue;
   // 放宽访问范围前必须确认：风险说明由访问模式模块渲染，此处不另写一份文案
   if (accessMode.widens(accessModeOf(target), wanted) && picker?.querySelector(".access-mode-risk")) {
+    picker.dataset.pendingMode = wanted;
     picker.querySelector(".access-mode-risk").hidden = false;
     return;
   }
@@ -4503,7 +4511,7 @@ function selectAccessMode(button) {
 function confirmAccessMode(button) {
   const target = button.closest(".access-mode-picker")?.dataset.accessModeTarget;
   closeAccessModeMenus();
-  if (target) applyAccessMode(target, "full");
+  if (target) applyAccessMode(target, button.closest(".access-mode-picker")?.dataset.pendingMode || accessMode.DEFAULT_MODE);
 }
 
 function cancelAccessMode(button) {
@@ -4511,20 +4519,29 @@ function cancelAccessMode(button) {
   if (risk) risk.hidden = true;
 }
 
-function applyAccessMode(target, mode, taskId) {
+async function applyAccessMode(target, mode, taskId) {
   const config = ACCESS_MODE_TARGETS[target];
   if (config.pinned()) return;
-  const current = config.holder(taskId);
-  if (!current) return;
-  const next = accessMode.writeMode(current, mode);
-  config.set(taskId, next);
-  config.persist(taskId);
-  const changed = accessMode.readMode(next);
-  setStatus(uiText(
-    changed === "full" ? "access.mode_changed_full" : "access.mode_changed_workspace",
-    changed === "full" ? "已启用本机完全权限" : "已切回工作区保护",
-  ));
-  render();
+  const id = taskId || state.activeTaskId;
+  const save = async () => {
+    const current = config.holder(id);
+    if (!current) return;
+    const next = accessMode.writeMode(current, mode);
+    const changed = accessMode.readMode(next);
+    await config.persist(id, changed);
+    config.set(id, next);
+    setStatus(uiText(
+      changed === "danger-full-access" ? "access.mode_changed_full" : "access.mode_changed_workspace",
+      changed === "danger-full-access" ? "未应用文件沙箱" : `已切换为${accessMode.labelFallback(changed)}`,
+    ));
+    render();
+  };
+  if (target !== "main") return save();
+  const pending = (accessModeSaves.get(id) || Promise.resolve()).catch(() => {}).then(save);
+  accessModeSaves.set(id, pending);
+  try { await pending; } finally {
+    if (accessModeSaves.get(id) === pending) accessModeSaves.delete(id);
+  }
 }
 
 // === 本机资源访问批准面板 ===
@@ -4534,7 +4551,7 @@ const ACCESS_OPERATION_FALLBACKS = { read: "读取", write: "写入", command: "
 function accessReviewKey(taskId, payload) {
   const reads = Array.isArray(payload?.reads) ? payload.reads.join("|") : "";
   const writes = Array.isArray(payload?.writes) ? payload.writes.join("|") : "";
-  return [taskId, payload?.tool || "", payload?.command || "", reads, writes].join("::");
+  return [taskId, payload?.request_id || "", payload?.tool || "", payload?.command || "", reads, writes].join("::");
 }
 
 function showAccessReview(task, payload, agentId) {
@@ -4620,7 +4637,7 @@ function bindAccessReview(panel, task, payload) {
   panel.querySelectorAll("[data-access-action]").forEach(button => {
     button.addEventListener("click", () => {
       const action = button.dataset.accessAction;
-      const switched = accessApproval.switchedMode(action);
+      const switched = accessApproval.switchedMode(action, payload);
       // 放宽访问范围前先确认：确认步骤本身就是风险提示的载体
       if (switched && accessMode.widens(accessModeOf("main", task.task_id), switched)) {
         risk.hidden = false;
@@ -4648,17 +4665,19 @@ async function resumeAccessReview(task, payload, action) {
   if (state.accessReviews.busy) return;
   state.accessReviews.busy = true;
   const tool = String(payload?.tool || "");
-  const switched = accessApproval.switchedMode(action);
+  const switched = accessApproval.switchedMode(action, payload);
   try {
+    if (switched) await applyAccessMode("main", switched, task.task_id);
     const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
       method: "POST",
-      body: JSON.stringify({ resume: accessApproval.resumeValue(action) }),
+      body: JSON.stringify({ resume: accessApproval.resumeValue(action, payload) }),
     });
-    if (switched) applyAccessMode("main", switched, task.task_id);
     closeAccessReview();
     listenToRun(run);
     if (action === "reject") {
       setStatus(uiText("access.denied", "已拒绝：{tool} 未执行，模型将收到可读的失败结果", { tool }));
+    } else if (action === "cancel") {
+      setStatus(uiText("access.cancelled", "已取消本次操作"));
     } else if (switched) {
       setStatus(uiText("access.switched_full", "已允许本次调用；后续运行按完全权限执行"));
     } else {
@@ -5239,7 +5258,10 @@ async function createTask(event) {
   if (submit) submit.disabled = true;
   try {
     const workspace = await api("/desktop/api/workspaces", { method: "POST", body: JSON.stringify({ path }) });
-    const task = await api(`/desktop/api/workspaces/${workspace.workspace_id}/threads`, { method: "POST", body: JSON.stringify({ title }) });
+    const task = await api(`/desktop/api/workspaces/${workspace.workspace_id}/threads`, {
+      method: "POST",
+      body: JSON.stringify({ title, access_mode: accessMode.readNewSessionDefault(window.localStorage) }),
+    });
     dialog.close(); replaceTasks([...state.tasks, task]); state.activeTaskId = task.task_id; state.view = "focus";
     await hydrateActive(); render();
   } catch (error) { setStatus(error.message, true); }
@@ -5905,8 +5927,30 @@ async function openSettings() {
   }
   renderModelSettings();
   syncLanguageControls();
+  const newSessionMode = settingsDialog?.querySelector?.("#newSessionAccessMode");
+  if (newSessionMode) newSessionMode.value = accessMode.readNewSessionDefault(window.localStorage);
   interfaceI18n.apply(settingsDialog);
+  const sandboxHost = settingsDialog?.querySelector?.("#sandboxStatusHost");
+  if (sandboxHost) {
+    try {
+      const status = await api("/desktop/api/sandbox/status");
+      sandboxHost.innerHTML = renderSandboxStatus(status);
+    } catch (error) {
+      sandboxHost.textContent = error.message;
+    }
+  }
   if (!settingsDialog?.open) settingsDialog?.showModal();
+}
+
+function renderSandboxStatus(status) {
+  const prepared = Array.isArray(status?.prepared_workspaces) ? status.prepared_workspaces : [];
+  const limitations = Array.isArray(status?.limitations) ? status.limitations : [];
+  return `<p>${escapeHtml(status?.limited_label || "受限后端不可用")}</p>
+    <p>${escapeHtml(uiText("sandbox.unrestricted", "完全访问：未应用文件沙箱"))}</p>
+    <h4>${escapeHtml(uiText("sandbox.prepared", "已准备过的工作区"))}</h4>
+    ${prepared.length ? `<ul>${prepared.map(path => `<li><code>${escapeHtml(path)}</code></li>`).join("")}</ul>` : `<p>${escapeHtml(uiText("sandbox.none_prepared", "暂无"))}</p>`}
+    <h4>${escapeHtml(uiText("sandbox.limitations", "实际限制"))}</h4>
+    <ul>${limitations.map((item, index) => `<li>${escapeHtml(uiText(`sandbox.limit_${index + 1}`, String(item)))}</li>`).join("")}</ul>`;
 }
 
 // f18:拦截消息内链接导航(避免 Electron 窗口跳转到本地路径白屏)。
@@ -6746,6 +6790,9 @@ function moveMessageGroup(messages, from, to) {
 }
 
 document.querySelector("#taskForm").addEventListener("submit", createTask);
+document.querySelector("#newSessionAccessMode")?.addEventListener("change", event => {
+  accessMode.saveNewSessionDefault(window.localStorage, event.target.value);
+});
 document.addEventListener("submit", event => {
   if (event.target.matches("[data-loop-wait-response]")) {
     event.preventDefault();

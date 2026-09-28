@@ -32,7 +32,7 @@
     (3) 通过 agent_factory（缺省 make_lead_agent）创建 agent
     (3.5) 将 checkpointer 挂载到 agent.checkpointer，将 store 挂载到 agent.store
     (4) 翻译 stream_modes（前端名称 → LangGraph 内部名称），统一为列表模式
-    (5) 调用 agent.astream()，每轮检查 abort_event
+    (5) 把当前 Run 的取消信号绑定到受治理执行上下文，调用 agent.astream()，每轮检查 abort_event
     (6) 每个 chunk 经 focus.runtime.runs.events 转换为统一信封事件 publish 到 bridge
         （messages 模式 → tokens；values 模式 → events）
     (7) 终态处理：success / interrupted（rollback 时用旧 checkpoint 恢复 thread 状态）/ error
@@ -52,6 +52,7 @@
 """
 
 import logging
+from dataclasses import replace
 from typing import Any, Awaitable, Callable
 
 from langchain_core.runnables import RunnableConfig
@@ -187,6 +188,11 @@ async def run_agent(
         # (0) 强制执行边界：会执行工具的调用必须在服务端派生的安全上下文下运行，
         #     缺失即拒绝执行，绝不以宽松默认值继续
         security = security_context_of(langgraph_context)
+        security = replace(
+            security,
+            extras={**security.extras, "sandbox_cancel_event": record.abort_event},
+        )
+        langgraph_context = {**langgraph_context, **security.to_runtime_context()}
 
         # (1) 置 running，发信封 metadata 事件
         run_manager.update(record.run_id, status=RunStatus.running)

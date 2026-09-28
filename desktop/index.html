@@ -116,6 +116,15 @@
         <button type="button" data-action="set-language" data-locale="en-US" data-i18n="settings.english">English</button>
       </div>
       <p class="muted tiny settings-language-help" data-i18n="settings.language_help">切换后立即应用，并保存在本机。</p>
+      <h3 data-i18n="settings.new_session_mode">新会话默认文件模式</h3>
+      <select id="newSessionAccessMode" aria-label="新会话默认文件模式" data-i18n-aria-label="settings.new_session_mode">
+        <option value="read-only" data-i18n="access.mode_read_only">只读执行</option>
+        <option value="workspace-write" data-i18n="access.mode_workspace_write">工作区可写</option>
+        <option value="danger-full-access" data-i18n="access.mode_danger_full_access">未应用文件沙箱</option>
+      </select>
+      <p class="muted tiny" data-i18n="settings.new_session_mode_help">只影响之后创建的会话；现有会话模式保持不变。</p>
+      <h3 data-i18n="settings.sandbox_status">Windows 文件沙箱</h3>
+      <div id="sandboxStatusHost" class="sandbox-status-host"></div>
     </section>
     <section class="settings-pane" data-settings-pane="models" hidden>
       <h3 data-i18n="settings.models">模型</h3>
@@ -174,7 +183,8 @@
       <div class="access-review-actions">
         <button class="primary approve-once-button" type="button" data-access-action="approve_once" data-i18n="access.approve_once">仅允许这一次</button>
         <button class="text-button reject-button" type="button" data-access-action="reject" data-i18n="access.reject">拒绝</button>
-        <button class="text-button switch-full-button" type="button" data-access-action="switch_full" data-i18n="access.switch_full">切换为完全权限</button>
+        <button class="text-button" type="button" data-access-action="cancel" data-i18n="access.cancel">取消</button>
+        <button class="text-button switch-full-button" type="button" data-access-action="switch_full" data-i18n="access.switch_requested">修改常驻模式</button>
       </div>
       <section class="access-review-risk" hidden></section>
     </article>

@@ -1,8 +1,8 @@
-"""本地访问策略的路径解释与准入判定用例。
+"""本文件对外提供三档文件模式、真实路径解释及文件准入的测试用例。
 
-输入为真实宿主路径、访问策略与上下文；输出为规范化结果、归属判定与准入结论。
-工作流先逐例锁定路径解释行为（含 Windows 扩展路径前缀与 UNC 写法），再锁定
-「工作根内/外 × 读/写」四种准入组合与策略构造的失败语义。
+输入为真实宿主路径、访问策略和受治理上下文；输出为规范化路径与允许、待审或拒绝结论。
+具体工作流为先核对 Windows 路径别名，再验证只读、工作区可写、完全访问和旧值迁移。
+示例：运行 python -m pytest backend/tests/test_access_policy.py。
 """
 
 import os
@@ -66,7 +66,7 @@ def test_canonical_text_unifies_extended_unc_prefix():
 
 
 def _workspace_policy(tmp_path) -> AccessPolicy:
-    return AccessPolicy(mode=AccessMode.WORKSPACE, workspace=tmp_path, roots=(tmp_path,))
+    return AccessPolicy(mode=AccessMode.WORKSPACE_WRITE, workspace=tmp_path, roots=(tmp_path,))
 
 
 def test_workspace_mode_allows_inside_root_for_both_operations(tmp_path):
@@ -76,11 +76,11 @@ def test_workspace_mode_allows_inside_root_for_both_operations(tmp_path):
     assert decide_path_access(policy, inside, AccessOperation.WRITE) is AccessDecision.ALLOW
 
 
-def test_workspace_mode_asks_outside_root_for_both_operations(tmp_path):
+def test_workspace_mode_allows_read_and_denies_write_outside_root(tmp_path):
     policy = _workspace_policy(tmp_path)
     outside = tmp_path.parent / "outside.txt"
-    assert decide_path_access(policy, outside, AccessOperation.READ) is AccessDecision.ASK
-    assert decide_path_access(policy, outside, AccessOperation.WRITE) is AccessDecision.ASK
+    assert decide_path_access(policy, outside, AccessOperation.READ) is AccessDecision.ALLOW
+    assert decide_path_access(policy, outside, AccessOperation.WRITE) is AccessDecision.DENY
 
 
 def test_full_mode_allows_outside_root(tmp_path):
@@ -89,42 +89,47 @@ def test_full_mode_allows_outside_root(tmp_path):
     assert decide_path_access(policy, outside, AccessOperation.WRITE) is AccessDecision.ALLOW
 
 
-def test_identity_without_roots_asks_for_every_target(tmp_path):
-    """没有被授予任何工作根的执行身份：所有受治理目标都在工作根之外，逐次请求批准。
-
-    正常派生路径（`derive_security_context`）保证工作根恒含工作区，因此这个形状不会由派生产生；
-    本用例锁定的是「即便出现无工作根的身份，判定也必须逐次交回人类」。
-    """
+def test_identity_without_roots_denies_writes(tmp_path):
     policy = AccessPolicy(mode=AccessMode.WORKSPACE, workspace=tmp_path, roots=())
     inside = tmp_path / "a.txt"
-    assert decide_path_access(policy, inside, AccessOperation.READ) is AccessDecision.ASK
-    assert decide_path_access(policy, inside, AccessOperation.WRITE) is AccessDecision.ASK
+    assert decide_path_access(policy, inside, AccessOperation.READ) is AccessDecision.ALLOW
+    assert decide_path_access(policy, inside, AccessOperation.WRITE) is AccessDecision.DENY
 
 
-def test_decision_never_denies(tmp_path):
-    """越界不是拒绝：判定只有放行与待决两种取值，越界以待决呈现。"""
-    assert set(AccessDecision) == {AccessDecision.ALLOW, AccessDecision.ASK}
+def test_decision_can_deny_outside_writes(tmp_path):
+    assert set(AccessDecision) == {AccessDecision.ALLOW, AccessDecision.ASK, AccessDecision.DENY}
     policy = _workspace_policy(tmp_path)
     outside = tmp_path.parent / "outside.txt"
-    assert decide_path_access(policy, outside, AccessOperation.READ) is AccessDecision.ASK
-    assert decide_path_access(policy, outside, AccessOperation.WRITE) is AccessDecision.ASK
+    assert decide_path_access(policy, outside, AccessOperation.READ) is AccessDecision.ALLOW
+    assert decide_path_access(policy, outside, AccessOperation.WRITE) is AccessDecision.DENY
 
 
-def test_policy_from_context_defaults_to_workspace(tmp_path):
+def test_policy_from_context_defaults_to_read_only(tmp_path):
     policy = policy_from_context({"workspace": str(tmp_path)})
-    assert policy.mode is AccessMode.WORKSPACE
+    assert policy.mode is AccessMode.READ_ONLY
     assert policy.workspace == tmp_path.resolve()
-    assert policy.roots == (tmp_path.resolve(),)
+    assert tmp_path.resolve() in policy.roots
 
 
 def test_policy_from_context_reads_declared_mode(tmp_path):
     policy = policy_from_context({"workspace": str(tmp_path), "access_mode": "full"})
-    assert policy.mode is AccessMode.FULL
+    assert policy.mode is AccessMode.DANGER_FULL_ACCESS
 
 
-def test_policy_from_context_treats_unknown_mode_as_workspace(tmp_path):
+def test_policy_from_context_treats_unknown_mode_as_read_only(tmp_path):
     policy = policy_from_context({"workspace": str(tmp_path), "access_mode": "bogus"})
-    assert policy.mode is AccessMode.WORKSPACE
+    assert policy.mode is AccessMode.READ_ONLY
+
+
+def test_read_only_denies_workspace_write_and_allows_external_read(tmp_path):
+    policy = AccessPolicy(mode=AccessMode.READ_ONLY, workspace=tmp_path, roots=(tmp_path,))
+    assert decide_path_access(policy, tmp_path / "a", AccessOperation.WRITE) is AccessDecision.DENY
+    assert decide_path_access(policy, tmp_path.parent / "outside", AccessOperation.READ) is AccessDecision.ALLOW
+
+
+def test_old_mode_values_migrate_explicitly():
+    assert AccessMode("workspace") is AccessMode.WORKSPACE_WRITE
+    assert AccessMode("full") is AccessMode.DANGER_FULL_ACCESS
 
 
 def test_policy_from_context_requires_workspace():

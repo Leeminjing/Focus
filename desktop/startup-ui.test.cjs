@@ -1,4 +1,9 @@
-/* Validates the local-only startup/branding contract without launching services. */
+/*
+ * 本文件对外提供本地启动与品牌资源的静态验证。
+ * 输入为桌面图标、主进程源码和固定依赖清单；输出为启动行为与资源约束的断言结果。
+ * 具体工作流为读取文件并核对图标、启动顺序和 Electron 与 Windows 沙箱依赖版本。
+ * 示例：运行 node --test desktop/startup-ui.test.cjs。
+ */
 "use strict";
 
 const assert = require("node:assert/strict");
@@ -70,6 +75,9 @@ assert.match(main, /app\.setAppUserModelId\("Focus\.Desktop"\)/);
 assert.match(main, /FOCUS_DISABLE_HARDWARE_ACCELERATION[\s\S]*app\.disableHardwareAcceleration\(\)/);
 
 const packageJson = JSON.parse(text("package.json"));
-assert.deepEqual(Object.keys(packageJson.dependencies || {}), ["electron"], "branding/startup must not add dependencies");
+assert.deepEqual(Object.keys(packageJson.dependencies || {}), [
+  "@deepseek-ai/cordis", "@deepseek-ai/dsh-sandbox-windows-acl",
+  "@deepseek-ai/dsh-subprocess", "electron",
+]);
 
-console.log("startup-ui: 原始图标、Windows ICO、启动阶段、动画降级与零新增依赖通过");
+console.log("startup-ui: 原始图标、Windows ICO、启动阶段、动画降级与固定依赖通过");

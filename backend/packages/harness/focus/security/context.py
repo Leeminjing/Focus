@@ -27,8 +27,8 @@
     (1) 档案是唯一可信来源：受治理字段一律由 derive_security_context 从档案算出，
         启动点不得自行拼装能力权限、访问模式、工作根或执行命名空间
     (2) 派生同时做归一与自检：工作区必须为绝对路径，工作根必须包含工作区，重复根被去重
-    (3) 内联子执行只能单调派生：能力权限不超集、工作根不超集、访问模式不更宽、权柄面不放宽；
-        请求越界即失败，而不是静默收窄
+    (3) 内联子执行只能单调派生：能力权限不超集、工作根不超集、三档文件模式不更宽、权柄面不放宽；
+        请求越界即失败，且不继承父 Run 的实时会话模式读取器
     (4) 运行上下文保持扁平字典（既有读取点不动），保留键承载本对象；扁平键是它的机械投影
     (5) 缺失合法安全上下文一律失败，绝不以宽松默认值继续执行
 
@@ -202,7 +202,11 @@ def derive_child_security_context(
         authority=_tuple(authority) if authority is not None else parent.authorization.authority,
         agent_role=str(role),
     )
-    child = replace(parent, authorization=authorization)
+    child = replace(
+        parent,
+        authorization=authorization,
+        extras={key: value for key, value in parent.extras.items() if key != "session_mode_resolver"},
+    )
     _require_not_wider(child, parent)
     return child
 
@@ -260,8 +264,11 @@ def _require_not_wider(child: SecurityContext, parent: SecurityContext) -> None:
 
 
 def _mode_rank(mode: AccessMode) -> int:
-    """访问模式的宽窄序：工作区保护 < 本机完全权限。"""
-    return 1 if mode is AccessMode.FULL else 0
+    return {
+        AccessMode.READ_ONLY: 0,
+        AccessMode.WORKSPACE_WRITE: 1,
+        AccessMode.DANGER_FULL_ACCESS: 2,
+    }[mode]
 
 
 def _tuple(values: Iterable[str]) -> tuple[str, ...]:

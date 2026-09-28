@@ -7,7 +7,7 @@ RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以
 编排入口 start_run 的输入 + agent_factory 闭包）以及可从持久 Run 重建的 dispatch 装配源。
 示例：`service = DesktopService(...); await service.start_main_run(task_id, message, ...)`。
 具体工作流为：登记真实宿主机工作区与线程，复制已提交 checkpoint 形成冻结草稿，
-准备无沙箱工作区 Agent 的装配参数（经统一执行链路 worker.run_agent 执行），并把上传、
+准备受文件沙箱约束的工作区 Agent 装配参数（经统一执行链路 worker.run_agent 执行），并把上传、
 内容读取、逐轮材料解析/历史/投影和自定义分组分别委托给单一职责服务；主运行在同一事务
 持久化稳定用户消息与有序材料绑定，图片是通用材料聚合的派生视图，初始与恢复路径使用同一
 投影，图片交付、必看完成门和压缩门按职责独立装配；压缩通过 Context Evolution 迁移端口发布，
@@ -30,7 +30,10 @@ Context revision execution thread/namespace；快捷压缩也在 current revisio
 执行身份：三个持久化启动点（主 run、resume、swarm）与本 UI 状态恢复路径统一经
 _governed_context 由执行身份档案派生受治理上下文（工作根、能力权限、访问模式、
 执行主体角色、执行命名空间），launcher 只提供身份材料；材料与图片投影在该上下文之上
-由装配层写入；访问模式（工作区保护 / 本机完全权限）随装备持久化，与能力权限正交。
+由装配层写入；三档文件模式随装备持久化，直接用户 Run 每次新请求读取会话常驻模式，
+并在模型上下文显示本次模式、工作区与升权规则，
+与能力权限正交。会话常驻模式只经独立事务更新；普通 UI 状态保存保留数据库中的模式，
+两类更新和主 Run 装备回写均锁定任务行，防止旧 UI 快照在完成顺序变化时覆盖新模式。
 
 路径归属：本文件的 _resolve_workspace_path 服务于材料登记，即人在界面侧把工作区文件登记为
 材料，属于界面侧入口，不受 Agent 本地访问策略约束；Agent 侧的路径解释与准入判定统一由
@@ -45,7 +48,7 @@ import hashlib
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import subprocess
 from typing import Any, Awaitable, Callable
@@ -190,18 +193,18 @@ logger = logging.getLogger(__name__)
 _MAIN_RUNTIME_EQUIPMENT_KEY = MAIN_RUN_EQUIPMENT_KEY
 _RUN_DISPATCH_EQUIPMENT_KEY = "_durable_dispatch_execution"
 _TERMINAL_STATUSES = frozenset({"success", "error", "interrupted"})
-_ACCESS_DECISIONS = frozenset({"approve", "reject"})
+_ACCESS_DECISIONS = frozenset({"approve", "reject", "cancel"})
 
 
 def _resolve_access_mode(value: str | None) -> AccessMode:
-    """把请求里的访问模式归一到策略取值；缺失或无法识别按最严的工作区保护处理。"""
+    """把桌面请求归一到三档模式；新会话缺失值默认工作区可写。"""
     if not value:
-        return AccessMode.WORKSPACE
+        return AccessMode.WORKSPACE_WRITE
     try:
         return AccessMode(str(value))
     except ValueError:
-        logger.warning("无法识别的访问模式 %r，已按最严的工作区保护处理", value)
-        return AccessMode.WORKSPACE
+        logger.warning("无法识别的访问模式 %r，已按只读处理", value)
+        return AccessMode.READ_ONLY
 
 
 def _identity_unregistered(what: str) -> HTTPException:
@@ -559,7 +562,10 @@ class DesktopService:
             await session.commit()
             return self._workspace_payload(workspace)
 
-    async def create_thread(self, workspace_id: str, thread_id: str | None, title: str) -> dict[str, Any]:
+    async def create_thread(
+        self, workspace_id: str, thread_id: str | None, title: str,
+        access_mode: str | None = None,
+    ) -> dict[str, Any]:
         async with self.session_factory() as session:
             workspace = await session.get(DesktopWorkspace, workspace_id)
             if not workspace:
@@ -572,7 +578,10 @@ class DesktopService:
             )
             if existing:
                 return await self._task_payload(session, existing, workspace)
-            task = DesktopThread(task_id=new_id(), workspace_id=workspace_id, thread_id=identity, title=title)
+            task = DesktopThread(
+                task_id=new_id(), workspace_id=workspace_id, thread_id=identity, title=title,
+                ui_state={"access_mode": str(_resolve_access_mode(access_mode))},
+            )
             session.add(task)
             await session.commit()
             return await self._task_payload(session, task, workspace)
@@ -612,16 +621,33 @@ class DesktopService:
 
     async def save_ui_state(self, task_id: str, ui_state: dict[str, Any]) -> None:
         async with self.session_factory() as session:
-            task = await session.get(DesktopThread, task_id)
+            task = await session.scalar(
+                select(DesktopThread).where(DesktopThread.task_id == task_id).with_for_update()
+            )
             if not task:
                 raise HTTPException(404, "任务不存在")
             persisted = dict(ui_state)
+            persisted.pop("access_mode", None)
+            standing_mode = (task.ui_state or {}).get("access_mode")
+            if standing_mode is not None:
+                persisted["access_mode"] = standing_mode
             runtime_equipment = (task.ui_state or {}).get(
                 _MAIN_RUNTIME_EQUIPMENT_KEY
             )
             if runtime_equipment is not None:
                 persisted[_MAIN_RUNTIME_EQUIPMENT_KEY] = runtime_equipment
             task.ui_state = persisted
+            await session.commit()
+
+    async def set_session_access_mode(self, task_id: str, access_mode: str) -> None:
+        mode = AccessMode(access_mode)
+        async with self.session_factory() as session:
+            task = await session.scalar(
+                select(DesktopThread).where(DesktopThread.task_id == task_id).with_for_update()
+            )
+            if task is None:
+                raise HTTPException(404, "任务不存在")
+            task.ui_state = {**(task.ui_state or {}), "access_mode": str(mode)}
             await session.commit()
 
     async def get_checkpoint_messages(self, thread_id: str, checkpoint_ns: str) -> list[dict[str, Any]]:
@@ -1212,6 +1238,7 @@ class DesktopService:
                     payload=self._run_payload(admission.run),
                 )
             self.run_material_history.add(session, run, run_materials)
+            await session.refresh(task_row, with_for_update=True)
             task_row.ui_state = {
                 **(task_row.ui_state or {}),
                 _MAIN_RUNTIME_EQUIPMENT_KEY: equipment,
@@ -1400,7 +1427,7 @@ class DesktopService:
                         409,
                         {
                             "code": "access_review_pending",
-                            "message": "存在待批准的本机资源访问，请以批准或拒绝载荷恢复",
+                            "message": "存在待批准的本机资源访问，请以批准、拒绝或取消载荷恢复",
                         },
                     )
                 self._require_resumable(access_recovery, "access_review")
@@ -1540,6 +1567,8 @@ class DesktopService:
                 "skills": equipment.get("skills") or [],
             },
         )
+        if run.origin == "direct_user":
+            self._attach_session_mode_resolver(context, run, equipment)
         # 材料与图片投影由装配层写入受治理上下文之上（受治理键的服务端生产者）
         project_run_material_context(
             context,
@@ -1921,6 +1950,8 @@ class DesktopService:
                 **({"checkpoint_id": checkpoint_id} if checkpoint_id is not None else {}),
             },
         )
+        if agent_role == "main" and run.origin == "direct_user":
+            self._attach_session_mode_resolver(context, run, equipment)
         # 材料与图片投影由装配层写入受治理上下文之上（受治理键的服务端生产者）
         project_run_material_context(
             context,
@@ -1933,6 +1964,31 @@ class DesktopService:
             stream_mode=["messages-tuple", "values"],
         )
         return PreparedRun(body=body, thread_id=thread_id, agent_factory=factory, payload=self._run_payload(run))
+
+    def _attach_session_mode_resolver(
+        self, context: dict[str, Any], run: DesktopRun, equipment: dict[str, Any],
+    ) -> None:
+        security = security_context_of(context)
+        context["security_context"] = replace(
+            security,
+            extras={
+                **security.extras,
+                "session_mode_resolver": self._session_mode_resolver(
+                    run.task_id, _resolve_access_mode(equipment.get("access_mode")),
+                ),
+            },
+        )
+
+    def _session_mode_resolver(self, task_id: str, initial: AccessMode):
+        async def current() -> AccessMode:
+            async with self.session_factory() as session:
+                task = await session.get(DesktopThread, task_id)
+                if task is None:
+                    raise RuntimeError(f"会话已不存在: {task_id}")
+                saved = (task.ui_state or {}).get("access_mode")
+                return _resolve_access_mode(saved) if saved else initial
+
+        return current
 
     def _governed_context(
         self,
@@ -1961,7 +2017,7 @@ class DesktopService:
                 workspace=Path(workspace_path),
                 roots=workspace_roots(Path(workspace_path), allow_global_config=allow_global_config),
                 permissions=tuple(permissions),
-                access_mode=AccessMode(str(access_mode)) if access_mode else AccessMode.WORKSPACE,
+                access_mode=AccessMode(str(access_mode)) if access_mode else AccessMode.READ_ONLY,
                 agent_role=agent_role,
             ),
             routing=RoutingIdentity(

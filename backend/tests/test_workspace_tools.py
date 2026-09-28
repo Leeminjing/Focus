@@ -1,5 +1,14 @@
+"""本文件对外验证工作区内置文件工具的能力门控、真实路径和 Shell 启动边界。
+
+输入为服务端签发或伪造的运行上下文、文件目标与可替换的 Shell 可执行路径。
+输出为文件读写结果、明确拒绝和目标文件未被修改的断言。
+具体工作流为验证工具装配及文件效果，再覆盖缺失身份、缺失工作区和 WSL 启动器拒绝。
+示例：运行 python -m pytest backend/tests/test_workspace_tools.py。
+"""
+
 import asyncio
 import os
+import shutil
 from pathlib import Path
 import warnings
 
@@ -10,6 +19,7 @@ from langchain_core.tools import ToolException
 
 from focus.tools.builtins.workspace_tools import (
     WORKSPACE_TOOLS,
+    bash,
     list_files,
     read_file,
     select_workspace_tools,
@@ -130,13 +140,41 @@ def test_write_file_accepts_equivalent_windows_extended_path(tmp_path, monkeypat
     assert target.read_text(encoding="utf-8") == "合同"
 
 
-def test_missing_workspace_context():
+def test_missing_signed_execution_identity():
     runtime = ToolRuntime(
         state={}, context={}, config={}, stream_writer=None,
         tool_call_id=None, store=None, tools=[],
     )
-    with pytest.raises(RuntimeError, match="workspace"):
+    with pytest.raises(RuntimeError, match="SecurityContext"):
         read_file.func(path="a.txt", runtime=runtime)
+
+
+def test_flat_context_cannot_authorize_structured_write(tmp_path):
+    runtime = ToolRuntime(
+        state={}, context={"workspace": str(tmp_path), "permissions": ["write"], "access_mode": "danger-full-access"},
+        config={}, stream_writer=None, tool_call_id=None, store=None, tools=[],
+    )
+    with pytest.raises(RuntimeError, match="SecurityContext"):
+        write_file.func(path="escaped.txt", content="escaped", runtime=runtime)
+    assert not (tmp_path / "escaped.txt").exists()
+
+
+def test_signed_identity_with_missing_workspace_cannot_create_it(tmp_path):
+    missing = tmp_path / "removed-workspace"
+    with pytest.raises(RuntimeError, match="工作区不存在"):
+        write_file.func(path="escaped.txt", content="escaped", runtime=_runtime(missing, ["write"]))
+    assert not missing.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows WSL launcher detection")
+def test_wsl_launcher_is_rejected_before_execution(tmp_path, monkeypatch):
+    from focus.tools.builtins import workspace_tools
+
+    launcher = str(Path(os.environ.get("WINDIR", "C:/Windows")) / "System32" / "bash.exe")
+    monkeypatch.setattr(shutil, "which", lambda _name: launcher)
+    monkeypatch.setattr(workspace_tools._SHELL_BACKEND, "run", lambda _request: pytest.fail("WSL launcher executed"))
+    with pytest.raises(RuntimeError, match="UNSUPPORTED_SHELL"):
+        bash.func(command="echo hello", runtime=_runtime(tmp_path, ["host_command"]))
 
 
 def test_read_file_docx_dispatch(tmp_path):

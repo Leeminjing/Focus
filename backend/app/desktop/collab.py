@@ -387,7 +387,7 @@ class AgentCollab:
 
     async def create_swarm_agent(
         self, agent_id: str, task_id: str, role: str, permissions: list[str] | None = None,
-        access_mode: str = "workspace",
+        access_mode: str = "workspace-write",
     ) -> None:
         """创建持久 Agent 身份行（checkpoint_ns=swarm:{agent_id}，status=active，permissions 与
         access_mode 持久化供 wake 沿用——两者都只在 spawn 时从父级继承，wake 不放大）。"""

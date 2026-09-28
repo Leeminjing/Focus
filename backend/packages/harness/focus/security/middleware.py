@@ -1,33 +1,16 @@
-"""本文件对外提供 AccessPolicyMiddleware，作为全部工具执行的唯一准入点。
+"""本文件对外提供 AccessPolicyMiddleware，统一执行工具准入、文件拒绝和业务审批。
 
-对外提供:
-    AccessPolicyMiddleware — AgentMiddleware 子类：工具执行前判定，待决即交回人类
-
-输入:
-    由 LangChain 注入的 ToolCallRequest（含 tool / tool_call / runtime）与下游 handler；
-    受治理上下文经 request.runtime.context 提供（workspace、access_mode、agent_role）。
-
-输出:
-    工具结果；待决时以中断交回人类，未获批准则返回表示「本次被跳过」的工具错误消息。
-
-具体工作流:
-    (1) 读取工具已签发的效果契约；无本地效果与委托执行直接放行
-    (2) 可结构化枚举的契约先解析全部受治理本地目标，再逐目标按访问策略判定（读用读、写用写）
-    (3) 不透明效果（含全部宿主命令）在受保护模式下整体待决，绝不分析命令文本
-    (4) 待决在产生任何副作用之前中断，载荷由 ApprovalRequest 组装，读目标与写目标分开承载
-    (5) 获批只作用于当前这一次调用：放行来自中断的恢复值，不建授权表、不设有效期
-    (6) 可结构化枚举的调用改用解析器交出的规范化参数下发，使判定目标与执行目标同一
-    (7) Loop workspace lease 存在时，每次工具调用前重新验证 fencing token
-    (8) 未获批准返回工具错误消息，使该次执行得到可理解的结果而非静默跳过
-
-示例:
-    middlewares = [AccessPolicyMiddleware(), *其他中间件]
+输入为工具调用、受治理执行上下文、效果契约与下游执行器。
+输出为真实工具结果、文件策略拒绝或明确的审批结局。
+具体工作流为先复查 Loop 租约与受治理身份、能力，再解析结构化目标并按模式拒绝非法写入，随后处理
+敏感路径和未受限的不透明效果审批，最后把已检查的参数交给工具执行。
+示例：AccessPolicyMiddleware().wrap_tool_call(request, handler) 返回 ToolMessage 或真实结果。
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +20,10 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command, interrupt
 
 from focus.security.approval import ApprovalRequest, approval_granted
+from focus.security.context import security_context_of
+from focus.security.escalation import escalation_request_id, validate_escalation
+from focus.security.execution import bind_call_execution
+from focus.security.live_mode import refreshed_runtime_context
 from focus.security.effects import EffectContract, ToolEffectKind, effect_of, resolve_fs_effect
 from focus.security.policy import (
     AccessDecision,
@@ -63,6 +50,9 @@ class _Admission:
     reads: tuple[Path, ...] = ()
     writes: tuple[Path, ...] = ()
     request: ApprovalRequest | None = None
+    denied: tuple[Path, ...] = ()
+    requested_mode: AccessMode | None = None
+    capability_denied: str | None = None
 
     @property
     def targets(self) -> tuple[Path, ...]:
@@ -79,20 +69,40 @@ class AccessPolicyMiddleware(AgentMiddleware):
     ) -> ToolResult:
         _reject_sync_workspace_lease(request)
         admission = _admit(request)
-        if admission.asked and not _approved(admission):
-            return _denied(request, admission)
-        return handler(_with_args(request, admission.args))
+        if admission.capability_denied:
+            return _capability_denied(request, admission.capability_denied)
+        if admission.denied:
+            return _policy_denied(request, admission)
+        if admission.asked:
+            outcome = _approval_outcome(admission)
+            if outcome != "approved":
+                return _denied(request, admission, outcome)
+        return handler(_with_grant(_with_args(request, admission.args), admission))
 
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolResult]],
     ) -> ToolResult:
+        request = request.override(
+            runtime=replace(
+                request.runtime,
+                context=await refreshed_runtime_context(request.runtime.context),
+            )
+        )
         await _assert_workspace_lease(request)
         admission = _admit(request)
-        if admission.asked and not _approved(admission):
-            return _denied(request, admission)
-        return await handler(_with_args(request, admission.args))
+        if admission.capability_denied:
+            return _capability_denied(request, admission.capability_denied)
+        if admission.denied:
+            return _policy_denied(request, admission)
+        if admission.asked:
+            outcome = _approval_outcome(admission)
+            if outcome != "approved":
+                return _denied(request, admission, outcome)
+        if admission.requested_mode is not None:
+            await _assert_workspace_lease(request)
+        return await handler(_with_grant(_with_args(request, admission.args), admission))
 
 
 async def _assert_workspace_lease(request: ToolCallRequest) -> None:
@@ -109,25 +119,92 @@ def _reject_sync_workspace_lease(request: ToolCallRequest) -> None:
         raise RuntimeError("Loop workspace lease 必须通过异步工具边界验证")
 
 
-def _approved(admission: _Admission) -> bool:
-    """向人类请求批准；放行是本次中断的恢复值，因此天然只作用于当前这一次调用。"""
+def _approval_outcome(admission: _Admission) -> str:
+    """读取本次审批结果并区分拒绝、取消、失配与渠道故障。"""
     if admission.request is None:
-        return False
-    return approval_granted(interrupt(admission.request.payload()))
+        return "unavailable"
+    try:
+        value = interrupt(admission.request.payload())
+    except RuntimeError:
+        return "unavailable"
+    if not isinstance(value, Mapping):
+        return "unavailable"
+    decision = str(value.get("decision") or "")
+    if decision == "cancel":
+        return "cancelled"
+    if decision != "approve":
+        return "rejected" if decision == "reject" else "unavailable"
+    if admission.requested_mode is not None:
+        return "approved" if value.get("request_id") == admission.request.request_id else "mismatch"
+    return "approved" if approval_granted(value) else "rejected"
 
 
 def _admit(request: ToolCallRequest) -> _Admission:
     """判定一次工具调用：是否需要人工批准，以及应当下发的参数。"""
     context = _context_of(request)
-    policy = policy_from_context(context)
     args = _args_of(request)
     contract = effect_of(request.tool)
+    if contract.kind not in (ToolEffectKind.NO_LOCAL_EFFECT, ToolEffectKind.DELEGATED_EXECUTION):
+        try:
+            security = security_context_of(context)
+        except RuntimeError:
+            return _Admission(False, args, capability_denied="缺少受治理执行身份")
+        if contract.kind is ToolEffectKind.SANDBOXED_SHELL and "host_command" not in security.authorization.permissions:
+            return _Admission(False, args, capability_denied="host_command")
+    policy = policy_from_context(context)
 
+    if args.get("requested_mode") is not None:
+        return _admit_escalation(request, policy, context, args, contract)
     if contract.kind in (ToolEffectKind.NO_LOCAL_EFFECT, ToolEffectKind.DELEGATED_EXECUTION):
+        return _Admission(False, args)
+    if contract.kind is ToolEffectKind.SANDBOXED_SHELL:
         return _Admission(False, args)
     if contract.kind is ToolEffectKind.STRUCTURED_FS:
         return _admit_structured(request, policy, context, args, contract)
     return _admit_opaque(request, policy, args)
+
+
+def _admit_escalation(
+    request: ToolCallRequest, policy: AccessPolicy, context: Mapping[str, Any],
+    args: Mapping[str, Any], contract: EffectContract,
+) -> _Admission:
+    target_mode = validate_escalation(
+        policy.mode, str(args["requested_mode"]), str(args.get("reason") or ""),
+    )
+    binding = bind_call_execution(context, str(request.tool_call.get("id") or ""))
+    reads: tuple[Path, ...] = ()
+    writes: tuple[Path, ...] = ()
+    rewritten = args
+    if contract.kind is ToolEffectKind.STRUCTURED_FS:
+        resolved = resolve_fs_effect(contract, args, context)
+        if not resolved.writes:
+            raise ValueError("只有结构化写操作可以申请文件模式放宽")
+        if "write" not in security_context_of(context).authorization.permissions:
+            return _Admission(False, args, capability_denied="write")
+        reads, writes = resolved.reads, resolved.writes
+        rewritten = resolved.args if resolved.args is not None else args
+        candidate = replace(policy, mode=target_mode)
+        denied = tuple(
+            path for path in writes
+            if decide_path_access(candidate, path, AccessOperation.WRITE) is AccessDecision.DENY
+        )
+        if denied:
+            return _Admission(False, rewritten, reads, writes, denied=denied)
+    elif contract.kind is not ToolEffectKind.SANDBOXED_SHELL:
+        raise ValueError("此工具不支持文件模式放宽")
+    request_id = escalation_request_id(
+        binding, str(request.tool_call.get("name") or ""), args, target_mode,
+    )
+    approval = ApprovalRequest(
+        tool=str(request.tool_call.get("name") or ""),
+        access_mode=str(policy.mode), cwd=str(binding.workspace),
+        agent_role=binding.agent_role, reads=tuple(str(path) for path in reads),
+        writes=tuple(str(path) for path in writes), command=_command_of(args),
+        requested_mode=str(target_mode), reason=str(args["reason"]).strip(),
+        request_id=request_id, run_id=binding.run_id,
+        agent_id=binding.agent_id, call_id=binding.call_id,
+    )
+    return _Admission(True, rewritten, reads, writes, approval, requested_mode=target_mode)
 
 
 def _admit_structured(
@@ -140,6 +217,16 @@ def _admit_structured(
     """可结构化枚举的调用：解析全部受治理目标后逐目标判定。"""
     resolved = resolve_fs_effect(contract, args, context)
     rewritten = resolved.args if resolved.args is not None else args
+    if resolved.writes and "write" not in security_context_of(context).authorization.permissions:
+        return _Admission(False, rewritten, capability_denied="write")
+    if resolved.reads and "read" not in security_context_of(context).authorization.permissions:
+        return _Admission(False, rewritten, capability_denied="read")
+    denied = tuple(
+        target for target in resolved.writes
+        if decide_path_access(policy, target, AccessOperation.WRITE) is AccessDecision.DENY
+    )
+    if denied:
+        return _Admission(False, rewritten, resolved.reads, resolved.writes, denied=denied)
     pending = [
         *_pending(policy, resolved.reads, AccessOperation.READ),
         *_pending(policy, resolved.writes, AccessOperation.WRITE),
@@ -192,11 +279,39 @@ def _request(
     )
 
 
-def _denied(request: ToolCallRequest, admission: _Admission) -> ToolMessage:
+def _denied(request: ToolCallRequest, admission: _Admission, outcome: str) -> ToolMessage:
     """未获批准：给出可理解的失败结果，使该次执行不是静默跳过。"""
     detail = "、".join(str(target) for target in admission.targets) or "该操作"
+    status = {
+        "rejected": "用户未批准本次操作",
+        "cancelled": "用户取消了本次操作",
+        "unavailable": "APPROVAL_UNAVAILABLE: 审批渠道不可用",
+        "mismatch": "APPROVAL_MISMATCH: 审批内容与本次调用不一致",
+    }.get(outcome, "审批未完成")
     return ToolMessage(
-        content=f"用户未批准本次越界操作，已跳过：{request.tool_call.get('name')} → {detail}",
+        content=f"{status}，已跳过：{request.tool_call.get('name')} → {detail}",
+        tool_call_id=request.tool_call.get("id"),
+        status="error",
+    )
+
+
+def _policy_denied(request: ToolCallRequest, admission: _Admission) -> ToolMessage:
+    policy = policy_from_context(_context_of(request))
+    detail = "、".join(str(target) for target in admission.denied)
+    return ToolMessage(
+        content=(
+            f"FILE_POLICY_DENIED: 当前模式 {policy.mode} 不允许修改 {detail}。"
+            "若确需本次放宽，请在原工具调用提供足够的最小 requested_mode 和非空 reason，"
+            "由用户单次批准；先核对已完成的副作用，再决定是否重试。"
+        ),
+        tool_call_id=request.tool_call.get("id"),
+        status="error",
+    )
+
+
+def _capability_denied(request: ToolCallRequest, detail: str) -> ToolMessage:
+    return ToolMessage(
+        content=f"PERMISSION_DENIED: 当前运行未授权 {detail}，已跳过 {request.tool_call.get('name')}",
         tool_call_id=request.tool_call.get("id"),
         status="error",
     )
@@ -208,6 +323,23 @@ def _with_args(request: ToolCallRequest, args: Mapping[str, Any]) -> ToolCallReq
     if args == original:
         return request
     return request.override(tool_call={**request.tool_call, "args": dict(args)})
+
+
+def _with_grant(request: ToolCallRequest, admission: _Admission) -> ToolCallRequest:
+    if admission.requested_mode is None or admission.request is None:
+        return request
+    security = security_context_of(_context_of(request))
+    approved = replace(
+        security,
+        authorization=replace(security.authorization, access_mode=admission.requested_mode),
+        extras={
+            **security.extras,
+            "approved_mode_source": "single-approval",
+            "approval_id": admission.request.request_id,
+        },
+    )
+    context = {**request.runtime.context, **approved.to_runtime_context()}
+    return request.override(runtime=replace(request.runtime, context=context))
 
 
 def _context_of(request: ToolCallRequest) -> Mapping[str, Any]:

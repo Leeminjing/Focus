@@ -1,8 +1,9 @@
-"""访问模式在运行请求、装备与派生执行主体记录上的持久化往返用例。
+"""本文件对外提供三档文件模式在请求、装备与派生主体记录上的持久化测试。
 
 输入为运行请求取值、装备字典与数据库行；输出为归一后的模式、迁移链形状与往返后的取值。
-工作流先锁定迁移存在且在链上只有一个头、重复升级不报错且列默认最严，
-再锁定装备经一次真实写入与重新读取后模式不丢失，最后锁定缺失或无法识别的取值按工作区保护处理。
+具体工作流为验证迁移单头、扩列与旧值转换，再验证装备经真实写入和重读不丢失，
+以及新会话缺失值与无效模式分别归一为工作区可写和只读。
+示例：运行 python -m pytest backend/tests/test_access_mode_equipment.py。
 """
 
 import asyncio
@@ -61,6 +62,13 @@ def _revision_declarations() -> list[tuple[str, tuple[str, ...]]]:
                     values[node.target.id] = ast.literal_eval(node.value)
                 except ValueError:
                     values[node.target.id] = None
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        try:
+                            values[target.id] = ast.literal_eval(node.value)
+                        except ValueError:
+                            values[target.id] = None
         revision = values.get("revision")
         if not isinstance(revision, str):
             continue
@@ -198,7 +206,7 @@ def test_run_request_model_round_trips_access_mode():
 
     assert _resolve_access_mode("full") is AccessMode.FULL
     assert _resolve_access_mode(None) is AccessMode.WORKSPACE
-    assert _resolve_access_mode("bogus") is AccessMode.WORKSPACE
+    assert _resolve_access_mode("bogus") is AccessMode.READ_ONLY
 
 
 def test_equipment_round_trip_keeps_access_mode(monkeypatch):
@@ -233,7 +241,7 @@ def test_equipment_round_trip_keeps_access_mode(monkeypatch):
             await session.commit()
             return equipment
 
-    assert _LOOP.run_until_complete(_run())["access_mode"] == "full"
+    assert _LOOP.run_until_complete(_run())["access_mode"] == "danger-full-access"
 
 
 def test_derived_agent_records_keep_access_mode():
@@ -264,7 +272,7 @@ def test_derived_agent_records_keep_access_mode():
                 SwarmAgent(
                     agent_id="agent-full", task_id=task_id, role="worker",
                     checkpoint_ns="swarm:agent-full", status="active", permissions=["read"],
-                    access_mode="full",
+                    access_mode="danger-full-access",
                 )
             )
             await session.commit()
@@ -280,4 +288,33 @@ def test_derived_agent_records_keep_access_mode():
             await session.commit()
             return access_modes
 
-    assert _LOOP.run_until_complete(_run()) == ("workspace", "full")
+    assert _LOOP.run_until_complete(_run()) == ("workspace-write", "danger-full-access")
+
+
+def test_session_mode_resolver_reads_new_persistent_selection(monkeypatch):
+    task_id = "task-live-mode"
+    workspace_id = "ws-live-mode"
+
+    async def _run():
+        async with _SESSION_FACTORY.begin() as session:
+            session.add(DesktopWorkspace(
+                workspace_id=workspace_id, path="C:/ws-live", display_name="live-mode",
+            ))
+            await session.flush()
+            session.add(DesktopThread(
+                task_id=task_id, workspace_id=workspace_id, thread_id="thread-live",
+                title="live-mode", ui_state={"access_mode": "workspace-write"},
+            ))
+        service = _seed_service(monkeypatch)
+        resolver = service._session_mode_resolver(task_id, AccessMode.WORKSPACE_WRITE)
+        first = await resolver()
+        async with _SESSION_FACTORY.begin() as session:
+            thread = await session.get(DesktopThread, task_id)
+            thread.ui_state = {"access_mode": "read-only"}
+        second = await resolver()
+        async with _SESSION_FACTORY.begin() as session:
+            await session.execute(delete(DesktopThread).where(DesktopThread.task_id == task_id))
+            await session.execute(delete(DesktopWorkspace).where(DesktopWorkspace.workspace_id == workspace_id))
+        return first, second
+
+    assert _LOOP.run_until_complete(_run()) == (AccessMode.WORKSPACE_WRITE, AccessMode.READ_ONLY)

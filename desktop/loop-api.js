@@ -128,7 +128,7 @@
             model_name: equipment.model_name || null,
             skills: Array.isArray(equipment.skills) ? equipment.skills : [],
             permissions: Array.isArray(equipment.permissions) && equipment.permissions.length ? equipment.permissions : ["read", "write"],
-            access_mode: equipment.access_mode || "workspace",
+            access_mode: equipment.access_mode || "workspace-write",
           }),
         });
         return decode(response, "发送 Context 消息");

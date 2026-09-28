@@ -1,8 +1,9 @@
-"""唯一准入点的判定、批准载荷与批准生命周期用例。
+"""本文件对外提供准入判定、受限 Shell 免审和敏感路径批准生命周期测试。
 
-输入为工具调用请求、受治理上下文与人工决定；输出为判定结论、中断载荷与工具结果。
-工作流先逐类锁定判定（无本地效果 / 委托执行 / 可结构化枚举 / 不透明），再锁定载荷字段，
-最后用一个带检查点的最小图验证「中断先于副作用」与「获批只作用于当前这一次调用」。
+输入为工具请求、受治理上下文与人工决定；输出为判定、中断载荷及工具结果。
+具体工作流为分别验证签发身份与能力门控、受限 Shell 直接执行、未知工具仍询问、普通外部读取放行，
+再用带检查点的最小图验证敏感路径批准先于副作用且只作用于当前调用。
+示例：运行 python -m pytest backend/tests/test_access_middleware.py。
 """
 
 import asyncio
@@ -20,6 +21,7 @@ from langgraph.types import Command
 
 import focus.security.middleware as middleware_module
 from focus.security.approval import ApprovalRequest
+from focus.config.layered import global_home
 from focus.security.effects import (
     DELEGATED_EXECUTION_EFFECT,
     NO_LOCAL_EFFECT,
@@ -28,7 +30,9 @@ from focus.security.effects import (
     structured_fs,
 )
 from focus.security.middleware import AccessPolicyMiddleware, _admit
+from focus.security.policy import AccessMode
 from focus.tools.builtins.workspace_tools import read_file
+from backend.tests.runtime_context_support import runtime_context
 
 WORKSPACE = "C:\\ws"
 
@@ -77,7 +81,12 @@ def _request(tool_obj, args: dict[str, Any], context: dict[str, Any]) -> ToolCal
 
 
 def _context(tmp_path, **extra) -> dict[str, Any]:
-    return {"workspace": str(tmp_path), **extra}
+    return runtime_context(
+        agent_id="main:task-1", task_id="task-1", workspace=str(tmp_path),
+        permissions=tuple(extra.pop("permissions", ("read", "write", "host_command"))),
+        access_mode=AccessMode(extra.pop("access_mode", "workspace-write")),
+        agent_role=extra.pop("agent_role", "main"), extras=extra,
+    )
 
 
 def test_no_local_effect_is_allowed_without_asking(tmp_path):
@@ -103,20 +112,13 @@ def test_read_file_inside_root_is_allowed_and_args_are_canonical(tmp_path):
     assert admission.args["path"] == str((tmp_path / "a.txt").resolve())
 
 
-def test_read_file_outside_root_asks_with_full_payload(tmp_path):
+def test_read_file_outside_root_is_allowed_and_canonical(tmp_path):
     request = _request(
         read_file, {"path": "../outside.txt"}, _context(tmp_path, agent_role="main")
     )
     admission = _admit(request)
-    assert admission.asked is True
-    payload = admission.request.payload()
-    assert payload["type"] == "access_review"
-    assert payload["tool"] == "read_file"
-    assert payload["access_mode"] == "workspace"
-    assert payload["cwd"] == str(tmp_path.resolve())
-    assert payload["agent_role"] == "main"
-    assert payload["reads"] == [str((tmp_path.parent / "outside.txt").resolve())]
-    assert payload["writes"] == []
+    assert admission.asked is False
+    assert admission.reads == ((tmp_path.parent / "outside.txt").resolve(),)
 
 
 def test_structured_target_outside_root_is_still_canonical_for_execution(tmp_path):
@@ -131,23 +133,19 @@ def test_full_mode_allows_outside_structured_target(tmp_path):
     assert admission.asked is False
 
 
-def test_shell_asks_in_workspace_mode_and_carries_command(tmp_path):
+def test_sandboxed_shell_runs_without_opaque_approval(tmp_path):
     from focus.tools.builtins.workspace_tools import powershell
 
     admission = _admit(
         _request(powershell, {"command": "Remove-Item ../x"}, _context(tmp_path, agent_role="worker"))
     )
-    assert admission.asked is True
-    payload = admission.request.payload()
-    assert payload["command"] == "Remove-Item ../x"
-    assert payload["agent_role"] == "worker"
-    assert payload["reads"] == []
-    assert payload["writes"] == []
+    assert admission.asked is False
+    assert admission.args["command"] == "Remove-Item ../x"
 
 
 def test_read_and_write_targets_are_labelled_separately(tmp_path):
     """同一路径可能被读、被写或两者兼有：载荷分开承载，人据此判断会不会被改写。"""
-    target = tmp_path.parent / "outside.txt"
+    target = tmp_path / ".agents" / "skills" / "policy.md"
     tool = _structured_tool(lambda args, context: ResolvedFsEffect(reads=(target,), writes=(target,)))
 
     admission = _admit(_request(tool, {"path": "x"}, _context(tmp_path)))
@@ -166,6 +164,38 @@ def test_shell_is_allowed_in_full_mode(tmp_path):
         _request(powershell, {"command": "ls"}, _context(tmp_path, access_mode="full"))
     )
     assert admission.asked is False
+
+
+def test_shell_escalation_without_host_command_is_denied_before_approval(tmp_path, monkeypatch):
+    from focus.tools.builtins.workspace_tools import powershell
+
+    request = _request(
+        powershell,
+        {"command": "echo hello", "requested_mode": "danger-full-access", "reason": "执行"},
+        _context(tmp_path, permissions=("read",)),
+    )
+    monkeypatch.setattr(middleware_module, "interrupt", lambda _payload: pytest.fail("approval requested"))
+    result = AccessPolicyMiddleware().wrap_tool_call(
+        request, lambda _request: pytest.fail("shell executed"),
+    )
+    assert result.status == "error"
+    assert "host_command" in result.content
+
+
+def test_flat_context_cannot_admit_structured_write(tmp_path):
+    from focus.tools.builtins.workspace_tools import write_file
+
+    target = tmp_path / "escaped.txt"
+    request = _request(
+        write_file, {"path": str(target), "content": "escaped"},
+        {"workspace": str(tmp_path), "permissions": ["write"], "access_mode": "workspace-write"},
+    )
+    result = AccessPolicyMiddleware().wrap_tool_call(
+        request, lambda _request: target.write_text("escaped"),
+    )
+    assert result.status == "error"
+    assert "PERMISSION_DENIED" in result.content
+    assert not target.exists()
 
 
 def test_network_tool_never_asks_even_in_workspace_mode(tmp_path):
@@ -207,7 +237,7 @@ def _approval_graph(middleware: AccessPolicyMiddleware, side_effects: list[Any])
             tool_call={"name": "read_file", "args": {"path": state["path"]}, "id": "call-1"},
             tool=_read_file_tool(),
             state={},
-            runtime=_runtime({"workspace": state["workspace"], "agent_role": "main"}),
+            runtime=_runtime(_context(Path(state["workspace"]))),
         )
         result = await middleware.awrap_tool_call(request, handler)
         return {"result": getattr(result, "content", None), "status": getattr(result, "status", None)}
@@ -250,9 +280,7 @@ def _write_graph(middleware: AccessPolicyMiddleware, side_effects: list[Any]):
             },
             tool=write_file,
             state={},
-            runtime=_runtime(
-                {"workspace": state["workspace"], "permissions": ["read", "write"], "agent_role": "main"}
-            ),
+            runtime=_runtime(_context(Path(state["workspace"]), permissions=("read", "write"))),
         )
         result = await middleware.awrap_tool_call(request, handler)
         return {"result": getattr(result, "content", None), "status": getattr(result, "status", None)}
@@ -268,7 +296,7 @@ def test_same_target_with_different_args_asks_again(tmp_path):
     """同一工具、同一目标但参数内容不同：放行只覆盖被批准的那一次调用。"""
     side_effects: list[Any] = []
     graph = _write_graph(AccessPolicyMiddleware(), side_effects)
-    outside = str(tmp_path.parent / "outside.txt")
+    outside = str(tmp_path / ".agents" / "skills" / "policy.md")
     config = {"configurable": {"thread_id": "same-target-1"}}
 
     asyncio.run(graph.ainvoke({"workspace": str(tmp_path), "path": outside, "content": "a"}, config))
@@ -300,7 +328,7 @@ def test_interrupt_fires_before_any_side_effect_and_grants_once(tmp_path):
     side_effects: list[Any] = []
     middleware = AccessPolicyMiddleware()
     graph, _ = _approval_graph(middleware, side_effects)
-    outside = str(tmp_path.parent / "outside.txt")
+    outside = str(global_home() / ".env")
 
     first = {"configurable": {"thread_id": "approve-1"}}
     asyncio.run(graph.ainvoke({"workspace": str(tmp_path), "path": outside}, first))
@@ -328,7 +356,7 @@ def test_rejection_skips_execution_and_returns_visible_error(tmp_path):
     config = {"configurable": {"thread_id": "reject-1"}}
 
     asyncio.run(
-        graph.ainvoke({"workspace": str(tmp_path), "path": str(tmp_path.parent / "outside.txt")}, config)
+        graph.ainvoke({"workspace": str(tmp_path), "path": str(global_home() / ".env")}, config)
     )
     assert side_effects == []
 

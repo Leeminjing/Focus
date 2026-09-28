@@ -1,4 +1,6 @@
-/* 验证 reasoning/tool 消息归一为紧凑、无重复且安全的会话事件。 */
+/* 本文件对外验证 reasoning/tool 历史消息归一和按需详情。输入为历史消息快照，输出为
+ * 紧凑、无重复且安全的事件 HTML；工作流为归一、渲染、展开并检查历史 Shell 执行模式。
+ * 示例：node desktop/conversation-events.test.cjs。 */
 "use strict";
 
 const assert = require("node:assert/strict");
@@ -77,6 +79,16 @@ assert.match(errorDetail, /<pre/);
 assert.match(errorDetail, /路径不属于当前工作区/);
 assert.doesNotMatch(errorDetail, /<outside>/);
 assert.match(errorDetail, /&lt;outside&gt;/);
+
+const historicalFact = JSON.stringify({ mode: "read-only", backend_applied: true, status: "exited" });
+const historicalTool = events.normalize([
+  { role: "ai", content: "", tool_calls: [{ id: "shell-old", name: "powershell", args: { command: "echo old" } }] },
+  { role: "tool", name: "powershell", tool_call_id: "shell-old", content: historicalFact },
+]).find(item => item.type === "tool");
+const currentSessionMode = "danger-full-access";
+const historicalDetail = events.renderEventDetail(historicalTool);
+assert.match(historicalDetail, /read-only/, "恢复后的历史结果显示调用发生时的实际模式");
+assert.doesNotMatch(historicalDetail, new RegExp(currentSessionMode), "当前常驻模式不改写历史执行事实");
 
 const pendingHtml = events.renderEvent(normalized[1]);
 assert.match(pendingHtml, /list_files/, "摘要行保留工具名");

@@ -169,14 +169,14 @@ def test_file_tools_are_structured_with_path_targets(tmp_path):
     assert write_effect.reads == ()
 
 
-def test_shell_tools_are_explicitly_opaque():
+def test_builtin_shell_tools_are_explicitly_sandboxed():
     from focus.tools.builtins.workspace_tools import WORKSPACE_TOOLS
 
     shells = [item for item in WORKSPACE_TOOLS if item.name in {"bash", "powershell", "cmd", "sh"}]
     assert len(shells) == 4
     for item in shells:
         assert has_declared_effect(item) is True
-        assert effect_of(item).kind is ToolEffectKind.OPAQUE_LOCAL
+        assert effect_of(item).kind is ToolEffectKind.SANDBOXED_SHELL
 
 
 def test_network_and_skill_tools_have_no_local_effect():

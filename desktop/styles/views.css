@@ -296,7 +296,7 @@
   cursor: pointer;
 }
 .access-mode-chip:hover { border-color: var(--border-strong, var(--border-subtle)); color: var(--text-primary); }
-.access-mode-chip.is-full { border-color: rgb(240 180 70 / 55%); background: rgb(240 180 70 / 12%); color: var(--text-warning, #8a6100); }
+.access-mode-chip.is-danger-full-access { border-color: rgb(240 180 70 / 55%); background: rgb(240 180 70 / 12%); color: var(--text-warning, #8a6100); }
 .access-mode-chip.is-pinned { cursor: default; opacity: .8; }
 .access-mode-shield { width: 12px; height: 12px; border: 1.5px solid currentColor; border-radius: 3px 3px 6px 6px; }
 .access-mode-caret { font-size: 9px; opacity: .7; }

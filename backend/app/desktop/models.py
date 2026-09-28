@@ -8,6 +8,7 @@ RunMaterialBinding 保存不可变运行快照，用 MaterialGroup 与 MaterialG
 用户主动组织事实，旧 attached_material_ids 仅在新字段缺失时作为兼容输入。
 desktop_threads.title 是 THREAD_TITLE_LIMIT 有界列：用户输入的标题由请求模型拒绝超长值，
 从散文派生的标题经 bounded_thread_title 收进该界，二者的界同源于列宽。
+SessionAccessModeUpdate 只接受三档规范模式，供独立的会话模式持久化接口使用。
 
 示例：request = MainRunCreate(message="比较", material_inputs=[{"material_id": "m1", "note": "看第三章"}])。
 """
@@ -400,7 +401,7 @@ class SwarmAgent(Base):
     checkpoint_ns: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")  # active | stopped
     permissions: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)  # spawn 时的权限（wake 沿用，不放大）
-    access_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="workspace")  # spawn 时继承的模式（wake 沿用，不放大）
+    access_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="workspace-write")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -467,6 +468,11 @@ class WorkspaceCreate(StrictRequest):
 class ThreadCreate(StrictRequest):
     thread_id: str | None = None
     title: str = Field(default="新任务", max_length=THREAD_TITLE_LIMIT)
+    access_mode: Literal["read-only", "workspace-write", "danger-full-access", "workspace", "full"] | None = None
+
+
+class SessionAccessModeUpdate(StrictRequest):
+    access_mode: Literal["read-only", "workspace-write", "danger-full-access"]
 
 
 class ContextSourceRef(StrictRequest):
@@ -513,7 +519,7 @@ class MainRunCreate(StrictRequest):
     permissions: list[Literal["read", "write", "host_command"]] = Field(
         default_factory=lambda: ["read", "write", "host_command"]
     )
-    access_mode: Literal["workspace", "full"] | None = None
+    access_mode: Literal["read-only", "workspace-write", "danger-full-access", "workspace", "full"] | None = None
     """本机资源访问模式：能做什么由 permissions 决定，能在哪里做由它决定；None 按最严处理。"""
 
     @model_validator(mode="after")

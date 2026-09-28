@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供作曲区未发送内容的归属与持久化检查。输入为草稿镜像模块、脚手架里的会话状态与真实
  * app.js 渲染/输入路径；输出为七类断言结果：镜像按任务归属（互不串味、回落取持久化值）、打字即归属、
- * 切换访问模式后内容仍在、切换界面语言后内容仍在、任务往返各自保留、发送成功后清空且重建不复活、页面
+ * 切换访问模式经服务端确认后内容仍在、切换界面语言后内容仍在、任务往返各自保留、发送成功后清空且重建不复活、页面
  * 隐藏与卸载流程各补一次落盘。工作流只构造数据并调用既有函数，不修改运行时代码。
  * 脚手架对作曲区的建模与浏览器语义一致：渲染（`#app` 被重新赋值）会替换掉旧输入框，因此输入框取值只可能
  * 来自"这一次渲染写进标记的值"或用户本次输入——这正是本变更要修的失效形态。
@@ -125,15 +125,15 @@ test("打字即归属：输入事件把内容写进该任务的镜像，不需�
   assert.equal(mirrored, "未发送的草稿正文", "输入事件后镜像立即持有内容");
 });
 
-test("切换本机资源访问模式不丢未发送内容", () => {
+test("切换本机资源访问模式不丢未发送内容", async () => {
   const harness = buildApp();
   type(harness, "未发送的草稿正文");
   assert.equal(composerValue(harness), "未发送的草稿正文", "前置：输入框里有内容");
-  harness.vm.runInContext("applyAccessMode('main', 'full')", harness.context);
+  await harness.vm.runInContext("applyAccessMode('main', 'full')", harness.context);
   const afterFull = harness.vm.runInContext("state.details.get('task-a').ui_state.access_mode", harness.context);
-  assert.equal(afterFull, "full", "前置：模式确实切到了完全权限");
+  assert.equal(afterFull, "danger-full-access", "前置：模式确实切到了完全权限");
   assert.equal(composerValue(harness), "未发送的草稿正文", "放大后内容仍在");
-  harness.vm.runInContext("applyAccessMode('main', 'workspace')", harness.context);
+  await harness.vm.runInContext("applyAccessMode('main', 'workspace')", harness.context);
   assert.equal(composerValue(harness), "未发送的草稿正文", "收窄后内容仍在");
 });
 

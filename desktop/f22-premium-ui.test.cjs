@@ -1,7 +1,8 @@
 /*
  * 本文件对外提供 F22 高完成度交互系统静态守卫。输入为桌面 HTML、语义 CSS、会话 renderer、
  * 本地图标资产与依赖清单，输出为无半框选中态、紧凑事件序列、专业离线图标、统一 motion、
- * reduced-motion 和同源/零依赖断言；示例：`node f22-premium-ui.test.cjs`。
+ * reduced-motion、同源和固定沙箱依赖断言；工作流为静态读取并逐项核对源码与资产。
+ * 示例：`node f22-premium-ui.test.cjs`。
  */
 "use strict";
 
@@ -115,7 +116,10 @@ assert.doesNotMatch([base, components, shell, views, events, icons].join("\n"), 
 assert.match(base, /prefers-reduced-motion:\s*reduce/);
 assert.match(base, /\(update:\s*slow\)/);
 
-assert.deepEqual(Object.keys(packageJson.dependencies || {}), ["electron"]);
+assert.deepEqual(Object.keys(packageJson.dependencies || {}), [
+  "@deepseek-ai/cordis", "@deepseek-ai/dsh-sandbox-windows-acl",
+  "@deepseek-ai/dsh-subprocess", "electron",
+]);
 assert.match(main, /loadURL\(`\$\{apiBase\}\/desktop\/`\)/);
 assert.match(app, /location\.origin/);
 

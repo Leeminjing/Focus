@@ -25,12 +25,13 @@
         (2b) apply_prompt_template(agent_name, skill_names, container_base_path) 生成 system_prompt
     (3) 若 tools 为 None: await get_available_tools(tool_groups=tool_groups) 汇集全局工具
         + build_describe_skill_tool(catalog) 创建 skill 查询工具
-    (4) 若 middlewares 为 None: 使用空中间件链（沙箱/上传中间件已随网页端与沙箱移除）
+    (4) 若 middlewares 为 None: 使用空自定义中间件链
     (4.5) 最终链最末端追加 PluginBridgeMiddleware（插件工具并入工具节点、插件 hook
         稳定顺序分发；无插件时为空操作）
     (4.6) 最终链最前端前置 AccessPolicyMiddleware 以取得最外层：本机资源准入必须先于
         任何「可恢复工具错误闭合」触发中断，否则越界会先被错误中间件吞成工具错误消息；
         该装配无条件完成，因此 main / teammate / worker / patrol 与内联子执行共用同一准入层
+    (4.7) 前置 FileModeContextMiddleware，使每次模型请求显示当前受治理文件模式和工作区
     (5) 调用 langchain.agents.create_agent(model, tools, middleware, system_prompt, state_schema=LeadAgentState)
     (6) 返回 CompiledStateGraph
 
@@ -57,6 +58,7 @@ from focus.models import create_chat_model
 from focus.plugins import get_plugin_registry
 from focus.plugins.bridge import PluginBridgeMiddleware
 from focus.security.middleware import AccessPolicyMiddleware
+from focus.security.model_context import FileModeContextMiddleware
 from focus.tools import get_available_tools
 
 logger = logging.getLogger(__name__)
@@ -219,6 +221,7 @@ async def make_lead_agent(
     # 准入门：位于最终链最前端以取得最外层，必须在任何「可恢复工具错误闭合」之前触发中断，
     # 否则越界会先被错误中间件吞成工具错误消息；此处位于 desktop 注入的 middlewares 之外，
     # 因此 main / teammate / worker / patrol 与内联子执行统一具备准入层
+    middlewares = [FileModeContextMiddleware(), *middlewares]
     middlewares = [AccessPolicyMiddleware(), *middlewares]
     middleware = middlewares if middlewares is not None else []
 

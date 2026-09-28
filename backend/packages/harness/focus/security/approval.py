@@ -1,8 +1,8 @@
-"""本文件对外提供越界批准请求的载荷与人工决定的解析，是「待决如何交回人类」的唯一归属地。
+"""本文件对外提供业务准入和单次模式升权的审批载荷及决定解析。
 
 对外提供:
     APPROVAL_TYPE — 准入待决在中断载荷中的类型标记
-    ApprovalRequest — 一次批准请求（工具、按操作类型分开的受治理真实目标、执行位置、发起角色、访问模式）
+    ApprovalRequest — 一次批准请求（主体、操作、工作区、当前与申请模式、理由及真实目标）
     ApprovalRequest.targets — 全部受治理目标的合并视图（去重保序）
     ApprovalRequest.payload() — 组装交给中断的中断载荷
     ApprovalRequest.from_payload(payload) — 由中断载荷还原请求；类型不符返回 None
@@ -10,7 +10,7 @@
 
 输入:
     payload: Mapping — 中断载荷
-    value: Any — 中断恢复值，形如 {"decision": "approve" | "reject"}
+    value: Any — 中断恢复值，形如 {"decision": "approve" | "reject" | "cancel"}
 
 输出:
     ApprovalRequest — 请求对象；from_payload → ApprovalRequest | None
@@ -25,7 +25,7 @@
     (4) 决定只认 approve 与 reject 两种取值；无法识别一律按未批准处理（保守语义）
 
 示例:
-    request = ApprovalRequest(tool="bash", command="rm -rf x", cwd="C:/ws", access_mode="workspace")
+    request = ApprovalRequest(tool="bash", command="echo ok", cwd="C:/ws", access_mode="read-only")
     decision = interrupt(request.payload())
     if not approval_granted(decision):
         ...
@@ -60,6 +60,12 @@ class ApprovalRequest:
     reads: tuple[str, ...] = ()
     writes: tuple[str, ...] = ()
     command: str | None = None
+    requested_mode: str | None = None
+    reason: str | None = None
+    request_id: str | None = None
+    run_id: str | None = None
+    agent_id: str | None = None
+    call_id: str | None = None
     extras: Mapping[str, Any] = field(default_factory=dict)
 
     @property
@@ -81,6 +87,10 @@ class ApprovalRequest:
             payload["agent_role"] = self.agent_role
         if self.command:
             payload["command"] = self.command
+        for key in ("requested_mode", "reason", "request_id", "run_id", "agent_id", "call_id"):
+            value = getattr(self, key)
+            if value:
+                payload[key] = value
         if self.extras:
             payload.update(self.extras)
         return payload
@@ -98,6 +108,12 @@ class ApprovalRequest:
             reads=_texts(payload.get("reads")),
             writes=_texts(payload.get("writes")),
             command=str(payload["command"]) if payload.get("command") else None,
+            requested_mode=str(payload["requested_mode"]) if payload.get("requested_mode") else None,
+            reason=str(payload["reason"]) if payload.get("reason") else None,
+            request_id=str(payload["request_id"]) if payload.get("request_id") else None,
+            run_id=str(payload["run_id"]) if payload.get("run_id") else None,
+            agent_id=str(payload["agent_id"]) if payload.get("agent_id") else None,
+            call_id=str(payload["call_id"]) if payload.get("call_id") else None,
         )
 
 

@@ -1,7 +1,7 @@
 """本文件对外提供工具效果契约的类型、声明入口与结构化目标解析，是「这个工具的本地副作用能否被证明」的唯一归属地。
 
 对外提供:
-    ToolEffectKind — 四种互斥的效果分类
+    ToolEffectKind — 五种互斥的效果分类
     ResolvedFsEffect — 一次调用被证明的全部受治理本地目标（读 / 写，0..N 个）
     EffectContract — 一条效果契约（分类 + 结构化目标解析器）
     OPAQUE_LOCAL_EFFECT / NO_LOCAL_EFFECT / DELEGATED_EXECUTION_EFFECT — 三个无数据的契约单例
@@ -58,6 +58,7 @@ class ToolEffectKind(StrEnum):
 
     STRUCTURED_FS = "structured_fs"
     OPAQUE_LOCAL = "opaque_local"
+    SANDBOXED_SHELL = "sandboxed_shell"
     NO_LOCAL_EFFECT = "no_local_effect"
     DELEGATED_EXECUTION = "delegated_execution"
 
@@ -94,6 +95,7 @@ class EffectContract:
 
 
 OPAQUE_LOCAL_EFFECT = EffectContract(ToolEffectKind.OPAQUE_LOCAL)
+SANDBOXED_SHELL_EFFECT = EffectContract(ToolEffectKind.SANDBOXED_SHELL)
 NO_LOCAL_EFFECT = EffectContract(ToolEffectKind.NO_LOCAL_EFFECT)
 DELEGATED_EXECUTION_EFFECT = EffectContract(ToolEffectKind.DELEGATED_EXECUTION)
 

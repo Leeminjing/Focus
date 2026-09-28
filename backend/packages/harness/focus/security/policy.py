@@ -1,38 +1,16 @@
-"""本文件对外提供本地访问策略的类型、唯一准入判定与策略构造，是「能在哪里做」的唯一归属地。
+"""本文件对外提供三档文件执行模式、路径策略判定及运行上下文策略构造。
 
-对外提供:
-    AccessMode — 访问模式：WORKSPACE（工作区保护）/ FULL（本机完全权限）
-    AccessOperation — 受治理操作类型：READ / WRITE
-    AccessDecision — 判定结果：ALLOW（直接执行）/ ASK（交回人类批准）
-    AccessPolicy — 一次执行的访问策略（模式 + 相对解析基准 + 全部工作根）
-    decide_path_access(policy, target, operation) — 唯一准入判定
-    policy_from_context(context) — 由运行上下文构造访问策略
-
-输入:
-    policy: AccessPolicy — 由运行起点派生的访问策略
-    target: Path — 已经规范化的真实宿主路径
-    operation: AccessOperation — 该次操作是读还是写
-    context: dict | None — 运行上下文，读取其中的 workspace 与 access_mode
-
-输出:
-    decide_path_access → AccessDecision（只有放行与待决两种，不存在拒绝）
-    policy_from_context → AccessPolicy；access_mode 缺失或无法识别时按最严的 WORKSPACE
-
-具体工作流:
-    (1) FULL 模式恒放行——完全权限只解除本机资源准入，不改变能力权限，也不解除其它硬协议
-    (2) WORKSPACE 模式下，目标位于任一工作根之内即放行，否则待决
-    (3) 判定恒不返回拒绝：越界的终点是交回人类，而不是终止该次执行
-    (4) 读与写当前同解；权柄面引入后，同一目标的两种操作可以得出不同结论
-    (5) 策略构造只认服务端提供的上下文；access_mode 无法识别时按最严处理
-
-示例:
-    policy = policy_from_context(runtime.context)
-    decide_path_access(policy, target, AccessOperation.WRITE)   # → AccessDecision.ALLOW
+输入为服务端认可的工作区、访问模式、真实目标、读写操作与附加业务权柄面。
+输出为 AccessPolicy 以及 ALLOW、ASK 或 DENY 判定；旧模式只在读取历史值时转换。
+具体工作流为先解析模式并保守回退只读，再按文件模式限定写入边界，最后应用敏感路径
+业务审批；完全访问只解除文件沙箱限制，不补发工具能力。
+示例：decide_path_access(policy, target, AccessOperation.WRITE) 返回 AccessDecision.DENY。
 """
 
 from __future__ import annotations
 
 import logging
+import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -52,10 +30,15 @@ declare_governed_keys("workspace", "access_mode", "allow_global_config")
 
 
 class AccessMode(StrEnum):
-    """访问模式：决定 Agent 能把已有的能力作用到哪里。"""
+    READ_ONLY = "read-only"
+    WORKSPACE_WRITE = "workspace-write"
+    DANGER_FULL_ACCESS = "danger-full-access"
+    WORKSPACE = "workspace-write"
+    FULL = "danger-full-access"
 
-    WORKSPACE = "workspace"
-    FULL = "full"
+    @classmethod
+    def _missing_(cls, value: object) -> AccessMode | None:
+        return {"workspace": cls.WORKSPACE_WRITE, "full": cls.DANGER_FULL_ACCESS}.get(value)
 
 
 class AccessOperation(StrEnum):
@@ -66,10 +49,9 @@ class AccessOperation(StrEnum):
 
 
 class AccessDecision(StrEnum):
-    """准入判定结果：放行，或交回人类批准。"""
-
     ALLOW = "allow"
     ASK = "ask"
+    DENY = "deny"
 
 
 @dataclass(frozen=True)
@@ -87,22 +69,19 @@ class AccessPolicy:
 
 
 def decide_path_access(policy: AccessPolicy, target: Path, operation: AccessOperation) -> AccessDecision:
-    """唯一准入判定：回答这个真实路径在当前策略下是放行还是交回人类。
-
-    判定顺序是「模式 → 权柄面 → 工作根」：完全权限整体不适用本机资源准入；受保护模式下
-    权柄面优先于工作根（工作区本身可能就是应用仓库，此时应用配置仍须逐次批准）；
-    其余目标按是否落在工作根内决定。
-    """
-    if policy.mode is AccessMode.FULL:
-        return AccessDecision.ALLOW
+    if operation is AccessOperation.WRITE:
+        if policy.mode is AccessMode.READ_ONLY:
+            return AccessDecision.DENY
+        if policy.mode is AccessMode.WORKSPACE_WRITE and not any(
+            is_within(root, target) for root in policy.roots
+        ):
+            return AccessDecision.DENY
     surface = authority_surface_for(target, policy.authority)
     if surface is not None:
         if operation is AccessOperation.WRITE:
             return AccessDecision.ASK
         return AccessDecision.ALLOW if surface.readable else AccessDecision.ASK
-    if any(is_within(root, target) for root in policy.roots):
-        return AccessDecision.ALLOW
-    return AccessDecision.ASK
+    return AccessDecision.ALLOW
 
 
 def policy_from_context(context: object) -> AccessPolicy:
@@ -129,14 +108,9 @@ def policy_from_context(context: object) -> AccessPolicy:
 
 
 def restrictive_policy(workspace: Path) -> AccessPolicy:
-    """构造最严的访问策略：工作区保护模式，且只有工作区一个工作根。
-
-    用于受治理上下文不可得的调用方（界面侧）与未声明访问模式的执行：宁可逐次待决，
-    也不放大到完全权限。
-    """
     resolved = Path(workspace).resolve()
     return AccessPolicy(
-        mode=AccessMode.WORKSPACE,
+        mode=AccessMode.READ_ONLY,
         workspace=resolved,
         roots=(resolved,),
         authority=authority_surfaces(resolved),
@@ -144,8 +118,8 @@ def restrictive_policy(workspace: Path) -> AccessPolicy:
 
 
 def workspace_roots(workspace: Path, *, allow_global_config: bool = False) -> tuple[Path, ...]:
-    """汇总全部工作根：主工作区在前；明确允许时并入全局配置家目录。"""
-    roots = [Path(workspace).resolve()]
+    """汇总结构化文件工具可写根：工作区及共享平台临时区。"""
+    roots = [Path(workspace).resolve(), Path(tempfile.gettempdir()).resolve()]
     if allow_global_config:
         from focus.config.layered import global_home
 
@@ -154,15 +128,14 @@ def workspace_roots(workspace: Path, *, allow_global_config: bool = False) -> tu
 
 
 def _access_mode(values: dict) -> AccessMode:
-    """解析访问模式；缺失或无法识别一律按最严的工作区保护处理并留下可见告警。"""
     raw = values.get("access_mode")
     if not raw:
-        return AccessMode.WORKSPACE
+        return AccessMode.READ_ONLY
     try:
         return AccessMode(str(raw))
     except ValueError:
-        logger.warning("无法识别的访问模式 %r，已按最严的工作区保护处理", raw)
-        return AccessMode.WORKSPACE
+        logger.warning("无法识别的访问模式 %r，已按只读模式处理", raw)
+        return AccessMode.READ_ONLY
 
 
 def _workspace_roots(workspace: Path, values: dict) -> tuple[Path, ...]:

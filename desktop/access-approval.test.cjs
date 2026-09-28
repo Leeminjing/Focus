@@ -1,6 +1,7 @@
 /*
  * 本文件验证准入待决面板：字段齐备、目标按操作类型分行、三个动作齐备、风险确认覆盖两点、
- * 后台待决不抢占主流程面板、会话视图不可用时待决仍可见，以及中英两种语言下新增文案齐备。
+ * 后台待决不抢占主流程面板、会话视图不可用时待决仍可见、常驻模式先落盘再恢复运行，
+ * 以及中英两种语言下新增文案齐备。
  *
  * 输入为中断载荷、面板模板与界面文案；输出为纯逻辑断言、静态标记断言与一次 VM 内的面板装配结果。
  * 工作流：先验纯逻辑（字段 / 目标分行 / 动作 / 恢复值）与标记文案齐备，再在 harness 内装配面板、
@@ -79,13 +80,29 @@ assert.deepEqual(
 );
 
 // 3) 动作齐备与恢复值：恢复值只回答「这一次」，放宽动作由调用方另行持久化
-assert.deepEqual([...approval.ACTIONS], ["approve_once", "reject", "switch_full"]);
+assert.deepEqual([...approval.ACTIONS], ["approve_once", "reject", "cancel", "switch_full"]);
 assert.deepEqual(approval.resumeValue("approve_once"), { decision: "approve" });
 assert.deepEqual(approval.resumeValue("switch_full"), { decision: "approve" });
 assert.deepEqual(approval.resumeValue("reject"), { decision: "reject" });
-assert.equal(approval.switchedMode("switch_full"), "full");
+assert.deepEqual(approval.resumeValue("cancel"), { decision: "cancel" });
+assert.deepEqual(approval.resumeValue("approve_once", { request_id: "request-1" }), { decision: "approve", request_id: "request-1" });
+assert.equal(approval.switchedMode("switch_full"), "danger-full-access");
+assert.equal(approval.switchedMode("switch_full", { requested_mode: "workspace-write" }), "workspace-write");
 assert.equal(approval.switchedMode("approve_once"), null);
 assert.equal(approval.switchedMode("reject"), null);
+const ESCALATION = {
+  ...COMMAND_PAYLOAD,
+  access_mode: "read-only",
+  requested_mode: "workspace-write",
+  reason: "生成输出",
+  run_id: "run-1",
+  agent_id: "main:task",
+  request_id: "request-1",
+};
+assert.deepEqual(
+  approval.approvalFields(ESCALATION).map(field => field.key),
+  ["tool", "target", "cwd", "agent_role", "agent_id", "run_id", "access_mode", "requested_mode", "reason"],
+);
 
 // 4) 主执行身份与后台执行主体的分流
 assert.equal(approval.isAccessReview(PAYLOAD), true);
@@ -258,6 +275,14 @@ const flush = async () => {
   assert.equal(fetches.length, 1, "允许这一次发起一次恢复请求");
   assert.ok(fetches[0].url.endsWith("/desktop/api/threads/thread/runs/resume"));
   assert.deepEqual(JSON.parse(fetches[0].options.body), { resume: { decision: "approve" } });
+
+  seedTask();
+  fetches.length = 0;
+  open("main:task", ESCALATION);
+  assert.match(panel.querySelector(".access-review-fields").innerHTML, /生成输出/);
+  actionButton("approve_once").click();
+  await flush();
+  assert.deepEqual(JSON.parse(fetches[0].options.body), { resume: { decision: "approve", request_id: "request-1" } });
   assert.match(harness.statusNode.textContent, /已允许这一次/);
 
   // 7e) 确认放宽 → 提交 approve 并把后续运行切到完全权限（模式落盘走访问模式模块）
@@ -269,13 +294,36 @@ const flush = async () => {
   new vm.Script("confirmAccessReviewFull({ closest: () => __accessPanel });")
     .runInContext(harness.context);
   await flush();
-  assert.deepEqual(JSON.parse(fetches[0].options.body), { resume: { decision: "approve" } });
+  assert.ok(fetches[0].url.endsWith("/desktop/api/tasks/task/access-mode"));
+  assert.deepEqual(JSON.parse(fetches[0].options.body), { access_mode: "danger-full-access" });
+  assert.ok(fetches[1].url.endsWith("/desktop/api/threads/thread/runs/resume"));
+  assert.deepEqual(JSON.parse(fetches[1].options.body), { resume: { decision: "approve" } });
   assert.match(harness.statusNode.textContent, /后续运行按完全权限执行/);
   assert.equal(
     new vm.Script(`state.details.get("task").ui_state.access_mode`).runInContext(harness.context),
-    "full",
+    "danger-full-access",
     "放宽选择持久化到任务 ui_state",
   );
+
+  seedTask();
+  fetches.length = 0;
+  const normalFetch = harness.context.fetch;
+  harness.context.fetch = async (url, options) => {
+    if (String(url).endsWith("/access-mode")) {
+      fetches.push({ url, options });
+      throw new Error("offline");
+    }
+    return normalFetch(url, options);
+  };
+  open("main:task");
+  actionButton("switch_full").click();
+  new vm.Script("confirmAccessReviewFull({ closest: () => __accessPanel });")
+    .runInContext(harness.context);
+  await flush();
+  assert.equal(fetches.length, 1, "常驻模式保存失败时不恢复待决运行");
+  assert.equal(new vm.Script(`state.details.get("task").ui_state.access_mode`).runInContext(harness.context), undefined);
+  assert.match(harness.statusNode.textContent, /offline/);
+  harness.context.fetch = normalFetch;
 
   // 7f) 拒绝 → 提交 reject 并给出可读结果
   seedTask();

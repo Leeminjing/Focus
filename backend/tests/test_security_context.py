@@ -7,6 +7,7 @@
 """
 
 from pathlib import Path
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -109,7 +110,7 @@ def test_runtime_context_projection_carries_reserved_key_and_flat_keys():
     assert runtime[SECURITY_CONTEXT_KEY] is context
     assert runtime["workspace"] == str(WORKSPACE)
     assert runtime["permissions"] == ["read", "write"]
-    assert runtime["access_mode"] == "workspace"
+    assert runtime["access_mode"] == "workspace-write"
     assert runtime["agent_role"] == "main"
     assert runtime["checkpoint_ns"] == ""
     assert runtime["user_id"] == "user-1"
@@ -151,6 +152,13 @@ def test_child_derivation_inherits_by_default():
     assert child.owner == parent.owner
 
 
+def test_child_derivation_does_not_inherit_parent_session_mode_resolver():
+    parent = replace(_parent(), extras={"session_mode_resolver": lambda: AccessMode.FULL, "tag": "retained"})
+    child = derive_child_security_context(parent, ChildRole.SPAWN_AGENT, access_mode=AccessMode.READ_ONLY)
+    assert child.extras == {"tag": "retained"}
+    assert child.authorization.access_mode is AccessMode.READ_ONLY
+
+
 def test_child_derivation_allows_narrowing():
     parent = _parent(mode=AccessMode.FULL)
     child = derive_child_security_context(
@@ -186,6 +194,12 @@ def test_child_derivation_rejects_wider_access_mode():
     parent = _parent(mode=AccessMode.WORKSPACE)
     with pytest.raises(ValueError, match="访问模式"):
         derive_child_security_context(parent, ChildRole.SPAWN_AGENT, access_mode=AccessMode.FULL)
+
+
+def test_child_derivation_rejects_read_only_to_workspace_write():
+    parent = _parent(mode=AccessMode.READ_ONLY)
+    with pytest.raises(ValueError, match="访问模式"):
+        derive_child_security_context(parent, ChildRole.SPAWN_AGENT, access_mode=AccessMode.WORKSPACE_WRITE)
 
 
 def test_spawn_agent_derives_instead_of_assembling_from_the_context_dict():

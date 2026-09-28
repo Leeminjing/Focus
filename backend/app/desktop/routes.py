@@ -2,7 +2,8 @@
 本文件对外提供 desktop_router，作为桌面 PoC 的 HTTP 与 SSE 接口层。
 
 输入为带 `X-Focus-Session` 的桌面请求以及 models.py 定义的数据模型；输出为工作区、
-Context、任务、草稿、普通/策展 Patrol、运行、材料/历史/分组 JSON、手工压缩优先权、文件响应或独立 SSE 流。
+Context、任务、草稿、普通/策展 Patrol、运行、文件沙箱状态、材料/历史/分组 JSON、手工压缩优先权、文件响应或独立 SSE 流。
+会话文件模式通过独立请求更新，普通界面状态保存不能改变受治理模式。
 具体工作流为校验本机会话后调用 DesktopService，并保持所有事件按 run_id 订阅；上传把
 UploadFile 直接交给有界上传服务，内容读取在校验 task/material 归属后交给 FileResponse。
 
@@ -35,6 +36,7 @@ from backend.app.desktop.models import (
     MaterialRestore,
     MaterialUpdate,
     ResumeRequest,
+    SessionAccessModeUpdate,
     ThreadCreate,
     WorkspaceCreate,
 )
@@ -43,11 +45,17 @@ from backend.app.desktop.run_materials import RunMaterialRequest
 from backend.app.desktop.run_orchestration import RunLauncher
 from backend.app.desktop.run_stream import durable_run_sse_consumer
 from backend.app.gateway.services import start_run
+from focus.sandbox.status import sandbox_status
 
 
 # 决策 10：桌面 API 只接受 loopback 对等连接（含 host_command 真实宿主机命令）。
 # 保护由 AuthMiddleware（统一会话保护）统一承担，本路由不再挂独立依赖。
 desktop_router = APIRouter(prefix="/desktop/api")
+
+
+@desktop_router.get("/sandbox/status")
+async def get_sandbox_status() -> dict[str, object]:
+    return sandbox_status()
 @desktop_router.get("/bootstrap")
 async def bootstrap(request: Request) -> dict:
     service = request.app.state.desktop_service
@@ -90,7 +98,7 @@ async def select_workspace() -> dict:
 @desktop_router.post("/workspaces/{workspace_id}/threads")
 async def create_thread(workspace_id: str, body: ThreadCreate, request: Request) -> dict:
     return await request.app.state.desktop_service.create_thread(
-        workspace_id, body.thread_id, body.title
+        workspace_id, body.thread_id, body.title, body.access_mode
     )
 
 
@@ -183,6 +191,12 @@ async def list_task_skills(task_id: str, request: Request) -> dict:
 async def save_ui_state(task_id: str, body: dict, request: Request) -> dict:
     await request.app.state.desktop_service.save_ui_state(task_id, body)
     return {"ok": True}
+
+
+@desktop_router.put("/tasks/{task_id}/access-mode")
+async def set_session_access_mode(task_id: str, body: SessionAccessModeUpdate, request: Request) -> dict:
+    await request.app.state.desktop_service.set_session_access_mode(task_id, body.access_mode)
+    return {"access_mode": body.access_mode}
 
 
 @desktop_router.post("/tasks/{task_id}/drafts/open")
