@@ -5,6 +5,7 @@ coordinator identity；输出为带 lease 的唯一 round claim、停滞 round �
 skip-locked 领取**未被有效租约持有**的候选 round（过期租约即时清除）、fencing stale attempt、由数据库
 状态推进 health；运行期在领取前先收敛已无进展的 round 并释放其名额，Runtime 启动时执行完整
 AgentLoopRecovery，随后由 registry 为每个 running Loop 建立独立 Supervisor，分别消费 Run、Worker、publication、Context Run、Fact 与 round。
+任务记忆拥有 admission 层独立组件，Loop 停止后仍可收口已冻结工作，不恢复执行监督。
 Run 结算只推进与该 Directive 当前绑定尝试一致的 Directive：结算的 Run 不是当前绑定时（已被取代的尝试），
 只记录该 Run 自身的事实，不改写 Directive 生命周期与绑定。
 示例：`runtime = LoopCoordinatorRuntime(...)`。
@@ -13,35 +14,72 @@ Run 结算只推进与该 Directive 当前绑定尝试一致的 Directive：结�
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-import uuid
 from typing import Protocol
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopAction, LoopBudgetUsage, LoopContextMembership, LoopCoordinatorFence, LoopCoordinatorLease, LoopDirective, LoopEventOutbox, LoopPatrolAttempt, LoopRound, LoopUserIntent, LoopWorkerRequest, MessageProvenance
+from backend.app.desktop.agent_loop.budgets import (
+    LoopBudgetGuard,
+    configured_provider_count,
+    no_progress_fingerprint,
+)
+from backend.app.desktop.agent_loop.directive_causality import (
+    DirectiveCausalityRecorder,
+)
+from backend.app.desktop.agent_loop.directive_lifecycle import (
+    DirectiveLifecycleRepository,
+)
+from backend.app.desktop.agent_loop.dispatch import LoopWaveDispatcher
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
 from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
-from backend.app.desktop.agent_loop.directive_causality import DirectiveCausalityRecorder
-from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
-from backend.app.desktop.agent_loop.user_run_events import LoopUserRunEventRecorder
+from backend.app.desktop.agent_loop.intervention_lifecycle import (
+    InterventionLifecycleRepository,
+)
+from backend.app.desktop.agent_loop.models import (
+    AgentLoop,
+    LoopAction,
+    LoopBudgetUsage,
+    LoopContextMembership,
+    LoopCoordinatorFence,
+    LoopCoordinatorLease,
+    LoopDelegationGrant,
+    LoopDirective,
+    LoopEventOutbox,
+    LoopPatrolAttempt,
+    LoopRound,
+    LoopUserIntent,
+    MessageProvenance,
+)
 from backend.app.desktop.agent_loop.patrol_session_models import LoopPatrolSession
-from backend.app.desktop.agent_loop.patrol_session_repository import PatrolSessionRepository
-from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, PatrolPhase
-from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count, no_progress_fingerprint
-from backend.app.desktop.agent_loop.rounds import CLAIMABLE_ROUND_STATUSES, RoundStallLimits, current_frontier_hash, terminate_round, terminate_stalled_rounds
-from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
-from backend.app.desktop.agent_loop.models import LoopDelegationGrant
-from backend.app.desktop.models import DesktopRun, DesktopThread
-from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
-from backend.app.desktop.run_orchestration import RunOutboxConsumer
-from backend.app.desktop.agent_loop.dispatch import LoopWaveDispatcher
-from backend.app.desktop.agent_loop.supervisor import LoopSupervisor, SupervisorComponent
+from backend.app.desktop.agent_loop.patrol_session_repository import (
+    PatrolSessionRepository,
+)
+from backend.app.desktop.agent_loop.patrol_session_state import (
+    PatrolActivity,
+    PatrolPhase,
+)
+from backend.app.desktop.agent_loop.rounds import (
+    CLAIMABLE_ROUND_STATUSES,
+    RoundStallLimits,
+    current_frontier_hash,
+    terminate_round,
+    terminate_stalled_rounds,
+)
+from backend.app.desktop.agent_loop.supervisor import (
+    LoopSupervisor,
+    SupervisorComponent,
+)
 from backend.app.desktop.agent_loop.supervisor_registry import LoopSupervisorRegistry
+from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
+from backend.app.desktop.agent_loop.user_run_events import LoopUserRunEventRecorder
+from backend.app.desktop.models import DesktopRun
+from backend.app.desktop.run_orchestration import RunOutboxConsumer
+from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
 
 
 @dataclass(frozen=True, slots=True)
@@ -520,6 +558,7 @@ class LoopCoordinatorRuntime:
         portfolio_publications: SupervisedQueuePort | None = None,
         context_runs: SupervisedQueuePort | None = None,
         fact_projector: SupervisedQueuePort | None = None,
+        task_progress=None,
     ) -> None:
         self._coordinator = coordinator
         self._run_events = run_events
@@ -532,6 +571,7 @@ class LoopCoordinatorRuntime:
         self._portfolio_publications = portfolio_publications
         self._context_runs = context_runs
         self._fact_projector = fact_projector
+        self._task_progress = task_progress
         self._poll_seconds = poll_seconds
         self._max_concurrent_loops = max(1, max_concurrent_loops)
         self._supervisor: LoopSupervisor | None = None
@@ -562,6 +602,8 @@ class LoopCoordinatorRuntime:
                 await start()
         await self._reconcile_supervisors()
         components = [SupervisorComponent("loop_registry", self._reconcile_supervisors, self._poll_seconds)]
+        if self._task_progress is not None:
+            components.append(SupervisorComponent("task_progress", self._task_progress.drain, self._poll_seconds))
         if self._compression_resolutions is not None:
             components.append(SupervisorComponent("compression_resolutions", self._compression_resolutions.drain, self._poll_seconds))
         if self._maintenance is not None:

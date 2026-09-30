@@ -4,38 +4,50 @@ r"""本文件对外提供 Loop directive 并发认领与直接用户 Run 工作�
 恰好一次 launch、稳定 directive 状态及同一 lease/anchor 合同。具体工作流为创建最小 Context revision，
 经 Kernel 生成 delegated directive，再并发派发并独立绑定直接用户 Run。示例：
 `pytest test_agent_loop_dispatch.py`。
+结算 backfill 不补造 Tool facts 或工具轨迹，原有调度/因果状态保持独立。
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
 import os
-from types import SimpleNamespace
 import uuid
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
-from langchain_core.messages import ToolMessage
 import pytest
+from langchain_core.messages import ToolMessage
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
 from backend.app.desktop.agent_loop import (
-    AgentLoopService,
     AgentLoopRecovery,
-    LoopCreateRequest,
+    AgentLoopService,
     LoopCoordinator,
     LoopCoordinatorRuntime,
+    LoopCreateRequest,
     LoopKernel,
     LoopRunWorkspaceBinder,
     LoopWaveDispatcher,
     PatrolDecisionIntent,
 )
-from backend.app.desktop.agent_loop.models import LoopCoordinatorLease
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDirective, LoopDirectiveTransition, LoopRound, LoopWorkerRequest
-from backend.app.desktop.agent_loop.directive_causality import DirectiveCausalityQuery, DirectiveCausalityRecorder
-from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
+from backend.app.desktop.agent_loop.directive_causality import (
+    DirectiveCausalityQuery,
+    DirectiveCausalityRecorder,
+)
+from backend.app.desktop.agent_loop.directive_lifecycle import (
+    DirectiveLifecycleRepository,
+)
 from backend.app.desktop.agent_loop.fact_projector import FactProjector
-from sqlalchemy import select
+from backend.app.desktop.agent_loop.models import (
+    AgentLoop,
+    LoopBudgetUsage,
+    LoopCoordinatorLease,
+    LoopDirective,
+    LoopDirectiveTransition,
+    LoopRound,
+    LoopWorkerRequest,
+)
 from backend.app.desktop.context_evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
@@ -46,8 +58,10 @@ from backend.app.desktop.context_evolution import (
 )
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
 from backend.app.desktop.run_orchestration import RunOutboxConsumer
-from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor, WorkspaceLease
-
+from backend.app.desktop.workspace_coordination.models import (
+    RunExecutionAnchor,
+    WorkspaceLease,
+)
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -353,7 +367,6 @@ def test_dispatch_claims_once_and_direct_user_uses_the_same_workspace_contract(t
             assert {item["kind"] for item in chain["events"]} >= {
                 "directive.authorized",
                 "context.run.started",
-                "context.tool.completed",
                 "context.run.settled",
                 "context.workspace.changed",
                 "fact.upserted",

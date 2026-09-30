@@ -2,7 +2,8 @@ r"""本文件对外提供 LoopWorkerRuntime、StructuredCompletionVerifier、测
 
 输入为 Patrol 已提交的可选 Worker request、可选 Loop scope、当前 Mission/round/Portfolio/workspace 证据和模型配置；输出为
 无工具、无状态提交能力的完成证据、retrieval-session 约束的 WorkContextDraft 或角色专属结构化派生产物。具体工作流为独立有界池领取
-request，Worker 统一投影当前有效 Mission，lane curator 查询完整 Revision indexes 与冻结 Mission sections；index/reconciliation/synthesis/claim/quality 角色绑定独立 schema、authority、重试、
+request，独立完成验证使用当前权威证据；Curator 与 retrieval planner 使用精确冻结 Observation、相关任务记忆/增量和真实来源祖先，不重读当前 Run/workspace。
+index/reconciliation/synthesis/claim/quality 角色绑定独立 schema、authority、重试、
 attempt 与模型用量审计；最终状态判断和提交权仍归 Portfolio Patrol/Kernel。示例：`await runtime.drain()`。
 """
 
@@ -62,8 +63,11 @@ from backend.app.desktop.agent_loop.context_expansion.synthesis import (
 from backend.app.desktop.agent_loop.curator_assignments import (
     CuratorAssignmentRepository,
 )
+from backend.app.desktop.agent_loop.decision_context import scoped_memory
 from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
-from backend.app.desktop.agent_loop.expansion_resource_policy import FrozenExpansionResources
+from backend.app.desktop.agent_loop.expansion_resource_policy import (
+    FrozenExpansionResources,
+)
 from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
 from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
 from backend.app.desktop.agent_loop.models import (
@@ -534,6 +538,26 @@ class LoopWorkerRuntime:
             round_row = await session.get(LoopRound, request.round_id)
             if loop is None or round_row is None:
                 raise LookupError("Worker 所属 Loop/round 不存在")
+            derivation = dict(request.scope.get("derivation_input") or {})
+            frozen_ref = derivation.get("decision_inputs_ref")
+            if request.kind in {"lane_curator", "retrieval_cognitive_planner"}:
+                from backend.app.desktop.agent_loop.models import LoopObservation
+                from backend.app.desktop.agent_loop.schemas import (
+                    LoopObservationEnvelope,
+                )
+
+                base = await session.get(LoopObservation, frozen_ref) if frozen_ref else await session.scalar(select(LoopObservation).where(LoopObservation.round_id == request.round_id, LoopObservation.loop_id == loop.loop_id))
+                if frozen_ref and (base is None or base.loop_id != loop.loop_id or base.round_id != request.round_id):
+                    raise ValueError("Curator 冻结 Observation 归属不一致")
+                if base is not None and base.envelope.get("input_schema_version") == 1:
+                    envelope = LoopObservationEnvelope.model_validate(base.envelope)
+                    context_ids = {str(assignment["context_id"]) for assignment in request.scope.get("assignments") or () if assignment.get("context_id")}
+                    if not context_ids:
+                        context_ids = set((envelope.grant or {}).get("context_scope") or ())
+                    memory = scoped_memory(envelope, context_ids)
+                    scope = {**request.scope, "derivation_input": {**derivation, **memory}}
+                    payload = {**memory, "mission": envelope.mission, "scope": scope, "frontier_hash": envelope.observed_frontier_hash, "workspace": envelope.workspace, "run_evidence": memory["stable_results"]}
+                    return payload, loop, round_row
             mission = await session.scalar(select(LoopMissionRevision).where(LoopMissionRevision.loop_id == loop.loop_id, LoopMissionRevision.revision == loop.goal_revision))
             goal = None if mission is not None else await session.scalar(select(LoopGoalRevision).where(LoopGoalRevision.loop_id == loop.loop_id, LoopGoalRevision.revision == loop.goal_revision))
             if mission is None and goal is None:

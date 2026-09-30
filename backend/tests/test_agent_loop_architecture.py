@@ -10,7 +10,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-
 ROOT = Path(__file__).parents[2]
 BACKEND_ROOT = ROOT / "backend" / "app" / "desktop"
 DESKTOP_ROOT = ROOT / "desktop"
@@ -87,6 +86,22 @@ def test_new_backend_domains_follow_dependency_direction() -> None:
                     if target and target != source_package and target not in allowed:
                         violations.append(f"{path.name}: {source_package} -> {target}")
     assert not violations, "非法领域依赖：" + ", ".join(sorted(violations))
+
+
+def test_task_memory_and_fact_consumers_are_independent() -> None:
+    memory = BACKEND_ROOT / "agent_loop" / "task_progress"
+    facts = [*(BACKEND_ROOT / "agent_loop").glob("fact*.py"), *(BACKEND_ROOT / "agent_loop").glob("materialized_fact*.py")]
+    for path in [*memory.glob("*.py"), *facts]:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imports = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+        forbidden = ".agent_loop.fact" if path.parent == memory else ".agent_loop.task_progress"
+        assert not any(forbidden in module for module in imports), f"消费者互相依赖: {path.name}"
+        if path.parent == memory:
+            assert not any("event_journal" in module for module in imports), "来源不能依赖可裁剪展示 journal"
+    for name in ("patrol.py", "patrol_runtime.py", "workers.py"):
+        tree = ast.parse((BACKEND_ROOT / "agent_loop" / name).read_text(encoding="utf-8"))
+        calls = [node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
+        assert not {"switch_current", "record_publication"}.intersection(calls), f"认知模块取得发布权: {name}"
 
 
 def test_compression_policy_is_a_pure_domain_module() -> None:

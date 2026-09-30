@@ -1,7 +1,7 @@
 r"""本文件对外提供 FactEvidenceReference、FactActor、FactVerificationDecision 与 FactVerificationPolicy。
 
 输入为类型化证据引用、观察者和期望验证状态；输出为允许的验证决定或显式拒绝。具体工作流为区分 observer、evidence
-与 authority，仅允许已提交 Run、Tool、Workspace、Artifact、Context revision、Kernel 或用户确认充当验证证据，模型文本
+与 authority，仅允许已提交 Run、Test、Tool 审计、Workspace、Artifact、Context revision、Kernel 或用户确认充当验证证据，模型文本
 只能形成 observed 事实。示例：`decision = policy.evaluate(evidence, observer)`。
 """
 
@@ -11,8 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
-EvidenceKind = Literal["run", "tool", "workspace", "artifact", "context_revision", "kernel", "user", "model_statement"]
+EvidenceKind = Literal["run", "test", "tool", "workspace", "artifact", "context_revision", "kernel", "user", "model_statement"]
 
 
 class _FactContract(BaseModel):
@@ -39,7 +38,7 @@ class FactVerificationDecision(_FactContract):
 
 
 class FactVerificationPolicy:
-    _AUTHORITATIVE = frozenset({"run", "tool", "workspace", "artifact", "context_revision", "kernel", "user"})
+    _AUTHORITATIVE = frozenset({"run", "test", "tool", "workspace", "artifact", "context_revision", "kernel", "user"})
 
     def evaluate(self, evidence: tuple[FactEvidenceReference, ...], observer: FactActor) -> FactVerificationDecision:
         accepted = tuple(item for item in evidence if item.kind in self._AUTHORITATIVE)

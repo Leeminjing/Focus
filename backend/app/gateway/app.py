@@ -2,12 +2,12 @@
 本文件对外提供 FastAPI 应用实例 app，作为 backend 网关的统一入口。
 
 输入为 `config.yaml`、进程环境变量与 lifespan 注入的数据库/checkpointer/store/stream bridge；
-输出为同源挂载 Gateway、Desktop API、Agent Loop coordinator 和静态页面的 `FastAPI` 实例。
+输出为同源挂载 Gateway、Desktop API、Agent Loop coordinator、独立任务记忆 worker 和静态页面的 `FastAPI` 实例。
 
 对外提供:
     app: FastAPI — 已绑定 lifespan 的 FastAPI 应用实例
 
-具体工作流:
+具体工作流为:
     (1) 定义 lifespan 异步上下文管理器
     (2) lifespan 内部加载 AppConfig（组合根），传入 langgraph_runtime 进行依赖注入
     (3) async with langgraph_runtime(app, app_config) 管理核心资源生命周期
@@ -15,7 +15,7 @@
     (5) 创建 FastAPI 实例并传入 lifespan
     (6) 通过 Desktop persistence registry 注册各领域 ORM 模型
     (7) 注册统一会话保护中间件与路由，并挂载桌面路由与 /desktop/ 静态资源（决策 1）
-    (8) 读取独立 Loop 切换开关，构造 AgentLoopService、LoopKernel、发布/Curator/Context/Fact 监督组件，并异步修复终态 Loop 遗留策展所有权；仅在 supervisor 开关启用时启动运行期
+    (8) 读取独立 Loop 切换开关，构造 AgentLoopService、LoopKernel、发布/Curator/Context/Fact 与独立 TaskProgress 监督组件，并异步修复终态 Loop 遗留策展所有权；仅在 supervisor 开关启用时启动运行期
     (9) 模块级导出 app 实例，供 uvicorn 等 ASGI server 直接引用
 
 示例:
@@ -24,18 +24,16 @@
 """
 
 import asyncio
-import os
-
 import logging
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
-from backend.app.gateway.deps import langgraph_runtime
-
 import backend.app.desktop.persistence_registry  # noqa: F401
+from backend.app.gateway.deps import langgraph_runtime
 
 # 在所有配置加载之前注入 .env 环境变量
 load_dotenv()
@@ -84,8 +82,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     async with langgraph_runtime(app, app_config):
         # 桌面功能内嵌：构造 DesktopService，复用 langgraph_runtime 挂载的
         # checkpointer / store / stream_bridge 与全局数据库 engine（决策 1、8、11）
-        from backend.app.desktop.service import DesktopService
         from focus.persistence.engine import get_session_factory
+
+        from backend.app.desktop.service import DesktopService
 
         sessions = get_session_factory()
         service = DesktopService(
@@ -97,13 +96,37 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_manager=app.state.run_manager,
         )
         app.state.desktop_service = service
-        from backend.app.desktop.agent_loop import AgentLoopRecovery, AgentLoopService, CompletionEvidenceService, ContextRunPool, DesktopDirectiveLaunchPort, LoopAuthorityService, LoopCoordinator, LoopCoordinatorRuntime, LoopKernel, LoopPortfolioPublicationQueue, LoopPortfolioPublicationService, LoopRoundOrchestrator, LoopRunWorkspaceBinder, LoopWaveDispatcher, LoopWorkerRuntime, LoopWorkspaceAdoptionService, PendingDecisionProjector
-        from backend.app.desktop.agent_loop.interventions import LoopInterventionService
+        from backend.app.desktop.agent_loop import (
+            AgentLoopRecovery,
+            AgentLoopService,
+            CompletionEvidenceService,
+            ContextRunPool,
+            DesktopDirectiveLaunchPort,
+            LoopAuthorityService,
+            LoopCoordinator,
+            LoopCoordinatorRuntime,
+            LoopKernel,
+            LoopPortfolioPublicationQueue,
+            LoopPortfolioPublicationService,
+            LoopRoundOrchestrator,
+            LoopRunWorkspaceBinder,
+            LoopWaveDispatcher,
+            LoopWorkerRuntime,
+            LoopWorkspaceAdoptionService,
+            PendingDecisionProjector,
+        )
+        from backend.app.desktop.agent_loop.compression_authority.gate_projector import (
+            LoopCompressionGateProjector,
+        )
+        from backend.app.desktop.agent_loop.compression_authority.resolution import (
+            CompressionResolutionCoordinator,
+        )
+        from backend.app.desktop.agent_loop.curation_ownership import (
+            CurationOwnershipRecovery,
+        )
         from backend.app.desktop.agent_loop.fact_projector import FactProjector
         from backend.app.desktop.agent_loop.feature_flags import LoopFeatureFlags
-        from backend.app.desktop.agent_loop.curation_ownership import CurationOwnershipRecovery
-        from backend.app.desktop.agent_loop.compression_authority.gate_projector import LoopCompressionGateProjector
-        from backend.app.desktop.agent_loop.compression_authority.resolution import CompressionResolutionCoordinator
+        from backend.app.desktop.agent_loop.interventions import LoopInterventionService
         from backend.app.desktop.run_orchestration import RunOutboxConsumer
 
         app.state.loop_feature_flags = LoopFeatureFlags.from_env()
@@ -152,6 +175,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             dispatcher,
         )
         app.state.agent_loop_fact_projector = FactProjector(sessions, app.state.checkpointer)
+        from backend.app.desktop.agent_loop.task_progress.runtime import (
+            TaskProgressRuntime,
+        )
+        app.state.agent_loop_task_progress = TaskProgressRuntime(sessions, app_config)
         app.state.agent_loop_runtime = LoopCoordinatorRuntime(
             app.state.agent_loop_coordinator,
             app.state.agent_loop_run_events,
@@ -164,6 +191,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             portfolio_publications=app.state.agent_loop_publication_queue,
             context_runs=app.state.agent_loop_context_runs,
             fact_projector=app.state.agent_loop_fact_projector,
+            task_progress=app.state.agent_loop_task_progress,
         )
         app.state.agent_loop_completion = CompletionEvidenceService(sessions)
         app.state.session_key = os.getenv("FOCUS_DESKTOP_SESSION", "focus-dev-session")

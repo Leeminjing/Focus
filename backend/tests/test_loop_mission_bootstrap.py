@@ -4,40 +4,80 @@ r"""本文件对外提供问候 Run 与新 Mission 交接、Kernel 幂等提交�
 Loop 不会因虚构的目标缺失而创建澄清请求、Mission 正文仅一次交付和 Worker 投影一致的断言。具体工作流为播种独立 workspace/Context revision，
 启动 Loop，经协调器、Kernel 与 Dispatcher 验证交付，检查结构化与旧版 Worker 载荷，再提交错误的等待提案并检查确定性拒绝。示例：
 `python -m pytest backend/tests/test_loop_mission_bootstrap.py -q`。
+派发测试的 launcher 持久化 pending Run 并调用真实 LoopRunExecutionBoundary，不把返回随机 identity 当作实际启动。
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import json
 import os
-from pathlib import Path
 import uuid
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from loop_run_boundary_support import start_loop_run
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.agent_loop import AgentLoopService, LoopCoordinator, LoopCreateRequest, LoopKernel, LoopWaveDispatcher, PatrolDecisionIntent
-from backend.app.desktop.agent_loop.mission_contract import CompletionCheckDefinition, ExecutionBoundaries, LoopMissionContract
-from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import PlanningRetrievalSession
+from backend.app.desktop.agent_loop import (
+    AgentLoopService,
+    LoopCoordinator,
+    LoopCreateRequest,
+    LoopKernel,
+    LoopWaveDispatcher,
+    PatrolDecisionIntent,
+)
 from backend.app.desktop.agent_loop.authority_control import LoopAuthorityService
-from backend.app.desktop.agent_loop.clarification_admission import ClarificationAdmissionPolicy, ClarificationFacts, ClarificationRejected
+from backend.app.desktop.agent_loop.clarification_admission import (
+    ClarificationAdmissionPolicy,
+    ClarificationFacts,
+    ClarificationRejected,
+)
+from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
+    PlanningRetrievalSession,
+)
 from backend.app.desktop.agent_loop.mission_bootstrap import MissionBootstrapStage
+from backend.app.desktop.agent_loop.mission_contract import (
+    CompletionCheckDefinition,
+    ExecutionBoundaries,
+    LoopMissionContract,
+)
 from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
 from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopDirective, LoopGoalRevision, LoopPendingDecision, LoopRound, LoopWorkerRequest, MessageProvenance
+from backend.app.desktop.agent_loop.models import (
+    AgentLoop,
+    LoopDelegationGrant,
+    LoopDirective,
+    LoopGoalRevision,
+    LoopPendingDecision,
+    LoopRound,
+    LoopWorkerRequest,
+    MessageProvenance,
+)
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
-from backend.app.desktop.agent_loop.round_orchestration import LoopRoundOrchestrator, PatrolDecisionProposal
+from backend.app.desktop.agent_loop.round_orchestration import (
+    LoopRoundOrchestrator,
+    PatrolDecisionProposal,
+)
 from backend.app.desktop.agent_loop.rounds import current_frontier_hash
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope, NarrowLoopGrantRequest, ResumeWithCurrentMissionRequest, WaitEvidenceIdentity, WaitForUserAction
+from backend.app.desktop.agent_loop.schemas import (
+    LoopObservationEnvelope,
+    NarrowLoopGrantRequest,
+    ResumeWithCurrentMissionRequest,
+    WaitEvidenceIdentity,
+    WaitForUserAction,
+)
 from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest, LoopWaitResponse
-from backend.app.desktop.agent_loop.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService
+from backend.app.desktop.agent_loop.wait_requests import (
+    LoopWaitRequestFactory,
+    LoopWaitRequestService,
+)
 from backend.app.desktop.agent_loop.workers import LoopWorkerRuntime
+from backend.app.desktop.context_curation.contracts import MissionEvidenceRef
 from backend.app.desktop.context_evolution import (
     ContextRevisionContract,
     ContextRevisionOriginKind,
@@ -47,9 +87,7 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRepository,
 )
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.context_curation.contracts import MissionEvidenceRef
 from backend.tests.config_helpers import app_config_for
-
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -298,7 +336,7 @@ def test_coordinator_bootstrap_and_replayed_dispatch_start_one_run(tmp_path: Pat
             coordinator = LoopCoordinator(sessions)
             claim = await coordinator.claim_for_loop(fixture["loop_id"], "mission-bootstrap-test")
             assert claim is not None
-            orchestrator = LoopRoundOrchestrator(sessions, app_config_for("patrol-test", None), LoopKernel(sessions), None)
+            orchestrator = LoopRoundOrchestrator(sessions, app_config_for("patrol-test", None), LoopKernel(sessions), _FrozenCheckpointer())
             committed = await orchestrator.process(claim)
             replay = await orchestrator.process(claim)
             assert committed is not None and committed.status == "committed"
@@ -309,13 +347,22 @@ def test_coordinator_bootstrap_and_replayed_dispatch_start_one_run(tmp_path: Pat
             async def launch(directive, message, _slot_id):
                 launches.append((directive.directive_id, message))
                 await asyncio.sleep(0.02)
-                return uuid.uuid4().hex
+                run_id = uuid.uuid4().hex
+                async with sessions.begin() as session:
+                    context = await session.get(DesktopThread, directive.target_context_id)
+                    session.add(DesktopRun(
+                        run_id=run_id, task_id=context.task_id, agent_id=f"main:{context.task_id}", kind="main", status="pending",
+                        origin="delegated_patrol", execution_thread_id=context.thread_id,
+                        context_revision_id=directive.target_context_revision_id, directive_id=directive.directive_id,
+                        loop_id=directive.loop_id, round_id=directive.round_id, workspace_anchor={"slot_id": _slot_id},
+                    ))
+                return await start_loop_run(sessions, run_id)
 
             first, second = await asyncio.gather(
                 LoopWaveDispatcher(sessions, launch).dispatch(fixture["loop_id"], claim.round_id, 1),
                 LoopWaveDispatcher(sessions, launch).dispatch(fixture["loop_id"], claim.round_id, 1),
             )
-            assert sorted((first, second), key=len)[0] == ()
+            assert min((first, second), key=len) == ()
             assert len(launches) == 1
             assert launches[0][1].content.startswith("请执行当前用户授权的任务。")
             assert launches[0][1].additional_kwargs == {}
@@ -428,7 +475,7 @@ def test_bootstrap_blocker_commits_typed_wait_through_kernel(tmp_path: Path, blo
             claim = await coordinator.claim_for_loop(fixture["loop_id"], "bootstrap-wait-test")
             assert claim is not None
             try:
-                orchestrator = LoopRoundOrchestrator(sessions, app_config_for("patrol-test", None), LoopKernel(sessions), None)
+                orchestrator = LoopRoundOrchestrator(sessions, app_config_for("patrol-test", None), LoopKernel(sessions), _FrozenCheckpointer())
                 result = await orchestrator.process(claim)
                 assert result is not None and result.status == "committed"
             finally:
@@ -461,7 +508,7 @@ def test_bootstrap_does_not_create_wait_without_wait_authority(tmp_path: Path) -
             claim = await coordinator.claim_for_loop(fixture["loop_id"], "bootstrap-no-wait-test")
             assert claim is not None
             try:
-                orchestrator = LoopRoundOrchestrator(sessions, app_config_for("patrol-test", None), LoopKernel(sessions), None)
+                orchestrator = LoopRoundOrchestrator(sessions, app_config_for("patrol-test", None), LoopKernel(sessions), _FrozenCheckpointer())
                 assert await orchestrator.process(claim) is None
             finally:
                 await coordinator.release(claim)
@@ -761,3 +808,9 @@ def test_current_mission_recovery_keeps_unrelated_text_waits_open(tmp_path: Path
             await engine.dispose()
 
     asyncio.run(run())
+
+
+class _FrozenCheckpointer:
+    async def aget_tuple(self, config):
+        from types import SimpleNamespace
+        return SimpleNamespace(config=config, checkpoint={"channel_values": {"messages": []}}, metadata={})

@@ -562,6 +562,8 @@ python -m uvicorn backend.app.gateway.app:app --host 127.0.0.1 --port 8765
 
 It applies Alembic migrations and connects to PostgreSQL. For a fresh database: `docker compose -f desktop/compose.yaml up -d`.
 
+Round task memory, committed derivation history, and realtime domain facts follow separate update boundaries. See [Round memory architecture and rollout](docs/round-memory-architecture.md) for the frozen inputs, background publication, diagnostics, and migration/rollback procedure.
+
 **Start the desktop shell**
 
 ```powershell

@@ -4,29 +4,34 @@ r"""本文件验证 Loop Control Console 的拓扑、完整会话、事实投影
 轻量节点图、可分页 Human/Tool 会话、精确测试事实、Mission 恒等及 observation 中外置 user_intent 的断言。
 具体工作流为启动 Loop、读取三个 query service、提交临时 Portfolio 意见并冻结下一轮观察。
 示例：`pytest test_agent_loop_console.py`。
+公共事实排除 Tool，但完整会话仍保留原始工具消息。
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import os
-from types import SimpleNamespace
 import uuid
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from fastapi import HTTPException
 import pytest
+from fastapi import HTTPException
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
 from backend.app.desktop.agent_loop import AgentLoopService, LoopCreateRequest
 from backend.app.desktop.agent_loop.console_query import LoopConsoleQueryService
-from backend.app.desktop.agent_loop.conversation_query import ContextConversationQueryService
+from backend.app.desktop.agent_loop.conversation_query import (
+    ContextConversationQueryService,
+)
 from backend.app.desktop.agent_loop.fact_projection import LoopFactProjectionService
 from backend.app.desktop.agent_loop.interventions import LoopInterventionService
-from backend.app.desktop.agent_loop.models import LoopInterventionTransition, LoopUserIntent
+from backend.app.desktop.agent_loop.models import (
+    LoopInterventionTransition,
+    LoopUserIntent,
+)
 from backend.app.desktop.agent_loop.round_orchestration import LoopObservationService
 from backend.app.desktop.agent_loop.schemas import LoopInterventionRequest
 from backend.app.desktop.context_evolution import (
@@ -38,7 +43,6 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRepository,
 )
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -218,7 +222,6 @@ def test_console_queries_and_portfolio_intent_reach_next_observation(tmp_path) -
                 "workspace",
                 "artifact",
                 "test",
-                "tool",
             }
             assert all(item["evidence"]["run_id"] == f"initial-{suffix}" for item in all_facts["facts"])
             assert foreign_error.value.status_code == 404

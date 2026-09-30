@@ -6,6 +6,7 @@ isolated-write 内部 CreateLanePlan；输出为边界 assessment、R3/R8/R5/F2 
 七工作域六查询/超过旧预算的真实规划及真实 Worker 的资源/证据/窗口 blocker 在缺少检索 manifests 时仍保持 Portfolio 不变、compiler blocker 终结 Round，以及未授权隔离写入被拒绝的断言。具体工作流为播种 Loop 与冻结来源、登记完整 expansion
 lifecycle、执行 observe-only 与部署回滚、提交 Kernel intent、注入首次提交回滚或同时发布、从新连接恢复 Outbox 派发，并核对
 comparison artifact、持久计划、来源边与终态历史。
+重启派发测试调用真实 LoopRunExecutionBoundary 后断言 run_started，保留交付与实际启动的独立职责。
 示例：`pytest backend/tests/test_context_expansion_kernel.py`。
 """
 
@@ -20,9 +21,10 @@ from types import SimpleNamespace
 
 import pytest
 from config_helpers import app_config_for
+from focus.runtime.runs.usage import ModelUsage
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from focus.runtime.runs.usage import ModelUsage
+from loop_run_boundary_support import start_loop_run
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -33,7 +35,9 @@ from backend.app.desktop.agent_loop import (
     LoopWaveDispatcher,
     PatrolDecisionIntent,
 )
-from backend.app.desktop.agent_loop.context_expansion.artifact_repository import SemanticDerivationArtifactRepository
+from backend.app.desktop.agent_loop.context_expansion.artifact_repository import (
+    SemanticDerivationArtifactRepository,
+)
 from backend.app.desktop.agent_loop.context_expansion.contracts import (
     ContextSemanticManifest,
     DerivationStageRecord,
@@ -46,19 +50,6 @@ from backend.app.desktop.agent_loop.context_expansion.contracts import (
 from backend.app.desktop.agent_loop.context_expansion.coordinator import (
     ContextExpansionStage,
 )
-from backend.app.desktop.agent_loop.context_expansion.retrieval_planner import (
-    LaneAdviceProposal,
-    PlannerQueryProposal,
-    PlannerReadProposal,
-    RetrievalBackedCognitiveAdvisor,
-)
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import RevisionSemanticIndexer
-from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
-    AuthorizedSemanticRetriever,
-    PlanningRetrievalSession,
-    PortfolioIndexCatalog,
-    RetrievalBudget,
-)
 from backend.app.desktop.agent_loop.context_expansion.models import (
     LoopContextDerivationArtifact,
     LoopContextExpansion,
@@ -66,7 +57,26 @@ from backend.app.desktop.agent_loop.context_expansion.models import (
 from backend.app.desktop.agent_loop.context_expansion.repository import (
     ContextExpansionRepository,
 )
+from backend.app.desktop.agent_loop.context_expansion.retrieval_planner import (
+    LaneAdviceProposal,
+    PlannerQueryProposal,
+    PlannerReadProposal,
+    RetrievalBackedCognitiveAdvisor,
+)
+from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
+    RevisionSemanticIndexer,
+)
+from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
+    AuthorizedSemanticRetriever,
+    PlanningRetrievalSession,
+    PortfolioIndexCatalog,
+    RetrievalBudget,
+)
 from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
+from backend.app.desktop.agent_loop.expansion_resource_policy import (
+    ExpansionResourcePolicy,
+    resolve_expansion_resources,
+)
 from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
 from backend.app.desktop.agent_loop.live_projection_projector import (
     LoopLiveSnapshotProjector,
@@ -82,7 +92,6 @@ from backend.app.desktop.agent_loop.models import (
     LoopRound,
     LoopWorkerRequest,
 )
-from backend.app.desktop.agent_loop.expansion_resource_policy import ExpansionResourcePolicy, resolve_expansion_resources
 from backend.app.desktop.agent_loop.patrol_runtime import PatrolSessionLifecycle
 from backend.app.desktop.agent_loop.patrol_session_state import (
     PatrolActivity,
@@ -93,7 +102,10 @@ from backend.app.desktop.agent_loop.portfolio_publication import (
     LoopPortfolioPublicationService,
 )
 from backend.app.desktop.agent_loop.round_orchestration import LoopRoundOrchestrator
-from backend.app.desktop.agent_loop.schemas import LoopBudgetContract, LoopObservationEnvelope
+from backend.app.desktop.agent_loop.schemas import (
+    LoopBudgetContract,
+    LoopObservationEnvelope,
+)
 from backend.app.desktop.agent_loop.workers import LoopWorkerRuntime
 from backend.app.desktop.context_curation import (
     ComposeMessage,
@@ -691,7 +703,7 @@ def test_read_only_expansion_retries_atomically_and_dispatches_once_after_restar
                             task_id=directive.target_context_id,
                             agent_id=f"main:{directive.target_context_id}",
                             kind="main",
-                            status="running",
+                            status="pending",
                             origin="delegated_patrol",
                             execution_thread_id=f"thread-{directive.target_context_id}",
                             context_revision_id=directive.target_context_revision_id,
@@ -700,7 +712,7 @@ def test_read_only_expansion_retries_atomically_and_dispatches_once_after_restar
                             round_id=seeded["round_id"],
                         )
                     )
-                return run_id
+                return await start_loop_run(restart_sessions, run_id)
 
             restarted_dispatcher = LoopWaveDispatcher(restart_sessions, launch)
             launched = await restarted_dispatcher.dispatch(

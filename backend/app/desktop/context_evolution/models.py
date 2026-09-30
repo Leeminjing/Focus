@@ -1,8 +1,9 @@
-r"""本文件对外提供不可变 Context revision 与版本化来源边的 SQLAlchemy 实体。
+r"""本文件对外提供不可变 Context revision、版本化来源边及同事务发布证明的 SQLAlchemy 实体。
 
 输入为 Context identity、执行 checkpoint、投影、哈希、来源和生命周期事实；输出为独立 ORM 表定义。
 具体工作流为复用 schema 层枚举合同，持久化 revision 内容与有序来源，并由
 `DesktopThread.current_revision_id` 指向已发布版本。
+publication receipt 与 current pointer 切换共同提交，候选插入不会生成发布证明。
 示例：`revision = ContextRevision(revision_id="r1", context_id="c1", generation=1, ...)`。
 """
 
@@ -11,17 +12,19 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from focus.persistence.base import Base
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
-
-from focus.persistence.base import Base
-
-from backend.app.desktop.context_evolution.schemas import (
-    ContextRevisionOriginKind,
-    ContextRevisionPayloadMode,
-    ContextRevisionProjectionStatus,
-)
 
 
 class ContextRevision(Base):
@@ -86,6 +89,14 @@ class ContextRevision(Base):
     origin_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     origin_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ContextPublicationReceipt(Base):
+    __tablename__ = "desktop_context_publications"
+
+    revision_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_context_revisions.revision_id", ondelete="CASCADE"), primary_key=True)
+    context_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

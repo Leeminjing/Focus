@@ -4,7 +4,7 @@ r"""本文件对外提供 RunLifecycleFinalizer 与 RunSettlement。
 新 Context revision 与 MainRunSettled event identity。具体工作流为先在事务外精确读取执行 checkpoint，
 再在单事务中锁 Run、保存终态及完整模型用量；仅以精确 source checkpoint 的消息 identity 证明终端未闭合调用属于当前 Run，
 来源不可读时不授予自动修复因果；随后用共享协议编译器验证 execution view，按 base revision CAS 发布合法 revision，
-按 lease 模式结算 workspace effect、释放 lease 并 enqueue outbox；Reader 只记录并发变化，隔离 Writer 保留待采用结果，
+按 lease 模式结算 workspace effect、释放 lease，保存独立类型化任务领域来源并 enqueue outbox；Reader 只记录并发变化，隔离 Writer 保留待采用结果，
 权威 Writer 才推进权威 slot。重复 finalize 返回同一事实，陈旧 Context 不覆盖用户的新 current pointer。
 示例：`settlement = await finalizer.finalize(record)`。
 """
@@ -12,12 +12,14 @@ r"""本文件对外提供 RunLifecycleFinalizer 与 RunSettlement。
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import hashlib
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-import uuid
 
+from focus.runtime.runs.events import serialize_message
+from focus.runtime.runs.manager import RunRecord
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -27,24 +29,32 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionOriginKind,
     ContextRevisionPayloadMode,
     ContextRevisionProjectionStatus,
-    ContextRevisionRef,
     ContextRevisionReader,
+    ContextRevisionRef,
     ContextRevisionRepository,
     ContextRevisionSourceContract,
 )
-from backend.app.desktop.context_projection import ProtocolRepairContext, compile_context_messages
-from backend.app.desktop.context_protocol import ToolExchangeInspector
 from backend.app.desktop.context_evolution.repository import (
     ContextRevisionIdentityMismatch,
     ContextRevisionNotFound,
 )
+from backend.app.desktop.context_projection import (
+    ProtocolRepairContext,
+    compile_context_messages,
+)
+from backend.app.desktop.context_protocol import ToolExchangeInspector
+from backend.app.desktop.domain_evidence.run_outcomes import RunOutcomeRecorder
 from backend.app.desktop.models import DesktopRun, DesktopThread
-from backend.app.desktop.workspace_coordination.fingerprints import WorkspaceFingerprinter
-from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor, WorkspaceLease, WorkspaceSlot
-from backend.app.desktop.run_orchestration.outbox import RunOutboxRepository
 from backend.app.desktop.persistence_safety import PersistencePayloadNormalizer
-from focus.runtime.runs.events import serialize_message
-from focus.runtime.runs.manager import RunRecord
+from backend.app.desktop.run_orchestration.outbox import RunOutboxRepository
+from backend.app.desktop.workspace_coordination.fingerprints import (
+    WorkspaceFingerprinter,
+)
+from backend.app.desktop.workspace_coordination.models import (
+    RunExecutionAnchor,
+    WorkspaceLease,
+    WorkspaceSlot,
+)
 
 
 class RunSettlement(BaseModel):
@@ -119,6 +129,7 @@ class RunLifecycleFinalizer:
                 checkpoint_id,
                 checkpoint_messages,
             )
+            await RunOutcomeRecorder().record(session, locked, checkpoint_messages)
             event = await self._outbox.enqueue_settled(
                 session,
                 locked.run_id,

@@ -2,26 +2,37 @@ r"""本文件对外提供 LoopWaveDispatcher、LoopRunWorkspaceBinder、DesktopD
 
 输入为已授权 Directive、规划出的 workspace slot 与 Run 请求；输出为持久的 Run/dispatch 交付和启动时的 workspace lease。
 具体工作流为 Dispatcher 认领 directive 并分配 slot，LaunchPort 将计划随 Run 准入原子提交，通用 durable worker 在启动边界调用 Binder 获取 lease；交付状态与实际启动状态分别记录。
+启动边界可先于 launcher 返回推进 Directive；交付确认仍须幂等收口 Expansion 的 dispatched 状态，不以 delivering 作为唯一入口。
 示例：`run_ids = await dispatcher.dispatch(loop_id, round_id)`。
 """
 
 from __future__ import annotations
 
-from typing import Any, Protocol
 import uuid
+from typing import Any, Protocol
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.desktop.agent_loop.context_expansion.repository import (
+    ContextExpansionRepository,
+)
+from backend.app.desktop.agent_loop.directive_lifecycle import (
+    DirectiveLifecycleRepository,
+)
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective
-from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
-from backend.app.desktop.agent_loop.context_expansion.repository import ContextExpansionRepository
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
+from backend.app.desktop.agent_loop.workspace_planning import WorkspaceRunPlanner
 from backend.app.desktop.models import DesktopRun
 from backend.app.desktop.workspace_coordination.leases import WorkspaceLeaseManager
-from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor, WorkspaceSlot
-from backend.app.desktop.agent_loop.workspace_planning import WorkspaceRunPlanner
-from backend.app.desktop.workspace_coordination.schemas import WorkspaceIntentDeriver, WorkspaceLeaseRequest
+from backend.app.desktop.workspace_coordination.models import (
+    RunExecutionAnchor,
+    WorkspaceSlot,
+)
+from backend.app.desktop.workspace_coordination.schemas import (
+    WorkspaceIntentDeriver,
+    WorkspaceLeaseRequest,
+)
 
 
 class DirectiveLaunchPort(Protocol):
@@ -76,6 +87,7 @@ class LoopWaveDispatcher:
                 directive.launched_run_id = run_id
             if directive.lifecycle_state == "delivering":
                 await self._lifecycle.transition(session, directive_id, "delivered", run_id=run_id)
+            if directive.launched_run_id == run_id and directive.lifecycle_state in {"delivered", "run_started", "settled", "failed"}:
                 expansion = await self._expansions.by_directive(session, directive.directive_id)
                 if expansion is not None and expansion.state == "committed":
                     await self._expansions.transition(

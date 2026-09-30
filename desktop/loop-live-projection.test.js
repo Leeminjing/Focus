@@ -306,6 +306,20 @@ test("connection owns one stream and atomically resynchronizes a recoverable gap
   await first;
 });
 
+test("legacy tool facts stay outside public facts while activity remains visible", () => {
+  const initial = Schema.validateSnapshot(snapshot(1, { facts: {
+    old: entity("old", 1, 1, { kind: "tool", status: "verified" }),
+    tests: entity("tests", 1, 1, { kind: "test", status: "verified" }),
+  } }));
+  assert.deepEqual(Object.keys(initial.facts), ["tests"]);
+  const replayed = Reducer.reduce(initial, event(2, { kind: "fact.upserted", entity_type: "fact", entity_id: "old", payload: { fact_type: "tool", state: "verified" } }));
+  assert.equal(replayed.last_sequence, 2);
+  assert.equal(replayed.facts.old, undefined);
+  const active = Reducer.reduce(replayed, event(3, { kind: "context.tool.completed", entity_type: "run", payload: { status: "running", current_action: "pytest" } }));
+  assert.equal(active.runs.r1.state.current_action, "pytest");
+  assert.ok(Selectors.selectFacts(active).every((fact) => fact.kind !== "tool"));
+});
+
 test("initial HTTP 500 stays in connection state and recovers on the next snapshot", async () => {
   const store = LiveStore.create();
   let reads = 0;

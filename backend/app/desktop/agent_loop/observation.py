@@ -2,7 +2,8 @@ r"""本文件对外提供 LoopObservationBuilder 与 observation_hash。
 
 输入为当前结构化 Mission/grant、bounded Portfolio frontier、稳定 Run/workspace 结果、预算、gate 和 Worker 返回；
 输出为不可变 LoopObservationEnvelope 及确定性哈希。具体工作流为限制集合长度和文本大小、只保留
-显式事实与展开句柄，排除私有思维链和未请求全历史。示例：`envelope = builder.build(**facts)`。
+显式事实与展开句柄，排除私有思维链和未请求全历史。冻结记忆、来源、血缘和精确 frontier 身份绕过预览截断。
+示例：`envelope = builder.build(**facts)`。
 """
 
 from __future__ import annotations
@@ -20,7 +21,8 @@ class LoopObservationBuilder:
         self._max_text = max_text
 
     def build(self, **facts: Any) -> LoopObservationEnvelope:
-        sanitized = self._sanitize(facts)
+        exact = {key: value for key, value in facts.items() if key in {"previous_task_progress", "task_delta", "committed_lineage", "decision_inputs_ref", "portfolio_frontier", "base_entity_revisions"}}
+        sanitized = {**self._sanitize({key: value for key, value in facts.items() if key not in exact}), **exact}
         return LoopObservationEnvelope.model_validate(sanitized)
 
     def _sanitize(self, value: Any) -> Any:

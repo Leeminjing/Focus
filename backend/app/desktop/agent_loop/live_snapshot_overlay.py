@@ -2,7 +2,8 @@ r"""本文件对外提供 LoopLiveProjectionOverlay。
 
 输入为 journal 投影、单一 sequence 边界和当前物化领域表；输出为补齐 Loop、Mission、Wait、Context/Run、Context 派生边、Curator、Expansion、Directive、Fact、恢复诊断与 Portfolio 的完整 snapshot。
 具体工作流为批量读取各 current entity，按统一 ProjectedEntity 信封归并，并附加渲染所需授权与预算字段；派生边由
-ContextLineageResolver 从权威 revision 来源解析，作为客户端在快照边界上的基线。示例：`await overlay.apply(session, projection, boundary)`。
+ContextLineageResolver 从权威 revision 来源解析，作为客户端在快照边界上的基线；公开事实集合排除历史 tool rows。
+示例：`await overlay.apply(session, projection, boundary)`。
 """
 
 from __future__ import annotations
@@ -64,7 +65,7 @@ class LoopLiveProjectionOverlay:
         curators = tuple((await session.scalars(select(LoopCuratorAssignment).where(LoopCuratorAssignment.loop_id == projection.loop_id))).all())
         expansions = tuple((await session.scalars(select(LoopContextExpansion).where(LoopContextExpansion.loop_id == projection.loop_id))).all())
         directives = tuple((await session.scalars(select(LoopDirective).where(LoopDirective.loop_id == projection.loop_id))).all())
-        facts = tuple((await session.scalars(select(LoopFact).where(LoopFact.loop_id == projection.loop_id))).all())
+        facts = tuple((await session.scalars(select(LoopFact).where(LoopFact.loop_id == projection.loop_id, LoopFact.fact_type != "tool"))).all())
         wait_requests = tuple((await session.scalars(select(LoopWaitRequest).where(LoopWaitRequest.loop_id == projection.loop_id).order_by(LoopWaitRequest.created_at.desc()).limit(50))).all())
         wait_request_ids = tuple(row.request_id for row in wait_requests)
         wait_responses = () if not wait_request_ids else tuple((await session.scalars(select(LoopWaitResponse).where(LoopWaitResponse.request_id.in_(wait_request_ids)))).all())

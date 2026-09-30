@@ -2,23 +2,26 @@ r"""本文件对外提供 PortfolioPatrol、PatrolDecisionModel 与 PatrolContra
 
 输入为一个不可变 bounded LoopObservationEnvelope、当前 holder/grant 身份和独立模型调用；输出为恰好
 一个 PatrolDecisionIntent，或携带模型原始输出的可重试合同违例。具体工作流为每轮创建隔离 attempt
-identity，模型可自行判断并可选择请求 Worker，结果先持久化为 proposal，再由 Kernel commit；模型回答
+identity，记录基础 Observation hash 与独立组合输入 hash；模型可自行判断并可选择请求 Worker，结果先持久化为 proposal，再由 Kernel commit；模型回答
 形状不合法时抛出 PatrolContractViolation，attempt 记为 error 并保留原始输出，是否重试由调用方决定。
 示例：`result = await patrol.decide(envelope, identity)`。
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import Awaitable, Callable, Protocol
 import uuid
+from datetime import UTC, datetime
+from typing import Protocol
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.desktop.agent_loop.models import LoopPatrolAttempt
+from backend.app.desktop.agent_loop.models import LoopObservation, LoopPatrolAttempt
 from backend.app.desktop.agent_loop.observation import observation_hash
-from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope, PatrolDecisionIntent
+from backend.app.desktop.agent_loop.schemas import (
+    LoopObservationEnvelope,
+    PatrolDecisionIntent,
+)
 
 
 class PatrolDecisionModel(Protocol):
@@ -54,6 +57,10 @@ class PortfolioPatrol:
         async with self._sessions.begin() as session:
             count = int(await session.scalar(select(func.count()).select_from(LoopPatrolAttempt).where(LoopPatrolAttempt.round_id == observation.round_id)) or 0)
             row = LoopPatrolAttempt(patrol_attempt_id=uuid.uuid4().hex, loop_id=observation.loop_id, round_id=observation.round_id, attempt=count + 1, execution_thread_id=f"{observation.loop_id}:patrol:{observation.round_id}:{count + 1}", checkpoint_ns=f"loop-patrol:{holder_id}", observation_hash=observation_hash(observation), status="running")
+            base = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == observation.round_id))
+            if base is not None:
+                row.observation_hash = base.envelope_hash
+            row.raw_output = {"decision_context": {"base_observation_id": base.observation_id if base else None, "base_hash": row.observation_hash, "composed_hash": observation_hash(observation)}}
             session.add(row)
             return row
 
@@ -61,7 +68,7 @@ class PortfolioPatrol:
         async with self._sessions.begin() as session:
             row = await session.get(LoopPatrolAttempt, attempt.patrol_attempt_id, with_for_update=True)
             row.status = status
-            row.raw_output = output
+            row.raw_output = {**(row.raw_output or {}), **output}
             row.error = error
             row.completed_at = datetime.now(UTC)
 

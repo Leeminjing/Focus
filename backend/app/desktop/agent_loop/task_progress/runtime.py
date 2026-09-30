@@ -1,0 +1,359 @@
+"""本文件对外提供 TaskProgressRuntime 的独立持久后台沉淀和恢复入口。
+
+输入为 sessions、结构化模型配置及 frozen work；输出为每份 Observation 唯一的不可变后继，或可诊断 blocked。
+具体工作流为短事务领取 fence/lease，事务外有界模型解释冻结来源，验证 patch，再原子发布；
+每次真实调用独立记账，失败保留原输入；显式重试可绑定新预算授权版本，不改变三项冻结输入。
+终态 Loop 的冻结工作仍可收口但不会启动执行。
+示例：await runtime.drain()；retry(observation_id) 显式恢复预算/证据 blocker。
+预算在调用前预留输入/输出与调用量，报告真实用量后替换估计；未报告与 crash 保留保守预留。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from datetime import UTC, datetime, timedelta
+
+from focus.config.app_config import AppConfig
+from focus.messages.usage import estimate_raw_tokens
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from backend.app.desktop.agent_loop.models import (
+    AgentLoop,
+    LoopBudgetUsage,
+    LoopDelegationGrant,
+    LoopObservation,
+)
+from backend.app.desktop.agent_loop.structured_worker import StructuredWorkerModel
+from backend.app.desktop.agent_loop.task_progress.consolidation import (
+    TaskProgressConsolidator,
+)
+from backend.app.desktop.agent_loop.task_progress.contracts import ProgressCandidate
+from backend.app.desktop.agent_loop.task_progress.models import LoopProgressWork
+from backend.app.desktop.agent_loop.task_progress.repository import (
+    TaskProgressRepository,
+)
+from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
+
+_SYSTEM = """你负责一次 Round 边界的任务记忆沉淀，没有执行或拓扑提交权。
+previous_progress 是已有完整任务记忆；task_delta 是本次冻结且尚未吸收的任务领域增量。
+只输出新增或有证据支持的修改，保留未出现的旧成果、义务和 blocker。修改旧 item 必须保持 item_id 并以 corrects 引用它；真正替代其他事项用 supersedes 引用前序 identity，旧项保留为不再适用。
+evidence_keys 只能引用本次冻结 source_key。来源冲突标记 conflicted/unknown，不根据最新文本简单覆盖。
+Run success 仅表示执行结束；run_outcome.statement 仅是 asserted。任务 completed 必须有相关独立领域证据；失败或未知测试不支持 completed。
+进度语义只含任务成果、状态、blocker 和未决项，不复制 Tool 调用、原始消息、checkpoint、代码正文或控制预算。
+用户目标变化属于义务修订，不是成果。每条 source 必须被 changes 引用，或在 source_assessments 明确解释。
+无法判断的来源以 unknown 保留未决事项；already_known/not_task_progress 必须说明理由，不允许遗漏后直接吸收。
+输出符合给定 schema；不要输出私有思维链。"""
+_logger = logging.getLogger(__name__)
+
+
+class TaskProgressRuntime:
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        app_config: AppConfig,
+        *,
+        model_factory=None,
+    ) -> None:
+        self._sessions = sessions
+        self._config = app_config
+        self._models = model_factory or (
+            lambda name: StructuredWorkerModel(app_config, name)
+        )
+        self._repository = TaskProgressRepository()
+        self._consolidator = TaskProgressConsolidator()
+
+    async def drain(self, *, loop_id: str | None = None) -> int:
+        claim = await self._claim(loop_id=loop_id)
+        if claim is None:
+            return 0
+        observation_id, fence = claim
+        try:
+            async with self._sessions() as session:
+                inputs = await self._repository.inputs(session, observation_id)
+                observation = await session.get(LoopObservation, observation_id)
+                envelope = dict(observation.envelope)
+                model_name = (envelope.get("budget") or {}).get("progress_model_name")
+            candidate = ProgressCandidate()
+            if inputs.task_delta.sources:
+                model = self._models(model_name)
+                payload = {
+                    "previous_progress": inputs.previous_progress.model_dump(
+                        mode="json"
+                    ),
+                    "task_delta": inputs.task_delta.model_dump(mode="json"),
+                    "mission": envelope.get("mission") or envelope.get("goal"),
+                }
+                document = json.dumps(
+                    payload, ensure_ascii=False, separators=(",", ":")
+                )
+                estimated_input = estimate_raw_tokens(
+                    document
+                    + _SYSTEM
+                    + json.dumps(ProgressCandidate.model_json_schema()),
+                    2,
+                )
+                window = model.context_window_tokens
+                if (
+                    window is not None
+                    and estimated_input + model.max_output_tokens > window
+                ):
+                    raise ValueError(
+                        "progress_memory_context_budget: 完整输入超出模型窗口"
+                    )
+                await self._reserve(
+                    observation_id,
+                    fence,
+                    envelope,
+                    estimated_input,
+                    model.max_output_tokens,
+                )
+                try:
+                    candidate = await asyncio.wait_for(
+                        model.invoke(ProgressCandidate, _SYSTEM, payload), timeout=60
+                    )
+                finally:
+                    await asyncio.shield(
+                        self._record_usage(observation_id, fence, model)
+                    )
+            result, contribution = self._consolidator.apply(
+                inputs, candidate, envelope.get("mission") or {}
+            )
+            async with self._sessions.begin() as session:
+                await self._repository.publish(
+                    session, observation_id, fence, result, contribution
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _logger.exception("任务记忆沉淀失败 observation=%s", observation_id)
+            await self._fail(observation_id, fence, exc)
+        return 1
+
+    async def _claim(self, *, loop_id: str | None = None) -> tuple[str, int] | None:
+        now = datetime.now(UTC)
+        async with self._sessions.begin() as session:
+            query = select(LoopProgressWork).where(
+                or_(
+                    LoopProgressWork.state == "pending",
+                    (LoopProgressWork.state == "claimed")
+                    & (LoopProgressWork.lease_expires_at < now),
+                )
+            )
+            if loop_id is not None:
+                query = query.where(LoopProgressWork.loop_id == loop_id)
+            work = await session.scalar(
+                query.order_by(
+                    LoopProgressWork.created_at, LoopProgressWork.observation_id
+                )
+                .with_for_update(skip_locked=True)
+                .limit(1)
+            )
+            if work is None:
+                return None
+            if work.attempts >= 3:
+                work.state = "blocked"
+                work.error = work.error or "progress_memory_attempts_exhausted"
+                work.lease_expires_at = None
+                return None
+            work.state = "claimed"
+            work.fence += 1
+            work.attempts += 1
+            work.lease_expires_at = now + timedelta(seconds=90)
+            work.attempt_events = [
+                *work.attempt_events,
+                {
+                    "event": "claimed",
+                    "fence": work.fence,
+                    "attempt": work.attempts,
+                    "at": now.isoformat(),
+                },
+            ]
+            return work.observation_id, work.fence
+
+    async def _reserve(
+        self,
+        observation_id: str,
+        fence: int,
+        envelope: dict,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        limits = (envelope.get("budget") or {}).get("limits") or {}
+        async with self._sessions.begin() as session:
+            await session.get(AgentLoop, envelope["loop_id"], with_for_update=True)
+            usage = await session.get(
+                LoopBudgetUsage, envelope["loop_id"], with_for_update=True
+            )
+            work = await session.get(
+                LoopProgressWork, observation_id, with_for_update=True
+            )
+            if work.state != "claimed" or work.fence != fence:
+                raise ValueError("progress_memory_worker_superseded")
+            authorization = work.retry_budget_authorization
+            if authorization is not None:
+                grant = await session.get(
+                    LoopDelegationGrant, authorization["grant_id"]
+                )
+                loop = await session.get(AgentLoop, envelope["loop_id"])
+                if (
+                    grant is None
+                    or grant.loop_id != loop.loop_id
+                    or grant.revision != authorization["grant_revision"]
+                    or grant.revision != loop.authority_revision
+                    or grant.status != "active"
+                    or (
+                        grant.expires_at is not None
+                        and grant.expires_at <= datetime.now(UTC)
+                    )
+                ):
+                    raise ValueError(
+                        "progress_memory_retry_budget_authorization_changed"
+                    )
+                limits = authorization["limits"]
+            if usage is not None:
+                for field, projected in (
+                    ("model_calls", 1),
+                    ("input_tokens", input_tokens),
+                    ("output_tokens", output_tokens),
+                ):
+                    if int(getattr(usage, field)) + projected > int(
+                        limits.get(f"max_{field}", 2**63 - 1)
+                    ):
+                        raise ValueError(f"progress_memory_{field}_budget")
+                LoopUsageLedger.apply(
+                    usage,
+                    LoopUsageDelta(
+                        model_calls=1,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        retries=int(work.attempts > 1),
+                    ),
+                )
+            work.usage = [
+                *work.usage,
+                {
+                    "fence": fence,
+                    "reserved_calls": 1,
+                    "estimated_input_tokens": input_tokens,
+                    "reserved_output_tokens": output_tokens,
+                    "usage_reported": False,
+                    "budget_authorization": authorization,
+                },
+            ]
+
+    async def _record_usage(self, observation_id: str, fence: int, model) -> None:
+        async with self._sessions.begin() as session:
+            identity = await session.get(LoopProgressWork, observation_id)
+            await session.get(AgentLoop, identity.loop_id, with_for_update=True)
+            usage = await session.get(
+                LoopBudgetUsage, identity.loop_id, with_for_update=True
+            )
+            work = await session.get(
+                LoopProgressWork,
+                observation_id,
+                with_for_update=True,
+                populate_existing=True,
+            )
+            entries = [dict(item) for item in work.usage]
+            entry = next((item for item in entries if item["fence"] == fence), None)
+            if entry is None or entry.get("accounted"):
+                return
+            measured = model.last_usage
+            if usage is not None:
+                LoopUsageLedger.apply(
+                    usage, LoopUsageDelta(model_calls=max(0, measured.model_calls - 1))
+                )
+                if model.last_usage_reported:
+                    usage.input_tokens = max(
+                        0,
+                        usage.input_tokens
+                        - entry["estimated_input_tokens"]
+                        + measured.input_tokens,
+                    )
+                    usage.output_tokens = max(
+                        0,
+                        usage.output_tokens
+                        - entry["reserved_output_tokens"]
+                        + measured.output_tokens,
+                    )
+            entry.update(
+                {
+                    "accounted": True,
+                    "model_calls": max(1, measured.model_calls),
+                    "input_tokens": measured.input_tokens,
+                    "output_tokens": measured.output_tokens,
+                    "usage_reported": model.last_usage_reported,
+                }
+            )
+            work.usage = entries
+
+    async def _fail(self, observation_id: str, fence: int, error: Exception) -> None:
+        async with self._sessions.begin() as session:
+            work = await session.get(
+                LoopProgressWork, observation_id, with_for_update=True
+            )
+            if work is not None and work.fence == fence and work.state != "published":
+                work.error = f"{type(error).__name__}: {error}"[:2000]
+                work.lease_expires_at = None
+                work.state = (
+                    "blocked"
+                    if work.attempts >= 3 or "budget" in str(error)
+                    else "pending"
+                )
+                work.attempt_events = [
+                    *work.attempt_events,
+                    {
+                        "event": work.state,
+                        "fence": fence,
+                        "failure_kind": type(error).__name__,
+                        "at": datetime.now(UTC).isoformat(),
+                    },
+                ]
+
+    async def retry(self, observation_id: str, *, loop_id: str | None = None) -> None:
+        async with self._sessions.begin() as session:
+            identity = await session.get(LoopProgressWork, observation_id)
+            if identity is None or (
+                loop_id is not None and identity.loop_id != loop_id
+            ):
+                raise ValueError("任务记忆工作不存在或不属于本 Loop")
+            loop = await session.get(AgentLoop, identity.loop_id, with_for_update=True)
+            work = await session.get(
+                LoopProgressWork, observation_id, with_for_update=True
+            )
+            if (
+                work is None
+                or work.state != "blocked"
+                or (loop_id is not None and work.loop_id != loop_id)
+            ):
+                raise ValueError("只有明确 blocked 的任务记忆工作可以恢复")
+            grant = await session.scalar(
+                select(LoopDelegationGrant).where(
+                    LoopDelegationGrant.loop_id == loop.loop_id,
+                    LoopDelegationGrant.revision == loop.authority_revision,
+                    LoopDelegationGrant.status == "active",
+                )
+            )
+            if grant is None or (
+                grant.expires_at is not None and grant.expires_at <= datetime.now(UTC)
+            ):
+                raise ValueError("显式重试需要有效的预算授权")
+            work.retry_budget_authorization = {
+                "grant_id": grant.grant_id,
+                "grant_revision": grant.revision,
+                "limits": grant.budgets,
+                "approved_at": datetime.now(UTC).isoformat(),
+            }
+            work.attempt_events = [
+                *work.attempt_events,
+                {
+                    "event": "explicit_retry",
+                    "budget_authorization": work.retry_budget_authorization,
+                },
+            ]
+            work.state = "pending"
+            work.attempts = 0
+            work.error = None

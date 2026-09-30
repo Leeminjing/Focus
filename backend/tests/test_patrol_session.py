@@ -4,6 +4,7 @@ r"""本文件验证可恢复 Patrol Session 状态机、结构化历史与安全
 终态封闭、隐私合同拒绝、合同违例逐次留痕与派生评估可回读断言。具体工作流为跨两个 Repository 实例写入并读取同一 session，
 并以真实数据库核对 Patrol attempt 与 observation 的持久化事实。
 示例：`pytest backend/tests/test_patrol_session.py`。
+assessment 和 Curator 结果独立持久化，基础 Observation 与 hash 保持不变。
 """
 
 from __future__ import annotations
@@ -185,6 +186,9 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
                 workspace={"revision": 1},
                 budget={},
             )
+
+            async with sessions.begin() as session:
+                session.add(LoopObservation(observation_id=uuid.uuid4().hex, loop_id=claim.loop_id, round_id=claim.round_id, envelope=observation.model_dump(mode="json"), envelope_hash=observation_hash(observation), projection_sequence=0, base_entity_revisions={}))
 
             class FrozenObservations:
                 async def capture(self, loop_id: str, round_id: str):
@@ -382,7 +386,8 @@ def test_semantic_contract_violation_is_persisted_with_raw_output(tmp_path) -> N
                 ).all()
             assert [row.attempt for row in attempts] == [1, 2]
             assert [row.status for row in attempts] == ["error", "error"]
-            assert [row.raw_output for row in attempts] == [{"raw_text": "raw-model-text-1"}, {"raw_text": "raw-model-text-2"}]
+            assert [row.raw_output["raw_text"] for row in attempts] == ["raw-model-text-1", "raw-model-text-2"]
+            assert all(row.raw_output["decision_context"] for row in attempts)
             assert all("assessment 之外" in (row.error or "") for row in attempts)
         finally:
             loop = await service.get(snapshot["loop_id"])
@@ -419,21 +424,22 @@ def test_expansion_assessment_is_persisted_and_readable(tmp_path) -> None:
                 row = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == round_id))
                 assert row.envelope["expansion_assessment"] is None
 
-            empty = {"level": "not_applicable", "opportunities": [], "blockers": []}
-            await observations.attach_expansion_assessment(loop_id, round_id, empty)
-            async with sessions() as session:
-                row = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == round_id))
-                assert row.envelope["expansion_assessment"] == empty
-
+            from backend.app.desktop.agent_loop.decision_context import (
+                DecisionSupplementRepository,
+                PatrolDecisionContext,
+            )
+            supplements = DecisionSupplementRepository()
             required = {"level": "required", "opportunities": [{"opportunity_id": "a" * 64}], "blockers": []}
-            updated = await observations.attach_expansion_assessment(loop_id, round_id, required)
-
+            async with sessions.begin() as session:
+                stored = await supplements.put(session, row.observation_id, "expansion_assessment", required)
+            updated = PatrolDecisionContext(envelope, expansion_assessment=stored).model_observation()
             assert updated.expansion_assessment == required
             async with sessions() as session:
                 row = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == round_id))
-                assert row.envelope["expansion_assessment"] == required
-                assert row.envelope_hash == observation_hash(updated)
-            assert (await observations.capture(loop_id, round_id)).expansion_assessment == required
+                assert row.envelope["expansion_assessment"] is None
+                assert row.envelope_hash == "b" * 64
+                assert await supplements.get(session, row.observation_id, "expansion_assessment") == required
+            assert (await observations.capture(loop_id, round_id)).expansion_assessment is None
         finally:
             loop = await service.get(loop_id)
             if loop["status"] in {"running", "paused", "waiting_user"}:

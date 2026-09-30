@@ -2,14 +2,20 @@ r"""本文件对外提供 LoopLiveProjectionReducer 与 ProjectionSequenceGap。
 
 输入为不可变 LoopLiveProjection 和下一条 CanonicalEventEnvelope；输出为确定性新投影。具体工作流为先执行
 sequence 去重/缺口检查，再按 entity_type 调用单实体或实体集合 reducer（含 Context 派生边集合），拒绝陈旧
-entity revision，最后追加有界安全活动摘要；未知 kind 保持前向兼容但不修改已知实体。
+entity revision，历史 tool fact 不进入领域集合，最后追加有界安全活动摘要；未知 kind 保持前向兼容但不修改已知实体。
 示例：`next_state = reducer.reduce(state, event)`。
 """
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventEnvelope
-from backend.app.desktop.agent_loop.live_projection_contract import ActivityEntry, LoopLiveProjection, ProjectedEntity
+from backend.app.desktop.agent_loop.live_projection_contract import (
+    ActivityEntry,
+    LoopLiveProjection,
+    ProjectedEntity,
+)
 
 
 class ProjectionSequenceGap(RuntimeError):
@@ -19,7 +25,7 @@ class ProjectionSequenceGap(RuntimeError):
 class LoopLiveProjectionReducer:
     _SINGULAR = frozenset({"loop", "mission", "patrol_session", "round", "portfolio"})
     _ACTIVITY_ONLY = frozenset({"tool", "artifact", "model_call"})
-    _COLLECTIONS = {
+    _COLLECTIONS: ClassVar[dict[str, str]] = {
         "context": "contexts",
         "context_lineage": "lineage",
         "run": "runs",
@@ -50,6 +56,8 @@ class LoopLiveProjectionReducer:
         return projection.model_copy(update={**changes, "last_sequence": event.sequence, "activity_timeline": timeline, "unknown_kinds": unknown})
 
     def _entity_change(self, projection: LoopLiveProjection, event: CanonicalEventEnvelope) -> dict:
+        if event.entity_type == "fact" and (event.payload.get("fact_type") or event.payload.get("kind")) == "tool":
+            return {"facts": {key: value for key, value in projection.facts.items() if key != event.entity_id}}
         payload = self._normalized_payload(event.entity_type, event.payload)
         if event.correlation_id is not None and "correlation_id" not in payload:
             payload = {**payload, "correlation_id": event.correlation_id}

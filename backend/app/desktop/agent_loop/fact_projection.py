@@ -1,7 +1,7 @@
 r"""本文件对外提供 LoopFactProjectionService 的旧版按 Run 游标事实查询端口。
 
 输入为 Loop id、Context/类型/状态过滤、反向 Run 游标与页大小；输出为该 Run 页对应的可追溯
-run、workspace、artifact、tool 与 test 事实。具体工作流为先用 SQL 限定 Run 页，再委托共享 RunFactSourceReader
+run、workspace、artifact 与 test 领域事实，排除工具轨迹。具体工作流为先用 SQL 限定 Run 页，再委托共享 RunFactSourceReader
 读取不可变 revision 增量；该端口保留用于物化切换前的 parity。示例：
 `await service.read(session, loop_id, context_id=None, before=None, limit=20)`。
 """

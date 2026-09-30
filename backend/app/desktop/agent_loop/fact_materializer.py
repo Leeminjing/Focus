@@ -1,8 +1,9 @@
 r"""本文件对外提供 FactMaterializer，将一个已提交 Run 的候选证据原子物化为版本化事实。
 
-输入为 Run、来源 journal event、correlation 与 RunFactSourceReader；输出为该 Run 创建或复用的 LoopFact 集合和 tool/fact
+输入为 Run、来源 journal event、correlation 与 RunFactSourceReader；输出为该 Run 创建或复用的领域 LoopFact 集合和 fact
 规范事件。具体工作流为解析候选、生成稳定 identity、记录 observed、应用验证 policy、关联旧 subject 结论；本模块不维护
 投影游标或调度循环。示例：`facts = await materializer.materialize_run(session, run, event)`。
+只物化 Run/Test/Workspace/Artifact 领域结果；独立 activity 保留 Tool 审计，领域结果版本可更新同一事实。
 """
 
 from __future__ import annotations
@@ -11,12 +12,18 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft, CanonicalEventEnvelope, EventVisibility
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
+from backend.app.desktop.agent_loop.event_contract import CanonicalEventEnvelope
 from backend.app.desktop.agent_loop.fact_identity import FactIdentityResolver
-from backend.app.desktop.agent_loop.fact_lifecycle import FactLifecycleRepository, FactObservation
+from backend.app.desktop.agent_loop.fact_lifecycle import (
+    FactLifecycleRepository,
+    FactObservation,
+)
 from backend.app.desktop.agent_loop.fact_models import LoopFact
-from backend.app.desktop.agent_loop.fact_verification import FactActor, FactEvidenceReference, FactVerificationPolicy
+from backend.app.desktop.agent_loop.fact_verification import (
+    FactActor,
+    FactEvidenceReference,
+    FactVerificationPolicy,
+)
 from backend.app.desktop.agent_loop.materialized_fact_sources import RunFactSourceReader
 from backend.app.desktop.models import DesktopRun
 
@@ -26,7 +33,6 @@ class FactMaterializer:
         self._sources = source_reader
         self._lifecycle = FactLifecycleRepository()
         self._policy = FactVerificationPolicy()
-        self._journal = LoopEventJournal()
 
     async def materialize_run(
         self,
@@ -42,7 +48,7 @@ class FactMaterializer:
         materialized: list[LoopFact] = []
         for candidate in candidates:
             if candidate["kind"] == "tool":
-                await self._record_tool_event(session, run, candidate, correlation_id, cause_event_id)
+                continue
             evidence = self._evidence(candidate)
             identity = FactIdentityResolver.resolve(
                 run.loop_id,
@@ -68,7 +74,7 @@ class FactMaterializer:
                 occurred_at=datetime.fromisoformat(candidate["occurred_at"]),
                 cause_event_id=cause_event_id,
             )
-            fact = await self._lifecycle.observe(session, observation)
+            fact = await self._lifecycle.upsert_observation(session, observation)
             decision = self._policy.evaluate(evidence, observation.observer)
             if fact.state in {"observed", "verifying"}:
                 fact = await self._lifecycle.apply_verification(session, fact.fact_id, decision, cause_event_id=cause_event_id)
@@ -76,38 +82,6 @@ class FactMaterializer:
                 await self._lifecycle.reconcile_subject(session, fact, cause_event_id)
             materialized.append(fact)
         return tuple(materialized)
-
-    async def _record_tool_event(
-        self,
-        session: AsyncSession,
-        run: DesktopRun,
-        candidate: dict,
-        correlation_id: str | None,
-        cause_event_id: str | None,
-    ) -> None:
-        evidence = candidate.get("evidence") or {}
-        entity_id = str(evidence.get("tool_call_id") or evidence.get("message_id") or candidate["fact_id"])
-        await self._journal.append(
-            session,
-            run.loop_id,
-            CanonicalEventDraft(
-                kind="context.tool.completed",
-                entity_type="tool",
-                entity_id=entity_id,
-                entity_revision=1,
-                correlation_id=correlation_id,
-                causation_id=cause_event_id,
-                visibility=EventVisibility(evidence_fields=("summary",)),
-                payload={
-                    "run_id": run.run_id,
-                    "context_id": run.task_id,
-                    "tool_name": evidence.get("tool_name"),
-                    "status": candidate.get("status"),
-                    "summary": candidate.get("summary"),
-                },
-                idempotency_key=f"context-tool:{run.run_id}:{entity_id}:completed",
-            ),
-        )
 
     @staticmethod
     async def _correlation(run: DesktopRun) -> str | None:
@@ -122,14 +96,14 @@ class FactMaterializer:
         if kind == "artifact":
             return f"artifact:{evidence.get('artifact') or candidate.get('summary')}"
         if kind == "test":
-            return f"context:{run.task_id}:test:{evidence.get('tool_name') or 'test'}"
-        if kind == "tool":
-            return f"context:{run.task_id}:tool:{evidence.get('tool_name') or 'tool'}"
+            return f"context:{run.task_id}:test" if evidence.get("domain_source_id") else f"context:{run.task_id}:test:{evidence.get('tool_name') or 'test'}"
         return f"run:{run.run_id}"
 
     @staticmethod
     def _source_key(run: DesktopRun, candidate: dict) -> str:
         evidence = candidate.get("evidence") or {}
+        if candidate["kind"] == "test" and evidence.get("domain_source_id"):
+            return f"domain:test:{evidence['domain_source_id']}"
         return ":".join(
             str(value)
             for value in (
@@ -146,9 +120,10 @@ class FactMaterializer:
     def _evidence(candidate: dict) -> tuple[FactEvidenceReference, ...]:
         evidence = candidate.get("evidence") or {}
         kind = candidate["kind"]
-        evidence_kind = "tool" if kind in {"tool", "test"} else "workspace" if kind == "workspace" else "artifact" if kind == "artifact" else "run"
+        evidence_kind = "test" if kind == "test" else "workspace" if kind == "workspace" else "artifact" if kind == "artifact" else "run"
         entity_id = (
-            evidence.get("tool_call_id")
+            evidence.get("domain_source_id")
+            or evidence.get("tool_call_id")
             or evidence.get("message_id")
             or evidence.get("artifact")
             or evidence.get("run_id")

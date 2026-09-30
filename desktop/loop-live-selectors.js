@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Live Loop projection 的只读选择器。
  * 输入为规范化 projection 与可选 Context identity；输出为 Patrol、等待请求、Expansion、图活动、Context 卡片、跨 Context 派生边、因果链、事实和摘要指标。
- * 具体工作流为仅从实体 state 派生稳定展示模型（派生边只保留两端仍是当前 Context 的去重对，不含自环），不持有领域状态；示例：`selectContextCards(projection)`。
+ * 具体工作流为从实体 state 派生展示模型并排除工具事实（成员派生边不含自环），不持有领域状态；示例：`selectContextCards(projection)`。
  */
 (function (root, factory) {
   const api = factory();
@@ -77,6 +77,7 @@
 
   function selectFacts(projection, options = {}) {
     return Object.freeze(values(projection?.facts)
+      .filter(entity => (entity.state.kind || entity.state.fact_type) !== "tool")
       .filter(entity => !options.contextId || entity.state.context_id === options.contextId)
       .filter(entity => !options.kind || entity.state.kind === options.kind)
       .filter(entity => !options.status || entity.state.status === options.status)

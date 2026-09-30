@@ -1,24 +1,28 @@
 r"""本文件对外提供 LoopRunActivityBridge。
 
 输入为既有 StreamBridge、Loop/Context/Run 身份和 Agent values 事件；输出为原流转发及持久化的模型、工具与工作区活动事件。
-具体工作流为只读取当前指令消息之后的已确认消息，按消息或 tool-call 身份去重，将安全摘要串行写入 per-Loop journal；失败由 Writer 重试并记录降级，close 等待提交并报告未恢复的失败。
+具体工作流为只读取当前指令消息之后的已确认消息，按消息或 tool-call 身份去重，在缩为活动摘要前提取类型化测试结果；
+Writer 在同事务保存独立领域来源并追加安全事件。失败由 Writer 重试并记录降级，close 等待提交并报告未恢复的失败。
 示例：`bridge.publish(run_id, stream_event)`。
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 import asyncio
 import logging
 import uuid
+from collections.abc import AsyncIterator
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft, EventVisibility
-from backend.app.desktop.agent_loop.run_activity_writer import LoopRunActivityWriter
 from focus.runtime.stream_bridge.base import StreamBridge
 from focus.runtime.stream_bridge.schemas import StreamEvent
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.desktop.agent_loop.event_contract import (
+    CanonicalEventDraft,
+    EventVisibility,
+)
+from backend.app.desktop.agent_loop.run_activity_writer import LoopRunActivityWriter
+from backend.app.desktop.domain_evidence.tests import TestResultParser, test_identity
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +51,7 @@ class LoopRunActivityBridge(StreamBridge):
         self._queue: asyncio.Queue[CanonicalEventDraft | None] = asyncio.Queue()
         self._worker = asyncio.create_task(self._persist(), name=f"loop-run-activity:{run_id}")
         self._closed = False
+        self._calls: dict[str, dict] = {}
 
     def publish(self, run_id: str, event: StreamEvent) -> None:
         self._delegate.publish(run_id, event)
@@ -98,10 +103,14 @@ class LoopRunActivityBridge(StreamBridge):
                     drafts.append(draft)
             for call in message.get("tool_calls") or ():
                 if isinstance(call, dict) and call.get("id"):
+                    self._calls[str(call["id"])] = call
                     draft = self._tool_started(str(call["id"]), str(call.get("name") or "tool"))
                     if draft is not None:
                         drafts.append(draft)
             if message.get("role") == "tool" and message.get("tool_call_id"):
+                test = self._test_completed(message)
+                if test is not None:
+                    drafts.append(test)
                 draft = self._tool_completed(message)
                 if draft is not None:
                     drafts.append(draft)
@@ -168,11 +177,26 @@ class LoopRunActivityBridge(StreamBridge):
                     entity_revision=1,
                     correlation_id=self._correlation_id,
                     visibility=EventVisibility(),
-                    payload={"run_id": self._run_id, "context_id": self._context_id, "status": "observed", "summary": "工作区文件活动已确认"},
+                    payload={"run_id": self._run_id, "context_id": self._context_id, "status": "observed", "path": artifact, "summary": "工作区文件活动已确认"},
                     idempotency_key=f"context-artifact:{self._run_id}:{entity_id}",
                 )
             )
         return tuple(drafts)
+
+    def _test_completed(self, message: dict) -> CanonicalEventDraft | None:
+        call_id = str(message["tool_call_id"])
+        call = self._calls.get(call_id) or {}
+        args = call.get("args") or {}
+        content = message.get("content")
+        if not isinstance(content, str):
+            return None
+        parsed = TestResultParser.parse(message.get("name") or call.get("name"), content, command=str(args.get("command") or args.get("cmd") or "") if isinstance(args, dict) else None, execution_status=message.get("status"))
+        if parsed is None:
+            return None
+        identity = test_identity(self._run_id, call_id)
+        if not self._new("test", identity):
+            return None
+        return CanonicalEventDraft(kind="context.test.completed", entity_type="test_result", entity_id=identity, entity_revision=1, correlation_id=self._correlation_id, visibility=EventVisibility(), payload={"run_id": self._run_id, "context_id": self._context_id, **parsed, "source": "run_stream"}, idempotency_key=f"context-test:{identity}:completed")
 
     async def _persist(self) -> None:
         while True:
@@ -204,4 +228,4 @@ class LoopRunActivityBridge(StreamBridge):
 
     @staticmethod
     def _phase(kind: str) -> str:
-        return "started" if kind == "context.tool.started" else "completed" if kind == "context.tool.completed" else "model" if kind == "context.model.completed" else "artifact"
+        return "started" if kind == "context.tool.started" else "completed" if kind == "context.tool.completed" else "model" if kind == "context.model.completed" else "test" if kind == "context.test.completed" else "artifact"

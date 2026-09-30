@@ -3,19 +3,25 @@ r"""本文件对外提供 Context revision、来源边和 current pointer 的事
 输入为一个或一批严格 `ContextRevisionContract`、`ContextRevisionRef` 与调用方 AsyncSession；输出为
 不可变历史记录、当前引用或类型化并发冲突。具体工作流为按 Context/revision identity 排序加锁，
 验证同 workspace、精确 checkpoint 和批内 revision DAG 后原子插入历史事实，再以单条条件更新执行
-current pointer CAS；本端口不提交事务也不提供历史更新/删除能力。示例：`await repository.insert_many(session, revisions)`。
+current pointer CAS，并在同事务登记发布证明；仅 insert candidate 不登记证明。本端口不提交事务也不提供历史更新/删除能力。
+示例：`await repository.insert_many(session, revisions)`。
 """
 
 from __future__ import annotations
 
-from copy import deepcopy
 import hashlib
+from copy import deepcopy
 
 from sqlalchemy import Select, func, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.desktop.context_evolution.models import ContextRevision, ContextRevisionSource
+from backend.app.desktop.context_evolution.models import (
+    ContextPublicationReceipt,
+    ContextRevision,
+    ContextRevisionSource,
+)
 from backend.app.desktop.context_evolution.schemas import (
     ContextRevisionContract,
     ContextRevisionRef,
@@ -230,7 +236,15 @@ class ContextRevisionRepository:
             raise StaleContextRevision(
                 f"current revision 已变化: expected={expected_id}, actual={current_id}"
             )
+        await self.record_publication(session, next_ref)
         return next_ref
+
+    @staticmethod
+    async def record_publication(session: AsyncSession, ref: ContextRevisionRef) -> None:
+        status = await session.scalar(select(ContextRevision.projection_status).where(ContextRevision.revision_id == ref.revision_id))
+        if status not in {"valid", "repaired", "approved", "deleted"}:
+            return
+        await session.execute(insert(ContextPublicationReceipt).values(revision_id=ref.revision_id, context_id=ref.context_id).on_conflict_do_nothing(index_elements=["revision_id"]))
 
     async def _lock_contexts(
         self,

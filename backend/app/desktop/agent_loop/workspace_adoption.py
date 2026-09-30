@@ -3,13 +3,14 @@ r"""本文件对外提供 LoopWorkspaceAdoptionService。
 输入为 Kernel 已授权的单个 adopt_workspace_result decision；输出为 adopted 或 conflict 的 Kernel 结果。
 具体工作流为重验当前 fencing、用户 delegation、来源 slot 所有权和目标 workspace revision，调用可恢复的
 WorkspaceAdopter 应用隔离 Git 结果，再提交 action/decision/anchor、推进新观察轮并写持久事件；Worker
-和 Patrol 模型都不能直接改权威文件。示例：`result = await service.adopt(decision_id)`。
+和 Patrol 模型都不能直接改权威文件。成功提交同时保存独立 adoption 领域来源，供下一轮任务记忆吸收。
+示例：`result = await service.adopt(decision_id)`。
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -22,9 +23,10 @@ from backend.app.desktop.agent_loop.models import (
     LoopEventOutbox,
     LoopRound,
 )
-from backend.app.desktop.agent_loop.schemas import AdoptWorkspaceResultAction
 from backend.app.desktop.agent_loop.ownership import LoopFencingGuard
+from backend.app.desktop.agent_loop.schemas import AdoptWorkspaceResultAction
 from backend.app.desktop.agent_loop.wait_requests import open_recovery_wait
+from backend.app.desktop.domain_evidence.repository import DomainResultRepository
 from backend.app.desktop.workspace_coordination import (
     GitWorkspaceResultApplier,
     RunExecutionAnchor,
@@ -147,6 +149,7 @@ class LoopWorkspaceAdoptionService:
             "resulting_target_revision": adoption.resulting_target_revision,
         }
         decision.status = "committed"
+        await DomainResultRepository().record(session, kind="workspace", source_id=adoption.adoption_id, loop_id=loop.loop_id, context_id=None, payload={"status": "adopted", "source_revision": adoption.source_revision, "resulting_target_revision": adoption.resulting_target_revision}, audit={"decision_id": decision_id})
         round_row.status = "settled"
         round_row.settled_at = datetime.now(UTC)
         number = int(

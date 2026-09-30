@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Agent Loop 可追溯事实抽屉、renderRows 与 reconcileRows。
  * 输入为物化事实、当前 Context 和筛选；输出为事实表 HTML，或按 fact_id 原位更新的 DOM 行。
- * 具体工作流为只呈现权威物化 revision；增量更新复用未变化行并原位更新状态，避免事实生命周期变化重建整个表和滚动容器。
+ * 具体工作流为只呈现领域 revision 并排除历史 tool 条目；增量更新复用未变化行并原位更新状态。
  * 示例：`FocusLoopFactsView.reconcileRows(tbody, facts)`。
  */
 (function (root, factory) {
@@ -27,10 +27,11 @@
   }
 
   function renderRows(items) {
-    return items.map(rowHtml).join("") || '<tr data-fact-empty><td colspan="6" class="history-boundary">暂无可验证事实</td></tr>';
+    return items.filter(item => item.kind !== "tool").map(rowHtml).join("") || '<tr data-fact-empty><td colspan="6" class="history-boundary">暂无可验证事实</td></tr>';
   }
 
   function reconcileRows(tbody, items) {
+    items = items.filter(item => item.kind !== "tool");
     if (!tbody || typeof document !== "object") return false;
     const existing = new Map([...tbody.querySelectorAll("tr[data-fact-id]")].map(row => [row.dataset.factId, row]));
     const fragment = document.createDocumentFragment();
@@ -67,7 +68,7 @@
   }
 
   function render(state) {
-    const all = state.facts?.facts || [];
+    const all = (state.facts?.facts || []).filter(item => item.kind !== "tool");
     const factStatus = state.factStatus || "all";
     const filtered = all.filter(item => (state.factFilter === "all" || item.kind === state.factFilter) && (factStatus === "all" || item.status === factStatus) && (state.factScope === "all" || !state.selectedContextId || item.context_id === state.selectedContextId));
     const tests = filtered.filter(item => item.kind === "test");
@@ -76,7 +77,7 @@
       else ["passed", "failed", "skipped"].forEach(key => { result[key] += Number(item.metrics[key] || 0); });
       return result;
     }, { passed: 0, failed: 0, skipped: 0, unknown: 0 });
-    const filters = ["all", "run", "test", "tool", "workspace", "artifact"];
+    const filters = ["all", "run", "test", "workspace", "artifact", "context_revision", "directive"];
     const statuses = [["all", "全部状态"], ["failed", "失败"], ["unknown", "未知"]];
     const older = state.facts?.has_more
       ? '<div class="fact-sentinel" data-loop-fact-sentinel aria-hidden="true"></div><button type="button" class="load-facts" data-action="loop-load-older-facts">加载更早事实</button>'

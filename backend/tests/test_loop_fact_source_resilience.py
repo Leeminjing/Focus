@@ -31,7 +31,7 @@ def test_missing_historical_checkpoint_skips_only_message_derived_facts() -> Non
         source._repository.get_by_id = get_by_id
         source._reader.read = read
 
-        facts = await source._tool_facts(None, SimpleNamespace(), "revision-1")
+        facts = await source._test_facts(None, SimpleNamespace(), "revision-1")
 
         assert facts == []
 

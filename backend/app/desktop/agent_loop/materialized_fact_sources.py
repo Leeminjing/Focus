@@ -1,23 +1,29 @@
 r"""本文件对外提供 RunFactSourceReader，将已提交 Run 证据转换为确定性候选事实字典。
 
 输入为 DesktopRun、RunExecutionAnchor、Run 产生的 Context revision 与可用 checkpoint 消息；输出为 run、workspace、artifact、
-tool 与 test 候选。具体工作流为批量读取 anchor/revision，再计算消息增量并复用纯 LoopFactBuilder；历史 checkpoint 已清理时
+test 候选；新测试优先读取独立持久领域结果，工具轨迹不进入事实。具体工作流为批量读取 anchor/revision，再计算消息增量并复用纯 LoopFactBuilder；历史 checkpoint 已清理时
 保留无需 checkpoint 的事实并跳过消息派生候选；本模块不持久化事实，也不决定验证权力。示例：
 `facts = await reader.read(session, (run,))`。
 """
 
 from __future__ import annotations
 
-from collections import Counter
 import json
-from typing import Any, Iterable
+from collections import Counter
+from collections.abc import Iterable
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.agent_loop.fact_sources import LoopFactBuilder
-from backend.app.desktop.context_evolution import ContextRevisionNotFound, ContextRevisionReader, ContextRevisionRepository
+from backend.app.desktop.context_evolution import (
+    ContextRevisionNotFound,
+    ContextRevisionReader,
+    ContextRevisionRepository,
+)
 from backend.app.desktop.context_evolution.models import ContextRevision
+from backend.app.desktop.domain_evidence.models import DesktopDomainResult
 from backend.app.desktop.models import DesktopRun
 from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor
 
@@ -35,16 +41,20 @@ class RunFactSourceReader:
         anchors = {row.run_id: row for row in (await session.scalars(select(RunExecutionAnchor).where(RunExecutionAnchor.run_id.in_(run_ids)))).all()}
         revisions = list((await session.scalars(select(ContextRevision).where(ContextRevision.origin_kind == "run_settled", ContextRevision.origin_id.in_(run_ids)))).all())
         revision_ids = {row.origin_id: row.revision_id for row in revisions}
+        domain_tests = tuple((await session.scalars(select(DesktopDomainResult).where(DesktopDomainResult.run_id.in_(run_ids), DesktopDomainResult.kind == "test").order_by(DesktopDomainResult.created_at, DesktopDomainResult.result_key))).all())
         facts: list[dict] = []
         for run in selected:
             facts.append(LoopFactBuilder.run_fact(run))
             facts.extend(LoopFactBuilder.workspace_facts(run, anchors.get(run.run_id)))
             revision_id = revision_ids.get(run.run_id)
-            if revision_id:
-                facts.extend(await self._tool_facts(session, run, revision_id))
+            tests = [row for row in domain_tests if row.run_id == run.run_id]
+            for result in tests:
+                facts.append({"fact_id": result.source_id, "context_id": run.task_id, "kind": "test", "title": "测试结果", "status": result.payload["status"], "summary": result.payload.get("summary"), "metrics": result.payload.get("metrics") or {}, "evidence": {"run_id": run.run_id, "domain_source_id": result.source_id}, "occurred_at": result.created_at.isoformat()})
+            if revision_id and not tests:
+                facts.extend(await self._test_facts(session, run, revision_id))
         return facts
 
-    async def _tool_facts(self, session: AsyncSession, run: DesktopRun, revision_id: str) -> list[dict]:
+    async def _test_facts(self, session: AsyncSession, run: DesktopRun, revision_id: str) -> list[dict]:
         try:
             revision = await self._repository.get_by_id(session, revision_id)
             current = await self._reader.read(session, revision.ref, "display")
@@ -52,7 +62,7 @@ class RunFactSourceReader:
             if revision.sources:
                 previous = await self._reader.read(session, revision.sources[0].source, "display")
                 previous_messages = previous.messages
-            return LoopFactBuilder.tool_facts(run, revision_id, self._message_delta(previous_messages, current.messages))
+            return LoopFactBuilder.test_facts(run, revision_id, self._message_delta(previous_messages, current.messages))
         except ContextRevisionNotFound:
             return []
 

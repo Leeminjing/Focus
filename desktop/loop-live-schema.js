@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 validateSnapshot、validateEvent 与 emptyProjection 函数。
  * 输入为 Live Loop API 返回的未知 JSON 值；输出为结构规范、可安全归约的 projection 或带字段路径的 TypeError。
- * 具体工作流为校验根边界与所有实体信封（含 contexts 与 lineage 派生边集合）、复制集合和时间线并冻结顶层结果；示例：`validateSnapshot(await api.liveSnapshot(loopId))`。
+ * 具体工作流为校验实体信封，排除历史 tool facts，复制集合和独立活动时间线并冻结结果；示例：`validateSnapshot(await api.liveSnapshot(loopId))`。
  */
 (function (root, factory) {
   const api = factory();
@@ -38,6 +38,7 @@
     const result = {};
     for (const [key, item] of Object.entries(source)) {
       const normalized = entity(item, `${path}.${key}`);
+      if (path === "snapshot.facts" && (normalized.state.kind || normalized.state.fact_type) === "tool") continue;
       if (normalized.entity_id !== key) throw new TypeError(`${path}.${key}.entity_id 与集合键不一致`);
       result[key] = normalized;
     }

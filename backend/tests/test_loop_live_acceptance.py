@@ -4,6 +4,7 @@ r"""本文件对外提供 Live Loop Execution Plane 生产组件的验收测试�
 Portfolio event producer；输出为三路同时运行、授权 Directive 改变目标 Context 当前动作、Fact 生命周期和 Portfolio 发布的
 持久事件断言。具体工作流为用确定性端口替代模型与 Agent 执行，但不手写任何最终 UI 事件。示例：
 `pytest backend/tests/test_loop_live_acceptance.py`。
+运行中的测试结果生成 Test facts，Tool 完成只更新独立 activity。
 """
 
 from __future__ import annotations
@@ -30,9 +31,13 @@ from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
 from backend.app.desktop.agent_loop.curator_assignments import (
     CuratorAssignmentRepository,
 )
+from backend.app.desktop.agent_loop.directive_causality import (
+    DirectiveCausalityRecorder,
+)
+from backend.app.desktop.agent_loop.directive_lifecycle import (
+    DirectiveLifecycleRepository,
+)
 from backend.app.desktop.agent_loop.dispatch import LoopWaveDispatcher
-from backend.app.desktop.agent_loop.directive_causality import DirectiveCausalityRecorder
-from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
 from backend.app.desktop.agent_loop.fact_models import LoopFact, LoopFactRevision
 from backend.app.desktop.agent_loop.fact_projector import FactProjector
 from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
@@ -148,7 +153,7 @@ def test_production_components_drive_the_complete_live_multi_context_story(tmp_p
                 projection = await LoopLiveSnapshotProjector().rebuild(session, loop_id)
             async with sessions() as session:
                 persisted = tuple((await session.scalars(select(LoopJournalEvent).where(LoopJournalEvent.loop_id == loop_id).order_by(LoopJournalEvent.sequence))).all())
-                tool_fact = await session.scalar(select(LoopFact).where(LoopFact.loop_id == loop_id, LoopFact.fact_type == "tool", LoopFact.source_run_id == testing_run.run_id))
+                tool_fact = await session.scalar(select(LoopFact).where(LoopFact.loop_id == loop_id, LoopFact.fact_type == "test", LoopFact.source_run_id == testing_run.run_id))
                 fact_states = tuple((await session.scalars(select(LoopFactRevision.state).where(LoopFactRevision.fact_id == tool_fact.fact_id).order_by(LoopFactRevision.revision))).all())
             assert patrol.phase == PatrolPhase.AUTHORIZING
             assert len(projection.curators) == 3

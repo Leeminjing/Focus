@@ -3,7 +3,8 @@ r"""本文件对外提供 PatrolSessionLifecycle、CuratorCoordinationStage 与 
 输入为 coordinator claim、冻结 observation、Kernel result 和持久 Session；输出为原子 phase 事件、单 Context Bootstrap 或
 多 Context Cognitive Planner assignment、可供 Patrol 消费的结构化 work specs 及等待/终态。具体工作流为 Lifecycle 管理 Session
 边界，Curator stage 先为完整冻结 Revisions 建立含独立 claim-support 判定且可恢复的 semantic indexes/catalog，再按 Portfolio 形态有界扇出 retrieval-backed
-规划、收集和消费；生产 request 携带单一有效 Mission、catalog、index identities 与授权修订冻结的 Expansion 资源策略，Outcome stage 只映射 Kernel 结果。
+规划、收集和消费；生产 request 携带单一有效 Mission、catalog、index identities、相关任务记忆/增量、真实祖先子图与授权修订冻结的 Expansion 资源策略。
+Curator 候选始终属于 proposal；Outcome stage 只映射 Kernel 结果。
 示例：`handle = await lifecycle.begin(claim)`。
 """
 
@@ -23,8 +24,11 @@ from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
 from backend.app.desktop.agent_loop.curator_assignments import (
     CuratorAssignmentRepository,
 )
+from backend.app.desktop.agent_loop.decision_context import scoped_memory
 from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
-from backend.app.desktop.agent_loop.expansion_resource_policy import resolve_expansion_resources
+from backend.app.desktop.agent_loop.expansion_resource_policy import (
+    resolve_expansion_resources,
+)
 from backend.app.desktop.agent_loop.kernel import KernelCommitResult
 from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
 from backend.app.desktop.agent_loop.models import (
@@ -161,7 +165,7 @@ class CuratorCoordinationStage:
                             "assignments": [scope],
                             "curator_mode": scope["mode"],
                             "patrol_session_id": session_id,
-                            "derivation_input": derivation_input,
+                            "derivation_input": self._scoped_task_view(derivation_input, observation, scope),
                         },
                     )
                     session.add(request)
@@ -221,6 +225,10 @@ class CuratorCoordinationStage:
             ).model_dump(mode="json"),
             "context_scope": tuple((observation.grant or {}).get("context_scope") or ()),
         }
+
+    @staticmethod
+    def _scoped_task_view(derivation: dict, observation: LoopObservationEnvelope, scope: dict) -> dict:
+        return {**derivation, **scoped_memory(observation, {str(scope["context_id"])})}
 
     async def results(self, session_id: str) -> tuple[dict, ...]:
         async with self._sessions() as session:

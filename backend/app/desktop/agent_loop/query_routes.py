@@ -4,6 +4,7 @@ r"""本文件对外提供 Loop Console、Mission 历史、完整会话、物化�
 拓扑、分页完整会话、可追溯 current facts/历史、revision graph 和执行 slot。具体工作流为路由把只读参数交给专用
 query service，不修改 Context 或模型输入；只读 audit 关联 Expansion planning session 的冻结策略/用量/阻断，以及自主压缩的 gate、candidate、resolution、Run 与 revision。
 示例：`app.include_router(loop_query_router)`。
+TaskProgress 诊断输出前序、Observation、manifest、Lineage refs/hash 及独立后台工作的 readiness 和用量。
 """
 
 from __future__ import annotations
@@ -11,22 +12,57 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import select
 
-from backend.app.desktop.agent_loop.models import LoopAction, LoopDecision, LoopDirective, LoopPatrolAttempt, LoopPendingDecision, LoopRound, LoopWorkerRequest, MessageProvenance
-from backend.app.desktop.agent_loop.context_expansion.models import LoopPlanningRetrievalSession
-from backend.app.desktop.agent_loop.expansion_resource_projection import planning_session_view, repeated_expansion_blocker
-from backend.app.desktop.agent_loop.compression_authority.models import LoopCompressionCandidate, LoopCompressionResolution
+from backend.app.desktop.agent_loop.compression_authority.models import (
+    LoopCompressionCandidate,
+    LoopCompressionResolution,
+)
 from backend.app.desktop.agent_loop.console_query import LoopConsoleQueryService
-from backend.app.desktop.agent_loop.conversation_query import ContextConversationQueryService
-from backend.app.desktop.agent_loop.materialized_fact_query import MaterializedFactQueryService
+from backend.app.desktop.agent_loop.context_expansion.models import (
+    LoopPlanningRetrievalSession,
+)
+from backend.app.desktop.agent_loop.conversation_query import (
+    ContextConversationQueryService,
+)
+from backend.app.desktop.agent_loop.expansion_resource_projection import (
+    planning_session_view,
+    repeated_expansion_blocker,
+)
 from backend.app.desktop.agent_loop.fact_projection import LoopFactProjectionService
 from backend.app.desktop.agent_loop.feature_flags import LoopFeatureFlags
+from backend.app.desktop.agent_loop.materialized_fact_query import (
+    MaterializedFactQueryService,
+)
 from backend.app.desktop.agent_loop.mission_history import MissionHistoryQueryService
-from backend.app.desktop.context_curation.models import CurationLane, CurationProgram, PortfolioLaneCandidate, PortfolioRevision
-from backend.app.desktop.context_evolution import ContextEvolutionQueryService, ContextRevisionNotFound, ContextRevisionReader, ContextRevisionRepository
+from backend.app.desktop.agent_loop.models import (
+    LoopAction,
+    LoopDecision,
+    LoopDirective,
+    LoopPatrolAttempt,
+    LoopPendingDecision,
+    LoopRound,
+    LoopWorkerRequest,
+    MessageProvenance,
+)
+from backend.app.desktop.context_curation.models import (
+    CurationLane,
+    CurationProgram,
+    PortfolioLaneCandidate,
+    PortfolioRevision,
+)
+from backend.app.desktop.context_evolution import (
+    ContextEvolutionQueryService,
+    ContextRevisionNotFound,
+    ContextRevisionReader,
+    ContextRevisionRepository,
+)
 from backend.app.desktop.context_evolution.models import ContextRevision
 from backend.app.desktop.models import DesktopRun, DesktopThread
-from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor, WorkspaceAdoption, WorkspaceLease, WorkspaceSlot
-
+from backend.app.desktop.workspace_coordination.models import (
+    RunExecutionAnchor,
+    WorkspaceAdoption,
+    WorkspaceLease,
+    WorkspaceSlot,
+)
 
 loop_query_router = APIRouter(prefix="/desktop/api", tags=["agent-loop-observability"])
 
@@ -41,6 +77,14 @@ async def loop_console(loop_id: str, request: Request) -> dict:
 async def loop_mission_history(loop_id: str, request: Request) -> dict:
     async with request.app.state.desktop_service.session_factory() as session:
         return await MissionHistoryQueryService().read(session, loop_id)
+
+
+@loop_query_router.get("/agent-loops/{loop_id}/task-progress")
+async def loop_task_progress(loop_id: str, request: Request) -> dict:
+    from backend.app.desktop.agent_loop.task_progress.query import TaskProgressQuery
+
+    async with request.app.state.desktop_service.session_factory() as session:
+        return await TaskProgressQuery().read(session, loop_id)
 
 
 @loop_query_router.get("/agent-loops/{loop_id}/contexts/{context_id}/conversation")

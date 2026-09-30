@@ -1,6 +1,6 @@
 r"""本文件对外提供 FactEventMaterializer。
 
-输入为按 sequence 提交的 Run、Tool、Workspace、Artifact、Context revision、Directive 与 verification 规范事件；输出为
+输入为按 sequence 提交的 Run、Test、Workspace、Artifact、Context revision、Directive 与 verification 规范事件；输出为
 确定 identity、携带 persistence-safety provenance 的事实修订和 policy 驱动的生命周期状态。具体工作流为把同一领域实体的连续事件归并为同一 Fact，先追加
 观察修订与规范化披露，再用类型化证据推进验证；verification 事件只作用于明确引用的 Fact。示例：
 `fact = await materializer.materialize(session, event)`。
@@ -8,20 +8,30 @@ r"""本文件对外提供 FactEventMaterializer。
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventEnvelope
 from backend.app.desktop.agent_loop.fact_identity import FactIdentityResolver
-from backend.app.desktop.agent_loop.fact_lifecycle import FactLifecycleRepository, FactObservation
+from backend.app.desktop.agent_loop.fact_lifecycle import (
+    FactLifecycleRepository,
+    FactObservation,
+)
 from backend.app.desktop.agent_loop.fact_models import LoopFact
-from backend.app.desktop.agent_loop.fact_verification import FactActor, FactEvidenceReference, FactVerificationDecision, FactVerificationPolicy
+from backend.app.desktop.agent_loop.fact_verification import (
+    FactActor,
+    FactEvidenceReference,
+    FactVerificationDecision,
+    FactVerificationPolicy,
+)
 from backend.app.desktop.models import DesktopRun
 
 
 class FactEventMaterializer:
-    _CATEGORIES = {
+    _CATEGORIES: ClassVar[dict[str, str]] = {
         "context_run": "run",
-        "tool": "tool",
+        "test_result": "test",
         "workspace_change": "workspace",
         "artifact": "artifact",
         "context_revision": "context_revision",
@@ -49,7 +59,7 @@ class FactEventMaterializer:
             event.loop_id,
             fact_type,
             self._subject(event, fact_type, context_id),
-            f"event:{event.entity_type}:{run_id or ''}:{event.entity_id}",
+            f"domain:test:{event.entity_id}" if fact_type == "test" else f"event:{event.entity_type}:{run_id or ''}:{event.entity_id}",
         )
         if event.kind == "context.run.settled" and await session.get(LoopFact, identity.fact_id) is None:
             return None
@@ -100,8 +110,8 @@ class FactEventMaterializer:
 
     @staticmethod
     def _subject(event: CanonicalEventEnvelope, fact_type: str, context_id: object) -> str:
-        if fact_type == "tool":
-            return f"context:{context_id or 'unknown'}:tool:{event.payload.get('tool_name') or event.entity_id}"
+        if fact_type == "test":
+            return f"context:{context_id or 'unknown'}:test"
         if fact_type == "workspace":
             return f"context:{context_id or 'unknown'}:workspace"
         if fact_type == "directive":
@@ -125,6 +135,7 @@ class FactEventMaterializer:
         terminal = event.kind.endswith((".completed", ".settled", ".changed", ".published", ".authorized", ".delivered", ".accepted"))
         evidence_kind = {
             "run": "run",
+            "test": "test",
             "tool": "tool",
             "workspace": "workspace",
             "artifact": "artifact",

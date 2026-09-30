@@ -5,52 +5,106 @@ r"""本文件对外提供 AgentLoopService 创建、查询、Mission 修订、�
 统一委托 TerminalLifecycle 原子收敛运行时并释放 Lane；失败轮恢复时新建观察轮并累计 retry；直接用户消息只建立一次性 intent 并以 authority revision
 隔离旧 Patrol 工作，不改写 Mission；override 仅在用户确认后创建 Mission revision；恢复确认仅解开目标/输入澄清并沿用当前 Mission。
 示例：`await service.start(body)`。
+新 Loop 在激活事务创建 P0，正式 Observation 后才生成后继任务记忆。
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import hashlib
-from pathlib import Path
 import uuid
+from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import HTTPException
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopContextMembership, LoopDecision, LoopDelegationGrant, LoopDirective, LoopEventOutbox, LoopGoalRevision, LoopPendingDecision, LoopRound, LoopUserIntent
-from backend.app.desktop.agent_loop.schemas import LoopBudgetContract, LoopCreateRequest, LoopWaitResponseRequest, ResumeWithCurrentMissionRequest
-from backend.app.desktop.agent_loop.expansion_resource_projection import expansion_resource_view, planning_session_view
-from backend.app.desktop.agent_loop.context_expansion.models import LoopPlanningRetrievalSession
-from backend.app.desktop.agent_loop.mission_contract import LegacyMissionAdapter, LoopMissionContract
+from backend.app.desktop.agent_loop.activation_eligibility import (
+    LoopActivationEligibilityResolver,
+)
+from backend.app.desktop.agent_loop.activation_models import LoopActivation
+from backend.app.desktop.agent_loop.budgets import configured_provider_count
+from backend.app.desktop.agent_loop.compression_authority.repository import (
+    CompressionAuthorityRepository,
+)
+from backend.app.desktop.agent_loop.context_expansion.models import (
+    LoopPlanningRetrievalSession,
+)
+from backend.app.desktop.agent_loop.curation_ownership import (
+    CurationOwnershipConflict,
+    CurationOwnershipRepository,
+    CurationOwnershipState,
+)
+from backend.app.desktop.agent_loop.directive_lifecycle import (
+    DirectiveLifecycleRepository,
+)
+from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
+from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
+from backend.app.desktop.agent_loop.expansion_resource_projection import (
+    expansion_resource_view,
+    planning_session_view,
+)
+from backend.app.desktop.agent_loop.intervention_lifecycle import (
+    InterventionLifecycleRepository,
+)
+from backend.app.desktop.agent_loop.lineage_events import ContextLineageEventRecorder
+from backend.app.desktop.agent_loop.mission_bootstrap import MissionBootstrapStage
+from backend.app.desktop.agent_loop.mission_contract import (
+    LegacyMissionAdapter,
+    LoopMissionContract,
+)
 from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
 from backend.app.desktop.agent_loop.mission_service import MissionRevisionService
-from backend.app.desktop.agent_loop.mission_bootstrap import MissionBootstrapStage
-from backend.app.desktop.agent_loop.mission_wait_recovery import MissionWaitRecoveryGuard, MissionWaitRecoveryRejected
-from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
-from backend.app.desktop.agent_loop.compression_authority.repository import CompressionAuthorityRepository
+from backend.app.desktop.agent_loop.mission_wait_recovery import (
+    MissionWaitRecoveryGuard,
+    MissionWaitRecoveryRejected,
+)
+from backend.app.desktop.agent_loop.models import (
+    AgentLoop,
+    LoopBudgetUsage,
+    LoopContextMembership,
+    LoopDecision,
+    LoopDelegationGrant,
+    LoopEventOutbox,
+    LoopGoalRevision,
+    LoopPendingDecision,
+    LoopRound,
+    LoopUserIntent,
+)
 from backend.app.desktop.agent_loop.rounds import create_observation_round
 from backend.app.desktop.agent_loop.runtime_convergence import LoopRuntimeConvergence
-from backend.app.desktop.agent_loop.curation_ownership import CurationOwnershipConflict, CurationOwnershipRepository, CurationOwnershipState
+from backend.app.desktop.agent_loop.schemas import (
+    LoopBudgetContract,
+    LoopCreateRequest,
+    LoopWaitResponseRequest,
+    ResumeWithCurrentMissionRequest,
+)
 from backend.app.desktop.agent_loop.terminal_lifecycle import LoopTerminalLifecycle
-from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
-from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
-from backend.app.desktop.agent_loop.lineage_events import ContextLineageEventRecorder
-from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
-from backend.app.desktop.context_curation.models import CurationLane, CurationProgram, CurationSourceSubscription, PortfolioLaneCandidate, PortfolioRevision
-from backend.app.desktop.context_evolution.models import ContextRevision
-from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-from backend.app.desktop.workspace_coordination.fingerprints import WorkspaceFingerprinter
-from backend.app.desktop.workspace_coordination.models import WorkspaceLease, WorkspaceSlot
-from backend.app.desktop.agent_loop.budgets import configured_provider_count
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest
-from backend.app.desktop.agent_loop.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService, WaitRequestConflict
-from backend.app.desktop.agent_loop.activation_eligibility import LoopActivationEligibilityResolver
-from backend.app.desktop.agent_loop.activation_models import LoopActivation
+from backend.app.desktop.agent_loop.wait_requests import (
+    LoopWaitRequestFactory,
+    LoopWaitRequestService,
+    WaitRequestConflict,
+)
+from backend.app.desktop.context_curation.models import (
+    CurationLane,
+    CurationProgram,
+    CurationSourceSubscription,
+    PortfolioLaneCandidate,
+    PortfolioRevision,
+)
+from backend.app.desktop.context_evolution.models import ContextRevision
+from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.workspace_coordination.fingerprints import (
+    WorkspaceFingerprinter,
+)
+from backend.app.desktop.workspace_coordination.models import (
+    WorkspaceLease,
+    WorkspaceSlot,
+)
 
 
 class AgentLoopService:
@@ -149,6 +203,13 @@ class AgentLoopService:
             loop = AgentLoop(loop_id=request.loop_id, workspace_id=request.workspace_id, initial_context_id=request.initial_context_id, program_id=program_id, holder_id=request.holder_id, status="running", health="observing", equipment=request.equipment)
             session.add(loop)
             await session.flush()
+            from backend.app.desktop.agent_loop.task_progress.consolidation import (
+                initial_progress,
+            )
+            from backend.app.desktop.agent_loop.task_progress.repository import (
+                TaskProgressRepository,
+            )
+            await TaskProgressRepository().initialize(session, loop.loop_id, initial_progress(mission.model_dump(mode="json"), 1))
             session.add(
                 LoopActivation(
                     activation_id=uuid.uuid4().hex,
@@ -883,4 +944,4 @@ class AgentLoopService:
 
     @staticmethod
     def _activation_lock_key(run_id: str) -> int:
-        return int.from_bytes(hashlib.sha256(f"loop-activation:{run_id}".encode("utf-8")).digest()[:8], "big", signed=True)
+        return int.from_bytes(hashlib.sha256(f"loop-activation:{run_id}".encode()).digest()[:8], "big", signed=True)

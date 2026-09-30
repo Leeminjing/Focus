@@ -5,6 +5,7 @@ r"""本文件对外提供 Agent Loop API、版本化 Expansion 预算、Mission�
 选择（spawn_context/recover_context）或结构化拒绝（decline_expansion）表达 Context 派生与恢复、可信 plan 由服务端从冻结 opportunity 取用，持久 legacy create 仅由兼容 adapter 解析，其余 action 依 discriminator 解析，
 envelope 绑定所有控制 revision 与未处理用户意图，completion 以稳定 check_id 绑定类型化证据；bootstrap intent 有模型外来源标识，自主压缩 action 只能引用已持久化候选，Kernel 只接受
 PatrolDecisionIntent。示例：`intent = PatrolDecisionIntent.model_validate(payload)`。
+新版 Observation 校验完整 TaskProgress、来源 manifest 和已提交 Lineage 合同；legacy 输入保留原 schema。
 """
 
 from __future__ import annotations
@@ -24,16 +25,23 @@ from backend.app.desktop.agent_loop.compression_authority.contracts import (
     ApplyContextCompressionAction,
     AutonomousCompressionPolicy,
 )
-from backend.app.desktop.agent_loop.expansion_resource_policy import ExpansionResourcePolicy
+from backend.app.desktop.agent_loop.expansion_resource_policy import (
+    ExpansionResourcePolicy,
+)
 from backend.app.desktop.agent_loop.mission_contract import (
     EvidenceKind,
     LegacyMissionAdapter,
     LoopMissionContract,
 )
+from backend.app.desktop.agent_loop.task_progress.contracts import (
+    TaskDeltaManifest,
+    TaskProgressDocument,
+)
 from backend.app.desktop.context_curation.contracts import (
     CreateLanePlan,
     UpdateLanePlan,
 )
+from backend.app.desktop.context_evolution.lineage_contracts import LineageSnapshot
 
 
 class StrictModel(BaseModel):
@@ -315,6 +323,11 @@ class ResumeWithCurrentMissionRequest(StrictModel):
 
 
 class LoopObservationEnvelope(StrictModel):
+    input_schema_version: Literal[0, 1] = 0
+    decision_inputs_ref: str | None = None
+    previous_task_progress: dict[str, Any] | None = None
+    task_delta: dict[str, Any] | None = None
+    committed_lineage: dict[str, Any] | None = None
     loop_id: str
     loop_revision: int
     round_id: str
@@ -342,6 +355,14 @@ class LoopObservationEnvelope(StrictModel):
     def require_mission_or_legacy_goal(self) -> LoopObservationEnvelope:
         if self.mission is None and self.goal is None:
             raise ValueError("observation 必须包含结构化 Mission 或旧 Goal")
+        if self.input_schema_version == 1:
+            if not self.decision_inputs_ref or self.previous_task_progress is None or self.task_delta is None or self.committed_lineage is None:
+                raise ValueError("新版 Observation 必须完整绑定三项冻结输入")
+            TaskProgressDocument.model_validate(self.previous_task_progress)
+            manifest = TaskDeltaManifest.model_validate(self.task_delta)
+            if not manifest.complete:
+                raise ValueError("新版 Observation 不接受未完成的来源枚举")
+            LineageSnapshot.model_validate(self.committed_lineage)
         return self
 
 

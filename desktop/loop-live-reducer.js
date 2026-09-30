@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 reduce、reduceBatch 与 SequenceGapError。
  * 输入为已验证的 Live Loop projection 和严格递增的 canonical event；输出为结构共享、确定性的下一份 projection。
- * 具体工作流为先拒绝跨 Loop 与 sequence 缺口，再按实体 revision 更新单体或集合、追加有界活动；示例：`reduce(state, event)`。
+ * 具体工作流为拒绝 sequence 缺口，按 revision 更新实体，排除历史工具事实并保留独立活动；示例：`reduce(state, event)`。
  */
 (function (root, factory) {
   const api = factory(
@@ -65,7 +65,11 @@
       if (!prior || prior.revision < incoming.revision) next[event.entity_type] = incoming;
     } else {
       const field = COLLECTION_BY_ENTITY[event.entity_type];
-      if (field) {
+      if (field === "facts" && (payload.kind || payload.fact_type) === "tool") {
+        const facts = { ...projection.facts };
+        delete facts[event.entity_id];
+        next.facts = Object.freeze(facts);
+      } else if (field) {
         const prior = projection[field][event.entity_id];
         const incoming = Object.freeze({ entity_id: event.entity_id, revision: event.entity_revision, updated_sequence: event.sequence, state: Object.freeze({ ...(prior?.state || {}), ...payload }) });
         if (!prior || prior.revision < incoming.revision) next[field] = Object.freeze({ ...projection[field], [event.entity_id]: incoming });

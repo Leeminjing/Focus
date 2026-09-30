@@ -2,7 +2,8 @@ r"""本文件对外提供 MaterializedFactQueryService 与 FactParityService。
 
 输入为 Loop、事实过滤、事实游标和可选旧版事实列表；输出为 current fact 页、单事实完整修订/关系历史或 parity 差异。
 具体工作流为直接读取 `loop_facts` current rows，以 fact_id/occurred_at 稳定分页，详情连接不可变 revisions 和双向关系；
-parity 仅比较规范化类型、来源与展示语义，不改变读取状态。示例：`page = await service.read(session, loop_id, ...)`。
+公共分页、计数、详情及关系端点一致排除历史 tool rows；parity 仅比较规范化类型、来源与展示语义，不改变读取状态。
+示例：`page = await service.read(session, loop_id, ...)`。
 """
 
 from __future__ import annotations
@@ -13,7 +14,11 @@ from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.desktop.agent_loop.fact_models import LoopFact, LoopFactRelationship, LoopFactRevision
+from backend.app.desktop.agent_loop.fact_models import (
+    LoopFact,
+    LoopFactRelationship,
+    LoopFactRevision,
+)
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopContextMembership
 
 
@@ -30,7 +35,7 @@ class MaterializedFactQueryService:
         limit: int,
     ) -> dict:
         await self._authorize_scope(session, loop_id, context_id)
-        predicates = [LoopFact.loop_id == loop_id]
+        predicates = [LoopFact.loop_id == loop_id, LoopFact.fact_type != "tool"]
         if context_id:
             predicates.append(LoopFact.source_context_id == context_id)
         if kind:
@@ -54,10 +59,11 @@ class MaterializedFactQueryService:
 
     async def detail(self, session: AsyncSession, loop_id: str, fact_id: str) -> dict:
         fact = await session.get(LoopFact, fact_id)
-        if fact is None or fact.loop_id != loop_id:
+        if fact is None or fact.loop_id != loop_id or fact.fact_type == "tool":
             raise HTTPException(404, "Fact 不存在")
         revisions = tuple((await session.scalars(select(LoopFactRevision).where(LoopFactRevision.fact_id == fact_id).order_by(LoopFactRevision.revision))).all())
-        relationships = tuple((await session.scalars(select(LoopFactRelationship).where(LoopFactRelationship.loop_id == loop_id, or_(LoopFactRelationship.source_fact_id == fact_id, LoopFactRelationship.target_fact_id == fact_id)).order_by(LoopFactRelationship.created_at, LoopFactRelationship.relationship_id))).all())
+        visible_ids = select(LoopFact.fact_id).where(LoopFact.loop_id == loop_id, LoopFact.fact_type != "tool")
+        relationships = tuple((await session.scalars(select(LoopFactRelationship).where(LoopFactRelationship.loop_id == loop_id, LoopFactRelationship.source_fact_id.in_(visible_ids), LoopFactRelationship.target_fact_id.in_(visible_ids), or_(LoopFactRelationship.source_fact_id == fact_id, LoopFactRelationship.target_fact_id == fact_id)).order_by(LoopFactRelationship.created_at, LoopFactRelationship.relationship_id))).all())
         return {
             "fact": self.serialize(fact),
             "revisions": [

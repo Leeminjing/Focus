@@ -4,43 +4,71 @@ r"""本文件验证版本化 Loop Fact 的确定性 identity、验证权力、�
 修订、同 correlation 的 tool/fact 链、显式 contradiction、无重复恢复和 byte-equivalent current projection。
 具体工作流为创建最小 Context，启动 Loop，投影一次 Run，重置物化表与 cursor 后从 journal 重建。示例：
 `pytest test_loop_materialized_facts.py`。
+公共事实只保留领域结果，Tool 审计与工具消息继续走独立 activity/会话读面。
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import os
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-import uuid
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from langchain_core.messages import HumanMessage, ToolMessage
-import pytest
 from sqlalchemy import create_engine, delete, inspect, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
-import backend.app.desktop.persistence_registry
 from backend.app.desktop.agent_loop import AgentLoopService, LoopCreateRequest
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
 from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
-from backend.app.desktop.agent_loop.fact_models import LoopFact, LoopFactRelationship, LoopFactRevision
 from backend.app.desktop.agent_loop.fact_identity import FactIdentityResolver
-from backend.app.desktop.agent_loop.fact_lifecycle import FactLifecycleRepository, FactTransitionRejected
-from backend.app.desktop.agent_loop.fact_projector import FactProjector
-from backend.app.desktop.agent_loop.fact_verification import FactActor, FactEvidenceReference, FactVerificationDecision, FactVerificationPolicy
+from backend.app.desktop.agent_loop.fact_lifecycle import (
+    FactLifecycleRepository,
+    FactTransitionRejected,
+)
+from backend.app.desktop.agent_loop.fact_models import (
+    LoopFact,
+    LoopFactRelationship,
+    LoopFactRevision,
+)
 from backend.app.desktop.agent_loop.fact_projection import LoopFactProjectionService
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent, LoopProjectorCursor, LoopReplayRetention
-from backend.app.desktop.agent_loop.live_api import LoopLiveEventFeed, LoopLiveSnapshotService
-from backend.app.desktop.agent_loop.materialized_fact_query import FactParityService, MaterializedFactQueryService
+from backend.app.desktop.agent_loop.fact_projector import FactProjector
+from backend.app.desktop.agent_loop.fact_verification import (
+    FactActor,
+    FactEvidenceReference,
+    FactVerificationDecision,
+    FactVerificationPolicy,
+)
+from backend.app.desktop.agent_loop.journal_models import (
+    LoopJournalEvent,
+    LoopProjectorCursor,
+    LoopReplayRetention,
+)
+from backend.app.desktop.agent_loop.live_api import (
+    LoopLiveEventFeed,
+    LoopLiveSnapshotService,
+)
+from backend.app.desktop.agent_loop.materialized_fact_query import (
+    FactParityService,
+    MaterializedFactQueryService,
+)
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant
-from backend.app.desktop.context_evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
+from backend.app.desktop.context_evolution import (
+    ContextRevisionContract,
+    ContextRevisionOriginKind,
+    ContextRevisionPayloadMode,
+    ContextRevisionProjectionStatus,
+    ContextRevisionRef,
+    ContextRevisionRepository,
+)
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
-
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -138,10 +166,11 @@ def test_materialized_fact_projection_rebuilds_without_duplicates(tmp_path) -> N
                 revisions = tuple((await session.scalars(select(LoopFactRevision).where(LoopFactRevision.fact_id == test_fact.fact_id).order_by(LoopFactRevision.revision))).all())
                 causal = tuple((await session.scalars(select(LoopJournalEvent).where(LoopJournalEvent.loop_id == loop_id, LoopJournalEvent.correlation_id == correlation_id).order_by(LoopJournalEvent.sequence))).all())
                 baseline = _current_projection(page["facts"])
-            assert {item["kind"] for item in page["facts"]} >= {"run", "workspace", "artifact", "test", "tool"}
+            assert {item["kind"] for item in page["facts"]} >= {"run", "workspace", "artifact", "test"}
+            assert not any(item["kind"] == "tool" for item in page["facts"])
             assert [item.state for item in revisions] == ["observed", "verifying", "verified"]
             assert test_fact.presentation["outcome_status"] == "failed"
-            assert {item.kind for item in causal} >= {"context.run.settled", "context.tool.completed", "fact.upserted"}
+            assert {item.kind for item in causal} >= {"context.run.settled", "fact.upserted"}
             assert all(item.correlation_id == correlation_id for item in causal)
             assert await projector.project_loop(loop_id) == 0
             async with sessions.begin() as session:
@@ -167,6 +196,16 @@ def test_materialized_fact_projection_rebuilds_without_duplicates(tmp_path) -> N
             assert relationship.source_fact_id == test_facts[1].fact_id
             assert relationship.target_fact_id == test_facts[0].fact_id
             assert detail["relationships"][0]["relation"] == "contradicts"
+            async with sessions.begin() as session:
+                legacy_tool_id = uuid.uuid4().hex
+                session.add(LoopFact(fact_id=legacy_tool_id, loop_id=loop_id, identity_key=uuid.uuid4().hex, fact_type="tool", normalized_subject="historical tool", state="observed", occurred_at=datetime.now(UTC)))
+                await session.flush()
+                session.add(LoopFactRelationship(relationship_id=uuid.uuid4().hex, loop_id=loop_id, source_fact_id=legacy_tool_id, target_fact_id=test_facts[0].fact_id, relation="supersedes"))
+            async with sessions() as session:
+                filtered_detail = await MaterializedFactQueryService().detail(session, loop_id, test_facts[0].fact_id)
+                assert filtered_detail["relationships"] == detail["relationships"]
+                filtered_page = await MaterializedFactQueryService().read(session, loop_id, context_id=None, kind=None, status=None, before=None, limit=40)
+                assert filtered_page["total"] == len(page["facts"])
             assert FactParityService.compare(legacy["facts"], page["facts"])["equal"] is True
             full_batch = await LoopLiveEventFeed(sessions).read_batch(loop_id, 0)
             assert full_batch["status"] == "events"

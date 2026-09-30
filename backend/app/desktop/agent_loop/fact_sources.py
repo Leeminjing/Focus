@@ -1,75 +1,24 @@
 r"""本文件对外提供 LoopFactBuilder 与 TestResultParser 的确定性事实构造能力。
 
 输入为持久化 Run、workspace execution anchor、结构化 workspace result 和 Run 新增 ToolMessage；输出为
-run、workspace、artifact、tool 与 test 事实。具体工作流为只接受权威字段和明确测试框架证据，保留
+run、workspace、artifact 与 test 领域事实；工具轨迹不成为 LoopFact。具体工作流为只接受权威字段和明确测试框架证据，保留
 Run/revision/message 锚点并拒绝从普通错误文本猜测测试。示例：`LoopFactBuilder.run_fact(run)`。
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 import hashlib
 import json
-import re
+from collections.abc import Iterable
 from typing import Any
 
+from backend.app.desktop.domain_evidence.tests import TestResultParser
 from backend.app.desktop.models import DesktopRun
 from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor
 
-
-_TEST_COUNT = re.compile(
-    r"(?P<count>\d+)\s+(?P<kind>passed|failed|skipped)\b",
-    re.IGNORECASE,
-)
-_TEST_COMMAND = re.compile(
-    r"(?:^|[\s>])(?:pytest|python\s+-m\s+pytest|go\s+test|cargo\s+test|"
-    r"npm\s+(?:run\s+)?test|pnpm\s+(?:run\s+)?test|yarn\s+test|"
-    r"vitest|jest|mocha)(?:\s|$)",
-    re.IGNORECASE,
-)
-_TEST_TOOL_NAMES = frozenset(
-    {"pytest", "unittest", "go test", "cargo test", "vitest", "jest", "mocha", "test"}
-)
 _ARTIFACT_KEYS = frozenset(
     {"artifacts", "artifact_paths", "changed_files", "files", "outputs", "output_files"}
 )
-
-
-class TestResultParser:
-    @classmethod
-    def parse(cls, tool_name: str | None, content: str) -> dict | None:
-        if not cls._is_test_execution(tool_name, content):
-            return None
-        counts = {"passed": 0, "failed": 0, "skipped": 0}
-        found = False
-        for match in _TEST_COUNT.finditer(content):
-            counts[match.group("kind").lower()] += int(match.group("count"))
-            found = True
-        if not found:
-            return {
-                "summary": "检测到测试执行，但输出不足以可靠统计数量",
-                "metrics": {"count_status": "unknown"},
-                "status": "unknown",
-            }
-        return {
-            "summary": (
-                f"{counts['passed']} passed · {counts['failed']} failed · "
-                f"{counts['skipped']} skipped"
-            ),
-            "metrics": {**counts, "count_status": "exact"},
-            "status": "failed" if counts["failed"] else "verified",
-        }
-
-    @staticmethod
-    def _is_test_execution(tool_name: str | None, content: str) -> bool:
-        normalized_name = str(tool_name or "").strip().lower()
-        lower = content.lower()
-        return (
-            normalized_name in _TEST_TOOL_NAMES
-            or bool(_TEST_COMMAND.search(content))
-            or "test suite" in lower
-            or re.search(r"\btests?:\s+\d+", lower) is not None
-        )
 
 
 class LoopFactBuilder:
@@ -144,7 +93,7 @@ class LoopFactBuilder:
         return facts
 
     @classmethod
-    def tool_facts(
+    def test_facts(
         cls,
         run: DesktopRun,
         revision_id: str,
@@ -183,16 +132,6 @@ class LoopFactBuilder:
                         "metrics": test["metrics"],
                     }
                 )
-            facts.append(
-                {
-                    **base,
-                    "fact_id": cls.fact_id("tool", run.run_id, revision_id, message_id),
-                    "kind": "tool",
-                    "title": tool_name or "工具执行",
-                    "summary": content[:800] if content else "工具未返回可展示正文",
-                    "metrics": {},
-                }
-            )
         return facts
 
     @classmethod
@@ -258,9 +197,8 @@ class LoopFactBuilder:
         anchor: RunExecutionAnchor | None,
         effects: Iterable[dict],
     ) -> bool:
-        if anchor is not None and anchor.resulting_fingerprint:
-            if anchor.resulting_fingerprint != anchor.observed_fingerprint:
-                return True
+        if anchor is not None and anchor.resulting_fingerprint and anchor.resulting_fingerprint != anchor.observed_fingerprint:
+            return True
         return any(isinstance(effect, dict) and effect.get("changed") is True for effect in effects)
 
     @staticmethod

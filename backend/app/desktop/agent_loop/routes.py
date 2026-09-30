@@ -4,6 +4,7 @@ r"""本文件对外提供 agent_loop_router，作为 Loop、Mission、授权、�
 持久用户意图、Kernel result 或 cursor event。具体工作流为路由解析 Mission 后从 app.state 取得专用
 service/Kernel，不在 HTTP 边界写领域状态或运行模型。
 示例：`app.include_router(agent_loop_router)`。
+task-progress/{observation_id}/retry 只恢复本 Loop 的 blocked 记忆工作，不启动 Run 或改变 Context。
 """
 
 from __future__ import annotations
@@ -16,10 +17,20 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract, LoopCreateRequest, LoopGrantMutationRequest, LoopInterventionRequest, LoopWaitResponseRequest, PatrolDecisionIntent, ResumeWithCurrentMissionRequest
-from backend.app.desktop.agent_loop.mission_contract import LegacyMissionAdapter, LoopMissionContract
 from backend.app.desktop.agent_loop.kernel import KernelRejected
-
+from backend.app.desktop.agent_loop.mission_contract import (
+    LegacyMissionAdapter,
+    LoopMissionContract,
+)
+from backend.app.desktop.agent_loop.schemas import (
+    CompletionVerificationContract,
+    LoopCreateRequest,
+    LoopGrantMutationRequest,
+    LoopInterventionRequest,
+    LoopWaitResponseRequest,
+    PatrolDecisionIntent,
+    ResumeWithCurrentMissionRequest,
+)
 
 agent_loop_router = APIRouter(prefix="/desktop/api/agent-loops", tags=["agent-loops"])
 
@@ -80,6 +91,16 @@ async def get_loop_activation_eligibility(context_id: str, request: Request) -> 
 @agent_loop_router.get("/{loop_id}")
 async def get_loop(loop_id: str, request: Request) -> dict:
     return await request.app.state.agent_loop_service.get(loop_id)
+
+
+@agent_loop_router.post("/{loop_id}/task-progress/{observation_id}/retry")
+async def retry_task_progress(loop_id: str, observation_id: str, request: Request) -> dict:
+    await request.app.state.agent_loop_service.get(loop_id)
+    try:
+        await request.app.state.agent_loop_task_progress.retry(observation_id, loop_id=loop_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"loop_id": loop_id, "observation_id": observation_id, "state": "pending"}
 
 
 @agent_loop_router.get("/{loop_id}/wait-request")

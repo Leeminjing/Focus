@@ -3,33 +3,67 @@ r"""本文件验证唯一 delegated authority、零 Worker 正常路径、用户
 输入为真实 PostgreSQL Loop/Context revision、严格 Patrol intent 与 verifier evidence；输出为一次 Kernel
 commit、外部 provenance、Mission 不变、直接消息 delivery/Run 终态、陈旧 decision superseded 和 unknown completion waiting-user 断言。
 具体工作流为 service start、Kernel commit、直接消息交付与结算、用户确认 Mission revision 和 guard 检查。
+用户 Run 在结算前经过真实 LoopRunExecutionBoundary，交付、实际启动与结算分别保留独立事实。
 示例：`pytest test_agent_loop_kernel.py`。
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import os
-from types import SimpleNamespace
 import uuid
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
+from loop_run_boundary_support import start_loop_run
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import backend.app.desktop.persistence_registry
-from backend.app.desktop.agent_loop import AgentLoopService, CompletionEvidenceService, CompletionGuard, CompletionVerificationContract, CriterionVerification, DelegatedDirectiveFactory, LoopCoordinator, LoopCreateRequest, LoopKernel, LoopWaveDispatcher, PatrolDecisionIntent, PendingDecisionProjector
+from backend.app.desktop.agent_loop import (
+    AgentLoopService,
+    CompletionEvidenceService,
+    CompletionGuard,
+    CompletionVerificationContract,
+    CriterionVerification,
+    DelegatedDirectiveFactory,
+    LoopCoordinator,
+    LoopCreateRequest,
+    LoopKernel,
+    LoopWaveDispatcher,
+    PatrolDecisionIntent,
+    PendingDecisionProjector,
+)
 from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.mission_contract import CompletionCheckDefinition, ExecutionBoundaries, LoopMissionContract
-from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
+from backend.app.desktop.agent_loop.mission_contract import (
+    CompletionCheckDefinition,
+    ExecutionBoundaries,
+    LoopMissionContract,
+)
 from backend.app.desktop.agent_loop.mission_history import MissionHistoryQueryService
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective, LoopDirectiveTransition, LoopGoalRevision, LoopInterventionTransition, LoopRound, LoopUserIntent, LoopWorkerRequest, MessageProvenance
-from backend.app.desktop.context_evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
+from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
+from backend.app.desktop.agent_loop.models import (
+    AgentLoop,
+    LoopDirective,
+    LoopDirectiveTransition,
+    LoopGoalRevision,
+    LoopInterventionTransition,
+    LoopRound,
+    LoopUserIntent,
+    LoopWorkerRequest,
+    MessageProvenance,
+)
+from backend.app.desktop.context_evolution import (
+    ContextRevisionContract,
+    ContextRevisionOriginKind,
+    ContextRevisionPayloadMode,
+    ContextRevisionProjectionStatus,
+    ContextRevisionRef,
+    ContextRevisionRepository,
+)
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
-
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -106,8 +140,13 @@ def test_zero_worker_delegated_directive_and_user_override(tmp_path) -> None:
                 assert user_intent.content == "只复现一次 Windows 路径失败，不改变长期目标。"
             direct_run_id = uuid.uuid4().hex
             async with sessions.begin() as session:
-                session.add(DesktopRun(run_id=direct_run_id, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, loop_id=loop_id, round_id=direct["round_id"], user_intent_id=direct["intent_id"], settled_at=datetime.now(UTC)))
+                session.add(DesktopRun(run_id=direct_run_id, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="pending", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, loop_id=loop_id, round_id=direct["round_id"], user_intent_id=direct["intent_id"]))
             await service.bind_user_message_run(direct["intent_id"], direct_run_id)
+            await start_loop_run(sessions, direct_run_id)
+            async with sessions.begin() as session:
+                direct_run = await session.get(DesktopRun, direct_run_id)
+                direct_run.status = "success"
+                direct_run.settled_at = datetime.now(UTC)
             async with sessions.begin() as session:
                 await LoopCoordinator(sessions).handle_run_settled(SimpleNamespace(event_id=uuid.uuid4().hex, run_id=direct_run_id, payload={}), session)
             async with sessions() as session:

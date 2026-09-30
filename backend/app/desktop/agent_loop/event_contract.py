@@ -2,7 +2,8 @@ r"""本文件对外提供 CanonicalEventDraft、CanonicalEventEnvelope、EventVi
 
 输入为领域事件 identity、entity revision、关联 identity、可见性和 JSON payload；输出为版本化、可验证、可安全投递的事件信封。
 具体工作流为 schema 接受符合命名规则的未来事件 kind，递归拒绝非 JSON/过深 payload，授权策略核对权限并移除秘密、
-隐藏推理和未授权证据字段；连续事件流使用不泄露原事件身份的占位信封推进被隐藏 sequence。示例：
+隐藏推理和未授权证据字段；历史 tool fact 的公开 replay 使用同 sequence 占位信封，独立 tool activity 仍可审计。
+连续事件流使用不泄露原事件身份的占位信封推进被隐藏 sequence。示例：
 `policy.public_envelope(event, permissions)`。
 """
 
@@ -12,7 +13,6 @@ from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 
 _REDACTED_KEYS = frozenset({
     "api_key",
@@ -110,6 +110,8 @@ class LiveEventAuthorizationPolicy:
         envelope: CanonicalEventEnvelope,
         permissions: set[str] | frozenset[str],
     ) -> CanonicalEventEnvelope:
+        if envelope.entity_type == "fact" and (envelope.payload.get("fact_type") or envelope.payload.get("kind")) == "tool":
+            raise EventNotAuthorized("工具审计不属于公开领域事实")
         required = set(envelope.visibility.required_permissions)
         if not required.issubset(permissions):
             raise EventNotAuthorized("事件权限不足")
@@ -140,7 +142,7 @@ def _validate_json(value: Any, depth: int) -> None:
     if isinstance(value, dict):
         for key, item in value.items():
             if not isinstance(key, str):
-                raise ValueError("event payload key 必须是字符串")
+                raise TypeError("event payload key 必须是字符串")
             _validate_json(item, depth + 1)
         return
     raise ValueError("event payload 必须是 JSON 值")

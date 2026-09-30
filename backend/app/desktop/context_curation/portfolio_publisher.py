@@ -7,18 +7,19 @@ r"""本文件对外提供 PortfolioFreezer、PortfolioCandidatePreparer 与 Atom
 authority attempt，再一次切换全部 Context/Portfolio 指针并写入幂等 outbox；任一失败保留旧 Portfolio。
 新建受管 Context 的标题取自 Lane purpose，写库前经 bounded_thread_title 收进 desktop_threads.title 的列宽。
 示例：`published = await publisher.publish(portfolio_id, current_controls)`。
+成功切换 Context current 时，在相同事务写入轻量 publication receipt；回滚与被取代候选不留下真实发布证明。
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import hashlib
 import json
-from typing import Any, Literal, Protocol
 import uuid
+from datetime import UTC, datetime
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -34,7 +35,9 @@ from backend.app.desktop.context_curation.models import (
     PortfolioRevision,
     PortfolioRevisionStatus,
 )
-from backend.app.desktop.context_curation.publication_outbox import CurationOutboxRepository
+from backend.app.desktop.context_curation.publication_outbox import (
+    CurationOutboxRepository,
+)
 from backend.app.desktop.context_curation.repository import PortfolioRepository
 from backend.app.desktop.context_evolution import (
     ContextRevisionOriginKind,
@@ -44,7 +47,11 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRepository,
     ContextRevisionSourceContract,
 )
-from backend.app.desktop.models import DesktopThread, DesktopWorkspace, bounded_thread_title
+from backend.app.desktop.models import (
+    DesktopThread,
+    DesktopWorkspace,
+    bounded_thread_title,
+)
 
 
 class _FrozenModel(BaseModel):
@@ -76,7 +83,7 @@ class PortfolioFreezeRequest(_FrozenModel):
     grant_revision: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
-    def _unique_inputs(self) -> "PortfolioFreezeRequest":
+    def _unique_inputs(self) -> PortfolioFreezeRequest:
         if len({item.context_id for item in self.source_frontier}) != len(
             self.source_frontier
         ):
@@ -994,6 +1001,7 @@ class AtomicPortfolioPublisher:
                 )
                 context = contexts[candidate.target_context_id]
                 context.current_revision_id = revision.ref.revision_id
+                await self._contexts.record_publication(session, revision.ref)
                 context.ui_state = {
                     key: value
                     for key, value in (context.ui_state or {}).items()
