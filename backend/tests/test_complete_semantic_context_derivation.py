@@ -5,12 +5,14 @@ bundle 与 claim/quality fixtures；输出为完整覆盖、旧证据可达、�
 降级 catalog 的 Curator 连续性、顺序无关 reconciliation、attempt audit、证据项账本、claim graph identity 和 quality-gated compilation 断言。
 具体工作流为仅调用公开领域接口，不依赖模型或权威提交；数据库恢复另由 persistence integration 覆盖。示例：
 `pytest backend/tests/test_complete_semantic_context_derivation.py -q`。
+取消替身显式提供本地测试预算，启动信号有界等待，预算入口提前失败不会造成无限挂起。
 """
 
 from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 from focus.runtime.runs.usage import ModelUsage
@@ -46,15 +48,17 @@ from backend.app.desktop.agent_loop.context_expansion.retrieval_planner import (
     PlannerReadProposal,
     RetrievalBackedCognitiveAdvisor,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
-    RevisionSemanticIndexer,
-    SegmentSemanticUnitDraft,
-)
-from backend.app.desktop.agent_loop.context_expansion.semantic_index import RevisionSemanticIndex
 from backend.app.desktop.agent_loop.context_expansion.semantic_grounding import (
     SemanticClaimSupportAssessment,
     SemanticSupportSpan,
     SupervisedSemanticClaimSupportVerifier,
+)
+from backend.app.desktop.agent_loop.context_expansion.semantic_index import (
+    RevisionSemanticIndex,
+)
+from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
+    RevisionSemanticIndexer,
+    SegmentSemanticUnitDraft,
 )
 from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
     AuthorizedSemanticRetriever,
@@ -737,6 +741,16 @@ def test_portfolio_index_cancellation_never_publishes_partial_ready_state() -> N
             self.started = asyncio.Event()
             self.release = asyncio.Event()
 
+        async def _model_budget(self, observation, authority_revision=None):
+            from backend.app.desktop.agent_loop.context_expansion.index_model_budget import (
+                IndexModelBudget,
+            )
+            from backend.app.desktop.agent_loop.expansion_resource_policy import (
+                resolve_expansion_resources,
+            )
+
+            return IndexModelBudget(resolve_expansion_resources({}, 1))
+
         async def _index_one(self, observation, frontier_item):
             self.started.set()
             await self.release.wait()
@@ -752,7 +766,7 @@ def test_portfolio_index_cancellation_never_publishes_partial_ready_state() -> N
             observed_frontier_hash="8" * 64,
         )
         task = asyncio.create_task(service.build(observation))
-        await service.started.wait()
+        await asyncio.wait_for(service.started.wait(), 5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -967,7 +981,7 @@ def test_retrieval_planner_accounts_real_tokens_and_stops_before_followup_calls(
 def test_role_bound_worker_retries_with_per_attempt_usage_audit(monkeypatch) -> None:
     class Worker:
         created = 0
-        payloads = []
+        payloads: ClassVar[list] = []
 
         def __init__(self, app_config, model_name=None) -> None:
             type(self).created += 1
@@ -976,7 +990,9 @@ def test_role_bound_worker_retries_with_per_attempt_usage_audit(monkeypatch) -> 
 
         async def invoke(self, schema, system, payload):
             type(self).payloads.append(payload)
-            self.usage = ModelUsage(model_calls=1, input_tokens=10 * self.ordinal, output_tokens=2)
+            self.usage = ModelUsage(
+                model_calls=1, input_tokens=10 * self.ordinal, output_tokens=2
+            )
             if self.ordinal == 1:
                 raise ValueError("first structured response was invalid")
             return schema.model_validate(
@@ -1003,18 +1019,31 @@ def test_role_bound_worker_retries_with_per_attempt_usage_audit(monkeypatch) -> 
             "error",
             "success",
         )
-        assert all(item["role"] == "semantic_index_projector" for item in model.last_attempt_records)
+        assert all(
+            item["role"] == "semantic_index_projector"
+            for item in model.last_attempt_records
+        )
         assert "previous_attempt_failure" not in Worker.payloads[0]
-        assert Worker.payloads[1]["previous_attempt_failure"]["category"] == "model_schema_error"
-        assert "first structured response was invalid" in Worker.payloads[1]["previous_attempt_failure"]["message"]
-        assert model.last_usage == ModelUsage(model_calls=2, input_tokens=30, output_tokens=4)
+        assert (
+            Worker.payloads[1]["previous_attempt_failure"]["category"]
+            == "model_schema_error"
+        )
+        assert (
+            "first structured response was invalid"
+            in Worker.payloads[1]["previous_attempt_failure"]["message"]
+        )
+        assert model.last_usage == ModelUsage(
+            model_calls=2, input_tokens=30, output_tokens=4
+        )
 
     asyncio.run(run())
 
 
-def test_role_bound_worker_retries_result_validation_with_unit_feedback(monkeypatch) -> None:
+def test_role_bound_worker_retries_result_validation_with_unit_feedback(
+    monkeypatch,
+) -> None:
     class Worker:
-        payloads = []
+        payloads: ClassVar[list] = []
 
         def __init__(self, app_config, model_name=None) -> None:
             self.usage = ModelUsage(model_calls=1, input_tokens=7, output_tokens=3)
@@ -1060,9 +1089,18 @@ def test_role_bound_worker_retries_result_validation_with_unit_feedback(monkeypa
         )
 
         assert result.queries[0].text == "frozen evidence"
-        assert tuple(item["outcome"] for item in model.last_attempt_records) == ("error", "success")
-        assert model.last_attempt_records[0]["failure_category"] == "semantic_support_error"
-        assert model.last_attempt_records[0]["validation_feedback"]["unit_identity"] == "claim-1"
+        assert tuple(item["outcome"] for item in model.last_attempt_records) == (
+            "error",
+            "success",
+        )
+        assert (
+            model.last_attempt_records[0]["failure_category"]
+            == "semantic_support_error"
+        )
+        assert (
+            model.last_attempt_records[0]["validation_feedback"]["unit_identity"]
+            == "claim-1"
+        )
         assert Worker.payloads[1]["previous_attempt_failure"] == {
             "category": "semantic_support_error",
             "error_type": "StructuredResultValidationError",

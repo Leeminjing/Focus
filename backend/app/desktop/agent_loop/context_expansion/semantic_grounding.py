@@ -1,14 +1,14 @@
-r"""本文件对外提供语义陈述的支持引文合同、确定性验证器与受监督 claim-support verifier。
+r"""本文件对外提供 support-span drafts、独立 claim assessments、SemanticGroundingValidator 与受监督 verifier。
 
-输入为自然语言 statement、冻结消息中的精确 support spans、可选 verifier verdict 与来源 Revision；输出为可验证的
-SemanticEvidenceUnit 或带稳定分类的 SemanticUnitRejection。具体工作流为先校验 message identity 和 quote 原文成员关系，
-再校验独立 claim-support verdict，最后只为通过的 unit 生成权威 evidence refs。示例：
-`result = SemanticGroundingValidator().validate(source, messages, draft, assessment)`。
+输入为冻结消息原文、陈述、精确引文及可选独立 verdict；输出为绑定目标 Revision 的 SemanticEvidenceUnit 或隔离原因。
+工作流为 evaluate_draft 确定性检查支持和 authority，再由 validate 生成来源引用；confirmed 必须有独立 supported verdict。
+示例：authority = SemanticGroundingValidator.evaluate_draft(contents, draft, assessment)；局部 record 可复用校验结果而不重新调用模型。
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, Mapping, Protocol
+from collections.abc import Mapping
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -18,7 +18,9 @@ from backend.app.desktop.agent_loop.context_expansion.contracts import (
     SemanticUnitKind,
     stable_expansion_hash,
 )
-from backend.app.desktop.agent_loop.derivation_worker import StructuredResultValidationError
+from backend.app.desktop.agent_loop.derivation_worker import (
+    StructuredResultValidationError,
+)
 from backend.app.desktop.context_curation import NamespacedMessageRef
 from backend.app.desktop.context_evolution import ContextRevisionRef
 
@@ -101,8 +103,10 @@ class SemanticUnitRejection(_GroundingModel):
         code: SemanticGroundingFailureCode,
         summary: str,
         disposition: Literal["quarantined", "hypothesis"] = "quarantined",
-    ) -> "SemanticUnitRejection":
-        message_ids = tuple(dict.fromkeys(support.message_id for support in draft.supports))
+    ) -> SemanticUnitRejection:
+        message_ids = tuple(
+            dict.fromkeys(support.message_id for support in draft.supports)
+        )
         return cls(
             rejection_id=stable_expansion_hash(
                 "semantic-unit-rejection-v1",
@@ -162,20 +166,24 @@ class SupervisedSemanticClaimSupportVerifier:
             return ()
         system = "你是无权 semantic claim verifier。只判断每条 statement 是否被给定冻结引文直接支持；必须逐条返回 supported、unsupported 或 unknown，不得补充证据、改写陈述或读取其他上下文。"
         payload = {
-                "claims": tuple(
-                    {
-                        "claim_key": draft.claim_key,
-                        "statement": draft.statement,
-                        "supports": tuple(support.model_dump(mode="json") for support in draft.supports),
-                    }
-                    for draft in drafts
-                )
-            }
+            "claims": tuple(
+                {
+                    "claim_key": draft.claim_key,
+                    "statement": draft.statement,
+                    "supports": tuple(
+                        support.model_dump(mode="json") for support in draft.supports
+                    ),
+                }
+                for draft in drafts
+            )
+        }
         expected = {draft.claim_key for draft in drafts}
         validator = lambda proposal: self._validate_batch(proposal, expected)
         invoke_validated = getattr(self._model, "invoke_validated", None)
         if invoke_validated is None:
-            proposal = await self._model.invoke(SemanticClaimSupportProposal, system, payload)
+            proposal = await self._model.invoke(
+                SemanticClaimSupportProposal, system, payload
+            )
             validator(proposal)
         else:
             proposal = await invoke_validated(
@@ -194,7 +202,9 @@ class SupervisedSemanticClaimSupportVerifier:
         actual = [assessment.claim_key for assessment in proposal.assessments]
         if len(actual) == len(set(actual)) and set(actual) == expected:
             return
-        affected = next((identity for identity in actual if actual.count(identity) > 1), None)
+        affected = next(
+            (identity for identity in actual if actual.count(identity) > 1), None
+        )
         if affected is None:
             affected = next(iter(sorted(expected - set(actual))), "claim-support-batch")
         raise StructuredResultValidationError(
@@ -206,6 +216,13 @@ class SupervisedSemanticClaimSupportVerifier:
 
 
 class SemanticGroundingValidator:
+    VERSION = "support-span-grounding-v1"
+
+    @classmethod
+    def evaluate_draft(cls, message_contents, draft, assessment=None):
+        cls._validate_supports(message_contents, draft)
+        return cls._validated_authority(draft, assessment)
+
     def validate(
         self,
         source: ContextRevisionRef,
@@ -213,9 +230,10 @@ class SemanticGroundingValidator:
         draft: SegmentSemanticUnitDraft,
         assessment: SemanticClaimSupportAssessment | None = None,
     ) -> SemanticEvidenceUnit:
-        self._validate_supports(message_contents, draft)
-        authority = self._validated_authority(draft, assessment)
-        message_ids = tuple(dict.fromkeys(support.message_id for support in draft.supports))
+        authority = self.evaluate_draft(message_contents, draft, assessment)
+        message_ids = tuple(
+            dict.fromkeys(support.message_id for support in draft.supports)
+        )
         return SemanticEvidenceUnit.create(
             kind=draft.kind,
             authority=authority,

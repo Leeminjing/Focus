@@ -1,22 +1,22 @@
-r"""本文件对外提供 RoleBoundStructuredModel。
+r"""本文件对外提供 RoleBoundStructuredModel 与结构化结果验证异常。
 
-输入为 AppConfig、明确的 semantic derivation worker role、可选模型名、结构化 schema、authority prompt、冻结 payload 与可选结果验证器；
-输出为经过有界生成/校验重试的 schema 结果、最近一次调用的 attempts 和累计 ModelUsage。具体工作流为每次 attempt 创建独立
-StructuredWorkerModel，把 schema 或业务合同的稳定分类、unit identity 和违反规则反馈给下一请求，记录该次 usage 与结果，成功后
-立即返回，耗尽重试后传播最后一个异常；本模块不读取 Context、修改状态或提交 Portfolio。示例：
-`result = await model.invoke_validated(Schema, prompt, payload, validator)`。
+输入为 AppConfig、无权派生 role、schema、冻结 payload、结果 validator 及可选逐 attempt request guard；输出为结构化结果和真实 attempts／usage。
+工作流为每次 attempt 新建独立 StructuredWorkerModel，先准入，再有界调用／验证；失败、取消和预算中止保存实际用量。
+cache_identity 只哈希非凭据模型配置；bind_request_guard 为索引共享预算提供逐次检查，不读 Context 或提交 Portfolio。
+示例：model.bind_request_guard(budget.admit); result = await model.invoke_validated(Schema, prompt, payload, validator)。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
+from hashlib import sha256
 from typing import Any, Literal
-
-from pydantic import ValidationError
 
 from focus.config.app_config import AppConfig
 from focus.runtime.runs.usage import ModelUsage
+from pydantic import ValidationError
 
 from backend.app.desktop.agent_loop.structured_worker import StructuredWorkerModel
 
@@ -62,6 +62,22 @@ class RoleBoundStructuredModel:
         self.last_attempt_records: tuple[dict[str, Any], ...] = ()
         self.last_usage = ModelUsage()
         self.usage = ModelUsage()
+        self._request_guard = None
+
+    @property
+    def cache_identity(self) -> str:
+        config = self._app_config.get_model(
+            self._model_name or self._app_config.resolve_default_model_name()
+        )
+        payload = {
+            key: value
+            for key, value in config.model_dump(mode="json").items()
+            if key not in {"api_key", "display_name", "default", "curation_default"}
+        }
+        return sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    def bind_request_guard(self, guard) -> None:
+        self._request_guard = guard
 
     async def invoke(self, schema, system: str, payload: dict[str, Any]):
         return await self._invoke(schema, system, payload, None)
@@ -88,6 +104,14 @@ class RoleBoundStructuredModel:
         feedback: dict[str, str] | None = None
         for attempt in range(1, self._max_attempts + 1):
             worker = StructuredWorkerModel(self._app_config, self._model_name)
+            if self._request_guard is not None:
+                try:
+                    await self._request_guard(
+                        worker, schema, system, self._attempt_payload(payload, feedback)
+                    )
+                except BaseException:
+                    self._finish(invocation_usage, records)
+                    raise
             try:
                 result = await worker.invoke(
                     schema,
@@ -96,6 +120,18 @@ class RoleBoundStructuredModel:
                 )
                 if validator is not None:
                     validator(result)
+            except asyncio.CancelledError:
+                invocation_usage += worker.usage
+                records.append(
+                    self._record(
+                        attempt,
+                        "cancelled",
+                        worker.usage,
+                        model_metadata=getattr(worker, "last_model_metadata", {}),
+                    )
+                )
+                self._finish(invocation_usage, records)
+                raise
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 invocation_usage += worker.usage
@@ -109,11 +145,19 @@ class RoleBoundStructuredModel:
                         type(exc).__name__,
                         category,
                         feedback,
+                        model_metadata=getattr(worker, "last_model_metadata", {}),
                     )
                 )
                 continue
             invocation_usage += worker.usage
-            records.append(self._record(attempt, "success", worker.usage))
+            records.append(
+                self._record(
+                    attempt,
+                    "success",
+                    worker.usage,
+                    model_metadata=getattr(worker, "last_model_metadata", {}),
+                )
+            )
             self._finish(invocation_usage, records)
             return result
         self._finish(invocation_usage, records)
@@ -134,6 +178,7 @@ class RoleBoundStructuredModel:
         error_type: str | None = None,
         failure_category: str | None = None,
         validation_feedback: dict[str, str] | None = None,
+        model_metadata: dict | None = None,
     ) -> dict[str, Any]:
         return {
             "role": self.role,
@@ -145,6 +190,7 @@ class RoleBoundStructuredModel:
             "error_type": error_type,
             "failure_category": failure_category,
             "validation_feedback": validation_feedback,
+            "model_metadata": model_metadata or {},
         }
 
     @staticmethod

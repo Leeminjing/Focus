@@ -1,16 +1,19 @@
 r"""本文件对外提供 PortfolioSemanticIndexService 与 PortfolioIndexBuildResult。
 
-输入为冻结 LoopObservationEnvelope、Context Revision repository/checkpointer、受监督 projector factory 和并发上限；输出为全部授权
-Revision 的 ready semantic indexes、PortfolioIndexCatalog 与真实 stage/attempt telemetry，或显式 blocker。具体工作流为并发读取精确
-Revision，命中版本化缓存或覆盖全部消息，依次调用无权 projector 和独立 claim verifier，隔离可选 unit 故障并累计真实模型用量，
-将冻结 Mission section catalog 纳入检索入口；只有权威来源均成功后才原子发布，取消、重试耗尽和 stale source 不发布部分结果。
-示例：`result = await service.build(observation)`。
+输入为冻结 Observation、Revision repository/checkpointer、受监督模型 factory 和并发上限；输出为完整 indexes、catalog、stage 与真实用量。
+工作流为每次构建冻结有效配置，各任务用短读事务，优先精确缓存，沿已提交同 Context 追加链继承，单段投影与验证不持有事务。
+最终以短事务解析 record/index 赢家并校验全量 catalog；模型前原子预留 Loop 共享额度，结束时结算，重试、取消和失败不重新获得额度。
+record 合同包含 Index／record schema 与完整切分 fingerprint；输入／输出模型配置变化不会复用旧合同。
+显式重试可传 budget_authority_revision，从真实新授权读取预算并记录版本，不修改原 Observation 或来源。
+示例：result = await service.build(observation)；消费者仍读取完整不可变 Revision Index。
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -22,27 +25,32 @@ from backend.app.desktop.agent_loop.context_expansion.artifact_repository import
 from backend.app.desktop.agent_loop.context_expansion.contracts import (
     DerivationStageRecord,
 )
+from backend.app.desktop.agent_loop.context_expansion.mission_sections import (
+    FrozenMissionSectionCatalog,
+)
+from backend.app.desktop.agent_loop.context_expansion.semantic_grounding import (
+    SemanticClaimSupportProposal,
+    SemanticGroundingValidator,
+    SemanticProjectionProposal,
+    SupervisedSemanticClaimSupportVerifier,
+)
 from backend.app.desktop.agent_loop.context_expansion.semantic_index import (
     RevisionSemanticIndex,
 )
 from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
     RevisionSemanticIndexer,
-    SupervisedSegmentSemanticProjector,
-)
-from backend.app.desktop.agent_loop.context_expansion.semantic_grounding import (
-    SemanticGroundingValidator,
-    SupervisedSemanticClaimSupportVerifier,
 )
 from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
     PortfolioIndexCatalog,
     PortfolioIndexCatalogOverflow,
 )
-from backend.app.desktop.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog
-from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
 from backend.app.desktop.agent_loop.context_expansion.stage_telemetry import (
     DerivationStageTimer,
 )
-from backend.app.desktop.agent_loop.expansion_resource_policy import resolve_expansion_resources
+from backend.app.desktop.agent_loop.expansion_resource_policy import (
+    resolve_expansion_resources,
+)
+from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.context_evolution import (
@@ -52,6 +60,36 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRepository,
 )
 from backend.app.desktop.context_evolution.repository import ContextRevisionNotFound
+
+from .contracts import stable_expansion_hash
+from .index_assembly import assemble_revision_index
+from .index_budget_repository import IndexBudgetReservationRepository
+from .index_inheritance import RevisionIndexInheritancePlanner
+from .index_model_budget import (
+    BudgetedIndexModel,
+    IndexBudgetExceeded,
+    IndexModelBudget,
+)
+from .projection_record_repository import ProjectionRecordRepository
+from .segment_projection import (
+    SEGMENT_PROMPT,
+    SegmentProjectionBuilder,
+    SegmentProjectionRecord,
+)
+
+
+@dataclass
+class _IndexBuildState:
+    attempts: dict = field(default_factory=dict)
+    records: dict = field(default_factory=dict)
+    telemetry: dict = field(default_factory=dict)
+    budget: Any = None
+    contract: str = ""
+    model_identities: dict = field(default_factory=dict)
+    budget_authorization: dict = field(default_factory=dict)
+
+
+_BUILD_STATE: ContextVar[_IndexBuildState] = ContextVar("semantic_index_build")
 
 
 class PortfolioIndexBuildResult(BaseModel):
@@ -65,7 +103,7 @@ class PortfolioIndexBuildResult(BaseModel):
 
 
 class PortfolioSemanticIndexService:
-    VERSION = "portfolio-semantic-index-service-v2"
+    VERSION = "portfolio-semantic-index-service-v3"
 
     def __init__(
         self,
@@ -88,16 +126,73 @@ class PortfolioSemanticIndexService:
         self._catalog_max_descriptor_chars = catalog_max_descriptor_chars
         self._semantic_projector_factory = semantic_projector_factory
         self._semantic_claim_verifier_factory = semantic_claim_verifier_factory
-        self._projection_attempts: dict[str, tuple[dict[str, Any], ...]] = {}
+        self._records = ProjectionRecordRepository()
 
-    async def build(self, observation: LoopObservationEnvelope) -> PortfolioIndexBuildResult:
+    @property
+    def _projection_contract(self):
+        return _BUILD_STATE.get().contract
+
+    def _prepare_contract(self):
+        if not hasattr(self, "_indexer"):
+            return
+        state = _BUILD_STATE.get()
+        for factory in (
+            self._semantic_projector_factory,
+            self._semantic_claim_verifier_factory,
+        ):
+            state.model_identities[factory] = self._model_identity(factory)
+        state.contract = (
+            "loc:"
+            + stable_expansion_hash(
+                "segment-local-projection-v2",
+                SegmentProjectionRecord.SCHEMA_VERSION,
+                self._indexer.INDEX_SCHEMA_VERSION,
+                self._indexer.segmenter_version,
+                SEGMENT_PROMPT,
+                SupervisedSemanticClaimSupportVerifier.VERSION,
+                SemanticGroundingValidator.VERSION,
+                SemanticProjectionProposal.model_json_schema(),
+                SemanticClaimSupportProposal.model_json_schema(),
+                state.model_identities[self._semantic_projector_factory],
+                state.model_identities[self._semantic_claim_verifier_factory],
+            )[:60]
+        )
+
+    @staticmethod
+    def _model_identity(factory):
+        if factory is None:
+            return "no-model"
+        model = factory()
+        return getattr(
+            model,
+            "cache_identity",
+            f"{type(model).__module__}.{type(model).__qualname__}",
+        )
+
+    @property
+    def _projection_attempts(self):
+        return _BUILD_STATE.get().attempts
+
+    @_projection_attempts.setter
+    def _projection_attempts(self, value):
+        _BUILD_STATE.set(_IndexBuildState(attempts=value))
+
+    async def build(
+        self,
+        observation: LoopObservationEnvelope,
+        *,
+        budget_authority_revision: int | None = None,
+    ) -> PortfolioIndexBuildResult:
         self._projection_attempts = {}
+        self._prepare_contract()
         timer = DerivationStageTimer(
             "portfolio_indexing",
             (observation.observed_frontier_hash,),
-            "portfolio-semantic-index-service-v1",
+            self.VERSION,
         )
-        frontier = tuple(item for item in observation.portfolio_frontier if item.get("revision"))
+        frontier = tuple(
+            item for item in observation.portfolio_frontier if item.get("revision")
+        )
         if not frontier:
             return await self._result(
                 observation,
@@ -107,30 +202,29 @@ class PortfolioSemanticIndexService:
             )
         semaphore = asyncio.Semaphore(self._concurrency)
         try:
-            indexes = await asyncio.gather(
-                *(self._bounded_index(observation, item, semaphore) for item in frontier)
+            _BUILD_STATE.get().budget = await self._model_budget(
+                observation, budget_authority_revision
             )
-            catalog = PortfolioIndexCatalog.create(
-                frontier_hash=observation.observed_frontier_hash,
-                indexes=tuple(indexes),
-                mission_catalog=(
-                    FrozenMissionSectionCatalog.from_mission(
-                        observation.loop_id,
-                        EffectiveMissionProjector.from_observation(observation),
-                    )
-                    if (getattr(observation, "mission", None) or {}).get("completion_checks")
-                    or (getattr(observation, "goal", None) or {}).get("acceptance_criteria")
-                    else None
-                ),
-                max_descriptor_chars=self._catalog_capacity(observation),
-            )
+            tasks = [
+                asyncio.create_task(self._bounded_index(observation, item, semaphore))
+                for item in frontier
+            ]
+            try:
+                indexes = await asyncio.gather(*tasks)
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            self._catalog(observation, indexes)
             async with self._sessions.begin() as session:
-                for index in indexes:
-                    await self._artifacts.put_index(
-                        session,
-                        index,
-                        attempt_records=self._projection_attempts.get(index.source.revision_id, ()),
-                    )
+                indexes = tuple(
+                    [
+                        await self._publish_one(session, index)
+                        for index in sorted(indexes, key=lambda i: i.source.revision_id)
+                    ]
+                )
+                catalog = self._catalog(observation, indexes)
         except asyncio.CancelledError:
             raise
         except PortfolioIndexCatalogOverflow as exc:
@@ -140,13 +234,31 @@ class PortfolioSemanticIndexService:
                 blocker_code="portfolio_catalog_overflow",
                 blocker_summary=str(exc)[:1600],
             )
-        except (ContextRevisionNotFound, ContextRevisionIdentityMismatch, KeyError, TypeError, ValueError) as exc:
+        except (
+            ContextRevisionNotFound,
+            ContextRevisionIdentityMismatch,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as exc:
             return await self._result(
                 observation,
                 timer,
-                blocker_code="portfolio_index_failed",
+                blocker_code="portfolio_index_budget"
+                if isinstance(exc, IndexBudgetExceeded)
+                else "portfolio_index_failed",
                 blocker_summary=f"完整 Revision semantic index 构建失败: {str(exc)[:1600]}",
             )
+        finally:
+            if hasattr(self, "_sessions"):
+                attempts = tuple(
+                    a for rows in self._projection_attempts.values() for a in rows
+                )
+                await asyncio.shield(
+                    self._record_attempt_usage(
+                        getattr(observation, "loop_id", ""), attempts
+                    )
+                )
         return await self._result(
             observation,
             timer,
@@ -154,14 +266,99 @@ class PortfolioSemanticIndexService:
             catalog=catalog,
         )
 
+    async def _model_budget(self, observation, authority_revision=None):
+        snapshot = getattr(observation, "budget", {}) or {}
+        revision = getattr(observation, "authority_revision", 1)
+        if authority_revision is not None:
+            revision = authority_revision
+            snapshot = await IndexBudgetReservationRepository.authorization_snapshot(
+                self._sessions, observation.loop_id, revision
+            )
+        limits = dict(snapshot.get("limits") or {})
+        usage = dict(snapshot.get("usage") or {})
+        resources = resolve_expansion_resources(limits, revision, usage)
+        _BUILD_STATE.get().budget_authorization = {
+            "grant_revision": revision,
+            "limits": limits,
+            "usage": usage,
+        }
+        return IndexModelBudget(
+            resources,
+            reservations=IndexBudgetReservationRepository(
+                self._sessions,
+                getattr(observation, "loop_id", ""),
+                resources.grant_revision,
+                limits,
+                usage,
+            ),
+        )
+
+    def _catalog(self, observation, indexes):
+        return PortfolioIndexCatalog.create(
+            frontier_hash=observation.observed_frontier_hash,
+            indexes=tuple(indexes),
+            mission_catalog=(
+                FrozenMissionSectionCatalog.from_mission(
+                    observation.loop_id,
+                    EffectiveMissionProjector.from_observation(observation),
+                )
+                if (getattr(observation, "mission", None) or {}).get(
+                    "completion_checks"
+                )
+                or (getattr(observation, "goal", None) or {}).get("acceptance_criteria")
+                else None
+            ),
+            max_descriptor_chars=self._catalog_capacity(observation),
+        )
+
+    async def _publish_one(self, session, index):
+        records = _BUILD_STATE.get().records.get(index.source.revision_id)
+        if records is not None:
+            cached = await self._artifacts.cached_index(
+                session,
+                revision_id=index.source.revision_id,
+                source_content_hash=index.source_content_hash,
+                index_schema_version=index.index_schema_version,
+                segmenter_version=index.segmenter_version,
+                projector_version=index.projector_version,
+            )
+            if cached is not None:
+                return cached
+            winners = tuple(
+                [
+                    await self._records.put(session, index.source.context_id, record)
+                    for record in records
+                ]
+            )
+            index = assemble_revision_index(
+                self._indexer, index, winners, index.inheritance
+            )
+        row = await self._artifacts.put_index(
+            session,
+            index,
+            attempt_records=self._projection_attempts.get(index.source.revision_id, ()),
+        )
+        return (
+            RevisionSemanticIndex.model_validate(row.payload)
+            if row is not None
+            else index
+        )
+
     def _catalog_capacity(self, observation: LoopObservationEnvelope) -> int:
         observed_budget = getattr(observation, "budget", {}) or {}
+        authority = _BUILD_STATE.get().budget_authorization
         policy = resolve_expansion_resources(
-            dict(observed_budget.get("limits") or {}),
-            getattr(observation, "authority_revision", 1),
-            dict(observed_budget.get("usage") or {}),
+            authority.get("limits", dict(observed_budget.get("limits") or {})),
+            authority.get(
+                "grant_revision", getattr(observation, "authority_revision", 1)
+            ),
+            authority.get("usage", dict(observed_budget.get("usage") or {})),
         ).policy
-        return min(policy.max_catalog_descriptor_chars, self._catalog_max_descriptor_chars) if self._catalog_max_descriptor_chars is not None else policy.max_catalog_descriptor_chars
+        return (
+            min(policy.max_catalog_descriptor_chars, self._catalog_max_descriptor_chars)
+            if self._catalog_max_descriptor_chars is not None
+            else policy.max_catalog_descriptor_chars
+        )
 
     async def _result(
         self,
@@ -175,15 +372,34 @@ class PortfolioSemanticIndexService:
     ) -> PortfolioIndexBuildResult:
         record = timer.finish(
             tuple(item.index_id for item in indexes),
-            blocker_summary or f"已准备 {len(indexes)} 个完整 Revision semantic indexes",
+            blocker_summary
+            or f"已准备 {len(indexes)} 个完整 Revision semantic indexes",
             failure_code=blocker_code,
         )
+        scope_fingerprint = stable_expansion_hash(
+            "index-stage-scope",
+            _BUILD_STATE.get().contract,
+            getattr(getattr(self, "_indexer", None), "segmenter_version", ""),
+            getattr(observation, "authority_revision", 1),
+            getattr(observation, "budget", {}),
+            _BUILD_STATE.get().budget_authorization,
+            blocker_code or "ready",
+        )
+        record = DerivationStageRecord.model_validate(
+            {
+                **record.model_dump(mode="json"),
+                "input_identities": (*record.input_identities, scope_fingerprint),
+            }
+        )
+        for revision_id, telemetry in _BUILD_STATE.get().telemetry.items():
+            self._append_attempt(
+                revision_id, {"role": "semantic_index_build", **telemetry}
+            )
         attempts = tuple(
             item
             for revision_attempts in self._projection_attempts.values()
             for item in revision_attempts
         )
-        await self._record_attempt_usage(observation.loop_id, attempts)
         async with self._sessions.begin() as session:
             existing = await self._artifacts.stage_artifact(
                 session,
@@ -194,7 +410,7 @@ class PortfolioSemanticIndexService:
                 version=record.version,
             )
             if existing is None:
-                await self._artifacts.put_stage_artifact(
+                published = await self._artifacts.put_stage_artifact(
                     session,
                     loop_id=observation.loop_id,
                     round_id=observation.round_id,
@@ -204,7 +420,10 @@ class PortfolioSemanticIndexService:
                     outcome="blocked" if blocker_code else "ready",
                     payload=record.model_dump(mode="json"),
                     attempt_records=attempts,
+                    adopt_winner=True,
                 )
+                if published is not None:
+                    record = DerivationStageRecord.model_validate(published.payload)
             else:
                 record = DerivationStageRecord.model_validate(existing.payload)
         return PortfolioIndexBuildResult(
@@ -223,18 +442,30 @@ class PortfolioSemanticIndexService:
     ) -> RevisionSemanticIndex:
         async with semaphore:
             last_error: Exception | None = None
-            revision_id = str((frontier_item.get("revision") or {}).get("revision_id") or "unknown")
+            revision_id = str(
+                (frontier_item.get("revision") or {}).get("revision_id") or "unknown"
+            )
             for attempt in range(1, self._max_attempts + 1):
                 try:
                     index = await self._index_one(observation, frontier_item)
                     self._append_attempt(
                         revision_id,
-                        {"role": "semantic_index_builder", "attempt": attempt, "outcome": "ready"},
+                        {
+                            "role": "semantic_index_builder",
+                            "attempt": attempt,
+                            "outcome": "ready",
+                        },
                     )
                     return index
                 except asyncio.CancelledError:
                     raise
-                except (ContextRevisionNotFound, ContextRevisionIdentityMismatch, KeyError, TypeError, ValueError) as exc:
+                except (
+                    ContextRevisionNotFound,
+                    ContextRevisionIdentityMismatch,
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                ) as exc:
                     last_error = exc
                     category, retryable = self._failure_policy(exc)
                     self._append_attempt(
@@ -254,11 +485,7 @@ class PortfolioSemanticIndexService:
                 raise RuntimeError("semantic index attempt 未执行")
             raise last_error
 
-    async def _index_one(
-        self,
-        observation: LoopObservationEnvelope,
-        frontier_item: dict[str, Any],
-    ) -> RevisionSemanticIndex:
+    async def _read_and_plan(self, observation, frontier_item):
         source = ContextRevisionRef.model_validate(frontier_item["revision"])
         frozen_hash = str(frontier_item.get("content_hash") or "")
         scope = set((observation.grant or {}).get("context_scope") or ())
@@ -274,57 +501,81 @@ class PortfolioSemanticIndexService:
                 source_content_hash=frozen_hash,
                 index_schema_version=self._indexer.INDEX_SCHEMA_VERSION,
                 segmenter_version=self._indexer.segmenter_version,
-                projector_version=self._indexer.PROJECTOR_VERSION,
+                projector_version=self._projection_contract,
             )
             if cached is not None:
-                return cached
+                if cached.source != source:
+                    raise ValueError("semantic index cached source identity mismatch")
+                _BUILD_STATE.get().telemetry[source.revision_id] = {
+                    "mode": "exact_hit",
+                    "reused_segments": len(cached.segments),
+                    "recomputed_segments": 0,
+                }
+                return cached, None, ()
             view = await self._reader.read(session, source, "execution")
-            objective = str((observation.mission or observation.goal or {}).get("outcome") or "Current mission")
-            index = self._indexer.index(
+            frozen = self._indexer.index(
                 source=source,
                 source_content_hash=frozen_hash,
                 context_role=str(frontier_item.get("role") or "context"),
-                active_objective=objective,
+                active_objective=str(
+                    (observation.mission or observation.goal or {}).get("outcome")
+                    or "Current mission"
+                ),
                 raw_messages=tuple(view.messages),
+                projector_version=self._projection_contract,
             )
-            if self._semantic_projector_factory is not None:
-                projector = SupervisedSegmentSemanticProjector(
-                    self._semantic_projector_factory()
-                )
-                try:
-                    drafts = await projector.project(index)
-                finally:
-                    for attempt in projector.attempt_records:
-                        self._append_attempt(source.revision_id, attempt)
-                assessments = ()
-                confirmed = tuple(
-                    draft
-                    for draft in drafts
-                    if draft.authority == "confirmed"
-                    and SemanticGroundingValidator.structurally_valid(
-                        self._indexer.message_contents(index.messages),
-                        draft,
-                    )
-                )
-                if confirmed and self._semantic_claim_verifier_factory is not None:
-                    verifier = SupervisedSemanticClaimSupportVerifier(
-                        self._semantic_claim_verifier_factory()
-                    )
-                    try:
-                        assessments = await verifier.verify(confirmed)
-                    finally:
-                        for attempt in verifier.attempt_records:
-                            self._append_attempt(source.revision_id, attempt)
-                index = self._indexer.index(
-                    source=source,
-                    source_content_hash=frozen_hash,
-                    context_role=str(frontier_item.get("role") or "context"),
-                    active_objective=objective,
-                    raw_messages=tuple(view.messages),
-                    unit_drafts=drafts,
-                    claim_support_assessments=assessments,
-                )
-            return index
+            planner = RevisionIndexInheritancePlanner(
+                self._revision_repository,
+                self._artifacts,
+                self._records,
+                self._projection_contract,
+            )
+            plan, inherited = await planner.plan(session, revision, frozen)
+        return frozen, plan, inherited
+
+    async def _index_one(self, observation, frontier_item) -> RevisionSemanticIndex:
+        frozen, plan, inherited = await self._read_and_plan(observation, frontier_item)
+        if plan is None:
+            return frozen
+        source = frozen.source
+        records = list(inherited)
+        for segment in frozen.segments[len(inherited) :]:
+            messages = tuple(
+                m for m in frozen.messages if m.message_id in set(segment.message_ids)
+            )
+            builder = SegmentProjectionBuilder(
+                source.context_id,
+                self._projection_contract,
+                self._budgeted_model(self._semantic_projector_factory),
+                self._budgeted_model(self._semantic_claim_verifier_factory),
+                lambda attempts: [
+                    self._append_attempt(source.revision_id, a) for a in attempts
+                ],
+            )
+            records.append(await builder.build(segment, messages))
+        _BUILD_STATE.get().records[source.revision_id] = tuple(records)
+        _BUILD_STATE.get().telemetry[source.revision_id] = {
+            "mode": plan.mode,
+            "baseline_index_id": plan.baseline_index_id,
+            "full_build_reason": plan.full_build_reason,
+            "reused_segments": len(plan.reused_segment_ids),
+            "recomputed_segments": len(plan.recomputed_segment_ids),
+            "read_message_count": len(frozen.messages),
+        }
+        return assemble_revision_index(self._indexer, frozen, tuple(records), plan)
+
+    def _budgeted_model(self, factory):
+        if factory is None:
+            return None
+        model = factory()
+        actual = getattr(
+            model,
+            "cache_identity",
+            f"{type(model).__module__}.{type(model).__qualname__}",
+        )
+        if actual != _BUILD_STATE.get().model_identities[factory]:
+            raise ValueError("semantic index model configuration 已 stale")
+        return BudgetedIndexModel(model, _BUILD_STATE.get().budget)
 
     def _append_attempt(self, revision_id: str, attempt: dict[str, Any]) -> None:
         self._projection_attempts[revision_id] = (
@@ -334,6 +585,10 @@ class PortfolioSemanticIndexService:
 
     @staticmethod
     def _failure_policy(exc: Exception) -> tuple[str, bool]:
+        if isinstance(exc, IndexBudgetExceeded):
+            return "authorized_budget", False
+        if "integrity" in str(exc).casefold():
+            return "artifact_integrity", False
         if isinstance(exc, ContextRevisionNotFound):
             return "source_not_found", False
         if isinstance(exc, ContextRevisionIdentityMismatch):
@@ -354,12 +609,20 @@ class PortfolioSemanticIndexService:
     ) -> None:
         if not attempts:
             return
-        await LoopUsageLedger(self._sessions).record(
-            loop_id,
-            LoopUsageDelta(
-                model_calls=sum(max(0, int(item.get("model_calls") or 0)) for item in attempts),
-                input_tokens=sum(max(0, int(item.get("input_tokens") or 0)) for item in attempts),
-                output_tokens=sum(max(0, int(item.get("output_tokens") or 0)) for item in attempts),
-                retries=sum(1 for item in attempts if int(item.get("attempt") or 1) > 1),
+        delta = LoopUsageDelta(
+            model_calls=sum(
+                max(0, int(item.get("model_calls") or 0)) for item in attempts
             ),
+            input_tokens=sum(
+                max(0, int(item.get("input_tokens") or 0)) for item in attempts
+            ),
+            output_tokens=sum(
+                max(0, int(item.get("output_tokens") or 0)) for item in attempts
+            ),
+            retries=sum(1 for item in attempts if int(item.get("attempt") or 1) > 1),
         )
+        budget = _BUILD_STATE.get().budget
+        if budget is not None and budget.has_reservations:
+            await budget.settle(delta)
+        else:
+            await LoopUsageLedger(self._sessions).record(loop_id, delta)

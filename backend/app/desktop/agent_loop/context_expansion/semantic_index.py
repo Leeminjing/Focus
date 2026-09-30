@@ -1,10 +1,8 @@
-r"""本文件对外提供完整 Revision semantic index、质量状态、rejection ledger 与稳定 identity 工具。
+r"""本文件对外提供 RevisionSemanticIndex、覆盖账本、质量 descriptor 与稳定 segment identity。
 
-输入为冻结 ContextRevisionRef、Revision content hash、按原始顺序排列的 message identities、protocol-safe segments
-与经验证的 semantic units；输出为可重放的 RevisionSemanticIndex、RevisionIndexDescriptor 和覆盖账本。具体工作流为
-规范化 descriptor，验证消息恰好被一个 segment 覆盖、Tool Exchange 不跨 segment、semantic unit 只引用本 Revision，
-记录 accepted 投影、segment fallback、complete/degraded 状态与隔离原因，再由来源与版本化 payload 计算 index identity。示例：
-`index = RevisionSemanticIndex.create(...)`。
+输入为冻结 Revision、完整规范消息、协议闭合 segments、验证后的 units 和可选 inheritance receipt；输出为不可变且可重放的完整索引。
+工作流为检查有序恰好一次覆盖、Tool Exchange 闭合、目标来源引用、fallback/rejections 与继承记录库存，再校验 payload identity。
+旧无 receipt payload 保留原 identity 算法，历史 planning session 可读。示例：index = RevisionSemanticIndex.create(...)。
 """
 
 from __future__ import annotations
@@ -17,9 +15,13 @@ from backend.app.desktop.agent_loop.context_expansion.contracts import (
     SemanticEvidenceUnit,
     stable_expansion_hash,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_grounding import SemanticUnitRejection
+from backend.app.desktop.agent_loop.context_expansion.semantic_grounding import (
+    SemanticUnitRejection,
+)
 from backend.app.desktop.context_curation import NamespacedMessageRef
 from backend.app.desktop.context_evolution import ContextRevisionRef
+
+from .index_build_contracts import IndexInheritanceReceipt
 
 
 class _IndexModel(BaseModel):
@@ -132,35 +134,70 @@ class RevisionSemanticIndex(_IndexModel):
     index_schema_version: str = Field(min_length=1, max_length=64)
     segmenter_version: str = Field(min_length=1, max_length=64)
     projector_version: str = Field(min_length=1, max_length=64)
+    inheritance: IndexInheritanceReceipt | None = None
 
     @field_validator("messages", mode="before")
     @classmethod
     def order_messages(cls, values: Any) -> tuple[Any, ...]:
-        return tuple(sorted(values or (), key=lambda item: item.get("ordinal", 0) if isinstance(item, dict) else item.ordinal))
+        return tuple(
+            sorted(
+                values or (),
+                key=lambda item: (
+                    item.get("ordinal", 0) if isinstance(item, dict) else item.ordinal
+                ),
+            )
+        )
 
     @field_validator("segments", mode="before")
     @classmethod
     def order_segments(cls, values: Any) -> tuple[Any, ...]:
-        return tuple(sorted(values or (), key=lambda item: item.get("ordinal", 0) if isinstance(item, dict) else item.ordinal))
+        return tuple(
+            sorted(
+                values or (),
+                key=lambda item: (
+                    item.get("ordinal", 0) if isinstance(item, dict) else item.ordinal
+                ),
+            )
+        )
 
     @model_validator(mode="after")
     def require_complete_valid_index(self) -> Self:
         if not self.source.is_runnable:
-            raise ValueError("Revision semantic index source 必须是可精确读取的 runnable Revision")
+            raise ValueError(
+                "Revision semantic index source 必须是可精确读取的 runnable Revision"
+            )
         message_ids = tuple(item.message_id for item in self.messages)
         if len(message_ids) != len(set(message_ids)):
             raise ValueError("Revision index message identity 重复")
-        if tuple(item.ordinal for item in self.messages) != tuple(range(len(self.messages))):
+        if tuple(item.ordinal for item in self.messages) != tuple(
+            range(len(self.messages))
+        ):
             raise ValueError("Revision index message ordinal 不连续")
-        covered = tuple(message_id for segment in self.segments for message_id in segment.message_ids)
+        covered = tuple(
+            message_id
+            for segment in self.segments
+            for message_id in segment.message_ids
+        )
         if covered != message_ids:
             raise ValueError("Revision index segments 未按原序恰好覆盖全部消息")
         if self.coverage.message_ids != message_ids:
             raise ValueError("Revision index coverage ledger 与消息不一致")
-        if self.coverage.segment_ids != tuple(item.segment_id for item in self.segments):
+        if self.coverage.segment_ids != tuple(
+            item.segment_id for item in self.segments
+        ):
             raise ValueError("Revision index coverage ledger 与 segments 不一致")
         self._require_semantic_provenance(set(message_ids))
         self._require_protocol_closure()
+        if self.inheritance is not None:
+            receipt = self.inheritance
+            segment_ids = tuple(s.segment_id for s in self.segments)
+            if (
+                receipt.reused_segment_ids + receipt.recomputed_segment_ids
+                != segment_ids
+            ):
+                raise ValueError("index inheritance segment coverage mismatch")
+            if len(receipt.record_ids) != len(segment_ids):
+                raise ValueError("index inheritance record coverage mismatch")
         if self.index_id != self._identity():
             raise ValueError("Revision semantic index identity 与冻结 payload 不一致")
         return self
@@ -174,21 +211,33 @@ class RevisionSemanticIndex(_IndexModel):
             raise ValueError("Revision index semantic rejection identity 重复")
         projected = set(self.projected_unit_ids)
         fallback = set(self.fallback_segment_ids)
-        if len(projected) != len(self.projected_unit_ids) or not projected.issubset(unit_ids):
+        if len(projected) != len(self.projected_unit_ids) or not projected.issubset(
+            unit_ids
+        ):
             raise ValueError("projected unit inventory 与 semantic units 不一致")
         segment_ids = {item.segment_id for item in self.segments}
-        if len(fallback) != len(self.fallback_segment_ids) or not fallback.issubset(segment_ids):
+        if len(fallback) != len(self.fallback_segment_ids) or not fallback.issubset(
+            segment_ids
+        ):
             raise ValueError("fallback segment inventory 与 segments 不一致")
         if self.quality_state == "complete" and (self.rejected_units or fallback):
-            raise ValueError("complete semantic index 不得包含 rejected units 或 segment fallback")
+            raise ValueError(
+                "complete semantic index 不得包含 rejected units 或 segment fallback"
+            )
         if self.quality_state == "degraded" and not (self.rejected_units or fallback):
-            raise ValueError("degraded semantic index 必须包含 rejected units 或 segment fallback")
+            raise ValueError(
+                "degraded semantic index 必须包含 rejected units 或 segment fallback"
+            )
         for unit in self.semantic_units:
             for ref in unit.evidence_refs:
                 if not isinstance(ref, NamespacedMessageRef):
-                    raise TypeError("Revision index semantic unit 只能引用 message evidence")
+                    raise TypeError(
+                        "Revision index semantic unit 只能引用 message evidence"
+                    )
                 if ref.source != self.source or ref.message_id not in known_message_ids:
-                    raise ValueError("Revision index semantic unit 引用了 index 之外的 message")
+                    raise ValueError(
+                        "Revision index semantic unit 引用了 index 之外的 message"
+                    )
         self._require_fallback_inventory(projected, fallback, set(unit_ids))
 
     def _require_fallback_inventory(
@@ -260,10 +309,17 @@ class RevisionSemanticIndex(_IndexModel):
             if message.tool_call_id:
                 assistant_id = calls.get(message.tool_call_id)
                 if assistant_id is None:
-                    raise ValueError("Tool Result 缺少同 Revision 的 Assistant tool call")
-                if segment_by_message[assistant_id] != segment_by_message[message.message_id]:
+                    raise ValueError(
+                        "Tool Result 缺少同 Revision 的 Assistant tool call"
+                    )
+                if (
+                    segment_by_message[assistant_id]
+                    != segment_by_message[message.message_id]
+                ):
                     raise ValueError("Tool Exchange 被拆分到不同 segments")
-        returned_ids = [item.tool_call_id for item in self.messages if item.tool_call_id]
+        returned_ids = [
+            item.tool_call_id for item in self.messages if item.tool_call_id
+        ]
         if len(returned_ids) != len(set(returned_ids)):
             raise ValueError("Tool Exchange Result identity 重复")
         returned = set(returned_ids)
@@ -271,8 +327,7 @@ class RevisionSemanticIndex(_IndexModel):
             raise ValueError("Assistant tool call 缺少对应 Tool Result")
 
     def _identity(self) -> str:
-        return stable_expansion_hash(
-            "revision-semantic-index",
+        payload = (
             self.source.model_dump(mode="json"),
             self.source_content_hash,
             self.index_schema_version,
@@ -286,6 +341,9 @@ class RevisionSemanticIndex(_IndexModel):
             self.fallback_segment_ids,
             self.quality_state,
         )
+        if self.inheritance is not None:
+            payload += (self.inheritance.model_dump(mode="json"),)
+        return stable_expansion_hash("revision-semantic-index", *payload)
 
     @classmethod
     def create(
@@ -306,11 +364,14 @@ class RevisionSemanticIndex(_IndexModel):
         segmenter_version: str,
         projector_version: str,
         protocol_exchange_count: int = 0,
+        inheritance: IndexInheritanceReceipt | None = None,
     ) -> Self:
         ordered_messages = tuple(sorted(messages, key=lambda item: item.ordinal))
         ordered_segments = tuple(sorted(segments, key=lambda item: item.ordinal))
         ordered_units = tuple(sorted(semantic_units, key=lambda item: item.unit_id))
-        ordered_rejections = tuple(sorted(rejected_units, key=lambda item: item.rejection_id))
+        ordered_rejections = tuple(
+            sorted(rejected_units, key=lambda item: item.rejection_id)
+        )
         ordered_projected_ids = tuple(sorted(projected_unit_ids))
         ordered_fallback_ids = tuple(sorted(fallback_segment_ids))
         coverage = RevisionCoverageLedger(
@@ -333,6 +394,8 @@ class RevisionSemanticIndex(_IndexModel):
             ordered_fallback_ids,
             quality_state,
         )
+        if inheritance is not None:
+            payload += (inheritance.model_dump(mode="json"),)
         return cls(
             index_id=stable_expansion_hash("revision-semantic-index", *payload),
             source=source,
@@ -350,6 +413,7 @@ class RevisionSemanticIndex(_IndexModel):
             index_schema_version=index_schema_version,
             segmenter_version=segmenter_version,
             projector_version=projector_version,
+            inheritance=inheritance,
         )
 
 

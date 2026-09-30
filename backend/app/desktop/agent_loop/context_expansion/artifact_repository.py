@@ -1,9 +1,8 @@
 r"""本文件对外提供 SemanticDerivationArtifactRepository。
 
-输入为 AsyncSession、RevisionSemanticIndex、PlanningRetrievalSession 或任意 identity-bearing stage payload；输出为幂等缓存命中、
-可恢复 session 和不可变 derivation artifact ORM 行。具体工作流为按完整 index cache key 查询并拒绝 identity 冲突，session 更新只允许
-同一冻结 frontier/catalog/budget，stage artifact 按 loop/round/stage/input/version 唯一复用且 payload 不可改写。示例：
-`row = await repository.put_index(session, index)`。
+输入为独立 AsyncSession、完整 Revision Index、planning session 或稳定 stage payload；输出为持久缓存、幂等 session 和不可变 artifact 行。
+工作流为校验数据库列与 payload 身份一致，新索引唯一键竞争采用首个提交赢家；旧索引与一般 stage 仍拒绝改写。
+调用方以一项短事务发布 records 与 indexes，索引 stage 可显式采用并发赢家。示例：row = await repository.put_index(session, index)。
 """
 
 from __future__ import annotations
@@ -11,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.agent_loop.context_expansion.contracts import (
@@ -40,7 +40,9 @@ class SemanticDerivationArtifactRepository:
         input_identities: tuple[str, ...],
         version: str,
     ) -> LoopContextDerivationArtifact | None:
-        input_identity = stable_expansion_hash("derivation-stage-input", tuple(sorted(input_identities)))
+        input_identity = stable_expansion_hash(
+            "derivation-stage-input", tuple(sorted(input_identities))
+        )
         return await session.scalar(
             select(LoopContextDerivationArtifact).where(
                 LoopContextDerivationArtifact.loop_id == loop_id,
@@ -71,7 +73,7 @@ class SemanticDerivationArtifactRepository:
         by_id = {row.index_id: row for row in rows}
         if set(index_ids) != set(by_id):
             raise LookupError("planning session 授权的 semantic index 不完整")
-        return tuple(RevisionSemanticIndex.model_validate(by_id[index_id].payload) for index_id in index_ids)
+        return tuple(self._validated_index(by_id[index_id]) for index_id in index_ids)
 
     async def cached_index(
         self,
@@ -93,7 +95,32 @@ class SemanticDerivationArtifactRepository:
                 LoopSemanticIndexArtifact.status == "ready",
             )
         )
-        return None if row is None else RevisionSemanticIndex.model_validate(row.payload)
+        return None if row is None else self._validated_index(row)
+
+    @staticmethod
+    def _validated_index(row) -> RevisionSemanticIndex:
+        index = RevisionSemanticIndex.model_validate(row.payload)
+        actual = (
+            row.index_id,
+            row.context_id,
+            row.revision_id,
+            row.source_content_hash,
+            row.index_schema_version,
+            row.segmenter_version,
+            row.projector_version,
+        )
+        expected = (
+            index.index_id,
+            index.source.context_id,
+            index.source.revision_id,
+            index.source_content_hash,
+            index.index_schema_version,
+            index.segmenter_version,
+            index.projector_version,
+        )
+        if actual != expected:
+            raise ValueError("semantic index columns integrity mismatch")
+        return index
 
     async def put_index(
         self,
@@ -111,7 +138,7 @@ class SemanticDerivationArtifactRepository:
             projector_version=index.projector_version,
         )
         if existing is not None:
-            if existing.index_id != index.index_id:
+            if existing.index_id != index.index_id and index.inheritance is None:
                 raise ValueError("semantic index cache key 命中不同 payload identity")
             row = await session.get(LoopSemanticIndexArtifact, existing.index_id)
             if row is None:
@@ -129,9 +156,37 @@ class SemanticDerivationArtifactRepository:
             payload=index.model_dump(mode="json"),
             attempt_records=list(attempt_records),
         )
-        session.add(row)
-        await session.flush()
-        return row
+        if index.inheritance is None:
+            session.add(row)
+            await session.flush()
+            return row
+        await session.execute(
+            insert(LoopSemanticIndexArtifact)
+            .values(
+                index_id=row.index_id,
+                context_id=row.context_id,
+                revision_id=row.revision_id,
+                source_content_hash=row.source_content_hash,
+                index_schema_version=row.index_schema_version,
+                segmenter_version=row.segmenter_version,
+                projector_version=row.projector_version,
+                status="ready",
+                payload=row.payload,
+                attempt_records=row.attempt_records,
+            )
+            .on_conflict_do_nothing(constraint="uq_loop_semantic_index_cache_key")
+        )
+        winner = await self.cached_index(
+            session,
+            revision_id=index.source.revision_id,
+            source_content_hash=index.source_content_hash,
+            index_schema_version=index.index_schema_version,
+            segmenter_version=index.segmenter_version,
+            projector_version=index.projector_version,
+        )
+        if winner is None:
+            raise ValueError("semantic index committed winner disappeared")
+        return await session.get(LoopSemanticIndexArtifact, winner.index_id)
 
     async def get_session(
         self,
@@ -139,7 +194,11 @@ class SemanticDerivationArtifactRepository:
         session_id: str,
     ) -> PlanningRetrievalSession | None:
         row = await session.get(LoopPlanningRetrievalSession, session_id)
-        return None if row is None else PlanningRetrievalSession.model_validate(row.payload)
+        return (
+            None
+            if row is None
+            else PlanningRetrievalSession.model_validate(row.payload)
+        )
 
     async def save_session(
         self,
@@ -150,7 +209,9 @@ class SemanticDerivationArtifactRepository:
         round_id: str,
         attempt_records: tuple[dict[str, Any], ...] = (),
     ) -> LoopPlanningRetrievalSession:
-        row = await session.get(LoopPlanningRetrievalSession, planning.session_id, with_for_update=True)
+        row = await session.get(
+            LoopPlanningRetrievalSession, planning.session_id, with_for_update=True
+        )
         payload = planning.model_dump(mode="json")
         if row is None:
             row = LoopPlanningRetrievalSession(
@@ -170,7 +231,11 @@ class SemanticDerivationArtifactRepository:
             return row
         if row.loop_id != loop_id or row.round_id != round_id:
             raise ValueError("planning session ownership 不一致")
-        if row.frontier_hash != planning.frontier_hash or row.catalog_id != planning.catalog_id or row.budget != planning.budget.model_dump(mode="json"):
+        if (
+            row.frontier_hash != planning.frontier_hash
+            or row.catalog_id != planning.catalog_id
+            or row.budget != planning.budget.model_dump(mode="json")
+        ):
             raise ValueError("planning session 冻结 scope 或 budget 不得改写")
         previous = PlanningRetrievalSession.model_validate(row.payload)
         if not self._usage_monotonic(previous, planning):
@@ -194,8 +259,11 @@ class SemanticDerivationArtifactRepository:
         payload: dict[str, Any],
         expansion_id: str | None = None,
         attempt_records: tuple[dict[str, Any], ...] = (),
+        adopt_winner: bool = False,
     ) -> LoopContextDerivationArtifact:
-        input_identity = stable_expansion_hash("derivation-stage-input", tuple(sorted(input_identities)))
+        input_identity = stable_expansion_hash(
+            "derivation-stage-input", tuple(sorted(input_identities))
+        )
         existing = await session.scalar(
             select(LoopContextDerivationArtifact).where(
                 LoopContextDerivationArtifact.loop_id == loop_id,
@@ -216,8 +284,12 @@ class SemanticDerivationArtifactRepository:
             payload,
         )
         if existing is not None:
-            if existing.artifact_id != artifact_id or existing.payload != payload:
-                raise ValueError("同一 derivation stage input/version 不得改写 artifact")
+            if not adopt_winner and (
+                existing.artifact_id != artifact_id or existing.payload != payload
+            ):
+                raise ValueError(
+                    "同一 derivation stage input/version 不得改写 artifact"
+                )
             return existing
         row = LoopContextDerivationArtifact(
             artifact_id=artifact_id,
@@ -231,6 +303,33 @@ class SemanticDerivationArtifactRepository:
             payload=payload,
             attempt_records=list(attempt_records),
         )
+        if adopt_winner:
+            await session.execute(
+                insert(LoopContextDerivationArtifact)
+                .values(
+                    artifact_id=artifact_id,
+                    loop_id=loop_id,
+                    round_id=round_id,
+                    expansion_id=expansion_id,
+                    stage=stage,
+                    input_identity=input_identity,
+                    version=version,
+                    outcome=outcome,
+                    payload=payload,
+                    attempt_records=list(attempt_records),
+                )
+                .on_conflict_do_nothing(
+                    constraint="uq_loop_context_derivation_stage_input"
+                )
+            )
+            return await self.stage_artifact(
+                session,
+                loop_id=loop_id,
+                round_id=round_id,
+                stage=stage,
+                input_identities=input_identities,
+                version=version,
+            )
         session.add(row)
         await session.flush()
         return row
@@ -241,4 +340,7 @@ class SemanticDerivationArtifactRepository:
         current: PlanningRetrievalSession,
     ) -> bool:
         fields = ("queries", "candidates", "exact_reads", "model_calls", "tokens")
-        return all(getattr(current.usage, field) >= getattr(previous.usage, field) for field in fields)
+        return all(
+            getattr(current.usage, field) >= getattr(previous.usage, field)
+            for field in fields
+        )
