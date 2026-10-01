@@ -1,7 +1,7 @@
 r"""本文件对外提供 IndexModelBudget 与 BudgetedIndexModel。
 
 输入为冻结资源策略、模型窗口和结构化 payload；输出为 attempt 准入、纯窗口预检或显式预算异常。
-工作流为按完整请求 UTF-8 字节上界估计输入，预留输出／调用；短事务共享权威额度，结束时幂等结算真实用量。
+具体工作流为按完整请求 UTF-8 字节上界估计输入，预留输出／调用；短事务共享权威额度，结束时幂等结算真实用量。
 resources 提供冻结策略；fits_request 只检查容量，admit 才为局部／综合／verifier attempts 预留额度。未知崩溃预留仍占额度。
 BudgetedIndexModel.last_attempt_records 只包含本次 invocation：准入／配置拒绝返回空记录，已发送的失败或取消保留真实 attempts。
 示例：model.fits_request(schema, prompt, multi_segment_payload)；多段原文超窗显式阻断，Tool 原子段不切开。

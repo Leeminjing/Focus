@@ -1,6 +1,8 @@
-"""focus.agents.compression 关键字快捷压缩单测（f34/f35）。
+"""本文件对外提供关键词压缩来源与 display/execution 分离测试。
 
-覆盖机械命中、范围组装、关键词范围编译、用户/模型双投影与禁提词摘要。
+输入为用户消息、关键词、替换/恢复/删除范围；输出为无损来源、模型摘要与独立 UI 来源断言。
+具体工作流为定位来源消息、编译范围并分别验证 canonical、展示和送模投影。
+示例：pytest backend/tests/test_keyword_compression.py。
 """
 
 import asyncio
@@ -211,7 +213,11 @@ def test_quick_apply_preserves_original_source_and_model_only_sees_summary(monke
         for message in captured["update"]["messages"]
         if getattr(message, "additional_kwargs", {}).get("compression")
     )
-    assert block.additional_kwargs["compression"]["source"] == serialized
+    from focus.history import deserialize_history_message
+
+    restored = [deserialize_history_message(record) for record in block.additional_kwargs["compression"]["source"]]
+    assert restored == [original]
+    assert serialize_message(block)["compression"]["source"] == serialized
 
     model_messages = _strip_compression_kwargs([block])
     assert len(model_messages) == 1

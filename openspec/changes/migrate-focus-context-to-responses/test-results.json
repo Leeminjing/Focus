@@ -1,0 +1,64 @@
+{
+  "full_backend": {
+    "passed": 1584,
+    "failed": 20,
+    "skipped": 6,
+    "seconds": 829.89,
+    "note": "Executed before final fixture/header fixes and three additional focused tests. The full result is preserved; repeated focused results are not added to its pass count."
+  },
+  "independent_head_baseline": {
+    "passed": 77,
+    "failed": 13,
+    "seconds": 21.1,
+    "failures": [
+      "backend/tests/test_agent_loop_contracts.py::test_fact_projection_only_claims_explicit_test_counts",
+      "backend/tests/test_assembly_config.py::test_containment_allows_global_root",
+      "backend/tests/test_authority_surfaces.py::test_access_mode_does_not_change_the_tool_set",
+      "backend/tests/test_authority_surfaces.py::test_full_mode_lifts_the_local_resource_layer_entirely",
+      "backend/tests/test_authority_surfaces.py::test_missing_mode_defaults_to_workspace",
+      "backend/tests/test_authority_surfaces.py::test_read_and_write_are_decided_separately",
+      "backend/tests/test_authority_surfaces.py::test_unrecognised_mode_defaults_to_workspace_with_a_warning",
+      "backend/tests/test_governed_context_producers.py::test_consumer_tests_do_not_hand_build_governed_context_keys",
+      "backend/tests/test_governed_keys.py::test_governed_payload_cannot_overwrite_the_flat_projection",
+      "backend/tests/test_loop_resilience_regressions.py::test_postgres_wait_journal_activation_and_projection_recovery",
+      "backend/tests/test_loop_run_live_dispatch.py::test_live_activity_is_idempotent_private_and_replayable",
+      "backend/tests/test_mcp_trust.py::test_trust_override_config_is_an_authority_surface",
+      "backend/tests/test_spatial_patrol.py::test_resolve_path_containment"
+    ]
+  },
+  "corrected_contract_tests": {
+    "full_run_failures": [
+      "backend/tests/test_access_mode_equipment.py::test_equipment_round_trip_keeps_access_mode",
+      "backend/tests/test_agent_loop_architecture.py::test_new_domain_files_have_declarative_headers",
+      "backend/tests/test_context_curator_contract.py::test_real_openai_compatible_adapters_accept_declared_output_contracts",
+      "backend/tests/test_live_sandbox_mode.py::test_next_model_request_shows_persisted_mode_and_workspace",
+      "backend/tests/test_swarm_runtime_regressions.py::test_second_swarm_run_applies_new_input_and_updates_checkpoint_lineage",
+      "backend/tests/test_swarm_runtime_regressions.py::test_swarm_run_recovers_from_latest_invalid_checkpoint",
+      "backend/tests/test_swarm_runtime_regressions.py::test_swarm_run_uses_clean_context_and_own_metadata"
+    ],
+    "recheck_passed": 55,
+    "recheck_failed": 0,
+    "seconds": 20.31
+  },
+  "semantic_and_curator_final": {
+    "passed": 32,
+    "failed": 0,
+    "seconds": 13.28
+  },
+  "responses_and_model_settings": {
+    "passed": 86,
+    "failed": 0,
+    "seconds": 38.4
+  },
+  "desktop_cjs": {
+    "files": 51,
+    "failed_files": 0
+  },
+  "desktop_live_and_collapse_js": {
+    "passed": 34,
+    "failed": 0
+  },
+  "openai_live": "not_run_no_independent_provider_credentials",
+  "deepseek_live": "passed_tool_replay_structured_reasoning_and_image",
+  "interactive_electron_e2e": "not_run; UI tests and backend integration are automated contract evidence"
+}

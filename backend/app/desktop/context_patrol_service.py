@@ -4,6 +4,7 @@ r"""本文件对外提供 ContextPatrolService，编排 Context 策展 Patrol �
 稳定 checkpoint 通知、控制状态、审计详情和启动/关闭方法。具体工作流为持久化来源观察与兼容调度
 游标，执行安全来源投影和 CurationEngine，再把候选与 attempt identity 交给通用单 Lane Program 的
 原子 Portfolio 发布路径；旧 binding/revision/attempt 只承载现有 API 调度与审计，不再镜像权威状态。
+来源从精确 checkpoint 的 semantic snapshot 读取，不消费 UI display 过滤结果。
 示例：`await service.notify_stable_context_checkpoint(context_id)`。
 """
 
@@ -163,8 +164,8 @@ class ContextPatrolService:
                     "model_name": draft.equipment.get("model_name"),
                     "permissions": ["read"],
                     "skills": [],
-                    # 访问模式随草稿装备一并承接（策展草稿由草稿规范化钉在工作区保护）；
-                    # 启动点不得丢掉它，否则会静默退回默认档
+
+
                     "access_mode": draft.equipment.get("access_mode") or str(AccessMode.WORKSPACE),
                 },
                 source_checkpoint_id=source_checkpoint_id,
@@ -550,7 +551,7 @@ class ContextPatrolService:
             checkpoint_id = revision.source_checkpoint_id
             base_revision = revision.base_binding_revision
         try:
-            root_snapshot = await self.contexts.snapshot(binding.root_context_id, checkpoint_id)
+            root_snapshot = await self.contexts.semantic_snapshot(binding.root_context_id, checkpoint_id)
             source = self.projector.project(checkpoint_id, root_snapshot["messages"])
             payload = build_curation_input(source, base_revision, policy, published)
             self._require_model_window(model_name, payload)

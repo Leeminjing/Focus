@@ -1,7 +1,7 @@
 r"""本文件对外提供 RoleBoundStructuredModel 与结构化结果验证异常。
 
 输入为 AppConfig、无权派生 role、schema、冻结 payload、结果 validator 及可选逐 attempt request guard；输出为结构化结果和真实 attempts／usage。
-工作流为每次 attempt 新建独立 StructuredWorkerModel，先准入，再有界调用／验证；失败、取消和预算中止保存实际用量。
+具体工作流为每次 attempt 新建独立 StructuredWorkerModel，先准入，再有界调用／验证；失败、取消和预算中止保存实际用量。
 cache_identity 只哈希非凭据模型配置；bind_request_guard 为索引共享预算提供逐次检查，不读 Context 或提交 Portfolio。
 示例：model.bind_request_guard(budget.admit); result = await model.invoke_validated(Schema, prompt, payload, validator)。
 """

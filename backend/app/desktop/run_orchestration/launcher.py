@@ -2,7 +2,7 @@ r"""本文件对外提供 RunLauncher、RunRegistrar 与严格 RunRegistrationRe
 
 输入为 PreparedRun、FastAPI 资源、可信执行身份和幂等键；输出为现有 `start_run → run_agent`
 脊柱上的 RunRecord 或唯一持久 Run。具体工作流为 Registrar 依靠数据库活跃执行/idempotency 约束
-裁决并发，Launcher 只调用既有 start_run 并挂接统一 lifecycle，绝不复制 Agent 执行循环。
+裁决并发，并在持久化前绑定宿主确认的输入来源；Launcher 只调用既有 start_run 并挂接统一 lifecycle。
 示例：`record = await launcher.launch(prepared, request)`。
 """
 
@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.models import DesktopRun
+from backend.app.desktop.run_orchestration.input_provenance import bind_run_inputs
 from focus.runtime.runs.manager import RunRecord
 
 
@@ -100,6 +101,7 @@ class RunRegistrar:
                 input_messages=list(request.input_messages),
                 model_name=request.model_name,
             )
+            run.input_messages = bind_run_inputs(run)
             session.add(run)
             try:
                 await session.commit()

@@ -1,6 +1,6 @@
 r"""本文件对外提供 Context revision、来源边和 current pointer 的事务型持久化端口。
 
-输入为一个或一批严格 `ContextRevisionContract`、`ContextRevisionRef` 与调用方 AsyncSession；输出为
+输入为一个或一批含 V1/V2 历史的严格 `ContextRevisionContract`、`ContextRevisionRef` 与调用方 AsyncSession；输出为
 不可变历史记录、当前引用或类型化并发冲突。具体工作流为按 Context/revision identity 排序加锁，
 验证同 workspace、精确 checkpoint 和批内 revision DAG 后原子插入历史事实，再以单条条件更新执行
 current pointer CAS，并在同事务登记发布证明；仅 insert candidate 不登记证明。本端口不提交事务也不提供历史更新/删除能力。
@@ -419,6 +419,7 @@ class ContextRevisionRepository:
     ) -> ContextRevisionContract:
         return ContextRevisionContract(
             ref=self._row_ref(row),
+            history_payload=deepcopy(row.history_payload),
             sources=sources,
             authored_messages=tuple(deepcopy(row.authored_messages)),
             execution_messages=tuple(deepcopy(row.execution_messages)),
@@ -458,8 +459,9 @@ class ContextRevisionRepository:
             checkpoint_ns=ref.checkpoint_ns,
             checkpoint_id=ref.checkpoint_id,
             payload_mode=ref.payload_mode.value,
-            authored_messages=deepcopy(list(contract.authored_messages)),
-            execution_messages=deepcopy(list(contract.execution_messages)),
+            history_payload=contract.history_payload.model_dump(mode="json") if contract.history_payload is not None else None,
+            authored_messages=[] if contract.history_payload is not None else deepcopy(list(contract.authored_messages)),
+            execution_messages=[] if contract.history_payload is not None else deepcopy(list(contract.execution_messages)),
             repair_manifest=deepcopy(list(contract.repair_manifest)),
             issues=deepcopy(list(contract.issues)),
             initial_message_ids=list(contract.initial_message_ids),

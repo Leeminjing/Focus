@@ -1,7 +1,7 @@
 r"""本文件对外提供 FrozenInterpretationInputs。
 
 输入为完整冻结 Index 和依次覆盖库存的局部 records；输出为全局发现目录及按任意合法 segment 请求展开的原文。
-工作流为保存全部有序目录，按冻结消息组装协议闭合原文，验证 read scope／上限并记录实际提供与请求身份。
+具体工作流为保存全部有序目录，按冻结消息组装协议闭合原文，验证 read scope／上限并记录实际提供与请求身份。
 示例：inputs.read((early_segment_id, late_segment_id))；不以关键词、相邻窗口或当前 Context pointer 筛选来源。
 """
 

@@ -1,7 +1,7 @@
-"""本文件对外提供图片附件请求投影中间件与图片交付失败类型。
+"""本文件对外提供 project_image_messages、select_image_messages、图片附件请求投影中间件与图片交付失败类型。
 
 输入为 runtime context 中的 RunImageInputs、工作区路径和模型图像能力；输出为只存在于
-当前模型请求中的 human 图像内容块。具体工作流为：每次模型调用读取 attached 清单，先校验
+当前模型请求中的 human 图像内容块。具体工作流为：先把历史未选图片投影为参考文本，再读取 attached 清单，先校验
 模型能力，再从未变化路径或受保护 Git blob 读取原图、生成送模副本并追加到 request.messages；
 任何附件不可读
 都在调用模型前失败，像素不写入 graph state 或 checkpoint。
@@ -22,6 +22,7 @@ from langchain_core.messages import HumanMessage
 
 from focus.agents.image_inputs import MODEL_IMAGE_INPUT_KEY, RunImageInput, RunImageInputs
 from focus.images import image_dimensions, scale_for_model, to_data_url
+from focus.messages.blocks import image_blocks, is_image_block
 
 _INJECTION_PREAMBLE = "以下是用户本轮附加的图片材料："
 
@@ -53,14 +54,35 @@ class ImageAttachmentProjectionMiddleware(AgentMiddleware):
 
     def _project(self, request: Any) -> Any:
         context = _runtime_context(getattr(request, "runtime", None))
-        inputs = RunImageInputs.from_context(context)
-        if not inputs.attached:
-            return request
-        _require_image_capable_model(context)
-        workspace = _workspace_of(context)
-        content: list[dict[str, Any]] = [{"type": "text", "text": _INJECTION_PREAMBLE}]
-        content.extend(_image_block(workspace, item) for item in inputs.attached)
-        return request.override(messages=[*request.messages, HumanMessage(content=content)])
+        return request.override(messages=project_image_messages(request.messages, context))
+
+
+def project_image_messages(messages, context):
+    inputs = RunImageInputs.from_context(context)
+    selected = select_image_messages(messages, context.get("origin_message_id") if isinstance(context, dict) else None)
+    if not inputs.attached:
+        return selected
+    _require_image_capable_model(context)
+    workspace = _workspace_of(context)
+    content = [{"type": "text", "text": _INJECTION_PREAMBLE}]
+    content.extend(_image_block(workspace, item) for item in inputs.attached)
+    return [*selected, HumanMessage(content=content)]
+
+
+def select_image_messages(messages, origin_message_id):
+    if not origin_message_id:
+        return messages
+    position = next((index for index, message in enumerate(messages) if message.id == origin_message_id), None)
+    if position is None:
+        return messages
+    result = []
+    for index, message in enumerate(messages):
+        if index < position and image_blocks(message):
+            content = [{"type": "text", "text": "[Historical image: select the original material in this Run to send pixels.]"}
+                       if is_image_block(block) else block for block in message.content]
+            message = message.model_copy(update={"content": content})
+        result.append(message)
+    return result
 
 
 def build_image_attachment_middleware() -> ImageAttachmentProjectionMiddleware:

@@ -1,4 +1,4 @@
-r"""本文件验证统一 Context revision reader 对迁移 root、derived 与 managed 语义的稳定投影。
+r"""本文件对外提供以下合同的验证统一 Context revision reader 对迁移 root、derived 与 managed 语义的稳定投影。
 
 输入为 migration-origin revision 合同与精确 checkpoint fixture；输出为 authored、execution、
 display、checkpoint、historical、frontier 和 deleted-source 视图断言。具体工作流为用只读内存仓储
@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from focus.history import HistoryPayload, messages_to_items
 
 from backend.app.desktop.context_evolution import (
     ContextFrontierSummary,
@@ -102,6 +103,28 @@ def _revision(
         created_at=datetime(2026, 9, 14, tzinfo=UTC),
         deleted_at=datetime(2026, 9, 14, tzinfo=UTC) if deleted else None,
     )
+
+
+def test_v2_semantic_and_display_preserve_source_ids_without_runtime_controls():
+    async def run():
+        ref = _ref("v2", "v2-r", ContextRevisionPayloadMode.DEFINITION)
+        authored = HumanMessage(id="u", content="task")
+        runtime = HumanMessage(id="env", content="environment", additional_kwargs={
+            "focus_context": {"origin": "runtime", "scope": "runtime", "kind": "world_state_update"},
+        })
+        answer = AIMessage(id="a", content="conclusion")
+        revision = _revision(ref).model_copy(update={"history_payload": HistoryPayload(
+            authored_items=messages_to_items([authored], origin="curator"),
+            execution_items=messages_to_items([authored, runtime, answer]),
+        ), "initial_message_ids": ("u", "env")})
+        reader = ContextRevisionReader(_RevisionStore(revision), _Checkpointer({}))
+        semantic = await reader.read(None, ref, "semantic")
+        display = await reader.read(None, ref, "display")
+        assert [row["id"] for row in semantic.messages] == ["u", "a"]
+        assert [row["source_ordinal"] for row in semantic.messages] == [0, 2]
+        assert [row["id"] for row in display.messages] == ["u", "a"]
+        assert all("_lc" not in row for row in display.messages)
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("kind", ["derived", "managed"])

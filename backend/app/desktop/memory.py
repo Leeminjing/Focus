@@ -5,22 +5,23 @@
     MemoryService — 记忆库业务服务（list/get/create/update/delete + resolve_selection
         + summarize_memory_transcript + build_memory_block）
 
-输入:
+输入为:
     session_factory — 桌面 DB 异步会话工厂
     app_config — 组合根配置（取默认模型做压缩总结）
     context_reader — Callable，给定 context_id（根/派生 context 的 task_id）返回其
         serialized messages 列表；由 DesktopService 注入（避免循环依赖）
 
-输出:
+输出为:
     list[dict] / dict — 记忆库列表与单条 payload
     str — 来源解析后的 transcript 或 `<memory>` 注入块
 
-具体工作流:
+具体工作流为:
     (1) CRUD：list/get/create/update/delete 直接读写 memory_items 表
     (2) resolve_selection：按 source.type（session/messages/text/manual）经 context_reader
         取上下文消息，按 message_ids（非连续）或 ranges（文字区间）切片，拼成 transcript
     (3) summarize_memory_transcript：复用 create_chat_model + 单次 ainvoke 生成中文摘要
-    (4) build_memory_block：把选中记忆包装为 `<memory>...</memory>` 块供 system prompt 注入
+    (4) freeze_selection：将选中记忆正文与版本哈希冻结为 Run 装备；新 Run 通过 scoped context 引用
+        build_memory_block 为旧展示调用返回文本，不定义模型基础行为
 
 示例:
     service = MemoryService(session_factory, app_config, context_reader)
@@ -38,7 +39,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from focus.models import create_chat_model
-from langchain_core.messages import HumanMessage, SystemMessage
+from focus.context.scoped import FrozenContext
+from focus.context.requests import frozen_request_messages
 
 from backend.app.desktop.models import Memory
 
@@ -46,20 +48,7 @@ logger = logging.getLogger(__name__)
 
 _MAIN_RUNTIME_MEMORY_KEY = "_main_run_memory_ids"
 
-# === 记忆压缩提示词（两种语义，精心设计） ===
-#
-# 设计原则（依据记忆压缩最佳实践）：
-#   1. 输出「持久事实」而非对话过程复述 —— 决策、约束、事实、未决事项、下一步。
-#   2. 去噪：丢弃寒暄、过程性日志、可由上下文重新推导的中间状态。
-#   3. 可溯源：分段记忆每段独立可读，并通过 source_ref 关联到具体来源。
-#   4. 格式约束：直接输出正文，不写标题/列表/代码块，避免污染注入后的系统提示词。
-#   5. 限长：宁可精炼，避免一大段无重点的长文。
-#
-# 两套提示词的差异只在「组织方式」：
-#   - COMPLETE：把多来源当作一个整体，跨来源去重、整合成一份全局纵览。
-#   - SEGMENT：把每个来源当独立记忆段提炼，段与段不合并，保留各自重点。
 
-# 「哪些信息值得留下」的共享准则。两套提示词都引用它，避免重复。
 _MEMORY_FACT_RULES = """\
 应该留下的信息（按价值优先级）：
 - 关键决策及背后的原因
@@ -106,11 +95,11 @@ class _Strict(BaseModel):
 
 
 class MemorySource(_Strict):
-    type: str  # session | messages | text | manual
+    type: str
     context_id: str | None = None
     message_ids: list[str] | None = None
-    parts: list[dict[str, Any]] | None = None  # text 来源: [{message_id, ranges:[{start,end}]}]
-    text: str | None = None  # manual 来源
+    parts: list[dict[str, Any]] | None = None
+    text: str | None = None
 
 
 class MemorySelection(_Strict):
@@ -120,7 +109,7 @@ class MemorySelection(_Strict):
 class MemoryCreate(_Strict):
     title: str
     content: str
-    content_mode: str = "complete"  # segmented | complete
+    content_mode: str = "complete"
     segments: list[dict[str, Any]] = Field(default_factory=list)
     source_kind: str = "manual"
     source: MemorySelection | None = None
@@ -135,7 +124,7 @@ class MemoryUpdate(_Strict):
 
 class MemorySummarizeRequest(_Strict):
     selection: MemorySelection
-    mode: str = "complete"  # segmented | complete
+    mode: str = "complete"
     model_name: str | None = None
 
 
@@ -169,7 +158,6 @@ class MemoryService:
         self._app_config = app_config
         self._context_reader = context_reader
 
-    # === CRUD ===
 
     async def list(self) -> list[dict[str, Any]]:
         async with self._session_factory() as session:
@@ -231,10 +219,9 @@ class MemoryService:
             await session.delete(row)
             await session.commit()
 
-    # === 来源解析 / 压缩总结 ===
 
     async def resolve_selection(self, selection: MemorySelection) -> str:
-        """把来源选择解析为 transcript 文本；单个来源失效时抛 4xx。"""
+
         parts: list[str] = []
         for source in selection.sources:
             transcript = await self._resolve_source(source)
@@ -286,14 +273,8 @@ class MemoryService:
         return "\n\n".join(lines)
 
     async def summarize(self, body: MemorySummarizeRequest) -> dict[str, Any]:
-        """按压缩语义生成记忆草稿。
 
-        - mode="complete"：把全部来源合并为一整份压缩，返回 {mode, content}。
-        - mode="segmented"：每个来源各自压缩成一段，返回 {mode, segments, content}
-          （content 为各段正文的分隔拼接，供展示/注入）。
 
-        任一来源为空或无可用内容时抛 ValueError。
-        """
         if body.mode == "segmented":
             return await self._summarize_segmented(body)
         return await self._summarize_complete(body)
@@ -304,11 +285,11 @@ class MemoryService:
             raise ValueError("所选来源没有可概括的内容")
         model = create_chat_model(body.model_name, app_config=self._app_config)
         response = await model.ainvoke(
-            [SystemMessage(content=_MEMORY_COMPLETE_PROMPT), HumanMessage(content=transcript)]
+            frozen_request_messages(_MEMORY_COMPLETE_PROMPT, transcript)
         )
         content = _message_text(getattr(response, "content", "")).strip()
         if not content:
-            # 可观测性：模型返回空时给出关键线索（不含原文/密钥），避免笼统报错。
+
             raise RuntimeError(
                 "摘要模型未返回内容: "
                 f"response_type={type(response).__name__}, "
@@ -324,14 +305,14 @@ class MemoryService:
             raise ValueError("未选择任何记忆来源")
         model = create_chat_model(body.model_name, app_config=self._app_config)
         segments: list[dict[str, Any]] = []
-        # 逐来源解析并压缩；单个来源失效时记为该来源的占位段，不中断其余来源。
+
         for index, source in enumerate(sources, start=1):
             transcript = (await self._resolve_source(source)).strip()
             if not transcript:
                 segments.append({"title": f"来源 {index}", "body": "[本来源无可概括内容]", "source_ref": self._source_ref(source)})
                 continue
             response = await model.ainvoke(
-                [SystemMessage(content=_MEMORY_SEGMENT_PROMPT), HumanMessage(content=transcript)]
+                frozen_request_messages(_MEMORY_SEGMENT_PROMPT, transcript, source_refs=(self._source_ref(source),))
             )
             body_text = _message_text(getattr(response, "content", "")).strip()
             if not body_text:
@@ -348,7 +329,7 @@ class MemoryService:
 
     @staticmethod
     def _source_ref(source: MemorySource) -> dict[str, Any]:
-        """给来源一个可读的引用（用于前端段标题与溯源）。"""
+
         if source.type == "session":
             return {"type": "session", "context_id": source.context_id}
         if source.type == "messages":
@@ -357,7 +338,6 @@ class MemoryService:
             return {"type": "text", "context_id": source.context_id, "message_id": source.parts[0]["message_id"] if source.parts else None}
         return {"type": "manual"}
 
-    # === 注入块 ===
 
     async def build_memory_block(self, memory_ids: list[str]) -> str:
         if not memory_ids:
@@ -371,13 +351,24 @@ class MemoryService:
         inner = "\n".join(self._render_memory(row) for row in rows)
         return f"<memory>\n{inner}\n</memory>"
 
+    async def freeze_selection(self, memory_ids: list[str] | None) -> list[dict]:
+        identities = list(dict.fromkeys(memory_ids or ()))
+        if not identities:
+            return []
+        async with self._session_factory() as session:
+            rows = (await session.scalars(select(Memory).where(Memory.memory_id.in_(identities)))).all()
+        selected = {row.memory_id: row for row in rows}
+        if set(identities) - selected.keys():
+            raise HTTPException(422, {"code": "memory_unavailable", "ids": sorted(set(identities) - selected.keys())})
+        return [FrozenContext(name=f"memory:{identity}", content=self._render_memory(selected[identity]),
+                              source_refs=({"kind": "memory", "memory_id": identity,
+                                            "updated_at": selected[identity].updated_at.isoformat()},)).record()
+                for identity in identities]
+
     @staticmethod
     def _render_memory(row: Memory) -> str:
-        """按压缩语义渲染单条记忆块。
 
-        - complete：`<memory id title>content</memory>`
-        - segmented：`<memory id title mode="segmented">` 内多层 `<segment title>` 段。
-        """
+
         if row.content_mode == "segmented" and row.segments:
             segments = "\n".join(
                 f"<segment title=\"{MemoryService._safe_attr(seg.get('title', '记忆段'))}\">\n{seg.get('body', '')}\n</segment>"
@@ -392,7 +383,7 @@ class MemoryService:
 
     @staticmethod
     def _safe_attr(value: str) -> str:
-        # 洗掉可能破坏 XML 属性的字符，避免注入后污染系统提示词。
+
         return str(value).replace('"', "&#34;").replace("<", "&lt;").replace(">", "&gt;")
 
     @staticmethod

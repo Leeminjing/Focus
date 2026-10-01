@@ -151,11 +151,12 @@ def _seed_service(monkeypatch) -> DesktopService:
 
     service = DesktopService.__new__(service_module.DesktopService)
     service.session_factory = _SESSION_FACTORY
+    service.app_config = SimpleNamespace(context_run_admission=True)
     service.checkpointer = SimpleNamespace(aget_tuple=_stub_none)
     service._get_task_entities = _stub_task_entities
     service._commitment_recovery_payload = _stub_none
     service._freeze_skills = lambda *_: {}
-    service._apply_memory_block = lambda prompt, _ids: _identity(prompt)
+    service.memory = SimpleNamespace(freeze_selection=lambda _ids: _identity([]))
     service._prepare = _stub_prepare.__get__(service, DesktopService)
     service.get_checkpoint_messages = _stub_checkpoint_messages
     service._validate_model_window = lambda *_: None

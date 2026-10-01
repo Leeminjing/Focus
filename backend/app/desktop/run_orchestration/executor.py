@@ -22,7 +22,7 @@ from langgraph.types import Command
 
 from focus.config.app_config import AppConfig
 from focus.runtime.checkpointer.namespaced import NamespacedCheckpointer
-from focus.runtime.runs.events import deserialize_messages
+from focus.history import deserialize_history_messages as deserialize_messages
 from focus.runtime.runs.limits import DEFAULT_AGENT_RECURSION_LIMIT
 from focus.runtime.runs.manager import RunManager, RunRecord
 from focus.runtime.runs.schemas import DisconnectMode
@@ -48,6 +48,8 @@ async def execute_prepared_run(
     *,
     runner: Callable[..., Awaitable[Any]] | None = None,
 ) -> RunRecord:
+    if not resources.app_config.context_run_admission:
+        raise HTTPException(503, "新 Run admission 已暂停；历史保持可读")
     context = _context_dict(body)
     _require_governed_context(context)
     record = resources.run_manager.create(

@@ -1,0 +1,1412 @@
+{
+  "change": "migrate-focus-context-to-responses",
+  "date": "2026-10-01",
+  "mode": "independent_verification_no_application_edits",
+  "tasks": {
+    "checked": 56,
+    "unchecked": 0
+  },
+  "requirements": {
+    "total": 37,
+    "implementation_evidence_found": 37,
+    "with_confirmed_divergence": 9
+  },
+  "scenarios": {
+    "total": 69,
+    "mapped": 69,
+    "missing_mappings": [],
+    "valid_test_references": 69,
+    "caution": "Named component tests are not sufficient proof of actual triggers, production composition or recovery."
+  },
+  "fresh_validation": {
+    "backend": {
+      "passed": 161,
+      "failed": 0,
+      "seconds": 21.36,
+      "log": ".tmp/openspec-verify-responses-tests.txt"
+    },
+    "desktop": {
+      "passed": 180,
+      "failed": 0,
+      "log": ".tmp/openspec-verify-desktop-tests.txt"
+    },
+    "openspec_strict": "passed",
+    "git_diff_check": "passed_with_line_ending_notices",
+    "reproductions": {
+      "executed": 6,
+      "confirmed_contract_divergences": 6,
+      "script": ".tmp/verify_responses_boundaries.py"
+    }
+  },
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "CRITICAL",
+      "priority": "P1",
+      "reproduction": "compression_resume"
+    },
+    {
+      "id": "F2",
+      "severity": "WARNING",
+      "priority": "P1",
+      "reproduction": "reference_policy_projection"
+    },
+    {
+      "id": "F3",
+      "severity": "WARNING",
+      "priority": "P1",
+      "reproduction": "input_provenance"
+    },
+    {
+      "id": "F4",
+      "severity": "WARNING",
+      "priority": "P1",
+      "reproduction": "changed_image_prefix"
+    },
+    {
+      "id": "F5",
+      "severity": "WARNING",
+      "priority": "P2",
+      "reproduction": "v1_semantic_runtime"
+    },
+    {
+      "id": "F6",
+      "severity": "WARNING",
+      "priority": "P2",
+      "reproduction": "compression_repair_status"
+    }
+  ],
+  "requirement_mapping": [
+    {
+      "spec": "checkpoint-world-state",
+      "requirement": "World state uses stable sections with explicit update semantics",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/context/world_state.py",
+          "symbol": "compile_world_state",
+          "line": 29,
+          "end_line": 95,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "requirement": "A snapshot is valid only for its retained checkpoint baseline",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/context/world_state.py",
+          "symbol": "compile_world_state",
+          "line": 29,
+          "end_line": 95,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/context/middleware.py",
+          "symbol": "_binding",
+          "line": 40,
+          "end_line": 44,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "requirement": "World state and its items are recoverably committed together",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/context/middleware.py",
+          "symbol": "abefore_model",
+          "line": 46,
+          "end_line": 70,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/execution_attempts/model.py",
+          "symbol": "ModelAttemptMiddleware",
+          "line": 61,
+          "end_line": 85,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "requirement": "Branch operations restore or reinitialize the correct baseline",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/history/bridge.py",
+          "symbol": "branch_messages",
+          "line": 40,
+          "end_line": 55,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/context/middleware.py",
+          "symbol": "abefore_model",
+          "line": 46,
+          "end_line": 70,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "requirement": "Permission descriptions never grant execution authority",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/context/sections.py",
+          "symbol": "execution_sections",
+          "line": 16,
+          "end_line": 46,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/security/middleware.py",
+          "symbol": "AccessPolicyMiddleware",
+          "line": 62,
+          "end_line": 105,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "requirement": "Frozen round inputs are not dynamic world state",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/app/desktop/agent_loop/patrol.py",
+          "symbol": "PortfolioPatrol",
+          "line": 40,
+          "end_line": 86,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/context/requests.py",
+          "symbol": "frozen_request_messages",
+          "line": 13,
+          "end_line": 22,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "focus-item-history",
+      "requirement": "Typed items preserve identity and trusted provenance",
+      "status": "confirmed_divergence",
+      "findings": [
+        "F2",
+        "F3"
+      ],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/history/contracts.py",
+          "symbol": "FocusItem",
+          "line": 32,
+          "end_line": 61,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/history/codec.py",
+          "symbol": "messages_to_items",
+          "line": 69,
+          "end_line": 94,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "focus-item-history",
+      "requirement": "History persistence is lossless and distinct from display",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/history/codec.py",
+          "symbol": "serialize_history_message",
+          "line": 25,
+          "end_line": 32,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/history/codec.py",
+          "symbol": "_native_items",
+          "line": 151,
+          "end_line": 166,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "focus-item-history",
+      "requirement": "Legacy revisions are adapted without rewriting authority",
+      "status": "confirmed_divergence",
+      "findings": [
+        "F5"
+      ],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/history/codec.py",
+          "symbol": "legacy_to_items",
+          "line": 97,
+          "end_line": 111,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/context_evolution/reader.py",
+          "symbol": "_messages",
+          "line": 170,
+          "end_line": 212,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "focus-item-history",
+      "requirement": "Authored and execution histories have separate authority",
+      "status": "confirmed_divergence",
+      "findings": [
+        "F6"
+      ],
+      "implementation": [
+        {
+          "file": "backend/app/desktop/context_evolution/history.py",
+          "symbol": "build_revision_history",
+          "line": 50,
+          "end_line": 63,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/history/selection.py",
+          "symbol": "authored_items",
+          "line": 86,
+          "end_line": 87,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "focus-item-history",
+      "requirement": "Continuation is scoped to an eligible execution branch",
+      "status": "confirmed_divergence",
+      "findings": [
+        "F4"
+      ],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/history/bridge.py",
+          "symbol": "branch_messages",
+          "line": 40,
+          "end_line": 55,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/models/response_projection.py",
+          "symbol": "_message",
+          "line": 63,
+          "end_line": 90,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "focus-item-history",
+      "requirement": "A compatibility bridge cannot create a second history authority",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/history/bridge.py",
+          "symbol": "synchronize_items",
+          "line": 31,
+          "end_line": 37,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/history/codec.py",
+          "symbol": "_restore_native_group",
+          "line": 169,
+          "end_line": 207,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "responses-provider-projection",
+      "requirement": "Provider requests use explicit protocol and capability contracts",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/models/provider_contract.py",
+          "symbol": "resolve_provider_contract",
+          "line": 31,
+          "end_line": 44,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "responses-provider-projection",
+      "requirement": "Manual replay uses Focus checkpoints as the sole context authority",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/models/response_projection.py",
+          "symbol": "build",
+          "line": 41,
+          "end_line": 61,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/models/responses.py",
+          "symbol": "request_payload",
+          "line": 75,
+          "end_line": 86,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "responses-provider-projection",
+      "requirement": "Policy authority survives provider role differences",
+      "status": "confirmed_divergence",
+      "findings": [
+        "F2"
+      ],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/models/response_projection.py",
+          "symbol": "_message",
+          "line": 63,
+          "end_line": 90,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/models/provider_contract.py",
+          "symbol": "policy_role",
+          "line": 27,
+          "end_line": 28,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "responses-provider-projection",
+      "requirement": "Tool protocol remains under Focus execution authority",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/models/response_projection.py",
+          "symbol": "function_specs",
+          "line": 20,
+          "end_line": 34,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/history/protocol.py",
+          "symbol": "validate_items",
+          "line": 16,
+          "end_line": 34,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "responses-provider-projection",
+      "requirement": "Structured output and modalities are validated after projection",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/models/response_structured.py",
+          "symbol": "structured_output",
+          "line": 5,
+          "location_status": "keyword"
+        },
+        {
+          "file": "backend/packages/harness/focus/models/response_output.py",
+          "symbol": "decode_response",
+          "line": 29,
+          "end_line": 52,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "responses-provider-projection",
+      "requirement": "Provider compaction cannot publish a Focus revision",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/models/response_projection.py",
+          "symbol": "_native",
+          "line": 92,
+          "end_line": 117,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/history/selection.py",
+          "symbol": "semantic_policy",
+          "line": 21,
+          "end_line": 30,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "responses-provider-projection",
+      "requirement": "All model roles use the declared projection boundary",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/models/factory.py",
+          "symbol": "create_chat_model",
+          "line": 40,
+          "end_line": 88,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/agent_loop/structured_worker.py",
+          "symbol": "StructuredWorkerModel",
+          "line": 23,
+          "end_line": 125,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "requirement": "Stream normalization preserves channel and item boundaries",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/models/response_stream.py",
+          "symbol": "ResponseStreamAssembler",
+          "line": 15,
+          "end_line": 149,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/models/response_chunks.py",
+          "symbol": "ResponseChunkBridge",
+          "line": 16,
+          "end_line": 87,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "requirement": "Tool calls execute only after valid argument completion",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/models/response_output.py",
+          "symbol": "_output_fields",
+          "line": 55,
+          "end_line": 95,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/models/response_chunks.py",
+          "symbol": "finish",
+          "line": 47,
+          "end_line": 81,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "requirement": "Provider terminal status controls model attempt settlement",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/models/response_stream.py",
+          "symbol": "finish",
+          "line": 66,
+          "end_line": 88,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/execution_attempts/model.py",
+          "symbol": "ModelAttemptMiddleware",
+          "line": 61,
+          "end_line": 85,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "requirement": "Partial audit cannot masquerade as replayable complete history",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/app/desktop/execution_attempts/tool.py",
+          "symbol": "ToolExecutionLedger",
+          "line": 15,
+          "end_line": 41,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/runtime/tool_attempts.py",
+          "symbol": "ToolExecutionUncertain",
+          "line": 17,
+          "end_line": 18,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "requirement": "Usage reflects actual requests and distinguishes unavailable values",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/models/response_output.py",
+          "symbol": "_usage",
+          "line": 98,
+          "end_line": 108,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/messages/request_budget.py",
+          "symbol": "estimate_responses_budget",
+          "line": 25,
+          "end_line": 36,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "requirement": "Existing display settlement and bounded rendering are preserved",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/runtime/runs/events.py",
+          "symbol": "serialize_message",
+          "line": 55,
+          "end_line": 94,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/runtime/runs/worker.py",
+          "symbol": "run_agent",
+          "line": 145,
+          "end_line": 361,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "requirement": "Semantic history is a deterministic derived view",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/history/selection.py",
+          "symbol": "semantic_messages",
+          "line": 33,
+          "end_line": 83,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/context_evolution/reader.py",
+          "symbol": "_messages",
+          "line": 170,
+          "end_line": 212,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "requirement": "Selection eligibility applies across the entire indexing pipeline",
+      "status": "confirmed_divergence",
+      "findings": [
+        "F5"
+      ],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/history/selection.py",
+          "symbol": "semantic_policy",
+          "line": 21,
+          "end_line": 30,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/agent_loop/context_expansion/semantic_indexer.py",
+          "symbol": "_units",
+          "line": 272,
+          "end_line": 339,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/agent_loop/context_expansion/semantic_grounding.py",
+          "symbol": "_validated_authority",
+          "line": 277,
+          "end_line": 298,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "requirement": "Tool evidence retains its invocation context",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/history/selection.py",
+          "symbol": "semantic_messages",
+          "line": 33,
+          "end_line": 83,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/agent_loop/context_expansion/semantic_indexer.py",
+          "symbol": "_atoms",
+          "line": 129,
+          "end_line": 155,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "requirement": "Selected references remain available without repetitive extraction",
+      "status": "confirmed_divergence",
+      "findings": [
+        "F1"
+      ],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/context/scoped.py",
+          "symbol": "FrozenContext",
+          "line": 20,
+          "end_line": 34,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/context_curator/contract.py",
+          "symbol": "_authored_message",
+          "line": 246,
+          "end_line": 281,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "requirement": "Index compatibility includes semantic selection contracts",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/app/desktop/agent_loop/context_expansion/semantic_indexer.py",
+          "symbol": "RevisionSemanticIndexer",
+          "line": 189,
+          "end_line": 354,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/agent_loop/context_expansion/index_inheritance.py",
+          "symbol": "RevisionIndexInheritancePlanner",
+          "line": 15,
+          "end_line": 107,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "requirement": "Semantic evidence remains resolvable to authoritative sources",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/history/selection.py",
+          "symbol": "semantic_messages",
+          "line": 33,
+          "end_line": 83,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/agent_loop/context_expansion/evidence_corpus.py",
+          "symbol": "semantic",
+          "line": 3,
+          "location_status": "keyword"
+        }
+      ]
+    },
+    {
+      "spec": "scoped-agent-context",
+      "requirement": "Context assembly separates behavior and scoped inputs",
+      "status": "confirmed_divergence",
+      "findings": [
+        "F1"
+      ],
+      "implementation": [
+        {
+          "file": "backend/app/desktop/context_assembly.py",
+          "symbol": "desktop_contexts",
+          "line": 14,
+          "end_line": 30,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/context/scoped.py",
+          "symbol": "ScopedContextMiddleware",
+          "line": 44,
+          "end_line": 71,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "scoped-agent-context",
+      "requirement": "Context is assembled according to role and ownership",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/context/requests.py",
+          "symbol": "frozen_request_messages",
+          "line": 13,
+          "end_line": 22,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/agent_loop/structured_worker.py",
+          "symbol": "StructuredWorkerModel",
+          "line": 23,
+          "end_line": 125,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "scoped-agent-context",
+      "requirement": "Selected context bindings are immutable and attributable",
+      "status": "confirmed_divergence",
+      "findings": [
+        "F1",
+        "F2"
+      ],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/context/scoped.py",
+          "symbol": "FrozenContext",
+          "line": 20,
+          "end_line": 34,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/run_material_message.py",
+          "symbol": "RunMaterialMessageProjector",
+          "line": 16,
+          "end_line": 53,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "scoped-agent-context",
+      "requirement": "Collaboration delivery is durable and deduplicated",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/app/desktop/inbox.py",
+          "symbol": "prepare",
+          "line": 28,
+          "end_line": 36,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/inbox.py",
+          "symbol": "confirm",
+          "line": 38,
+          "end_line": 67,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/inbox.py",
+          "symbol": "DurableInboxMiddleware",
+          "line": 79,
+          "end_line": 95,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "scoped-agent-context",
+      "requirement": "Request context is auditable without another authority",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/context/middleware.py",
+          "symbol": "abefore_model",
+          "line": 46,
+          "end_line": 70,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/models/response_source.py",
+          "symbol": "response_source_manifest",
+          "line": 14,
+          "end_line": 22,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/execution_attempts/model.py",
+          "symbol": "ModelAttemptMiddleware",
+          "line": 61,
+          "end_line": 85,
+          "location_status": "symbol"
+        }
+      ]
+    },
+    {
+      "spec": "scoped-agent-context",
+      "requirement": "Material and must-view behavior is preserved in actual requests",
+      "status": "implementation_evidence_found_no_issue_detected",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/agents/image_attachment.py",
+          "symbol": "project_image_messages",
+          "line": 60,
+          "end_line": 69,
+          "location_status": "symbol"
+        },
+        {
+          "file": "backend/packages/harness/focus/agents/compression/gate.py",
+          "symbol": "_request_usage",
+          "line": 261,
+          "end_line": 281,
+          "location_status": "symbol"
+        }
+      ]
+    }
+  ],
+  "scenario_reference_checks": [
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "State is unchanged at the next sampling",
+      "test": "backend/tests/test_checkpoint_world_state.py::test_full_diff_replacement_and_missing_dependency_reanchor",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "A catalog entry is removed",
+      "test": "backend/tests/test_checkpoint_world_state.py::test_renderer_binding_changes_and_removal_are_explicit",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Compression removes a permissions fragment",
+      "test": "backend/tests/test_checkpoint_world_state.py::test_full_diff_replacement_and_missing_dependency_reanchor",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Rendering contract changes",
+      "test": "backend/tests/test_checkpoint_world_state.py::test_renderer_binding_changes_and_removal_are_explicit",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Crash after preparing a request",
+      "test": "backend/tests/test_execution_attempt_audit.py::test_completed_attempt_recovery_reuses_canonical_result_without_resampling",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Fail before checkpoint persistence",
+      "test": "backend/tests/test_checkpoint_world_state.py::test_sampling_waits_for_durable_prepared_checkpoint",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Roll back after access mode was narrowed",
+      "test": "backend/tests/test_live_sandbox_mode.py::test_next_model_request_shows_persisted_mode_and_workspace",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Derive into another workspace",
+      "test": "backend/tests/test_checkpoint_world_state.py::test_renderer_binding_changes_and_removal_are_explicit",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Permission changes between sampling and tool execution",
+      "test": "backend/tests/test_live_sandbox_mode.py::test_new_tool_call_reads_new_mode_without_mutating_prior_binding",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Approve one specific tool call",
+      "test": "backend/tests/test_access_middleware.py::test_interrupt_fires_before_any_side_effect_and_grants_once",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Progress is published while a round is running",
+      "test": "backend/tests/test_round_memory_boundaries.py::test_successful_child_publication_keeps_old_round_and_advances_next",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Runtime facts use a user wire role",
+      "test": "backend/tests/test_focus_item_history.py::test_runtime_role_does_not_create_authorization_or_semantics",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "A delegated instruction looks like human input",
+      "test": "backend/tests/test_focus_item_history.py::test_runtime_role_does_not_create_authorization_or_semantics",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Persist a reasoning and tool exchange",
+      "test": "backend/tests/test_focus_item_history.py::test_native_items_and_parallel_exchange",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Preserve an unknown provider item",
+      "test": "backend/tests/test_focus_item_history.py::test_unknown_preserved_but_not_semantic",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Read and derive from a V1 revision",
+      "test": "backend/tests/test_focus_history_migration.py::test_additive_history_migration_preserves_v1_and_refuses_v2_downgrade",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Encounter a future schema",
+      "test": "backend/tests/test_focus_item_history.py::test_legacy_identity_is_stable_and_input_is_untouched",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Append a permissions update during a run",
+      "test": "backend/tests/test_context_revision_reader.py::test_v2_semantic_and_display_preserve_source_ids_without_runtime_controls",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Repair an authored tool fragment",
+      "test": "backend/tests/test_responses_protocol.py::test_typed_interruption_repair_requires_proven_source_and_is_not_evidence",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Continue an unchanged branch",
+      "test": "backend/tests/test_responses_protocol.py::test_actual_wire_stream_manual_replay_and_structured_output",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Merge two contexts",
+      "test": "backend/tests/test_recursive_context_forking.py::test_recursive_tree_merge_and_parent_independence",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Resume through a compatibility representation",
+      "test": "backend/tests/test_focus_item_history.py::test_lossless_message_roundtrip",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Detect divergent representations",
+      "test": "backend/tests/test_focus_item_history.py::test_mirror_tool_arguments_cannot_override_canonical_data",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Responses capability is unavailable",
+      "test": "backend/tests/test_responses_protocol.py::test_policy_modality_and_explicit_config_contract",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "An old configuration is loaded",
+      "test": "backend/tests/test_responses_protocol.py::test_policy_modality_and_explicit_config_contract",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Continue on OpenAI",
+      "test": "backend/tests/test_responses_protocol.py::test_actual_wire_stream_manual_replay_and_structured_output",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Continue on DeepSeek",
+      "test": "backend/tests/test_responses_protocol.py::test_actual_wire_stream_manual_replay_and_structured_output",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Project policy to DeepSeek",
+      "test": "backend/tests/test_responses_protocol.py::test_policy_modality_and_explicit_config_contract",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Project selected external content",
+      "test": "backend/tests/test_responses_role_cutover.py::test_actual_agent_factory_protocol_and_context_sources",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Receive parallel function calls",
+      "test": "backend/tests/test_responses_protocol.py::test_parallel_calls_execute_once_and_native_items_survive_graph",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Request an unsupported custom tool",
+      "test": "backend/tests/test_responses_protocol.py::test_policy_modality_and_explicit_config_contract",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Run a curator structured response",
+      "test": "backend/tests/test_responses_role_cutover.py::test_actual_structured_worker_has_frozen_sources",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Required image uses an unsupported role",
+      "test": "backend/tests/test_responses_protocol.py::test_policy_modality_and_explicit_config_contract",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Receive a provider compaction item",
+      "test": "backend/tests/test_responses_protocol.py::test_invalid_conflicting_calls_refusal_and_unknown_archive",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Invoke a cognitive worker after protocol migration",
+      "test": "backend/tests/test_responses_role_cutover.py::test_actual_structured_worker_has_frozen_sources",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Interleave reasoning and visible text",
+      "test": "backend/tests/test_responses_protocol.py::test_actual_wire_stream_manual_replay_and_structured_output",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Receive tool arguments or tool output",
+      "test": "backend/tests/test_responses_protocol.py::test_parallel_calls_execute_once_and_native_items_survive_graph",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Disconnect during arguments",
+      "test": "backend/tests/test_responses_protocol.py::test_partial_function_arguments_never_become_tools",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Repeat an item completion event",
+      "test": "backend/tests/test_responses_protocol.py::test_stream_duplicate_done_and_conflicting_sequence",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Receive incomplete output with valid JSON prefix",
+      "test": "backend/tests/test_responses_protocol.py::test_invalid_conflicting_calls_refusal_and_unknown_archive",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Stream ends without a terminal event",
+      "test": "backend/tests/test_responses_protocol.py::test_partial_function_arguments_never_become_tools",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Cancel after output began",
+      "test": "backend/tests/test_execution_attempt_audit.py::test_real_checkpoint_inbox_receipt_and_partial_model_audit",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Crash after a tool side effect",
+      "test": "backend/tests/test_execution_attempt_audit.py::test_uncertain_tool_result_blocks_recovery_and_completed_result_is_reusable",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "World state and tool schemas consume context",
+      "test": "backend/tests/test_responses_role_cutover.py::test_pending_world_state_budget_is_identical_to_actual_request",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Provider omits cache usage",
+      "test": "backend/tests/test_responses_role_cutover.py::test_actual_structured_worker_has_frozen_sources",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Final snapshot follows streamed text",
+      "test": "backend/tests/test_responses_protocol.py::test_repeated_terminal_has_one_final_chunk_and_one_usage",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "An oversized tool result settles",
+      "test": "backend/tests/test_focus_item_history.py::test_display_does_not_serialize_authority_or_opaque_payload",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Re-read the same semantic view",
+      "test": "backend/tests/test_context_revision_reader.py::test_v2_semantic_and_display_preserve_source_ids_without_runtime_controls",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Attempt independent semantic editing",
+      "test": "backend/tests/test_focus_item_history.py::test_semantic_view_cannot_be_persisted_or_edited_independently",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "World state changes without new task content",
+      "test": "backend/tests/test_typed_history_checkpoint.py::test_evidence_only_has_no_automatic_hypothesis",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "An assistant claims an unverified result",
+      "test": "backend/tests/test_semantic_evidence_resolver.py::test_lexically_related_but_semantically_unrelated_message_cannot_cover_requirement",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Select a search result as evidence",
+      "test": "backend/tests/test_focus_item_history.py::test_tool_evidence_preserves_original_position_and_arguments",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Encounter an orphan tool result",
+      "test": "backend/tests/test_typed_history_checkpoint.py::test_only_closed_real_exchange_is_eligible_evidence",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Derive a context with a selected memory constraint",
+      "test": "backend/tests/test_context_curator_contract.py::test_selected_constraint_derivation_keeps_reference_policy_and_exact_source",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "A reference is no longer available",
+      "test": "backend/tests/test_context_curator_contract.py::test_selected_constraint_derivation_keeps_reference_policy_and_exact_source",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Enable V2 semantic selection",
+      "test": "backend/tests/test_responses_role_cutover.py::test_independent_head_v5_golden_preserves_hash_and_v6_is_a_new_identity",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Reuse an unchanged eligible prefix",
+      "test": "backend/tests/test_semantic_index_cache_compatibility.py::test_legacy_semantic_cache_is_preserved_but_rebuilt_under_v3_contract",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Resolve a quote after runtime items were excluded",
+      "test": "backend/tests/test_focus_item_history.py::test_tool_evidence_preserves_original_position_and_arguments",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "A selected skill changes between runs",
+      "test": "backend/tests/test_scoped_context_inbox.py::test_selected_context_scope_and_frozen_hash",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Replay a retained history",
+      "test": "backend/tests/test_scoped_context_inbox.py::test_selected_context_scope_and_frozen_hash",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Invoke a semantic projector",
+      "test": "backend/tests/test_responses_role_cutover.py::test_actual_structured_worker_has_frozen_sources",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Invoke a patrol for a frozen round",
+      "test": "backend/tests/test_patrol_cognitive_contract.py::test_retry_feedback_repairs_malformed_proposal_on_frozen_observation",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "A selected skill file changes after admission",
+      "test": "backend/tests/test_scoped_context_inbox.py::test_selected_context_scope_and_frozen_hash",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "A material contains an instruction to expand access",
+      "test": "backend/tests/test_access_middleware.py::test_flat_context_cannot_admit_structured_write",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Crash after reading an inbox",
+      "test": "backend/tests/test_scoped_context_inbox.py::test_inbox_durable_ack_recovery_and_rollback",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Crash between persistence and delivery acknowledgment",
+      "test": "backend/tests/test_scoped_context_inbox.py::test_inbox_durable_ack_recovery_and_rollback",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Inspect a completed model attempt",
+      "test": "backend/tests/test_execution_attempt_audit.py::test_completed_attempt_recovery_reuses_canonical_result_without_resampling",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Replay a history containing a previously selected image",
+      "test": "backend/tests/test_must_view_images.py::test_optional_attachment_is_projected_without_entering_state_or_completion_gate",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Required image is removed by context rebuilding",
+      "test": "backend/tests/test_must_view_images.py::test_injection_survives_reference_being_compressed_away",
+      "reference_exists": true,
+      "assessment": "reference_integrity_only_not_end_to_end_proof"
+    }
+  ],
+  "limitations": [
+    "Full backend suite not rerun in this verification turn.",
+    "Earlier full backend run had 20 failures: 13 independently reproduced on HEAD and 7 corrected with focused retests; this is not a fresh full-suite pass.",
+    "OpenAI live smoke and interactive Electron E2E were not run; prior DeepSeek smoke evidence is retained, not rerun.",
+    "Memory-checkpointer reproductions prove middleware/reader/compiler behavior; they do not simulate process death on a live production instance."
+  ],
+  "assessment": "not_ready_for_archive_fix_F1_and_review_F2_to_F6"
+}

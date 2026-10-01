@@ -1,16 +1,8 @@
-"""
-承诺层（commitment-layer）PoC 测试。
+"""本文件对外提供承诺流程、角色装配和 schema 验证测试。
 
-覆盖:
-    开关与装配 — build_general_middlewares 按 commitment.enabled 条件装配
-    触发解析 — /commit 显式触发、前导 skill token 剥离、普通/空/中部命令不触发
-    九阶段状态机 — Supervisor 路由、阶段信封、stage 严格递增
-    Worker–Evaluator 审核闭环 — 最多三次重试、结构失败合成审核结果
-    人工修订 — approve/revise 语义、replacement 重审、失败草稿不可批准
-    消息账本 — 阶段结果提取、原位替换、账本纯净
-    Context7 解析 — library_id / stable version / candidate version / evidence
-    阶段规则 — 阶段2/3/4 语义校验、阶段3 逐字继承、阶段4 引用过滤
-    interrupt/resume — Interrupt 序列化提取、middleware 首次与恢复分支
+输入为工具效果声明、角色请求及离线模型结果；输出为准入、隔离和既有承诺阶段合同断言。
+具体工作流为构造冻结承诺状态、运行模型/工具节点并验证各阶段行为。
+示例：pytest backend/tests/test_commitment_poc.py。
 """
 
 import asyncio
@@ -183,6 +175,7 @@ def test_make_lead_agent_defers_context7_until_loader_is_called(monkeypatch):
     monkeypatch.setattr(lead_middlewares, "build_general_middlewares", fake_builder)
 
     result = asyncio.run(lead_agent.make_lead_agent(
+        model_name="test-model",
         tools=[],
         system_prompt="prompt",
         app_config=_app_config(True),
@@ -202,8 +195,9 @@ def test_make_lead_agent_defers_context7_until_loader_is_called(monkeypatch):
     from focus.security.middleware import AccessPolicyMiddleware
 
     assert isinstance(captured["middleware"][0], AccessPolicyMiddleware)
-    assert captured["middleware"][1:3] == [commitment_middleware, tool_error_middleware]
-    assert isinstance(captured["middleware"][-1], PluginBridgeMiddleware)
+    chain = captured["middleware"]
+    assert chain.index(commitment_middleware) < chain.index(tool_error_middleware)
+    assert any(isinstance(item, PluginBridgeMiddleware) for item in chain)
 
 
 # === 2. 触发解析 ===

@@ -1,4 +1,9 @@
-"""Swarm 后台运行上下文与主 Agent 有界等待的回归测试。"""
+"""本文件对外提供 Swarm 后台运行、恢复与有界等待回归验证。
+
+输入为真实测试数据库、明确 Run 准入和隔离运行配置；输出为 checkpoint lineage、等待与协作断言。
+具体工作流为创建独立 Swarm 主体，执行新输入或恢复，再核对运行元数据与已提交历史。
+示例：pytest backend/tests/test_swarm_runtime_regressions.py；测试不使用用户数据库。
+"""
 
 import asyncio
 import atexit
@@ -93,7 +98,7 @@ def _service(run_manager=None) -> DesktopService:
         checkpointer=_EmptyCheckpointer(serde=object()),
         store=object(),
         bridge=object(),
-        app_config=SimpleNamespace(models=[], commitment=SimpleNamespace(enabled=False)),
+        app_config=SimpleNamespace(models=[], context_run_admission=True, commitment=SimpleNamespace(enabled=False)),
         run_manager=run_manager or SimpleNamespace(),
     )
 
@@ -156,7 +161,7 @@ def test_second_swarm_run_applies_new_input_and_updates_checkpoint_lineage(monke
             checkpointer=saver,
             store=None,
             bridge=MemoryStreamBridge(),
-            app_config=SimpleNamespace(models=[], commitment=SimpleNamespace(enabled=False)),
+            app_config=SimpleNamespace(models=[], context_run_admission=True, commitment=SimpleNamespace(enabled=False)),
             run_manager=manager,
         )
         seen: list[str] = []
@@ -219,7 +224,7 @@ def test_swarm_run_recovers_from_latest_invalid_checkpoint(monkeypatch):
             checkpointer=saver,
             store=None,
             bridge=MemoryStreamBridge(),
-            app_config=SimpleNamespace(models=[], commitment=SimpleNamespace(enabled=False)),
+            app_config=SimpleNamespace(models=[], context_run_admission=True, commitment=SimpleNamespace(enabled=False)),
             run_manager=manager,
         )
         seen: list[str] = []

@@ -19,7 +19,7 @@
     (2) 逐范围校验：source_ids 非空、无重复、存在于当前 messages、跨范围不重叠
     (3) 活动输入豁免：范围覆盖 origin 用户消息或引用本轮必需材料时拒绝
     (4) replacement 与 restore 二选一；restore 的 source 必须全部是压缩块
-    (5) 其余选择完全自由：拆散 tool-call 组的范围不拒绝，由 gate._repair_protocol 兜底修复
+    (5) 其余选择完全自由：拆散 tool-call 组的范围不拒绝，由共享 history.repair 以 error 占位闭合
 
 示例:
     ranges, error = validate_apply_decision(decision, state["messages"], ("ab12",))

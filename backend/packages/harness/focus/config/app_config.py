@@ -8,7 +8,7 @@ reload_app_config: 强制替换全局单例（仅用于测试与显式重载；�
 build_app_config: 由两层原始 map 构造一个已校验的 AppConfig（不触碰全局单例）
 apply_app_config: 把已校验对象就地写入既有对象，保持对象身份不变
 
-完整加载工作流：
+完整加载具体工作流为：
 load_layered_maps 读取 文件层 + 用户偏好层 两份原始 map → merge_model_layers 施加模型目录专项合并
 （按条目名覆盖、删除名单、单例标记归属）→ resolve_env_vars 软解析 $ENV_VAR 环境变量引用
 （未命中的引用原样保留，不阻塞加载，缺失校验推迟到使用期）
@@ -20,6 +20,9 @@ load_layered_maps 读取 文件层 + 用户偏好层 两份原始 map → merge_
 build_app_config 构造一个校验通过的对象，再用 apply_app_config 就地写入既有对象；
 MUST NOT 依赖 reload_app_config——它替换模块全局，会让已经按引用持有旧对象的调用方
 （桌面服务、巡检服务、策展引擎）继续读到旧配置。
+
+输入为模型、运行准入、存储和工具配置；输出为验证后的 AppConfig，context_run_admission 控制新 Run 准入。
+示例：AppConfig(models=[model_config], context_run_admission=False) 允许维护期继续读取历史。
 """
 
 import os
@@ -47,7 +50,7 @@ _MODEL_ENTRY_HINT = (
 
 
 def available_model_names(config: "AppConfig") -> str:
-    """列出当前生效目录的条目名，供失败信息自解释（配置层与桌面服务共用同一实现）。"""
+
     return ", ".join(model.name for model in config.models) or "（当前没有任何条目）"
 
 
@@ -55,6 +58,7 @@ class AppConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     models: list[ModelConfig]
+    context_run_admission: bool = True
     removed_models: list[str] = Field(default_factory=list)
     """用户偏好层的显式删除名单：这些条目名在合并后已被剔除，界面据此显示「已删除」。"""
     stream_bridge: StreamBridgeConfig = StreamBridgeConfig()
@@ -80,12 +84,8 @@ class AppConfig(BaseModel):
         return self
 
     def resolve_default_model_name(self) -> str:
-        """解析默认模型名（默认模型的唯一真相来源）。
 
-        优先级：环境变量 FOCUS_MODEL > 配置中显式声明 default: true 的条目。
-        不再回退到列表位置，避免「调整条目顺序即改变系统行为」；失败信息列出全部可用条目，
-        使拼写错误可以就地自救。
-        """
+
         override = (os.environ.get(DEFAULT_MODEL_ENV_VAR) or "").strip()
         if override:
             if not any(model.name == override for model in self.models):
@@ -128,10 +128,8 @@ _app_config: AppConfig | None = None
 
 
 def build_app_config(file_map: dict, preference_map: dict) -> AppConfig:
-    """由 文件层 + 用户偏好层 两份原始 map 构造一个已校验的 AppConfig（不写入全局单例）。
 
-    环境变量引用在此软解析；未命中的引用原样保留，缺失校验推迟到使用期。
-    """
+
     from focus.config.model_layers import merge_model_layers
 
     merged = merge_model_layers(file_map, preference_map)
@@ -139,11 +137,8 @@ def build_app_config(file_map: dict, preference_map: dict) -> AppConfig:
 
 
 def apply_app_config(target: AppConfig, fresh: AppConfig) -> AppConfig:
-    """把已校验的 fresh 就地写入 target，保持 target 的对象身份不变，返回 target。
 
-    就地写入是刻意的：桌面服务、巡检服务与策展引擎都按引用持有同一个配置对象，
-    保持身份即可让它们无需任何刷新调用就读到新值。校验由 fresh 承担（见模块文档字符串）。
-    """
+
     for name in type(fresh).model_fields:
         setattr(target, name, getattr(fresh, name))
     for name, value in (fresh.__pydantic_extra__ or {}).items():
@@ -159,14 +154,14 @@ def get_app_config(yaml_path: str) -> AppConfig:
 
 
 def reload_app_config(yaml_path: str) -> AppConfig:
-    """强制替换全局单例。仅供测试与显式重载使用；运行期生效请用 apply_app_config。"""
+
     global _app_config
     _app_config = _load_layered_config(yaml_path)
     return _app_config
 
 
 def _load_layered_config(yaml_path: str) -> AppConfig:
-    """经两层聚合层读取配置：文件层 <yaml_path> 为默认，用户偏好层 `~/.focus/config.yaml` 优先。"""
+
     from focus.config.layered import load_layered_maps
 
     file_map, preference_map = load_layered_maps(Path(yaml_path).name, yaml_path)

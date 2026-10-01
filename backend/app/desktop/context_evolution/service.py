@@ -6,6 +6,7 @@ checkpoint 规范化成 revision，definition 先在 shadow identity 编译并�
 发布，待审批候选作为不可运行 current revision 留存，accept/reject 再产生新 revision；受管更新可从
 旧 current revision 计算初始前缀之后的真实运行后缀并接入新 checkpoint，全程不读写 identity-level
 definition/source 表。示例：`ref = await service.stage_definition(...)`。
+新 checkpoint publication 保存 V2 typed payload 与内容 hash；V1 migration 行不被重写，semantic 读取只提供资格允许的任务与证据。
 """
 
 from __future__ import annotations
@@ -36,7 +37,9 @@ from backend.app.desktop.context_evolution.schemas import (
     ContextRevisionSourceContract,
 )
 from backend.app.desktop.models import DesktopThread
-from focus.runtime.runs.events import serialize_message
+from focus.history import serialize_history_message as serialize_message
+from focus.history.bridge import checkpoint_records
+from backend.app.desktop.context_evolution.history import build_revision_history, continued_revision_history
 
 
 class ContextEvolutionService:
@@ -86,6 +89,17 @@ class ContextEvolutionService:
         value = await self._reader.read(session, revision.ref, "display")
         if not isinstance(value, ContextRevisionMessageView):
             raise TypeError("display reader 返回了错误视图")
+        return value
+
+    async def read_checkpoint_semantic(
+        self, session: AsyncSession, context_id: str, checkpoint_id: str,
+    ) -> ContextRevisionMessageView | None:
+        revision = await self._repository.find_by_checkpoint(session, context_id, checkpoint_id)
+        if revision is None:
+            return None
+        value = await self._reader.read(session, revision.ref, "semantic")
+        if not isinstance(value, ContextRevisionMessageView):
+            raise TypeError("semantic reader 返回了错误视图")
         return value
 
     async def ensure_checkpoint_revision(
@@ -259,10 +273,12 @@ class ContextEvolutionService:
                 if expected is not None
                 else ()
             )
+            history = await self._checkpoint_history(thread_id, namespace, checkpoint_id, current)
             contract = ContextRevisionContract(
                 ref=ref,
                 sources=sources,
-                content_hash=self._hash("checkpoint", context_id, checkpoint_id),
+                history_payload=history,
+                content_hash=self._hash("checkpoint", context_id, checkpoint_id, history.model_dump(mode="json")),
                 projection_status=ContextRevisionProjectionStatus.VALID,
                 origin_kind=origin_kind,
                 origin_id=origin_id,
@@ -360,6 +376,13 @@ class ContextEvolutionService:
         contract = self._decision_contract(
             current, ref, ContextRevisionProjectionStatus.APPROVED, initial_ids
         )
+        records = await self._writer.read_records(ref)
+        payload = build_revision_history(current.authored_messages, records, previous=current.history_payload)
+        contract = contract.model_copy(update={
+            "history_payload": payload, "authored_messages": (), "execution_messages": (),
+            "content_hash": self._hash("decision-v2", current.content_hash, payload.model_dump(mode="json"), ref.checkpoint_id),
+        })
+        contract = ContextRevisionContract.model_validate(contract.model_dump(mode="python"))
         await self._repository.insert(session, contract)
         await self._repository.switch_current(session, ref, current.ref)
         return contract
@@ -393,6 +416,7 @@ class ContextEvolutionService:
         return ContextRevisionContract(
             ref=ref,
             sources=current.sources,
+            history_payload=current.history_payload,
             authored_messages=current.authored_messages,
             execution_messages=current.execution_messages,
             repair_manifest=current.repair_manifest,
@@ -453,6 +477,14 @@ class ContextEvolutionService:
         )
         if actual != checkpoint_id:
             raise ValueError(f"checkpoint 不属于 Context execution identity: {checkpoint_id}")
+
+    async def _checkpoint_history(self, thread_id, namespace, checkpoint_id, current):
+        checkpoint = await self._checkpointer.aget_tuple({"configurable": {
+            "thread_id": thread_id, "checkpoint_ns": namespace, "checkpoint_id": checkpoint_id,
+        }})
+        records = checkpoint_records(checkpoint.checkpoint.get("channel_values", {}))
+        return continued_revision_history(current.authored_messages if current is not None else (), records,
+                                          previous=current.history_payload if current else None)
 
     @staticmethod
     def _hash(*parts: Any) -> str:

@@ -1,8 +1,9 @@
 r"""本文件对外提供 RevisionSemanticIndex、覆盖账本和稳定 segment identity。
 
 输入为冻结 Revision、规范消息、segments、验证 units、inheritance receipt 及 interpretation proof；输出为不可变完整索引。
-工作流为检查恰好一次覆盖、Tool Exchange 闭合、目标来源、质量账本及局部库存，再验证综合全部阅读依赖与联合 units 身份。
+具体工作流为检查恰好一次覆盖、Tool Exchange 闭合、目标来源、质量账本及局部库存，再验证综合全部阅读依赖与联合 units 身份。
 旧 v3/v4 无综合 proof 的 payload 保留原 identity 算法；新 rev 合同要求完成综合。
+semantic_policy 分离任务命题与证据／参考，source_ordinal 保留原始位置，只有 index 资格的未覆盖消息产生 fallback。
 示例：index = RevisionSemanticIndex.create(..., interpretation=proof)；一条诊断共同引用早期怀疑和后来否定。
 """
 
@@ -37,6 +38,11 @@ class IndexedMessage(_IndexModel):
     content: Any = ""
     tool_calls: tuple[dict[str, Any], ...] = ()
     tool_call_id: str | None = None
+    name: str | None = None
+    status: str | None = None
+    source_item_ids: tuple[str, ...] = ()
+    semantic_policy: Literal["index", "evidence_only", "reference_only"] = "index"
+    source_ordinal: int | None = Field(default=None, ge=0)
 
 
 class RevisionSegment(_IndexModel):
@@ -286,10 +292,11 @@ class RevisionSemanticIndex(_IndexModel):
             if unit.unit_id in projected
             for ref in unit.evidence_refs
         }
+        eligible = {message.message_id for message in self.messages if message.semantic_policy == "index"}
         expected_fallback = {
             segment.segment_id
             for segment in self.segments
-            if not set(segment.message_ids).issubset(represented)
+            if set(segment.message_ids) & eligible and not (set(segment.message_ids) & eligible).issubset(represented)
         }
         if fallback != expected_fallback:
             raise ValueError("fallback segment inventory 未精确覆盖未投影的来源")
@@ -367,7 +374,7 @@ class RevisionSemanticIndex(_IndexModel):
             self.index_schema_version,
             self.segmenter_version,
             self.projector_version,
-            tuple(item.model_dump(mode="json") for item in self.messages),
+            self.message_records(),
             tuple(item.model_dump(mode="json") for item in self.segments),
             tuple(item.model_dump(mode="json") for item in self.semantic_units),
             tuple(item.model_dump(mode="json") for item in self.rejected_units),
@@ -380,6 +387,16 @@ class RevisionSemanticIndex(_IndexModel):
         if self.interpretation is not None:
             payload += (self.interpretation.model_dump(mode="json"),)
         return stable_expansion_hash("revision-semantic-index", *payload)
+
+    def message_records(self) -> tuple[dict[str, Any], ...]:
+        return tuple(self._message_record(item, self.index_schema_version) for item in self.messages)
+
+    @staticmethod
+    def _message_record(item: IndexedMessage, version: str) -> dict[str, Any]:
+        excluded = {"semantic_policy", "source_ordinal", "name", "status", "source_item_ids"} if version in {
+            "revision-semantic-index-v3", "revision-semantic-index-v4", "revision-semantic-index-v5",
+        } else set()
+        return item.model_dump(mode="json", exclude=excluded)
 
     @classmethod
     def create(
@@ -423,7 +440,7 @@ class RevisionSemanticIndex(_IndexModel):
             index_schema_version,
             segmenter_version,
             projector_version,
-            tuple(item.model_dump(mode="json") for item in ordered_messages),
+            tuple(cls._message_record(item, index_schema_version) for item in ordered_messages),
             tuple(item.model_dump(mode="json") for item in ordered_segments),
             tuple(item.model_dump(mode="json") for item in ordered_units),
             tuple(item.model_dump(mode="json") for item in ordered_rejections),

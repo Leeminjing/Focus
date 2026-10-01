@@ -13,12 +13,12 @@
     probe_model_connection(entry, api_key_value) — 用候选条目发起一次最小真实调用
     referencing_models(session_factory, names) — 查询引用这些条目名的任务与运行
 
-输入:
+输入为:
     app_config: AppConfig — 运行中按引用持有的权威配置对象（就地更新的目标）
     payload: dict — 界面提交的 {models, removed_models, credentials}
     names: Sequence[str] — 待查询引用关系的条目名
 
-输出:
+输出为:
     catalog_snapshot → list[dict]；settings_snapshot / save_model_settings → dict
     probe_model_connection → {"ok": bool, "reason": str}；referencing_models → dict[str, list[dict]]
 
@@ -26,7 +26,7 @@
 形式的引用，要么是空串（条目用手写字面量密钥时只标记 api_key_literal，绝不回显值）。
 配置对象上的 api_key 在加载期已被 resolve_env_vars 解析成明文，直接读它会泄漏凭据。
 
-具体工作流（保存）:
+具体工作流为（保存）:
     (1) 字段与目录级校验：未知字段、必填、条目名唯一、适配器在受支持集合内、端点 http/https、
         窗口与策展上限为正整数、恰好一个默认与一个策展默认、策展默认必须声明策展输出方式。
     (2) 凭据可用性：每个条目的来源变量必须能在本次提交值或当前进程内取到。
@@ -75,6 +75,10 @@ CONFIG_FILE_NAME = "config.yaml"
 
 SUPPORTED_ADAPTERS: tuple[dict[str, str], ...] = (
     {
+        "use": "focus.models.responses:FocusResponsesChatModel",
+        "label": "Responses（显式 Provider）",
+    },
+    {
         "use": "focus.models.deepseek:DeepSeekChatOpenAI",
         "label": "DeepSeek（OpenAI 兼容）",
     },
@@ -96,6 +100,8 @@ _EDITABLE_FIELDS = (
     "model",
     "api_key",
     "base_url",
+    "provider",
+    "protocol",
     "context_window",
     "curation_output_method",
     "curation_max_output_tokens",
@@ -115,7 +121,7 @@ class ModelSettingsError(ValueError):
 
 
 def _redact(text: str, secrets: Sequence[str]) -> str:
-    """从错误信息中抹掉待提交的凭据值，避免它出现在响应或日志里。"""
+
     for secret in secrets:
         if secret:
             text = text.replace(secret, "***")
@@ -139,7 +145,7 @@ def _by_name(entries: Sequence[Any]) -> dict[str, dict]:
 
 
 def _normalized_entry(entry: Any) -> dict | None:
-    """把一份原始条目收敛为声明式完整条目（不做环境变量解析）；无法校验时返回 None。"""
+
     if not isinstance(entry, dict):
         return None
     try:
@@ -149,16 +155,13 @@ def _normalized_entry(entry: Any) -> dict | None:
 
 
 def credential_variable(entry: dict) -> str | None:
-    """条目凭据来源变量名；条目用字面量密钥时返回 None。"""
+
     return match_env_ref(entry.get("api_key") or "")
 
 
 def _raw_layers(config_name: str) -> tuple[dict[str, dict], dict[str, dict]]:
-    """读取 (文件层条目, 生效的原始声明条目)。
 
-    两者都未做环境变量解析，因此 `api_key` 仍是指向变量名的引用（或手写字面量），
-    不会像配置对象那样已经变成明文。
-    """
+
     file_map, preference_map = load_layered_maps(config_name, str(Path(config_name)))
     file_entries = _by_name(file_map.get("models") or [])
     declared = _by_name(merge_model_layers(file_map, preference_map).get("models") or [])
@@ -166,7 +169,7 @@ def _raw_layers(config_name: str) -> tuple[dict[str, dict], dict[str, dict]]:
 
 
 def _entry_view(model: ModelConfig, raw: dict | None) -> dict:
-    """单个条目的读模型：全部可编辑参数 + 凭据状态（绝不回显凭据值）。"""
+
     declared = _normalized_entry(raw)
     surface = declared or model.model_dump()
     entry = {field: surface.get(field) for field in _EDITABLE_FIELDS}
@@ -178,11 +181,15 @@ def _entry_view(model: ModelConfig, raw: dict | None) -> dict:
     entry["api_key_variable"] = variable
     entry["api_key_literal"] = bool(raw_key) and variable is None
     entry["api_key_set"] = credential_is_set(variable) if variable else entry["api_key_literal"]
+    from focus.models.provider_contract import resolve_provider_contract
+    contract = resolve_provider_contract(model)
+    entry["effective_provider"] = contract.provider
+    entry["effective_protocol"] = contract.protocol
     return entry
 
 
 def catalog_snapshot(app_config: AppConfig, config_name: str = CONFIG_FILE_NAME) -> list[dict]:
-    """生效目录的完整读模型：全部可编辑参数 + 来源标注 + 凭据状态。"""
+
     file_entries, declared = _raw_layers(config_name)
     snapshot: list[dict] = []
     for model in app_config.models:
@@ -200,7 +207,7 @@ def catalog_snapshot(app_config: AppConfig, config_name: str = CONFIG_FILE_NAME)
 
 
 def _default_state(app_config: AppConfig) -> tuple[str | None, str | None]:
-    """解析默认模型；失败时返回可读原因，使设置页能解释「为什么现在起不来」。"""
+
     try:
         return app_config.resolve_default_model_name(), None
     except ValueError as exc:
@@ -208,11 +215,8 @@ def _default_state(app_config: AppConfig) -> tuple[str | None, str | None]:
 
 
 def _default_model_override() -> str | None:
-    """当前生效的 FOCUS_MODEL 覆盖值（未设置时 None）。
 
-    它是最高优先级的默认模型来源，所以界面 MUST 能看见它在起作用——否则勾了「默认模型」
-    的人会以为自己说了算，实际跑的是环境变量指的那个条目。
-    """
+
     from focus.config.app_config import DEFAULT_MODEL_ENV_VAR
 
     value = (os.environ.get(DEFAULT_MODEL_ENV_VAR) or "").strip()
@@ -220,7 +224,7 @@ def _default_model_override() -> str | None:
 
 
 def settings_snapshot(app_config: AppConfig, config_name: str = CONFIG_FILE_NAME) -> dict:
-    """设置页所需的完整快照。"""
+
     default_name, default_error = _default_state(app_config)
     curated = [model.name for model in app_config.models if model.curation_default]
     file_entries, _ = _raw_layers(config_name)
@@ -237,7 +241,7 @@ def settings_snapshot(app_config: AppConfig, config_name: str = CONFIG_FILE_NAME
         "curation_output_methods": list(_CURATION_OUTPUT_METHODS),
         "default_model_name": default_name,
         "default_error": default_error,
-        # 环境变量压过面板里的默认选择时必须可见：否则界面显示的「默认」徽标会骗人
+
         "default_model_override": _default_model_override(),
         "curation_default_model_name": curated[0] if curated else None,
         "config_file": str(Path(config_name)),
@@ -245,12 +249,12 @@ def settings_snapshot(app_config: AppConfig, config_name: str = CONFIG_FILE_NAME
 
 
 def _entries_for_submission(entry: dict) -> dict:
-    """把条目收敛为提交用的字段集合（与读模型共用同一份可编辑字段清单）。"""
+
     return {field: entry.get(field) for field in _EDITABLE_FIELDS}
 
 
 def _entry_errors(index: int, entry: Any) -> dict[str, str]:
-    """单条目的字段级校验；供目录校验与连通性测试共用。"""
+
     errors: dict[str, str] = {}
     prefix = f"models[{index}]"
     if not isinstance(entry, dict):
@@ -292,18 +296,25 @@ def _entry_errors(index: int, entry: Any) -> dict[str, str]:
         if flag in entry and not isinstance(entry[flag], bool):
             errors[f"{prefix}.{flag}"] = "必须是布尔值"
 
+    if not errors:
+        from focus.models.provider_contract import resolve_provider_contract
+        try:
+            resolve_provider_contract(ModelConfig.model_validate(entry))
+        except (ValueError, ValidationError) as exc:
+            errors[f"{prefix}.protocol"] = str(exc)
+
     return errors
 
 
 def validate_entry(entry: Any) -> None:
-    """单条目校验；失败抛 ModelSettingsError。"""
+
     errors = _entry_errors(0, entry)
     if errors:
         raise ModelSettingsError(errors)
 
 
 def validate_catalog(models: Any) -> None:
-    """写入前目录级校验；失败抛 ModelSettingsError，错误按字段定位。"""
+
     if not isinstance(models, list):
         raise ModelSettingsError({"models": "模型目录必须是列表"})
     if not models:
@@ -342,12 +353,12 @@ def _is_http_url(value: str) -> bool:
 
 
 def _validate_credentials(models: Sequence[dict], pending: dict[str, str]) -> None:
-    """每个条目的凭据来源变量必须能用：来自本次提交的值，或当前进程内已有值。"""
+
     errors: dict[str, str] = {}
     for index, entry in enumerate(models):
         variable = credential_variable(entry)
         if variable is None:
-            continue  # 字面量密钥由结构校验保证非空
+            continue
         if pending.get(variable) or credential_is_set(variable):
             continue
         errors[f"models[{index}].api_key"] = f"凭据来源变量未设置: {variable}"
@@ -367,7 +378,7 @@ def _pending_credentials(payload: dict) -> dict[str, str]:
 
 
 def _with_inherited_api_keys(submitted: Any, declared: dict[str, dict]) -> Any:
-    """提交里留空 api_key 表示不修改该条目的密钥来源，从当前原始声明继承（可能是字面量）。"""
+
     if not isinstance(submitted, list):
         return submitted
     result = []
@@ -381,7 +392,7 @@ def _with_inherited_api_keys(submitted: Any, declared: dict[str, dict]) -> Any:
 
 
 def _with_pending_credentials(models: Sequence[dict], pending: dict[str, str]) -> list[dict]:
-    """把本次提交的凭据值就地代入条目，供「落盘前校验」使用（不写入任何文件）。"""
+
     result = []
     for entry in models:
         variable = credential_variable(entry)
@@ -393,7 +404,7 @@ def _with_pending_credentials(models: Sequence[dict], pending: dict[str, str]) -
 
 
 def _self_check(config: AppConfig) -> None:
-    """装配默认模型，使适配器与凭据问题在写入之前暴露（与启动期自检同一路径）。"""
+
     from focus.models import create_chat_model
 
     name = next((model.name for model in config.models if model.default), None)
@@ -410,7 +421,7 @@ def save_model_settings(
     payload: dict,
     config_name: str = CONFIG_FILE_NAME,
 ) -> dict:
-    """校验、落盘并就地生效；任何校验失败都发生在写入之前。"""
+
     file_map, _ = load_layered_maps(config_name, str(Path(config_name)))
     declared = _by_name(merge_model_layers(file_map, {}).get("models") or [])
 
@@ -426,13 +437,13 @@ def save_model_settings(
     ]
     shipped_names = set(_by_name(file_map.get("models") or []))
     overrides, derived_removed = derive_preference_overlay(models, list(file_map.get("models") or []))
-    # 删除名单以服务端推导为准：只有文件层里真实存在的名字才需要被显式记住
+
     removed = list(
         dict.fromkeys([*derived_removed, *[n for n in requested_removals if n in shipped_names]])
     )
     preference_map = {"models": overrides, "removed_models": removed}
 
-    # 先在内存里构造并自检（待提交凭据就地代入）：失败时磁盘与当前生效配置都不变
+
     fresh = build_app_config(
         file_map,
         {"models": _with_pending_credentials(overrides, pending), "removed_models": removed},
@@ -453,7 +464,7 @@ def save_model_settings(
 
 
 async def referencing_models(session_factory, names: Sequence[str]) -> dict[str, list[dict]]:
-    """按条目名查询引用它的任务、运行、巡检与小兵草稿。"""
+
     from sqlalchemy import select
 
     from backend.app.desktop.models import (
@@ -535,10 +546,8 @@ async def referencing_models(session_factory, names: Sequence[str]) -> dict[str,
 
 
 async def probe_model_connection(entry: dict, api_key_value: str | None = None) -> dict:
-    """用候选条目发起一次最小真实调用；只在人显式点击测试时执行。
 
-    待提交的凭据值只就地代入本次内存配置，不写进程环境、不落盘；返回值与错误信息都做脱敏。
-    """
+
     secrets = [api_key_value] if api_key_value else []
     candidate = {field: entry.get(field) for field in _EDITABLE_FIELDS}
     if api_key_value:
@@ -558,17 +567,14 @@ async def probe_model_connection(entry: dict, api_key_value: str | None = None) 
             name=candidate["name"], app_config=fresh, max_tokens=1, temperature=0
         )
         await model.ainvoke("ping")
-    except Exception as exc:  # 网络与供应商错误统一在此映射成可读原因
+    except Exception as exc:
         return {"ok": False, "reason": _redact(_describe_failure(exc), secrets)}
     return {"ok": True, "reason": "连接成功"}
 
 
 def _provider_message(exc: Exception) -> str:
-    """取供应商自己给出的错误原文（通常一句话就点明了原因），没有则返回空串。
 
-    必须带上它：不同兼容层对同一类问题的状态码并不一致——例如「模型不存在」既可能是
-    404，也可能是 400 + `Model Not Exist`。只报状态码会让人无从下手。
-    """
+
     response = getattr(exc, "response", None)
     payload = None
     if response is not None:
@@ -590,10 +596,10 @@ def _provider_message(exc: Exception) -> str:
 
 
 def _describe_failure(exc: Exception) -> str:
-    """把供应商/网络异常转成可读原因：状态码 + 供应商原文，不泄漏请求细节。"""
+
     try:
         import openai
-    except ImportError:  # pragma: no cover - openai 是 langchain-openai 的依赖
+    except ImportError:
         return f"{type(exc).__name__}: 连接失败"
 
     detail = _provider_message(exc)

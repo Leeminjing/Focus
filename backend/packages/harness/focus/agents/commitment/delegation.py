@@ -1,17 +1,17 @@
 """
 本文件对外提供 ReviewedDelegator，封装隔离的 Worker-Evaluator 审核闭环。
 
-输入:
+输入为:
     model — 创建 Worker 和 Evaluator 所使用的 BaseChatModel。
     context7_tools / context7_tools_loader — 仅承诺层内部可见的静态工具，或按需加载函数。
     TaskEnvelope — 当前阶段指令、上下文和验收条件。
     Supervisor messages — 指令 HumanMessage 和此前阶段最终 ToolMessage。
 
-输出:
+输出为:
     WorkerOutput | None — 最多三次审核后通过的阶段结果；全部失败时为 None。
     str — 未通过时最后一轮结构校验或 Evaluator 反馈。
 
-具体工作流:
+具体工作流为:
     (1) 为当前阶段创建干净的 Worker 上下文并生成候选结果。
     (2) 对特殊阶段执行确定性 Context7 查询、版本处理或结果规范化。
     (3) 使用独立 Evaluator 按 TaskEnvelope 验收条件审核结果。
@@ -108,7 +108,12 @@ def _deepseek_commitment_model(
     *,
     json_output: bool,
 ) -> BaseChatModel:
-    """复制 DeepSeek V4 配置，并按调用是否带工具选择 JSON Output。"""
+
+    from focus.models.responses import FocusResponsesChatModel
+    if isinstance(model, FocusResponsesChatModel):
+        if model.provider_contract.provider != "deepseek":
+            return model
+        return model.model_copy(update={"reasoning_effort": "high", "text": {"format": {"type": "json_object"}} if json_output else None})
     if not isinstance(model, ChatOpenAI):
         return model
     model_name = str(getattr(model, "model_name", "") or "")
@@ -137,12 +142,12 @@ def _deepseek_commitment_model(
 
 
 def _deepseek_structured_model(model: BaseChatModel) -> BaseChatModel:
-    """为不绑定工具的承诺层结构化请求启用稳定 JSON Output。"""
+
     return _deepseek_commitment_model(model, json_output=True)
 
 
 def _deepseek_tool_model(model: BaseChatModel) -> BaseChatModel:
-    """为工具型 Worker 保留 thinking/high，但避开 beta auto-parse。"""
+
     return _deepseek_commitment_model(model, json_output=False)
 
 

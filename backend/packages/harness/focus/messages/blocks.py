@@ -8,18 +8,18 @@
     content_text — 把一条消息的 content 归一为拼接文本
     strip_image_payloads — 把内联图像载荷替换为占位符，供需要 JSON 文本口径的调用方复用
 
-输入:
+输入为:
     block: Any — 单个内容块。兼容 OpenAI 兼容形态 {"type": "image_url", "image_url": {"url": ...}}
                  与跨 provider 标准形态 {"type": "image", "base64": ..., "mime_type": ...}
     content: Any — 消息的 content 字段，字符串或内容块列表
     message: Any — 单条消息，dict 或带 content 属性的对象（langchain BaseMessage）
 
-输出:
+输出为:
     message_content → Any；is_image_block → bool；image_blocks → list[dict]
     image_inline_payload → tuple[str, str] | None，非内联载荷返回 None
     content_text → str；strip_image_payloads → list[Any]
 
-具体工作流:
+具体工作流为:
     (1) message_content 先按 dict 取值，再回退到属性读取，两类消息形态归一
     (2) is_image_block 以块的 type 字段判定，同时认 image_url 与 image 两种命名
     (3) image_inline_payload 只接受 data URL 形态；远程 http(s) URL 与缺失载荷返回 None
@@ -35,7 +35,7 @@
 import re
 from typing import Any
 
-_IMAGE_BLOCK_TYPES = frozenset({"image_url", "image"})
+_IMAGE_BLOCK_TYPES = frozenset({"image_url", "image", "input_image"})
 _DEFAULT_IMAGE_MIME = "image/png"
 _DATA_URL_PATTERN = re.compile(
     r"^data:(?P<mime>[^;,]+)?;base64,(?P<data>.+)$", re.DOTALL | re.IGNORECASE
@@ -67,7 +67,7 @@ def image_inline_payload(block: Any) -> tuple[str, str] | None:
         return None
     if block.get("type") == "image":
         return _standard_payload(block)
-    if block.get("type") == "image_url":
+    if block.get("type") in {"image_url", "input_image"}:
         return _openai_payload(block)
     return None
 

@@ -1,4 +1,9 @@
-"""验证记忆库 CRUD、来源解析、压缩总结与主 Agent 的 `<memory>` 注入。"""
+"""本文件对外提供记忆 CRUD、摘要和 Run 冻结绑定测试。
+
+输入为持久记忆、明确选择与隔离模型输出；输出为版本绑定、来源解析和冻结正文断言。
+具体工作流为保存记忆、冻结 admission 选择、装配参考上下文并验证后续更新不漂移。
+示例：pytest backend/tests/test_memory_library.py。
+"""
 
 import os
 from pathlib import Path
@@ -146,10 +151,9 @@ def test_memory_crud_and_injection(monkeypatch):
             assert seg_mem["content_mode"] == "segmented"
             assert len(seg_mem["segments"]) == 2
 
-            # _apply_memory_block 注入缝
-            injected = await service._apply_memory_block("BASEPROMPT", [mem["memory_id"]])
-            assert injected.startswith("BASEPROMPT") and "<memory>" in injected
-            assert await service._apply_memory_block("BASEPROMPT", []) == "BASEPROMPT"
+            frozen = await service.memory.freeze_selection([mem["memory_id"]])
+            assert "编辑后的最终内容" in frozen[0]["content"]
+            assert frozen[0]["source_refs"][0]["memory_id"] == mem["memory_id"]
 
             # start_main_run 持久化 memory_ids → ui_state
             prepared = await service.start_main_run(
@@ -169,6 +173,7 @@ def test_memory_crud_and_injection(monkeypatch):
 
             async def fake_make_lead_agent(**kwargs):
                 captured["system_prompt"] = kwargs.get("system_prompt", "")
+                captured["frozen_contexts"] = kwargs["frozen_contexts"]
                 return create_agent(model=FakeListChatModel(responses=["unused"]), tools=[])
 
             original = svc.make_lead_agent
@@ -178,8 +183,8 @@ def test_memory_crud_and_injection(monkeypatch):
                     task_id, "请再开始", None, ["read"], [], None, [mem["memory_id"]],
                 )
                 graph = await prepared2.agent_factory()
-                assert "<memory>" in captured["system_prompt"]
-                assert "编辑后的最终内容" in captured["system_prompt"]
+                assert "编辑后的最终内容" not in captured["system_prompt"]
+                assert any("编辑后的最终内容" in item.content for item in captured["frozen_contexts"])
                 assert graph is not None
             finally:
                 svc.make_lead_agent = original

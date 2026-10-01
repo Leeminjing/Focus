@@ -1,0 +1,11 @@
+{
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "max_output_tokens_per_request": 512,
+  "tool_call": "passed",
+  "manual_replay": "passed",
+  "structured": "passed",
+  "reasoning_stream": "passed",
+  "reasoning_item": true,
+  "usage_reported": true
+}

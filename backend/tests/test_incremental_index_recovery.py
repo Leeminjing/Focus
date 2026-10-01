@@ -1,7 +1,7 @@
 r"""本文件对外提供索引独立进程重启与 additive migration 的 PostgreSQL 演练。
 
 输入为真实隔离数据库、冻结输入和独立子进程；输出为强杀提交前不泄漏、提交后零调用恢复及迁移不改权威记忆的断言。
-工作流为只在测试目录启动隐藏子进程，等待信号后强杀，另一个新进程重放并继续继承；迁移使用独立随机数据库。
+具体工作流为只在测试目录启动隐藏子进程，等待信号后强杀，另一个新进程重放并继续继承；迁移使用独立随机数据库。
 综合参与真实计费及进程边界；崩溃未知预留仍占额度，结算后可升降级，bf2a3b4c5d6e 回撤新综合 artifact 保留权威记忆。
 示例：python -m pytest backend/tests/test_incremental_index_recovery.py -q。
 """
@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import make_url
 
@@ -159,7 +160,7 @@ def test_projection_record_migration_round_trip_preserves_control_tables(
         monkeypatch.setenv(
             "FOCUS_DATABASE_URL", target.render_as_string(hide_password=False)
         )
-        command.upgrade(config, "8c9d0e1f2a3b")
+        command.upgrade(config, "head")
         from datetime import UTC, datetime
 
         from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -186,6 +187,8 @@ def test_projection_record_migration_round_trip_preserves_control_tables(
                 await database.dispose()
 
         fixture, target_revision = asyncio.run(seed_control())
+        assert target_revision.history_payload is None
+        command.downgrade(config, "8c9d0e1f2a3b")
         engine = create_engine(target.set(drivername="postgresql+psycopg", query={}))
         tables = [
             "desktop_context_revisions",
@@ -197,7 +200,7 @@ def test_projection_record_migration_round_trip_preserves_control_tables(
         def snapshot():
             with engine.connect() as c:
                 return {
-                    t: c.execute(text(f"SELECT to_jsonb(x) FROM {t} x")).scalars().all()
+                    t: c.execute(text(f"SELECT to_jsonb(x) - 'history_payload' FROM {t} x")).scalars().all()
                     for t in tables
                 }
 
@@ -264,7 +267,7 @@ def test_projection_record_migration_round_trip_preserves_control_tables(
         with engine.begin() as c:
             assert (
                 c.scalar(text("SELECT version_num FROM alembic_version"))
-                == "bf2a3b4c5d6e"
+                == ScriptDirectory.from_config(config).get_current_head()
             )
             c.execute(
                 text(

@@ -1,0 +1,53 @@
+{
+  "change": "migrate-focus-context-to-responses",
+  "date": "2026-10-01",
+  "validation": {
+    "backend_broad": {
+      "passed": 621,
+      "failed": 0,
+      "seconds": 279.82,
+      "log": ".tmp/responses-repair-regression.txt"
+    },
+    "backend_final_focused": {
+      "passed": 70,
+      "failed": 0,
+      "seconds": 7.19,
+      "log": ".tmp/responses-repair-final-focused.txt"
+    },
+    "http_admission": {
+      "passed": 12,
+      "failed": 0,
+      "seconds": 9.04,
+      "log": ".tmp/responses-repair-admission.txt"
+    },
+    "desktop": {
+      "rerun": false,
+      "prior_passed": 180,
+      "reason": "No frontend changes in this repair."
+    },
+    "openspec_strict": "passed",
+    "git_diff_check": "passed",
+    "repaired_file_headers_and_syntax": {
+      "passed": 24
+    },
+    "harness_dependency_direction": "passed",
+    "open_critical": 0,
+    "open_warning": 0
+  },
+  "resolved_findings": [
+    "F1",
+    "F2",
+    "F3",
+    "F4",
+    "F5",
+    "F6"
+  ],
+  "limitations": [
+    "Test groups overlap; counts must not be added into a full-suite claim.",
+    "Full backend suite not rerun. Previously 13 failures were independently reproduced on HEAD; unrelated baseline failures are outside this six-finding repair.",
+    "Final focused tests cover the last V1 compatibility and regression changes after the broad batch started.",
+    "Provider live smoke and interactive Electron E2E were not rerun.",
+    "PostgreSQL crash injection and graph reconstruction use isolated tests, not a production process-death exercise.",
+    "Initial audit artifacts and failure reproductions remain unchanged; obsolete temporary reproduction script is replaced by permanent regression tests."
+  ]
+}

@@ -35,6 +35,8 @@ async def _cleanup(service: DesktopService, task_id: str, workspace_id: str, thr
     await service.checkpointer.adelete_thread(thread_id)
     await service.checkpointer.adelete_thread(f"{thread_id}:commitment")
     async with service.session_factory() as session:
+        from backend.app.desktop.domain_evidence.models import DesktopDomainResult
+        await session.execute(delete(DesktopDomainResult).where(DesktopDomainResult.context_id == task_id))
         await session.execute(delete(DesktopThread).where(DesktopThread.task_id == task_id))
         await session.execute(
             delete(DesktopWorkspace).where(DesktopWorkspace.workspace_id == workspace_id)

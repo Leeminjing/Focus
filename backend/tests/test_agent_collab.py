@@ -1,4 +1,9 @@
-"""AgentCollab 协作能力测试：Mailbox 消息回合消费、任务板 CAS 机械协议。"""
+"""本文件对外提供AgentCollab 协作合同测试。
+
+输入为真实隔离数据库中的 mailbox 与任务板；输出为只读 inbox 准备、稳定消息身份和任务板 CAS 断言。
+具体工作流为播种协作消息、重复准备并验证未确认消息不被消费。
+示例：pytest backend/tests/test_agent_collab.py。
+"""
 
 import asyncio
 import atexit
@@ -74,45 +79,31 @@ async def _cleanup(collab: AgentCollab, task_id: str) -> None:
         await session.commit()
 
 
-def test_mailbox_send_and_turn_consume():
-    async def run() -> None:
+def test_mailbox_prepare_is_read_only_and_scoped_to_recipient():
+    from types import SimpleNamespace
+    from backend.app.desktop.inbox import AgentInbox
+
+    async def run():
         collab = AgentCollab(_SESSION_FACTORY)
         task_id = await _seed(collab)
         try:
             send = collab.build_send_message_tool()
             main = _runtime(f"main:{task_id}", task_id)
-            patrol = _runtime("patrol-x", task_id)
-
-            result = await send.ainvoke(
-                {"to_agent": "patrol-x", "content": "补充要求：报告需含测试覆盖率", "runtime": main}
-            )
-            assert "已发送" in result
-
-            block = await collab.load_unread_messages("patrol-x", task_id)
-            assert "<agent_messages>" in block
-            assert f'from="main:{task_id}"' in block
-            assert "补充要求" in block
-            assert "at=" in block
-
-            # 消费即销毁：再次注入为空，且消息已标记已读
-            assert await collab.load_unread_messages("patrol-x", task_id) == ""
-            assert await collab.load_unread_messages(f"main:{task_id}", task_id) == ""
-
-            # 非目标 agent 不受影响（消息只投递给 to_agent）
-            result = await send.ainvoke(
-                {"to_agent": f"main:{task_id}", "content": "小兵汇报：完成", "runtime": patrol}
-            )
-            assert "已发送" in result
-            assert f'from="patrol-x"' in await collab.load_unread_messages(f"main:{task_id}", task_id)
-            # XML 转义：内容含 < 时不破坏注入块
-            await send.ainvoke(
-                {"to_agent": "patrol-x", "content": "注意 <important> 标签", "runtime": main}
-            )
-            block = await collab.load_unread_messages("patrol-x", task_id)
-            assert "&lt;important&gt;" in block
+            await send.ainvoke({"to_agent": "patrol-x", "content": "注意 <important> 标签", "runtime": main})
+            inbox = AgentInbox(_SESSION_FACTORY, None)
+            routing = SimpleNamespace(agent_id="patrol-x", task_id=task_id)
+            first, pending = await inbox.prepare(routing, set())
+            again, _ = await inbox.prepare(routing, set())
+            assert len(first) == 1 and first[0].model_dump() == again[0].model_dump()
+            assert "<important>" in first[0].content and "main:" in first[0].content
+            assert pending
+            assert (await inbox.prepare(routing, {first[0].id}))[0] == []
+            assert (await inbox.prepare(SimpleNamespace(agent_id="other", task_id=task_id), set()))[0] == []
+            async with _SESSION_FACTORY() as session:
+                row = await session.scalar(select(AgentMessage).where(AgentMessage.message_id == pending[0]))
+                assert row.read_at is None
         finally:
             await _cleanup(collab, task_id)
-
     _LOOP.run_until_complete(run())
 
 

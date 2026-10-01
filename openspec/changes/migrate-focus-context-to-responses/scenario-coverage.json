@@ -1,0 +1,525 @@
+{
+  "schema_version": 1,
+  "scenario_count": 69,
+  "scenarios": [
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "State is unchanged at the next sampling",
+      "contract_test": "backend/tests/test_checkpoint_world_state.py::test_full_diff_replacement_and_missing_dependency_reanchor",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "A catalog entry is removed",
+      "contract_test": "backend/tests/test_checkpoint_world_state.py::test_renderer_binding_changes_and_removal_are_explicit",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Compression removes a permissions fragment",
+      "contract_test": "backend/tests/test_checkpoint_world_state.py::test_full_diff_replacement_and_missing_dependency_reanchor",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Rendering contract changes",
+      "contract_test": "backend/tests/test_checkpoint_world_state.py::test_renderer_binding_changes_and_removal_are_explicit",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Crash after preparing a request",
+      "contract_test": "backend/tests/test_execution_attempt_audit.py::test_completed_attempt_recovery_reuses_canonical_result_without_resampling",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Fail before checkpoint persistence",
+      "contract_test": "backend/tests/test_checkpoint_world_state.py::test_sampling_waits_for_durable_prepared_checkpoint",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Roll back after access mode was narrowed",
+      "contract_test": "backend/tests/test_live_sandbox_mode.py::test_next_model_request_shows_persisted_mode_and_workspace",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Derive into another workspace",
+      "contract_test": "backend/tests/test_checkpoint_world_state.py::test_renderer_binding_changes_and_removal_are_explicit",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Permission changes between sampling and tool execution",
+      "contract_test": "backend/tests/test_live_sandbox_mode.py::test_new_tool_call_reads_new_mode_without_mutating_prior_binding",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Approve one specific tool call",
+      "contract_test": "backend/tests/test_access_middleware.py::test_interrupt_fires_before_any_side_effect_and_grants_once",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "checkpoint-world-state",
+      "scenario": "Progress is published while a round is running",
+      "contract_test": "backend/tests/test_round_memory_boundaries.py::test_successful_child_publication_keeps_old_round_and_advances_next",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Runtime facts use a user wire role",
+      "contract_test": "backend/tests/test_focus_item_history.py::test_runtime_role_does_not_create_authorization_or_semantics",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "A delegated instruction looks like human input",
+      "contract_test": "backend/tests/test_focus_item_history.py::test_runtime_role_does_not_create_authorization_or_semantics",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results.",
+      "repair_regression_tests": [
+        "backend/tests/test_history_source_repairs.py::test_admitted_main_input_has_host_provenance_in_execution"
+      ],
+      "repair_evidence": "Actual Lead factory/SDK wire, isolated database admission/checkpoint or lossless reader regression; see repair-verification.md."
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Persist a reasoning and tool exchange",
+      "contract_test": "backend/tests/test_focus_item_history.py::test_native_items_and_parallel_exchange",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Preserve an unknown provider item",
+      "contract_test": "backend/tests/test_focus_item_history.py::test_unknown_preserved_but_not_semantic",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Read and derive from a V1 revision",
+      "contract_test": "backend/tests/test_focus_history_migration.py::test_additive_history_migration_preserves_v1_and_refuses_v2_downgrade",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results.",
+      "repair_regression_tests": [
+        "backend/tests/test_history_source_repairs.py::test_v1_semantic_uses_canonical_checkpoint_without_mutation"
+      ],
+      "repair_evidence": "Actual Lead factory/SDK wire, isolated database admission/checkpoint or lossless reader regression; see repair-verification.md."
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Encounter a future schema",
+      "contract_test": "backend/tests/test_focus_item_history.py::test_legacy_identity_is_stable_and_input_is_untouched",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Append a permissions update during a run",
+      "contract_test": "backend/tests/test_context_revision_reader.py::test_v2_semantic_and_display_preserve_source_ids_without_runtime_controls",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Repair an authored tool fragment",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_typed_interruption_repair_requires_proven_source_and_is_not_evidence",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results.",
+      "repair_regression_tests": [
+        "backend/tests/test_history_source_repairs.py::test_compression_parallel_exchange_has_error_repair_and_real_evidence"
+      ],
+      "repair_evidence": "Actual Lead factory/SDK wire, isolated database admission/checkpoint or lossless reader regression; see repair-verification.md."
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Continue an unchanged branch",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_actual_wire_stream_manual_replay_and_structured_output",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results.",
+      "repair_regression_tests": [
+        "backend/tests/test_request_context_repairs.py::test_actual_prefix_change_rebuilds_authority_and_preserves_old_checkpoint"
+      ],
+      "repair_evidence": "Actual Lead factory/SDK wire, isolated database admission/checkpoint or lossless reader regression; see repair-verification.md."
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Merge two contexts",
+      "contract_test": "backend/tests/test_recursive_context_forking.py::test_recursive_tree_merge_and_parent_independence",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Resume through a compatibility representation",
+      "contract_test": "backend/tests/test_focus_item_history.py::test_lossless_message_roundtrip",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Detect divergent representations",
+      "contract_test": "backend/tests/test_focus_item_history.py::test_mirror_tool_arguments_cannot_override_canonical_data",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Responses capability is unavailable",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_policy_modality_and_explicit_config_contract",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "An old configuration is loaded",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_policy_modality_and_explicit_config_contract",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Continue on OpenAI",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_actual_wire_stream_manual_replay_and_structured_output",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Continue on DeepSeek",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_actual_wire_stream_manual_replay_and_structured_output",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Project policy to DeepSeek",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_policy_modality_and_explicit_config_contract",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Project selected external content",
+      "contract_test": "backend/tests/test_responses_role_cutover.py::test_actual_agent_factory_protocol_and_context_sources",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results.",
+      "repair_regression_tests": [
+        "backend/tests/test_history_source_repairs.py::test_curator_system_role_cannot_promote_source_authority"
+      ],
+      "repair_evidence": "Actual Lead factory/SDK wire, isolated database admission/checkpoint or lossless reader regression; see repair-verification.md."
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Receive parallel function calls",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_parallel_calls_execute_once_and_native_items_survive_graph",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Request an unsupported custom tool",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_policy_modality_and_explicit_config_contract",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Run a curator structured response",
+      "contract_test": "backend/tests/test_responses_role_cutover.py::test_actual_structured_worker_has_frozen_sources",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Required image uses an unsupported role",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_policy_modality_and_explicit_config_contract",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Receive a provider compaction item",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_invalid_conflicting_calls_refusal_and_unknown_archive",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Invoke a cognitive worker after protocol migration",
+      "contract_test": "backend/tests/test_responses_role_cutover.py::test_actual_structured_worker_has_frozen_sources",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Interleave reasoning and visible text",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_actual_wire_stream_manual_replay_and_structured_output",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Receive tool arguments or tool output",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_parallel_calls_execute_once_and_native_items_survive_graph",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Disconnect during arguments",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_partial_function_arguments_never_become_tools",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Repeat an item completion event",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_stream_duplicate_done_and_conflicting_sequence",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Receive incomplete output with valid JSON prefix",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_invalid_conflicting_calls_refusal_and_unknown_archive",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Stream ends without a terminal event",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_partial_function_arguments_never_become_tools",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Cancel after output began",
+      "contract_test": "backend/tests/test_execution_attempt_audit.py::test_real_checkpoint_inbox_receipt_and_partial_model_audit",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Crash after a tool side effect",
+      "contract_test": "backend/tests/test_execution_attempt_audit.py::test_uncertain_tool_result_blocks_recovery_and_completed_result_is_reusable",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "World state and tool schemas consume context",
+      "contract_test": "backend/tests/test_responses_role_cutover.py::test_pending_world_state_budget_is_identical_to_actual_request",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Provider omits cache usage",
+      "contract_test": "backend/tests/test_responses_role_cutover.py::test_actual_structured_worker_has_frozen_sources",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "Final snapshot follows streamed text",
+      "contract_test": "backend/tests/test_responses_protocol.py::test_repeated_terminal_has_one_final_chunk_and_one_usage",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "responses-stream-lifecycle",
+      "scenario": "An oversized tool result settles",
+      "contract_test": "backend/tests/test_focus_item_history.py::test_display_does_not_serialize_authority_or_opaque_payload",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Re-read the same semantic view",
+      "contract_test": "backend/tests/test_context_revision_reader.py::test_v2_semantic_and_display_preserve_source_ids_without_runtime_controls",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Attempt independent semantic editing",
+      "contract_test": "backend/tests/test_focus_item_history.py::test_semantic_view_cannot_be_persisted_or_edited_independently",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "World state changes without new task content",
+      "contract_test": "backend/tests/test_typed_history_checkpoint.py::test_evidence_only_has_no_automatic_hypothesis",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "An assistant claims an unverified result",
+      "contract_test": "backend/tests/test_semantic_evidence_resolver.py::test_lexically_related_but_semantically_unrelated_message_cannot_cover_requirement",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Select a search result as evidence",
+      "contract_test": "backend/tests/test_focus_item_history.py::test_tool_evidence_preserves_original_position_and_arguments",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Encounter an orphan tool result",
+      "contract_test": "backend/tests/test_typed_history_checkpoint.py::test_only_closed_real_exchange_is_eligible_evidence",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Derive a context with a selected memory constraint",
+      "contract_test": "backend/tests/test_context_curator_contract.py::test_selected_constraint_derivation_keeps_reference_policy_and_exact_source",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results.",
+      "repair_regression_tests": [
+        "backend/tests/test_history_source_repairs.py::test_curator_system_role_cannot_promote_source_authority"
+      ],
+      "repair_evidence": "Actual Lead factory/SDK wire, isolated database admission/checkpoint or lossless reader regression; see repair-verification.md."
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "A reference is no longer available",
+      "contract_test": "backend/tests/test_context_curator_contract.py::test_selected_constraint_derivation_keeps_reference_policy_and_exact_source",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Enable V2 semantic selection",
+      "contract_test": "backend/tests/test_responses_role_cutover.py::test_independent_head_v5_golden_preserves_hash_and_v6_is_a_new_identity",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Reuse an unchanged eligible prefix",
+      "contract_test": "backend/tests/test_semantic_index_cache_compatibility.py::test_legacy_semantic_cache_is_preserved_but_rebuilt_under_v3_contract",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Resolve a quote after runtime items were excluded",
+      "contract_test": "backend/tests/test_focus_item_history.py::test_tool_evidence_preserves_original_position_and_arguments",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "A selected skill changes between runs",
+      "contract_test": "backend/tests/test_scoped_context_inbox.py::test_selected_context_scope_and_frozen_hash",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Replay a retained history",
+      "contract_test": "backend/tests/test_scoped_context_inbox.py::test_selected_context_scope_and_frozen_hash",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results.",
+      "repair_regression_tests": [
+        "backend/tests/test_request_context_repairs.py::test_compression_resume_restores_frozen_context_before_first_wire"
+      ],
+      "repair_evidence": "Actual Lead factory/SDK wire, isolated database admission/checkpoint or lossless reader regression; see repair-verification.md."
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Invoke a semantic projector",
+      "contract_test": "backend/tests/test_responses_role_cutover.py::test_actual_structured_worker_has_frozen_sources",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Invoke a patrol for a frozen round",
+      "contract_test": "backend/tests/test_patrol_cognitive_contract.py::test_retry_feedback_repairs_malformed_proposal_on_frozen_observation",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "A selected skill file changes after admission",
+      "contract_test": "backend/tests/test_scoped_context_inbox.py::test_selected_context_scope_and_frozen_hash",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "A material contains an instruction to expand access",
+      "contract_test": "backend/tests/test_access_middleware.py::test_flat_context_cannot_admit_structured_write",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Crash after reading an inbox",
+      "contract_test": "backend/tests/test_scoped_context_inbox.py::test_inbox_durable_ack_recovery_and_rollback",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Crash between persistence and delivery acknowledgment",
+      "contract_test": "backend/tests/test_scoped_context_inbox.py::test_inbox_durable_ack_recovery_and_rollback",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Inspect a completed model attempt",
+      "contract_test": "backend/tests/test_execution_attempt_audit.py::test_completed_attempt_recovery_reuses_canonical_result_without_resampling",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Replay a history containing a previously selected image",
+      "contract_test": "backend/tests/test_must_view_images.py::test_optional_attachment_is_projected_without_entering_state_or_completion_gate",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results.",
+      "repair_regression_tests": [
+        "backend/tests/test_request_context_repairs.py::test_actual_prefix_change_rebuilds_authority_and_preserves_old_checkpoint"
+      ],
+      "repair_evidence": "Actual Lead factory/SDK wire, isolated database admission/checkpoint or lossless reader regression; see repair-verification.md."
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Required image is removed by context rebuilding",
+      "contract_test": "backend/tests/test_must_view_images.py::test_injection_survives_reference_being_compressed_away",
+      "evidence": "offline_contract_or_database_integration",
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results.",
+      "repair_regression_tests": [
+        "backend/tests/test_request_context_repairs.py::test_actual_prefix_change_rebuilds_authority_and_preserves_old_checkpoint"
+      ],
+      "repair_evidence": "Actual Lead factory/SDK wire, isolated database admission/checkpoint or lossless reader regression; see repair-verification.md."
+    }
+  ]
+}

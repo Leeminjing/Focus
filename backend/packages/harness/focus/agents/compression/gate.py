@@ -6,22 +6,24 @@
     apply_compression_ranges — 把压缩范围编译为新的 messages 状态（阈值压缩与
         快捷压缩共用的应用编译器）
 
-输入:
+输入为:
     apply_compression_ranges(messages, ranges): messages 为当前 BaseMessage 列表；
         ranges 为规范化范围列表（每条 {source_ids, replacement|restore|delete}）
     build_compression_gate(context_window, threshold_ratio): context_window 为窗口上限
         （None 时恒放行）；threshold_ratio 为阈值比例（默认 0.9）
 
-输出:
+输出为:
     before_model 钩子返回 None（放行）或消息状态更新；wrap_model_call 钩子返回剥离
     压缩元数据后的模型响应。
 
-具体工作流:
+具体工作流为:
     (1) before_model 估算 messages 与 run 图片附件组成的最终请求用量；未达阈值、
         本轮已取消或窗口未知时放行
     (2) 达阈值时以 interrupt() 暂停图并发起 compression_request；resume 后：
         cancel → 记录该 run 后本轮放行；apply → 校验后按范围重建 messages
         （压缩范围为块、restore 范围原位展开来源原文，均经 RemoveMessage 全量重建）
+        显式重建同时清除旧 typed authority、WorldState 基线与 opaque Provider continuation，下一节点重新锚定
+        最终请求准备再按原冻结版本补齐当前 Run 引用；工具协议占位使用共享 error repair 合同
     (3) wrap_model_call 在每次模型调用前剥离 messages 的 compression 元数据，
         来源原文永不进入模型上下文
     (4) 校验压缩范围时保护活动运行的 origin 用户材料消息，并继续豁免必看图片依赖消息；
@@ -45,18 +47,18 @@ from langgraph.types import interrupt
 from focus.agents.compression.schemas import validate_apply_decision
 from focus.agents.material_inputs import RunMaterialInputs
 from focus.messages import estimate_model_request_tokens
+from focus.messages.request_budget import estimate_request_budget
+from focus.context.scoped import scoped_messages
+from focus.agents.image_attachment import select_image_messages, project_image_messages
 from focus.runtime.runs.events import (
-    deserialize_messages,
-    serialize_message,
     validate_messages,
 )
+from focus.history import deserialize_history_messages, serialize_history_message as serialize_message
+from focus.history.repair import repair_tool_messages
 
 _COMPRESSION_KWARG = "compression"
 
-# ponytail: 进程内取消过的 run 集合（每取消一次仅增一条 run id，桌面进程生命周期内可忽略）。
-# 不依赖 runtime.context 字典可变性：空 dict 会被 LangChain Runtime.merge 以 falsy 语义替换，
-# 直接改写 context 的标记在跨模型调用时不可靠；execution_info.run_id 恒为 None，
-# configurable.run_id 由 worker 每轮 run 显式写入（resume 为新 run 自然重置）。
+
 _cancelled_runs: set[str] = set()
 
 
@@ -80,7 +82,7 @@ def _strip_compression_kwargs(messages: list[BaseMessage]) -> list[BaseMessage]:
         )
         if isinstance(metadata, dict) and metadata.get("deleted"):
             changed = True
-            continue  # 删除墓碑：不进模型，仅随 checkpoint 保留来源供前端展示/恢复
+            continue
         if isinstance(kwargs, dict) and _COMPRESSION_KWARG in kwargs:
             changed = True
             kwargs = {
@@ -98,85 +100,9 @@ def _compression_source(message: BaseMessage) -> list[dict]:
     return metadata.get("source", [])
 
 
-_SYNTHETIC_TOOL_RESULT = "[Focus placeholder: tool result omitted]"
-
-
-def _repair_protocol(messages: list[BaseMessage]) -> list[BaseMessage]:
-    """修复用户自由划范围拆散 tool-call 组产生的悬空协议（f15 执行投影同款语义）。
-
-    悬空 ToolMessage（tool_call_id 无调用方）→ 文本化降级为 human 消息（保留原 id，
-    focus-degraded 包装）；AI tool_calls 缺结果 → 补合成占位 ToolMessage
-    （curation_synthetic 标记、稳定合成 id）。未涉及的消息原样保留。
-    """
-    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-
-    pending: dict[str, dict] = {}
-    resolved: set[str] = set()
-    repaired: list[BaseMessage] = []
-
-    def finish_pending() -> None:
-        for call_id, call in list(pending.items()):
-            if call_id in resolved:
-                continue
-            repaired.append(
-                ToolMessage(
-                    content=_SYNTHETIC_TOOL_RESULT,
-                    tool_call_id=call_id,
-                    name=call.get("name") or "tool",
-                    id=f"focus-synthetic-tool-result-{call_id[:16]}",
-                    additional_kwargs={"curation_synthetic": True},
-                )
-            )
-            resolved.add(call_id)
-
-    for message in messages:
-        if isinstance(message, ToolMessage):
-            call_id = message.tool_call_id
-            if call_id in pending and call_id not in resolved:
-                resolved.add(call_id)
-                repaired.append(message)
-                continue
-            repaired.append(
-                HumanMessage(
-                    content=(
-                        f'<focus-degraded-message role="tool" name="{message.name or ""}">\n'
-                        f"{message.content}\n</focus-degraded-message>"
-                    ),
-                    id=message.id,
-                )
-            )
-            continue
-        if pending and set(pending) - resolved:
-            finish_pending()
-            pending = {}
-            resolved = set()
-        if isinstance(message, AIMessage) and message.tool_calls:
-            pending = {call["id"]: call for call in message.tool_calls}
-            resolved = set()
-        repaired.append(message)
-    if pending and set(pending) - resolved:
-        finish_pending()
-    return repaired
-
-
 def apply_compression_ranges(messages: list[BaseMessage], ranges: list[dict]) -> dict[str, Any]:
-    """把压缩范围编译为新的 messages 状态（阈值压缩与快捷压缩共用）。
 
-    输入:
-        messages: list[BaseMessage] — 当前 graph state 的完整 messages
-        ranges: list[dict] — 规范化范围列表，每条为
-            {source_ids, replacement}（压缩块）或 {source_ids, restore}（展开来源）
-            或 {source_ids, delete}（删除墓碑）；来源随块元数据持久化
 
-    输出:
-        dict — {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *rebuilt]} 状态更新
-
-    具体工作流:
-        (1) 逐范围收集 removed / restore_map / block_by_first（块与墓碑均携带来源元数据）
-        (2) 按原消息顺序重建：restore 展开来源、块/墓碑原位替换、其余保留
-        (3) 经 _repair_protocol 修复拆散 tool-call 组的悬空协议
-        (4) validate_messages 校验重建后协议合法后返回
-    """
     by_id = {message.id: message for message in messages if message.id}
     removed: set[str] = set()
     restore_map: dict[str, list[BaseMessage]] = {}
@@ -186,15 +112,13 @@ def apply_compression_ranges(messages: list[BaseMessage], ranges: list[dict]) ->
         removed.update(source_ids)
         if message_range.get("restore"):
             for source_id in source_ids:
-                # 来源切片可能孤立于调用方（用户自由划范围），跳过局部校验，
-                # 由重建后的 _repair_protocol + validate_messages 统一兜底
-                restore_map[source_id] = deserialize_messages(
-                    _compression_source(by_id[source_id]), validate=False
-                )
+
+
+                restore_map[source_id] = deserialize_history_messages(_compression_source(by_id[source_id]))
             continue
         if message_range.get("delete"):
-            # 删除墓碑：content 为空、携带来源与 deleted 标记；模型不可见（wrap_model_call 过滤），
-            # 前端据此保留原会话展示并支持"恢复原消息"撤销删除
+
+
             block_id = uuid.uuid4().hex
             block_by_first[source_ids[0]] = HumanMessage(
                 content="",
@@ -238,9 +162,17 @@ def apply_compression_ranges(messages: list[BaseMessage], ranges: list[dict]) ->
             continue
         else:
             rebuilt.append(message)
-    rebuilt = _repair_protocol(rebuilt)
+    from focus.history.bridge import branch_messages
+
+    rebuilt = repair_tool_messages(branch_messages(rebuilt), cause="compression")
     validate_messages([serialize_message(message) for message in rebuilt])
-    return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *rebuilt]}
+
+    return {
+        "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *rebuilt],
+        "execution_items": None,
+        "world_state_snapshot": None,
+        "request_manifest": None,
+    }
 
 
 class CompressionGate(AgentMiddleware):
@@ -250,6 +182,48 @@ class CompressionGate(AgentMiddleware):
         super().__init__()
         self._context_window = context_window
         self._threshold_ratio = threshold_ratio
+        self._instructions = ""
+        self._tools = ()
+        self._model = None
+        self._world_state = None
+
+    def configure_request(self, instructions: str, tool_specs: list[dict], *, model=None, world_state=None) -> None:
+        self._instructions = instructions
+        self._tools = tuple(tool_specs)
+        self._model = model
+        self._world_state = world_state
+
+    async def abefore_model(self, state, runtime):
+        from types import SimpleNamespace
+        from focus.security.context import has_security_context
+        from focus.security.live_mode import refreshed_runtime_context
+
+        context = runtime.context
+        if has_security_context(context):
+            context = await refreshed_runtime_context(context)
+        return self.before_model(state, SimpleNamespace(context=context))
+
+    def _request_usage(self, state, context, images):
+        messages = state.get("messages", [])
+        if self._world_state is not None:
+            from focus.security.context import has_security_context
+            if has_security_context(context):
+                messages = self._world_state.preview_messages(state, context)
+        messages = scoped_messages(list(messages), str(context.get("run_id", "")))
+        if self._model is not None:
+            from langchain_core.messages import SystemMessage
+            from focus.models.response_projection import ResponsesRequestProjector
+            from focus.messages.request_budget import estimate_responses_budget
+
+            projected = project_image_messages(_strip_compression_kwargs(messages), context)
+            payload = ResponsesRequestProjector(self._model.provider_contract).build(
+                [SystemMessage(content=self._instructions), *projected], model=self._model.model_name,
+                tools=self._tools, text=self._model.text,
+            )
+            return estimate_responses_budget(payload)
+        messages = select_image_messages(messages, context.get("origin_message_id"))
+        return (estimate_request_budget(messages, self._instructions, self._tools, request_images=images)
+                if self._instructions or self._tools else estimate_model_request_tokens(messages, images))
 
     @property
     def _limit(self) -> int | None:
@@ -267,7 +241,8 @@ class CompressionGate(AgentMiddleware):
         messages = list(state.get("messages", []))
         run_materials = RunMaterialInputs.from_context(getattr(runtime, "context", None))
         run_images = run_materials.images
-        usage = estimate_model_request_tokens(messages, run_images.attached)
+        context = getattr(runtime, "context", None) or {}
+        usage = self._request_usage(state, context, run_images.attached)
         if usage < limit:
             return None
         decision = interrupt(

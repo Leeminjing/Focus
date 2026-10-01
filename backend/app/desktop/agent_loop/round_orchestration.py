@@ -195,6 +195,7 @@ class StructuredPatrolDecisionModel:
         self._remaining_calls = 1
         self._contract = PatrolDecisionContract()
         self._last_raw_text: str | None = None
+        self.attempt_metadata: list[dict] = []
         self._rejection_feedback: str | None = None
 
     def set_rejection_feedback(self, feedback: str) -> None:
@@ -210,7 +211,10 @@ class StructuredPatrolDecisionModel:
         config = self._app_config.get_model(self._model_name or self._app_config.resolve_default_model_name())
         model = create_chat_model(name=config.name, app_config=self._app_config, max_tokens=config.curation_max_output_tokens)
         prompt = json.dumps(EffectiveMissionProjector.observation_payload(observation), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        messages = [SystemMessage(content=PATROL_SYSTEM_CONTRACT), HumanMessage(content=f"<loop_observation>{prompt}</loop_observation>")]
+        from focus.context.requests import frozen_request_messages
+        messages = frozen_request_messages(PATROL_SYSTEM_CONTRACT, f"<loop_observation>{prompt}</loop_observation>", scope="round",
+            source_refs=({"loop_id": observation.loop_id, "round_id": observation.round_id,
+                          "observation_hash": observation_hash(observation), "frontier_hash": observation.observed_frontier_hash},))
         if self._rejection_feedback:
             messages.append(HumanMessage(content=f"<proposal_validation_feedback>{self._rejection_feedback}</proposal_validation_feedback>\n请针对该错误修正提案；不要重新解释或改变冻结的 Mission、授权与 frontier。"))
         proposal = await self._decide(model, messages, config.curation_output_method, observation)
@@ -303,6 +307,7 @@ class StructuredPatrolDecisionModel:
             raise RuntimeError("Patrol model-call budget 已耗尽")
         self.call_count += 1
         callback = UsageMetadataCallbackHandler()
+        metadata = {}
         try:
             invoke_config = {"callbacks": [callback]}
             if method == "prompt_json":
@@ -311,6 +316,7 @@ class StructuredPatrolDecisionModel:
                     [*messages, HumanMessage(content=f"只返回符合此 JSON Schema 的 JSON：{schema_text}")],
                     config=invoke_config,
                 )
+                metadata = getattr(response, "response_metadata", {}) or {}
                 content = getattr(response, "content", response)
                 text = content if isinstance(content, str) else "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
                 candidate = text.strip()
@@ -320,12 +326,24 @@ class StructuredPatrolDecisionModel:
                 parsed = self._validated(schema, candidate)
                 self._last_raw_text = candidate
                 return parsed
-            runnable = model.with_structured_output(schema, method=method)
+            runnable = model.with_structured_output(schema, method=method, include_raw=True)
             raw = await runnable.ainvoke(messages, config=invoke_config)
+            if isinstance(raw, dict) and "raw" in raw:
+                metadata = getattr(raw["raw"], "response_metadata", {}) or {}
+                if raw.get("parsing_error") is not None:
+                    raise raw["parsing_error"]
+                raw = raw["parsed"]
             parsed = raw if isinstance(raw, schema) else self._validated(schema, raw)
             self._last_raw_text = json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False) if hasattr(parsed, "model_dump") else json.dumps(raw, ensure_ascii=False, default=str)
             return parsed
+        except BaseException as exc:
+            audit = getattr(exc, "audit", {})
+            metadata = {**metadata, "request_source_manifest": audit.get("request_source_manifest", metadata.get("request_source_manifest")),
+                        "usage": audit.get("usage", metadata.get("usage")), "status": getattr(exc, "status", "failed")}
+            raise
         finally:
+            self.attempt_metadata.append({key: metadata.get(key) for key in
+                ("request_source_manifest", "provider", "protocol", "model_name", "status", "usage")})
             measured = callback_usage(callback)
             self.usage += measured if measured.model_calls else ModelUsage(model_calls=1)
 

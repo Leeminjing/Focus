@@ -1,9 +1,10 @@
 r"""本文件对外提供 PortfolioSemanticIndexService 与 PortfolioIndexBuildResult。
 
 输入为冻结 Observation、Revision reader、监督模型 factories 和并发上限；输出为完整 indexes、catalog、stage 与真实用量。
-工作流为冻结独立局部／整体合同，精确缓存优先，权威追加继承局部 records，再用完整目录及任意冻结原文做整体解释和联合验证。
+具体工作流为冻结独立局部／整体合同，精确缓存优先，权威追加继承局部 records，再用完整目录及任意冻结原文做整体解释和联合验证。
 模型工作不持有事务；短事务解析局部及完整 Index 赢家并校验 catalog。全部阶段共用 Loop 准入／结算，取消和竞争仍计实际成本。
 新 Index 包含 interpretation proof；必要综合失败不发布局部-only artifact。显式新授权重试记录版本，冻结认知输入不变。
+Revision 原文从版本化 semantic view 读取，控制与 reasoning 不参与 segmentation、fallback 或综合解释。
 示例：result = await service.build(observation)；稳定旧段免重抽，新增否定与远端怀疑生成联合诊断，消费者读取一个完整目标。
 """
 
@@ -563,7 +564,7 @@ class PortfolioSemanticIndexService:
                     "recomputed_segments": 0,
                 }
                 return cached, None, ()
-            view = await self._reader.read(session, source, "execution")
+            view = await self._reader.read(session, source, "semantic")
             frozen = self._indexer.index(
                 source=source,
                 source_content_hash=frozen_hash,

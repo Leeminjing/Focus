@@ -1,0 +1,9 @@
+{
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash-vision-exp",
+  "input": "generated 16x16 red fixture",
+  "max_output_tokens": 256,
+  "status": "completed",
+  "image": "passed",
+  "usage_reported": true
+}

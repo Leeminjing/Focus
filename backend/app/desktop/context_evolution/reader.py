@@ -1,9 +1,10 @@
 r"""本文件对外提供当前、历史及多来源 Context revision 的统一只读端口。
 
 输入为唯一 `ContextRevisionRef`、读取视图、可选分页边界和调用方 AsyncSession；输出为 authored、
-execution、display、display page、checkpoint、historical、frontier-summary 或 deleted-source 投影。
+execution、semantic、display、display page、checkpoint、historical、frontier-summary 或 deleted-source 投影。
 具体工作流为从不可变 repository 解析 revision，按 payload mode 加载精确 checkpoint；checkpoint-backed revision 的 authored/display
 保留原始 checkpoint，execution 优先使用 settlement 时持久化的协议合法投影；分页读取只序列化命中页，且不追随最新 checkpoint。
+V1 semantic 从 canonical checkpoint 适配可证明的宿主来源，UI codec 仅用于显示；旧记录和 hash 不被改写。
 示例：`await reader.read(session, ref, "display")`。
 """
 
@@ -35,11 +36,13 @@ from backend.app.desktop.context_evolution.schemas import (
 )
 from backend.app.desktop.models import DesktopThread
 from focus.runtime.runs.events import serialize_message
+from focus.history import deserialize_history_message, history_records, items_to_messages, legacy_to_items, semantic_messages, serialize_history_message, validate_items
 
 
 ContextRevisionViewKind = Literal[
     "authored",
     "execution",
+    "semantic",
     "display",
     "checkpoint",
     "historical",
@@ -96,6 +99,12 @@ class ContextRevisionReader:
         before: int | None,
         limit: int,
     ) -> ContextRevisionMessagePage:
+        if revision.history_payload is not None:
+            view = await self._messages(revision, "display")
+            total = len(view.messages)
+            end = total if before is None else min(max(before, 0), total)
+            start = max(0, end - limit)
+            return ContextRevisionMessagePage(revision.ref, view.messages[start:end], total, start, end)
         runtime = await self._runtime_message_objects(revision.ref)
         if revision.ref.payload_mode is ContextRevisionPayloadMode.CHECKPOINT:
             total = len(runtime)
@@ -142,7 +151,7 @@ class ContextRevisionReader:
         revision: ContextRevisionContract,
         view: ContextRevisionViewKind,
     ) -> ContextRevisionReadResult:
-        if view in {"authored", "execution", "display"}:
+        if view in {"authored", "execution", "display", "semantic"}:
             return await self._messages(revision, view)
         if view == "checkpoint":
             checkpoint = await self._checkpoint(revision.ref)
@@ -164,6 +173,28 @@ class ContextRevisionReader:
         revision: ContextRevisionContract,
         view: ContextRevisionMessageViewKind,
     ) -> ContextRevisionMessageView:
+        if revision.history_payload is not None:
+            payload = revision.history_payload
+            items = payload.authored_items if view == "authored" else payload.execution_items
+            if view == "semantic":
+                messages = semantic_messages(items)
+            elif view == "display":
+                messages = tuple(serialize_message(message) for message in items_to_messages(
+                    item for item in items if item.scope not in {"runtime", "round"}
+                    and item.kind not in {"unknown", "compaction", "reasoning", "selected_context", "projection_repair"}
+                ))
+                if revision.ref.payload_mode is ContextRevisionPayloadMode.DEFINITION:
+                    initial_ids = set(revision.initial_message_ids)
+                    authored = tuple(serialize_message(deserialize_history_message(record)) if "_lc" in record else deepcopy(record)
+                                     for record in history_records(payload.authored_items))
+                    messages = (*authored, *(message for message in messages if message.get("id") not in initial_ids))
+            else:
+                messages = history_records(items)
+            return ContextRevisionMessageView(ref=revision.ref, view=view, messages=messages)
+        if view == "semantic":
+            items = legacy_to_items(await self._legacy_execution_records(revision))
+            validate_items(items)
+            return ContextRevisionMessageView(ref=revision.ref, view=view, messages=semantic_messages(items))
         runtime = await self._runtime_messages(revision.ref)
         if revision.ref.payload_mode is ContextRevisionPayloadMode.CHECKPOINT:
             messages = (
@@ -287,6 +318,24 @@ class ContextRevisionReader:
     async def _runtime_messages(self, ref: ContextRevisionRef) -> list[dict[str, Any]]:
         messages = await self._runtime_message_objects(ref)
         return [serialize_message(message) for message in messages]
+
+    async def _legacy_execution_records(self, revision: ContextRevisionContract):
+        runtime = tuple(serialize_history_message(message) for message in await self._runtime_message_objects(revision.ref))
+        stored = revision.execution_messages
+        if not stored or revision.ref.payload_mode is not ContextRevisionPayloadMode.CHECKPOINT:
+            return runtime or stored
+        by_id = {record.get("id"): record for record in runtime if record.get("id")}
+        return tuple(self._canonical_source(record, by_id.get(record.get("id"))) for record in stored)
+
+    @staticmethod
+    def _canonical_source(record, source):
+        if source is None or "_lc" in record or record.get("curation_synthetic") or "focus_context" in record.get("additional_kwargs", {}):
+            return deepcopy(record)
+        keys = ("role", "content", "tool_calls", "tool_call_id", "name", "status")
+        normalized = serialize_history_message(deserialize_history_message(record))
+        if all(normalized.get(key) == source.get(key) for key in keys):
+            return deepcopy(source)
+        return deepcopy(record)
 
     @staticmethod
     def _message_id(message: Any) -> str | None:

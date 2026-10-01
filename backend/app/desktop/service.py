@@ -6,6 +6,9 @@
 RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以及 PreparedRun（统一
 编排入口 start_run 的输入 + agent_factory 闭包）以及可从持久 Run 重建的 dispatch 装配源。
 示例：`service = DesktopService(...); await service.start_main_run(task_id, message, ...)`。
+基础行为仅进入 instructions；memory／selected skills／材料 policy／空间选择冻结为 Run 输入，能力目录与权限进入 checkpoint-bound WorldState。
+真实用户与委托输入由 Run admission/装配端口绑定可信来源；模型 role 和正文不能替代该宿主身份。
+协作消息由耐久 inbox 准备，模型与工具尝试通过独立审计端口确认；临时运行控制不进入 authored 或 semantic 历史。
 具体工作流为：登记真实宿主机工作区与线程，复制已提交 checkpoint 形成冻结草稿，
 准备受文件沙箱约束的工作区 Agent 装配参数（经统一执行链路 worker.run_agent 执行），并把上传、
 内容读取、逐轮材料解析/历史/投影和自定义分组分别委托给单一职责服务；主运行在同一事务
@@ -16,6 +19,7 @@ RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以
 Main Run 供 Loop 绑定首轮，并按活跃执行视图返回该 Context 的会话消息（执行身份上有更新状态时与运行流同源，
 否则与已发布 revision 一致），数据库锚点与真实作用路径一致。
 Agent 运行使用独立 checkpoint namespace 隔离，并用 Git 隐藏引用保护不可遗失材料。
+Curator admission 读取精确 semantic snapshot，与任务页的 display 会话投影分离。
 四套机制装配边界经 agent_role 区分：main（spawn 三件套 + 协作工具 + Mailbox 注入
 + 联网工具 web_search/web_fetch + MCP 远端工具 + 压缩门）、teammate/worker（持久派生
 Agent，协作工具 + Mailbox 注入 + 联网工具）、patrol（小兵机制，工作区工具仅，无联网
@@ -112,10 +116,14 @@ from backend.app.desktop.models import (
 )
 from backend.app.desktop.agent_loop.models import MessageProvenance
 from backend.app.desktop.skills import build_task_skill_catalog, resolve_task_skills
+from backend.app.desktop.context_assembly import desktop_contexts, skill_catalog_records
+from backend.app.desktop.inbox import AgentInbox, DurableInboxMiddleware
+from backend.app.desktop.execution_attempts import ModelAttemptJournal, ModelAttemptMiddleware, ToolExecutionLedger
 from backend.app.desktop.resource_limits import ImageResourceLimits
 from backend.app.desktop.run_images import RunImageResolver
 from backend.app.desktop.run_material_history import RunMaterialHistoryRepository
 from backend.app.desktop.run_material_message import RunMaterialMessageProjector
+from backend.app.desktop.run_orchestration.input_provenance import bind_run_inputs
 from backend.app.desktop.run_materials import RunMaterialRequest, RunMaterialResolver
 from backend.app.desktop.run_orchestration import (
     DurableRunDispatchWorker,
@@ -197,7 +205,7 @@ _ACCESS_DECISIONS = frozenset({"approve", "reject", "cancel"})
 
 
 def _resolve_access_mode(value: str | None) -> AccessMode:
-    """把桌面请求归一到三档模式；新会话缺失值默认工作区可写。"""
+
     if not value:
         return AccessMode.WORKSPACE_WRITE
     try:
@@ -208,11 +216,8 @@ def _resolve_access_mode(value: str | None) -> AccessMode:
 
 
 def _identity_unregistered(what: str) -> HTTPException:
-    """未登记的执行身份：拒绝请求，并把它与「资源不存在」区分开。
 
-    身份材料的来源校验在网关（调用方自带上下文 → 422 `execution_profile_required`）；
-    这里回答的是另一半：被指向的持久身份行不存在，因此无法据此派生安全上下文。
-    """
+
     return HTTPException(
         404,
         {"code": "execution_identity_unregistered", "message": f"执行身份未登记：{what}"},
@@ -221,24 +226,6 @@ def _identity_unregistered(what: str) -> HTTPException:
 
 _ASSEMBLY_WORKSPACE_DISPLAY = "无工作区模式"
 _ASSEMBLY_THREAD_ID = "focus-assembly"
-
-
-def _spatial_focus_prompt(focus: dict[str, Any] | None) -> str:
-    """把插件提供的当前空间焦点注入本轮系统提示，不改写用户原始消息。"""
-    if not focus:
-        return ""
-    required = ("spatial_id", "content_ref", "page", "x", "y", "kind", "status")
-    if any(key not in focus for key in required):
-        return ""
-    payload = {key: focus[key] for key in required}
-    return (
-        "\n\n<current_spatial_focus>\n"
-        f"{json.dumps(payload, ensure_ascii=False)}\n"
-        "用户刚刚在内容查看器中明确选择了这个空间锚点。"
-        "对‘这里/这个/这一块/刚才那里’等指代，必须优先围绕该坐标解释，"
-        "不得重新猜测或迁移坐标。\n"
-        "</current_spatial_focus>"
-    )
 
 
 @dataclass
@@ -262,7 +249,7 @@ def _checkpoint_commitment_review(
     checkpoint: Any,
     stage: int,
 ) -> dict[str, Any] | None:
-    """读取 LangGraph 已持久化的最新承诺 interrupt 原始载荷。"""
+
     pending_writes = list(getattr(checkpoint, "pending_writes", None) or [])
     for _task_id, channel, raw_value in reversed(pending_writes):
         if channel != "__interrupt__":
@@ -371,12 +358,12 @@ class DesktopService:
             on_failed=self.run_lifecycle.abort_prepared,
         )
         self._run_dispatch_task: asyncio.Task | None = None
-        # Agent 协作（Mailbox 消息 / 任务板）：工具构建与未读消息回合注入；
-        # swarm_launcher 注入消息驱动自动唤醒（send_message/publish_task 落表后触发目标 run）
+
+
         self.agent_collab = AgentCollab(session_factory, swarm_launcher=self._auto_wake_swarm)
-        # 全局记忆库：CRUD + 来源解析 + 压缩总结 + 注入块（context_reader 复用 contexts.snapshot）
+
         self.memory = MemoryService(session_factory, app_config, self._memory_context_messages)
-        # 仅持有 DB 终态同步任务（运行注册表/取消由 RunManager 负责）
+
         self._sync_tasks: set[asyncio.Task] = set()
         self._watcher: asyncio.Task | None = None
         self._material_watch_failures: set[str] = set()
@@ -514,7 +501,7 @@ class DesktopService:
         except (OSError, json.JSONDecodeError):
             skills = []
         return {
-            # 读模型与设置页共用同一份：装备下拉与设置列表不会出现两套字段定义
+
             "models": catalog_snapshot(self.app_config),
             "skills": skills,
             "permissions": ["read", "write", "host_command"],
@@ -538,13 +525,8 @@ class DesktopService:
             return self._run_payload_with_dispatch(run, dispatch)
 
     async def _equipment_tools(self) -> list[dict[str, Any]]:
-        """返回装备信息中的工具清单（含 name/label/source），供前端区分内置与自定义工具。
 
-        工作流:
-            (1) 经 get_available_tools() 聚合全部可用工具（builtin/custom/mcp/plugin）
-            (2) 每个 ToolInfo 转 {name, label, source}
-            (3) 按 name 去重、保持顺序返回
-        """
+
         from focus.tools.interfaces import ToolInfo
         from focus.tools.tools import get_available_tools
 
@@ -628,7 +610,7 @@ class DesktopService:
         return payload
 
     async def _memory_context_messages(self, context_id: str) -> list[dict[str, Any]]:
-        """记忆来源解析器：给定 context_id（根/派生 context 的 task_id），返回其 serialized messages。"""
+
         snapshot = await self.contexts.snapshot(context_id)
         return snapshot["messages"]
 
@@ -682,17 +664,8 @@ class DesktopService:
     async def quick_compression_preview(
         self, task_id: str, keyword: str, case_sensitive: bool = False
     ) -> dict[str, Any]:
-        """关键字快捷压缩预览：机械命中主图消息中含该词的消息。
 
-        输入:
-            task_id: str — 桌面任务 id
-            keyword: str — 要命中的关键词
-            case_sensitive: bool — 是否区分大小写
 
-        输出:
-            dict — {"keyword", "hit_ids": [命中消息 id], "hit_messages": [命中消息快照]}
-            纯机械命中，不改动任何消息。
-        """
         async with self.session_factory() as session:
             task, _ = await self._get_task_entities(session, task_id)
             await self.contexts.ensure_runnable(session, task_id)
@@ -718,23 +691,8 @@ class DesktopService:
         return {"keyword": keyword, "hit_ids": hit_ids, "hit_messages": hit_messages}
 
     async def quick_compression_apply(self, task_id: str, ranges: list[dict[str, Any]], scrub_terms: list[str] | None = None) -> dict[str, Any]:
-        """关键字快捷压缩应用：校验范围后写回主图 checkpoint。
 
-        输入:
-            task_id: str — 桌面任务 id
-            ranges: list[dict] — 既有压缩语义范围（{source_ids, replacement|restore|delete}）
-            scrub_terms: list[str] | None — 摘要阶段使用的禁用词；保留用于接口兼容，不改写来源
 
-        输出:
-            dict — 应用后的主图消息快照；主 Agent 运行中或范围非法时抛 HTTPException
-
-        具体工作流:
-            (1) 主 Agent 空闲校验（存在 pending/running main run → 409）
-            (2) 读主图 checkpoint 消息 → deserialize → validate_apply_decision 校验范围
-            (3) apply_compression_ranges 以原始消息编译新 messages，完整来源只保存在块元数据中
-                → graph.aupdate_state 写回；模型调用前由压缩门剥离该元数据
-            (4) 返回写回后的消息快照（含压缩块/墓碑元数据）
-        """
         async with self.session_factory() as session:
             task, _ = await self._get_task_entities(session, task_id)
             current_revision = await ContextRevisionRepository().current(
@@ -771,7 +729,7 @@ class DesktopService:
             execution_thread_id, execution_checkpoint_ns
         )
         base_messages = deserialize_messages(messages)
-        # 状态一致性：范围引用的 source_ids 必须是当前顶层消息，否则面板快照已过期（上下文已变化）
+
         current_ids = {m.id for m in base_messages if m.id}
         missing = [
             sid for r in ranges for sid in (r.get("source_ids") or [])
@@ -919,7 +877,7 @@ class DesktopService:
     async def quick_deploy_context_curator(
         self, task_id: str, deployment_id: str
     ) -> PreparedRun:
-        """用领域默认策略创建并投放一份独立策展草稿，不覆盖用户正在编辑的普通草稿。"""
+
         async with self.session_factory() as session:
             existing = await session.scalar(
                 select(DesktopRun).where(DesktopRun.deployment_id == deployment_id)
@@ -960,12 +918,12 @@ class DesktopService:
         model_name: str | None,
         policy: ContextCurationPolicy,
     ) -> str:
-        """校验来源与模型窗口，并把草稿规范化为唯一的 Context 策展形态。"""
+
         root_context_id = await self.contexts.resolve_chat_root(draft.task_id)
         checkpoint_id = await self.contexts.current_checkpoint_id(root_context_id)
         if checkpoint_id is None:
             raise HTTPException(409, "根 Context 尚无稳定 checkpoint")
-        snapshot = await self.contexts.snapshot(root_context_id, checkpoint_id)
+        snapshot = await self.contexts.semantic_snapshot(root_context_id, checkpoint_id)
         try:
             self.context_patrol.engine.validate_model(model_name)
         except CurationEngineError as exc:
@@ -987,7 +945,7 @@ class DesktopService:
             "model_name": model_name,
             "skills": [],
             "permissions": ["read"],
-            # 小兵是用户的委托观察者与上下文操作员，访问模式钉在工作区保护
+
             "access_mode": str(AccessMode.WORKSPACE),
         }
         draft.source_checkpoint_id = checkpoint_id
@@ -1060,6 +1018,7 @@ class DesktopService:
                 mode="standard",
                 curation_policy={},
             )
+            self._require_run_admission()
             run = DesktopRun(
                 run_id=new_id(), task_id=draft.task_id, agent_id=agent_id, deployment_id=deployment_id,
                 kind="patrol", status="pending", input_messages=frozen,
@@ -1094,6 +1053,10 @@ class DesktopService:
             run, thread_id, workspace_id, workspace_path, frozen,
             draft.system_prompt, agent.equipment, agent.checkpoint_ns, "patrol",
         )
+
+    def _require_run_admission(self) -> None:
+        if not getattr(self.app_config, "context_run_admission", True):
+            raise HTTPException(503, "新 Run admission 已暂停；现有 V1/V2 历史可读，恢复前需确认兼容 execution 分支")
 
     async def start_main_run(
         self, task_id: str, message: str | list[dict[str, Any]], model_name: str | None,
@@ -1189,8 +1152,8 @@ class DesktopService:
                         "message": "存在待处理的必看报告，请先重试或取消当前运行",
                     },
                 )
-            # 未决中断的阻塞以主执行身份为粒度：以下探测都只读主图命名空间（外加承诺子图），
-            # 后台执行主体（swarm / patrol / spatial）的中断位于各自命名空间，不阻塞主运行
+
+
             access_recovery = await main_pending_interrupt(
                 session, task_row, self.checkpointer, APPROVAL_TYPE
             )
@@ -1228,6 +1191,7 @@ class DesktopService:
                 "skill_snapshots": snapshots,
                 "permissions": permissions,
                 "access_mode": str(_resolve_access_mode(access_mode)),
+                "spatial_focus": spatial_focus,
                 **run_materials.to_equipment(),
             }
             history = await self.get_checkpoint_messages(
@@ -1238,8 +1202,8 @@ class DesktopService:
                 self.checkpointer, execution_thread_id, execution_checkpoint_ns
             )
             is_assembly = task_row.thread_id == _ASSEMBLY_THREAD_ID
-            base_prompt = (_ASSEMBLY_SYSTEM_PROMPT if is_assembly else _MAIN_SYSTEM_PROMPT) + _spatial_focus_prompt(spatial_focus)
-            base_prompt = await self._apply_memory_block(base_prompt, memory_ids)
+            base_prompt = _ASSEMBLY_SYSTEM_PROMPT if is_assembly else _MAIN_SYSTEM_PROMPT
+            equipment["memory_snapshots"] = await self.memory.freeze_selection(memory_ids)
             equipment[_RUN_DISPATCH_EQUIPMENT_KEY] = {
                 "agent_role": "main",
                 "base_prompt": base_prompt,
@@ -1250,6 +1214,7 @@ class DesktopService:
                 model_name,
                 estimate_tokens(_MAIN_SYSTEM_PROMPT, [*history, current_message], "", run_materials.images),
             )
+            self._require_run_admission()
             run = DesktopRun(
                 run_id=run_id, task_id=task_id, agent_id=f"main:{task_id}", kind="main", status="pending",
                 input_messages=[current_message], model_name=model_name,
@@ -1354,11 +1319,8 @@ class DesktopService:
             )
 
     async def ensure_assembly_task(self) -> dict[str, Any]:
-        """确保「无工作区模式」保留工作区与其任务存在，返回该任务 payload。
 
-        无工作区模式被建模为保留工作区（路径 = 全局配置家目录 ~/.focus）下的普通任务，
-        由此复用任务页全套能力（派生 context / 草稿 / 材料 / 小兵 / 技能）。
-        """
+
         async with self.session_factory() as session:
             workspace = await self._ensure_assembly_workspace(session)
             thread = await self._ensure_assembly_thread(session, workspace)
@@ -1366,7 +1328,7 @@ class DesktopService:
             return await self._task_payload(session, thread, workspace)
 
     async def _ensure_assembly_workspace(self, session: AsyncSession) -> DesktopWorkspace:
-        """获取/创建装配保留 workspace（路径 = 全局配置家目录 ~/.focus），并尝试确保该目录存在。"""
+
         from focus.config.layered import global_home
 
         path = str(global_home().resolve())
@@ -1386,7 +1348,7 @@ class DesktopService:
         return workspace
 
     async def _ensure_assembly_thread(self, session: AsyncSession, workspace: DesktopWorkspace) -> DesktopThread:
-        """获取/创建装配会话线程（单一稳定 thread，历史累积）。"""
+
         thread = await session.scalar(
             select(DesktopThread).where(
                 DesktopThread.workspace_id == workspace.workspace_id,
@@ -1408,23 +1370,8 @@ class DesktopService:
         resume: dict[str, Any],
         run_identity: dict[str, Any] | None = None,
     ) -> PreparedRun:
-        """主 Agent 中断恢复：按主执行上的未决中断类型分派。
 
-        输入:
-            thread_id: str — 桌面任务登记的唯一 thread 标识
-            resume: dict — 承诺层 {decision: approve|revise, feedback?, replacement?}、
-                压缩 {"type": "compression", "decision": apply|cancel, ...}、
-                或准入 {"decision": approve|reject}（仅允许这一次）
 
-        输出:
-            PreparedRun — 携带 RunCreateRequest(resume=...) 与主 Agent 装配闭包
-
-        工作流:
-            (1) 依次探测主执行上的三类未决中断：承诺子图审批、压缩请求、准入待决
-            (2) 命中后要求 resume 载荷与该类型匹配，并按收敛状态区分「处理中」与「已失去父图」
-            (3) 皆无未决时 409；校验通过后经 _prepare_main_resume 组装主 Agent resume run；内部
-                autonomous caller 可提供持久 run_identity，普通 API 调用保持直接用户 resume 身份
-        """
         async with self.session_factory() as session:
             task = await session.scalar(
                 select(DesktopThread).where(DesktopThread.thread_id == thread_id)
@@ -1491,7 +1438,7 @@ class DesktopService:
 
     @staticmethod
     def _require_resumable(recovery: dict[str, Any], code_prefix: str) -> None:
-        """未决中断必须可恢复；「处理中」与「已失去父图」是两种不同的拒绝。"""
+
         if recovery["status"] == "resumable":
             return
         processing = recovery["status"] == "processing"
@@ -1509,7 +1456,7 @@ class DesktopService:
 
     @staticmethod
     async def _resume_workspace(session: AsyncSession, task: DesktopThread) -> DesktopWorkspace:
-        """取出 resume 所需的工作区；缺失即 404。"""
+
         workspace = await session.get(DesktopWorkspace, task.workspace_id)
         if not workspace:
             raise HTTPException(404, "工作区不存在")
@@ -1523,16 +1470,15 @@ class DesktopService:
         resume: dict[str, Any],
         run_identity: dict[str, Any] | None = None,
     ) -> PreparedRun:
-        """组装主 Agent resume run 的公共尾部：equipment 沿用、新建 DesktopRun、
-        agent_factory 与 RunCreateRequest(resume=...)；可选 run_identity 为自治恢复保留稳定审计身份。"""
+
+
         interrupted_run = await latest_main_run(session, task)
         execution_identity = identity_from_main_run(task, interrupted_run)
-        equipment = dict(
-            (task.ui_state or {}).get(_MAIN_RUNTIME_EQUIPMENT_KEY) or {}
-        )
+        equipment = dict(interrupted_run.equipment if interrupted_run is not None and interrupted_run.equipment else
+                         (task.ui_state or {}).get(_MAIN_RUNTIME_EQUIPMENT_KEY) or {})
         if not equipment:
-            # 兼容修复前已进入 interrupt 的任务：尽量恢复 UI 中仍可获得的技能，
-            # 其余字段沿用旧行为的默认值。
+
+
             skills = self._normalize_skill_names((task.ui_state or {}).get("skills"))
             equipment = {
                 "model_name": None,
@@ -1586,15 +1532,10 @@ class DesktopService:
         await session.commit()
         projection = MaterialContextProjector.project(run_materials, workspace.path)
         material_context = projection.policy_text
-        resume_memory_ids = list(
-            (task.ui_state or {}).get(_MAIN_RUNTIME_MEMORY_KEY) or []
-        )
-        memory_base_prompt = await self._apply_memory_block(
-            _MAIN_SYSTEM_PROMPT, resume_memory_ids
-        )
+        memory_base_prompt = _MAIN_SYSTEM_PROMPT
         required = list(run_materials.images.required)
         if required:
-            memory_base_prompt += _must_view_prompt(
+            material_context += _must_view_prompt(
                 [
                     {"material_id": item.material_id, "relative_path": item.relative_path}
                     for item in required
@@ -1621,7 +1562,7 @@ class DesktopService:
         )
         if run.origin == "direct_user":
             self._attach_session_mode_resolver(context, run, equipment)
-        # 材料与图片投影由装配层写入受治理上下文之上（受治理键的服务端生产者）
+
         project_run_material_context(
             context,
             run_materials,
@@ -1648,7 +1589,7 @@ class DesktopService:
         return str(path)
 
     async def abandon_commitment(self, thread_id: str) -> dict[str, Any]:
-        """显式废弃待确认承诺子图；只删除派生 thread checkpoint。"""
+
         async with self.session_factory() as session:
             task = await session.scalar(
                 select(DesktopThread).where(DesktopThread.thread_id == thread_id)
@@ -1679,6 +1620,7 @@ class DesktopService:
                 raise HTTPException(409, "Context 策展 Patrol 由根 checkpoint 自动触发，不能手工重试")
             task_row = await session.get(DesktopThread, agent.task_id)
             workspace_row = await session.get(DesktopWorkspace, task_row.workspace_id)
+            self._require_run_admission()
             run = DesktopRun(
                 run_id=new_id(), task_id=agent.task_id, agent_id=agent.agent_id, kind="patrol",
                 status="pending", input_messages=agent.frozen_messages,
@@ -1715,6 +1657,7 @@ class DesktopService:
             task_row = await session.get(DesktopThread, agent.task_id)
             workspace_row = await session.get(DesktopWorkspace, task_row.workspace_id)
             input_messages = [{"role": "human", "content": message}]
+            self._require_run_admission()
             run = DesktopRun(
                 run_id=new_id(), task_id=agent.task_id, agent_id=agent.agent_id, kind="patrol",
                 status="pending", input_messages=input_messages, model_name=agent.equipment.get("model_name"),
@@ -1738,7 +1681,7 @@ class DesktopService:
         )
 
     async def cancel_run(self, run_id: str) -> dict[str, Any]:
-        # 软硬双通道取消由 RunManager 负责（abort_event + task.cancel）
+
         self.run_manager.cancel(run_id)
         async with self.session_factory() as session:
             run = await session.get(DesktopRun, run_id)
@@ -1955,14 +1898,8 @@ class DesktopService:
         checkpoint_ns: str, agent_role: str, checkpoint_id: str | None = None,
         allow_global_config: bool = False,
     ) -> PreparedRun:
-        """组装统一编排入口的输入：RunCreateRequest（input/context/stream_mode）+ agent_factory 闭包。
 
-        工作流:
-            (1) 查询任务材料策略，拼入运行 prompt 基础
-            (2) 构建 agent_factory 闭包（工作区内置工具按权限过滤 + 角色协作工具 + 技能快照）
-            (3) context 携带 workspace/workspace_id/agent_id/task_id/permissions/skills/checkpoint_ns，
-                由 services.start_run 透传给 worker 与工具（ToolRuntime）
-        """
+
         run_materials = RunMaterialInputs.from_equipment(equipment)
         if agent_role == "main":
             if any(item.digest != "legacy" for item in run_materials.attached):
@@ -1976,7 +1913,7 @@ class DesktopService:
         image_inputs = run_materials.images
         required = list(image_inputs.required)
         if required:
-            base_prompt = base_prompt + _must_view_prompt(
+            material_context = material_context + _must_view_prompt(
                 [
                     {"material_id": item.material_id, "relative_path": item.relative_path}
                     for item in required
@@ -2004,14 +1941,14 @@ class DesktopService:
         )
         if agent_role == "main" and run.origin == "direct_user":
             self._attach_session_mode_resolver(context, run, equipment)
-        # 材料与图片投影由装配层写入受治理上下文之上（受治理键的服务端生产者）
+
         project_run_material_context(
             context,
             run_materials,
             self._model_supports_image_input(equipment.get("model_name") or run.model_name),
         )
         body = RunCreateRequest(
-            input={"messages": messages},
+            input={"messages": bind_run_inputs(run, messages)},
             context=context,
             stream_mode=["messages-tuple", "values"],
         )
@@ -2058,12 +1995,8 @@ class DesktopService:
         extras: dict[str, Any],
         swarm_depth: int = 0,
     ) -> dict[str, Any]:
-        """由执行身份档案派生运行上下文（委托统一组装入口）。
 
-        受治理字段（工作根、能力权限、访问模式、执行主体角色、所属任务、执行命名空间）一律来自档案，
-        附加载荷只是随行数据；因此调用方无法通过附加载荷改写安全决策。唤醒链深度属执行提示，由
-        统一组装入口的生产者写回（用户驱动的主 run 为 0）。
-        """
+
         profile = ExecutionProfile(
             authorization=AuthorizationIdentity(
                 workspace=Path(workspace_path),
@@ -2082,46 +2015,32 @@ class DesktopService:
             ),
             model_name=model_name,
         )
-        return assemble_run_context(profile, extras, dispatch_hints={"swarm_depth": swarm_depth})
+        runtime_extras = {**extras, "context_revision_ref": {"revision_id": run.context_revision_id,
+                          "checkpoint_id": run.context_checkpoint_id, "context_id": run.task_id}}
+        runtime_extras["origin_message_id"] = run.origin_message_id
+        if hasattr(self, "session_factory"):
+            runtime_extras["tool_execution_ledger"] = ToolExecutionLedger(self.session_factory)
+        return assemble_run_context(profile, runtime_extras, dispatch_hints={"swarm_depth": swarm_depth})
 
     def _build_agent_factory(
         self, task_id: str, agent_id: str, workspace_path: str, equipment: dict[str, Any],
         base_prompt: str, material_context: str, agent_role: str,
     ) -> Callable[[], Awaitable[CompiledStateGraph]]:
-        """构建 agent_factory 闭包：工作区内置工具（权限过滤）+ 角色协作工具 + Mailbox 注入。
 
-        输入:
-            task_id: str — 任务 ID（小兵读取工具与协作工具按任务过滤）
-            agent_id: str — 当前 run 的 agent 标识（协作消息 from/to 依据）
-            workspace_path: str — 真实工作区路径（经 ToolRuntime context 注入工具）
-            equipment: dict — 模型/权限/技能快照（skill_snapshots）
-            base_prompt: str — 主 prompt（主 Agent 固定模板 / 协作 Agent 提示词）
-            material_context: str — 材料策略文本（可为空）
-            agent_role: str — "main" / "teammate" / "worker" / "patrol"（四套机制装配边界：
-                              patrol 为小兵机制，装配工作区工具仅，无协作工具、无 Mailbox 注入）
 
-        输出:
-            Callable — async 闭包，await 后返回 CompiledStateGraph
-
-        工作流:
-            (1) 按角色汇工具：main 携带小兵读取 + spawn 三件套 + 协作工具；teammate/worker 携带协作工具；
-                patrol 仅工作区工具（纯净）
-            (2) prompt 注入链：技能快照 → 材料策略 → Mailbox 未读消息（仅 main/teammate/worker，回合边界）
-        """
         permissions = equipment.get("permissions") or ["read"]
-        snapshots = equipment.get("skill_snapshots") or []
         model_name = equipment.get("model_name")
         collab_tools = self.agent_collab.build_collab_tools(agent_role)
         include_mailbox = agent_role in ("main", "teammate", "worker")
 
         async def factory() -> CompiledStateGraph:
             tools = select_workspace_tools(permissions)
-            # 联网工具（web_search/web_fetch）装配给 main/teammate/worker，patrol 保持纯净
+
             if agent_role != "patrol":
                 tools = [*tools, web_search, web_fetch]
             if agent_role == "main":
-                # 系统级可注册工具池（自定义/mcp/插件）仅 main 装配，fail-soft 降级为空。
-                # 内置工具已由上方 select_workspace_tools + web 按权限/角色装配，此处排除 source=="builtin" 以去重。
+
+
                 from focus.tools.interfaces import ToolInfo
 
                 pooled = await get_available_tools()
@@ -2135,17 +2054,11 @@ class DesktopService:
                          build_spawn_agent_tool(), *self._build_swarm_tools(),
                          *pool_tools]
             tools = [*tools, *collab_tools]
-            prompt = prompt_with_skills(base_prompt, snapshots)
-            if material_context:
-                prompt = f"{prompt}\n\n<focus_material_policies>\n{material_context}\n</focus_material_policies>"
-            if include_mailbox:
-                mailbox_block = await self.agent_collab.load_unread_messages(agent_id, task_id)
-                if mailbox_block:
-                    prompt = f"{prompt}\n\n{mailbox_block}"
-            # 承诺层装配：主 Agent 经共享 builder（按 commitment.enabled 条件装配，
-            # skill_names 取任务技能 catalog 全量用于触发剥离）；其他角色不装配承诺层。
+            catalog = build_task_skill_catalog(workspace_path)
+
+
             if agent_role == "main":
-                task_skill_names = frozenset(build_task_skill_catalog(workspace_path))
+                task_skill_names = frozenset(catalog)
                 middlewares = None
             else:
                 task_skill_names = None
@@ -2153,12 +2066,11 @@ class DesktopService:
             additional_middlewares = [build_tool_error_middleware()]
             if agent_role == "main":
                 image_inputs = RunMaterialInputs.from_equipment(equipment).images
-                if image_inputs.attached:
-                    additional_middlewares.append(build_image_attachment_middleware())
+                additional_middlewares.append(build_image_attachment_middleware())
                 if image_inputs.required_ids:
                     additional_middlewares.append(build_must_view_completion_middleware())
-                    # 逐图表态由普通工具承载：只在有必需图片时装配，且不做任何强制工具选择，
-                    # 以免与 thinking 模型互斥（见 drop-forced-tool-choice-for-must-view）。
+
+
                     tools = [*tools, report_must_view_images]
             if agent_role == "main" and self.app_config.compression.enabled:
                 from focus.agents.compression.gate import build_compression_gate
@@ -2172,11 +2084,15 @@ class DesktopService:
             return await make_lead_agent(
                 model_name=model_name,
                 tools=tools,
-                system_prompt=prompt,
+                system_prompt=base_prompt,
                 middlewares=middlewares,
                 additional_middlewares=additional_middlewares,
                 app_config=self.app_config,
                 middleware_skill_names=task_skill_names,
+                frozen_contexts=desktop_contexts(equipment, material_context),
+                world_skill_catalog=skill_catalog_records(catalog),
+                inbox_middleware=DurableInboxMiddleware(AgentInbox(self.session_factory, self.checkpointer)) if include_mailbox else None,
+                attempt_middleware=ModelAttemptMiddleware(ModelAttemptJournal(self.session_factory, self.checkpointer)),
             )
 
         return factory
@@ -2191,7 +2107,7 @@ class DesktopService:
         return bool(model.supports_image_input)
 
     def _compression_context_window(self, model_name: str | None) -> int | None:
-        """按运行模型取上下文窗口；模型未知时返回 None（压缩门恒放行）。"""
+
         try:
             model = self.app_config.get_model(
                 model_name or self.app_config.resolve_default_model_name()
@@ -2200,16 +2116,6 @@ class DesktopService:
             return None
         return model.context_window
 
-    async def _apply_memory_block(self, base_prompt: str, memory_ids: list[str] | None) -> str:
-        """在 base_prompt 末尾注入 `<memory>` 块；无选中记忆时原样返回。"""
-        if not memory_ids:
-            return base_prompt
-        block = await self.memory.build_memory_block(memory_ids)
-        if not block:
-            return base_prompt
-        return f"{base_prompt}\n\n{block}"
-
-    # === 机制③④：持久派生 spawn（teammate/worker）===
 
     _TEAMMATE_PROMPT = (
         "你是 Focus 的 Teammate，隶属于主 Agent 领导的团队。独立完成任务，"
@@ -2224,7 +2130,7 @@ class DesktopService:
     )
 
     def _build_swarm_tools(self) -> list[BaseTool]:
-        """构建持久派生、唤醒与有界等待工具（仅 main 装配）。"""
+
 
         @tool
         async def spawn_teammate(task: str, runtime: ToolRuntime[dict], system_prompt: str | None = None) -> str:
@@ -2264,7 +2170,7 @@ class DesktopService:
     async def _wait_for_swarm(
         self, task_id: str, agent_ids: list[str], timeout_seconds: int
     ) -> dict[str, Any]:
-        """等待协作状态变化；读取快照不消费发给 main 的未读消息。"""
+
         if not agent_ids:
             raise ValueError("agent_ids 不能为空")
         if not 1 <= timeout_seconds <= 30:
@@ -2305,7 +2211,7 @@ class DesktopService:
                 return {"timed_out": False, **current}
 
     async def _swarm_snapshot(self, task_id: str, agent_ids: list[str]) -> dict[str, Any]:
-        """组装非消费式协调快照。"""
+
         async with self.session_factory() as session:
             await session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
             runs = (
@@ -2378,17 +2284,8 @@ class DesktopService:
     async def _spawn_swarm(
         self, task: str, system_prompt: str | None, role: str, runtime: Any
     ) -> str:
-        """创建持久 Agent 身份并启动后台 run。
 
-        输入:
-            task: str — 子任务描述（作为 HumanMessage 输入）
-            system_prompt: str | None — 自定义提示词，None 时用角色默认模板
-            role: str — "teammate" 或 "worker"
-            runtime: ToolRuntime — 提供 workspace/permissions/model_name 上下文
 
-        输出:
-            str — 新 Agent 的 agent_id
-        """
         parent = security_context_of(runtime.context)
         task_id = runtime.context.get("task_id")
         workspace_id = parent.routing.workspace_id
@@ -2418,22 +2315,8 @@ class DesktopService:
         return agent_id
 
     async def _wake_swarm(self, agent_id: str, message: str, context: dict[str, Any]) -> str:
-        """唤醒常驻 Agent：校验身份与状态后，以新消息为输入触发其一轮新 run。
 
-        输入:
-            agent_id: str — 目标 teammate/worker 的 agent_id
-            message: str — 新指令（作为 HumanMessage 输入，历史经 checkpoint 自动恢复）
-            context: dict — 主 Agent 的 runtime.context（workspace_id/workspace/model_name）
 
-        输出:
-            str — 新 run 的 run_id
-
-        工作流:
-            (1) 校验持久 Agent 存在且未 stopped（409）
-            (2) equipment 沿用 spawn 时持久化的 permissions 与 access_mode（两者都不放大），
-                工作区身份取自发起唤醒的父级安全上下文
-            (3) 复用 _launch_swarm_run（同一 checkpoint 命名空间 → 多轮历史连贯）
-        """
         agent_row = await self.agent_collab.get_swarm_agent(agent_id)
         if agent_row is None:
             raise _identity_unregistered(f"派生执行主体 {agent_id}")
@@ -2456,18 +2339,8 @@ class DesktopService:
         return run_id
 
     async def _auto_wake_swarm(self, agent_id: str, message: str, depth: int) -> None:
-        """消息驱动的自动唤醒（AgentCollab.swarm_launcher 注入）：查身份/查忙后触发目标 run。
 
-        输入:
-            agent_id: str — 消息目标（teammate/worker）
-            message: str — 触发 run 的输入消息
-            depth: int — 目标 run 的 swarm_depth（来源 depth+1）
 
-        工作流:
-            (1) 目标不存在或已 stopped → 跳过（仅落表）
-            (2) 目标已有 pending/running run → 跳过（避免并发堆积，未读消息由该 run 回合注入消费）
-            (3) 查 thread/workspace 后复用 _launch_swarm_run（depth 传入 context）
-        """
         try:
             agent_row = await self.agent_collab.get_swarm_agent(agent_id)
             if agent_row is None or agent_row.status == "stopped":
@@ -2509,22 +2382,8 @@ class DesktopService:
         system_prompt: str, workspace_id: str, workspace_path: str, equipment: dict[str, Any],
         swarm_depth: int = 0,
     ) -> str:
-        """经统一链路启动持久 Agent 的后台 run（独立 checkpoint 命名空间）。
 
-        输入:
-            task_id / agent_id / role / task_text / system_prompt — 派生参数
-            workspace_id / workspace_path — 工作区定位
-            equipment — 模型/权限/技能装备
-            swarm_depth — 自动唤醒链深度（消息触发为来源+1；wake/spawn 为 0，用于防环截断）
 
-        输出:
-            str — 创建的 run_id
-
-        工作流:
-            (1) stopped 检查（关机后拒绝新 run）
-            (2) 登记 DesktopRun 与 RunRecord，组装 run_agent 参数（参考 services.start_run）
-            (3) 按角色构建 agent_factory（含 Mailbox 注入），经唯一 execute_prepared_run 脊柱启动
-        """
         if await self.agent_collab.is_agent_stopped(agent_id):
             raise HTTPException(409, "该 Agent 已停止")
         async with self.session_factory() as session:
@@ -2534,9 +2393,10 @@ class DesktopService:
             agent_row = await session.get(SwarmAgent, agent_id)
             if agent_row is None:
                 raise _identity_unregistered(f"派生执行主体 {agent_id}")
-            # 执行命名空间以持久化身份为准：它是身份的一部分，不由启动点临时拼接
+
             checkpoint_ns = agent_row.checkpoint_ns
             thread_id = task_row.thread_id
+            self._require_run_admission()
             run = DesktopRun(
                 run_id=new_id(), task_id=task_id, agent_id=agent_id, kind=role,
                 status="pending", input_messages=[{"role": "human", "content": task_text}],
@@ -2598,7 +2458,7 @@ class DesktopService:
         return run.run_id
 
     def attach_run_sync(self, record: RunRecord) -> None:
-        """挂载 DB 终态同步薄任务：worker 结束后把 RunRecord 终态写入 desktop_runs。"""
+
         task = asyncio.create_task(self._sync_run_status(record))
         self._sync_tasks.add(task)
 
@@ -2606,7 +2466,7 @@ class DesktopService:
         try:
             await record.task
         except asyncio.CancelledError:
-            pass  # RunManager.cancel 已置 interrupted
+            pass
         finally:
             try:
                 activity_task = getattr(record, "loop_activity_task", None)
@@ -2651,12 +2511,8 @@ class DesktopService:
                 self._sync_tasks.discard(asyncio.current_task())
 
     async def _material_context(self, task_id: str) -> tuple[str, str]:
-        """返回 (材料策略文本, 上传清单标签)。
 
-        上传清单以 <current_uploads> 标签形式返回（承诺层阶段4 据此核对文件名）。该标签的**运行期**通道
-        是 run context 的 run_material_inputs（由材料投影生产者写回），本方法的返回值只用于桌面侧展示与
-        兼容调用方，不再经扁平 uploads 字段投喂给承诺子图。
-        """
+
         async with self.session_factory() as session:
             _, workspace = await self._get_task_entities(session, task_id)
             materials = (
@@ -2731,11 +2587,8 @@ class DesktopService:
                     raise HTTPException(422, f"附件引用失效: {path}")
 
     def _require_model(self, model_name: str | None):
-        """取运行需要的条目；条目已被删除或未声明时抛可读的 422，而不是 KeyError。
 
-        删除条目是设置面板允许的动作，因此「旧任务引用了已删除条目」是必须解释的正常路径：
-        运行发起前给出可读原因，界面据此要求重新选择；MUST NOT 静默回退到别的条目。
-        """
+
         try:
             return self.app_config.get_model(
                 model_name or self.app_config.resolve_default_model_name()
@@ -2806,7 +2659,7 @@ class DesktopService:
     async def _execution_entities(
         self, session: AsyncSession, task_id: str
     ) -> tuple[DesktopThread, DesktopWorkspace]:
-        """主执行身份解析：供启动点使用，未登记以可识别的错误码拒绝。"""
+
         try:
             return await self._get_task_entities(session, task_id)
         except HTTPException as exc:
@@ -2933,7 +2786,7 @@ class DesktopService:
                         except asyncio.CancelledError:
                             raise
                         except Exception:
-                            # 单个材料失败（如工作区目录已删除的遗留材料）不阻塞其他材料
+
                             failures = getattr(self, "_material_watch_failures", None)
                             if failures is None:
                                 failures = self._material_watch_failures = set()
@@ -3028,7 +2881,7 @@ class DesktopService:
     async def _commitment_recovery_payload(
         self, session: AsyncSession, task: DesktopThread
     ) -> dict[str, Any] | None:
-        """从承诺子图 checkpoint 投影桌面审批恢复状态。"""
+
         latest = await latest_main_run(session, task)
         execution_identity = identity_from_main_run(task, latest)
         config = {

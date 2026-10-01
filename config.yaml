@@ -1,7 +1,11 @@
+context_run_admission: true
+
 models:
   - name: deepseek-v4-flash-vision-exp
     display_name: DeepSeek-V4-Flash-Vision-Exp
-    use: focus.models.deepseek:DeepSeekChatOpenAI
+    use: focus.models.responses:FocusResponsesChatModel
+    provider: deepseek
+    protocol: responses
     model: deepseek-v4-flash-vision-exp
     context_window: 131072
     curation_output_method: prompt_json
@@ -13,7 +17,9 @@ models:
 
   - name: deepseek-v4-flash
     display_name: Other OpenAI-compatible / deepseek-v4-flash
-    use: focus.models.deepseek:DeepSeekChatOpenAI
+    use: focus.models.responses:FocusResponsesChatModel
+    provider: deepseek
+    protocol: responses
     model: deepseek-v4-flash
     context_window: 131072
     curation_output_method: prompt_json

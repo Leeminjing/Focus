@@ -160,7 +160,8 @@ def test_recursive_tree_merge_and_parent_independence(tmp_path: Path, monkeypatc
             original_b_snapshot = client.get(
                 f"/desktop/api/contexts/{b['context_id']}/snapshot", headers=SESSION
             ).json()
-            assert original_b_snapshot["messages"] == [{"role": "human", "content": "B1"}]
+            assert [{key: value for key, value in message.items() if key != "id"}
+                    for message in original_b_snapshot["messages"]] == [{"role": "human", "content": "B1"}]
 
             edited_b = client.put(
                 f"/desktop/api/contexts/{b['context_id']}/definition",

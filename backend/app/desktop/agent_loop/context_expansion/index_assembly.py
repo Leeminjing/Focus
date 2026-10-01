@@ -1,7 +1,7 @@
 r"""本文件对外提供 assemble_revision_index。
 
 输入为冻结 index、局部 records、BuildPlan 与综合 proof；输出为绑定目标 Revision 的完整不可变 index。
-工作流为重验两类依赖，合并与去重 drafts／verdicts，统一 grounding 并重建覆盖、隔离账本、继承凭据及综合身份。
+具体工作流为重验两类依赖，合并与去重 drafts／verdicts，统一 grounding 并重建覆盖、隔离账本、继承凭据及综合身份。
 示例：index = assemble_revision_index(indexer, frozen, records, plan, interpretation=proof)；联合诊断与历史局部证据共存，旧对象不变。
 """
 

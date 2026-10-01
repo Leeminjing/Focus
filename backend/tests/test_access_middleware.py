@@ -391,7 +391,7 @@ def test_access_policy_is_installed_unconditionally_at_the_front():
     取得最外层，先于任何「可恢复工具错误闭合」触发中断。
     """
     source = _agent_source()
-    prepend = "\n    middlewares = [AccessPolicyMiddleware(), *middlewares]"
+    prepend = "\n    middlewares = [AccessPolicyMiddleware(), ToolExecutionMiddleware(), *middlewares]"
     assert prepend in source, "准入门必须以函数体缩进无条件装配"
     assert source.index(prepend) > source.index("PluginBridgeMiddleware(get_plugin_registry())")
 

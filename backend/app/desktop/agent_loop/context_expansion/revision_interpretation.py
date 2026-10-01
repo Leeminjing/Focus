@@ -1,7 +1,7 @@
 r"""本文件对外提供 RevisionInterpretationBuilder 与综合合同 prompt。
 
 输入为完整冻结目录、局部 records、预算化模型及原文读取上限；输出为联合引用、独立 verdict 和全部阅读依赖的综合 record。
-工作流为冷构建共同提供可容纳原文，增量提供新原文及完整目录，响应模型任意合法旧段请求，再验证联合 claims。
+具体工作流为冷构建共同提供可容纳原文，增量提供新原文及完整目录，响应模型任意合法旧段请求，再验证联合 claims。
 示例：record = await builder.build(index, records, plan)。旧段可免重抽，却可与新段一起参与新的否定和因果理解。
 """
 
@@ -19,6 +19,7 @@ from .semantic_index import IndexedMessage
 from .semantic_indexer import RevisionSemanticIndexer
 
 INTERPRETATION_PROMPT = (
+    "semantic_policy=index 才能定义任务命题；evidence_only 是关联调用证据，reference_only 是约束参考，不能独立提升为任务要求。"
     "你是无权 Revision semantic interpreter。共同理解整个冻结历史的 inventory 和多个原文 segments，"
     "发现跨段指代、因果、否定与时间演化，而不是逐段复述或字符串拼接。inventory 只是目录和历史线索，不是原文证据。"
     "局部 confirmed 不能直接证明新的因果组合。区分曾怀疑、后来否定、当前证据最终确认；不得把报告的猜测升级为事实。"

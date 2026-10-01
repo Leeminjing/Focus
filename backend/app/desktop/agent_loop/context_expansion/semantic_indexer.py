@@ -1,7 +1,7 @@
 r"""本文件对外提供 ProtocolSafeRevisionSegmenter、SupervisedSegmentSemanticProjector 与 RevisionSemanticIndexer。
 
-输入为冻结完整消息、来源/hash 和受监督的 drafts／assessments；输出为协议闭合 segments 与完整目标 Index。
-工作流为规范消息、将 Tool Exchange 折叠成原子，按实际参数 fingerprint 切段，统一验证引用并补齐 fallback。
+输入为冻结 semantic 消息、原始位置、来源/hash 和受监督的 drafts／assessments；输出为协议闭合 segments 与完整目标 Index。
+具体工作流为规范消息、将 Tool Exchange 折叠成原子，按实际参数 fingerprint 切段，统一验证引用并补齐 fallback。
 每条 draft 的引文／verdict 独立 grounding，再按最终 unit_id 合并相同事实和 projected 库存；局部／综合 proof 保留原始证据。
 describe_segment 是纯 identity 工具；validate_proposal 检查投影 identity 唯一性。旧 projector 保留兼容，新 Portfolio 合并局部及综合 drafts。
 示例：index = RevisionSemanticIndexer().index(source=ref, raw_messages=messages, ...)；跨段联合引文绑定同一 Revision，旧 index 不变。
@@ -53,7 +53,7 @@ class SupervisedSegmentSemanticProjector:
         self,
         index: RevisionSemanticIndex,
     ) -> tuple[SegmentSemanticUnitDraft, ...]:
-        system = "你是无权 semantic_index_projector。只从输入冻结 segment 原文抽取原子 semantic units。每个 unit 分别输出自然语言 statement 与一个或多个 supports；每个 support 的 message_id 必须来自输入，quote 必须逐字复制该消息原文。confirmed statement 必须被全部引文共同直接支持。不得生成 WorkSpec、查询外部历史或执行状态变更。"
+        system = "你是无权 semantic_index_projector。semantic_policy=index 才能定义任务命题；evidence_only 是关联证据，reference_only 是约束参考，两者不独立提升为任务要求。只从输入冻结 segment 原文抽取原子 semantic units。每个 unit 分别输出自然语言 statement 与一个或多个 supports；每个 support 的 message_id 必须来自输入，quote 必须逐字复制该消息原文。confirmed statement 必须被全部引文共同直接支持。不得生成 WorkSpec、查询外部历史或执行状态变更。"
         payload = {
             "source": index.source.model_dump(mode="json"),
             "segments": tuple(
@@ -98,7 +98,7 @@ class SupervisedSegmentSemanticProjector:
 
 
 class ProtocolSafeRevisionSegmenter:
-    VERSION = "protocol-safe-segmenter-v1"
+    VERSION = "protocol-safe-segmenter-v2"
 
     def __init__(self, max_messages: int = 12) -> None:
         if max_messages < 1:
@@ -187,7 +187,7 @@ class ProtocolSafeRevisionSegmenter:
 
 
 class RevisionSemanticIndexer:
-    INDEX_SCHEMA_VERSION = "revision-semantic-index-v5"
+    INDEX_SCHEMA_VERSION = "revision-semantic-index-v6"
     PROJECTOR_VERSION = "supervised-segment-projector-v2"
 
     def __init__(
@@ -255,6 +255,11 @@ class RevisionSemanticIndexer:
                 content=item.get("content", ""),
                 tool_calls=tuple(item.get("tool_calls") or ()),
                 tool_call_id=item.get("tool_call_id"),
+                name=item.get("name"),
+                status=item.get("status"),
+                source_item_ids=tuple(item.get("source_item_ids", ())),
+                semantic_policy=item.get("semantic_policy", "index"),
+                source_ordinal=item.get("source_ordinal", ordinal),
             )
             for ordinal, item in enumerate(raw_messages)
         )
@@ -310,7 +315,10 @@ class RevisionSemanticIndexer:
             if isinstance(ref, NamespacedMessageRef)
         }
         for segment in segments:
-            if set(segment.message_ids).issubset(represented):
+            eligible = {message.message_id for message in messages if message.semantic_policy == "index"}
+            if not set(segment.message_ids) & eligible:
+                continue
+            if (set(segment.message_ids) & eligible).issubset(represented):
                 continue
             fallback_ids.append(segment.segment_id)
             unit = SemanticEvidenceUnit.create(

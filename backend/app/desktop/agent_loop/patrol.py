@@ -4,6 +4,7 @@ r"""本文件对外提供 PortfolioPatrol、PatrolDecisionModel 与 PatrolContra
 一个 PatrolDecisionIntent，或携带模型原始输出的可重试合同违例。具体工作流为每轮创建隔离 attempt
 identity，记录基础 Observation hash 与独立组合输入 hash；模型可自行判断并可选择请求 Worker，结果先持久化为 proposal，再由 Kernel commit；模型回答
 形状不合法时抛出 PatrolContractViolation，attempt 记为 error 并保留原始输出，是否重试由调用方决定。
+模型请求来源摘要与可用的实际用量附在现有 attempt 审计中，opaque continuation 不进入日志或任务事实。
 示例：`result = await patrol.decide(envelope, identity)`。
 """
 
@@ -68,7 +69,8 @@ class PortfolioPatrol:
         async with self._sessions.begin() as session:
             row = await session.get(LoopPatrolAttempt, attempt.patrol_attempt_id, with_for_update=True)
             row.status = status
-            row.raw_output = {**(row.raw_output or {}), **output}
+            row.raw_output = {**(row.raw_output or {}), **output,
+                              "model_attempts": list(getattr(self._model, "attempt_metadata", ())) }
             row.error = error
             row.completed_at = datetime.now(UTC)
 

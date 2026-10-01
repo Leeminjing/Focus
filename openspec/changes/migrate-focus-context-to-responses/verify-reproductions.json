@@ -1,0 +1,58 @@
+{
+  "compression_resume": {
+    "interrupted": true,
+    "model_calls": 1,
+    "selected_contexts_before_resume": [
+      "CURRENT_RUN_MEMORY",
+      "CURRENT_RUN_SKILL",
+      "CURRENT_RUN_MATERIAL_POLICY"
+    ],
+    "selected_contexts_in_first_sampling": [],
+    "selected_contexts_in_final_checkpoint": []
+  },
+  "reference_policy_projection": {
+    "source_policy": "reference_only",
+    "item_kind": "selected_context",
+    "item_origin": "curator",
+    "projected_roles": {
+      "openai": "developer",
+      "deepseek": "system"
+    }
+  },
+  "input_provenance": {
+    "direct_user": {
+      "item_origin": "legacy_unknown",
+      "source_refs": []
+    },
+    "delegated_patrol": {
+      "item_origin": "legacy_unknown",
+      "source_refs": []
+    }
+  },
+  "changed_image_prefix": {
+    "image_prefix_changed": true,
+    "native_reasoning_replayed": true,
+    "projection_rejected": false
+  },
+  "v1_semantic_runtime": {
+    "stored_control_origin": "runtime",
+    "semantic_messages": [
+      {
+        "id": "real-task",
+        "semantic_policy": "index",
+        "origin": null
+      },
+      {
+        "id": "environment-control",
+        "semantic_policy": "index",
+        "origin": null
+      }
+    ]
+  },
+  "compression_repair_status": {
+    "synthetic": true,
+    "tool_status": "success",
+    "item_origin": "runtime",
+    "item_kind": "projection_repair"
+  }
+}

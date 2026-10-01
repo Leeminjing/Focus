@@ -1,7 +1,7 @@
 """本文件对外提供 Desktop Gateway、Run、Patrol、Context 与权限主链路的集成回归。
 
 输入为真实 FastAPI/TestClient、PostgreSQL、LangGraph checkpoint、受控 Agent 图与受保护材料；输出为 HTTP、
-SSE、持久 Run、恢复、投放、权限装配和精确材料版本断言。具体工作流为自动隔离用户 MCP/插件工具发现，测试内
+SSE、持久 Run、宿主输入来源、恢复、投放、权限装配和精确材料版本断言。具体工作流为自动隔离用户 MCP/插件工具发现，测试内
 按场景替换模型图，其余 Desktop 执行脊柱保持真实；示例：`python -m pytest backend/tests/test_desktop_poc.py -q`。
 """
 
@@ -183,9 +183,17 @@ async def _seed_checkpoint(service: DesktopService, thread_id: str, namespace: s
 
 
 async def _cleanup(service: DesktopService, task_id: str, workspace_id: str, thread_id: str):
+    from backend.app.desktop.domain_evidence.models import DesktopDomainResult
+
+    pending = [task for task in service._sync_tasks if not task.done()
+               and (record := task.get_coro().cr_frame.f_locals.get("record")) is not None
+               and record.thread_id == thread_id and record.status.value in {"success", "error", "interrupted", "cancelled"}]
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=False)
     await service.checkpointer.adelete_thread(thread_id)
     await service.checkpointer.adelete_thread(f"{thread_id}:commitment")
     async with service.session_factory() as session:
+        await session.execute(delete(DesktopDomainResult).where(DesktopDomainResult.context_id == task_id))
         await session.execute(delete(DesktopThread).where(DesktopThread.task_id == task_id))
         await session.execute(
             delete(DesktopWorkspace).where(DesktopWorkspace.workspace_id == workspace_id)
@@ -306,6 +314,16 @@ def test_unified_pipeline_main_run_end_to_end(tmp_path, wait_until):
             )
             assert messages[-1]["role"] == "ai"
             assert "你好" in messages[-1]["content"]
+
+            async def input_source():
+                checkpoint = await service.checkpointer.aget_tuple({"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}})
+                human = checkpoint.checkpoint["channel_values"]["messages"][0]
+                return human.additional_kwargs["focus_context"]
+
+            provenance = client.portal.call(input_source)
+            assert provenance["origin"] == "direct_user"
+            assert provenance["source_refs"][0]["run_id"] == run["run_id"]
+            assert provenance["source_refs"][0]["task_id"] == task["task_id"]
 
             # 清理
             client.portal.call(

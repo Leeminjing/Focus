@@ -1,7 +1,8 @@
 r"""本文件对外提供 RunAdmissionService 与 RunAdmissionResult。
 
 输入为调用方事务中已构造但未提交的 DesktopRun；输出为同事务持久化的唯一 Run 与 accepted RunDispatch。
-具体工作流为先取得 task 与 idempotency key 的事务级互斥锁，再查找幂等赢家、校验 task-local 活跃 Main Run，最后同时写 Run/dispatch 并 flush，不创建 Agent。
+具体工作流为先取得 task 与 idempotency key 的事务级互斥锁，再查找幂等赢家、校验 task-local 活跃 Main Run，
+按宿主 Run 身份绑定新输入来源，最后同时写 Run/dispatch 并 flush，不创建 Agent。
 示例：`result = await service.admit(session, run)`。
 """
 
@@ -17,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.desktop.models import DesktopRun
 from backend.app.desktop.persistence_safety import PersistencePayloadNormalizer
 from backend.app.desktop.run_orchestration.models import RunDispatch
+from backend.app.desktop.run_orchestration.input_provenance import bind_run_inputs
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +53,7 @@ class RunAdmissionService:
         )
         if run.kind == "main" and active is not None:
             raise RunAdmissionConflict(f"任务已有活跃 Main Run: {active.run_id}")
+        run.input_messages = bind_run_inputs(run)
         self._normalize_mutable_payloads(run)
         session.add(run)
         dispatch = RunDispatch(

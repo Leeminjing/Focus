@@ -1,7 +1,7 @@
 r"""本文件对外提供 SegmentProjectionRecord、SegmentProjectionBuilder 与投影合同 fingerprint。
 
 输入为单个协议闭合 segment、其规范消息及受监督模型；输出为保留 drafts、精确引文、verdict 和隔离结果的不可变记录。
-工作流为仅向模型提交该段，确定性检查局部 supports，独立验证 confirmed claims，保存原始证据与稳定身份。
+具体工作流为仅向模型提交该段，确定性检查局部 supports，独立验证 confirmed claims，保存原始证据与稳定身份。
 复用输入为相同 segment；输出为经重新校验的记录，不重新调用模型。示例：record = await builder.build(segment, messages)。
 """
 
@@ -30,6 +30,7 @@ SEGMENT_PROMPT = (
     "你是无权 semantic_index_projector。只从这个冻结 segment 的原文抽取原子 semantic units。"
     "每个 unit 输出 statement 和 supports；message_id 必须来自本段，quote 必须逐字复制原文。"
     "confirmed statement 必须被给定引文直接支持。不得引用其他段、生成 WorkSpec、查询外部历史或改变状态。"
+    "semantic_policy=index 才能提出任务命题；evidence_only 只提供关联证据，reference_only 只提供约束参考，不将两者独立改写为任务要求。"
 )
 
 
@@ -170,7 +171,7 @@ class SegmentProjectionRecord(BaseModel):
         return (
             tuple(sorted(accepted)),
             tuple(sorted(rejected, key=lambda r: r.rejection_id)),
-            not set(contents).issubset(represented),
+            not {m.message_id for m in messages if m.semantic_policy == "index"}.issubset(represented),
         )
 
 

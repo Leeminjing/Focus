@@ -2,7 +2,7 @@ r"""本文件对外提供单 Context definition revision 的准备、验证与�
 
 输入为 authored definition、版本化来源、可选真实运行后缀、期望基础 revision、checkpoint writer
 与调用方 AsyncSession；输出为不可路由 shadow candidate 或已发布 revision 引用。具体工作流为
-确定性编译 authored messages，待审批候选停在无 checkpoint 状态，合法候选把 execution 前缀和后缀
+确定性编译 authored messages 为 V2 typed 历史，待审批候选停在无 checkpoint 状态，合法候选把 execution 前缀和后缀
 写入 shadow identity，最后在嵌套事务中执行 immutable insert 与 current pointer CAS；失败不会留下
 可运行 revision。
 示例：`candidate = await publisher.prepare(session, request); await publisher.publish(session, candidate)`。
@@ -32,6 +32,7 @@ from backend.app.desktop.context_evolution.schemas import (
     PreparedContextRevision,
 )
 from backend.app.desktop.context_projection import compile_context_messages
+from backend.app.desktop.context_evolution.history import build_revision_history, definition_records
 
 
 class ContextRevisionPreparationFailed(RuntimeError):
@@ -65,7 +66,7 @@ class ContextRevisionPublisher:
                 f"prepare base 已变化: expected={self._id(request.expected_base)}, "
                 f"actual={self._id(current_ref)}"
             )
-        projection = compile_context_messages(list(request.authored_messages))
+        projection = compile_context_messages(list(definition_records(request.authored_messages)))
         revision_id = uuid.uuid4().hex
         shadow_ref = ContextRevisionRef(
             context_id=request.context_id,
@@ -102,17 +103,23 @@ class ContextRevisionPublisher:
             ref = ContextRevisionRef.model_validate(
                 {**shadow_ref.model_dump(mode="python"), "checkpoint_id": checkpoint_id}
             )
+        execution = [*definition_records(projection.execution_messages), *definition_records(suffix_messages)]
+        read_records = getattr(self._checkpoint_writer, "read_records", None)
+        if ref.checkpoint_id is not None and read_records is not None:
+            execution = list(await read_records(ref))
+        history = build_revision_history(projection.authored_messages, execution) if ref.checkpoint_id is not None else None
         revision = ContextRevisionContract(
             ref=ref,
             sources=request.sources,
-            authored_messages=tuple(projection.authored_messages),
-            execution_messages=tuple(projection.execution_messages),
+            history_payload=history,
+            authored_messages=tuple(projection.authored_messages) if ref.checkpoint_id is None else (),
+            execution_messages=tuple(projection.execution_messages) if ref.checkpoint_id is None else (),
             repair_manifest=tuple(projection.repair_manifest),
             issues=tuple(projection.issues),
             initial_message_ids=initial_ids,
             definition_hash=projection.definition_hash,
             projection_hash=projection.projection_hash,
-            content_hash=self._content_hash(request, projection.projection_hash),
+            content_hash=self._content_hash(request, projection.projection_hash, history),
             projection_status=status,
             origin_kind=request.origin_kind,
             origin_id=request.origin_id,
@@ -149,7 +156,7 @@ class ContextRevisionPublisher:
         )
 
     @staticmethod
-    def _content_hash(request: ContextRevisionPrepareRequest, projection_hash: str) -> str:
+    def _content_hash(request: ContextRevisionPrepareRequest, projection_hash: str, history=None) -> str:
         payload = {
             "context_id": request.context_id,
             "projection_hash": projection_hash,
@@ -157,6 +164,8 @@ class ContextRevisionPublisher:
             "origin_kind": request.origin_kind.value,
             "origin_id": request.origin_id,
         }
+        if history is not None:
+            payload["history_payload"] = history.model_dump(mode="json")
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
