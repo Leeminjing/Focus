@@ -1,8 +1,11 @@
-"""权柄面派生、优先于工作根与读写分离的用例。
+"""本文件对外提供权柄面派生、文件模式边界及读写分离的测试用例。
 
 输入为工作区、真实目标路径与访问策略；输出为权柄面归属与准入判定结果。
 工作流先锁定权柄面的成员由判定原则派生（含「加载器会去看的候选路径」且普通说明文件不算），
-再锁定权柄面优先于工作根、读写分别判定，最后锁定访问模式与能力权限正交且缺省最严。
+再锁定文件模式先约束写入范围、允许范围内权柄面仍需审批及读写分别判定，最后验证模式与能力权限正交且缺省只读。
+外部普通读取可放行；完全访问解除文件边界后，敏感写入依旧需要审批。
+辅助准入构造保留完整判定结果，分别核对审批、路径拒绝及能力拒绝；普通受限 Shell 调用不等同于模式升级。
+示例：pytest backend/tests/test_authority_surfaces.py；路径与全局配置根由隔离临时目录提供。
 """
 
 import logging
@@ -102,28 +105,28 @@ def test_read_and_write_are_decided_separately(tmp_path, monkeypatch):
     config = global_home() / "config.yaml"
 
     assert decide_path_access(policy, credential, AccessOperation.READ) is AccessDecision.ASK
-    assert decide_path_access(policy, credential, AccessOperation.WRITE) is AccessDecision.ASK
+    assert policy.mode is AccessMode.READ_ONLY
+    assert decide_path_access(policy, credential, AccessOperation.WRITE) is AccessDecision.DENY
     assert decide_path_access(policy, config, AccessOperation.READ) is AccessDecision.ALLOW
-    assert decide_path_access(policy, config, AccessOperation.WRITE) is AccessDecision.ASK
+    assert decide_path_access(policy, config, AccessOperation.WRITE) is AccessDecision.DENY
 
 
-def test_full_mode_lifts_the_local_resource_layer_entirely(tmp_path, monkeypatch):
+def test_full_mode_lifts_file_boundary_but_preserves_authority_review(tmp_path, monkeypatch):
     monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(tmp_path / "home"))
     policy = AccessPolicy(
         mode=AccessMode.FULL, workspace=tmp_path / "ws", roots=(tmp_path / "ws",),
         authority=authority_surfaces(tmp_path / "ws"),
     )
     assert decide_path_access(policy, tmp_path / "outside.txt", AccessOperation.WRITE) is AccessDecision.ALLOW
-    assert decide_path_access(policy, global_home() / ".env", AccessOperation.WRITE) is AccessDecision.ALLOW
+    assert decide_path_access(policy, global_home() / ".env", AccessOperation.WRITE) is AccessDecision.ASK
 
 
-def test_missing_mode_defaults_to_workspace(tmp_path):
+def test_missing_mode_defaults_to_read_only(tmp_path):
     policy = policy_from_context({"workspace": str(tmp_path)})
-    assert policy.mode is AccessMode.WORKSPACE
+    assert policy.mode is AccessMode.READ_ONLY
 
 
-def test_unrecognised_mode_defaults_to_workspace_with_a_warning(tmp_path):
-    """无法识别的模式按最严处理并留下可见告警；用例自带 handler，不依赖全局日志配置。"""
+def test_unrecognised_mode_defaults_to_read_only_with_a_warning(tmp_path):
     import focus.security.policy as policy_module
 
     records: list[logging.LogRecord] = []
@@ -139,7 +142,7 @@ def test_unrecognised_mode_defaults_to_workspace_with_a_warning(tmp_path):
     finally:
         policy_module.logger.removeHandler(handler)
 
-    assert policy.mode is AccessMode.WORKSPACE
+    assert policy.mode is AccessMode.READ_ONLY
     assert any("访问模式" in record.getMessage() for record in records)
 
 
@@ -170,8 +173,8 @@ def _runtime(mode: str, workspace: Path, permissions: tuple[str, ...]) -> ToolRu
     )
 
 
-def _asks(tmp_path, workspace: Path, permissions: tuple[str, ...], mode: str, name: str,
-          args: dict[str, object]) -> bool:
+def _admission(workspace: Path, permissions: tuple[str, ...], mode: str, name: str,
+               args: dict[str, object]):
     from focus.security.middleware import _admit
     from focus.tools.builtins.workspace_tools import select_workspace_tools
     from langchain.tools.tool_node import ToolCallRequest
@@ -183,36 +186,31 @@ def _asks(tmp_path, workspace: Path, permissions: tuple[str, ...], mode: str, na
             tool_call={"name": name, "args": args, "id": "c1"},
             tool=tool, state={}, runtime=_runtime(mode, workspace, permissions),
         )
-    ).asked
+    )
 
 
 def test_access_mode_does_not_change_the_tool_set(tmp_path):
-    """模式与能力权限正交：工具集合只由权限决定，同一调用的准入结论只由模式决定。"""
     import inspect
 
     from focus.tools.builtins.workspace_tools import select_workspace_tools
 
-    # 工具集合是权限的函数：选择入口不接受模式，因此两档模式下同一权限集合得到的集合必然相同
     assert list(inspect.signature(select_workspace_tools).parameters) == ["permissions"]
     assert "powershell" not in _names(("read",))
     assert "powershell" in _names(("read", "write", "host_command"))
 
-    # 四种组合的准入语义：命中允许面之外的路径时，只有工作区保护请求人工决定
     outside = str(tmp_path.parent / "outside.txt")
     combinations = [
         (permissions, mode)
         for permissions in (("read",), ("read", "write", "host_command"))
-        for mode in ("workspace", "full")
+        for mode in ("read-only", "workspace-write", "danger-full-access")
     ]
     for permissions, mode in combinations:
-        assert _asks(tmp_path, tmp_path, permissions, mode, "read_file", {"path": "notes.md"}) is False
-        assert _asks(tmp_path, tmp_path, permissions, mode, "read_file", {"path": outside}) is (
-            mode == "workspace"
-        )
-    for mode in ("workspace", "full"):
-        assert _asks(
-            tmp_path, tmp_path, ("read", "write", "host_command"), mode, "powershell", {"command": "ls"}
-        ) is (mode == "workspace")
+        for path in ("notes.md", outside):
+            result = _admission(tmp_path, permissions, mode, "read_file", {"path": path})
+            assert not result.asked and not result.denied and result.capability_denied is None
+    for mode in ("read-only", "workspace-write", "danger-full-access"):
+        result = _admission(tmp_path, ("read", "write", "host_command"), mode, "powershell", {"command": "ls"})
+        assert not result.asked and not result.denied and result.capability_denied is None
 
 
 def _names(permissions: tuple[str, ...]) -> list[str]:

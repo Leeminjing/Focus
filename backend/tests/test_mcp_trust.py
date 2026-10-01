@@ -1,8 +1,10 @@
-"""外部执行工具信任分层的用例。
+"""本文件对外提供外部执行工具信任分层及信任配置准入的测试用例。
 
 输入为外来自声明、随版本契约、用户显式覆盖与受治理上下文；输出为签发后的效果契约与准入结论。
 工作流先锁定外来自声明不参与判定、随版本契约优先于用户覆盖、用户覆盖的取值域被收窄，
-再锁定信任覆盖所在的配置属于权柄面，最后锁定本系统自行接线的 Context7 不产生待决。
+再以隔离配置来源验证三档模式下工作区内外信任配置的读写判定，最后锁定本系统自行接线的 Context7 不产生待决。
+文件模式先限定写入范围；允许范围内的信任配置仍请求审批，目录可见性和读取不会赋予写权限。
+示例：pytest backend/tests/test_mcp_trust.py；配置路径来自临时工作区及独立全局目录。
 """
 
 import asyncio
@@ -180,25 +182,35 @@ def test_overrides_are_scoped_to_the_server_that_declared_them(monkeypatch):
     ]
 
 
-def test_trust_override_config_is_an_authority_surface(tmp_path):
-    """能放宽信任的持久化配置本身属于权柄面：写入它请求人工决定。"""
+@pytest.mark.parametrize("mode, inside, outside", [
+    (AccessMode.READ_ONLY, AccessDecision.DENY, AccessDecision.DENY),
+    (AccessMode.WORKSPACE_WRITE, AccessDecision.ASK, AccessDecision.DENY),
+    (AccessMode.DANGER_FULL_ACCESS, AccessDecision.ASK, AccessDecision.ASK),
+])
+def test_trust_override_config_is_an_authority_surface(tmp_path, monkeypatch, mode, inside, outside):
+    config_home = tmp_path.parent / f"{tmp_path.name}-global"
+    monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(config_home))
+    monkeypatch.chdir(tmp_path)
     surfaces = authority_surfaces(tmp_path)
     trust_surfaces = [
         surface for surface in surfaces if surface.path.name == "extensions_config.json"
     ]
     assert len(trust_surfaces) == 2
     assert all(surface.kind is AuthorityKind.TRUST for surface in trust_surfaces)
+    assert {surface.path for surface in trust_surfaces} == {
+        (tmp_path / "extensions_config.json").resolve(), (config_home / "extensions_config.json").resolve(),
+    }
 
     policy = AccessPolicy(
-        mode=AccessMode.WORKSPACE,
+        mode=mode,
         workspace=tmp_path.resolve(),
         roots=(tmp_path.resolve(),),
         authority=surfaces,
     )
-    for surface in trust_surfaces:
-        assert (
-            decide_path_access(policy, surface.path, AccessOperation.WRITE) is AccessDecision.ASK
-        )
+    for target, expected in [(tmp_path / "extensions_config.json", inside),
+                             (config_home / "extensions_config.json", outside)]:
+        assert decide_path_access(policy, target.resolve(), AccessOperation.WRITE) is expected
+        assert decide_path_access(policy, target.resolve(), AccessOperation.READ) is AccessDecision.ALLOW
 
 
 def test_promise_stage_external_queries_do_not_ask(monkeypatch):

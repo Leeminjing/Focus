@@ -8,6 +8,7 @@ RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以
 示例：`service = DesktopService(...); await service.start_main_run(task_id, message, ...)`。
 基础行为仅进入 instructions；memory／selected skills／材料 policy／空间选择冻结为 Run 输入，能力目录与权限进入 checkpoint-bound WorldState。
 真实用户与委托输入由 Run admission/装配端口绑定可信来源；模型 role 和正文不能替代该宿主身份。
+Main 执行池按来源选择 custom／MCP；工作区工具和插件桥各自独占内置／插件注入，发现目录仍完整用于装备展示。
 协作消息由耐久 inbox 准备，模型与工具尝试通过独立审计端口确认；临时运行控制不进入 authored 或 semantic 历史。
 具体工作流为：登记真实宿主机工作区与线程，复制已提交 checkpoint 形成冻结草稿，
 准备受文件沙箱约束的工作区 Agent 装配参数（经统一执行链路 worker.run_agent 执行），并把上传、
@@ -189,6 +190,7 @@ from focus.runtime.runs.manager import RunManager, RunRecord
 from focus.runtime.runs.worker import run_agent
 from focus.runtime.stream_bridge.base import StreamBridge
 from focus.tools import get_available_tools
+from focus.tools.catalog import execution_pool_tools
 from focus.tools.builtins.web_tools import web_fetch, web_search
 from focus.tools.builtins.workspace_tools import select_workspace_tools
 from backend.app.desktop.prompts import (
@@ -2041,14 +2043,8 @@ class DesktopService:
             if agent_role == "main":
 
 
-                from focus.tools.interfaces import ToolInfo
-
                 pooled = await get_available_tools()
-                pool_tools = [
-                    t.tool() if isinstance(t, ToolInfo) else t
-                    for t in pooled
-                    if not (isinstance(t, ToolInfo) and t.source == "builtin")
-                ]
+                pool_tools = execution_pool_tools(pooled, include_builtin=False)
                 tools = [*tools, *self._build_patrol_reader_tools(task_id),
                          *self._build_swarm_reader_tools(task_id),
                          build_spawn_agent_tool(), *self._build_swarm_tools(),

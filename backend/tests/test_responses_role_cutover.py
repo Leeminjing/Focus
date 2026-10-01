@@ -2,6 +2,7 @@
 
 输入为离线 HTTP 终态、明确模型配置和受治理角色上下文；输出为实际请求协议、来源与恢复隔离断言。
 具体工作流为调用真实模型/Agent 工厂，检查 Main、Teammate、Worker 和冻结认知请求，再比较压缩门与 SDK 请求预算。
+旧 v5 索引以独立黄金哈希保持可读且不改写；当前 v8 索引使用新身份并可通过持久化校验重新加载。
 示例：pytest backend/tests/test_responses_role_cutover.py；不使用外部模型或用户数据库。
 """
 
@@ -146,18 +147,21 @@ def test_maintenance_admission_preserves_v2_read_and_explicit_new_branch(tmp_pat
     assert [message.content for message in branch_messages(items_to_messages(items))] == ["task"]
 
 
-def test_independent_head_v5_golden_preserves_hash_and_v6_is_a_new_identity():
+def test_independent_head_v5_golden_preserves_hash_and_v8_is_a_new_identity():
     from backend.app.desktop.agent_loop.context_expansion.semantic_index import RevisionSemanticIndex
     from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import RevisionSemanticIndexer
     path = Path(__file__).parent / "fixtures/responses/legacy-v5-index.json"
     before = path.read_bytes()
     old = RevisionSemanticIndex.model_validate_json(before)
+    assert old.index_schema_version == "revision-semantic-index-v5"
     assert old.index_id == "7be7ed7fe4a2c418a0109276037031e05fb7aebbb76e1da66f79788aee554606"
     current = RevisionSemanticIndexer().index(source=old.source, source_content_hash=old.source_content_hash,
         context_role=old.context_role, active_objective=old.active_objective,
         raw_messages=[{"id": message.message_id, "role": message.role, "content": message.content} for message in old.messages])
-    assert current.index_schema_version == "revision-semantic-index-v6"
+    assert current.index_schema_version == "revision-semantic-index-v8"
     assert current.index_id != old.index_id
+    assert current.source == old.source and current.source_content_hash == old.source_content_hash
+    assert RevisionSemanticIndex.model_validate_json(current.model_dump_json()) == current
     assert path.read_bytes() == before
 
 

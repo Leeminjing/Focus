@@ -9,7 +9,7 @@
     registry: PluginRegistry — 装配时快照使用的插件注册表
 
 输出:
-    tools 属性 → list[BaseTool]（注册表插件工具，经 create_agent 编译时并入工具节点）
+    tools 属性 → list[BaseTool]（构图时捕获的插件工具快照；每次返回独立列表，经 create_agent 并入工具节点）
     abefore_agent / abefore_model → dict | None（可变 hook 流水线合并 diff）
     aafter_model / aafter_agent → None（只读 hook，返回值丢弃）
     awrap_tool_call → ToolMessage | Command（before_tool → handler → after_tool）
@@ -22,6 +22,7 @@
     (3) 失败归属插件实现（trace 记录插件名 + 接口名 + 错误文本），系统不做技术栈特殊处理
     (4) 本中间件仅实现异步钩子：系统运行链路全程 agent.astream（ponytail: 出现同步
         invoke 调用路径时再补 sync 变体）
+    (5) 工具对象与可信 metadata 保持原身份；reload 只影响新桥实例，目录消费者不能修改本次绑定列表
 
 示例:
     middlewares = [PluginBridgeMiddleware(get_plugin_registry())]
@@ -44,10 +45,11 @@ class PluginBridgeMiddleware(AgentMiddleware):
     def __init__(self, registry: PluginRegistry) -> None:
         super().__init__()
         self._registry = registry
+        self._tools = tuple(registry.tools())
 
     @property
     def tools(self) -> list[Any]:
-        return self._registry.tools()
+        return list(self._tools)
 
     async def _invoke(
         self, impl: HookImpl, name: str, *args: Any
