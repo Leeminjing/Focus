@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "scenario_count": 69,
+  "scenario_count": 83,
   "scenarios": [
     {
       "spec": "checkpoint-world-state",
@@ -342,7 +342,12 @@
       "scenario": "Final snapshot follows streamed text",
       "contract_test": "backend/tests/test_responses_protocol.py::test_repeated_terminal_has_one_final_chunk_and_one_usage",
       "evidence": "offline_contract_or_database_integration",
-      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results."
+      "limits": "Focused contract evidence; see verification.md for baseline failures, real-provider limits and Desktop integration results.",
+      "additional_tests": [
+        "backend/tests/test_contract_history_repairs.py::test_reader_and_live_contract_display_keep_attachments_without_mutation"
+      ],
+      "repair_verification": "follow-up-repair-verification.md",
+      "repair_status": "targeted_regressions_passed"
     },
     {
       "spec": "responses-stream-lifecycle",
@@ -520,6 +525,205 @@
         "backend/tests/test_request_context_repairs.py::test_actual_prefix_change_rebuilds_authority_and_preserves_old_checkpoint"
       ],
       "repair_evidence": "Actual Lead factory/SDK wire, isolated database admission/checkpoint or lossless reader regression; see repair-verification.md."
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Deliver an approved commitment contract",
+      "status": "verified_targeted",
+      "contract_test": "backend/tests/test_commitment_handoff_recovery.py::test_actual_lead_contract_handoff_freezes_knowledge_and_audits_wire",
+      "evidence": "offline_contract_and_actual_graph_or_database_integration",
+      "limits": "Targeted fixture/integration evidence; no live Provider or Electron E2E. See follow-up-verification.md.",
+      "additional_tests": [
+        "backend/tests/test_commitment_handoff_publication.py::test_contract_settlement_derivation_and_rollback_preserve_exact_sources",
+        "backend/tests/test_contract_history_repairs.py::test_reader_and_live_contract_display_keep_attachments_without_mutation"
+      ],
+      "repair_verification": "follow-up-repair-verification.md",
+      "repair_status": "targeted_regressions_passed"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Reject a contract changed after approval",
+      "status": "verified_targeted",
+      "contract_test": "backend/tests/test_commitment_handoff.py::test_compiler_rejects_unapproved_or_conflicting_sources",
+      "evidence": "offline_contract_and_actual_graph_or_database_integration",
+      "limits": "Targeted fixture/integration evidence; no live Provider or Electron E2E. See follow-up-verification.md.",
+      "additional_tests": [
+        "backend/tests/test_commitment_handoff_publication.py::test_contract_settlement_derivation_and_rollback_preserve_exact_sources"
+      ]
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "A draft or tagged message has no confirmed contract authority",
+      "status": "verified_targeted",
+      "contract_test": "backend/tests/test_commitment_handoff.py::test_compiler_rejects_unapproved_or_conflicting_sources",
+      "evidence": "offline_contract_and_actual_graph_or_database_integration",
+      "limits": "Targeted fixture/integration evidence; no live Provider or Electron E2E. See follow-up-verification.md.",
+      "additional_tests": [
+        "backend/tests/test_commitment_handoff_publication.py::test_contract_settlement_derivation_and_rollback_preserve_exact_sources"
+      ]
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Recover a contract handoff after parent checkpoint persistence",
+      "status": "verified_targeted",
+      "contract_test": "backend/tests/test_commitment_handoff_recovery.py::test_completed_child_recovers_parent_handoff_once",
+      "evidence": "offline_contract_and_actual_graph_or_database_integration",
+      "limits": "Targeted fixture/integration evidence; no live Provider or Electron E2E. See follow-up-verification.md.",
+      "additional_tests": [
+        "backend/tests/test_commitment_handoff_publication.py::test_contract_settlement_derivation_and_rollback_preserve_exact_sources",
+        "backend/tests/test_contract_history_repairs.py::test_real_compression_graph_clears_and_restores_typed_mirror",
+        "backend/tests/test_contract_history_repairs.py::test_durable_compression_mirror_reconstructs_with_exact_old_checkpoint",
+        "backend/tests/test_contract_history_repairs.py::test_typed_mirror_is_cleared_even_when_recovering_a_stale_scalar",
+        "backend/tests/test_contract_history_repairs.py::test_legacy_scalar_is_explicit_and_tags_do_not_create_typed_authority"
+      ],
+      "independent_boundary_findings": [
+        "V2"
+      ],
+      "repair_verification": "follow-up-repair-verification.md",
+      "repair_status": "targeted_regressions_passed",
+      "independent_boundary_resolution": "resolved"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Project a Focus inbox item to OpenAI Responses",
+      "status": "verified_targeted",
+      "contract_test": "backend/tests/test_commitment_handoff.py::test_host_collaboration_and_contract_use_user_wire_without_beta",
+      "evidence": "offline_contract_and_actual_graph_or_database_integration",
+      "limits": "Targeted fixture/integration evidence; no live Provider or Electron E2E. See follow-up-verification.md."
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Project a Focus inbox item to DeepSeek Responses",
+      "status": "verified_targeted",
+      "contract_test": "backend/tests/test_commitment_handoff.py::test_host_collaboration_and_contract_use_user_wire_without_beta",
+      "evidence": "offline_contract_and_actual_graph_or_database_integration",
+      "limits": "Targeted fixture/integration evidence; no live Provider or Electron E2E. See follow-up-verification.md."
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Preserve an unverified native multi-agent payload",
+      "status": "verified_targeted",
+      "contract_test": "backend/tests/test_commitment_handoff.py::test_host_collaboration_and_contract_use_user_wire_without_beta",
+      "evidence": "offline_contract_and_actual_graph_or_database_integration",
+      "limits": "Targeted fixture/integration evidence; no live Provider or Electron E2E. See follow-up-verification.md."
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Project a confirmed Focus task contract",
+      "status": "verified_targeted",
+      "contract_test": "backend/tests/test_commitment_handoff_recovery.py::test_actual_lead_contract_handoff_freezes_knowledge_and_audits_wire",
+      "evidence": "offline_contract_and_actual_graph_or_database_integration",
+      "limits": "Targeted fixture/integration evidence; no live Provider or Electron E2E. See follow-up-verification.md."
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Select a confirmed contract and its accompanying knowledge",
+      "status": "verified_targeted",
+      "contract_test": "backend/tests/test_commitment_handoff.py::test_contract_authored_semantic_curator_and_display_keep_separate_authorities",
+      "evidence": "offline_contract_and_actual_graph_or_database_integration",
+      "limits": "Targeted fixture/integration evidence; no live Provider or Electron E2E. See follow-up-verification.md.",
+      "additional_tests": [
+        "backend/tests/test_commitment_handoff_publication.py::test_contract_settlement_derivation_and_rollback_preserve_exact_sources",
+        "backend/tests/test_semantic_eligibility_repairs.py::test_reference_only_cannot_independently_define_task_units",
+        "backend/tests/test_semantic_eligibility_repairs.py::test_local_and_interpretation_share_eligibility_rejection",
+        "backend/tests/test_semantic_eligibility_repairs.py::test_evidence_only_preserves_evidence_results_without_defining_task_scope",
+        "backend/tests/test_semantic_eligibility_repairs.py::test_index_with_reference_support_can_define_a_verified_task_decision"
+      ],
+      "independent_boundary_findings": [
+        "V1"
+      ],
+      "repair_verification": "follow-up-repair-verification.md",
+      "repair_status": "targeted_regressions_passed",
+      "independent_boundary_resolution": "resolved"
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "A typed contract changes the semantic input contract",
+      "status": "verified_targeted",
+      "contract_test": "backend/tests/test_commitment_handoff.py::test_v7_task_fallback_changes_fingerprint_without_rewriting_legacy_index",
+      "evidence": "offline_contract_and_actual_graph_or_database_integration",
+      "limits": "Targeted fixture/integration evidence; no live Provider or Electron E2E. See follow-up-verification.md.",
+      "additional_tests": [
+        "backend/tests/test_commitment_handoff_publication.py::test_contract_settlement_derivation_and_rollback_preserve_exact_sources",
+        "backend/tests/test_semantic_eligibility_repairs.py::test_old_local_and_whole_proofs_preserve_original_identity_and_algorithm",
+        "backend/tests/test_semantic_eligibility_repairs.py::test_v7_index_is_read_only_compatible_but_cannot_bypass_v8_eligibility"
+      ],
+      "repair_verification": "follow-up-repair-verification.md",
+      "repair_status": "targeted_regressions_passed"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "A completed commitment contains contract and theoretical references",
+      "status": "verified_targeted",
+      "contract_test": "backend/tests/test_commitment_handoff.py::test_compiler_produces_separate_typed_contract_and_references",
+      "evidence": "offline_contract_and_actual_graph_or_database_integration",
+      "limits": "Targeted fixture/integration evidence; no live Provider or Electron E2E. See follow-up-verification.md.",
+      "additional_tests": [
+        "backend/tests/test_commitment_handoff_publication.py::test_contract_settlement_derivation_and_rollback_preserve_exact_sources"
+      ]
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "A knowledge file changes after its snapshot was frozen",
+      "status": "verified_targeted",
+      "contract_test": "backend/tests/test_commitment_handoff_recovery.py::test_actual_lead_contract_handoff_freezes_knowledge_and_audits_wire",
+      "evidence": "offline_contract_and_actual_graph_or_database_integration",
+      "limits": "Targeted fixture/integration evidence; no live Provider or Electron E2E. See follow-up-verification.md.",
+      "additional_tests": [
+        "backend/tests/test_commitment_handoff_publication.py::test_contract_settlement_derivation_and_rollback_preserve_exact_sources"
+      ]
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Resume before parent handoff is committed",
+      "status": "verified_targeted",
+      "contract_test": "backend/tests/test_commitment_handoff_recovery.py::test_completed_child_recovers_parent_handoff_once",
+      "evidence": "offline_contract_and_actual_graph_or_database_integration",
+      "limits": "Targeted fixture/integration evidence; no live Provider or Electron E2E. See follow-up-verification.md.",
+      "additional_tests": [
+        "backend/tests/test_commitment_handoff_publication.py::test_contract_settlement_derivation_and_rollback_preserve_exact_sources"
+      ]
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Approval does not elevate execution access",
+      "status": "verified_targeted",
+      "contract_test": "backend/tests/test_commitment_handoff_recovery.py::test_actual_lead_contract_handoff_freezes_knowledge_and_audits_wire",
+      "evidence": "offline_contract_and_actual_graph_or_database_integration",
+      "limits": "Targeted fixture/integration evidence; no live Provider or Electron E2E. See follow-up-verification.md.",
+      "additional_tests": [
+        "backend/tests/test_commitment_handoff_publication.py::test_contract_settlement_derivation_and_rollback_preserve_exact_sources"
+      ]
     }
-  ]
+  ],
+  "baseline_mapped_count": 69,
+  "pending_count": 0,
+  "coverage_scope": {
+    "baseline_commit": "7a3390900574975bcb930bb801d73d4c67fcc7cc",
+    "baseline_scenarios": 69,
+    "follow_up_status": "implemented_targeted_verified",
+    "follow_up_test_execution": "follow-up-verification.md"
+  },
+  "follow_up_mapped_count": 14,
+  "independent_verification": {
+    "report": "follow-up-independent-verification.md",
+    "finding_ids": [
+      "V1",
+      "V2",
+      "V3"
+    ],
+    "named_mapping_is_not_acceptance": true,
+    "strict_xfail_reproductions": 3,
+    "scope": "Historical pre-repair independent audit."
+  },
+  "follow_up_repair": {
+    "report": "follow-up-repair-verification.md",
+    "resolved_findings": [
+      "V1",
+      "V2",
+      "V3"
+    ],
+    "new_regression_cases": 25,
+    "named_mapping_is_not_acceptance": true
+  }
 }

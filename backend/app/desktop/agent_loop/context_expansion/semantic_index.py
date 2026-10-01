@@ -4,11 +4,14 @@ r"""本文件对外提供 RevisionSemanticIndex、覆盖账本和稳定 segment 
 具体工作流为检查恰好一次覆盖、Tool Exchange 闭合、目标来源、质量账本及局部库存，再验证综合全部阅读依赖与联合 units 身份。
 旧 v3/v4 无综合 proof 的 payload 保留原 identity 算法；新 rev 合同要求完成综合。
 semantic_policy 分离任务命题与证据／参考，source_ordinal 保留原始位置，只有 index 资格的未覆盖消息产生 fallback。
+task_fallback_unit 在 v7/v8 只用 index 正文及来源构造假设；v8 校验 projected units 的宿主资格。
+旧索引保持其原验证算法读取，不改写历史 identity。
 示例：index = RevisionSemanticIndex.create(..., interpretation=proof)；一条诊断共同引用早期怀疑和后来否定。
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -19,6 +22,7 @@ from backend.app.desktop.agent_loop.context_expansion.contracts import (
 )
 from backend.app.desktop.agent_loop.context_expansion.semantic_grounding import (
     SemanticUnitRejection,
+    SemanticGroundingValidator,
 )
 from backend.app.desktop.context_curation import NamespacedMessageRef
 from backend.app.desktop.context_evolution import ContextRevisionRef
@@ -43,6 +47,20 @@ class IndexedMessage(_IndexModel):
     source_item_ids: tuple[str, ...] = ()
     semantic_policy: Literal["index", "evidence_only", "reference_only"] = "index"
     source_ordinal: int | None = Field(default=None, ge=0)
+
+
+def task_fallback_unit(source: ContextRevisionRef, segment: RevisionSegment,
+                       messages: tuple[IndexedMessage, ...]) -> SemanticEvidenceUnit:
+    eligible = [message for message in messages
+                if message.message_id in segment.message_ids and message.semantic_policy == "index"]
+    parts = []
+    for message in eligible:
+        text = message.content if isinstance(message.content, str) else json.dumps(message.content, ensure_ascii=False, default=str)
+        compact = " ".join(text.split())[:240]
+        parts.append(f"{message.role}:{compact}" if compact else message.role)
+    return SemanticEvidenceUnit.create(kind="claim", authority="hypothesis",
+        statement=" | ".join(parts)[:1200] or "empty-content segment",
+        evidence_refs=tuple(NamespacedMessageRef(source=source, message_id=message.message_id) for message in eligible))
 
 
 class RevisionSegment(_IndexModel):
@@ -279,6 +297,13 @@ class RevisionSemanticIndex(_IndexModel):
                         "Revision index semantic unit 引用了 index 之外的 message"
                     )
         self._require_fallback_inventory(projected, fallback, set(unit_ids))
+        if self.index_schema_version == "revision-semantic-index-v8":
+            policies = {message.message_id: message.semantic_policy for message in self.messages}
+            for unit in self.semantic_units:
+                if unit.unit_id in projected:
+                    SemanticGroundingValidator.validate_eligibility(
+                        unit.kind, (ref.message_id for ref in unit.evidence_refs), policies
+                    )
 
     def _require_fallback_inventory(
         self,
@@ -301,20 +326,21 @@ class RevisionSemanticIndex(_IndexModel):
         if fallback != expected_fallback:
             raise ValueError("fallback segment inventory 未精确覆盖未投影的来源")
         expected_fallback_units = {
-            SemanticEvidenceUnit.create(
-                kind="claim",
-                authority="hypothesis",
-                statement=segment.descriptor,
-                evidence_refs=tuple(
-                    NamespacedMessageRef(source=self.source, message_id=message_id)
-                    for message_id in segment.message_ids
-                ),
-            ).unit_id
+            self._fallback_unit(segment).unit_id
             for segment in self.segments
             if segment.segment_id in fallback
         }
         if unit_ids != projected | expected_fallback_units:
             raise ValueError("semantic units 与 projected/fallback inventory 不一致")
+
+    def _fallback_unit(self, segment: RevisionSegment) -> SemanticEvidenceUnit:
+        if self.index_schema_version in {"revision-semantic-index-v7", "revision-semantic-index-v8"}:
+            return task_fallback_unit(self.source, segment, self.messages)
+        return SemanticEvidenceUnit.create(
+            kind="claim", authority="hypothesis", statement=segment.descriptor,
+            evidence_refs=tuple(NamespacedMessageRef(source=self.source, message_id=message_id)
+                                for message_id in segment.message_ids),
+        )
 
     def descriptor(self) -> RevisionIndexDescriptor:
         return RevisionIndexDescriptor(

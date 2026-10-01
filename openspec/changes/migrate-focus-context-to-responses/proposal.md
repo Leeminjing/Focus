@@ -12,10 +12,16 @@ Focus 当前以 Chat Completions 风格消息同时承载任务历史、模型�
 - **BREAKING**：OpenAI 与 DeepSeek 的目标执行路径改为 Responses API，统一手工 Item replay；Provider conversation 和 `previous_response_id` 不成为上下文权威。保留现有 LangGraph 调度及必要的无损 BaseMessage bridge。
 - 实现 Provider 能力合同、合法 input 投影、structured output 和流事件标准化；原生 continuation 独立于可见 reasoning，显式处理 incomplete、failed、取消和断流。
 - Chat Completions 仅作为显式迁移兼容入口，不允许静默 fallback；不引入 Responses hosted tools 作为 Focus 工具权威，不把 Provider compaction 当作 Focus Compression publication。
+- 补齐 Commitment 到主执行历史的 typed TaskContract 生产边界：复用既有人工批准，将合同与冻结理论依据分开，保存稳定身份及批准来源，经既有 checkpoint／Revision 发布链路继承。
+- 明确 host-managed AgentCollaboration 的当前双 Provider 合同：投影普通 user message，内部保留 collaborator 来源与投递证明；原生 `agent_message` 属于另行验证和批准的 Multi-agent Beta 集成，不因 Provider 为 OpenAI 自动启用。
 
 本 change 的 artifacts 完成只代表规划可审阅。用户明确同意本 change 后才可 apply；修改应用代码前必须再次成功调用 Context7，找不到或无法使用时立即停止并询问用户。
 
+2026-10-01 补充范围：前 63 项任务及 F1–F6 修复已经完成并推送；用户审阅更新 artifacts 后显式调用 openspec-apply-change，授权实施 tasks 第 12 节。该 8 项任务现已完成；批准与新 Context7 依据见 follow-up-preflight.md，独立于旧范围的实现／测试结果见 follow-up-verification.md。本次未提交、推送或归档。
+
 ## Capabilities
+
+随后用户“全部修复”授权独立审计 V1／V2／V3；tasks 第 13 节已完成，当前 76/76。当前修复及验证依据见 follow-up-repair-verification.md，原审计与实施证据按时间保留；本次没有提交、推送或归档。
 
 ### New Capabilities
 

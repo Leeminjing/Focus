@@ -4,6 +4,26 @@
 
 ## ADDED Requirements
 
+### Requirement: Host collaboration uses a verified projection without hosted orchestration
+
+当前 host-managed AgentCollaboration SHALL 在 OpenAI 与 DeepSeek Responses 投影为普通 user message，同时在 canonical history／source manifest 保留 collaborator 来源、author、recipient 及 delivery refs。wire role MUST NOT 将其变成真实用户授权。当前合同 MUST NOT 仅因 provider=openai 自动启用 Multi-agent Beta、由明文 Inbox 伪造 native agent_message 或转移 Focus 的调度／checkpoint 投递确认权威；原生 Beta 集成需另行批准和验证。
+
+#### Scenario: Project a Focus inbox item to OpenAI Responses
+- **WHEN** 当前普通 OpenAI Responses 请求含宿主投递的 AgentCollaboration Item
+- **THEN** input 使用普通 message 的 user role，内部 collaborator 来源与精确 checkpoint 投递证明仍可审计，不发送 agent_message 或自动加入 Beta 协议
+
+#### Scenario: Project a Focus inbox item to DeepSeek Responses
+- **WHEN** DeepSeek Responses 请求含相同宿主协作 Item
+- **THEN** input 使用普通 user message，保留同一内部身份／来源，不将协作者正文提升为平台 policy 或真正用户输入
+
+#### Scenario: Preserve an unverified native multi-agent payload
+- **WHEN** 收到尚未纳入已验证能力合同的 native agent_message 载荷
+- **THEN** 保留原始载荷及 Provider 来源，不按明文 Inbox 重解释，不自动 replay 或执行其关联 hosted coordination
+
+#### Scenario: Project a confirmed Focus task contract
+- **WHEN** 当前 OpenAI 或 DeepSeek 请求含已验证批准来源的 Focus task_contract Item
+- **THEN** 投影为普通 user message并保留内部合同身份／来源，不发送 type=task_contract、不提升为平台 policy，也不产生额外工具权限
+
 ### Requirement: Provider requests use explicit protocol and capability contracts
 
 Provider、协议和能力 SHALL 显式声明并按经验证的模型／适配器合同解析。MUST NOT 仅凭模型名推断能力，或因请求失败静默切换 Chat Completions。迁移兼容入口 SHALL 显式可见且有固定兼容范围。

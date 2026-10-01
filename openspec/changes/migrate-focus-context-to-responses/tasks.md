@@ -93,3 +93,26 @@
 - [x] 11.5 修复 F5：V1 semantic 从 canonical checkpoint 来源适配，保留宿主可证元数据与旧 hash，补混合旧历史回归。
 - [x] 11.6 修复 F6：统一合成工具 repair 的 error 状态与来源审计，覆盖压缩拆分并行交换和 typed interruption。
 - [x] 11.7 重跑必要集成／安全／桌面测试、检查模块与声明式头部，更新场景映射和独立验证报告。
+
+## 12. Confirmed contract handoff and collaboration projection follow-up
+
+本节为 2026-10-01 新增范围，用户随后显式调用 openspec-apply-change 授权实施；前 63 项完成及旧测试只证明原范围。新 preflight 见 follow-up-preflight.md。
+
+- [x] 12.1 获得用户对本次更新 artifacts 的明确同意；改应用代码前重新成功调用 Context7，核对 LangGraph reducer／checkpoint、消息身份和 Responses 投影合同，保存新 preflight；缺失或不可用立即停下询问用户。
+- [x] 12.2 在 Commitment 边界建立纯 handoff 编译模块，校验既有第 7 阶段批准与精确 artifact hash，输出独立稳定 TaskContract 和冻结知识 references；验收：正文标签、draft、未批准及批准后改写不能生成 confirmed contract，不新增批准 UI 或合同权威库。
+- [x] 12.3 替换混合 final_message 的唯一交付职责，合同使用 delegated／revision 来源及批准／触发输入／child checkpoint refs，知识使用 reference_only 冻结版本；验收：不复用原用户消息 ID，不读取当前文件替换冻结内容，缺失或冲突可诊断。
+- [x] 12.4 经现有 bridge／reducer 同步提交 typed Items 与兼容 messages，校验 state.task_contract 镜像并支持恢复幂等；验收：父 checkpoint 前／后故障及重新构图只交付一次，同 ID 不同内容拒绝，新批准版本独立，原输入与旧 checkpoint 不变。
+- [x] 12.5 接通 continued authored selection、Revision publication 与 semantic／Curator 消费，处理必要的兼容 fingerprint 更新；验收：合同可进入 index 但不绕过事实验证，知识 reference_only，派生／rollback 精确来源可解析，旧 Revision／hash／索引不被改写或依据标签重分类。
+- [x] 12.6 固定双 Provider 的 host collaboration 与合同 wire 合同；验收：实际 OpenAI／DeepSeek payload 均使用普通 user message，保留 collaborator／delegated 区别及请求来源证明，不自动开启 Beta、不伪造 agent_message、不改变 checkpoint inbox ack 或工具授权。
+- [x] 12.7 维护原 display 和承诺子图流隔离；验收：原用户输入在 canonical history 保留，展示关系不改 authority，合同与知识不重复显示，子图 tokens／reasoning 不泄漏到主助手流。
+- [x] 12.8 跑实际 Commitment 批准／恢复／父图交付、隔离数据库结算／分支、双 Provider wire、semantic 与 display 必要回归；核对模块及文件头，逐项更新新增场景真实证据并执行 OpenSpec strict；未运行、待实施与历史结果分别标明，未完成前不宣布补充范围完成。
+
+## 13. Independent follow-up verification corrections
+
+用户“全部修复”授权 V1／V2／V3；规划细化不扩大独立报告的修复范围。
+
+- [x] 13.1 改应用代码前成功调用 Context7，记录当前授权、reducer／checkpoint 与冻结 proof 的理论依据。
+- [x] 13.2 修复 V1：局部 projection、整体 interpretation 和最终 index 共用宿主语义资格校验；保持正常 evidence 与引用解释，升级 fingerprint 并只读兼容旧 proof／index。
+- [x] 13.3 修复 V2：合同兼容镜像与 typed／legacy 来源随历史手术／shadow／恢复同步，删除或替代合同不留下独立 scalar；补实际 graph checkpoint 及旧兼容回归。
+- [x] 13.4 修复 V3：合同替换式展示保留原输入的附件元数据，展示只读，不改变 canonical 身份；验证 Reader 与 live snapshots。
+- [x] 13.5 将三项 strict xfail 转为正式回归，重跑必要语义／压缩／合同／持久化／桌面套件，核对文件头与模块边界，更新验证报告及场景映射，执行 strict 和 diff 检查。

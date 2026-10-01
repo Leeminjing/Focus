@@ -10,7 +10,7 @@
 
 输出:
     None — 已存在 task_contract、没有消息或未显式输入 /commit 指令时跳过承诺层。
-    dict[str, Any] — 完成后写入 task_contract，并原位替换 /commit 消息。
+    dict[str, Any] — 同 checkpoint 追加独立合同／冻结引用与 typed authority，task_contract 为兼容视图；typed／legacy 来源显式保存。
     GraphInterrupt — 人工确认节点暂停时向父图传播的中断。
 
 具体工作流:
@@ -26,8 +26,8 @@
         resume 时从父图 config 读取 resume 载荷并 Command(resume=...) 转发，
         子图从上次中断点继续，不重放已完成阶段。
     (4) 将子图 interrupt 原样传播给现有 run/resume 链路。
-    (5) 子图完成后校验 stage、合同和最终消息。
-    (6) 返回状态更新，由 LangGraph reducer 以相同 id 原位写入合同 HumanMessage。
+    (5) 子图完成后以精确耐久 checkpoint 编译批准合同与知识引用，完成子图可幂等重试交付。
+    (6) 保留原输入，通过唯一 bridge 提交消息／Items；display 关系表达旧的替换式展示。
 
 示例:
     middleware = CommitmentMiddleware(model, load_context7_tools, skill_names)
@@ -50,8 +50,10 @@ from langgraph._internal._constants import (
 from langgraph.config import get_config
 from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
+from langgraph.graph.message import add_messages
 
 from focus.agents.commitment.delegation import ReviewedDelegator
+from focus.agents.commitment.handoff import compile_handoff
 from focus.agents.commitment.schemas import CommitmentState
 from focus.agents.commitment.tracing import _write_commitment_messages
 from focus.agents.commitment.workflow import _build_supervisor
@@ -61,11 +63,11 @@ from focus.security.context import (
     security_context_of,
 )
 from focus.security.governed import declare_governed_keys
+from focus.history.bridge import synchronize_items
+from focus.history.task_contract import task_contract_state_update
 
 _SUBGRAPH_THREAD_SUFFIX = ":commitment"
 
-# 承诺层读取的受治理字段：工作区决定知识/合同落盘位置，thread 决定承诺子图的隔离命名空间；
-# 上传清单不在此列——它由 run_material_inputs 这一已有生产者的键承载（见 _uploads_tag）
 declare_governed_keys("workspace", "thread_id")
 
 _UPLOADS_TAG_RE = re.compile(
@@ -74,42 +76,16 @@ _UPLOADS_TAG_RE = re.compile(
 
 
 def commitment_subgraph_thread_id(thread_id: str) -> str:
-    """返回承诺子图使用的派生 thread id。"""
     return f"{thread_id}{_SUBGRAPH_THREAD_SUFFIX}"
 
 
 def _uploads_tag(context: object) -> str:
-    """从运行上下文取本轮上传清单：由 run_material_inputs（已有服务端生产者的键）构造。
-
-    输入:
-        context: object — 父级的运行上下文
-
-    输出:
-        str — <current_uploads> 标签；本轮没有已选材料时为空串
-
-    工作流:
-        (1) 由 run_material_inputs 读回不可变材料聚合（缺失时为空聚合）
-        (2) 交给材料聚合的唯一标签构造点，避免与桌面材料的策略投影各写一遍格式
-    """
     from focus.agents.material_inputs import RunMaterialInputs
 
     return RunMaterialInputs.from_context(context).uploads_tag
 
 
 def _strip_leading_skill_tokens(text: str, skill_names: frozenset[str]) -> str:
-    """剥离文本前导的 /<skill-name> token 序列，返回剩余文本。
-
-    输入:
-        text: str — 去除外围空白后的消息文本
-        skill_names: frozenset[str] — 当前任务可用技能名集合
-
-    输出:
-        str — 剥离前导 skill token 后的文本；无 token 或集合为空时原样返回
-
-    工作流:
-        (1) 从文本首部逐 token 匹配 /<skill-name>（精确、大小写敏感）。
-        (2) 连续匹配的 token 全部剥离，遇到第一个不匹配 token 停止并返回剩余文本。
-    """
     if not skill_names:
         return text
     rest = text
@@ -134,21 +110,6 @@ def _commit_instruction(
 
 
 def _extract_uploads_tag(instruction: str) -> tuple[str, str | None]:
-    """从指令文本中分离 <current_uploads> 标签块。
-
-    输入:
-        instruction: str — 去掉 /commit 前缀后的指令文本。
-
-    输出:
-        tuple[str, str | None] — (剥离标签后的指令, 标签块原文或 None)。
-
-    工作流:
-        (1) 用非贪婪正则查找 <current_uploads>...</current_uploads> 块。
-        (2) 找到则从指令中移除并返回标签原文；未找到返回指令原样。
-
-    示例:
-        clean, tag = _extract_uploads_tag("做X\\n\\n<current_uploads>...</current_uploads>")
-    """
     match = _UPLOADS_TAG_RE.search(instruction)
     if not match:
         return instruction, None
@@ -158,7 +119,6 @@ def _extract_uploads_tag(instruction: str) -> tuple[str, str | None]:
 
 
 def _parent_config() -> dict[str, Any]:
-    """读取当前节点执行的 configurable；不在节点上下文时返回空 dict。"""
     try:
         return dict(get_config().get("configurable", {}))
     except RuntimeError:
@@ -166,25 +126,10 @@ def _parent_config() -> dict[str, Any]:
 
 
 def _parent_checkpointer() -> Any | None:
-    """获取父图运行期挂载的 checkpointer 实例（经 config 注入）。
-
-    实现依据: langgraph pregel 在节点 configurable 中注入
-    CONFIG_KEY_CHECKPOINTER。
-    """
     return _parent_config().get(CONFIG_KEY_CHECKPOINTER)
 
 
 def _parent_resume_value() -> tuple[Any | None, bool]:
-    """不消费地探测父图是否处于 resume 重执行，并返回 resume 载荷。
-
-    输出:
-        tuple[Any | None, bool] — (resume 值或 None, 是否处于 resume 重执行)。
-
-    工作流:
-        (1) 读取 configurable 中的 CONFIG_KEY_SCRATCHPAD。
-        (2) get_null_resume(consume=False) 只探测不消费。
-        (3) 不在节点上下文或无法读取时返回 (None, False)。
-    """
     conf = _parent_config()
     scratchpad = conf.get(CONFIG_KEY_SCRATCHPAD)
     if scratchpad is None:
@@ -197,12 +142,6 @@ def _parent_resume_value() -> tuple[Any | None, bool]:
 
 
 def _subgraph_config(thread_id: str) -> dict[str, Any]:
-    """构造承诺子图的隔离 checkpoint 配置。
-
-    使用 thread_id 派生的隔离命名空间（{thread_id}:commitment），与父图 checkpoint
-    键互不冲突；父图 checkpointer 经 CONFIG_KEY_CHECKPOINTER 注入，使子图在自身
-    未挂 checkpointer 的情况下仍可持久化与恢复。
-    """
     configurable: dict[str, Any] = {
         "thread_id": commitment_subgraph_thread_id(thread_id),
     }
@@ -217,8 +156,8 @@ def _seed_subgraph_input(
     uploads_tag: str | None,
     thread_id: str,
     workspace: str,
+    source_refs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """构造子图首次执行的种子输入：只含指令消息，不携带 /commit 前置历史。"""
     return {
         "messages": [
             trigger.model_copy(update={"content": instruction}),
@@ -229,9 +168,38 @@ def _seed_subgraph_input(
         "thread_id": str(thread_id),
         "workspace": workspace,
         "knowledge_files": [],
+        "knowledge_snapshots": [],
+        "handoff_source_refs": source_refs or [],
         "source_text": instruction,
         "uploads_tag": uploads_tag or "",
     }
+
+
+def _handoff_source_refs(context: dict, security) -> list[dict[str, Any]]:
+    routing = security.routing
+    refs = [{"kind": "commitment_run", "run_id": routing.run_id, "task_id": routing.task_id,
+             "thread_id": routing.thread_id, "checkpoint_ns": routing.checkpoint_ns}]
+    revision = context.get("context_revision_ref")
+    if revision:
+        refs.append({"kind": "context_revision", **(revision.model_dump(mode="json")
+                                                   if hasattr(revision, "model_dump") else dict(revision))})
+    return refs
+
+
+async def _child_checkpoint(checkpointer, config):
+    if checkpointer is None:
+        raise RuntimeError("承诺合同交付需要可恢复的 child checkpointer")
+    return await checkpointer.aget_tuple(config)
+
+
+def _handoff_update(state, trigger, checkpoint):
+    completed = checkpoint.checkpoint["channel_values"]
+    configurable = checkpoint.config["configurable"]
+    ref = {key: configurable.get(key, "") for key in ("thread_id", "checkpoint_ns", "checkpoint_id")}
+    messages = compile_handoff(completed, trigger, ref, list(completed.get("handoff_source_refs", [])))
+    combined = add_messages(state.get("messages", []), messages)
+    return {"task_contract": completed["task_contract"], "task_contract_source": "typed", "messages": messages,
+            "execution_items": synchronize_items(state.get("execution_items"), combined)}
 
 
 class CommitmentMiddleware(AgentMiddleware):
@@ -253,15 +221,17 @@ class CommitmentMiddleware(AgentMiddleware):
         self._skill_names = skill_names
 
     async def _run(self, state: AgentState, runtime: Any) -> dict[str, Any] | None:
+        mirror_update = task_contract_state_update(state)
+        state = {**state, **mirror_update}
         if state.get("task_contract"):
-            return None
+            return mirror_update or None
         messages = state.get("messages", [])
         if not messages:
-            return None
+            return mirror_update or None
         trigger = messages[-1]
         instruction = _commit_instruction(trigger, self._skill_names)
         if instruction is None:
-            return None
+            return mirror_update or None
         if trigger.id is None:
             raise ValueError("/commit 触发消息缺少 message id")
         thread_id = getattr(getattr(runtime, "execution_info", None), "thread_id", None)
@@ -270,26 +240,18 @@ class CommitmentMiddleware(AgentMiddleware):
         instruction, tag = _extract_uploads_tag(instruction)
         runtime_context = getattr(runtime, "context", None)
         uploads_tag = _uploads_tag(runtime_context) or tag
-        # 承诺子图是本进程内的派生执行：身份由父级安全上下文单调派生，
-        # 落盘位置与工具上下文都取自这一份来源，不再从扁平上下文搬运受治理字段
-        child_security = derive_child_security_context(
-            security_context_of(runtime_context), ChildRole.COMMITMENT_WORKER
-        )
+        parent_security = security_context_of(runtime_context)
+        child_security = derive_child_security_context(parent_security, ChildRole.COMMITMENT_WORKER)
         workspace = str(child_security.authorization.workspace)
         subgraph_config = _subgraph_config(str(thread_id))
 
-        # 区分首次执行与 resume：父图 resume 重执行时 config 携带 resume 载荷，
-        # 子图 checkpoint 必须与之对应存在；任一方向不一致都显式报错，不静默重放。
         checkpointer = _parent_checkpointer()
+        latest = await _child_checkpoint(checkpointer, subgraph_config)
+        if latest is not None and latest.checkpoint["channel_values"].get("stage") == 9:
+            return _handoff_update(state, trigger, latest)
         resume_value, is_resume = _parent_resume_value()
         subgraph_input: dict[str, Any] | Command
         if is_resume:
-            latest = None
-            if checkpointer is not None:
-                try:
-                    latest = await checkpointer.aget_tuple(subgraph_config)
-                except Exception:
-                    latest = None
             if checkpointer is None or latest is None:
                 raise RuntimeError(
                     "父图正在恢复承诺流程，但承诺子图 checkpoint 不可用；"
@@ -297,18 +259,14 @@ class CommitmentMiddleware(AgentMiddleware):
                 )
             subgraph_input = Command(resume=resume_value)
         else:
-            if checkpointer is not None:
-                try:
-                    latest = await checkpointer.aget_tuple(subgraph_config)
-                except Exception:
-                    latest = None
-                if latest is not None:
-                    raise RuntimeError(
-                        "承诺子图存在 checkpoint 但父图未处于 resume 状态；"
-                        "拒绝静默重新从 stage 0 执行并丢弃人工决定"
-                    )
+            if latest is not None:
+                raise RuntimeError(
+                    "承诺子图存在 checkpoint 但父图未处于 resume 状态；"
+                    "拒绝静默重新从 stage 0 执行并丢弃人工决定"
+                )
             subgraph_input = _seed_subgraph_input(
-                trigger, instruction, uploads_tag, str(thread_id), workspace
+                trigger, instruction, uploads_tag, str(thread_id), workspace,
+                _handoff_source_refs(runtime_context, parent_security),
             )
 
         result: dict[str, Any] = {}
@@ -317,6 +275,7 @@ class CommitmentMiddleware(AgentMiddleware):
             config=subgraph_config,
             context=child_security.to_runtime_context(),
             stream_mode=["values", "custom"],
+            durability="sync",
         ):
             if mode == "custom":
                 _write_commitment_messages(chunk)
@@ -336,16 +295,10 @@ class CommitmentMiddleware(AgentMiddleware):
             raise RuntimeError(
                 f"承诺流程异常终止于 stage {result.get('stage', 0)}"
             )
-        contract = str(result.get("task_contract", ""))
-        final_message = str(result.get("final_message", ""))
-        if not contract or not final_message:
-            raise RuntimeError("承诺流程未产出合同或最终消息")
-        return {
-            "task_contract": contract,
-            "messages": [
-                HumanMessage(content=final_message, id=trigger.id),
-            ],
-        }
+        completed = await _child_checkpoint(checkpointer, subgraph_config)
+        if completed is None:
+            raise RuntimeError("承诺流程缺少完成 checkpoint")
+        return _handoff_update(state, trigger, completed)
 
     def before_agent(self, state: AgentState, runtime: Any) -> dict[str, Any] | None:
         return asyncio.run(self._run(state, runtime))

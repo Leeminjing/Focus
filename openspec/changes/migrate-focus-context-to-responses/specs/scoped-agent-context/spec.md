@@ -4,6 +4,26 @@
 
 ## ADDED Requirements
 
+### Requirement: Commitment handoff separates confirmed contract from frozen knowledge
+
+Commitment SHALL 将已批准的合同与配套理论依据编译为不同 Items：合同按可信批准来源成为 task_contract，理论依据按 child artifact 的精确冻结内容／版本成为 selected_context，默认为 reference_only。MUST NOT 将混合 final_message 整段当作获批合同，MUST NOT 在恢复时用当前文件内容替代冻结引用。SHALL 复用既有第 7 阶段批准，不新增批准对话，也不因合同批准扩大工具权限。
+
+#### Scenario: A completed commitment contains contract and theoretical references
+- **WHEN** 第 9 阶段结果包含合同及多个理论依据来源
+- **THEN** 合同独立保留批准证明，理论依据各自保留版本／hash／来源且为 reference_only；同处一个交付结果不传播合同批准权威
+
+#### Scenario: A knowledge file changes after its snapshot was frozen
+- **WHEN** 父流程恢复时知识文件磁盘版本与冻结 artifact 不同
+- **THEN** 使用可校验的冻结内容；无法解析或证明该版本时返回来源错误，不悄悄读取当前文件替换
+
+#### Scenario: Resume before parent handoff is committed
+- **WHEN** 子流程完成并保存合同和冻结知识后，父 checkpoint 提交前失败
+- **THEN** 恢复从精确子 checkpoint 编译相同身份及内容并重试交付，不重新读取可变知识或把未持久化交付标记为已完成
+
+#### Scenario: Approval does not elevate execution access
+- **WHEN** 用户批准合同中包含需要更高工具权限的工作
+- **THEN** 合同只确认任务范围，实际调用仍由当前 SecurityContext 与具体调用批准裁决，子流程事件保持现有主流隔离
+
 ### Requirement: Context assembly separates behavior and scoped inputs
 
 每次模型请求 SHALL 可区分 Base Instructions、结构化工具、WorldState、selected context、冻结 Run／Round 输入和任务 execution history。基础行为 SHALL 作为请求级 instructions，不成为任务 authored 内容或 semantic 命题；动态内容 MUST NOT 永久粘入不可追溯的大型基础 prompt。

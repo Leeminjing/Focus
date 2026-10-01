@@ -2,13 +2,14 @@ r"""本文件对外提供 RevisionInterpretationProposal、发现库存和不可
 
 输入为完整有序局部证据目录、实际提供的冻结原文、联合 drafts 和独立 verdict；输出为受依赖身份约束的综合 proof。
 具体工作流为区分 read／complete 回复，验证库存及原文范围，计算 accepted／quarantined claims，并保存所有理解输入的身份。
-历史 v3/v4/v5 proof 按原消息 schema 验证，新 semantic 元数据不会改写旧 identity。
+新 proof 保存 grounding_version 并检查宿主语义资格；旧 proof 缺少版本时使用原处置与序列化，不改写 identity。
+历史 v3/v4/v5 proof 的原消息 schema 继续保持。
 示例：record = RevisionInterpretationRecord.create(...); record.validate_target(index, records)。最后引用的消息不代替全部阅读依赖。
 """
 
 from typing import Any, ClassVar, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from .contracts import stable_expansion_hash
 from .semantic_grounding import (
@@ -80,6 +81,14 @@ class RevisionInterpretationRecord(_InterpretationModel):
     accepted_claim_keys: tuple[str, ...] = ()
     rejections: tuple[SemanticUnitRejection, ...] = ()
     completed: Literal[True] = True
+    grounding_version: Literal["support-span-grounding-v1", "support-span-grounding-v2"] = "support-span-grounding-v1"
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler):
+        payload = handler(self)
+        if self.grounding_version == "support-span-grounding-v1":
+            payload.pop("grounding_version", None)
+        return payload
 
     @model_validator(mode="after")
     def require_integrity(self) -> Self:
@@ -104,7 +113,7 @@ class RevisionInterpretationRecord(_InterpretationModel):
             ):
                 raise ValueError("interpretation original inventory integrity mismatch")
         accepted, rejected = self._dispositions(
-            self.provided, self.drafts, self.assessments
+            self.provided, self.drafts, self.assessments, self.grounding_version
         )
         if (accepted, rejected) != (self.accepted_claim_keys, self.rejections):
             raise ValueError("interpretation verification integrity mismatch")
@@ -164,6 +173,7 @@ class RevisionInterpretationRecord(_InterpretationModel):
     ) -> Self:
         accepted, rejected = cls._dispositions(provided, drafts, assessments)
         payload = {
+            "grounding_version": SemanticGroundingValidator.RECORD_VERSION,
             "context_id": context_id,
             "source_content_hash": source_content_hash,
             "contract_fingerprint": contract_fingerprint,
@@ -186,8 +196,9 @@ class RevisionInterpretationRecord(_InterpretationModel):
         by_claim = {a.claim_key: a for a in self.assessments}
         accepted = set(self.accepted_claim_keys)
         validator = SemanticGroundingValidator()
+        policies = self._message_policies(self.provided, self.grounding_version)
         return tuple(
-            validator.validate(source, contents, draft, by_claim.get(draft.claim_key))
+            validator.validate(source, contents, draft, by_claim.get(draft.claim_key), message_policies=policies)
             for draft in self.drafts
             if draft.claim_key in accepted
         )
@@ -206,9 +217,17 @@ class RevisionInterpretationRecord(_InterpretationModel):
             for m in item.messages
         }
 
+    @staticmethod
+    def _message_policies(provided, grounding_version):
+        if grounding_version != SemanticGroundingValidator.RECORD_VERSION:
+            return None
+        return {message["message_id"]: message.get("semantic_policy", "index")
+                for original in provided for message in original.messages}
+
     @classmethod
-    def _dispositions(cls, provided, drafts, assessments):
+    def _dispositions(cls, provided, drafts, assessments, grounding_version=SemanticGroundingValidator.RECORD_VERSION):
         contents = cls._message_contents(provided)
+        policies = cls._message_policies(provided, grounding_version)
         by_claim = {a.claim_key: a for a in assessments}
         expected = {
             d.claim_key
@@ -226,7 +245,7 @@ class RevisionInterpretationRecord(_InterpretationModel):
         for draft in drafts:
             try:
                 SemanticGroundingValidator.evaluate_draft(
-                    contents, draft, by_claim.get(draft.claim_key)
+                    contents, draft, by_claim.get(draft.claim_key), message_policies=policies
                 )
                 accepted.append(draft.claim_key)
             except SemanticGroundingError as exc:

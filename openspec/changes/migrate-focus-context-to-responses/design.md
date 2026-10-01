@@ -2,6 +2,8 @@
 
 动机与范围见 [proposal.md](proposal.md)。本设计依据当前工作区及 2026-10-01 的依赖／文档核对；规划完成不代表用户同意 apply。
 
+本文件前期迁移分析与 Gate 记录作为历史设计保留。2026-10-01 补充范围以已推送的 `7a3390900574975bcb930bb801d73d4c67fcc7cc` 为基线，见 decisions 7／8／14 与 tasks 第 12 节。用户显式调用 openspec-apply-change 批准补充范围，8 项任务现已实施；新 Context7 preflight 见 follow-up-preflight.md，独立于旧范围的测试结果见 follow-up-verification.md。
+
 当前边界：
 
 - `ContextRevisionRef` 已包含 execution thread、namespace 和精确 checkpoint；Revision、来源边与 publication receipt 构成唯一发布权威。
@@ -54,7 +56,7 @@ flowchart TD
 
 建立封闭的已知 Item 类型与保留原始 JSON 的 unknown 类型。公共 envelope 包含稳定 `item_id`、`kind`、宿主 `origin`、`scope`、payload 和 source refs。语义资格由版本化宿主 selection policy 决定，持久化的资格必须经过宿主校验，不能信任模型提交的字段。
 
-首批支持 Message、Reasoning、FunctionCall／Output、WorldStateUpdate、SelectedContextReference、AgentCollaboration、RoundDecisionContextReference 和 ProjectionRepair。Custom／hosted／compaction 等输出可保存其 Provider 载荷，但只有能力合同明确支持的类型才允许投影和执行。无需先实现庞大的 Codex 枚举才能迁移。
+首批支持 Message、Reasoning、FunctionCall／Output、WorldStateUpdate、SelectedContextReference、AgentCollaboration、TaskContract、RoundDecisionContextReference 和 ProjectionRepair。Custom／hosted／compaction 等输出可保存其 Provider 载荷，但只有能力合同明确支持的类型才允许投影和执行。无需先实现庞大的 Codex 枚举才能迁移。
 
 | Scope | Authority | Inheritance |
 |---|---|---|
@@ -142,6 +144,10 @@ must-view 是实际请求约束：保留 history/display 中的旧图片引用�
 
 复用现有数据库事务／唯一约束／fencing；不新建消息调度器。已投递只表示输入持久化，不表示模型读懂或任务结果已被采纳。历史 read_at 缺少投递证明时保持旧兼容状态，不臆造过去已知的 checkpoint。
 
+当前 Focus 在宿主维护 Inbox 和协作调度。OpenAI 与 DeepSeek 均将宿主 collaboration 投影为普通 `message(role=user)`；`kind=agent_collaboration`、`origin=collaborator`、author／recipient、delivery refs 仍存在于 canonical history 和请求来源审计，默认 `evidence_only`。wire user 不等于真实用户输入，也不产生用户授权；checkpoint 投递确认仍由 Focus 负责。
+
+原生 `agent_message` 不能仅由 Inbox 文本拼出。官方 Responses Multi-agent Beta 使用 Beta 协议并返回 encrypted agent_message，且其协调调用由 API 执行，见 [官方指南](https://developers.openai.com/api/docs/guides/responses-multi-agent)。本 change 不接入该调度模型、不新增未经使用的能力开关、不承诺普通 OpenAI 请求原生投影。未来接入需另行批准，验证 Beta、模型、SDK、输入／输出 schema、加密载荷 replay 及 Focus 调度边界；未经验证的原生载荷可保存但不得自动 replay。
+
 ### 8. Responses adapters implement explicit, tested capabilities
 
 在现有 `focus/models` 内建立协议投影边界，工厂读取显式 provider／protocol／capability 合同。使用 BaseChatModel-compatible Responses 适配入口继续支持 create_agent、bind_tools 和 structured output；可复用 ChatOpenAI 的已验证能力，Provider 差异由窄适配器处理，不把两个不同协议强塞进旧 DeepSeek Chat shim。
@@ -160,6 +166,8 @@ DeepSeek developer 当 user、hosted tools 忽略、custom tools 限制及并行
 Structured output 的参数、schema strictness、拒绝与 incomplete 由适配器归一化，原有领域结果验证继续运行。所有模型角色的工厂调用点必须纳入清单；不能只修改 Main 的 endpoint。
 
 不预先实现全部 custom／hosted／configuration_update 路径。Codex 的枚举不等于所有模型通用能力清单；本 change 先保证当前 Focus function 工具及结构化认知调用。
+
+对两种当前 Provider，Focus `TaskContract` 都投影普通 user message，协作 Item 也投影普通 user message。前者是已批准的任务范围，后者是协作者输入；两者内部类型和来源各自保留，均不能投影为平台 policy。不存在 Responses `type=task_contract`，也不按 OpenAI 名称自动开启 `agent_message`。
 
 ### 9. A retained bridge is acceptable only when it is lossless and single-authority
 
@@ -210,11 +218,29 @@ Provider compaction 原样保存执行载荷，但首版不自动请求 compacti
 
 ### 13. Implementation requires explicit approval and a fresh Context7 preflight
 
-本轮只写 artifacts。tasks 的所有实现项保持未完成；OpenSpec 显示规划完成不代表获得 apply 授权。收到用户明确同意本 change 后，改代码前重新发现并实际调用 Context7，按将要使用的库核对文档；找不到或不可用时立即停止并询问用户，不用本轮研究或模型记忆代替。
+规划阶段只写 artifacts，OpenSpec 显示规划完成不代表获得补充范围的 apply 授权。收到用户明确同意更新后的 artifacts 后，改代码前重新发现并实际调用 Context7，按将要使用的库核对文档；找不到或不可用时立即停止并询问用户，不用旧 preflight、研究或模型记忆代替。前期及第 12 节的实际授权／完成状态见 tasks 与对应 preflight、verification 文档。
 
 Context7 文档与 Provider 官方文档共同作为理论依据；依赖版本还需契约测试。本轮记录不是“已验证真实 API”。所有关键语义合同用无密钥 fixture 和持久化／恢复测试验证，真实 Provider smoke 的结果另行记录。
 
+### 14. Commitment publishes a confirmed contract and separate frozen references
+
+当前 Commitment 返回的 `final_message` 混合合同与理论依据，并复用触发用户消息 ID。补充设计在生产边界替代该行为：保留原输入，追加独立的 `task_contract` Item 及必要 `selected_context` Items；UI 如需保留原来的替换式展示，由 display 关系表达，不改写 canonical 输入。
+
+合同仅含获批合同正文。复用既有第 7 阶段人工批准，不增加批准对话；宿主校验 child checkpoint 中的批准状态、批准 artifact 身份与内容 hash，后续阶段返回的合同必须与批准版本一致。draft、未批准、失败或正文标签不能生成 confirmed contract。返回来源为 `origin=delegated`、`scope=revision`，并绑定触发输入 ID、可用的 Run／源 Context refs、child thread／namespace／精确 checkpoint、批准阶段和 artifact hash／路径；不能伪造 `direct_user`。人工批准表示任务范围被确认，不扩大 SecurityContext。
+
+理论依据由子流程产物的冻结内容／版本编译为独立 `selected_context`，默认 `reference_only`；保存来源文件身份、hash 和必要证据 refs。主流程不得在恢复时读取当前磁盘版本悄悄替代，缺失或 hash 冲突可诊断拒绝。它不因同处 `final_message`、带有理论标签或合同已获批而获得合同批准权威。
+
+稳定 Item 身份由来源流程／批准 artifact 身份及内容 hash 产生，独立于原用户消息 ID；相同交付在恢复时只追加一次。同一身份不同内容拒绝；新的明确批准版本使用新身份。typed Items 与兼容 messages 经现有唯一 bridge 同步提交到父 checkpoint，结算依原 publication／fencing 发布；保留原触发消息和合同的不同身份，使 continued authored selection 能保留新合同。`state.task_contract` 只作为经 canonical Item 校验的兼容视图，不新增独立可写合同真相。
+
+定义一个小的纯 handoff 编译边界负责批准证明校验、合同／引用分离与稳定身份；Commitment workflow 负责阶段与冻结产物，middleware 负责交付，history bridge 负责通用持久化及恢复，Desktop 负责既有 Revision 发布。不要把合同业务判断塞入通用 codec、Provider adapter 或 service，不重写整个图或建立第二套合同数据库。必要改动遵守声明式文件头与单一职责规则。
+
+`task_contract` 默认具备 `index` 资格；获批范围与事实验证仍分开。RSI／Curator 从相同 semantic view 读取，知识参考保持 reference_only。若输入资格或表示合同改变，更新相关 selection／adapter fingerprint，旧索引只读保留。旧消息不依据 XML 标签自动重新标记、旧 Revision 与 hash 不回写。派生／rollback 按精确来源选择合同及冻结引用，不继承旧 runtime 权限。
+
+实施选择：混合 segment 保留参考用于 grounding／检索，v7 fallback 仅从该段 index 消息生成假设正文及来源引用。`revision-semantic-index-v7` 纳入既有缓存／继承 fingerprint；v6 及更早索引继续按原 fallback 算法校验读取，不回写 identity。shadow 分支缺失 task_contract 镜像时从 canonical 合同恢复；已有非空镜像冲突拒绝。
+
 ## Risks / Trade-offs
+
+独立审查 V1／V2／V3 的获准修复：任务命题资格由共享 grounding 检查，不仅写入 prompt；仅 reference_only 的支持不能创建独立任务 unit，evidence_only 可产生证据类结果但不能独立定义 decision／任务 question。新 proof 标明验证合同版本，旧 proof 保留原 hash 和处置算法；新索引 fingerprint 与旧记录隔离。合同 scalar 是 canonical 合同的兼容镜像，typed／legacy 来源显式区分，历史重建同时更新镜像。替换式 display 从保留的触发输入只读复制附件，不将其写回合同或改变请求材料绑定。依据与当前用户授权见 follow-up-repair-preflight.md。
 
 - [Library bridge 丢失原生字段或 Provider 新事件] → 独立 codec、原生 fixtures、typed roundtrip、明确版本范围；不以开启 use_responses_api 当作迁移验收。
 - [V1 来源不完整] → 宿主可证明则适配，其余 legacy-unknown；保持旧内容与 hash，不根据正文猜测权限。
@@ -224,6 +250,8 @@ Context7 文档与 Provider 官方文档共同作为理论依据；依赖版本�
 - [新旧 writer 混用覆盖历史] → V2 启用前隔离旧 writer；未知 schema fail closed；旧二进制不能恢复 V2 活动执行。
 - [mailbox ack 跨存储边界] → checkpoint delivery refs 先持久化、唯一 delivery key 后确认，恢复核对并补 ack。
 - [首版同时覆盖多角色成本较高] → 分阶段 gate，但不能宣布迁移完成时仍存在未声明的旧调用路径。
+- [把 Inbox 文本误投影成 Beta agent_message] → 当前两种 Provider 保留普通消息合同；Beta 另行批准并验证，不交出 Focus 调度和 delivery 权威。
+- [复用用户消息 ID 或混合批准合同与可变知识] → 生产边界拆分稳定 Item、冻结来源并验证第 7 阶段批准；父图恢复和 publication 增加真实集成回归。
 
 ## Migration Plan
 
@@ -249,5 +277,8 @@ Context7 文档与 Provider 官方文档共同作为理论依据；依赖版本�
 8. completed／incomplete／failed／断流／拒绝／取消、重复事件、部分参数和旧 fence 被正确收束。
 9. 各认知角色保持冻结输入与领域质量校验；Provider output 不绕过 Kernel、publisher、CompletionGuard。
 10. tokens／reasoning／工具行和最终 snapshot 去重，长正文成本边界与承诺子图隔离不回归。
+11. Commitment 真实第 7 阶段批准到第 9 阶段交付：合同一致性、独立身份、冻结知识和 compatibility mirror 可验证；未批准、内容冲突及失效来源拒绝。
+12. 父 checkpoint 提交前／后故障、重构图恢复、结算／派生／rollback：只交付一次，原输入和已发布 Revision 不变，合同进入 authored／semantic，知识不生成重复命题。
+13. 双 Provider 实际 wire fixture：collaboration 和 task contract 均为 user message，可信内部来源仍可审计，不出现 Beta 或虚构 wire type；子图流隔离和 display 不重复。
 
 资料与版本核对见 [research.md](research.md)。

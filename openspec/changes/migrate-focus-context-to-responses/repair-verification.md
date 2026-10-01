@@ -1,5 +1,7 @@
 # Independent verification corrections
 
+> 2026-10-01 补充实施：用户批准的 tasks 第 12 节已完成，当前 71/71，40 Requirements／83 场景。新增 14 场景以新测试映射验收，结果见 follow-up-verification.md。本报告正文中的 63/63、37 Requirements、69 场景及旧测试结果仅适用于原迁移／F1–F6 修复，不能代替新增验收。
+
 2026-10-01。用户“全部修复”授权后修复原审计 F1–F6；改应用代码前成功调用 Context7，依据记录见 repair-preflight.md。没有修改已发布 Revision，没有归档 change。
 
 ## 结果

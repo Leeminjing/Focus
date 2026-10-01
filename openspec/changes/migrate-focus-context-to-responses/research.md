@@ -49,3 +49,21 @@
 | `desktop/service.py`、`collab.py` | selected 内容拼 prompt；mailbox 组装时即标已读，需要可恢复投递确认 |
 
 本次没有调用真实模型、执行数据库迁移、运行实现测试或修改应用源码。后续验收必须区分文档依据、离线 fixture、持久化恢复测试和真实 Provider smoke。
+
+## 2026-10-01 follow-up planning evidence
+
+本节记录基于已推送实现 `7a3390900574975bcb930bb801d73d4c67fcc7cc` 的补充规划研究，不覆盖前期研究的时间语义，也不是实现或验证结果。规划研究阶段只读源码并修改 artifacts，未运行应用测试；后续 apply 的 Context7 与实际测试另行记录。
+
+| 当前实现来源 | 发现与规划决定 |
+|---|---|
+| `backend/app/desktop/inbox.py` | Inbox 已绑定 agent_collaboration／collaborator 和 delivery refs，以精确 checkpoint 确认投递；当前普通 user wire 不代表来源丢失 |
+| `backend/packages/harness/focus/models/response_projection.py` | HumanMessage 投影普通 user message；当前未验证 native Multi-agent Beta，因此保留 host collaboration 投影合同 |
+| `backend/packages/harness/focus/agents/commitment/middleware.py` | 完成返回复用 trigger.id 的 HumanMessage(final_message)，无 typed 合同元数据；补充设计保留原输入，独立追加稳定合同身份 |
+| `backend/packages/harness/focus/agents/commitment/workflow.py` | 第 7 阶段已有人工批准，后续阶段复制合同；需用精确 child checkpoint 验证批准 artifact，不新增人工审批 |
+| `backend/packages/harness/focus/agents/commitment/artifacts.py` | final_message 混合合同与从文件读取的理论依据；改为合同和精确冻结知识独立编译，不能整段承袭批准来源 |
+| `backend/app/desktop/context_evolution/history.py` | continued authored 以未出现的新用户消息 ID 纳入定义；独立合同 ID 避免同 ID 替换使新合同漏入 authored |
+| `backend/packages/harness/focus/history/contracts.py`、`selection.py` | task_contract 类型已存在并默认 index；缺口在生产和来源绑定，不是普通合同内容完全不能索引 |
+
+[OpenAI Responses Multi-agent Beta 官方指南](https://developers.openai.com/api/docs/guides/responses-multi-agent) 描述 Beta 协议、API 执行的协调行为及 encrypted agent_message。由此推断：Focus 宿主 Inbox 的明文消息不能直接视为该原生 Item；只有另外验证完整 Beta 合同和调度边界后才能设计原生接入。本 change 将其明确留作未来独立范围，当前普通消息投影仍保留 Focus 内部协作语义。
+
+本节记录规划时的只读研究。后续用户显式调用 apply 后，新 Context7 依据见 follow-up-preflight.md，实现与新增场景实际测试映射见 follow-up-verification.md、scenario-coverage.json；前期 69 个场景映射、63 项任务及 F1–F6 回归仍是历史范围证据。

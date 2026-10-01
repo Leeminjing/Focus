@@ -1,5 +1,11 @@
 # Verification Report: migrate-focus-context-to-responses
 
+> 当前修复复核：用户“全部修复”授权的 V1／V2／V3 均已解决，**76/76 tasks，0 个未解决发现**。正式回归及最终 222／151／153／72 项专项结果见 [follow-up-repair-verification.md](follow-up-repair-verification.md)。下方独立审计和前期报告保留为历史证据。
+
+> 独立审计初始结果（修复前，2026-10-01）：71/71 checked，40 Requirements／83 场景映射存在；发现 **2 WARNING + 1 SUGGESTION**。当时复现为 3 strict xfail；专项 181／133／72 不覆盖这些边界。完整原始发现见 [follow-up-independent-verification.md](follow-up-independent-verification.md)。
+
+> 2026-10-01 补充实施：用户批准的 tasks 第 12 节已完成，当前 71/71，40 Requirements／83 场景。新增 14 场景以新测试映射验收，结果见 follow-up-verification.md。本报告正文中的 63/63、37 Requirements、69 场景及旧测试结果仅适用于原迁移／F1–F6 修复，不能代替新增验收。
+
 2026-10-01 修复复核：原审计 **1 CRITICAL + 5 WARNING 全部解决**，修复范围 **0 个未解决问题**。
 
 | Dimension | Status |

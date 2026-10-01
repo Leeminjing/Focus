@@ -2,6 +2,7 @@ r"""本文件对外提供 ProtocolSafeRevisionSegmenter、SupervisedSegmentSeman
 
 输入为冻结 semantic 消息、原始位置、来源/hash 和受监督的 drafts／assessments；输出为协议闭合 segments 与完整目标 Index。
 具体工作流为规范消息、将 Tool Exchange 折叠成原子，按实际参数 fingerprint 切段，统一验证引用并补齐 fallback。
+v8 fallback 只从 index 消息生成正文和来源，所有 drafts 经共享宿主资格校验；混合段的证据／参考仍可解释。
 每条 draft 的引文／verdict 独立 grounding，再按最终 unit_id 合并相同事实和 projected 库存；局部／综合 proof 保留原始证据。
 describe_segment 是纯 identity 工具；validate_proposal 检查投影 identity 唯一性。旧 projector 保留兼容，新 Portfolio 合并局部及综合 drafts。
 示例：index = RevisionSemanticIndexer().index(source=ref, raw_messages=messages, ...)；跨段联合引文绑定同一 Revision，旧 index 不变。
@@ -28,6 +29,7 @@ from backend.app.desktop.agent_loop.context_expansion.semantic_index import (
     IndexedMessage,
     RevisionSegment,
     RevisionSemanticIndex,
+    task_fallback_unit,
 )
 from backend.app.desktop.agent_loop.derivation_worker import (
     StructuredResultValidationError,
@@ -187,7 +189,7 @@ class ProtocolSafeRevisionSegmenter:
 
 
 class RevisionSemanticIndexer:
-    INDEX_SCHEMA_VERSION = "revision-semantic-index-v6"
+    INDEX_SCHEMA_VERSION = "revision-semantic-index-v8"
     PROJECTOR_VERSION = "supervised-segment-projector-v2"
 
     def __init__(
@@ -283,6 +285,7 @@ class RevisionSemanticIndexer:
         tuple[str, ...],
     ]:
         contents = self.message_contents(messages)
+        policies = {message.message_id: message.semantic_policy for message in messages}
         by_claim = {assessment.claim_key: assessment for assessment in assessments}
         if len(by_claim) != len(assessments):
             raise ValueError("claim support assessment identity 重复")
@@ -297,6 +300,7 @@ class RevisionSemanticIndexer:
                     contents,
                     draft,
                     by_claim.get(draft.claim_key),
+                    message_policies=policies,
                 )
                 units[unit.unit_id] = unit
                 projected_ids.add(unit.unit_id)
@@ -321,15 +325,7 @@ class RevisionSemanticIndexer:
             if (set(segment.message_ids) & eligible).issubset(represented):
                 continue
             fallback_ids.append(segment.segment_id)
-            unit = SemanticEvidenceUnit.create(
-                kind="claim",
-                authority="hypothesis",
-                statement=segment.descriptor,
-                evidence_refs=tuple(
-                    NamespacedMessageRef(source=source, message_id=message_id)
-                    for message_id in segment.message_ids
-                ),
-            )
+            unit = task_fallback_unit(source, segment, messages)
             units[unit.unit_id] = unit
         return (
             tuple(sorted(units.values(), key=lambda item: item.unit_id)),

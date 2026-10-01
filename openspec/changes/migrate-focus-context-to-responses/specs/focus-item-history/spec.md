@@ -75,3 +75,23 @@ Provider opaque reasoning 和 compaction continuation SHALL 绑定其 Provider�
 #### Scenario: Detect divergent representations
 - **WHEN** 兼容消息与 typed history 的调用身份或内容不一致
 - **THEN** 执行被阻止并返回可诊断错误，而非任选一份作为最新历史
+
+### Requirement: Confirmed task contracts are produced as typed domain items
+
+Commitment 成功交付 SHALL 在宿主生产边界生成 `task_contract` Item，仅承载获批合同正文，并保存 delegated 来源、revision scope、稳定身份及批准证明。批准证明 SHALL 绑定原触发输入、来源流程、精确 child checkpoint、第 7 阶段批准与 artifact 内容 hash。MUST NOT 将宿主输出伪造为 direct_user，MUST NOT 从正文标签推断批准。该 Item SHALL 经现有 bridge／publication 成为可选择的 authored 任务定义；兼容 state.task_contract SHALL 与 canonical Item 一致，而非独立权威。
+
+#### Scenario: Deliver an approved commitment contract
+- **WHEN** 第 7 阶段已批准合同且子流程完成，最终合同与批准版本一致
+- **THEN** 父执行历史保存独立 typed TaskContract 与批准来源，原用户输入保持原身份及正文，合同进入 authored／semantic 任务定义，不包含理论依据正文
+
+#### Scenario: Reject a contract changed after approval
+- **WHEN** 后续阶段交付的合同与精确批准 artifact 身份或内容 hash 不一致
+- **THEN** 返回可诊断的不一致结果，不发布或标记为已批准 TaskContract
+
+#### Scenario: A draft or tagged message has no confirmed contract authority
+- **WHEN** 承诺尚未批准、失败或仅有普通消息正文中的 task_contract 标签
+- **THEN** 不生成 confirmed TaskContract，也不把已有普通消息或旧 Revision 自动重分类为已批准合同
+
+#### Scenario: Recover a contract handoff after parent checkpoint persistence
+- **WHEN** 合同已提交父 checkpoint 后进程中断，随后从精确 checkpoint 重新构图恢复并重复交付相同批准产物
+- **THEN** typed Item 与兼容消息只保留一次且镜像一致；同一身份不同内容被拒绝，新的明确批准版本使用新身份，旧 checkpoint 和 Revision 不被修改

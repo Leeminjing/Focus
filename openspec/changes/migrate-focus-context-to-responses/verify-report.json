@@ -1,58 +1,27 @@
 {
   "change": "migrate-focus-context-to-responses",
   "date": "2026-10-01",
-  "mode": "approved_repair_and_targeted_verification",
+  "mode": "historical_audit_and_completed_follow_up_repairs",
   "tasks": {
-    "checked": 63,
+    "checked": 76,
     "unchecked": 0
   },
   "requirements": {
-    "total": 37,
-    "implementation_evidence_found": 37,
+    "total": 40,
+    "implementation_evidence_found": 40,
     "with_confirmed_divergence": 0,
     "original_with_confirmed_divergence": 9,
-    "scope": "Original six findings resolved by regression; not a fresh proof of every production scenario."
+    "scope": "40 implementation mappings and 83 scenario mappings exist. V1/V2/V3 are resolved with targeted regressions; named mappings alone do not prove all production paths.",
+    "pending_follow_up": 0
   },
   "scenarios": {
-    "total": 69,
-    "mapped": 69,
+    "total": 83,
+    "mapped": 83,
     "missing_mappings": [],
-    "valid_test_references": 69,
+    "valid_test_references": 83,
     "caution": "Named component tests are not sufficient proof of actual triggers, production composition or recovery.",
-    "repair_regression_mappings": 9
-  },
-  "fresh_validation": {
-    "backend_broad": {
-      "passed": 621,
-      "failed": 0,
-      "seconds": 279.82,
-      "log": ".tmp/responses-repair-regression.txt"
-    },
-    "backend_final_focused": {
-      "passed": 70,
-      "failed": 0,
-      "seconds": 7.19,
-      "log": ".tmp/responses-repair-final-focused.txt"
-    },
-    "http_admission": {
-      "passed": 12,
-      "failed": 0,
-      "seconds": 9.04,
-      "log": ".tmp/responses-repair-admission.txt"
-    },
-    "desktop": {
-      "rerun": false,
-      "prior_passed": 180,
-      "reason": "No frontend changes in this repair."
-    },
-    "openspec_strict": "passed",
-    "git_diff_check": "passed",
-    "repaired_file_headers_and_syntax": {
-      "passed": 24
-    },
-    "harness_dependency_direction": "passed",
-    "open_critical": 0,
-    "open_warning": 0
+    "repair_regression_mappings": 9,
+    "pending_follow_up": []
   },
   "findings": [
     {
@@ -102,6 +71,45 @@
       "status": "resolved",
       "original_reproduction": "compression_repair_status",
       "resolution_evidence": "repair-verification.md"
+    },
+    {
+      "id": "V1",
+      "severity": "WARNING",
+      "priority": "P1",
+      "status": "resolved",
+      "title": "reference_only-only drafts can define confirmed task decisions",
+      "file": "backend/app/desktop/agent_loop/context_expansion/semantic_indexer.py",
+      "line": 295,
+      "evidence": "backend/tests/test_semantic_eligibility_repairs.py::test_reference_only_cannot_independently_define_task_units",
+      "original_evidence": "verify-reproductions/test_follow_up_boundaries.py::test_reference_only_cannot_independently_define_a_confirmed_task_decision",
+      "original_reproduction_log": ".tmp/independent-boundary-reproductions.txt",
+      "resolution_evidence": "follow-up-repair-verification.md"
+    },
+    {
+      "id": "V2",
+      "severity": "WARNING",
+      "priority": "P2",
+      "status": "resolved",
+      "title": "compression leaves task_contract mirror detached from canonical typed contract",
+      "file": "backend/packages/harness/focus/agents/commitment/middleware.py",
+      "line": 223,
+      "evidence": "backend/tests/test_contract_history_repairs.py::test_real_compression_graph_clears_and_restores_typed_mirror",
+      "original_evidence": "verify-reproductions/test_follow_up_boundaries.py::test_deleted_typed_contract_does_not_leave_an_authoritative_scalar_mirror",
+      "original_reproduction_log": ".tmp/independent-boundary-reproductions.txt",
+      "resolution_evidence": "follow-up-repair-verification.md"
+    },
+    {
+      "id": "V3",
+      "severity": "SUGGESTION",
+      "priority": "P2",
+      "status": "resolved",
+      "title": "define whether replacement contract display retains source attachments",
+      "file": "backend/packages/harness/focus/history/display.py",
+      "line": 35,
+      "evidence": "backend/tests/test_contract_history_repairs.py::test_reader_and_live_contract_display_keep_attachments_without_mutation",
+      "original_evidence": "verify-reproductions/test_follow_up_boundaries.py::test_contract_display_retains_trigger_attachment_metadata",
+      "original_reproduction_log": ".tmp/independent-boundary-reproductions.txt",
+      "resolution_evidence": "follow-up-repair-verification.md"
     }
   ],
   "requirement_mapping": [
@@ -136,8 +144,8 @@
         {
           "file": "backend/packages/harness/focus/context/middleware.py",
           "symbol": "_binding",
-          "line": 40,
-          "end_line": 44,
+          "line": 62,
+          "end_line": 66,
           "location_status": "symbol"
         }
       ]
@@ -151,8 +159,8 @@
         {
           "file": "backend/packages/harness/focus/context/middleware.py",
           "symbol": "abefore_model",
-          "line": 46,
-          "end_line": 70,
+          "line": 68,
+          "end_line": 94,
           "location_status": "symbol"
         },
         {
@@ -173,15 +181,15 @@
         {
           "file": "backend/packages/harness/focus/history/bridge.py",
           "symbol": "branch_messages",
-          "line": 40,
-          "end_line": 55,
+          "line": 53,
+          "end_line": 68,
           "location_status": "symbol"
         },
         {
           "file": "backend/packages/harness/focus/context/middleware.py",
           "symbol": "abefore_model",
-          "line": 46,
-          "end_line": 70,
+          "line": 68,
+          "end_line": 94,
           "location_status": "symbol"
         }
       ]
@@ -297,8 +305,8 @@
         {
           "file": "backend/app/desktop/context_evolution/reader.py",
           "symbol": "_messages",
-          "line": 170,
-          "end_line": 212,
+          "line": 173,
+          "end_line": 214,
           "location_status": "symbol"
         }
       ],
@@ -342,15 +350,15 @@
         {
           "file": "backend/packages/harness/focus/history/bridge.py",
           "symbol": "branch_messages",
-          "line": 40,
-          "end_line": 55,
+          "line": 53,
+          "end_line": 68,
           "location_status": "symbol"
         },
         {
           "file": "backend/packages/harness/focus/models/response_projection.py",
           "symbol": "_message",
-          "line": 63,
-          "end_line": 90,
+          "line": 67,
+          "end_line": 96,
           "location_status": "symbol"
         }
       ],
@@ -366,8 +374,8 @@
         {
           "file": "backend/packages/harness/focus/history/bridge.py",
           "symbol": "synchronize_items",
-          "line": 31,
-          "end_line": 37,
+          "line": 44,
+          "end_line": 50,
           "location_status": "symbol"
         },
         {
@@ -403,8 +411,8 @@
         {
           "file": "backend/packages/harness/focus/models/response_projection.py",
           "symbol": "build",
-          "line": 41,
-          "end_line": 61,
+          "line": 43,
+          "end_line": 65,
           "location_status": "symbol"
         },
         {
@@ -427,8 +435,8 @@
         {
           "file": "backend/packages/harness/focus/models/response_projection.py",
           "symbol": "_message",
-          "line": 63,
-          "end_line": 90,
+          "line": 67,
+          "end_line": 96,
           "location_status": "symbol"
         },
         {
@@ -451,8 +459,8 @@
         {
           "file": "backend/packages/harness/focus/models/response_projection.py",
           "symbol": "function_specs",
-          "line": 20,
-          "end_line": 34,
+          "line": 22,
+          "end_line": 36,
           "location_status": "symbol"
         },
         {
@@ -494,8 +502,8 @@
         {
           "file": "backend/packages/harness/focus/models/response_projection.py",
           "symbol": "_native",
-          "line": 92,
-          "end_line": 117,
+          "line": 98,
+          "end_line": 123,
           "location_status": "symbol"
         },
         {
@@ -648,8 +656,8 @@
         {
           "file": "backend/packages/harness/focus/runtime/runs/events.py",
           "symbol": "serialize_message",
-          "line": 55,
-          "end_line": 94,
+          "line": 56,
+          "end_line": 95,
           "location_status": "symbol"
         },
         {
@@ -677,8 +685,8 @@
         {
           "file": "backend/app/desktop/context_evolution/reader.py",
           "symbol": "_messages",
-          "line": 170,
-          "end_line": 212,
+          "line": 173,
+          "end_line": 214,
           "location_status": "symbol"
         }
       ]
@@ -686,7 +694,7 @@
     {
       "spec": "revision-semantic-selection",
       "requirement": "Selection eligibility applies across the entire indexing pipeline",
-      "status": "original_confirmed_divergence_repaired_with_regression",
+      "status": "independent_divergence_repaired_with_regression",
       "findings": [
         "F5"
       ],
@@ -701,20 +709,35 @@
         {
           "file": "backend/app/desktop/agent_loop/context_expansion/semantic_indexer.py",
           "symbol": "_units",
-          "line": 272,
-          "end_line": 339,
+          "line": 274,
+          "end_line": 335,
           "location_status": "symbol"
         },
         {
           "file": "backend/app/desktop/agent_loop/context_expansion/semantic_grounding.py",
           "symbol": "_validated_authority",
-          "line": 277,
-          "end_line": 298,
+          "line": 298,
+          "end_line": 319,
           "location_status": "symbol"
+        },
+        {
+          "file": "backend/app/desktop/agent_loop/context_expansion/semantic_grounding.py",
+          "symbol": "validate_eligibility",
+          "location_status": "symbol",
+          "line": 234,
+          "end_line": 243
         }
       ],
       "original_status": "confirmed_divergence",
-      "repair_evidence": "repair-verification.md"
+      "repair_evidence": "repair-verification.md",
+      "pre_independent_verification_status": "original_confirmed_divergence_repaired_with_regression",
+      "independent_findings": [
+        "V1"
+      ],
+      "independent_repair_evidence": "follow-up-repair-verification.md",
+      "independent_regression_tests": [
+        "backend/tests/test_semantic_eligibility_repairs.py::test_reference_only_cannot_independently_define_task_units"
+      ]
     },
     {
       "spec": "revision-semantic-selection",
@@ -732,8 +755,8 @@
         {
           "file": "backend/app/desktop/agent_loop/context_expansion/semantic_indexer.py",
           "symbol": "_atoms",
-          "line": 129,
-          "end_line": 155,
+          "line": 131,
+          "end_line": 157,
           "location_status": "symbol"
         }
       ]
@@ -756,8 +779,8 @@
         {
           "file": "backend/app/desktop/context_curator/contract.py",
           "symbol": "_authored_message",
-          "line": 246,
-          "end_line": 281,
+          "line": 247,
+          "end_line": 283,
           "location_status": "symbol"
         }
       ],
@@ -773,8 +796,8 @@
         {
           "file": "backend/app/desktop/agent_loop/context_expansion/semantic_indexer.py",
           "symbol": "RevisionSemanticIndexer",
-          "line": 189,
-          "end_line": 354,
+          "line": 191,
+          "end_line": 350,
           "location_status": "symbol"
         },
         {
@@ -823,15 +846,24 @@
           "location_status": "symbol"
         },
         {
+          "file": "backend/packages/harness/focus/context/middleware.py",
+          "symbol": "WorldStateMiddleware._prepare",
+          "location_status": "symbol",
+          "line": 53,
+          "end_line": 60
+        }
+      ],
+      "original_status": "confirmed_divergence",
+      "repair_evidence": "repair-verification.md",
+      "historical_implementation": [
+        {
           "file": "backend/packages/harness/focus/context/scoped.py",
           "symbol": "ScopedContextMiddleware",
           "line": 44,
           "end_line": 71,
           "location_status": "symbol"
         }
-      ],
-      "original_status": "confirmed_divergence",
-      "repair_evidence": "repair-verification.md"
+      ]
     },
     {
       "spec": "scoped-agent-context",
@@ -920,15 +952,15 @@
         {
           "file": "backend/packages/harness/focus/context/middleware.py",
           "symbol": "abefore_model",
-          "line": 46,
-          "end_line": 70,
+          "line": 68,
+          "end_line": 94,
           "location_status": "symbol"
         },
         {
           "file": "backend/packages/harness/focus/models/response_source.py",
           "symbol": "response_source_manifest",
-          "line": 14,
-          "end_line": 22,
+          "line": 16,
+          "end_line": 25,
           "location_status": "symbol"
         },
         {
@@ -956,11 +988,74 @@
         {
           "file": "backend/packages/harness/focus/agents/compression/gate.py",
           "symbol": "_request_usage",
-          "line": 261,
-          "end_line": 281,
+          "line": 209,
+          "end_line": 229,
           "location_status": "symbol"
         }
       ]
+    },
+    {
+      "spec": "focus-item-history",
+      "requirement": "Confirmed task contracts are produced as typed domain items",
+      "status": "independent_divergence_repaired_with_regression",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/agents/commitment/handoff.py",
+          "symbol": "compile_handoff",
+          "line": 68,
+          "location_status": "symbol",
+          "end_line": 93
+        },
+        {
+          "file": "backend/packages/harness/focus/history/task_contract.py",
+          "symbol": "task_contract_state_update",
+          "location_status": "symbol",
+          "line": 20,
+          "end_line": 39
+        }
+      ],
+      "verification": "follow-up-verification.md",
+      "pre_independent_verification_status": "implemented_targeted_verified",
+      "independent_findings": [
+        "V2"
+      ],
+      "independent_repair_evidence": "follow-up-repair-verification.md",
+      "independent_regression_tests": [
+        "backend/tests/test_contract_history_repairs.py::test_real_compression_graph_clears_and_restores_typed_mirror"
+      ]
+    },
+    {
+      "spec": "responses-provider-projection",
+      "requirement": "Host collaboration uses a verified projection without hosted orchestration",
+      "status": "implemented_targeted_verified",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/models/response_projection.py",
+          "symbol": "ResponsesRequestProjector",
+          "line": 39,
+          "location_status": "symbol",
+          "end_line": 190
+        }
+      ],
+      "verification": "follow-up-verification.md"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "requirement": "Commitment handoff separates confirmed contract from frozen knowledge",
+      "status": "implemented_targeted_verified",
+      "findings": [],
+      "implementation": [
+        {
+          "file": "backend/packages/harness/focus/agents/commitment/artifacts.py",
+          "symbol": "_freeze_knowledge",
+          "line": 41,
+          "location_status": "symbol",
+          "end_line": 60
+        }
+      ],
+      "verification": "follow-up-verification.md"
     }
   ],
   "scenario_reference_checks": [
@@ -1446,6 +1541,118 @@
       "test": "backend/tests/test_must_view_images.py::test_injection_survives_reference_being_compressed_away",
       "reference_exists": true,
       "assessment": "reference_integrity_only_not_end_to_end_proof"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Deliver an approved commitment contract",
+      "contract_test": "backend/tests/test_commitment_handoff_recovery.py::test_actual_lead_contract_handoff_freezes_knowledge_and_audits_wire",
+      "valid": true,
+      "assessment": "targeted_execution_evidence_not_live_provider_proof",
+      "verification": "follow-up-verification.md"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Reject a contract changed after approval",
+      "contract_test": "backend/tests/test_commitment_handoff.py::test_compiler_rejects_unapproved_or_conflicting_sources",
+      "valid": true,
+      "assessment": "targeted_execution_evidence_not_live_provider_proof",
+      "verification": "follow-up-verification.md"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "A draft or tagged message has no confirmed contract authority",
+      "contract_test": "backend/tests/test_commitment_handoff.py::test_compiler_rejects_unapproved_or_conflicting_sources",
+      "valid": true,
+      "assessment": "targeted_execution_evidence_not_live_provider_proof",
+      "verification": "follow-up-verification.md"
+    },
+    {
+      "spec": "focus-item-history",
+      "scenario": "Recover a contract handoff after parent checkpoint persistence",
+      "contract_test": "backend/tests/test_commitment_handoff_recovery.py::test_completed_child_recovers_parent_handoff_once",
+      "valid": true,
+      "assessment": "targeted_execution_evidence_not_live_provider_proof",
+      "verification": "follow-up-verification.md"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Project a Focus inbox item to OpenAI Responses",
+      "contract_test": "backend/tests/test_commitment_handoff.py::test_host_collaboration_and_contract_use_user_wire_without_beta",
+      "valid": true,
+      "assessment": "targeted_execution_evidence_not_live_provider_proof",
+      "verification": "follow-up-verification.md"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Project a Focus inbox item to DeepSeek Responses",
+      "contract_test": "backend/tests/test_commitment_handoff.py::test_host_collaboration_and_contract_use_user_wire_without_beta",
+      "valid": true,
+      "assessment": "targeted_execution_evidence_not_live_provider_proof",
+      "verification": "follow-up-verification.md"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Preserve an unverified native multi-agent payload",
+      "contract_test": "backend/tests/test_commitment_handoff.py::test_host_collaboration_and_contract_use_user_wire_without_beta",
+      "valid": true,
+      "assessment": "targeted_execution_evidence_not_live_provider_proof",
+      "verification": "follow-up-verification.md"
+    },
+    {
+      "spec": "responses-provider-projection",
+      "scenario": "Project a confirmed Focus task contract",
+      "contract_test": "backend/tests/test_commitment_handoff_recovery.py::test_actual_lead_contract_handoff_freezes_knowledge_and_audits_wire",
+      "valid": true,
+      "assessment": "targeted_execution_evidence_not_live_provider_proof",
+      "verification": "follow-up-verification.md"
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "Select a confirmed contract and its accompanying knowledge",
+      "contract_test": "backend/tests/test_commitment_handoff.py::test_contract_authored_semantic_curator_and_display_keep_separate_authorities",
+      "valid": true,
+      "assessment": "targeted_execution_evidence_not_live_provider_proof",
+      "verification": "follow-up-verification.md"
+    },
+    {
+      "spec": "revision-semantic-selection",
+      "scenario": "A typed contract changes the semantic input contract",
+      "contract_test": "backend/tests/test_commitment_handoff.py::test_v7_task_fallback_changes_fingerprint_without_rewriting_legacy_index",
+      "valid": true,
+      "assessment": "targeted_execution_evidence_not_live_provider_proof",
+      "verification": "follow-up-verification.md"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "A completed commitment contains contract and theoretical references",
+      "contract_test": "backend/tests/test_commitment_handoff.py::test_compiler_produces_separate_typed_contract_and_references",
+      "valid": true,
+      "assessment": "targeted_execution_evidence_not_live_provider_proof",
+      "verification": "follow-up-verification.md"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "A knowledge file changes after its snapshot was frozen",
+      "contract_test": "backend/tests/test_commitment_handoff_recovery.py::test_actual_lead_contract_handoff_freezes_knowledge_and_audits_wire",
+      "valid": true,
+      "assessment": "targeted_execution_evidence_not_live_provider_proof",
+      "verification": "follow-up-verification.md"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Resume before parent handoff is committed",
+      "contract_test": "backend/tests/test_commitment_handoff_recovery.py::test_completed_child_recovers_parent_handoff_once",
+      "valid": true,
+      "assessment": "targeted_execution_evidence_not_live_provider_proof",
+      "verification": "follow-up-verification.md"
+    },
+    {
+      "spec": "scoped-agent-context",
+      "scenario": "Approval does not elevate execution access",
+      "contract_test": "backend/tests/test_commitment_handoff_recovery.py::test_actual_lead_contract_handoff_freezes_knowledge_and_audits_wire",
+      "valid": true,
+      "assessment": "targeted_execution_evidence_not_live_provider_proof",
+      "verification": "follow-up-verification.md"
     }
   ],
   "limitations": [
@@ -1456,5 +1663,200 @@
     "PostgreSQL crash injection and graph reconstruction use isolated tests, not a production process-death exercise.",
     "Initial audit artifacts and failure reproductions remain unchanged; obsolete temporary reproduction script is replaced by permanent regression tests."
   ],
-  "assessment": "All six original findings resolved; 0 open critical/warning in the repair scope. Change is not archived."
+  "assessment": "V1/V2/V3 resolved; 76/76 tasks complete; no open findings in this audit. Targeted validation passed; no live Provider or interactive Electron E2E claim. No archive, commit or push.",
+  "baseline_evidence_scope": {
+    "commit": "7a3390900574975bcb930bb801d73d4c67fcc7cc",
+    "tasks": {
+      "checked": 63,
+      "unchecked": 0
+    },
+    "requirements": 37,
+    "scenarios": 69,
+    "validation_scope": "Original migration and F1-F6 repairs only; no follow-up implementation or test execution."
+  },
+  "baseline_validation": {
+    "backend_broad": {
+      "passed": 621,
+      "failed": 0,
+      "seconds": 279.82,
+      "log": ".tmp/responses-repair-regression.txt"
+    },
+    "backend_final_focused": {
+      "passed": 70,
+      "failed": 0,
+      "seconds": 7.19,
+      "log": ".tmp/responses-repair-final-focused.txt"
+    },
+    "http_admission": {
+      "passed": 12,
+      "failed": 0,
+      "seconds": 9.04,
+      "log": ".tmp/responses-repair-admission.txt"
+    },
+    "desktop": {
+      "rerun": false,
+      "prior_passed": 180,
+      "reason": "No frontend changes in this repair."
+    },
+    "openspec_strict": "passed",
+    "git_diff_check": "passed",
+    "repaired_file_headers_and_syntax": {
+      "passed": 24
+    },
+    "harness_dependency_direction": "passed",
+    "open_critical": 0,
+    "open_warning": 0
+  },
+  "follow_up": {
+    "date": "2026-10-01",
+    "scope": "Confirmed TaskContract producer and explicit host collaboration projection contract",
+    "approval": "explicit_openspec_apply_change",
+    "implementation": "complete",
+    "context7_preflight": "passed_before_code_changes",
+    "tasks_section": 12,
+    "new_scenarios": 14,
+    "application_tests": "follow-up-verification.md"
+  },
+  "follow_up_validation": {
+    "backend_contract_and_integration": {
+      "passed": 181,
+      "failed": 0,
+      "seconds": 9.48,
+      "log": ".tmp/commitment-handoff-regression.txt"
+    },
+    "semantic_and_cache": {
+      "passed": 133,
+      "failed": 0,
+      "seconds": 78.18,
+      "log": ".tmp/commitment-semantic-regression.txt"
+    },
+    "desktop_display": {
+      "passed": 72,
+      "failed": 0,
+      "milliseconds": 323,
+      "log": ".tmp/commitment-display-regression.txt"
+    },
+    "openspec_strict": "passed",
+    "git_diff_check": "passed",
+    "modified_python_headers_syntax_dependency_direction": "passed",
+    "live_provider_smoke": "not_run",
+    "interactive_electron_e2e": "not_run",
+    "full_backend_suite": "not_run",
+    "final_focused": {
+      "passed": 122,
+      "failed": 0,
+      "seconds": 32.7,
+      "log": ".tmp/commitment-handoff-final.txt"
+    }
+  },
+  "independent_verification": {
+    "report": "follow-up-independent-verification.md",
+    "critical": 0,
+    "warnings": 2,
+    "suggestions": 1,
+    "tasks_checked": 71,
+    "requirements_mapped": 40,
+    "scenarios_mapped": 83,
+    "valid_distinct_named_test_references": 59,
+    "fresh_validation": [
+      {
+        "scope": "handoff and adjacent backend modules",
+        "passed": 181,
+        "seconds": 9.74,
+        "log": ".tmp/independent-handoff-regression.txt"
+      },
+      {
+        "scope": "semantic indexing and derivation",
+        "passed": 133,
+        "seconds": 77.66,
+        "log": ".tmp/independent-semantic-regression.txt"
+      },
+      {
+        "scope": "desktop contract suites",
+        "passed": 72,
+        "duration_ms": 352.1173,
+        "log": ".tmp/independent-display-regression.txt"
+      },
+      {
+        "scope": "strict xfail boundary reproductions",
+        "xfailed": 3,
+        "seconds": 2.17,
+        "log": ".tmp/independent-boundary-reproductions.txt"
+      }
+    ],
+    "strict_validation": "passed",
+    "diff_check": "passed",
+    "not_run": [
+      "full backend suite",
+      "live OpenAI/DeepSeek smoke",
+      "interactive Electron E2E"
+    ],
+    "assessment": "No CRITICAL missing implementation; fix two WARNING issues before treating verification as clean. No archive, commit or push.",
+    "scope": "Historical pre-repair independent audit; current resolution is recorded in follow_up_repair."
+  },
+  "follow_up_repair": {
+    "report": "follow-up-repair-verification.md",
+    "authorization": "user_all_repairs",
+    "context7_preflight": "follow-up-repair-preflight.md",
+    "tasks_section": 13,
+    "tasks_checked": 76,
+    "resolved_findings": [
+      "V1",
+      "V2",
+      "V3"
+    ],
+    "open_critical": 0,
+    "open_warning": 0,
+    "open_suggestion": 0,
+    "new_regression_cases": 25,
+    "validation": {
+      "history_and_contract": {
+        "passed": 222,
+        "failed": 0,
+        "seconds": 11.05,
+        "log": ".tmp/follow-up-repair-history.txt"
+      },
+      "semantic_and_cache": {
+        "passed": 151,
+        "failed": 0,
+        "seconds": 79.76,
+        "log": ".tmp/follow-up-repair-semantic-final.txt"
+      },
+      "revision_and_publication": {
+        "passed": 153,
+        "failed": 0,
+        "seconds": 4.67,
+        "log": ".tmp/follow-up-repair-publication.txt"
+      },
+      "desktop_display": {
+        "passed": 72,
+        "failed": 0,
+        "milliseconds": 387.0502,
+        "log": ".tmp/follow-up-repair-display.txt"
+      },
+      "python_syntax_headers_dependency_direction": {
+        "files_checked": 17,
+        "errors": [],
+        "log": ".tmp/follow-up-repair-checks.json"
+      },
+      "openspec_strict": "passed",
+      "git_diff_check": "passed",
+      "evidence_inventory": {
+        "checked_tasks": 76,
+        "unchecked_tasks": 0,
+        "requirements": 40,
+        "scenarios": 83,
+        "missing_requirement_mappings": [],
+        "missing_scenario_mappings": [],
+        "distinct_test_references_checked": 70,
+        "invalid_test_references": [],
+        "invalid_implementation_references": []
+      }
+    },
+    "limitations": [
+      "Test groups overlap; counts are not a full-suite total.",
+      "Full backend suite, live OpenAI/DeepSeek smoke and interactive Electron E2E were not run.",
+      "Durable recovery uses an isolated PostgreSQL graph reconstruction test, not a production process-death exercise."
+    ]
+  }
 }

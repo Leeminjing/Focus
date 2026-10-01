@@ -28,6 +28,10 @@
 - **WHEN** assistant 结论具有 index 资格但没有充分证据
 - **THEN** 系统保留原有 hypothesis、verification 或 rejection 区分，不因资格而认定为事实
 
+#### Scenario: Select a confirmed contract and its accompanying knowledge
+- **WHEN** Revision 保存具有宿主批准证明的 task_contract 和独立冻结知识 selected_context
+- **THEN** RSI 与 Curator 从同一 semantic view 消费合同的 index 资格和知识的 reference_only 资格；知识不独立生成 fallback 命题，合同中的事实声明仍需既有验证
+
 ### Requirement: Tool evidence retains its invocation context
 
 进入 semantic view 的工具证据 SHALL 保留工具身份、调用参数、调用 ID、输出状态及精确来源关系。排除工具调用作为任务命题 MUST NOT 使输出失去解释上下文；仅有孤立输出或协议 repair 的内容 MUST NOT 冒充完整已执行证据。
@@ -63,6 +67,10 @@ selected memory、skill 或 material 中的任务相关约束 SHALL 通过版本
 #### Scenario: Reuse an unchanged eligible prefix
 - **WHEN** 追加 Revision 的任务语义前缀、证据依赖和版本均满足现有增量证明
 - **THEN** 复用兼容局部证据并重绑定到新来源；有语义变化时整体解释仍按既有合同重算
+
+#### Scenario: A typed contract changes the semantic input contract
+- **WHEN** 合同与知识拆分导致 semantic 输入表示、资格或来源依赖合同发生变化
+- **THEN** fingerprint 体现实际变化，不误复用旧混合消息索引；旧缓存和 Revision 保留，新分支的合同／引用仍可解析到精确原始来源
 
 ### Requirement: Semantic evidence remains resolvable to authoritative sources
 

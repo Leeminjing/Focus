@@ -5,6 +5,7 @@ execution、semantic、display、display page、checkpoint、historical、fronti
 具体工作流为从不可变 repository 解析 revision，按 payload mode 加载精确 checkpoint；checkpoint-backed revision 的 authored/display
 保留原始 checkpoint，execution 优先使用 settlement 时持久化的协议合法投影；分页读取只序列化命中页，且不追随最新 checkpoint。
 V1 semantic 从 canonical checkpoint 适配可证明的宿主来源，UI codec 仅用于显示；旧记录和 hash 不被改写。
+V2 display 消费统一 history.display 关系，合同及冻结引用只展示一次，原输入仍在 authored／execution 中。
 示例：`await reader.read(session, ref, "display")`。
 """
 
@@ -37,6 +38,7 @@ from backend.app.desktop.context_evolution.schemas import (
 from backend.app.desktop.models import DesktopThread
 from focus.runtime.runs.events import serialize_message
 from focus.history import deserialize_history_message, history_records, items_to_messages, legacy_to_items, semantic_messages, serialize_history_message, validate_items
+from focus.history.display import display_messages
 
 
 ContextRevisionViewKind = Literal[
@@ -179,15 +181,16 @@ class ContextRevisionReader:
             if view == "semantic":
                 messages = semantic_messages(items)
             elif view == "display":
-                messages = tuple(serialize_message(message) for message in items_to_messages(
+                objects = items_to_messages(
                     item for item in items if item.scope not in {"runtime", "round"}
-                    and item.kind not in {"unknown", "compaction", "reasoning", "selected_context", "projection_repair"}
-                ))
+                    and item.kind not in {"unknown", "compaction", "reasoning", "projection_repair"}
+                )
                 if revision.ref.payload_mode is ContextRevisionPayloadMode.DEFINITION:
                     initial_ids = set(revision.initial_message_ids)
-                    authored = tuple(serialize_message(deserialize_history_message(record)) if "_lc" in record else deepcopy(record)
-                                     for record in history_records(payload.authored_items))
-                    messages = (*authored, *(message for message in messages if message.get("id") not in initial_ids))
+                    authored = items_to_messages(payload.authored_items)
+                    initial_ids.update(message.id for message in authored)
+                    objects = [*authored, *(message for message in objects if message.id not in initial_ids)]
+                messages = tuple(serialize_message(message) for message in display_messages(objects))
             else:
                 messages = history_records(items)
             return ContextRevisionMessageView(ref=revision.ref, view=view, messages=messages)

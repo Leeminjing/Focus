@@ -1,8 +1,11 @@
 r"""本文件对外提供 support-span drafts、独立 claim assessments、SemanticGroundingValidator 与受监督 verifier。
 
-输入为冻结消息原文、陈述、精确引文及可选独立 verdict；输出为绑定目标 Revision 的 SemanticEvidenceUnit 或隔离原因。
-具体工作流为 evaluate_draft 确定性检查支持和 authority，再由 validate 生成来源引用；confirmed 必须有独立 supported verdict。
-示例：authority = SemanticGroundingValidator.evaluate_draft(contents, draft, assessment)；局部 record 可复用校验结果而不重新调用模型。
+输入为冻结消息原文、语义资格、陈述、精确引文及可选独立 verdict；输出为绑定目标 Revision 的 SemanticEvidenceUnit 或隔离原因。
+具体工作流为 evaluate_draft 检查引文、宿主资格和 authority，再由 validate 生成来源引用；confirmed 仍必须有独立 supported verdict。
+index 可定义任务命题；evidence_only 可产生证据类结果，不能独立定义 decision／question；reference_only 不独立产生 unit。
+message_policies=None 仅用于旧 proof 的原算法兼容；新 indexing／projection／interpretation 均传递完整资格。
+RECORD_VERSION 标识可读取的 proof 规则；VERSION 参与模型／配置整体 fingerprint，不作为历史 payload schema。
+示例：authority = SemanticGroundingValidator.evaluate_draft(contents, draft, assessment, message_policies=policies)。
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ SemanticGroundingFailureCode = Literal[
     "claim_support_unsupported",
     "claim_support_unknown",
     "claim_support_missing",
+    "semantic_eligibility_error",
 ]
 
 
@@ -216,12 +220,27 @@ class SupervisedSemanticClaimSupportVerifier:
 
 
 class SemanticGroundingValidator:
-    VERSION = "support-span-grounding-v1"
+    RECORD_VERSION = "support-span-grounding-v2"
+    VERSION = RECORD_VERSION
 
     @classmethod
-    def evaluate_draft(cls, message_contents, draft, assessment=None):
+    def evaluate_draft(cls, message_contents, draft, assessment=None, *, message_policies=None):
         cls._validate_supports(message_contents, draft)
+        if message_policies is not None:
+            cls.validate_eligibility(draft.kind, (support.message_id for support in draft.supports), message_policies)
         return cls._validated_authority(draft, assessment)
+
+    @staticmethod
+    def validate_eligibility(kind, message_ids, policies):
+        selected = {policies.get(identity) for identity in message_ids}
+        if not selected or not selected.issubset({"index", "evidence_only", "reference_only"}):
+            raise SemanticGroundingError("semantic_eligibility_error", "semantic support 缺少有效宿主资格")
+        if "index" in selected:
+            return
+        evidence_kinds = {"claim", "hypothesis", "implementation_effect", "verification_result", "failure"}
+        if "evidence_only" in selected and kind in evidence_kinds:
+            return
+        raise SemanticGroundingError("semantic_eligibility_error", "参考或证据不能独立定义该任务命题")
 
     def validate(
         self,
@@ -229,8 +248,10 @@ class SemanticGroundingValidator:
         message_contents: Mapping[str, str],
         draft: SegmentSemanticUnitDraft,
         assessment: SemanticClaimSupportAssessment | None = None,
+        *,
+        message_policies: Mapping[str, str] | None = None,
     ) -> SemanticEvidenceUnit:
-        authority = self.evaluate_draft(message_contents, draft, assessment)
+        authority = self.evaluate_draft(message_contents, draft, assessment, message_policies=message_policies)
         message_ids = tuple(
             dict.fromkeys(support.message_id for support in draft.supports)
         )
