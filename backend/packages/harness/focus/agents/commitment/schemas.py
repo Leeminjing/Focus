@@ -12,7 +12,8 @@
 具体工作流:
     (1) 使用字段类型和约束声明阶段数据边界。
     (2) Worker、Evaluator 和 Supervisor 通过相同模型交换结构化数据。
-    (3) LangGraph 使用 CommitmentState 保存阶段、人工等待、产物和最终合同。
+    (3) LangGraph 使用 CommitmentState 保存阶段、人工等待、冻结知识、第七阶段批准证明和最终合同。
+        父图复用该 schema 的 task_contract_source 区分 typed 镜像与 legacy 字符串；旧 checkpoint 不要求该字段。
 
 示例:
     envelope = TaskEnvelope(stage=1, instruction="明确目标")
@@ -22,7 +23,9 @@ from typing import Any, Literal
 
 from langchain.agents.middleware.types import AgentState
 from pydantic import BaseModel, Field
-from typing_extensions import NotRequired
+from typing_extensions import Annotated, NotRequired
+
+from focus.history.bridge import replace_execution_items
 
 
 class TaskEnvelope(BaseModel):
@@ -112,14 +115,18 @@ class StageFiveResult(BaseModel):
 
 
 class CommitmentState(AgentState):
+    execution_items: Annotated[list[dict] | None, replace_execution_items]
     stage: NotRequired[int]
     awaiting_human: NotRequired[int | None]
     artifacts: NotRequired[dict[str, Any]]
     source_text: NotRequired[str]
+    handoff_source_refs: NotRequired[list[dict[str, Any]]]
     uploads_tag: NotRequired[str]
     thread_id: NotRequired[str]
-    # 本土化：合同/知识落盘的真实宿主机工作区根目录（desktop 任务登记路径）
     workspace: NotRequired[str]
     knowledge_files: NotRequired[list[str]]
-    task_contract: NotRequired[str]
+    knowledge_snapshots: NotRequired[list[dict[str, Any]]]
+    contract_approval: NotRequired[dict[str, Any]]
+    task_contract: NotRequired[str | None]
+    task_contract_source: NotRequired[Literal["typed", "legacy"]]
     final_message: NotRequired[str]

@@ -2,7 +2,7 @@
 
 输入为受治理运行上下文、真实工具/基础指令、冻结 selected bindings 及精确 graph state；输出为同时提交的 Items、snapshot 和 prepared manifest。
 具体工作流为在历史手术后刷新状态、补齐冻结引用、核对实际 continuation 前缀；不兼容时显式重建执行分支，
-再将完整请求来源与 typed authority 原子提交。在完整模型返回后标记 sampled；工具授权仍由安全中间件独立刷新。
+再将完整请求来源（含合同／协作 source refs）与 typed authority 原子提交。在完整模型返回后标记 sampled；工具授权仍由安全中间件独立刷新。
 示例：middleware = WorldStateMiddleware(tools, base_instructions, skill_names, model_name)。
 """
 
@@ -80,6 +80,9 @@ class WorldStateMiddleware(AgentMiddleware):
             "provider_contract": self._provider_contract,
             "instructions_hash": self._instructions_hash, "tools_hash": content_hash(self._tool_specs),
             "item_ids": [item["item_id"] for item in items if item.get("message_id") in visible_ids],
+            "source_bindings": [{"item_id": item["item_id"], "kind": item["kind"], "origin": item["origin"],
+                                 "source_refs": item["source_refs"]} for item in items
+                                if item.get("message_id") in visible_ids and item["source_refs"]],
             "world_state_hash": content_hash(snapshot),
             "context_revision_ref": context.get("context_revision_ref"),
             "selected_bindings": [item["source_refs"] for item in items if item.get("message_id") in visible_ids

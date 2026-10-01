@@ -4,6 +4,7 @@
     LeadAgentState — lead_agent 子图的 LangGraph State schema，继承 AgentState 并扩展业务字段
     merge_artifacts — artifacts 字段的 reducer，只增不减、去重保序
     execution_items — 唯一 typed 历史，messages 为其可验证 LangGraph 兼容投影
+    task_contract / task_contract_source — canonical 合同镜像与 typed／legacy 兼容来源，随历史手术更新
     world_state_snapshot / request_manifest — 随精确 checkpoint 提交的运行基线与 sampling 来源
     inbox_delivery — 同 checkpoint 保存的待确认消息身份，供崩溃后补交耐久投递 receipt
 
@@ -25,7 +26,7 @@
 """
 
 from langchain.agents.middleware.types import AgentState
-from typing_extensions import Annotated, NotRequired
+from typing_extensions import Annotated, Literal, NotRequired
 from focus.history.bridge import replace_execution_items
 
 
@@ -43,6 +44,7 @@ class LeadAgentState(AgentState):
     title: NotRequired[str | None]
     artifacts: Annotated[list[str], merge_artifacts]
     task_contract: NotRequired[str | None]
+    task_contract_source: NotRequired[Literal["typed", "legacy"]]
     execution_items: Annotated[list[dict] | None, replace_execution_items]
     world_state_snapshot: NotRequired[dict | None]
     request_manifest: NotRequired[dict | None]

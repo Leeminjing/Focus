@@ -23,6 +23,7 @@
         cancel → 记录该 run 后本轮放行；apply → 校验后按范围重建 messages
         （压缩范围为块、restore 范围原位展开来源原文，均经 RemoveMessage 全量重建）
         显式重建同时清除旧 typed authority、WorldState 基线与 opaque Provider continuation，下一节点重新锚定
+        合同兼容镜像与 typed 来源同时按保留／恢复的 canonical 合同更新，删除或摘要替换不留下旧 scalar
         最终请求准备再按原冻结版本补齐当前 Run 引用；工具协议占位使用共享 error repair 合同
     (3) wrap_model_call 在每次模型调用前剥离 messages 的 compression 元数据，
         来源原文永不进入模型上下文
@@ -55,6 +56,7 @@ from focus.runtime.runs.events import (
 )
 from focus.history import deserialize_history_messages, serialize_history_message as serialize_message
 from focus.history.repair import repair_tool_messages
+from focus.history.task_contract import task_contract_state_update
 
 _COMPRESSION_KWARG = "compression"
 
@@ -168,6 +170,7 @@ def apply_compression_ranges(messages: list[BaseMessage], ranges: list[dict]) ->
     validate_messages([serialize_message(message) for message in rebuilt])
 
     return {
+        **task_contract_state_update({"messages": messages}, rebuilt_messages=rebuilt),
         "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *rebuilt],
         "execution_items": None,
         "world_state_snapshot": None,

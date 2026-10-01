@@ -16,7 +16,7 @@
     (2) delegate_with_review 校验 stage 后调用 ReviewedDelegator。
     (3) 固定人工节点、条件冲突或失败结果通过 interrupt 等待人工处理。
     (4) 人工修订重新经过 Evaluator，未批准前不推进业务阶段。
-    (5) 阶段六写入知识；阶段七人工确认后写入合同；阶段九生成最终合同消息。
+    (5) 阶段六写入并冻结知识；阶段七人工确认后保存合同及批准 hash；阶段九以冻结知识生成子图展示文本。
     (6) Supervisor messages 只保留阶段委派和最终工具结果。
 
 示例:
@@ -36,9 +36,12 @@ from langgraph.types import Command, interrupt
 
 from focus.agents.commitment.artifacts import (
     _build_final_message,
+    _freeze_knowledge,
     _write_contract,
     _write_knowledge,
 )
+from focus.agents.commitment.handoff import ContractApproval
+from focus.history import content_hash
 from focus.agents.commitment.delegation import ReviewedDelegator
 from focus.agents.commitment.schemas import (
     CommitmentState,
@@ -228,6 +231,10 @@ async def _human_review(
                     error = f"合同写入失败: {exc}"
                     continue
                 updates["task_contract"] = contract
+                updates["contract_approval"] = ContractApproval(
+                    artifact_ref=artifact_ref, contract_hash=content_hash(contract),
+                    artifact_hash=content_hash(artifacts["7"]),
+                ).model_dump(mode="json")
                 emit_commitment_trace(
                     actor="system",
                     event="artifact_completed",
@@ -270,9 +277,11 @@ async def _human_review(
                 continue
             artifacts[str(stage)] = revised
             knowledge_files = list(state.get("knowledge_files", []))
+            knowledge_snapshots = list(state.get("knowledge_snapshots", []))
             artifact_ref = None
             if stage == 6:
                 knowledge_files = _write_knowledge(revised, str(state.get("workspace", "")))
+                knowledge_snapshots = _freeze_knowledge(revised)
                 artifact_ref = ",".join(knowledge_files)
             emit_commitment_trace(
                 actor="supervisor",
@@ -286,6 +295,7 @@ async def _human_review(
                 "stage": stage,
                 "artifacts": artifacts,
                 "knowledge_files": knowledge_files,
+                "knowledge_snapshots": knowledge_snapshots,
                 "messages": [
                     _replace_stage_tool_message(
                         dict(state),
@@ -413,6 +423,7 @@ def build_delegate_with_review_tool(delegator: ReviewedDelegator) -> BaseTool:
                     state.get("task_contract", ""),
                     list(state.get("knowledge_files", [])),
                     str(state.get("workspace", "")),
+                    list(state.get("knowledge_snapshots", [])),
                 )
             }
 
@@ -431,6 +442,7 @@ def build_delegate_with_review_tool(delegator: ReviewedDelegator) -> BaseTool:
             updates["knowledge_files"] = _write_knowledge(
                 result, str(state.get("workspace", ""))
             )
+            updates["knowledge_snapshots"] = _freeze_knowledge(result)
             artifact_ref = ",".join(updates["knowledge_files"])
             emit_commitment_trace(
                 actor="system",

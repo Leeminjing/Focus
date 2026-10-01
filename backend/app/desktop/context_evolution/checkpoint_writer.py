@@ -3,7 +3,7 @@ r"""本文件对外提供 definition revision 的非路由 LangGraph checkpoint 
 输入为尚无 checkpoint 的 shadow `ContextRevisionRef`、无损协议合法 execution 前缀、可选真实运行后缀、
 graph factory 和 checkpointer；输出为精确 checkpoint id 与初始前缀消息 id。具体工作流为强制 shadow
 thread/namespace，用 NamespacedCheckpointer 把物理 namespace 映射成根图视角，依次反序列化并写入
-策展前缀与后缀，再从已持久化 state 返回执行身份；不读取或覆盖活动 Context，也不把持久化 namespace
+策展前缀与后缀，同时从 canonical 合同生成兼容镜像及 typed 来源，再从已持久化 state 返回执行身份；不读取或覆盖活动 Context，也不把持久化 namespace
 误判成子图路径。
 示例：`checkpoint_id, ids = await writer.write(shadow_ref, messages)`。
 """
@@ -17,6 +17,7 @@ from backend.app.desktop.context_evolution.schemas import ContextRevisionRef
 from focus.runtime.checkpointer.namespaced import NamespacedCheckpointer
 from focus.history import deserialize_history_messages, legacy_to_items, validate_items
 from focus.history.bridge import branch_messages, checkpoint_records, synchronize_items
+from focus.history.task_contract import task_contract_state_update
 
 
 class ContextCheckpointWriter(Protocol):
@@ -64,6 +65,7 @@ class LangGraphContextCheckpointWriter:
             if message.id is None:
                 message.id = f"{shadow_ref.revision_id}:message:{index}"
         updated_config = await graph.aupdate_state(config, {
+            **task_contract_state_update({"messages": rebuilt}),
             "messages": rebuilt,
             "execution_items": synchronize_items(None, rebuilt),
             "world_state_snapshot": None,

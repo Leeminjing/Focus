@@ -30,7 +30,7 @@
         （node 取 metadata.langgraph_node）
     (2) values 模式: chunk 为完整状态 dict → serialize_value 递归序列化 → events 事件
     (3) 所有事件 data 为 build_envelope 信封，前端按 run_id 独立路由
-        UI codec 排除 typed authority、opaque Provider 载荷和运行控制消息；权威恢复使用 focus.history
+        UI codec 排除 typed authority、opaque Provider 载荷和运行控制消息；合同展示关系由 history.display 编译，权威恢复使用 focus.history
     (4) deserialize_messages: validate_messages 校验 tool call 关联完整性 → 按角色还原 BaseMessage
 
 示例:
@@ -47,6 +47,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from focus.runtime.stream_bridge.schemas import StreamEvent
+from focus.history.display import display_messages
 
 
 _COMMITMENT_SUBGRAPH_NODES = frozenset({"prepare_call", "delegate_with_review", "human_review"})
@@ -109,6 +110,8 @@ def serialize_value(value: Any) -> Any:
         return {key: serialize_value(item) for key, item in value.items()
                 if key not in {"execution_items", "world_state_snapshot", "request_manifest", "inbox_delivery"}}
     if isinstance(value, (list, tuple)):
+        if value and all(isinstance(item, BaseMessage) for item in value):
+            return [serialize_message(item) for item in display_messages(value)]
         return [serialize_value(item) for item in value if not _hidden_context(item)]
     return value
 

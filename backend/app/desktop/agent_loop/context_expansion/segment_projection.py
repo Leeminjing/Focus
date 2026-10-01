@@ -1,13 +1,14 @@
 r"""本文件对外提供 SegmentProjectionRecord、SegmentProjectionBuilder 与投影合同 fingerprint。
 
 输入为单个协议闭合 segment、其规范消息及受监督模型；输出为保留 drafts、精确引文、verdict 和隔离结果的不可变记录。
-具体工作流为仅向模型提交该段，确定性检查局部 supports，独立验证 confirmed claims，保存原始证据与稳定身份。
+具体工作流为仅向模型提交该段，确定性检查局部 supports 与宿主语义资格，独立验证 confirmed claims，保存原始证据与稳定身份。
+新记录保存 grounding_version；旧记录缺失该字段时使用原处置算法与序列化，不改写旧 hash。
 复用输入为相同 segment；输出为经重新校验的记录，不重新调用模型。示例：record = await builder.build(segment, messages)。
 """
 
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, model_serializer, model_validator
 
 from .contracts import stable_expansion_hash
 from .semantic_grounding import (
@@ -50,6 +51,14 @@ class SegmentProjectionRecord(BaseModel):
     rejections: tuple[SemanticUnitRejection, ...] = ()
     fallback: bool = False
     model_metadata: tuple[dict[str, Any], ...] = ()
+    grounding_version: Literal["support-span-grounding-v1", "support-span-grounding-v2"] = "support-span-grounding-v1"
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler):
+        payload = handler(self)
+        if self.grounding_version == "support-span-grounding-v1":
+            payload.pop("grounding_version", None)
+        return payload
 
     @model_validator(mode="after")
     def require_integrity(self) -> Self:
@@ -74,7 +83,7 @@ class SegmentProjectionRecord(BaseModel):
         ):
             raise ValueError("segment projection 内容与 segment hash 不一致")
         accepted, rejections, fallback = self._dispositions(
-            self.messages, self.drafts, self.assessments
+            self.messages, self.drafts, self.assessments, self.grounding_version
         )
         if (accepted, rejections, fallback) != (
             self.accepted_claim_keys,
@@ -115,6 +124,7 @@ class SegmentProjectionRecord(BaseModel):
     ) -> Self:
         accepted, rejected, fallback = cls._dispositions(messages, drafts, assessments)
         payload = {
+            "grounding_version": SemanticGroundingValidator.RECORD_VERSION,
             "model_metadata": list(model_metadata),
             "context_id": context_id,
             "cache_key": stable_expansion_hash(
@@ -139,8 +149,10 @@ class SegmentProjectionRecord(BaseModel):
         )
 
     @staticmethod
-    def _dispositions(messages, drafts, assessments):
+    def _dispositions(messages, drafts, assessments, grounding_version=SemanticGroundingValidator.RECORD_VERSION):
         contents = RevisionSemanticIndexer.message_contents(messages)
+        policies = ({message.message_id: message.semantic_policy for message in messages}
+                    if grounding_version == SemanticGroundingValidator.RECORD_VERSION else None)
         by_claim = {a.claim_key: a for a in assessments}
         if len(by_claim) != len(assessments) or len(
             {d.claim_key for d in drafts}
@@ -158,7 +170,7 @@ class SegmentProjectionRecord(BaseModel):
         for draft in drafts:
             try:
                 SemanticGroundingValidator.evaluate_draft(
-                    contents, draft, by_claim.get(draft.claim_key)
+                    contents, draft, by_claim.get(draft.claim_key), message_policies=policies
                 )
                 accepted.append(draft.claim_key)
                 represented.update(s.message_id for s in draft.supports)
