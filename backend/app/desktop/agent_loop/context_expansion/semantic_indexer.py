@@ -1,10 +1,10 @@
 r"""本文件对外提供 ProtocolSafeRevisionSegmenter、SupervisedSegmentSemanticProjector 与 RevisionSemanticIndexer。
 
-输入为冻结完整执行消息、来源/hash 和可选经过监督的 drafts／assessments；输出为协议闭合 segments 与完整不可变 Revision Index。
-工作流为规范消息、将 Tool Exchange 折叠成原子、按包含配置参数的 fingerprint 切段，验证引用并补齐 fallback。
-describe_segment 是对外可复用的纯 identity 工具；validate_proposal 检查投影结果 identity 唯一性，非法结果抛出结构化错误。
-旧 projector 只供旧合同适配，新 Portfolio 走 segment_projection 的单段合同。
-示例：index = RevisionSemanticIndexer().index(source=ref, raw_messages=messages, ...)；旧 index 不原地更新。
+输入为冻结完整消息、来源/hash 和受监督的 drafts／assessments；输出为协议闭合 segments 与完整目标 Index。
+工作流为规范消息、将 Tool Exchange 折叠成原子，按实际参数 fingerprint 切段，统一验证引用并补齐 fallback。
+每条 draft 的引文／verdict 独立 grounding，再按最终 unit_id 合并相同事实和 projected 库存；局部／综合 proof 保留原始证据。
+describe_segment 是纯 identity 工具；validate_proposal 检查投影 identity 唯一性。旧 projector 保留兼容，新 Portfolio 合并局部及综合 drafts。
+示例：index = RevisionSemanticIndexer().index(source=ref, raw_messages=messages, ...)；跨段联合引文绑定同一 Revision，旧 index 不变。
 """
 
 from __future__ import annotations
@@ -187,7 +187,7 @@ class ProtocolSafeRevisionSegmenter:
 
 
 class RevisionSemanticIndexer:
-    INDEX_SCHEMA_VERSION = "revision-semantic-index-v4"
+    INDEX_SCHEMA_VERSION = "revision-semantic-index-v5"
     PROJECTOR_VERSION = "supervised-segment-projector-v2"
 
     def __init__(
@@ -281,9 +281,9 @@ class RevisionSemanticIndexer:
         by_claim = {assessment.claim_key: assessment for assessment in assessments}
         if len(by_claim) != len(assessments):
             raise ValueError("claim support assessment identity 重复")
-        units: list[SemanticEvidenceUnit] = []
+        units: dict[str, SemanticEvidenceUnit] = {}
         rejections: list[SemanticUnitRejection] = []
-        projected_ids: list[str] = []
+        projected_ids: set[str] = set()
         fallback_ids: list[str] = []
         for draft in drafts:
             try:
@@ -293,8 +293,8 @@ class RevisionSemanticIndexer:
                     draft,
                     by_claim.get(draft.claim_key),
                 )
-                units.append(unit)
-                projected_ids.append(unit.unit_id)
+                units[unit.unit_id] = unit
+                projected_ids.add(unit.unit_id)
             except SemanticGroundingError as exc:
                 rejections.append(
                     SemanticUnitRejection.create(
@@ -305,7 +305,7 @@ class RevisionSemanticIndexer:
                 )
         represented = {
             ref.message_id
-            for unit in units
+            for unit in units.values()
             for ref in unit.evidence_refs
             if isinstance(ref, NamespacedMessageRef)
         }
@@ -313,19 +313,18 @@ class RevisionSemanticIndexer:
             if set(segment.message_ids).issubset(represented):
                 continue
             fallback_ids.append(segment.segment_id)
-            units.append(
-                SemanticEvidenceUnit.create(
-                    kind="claim",
-                    authority="hypothesis",
-                    statement=segment.descriptor,
-                    evidence_refs=tuple(
-                        NamespacedMessageRef(source=source, message_id=message_id)
-                        for message_id in segment.message_ids
-                    ),
-                )
+            unit = SemanticEvidenceUnit.create(
+                kind="claim",
+                authority="hypothesis",
+                statement=segment.descriptor,
+                evidence_refs=tuple(
+                    NamespacedMessageRef(source=source, message_id=message_id)
+                    for message_id in segment.message_ids
+                ),
             )
+            units[unit.unit_id] = unit
         return (
-            tuple(sorted(units, key=lambda item: item.unit_id)),
+            tuple(sorted(units.values(), key=lambda item: item.unit_id)),
             tuple(sorted(rejections, key=lambda item: item.rejection_id)),
             tuple(sorted(projected_ids)),
             tuple(sorted(fallback_ids)),

@@ -1,7 +1,8 @@
 r"""本文件对外提供隔离索引测试的 Revision 播种、冻结 Observation 和计数模型端口。
 
 输入为真实隔离 PostgreSQL sessionmaker 与执行消息；输出为已提交的 Context Revision、最小冻结输入和可观测模型调用。
-工作流为复用真实 Loop bootstrap，发布有来源边的后继版本，模型只从请求内原文生成可验证 drafts。
+工作流为真实 Loop bootstrap，发布权威后继，模型只从请求原文生成 drafts；默认综合完成空结果。
+calls 记录全部尝试；interpretation_calls 为综合回合，local_calls 仅排除综合回合，联合 verifier 通过 payload 或 index_phase 另行识别。
 示例：probe = ModelProbe(); service = probe.service(sessions)。测试模型不访问 provider，不隐藏模型 payload。
 """
 
@@ -125,6 +126,14 @@ def messages(count, start=0):
 
 
 class ModelProbe:
+    @property
+    def local_calls(self):
+        return tuple(call for call in self.calls if call[0] != "interpretation")
+
+    @property
+    def interpretation_calls(self):
+        return tuple(call for call in self.calls if call[0] == "interpretation")
+
     def __init__(
         self,
         *,
@@ -158,15 +167,20 @@ class ModelProbe:
                 return f"test-{role}-{probe.version}"
 
             async def invoke(self, schema, system, payload):
-                probe.calls.append((role, payload))
+                actual_role = (
+                    "interpretation"
+                    if schema.__name__ == "RevisionInterpretationProposal"
+                    else role
+                )
+                probe.calls.append((actual_role, payload))
                 probe.active += 1
                 probe.max_active = max(probe.max_active, probe.active)
                 try:
                     if probe.gate:
-                        await probe.gate(role, payload)
+                        await probe.gate(actual_role, payload)
                     self.last_attempt_records = (
                         {
-                            "role": role,
+                            "role": actual_role,
                             "model_calls": 1,
                             "input_tokens": len(json.dumps(payload).encode()) // 4,
                             "output_tokens": 10,
@@ -175,6 +189,8 @@ class ModelProbe:
                     )
                     if probe.fail:
                         raise ValueError("test model failure")
+                    if actual_role == "interpretation":
+                        return schema(action="complete", units=())
                     if role == "projector":
                         drafts = []
                         for raw in payload["segments"][0]["messages"]:
@@ -217,10 +233,13 @@ class ModelProbe:
         return Model
 
     def service(self, sessions, **kwargs):
+        options = {
+            "semantic_projector_factory": self.factory("projector"),
+            "semantic_claim_verifier_factory": self.factory("verifier"),
+            **kwargs,
+        }
         return PortfolioSemanticIndexService(
             sessions,
             Checkpoints(),
-            semantic_projector_factory=self.factory("projector"),
-            semantic_claim_verifier_factory=self.factory("verifier"),
-            **kwargs,
+            **options,
         )

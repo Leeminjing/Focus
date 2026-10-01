@@ -1,9 +1,9 @@
-r"""本文件对外提供 Context expansion、transition、完整 semantic index、单 segment 投影记录、索引预算预留、planning session 与 stage 的 ORM 实体。
+r"""本文件对外提供 Context expansion、transition、semantic index、局部投影记录、预算预留、planning session 与 stage 的 ORM 实体。
 
 输入为来源身份、Context 隔离缓存键、冻结 payload 和版本合同；输出为注册到 Base.metadata 的持久表。
-工作流为完整索引按 Revision/hash/算法合同唯一保存，局部投影按 Context/内容依赖键唯一保存，record payload 保留引文与独立验证。
-预算按 build 保存授权版本、累计请求预留与结算凭据；未结算预留仍占用 Loop 的共享额度。
-示例：row = LoopSegmentProjectionRecord(record_id=record.record_id, context_id=context_id, cache_key=record.cache_key, payload=record.model_dump(mode="json"))。
+工作流为完整索引按 Revision/hash/合同唯一保存，局部记录按 Context/依赖键保存；预算记录授权版本、预留与实际结算。
+新 rev 合同 ready artifact 必须携带完成的 interpretation 对象；旧 v3/v4 不伪造该 proof，未知预留仍占用 Loop 共享额度。
+示例：row = LoopSemanticIndexArtifact(..., payload=index.model_dump(mode="json"))；payload 包含联合引文与综合阅读依赖。
 """
 
 from __future__ import annotations
@@ -159,6 +159,10 @@ class LoopContextExpansionTransition(Base):
 class LoopSemanticIndexArtifact(Base):
     __tablename__ = "loop_semantic_index_artifacts"
     __table_args__ = (
+        CheckConstraint(
+            "projector_version NOT LIKE 'rev:%' OR COALESCE(jsonb_typeof(payload -> 'interpretation') = 'object' AND (payload -> 'interpretation' ->> 'completed') = 'true', false)",
+            name="ck_loop_semantic_interpretation_complete",
+        ),
         UniqueConstraint(
             "revision_id",
             "source_content_hash",

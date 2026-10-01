@@ -1,8 +1,9 @@
 r"""本文件对外提供 ProjectionRecordRepository。
 
-输入为独立 AsyncSession、Context identity 和有完整验证记录的 segment records；输出为经完整性检查的记录与首个提交赢家。
-工作流为按 Context 隔离，DO NOTHING 处理唯一键竞争，下一条 SELECT 读取权威 payload，再校验列与 payload 身份一致。
-示例：winner = await repository.put(session, context_id, record)。
+输入为独立 AsyncSession、Context identity 和局部验证 records；输出为经完整性检查的记录与首个提交赢家。
+工作流为按 Context 隔离，DO NOTHING 处理唯一键竞争，随后 SELECT 权威 payload 并校验列与内容身份。
+resolve_existing 在综合前批量采用已有局部赢家；by_ids 依库存顺序返回，put 的竞争赢家用于原子发布。
+示例：records = await repository.resolve_existing(session, context_id, records)；综合读取这些权威局部线索。
 """
 
 from sqlalchemy import select
@@ -13,6 +14,27 @@ from .segment_projection import SegmentProjectionRecord
 
 
 class ProjectionRecordRepository:
+    async def resolve_existing(self, session, context_id, records):
+        rows = (
+            await session.scalars(
+                select(LoopSegmentProjectionRecord).where(
+                    LoopSegmentProjectionRecord.context_id == context_id,
+                    LoopSegmentProjectionRecord.cache_key.in_(
+                        [r.cache_key for r in records]
+                    ),
+                )
+            )
+        ).all()
+        by_key = {row.cache_key: self._validated(row) for row in rows}
+        resolved = []
+        for record in records:
+            winner = by_key.get(record.cache_key, record)
+            winner.validate_target(
+                record.segment, record.messages, record.contract_fingerprint
+            )
+            resolved.append(winner)
+        return tuple(resolved)
+
     async def by_ids(
         self, session, context_id: str, record_ids: tuple[str, ...]
     ) -> tuple[SegmentProjectionRecord, ...] | None:

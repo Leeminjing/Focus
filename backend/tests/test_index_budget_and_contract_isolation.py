@@ -1,7 +1,7 @@
 r"""本文件对外提供正式索引预算与完整配置隔离回归测试。
 
 输入为隔离 PostgreSQL 和确定性计数模型；输出为切分／schema record 隔离与跨 build 预算合同断言。
-工作流为由 fixture 创建随机数据库、发布真实 Revision、经过完整服务读写并校验持久化赢家和用量。
+工作流为随机数据库发布 Revision，经局部及综合服务校验合同、持久赢家与用量；新授权重试保留原冻结输入并计综合成本。
 示例：python -m pytest backend/tests/test_index_budget_and_contract_isolation.py -q。
 """
 
@@ -79,7 +79,7 @@ def test_new_contract_does_not_adopt_old_projection_record(
         result = await service.build(observation(seed, new_revision))
         assert result.blocker_code is None, result.blocker_summary
         current = result.indexes[0]
-        assert current.inheritance.mode == "full" and len(b.calls) == 2
+        assert current.inheritance.mode == "full" and len(b.local_calls) == 2
         assert all(unit.statement.endswith(" B") for unit in current.semantic_units)
         assert current.inheritance.record_ids != old.inheritance.record_ids, (
             "Full build under different schema/segmentation adopted the previous contract record"
@@ -181,7 +181,7 @@ def test_explicit_new_authorization_can_retry_without_changing_frozen_source(
                     revision=2,
                     budgets={
                         **old.budgets,
-                        "max_model_calls": 4,
+                        "max_model_calls": 5,
                         "expansion_resources": {
                             "max_catalog_descriptor_chars": catalog_limit
                         },
@@ -223,8 +223,8 @@ def test_explicit_new_authorization_can_retry_without_changing_frozen_source(
             assert all(row.settled_at is not None for row in rows)
             assert (
                 await session.get(LoopBudgetUsage, seed["loop_id"])
-            ).model_calls == 4
-        assert len(probe.calls) == 4
+            ).model_calls == 5
+        assert len(probe.calls) == 5
 
     exercise(tmp_path, run)
 

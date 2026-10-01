@@ -2,7 +2,7 @@ r"""本文件对外提供索引独立进程重启与 additive migration 的 Post
 
 输入为真实隔离数据库、冻结输入和独立子进程；输出为强杀提交前不泄漏、提交后零调用恢复及迁移不改权威记忆的断言。
 工作流为只在测试目录启动隐藏子进程，等待信号后强杀，另一个新进程重放并继续继承；迁移使用独立随机数据库。
-崩溃未结算预算保持占用；schema downgrade 不得删除此类预留，结算后可正常升降级。
+综合参与真实计费及进程边界；崩溃未知预留仍占额度，结算后可升降级，bf2a3b4c5d6e 回撤新综合 artifact 保留权威记忆。
 示例：python -m pytest backend/tests/test_incremental_index_recovery.py -q。
 """
 
@@ -76,7 +76,7 @@ def test_independent_process_kill_and_persisted_inheritance(tmp_path, boundary):
             state = await signal(
                 directory, "prepared" if boundary == "before_commit" else "done", child
             )
-            assert state["calls"] == 2
+            assert state["calls"] == 3
         finally:
             child.kill()
             await asyncio.to_thread(child.wait, 5)
@@ -98,7 +98,7 @@ def test_independent_process_kill_and_persisted_inheritance(tmp_path, boundary):
             ).all()
             assert bool(pending) == (boundary == "before_commit")
             if pending:
-                assert pending[0].model_calls == 2 and pending[0].grant_revision == 1
+                assert pending[0].model_calls == 3 and pending[0].grant_revision == 1
         directory = tmp_path / "restarted"
         child, log = process(directory, "build", observation(seed, first))
         try:
@@ -109,7 +109,7 @@ def test_independent_process_kill_and_persisted_inheritance(tmp_path, boundary):
                 child.kill()
                 child.wait(5)
             log.close()
-        assert replay["calls"] == (0 if boundary == "after_commit" else 2)
+        assert replay["calls"] == (0 if boundary == "after_commit" else 3)
         if stored:
             assert replay["index_id"] == stored
         new = await revision(sessions, seed["context_id"], messages(13), parent=first)
@@ -126,7 +126,7 @@ def test_independent_process_kill_and_persisted_inheritance(tmp_path, boundary):
         assert (
             descendant["mode"] == "incremental"
             and descendant["reused"] == 1
-            and descendant["calls"] == 2
+            and descendant["calls"] == 3
         )
         assert descendant["pid"] != replay["pid"] != state["pid"]
 
@@ -264,7 +264,7 @@ def test_projection_record_migration_round_trip_preserves_control_tables(
         with engine.begin() as c:
             assert (
                 c.scalar(text("SELECT version_num FROM alembic_version"))
-                == "ae1f2a3b4c5d"
+                == "bf2a3b4c5d6e"
             )
             c.execute(
                 text(

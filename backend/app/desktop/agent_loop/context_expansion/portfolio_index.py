@@ -1,11 +1,10 @@
 r"""本文件对外提供 PortfolioSemanticIndexService 与 PortfolioIndexBuildResult。
 
-输入为冻结 Observation、Revision repository/checkpointer、受监督模型 factory 和并发上限；输出为完整 indexes、catalog、stage 与真实用量。
-工作流为每次构建冻结有效配置，各任务用短读事务，优先精确缓存，沿已提交同 Context 追加链继承，单段投影与验证不持有事务。
-最终以短事务解析 record/index 赢家并校验全量 catalog；模型前原子预留 Loop 共享额度，结束时结算，重试、取消和失败不重新获得额度。
-record 合同包含 Index／record schema 与完整切分 fingerprint；输入／输出模型配置变化不会复用旧合同。
-显式重试可传 budget_authority_revision，从真实新授权读取预算并记录版本，不修改原 Observation 或来源。
-示例：result = await service.build(observation)；消费者仍读取完整不可变 Revision Index。
+输入为冻结 Observation、Revision reader、监督模型 factories 和并发上限；输出为完整 indexes、catalog、stage 与真实用量。
+工作流为冻结独立局部／整体合同，精确缓存优先，权威追加继承局部 records，再用完整目录及任意冻结原文做整体解释和联合验证。
+模型工作不持有事务；短事务解析局部及完整 Index 赢家并校验 catalog。全部阶段共用 Loop 准入／结算，取消和竞争仍计实际成本。
+新 Index 包含 interpretation proof；必要综合失败不发布局部-only artifact。显式新授权重试记录版本，冻结认知输入不变。
+示例：result = await service.build(observation)；稳定旧段免重抽，新增否定与远端怀疑生成联合诊断，消费者读取一个完整目标。
 """
 
 from __future__ import annotations
@@ -70,7 +69,15 @@ from .index_model_budget import (
     IndexBudgetExceeded,
     IndexModelBudget,
 )
+from .interpretation_record import (
+    RevisionInterpretationProposal,
+    RevisionInterpretationRecord,
+)
 from .projection_record_repository import ProjectionRecordRepository
+from .revision_interpretation import (
+    INTERPRETATION_PROMPT,
+    RevisionInterpretationBuilder,
+)
 from .segment_projection import (
     SEGMENT_PROMPT,
     SegmentProjectionBuilder,
@@ -85,6 +92,8 @@ class _IndexBuildState:
     telemetry: dict = field(default_factory=dict)
     budget: Any = None
     contract: str = ""
+    local_contract: str = ""
+    interpretation_contract: str = ""
     model_identities: dict = field(default_factory=dict)
     budget_authorization: dict = field(default_factory=dict)
 
@@ -103,7 +112,7 @@ class PortfolioIndexBuildResult(BaseModel):
 
 
 class PortfolioSemanticIndexService:
-    VERSION = "portfolio-semantic-index-service-v3"
+    VERSION = "portfolio-semantic-index-service-v4"
 
     def __init__(
         self,
@@ -115,6 +124,7 @@ class PortfolioSemanticIndexService:
         catalog_max_descriptor_chars: int | None = None,
         semantic_projector_factory: Callable[[], Any] | None = None,
         semantic_claim_verifier_factory: Callable[[], Any] | None = None,
+        semantic_interpreter_factory: Callable[[], Any] | None = None,
     ) -> None:
         self._sessions = sessions
         self._revision_repository = ContextRevisionRepository()
@@ -126,6 +136,9 @@ class PortfolioSemanticIndexService:
         self._catalog_max_descriptor_chars = catalog_max_descriptor_chars
         self._semantic_projector_factory = semantic_projector_factory
         self._semantic_claim_verifier_factory = semantic_claim_verifier_factory
+        self._semantic_interpreter_factory = (
+            semantic_interpreter_factory or semantic_projector_factory
+        )
         self._records = ProjectionRecordRepository()
 
     @property
@@ -139,9 +152,10 @@ class PortfolioSemanticIndexService:
         for factory in (
             self._semantic_projector_factory,
             self._semantic_claim_verifier_factory,
+            self._semantic_interpreter_factory,
         ):
             state.model_identities[factory] = self._model_identity(factory)
-        state.contract = (
+        state.local_contract = (
             "loc:"
             + stable_expansion_hash(
                 "segment-local-projection-v2",
@@ -155,6 +169,28 @@ class PortfolioSemanticIndexService:
                 SemanticClaimSupportProposal.model_json_schema(),
                 state.model_identities[self._semantic_projector_factory],
                 state.model_identities[self._semantic_claim_verifier_factory],
+            )[:60]
+        )
+        state.interpretation_contract = (
+            "syn:"
+            + stable_expansion_hash(
+                "frozen-evidence-discovery-v1",
+                RevisionInterpretationRecord.SCHEMA_VERSION,
+                RevisionInterpretationProposal.model_json_schema(),
+                INTERPRETATION_PROMPT,
+                state.model_identities[self._semantic_interpreter_factory],
+                state.model_identities[self._semantic_claim_verifier_factory],
+                state.budget.resources.policy.model_dump(mode="json"),
+                SemanticGroundingValidator.VERSION,
+                SupervisedSemanticClaimSupportVerifier.VERSION,
+            )[:60]
+        )
+        state.contract = (
+            "rev:"
+            + stable_expansion_hash(
+                "revision-projection-contract-v1",
+                state.local_contract,
+                state.interpretation_contract,
             )[:60]
         )
 
@@ -184,7 +220,6 @@ class PortfolioSemanticIndexService:
         budget_authority_revision: int | None = None,
     ) -> PortfolioIndexBuildResult:
         self._projection_attempts = {}
-        self._prepare_contract()
         timer = DerivationStageTimer(
             "portfolio_indexing",
             (observation.observed_frontier_hash,),
@@ -205,6 +240,7 @@ class PortfolioSemanticIndexService:
             _BUILD_STATE.get().budget = await self._model_budget(
                 observation, budget_authority_revision
             )
+            self._prepare_contract()
             tasks = [
                 asyncio.create_task(self._bounded_index(observation, item, semaphore))
                 for item in frontier
@@ -330,8 +366,23 @@ class PortfolioSemanticIndexService:
                     for record in records
                 ]
             )
+            committed = await self._artifacts.cached_index(
+                session,
+                revision_id=index.source.revision_id,
+                source_content_hash=index.source_content_hash,
+                index_schema_version=index.index_schema_version,
+                segmenter_version=index.segmenter_version,
+                projector_version=index.projector_version,
+            )
+            if committed is not None:
+                return committed
             index = assemble_revision_index(
-                self._indexer, index, winners, index.inheritance
+                self._indexer,
+                index,
+                winners,
+                index.inheritance,
+                interpretation=index.interpretation,
+                local_contract=_BUILD_STATE.get().local_contract,
             )
         row = await self._artifacts.put_index(
             session,
@@ -529,6 +580,7 @@ class PortfolioSemanticIndexService:
                 self._artifacts,
                 self._records,
                 self._projection_contract,
+                local_contract=_BUILD_STATE.get().local_contract,
             )
             plan, inherited = await planner.plan(session, revision, frozen)
         return frozen, plan, inherited
@@ -545,14 +597,33 @@ class PortfolioSemanticIndexService:
             )
             builder = SegmentProjectionBuilder(
                 source.context_id,
-                self._projection_contract,
+                _BUILD_STATE.get().local_contract,
                 self._budgeted_model(self._semantic_projector_factory),
                 self._budgeted_model(self._semantic_claim_verifier_factory),
                 lambda attempts: [
-                    self._append_attempt(source.revision_id, a) for a in attempts
+                    self._append_attempt(
+                        source.revision_id, {**a, "index_phase": "local"}
+                    )
+                    for a in attempts
                 ],
             )
             records.append(await builder.build(segment, messages))
+        async with self._sessions.begin() as session:
+            records = await self._records.resolve_existing(
+                session, source.context_id, records
+            )
+        state = _BUILD_STATE.get()
+        interpreter = RevisionInterpretationBuilder(
+            self._budgeted_model(self._semantic_interpreter_factory),
+            self._budgeted_model(self._semantic_claim_verifier_factory),
+            state.budget.resources,
+            state.interpretation_contract,
+            state.local_contract,
+            lambda attempts: [
+                self._append_attempt(source.revision_id, a) for a in attempts
+            ],
+        )
+        interpretation = await interpreter.build(frozen, records, plan)
         _BUILD_STATE.get().records[source.revision_id] = tuple(records)
         _BUILD_STATE.get().telemetry[source.revision_id] = {
             "mode": plan.mode,
@@ -561,8 +632,17 @@ class PortfolioSemanticIndexService:
             "reused_segments": len(plan.reused_segment_ids),
             "recomputed_segments": len(plan.recomputed_segment_ids),
             "read_message_count": len(frozen.messages),
+            "interpretation_original_segments": len(interpretation.provided),
+            "interpretation_read_rounds": len(interpretation.read_requests),
         }
-        return assemble_revision_index(self._indexer, frozen, tuple(records), plan)
+        return assemble_revision_index(
+            self._indexer,
+            frozen,
+            tuple(records),
+            plan,
+            interpretation=interpretation,
+            local_contract=state.local_contract,
+        )
 
     def _budgeted_model(self, factory):
         if factory is None:

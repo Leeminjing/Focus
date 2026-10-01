@@ -1,8 +1,9 @@
-r"""本文件对外提供 RevisionSemanticIndex、覆盖账本、质量 descriptor 与稳定 segment identity。
+r"""本文件对外提供 RevisionSemanticIndex、覆盖账本和稳定 segment identity。
 
-输入为冻结 Revision、完整规范消息、协议闭合 segments、验证后的 units 和可选 inheritance receipt；输出为不可变且可重放的完整索引。
-工作流为检查有序恰好一次覆盖、Tool Exchange 闭合、目标来源引用、fallback/rejections 与继承记录库存，再校验 payload identity。
-旧无 receipt payload 保留原 identity 算法，历史 planning session 可读。示例：index = RevisionSemanticIndex.create(...)。
+输入为冻结 Revision、规范消息、segments、验证 units、inheritance receipt 及 interpretation proof；输出为不可变完整索引。
+工作流为检查恰好一次覆盖、Tool Exchange 闭合、目标来源、质量账本及局部库存，再验证综合全部阅读依赖与联合 units 身份。
+旧 v3/v4 无综合 proof 的 payload 保留原 identity 算法；新 rev 合同要求完成综合。
+示例：index = RevisionSemanticIndex.create(..., interpretation=proof)；一条诊断共同引用早期怀疑和后来否定。
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from backend.app.desktop.context_curation import NamespacedMessageRef
 from backend.app.desktop.context_evolution import ContextRevisionRef
 
 from .index_build_contracts import IndexInheritanceReceipt
+from .interpretation_record import RevisionInterpretationRecord
 
 
 class _IndexModel(BaseModel):
@@ -135,6 +137,7 @@ class RevisionSemanticIndex(_IndexModel):
     segmenter_version: str = Field(min_length=1, max_length=64)
     projector_version: str = Field(min_length=1, max_length=64)
     inheritance: IndexInheritanceReceipt | None = None
+    interpretation: RevisionInterpretationRecord | None = None
 
     @field_validator("messages", mode="before")
     @classmethod
@@ -198,9 +201,40 @@ class RevisionSemanticIndex(_IndexModel):
                 raise ValueError("index inheritance segment coverage mismatch")
             if len(receipt.record_ids) != len(segment_ids):
                 raise ValueError("index inheritance record coverage mismatch")
+        self._require_interpretation()
         if self.index_id != self._identity():
             raise ValueError("Revision semantic index identity 与冻结 payload 不一致")
         return self
+
+    def _require_interpretation(self):
+        if self.interpretation is None:
+            if self.inheritance is not None and self.projector_version.startswith(
+                "rev:"
+            ):
+                raise ValueError(
+                    "complete revision projection requires interpretation proof"
+                )
+            return
+        self.interpretation.validate_target(self)
+        if self.inheritance is None or self.inheritance.record_ids != tuple(
+            e.record_id for e in self.interpretation.inventory
+        ):
+            raise ValueError("interpretation local record inventory integrity mismatch")
+        units = {u.unit_id: u for u in self.semantic_units}
+        if any(
+            units.get(u.unit_id) != u
+            for u in self.interpretation.accepted_units(self.source)
+        ):
+            raise ValueError(
+                "interpretation accepted unit inventory integrity mismatch"
+            )
+        rejected = {r.rejection_id for r in self.rejected_units}
+        if not {r.rejection_id for r in self.interpretation.rejections}.issubset(
+            rejected
+        ):
+            raise ValueError(
+                "interpretation rejected unit inventory integrity mismatch"
+            )
 
     def _require_semantic_provenance(self, known_message_ids: set[str]) -> None:
         unit_ids = [item.unit_id for item in self.semantic_units]
@@ -343,6 +377,8 @@ class RevisionSemanticIndex(_IndexModel):
         )
         if self.inheritance is not None:
             payload += (self.inheritance.model_dump(mode="json"),)
+        if self.interpretation is not None:
+            payload += (self.interpretation.model_dump(mode="json"),)
         return stable_expansion_hash("revision-semantic-index", *payload)
 
     @classmethod
@@ -365,6 +401,7 @@ class RevisionSemanticIndex(_IndexModel):
         projector_version: str,
         protocol_exchange_count: int = 0,
         inheritance: IndexInheritanceReceipt | None = None,
+        interpretation: RevisionInterpretationRecord | None = None,
     ) -> Self:
         ordered_messages = tuple(sorted(messages, key=lambda item: item.ordinal))
         ordered_segments = tuple(sorted(segments, key=lambda item: item.ordinal))
@@ -396,6 +433,8 @@ class RevisionSemanticIndex(_IndexModel):
         )
         if inheritance is not None:
             payload += (inheritance.model_dump(mode="json"),)
+        if interpretation is not None:
+            payload += (interpretation.model_dump(mode="json"),)
         return cls(
             index_id=stable_expansion_hash("revision-semantic-index", *payload),
             source=source,
@@ -414,6 +453,7 @@ class RevisionSemanticIndex(_IndexModel):
             segmenter_version=segmenter_version,
             projector_version=projector_version,
             inheritance=inheritance,
+            interpretation=interpretation,
         )
 
 

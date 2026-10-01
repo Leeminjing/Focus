@@ -1,9 +1,10 @@
 r"""本文件对外提供 IndexModelBudget 与 BudgetedIndexModel。
 
-输入为冻结资源策略、模型单请求窗口和结构化 payload；输出为逐次 attempt 的准入或显式预算异常。
-工作流为按完整请求的 UTF-8 字节上界估计输入，预留输出／调用次数；真实构建通过短事务共享权威额度，结束时幂等结算实际用量。
-无持久化端口的纯适配器保留单构建锁；崩溃未结算预留仍占额度，不能由超时或重试自动释放。
-示例：model = BudgetedIndexModel(port, budget)；零预算不会发送请求，Tool 原子段不切开。
+输入为冻结资源策略、模型窗口和结构化 payload；输出为 attempt 准入、纯窗口预检或显式预算异常。
+工作流为按完整请求 UTF-8 字节上界估计输入，预留输出／调用；短事务共享权威额度，结束时幂等结算真实用量。
+resources 提供冻结策略；fits_request 只检查容量，admit 才为局部／综合／verifier attempts 预留额度。未知崩溃预留仍占额度。
+BudgetedIndexModel.last_attempt_records 只包含本次 invocation：准入／配置拒绝返回空记录，已发送的失败或取消保留真实 attempts。
+示例：model.fits_request(schema, prompt, multi_segment_payload)；多段原文超窗显式阻断，Tool 原子段不切开。
 """
 
 import asyncio
@@ -27,11 +28,16 @@ class IndexModelBudget:
     def has_reservations(self) -> bool:
         return self._reservations is not None
 
+    @property
+    def resources(self):
+        return self._resources
+
     async def settle(self, usage) -> None:
         if self._reservations is not None:
             await self._reservations.settle(usage)
 
-    async def admit(self, model, schema, system, payload) -> None:
+    @staticmethod
+    def _estimated_input(schema, system, payload):
         request = json.dumps(
             {
                 "system": system,
@@ -41,7 +47,9 @@ class IndexModelBudget:
             ensure_ascii=False,
             sort_keys=True,
         )
-        estimated = len(request.encode("utf-8")) + 256
+        return len(request.encode("utf-8")) + 256
+
+    def _request_limits(self, model):
         policy = self._resources.policy
         output = max(
             policy.output_token_reserve,
@@ -51,6 +59,15 @@ class IndexModelBudget:
         limit = policy.max_request_input_tokens
         if window is not None:
             limit = min(limit, window - output)
+        return limit, output
+
+    def fits_request(self, model, schema, system, payload):
+        limit, _ = self._request_limits(model)
+        return self._estimated_input(schema, system, payload) <= limit
+
+    async def admit(self, model, schema, system, payload) -> None:
+        estimated = self._estimated_input(schema, system, payload)
+        limit, output = self._request_limits(model)
         async with self._lock:
             if estimated > limit:
                 raise IndexBudgetExceeded(
@@ -73,6 +90,7 @@ class BudgetedIndexModel:
         self._budget = budget
         self._identity = getattr(model, "cache_identity", None)
         self._guarded = hasattr(model, "bind_request_guard")
+        self._last_attempt_records = ()
         if self._guarded:
             model.bind_request_guard(self._admit_checked)
 
@@ -86,21 +104,37 @@ class BudgetedIndexModel:
 
     @property
     def last_attempt_records(self):
-        return tuple(getattr(self._model, "last_attempt_records", ()))
+        return self._last_attempt_records
+
+    def fits_request(self, schema, system, payload):
+        self._check_identity()
+        return self._budget.fits_request(self._model, schema, system, payload)
 
     async def invoke(self, schema, system, payload):
-        self._check_identity()
-        if not self._guarded:
-            await self._budget.admit(self._model, schema, system, payload)
-        return await self._model.invoke(schema, system, payload)
+        return await self._invoke(schema, system, payload)
 
     async def invoke_validated(self, schema, system, payload, validator):
+        return await self._invoke(schema, system, payload, validator)
+
+    async def _invoke(self, schema, system, payload, validator=None):
+        self._last_attempt_records = ()
         self._check_identity()
-        method = getattr(self._model, "invoke_validated", None)
-        if method is None:
-            result = await self.invoke(schema, system, payload)
-            validator(result)
-            return result
+        method = (
+            getattr(self._model, "invoke_validated", None)
+            if validator is not None
+            else None
+        )
         if not self._guarded:
             await self._budget.admit(self._model, schema, system, payload)
-        return await method(schema, system, payload, validator)
+        try:
+            if method is not None:
+                return await method(schema, system, payload, validator)
+            result = await self._model.invoke(schema, system, payload)
+            if validator is not None:
+                validator(result)
+            return result
+        finally:
+            self._last_attempt_records = tuple(
+                dict(attempt)
+                for attempt in getattr(self._model, "last_attempt_records", ())
+            )

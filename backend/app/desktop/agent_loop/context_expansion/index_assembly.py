@@ -1,15 +1,17 @@
 r"""本文件对外提供 assemble_revision_index。
 
-输入为冻结完整 index、依次覆盖 segments 的验证 records 和 BuildPlan；输出为绑定目标 Revision 的完整不可变 index。
-工作流为逐段重验依赖，仅组装已接受 drafts，重新生成来源引用及覆盖／fallback，再合并隔离账本与继承凭据。
-示例：index = assemble_revision_index(indexer, frozen, records, plan)。旧 index 与 record 不被改写。
+输入为冻结 index、局部 records、BuildPlan 与综合 proof；输出为绑定目标 Revision 的完整不可变 index。
+工作流为重验两类依赖，合并与去重 drafts／verdicts，统一 grounding 并重建覆盖、隔离账本、继承凭据及综合身份。
+示例：index = assemble_revision_index(indexer, frozen, records, plan, interpretation=proof)；联合诊断与历史局部证据共存，旧对象不变。
 """
 
 from .index_build_contracts import IndexInheritanceReceipt
 from .semantic_index import RevisionSemanticIndex
 
 
-def assemble_revision_index(indexer, frozen, records, plan):
+def assemble_revision_index(
+    indexer, frozen, records, plan, *, interpretation=None, local_contract=None
+):
     if len(records) != len(frozen.segments):
         raise ValueError("index assembly record inventory incomplete")
     drafts, assessments, rejections = [], [], []
@@ -19,11 +21,22 @@ def assemble_revision_index(indexer, frozen, records, plan):
         )
         if record.context_id != frozen.source.context_id:
             raise ValueError("index assembly record context scope mismatch")
-        record.validate_target(segment, messages, frozen.projector_version)
+        record.validate_target(
+            segment, messages, local_contract or frozen.projector_version
+        )
         accepted = set(record.accepted_claim_keys)
         drafts.extend(d for d in record.drafts if d.claim_key in accepted)
         assessments.extend(record.assessments)
         rejections.extend(record.rejections)
+    if interpretation is not None:
+        interpretation.validate_target(frozen, records)
+        accepted = set(interpretation.accepted_claim_keys)
+        drafts.extend(d for d in interpretation.drafts if d.claim_key in accepted)
+        assessments.extend(interpretation.assessments)
+        rejections.extend(interpretation.rejections)
+    drafts = tuple({d.claim_key: d for d in drafts}.values())
+    assessments = tuple({a.claim_key: a for a in assessments}.values())
+    rejections = tuple({r.rejection_id: r for r in rejections}.values())
     receipt = IndexInheritanceReceipt.model_validate(
         {**plan.model_dump(mode="json"), "record_ids": [r.record_id for r in records]}
     )
@@ -41,6 +54,7 @@ def assemble_revision_index(indexer, frozen, records, plan):
         "index_id",
         "coverage",
         "inheritance",
+        "interpretation",
         "rejected_units",
         "quality_state",
     }
@@ -52,6 +66,7 @@ def assemble_revision_index(indexer, frozen, records, plan):
     return RevisionSemanticIndex.create(
         **values,
         inheritance=receipt,
+        interpretation=interpretation,
         rejected_units=tuple(rejections),
         quality_state="degraded"
         if rejections or projected.fallback_segment_ids

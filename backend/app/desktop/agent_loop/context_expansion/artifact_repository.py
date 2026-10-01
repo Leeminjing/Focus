@@ -1,8 +1,9 @@
 r"""本文件对外提供 SemanticDerivationArtifactRepository。
 
-输入为独立 AsyncSession、完整 Revision Index、planning session 或稳定 stage payload；输出为持久缓存、幂等 session 和不可变 artifact 行。
-工作流为校验数据库列与 payload 身份一致，新索引唯一键竞争采用首个提交赢家；旧索引与一般 stage 仍拒绝改写。
-调用方以一项短事务发布 records 与 indexes，索引 stage 可显式采用并发赢家。示例：row = await repository.put_index(session, index)。
+输入为独立 AsyncSession、完整 Index、planning session 或 stage；输出为校验后的持久缓存、幂等 session 和不可变 artifact。
+工作流为校验数据库列与 payload 身份，唯一键竞争采用首个提交赢家；一般 stage 与旧索引仍拒绝改写。
+cached_local_index 只为权威祖先查找同局部合同的基线，不将旧综合合同冒充精确命中；调用方以短事务发布完整批次。
+示例：index = await repository.cached_local_index(...)；综合模型配置改变时仍可复用符合原局部合同的证据。
 """
 
 from __future__ import annotations
@@ -94,6 +95,34 @@ class SemanticDerivationArtifactRepository:
                 LoopSemanticIndexArtifact.projector_version == projector_version,
                 LoopSemanticIndexArtifact.status == "ready",
             )
+        )
+        return None if row is None else self._validated_index(row)
+
+    async def cached_local_index(
+        self,
+        session,
+        *,
+        revision_id,
+        source_content_hash,
+        index_schema_version,
+        segmenter_version,
+        local_contract,
+    ):
+        row = await session.scalar(
+            select(LoopSemanticIndexArtifact)
+            .where(
+                LoopSemanticIndexArtifact.revision_id == revision_id,
+                LoopSemanticIndexArtifact.source_content_hash == source_content_hash,
+                LoopSemanticIndexArtifact.index_schema_version == index_schema_version,
+                LoopSemanticIndexArtifact.segmenter_version == segmenter_version,
+                LoopSemanticIndexArtifact.payload["interpretation"][
+                    "local_contract_fingerprint"
+                ].astext
+                == local_contract,
+                LoopSemanticIndexArtifact.status == "ready",
+            )
+            .order_by(LoopSemanticIndexArtifact.created_at.desc())
+            .limit(1)
         )
         return None if row is None else self._validated_index(row)
 

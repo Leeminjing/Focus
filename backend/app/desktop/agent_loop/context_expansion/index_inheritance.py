@@ -1,8 +1,9 @@
 r"""本文件对外提供 RevisionIndexInheritancePlanner。
 
-输入为已提交目标 Revision、完整规范 index 与合同 fingerprints；输出为有界选择的基线 records 和证明稳定前缀的 BuildPlan。
-工作流为仅沿 single-source 同 Context run_settled 链查已发布记录，证明消息前缀相等，选择相同闭合 segments。
-示例：plan, records = await planner.plan(session, revision, index)。缺少兼容基线正常全量回退，完整性错误不隐藏。
+输入为已提交目标 Revision、完整规范 index 及独立局部／整体 fingerprints；输出为基线 records 和稳定前缀 BuildPlan。
+工作流为沿同 Context single-source run_settled 权威链有界查找，证明消息前缀相等，选择相同闭合 segments。
+综合合同变化仍可寻找兼容局部 proof；旧整体解释不随前缀直接继承。缺少基线全量回退，完整性错误不隐藏。
+示例：plan, records = await planner.plan(session, revision, index)；新增否定复用旧局部引文，整体解释重新生成。
 """
 
 from backend.app.desktop.context_evolution.models import ContextPublicationReceipt
@@ -13,12 +14,20 @@ from .index_build_contracts import IndexBuildPlan
 
 class RevisionIndexInheritancePlanner:
     def __init__(
-        self, revisions, artifacts, records, contract: str, *, search_limit: int = 64
+        self,
+        revisions,
+        artifacts,
+        records,
+        contract: str,
+        *,
+        local_contract: str | None = None,
+        search_limit: int = 64,
     ) -> None:
         self._revisions = revisions
         self._artifacts = artifacts
         self._records = records
         self._contract = contract
+        self._local_contract = local_contract or contract
         self._search_limit = max(1, search_limit)
 
     async def plan(self, session, revision, target):
@@ -46,7 +55,16 @@ class RevisionIndexInheritancePlanner:
                 projector_version=self._contract,
             )
             if baseline is None:
-                continue
+                baseline = await self._artifacts.cached_local_index(
+                    session,
+                    revision_id=source.revision_id,
+                    source_content_hash=cursor.content_hash,
+                    index_schema_version=target.index_schema_version,
+                    segmenter_version=target.segmenter_version,
+                    local_contract=self._local_contract,
+                )
+                if baseline is None:
+                    continue
             if baseline.inheritance is None:
                 return self._full(target, "missing_projection_proofs")
             records = await self._records.by_ids(
@@ -63,7 +81,7 @@ class RevisionIndexInheritancePlanner:
                 messages = tuple(
                     m for m in target.messages if m.message_id in set(new.message_ids)
                 )
-                record.validate_target(new, messages, self._contract)
+                record.validate_target(new, messages, self._local_contract)
                 reused.append(record)
             count = len(reused)
             return IndexBuildPlan(

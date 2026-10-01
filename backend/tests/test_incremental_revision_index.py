@@ -1,7 +1,7 @@
 r"""本文件对外提供 Revision 继承索引的真实 PostgreSQL 合同测试。
 
 输入为已迁移隔离数据库、真实来源边及计数模型；输出为追加继承、来源重绑定、回退、质量、预算与原子竞争断言。
-工作流为真实发布 R1／R2，经完整 Portfolio 服务构建并从新 session 检查 index／record 与 Loop 用量。
+工作流为发布 R1／R2，经局部继承及必需综合构建，从新 session 检查 index／record、分阶段成本和 Loop 用量；历史 v3/v4 按原身份恢复。
 示例：python -m pytest backend/tests/test_incremental_revision_index.py -q。
 """
 
@@ -69,27 +69,48 @@ def exercise(tmp_path, operation):
     asyncio.run(run())
 
 
+def _phase_costs(calls):
+    import json
+
+    phases = {}
+    for phase, selected in (
+        ("local", [(r, p) for r, p in calls if r != "interpretation"]),
+        ("interpretation", [(r, p) for r, p in calls if r == "interpretation"]),
+        ("total", calls),
+    ):
+        phases[phase] = {
+            "calls": len(selected),
+            "payload_bytes": sum(len(json.dumps(p).encode()) for _, p in selected),
+            "fake_input_tokens": sum(
+                len(json.dumps(p).encode()) // 4 for _, p in selected
+            ),
+            "fake_output_tokens": len(selected) * 10,
+        }
+    return phases
+
+
 def test_long_history_reuses_100_segments_and_rebinds_all_evidence(tmp_path):
     async def run(sessions, seed):
         probe = ModelProbe()
+        large_policy = {"expansion_resources": {"max_request_input_tokens": 1_000_000}}
         service = probe.service(sessions)
         history = messages(1200)
         first = await revision(sessions, seed["context_id"], history)
-        result = await service.build(observation(seed, first))
+        result = await service.build(observation(seed, first, budget=large_policy))
         assert result.blocker_code is None, result.blocker_summary
         old = result.indexes[0]
-        assert len(probe.calls) == 200 and old.quality_state == "complete"
+        assert len(probe.local_calls) == 200 and old.quality_state == "complete"
         new = await revision(
             sessions, seed["context_id"], history + messages(2, 1200), parent=first
         )
         probe.calls.clear()
-        result = await service.build(observation(seed, new))
+        result = await service.build(observation(seed, new, budget=large_policy))
         assert result.blocker_code is None, result.blocker_summary
         current = result.indexes[0]
         incremental_calls = tuple(probe.calls)
         assert current.inheritance.mode == "incremental"
         assert len(current.inheritance.reused_segment_ids) == 100
-        assert len(probe.calls) == 2
+        assert len(probe.local_calls) == 2
         assert [
             m["message_id"] for m in probe.calls[0][1]["segments"][0]["messages"]
         ] == ["m-1200", "m-1201"]
@@ -103,20 +124,22 @@ def test_long_history_reuses_100_segments_and_rebinds_all_evidence(tmp_path):
             old_row = await session.get(LoopSemanticIndexArtifact, old.index_id)
             assert RevisionSemanticIndex.model_validate(old_row.payload) == old
             usage = await session.get(LoopBudgetUsage, seed["loop_id"])
-            assert usage.model_calls == 202
+            assert usage.model_calls == 204
         probe.calls.clear()
-        await service.build(observation(seed, new))
+        await service.build(observation(seed, new, budget=large_policy))
         assert probe.calls == []
         async with sessions() as session:
             assert (
                 await session.get(LoopBudgetUsage, seed["loop_id"])
-            ).model_calls == 202
+            ).model_calls == 204
         cold_probe = ModelProbe(version="cold-comparison")
-        cold = await cold_probe.service(sessions).build(observation(seed, new))
+        cold = await cold_probe.service(sessions).build(
+            observation(seed, new, budget=large_policy)
+        )
         assert cold.blocker_code is None, cold.blocker_summary
         assert cold.indexes[0].semantic_units == current.semantic_units
         assert cold.indexes[0].coverage == current.coverage
-        assert len(cold_probe.calls) == 202
+        assert len(cold_probe.local_calls) == 202
         import json
         from pathlib import Path
 
@@ -125,8 +148,17 @@ def test_long_history_reuses_100_segments_and_rebinds_all_evidence(tmp_path):
                 {
                     "history_messages": 1202,
                     "stable_segments": 100,
+                    "fixture": "deterministic local facts, completed empty interpretation, no global verifier needed",
+                    "cold_phases": _phase_costs(cold_probe.calls),
+                    "incremental_phases": _phase_costs(incremental_calls),
                     "cold_calls": len(cold_probe.calls),
-                    "incremental_calls": 2,
+                    "cold_local_calls": len(cold_probe.local_calls),
+                    "cold_interpretation_calls": len(cold_probe.interpretation_calls),
+                    "incremental_calls": len(incremental_calls),
+                    "incremental_local_calls": 2,
+                    "incremental_interpretation_calls": sum(
+                        role == "interpretation" for role, _ in incremental_calls
+                    ),
                     "cold_payload_bytes": sum(
                         len(json.dumps(p).encode()) for _, p in cold_probe.calls
                     ),
@@ -172,7 +204,7 @@ def test_append_tail_boundaries(tmp_path, count, append, reused, recomputed):
             len(receipt.reused_segment_ids),
             len(receipt.recomputed_segment_ids),
         ) == (reused, recomputed)
-        assert len(probe.calls) == recomputed * 2
+        assert len(probe.local_calls) == recomputed * 2
 
     exercise(tmp_path, run)
 
@@ -210,7 +242,7 @@ def test_curator_retrieves_inherited_failure_and_new_fix(tmp_path):
         payload = await CuratorCoordinationStage(
             sessions, index_service=service
         )._derivation_input(envelope)
-        assert len(probe.calls) == 2
+        assert len(probe.local_calls) == 2
         repository = SemanticDerivationArtifactRepository()
         async with sessions() as session:
             indexes = await repository.indexes_by_ids(
@@ -363,7 +395,8 @@ def test_quality_and_rejection_records_survive_inheritance(tmp_path, invalid, ve
         probe.calls.clear()
         result = await service.build(observation(seed, new))
         assert result.blocker_code is None, result.blocker_summary
-        assert result.indexes[0].quality_state == "degraded" and probe.calls == []
+        assert result.indexes[0].quality_state == "degraded" and not probe.local_calls
+        assert len(probe.interpretation_calls) == 1
         assert result.indexes[0].rejected_units == old.rejected_units
 
     exercise(tmp_path, run)
@@ -470,7 +503,7 @@ def test_concurrent_builds_return_persisted_winner_and_bill_both(tmp_path):
             )
             assert (
                 await session.get(LoopBudgetUsage, seed["loop_id"])
-            ).model_calls == 4
+            ).model_calls == 6
             for result in results:
                 stored = await SemanticDerivationArtifactRepository().indexes_by_ids(
                     session, (result.indexes[0].index_id,)
@@ -509,7 +542,7 @@ def test_effective_configuration_changes_force_full_build(
         result = await newer.build(observation(seed, target))
         assert result.blocker_code is None, result.blocker_summary
         assert result.indexes[0].inheritance.mode == "full"
-        assert len(probe.calls) == len(result.indexes[0].segments) * 2
+        assert len(probe.local_calls) == len(result.indexes[0].segments) * 2
 
     exercise(tmp_path, run)
 
@@ -573,7 +606,7 @@ def test_hypothesis_and_missing_verdict_are_never_promoted(tmp_path):
         first = await revision(sessions, seed["context_id"], messages(1))
         result = await hypothesis.service(sessions).build(observation(seed, first))
         assert result.indexes[0].semantic_units[0].authority == "hypothesis"
-        assert len(hypothesis.calls) == 1
+        assert len(hypothesis.local_calls) == 1
         missing = ModelProbe()
         service = PortfolioSemanticIndexService(
             sessions,
@@ -662,7 +695,7 @@ def test_tool_atom_and_single_request_window_are_not_split(tmp_path):
         first = await revision(sessions, seed["context_id"], history)
         result = await service.build(observation(seed, first))
         assert result.blocker_code is None, result.blocker_summary
-        assert len(result.indexes[0].segments) == 1 and len(probe.calls) == 2
+        assert len(result.indexes[0].segments) == 1 and len(probe.local_calls) == 2
         huge = [dict(m) for m in history]
         huge[0]["content"] = "x" * 100000
         new = await revision(sessions, seed["context_id"], huge, parent=first)
@@ -679,7 +712,10 @@ def test_tool_atom_and_single_request_window_are_not_split(tmp_path):
     exercise(tmp_path, run)
 
 
-def test_historical_v3_index_and_planning_session_remain_readable(tmp_path):
+@pytest.mark.parametrize("schema_version", ["v3", "v4"])
+def test_historical_index_and_planning_session_remain_readable(
+    tmp_path, schema_version
+):
     async def run(sessions, seed):
         from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
             PlanningRetrievalSession,
@@ -707,7 +743,7 @@ def test_historical_v3_index_and_planning_session_remain_readable(tmp_path):
         }
         legacy = RevisionSemanticIndex.create(
             **values,
-            index_schema_version="revision-semantic-index-v3",
+            index_schema_version=f"revision-semantic-index-{schema_version}",
             segmenter_version="protocol-safe-segmenter-v1",
         )
         repository = SemanticDerivationArtifactRepository()
@@ -740,7 +776,10 @@ def test_historical_v3_index_and_planning_session_remain_readable(tmp_path):
         probe = ModelProbe()
         result = await probe.service(sessions).build(observation(seed, first))
         assert result.blocker_code is None, result.blocker_summary
-        assert result.indexes[0].index_id != legacy.index_id and len(probe.calls) == 2
+        assert (
+            result.indexes[0].index_id != legacy.index_id
+            and len(probe.local_calls) == 2
+        )
         async with sessions() as session:
             saved = await repository.get_session(session, planning.session_id)
             assert await repository.indexes_by_ids(
@@ -807,7 +846,7 @@ def test_model_calls_hold_no_database_transaction(tmp_path):
         first = await revision(sessions, seed["context_id"], messages(2))
         result = await probe.service(sessions).build(observation(seed, first))
         assert result.blocker_code is None, result.blocker_summary
-        assert observed == [0, 0]
+        assert observed == [0] * len(probe.calls)
 
     exercise(tmp_path, run)
 
@@ -842,7 +881,7 @@ def test_configuration_change_during_model_work_is_blocked(tmp_path):
         result = await probe.service(sessions).build(observation(seed, first))
         assert result.blocker_code == "portfolio_index_failed"
         assert "stale" in result.blocker_summary
-        assert len(probe.calls) == 1
+        assert len(probe.local_calls) == 1
 
     exercise(tmp_path, run)
 
