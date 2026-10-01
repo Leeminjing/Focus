@@ -1,4 +1,9 @@
-"""验证 Context 策展 Patrol 的耐久观察、Attempt 重试、持续发布与启动对账。"""
+"""本文件对外提供Context Patrol 耐久观察和发布测试。
+
+输入为隔离数据库、精确 checkpoint 与失败注入；输出为冻结 Observation、Attempt 重试和 current pointer 断言。
+具体工作流为登记旧/新 revision、恢复耐久尝试并验证持续发布边界。
+示例：pytest backend/tests/test_context_patrol_service.py。
+"""
 
 import asyncio
 import os
@@ -375,7 +380,7 @@ def test_observation_commits_before_nul_safe_projection(
             timeout=15,
         )
         checkpoint_id = client.portal.call(_seed_root, service, task["thread_id"], "C1")
-        original_snapshot = service.contexts.snapshot
+        original_snapshot = service.contexts.semantic_snapshot
 
         async def snapshot_with_nul(context_id, requested_checkpoint=None):
             if context_id == task["task_id"] and requested_checkpoint == checkpoint_id:
@@ -385,7 +390,7 @@ def test_observation_commits_before_nul_safe_projection(
                 }]}
             return await original_snapshot(context_id, requested_checkpoint)
 
-        monkeypatch.setattr(service.contexts, "snapshot", snapshot_with_nul)
+        monkeypatch.setattr(service.contexts, "semantic_snapshot", snapshot_with_nul)
         client.portal.call(service.context_patrol.notify_stable_context_checkpoint, task["task_id"])
         observed = client.portal.call(_binding_snapshot, service, agent_id)
         assert observed["observed"] == observed["desired"] == checkpoint_id

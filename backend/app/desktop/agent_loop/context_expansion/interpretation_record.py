@@ -1,7 +1,8 @@
 r"""本文件对外提供 RevisionInterpretationProposal、发现库存和不可变 RevisionInterpretationRecord。
 
 输入为完整有序局部证据目录、实际提供的冻结原文、联合 drafts 和独立 verdict；输出为受依赖身份约束的综合 proof。
-工作流为区分 read／complete 回复，验证库存及原文范围，计算 accepted／quarantined claims，并保存所有理解输入的身份。
+具体工作流为区分 read／complete 回复，验证库存及原文范围，计算 accepted／quarantined claims，并保存所有理解输入的身份。
+历史 v3/v4/v5 proof 按原消息 schema 验证，新 semantic 元数据不会改写旧 identity。
 示例：record = RevisionInterpretationRecord.create(...); record.validate_target(index, records)。最后引用的消息不代替全部阅读依赖。
 """
 
@@ -135,7 +136,7 @@ class RevisionInterpretationRecord(_InterpretationModel):
         ]
         if actual != expected:
             raise ValueError("interpretation target inventory integrity mismatch")
-        messages = {m.message_id: m.model_dump(mode="json") for m in target.messages}
+        messages = {record["message_id"]: record for record in target.message_records()}
         for item in self.provided:
             if tuple(messages[m["message_id"]] for m in item.messages) != item.messages:
                 raise ValueError("interpretation original content integrity mismatch")

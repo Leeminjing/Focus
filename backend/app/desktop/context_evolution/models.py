@@ -1,6 +1,6 @@
 r"""本文件对外提供不可变 Context revision、版本化来源边及同事务发布证明的 SQLAlchemy 实体。
 
-输入为 Context identity、执行 checkpoint、投影、哈希、来源和生命周期事实；输出为独立 ORM 表定义。
+输入为 Context identity、执行 checkpoint、V1 消息或 V2 typed payload、哈希、来源和生命周期事实；输出为独立 ORM 表定义。
 具体工作流为复用 schema 层枚举合同，持久化 revision 内容与有序来源，并由
 `DesktopThread.current_revision_id` 指向已发布版本。
 publication receipt 与 current pointer 切换共同提交，候选插入不会生成发布证明。
@@ -67,6 +67,7 @@ class ContextRevision(Base):
     checkpoint_ns: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     checkpoint_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     payload_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    history_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     authored_messages: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
     )

@@ -5,10 +5,12 @@ description = "Focus agent harness — focus core runtime"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",
-    "langchain>=0.3.0",
-    "langchain-core>=0.3.0",
-    "langgraph>=0.3.0",
-    "langchain-openai>=0.3.0",
+    "langchain==1.3.10",
+    "langchain-core==1.4.7",
+    "langgraph==1.2.6",
+    "langchain-openai==1.3.2",
+    "openai==2.43.0",
+    "jsonschema>=4.0,<5",
     "pyyaml>=6.0",
     # 用户偏好层配置的往返读写：保住用户手写注释与键顺序（PyYAML 回写会静默删除注释）
     "ruamel.yaml>=0.18",

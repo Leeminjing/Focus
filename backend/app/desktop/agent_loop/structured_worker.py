@@ -13,6 +13,8 @@ from typing import Any
 
 from focus.config.app_config import AppConfig
 from focus.models.factory import create_chat_model
+from focus.context.requests import frozen_request_messages
+from focus.history import content_hash
 from focus.runtime.runs.usage import ModelUsage, callback_usage
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -56,12 +58,8 @@ class StructuredWorkerModel:
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        messages = [
-            SystemMessage(content=system),
-            HumanMessage(
-                content=f"<worker_input>{document}</worker_input>\nJSON Schema: {json_schema}"
-            ),
-        ]
+        messages = frozen_request_messages(system, f"<worker_input>{document}</worker_input>\nJSON Schema: {json_schema}",
+                                           scope="round", source_refs=({"payload_hash": content_hash(payload)},))
         callback = UsageMetadataCallbackHandler()
         try:
             invoke_config = {"callbacks": [callback]}
@@ -71,7 +69,7 @@ class StructuredWorkerModel:
                 self.last_model_metadata.update(
                     {
                         key: metadata[key]
-                        for key in ("model", "model_name", "system_fingerprint")
+                        for key in ("model", "model_name", "system_fingerprint", "provider", "protocol", "request_source_manifest")
                         if key in metadata
                     }
                 )
@@ -90,7 +88,15 @@ class StructuredWorkerModel:
             response = await model.with_structured_output(
                 schema,
                 method=config.curation_output_method,
+                include_raw=True,
             ).ainvoke(messages, config=invoke_config)
+            if isinstance(response, dict) and "raw" in response:
+                metadata = getattr(response["raw"], "response_metadata", {}) or {}
+                self.last_model_metadata.update({key: metadata[key] for key in
+                    ("provider", "protocol", "model_name", "request_source_manifest", "usage") if key in metadata})
+                if response.get("parsing_error") is not None:
+                    raise response["parsing_error"]
+                response = response["parsed"]
             return (
                 response
                 if isinstance(response, schema)

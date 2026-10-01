@@ -1,7 +1,7 @@
 r"""
 本文件对外提供 CurationSourceProjector。
 
-输入为某个已提交根 checkpoint 的通用序列化消息；输出为只含稳定身份、可见正文和必要
+输入为某个已提交根 checkpoint 的无损消息或 semantic 投影；输出为只含合格身份、可见正文和必要
 工具证据的 CurationSourceSnapshot。具体工作流为排除内部 reasoning/运行元数据/既有策展
 合成消息与协议占位，规范化 JSONB 不安全控制字符，并对 canonical JSON 计算稳定哈希。
 示例：`snapshot = CurationSourceProjector().project("cp-1", messages)`。
@@ -16,6 +16,7 @@ from typing import Any
 from backend.app.desktop.storage_values import normalize_json_storage_value
 
 from .contract import CurationSourceMessage, CurationSourceSnapshot
+from focus.history import legacy_to_items, semantic_messages
 
 
 _ROLE_MAP = {"user": "human", "assistant": "ai"}
@@ -30,7 +31,10 @@ class CurationSourceProjector:
     ) -> CurationSourceSnapshot:
         projected: list[CurationSourceMessage] = []
         seen_ids: set[str] = set()
-        for index, raw in enumerate(source_messages):
+        eligible = (tuple(source_messages) if all("semantic_policy" in raw for raw in source_messages)
+                    else semantic_messages(legacy_to_items(raw for raw in source_messages
+                         if _ROLE_MAP.get(str(raw.get("role")), str(raw.get("role"))) in _ALLOWED_ROLES)))
+        for index, raw in enumerate(eligible):
             if raw.get("curation_synthetic") or raw.get("curation_source_message_ids"):
                 continue
             role = _ROLE_MAP.get(str(raw.get("role") or ""), str(raw.get("role") or ""))
@@ -50,6 +54,7 @@ class CurationSourceProjector:
                 tool_call_id=self._optional_text(raw.get("tool_call_id")),
                 name=self._optional_text(raw.get("name")),
                 status=self._optional_text(raw.get("status")),
+                semantic_policy=raw.get("semantic_policy", "index"),
             ))
 
         canonical_messages = [item.model_dump(mode="json") for item in projected]

@@ -1,10 +1,11 @@
-r"""本文件验证唯一 RunLauncher、持久 Run identity、活跃 main fencing、原子终态与 outbox 恢复。
+r"""本文件对外提供以下合同的验证唯一 RunLauncher、持久 Run identity、活跃 main fencing、原子终态与 outbox 恢复。
 
 输入为并发注册请求、假 PreparedRun/Request、已完成 RunRecord 和假 checkpoint；输出为单次 launch、
 单持久 Run、完整历史字段、非根 namespace checkpoint publication、事务回滚后可重试的 settlement，
 以及重启后恰好一次消费断言。具体工作流为使用隔离 PostgreSQL 建立 Context revision，再分别穿过
 registrar、launcher、finalizer 和 consumer，并验证中断 tool call 的 authored/execution 双视图与可审计 repair manifest。
 集成续跑用严格 provider 合同校验 repaired execution，再发布下一代 Context；错误 Run 不能认领继承调用的中断因果。
+V2 authored 只保存定义，真实调用仍保留在 display/checkpoint，合成 repair 只在 execution；fixture 清理先释放耐久领域来源引用。
 示例：`pytest backend/tests/test_unified_run_orchestration.py`。
 """
 
@@ -31,6 +32,7 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionReader,
 )
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.domain_evidence.models import DesktopDomainResult
 from backend.app.desktop.run_orchestration import (
     RunLauncher,
     RunLifecycleFinalizer,
@@ -205,6 +207,7 @@ def test_concurrent_registration_returns_one_idempotent_run_and_fences_second_ma
                 assert persisted.workspace_anchor["revision"] == "workspace-r1"
         finally:
             async with sessions.begin() as session:
+                await session.execute(delete(DesktopDomainResult).where(DesktopDomainResult.context_id == context_id))
                 await session.execute(
                     delete(DesktopWorkspace).where(
                         DesktopWorkspace.workspace_id == workspace_id
@@ -299,6 +302,7 @@ def test_finalization_is_atomic_idempotent_and_restart_consumer_drains() -> None
                 assert any(receipt.event_id == settlement.event_id for receipt in receipts)
         finally:
             async with sessions.begin() as session:
+                await session.execute(delete(DesktopDomainResult).where(DesktopDomainResult.context_id == context_id))
                 await session.execute(
                     delete(DesktopWorkspace).where(
                         DesktopWorkspace.workspace_id == workspace_id
@@ -346,9 +350,11 @@ def test_interrupted_run_publishes_repaired_execution_without_mutating_checkpoin
                 reader = ContextRevisionReader(repository, checkpointer)
                 authored = await reader.read(session, settlement.context_revision, "authored")
                 execution = await reader.read(session, settlement.context_revision, "execution")
+                display = await reader.read(session, settlement.context_revision, "display")
             assert contract.projection_status is ContextRevisionProjectionStatus.REPAIRED
-            assert authored.messages[0]["tool_calls"][0]["id"] == "browser_run_code_unsafe"
-            assert len(authored.messages) == 1
+            assert authored.messages == ()
+            assert display.messages[0]["tool_calls"][0]["id"] == "browser_run_code_unsafe"
+            assert len(display.messages) == 1
             assert execution.messages[-1]["tool_call_id"] == "browser_run_code_unsafe"
             assert execution.messages[-1]["status"] == "error"
             assert execution.messages[-1]["focus_interruption_status"] == "interrupted"
@@ -393,6 +399,7 @@ def test_interrupted_run_publishes_repaired_execution_without_mutating_checkpoin
             assert continued.context_revision.generation == settlement.context_revision.generation + 1
         finally:
             async with sessions.begin() as session:
+                await session.execute(delete(DesktopDomainResult).where(DesktopDomainResult.context_id == context_id))
                 await session.execute(
                     delete(DesktopWorkspace).where(
                         DesktopWorkspace.workspace_id == workspace_id
@@ -468,6 +475,7 @@ def test_later_provider_error_cannot_repair_call_in_source_checkpoint(source_che
             assert proposed.repair_manifest[0]["source_run_id"] is None
         finally:
             async with sessions.begin() as session:
+                await session.execute(delete(DesktopDomainResult).where(DesktopDomainResult.context_id == context_id))
                 await session.execute(
                     delete(DesktopWorkspace).where(DesktopWorkspace.workspace_id == workspace_id)
                 )

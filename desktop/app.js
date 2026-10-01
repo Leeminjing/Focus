@@ -1,4 +1,5 @@
 /*
+ * 示例：renderFocus(activeTask()); await sendMain()。模型配置显式选择 Provider 与协议，详情展示有效协议。
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
  * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
  * 对话/Context/Agent/Commitment/压缩/插件与模块化 Agent Loop Portfolio 控制台、结构化 Mission 编辑、Context Expansion 资源授权/状态、自主压缩授权/审计/来源恢复、终止 Loop 退出/后继 Loop 准备等视图；逐轮材料以有序 binding 草稿和独立图片必看
@@ -25,7 +26,6 @@
  * 主任务 Composer 仅在存在错误或需处理的提醒时显示反馈，不为常态和运行提示预留空行；
  * 审批弹窗区分单次放宽和常驻切换；Agent Loop 的 snapshot、sequence reducer、断线重放和重同步
  * 由独立 Live Store/Connection 负责，切换 Loop 时清除旧投影，启动边界观察意外连接拒绝并归入连接状态；Expansion 表单和阻断视图委托 FocusLoopExpansionBudget，普通 API 响应统一委托无 DOM 的 FocusHttpResponse 解码，本文件只组合页面生命周期和控制请求。
- * 示例：renderFocus(activeTask()); await sendMain()。
  */
 "use strict";
 
@@ -5667,6 +5667,7 @@ function modelEntryRow(entry, index) {
     <div class="settings-model-info">
       <div class="settings-model-title"><strong>${escapeHtml(entry.display_name || entry.name || "")}</strong>${badges}</div>
       <div class="muted tiny">${escapeHtml(entry.name || "")} · ${escapeHtml(entry.model || "")} · ${escapeHtml(entry.base_url || "")}</div>
+      <div class="muted tiny">${escapeHtml(entry.effective_provider || entry.provider || "")} · ${escapeHtml(entry.effective_protocol || entry.protocol || "")}</div>
       <div class="muted tiny">${escapeHtml(modelEntrySource(entry))} · ${uiText("settings.model_field_context_window", "上下文窗口")}: ${escapeHtml(String(entry.context_window ?? uiText("settings.model_unknown", "未知")))} · ${uiText("settings.model_field_api_key", "密钥来源变量")}: ${escapeHtml(modelCredentialState(entry))}</div>
     </div>
     <div class="settings-model-row-actions">
@@ -5702,6 +5703,8 @@ function renderModelDraft() {
       ${modelTextField(uiText("settings.model_field_display_name", "显示名"), "display_name", entry)}
       ${modelTextField(uiText("settings.model_field_model", "模型标识"), "model", entry)}
       ${modelTextField(uiText("settings.model_field_use", "适配器"), "use", entry, { select: adapters })}
+      ${modelTextField("Provider", "provider", entry, { select: [{ value: "", label: "沿用旧适配器映射" }, { value: "openai", label: "OpenAI" }, { value: "deepseek", label: "DeepSeek" }] })}
+      ${modelTextField("API 协议", "protocol", entry, { select: [{ value: "", label: "沿用旧适配器映射" }, { value: "responses", label: "Responses" }, { value: "chat_completions", label: "Chat Completions（兼容）" }] })}
       ${modelTextField(uiText("settings.model_field_base_url", "端点"), "base_url", entry)}
       ${modelTextField(uiText("settings.model_field_context_window", "上下文窗口"), "context_window", entry, { type: "number" })}
       ${modelTextField(uiText("settings.model_field_curation_method", "策展输出方式"), "curation_output_method", entry, { select: methods })}
@@ -5813,6 +5816,7 @@ function addModelEntry() {
   const entry = {
     name: "", display_name: "", use: template.use || ((modelSettings.snapshot.adapters || [])[0]?.use ?? ""),
     model: "", api_key: template.api_key || "$OPENAI_API_KEY", base_url: template.base_url || "",
+    provider: template.provider ?? null, protocol: template.protocol ?? null,
     context_window: template.context_window ?? null, curation_output_method: template.curation_output_method ?? null,
     curation_max_output_tokens: template.curation_max_output_tokens ?? 8192,
     curation_default: false, default: false, supports_image_input: false, source: "user_added",
@@ -5854,6 +5858,7 @@ function updateModelField(target) {
     const trimmed = String(value).trim();
     value = trimmed === "" ? null : (Number.isNaN(Number(trimmed)) ? value : Number(trimmed));
   }
+  if (["provider", "protocol"].includes(field) && value === "") value = null;
   entry[field] = value;
   modelSettings.dirty = true;
 }

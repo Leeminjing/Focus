@@ -1,4 +1,9 @@
-"""Swarm/Coordinator 机制测试：广播、协议分拣、计划审批回合、关机状态机（独立于小兵机制）。"""
+"""本文件对外提供Swarm/Coordinator 广播、审批和状态机测试。
+
+输入为隔离数据库中的 teammate/worker 身份与协作消息；输出为逐目标稳定 inbox 读取、协议分拣和状态转换断言。
+具体工作流为发布广播/peer 消息，通过独立 inbox 准备并验证各角色机械协议。
+示例：pytest backend/tests/test_swarm_coordinator.py。
+"""
 
 import asyncio
 import atexit
@@ -77,6 +82,17 @@ async def _cleanup(collab: AgentCollab, task_id: str) -> None:
         await session.commit()
 
 
+async def _inbox_text(collab, agent_id, task_id):
+    from types import SimpleNamespace
+    from backend.app.desktop.inbox import AgentInbox
+    retained = getattr(collab, "_test_retained", {})
+    ids = retained.setdefault((agent_id, task_id), set())
+    updates, _ = await AgentInbox(collab.session_factory, None).prepare(SimpleNamespace(agent_id=agent_id, task_id=task_id), ids)
+    ids.update(message.id for message in updates)
+    collab._test_retained = retained
+    return "\n".join(message.content for message in updates)
+
+
 def test_broadcast_writes_per_target_and_independent_consume():
     async def run() -> None:
         collab = AgentCollab(_SESSION_FACTORY)
@@ -99,10 +115,10 @@ def test_broadcast_writes_per_target_and_independent_consume():
                 assert total == 3
 
             # 任一 agent 消费不影响其他（独立 read_at）
-            assert "周五前完成各自任务" in await collab.load_unread_messages(f"main:{task_id}", task_id)
-            assert await collab.load_unread_messages(f"main:{task_id}", task_id) == ""
-            assert "周五前完成各自任务" in await collab.load_unread_messages(teammate_id, task_id)
-            assert "周五前完成各自任务" in await collab.load_unread_messages(worker_id, task_id)
+            assert "周五前完成各自任务" in await _inbox_text(collab, f"main:{task_id}", task_id)
+            assert await _inbox_text(collab, f"main:{task_id}", task_id) == ""
+            assert "周五前完成各自任务" in await _inbox_text(collab, teammate_id, task_id)
+            assert "周五前完成各自任务" in await _inbox_text(collab, worker_id, task_id)
         finally:
             await _cleanup(collab, task_id)
 
@@ -123,24 +139,24 @@ def test_peer_to_peer_message_between_teammates():
                 {"to_agent": teammate_b, "content": "帮我查一下竞品定价", "runtime": rt_a}
             )
             assert f"已发送给 {teammate_b}" in result
-            block_b = await collab.load_unread_messages(teammate_b, task_id)
-            assert f'from="{teammate_a}"' in block_b
+            block_b = await _inbox_text(collab, teammate_b, task_id)
+            assert f'author": "{teammate_a}"' in block_b
             assert "竞品定价" in block_b
             # 消费即销毁
-            assert await collab.load_unread_messages(teammate_b, task_id) == ""
+            assert await _inbox_text(collab, teammate_b, task_id) == ""
 
             # B → A 回复（双向）
             await send.ainvoke(
                 {"to_agent": teammate_a, "content": "查到了，三档定价", "runtime": rt_b}
             )
-            block_a = await collab.load_unread_messages(teammate_a, task_id)
-            assert f'from="{teammate_b}"' in block_a
+            block_a = await _inbox_text(collab, teammate_a, task_id)
+            assert f'author": "{teammate_b}"' in block_a
             assert "三档定价" in block_a
 
             # 无关的第三个 agent 收不到（消息精确投递）
             third = uuid.uuid4().hex
             await collab.create_swarm_agent(third, task_id, "worker")
-            assert await collab.load_unread_messages(third, task_id) == ""
+            assert await _inbox_text(collab, third, task_id) == ""
         finally:
             await _cleanup(collab, task_id)
 
@@ -208,16 +224,16 @@ def test_protocol_kind_segregation():
             await request_plan.ainvoke({"plan": "先重构核心模块再补测试", "runtime": teammate})
             await request_shutdown.ainvoke({"reason": "工作已完成", "runtime": teammate})
 
-            block = await collab.load_unread_messages(f"main:{task_id}", task_id)
-            # 协议消息进 <agent_protocols> 块（from/kind 标签），不进 <agent_messages>
-            assert "<agent_protocols>" in block
-            assert f'from="{teammate_id}"' in block
-            assert 'kind="plan_approval_request"' in block
-            assert 'kind="shutdown_request"' in block
+            block = await _inbox_text(collab, f"main:{task_id}", task_id)
+            # 协议消息进 Agent collaboration: 块（from/kind 标签），不进 Agent collaboration:
+            assert "Agent collaboration:" in block
+            assert f'author": "{teammate_id}"' in block
+            assert 'kind": "plan_approval_request"' in block
+            assert 'kind": "shutdown_request"' in block
             assert "先重构核心模块再补测试" in block
-            assert "<agent_messages>" not in block
+            assert '"kind": "message"' not in block
             # 只注入 main：teammate 自己看不到（无发送给它的协议消息）
-            assert await collab.load_unread_messages(teammate_id, task_id) == ""
+            assert await _inbox_text(collab, teammate_id, task_id) == ""
         finally:
             await _cleanup(collab, task_id)
 
@@ -235,16 +251,16 @@ def test_plan_approval_roundtrip():
             main = _runtime(f"main:{task_id}", task_id)
 
             await request_plan.ainvoke({"plan": "先补测试", "runtime": teammate})
-            assert 'kind="plan_approval_request"' in await collab.load_unread_messages(f"main:{task_id}", task_id)
+            assert 'kind": "plan_approval_request"' in await _inbox_text(collab, f"main:{task_id}", task_id)
 
             result = await approve.ainvoke(
                 {"agent_id": teammate_id, "approved": False, "feedback": "先出设计文档", "runtime": main}
             )
             assert "已发送" in result
 
-            response_block = await collab.load_unread_messages(teammate_id, task_id)
-            assert "<agent_protocols>" in response_block
-            assert 'kind="plan_approval_response"' in response_block
+            response_block = await _inbox_text(collab, teammate_id, task_id)
+            assert "Agent collaboration:" in response_block
+            assert 'kind": "plan_approval_response"' in response_block
             assert "计划被拒绝" in response_block
             assert "先出设计文档" in response_block
         finally:
@@ -267,8 +283,8 @@ def test_shutdown_state_machine():
             )
             assert "拒绝" in result
             assert await collab.is_agent_stopped(teammate_id) is False
-            block = await collab.load_unread_messages(teammate_id, task_id)
-            assert 'kind="shutdown_response"' in block
+            block = await _inbox_text(collab, teammate_id, task_id)
+            assert 'kind": "shutdown_response"' in block
             assert "被拒绝" in block
 
             # 批准：代码层置 stopped（无消息注入）
@@ -277,7 +293,7 @@ def test_shutdown_state_machine():
             )
             assert "已停止" in result
             assert await collab.is_agent_stopped(teammate_id) is True
-            assert await collab.load_unread_messages(teammate_id, task_id) == ""
+            assert await _inbox_text(collab, teammate_id, task_id) == ""
 
             # 重复批准：幂等（已停止）
             result = await respond.ainvoke(

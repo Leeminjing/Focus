@@ -1,4 +1,9 @@
-"""backend/tests 共享 fixture：隔离 PostgreSQL 与统一轮询等待入口。"""
+"""本文件对外提供隔离 PostgreSQL fixture、迁移隔离插件和 wait_until 轮询入口。
+
+输入为测试目录、临时资源和待验证条件；输出为独立测试数据库与有界轮询结果。
+具体工作流为创建隔离会话库、注册 DDL 独立库 fixture，测试后按明确身份清理。
+示例：pytest backend/tests -q。
+"""
 
 import os
 from pathlib import Path
@@ -121,3 +126,5 @@ def wait_for_memory_status(wait_until):
         )
 
     return _wait
+
+pytest_plugins = ("backend.tests.migration_support",)

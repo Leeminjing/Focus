@@ -14,6 +14,7 @@ from enum import StrEnum
 from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from focus.history import HistoryPayload, history_records
 
 
 class ContextRevisionPayloadMode(StrEnum):
@@ -92,6 +93,7 @@ class ContextRevisionSourceContract(_FrozenContract):
 
 class ContextRevisionContract(_FrozenContract):
     ref: ContextRevisionRef
+    history_payload: HistoryPayload | None = None
     sources: tuple[ContextRevisionSourceContract, ...] = ()
     authored_messages: tuple[dict[str, Any], ...] = ()
     execution_messages: tuple[dict[str, Any], ...] = ()
@@ -109,6 +111,14 @@ class ContextRevisionContract(_FrozenContract):
 
     @model_validator(mode="after")
     def _validate_source_order(self) -> Self:
+        if self.history_payload is not None:
+            for name, items in (("authored_messages", self.history_payload.authored_items),
+                                ("execution_messages", self.history_payload.execution_items)):
+                records = history_records(items)
+                existing = getattr(self, name)
+                if existing and existing != records:
+                    raise ValueError(f"V2 {name} 与权威 history_payload 不一致")
+                object.__setattr__(self, name, records)
         positions = [source.position for source in self.sources]
         if positions != list(range(len(positions))):
             raise ValueError("revision 来源必须按从 0 开始的连续稳定顺序排列")
@@ -117,7 +127,7 @@ class ContextRevisionContract(_FrozenContract):
         return self
 
 
-ContextRevisionMessageViewKind = Literal["authored", "execution", "display"]
+ContextRevisionMessageViewKind = Literal["authored", "execution", "display", "semantic"]
 
 
 class ContextRevisionMessageView(_FrozenContract):

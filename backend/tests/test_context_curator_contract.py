@@ -1,11 +1,16 @@
-"""验证 Context 策展的安全来源、最小计划、直接模型调用和持久边界。"""
+"""本文件对外提供 Context 策展来源、计划、模型协议与持久边界验证。
+
+输入为受治理来源、模型配置和策展结果；输出为 schema、投影与发布权限断言。
+具体工作流为构造最小计划，调用实际配置的请求投影，再校验结构化输出与权威边界。
+示例：pytest backend/tests/test_context_curator_contract.py；Provider 请求只检查离线 payload。
+"""
 
 import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
 
 from fastapi import HTTPException
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 import pytest
 from pydantic import ValidationError
@@ -381,8 +386,20 @@ def test_real_openai_compatible_adapters_accept_declared_output_contracts():
     for configured in app_config.models:
         assert engine.validate_model(configured.name) == "prompt_json"
         adapter = create_chat_model(name=configured.name, app_config=app_config)
-        payload = adapter._get_request_payload([("human", "return one JSON object")])
-        assert "tools" not in payload
+        from focus.models.provider_contract import resolve_provider_contract
+        protocol = resolve_provider_contract(configured).protocol
+        if protocol == "responses":
+            payload = adapter.request_payload([HumanMessage(content="return one JSON object")])
+            assert "input" in payload and "messages" not in payload
+            assert "previous_response_id" not in payload
+            adapter._client.close()
+            asyncio.run(adapter._async_client.close())
+        else:
+            payload = adapter._get_request_payload([HumanMessage(content="return one JSON object")])
+            assert "messages" in payload and "input" not in payload
+            adapter.root_client.close()
+            asyncio.run(adapter.root_async_client.close())
+        assert not payload.get("tools")
         assert "tool_choice" not in payload
         assert "response_format" not in payload
 
@@ -438,3 +455,25 @@ def test_model_window_boundary_rejects_without_truncating_input():
     assert error.value.detail["code"] == "context_window_exceeded"
     assert error.value.detail["output_reserve"] == 2048
     assert payload == before
+
+
+def test_selected_constraint_derivation_keeps_reference_policy_and_exact_source():
+    from focus.history import legacy_to_items, semantic_messages
+    source = {"id": "memory-v1", "role": "human", "content": "deploy requires review",
+              "semantic_policy": "reference_only"}
+    snapshot = CurationSourceProjector().project("checkpoint-v1", [source])
+    source["content"] = "current memory v2"
+    compiled = compile_curated_context({"outcome": "replace", "items": [
+        {"type": "copy_message", "source_message_id": "memory-v1"},
+    ]}, snapshot)
+    validate_messages(compiled.authored_messages)
+    view = semantic_messages(legacy_to_items(compiled.authored_messages))
+    assert view[0]["content"] == "deploy requires review"
+    assert view[0]["semantic_policy"] == "reference_only"
+    context = compiled.authored_messages[0]["additional_kwargs"]["focus_context"]
+    assert context["scope"] == "revision"
+    assert context["source_refs"] == [{"checkpoint_id": "checkpoint-v1", "message_id": "memory-v1"}]
+    with pytest.raises(CurationContractError, match="未知来源"):
+        compile_curated_context({"outcome": "replace", "items": [
+            {"type": "copy_message", "source_message_id": "missing-version"},
+        ]}, snapshot)

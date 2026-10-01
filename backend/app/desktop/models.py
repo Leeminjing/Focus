@@ -9,6 +9,7 @@ RunMaterialBinding 保存不可变运行快照，用 MaterialGroup 与 MaterialG
 desktop_threads.title 是 THREAD_TITLE_LIMIT 有界列：用户输入的标题由请求模型拒绝超长值，
 从散文派生的标题经 bounded_thread_title 收进该界，二者的界同源于列宽。
 SessionAccessModeUpdate 只接受三档规范模式，供独立的会话模式持久化接口使用。
+AgentMessageDelivery 记录协作消息的精确 checkpoint 投递事实，与消息已读显示同事务提交。
 
 示例：request = MainRunCreate(message="比较", material_inputs=[{"material_id": "m1", "note": "看第三章"}])。
 """
@@ -31,7 +32,7 @@ THREAD_TITLE_LIMIT = 200
 
 
 def bounded_thread_title(text: str) -> str:
-    """把从散文派生的 Context 标题收进列宽，避免超长标题让整个发布事务失败。"""
+
     return str(text or "")[:THREAD_TITLE_LIMIT]
 
 
@@ -397,10 +398,10 @@ class SwarmAgent(Base):
     task_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True
     )
-    role: Mapped[str] = mapped_column(String(16), nullable=False)  # teammate | worker
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
     checkpoint_ns: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")  # active | stopped
-    permissions: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)  # spawn 时的权限（wake 沿用，不放大）
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    permissions: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     access_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="workspace-write")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -419,6 +420,48 @@ class AgentMessage(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentMessageDelivery(Base):
+    __tablename__ = "agent_message_deliveries"
+    __table_args__ = (UniqueConstraint("message_id", "execution_thread_id", "checkpoint_ns", "checkpoint_id",
+                                      name="uq_inbox_checkpoint_delivery"),)
+
+    delivery_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    message_id: Mapped[str] = mapped_column(String(32), ForeignKey("agent_messages.message_id", ondelete="CASCADE"), nullable=False)
+    execution_thread_id: Mapped[str] = mapped_column(Text, nullable=False)
+    checkpoint_ns: Mapped[str] = mapped_column(Text, nullable=False)
+    checkpoint_id: Mapped[str] = mapped_column(Text, nullable=False)
+    run_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ModelAttemptAudit(Base):
+    __tablename__ = "model_attempt_audits"
+
+    attempt_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_runs.run_id", ondelete="CASCADE"), nullable=False)
+    execution_thread_id: Mapped[str] = mapped_column(Text, nullable=False)
+    checkpoint_ns: Mapped[str] = mapped_column(Text, nullable=False)
+    checkpoint_id: Mapped[str] = mapped_column(Text, nullable=False)
+    source_manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    audit: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    usage: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ToolExecutionAttempt(Base):
+    __tablename__ = "tool_execution_attempts"
+
+    attempt_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_runs.run_id", ondelete="CASCADE"), nullable=False)
+    call_id: Mapped[str] = mapped_column(Text, nullable=False)
+    call_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class AgentBoardTask(Base):
@@ -444,9 +487,9 @@ class Memory(Base):
     memory_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    # 压缩语义：segmented（会话隔离→分段记忆）| complete（全部会话→完整记忆）
+
     content_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="complete")
-    # 分段记忆的段列表，每段 {title, body, source_ref}；完整记忆时为空数组。
+
     segments: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
     source_kind: Mapped[str] = mapped_column(String(24), nullable=False, default="manual")
     source_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)

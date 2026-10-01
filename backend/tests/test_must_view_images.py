@@ -1,7 +1,7 @@
-"""必需图片交付、压缩豁免与二进制读取兜底的回归测试。
+"""本文件对外提供必需图片交付、压缩豁免与二进制读取兜底的回归测试。
 
 输入为图片材料、运行上下文、模型请求和压缩决策；输出为请求层图片投影、必需材料完成门、
-路径边界、送模缩放、材料失效诊断和压缩保护断言。具体工作流不经桌面上传服务；上传资源、
+路径边界、送模缩放、材料失效诊断和压缩保护断言。具体工作流为不经桌面上传服务；上传资源、
 独占命名和补偿协议由 test_material_upload_lifecycle.py 覆盖。
 
 示例：python -m pytest backend/tests/test_must_view_images.py。
@@ -310,7 +310,13 @@ def test_compression_without_protection_behaves_as_before():
 
 class _ToolRuntime:
     def __init__(self, workspace: Path) -> None:
-        self.context = {"workspace": str(workspace), "permissions": ["read"]}
+        from focus.security.context import AuthorizationIdentity, RoutingIdentity, SecurityContext
+        from focus.security.policy import AccessMode
+
+        self.context = SecurityContext(
+            AuthorizationIdentity(workspace, (workspace,), ("read",), AccessMode.READ_ONLY, "main"),
+            RoutingIdentity("images", "images", "main", "images", "", "images"),
+        ).to_runtime_context()
 
 
 def test_read_file_rejects_image_with_correctable_hint(scratch):

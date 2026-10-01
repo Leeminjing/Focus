@@ -1,7 +1,7 @@
 r"""本文件对外提供 FrozenEvidenceCorpus、CorpusEvidenceItem、FrozenEvidenceAuthority 与 FrozenEvidenceCorpusReader。
 
 输入为冻结 Loop observation、semantic manifests、WorkContext opportunity、精确 Context Revision 存储与 checkpointer；
-输出为只含授权版本的不可变 evidence corpus。具体工作流为校验 frontier/scope/hash，读取每个精确 Revision 的完整消息，
+输出为只含授权版本的不可变 evidence corpus。具体工作流为校验 frontier/scope/hash，读取每个精确 Revision 的 semantic 消息，
 再把版本化 Mission sections、Run 与 Workspace 事实编码为类型化 evidence，并用 manifest unit 保留语义角色。示例：
 `corpus = await reader.read(observation, opportunity, manifests)`。
 """
@@ -173,7 +173,7 @@ class FrozenEvidenceCorpusReader:
                         manifest,
                         revision.content_hash,
                     )
-                    view = await self._reader.read(session, source, "execution")
+                    view = await self._reader.read(session, source, "semantic")
                     messages = tuple(self._message(source, message) for message in view.messages)
                     sources.append(
                         SourceRevisionEvidence(

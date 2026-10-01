@@ -4,7 +4,7 @@
     summarize_messages — 用指定模型为选定消息范围生成中文候选摘要
     compression_recovery_payload — 从主图 checkpoint 投影待确认压缩请求的恢复状态
 
-输入:
+输入为:
     summarize_messages: messages — 面板消息快照（serialize_message 产物）；
         model_name — 目标模型名，None 时取默认；app_config — 组合根配置；
         forbid_terms — 明文禁止出现在摘要中的词列表（快捷压缩禁提关键词用），
@@ -13,12 +13,12 @@
     compression_recovery_payload: session — 桌面 DB 会话；task — DesktopThread；
         checkpointer — LangGraph checkpointer
 
-输出:
+输出为:
     summarize_messages → str 候选摘要；compression_recovery_payload → dict | None
     （None 表示无待确认压缩请求；否则为 {"status": processing|resumable|orphaned,
     "request": 原始 compression_request 载荷}）
 
-具体工作流:
+具体工作流为:
     (1) 摘要：消息按 role 分节格式化（跳过协议占位、剥离 compression
         元数据），以中文概括 system prompt 单次 ainvoke
     (2) 恢复投影：未决中断的枚举与状态归一委托 backend.app.desktop.pending_interrupts，
@@ -47,12 +47,8 @@ _SUMMARY_SYSTEM_PROMPT = """你是上下文压缩器。把给定对话片段概�
 
 
 def _build_summary_prompt(forbid_terms: tuple[str, ...] | list[str] | None = None) -> str:
-    """按禁提词列表构造摘要系统指令；无禁提词时返回默认指令。
 
-    输入: forbid_terms — 明文禁止出现的词序列（可空）
 
-    输出: str — 摘要系统提示词；非空时追加不得提及该词的条款（可用指代表达）
-    """
     terms = tuple(dict.fromkeys(forbid_terms or ()))
     if not terms:
         return _SUMMARY_SYSTEM_PROMPT
@@ -98,7 +94,7 @@ def _message_text(content: Any) -> str:
 
 
 def _format_transcript(messages: list[dict[str, Any]]) -> str:
-    """按 role 分节格式化；跳过协议占位，保留有来源证据的策展总结。"""
+
     parts: list[str] = []
     for index, message in enumerate(messages, start=1):
         if message.get("curation_synthetic") and not message.get("curation_source_message_ids"):
@@ -112,19 +108,8 @@ def _format_transcript(messages: list[dict[str, Any]]) -> str:
 
 
 def _scrub_terms(text: str, terms: tuple[str, ...] | list[str] | None) -> str:
-    """机械剥离摘要中禁止出现的词（最终保证，不依赖 LLM 自觉）。
 
-    输入:
-        text: str — 模型产出的摘要正文
-        terms: 序列 — 明文禁止出现的词（可为空）
 
-    输出:
-        str — 逐词去除后的文本；若去除后为空则回退为通用占位文本
-
-    具体工作流:
-        (1) 对每个禁用词做全量字符串替换去除
-        (2) 若结果为空（摘要仅由该词构成），回退为 '（该话题已从上下文移除）'
-    """
     scrubbed = text
     for term in dict.fromkeys(terms or ()):
         if term:
@@ -145,12 +130,8 @@ async def summarize_messages(
         raise ValueError("所选范围没有可概括的内容")
     transcript = _scrub_terms(raw_transcript, forbid_terms)
     model = create_chat_model(model_name, app_config=app_config)
-    response = await model.ainvoke(
-        [
-            SystemMessage(content=_build_summary_prompt(forbid_terms)),
-            HumanMessage(content=transcript),
-        ]
-    )
+    from focus.context.requests import frozen_request_messages
+    response = await model.ainvoke(frozen_request_messages(_build_summary_prompt(forbid_terms), transcript))
     text = ""
     content = getattr(response, "content", "")
     if isinstance(content, str):
@@ -173,9 +154,6 @@ COMPRESSION_INTERRUPT_TYPE = "compression_request"
 async def compression_recovery_payload(
     session: Any, task: Any, checkpointer: Any
 ) -> dict[str, Any] | None:
-    """主图上的待确认压缩请求。
 
-    未决中断的枚举与状态归一由 backend.app.desktop.pending_interrupts 统一承担，
-    因此压缩与准入两条待决走的是同一份投影。
-    """
+
     return await main_pending_interrupt(session, task, checkpointer, COMPRESSION_INTERRUPT_TYPE)

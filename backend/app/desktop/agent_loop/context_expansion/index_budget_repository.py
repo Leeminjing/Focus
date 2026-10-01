@@ -1,7 +1,7 @@
 r"""本文件对外提供 IndexBudgetReservationRepository。
 
 输入为独立 sessionmaker、Loop／授权版本、冻结限制及实际模型用量；输出为原子请求预留或预算阻断，以及幂等结算。
-工作流为短事务锁住 Loop 用量，校验真实授权，扣除全部未结算预留；模型调用后另一短事务结算并保留审计凭据。
+具体工作流为短事务锁住 Loop 用量，校验真实授权，扣除全部未结算预留；模型调用后另一短事务结算并保留审计凭据。
 崩溃未结算的预留保持占用，不按时间自动回收；新授权不会清除既有用量或预留。
 示例：await repository.reserve(input_upper_bound, output_limit); await repository.settle(delta)。不在模型调用期间持有 session。
 """

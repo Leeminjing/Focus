@@ -22,13 +22,13 @@ from langgraph.types import Command, interrupt
 
 from focus.agents.compression.gate import (
     CompressionGate,
-    _repair_protocol,
     _strip_compression_kwargs,
     apply_compression_ranges,
     build_compression_gate,
 )
 from focus.agents.compression.schemas import validate_apply_decision
 from focus.messages import estimate_raw_tokens
+from focus.history.repair import repair_tool_messages
 from focus.runtime.runs.events import serialize_message, validate_messages
 
 
@@ -325,7 +325,7 @@ def test_repair_protocol_passes_valid_lists_through():
         HumanMessage(content="你好", id="h1"),
         AIMessage(content="回答", id="a2"),
     ]
-    assert _repair_protocol(messages) == messages
+    assert repair_tool_messages(messages, cause="compression") == messages
 
 
 def test_strip_compression_kwargs_leaves_model_clean():

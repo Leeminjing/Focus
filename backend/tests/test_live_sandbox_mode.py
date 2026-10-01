@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import json
 from dataclasses import replace
 
 from langchain.agents.middleware import ModelRequest
@@ -18,7 +19,7 @@ from backend.tests.runtime_context_support import runtime_context
 from focus.security.context import security_context_of
 from focus.security.execution import bind_call_execution
 from focus.security.middleware import AccessPolicyMiddleware
-from focus.security.model_context import FileModeContextMiddleware
+from focus.context.middleware import WorldStateMiddleware
 from focus.security.policy import AccessMode
 from focus.tools.builtins.workspace_tools import powershell
 
@@ -70,20 +71,16 @@ def test_next_model_request_shows_persisted_mode_and_workspace(tmp_path):
     state = {"mode": AccessMode.WORKSPACE_WRITE}
     runtime = _runtime(tmp_path, state)
 
-    async def model_call():
-        request = ModelRequest(
-            model=None, messages=[], system_message=SystemMessage(content="base"), runtime=runtime,
-        )
-
-        async def handler(active):
-            return active.system_message.content
-
-        return await FileModeContextMiddleware().awrap_model_call(request, handler)
-
-    first = asyncio.run(model_call())
+    middleware = WorldStateMiddleware([], "base", frozenset(), "fixture", "v1")
+    initial = asyncio.run(middleware.abefore_model({"messages": []}, runtime))
+    first = "\n".join(message.content for message in initial["messages"])
     state["mode"] = AccessMode.READ_ONLY
-    second = asyncio.run(model_call())
+    updated = asyncio.run(middleware.abefore_model(initial, runtime))
+    second = "\n".join(message.content for message in updated["messages"])
     assert "workspace-write" in first
     assert "read-only" in second
-    assert str(tmp_path) in first and str(tmp_path) in second
-    assert "workspace-write" not in second.split("当前文件模式：", 1)[1].split("；", 1)[0]
+    environment = next(message for message in initial["messages"] if 'section="environment"' in message.content)
+    assert json.loads(environment.content.split("\n")[1])["workspace"] == str(tmp_path)
+    permissions = next(message for message in updated["messages"] if 'section="permissions"' in message.content)
+    assert 'update="replacement"' in permissions.content
+    assert json.loads(permissions.content.split("\n")[1])["access_mode"] == "read-only"

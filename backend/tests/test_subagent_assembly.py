@@ -1,13 +1,14 @@
-"""本文件验证主 Agent 与小兵的角色装配、图片中间件组合和 Mailbox 注入。
+"""本文件对外提供以下合同的验证主 Agent 与小兵的角色装配、图片中间件组合和 Mailbox 注入。
 
 输入为真实桌面 API、数据库、图片上传和可捕获的 Agent 工厂；输出为无图片、普通附件、
 附件加必看三种 middleware 组合及协作工具断言，并锁定主运行不得绑定 provider 结构化输出。
-具体工作流保留 start_run/worker/StreamBridge/DB，只替换外部工具池和模型图构建，避免网络依赖。
+具体工作流为保留 start_run/worker/StreamBridge/DB，只替换外部工具池和模型图构建，避免网络依赖。
 
 示例：python -m pytest backend/tests/test_subagent_assembly.py。
 """
 
 import base64
+import asyncio
 import os
 import uuid
 
@@ -39,8 +40,15 @@ def _client():
 
 
 async def _cleanup(service: DesktopService, task_id: str, workspace_id: str, thread_id: str):
+    from backend.app.desktop.domain_evidence.models import DesktopDomainResult
+    pending = [task for task in service._sync_tasks if not task.done()
+               and (record := task.get_coro().cr_frame.f_locals.get("record")) is not None
+               and record.thread_id == thread_id and record.status.value in {"success", "error", "interrupted", "cancelled"}]
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=False)
     await service.checkpointer.adelete_thread(thread_id)
     async with service.session_factory() as session:
+        await session.execute(delete(DesktopDomainResult).where(DesktopDomainResult.context_id == task_id))
         await session.execute(delete(DesktopThread).where(DesktopThread.task_id == task_id))
         await session.execute(
             delete(DesktopWorkspace).where(DesktopWorkspace.workspace_id == workspace_id)
@@ -158,8 +166,9 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
                 "ToolStrategy 并强制 tool_choice=required，与 thinking 模型互斥"
             )
             assert "claim_task" not in main_names
-            assert "<agent_messages>" in main_cfg["system_prompt"]
-            assert 'from="patrol-x"' in main_cfg["system_prompt"]
+            assert main_cfg["inbox_middleware"].__class__.__name__ == "DurableInboxMiddleware"
+            assert "<agent_messages>" not in main_cfg["system_prompt"]
+            assert "patrol-x" not in main_cfg["system_prompt"]
 
             base_equipment = {
                 "model_name": None,
@@ -176,7 +185,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
             empty_cfg = captured[-1]
             assert [
                 item.__class__.__name__ for item in empty_cfg["additional_middlewares"]
-            ] == ["handle_tool_errors", "CompressionGate"]
+            ] == ["handle_tool_errors", "ImageAttachmentProjectionMiddleware", "CompressionGate"]
             assert "response_format" not in empty_cfg
             assert "report_must_view_images" not in {
                 item.name for item in empty_cfg["tools"]

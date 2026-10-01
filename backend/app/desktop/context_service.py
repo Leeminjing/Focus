@@ -8,6 +8,7 @@
 受管 Context 的真实运行后缀会从旧 revision 提取并接到新 authored/execution 前缀之后；任务页读取会话时
 声明活跃执行视图，其实现只读取当前 revision 执行身份上的最新 checkpoint，不写入任何权威状态。
 删除时由 retention planner 保留仍被后代引用的最小 tombstone，本服务不再读写 identity-level definition/source 权威表。
+semantic_snapshot 读取精确版本的任务语义与关联证据；Curator 使用该端口，display snapshot 只供展示。
 由根 Context 派生的受管 Context 标题经 bounded_thread_title 收进 desktop_threads.title 的列宽。
 示例：`context = await service.derive(body)`；`view = await service.live_conversation(context_id)`。
 """
@@ -64,6 +65,8 @@ from backend.app.desktop.models import (
 from focus.agents.lead import make_lead_agent
 from focus.config.app_config import AppConfig
 from focus.runtime.runs.events import serialize_message
+from focus.history import legacy_to_items, semantic_messages, validate_items
+from focus.history.bridge import checkpoint_records
 
 
 logger = logging.getLogger(__name__)
@@ -138,12 +141,26 @@ class ContextService:
             "messages": self._checkpoint_messages(checkpoint),
         }
 
-    async def live_conversation(self, context_id: str) -> dict[str, Any]:
-        """任务页会话视图：优先返回当前 revision 执行身份上更新的执行状态。
+    async def semantic_snapshot(self, context_id: str, checkpoint_id: str) -> dict[str, Any]:
+        async with self.session_factory() as session:
+            task = await session.get(DesktopThread, context_id)
+            if task is None:
+                raise HTTPException(404, "Context 不存在")
+            view = await self.evolution.read_checkpoint_semantic(session, context_id, checkpoint_id)
+            if view is not None:
+                return {"context_id": context_id, "checkpoint_id": checkpoint_id, "messages": list(view.messages)}
+        checkpoint = await self.checkpointer.aget_tuple({"configurable": {
+            "thread_id": task.thread_id, "checkpoint_ns": "", "checkpoint_id": checkpoint_id,
+        }})
+        if checkpoint is None or checkpoint.config["configurable"].get("checkpoint_id") != checkpoint_id:
+            raise HTTPException(404, "Context checkpoint 不属于该 Context")
+        items = legacy_to_items(checkpoint_records(checkpoint.checkpoint.get("channel_values", {})))
+        validate_items(items)
+        return {"context_id": context_id, "checkpoint_id": checkpoint_id, "messages": list(semantic_messages(items))}
 
-        输出与 `snapshot` 同形（context_id / checkpoint_id / messages）；当执行身份上没有比当前
-        revision 更新的状态时，逐字回退到 `snapshot` 的已发布视图。
-        """
+    async def live_conversation(self, context_id: str) -> dict[str, Any]:
+
+
         async with self.session_factory() as session:
             task = await session.get(DesktopThread, context_id)
             if not task:
@@ -630,19 +647,8 @@ class ContextService:
         )
 
     async def archive(self, context_id: str, cascade: bool = False) -> dict[str, Any]:
-        """归档一个会话（根/派生 Context）。归档可恢复；有后代时侧栏保留「已归档」墓碑。
 
-        输入:
-            context_id: str — 会话标识
-            cascade: bool — True 时递归归档该会话及全部派生后代（无墓碑）
 
-        输出:
-            dict — {context_id, archived: True}
-
-        工作流:
-            (1) 会话不存在 404；已删除 409；存在 pending/running 主运行 409
-            (2) cascade 时对自身与全部后代置 archived_at；否则仅置自身 archived_at
-        """
         async with self.session_factory() as session:
             task = await session.get(DesktopThread, context_id)
             if not task:
@@ -665,7 +671,7 @@ class ContextService:
         return {"context_id": context_id, "archived": True}
 
     async def unarchive(self, context_id: str) -> dict[str, Any]:
-        """恢复一个已归档会话（清空 archived_at，回到 active）。"""
+
         async with self.session_factory() as session:
             task = await session.get(DesktopThread, context_id)
             if not task:
@@ -677,22 +683,8 @@ class ContextService:
         return {"context_id": context_id, "archived": False}
 
     async def delete(self, context_id: str, cascade: bool = False) -> dict[str, Any]:
-        """删除一个会话（根/派生 Context）。永久删除、需确认；有后代时侧栏保留「已删除」墓碑。
 
-        输入:
-            context_id: str — 会话标识
-            cascade: bool — True 时递归删除该会话及全部派生后代（无墓碑）
 
-        输出:
-            dict — {context_id, deleted: True}
-
-        工作流:
-            (1) 会话不存在 404；存在 pending/running 主运行 409
-            (2) cascade：自底向上物理删除自身与全部后代线程行 + 清理各自 checkpoint（无墓碑）
-            (3) 非 cascade 且无后代：物理删除自身线程行 + 清理 checkpoint（无墓碑）
-            (4) 非 cascade 且有后代：保留自身线程行并置 deleted_at（墓碑），清自身内容与 checkpoint，
-                保留后代 source 行
-        """
         to_clean: list[str] = []
         async with self.session_factory() as session:
             task = await session.get(DesktopThread, context_id)
@@ -721,22 +713,8 @@ class ContextService:
         return {"context_id": context_id, "deleted": True}
 
     async def delete_many(self, context_ids: list[str], cascade: bool = False) -> dict[str, Any]:
-        """删除多个会话（根/派生 Context），即批量删除。语义与 delete 完全一致，需确认。
 
-        输入:
-            context_ids: list[str] — 待删除的会话标识集合（重复或血缘重叠会被去重/合并）
-            cascade: bool — True 时递归删除每个被选会话及其全部派生后代（无墓碑）
 
-        输出:
-            dict — {context_ids, deleted: True}
-
-        工作流:
-            (1) 去重 context_ids；为空集合时 422
-            (2) 逐个校验：会话不存在 404、存在 pending/running 主运行 409（整批拒绝，不删除任何会话）
-            (3) 按「级联 / 有后代 / 无后代」分类复用删除引擎：级联并入硬删除列表；有后代走墓碑；
-                无后代并入硬删除列表；touched 并集去重血缘重叠，避免重复处理
-            (4) 单事务提交；提交后统一用 checkpointer.adelete_thread 清理（去重、best-effort）
-        """
         ids = list(dict.fromkeys(context_ids))
         if not ids:
             raise HTTPException(422, "未提供要删除的会话")
@@ -775,7 +753,7 @@ class ContextService:
         return {"context_ids": ids, "deleted": True}
 
     async def list_archived(self) -> list[dict[str, Any]]:
-        """列出全部已归档会话（archived_at 非空且未 deleted_at）。"""
+
         async with self.session_factory() as session:
             rows = (
                 await session.execute(
@@ -989,8 +967,8 @@ class ContextService:
                 )
             )
             return revision.ref.checkpoint_id if revision is not None and not has_main_run else None
-        # 普通派生 Context 沿用自身 thread 的最新合法 checkpoint；由调用方的
-        # checkpoint recovery 统一处理降级。
+
+
         return None
 
     async def _make_state_graph(self):
@@ -1020,7 +998,7 @@ class ContextService:
             current = sources[0].context_id
 
     async def _has_active_run(self, session: AsyncSession, context_id: str) -> bool:
-        """判断会话是否存在 pending/running 主运行（避免边运行边归档/删除）。"""
+
         return bool(
             await session.scalar(
                 select(DesktopRun.run_id)
@@ -1033,7 +1011,7 @@ class ContextService:
         )
 
     async def _descendant_ids(self, session: AsyncSession, context_id: str) -> list[str]:
-        """经 current revision 的版本化来源边 BFS 求全部派生 Context identity。"""
+
         task = await session.get(DesktopThread, context_id)
         if task is None:
             return []
@@ -1127,7 +1105,7 @@ class ContextService:
 
     @staticmethod
     def _lifecycle(task: DesktopThread) -> str:
-        """返回会话生命周期标记：deleted / archived / active。"""
+
         if task.deleted_at is not None:
             return "deleted"
         if task.archived_at is not None:

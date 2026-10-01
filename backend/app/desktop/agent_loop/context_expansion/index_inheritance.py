@@ -1,7 +1,7 @@
 r"""本文件对外提供 RevisionIndexInheritancePlanner。
 
 输入为已提交目标 Revision、完整规范 index 及独立局部／整体 fingerprints；输出为基线 records 和稳定前缀 BuildPlan。
-工作流为沿同 Context single-source run_settled 权威链有界查找，证明消息前缀相等，选择相同闭合 segments。
+具体工作流为沿同 Context single-source run_settled 权威链有界查找，证明消息前缀相等，选择相同闭合 segments。
 综合合同变化仍可寻找兼容局部 proof；旧整体解释不随前缀直接继承。缺少基线全量回退，完整性错误不隐藏。
 示例：plan, records = await planner.plan(session, revision, index)；新增否定复用旧局部引文，整体解释重新生成。
 """

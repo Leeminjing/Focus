@@ -14,22 +14,23 @@
             且承诺子图（Supervisor）冒泡的消息以其节点名/消息 id 前缀先行排除
         values 模式 → events 事件（data: 完整序列化状态快照）
 
-输入:
+输入为:
     serialize_message: message — LangChain 消息实例
     chunk_to_events: mode — "messages" | "values"；chunk — astream 产出的原始 chunk；
                      envelope — 基础信封 dict（含 workspace_id/thread_id/agent_id/run_id）
     deserialize_messages: messages — 前端消息 dict 列表（含 tool_calls/tool_call_id/files）
 
-输出:
+输出为:
     serialize_message → dict；chunk_to_events → list[StreamEvent]（id 留空由 bridge 分配）；
     deserialize_messages → list[BaseMessage]（结构非法时抛 ValueError）
 
-具体工作流:
+具体工作流为:
     (1) messages 模式: chunk 为 (message_chunk, metadata) 元组 → 排除承诺子图消息与非助手消息
         → stream_reasoning 取独立思考增量组装 reasoning 事件、stream_text 取可见正文组装 tokens 事件
         （node 取 metadata.langgraph_node）
     (2) values 模式: chunk 为完整状态 dict → serialize_value 递归序列化 → events 事件
     (3) 所有事件 data 为 build_envelope 信封，前端按 run_id 独立路由
+        UI codec 排除 typed authority、opaque Provider 载荷和运行控制消息；权威恢复使用 focus.history
     (4) deserialize_messages: validate_messages 校验 tool call 关联完整性 → 按角色还原 BaseMessage
 
 示例:
@@ -47,12 +48,12 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from focus.runtime.stream_bridge.schemas import StreamEvent
 
-# 承诺子图（Supervisor）节点名：其消息冒泡到父图 messages 通道时以此为特征排除
+
 _COMMITMENT_SUBGRAPH_NODES = frozenset({"prepare_call", "delegate_with_review", "human_review"})
 
 
 def serialize_message(message: BaseMessage) -> dict[str, Any]:
-    """LangChain BaseMessage → 前端消息 dict。"""
+
     if isinstance(message, HumanMessage):
         role = "human"
     elif isinstance(message, AIMessage):
@@ -63,7 +64,11 @@ def serialize_message(message: BaseMessage) -> dict[str, Any]:
         role = "tool"
     else:
         role = message.type
-    result: dict[str, Any] = {"role": role, "content": message.content}
+    content = message.content
+    if isinstance(message, AIMessage) and isinstance(content, list):
+        content = [block for block in content if not isinstance(block, dict)
+                   or block.get("type") not in {"reasoning", "compaction"}]
+    result: dict[str, Any] = {"role": role, "content": content}
     if message.id:
         result["id"] = message.id
     if isinstance(message, AIMessage) and message.tool_calls:
@@ -83,25 +88,40 @@ def serialize_message(message: BaseMessage) -> dict[str, Any]:
         result["files"] = files
     compression = message.additional_kwargs.get("compression") if message.additional_kwargs else None
     if compression:
-        result["compression"] = compression
+        result["compression"] = _display_compression(compression)
     if message.additional_kwargs and message.additional_kwargs.get("curation_synthetic"):
         result["curation_synthetic"] = True
     return result
 
 
+def _display_compression(metadata: dict) -> dict:
+    from focus.history import deserialize_history_message
+
+    return {**metadata, "source": [serialize_message(deserialize_history_message(record))
+                                  for record in metadata.get("source", ())]}
+
+
 def serialize_value(value: Any) -> Any:
-    """递归将 LangChain 值序列化为 JSON 可序列化等价值。"""
+
     if isinstance(value, BaseMessage):
         return serialize_message(value)
     if isinstance(value, dict):
-        return {key: serialize_value(item) for key, item in value.items()}
+        return {key: serialize_value(item) for key, item in value.items()
+                if key not in {"execution_items", "world_state_snapshot", "request_manifest", "inbox_delivery"}}
     if isinstance(value, (list, tuple)):
-        return [serialize_value(item) for item in value]
+        return [serialize_value(item) for item in value if not _hidden_context(item)]
     return value
 
 
+def _hidden_context(value: Any) -> bool:
+    if not isinstance(value, BaseMessage):
+        return False
+    context = value.additional_kwargs.get("focus_context", {})
+    return context.get("scope") in {"runtime", "round"} or context.get("kind") == "selected_context"
+
+
 def stream_text(content: Any) -> str:
-    """从 LangChain message chunk 提取可见文本。"""
+
     if isinstance(content, str):
         return content
     if not isinstance(content, list):
@@ -116,20 +136,14 @@ def stream_text(content: Any) -> str:
 
 
 def stream_reasoning(message: BaseMessage) -> str:
-    """从 DeepSeek AI message chunk 提取独立思考增量。"""
+
     reasoning = (getattr(message, "additional_kwargs", None) or {}).get("reasoning_content")
     return reasoning if isinstance(reasoning, str) else ""
 
 
 def validate_messages(messages: list[dict[str, Any]]) -> None:
-    """校验前端消息列表结构合法：角色有效、tool call 与 ToolMessage 关联完整。
 
-    输入:
-        messages: list[dict] — 前端消息列表
 
-    输出:
-        None — 结构合法；非法时抛 ValueError（含消息序号）
-    """
     pending_calls: dict[str, int] = {}
     resolved_calls: set[str] = set()
     for index, message in enumerate(messages):
@@ -166,21 +180,8 @@ def validate_messages(messages: list[dict[str, Any]]) -> None:
 def deserialize_messages(
     messages: list[dict[str, Any]], validate: bool = True
 ) -> list[BaseMessage]:
-    """前端消息 dict 列表 → LangChain BaseMessage 列表（默认先校验结构）。
 
-    输入:
-        messages: list[dict] — 前端消息（role/content/id/files/tool_calls/tool_call_id）
-        validate: bool — 是否先做 tool call 关联完整性校验；压缩块来源恢复等
-            局部切片可能孤立于调用方，由调用方后续统一修复时传 False
 
-    输出:
-        list[BaseMessage] — 按角色还原的消息实例
-
-    工作流:
-        (1) validate=True 时 validate_messages 校验 tool call 关联完整性
-        (2) human/user → HumanMessage；ai/assistant → AIMessage（含 tool_calls）；
-            system → SystemMessage；tool → ToolMessage
-    """
     if validate:
         validate_messages(messages)
     result: list[BaseMessage] = []
@@ -224,7 +225,7 @@ def build_envelope(
     event: str,
     data: Any,
 ) -> dict[str, Any]:
-    """组装统一事件信封。"""
+
     return {
         "workspace_id": workspace_id,
         "thread_id": thread_id,
@@ -236,14 +237,8 @@ def build_envelope(
 
 
 def serialize_interrupt(value: Any) -> Any:
-    """递归序列化 LangGraph Interrupt（id + value）为 JSON 可序列化 dict。
 
-    输入:
-        value: Any — Interrupt 实例或包含它的任意结构
 
-    输出:
-        Any — {"id": ..., "value": ...} 或递归序列化后的等价结构
-    """
     from langgraph.types import Interrupt
 
     if isinstance(value, Interrupt):
@@ -256,14 +251,8 @@ def serialize_interrupt(value: Any) -> Any:
 
 
 def extract_interrupts(chunk: Any) -> list[dict[str, Any]]:
-    """递归提取 chunk 中所有 LangGraph Interrupt 对象。
 
-    输入:
-        chunk: Any — astream 产出的 chunk（values 快照可能含 __interrupt__ 键）
 
-    输出:
-        list[dict[str, Any]] — 序列化后的 Interrupt 列表；无中断返回空列表
-    """
     from langgraph.types import Interrupt
 
     if isinstance(chunk, Interrupt):
@@ -282,25 +271,15 @@ def extract_interrupts(chunk: Any) -> list[dict[str, Any]]:
 
 
 def chunk_to_events(mode: str, chunk: Any, envelope: dict[str, Any]) -> list[StreamEvent]:
-    """将 astream 的 (mode, chunk) 转换为统一信封 StreamEvent 列表。
 
-    输入:
-        mode: str — "messages"（token 增量）、"values"（完整快照）或 "custom"
-        chunk: Any — astream 产出的原始 chunk
-        envelope: dict — 基础信封（workspace_id/thread_id/agent_id/run_id，event/data 由本函数填充）
 
-    输出:
-        list[StreamEvent] — tokens / events 事件；无法识别的 chunk 返回空列表
-    """
     if mode == "messages":
         try:
             message, metadata = chunk
         except (TypeError, ValueError):
             return []
-        # 承诺子图（Supervisor）在 middleware 内 astream 时，其 AIMessage/ToolMessage
-        # 会冒泡到父图 messages 通道（langgraph_node 为子图节点名）；这些消息已通过
-        # custom 通道（commitment_messages）进入轨迹面板，不得重复发布为 tokens
-        # 污染 lead 对话流。
+
+
         node = metadata.get("langgraph_node") if isinstance(metadata, dict) else None
         message_id = getattr(message, "id", None)
         if node in _COMMITMENT_SUBGRAPH_NODES or (
@@ -331,7 +310,7 @@ def chunk_to_events(mode: str, chunk: Any, envelope: dict[str, Any]) -> list[Str
         return [StreamEvent(id="", event="events", data={**envelope, "event": "events", "data": payload})]
 
     if mode == "custom":
-        # 承诺层各角色真实 messages（commitment_messages）→ events 信封
+
         payload = serialize_value(chunk)
         return [StreamEvent(id="", event="events", data={**envelope, "event": "events", "data": payload})]
 

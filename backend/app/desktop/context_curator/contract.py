@@ -3,6 +3,8 @@ r"""
 
 输入为 CurationSourceProjector 产生的稳定证据快照、冻结策略、当前已发布定义和模型返回的
 CuratedContextPlan；输出为版本化模型 envelope、完整 authored_messages 与多对多来源审计。
+semantic 资格在来源与 reference_only 派生之间保持；所有策展消息保存 curator 来源及证据引用，
+其声明的模型 role 不赋予宿主 policy 权威。
 具体工作流为严格解析判别联合，按计划顺序生成普通消息或原子工具交换，由系统分配稳定
 消息/调用 ID，并验证所有工具结果与来源证据一致。示例：
 `compiled = compile_curated_context(plan, snapshot)`。
@@ -50,6 +52,7 @@ class CurationSourceMessage(_StrictModel):
     tool_call_id: str | None = None
     name: str | None = None
     status: str | None = None
+    semantic_policy: Literal["index", "evidence_only", "reference_only"] = "index"
 
 
 class CurationSourceSnapshot(_StrictModel):
@@ -263,6 +266,14 @@ def _authored_message(
         json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         .encode("utf-8")
     ).hexdigest()[:24]
+    referenced = [source for source in snapshot.messages if source.source_message_id in evidence]
+    reference_only = referenced and all(source.semantic_policy == "reference_only" for source in referenced)
+    extra["additional_kwargs"] = {"focus_context": {
+        "origin": "curator", "scope": "revision", "kind": "selected_context" if reference_only else "message",
+        "authority": "reference" if reference_only else "task",
+        "source_refs": [{"checkpoint_id": snapshot.source_checkpoint_id, "message_id": source.source_message_id}
+                        for source in referenced],
+    }}
     return {
         "id": f"focus-curation-{digest}",
         "role": role,

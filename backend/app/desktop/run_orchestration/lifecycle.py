@@ -6,19 +6,21 @@ r"""本文件对外提供 RunLifecycleFinalizer 与 RunSettlement。
 来源不可读时不授予自动修复因果；随后用共享协议编译器验证 execution view，按 base revision CAS 发布合法 revision，
 按 lease 模式结算 workspace effect、释放 lease，保存独立类型化任务领域来源并 enqueue outbox；Reader 只记录并发变化，隔离 Writer 保留待采用结果，
 权威 Writer 才推进权威 slot。重复 finalize 返回同一事实，陈旧 Context 不覆盖用户的新 current pointer。
+checkpoint 的 canonical typed bridge 在结算前验证，新 publication 保存 V2 execution Items，UI codec 不参与恢复。
 示例：`settlement = await finalizer.finalize(record)`。
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from focus.runtime.runs.events import serialize_message
+from focus.history import content_hash
+from focus.history.bridge import checkpoint_records
+from backend.app.desktop.context_evolution.history import continued_revision_history
 from focus.runtime.runs.manager import RunRecord
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
@@ -338,11 +340,14 @@ class RunLifecycleFinalizer:
             "repaired": ContextRevisionProjectionStatus.REPAIRED,
             "approval_required": ContextRevisionProjectionStatus.APPROVAL_REQUIRED,
         }[projection.status]
+        history = continued_revision_history(
+            current.authored_messages if current is not None else (), projection.execution_messages,
+            previous=current.history_payload if current else None,
+        )
         contract = ContextRevisionContract(
             ref=ref,
             sources=sources,
-            authored_messages=tuple(projection.authored_messages),
-            execution_messages=tuple(projection.execution_messages),
+            history_payload=history,
             repair_manifest=tuple(projection.repair_manifest),
             issues=tuple(projection.issues),
             initial_message_ids=tuple(
@@ -352,9 +357,8 @@ class RunLifecycleFinalizer:
             ),
             definition_hash=projection.definition_hash,
             projection_hash=projection.projection_hash,
-            content_hash=hashlib.sha256(
-                f"run-settled:{run.run_id}:{checkpoint_id}:{projection.projection_hash}".encode()
-            ).hexdigest(),
+            content_hash=content_hash({"run_id": run.run_id, "checkpoint_id": checkpoint_id,
+                                       "history_payload": history.model_dump(mode="json")}),
             projection_status=status,
             origin_kind=ContextRevisionOriginKind.RUN_SETTLED,
             origin_id=run.run_id,
@@ -377,7 +381,7 @@ class RunLifecycleFinalizer:
         if checkpoint is None:
             return ()
         values = getattr(checkpoint, "checkpoint", {}).get("channel_values", {})
-        return tuple(serialize_message(message) for message in values.get("messages", ()))
+        return checkpoint_records(values)
 
     @staticmethod
     def _repair_context(

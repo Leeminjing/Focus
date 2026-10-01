@@ -1,7 +1,7 @@
 r"""本文件对外提供 support-span drafts、独立 claim assessments、SemanticGroundingValidator 与受监督 verifier。
 
 输入为冻结消息原文、陈述、精确引文及可选独立 verdict；输出为绑定目标 Revision 的 SemanticEvidenceUnit 或隔离原因。
-工作流为 evaluate_draft 确定性检查支持和 authority，再由 validate 生成来源引用；confirmed 必须有独立 supported verdict。
+具体工作流为 evaluate_draft 确定性检查支持和 authority，再由 validate 生成来源引用；confirmed 必须有独立 supported verdict。
 示例：authority = SemanticGroundingValidator.evaluate_draft(contents, draft, assessment)；局部 record 可复用校验结果而不重新调用模型。
 """
 

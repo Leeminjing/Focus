@@ -1,49 +1,16 @@
-"""
-本文件对外提供 make_lead_agent 异步工厂函数，作为 lead_agent 装配的唯一对外入口。
+"""本文件对外提供 make_lead_agent 的统一角色执行图工厂。
 
-对外提供:
-    make_lead_agent — 装配并返回可执行的 CompiledStateGraph
-
-输入:
-    make_lead_agent:
-        model_name: str | None — 目标模型名，None 时取显式声明的默认模型
-        agent_name: str | None — system prompt 中的 agent 名称，None 时使用默认值 "focus"
-        tool_groups: list[str] | None — 需要加载的工具分组名列表，None 表示加载全部
-        user_id: str | None — 用户标识，用于定位 per-user custom skills 路径，None 时跳过 custom
-        tools: list[BaseTool] | None — 自定义工具集，非 None 时跳过全局工具汇集与 describe_skill_tool
-        system_prompt: str | None — 自定义系统提示词，非 None 时跳过技能扫描与模板生成
-        middlewares: list[AgentMiddleware] | None — 自定义中间件链，非 None 时覆盖默认构建
-        additional_middlewares: list[AgentMiddleware] | None — 追加到默认或自定义链末尾的中间件
-
-输出:
-    CompiledStateGraph — langchain.agents.create_agent() 产出的可执行 agent graph
-
-具体工作流:
-    (1) 调用 create_chat_model(name=model_name) 获取 BaseChatModel 实例
-    (2) 若 system_prompt 为 None:
-        (2a) 加载 skills（public/custom 扫描 + enabled 过滤 → SkillCatalog）
-        (2b) apply_prompt_template(agent_name, skill_names, container_base_path) 生成 system_prompt
-    (3) 若 tools 为 None: await get_available_tools(tool_groups=tool_groups) 汇集全局工具
-        + build_describe_skill_tool(catalog) 创建 skill 查询工具
-    (4) 若 middlewares 为 None: 使用空自定义中间件链
-    (4.5) 最终链最末端追加 PluginBridgeMiddleware（插件工具并入工具节点、插件 hook
-        稳定顺序分发；无插件时为空操作）
-    (4.6) 最终链最前端前置 AccessPolicyMiddleware 以取得最外层：本机资源准入必须先于
-        任何「可恢复工具错误闭合」触发中断，否则越界会先被错误中间件吞成工具错误消息；
-        该装配无条件完成，因此 main / teammate / worker / patrol 与内联子执行共用同一准入层
-    (4.7) 前置 FileModeContextMiddleware，使每次模型请求显示当前受治理文件模式和工作区
-    (5) 调用 langchain.agents.create_agent(model, tools, middleware, system_prompt, state_schema=LeadAgentState)
-    (6) 返回 CompiledStateGraph
-
-示例:
-    graph = await make_lead_agent()
-    graph = await make_lead_agent(model_name="deepseek-v4-flash", agent_name="DeepSeek")
-    graph = await make_lead_agent(tool_groups=["file:read", "bash"])
-    graph = await make_lead_agent(user_id="uuid-xxx")
-    graph = await make_lead_agent(tools=my_tools, system_prompt=my_prompt, middlewares=[])
+输入为显式模型目录、稳定基础行为、实际工具与冻结 selected context、inbox／attempt 端口；输出为 CompiledStateGraph。
+具体工作流为装配唯一 Provider 模型入口及安全最外层，依次处理耐久 inbox 和完整请求压缩预算，
+历史重建后统一准备 WorldState、冻结 selected context、有效 replay 分支和 typed authority，
+再由 create_agent 执行 sampling／工具交换。Scoped context 与运行状态进入 input，基础行为独立进入 instructions；
+工具执行 ledger 保留不确定恢复边界；WorldState 与 typed bridge 在 sync checkpoint 提交，模型审计独立于任务语义。
+helpers 只承担技能目录发现；Desktop ORM 不进入 Harness。attempt／inbox 端口由 Desktop 组合根注入。
+示例：graph = await make_lead_agent(model_name="model", tools=tools, system_prompt=policy, frozen_contexts=contexts)。
 """
 
 import json
+from dataclasses import asdict
 import logging
 from pathlib import Path
 
@@ -58,26 +25,18 @@ from focus.models import create_chat_model
 from focus.plugins import get_plugin_registry
 from focus.plugins.bridge import PluginBridgeMiddleware
 from focus.security.middleware import AccessPolicyMiddleware
-from focus.security.model_context import FileModeContextMiddleware
+from focus.context.middleware import WorldStateMiddleware
+from focus.context.scoped import FrozenContext
+from focus.history.middleware import TypedHistoryMiddleware
+from focus.runtime.tool_attempts import ToolExecutionMiddleware
 from focus.tools import get_available_tools
 
 logger = logging.getLogger(__name__)
 
 
 def _load_enabled_skill_names() -> frozenset[str]:
-    """从 extensions_config.json 读取已启用的 skill 名称集合。
 
-    输入: 无
 
-    输出:
-        frozenset[str] — enabled=true 的 skill 名称集合
-
-    工作流:
-        (1) 读取 extensions_config.json
-        (2) 提取 skills 段
-        (3) 过滤 enabled=true → 返回名称 frozenset
-        (4) 文件不存在或 skills 段为空 → 返回空 frozenset
-    """
     try:
         with open("extensions_config.json", "r", encoding="utf-8") as f:
             raw = json.load(f)
@@ -99,23 +58,8 @@ def _discover_and_build_catalog(
     host_base_path: str | None,
     user_id: str | None = None,
 ) -> "SkillCatalog":
-    """扫描宿主机文件系统发现 SKILL.md，解析并构建 SkillCatalog。
 
-    输入:
-        enabled_names: frozenset[str] — extensions_config.json 中 enabled=true 的 skill 名称
-        host_base_path: str | None — skills 根目录的宿主机路径，None 时从 SKILLS_PUBLIC_REAL_ROOT 取默认值
-        user_id: str | None — 用户标识，用于定位 per-user custom skills 路径，None 时跳过 custom
 
-    输出:
-        SkillCatalog — 包含所有已启用 skill 的不可变索引
-
-    工作流:
-        (1) public: 遍历 SKILLS_PUBLIC_REAL_ROOT 下的 SKILL.md
-        (2) custom: 若 user_id 非 None，遍历 SKILLS_CUSTOM_REAL_ROOT.format(user_id=user_id) 下的 SKILL.md
-        (3) 逐个 parse_skill_file() 解析
-        (4) 根据 enabled_names 过滤 enabled=true
-        (5) 构建 SkillCatalog 并返回
-    """
     from focus.skills.catalog import SkillCatalog
     from focus.skills.parser import parse_skill_file
     from focus.skills.types import (
@@ -147,7 +91,7 @@ def _discover_and_build_catalog(
             )
             if skill is None:
                 continue
-            # 设置 enabled 状态
+
             skill.enabled = skill.name in enabled_names
             if skill.enabled:
                 skills.append(skill)
@@ -166,14 +110,18 @@ async def make_lead_agent(
     additional_middlewares: list[AgentMiddleware] | None = None,
     app_config: AppConfig | None = None,
     middleware_skill_names: frozenset[str] | None = None,
+    frozen_contexts: tuple[FrozenContext, ...] = (),
+    world_skill_catalog: dict | None = None,
+    inbox_middleware: AgentMiddleware | None = None,
+    attempt_middleware: AgentMiddleware | None = None,
 ) -> CompiledStateGraph:
-    # (1) 创建模型
+
     model = create_chat_model(name=model_name, app_config=app_config)
 
-    # (2) system prompt：桌面路径已注入（prompt_with_skills 等），此处不再生成默认模板
+
     catalog = None
 
-    # (3) 汇集工具：未注入时走全局工具池 + describe_skill_tool
+
     if tools is None:
         from focus.tools.interfaces import ToolInfo
 
@@ -188,8 +136,7 @@ async def make_lead_agent(
         describe_skill_tool = build_describe_skill_tool(catalog)
         tools = [describe_skill_tool] + tools
 
-    # (4) middleware：未注入时经共享 builder 按 commitment.enabled 装配承诺层；
-    #     Context7 只提供延迟加载函数，网络连接由承诺阶段首次实际使用时建立。
+
     if middlewares is None:
         from focus.agents.lead.middlewares import build_general_middlewares
 
@@ -215,17 +162,33 @@ async def make_lead_agent(
         )
     if additional_middlewares:
         middlewares = [*(middlewares or []), *additional_middlewares]
-    # 插件桥接：位于最终链最末端（所有系统中间件之后），插件工具经 middleware tools
-    # 属性并入工具节点、插件 hook 按注册表稳定顺序分发（全部角色统一生效）
-    middlewares = [*(middlewares or []), PluginBridgeMiddleware(get_plugin_registry())]
-    # 准入门：位于最终链最前端以取得最外层，必须在任何「可恢复工具错误闭合」之前触发中断，
-    # 否则越界会先被错误中间件吞成工具错误消息；此处位于 desktop 注入的 middlewares 之外，
-    # 因此 main / teammate / worker / patrol 与内联子执行统一具备准入层
-    middlewares = [FileModeContextMiddleware(), *middlewares]
-    middlewares = [AccessPolicyMiddleware(), *middlewares]
-    middleware = middlewares if middlewares is not None else []
 
-    # (5) create_agent
+
+    middlewares = [*(middlewares or []), PluginBridgeMiddleware(get_plugin_registry())]
+
+
+    middlewares = [AccessPolicyMiddleware(), ToolExecutionMiddleware(), *middlewares]
+    visible_tools = [*tools, *(tool for middleware in middlewares for tool in getattr(middleware, "tools", ()))]
+    from focus.agents.compression.gate import CompressionGate
+    from focus.models.response_projection import function_specs
+    from focus.models.responses import FocusResponsesChatModel
+    responses_model = model if isinstance(model, FocusResponsesChatModel) else None
+    world_state = WorldStateMiddleware(
+        visible_tools, system_prompt, middleware_skill_names or frozenset(),
+        model_name or (app_config or get_app_config("config.yaml")).resolve_default_model_name(),
+        responses_model.provider_contract.projection_version if responses_model else "focus-chat-bridge-v1",
+        skill_catalog=world_skill_catalog,
+        provider_contract=asdict(responses_model.provider_contract) if responses_model else None,
+        frozen_contexts=frozen_contexts,
+    )
+    for configured in middlewares:
+        if isinstance(configured, CompressionGate):
+            configured.configure_request(system_prompt, function_specs(visible_tools), model=responses_model, world_state=world_state)
+    middleware = [middlewares[0],
+                  *([inbox_middleware] if inbox_middleware is not None else []), *middlewares[1:], world_state,
+                  TypedHistoryMiddleware(), *([attempt_middleware] if attempt_middleware is not None else [])]
+
+
     return create_agent(
         model=model,
         tools=tools,

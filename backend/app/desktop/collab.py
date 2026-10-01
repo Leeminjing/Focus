@@ -1,7 +1,7 @@
 """
 本文件对外提供 AgentCollab 类，集中实现 Claude Code 三套 subagent 机制的协作能力：
 SendMessage（点对点/广播）、任务板（Coordinator CAS 机械协议）、计划审批与关机机械协议、
-未读消息回合注入（按 kind 分拣）。
+协作消息发送与协议处理；投递由独立 AgentInbox 管理。
 
 输入为已初始化的 PostgreSQL session factory；协作工具另需运行上下文提供执行主体身份与任务身份
 （`runtime.context` 的 `agent_id` / `task_id`）以及唤醒链深度 `swarm_depth`——三者都是受治理键，缺失即
@@ -9,22 +9,19 @@ SendMessage（点对点/广播）、任务板（Coordinator CAS 机械协议）�
     build_collab_tools(role) — 按角色构建协作工具列表（main: send/approve_plan/respond_shutdown/
                               publish_task/list_board_tasks；teammate: send/request_plan_approval/
                               request_shutdown；worker: send/claim_task/complete_task；patrol: 空）
-    load_unread_messages(agent_id, task_id) — 查询未读消息并按 kind 分拣组装注入块，随后标记已读
     create_swarm_agent / list_swarm_agent_ids / is_agent_stopped — 持久 Agent 身份管理
 
 效果声明：协作工具只读写会话数据库，不产生受治理的本地文件副作用，由 build_collab_tools
 统一签发为无本地效果。
 
 具体工作流为：send_message 落表（from=当前 agent，kind 区分文本与协议消息，to_agent="*" 广播）；
-目标 agent 下一次 run 装配时 load_unread_messages 按 kind 分拣——"message" 进 <agent_messages>
-文本块，协议 kind 进 <agent_protocol> 块（from/kind 标签），统一读后标已读（消费即销毁，防膨胀）；
+目标 agent 通过 AgentInbox 只读取得 typed collaboration 内容，精确 checkpoint 提交后确认投递；
 计划审批为回合制（teammate 请求 → main 响应 → teammate 回合注入）；关机批准为代码层动作
 （swarm_agents.status 置 stopped）；任务板以数据库 CAS 更新强制状态机。
 
 示例：
     collab = AgentCollab(session_factory)
     tools = collab.build_collab_tools(role="teammate")
-    block = await collab.load_unread_messages(agent_id="swarm:abc", task_id="t-1")
 """
 
 from __future__ import annotations
@@ -48,10 +45,10 @@ from focus.security.launch import SWARM_DEPTH_CONTEXT_KEY
 
 logger = logging.getLogger(__name__)
 
-# 消息驱动自动唤醒的深度上限（防 A→B→A→B 乒乓；超限只落表排队等主 Agent wake）
+
 _SWARM_DEPTH_LIMIT = 3
 
-# 协作层用于决策的上下文字段：身份决定消息归属，深度决定是否截断自动唤醒
+
 declare_governed_keys("agent_id", "task_id", "swarm_depth")
 
 _MESSAGE_KINDS = frozenset({
@@ -73,16 +70,9 @@ def _new_id() -> str:
     return uuid.uuid4().hex
 
 
-def _escape(value: str) -> str:
-    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
 def _context_value(context: object, key: str, label: str) -> str:
-    """取一个受治理的协作上下文字段；缺失即失败并指明是哪一个键。
 
-    受治理键不允许"取不到就用默认值"的静默降级：缺键意味着启动点没把身份带进来，
-    必须显式失败，且失败信息只提缺失的那个键。
-    """
+
     if not isinstance(context, dict):
         raise RuntimeError("缺少协作上下文: runtime.context 必须为 dict")
     if key not in context or context[key] in (None, ""):
@@ -91,7 +81,7 @@ def _context_value(context: object, key: str, label: str) -> str:
 
 
 def _collab_values(runtime: ToolRuntime[dict]) -> tuple[str, str]:
-    """从 runtime.context 提取当前 agent_id 与 task_id，逐键校验。"""
+
     context = runtime.context
     agent_id = _context_value(context, "agent_id", "执行主体身份")
     task_id = _context_value(context, "task_id", "任务身份")
@@ -106,35 +96,19 @@ class AgentCollab:
         session_factory: async_sessionmaker[AsyncSession],
         swarm_launcher: Callable[[str, str, int], Awaitable[None]] | None = None,
     ) -> None:
-        """初始化 AgentCollab。
 
-        输入:
-            session_factory: async_sessionmaker — 数据库会话工厂
-            swarm_launcher: Callable | None — 消息驱动自动唤醒的执行器（service 层提供，
-                签名 (agent_id, message, depth)），None 时禁用自动触发（仅落表）
-        """
+
         self.session_factory = session_factory
         self.swarm_launcher = swarm_launcher
 
-    # === 工具构建 ===
 
     def build_collab_tools(self, role: str) -> list[BaseTool]:
-        """按角色构建协作工具列表。
 
-        输入:
-            role: str — "main"（Team Lead/Coordinator）、"teammate"、"worker"；"patrol" 返回空列表
 
-        输出:
-            list[BaseTool] — 该角色可用的协作工具
-
-        工作流:
-            (1) 按角色取该角色的协作工具集合
-            (2) 统一签发无本地效果契约：协作只读写会话数据库，不产生受治理的本地文件副作用
-        """
         return declare_all_effects(self._role_tools(role), NO_LOCAL_EFFECT)
 
     def _role_tools(self, role: str) -> list[BaseTool]:
-        """按角色列出协作工具，不签发效果契约。"""
+
         if role == "main":
             return [
                 self.build_send_message_tool(),
@@ -185,23 +159,12 @@ class AgentCollab:
         return send_message
 
     def _maybe_auto_wake(self, task_id: str, to_agent: str, content: str, depth: int) -> None:
-        """落表后评估自动触发目标 agent 的一轮 run（消息驱动自动唤醒）。
 
-        输入:
-            task_id: str — 所属任务
-            to_agent: str — 目标 agent
-            content: str — 触发 run 的输入消息
-            depth: int — 目标 run 的 swarm_depth（来源 depth+1）
 
-        工作流:
-            (1) 未注入 launcher 或目标为主 Agent（main:{task_id}）→ 不触发（仅落表）
-            (2) depth 达上限 → 不触发（防环截断，消息排队等主 Agent wake）
-            (3) 异步调用 launcher（由 service 层查忙/查身份后触发 run）
-        """
         if self.swarm_launcher is None:
             return
         if to_agent == f"main:{task_id}":
-            return  # main 代表用户，永不被自动触发（须用户驱动）
+            return
         if depth >= _SWARM_DEPTH_LIMIT:
             logger.info("自动唤醒深度达上限 (%s)，仅落表排队: to_agent=%s", _SWARM_DEPTH_LIMIT, to_agent)
             return
@@ -292,7 +255,7 @@ class AgentCollab:
                 session.add(board)
                 await session.commit()
             if self.swarm_launcher is not None:
-                # 任务板只有 active worker 能消费；消息携带任务 ID，供 claim_task 认领
+
                 wake_message = (
                     f"任务板有新任务：{description}（board_task_id={board.board_task_id}），"
                     f"请用 claim_task 认领。"
@@ -383,14 +346,13 @@ class AgentCollab:
 
         return complete_task
 
-    # === 持久 Agent 身份（机制③④）===
 
     async def create_swarm_agent(
         self, agent_id: str, task_id: str, role: str, permissions: list[str] | None = None,
         access_mode: str = "workspace-write",
     ) -> None:
-        """创建持久 Agent 身份行（checkpoint_ns=swarm:{agent_id}，status=active，permissions 与
-        access_mode 持久化供 wake 沿用——两者都只在 spawn 时从父级继承，wake 不放大）。"""
+
+
         async with self.session_factory() as session:
             session.add(SwarmAgent(
                 agent_id=agent_id, task_id=task_id, role=role,
@@ -401,14 +363,14 @@ class AgentCollab:
             await session.commit()
 
     async def get_swarm_agent(self, agent_id: str) -> SwarmAgent | None:
-        """按 agent_id 查询持久 Agent 身份行（wake 等入口校验存在性、角色与权限）。"""
+
         async with self.session_factory() as session:
             return await session.get(SwarmAgent, agent_id)
 
     async def list_swarm_agent_ids(
         self, task_id: str, *, role: str | None = None, status: str | None = None
     ) -> list[str]:
-        """按可选角色/状态过滤任务下的持久 Agent ID。"""
+
         query = select(SwarmAgent.agent_id).where(SwarmAgent.task_id == task_id)
         if role is not None:
             query = query.where(SwarmAgent.role == role)
@@ -419,7 +381,7 @@ class AgentCollab:
         return list(rows)
 
     async def is_agent_stopped(self, agent_id: str) -> bool:
-        """查询持久 Agent 是否已关机（status=stopped）。"""
+
         async with self.session_factory() as session:
             status = await session.scalar(
                 select(SwarmAgent.status).where(SwarmAgent.agent_id == agent_id)
@@ -427,7 +389,7 @@ class AgentCollab:
         return status == "stopped"
 
     async def _stop_swarm_agent(self, agent_id: str) -> bool:
-        """代码层关机：将 Agent 状态置 stopped（CAS 仅 active 可停）。"""
+
         async with self.session_factory() as session:
             result = await session.execute(
                 update(SwarmAgent)
@@ -439,61 +401,6 @@ class AgentCollab:
         return result.scalar() is not None
 
     async def _broadcast_targets(self, task_id: str) -> list[str]:
-        """广播目标：主 Agent + 任务下全部持久 Agent。"""
+
         swarm_ids = await self.list_swarm_agent_ids(task_id)
         return [f"main:{task_id}", *swarm_ids]
-
-    # === 回合注入 ===
-
-    async def load_unread_messages(self, agent_id: str, task_id: str) -> str:
-        """查询当前 agent 的未读消息，按 kind 分拣组装注入块，随后标记已读。
-
-        输入:
-            agent_id: str — 当前 run 的 agent 标识
-            task_id: str — 所属任务 ID
-
-        输出:
-            str — 未读消息非空时返回注入块（"message" 进 <agent_messages> 文本块，协议 kind
-                  进 <agent_protocol> 块，均带 from/kind 标签），否则返回空字符串
-
-        工作流:
-            (1) 查询 to_agent=agent_id 且 read_at 为 NULL 的消息（按创建时间排序）
-            (2) 按 kind 分拣组装注入块（内容转义）
-            (3) 同一事务内将所有消息标记已读（消费即销毁）
-        """
-        async with self.session_factory() as session:
-            rows = (
-                await session.execute(
-                    select(AgentMessage)
-                    .where(
-                        AgentMessage.to_agent == agent_id,
-                        AgentMessage.task_id == task_id,
-                        AgentMessage.read_at.is_(None),
-                    )
-                    .order_by(AgentMessage.created_at)
-                )
-            ).scalars().all()
-            if not rows:
-                return ""
-            text_blocks: list[str] = []
-            protocol_blocks: list[str] = []
-            for row in rows:
-                stamp = row.created_at.isoformat() if row.created_at else ""
-                if row.kind == "message":
-                    text_blocks.append(
-                        f'<agent_message from="{row.from_agent}" at="{stamp}">{_escape(row.content)}</agent_message>'
-                    )
-                else:
-                    protocol_blocks.append(
-                        f'<agent_protocol from="{row.from_agent}" kind="{row.kind}">{_escape(row.content)}</agent_protocol>'
-                    )
-            now = datetime.now(timezone.utc)
-            for row in rows:
-                row.read_at = now
-            await session.commit()
-        parts: list[str] = []
-        if text_blocks:
-            parts.append("<agent_messages>\n" + "\n".join(text_blocks) + "\n</agent_messages>")
-        if protocol_blocks:
-            parts.append("<agent_protocols>\n" + "\n".join(protocol_blocks) + "\n</agent_protocols>")
-        return "\n\n".join(parts)
