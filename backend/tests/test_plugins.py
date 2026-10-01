@@ -1,4 +1,9 @@
-"""插件系统单元测试：接口目录、声明校验、注册表（冲突/依赖/撤销/顺序）、桥接分发、装配集成。"""
+"""本文件对外提供插件接口、注册表、桥接及实际工厂的回归验证。
+
+输入为测试插件声明、工具与 hooks；输出为依赖解析、冲突拒绝、执行分发和装配断言。
+工作流为加载并登记插件，验证稳定分发，再通过真实工厂确认工具注入和重复名称提前拒绝。
+示例：pytest backend/tests/test_plugins.py；进程外插件使用隔离测试 runtime。
+"""
 
 import asyncio
 import json
@@ -453,7 +458,7 @@ def test_make_lead_agent_appends_bridge_and_injects_plugin_tool(monkeypatch, tmp
     asyncio.run(run())
 
 
-def test_name_collision_system_tool_wins(monkeypatch):
+def test_name_collision_rejected_before_system_tool_overwrites_plugin(monkeypatch):
     async def run():
         sys_tool = StructuredTool.from_function(
             func=lambda x: "sys", name="browser", description="system tool",
@@ -468,12 +473,15 @@ def test_name_collision_system_tool_wins(monkeypatch):
 
         from focus.agents.lead import make_lead_agent
 
-        agent = await make_lead_agent(
-            model_name=None, tools=[sys_tool], system_prompt="", middlewares=[],
-            app_config=_fake_app_config(),
-        )
-        by_name = agent.nodes["tools"].bound.tools_by_name
-        assert by_name["browser"].description == "system tool"
+        from focus.tools.catalog import ToolNameConflict
+
+        with pytest.raises(ToolNameConflict) as caught:
+            await make_lead_agent(
+                model_name=None, tools=[sys_tool], system_prompt="", middlewares=[],
+                app_config=_fake_app_config(),
+            )
+        assert caught.value.tool_name == "browser"
+        assert "PluginBridgeMiddleware" in str(caught.value) and "tools[0]" in str(caught.value)
 
     asyncio.run(run())
 

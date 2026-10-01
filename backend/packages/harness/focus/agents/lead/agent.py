@@ -5,6 +5,8 @@
 历史重建后统一准备 WorldState、冻结 selected context、有效 replay 分支和 typed authority，
 再由 create_agent 执行 sampling／工具交换。Scoped context 与运行状态进入 input，基础行为独立进入 instructions；
 工具执行 ledger 保留不确定恢复边界；WorldState 与 typed bridge 在 sync checkpoint 提交，模型审计独立于任务语义。
+发现池只选择非插件来源；插件桥独占插件注入，联合目录在名称映射前拒绝冲突。
+目录按 middleware／普通工具顺序保留原绑定，供执行、WorldState 与压缩预算共同消费。
 helpers 只承担技能目录发现；Desktop ORM 不进入 Harness。attempt／inbox 端口由 Desktop 组合根注入。
 示例：graph = await make_lead_agent(model_name="model", tools=tools, system_prompt=policy, frozen_contexts=contexts)。
 """
@@ -30,6 +32,7 @@ from focus.context.scoped import FrozenContext
 from focus.history.middleware import TypedHistoryMiddleware
 from focus.runtime.tool_attempts import ToolExecutionMiddleware
 from focus.tools import get_available_tools
+from focus.tools.catalog import ToolBinding, compile_agent_tool_catalog, execution_pool_tools
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +107,7 @@ async def make_lead_agent(
     agent_name: str | None = None,
     tool_groups: list[str] | None = None,
     user_id: str | None = None,
-    tools: list[BaseTool] | None = None,
+    tools: list[BaseTool | ToolBinding] | None = None,
     system_prompt: str = "",
     middlewares: list[AgentMiddleware] | None = None,
     additional_middlewares: list[AgentMiddleware] | None = None,
@@ -123,10 +126,8 @@ async def make_lead_agent(
 
 
     if tools is None:
-        from focus.tools.interfaces import ToolInfo
-
         pooled = await get_available_tools(tool_groups=tool_groups)
-        tools = [t.tool() if isinstance(t, ToolInfo) else t for t in pooled]
+        tools = execution_pool_tools(pooled)
 
         from focus.tools.builtins.describe_skill_tool import build_describe_skill_tool
 
@@ -168,30 +169,30 @@ async def make_lead_agent(
 
 
     middlewares = [AccessPolicyMiddleware(), ToolExecutionMiddleware(), *middlewares]
-    visible_tools = [*tools, *(tool for middleware in middlewares for tool in getattr(middleware, "tools", ()))]
+    middleware = [middlewares[0], *([inbox_middleware] if inbox_middleware is not None else []), *middlewares[1:]]
+    tail = [TypedHistoryMiddleware(), *([attempt_middleware] if attempt_middleware is not None else [])]
+    tool_catalog = compile_agent_tool_catalog(tools, [*middleware, *tail])
     from focus.agents.compression.gate import CompressionGate
     from focus.models.response_projection import function_specs
     from focus.models.responses import FocusResponsesChatModel
     responses_model = model if isinstance(model, FocusResponsesChatModel) else None
     world_state = WorldStateMiddleware(
-        visible_tools, system_prompt, middleware_skill_names or frozenset(),
+        tool_catalog.tools, system_prompt, middleware_skill_names or frozenset(),
         model_name or (app_config or get_app_config("config.yaml")).resolve_default_model_name(),
         responses_model.provider_contract.projection_version if responses_model else "focus-chat-bridge-v1",
         skill_catalog=world_skill_catalog,
         provider_contract=asdict(responses_model.provider_contract) if responses_model else None,
         frozen_contexts=frozen_contexts,
     )
-    for configured in middlewares:
+    for configured in [*middleware, *tail]:
         if isinstance(configured, CompressionGate):
-            configured.configure_request(system_prompt, function_specs(visible_tools), model=responses_model, world_state=world_state)
-    middleware = [middlewares[0],
-                  *([inbox_middleware] if inbox_middleware is not None else []), *middlewares[1:], world_state,
-                  TypedHistoryMiddleware(), *([attempt_middleware] if attempt_middleware is not None else [])]
+            configured.configure_request(system_prompt, function_specs(tool_catalog.tools), model=responses_model, world_state=world_state)
+    middleware = [*middleware, world_state, *tail]
 
 
     return create_agent(
         model=model,
-        tools=tools,
+        tools=tool_catalog.regular_tools,
         middleware=middleware,
         system_prompt=system_prompt,
         state_schema=LeadAgentState,
