@@ -8,6 +8,7 @@ Context、任务、草稿、普通/策展 Patrol、运行、文件沙箱状态�
 UploadFile 直接交给有界上传服务，内容读取在校验 task/material 归属后交给 FileResponse。
 
 示例：POST /desktop/api/tasks/{task_id}/main/runs。
+standard Patrol 的来源、只读可用性、预览、定义复制与中断响应交给 session_patrol 端口；自由保存与执行准入分离，部署沿 durable dispatch 启动。示例：POST /desktop/api/drafts/{id}/preview。
 """
 
 from __future__ import annotations
@@ -225,7 +226,7 @@ async def _launch(request: Request, prepared: PreparedRun | None) -> None:
 @desktop_router.post("/drafts/{draft_id}/deploy")
 async def deploy(draft_id: str, body: DeployRequest, request: Request) -> dict:
     try:
-        prepared = await request.app.state.desktop_service.deploy(draft_id, body.deployment_id)
+        prepared = await request.app.state.desktop_service.deploy(draft_id, body.deployment_id, body.preview_token)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     await _launch(request, prepared)
@@ -303,6 +304,36 @@ async def start_main_run(
         if loop_binding and loop_service:
             await loop_service.fail_user_message_round(loop_binding["loop_id"], loop_binding["round_id"], str(exc))
         raise
+    return prepared.payload
+
+
+@desktop_router.post("/drafts/{draft_id}/preview")
+async def preview_patrol(draft_id: str, request: Request) -> dict:
+    return await request.app.state.desktop_service.session_patrol.preview(draft_id)
+
+
+@desktop_router.get("/patrol/sources")
+async def patrol_source_catalog(request: Request) -> dict:
+    return await request.app.state.desktop_service.patrol_sources.catalog()
+
+
+@desktop_router.get("/drafts/{draft_id}/source-status")
+async def patrol_source_status(draft_id: str, request: Request) -> dict:
+    return await request.app.state.desktop_service.session_patrol.source_status(draft_id)
+
+
+@desktop_router.post("/drafts/{draft_id}/sources")
+async def import_patrol_source(draft_id: str, body: dict, request: Request) -> dict:
+    try:
+        return await request.app.state.desktop_service.patrol_sources.import_into(draft_id, body)
+    except (OSError, ValueError, KeyError) as exc:
+        raise HTTPException(422, {"code": "source_unavailable", "message": str(exc)}) from exc
+
+
+@desktop_router.post("/runs/{run_id}/patrol-resume")
+async def resume_patrol(run_id: str, body: ResumeRequest, request: Request) -> dict:
+    prepared = await request.app.state.desktop_service.session_patrol.resume(run_id, body.resume)
+    await _launch(request, prepared)
     return prepared.payload
 
 
@@ -409,9 +440,24 @@ async def retry_agent(agent_id: str, request: Request) -> dict:
     return prepared.payload
 
 
+@desktop_router.post("/agents/{agent_id}/drafts/open")
+async def edit_patrol_definition(agent_id: str, request: Request) -> dict:
+    return await request.app.state.desktop_service.session_patrol.edit_definition(agent_id)
+
+
+@desktop_router.get("/runs/{run_id}/patrol-definition")
+async def patrol_definition_audit(run_id: str, request: Request) -> dict:
+    return await request.app.state.desktop_service.session_patrol.audit(run_id)
+
+
+@desktop_router.get("/drafts/{draft_id}")
+async def read_patrol_draft(draft_id: str, request: Request) -> dict:
+    return await request.app.state.desktop_service.session_patrol.read_draft(draft_id)
+
+
 @desktop_router.post("/agents/{agent_id}/continue")
 async def continue_agent(agent_id: str, body: ContinueRequest, request: Request) -> dict:
-    prepared = await request.app.state.desktop_service.continue_agent(agent_id, body.message)
+    prepared = await request.app.state.desktop_service.continue_agent(agent_id, body.message, body.run_id, body.checkpoint_id)
     await _launch(request, prepared)
     return prepared.payload
 

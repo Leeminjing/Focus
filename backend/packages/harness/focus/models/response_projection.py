@@ -5,6 +5,7 @@
 关联工具结果并拒绝不支持的字段/模态；前缀变化返回显式分支重建错误。
 OpenAI 禁用 store；DeepSeek 省略该字段。外部参考和策展内容按宿主来源投影，不能由声明的 role 升级为 policy。
 示例：payload = ResponsesRequestProjector(contract).build(messages, model="model", tools=tools)。
+明确 user_authored/authored_instruction 的角色意图按顺序映射：OpenAI 保留 System/Developer，DeepSeek Developer 转 System；权限仍由宿主安全上下文确定。
 """
 
 from copy import deepcopy
@@ -90,7 +91,9 @@ class ResponsesRequestProjector:
             context = message.additional_kwargs.get("focus_context", {})
             reference = context.get("kind") == "selected_context" or context.get("authority") in {"reference", "task"}
             external = context.get("origin") in {"direct_user", "curator", "delegated", "collaborator", "tool", "provider"}
-            role = "user" if reference or external else self._contract.policy_role
+            authored = context.get("kind") == "authored_instruction" and context.get("origin") == "user_authored"
+            requested = context.get("requested_role", message.type)
+            role = ("system" if requested == "system" else self._contract.policy_role) if authored else "user" if reference or external else self._contract.policy_role
         else:
             raise ValueError(f"不支持的模型消息类型: {message.type}")
         return [{"type": "message", "role": role, "content": self._content(message.content, role)}]

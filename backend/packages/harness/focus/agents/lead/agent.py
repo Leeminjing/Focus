@@ -9,6 +9,7 @@
 目录按 middleware／普通工具顺序保留原绑定，供执行、WorldState 与压缩预算共同消费。
 helpers 只承担技能目录发现；Desktop ORM 不进入 Harness。attempt／inbox 端口由 Desktop 组合根注入。
 示例：graph = await make_lead_agent(model_name="model", tools=tools, system_prompt=policy, frozen_contexts=contexts)。
+可选 preparation_observer 接收同一模型、实际工具与 WorldState 的只读准备端口，供预览及启动合同校验；观察不采样、不执行工具。
 """
 
 import json
@@ -117,6 +118,7 @@ async def make_lead_agent(
     world_skill_catalog: dict | None = None,
     inbox_middleware: AgentMiddleware | None = None,
     attempt_middleware: AgentMiddleware | None = None,
+    preparation_observer=None,
 ) -> CompiledStateGraph:
 
     model = create_chat_model(name=model_name, app_config=app_config)
@@ -188,6 +190,9 @@ async def make_lead_agent(
         if isinstance(configured, CompressionGate):
             configured.configure_request(system_prompt, function_specs(tool_catalog.tools), model=responses_model, world_state=world_state)
     middleware = [*middleware, world_state, *tail]
+    if preparation_observer is not None:
+        from focus.context.preparation import AgentRequestPreparation
+        preparation_observer(AgentRequestPreparation(model, tuple(tool_catalog.tools), world_state, system_prompt))
 
 
     return create_agent(

@@ -44,6 +44,7 @@ _governed_context 由执行身份档案派生受治理上下文（工作根、�
 材料，属于界面侧入口，不受 Agent 本地访问策略约束；Agent 侧的路径解释与准入判定统一由
 focus.security 承担（见 openspec add-local-access-policy）。
 
+会话 standard Patrol 的文档、来源、编译、预览与分支生命周期委托 session_patrol；本组合根仅注入 canonical Reader、统一 Agent 工厂观察端口和现有 dispatch/ledger。Context Curator 和 Loop Patrol 保持各自权威流程。
 """
 
 from __future__ import annotations
@@ -342,6 +343,10 @@ class DesktopService:
         self.material_groups = MaterialGroupService(session_factory)
         self.material_snapshots = MaterialSnapshotVerifier()
         self.contexts = ContextService(session_factory, checkpointer, app_config)
+        from backend.app.desktop.session_patrol.deployment import PatrolDeploymentCoordinator
+        from backend.app.desktop.session_patrol.sources import PatrolSourceResolver
+        self.session_patrol = PatrolDeploymentCoordinator(self)
+        self.patrol_sources = PatrolSourceResolver(self)
         self.context_patrol = ContextPatrolService(
             session_factory, self.contexts, checkpointer, store, bridge, run_manager, app_config
         )
@@ -450,7 +455,7 @@ class DesktopService:
                 raise LookupError(f"Run Workspace 不存在: {task.workspace_id}")
             equipment = dict(run.equipment or {})
             execution = dict(equipment.get(_RUN_DISPATCH_EQUIPMENT_KEY) or {})
-            if run.status != "pending" or execution.get("agent_role") != "main":
+            if run.status != "pending" or execution.get("agent_role") not in {"main", "patrol"}:
                 raise RuntimeError(f"Run 不可由 durable dispatch 装配: {run.run_id}@{run.status}")
             workspace_path = str((run.workspace_anchor or {}).get("workspace_path") or workspace.path)
             slot_id = (run.workspace_anchor or {}).get("slot_id")
@@ -476,10 +481,13 @@ class DesktopService:
                 str(execution["base_prompt"]),
                 equipment,
                 run.checkpoint_ns or "",
-                "main",
+                execution["agent_role"],
                 execution.get("checkpoint_id"),
                 bool(execution.get("allow_global_config")),
             )
+            if "resume_payload" in execution:
+                prepared.body.input = None
+                prepared.body.resume = execution["resume_payload"]
         if loop_id:
             from backend.app.desktop.agent_loop.dispatch import LoopRunWorkspaceBinder
 
@@ -801,16 +809,35 @@ class DesktopService:
                 if existing.mode == "context_curator":
                     payload["root_context_id"] = await self.contexts.resolve_chat_root(task_id)
                 return payload
-            config = {"configurable": {"thread_id": task.thread_id, "checkpoint_ns": ""}}
-            checkpoint = await self.checkpointer.aget_tuple(config)
-            messages: list[dict[str, Any]] = []
-            checkpoint_id = None
-            if checkpoint:
-                checkpoint_id = checkpoint.config.get("configurable", {}).get("checkpoint_id")
-                values = checkpoint.checkpoint.get("channel_values", {})
-                messages = normalize_json_storage_value(
-                    [serialize_message(message) for message in values.get("messages", [])]
-                )
+            from backend.app.desktop.context_evolution.repository import ContextRevisionRepository
+            from backend.app.desktop.context_evolution.reader import ContextRevisionReader
+            from focus.history import serialize_history_message, legacy_to_items, semantic_policy, content_hash
+            from backend.app.desktop.session_patrol.sources import portable_record
+            repository = ContextRevisionRepository()
+            revision = await repository.current(session, task_id)
+            checkpoint_id = revision.ref.checkpoint_id if revision else None
+            if revision:
+                view = await ContextRevisionReader(repository, self.checkpointer).read(session, revision.ref, "execution")
+                messages = list(view.messages)
+            else:
+                config = {"configurable": {"thread_id": task.thread_id, "checkpoint_ns": ""}}
+                checkpoint = await self.checkpointer.aget_tuple(config)
+                checkpoint_id = checkpoint.config["configurable"].get("checkpoint_id") if checkpoint else None
+                messages = [serialize_history_message(message) for message in checkpoint.checkpoint.get("channel_values", {}).get("messages", [])] if checkpoint else []
+            frozen_sources = {}
+            portable = []
+            for record in messages:
+                items = legacy_to_items([record])
+                if all(semantic_policy(item) in {"exclude", "reference_only"} for item in items):
+                    continue
+                value = portable_record(record)
+                source_ref = new_id()
+                source = revision.ref.model_dump(mode="json") if revision else {"context_id": task_id, "execution_thread_id": task.thread_id, "checkpoint_ns": "", "checkpoint_id": checkpoint_id, "legacy": True}
+                frozen_sources[source_ref] = {"record": record, "source": {**source, "message_id": record.get("id")},
+                    "entry_hash": content_hash({key: value.get(key) for key in ("role", "content", "tool_calls", "tool_call_id", "name", "status")}), "historical_runtime": False}
+                value.update(source_ref=source_ref, source_hash=content_hash(record))
+                portable.append(value)
+            messages = normalize_json_storage_value(portable)
             default_model = self.app_config.resolve_default_model_name()
             equipment = {
                 "model_name": default_model,
@@ -822,6 +849,7 @@ class DesktopService:
                 draft_id=new_id(),
                 task_id=task_id,
                 history_messages=messages,
+                frozen_sources=frozen_sources,
                 source_checkpoint_id=checkpoint_id,
                 equipment=equipment,
                 token_estimate=estimate_tokens("", messages, ""),
@@ -832,7 +860,8 @@ class DesktopService:
 
     async def update_draft(self, draft_id: str, body: DraftUpdate) -> dict[str, Any]:
         async with self.session_factory() as session:
-            draft = await session.get(PatrolDraft, draft_id)
+            from backend.app.desktop.session_patrol.repository import DraftRepository
+            draft = await DraftRepository().save(session, draft_id, body.authoring_document, expected_revision=body.draft_revision)
             if not draft or draft.status != "editing":
                 raise HTTPException(404, "可编辑草稿不存在")
             task_row, workspace = await self._get_task_entities(session, draft.task_id)
@@ -854,10 +883,14 @@ class DesktopService:
                 payload["root_context_id"] = root_context_id
                 return payload
 
+            if body.authoring_document is not None:
+                draft.equipment = equipment
+                draft.mode = "standard"
+                await session.commit()
+                return self._draft_payload(draft)
             safe_system_prompt = normalize_json_storage_value(body.system_prompt)
             safe_history_messages = normalize_json_storage_value(body.history_messages)
             safe_final_human_message = normalize_json_storage_value(body.final_human_message)
-            validate_messages(safe_history_messages)
             snapshots, _ = resolve_task_skills(
                 build_task_skill_catalog(workspace.path), equipment["skills"]
             )
@@ -971,7 +1004,7 @@ class DesktopService:
             }) from exc
         return model.name
 
-    async def deploy(self, draft_id: str, deployment_id: str) -> PreparedRun:
+    async def deploy(self, draft_id: str, deployment_id: str, preview_token: str | None = None) -> PreparedRun:
         async with self.session_factory() as session:
             draft_mode = await session.scalar(
                 select(PatrolDraft.mode).where(PatrolDraft.draft_id == draft_id)
@@ -984,77 +1017,7 @@ class DesktopService:
                 agent_factory=None,
                 payload=self._run_payload(run),
             )
-        async with self.session_factory() as session:
-            existing = await session.scalar(select(DesktopRun).where(DesktopRun.deployment_id == deployment_id))
-            if existing:
-                return PreparedRun(
-                    body=RunCreateRequest(input={"messages": []}), thread_id="",
-                    agent_factory=None, payload=self._run_payload(existing),
-                )
-            draft = await session.get(PatrolDraft, draft_id)
-            if not draft or draft.status != "editing":
-                raise HTTPException(404, "可投放草稿不存在")
-            if not draft.final_human_message.strip():
-                raise HTTPException(422, "最后一条 HumanMessage 不能为空")
-            validate_messages(draft.history_messages)
-            task_row, workspace = await self._get_task_entities(session, draft.task_id)
-            snapshots = self._freeze_skills(workspace.path, draft.equipment.get("skills", []))
-            equipment = {**draft.equipment, "skill_snapshots": snapshots}
-            estimate = estimate_tokens(
-                prompt_with_skills(draft.system_prompt, snapshots),
-                draft.history_messages,
-                draft.final_human_message,
-            )
-            self._validate_model_window(equipment.get("model_name"), estimate)
-            await self._validate_attachments(session, draft.task_id, draft.history_messages)
-            agent_id = new_id()
-            frozen = [*draft.history_messages, {"role": "human", "content": draft.final_human_message}]
-            agent = PatrolAgent(
-                agent_id=agent_id,
-                task_id=draft.task_id,
-                checkpoint_ns=f"patrol:{agent_id}",
-                system_prompt=draft.system_prompt,
-                frozen_messages=frozen,
-                equipment=equipment,
-                source_checkpoint_id=draft.source_checkpoint_id,
-                mode="standard",
-                curation_policy={},
-            )
-            self._require_run_admission()
-            run = DesktopRun(
-                run_id=new_id(), task_id=draft.task_id, agent_id=agent_id, deployment_id=deployment_id,
-                kind="patrol", status="pending", input_messages=frozen,
-                model_name=equipment.get("model_name"),
-                origin="direct_user", execution_thread_id=task_row.thread_id,
-                checkpoint_ns=agent.checkpoint_ns,
-                context_revision_id=task_row.current_revision_id,
-                context_checkpoint_id=draft.source_checkpoint_id,
-                equipment=equipment,
-                workspace_anchor={
-                    "workspace_id": workspace.workspace_id,
-                    "workspace_path": workspace.path,
-                },
-            )
-            draft.status = "deployed"
-            session.add_all([agent, run])
-            try:
-                await session.commit()
-            except IntegrityError:
-                await session.rollback()
-                winner = await session.scalar(select(DesktopRun).where(DesktopRun.deployment_id == deployment_id))
-                if winner:
-                    return PreparedRun(
-                        body=RunCreateRequest(input={"messages": []}), thread_id="",
-                        agent_factory=None, payload=self._run_payload(winner),
-                    )
-                raise
-            thread_id = task_row.thread_id
-            workspace_id = workspace.workspace_id
-            workspace_path = workspace.path
-        return await self._prepare(
-            run, thread_id, workspace_id, workspace_path, frozen,
-            draft.system_prompt, agent.equipment, agent.checkpoint_ns, "patrol",
-        )
+        return await self.session_patrol.deploy(draft_id, deployment_id, preview_token)
 
     def _require_run_admission(self) -> None:
         if not getattr(self.app_config, "context_run_admission", True):
@@ -1614,73 +1577,10 @@ class DesktopService:
         return {"ok": True, "thread_id": thread_id}
 
     async def retry_agent(self, agent_id: str) -> PreparedRun:
-        async with self.session_factory() as session:
-            agent = await session.get(PatrolAgent, agent_id)
-            if not agent:
-                raise HTTPException(404, "小兵不存在")
-            if agent.mode == "context_curator":
-                raise HTTPException(409, "Context 策展 Patrol 由根 checkpoint 自动触发，不能手工重试")
-            task_row = await session.get(DesktopThread, agent.task_id)
-            workspace_row = await session.get(DesktopWorkspace, task_row.workspace_id)
-            self._require_run_admission()
-            run = DesktopRun(
-                run_id=new_id(), task_id=agent.task_id, agent_id=agent.agent_id, kind="patrol",
-                status="pending", input_messages=agent.frozen_messages,
-                model_name=agent.equipment.get("model_name"),
-                origin="retry", execution_thread_id=task_row.thread_id,
-                checkpoint_ns=agent.checkpoint_ns,
-                context_revision_id=task_row.current_revision_id,
-                context_checkpoint_id=agent.source_checkpoint_id,
-                equipment=agent.equipment,
-                workspace_anchor={
-                    "workspace_id": workspace_row.workspace_id,
-                    "workspace_path": workspace_row.path,
-                },
-            )
-            session.add(run)
-            if run.origin == "direct_user" and run.context_revision_id is not None:
-                session.add(MessageProvenance(provenance_id=new_id(), context_revision_id=run.context_revision_id, message_id=message_id, source_kind="direct_user", actor_id="user", audit={"loop_id": run.loop_id, "round_id": run.round_id}))
-            await session.commit()
-            thread_id = task_row.thread_id
-            workspace_id = workspace_row.workspace_id
-            workspace_path = workspace_row.path
-        return await self._prepare(
-            run, thread_id, workspace_id, workspace_path, agent.frozen_messages,
-            agent.system_prompt, agent.equipment, agent.checkpoint_ns, "patrol",
-        )
+        return await self.session_patrol.restart(agent_id)
 
-    async def continue_agent(self, agent_id: str, message: str) -> PreparedRun:
-        async with self.session_factory() as session:
-            agent = await session.get(PatrolAgent, agent_id)
-            if not agent:
-                raise HTTPException(404, "小兵不存在")
-            if agent.mode == "context_curator":
-                raise HTTPException(409, "Context 策展 Patrol 不接受普通继续消息")
-            task_row = await session.get(DesktopThread, agent.task_id)
-            workspace_row = await session.get(DesktopWorkspace, task_row.workspace_id)
-            input_messages = [{"role": "human", "content": message}]
-            self._require_run_admission()
-            run = DesktopRun(
-                run_id=new_id(), task_id=agent.task_id, agent_id=agent.agent_id, kind="patrol",
-                status="pending", input_messages=input_messages, model_name=agent.equipment.get("model_name"),
-                origin="direct_user", execution_thread_id=task_row.thread_id,
-                checkpoint_ns=agent.checkpoint_ns,
-                context_revision_id=task_row.current_revision_id,
-                equipment=agent.equipment,
-                workspace_anchor={
-                    "workspace_id": workspace_row.workspace_id,
-                    "workspace_path": workspace_row.path,
-                },
-            )
-            session.add(run)
-            await session.commit()
-            thread_id = task_row.thread_id
-            workspace_id = workspace_row.workspace_id
-            workspace_path = workspace_row.path
-        return await self._prepare(
-            run, thread_id, workspace_id, workspace_path, input_messages,
-            agent.system_prompt, agent.equipment, agent.checkpoint_ns, "patrol",
-        )
+    async def continue_agent(self, agent_id: str, message: str, run_id: str | None = None, checkpoint_id: str | None = None) -> PreparedRun:
+        return await self.session_patrol.continue_from(agent_id, message, source_run_id=run_id, checkpoint_id=checkpoint_id)
 
     async def cancel_run(self, run_id: str) -> dict[str, Any]:
 
@@ -1743,7 +1643,11 @@ class DesktopService:
             mode = agent.mode
         if mode == "context_curator":
             return await self.context_patrol.history(agent_id)
-        return await self.get_checkpoint_messages(task.thread_id, agent.checkpoint_ns)
+        async with self.session_factory() as session:
+            latest = await session.scalar(select(DesktopRun).where(DesktopRun.agent_id == agent_id).order_by(DesktopRun.created_at.desc()))
+            execution_thread = latest.execution_thread_id if latest and latest.execution_thread_id else task.thread_id
+            execution_namespace = latest.checkpoint_ns if latest else agent.checkpoint_ns
+        return await self.get_checkpoint_messages(execution_thread, execution_namespace)
 
     async def get_run(self, run_id: str) -> DesktopRun:
         async with self.session_factory() as session:
@@ -1911,7 +1815,10 @@ class DesktopService:
             projection = MaterialContextProjector.project(run_materials, workspace_path)
             material_context = projection.policy_text
         else:
-            material_context, _ = await self._material_context(run.task_id)
+            if agent_role == "patrol" and "_patrol_material_policy" in equipment:
+                material_context = equipment["_patrol_material_policy"]
+            else:
+                material_context, _ = await self._material_context(run.task_id)
         image_inputs = run_materials.images
         required = list(image_inputs.required)
         if required:
@@ -1924,6 +1831,7 @@ class DesktopService:
         factory = self._build_agent_factory(
             run.task_id, run.agent_id, workspace_path, equipment, base_prompt,
             material_context, agent_role,
+            preparation_observer=self.session_patrol.preparation_guard(equipment) if agent_role == "patrol" else None,
         )
         context = self._governed_context(
             thread_id=thread_id,
@@ -2027,6 +1935,7 @@ class DesktopService:
     def _build_agent_factory(
         self, task_id: str, agent_id: str, workspace_path: str, equipment: dict[str, Any],
         base_prompt: str, material_context: str, agent_role: str,
+        preparation_observer=None,
     ) -> Callable[[], Awaitable[CompiledStateGraph]]:
 
 
@@ -2089,6 +1998,7 @@ class DesktopService:
                 world_skill_catalog=skill_catalog_records(catalog),
                 inbox_middleware=DurableInboxMiddleware(AgentInbox(self.session_factory, self.checkpointer)) if include_mailbox else None,
                 attempt_middleware=ModelAttemptMiddleware(ModelAttemptJournal(self.session_factory, self.checkpointer)),
+                preparation_observer=preparation_observer,
             )
 
         return factory
@@ -2921,6 +2831,7 @@ class DesktopService:
         }
 
     def _draft_payload(self, draft: PatrolDraft) -> dict[str, Any]:
+        from backend.app.desktop.session_patrol.repository import DraftRepository
         default_policy = ContextCurationPolicy().model_dump(mode="json")
         equipment = {
             **draft.equipment,
@@ -2929,6 +2840,8 @@ class DesktopService:
         equipment.pop("skill_snapshots", None)
         return {
             "draft_id": draft.draft_id, "task_id": draft.task_id, "status": draft.status,
+            "authoring_document": DraftRepository.document(draft).model_dump(mode="json"),
+            "draft_revision": draft.draft_revision, "history_schema_version": 2 if draft.authoring_document is not None else 1,
             "mode": draft.mode,
             "curation_policy": draft.curation_policy or (
                 default_policy if draft.mode == "context_curator" else {}

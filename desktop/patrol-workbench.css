@@ -1,0 +1,27 @@
+/* 本文件对外提供工作台布局、窗口列表及局部交互状态。
+ * 输入为已有应用主题变量，输出为响应式双栏编辑、JSON 可见区域滚动和 150ms 非阻塞反馈；工作流尊重 reduced-motion。
+ * 示例：.patrol-workbench 包含 .patrol-list 与 .patrol-editor。
+ */
+.patrol-workbench { display:grid; grid-template-columns:minmax(240px, 32%) minmax(0, 1fr); gap:16px; padding:16px; }
+.patrol-workbench [hidden] { display:none !important; }
+.patrol-toolbar, .patrol-actions { grid-column:1/-1; display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.patrol-workbench button, .patrol-workbench select { padding:7px 12px; border-radius:8px; }
+.patrol-list { height:58vh; overflow:auto; border:1px solid var(--border, #ddd); border-radius:12px; position:relative; }
+.patrol-entry { height:72px; padding:10px 12px; box-sizing:border-box; display:flex; gap:8px; border-bottom:1px solid var(--border, #ddd); cursor:pointer; overflow:hidden; }
+.patrol-entry[aria-selected=true] { background:var(--selected-bg, #eaf1f7); }
+.patrol-entry-text { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.patrol-editor { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.patrol-editor textarea { width:100%; min-height:220px; resize:vertical; box-sizing:border-box; }
+.patrol-behavior { grid-column:1/-1; }
+.patrol-behavior textarea { width:100%; min-height:90px; margin-top:8px; box-sizing:border-box; resize:vertical; }
+.patrol-raw { grid-column:1/-1; width:100%; height:55vh; min-height:55vh; box-sizing:border-box; font-family:monospace; white-space:pre; overflow-wrap:normal; }
+.patrol-raw .cm-editor { height:100%; border:1px solid var(--border, #ddd); border-radius:8px; }
+.patrol-raw .cm-scroller { overflow:auto; font-family:monospace; }
+.patrol-raw-state { grid-column:1/-1; margin:0; color:var(--text-secondary, #667); }
+.patrol-panel { grid-column:1/-1; border:1px solid var(--border, #ddd); border-radius:12px; padding:12px; max-height:50vh; overflow:auto; }
+.patrol-status { margin-left:auto; color:var(--text-secondary, #667); }
+.patrol-diagnostic { display:flex; gap:8px; padding:8px; align-items:center; }
+.patrol-drop { outline:2px solid var(--accent, #53779e); transform:translateY(2px); }
+.patrol-entry { transition:background 150ms, transform 150ms; }
+@media (max-width:850px) { .patrol-workbench { grid-template-columns:1fr; } .patrol-list { height:28vh; } }
+@media (prefers-reduced-motion:reduce) { .patrol-entry { transition:none; } }

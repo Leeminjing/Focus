@@ -3,6 +3,7 @@
 输入为 BaseMessage、旧消息 dict 或 FocusItem 序列；输出为可恢复消息与版本化 typed 历史。
 具体工作流为保留完整 LangChain 数据、分离原生 Provider Items、关联同一输出组并确定性恢复。
 示例：restored = items_to_messages(messages_to_items([AIMessage(content="done")]))。
+宿主标注的 user_authored 示例与 legacy_unknown 原样保留；只有缺少显式来源的旧模型/工具记录沿原兼容推断，手写结果不提升为真实执行证明。
 """
 
 from __future__ import annotations
@@ -73,9 +74,9 @@ def messages_to_items(messages: Iterable[BaseMessage], *, origin: Origin = "lega
         message_id = message.id or "legacy:" + content_hash([ordinal, record])
         metadata = message.additional_kwargs.get("focus_context", {})
         actual_origin = metadata.get("origin", origin)
-        if isinstance(message, AIMessage) and actual_origin == "legacy_unknown":
+        if isinstance(message, AIMessage) and actual_origin == "legacy_unknown" and "origin" not in metadata:
             actual_origin = "provider"
-        elif isinstance(message, ToolMessage):
+        elif isinstance(message, ToolMessage) and actual_origin != "user_authored" and metadata.get("origin") != "legacy_unknown":
             actual_origin = "tool"
         native = message.additional_kwargs.get("focus_response_items")
         if native is not None:

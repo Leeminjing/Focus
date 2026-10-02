@@ -50,6 +50,7 @@
         stream_modes=["values"],
         langgraph_context={"model_name": "deepseek-v4-flash", "app_config": app_config, "user_id": "uuid-xxx"},
     ))
+精确 checkpoint 的普通新输入通过 update_state 创建分叉；Command(resume) 直接恢复原中断任务，不经过 START 分叉，保留原 Run 的工具 ledger。
 """
 
 import logging
@@ -224,7 +225,7 @@ async def run_agent(
 
         stream_input = graph_input
         checkpoint_id = runnable_config.get("configurable", {}).get("checkpoint_id")
-        if checkpoint_id is not None:
+        if checkpoint_id is not None and not isinstance(graph_input, Command):
             fork_input_config = {
                 **runnable_config,
                 "configurable": {

@@ -3,6 +3,7 @@
 输入为受治理运行上下文、真实工具/基础指令、冻结 selected bindings 及精确 graph state；输出为同时提交的 Items、snapshot 和 prepared manifest。
 具体工作流为在历史手术后刷新状态、补齐冻结引用、核对实际 continuation 前缀；不兼容时显式重建执行分支，
 再将完整请求来源（含合同／协作 source refs）与 typed authority 原子提交。在完整模型返回后标记 sampled；工具授权仍由安全中间件独立刷新。
+preparation_fingerprint 对静态能力目录及冻结 selected bindings 求 hash，供实际工厂观察端口验证启动前变更；动态环境事实仍沿 WorldState snapshot 更新。
 示例：middleware = WorldStateMiddleware(tools, base_instructions, skill_names, model_name)。
 """
 
@@ -37,6 +38,11 @@ class WorldStateMiddleware(AgentMiddleware):
         self._instructions = base_instructions
         self._frozen_contexts = tuple(frozen_contexts)
         self._contract = ProviderContract(**provider_contract) if provider_contract else None
+
+    @property
+    def preparation_fingerprint(self):
+        return content_hash([self._skill_catalog, sorted(self._skill_names or ()),
+                             [context.record() for context in self._frozen_contexts]])
 
     def preview_messages(self, state, context):
         messages, _, _, _ = self._prepare(state, context)

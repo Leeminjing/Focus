@@ -12,6 +12,7 @@ SessionAccessModeUpdate 只接受三档规范模式，供独立的会话模式�
 AgentMessageDelivery 记录协作消息的精确 checkpoint 投递事实，与消息已读显示同事务提交。
 
 示例：request = MainRunCreate(message="比较", material_inputs=[{"material_id": "m1", "note": "看第三章"}])。
+PatrolDraft 保存宽容 V2 文档、并发版本与冻结来源；PatrolDeploymentDefinition 是数据库不可变审计记录。定义与 Run/dispatch 同事务创建，Run 删除后其审计身份仍可定位，不以外键阻断既有删除流程。
 """
 
 from datetime import datetime
@@ -83,6 +84,9 @@ class PatrolDraft(Base):
         String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True
     )
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="editing")
+    authoring_document: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    draft_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    frozen_sources: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     history_messages: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
     final_human_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -95,6 +99,19 @@ class PatrolDraft(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class PatrolDeploymentDefinition(Base):
+    __tablename__ = "patrol_deployment_definitions"
+
+    definition_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    document_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    document: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    compiled_plan: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    sources: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    execution_mode: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class PatrolAgent(Base):
@@ -611,6 +628,8 @@ class ContextCurationPolicy(StrictRequest):
 
 
 class DraftUpdate(StrictRequest):
+    authoring_document: dict[str, Any] | None = None
+    draft_revision: int | None = Field(default=None, ge=0)
     system_prompt: str = ""
     history_messages: list[dict[str, Any]] = Field(default_factory=list)
     final_human_message: str = ""
@@ -625,10 +644,13 @@ class ContextTrackingUpdate(StrictRequest):
 
 class DeployRequest(StrictRequest):
     deployment_id: str = Field(min_length=1, max_length=64)
+    preview_token: str | None = None
 
 
 class ContinueRequest(StrictRequest):
     message: str = Field(min_length=1)
+    run_id: str | None = None
+    checkpoint_id: str | None = None
 
 
 class ResumeRequest(StrictRequest):
