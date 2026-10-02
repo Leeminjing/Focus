@@ -1,6 +1,6 @@
 """
 本文件对外提供 DesktopService 与 PreparedRun，编排桌面工作区、Context、Patrol、材料、
-主运行、Context revision 终态和三套 subagent 机制（树形 spawn / Swarm / Coordinator）业务。
+v3 typed Patrol 草稿只读适配、主运行、Context revision 终态和三套 subagent 机制（树形 spawn / Swarm / Coordinator）业务。
 
 输入为已初始化的 PostgreSQL session factory、LangGraph checkpointer/store、StreamBridge、
 RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以及 PreparedRun（统一
@@ -62,10 +62,9 @@ import uuid
 
 from fastapi import HTTPException, UploadFile
 from langchain.tools import ToolRuntime
-from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool, tool
 from langgraph.graph.state import CompiledStateGraph
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -116,7 +115,6 @@ from backend.app.desktop.models import (
     PatrolDraft,
     SwarmAgent,
 )
-from backend.app.desktop.agent_loop.models import MessageProvenance
 from backend.app.desktop.skills import build_task_skill_catalog, resolve_task_skills
 from backend.app.desktop.context_assembly import desktop_contexts, skill_catalog_records
 from backend.app.desktop.inbox import AgentInbox, DurableInboxMiddleware
@@ -185,7 +183,6 @@ from focus.runtime.checkpointer.namespaced import NamespacedCheckpointer
 from focus.runtime.runs.events import (
     deserialize_messages,
     serialize_message,
-    validate_messages,
 )
 from focus.runtime.runs.manager import RunManager, RunRecord
 from focus.runtime.runs.worker import run_agent
@@ -811,33 +808,25 @@ class DesktopService:
                 return payload
             from backend.app.desktop.context_evolution.repository import ContextRevisionRepository
             from backend.app.desktop.context_evolution.reader import ContextRevisionReader
-            from focus.history import serialize_history_message, legacy_to_items, semantic_policy, content_hash
-            from backend.app.desktop.session_patrol.sources import portable_record
+            from focus.history import serialize_history_message
+            from backend.app.desktop.session_patrol.source_projection import freeze_authoring_sources
+            from backend.app.desktop.session_patrol.contracts import AuthoringDocument
             repository = ContextRevisionRepository()
             revision = await repository.current(session, task_id)
             checkpoint_id = revision.ref.checkpoint_id if revision else None
             if revision:
                 view = await ContextRevisionReader(repository, self.checkpointer).read(session, revision.ref, "execution")
-                messages = list(view.messages)
+                messages = [item.model_dump(mode="json") for item in revision.history_payload.execution_items] if revision.history_payload is not None else list(view.messages)
             else:
                 config = {"configurable": {"thread_id": task.thread_id, "checkpoint_ns": ""}}
                 checkpoint = await self.checkpointer.aget_tuple(config)
                 checkpoint_id = checkpoint.config["configurable"].get("checkpoint_id") if checkpoint else None
-                messages = [serialize_history_message(message) for message in checkpoint.checkpoint.get("channel_values", {}).get("messages", [])] if checkpoint else []
-            frozen_sources = {}
-            portable = []
-            for record in messages:
-                items = legacy_to_items([record])
-                if all(semantic_policy(item) in {"exclude", "reference_only"} for item in items):
-                    continue
-                value = portable_record(record)
-                source_ref = new_id()
-                source = revision.ref.model_dump(mode="json") if revision else {"context_id": task_id, "execution_thread_id": task.thread_id, "checkpoint_ns": "", "checkpoint_id": checkpoint_id, "legacy": True}
-                frozen_sources[source_ref] = {"record": record, "source": {**source, "message_id": record.get("id")},
-                    "entry_hash": content_hash({key: value.get(key) for key in ("role", "content", "tool_calls", "tool_call_id", "name", "status")}), "historical_runtime": False}
-                value.update(source_ref=source_ref, source_hash=content_hash(record))
-                portable.append(value)
-            messages = normalize_json_storage_value(portable)
+                values = checkpoint.checkpoint.get("channel_values", {}) if checkpoint else {}
+                messages = values.get("execution_items") if values.get("execution_items") is not None else [serialize_history_message(message) for message in values.get("messages", [])]
+            source = revision.ref.model_dump(mode="json") if revision else {"context_id": task_id, "execution_thread_id": task.thread_id, "checkpoint_ns": "", "checkpoint_id": checkpoint_id, "legacy": True}
+            entries, frozen_sources = freeze_authoring_sources(messages, {**source, "title": task.title})
+            document = AuthoringDocument(entries=entries)
+            messages = []
             default_model = self.app_config.resolve_default_model_name()
             equipment = {
                 "model_name": default_model,
@@ -849,6 +838,7 @@ class DesktopService:
                 draft_id=new_id(),
                 task_id=task_id,
                 history_messages=messages,
+                authoring_document=document.model_dump(mode="json"),
                 frozen_sources=frozen_sources,
                 source_checkpoint_id=checkpoint_id,
                 equipment=equipment,
@@ -861,7 +851,8 @@ class DesktopService:
     async def update_draft(self, draft_id: str, body: DraftUpdate) -> dict[str, Any]:
         async with self.session_factory() as session:
             from backend.app.desktop.session_patrol.repository import DraftRepository
-            draft = await DraftRepository().save(session, draft_id, body.authoring_document, expected_revision=body.draft_revision)
+            policy_only = body.mode == "context_curator" and not body.model_fields_set & {"system_prompt", "history_messages", "final_human_message"}
+            draft = await DraftRepository().save(session, draft_id, body.authoring_document, expected_revision=body.draft_revision, policy_only=policy_only)
             if not draft or draft.status != "editing":
                 raise HTTPException(404, "可编辑草稿不存在")
             task_row, workspace = await self._get_task_entities(session, draft.task_id)
@@ -2841,7 +2832,7 @@ class DesktopService:
         return {
             "draft_id": draft.draft_id, "task_id": draft.task_id, "status": draft.status,
             "authoring_document": DraftRepository.document(draft).model_dump(mode="json"),
-            "draft_revision": draft.draft_revision, "history_schema_version": 2 if draft.authoring_document is not None else 1,
+            "draft_revision": draft.draft_revision, "history_schema_version": 3,
             "mode": draft.mode,
             "curation_policy": draft.curation_policy or (
                 default_policy if draft.mode == "context_curator" else {}

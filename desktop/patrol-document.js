@@ -3,7 +3,8 @@
  * 工作流为命中 entry identity 更新字段，基线合并保留较新编辑、同字段冲突返回字段名；结构操作记录逆操作。
  * 未知 JSON 字段名始终写为自有数据属性，不改变 entry 原型；entry epoch 区分删除/恢复与单纯重排。
  * 输入法暂缓发送但仍登记脏版本，确认只推进已提交版本；applyFields(id,base,desired,{pendingFields}) 保护尚未解析的新意图。
- * 示例：doc.setField('e1','content','正文'); queue.changed(); await queue.flush()。
+ * payload 字段逐项基线合并，不因较旧完整结构返回覆盖新正文；setPayloadField 只更新命中 Item。
+ * 示例：doc.setPayloadField('e1','content','正文'); queue.changed(); await queue.flush()。
  */
 (function (root) {
   "use strict";
@@ -20,11 +21,26 @@
       this._write(entry, field, value); this._changed();
     }
     setInstructions(value) { if(this.value.instructions!==value){this.value.instructions=value;this._changed();} }
+    setPayloadField(id, field, value) {
+      const entry=this.byId.get(id);if(!entry || entry.payload[field]===value)return;
+      if(entry.source_ref)entry.edited_from ||= entry.source_ref;
+      this._write(entry.payload,field,value);this._changed();
+    }
     versionOf(id) { return this.entryEpochs.get(id); }
     applyFields(id, base, desired, { pendingFields = [] } = {}) {
       const entry = this.byId.get(id); if (!entry) return { conflicts:["entry_id"], changed:[] };
       const ignored = new Set(["entry_id", "fields_base", "fields_buffer", "fields_error"]);
       const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+      if(base.payload && desired.payload && entry.payload) {
+        const desiredPayload=desired.payload;
+        const keys=[...new Set([...Object.keys(base.payload),...Object.keys(desired.payload)])];
+        const modified=keys.filter(key=>!equal(base.payload[key],desired.payload[key]));
+        const conflicts=modified.filter(key=>pendingFields.includes(`payload.${key}`)||!equal(entry.payload[key],base.payload[key])&&!equal(entry.payload[key],desired.payload[key]));
+        if(conflicts.length)return {conflicts:conflicts.map(key=>`payload.${key}`),changed:[]};
+        desired={...desired,payload:{...entry.payload}};
+        for(const key of modified)if(Object.hasOwn(desiredPayload,key))this._write(desired.payload,key,desiredPayload[key]);else delete desired.payload[key];
+        base={...base,payload:entry.payload};
+      }
       const changes = [...new Set([...Object.keys(base), ...Object.keys(desired)])]
         .filter(key => !ignored.has(key) && !equal(base[key], desired[key]));
       const conflicts = changes.filter(key => pendingFields.includes(key) || !equal(entry[key], base[key]) && !equal(entry[key], desired[key]));

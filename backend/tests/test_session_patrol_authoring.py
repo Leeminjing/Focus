@@ -6,7 +6,7 @@
 """
 import pytest
 from langchain_core.messages import SystemMessage
-from backend.app.desktop.session_patrol.contracts import AuthoringDocument, AuthoringEntry, Transformation, legacy_document
+from backend.app.desktop.session_patrol.contracts import AuthoringDocument, Transformation, legacy_document
 from backend.app.desktop.session_patrol.compiler import compile_document
 from focus.history import FocusItem, deserialize_history_messages, semantic_policy, content_hash
 from focus.models.provider_contract import ProviderContract
@@ -14,7 +14,7 @@ from focus.models.response_projection import ResponsesRequestProjector
 
 
 def document(*entries):
-    return AuthoringDocument(entries=[AuthoringEntry(entry_id=f"e{index}", **entry) for index, entry in enumerate(entries)])
+    return AuthoringDocument.model_validate({"schema_version": 2, "entries": [{"entry_id": f"e{index}", **entry} for index, entry in enumerate(entries)]})
 
 
 @pytest.mark.parametrize("kind", [None, "message", "future", {"future": True}, ["future"], 3])
@@ -69,7 +69,7 @@ def test_explicit_placeholder_and_stale_plan():
     result = compile_document(doc, provider="openai")
     assert result.executable and result.messages[-1]["status"] == "error"
     assert "未执行" in result.messages[-1]["content"]
-    doc.entries[0].content = "changed"
+    doc.entries[0].payload["content"] = "changed"
     assert "stale_transformation" in {d["code"] for d in compile_document(doc, provider="openai").diagnostics}
 
 
@@ -79,7 +79,7 @@ def test_spoofed_metadata_and_duplicate_calls():
     result = compile_document(doc, provider="openai")
     assert "duplicate_call_id" in {d["code"] for d in result.diagnostics}
     assert all(i["origin"] == "user_authored" for i in result.items)
-    assert not any("approved" in i["payload"]["message"]["additional_kwargs"] for i in result.items)
+    assert not any("approved" in i["payload"] for i in result.items)
 
 
 def test_legacy_read_does_not_mutate_records():
@@ -101,7 +101,7 @@ def test_contract_edit_source_integrity_and_native_diagnostics():
     result = compile_document(doc, provider="openai", sources={"ref": {"record": original, "source": {"revision_id": "R1", "checkpoint_id": "C1"}}})
     assert result.executable and result.items[0]["kind"] == "task_contract"
     assert result.items[0]["origin"] == "user_authored"
-    assert "approved" not in result.items[0]["payload"]["message"]["additional_kwargs"]["focus_context"]
+    assert "approved" not in result.items[0]["payload"]
     assert result.items[0]["source_refs"][0]["relation"] == "edited_from"
     assert original["additional_kwargs"]["focus_context"]["approved"]
     doc.entries[0].source_hash = "forged"
@@ -113,7 +113,7 @@ def test_contract_edit_source_integrity_and_native_diagnostics():
 def test_legacy_provenance_changes_only_after_authored_edit():
     doc = legacy_document("base", [{"role": "ai", "content": "旧正文"}])
     assert compile_document(doc, provider="openai").items[0]["origin"] == "legacy_unknown"
-    doc.entries[0].content = "用户编辑"
+    doc.entries[0].payload["content"] = "用户编辑"
     assert compile_document(doc, provider="openai").items[0]["origin"] == "user_authored"
 
 

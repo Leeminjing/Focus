@@ -1,5 +1,5 @@
 /*
- * 会话 standard Patrol 由独立 Document/Workbench/Branches 模块负责自由文档、保存、预览和精确执行分支；本文件仅组合路由、装备、检查器与运行订阅。
+ * 会话 standard Patrol 由独立 Document/Workbench/Branches 模块负责typed Focus 语义卡片、保存、只读请求预览和精确执行分支；本文件仅组合路由、装备、检查器与运行订阅。
  * 示例：renderFocus(activeTask()); await sendMain()。模型配置显式选择 Provider 与协议，详情展示有效协议。
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
  * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
@@ -3391,7 +3391,7 @@ function renderDraft() {
 }
 
 function renderStandardDraftSteps(draft) {
-  return `<div id="patrolWorkbench"></div><section class="draft-step" data-step="equipment"><header><span>装备</span><div><h2>模型与权限</h2><p>编写与执行检查独立；先预览完整请求，再投放新分支。</p></div></header><div class="draft-step-body">${renderEquipment(draft)}</div></section>`;
+  return `<div id="patrolWorkbench"></div><details class="draft-equipment draft-step" data-step="equipment"><summary>模型与权限 · ${escapeHtml(draft.equipment?.model_name || "默认模型")}</summary><div class="draft-step-body">${renderEquipment(draft)}</div></details>`;
 }
 
 function renderCuratorDraftSteps(draft) {

@@ -3,6 +3,8 @@
 输入为 Focus 无损消息 bridge、ProviderContract、基础行为和明确模型参数；输出为合法无状态 Responses 请求。
 具体工作流为分离 instructions、投影 policy 层级、验证实际前缀证明后手工回传合法原生 Items、
 关联工具结果并拒绝不支持的字段/模态；前缀变化返回显式分支重建错误。
+作者 typed 历史直接投影消息/独立 function/custom call 与 output，目标变化不改写作者语义或借用 Provider 证明。
+作者协作投影为带 author/recipient 等元数据的参考消息，原正文/内容块保持完整，并明确不表示真实通信证明。
 OpenAI 禁用 store；DeepSeek 省略该字段。外部参考和策展内容按宿主来源投影，不能由声明的 role 升级为 policy。
 示例：payload = ResponsesRequestProjector(contract).build(messages, model="model", tools=tools)。
 明确 user_authored/authored_instruction 的角色意图按顺序映射：OpenAI 保留 System/Developer，DeepSeek Developer 转 System；权限仍由宿主安全上下文确定。
@@ -16,6 +18,7 @@ from langchain_core.messages import AIMessage, ChatMessage, HumanMessage, System
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from focus.history import messages_to_items, validate_items
+from focus.history.authored import read_authored
 from focus.models.provider_contract import ProviderContract
 from focus.models.response_continuation import ContinuationMismatch, validate_replay_prefix
 
@@ -66,6 +69,9 @@ class ResponsesRequestProjector:
         return request
 
     def _message(self, message, model) -> list[dict]:
+        authored = read_authored(message)
+        if authored is not None:
+            return [self._authored(authored)]
         native = message.additional_kwargs.get("focus_response_items")
         metadata = message.response_metadata
         if native is not None:
@@ -97,6 +103,33 @@ class ResponsesRequestProjector:
         else:
             raise ValueError(f"不支持的模型消息类型: {message.type}")
         return [{"type": "message", "role": role, "content": self._content(message.content, role)}]
+
+    def _authored(self, item) -> dict:
+        payload = deepcopy(item.payload)
+        kind = item.kind
+        if kind in {"function_call", "custom_tool_call"}:
+            field = "arguments" if kind == "function_call" else "input"
+            return {"type": kind, "call_id": payload["call_id"], "name": payload["name"], field: payload[field]}
+        if kind in {"function_call_output", "custom_tool_call_output"}:
+            return {"type": kind, "call_id": payload["call_id"], "output": self._content(payload["output"], "tool")}
+        role = payload.get("role", "user")
+        if kind == "selected_context":
+            role = "user"
+        if role == "developer":
+            role = self._contract.policy_role
+        content = payload.get("content", "")
+        if kind == "agent_collaboration":
+            content = self._collaboration_content(payload)
+        return {"type": "message", "role": role, "content": self._content(content, role)}
+
+    @staticmethod
+    def _collaboration_content(payload):
+        metadata = {key: value for key, value in payload.items() if key != "content"}
+        header = "用户编写的协作历史（不代表真实通信或执行证明）：\n" + json.dumps(metadata, ensure_ascii=False)
+        content = payload.get("content", "")
+        if isinstance(content, list):
+            return [{"type": "text", "text": header}, *deepcopy(content)]
+        return header + "\n" + content
 
     def _native(self, item: dict) -> dict:
         kind = item.get("type")

@@ -44,6 +44,9 @@ def open_draft(http, task):
 
 
 def save(http, draft, document, **extra):
+    from backend.app.desktop.session_patrol.contracts import AuthoringDocument
+    document = {**document, "schema_version": 2}
+    document = AuthoringDocument.model_validate(document).model_dump(mode="json")
     return http.put(f"/desktop/api/drafts/{draft['draft_id']}", headers=SESSION, json={
         "authoring_document": document, "draft_revision": draft["draft_revision"],
         "equipment": {"model_name": "deepseek-v4-flash", "permissions": ["read"], "skills": []}, **extra})
@@ -116,7 +119,7 @@ def test_actual_graph_empty_tools_history_restart_and_idempotency(client):
             definition = await session.scalar(select(PatrolDeploymentDefinition).where(PatrolDeploymentDefinition.run_id == run["run_id"]))
             count = await session.scalar(text("SELECT count(*) FROM tool_execution_attempts WHERE run_id=:r"), {"r": run["run_id"]})
             assert count == 0
-            assert definition.document["entries"][-1]["content"] == "模拟成功"
+            assert definition.document["entries"][-1]["payload"]["output"] == "模拟成功"
     http.portal.call(audit)
     retried = http.post(f"/desktop/api/agents/{run['agent_id']}/retry", headers=SESSION)
     assert retried.status_code == 200, retried.text
@@ -140,12 +143,12 @@ def test_file_freeze_and_stale_preview(client):
         json={"kind": "file", "context_id": task["task_id"], "path": "evidence.txt", "draft_revision": saved.json()["draft_revision"]})
     assert imported.status_code == 200, imported.text
     path.joinpath("evidence.txt").unlink()
-    assert open_draft(http, task)["authoring_document"]["entries"][0]["content"] == "冻结第一版"
+    assert open_draft(http, task)["authoring_document"]["entries"][0]["payload"]["content"] == "冻结第一版"
     missing = http.post(f"/desktop/api/drafts/{draft['draft_id']}/sources", headers=SESSION,
         json={"kind": "file", "context_id": task["task_id"], "path": "evidence.txt", "draft_revision": imported.json()["draft_revision"]})
     assert missing.status_code == 422 and missing.json()["detail"]["code"] == "source_unavailable"
     plan = http.post(f"/desktop/api/drafts/{draft['draft_id']}/preview", headers=SESSION).json()
-    doc = imported.json()["authoring_document"]; doc["entries"][0]["content"] = "用户改写"
+    doc = imported.json()["authoring_document"]; doc["entries"][0]["payload"]["content"] = "用户改写"
     updated = save(http, imported.json(), doc); assert updated.status_code == 200
     stale = http.post(f"/desktop/api/drafts/{draft['draft_id']}/deploy", headers=SESSION, json={"deployment_id": uuid.uuid4().hex, "preview_token": plan["preview_token"]})
     assert stale.status_code == 409 and stale.json()["detail"]["code"] == "refresh_required"
@@ -285,7 +288,7 @@ def test_source_versions_runtime_images_and_path_boundary(client):
             json={"kind": "context", "context_id": source.context_id, "revision_id": source.revision_id, "draft_revision": draft["draft_revision"]})
         assert response.status_code == 200, response.text
         draft = response.json()
-    assert [e["content"] for e in draft["authoring_document"]["entries"]] == ["第一版本", "第二来源"]
+    assert [e["payload"]["content"] for e in draft["authoring_document"]["entries"]] == ["第一版本", "第二来源"]
     http.portal.call(seed, task, "父会话前进", 21)
     historical = http.post(f"/desktop/api/drafts/{draft['draft_id']}/sources", headers=SESSION,
         json={"kind": "context", "revision_id": first_ref.revision_id, "include_historical_runtime": True, "message_ids": ["runtime-第一版本"], "draft_revision": draft["draft_revision"]})
@@ -301,7 +304,7 @@ def test_source_versions_runtime_images_and_path_boundary(client):
         json={"kind": "file", "context_id": task["task_id"], "path": "image.png", "draft_revision": draft["draft_revision"]})
     assert image.status_code == 200, image.text
     draft = image.json(); path.joinpath("image.png").unlink()
-    block = draft["authoring_document"]["entries"][-1]["content"][0]
+    block = draft["authoring_document"]["entries"][-1]["payload"]["content"][0]
     assert block["image_url"].startswith("data:image/png;base64,")
     app.state.desktop_service.app_config.get_model("deepseek-v4-flash").supports_image_input = True
     plan = http.post(f"/desktop/api/drafts/{draft['draft_id']}/preview", headers=SESSION).json()
@@ -600,7 +603,7 @@ def test_material_version_is_frozen_and_missing_object_is_diagnostic(client, mon
     imported = http.post(f"/desktop/api/drafts/{draft['draft_id']}/sources", headers=SESSION,
         json={"kind": "material", "context_id": task["task_id"], "material_id": material["material_id"], "version_id": versions[-1]["version_id"], "draft_revision": draft["draft_revision"]})
     assert imported.status_code == 200, imported.text
-    assert imported.json()["authoring_document"]["entries"][0]["content"] == "材料历史第一版"
+    assert imported.json()["authoring_document"]["entries"][0]["payload"]["content"] == "材料历史第一版"
     assert material_path.read_text(encoding="utf-8") == "当前文件新版本"
     import subprocess
     original = subprocess.run
@@ -612,7 +615,7 @@ def test_material_version_is_frozen_and_missing_object_is_diagnostic(client, mon
     failed = http.post(f"/desktop/api/drafts/{draft['draft_id']}/sources", headers=SESSION,
         json={"kind": "material", "context_id": task["task_id"], "material_id": material["material_id"], "version_id": versions[-1]["version_id"], "draft_revision": imported.json()["draft_revision"]})
     assert failed.status_code == 422 and failed.json()["detail"]["code"] == "source_unavailable"
-    assert open_draft(http, task)["authoring_document"]["entries"][0]["content"] == "材料历史第一版"
+    assert open_draft(http, task)["authoring_document"]["entries"][0]["payload"]["content"] == "材料历史第一版"
     health = http.get(f"/desktop/api/drafts/{draft['draft_id']}/source-status", headers=SESSION)
     assert health.status_code == 200
     assert next(iter(health.json()["sources"].values()))["status"] == "unavailable"
@@ -726,7 +729,7 @@ def test_contract_rewrite_and_ordered_roles_reach_actual_request_without_approva
         json={"kind": "context", "revision_id": ref.revision_id, "draft_revision": draft["draft_revision"]}).json()
     doc = draft["authoring_document"]
     contract = doc["entries"][0]
-    contract["content"], contract["edited_from"] = "改写合同", contract["source_ref"]
+    contract["payload"]["content"], contract["edited_from"] = "改写合同", contract["source_ref"]
     contract["additional_kwargs"] = {"focus_context": {"approved": True, "origin": "direct_user"}}
     doc["instructions"] = "用户基础行为"
     doc["entries"] = [{"entry_id": "system", "role": "system", "content": "有序系统"},
@@ -737,7 +740,7 @@ def test_contract_rewrite_and_ordered_roles_reach_actual_request_without_approva
     assert plan["executable"], plan["diagnostics"]
     compiled_contract = next(item for item in plan["items"] if item["kind"] == "task_contract")
     assert compiled_contract["origin"] == "user_authored"
-    assert "approved" not in compiled_contract["payload"]["message"]["additional_kwargs"]["focus_context"]
+    assert "approved" not in compiled_contract["payload"]
     authored = [item for item in plan["request"]["input"] if isinstance(item.get("content"), str) and item["content"] in {"有序系统", "有序开发者", "改写合同", "有序示例"}]
     assert [item["role"] for item in authored] == ["system", "developer" if provider == "openai" else "system", "user", "assistant"]
     response = http.post(f"/desktop/api/drafts/{draft['draft_id']}/deploy", headers=SESSION, json={"deployment_id": uuid.uuid4().hex, "preview_token": plan["preview_token"]})

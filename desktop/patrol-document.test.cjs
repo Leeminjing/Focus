@@ -5,6 +5,17 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { PatrolDocument, DraftSaveQueue } = require('./patrol-document.js');
+test('typed payload baseline merges preserve newer body while allowing unrelated role edits', () => {
+  const entry={entry_id:'typed',kind:'message',payload:{role:'user',content:'old',future:{kept:true}},source_ref:'s'};
+  const doc=new PatrolDocument({schema_version:3,entries:[entry]}),base=structuredClone(entry);
+  doc.setPayloadField('typed','content','new');
+  const desired={...base,payload:{...base.payload,role:'developer'}};
+  assert.deepEqual(doc.applyFields('typed',base,desired).conflicts,[]);
+  assert.deepEqual(entry.payload,{role:'developer',content:'new',future:{kept:true}});
+  const conflict=doc.applyFields('typed',base,{...base,payload:{...base.payload,content:'late'}});
+  assert.deepEqual(conflict.conflicts,['payload.content']);assert.equal(entry.payload.content,'new');
+  doc.undo();assert.equal(entry.payload.role,'user');assert.equal(entry.payload.content,'new');
+});
 test('delayed fields merge preserves newer text and unknown blocks and is reversible', () => {
   const entry={entry_id:'e',role:'assistant',content:'original',future:[{type:'unknown'}],name:'old',source_ref:'s'};
   const doc=new PatrolDocument({entries:[entry]}),base=structuredClone(entry),desired={...base,name:'new'};
