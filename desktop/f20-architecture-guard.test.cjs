@@ -2,7 +2,8 @@
  * 本文件对外提供 F20 前端架构静态守卫。输入为桌面清单、Electron 主进程、Gateway 挂载、
  * HTML、渲染入口与 Patrol presence 源码，输出为 Focus 自有沙箱依赖、零外部 CDN、同一 loopback
  * Origin、无 CORS/代理和无待命后端副作用的断言结果；工作流只读取仓库文件并在约束被
- * 破坏时退出失败。示例：`node f20-architecture-guard.test.cjs`。
+ * 破坏时退出失败。构建阶段仅允许离线 JSON 编辑器依赖，运行依赖仍为 Electron/Koffi。
+ * 示例：`node f20-architecture-guard.test.cjs`。
  */
 "use strict";
 
@@ -18,7 +19,10 @@ assert.deepStrictEqual(packageJson.dependencies, {
   electron: "^43.2.0",
   koffi: "3.3.1",
 });
-assert.strictEqual(packageJson.devDependencies, undefined);
+assert.deepStrictEqual(Object.keys(packageJson.devDependencies).sort(), ['@codemirror/commands', '@codemirror/state', '@codemirror/view', 'esbuild']);
+assert.strictEqual(packageJson.scripts['build:patrol-editor'], 'node build-patrol-editor.cjs');
+assert.match(read('desktop/patrol-json-editor.bundle.js'), /FocusPatrolJsonEditor/);
+assert.match(read('desktop/build-patrol-editor.cjs'), /platform:'browser'/);
 
 const html = read("desktop/index.html");
 const externalAssets = [...html.matchAll(/<(?:script|link)\b[^>]+(?:src|href)=["'](https?:\/\/[^"']+)/gi)];

@@ -5,6 +5,7 @@
   "description": "Focus 全图巡逻小兵桌面 PoC",
   "main": "main.cjs",
   "scripts": {
+    "build:patrol-editor": "node build-patrol-editor.cjs",
     "start": "electron .",
     "install:electron": "install-electron",
     "dev": "cd .. && python -m uvicorn backend.app.gateway.app:app --host 127.0.0.1 --port 8765"
@@ -15,5 +16,11 @@
   "dependencies": {
     "electron": "^43.2.0",
     "koffi": "3.3.1"
+  },
+  "devDependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.13",
+    "esbuild": "^0.28.2"
   }
 }

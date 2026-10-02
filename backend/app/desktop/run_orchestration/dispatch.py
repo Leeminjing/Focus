@@ -1,7 +1,7 @@
 r"""本文件对外提供 RunDispatchRepository、RunDispatchRecovery 与 DurableRunDispatchWorker。
 
 输入为 accepted/遗留 dispatch、worker identity、租约、fencing token、执行装配器与启动函数；输出为有界领取、running/settled、显式启动失败或重启分类状态。
-具体工作流为 repository 使用 skip-locked 领取并递增 fencing，唯一 durable worker 在租约内装配和启动；recovery 只把带完整 durable Main 执行快照且可证明未启动的工作恢复为 accepted，并把不确定执行标为 interrupted；后续转换必须携带当前 token，旧 owner 无法提交。
+具体工作流为 repository 使用 skip-locked 领取并递增 fencing，唯一 durable worker 在租约内装配和启动；recovery 只把带完整 durable Main/standard Patrol 执行快照且可证明未启动的工作恢复为 accepted，并把不确定执行标为 interrupted；后续转换必须携带当前 token，旧 owner 无法提交。
 示例：`processed = await worker.drain(limit=4)`。
 """
 
@@ -182,7 +182,7 @@ class RunDispatchRecovery:
     @staticmethod
     def _restart_safe(run: DesktopRun) -> bool:
         execution = (run.equipment or {}).get("_durable_dispatch_execution")
-        if run.kind != "main" or run.status != "pending" or not isinstance(execution, dict) or execution.get("agent_role") != "main":
+        if run.kind not in {"main", "patrol"} or run.status != "pending" or not isinstance(execution, dict) or execution.get("agent_role") not in {"main", "patrol"}:
             return False
         if run.loop_id:
             return bool((run.workspace_anchor or {}).get("slot_id") and run.context_revision_id)

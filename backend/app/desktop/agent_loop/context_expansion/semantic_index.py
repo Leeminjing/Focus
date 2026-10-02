@@ -4,7 +4,7 @@ r"""本文件对外提供 RevisionSemanticIndex、覆盖账本和稳定 segment 
 具体工作流为检查恰好一次覆盖、Tool Exchange 闭合、目标来源、质量账本及局部库存，再验证综合全部阅读依赖与联合 units 身份。
 旧 v3/v4 无综合 proof 的 payload 保留原 identity 算法；新 rev 合同要求完成综合。
 semantic_policy 分离任务命题与证据／参考，source_ordinal 保留原始位置，只有 index 资格的未覆盖消息产生 fallback。
-task_fallback_unit 在 v7/v8 只用 index 正文及来源构造假设；v8 校验 projected units 的宿主资格。
+task_fallback_unit 在 v7/v8/v9 只用 index 正文及来源构造假设；v8/v9 校验 projected units 的宿主资格。
 旧索引保持其原验证算法读取，不改写历史 identity。
 示例：index = RevisionSemanticIndex.create(..., interpretation=proof)；一条诊断共同引用早期怀疑和后来否定。
 """
@@ -297,7 +297,7 @@ class RevisionSemanticIndex(_IndexModel):
                         "Revision index semantic unit 引用了 index 之外的 message"
                     )
         self._require_fallback_inventory(projected, fallback, set(unit_ids))
-        if self.index_schema_version == "revision-semantic-index-v8":
+        if self.index_schema_version in {"revision-semantic-index-v8", "revision-semantic-index-v9"}:
             policies = {message.message_id: message.semantic_policy for message in self.messages}
             for unit in self.semantic_units:
                 if unit.unit_id in projected:
@@ -334,7 +334,7 @@ class RevisionSemanticIndex(_IndexModel):
             raise ValueError("semantic units 与 projected/fallback inventory 不一致")
 
     def _fallback_unit(self, segment: RevisionSegment) -> SemanticEvidenceUnit:
-        if self.index_schema_version in {"revision-semantic-index-v7", "revision-semantic-index-v8"}:
+        if self.index_schema_version in {"revision-semantic-index-v7", "revision-semantic-index-v8", "revision-semantic-index-v9"}:
             return task_fallback_unit(self.source, segment, self.messages)
         return SemanticEvidenceUnit.create(
             kind="claim", authority="hypothesis", statement=segment.descriptor,

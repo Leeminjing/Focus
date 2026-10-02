@@ -1,5 +1,5 @@
 /*
- * 本文件验证 F20 小兵草稿工作台。输入为固定任务、草稿、模型和权限清单，输出为四段顺序结构、
+ * 本文件验证 F20 小兵草稿工作台。输入为固定任务、草稿、模型和权限清单，输出为自由工作台与装备/确认结构、
  * 固定投放栏、自动保存/token 状态与原投放协议断言；工作流不访问真实 API 或 Electron。
  */
 "use strict";
@@ -33,13 +33,9 @@ new vm.Script(`
   renderDraft();
 `).runInContext(context);
 
-for (const heading of ["目标摘要", "消息编排", "装备与权限", "确认投放"]) {
-  assert.match(html, new RegExp(heading), `草稿包含 ${heading}`);
-}
-assert.equal((html.match(/data-step="/g) || []).length, 4, "草稿严格呈现四段工作流");
-assert.match(html, /data-draft-field="system_prompt"/, "System Prompt 仍可编辑");
-assert.match(html, /data-draft-field="final_human_message"/, "最终 HumanMessage 仍可编辑");
-assert.match(html, /data-message-field="content"/, "历史消息编排仍可编辑");
+for (const heading of ["模型与权限", "确认投放"]) assert.match(html,new RegExp(heading));
+assert.match(html,/id="patrolWorkbench"/,"标准 Patrol 委托独立工作台");
+assert.doesNotMatch(html,/data-message-field|final_human_message/,"不再使用强制末条 HAT 编辑器");
 assert.match(html, /data-permission="host_command"/, "宿主命令权限仍显式呈现");
 assert.match(html, /id="draftSaveState"[^>]*>自动保存/, "固定操作区呈现自动保存状态");
 assert.match(html, /id="tokenCount">估算 1200 tokens/, "固定操作区呈现 token 估算");
@@ -84,4 +80,4 @@ assert.match(source, /draftSaveRevisions\.get\(taskId\) === revision/, "乱序�
 assert.match(source, /if \(!await saveDraft\(state\.activeTaskId\)\)/, "保存失败时投放必须停止");
 assert.match(source, /\/context-curation\/quick-deploy/, "待命 Patrol 快捷策展走后端原子入口");
 
-console.log("draft UI: 四段工作台、自动保存、token、权限与投放协议通过");
+console.log("draft UI: 自由工作台工作台、自动保存、token、权限与投放协议通过");

@@ -3,6 +3,7 @@
 输入为宿主确定的来源、作用域和 typed payload；输出为严格版本化历史合同与 canonical hash。
 具体工作流为校验 envelope、保留 Provider 原始载荷、按稳定 JSON 计算身份并拒绝未知 schema。
 示例：HistoryPayload(execution_items=(FocusItem(item_id="i1", kind="message", payload={}),))。
+user_authored 表示用户编写而非消息角色；authored_instruction 表示有序行为指令，新增语义选择版本不重写旧 HistoryPayload/hash。
 """
 
 from __future__ import annotations
@@ -14,11 +15,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-Origin = Literal["direct_user", "curator", "delegated", "runtime", "provider", "tool", "collaborator", "legacy_unknown"]
+Origin = Literal["direct_user", "user_authored", "curator", "delegated", "runtime", "provider", "tool", "collaborator", "legacy_unknown"]
 Scope = Literal["revision", "execution", "runtime", "run", "round"]
 SemanticPolicy = Literal["index", "evidence_only", "reference_only", "exclude"]
 ItemKind = Literal[
-    "message", "reasoning", "function_call", "function_call_output", "custom_tool_call",
+    "message", "authored_instruction", "reasoning", "function_call", "function_call_output", "custom_tool_call",
     "custom_tool_call_output", "world_state_update", "selected_context", "agent_collaboration",
     "round_decision_context", "task_contract", "compaction", "projection_repair", "unknown",
 ]
@@ -68,7 +69,7 @@ class HistoryPayload(BaseModel):
     authored_items: tuple[FocusItem, ...] = ()
     execution_items: tuple[FocusItem, ...] = ()
     binding_refs: tuple[dict[str, Any], ...] = ()
-    selection_version: str = "focus-semantic-selection-v1"
+    selection_version: str = "focus-semantic-selection-v2"
 
     @model_validator(mode="after")
     def validate_inventories(self):

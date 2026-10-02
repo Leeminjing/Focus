@@ -4,6 +4,7 @@
 具体工作流为独立 projector 构造无状态请求、首次实际调用才创建相应 SDK 客户端、decoder 验证终态/工具并保存原生 Items。
 结构化输出使用 text.format，仍由领域 Pydantic schema 校验；本类不拥有 Context/Revision 或工具执行权。
 示例：model = FocusResponsesChatModel(model="model", api_key="...", provider_contract=contract)；await model.ainvoke(messages)。
+request_payload(validate_window=False) 仅供完整请求预览和分项预算诊断；真实采样默认校验窗口，参数不传给 Provider SDK。
 """
 
 import asyncio
@@ -72,7 +73,7 @@ class FocusResponsesChatModel(BaseChatModel):
 
         return structured_runnable(self, schema, method, include_raw, strict, kwargs)
 
-    def request_payload(self, messages, *, stop=None, **kwargs):
+    def request_payload(self, messages, *, stop=None, validate_window=True, **kwargs):
         if stop:
             raise ValueError("Responses 不支持 Chat stop 参数")
         options = {key: getattr(self, key) for key in ("temperature", "top_p", "max_tokens", "reasoning_effort", "reasoning", "text")}
@@ -81,7 +82,7 @@ class FocusResponsesChatModel(BaseChatModel):
         payload = ResponsesRequestProjector(self.provider_contract).build(messages, model=self.model_name, tools=tools, **options)
         estimate = estimate_responses_budget(payload)
         window = self.provider_contract.context_window
-        if window is not None and estimate > window:
+        if validate_window and window is not None and estimate > window:
             raise ValueError(f"完整 Responses 请求超出上下文窗口: estimate={estimate}, limit={window}")
         return payload
 

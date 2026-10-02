@@ -3,6 +3,7 @@
 输入为可信 FocusItems；输出为保留原始身份和调用语境的领域消费视图。
 具体工作流为排除执行控制和旧 Run 的临时选择、隔离 reasoning、关联工具证据并保留引用而不自动声明事实成立。
 示例：semantic_messages(legacy_to_items(records)) 供版本化语义消费者读取。
+当前 selection v2 排除 authored_instruction；用户编写的任务/模型示例仍可索引，工具示例仅具 evidence_only 资格而不声明真实执行。
 """
 
 from __future__ import annotations
@@ -14,8 +15,8 @@ from focus.history.codec import history_records
 from focus.history.contracts import FocusItem, SemanticPolicy
 
 
-SELECTION_VERSION = "focus-semantic-selection-v1"
-_EXCLUDED = {"reasoning", "world_state_update", "round_decision_context", "projection_repair", "compaction", "unknown"}
+SELECTION_VERSION = "focus-semantic-selection-v2"
+_EXCLUDED = {"authored_instruction", "reasoning", "world_state_update", "round_decision_context", "projection_repair", "compaction", "unknown"}
 
 
 def semantic_policy(item: FocusItem) -> SemanticPolicy:

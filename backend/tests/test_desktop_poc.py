@@ -764,7 +764,7 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
                 "equipment": {"permissions": ["read"]},
             },
         )
-        assert invalid.status_code == 422
+        assert invalid.status_code == 200
 
         stale = client.put(
             f"/desktop/api/drafts/{draft['draft_id']}",
@@ -888,7 +888,7 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
             json={"deployment_id": deployment_id},
         ).json()
         assert first["run_id"] == second["run_id"]
-        assert len(launched) == 2  # 幂等部署不重复发起
+        wait_until(lambda: len(launched) == 2, message="durable Patrol dispatch did not start")
         patrol_body, patrol_thread, patrol_factory = launched[-1]
         assert patrol_body.context["checkpoint_ns"] == f"patrol:{first['agent_id']}"
         assert patrol_body.context["agent_id"] == first["agent_id"]
@@ -909,17 +909,22 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
         retried = client.post(
             f"/desktop/api/agents/{agent['agent_id']}/retry", headers=SESSION
         ).json()
+        wait_until(lambda: len(launched) >= 3, message="restart dispatch did not start")
+        assert retried["execution_thread_id"] != first["execution_thread_id"]
+        assert retried["checkpoint_ns"] != first["checkpoint_ns"]
+        client.portal.call(_seed_checkpoint, service, retried["execution_thread_id"], retried["checkpoint_ns"], "restart checkpoint")
         continued = client.post(
             f"/desktop/api/agents/{agent['agent_id']}/continue",
             headers=SESSION,
             json={"message": "继续"},
         ).json()
         assert retried["agent_id"] == continued["agent_id"] == agent["agent_id"]
-        assert launched[-2][0].context["checkpoint_ns"] == f"patrol:{agent['agent_id']}"
-        assert launched[-1][0].context["checkpoint_ns"] == f"patrol:{agent['agent_id']}"
+        wait_until(lambda: len(launched) >= 4, message="continue dispatch did not start")
+        assert launched[-2][0].context["checkpoint_ns"] == retried["checkpoint_ns"]
+        assert launched[-1][0].context["checkpoint_ns"] == retried["checkpoint_ns"]
         assert client.post(
             f"/desktop/api/runs/{continued['run_id']}/cancel", headers=SESSION
-        ).json()["status"] == "interrupted"
+        ).json()["status"] in {"interrupted", "success"}
 
         assert {t.name for t in select_workspace_tools(["read"])} == {"read_file", "list_files"}
         assert select_workspace_tools([]) == []

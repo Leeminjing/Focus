@@ -1,4 +1,5 @@
 /*
+ * 会话 standard Patrol 由独立 Document/Workbench/Branches 模块负责自由文档、保存、预览和精确执行分支；本文件仅组合路由、装备、检查器与运行订阅。
  * 示例：renderFocus(activeTask()); await sendMain()。模型配置显式选择 Provider 与协议，详情展示有效协议。
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
  * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
@@ -677,7 +678,7 @@ async function bootstrap() {
     await hydrateActive();
   } catch (error) {
     setStatus(error.message, true);
-    app.innerHTML = `<section class="empty-state"><h1>桌面服务未就绪</h1><p>${escapeHtml(error.message)}</p><button class="primary" data-action="reload">重试</button></section>`;
+    app.innerHTML = `<section class="empty-state"><h1>桌面服务未就绪</h1><p>${escapeHtml(error.message)}</p><button class="primary" data-action="reload">重跑新分支</button></section>`;
     return false;
   }
   render();
@@ -718,6 +719,8 @@ async function hydrateActive(taskId = state.activeTaskId) {
 }
 
 function render() {
+  const shownDraft = document.querySelector('#patrolWorkbench')?.dataset?.draftId;
+  if (shownDraft && (state.view !== 'draft' || state.drafts.get(state.activeTaskId)?.draft_id !== shownDraft)) window.FocusPatrolWorkbench?.leave(shownDraft);
   if (state.view !== "loop") loopConnection?.stop();
   document.body.dataset.view = state.view;
   renderShellChrome();
@@ -1268,6 +1271,8 @@ function renderInspector() {
   syncShellResizerVisibility();
   if (!state.inspector.open) return;
   const tab = state.inspector.tab;
+  const activeBranch = document.querySelector('#patrolBranchControls');
+  if (tab === 'agents' && activeBranch?.dataset?.agentId === state.agentDetails.agentId && ['TEXTAREA','INPUT','SELECT'].includes(document.activeElement?.tagName) && activeBranch.parentElement?.contains(document.activeElement)) return;
   const task = activeTask();
   appInspector.querySelectorAll?.('[role="tab"]').forEach(button => {
     const selected = button.dataset.inspectorTab === tab;
@@ -1304,11 +1309,17 @@ function renderInspector() {
           ? (state.agentDetails.busy ? '<p class="muted">加载中…</p>' : renderCuratorDetails(agent, state.agentDetails.curation))
           : `<div class="agent-detail-history">${state.agentDetails.busy ? '<p class="muted">加载中…</p>' : state.agentDetails.messages.length ? state.agentDetails.messages.map(renderMessage).join("") : '<p class="muted">暂无已提交消息</p>'}</div>
             <div class="ui-toolbar agent-detail-actions"><button class="text-button" data-action="refresh-agent-details">刷新</button><button class="text-button" data-action="retry-agent-details">重试</button><button class="text-button danger" data-action="cancel-agent-details">取消运行</button></div>
-            <form class="agent-inspector-continue" id="agentInspectorContinueForm"><label for="agentInspectorInput">继续对话</label><textarea id="agentInspectorInput" rows="3" placeholder="给这个 Agent 追加指令…"></textarea><button class="primary" type="submit">继续</button></form>`}
+            <div id="patrolBranchControls"></div><form class="agent-inspector-continue" id="agentInspectorContinueForm"><label for="agentInspectorInput">继续对话</label><textarea id="agentInspectorInput" rows="3" placeholder="给这个 Agent 追加指令…"></textarea><button class="primary" type="submit">继续</button></form>`}
       </section>`;
+      if (window.FocusPatrolBranches) window.FocusPatrolBranches.mount(document.querySelector('#patrolBranchControls'), {
+        agent:agents.find(item => item.agent_id === state.agentDetails.agentId), api, onRun:listenToRun,
+        onDraft:draft=>{state.drafts.set(draft.task_id,draft);state.activeTaskId=draft.task_id;state.view='draft';render();},
+        onError:error=>setStatus(error.message,true),
+      });
       return;
     }
     inspectorContent.innerHTML = `<section class="inspector-section"><header><h3>协作 Agents</h3><span class="ui-badge">${agents.length}</span></header><div class="inspector-list">${agents.length ? renderAgentStrip(task.task_id) : '<p class="muted">尚未投放小兵</p>'}</div></section>`;
+
     return;
   }
   const run = state.details.get(task.task_id)?.active_run;
@@ -2281,7 +2292,7 @@ async function continueAgentDetails() {
   const message = input.value.trim();
   if (!message) return;
   try {
-    const run = await api(`/desktop/api/agents/${state.agentDetails.agentId}/continue`, { method: "POST", body: JSON.stringify({ message }) });
+    const run = await api(`/desktop/api/agents/${state.agentDetails.agentId}/continue`, { method: "POST", body: JSON.stringify({ message, ...(window.FocusPatrolBranches?.get(state.agentDetails.agentId) || {}) }) });
     listenToRun(run);
     input.value = "";
     setStatus("已发起小兵继续对话");
@@ -3348,6 +3359,15 @@ function renderDraft() {
   const task = state.tasks.find(item => item.task_id === draft?.task_id);
   if (!draft || !task) { state.view = "map"; renderMap(); return; }
   const curator = draft.mode === "context_curator";
+  const currentWorkbench = document.querySelector('#patrolWorkbench');
+  if (curator && currentWorkbench?.dataset?.draftId) window.FocusPatrolWorkbench?.leave(currentWorkbench.dataset.draftId);
+  if (!curator && currentWorkbench?.dataset?.draftId === draft.draft_id && window.FocusPatrolWorkbench) {
+    window.FocusPatrolWorkbench.get(draft.draft_id).rebind({draft,api,onStale:updateTokenState,onPreview:updateTokenState,onReload:()=>renderDraft()});
+    const equipment = document.querySelector('.draft-step[data-step="equipment"] .draft-step-body');
+    const signature = JSON.stringify([draft.equipment.model_name,draft.equipment.skills,draft.equipment.permissions,draft.equipment.access_mode]);
+    if (equipment && equipment.dataset.signature !== signature) { equipment.innerHTML = renderEquipment(draft); equipment.dataset.signature = signature; }
+    updateTokenState(); return;
+  }
   app.innerHTML = `<section class="draft-view">
     <section class="draft-panel">
       <header class="draft-heading"><span class="ui-meta">${curator ? "跟踪起点" : "来源"} checkpoint ${escapeHtml(draft.source_checkpoint_id || "空历史")}</span><span class="ui-badge is-success">${curator ? "只读策展 · 无通用工具" : "主 Agent 可继续运行"}</span></header>
@@ -3362,16 +3382,16 @@ function renderDraft() {
       <footer class="draft-footer ui-action-bar"><button class="text-button" data-action="exit-draft">退出并保存</button><span class="muted tiny">草稿仅属于当前任务</span><button class="primary" data-action="deploy">确认并投放</button></footer>
     </section>
   </section>`;
+  if (!curator && window.FocusPatrolWorkbench && draft.authoring_document) {
+    window.FocusPatrolWorkbench.mount(document.querySelector('#patrolWorkbench'), {
+      draft, api, onStale:updateTokenState, onPreview:updateTokenState, onReload:()=>renderDraft(),
+    });
+  }
   updateTokenState();
 }
 
 function renderStandardDraftSteps(draft) {
-  return `<section class="draft-step" data-step="objective"><header><span>01</span><div><h2>目标摘要</h2><p>说明这个 Agent 要完成什么，以及它应继承的系统约束。</p></div></header><div class="draft-step-body">
-    <div class="draft-field"><label for="draftFinalMessage">最终任务指令</label>${renderSkillPicker("draft", `<textarea id="draftFinalMessage" data-draft-field="final_human_message" placeholder="给小兵一个清晰、可验收的目标…">${escapeHtml(draft.final_human_message)}</textarea>`)}</div>
-    <details class="draft-advanced" ${state.openDraftSection === "system" ? "open" : ""}><summary>高级：System Prompt</summary><textarea data-draft-field="system_prompt">${escapeHtml(draft.system_prompt)}</textarea></details>
-  </div></section>
-  <section class="draft-step" data-step="history"><header><span>02</span><div><h2>消息编排</h2><p>调整交接历史；工具调用关联项会作为一个整体处理。</p></div></header><div class="draft-step-body">${renderHistory(draft)}</div></section>
-  <section class="draft-step" data-step="equipment"><header><span>03</span><div><h2>装备与权限</h2><p>选择模型与宿主权限；写入和命令会直接影响真实工作区。</p></div></header><div class="draft-step-body">${renderEquipment(draft)}</div></section>`;
+  return `<div id="patrolWorkbench"></div><section class="draft-step" data-step="equipment"><header><span>装备</span><div><h2>模型与权限</h2><p>编写与执行检查独立；先预览完整请求，再投放新分支。</p></div></header><div class="draft-step-body">${renderEquipment(draft)}</div></section>`;
 }
 
 function renderCuratorDraftSteps(draft) {
@@ -3389,22 +3409,6 @@ function renderCuratorDraftSteps(draft) {
     <label>模型<select data-equipment="model_name">${state.equipment.models.map(model => `<option value="${model.name}" ${model.name === draft.equipment?.model_name ? "selected" : ""}>${escapeHtml(model.display_name)} · ${model.context_window || "未知"}</option>`).join("")}</select></label>
     <p class="tiny muted">运行时固定为 read 权限，不装配 skills、write 或 host_command。</p>
   </div></section>`;
-}
-
-function renderHistory(draft) {
-  return `<div class="history-actions"><button class="text-button" data-action="add-message">增加消息</button><button class="text-button danger" data-action="clear-history">清空历史</button></div><div id="historyList">${draft.history_messages.map((message, index) => renderMessageEditor(message, index)).join("")}</div>`;
-}
-
-function renderMessageEditor(message, index) {
-  const locked = message.locked || message.role === "tool" || message.tool_calls?.length;
-  const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content, null, 2);
-  return `<div class="message-editor" draggable="true" data-index="${index}">
-    <button class="drag-handle" type="button" aria-label="拖动排序">${String(index + 1).padStart(2, "0")}</button>
-    <select data-message-field="role" ${locked ? "disabled" : ""}><option value="human" ${["human", "user"].includes(message.role) ? "selected" : ""}>Human</option><option value="ai" ${["ai", "assistant"].includes(message.role) ? "selected" : ""}>AI</option><option value="system" ${message.role === "system" ? "selected" : ""}>System</option><option value="tool" ${message.role === "tool" ? "selected" : ""}>Tool</option></select>
-    <textarea data-message-field="content">${escapeHtml(content)}</textarea>
-    <button class="delete-message" type="button" data-action="delete-message" aria-label="删除消息">删除</button>
-    ${locked ? `<span class="locked-note">工具调用结构已锁定；删除会同时处理关联消息。</span>` : ""}
-  </div>`;
 }
 
 const sourceMeta = {
@@ -3501,7 +3505,9 @@ function defaultCurationPolicy(draft) {
 
 function setDraftPatrolMode(draft, mode) {
   if (!draft || !["standard", "context_curator"].includes(mode) || draft.mode === mode) return false;
+  if (draft.mode === "standard" && draft.authoring_document) draft.authoring_document.standard_equipment = structuredClone(draft.equipment);
   draft.mode = mode;
+  if (mode === "standard" && draft.authoring_document?.standard_equipment) draft.equipment = structuredClone(draft.authoring_document.standard_equipment);
   if (mode === "context_curator") {
     draft.curation_policy = defaultCurationPolicy(draft);
     draft.equipment = {
@@ -3517,12 +3523,6 @@ function setDraftPatrolMode(draft, mode) {
 function syncDraftFromDom() {
   const draft = state.drafts.get(state.activeTaskId);
   if (!draft) return null;
-  document.querySelectorAll(".message-editor").forEach(row => {
-    const message = draft.history_messages[Number(row.dataset.index)];
-    const role = row.querySelector('[data-message-field="role"]');
-    if (role && !role.disabled) message.role = role.value;
-    message.content = row.querySelector('[data-message-field="content"]').value;
-  });
   document.querySelectorAll("[data-draft-field]").forEach(input => { draft[input.dataset.draftField] = input.value; });
   document.querySelectorAll("[data-curation-policy]").forEach(input => {
     const field = input.dataset.curationPolicy;
@@ -3548,6 +3548,9 @@ function syncDraftFromDom() {
 }
 
 function scheduleDraftSave() {
+  const current = state.drafts.get(state.activeTaskId);
+  const workbench = current?.mode === "standard" && window.FocusPatrolWorkbench?.get(current.draft_id);
+  if (workbench) { syncDraftFromDom(); workbench.configurationChanged(); updateTokenState(); return; }
   const taskId = state.activeTaskId;
   syncDraftFromDom();
   clearTimeout(state.saveTimer);
@@ -3559,6 +3562,9 @@ function scheduleDraftSave() {
 }
 
 async function saveDraft(taskId = state.activeTaskId, options = {}) {
+  const activeDraft = state.drafts.get(taskId);
+  const workbench = activeDraft?.mode === "standard" && window.FocusPatrolWorkbench?.get(activeDraft.draft_id);
+  if (workbench) { try { if (taskId === state.activeTaskId) syncDraftFromDom(); await workbench.flush(); return true; } catch (error) { setStatus(error.message, true); return false; } }
   if (options.cancelTimer !== false) {
     clearTimeout(state.saveTimer);
     state.saveTimer = null;
@@ -3576,6 +3582,7 @@ async function saveDraft(taskId = state.activeTaskId, options = {}) {
     equipment: draft.equipment,
     mode: draft.mode || "standard",
     curation_policy: draft.curation_policy || {},
+    ...(draft.authoring_document ? {authoring_document:draft.authoring_document, draft_revision:draft.draft_revision} : {}),
   };
   try {
     const saved = await api(`/desktop/api/drafts/${draft.draft_id}`, { method: "PUT", body: JSON.stringify(payload) });
@@ -3604,7 +3611,8 @@ function updateTokenState() {
   const over = model?.context_window && draft.token_estimate > model.context_window;
   document.querySelector("#tokenCount")?.classList.toggle("over", Boolean(over));
   const deploy = document.querySelector('[data-action="deploy"]');
-  if (deploy) deploy.disabled = Boolean(over) || (draft.mode !== "context_curator" && !draft.final_human_message?.trim());
+  const workbench = draft?.mode === "standard" && window.FocusPatrolWorkbench?.get(draft.draft_id);
+  if (deploy) deploy.disabled = workbench ? !workbench.previewPlan?.executable : Boolean(over) || (draft.mode !== "context_curator" && !draft.final_human_message?.trim());
 }
 
 async function deployDraft() {
@@ -3617,14 +3625,15 @@ async function deployDraft() {
     return;
   }
   const draft = state.drafts.get(state.activeTaskId);
-  if (draft.mode !== "context_curator" && !draft.final_human_message.trim()) {
+  const workbench = draft.mode === "standard" && window.FocusPatrolWorkbench?.get(draft.draft_id);
+  if (!workbench && draft.mode !== "context_curator" && !draft.final_human_message.trim()) {
     state.deploying = false;
     updateTokenState();
     return setStatus("最后一条 HumanMessage 不能为空", true);
   }
   try {
     draft.deployment_id ||= crypto.randomUUID();
-    const run = await api(`/desktop/api/drafts/${draft.draft_id}/deploy`, { method: "POST", body: JSON.stringify({ deployment_id: draft.deployment_id }) });
+    const run = await api(`/desktop/api/drafts/${draft.draft_id}/deploy`, { method: "POST", body: JSON.stringify({ deployment_id: draft.deployment_id, ...(workbench ? {preview_token:workbench.previewPlan?.preview_token} : {}) }) });
     listenToRun(run);
     state.view = "map";
     state.drafts.delete(state.activeTaskId);
@@ -6325,6 +6334,7 @@ async function handleDocumentClick(event) {
   if (action === "cancel-access-mode") return cancelAccessMode(button);
   if (action === "exit-draft") { if (await saveDraft(state.activeTaskId)) { state.view = "map"; return render(); } return; }
   if (action === "set-patrol-mode") {
+    if (!await saveDraft(state.activeTaskId)) return;
     const draft = syncDraftFromDom();
     const mode = button.dataset.mode;
     if (!setDraftPatrolMode(draft, mode)) return;
@@ -6333,15 +6343,6 @@ async function handleDocumentClick(event) {
     return;
   }
   if (action === "deploy") return deployDraft();
-  if (action === "add-message") { syncDraftFromDom().history_messages.push({ role: "human", content: "" }); renderDraft(); scheduleDraftSave(); return; }
-  if (action === "clear-history") { syncDraftFromDom().history_messages = []; renderDraft(); scheduleDraftSave(); return; }
-  if (action === "delete-message") {
-    const draft = syncDraftFromDom(); const index = Number(button.closest(".message-editor").dataset.index); const message = draft.history_messages[index];
-    const callIds = new Set((message.tool_calls || []).map(call => call.id));
-    if (message.role === "tool") callIds.add(message.tool_call_id);
-    draft.history_messages = draft.history_messages.filter((item, itemIndex) => itemIndex !== index && !callIds.has(item.tool_call_id) && !(item.tool_calls || []).some(call => callIds.has(call.id)));
-    renderDraft(); scheduleDraftSave(); return;
-  }
   if (action === "set-material-grouping") {
     const detail = state.details.get(state.activeTaskId);
     detail.ui_state = { ...(detail.ui_state || {}), material_grouping_mode: button.dataset.mode };
@@ -6761,8 +6762,6 @@ document.addEventListener("lostpointercapture", event => {
 
 document.addEventListener("dragstart", event => {
   if (event.target.matches(".soldier-source")) event.dataTransfer.setData("application/x-focus-soldier", "new");
-  const row = event.target.closest(".message-editor");
-  if (row) event.dataTransfer.setData("application/x-focus-message", row.dataset.index);
   // 左下栏「记忆源」卡拖拽重排：携带来源索引，与三栏「添加来源」payload 区分。
   const sourceCard = event.target.closest(".memory-source-edit[data-source-index]");
   if (sourceCard) {
@@ -6797,8 +6796,6 @@ document.addEventListener("dragstart", event => {
 document.addEventListener("dragover", event => {
   const card = event.target.closest(".task-card, .map-collapsible-context-item");
   if (card && event.dataTransfer.types.includes("application/x-focus-soldier")) { event.preventDefault(); card.classList.add("drop-target"); }
-  const row = event.target.closest(".message-editor");
-  if (row && event.dataTransfer.types.includes("application/x-focus-message")) event.preventDefault();
   if (event.target.closest(".memory-source-edit-list") && event.dataTransfer.types.includes("application/x-focus-source-index")) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }
   if (event.target.closest(".memory-compose") && event.dataTransfer.types.includes("application/x-focus-memory")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }
 });
@@ -6807,11 +6804,6 @@ document.addEventListener("dragleave", event => event.target.closest(".task-card
 document.addEventListener("drop", event => {
   const card = event.target.closest(".task-card, .map-collapsible-context-item");
   if (card && event.dataTransfer.getData("application/x-focus-soldier")) { event.preventDefault(); return openDraft(card.dataset.taskId); }
-  const row = event.target.closest(".message-editor");
-  const from = Number(event.dataTransfer.getData("application/x-focus-message"));
-  if (row && Number.isInteger(from)) {
-    event.preventDefault(); const draft = syncDraftFromDom(); moveMessageGroup(draft.history_messages, from, Number(row.dataset.index)); renderDraft(); scheduleDraftSave();
-  }
   const sourceCard = event.target.closest(".memory-source-edit[data-source-index]");
   const fromIndex = Number(event.dataTransfer.getData("application/x-focus-source-index"));
   if (sourceCard && Number.isInteger(fromIndex) && event.dataTransfer.getData("application/x-focus-source-index") !== "") {
@@ -6843,20 +6835,7 @@ function messageGroup(messages, index) {
   });
 }
 
-function moveMessageGroup(messages, from, to) {
-  const moving = new Set(messageGroup(messages, from));
-  const target = messageGroup(messages, to);
-  const group = messages.filter((_item, index) => moving.has(index));
-  const insertion = messages.slice(0, Math.min(...target)).filter((_item, index) => !moving.has(index)).length;
-  const remaining = messages.filter((_item, index) => !moving.has(index));
-  remaining.splice(insertion, 0, ...group);
-  messages.splice(0, messages.length, ...remaining);
-}
 
-document.querySelector("#taskForm").addEventListener("submit", createTask);
-document.querySelector("#newSessionAccessMode")?.addEventListener("change", event => {
-  accessMode.saveNewSessionDefault(window.localStorage, event.target.value);
-});
 document.addEventListener("submit", event => {
   if (event.target.matches("[data-loop-wait-response]")) {
     event.preventDefault();
