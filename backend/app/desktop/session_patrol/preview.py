@@ -6,7 +6,7 @@
 """
 from dataclasses import asdict
 from types import SimpleNamespace
-from focus.history import content_hash, deserialize_history_messages
+from focus.history import content_hash, items_to_messages
 from focus.models.provider_contract import resolve_provider_contract
 from focus.messages.request_budget import estimate_responses_budget
 from .compiler import compile_document
@@ -47,7 +47,7 @@ class PatrolPreview:
             workspace_path=workspace.path, permissions=equipment.get("permissions") or ["read"], access_mode=equipment.get("access_mode"),
             checkpoint_ns=plan["checkpoint_ns"], agent_role="patrol", model_name=equipment.get("model_name"), allow_global_config=False, extras={"skills": equipment.get("skills", [])})
         try:
-            request = observed[0].preview(deserialize_history_messages(compiled.messages), context)
+            request = observed[0].preview(items_to_messages(compiled.items), context)
         except (ValueError, TypeError, KeyError) as exc:
             plan["diagnostics"].append({"code": "provider_projection", "entry_ids": [e.entry_id for e in document.entries], "message": str(exc)})
             return plan

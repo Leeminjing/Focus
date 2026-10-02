@@ -1,10 +1,11 @@
 /* 本文件对外提供 mount / get / leave 的会话 Patrol 工作台组合端口。
- * 输入为草稿、API 和目录；输出为稳定 identity 编辑器、虚拟列表、独立保存、来源及可追溯请求预览。
- * 工作流为字段事件局部更新，结构事件 reconcile 最多 100 cards；文档、字段和内容块在 Worker 解析及校验。
+ * 输入为草稿、API 和目录；输出为稳定 identity 的连续 typed 卡片、独立保存、来源及可追溯请求预览。
+ * 工作流为字段事件局部更新，结构事件通过独立 viewport reconcile 最多 80 cards；文档、字段和内容块在 Worker 解析及校验。
  * 字段按编辑基线合并，冲突保留 buffer；entry epoch 与请求身份拒绝旧生命周期结果。来源状态独立只读刷新。
  * 高级视图先呈现 pending 再由 Worker 格式化全文，视图/文档版本保护迟到结果；本地反馈与完整内容就绪分别计量。
- * 基础行为与 entry 编辑独立；结构 JSON 通过 JsonEditor 端口保留全文与 history，仅排版可见区域。
- * 输入法期间暂缓保存，导航保留本地 buffer；服务器版本冲突保留本地稿，显式载入可撤销。
+ * 基础行为与 typed kind/payload 编辑独立；结构 JSON 通过 JsonEditor 端口保留全文与 history，仅排版可见区域。
+ * 输入法期间暂缓保存及字段类型协调，文本撤销由所属编辑器接管；导入持久合并与面板 ticket 独立。
+ * 文档与高级面板共享独立内容布局，行为区展开时仍不遮挡输入；导航保留本地 buffer，显式载入可撤销。
  * 示例：FocusPatrolWorkbench.mount(root,{draft,api})。
  */
 (function (global) {
@@ -18,10 +19,10 @@
     constructor(options) {
       this.options = options; this.draft = options.draft; this.api = options.api; this.cards = new Map(); this.generation = 0; this.panelGeneration = 0; this.selected = null; this.composing = false;
       this.entryParses = new Map(); this.parseIdentity = 0;
-      let value = this.draft.authoring_document || { schema_version:2, instructions:this.draft.system_prompt || "", entries:[], transformations:[] };
+      let value = this.draft.authoring_document || { schema_version:3, instructions:this.draft.system_prompt || "", entries:[], transformations:[] };
       let baseRevision=this.draft.draft_revision || 0;
-      try { const local = JSON.parse(localStorage.getItem(this._storageKey())); if (local?.document?.schema_version===2 && Array.isArray(local.document.entries)) { value=local.document;baseRevision=local.serverRevision;this.localConflict=baseRevision!==this.draft.draft_revision; } } catch (_) {}
-      this.doc = new PatrolDocument(value, () => this._changed());
+      try { const local = JSON.parse(localStorage.getItem(this._storageKey())); if ([2,3].includes(local?.document?.schema_version) && Array.isArray(local.document.entries)) { value=local.document;baseRevision=local.serverRevision;this.localConflict=baseRevision!==this.draft.draft_revision; } } catch (_) {}
+      this.doc = new PatrolDocument(global.FocusPatrolAuthoring.upgradeDocument(value), () => this._changed());
       this.queue = new DraftSaveQueue({ revision:baseRevision,
         save:body => this.api(`/desktop/api/drafts/${this.draft.draft_id}`, { method:"PUT", body:JSON.stringify(body) }),
         snapshot:revision => {
@@ -40,14 +41,25 @@
       this.events?.abort(); this.events = new AbortController(); const signal = this.events.signal;
       this.root = root; root.className = "patrol-workbench"; root.replaceChildren(); this.cards.clear();
       const toolbar = element("div", "patrol-toolbar");
-      toolbar.append(button("增加条目", () => this._add()), button("清空", () => { this.doc.clear(); this.renderList(); this.select(null); }),
-        button("撤销", () => this._undo(false)), button("重做", () => this._undo(true)), button("高级结构", () => this._toggleRaw()),
-        button("导入来源", () => this._sources()), button("检查来源", () => this._refreshSources()), button("预览与检查", () => this.preview()), button("载入服务器版本", () => this._reloadServer()));
-      this.status = element("button", "patrol-status", "自动保存"); this.status.onclick = () => this.queue.flush().catch(() => {}); toolbar.append(this.status);
-      if(this.localConflict)this.status.textContent="另一窗口已更新；本地编辑已保留，可载入服务器版本或复制正文";
-      this.list = element("div", "patrol-list"); this.list.setAttribute("role", "listbox"); this.list.setAttribute("aria-label", "上下文条目");
-      this.list.addEventListener("scroll", () => { if (!this.scrollFrame) this.scrollFrame = requestAnimationFrame(() => { this.scrollFrame = null; this.renderList(); }); });
-      this.editor = element("div", "patrol-editor"); this.panel = element("div", "patrol-panel"); this.panel.hidden = true;
+      const heading = element("div", "patrol-document-heading"); heading.append(element("h2", "", "Patrol 上下文"),element("span", "patrol-document-hint", "编写模型要看到的消息与工具历史"));
+      const add = element("details", "patrol-add-menu"); add.append(element("summary", "patrol-tool-button", "＋ 添加"));
+      const choices = element("div", "patrol-popover");
+      for (const role of ["developer","user","assistant","system"]) choices.append(button(role,()=>{this._add("message",role);add.open=false;}));
+      for (const kind of ["function_call","function_call_output","custom_tool_call","custom_tool_call_output","task_contract","agent_collaboration","unknown"]) choices.append(button(kind,()=>{this._add(kind);add.open=false;}));
+      add.append(choices);
+      const advanced=element("details","patrol-add-menu");advanced.append(element("summary","patrol-tool-button","高级"));
+      const advancedMenu=element("div","patrol-popover");advancedMenu.append(button("编辑 Focus 语义 JSON",()=>{advanced.open=false;this._toggleRaw();}),button("实际模型请求",()=>{advanced.open=false;this.preview();}));advanced.append(advancedMenu);
+      const more=element("details","patrol-add-menu");more.append(element("summary","patrol-tool-button","···"));more.firstChild.setAttribute("aria-label","更多操作");
+      const moreMenu=element("div","patrol-popover");moreMenu.append(button("撤销",()=>this._undo(false)),button("重做",()=>this._undo(true)),button("清空上下文",()=>{this.doc.clear();this.renderList();more.open=false;}),button("检查来源",()=>this._refreshSources()),button("载入服务器版本",()=>this._reloadServer()));more.append(moreMenu);
+      this.status = element("button", "patrol-status", "自动保存");this.status.type="button";this.status.onclick=()=>this.queue.flush().catch(()=>{});
+      toolbar.append(add,button("导入来源",()=>this._sources()),button("检查",()=>this.preview()),advanced,more,this.status);
+      if(this.localConflict)this.status.textContent="本地编辑已保留 · 服务器有新版本";
+      this.list = element("div", "patrol-list");this.list.setAttribute("aria-label","Focus 语义上下文");
+      const previous=this.viewport;previous?.observer.disconnect();cancelAnimationFrame(previous?.frame);
+      this.viewport=new global.FocusPatrolViewport.PatrolViewport(this,this.list);
+      if(previous){this.viewport.cache=previous.cache;this.viewport.heights=previous.heights;this.restoredScroll=previous.list.scrollTop;}
+      this.panel = element("aside", "patrol-panel"); this.panel.hidden = true;
+      const roles=element("datalist");roles.id="patrol-roles";for(const role of ["developer","user","assistant","system"]) {const option=element("option");option.value=role;roles.append(option);}
       this.rawEditor ||= global.FocusPatrolJsonEditor.createJsonEditor({label:"高级文档 JSON，允许保存未完成输入"});
       this.raw = this.rawEditor.element; this.raw.hidden = true;
       this.rawState = element("p", "patrol-raw-state"); this.rawState.hidden = true; this.rawState.setAttribute("role", "status");
@@ -60,17 +72,20 @@
       const instructions = element("textarea"); instructions.setAttribute("aria-label", "小兵基础行为"); instructions.value = this.doc.value.instructions || "";
       this.instructions = instructions;
       instructions.addEventListener("input", () => this.doc.setInstructions(instructions.value)); behavior.append(instructions);
-      root.append(toolbar, behavior, this.list, this.editor, this.rawState, this.raw, this.panel);
+      const content=element("div","patrol-content");content.append(this.rawState,this.list,this.raw,this.panel);
+      root.append(heading,toolbar,behavior,content,roles);
       root.addEventListener("input", event => event.stopPropagation(), {signal}); root.addEventListener("change", event => event.stopPropagation(), {signal});
       root.addEventListener("compositionstart", () => { this.composing = true; this.queue.held = true; }, {signal});
       root.addEventListener("compositionend", () => {
         this.composing = false; this.queue.held = false;
         for (const state of this.entryParses.values()) if (state.result) this._entryParsed(state.result);
         if (this.pendingDocument) { const result = this.pendingDocument; this.pendingDocument = null; this._parsed(result); }
+        this.renderList();
         this.queue.changed();
       }, {signal});
       root.addEventListener("keydown", event => this._keys(event), {signal});
       this.renderList(); this.select(this.selected || this.doc.value.entries[0]?.entry_id);
+      if(this.restoredScroll!=null){this.list.scrollTop=this.restoredScroll;this.restoredScroll=null;this.renderList();}
       this._refreshSources();
     }
     rebind(options) { this.options = options; this.draft = options.draft; }
@@ -95,70 +110,17 @@
         const remote=await this.api(`/desktop/api/drafts/${this.draft.draft_id}`);
         if(generation!==this.generation){this.status.textContent="载入期间有新编辑，已保留本地内容";return;}
         clearTimeout(this.queue.timer);this.queue.timer=null;Object.assign(this.draft,remote);
-        this.reloading=true;this.doc.replace(remote.authoring_document);this.reloading=false;
+        this.reloading=true;this.doc.replace(global.FocusPatrolAuthoring.upgradeDocument(remote.authoring_document));this.reloading=false;
         this.queue.serverRevision=remote.draft_revision;this.queue.confirmed=this.queue.localRevision;this.queue.error=null;this.localConflict=false;
-        clearTimeout(this.localTimer);localStorage.removeItem(this._storageKey());this.editorId=undefined;this.renderList();this.select(this.selected);
+        clearTimeout(this.localTimer);localStorage.removeItem(this._storageKey());this.renderList();this.select(this.selected);
         this._syncInstructions();this.status.textContent="已载入服务器版本；可以撤销恢复刚才的本地内容";this.options.onReload?.(remote);
       } catch(error){this.reloading=false;this.status.textContent=error.message;}
     }
-    renderList() {
-      const entries = this.doc.value.entries, start = Math.max(0, Math.floor(this.list.scrollTop / 72) - 10), end = Math.min(entries.length, start + 100);
-      const wanted = new Set(entries.slice(start, end).map(e => e.entry_id));
-      for (const [id, card] of this.cards) if (!wanted.has(id)) { card.remove(); this.cards.delete(id); }
-      if (!this.topSpacer) { this.topSpacer = element("div"); this.bottomSpacer = element("div"); }
-      this.topSpacer.style.height = `${start * 72}px`; this.bottomSpacer.style.height = `${(entries.length - end) * 72}px`;
-      const desired = [this.topSpacer];
-      for (let index = start; index < end; index++) {
-        const entry = entries[index]; let card = this.cards.get(entry.entry_id);
-        if (!card) {
-          card = element("div", "patrol-entry"); card.dataset.entryId = entry.entry_id; card.tabIndex = 0; card.setAttribute("role", "option");
-          const handle = button("↕", () => {}); handle.setAttribute("aria-label", "拖动排序"); handle.addEventListener("pointerdown", event => this._drag(event, entry.entry_id));
-          card.append(handle, element("span", "patrol-entry-text")); card.onclick = () => this.select(entry.entry_id); this.cards.set(entry.entry_id, card);
-        }
-        card.setAttribute("aria-selected", String(entry.entry_id === this.selected));
-        card.entryIndex = index; const summary = this._entrySummary(entry, index);
-        if (card.lastChild.textContent !== summary) card.lastChild.textContent = summary;
-        desired.push(card);
-      }
-      desired.push(this.bottomSpacer);
-      desired.forEach((node, index) => { if (this.list.children[index] !== node) this.list.insertBefore(node, this.list.children[index] || null); });
-    }
-    select(id) {
-      if (this.composing || this.editorId === id && this.editor.childNodes.length) return;
-      this.selected = id || null; this.editorId = id; this.editor.replaceChildren(); this.renderList();
-      const entry = this.doc.byId.get(id); if (!entry) { this.editor.append(element("p", "muted", "可以从空白文档开始，选择条目后编辑。")); return; }
-      const tools = element("div", "patrol-actions"), role = element("input"); role.setAttribute("list", "patrol-role-options"); role.setAttribute("aria-label", "角色意图"); role.value = entry.role;
-      const roles = element("datalist"); roles.id = "patrol-role-options"; ["system", "developer", "user", "assistant", "tool"].forEach(value => { const option = element("option"); option.value = value; roles.append(option); });
-      role.oninput = () => { this.doc.setField(id, "role", role.value); this._summary(id); };
-      tools.append(role, roles, button("复制", () => { const copied = this.doc.copy(id); this.renderList(); this.select(copied.entry_id); }),
-        button("删除", () => { this.doc.remove(id); this.renderList(); this.select(null); }), button("向上", () => this._moveSelected(-1)), button("向下", () => this._moveSelected(1)));
-      this.editor.append(tools);
-      const text = element("textarea"); text.setAttribute("aria-label", "条目正文"); text.value = typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content, null, 2);
-      if (entry.content_error && entry.content_buffer != null) text.value = entry.content_buffer;
-      text.oninput = () => {
-        if (typeof entry.content === "string") { this.doc.setField(id, "content", text.value); this._summary(id); }
-        else {
-          this.doc.setField(id, "content_buffer", text.value); this.doc.setField(id, "content_error", "待解析内容块");
-          this._parseEntry(entry, "content", text.value, { content:entry.content });
-        }
-      };
-      this.editor.append(text);
-      const detail = element("details"), summary = element("summary", "", "工具字段与未知结构（可自由编辑）"); detail.append(summary);
-      detail.addEventListener("toggle", () => {
-        if (!detail.open || detail.children.length > 1) return;
-        const fields = element("textarea"); fields.setAttribute("aria-label", "工具和扩展字段 JSON"); fields.value = entry.fields_error && entry.fields_buffer != null ? entry.fields_buffer : JSON.stringify(entry, null, 2);
-        fields.wrap = "off"; fields.spellcheck = false;
-        let base = entry.fields_base || structuredClone(entry);
-        fields.oninput = () => {
-          entry.fields_base = base; entry.fields_buffer = fields.value; entry.fields_error = "待解析字段"; this._changed();
-          this._parseEntry(entry, "fields", fields.value, base, value => { base = value; });
-        }; detail.append(fields);
-      });
-      this.sourceLabel = element("p", "muted"); this.editor.append(detail, this.sourceLabel); this._sourceLabel();
-    }
-    _parseEntry(entry, kind, raw, base, applied) {
+    renderList() { this.viewport.render(); }
+    select(id) { this.selected=id || null;this.renderList();this.editor=this.cards.get(id) || this.list; }
+    _parseEntry(entry, kind, raw, base, applied, field = "content") {
       const key = `${entry.entry_id}:${kind}`; clearTimeout(this.entryParses.get(key)?.timer);
-      const state = { entry, kind, base, applied, epoch:this.doc.versionOf(entry.entry_id), request_id:++this.parseIdentity };
+      const state = { entry, kind, base, applied, field, epoch:this.doc.versionOf(entry.entry_id), request_id:++this.parseIdentity };
       state.timer = setTimeout(() => this.worker.postMessage({ request_id:state.request_id, entry_id:entry.entry_id, kind, raw }), 450);
       this.entryParses.set(key, state);
     }
@@ -171,30 +133,20 @@
       if (entry !== state.entry || this.doc.versionOf(result.entry_id) !== state.epoch) return;
       let error = result.error, changes = [];
       if (!error) {
-        const value = result.kind === "content" ? { content:result.value } : { role:"user", content:"", ...result.value };
+        const value = result.kind === "content" ? { ...state.base, payload:{...state.base.payload,[state.field || "content"]:result.value} } : result.kind === "payload" ? {...state.base,payload:result.value} : result.value;
         const pendingContent = this.entryParses.has(`${entry.entry_id}:content`) || entry.content_error && entry.content_buffer != null;
-        const merged = this.doc.applyFields(entry.entry_id, state.base, value, { pendingFields:result.kind === "fields" && pendingContent ? ["content"] : [] });
+        const merged = this.doc.applyFields(entry.entry_id, state.base, value, { pendingFields:result.kind === "fields" && pendingContent ? ["payload.content", "payload.output"] : [] });
         error = merged.conflicts.length ? `字段已被较新编辑修改：${merged.conflicts.join("、")}；原输入已保留` : null;
         changes = merged.changed;
         if (!error) state.applied?.(value);
       }
       this.doc.setField(entry.entry_id, `${result.kind}_error`, error);
       if (!error) { delete entry[`${result.kind}_buffer`]; if (result.kind === "fields") delete entry.fields_base; }
-      if (this.selected === entry.entry_id) {
-        const text = this.editor.querySelector('[aria-label="条目正文"]'), role = this.editor.querySelector('[aria-label="角色意图"]');
-        if (result.kind === "fields" && changes.includes("content") && text) text.value = typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content, null, 2);
-        if (changes.includes("role") && role) role.value = entry.role;
-        this._summary(entry.entry_id); this._sourceLabel();
-        if (error) this.status.textContent = error;
-      }
+      if(changes.includes("kind"))this.renderList();
+      this.viewport.cache.get(entry.entry_id)?.sync(this.doc.value.entries.indexOf(entry));
+      if(error)this.status.textContent=error;
     }
-    _sourceLabel() {
-      const entry = this.doc.byId.get(this.selected); if (!entry || !this.sourceLabel?.isConnected) return;
-      const health = this.sourceStatus?.[entry.source_ref];
-      const status = this.sourceChecking ? " · 正在检查原来源" : this.sourceFailed ? " · 暂时无法检查来源，冻结正文仍可编辑" :
-        health?.status === "unavailable" ? ` · 原来源不可用（${health.message}），冻结正文仍可编辑` : health?.status === "unknown" ? " · 旧引用状态无法检查" : "";
-      this.sourceLabel.textContent = entry.source_ref ? `来源 ${entry.source_ref}${entry.edited_from ? " · 用户改写" : " · 冻结引用"}${status}` : "用户编写 · 历史示例不登记为真实工具执行";
-    }
+    _sourceLabel() {for(const [id,card] of this.viewport.cache)if(card.node.isConnected)card.sync(this.doc.value.entries.indexOf(this.doc.byId.get(id)));}
     async _refreshSources() {
       const ticket = this.healthGeneration = (this.healthGeneration || 0) + 1;
       this.sourceChecking = true; this.sourceFailed = false; this._sourceLabel();
@@ -204,27 +156,32 @@
         this.sourceStatus = health.sources; this.sourceChecking = false; this._sourceLabel(); this.renderList();
       } catch (_) { if (ticket === this.healthGeneration) { this.sourceStatus = null; this.sourceChecking = false; this.sourceFailed = true; this._sourceLabel(); } }
     }
-    _summary(id) {
-      const card = this.cards.get(id), entry = this.doc.byId.get(id); if (card) card.lastChild.textContent = this._entrySummary(entry, card.entryIndex);
-    }
-    _entrySummary(entry, index) {
-      return `${index + 1} · ${entry.role} · ${typeof entry.content === "string" ? entry.content.slice(0, 120) : "结构化内容块"}${entry.source_ref ? " · 引用" : ""}${this.sourceStatus?.[entry.source_ref]?.status === "unavailable" ? " · 原来源不可用" : ""}`;
-    }
-    _add() { const entry = { entry_id:crypto.randomUUID(), role:"user", content:"" }; this.doc.insert(entry); this.renderList(); this.select(entry.entry_id); }
+    _add(kind="message",role="user",index) { const entry=global.FocusPatrolAuthoring.newEntry(kind,role);this.doc.insert(entry,index);this.renderList();this._locate(entry.entry_id); }
     _moveSelected(delta) { if (!this.selected) return; const index = this.doc.value.entries.findIndex(e => e.entry_id === this.selected); this.doc.move(this.selected, index + delta); this.renderList(); }
-    _undo(redo) { if (this.composing) return; (redo ? this.doc.redo() : this.doc.undo()); this._syncInstructions();this.editorId = undefined; this.renderList(); this.select(this.selected); }
+    _undo(redo) {
+      if(this.composing)return;
+      const owned=this.root.contains(document.activeElement);
+      (redo ? this.doc.redo() : this.doc.undo());this._syncInstructions();this.renderList();this.select(this.selected);
+      if(owned && !this.root.contains(document.activeElement)){this.list.tabIndex=-1;this.list.focus({preventScroll:true});}
+    }
     _keys(event) {
+      if(event.defaultPrevented)return;
       if (event.key === "Escape") { this._cancelDrag?.(); this.panelGeneration++; this.panel.hidden = true; return; }
       if (event.target.dataset.entryId && ["Enter", " "].includes(event.key)) { event.preventDefault(); this._locate(event.target.dataset.entryId); }
       if (event.altKey && ["ArrowUp", "ArrowDown"].includes(event.key)) { event.preventDefault(); this._moveSelected(event.key === "ArrowUp" ? -1 : 1); }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !["TEXTAREA", "INPUT"].includes(event.target.tagName) && !this.raw.contains(event.target)) { event.preventDefault(); this._undo(event.shiftKey); }
+      if(event.target.closest?.('input, textarea, [contenteditable], [data-patrol-text-editor]'))return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); this._undo(event.shiftKey); }
     }
     async _toggleRaw() {
       if (this.composing) return;
       this._cancelRaw();
-      this.raw.hidden = !this.raw.hidden; this.list.hidden = !this.raw.hidden; this.editor.hidden = !this.raw.hidden;
+      this.raw.hidden = !this.raw.hidden; this.list.hidden = !this.raw.hidden;
       this.rawState.hidden = this.raw.hidden;
-      if (this.raw.hidden) return false;
+      if (this.raw.hidden) {
+        requestAnimationFrame(()=>{for(const card of this.viewport.cache.values())if(card.node.isConnected)card.refresh();this.viewport.schedule();});
+        return false;
+      }
+      this.panelGeneration++;this.panel.hidden=true;
       this.rawState.textContent = "正在准备完整结构…"; this.rawEditor.readOnly = true; this.rawEditor.refresh(); this.rawEditor.focus();
       return new Promise(resolve => {
         const request = this.rawFormat = { view_id:this.rawViewGeneration, resolve };
@@ -258,9 +215,9 @@
         this.doc.value.raw_error = invalid; this._changed(); this.rawDocumentGeneration = this.generation; this.status.textContent = invalid; return;
       }
       const value = result.value;
-      value.entries = value.entries.map(entry => ({role:"user", content:"", ...entry, entry_id:entry.entry_id || crypto.randomUUID()}));
+      Object.assign(value,global.FocusPatrolAuthoring.upgradeDocument(value));value.entries=value.entries.map(entry=>({...entry,entry_id:entry.entry_id || crypto.randomUUID()}));
       value.raw_buffer = raw; value.raw_error = null;
-      this.doc.replace(value);this.rawDocumentGeneration = this.generation;this._syncInstructions(); this.editorId = undefined; this.renderList(); this.select(this.selected);
+      this.doc.replace(value);this.rawDocumentGeneration = this.generation;this._syncInstructions(); this.renderList(); this.select(this.selected);
     }
     async preview() {
       const ticket = ++this.panelGeneration;
@@ -270,6 +227,7 @@
         const plan = await this.api(`/desktop/api/drafts/${this.draft.draft_id}/preview`, { method:"POST" });
         if (generation !== this.generation || ticket !== this.panelGeneration || !this.root.isConnected) return null;
         this.previewPlan = plan; this.panel.replaceChildren();
+        this.panel.append(element("h3", "patrol-panel-title", "实际模型请求"),button("关闭",()=>{this.panelGeneration++;this.panel.hidden=true;}));
         this.panel.append(element("p", "", plan.budget ? `窗口：${plan.budget.total} / ${plan.budget.context_window || "未知"}；输入 ${plan.budget.input}，工具 ${plan.budget.tools}，指令 ${plan.budget.instructions}，输出预留 ${plan.budget.output_reserve}` : "检查以下条目"));
         for (const diagnostic of plan.diagnostics) {
           const row = element("div", "patrol-diagnostic"); row.append(element("span", "", diagnostic.message), button("定位", () => this._locate(diagnostic.entry_ids[0])));
@@ -282,13 +240,14 @@
       } catch (error) { if (ticket === this.panelGeneration && this.root.isConnected) this.panel.textContent = error.message; return null; }
     }
     _transform(plan, diagnostic, operation) { this.doc.transform({ document_hash:plan.document_hash, entry_ids:diagnostic.entry_ids, operation, parameters:{} }); this.preview(); }
-    _locate(id) { const index = this.doc.value.entries.findIndex(e => e.entry_id === id); if (index < 0) return; this.list.scrollTop = index * 72; this.renderList(); this.select(id); this.editor.querySelector("textarea[aria-label='条目正文']")?.focus(); }
+    _locate(id) { this.selected=id;this.viewport.locate(id);this.editor=this.cards.get(id) || this.list; }
     async _sources() {
       const ticket = ++this.panelGeneration;
       this.panel.hidden = false; this.panel.textContent = "读取来源版本…"; const generation = this.sourceGeneration = (this.sourceGeneration || 0) + 1;
       try {
         const catalog = await this.api("/desktop/api/patrol/sources"); if (generation !== this.sourceGeneration || ticket !== this.panelGeneration || !this.root.isConnected) return;
         this.panel.replaceChildren();
+        this.panel.append(element("h3", "patrol-panel-title", "导入冻结来源"),button("关闭",()=>{this.panelGeneration++;this.panel.hidden=true;}));
         const select = element("select"); select.setAttribute("aria-label", "精确来源版本");
         const refs = [];
         for (const context of catalog.contexts) for (const revision of context.revisions) refs.push({ title:`${context.title} · R${revision.generation} · ${revision.checkpoint_id || "definition"}`, kind:"context", revision_id:revision.revision_id, context_id:context.context_id });
@@ -311,6 +270,8 @@
     }
     async _import(ref) {
       if (this.composing) return;
+      const panel=this.panel,ticket=this.panelGeneration,root=this.root;
+      const current=()=>panel===this.panel && root===this.root && root.isConnected && ticket===this.panelGeneration && !panel.hidden;
       try {
         const generation = this.generation;
         await this.queue.mutate(async () => {
@@ -318,9 +279,10 @@
           this.queue.serverRevision = result.draft_revision; this.draft.draft_revision = result.draft_revision;
           this.doc.append(result.authoring_document.entries);
         });
-        this.renderList(); this.panel.textContent = generation === this.generation ? "来源已冻结" : "来源已追加，保留本地编辑";
+        if(this.root.isConnected)this.renderList();
+        if(current())panel.textContent = generation === this.generation ? "来源已冻结" : "来源已追加，保留本地编辑";
         this._refreshSources();
-      } catch (error) { this.panel.textContent = error.message; }
+      } catch (error) { if(current())panel.textContent = error.message; }
     }
     _drag(event, id) {
       event.preventDefault(); const listRect = this.list.getBoundingClientRect(); this.drag = { id, y:event.clientY, index:0 };
@@ -328,7 +290,7 @@
       const tick = () => {
         if (!this.drag) return;
         const y = this.drag.y; if (y < listRect.top + 40) this.list.scrollTop -= 12; else if (y > listRect.bottom - 40) this.list.scrollTop += 12;
-        this.drag.index = Math.max(0, Math.min(this.doc.value.entries.length - 1, Math.floor((y - listRect.top + this.list.scrollTop) / 72)));
+        this.drag.index = Math.max(0, Math.min(this.doc.value.entries.length - 1, this.viewport.indexAt(y - listRect.top + this.list.scrollTop)));
         this.renderList(); const target = this.doc.value.entries[this.drag.index]?.entry_id;
         for (const [entryId, card] of this.cards) card.classList.toggle("patrol-drop", entryId === target);
         this.dragFrame = requestAnimationFrame(tick);
@@ -351,7 +313,7 @@
         instance.rebind(options);
         if(options.draft.draft_revision!==instance.queue.serverRevision){
           if(instance.queue.confirmed<instance.queue.localRevision||instance.composing)instance.localConflict=true;
-          else {instance.reloading=true;instance.doc.replace(options.draft.authoring_document);instance.reloading=false;instance.queue.serverRevision=options.draft.draft_revision;}
+          else {instance.reloading=true;instance.doc.replace(global.FocusPatrolAuthoring.upgradeDocument(options.draft.authoring_document));instance.reloading=false;instance.queue.serverRevision=options.draft.draft_revision;}
         }
       }
       const previous = rootOwners.get(root); if(previous && previous !== instance)previous.leave();

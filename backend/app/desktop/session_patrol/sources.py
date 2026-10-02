@@ -7,23 +7,15 @@
 示例：await resolver.import_into(draft_id, {"kind":"context", "revision_id":"r1"})。
 """
 from copy import deepcopy
-import uuid
 from fastapi import HTTPException
 from sqlalchemy import select
 from backend.app.desktop.models import DesktopThread, DesktopWorkspace, DesktopRun, PatrolDraft, PatrolAgent, DesktopMaterial, MaterialVersion
 from backend.app.desktop.context_evolution.repository import ContextRevisionRepository
 from backend.app.desktop.context_evolution.reader import ContextRevisionReader
 from backend.app.desktop.material_files import resolve_material_path
-from focus.history import content_hash, serialize_history_message, deserialize_history_message, messages_to_items, semantic_policy
-from .contracts import AuthoringEntry
+from focus.history import serialize_history_message
+from .source_projection import freeze_authoring_sources
 from .repository import DraftRepository
-
-
-def portable_record(record):
-    value = {key: deepcopy(record[key]) for key in ("role", "id", "name", "content", "tool_calls", "tool_call_id", "status") if key in record}
-    if isinstance(value.get("content"), list):
-        value["content"] = [block for block in value["content"] if not isinstance(block, dict) or block.get("type") != "reasoning"]
-    return value
 
 
 class PatrolSourceResolver:
@@ -52,26 +44,10 @@ class PatrolSourceResolver:
             records, source = await self._resolve(session, request)
             document = DraftRepository.document(draft)
             sources = deepcopy(draft.frozen_sources or {})
-            selected = request.get("message_ids")
-            for record in records:
-                if selected is not None and record.get("id") not in selected:
-                    continue
-                message = deserialize_history_message(record)
-                items = messages_to_items([message])
-                historical = all(semantic_policy(item) in {"exclude", "reference_only"} for item in items)
-                if historical and not request.get("include_historical_runtime"):
-                    continue
-                entry = AuthoringEntry.model_validate({**portable_record(record), "entry_id": uuid.uuid4().hex})
-                if historical:
-                    entry.role = "user"
-                    entry.content = "历史运行参考（不表示当前状态）：\n" + str(record.get("content", ""))
-                    entry.reference_only = True
-                ref = uuid.uuid4().hex
-                entry.source_ref = ref
-                entry.source_hash = content_hash(record)
-                sources[ref] = {"record": record, "source": {**source, "message_id": record.get("id"), "content_hash": content_hash(record)},
-                    "entry_hash": content_hash({key: entry.model_dump().get(key) for key in ("role", "content", "tool_calls", "tool_call_id", "name", "status")}), "historical_runtime": historical}
-                document.entries.append(entry)
+            entries, frozen = freeze_authoring_sources(records, source, selected=request.get("message_ids"),
+                include_historical=bool(request.get("include_historical_runtime")))
+            document.entries.extend(entries)
+            sources.update(frozen)
             draft.authoring_document = document.model_dump(mode="json")
             draft.frozen_sources = sources
             draft.draft_revision += 1
@@ -85,7 +61,11 @@ class PatrolSourceResolver:
             if request.get("context_id", revision.ref.context_id) != revision.ref.context_id:
                 raise HTTPException(409, "来源 Context 身份不匹配")
             view = await self._reader.read(session, revision.ref, "execution")
-            return list(view.messages), {"kind": kind, **revision.ref.model_dump(mode="json")}
+            task = await session.get(DesktopThread, revision.ref.context_id)
+            source = {"kind": kind, "title": task.title if task else "Context", **revision.ref.model_dump(mode="json")}
+            if revision.history_payload is not None:
+                return [item.model_dump(mode="json") for item in revision.history_payload.execution_items], source
+            return list(view.messages), source
         if kind == "patrol":
             run = await session.get(DesktopRun, request["run_id"])
             if run is None or run.kind != "patrol":
@@ -99,7 +79,8 @@ class PatrolSourceResolver:
             checkpoint = await self._host.checkpointer.aget_tuple(config)
             if checkpoint is None or checkpoint.config["configurable"]["checkpoint_id"] != checkpoint_id:
                 raise HTTPException(404, "精确 checkpoint 不存在")
-            records = [serialize_history_message(m) for m in checkpoint.checkpoint["channel_values"].get("messages", [])]
+            values = checkpoint.checkpoint["channel_values"]
+            records = deepcopy(values["execution_items"]) if values.get("execution_items") is not None else [serialize_history_message(m) for m in values.get("messages", [])]
             return records, {"kind": kind, "run_id": run.run_id, **config["configurable"]}
         if kind in {"file", "material"}:
             task = await session.get(DesktopThread, request["context_id"])

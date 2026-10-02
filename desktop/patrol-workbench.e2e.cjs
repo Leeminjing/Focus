@@ -5,7 +5,7 @@
  */
 const { app, BrowserWindow, screen, contentTracing } = require('electron');
 const path = require('node:path'), fs = require('node:fs'), os = require('node:os');
-const output = path.resolve(__dirname, '../.tmp/session-patrol-performance');
+const output = path.resolve(__dirname, '../.tmp/session-patrol-semantic-performance');
 fs.mkdirSync(output, { recursive:true });
 app.setPath('userData', path.join(os.tmpdir(), `focus-patrol-bench-${process.pid}`));
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -17,16 +17,16 @@ async function run() {
   await win.webContents.executeJavaScript(`(() => {
     window.fixtureEntries=Array.from({length:1000},(_,i)=>{
       const body='中文上下文与工具证据'.repeat(69)+'-'+i;
-      const entry={entry_id:'entry-'+i,role:['user','assistant','developer','system'][i%4],content:body,source_ref:i%5===0?'source-'+i:null};
-      if(i%10===5){entry.role='assistant';entry.tool_calls=[{id:'example-'+i,name:'read_file',args:{path:'frozen-'+i+'.txt'}}];}
-      if(i%10===6){entry.role='tool';entry.tool_call_id='example-'+(i-1);}
-      if(i%10===7){entry.role='user';entry.content=[{type:'input_text',text:body},{type:'input_image',image_url:'data:image/png;base64,iVBORw0KGgo='},{type:'input_file',filename:'reference.txt',file_data:'data:text/plain;base64,Zm9yIHJlZmVyZW5jZQ=='},{type:'future',payload:{kept:true}}];}
+      const entry={entry_id:'entry-'+i,kind:'message',payload:{role:['user','assistant','developer','system'][i%4],content:body},source_ref:i%5===0?'source-'+i:null};
+      if(i%10===5){entry.kind='function_call';entry.payload={call_id:'example-'+i,name:'read_file',arguments:JSON.stringify({path:'frozen-'+i+'.txt',note:body})};}
+      if(i%10===6){entry.kind='function_call_output';entry.payload={call_id:'example-'+(i-1),output:body};}
+      if(i%10===7){entry.payload={role:'user',content:[{type:'input_text',text:body},{type:'input_image',image_url:'data:image/png;base64,iVBORw0KGgo='},{type:'input_file',filename:'reference.txt',file_data:'data:text/plain;base64,Zm9yIHJlZmVyZW5jZQ=='},{type:'future',payload:{kept:true}}]};}
       if(i===7)entry.future_payload='长字段保真'.repeat(16000);
       return entry;
     });
     window.fixtureRequests=[]; window.longTasks=[];
     new PerformanceObserver(list=>longTasks.push(...list.getEntries().map(e=>({start:e.startTime,duration:e.duration})))).observe({type:'longtask',buffered:true});
-    const draft={draft_id:'benchmark',draft_revision:0,task_id:'test',equipment:{model_name:'model',permissions:['read'],skills:[]},authoring_document:{schema_version:2,entries:fixtureEntries,instructions:'基础行为',transformations:[]}};
+    const draft={draft_id:'benchmark',draft_revision:0,task_id:'test',equipment:{model_name:'model',permissions:['read'],skills:[]},authoring_document:{schema_version:3,entries:fixtureEntries,instructions:'基础行为',transformations:[]}};
     window.wb=FocusPatrolWorkbench.mount(document.querySelector('#fixture'),{draft,api:async(url,options)=>{fixtureRequests.push(url);await new Promise(r=>setTimeout(r,25));const body=JSON.parse(options?.body||'{}');return {draft_revision:(body.draft_revision||0)+1};}});
     window.fixtureSize=new TextEncoder().encode(JSON.stringify(draft.authoring_document)).length;
     window.inputSamples=[]; const editor=document.querySelector('[aria-label="条目正文"]');
@@ -34,12 +34,12 @@ async function run() {
   })()`);
   const rounds=[];
   for (let round=0;round<3;round++) {
-    await win.webContents.executeJavaScript(`inputSamples=[]; window.roundStart=performance.now(); window.initialEditor=document.querySelector('[aria-label="条目正文"]'); initialEditor.focus();`);
+    await win.webContents.executeJavaScript(`wb._locate('entry-0');inputSamples=[]; window.roundStart=performance.now(); window.initialEditor=wb.cards.get('entry-0').querySelector('[aria-label="条目正文"]'); initialEditor.focus();`);
     for (let sample=0;sample<100;sample++) {
       win.webContents.sendInputEvent({type:'char',keyCode:'中'}); await wait(20);
     }
     await wait(60);
-    const input = await win.webContents.executeJavaScript(`({samples:inputSamples, same:initialEditor===document.querySelector('[aria-label="条目正文"]'), focused:document.activeElement===initialEditor, text:initialEditor.value, cards:document.querySelectorAll('.patrol-entry').length})`);
+    const input = await win.webContents.executeJavaScript(`({samples:inputSamples, same:initialEditor===wb.cards.get('entry-0').querySelector('[aria-label="条目正文"]'), focused:document.activeElement===initialEditor, text:initialEditor.value, cards:document.querySelectorAll('.patrol-entry').length})`);
     const drag = await win.webContents.executeJavaScript(`new Promise(resolve=>{
       const start=performance.now(); const handle=document.querySelector('.patrol-entry button'); const rect=handle.getBoundingClientRect();
       handle.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:rect.x+5,clientY:rect.y+5}));
@@ -58,9 +58,9 @@ async function run() {
   const expanded = await win.webContents.executeJavaScript(`(async()=>{
     const phaseStart=performance.now();
     const paint=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-    let start=performance.now();wb.select('entry-7');const details=wb.editor.querySelector('details');details.open=true;await paint();
-    const fieldsOpen=performance.now()-start,fields=details.querySelector('textarea');
-    const changed=JSON.parse(fields.value);changed.name='edited-large-field';fields.value=JSON.stringify(changed);fields.dispatchEvent(new InputEvent('input',{bubbles:true}));
+    let start=performance.now();wb.select('entry-7');const details=wb.editor.querySelector('.patrol-item-structure');details.open=true;await paint();
+    const fieldsOpen=performance.now()-start,fields=wb.viewport.cache.get('entry-7').structureEditor;
+    const changed=JSON.parse(fields.value);changed.name='edited-large-field';fields.value=JSON.stringify(changed);fields.element.dispatchEvent(new InputEvent('input',{bubbles:true}));
     await new Promise(resolve=>setTimeout(resolve,700));await wb.flush();
     const largeKept=wb.doc.byId.get('entry-7').future_payload==='长字段保真'.repeat(16000)&&wb.doc.byId.get('entry-7').name==='edited-large-field';
     start=performance.now();const loading=wb._toggleRaw();await paint();const rawFeedback=performance.now()-start;
@@ -85,30 +85,30 @@ async function run() {
   win.webContents.sendInputEvent({type:'keyDown',keyCode:'Z',modifiers:['control']});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Z',modifiers:['control']});await wait(700);
   const rawUndo=await win.webContents.executeJavaScript(`(async()=>{const same=wb.rawEditor.value===${JSON.stringify(rawBefore)};await wb._toggleRaw();return same;})()`);
   const composition=await win.webContents.executeJavaScript(`(() => {
-    const editor=document.querySelector('[aria-label="条目正文"]'); editor.focus(); const same=editor;
+    wb._locate('entry-0');const editor=wb.cards.get('entry-0').querySelector('[aria-label="条目正文"]'); editor.focus(); const same=editor;
     editor.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true,data:'中'}));
     editor.value+='中文输入'; editor.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertCompositionText',data:'中文输入',isComposing:true}));
-    const preserved=document.activeElement===same && same===document.querySelector('[aria-label="条目正文"]');
+    const preserved=document.activeElement===same && same===wb.cards.get('entry-0').querySelector('[aria-label="条目正文"]');
     editor.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'中文输入'})); return preserved;
   })()`);
   const interactions = await win.webContents.executeJavaScript(`(async () => {
-    const assertions={}; const editor=document.querySelector('[aria-label="条目正文"]'); editor.focus(); editor.setSelectionRange(2,4);
-    const identity=editor; await wb.flush(); assertions.save_keeps_editor=identity===document.querySelector('[aria-label="条目正文"]')&&document.activeElement===identity&&identity.selectionStart===2&&identity.selectionEnd===4;
+    const assertions={};wb._locate('entry-0'); const editor=wb.cards.get('entry-0').querySelector('[aria-label="条目正文"]'); editor.focus(); editor.setSelectionRange(2,4);
+    const identity=editor; await wb.flush(); assertions.save_keeps_editor=identity===wb.cards.get('entry-0').querySelector('[aria-label="条目正文"]')&&document.activeElement===identity&&identity.selectionStart===2&&identity.selectionEnd===4;
     editor.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true,data:'续'}));editor.value+='导航保留中文';editor.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:true}));
     wb.leave();FocusPatrolWorkbench.mount(document.querySelector('#fixture'),{draft:wb.draft,api:wb.api});await wb.flush();
-    assertions.composition_navigation=!wb.composing&&!wb.queue.held&&wb.doc.byId.get('entry-0').content.includes('导航保留中文');
+    assertions.composition_navigation=!wb.composing&&!wb.queue.held&&wb.doc.byId.get('entry-0').payload.content.includes('导航保留中文');
     const before=wb.doc.value.entries.length,startFeedback=performance.now(); wb.doc.clear(); wb.renderList(); wb._undo(false); assertions.clear_undo=wb.doc.value.entries.length===before;
     window.localFeedbackMs=performance.now()-startFeedback;assertions.local_feedback_budget=localFeedbackMs<=100;
     await wb._toggleRaw();const rawNode=wb.raw;wb.rawEditor.setSelectionRange(10,20);wb.list.scrollTop=40000;wb.renderList();
-    assertions.raw_editor_pin=rawNode===wb.raw&&wb.rawEditor.hasFocus&&wb.rawEditor.selectionStart===10&&getComputedStyle(wb.editor).display==='none';await wb._toggleRaw();
-    const old=wb; let confirm; old.queue.save=()=>new Promise(resolve=>{confirm=resolve;}); old.doc.setField('entry-0','content','旧草稿未保存'); const saving=old.flush();
+    assertions.raw_editor_pin=rawNode===wb.raw&&wb.rawEditor.hasFocus&&wb.rawEditor.selectionStart===10&&getComputedStyle(wb.list).display==='none';await wb._toggleRaw();
+    const old=wb; let confirm; old.queue.save=()=>new Promise(resolve=>{confirm=resolve;}); old.doc.setPayloadField('entry-0','content','旧草稿未保存'); const saving=old.flush();
     await Promise.resolve();
     const draft={draft_id:'other',draft_revision:0,task_id:'other',equipment:{model_name:'model',permissions:['read'],skills:[]},authoring_document:{schema_version:2,instructions:'',entries:[{entry_id:'new',role:'user',content:'新草稿'}],transformations:[]}};
     const current=FocusPatrolWorkbench.mount(document.querySelector('#fixture'),{draft,api:async(_url,options)=>({draft_revision:(JSON.parse(options?.body||'{}').draft_revision||0)+1})});
     const currentEditor=current.editor.querySelector('[aria-label="条目正文"]');currentEditor.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
     assertions.navigation_listener_cleanup=current.composing&&!old.composing;currentEditor.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));
-    current.doc.setField('new','content','新草稿继续输入'); confirm({draft_revision:old.queue.serverRevision+1}); await saving;
-    assertions.cross_draft_late_save=current.doc.byId.get('new').content==='新草稿继续输入'&&old.doc.byId.get('entry-0').content==='旧草稿未保存';
+    current.doc.setPayloadField('new','content','新草稿继续输入'); confirm({draft_revision:old.queue.serverRevision+1}); await saving;
+    assertions.cross_draft_late_save=current.doc.byId.get('new').payload.content==='新草稿继续输入'&&old.doc.byId.get('entry-0').payload.content==='旧草稿未保存';
     let previewDone; current.api=async(url,options)=>url.endsWith('/preview')?new Promise(resolve=>{previewDone=resolve;}):({draft_revision:JSON.parse(options?.body||'{}').draft_revision+1});
     const pending=current.preview(); while(!previewDone)await new Promise(resolve=>setTimeout(resolve,5)); current.draft.equipment.model_name='new-model';current.configurationChanged();
     const late=previewDone;current.api=async(url,options)=>url.endsWith('/preview')?({executable:true,diagnostics:[],preview_token:'fresh-model'}):({draft_revision:JSON.parse(options?.body||'{}').draft_revision+1});await current.preview();
@@ -116,7 +116,7 @@ async function run() {
     await current._toggleRaw(); current.rawEditor.value='{ invalid JSON 中文'; current.raw.dispatchEvent(new InputEvent('input',{bubbles:true})); await new Promise(resolve=>setTimeout(resolve,650));
     assertions.invalid_raw_preserved=current.doc.value.raw_buffer==='{ invalid JSON 中文'&&Boolean(current.doc.value.raw_error);
     await current._toggleRaw(); const cards=document.querySelectorAll('.patrol-entry').length; assertions.no_truncation=current.doc.value.entries.length===1&&cards<=120;
-    current.doc.insert({entry_id:'keyboard',role:'tool',content:'键盘条目'});current.select('new');
+    current.doc.insert({entry_id:'keyboard',kind:'message',payload:{role:'user',content:'键盘条目'}});current.select('new');
     const active=current.editor.querySelector('[aria-label="条目正文"]');active.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'ArrowDown',altKey:true}));
     assertions.keyboard_reorder=current.doc.value.entries[1].entry_id==='new';
     const card=current.cards.get('new');card.focus();card.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'z',ctrlKey:true}));assertions.keyboard_undo=current.doc.value.entries[0].entry_id==='new';
@@ -129,10 +129,10 @@ async function run() {
     localStorage.setItem('focus-patrol-draft:recovery',JSON.stringify({serverRevision:3,document:{schema_version:2,entries:[{entry_id:'local',role:'user',content:'本地未确认正文'}]}}));
     const remote={draft_id:'recovery',draft_revision:7,equipment:{},authoring_document:{schema_version:2,entries:[{entry_id:'server',role:'user',content:'服务器另一窗口正文'}]}};
     const recovery=FocusPatrolWorkbench.mount(document.querySelector('#fixture'),{draft:remote,api:async(_url,options)=>{if(options?.method==='PUT')throw Error('409 revision conflict');return remote;}});
-    assertions.local_conflict_recovery=recovery.localConflict&&recovery.queue.serverRevision===3&&recovery.doc.byId.get('local').content==='本地未确认正文';
+    assertions.local_conflict_recovery=recovery.localConflict&&recovery.queue.serverRevision===3&&recovery.doc.byId.get('local').payload.content==='本地未确认正文';
     await recovery.queue.flush().catch(()=>{});await recovery._reloadServer();
-    assertions.explicit_server_reload=recovery.queue.serverRevision===7&&recovery.doc.byId.get('server').content==='服务器另一窗口正文';recovery._undo(false);
-    assertions.server_reload_undo=recovery.doc.byId.get('local').content==='本地未确认正文';clearTimeout(recovery.queue.timer);
+    assertions.explicit_server_reload=recovery.queue.serverRevision===7&&recovery.doc.byId.get('server').payload.content==='服务器另一窗口正文';recovery._undo(false);
+    assertions.server_reload_undo=recovery.doc.byId.get('local').payload.content==='本地未确认正文';clearTimeout(recovery.queue.timer);
     return assertions;
   })()`);
   interactions.raw_native_undo_after_view_toggle=rawUndo;
@@ -146,7 +146,7 @@ async function run() {
   win.webContents.debugger.detach();
   const trace=await contentTracing.stopRecording(path.join(output,'electron-trace.json'));
   const display=screen.getPrimaryDisplay();
-  const fixtureContent=await win.webContents.executeJavaScript(`({entries:fixtureEntries.length,tool_calls:fixtureEntries.filter(e=>e.tool_calls).length,tool_outputs:fixtureEntries.filter(e=>e.role==='tool').length,multimodal_entries:fixtureEntries.filter(e=>Array.isArray(e.content)).length,large_field_bytes:new TextEncoder().encode(fixtureEntries.find(e=>e.entry_id==='entry-7').future_payload).length})`);
+  const fixtureContent=await win.webContents.executeJavaScript(`({entries:fixtureEntries.length,tool_calls:fixtureEntries.filter(e=>e.kind==='function_call').length,tool_outputs:fixtureEntries.filter(e=>e.kind==='function_call_output').length,multimodal_entries:fixtureEntries.filter(e=>Array.isArray(e.payload.content)).length,large_field_bytes:new TextEncoder().encode(fixtureEntries.find(e=>e.entry_id==='entry-7').future_payload).length})`);
   const report={hardware:{cpu:os.cpus()[0].model,logical_cpus:os.cpus().length,memory_bytes:os.totalmem(),platform:os.platform(),electron:process.versions.electron,chrome:process.versions.chrome,refresh_rate_hz:display.displayFrequency,viewport:{width:1280,height:900}},fixture_bytes:await win.webContents.executeJavaScript('fixtureSize'),fixture_content:fixtureContent,rounds,expanded,raw_input:rawInput,interactions,local_feedback_ms:await win.webContents.executeJavaScript('localFeedbackMs'),composition_event_continuity:composition,trace,notes:['输入使用 Electron sendInputEvent，composition 使用浏览器事件；未覆盖物理中文 IME 候选窗口。','网络 mock 延迟 25ms 不计入 paint；未调用真实 Provider。','展开字段/raw 测量从本地操作到 double RAF；大型解析独立在 Worker 执行，反馈与全文就绪耗时分列。']};
   fs.writeFileSync(path.join(output,'report.json'),JSON.stringify(report,null,2));
   console.log(JSON.stringify(report,null,2));

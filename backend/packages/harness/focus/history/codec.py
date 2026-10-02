@@ -2,6 +2,7 @@
 
 输入为 BaseMessage、旧消息 dict 或 FocusItem 序列；输出为可恢复消息与版本化 typed 历史。
 具体工作流为保留完整 LangChain 数据、分离原生 Provider Items、关联同一输出组并确定性恢复。
+作者 typed Items 经独立 authored bridge 原样往返；不进入 Provider opaque continuation 编解码。
 示例：restored = items_to_messages(messages_to_items([AIMessage(content="done")]))。
 宿主标注的 user_authored 示例与 legacy_unknown 原样保留；只有缺少显式来源的旧模型/工具记录沿原兼容推断，手写结果不提升为真实执行证明。
 """
@@ -17,6 +18,7 @@ from langchain_core.messages import (
 )
 
 from focus.history.contracts import FocusItem, Origin, content_hash
+from focus.history.authored import authored_message, read_authored
 
 
 _ROLES = {"human": "human", "ai": "ai", "system": "system", "tool": "tool", "chat": "user"}
@@ -70,6 +72,10 @@ def deserialize_history_messages(records: Iterable[dict[str, Any]]) -> list[Base
 def messages_to_items(messages: Iterable[BaseMessage], *, origin: Origin = "legacy_unknown") -> tuple[FocusItem, ...]:
     items: list[FocusItem] = []
     for ordinal, message in enumerate(messages):
+        authored = read_authored(message)
+        if authored is not None:
+            items.append(authored)
+            continue
         record = serialize_history_message(message)
         message_id = message.id or "legacy:" + content_hash([ordinal, record])
         metadata = message.additional_kwargs.get("focus_context", {})
@@ -139,7 +145,9 @@ def items_to_messages(items: Iterable[FocusItem | dict[str, Any]]) -> list[BaseM
     result: list[BaseMessage] = []
     for group in order:
         values = groups[group]
-        if len(values) == 1 and "message" in values[0].payload:
+        if len(values) == 1 and values[0].origin in {"user_authored", "legacy_unknown"} and "message" not in values[0].payload:
+            result.append(authored_message(values[0]))
+        elif len(values) == 1 and "message" in values[0].payload:
             message = deserialize_history_message(values[0].payload["message"])
             if message.id is None:
                 message.id = group

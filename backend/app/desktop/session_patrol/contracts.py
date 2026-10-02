@@ -1,23 +1,24 @@
 """本文件对外提供 AuthoringDocument、AuthoringEntry、Transformation 和 legacy_document。
 
-输入为任意角色内容、未知字段和未完成 JSON，输出为版本化可保存文档及稳定内容 hash。
+输入为 kind/payload、稳定编辑身份、任意角色及未知字段和未完成 JSON，输出为 v3 可保存文档及稳定内容 hash。
 工作流为只校验编辑身份，不校验 Provider 协议；旧数据读时适配，原载荷保持不变。
-示例：AuthoringDocument(entries=[AuthoringEntry(entry_id="e1", role="developer", content="逐条验证")])。
+示例：AuthoringDocument(entries=[AuthoringEntry(entry_id="e1", kind="message", payload={"role":"developer","content":"逐条验证"})])。
 """
 
 from copy import deepcopy
 from typing import Any, Literal
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from focus.history import content_hash
+from .authoring_adapters import upgrade_document, expand_record
 
 
 class AuthoringEntry(BaseModel):
     model_config = ConfigDict(extra="allow")
     entry_id: str = Field(default_factory=lambda: uuid.uuid4().hex, min_length=1)
-    role: str = "user"
-    content: Any = ""
+    kind: str
+    payload: dict[str, Any]
     source_ref: str | None = None
     source_hash: str | None = None
     edited_from: str | None = None
@@ -35,12 +36,17 @@ class Transformation(BaseModel):
 
 class AuthoringDocument(BaseModel):
     model_config = ConfigDict(extra="allow")
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     entries: list[AuthoringEntry] = Field(default_factory=list)
     instructions: str = ""
     raw_buffer: str | None = None
     raw_error: str | None = None
     transformations: list[Transformation] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_document(cls, value):
+        return upgrade_document(value) if isinstance(value, dict) else value
 
     @property
     def content_hash(self) -> str:
@@ -53,8 +59,8 @@ def legacy_document(system_prompt: str, messages: list[dict], final_message: str
     records = deepcopy(messages)
     if final_message:
         records.append({"role": "human", "content": final_message})
-    return AuthoringDocument(instructions=system_prompt, entries=[
-        AuthoringEntry.model_validate({**record, "entry_id": "legacy:" + content_hash([index, record]),
-                                      "legacy_entry_hash": content_hash({key: record.get(key) for key in ("role", "content", "tool_calls", "tool_call_id", "name", "status")})})
-        for index, record in enumerate(records)
-    ])
+    entries = [entry for index, record in enumerate(records)
+               for entry in expand_record(record, "legacy:" + content_hash([index, record]))]
+    for entry in entries:
+        entry["legacy_entry_hash"] = content_hash([entry["kind"], entry["payload"]])
+    return AuthoringDocument(instructions=system_prompt, entries=entries)

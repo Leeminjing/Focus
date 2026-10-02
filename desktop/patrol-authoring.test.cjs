@@ -23,7 +23,7 @@ test('worker validates documents and fields but freely parses content with exact
   vm.runInContext(fs.readFileSync(path.join(__dirname,'patrol-parser-worker.js'),'utf8'),context);
   context.onmessage({data:{generation:7,raw:JSON.stringify({schema_version:2,entries:[{role:3}]})}});
   assert.equal(replies[0].generation,7);assert.ok(replies[0].error.includes('role'));assert.equal(replies[0].value,undefined);
-  context.onmessage({data:{kind:'fields',request_id:8,entry_id:'e',raw:'{"source_ref":[]}'}});
+  context.onmessage({data:{kind:'fields',request_id:8,entry_id:'e',raw:'{"kind":"message","payload":{},"source_ref":[]}'}});
   assert.equal(replies[1].request_id,8);assert.ok(replies[1].error.includes('source_ref'));
   context.onmessage({data:{kind:'content',request_id:9,entry_id:'e',raw:'[{"type":{"future":true}}]'}});
   assert.equal(replies[2].request_id,9);assert.equal(replies[2].value[0].type.future,true);

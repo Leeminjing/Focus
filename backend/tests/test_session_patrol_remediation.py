@@ -39,7 +39,7 @@ def test_invalid_structural_buffer_saves_beside_last_valid_document(client):
     assert saved.status_code == 200
     reopened = http.get(f"/desktop/api/drafts/{draft['draft_id']}", headers=SESSION).json()
     assert reopened["authoring_document"]["entries"] == saved.json()["authoring_document"]["entries"]
-    assert reopened["authoring_document"]["entries"][0]["content"] == "KEEP"
+    assert reopened["authoring_document"]["entries"][0]["payload"]["content"] == "KEEP"
     assert reopened["authoring_document"]["raw_buffer"] == document["raw_buffer"]
     assert not http.post(f"/desktop/api/drafts/{draft['draft_id']}/preview", headers=SESSION).json()["executable"]
     assert not requests
@@ -86,7 +86,7 @@ def test_legacy_continue_edit_and_restart_restore_original_definition(client):
     assert "ORIGINAL_TASK" in str(requests[-1]["input"]) and "FOLLOWUP_ONLY" in str(requests[-1]["input"])
     copied = http.post(f"/desktop/api/agents/{identity}/drafts/open", headers=SESSION)
     assert copied.status_code == 200, copied.text
-    assert [e["content"] for e in copied.json()["authoring_document"]["entries"]] == ["ORIGINAL_TASK"]
+    assert [e["payload"]["content"] for e in copied.json()["authoring_document"]["entries"]] == ["ORIGINAL_TASK"]
     restarted = http.post(f"/desktop/api/agents/{identity}/retry", headers=SESSION)
     assert restarted.status_code == 200, restarted.text
     final = wait_run(http, restarted.json()["run_id"])
