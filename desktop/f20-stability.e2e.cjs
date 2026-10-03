@@ -48,6 +48,95 @@ async function run() {
 
   const failures = [];
 
+  const taskCreation = await evaluate(win, `(async () => {
+    const originalFetch = window.fetch;
+    const originalTasks = [...state.tasks];
+    const originalTaskId = state.activeTaskId;
+    const requests = [];
+    const form = document.querySelector('#taskForm');
+    const submit = form.querySelector('button[type="submit"]');
+    const workspacePath = 'C:/workspace/new-task-regression';
+    let mode = 'workspace-failure';
+    let releaseWorkspace;
+    const waitUntil = async condition => {
+      for (let count = 0; count < 100; count += 1) {
+        if (condition()) return;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      throw new Error('新建任务状态等待超时');
+    };
+    window.fetch = async (input, options = {}) => {
+      const pathname = new URL(String(input), 'http://focus.test').pathname;
+      if (options.method !== 'POST' || (pathname !== '/desktop/api/workspaces' && !pathname.endsWith('/threads'))) {
+        return originalFetch(input, options);
+      }
+      requests.push({ pathname, body: JSON.parse(options.body) });
+      if (mode === 'workspace-failure' || (mode === 'thread-failure' && pathname.endsWith('/threads'))) {
+        return new Response('任务创建失败：测试服务不可用', { status: 503 });
+      }
+      if (pathname === '/desktop/api/workspaces') {
+        if (mode === 'success') await new Promise(resolve => { releaseWorkspace = resolve; });
+        return new Response(JSON.stringify({ workspace_id: 'workspace' }));
+      }
+      return new Response(JSON.stringify({
+        task_id: 'created-task', title: '创建回归', workspace_id: 'workspace',
+        workspace_name: '测试工作区', workspace_path: workspacePath, thread_id: 'thread-created', active_run: null,
+      }));
+    };
+    try {
+      document.querySelector('[data-action="new-task"]').click();
+      await waitUntil(() => document.querySelector('#taskDialog').open);
+      form.querySelector('#workspacePath').value = workspacePath;
+      form.querySelector('#threadTitle').value = '创建回归';
+      const failedAttempts = [];
+      for (const failureMode of ['workspace-failure', 'thread-failure']) {
+        mode = failureMode;
+        const before = requests.length;
+        submit.click();
+        await waitUntil(() => requests.length > before && !state.creatingTask);
+        failedAttempts.push({
+          mode, requests: requests.length - before,
+          open: document.querySelector('#taskDialog').open,
+          active: state.activeTaskId === originalTaskId,
+          retained: form.querySelector('#workspacePath').value === workspacePath && form.querySelector('#threadTitle').value === '创建回归',
+          enabled: !submit.disabled,
+          error: document.querySelector('#globalStatus').textContent.includes('测试服务不可用'),
+        });
+      }
+      mode = 'success';
+      const before = requests.length;
+      submit.click();
+      form.requestSubmit();
+      await waitUntil(() => Boolean(releaseWorkspace));
+      const pending = { requests: requests.length - before, disabled: submit.disabled, open: document.querySelector('#taskDialog').open };
+      releaseWorkspace();
+      await waitUntil(() => !state.creatingTask && state.activeTaskId === 'created-task');
+      return {
+        failedAttempts, pending,
+        created: requests.slice(before),
+        active: state.activeTaskId,
+        open: document.querySelector('#taskDialog').open,
+        enabled: !submit.disabled,
+        taskCount: state.tasks.length - originalTasks.length,
+        rendered: document.querySelector('.shell-task-context').textContent.includes('创建回归'),
+      };
+    } finally {
+      window.fetch = originalFetch;
+      dialog.close();
+      replaceTasks(originalTasks);
+      state.activeTaskId = originalTaskId;
+      state.view = 'focus';
+      await hydrateActive();
+      render();
+    }
+  })()`);
+  if (taskCreation.failedAttempts.some(attempt => !attempt.open || !attempt.active || !attempt.retained || !attempt.enabled || !attempt.error || attempt.requests !== (attempt.mode === 'workspace-failure' ? 1 : 2)) ||
+      taskCreation.pending.requests !== 1 || !taskCreation.pending.disabled || !taskCreation.pending.open ||
+      taskCreation.created.length !== 2 || taskCreation.created[0].body.path !== 'C:/workspace/new-task-regression' || taskCreation.created[1].body.title !== '创建回归' ||
+      taskCreation.active !== 'created-task' || taskCreation.open || !taskCreation.enabled || taskCreation.taskCount !== 1 || !taskCreation.rendered) {
+    failures.push(`新建任务提交、失败重试或重复提交保护失败：${JSON.stringify(taskCreation)}`);
+  }
+
   const composer = await evaluate(win, `(async () => {
     const input = document.querySelector('#mainInput');
     input.value = '切换视图后必须保留的未发送内容';
@@ -206,7 +295,7 @@ async function run() {
 
   win.destroy();
   if (failures.length) throw new Error(`F20 stability audit:\n- ${failures.join("\n- ")}`);
-  console.log("f20-stability: Composer、取消、焦点、面板、回退、压缩计划与 DOM 守卫通过");
+  console.log("f20-stability: 新建任务、失败重试、重复提交、Composer、取消、焦点、面板、回退、压缩计划与 DOM 守卫通过");
 }
 
 app.whenReady().then(run).then(() => app.quit()).catch(error => {

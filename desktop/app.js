@@ -5301,14 +5301,13 @@ async function refreshTaskAfterTxn(taskId) {
   }
 }
 
-async function createTask(event) {
-  event.preventDefault();
+async function createTask(form) {
   if (state.creatingTask) return;
-  const path = document.querySelector("#workspacePath").value.trim();
-  const title = document.querySelector("#threadTitle").value.trim();
+  const path = form.querySelector("#workspacePath").value.trim();
+  const title = form.querySelector("#threadTitle").value.trim();
   if (!path || !title) return;
   state.creatingTask = true;
-  const submit = document.querySelector('#taskForm button[type="submit"]');
+  const submit = form.querySelector('button[type="submit"]');
   if (submit) submit.disabled = true;
   try {
     const workspace = await api("/desktop/api/workspaces", { method: "POST", body: JSON.stringify({ path }) });
@@ -6832,6 +6831,11 @@ function messageGroup(messages, index) {
 
 
 document.addEventListener("submit", event => {
+  if (event.target.id === "taskForm") {
+    event.preventDefault();
+    runUiAction(() => createTask(event.target));
+    return;
+  }
   if (event.target.matches("[data-loop-wait-response]")) {
     event.preventDefault();
     const request = loopStore?.get().snapshot?.wait_request;
