@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from backend.app.desktop.agent_loop.resource_limits import exceeds_limit, remaining_capacity
 from backend.app.desktop.agent_loop.expansion_resource_policy import resolve_expansion_resources
 
 
@@ -25,7 +26,7 @@ def planning_session_view(payload: dict[str, Any], *, round_id: str, round_numbe
         "planner_tokens": ("max_tokens", "tokens"),
     }
     remaining = {
-        name: max(0, int(limits.get(limit, 0)) - int(usage.get(used, 0)))
+        name: remaining_capacity(limits.get(limit, 0), int(usage.get(used, 0)))
         for name, (limit, used) in pairs.items()
     }
     return {

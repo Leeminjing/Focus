@@ -235,6 +235,22 @@ def test_context_and_provider_budgets_are_explicit_hard_limits() -> None:
     ) == 2
 
 
+def test_default_budgets_allow_large_usage_but_retain_system_ceilings() -> None:
+    contract = LoopBudgetContract()
+    budgets = contract.model_dump()
+    for name, field in type(contract).model_fields.items():
+        ceiling = next((item.le for item in field.metadata if hasattr(item, "le")), None)
+        if ceiling is not None:
+            assert budgets[name] == ceiling
+    guard = LoopBudgetGuard()
+    usage = {"duration_seconds": 10**12, "model_calls": 10**12,
+             "input_tokens": 10**12, "output_tokens": 10**12, "retries": 10**12}
+    assert guard.evaluate(usage, budgets, "dispatch", {"input_tokens": 10**12}).status == "allow"
+    assert guard.evaluate({"rounds": 1000}, budgets, "dispatch").status == "exhausted"
+    assert guard.evaluate({"no_progress_count": 20}, budgets, "continue_context").status == "change_direction"
+    assert guard.evaluate(usage, {**budgets, "max_model_calls": 10}, "dispatch").status == "exhausted"
+
+
 def test_user_intervention_preserves_external_scope() -> None:
     context = LoopInterventionRequest(
         mode="patrol_context_intent",

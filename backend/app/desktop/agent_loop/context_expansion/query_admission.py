@@ -7,6 +7,7 @@ r"""本文件对外提供 QueryPlanAdmission 与 QueryPlanAdmissionError。
 
 from __future__ import annotations
 
+from backend.app.desktop.agent_loop.resource_limits import exceeds_limit, remaining_capacity
 from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
     PlanningRetrievalSession,
     SemanticRetrievalQuery,
@@ -14,7 +15,7 @@ from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import 
 
 
 class QueryPlanAdmissionError(ValueError):
-    def __init__(self, code: str, summary: str, *, boundary: str, requested: int, remaining: int) -> None:
+    def __init__(self, code: str, summary: str, *, boundary: str, requested: int, remaining: int | None) -> None:
         super().__init__(summary)
         self.code = code
         self.boundary = boundary
@@ -34,16 +35,16 @@ class QueryPlanAdmission:
                 "query plan 包含重复 query identity",
                 boundary="query_identity",
                 requested=len(queries),
-                remaining=max(0, session.budget.max_queries - session.usage.queries),
+                remaining=remaining_capacity(session.budget.max_queries, session.usage.queries),
             )
-        available_queries = session.budget.max_queries - session.usage.queries
-        if len(queries) > available_queries:
+        available_queries = remaining_capacity(session.budget.max_queries, session.usage.queries)
+        if exceeds_limit(len(queries), available_queries):
             raise QueryPlanAdmissionError(
                 "expansion_policy_limit",
                 "query plan 超出冻结查询容量",
                 boundary="max_queries",
                 requested=len(queries),
-                remaining=max(0, available_queries),
+                remaining=available_queries,
             )
         authorized = set(session.authorized_index_ids)
         if any(not set(item.index_ids).issubset(authorized) for item in queries):
@@ -52,16 +53,16 @@ class QueryPlanAdmission:
                 "query plan 请求了未授权 index",
                 boundary="authorized_index_ids",
                 requested=len(queries),
-                remaining=max(0, available_queries),
+                remaining=available_queries,
             )
         requested_candidates = sum(item.limit for item in queries)
-        available_candidates = session.budget.max_candidates - session.usage.candidates
-        if requested_candidates > available_candidates:
+        available_candidates = remaining_capacity(session.budget.max_candidates, session.usage.candidates)
+        if exceeds_limit(requested_candidates, available_candidates):
             raise QueryPlanAdmissionError(
                 "expansion_policy_limit",
                 "query plan 请求上界超出冻结唯一候选容量",
                 boundary="max_unique_candidates",
                 requested=requested_candidates,
-                remaining=max(0, available_candidates),
+                remaining=available_candidates,
             )
         return queries

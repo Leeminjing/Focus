@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 
+from backend.app.desktop.agent_loop.resource_limits import exceeds_limit, request_limits
 from backend.app.desktop.agent_loop.context_expansion.contracts import stable_expansion_hash
 from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
     CandidateDescriptorPage,
@@ -37,17 +38,17 @@ class CandidateDescriptorPager:
             raise ValueError("candidate paging 需要冻结的新版资源策略")
         request_limit = provider_request_limit(session, context_window_tokens, max_output_tokens)
         base_size = len(self._bytes(planning_input)) + 4096
-        if request_limit <= base_size:
+        if exceeds_limit(base_size, request_limit, inclusive=True):
             raise ProviderRequestWindowError("固定规划上下文已超过 provider 单次请求窗口", stage="read_selection")
-        page_budget = request_limit - base_size
+        page_budget = None if request_limit is None else request_limit - base_size
         pages: list[CandidateDescriptorPage] = []
         current: list[RetrievalCandidate] = []
         size = 0
         for candidate in candidates:
             candidate_size = len(self._bytes(self.descriptor(candidate)))
-            if candidate_size > page_budget:
+            if exceeds_limit(candidate_size, page_budget):
                 raise ProviderRequestWindowError("单个 candidate descriptor 已超过 provider 单次请求窗口", stage="read_selection")
-            if current and (size + candidate_size > page_budget or len(current) >= 256):
+            if current and (exceeds_limit(size + candidate_size, page_budget) or len(current) >= 256):
                 pages.append(self._page(session, len(pages), current, base_size + size))
                 current, size = [], 0
             current.append(candidate)
@@ -92,11 +93,12 @@ def provider_request_limit(
     session: PlanningRetrievalSession,
     context_window_tokens: int | None,
     max_output_tokens: int,
-) -> int:
+) -> int | None:
     if session.frozen_resources is None:
         raise ValueError("provider request window 需要冻结的新版资源策略")
     policy = session.frozen_resources.policy
-    limit = policy.max_request_input_tokens
-    if context_window_tokens is not None:
-        limit = min(limit, context_window_tokens - max(policy.output_token_reserve, max_output_tokens))
+    limit, _ = request_limits(
+        policy.max_request_input_tokens, policy.output_token_reserve,
+        context_window_tokens, max_output_tokens,
+    )
     return limit

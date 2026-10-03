@@ -396,7 +396,7 @@ class PortfolioSemanticIndexService:
             else index
         )
 
-    def _catalog_capacity(self, observation: LoopObservationEnvelope) -> int:
+    def _catalog_capacity(self, observation: LoopObservationEnvelope) -> int | None:
         observed_budget = getattr(observation, "budget", {}) or {}
         authority = _BUILD_STATE.get().budget_authorization
         policy = resolve_expansion_resources(
@@ -406,11 +406,10 @@ class PortfolioSemanticIndexService:
             ),
             authority.get("usage", dict(observed_budget.get("usage") or {})),
         ).policy
-        return (
-            min(policy.max_catalog_descriptor_chars, self._catalog_max_descriptor_chars)
-            if self._catalog_max_descriptor_chars is not None
-            else policy.max_catalog_descriptor_chars
-        )
+        capacities = [value for value in (
+            policy.max_catalog_descriptor_chars, self._catalog_max_descriptor_chars,
+        ) if value is not None]
+        return min(capacities) if capacities else None
 
     async def _result(
         self,

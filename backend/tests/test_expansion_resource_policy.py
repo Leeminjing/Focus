@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from types import SimpleNamespace
 
 import pytest
 from focus.runtime.runs.usage import ModelUsage
@@ -29,6 +30,7 @@ from backend.app.desktop.agent_loop.context_expansion.retrieval_planner import (
     RetrievalBackedCognitiveAdvisor,
 )
 from backend.app.desktop.agent_loop.context_expansion.candidate_paging import CandidateDescriptorPager
+from backend.app.desktop.agent_loop.context_expansion.index_model_budget import IndexBudgetExceeded, IndexModelBudget
 from backend.app.desktop.agent_loop.context_expansion.contracts import CognitivePlanResult, DerivationStageRecord, ExpansionOpportunity, ResolvedEvidenceBundle, stable_expansion_hash
 from backend.app.desktop.agent_loop.context_expansion.coordinator import ContextExpansionCoordinator
 from backend.app.desktop.agent_loop.context_expansion.evidence_corpus import CorpusEvidenceItem, FrozenEvidenceCorpus
@@ -52,19 +54,35 @@ from backend.app.desktop.context_curation import MultiSourceEvidence, Namespaced
 
 def test_expansion_policy_defaults_and_round_trip() -> None:
     policy = ExpansionResourcePolicy()
-    assert policy.max_queries == 16
-    assert policy.max_unique_candidates == 4096
-    assert policy.max_exact_reads == 512
-    assert policy.max_planner_model_calls == 32
-    assert policy.max_model_attempts_per_operation == 3
-    assert policy.max_planner_tokens == 4_000_000
+    assert all(value is None for key, value in policy.model_dump().items() if key != "version")
     assert ExpansionResourcePolicy.model_validate_json(policy.model_dump_json()) == policy
     assert LoopBudgetContract().expansion_resources == policy
 
 
+def test_unlimited_resources_still_respect_actual_model_window() -> None:
+    async def run():
+        frozen = resolve_expansion_resources(LoopBudgetContract().as_grant_budgets(), 1)
+        budget = IndexModelBudget(frozen)
+        model = SimpleNamespace(context_window_tokens=16384, max_output_tokens=2048)
+        assert budget._request_limits(model) == (14336, 2048)
+        payload = {"source": "x" * 10000}
+        assert budget.fits_request(model, PlannerQueryProposal, "plan", payload)
+        await budget.admit(model, PlannerQueryProposal, "plan", payload)
+        await budget.admit(model, PlannerQueryProposal, "plan", payload)
+        assert budget._calls is None and budget._input is None and budget._output is None
+        with pytest.raises(IndexBudgetExceeded, match="provider_request_window"):
+            await budget.admit(model, PlannerQueryProposal, "plan", {"source": "x" * 20000})
+        explicit = frozen.model_copy(update={"policy": ExpansionResourcePolicy(
+            max_request_input_tokens=4096, output_token_reserve=4096,
+        )})
+        assert IndexModelBudget(explicit)._request_limits(model) == (4096, 4096)
+
+    asyncio.run(run())
+
+
 def test_expansion_policy_accepts_explicit_limits_and_rejects_invalid_shape() -> None:
     policy = ExpansionResourcePolicy(max_queries=2, max_unique_candidates=8, max_exact_reads=2)
-    budgets = LoopBudgetContract(expansion_resources=policy, expansion_resources_source="explicit")
+    budgets = LoopBudgetContract(max_model_calls=200, expansion_resources=policy, expansion_resources_source="explicit")
     frozen = resolve_expansion_resources(budgets.model_dump(mode="json"), 3, {"model_calls": 5})
     assert frozen.policy == policy
     assert frozen.source == "explicit"
@@ -115,7 +133,7 @@ def test_start_and_revision_api_contracts_expose_and_validate_expansion_resource
         })
     with pytest.raises(ValidationError):
         AdjustLoopBudgetsRequest.model_validate({
-            "command": "adjust_budgets", "budgets": {"expansion_resources": {"max_exact_reads": 9000}},
+            "command": "adjust_budgets", "budgets": {"expansion_resources": {"max_unique_candidates": 4096, "max_exact_reads": 9000}},
         })
 
 
@@ -123,7 +141,7 @@ def test_planning_session_freezes_policy_source_grant_and_global_remainder() -> 
     index = _long_index()
     catalog = PortfolioIndexCatalog.create(frontier_hash="f" * 64, indexes=(index,))
     first = resolve_expansion_resources(
-        LoopBudgetContract().as_grant_budgets(),
+        LoopBudgetContract(max_model_calls=200).as_grant_budgets(),
         1,
         {"model_calls": 3, "input_tokens": 100, "output_tokens": 50},
     )
@@ -192,7 +210,7 @@ def test_historical_blocked_session_is_read_only_while_new_round_uses_current_po
     assert legacy.source == "legacy_default"
     _, current = _new_v2_session()
     assert current.schema_version == "retrieval-session-v2"
-    assert current.budget.max_candidates == 4096
+    assert current.budget.max_candidates is None
     assert historical.model_dump(mode="json") == stored
 
 
@@ -484,7 +502,8 @@ def test_resource_snapshot_and_audit_replay_share_frozen_limits_and_context_iden
     )
     assert view["latest_session"] == audit
     assert view["effective"]["policy"] == raw["frozen_resources"]["policy"]
-    assert view["effective"]["global_model_calls_remaining"] == 198
+    assert view["effective"]["global_model_calls_remaining"] is None
+    assert view["latest_session"]["remaining"]["planner_tokens"] is None
     assert view["latest_session"]["remaining"]["unique_candidates"] == 8000
     assert view["latest_session"]["source_context_ids"] == raw["source_context_ids"]
     assert view["latest_session"]["stage"] == "work_spec"

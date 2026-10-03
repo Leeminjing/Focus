@@ -1117,21 +1117,7 @@ async function resumeLoopWithCurrentMission(request) {
 }
 
 function loopBudgetPayload(values, starting = false) {
-  return {
-    max_rounds: Number(values.get("maxRounds")),
-    max_duration_seconds: Number(values.get("maxDurationSeconds")),
-    max_model_calls: Number(values.get("maxModelCalls")),
-    max_input_tokens: Number(values.get("maxInputTokens")),
-    max_output_tokens: Number(values.get("maxOutputTokens")),
-    max_retries: Number(values.get("maxRetries")),
-    max_lanes: Number(values.get("maxLanes")),
-    max_contexts: Number(values.get("maxContexts")),
-    max_providers: Number(values.get("maxProviders")),
-    max_new_lanes_per_round: Number(values.get("maxNewLanesPerRound")),
-    max_concurrent_runs: Number(values.get("maxConcurrentRuns")),
-    max_no_progress: Number(values.get("maxNoProgress")),
-    ...window.FocusLoopExpansionBudget.submission(values, starting),
-  };
+  return window.FocusLoopExpansionBudget.readLoop(values, starting);
 }
 
 function loopListValue(values, name) {

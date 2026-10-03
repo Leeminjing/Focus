@@ -14,6 +14,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from backend.app.desktop.agent_loop.resource_limits import exceeds_limit
+
 
 class BudgetDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -25,13 +27,13 @@ class BudgetDecision(BaseModel):
 class LoopBudgetGuard:
     HARD_FIELDS = {"rounds": "max_rounds", "duration_seconds": "max_duration_seconds", "model_calls": "max_model_calls", "input_tokens": "max_input_tokens", "output_tokens": "max_output_tokens", "retries": "max_retries", "lanes": "max_lanes", "contexts": "max_contexts", "providers": "max_providers"}
 
-    def evaluate(self, usage: dict[str, int], budgets: dict[str, int], next_action: str, projected: dict[str, int] | None = None) -> BudgetDecision:
+    def evaluate(self, usage: dict[str, int], budgets: dict[str, int | None], next_action: str, projected: dict[str, int] | None = None) -> BudgetDecision:
         projected = projected or {}
         exhausted = [
             name
             for name, limit in self.HARD_FIELDS.items()
-            if int(usage.get(name, 0)) >= int(budgets.get(limit, 2**63 - 1))
-            or int(usage.get(name, 0)) + int(projected.get(name, 0)) > int(budgets.get(limit, 2**63 - 1))
+            if exceeds_limit(int(usage.get(name, 0)), budgets.get(limit), inclusive=True)
+            or exceeds_limit(int(usage.get(name, 0)) + int(projected.get(name, 0)), budgets.get(limit))
         ]
         if exhausted:
             return BudgetDecision(status="exhausted", reasons=tuple(f"{name}_budget" for name in exhausted))

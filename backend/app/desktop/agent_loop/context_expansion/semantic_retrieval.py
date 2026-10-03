@@ -16,6 +16,7 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from backend.app.desktop.agent_loop.resource_limits import exceeds_limit, remaining_capacity
 from backend.app.desktop.agent_loop.context_expansion.contracts import (
     CandidateEvidenceIdentity,
     stable_expansion_hash,
@@ -43,11 +44,11 @@ class PortfolioIndexCatalogOverflow(ValueError):
 
 
 class RetrievalBudget(_RetrievalModel):
-    max_queries: int = Field(ge=0)
-    max_candidates: int = Field(ge=0)
-    max_exact_reads: int = Field(ge=0)
-    max_model_calls: int = Field(ge=0)
-    max_tokens: int = Field(ge=0)
+    max_queries: int | None = Field(ge=0)
+    max_candidates: int | None = Field(ge=0)
+    max_exact_reads: int | None = Field(ge=0)
+    max_model_calls: int | None = Field(ge=0)
+    max_tokens: int | None = Field(ge=0)
 
 
 class RetrievalUsage(_RetrievalModel):
@@ -281,7 +282,7 @@ class PortfolioIndexCatalog(_RetrievalModel):
         frontier_hash: str,
         indexes: tuple[RevisionSemanticIndex, ...],
         mission_catalog: FrozenMissionSectionCatalog | None = None,
-        max_descriptor_chars: int = ExpansionResourcePolicy().max_catalog_descriptor_chars,
+        max_descriptor_chars: int | None = ExpansionResourcePolicy().max_catalog_descriptor_chars,
     ) -> Self:
         descriptors = tuple(sorted((item.descriptor() for item in indexes), key=lambda item: item.index_id))
         segments = tuple(
@@ -300,7 +301,7 @@ class PortfolioIndexCatalog(_RetrievalModel):
             if mission_catalog else segments
         )
         size = len(json.dumps(catalog_payload, ensure_ascii=False, separators=(",", ":")))
-        if size > max_descriptor_chars:
+        if exceeds_limit(size, max_descriptor_chars):
             raise PortfolioIndexCatalogOverflow("portfolio index catalog 超出预算，不能静默截断授权 index")
         identity_parts = (frontier_hash, tuple(item.index_id for item in descriptors), segments)
         if mission_catalog is not None:
@@ -391,7 +392,7 @@ class PlanningRetrievalSession(_RetrievalModel):
             (self.usage.model_calls, self.budget.max_model_calls),
             (self.usage.tokens, self.budget.max_tokens),
         )
-        if self.state not in {"blocked", "stale"} and any(used > maximum for used, maximum in pairs):
+        if self.state not in {"blocked", "stale"} and any(exceeds_limit(used, maximum) for used, maximum in pairs):
             raise ValueError("planning retrieval session usage 超出冻结预算")
         if self.state in {"blocked", "stale"} and not self.blocker_code:
             raise ValueError("blocked/stale planning session 必须包含 blocker code")
@@ -521,9 +522,10 @@ class AuthorizedSemanticRetriever:
         requested = set(query.index_ids) or authorized
         if not requested.issubset(authorized):
             raise ValueError("retrieval query 请求了 session scope 之外的 index")
-        if session.usage.queries + 1 > session.budget.max_queries:
+        if exceeds_limit(session.usage.queries + 1, session.budget.max_queries):
             raise ValueError("retrieval query budget exhausted")
-        remaining = session.budget.max_candidates - session.usage.candidates
+        capacity = remaining_capacity(session.budget.max_candidates, session.usage.candidates)
+        remaining = capacity
         query_terms = self._terms(query.text)
         ranked = []
         for index in indexes:
@@ -544,7 +546,7 @@ class AuthorizedSemanticRetriever:
         ranked.sort(key=lambda item: (-item[0], item[1], item[2], item[3]))
         selected = tuple((rank, *item) for rank, item in enumerate(ranked[:query.limit], start=1))
         if session.schema_version == "retrieval-session-v1":
-            if remaining <= 0:
+            if remaining is not None and remaining <= 0:
                 raise ValueError("retrieval candidate budget exhausted")
             selected = selected[:remaining]
         else:
@@ -553,10 +555,10 @@ class AuthorizedSemanticRetriever:
             for rank, score, index_id, kind, entry_id, descriptor, index, mission_item in selected:
                 digest = mission_item.ref.content_hash if mission_item else index.source_content_hash
                 identity = stable_expansion_hash("retrieval-candidate-v2", index_id, kind, entry_id, digest)
-                if identity in known or remaining > 0:
+                if identity in known or remaining is None or remaining > 0:
                     bounded.append((rank, score, index_id, kind, entry_id, descriptor, index, mission_item))
                     if identity not in known:
-                        remaining -= 1
+                        remaining = remaining_capacity(remaining, 1)
             selected = bounded
         candidates = tuple(
             RetrievalCandidate(
@@ -588,7 +590,7 @@ class AuthorizedSemanticRetriever:
         coverage = RetrievalQueryCoverage(
             query_id=query.query_id,
             requested=query.limit,
-            allocated=min(query.limit, max(0, session.budget.max_candidates - session.usage.candidates)),
+            allocated=query.limit if capacity is None else min(query.limit, capacity),
             returned=len(candidates),
             deduplicated=sum(item.candidate_id in session.candidate_ids for item in candidates),
             unvisited=len(ranked) - len(candidates),
@@ -630,7 +632,7 @@ class AuthorizedSemanticRetriever:
                 for hit in session.query_hits
             ):
                 raise ValueError("retrieval candidate query hit 未在同一 session 中返回")
-        if session.usage.exact_reads + 1 > session.budget.max_exact_reads:
+        if exceeds_limit(session.usage.exact_reads + 1, session.budget.max_exact_reads):
             raise ValueError("exact evidence read budget exhausted")
         if candidate.source_type == "mission":
             return self._read_mission(session, candidate)
@@ -884,7 +886,7 @@ class PlanningRetrievalSessionController:
                     "unreported_model_calls": ledger.unreported_model_calls,
                 }
             )
-            over_budget = usage.model_calls > session.budget.max_model_calls or usage.tokens > session.budget.max_tokens
+            over_budget = exceeds_limit(usage.model_calls, session.budget.max_model_calls) or exceeds_limit(usage.tokens, session.budget.max_tokens)
             results = dict(session.model_results)
             if result_payload is not None:
                 result_key = result_operation_id or operation_id
@@ -894,7 +896,7 @@ class PlanningRetrievalSessionController:
                 results[result_key] = result_payload
             values = {"ledger": ledger, "usage": usage, "model_results": results}
             if over_budget:
-                boundary = "max_planner_model_calls" if usage.model_calls > session.budget.max_model_calls else "max_planner_tokens"
+                boundary = "max_planner_model_calls" if exceeds_limit(usage.model_calls, session.budget.max_model_calls) else "max_planner_tokens"
                 values.update({
                     "state": "blocked",
                     "blocker_code": "expansion_policy_limit",
@@ -913,8 +915,8 @@ class PlanningRetrievalSessionController:
             }
         )
         over_budget = (
-            usage.model_calls > session.budget.max_model_calls
-            or usage.tokens > session.budget.max_tokens
+            exceeds_limit(usage.model_calls, session.budget.max_model_calls)
+            or exceeds_limit(usage.tokens, session.budget.max_tokens)
         )
         values: dict[str, Any] = {"usage": usage}
         if over_budget:
@@ -924,8 +926,8 @@ class PlanningRetrievalSessionController:
     @staticmethod
     def has_model_capacity(session: PlanningRetrievalSession) -> bool:
         return (
-            session.usage.model_calls < session.budget.max_model_calls
-            and session.usage.tokens < session.budget.max_tokens
+            not exceeds_limit(session.usage.model_calls, session.budget.max_model_calls, inclusive=True)
+            and not exceeds_limit(session.usage.tokens, session.budget.max_tokens, inclusive=True)
         )
 
     @staticmethod

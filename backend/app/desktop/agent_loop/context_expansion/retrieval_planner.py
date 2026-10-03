@@ -8,6 +8,10 @@ r"""本文件对外提供 RetrievalBackedCognitiveAdvisor 及其分步 worker sc
 
 from __future__ import annotations
 
+from itertools import count
+
+from backend.app.desktop.agent_loop.resource_limits import exceeds_limit, remaining_capacity
+
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
@@ -298,7 +302,7 @@ class RetrievalBackedCognitiveAdvisor:
                 candidates,
                 planning_input,
                 context_window_tokens=getattr(self._model, "context_window_tokens", None),
-                max_output_tokens=getattr(self._model, "max_output_tokens", session.frozen_resources.policy.output_token_reserve),
+                max_output_tokens=getattr(self._model, "max_output_tokens", session.frozen_resources.policy.output_token_reserve or 8192),
             )
             session = self._controller.record_read_pages(session, pages)
             await self._save(session)
@@ -333,7 +337,7 @@ class RetrievalBackedCognitiveAdvisor:
         if not session.selected_candidate_ids:
             return self._controller.block(session, "evidence_insufficient", stage="read_selection", boundary="selected_evidence")
         selected = tuple(item for item in session.candidates if item.candidate_id in set(session.selected_candidate_ids))
-        if len(selected) > session.budget.max_exact_reads:
+        if exceeds_limit(len(selected), session.budget.max_exact_reads):
             return self._controller.block(session, "expansion_policy_limit", summary="精确读取超过冻结上限", stage="exact_read", boundary="max_exact_reads")
         reads = tuple(self._retriever.read(session, item, indexes) for item in selected)
         session = self._controller.record_reads(session, reads)
@@ -347,7 +351,7 @@ class RetrievalBackedCognitiveAdvisor:
             session.reads,
             planning_input,
             context_window_tokens=getattr(self._model, "context_window_tokens", None),
-            max_output_tokens=getattr(self._model, "max_output_tokens", session.frozen_resources.policy.output_token_reserve),
+            max_output_tokens=getattr(self._model, "max_output_tokens", session.frozen_resources.policy.output_token_reserve or 8192),
         )
         proposals: list[LaneAdviceProposal] = []
         for page in pages:
@@ -409,7 +413,8 @@ class RetrievalBackedCognitiveAdvisor:
             charge.operation_id.startswith(f"model:{operation_id}:attempt:")
             for charge in session.ledger.charges
         ) if is_v2 else 0
-        for attempt in range(completed_attempts + 1, attempt_limit + 1):
+        attempts = count(completed_attempts + 1) if attempt_limit is None else range(completed_attempts + 1, attempt_limit + 1)
+        for attempt in attempts:
             blocked = self._model_capacity_blocker(session, stage=stage, operation_id=operation_id)
             if blocked is not None:
                 await self._save(blocked)
@@ -460,17 +465,16 @@ class RetrievalBackedCognitiveAdvisor:
     ):
         if session.frozen_resources is not None:
             frozen = session.frozen_resources
-            comparison = (lambda used, limit: used > limit) if after_call else (lambda used, limit: used >= limit)
             for boundary, used, limit in (
                 ("global_model_calls", session.usage.model_calls, frozen.global_model_calls_remaining),
                 ("global_input_tokens", session.usage.input_tokens, frozen.global_input_tokens_remaining),
                 ("global_output_tokens", session.usage.output_tokens, frozen.global_output_tokens_remaining),
             ):
-                if comparison(used, limit):
+                if exceeds_limit(used, limit, inclusive=not after_call):
                     return self._controller.block(session, "global_grant_exhausted", summary=f"全局授权 {boundary} 已耗尽", stage=stage, boundary=boundary, operation_id=operation_id)
         if not after_call and not self._controller.has_model_capacity(session):
             code = "expansion_policy_limit" if session.schema_version == "retrieval-session-v2" else "retrieval_budget_exhausted"
-            boundary = "max_planner_model_calls" if session.usage.model_calls >= session.budget.max_model_calls else "max_planner_tokens"
+            boundary = "max_planner_model_calls" if exceeds_limit(session.usage.model_calls, session.budget.max_model_calls, inclusive=True) else "max_planner_tokens"
             return self._controller.block(session, code, summary=f"冻结资源策略 {boundary} 已耗尽", stage=stage, boundary=boundary, operation_id=operation_id)
         return None
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from backend.app.desktop.agent_loop.resource_limits import exceeds_limit
 from backend.app.desktop.agent_loop.expansion_resource_policy import ExpansionResourcePolicy
 from backend.app.desktop.agent_loop.context_expansion.contracts import (
     ContextSemanticManifest,
@@ -45,7 +46,7 @@ class SemanticEvidenceSelectorPort(Protocol):
         requirement: EvidenceRequirement,
         corpus: FrozenEvidenceCorpus,
         *,
-        limit: int,
+        limit: int | None,
     ) -> tuple[CorpusEvidenceItem, ...]: ...
 
 
@@ -55,7 +56,7 @@ class IdentityBoundedEvidenceSelector:
         requirement: EvidenceRequirement,
         corpus: FrozenEvidenceCorpus,
         *,
-        limit: int,
+        limit: int | None,
     ) -> tuple[CorpusEvidenceItem, ...]:
         matches = tuple(
             item
@@ -64,7 +65,8 @@ class IdentityBoundedEvidenceSelector:
             and requirement.role in item.semantic_roles
             and self._allowed(requirement, item)
         )
-        return tuple(sorted(matches, key=lambda item: evidence_ref_key(item.ref)))[: max(0, limit)]
+        stop = None if limit is None else max(0, limit)
+        return tuple(sorted(matches, key=lambda item: evidence_ref_key(item.ref)))[:stop]
 
     @staticmethod
     def _identity(ref: EvidenceRef) -> str | None:
@@ -107,7 +109,7 @@ class MultiSourceEvidenceResolver:
         manifests: tuple[ContextSemanticManifest, ...],
         corpus: FrozenEvidenceCorpus,
         *,
-        max_items: int = ExpansionResourcePolicy().max_compiled_evidence_items,
+        max_items: int | None = ExpansionResourcePolicy().max_compiled_evidence_items,
     ) -> ResolvedEvidenceBundle | ExpansionBlocker:
         unit_refs = self._unit_refs(manifests, corpus)
         resolved: list[ResolvedEvidenceItem] = []
@@ -142,7 +144,7 @@ class MultiSourceEvidenceResolver:
             closed_refs = self._protocol_closure(corpus, tuple(selected_refs.values()))
         except ValueError as exc:
             return self._blocked(opportunity, "required_evidence_unresolved", str(exc))
-        if len(closed_refs) > max_items:
+        if exceeds_limit(len(closed_refs), max_items):
             return self._blocked(
                 opportunity,
                 "evidence_budget_exhausted",

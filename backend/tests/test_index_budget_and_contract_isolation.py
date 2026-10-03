@@ -43,6 +43,36 @@ from backend.tests.test_incremental_revision_index import exercise
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 
+@pytest.mark.parametrize("limited_source", ["frozen", "live"])
+def test_unlimited_reservations_keep_accounting_and_obey_finite_authority(tmp_path, limited_source):
+    async def run(sessions, seed):
+        limits = {"max_model_calls": None, "max_input_tokens": None, "max_output_tokens": None}
+        async with sessions.begin() as session:
+            grant = await session.scalar(select(LoopDelegationGrant).where(
+                LoopDelegationGrant.loop_id == seed["loop_id"],
+            ))
+            grant.budgets = {**grant.budgets, **limits}
+        first = IndexBudgetReservationRepository(sessions, seed["loop_id"], 1, limits, {})
+        await first.reserve(3_000_000, 600_000)
+        if limited_source == "live":
+            async with sessions.begin() as session:
+                grant = await session.scalar(select(LoopDelegationGrant).where(
+                    LoopDelegationGrant.loop_id == seed["loop_id"],
+                ))
+                grant.budgets = {**grant.budgets, "max_model_calls": 1}
+        else:
+            limits = {**limits, "max_model_calls": 1}
+        reopened = IndexBudgetReservationRepository(sessions, seed["loop_id"], 1, limits, {})
+        with pytest.raises(IndexBudgetExceeded):
+            await reopened.reserve(1, 1)
+        await first.settle(LoopUsageDelta(model_calls=1, input_tokens=2_500_000, output_tokens=550_000))
+        async with sessions() as session:
+            usage = await session.get(LoopBudgetUsage, seed["loop_id"])
+            assert (usage.model_calls, usage.input_tokens, usage.output_tokens) == (1, 2_500_000, 550_000)
+
+    exercise(tmp_path, run)
+
+
 @pytest.mark.parametrize("change", ["segmenter", "schema", "record_schema"])
 def test_new_contract_does_not_adopt_old_projection_record(
     tmp_path, change, monkeypatch

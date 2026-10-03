@@ -394,7 +394,7 @@ def test_real_worker_negative_planning_preserves_portfolio(
                 await SemanticDerivationArtifactRepository().put_index(session, index)
             catalog = PortfolioIndexCatalog.create(frontier_hash=observation.observed_frontier_hash, indexes=(index,))
             policy = ExpansionResourcePolicy(max_unique_candidates=1, max_exact_reads=1) if case == "low_policy" else ExpansionResourcePolicy()
-            budgets = LoopBudgetContract(expansion_resources=policy).as_grant_budgets()
+            budgets = LoopBudgetContract(max_model_calls=200, expansion_resources=policy).as_grant_budgets()
             global_usage = {"model_calls": budgets["max_model_calls"]} if case == "global_grant" else {}
             frozen = resolve_expansion_resources(budgets, observation.authority_revision, global_usage)
             request = LoopWorkerRequest(

@@ -18,6 +18,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.desktop.agent_loop.resource_limits import exceeds_limit
 from backend.app.desktop.agent_loop.compression_authority.contracts import AutonomousCompressionPolicy, CompressionCandidateRequest
 from backend.app.desktop.agent_loop.compression_authority.evidence import CompressionEvidenceVerifier
 from backend.app.desktop.agent_loop.compression_authority.manifest import CompressionManifestBuilder
@@ -75,7 +76,7 @@ class CompressionCandidateService:
             usage = await session.get(LoopBudgetUsage, loop.loop_id, with_for_update=True)
             if usage is None:
                 raise ValueError("Loop budget usage 不存在")
-            if usage.model_calls >= int(grant.budgets.get("max_model_calls", 0)):
+            if exceeds_limit(usage.model_calls, grant.budgets.get("max_model_calls", 0), inclusive=True):
                 raise ValueError("Loop model call budget 已耗尽")
             normalized = self._manifest.normalize(
                 messages,
@@ -298,13 +299,13 @@ class CompressionCandidateService:
         input_tokens: int,
         output_tokens: int = 0,
     ) -> None:
-        if usage.model_calls >= int(budgets.get("max_model_calls", 0)):
+        if exceeds_limit(usage.model_calls, budgets.get("max_model_calls", 0), inclusive=True):
             raise ValueError("Loop model call budget 已耗尽")
-        if usage.input_tokens + input_tokens > int(budgets.get("max_input_tokens", 0)):
+        if exceeds_limit(usage.input_tokens + input_tokens, budgets.get("max_input_tokens", 0)):
             raise ValueError("Loop input token budget 不足以准备压缩候选")
-        if usage.output_tokens + output_tokens > int(budgets.get("max_output_tokens", 0)):
+        if exceeds_limit(usage.output_tokens + output_tokens, budgets.get("max_output_tokens", 0)):
             raise ValueError("Loop output token budget 不足以接受压缩候选")
-        if usage.retries > 0 and usage.retries >= int(budgets.get("max_retries", 0)):
+        if usage.retries > 0 and exceeds_limit(usage.retries, budgets.get("max_retries", 0), inclusive=True):
             raise ValueError("Loop candidate preparation attempt budget 已耗尽")
 
     @staticmethod

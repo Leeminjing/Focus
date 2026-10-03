@@ -5,6 +5,8 @@ r"""本文件对外提供 FrozenInterpretationInputs。
 示例：inputs.read((early_segment_id, late_segment_id))；不以关键词、相邻窗口或当前 Context pointer 筛选来源。
 """
 
+from backend.app.desktop.agent_loop.resource_limits import exceeds_limit
+
 from .index_model_budget import IndexBudgetExceeded
 from .interpretation_record import (
     InterpretationHint,
@@ -76,7 +78,7 @@ class FrozenInterpretationInputs:
         if not set(segment_ids).issubset(self._segments):
             raise ValueError("interpretation read outside frozen scope")
         combined = set(self._provided) | set(segment_ids)
-        if len(combined) > self._max_reads:
+        if exceeds_limit(len(combined), self._max_reads):
             raise IndexBudgetExceeded("interpretation authorized exact reads exhausted")
         if requested:
             self._requests.append(tuple(segment_ids))

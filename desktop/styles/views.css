@@ -1243,6 +1243,16 @@
   margin-top: var(--space-5);
 }
 
+.loop-start-options > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+.loop-start-options[open] > summary,
+.loop-start-options > .loop-delegation-option {
+  margin-bottom: var(--space-3);
+}
+
 .loop-start-form > label,
 .loop-start-budget label {
   display: grid;
