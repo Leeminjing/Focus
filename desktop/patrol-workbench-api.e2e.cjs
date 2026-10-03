@@ -1,5 +1,5 @@
 /* 本文件对外提供前台 Electron 与真实隔离 Desktop API 的交互验收。
- * 输入为测试 bridge URL 和冻结 fixture JSON 路径；输出为字段交错/同字段冲突、raw shape、来源失效及部署断言。
+ * 输入为测试 bridge URL 和冻结 fixture JSON 路径；输出为字段竞态、逐行来源、变换取消/替换、实际部署断言与修复状态截图。
  * 工作流加载生产模块，经实际 API 保存文档/编译/运行；类型切换保存重开保留图像/未知块，恢复正文后继续实际部署。
  * slow/failure 只作用测试网络，模型采样由 Python fixture 控制。
  * 示例：测试设置 FOCUS_PATROL_TEST_URL/FIXTURE 后启动 electron desktop/patrol-workbench-api.e2e.cjs。
@@ -10,11 +10,14 @@ app.setPath('userData',path.join(os.tmpdir(),`focus-patrol-api-${process.pid}`))
 async function run(){
   const url=process.env.FOCUS_PATROL_TEST_URL,fixturePath=process.env.FOCUS_PATROL_TEST_FIXTURE,fixture=JSON.parse(fs.readFileSync(fixturePath,'utf8'));
   const win=new BrowserWindow({show:true,width:1280,height:900,webPreferences:{contextIsolation:false,nodeIntegration:false,backgroundThrottling:false}});
+  const out=path.resolve(__dirname,'../.tmp/session-patrol-api');fs.mkdirSync(out,{recursive:true});const captures=[];
+  win.webContents.on('console-message',event=>{if(event.message?.startsWith('PATROL_CAPTURE:'))captures.push(win.webContents.capturePage().then(image=>fs.writeFileSync(path.join(out,event.message.slice(15)+'.png'),image.toPNG())));});
   await win.loadFile(path.join(__dirname,'patrol-workbench-fixture.html'));win.focus();
   const result=await win.webContents.executeJavaScript(`(async()=>{
     const fixture=${JSON.stringify(fixture)},base=${JSON.stringify(url)};
     const assert=(value,message)=>{if(!value)throw Error(message);};
     const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+    const shot=async name=>{await wait(70);console.log('PATROL_CAPTURE:'+name);await wait(180);};
     const api=async(route,options={})=>{const response=await fetch(base+route,{...options,headers:{'Content-Type':'application/json'}});const data=await response.json();if(!response.ok)throw Error(JSON.stringify(data));return data;};
     const wb=FocusPatrolWorkbench.mount(document.querySelector('#fixture'),{draft:fixture.draft,api});await wb.flush();
     const behavior=wb.root.querySelector('[aria-label="小兵基础行为"]');behavior.value='界面编写的小兵基础行为';behavior.dispatchEvent(new InputEvent('input',{bubbles:true}));await wb.flush();
@@ -66,8 +69,9 @@ async function run(){
     switchedCard.fieldsBase=structuredClone(switched);switchedCard.structureEditor.value=JSON.stringify({...switched,payload:{...switched.payload,content:'plain again'}});switchedCard.structureEditor.element.dispatchEvent(new InputEvent('input',{bubbles:true}));await wait(650);
     const restoredEditor=switchedCard.fieldEditor('content');restoredEditor.value='plain again edited';restoredEditor.element.dispatchEvent(new InputEvent('input',{bubbles:true}));await wait(650);await wb.flush();
     assert(switched.payload.content==='plain again edited'&&!switched.content_error&&restoredEditor===switchedEditor,'switchedBlocks to text editing keeps editor identity and text mode');wb.doc.remove(switched.entry_id);wb.renderList();
-    await wb._sources();assert(wb.panel.querySelector('[aria-label="精确来源版本"]'),'source picker');
-    await wb._import({kind:'file',context_id:fixture.draft.task_id,path:'ui-source.txt'});
+    assert(wb.sourceView.node.querySelector('[aria-label="精确来源版本"]'),'source picker');
+    await wb.sourceController.choose({kind:'file',context_id:fixture.draft.task_id,path:'ui-source.txt'});
+    const sourceRow=wb.sourceController.rows[0];wb.sourceController.select(sourceRow.source_row_id,true);await wb.interactions.importSelected();
     const source=wb.doc.value.entries[0];assert(source.payload.content==='界面来源','frozen source');wb.select(source.entry_id);
     const editor=wb.editor.querySelector('[aria-label="条目正文"]');editor.focus();editor.value+=' 用户改写';editor.dispatchEvent(new InputEvent('input',{bubbles:true}));await wb.flush();
     assert(wb.doc.byId.get(source.entry_id).edited_from===source.source_ref,'edited source identity');
@@ -83,26 +87,31 @@ async function run(){
     let plan=await wb.preview();assert(!plan.executable&&plan.diagnostics.some(d=>d.entry_ids.includes('ui-orphan')),'located tool conflict');
     wb._locate('ui-orphan');assert(wb.editor.contains(document.activeElement),'diagnostic focus');
     const diagnostic=plan.diagnostics.find(d=>d.entry_ids.includes('ui-orphan'));
-    wb.doc.transform({document_hash:plan.document_hash,entry_ids:diagnostic.entry_ids,operation:'as_text',parameters:{}});plan=await wb.preview();assert(plan.executable,'explicit repair');
+    assert(diagnostic.options.includes('as_text')&&!diagnostic.options.includes('placeholder'),'orphan output offers applicable repair only');
+    await shot('01-located-orphan');await wb.review.transform(diagnostic,'as_text');plan=wb.previewPlan;assert(plan.executable,'explicit repair');await shot('02-explicit-repair');
+    wb.instructions.value+=' · 更新行为';wb.instructions.dispatchEvent(new InputEvent('input',{bubbles:true}));plan=await wb.preview();assert(plan.diagnostics.some(d=>d.code==='stale_transformation'),'instructions edit makes transformation stale');
+    await shot('03-stale-transformation');const oldHash=wb.doc.value.transformations[0].document_hash;await wb.review.replaceTransformation(0);plan=wb.previewPlan;await shot('04-replaced-transformation');
+    assert(plan.executable&&wb.doc.value.transformations.length===1&&wb.doc.value.transformations[0].document_hash!==oldHash,'explicit replacement replaces stale plan and checks actual request');
+    await wb.review.cancelTransformation(0);plan=wb.previewPlan;assert(!plan.executable&&!wb.doc.value.transformations.length,'cancel removes transformation without pretending tool executed');await shot('05-cancelled-transformation');
+    await wb.review.transform(plan.diagnostics.find(d=>d.entry_ids.includes('ui-orphan')),'as_text');plan=wb.previewPlan;
     await api('/test/fail-next-save',{method:'POST'});wb.doc.setPayloadField(source.entry_id,'content','失败后保留的编辑');
     let failed=false;try{await wb.flush();}catch(_){failed=true;}assert(failed&&wb.queue.confirmed<wb.queue.localRevision,'failed save is recoverable');
     await wb.flush();assert(wb.doc.byId.get(source.entry_id).payload.content==='失败后保留的编辑','retry preserved text');
     wb.doc.clear();wb._undo(false);assert(wb.doc.value.entries.length===2,'batch undo');plan=await wb.preview();
     assert(plan.diagnostics.some(d=>d.code==='stale_transformation'),'edited document invalidates repair');
-    wb.doc.value.transformations=[];wb._changed();plan=await wb.preview();
-    wb.doc.transform({document_hash:plan.document_hash,entry_ids:['ui-orphan'],operation:'as_text',parameters:{}});plan=await wb.preview();assert(plan.executable,'renewed explicit repair');
+    await wb.review.replaceTransformation(0);plan=wb.previewPlan;assert(plan.executable,'renewed explicit repair');
     const addItem=label=>{const menu=wb.root.querySelector('.patrol-add-menu');menu.open=true;[...menu.querySelectorAll('button')].find(button=>button.textContent===label).click();return wb.doc.value.entries.at(-1);};
     const edit=(entry,key,text)=>{const input=wb.cards.get(entry.entry_id).querySelector('[data-payload-field="'+key+'"]');input.value=text;input.dispatchEvent(new InputEvent('input',{bubbles:true}));};
-    const developer=addItem('developer');edit(developer,'content','UI_DEVELOPER');
-    const user=addItem('user');edit(user,'content','UI_USER');
-    const assistant=addItem('assistant');edit(assistant,'content','UI_ASSISTANT');
-    const call=addItem('function_call');edit(call,'name','read_file');edit(call,'call_id','ui-five-call');edit(call,'arguments','{"path":"must-not-execute.txt"}');
-    const output=addItem('function_call_output');edit(output,'call_id','ui-five-call');edit(output,'output','UI_OUTPUT');
-    wb.doc.value.transformations=[];wb._changed();plan=await wb.preview();
-    wb.doc.transform({document_hash:plan.document_hash,entry_ids:['ui-orphan'],operation:'as_text',parameters:{}});plan=await wb.preview();
+    const developer=addItem('developer 消息');edit(developer,'content','UI_DEVELOPER');
+    const user=addItem('user 消息');edit(user,'content','UI_USER');
+    const assistant=addItem('assistant 消息');edit(assistant,'content','UI_ASSISTANT');
+    const call=addItem('工具调用');edit(call,'name','read_file');edit(call,'call_id','ui-five-call');edit(call,'arguments','{"path":"must-not-execute.txt"}');
+    const output=addItem('工具结果');edit(output,'call_id','ui-five-call');edit(output,'output','UI_OUTPUT');
+    await wb.review.replaceTransformation(0);plan=wb.previewPlan;
     assert(plan.executable&&plan.request.input.some(item=>item.type==='function_call'&&item.call_id==='ui-five-call')&&plan.request.input.some(item=>item.type==='function_call_output'&&item.output==='UI_OUTPUT'),'five UI authored types reach actual request');
     assert(['UI_DEVELOPER','UI_USER','UI_ASSISTANT'].every(text=>JSON.stringify(plan.request.input).includes(text)),'UI message roles reach actual request');
     assert(plan.request.instructions.includes('界面编写的小兵基础行为'),'behavior reaches actual instructions');
+    await shot('06-actual-request-ready');
     const run=await api('/desktop/api/drafts/'+fixture.draft.draft_id+'/deploy',{method:'POST',body:JSON.stringify({deployment_id:crypto.randomUUID(),preview_token:plan.preview_token})});
     let terminal;for(let i=0;i<200;i++){terminal=await api('/desktop/api/runs/'+run.run_id);if(terminal.status==='success')break;await wait(25);}assert(terminal.status==='success','actual graph completion');
     const branchRoot=document.createElement('div');document.body.append(branchRoot);let cloned;
@@ -111,6 +120,6 @@ async function run(){
     branchRoot.querySelector('button').click();for(let i=0;i<100&&!cloned;i++)await wait(25);assert(cloned&&cloned.authoring_document.entries.length===7,'edit frozen definition');
     return {five_ui_items:true,field_merge:true,field_conflict:true,field_navigation:true,invalid_shape_buffer:true,source_unavailable:true,sources:true,raw_save:true,mixed_blocks:true,unknown_fields:true,diagnostics:true,explicit_transform:true,failed_save_retry:true,undo:true,deployment:true,branches:true,definition_edit:true,run_id:run.run_id};
   })()`);
-  console.log(JSON.stringify(result));win.destroy();app.exit(0);
+  await Promise.all(captures);fs.writeFileSync(path.join(out,'report.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));win.destroy();app.exit(0);
 }
 app.whenReady().then(run).catch(error=>{fs.writeFileSync(path.join(os.tmpdir(),'focus-patrol-api-error.log'),String(error.stack||error));console.error(error);app.exit(1);});

@@ -3,6 +3,7 @@
 输入为冻结候选草稿、装备和宿主组合根；输出为逐条诊断、实际请求、分项窗口与 freshness token。
 工作流为纯编译后调用统一 Agent 工厂观察端口，装配当前 WorldState、工具及冻结技能／材料，不采样。
 示例：plan = await PatrolPreview(host).build(draft, task, workspace)；token 绑定完整请求。
+无精确条目身份的 Provider 投影失败作为全局诊断，不伪造全量条目定位。
 """
 from dataclasses import asdict
 from types import SimpleNamespace
@@ -49,7 +50,7 @@ class PatrolPreview:
         try:
             request = observed[0].preview(items_to_messages(compiled.items), context)
         except (ValueError, TypeError, KeyError) as exc:
-            plan["diagnostics"].append({"code": "provider_projection", "entry_ids": [e.entry_id for e in document.entries], "message": str(exc)})
+            plan["diagnostics"].append({"code": "provider_projection", "entry_ids": [], "message": str(exc), "options": ["edit"]})
             return plan
         reserve = int(request.get("max_output_tokens") or 4096)
         budget = {"instructions": estimate_responses_budget({"instructions": request.get("instructions", "")}),

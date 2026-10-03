@@ -1,6 +1,6 @@
 /*
- * 会话 standard Patrol 由独立 Document/Workbench/Branches 模块负责typed Focus 语义卡片、保存、只读请求预览和精确执行分支；本文件仅组合路由、装备、检查器与运行订阅。
- * 示例：renderFocus(activeTask()); await sendMain()。模型配置显式选择 Provider 与协议，详情展示有效协议。
+ * 会话 standard Patrol 由独立 Document/Workbench/Branches 模块负责 typed 左右编排、精确来源选择、保存、只读请求预览和精确执行分支；本文件组合路由、装备、检查器与运行订阅，材料变更按所属任务使检查过期并按当前页面刷新，保留编辑挂载。
+ * 示例：refreshMaterialView(taskId, true) 使该任务材料变更后的检查过期并刷新当前路由；await sendMain()。模型配置显式选择 Provider 与协议，详情展示有效协议。
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
  * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
  * 对话/Context/Agent/Commitment/压缩/插件与模块化 Agent Loop Portfolio 控制台、结构化 Mission 编辑、Context Expansion 资源授权/状态、自主压缩授权/审计/来源恢复、终止 Loop 退出/后继 Loop 准备等视图；逐轮材料以有序 binding 草稿和独立图片必看
@@ -3362,7 +3362,7 @@ function renderDraft() {
   const currentWorkbench = document.querySelector('#patrolWorkbench');
   if (curator && currentWorkbench?.dataset?.draftId) window.FocusPatrolWorkbench?.leave(currentWorkbench.dataset.draftId);
   if (!curator && currentWorkbench?.dataset?.draftId === draft.draft_id && window.FocusPatrolWorkbench) {
-    window.FocusPatrolWorkbench.get(draft.draft_id).rebind({draft,api,onStale:updateTokenState,onPreview:updateTokenState,onReload:()=>renderDraft()});
+    window.FocusPatrolWorkbench.get(draft.draft_id).rebind({draft,api,onStale:updateTokenState,onPreview:updateTokenState,onReload:()=>renderDraft(),onEquipment:()=>{const panel=document.querySelector(".draft-equipment");if(panel)panel.open=true;}});
     const equipment = document.querySelector('.draft-step[data-step="equipment"] .draft-step-body');
     const signature = JSON.stringify([draft.equipment.model_name,draft.equipment.skills,draft.equipment.permissions,draft.equipment.access_mode]);
     if (equipment && equipment.dataset.signature !== signature) { equipment.innerHTML = renderEquipment(draft); equipment.dataset.signature = signature; }
@@ -3384,7 +3384,7 @@ function renderDraft() {
   </section>`;
   if (!curator && window.FocusPatrolWorkbench && draft.authoring_document) {
     window.FocusPatrolWorkbench.mount(document.querySelector('#patrolWorkbench'), {
-      draft, api, onStale:updateTokenState, onPreview:updateTokenState, onReload:()=>renderDraft(),
+      draft, api, onStale:updateTokenState, onPreview:updateTokenState, onReload:()=>renderDraft(),onEquipment:()=>{const panel=document.querySelector(".draft-equipment");if(panel)panel.open=true;},
     });
   }
   updateTokenState();
@@ -3612,7 +3612,7 @@ function updateTokenState() {
   document.querySelector("#tokenCount")?.classList.toggle("over", Boolean(over));
   const deploy = document.querySelector('[data-action="deploy"]');
   const workbench = draft?.mode === "standard" && window.FocusPatrolWorkbench?.get(draft.draft_id);
-  if (deploy) deploy.disabled = workbench ? !workbench.previewPlan?.executable : Boolean(over) || (draft.mode !== "context_curator" && !draft.final_human_message?.trim());
+  if (deploy) deploy.disabled = workbench ? state.deploying || !workbench.previewPlan?.executable : Boolean(over) || (draft.mode !== "context_curator" && !draft.final_human_message?.trim());
 }
 
 async function deployDraft() {
@@ -5346,14 +5346,23 @@ async function pickWorkspace() {
   } catch (error) { setStatus(error.message, true); }
 }
 
+function refreshMaterialView(taskId, changed = false) {
+  if (changed) {
+    const draft = state.drafts.get(taskId);
+    if (draft?.mode === "standard") window.FocusPatrolWorkbench?.get(draft.draft_id)?.configurationChanged();
+  }
+  if (state.activeTaskId === taskId) render();
+}
+
 async function handleMaterialAction(button) {
+  const taskId = state.activeTaskId;
   const row = button.closest("[data-material-id]");
   const materialId = row.dataset.materialId;
-  const material = (state.materials.get(state.activeTaskId) || []).find(item => item.material_id === materialId);
+  const material = (state.materials.get(taskId) || []).find(item => item.material_id === materialId);
   try {
-  if (button.dataset.action === "toggle-material") { state.openMaterial = state.openMaterial === materialId ? null : materialId; return renderFocus(); }
-  if (button.dataset.action === "toggle-run-material") { toggleRunMaterial(materialId); return renderFocus(); }
-  if (button.dataset.action === "toggle-image-required") { await toggleImageRequired(materialId); return renderFocus(); }
+  if (button.dataset.action === "toggle-material") { state.openMaterial = state.openMaterial === materialId ? null : materialId; return refreshMaterialView(taskId); }
+  if (button.dataset.action === "toggle-run-material") { toggleRunMaterial(materialId); return refreshMaterialView(taskId); }
+  if (button.dataset.action === "toggle-image-required") { await toggleImageRequired(materialId); return refreshMaterialView(taskId); }
   if (button.dataset.action === "move-material-group") {
     const groups = state.materialGroups.get(state.activeTaskId) || [];
     if (!groups.length) return setStatus("请先新建自定义分组", true);
@@ -5396,38 +5405,38 @@ async function handleMaterialAction(button) {
     const body = Object.fromEntries([...row.querySelectorAll("select[data-field]")].map(select => [select.dataset.field, select.value]));
     try {
       const saved = await api(`/desktop/api/materials/${materialId}`, { method: "PUT", body: JSON.stringify(body) });
-      Object.assign(material, saved); renderFocus();
+      Object.assign(material, saved); refreshMaterialView(taskId, true);
     } catch (error) {
       if (error.status === 409 && error.detail?.code === "git_init_required" && confirm("该文件夹还不是 Git 仓库。是否执行 git init 并启用不可遗失保护？")) {
         const saved = await api(`/desktop/api/materials/${materialId}`, { method: "PUT", body: JSON.stringify({ ...body, confirm_git_init: true }) });
-        Object.assign(material, saved); renderFocus();
+        Object.assign(material, saved); refreshMaterialView(taskId, true);
       } else setStatus(error.message, true);
     }
   }
   if (button.dataset.action === "clear-material" && confirm("保留文件路径并将内容置空？此操作会保存新版本。")) {
     Object.assign(material, await api(`/desktop/api/materials/${materialId}/clear`, { method: "POST" }));
     state.materialSelections.set(
-      state.activeTaskId,
-      runMaterialPicker.normalizeSelection(materialSelection(), state.materials.get(state.activeTaskId))
+      taskId,
+      runMaterialPicker.normalizeSelection(materialSelection(taskId), state.materials.get(taskId))
     );
-    renderFocus();
+    refreshMaterialView(taskId, true);
   }
   if (button.dataset.action === "delete-material" && confirm("删除这个可移除文件？")) {
     await api(`/desktop/api/materials/${materialId}`, { method: "DELETE" });
-    materialContentLoader.releaseMaterial(state.activeTaskId, materialId);
-    state.materials.set(state.activeTaskId, state.materials.get(state.activeTaskId).filter(item => item.material_id !== materialId));
+    materialContentLoader.releaseMaterial(taskId, materialId);
+    state.materials.set(taskId, state.materials.get(taskId).filter(item => item.material_id !== materialId));
     state.materialSelections.set(
-      state.activeTaskId,
-      runMaterialPicker.normalizeSelection(materialSelection(), state.materials.get(state.activeTaskId))
+      taskId,
+      runMaterialPicker.normalizeSelection(materialSelection(taskId), state.materials.get(taskId))
     );
-    renderFocus();
+    refreshMaterialView(taskId, true);
   }
   if (button.dataset.action === "load-versions") {
     const versions = await api(`/desktop/api/materials/${materialId}/versions`);
     row.querySelector("[data-versions]").innerHTML = versions.map(version => `<li><span>${escapeHtml(version.source)} · ${escapeHtml(version.created_at || "")}</span><button class="text-button" data-action="restore-version" data-version-id="${version.version_id}">恢复</button></li>`).join("") || "<li>尚无版本</li>";
   }
   if (button.dataset.action === "restore-version") {
-    Object.assign(material, await api(`/desktop/api/materials/${materialId}/restore`, { method: "POST", body: JSON.stringify({ version_id: button.dataset.versionId }) })); renderFocus();
+    Object.assign(material, await api(`/desktop/api/materials/${materialId}/restore`, { method: "POST", body: JSON.stringify({ version_id: button.dataset.versionId }) })); refreshMaterialView(taskId, true);
   }
   } catch (error) {
     setStatus(error.message, true);
@@ -5445,7 +5454,7 @@ async function refreshMaterialOrganization() {
   state.materialGroups.set(taskId, groups);
   state.materialHistory.set(taskId, history);
   state.materialSelections.set(taskId, runMaterialPicker.normalizeSelection(materialSelection(taskId), materials));
-  renderFocus();
+  refreshMaterialView(taskId);
 }
 
 async function moveMaterialMembership(materialId, groupId) {
@@ -6906,10 +6915,12 @@ function serializeWaitDraft(form) {
 async function uploadMaterialFile(file) {
   if (!file) return;
   if (!state.activeTaskId) return setStatus("请先选择任务，再粘贴图片", true);
+  const taskId = state.activeTaskId;
   const body = new FormData(); body.append("file", file);
   try {
-    await api(`/desktop/api/tasks/${state.activeTaskId}/materials/upload`, { method: "POST", body });
-    state.materials.set(state.activeTaskId, await api(`/desktop/api/tasks/${state.activeTaskId}/materials`)); renderFocus();
+    await api(`/desktop/api/tasks/${taskId}/materials/upload`, { method: "POST", body });
+    refreshMaterialView(taskId, true);
+    state.materials.set(taskId, await api(`/desktop/api/tasks/${taskId}/materials`)); refreshMaterialView(taskId);
   } catch (error) { setStatus(error.message, true); }
 }
 

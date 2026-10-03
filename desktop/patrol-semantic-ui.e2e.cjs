@@ -1,4 +1,4 @@
-/* 本文件提供 typed Patrol 连续卡片的真实 Electron 视觉与交互验收。
+/* 本文件提供 typed Patrol 左右编排的真实 Electron 视觉与交互验收。
  * 输入为生产模块、混合 Focus 语义和可控异步 API；输出为八种截图及身份/正文/IME/结构/请求断言。
  * 工作流从 UI 新建五类核心项，编辑完整语义 JSON，检查独立只读请求；实际 API/图由对应集成验收提供。
  * 示例：electron desktop/patrol-semantic-ui.e2e.cjs。
@@ -20,7 +20,7 @@ async function run(){
   window.wb=FocusPatrolWorkbench.mount(document.querySelector('#fixture'),{draft,api:async(url,options)=>{
    if(url.endsWith('/source-status'))return {sources:{ref:{status:'unavailable',message:'原文件已删除'}}};
    if(url.endsWith('/preview'))return {executable:true,diagnostics:[],budget:{total:800,context_window:64000,input:200,tools:50,instructions:50,output_reserve:500},request:{instructions:wb.doc.value.instructions,input:wb.doc.value.entries.map(e=>({type:e.kind==='message'?'message':e.kind,...e.payload})),tools:[]},role_mappings:[],items:[]};
-   if(url.endsWith('/sources')&&!options)return {contexts:[{title:'架构讨论',context_id:'task',revisions:[{revision_id:'R1',generation:3}]}],branches:[]};
+   if(url.includes('/patrol/sources'))return {items:[{label:'架构讨论 · R3',available:true,source_ref:{kind:'context',context_id:'task',revision_id:'R1'}}]};
    if(url.includes('/materials'))return [];
    return {draft_revision:JSON.parse(options?.body || '{}').draft_revision+1};}});
  })()`);
@@ -53,8 +53,8 @@ async function run(){
  })()`);
  await win.webContents.executeJavaScript(String.raw`wb.panel.querySelector('details').open=true`);await shot('03-request-preview');
  await win.webContents.executeJavaScript(String.raw`(async()=>{wb.panel.hidden=true;await wb._toggleRaw();})()`);await shot('04-semantic-structure');
- await win.webContents.executeJavaScript(String.raw`(async()=>{const before=wb.doc.value.entries.length;wb.rawEditor.value='{"schema_version":3,"entries":42}';wb.raw.dispatchEvent(new InputEvent('input',{bubbles:true}));await wait(650);assert(wb.doc.value.entries.length===before&&wb.doc.value.raw_error,'invalid structure preserves document');wb.rawEditor.value=JSON.stringify({schema_version:3,instructions:wb.doc.value.instructions,entries:wb.doc.value.entries,transformations:[]});wb.raw.dispatchEvent(new InputEvent('input',{bubbles:true}));await wait(650);await wb._toggleRaw();await wb._sources();})()`);await shot('05-source-picker');
- await win.webContents.executeJavaScript(String.raw`(()=>{wb.panel.hidden=true;const e=wb.doc.value.entries[0];wb.doc.setPayloadField(e.entry_id,'content','长正文示例，保留全文并局部滚动。'.repeat(6000));wb.renderList();wb.list.scrollTop=0;assert(wb.doc.byId.get(e.entry_id).payload.content.length>80000,'long body remains complete');})()`);await shot('06-long-body');
+ await win.webContents.executeJavaScript(String.raw`(async()=>{const before=wb.doc.value.entries.length;wb.rawEditor.value='{"schema_version":3,"entries":42}';wb.raw.dispatchEvent(new InputEvent('input',{bubbles:true}));await wait(650);assert(wb.doc.value.entries.length===before&&wb.doc.value.raw_error,'invalid structure preserves document');wb.rawEditor.value=JSON.stringify({schema_version:3,instructions:wb.doc.value.instructions,entries:wb.doc.value.entries,transformations:[]});wb.raw.dispatchEvent(new InputEvent('input',{bubbles:true}));await wait(650);await wb._toggleRaw();await wb.sourceController.directory();wb.view.setPage("source");})()`);await shot('05-source-picker');
+ await win.webContents.executeJavaScript(String.raw`(()=>{wb.panel.hidden=true;const e=wb.doc.value.entries[0];wb.doc.setPayloadField(e.entry_id,'content','长正文示例，保留全文并连续编辑。'.repeat(6000));wb.renderList();wb.list.scrollTop=0;assert(wb.doc.byId.get(e.entry_id).payload.content.length>80000,'long body remains complete');})()`);await shot('06-long-body');
  win.setSize(600,900);await wait(100);await shot('07-narrow');
  await win.webContents.executeJavaScript(String.raw`(async()=>{
   wb._add('unknown_provider_item');const e=wb.doc.value.entries.at(-1);await wait(100);

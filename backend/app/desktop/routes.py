@@ -8,7 +8,7 @@ Context、任务、草稿、普通/策展 Patrol、运行、文件沙箱状态�
 UploadFile 直接交给有界上传服务，内容读取在校验 task/material 归属后交给 FileResponse。
 
 示例：POST /desktop/api/tasks/{task_id}/main/runs。
-standard Patrol 的来源、只读可用性、预览、定义复制与中断响应交给 session_patrol 端口；自由保存与执行准入分离，部署沿 durable dispatch 启动。示例：POST /desktop/api/drafts/{id}/preview。
+standard Patrol 的来源目录/分页正文预览、原子冻结插入、只读可用性、检查、定义复制与中断响应交给 session_patrol 端口；自由保存与执行准入分离，部署沿 durable dispatch 启动。示例：POST /desktop/api/drafts/{id}/source-preview。
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import asyncio
 import uuid
 from fastapi import APIRouter, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+from backend.app.desktop.session_patrol.contracts import SourcePreviewRequest
 
 from backend.app.desktop.models import (
     BatchDeleteRequest,
@@ -313,8 +314,15 @@ async def preview_patrol(draft_id: str, request: Request) -> dict:
 
 
 @desktop_router.get("/patrol/sources")
-async def patrol_source_catalog(request: Request) -> dict:
-    return await request.app.state.desktop_service.patrol_sources.catalog()
+async def patrol_source_catalog(request: Request, kind: str = "context", query: str = Query(default="", max_length=1000),
+                                cursor: str | None = Query(default=None, max_length=4096),
+                                limit: int | None = Query(default=None, ge=1, le=100)) -> dict:
+    return await request.app.state.desktop_service.patrol_sources.catalog(kind=kind, query=query, cursor=cursor, limit=limit)
+
+
+@desktop_router.post("/drafts/{draft_id}/source-preview")
+async def preview_patrol_source(draft_id: str, body: SourcePreviewRequest, request: Request) -> dict:
+    return await request.app.state.desktop_service.patrol_sources.preview(draft_id, body.model_dump(mode="json", exclude_none=True))
 
 
 @desktop_router.get("/drafts/{draft_id}/source-status")

@@ -1,6 +1,6 @@
-/* 本文件对外提供 FocusPatrolCards.create 的独立 typed Item 卡片。
+/* 本文件对外提供 FocusPatrolCards.create 的紧凑 typed 条目视图。
  * 输入为 authoring kind/payload、文档与异步解析端口；输出为稳定身份的卡片和正文/结构编辑端口。
- * 工作流按 kind 选择字段，PayloadField 管理原位控件，ItemCard 管理菜单、来源与局部同步。
+ * 工作流按 kind 选择字段，PayloadField 管理自然高度原位控件，ItemCard 管理菜单、来源、稳定插入锚点与局部同步；结构动作经交互端口串行。
  * 合法结构改写协调文本/内容块模式，只升级变化字段的控件并保留选区；输入法及待解析正文保持当前输入。
  * 大型/结构内容按需采用可见区域编辑器；不会将未知字段或来源声明转成执行权威。
  * 示例：create(workbench, entry).fieldEditor('arguments') 直接编辑独立 function_call 参数。
@@ -16,7 +16,7 @@
       this.node=node("label","patrol-field");
       if(label!=="条目正文")this.node.append(node("span","patrol-field-label",label));
       if(this.structured || value.length>32000){
-        this.port=global.FocusPatrolJsonEditor.createJsonEditor({label});this.input=this.port.element;
+        this.port=global.FocusPatrolJsonEditor.createJsonEditor({label,wrap:multiline});this.input=this.port.element;
         this.port.value=entry.content_buffer || (this.structured?JSON.stringify(value,null,2):value);this.node.classList.add("is-structured");
       }else{
         this.input=node(multiline?"textarea":"input","patrol-inline-input");this.input.value=value;
@@ -31,7 +31,7 @@
     _upgradeEditor(raw){
       const previous=this.input,active=document.activeElement===previous;
       const selection=active?[previous.selectionStart,previous.selectionEnd]:null;
-      this.port=global.FocusPatrolJsonEditor.createJsonEditor({label:this.label});this.input=this.port.element;
+      this.port=global.FocusPatrolJsonEditor.createJsonEditor({label:this.label,wrap:this.multiline});this.input=this.port.element;
       this.port.value=raw;this.node.classList.add("is-structured");this._bindInput();previous.replaceWith(this.input);
       if(active){this.port.focus();this.port.setSelectionRange(Math.min(selection[0],raw.length),Math.min(selection[1],raw.length));}
     }
@@ -62,7 +62,7 @@
     }
     refresh(){
       if(this.port){this.port.refresh();return;}
-      if(this.multiline){this.input.style.height="auto";this.input.style.height=Math.min(180,Math.max(32,this.input.scrollHeight))+"px";}
+      if(this.multiline){this.input.style.height="auto";this.input.style.height=Math.max(32,this.input.scrollHeight)+"px";}
     }
     destroy(){this.port?.destroy();}
   }
@@ -83,11 +83,14 @@
       this.number=node("span","patrol-card-number");
       const menu=node("details","patrol-card-menu");menu.append(node("summary","","···"));menu.firstChild.setAttribute("aria-label","条目操作");
       const actions=node("div","patrol-popover");
-      actions.append(action("复制",()=>{const value=this.wb.doc.copy(this.entry.entry_id);this.wb.renderList();this.wb._locate(value.entry_id);}),
+      actions.append(action("复制",()=>this.wb.interactions.run(()=>{const value=this.wb.doc.copy(this.entry.entry_id);this.wb.renderList();this.wb._locate(value.entry_id);})),
         action("向上",()=>this._move(-1)),action("向下",()=>this._move(1)),
+        action("移动到指定位置",()=>this._position(actions)),
         action("在下方插入",()=>this.wb._add("message","user",this.wb.doc.value.entries.indexOf(this.entry)+1)),
-        action("删除",()=>{this.wb.doc.remove(this.entry.entry_id);this.wb.renderList();}));
-      menu.append(actions);header.append(drag,this.title,this.role,this.number,menu);this.node.append(header);
+        action("删除",()=>this.wb.interactions.run(()=>{this.wb.doc.remove(this.entry.entry_id);this.wb.renderList();})));
+      menu.append(actions);header.append(drag,this.title,this.role,this.number,menu);
+      const gap=action("＋ 插入到这里",()=>this.wb.interactions.setAnchor(this.entry.entry_id));gap.className="patrol-entry-gap";gap.setAttribute("aria-label","在此条目前插入来源或新增条目");
+      this.node.append(gap,header);
     }
     _body(){
       this.body=node("div","patrol-card-body");this.node.append(this.body);
@@ -114,7 +117,12 @@
       });
     }
     _field(key,label,multiline){const field=new PayloadField(this.wb,this.entry,key,label,multiline);this.bindings.set(key,field);this.body.append(field.node);}
-    _move(delta){this.wb.doc.move(this.entry.entry_id,this.wb.doc.value.entries.indexOf(this.entry)+delta);this.wb.renderList();}
+    _move(delta){this.wb.interactions.run(()=>{this.wb.doc.move(this.entry.entry_id,this.wb.doc.value.entries.indexOf(this.entry)+delta);this.wb.renderList();});}
+    _position(container){
+      if(this.positionInput)return;
+      this.positionInput=node("input");this.positionInput.type="number";this.positionInput.min="1";this.positionInput.max=String(this.wb.doc.value.entries.length);this.positionInput.value=String(this.wb.doc.value.entries.indexOf(this.entry)+1);this.positionInput.setAttribute("aria-label","目标条目位置");
+      const confirm=action("确认移动",()=>{const index=Number(this.positionInput.value)-1;if(Number.isInteger(index) && index>=0 && index<this.wb.doc.value.entries.length)this.wb.interactions.run(()=>{this.wb.doc.move(this.entry.entry_id,index);this.wb.renderList();});});container.append(this.positionInput,confirm);this.positionInput.focus();
+    }
     _structure(){
       const fields=node("details","patrol-item-structure");fields.append(node("summary","","条目结构"));this.node.append(fields);
       fields.ontoggle=()=>{
@@ -137,10 +145,11 @@
       this.source.ontoggle=()=>{if(this.source.open)info.textContent=JSON.stringify({reference:this.entry.source_ref,source_item:this.entry.source_item_id,group:this.entry.source_group,hash:this.entry.source_hash,edited_from:this.entry.edited_from,status:this.wb.sourceStatus?.[this.entry.source_ref]},null,2);};
     }
     sync(index){
-      this.title.textContent=["message","authored_instruction"].includes(this.kind)?"message":this.kind;
+      this.title.textContent=global.FocusPatrolUI.kindLabel(this.kind);
       this.role.hidden=!["message","authored_instruction","task_contract","selected_context"].includes(this.kind);
       if(this.role.value!==(this.entry.payload.role || "user"))this.role.value=this.entry.payload.role || "user";
       this.number.textContent=String(index+1).padStart(2,"0");for(const binding of this.bindings.values())binding.sync();
+      this.node.classList.toggle("is-insertion-anchor",this.wb.interactions.anchor===this.entry.entry_id);
       if(this.payloadEditor && this.renderedPayload!==this.entry.payload && !this.entry.payload_error && !this.wb.composing){
         const raw=JSON.stringify(this.entry.payload,null,2),selection=this.payloadEditor.hasFocus?[this.payloadEditor.selectionStart,this.payloadEditor.selectionEnd]:null;
         this.payloadEditor.value=raw;this.renderedPayload=this.entry.payload;if(selection)this.payloadEditor.setSelectionRange(Math.min(selection[0],raw.length),Math.min(selection[1],raw.length));
@@ -150,7 +159,7 @@
       this.source.hidden=!this.entry.source_ref;this.sourceTitle.textContent=label+" · "+status;
       this.error.textContent=this.entry.fields_error || this.entry.content_error || this.entry.payload_error || "";this.error.hidden=!this.error.textContent;
     }
-    fieldEditor(key){const binding=this.bindings.get(key);return binding?.port || binding?.input;}
+    fieldEditor(key){const binding=this.bindings.get(key);return key==="payload"?this.payloadEditor:binding?.port || binding?.input;}
     refresh(){for(const binding of this.bindings.values())binding.refresh();this.structureEditor?.refresh();this.payloadEditor?.refresh();}
     destroy(){for(const binding of this.bindings.values())binding.destroy();this.structureEditor?.destroy();this.payloadEditor?.destroy();}
   }

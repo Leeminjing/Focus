@@ -1,5 +1,5 @@
-/* 本文件对外提供真实前台 Electron 工作台性能与编辑连续性验收。
- * 输入为 1000 entries / 约 2MiB 混合工具组、图片/文件引用与未知块 fixture；输出为三轮输入/拖动及展开字段/raw 测量。
+/* 本文件对外提供真实前台 Electron 左右编排性能与编辑连续性验收。
+ * 输入为 1000 entries / 约 2MiB 混合工具组、图片/文件引用与未知块 fixture；输出为三轮输入/拖动、来源跨页缓存及展开字段/raw 测量。
  * 工作流在前台 BrowserWindow 输入中文、测量下一帧反馈并连续拖动；网络时间独立，预算失败直接失败。
  * 示例：desktop/node_modules/.bin/electron desktop/patrol-workbench.e2e.cjs。
  */
@@ -39,9 +39,9 @@ async function run() {
       win.webContents.sendInputEvent({type:'char',keyCode:'中'}); await wait(20);
     }
     await wait(60);
-    const input = await win.webContents.executeJavaScript(`({samples:inputSamples, same:initialEditor===wb.cards.get('entry-0').querySelector('[aria-label="条目正文"]'), focused:document.activeElement===initialEditor, text:initialEditor.value, cards:document.querySelectorAll('.patrol-entry').length})`);
+    const input = await win.webContents.executeJavaScript(`({samples:inputSamples, same:initialEditor===wb.cards.get('entry-0').querySelector('[aria-label="条目正文"]'), focused:document.activeElement===initialEditor, text:initialEditor.value, cards:document.querySelectorAll('.patrol-entry').length,cache:wb.viewport.cache.size})`);
     const drag = await win.webContents.executeJavaScript(`new Promise(resolve=>{
-      const start=performance.now(); const handle=document.querySelector('.patrol-entry button'); const rect=handle.getBoundingClientRect();
+      const start=performance.now(); const handle=document.querySelector('[aria-label="拖动排序"]'); const rect=handle.getBoundingClientRect();
       handle.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:rect.x+5,clientY:rect.y+5}));
       const samples=[]; let last=performance.now();
       const frame=()=>{const now=performance.now();samples.push(now-last);last=now;
@@ -49,10 +49,10 @@ async function run() {
         document.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientY:list.bottom-5,clientX:list.x+10}));
         if(samples.length<320)return requestAnimationFrame(frame);
         document.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientY:list.bottom-5}));
-        resolve({samples,cards:document.querySelectorAll('.patrol-entry').length,duration:performance.now()-start});}; requestAnimationFrame(frame);
+        resolve({samples,cards:document.querySelectorAll('.patrol-entry').length,cache:wb.viewport.cache.size,duration:performance.now()-start});}; requestAnimationFrame(frame);
     })`);
     const tasks = await win.webContents.executeJavaScript(`longTasks.filter(e=>e.start>=roundStart)`);
-    rounds.push({round:round+1,input_samples:input.samples.length,input_p95_ms:p95(input.samples),drag_frames:drag.samples.length,frame_p95_ms:p95(drag.samples),max_long_task_ms:Math.max(0,...tasks.map(t=>t.duration)),resident_cards:Math.max(input.cards,drag.cards),editor_identity:input.same,focus:input.focused,text_length:input.text.length});
+    rounds.push({round:round+1,input_samples:input.samples.length,input_p95_ms:p95(input.samples),drag_frames:drag.samples.length,frame_p95_ms:p95(drag.samples),max_long_task_ms:Math.max(0,...tasks.map(t=>t.duration)),resident_cards:Math.max(input.cards,drag.cards),resident_cache:Math.max(input.cache,drag.cache),editor_identity:input.same,focus:input.focused,text_length:input.text.length});
     await win.webContents.executeJavaScript(`wb.list.scrollTop=0; wb.renderList(); wb.select('entry-0');`);
   }
   const expanded = await win.webContents.executeJavaScript(`(async()=>{
@@ -91,6 +91,21 @@ async function run() {
     const preserved=document.activeElement===same && same===wb.cards.get('entry-0').querySelector('[aria-label="条目正文"]');
     editor.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'中文输入'})); return preserved;
   })()`);
+  const sourceBrowsing=await win.webContents.executeJavaScript(`(async()=>{
+    const originalApi=wb.api,paint=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))),rows=Array.from({length:1000},(_,index)=>({source_row_id:'browse-'+index,kind:'message',role:'user',eligible:true,summary:'只读来源 '+index,truncated:true}));
+    wb.api=async(url,options)=>{if(!url.endsWith('/source-preview'))return originalApi(url,options);const body=JSON.parse(options.body);
+      if(body.row_id)return {source_fingerprint:body.revision_id,row:{entry:{kind:'message',payload:{content:'完整只读正文'.repeat(9000)}}}};
+      const offset=Number(body.cursor || 0);return {source_ref:body,source_fingerprint:body.revision_id,rows:rows.slice(offset,offset+50),total:1000,excluded_count:0,next_cursor:offset+50<1000?String(offset+50):null};};
+    const c=wb.sourceController;await c.choose({kind:'context',revision_id:'R1'});await paint();c.select('browse-0',true);
+    let mounted=0,cache=0;for(let i=0;i<20;i++){await paint();mounted=Math.max(mounted,wb.sourceView.list.querySelectorAll('.patrol-source-row').length);cache=Math.max(cache,wb.sourceView.viewport.cache.size);if(i<19)await c.nextPage();}
+    const acrossPages=c.selected.has('browse-0');await c.choose({kind:'context',revision_id:'R2'});await paint();const cleanVersion=c.selected.size===0;
+    for(let i=0;i<30;i++)await c.expand('browse-'+i);await paint();const detailCache=c.details.size,renderedLines=wb.sourceView.list.querySelectorAll('.cm-line').length;
+    wb._locate('entry-0');const port=wb.viewport.cache.get('entry-0').fieldEditor('content');port.focus();port.setSelectionRange(2,4);const scroll=wb.list.scrollTop;
+    await c.choose({kind:'context',revision_id:'R3'});await paint();const continuity=document.activeElement===port&&port.selectionStart===2&&wb.list.scrollTop===scroll;
+    wb.list.scrollTop=10000;wb.viewport.render();await paint();const index=wb.viewport.indexAt(wb.list.scrollTop),id=wb.viewport.renderedKeys[index],within=wb.list.scrollTop-wb.viewport.offsets[index];
+    wb.doc.insert({entry_id:'anchor-test',kind:'message',payload:{role:'user',content:'above viewport'}},0);wb.renderList();await paint();const next=wb.doc.value.entries.findIndex(entry=>entry.entry_id===id),anchored=Math.abs(wb.list.scrollTop-wb.viewport.offsets[next]-within)<2;wb.doc.remove('anchor-test');wb.renderList();
+    wb.api=originalApi;return {rows:1000,pages:20,mounted_max:mounted,cache_max:cache,detail_cache:detailCache,full_detail_rendered_lines:renderedLines,cross_page_selection:acrossPages,switch_version_clears_selection:cleanVersion,source_keeps_target_focus_and_scroll:continuity,structural_scroll_anchor:anchored};
+  })()`);
   const interactions = await win.webContents.executeJavaScript(`(async () => {
     const assertions={};wb._locate('entry-0'); const editor=wb.cards.get('entry-0').querySelector('[aria-label="条目正文"]'); editor.focus(); editor.setSelectionRange(2,4);
     const identity=editor; await wb.flush(); assertions.save_keeps_editor=identity===wb.cards.get('entry-0').querySelector('[aria-label="条目正文"]')&&document.activeElement===identity&&identity.selectionStart===2&&identity.selectionEnd===4;
@@ -120,11 +135,11 @@ async function run() {
     const active=current.editor.querySelector('[aria-label="条目正文"]');active.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'ArrowDown',altKey:true}));
     assertions.keyboard_reorder=current.doc.value.entries[1].entry_id==='new';
     const card=current.cards.get('new');card.focus();card.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'z',ctrlKey:true}));assertions.keyboard_undo=current.doc.value.entries[0].entry_id==='new';
-    const order=current.doc.value.entries.map(e=>e.entry_id).join(',');const handle=current.cards.get('new').querySelector('button');const bounds=handle.getBoundingClientRect();
+    const order=current.doc.value.entries.map(e=>e.entry_id).join(',');const handle=current.cards.get('new').querySelector('[aria-label="拖动排序"]');const bounds=handle.getBoundingClientRect();
     handle.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:bounds.x+2,clientY:bounds.y+2}));current.root.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'Escape'}));
     assertions.drag_cancel=!current.drag&&!current._cancelDrag&&current.doc.value.entries.map(e=>e.entry_id).join(',')===order;
-    let sourceDone;current.api=async(url,options)=>url.endsWith('/sources')?new Promise(resolve=>{sourceDone=resolve;}):url.endsWith('/preview')?({executable:true,diagnostics:[],preview_token:'newer'}):({draft_revision:JSON.parse(options?.body||'{}').draft_revision+1});
-    const oldSource=current._sources();while(!sourceDone)await new Promise(resolve=>setTimeout(resolve,5));await current.preview();sourceDone({contexts:[],branches:[]});await oldSource;
+    let sourceDone;current.api=async(url,options)=>url.includes('/patrol/sources')?new Promise(resolve=>{sourceDone=resolve;}):url.endsWith('/preview')?({executable:true,diagnostics:[],preview_token:'newer'}):({draft_revision:JSON.parse(options?.body||'{}').draft_revision+1});
+    const oldSource=current.sourceController.directory();while(!sourceDone)await new Promise(resolve=>setTimeout(resolve,5));await current.preview();sourceDone({items:[],next_cursor:null});await oldSource;
     assertions.source_out_of_order=current.previewPlan.preview_token==='newer'&&Boolean(current.panel.querySelector('details'));
     localStorage.setItem('focus-patrol-draft:recovery',JSON.stringify({serverRevision:3,document:{schema_version:2,entries:[{entry_id:'local',role:'user',content:'本地未确认正文'}]}}));
     const remote={draft_id:'recovery',draft_revision:7,equipment:{},authoring_document:{schema_version:2,entries:[{entry_id:'server',role:'user',content:'服务器另一窗口正文'}]}};
@@ -148,9 +163,12 @@ async function run() {
   const display=screen.getPrimaryDisplay();
   const fixtureContent=await win.webContents.executeJavaScript(`({entries:fixtureEntries.length,tool_calls:fixtureEntries.filter(e=>e.kind==='function_call').length,tool_outputs:fixtureEntries.filter(e=>e.kind==='function_call_output').length,multimodal_entries:fixtureEntries.filter(e=>Array.isArray(e.payload.content)).length,large_field_bytes:new TextEncoder().encode(fixtureEntries.find(e=>e.entry_id==='entry-7').future_payload).length})`);
   const report={hardware:{cpu:os.cpus()[0].model,logical_cpus:os.cpus().length,memory_bytes:os.totalmem(),platform:os.platform(),electron:process.versions.electron,chrome:process.versions.chrome,refresh_rate_hz:display.displayFrequency,viewport:{width:1280,height:900}},fixture_bytes:await win.webContents.executeJavaScript('fixtureSize'),fixture_content:fixtureContent,rounds,expanded,raw_input:rawInput,interactions,local_feedback_ms:await win.webContents.executeJavaScript('localFeedbackMs'),composition_event_continuity:composition,trace,notes:['输入使用 Electron sendInputEvent，composition 使用浏览器事件；未覆盖物理中文 IME 候选窗口。','网络 mock 延迟 25ms 不计入 paint；未调用真实 Provider。','展开字段/raw 测量从本地操作到 double RAF；大型解析独立在 Worker 执行，反馈与全文就绪耗时分列。']};
+  report.source_browsing=sourceBrowsing;
   fs.writeFileSync(path.join(output,'report.json'),JSON.stringify(report,null,2));
   console.log(JSON.stringify(report,null,2));
   const passed=rounds.every(r=>r.input_samples>=100&&r.drag_frames>=300&&r.input_p95_ms<=50&&r.frame_p95_ms<=20&&r.max_long_task_ms<=100&&r.resident_cards<=120&&r.editor_identity&&r.focus)&&composition&&Object.values(interactions).every(Boolean)&&expanded.fields_open_ms<=100&&expanded.raw_feedback_ms<=100&&expanded.raw_pending_feedback&&expanded.large_field_preserved&&expanded.raw_rendered_lines<=120&&expanded.raw_input_continuity&&expanded.raw_roundtrip&&expanded.max_long_task_ms<=100&&rawInput.samples>=100&&rawInput.input_p95_ms<=50&&rawInput.editor_identity&&rawInput.focus&&rawInput.complete&&rawInput.max_long_task_ms<=100;
-  win.destroy();app.exit(passed?0:1);
+  const sourcePassed=sourceBrowsing.mounted_max<=80&&sourceBrowsing.cache_max<=120&&sourceBrowsing.detail_cache<=24&&sourceBrowsing.cross_page_selection&&sourceBrowsing.switch_version_clears_selection&&sourceBrowsing.source_keeps_target_focus_and_scroll&&sourceBrowsing.structural_scroll_anchor;
+  const targetPassed=rounds.every(round=>round.resident_cards<=80&&round.resident_cache<=120);
+  win.destroy();app.exit(passed&&sourcePassed&&targetPassed?0:1);
 }
 app.whenReady().then(run).catch(error=>{console.error(error.stack);app.exit(1);});

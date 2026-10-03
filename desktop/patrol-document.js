@@ -4,7 +4,8 @@
  * 未知 JSON 字段名始终写为自有数据属性，不改变 entry 原型；entry epoch 区分删除/恢复与单纯重排。
  * 输入法暂缓发送但仍登记脏版本，确认只推进已提交版本；applyFields(id,base,desired,{pendingFields}) 保护尚未解析的新意图。
  * payload 字段逐项基线合并，不因较旧完整结构返回覆盖新正文；setPayloadField 只更新命中 Item。
- * 示例：doc.setPayloadField('e1','content','正文'); queue.changed(); await queue.flush()。
+ * 来源批量按稳定锚点插入为一个结构操作；变换可取消/替换；mutation 与保存共享串行屏障，冲突保留待保存 buffer。
+ * 示例：doc.insertBatch(entries,'e1'); doc.setPayloadField('e1','content','正文'); queue.changed(); await queue.flush()。
  */
 (function (root) {
   "use strict";
@@ -81,14 +82,25 @@
       const before = this.value;
       this._commit(() => { this.value = value; this._replace(value.entries); }, () => { this.value = before; this._replace(before.entries); });
     }
-    transform(plan) {
+    transform(plan, replaceIndex = null) {
       const previous = this.value.transformations;
-      this._commit(() => { this.value.transformations = [...(previous || []), plan]; }, () => { this.value.transformations = previous; });
+      const next = [...(previous || [])];
+      if(replaceIndex==null)next.push(plan);else next.splice(replaceIndex,1,plan);
+      this._commit(() => { this.value.transformations = next; }, () => { this.value.transformations = previous; });
     }
-    append(entries) {
-      const ids = new Set(this.byId.keys()), added = entries.filter(entry => !ids.has(entry.entry_id));
-      this._commit(() => added.forEach(entry => this._insert(entry, this.value.entries.length)), () => added.forEach(entry => this._remove(entry.entry_id)));
+    cancelTransformation(index) {
+      const previous=this.value.transformations || [],next=previous.filter((_,i)=>i!==index);
+      if(next.length!==previous.length)this._commit(()=>{this.value.transformations=next;},()=>{this.value.transformations=previous;});
     }
+    insertBatch(entries, beforeId = null) {
+      const index=beforeId==null?this.value.entries.length:this.value.entries.findIndex(entry=>entry.entry_id===beforeId);
+      if(index<0)throw new Error("插入位置已不存在，请重新选择位置");
+      const ids=new Set(this.byId.keys()),added=[];
+      for(const entry of entries)if(!ids.has(entry.entry_id)){added.push(entry);ids.add(entry.entry_id);}
+      if(added.length)this._commit(()=>added.forEach((entry,offset)=>this._insert(entry,index+offset)),()=>added.forEach(entry=>this._remove(entry.entry_id)));
+      return added;
+    }
+    append(entries) { return this.insertBatch(entries); }
     undo() {
       const op = this.undoStack.pop(); if (!op) return false;
       op.undo(); this.redoStack.push(op); this._changed(); return true;
@@ -116,6 +128,7 @@
     }
     async flush() {
       clearTimeout(this.timer); this.timer = null;
+      if(this.blocked)throw this.blocked;
       if (this.held) return false;
       if (this.running) { await this.running; if (this.confirmed < this.localRevision) return this.flush(); return true; }
       if (this.confirmed === this.localRevision) return true;
@@ -130,7 +143,7 @@
     }
     mutate(action) {
       const next = (this.mutations || Promise.resolve()).catch(() => {}).then(async () => {
-        await this.flush();
+        if(!await this.flush())throw new Error("请完成当前输入后再导入");
         this.running = action().finally(() => { this.running = null; });
         return await this.running;
       });

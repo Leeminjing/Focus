@@ -2,7 +2,7 @@
 <!--
   本文件提供 Focus 桌面宿主的持久挂载结构。输入为 app.js 的同源数据与原生 DOM 更新，
   输出为受内容安全策略保护的全局导航、任务上下文、工作区、Loop Portfolio 控制台、检查器、
-  材料 Blob 加载器、浮层、对话框和可复用模板。具体工作流为先约束资源来源，再加载 Expansion 预算模块、无状态 UI、Live Loop schema/reducer/连接器、兼容读模型与材料 loader，加载独立 Patrol 文档/工作台/分支模块，最后启动 app.js。
+  材料 Blob 加载器、浮层、对话框和可复用模板。具体工作流为先约束资源来源，再加载 Expansion 预算模块、无状态 UI、Live Loop schema/reducer/连接器、兼容读模型与材料 loader，加载独立 Patrol 文档/来源/编排/交互/检查/分支模块，最后启动 app.js。
   示例：浏览器加载 index.html 后由 app.js 挂载 #app。
 -->
 <html lang="zh-CN">
@@ -259,7 +259,7 @@
   <script src="./patrol-authoring.js"></script>
   <script src="./patrol-document.js"></script>
   <script src="./patrol-json-editor.bundle.js"></script>
-  <script src="./patrol-cards.js"></script><script src="./patrol-viewport.js"></script><script src="./patrol-workbench.js"></script>
+  <script src="./patrol-cards.js"></script><script src="./patrol-viewport.js"></script><script src="./patrol-ui.js"></script><script src="./patrol-source-controller.js"></script><script src="./patrol-source-browser.js"></script><script src="./patrol-assembly-view.js"></script><script src="./patrol-interactions.js"></script><script src="./patrol-review-panel.js"></script><script src="./patrol-workbench.js"></script>
   <script src="./patrol-branches.js"></script>
   <script src="./app.js?v=20261002a"></script>
 </body>

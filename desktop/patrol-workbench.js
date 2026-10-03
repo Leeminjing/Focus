@@ -1,12 +1,8 @@
-/* 本文件对外提供 mount / get / leave 的会话 Patrol 工作台组合端口。
- * 输入为草稿、API 和目录；输出为稳定 identity 的连续 typed 卡片、独立保存、来源及可追溯请求预览。
- * 工作流为字段事件局部更新，结构事件通过独立 viewport reconcile 最多 80 cards；文档、字段和内容块在 Worker 解析及校验。
- * 字段按编辑基线合并，冲突保留 buffer；entry epoch 与请求身份拒绝旧生命周期结果。来源状态独立只读刷新。
- * 高级视图先呈现 pending 再由 Worker 格式化全文，视图/文档版本保护迟到结果；本地反馈与完整内容就绪分别计量。
- * 基础行为与 typed kind/payload 编辑独立；结构 JSON 通过 JsonEditor 端口保留全文与 history，仅排版可见区域。
- * 输入法期间暂缓保存及字段类型协调，文本撤销由所属编辑器接管；导入持久合并与面板 ticket 独立。
- * 文档与高级面板共享独立内容布局，行为区展开时仍不遮挡输入；导航保留本地 buffer，显式载入可撤销。
- * 示例：FocusPatrolWorkbench.mount(root,{draft,api})。
+/* 本文件对外提供 FocusPatrolWorkbench.mount/get/leave 的会话工作台组合端口。
+ * 输入为真实挂载节点、v3 草稿、API 和状态回调；输出为唯一作者文档、保存队列及模块化左右编排界面。
+ * 具体工作流为恢复本地 buffer → 组合来源/目标/交互/检查视图 → 串行保存与字段 epoch 合并；离开释放观察器/worker，保留有界字段历史和解析意图，重开继续解析。
+ * 来源控制器不拥有作者文档，诊断/预算由真实 preview 产生；输入法期间保留意图，不因异步结果重建编辑器。
+ * 示例：const wb=FocusPatrolWorkbench.mount(root,{draft,api}); await wb.flush(); await wb.preview()。
  */
 (function (global) {
   "use strict";
@@ -31,68 +27,56 @@
           if (result?.draft_revision != null) this.draft.draft_revision = result.draft_revision;
           if (status === "saved") { localStorage.removeItem(this._storageKey()); this.draft.authoring_document = this.doc.value; }
           if (this.status) this.status.textContent = ({pending:"有修改", saving:"保存中…", saved:"已保存", error:"保存失败，点击重试"})[status];
+          if(status==="error" && (result?.code || result?.detail?.code)==="draft_revision_conflict"){
+            this.queue.blocked=result;this.localConflict=true;if(this.status)this.status.textContent="保存冲突 · 本地编辑已保留，请载入服务器版本（可撤销）";
+          }
         }});
       this.queue.changed();
-      this.worker = new Worker("./patrol-parser-worker.js");
-      this.worker.onmessage = event => event.data.kind === "format" ? this._formatted(event.data) : event.data.request_id != null ? this._entryParsed(event.data) : this._parsed(event.data);
+      this.sourceController=new global.FocusPatrolSource.PatrolSourceController({draft:this.draft,api:(...args)=>this.api(...args)});
+      this.interactions=new global.FocusPatrolInteractions.PatrolInteractions(this);
+      this.review=new global.FocusPatrolReview.PatrolReviewPanel(this);
     }
+    _startWorker(){
+      if(this.worker)return;this.worker=new Worker("./patrol-parser-worker.js");
+      this.worker.onmessage=event=>event.data.kind==="format"?this._formatted(event.data):event.data.request_id!=null?this._entryParsed(event.data):this._parsed(event.data);
+      for(const state of this.entryParses.values())if(state.result)this._entryParsed(state.result);else this.worker.postMessage({request_id:state.request_id,entry_id:state.entry.entry_id,kind:state.kind,raw:state.raw});
+      if(this.doc.value.raw_error==="JSON 正在解析")this.worker.postMessage({generation:this.generation,raw:this.doc.value.raw_buffer});
+    }
+    _stopWorker(){clearTimeout(this.parseTimer);for(const state of this.entryParses.values())clearTimeout(state.timer);this.worker?.terminate();this.worker=null;}
     mount(root) {
-      this._cancelRaw();
-      this.events?.abort(); this.events = new AbortController(); const signal = this.events.signal;
-      this.root = root; root.className = "patrol-workbench"; root.replaceChildren(); this.cards.clear();
-      const toolbar = element("div", "patrol-toolbar");
-      const heading = element("div", "patrol-document-heading"); heading.append(element("h2", "", "Patrol 上下文"),element("span", "patrol-document-hint", "编写模型要看到的消息与工具历史"));
-      const add = element("details", "patrol-add-menu"); add.append(element("summary", "patrol-tool-button", "＋ 添加"));
-      const choices = element("div", "patrol-popover");
-      for (const role of ["developer","user","assistant","system"]) choices.append(button(role,()=>{this._add("message",role);add.open=false;}));
-      for (const kind of ["function_call","function_call_output","custom_tool_call","custom_tool_call_output","task_contract","agent_collaboration","unknown"]) choices.append(button(kind,()=>{this._add(kind);add.open=false;}));
-      add.append(choices);
-      const advanced=element("details","patrol-add-menu");advanced.append(element("summary","patrol-tool-button","高级"));
-      const advancedMenu=element("div","patrol-popover");advancedMenu.append(button("编辑 Focus 语义 JSON",()=>{advanced.open=false;this._toggleRaw();}),button("实际模型请求",()=>{advanced.open=false;this.preview();}));advanced.append(advancedMenu);
-      const more=element("details","patrol-add-menu");more.append(element("summary","patrol-tool-button","···"));more.firstChild.setAttribute("aria-label","更多操作");
-      const moreMenu=element("div","patrol-popover");moreMenu.append(button("撤销",()=>this._undo(false)),button("重做",()=>this._undo(true)),button("清空上下文",()=>{this.doc.clear();this.renderList();more.open=false;}),button("检查来源",()=>this._refreshSources()),button("载入服务器版本",()=>this._reloadServer()));more.append(moreMenu);
-      this.status = element("button", "patrol-status", "自动保存");this.status.type="button";this.status.onclick=()=>this.queue.flush().catch(()=>{});
-      toolbar.append(add,button("导入来源",()=>this._sources()),button("检查",()=>this.preview()),advanced,more,this.status);
-      if(this.localConflict)this.status.textContent="本地编辑已保留 · 服务器有新版本";
-      this.list = element("div", "patrol-list");this.list.setAttribute("aria-label","Focus 语义上下文");
-      const previous=this.viewport;previous?.observer.disconnect();cancelAnimationFrame(previous?.frame);
-      this.viewport=new global.FocusPatrolViewport.PatrolViewport(this,this.list);
-      if(previous){this.viewport.cache=previous.cache;this.viewport.heights=previous.heights;this.restoredScroll=previous.list.scrollTop;}
-      this.panel = element("aside", "patrol-panel"); this.panel.hidden = true;
-      const roles=element("datalist");roles.id="patrol-roles";for(const role of ["developer","user","assistant","system"]) {const option=element("option");option.value=role;roles.append(option);}
+      this._cancelRaw();this.interactions.cancel();this.events?.abort();this.events=new AbortController();const signal=this.events.signal;
+      this.sourceView?.destroy();this.view?.destroy();this.root=root;this.active=true;this.cards.clear();
       this.rawEditor ||= global.FocusPatrolJsonEditor.createJsonEditor({label:"高级文档 JSON，允许保存未完成输入"});
-      this.raw = this.rawEditor.element; this.raw.hidden = true;
-      this.rawState = element("p", "patrol-raw-state"); this.rawState.hidden = true; this.rawState.setAttribute("role", "status");
-      this.raw.addEventListener("input", event => {
-        if (event.target !== this.raw) return;
-        this.doc.value.raw_buffer = this.rawEditor.value; this.doc.value.raw_error = "JSON 正在解析"; this._changed(); clearTimeout(this.parseTimer);
-        this.parseTimer = setTimeout(() => this.worker.postMessage({ generation:this.generation, raw:this.rawEditor.value }), 450);
-      }, {signal});
-      const behavior = element("details", "patrol-behavior"); behavior.append(element("summary", "", "小兵基础行为（instructions）"));
-      const instructions = element("textarea"); instructions.setAttribute("aria-label", "小兵基础行为"); instructions.value = this.doc.value.instructions || "";
-      this.instructions = instructions;
-      instructions.addEventListener("input", () => this.doc.setInstructions(instructions.value)); behavior.append(instructions);
-      const content=element("div","patrol-content");content.append(this.rawState,this.list,this.raw,this.panel);
-      root.append(heading,toolbar,behavior,content,roles);
-      root.addEventListener("input", event => event.stopPropagation(), {signal}); root.addEventListener("change", event => event.stopPropagation(), {signal});
-      root.addEventListener("compositionstart", () => { this.composing = true; this.queue.held = true; }, {signal});
-      root.addEventListener("compositionend", () => {
-        this.composing = false; this.queue.held = false;
-        for (const state of this.entryParses.values()) if (state.result) this._entryParsed(state.result);
-        if (this.pendingDocument) { const result = this.pendingDocument; this.pendingDocument = null; this._parsed(result); }
-        this.renderList();
-        this.queue.changed();
-      }, {signal});
-      root.addEventListener("keydown", event => this._keys(event), {signal});
-      this.renderList(); this.select(this.selected || this.doc.value.entries[0]?.entry_id);
+      const previous=this.viewport;previous?.suspend();
+      this.view=new global.FocusPatrolAssembly.PatrolAssemblyView(this,root);
+      for(const key of ["status","list","panel","raw","rawState","instructions"])this[key]=this.view[key];
+      this.viewport=new global.FocusPatrolViewport.PatrolViewport(this,this.list);
+      if(previous){this.viewport.cache=previous.cache;this.viewport.heights=previous.heights;this.viewport.widths=previous.widths;this.restoredScroll=previous.list.scrollTop;}
+      this.sourceView=new global.FocusPatrolSourceBrowser.PatrolSourceBrowser(this.sourceController,{onInsert:()=>this.interactions.importSelected(),onDrag:event=>this.interactions.startSource(event)});
+      this.view.source.append(this.sourceView.node);this.review.bind(this.view);
+      this._startWorker();
+      this.raw.addEventListener("input",event=>{
+        if(event.target!==this.raw)return;this.doc.value.raw_buffer=this.rawEditor.value;this.doc.value.raw_error="JSON 正在解析";this._changed();clearTimeout(this.parseTimer);
+        this.parseTimer=setTimeout(()=>this.worker.postMessage({generation:this.generation,raw:this.rawEditor.value}),450);
+      },{signal});
+      root.addEventListener("input",event=>event.stopPropagation(),{signal});root.addEventListener("change",event=>event.stopPropagation(),{signal});
+      root.addEventListener("compositionstart",()=>{this.composing=true;this.queue.held=true;},{signal});
+      root.addEventListener("compositionend",()=>{
+        this.composing=false;this.queue.held=false;for(const state of this.entryParses.values())if(state.result)this._entryParsed(state.result);
+        if(this.pendingDocument){const result=this.pendingDocument;this.pendingDocument=null;this._parsed(result);}this.renderList();this.queue.changed();
+      },{signal});
+      root.addEventListener("keydown",event=>this._keys(event),{signal});
+      this.renderList();this.select(this.selected || this.doc.value.entries[0]?.entry_id);
       if(this.restoredScroll!=null){this.list.scrollTop=this.restoredScroll;this.restoredScroll=null;this.renderList();}
+      if(this.localConflict)this.status.textContent="本地编辑已保留 · 服务器有新版本";
+      if(!this.sourceController.catalog.length && this.sourceController.kind!=="file")this.sourceController.directory();
       this._refreshSources();
     }
-    rebind(options) { this.options = options; this.draft = options.draft; }
+    rebind(options) { this.options = options; this.draft = options.draft; this.sourceController.draft=this.draft; }
     configurationChanged() { this._changed(); }
     _syncInstructions() { if(this.instructions)this.instructions.value=this.doc.value.instructions || ""; }
     _changed() {
-      this.generation++; this.previewPlan = null; if (this.options.onStale) this.options.onStale();
+      this.generation++; this.review?.invalidate(); this.previewPlan = null; if (this.options.onStale) this.options.onStale();
       if (!this.reloading) this.queue.changed(this.composing);
       clearTimeout(this.localTimer); this.localTimer = setTimeout(() => this._persist(), 450);
     }
@@ -100,7 +84,8 @@
     _persist() {
       try { localStorage.setItem(this._storageKey(), JSON.stringify({ serverRevision:this.queue.serverRevision, document:this.doc.value })); } catch (_) { if (this.status) this.status.textContent = "本地缓存空间不足，草稿仍可保存"; }
     }
-    leave() { this._cancelDrag?.(); this._cancelRaw(); this._persist(); this.events?.abort(); this.composing = false; this.queue.held = false; this.queue.flush().catch(() => {}); }
+    leave() { this.active=false;this._cancelDrag?.(); this._cancelRaw(); this._persist();clearTimeout(this.localTimer);this._stopWorker();this.events?.abort();this.viewport?.suspend();this.sourceView?.destroy();this.view?.destroy();this.review.destroy();this.healthGeneration=(this.healthGeneration || 0)+1;
+      this.composing = false; this.queue.held = false; this.queue.flush().catch(() => {}); }
     async flush() { if (this.composing) throw new Error("请完成当前输入"); return this.queue.flush(); }
     async _reloadServer() {
       if (this.composing) return;
@@ -111,16 +96,16 @@
         if(generation!==this.generation){this.status.textContent="载入期间有新编辑，已保留本地内容";return;}
         clearTimeout(this.queue.timer);this.queue.timer=null;Object.assign(this.draft,remote);
         this.reloading=true;this.doc.replace(global.FocusPatrolAuthoring.upgradeDocument(remote.authoring_document));this.reloading=false;
-        this.queue.serverRevision=remote.draft_revision;this.queue.confirmed=this.queue.localRevision;this.queue.error=null;this.localConflict=false;
+        this.queue.serverRevision=remote.draft_revision;this.queue.confirmed=this.queue.localRevision;this.queue.error=null;this.queue.blocked=null;this.localConflict=false;
         clearTimeout(this.localTimer);localStorage.removeItem(this._storageKey());this.renderList();this.select(this.selected);
         this._syncInstructions();this.status.textContent="已载入服务器版本；可以撤销恢复刚才的本地内容";this.options.onReload?.(remote);
       } catch(error){this.reloading=false;this.status.textContent=error.message;}
     }
-    renderList() { this.viewport.render(); }
+    renderList() { if(!this.active)return;this.viewport.render(); this.view?.update(); }
     select(id) { this.selected=id || null;this.renderList();this.editor=this.cards.get(id) || this.list; }
     _parseEntry(entry, kind, raw, base, applied, field = "content") {
       const key = `${entry.entry_id}:${kind}`; clearTimeout(this.entryParses.get(key)?.timer);
-      const state = { entry, kind, base, applied, field, epoch:this.doc.versionOf(entry.entry_id), request_id:++this.parseIdentity };
+      const state = { entry, kind, raw, base, applied, field, epoch:this.doc.versionOf(entry.entry_id), request_id:++this.parseIdentity };
       state.timer = setTimeout(() => this.worker.postMessage({ request_id:state.request_id, entry_id:entry.entry_id, kind, raw }), 450);
       this.entryParses.set(key, state);
     }
@@ -156,17 +141,19 @@
         this.sourceStatus = health.sources; this.sourceChecking = false; this._sourceLabel(); this.renderList();
       } catch (_) { if (ticket === this.healthGeneration) { this.sourceStatus = null; this.sourceChecking = false; this.sourceFailed = true; this._sourceLabel(); } }
     }
-    _add(kind="message",role="user",index) { const entry=global.FocusPatrolAuthoring.newEntry(kind,role);this.doc.insert(entry,index);this.renderList();this._locate(entry.entry_id); }
-    _moveSelected(delta) { if (!this.selected) return; const index = this.doc.value.entries.findIndex(e => e.entry_id === this.selected); this.doc.move(this.selected, index + delta); this.renderList(); }
+    _add(kind="message",role="user",index) { this.interactions.run(()=>{const entry=global.FocusPatrolAuthoring.newEntry(kind,role);const anchor=this.interactions.anchor;
+      if(index==null && anchor!=null){index=this.doc.value.entries.findIndex(value=>value.entry_id===anchor);if(index<0){this.status.textContent="插入位置已不存在，请重新选择位置";return;}}
+      this.doc.insert(entry,index);this.renderList();this._locate(entry.entry_id);}); }
+    _moveSelected(delta) { this.interactions.run(()=>{if(!this.selected)return;const index=this.doc.value.entries.findIndex(entry=>entry.entry_id===this.selected);this.doc.move(this.selected,index+delta);this.renderList();}); }
     _undo(redo) {
-      if(this.composing)return;
-      const owned=this.root.contains(document.activeElement);
-      (redo ? this.doc.redo() : this.doc.undo());this._syncInstructions();this.renderList();this.select(this.selected);
-      if(owned && !this.root.contains(document.activeElement)){this.list.tabIndex=-1;this.list.focus({preventScroll:true});}
+      if(this.composing)return;this.interactions.run(()=>{
+        const owned=this.root.contains(document.activeElement);(redo?this.doc.redo():this.doc.undo());this._syncInstructions();this.renderList();this.select(this.selected);
+        if(owned && !this.root.contains(document.activeElement)){this.list.tabIndex=-1;this.list.focus({preventScroll:true});}
+      });
     }
     _keys(event) {
       if(event.defaultPrevented)return;
-      if (event.key === "Escape") { this._cancelDrag?.(); this.panelGeneration++; this.panel.hidden = true; return; }
+      if (event.key === "Escape") { this._cancelDrag?.(); this.review.close(); return; }
       if (event.target.dataset.entryId && ["Enter", " "].includes(event.key)) { event.preventDefault(); this._locate(event.target.dataset.entryId); }
       if (event.altKey && ["ArrowUp", "ArrowDown"].includes(event.key)) { event.preventDefault(); this._moveSelected(event.key === "ArrowUp" ? -1 : 1); }
       if(event.target.closest?.('input, textarea, [contenteditable], [data-patrol-text-editor]'))return;
@@ -209,6 +196,10 @@
     _parsed(result) {
       if (result.generation !== this.generation) return;
       if (this.composing) { this.pendingDocument = result; return; }
+      if(this.interactions.busy){this.interactions.run(()=>{
+        if(result.generation===this.generation)this._parsed(result);
+        else {this.doc.value.raw_error="导入后上下文结构已变化，完整 JSON 输入已保留，请重新编辑确认";this._changed();this.rawState.hidden=false;this.rawState.textContent=this.doc.value.raw_error;}
+      });return;}
       const raw = this.rawEditor.value;
       const invalid = result.error || global.FocusPatrolAuthoring.validateDocument(result.value);
       if (invalid) {
@@ -219,91 +210,16 @@
       value.raw_buffer = raw; value.raw_error = null;
       this.doc.replace(value);this.rawDocumentGeneration = this.generation;this._syncInstructions(); this.renderList(); this.select(this.selected);
     }
-    async preview() {
-      const ticket = ++this.panelGeneration;
-      this.panel.hidden = false; this.panel.textContent = "正在准备实际请求…";
-      try {
-        await this.flush(); const generation = this.generation;
-        const plan = await this.api(`/desktop/api/drafts/${this.draft.draft_id}/preview`, { method:"POST" });
-        if (generation !== this.generation || ticket !== this.panelGeneration || !this.root.isConnected) return null;
-        this.previewPlan = plan; this.panel.replaceChildren();
-        this.panel.append(element("h3", "patrol-panel-title", "实际模型请求"),button("关闭",()=>{this.panelGeneration++;this.panel.hidden=true;}));
-        this.panel.append(element("p", "", plan.budget ? `窗口：${plan.budget.total} / ${plan.budget.context_window || "未知"}；输入 ${plan.budget.input}，工具 ${plan.budget.tools}，指令 ${plan.budget.instructions}，输出预留 ${plan.budget.output_reserve}` : "检查以下条目"));
-        for (const diagnostic of plan.diagnostics) {
-          const row = element("div", "patrol-diagnostic"); row.append(element("span", "", diagnostic.message), button("定位", () => this._locate(diagnostic.entry_ids[0])));
-          if (diagnostic.entry_ids.length) row.append(button("转参考文本", () => this._transform(plan, diagnostic, "as_text")), button("未完成结果", () => this._transform(plan, diagnostic, "placeholder")));
-          this.panel.append(row);
-        }
-        const details = element("details"), summary = element("summary", "", "实际 instructions / input / tools 与角色映射"); details.append(summary);
-        details.addEventListener("toggle", () => { if (details.open && details.children.length === 1) details.append(element("pre", "", JSON.stringify({ request:plan.request, roles:plan.role_mappings, sources:plan.items?.map(item=>({entry:item.message_id,refs:item.source_refs})), transformations:plan.transformations }, null, 2))); });
-        this.panel.append(details); if (this.options.onPreview) this.options.onPreview(plan); return plan;
-      } catch (error) { if (ticket === this.panelGeneration && this.root.isConnected) this.panel.textContent = error.message; return null; }
+    preview() { return this.review.check(); }
+    _locate(id,field=null) {
+      this.selected=id;this.view.setPage("target");
+      const card=this.viewport.cache.get(id);
+      if(field==="fields"){this.viewport.locate(id);const details=this.cards.get(id)?.querySelector(".patrol-item-structure");if(details)details.open=true;requestAnimationFrame(()=>this.viewport.cache.get(id)?.structureEditor?.focus());}
+      else this.viewport.locate(id,field?.replace(/^payload\./,""));
+      this.editor=this.cards.get(id) || this.list;
     }
-    _transform(plan, diagnostic, operation) { this.doc.transform({ document_hash:plan.document_hash, entry_ids:diagnostic.entry_ids, operation, parameters:{} }); this.preview(); }
-    _locate(id) { this.selected=id;this.viewport.locate(id);this.editor=this.cards.get(id) || this.list; }
-    async _sources() {
-      const ticket = ++this.panelGeneration;
-      this.panel.hidden = false; this.panel.textContent = "读取来源版本…"; const generation = this.sourceGeneration = (this.sourceGeneration || 0) + 1;
-      try {
-        const catalog = await this.api("/desktop/api/patrol/sources"); if (generation !== this.sourceGeneration || ticket !== this.panelGeneration || !this.root.isConnected) return;
-        this.panel.replaceChildren();
-        this.panel.append(element("h3", "patrol-panel-title", "导入冻结来源"),button("关闭",()=>{this.panelGeneration++;this.panel.hidden=true;}));
-        const select = element("select"); select.setAttribute("aria-label", "精确来源版本");
-        const refs = [];
-        for (const context of catalog.contexts) for (const revision of context.revisions) refs.push({ title:`${context.title} · R${revision.generation} · ${revision.checkpoint_id || "definition"}`, kind:"context", revision_id:revision.revision_id, context_id:context.context_id });
-        for (const branch of catalog.branches) if (branch.checkpoint_id) refs.push({ ...branch, title:`小兵 ${branch.run_id} · ${branch.checkpoint_id}`, kind:"patrol" });
-        refs.forEach((ref, index) => { const option = element("option", "", ref.title); option.value = String(index); select.append(option); });
-        const historical = element("input"); historical.type = "checkbox"; const label = element("label", "", "包括历史运行参考"); label.prepend(historical);
-        this.panel.append(select, label, button("追加选定版本", () => this._import({ ...refs[Number(select.value)], include_historical_runtime:historical.checked })));
-        const path = element("input"); path.placeholder = "相对工作区的文件路径"; path.setAttribute("aria-label", "冻结文件路径");
-        this.panel.append(path, button("冻结文件", () => this._import({ kind:"file", context_id:this.draft.task_id, path:path.value })));
-        const materials = await this.api(`/desktop/api/tasks/${this.draft.task_id}/materials`);
-        if (generation !== this.sourceGeneration || ticket !== this.panelGeneration || !this.root.isConnected) return;
-        for (const material of materials) this.panel.append(button(`材料 ${material.relative_path}`, async () => {
-          const versions = await this.api(`/desktop/api/materials/${material.material_id}/versions`);
-          if (generation !== this.sourceGeneration || ticket !== this.panelGeneration || !this.root.isConnected) return;
-          const versionSelect = element("select"); const current = element("option", "", "当前文件快照"); current.value = ""; versionSelect.append(current);
-          versions.forEach(version => { const option = element("option", "", version.version_id); option.value = version.version_id; versionSelect.append(option); });
-          this.panel.append(versionSelect, button("追加材料", () => this._import({ kind:"material", context_id:this.draft.task_id, material_id:material.material_id, version_id:versionSelect.value || null })));
-        }));
-      } catch (error) { if (ticket === this.panelGeneration && this.root.isConnected) this.panel.textContent = error.message; }
-    }
-    async _import(ref) {
-      if (this.composing) return;
-      const panel=this.panel,ticket=this.panelGeneration,root=this.root;
-      const current=()=>panel===this.panel && root===this.root && root.isConnected && ticket===this.panelGeneration && !panel.hidden;
-      try {
-        const generation = this.generation;
-        await this.queue.mutate(async () => {
-          const result = await this.api(`/desktop/api/drafts/${this.draft.draft_id}/sources`, { method:"POST", body:JSON.stringify({ ...ref, draft_revision:this.queue.serverRevision }) });
-          this.queue.serverRevision = result.draft_revision; this.draft.draft_revision = result.draft_revision;
-          this.doc.append(result.authoring_document.entries);
-        });
-        if(this.root.isConnected)this.renderList();
-        if(current())panel.textContent = generation === this.generation ? "来源已冻结" : "来源已追加，保留本地编辑";
-        this._refreshSources();
-      } catch (error) { if(current())panel.textContent = error.message; }
-    }
-    _drag(event, id) {
-      event.preventDefault(); const listRect = this.list.getBoundingClientRect(); this.drag = { id, y:event.clientY, index:0 };
-      const move = e => { if (this.drag) this.drag.y = e.clientY; };
-      const tick = () => {
-        if (!this.drag) return;
-        const y = this.drag.y; if (y < listRect.top + 40) this.list.scrollTop -= 12; else if (y > listRect.bottom - 40) this.list.scrollTop += 12;
-        this.drag.index = Math.max(0, Math.min(this.doc.value.entries.length - 1, this.viewport.indexAt(y - listRect.top + this.list.scrollTop)));
-        this.renderList(); const target = this.doc.value.entries[this.drag.index]?.entry_id;
-        for (const [entryId, card] of this.cards) card.classList.toggle("patrol-drop", entryId === target);
-        this.dragFrame = requestAnimationFrame(tick);
-      };
-      const finish = e => {
-        document.removeEventListener("pointermove", move); document.removeEventListener("pointerup", finish); document.removeEventListener("pointercancel", finish); cancelAnimationFrame(this.dragFrame);
-        const drag = this.drag; this.drag = null; if (drag && e.type === "pointerup") this.doc.move(drag.id, drag.index);
-        for (const card of this.cards.values()) card.classList.remove("patrol-drop"); this.renderList();
-        this._cancelDrag = null;
-      };
-      this._cancelDrag = () => finish({type:"pointercancel"});
-      document.addEventListener("pointermove", move); document.addEventListener("pointerup", finish); document.addEventListener("pointercancel", finish); tick();
-    }
+    _drag(event,id) { this.interactions.startTarget(event,id); }
+
   }
   global.FocusPatrolWorkbench = {
     mount(root, options) {

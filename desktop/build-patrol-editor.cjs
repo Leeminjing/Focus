@@ -10,7 +10,7 @@ require('esbuild').buildSync({
   outfile:path.join(__dirname,'patrol-json-editor.bundle.js'),
   bundle:true, format:'iife', globalName:'FocusPatrolJsonEditor', platform:'browser', target:'chrome150',
   minify:true, legalComments:'external',
-  banner:{js:'/* 本文件对外提供 FocusPatrolJsonEditor.createJsonEditor。输入为 label，输出为 element/value/selection/readOnly 编辑端口；工作流为完整文本状态与可见区域排版。示例：createJsonEditor({label:"JSON"})。由 npm run build:patrol-editor 生成，源码见 patrol-json-editor.mjs。 */'},
+  banner:{js:'/* 本文件对外提供 FocusPatrolJsonEditor.createJsonEditor。输入为 label 与可选 wrap，输出为 element/value/selection/readOnly 编辑端口；工作流为最小 transaction、选区映射与可见区域排版。示例：createJsonEditor({label:"JSON",wrap:true})。由 npm run build:patrol-editor 生成，源码见 patrol-json-editor.mjs。 */'},
 });
 const dependencies = ['@codemirror/state','@codemirror/view','@codemirror/commands','@codemirror/language','@lezer/common','@lezer/highlight','@lezer/lr','@marijn/find-cluster-break','style-mod','w3c-keyname','crelt'];
 fs.writeFileSync(path.join(__dirname,'patrol-json-editor.LICENSE.txt'), dependencies.map(name => {
