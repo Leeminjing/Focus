@@ -1,7 +1,7 @@
-"""本文件对外提供 freeze_authoring_sources 的纯来源投影。
+"""本文件对外提供 project_authoring_sources、source_fingerprint、freeze_authoring_sources 的纯来源投影。
 
-输入为宿主读取的 canonical Items/旧消息、精确来源身份及选择；输出为 typed 作者条目和冻结来源映射。
-工作流按逐项语义资格筛选、展开旧调用组、生成逐项引用及 hash；显式历史只提取白名单类型的可读正文。
+输入为宿主读取的 canonical Items/旧消息、精确来源身份及记录/投影行选择；输出为稳定只读行、快照指纹或冻结 typed 条目。
+工作流按逐项语义资格筛选、展开旧调用组、生成确定性行身份，确认导入后才生成目标引用；显式历史只提取白名单可读正文。
 reasoning/compaction/未知载荷/修复证明始终留在宿主历史，不转成作者文本；原来源记录与 hash 不被改写。
 示例：entries, sources = freeze_authoring_sources(records, {'revision_id':'r1'})。
 """
@@ -26,34 +26,58 @@ def _historical_payload(item):
     return {"role": "user", "content": "历史运行参考（不表示当前状态）：\n" + content}
 
 
-def freeze_authoring_sources(records, source, *, selected=None, include_historical=False):
-    entries, sources = [], {}
-    for record in records:
-        record_id = record.get("item_id") or record.get("id")
-        if selected is not None and record_id not in selected and record.get("message_id") not in selected:
-            continue
+def source_fingerprint(records, source, *, include_historical=False):
+    identity = {key: value for key, value in source.items() if key != "title"}
+    return content_hash(["patrol-source-rows-v1", identity, records, include_historical])
+
+
+def project_authoring_sources(records, source, *, include_historical=False):
+    rows = []
+    identity = {key: value for key, value in source.items() if key != "title"}
+    for ordinal, record in enumerate(records):
         items = [FocusItem.model_validate(record)] if "item_id" in record else legacy_to_items([record])
-        for item in items:
+        for item_index, item in enumerate(items):
             historical = semantic_policy(item) in {"exclude", "reference_only"}
-            if historical and not include_historical:
-                continue
             reference = _historical_payload(item) if historical else None
-            if historical and reference is None:
-                continue
-            identity = uuid.uuid4().hex
-            values = [{"entry_id": identity, "kind": "selected_context", "payload": reference,
-                       "source_item_id": item.item_id, "source_group": item.message_id}] if historical else expand_record(item.model_dump(mode="json"), identity)
-            for value in values:
-                entry = AuthoringEntry.model_validate(value)
-                entry.source_label = source.get("title") or source.get("path") or (f"Context · R{source.get('generation', '')}" if source.get("revision_id") else "历史来源")
+            allowed = not historical or include_historical and reference is not None
+            seed = content_hash([identity, ordinal, item_index, item.item_id])
+            values = ([{"entry_id": seed, "kind": "selected_context", "payload": reference,
+                        "source_item_id": item.item_id, "source_group": item.message_id}]
+                      if historical and reference is not None else expand_record(item.model_dump(mode="json"), seed))
+            for value_index, value in enumerate(values):
+                row_id = content_hash([seed, value_index])
+                value["entry_id"] = row_id
                 if historical:
-                    entry.kind = "selected_context"
-                    entry.payload = deepcopy(reference)
-                    entry.reference_only = True
-                ref = uuid.uuid4().hex
-                entry.source_ref, entry.source_hash = ref, content_hash(record)
-                sources[ref] = {"record": deepcopy(record), "source": {**source, "message_id": item.message_id or record.get("id"),
-                    "item_id": item.item_id, "source_group": value.get("source_group"), "content_hash": content_hash(record)},
-                    "entry_hash": content_hash([entry.kind, entry.payload]), "historical_runtime": historical}
-                entries.append(entry)
+                    value["reference_only"] = True
+                rows.append({"source_row_id": row_id, "entry": value, "record": record, "item_id": item.item_id,
+                             "message_id": item.message_id, "historical_runtime": historical, "eligible": bool(allowed),
+                             "exclusion_reason": None if allowed else ("此类型仅保留在宿主历史" if reference is None else "未启用历史可读内容")})
+    return rows
+
+
+def freeze_authoring_sources(records, source, *, selected=None, selected_rows=None, include_historical=False):
+    rows = project_authoring_sources(records, source, include_historical=include_historical)
+    if selected_rows is not None:
+        if not isinstance(selected_rows, list) or not selected_rows or not all(isinstance(value, str) for value in selected_rows):
+            raise ValueError("请选择有效来源行")
+        allowed = {row["source_row_id"] for row in rows if row["eligible"]}
+        if not set(selected_rows).issubset(allowed):
+            raise ValueError("来源行不存在或不可导入")
+    entries, sources = [], {}
+    for row in rows:
+        record = row["record"]
+        if not row["eligible"] or selected_rows is not None and row["source_row_id"] not in selected_rows:
+            continue
+        if selected is not None and (record.get("item_id") or record.get("id")) not in selected and record.get("message_id") not in selected:
+            continue
+        value = deepcopy(row["entry"])
+        value["entry_id"] = uuid.uuid4().hex
+        entry = AuthoringEntry.model_validate(value)
+        entry.source_label = source.get("title") or source.get("path") or (f"Context · R{source.get('generation', '')}" if source.get("revision_id") else "历史来源")
+        ref = uuid.uuid4().hex
+        entry.source_ref, entry.source_hash = ref, content_hash(record)
+        sources[ref] = {"record": deepcopy(record), "source": {**source, "message_id": row["message_id"] or record.get("id"),
+            "item_id": row["item_id"], "source_group": value.get("source_group"), "source_row_id": row["source_row_id"], "content_hash": content_hash(record)},
+            "entry_hash": content_hash([entry.kind, entry.payload]), "historical_runtime": row["historical_runtime"]}
+        entries.append(entry)
     return entries, sources

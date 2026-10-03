@@ -1,6 +1,6 @@
-/* 本文件提供 Patrol v3 修复的真实原生键盘与异步面板验收。
- * 输入为隔离生产组件草稿和可控延迟 API；输出为 Ctrl+Z/Redo、类型切换与面板所有权断言。
- * 工作流为逐个激活长正文/块/通用 payload/条目结构/全文结构，发送 Electron 原生键盘事件；延迟导入仍保存所属文档。
+/* 本文件提供 Patrol v3 修复的真实原生键盘与异步来源/检查视图验收。
+ * 输入为隔离生产组件草稿和可控延迟 API；输出为 Ctrl+Z/Redo、类型切换、导入屏障与视图/worker 所有权断言。
+ * 工作流为逐个激活长正文/块/通用 payload/条目结构/全文结构，发送 Electron 原生键盘事件；延迟导入仍保存所属文档，后台结果不抢新来源视图。
  * 示例：electron desktop/patrol-v3-remediation.e2e.cjs；不连接用户数据。
  */
 const {app,BrowserWindow}=require('electron');
@@ -51,17 +51,28 @@ async function run(){
   await wb.flush();
   for(const outcome of ['success','failure','remount','leave']){
    let resolve,reject;wb.api=async(url,options)=>url.endsWith('/sources')&&options?.method==='POST'?new Promise((a,b)=>{resolve=a;reject=b;}):baseApi(url,options);
-   const imported=wb._import({kind:'context',revision_id:'fake'});await wait(30);await wb._sources();const panel=wb.panel;
+   const request={kind:'context',revision_id:'fake',source_fingerprint:'fp',selected_row_ids:['row'],before_entry_id:null};
+   const imported=wb.interactions.importSelected(request);await wait(30);wb.view.setPage('source');const sourcePane=wb.sourceView.node;
    if(outcome==='remount')wb.mount(wb.root);
    if(outcome==='leave'){wb.leave();wb.root.remove();}
-   if(outcome==='failure')reject(Error('late failure'));else resolve({draft_revision:wb.queue.serverRevision+1,authoring_document:{entries:[{entry_id:'import-'+outcome,kind:'message',payload:{role:'user',content:'frozen'}}]}});
+   if(outcome==='failure')reject(Object.assign(Error('late failure'),{status:422}));else resolve({draft_revision:wb.queue.serverRevision+1,authoring_document:{entries:[{entry_id:'import-'+outcome,kind:'message',payload:{role:'user',content:'frozen'}}]}});
    await imported;await wait(40);
-   if(outcome==='success'||outcome==='failure')assert(panel.querySelector('h3')?.textContent==='导入冻结来源','late '+outcome+' preserves newer source panel');
-   if(outcome==='remount')assert(wb.panel.textContent==='','late import preserves remounted panel');
+   if(outcome==='success'||outcome==='failure')assert(sourcePane.isConnected&&sourcePane.querySelector('h3')?.textContent==='来源','late '+outcome+' preserves newer source view');
+   if(outcome==='remount')assert(wb.sourceView.node!==sourcePane&&wb.sourceView.node.isConnected,'late import preserves remounted source view');
    if(outcome!=='failure')assert(wb.doc.byId.has('import-'+outcome),'late '+outcome+' merges into owning document');
    if(outcome==='leave'){const root=document.createElement('div');root.id='fixture';document.body.append(root);wb.mount(root);}
   }
   wb.api=baseApi;await wb.flush();
+  let resolve;wb.api=async(url,options)=>url.endsWith('/sources')?new Promise(done=>{resolve=done;}):baseApi(url,options);
+  wb.doc.insert({entry_id:'stable-anchor',kind:'message',payload:{role:'user',content:'保留锚点'}});wb.renderList();await wb.flush();
+  await wb._toggleRaw();const pending=wb.interactions.importSelected({kind:'context',revision_id:'fake',source_fingerprint:'fp',selected_row_ids:['row'],before_entry_id:'stable-anchor'});
+  while(!resolve)await wait(5);const rawValue=structuredClone(wb.doc.value);rawValue.entries=rawValue.entries.filter(e=>e.entry_id!=='stable-anchor');
+  wb.rawEditor.value=JSON.stringify(rawValue);wb.raw.dispatchEvent(new InputEvent('input',{bubbles:true}));await wait(650);
+  assert(wb.doc.byId.has('stable-anchor'),'raw structure waits behind import barrier');
+  resolve({draft_revision:wb.queue.serverRevision+1,inserted_entries:[{entry_id:'raw-barrier-import',kind:'message',payload:{role:'user',content:'frozen'}}],inserted_entry_ids:['raw-barrier-import']});await pending;await wait(50);
+  assert(wb.doc.byId.has('raw-barrier-import')&&wb.doc.byId.has('stable-anchor')&&wb.doc.value.raw_buffer===JSON.stringify(rawValue)&&wb.doc.value.raw_error.includes('重新编辑确认'),'concurrent raw intent and committed source survive without overwrite');
+  wb.api=baseApi;await wb.flush();wb.leave();assert(!wb.worker&&!wb.viewport.frame&&!wb.interactions.drag,'leave releases worker viewport and drag resources');wb.mount(wb.root);
+  wb.doc.value.raw_error=null;await wb._toggleRaw();
  })()`);
  const assertions=await win.webContents.executeJavaScript('assertions');fs.writeFileSync(path.join(out,'report.json'),JSON.stringify({assertions,electron:process.versions.electron},null,2));console.log(JSON.stringify(assertions));win.destroy();app.exit(0);
 }

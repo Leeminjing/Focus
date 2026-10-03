@@ -1,7 +1,7 @@
-"""本文件对外提供 AuthoringDocument、AuthoringEntry、Transformation 和 legacy_document。
+"""本文件对外提供 AuthoringDocument、AuthoringEntry、Transformation、SourcePreviewRequest 和 legacy_document。
 
 输入为 kind/payload、稳定编辑身份、任意角色及未知字段和未完成 JSON，输出为 v3 可保存文档及稳定内容 hash。
-工作流为只校验编辑身份，不校验 Provider 协议；旧数据读时适配，原载荷保持不变。
+工作流为只校验编辑身份，不校验 Provider 协议；旧数据读时适配，原载荷保持不变；来源预览请求限制分页范围，不提供草稿写入能力。
 示例：AuthoringDocument(entries=[AuthoringEntry(entry_id="e1", kind="message", payload={"role":"developer","content":"逐条验证"})])。
 """
 
@@ -32,6 +32,16 @@ class Transformation(BaseModel):
     entry_ids: list[str]
     operation: Literal["as_text", "placeholder", "rename_call"]
     parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourcePreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    kind: Literal["context", "patrol", "file", "material"]
+    query: str = Field(default="", max_length=1000)
+    cursor: str | None = Field(default=None, max_length=4096)
+    row_id: str | None = None
+    limit: int = Field(default=50, ge=1, le=100)
+    include_historical: bool = False
 
 
 class AuthoringDocument(BaseModel):

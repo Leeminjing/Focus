@@ -1,7 +1,7 @@
 """本文件对外提供 compile_document 与 Compilation 的纯 typed 编译端口。
 
 输入为可编辑 Focus 语义文档和宿主冻结来源；输出为严格 FocusItems、兼容消息、逐项诊断及投影映射。
-工作流先校验显式转换与来源，再直接构造作者 Items，验证调用关联，最后生成 LangGraph bridge。
+工作流先校验显式转换与来源，再直接构造作者 Items，验证调用关联，最后生成 LangGraph bridge；诊断提供已知字段路径和适用修复选项。
 未闭合、未知类型及未完成 JSON 可保存，但不能执行；模拟调用不登记真实工具证据或提升权限。
 示例：compile_document(AuthoringDocument(), provider="openai").executable 为 True。
 """
@@ -43,7 +43,9 @@ def compile_document(document: AuthoringDocument, *, provider: str, sources: dic
         if entry.get("source_ref") and (source is None or entry.get("source_hash") != content_hash(source["record"])):
             _diagnostic(result, "source_integrity", [identity], "来源引用无法核验；可以移除引用并保留手写正文")
         if entry.get("content_error") or entry.get("fields_error") or entry.get("payload_error"):
-            _diagnostic(result, "entry_parse_error", [identity], entry.get("content_error") or entry.get("fields_error") or entry.get("payload_error"))
+            field_name = next(key for key in ("content", "fields", "payload") if entry.get(key + "_error"))
+            field_path = "payload." + next((key for key in ("content", "output", "arguments", "input") if key in payload), "content") if field_name == "content" else field_name
+            _diagnostic(result, "entry_parse_error", [identity], entry.get(field_name + "_error"), field=field_path)
         try:
             kind = _validate_payload(kind, payload)
             _link_call(kind, payload, identity, calls, outputs, result)
@@ -62,7 +64,10 @@ def compile_document(document: AuthoringDocument, *, provider: str, sources: dic
             result.role_mappings.append({"entry_id": identity, "item_id": item.item_id, "requested": requested, "actual": actual})
         except (ValueError, TypeError, KeyError) as exc:
             code = "unsupported_authored_reasoning" if "reasoning" in str(exc) else "unsupported_native_item" if kind == "unknown" else "invalid_tool_fields" if "call" in kind or "legacy_tool_calls" in payload else "invalid_entry"
-            _diagnostic(result, code, [identity], str(exc))
+            field_name = next((key for key in ("call_id", "name", "arguments", "input", "output", "status", "content") if str(exc).startswith(key)), None)
+            if isinstance(exc, json.JSONDecodeError) and kind == "function_call":
+                field_name = "arguments"
+            _diagnostic(result, code, [identity], str(exc), field="payload." + field_name if field_name else None)
     for call_id, (_, identity) in calls.items():
         if call_id not in outputs:
             _diagnostic(result, "missing_tool_output", [identity], "缺少结果；补齐、转为参考文本或显式生成未完成结果")
@@ -112,14 +117,14 @@ def _link_call(kind, payload, identity, calls, outputs, result):
     if kind in {"function_call", "custom_tool_call"}:
         call_id = payload["call_id"]
         if call_id in calls:
-            _diagnostic(result, "duplicate_call_id", [identity, calls[call_id][1]], "调用 ID 重复")
+            _diagnostic(result, "duplicate_call_id", [identity, calls[call_id][1]], "调用 ID 重复", field="payload.call_id")
         else:
             calls[call_id] = (kind, identity)
     elif kind in {"function_call_output", "custom_tool_call_output"}:
         call_id = payload["call_id"]
         expected = kind.removesuffix("_output")
         if call_id not in calls or call_id in outputs or calls[call_id][0] != expected:
-            _diagnostic(result, "orphan_tool_output", [identity], "结果缺少匹配前置调用、类型不一致或结果重复")
+            _diagnostic(result, "orphan_tool_output", [identity], "结果缺少匹配前置调用、类型不一致或结果重复", field="payload.call_id")
         else:
             outputs.add(call_id)
 
@@ -132,14 +137,19 @@ def _references(entry, source):
              "relation": "reference" if unchanged else "edited_from"}]
 
 
-def _diagnostic(result, code, ids, message):
-    result.diagnostics.append({"code": code, "entry_ids": ids, "message": message, "options": ["edit", "as_text"]})
+def _diagnostic(result, code, ids, message, *, field=None):
+    options = (["cancel", "replace"] if code == "stale_transformation" else ["edit", "as_text", "placeholder"]
+               if code == "missing_tool_output" else ["edit", "as_text"] if ids and code not in {"entry_parse_error", "duplicate_entry_id"} else ["edit"])
+    diagnostic = {"code": code, "entry_ids": ids, "message": message, "options": options}
+    if field:
+        diagnostic["field"] = field
+    result.diagnostics.append(diagnostic)
 
 
 def _transform(entries, document, result):
     for plan in document.transformations:
         if plan.document_hash != document.content_hash or not set(plan.entry_ids) <= {e["entry_id"] for e in entries}:
-            _diagnostic(result, "stale_transformation", plan.entry_ids, "变换计划已过期，请重新预览")
+            _diagnostic(result, "stale_transformation", plan.entry_ids, "变换计划已过期，请取消或重新确认替换")
             continue
         result.transformations.append(plan.model_dump(mode="json"))
         transformed = []
