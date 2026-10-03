@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 
 from backend.app.desktop.agent_loop.models import LoopBudgetUsage, LoopDelegationGrant
 from backend.app.desktop.agent_loop.usage import LoopUsageLedger
+from backend.app.desktop.agent_loop.resource_limits import exceeds_limit
 
 from .index_model_budget import IndexBudgetExceeded
 from .models import LoopIndexBudgetReservation
@@ -77,14 +78,14 @@ class IndexBudgetReservationRepository:
             for (name, default), reserved in zip(
                 self._DEFAULTS.items(), pending, strict=True
             ):
-                limit = min(
-                    int(self._limits.get(f"max_{name}", default)),
-                    int(grant.budgets.get(f"max_{name}", default)),
+                ceilings = (
+                    self._limits.get(f"max_{name}", default),
+                    grant.budgets.get(f"max_{name}", default),
                 )
                 consumed = max(
                     getattr(usage, name), int(self._frozen_usage.get(name, 0))
                 )
-                if consumed + reserved + amounts[name] > limit:
+                if any(exceeds_limit(consumed + reserved + amounts[name], limit) for limit in ceilings):
                     raise IndexBudgetExceeded(
                         "semantic index authorized_model_budget exhausted"
                     )

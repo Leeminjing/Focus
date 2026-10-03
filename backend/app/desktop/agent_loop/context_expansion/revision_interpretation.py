@@ -5,6 +5,10 @@ r"""本文件对外提供 RevisionInterpretationBuilder 与综合合同 prompt�
 示例：record = await builder.build(index, records, plan)。旧段可免重抽，却可与新段一起参与新的否定和因果理解。
 """
 
+from itertools import count
+
+from backend.app.desktop.agent_loop.resource_limits import exceeds_limit
+
 from .index_model_budget import IndexBudgetExceeded
 from .interpretation_inputs import FrozenInterpretationInputs
 from .interpretation_record import (
@@ -56,7 +60,7 @@ class RevisionInterpretationBuilder:
         initial = () if plan.mode == "full" else plan.recomputed_segment_ids
         if (
             plan.mode == "full"
-            and len(index.segments) <= self._resources.policy.max_exact_reads
+            and not exceeds_limit(len(index.segments), self._resources.policy.max_exact_reads)
         ):
             payload = inputs.payload(originals=inputs.all_originals())
             if self._projector.fits_request(
@@ -64,7 +68,8 @@ class RevisionInterpretationBuilder:
             ):
                 initial = tuple(s.segment_id for s in index.segments)
         inputs.read(initial, requested=False)
-        for _ in range(self._resources.policy.max_planner_model_calls):
+        limit = self._resources.policy.max_planner_model_calls
+        for _ in count() if limit is None else range(limit):
             proposal = await self._invoke(inputs.payload())
             if proposal.action == "read":
                 inputs.read(proposal.read_segments)

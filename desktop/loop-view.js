@@ -17,25 +17,7 @@
   const escape = value => String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
   const list = values => escape((values || []).join(", "));
 
-  function budgetInputs(budgets = {}) {
-    const field = (name, label, value, min = 0, max = "") => `<label>${label}<input name="${name}" type="number" min="${min}"${max ? ` max="${max}"` : ""} value="${escape(budgets[value] ?? "")}" required></label>`;
-    return [
-      field("maxRounds", "最大轮次", "max_rounds", 1, 1000),
-      field("maxDurationSeconds", "最长秒数", "max_duration_seconds", 60),
-      field("maxModelCalls", "最大模型调用", "max_model_calls", 1),
-      field("maxInputTokens", "最大输入 Token", "max_input_tokens", 1),
-      field("maxOutputTokens", "最大输出 Token", "max_output_tokens", 1),
-      field("maxRetries", "最大重试", "max_retries", 0),
-      field("maxLanes", "最大 Lane", "max_lanes", 1, 64),
-      field("maxContexts", "最大 Context", "max_contexts", 1, 256),
-      field("maxProviders", "最大 Provider", "max_providers", 1, 32),
-      field("maxNewLanesPerRound", "每轮最大新 Lane", "max_new_lanes_per_round", 0, 16),
-      field("maxConcurrentRuns", "最大并行 Run", "max_concurrent_runs", 1, 32),
-      field("maxNoProgress", "最大无进展轮次", "max_no_progress", 1, 20),
-    ].join("") + expansionBudget.renderInputs(budgets.expansion_resources || DEFAULT_EXPANSION_POLICY);
-  }
-
-  const DEFAULT_EXPANSION_POLICY = expansionBudget.DEFAULTS;
+  const budgetInputs = budgets => expansionBudget.renderLoopInputs(budgets);
 
   function freshDirectRun(context) {
     const eligibility = context.loop_activation;
@@ -65,7 +47,7 @@
   }
 
   function startView(context) {
-    const defaults = { max_rounds: 50, max_duration_seconds: 86400, max_model_calls: 200, max_input_tokens: 2000000, max_output_tokens: 500000, max_retries: 20, max_lanes: 8, max_contexts: 16, max_providers: 4, max_new_lanes_per_round: 3, max_concurrent_runs: 4, max_no_progress: 3 };
+    const defaults = expansionBudget.LOOP_DEFAULTS;
     const initialRun = freshDirectRun(context);
     const linkedRun = context.latest_direct_user_run?.loop_id || context.active_run?.loop_id;
     const eligibility = context.loop_activation || null;
@@ -82,7 +64,7 @@
       ? `<p class="loop-ready" role="status">首轮将绑定直接用户 Run：${escape(initialRun.run_id)}（${escape(initialRun.status || "unknown")}）</p>`
       : `<div class="loop-start-gate" role="status" data-eligibility-reason="${escape(eligibility?.reason || "unknown")}"><strong>${escape(linkedRun && !eligibility ? "旧 Run 已归属于历史 Loop" : reasonLabel)}</strong>${blockedDetail ? `<small>${escape(blockedDetail)}</small>` : ""}<span>${eligibility?.reason === "nonterminal_predecessor" ? "请先处理或停止现有 Loop；系统不会覆盖它。" : "请回到当前 Context 发送一条新的用户消息，再创建后继 Loop。"}</span><button type="button" data-action="loop-new-run">返回 Context 发送消息</button></div>`;
     const editor = globalThis.FocusLoopMissionEditor?.render({ outcome: context.title || "" }) || "";
-    return `<section class="loop-empty"><header><span class="loop-kicker">Context Loop</span><h2>启动长期 Agent Loop</h2><p>用户保留根权力；Portfolio Patrol 在授权范围内持续判断、策展 Context 并发送普通 HumanMessage。</p></header>${readiness}<form id="agentLoopStartForm" class="loop-start-form">${editor}<label class="loop-delegation-option"><input name="autonomousCompression" type="checkbox" checked>允许 Patrol 自主压缩 Context；原文保留可恢复，授权可随时撤销</label><label class="loop-delegation-option"><input name="isolatedWrites" type="checkbox" checked>允许 Patrol 为并行写实验创建隔离 Git worktree，并在明确选择后采用结果</label><div class="loop-start-budget">${budgetInputs(defaults)}</div><p data-loop-start-status role="status"></p><button class="primary" type="submit"${initialRun ? "" : " disabled"}>授权 Patrol 并启动</button></form></section>`;
+    return `<section class="loop-empty"><header><span class="loop-kicker">Context Loop</span><h2>启动长期 Agent Loop</h2><p>用户保留根权力；Portfolio Patrol 在授权范围内持续判断、策展 Context 并发送普通 HumanMessage。</p></header>${readiness}<form id="agentLoopStartForm" class="loop-start-form">${editor}<label class="loop-delegation-option"><input name="autonomousCompression" type="checkbox" checked>允许 Patrol 自主压缩 Context；原文保留可恢复，授权可随时撤销</label><details class="loop-start-options"><summary>授权与资源设置</summary><label class="loop-delegation-option"><input name="isolatedWrites" type="checkbox" checked>允许 Patrol 为并行写实验创建隔离 Git worktree，并在明确选择后采用结果</label><div class="loop-start-budget">${budgetInputs(defaults)}</div></details><p data-loop-start-status role="status"></p><button class="primary" type="submit"${initialRun ? "" : " disabled"}>授权 Patrol 并启动</button></form></section>`;
   }
 
   function compressionStatus(related) {

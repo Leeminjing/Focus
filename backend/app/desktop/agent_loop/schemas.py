@@ -205,18 +205,18 @@ class PatrolDecisionIntent(StrictModel):
 
 
 class LoopBudgetContract(StrictModel):
-    max_rounds: int = Field(default=50, ge=1, le=1000)
-    max_duration_seconds: int = Field(default=86400, ge=60)
-    max_model_calls: int = Field(default=200, ge=1)
-    max_input_tokens: int = Field(default=2_000_000, ge=1)
-    max_output_tokens: int = Field(default=500_000, ge=1)
-    max_retries: int = Field(default=20, ge=0)
-    max_lanes: int = Field(default=8, ge=1, le=64)
-    max_contexts: int = Field(default=16, ge=1, le=256)
-    max_providers: int = Field(default=4, ge=1, le=32)
-    max_new_lanes_per_round: int = Field(default=3, ge=0, le=16)
-    max_concurrent_runs: int = Field(default=4, ge=1, le=32)
-    max_no_progress: int = Field(default=3, ge=1, le=20)
+    max_rounds: int = Field(default=1000, ge=1, le=1000)
+    max_duration_seconds: int | None = Field(default=None, ge=60)
+    max_model_calls: int | None = Field(default=None, ge=1)
+    max_input_tokens: int | None = Field(default=None, ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    max_retries: int | None = Field(default=None, ge=0)
+    max_lanes: int = Field(default=64, ge=1, le=64)
+    max_contexts: int = Field(default=256, ge=1, le=256)
+    max_providers: int = Field(default=32, ge=1, le=32)
+    max_new_lanes_per_round: int = Field(default=16, ge=0, le=16)
+    max_concurrent_runs: int = Field(default=32, ge=1, le=32)
+    max_no_progress: int = Field(default=20, ge=1, le=20)
     expansion_resources: ExpansionResourcePolicy = Field(default_factory=ExpansionResourcePolicy)
     expansion_resources_source: Literal["default", "explicit"] = "default"
 

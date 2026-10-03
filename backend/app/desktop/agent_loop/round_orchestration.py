@@ -31,6 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.desktop.agent_loop.resource_limits import exceeds_limit, remaining_capacity
 from backend.app.desktop.agent_loop.budgets import (
     LoopBudgetGuard,
 )
@@ -204,9 +205,8 @@ class StructuredPatrolDecisionModel:
     async def __call__(self, observation: LoopObservationEnvelope) -> PatrolDecisionIntent:
         limits = observation.budget.get("limits") or {}
         usage = observation.budget.get("usage") or {}
-        self._remaining_calls = max(
-            0,
-            int(limits.get("max_model_calls", 200)) - int(usage.get("model_calls", 0)),
+        self._remaining_calls = remaining_capacity(
+            limits.get("max_model_calls", 200), int(usage.get("model_calls", 0)),
         )
         config = self._app_config.get_model(self._model_name or self._app_config.resolve_default_model_name())
         model = create_chat_model(name=config.name, app_config=self._app_config, max_tokens=config.curation_max_output_tokens)
@@ -303,7 +303,7 @@ class StructuredPatrolDecisionModel:
         return await self._reader(observation, step.reads)
 
     async def _invoke(self, model, messages, method: str, schema):
-        if self.call_count >= self._remaining_calls:
+        if exceeds_limit(self.call_count, self._remaining_calls, inclusive=True):
             raise RuntimeError("Patrol model-call budget 已耗尽")
         self.call_count += 1
         callback = UsageMetadataCallbackHandler()

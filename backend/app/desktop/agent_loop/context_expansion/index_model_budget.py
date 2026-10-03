@@ -10,6 +10,12 @@ BudgetedIndexModel.last_attempt_records 只包含本次 invocation：准入／�
 import asyncio
 import json
 
+from backend.app.desktop.agent_loop.resource_limits import (
+    exceeds_limit,
+    remaining_capacity,
+    request_limits,
+)
+
 
 class IndexBudgetExceeded(ValueError):
     pass
@@ -51,37 +57,34 @@ class IndexModelBudget:
 
     def _request_limits(self, model):
         policy = self._resources.policy
-        output = max(
+        return request_limits(
+            policy.max_request_input_tokens,
             policy.output_token_reserve,
-            int(getattr(model, "max_output_tokens", policy.output_token_reserve)),
+            getattr(model, "context_window_tokens", None),
+            int(getattr(model, "max_output_tokens", None) or policy.output_token_reserve or 8192),
         )
-        window = getattr(model, "context_window_tokens", None)
-        limit = policy.max_request_input_tokens
-        if window is not None:
-            limit = min(limit, window - output)
-        return limit, output
 
     def fits_request(self, model, schema, system, payload):
         limit, _ = self._request_limits(model)
-        return self._estimated_input(schema, system, payload) <= limit
+        return not exceeds_limit(self._estimated_input(schema, system, payload), limit)
 
     async def admit(self, model, schema, system, payload) -> None:
         estimated = self._estimated_input(schema, system, payload)
         limit, output = self._request_limits(model)
         async with self._lock:
-            if estimated > limit:
+            if exceeds_limit(estimated, limit):
                 raise IndexBudgetExceeded(
                     "semantic index provider_request_window exceeded; Tool Exchange remains indivisible"
                 )
-            if self._calls < 1 or self._input < estimated or self._output < output:
+            if exceeds_limit(1, self._calls) or exceeds_limit(estimated, self._input) or exceeds_limit(output, self._output):
                 raise IndexBudgetExceeded(
                     "semantic index authorized_model_budget exhausted"
                 )
             if self._reservations is not None:
                 await self._reservations.reserve(estimated, output)
-            self._calls -= 1
-            self._input -= estimated
-            self._output -= output
+            self._calls = remaining_capacity(self._calls, 1)
+            self._input = remaining_capacity(self._input, estimated)
+            self._output = remaining_capacity(self._output, output)
 
 
 class BudgetedIndexModel:

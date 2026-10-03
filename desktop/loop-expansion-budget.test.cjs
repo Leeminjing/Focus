@@ -14,7 +14,7 @@ test("start and edit UI expose every effective expansion resource", () => {
   for (const key of Object.keys(Budget.DEFAULTS).filter(key => key !== "version")) {
     assert.match(start, new RegExp(`name="expansion_${key}"`));
   }
-  const values = new Map(Object.entries(Budget.DEFAULTS).filter(([key]) => key !== "version").map(([key, value]) => [`expansion_${key}`, String(value)]));
+  const values = new Map(Object.entries(Budget.DEFAULTS).filter(([key]) => key !== "version").map(([key, value]) => [`expansion_${key}`, String(value ?? "")]));
   assert.deepEqual(Budget.read(values), Budget.DEFAULTS);
   assert.deepEqual(Budget.submission(values, true), {});
   assert.deepEqual(Budget.submission(values), { expansion_resources: Budget.DEFAULTS });
@@ -46,4 +46,22 @@ test("running status uses API limits and identifies causal blocker", () => {
   assert.match(html, /全局剩余：模型调用 20 · 输入 Token 100000/);
   assert.match(html, /Grant R4/);
   assert.match(html, /连续 2 轮 Context Expansion 阻断/);
+});
+
+test("start settings are closed and defaults submit maxima or no extra limit", () => {
+  const html = LoopView.render(null, { title: "Large task" });
+  const details = html.match(/<details class="loop-start-options"[^>]*>([\s\S]*?)<\/details>/);
+  assert.ok(details);
+  assert.doesNotMatch(details[0].split(">")[0], /\bopen\b/);
+  assert.match(details[1], /name="isolatedWrites"/);
+  assert.match(details[1], /name="expansion_output_token_reserve"[^>]*placeholder="按模型配置"/);
+  const values = new Map([...html.matchAll(/<input name="([^"]+)" type="number"[^>]*value="([^"]*)"/g)].map(([, name, value]) => [name, value]));
+  assert.deepEqual(Budget.readLoop(values, true), Budget.LOOP_DEFAULTS);
+  values.set("maxModelCalls", "10");
+  values.set("expansion_output_token_reserve", "1024");
+  const explicit = Budget.readLoop(values, true);
+  assert.equal(explicit.max_model_calls, 10);
+  assert.equal(explicit.expansion_resources.output_token_reserve, 1024);
+  values.set("maxRounds", "1001");
+  assert.throws(() => Budget.readLoop(values), /maxRounds/);
 });

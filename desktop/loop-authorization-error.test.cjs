@@ -41,8 +41,11 @@ test("authorization conflict stays beside the button and preserves mission plus 
   const form = {
     dataset: {},
     values: {
+      maxRounds: "1000", maxDurationSeconds: "", maxModelCalls: "", maxInputTokens: "",
+      maxOutputTokens: "", maxRetries: "", maxLanes: "64", maxContexts: "256",
+      maxProviders: "32", maxNewLanesPerRound: "16", maxConcurrentRuns: "32", maxNoProgress: "20",
       outcome: "保留我的 Mission", autonomousCompression: "on", isolatedWrites: "off",
-      ...Object.fromEntries(Object.entries(ExpansionBudget.DEFAULTS).filter(([key]) => key !== "version").map(([key, value]) => [`expansion_${key}`, String(value)])),
+      ...Object.fromEntries(Object.entries(ExpansionBudget.DEFAULTS).filter(([key]) => key !== "version").map(([key, value]) => [`expansion_${key}`, String(value ?? "")])),
     },
     querySelector(selector) {
       if (selector === 'button[type="submit"]') return submit;

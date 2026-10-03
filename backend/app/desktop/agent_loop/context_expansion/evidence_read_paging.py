@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from backend.app.desktop.agent_loop.resource_limits import exceeds_limit
 from backend.app.desktop.agent_loop.context_expansion.candidate_paging import (
     ProviderRequestWindowError,
     provider_request_limit,
@@ -37,17 +38,17 @@ class EvidenceReadPager:
     ) -> tuple[EvidenceReadPage, ...]:
         request_limit = provider_request_limit(session, context_window_tokens, max_output_tokens)
         base_size = self._size(planning_input) + 4096
-        if request_limit <= base_size:
+        if exceeds_limit(base_size, request_limit, inclusive=True):
             raise ProviderRequestWindowError("固定规划上下文已超过 provider 单次请求窗口", stage="work_spec")
-        page_budget = request_limit - base_size
+        page_budget = None if request_limit is None else request_limit - base_size
         pages: list[EvidenceReadPage] = []
         current: list[ExactEvidenceRead] = []
         size = 0
         for read in reads:
             read_size = self._size(read.model_dump(mode="json")) + len(read.entry_id) + 8
-            if read_size > page_budget:
+            if exceeds_limit(read_size, page_budget):
                 raise ProviderRequestWindowError("单个 exact evidence read 已超过 provider 单次请求窗口", stage="work_spec")
-            if current and (size + read_size > page_budget or len(current) >= 64):
+            if current and (exceeds_limit(size + read_size, page_budget) or len(current) >= 64):
                 pages.append(self._page(session, len(pages), current))
                 current, size = [], 0
             current.append(read)
