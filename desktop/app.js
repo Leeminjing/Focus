@@ -1,4 +1,6 @@
 /*
+ * Loop 激活由服务端解析初始 Run 装备，客户端不从详情缓存猜测权限；继承请求输出完整有效授权快照。
+ * Loop 介入提交保留原文；成功后只清空同一 Context、模式和内容的当前表单，重绘替换及提交期间的新草稿不被旧节点重置影响。
  * 会话 standard Patrol 由独立 Document/Workbench/Branches 模块负责 typed 左右编排、精确来源选择、保存、只读请求预览和精确执行分支；本文件组合路由、装备、检查器与运行订阅，材料变更按所属任务使检查过期并按当前页面刷新，保留编辑挂载。
  * 示例：refreshMaterialView(taskId, true) 使该任务材料变更后的检查过期并刷新当前路由；await sendMain()。模型配置显式选择 Provider 与协议，详情展示有效协议。
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
@@ -1008,13 +1010,10 @@ async function startAgentLoop(form) {
   const activationKey = form.dataset.activationKey || `loop-activation:${initialRunId}`;
   form.dataset.loopId = loopId;
   form.dataset.activationKey = activationKey;
-  const detail = state.details.get(task.task_id) || {};
-  const saved = detail.ui_state?._main_run_equipment || detail.ui_state || {};
-  const permissions = Array.isArray(saved.permissions) && saved.permissions.length ? saved.permissions : ["read", "write"];
   const capabilities = ["continue_context", "create_lane", "update_lane", "merge_contexts", "pause_lane", "discard_membership", "request_lane_curator", "request_completion_verifier", "request_completion", "wait_for_user", "stop_loop"];
   const autonomousCompression = values.get("autonomousCompression") === "on";
   if (autonomousCompression) capabilities.push("apply_context_compression");
-  if (values.get("isolatedWrites") === "on" && permissions.includes("write")) {
+  if (values.get("isolatedWrites") === "on") {
     capabilities.push("isolate_workspace", "adopt_workspace_result");
   }
   const body = {
@@ -1028,7 +1027,8 @@ async function startAgentLoop(form) {
     mission,
     capabilities,
     context_scope: [task.task_id],
-    permission_scope: permissions,
+    permission_scope: [],
+    inherit_initial_equipment: true,
     delegable_gates: autonomousCompression ? ["compression"] : [],
     compression_policy: autonomousCompression ? {
       version: 1,
@@ -1042,7 +1042,7 @@ async function startAgentLoop(form) {
       min_reduction_tokens: 256,
     } : null,
     budgets: loopBudgetPayload(values, true),
-    equipment: { model_name: saved.model_name || null, patrol_model_name: saved.model_name || null, permissions, skills: Array.isArray(saved.skills) ? saved.skills : [], access_mode: saved.access_mode || null },
+    equipment: {},
   };
   state.loop.loading = true;
   if (status) status.textContent = `正在授权 Run ${initialRunId}…`;
@@ -6872,9 +6872,14 @@ document.addEventListener("submit", event => {
   if (event.target.id === "loopInterventionForm") {
     event.preventDefault();
     const form = event.target;
+    const content = new FormData(form).get("content");
+    const submitted = loopConsoleStore.get();
     runUiAction(async () => {
-      await loopConsoleController?.submit(new FormData(form).get("content"));
-      form.reset();
+      await loopConsoleController?.submit(content);
+      const current = loopConsoleStore.get();
+      const currentForm = document.querySelector("#loopInterventionForm");
+      if (current.selectedContextId === submitted.selectedContextId && current.interventionMode === submitted.interventionMode
+          && currentForm?.elements.content.value === content) currentForm.reset();
     });
     return;
   }

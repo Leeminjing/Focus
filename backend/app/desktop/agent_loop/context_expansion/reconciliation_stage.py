@@ -55,6 +55,10 @@ class PersistedWorkSpecReconciliationStage:
             )
             if row is not None and row.outcome == "ready":
                 return WorkSpecReconciliation.model_validate(row.payload)
+        if hasattr(self._evaluator, "bind_usage_receipts"):
+            from backend.app.desktop.agent_loop.model_usage_owner import OwnedModelUsage
+
+            self._evaluator.bind_usage_receipts(OwnedModelUsage(self._sessions, loop_id, round_id, "round", round_id))
         relations = await self._evaluator.evaluate(candidates)
         attempts = tuple(getattr(self._evaluator, "attempt_records", ()))
         await self._record_attempt_usage(loop_id, attempts)
@@ -83,6 +87,7 @@ class PersistedWorkSpecReconciliationStage:
         loop_id: str,
         attempts: tuple[dict, ...],
     ) -> None:
+        attempts = tuple(item for item in attempts if not item.get("usage_managed"))
         if not attempts:
             return
         await LoopUsageLedger(self._sessions).record(

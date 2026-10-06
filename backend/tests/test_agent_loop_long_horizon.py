@@ -4,7 +4,7 @@ r"""本文件对外提供 Context-Governed Agent Loop 长时程确定性模拟�
 结果和独立 Completion Verifier 证据；输出为可重放的 round、directive、many-to-many revision、
 用户改向、未采用分支与最终完成路径断言。具体工作流为先让 Patrol 针对重复失败发出普通
 HumanMessage，再由用户提升权力版本并取消旧方向，随后保留多源探索、接收无权 Worker 结果，
-最后只采用当前已发布 Portfolio 中的 Context 完成。示例：运行本测试并按 event cursor 重放轨迹。
+最后以真实 Worker 领取身份提交验证，只采用当前已发布 Portfolio 中的 Context 完成。示例：运行本测试并按 event cursor 重放轨迹。
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from pathlib import Path
 import uuid
 
 import pytest
+from completion_evidence_support import claim_verifier, record_verified_fixture
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -146,7 +147,7 @@ def test_long_horizon_trace_is_replayable_and_preserves_unadopted_synthesis(
                         "request_completion",
                     ),
                     context_scope=(root_id, side_id),
-                    permission_scope=("read", "write"),
+                    permission_scope=("read", "write", "host_command"),
                     budgets={"max_rounds": 20, "max_contexts": 8, "max_providers": 3},
                 )
             )
@@ -273,6 +274,8 @@ def test_long_horizon_trace_is_replayable_and_preserves_unadopted_synthesis(
                         scope={"candidate_context_ids": [root_id]},
                     )
                 )
+            test_source = await record_verified_fixture(sessions, loop_id, root_id, current_round.round_id, workspace_path, current_round.workspace_revision)
+            retry_identity = await claim_verifier(sessions, loop_id, verifier_id)
             await CompletionEvidenceService(sessions).record(
                 CompletionVerificationContract(
                     verification_id=verification_id,
@@ -285,13 +288,14 @@ def test_long_horizon_trace_is_replayable_and_preserves_unadopted_synthesis(
                         CriterionVerification(
                             criterion_id="tests",
                             status="satisfied",
-                            evidence=({"kind": "fact", "source_id": f"initial-{suffix}", "summary": "The deterministic suite passed."},),
+                            evidence=({"kind": "fact", "source_id": test_source, "summary": "The deterministic suite passed."},),
                             explanation="The required deterministic suite passed.",
                         ),
                     ),
                     conclusion="satisfied",
                 ),
                 verifier_id,
+                retry_identity=retry_identity,
             )
             async with sessions() as session:
                 slot = await session.scalar(

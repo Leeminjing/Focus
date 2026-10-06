@@ -1,7 +1,7 @@
 r"""本文件对外提供 LoopTerminalLifecycle 与 TerminalFinalizationResult 统一提交 Loop 终态。
 
 输入为调用方事务中已锁定的 AgentLoop、completed/stopped/failed 目标、原因和可选最终结果；输出为被取消的 Run 与已释放 Lane identity。
-具体工作流为设置终态字段、撤销活动 grant、收敛运行时工作、停止压缩授权、释放策展所有权并追加规范终态事件，任一步失败均由调用方事务整体回滚。
+具体工作流为设置终态字段、撤销活动 grant、收敛运行时工作、停止压缩授权、释放策展所有权，由共享生命周期入口发布当前状态，再追加独立终态审计事件；控制版本与实体版本分离，任一步失败均由调用方事务整体回滚。
 示例：`result = await lifecycle.finalize(session, loop, "stopped", "user_stop")`。
 """
 
@@ -86,12 +86,15 @@ class LoopTerminalLifecycle:
         reason: str,
         retired_lane_ids: tuple[str, ...],
     ) -> None:
+        from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
+
+        await LoopLifecycleEventRecorder().record(session, loop)
         await self._journal.append(
             session,
             loop.loop_id,
             CanonicalEventDraft(
                 kind="loop.lifecycle.terminal",
-                entity_type="loop",
+                entity_type="loop_activity",
                 entity_id=loop.loop_id,
                 entity_revision=loop.revision,
                 correlation_id=loop.loop_id,

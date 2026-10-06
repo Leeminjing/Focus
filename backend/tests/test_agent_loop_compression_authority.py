@@ -1,10 +1,11 @@
-r"""本文件验证 Patrol 自主压缩的领域契约、候选/结果证据、事务提交、迁移往返与用户优先级。
+r"""本文件对外提供 Patrol 自主压缩的领域契约、候选/结果证据、事务提交、迁移往返与用户优先级回归测试。
 
 输入为消息协议组、保护锚点、版本化授权 facts、并发 Kernel intent 与隔离 PostgreSQL；输出为 bounded
 manifest、纯 policy、唯一 resolution、内容哈希、无 Context 副作用及可逆 schema 的确定性断言。
 具体工作流为先验证无正文 manifest、closed action 和 checkpoint evidence，再以真实候选服务覆盖
 候选持久化、并发提交、用户 supersession 及
 `head → down_revision → head` 迁移。示例：`pytest test_agent_loop_compression_authority.py`。
+初始化失败回归保留原始异常，清理只处理已创建Loop，且始终释放自身AsyncEngine。
 """
 
 from datetime import UTC, datetime, timedelta
@@ -498,6 +499,7 @@ def test_kernel_commits_one_resolution_without_mutating_context_and_user_overrid
         workspace_path = tmp_path / workspace_id
         workspace_path.mkdir()
         service = AgentLoopService(sessions)
+        snapshot = None
         try:
             async with sessions.begin() as session:
                 session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(workspace_path), display_name="compression"))
@@ -622,9 +624,39 @@ def test_kernel_commits_one_resolution_without_mutating_context_and_user_overrid
                 assert resolution.status == "superseded"
                 assert candidate.status == "superseded"
         finally:
-            snapshot = await service.get(loop_id)
-            if snapshot["status"] in {"running", "paused", "waiting_user"}:
-                await service.control(loop_id, "stop")
-            await engine.dispose()
+            try:
+                if snapshot is not None:
+                    current = await service.get(loop_id)
+                    if current["status"] in {"running", "paused", "waiting_user"}:
+                        await service.control(loop_id, "stop")
+            finally:
+                await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_compression_setup_failure_retains_original_error_and_disposes_engine(tmp_path, isolated_postgres_database, monkeypatch):
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+
+    disposed = []
+    original_dispose = AsyncEngine.dispose
+    failure = RuntimeError("compression fixture initialization probe")
+
+    async def _fail_flush(_session, *args, **kwargs):
+        raise failure
+
+    async def _forbidden_lookup(_service, _loop_id):
+        raise AssertionError("uncreated Loop must not be queried during cleanup")
+
+    async def _dispose(engine, *args, **kwargs):
+        disposed.append(engine)
+        await original_dispose(engine, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "flush", _fail_flush)
+    monkeypatch.setattr(AgentLoopService, "get", _forbidden_lookup)
+    monkeypatch.setattr(AsyncEngine, "dispose", _dispose)
+    with pytest.raises(RuntimeError) as caught:
+        test_kernel_commits_one_resolution_without_mutating_context_and_user_override_wins(
+            tmp_path, isolated_postgres_database, monkeypatch)
+    assert caught.value is failure
+    assert len(disposed) == 1

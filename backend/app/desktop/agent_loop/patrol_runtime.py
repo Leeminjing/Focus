@@ -4,7 +4,8 @@ r"""本文件对外提供 PatrolSessionLifecycle、CuratorCoordinationStage 与 
 多 Context Cognitive Planner assignment、可供 Patrol 消费的结构化 work specs 及等待/终态。具体工作流为 Lifecycle 管理 Session
 边界，Curator stage 先为完整冻结 Revisions 建立含独立 claim-support 判定且可恢复的 semantic indexes/catalog，再按 Portfolio 形态有界扇出 retrieval-backed
 规划、收集和消费；生产 request 携带单一有效 Mission、catalog、index identities、相关任务记忆/增量、真实祖先子图与授权修订冻结的 Expansion 资源策略。
-Curator 候选始终属于 proposal；Outcome stage 只映射 Kernel 结果。
+Curator 候选始终属于 proposal；分派同事务发布 Round 与 Loop 阶段事实，阶段实体版本不改变执行控制版本；Outcome stage 只映射 Kernel 结果。
+派发恢复只信耐久 assignment/Worker 与完整索引输入，Loop→Round→Session 锁下复检授权和调用者 fence，重复协调者不重复创建请求。
 示例：`handle = await lifecycle.begin(claim)`。
 """
 
@@ -146,14 +147,16 @@ class CuratorCoordinationStage:
             for item in eligible[: self._max_assignments]
         )
 
-    async def dispatch(self, session_id: str, observation: LoopObservationEnvelope, scopes: tuple[dict, ...]) -> int:
-        derivation_input = await self._derivation_input(observation)
+    async def dispatch(self, session_id: str, observation: LoopObservationEnvelope, scopes: tuple[dict, ...], *, fencing_token: int | None = None) -> int:
+        async with self._sessions() as session:
+            prepared = await self._assignments.by_session(session, session_id)
+        derivation_input = None if prepared else await self._derivation_input(observation)
         async with self._sessions.begin() as session:
+            loop, round_row, patrol = await self._lock_dispatch(session, session_id, observation, fencing_token)
             existing = await self._assignments.by_session(session, session_id)
             if not existing:
-                patrol = await session.get(LoopPatrolSession, session_id, with_for_update=True)
-                if patrol is None:
-                    raise LookupError("Patrol session 不存在")
+                if derivation_input is None:
+                    raise ValueError("curator_preparation_incomplete: 已有准备证明丢失")
                 for scope in scopes:
                     request_id = uuid.uuid4().hex
                     request = LoopWorkerRequest(
@@ -179,14 +182,18 @@ class CuratorCoordinationStage:
                         worker_request_id=request_id,
                         scope=scope,
                     )
-                round_row = await session.get(LoopRound, patrol.round_id, with_for_update=True)
-                loop = await session.get(AgentLoop, patrol.loop_id, with_for_update=True)
                 if round_row is not None:
                     round_row.status = "waiting_workers"
                 if loop is not None:
                     loop.health = "curating"
+                    from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
+                    from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
+
+                    if round_row is not None:
+                        await RoundStateEventRecorder().record(session, round_row)
+                    await LoopLifecycleEventRecorder().record(session, loop)
                 existing = await self._assignments.by_session(session, session_id)
-            patrol = await session.get(LoopPatrolSession, session_id, with_for_update=True)
+            await self._verify_assignments(session, existing, scopes, observation)
             if patrol is not None and patrol.current_phase == PatrolPhase.DISPATCHING_CURATORS:
                 await self._sessions_repository.transition(
                     session,
@@ -199,6 +206,37 @@ class CuratorCoordinationStage:
                     ),
                 )
             return len(existing)
+
+    async def _lock_dispatch(self, session, session_id, observation, fencing_token):
+        from backend.app.desktop.agent_loop.ownership import KernelFencingRejected, LoopFencingGuard
+
+        loop = await session.get(AgentLoop, observation.loop_id, with_for_update=True, populate_existing=True)
+        round_row = await session.get(LoopRound, observation.round_id, with_for_update=True, populate_existing=True)
+        patrol = await session.get(LoopPatrolSession, session_id, with_for_update=True, populate_existing=True)
+        if loop is None or round_row is None or patrol is None:
+            raise KernelFencingRejected("curator_preparation_missing_owner")
+        if (loop.status != "running" or loop.current_round_id != observation.round_id
+            or loop.authority_revision != observation.authority_revision or loop.revision != observation.loop_revision
+            or round_row.status in {"error", "superseded", "settled"} or patrol.status != "active"
+            or patrol.current_phase not in {PatrolPhase.DISPATCHING_CURATORS.value, PatrolPhase.COLLECTING_CURATORS.value}
+            or patrol.loop_id != loop.loop_id or patrol.round_id != round_row.round_id):
+            raise KernelFencingRejected("curator_preparation_superseded")
+        if fencing_token is not None:
+            await LoopFencingGuard().validate_active(session, round_row.round_id, fencing_token)
+            if patrol.fencing_token != fencing_token:
+                raise KernelFencingRejected("curator_preparation_stale_session")
+        return loop, round_row, patrol
+
+    @staticmethod
+    async def _verify_assignments(session, assignments, scopes, observation):
+        expected = {str(item.get("lane_id") or item["context_id"]) for item in scopes}
+        if {item.assignment_key for item in assignments} != expected:
+            raise ValueError("curator_preparation_incomplete: assignment 集合不完整")
+        for assignment in assignments:
+            worker = await session.get(LoopWorkerRequest, assignment.worker_request_id)
+            if (worker is None or worker.loop_id != observation.loop_id or worker.round_id != observation.round_id
+                or not worker.scope.get("derivation_input", {}).get("portfolio_index_catalog")):
+                raise ValueError("curator_preparation_incomplete: 缺少 Worker 或完整索引输入")
 
     async def _derivation_input(self, observation: LoopObservationEnvelope) -> dict:
         if self._index_service is None:
@@ -240,6 +278,7 @@ class CuratorCoordinationStage:
                     {
                         "assignment_id": assignment.assignment_id,
                         "request_id": assignment.worker_request_id,
+                        "round_id": assignment.round_id,
                         "kind": "lane_curator",
                         "scope": assignment.scope,
                         "status": assignment.state,

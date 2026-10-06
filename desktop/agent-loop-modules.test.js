@@ -3,6 +3,7 @@
  * 输入为重复/乱序事件、千条会话页、模拟 fetch、Lane revisions 和多父边；输出为幂等 cursor、固定
  * 消息窗口、视口恢复、正确请求、完整 secondary source 与不污染消息正文的 badge 断言。具体工作流为
  * 直接加载无 DOM UMD 模块并调用纯函数；示例：`node --test desktop/agent-loop-modules.test.js`。
+ * 原文空白保持、失败重放同一身份、交付生命周期及历史缺决策诊断均依据实际合同断言。
  */
 
 "use strict";
@@ -22,6 +23,74 @@ const PortfolioMap = require("./portfolio-map-view.js");
 const Conversation = require("./context-conversation-view.js");
 const Facts = require("./loop-facts-view.js");
 const ConsoleController = require("./loop-console-controller.js");
+
+test("historical missing decision is visible without counting a complete transaction", () => {
+  const html = LoopView.render({ snapshot: { loop_id: "l1", status: "paused", usage: { rounds: 0 },
+    accounting: { round_history: [{ number: 13, status: "superseded", observation_id: null,
+      decision_id: null, completed_transaction: false, diagnostics: ["missing_patrol_decision"] }] } } });
+  assert.match(html, /Round 13 · superseded · 未完成事务/);
+  assert.match(html, /missing_patrol_decision/);
+  assert.match(html, /Observation — · Decision —/);
+});
+
+test("direct user delivery displays durable acceptance without claiming a running Run", () => {
+  const manifest = { nodes: [{ context_id: "c1", topic: "主 Context", status: "active" }], user_intents: [
+    { intent_id: "u1", intent_kind: "direct_message", context_id: "c1", delivery_state: "accepted", resulting_run_id: null },
+  ] };
+  let html = Conversation.render({ manifest, selectedContextId: "c1", interventionMode: "direct_context_message" });
+  assert.match(html, /已受理 · 待观察授权/);
+  assert.match(html, /当前没有运行中的 Context Run/);
+  assert.doesNotMatch(html, /立即启动/);
+  manifest.user_intents[0] = { ...manifest.user_intents[0], delivery_state: "run_started", resulting_run_id: "r1" };
+  html = Conversation.render({ manifest, selectedContextId: "c1", interventionMode: "direct_context_message" });
+  assert.match(html, /data-delivery-state="run_started"/);
+  assert.match(html, /运行中.*Run r1/);
+});
+
+test("direct user controller shares in-flight submission and reuses identity after failure", async () => {
+  globalThis.requestAnimationFrame = () => 1;
+  globalThis.cancelAnimationFrame = () => {};
+  const store = ConsoleStore.create();
+  const manifest = { loop_id: "l1", initial_context_id: "c1", status: "running", nodes: [{ context_id: "c1", revision: { revision_id: "v1" } }] };
+  const calls = [];
+  let rejectSubmission;
+  let first = true;
+  const controller = ConsoleController.create({ store, api: {
+    console: async () => manifest,
+    conversation: async () => ({ context_id: "c1", revision: { revision_id: "v1" }, messages: [] }),
+    facts: async () => ({ facts: [] }),
+    directMessage: async (contextId, content, requestId) => {
+      calls.push({ contextId, content, requestId });
+      if (first) { first = false; await new Promise((resolve, reject) => { rejectSubmission = reject; }); }
+      return { intent_id: "u1", delivery_state: "accepted", run_id: null };
+    },
+  } });
+  await controller.load("l1");
+  const original = "  保留原文\n\n";
+  const one = controller.submit(original);
+  const two = controller.submit(original);
+  assert.equal(calls.length, 1);
+  rejectSubmission(new Error("connection lost after acceptance"));
+  const failed = await Promise.allSettled([one, two]);
+  assert.deepEqual(failed.map(item => item.status), ["rejected", "rejected"]);
+  await controller.submit(original);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], calls[1]);
+  assert.equal(calls[0].content, original);
+  controller.destroy();
+});
+
+test("waiting controls and consumption reflect durable lifecycle and occupied budget", () => {
+  const loop = { loop_id: "waiting", status: "waiting_user", usage: { model_calls: 7 },
+    grant: { budgets: { max_model_calls: 10 } }, accounting: { consumption: {
+      actual: { model_calls: 3 }, unreported_reservations: { model_calls: 4 }, occupied: { model_calls: 7 },
+    } } };
+  const html = LoopView.render({ snapshot: loop });
+  assert.match(html, /data-loop-control="stop"/);
+  assert.doesNotMatch(html, /data-loop-control="pause"/);
+  assert.match(html, /Calls 实际 3 · 未报告预留 4 · 预算占用 7 \/ 10/);
+  assert.match(html, /aria-label="预算已使用 70%"/);
+});
 
 
 test("mission editor separates outcome boundaries and evidence-backed checks", () => {
@@ -141,17 +210,16 @@ test("console api exposes topology, paginated conversation, facts and scoped int
   await api.conversation("l 1", "c/1", { before: 48, limit: 24 });
   await api.facts("l 1", { contextId: "c/1", kind: "test" });
   await api.intervene("l 1", { mode: "patrol_context_intent", context_id: "c/1", content: "Run tests" });
-  await api.directMessage("c/1", "Continue the run");
+  await api.directMessage("c/1", "Continue the run", "stable-user-request");
   await api.restoreCompression("c/1", "compressed-message");
   assert.equal(calls[0].url, "http://focus/desktop/api/agent-loops/l%201/console");
   assert.match(calls[1].url, /conversation\?before=48&limit=24$/);
   assert.match(calls[2].url, /facts\?context_id=c%2F1&kind=test$/);
   assert.deepEqual(JSON.parse(calls[3].options.body), { mode: "patrol_context_intent", context_id: "c/1", content: "Run tests" });
-  assert.equal(calls[4].url, "http://focus/desktop/api/tasks/c%2F1");
-  assert.equal(calls[5].url, "http://focus/desktop/api/tasks/c%2F1/main/runs");
-  assert.deepEqual(JSON.parse(calls[5].options.body), { message: "Continue the run", model_name: null, skills: ["testing"], permissions: ["read"], access_mode: "workspace" });
-  assert.equal(calls[6].url, "http://focus/desktop/api/compression/quick-apply");
-  assert.deepEqual(JSON.parse(calls[6].options.body).ranges, [{ source_ids: ["compressed-message"], restore: true }]);
+  assert.equal(calls[4].url, "http://focus/desktop/api/tasks/c%2F1/main/runs");
+  assert.deepEqual(JSON.parse(calls[4].options.body), { message: "Continue the run", idempotency_key: "stable-user-request" });
+  assert.equal(calls[5].url, "http://focus/desktop/api/compression/quick-apply");
+  assert.deepEqual(JSON.parse(calls[5].options.body).ranges, [{ source_ids: ["compressed-message"], restore: true }]);
 });
 
 

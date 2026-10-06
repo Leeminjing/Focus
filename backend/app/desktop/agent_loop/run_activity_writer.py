@@ -3,6 +3,7 @@ r"""本文件对外提供 LoopRunActivityWriter 与 LoopRunActivityWriteError。
 输入为 Loop 身份和已去重的安全活动草稿；输出为提交后的 journal 事件，或可在 Live 诊断中看到的失败记录。
 具体工作流为先独立提交可信 Test/Artifact 领域结果，再使用独立事务追加幂等展示事件，短暂写入失败后重试；
 领域结果保留不依赖 journal retention。耗尽重试时记录降级单元并向调用方报告失败，后续重放成功则解除降级。
+Artifact 精确路径与命令执行证明保留在独立领域证据中，公共活动摘要只发布状态及统计，避免将本地路径广播到 journal。
 示例：`event = await writer.write(draft)`。
 """
 
@@ -43,6 +44,8 @@ class LoopRunActivityWriter:
         identity = draft.idempotency_key or draft.event_id or f"{draft.kind}:{draft.entity_id}"
         unit_id = identity if len(identity) <= 160 else uuid.uuid5(uuid.NAMESPACE_URL, identity).hex
         await self._persist_domain(draft)
+        if draft.kind in {"context.artifact.observed", "context.test.completed"}:
+            draft = draft.model_copy(update={"payload": {key: value for key, value in draft.payload.items() if key not in {"path", "execution_proof"}}})
         for attempt in range(3):
             try:
                 async with self._sessions.begin() as session:
@@ -71,7 +74,7 @@ class LoopRunActivityWriter:
 
     async def _persist_domain(self, draft: CanonicalEventDraft) -> None:
         if draft.kind == "context.test.completed":
-            kind, fields = "test", ("status", "summary", "metrics")
+            kind, fields = "test", ("status", "summary", "metrics", "execution_proof")
         elif draft.kind == "context.artifact.observed" and draft.payload.get("path"):
             kind, fields = "artifact", ("path", "status")
         else:

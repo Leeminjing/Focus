@@ -3,6 +3,7 @@ r"""本文件对外提供以下合同的验证统一 Context revision reader 对
 输入为 migration-origin revision 合同与精确 checkpoint fixture；输出为 authored、execution、
 display、checkpoint、historical、frontier 和 deleted-source 视图断言。具体工作流为用只读内存仓储
 模拟已迁移记录并以假 checkpointer 返回冻结消息。示例：`pytest backend/tests/test_context_revision_reader.py`。
+V2定义混合未知作者原文与合法消息时展示原文和稳定身份，semantic仍读取合法执行投影，读取前后冻结载荷不变。
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
-from focus.history import HistoryPayload, messages_to_items
+from focus.history import FocusItem, HistoryPayload, messages_to_items
 
 from backend.app.desktop.context_evolution import (
     ContextFrontierSummary,
@@ -103,6 +104,31 @@ def _revision(
         created_at=datetime(2026, 9, 14, tzinfo=UTC),
         deleted_at=datetime(2026, 9, 14, tzinfo=UTC) if deleted else None,
     )
+
+
+def test_v2_definition_display_preserves_opaque_authored_record_and_runtime_suffix():
+    async def run():
+        ref = _ref("opaque", "opaque-r", ContextRevisionPayloadMode.DEFINITION)
+        original = {"role": "unknown", "content": "保留原文", "future": {"nested": [1, 2]}}
+        human = HumanMessage(id="known", content="known input")
+        repair = HumanMessage(id="repair", content="approved projection")
+        answer = AIMessage(id="answer", content="runtime suffix")
+        opaque = FocusItem(item_id="opaque", message_id="opaque", kind="message", origin="curator",
+                           scope="revision", payload={"message": original})
+        history = HistoryPayload(authored_items=(*messages_to_items([human], origin="curator"), opaque),
+                                 execution_items=messages_to_items([human, repair, answer]))
+        revision = _revision(ref).model_copy(update={"history_payload": history,
+                                                     "initial_message_ids": ("known", "repair")})
+        frozen = revision.model_dump(mode="json")
+        reader = ContextRevisionReader(_RevisionStore(revision), _Checkpointer({}))
+        display = await reader.read(None, ref, "display")
+        assert display.messages[0]["id"] == "known"
+        assert display.messages[1] == original
+        assert display.messages[2]["id"] == "answer"
+        semantic = await reader.read(None, ref, "semantic")
+        assert [row["id"] for row in semantic.messages] == ["known", "repair", "answer"]
+        assert revision.model_dump(mode="json") == frozen
+    asyncio.run(run())
 
 
 def test_v2_semantic_and_display_preserve_source_ids_without_runtime_controls():

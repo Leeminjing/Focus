@@ -1,10 +1,12 @@
 r"""本文件对外提供 ContextExpansionCoordinator、ContextExpansionStage 与 ExpansionResolution。
 
 输入为冻结 LoopObservationEnvelope、可替换的 signal/projector/planner/reconciler/policy 阶段与已存在 work-spec identities；输出为
-确定性 ExpansionAssessment。具体工作流为 façade 汇总完整-index retrieval sessions，先传播已持久化的 planning blocker，再依次传递 signals、retrieved manifests、
-WorkContextSpec、relation reconciliation 与 admission；Stage 记录 lifecycle，并把 identity-only Patrol 选择编译为经 synthesis/quality
+确定性 ExpansionAssessment。具体工作流为 façade 汇总完整-index retrieval sessions，先将阶段专属 planning failure 映射为领域 blocker，
+在 stage_records 保留原始失败来源，再依次传递 signals、retrieved manifests、
+WorkContextSpec、候选证据准入、relation reconciliation 与 admission；Stage 注入真实 corpus/resolver 校验并持久保留 invalid_candidate，再把 identity-only Patrol 选择编译为经 synthesis/quality
 验证的内部 LanePlan；Stage 另提供不创建 expansion/Context/Portfolio mutation 的 observe-only comparison，并可通过部署开关停止自动写入。
 示例：`resolution = await stage.resolve(observation, intent)`。
+完成动作在 Stage 的只读事务复用 CompletionEligibilityPolicy 重验当前资格，提交权和最后复检仍归 Kernel。
 """
 
 from __future__ import annotations
@@ -12,12 +14,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import TypeAdapter, ValidationError
 from focus.config.app_config import AppConfig
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.context_expansion.artifact_repository import (
     SemanticDerivationArtifactRepository,
 )
+from backend.app.desktop.agent_loop.context_expansion.candidate_admission import CandidateEvidenceAdmission
 from backend.app.desktop.agent_loop.context_expansion.compiler import (
     ContextExpansionPlanCompiler,
 )
@@ -25,6 +29,7 @@ from backend.app.desktop.agent_loop.context_expansion.contracts import (
     DerivationStageRecord,
     ExpansionAssessment,
     ExpansionBlocker,
+    ExpansionBlockerCode,
     ExpansionOpportunity,
     SpawnContextIntent,
 )
@@ -68,6 +73,8 @@ from backend.app.desktop.agent_loop.schemas import (
     PatrolDecisionIntent,
 )
 
+_BLOCKER_CODE = TypeAdapter(ExpansionBlockerCode)
+
 
 class ContextExpansionCoordinator:
     def __init__(
@@ -79,6 +86,7 @@ class ContextExpansionCoordinator:
         reconciler: WorkSpecReconciler | None = None,
         reconciliation_stage: PersistedWorkSpecReconciliationStage | None = None,
         policy: ExpansionAdmissionPolicy | None = None,
+        candidate_admission: CandidateEvidenceAdmission | None = None,
     ) -> None:
         self._signals = signals or ExpansionSignalCollector()
         self._projector = projector or CompositeSemanticManifestProjector()
@@ -87,6 +95,7 @@ class ContextExpansionCoordinator:
         self._reconciler = reconciler or WorkSpecReconciler()
         self._reconciliation_stage = reconciliation_stage
         self._policy = policy or ExpansionAdmissionPolicy()
+        self._candidate_admission = candidate_admission
 
     async def assess(
         self,
@@ -152,7 +161,7 @@ class ContextExpansionCoordinator:
             first = planning_blockers[0]
             return self._failed_assessment(
                 observation,
-                str(first.get("code") or "retrieval_planning_failed"),
+                self._planning_failure_code(str(first.get("code") or "retrieval_planning_failed")),
                 str(first.get("summary") or "retrieval-backed planning blocked")[:1800],
                 stage_records=tuple(records),
             )
@@ -199,11 +208,24 @@ class ContextExpansionCoordinator:
             )
             return self._failed_assessment(
                 observation,
-                planned.failure.code if planned.failure.code in {"retrieval_budget_exhausted", "expansion_policy_limit", "global_grant_exhausted", "provider_request_window", "evidence_insufficient", "model_usage_unavailable"} else "cognitive_planning_failed",
+                self._planning_failure_code(planned.failure.code),
                 planned.failure.summary,
                 retryable=planned.failure.retryable,
                 stage_records=tuple(records),
             )
+        rejected = ()
+        if self._candidate_admission is not None:
+            review = await self._candidate_admission.review(observation, planned, manifests)
+            rejected = review.rejected
+            records.append(DerivationStageTimer("candidate_admission",
+                tuple(spec.work_spec_id for spec in planned.work_specs), self._candidate_admission.VERSION).finish(
+                    tuple(spec.work_spec_id for spec in review.planned.work_specs),
+                    f"拒绝 {len(rejected)} 项无效证据角色；接受 {len(review.planned.work_specs)} 项候选",
+                    failure_code=review.blocker.code if review.blocker else None))
+            if review.blocker is not None:
+                return self._failed_assessment(observation, review.blocker.code, review.blocker.summary,
+                    stage_records=tuple(records)).model_copy(update={"rejected_candidates": rejected})
+            planned = review.planned
         records.append(
             planning_timer.finish(
                 tuple(item.work_spec_id for item in planned.work_specs),
@@ -243,7 +265,7 @@ class ContextExpansionCoordinator:
                 "work_reconciliation_failed",
                 str(exc)[:1800],
                 stage_records=tuple(records),
-            )
+            ).model_copy(update={"rejected_candidates": rejected})
         records.append(
             reconciliation_timer.finish(
                 (reconciliation.reconciliation_id, *(item.work_spec_id for item in reconciliation.canonical_specs)),
@@ -258,7 +280,7 @@ class ContextExpansionCoordinator:
                 "WorkSpec candidates 存在互斥职责或 workspace 边界，拒绝自动合并",
                 stage_records=tuple(records),
                 reconciliation=reconciliation.model_dump(mode="json"),
-            )
+            ).model_copy(update={"rejected_candidates": rejected})
         opportunities = tuple(
             ExpansionOpportunity.create(
                 loop_id=observation.loop_id,
@@ -295,6 +317,7 @@ class ContextExpansionCoordinator:
             update={
                 "stage_records": tuple(records),
                 "reconciliation": reconciliation.model_dump(mode="json"),
+                "rejected_candidates": rejected,
             }
         )
 
@@ -325,6 +348,13 @@ class ContextExpansionCoordinator:
             failure_code=failures[0] if failures else None,
         )
 
+    @staticmethod
+    def _planning_failure_code(code: str) -> ExpansionBlockerCode:
+        try:
+            return _BLOCKER_CODE.validate_python(code)
+        except ValidationError:
+            return "cognitive_planning_failed"
+
     def _failed_assessment(
         self,
         observation: LoopObservationEnvelope,
@@ -340,7 +370,7 @@ class ContextExpansionCoordinator:
             round_id=observation.round_id,
             frontier_hash=observation.observed_frontier_hash,
             policy_version=self._policy.VERSION,
-            level="blocked" if code in {"retrieval_budget_exhausted", "expansion_policy_limit", "global_grant_exhausted", "provider_request_window", "evidence_insufficient", "model_usage_unavailable"} else "not_applicable",
+            level="blocked" if code in {"retrieval_budget_exhausted", "expansion_policy_limit", "global_grant_exhausted", "provider_request_window", "evidence_insufficient", "model_usage_unavailable", "required_evidence_unresolved", "evidence_budget_exhausted", "source_unreadable", "stale_source", "source_out_of_scope"} else "not_applicable",
             blockers=(ExpansionBlocker(code=code, summary=summary, retryable=retryable),),
             stage_records=stage_records,
             reconciliation=reconciliation,
@@ -379,6 +409,7 @@ class ContextExpansionStage:
         self._coordinator = ContextExpansionCoordinator(
             relation_evaluator=relation_evaluator,
             reconciliation_stage=reconciliation_stage,
+            candidate_admission=CandidateEvidenceAdmission(sessions, checkpointer),
         )
         self._compiler = ContextExpansionPlanCompiler(
             sessions,
@@ -433,7 +464,9 @@ class ContextExpansionStage:
                     input_identities=record.input_identities,
                     version=record.version,
                     outcome="blocked" if record.failure_code else "ready",
-                    payload=record.model_dump(mode="json"),
+                    payload={**record.model_dump(mode="json"), **({"rejected_candidates":
+                        [item.model_dump(mode="json") for item in assessment.rejected_candidates]}
+                        if record.stage == "candidate_admission" else {})},
                 )
 
     async def resolve(
@@ -441,6 +474,11 @@ class ContextExpansionStage:
         observation: LoopObservationEnvelope,
         intent: PatrolDecisionIntent,
     ) -> ExpansionResolution:
+        completion = tuple(action for action in intent.actions if action.action == 'request_completion')
+        if completion:
+            blocker = await self._completion_blocker(observation, completion)
+            if blocker is not None:
+                return ExpansionResolution(intent=None, blocker=blocker)
         assessment = ExpansionAssessment.model_validate(observation.expansion_assessment or {})
         opportunities = {item.opportunity_id: item for item in assessment.opportunities}
         resolved = []
@@ -473,6 +511,25 @@ class ContextExpansionStage:
             intent=intent.model_copy(update={"actions": tuple(resolved)}),
             blocker=None,
         )
+
+    async def _completion_blocker(self, observation, actions):
+        from sqlalchemy import text
+        from backend.app.desktop.agent_loop.completion_eligibility import CompletionEligibilityPolicy, CompletionEligibilityRejected
+        from backend.app.desktop.agent_loop.models import AgentLoop, LoopRound
+
+        async with self._sessions() as session:
+            await session.execute(text('SET TRANSACTION READ ONLY'))
+            loop = await session.get(AgentLoop, observation.loop_id)
+            round_row = await session.get(LoopRound, observation.round_id)
+            try:
+                if loop is None or round_row is None:
+                    raise CompletionEligibilityRejected(('completion_control_changed',))
+                view = await CompletionEligibilityPolicy().read(session, loop, round_row)
+                for action in actions:
+                    CompletionEligibilityPolicy.require_allowed(view, action)
+            except CompletionEligibilityRejected as exc:
+                return ExpansionBlocker(code='completion_not_decidable', summary=str(exc))
+        return None
 
     async def observe_only(
         self,

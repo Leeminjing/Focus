@@ -3,6 +3,7 @@ r"""本文件对外提供 SegmentProjectionRecord、SegmentProjectionBuilder 与
 输入为单个协议闭合 segment、其规范消息及受监督模型；输出为保留 drafts、精确引文、verdict 和隔离结果的不可变记录。
 具体工作流为仅向模型提交该段，确定性检查局部 supports 与宿主语义资格，独立验证 confirmed claims，保存原始证据与稳定身份。
 新记录保存 grounding_version；旧记录缺失该字段时使用原处置算法与序列化，不改写旧 hash。
+SegmentProjectionRecord.cache_key_for 为纯局部合同/段身份函数，创建、完整性验证和缓存读取共用原版本哈希算法。
 复用输入为相同 segment；输出为经重新校验的记录，不重新调用模型。示例：record = await builder.build(segment, messages)。
 """
 
@@ -67,11 +68,7 @@ class SegmentProjectionRecord(BaseModel):
             "segment-projection-record-v1", expected
         ):
             raise ValueError("segment projection record integrity mismatch")
-        if self.cache_key != stable_expansion_hash(
-            "segment-projection-key-v1",
-            self.contract_fingerprint,
-            self.segment.model_dump(mode="json"),
-        ):
+        if self.cache_key != self.cache_key_for(self.segment, self.contract_fingerprint):
             raise ValueError("segment projection cache key mismatch")
         if tuple(m.message_id for m in self.messages) != self.segment.message_ids:
             raise ValueError("segment projection 消息库存不一致")
@@ -110,6 +107,10 @@ class SegmentProjectionRecord(BaseModel):
     def _payload(self) -> dict:
         return self.model_dump(mode="json", exclude={"record_id"})
 
+    @staticmethod
+    def cache_key_for(segment: RevisionSegment, contract: str) -> str:
+        return stable_expansion_hash("segment-projection-key-v1", contract, segment.model_dump(mode="json"))
+
     @classmethod
     def create(
         cls,
@@ -127,9 +128,7 @@ class SegmentProjectionRecord(BaseModel):
             "grounding_version": SemanticGroundingValidator.RECORD_VERSION,
             "model_metadata": list(model_metadata),
             "context_id": context_id,
-            "cache_key": stable_expansion_hash(
-                "segment-projection-key-v1", contract, segment.model_dump(mode="json")
-            ),
+            "cache_key": cls.cache_key_for(segment, contract),
             "contract_fingerprint": contract,
             "segment": segment.model_dump(mode="json"),
             "messages": [m.model_dump(mode="json") for m in messages],

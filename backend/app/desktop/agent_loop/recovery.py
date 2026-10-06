@@ -3,7 +3,9 @@ r"""本文件对外提供 AgentLoopRecovery 与 LoopRecoveryReport。
 输入为重启后的持久 decision lease、Worker/Patrol attempt、停滞 round、shadow publication、directive、Run
 outbox 和 workspace lease 状态；输出为可重试、需观察、已恢复与已收敛 round 的计数。具体工作流为只重置提交前
 计算状态、保留已 commit 权威事实、收敛已不可能推进的 round（已有落定 decision 或越过无进展界限）并释放其
-租约，Worker 仅在自己的持久最大尝试数内重排队，Writer 副作用进入 observation 而不盲重跑。示例：`await recovery.reconcile()`。
+租约，Worker 按 Loop→Worker 顺序锁定、撤销旧领取身份并仅在持久最大尝试数内重排队；当前失败工作重建准确 recovery wait，
+不恢复用户暂停 Loop。Writer 副作用进入 observation 而不盲重跑。示例：`await recovery.reconcile()`。
+Worker旧领取身份或已终结owner的未报告回执由共享恢复入口标unknown并保留预留；不推测消费，当前同身份运行请求不被分类，迟到实测仍可补齐。
 """
 
 from __future__ import annotations
@@ -21,6 +23,9 @@ from backend.app.desktop.context_curation.models import PortfolioLaneCandidate, 
 from backend.app.desktop.run_orchestration import RunOutboxConsumer
 from backend.app.desktop.workspace_coordination.models import WorkspaceLease
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
+from backend.app.desktop.agent_loop.worker_attempts import WorkerAttemptAuthority, WorkerAttemptRejected
+from backend.app.desktop.agent_loop.worker_recovery import WorkerRecoveryRepository
+from backend.app.desktop.agent_loop.worker_receipt_recovery import WorkerReceiptRecovery
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,29 +57,46 @@ class AgentLoopRecovery:
         coordinator_leases = await self._coordinator.recover()
         run_events = await self._run_events.recover()
         async with self._sessions.begin() as session:
-            patrol_rows = list((await session.scalars(select(LoopPatrolAttempt).where(LoopPatrolAttempt.status == "running").with_for_update())).all())
-            worker_rows = list((await session.scalars(select(LoopWorkerRequest).where(LoopWorkerRequest.status == "running").with_for_update())).all())
+            patrol_rows = list((await session.scalars(select(LoopPatrolAttempt).where(LoopPatrolAttempt.status == "running"))).all())
+            worker_rows = list((await session.scalars(select(LoopWorkerRequest).where(LoopWorkerRequest.status == "running"))).all())
             retries_by_loop: dict[str, int] = {}
             for row in patrol_rows:
+                await session.get(AgentLoop, row.loop_id, with_for_update=True)
+                row = await session.get(LoopPatrolAttempt, row.patrol_attempt_id, with_for_update=True, populate_existing=True)
+                if row.status != "running":
+                    continue
                 row.status = "error"
                 row.error = "process_restarted"
                 row.completed_at = datetime.now(UTC)
                 retries_by_loop[row.loop_id] = retries_by_loop.get(row.loop_id, 0) + 1
             for row in worker_rows:
-                loop = await session.get(AgentLoop, row.loop_id)
-                if loop is None or loop.status != "running":
+                loop = await session.get(AgentLoop, row.loop_id, with_for_update=True)
+                row = await session.get(LoopWorkerRequest, row.worker_request_id, with_for_update=True, populate_existing=True)
+                if row.status != "running":
+                    continue
+                WorkerAttemptAuthority.archive(row, "error", {"error": "process_restarted"})
+                try:
+                    if loop is None:
+                        raise WorkerAttemptRejected("Loop 不存在")
+                    await WorkerAttemptAuthority().require_authorized(session, loop, row)
+                    authorized = True
+                except WorkerAttemptRejected:
+                    authorized = False
+                if not authorized:
                     row.status = "cancelled"
                     row.result = {"reason": "process_restarted_while_loop_inactive"}
                     row.completed_at = datetime.now(UTC)
                 elif row.attempt < row.max_attempts:
                     row.status = "pending"
                     row.attempt += 1
-                    row.retry_identity = f"worker:{row.worker_request_id}:attempt:{row.attempt}"
+                    row.retry_identity = None
                     retries_by_loop[row.loop_id] = retries_by_loop.get(row.loop_id, 0) + 1
                 else:
                     row.status = "error"
                     row.result = {"error": "process_restarted", "retrying": False}
                     row.completed_at = datetime.now(UTC)
+            await WorkerReceiptRecovery().reconcile(session)
+            await WorkerRecoveryRepository().reconcile(session)
             for loop_id, retries in retries_by_loop.items():
                 usage = await session.get(LoopBudgetUsage, loop_id, with_for_update=True)
                 if usage is not None:

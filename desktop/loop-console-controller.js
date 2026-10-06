@@ -3,6 +3,7 @@
  * 输入为 Loop API、Console Store 与重绘回调；输出为加载拓扑、切换或强制刷新 Context、双向分页、视口恢复、事实筛选、可调布局和三类介入命令。
  * 具体工作流为切换前保存当前 Context 视口，通常优先恢复 revision 缓存，来源恢复后可强制读取新 revision；事实查询、通知与拖拽分别按游标和动画帧协调。
  * 示例：`controller.load(loopId)` 后由 Store 驱动纯视图渲染。
+ * 直接提交复用在途 Promise；失败重试同一目标原文保留 request identity，成功刷新后释放，避免重复交付。
  */
 (function (root, factory) {
   const api = factory();
@@ -23,6 +24,8 @@
     let factsLoading = false;
     let factsRevision = 0;
     let boundContainer = null;
+    let directRequest = null;
+    let submission = null;
     const schedule = () => {
       if (frame !== null) return;
       frame = requestAnimationFrame(() => { frame = null; onChange(store.get()); });
@@ -194,14 +197,26 @@
     }
 
     async function submit(content) {
+      if (submission) return submission;
+      submission = submitIntent(content);
+      try {
+        return await submission;
+      } finally {
+        submission = null;
+      }
+    }
+
+    async function submitIntent(content) {
       const state = store.get();
       const contextId = state.selectedContextId;
-      const text = String(content || "").trim();
-      if (!text || !loopId || !contextId) return;
+      const text = String(content || "");
+      if (!text.trim() || !loopId || !contextId) return;
       store.begin("intervention");
       try {
         if (state.interventionMode === "direct_context_message") {
-          await api.directMessage(contextId, text);
+          const signature = JSON.stringify([loopId, contextId, text]);
+          if (directRequest?.signature !== signature) directRequest = { signature, id: crypto.randomUUID() };
+          await api.directMessage(contextId, text, directRequest.id);
         } else {
           await api.intervene(loopId, {
             mode: state.interventionMode,
@@ -211,6 +226,7 @@
         }
         store.complete();
         await refresh();
+        directRequest = null;
       } catch (error) {
         store.fail(error);
         throw error;

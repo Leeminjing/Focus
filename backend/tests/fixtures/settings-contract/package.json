@@ -1,0 +1,7 @@
+{
+  "name": "focus-settings-contract-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {"build": "tsc --project tsconfig.json", "test": "node --test dist/settings.test.js"},
+  "devDependencies": {"typescript": "5.9.3"}
+}

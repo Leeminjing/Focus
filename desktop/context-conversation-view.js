@@ -4,6 +4,7 @@
  * 具体工作流为当前执行活动读取 Live projection，固定 revision 历史会话维持有界双向分页；因果带只读取已提交事件，来源徽标保持在审计栏，正文不被元数据污染，终止态只读；
  * 标题与描述同源时只显示一次，不在页头重复渲染同一段 purpose。
  * 示例：`FocusContextConversationView.render(consoleState)`。
+ * 直接消息分别展示受理、待授权、交付、运行、终态，用户来源 Directive 使用独立标签。
  */
 (function (root, factory) {
   const api = factory();
@@ -51,7 +52,13 @@
   function causality(entries) {
     if (!entries?.length) return "";
     const visible = entries.slice(-8);
-    return `<section class="context-causality" aria-label="指令因果链"><span class="loop-kicker">Live causality</span><ol>${visible.map(item => `<li data-causality-id="${escape(item.event_id)}" class="is-${escape(item.entity_type)}"><i aria-hidden="true"></i><strong>${escape(item.entity_type === "directive" ? "Patrol directive" : item.entity_type)}</strong><span>${escape(item.summary)}</span><small>${escape(item.kind)}</small></li>`).join("")}</ol></section>`;
+    return `<section class="context-causality" aria-label="指令因果链"><span class="loop-kicker">Live causality</span><ol>${visible.map(item => `<li data-causality-id="${escape(item.event_id)}" class="is-${escape(item.entity_type)}"><i aria-hidden="true"></i><strong>${escape(item.entity_type === "directive" ? (item.detail?.origin === "direct_user" ? "用户消息交付" : "Patrol directive") : item.entity_type)}</strong><span>${escape(item.summary)}</span><small>${escape(item.kind)}</small></li>`).join("")}</ol></section>`;
+  }
+
+  function userMessages(manifest, contextId) {
+    const labels = { accepted: "已受理 · 待观察授权", observed: "已观察 · 待 Patrol 授权", delivered: "已交付 · 等待启动", run_started: "运行中", settled: "已结算", failed: "失败", delivery_failed: "交付失败", rejected: "已拒绝", cancelled: "已取消" };
+    const messages = (manifest.user_intents || []).filter(item => item.intent_kind === "direct_message" && item.context_id === contextId).slice(0, 8);
+    return messages.length ? `<section aria-label="用户消息交付状态" aria-live="polite">${messages.map(item => `<p data-user-intent-id="${escape(item.intent_id)}" data-delivery-state="${escape(item.delivery_state)}"><strong>${escape(labels[item.delivery_state] || item.delivery_state)}</strong>${item.resulting_run_id ? ` · Run ${escape(item.resulting_run_id)}` : ""}</p>`).join("")}</section>` : "";
   }
 
   function executionActivity(node) {
@@ -70,7 +77,7 @@
     const conversation = state.conversation;
     if (!node) return '<section class="context-conversation is-empty">选择一个 Context 查看完整会话</section>';
     const modes = [
-      ["direct_context_message", "直接进入 Context", "以用户 HumanMessage 立即启动该 Context 的 Main Run"],
+      ["direct_context_message", "直接进入 Context", "受理用户原文，观察并授权后交付该 Context；沿用其当前装备"],
       ["patrol_context_intent", "告诉 Patrol：这个 Context", "意见进入 Patrol 下一次观察，不污染模型消息"],
       ["patrol_portfolio_intent", "告诉 Patrol：整体布局", "对所有 Context 的分工、保留或淘汰提出意见"],
     ];
@@ -88,7 +95,7 @@
     const composer = state.terminal
       ? '<div class="loop-intervention is-readonly"><strong>历史只读</strong><span>该 Loop 已结束，退出后可在当前 Context 发送新的用户消息并创建后继 Loop。</span></div>'
       : `<form id="loopInterventionForm" class="loop-intervention"><div class="intervention-modes" role="tablist">${modes.map(item => `<button type="button" role="tab" data-action="loop-intervention-mode" data-mode="${item[0]}" aria-selected="${state.interventionMode === item[0]}" class="${state.interventionMode === item[0] ? "is-active" : ""}">${item[1]}</button>`).join("")}</div><p>${escape(mode[2])}</p><div class="intervention-composer"><textarea name="content" required rows="3" placeholder="${escape(mode[0] === "direct_context_message" ? "向这个 Context 发送新的 HumanMessage" : "表达你的意图，Patrol 将在下次判断中处理")}"></textarea><button class="primary" type="submit" ${state.pending === "intervention" ? "disabled" : ""}>${state.pending === "intervention" ? "提交中…" : "发送"}</button></div></form>`;
-    return `<section class="context-conversation"><header class="conversation-head"><div><span class="loop-kicker">Context · 固定 Revision 历史会话</span><h3>${escape(name)}</h3><p>${purpose}R${escape(conversation?.revision?.generation || node.revision?.generation || "—")} · ${escape(conversation?.total ?? "…")} 条消息</p></div><span class="context-run-state is-${escape(node.latest_run?.status || node.status)}">${escape(node.latest_run?.status || node.status)}</span></header>${executionActivity(node)}<div class="context-metrics">${contextMetrics(node)}</div>${causality(state.causality)}<div class="conversation-tools"><input type="search" data-loop-message-search value="${escape(state.messageSearch)}" placeholder="搜索消息内容、工具调用、文件名…"><div class="conversation-filters">${filters.map(value => `<button type="button" data-action="loop-message-filter" data-filter="${value}" class="${state.messageFilter === value ? "is-active" : ""}">${value}</button>`).join("")}</div></div><div class="loop-transcript" data-loop-transcript data-context-id="${escape(node.context_id)}" data-range-start="${escape(conversation?.range?.start ?? 0)}">${historyControl}${messages.map(item => messageCard({ ...item, context_id: node.context_id })).join("") || '<p class="history-boundary">没有匹配的消息</p>'}${newerControl}</div>${composer}</section>`;
+    return `<section class="context-conversation"><header class="conversation-head"><div><span class="loop-kicker">Context · 固定 Revision 历史会话</span><h3>${escape(name)}</h3><p>${purpose}R${escape(conversation?.revision?.generation || node.revision?.generation || "—")} · ${escape(conversation?.total ?? "…")} 条消息</p></div><span class="context-run-state is-${escape(node.latest_run?.status || node.status)}">${escape(node.latest_run?.status || node.status)}</span></header>${executionActivity(node)}${userMessages(manifest, node.context_id)}<div class="context-metrics">${contextMetrics(node)}</div>${causality(state.causality)}<div class="conversation-tools"><input type="search" data-loop-message-search value="${escape(state.messageSearch)}" placeholder="搜索消息内容、工具调用、文件名…"><div class="conversation-filters">${filters.map(value => `<button type="button" data-action="loop-message-filter" data-filter="${value}" class="${state.messageFilter === value ? "is-active" : ""}">${value}</button>`).join("")}</div></div><div class="loop-transcript" data-loop-transcript data-context-id="${escape(node.context_id)}" data-range-start="${escape(conversation?.range?.start ?? 0)}">${historyControl}${messages.map(item => messageCard({ ...item, context_id: node.context_id })).join("") || '<p class="history-boundary">没有匹配的消息</p>'}${newerControl}</div>${composer}</section>`;
   }
 
   function renderExecutionActivity(state) {

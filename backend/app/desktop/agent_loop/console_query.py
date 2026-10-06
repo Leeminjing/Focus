@@ -6,6 +6,7 @@ r"""本文件对外提供 LoopConsoleQueryService 的轻量 Context Portfolio �
 零进展"的停顿可被控制台解释；派生边由 ContextLineageResolver 解析（沿每个 Context 自身 revision 链回溯到外部
 来源），因此与目标是第几代 revision 无关，同一 Context 的 revision 链不会成为拓扑边。
 示例：`await service.read(session, loop_id)`。
+用户消息轻量投影公开类型、原始来源、耐久 delivery_state 和真实 resulting_run_id，不把受理提交当作执行启动。
 """
 
 from __future__ import annotations
@@ -166,6 +167,10 @@ class LoopConsoleQueryService:
             "user_intents": [
                 {
                     "intent_id": row.intent_id,
+                    "intent_kind": row.intent_kind,
+                    "delivery_state": row.delivery_state,
+                    "resulting_run_id": row.resulting_run_id,
+                    "origin": row.origin_kind,
                     "scope": row.scope,
                     "context_id": row.target_context_id,
                     "content": row.content,

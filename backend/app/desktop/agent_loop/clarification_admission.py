@@ -1,9 +1,10 @@
 r"""本文件对外提供 ClarificationFacts、ClarificationFactsReader 和 ClarificationAdmissionPolicy。
 
-输入为类型化 wait_for_user 提案及冻结 observation 或 Kernel 当前 Mission/grant/gate/预算事实；输出为准入成功
-或具体、可反馈的拒绝原因。具体工作流为 Reader 只组装可核验事实，Policy 逐类验证 cause、所需用户决定与
-证据身份；Kernel 另核对尚未交付 Mission 的 Primary 授权缺口，完整 Mission、可安全继续和单纯没有派生机会均不能构成缺失目标等待。
-示例：`ClarificationAdmissionPolicy().validate(action, facts)`。
+输入为类型化 wait_for_user 提案及冻结 observation 或 Kernel 当前 Mission/grant/gate/预算事实；输出为准入结果
+或包含合法 cause/证据 identity 的 read_view。具体工作流为 Reader 在当前事务校验同 Observation 的 assessment 补充，
+不存在补充时兼容基础 envelope；当前授权、预算、gate 与 Run 仍由权威事实组装。Policy 的读面与验证共享证据资格，
+Kernel 另核对尚未交付 Mission 的 Primary 授权缺口。完整 Mission、安全继续及没有派生机会不能构成缺失目标等待。
+示例：`view = ClarificationAdmissionPolicy.read_view(facts)`；`ClarificationAdmissionPolicy().validate(action, facts)`。
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard
+from backend.app.desktop.agent_loop.decision_context import DecisionSupplementRepository
 from backend.app.desktop.agent_loop.mission_bootstrap import MissionBootstrapStage
 from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
 from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
@@ -99,10 +101,8 @@ class ClarificationFactsReader:
         safe = "continue_context" in capabilities and loop.initial_context_id in scope and not gates and not exhausted and not external and active is None
         bootstrap = await MissionBootstrapStage().assess(session, loop, round_row)
         bootstrap_need = MissionBootstrapStage.permission_identity(bootstrap.reason or "") if bootstrap.state == "blocked" else None
-        permission_needs = ClarificationAdmissionPolicy.permission_needs(
-            (observation.envelope or {}).get("expansion_assessment") if observation is not None else None,
-            capabilities, permissions,
-        )
+        assessment = await self._expansion_assessment(session, observation)
+        permission_needs = ClarificationAdmissionPolicy.permission_needs(assessment, capabilities, permissions)
         if bootstrap_need is not None:
             permission_needs = permission_needs | {bootstrap_need}
         return ClarificationFacts(
@@ -119,8 +119,43 @@ class ClarificationFactsReader:
             permission_needs=frozenset(permission_needs),
         )
 
+    @staticmethod
+    async def _expansion_assessment(session: AsyncSession, observation: LoopObservation | None) -> dict | None:
+        if observation is None:
+            return None
+        supplement = await DecisionSupplementRepository().get(session, observation.observation_id, "expansion_assessment")
+        return supplement if supplement is not None else (observation.envelope or {}).get("expansion_assessment")
+
 
 class ClarificationAdmissionPolicy:
+    @classmethod
+    def read_view(cls, facts: ClarificationFacts) -> dict:
+        return {
+            "version": "clarification-admission-read-v1",
+            "mission_revision": facts.mission_revision,
+            "safe_continuation": facts.safe_continuation,
+            "active_run": facts.active_run,
+            "admitted_requests": tuple(
+                {"cause": cause, "evidence_identity": {"kind": kind, "reference_id": reference, "revision": facts.mission_revision}}
+                for cause, kind, reference in cls._admitted_evidence(facts)
+            ),
+        }
+
+    @staticmethod
+    def _admitted_evidence(facts: ClarificationFacts) -> tuple[tuple[str, str, str], ...]:
+        if facts.active_run:
+            return ()
+        options = [
+            ("human_gate", "gate", facts.pending_gate_ids),
+            ("permission", "capability", facts.permission_needs),
+            ("budget", "budget", facts.budget_exhaustions),
+        ]
+        if not facts.safe_continuation:
+            options.extend((("missing_input", "input", facts.missing_input_ids), ("external_blocker", "external", facts.external_blockers)))
+            if not (facts.outcome.strip() and facts.check_ids):
+                options.append(("missing_goal", "mission", frozenset({"outcome"})))
+        return tuple(sorted((cause, kind, reference) for cause, kind, references in options for reference in references))
+
     @staticmethod
     def permission_needs(assessment: dict | None, capabilities: frozenset[str], permissions: frozenset[str]) -> frozenset[str]:
         opportunities = tuple((assessment or {}).get("opportunities") or ())
@@ -142,22 +177,12 @@ class ClarificationAdmissionPolicy:
             raise ClarificationRejected("wait_for_user evidence revision 已过期")
         if facts.active_run:
             raise ClarificationRejected("活动 Run 尚未结算，不得请求用户重述任务")
+        if (action.cause, evidence.kind, evidence.reference_id) in self._admitted_evidence(facts):
+            return
         if action.cause == "missing_goal":
             if facts.outcome.strip() and facts.check_ids:
                 raise ClarificationRejected("当前 Mission 已包含最终结果与完成检查，不能声称缺少目标")
-            if evidence.kind != "mission" or evidence.reference_id != "outcome" or facts.safe_continuation:
-                raise ClarificationRejected("缺失目标等待缺少可核验的 Mission 前提")
-            return
+            raise ClarificationRejected("缺失目标等待缺少可核验的 Mission 前提")
         if action.cause == "missing_input":
-            if facts.safe_continuation or evidence.kind != "input" or evidence.reference_id not in facts.missing_input_ids:
-                raise ClarificationRejected("缺失输入未绑定当前未决输入请求，无法证明必须等待用户")
-            return
-        if action.cause == "human_gate" and evidence.kind == "gate" and evidence.reference_id in facts.pending_gate_ids:
-            return
-        if action.cause == "permission" and evidence.kind == "capability" and evidence.reference_id in facts.permission_needs:
-            return
-        if action.cause == "budget" and evidence.kind == "budget" and evidence.reference_id in facts.budget_exhaustions:
-            return
-        if action.cause == "external_blocker" and evidence.kind == "external" and evidence.reference_id in facts.external_blockers and not facts.safe_continuation:
-            return
+            raise ClarificationRejected("缺失输入未绑定当前未决输入请求，无法证明必须等待用户")
         raise ClarificationRejected("wait_for_user cause 与当前 Mission、授权、gate、预算或外部证据不一致")

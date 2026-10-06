@@ -1,10 +1,11 @@
-r"""本文件验证可恢复 Patrol Session 状态机、结构化历史与安全事件 payload。
+r"""本文件对外提供可恢复 Patrol Session 状态机、结构化历史与安全事件 payload 的验证。
 
 输入为真实 Loop round、合法/非法 phase、等待目标和受禁止的隐藏字段；输出为重启后历史一致、重复 phase 合法、
 终态封闭、隐私合同拒绝、合同违例逐次留痕与派生评估可回读断言。具体工作流为跨两个 Repository 实例写入并读取同一 session，
 并以真实数据库核对 Patrol attempt 与 observation 的持久化事实。
 示例：`pytest backend/tests/test_patrol_session.py`。
 assessment 和 Curator 结果独立持久化，基础 Observation 与 hash 保持不变。
+Curator 派发使用真实 Coordinator claim/lease 验证准备 fencing，不以手造 token 绕过生产授权检查。
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from backend.app.desktop.agent_loop import (
     LoopKernel,
     PatrolDecisionIntent,
 )
-from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
+from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim, LoopCoordinator
 from backend.app.desktop.agent_loop.curator_assignments import (
     CuratorAssignmentRepository,
     CuratorScope,
@@ -163,7 +164,7 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
         orchestrator = LoopRoundOrchestrator(sessions, object(), None, None)
         orchestrator._curators = coordination
         try:
-            claim = CoordinatorClaim("lease-1", snapshot["loop_id"], snapshot["current_round_id"], "1")
+            claim = await LoopCoordinator(sessions).claim_for_loop(snapshot["loop_id"], "curator-preparation-test")
             patrol = await lifecycle.begin(claim)
             observation = LoopObservationEnvelope(
                 loop_id=snapshot["loop_id"],
@@ -198,7 +199,7 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
             assert await orchestrator._prepare_observation(claim, patrol.session_id, "observed") is None
             claimed = await runtime._claim_many(2)
             assert len(claimed) == 2
-            await runtime._start_curator_analysis(claimed[0].worker_request_id)
+            await runtime._start_curator_analysis(claimed[0])
             async with sessions.begin() as session:
                 assignment = await assignments.by_worker(session, claimed[0].worker_request_id, lock=True)
                 await assignments.transition(

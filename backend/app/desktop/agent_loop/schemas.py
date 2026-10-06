@@ -3,9 +3,13 @@ r"""本文件对外提供 Agent Loop API、版本化 Expansion 预算、Mission�
 输入为用户 Mission 或兼容旧目标、grant、冻结版本、Expansion/recovery opportunity、Patrol action 和 verifier evidence；输出为拒绝未知字段的不可变
 合同。具体工作流为预算合同验证 Expansion 子策略并标记来源，创建请求再解析结构化 Mission 或无损适配旧三字段，介入请求区分 Context/Portfolio 作用域，模型只以 identity
 选择（spawn_context/recover_context）或结构化拒绝（decline_expansion）表达 Context 派生与恢复、可信 plan 由服务端从冻结 opportunity 取用，持久 legacy create 仅由兼容 adapter 解析，其余 action 依 discriminator 解析，
-envelope 绑定所有控制 revision 与未处理用户意图，completion 以稳定 check_id 绑定类型化证据；bootstrap intent 有模型外来源标识，自主压缩 action 只能引用已持久化候选，Kernel 只接受
+envelope 绑定所有控制 revision 与未处理用户意图，completion 的模型候选与持久合同共用 CompletionVerificationResult，绑定唯一 check_id、类型化证据及 unresolved 引用；bootstrap intent 有模型外来源标识，自主压缩 action 只能引用已持久化候选，Kernel 只接受
 PatrolDecisionIntent。示例：`intent = PatrolDecisionIntent.model_validate(payload)`。
 新版 Observation 校验完整 TaskProgress、来源 manifest 和已提交 Lineage 合同；legacy 输入保留原 schema。
+LoopCreateRequest.inherit_initial_equipment 显式要求服务端继承初始 Run，equipment 与 permission_scope 仅表达 override 或缩权。
+deliver_user_message 只接受已冻结 intent_id，不接受模型提供正文、目标或装备。
+completion_admission 冻结当前完成请求语义身份、原验证及准入 blocker，历史 envelope 可缺省。
+completion_eligibility 独立冻结具体验证的版本化完成资格，历史输入缺省不回填或改写。
 """
 
 from __future__ import annotations
@@ -54,6 +58,11 @@ class ContinueContextAction(StrictModel):
     context_revision_id: str
     message: str = Field(min_length=1)
     required_barrier: bool = True
+
+
+class DeliverUserMessageAction(StrictModel):
+    action: Literal["deliver_user_message"]
+    intent_id: str = Field(min_length=1, max_length=32)
 
 
 class CreateLaneAction(StrictModel):
@@ -165,7 +174,7 @@ class StopLoopAction(StrictModel):
 
 
 PatrolAction = Annotated[
-    ContinueContextAction | CreateLaneAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
+    ContinueContextAction | DeliverUserMessageAction | CreateLaneAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
     PauseLaneAction | DiscardMembershipAction | RequestLaneCuratorAction |
     RequestCompletionVerifierAction | RequestCompletionAction | AdoptWorkspaceResultAction |
     ApplyContextCompressionAction | WaitForUserAction | StopLoopAction,
@@ -174,7 +183,7 @@ PatrolAction = Annotated[
 PATROL_ACTION_ADAPTER = TypeAdapter(PatrolAction)
 
 PatrolModelAction = Annotated[
-    ContinueContextAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
+    ContinueContextAction | DeliverUserMessageAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
     PauseLaneAction | DiscardMembershipAction | RequestLaneCuratorAction |
     RequestCompletionVerifierAction | RequestCompletionAction | AdoptWorkspaceResultAction |
     ApplyContextCompressionAction | WaitForUserAction | StopLoopAction,
@@ -280,6 +289,7 @@ class LoopCreateRequest(StrictModel):
     compression_policy: AutonomousCompressionPolicy | None = None
     budgets: LoopBudgetContract = Field(default_factory=LoopBudgetContract)
     equipment: dict[str, Any] = Field(default_factory=dict)
+    inherit_initial_equipment: bool = False
     expires_at: str | None = None
 
     @model_validator(mode="after")
@@ -350,6 +360,8 @@ class LoopObservationEnvelope(StrictModel):
     expansion_assessment: dict[str, Any] | None = None
     recovery_opportunities: tuple[dict[str, Any], ...] = ()
     recovery_waiting_reason: str | None = None
+    completion_admission: dict[str, Any] | None = None
+    completion_eligibility: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def require_mission_or_legacy_goal(self) -> LoopObservationEnvelope:
@@ -385,22 +397,25 @@ class CriterionVerification(StrictModel):
         return self
 
 
-class CompletionVerificationContract(StrictModel):
-    verification_id: str
-    loop_id: str
-    round_id: str
-    goal_revision: int
-    frontier_hash: str
-    workspace_revision: int
+class CompletionVerificationResult(StrictModel):
     criteria: tuple[CriterionVerification, ...] = Field(min_length=1)
     conclusion: Literal["satisfied", "unsatisfied", "unknown"]
     unresolved: tuple[str, ...] = ()
 
     @model_validator(mode="after")
-    def require_unique_declared_check_ids(self) -> CompletionVerificationContract:
+    def require_unique_declared_check_ids(self) -> CompletionVerificationResult:
         check_ids = [item.check_id for item in self.criteria]
         if len(check_ids) != len(set(check_ids)):
             raise ValueError("Completion verification check_id 必须唯一")
         if not set(self.unresolved).issubset(check_ids):
             raise ValueError("unresolved 只能引用本 verification 的 check_id")
         return self
+
+
+class CompletionVerificationContract(CompletionVerificationResult):
+    verification_id: str
+    loop_id: str
+    round_id: str
+    goal_revision: int
+    frontier_hash: str
+    workspace_revision: int

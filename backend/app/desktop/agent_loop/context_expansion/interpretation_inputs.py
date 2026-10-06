@@ -1,7 +1,7 @@
 r"""本文件对外提供 FrozenInterpretationInputs。
 
-输入为完整冻结 Index 和依次覆盖库存的局部 records；输出为全局发现目录及按任意合法 segment 请求展开的原文。
-具体工作流为保存全部有序目录，按冻结消息组装协议闭合原文，验证 read scope／上限并记录实际提供与请求身份。
+输入为完整冻结 Index 和依次覆盖库存的局部 records；输出为全局发现目录、当前共同阅读窗口及完整累积阅读依赖。
+具体工作流为保存全部有序目录和协议闭合原文，纯预检 read scope／上限，再替换活动窗口并累积实际提供与请求身份；模型 payload 只带活动窗口与最近读取身份，最终 proof 使用完整审计。
 示例：inputs.read((early_segment_id, late_segment_id))；不以关键词、相邻窗口或当前 Context pointer 筛选来源。
 """
 
@@ -21,6 +21,7 @@ class FrozenInterpretationInputs:
             raise ValueError("interpretation local inventory incomplete")
         self._segments = {}
         self._provided = {}
+        self._window = ()
         self._requests = []
         self._max_reads = max_reads
         self.inventory = tuple(
@@ -75,21 +76,37 @@ class FrozenInterpretationInputs:
         return tuple(self._segments.values())
 
     def read(self, segment_ids, *, requested=True):
-        if not set(segment_ids).issubset(self._segments):
-            raise ValueError("interpretation read outside frozen scope")
-        combined = set(self._provided) | set(segment_ids)
-        if exceeds_limit(len(combined), self._max_reads):
-            raise IndexBudgetExceeded("interpretation authorized exact reads exhausted")
+        selected = self._select(segment_ids)
         if requested:
             self._requests.append(tuple(segment_ids))
-        self._provided.update({key: self._segments[key] for key in segment_ids})
+        self._window = selected
+        self._provided.update({item.segment_id: item for item in selected})
+
+    def preview_read(self, segment_ids, *, requested=True):
+        selected = self._select(segment_ids)
+        requests = (tuple(segment_ids),) if requested else ()
+        return self._payload(selected, requests)
+
+    def _select(self, segment_ids):
+        requested = set(segment_ids)
+        if len(requested) != len(segment_ids):
+            raise ValueError("interpretation duplicate read identity")
+        if not requested.issubset(self._segments):
+            raise ValueError("interpretation read outside frozen scope")
+        combined = set(self._provided) | requested
+        if exceeds_limit(len(combined), self._max_reads):
+            raise IndexBudgetExceeded("interpretation authorized exact reads exhausted")
+        return tuple(item for key, item in self._segments.items() if key in requested)
 
     def payload(self, *, originals=None):
+        return self._payload(self._window if originals is None else originals, self.requests[-1:])
+
+    def _payload(self, originals, requests):
         return {
             "inventory": tuple(e.model_dump(mode="json") for e in self.inventory),
             "segments": tuple(
                 p.model_dump(mode="json")
-                for p in (self.provided if originals is None else originals)
+                for p in originals
             ),
-            "read_requests": self.requests,
+            "read_requests": requests,
         }

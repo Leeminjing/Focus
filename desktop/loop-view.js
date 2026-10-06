@@ -1,8 +1,9 @@
 /*
  * 本文件对外提供 Agent Loop 生命周期外壳、Option 3 Patrol 活动轨、Mission 表单、Expansion 资源状态、授权控制与轻量生命周期补丁函数。
  * 输入为兼容 Loop 读模型、Mission 交付与有效 Expansion 预算快照、权威 Live projection、连接状态、当前 Context 与 Console 读模型；输出为紧凑顶栏、独立连接提示、交付/资源/阻断状态及现有图/会话/事实工作区。
- * 具体工作流为启动态编辑 Mission 与显式 Expansion 容量；运行态以当前 Live round 显示轮次、以已结算用量计算预算，连接提示随生命周期补丁更新，再把图、会话、事实交给专用视图。
+ * 具体工作流为启动态编辑 Mission 与显式 Expansion 容量；运行态以当前 Live round 显示轮次，消费分开显示实际、未报告预留和预算占用，预算环按占用计算；分别显示事务完成计数、初始证据和待清理，连接提示随生命周期补丁更新，再把图、会话、事实交给专用视图。
  * 示例：`FocusLoopView.render(loopState, context, consoleState)`；SSE 到达时调用 `patchLifecycle(container, state)`。
+ * 历史事务按只读 accounting 身份展示冻结/决策与 missing_patrol_decision，保留原有轮号及历史事实。
  */
 (function (root, factory) {
   const api = factory();
@@ -114,8 +115,8 @@
     const contextCount = consoleState?.manifest?.nodes?.length ?? usage.contexts ?? 0;
     const terminal = TERMINAL.has(loop.status);
     const controls = loop.status === "running" ? ["pause", "stop"] : loop.status === "paused" ? [...(loop.grant ? ["resume"] : []), "stop"] : loop.status === "waiting_user" ? ["stop"] : [];
-    const percent = budgetPercent(usage, budgets);
-    const round = terminal ? Number(usage.rounds || 0) : Number(currentRound || usage.rounds || 0);
+    const percent = budgetPercent({ ...usage, ...loop.accounting?.consumption?.occupied }, budgets);
+    const round = Number(currentRound || loop.accounting?.started_rounds || usage.rounds || 0);
     return `<header class="loop-command-bar"><div class="loop-command-title"><h2>Portfolio Map</h2>${goalDisclosure(loop)}</div><div class="loop-command-metrics"><div class="loop-command-metric"><span class="loop-live-dot is-${escape(loop.status)}" aria-hidden="true"></span><div><strong>${escape(loop.status)}</strong><small>Loop 状态</small></div></div><div class="loop-command-metric"><strong>Round ${escape(round)}</strong><small>/ ${escape(budgets.max_rounds || "∞")}</small></div><div class="loop-command-metric"><strong>${escape(contextCount)} 个 Context</strong><small>真实 Portfolio</small></div><div class="loop-command-metric"><strong>Portfolio Patrol</strong><small>${escape(loop.health || "idle")}</small></div><div class="loop-budget-ring" style="--loop-budget-progress:${percent}%" role="img" aria-label="预算已使用 ${percent}%"><span>${percent}%</span></div></div><div class="loop-primary-controls">${controls.map(command => `<button type="button" data-action="loop-control" data-loop-control="${command}">${({ pause: "暂停", resume: "恢复", stop: "停止" })[command]}</button>`).join("")}${terminal ? '<button type="button" data-action="loop-exit">退出当前 Loop</button><button class="primary" type="button" data-action="loop-prepare-new">新建 Loop</button>' : ""}</div></header>`;
   }
 
@@ -201,6 +202,18 @@
     existing.forEach(item => item.remove());
   }
 
+  function consumptionDetails(loop, budgets) {
+    const consumption = loop.accounting?.consumption;
+    return [["Calls", "model_calls"], ["Input", "input_tokens"], ["Output", "output_tokens"]].map(([label, key]) => {
+      if (!consumption) return `<span>${label} ${escape(loop.usage?.[key] || 0)} / ${escape(budgets[`max_${key}`] || "∞")}</span>`;
+      return `<span>${label} 实际 ${escape(consumption.actual?.[key] || 0)} · 未报告预留 ${escape(consumption.unreported_reservations?.[key] || 0)} · 预算占用 ${escape(consumption.occupied?.[key] || 0)} / ${escape(budgets[`max_${key}`] || "∞")}</span>`;
+    }).join("");
+  }
+
+  function transactionHistory(loop) {
+    return `<details class="loop-round-history"><summary>事务轮次记录</summary><ol>${(loop.accounting?.round_history || []).map(row => `<li>Round ${escape(row.number)} · ${escape(row.status)} · ${row.completed_transaction ? "完整事务" : "未完成事务"}<div>Observation ${escape(row.observation_id || "—")} · Decision ${escape(row.decision_id || "—")}</div>${(row.diagnostics || []).map(code => `<code>${escape(code)}</code>`).join(" ")}</li>`).join("")}</ol></details>`;
+  }
+
   function render(state, context = {}, consoleState = null, waitUi = {}) {
     const loop = state?.snapshot;
     if (!loop) return startView(context);
@@ -211,11 +224,12 @@
     const terminal = TERMINAL.has(loop.status);
     const missionEditor = globalThis.FocusLoopMissionEditor?.render(loop.mission || { goal: loop.goal }) || "";
     const history = missionHistory(related.audit?.mission_history);
+    const roundHistory = transactionHistory(loop);
     const override = ["running", "paused", "waiting_user"].includes(loop.status) ? `<details class="loop-override"><summary>用户接管 / 修订 Mission</summary><form id="agentLoopOverrideForm">${missionEditor}<button class="primary" type="submit">确认新 Mission revision</button></form></details>` : "";
-    const budgetDetails = `<div class="loop-budget"><span>Rounds ${escape(usage.rounds || 0)} / ${escape(budgets.max_rounds || "∞")}</span><span>Duration ${escape(usage.duration_seconds || 0)} / ${escape(budgets.max_duration_seconds || "∞")}s</span><span>Calls ${escape(usage.model_calls || 0)} / ${escape(budgets.max_model_calls || "∞")}</span><span>Input ${escape(usage.input_tokens || 0)} / ${escape(budgets.max_input_tokens || "∞")}</span><span>Output ${escape(usage.output_tokens || 0)} / ${escape(budgets.max_output_tokens || "∞")}</span><span>Retries ${escape(usage.retries || 0)} / ${escape(budgets.max_retries ?? "∞")}</span><span>Lanes ${escape(usage.lanes || 0)} / ${escape(budgets.max_lanes || "∞")}</span><span>Contexts ${escape(usage.contexts || 0)} / ${escape(budgets.max_contexts || "∞")}</span><span>Providers ${escape(usage.providers || 0)} / ${escape(budgets.max_providers || "∞")}</span></div>`;
+    const budgetDetails = `<div class="loop-budget"><span>Rounds ${escape(usage.rounds || 0)} / ${escape(budgets.max_rounds || "∞")} · 已完成事务</span><span>Legacy ${escape(loop.accounting?.legacy_rounds || 0)}</span><span>待清理 ${escape(loop.accounting?.cleanup_pending_runs || 0)}</span><span>预留调用 ${escape(loop.accounting?.reserved_model_calls || 0)}</span><span>用量未知 ${escape(loop.accounting?.unknown_model_attempts || 0)}</span><span>Duration ${escape(usage.duration_seconds || 0)} / ${escape(budgets.max_duration_seconds || "∞")}s</span>${consumptionDetails(loop, budgets)}<span>Retries ${escape(usage.retries || 0)} / ${escape(budgets.max_retries ?? "∞")}</span><span>Lanes ${escape(usage.lanes || 0)} / ${escape(budgets.max_lanes || "∞")}</span><span>Contexts ${escape(usage.contexts || 0)} / ${escape(budgets.max_contexts || "∞")}</span><span>Providers ${escape(usage.providers || 0)} / ${escape(budgets.max_providers || "∞")}</span></div>`;
     const consoleHtml = globalThis.FocusLoopConsoleView?.render({ ...consoleState, loopStatus: loop.status, terminal }) || '<section class="loop-console-loading">控制台模块不可用</section>';
     const waitRequest = globalThis.FocusLoopWaitRequestView?.render(loop.wait_request, waitUi, escape) || (loop.waiting_reason ? `<p class="loop-waiting" data-loop-waiting role="status">${escape(loop.waiting_reason)}</p>` : "");
-    return `<section class="loop-dashboard console-shell" data-loop-id="${escape(loop.loop_id)}" data-loop-status="${escape(loop.status)}">${commandBar(loop, consoleState, state.live?.round?.state?.number)}${connectionNotice(state)}${patrolActivity(state)}${missionDeliveryStatus(loop)}${waitRequest}${expansionBudget.renderStatus(loop.expansion_resources)}${compressionStatus({ ...related, snapshot: loop })}${terminal ? `<div class="loop-terminal-notice" role="status"><strong>该 Loop 已${loop.status === "completed" ? "完成" : loop.status === "failed" ? "失败" : "停止"}</strong><span>历史 Context、完整会话和事实证据仍可查看；退出不会删除审计记录。</span></div>` : ""}${consoleHtml}<details class="loop-advanced"><summary>授权、预算与目标控制</summary>${budgetDetails}${grantControls(loop)}${history}${override}<p class="muted tiny">当前轮次 ${escape(loop.current_round_id || "—")} · 活动 Run ${escape(activeRuns.length)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)} · Authority R${escape(loop.authority_revision)}</p></details></section>`;
+    return `<section class="loop-dashboard console-shell" data-loop-id="${escape(loop.loop_id)}" data-loop-status="${escape(loop.status)}">${commandBar(loop, consoleState, state.live?.round?.state?.number)}${connectionNotice(state)}${patrolActivity(state)}${missionDeliveryStatus(loop)}${waitRequest}${expansionBudget.renderStatus(loop.expansion_resources)}${compressionStatus({ ...related, snapshot: loop })}${terminal ? `<div class="loop-terminal-notice" role="status"><strong>该 Loop 已${loop.status === "completed" ? "完成" : loop.status === "failed" ? "失败" : "停止"}</strong><span>历史 Context、完整会话和事实证据仍可查看；退出不会删除审计记录。</span></div>` : ""}${consoleHtml}<details class="loop-advanced"><summary>授权、预算与目标控制</summary>${budgetDetails}${roundHistory}${grantControls(loop)}${history}${override}<p class="muted tiny">当前轮次 ${escape(loop.current_round_id || "—")} · 活动 Run ${escape(activeRuns.length)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)} · Authority R${escape(loop.authority_revision)}</p></details></section>`;
   }
 
   function patchLifecycle(container, state) {
@@ -238,6 +252,9 @@
     const metrics = shell.querySelector(".loop-command-metrics");
     const nextMetrics = commandTemplate.content.querySelector(".loop-command-metrics");
     if (metrics && nextMetrics) metrics.replaceWith(nextMetrics);
+    const historyTemplate = document.createElement("template");
+    historyTemplate.innerHTML = transactionHistory(loop);
+    shell.querySelector(".loop-round-history ol")?.replaceWith(historyTemplate.content.querySelector("ol"));
     const activity = shell.querySelector(".patrol-activity-rail");
     const nextActivityHtml = patrolActivity(state);
     if (activity && nextActivityHtml) {

@@ -1,4 +1,4 @@
-r"""本文件验证 Agent Loop round 的活性契约：领取公平性、决策终局收敛、终局短路、看门狗与存量恢复。
+r"""本文件对外提供 Agent Loop round 活性契约测试：领取公平性、决策终局收敛、终局短路、看门狗与存量恢复。
 
 输入为真实 PostgreSQL 中的同工作区多 Loop、可由他人占用的与已过期的 coordinator 租约、停滞 round 的
 attempt 计数、legacy 落定 decision 与 Kernel/Coordinator/Recovery 真实调用；输出为"队头被占用仍顺延领取"
@@ -67,7 +67,7 @@ from config_helpers import app_config_for
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 
-async def _seed_loop(sessions, tmp_path: Path, *, label: str, started_at: datetime) -> dict:
+async def _seed_loop(sessions, tmp_path: Path, *, label: str, started_at: datetime, budgets=None) -> dict:
     """播种一个 workspace/context/settled 初始 Run 并启动 Loop，返回其观察轮与 intent 基线。"""
     workspace_id = f"ws-{label}-{uuid.uuid4().hex[:8]}"
     context_id = f"context-{label}-{uuid.uuid4().hex[:8]}"
@@ -128,6 +128,7 @@ async def _seed_loop(sessions, tmp_path: Path, *, label: str, started_at: dateti
             capabilities=("continue_context", "request_completion"),
             context_scope=(context_id,),
             permission_scope=("read", "write"),
+            budgets=budgets or {},
         )
     )
     round_id = snapshot["current_round_id"]
@@ -178,7 +179,11 @@ def test_claim_skips_leased_head_and_claims_next_candidate(tmp_path: Path) -> No
                 blocked = await session.get(AgentLoop, older["loop_id"])
                 claimed = await session.get(AgentLoop, newer["loop_id"])
                 assert blocked.health == "observing", "被阻塞的 Loop 不应被本协调者推进"
-                assert claimed.health == "deciding", "被领取的 Loop 必须离开仅观察状态"
+                assert claimed.health == "observing", "领取租约不等于完成冻结观察或开始 Patrol 决策"
+                current = await session.get(LoopRound, claimed.current_round_id)
+                lease = await session.scalar(select(LoopCoordinatorLease).where(LoopCoordinatorLease.round_id == current.round_id))
+                assert current.observation_id is None and lease.owner_id == "agent-loop-coordinator"
+                assert lease.fencing_token == claim.fencing_token
         finally:
             for fixture in (older, newer):
                 if fixture is not None:

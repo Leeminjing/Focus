@@ -134,6 +134,10 @@ class StructuredWorkSpecRelationEvaluator:
     def attempt_records(self) -> tuple[dict[str, Any], ...]:
         return tuple(getattr(self._model, "last_attempt_records", ()))
 
+    def bind_usage_receipts(self, receipts):
+        if hasattr(self._model, "bind_usage_receipts"):
+            self._model.bind_usage_receipts(receipts)
+
     async def evaluate(
         self,
         candidates: tuple[WorkContextSpec, ...],

@@ -5,6 +5,7 @@ Portfolio event producer；输出为三路同时运行、授权 Directive 改变
 持久事件断言。具体工作流为用确定性端口替代模型与 Agent 执行，但不手写任何最终 UI 事件。示例：
 `pytest backend/tests/test_loop_live_acceptance.py`。
 运行中的测试结果生成 Test facts，Tool 完成只更新独立 activity。
+该场景播种已存在的三个正式 membership，验证并行 Live 合同；不将夹具播种声明为生产 Context 派生或原生 publication 证明。
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ from backend.app.desktop.agent_loop.live_projection_projector import (
     LoopLiveSnapshotProjector,
 )
 from backend.app.desktop.agent_loop.models import (
+    LoopContextMembership,
     LoopDirective,
     LoopRound,
     LoopWorkerRequest,
@@ -107,6 +109,7 @@ def test_production_components_drive_the_complete_live_multi_context_story(tmp_p
                 )
             )
             started = True
+            await _seed_memberships(sessions, loop_id, snapshot["current_round_id"], context_ids, roles)
             patrol = await _fan_out_curators(sessions, snapshot, context_ids, revision_ids, roles)
             messages = (
                 "实现目标变更并持续报告工具活动。",
@@ -192,6 +195,18 @@ async def _seed_contexts(sessions, tmp_path, workspace_id, context_ids, revision
             await repository.insert(session, ContextRevisionContract(ref=ref, content_hash=str(index) * 64, projection_status=ContextRevisionProjectionStatus.VALID, origin_kind=ContextRevisionOriginKind.ROOT, created_at=datetime.now(UTC)))
             await repository.switch_current(session, ref, None)
         session.add(DesktopRun(run_id=initial_run_id, task_id=context_ids[0], agent_id=f"main:{context_ids[0]}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{context_ids[0]}", context_revision_id=revision_ids[0], settled_at=datetime.now(UTC)))
+
+
+async def _seed_memberships(sessions, loop_id, round_id, context_ids, roles):
+    from backend.app.desktop.agent_loop.rounds import current_frontier_hash
+
+    async with sessions.begin() as session:
+        for context_id, role in zip(context_ids[1:], roles[1:], strict=True):
+            session.add(LoopContextMembership(membership_id=uuid.uuid4().hex, loop_id=loop_id,
+                context_id=context_id, role=role, status="active"))
+        await session.flush()
+        round_row = await session.get(LoopRound, round_id)
+        round_row.frontier_hash = await current_frontier_hash(session, loop_id)
 
 
 async def _fan_out_curators(sessions, snapshot, context_ids, revision_ids, roles):

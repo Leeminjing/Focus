@@ -16,6 +16,7 @@ SendMessage（点对点/广播）、任务板（Coordinator CAS 机械协议）�
 
 具体工作流为：send_message 落表（from=当前 agent，kind 区分文本与协议消息，to_agent="*" 广播）；
 目标 agent 通过 AgentInbox 只读取得 typed collaboration 内容，精确 checkpoint 提交后确认投递；
+消息 kind 与公开 schema 共用 MessageKind 合同，非法类型在投递前拒绝。
 计划审批为回合制（teammate 请求 → main 响应 → teammate 回合注入）；关机批准为代码层动作
 （swarm_agents.status 置 stopped）；任务板以数据库 CAS 更新强制状态机。
 
@@ -30,7 +31,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, get_args
 import uuid
 
 from langchain.tools import ToolRuntime
@@ -39,6 +40,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.models import AgentBoardTask, AgentMessage, SwarmAgent
+from backend.app.desktop.collaboration_contracts import MessageKind
 from focus.security.effects import NO_LOCAL_EFFECT, declare_all_effects
 from focus.security.governed import declare_governed_keys
 from focus.security.launch import SWARM_DEPTH_CONTEXT_KEY
@@ -51,13 +53,7 @@ _SWARM_DEPTH_LIMIT = 3
 
 declare_governed_keys("agent_id", "task_id", "swarm_depth")
 
-_MESSAGE_KINDS = frozenset({
-    "message",
-    "plan_approval_request",
-    "plan_approval_response",
-    "shutdown_request",
-    "shutdown_response",
-})
+_MESSAGE_KINDS = frozenset(get_args(MessageKind))
 _PROTOCOL_KINDS = frozenset({
     "plan_approval_request",
     "plan_approval_response",
@@ -134,7 +130,7 @@ class AgentCollab:
     def build_send_message_tool(self) -> BaseTool:
         @tool
         async def send_message(
-            to_agent: str, content: str, runtime: ToolRuntime[dict], kind: str = "message"
+            to_agent: str, content: str, runtime: ToolRuntime[dict], kind: MessageKind = "message"
         ) -> str:
             """给指定 Agent 发送消息；to_agent="*" 广播给主 Agent 与全部协作 Agent。对方下一次运行时读取，每条消息只被消费一次。"""
             agent_id, task_id = _collab_values(runtime)

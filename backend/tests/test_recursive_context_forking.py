@@ -1,7 +1,7 @@
 r"""本文件对外提供 Context 派生树、协议审批边界和独立 LangGraph checkpoint 集成测试。
 
 输入为真实 workspace、来源 checkpoint、合法或歧义的 authored messages 及哈希绑定审批；输出为派生 revision、不可变 authored
-snapshot、approval_required 阻断、接受/拒绝与 stale decision 断言。具体工作流为通过 Desktop API 派生多层 Context，验证无中断因果的
+snapshot及稳定消息身份、approval_required 阻断、接受/拒绝与 stale decision 断言。具体工作流为通过 Desktop API 派生多层 Context，验证历史身份和当前消息独立，且无中断因果的
 Tool Exchange 不会被自动解释，再检查审批和 checkpoint 隔离。示例：`pytest backend/tests/test_recursive_context_forking.py -q`。
 """
 
@@ -174,7 +174,10 @@ def test_recursive_tree_merge_and_parent_independence(tmp_path: Path, monkeypatc
             b_snapshot = client.get(
                 f"/desktop/api/contexts/{b['context_id']}/snapshot", headers=SESSION
             ).json()
-            assert b_snapshot["messages"] == [{"role": "human", "content": "B2"}]
+            assert [{"role": message["role"], "content": message["content"]}
+                    for message in b_snapshot["messages"]] == [{"role": "human", "content": "B2"}]
+            assert b_snapshot["messages"][0]["id"]
+            assert b_snapshot["messages"][0]["id"] != original_b_snapshot["messages"][0]["id"]
             historical_b_snapshot = client.get(
                 f"/desktop/api/contexts/{b['context_id']}/snapshot",
                 headers=SESSION,
@@ -184,6 +187,7 @@ def test_recursive_tree_merge_and_parent_independence(tmp_path: Path, monkeypatc
                 {"role": message["role"], "content": message["content"]}
                 for message in historical_b_snapshot["messages"]
             ] == [{"role": "human", "content": "B1"}]
+            assert historical_b_snapshot["messages"] == original_b_snapshot["messages"]
 
             client.portal.call(
                 _insert_main_run,
@@ -200,12 +204,12 @@ def test_recursive_tree_merge_and_parent_independence(tmp_path: Path, monkeypatc
             assert locked_edit.status_code == 409
             assert client.get(
                 f"/desktop/api/contexts/{b['context_id']}/snapshot", headers=SESSION
-            ).json()["messages"] == [{"role": "human", "content": "B2"}]
+            ).json()["messages"] == b_snapshot["messages"]
 
             client.portal.call(_append, service, root["thread_id"], "A2")
             assert client.get(
                 f"/desktop/api/contexts/{b['context_id']}/snapshot", headers=SESSION
-            ).json()["messages"] == [{"role": "human", "content": "B2"}]
+            ).json()["messages"] == b_snapshot["messages"]
 
             c = derive(
                 "C",

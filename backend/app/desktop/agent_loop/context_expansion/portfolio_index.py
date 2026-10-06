@@ -3,8 +3,12 @@ r"""本文件对外提供 PortfolioSemanticIndexService 与 PortfolioIndexBuildR
 输入为冻结 Observation、Revision reader、监督模型 factories 和并发上限；输出为完整 indexes、catalog、stage 与真实用量。
 具体工作流为冻结独立局部／整体合同，精确缓存优先，权威追加继承局部 records，再用完整目录及任意冻结原文做整体解释和联合验证。
 模型工作不持有事务；短事务解析局部及完整 Index 赢家并校验 catalog。全部阶段共用 Loop 准入／结算，取消和竞争仍计实际成本。
+索引采样绑定本次冻结 Round identity 并复用逐次 owner receipt，混合成功和取消分别结算，不把通用预算行当作独立执行权威；批次汇总跳过已托管 attempts 避免重复计费。
 新 Index 包含 interpretation proof；必要综合失败不发布局部-only artifact。显式新授权重试记录版本，冻结认知输入不变。
+整体解释窗口合同独立进入 fingerprint，使旧综合缓存不冒充新协议；局部记录继续按独立合同复用，旧 proof 不改写。
+局部投影在调用模型前读取并校验原合同缓存，只有未命中的段调用局部模型；发布前仍采用原子赢家并复核综合依赖。
 Revision 原文从版本化 semantic view 读取，控制与 reasoning 不参与 segmentation、fallback 或综合解释。
+容量失败的阶段 attempt 保存 schema、请求 hash 与字段尺寸，保留真实消费，不将通用窗口拒绝误记为 Tool 原子失败。
 示例：result = await service.build(observation)；稳定旧段免重抽，新增否定与远端怀疑生成联合诊断，消费者读取一个完整目标。
 """
 
@@ -175,7 +179,7 @@ class PortfolioSemanticIndexService:
         state.interpretation_contract = (
             "syn:"
             + stable_expansion_hash(
-                "frozen-evidence-discovery-v1",
+                "frozen-evidence-discovery-window-v2",
                 RevisionInterpretationRecord.SCHEMA_VERSION,
                 RevisionInterpretationProposal.model_json_schema(),
                 INTERPRETATION_PROMPT,
@@ -321,14 +325,21 @@ class PortfolioSemanticIndexService:
         }
         return IndexModelBudget(
             resources,
+            usage_receipts=self._owned_usage(observation),
             reservations=IndexBudgetReservationRepository(
                 self._sessions,
                 getattr(observation, "loop_id", ""),
                 resources.grant_revision,
                 limits,
                 usage,
+                owner={"owner_kind": "round", "owner_id": observation.round_id, "round_id": observation.round_id},
             ),
         )
+
+    def _owned_usage(self, observation):
+        from backend.app.desktop.agent_loop.model_usage_owner import OwnedModelUsage
+
+        return OwnedModelUsage(self._sessions, observation.loop_id, observation.round_id, "round", observation.round_id)
 
     def _catalog(self, observation, indexes):
         return PortfolioIndexCatalog.create(
@@ -528,6 +539,7 @@ class PortfolioSemanticIndexService:
                             "error_type": type(exc).__name__,
                             "failure_category": category,
                             "retryable": retryable,
+                            **({"request_capacity": exc.request_diagnostic} if getattr(exc, "request_diagnostic", None) is not None else {}),
                         },
                     )
                     if not retryable:
@@ -592,22 +604,7 @@ class PortfolioSemanticIndexService:
         source = frozen.source
         records = list(inherited)
         for segment in frozen.segments[len(inherited) :]:
-            messages = tuple(
-                m for m in frozen.messages if m.message_id in set(segment.message_ids)
-            )
-            builder = SegmentProjectionBuilder(
-                source.context_id,
-                _BUILD_STATE.get().local_contract,
-                self._budgeted_model(self._semantic_projector_factory),
-                self._budgeted_model(self._semantic_claim_verifier_factory),
-                lambda attempts: [
-                    self._append_attempt(
-                        source.revision_id, {**a, "index_phase": "local"}
-                    )
-                    for a in attempts
-                ],
-            )
-            records.append(await builder.build(segment, messages))
+            records.append(await self._project_segment(frozen, segment))
         async with self._sessions.begin() as session:
             records = await self._records.resolve_existing(
                 session, source.context_id, records
@@ -643,6 +640,22 @@ class PortfolioSemanticIndexService:
             interpretation=interpretation,
             local_contract=state.local_contract,
         )
+
+    async def _project_segment(self, frozen, segment):
+        ids = set(segment.message_ids)
+        messages = tuple(m for m in frozen.messages if m.message_id in ids)
+        contract = _BUILD_STATE.get().local_contract
+        async with self._sessions() as session:
+            cached = await self._records.for_segment(session, frozen.source.context_id, segment, messages, contract)
+        if cached is not None:
+            return cached
+        builder = SegmentProjectionBuilder(
+            frozen.source.context_id, contract,
+            self._budgeted_model(self._semantic_projector_factory),
+            self._budgeted_model(self._semantic_claim_verifier_factory),
+            lambda attempts: [self._append_attempt(frozen.source.revision_id, {**a, "index_phase": "local"}) for a in attempts],
+        )
+        return await builder.build(segment, messages)
 
     def _budgeted_model(self, factory):
         if factory is None:
@@ -687,6 +700,7 @@ class PortfolioSemanticIndexService:
         loop_id: str,
         attempts: tuple[dict[str, Any], ...],
     ) -> None:
+        attempts = tuple(item for item in attempts if not item.get("usage_managed"))
         if not attempts:
             return
         delta = LoopUsageDelta(
@@ -703,6 +717,6 @@ class PortfolioSemanticIndexService:
         )
         budget = _BUILD_STATE.get().budget
         if budget is not None and budget.has_reservations:
-            await budget.settle(delta)
+            await budget.settle(delta, reported=all(item.get("usage_reported", True) for item in attempts))
         else:
             await LoopUsageLedger(self._sessions).record(loop_id, delta)

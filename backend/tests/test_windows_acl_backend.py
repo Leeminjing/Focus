@@ -4,7 +4,8 @@
 输出为缺失后端时目标未运行、独立状态通道不被目标输出伪造，以及两种受限模式的文件效果，
 包括嵌套根拒绝、跨根重命名、目录联接越界、只读新建文件及四种解释器的写删效果。
 具体工作流为先验证启动前失败零执行、启动后控制故障仍保留目标事实，再尝试越界写入，
-每个测试结束时撤销该测试会话的私有临时授权，并核对清理失败只产生独立告警。
+每个测试结束时撤销该测试会话的私有临时授权，并核对清理失败只产生独立告警；
+进程树取消以目标已输出 READY 且写入就绪文件为前置事实，避免固定延时把未启动当作已启动。
 示例：运行 python -m pytest backend/tests/test_windows_acl_backend.py。
 """
 
@@ -589,26 +590,31 @@ def test_powershell_python_node_chain_keeps_file_boundary(windows_sandbox_roots,
 @pytest.mark.parametrize("reason", ["cancelled", "timeout"])
 def test_cancel_or_timeout_terminates_managed_descendants(windows_sandbox_roots, acl_backend, reason):
     marker = windows_sandbox_roots.workspace_a / f"late-{reason}.txt"
+    ready = windows_sandbox_roots.workspace_a / f"ready-{reason}.txt"
     child_code = (
         "import sys,time; from pathlib import Path; "
         "time.sleep(1.5); Path(sys.argv[1]).write_text('late')"
     )
     parent_code = (
-        "import subprocess,sys,time; "
+        "import subprocess,sys,time; from pathlib import Path; "
         "subprocess.Popen([sys.executable,'-c',sys.argv[2],sys.argv[1]]); "
-        "print('READY', flush=True); time.sleep(10)"
+        "print('READY', flush=True); Path(sys.argv[3]).write_text('ready'); time.sleep(10)"
     )
     cancellation = threading.Event()
     request = ShellExecutionRequest(
         _binding(windows_sandbox_roots.workspace_a), sys.executable,
-        ("-c", parent_code, str(marker), child_code),
+        ("-c", parent_code, str(marker), child_code, str(ready)),
         timeout_seconds=0.6 if reason == "timeout" else 10,
         cancel_event=cancellation,
     )
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(acl_backend.run, request)
         if reason == "cancelled":
-            time.sleep(0.6)
+            deadline = time.monotonic() + request.timeout_seconds
+            while not ready.exists() and not future.done() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert ready.exists(), "managed target did not reach readiness before cancellation"
+            assert not marker.exists(), "descendant completed before cancellation was exercised"
             cancellation.set()
         result = future.result(timeout=12)
     assert result.status == reason

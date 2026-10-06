@@ -1,26 +1,14 @@
-"""spatial-patrol 插件的空间服务:载体解析、坐标换算、从锚点向外观察、观察工具构建。
+"""本文件对外提供 ObservationService、init_service、get_service、CARRIER_READ_EFFECT 和观察工具构建。
 
-对外提供:
-    ObservationService — 观察服务(载体解析 / PDF 扩张取文 / 图片裁剪视觉描述)
-    ObservationService.carrier_path(workspace, content_ref) — 领域解析:只回答"是哪一个文件"
-    ObservationService.resolve_path(workspace, content_ref, context) — 领域解析 + 准入判定
-    CARRIER_READ_EFFECT — 观察工具的读取效果契约(受治理目标来自受治理上下文)
-    build_observation_tools(service) — observe_anchor / expand_observation 两个工具
-
-载体归属:载体引用到真实宿主路径的解释与准入判定委托 focus.security;本模块不自行比较工作根。
-过渡期说明:准入中间件成为权威之前,待决在 resolve_path 处以 ValueError 呈现
-(见 openspec tasks 3.4)。
-
-输入:
-    plugin_config: dict — config.json 原样内容(observe_radius_start/growth/max_radius)
-    vision_model: BaseChatModel | None — 视觉模型(插件接入时已校验,可为 None 仅测试)
-
-观察语义(f18-spatial-patrol spec):
-    PDF: pypdfium2 get_text_bounded 以锚点为中心逐圈取文字(纯文本,text-only 模型可读);
-    图片: Pillow 按锚点裁剪,视觉模型描述。半径 r 为相对页/图尺寸的归一化值。
-
-视觉能力判定:主模型是否具备图像输入能力只依据模型条目的 supports_image_input 声明,
-不再依据模型名推断;声明缺失按不具备处理(纯文本保守语义)。
+输入为插件半径配置、可选视觉模型、工作区载体引用、页号和归一化锚点坐标；输出为真实载体路径、
+PDF锚点周围文字、图片裁剪描述和具备读取效果声明的 observe_anchor/expand_observation 工具。
+具体工作流为复用 focus.security 的真实路径解释及归属函数，先确认载体属于本工作区，再独立执行
+文件访问准入；允许读取外部普通文件不使其成为本工作区载体。准入待决仍以 ValueError 呈现。
+carrier_path只解析路径，resolve_path落实归属及准入，界面和执行调用共用这一业务边界。
+PDF用pypdfium2逐圈取文字，图片用Pillow裁剪后交由视觉模型；半径相对页/图尺寸。
+视觉能力仅依据supports_image_input声明；纯文本模型且无视觉能力提供方时插件不可用。
+示例：ObservationService({}, None).resolve_path("C:/ws", "docs/a.pdf") 返回本工作区载体路径；
+"../other/a.pdf"被拒，即使当前执行为danger-full-access。
 """
 
 import base64
@@ -44,6 +32,7 @@ from focus.security import (
     AccessPolicy,
     canonical_target,
     decide_path_access,
+    is_within,
     policy_from_context,
     restrictive_policy,
 )
@@ -131,7 +120,6 @@ def _clamp(value: float, low: float, high: float) -> float:
 
 
 def _policy_or_restrictive(context: object, root: Path) -> AccessPolicy:
-    """由受治理上下文构造访问策略;上下文不可用时退回最严的工作区策略。"""
     if isinstance(context, dict) and context.get("workspace"):
         return policy_from_context(context)
     return restrictive_policy(root)
@@ -174,14 +162,10 @@ class ObservationService:
 
     @staticmethod
     def resolve_path(workspace: str, content_ref: str, context: object = None) -> Path:
-        """领域解析后按访问策略判定是否放行。
-
-        准入判定委托 focus.security,本函数不自行比较工作根。过渡实现:
-        准入中间件成为权威之前,待决在这里以 ValueError 呈现(见 openspec tasks 3.4);
-        界面侧调用方不传受治理上下文,因此得到最严的工作区策略。
-        """
         root = Path(workspace).resolve()
         target = ObservationService.carrier_path(workspace, content_ref)
+        if not is_within(root, target):
+            raise ValueError("载体路径不属于当前工作区")
         policy = _policy_or_restrictive(context, root)
         if decide_path_access(policy, target, AccessOperation.READ) is not AccessDecision.ALLOW:
             raise ValueError("载体路径不属于当前工作区")

@@ -1,7 +1,8 @@
-r"""本文件验证 LoopSupervisor 的独立进度、故障隔离、暂停屏障和停止收敛。
+r"""本文件对外提供 LoopSupervisor 的独立进度、故障隔离、暂停屏障和停止收敛回归。
 
 输入为阻塞 round、失败 worker 与快速 Run-event 组件；输出为互不阻塞的 tick、独立 failure state、暂停后
-不启动新工作及 close 后全部终止的断言。具体工作流为用 asyncio Event 驱动确定性组件而不访问数据库。
+不启动新工作及 close 后全部终止的断言。具体工作流为用 asyncio Event 和可推进的事件循环时钟驱动确定性组件，
+核对配置续租检查期限内的取消与唯一释放，而不访问数据库。
 示例：`pytest backend/tests/test_loop_supervisor.py`。
 """
 
@@ -185,4 +186,53 @@ def test_runtime_renews_long_claim_and_cancels_on_renewal_loss() -> None:
         finally:
             await runtime.close()
 
+    asyncio.run(run())
+
+
+def test_simulated_clock_cancellation_closes_within_configured_renewal_window(monkeypatch) -> None:
+    async def run():
+        loop = asyncio.get_running_loop()
+        clock = [loop.time()]
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+        released = []
+        claim = CoordinatorClaim("lease", "loop", "round", "fence")
+
+        class Coordinator:
+            renewal_interval = 3.0
+
+            async def renew(self, identity):
+                assert identity == claim
+                return False
+
+            async def release(self, identity):
+                released.append(identity)
+
+        class Orchestrator:
+            async def process(self, identity):
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+
+        runtime = LoopCoordinatorRuntime(Coordinator(), None, orchestrator=Orchestrator(), poll_seconds=0.1)
+        with monkeypatch.context() as patch:
+            patch.setattr(loop, "time", lambda: clock[0])
+            task = asyncio.create_task(runtime._execute_claim(claim))
+            try:
+                await started.wait()
+                await asyncio.sleep(0)
+                began = clock[0]
+                clock[0] += Coordinator.renewal_interval + 0.001
+                for _ in range(20):
+                    await asyncio.sleep(0)
+                    if task.done():
+                        break
+                assert task.done() and cancelled.is_set()
+                assert released == [claim]
+                assert clock[0] - began <= Coordinator.renewal_interval + 0.1
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
     asyncio.run(run())

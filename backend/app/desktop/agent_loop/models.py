@@ -5,6 +5,7 @@ r"""本文件对外提供 Agent Loop、delegation、fencing、round、directive�
 decision/action 记录判断与异步发布尝试，recovery opportunity 冻结单来源恢复 authority 并记录原子消费，user intent 保存用户对 Context 或 Portfolio 的外部控制意见，
 directive/provenance 以可见排队原因驱动 Run，fencing counter 拒绝旧 owner，completion/outbox 收敛生命周期。
 示例：`loop = AgentLoop(loop_id="l1", status="running", ...)`。
+用户 intent 显式区分 patrol_opinion/direct_message，request_payload 保留原始请求、稳定 hash 和受理轮身份；旧数据默认普通意见，不补造历史决策。
 """
 
 from __future__ import annotations
@@ -142,6 +143,8 @@ class LoopUserIntent(Base):
         String(32), ForeignKey("desktop_threads.task_id", ondelete="RESTRICT"), nullable=True, index=True
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    intent_kind: Mapped[str] = mapped_column(String(24), nullable=False, default="patrol_opinion", server_default="patrol_opinion")
+    request_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", server_default="pending")
     delivery_state: Mapped[str] = mapped_column(String(24), nullable=False, default="submitted", server_default="submitted")
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")

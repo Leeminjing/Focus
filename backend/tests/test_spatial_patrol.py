@@ -1,7 +1,8 @@
 """本文件对外提供 spatial-patrol 的非 DOCX 观察、载体和插件接入回归测试。
 
 输入为测试工作区、PDF/图片等载体与模拟模型配置；输出为路径边界、观察能力和视觉模型接入断言。
-具体工作流为在隔离目录装载插件并核对非 DOCX 观察与授权行为。示例：`pytest backend/tests/test_spatial_patrol.py -q`。
+具体工作流为核对载体所属工作区后再核对文件准入，三档模式均不能将外部文件变成本工作区载体；
+普通文件读取政策保持不变。示例：`pytest backend/tests/test_spatial_patrol.py -q`。
 """
 
 import json
@@ -73,6 +74,24 @@ def test_resolve_path_containment():
     assert str(service.resolve_path(workspace, "docs/a.png")) == str(Path(r"C:\ws\project\docs\a.png"))
     with pytest.raises(ValueError, match="不属于当前工作区"):
         service.resolve_path(workspace, "..\\outside.png")
+
+
+@pytest.mark.parametrize("mode", ["read-only", "workspace-write", "danger-full-access"])
+def test_carrier_membership_is_independent_of_read_policy(tmp_path, mode):
+    from backend.tests.runtime_context_support import runtime_context
+    from focus.security.policy import AccessDecision, AccessMode, AccessOperation, decide_path_access, policy_from_context
+    from plugins.spatial_patrol.spatial import ObservationService
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    outside = tmp_path / "outside.png"
+    context = runtime_context(agent_id="spatial-test", task_id="task-test",
+        workspace=str(workspace), access_mode=AccessMode(mode))
+    assert decide_path_access(policy_from_context(context), outside, AccessOperation.READ) is AccessDecision.ALLOW
+    assert ObservationService.resolve_path(str(workspace), "docs/a.png", context) == workspace / "docs/a.png"
+    for content_ref in ("../outside.png", str(outside), "../project-other/a.png"):
+        with pytest.raises(ValueError, match="不属于当前工作区"):
+            ObservationService.resolve_path(str(workspace), content_ref, context)
 
 
 def test_is_viewable_suffixes():

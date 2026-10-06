@@ -1,7 +1,7 @@
 r"""本文件对外提供 RevisionInterpretationBuilder 与综合合同 prompt。
 
 输入为完整冻结目录、局部 records、预算化模型及原文读取上限；输出为联合引用、独立 verdict 和全部阅读依赖的综合 record。
-具体工作流为冷构建共同提供可容纳原文，增量提供新原文及完整目录，响应模型任意合法旧段请求，再验证联合 claims。
+具体工作流为冷构建或增量提供可容纳的初始原文窗口及完整目录；模型 read 先纯预检范围和完整请求容量，经既有有界校验反馈后才替换窗口，最终从完整实际阅读依赖验证联合 claims。
 示例：record = await builder.build(index, records, plan)。旧段可免重抽，却可与新段一起参与新的否定和因果理解。
 """
 
@@ -21,6 +21,7 @@ from .semantic_grounding import (
 )
 from .semantic_index import IndexedMessage
 from .semantic_indexer import RevisionSemanticIndexer
+from backend.app.desktop.agent_loop.derivation_worker import StructuredResultValidationError
 
 INTERPRETATION_PROMPT = (
     "semantic_policy=index 才能定义任务命题；evidence_only 是关联调用证据，reference_only 是约束参考，不能独立提升为任务要求。"
@@ -29,6 +30,9 @@ INTERPRETATION_PROMPT = (
     "局部 confirmed 不能直接证明新的因果组合。区分曾怀疑、后来否定、当前证据最终确认；不得把报告的猜测升级为事实。"
     "同一问题存在早期怀疑、否定与最终诊断时，输出联合概括整条证据演化的 unit；不要只分别复述怀疑和结论而遗漏其关系。"
     "需要任何旧段原文时返回 action=read 和 read_segments，允许远距离、无共同关键词以及旧段之间的关系。"
+    "read_segments 是下一次需要共同查看的完整原文窗口，将替换当前 segments，不会追加所有历史原文。"
+    "需要保留当前段共同理解时必须也列出其segment_id；可以重读任意库存段。此前实际阅读依赖仍保留，read_requests只显示最近一次窗口。"
+    "窗口容量被拒时根据校验反馈选择可容纳的完整段集合，不能拆开工具调用和返回或把目录线索当原文。"
     "原文不足或摘要遗漏时继续 read，完整库存之外的资料不能读取。"
     "只有完成整体理解后返回 action=complete 和 units；没有跨段关系可返回空 units。"
     "一个 unit 可引用多个段；supports 的 message_id 必须来自实际给出的原文，quote 必须逐字复制。"
@@ -67,10 +71,15 @@ class RevisionInterpretationBuilder:
                 RevisionInterpretationProposal, INTERPRETATION_PROMPT, payload
             ):
                 initial = tuple(s.segment_id for s in index.segments)
+        if not self._projector.fits_request(
+            RevisionInterpretationProposal, INTERPRETATION_PROMPT,
+            inputs.preview_read(initial, requested=False),
+        ):
+            initial = ()
         inputs.read(initial, requested=False)
         limit = self._resources.policy.max_planner_model_calls
         for _ in count() if limit is None else range(limit):
-            proposal = await self._invoke(inputs.payload())
+            proposal = await self._invoke(inputs)
             if proposal.action == "read":
                 inputs.read(proposal.read_segments)
                 continue
@@ -80,23 +89,41 @@ class RevisionInterpretationBuilder:
             "interpretation authorized discovery rounds exhausted"
         )
 
-    async def _invoke(self, payload):
+    async def _invoke(self, inputs):
+        payload = inputs.payload()
+        validator = lambda proposal: self._validate_read(inputs, proposal)
         try:
             method = getattr(self._projector, "invoke_validated", None)
             if method is None:
-                return await self._projector.invoke(
+                proposal = await self._projector.invoke(
                     RevisionInterpretationProposal, INTERPRETATION_PROMPT, payload
                 )
+                validator(proposal)
+                return proposal
             return await method(
                 RevisionInterpretationProposal,
                 INTERPRETATION_PROMPT,
                 payload,
-                lambda proposal: RevisionInterpretationProposal.model_validate(
-                    proposal.model_dump(mode="json")
-                ),
+                validator,
             )
         finally:
             self._capture(self._projector, "interpretation")
+
+    def _validate_read(self, inputs, proposal):
+        proposal = RevisionInterpretationProposal.model_validate(proposal.model_dump(mode="json"))
+        if proposal.action != "read":
+            return
+        payload = inputs.preview_read(proposal.read_segments)
+        require_fit = getattr(self._projector, "require_fit", None)
+        if require_fit is not None:
+            require_fit(RevisionInterpretationProposal, INTERPRETATION_PROMPT, payload)
+            return
+        if not self._projector.fits_request(RevisionInterpretationProposal, INTERPRETATION_PROMPT, payload):
+            raise StructuredResultValidationError(
+                "interpretation_read_window", "请求的共同原文窗口超过完整请求容量；请选择可容纳的完整段集合。",
+                unit_identity="interpretation-read-window",
+                violated_rule="complete inventory, selected original window, schema/system and output reserve must fit before providing evidence",
+            )
 
     async def _verify(self, inputs, drafts):
         messages = tuple(m for original in inputs.provided for m in original.messages)

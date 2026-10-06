@@ -1,7 +1,8 @@
 r"""本文件对外提供 Loop Run 通用调度路径与真实桌面首个 Live GET 故障恢复的回归测试。
 
 输入为隔离 PostgreSQL 中已授权的 Loop directive、带稳定消息身份的 Main Run、模拟的 LangGraph values 里程碑和一次注入的 HTTP 500；输出为 Run 尚未结算时可按 Loop/Run 身份读取的工具活动事件与桌面恢复证据。
-具体工作流为令通用 durable worker 认领 Run，通过 DesktopService 的共同启动入口发布工具调用，再以真实 Electron 检查首次 Live 失败后恢复并查询 per-Loop journal。示例：`pytest backend/tests/test_loop_run_live_dispatch.py -q`。
+具体工作流为令通用 durable worker 认领 Run，通过 DesktopService 的共同启动入口发布工具调用，等待实际 Writer 队列提交而保持 Run 未完成，再以真实 Electron 检查首次 Live 失败后恢复并查询 per-Loop journal。示例：`pytest backend/tests/test_loop_run_live_dispatch.py -q`。
+局部装配 fixture 同样提供真实内存 checkpointer，供新增的不可变 execution 投影解析端口使用；原计划 slot 断言保持。
 """
 
 from __future__ import annotations
@@ -30,10 +31,11 @@ from backend.app.desktop.agent_loop import AgentLoopService, LoopCreateRequest
 from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
 from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
 from backend.app.desktop.agent_loop.live_api import LoopLiveEventFeed, LoopLiveSnapshotService
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective
+from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective, LoopRound
 from backend.app.desktop.agent_loop.projection_models import LoopProjectionFailure
 from backend.app.desktop.agent_loop.run_activity_bridge import LoopRunActivityBridge
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
 from backend.app.desktop.run_orchestration.admission import RunAdmissionService
 from backend.app.desktop.run_orchestration.assembler import RunExecutionAssembly
 from backend.app.desktop.run_orchestration.dispatch import DurableRunDispatchWorker, RunDispatchRepository
@@ -46,67 +48,23 @@ from backend.app.desktop.context_evolution import (
 )
 
 from test_agent_loop_round_liveness import _seed_loop, _stop
-from test_loop_execution_ownership import _seed_launching_directive
+from test_loop_execution_ownership import _seed_launching_directive, _admit_run
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 
 async def _seed_active_first_round(sessions, tmp_path: Path) -> dict:
-    suffix = uuid.uuid4().hex[:8]
-    workspace_id = f"ws-first-{suffix}"
-    context_id = f"context-first-{suffix}"
-    revision_id = uuid.uuid4().hex
-    run_id = uuid.uuid4().hex
-    loop_id = uuid.uuid4().hex
-    anchor_message_id = f"message-{uuid.uuid4().hex}"
-    workspace_path = tmp_path / workspace_id
-    workspace_path.mkdir()
+    fixture = await _seed_loop(sessions, tmp_path, label="first-round", started_at=datetime.now(UTC))
+    directive_id = await _seed_launching_directive(sessions, fixture, label="first-round")
+    run_id = await _admit_run(sessions, fixture, directive_id)
     async with sessions.begin() as session:
-        session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(workspace_path), display_name="first round"))
-        await session.flush()
-        session.add(DesktopThread(task_id=context_id, workspace_id=workspace_id, thread_id=f"thread-{context_id}", title="first round"))
-        await session.flush()
-        ref = ContextRevisionRef(
-            context_id=context_id, revision_id=revision_id, generation=1,
-            execution_thread_id=f"thread-{context_id}", checkpoint_ns="",
-            checkpoint_id=f"checkpoint-{context_id}", payload_mode=ContextRevisionPayloadMode.CHECKPOINT,
-        )
-        await ContextRevisionRepository().insert(session, ContextRevisionContract(
-            ref=ref, content_hash="a" * 64, projection_status=ContextRevisionProjectionStatus.VALID,
-            origin_kind=ContextRevisionOriginKind.ROOT, created_at=datetime.now(UTC),
-        ))
-        await ContextRevisionRepository().switch_current(session, ref, None)
-        admission = await RunAdmissionService().admit(session, DesktopRun(
-            run_id=run_id, task_id=context_id, agent_id=f"main:{context_id}",
-            kind="main", status="pending", origin="direct_user",
-            execution_thread_id=f"thread-{context_id}", origin_message_id=anchor_message_id,
-            context_revision_id=revision_id,
-            input_messages=[{"role": "human", "id": anchor_message_id, "content": "开始首轮测试"}],
-            equipment={"_durable_dispatch_execution": {"agent_role": "main", "base_prompt": "test"}},
-            workspace_anchor={"workspace_id": workspace_id, "workspace_path": str(workspace_path)},
-        ))
-        admission.dispatch.accepted_at = datetime(2000, 1, 1, tzinfo=UTC)
-    service = AgentLoopService(sessions)
-    snapshot = await service.start(LoopCreateRequest(
-        loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id,
-        initial_run_id=run_id, holder_id=f"patrol-{suffix}",
-        goal="Observe the first active Context Run", task_contract="Show confirmed progress",
-        acceptance_criteria=({"criterion_id": "live", "text": "live activity visible"},),
-        capabilities=("continue_context", "request_completion"),
-        context_scope=(context_id,), permission_scope=("read", "write"),
-    ))
-    async with sessions.begin() as session:
-        slot = await session.scalar(select(WorkspaceSlot).where(
-            WorkspaceSlot.workspace_id == workspace_id, WorkspaceSlot.kind == "authoritative",
-        ))
-        run = await session.get(DesktopRun, run_id, with_for_update=True)
-        run.workspace_anchor = {**run.workspace_anchor, "slot_id": slot.slot_id}
-    return {
-        "service": service, "loop_id": loop_id, "context_id": context_id,
-        "revision_id": revision_id, "round_id": snapshot["current_round_id"],
-        "snapshot": snapshot, "run_id": run_id, "anchor_message_id": anchor_message_id,
-    }
+        directive = await session.get(LoopDirective, directive_id)
+        round_row = await session.get(LoopRound, fixture["round_id"])
+        round_row.status = "running"
+        round_row.decision_id = directive.decision_id
+        anchor = directive.message_id
+    return {**fixture, "run_id": run_id, "anchor_message_id": anchor}
 
 
 def test_generic_dispatch_publishes_loop_tool_activity_before_settlement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -128,7 +86,7 @@ def test_generic_dispatch_publishes_loop_tool_activity_before_settlement(tmp_pat
                 slot_id = slot.slot_id
             run_id = uuid.uuid4().hex
             async with sessions.begin() as session:
-                admission = await RunAdmissionService().admit(
+                admission = await RunAdmissionService(RunOwnershipPolicy().admit).admit(
                     session,
                     DesktopRun(
                         run_id=run_id,
@@ -158,8 +116,10 @@ def test_generic_dispatch_publishes_loop_tool_activity_before_settlement(tmp_pat
             service.store = SimpleNamespace()
             service.app_config = SimpleNamespace()
             execution_done = asyncio.get_running_loop().create_future()
+            activity_bridges = []
 
             async def execute(body, thread_id, resources, factory):
+                activity_bridges.append(resources.bridge)
                 resources.bridge.publish(
                     run_id,
                     StreamEvent(
@@ -193,17 +153,15 @@ def test_generic_dispatch_publishes_loop_tool_activity_before_settlement(tmp_pat
             )
             assert await worker.drain(limit=1) == 1
 
-            found = []
-            for _ in range(20):
-                async with sessions() as session:
-                    found = list((await session.scalars(select(LoopJournalEvent).where(
-                        LoopJournalEvent.loop_id == fixture["loop_id"],
-                        LoopJournalEvent.kind == "context.tool.started",
-                        LoopJournalEvent.entity_id == "call-1",
-                    ))).all())
-                if found:
-                    break
-                await asyncio.sleep(0.05)
+            assert len(activity_bridges) == 1
+            await asyncio.wait_for(activity_bridges[0]._queue.join(), 10)
+            assert not execution_done.done()
+            async with sessions() as session:
+                found = list((await session.scalars(select(LoopJournalEvent).where(
+                    LoopJournalEvent.loop_id == fixture["loop_id"],
+                    LoopJournalEvent.kind == "context.tool.started",
+                    LoopJournalEvent.entity_id == "call-1",
+                ))).all())
             assert len(found) == 1, "通用 worker 执行中的工具活动必须在 Run 结算前进入 Loop journal"
             assert found[0].payload["run_id"] == run_id
             execution_done.set_result(None)
@@ -239,7 +197,7 @@ def test_generic_assembly_uses_the_planned_isolated_slot(tmp_path: Path) -> None
                     owner_loop_id=fixture["loop_id"],
                 ))
                 await session.flush()
-                await RunAdmissionService().admit(session, DesktopRun(
+                await RunAdmissionService(RunOwnershipPolicy().admit).admit(session, DesktopRun(
                     run_id=run_id,
                     task_id=fixture["context_id"],
                     agent_id=f"main:{fixture['context_id']}",
@@ -257,6 +215,9 @@ def test_generic_assembly_uses_the_planned_isolated_slot(tmp_path: Path) -> None
 
             service = object.__new__(DesktopService)
             service.session_factory = sessions
+            from langgraph.checkpoint.memory import InMemorySaver
+
+            service.checkpointer = InMemorySaver()
             seen_paths = []
 
             async def prepare(*args, **kwargs):
@@ -298,6 +259,9 @@ def test_live_activity_is_idempotent_private_and_replayable(tmp_path: Path) -> N
         try:
             fixture = await _seed_loop(sessions, tmp_path, label="activity-replay", started_at=datetime.now(UTC))
             run_id = uuid.uuid4().hex
+            async with sessions.begin() as session:
+                session.add(DesktopRun(run_id=run_id, task_id=fixture["context_id"], agent_id="main", kind="main",
+                    status="running", loop_id=fixture["loop_id"], round_id=fixture["round_id"]))
             bridge = LoopRunActivityBridge(
                 MemoryStreamBridge(), sessions,
                 loop_id=fixture["loop_id"], context_id=fixture["context_id"],
@@ -321,6 +285,7 @@ def test_live_activity_is_idempotent_private_and_replayable(tmp_path: Path) -> N
                 ).order_by(LoopJournalEvent.sequence))).all())
             assert [item.kind for item in events] == [
                 "context.model.completed", "context.tool.started",
+                "context.test.completed",
                 "context.tool.completed", "context.artifact.observed",
             ]
             assert "secret-token-123" not in json.dumps([item.payload for item in events])

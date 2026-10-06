@@ -1,7 +1,7 @@
 r"""本文件对外提供 Revision 继承索引的真实 PostgreSQL 合同测试。
 
 输入为已迁移隔离数据库、真实来源边及计数模型；输出为追加继承、来源重绑定、回退、质量、预算与原子竞争断言。
-工作流为发布 R1／R2，经局部继承及必需综合构建，从新 session 检查 index／record、分阶段成本和 Loop 用量；历史 v3/v4 按原身份恢复。
+具体工作流为先通过 Observation 服务冻结模型调用来源，再发布 R1／R2，经局部继承及必需综合构建，从新 session 检查 index／record、分阶段成本和 Loop 用量；历史 v3/v4 按原身份恢复。
 示例：python -m pytest backend/tests/test_incremental_revision_index.py -q。
 """
 
@@ -29,8 +29,10 @@ from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
     RevisionSemanticIndexer,
 )
 from backend.app.desktop.agent_loop.models import LoopBudgetUsage, LoopDelegationGrant
+from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
 from backend.app.desktop.context_evolution.models import ContextPublicationReceipt
 from backend.tests.incremental_index_support import (
+    Checkpoints,
     ModelProbe,
     messages,
     observation,
@@ -60,6 +62,9 @@ def exercise(tmp_path, operation):
                 "max_input_tokens": 10000000,
                 "max_output_tokens": 10000000,
             }
+        await LoopObservationService(sessions, Checkpoints()).capture(
+            seed["loop_id"], seed["round_id"]
+        )
         try:
             await operation(sessions, seed)
         finally:

@@ -5,6 +5,7 @@ r"""本文件对外提供 Loop directive 并发认领与直接用户 Run 工作�
 经 Kernel 生成 delegated directive，再并发派发并独立绑定直接用户 Run。示例：
 `pytest test_agent_loop_dispatch.py`。
 结算 backfill 不补造 Tool facts 或工具轨迹，原有调度/因果状态保持独立。
+每个用例使用既有runtime_postgres_database独立数据库，全库重启恢复不读取其他用例残留Worker；原恢复数量和因果断言保持。
 """
 
 from __future__ import annotations
@@ -63,7 +64,7 @@ from backend.app.desktop.workspace_coordination.models import (
     WorkspaceLease,
 )
 
-pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
+pytestmark = pytest.mark.usefixtures("runtime_postgres_database")
 
 
 class _CausalCheckpointer:
@@ -325,6 +326,10 @@ def test_dispatch_claims_once_and_direct_user_uses_the_same_workspace_contract(t
 
             causal_run_id = uuid.uuid4().hex
             causal_revision_id = uuid.uuid4().hex
+            async with sessions.begin() as session:
+                recovered_worker = await session.get(LoopWorkerRequest, recovery_worker_id)
+                recovered_worker.status = "success"
+                recovered_worker.completed_at = datetime.now(UTC)
 
             async def causal_launch(directive, _message, _slot_id):
                 async with sessions.begin() as session:

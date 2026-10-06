@@ -4,6 +4,7 @@ r"""本文件对外提供 DelegatedAuthorityGuard 与 AuthorityViolation。
 结构化拒绝。具体工作流为依次核对 holder、版本、有效期、capability、Context、permission 和 gate
 范围，无副作用的结构化 expansion decline 只保留审计而不要求 mutation capability；用户无需竞争，因为用户覆盖先推进所有控制 revision。
 示例：`guard.validate(loop, grant, intent)`。
+用户消息交付复用 continue_context 能力，具体原文、目标和冻结身份由 Kernel 的消息交付端口复核，不新增授权能力。
 """
 
 from __future__ import annotations
@@ -41,7 +42,8 @@ class DelegatedAuthorityGuard:
         for action in intent.actions:
             if action.action == "decline_expansion":
                 continue
-            if action.action not in allowed:
+            capability = "continue_context" if action.action == "deliver_user_message" else action.action
+            if capability not in allowed:
                 raise AuthorityViolation(f"grant 不允许 action: {action.action}")
             context_id = getattr(action, "context_id", None)
             if context_id is not None and context_id not in set(grant.context_scope):

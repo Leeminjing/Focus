@@ -1,9 +1,10 @@
-"""本文件验证必看报告恢复探测、载荷校验和统一运行材料上下文投影。
+"""本文件对外提供必看报告恢复探测、载荷校验和统一运行材料上下文投影测试。
 
 输入为内存 checkpoint tuple、最近主运行状态、旧/新 equipment 与 retry/cancel 载荷；输出为
 processing/resumable/orphaned 状态、非法载荷拒绝，以及初始运行和任意主运行恢复使用完全相同的
-材料投影并保留被中断 Revision 的执行身份。具体工作流断言顺序/备注、图片、required、模型能力、
-execution thread/namespace 与 revision id，不启动模型或后台 worker。
+材料投影并保留被中断 Revision 的执行身份。具体工作流为通过同源准备接口，
+验证顺序/备注、图片、required、模型能力、execution thread/namespace 与 revision id，
+同时断言普通主运行不启用 Patrol 准备观察器；不启动模型或后台 worker。
 
 示例：python -m pytest backend/tests/test_must_view_recovery.py。
 """
@@ -114,7 +115,11 @@ def test_initial_and_resume_paths_project_identical_material_context(tmp_path) -
 
     service._material_context = material_context
     service._apply_memory_block = apply_memory
-    service._build_agent_factory = lambda *_args: (lambda: None)
+    def build_agent_factory(*_args, preparation_observer=None):
+        assert preparation_observer is None
+        return lambda: None
+
+    service._build_agent_factory = build_agent_factory
     service._model_supports_image_input = lambda _name: True
     inputs = RunMaterialInputs.build(
         "origin-run",

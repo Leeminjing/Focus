@@ -1,7 +1,7 @@
-"""本文件对外提供 TaskProgressRepository 的初始、冻结、领取和原子发布端口。
+"""本文件对外提供 TaskProgressRepository 的初始、冻结、readiness、授权重试和原子发布端口。
 
 输入为调用方短事务、不可变合同和 fence；输出为唯一版本或明确 stale/readiness 错误。
-具体工作流为 Loop→head→work 锁序，前序 CAS、输入 hash 和租约共同验证，再原子插入版本与 receipts。
+具体工作流为 Loop→head→work 锁序，readiness 携带未完成工作身份，重试复检当前预算授权并保留冻结输入和消费，前序 CAS、输入 hash 和租约共同验证，再原子插入版本与 receipts。
 无模型调用或 Context 发布权限。示例：await repository.publish(session, observation_id, fence, document, contribution)。
 """
 
@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopObservation
+from backend.app.desktop.agent_loop.models import AgentLoop, LoopObservation, LoopDelegationGrant
 from backend.app.desktop.agent_loop.task_progress.contracts import (
     RoundContribution,
     RoundDecisionInputs,
@@ -30,7 +30,11 @@ from backend.app.desktop.agent_loop.task_progress.models import (
 
 
 class ProgressNotReady(RuntimeError):
-    pass
+    def __init__(self, observation_id, state, error=None):
+        self.observation_id = observation_id
+        self.state = state
+        self.failure_kind = error.split(":", 1)[0] if error else None
+        super().__init__(f"progress_memory_{state}: {observation_id}; {error or '等待上一轮任务记忆'}")
 
 
 class ProgressPublicationRejected(RuntimeError):
@@ -92,9 +96,30 @@ class TaskProgressRepository:
             .limit(1)
         )
         if unfinished is not None:
-            raise ProgressNotReady(
-                f"progress_memory_{unfinished.state}: {unfinished.observation_id}; {unfinished.error or '等待上一轮任务记忆'}"
-            )
+            raise ProgressNotReady(unfinished.observation_id, unfinished.state, unfinished.error)
+
+    async def retry(self, session, observation_id, *, loop_id=None):
+        identity = await session.get(LoopProgressWork, observation_id)
+        if identity is None or (loop_id is not None and identity.loop_id != loop_id):
+            raise ValueError("任务记忆工作不存在或不属于本 Loop")
+        loop = await session.get(AgentLoop, identity.loop_id, with_for_update=True)
+        work = await session.get(LoopProgressWork, observation_id, with_for_update=True, populate_existing=True)
+        if work.state != "blocked":
+            raise ValueError("只有明确 blocked 的任务记忆工作可以恢复")
+        grant = await session.scalar(select(LoopDelegationGrant).where(
+            LoopDelegationGrant.loop_id == loop.loop_id, LoopDelegationGrant.revision == loop.authority_revision,
+            LoopDelegationGrant.status == "active"))
+        if loop.status not in {"running", "paused", "waiting_user"} or grant is None or (
+            grant.expires_at is not None and grant.expires_at <= datetime.now(UTC)):
+            raise ValueError("显式重试需要有效的预算授权")
+        work.retry_budget_authorization = {"grant_id": grant.grant_id, "grant_revision": grant.revision,
+            "limits": grant.budgets, "approved_at": datetime.now(UTC).isoformat()}
+        work.attempt_events = [*work.attempt_events, {"event": "explicit_retry",
+            "budget_authorization": work.retry_budget_authorization}]
+        work.state = "pending"
+        work.attempts = 0
+        work.error = None
+        work.lease_expires_at = None
 
     async def freeze(
         self, session: AsyncSession, loop_id: str, inputs: RoundDecisionInputs

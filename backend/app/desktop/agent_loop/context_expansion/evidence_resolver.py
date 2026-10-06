@@ -1,11 +1,11 @@
 r"""本文件对外提供 SemanticEvidenceSelectorPort、IdentityBoundedEvidenceSelector 与 MultiSourceEvidenceResolver。
 
-输入为冻结 WorkContextSpec、semantic manifests、授权 FrozenEvidenceCorpus 与 evidence item budget；输出为完整
+输入为冻结 WorkContextSpec、semantic manifests、授权 FrozenEvidenceCorpus 与 evidence item budget；输出为候选角色覆盖诊断或完整
 ResolvedEvidenceBundle 或结构化 ExpansionBlocker。具体工作流为先验证 planner 明确指认的 semantic units，再仅以结构化权威
 对象的精确 identity 补足未覆盖 requirement；新版 Mission candidate 直接按 revision/section/hash 解析，
-再按角色与 source constraints 验证 coverage，并扩展完整 Tool Exchange；
+再按角色与 source constraints 验证 coverage，保留同要求的联合绑定并按精确身份去重，与质量预检复用同一完整Tool Exchange闭包后统一检查预算；
 同 role 消息、关键词和最近消息都不能独立证明 coverage。
-示例：`result = resolver.resolve(opportunity, manifests, corpus, max_items=policy.max_compiled_evidence_items)`。
+示例：`candidates, covered = resolver.inspect_requirement(requirement, manifests, corpus)`；正式编译继续使用 resolve。
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from backend.app.desktop.agent_loop.context_expansion.evidence_corpus import (
     CorpusEvidenceItem,
     FrozenEvidenceCorpus,
 )
+from backend.app.desktop.agent_loop.context_expansion.tool_exchange_closure import tool_exchange_closure
 from backend.app.desktop.context_curation import (
     EvidenceRef,
     MaterialEvidenceRef,
@@ -33,7 +34,6 @@ from backend.app.desktop.context_curation import (
     MultiSourceEvidence,
     NamespacedMessageRef,
     RunResultEvidenceRef,
-    SourceMessageEvidence,
     SourceRevisionEvidence,
     WorkspaceEffectEvidenceRef,
     evidence_ref_key,
@@ -98,7 +98,7 @@ class IdentityBoundedEvidenceSelector:
 
 
 class MultiSourceEvidenceResolver:
-    VERSION = "multi-source-evidence-resolver-v1"
+    VERSION = "multi-source-evidence-resolver-v2"
 
     def __init__(self, selector: SemanticEvidenceSelectorPort | None = None) -> None:
         self._selector = selector or IdentityBoundedEvidenceSelector()
@@ -111,14 +111,10 @@ class MultiSourceEvidenceResolver:
         *,
         max_items: int | None = ExpansionResourcePolicy().max_compiled_evidence_items,
     ) -> ResolvedEvidenceBundle | ExpansionBlocker:
-        unit_refs = self._unit_refs(manifests, corpus)
         resolved: list[ResolvedEvidenceItem] = []
         selected_refs: dict[tuple[str, ...], EvidenceRef] = {}
         for requirement in opportunity.work_spec.evidence_requirements:
-            candidates = self._candidate_items(requirement, unit_refs, corpus)
-            if not candidates and not requirement.candidate_refs:
-                candidates = self._selector.select(requirement, corpus, limit=max_items)
-            candidates = tuple(item for item in candidates if self._covers(requirement, item))
+            _, candidates = self.inspect_requirement(requirement, manifests, corpus)
             if not candidates:
                 if requirement.necessity == "required":
                     return self._blocked(
@@ -127,21 +123,22 @@ class MultiSourceEvidenceResolver:
                         f"必需 evidence requirement 未解析：{requirement.requirement_id}",
                     )
                 continue
-            chosen = min(candidates, key=lambda item: evidence_ref_key(item.ref))
-            selected_refs[evidence_ref_key(chosen.ref)] = chosen.ref
-            resolved.append(
-                ResolvedEvidenceItem(
-                    requirement_id=requirement.requirement_id,
-                    ref=chosen.ref,
-                    content_hash=chosen.content_hash,
-                    relevance_reason=(
-                        f"Exact semantic binding satisfies {requirement.requirement_id}: "
-                        f"{requirement.question} Coverage criterion: {requirement.coverage_criterion}"
-                    ),
+            bindings = {evidence_ref_key(item.ref): item for item in candidates}
+            for key, chosen in sorted(bindings.items()):
+                selected_refs[key] = chosen.ref
+                resolved.append(
+                    ResolvedEvidenceItem(
+                        requirement_id=requirement.requirement_id,
+                        ref=chosen.ref,
+                        content_hash=chosen.content_hash,
+                        relevance_reason=(
+                            f"Exact semantic binding satisfies {requirement.requirement_id}: "
+                            f"{requirement.question} Coverage criterion: {requirement.coverage_criterion}"
+                        ),
+                    )
                 )
-            )
         try:
-            closed_refs = self._protocol_closure(corpus, tuple(selected_refs.values()))
+            closed_refs = tool_exchange_closure(corpus.evidence, tuple(selected_refs.values()))
         except ValueError as exc:
             return self._blocked(opportunity, "required_evidence_unresolved", str(exc))
         if exceeds_limit(len(closed_refs), max_items):
@@ -160,6 +157,12 @@ class MultiSourceEvidenceResolver:
             )
         except (KeyError, TypeError, ValueError) as exc:
             return self._blocked(opportunity, "required_evidence_unresolved", str(exc))
+
+    def inspect_requirement(self, requirement, manifests, corpus, *, max_items=None):
+        candidates = self._candidate_items(requirement, self._unit_refs(manifests, corpus), corpus)
+        if not candidates and not requirement.candidate_refs:
+            candidates = self._selector.select(requirement, corpus, limit=max_items)
+        return candidates, tuple(item for item in candidates if self._covers(requirement, item))
 
     @staticmethod
     def _unit_refs(
@@ -215,46 +218,6 @@ class MultiSourceEvidenceResolver:
     @staticmethod
     def _covers(requirement: EvidenceRequirement, item: CorpusEvidenceItem) -> bool:
         return requirement.role in item.semantic_roles and IdentityBoundedEvidenceSelector._allowed(requirement, item)
-
-    @staticmethod
-    def _protocol_closure(
-        corpus: FrozenEvidenceCorpus,
-        selected: tuple[EvidenceRef, ...],
-    ) -> tuple[EvidenceRef, ...]:
-        closed = {evidence_ref_key(ref): ref for ref in selected}
-        selected_message_keys = {
-            ref.key for ref in selected if isinstance(ref, NamespacedMessageRef)
-        }
-        for source in corpus.evidence.sources:
-            callers: dict[str, SourceMessageEvidence] = {}
-            results: dict[str, SourceMessageEvidence] = {}
-            for message in source.messages:
-                for call in message.tool_calls:
-                    if call.get("id"):
-                        callers[str(call["id"])] = message
-                if message.tool_call_id:
-                    results[message.tool_call_id] = message
-            relevant_callers = set()
-            for message in source.messages:
-                if message.ref.key not in selected_message_keys:
-                    continue
-                if message.tool_call_id:
-                    caller = callers.get(message.tool_call_id)
-                    if caller is None:
-                        raise ValueError("选中的 Tool Result 缺少 Assistant caller")
-                    relevant_callers.add(caller.ref.key)
-                if message.tool_calls:
-                    relevant_callers.add(message.ref.key)
-            for message in source.messages:
-                if message.ref.key not in relevant_callers:
-                    continue
-                closed[evidence_ref_key(message.ref)] = message.ref
-                for call in message.tool_calls:
-                    result = results.get(str(call.get("id") or ""))
-                    if result is None:
-                        raise ValueError("选中的 Tool Exchange 缺少 sibling Tool Result")
-                    closed[evidence_ref_key(result.ref)] = result.ref
-        return tuple(closed[key] for key in sorted(closed))
 
     @staticmethod
     def _subset(

@@ -1,7 +1,7 @@
 r"""本文件对外提供 Loop Live schema、reducer、snapshot、只读事务与并发锁顺序的回归测试。
 
 输入为各 Loop 状态、重复/陈旧/缺口事件和隔离 PostgreSQL journal；输出为确定性实体状态、有界 timeline、
-byte-equivalent rebuild、无 Live 游标写入、只读事务及无死锁断言。具体工作流为先纯归约，再以独立数据库驱动读写事务竞争。
+byte-equivalent rebuild、实体切换和迟到旧轮拒绝、创建后尚未冻结的 Round 快照与首个事件接续、无 Live 游标写入、只读事务及无死锁断言。具体工作流为先纯归约，再以独立数据库驱动读写事务竞争。
 示例：`pytest backend/tests/test_loop_live_projection.py`。
 """
 
@@ -41,6 +41,21 @@ def test_projection_serializes_loop_lifecycle(status: str) -> None:
     assert projection.model_dump(mode="json")["loop"]["state"]["status"] == status
 
 
+def test_singular_identity_switch_resets_state_and_does_not_compare_unrelated_revisions():
+    reducer = LoopLiveProjectionReducer()
+    state = LoopLiveProjection(loop_id="l1")
+    state = reducer.reduce(state, _envelope(1, "round.state", "round", "round-1", 5, {"number": 1, "decision_id": "old-decision"}))
+    state = reducer.reduce(state, _envelope(2, "patrol.state", "patrol_session", "patrol-1", 20, {"round_id": "round-1", "phase": "completed"}))
+    state = reducer.reduce(state, _envelope(3, "round.state", "round", "round-2", 1, {"number": 2}))
+    assert state.round.entity_id == "round-2" and "decision_id" not in state.round.state
+    assert state.patrol_session is None
+    state = reducer.reduce(state, _envelope(4, "patrol.state", "patrol_session", "patrol-2", 1, {"round_id": "round-2", "phase": "created"}))
+    state = reducer.reduce(state, _envelope(5, "round.state", "round", "round-1", 6, {"number": 1}))
+    state = reducer.reduce(state, _envelope(6, "patrol.state", "patrol_session", "patrol-1", 21, {"round_id": "round-1", "phase": "cancelled"}))
+    assert state.round.entity_id == "round-2" and state.patrol_session.entity_id == "patrol-2"
+    assert state.last_sequence == 6
+
+
 def test_reducer_is_deterministic_for_duplicates_stale_revisions_and_gaps() -> None:
     reducer = LoopLiveProjectionReducer(timeline_limit=2)
     state = LoopLiveProjection(loop_id="l1")
@@ -73,6 +88,47 @@ def test_run_activity_time_tracks_confirmed_events_not_transport_heartbeat() -> 
     heartbeat = _envelope(3, "transport.heartbeat", "transport", "connection-1", 1, {})
     state = reducer.reduce(state, heartbeat)
     assert state.runs["run-1"].state["last_activity_at"] == "2026-01-01T00:01:00+00:00"
+
+
+def test_unfrozen_round_snapshot_accepts_its_first_canonical_event(tmp_path: Path) -> None:
+    async def run() -> None:
+        from backend.app.desktop.agent_loop.live_snapshot_overlay import LoopLiveProjectionOverlay
+        from backend.app.desktop.agent_loop.models import LoopRound
+        from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
+
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        loop_id = await _seed_loop(sessions, tmp_path)
+        round_id = uuid.uuid4().hex
+        try:
+            async with sessions.begin() as session:
+                session.add(LoopRound(round_id=round_id, loop_id=loop_id, number=7,
+                    authority_revision=1, goal_revision=1, frontier_hash="frontier",
+                    workspace_revision=0, barrier={"pending": True}))
+                loop = await session.get(AgentLoop, loop_id)
+                loop.current_round_id = round_id
+            async with sessions() as session:
+                snapshot = await LoopLiveProjectionOverlay().apply(session, LoopLiveProjection(loop_id=loop_id), 0)
+            assert snapshot.round.revision == 1
+            async with sessions.begin() as session:
+                round_row = await session.get(LoopRound, round_id, with_for_update=True)
+                round_row.status = "curated"
+                round_row.barrier = {"pending": False}
+                await RoundStateEventRecorder().record(session, round_row)
+            async with sessions() as session:
+                events = await LoopEventJournal().read(session, loop_id, 0, 20)
+            assert len(events) == 1 and events[0].entity_revision == 2
+            projected = LoopLiveProjectionReducer().reduce(snapshot, events[0])
+            assert projected.round.state["status"] == "curated"
+            assert projected.round.state["barrier"] == {"pending": False}
+            assert projected.round.state["number"] == 7
+            async with sessions() as session:
+                refreshed = await LoopLiveProjectionOverlay().apply(session, projected, projected.last_sequence)
+            assert refreshed.round.revision == 2
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
 
 
 def test_snapshot_projector_and_rebuild_share_one_committed_boundary(tmp_path: Path) -> None:

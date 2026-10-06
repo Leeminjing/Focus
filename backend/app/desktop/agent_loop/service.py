@@ -1,11 +1,15 @@
 r"""本文件对外提供 AgentLoopService 创建、查询、Mission 修订、类型化等待响应、沿用当前 Mission 的显式恢复、控制、临时用户介入与事件读取用例。
 
 输入为认证后的 LoopCreateRequest、Loop id、控制动作或用户确认的 Mission；输出为包含 Mission 交付状态、有效 Expansion 策略、用量和阻断的 Loop 快照与
-持久事件。具体工作流为 start 先锁 Context、核验后继资格并经策展所有权边界释放已终态 predecessor，再原子绑定初始用户 Run、创建 grant/holder/membership/budget/首轮并登记成员派生事实；pause/resume 推进 revision，stop
-统一委托 TerminalLifecycle 原子收敛运行时并释放 Lane；失败轮恢复时新建观察轮并累计 retry；直接用户消息只建立一次性 intent 并以 authority revision
+持久事件。具体工作流为 start 先锁 Context、核验后继资格并经策展所有权边界释放已终态 predecessor，再记录初始证据、创建 grant/holder/membership/budget/观察首轮并登记成员派生事实；pause/resume 推进 revision，stop
+统一委托 TerminalLifecycle 原子收敛运行时并释放 Lane；失败轮恢复时新建观察轮并累计 retry；具体记忆/Worker 恢复与等待响应原子提交，Worker 复用冻结输入及单调尝试身份；直接用户消息委托独立受理端口，保留原文和幂等身份并建立观察轮，以 authority revision
 隔离旧 Patrol 工作，不改写 Mission；override 仅在用户确认后创建 Mission revision；恢复确认仅解开目标/输入澄清并沿用当前 Mission。
-示例：`await service.start(body)`。
-新 Loop 在激活事务创建 P0，正式 Observation 后才生成后继任务记忆。
+记忆阻塞的等待响应与原 frozen work 重试在同事务核对授权并提交，保持原后继轮和输入身份；示例：`await service.start(body)`。
+新 Loop 在激活事务创建 P0，正式 Observation 后才生成后继任务记忆；装备继承从初始 Run 读取并由服务端解析；控制转移与规范生命周期事件同事务提交，提交后才通知执行器取消，Run 租约由真实结算释放；Mission 修订复用全部后果收敛；等待恢复后的事务指针使用后继控制版本，Live 更新不回退已暂停状态；等待审计是独立活动，不覆盖生命周期主体。
+Mission交付快照与Directive事件使用同一个评估序列化，不以Patrol或旧bootstrap来源代替实际交付状态。
+Mission 恢复与其他控制入口均按 Loop → 等待请求锁定；通用控制由收敛模块终结旧等待，不让请求反向持锁或控制后继事务。
+已提交等待响应的幂等重放只返回历史提交身份和当前状态，不重复执行停止、预算修订或恢复效果。
+人工访问门禁的正式retry先核对同主体人工恢复及严格检查点，再与等待响应同事务收口投影；未处理或无法证明仍阻断，不代替用户批准工具。
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import HTTPException
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -65,7 +69,6 @@ from backend.app.desktop.agent_loop.models import (
     AgentLoop,
     LoopBudgetUsage,
     LoopContextMembership,
-    LoopDecision,
     LoopDelegationGrant,
     LoopEventOutbox,
     LoopGoalRevision,
@@ -98,19 +101,19 @@ from backend.app.desktop.context_curation.models import (
 )
 from backend.app.desktop.context_evolution.models import ContextRevision
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.equipment_policy import activation_equipment
+from backend.app.desktop.agent_loop.accounting_query import LoopAccountingQuery
 from backend.app.desktop.workspace_coordination.fingerprints import (
     WorkspaceFingerprinter,
 )
-from backend.app.desktop.workspace_coordination.models import (
-    WorkspaceLease,
-    WorkspaceSlot,
-)
+from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
 
 
 class AgentLoopService:
-    def __init__(self, sessions: async_sessionmaker[AsyncSession], run_manager=None) -> None:
+    def __init__(self, sessions: async_sessionmaker[AsyncSession], run_manager=None, *, user_gate_recovery=None) -> None:
         self._sessions = sessions
         self._run_manager = run_manager
+        self._user_gate_recovery = user_gate_recovery
         self._missions = MissionRevisionService()
         self._convergence = LoopRuntimeConvergence()
         self._ownership = CurationOwnershipRepository()
@@ -185,6 +188,13 @@ class AgentLoopService:
                 raise HTTPException(409, {"code": eligibility.reason or "initial_run_changed", "eligibility": self._activation_payload(eligibility)})
             initial_run = await self._initial_run(session, request)
             try:
+                equipment = activation_equipment(
+                    initial_run.equipment or {}, request.equipment, request.permission_scope,
+                    inherit=request.inherit_initial_equipment,
+                )
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            try:
                 predecessor_ownership = await self._ownership.prepare_successor(
                     session,
                     context.task_id,
@@ -200,7 +210,7 @@ class AgentLoopService:
             program = CurationProgram(program_id=program_id, workspace_id=workspace.workspace_id, policy={"owner_loop_id": request.loop_id}, revision=1)
             session.add(program)
             await session.flush()
-            loop = AgentLoop(loop_id=request.loop_id, workspace_id=request.workspace_id, initial_context_id=request.initial_context_id, program_id=program_id, holder_id=request.holder_id, status="running", health="observing", equipment=request.equipment)
+            loop = AgentLoop(loop_id=request.loop_id, workspace_id=request.workspace_id, initial_context_id=request.initial_context_id, program_id=program_id, holder_id=request.holder_id, status="running", health="observing", equipment=equipment)
             session.add(loop)
             await session.flush()
             from backend.app.desktop.agent_loop.task_progress.consolidation import (
@@ -231,7 +241,7 @@ class AgentLoopService:
                 authored_by="user",
                 legacy_goal_revision_id=goal.goal_revision_id,
             )
-            grant = LoopDelegationGrant(grant_id=uuid.uuid4().hex, loop_id=loop.loop_id, revision=1, holder_id=request.holder_id, capabilities=list(request.capabilities), context_scope=list(request.context_scope), permission_scope=list(request.permission_scope), budgets=request.budgets.as_grant_budgets(), delegable_gates=list(request.delegable_gates), compression_policy=compression_policy, expires_at=datetime.fromisoformat(request.expires_at) if request.expires_at else None)
+            grant = LoopDelegationGrant(grant_id=uuid.uuid4().hex, loop_id=loop.loop_id, revision=1, holder_id=request.holder_id, capabilities=list(request.capabilities), context_scope=list(request.context_scope), permission_scope=list(dict.fromkeys([*equipment["permissions"], *(item for item in request.permission_scope if item not in {"read", "write", "host_command"})])), budgets=request.budgets.as_grant_budgets(), delegable_gates=list(request.delegable_gates), compression_policy=compression_policy, expires_at=datetime.fromisoformat(request.expires_at) if request.expires_at else None)
             subscription = CurationSourceSubscription(subscription_id=uuid.uuid4().hex, program_id=program_id, source_context_id=context.task_id, source_role="initial", selection_policy={}, position=0)
             lane = CurationLane(lane_id=lane_id, program_id=program_id, managed_context_id=context.task_id, purpose="Primary execution", normalized_purpose="primary execution", lane_policy={}, current_source_frontier_hash=frontier_hash, current_semantic_fingerprint=context_revision.content_hash)
             try:
@@ -277,21 +287,18 @@ class AgentLoopService:
                 )
                 session.add(slot)
             active_initial_run = initial_run.status in {"pending", "running"}
-            round_row = LoopRound(round_id=uuid.uuid4().hex, loop_id=loop.loop_id, number=1, status="running" if active_initial_run else "settled", authority_revision=1, goal_revision=1, frontier_hash=frontier_hash, workspace_revision=slot.revision, settled_at=None if active_initial_run else datetime.now(UTC))
+            round_row = LoopRound(round_id=uuid.uuid4().hex, loop_id=loop.loop_id, number=1, status="observed", authority_revision=1, goal_revision=1, frontier_hash=frontier_hash, workspace_revision=slot.revision)
             initial_run.loop_id = loop.loop_id
-            initial_run.round_id = round_row.round_id
             usage = LoopBudgetUsage(
                 loop_id=loop.loop_id,
-                rounds=0 if active_initial_run else 1,
-                model_calls=0 if active_initial_run else int(initial_run.model_call_count or 0),
-                input_tokens=0 if active_initial_run else int(initial_run.prompt_input_tokens or 0),
-                output_tokens=0 if active_initial_run else int(initial_run.prompt_output_tokens or 0),
+                rounds=0,
+                model_calls=0,
+                input_tokens=0,
+                output_tokens=0,
             )
             current_round = round_row
             if active_initial_run:
                 loop.health = "waiting_runs"
-            else:
-                current_round = LoopRound(round_id=uuid.uuid4().hex, loop_id=loop.loop_id, number=2, authority_revision=1, goal_revision=1, frontier_hash=frontier_hash, workspace_revision=slot.revision)
             loop.current_round_id = current_round.round_id
             rows = [grant, candidate, membership, round_row, usage, LoopEventOutbox(event_id=uuid.uuid4().hex, loop_id=loop.loop_id, sequence=1, event_type="LoopStarted", payload={"round_id": round_row.round_id, "current_round_id": current_round.round_id, "initial_run_id": initial_run.run_id, "program_id": program_id, "portfolio_revision_id": portfolio_id}, idempotency_key=f"loop:{loop.loop_id}:started")]
             if current_round is not round_row:
@@ -339,6 +346,9 @@ class AgentLoopService:
         actor_id: str,
     ) -> dict:
         async with self._sessions.begin() as session:
+            loop = await session.get(AgentLoop, loop_id, with_for_update=True)
+            if loop is None:
+                raise HTTPException(404, "Agent Loop 不存在")
             request = await session.get(LoopWaitRequest, request_id, with_for_update=True)
             if request is None or request.loop_id != loop_id:
                 raise HTTPException(404, "等待请求不存在")
@@ -358,16 +368,33 @@ class AgentLoopService:
                     detail["committed_response_id"] = exc.committed.response_id
                     detail["committed_answer"] = exc.committed.answer
                 raise HTTPException(409, detail) from exc
-            loop = await session.get(AgentLoop, loop_id, with_for_update=True)
-            if loop is None:
-                raise HTTPException(404, "Agent Loop 不存在")
             action = str(body.answer.get("action") or "")
-            if action == "stop":
-                if created:
-                    loop.revision += 1
+            if created and action == "retry" and request.scope.get("kind") == "access_approval":
+                if self._user_gate_recovery is None:
+                    raise HTTPException(409, {"code": "user_gate_not_resolved", "message": "人工访问审批缺少来源核对端口"})
+                try:
+                    await self._user_gate_recovery.resolve(session, loop, request, response.response_id, actor_id)
+                except ValueError as exc:
+                    raise HTTPException(409, {"code": "user_gate_not_resolved", "message": str(exc)}) from exc
+            if created and action == "stop":
+                loop.revision += 1
                 await self._terminal.finalize(session, loop, "stopped", "wait_request_stop")
-            elif action == "revise_budget":
+            elif created and action == "revise_budget":
                 await self._apply_wait_budget_revision(session, loop, body.answer)
+            elif created and action == "retry" and request.scope.get("component") == "progress_memory":
+                from backend.app.desktop.agent_loop.task_progress.repository import TaskProgressRepository
+
+                try:
+                    await TaskProgressRepository().retry(session, request.scope["observation_id"], loop_id=loop_id)
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from exc
+            elif created and action == "retry" and request.scope.get("worker_request_id"):
+                from backend.app.desktop.agent_loop.worker_recovery import WorkerRecoveryRepository
+
+                try:
+                    await WorkerRecoveryRepository().retry(session, loop, request)
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from exc
             if created:
                 if loop.status == "running":
                     await self._resume_after_wait(session, loop, request, response.response_id)
@@ -390,6 +417,9 @@ class AgentLoopService:
         actor_id: str,
     ) -> dict:
         async with self._sessions.begin() as session:
+            loop = await session.get(AgentLoop, loop_id, with_for_update=True)
+            if loop is None:
+                raise HTTPException(404, "Agent Loop 不存在")
             request = await session.get(LoopWaitRequest, request_id, with_for_update=True)
             if request is None or request.loop_id != loop_id:
                 raise HTTPException(404, "等待请求不存在")
@@ -399,11 +429,7 @@ class AgentLoopService:
                 payload = existing.payload or {}
                 if payload.get("request_id") != request_id or payload.get("request_revision") != body.request_revision or payload.get("actor_id") != actor_id:
                     raise HTTPException(409, "恢复幂等键已用于不同请求")
-                loop = await session.get(AgentLoop, loop_id)
                 return {"request": self._wait_request_payload(request), "recovery_event_id": existing.event_id, "created": False, "loop_status": loop.status, "current_round_id": payload["successor_round_id"]}
-            loop = await session.get(AgentLoop, loop_id, with_for_update=True)
-            if loop is None:
-                raise HTTPException(404, "Agent Loop 不存在")
             try:
                 await self._mission_wait_recovery.validate(session, loop, request, request_revision=body.request_revision)
             except MissionWaitRecoveryRejected as exc:
@@ -482,68 +508,13 @@ class AgentLoopService:
             for row in pending:
                 row.status = "superseded"
 
-    async def user_message(self, context_id: str, content: str) -> dict | None:
-        async with self._sessions.begin() as session:
-            loop = await session.scalar(select(AgentLoop).join(LoopContextMembership, LoopContextMembership.loop_id == AgentLoop.loop_id).where(LoopContextMembership.context_id == context_id, LoopContextMembership.status.in_(["active", "paused"]), AgentLoop.status.in_(["running", "paused"])).order_by(AgentLoop.created_at.desc()).with_for_update().limit(1))
-            if loop is None:
-                return None
-            current_grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.loop_id == loop.loop_id, LoopDelegationGrant.status == "active").with_for_update())
-            if current_grant is None:
-                return None
-            loop.revision += 1
-            loop.authority_revision += 1
-            loop.status = "running"
-            loop.health = "waiting_runs"
-            loop.waiting_reason = None
-            current_grant.status = "revoked"
-            current_grant.revoked_at = datetime.now(UTC)
-            grant = LoopDelegationGrant(grant_id=uuid.uuid4().hex, loop_id=loop.loop_id, revision=loop.authority_revision, holder_id=current_grant.holder_id, capabilities=current_grant.capabilities, context_scope=current_grant.context_scope, permission_scope=current_grant.permission_scope, budgets=current_grant.budgets, delegable_gates=current_grant.delegable_gates, compression_policy=current_grant.compression_policy, expires_at=current_grant.expires_at)
-            intent_id = uuid.uuid4().hex
-            intent = LoopUserIntent(intent_id=intent_id, loop_id=loop.loop_id, scope="context", target_context_id=context_id, content=content, status="addressed", goal_revision=loop.goal_revision, authority_revision=loop.authority_revision, correlation_id=intent_id)
-            await session.execute(update(LoopRound).where(LoopRound.loop_id == loop.loop_id, LoopRound.status.in_(["observed", "curated", "ready", "waiting_workers", "publishing", "adopting"])).values(status="superseded"))
-            await session.execute(update(LoopDecision).where(LoopDecision.loop_id == loop.loop_id, LoopDecision.status.in_(["pending", "publishing", "adopting"])).values(status="superseded"))
-            await self._directives.cancel_active(session, loop.loop_id, "direct_user_message")
-            await CompressionAuthorityRepository().supersede(session, loop.loop_id, "direct_user_message")
-            active_runs = list(
-                (
-                    await session.scalars(
-                        select(DesktopRun).where(
-                            DesktopRun.loop_id == loop.loop_id,
-                            DesktopRun.status.in_(["pending", "running"]),
-                        ).with_for_update()
-                    )
-                ).all()
-            )
-            for run in active_runs:
-                if self._run_manager is not None:
-                    self._run_manager.cancel(run.run_id, action="interrupt")
-                run.status = "interrupted"
-                lease_id = (run.workspace_anchor or {}).get("lease_id")
-                if lease_id:
-                    lease = await session.get(WorkspaceLease, lease_id, with_for_update=True)
-                    if lease is not None and lease.status == "active":
-                        lease.status = "released"
-                        lease.released_at = datetime.now(UTC)
-            prior = await session.get(LoopRound, loop.current_round_id) if loop.current_round_id else None
-            slot = await session.scalar(select(WorkspaceSlot).where(WorkspaceSlot.workspace_id == loop.workspace_id, WorkspaceSlot.kind == "authoritative", WorkspaceSlot.lifecycle != "deleted"))
-            number = int(await session.scalar(select(func.max(LoopRound.number)).where(LoopRound.loop_id == loop.loop_id)) or 0) + 1
-            round_row = LoopRound(round_id=uuid.uuid4().hex, loop_id=loop.loop_id, number=number, status="running", authority_revision=loop.authority_revision, goal_revision=loop.goal_revision, frontier_hash=prior.frontier_hash if prior else self._hash({"context_id": context_id}), workspace_revision=slot.revision if slot else 1)
-            loop.current_round_id = round_row.round_id
-            session.add_all([grant, intent, round_row])
-            await self._interventions.register(session, intent)
-            await self._interventions.transition(session, intent.intent_id, "accepted")
-            await self._append_event(session, loop, "DirectUserMessage", {"intent_id": intent.intent_id, "context_id": context_id, "round_id": round_row.round_id, "mission_revision": loop.goal_revision})
-            return {"loop_id": loop.loop_id, "round_id": round_row.round_id, "intent_id": intent.intent_id, "goal_revision": loop.goal_revision, "mission_revision": loop.goal_revision}
+    async def user_message(self, context_id: str, content: str, *, request_id: str | None = None,
+                           payload: dict | None = None) -> dict | None:
+        from backend.app.desktop.agent_loop.user_messages import LoopUserMessageAdmission
 
-    async def bind_user_message_run(self, intent_id: str, run_id: str) -> None:
-        async with self._sessions.begin() as session:
-            intent = await session.get(LoopUserIntent, intent_id, with_for_update=True)
-            if intent is None or intent.origin_kind != "user":
-                raise LookupError("直接用户消息 intent 已失效")
-            if intent.delivery_state == "accepted":
-                await self._interventions.transition(session, intent_id, "delivered", run_id=run_id)
-            elif intent.delivery_state not in {"delivered", "run_started"} or intent.resulting_run_id != run_id:
-                raise LookupError("直接用户消息 intent 已绑定其他 Run")
+        return await LoopUserMessageAdmission(self._sessions, self._append_event,
+            self._notify_run_cancellation).submit(context_id, request_id or uuid.uuid4().hex,
+                                                 payload if payload is not None else {"message": content})
 
     async def control(self, loop_id: str, command: str) -> dict:
         transitions = {"pause": ({"running"}, "paused"), "resume": ({"paused", "waiting_user"}, "running"), "stop": ({"running", "paused", "waiting_user"}, "stopped")}
@@ -583,64 +554,18 @@ class AgentLoopService:
             if command == "pause":
                 loop.status = target
                 loop.health = "idle"
-                await self._cancel_autonomous_compression_runs(session, loop_id)
                 await CompressionAuthorityRepository().supersede(session, loop_id, "loop_paused")
                 run_ids = await self._convergence.converge(session, loop, "loop_paused")
             elif command == "stop":
-                active_wait = await self._waits.active(session, loop_id, lock=True)
-                if active_wait is not None:
-                    await self._waits.cancel(session, active_wait.request_id)
                 finalized = await self._terminal.finalize(session, loop, "stopped", "loop_stopped")
                 run_ids = finalized.cancelled_run_ids
             else:
                 loop.status = target
                 loop.health = "observing"
-            if command in {"pause", "stop"} and self._run_manager is not None:
-                for run_id in run_ids:
-                    self._run_manager.cancel(run_id, action="interrupt")
             await self._append_event(session, loop, f"Loop{command.title()}", {"status": target})
-            return await self._snapshot(session, loop)
-
-    async def fail_user_message_round(self, loop_id: str, round_id: str, reason: str) -> None:
-        async with self._sessions.begin() as session:
-            loop = await session.get(AgentLoop, loop_id, with_for_update=True)
-            round_row = await session.get(LoopRound, round_id, with_for_update=True)
-            if loop is None or round_row is None or round_row.loop_id != loop_id:
-                return
-            intent = await session.scalar(
-                select(LoopUserIntent)
-                .where(
-                    LoopUserIntent.loop_id == loop_id,
-                    LoopUserIntent.delivery_state.in_(("accepted", "delivered")),
-                )
-                .order_by(LoopUserIntent.created_at.desc())
-                .with_for_update()
-                .limit(1)
-            )
-            if intent is not None:
-                target = "delivery_failed" if intent.delivery_state == "delivered" else "rejected"
-                await self._interventions.transition(session, intent.intent_id, target, reason=reason)
-            if round_row.status == "running":
-                round_row.status = "error"
-            if loop.current_round_id == round_id and loop.status == "running":
-                loop.health = "degraded"
-                await self._waits.open(
-                    session,
-                    loop,
-                    LoopWaitRequestFactory.retry_or_stop(
-                        f"用户 Run 准备失败: {reason[:1000]}",
-                        {"round_id": round_id, "failure_kind": "run_preparation"},
-                    ),
-                    created_by="run-preparation",
-                    correlation_id=intent.correlation_id if intent is not None else f"round:{round_id}",
-                    round_id=round_id,
-                )
-                await self._append_event(
-                    session,
-                    loop,
-                    "DirectUserRunPreparationFailed",
-                    {"round_id": round_id, "reason": reason[:1000]},
-                )
+            snapshot = await self._snapshot(session, loop)
+        self._notify_run_cancellation(run_ids)
+        return snapshot
 
     async def override(
         self,
@@ -666,18 +591,12 @@ class AgentLoopService:
             loop.authority_revision += 1
             loop.status = "running"
             loop.health = "observing"
-            active_wait = await self._waits.active(session, loop_id, lock=True)
-            if active_wait is not None:
-                await self._waits.cancel(session, active_wait.request_id, superseded=True)
-            await session.execute(update(LoopDecision).where(LoopDecision.loop_id == loop_id, LoopDecision.status.in_(["pending", "publishing", "adopting"])).values(status="superseded"))
-            await session.execute(update(LoopRound).where(LoopRound.loop_id == loop_id, LoopRound.status.in_(["observed", "curated", "ready", "waiting_workers", "publishing", "adopting"])).values(status="superseded"))
-            await self._directives.cancel_active(session, loop_id, "mission_revision")
+            run_ids = await self._convergence.converge(session, loop, "mission_revision")
             old_grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.loop_id == loop_id, LoopDelegationGrant.status == "active").with_for_update())
             if old_grant is not None:
                 old_grant.status = "revoked"
                 old_grant.revoked_at = datetime.now(UTC)
                 session.add(LoopDelegationGrant(grant_id=uuid.uuid4().hex, loop_id=loop_id, revision=loop.authority_revision, holder_id=old_grant.holder_id, capabilities=old_grant.capabilities, context_scope=old_grant.context_scope, permission_scope=old_grant.permission_scope, budgets=old_grant.budgets, delegable_gates=old_grant.delegable_gates, compression_policy=old_grant.compression_policy, expires_at=old_grant.expires_at))
-            await self._cancel_autonomous_compression_runs(session, loop_id)
             await CompressionAuthorityRepository().supersede(session, loop_id, "user_override")
             goal_row = LoopGoalRevision(goal_revision_id=uuid.uuid4().hex, loop_id=loop_id, revision=loop.goal_revision, goal=legacy_mission["goal"], task_contract=legacy_mission["task_contract"], acceptance_criteria=legacy_mission["acceptance_criteria"], authored_by="user")
             session.add(goal_row)
@@ -711,38 +630,19 @@ class AgentLoopService:
             loop.current_round_id = round_row.round_id
             session.add(round_row)
             await self._append_event(session, loop, "MissionRevisionActivated", {"round_id": round_row.round_id, "mission_revision": loop.goal_revision, "mission_revision_id": mission_row.mission_revision_id, "previous_mission_revision": loop.goal_revision - 1})
-            return await self._snapshot(session, loop)
+            snapshot = await self._snapshot(session, loop)
+        self._notify_run_cancellation(run_ids)
+        return snapshot
 
     async def events(self, loop_id: str, after: int = 0, limit: int = 200) -> list[dict]:
         async with self._sessions() as session:
             rows = list((await session.scalars(select(LoopEventOutbox).where(LoopEventOutbox.loop_id == loop_id, LoopEventOutbox.sequence > after).order_by(LoopEventOutbox.sequence).limit(limit))).all())
             return [{"event_id": row.event_id, "cursor": row.sequence, "type": row.event_type, "payload": row.payload, "created_at": row.created_at.isoformat()} for row in rows]
 
-    async def _cancel_autonomous_compression_runs(self, session: AsyncSession, loop_id: str) -> tuple[str, ...]:
-        runs = tuple(
-            (
-                await session.scalars(
-                    select(DesktopRun)
-                    .where(
-                        DesktopRun.loop_id == loop_id,
-                        DesktopRun.origin == "delegated_patrol_compression",
-                        DesktopRun.status.in_(["pending", "running"]),
-                    )
-                    .with_for_update()
-                )
-            ).all()
-        )
-        for run in runs:
-            if self._run_manager is not None:
-                self._run_manager.cancel(run.run_id, action="interrupt")
-            run.status = "interrupted"
-            lease_id = (run.workspace_anchor or {}).get("lease_id")
-            if lease_id:
-                lease = await session.get(WorkspaceLease, lease_id, with_for_update=True)
-                if lease is not None and lease.status == "active":
-                    lease.status = "released"
-                    lease.released_at = datetime.now(UTC)
-        return tuple(run.run_id for run in runs)
+    def _notify_run_cancellation(self, run_ids: tuple[str, ...]) -> None:
+        if self._run_manager is not None:
+            for run_id in run_ids:
+                self._run_manager.cancel(run_id, action="interrupt")
 
     @staticmethod
     async def _initial_run(session: AsyncSession, request: LoopCreateRequest) -> DesktopRun:
@@ -814,8 +714,9 @@ class AgentLoopService:
         )
         round_row = await session.get(LoopRound, loop.current_round_id) if loop.current_round_id else None
         delivery = await self._mission_bootstrap.assess(session, loop, round_row) if round_row is not None else None
-        delivery_payload = None if delivery is None else {"state": delivery.state, "mission_revision": delivery.mission_revision, "reason": delivery.reason, "directive_id": delivery.directive_id, "run_id": delivery.run_id}
-        return {"loop_id": loop.loop_id, "workspace_id": loop.workspace_id, "initial_context_id": loop.initial_context_id, "program_id": loop.program_id, "status": loop.status, "health": loop.health, "revision": loop.revision, "goal_revision": loop.goal_revision, "active_mission_revision": loop.goal_revision, "authority_revision": loop.authority_revision, "holder_id": loop.holder_id, "current_round_id": loop.current_round_id, "current_portfolio_revision_id": loop.current_portfolio_revision_id, "waiting_reason": loop.waiting_reason, "wait_request": None if wait_request is None else self._wait_request_payload(wait_request), "mission_delivery": delivery_payload, "equipment": loop.equipment, "mission": mission_payload, "goal": None if goal is None else {"goal": goal.goal, "task_contract": goal.task_contract, "acceptance_criteria": goal.acceptance_criteria}, "grant": None if grant is None else {"grant_id": grant.grant_id, "status": grant.status, "capabilities": grant.capabilities, "context_scope": grant.context_scope, "permission_scope": grant.permission_scope, "budgets": grant.budgets, "delegable_gates": grant.delegable_gates, "compression_policy": grant.compression_policy, "expires_at": grant.expires_at.isoformat() if grant.expires_at else None}, "usage": None if usage is None else {"rounds": usage.rounds, "duration_seconds": duration_seconds, "model_calls": usage.model_calls, "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens, "retries": usage.retries, "lanes": usage.lanes, "contexts": context_count, "providers": configured_provider_count(loop.equipment or {}), "no_progress_count": usage.no_progress_count}, "expansion_resources": expansion_resources, "final_result": loop.final_result}
+        delivery_payload = None if delivery is None else delivery.to_payload()
+        accounting = await LoopAccountingQuery().read(session, loop.loop_id)
+        return {"loop_id": loop.loop_id, "workspace_id": loop.workspace_id, "initial_context_id": loop.initial_context_id, "program_id": loop.program_id, "status": loop.status, "health": loop.health, "revision": loop.revision, "goal_revision": loop.goal_revision, "active_mission_revision": loop.goal_revision, "authority_revision": loop.authority_revision, "holder_id": loop.holder_id, "current_round_id": loop.current_round_id, "current_portfolio_revision_id": loop.current_portfolio_revision_id, "waiting_reason": loop.waiting_reason, "wait_request": None if wait_request is None else self._wait_request_payload(wait_request), "mission_delivery": delivery_payload, "equipment": loop.equipment, "accounting": accounting, "mission": mission_payload, "goal": None if goal is None else {"goal": goal.goal, "task_contract": goal.task_contract, "acceptance_criteria": goal.acceptance_criteria}, "grant": None if grant is None else {"grant_id": grant.grant_id, "status": grant.status, "capabilities": grant.capabilities, "context_scope": grant.context_scope, "permission_scope": grant.permission_scope, "budgets": grant.budgets, "delegable_gates": grant.delegable_gates, "compression_policy": grant.compression_policy, "expires_at": grant.expires_at.isoformat() if grant.expires_at else None}, "usage": None if usage is None else {"rounds": accounting["completed_rounds"], "duration_seconds": duration_seconds, "model_calls": usage.model_calls, "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens, "retries": usage.retries, "lanes": usage.lanes, "contexts": context_count, "providers": configured_provider_count(loop.equipment or {}), "no_progress_count": usage.no_progress_count}, "expansion_resources": expansion_resources, "final_result": loop.final_result}
 
     @staticmethod
     def _wait_request_payload(request: LoopWaitRequest) -> dict:
@@ -874,6 +775,7 @@ class AgentLoopService:
         request: LoopWaitRequest,
         response_id: str,
     ) -> None:
+        loop.revision += 1
         current = await session.get(LoopRound, loop.current_round_id, with_for_update=True) if loop.current_round_id else None
         if current is not None and current.status not in {"settled", "superseded", "error"}:
             loop.health = "observing"
@@ -887,20 +789,11 @@ class AgentLoopService:
         session.add(resumed)
         loop.current_round_id = resumed.round_id
         loop.health = "observing"
-        await self._journal.append(
-            session,
-            loop.loop_id,
-            CanonicalEventDraft(
-                kind="loop.round.observed",
-                entity_type="round",
-                entity_id=resumed.round_id,
-                entity_revision=max(1, resumed.number),
-                correlation_id=request.correlation_id,
-                causation_id=response_id,
-                payload={"round_id": resumed.round_id, "number": resumed.number, "status": resumed.status, "resumed_from_wait_request_id": request.request_id},
-                idempotency_key=f"loop-wait:{request.request_id}:successor-round",
-            ),
-        )
+        from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
+        from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
+
+        await RoundStateEventRecorder().record(session, resumed)
+        await LoopLifecycleEventRecorder().record(session, loop, cause_id=response_id)
 
     async def _append_wait_transition_event(
         self,
@@ -916,7 +809,7 @@ class AgentLoopService:
             loop.loop_id,
             CanonicalEventDraft(
                 kind="loop.wait.terminated" if terminated else "loop.wait.resumed",
-                entity_type="loop",
+                entity_type="loop_activity",
                 entity_id=loop.loop_id,
                 entity_revision=loop.revision,
                 correlation_id=request.correlation_id,
@@ -935,6 +828,9 @@ class AgentLoopService:
 
     @staticmethod
     async def _append_event(session, loop, event_type, payload) -> None:
+        from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
+
+        await LoopLifecycleEventRecorder().record(session, loop)
         sequence = int(await session.scalar(select(func.coalesce(func.max(LoopEventOutbox.sequence), 0)).where(LoopEventOutbox.loop_id == loop.loop_id)) or 0) + 1
         session.add(LoopEventOutbox(event_id=uuid.uuid4().hex, loop_id=loop.loop_id, sequence=sequence, event_type=event_type, payload=payload, idempotency_key=f"{loop.loop_id}:{loop.revision}:{event_type}"))
 

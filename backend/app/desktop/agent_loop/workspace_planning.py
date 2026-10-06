@@ -76,12 +76,16 @@ class WorkspaceRunPlanner:
             )
             if grant is None or authoritative is None:
                 return ()
-            intent = WorkspaceIntentDeriver.derive(loop.equipment or {})
-            if intent.mode.value == "read":
-                return tuple(
-                    WorkspaceRunPlan(row.directive_id, authoritative.slot_id, "read")
-                    for row in directives[:concurrency]
-                )
+            from backend.app.desktop.agent_loop.directive_equipment import resolve_directive_equipment
+
+            readers = []
+            writers = []
+            for directive in directives[:concurrency]:
+                intent = WorkspaceIntentDeriver.derive(await resolve_directive_equipment(session, loop, directive))
+                (readers if intent.mode.value == "read" else writers).append(directive)
+            reader_plans = [WorkspaceRunPlan(row.directive_id, authoritative.slot_id, "read") for row in readers]
+            if not writers:
+                return tuple(reader_plans)
             authoritative_busy = await session.scalar(
                 select(WorkspaceLease.lease_id).where(
                     WorkspaceLease.slot_id == authoritative.slot_id,
@@ -91,16 +95,16 @@ class WorkspaceRunPlanner:
             allow_isolation = "isolate_workspace" in set(grant.capabilities or [])
             workspace_id = loop.workspace_id
             source_root = Path(authoritative.root_path)
-        plans: list[WorkspaceRunPlan] = []
-        remaining = directives[:concurrency]
-        use_isolation = allow_isolation and (bool(authoritative_busy) or len(remaining) > 1)
+        plans: list[WorkspaceRunPlan] = reader_plans
+        remaining = writers
+        use_isolation = allow_isolation and (bool(authoritative_busy) or bool(readers) or len(remaining) > 1)
         baseline = (
             await asyncio.to_thread(WorkspaceFingerprinter().capture, source_root)
             if use_isolation
             else None
         )
         if baseline is None or baseline.vcs_revision is None or baseline.dirty:
-            if not authoritative_busy and remaining:
+            if not authoritative_busy and not readers and remaining:
                 first = remaining.pop(0)
                 plans.append(WorkspaceRunPlan(first.directive_id, authoritative.slot_id, "write"))
             return tuple(plans)

@@ -1,7 +1,7 @@
 r"""本文件对外提供索引独立进程重启与 additive migration 的 PostgreSQL 演练。
 
 输入为真实隔离数据库、冻结输入和独立子进程；输出为强杀提交前不泄漏、提交后零调用恢复及迁移不改权威记忆的断言。
-具体工作流为只在测试目录启动隐藏子进程，等待信号后强杀，另一个新进程重放并继续继承；迁移使用独立随机数据库。
+具体工作流为通过真实 Observation 服务冻结调用所有权，再只在测试目录启动隐藏子进程，等待信号后强杀，另一个新进程重放并继续继承；迁移使用独立随机数据库。
 综合参与真实计费及进程边界；崩溃未知预留仍占额度，结算后可升降级，bf2a3b4c5d6e 回撤新综合 artifact 保留权威记忆。
 示例：python -m pytest backend/tests/test_incremental_index_recovery.py -q。
 """
@@ -181,6 +181,12 @@ def test_projection_record_migration_round_trip_preserves_control_tables(
                 )
                 target_revision = await revision(
                     sessions, fixture["context_id"], messages(12)
+                )
+                from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
+                from backend.tests.incremental_index_support import Checkpoints
+
+                await LoopObservationService(sessions, Checkpoints()).capture(
+                    fixture["loop_id"], fixture["round_id"]
                 )
                 return fixture, target_revision
             finally:

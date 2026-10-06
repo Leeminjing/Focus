@@ -3,12 +3,17 @@ r"""本文件对外提供 LoopCoordinator、CoordinatorClaim 与基于 per-Loop 
 输入为数据库中的 running Loop、可领取 round、租约事实、Worker/Run/outbox 事实、稳定 compression gate 和
 coordinator identity；输出为带 lease 的唯一 round claim、停滞 round 的收敛结果与恢复计数。具体工作流为
 skip-locked 领取**未被有效租约持有**的候选 round（过期租约即时清除）、fencing stale attempt、由数据库
-状态推进 health；运行期在领取前先收敛已无进展的 round 并释放其名额，Runtime 启动时执行完整
+状态推进 health；候选快照后新提交的有效租约在锁内复检，已占用候选从本次领取集合排除并顺延，不覆盖他人租约。
+运行期在领取前先收敛已无进展的 round 并释放其名额，Runtime 启动时执行完整
 AgentLoopRecovery，随后由 registry 为每个 running Loop 建立独立 Supervisor，分别消费 Run、Worker、publication、Context Run、Fact 与 round。
 任务记忆拥有 admission 层独立组件，Loop 停止后仍可收口已冻结工作，不恢复执行监督。
 Run 结算只推进与该 Directive 当前绑定尝试一致的 Directive：结算的 Run 不是当前绑定时（已被取代的尝试），
 只记录该 Run 自身的事实，不改写 Directive 生命周期与绑定。
-示例：`runtime = LoopCoordinatorRuntime(...)`。
+正常 Round 收口读取全部耐久后果；失败交回用户后不覆盖等待健康状态，既有 maintenance 会重查等待清理的事务并复用相同推进入口；Run 模型消费有逐 attempt receipt 时不重复整 Run 计费，暂停后仍完成消费对账。
+稳定推进委托 rounds 唯一事务，进展依据全轮实际语义成果，与最后一个 Run 是否成功无关。
+Run 结算先 flush 当前已发生事实，再按 Loop→Round 刷新锁定所有者，之后收口消息与 Directive；该顺序与 Worker、维护和控制事务一致。
+执行阶段变化发布独立实体版本，不通过改变控制版本使正在执行的 Run 失效。示例：`runtime = LoopCoordinatorRuntime(...)`。
+新直接消息沿 Directive 统一结算，observed 阶段启动失败保留 delivery_failed；有 Directive 的 Run 不重复发布旧用户 Run 事件。
 """
 
 from __future__ import annotations
@@ -26,7 +31,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.desktop.agent_loop.budgets import (
     LoopBudgetGuard,
     configured_provider_count,
-    no_progress_fingerprint,
 )
 from backend.app.desktop.agent_loop.directive_causality import (
     DirectiveCausalityRecorder,
@@ -78,6 +82,8 @@ from backend.app.desktop.agent_loop.supervisor_registry import LoopSupervisorReg
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.agent_loop.user_run_events import LoopUserRunEventRecorder
 from backend.app.desktop.models import DesktopRun
+from backend.app.desktop.models import ModelAttemptAudit
+from backend.app.desktop.agent_loop.round_consequences import RoundConsequenceReader
 from backend.app.desktop.run_orchestration import RunOutboxConsumer
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
 
@@ -181,11 +187,8 @@ class LoopCoordinator:
         now = datetime.now(UTC)
         async with self._sessions.begin() as session:
             await session.execute(delete(LoopCoordinatorLease).where(LoopCoordinatorLease.expires_at <= now))
-            round_row = await session.scalar(self._candidate_statement(now, loop_id))
+            round_row, lease = await self._unleased_candidate(session, now, loop_id)
             if round_row is None:
-                return None
-            lease = await session.scalar(select(LoopCoordinatorLease).where(LoopCoordinatorLease.round_id == round_row.round_id).with_for_update())
-            if lease is not None and lease.expires_at > now:
                 return None
             fence = await session.get(LoopCoordinatorFence, round_row.round_id, with_for_update=True)
             if fence is None:
@@ -201,10 +204,23 @@ class LoopCoordinator:
                 lease.owner_id = owner_id
                 lease.fencing_token = token
                 lease.expires_at = now + timedelta(seconds=self._ttl)
-            loop = await session.get(AgentLoop, round_row.loop_id)
-            if loop is not None:
-                loop.health = "deciding" if round_row.status == "observed" else loop.health
             return CoordinatorClaim(lease.lease_id, round_row.loop_id, round_row.round_id, lease.fencing_token)
+
+    async def _unleased_candidate(self, session, now, loop_id):
+        occupied: set[str] = set()
+        while True:
+            statement = self._candidate_statement(now, loop_id)
+            if occupied:
+                statement = statement.where(LoopRound.round_id.not_in(occupied))
+            round_row = await session.scalar(statement)
+            if round_row is None:
+                return None, None
+            lease = await session.scalar(select(LoopCoordinatorLease).where(
+                LoopCoordinatorLease.round_id == round_row.round_id,
+            ).with_for_update())
+            if lease is None or lease.expires_at <= now:
+                return round_row, lease
+            occupied.add(round_row.round_id)
 
     async def ownership_lost(self, claim: CoordinatorClaim, reason: str = "lease_renewal_failed") -> None:
         async with self._sessions.begin() as session:
@@ -245,6 +261,31 @@ class LoopCoordinator:
         """运行期看门狗：收敛已无进展的 round 并释放其名额，使后续候选在同一轮内可被领取。"""
         now = datetime.now(UTC)
         async with self._sessions.begin() as session:
+            loops = tuple((await session.scalars(select(AgentLoop).join(
+                LoopRound, LoopRound.round_id == AgentLoop.current_round_id,
+            ).where(
+                AgentLoop.status == "running", or_(LoopRound.status == "settled",
+                    AgentLoop.waiting_reason.startswith("round_consequences:"))
+            ).with_for_update(skip_locked=True))).all())
+            for loop in loops:
+                current = await session.get(LoopRound, loop.current_round_id, with_for_update=True)
+                if current is not None and current.status == "settled":
+                    await self._continue_settled_round(session, loop, current)
+                    continue
+                if current is None or current.status != "running":
+                    continue
+                run = await session.scalar(select(DesktopRun).where(
+                    DesktopRun.loop_id == loop.loop_id, DesktopRun.round_id == current.round_id,
+                    DesktopRun.settled_at.is_not(None),
+                ).order_by(DesktopRun.settled_at.desc()).limit(1))
+                if run is not None:
+                    from backend.app.desktop.run_orchestration.models import RunOutboxEvent
+
+                    event = await session.scalar(select(RunOutboxEvent).where(
+                        RunOutboxEvent.run_id == run.run_id,
+                        RunOutboxEvent.event_type == "MainRunSettled",
+                    ))
+                    await self._advance_from_run(session, loop, current, run, event)
             terminated = await terminate_stalled_rounds(session, self._stall_limits, now, category="watchdog")
         if terminated:
             await self.release_rounds(terminated)
@@ -386,6 +427,11 @@ class LoopCoordinator:
             )
             current.status = "running" if run_ids else "ready" if queued else "error"
             loop.health = "waiting_runs" if run_ids else "dispatching" if queued else "degraded"
+            from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
+            from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
+
+            await RoundStateEventRecorder().record(session, current)
+            await LoopLifecycleEventRecorder().record(session, loop)
         return run_ids
 
     async def _context_count(self, loop_id: str) -> int:
@@ -403,10 +449,15 @@ class LoopCoordinator:
         run = await session.get(DesktopRun, event.run_id)
         if run is None or run.loop_id is None or run.round_id is None:
             return
+        await session.flush()
+        loop = await session.get(AgentLoop, run.loop_id, with_for_update=True, populate_existing=True)
+        round_row = await session.get(LoopRound, run.round_id, with_for_update=True, populate_existing=True)
+        if round_row is None or loop is None:
+            return
         if run.user_intent_id:
             intent = await session.get(LoopUserIntent, run.user_intent_id, with_for_update=True)
-            if intent is not None and run.status == "error" and intent.delivery_state in {"accepted", "delivered"}:
-                if intent.delivery_state == "accepted":
+            if intent is not None and run.status == "error" and intent.delivery_state in {"accepted", "observed", "delivered"}:
+                if intent.delivery_state in {"accepted", "observed"}:
                     await self._interventions.transition(session, intent.intent_id, "delivered", run_id=run.run_id)
                 await self._interventions.transition(session, intent.intent_id, "delivery_failed", run_id=run.run_id, reason=run.error)
             elif intent is not None and intent.delivery_state == "run_started":
@@ -417,7 +468,7 @@ class LoopCoordinator:
                     run_id=run.run_id,
                     reason=run.error,
                 )
-            if intent is not None:
+            if intent is not None and not run.directive_id:
                 await self._user_run_events.settled(session, intent, run, getattr(event, "event_id", None))
         elif run.origin == "direct_user":
             await self._user_run_events.settled(session, None, run, getattr(event, "event_id", None))
@@ -426,13 +477,11 @@ class LoopCoordinator:
             provenance = await session.scalar(select(MessageProvenance).where(MessageProvenance.message_id == run.origin_message_id).with_for_update())
             if provenance is not None:
                 provenance.context_revision_id = revision_id
-        round_row = await session.get(LoopRound, run.round_id, with_for_update=True)
-        loop = await session.get(AgentLoop, run.loop_id, with_for_update=True)
-        if round_row is None or loop is None or loop.status != "running":
-            return
         if run.directive_id:
             directive = await session.get(LoopDirective, run.directive_id, with_for_update=True)
-            if directive is not None and directive.lifecycle_state in {"delivering", "delivered"} and run.status == "error":
+            if (directive is not None and directive.lifecycle_state in {"delivering", "delivered"}
+                and run.status == "error" and run.parent_run_id is None
+                and directive.launched_run_id in {None, run.run_id}):
                 directive.status = "blocked"
                 directive.queued_reason = run.error or "run_start_failed"
                 await self._directive_lifecycle.transition(
@@ -440,7 +489,6 @@ class LoopCoordinator:
                     run_id=run.run_id, reason=directive.queued_reason,
                     caused_by_event_id=getattr(event, "event_id", None),
                 )
-                await self._directive_causality.run_settled(session, directive, run, getattr(event, "event_id", None))
             elif directive is not None and directive.lifecycle_state == "run_started" and directive.launched_run_id == run.run_id:
                 await self._directive_lifecycle.transition(
                     session,
@@ -450,73 +498,79 @@ class LoopCoordinator:
                     reason=run.error,
                     caused_by_event_id=getattr(event, "event_id", None),
                 )
+            if directive is not None and (directive.loop_id, directive.round_id) == (run.loop_id, run.round_id):
                 await self._directive_causality.run_settled(session, directive, run, getattr(event, "event_id", None))
         resolution_state = None
         if self._compression_resolutions is not None:
             resolution_state = await self._compression_resolutions.settle_run(session, event, run, loop)
         if resolution_state == "failed":
             return
+        usage = await session.get(LoopBudgetUsage, loop.loop_id, with_for_update=True)
+        reported = (run.equipment or {}).get("_loop_settlement_usage_reported")
+        audited = await session.scalar(select(ModelAttemptAudit.attempt_id).where(
+            ModelAttemptAudit.run_id == run.run_id, ModelAttemptAudit.usage_accounting["loop_id"].astext == loop.loop_id,
+        ).limit(1))
+        if usage is not None and not reported and audited is None:
+            LoopUsageLedger.apply(usage, LoopUsageDelta(model_calls=int(run.model_call_count or 0),
+                input_tokens=int(run.prompt_input_tokens or 0), output_tokens=int(run.prompt_output_tokens or 0)))
+            run.equipment = {**(run.equipment or {}), "_loop_settlement_usage_reported": True}
+        if loop.status != "running":
+            return
         if round_row.status != "running":
             return
-        projected_gate = None
-        if self._compression_gates is not None:
-            projected_gate = await self._compression_gates.project_settled(session, event, run, loop)
+        await self._advance_from_run(session, loop, round_row, run, event)
+
+    async def _advance_from_run(self, session, loop, round_row, run, event):
+        if loop.status != "running" or loop.current_round_id != round_row.round_id or round_row.status != "running":
+            return
         usage = await session.get(LoopBudgetUsage, loop.loop_id, with_for_update=True)
-        if usage is not None:
-            LoopUsageLedger.apply(
-                usage,
-                LoopUsageDelta(
-                    model_calls=int(run.model_call_count or 0),
-                    input_tokens=int(run.prompt_input_tokens or 0),
-                    output_tokens=int(run.prompt_output_tokens or 0),
-                ),
-            )
+        projected_gate = None
+        if self._compression_gates is not None and event is not None:
+            projected_gate = await self._compression_gates.project_settled(session, event, run, loop)
         active = await session.scalar(select(func.count()).select_from(DesktopRun).where(DesktopRun.round_id == run.round_id, DesktopRun.status.in_(["pending", "running"])))
         if active:
             round_row.status = "running"
             loop.health = "waiting_runs"
-            return
-        if projected_gate is not None and not projected_gate.delegable:
-            round_row.status = "settled"
-            round_row.settled_at = datetime.now(UTC)
-            await self._complete_patrol_session(session, round_row.round_id, run.run_id)
+            await self._record_live_state(session, loop, round_row)
             return
         queued = await session.scalar(select(func.count()).select_from(LoopDirective).where(LoopDirective.round_id == run.round_id, LoopDirective.status == "created"))
         if queued:
             round_row.status = "ready"
             loop.health = "dispatching"
+            await self._record_live_state(session, loop, round_row)
             sequence = int(await session.scalar(select(func.coalesce(func.max(LoopEventOutbox.sequence), 0)).where(LoopEventOutbox.loop_id == loop.loop_id)) or 0) + 1
             session.add(LoopEventOutbox(event_id=uuid.uuid4().hex, loop_id=loop.loop_id, sequence=sequence, event_type="LoopWaveReady", payload={"round_id": round_row.round_id, "remaining_directives": queued}, idempotency_key=f"wave-ready:{run.run_id}"))
             return
-        round_row.status = "settled"
-        round_row.settled_at = datetime.now(UTC)
+        from backend.app.desktop.agent_loop.rounds import settle_round
+
+        if not await settle_round(session, loop, round_row):
+            if loop.status == "running":
+                loop.health = "waiting_runs"
+            await self._record_live_state(session, loop, round_row)
+            return
         await self._complete_patrol_session(session, round_row.round_id, run.run_id)
-        number = int(await session.scalar(select(func.max(LoopRound.number)).where(LoopRound.loop_id == loop.loop_id)) or 0) + 1
-        frontier_hash = await self._current_frontier_hash(session, loop.loop_id)
-        slot = await session.scalar(select(WorkspaceSlot).where(WorkspaceSlot.workspace_id == loop.workspace_id, WorkspaceSlot.kind == "authoritative", WorkspaceSlot.lifecycle != "deleted"))
-        workspace_revision = slot.revision if slot is not None else int((run.workspace_result or {}).get("revision") or round_row.workspace_revision)
-        next_round = LoopRound(round_id=uuid.uuid4().hex, loop_id=loop.loop_id, number=number, authority_revision=loop.authority_revision, goal_revision=loop.goal_revision, frontier_hash=frontier_hash, workspace_revision=workspace_revision)
-        session.add(next_round)
-        loop.current_round_id = next_round.round_id
-        loop.health = "observing"
-        loop.revision += 1
-        if usage is not None:
-            usage.rounds += 1
-            if run.status == "success":
-                usage.no_progress_count = 0
-                usage.no_progress_fingerprint = None
-            else:
-                action = await session.get(LoopAction, run.action_id) if run.action_id else None
-                progress = no_progress_fingerprint(
-                    status=run.status,
-                    error=run.error,
-                    workspace_fingerprint=(run.workspace_result or {}).get("fingerprint"),
-                    action_type=action.action_type if action else None,
-                )
-                usage.no_progress_count = usage.no_progress_count + 1 if usage.no_progress_fingerprint == progress else 1
-                usage.no_progress_fingerprint = progress
+        if projected_gate is not None and not projected_gate.delegable:
+            return
+        await self._continue_settled_round(session, loop, round_row, run)
+
+    @staticmethod
+    async def _record_live_state(session, loop, round_row):
+        from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
+        from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
+
+        await RoundStateEventRecorder().record(session, round_row)
+        await LoopLifecycleEventRecorder().record(session, loop)
+
+    async def _continue_settled_round(self, session, loop, round_row, run=None):
+        from backend.app.desktop.agent_loop.rounds import advance_settled_round
+
+        next_round = await advance_settled_round(session, loop, round_row)
+        if next_round is None:
+            return
         sequence = int(await session.scalar(select(func.coalesce(func.max(LoopEventOutbox.sequence), 0)).where(LoopEventOutbox.loop_id == loop.loop_id)) or 0) + 1
-        session.add(LoopEventOutbox(event_id=uuid.uuid4().hex, loop_id=loop.loop_id, sequence=sequence, event_type="RoundObserved", payload={"round_id": next_round.round_id, "settled_run_id": run.run_id}, idempotency_key=f"run-settled:{run.run_id}"))
+        session.add(LoopEventOutbox(event_id=uuid.uuid4().hex, loop_id=loop.loop_id, sequence=sequence,
+            event_type="RoundObserved", payload={"round_id": next_round.round_id, "source_round_id": round_row.round_id,
+            "settled_run_id": run.run_id if run else None}, idempotency_key=f"round-settled:{round_row.round_id}"))
 
     async def _complete_patrol_session(self, session: AsyncSession, round_id: str, run_id: str) -> None:
         patrol = await session.scalar(

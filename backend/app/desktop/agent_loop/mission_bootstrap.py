@@ -4,6 +4,8 @@ r"""本文件对外提供 MissionInstructionRenderer 与 MissionBootstrapStage �
 HumanMessage 正文、待提交的 continuation/类型化等待意图，或可显示的具体交付阻断。具体工作流为 renderer
 按原文和稳定分区标识构造指令，stage 优先识别同 revision 已授权交付，再检查活动 Run、人类 gate、授权和
 Context revision；已授权等待的具体 blocker 形成带证据身份的 Kernel 意图，其他情况保持明确阻断。
+complete_patrol_delivery 仅向 Patrol 已选择的 Primary continuation 补入完整正文，权威 identity 与其他动作保持该次 Patrol 来源。
+MissionBootstrapAssessment.to_payload 对外提供快照与规范事件共用的交付读面，不输出候选intent或正文。
 示例：`assessment = await MissionBootstrapStage().assess(session, loop, round_row)`。
 """
 
@@ -39,6 +41,10 @@ class MissionBootstrapAssessment:
     directive_id: str | None = None
     run_id: str | None = None
     intent: PatrolDecisionIntent | None = None
+
+    def to_payload(self) -> dict:
+        return {"state": self.state, "mission_revision": self.mission_revision, "reason": self.reason,
+                "directive_id": self.directive_id, "run_id": self.run_id}
 
 
 class MissionInstructionRenderer:
@@ -76,6 +82,21 @@ class MissionInstructionRenderer:
 class MissionBootstrapStage:
     def __init__(self, renderer: type[MissionInstructionRenderer] = MissionInstructionRenderer) -> None:
         self._renderer = renderer
+
+    @staticmethod
+    def complete_patrol_delivery(intent: PatrolDecisionIntent, assessment: MissionBootstrapAssessment) -> PatrolDecisionIntent:
+        seed = assessment.intent
+        if seed is None:
+            return intent
+        primary = next((action for action in seed.actions if action.action == "continue_context"), None)
+        if primary is None:
+            return intent
+        actions = tuple(
+            action.model_copy(update={"message": primary.message + "\n\n本轮执行指令：\n" + action.message})
+            if action.action == "continue_context" and action.context_id == primary.context_id else action
+            for action in intent.actions
+        )
+        return intent.model_copy(update={"actions": actions})
 
     async def assess(self, session: AsyncSession, loop: AgentLoop, round_row: LoopRound) -> MissionBootstrapAssessment:
         revision = loop.goal_revision

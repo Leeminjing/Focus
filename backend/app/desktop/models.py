@@ -10,6 +10,7 @@ desktop_threads.title 是 THREAD_TITLE_LIMIT 有界列：用户输入的标题�
 从散文派生的标题经 bounded_thread_title 收进该界，二者的界同源于列宽。
 SessionAccessModeUpdate 只接受三档规范模式，供独立的会话模式持久化接口使用。
 AgentMessageDelivery 记录协作消息的精确 checkpoint 投递事实，与消息已读显示同事务提交。
+DesktopRun.parent_run_id 保存可信执行父链；ModelAttemptAudit.usage_accounting 保存共享预算的预留、实测或未知 receipt，历史空值不伪造归属。
 
 示例：request = MainRunCreate(message="比较", material_inputs=[{"material_id": "m1", "note": "看第三章"}])。
 PatrolDraft 保存宽容 V2 文档、并发版本与冻结来源；PatrolDeploymentDefinition 是数据库不可变审计记录。定义与 Run/dispatch 同事务创建，Run 删除后其审计身份仍可定位，不以外键阻断既有删除流程。
@@ -286,6 +287,7 @@ class DesktopRun(Base):
     user_intent_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     loop_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     round_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    parent_run_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("desktop_runs.run_id", ondelete="RESTRICT"), nullable=True, index=True)
     action_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     equipment: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
@@ -465,6 +467,7 @@ class ModelAttemptAudit(Base):
     status: Mapped[str] = mapped_column(String(24), nullable=False)
     audit: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     usage: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    usage_accounting: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

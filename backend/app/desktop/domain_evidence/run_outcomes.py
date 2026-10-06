@@ -1,8 +1,8 @@
 """本文件对外提供 RunOutcomeRecorder 与 workspace_results 的领域结果适配。
 
 输入为终态 Run、其指令之后的已确认输出和已提交 Workspace 结果；输出为持久领域结果身份。
-具体工作流为排除继承消息，提取测试结论与 Agent 最终自述，再单独保存 Workspace/Artifact 领域变化；
-原始消息与 checkpoint identity 只保存在 audit。Run success 不被翻译为任务完成。
+具体工作流为排除继承消息，提取测试结论与 Agent 最终自述，再单独保存 Workspace 变化；ArtifactObservationRecorder 从真实文件调用审计和当前文件记录产物，既有显式产物列表仍独立保留；
+原始消息与 checkpoint identity 只保存在 audit。可信报告的命名结果使用注入的实际秘密值脱敏，Run success 不被翻译为任务完成。
 示例：await RunOutcomeRecorder().record(session, run, checkpoint_messages)。
 Workspace 适配只提取状态、版本、文件与指纹变更，路径身份哈希保证字段长度稳定。
 """
@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.desktop.domain_evidence.identity import canonical_hash
 from backend.app.desktop.domain_evidence.repository import DomainResultRepository
 from backend.app.desktop.domain_evidence.tests import TestResultParser, test_identity
+from backend.app.desktop.domain_evidence.artifacts import ArtifactObservationRecorder
+from backend.app.desktop.secret_redaction import configured_secret_values
 
 
 def workspace_results(result: dict) -> tuple[dict, ...]:
@@ -59,8 +61,9 @@ def workspace_results(result: dict) -> tuple[dict, ...]:
 
 
 class RunOutcomeRecorder:
-    def __init__(self) -> None:
+    def __init__(self, *, secrets=None) -> None:
         self._results = DomainResultRepository()
+        self._secrets = configured_secret_values() if secrets is None else secrets
 
     async def record(
         self, session: AsyncSession, run: Any, messages: tuple[dict, ...]
@@ -126,13 +129,16 @@ class RunOutcomeRecorder:
                 if isinstance(args, dict)
                 else None,
                 execution_status=item.get("status"),
+                run_id=run.run_id,
+                call_id=call_id,
+                secrets=self._secrets,
             )
             if parsed is not None and call_id:
                 await self._results.record(
                     session,
                     kind="test",
                     source_id=test_identity(run.run_id, call_id),
-                    payload=parsed,
+                    payload={**parsed, "workspace_revision": (run.workspace_result or {}).get("revision")},
                     loop_id=run.loop_id,
                     context_id=run.task_id,
                     run_id=run.run_id,
@@ -159,3 +165,4 @@ class RunOutcomeRecorder:
                 context_id=run.task_id,
                 run_id=run.run_id,
             )
+        await ArtifactObservationRecorder().record(session, run, calls)

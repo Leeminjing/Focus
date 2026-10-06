@@ -3,12 +3,14 @@ r"""本文件对外提供 RetrievalBackedCognitiveAdvisor 及其分步 worker sc
 输入为冻结 Mission/workspace facts、PortfolioIndexCatalog、授权 Context index/Mission catalog、planning session 与结构化模型端口；
 输出为 WorkContextDraft 候选、同 session 已验证的 semantic manifests、来源类型化 exact reads 和终态 session。具体工作流为模型先提交经整体容量检查的查询，
 服务端在授权索引内召回去重候选，模型按持久分页选择 Context/Mission candidates，服务端精读并以实际用量记账；失败尝试可从稳定操作身份恢复，
-最终模型按单请求窗口分页处理所有精读证据，只能引用所在批次已精读 unit identity 生成工作候选，同一职责跨页归并且保留全部引用，资源与请求窗口阻断保留因果代码。示例：`result = await advisor.plan(payload, session, indexes)`。
+最终模型按单请求窗口分页处理所有精读证据，同一Corpus角色政策按当前可引用kind与Context职责在分页容量计算前投影到工作输入，不重复内联不可引用的Run分类；只能引用所在批次已精读 unit identity 生成工作候选，引用校验先于成功缓存，失败进入同一冻结尝试预算的反馈流程，恢复复检缓存而不改写历史。
+同一职责跨页归并且保留全部引用，资源与请求窗口阻断保留因果代码。示例：`result = await advisor.plan(payload, session, indexes)`。
 """
 
 from __future__ import annotations
 
 from itertools import count
+from functools import partial
 
 from backend.app.desktop.agent_loop.resource_limits import exceeds_limit, remaining_capacity
 
@@ -27,6 +29,7 @@ from backend.app.desktop.agent_loop.context_expansion.candidate_paging import (
     ProviderRequestWindowError,
 )
 from backend.app.desktop.agent_loop.context_expansion.evidence_read_paging import EvidenceReadPager
+from backend.app.desktop.agent_loop.context_expansion.evidence_roles import evidence_role_contract
 from backend.app.desktop.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog
 from backend.app.desktop.agent_loop.context_expansion.query_admission import (
     QueryPlanAdmission,
@@ -44,6 +47,7 @@ from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import 
     SemanticRetrievalQuery,
 )
 from backend.app.desktop.agent_loop.context_expansion.work_spec_pages import combine_page_work_specs
+from backend.app.desktop.agent_loop.derivation_worker import StructuredResultValidationError
 
 
 class _PlannerModel(BaseModel):
@@ -96,7 +100,7 @@ class StructuredModelPort(Protocol):
 
 
 class RetrievalBackedCognitiveAdvisor:
-    VERSION = "retrieval-backed-cognitive-advisor-v1"
+    VERSION = "retrieval-backed-cognitive-advisor-v2"
 
     def __init__(
         self,
@@ -181,7 +185,7 @@ class RetrievalBackedCognitiveAdvisor:
                     LaneAdviceProposal,
                     self._work_authority(),
                     {
-                        **self._planning_input(payload),
+                        **self._work_input(payload, session),
                         "exact_reads": tuple(item.model_dump(mode="json") for item in reads),
                         "semantic_manifests": tuple(item.model_dump(mode="json") for item in manifests),
                         "allowed_candidate_unit_ids": tuple(item.entry_id for item in selected if item.source_type == "context"),
@@ -345,7 +349,7 @@ class RetrievalBackedCognitiveAdvisor:
         return session
 
     async def _plan_v2_work(self, payload: dict[str, Any], session: PlanningRetrievalSession):
-        planning_input = self._planning_input(payload)
+        planning_input = self._work_input(payload, session)
         pages = EvidenceReadPager().pages(
             session,
             session.reads,
@@ -370,6 +374,7 @@ class RetrievalBackedCognitiveAdvisor:
                     "allowed_candidate_refs": allowed_refs,
                 },
                 operation_id="work_spec" if len(pages) == 1 else f"work_page:{page.page_id}",
+                validator=partial(self._require_known_citations, selected=page_candidates),
             )
             if session.state == "blocked":
                 return None, session
@@ -403,17 +408,28 @@ class RetrievalBackedCognitiveAdvisor:
             for requirement in draft.evidence_requirements
         )
 
-    async def _invoke(self, session, schema, authority: str, payload: dict[str, Any], *, operation_id: str):
+    @classmethod
+    def _require_known_citations(cls, proposal, *, selected):
+        if cls._unknown_citations(proposal, selected):
+            raise StructuredResultValidationError(
+                "planner_evidence_identity_unknown",
+                "工作候选只能引用本页 allowed_candidate_unit_ids 或完整 allowed_candidate_refs；请复制精读来源身份。",
+                unit_identity="work_spec",
+                violated_rule="exact_read_identity",
+            )
+
+    async def _invoke(self, session, schema, authority: str, payload: dict[str, Any], *, operation_id: str, validator=None):
         is_v2 = session.schema_version == "retrieval-session-v2"
         stage = self._operation_stage(operation_id)
         if is_v2 and operation_id in session.model_results:
-            return schema.model_validate(session.model_results[operation_id]), session
+            return await self._cached_result(session, schema, operation_id, validator)
         attempt_limit = session.frozen_resources.policy.max_model_attempts_per_operation if is_v2 else 1
         completed_attempts = sum(
             charge.operation_id.startswith(f"model:{operation_id}:attempt:")
             for charge in session.ledger.charges
         ) if is_v2 else 0
         attempts = count(completed_attempts + 1) if attempt_limit is None else range(completed_attempts + 1, attempt_limit + 1)
+        feedback = {"category": "previous_attempt_unaccepted", "message": "前次尝试未保存合格结果，请按冻结输入与精读身份重新生成。"} if completed_attempts else None
         for attempt in attempts:
             blocked = self._model_capacity_blocker(session, stage=stage, operation_id=operation_id)
             if blocked is not None:
@@ -421,32 +437,25 @@ class RetrievalBackedCognitiveAdvisor:
                 return None, blocked
             error = None
             try:
-                result = await self._model.invoke(schema, authority, payload)
+                result = await self._model.invoke(schema, authority, payload if feedback is None else {
+                    **payload, "previous_attempt_failure": feedback,
+                    "retry_instruction": "Correct the previous failure without changing frozen input or evidence identities.",
+                })
+                if validator is not None:
+                    validator(result)
             except Exception as exc:
                 result = None
                 error = exc
-            usage = getattr(self._model, "last_usage", ModelUsage(model_calls=1))
-            updated = self._controller.record_model_usage(
-                session,
-                model_calls=max(1, int(getattr(usage, "model_calls", 0))),
-                tokens=max(0, int(getattr(usage, "input_tokens", 0))) + max(0, int(getattr(usage, "output_tokens", 0))),
-                operation_id=f"{operation_id}:attempt:{attempt}" if is_v2 else operation_id,
-                input_tokens=max(0, int(getattr(usage, "input_tokens", 0))),
-                output_tokens=max(0, int(getattr(usage, "output_tokens", 0))),
-                result_payload=result.model_dump(mode="json") if is_v2 and result is not None else None,
-                result_operation_id=operation_id if is_v2 else None,
-                usage_reported=getattr(self._model, "last_usage_reported", True),
-                stage=stage,
-            )
+                if isinstance(exc, StructuredResultValidationError):
+                    feedback = {"category": exc.code, "message": str(exc), "violated_rule": exc.violated_rule}
+            updated = self._record_model_attempt(session, result, operation_id, attempt, stage)
             blocked = self._model_capacity_blocker(updated, after_call=True, stage=stage, operation_id=operation_id)
             if blocked is not None:
                 updated = blocked
             if error is not None and updated.state != "blocked" and (
                 self._is_provider_window_failure(error) or attempt == attempt_limit
             ):
-                code = "provider_request_window" if self._is_provider_window_failure(error) else "retrieval_planning_failed"
-                summary = "模型单次请求超过配置窗口" if code == "provider_request_window" else "模型规划请求失败；实际调用用量已保留"
-                updated = self._controller.block(updated, code, summary=summary, stage=stage, boundary="provider_request_window" if code == "provider_request_window" else "provider_failure", operation_id=operation_id)
+                updated = self._failed_model_attempt(updated, error, operation_id, stage)
             await self._save(updated)
             if updated.state == "blocked" or error is None:
                 return result, updated
@@ -454,6 +463,41 @@ class RetrievalBackedCognitiveAdvisor:
         blocked = self._controller.block(session, "retrieval_planning_failed", stage=stage, boundary="model_attempts", operation_id=operation_id)
         await self._save(blocked)
         return None, blocked
+
+    async def _cached_result(self, session, schema, operation_id, validator):
+        result = schema.model_validate(session.model_results[operation_id])
+        if validator is not None:
+            try:
+                validator(result)
+            except StructuredResultValidationError as exc:
+                blocked = self._failed_model_attempt(session, exc, operation_id, self._operation_stage(operation_id))
+                await self._save(blocked)
+                return None, blocked
+        return result, session
+
+    def _record_model_attempt(self, session, result, operation_id, attempt, stage):
+        is_v2 = session.schema_version == "retrieval-session-v2"
+        usage = getattr(self._model, "last_usage", ModelUsage(model_calls=1))
+        input_tokens = max(0, int(getattr(usage, "input_tokens", 0)))
+        output_tokens = max(0, int(getattr(usage, "output_tokens", 0)))
+        return self._controller.record_model_usage(
+            session, model_calls=max(1, int(getattr(usage, "model_calls", 0))),
+            tokens=input_tokens + output_tokens,
+            operation_id=f"{operation_id}:attempt:{attempt}" if is_v2 else operation_id,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            result_payload=result.model_dump(mode="json") if is_v2 and result is not None else None,
+            result_operation_id=operation_id if is_v2 else None,
+            usage_reported=getattr(self._model, "last_usage_reported", True), stage=stage,
+        )
+
+    def _failed_model_attempt(self, session, error, operation_id, stage):
+        if isinstance(error, StructuredResultValidationError):
+            code, summary, boundary = error.code, str(error), error.violated_rule
+        elif self._is_provider_window_failure(error):
+            code, summary, boundary = "provider_request_window", "模型单次请求超过配置窗口", "provider_request_window"
+        else:
+            code, summary, boundary = "retrieval_planning_failed", "模型规划请求失败；实际调用用量已保留", "provider_failure"
+        return self._controller.block(session, code, summary=summary, stage=stage, boundary=boundary, operation_id=operation_id)
 
     def _model_capacity_blocker(
         self,
@@ -539,6 +583,16 @@ class RetrievalBackedCognitiveAdvisor:
             "derivation": derivation,
         }
 
+    @classmethod
+    def _work_input(cls, payload: dict[str, Any], session: PlanningRetrievalSession) -> dict[str, Any]:
+        kinds = tuple(read.content["kind"] for read in session.reads
+                      if read.source_type == "context" and isinstance(read.content, dict) and "kind" in read.content)
+        planning = cls._planning_input(payload)
+        catalog = planning["derivation"].get("portfolio_index_catalog")
+        indexes = {read.index_id for read in session.reads}
+        roles = tuple(item["context_role"] for item in catalog["descriptors"] if item["index_id"] in indexes) if catalog else None
+        return {**planning, "evidence_role_contract": evidence_role_contract(unit_kinds=kinds, context_roles=roles, include_run_results=False)}
+
     def _blocked(
         self,
         session: PlanningRetrievalSession,
@@ -591,4 +645,4 @@ class RetrievalBackedCognitiveAdvisor:
 
     @staticmethod
     def _work_authority() -> str:
-        return "你是无权 Cognitive Work Planner。只使用本 planning session 已精确读取的 evidence 生成零个或多个 WorkContextDraft；Mission 引用必须完整复制 allowed_candidate_refs 中的版本化来源身份，旧版 Context unit 可使用 allowed_candidate_unit_ids。按真实认知职责决定是否需要独立历史，不得按关键词/阈值套模板，不得创建 Context、修改状态、运行工具或扩大 scope。"
+        return "你是无权 Cognitive Work Planner。只使用本 planning session 已精确读取的 evidence 生成零个或多个 WorkContextDraft；Mission 引用必须完整复制 allowed_candidate_refs 中的版本化来源身份，旧版 Context unit 可使用 allowed_candidate_unit_ids。evidence_role_contract 是最终Corpus使用的同一角色政策：Context消息的角色由引用unit的kind及来源Context职责形成，同一消息跨unit的角色取并集；material仅用于真实类型化material来源，文件正文或未来交付物不能因此成为material。现有输入按角色引用，未来代码、测试和报告放入completion_criteria。按真实认知职责决定是否需要独立历史，不得按关键词/阈值套模板，不得创建 Context、修改状态、运行工具或扩大 scope。"

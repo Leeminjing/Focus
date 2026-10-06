@@ -2,7 +2,9 @@ r"""本文件对外提供 Loop 交互、持久化与恢复缺陷的回归测试�
 
 输入为含 NUL 的嵌套载荷、WaitRequest factory、Loop 激活候选与投影失败；输出为安全载荷、类型化等待、
 最新直接用户 Run 决策和局部失败结果。具体工作流为先验证纯领域合同，再用隔离 PostgreSQL 验证事务边界。
+历史迁移在独立临时数据库反射旧表后写入，避免新 ORM 列穿越旧 schema 或共享测试数据库被降级。
 示例：`pytest backend/tests/test_loop_resilience_regressions.py`。
+工具 journal 活动不冒充领域 ToolFact；等待恢复发布真实观察轮状态，冻结和 Decision 仍由后续权威管线产生。
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from alembic import command
 from alembic.config import Config
 from fastapi import HTTPException
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, select, MetaData, Table, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
@@ -160,12 +162,17 @@ def test_postgres_wait_journal_activation_and_projection_recovery(tmp_path: Path
                 replay = await journal.read(session, loop_id, after_sequence=0)
                 assert any(item.idempotency_key == "nul-tool-fixture" for item in replay)
             projector = FactProjector(sessions, object())
-            assert await projector.project_loop(loop_id) >= 1
+            assert await projector.project_loop(loop_id) == 0
             async with sessions() as session:
                 fact = await session.scalar(select(LoopFact).where(LoopFact.loop_id == loop_id, LoopFact.fact_type == "tool"))
-                assert fact.source_run_id == newest_run_id
-                assert fact.presentation["summary"] == r"WSL\u0000payload"
-                assert fact.presentation["persistence_safety"]["normalized"] is True
+                assert fact is None
+                cursor = await session.get(LoopProjectorCursor, (loop_id, FactProjector.PROJECTOR_NAME))
+                assert cursor.last_sequence == event.sequence
+                activity = next(item for item in await journal.read(session, loop_id, after_sequence=0)
+                                if item.event_id == event.event_id)
+                assert activity.payload["run_id"] == newest_run_id
+                assert activity.payload["summary"] == r"WSL\u0000payload"
+                assert activity.payload["_persistence_safety"]["replacement_count"] == 2
 
             recovery = ProjectionRecoveryRepository()
             async with sessions.begin() as session:
@@ -189,10 +196,16 @@ def test_postgres_wait_journal_activation_and_projection_recovery(tmp_path: Path
     asyncio.run(run())
 
 
-def test_migration_backfills_legacy_wait_and_classifies_runs(tmp_path: Path) -> None:
+def test_migration_backfills_legacy_wait_and_classifies_runs(tmp_path: Path, monkeypatch) -> None:
     migrations = Path(__file__).parents[1] / "packages" / "harness" / "focus" / "persistence" / "migrations" / "alembic.ini"
     config = Config(str(migrations))
-    engine = create_engine(make_url(os.environ["FOCUS_DATABASE_URL"]).set(drivername="postgresql+psycopg"))
+    url = make_url(os.environ["FOCUS_DATABASE_URL"]).set(drivername="postgresql+psycopg")
+    database = "focus_migration_" + uuid.uuid4().hex[:12]
+    admin = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    with admin.connect() as connection:
+        connection.execute(text(f'CREATE DATABASE "{database}"'))
+    monkeypatch.setenv("FOCUS_DATABASE_URL", url.set(drivername="postgresql+asyncpg", database=database).render_as_string(hide_password=False))
+    engine = create_engine(url.set(database=database))
     workspace_id = uuid.uuid4().hex
     waiting_context = uuid.uuid4().hex
     running_context = uuid.uuid4().hex
@@ -200,19 +213,22 @@ def test_migration_backfills_legacy_wait_and_classifies_runs(tmp_path: Path) -> 
     pending_run_id = uuid.uuid4().hex
     running_run_id = uuid.uuid4().hex
     try:
+        command.upgrade(config, "head")
         command.downgrade(config, "0a1b2c3d4e5f")
-        with Session(engine) as session, session.begin():
-            session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(tmp_path), display_name="legacy"))
-            session.flush()
-            session.add_all([
-                DesktopThread(task_id=waiting_context, workspace_id=workspace_id, thread_id=f"thread-{waiting_context}", title="waiting"),
-                DesktopThread(task_id=running_context, workspace_id=workspace_id, thread_id=f"thread-{running_context}", title="running"),
+        metadata = MetaData()
+        tables = {name: Table(name, metadata, autoload_with=engine) for name in
+                  ("desktop_workspaces", "desktop_threads", "agent_loops", "desktop_runs")}
+        with engine.begin() as connection:
+            connection.execute(tables["desktop_workspaces"].insert(), dict(workspace_id=workspace_id, path=str(tmp_path), display_name="legacy"))
+            connection.execute(tables["desktop_threads"].insert(), [
+                dict(task_id=waiting_context, workspace_id=workspace_id, thread_id=f"thread-{waiting_context}", title="waiting"),
+                dict(task_id=running_context, workspace_id=workspace_id, thread_id=f"thread-{running_context}", title="running"),
             ])
-            session.flush()
-            session.add(AgentLoop(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=waiting_context, holder_id="patrol", status="waiting_user", health="idle", waiting_reason="旧原因"))
-            session.add_all([
-                DesktopRun(run_id=pending_run_id, task_id=waiting_context, agent_id=f"main:{waiting_context}", kind="main", status="pending", origin="direct_user", execution_thread_id=f"thread-{waiting_context}", input_messages=[{"role": "user", "content": "你好"}]),
-                DesktopRun(run_id=running_run_id, task_id=running_context, agent_id=f"main:{running_context}", kind="main", status="running", origin="direct_user", execution_thread_id=f"thread-{running_context}", input_messages=[{"role": "user", "content": "仍在执行"}]),
+            connection.execute(tables["agent_loops"].insert(), dict(loop_id=loop_id, workspace_id=workspace_id,
+                initial_context_id=waiting_context, holder_id="patrol", status="waiting_user", health="idle", waiting_reason="旧原因"))
+            connection.execute(tables["desktop_runs"].insert(), [
+                dict(run_id=pending_run_id, task_id=waiting_context, agent_id=f"main:{waiting_context}", kind="main", status="pending", origin="direct_user", execution_thread_id=f"thread-{waiting_context}", input_messages=[{"role": "user", "content": "你好"}]),
+                dict(run_id=running_run_id, task_id=running_context, agent_id=f"main:{running_context}", kind="main", status="running", origin="direct_user", execution_thread_id=f"thread-{running_context}", input_messages=[{"role": "user", "content": "仍在执行"}]),
             ])
         command.upgrade(config, "head")
         with Session(engine) as session:
@@ -229,8 +245,10 @@ def test_migration_backfills_legacy_wait_and_classifies_runs(tmp_path: Path) -> 
             assert interrupted.status == "interrupted"
             assert interrupted.input_messages[0]["content"] == "仍在执行"
     finally:
-        command.upgrade(config, "head")
         engine.dispose()
+        with admin.connect() as connection:
+            connection.execute(text(f'DROP DATABASE "{database}" WITH (FORCE)'))
+        admin.dispose()
 
 
 def test_projector_quarantines_one_unit_continues_and_repairs(tmp_path: Path) -> None:
@@ -437,7 +455,10 @@ def test_wait_response_resumes_once_while_unrelated_task_admits(tmp_path: Path) 
                 rounds = tuple((await session.scalars(select(LoopRound).where(LoopRound.loop_id == loop_id))).all())
                 replay = await LoopEventJournal().read(session, loop_id, after_sequence=0)
                 assert len(rounds) == 1
-                assert {item.kind for item in replay} >= {"loop.wait.request_opened", "loop.wait.response_committed", "loop.wait.request_resolved", "loop.round.observed", "loop.wait.resumed", "loop.wait.terminated"}
+                assert {item.kind for item in replay} >= {"loop.wait.request_opened", "loop.wait.response_committed", "loop.wait.request_resolved", "loop.round.state_changed", "loop.wait.resumed", "loop.wait.terminated"}
+                created_round = next(item for item in replay if item.kind == "loop.round.state_changed" and item.payload["status"] == "observed")
+                assert created_round.payload["number"] == 1
+                assert created_round.payload["observation_id"] is None and created_round.payload["decision_id"] is None
         finally:
             await engine.dispose()
 

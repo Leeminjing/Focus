@@ -2,7 +2,8 @@ r"""本文件对外提供 LoopPortfolioPublicationQueue。
 
 输入为已由 Kernel 持久授权且状态为 publishing 的 LoopDecision、可选 Loop scope、发布端口、并发上限和最大尝试次数；输出为
 独立于 Run event 消费的有界发布任务。具体工作流为按依赖锁定可发布 decision，记录稳定 attempt identity，
-后台执行原子发布，成功后收口用户意图与 Patrol Session，失败则有界重排队或显式终结并保留 Session 因果。
+后台执行原子发布，成功后收口用户意图与Patrol Session；失败先依Loop→Round→Decision锁定并刷新，有界重排队仅作用于当前运行轮。
+终态失败和superseded复用Round终止入口记录结算与事件，当前运行Loop交回用户，暂停及后继轮保持，保留Session因果。
 示例：`await queue.drain()`。
 """
 
@@ -21,6 +22,7 @@ from backend.app.desktop.agent_loop.patrol_runtime import PatrolSessionLifecycle
 from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
 from backend.app.desktop.context_curation.portfolio_publisher import PortfolioSuperseded
 from backend.app.desktop.agent_loop.wait_requests import open_recovery_wait
+from backend.app.desktop.agent_loop.rounds import terminate_round
 
 
 class PortfolioPublicationPort(Protocol):
@@ -145,16 +147,15 @@ class LoopPortfolioPublicationQueue:
 
     async def _settle_failure(self, decision_id: str, reason: str, *, superseded: bool) -> bool:
         async with self._sessions.begin() as session:
-            decision = await session.get(LoopDecision, decision_id, with_for_update=True)
+            loop, round_row, decision = await self._failure_rows(session, decision_id)
             if decision is None or decision.status != "publishing_run":
                 return False
-            loop = await session.get(AgentLoop, decision.loop_id, with_for_update=True)
-            round_row = await session.get(LoopRound, decision.round_id, with_for_update=True)
-            if not superseded and loop is not None and loop.status == "running" and decision.deferred_attempt < self._max_attempts:
+            current = loop is not None and loop.status == "running" and loop.current_round_id == decision.round_id
+            if not superseded and current and decision.deferred_attempt < self._max_attempts:
                 decision.status = "publishing"
                 decision.queued_reason = f"retry:{decision.decision_id}:attempt:{decision.deferred_attempt + 1}:{reason[:500]}"
                 return False
-            status = "superseded" if superseded or loop is None or loop.status != "running" else "rejected"
+            status = "superseded" if superseded or not current else "rejected"
             decision.status = status
             decision.rejection = {"reason": reason[:2000], "attempts": decision.deferred_attempt}
             decision.queued_reason = None
@@ -168,9 +169,11 @@ class LoopPortfolioPublicationQueue:
             for action in actions:
                 if action.status == "authorized":
                     action.status = status
-            if round_row is not None and round_row.status == "publishing":
-                round_row.status = "superseded" if status == "superseded" else "error"
-            if loop is not None and loop.status == "running" and status == "rejected":
+            if round_row is not None:
+                await terminate_round(session, loop, round_row, category="publication_superseded" if status == "superseded" else "publication_failure",
+                    reason=reason[:2000], decision_id=decision_id, allowed_statuses={"publishing"},
+                    terminal_status="superseded" if status == "superseded" else "error", wait_for_user=False)
+            if current:
                 loop.health = "degraded"
                 await open_recovery_wait(
                     session,
@@ -181,6 +184,15 @@ class LoopPortfolioPublicationQueue:
                     scope={"decision_id": decision_id},
                 )
             return True
+
+    async def _failure_rows(self, session: AsyncSession, decision_id: str):
+        identity = await session.get(LoopDecision, decision_id)
+        if identity is None:
+            return None, None, None
+        loop = await session.get(AgentLoop, identity.loop_id, with_for_update=True, populate_existing=True)
+        round_row = await session.get(LoopRound, identity.round_id, with_for_update=True, populate_existing=True)
+        decision = await session.get(LoopDecision, decision_id, with_for_update=True, populate_existing=True)
+        return loop, round_row, decision
 
     async def _settle_patrol(
         self,

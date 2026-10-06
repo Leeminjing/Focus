@@ -1,10 +1,12 @@
-"""本文件对外提供隔离 PostgreSQL fixture、迁移隔离插件和 wait_until 轮询入口。
+"""本文件对外提供会话及运行时隔离 PostgreSQL fixture、迁移隔离插件和 wait_until 轮询入口。
 
-输入为测试目录、临时资源和待验证条件；输出为独立测试数据库与有界轮询结果。
-具体工作流为创建隔离会话库、注册 DDL 独立库 fixture，测试后按明确身份清理。
-示例：pytest backend/tests -q。
+输入为测试目录、临时资源和待验证条件；输出为迁移到当前版本的独立测试数据库与有界轮询结果。
+具体工作流为复用同一创建/迁移/销毁合同；普通集成测试使用会话库，全库调度器测试使用逐用例运行时库，
+临时环境覆盖由 monkeypatch 恢复，失败时仍按本次精确数据库身份清理，不修改其他测试记录。
+示例：使用 runtime_postgres_database 后启动 TestClient，真实 Worker 只能领取本用例创建的任务。
 """
 
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import time
@@ -52,7 +54,21 @@ def _isolate_default_model_override(monkeypatch):
 
 @pytest.fixture(scope="session")
 def isolated_postgres_database():
-    """为 PostgreSQL 集成测试创建、迁移并最终销毁独立数据库。"""
+    with _migrated_postgres_database(_test_database_name, create=_managed_test_database):
+        yield
+
+
+@pytest.fixture
+def runtime_postgres_database(isolated_postgres_database, monkeypatch):
+    database_name = f"focus_test_runtime_{uuid.uuid4().hex}"
+    database_url = _database_source_url.set(database=database_name)
+    monkeypatch.setenv("FOCUS_DATABASE_URL", database_url.render_as_string(hide_password=False))
+    with _migrated_postgres_database(database_name, create=True):
+        yield
+
+
+@contextmanager
+def _migrated_postgres_database(database_name, *, create):
 
     from alembic import command
     from alembic.config import Config
@@ -67,9 +83,9 @@ def isolated_postgres_database():
     created = False
 
     try:
-        if _managed_test_database:
+        if create:
             with admin_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
-                connection.execute(text(f'CREATE DATABASE "{_test_database_name}"'))
+                connection.execute(text(f'CREATE DATABASE "{database_name}"'))
             created = True
 
         migrations = (
@@ -86,7 +102,7 @@ def isolated_postgres_database():
     finally:
         if created:
             with admin_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
-                connection.execute(text(f'DROP DATABASE IF EXISTS "{_test_database_name}" WITH (FORCE)'))
+                connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)'))
         admin_engine.dispose()
 
 

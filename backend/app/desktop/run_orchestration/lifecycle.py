@@ -4,8 +4,10 @@ r"""本文件对外提供 RunLifecycleFinalizer 与 RunSettlement。
 新 Context revision 与 MainRunSettled event identity。具体工作流为先在事务外精确读取执行 checkpoint，
 再在单事务中锁 Run、保存终态及完整模型用量；仅以精确 source checkpoint 的消息 identity 证明终端未闭合调用属于当前 Run，
 来源不可读时不授予自动修复因果；随后用共享协议编译器验证 execution view，按 base revision CAS 发布合法 revision，
-按 lease 模式结算 workspace effect、释放 lease，保存独立类型化任务领域来源并 enqueue outbox；Reader 只记录并发变化，隔离 Writer 保留待采用结果，
-权威 Writer 才推进权威 slot。重复 finalize 返回同一事实，陈旧 Context 不覆盖用户的新 current pointer。
+按 lease 模式结算 workspace effect、释放 lease，保存使用当前注入秘密值脱敏的类型化任务领域来源并 enqueue outbox；Reader 只记录并发变化，隔离 Writer 保留待采用结果，
+权威 Writer 才推进权威 slot。控制终止只改变业务状态，finalize 仍回填用量与清理且不复活执行；
+未启动的 abort_prepared 同事务按 Run→Dispatch 顺序保存终态、终结派发和释放租约，再登记 outbox。
+重复 finalize 返回同一事实，陈旧 Context 不覆盖用户的新 current pointer。
 checkpoint 的 canonical typed bridge 在结算前验证，新 publication 保存 V2 execution Items，UI codec 不参与恢复。
 示例：`settlement = await finalizer.finalize(record)`。
 """
@@ -46,7 +48,7 @@ from backend.app.desktop.context_projection import (
 )
 from backend.app.desktop.context_protocol import ToolExchangeInspector
 from backend.app.desktop.domain_evidence.run_outcomes import RunOutcomeRecorder
-from backend.app.desktop.models import DesktopRun, DesktopThread
+from backend.app.desktop.models import DesktopRun, DesktopThread, ModelAttemptAudit
 from backend.app.desktop.persistence_safety import PersistencePayloadNormalizer
 from backend.app.desktop.run_orchestration.outbox import RunOutboxRepository
 from backend.app.desktop.workspace_coordination.fingerprints import (
@@ -80,11 +82,14 @@ class RunLifecycleFinalizer:
         checkpointer: Any,
         context_revisions: ContextRevisionRepository | None = None,
         outbox: RunOutboxRepository | None = None,
+        *,
+        secret_provider=None,
     ) -> None:
         self._sessions = session_factory
         self._checkpointer = checkpointer
         self._contexts = context_revisions or ContextRevisionRepository()
         self._outbox = outbox or RunOutboxRepository()
+        self._secret_provider = secret_provider
 
     async def finalize(
         self,
@@ -108,6 +113,9 @@ class RunLifecycleFinalizer:
                 return await self._settlement(session, locked, idempotent=True)
             terminal_status = record.status.value
             terminal_error = record.error
+            if locked.status == "interrupted":
+                terminal_status = locked.status
+                terminal_error = locked.error or terminal_error
             if terminal_status in {"pending", "running"}:
                 terminal_status = "error"
                 terminal_error = terminal_error or "Run task 已结束但未产生终态"
@@ -117,12 +125,20 @@ class RunLifecycleFinalizer:
             locked.prompt_input_tokens = record.prompt_input_tokens
             locked.prompt_output_tokens = record.prompt_output_tokens
             locked.prompt_cache_hit_tokens = record.prompt_cache_hit_tokens
+            audits = tuple((await session.scalars(select(ModelAttemptAudit).where(ModelAttemptAudit.run_id == locked.run_id))).all())
+            if audits:
+                locked.model_call_count = max(locked.model_call_count, len(audits))
+                locked.prompt_input_tokens = max(locked.prompt_input_tokens, sum(int((row.usage or {}).get("input_tokens") or 0) for row in audits))
+                locked.prompt_output_tokens = max(locked.prompt_output_tokens, sum(int((row.usage or {}).get("output_tokens") or 0) for row in audits))
             locked.final_checkpoint_id = checkpoint_id
             locked.workspace_result = self._safe_json(
                 await self._settle_workspace(session, locked, workspace_result, captured),
                 "desktop-run.workspace-result",
             )
             locked.settled_at = datetime.now(UTC)
+            from backend.app.desktop.run_orchestration.dispatch import RunDispatchRepository
+
+            await RunDispatchRepository().settle_by_run(session, locked.run_id)
             await self._release_workspace_lease(session, locked)
             revision, publication = await self._publish_context_checkpoint(
                 session,
@@ -131,7 +147,8 @@ class RunLifecycleFinalizer:
                 checkpoint_id,
                 checkpoint_messages,
             )
-            await RunOutcomeRecorder().record(session, locked, checkpoint_messages)
+            secrets = self._secret_provider() if self._secret_provider is not None else None
+            await RunOutcomeRecorder(secrets=secrets).record(session, locked, checkpoint_messages)
             event = await self._outbox.enqueue_settled(
                 session,
                 locked.run_id,
@@ -155,7 +172,8 @@ class RunLifecycleFinalizer:
                 (
                     await session.scalars(
                         select(DesktopRun).where(
-                            DesktopRun.status.in_(["pending", "running"]),
+                            DesktopRun.settled_at.is_(None),
+                            DesktopRun.status.in_(["pending", "running", "interrupted"]),
                             DesktopRun.run_id.not_in(excluded) if excluded else True,
                         )
                     )
@@ -171,7 +189,8 @@ class RunLifecycleFinalizer:
                     await session.scalars(
                         select(DesktopRun)
                         .where(
-                            DesktopRun.status.in_(["pending", "running"]),
+                            DesktopRun.settled_at.is_(None),
+                            DesktopRun.status.in_(["pending", "running", "interrupted"]),
                             DesktopRun.run_id.not_in(excluded) if excluded else True,
                         )
                         .order_by(DesktopRun.run_id)
@@ -182,6 +201,21 @@ class RunLifecycleFinalizer:
             for run in runs:
                 run.status = "interrupted"
                 run.error = self._safe_text(reason, "desktop-run.error")
+                from backend.app.desktop.execution_attempts.usage_receipts import ModelUsageReceipts
+                from backend.app.desktop.models import ModelAttemptAudit
+                from backend.app.desktop.run_orchestration.dispatch import RunDispatchRepository
+
+                audits = tuple((await session.scalars(select(ModelAttemptAudit).where(ModelAttemptAudit.run_id == run.run_id).with_for_update())).all())
+                for audit in audits:
+                    if audit.status == "prepared":
+                        audit.status = "interrupted"
+                        audit.audit = {"error_type": "process_restarted", "consumption": "unknown"}
+                        audit.settled_at = datetime.now(UTC)
+                        await ModelUsageReceipts().settle(session, audit)
+                run.model_call_count = max(run.model_call_count or 0, len(audits))
+                run.prompt_input_tokens = max(run.prompt_input_tokens or 0, sum(int((audit.usage or {}).get("input_tokens") or 0) for audit in audits))
+                run.prompt_output_tokens = max(run.prompt_output_tokens or 0, sum(int((audit.usage or {}).get("output_tokens") or 0) for audit in audits))
+                await RunDispatchRepository().settle_by_run(session, run.run_id)
                 run.settled_at = datetime.now(UTC)
                 reconciliation = await self._reconcile_workspace_evidence(
                     session,
@@ -238,14 +272,18 @@ class RunLifecycleFinalizer:
             run = await session.get(DesktopRun, run_id, with_for_update=True)
             if run is None or run.settled_at is not None:
                 return False
-            run.status = "error"
-            run.error = self._safe_text(reason, "desktop-run.error")
+            if run.status != "interrupted":
+                run.status = "error"
+                run.error = self._safe_text(reason, "desktop-run.error")
             run.settled_at = datetime.now(UTC)
             run.workspace_result = self._safe_json({
                 **(run.workspace_result or {}),
                 "context_publication": "not_started",
                 "launch_error": reason,
             }, "desktop-run.workspace-result")
+            from backend.app.desktop.run_orchestration.dispatch import RunDispatchRepository
+
+            await RunDispatchRepository().settle_by_run(session, run.run_id)
             await self._release_workspace_lease(session, run)
             await self._outbox.enqueue_settled(
                 session,

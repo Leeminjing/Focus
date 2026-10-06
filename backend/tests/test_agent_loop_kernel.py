@@ -1,10 +1,12 @@
-r"""本文件验证唯一 delegated authority、零 Worker 正常路径、用户介入生命周期、Mission 修订与 Completion Guard。
+r"""本文件对外提供唯一 delegated authority、零 Worker 正常路径、用户介入生命周期、Mission 修订与 Completion Guard 测试。
 
 输入为真实 PostgreSQL Loop/Context revision、严格 Patrol intent 与 verifier evidence；输出为一次 Kernel
 commit、外部 provenance、Mission 不变、直接消息 delivery/Run 终态、陈旧 decision superseded 和 unknown completion waiting-user 断言。
-具体工作流为 service start、Kernel commit、直接消息交付与结算、用户确认 Mission revision 和 guard 检查。
+具体工作流为 service start、Kernel commit、直接消息交付与结算、用户确认 Mission revision 和 guard 检查；Verifier 证据提交引用真实领取身份。
 用户 Run 在结算前经过真实 LoopRunExecutionBoundary，交付、实际启动与结算分别保留独立事实。
 示例：`pytest test_agent_loop_kernel.py`。
+用户消息测试改为先受理、真实冻结及 Patrol/Kernel 授权后交付，不再手工插入裸 Run。
+实际全库dispatch用例使用逐用例runtime数据库，导入的执行helper不会继承其原测试模块标记，避免领取其他用例的accepted队列。
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 from loop_run_boundary_support import start_loop_run
+from completion_evidence_support import claim_verifier, record_verified_fixture
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -73,6 +76,7 @@ def test_closed_action_union_rejects_unknown() -> None:
         PatrolDecisionIntent.model_validate({"decision_id": "d", "idempotency_key": "k", "loop_id": "l", "loop_revision": 1, "round_id": "r", "holder_id": "h", "grant_id": "g", "grant_revision": 1, "goal_revision": 1, "observed_frontier_hash": "a" * 64, "observed_workspace_revision": 1, "rationale": "x", "actions": [{"action": "worker_commit_database"}]})
 
 
+@pytest.mark.usefixtures("runtime_postgres_database")
 def test_zero_worker_delegated_directive_and_user_override(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
@@ -103,7 +107,7 @@ def test_zero_worker_delegated_directive_and_user_override(tmp_path) -> None:
             result = await LoopKernel(sessions).commit(intent)
             again = await LoopKernel(sessions).commit(intent)
             assert result == again
-            assert result.status == "committed"
+            assert result.status == "committed", result.reason
             async with sessions() as session:
                 directive = await session.get(LoopDirective, result.directive_ids[0])
                 provenance = await session.scalar(select(MessageProvenance).where(MessageProvenance.directive_id == directive.directive_id))
@@ -131,27 +135,28 @@ def test_zero_worker_delegated_directive_and_user_override(tmp_path) -> None:
                 cancelled_directive = await session.get(LoopDirective, result.directive_ids[0])
                 cancelled_history = tuple((await session.scalars(select(LoopDirectiveTransition).where(LoopDirectiveTransition.directive_id == cancelled_directive.directive_id).order_by(LoopDirectiveTransition.revision))).all())
                 assert len(revisions) == 1
-                assert user_intent.status == "addressed"
+                assert user_intent.status == "pending"
                 assert user_intent.origin_kind == "user"
                 assert user_intent.delivery_state == "accepted"
                 assert [item.to_state for item in direct_history] == ["submitted", "accepted"]
                 assert cancelled_directive.lifecycle_state == "cancelled"
                 assert cancelled_history[-1].to_state == "cancelled"
                 assert user_intent.content == "只复现一次 Windows 路径失败，不改变长期目标。"
-            direct_run_id = uuid.uuid4().hex
-            async with sessions.begin() as session:
-                session.add(DesktopRun(run_id=direct_run_id, task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="pending", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, loop_id=loop_id, round_id=direct["round_id"], user_intent_id=direct["intent_id"]))
-            await service.bind_user_message_run(direct["intent_id"], direct_run_id)
-            await start_loop_run(sessions, direct_run_id)
-            async with sessions.begin() as session:
-                direct_run = await session.get(DesktopRun, direct_run_id)
-                direct_run.status = "success"
-                direct_run.settled_at = datetime.now(UTC)
-            async with sessions.begin() as session:
-                await LoopCoordinator(sessions).handle_run_settled(SimpleNamespace(event_id=uuid.uuid4().hex, run_id=direct_run_id, payload={}), session)
+            from test_loop_user_message_transaction import authorize_message
+            from test_loop_failure_repair_transaction import _launch, _finish
+            from focus.runtime.runs.schemas import RunStatus
+
+            fixture = {"loop_id": loop_id, "context_id": context_id, "revision_id": revision_id,
+                       "snapshot": after_direct, "service": service}
+            coordinator = LoopCoordinator(sessions)
+            claim = await coordinator.claim_for_loop(loop_id, "direct-user-kernel")
+            await authorize_message(sessions, fixture, claim, direct["intent_id"])
+            record = await _launch(sessions, fixture, coordinator, claim)
+            record.status = RunStatus.success
+            await _finish(sessions, fixture, coordinator, record, [])
             async with sessions() as session:
                 settled_history = tuple((await session.scalars(select(LoopInterventionTransition).where(LoopInterventionTransition.intent_id == direct["intent_id"]).order_by(LoopInterventionTransition.revision))).all())
-            assert [item.to_state for item in settled_history] == ["submitted", "accepted", "delivered", "run_started", "settled"]
+            assert [item.to_state for item in settled_history] == ["submitted", "accepted", "observed", "delivered", "run_started", "settled"]
             overridden = await service.override(loop_id, "Prioritize migration safety", "Do not change public API", [{"criterion_id": "api", "text": "API stable"}])
             assert overridden["goal_revision"] == 2
             mission_event = next(event for event in await service.events(loop_id) if event["type"] == "MissionRevisionActivated")
@@ -287,17 +292,19 @@ def test_independent_verifier_is_required_before_completion_and_final_result_is_
                 await repository.switch_current(session, ref, None)
                 session.add(DesktopRun(run_id=f"initial-{suffix}", task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="success", origin="direct_user", execution_thread_id=f"thread-{suffix}", context_revision_id=revision_id, settled_at=datetime.now(UTC)))
             service = AgentLoopService(sessions)
-            snapshot = await service.start(LoopCreateRequest(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id="patrol-complete", goal="Finish safely", task_contract="Tests must pass", acceptance_criteria=({"criterion_id": "tests", "text": "tests pass", "required": True},), capabilities=("request_completion_verifier", "request_completion"), context_scope=(context_id,), permission_scope=("read",)))
+            snapshot = await service.start(LoopCreateRequest(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id="patrol-complete", goal="Finish safely", task_contract="Tests must pass", acceptance_criteria=({"criterion_id": "tests", "text": "tests pass", "required": True},), capabilities=("request_completion_verifier", "request_completion"), context_scope=(context_id,), permission_scope=("read", "host_command")))
             async with sessions.begin() as session:
                 round_row = await session.get(LoopRound, snapshot["current_round_id"])
                 slot = await session.scalar(select(WorkspaceSlot).where(WorkspaceSlot.workspace_id == workspace_id, WorkspaceSlot.kind == "authoritative"))
                 worker_id = uuid.uuid4().hex
                 session.add(LoopWorkerRequest(worker_request_id=worker_id, loop_id=loop_id, round_id=round_row.round_id, kind="completion_verifier", scope={"candidate_context_ids": [context_id]}))
-            verification = CompletionVerificationContract(verification_id=uuid.uuid4().hex, loop_id=loop_id, round_id=round_row.round_id, goal_revision=1, frontier_hash=round_row.frontier_hash, workspace_revision=round_row.workspace_revision, criteria=(CriterionVerification(criterion_id="tests", status="satisfied", evidence=({"kind": "fact", "source_id": f"initial-{suffix}", "summary": "Focused tests passed."},), explanation="Focused tests passed."),), conclusion="satisfied")
-            await CompletionEvidenceService(sessions).record(verification, worker_id)
+            test_source = await record_verified_fixture(sessions, loop_id, context_id, round_row.round_id, workspace_path, round_row.workspace_revision)
+            verification = CompletionVerificationContract(verification_id=uuid.uuid4().hex, loop_id=loop_id, round_id=round_row.round_id, goal_revision=1, frontier_hash=round_row.frontier_hash, workspace_revision=round_row.workspace_revision, criteria=(CriterionVerification(criterion_id="tests", status="satisfied", evidence=({"kind": "fact", "source_id": test_source, "summary": "Focused tests passed."},), explanation="Focused tests passed."),), conclusion="satisfied")
+            retry_identity = await claim_verifier(sessions, loop_id, worker_id)
+            await CompletionEvidenceService(sessions).record(verification, worker_id, retry_identity=retry_identity)
             intent = PatrolDecisionIntent(decision_id=uuid.uuid4().hex, idempotency_key=f"complete-{suffix}", loop_id=loop_id, loop_revision=snapshot["revision"], round_id=round_row.round_id, holder_id="patrol-complete", grant_id=snapshot["grant"]["grant_id"], grant_revision=1, goal_revision=1, observed_frontier_hash=round_row.frontier_hash, observed_workspace_revision=round_row.workspace_revision, rationale="Independent evidence satisfies every required criterion.", actions=({"action": "request_completion", "verification_id": verification.verification_id, "final_context_ids": [context_id], "final_slot_id": slot.slot_id},))
             result = await LoopKernel(sessions).commit(intent)
-            assert result.status == "committed"
+            assert result.status == "committed", result.reason
             async with sessions() as session:
                 loop = await session.get(AgentLoop, loop_id)
                 assert loop.status == "completed"

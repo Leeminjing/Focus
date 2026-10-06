@@ -187,7 +187,19 @@ def test_every_launch_takes_the_mode_from_the_subject_equipment():
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "_governed_context"
     ]
-    assert len(calls) >= 3, "主 run、resume 与 swarm 都应经同一派生入口"
+    assert len(calls) == 2, "durable 装配与 resume 均须经同一派生入口"
+    tree = ast.parse((desktop / "service.py").read_text(encoding="utf-8"))
+    methods = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)}
+    launch = ast.unparse(methods["_launch_swarm_run"])
+    assert "self._admission_service().admit(" in launch
+    assert "self.notify_run_dispatch()" in launch
+    assert "self._prepare(" in ast.unparse(methods["assemble_run"])
+    assembly_calls = [node for node in ast.walk(methods["assemble_run"]) if isinstance(node, ast.Call)
+                      and isinstance(node.func, ast.Attribute) and node.func.attr == "_prepare"]
+    assert len(assembly_calls) == 1
+    assert any(isinstance(arg, ast.Subscript) and isinstance(arg.value, ast.Name)
+               and arg.value.id == "execution" and isinstance(arg.slice, ast.Constant)
+               and arg.slice.value == "agent_role" for arg in assembly_calls[0].args)
     for call in calls:
         keywords = {keyword.arg for keyword in call.keywords}
         assert "access_mode" in keywords, f"启动点缺少访问模式：行 {call.lineno}"

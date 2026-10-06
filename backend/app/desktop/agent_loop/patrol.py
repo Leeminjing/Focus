@@ -1,9 +1,9 @@
 r"""本文件对外提供 PortfolioPatrol、PatrolDecisionModel 与 PatrolContractViolation。
 
 输入为一个不可变 bounded LoopObservationEnvelope、当前 holder/grant 身份和独立模型调用；输出为恰好
-一个 PatrolDecisionIntent，或携带模型原始输出的可重试合同违例。具体工作流为每轮创建隔离 attempt
+一个 PatrolDecisionIntent，或携带有界原始输出及可选已解析动作的可重试合同违例。具体工作流为每轮创建隔离 attempt
 identity，记录基础 Observation hash 与独立组合输入 hash；模型可自行判断并可选择请求 Worker，结果先持久化为 proposal，再由 Kernel commit；模型回答
-形状不合法时抛出 PatrolContractViolation，attempt 记为 error 并保留原始输出，是否重试由调用方决定。
+形状不合法时抛出 PatrolContractViolation，attempt 记为 error 并保留原始输出；已解析动作通过 audit 纯投影保存无正文诊断，是否重试由调用方决定。
 模型请求来源摘要与可用的实际用量附在现有 attempt 审计中，opaque continuation 不进入日志或任务事实。
 示例：`result = await patrol.decide(envelope, identity)`。
 """
@@ -19,9 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.models import LoopObservation, LoopPatrolAttempt
 from backend.app.desktop.agent_loop.observation import observation_hash
+from backend.app.desktop.agent_loop.patrol_audit import proposal_failure_diagnostic
 from backend.app.desktop.agent_loop.schemas import (
     LoopObservationEnvelope,
     PatrolDecisionIntent,
+    PatrolModelAction,
 )
 
 
@@ -30,11 +32,10 @@ class PatrolDecisionModel(Protocol):
 
 
 class PatrolContractViolation(RuntimeError):
-    """模型回答不符合 Patrol 认知步骤合同；携带原始输出供审计与重试判断。"""
-
-    def __init__(self, message: str, raw_output: str | None = None) -> None:
+    def __init__(self, message: str, raw_output: str | None = None, *, proposal_actions: tuple[PatrolModelAction, ...] | None = None) -> None:
         super().__init__(message)
         self.raw_output = raw_output
+        self.proposal_actions = proposal_actions
 
 
 class PortfolioPatrol:
@@ -44,12 +45,21 @@ class PortfolioPatrol:
 
     async def decide(self, observation: LoopObservationEnvelope, holder_id: str) -> PatrolDecisionIntent:
         attempt = await self._begin(observation, holder_id)
+        if hasattr(self._model, "bind_usage_receipts"):
+            from backend.app.desktop.agent_loop.model_usage_owner import OwnedModelUsage
+
+            self._model.bind_usage_receipts(OwnedModelUsage(self._sessions, observation.loop_id, observation.round_id,
+                                                          "patrol", attempt.patrol_attempt_id))
         try:
             intent = await self._model(observation)
             self._validate_output(intent, observation, holder_id)
-        except Exception as exc:
+        except BaseException as exc:
             raw_output = getattr(exc, "raw_output", None)
-            await self._finish(attempt, "error", {"raw_text": raw_output} if raw_output else {}, str(exc))
+            output = {"raw_text": raw_output} if raw_output else {}
+            actions = getattr(exc, "proposal_actions", None)
+            if actions is not None:
+                output["proposal_diagnostic"] = proposal_failure_diagnostic(actions)
+            await self._finish(attempt, "error", output, str(exc))
             raise
         await self._finish(attempt, "success", intent.model_dump(mode="json"), None)
         return intent
@@ -68,7 +78,8 @@ class PortfolioPatrol:
     async def _finish(self, attempt: LoopPatrolAttempt, status: str, output: dict, error: str | None) -> None:
         async with self._sessions.begin() as session:
             row = await session.get(LoopPatrolAttempt, attempt.patrol_attempt_id, with_for_update=True)
-            row.status = status
+            if row.status not in {"interrupted", "cancelled"}:
+                row.status = status
             row.raw_output = {**(row.raw_output or {}), **output,
                               "model_attempts": list(getattr(self._model, "attempt_metadata", ())) }
             row.error = error

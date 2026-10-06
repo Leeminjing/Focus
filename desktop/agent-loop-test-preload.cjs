@@ -2,7 +2,9 @@
  * 本文件对外提供 Agent Loop Electron 回归页的确定性本地 API。
  * 输入为真实 Desktop 页面发出的结构化 Mission、Loop、Console、完整会话、事实、介入、压缩恢复与 workspace 请求；输出为
  * 可变的长期 Loop 快照、Context Portfolio 和审计投影。具体工作流为复用 Context 测试 API，再拦截
- * Loop 领域路由，模拟后继激活 eligibility、阈值、候选、Kernel commit、终止后直接用户 Run、自动 resume/显式 Mission revision，记录来源恢复与三类用户介入，而不访问网络或数据库；示例：在 BrowserWindow preload 中加载本文件。
+ * Loop 领域路由，模拟后继激活 eligibility、阈值、候选、Kernel commit、终止后直接用户 Run、自动 resume/显式 Mission revision，记录来源恢复、等待响应与三类用户介入，而不访问网络或数据库；示例：在 BrowserWindow preload 中加载本文件。
+ * inherit_initial_equipment 请求模拟服务端可信继承，空 UI 缓存不丢失 host_command 或沙箱模式。
+ * Loop 内直接消息仅返回 accepted 身份并投影 intervention，无 Run；Loop 外仍返回实际 Run。
  */
 "use strict";
 
@@ -24,8 +26,11 @@ const loop = {
   interventions: [],
   directMessages: [],
   restores: [],
+  waitResponses: [],
   compressionRestored: false,
   cursor: 0,
+  liveSequence: 1,
+  liveControllers: new Set(),
 };
 
 function runningSnapshot(body) {
@@ -49,7 +54,7 @@ function runningSnapshot(body) {
       task_contract: [...mission.boundaries.in_scope, ...mission.boundaries.required_invariants, ...mission.boundaries.prohibited_actions].join("\n"),
       acceptance_criteria: mission.completion_checks.map(item => ({ criterion_id: item.check_id, text: item.claim, required: item.required })),
     },
-    grant: { budgets: body.budgets, capabilities: body.capabilities, context_scope: body.context_scope, permission_scope: body.permission_scope, delegable_gates: body.delegable_gates, compression_policy: body.compression_policy, expires_at: null },
+    grant: { budgets: body.budgets, capabilities: body.capabilities, context_scope: body.context_scope, permission_scope: body.inherit_initial_equipment ? ["read", "write", "host_command"] : body.permission_scope, delegable_gates: body.delegable_gates, compression_policy: body.compression_policy, expires_at: null },
     usage: { rounds: 13, duration_seconds: 180, model_calls: 43, input_tokens: 14192, output_tokens: 2304, retries: 2, lanes: 4, contexts: 5, providers: 2 },
     memberships: [
       { context_id: "root", lane_id: "implementation", state: "active" },
@@ -188,7 +193,7 @@ function liveSnapshot() {
   const mission = loop.snapshot.mission;
   return {
     loop_id: loop.snapshot.loop_id,
-    last_sequence: 1,
+    last_sequence: loop.liveSequence,
     loop: envelope(loop.snapshot.loop_id, loop.snapshot, loop.snapshot.authority_revision || 1),
     mission: envelope(`mission-${loop.snapshot.goal_revision || 1}`, mission),
     patrol_session: envelope("patrol-session-12", { state: "observing", phase: "collecting", safe_summary: "正在观察多个 Context 并汇总证据" }),
@@ -200,8 +205,12 @@ function liveSnapshot() {
       "curator-architecture": envelope("curator-architecture", { lane_id: "architecture", state: "reading", safe_summary: "正在比较 Context 设计" }),
     },
     directives,
+    interventions: Object.fromEntries(consoleManifest.user_intents.map(item => [item.intent_id, envelope(item.intent_id, {
+      ...item, target_context_id: item.context_id, state: item.delivery_state,
+    })])),
     facts,
     portfolio: envelope("portfolio-12", { generation: 12, status: "published" }),
+    wait_request: loop.snapshot.wait_request ? envelope(loop.snapshot.wait_request.request_id, loop.snapshot.wait_request) : null,
     activity_timeline: [{ event_id: "live-event-1", sequence: 1, kind: "patrol.directive.delivered", entity_type: "directive", entity_id: "directive-12", summary: "Patrol 指令已送达 Testing Context", occurred_at: "2026-09-16T01:01:00Z", correlation_id: "directive-12", causation_id: null, detail: { context_id: "child", directive_id: "directive-12", status: "launched" } }],
     unknown_kinds: [],
     diagnostics: { journal_last_sequence: 1, projector_last_sequence: 1, lag: 0, rebuilt: false, updated_at: "2026-09-16T01:01:00Z" },
@@ -230,11 +239,20 @@ window.fetch = async (input, options = {}) => {
     return json(loop.snapshot);
   }
   if (/^\/desktop\/api\/agent-loops\/[^/]+$/.test(path)) return json(loop.snapshot);
+  if (/\/desktop\/api\/agent-loops\/[^/]+\/wait-requests\/[^/]+\/responses$/.test(path) && options.method === "POST") {
+    loop.waitResponses.push({ request_id: decodeURIComponent(path.split("/").at(-2)), ...JSON.parse(options.body) });
+    loop.snapshot = { ...loop.snapshot, status: "running", health: "progress_waiting", waiting_reason: null, wait_request: null };
+    return json({ created: true });
+  }
   if (/\/desktop\/api\/agent-loops\/[^/]+\/live$/.test(path)) return json(liveSnapshot());
   if (/\/desktop\/api\/agent-loops\/[^/]+\/live\/stream$/.test(path)) {
     const body = new ReadableStream({
       start(controller) {
-        options.signal?.addEventListener("abort", () => controller.error(new DOMException("Aborted", "AbortError")), { once: true });
+        loop.liveControllers.add(controller);
+        options.signal?.addEventListener("abort", () => {
+          loop.liveControllers.delete(controller);
+          controller.error(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
       },
     });
     return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
@@ -256,6 +274,20 @@ window.fetch = async (input, options = {}) => {
     const contextId = decodeURIComponent(path.split("/").at(-3));
     const runId = `direct-${loop.directMessages.length + 1}`;
     loop.directMessages.push({ context_id: contextId, ...body });
+    if (loop.snapshot.status === "running" && contextId === "child") {
+      const accepted = { intent_id: "user-message-1", context_id: contextId, intent_kind: "direct_message",
+        origin: "user", delivery_state: "accepted", run_id: null, resulting_run_id: null };
+      consoleManifest.user_intents.push(accepted);
+      const sequence = ++loop.liveSequence;
+      const event = { event_id: `intervention-${sequence}`, loop_id: loop.snapshot.loop_id, sequence,
+        schema_version: 1, kind: "intervention.accepted", entity_type: "intervention", entity_id: accepted.intent_id,
+        entity_revision: 2, correlation_id: accepted.intent_id, causation_id: null,
+        visibility: { audience: "loop_member", required_permissions: [], evidence_fields: [] },
+        payload: { ...accepted, target_context_id: contextId, state: "accepted" },
+        idempotency_key: `intervention-${sequence}`, occurred_at: new Date().toISOString(), retained_until: null };
+      for (const controller of loop.liveControllers) controller.enqueue(new TextEncoder().encode(`event: loop_event\ndata: ${JSON.stringify(event)}\n\n`));
+      return json(accepted);
+    }
     if (contextId === "root") loop.latestRunId = runId;
     return json({ run_id: runId, message_id: `message-${runId}`, status: "pending" });
   }

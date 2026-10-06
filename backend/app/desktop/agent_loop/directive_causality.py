@@ -3,6 +3,7 @@ r"""本文件对外提供 DirectiveCausalityRecorder 与 DirectiveCausalityQuery
 输入为已持久 Directive/Run/workspace 结果和稳定 correlation identity；输出为包含真实 Directive 当前动作的 Run/Workspace 规范事件及按 sequence
 排序的完整因果查询。具体工作流为启动和结算边界原子追加事件，查询读取 directive transition、Run、anchor 与同 correlation
 journal；后续 Tool/Fact projector 复用同一 correlation 即自动进入链。示例：`chain = await query.read(session, directive_id)`。
+统一 Run 因果事件同时公开真实 origin 和 user_intent_id，用户交付与 Patrol 委托可区分且不重复生产事件。
 """
 
 from __future__ import annotations
@@ -37,6 +38,8 @@ class DirectiveCausalityRecorder:
                     "directive_id": directive.directive_id,
                     "round_id": directive.round_id,
                     "context_id": directive.target_context_id,
+                    "origin": directive.origin_kind,
+                    "user_intent_id": directive.correlation_id if directive.origin_kind == "direct_user" else None,
                     "status": "running",
                     "current_action": directive.content,
                     "summary": "Context 已按授权 Directive 启动",
@@ -61,6 +64,8 @@ class DirectiveCausalityRecorder:
                     "directive_id": directive.directive_id,
                     "round_id": directive.round_id,
                     "context_id": run.task_id,
+                    "origin": run.origin,
+                    "user_intent_id": run.user_intent_id,
                     "status": run.status,
                     "error": run.error,
                 },
