@@ -3,7 +3,9 @@ r"""本文件对外提供 LoopAuthorityService，承接用户对 Patrol delegati
 输入为 Loop id 与 narrow、adjust_budgets 或 revoke 的封闭请求（含可撤销压缩 policy）；输出为新的 authority revision 与
 活动 Run 处理结果。具体工作流为锁定 Loop/grant，撤销旧 grant，使旧 Patrol 工作失效，安全中断旧
 authority 下的 Run；narrow/adjust 创建新 grant 和观察轮，revoke 则进入 waiting_user。
+全部 Round/Directive/Worker/Patrol/Run 取消复用 LoopRuntimeConvergence；提交控制事实后才通知执行器，事务回滚不取消仍获授权的 Run；Run 租约由实际结算负责释放；授权与状态的规范事件由共享 LifecycleEventRecorder 同事务记录。
 示例：`await service.mutate(loop_id, request)`。
+旧等待随同旧授权在收敛事务中 superseded；撤权或预算耗尽创建属于新授权原因的等待，而不是沿用旧请求。
 """
 
 from __future__ import annotations
@@ -12,18 +14,16 @@ from datetime import UTC, datetime
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count
-from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
+from backend.app.desktop.agent_loop.runtime_convergence import LoopRuntimeConvergence
 from backend.app.desktop.agent_loop.models import (
     AgentLoop,
     LoopBudgetUsage,
     LoopContextMembership,
-    LoopDecision,
     LoopDelegationGrant,
-    LoopDirective,
     LoopEventOutbox,
     LoopRound,
 )
@@ -31,8 +31,6 @@ from backend.app.desktop.agent_loop.schemas import AdjustLoopBudgetsRequest, Loo
 from backend.app.desktop.agent_loop.rounds import create_observation_round
 from backend.app.desktop.agent_loop.compression_authority.contracts import AutonomousCompressionPolicy
 from backend.app.desktop.agent_loop.compression_authority.repository import CompressionAuthorityRepository
-from backend.app.desktop.models import DesktopRun
-from backend.app.desktop.workspace_coordination.models import WorkspaceLease
 from backend.app.desktop.agent_loop.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService
 
 
@@ -40,7 +38,7 @@ class LoopAuthorityService:
     def __init__(self, sessions: async_sessionmaker[AsyncSession], run_manager=None) -> None:
         self._sessions = sessions
         self._run_manager = run_manager
-        self._directives = DirectiveLifecycleRepository()
+        self._convergence = LoopRuntimeConvergence()
 
     async def mutate(self, loop_id: str, request: LoopGrantMutationRequest) -> dict:
         async with self._sessions.begin() as session:
@@ -62,9 +60,8 @@ class LoopAuthorityService:
             loop.authority_revision += 1
             grant.status = "revoked"
             grant.revoked_at = datetime.now(UTC)
-            await self._supersede_uncommitted(session, loop_id)
+            interrupted = list(await self._convergence.converge(session, loop, "authority_changed"))
             await CompressionAuthorityRepository().supersede(session, loop_id, "authority_changed")
-            interrupted = await self._interrupt_active_runs(session, loop_id)
             if replacement is None:
                 loop.health = "idle"
                 await LoopWaitRequestService().open(
@@ -91,9 +88,6 @@ class LoopAuthorityService:
                         correlation_id=f"budget:{loop.loop_id}:{loop.authority_revision}",
                     )
                 else:
-                    active_wait = await LoopWaitRequestService().active(session, loop_id, lock=True)
-                    if active_wait is not None:
-                        await LoopWaitRequestService().cancel(session, active_wait.request_id, superseded=True)
                     round_row = await create_observation_round(session, loop, prior_round, "0" * 64)
                     loop.current_round_id = round_row.round_id
                     loop.status = "running"
@@ -107,7 +101,11 @@ class LoopAuthorityService:
                 event_type,
                 {"authority_revision": loop.authority_revision, "interrupted_run_ids": interrupted},
             )
-            return {"loop_id": loop.loop_id, "authority_revision": loop.authority_revision, "interrupted_run_ids": interrupted}
+            result = {"loop_id": loop.loop_id, "authority_revision": loop.authority_revision, "interrupted_run_ids": interrupted}
+        if self._run_manager is not None:
+            for run_id in interrupted:
+                self._run_manager.cancel(run_id, action="interrupt")
+        return result
 
     @staticmethod
     def _replacement(loop: AgentLoop, grant: LoopDelegationGrant, request: LoopGrantMutationRequest) -> LoopDelegationGrant | None:
@@ -183,25 +181,6 @@ class LoopAuthorityService:
         if invalid:
             raise HTTPException(422, {"code": "compression_policy_not_narrower"})
 
-    async def _interrupt_active_runs(self, session: AsyncSession, loop_id: str) -> list[str]:
-        runs = list((await session.scalars(select(DesktopRun).where(DesktopRun.loop_id == loop_id, DesktopRun.status.in_(["pending", "running"])).with_for_update())).all())
-        for run in runs:
-            if self._run_manager is not None:
-                self._run_manager.cancel(run.run_id, action="interrupt")
-            run.status = "interrupted"
-            lease_id = (run.workspace_anchor or {}).get("lease_id")
-            if lease_id:
-                lease = await session.get(WorkspaceLease, lease_id, with_for_update=True)
-                if lease is not None and lease.status == "active":
-                    lease.status = "released"
-                    lease.released_at = datetime.now(UTC)
-        return [run.run_id for run in runs]
-
-    async def _supersede_uncommitted(self, session: AsyncSession, loop_id: str) -> None:
-        await session.execute(update(LoopDecision).where(LoopDecision.loop_id == loop_id, LoopDecision.status.in_(["pending", "publishing", "adopting"])).values(status="superseded"))
-        await session.execute(update(LoopRound).where(LoopRound.loop_id == loop_id, LoopRound.status.in_(["observed", "curated", "ready", "waiting_workers", "publishing", "adopting"])).values(status="superseded"))
-        await self._directives.cancel_active(session, loop_id, "authority_changed")
-
     @staticmethod
     async def _exhausted_budgets(session: AsyncSession, loop: AgentLoop, budgets: dict) -> tuple[str, ...]:
         usage = await session.get(LoopBudgetUsage, loop.loop_id, with_for_update=True)
@@ -230,5 +209,8 @@ class LoopAuthorityService:
 
     @staticmethod
     async def _append_event(session: AsyncSession, loop: AgentLoop, event_type: str, payload: dict) -> None:
+        from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
+
+        await LoopLifecycleEventRecorder().record(session, loop)
         sequence = int(await session.scalar(select(func.coalesce(func.max(LoopEventOutbox.sequence), 0)).where(LoopEventOutbox.loop_id == loop.loop_id)) or 0) + 1
         session.add(LoopEventOutbox(event_id=uuid.uuid4().hex, loop_id=loop.loop_id, sequence=sequence, event_type=event_type, payload=payload, idempotency_key=f"{loop.loop_id}:{loop.revision}:{event_type}"))

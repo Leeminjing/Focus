@@ -755,7 +755,7 @@ def test_explicit_retry_uses_new_budget_without_rewriting_frozen_inputs(tmp_path
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         fixture = await _seed_loop(
-            sessions, tmp_path, label="budget-retry", started_at=datetime.now(UTC)
+            sessions, tmp_path, label="budget-retry", started_at=datetime.now(UTC), budgets={"max_model_calls": 2}
         )
         loop_id = fixture["loop_id"]
         try:

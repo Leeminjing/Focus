@@ -2,6 +2,7 @@
  * 本文件对外提供 Live Loop projection 的只读选择器。
  * 输入为规范化 projection 与可选 Context identity；输出为 Patrol、等待请求、Expansion、图活动、Context 卡片、跨 Context 派生边、因果链、事实和摘要指标。
  * 具体工作流为从实体 state 派生展示模型并排除工具事实（成员派生边不含自环），不持有领域状态；示例：`selectContextCards(projection)`。
+ * 用户 intervention 尚无 Run 时也可按真实目标和 correlation 进入 Context 因果链。
  */
 (function (root, factory) {
   const api = factory();
@@ -70,8 +71,9 @@
   function selectCausality(projection, contextId) {
     const directives = values(projection?.directives).filter(entity => !contextId || entity.state.target_context_id === contextId);
     const ids = new Set(directives.map(entity => entity.entity_id));
+    const interventions = values(projection?.interventions).filter(entity => !contextId || entity.state.target_context_id === contextId);
     const runs = values(projection?.runs).filter(entity => ids.has(entity.state.directive_id) || (!entity.state.directive_id && (!contextId || entity.state.context_id === contextId)));
-    const correlations = new Set([...directives, ...runs].map(entity => entity.state.correlation_id).filter(Boolean));
+    const correlations = new Set([...directives, ...runs, ...interventions].map(entity => entity.state.correlation_id).filter(Boolean));
     return Object.freeze(projection.activity_timeline.filter(item => ids.has(item.entity_id) || correlations.has(item.correlation_id)));
   }
 

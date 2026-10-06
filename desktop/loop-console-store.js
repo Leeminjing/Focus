@@ -3,6 +3,7 @@
  * 输入为一次性 Portfolio manifest、权威 Live projection 派生的 Context/Run/Fact 与 Context 派生边、分页会话、视口和筛选；输出为现有控制台视图的不可变读模型。
  * 具体工作流为 Live projection 更新拓扑活动、事实与派生边（已有快照时以投影 lineage 取代 manifest 那份一次性边集合），Store 仅保留选择、筛选、草稿相关状态及有界会话窗口，不再拥有 Loop 领域状态。
  * 示例：`const store = FocusLoopConsoleStore.create(); store.loadManifest(payload)`。
+ * 直接消息状态由 live interventions 覆盖 Console 快照，保留真实 resulting_run_id，避免等待阶段被旧 Run 状态替代。
  */
 (function (root, factory) {
   const api = factory();
@@ -143,6 +144,10 @@
           current_round: round,
           current_round_id: round?.round_id || projection.round?.entity_id || loop.current_round_id,
           initial_context_id: loop.initial_context_id || current.manifest.initial_context_id,
+          user_intents: Object.values(projection.interventions || {}).map(entity => ({
+            ...entity.state, intent_id: entity.entity_id, context_id: entity.state.target_context_id,
+            delivery_state: entity.state.state, resulting_run_id: entity.state.run_id,
+          })),
           nodes,
           edges,
         } : null;

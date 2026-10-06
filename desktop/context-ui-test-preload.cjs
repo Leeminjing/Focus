@@ -1,7 +1,8 @@
 /*
- * 本文件为 Context 桌面交互回归页提供确定性的本地 API。
+ * 本文件对外提供 Context 与新线程桌面交互回归页的确定性本地 API。
  * 输入为 app.js 发出的同源请求，输出为固定任务、lineage 和长消息快照；
- * 工作流不访问网络或数据库，仅让真实桌面页面复现滚动与树排序行为。
+ * 具体工作流为记录工作区/线程提交、可控制失败和响应屏障，随后返回任务快照；不访问网络或数据库。
+ * 示例：threadUiHarness.hold = true 可验证重复提交仍只创建一条线程。
  */
 const tasks = [
   { task_id: "child", title: "同名 Context", workspace_id: "workspace", workspace_name: "测试工作区", workspace_path: "C:/workspace/这是一个用于验证最小窗口不会横向溢出的非常长目录名称/another-very-long-directory-name/focus", thread_id: "thread-child-with-a-long-identifier-that-must-remain-accessible", active_run: null },
@@ -47,6 +48,7 @@ function json(value, status = 200) {
 }
 
 const uiStates = new Map();
+window.threadUiHarness = { submissions: [], hold: false, fail: false, release: null };
 const conversationMessages = taskId => Array.from({ length: 12 }, (_value, index) => ({
   id: `${taskId}-message-${index}`,
   role: index % 2 ? "ai" : "human",
@@ -56,6 +58,16 @@ const conversationMessages = taskId => Array.from({ length: 12 }, (_value, index
 window.focusDesktop = { runtime: () => ({ apiBase: "http://focus.test", session: "test-session" }) };
 window.fetch = async (input, options = {}) => {
   const path = new URL(String(input), "http://focus.test").pathname;
+  if (path === "/desktop/api/workspaces" && options.method === "POST") return json({ workspace_id: "workspace" });
+  if (path === "/desktop/api/workspaces/workspace/threads" && options.method === "POST") {
+    const body = JSON.parse(options.body);
+    window.threadUiHarness.submissions.push(body);
+    if (window.threadUiHarness.hold) await new Promise(resolve => { window.threadUiHarness.release = resolve; });
+    if (window.threadUiHarness.fail) return json({ detail: "isolated thread creation failure" }, 500);
+    const task = { task_id: `created-${window.threadUiHarness.submissions.length}`, title: body.title, workspace_id: "workspace", workspace_path: "C:/workspace", active_run: null };
+    tasks.push(task);
+    return json(task);
+  }
   if (path === "/desktop/api/bootstrap") return json({ tasks, equipment: { models: [], tools: [], skills: [], permissions: [] } });
   if (path === "/desktop/api/tasks") return json(tasks);
   if (path === "/desktop/api/workspaces/workspace/contexts/tree") return json(tree);

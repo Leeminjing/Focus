@@ -1,22 +1,31 @@
-r"""本文件对外提供 claim-level Context synthesis 合同、ContextSynthesisValidator、WorkerResultContextSynthesizer 与渲染函数。
+r"""本文件对外提供 Context synthesis DTO、ContextSynthesisValidator、WorkerResultContextSynthesizer 与渲染函数。
 
-输入为冻结 WorkContextSpec、ResolvedEvidenceBundle、结构化原子 claims、citation/premise/coverage mappings 及独立 direct-support
-verdicts；输出为 identity 稳定的 ValidatedContextDossier 或显式 synthesis blocker。具体工作流为验证 citation 属于 bundle、premise
-图无环、confirmed claim 有独立直接支持、inference 只依赖已验证 premises、required requirement/question 有映射，再以冻结输入和
-synthesizer version 计算 dossier identity；不读取最新 Portfolio，也不提供 extractive fallback。示例：
-`dossier = validator.validate(work_spec, bundle, draft, support_verdicts)`。
+输入为冻结 WorkContextSpec、ResolvedEvidenceBundle、原子 claims、引用/前提/覆盖映射及独立支持判定；输出为身份稳定的
+ValidatedContextDossier 或明确 blocker。具体工作流为作者 citation_catalog/schema_for 仅允许冻结目录键，解析绑定回原类型化引用，
+Schema 表达 confirmed/inference/hypothesis 的既有引用与前提规则；空目录拒绝，通用 DTO 保留完整引用 JSON 恢复。
+section 内嵌清单是唯一声明归属；materialize 按拓扑生成稳定身份，拒绝重复 key、未知 premise、循环和非法 authority。
+statement 表达来源领域命题，生成图的分组/依赖/覆盖由类型化字段表达。validate_draft 在成功记录前检查冻结引用和完整覆盖，
+validate 再独立检查 direct-support。ClaimSupportProposal.schema_for 约束 confirmed 身份与数量，不预设 verdict。
+失败摘要仅保留实际拒绝计数及首条身份；ContextSynthesisReview 在私有失败产物保存已结构准入候选与实际判定，未核验为 None，
+不进入 ready 缓存。持久引用先类型化再排序，冻结输入及 synthesizer version 决定 dossier 身份，不读取最新 Portfolio 或补造证据。
+示例：`dossier = validator.validate(work_spec, bundle, draft, support_verdicts)`。
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol, Self
+import json
+from enum import Enum
+from graphlib import CycleError, TopologicalSorter
+from typing import Annotated, Any, Literal, Protocol, Self, Union
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     TypeAdapter,
     ValidationError,
+    create_model,
     field_validator,
     model_validator,
 )
@@ -51,10 +60,10 @@ class ContextSynthesisClaim(_SynthesisModel):
     def normalize_identities(cls, values: Any) -> tuple[str, ...]:
         return tuple(sorted(set(values or ())))
 
-    @field_validator("citations", mode="before")
+    @field_validator("citations", mode="after")
     @classmethod
-    def order_citations(cls, values: Any) -> tuple[Any, ...]:
-        return tuple(sorted(values or (), key=evidence_ref_key))
+    def order_citations(cls, values: tuple[EvidenceRef, ...]) -> tuple[EvidenceRef, ...]:
+        return tuple(sorted(values, key=evidence_ref_key))
 
     @model_validator(mode="after")
     def require_authority_shape(self) -> Self:
@@ -119,32 +128,69 @@ class ContextSynthesisClaim(_SynthesisModel):
 
 class SynthesisClaimDraft(_SynthesisModel):
     claim_key: str = Field(min_length=1, max_length=120)
-    statement: str = Field(min_length=1, max_length=2000)
+    statement: str = Field(min_length=1, max_length=2000,
+        description="关于冻结来源领域的单个命题。当前输出的分组、引用、推理依赖和覆盖关系只由对应类型化字段表达，不作为该命题的一部分。")
     authority: ClaimAuthority
     citations: tuple[EvidenceRef, ...] = ()
-    premise_claim_keys: tuple[str, ...] = ()
+    premise_claim_keys: tuple[str, ...] = Field(default=(),
+        description="本次输出中已声明的本地 claim_key 依赖；这是生成图的结构关系，不需要另写一条 confirmed 声明描述该关系。")
     requirement_ids: tuple[str, ...] = ()
     question_ids: tuple[str, ...] = ()
 
 
 class SynthesisSectionDraft(_SynthesisModel):
     title: str = Field(min_length=1, max_length=200)
-    claim_keys: tuple[str, ...] = Field(min_length=1)
+    claims: tuple[SynthesisClaimDraft, ...] = Field(min_length=1)
 
 
 class ContextSynthesisWorkerDraft(_SynthesisModel):
     sections: tuple[SynthesisSectionDraft, ...] = Field(min_length=1)
-    claims: tuple[SynthesisClaimDraft, ...] = Field(min_length=1)
     unresolved_questions: tuple[str, ...] = ()
+
+    @staticmethod
+    def citation_catalog(bundle: ResolvedEvidenceBundle) -> dict[str, EvidenceRef]:
+        return {
+            stable_expansion_hash("synthesis-citation-input-v1", evidence_ref_key(ref)): ref
+            for ref in sorted(bundle.evidence_frontier, key=evidence_ref_key)
+        }
+
+    @classmethod
+    def schema_for(cls, bundle: ResolvedEvidenceBundle) -> type[ContextSynthesisWorkerDraft]:
+        catalog = cls.citation_catalog(bundle)
+        if not catalog:
+            raise ValueError("synthesis 作者缺少冻结 citation，无法构造合法声明根")
+        identity = stable_expansion_hash("synthesis-author-contract-v1", bundle.resolution_id, tuple(catalog))[:12]
+        choices = Enum(f"FrozenCitationChoices_{identity}",
+            {f"citation_{index}": key for index, key in enumerate(catalog)}, type=str)
+
+        def resolve(value: Any) -> EvidenceRef:
+            if not isinstance(value, str) or value not in catalog:
+                raise ValueError("citation 必须选择本次冻结目录中的身份")
+            return catalog[value]
+
+        citation = Annotated[EvidenceRef, BeforeValidator(resolve, json_schema_input_type=choices)]
+        variants = cls._claim_shapes(citation, identity)
+        section = create_model(f"FrozenSynthesisSection_{identity}", __base__=SynthesisSectionDraft,
+            claims=(tuple[Union[variants], ...], Field(min_length=1)))
+        return create_model(f"FrozenSynthesisWorker_{identity}", __base__=cls,
+            sections=(tuple[section, ...], Field(min_length=1)))
+
+    @staticmethod
+    def _claim_shapes(citation: Any, identity: str) -> tuple[type[SynthesisClaimDraft], ...]:
+        shapes = (
+            ("Confirmed", "confirmed", Field(min_length=1), Field(default=(), max_length=0)),
+            ("Inference", "inference", Field(default=()), Field(min_length=1)),
+            ("EvidenceHypothesis", "hypothesis", Field(min_length=1), Field(default=())),
+            ("PremiseHypothesis", "hypothesis", Field(default=(), max_length=0), Field(min_length=1)),
+        )
+        return tuple(create_model(f"Frozen{name}_{identity}", __base__=SynthesisClaimDraft,
+            authority=(Literal[authority], ...), citations=(tuple[citation, ...], citations),
+            premise_claim_keys=(tuple[str, ...], premises))
+            for name, authority, citations, premises in shapes)
 
     def materialize(self) -> ContextSynthesisDraft:
         by_key: dict[str, ContextSynthesisClaim] = {}
-        for draft in self.claims:
-            if draft.claim_key in by_key:
-                raise ValueError("synthesis worker claim_key 重复")
-            unknown = set(draft.premise_claim_keys) - set(by_key)
-            if unknown:
-                raise ValueError("synthesis worker premise 必须引用更早且已知的 claim_key")
+        for draft in self._ordered_claims(self.sections):
             by_key[draft.claim_key] = ContextSynthesisClaim.create(
                 statement=draft.statement,
                 authority=draft.authority,
@@ -153,18 +199,29 @@ class ContextSynthesisWorkerDraft(_SynthesisModel):
                 requirement_ids=draft.requirement_ids,
                 question_ids=draft.question_ids,
             )
-        sections = tuple(
-            SynthesisSection(
-                title=section.title,
-                claim_ids=tuple(by_key[key].claim_id for key in section.claim_keys),
-            )
-            for section in self.sections
-        )
+        sections = tuple(SynthesisSection(title=section.title,
+            claim_ids=tuple(by_key[draft.claim_key].claim_id for draft in section.claims)) for section in self.sections)
         return ContextSynthesisDraft(
             sections=sections,
             claims=tuple(by_key.values()),
             unresolved_questions=self.unresolved_questions,
         )
+
+    @staticmethod
+    def _ordered_claims(sections: tuple[SynthesisSectionDraft, ...]) -> tuple[SynthesisClaimDraft, ...]:
+        drafts: dict[str, SynthesisClaimDraft] = {}
+        for section in sections:
+            for draft in section.claims:
+                if draft.claim_key in drafts:
+                    raise ValueError("synthesis worker claim_key 重复")
+                drafts[draft.claim_key] = draft
+        if {key for draft in drafts.values() for key in draft.premise_claim_keys} - drafts.keys():
+            raise ValueError("synthesis worker premise 必须引用已知的 claim_key")
+        try:
+            order = tuple(TopologicalSorter({key: draft.premise_claim_keys for key, draft in drafts.items()}).static_order())
+        except CycleError as exc:
+            raise ValueError("synthesis worker premise graph 必须无环") from exc
+        return tuple(drafts[key] for key in order)
 
 
 class SynthesisSection(_SynthesisModel):
@@ -199,6 +256,21 @@ class ClaimSupportDraft(_SynthesisModel):
 class ClaimSupportProposal(_SynthesisModel):
     assessments: tuple[ClaimSupportDraft, ...]
 
+    @staticmethod
+    def schema_for(claim_ids: tuple[str, ...]) -> type[ClaimSupportProposal]:
+        identities = tuple(sorted(claim_ids))
+        if len(identities) != len(set(identities)):
+            raise ValueError("confirmed claim identity 重复")
+        identity = stable_expansion_hash("claim-support-output-contract-v1", identities)[:12]
+        assessment = create_model(
+            f"FrozenClaimSupport_{identity}", __base__=ClaimSupportDraft,
+            claim_id=(Literal[identities], ...) if identities else (str, ...),
+        )
+        return create_model(
+            f"FrozenClaimSupportProposal_{identity}", __base__=ClaimSupportProposal,
+            assessments=(tuple[assessment, ...], Field(min_length=len(identities), max_length=len(identities))),
+        )
+
 
 class ValidatedContextDossier(_SynthesisModel):
     dossier_id: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -211,11 +283,29 @@ class ValidatedContextDossier(_SynthesisModel):
     support_assessments: tuple[ClaimSupportAssessment, ...]
 
 
+class ContextSynthesisReview(_SynthesisModel):
+    work_spec_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    resolution_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    synthesizer_version: str = Field(min_length=1, max_length=64)
+    draft: ContextSynthesisDraft = Field(repr=False)
+    support_assessments: tuple[ClaimSupportAssessment, ...] | None = Field(default=None, repr=False)
+
+    @model_validator(mode="after")
+    def require_assessment_identity(self) -> Self:
+        if self.support_assessments is not None:
+            identities = tuple(item.claim_id for item in self.support_assessments)
+            expected = {item.claim_id for item in self.draft.claims if item.authority == "confirmed"}
+            if len(identities) != len(set(identities)) or set(identities) != expected:
+                raise ValueError("synthesis review assessments 必须恰好覆盖候选 confirmed identities")
+        return self
+
+
 class ContextSynthesisResult(_SynthesisModel):
     dossier: ValidatedContextDossier | None = None
     blocker_code: str | None = None
     blocker_summary: str | None = None
     attempt_records: tuple[dict[str, Any], ...] = ()
+    review: ContextSynthesisReview | None = Field(default=None, repr=False)
 
     @model_validator(mode="after")
     def require_result_shape(self) -> Self:
@@ -224,6 +314,8 @@ class ContextSynthesisResult(_SynthesisModel):
             raise ValueError("synthesis result 必须恰好包含 dossier 或完整 blocker")
         if blocked and not (self.blocker_code and self.blocker_summary):
             raise ValueError("synthesis blocker 必须包含 code 与 summary")
+        if self.review is not None and not blocked:
+            raise ValueError("synthesis review 仅属于失败候选，不能替代有效 dossier")
         return self
 
 
@@ -250,6 +342,64 @@ class ContextSynthesisValidator:
         *,
         synthesizer_version: str,
     ) -> ValidatedContextDossier:
+        self.validate_draft(work_spec, bundle, draft)
+        assessments = self._validated_support(draft.claims, support_assessments)
+        payload = (
+            work_spec.work_spec_id,
+            bundle.resolution_id,
+            synthesizer_version,
+            tuple(item.model_dump(mode="json") for item in draft.sections),
+            tuple(item.model_dump(mode="json") for item in draft.claims),
+            tuple(sorted(set(draft.unresolved_questions))),
+            tuple(item.model_dump(mode="json") for item in assessments),
+        )
+        return ValidatedContextDossier(
+            dossier_id=stable_expansion_hash("validated-context-dossier", *payload),
+            work_spec_id=work_spec.work_spec_id,
+            resolution_id=bundle.resolution_id,
+            synthesizer_version=synthesizer_version,
+            sections=draft.sections,
+            claims=draft.claims,
+            unresolved_questions=tuple(sorted(set(draft.unresolved_questions))),
+            support_assessments=assessments,
+        )
+
+    @staticmethod
+    def _validated_support(
+        claims: tuple[ContextSynthesisClaim, ...],
+        assessments: tuple[ClaimSupportAssessment, ...],
+    ) -> tuple[ClaimSupportAssessment, ...]:
+        by_claim = {item.claim_id: item for item in assessments}
+        if len(by_claim) != len(assessments):
+            raise ValueError("direct-support assessment claim identity 重复")
+        confirmed = {item.claim_id: item for item in claims if item.authority == "confirmed"}
+        if set(by_claim) != set(confirmed):
+            raise ValueError("direct-support assessments 必须恰好覆盖全部 confirmed claims")
+        failures = []
+        for claim_id, claim in sorted(confirmed.items()):
+            assessment = by_claim[claim_id]
+            citation_keys = tuple(evidence_ref_key(item) for item in claim.citations)
+            citation_match = tuple(assessment.citation_keys) == citation_keys
+            if not citation_match or assessment.verdict != "supported":
+                failures.append((claim_id, assessment.verdict, citation_match))
+        if failures:
+            first_id, first_verdict, first_match = failures[0]
+            diagnostic = {
+                "rejected_count": len(failures),
+                "unsupported_count": sum(verdict == "unsupported" for _, verdict, _ in failures),
+                "unknown_count": sum(verdict == "unknown" for _, verdict, _ in failures),
+                "citation_mismatch_count": sum(not matched for _, _, matched in failures),
+                "first_claim_id": first_id, "first_verdict": first_verdict, "first_citation_match": first_match,
+            }
+            raise ValueError("confirmed claim 未通过冻结 citation 的 direct-support 验证: " + json.dumps(diagnostic))
+        return tuple(sorted(assessments, key=lambda item: item.claim_id))
+
+    def validate_draft(
+        self,
+        work_spec: WorkContextSpec,
+        bundle: ResolvedEvidenceBundle,
+        draft: ContextSynthesisDraft,
+    ) -> None:
         if bundle.work_spec_id != work_spec.work_spec_id:
             raise ValueError("synthesis inputs 的 WorkSpec identity 不一致")
         claims = {item.claim_id: item for item in draft.claims}
@@ -271,18 +421,6 @@ class ContextSynthesisValidator:
             if set(claim.question_ids) - question_ids:
                 raise ValueError("synthesis claim 引用了未知 question")
         self._require_acyclic(claims)
-        by_claim = {item.claim_id: item for item in support_assessments}
-        if len(by_claim) != len(support_assessments):
-            raise ValueError("direct-support assessment claim identity 重复")
-        confirmed = {item.claim_id for item in draft.claims if item.authority == "confirmed"}
-        if set(by_claim) != confirmed:
-            raise ValueError("direct-support assessments 必须恰好覆盖全部 confirmed claims")
-        for claim_id in confirmed:
-            assessment = by_claim[claim_id]
-            claim = claims[claim_id]
-            citation_keys = tuple(evidence_ref_key(item) for item in claim.citations)
-            if tuple(assessment.citation_keys) != citation_keys or assessment.verdict != "supported":
-                raise ValueError("confirmed claim 未通过冻结 citation 的 direct-support 验证")
         for claim in draft.claims:
             if claim.authority == "inference" and any(
                 claims[premise].authority == "hypothesis"
@@ -301,26 +439,6 @@ class ContextSynthesisValidator:
         unresolved = {self.question_id(question) for question in draft.unresolved_questions}
         if not question_ids.issubset(covered_questions | unresolved):
             raise ValueError("synthesis 未覆盖 WorkSpec required questions")
-        assessments = tuple(sorted(support_assessments, key=lambda item: item.claim_id))
-        payload = (
-            work_spec.work_spec_id,
-            bundle.resolution_id,
-            synthesizer_version,
-            tuple(item.model_dump(mode="json") for item in draft.sections),
-            tuple(item.model_dump(mode="json") for item in draft.claims),
-            tuple(sorted(set(draft.unresolved_questions))),
-            tuple(item.model_dump(mode="json") for item in assessments),
-        )
-        return ValidatedContextDossier(
-            dossier_id=stable_expansion_hash("validated-context-dossier", *payload),
-            work_spec_id=work_spec.work_spec_id,
-            resolution_id=bundle.resolution_id,
-            synthesizer_version=synthesizer_version,
-            sections=draft.sections,
-            claims=draft.claims,
-            unresolved_questions=tuple(sorted(set(draft.unresolved_questions))),
-            support_assessments=assessments,
-        )
 
     @staticmethod
     def question_id(question: str) -> str:

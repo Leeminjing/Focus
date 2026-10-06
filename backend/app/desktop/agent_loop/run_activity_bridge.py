@@ -1,7 +1,7 @@
 r"""本文件对外提供 LoopRunActivityBridge。
 
 输入为既有 StreamBridge、Loop/Context/Run 身份和 Agent values 事件；输出为原流转发及持久化的模型、工具与工作区活动事件。
-具体工作流为只读取当前指令消息之后的已确认消息，按消息或 tool-call 身份去重，在缩为活动摘要前提取类型化测试结果；
+具体工作流为只读取当前指令消息之后的已确认消息，按消息或 tool-call 身份去重，在缩为活动摘要前提取类型化测试结果及使用实际秘密值脱敏的命名元数据；
 Writer 在同事务保存独立领域来源并追加安全事件。失败由 Writer 重试并记录降级，close 等待提交并报告未恢复的失败。
 示例：`bridge.publish(run_id, stream_event)`。
 """
@@ -23,6 +23,7 @@ from backend.app.desktop.agent_loop.event_contract import (
 )
 from backend.app.desktop.agent_loop.run_activity_writer import LoopRunActivityWriter
 from backend.app.desktop.domain_evidence.tests import TestResultParser, test_identity
+from backend.app.desktop.secret_redaction import configured_secret_values
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class LoopRunActivityBridge(StreamBridge):
         run_id: str,
         correlation_id: str | None,
         anchor_message_id: str,
+        secrets=None,
     ) -> None:
         self._delegate = delegate
         self._context_id = context_id
@@ -52,6 +54,7 @@ class LoopRunActivityBridge(StreamBridge):
         self._worker = asyncio.create_task(self._persist(), name=f"loop-run-activity:{run_id}")
         self._closed = False
         self._calls: dict[str, dict] = {}
+        self._secrets = configured_secret_values() if secrets is None else secrets
 
     def publish(self, run_id: str, event: StreamEvent) -> None:
         self._delegate.publish(run_id, event)
@@ -190,7 +193,7 @@ class LoopRunActivityBridge(StreamBridge):
         content = message.get("content")
         if not isinstance(content, str):
             return None
-        parsed = TestResultParser.parse(message.get("name") or call.get("name"), content, command=str(args.get("command") or args.get("cmd") or "") if isinstance(args, dict) else None, execution_status=message.get("status"))
+        parsed = TestResultParser.parse(message.get("name") or call.get("name"), content, command=str(args.get("command") or args.get("cmd") or "") if isinstance(args, dict) else None, execution_status=message.get("status"), run_id=self._run_id, call_id=call_id, secrets=self._secrets)
         if parsed is None:
             return None
         identity = test_identity(self._run_id, call_id)

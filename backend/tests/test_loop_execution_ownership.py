@@ -1,6 +1,8 @@
 r"""本文件对外提供 Loop Run 单一 durable 启动者的竞争与授权回归测试。
 
 输入为真实 PostgreSQL 中的已授权 Directive、持久 Run 计划和两个并发 worker；输出为一次启动、正确生命周期，以及撤销授权后的启动拒绝。
+直接用户消息夹具先经真实受理、冻结和 Patrol/Kernel 决策，启动前仍为 observed，成功启动后才绑定 Run。
+调度恢复在独立运行时数据库验证执行前安全重排保留计划，执行后恢复必须中断，不用新消息用例替代该原有合同。
 具体工作流为模拟通用 worker 竞争同一调度行，使用真实 fencing 与 Loop 启动边界，并在 Run 结算前查询持久状态。示例：`pytest backend/tests/test_loop_execution_ownership.py -q`。
 """
 
@@ -26,6 +28,7 @@ from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLi
 from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
 from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
 from backend.app.desktop.models import DesktopRun, DesktopThread
+from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
 from backend.app.desktop.run_orchestration.admission import RunAdmissionService
 from backend.app.desktop.run_orchestration.assembler import RunExecutionAssembly
 from backend.app.desktop.run_orchestration.dispatch import DurableRunDispatchWorker, RunDispatchRecovery, RunDispatchRepository
@@ -111,7 +114,7 @@ async def _admit_run(sessions, fixture: dict, directive_id: str) -> str:
             WorkspaceSlot.kind == "authoritative",
         ))
         assert slot is not None
-        admission = await RunAdmissionService().admit(session, DesktopRun(
+        admission = await RunAdmissionService(RunOwnershipPolicy().admit).admit(session, DesktopRun(
             run_id=run_id,
             task_id=fixture["context_id"],
             agent_id=f"main:{fixture['context_id']}",
@@ -185,6 +188,40 @@ def test_competing_durable_workers_start_one_loop_run(tmp_path: Path, monkeypatc
                 await _stop(fixture["service"], fixture["loop_id"])
             await engine.dispose()
 
+    asyncio.run(run())
+
+
+def test_loop_dispatch_recovery_preserves_plan_only_before_execution(tmp_path: Path, runtime_postgres_database) -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        fixture = None
+        try:
+            fixture = await _seed_loop(sessions, tmp_path, label="recover-plan", started_at=datetime.now(UTC))
+            directive_id = await _seed_launching_directive(sessions, fixture, label="recover-plan")
+            run_id = await _admit_run(sessions, fixture, directive_id)
+            repository = RunDispatchRepository()
+            async with sessions.begin() as session:
+                claimed = await repository.claim(session, "desktop-main:dead")
+                assert claimed.run_id == run_id
+            first = await RunDispatchRecovery(sessions).reconcile()
+            assert run_id in first.safe_run_ids
+            async with sessions.begin() as session:
+                dispatch = await repository.by_run(session, run_id)
+                planned = await session.get(DesktopRun, run_id)
+                assert dispatch.status == "accepted"
+                assert planned.workspace_anchor["slot_id"]
+                claimed = await repository.claim(session, "desktop-main:replacement")
+                await repository.transition(session, claimed.dispatch_id, claimed.fencing_token, "running")
+            second = await RunDispatchRecovery(sessions).reconcile()
+            assert run_id in second.interrupted_run_ids
+            async with sessions() as session:
+                dispatch = await repository.by_run(session, run_id)
+            assert dispatch.status == "interrupted"
+        finally:
+            if fixture is not None:
+                await _stop(fixture["service"], fixture["loop_id"])
+            await engine.dispose()
     asyncio.run(run())
 
 
@@ -320,141 +357,54 @@ def test_occupied_planned_writer_slot_fails_without_workspace_fallback(tmp_path:
     asyncio.run(run())
 
 
-def test_direct_user_loop_run_binds_after_actual_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_direct_user_loop_run_binds_after_actual_start(tmp_path: Path) -> None:
+    from backend.tests.test_loop_user_message_transaction import authorize_message
+    from backend.tests.test_loop_failure_repair_transaction import _launch, _finish
+    from focus.runtime.runs.schemas import RunStatus
+
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         fixture = None
+        record = None
         try:
             fixture = await _seed_loop(sessions, tmp_path, label="user-entry", started_at=datetime.now(UTC))
-            intent_id = uuid.uuid4().hex
-            run_id = uuid.uuid4().hex
-            async with sessions.begin() as session:
-                task = await session.get(DesktopThread, fixture["context_id"])
-                slot = await session.scalar(select(WorkspaceSlot).where(
-                    WorkspaceSlot.workspace_id == task.workspace_id,
-                    WorkspaceSlot.kind == "authoritative",
-                ))
-                intent = LoopUserIntent(
-                    intent_id=intent_id,
-                    loop_id=fixture["loop_id"],
-                    scope="context",
-                    target_context_id=fixture["context_id"],
-                    content="Continue this Context",
-                    origin_kind="user",
-                    correlation_id=f"user:{intent_id}",
-                    goal_revision=1,
-                    authority_revision=1,
-                    observed_round_id=fixture["round_id"],
-                )
-                session.add(intent)
-                await InterventionLifecycleRepository().register(session, intent)
-                await InterventionLifecycleRepository().transition(session, intent_id, "accepted")
-                admission = await RunAdmissionService().admit(session, DesktopRun(
-                    run_id=run_id,
-                    task_id=fixture["context_id"],
-                    agent_id=f"main:{fixture['context_id']}",
-                    kind="main",
-                    status="pending",
-                    origin="direct_user",
-                    execution_thread_id=task.thread_id,
-                    origin_message_id=f"message-{run_id}",
-                    context_revision_id=fixture["revision_id"],
-                    user_intent_id=intent_id,
-                    loop_id=fixture["loop_id"],
-                    round_id=fixture["round_id"],
-                    equipment={"_durable_dispatch_execution": {"agent_role": "main", "base_prompt": "test"}},
-                    workspace_anchor={"slot_id": slot.slot_id},
-                ))
-                admission.dispatch.accepted_at = datetime(2000, 1, 1, tzinfo=UTC)
-            done = asyncio.get_running_loop().create_future()
-
-            async def execute(body, thread_id, resources, factory):
-                return SimpleNamespace(run_id=run_id, task=done)
-
-            monkeypatch.setattr(desktop_service_module, "execute_prepared_run", execute)
-            service = object.__new__(DesktopService)
-            service.session_factory = sessions
-            service.bridge = MemoryStreamBridge()
-            service.run_manager = SimpleNamespace(cancel=lambda *args, **kwargs: None)
-            service.checkpointer = SimpleNamespace()
-            service.store = SimpleNamespace()
-            service.app_config = SimpleNamespace()
-
-            class Assembler:
-                async def assemble(self, requested_run_id):
-                    return RunExecutionAssembly(
-                        run_id=requested_run_id,
-                        body=SimpleNamespace(context={"run_id": requested_run_id}),
-                        thread_id="thread-test",
-                        agent_factory=lambda: None,
-                    )
-
-            worker = DurableRunDispatchWorker(sessions, "desktop-main:user", Assembler(), service._start_dispatched_run, RunDispatchRepository())
-            assert await worker.drain(limit=1) == 1
-            await fixture["service"].bind_user_message_run(intent_id, run_id)
+            accepted = await fixture["service"].user_message(fixture["context_id"], "Continue this Context")
+            coordinator = LoopCoordinator(sessions)
+            claim = await coordinator.claim_for_loop(fixture["loop_id"], "user-entry")
+            observation, decision = await authorize_message(sessions, fixture, claim, accepted["intent_id"])
             async with sessions() as session:
-                intent = await session.get(LoopUserIntent, intent_id)
+                intent = await session.get(LoopUserIntent, accepted["intent_id"])
+                assert intent.delivery_state == "observed" and intent.resulting_run_id is None
+            record = await _launch(sessions, fixture, coordinator, claim)
+            async with sessions() as session:
+                intent = await session.get(LoopUserIntent, accepted["intent_id"])
+                directive = await session.get(LoopDirective, decision.directive_ids[0])
                 started_event = await session.scalar(select(LoopJournalEvent).where(
                     LoopJournalEvent.loop_id == fixture["loop_id"],
                     LoopJournalEvent.kind == "context.run.started",
-                    LoopJournalEvent.entity_id == run_id,
+                    LoopJournalEvent.entity_id == record.run_id,
                 ))
-            assert intent.delivery_state == "run_started"
-            assert intent.resulting_run_id == run_id
-            assert started_event is not None
-            done.set_result(None)
-            await asyncio.sleep(0)
-            async with sessions.begin() as session:
-                settled = await session.get(DesktopRun, run_id, with_for_update=True)
-                settled.status = "success"
-                settled.settled_at = datetime.now(UTC)
-                await LoopCoordinator(sessions).handle_run_settled(
-                    SimpleNamespace(run_id=run_id, event_id=uuid.uuid4().hex, payload={}), session,
-                )
+                assert intent.delivery_state == "run_started"
+                assert intent.resulting_run_id == record.run_id == directive.launched_run_id
+                assert started_event is not None
+                assert directive.round_id == observation.round_id
+            record.status = RunStatus.success
+            await _finish(sessions, fixture, coordinator, record, [])
             async with sessions() as session:
+                intent = await session.get(LoopUserIntent, accepted["intent_id"])
                 settled_event = await session.scalar(select(LoopJournalEvent).where(
                     LoopJournalEvent.loop_id == fixture["loop_id"],
                     LoopJournalEvent.kind == "context.run.settled",
-                    LoopJournalEvent.entity_id == run_id,
+                    LoopJournalEvent.entity_id == record.run_id,
                 ))
-            assert settled_event is not None
+                assert intent.delivery_state == "settled"
+                assert settled_event is not None
         finally:
-            if fixture is not None:
-                await _stop(fixture["service"], fixture["loop_id"])
-            await engine.dispose()
-
-    asyncio.run(run())
-
-
-def test_loop_dispatch_recovery_preserves_plan_only_before_execution(tmp_path: Path) -> None:
-    async def run() -> None:
-        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
-        fixture = None
-        try:
-            fixture = await _seed_loop(sessions, tmp_path, label="recover-plan", started_at=datetime.now(UTC))
-            directive_id = await _seed_launching_directive(sessions, fixture, label="recover-plan")
-            run_id = await _admit_run(sessions, fixture, directive_id)
-            repository = RunDispatchRepository()
-            async with sessions.begin() as session:
-                claimed = await repository.claim(session, "desktop-main:dead")
-                assert claimed.run_id == run_id
-            first = await RunDispatchRecovery(sessions).reconcile()
-            assert run_id in first.safe_run_ids
-            async with sessions.begin() as session:
-                dispatch = await repository.by_run(session, run_id)
-                planned = await session.get(DesktopRun, run_id)
-                assert dispatch.status == "accepted"
-                assert planned.workspace_anchor["slot_id"]
-                claimed = await repository.claim(session, "desktop-main:replacement")
-                await repository.transition(session, claimed.dispatch_id, claimed.fencing_token, "running")
-            second = await RunDispatchRecovery(sessions).reconcile()
-            assert run_id in second.interrupted_run_ids
-            async with sessions() as session:
-                dispatch = await repository.by_run(session, run_id)
-            assert dispatch.status == "interrupted"
-        finally:
+            if record is not None and not record.task.done():
+                record.task.cancel()
+                await asyncio.gather(record.task, return_exceptions=True)
+                await record.loop_activity_task
             if fixture is not None:
                 await _stop(fixture["service"], fixture["loop_id"])
             await engine.dispose()

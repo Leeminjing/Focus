@@ -1,8 +1,9 @@
-"""受治理运行上下文键的声明并集、剥除与拒绝伪造用例。
+"""本文件对外提供受治理运行上下文键的声明并集、剥除与拒绝伪造用例。
 
 输入为消费者声明与调用方提供的运行上下文；输出为受治理键集合与剥除结果。
-工作流先锁定集合是跨模块声明的并集且不是手写名单，再锁定剥除只保留附带载荷，
-最后在网关入口断言调用方伪造受治理字段的请求被拒绝、且不留下运行记录。
+具体工作流为验证跨模块声明的并集、仅保留附带载荷和规范权限投影，
+再在网关入口断言伪造请求被拒绝且不留下运行记录。
+示例：pytest backend/tests/test_governed_keys.py -q。
 """
 
 import asyncio
@@ -140,7 +141,7 @@ def test_governed_payload_cannot_overwrite_the_flat_projection():
             }
         ),
     }
-    assert forged["access_mode"] == "workspace"
+    assert forged["access_mode"] == "workspace-write"
     assert forged["workspace"] == str(workspace)
     assert forged["skills"] == ["x"]
     # 准入策略只认安全上下文：伪造的受治理字段与伪造的工作根都不构成第二个来源

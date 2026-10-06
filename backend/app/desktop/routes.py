@@ -8,6 +8,7 @@ Context、任务、草稿、普通/策展 Patrol、运行、文件沙箱状态�
 UploadFile 直接交给有界上传服务，内容读取在校验 task/material 归属后交给 FileResponse。
 
 示例：POST /desktop/api/tasks/{task_id}/main/runs。
+Loop 内直接用户消息只返回耐久受理身份，冻结和 Patrol/Kernel 授权后沿既有 Directive 启动；Loop 外仍沿 durable Main Run 准入。
 standard Patrol 的来源目录/分页正文预览、原子冻结插入、只读可用性、检查、定义复制与中断响应交给 session_patrol 端口；自由保存与执行准入分离，部署沿 durable dispatch 启动。示例：POST /desktop/api/drafts/{id}/source-preview。
 """
 
@@ -256,55 +257,30 @@ async def start_main_run(
     idempotency_header: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict:
     request_identity = body.idempotency_key or idempotency_header or uuid.uuid4().hex
+    loop_service = getattr(request.app.state, "agent_loop_service", None)
+    if loop_service is not None:
+        accepted = await loop_service.user_message(task_id, _loop_message_text(body.message),
+            request_id=request_identity, payload=body.model_dump(mode="json", exclude_unset=True,
+                                                                 exclude={"idempotency_key"}))
+        if accepted is not None:
+            return accepted
     idempotency_key = f"direct-user:{request_identity}"
     existing = await request.app.state.desktop_service.run_by_idempotency(idempotency_key)
     if existing is not None:
         request.app.state.desktop_service.notify_run_dispatch()
         return existing
     message_id = uuid.uuid5(uuid.NAMESPACE_URL, f"focus:direct-user-message:{request_identity}").hex
-    loop_service = getattr(request.app.state, "agent_loop_service", None)
-    loop_binding = await loop_service.user_message(task_id, _loop_message_text(body.message)) if loop_service else None
-    loop_workspace = getattr(request.app.state, "agent_loop_workspace", None)
-    execution_workspace_path = (
-        await loop_workspace.execution_root(loop_binding["loop_id"])
-        if loop_binding and loop_workspace
-        else None
+    prepared = await request.app.state.desktop_service.start_main_run(
+        task_id=task_id, message=body.message, model_name=body.model_name,
+        permissions=body.permissions, skills=body.skills, spatial_focus=body.spatial_focus,
+        memory_ids=body.memory_ids,
+        material_inputs=[RunMaterialRequest(material_id=item.material_id, note=item.note)
+                         for item in body.material_inputs] if body.material_inputs is not None else None,
+        attached_material_ids=body.attached_material_ids, must_view_material_ids=body.must_view_material_ids,
+        access_mode=body.access_mode,
+        run_identity={"message_id": message_id, "origin": "direct_user", "idempotency_key": idempotency_key},
     )
-    prepared = None
-    try:
-        prepared = await request.app.state.desktop_service.start_main_run(
-            task_id=task_id,
-            message=body.message,
-            model_name=body.model_name,
-            permissions=body.permissions,
-            skills=body.skills,
-            spatial_focus=body.spatial_focus,
-            memory_ids=body.memory_ids,
-            material_inputs=(
-                [
-                    RunMaterialRequest(material_id=item.material_id, note=item.note)
-                    for item in body.material_inputs
-                ]
-                if body.material_inputs is not None
-                else None
-            ),
-            attached_material_ids=body.attached_material_ids,
-            must_view_material_ids=body.must_view_material_ids,
-            access_mode=body.access_mode,
-            run_identity={"message_id": message_id, "origin": "direct_user", "loop_id": loop_binding["loop_id"] if loop_binding else None, "round_id": loop_binding["round_id"] if loop_binding else None, "user_intent_id": loop_binding["intent_id"] if loop_binding else None, "idempotency_key": idempotency_key},
-            execution_workspace_path=execution_workspace_path,
-        )
-        request.app.state.desktop_service.notify_run_dispatch()
-        if loop_binding and loop_service:
-            await loop_service.bind_user_message_run(loop_binding["intent_id"], str(prepared.payload["run_id"]))
-    except Exception as exc:
-        if prepared is not None:
-            await request.app.state.desktop_service.run_lifecycle.abort_prepared(
-                str(prepared.payload["run_id"]), str(exc)
-            )
-        if loop_binding and loop_service:
-            await loop_service.fail_user_message_round(loop_binding["loop_id"], loop_binding["round_id"], str(exc))
-        raise
+    request.app.state.desktop_service.notify_run_dispatch()
     return prepared.payload
 
 

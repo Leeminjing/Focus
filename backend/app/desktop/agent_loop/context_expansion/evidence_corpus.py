@@ -2,7 +2,7 @@ r"""本文件对外提供 FrozenEvidenceCorpus、CorpusEvidenceItem、FrozenEvid
 
 输入为冻结 Loop observation、semantic manifests、WorkContext opportunity、精确 Context Revision 存储与 checkpointer；
 输出为只含授权版本的不可变 evidence corpus。具体工作流为校验 frontier/scope/hash，读取每个精确 Revision 的 semantic 消息，
-再把版本化 Mission sections、Run 与 Workspace 事实编码为类型化 evidence，并用 manifest unit 保留语义角色。示例：
+再把版本化 Mission sections、Run 与 Workspace 事实编码为类型化 evidence，并复用规划读面的同一角色政策保留 manifest unit 语义角色。示例：
 `corpus = await reader.read(observation, opportunity, manifests)`。
 """
 
@@ -20,6 +20,11 @@ from backend.app.desktop.agent_loop.context_expansion.contracts import (
     stable_expansion_hash,
 )
 from backend.app.desktop.agent_loop.context_expansion.mission_sections import FrozenMissionSectionCatalog
+from backend.app.desktop.agent_loop.context_expansion.evidence_roles import (
+    context_evidence_role,
+    semantic_unit_roles,
+    structured_evidence_role,
+)
 from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 from backend.app.desktop.context_curation import (
@@ -318,37 +323,18 @@ class FrozenEvidenceCorpusReader:
         context_roles: dict[str, str],
     ) -> tuple[CorpusEvidenceItem, ...]:
         unit_map: dict[tuple[str, ...], tuple[set[EvidenceRole], set[str]]] = {}
-        kind_roles: dict[str, tuple[EvidenceRole, ...]] = {
-            "decision": ("decision",),
-            "claim": ("conversation",),
-            "hypothesis": ("conversation",),
-            "unresolved_question": ("conversation",),
-            "implementation_effect": ("implementation", "workspace_effect"),
-            "verification_result": ("test",),
-            "failure": ("failure",),
-        }
         for manifest in manifests:
             for unit in manifest.units:
                 for ref in unit.evidence_refs:
                     roles, unit_ids = unit_map.setdefault(evidence_ref_key(ref), (set(), set()))
-                    roles.update(kind_roles[unit.kind])
+                    roles.update(semantic_unit_roles(unit.kind))
                     unit_ids.add(unit.unit_id)
         items: list[CorpusEvidenceItem] = []
-        role_aliases: dict[str, EvidenceRole] = {
-            "implementation": "implementation",
-            "testing": "test",
-            "test": "test",
-            "verification": "test",
-            "requirements": "requirement",
-            "requirement": "requirement",
-            "failure": "failure",
-            "decision": "decision",
-        }
         for source in evidence.sources:
             for message in source.messages:
                 roles, unit_ids = unit_map.get(evidence_ref_key(message.ref), (set(), set()))
                 context_role = context_roles.get(source.source.revision_id)
-                contextual_role = role_aliases.get((context_role or "").casefold())
+                contextual_role = context_evidence_role(context_role)
                 if contextual_role is not None:
                     roles.add(contextual_role)
                 items.append(
@@ -362,20 +348,12 @@ class FrozenEvidenceCorpusReader:
                     )
                 )
         for item in evidence.structured:
-            role: EvidenceRole = "requirement"
-            if isinstance(item.ref, RunResultEvidenceRef):
-                status = str(item.content.get("status") if isinstance(item.content, dict) else "").casefold()
-                role = "failure" if status in {"error", "failed", "failure"} else "test"
-            elif isinstance(item.ref, WorkspaceEffectEvidenceRef):
-                role = "workspace_effect"
-            elif isinstance(item.ref, MaterialEvidenceRef):
-                role = "material"
             items.append(
                 CorpusEvidenceItem(
                     ref=item.ref,
                     content_hash=item.ref.content_hash,
                     content=item.content,
-                    semantic_roles=(role,),
+                    semantic_roles=(structured_evidence_role(item.ref, item.content),),
                 )
             )
         return tuple(items)

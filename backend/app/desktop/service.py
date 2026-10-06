@@ -8,14 +8,18 @@ RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以
 示例：`service = DesktopService(...); await service.start_main_run(task_id, message, ...)`。
 基础行为仅进入 instructions；memory／selected skills／材料 policy／空间选择冻结为 Run 输入，能力目录与权限进入 checkpoint-bound WorldState。
 真实用户与委托输入由 Run admission/装配端口绑定可信来源；模型 role 和正文不能替代该宿主身份。
+访问审批投影同时绑定实际Task与中断Run，供用户处理后的正式Loop恢复核对；相同正文的后续请求仍有独立来源身份。
+普通 Main 新输入从精确已发布修复 revision 读取 execution 投影并交给统一分支入口；resume 仍使用原中断任务，不重写历史。
 Main 执行池按来源选择 custom／MCP；工作区工具和插件桥各自独占内置／插件注入，发现目录仍完整用于装备展示。
 协作消息由耐久 inbox 准备，模型与工具尝试通过独立审计端口确认；临时运行控制不进入 authored 或 semantic 历史。
+Loop 工具 claim 通过组合根注入的实时版本校验受理，暂停后的新效果意图被拒绝，已开始调用仍保留迟到结果。
+协作等待秒数使用 collaboration_contracts 的同一受约束类型生成 schema 并验证直接调用。
 具体工作流为：登记真实宿主机工作区与线程，复制已提交 checkpoint 形成冻结草稿，
 准备受文件沙箱约束的工作区 Agent 装配参数（经统一执行链路 worker.run_agent 执行），并把上传、
 内容读取、逐轮材料解析/历史/投影和自定义分组分别委托给单一职责服务；主运行在同一事务
 持久化稳定用户消息与有序材料绑定，图片是通用材料聚合的派生视图，初始与恢复路径使用同一
 投影，图片交付、必看完成门和压缩门按职责独立装配；压缩通过 Context Evolution 迁移端口发布，
-稳定 Run 则由 RunLifecycleFinalizer 在同一事务收敛终态、Context revision 与 durable outbox；主 Run 先原子写入 accepted dispatch，后台 worker 通过 lease/fencing 领取并从持久装备重建 Agent，HTTP 确认不再依赖内存 task 接力；Loop
+稳定 Run 则由 RunLifecycleFinalizer 在同一事务收敛终态、Context revision 与 durable outbox，并通过配置提供器为命名测试结果获取当前实际秘密值；主 Run 先原子写入 accepted dispatch，后台 worker 通过 lease/fencing 领取并从持久装备重建 Agent，HTTP 确认不再依赖内存 task 接力；Loop
 后台启动把计划 Workspace Slot 与 Run 一同持久化，再把受治理工具根绑定到该 Slot；任务详情同时公开最新直接用户
 Main Run 供 Loop 绑定首轮，并按活跃执行视图返回该 Context 的会话消息（执行身份上有更新状态时与运行流同源，
 否则与已发布 revision 一致），数据库锚点与真实作用路径一致。
@@ -61,6 +65,8 @@ from typing import Any, Awaitable, Callable
 import uuid
 
 from fastapi import HTTPException, UploadFile
+from backend.app.desktop.collaboration_contracts import WaitSeconds, validate_wait_seconds
+from backend.app.desktop.equipment_policy import effective_equipment
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 from langgraph.graph.state import CompiledStateGraph
@@ -347,8 +353,11 @@ class DesktopService:
         self.context_patrol = ContextPatrolService(
             session_factory, self.contexts, checkpointer, store, bridge, run_manager, app_config
         )
-        self.run_lifecycle = RunLifecycleFinalizer(session_factory, checkpointer)
-        self._run_admission = RunAdmissionService()
+        from backend.app.desktop.secret_redaction import configured_secret_values
+
+        self.run_lifecycle = RunLifecycleFinalizer(session_factory, checkpointer,
+            secret_provider=lambda: configured_secret_values(self.app_config))
+        self._run_admission = self._admission_service()
         self._run_dispatch_repository = RunDispatchRepository()
         self._run_dispatch_recovery = RunDispatchRecovery(session_factory)
         self._run_dispatch_wakeup = asyncio.Event()
@@ -371,6 +380,11 @@ class DesktopService:
         self._sync_tasks: set[asyncio.Task] = set()
         self._watcher: asyncio.Task | None = None
         self._material_watch_failures: set[str] = set()
+
+    def _admission_service(self) -> RunAdmissionService:
+        from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
+
+        return getattr(self, "_run_admission", None) or RunAdmissionService(RunOwnershipPolicy().admit)
 
     async def start(self) -> None:
         dispatch_recovery = await self._run_dispatch_recovery.reconcile()
@@ -435,7 +449,7 @@ class DesktopService:
                 assembly, resources, execute_prepared_run
             )
         return await execute_prepared_run(
-            assembly.body, assembly.thread_id, resources, assembly.agent_factory
+            assembly.body, assembly.thread_id, resources, assembly.agent_factory, runner=run_agent
         )
 
     async def assemble_run(self, run_id: str) -> RunExecutionAssembly:
@@ -452,7 +466,7 @@ class DesktopService:
                 raise LookupError(f"Run Workspace 不存在: {task.workspace_id}")
             equipment = dict(run.equipment or {})
             execution = dict(equipment.get(_RUN_DISPATCH_EQUIPMENT_KEY) or {})
-            if run.status != "pending" or execution.get("agent_role") not in {"main", "patrol"}:
+            if run.status != "pending" or execution.get("agent_role") not in {"main", "patrol", "teammate", "worker"}:
                 raise RuntimeError(f"Run 不可由 durable dispatch 装配: {run.run_id}@{run.status}")
             workspace_path = str((run.workspace_anchor or {}).get("workspace_path") or workspace.path)
             slot_id = (run.workspace_anchor or {}).get("slot_id")
@@ -481,10 +495,17 @@ class DesktopService:
                 execution["agent_role"],
                 execution.get("checkpoint_id"),
                 bool(execution.get("allow_global_config")),
+                swarm_depth=int(execution.get("swarm_depth") or 0),
             )
             if "resume_payload" in execution:
                 prepared.body.input = None
                 prepared.body.resume = execution["resume_payload"]
+            elif run.kind == "main":
+                from backend.app.desktop.run_orchestration.execution_history import repaired_execution_for_run
+
+                history = await repaired_execution_for_run(session, run, self.checkpointer)
+                if history is not None:
+                    prepared.body.context["context_execution_messages"] = history
         if loop_id:
             from backend.app.desktop.agent_loop.dispatch import LoopRunWorkspaceBinder
 
@@ -1114,7 +1135,9 @@ class DesktopService:
                 session, task_row, self.checkpointer, APPROVAL_TYPE
             )
             if access_recovery is not None:
-                await self._project_loop_pending_decision(identity, "access_approval", access_recovery)
+                source_run = await latest_main_run(session, task_row)
+                source = ({"task_id": task_row.task_id, "run_id": source_run.run_id} if source_run is not None else None)
+                await self._project_loop_pending_decision(identity, "access_approval", access_recovery, source=source)
                 raise HTTPException(
                     409,
                     {
@@ -1189,7 +1212,7 @@ class DesktopService:
                 },
             )
             try:
-                admission = await getattr(self, "_run_admission", RunAdmissionService()).admit(session, run)
+                admission = await self._admission_service().admit(session, run)
             except RunAdmissionConflict as exc:
                 raise HTTPException(409, {"code": "main_run_active", "message": str(exc)}) from exc
             if not admission.created:
@@ -1265,13 +1288,15 @@ class DesktopService:
         identity: dict[str, Any],
         kind: str,
         recovery: dict[str, Any],
+        *,
+        source: dict[str, Any] | None = None,
     ) -> None:
         loop_id = identity.get("loop_id")
         projector = getattr(self, "pending_decision_projector", None)
         if loop_id and projector is not None:
             await projector.project(
                 str(loop_id),
-                {"type": kind, "recovery": recovery},
+                {"type": kind, "recovery": recovery, **({"source": source} if source is not None else {})},
             )
 
     async def ensure_assembly_task(self) -> dict[str, Any]:
@@ -1794,6 +1819,7 @@ class DesktopService:
         messages: list[dict[str, Any]], base_prompt: str, equipment: dict[str, Any],
         checkpoint_ns: str, agent_role: str, checkpoint_id: str | None = None,
         allow_global_config: bool = False,
+        swarm_depth: int = 0,
     ) -> PreparedRun:
 
 
@@ -1833,6 +1859,7 @@ class DesktopService:
             access_mode=equipment.get("access_mode"),
             checkpoint_ns=checkpoint_ns,
             agent_role=agent_role,
+            swarm_depth=swarm_depth,
             model_name=equipment.get("model_name") or run.model_name,
             allow_global_config=allow_global_config,
             extras={
@@ -1920,7 +1947,10 @@ class DesktopService:
                           "checkpoint_id": run.context_checkpoint_id, "context_id": run.task_id}}
         runtime_extras["origin_message_id"] = run.origin_message_id
         if hasattr(self, "session_factory"):
-            runtime_extras["tool_execution_ledger"] = ToolExecutionLedger(self.session_factory)
+            from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
+
+            runtime_extras["tool_execution_ledger"] = ToolExecutionLedger(
+                self.session_factory, authority_validator=RunOwnershipPolicy().assert_live)
         return assemble_run_context(profile, runtime_extras, dispatch_hints={"swarm_depth": swarm_depth})
 
     def _build_agent_factory(
@@ -1932,6 +1962,7 @@ class DesktopService:
 
         permissions = equipment.get("permissions") or ["read"]
         model_name = equipment.get("model_name")
+        governed_loop = "_loop_authority_revision" in equipment
         collab_tools = self.agent_collab.build_collab_tools(agent_role)
         include_mailbox = agent_role in ("main", "teammate", "worker")
 
@@ -1947,7 +1978,7 @@ class DesktopService:
                 pool_tools = execution_pool_tools(pooled, include_builtin=False)
                 tools = [*tools, *self._build_patrol_reader_tools(task_id),
                          *self._build_swarm_reader_tools(task_id),
-                         build_spawn_agent_tool(), *self._build_swarm_tools(),
+                         *([] if governed_loop else [build_spawn_agent_tool(), *self._build_swarm_tools()]),
                          *pool_tools]
             tools = [*tools, *collab_tools]
             catalog = build_task_skill_catalog(workspace_path)
@@ -2049,7 +2080,7 @@ class DesktopService:
 
         @tool
         async def wait_for_swarm(
-            agent_ids: list[str], runtime: ToolRuntime[dict], timeout_seconds: int = 30
+            agent_ids: list[str], runtime: ToolRuntime[dict], timeout_seconds: WaitSeconds = 30
         ) -> str:
             """有界等待 Teammate/Worker 状态变化，返回运行、任务板和主 Agent 未读消息快照。"""
             context = runtime.context
@@ -2070,8 +2101,7 @@ class DesktopService:
 
         if not agent_ids:
             raise ValueError("agent_ids 不能为空")
-        if not 1 <= timeout_seconds <= 30:
-            raise ValueError("timeout_seconds 必须在 1..30 之间")
+        timeout_seconds = validate_wait_seconds(timeout_seconds)
         targets = list(dict.fromkeys(agent_ids))
         async with self.session_factory() as session:
             rows = (
@@ -2190,23 +2220,19 @@ class DesktopService:
             raise RuntimeError("缺少协作上下文: runtime.context['task_id']（任务身份）")
         if not workspace_id:
             raise RuntimeError("缺少协作上下文: security_context.routing.workspace_id（工作区身份）")
+        source = await self._swarm_source(parent.routing.run_id)
 
         agent_id = new_id()
         await self.agent_collab.create_swarm_agent(
             agent_id, task_id, role, list(parent.authorization.permissions),
             access_mode=str(parent.authorization.access_mode),
         )
-        equipment = {
-            "model_name": parent.model_name,
-            "skills": [],
-            "skill_snapshots": [],
-            "permissions": list(parent.authorization.permissions),
-            "access_mode": str(parent.authorization.access_mode),
-        }
+        equipment = effective_equipment(source.equipment or {}, permissions=list(parent.authorization.permissions))
         prompt = system_prompt or (self._TEAMMATE_PROMPT if role == "teammate" else self._WORKER_PROMPT)
         run_id = await self._launch_swarm_run(
             task_id, agent_id, role, task, prompt, workspace_id,
             str(parent.authorization.workspace), equipment,
+            parent_run_id=source.run_id,
         )
         logger.info("持久 Agent 已派生: agent_id='%s' role=%s run_id='%s'", agent_id, role, run_id)
         return agent_id
@@ -2220,17 +2246,14 @@ class DesktopService:
         if agent_row.status == "stopped":
             raise HTTPException(409, "该 Agent 已停止")
         parent = security_context_of(context)
-        equipment = {
-            "model_name": parent.model_name,
-            "skills": [],
-            "skill_snapshots": [],
-            "permissions": list(agent_row.permissions or ["read"]),
-            "access_mode": agent_row.access_mode,
-        }
+        source = await self._swarm_source(parent.routing.run_id)
+        equipment = effective_equipment(source.equipment or {}, permissions=list(agent_row.permissions or ["read"]),
+                                        overrides={"access_mode": agent_row.access_mode})
         prompt = self._TEAMMATE_PROMPT if agent_row.role == "teammate" else self._WORKER_PROMPT
         run_id = await self._launch_swarm_run(
             agent_row.task_id, agent_id, agent_row.role, message, prompt,
             parent.routing.workspace_id, str(parent.authorization.workspace), equipment,
+            parent_run_id=source.run_id,
         )
         logger.info("持久 Agent 已唤醒: agent_id='%s' run_id='%s'", agent_id, run_id)
         return run_id
@@ -2259,25 +2282,35 @@ class DesktopService:
                 workspace_row = await session.get(DesktopWorkspace, task_row.workspace_id)
                 if not workspace_row:
                     return
-            equipment = {
-                "model_name": None,
-                "skills": [],
-                "skill_snapshots": [],
-                "permissions": list(agent_row.permissions or ["read"]),
-            }
+                source = await session.scalar(select(DesktopRun).where(DesktopRun.agent_id == agent_id).order_by(DesktopRun.created_at.desc()).limit(1))
+                if source is None or source.loop_id is not None:
+                    return
+            equipment = effective_equipment(source.equipment or {}, permissions=list(agent_row.permissions or ["read"]),
+                                            overrides={"access_mode": agent_row.access_mode})
             prompt = self._TEAMMATE_PROMPT if agent_row.role == "teammate" else self._WORKER_PROMPT
             await self._launch_swarm_run(
                 agent_row.task_id, agent_id, agent_row.role, message, prompt,
                 workspace_row.workspace_id, workspace_row.path, equipment, swarm_depth=depth,
+                parent_run_id=source.run_id,
             )
             logger.info("自动唤醒已触发: agent_id='%s' depth=%s", agent_id, depth)
         except Exception:
             logger.warning("自动唤醒失败: agent_id=%s", agent_id, exc_info=True)
 
+    async def _swarm_source(self, run_id: str) -> DesktopRun:
+        async with self.session_factory() as session:
+            source = await session.get(DesktopRun, run_id)
+            if source is None:
+                raise ValueError("协作派生缺少持久父执行")
+            if source.loop_id is not None:
+                raise ValueError("Loop 派生必须经过 Patrol Context Expansion 与 Kernel 授权")
+            return source
+
     async def _launch_swarm_run(
         self, task_id: str, agent_id: str, role: str, task_text: str,
         system_prompt: str, workspace_id: str, workspace_path: str, equipment: dict[str, Any],
         swarm_depth: int = 0,
+        parent_run_id: str | None = None,
     ) -> str:
 
 
@@ -2293,6 +2326,7 @@ class DesktopService:
 
             checkpoint_ns = agent_row.checkpoint_ns
             thread_id = task_row.thread_id
+            checkpoint_id = await select_checkpoint_base(self.checkpointer, thread_id, checkpoint_ns)
             self._require_run_admission()
             run = DesktopRun(
                 run_id=new_id(), task_id=task_id, agent_id=agent_id, kind=role,
@@ -2301,57 +2335,19 @@ class DesktopService:
                 origin="swarm", execution_thread_id=thread_id,
                 checkpoint_ns=checkpoint_ns,
                 context_revision_id=task_row.current_revision_id,
-                equipment=equipment,
+                parent_run_id=parent_run_id,
+                equipment={**equipment, _RUN_DISPATCH_EQUIPMENT_KEY: {
+                    "agent_role": role, "base_prompt": system_prompt, "checkpoint_id": checkpoint_id,
+                    "allow_global_config": False, "swarm_depth": swarm_depth,
+                }},
                 workspace_anchor={
                     "workspace_id": workspace_id,
                     "workspace_path": workspace_path,
                 },
             )
-            session.add(run)
+            await self._admission_service().admit(session, run)
             await session.commit()
-
-        checkpoint_id = await select_checkpoint_base(
-            self.checkpointer, thread_id, checkpoint_ns,
-        )
-        factory = self._build_agent_factory(
-            task_id, agent_id, workspace_path, equipment, system_prompt, "", role,
-        )
-        langgraph_context = self._governed_context(
-            thread_id=thread_id,
-            run=run,
-            workspace_id=workspace_id,
-            workspace_path=workspace_path,
-            permissions=list(equipment.get("permissions") or ["read"]),
-            access_mode=equipment.get("access_mode"),
-            checkpoint_ns=checkpoint_ns,
-            agent_role=role,
-            model_name=equipment.get("model_name") or run.model_name,
-            allow_global_config=False,
-            extras={
-                "skills": equipment.get("skills") or [],
-                "checkpoint_id": checkpoint_id,
-                "app_config": self.app_config,
-            },
-            swarm_depth=swarm_depth,
-        )
-        record = await execute_prepared_run(
-            RunCreateRequest(
-                input={"messages": [{"role": "human", "content": task_text}]},
-                context=langgraph_context,
-                stream_mode=["values"],
-            ),
-            thread_id,
-            RunExecutionResources(
-                bridge=self.bridge,
-                run_manager=self.run_manager,
-                checkpointer=self.checkpointer,
-                store=self.store,
-                app_config=self.app_config,
-            ),
-            factory,
-            runner=run_agent,
-        )
-        self.attach_run_sync(record)
+        self.notify_run_dispatch()
         return run.run_id
 
     def attach_run_sync(self, record: RunRecord) -> None:

@@ -17,6 +17,7 @@
     (7) 注册统一会话保护中间件与路由，并挂载桌面路由与 /desktop/ 静态资源（决策 1）
     (8) 读取独立 Loop 切换开关，构造 AgentLoopService、LoopKernel、发布/Curator/Context/Fact 与独立 TaskProgress 监督组件，并异步修复终态 Loop 遗留策展所有权；仅在 supervisor 开关启用时启动运行期
     (9) 模块级导出 app 实例，供 uvicorn 等 ASGI server 直接引用
+    人工访问门禁恢复注入共享真实检查点核对端口，只收口已实际处理的投影，不批准访问或扩大授权。
 
 示例:
     uvicorn backend.app.gateway.app:app --host 0.0.0.0 --port 8000
@@ -130,7 +131,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         from backend.app.desktop.run_orchestration import RunOutboxConsumer
 
         app.state.loop_feature_flags = LoopFeatureFlags.from_env()
-        app.state.agent_loop_service = AgentLoopService(sessions, app.state.run_manager)
+        from backend.app.desktop.agent_loop.user_access_gate_recovery import UserAccessGateRecovery
+
+        app.state.agent_loop_service = AgentLoopService(
+            sessions, app.state.run_manager, user_gate_recovery=UserAccessGateRecovery(app.state.checkpointer)
+        )
         app.state.agent_loop_interventions = LoopInterventionService(sessions)
         app.state.agent_loop_authority = LoopAuthorityService(sessions, app.state.run_manager)
         app.state.agent_loop_workspace = LoopRunWorkspaceBinder(sessions)

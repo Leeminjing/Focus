@@ -1,7 +1,8 @@
 /*
  * 本文件对外提供前端 Live Loop schema、reducer、序列防护、连接恢复、选择器与界面状态的回归测试。
  * 输入为有效/畸形 snapshot、重复/陈旧/缺口事件、HTTP 故障和模拟 Live API；输出为确定性 projection、原子重同步、取消信号、退避及单连接断言。
- * 具体工作流为使用 Node test 直接加载 UMD 模块并驱动 Store/Connection/API；示例：`node --test desktop/loop-live-projection.test.js`。
+ * 具体工作流为使用 Node test 直接加载 UMD 模块并驱动 Store/Connection/API，验证新 Round/Patrol 的局部版本与迟到旧实体隔离；示例：`node --test desktop/loop-live-projection.test.js`。
+ * Mission交付使用服务端评估，覆盖Patrol真实来源、终态Run身份保留及跨Mission事件隔离。
  */
 "use strict";
 
@@ -96,6 +97,92 @@ test("reducer is deterministic, deduplicates sequence and ignores stale entity r
   assert.equal(stale.last_sequence, 2);
   const replayed = Reducer.reduceBatch(initial, [event(1), event(2, { entity_revision: 2, payload: { context_id: "c1", status: "success" } })]);
   assert.deepEqual(replayed, Reducer.reduceBatch(initial, [event(1), event(2, { entity_revision: 2, payload: { context_id: "c1", status: "success" } })]));
+});
+
+test("Round and Patrol identity switches use local revisions and reject late old-round events", () => {
+  let state = Reducer.reduce(snapshot(), event(1, { entity_type: "round", entity_id: "round-1", entity_revision: 5, payload: { number: 1, decision_id: "old-decision" } }));
+  state = Reducer.reduce(state, event(2, { entity_type: "patrol_session", entity_id: "patrol-1", entity_revision: 20, payload: { round_id: "round-1", phase: "completed" } }));
+  state = Reducer.reduce(state, event(3, { entity_type: "round", entity_id: "round-2", entity_revision: 1, payload: { number: 2 } }));
+  assert.equal(state.round.entity_id, "round-2");
+  assert.equal(state.round.state.decision_id, undefined);
+  assert.equal(state.patrol_session, null);
+  state = Reducer.reduce(state, event(4, { entity_type: "patrol_session", entity_id: "patrol-2", entity_revision: 1, payload: { round_id: "round-2", phase: "created" } }));
+  state = Reducer.reduce(state, event(5, { entity_type: "round", entity_id: "round-1", entity_revision: 6, payload: { number: 1 } }));
+  state = Reducer.reduce(state, event(6, { entity_type: "patrol_session", entity_id: "patrol-1", entity_revision: 21, payload: { round_id: "round-1", phase: "cancelled" } }));
+  assert.equal(state.round.entity_id, "round-2");
+  assert.equal(state.patrol_session.entity_id, "patrol-2");
+  assert.equal(state.last_sequence, 6);
+});
+
+test("Patrol Mission delivery uses the authoritative assessment and retains its settled Run", () => {
+  const store = LoopStore.create();
+  store.load({ goal_revision: 1, mission_delivery: { state: "pending", mission_revision: 1 } });
+  const delivery = { state: "delivered", mission_revision: 1, directive_id: "d1", run_id: "r1", reason: null };
+  const current = snapshot(2, {
+    loop: entity("l1", 2, 2, { goal_revision: 1, status: "running" }),
+    directives: { d1: entity("d1", 4, 2, { origin: "patrol", state: "settled", mission_revision: 1,
+      run_id: null, mission_delivery: delivery }) },
+  });
+  store.projectLive(current);
+  assert.deepEqual(store.get().snapshot.mission_delivery, delivery);
+  const newer = { ...delivery, mission_revision: 2, state: "authorized", directive_id: "d2", run_id: null };
+  store.projectLive(snapshot(4, { loop: entity("l1", 3, 4, { goal_revision: 2 }), directives: {
+    ...current.directives, d2: entity("d2", 2, 3, { origin: "patrol", mission_revision: 2, mission_delivery: newer }),
+    late: entity("late", 7, 4, { origin: "patrol", mission_revision: 1, mission_delivery: delivery }),
+  } }));
+  assert.deepEqual(store.get().snapshot.mission_delivery, newer);
+});
+
+test("ordinary Patrol directives cannot assert Mission delivery without its assessment", () => {
+  const store = LoopStore.create();
+  store.load({ goal_revision: 1, mission_delivery: { state: "pending", mission_revision: 1 } });
+  store.projectLive(snapshot(2, { loop: entity("l1", 1, 1, { goal_revision: 1 }),
+    directives: { d1: entity("d1", 3, 2, { origin: "patrol", mission_revision: 1, run_id: "r1", state: "run_started" }) } }));
+  assert.equal(store.get().snapshot.mission_delivery.state, "pending");
+  store.projectLive(snapshot(3, { loop: entity("l1", 1, 1, { goal_revision: 1 }),
+    directives: { old: entity("old", 3, 3, { origin: "mission_bootstrap", mission_revision: 1, run_id: "legacy" }) } }));
+  assert.equal(store.get().snapshot.mission_delivery.run_id, "legacy");
+});
+
+test("a reconnected Mission snapshot outranks older events and accepts a newer delivery event", () => {
+  const store = LoopStore.create();
+  const delivered = { state: "delivered", mission_revision: 1, directive_id: "d1", run_id: "r1" };
+  const authorized = { ...delivered, state: "authorized", run_id: null };
+  const restored = snapshot(5, { loop: entity("l1", 2, 5, { goal_revision: 1, mission_delivery: delivered }),
+    directives: { d1: entity("d1", 2, 2, { origin: "patrol", mission_delivery: authorized }) } });
+  store.projectLive(restored);
+  assert.deepEqual(store.get().snapshot.mission_delivery, delivered);
+  const blocked = { ...authorized, state: "blocked", reason: "delivery_failed" };
+  store.projectLive({ ...restored, last_sequence: 6, directives: {
+    d1: entity("d1", 3, 6, { origin: "patrol", mission_delivery: blocked }),
+  } });
+  assert.deepEqual(store.get().snapshot.mission_delivery, blocked);
+});
+
+test("user interventions retain acceptance before a Run and ignore a late old phase", () => {
+  let state = Schema.emptyProjection("l1");
+  state = Reducer.reduce(state, event(1, { kind: "intervention.accepted", entity_type: "intervention", entity_id: "u1",
+    correlation_id: "u1", payload: { intent_kind: "direct_message", origin: "user", target_context_id: "c1", state: "accepted", run_id: null } }));
+  assert.equal(state.interventions.u1.state.state, "accepted");
+  assert.equal(Object.keys(state.runs).length, 0);
+  assert.equal(Selectors.selectCausality(state, "c1").length, 1);
+  state = Reducer.reduce(state, event(2, { kind: "intervention.settled", entity_type: "intervention", entity_id: "u1",
+    entity_revision: 6, correlation_id: "u1", payload: { state: "settled", run_id: "r1" } }));
+  state = Reducer.reduce(state, event(3, { kind: "intervention.observed", entity_type: "intervention", entity_id: "u1",
+    entity_revision: 3, correlation_id: "u1", payload: { state: "observed" } }));
+  assert.equal(state.interventions.u1.state.state, "settled");
+  assert.equal(state.interventions.u1.state.run_id, "r1");
+});
+
+test("accounting events update budget occupancy independently of frozen Loop control revision", () => {
+  const legacy = LoopStore.create();
+  let state = Schema.validateSnapshot(snapshot(1, { loop: entity("l1", 4, 1, { status: "paused", revision: 4, goal_revision: 1, usage: { model_calls: 0 } }) }));
+  state = Reducer.reduce(state, event(2, { kind: "loop.accounting.updated", entity_type: "accounting", entity_id: "l1", entity_revision: 2, payload: { accounting: { consumption: { actual: { model_calls: 1 }, occupied: { model_calls: 2 } } }, usage: { model_calls: 1 } } }));
+  legacy.projectLive(state, null);
+  assert.equal(state.loop.revision, 4);
+  assert.equal(legacy.get().snapshot.status, "paused");
+  assert.equal(legacy.get().snapshot.usage.model_calls, 1);
+  assert.equal(legacy.get().snapshot.accounting.consumption.occupied.model_calls, 2);
 });
 
 test("Run activity updates only from confirmed model and tool events", () => {

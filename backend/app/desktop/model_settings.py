@@ -1,5 +1,6 @@
 """
 本文件对外提供桌面模型设置域能力：读模型、写入前校验、保存并立即生效、连通性测试与条目引用查询。
+连通性错误使用公共 secret_redaction.redact_text 纯函数替换实际凭据，不回显秘密。
 
 对外提供:
     CONFIG_FILE_NAME — 文件层配置文件名（与 get_app_config("config.yaml") 的既有约定一致）
@@ -57,6 +58,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from focus.config.app_config import AppConfig, apply_app_config, build_app_config
+from backend.app.desktop.secret_redaction import redact_text as _redact
 from focus.config.env import match_env_ref
 from focus.config.layered import load_layered_maps
 from focus.config.model_config import ModelConfig
@@ -118,14 +120,6 @@ class ModelSettingsError(ValueError):
     def __init__(self, errors: dict[str, str]) -> None:
         super().__init__("; ".join(f"{field}: {message}" for field, message in errors.items()))
         self.errors = errors
-
-
-def _redact(text: str, secrets: Sequence[str]) -> str:
-
-    for secret in secrets:
-        if secret:
-            text = text.replace(secret, "***")
-    return text
 
 
 def _entry_name(entry: Any) -> str | None:

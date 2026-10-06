@@ -1,7 +1,7 @@
 r"""本文件对外提供 RunDispatchRepository、RunDispatchRecovery 与 DurableRunDispatchWorker。
 
 输入为 accepted/遗留 dispatch、worker identity、租约、fencing token、执行装配器与启动函数；输出为有界领取、running/settled、显式启动失败或重启分类状态。
-具体工作流为 repository 使用 skip-locked 领取并递增 fencing，唯一 durable worker 在租约内装配和启动；recovery 只把带完整 durable Main/standard Patrol 执行快照且可证明未启动的工作恢复为 accepted，并把不确定执行标为 interrupted；后续转换必须携带当前 token，旧 owner 无法提交。
+具体工作流为 repository 使用 skip-locked 领取并递增 fencing，唯一 durable worker 在租约内装配和启动；recovery 只把带完整 durable Main/standard Patrol/协作执行快照且可证明未启动的工作恢复为 accepted，并把不确定执行标为 interrupted；涉及 Run 的转换统一按 Run→Dispatch 加锁，锁后复检 token 和终态，旧 owner 或已收口执行无法提交。
 示例：`processed = await worker.drain(limit=4)`。
 """
 
@@ -107,10 +107,14 @@ class RunDispatchRepository:
         *,
         error: str | None = None,
     ) -> RunDispatch:
-        row = await session.get(RunDispatch, dispatch_id, with_for_update=True)
+        run_id = await session.scalar(select(RunDispatch.run_id).where(RunDispatch.dispatch_id == dispatch_id))
+        if run_id is None:
+            raise LookupError(dispatch_id)
+        run = await session.get(DesktopRun, run_id, with_for_update=True, populate_existing=True)
+        row = await session.get(RunDispatch, dispatch_id, with_for_update=True, populate_existing=True)
         if row is None:
             raise LookupError(dispatch_id)
-        if row.fencing_token != fencing_token:
+        if row.fencing_token != fencing_token or row.status in {"settled", "failed_to_start", "interrupted"}:
             raise StaleDispatchFence(dispatch_id)
         allowed = {
             "claimed": {"running", "failed_to_start", "interrupted"},
@@ -121,8 +125,13 @@ class RunDispatchRepository:
         row.status = target
         row.error = error
         now = datetime.now(UTC)
-        run = await session.get(DesktopRun, row.run_id, with_for_update=True)
         if target == "running":
+            if run is None or run.status != "pending":
+                row.status = "interrupted"
+                row.settled_at = now
+                row.lease_expires_at = None
+                await session.flush()
+                return row
             row.running_at = now
             if run is not None and run.status == "pending":
                 run.status = "running"
@@ -130,9 +139,9 @@ class RunDispatchRepository:
             row.settled_at = now
             row.lease_expires_at = None
         if run is not None and target in {"interrupted", "failed_to_start"}:
-            run.status = "interrupted" if target == "interrupted" else "error"
-            run.error = error
-            run.settled_at = now
+            if run.status != "interrupted":
+                run.status = "interrupted" if target == "interrupted" else "error"
+                run.error = error
         await session.flush()
         return row
 
@@ -182,7 +191,7 @@ class RunDispatchRecovery:
     @staticmethod
     def _restart_safe(run: DesktopRun) -> bool:
         execution = (run.equipment or {}).get("_durable_dispatch_execution")
-        if run.kind not in {"main", "patrol"} or run.status != "pending" or not isinstance(execution, dict) or execution.get("agent_role") not in {"main", "patrol"}:
+        if run.kind not in {"main", "patrol", "teammate", "worker"} or run.status != "pending" or not isinstance(execution, dict) or execution.get("agent_role") not in {"main", "patrol", "teammate", "worker"}:
             return False
         if run.loop_id:
             return bool((run.workspace_anchor or {}).get("slot_id") and run.context_revision_id)
@@ -225,19 +234,31 @@ class DurableRunDispatchWorker:
             try:
                 assembly = await self._assemble_with_lease(identity)
                 async with self._sessions.begin() as session:
-                    await self._repository.transition(session, identity[0], identity[2], "running")
+                    running = await self._repository.transition(session, identity[0], identity[2], "running")
+                    cancelled_before_start = running.status != "running"
+                if cancelled_before_start:
+                    if self._on_failed is not None:
+                        await self._on_failed(identity[1], "Run 启动前已取消")
+                    processed += 1
+                    continue
                 started = await asyncio.wait_for(
                     self._starter(assembly),
                     timeout=self._startup_deadline_seconds,
                 )
             except StaleDispatchFence:
+                if self._on_failed is not None:
+                    async with self._sessions() as session:
+                        cancelled = await session.get(DesktopRun, identity[1])
+                        cancelled_before_start = cancelled is not None and cancelled.status == "interrupted" and cancelled.settled_at is None
+                    if cancelled_before_start:
+                        await self._on_failed(identity[1], "Run 启动前已取消")
                 processed += 1
                 continue
             except Exception as error:
-                if self._on_failed is not None:
-                    await self._on_failed(identity[1], str(error))
                 async with self._sessions.begin() as session:
                     await self._repository.transition(session, identity[0], identity[2], "failed_to_start", error=str(error)[:4000])
+                if self._on_failed is not None:
+                    await self._on_failed(identity[1], str(error))
             else:
                 if self._on_started is not None:
                     self._on_started(started)

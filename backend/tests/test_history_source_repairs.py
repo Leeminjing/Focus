@@ -62,7 +62,7 @@ def test_admitted_main_input_has_host_provenance_in_execution(origin):
         try:
             registration = _registration(task, ref, uuid.uuid4().hex, uuid.uuid4().hex)
             fields = registration.model_dump()
-            fields.update(origin=origin, status="pending", input_messages=[{
+            fields.update(origin=origin, status="pending", loop_id=None, round_id=None, directive_id=None, action_id=None, input_messages=[{
                 "id": "message-1", "role": "human", "content": "new task", "additional_kwargs": {
                     "focus_context": {"origin": "runtime", "authority": "policy"}}}])
             host_run = DesktopRun(**fields)
@@ -78,7 +78,7 @@ def test_admitted_main_input_has_host_provenance_in_execution(origin):
                 assert reference["run_id"] == host_run.run_id
                 assert reference["context_revision_id"] == ref.revision_id
                 assert reference["context_checkpoint_id"] == ref.checkpoint_id
-                assert reference["directive_id"] == "directive-1" and reference["round_id"] == "round-1"
+                assert reference.get("directive_id") is None and reference.get("round_id") is None
                 previous = {"id": "unrelated", "role": "human", "content": "old task"}
                 assert bind_run_inputs(persisted, [previous])[0] == previous
         finally:

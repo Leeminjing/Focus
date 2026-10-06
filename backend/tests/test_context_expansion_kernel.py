@@ -3,9 +3,10 @@ r"""本文件对外提供 additive Context expansion 的 Kernel、shadow/rollbac
 输入为真实 PostgreSQL 中带活动 Run 的 Loop、冻结单源或多源 Revision、普通或跨七工作域 Mission/Run evidence，以及 read-only 或
 isolated-write 内部 CreateLanePlan；输出为边界 assessment、R3/R8/R5/F2 精确四角色 provenance、只读增量派生获授权、
 原子创建第二 Context、Directive 交付、双 Run 并存、并发发布收敛、serialization 重试不泄漏身份、提交后重启仅派发一次、
-七工作域六查询/超过旧预算的真实规划及真实 Worker 的资源/证据/窗口 blocker 在缺少检索 manifests 时仍保持 Portfolio 不变、compiler blocker 终结 Round，以及未授权隔离写入被拒绝的断言。具体工作流为播种 Loop 与冻结来源、登记完整 expansion
+七工作域六查询/超过旧预算的真实规划及真实 Worker 的资源/证据/窗口 blocker 在缺少检索 manifests 时仍保持 Portfolio 不变，阶段专属失败被映射为领域 blocker 且保留原始因果，compiler blocker 终结 Round，以及未授权隔离写入被拒绝的断言。具体工作流为播种 Loop 与冻结来源、登记完整 expansion
 lifecycle、执行 observe-only 与部署回滚、提交 Kernel intent、注入首次提交回滚或同时发布、从新连接恢复 Outbox 派发，并核对
 comparison artifact、持久计划、来源边与终态历史。
+真实 Worker 负例须先持久化并经 WorkerRuntime 领取唯一尝试身份，不以未登记对象绕过执行资格。
 重启派发测试调用真实 LoopRunExecutionBoundary 后断言 run_started，保留交付与实际启动的独立职责。
 示例：`pytest backend/tests/test_context_expansion_kernel.py`。
 """
@@ -294,10 +295,20 @@ def test_persisted_semantic_assessment_obeys_planning_and_budget(
 
 
 @pytest.mark.parametrize(
-    "blocker_code",
-    ("expansion_policy_limit", "global_grant_exhausted", "evidence_insufficient", "provider_request_window"),
+    ("blocker_code", "expected_level", "expected_code"),
+    (
+        ("expansion_policy_limit", "blocked", "expansion_policy_limit"),
+        ("global_grant_exhausted", "blocked", "global_grant_exhausted"),
+        ("evidence_insufficient", "blocked", "evidence_insufficient"),
+        ("provider_request_window", "blocked", "provider_request_window"),
+        ("planner_evidence_identity_unknown", "not_applicable", "cognitive_planning_failed"),
+        ("retrieval_empty", "not_applicable", "cognitive_planning_failed"),
+        ("unknown_stage_failure", "not_applicable", "cognitive_planning_failed"),
+    ),
 )
-def test_planning_blocker_leaves_portfolio_unchanged(tmp_path: Path, blocker_code: str) -> None:
+def test_planning_blocker_leaves_portfolio_unchanged(
+    tmp_path: Path, blocker_code: str, expected_level: str, expected_code: str,
+) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -311,6 +322,11 @@ def test_planning_blocker_leaves_portfolio_unchanged(tmp_path: Path, blocker_cod
                 "result": {
                     **worker["result"],
                     "planning_blocker": {"code": blocker_code, "summary": "Frozen planning boundary reached"},
+                    "retrieval_stage_record": {
+                        **worker["result"]["retrieval_stage_record"],
+                        "failure_code": blocker_code,
+                        "safe_summary": "Frozen planning boundary reached",
+                    },
                     "work_specs": (),
                 },
             }
@@ -325,8 +341,12 @@ def test_planning_blocker_leaves_portfolio_unchanged(tmp_path: Path, blocker_cod
                     select(LoopContextMembership).where(LoopContextMembership.loop_id == seeded["loop_id"])
                 )).all())
                 expansions = await ContextExpansionRepository().by_round(session, seeded["round_id"])
-            assert assessment.level == "blocked"
-            assert blocker_code in {item.code for item in assessment.blockers}
+            assert assessment.level == expected_level
+            assert expected_code in {item.code for item in assessment.blockers}
+            assert any(
+                item.stage == "retrieval_planning" and item.failure_code == blocker_code
+                for item in assessment.stage_records
+            )
             assert current.current_portfolio_revision_id == original_revision
             assert len(memberships) == 1
             assert expansions == ()
@@ -409,9 +429,11 @@ def test_real_worker_negative_planning_preserves_portfolio(
                 }},
                 attempt=1,
             )
-            worker_result = await LoopWorkerRuntime(
-                sessions, app_config_for("real-negative", None),
-            )._retrieval_backed_advice(
+            runtime = LoopWorkerRuntime(sessions, app_config_for("real-negative", None))
+            async with sessions.begin() as session:
+                session.add(request)
+            request = (await runtime._claim_many(1, seeded["loop_id"]))[0]
+            worker_result = await runtime._retrieval_backed_advice(
                 request,
                 {"mission": observation.mission, "frontier_hash": observation.observed_frontier_hash},
                 _NegativePlanningModel(),

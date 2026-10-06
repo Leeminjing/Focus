@@ -1,7 +1,8 @@
 r"""本文件对外提供 durable Main Run admission、dispatch lease/fencing 与 restart recovery 回归测试。
 
 输入为两个独立任务、并发幂等 Run 请求、过期 claim 和 running/pending 重启状态；输出为唯一 accepted dispatch、任务级并发、旧 fence 拒绝及安全恢复分类断言。
-具体工作流为在隔离 PostgreSQL 中登记 Run，模拟两代 worker 领取，再执行恢复并检查原始输入仍保留。示例：`pytest backend/tests/test_run_dispatch_durability.py`。
+具体工作流为在逐用例隔离 PostgreSQL 中登记 Run，模拟两代 worker 领取，再执行恢复并检查原始输入仍保留；
+全库调度和恢复只能访问本用例，不预先篡改其他测试的运行状态。示例：`pytest backend/tests/test_run_dispatch_durability.py`。
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from pathlib import Path
 import uuid
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import backend.app.desktop.persistence_registry
@@ -24,7 +25,7 @@ from backend.app.desktop.run_orchestration.dispatch import DurableRunDispatchWor
 from backend.app.desktop.run_orchestration.models import RunDispatch
 
 
-pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
+pytestmark = pytest.mark.usefixtures("runtime_postgres_database")
 
 
 def test_admission_claim_fencing_and_recovery_are_task_scoped(tmp_path: Path) -> None:
@@ -38,9 +39,6 @@ def test_admission_claim_fencing_and_recovery_are_task_scoped(tmp_path: Path) ->
         repository = RunDispatchRepository()
         try:
             async with sessions.begin() as session:
-                now = datetime.now(UTC)
-                await session.execute(update(RunDispatch).where(RunDispatch.status.in_(("accepted", "claimed", "running"))).values(status="settled", settled_at=now, lease_expires_at=None))
-                await session.execute(update(DesktopRun).where(DesktopRun.status.in_(("pending", "running"))).values(status="success", settled_at=now))
                 session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(tmp_path), display_name="dispatch"))
                 await session.flush()
                 session.add_all([
@@ -113,7 +111,6 @@ def test_worker_fences_before_start_and_reports_start_failure(tmp_path: Path) ->
         failed: list[tuple[str, str]] = []
         try:
             async with sessions.begin() as session:
-                await session.execute(update(RunDispatch).where(RunDispatch.status == "accepted").values(status="settled", settled_at=datetime.now(UTC)))
                 session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(tmp_path), display_name="worker"))
                 await session.flush()
                 session.add(DesktopThread(task_id=task_id, workspace_id=workspace_id, thread_id=f"thread-{task_id}", title="worker"))

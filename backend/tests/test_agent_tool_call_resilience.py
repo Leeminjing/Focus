@@ -1,4 +1,4 @@
-"""Agent 工具调用韧性测试：错误 ToolMessage、历史读取边界与 checkpoint 恢复。
+"""本文件对外提供 Agent 工具调用韧性测试：错误 ToolMessage、历史读取边界与 checkpoint 恢复。
 
 输入为纯内存 ToolCallRequest/checkpoint tuple，以及最小 gateway request fake；输出为工具消息
 关联、合法祖先选择和 RunnableConfig 透传断言。具体工作流为：先独立调用 middleware，
@@ -85,21 +85,23 @@ def test_tool_error_middleware_classifies_recoverable_errors():
         async def permission_error(_request):
             raise PermissionError("workspace denied")
 
-        with pytest.raises(PermissionError, match="workspace denied"):
-            await middleware.awrap_tool_call(_request("call-permission"), permission_error)
+        denied = await middleware.awrap_tool_call(_request("call-permission"), permission_error)
+        assert denied.status == "error" and denied.name == "test_tool"
+        assert "workspace denied" in denied.content
 
         async def programming_error(_request):
             raise RuntimeError("implementation bug")
 
-        with pytest.raises(RuntimeError, match="implementation bug"):
-            await middleware.awrap_tool_call(_request("call-runtime"), programming_error)
+        failed = await middleware.awrap_tool_call(_request("call-runtime"), programming_error)
+        assert failed.status == "error" and failed.tool_call_id == "call-runtime"
+        assert "RuntimeError" in failed.content and "implementation bug" not in failed.content
 
         async def server_error(_request):
             raise HTTPException(503, "database unavailable")
 
-        with pytest.raises(HTTPException) as exc_info:
-            await middleware.awrap_tool_call(_request("call-503"), server_error)
-        assert exc_info.value.status_code == 503
+        unavailable = await middleware.awrap_tool_call(_request("call-503"), server_error)
+        assert unavailable.status == "error" and "HTTP 503" in unavailable.content
+        assert "database unavailable" not in unavailable.content
 
     asyncio.run(run())
 

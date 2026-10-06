@@ -1,7 +1,8 @@
 """本文件对外提供会话工作台实际 API、PostgreSQL、dispatch、create_agent 和请求投影集成验收。
 
-输入为隔离数据库及受控模型采样，输出为草稿并发、编辑竞态、结构 buffer、来源失效、原定义及请求／ledger 断言。
-工作流保留真实运行图、请求组装与持久 checkpoint，只替换模型响应；示例：pytest 本文件 -q。
+输入为逐用例隔离数据库及受控模型采样；输出为草稿并发、编辑竞态、结构 buffer、来源失效、原定义及请求／ledger 断言。
+具体工作流为通过 runtime_postgres_database 创建和清理本次完整迁移库，保留真实运行图、请求组装与持久 checkpoint，
+只替换模型响应；全库 Worker 不读取其他用例遗留任务。示例：pytest 本文件 -q。
 """
 import asyncio
 import uuid
@@ -18,7 +19,7 @@ SESSION = {"X-Focus-Session": "focus-dev-session"}
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
+def client(tmp_path, monkeypatch, runtime_postgres_database):
     requests = []
     async def stream(model, messages, stop=None, run_manager=None, **kwargs):
         requests.append(model.request_payload(messages, **kwargs))

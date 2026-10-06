@@ -1,7 +1,7 @@
 r"""本文件对外提供 Context expansion 的工作规格、语义证据、阶段结果与稳定 identity 合同。
 
 输入为冻结 Loop identity、认知工作目标、版本化候选来源、证据需求、语义 manifest、精确证据 frontier 与 Workspace 需求；输出为
-`WorkContextSpec`、`ContextSemanticManifest`、`ResolvedEvidenceBundle`、opportunity、assessment、intent 与 outcome。
+`WorkContextSpec`、`ContextSemanticManifest`、`ResolvedEvidenceBundle`、opportunity、assessment、CandidateEvidenceRejection、intent 与 outcome。
 具体工作流为把 identity-bearing 数据规范化为深度不可变结构，对 canonical JSON 求哈希，并验证 confirmed statement、
 required coverage、引用 frontier 与编译证据用量账本，使规划、解析、重放和提交共享同一语义身份。示例：`spec = WorkContextSpec.create(...)`。
 """
@@ -52,6 +52,7 @@ DerivationStage = Literal[
     "portfolio_projection",
     "retrieval_planning",
     "cognitive_planning",
+    "candidate_admission",
     "work_reconciliation",
     "admission",
     "evidence_resolution",
@@ -693,6 +694,15 @@ class ExpansionBlocker(_ExpansionModel):
     stage_records: tuple[DerivationStageRecord, ...] = ()
 
 
+class CandidateEvidenceRejection(_ExpansionModel):
+    code: Literal["invalid_candidate"] = "invalid_candidate"
+    work_spec_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    requirement_id: str
+    requested_role: EvidenceRole
+    actual_roles: tuple[EvidenceRole, ...]
+    evidence_identities: tuple[tuple[str, ...], ...]
+
+
 class ExpansionAssessment(_ExpansionModel):
     loop_id: str
     round_id: str
@@ -704,6 +714,7 @@ class ExpansionAssessment(_ExpansionModel):
     decision_deadline_round: int | None = Field(default=None, ge=1)
     stage_records: tuple[DerivationStageRecord, ...] = ()
     reconciliation: dict[str, Any] | None = None
+    rejected_candidates: tuple[CandidateEvidenceRejection, ...] = ()
 
     @model_validator(mode="after")
     def require_consistent_level(self) -> Self:

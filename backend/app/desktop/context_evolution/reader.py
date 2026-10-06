@@ -6,6 +6,7 @@ execution、semantic、display、display page、checkpoint、historical、fronti
 保留原始 checkpoint，execution 优先使用 settlement 时持久化的协议合法投影；分页读取只序列化命中页，且不追随最新 checkpoint。
 V1 semantic 从 canonical checkpoint 适配可证明的宿主来源，UI codec 仅用于显示；旧记录和 hash 不被改写。
 V2 display 消费统一 history.display 关系，合同及冻结引用只展示一次，原输入仍在 authored／execution 中。
+Definition display 保留无法解释为模型消息的作者原文，合法消息维持稳定身份和合同展示关系；读取不修改执行投影或审批状态。
 示例：`await reader.read(session, ref, "display")`。
 """
 
@@ -186,11 +187,9 @@ class ContextRevisionReader:
                     and item.kind not in {"unknown", "compaction", "reasoning", "projection_repair"}
                 )
                 if revision.ref.payload_mode is ContextRevisionPayloadMode.DEFINITION:
-                    initial_ids = set(revision.initial_message_ids)
-                    authored = items_to_messages(payload.authored_items)
-                    initial_ids.update(message.id for message in authored)
-                    objects = [*authored, *(message for message in objects if message.id not in initial_ids)]
-                messages = tuple(serialize_message(message) for message in display_messages(objects))
+                    messages = self._definition_items_display(revision, objects)
+                else:
+                    messages = tuple(serialize_message(message) for message in display_messages(objects))
             else:
                 messages = history_records(items)
             return ContextRevisionMessageView(ref=revision.ref, view=view, messages=messages)
@@ -347,6 +346,28 @@ class ContextRevisionReader:
         else:
             value = getattr(message, "id", None)
         return str(value) if value is not None else None
+
+    @staticmethod
+    def _definition_items_display(revision: ContextRevisionContract, objects: list[Any]) -> tuple[dict[str, Any], ...]:
+        groups = {}
+        for item in revision.history_payload.authored_items:
+            groups.setdefault(item.message_id or item.item_id, []).append(item)
+        authored, opaque = [], {}
+        for identity, group in groups.items():
+            try:
+                authored.extend(items_to_messages(group))
+            except (ValueError, KeyError, TypeError):
+                if any("message" not in item.payload or "_lc" in item.payload["message"] for item in group):
+                    raise
+                opaque[identity] = history_records(group)
+        initial_ids = set(revision.initial_message_ids) | groups.keys()
+        suffix = [message for message in objects if message.id not in initial_ids]
+        visible = [serialize_message(message) for message in display_messages([*authored, *suffix])]
+        by_id = {message.get("id"): message for message in visible}
+        prefix = [record for identity in groups for record in opaque.get(
+            identity, (by_id[identity],) if identity in by_id else ()
+        )]
+        return tuple([*prefix, *(message for message in visible if message.get("id") not in groups)])
 
     @staticmethod
     def _definition_display(

@@ -3,9 +3,12 @@
 输入为真实 FastAPI/TestClient、PostgreSQL、LangGraph checkpoint、受控 Agent 图与受保护材料；输出为 HTTP、
 SSE、持久 Run、宿主输入来源、恢复、投放、权限装配和精确材料版本断言。具体工作流为自动隔离用户 MCP/插件工具发现，测试内
 按场景替换模型图，其余 Desktop 执行脊柱保持真实；示例：`python -m pytest backend/tests/test_desktop_poc.py -q`。
+测试清理对目标线程全部同步任务请求取消并等待真实收口，再删除checkpoint与数据库行；不会取消其它线程的任务。
+草稿链使用v3作者文档、当前revision和真实Responses预览，保留冻结来源、部署幂等、分支与材料恢复断言。
 """
 
 import asyncio
+from copy import deepcopy
 import hashlib
 import os
 from pathlib import Path
@@ -52,6 +55,8 @@ from backend.app.desktop.service import (  # noqa: E402
     prompt_with_skills,
 )
 from backend.app.gateway.routers.thread_runs import sse_consumer  # noqa: E402
+from backend.tests.patrol_draft_support import save_patrol_document, save_patrol_draft
+from backend.app.desktop.session_patrol.contracts import legacy_document
 
 
 SESSION = {"X-Focus-Session": "focus-dev-session"}
@@ -185,11 +190,13 @@ async def _seed_checkpoint(service: DesktopService, thread_id: str, namespace: s
 async def _cleanup(service: DesktopService, task_id: str, workspace_id: str, thread_id: str):
     from backend.app.desktop.domain_evidence.models import DesktopDomainResult
 
-    pending = [task for task in service._sync_tasks if not task.done()
+    pending = [(task, record) for task in service._sync_tasks if not task.done()
                and (record := task.get_coro().cr_frame.f_locals.get("record")) is not None
-               and record.thread_id == thread_id and record.status.value in {"success", "error", "interrupted", "cancelled"}]
+               and record.thread_id == thread_id]
     if pending:
-        await asyncio.gather(*pending, return_exceptions=False)
+        for _, record in pending:
+            service.run_manager.cancel(record.run_id)
+        await asyncio.gather(*(task for task, _ in pending), return_exceptions=False)
     await service.checkpointer.adelete_thread(thread_id)
     await service.checkpointer.adelete_thread(f"{thread_id}:commitment")
     async with service.session_factory() as session:
@@ -688,7 +695,7 @@ def test_commitment_review_recovers_blocks_input_and_abandons_explicitly(tmp_pat
             )
 
 
-def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
+def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until, monkeypatch):
     workspace_folder = tmp_path / "workspace"
     workspace_folder.mkdir()
     material_file = workspace_folder / "material.txt"
@@ -710,6 +717,11 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
         service = app.state.desktop_service
 
         skills_root = workspace_folder / ".agents" / "skills"
+        model = service.app_config.get_model("deepseek-v4-flash")
+        monkeypatch.setattr(model, "use", "focus.models.responses:FocusResponsesChatModel")
+        monkeypatch.setattr(model, "protocol", "responses")
+        monkeypatch.setattr(model, "provider", "deepseek")
+        monkeypatch.setattr(model, "context_window", 131072)
         for name in ("one", "two"):
             skill_file = skills_root / name / "SKILL.md"
             skill_file.parent.mkdir(parents=True, exist_ok=True)
@@ -746,41 +758,35 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
         draft = client.post(
             f"/desktop/api/tasks/{task['task_id']}/drafts/open", headers=SESSION
         ).json()
-        frozen_count = len(draft["history_messages"])
+        frozen_document = deepcopy(draft["authoring_document"])
+        frozen_count = len(frozen_document["entries"])
+        assert frozen_count > 0
         client.portal.call(_seed_checkpoint, service, thread_id, "", "later main message")
         reopened = client.post(
             f"/desktop/api/tasks/{task['task_id']}/drafts/open", headers=SESSION
         ).json()
-        assert len(reopened["history_messages"]) == frozen_count
+        assert reopened["authoring_document"] == frozen_document
 
-        invalid = client.put(
-            f"/desktop/api/drafts/{draft['draft_id']}",
-            headers=SESSION,
-            json={
-                "history_messages": [{
+        invalid = save_patrol_draft(client, draft, headers=SESSION, system_prompt="",
+                history_messages=[{
                     "role": "ai", "content": "", "tool_calls": [{"id": "missing", "name": "x", "args": {}}]
-                }],
-                "final_human_message": "run",
-                "equipment": {"permissions": ["read"]},
-            },
-        )
-        assert invalid.status_code == 200
+                }], final_human_message="run", equipment={"model_name": "deepseek-v4-flash", "permissions": ["read"]})
+        assert invalid.status_code == 200, invalid.text
 
-        stale = client.put(
-            f"/desktop/api/drafts/{draft['draft_id']}",
-            headers=SESSION,
-            json={
-                "history_messages": draft["history_messages"],
-                "final_human_message": "run",
-                "equipment": {"skills": ["missing"], "permissions": ["read"]},
-            },
-        )
+        invalid_preview = client.post(f"/desktop/api/drafts/{draft['draft_id']}/preview", headers=SESSION)
+        assert invalid_preview.status_code == 200, invalid_preview.text
+        assert not invalid_preview.json()["executable"]
+        assert invalid_preview.json()["diagnostics"]
+        restored_document = deepcopy(frozen_document)
+        restored_document["entries"] += legacy_document("", [], "run").model_dump(mode="json")["entries"]
+        stale = save_patrol_document(client, invalid.json(), headers=SESSION,
+            authoring_document=restored_document,
+            equipment={"model_name": "deepseek-v4-flash", "skills": ["missing"], "permissions": ["read"]})
         assert stale.status_code == 200
         runs_before = client.portal.call(_run_count, service, task["task_id"])
         unavailable_patrol = client.post(
-            f"/desktop/api/drafts/{draft['draft_id']}/deploy",
+            f"/desktop/api/drafts/{draft['draft_id']}/preview",
             headers=SESSION,
-            json={"deployment_id": uuid.uuid4().hex},
         )
         assert unavailable_patrol.status_code == 422
         assert unavailable_patrol.json()["detail"] == {
@@ -788,21 +794,36 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
         }
         assert client.portal.call(_run_count, service, task["task_id"]) == runs_before
 
-        updated = client.put(
-            f"/desktop/api/drafts/{draft['draft_id']}",
-            headers=SESSION,
-            json={
-                "system_prompt": "只返回结论",
-                "history_messages": draft["history_messages"],
-                "final_human_message": "检查材料",
-                "equipment": {"model_name": "deepseek-v4-flash", "skills": ["one", "two", "one"], "permissions": ["read"]},
-            },
-        ).json()
+        no_preview = client.post(f"/desktop/api/drafts/{draft['draft_id']}/deploy", headers=SESSION,
+            json={"deployment_id": uuid.uuid4().hex})
+        assert no_preview.status_code == 409
+        assert no_preview.json()["detail"]["code"] == "refresh_required"
+        assert client.portal.call(_run_count, service, task["task_id"]) == runs_before
+
+        authored_document = deepcopy(frozen_document)
+        authored_document["instructions"] = "只返回结论"
+        authored_document["entries"] += legacy_document("", [], "检查材料").model_dump(mode="json")["entries"]
+        unskilled = save_patrol_document(client, stale.json(), headers=SESSION,
+            authoring_document=authored_document,
+            equipment={"model_name": "deepseek-v4-flash", "skills": [], "permissions": ["read"]})
+        assert unskilled.status_code == 200, unskilled.text
+        unskilled_preview = client.post(f"/desktop/api/drafts/{draft['draft_id']}/preview", headers=SESSION)
+        assert unskilled_preview.status_code == 200, unskilled_preview.text
+        assert unskilled_preview.json()["executable"], unskilled_preview.json()["diagnostics"]
+        update_response = save_patrol_document(client, unskilled.json(), headers=SESSION,
+            authoring_document=authored_document,
+            equipment={"model_name": "deepseek-v4-flash", "skills": ["one", "two", "one"], "permissions": ["read"]})
+        assert update_response.status_code == 200, update_response.text
+        updated = update_response.json()
         assert updated["source_checkpoint_id"] == draft["source_checkpoint_id"]
         assert updated["equipment"]["skills"] == ["one", "two"]
-        assert updated["token_estimate"] > estimate_tokens(
-            updated["system_prompt"], updated["history_messages"], updated["final_human_message"]
-        )
+        assert updated["authoring_document"]["entries"][:frozen_count] == frozen_document["entries"]
+        skilled_preview = client.post(f"/desktop/api/drafts/{draft['draft_id']}/preview", headers=SESSION)
+        assert skilled_preview.status_code == 200, skilled_preview.text
+        assert skilled_preview.json()["executable"], skilled_preview.json()["diagnostics"]
+        assert skilled_preview.json()["budget"]["input"] > unskilled_preview.json()["budget"]["input"]
+        assert skilled_preview.json()["budget"]["total"] > unskilled_preview.json()["budget"]["total"]
+        assert skilled_preview.json()["budget"]["instructions"] == unskilled_preview.json()["budget"]["instructions"]
         oversized_with_skill = estimate_tokens(
             prompt_with_skills("", [{"name": "huge", "content": "界" * 131100}]), [], ""
         )
@@ -877,16 +898,24 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until):
         assert resumed.agent_factory is not None
 
         deployment_id = uuid.uuid4().hex
-        first = client.post(
+        preview_response = client.post(f"/desktop/api/drafts/{draft['draft_id']}/preview", headers=SESSION)
+        assert preview_response.status_code == 200, preview_response.text
+        preview = preview_response.json()
+        assert preview["executable"], preview["diagnostics"]
+        first_response = client.post(
             f"/desktop/api/drafts/{draft['draft_id']}/deploy",
             headers=SESSION,
-            json={"deployment_id": deployment_id},
-        ).json()
-        second = client.post(
+            json={"deployment_id": deployment_id, "preview_token": preview["preview_token"]},
+        )
+        assert first_response.status_code == 200, first_response.text
+        first = first_response.json()
+        second_response = client.post(
             f"/desktop/api/drafts/{draft['draft_id']}/deploy",
             headers=SESSION,
-            json={"deployment_id": deployment_id},
-        ).json()
+            json={"deployment_id": deployment_id, "preview_token": preview["preview_token"]},
+        )
+        assert second_response.status_code == 200, second_response.text
+        second = second_response.json()
         assert first["run_id"] == second["run_id"]
         wait_until(lambda: len(launched) == 2, message="durable Patrol dispatch did not start")
         patrol_body, patrol_thread, patrol_factory = launched[-1]
@@ -1096,6 +1125,9 @@ def test_main_run_permissions(tmp_path):
                 MainRunCreate(message="x").permissions, [],
             )
             assert prepared_default.body.context["permissions"] == ["read", "write", "host_command"]
+
+            client.portal.call(service.run_lifecycle.abort_prepared,
+                prepared_default.body.context["run_id"], "test inspection complete")
 
             client.portal.call(
                 _cleanup, service, task["task_id"], workspace["workspace_id"], thread_id

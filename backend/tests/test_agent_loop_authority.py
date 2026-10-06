@@ -1,4 +1,4 @@
-r"""本文件验证用户作为根权力对 Agent Loop delegation 的收窄、预算调整与撤销。
+r"""本文件对外提供用户作为根权力对 Agent Loop delegation 的收窄、预算调整与撤销测试。
 
 输入为真实 PostgreSQL Loop、活动 grant、用量账本与活动 Main Run；输出为单调 authority revision、
 旧执行中断、权限不可放大、预算即时阻断以及撤销后不可恢复的断言。具体工作流为绑定初始用户 Run，
@@ -64,13 +64,14 @@ def test_root_user_can_narrow_adjust_and_revoke_delegation(tmp_path) -> None:
             started = await service.start(LoopCreateRequest(loop_id=loop_id, workspace_id=workspace_id, initial_context_id=context_id, initial_run_id=f"initial-{suffix}", holder_id=f"patrol-{suffix}", goal="Ship safely", task_contract="Stay in scope", acceptance_criteria=({"criterion_id": "done", "text": "done"},), capabilities=("continue_context", "request_completion"), context_scope=(context_id,), permission_scope=("read", "write")))
             async with sessions() as session:
                 initial = await session.get(DesktopRun, f"initial-{suffix}")
-                first_round = await session.get(LoopRound, initial.round_id)
+                first_round = await session.get(LoopRound, started["current_round_id"])
                 initial_usage = await session.get(LoopBudgetUsage, loop_id)
                 assert initial.loop_id == loop_id
                 assert first_round.number == 1
-                assert first_round.status == "settled"
-                assert started["current_round_id"] != first_round.round_id
-                assert (initial_usage.model_calls, initial_usage.input_tokens, initial_usage.output_tokens) == (3, 10, 5)
+                assert first_round.status == "observed"
+                assert initial.round_id is None
+                assert started["current_round_id"] == first_round.round_id
+                assert (initial_usage.rounds, initial_usage.model_calls, initial_usage.input_tokens, initial_usage.output_tokens) == (0, 0, 0, 0)
             async with sessions.begin() as session:
                 session.add(DesktopRun(run_id=f"active-{suffix}", task_id=context_id, agent_id=f"main:{context_id}", kind="main", status="pending", origin="delegated_patrol", execution_thread_id=f"thread-active-{suffix}", context_revision_id=revision_id, loop_id=loop_id, round_id=started["current_round_id"]))
 

@@ -2,6 +2,7 @@ r"""本文件对外提供两层配置聚合、MCP mtime cache 与全局配置家
 
 输入为隔离的全局/工作区配置文件、显式纳秒 mtime、路径访问请求与并发读取；输出为配置优先级、缓存刷新和访问决策断言。
 具体工作流为在临时目录构造两层配置，固定文件时间因果后调用公开读取/cache 接口，并验证同一快照和变更快照的行为。
+访问用例经生产执行身份派生策略，分别验证只读拒写、工作区写边界和全局业务审批，避免缺省只读被误当成写授权。
 示例：`pytest backend/tests/test_assembly_config.py -q`。
 """
 
@@ -24,6 +25,8 @@ from focus.security import (
     decide_path_access,
     policy_from_context,
 )
+from focus.security.context import AuthorizationIdentity, ExecutionProfile, RoutingIdentity, derive_security_context
+from focus.security.policy import AccessMode, workspace_roots
 
 _GLOBAL_ENV = "FOCUS_GLOBAL_HOME"
 
@@ -82,12 +85,22 @@ def test_layered_mtime_none():
     assert layered_mtime("nope.json", "nope.json") is None
 
 
+def _assembly_policy(workspace, mode, *, allow_global_config=False):
+    profile = ExecutionProfile(
+        authorization=AuthorizationIdentity(workspace=workspace,
+            roots=workspace_roots(workspace, allow_global_config=allow_global_config),
+            permissions=("read", "write"), access_mode=mode, agent_role="main"),
+        routing=RoutingIdentity(thread_id="assembly-thread", workspace_id="assembly-workspace",
+                                agent_id="main:assembly", task_id="assembly", checkpoint_ns=""),
+    )
+    return policy_from_context(derive_security_context(profile).to_runtime_context())
+
+
 def test_containment_allows_global_root(global_home_dir, tmp_path):
-    """工作根内放行、根外待决；装配模式把全局配置家目录并入工作根。"""
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     global_file = global_home_dir / "plugins" / "demo" / "plugin.py"
-    plain = policy_from_context({"workspace": str(workspace)})
+    plain = _assembly_policy(workspace, AccessMode.DANGER_FULL_ACCESS)
 
     inside = canonical_target(workspace, "a.txt")
     assert inside == (workspace / "a.txt").resolve()
@@ -96,7 +109,16 @@ def test_containment_allows_global_root(global_home_dir, tmp_path):
     outside = canonical_target(workspace, str(global_file))
     assert decide_path_access(plain, outside, AccessOperation.WRITE) is AccessDecision.ASK
 
-    scoped = policy_from_context({"workspace": str(workspace), "allow_global_config": True})
+    read_only = _assembly_policy(workspace, AccessMode.READ_ONLY)
+    assert decide_path_access(read_only, inside, AccessOperation.WRITE) is AccessDecision.DENY
+    assert decide_path_access(read_only, outside, AccessOperation.WRITE) is AccessDecision.DENY
+    limited = _assembly_policy(workspace, AccessMode.WORKSPACE_WRITE)
+    assert decide_path_access(limited, inside, AccessOperation.WRITE) is AccessDecision.ALLOW
+    ordinary_outside = Path.home() / "focus-policy-test-only" / "outside.txt"
+    assert decide_path_access(limited, ordinary_outside, AccessOperation.WRITE) is AccessDecision.DENY
+    assert global_home().resolve() not in limited.roots
+
+    scoped = _assembly_policy(workspace, AccessMode.WORKSPACE_WRITE, allow_global_config=True)
     assert global_home().resolve() in scoped.roots
     scratch = canonical_target(workspace, str(global_home_dir / "scratch" / "note.txt"))
     assert decide_path_access(scoped, scratch, AccessOperation.WRITE) is AccessDecision.ALLOW

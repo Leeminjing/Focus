@@ -1,9 +1,10 @@
-"""执行身份、安全上下文与内联单调派生的用例。
+"""本文件对外提供执行身份、安全上下文与内联单调派生的用例。
 
 输入为执行身份档案、父级安全上下文与派生请求；输出为派生结果或拒绝。
-工作流先锁定档案派生的归一与两类身份，再锁定扁平投影与策略来源，随后逐项锁定内联派生的
+具体工作流为先锁定档案派生的归一与两类身份，再锁定扁平投影与策略来源，随后逐项锁定内联派生的
 单调性（能力权限 / 工作根 / 访问模式 / 权柄面四项均只能收窄），最后断言派生工具不再从
-运行上下文字典手工拼装字段。
+运行上下文字典手工拼装字段，并验证伪造扁平权限不能授权真实文件写入。
+示例：pytest backend/tests/test_security_context.py。
 """
 
 from pathlib import Path
@@ -26,9 +27,20 @@ from focus.security.context import (
     security_context_of,
 )
 from focus.security.policy import AccessMode, policy_from_context
+from focus.tools.builtins.workspace_tools import write_file
 
 WORKSPACE = Path("C:/ws")
 CHILD = Path("C:/ws/child")
+
+
+def test_flat_context_cannot_authorize_structured_write(tmp_path):
+    runtime = ToolRuntime(
+        state={}, context={"workspace": str(tmp_path), "permissions": ["write"], "access_mode": "danger-full-access"},
+        config={}, stream_writer=None, tool_call_id=None, store=None, tools=[],
+    )
+    with pytest.raises(RuntimeError, match="SecurityContext"):
+        write_file.func(path="escaped.txt", content="escaped", runtime=runtime)
+    assert not (tmp_path / "escaped.txt").exists()
 
 
 def _profile(**overrides) -> ExecutionProfile:
@@ -241,7 +253,9 @@ def test_launch_points_derive_the_governed_context():
     spatial = (root / "plugins/spatial-patrol/routes.py").read_text(encoding="utf-8")
 
     assert "langgraph_context = {" not in desktop
-    assert desktop.count("self._governed_context(") >= 3
+    assert desktop.count("self._governed_context(") == 2
+    assert 'execution.get("agent_role") not in {"main", "patrol", "teammate", "worker"}' in desktop
+    assert "prepared = await self._prepare(" in desktop
     # 插件启动点同样经统一组装入口 + 自己的服务端生产者写回，不再铺开身份投影
     assert "assemble_run_context(" in spatial
     assert "project_spatial_context(" in spatial

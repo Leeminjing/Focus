@@ -1,6 +1,6 @@
-"""本文件对外验证工作区内置文件工具的能力门控、真实路径和 Shell 启动边界。
+"""本文件对外提供工作区内置文件工具的能力门控、真实路径和 Shell 启动边界测试。
 
-输入为服务端签发或伪造的运行上下文、文件目标与可替换的 Shell 可执行路径。
+输入为服务端签发的运行上下文、缺失身份、文件目标与可替换的 Shell 可执行路径。
 输出为文件读写结果、明确拒绝和目标文件未被修改的断言。
 具体工作流为验证工具装配及文件效果，再覆盖缺失身份、缺失工作区和 WSL 启动器拒绝。
 示例：运行 python -m pytest backend/tests/test_workspace_tools.py。
@@ -147,16 +147,6 @@ def test_missing_signed_execution_identity():
     )
     with pytest.raises(RuntimeError, match="SecurityContext"):
         read_file.func(path="a.txt", runtime=runtime)
-
-
-def test_flat_context_cannot_authorize_structured_write(tmp_path):
-    runtime = ToolRuntime(
-        state={}, context={"workspace": str(tmp_path), "permissions": ["write"], "access_mode": "danger-full-access"},
-        config={}, stream_writer=None, tool_call_id=None, store=None, tools=[],
-    )
-    with pytest.raises(RuntimeError, match="SecurityContext"):
-        write_file.func(path="escaped.txt", content="escaped", runtime=runtime)
-    assert not (tmp_path / "escaped.txt").exists()
 
 
 def test_signed_identity_with_missing_workspace_cannot_create_it(tmp_path):

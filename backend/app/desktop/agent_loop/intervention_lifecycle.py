@@ -3,6 +3,7 @@ r"""本文件对外提供 InterventionLifecycleRepository 与 InterventionTransi
 输入为真实 user intent、目标 delivery state、可选 Run 与失败原因；输出为递增 revision、不可变 transition 与规范事件。
 具体工作流为 register 记录 submitted，随后按 user→Context 的 delivery/run 链或 user→Patrol 的 observed/addressed 链推进，
 两条路径均保留 origin=user 且不修改 Mission。示例：`await repository.transition(session, intent_id, "accepted")`。
+类型 direct_message 必须 accepted→observed→delivered→run_started→settled/failed；普通 Patrol 意见只走 observed→addressed，终止更新对应业务状态。
 """
 
 from __future__ import annotations
@@ -26,11 +27,14 @@ class InterventionLifecycleRepository:
     _TERMINAL = frozenset({"addressed", "rejected", "delivery_failed", "settled", "failed", "cancelled"})
     _EDGES = {
         "submitted": frozenset({"accepted", "rejected", "cancelled"}),
-        "accepted": frozenset({"observed", "delivered", "rejected", "cancelled"}),
+        "accepted": frozenset({"observed", "rejected", "cancelled"}),
         "observed": frozenset({"addressed", "rejected", "cancelled"}),
         "delivered": frozenset({"run_started", "delivery_failed", "cancelled"}),
         "run_started": frozenset({"settled", "failed", "cancelled"}),
     }
+    _MESSAGE_EDGES = {**_EDGES,
+        "accepted": frozenset({"observed", "rejected", "cancelled"}),
+        "observed": frozenset({"delivered", "rejected", "cancelled"})}
 
     def __init__(self) -> None:
         self._journal = LoopEventJournal()
@@ -57,13 +61,16 @@ class InterventionLifecycleRepository:
         if intent is None:
             raise LookupError("User intervention 不存在")
         current = intent.delivery_state
-        if current in self._TERMINAL or target not in self._EDGES.get(current, frozenset()):
+        edges = self._MESSAGE_EDGES if intent.intent_kind == "direct_message" else self._EDGES
+        if current in self._TERMINAL or target not in edges.get(current, frozenset()):
             raise InterventionTransitionRejected(f"非法 intervention transition: {current} -> {target}")
         intent.revision += 1
         intent.delivery_state = target
         if run_id is not None:
             intent.resulting_run_id = run_id
         if target in self._TERMINAL:
+            if intent.intent_kind == "direct_message":
+                intent.status = "addressed" if target in {"settled", "failed", "delivery_failed"} else "superseded"
             intent.terminal_reason = reason
             intent.addressed_at = datetime.now(UTC)
         await self._record(session, intent, current, target, run_id, reason)
@@ -106,6 +113,7 @@ class InterventionLifecycleRepository:
                     "intent_id": intent.intent_id,
                     "origin": intent.origin_kind,
                     "scope": intent.scope,
+                    "intent_kind": intent.intent_kind,
                     "target_context_id": intent.target_context_id,
                     "state": target,
                     "run_id": run_id,

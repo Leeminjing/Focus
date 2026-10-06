@@ -9,6 +9,9 @@ assessment）；输出为合同通过，或携带稳定拒绝原因的 PatrolCon
 澄清动作还要通过共享准入策略核对冻结的 Mission、授权、gate、预算和可安全继续的 Context。
 
 示例：`PatrolDecisionContract().validate(actions=proposal.actions, mission_references=proposal.mission_references, observation=observation)`。
+消息交付只允许选本轮冻结的唯一 intent identity；未处理直接消息阻止完成提案，模型不能改写正文。
+完成重请求复用冻结的 CompletionRequestAdmission，等价输入反馈进入原有有界候选纠错，最终 Kernel 仍复检。
+完成动作精确选择 completion_eligibility 冻结目录中的可用验证，拒绝码进入同一纠错流程，不把新验证准入当完成许可。
 """
 
 from __future__ import annotations
@@ -80,6 +83,32 @@ class PatrolDecisionContract:
         self._validate_expansion_decision(actions, observation)
         self._validate_recovery_decision(actions, observation)
         self._validate_clarification(actions, observation)
+        self._validate_user_messages(actions, observation)
+        from backend.app.desktop.agent_loop.completion_eligibility import CompletionEligibilityPolicy, CompletionEligibilityRejected
+
+        for action in actions:
+            if action.action == 'request_completion':
+                try:
+                    CompletionEligibilityPolicy.require_allowed(observation.completion_eligibility, action)
+                except CompletionEligibilityRejected as exc:
+                    raise PatrolContractViolation(str(exc)) from exc
+        if any(action.action == 'request_completion_verifier' for action in actions) and observation.completion_admission is not None:
+            from backend.app.desktop.agent_loop.completion_admission import CompletionRequestAdmission
+
+            try:
+                CompletionRequestAdmission.require_allowed(observation.completion_admission)
+            except ValueError as exc:
+                raise PatrolContractViolation(str(exc)) from exc
+
+    @staticmethod
+    def _validate_user_messages(actions, observation):
+        messages = {item["intent_id"] for item in observation.user_intents
+                    if item.get("intent_kind") == "direct_message"}
+        selected = [action.intent_id for action in actions if action.action == "deliver_user_message"]
+        if len(selected) != len(set(selected)) or not set(selected).issubset(messages):
+            raise PatrolContractViolation("用户消息交付只能选择本轮冻结的唯一 intent identity")
+        if messages and any(action.action == "request_completion" for action in actions):
+            raise PatrolContractViolation("未处理直接用户消息阻止完成")
 
     @staticmethod
     def _validate_clarification(actions: tuple[PatrolModelAction, ...], observation: LoopObservationEnvelope) -> None:

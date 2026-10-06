@@ -51,6 +51,7 @@
         langgraph_context={"model_name": "deepseek-v4-flash", "app_config": app_config, "user_id": "uuid-xxx"},
     ))
 精确 checkpoint 的普通新输入通过 update_state 创建分叉；Command(resume) 直接恢复原中断任务，不经过 START 分叉，保留原 Run 的工具 ledger。
+已发布修复投影仅用于普通新输入，在精确旧 checkpoint 上以显式 Items 重建原子提交消息、合同镜像和空请求状态；原中断历史保持。
 """
 
 import logging
@@ -58,15 +59,20 @@ from dataclasses import replace
 from typing import Any, Awaitable, Callable
 
 from langchain_core.runnables import RunnableConfig
+from langchain_core.messages import RemoveMessage
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import START
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Command
 
 from focus.agents.lead import make_lead_agent
 from focus.config.app_config import AppConfig
+from focus.history import content_hash, deserialize_history_messages, messages_to_items, validate_items
+from focus.history.bridge import ExecutionHistoryRebuild, branch_messages, synchronize_items
+from focus.history.task_contract import task_contract_state_update
 from focus.runtime.runs.events import (
     build_envelope,
     chunk_to_events,
@@ -140,6 +146,28 @@ def _error_envelope_base(record: RunRecord, langgraph_context: dict | None) -> d
         "thread_id": record.thread_id,
         "agent_id": record.run_id,
         "run_id": record.run_id,
+    }
+
+
+async def _fork_input_update(agent, config, graph_input, context):
+    projection = context.get("context_execution_messages")
+    if projection is None:
+        return graph_input
+    state = await agent.aget_state(config)
+    if state.config.get("configurable", {}).get("checkpoint_id") != config["configurable"]["checkpoint_id"]:
+        raise ValueError("执行投影的精确 source checkpoint 不存在")
+    messages = deserialize_history_messages(list(projection))
+    validate_items(messages_to_items(messages))
+    rebuilt = [*branch_messages(messages), *graph_input.get("messages", ())]
+    items = synchronize_items(None, rebuilt)
+    validate_items(messages_to_items(rebuilt))
+    return {
+        **graph_input,
+        **task_contract_state_update(state.values, rebuilt_messages=rebuilt),
+        "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *rebuilt],
+        "execution_items": ExecutionHistoryRebuild(content_hash(state.values.get("execution_items")), items),
+        "world_state_snapshot": None,
+        "request_manifest": None,
     }
 
 
@@ -235,7 +263,7 @@ async def run_agent(
             }
             fork_config = await agent.aupdate_state(
                 fork_input_config,
-                graph_input,
+                await _fork_input_update(agent, fork_input_config, graph_input, langgraph_context),
                 as_node=START,
             )
             runnable_config = {

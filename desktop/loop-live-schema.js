@@ -1,7 +1,8 @@
 /*
  * 本文件对外提供 validateSnapshot、validateEvent 与 emptyProjection 函数。
- * 输入为 Live Loop API 返回的未知 JSON 值；输出为结构规范、可安全归约的 projection 或带字段路径的 TypeError。
+ * 输入为 Live Loop API 返回的未知 JSON 值及可选独立 accounting 读模型；输出为结构规范、可安全归约的 projection 或带字段路径的 TypeError。
  * 具体工作流为校验实体信封，排除历史 tool facts，复制集合和独立活动时间线并冻结结果；示例：`validateSnapshot(await api.liveSnapshot(loopId))`。
+ * interventions 为向后兼容独立集合，旧快照缺字段时读为空集合。
  */
 (function (root, factory) {
   const api = factory();
@@ -10,8 +11,8 @@
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
 
-  const COLLECTIONS = Object.freeze(["contexts", "lineage", "runs", "curators", "expansions", "directives", "facts", "wait_requests", "wait_responses"]);
-  const SINGULAR = Object.freeze(["loop", "mission", "patrol_session", "round", "portfolio"]);
+  const COLLECTIONS = Object.freeze(["contexts", "lineage", "runs", "curators", "expansions", "directives", "interventions", "facts", "wait_requests", "wait_responses"]);
+  const SINGULAR = Object.freeze(["loop", "mission", "patrol_session", "round", "portfolio", "accounting"]);
 
   function record(value, path) {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${path} 必须是对象`);
@@ -59,10 +60,12 @@
       curators: Object.freeze({}),
       expansions: Object.freeze({}),
       directives: Object.freeze({}),
+      interventions: Object.freeze({}),
       facts: Object.freeze({}),
       wait_requests: Object.freeze({}),
       wait_responses: Object.freeze({}),
       portfolio: null,
+      accounting: null,
       activity_timeline: Object.freeze([]),
       unknown_kinds: Object.freeze([]),
       diagnostics: Object.freeze({ journal_last_sequence: 0, projector_last_sequence: 0, lag: 0, rebuilt: false, recovery_status: "healthy", degraded_scope: Object.freeze([]), quarantined_units: Object.freeze([]), updated_at: null }),

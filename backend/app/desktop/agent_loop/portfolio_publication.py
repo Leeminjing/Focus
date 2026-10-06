@@ -201,8 +201,12 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
                 or 0
             )
         loop.health = "dispatching" if self._directive_ids else "idle"
-        round_row.status = "ready" if self._directive_ids else "settled"
+        round_row.status = "ready" if self._directive_ids else "running"
         decision.status = "committed"
+        if not self._directive_ids:
+            from backend.app.desktop.agent_loop.rounds import settle_round
+
+            await settle_round(session, loop, round_row)
         await self._event(
             session,
             loop.loop_id,

@@ -3,6 +3,7 @@
  * 输入为 Console Store 快照与 Loop 生命周期；输出为左侧 Context Portfolio/事实工作区和右侧完整会话的统一布局。
  * 具体工作流为只组合专用视图，不发请求、不持有领域状态；当前执行活动与因果带只更新各自的小块，固定会话按 revision 签名补丁，事实按 fact_id 原位对账并保持滚动，终止态关闭介入面板。
  * 示例：首次调用 `FocusLoopConsoleView.render(state)`，后续调用 `patch(container, state)`。
+ * 用户消息生命周期参与会话签名，待授权和实际 Run 状态变化更新展示并保留当前草稿及阅读位置。
  */
 (function (root, factory) {
   const api = factory();
@@ -21,6 +22,7 @@
       search: state.messageSearch,
       pending: state.pending,
       terminal: state.terminal,
+      user_messages: (state.manifest?.user_intents || []).filter(item => item.intent_kind === "direct_message" && item.context_id === state.selectedContextId),
     });
   }
   function signatureToken(value) {

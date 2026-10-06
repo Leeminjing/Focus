@@ -1,9 +1,10 @@
 r"""本文件对外提供 ContextQualityPreflight、ContextQualityAssessment、QualityDimensionVerdict 与 ContextQualityVerifier。
 
 输入为同一冻结 WorkContextSpec、ResolvedEvidenceBundle、ValidatedContextDossier 及受监督三维 verdict；输出为绑定全部输入 identity
-的可审计质量评估或 fail-closed blocker。具体工作流为先机械验证 requirement/question coverage、citation membership、每项 evidence
+的可审计质量评估或 fail-closed blocker。具体工作流为与Resolver复用完整Tool Exchange闭包，再机械验证 requirement/question coverage、citation membership、每项 evidence
 的 requirement/claim/protocol 用途与 workspace 边界，再只接受 minimality、sufficiency、coherence 三个独立语义 verdict；三者必须
-同时 pass 才允许 compilation。示例：`assessment = verifier.verify(work_spec, bundle, dossier, worker_payload)`。
+同时 pass 才允许 compilation。持久评估恢复重新验证冻结输入、版本和引用成员，并按原三维判定重建结果，不调用模型。
+示例：`result = verifier.restore(work_spec, bundle, dossier, saved_assessment)`。
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from backend.app.desktop.agent_loop.context_expansion.synthesis import (
     ValidatedContextDossier,
 )
 from backend.app.desktop.context_curation import evidence_ref_key
+from backend.app.desktop.agent_loop.context_expansion.tool_exchange_closure import tool_exchange_closure
 
 QualityDimension = Literal["minimality", "sufficiency", "coherence"]
 QualityVerdict = Literal["pass", "fail", "unknown"]
@@ -170,8 +172,8 @@ class ContextQualityResult(_QualityModel):
 
 
 class ContextQualityVerifier:
-    VERSION = "context-quality-verifier-v1"
-    POLICY_VERSION = "derived-context-quality-policy-v1"
+    VERSION = "context-quality-verifier-v2"
+    POLICY_VERSION = "derived-context-quality-policy-v2"
 
     def preflight(
         self,
@@ -208,7 +210,12 @@ class ContextQualityVerifier:
             codes.append("required_question_uncovered")
             reasons.append("Dossier 未回答或显式保留全部 WorkSpec questions")
         requirement_evidence = {evidence_ref_key(item.ref) for item in bundle.items}
-        protocol = self._protocol_closure(bundle, requirement_evidence | cited)
+        try:
+            protocol = self._protocol_closure(bundle, requirement_evidence | cited)
+        except ValueError as exc:
+            protocol = set()
+            codes.append("tool_exchange_incomplete")
+            reasons.append(str(exc))
         used = requirement_evidence | cited | protocol
         unused = tuple(sorted(allowed - used))
         if unused:
@@ -279,6 +286,48 @@ class ContextQualityVerifier:
                 blocker_code="quality_contract_invalid",
                 blocker_summary=f"quality verifier output invalid: {str(exc)[:1600]}",
             )
+        return self._assessed_result(preflight, assessment)
+
+    def restore(
+        self,
+        work_spec: WorkContextSpec,
+        bundle: ResolvedEvidenceBundle,
+        dossier: ValidatedContextDossier,
+        saved_assessment: dict[str, Any],
+    ) -> ContextQualityResult:
+        preflight = self.preflight(work_spec, bundle, dossier)
+        if not preflight.eligible:
+            return ContextQualityResult(
+                preflight=preflight,
+                blocker_code="quality_preflight_failed",
+                blocker_summary="; ".join(preflight.reasons)[:2000],
+            )
+        try:
+            saved = ContextQualityAssessment.model_validate(saved_assessment)
+            assessment = ContextQualityAssessment.create(
+                work_spec=work_spec,
+                bundle=bundle,
+                dossier=dossier,
+                preflight=preflight,
+                verifier_version=self.VERSION,
+                policy_version=self.POLICY_VERSION,
+                dimensions=saved.dimensions,
+            )
+            if assessment != saved:
+                raise ValueError("saved quality assessment 与当前冻结输入或版本不一致")
+        except (TypeError, ValidationError, ValueError):
+            return ContextQualityResult(
+                preflight=preflight,
+                blocker_code="quality_contract_invalid",
+                blocker_summary="持久 quality assessment 未通过冻结输入、版本或引用成员验证",
+            )
+        return self._assessed_result(preflight, assessment)
+
+    @staticmethod
+    def _assessed_result(
+        preflight: ContextQualityPreflight,
+        assessment: ContextQualityAssessment,
+    ) -> ContextQualityResult:
         if not assessment.passes:
             failed = ", ".join(
                 f"{item.dimension}={item.verdict}"
@@ -298,24 +347,5 @@ class ContextQualityVerifier:
         bundle: ResolvedEvidenceBundle,
         selected_keys: set[tuple[str, ...]],
     ) -> set[tuple[str, ...]]:
-        required: set[tuple[str, ...]] = set()
-        for source in bundle.evidence.sources:
-            calls = {
-                str(call.get("id") or ""): message.ref
-                for message in source.messages
-                for call in message.tool_calls
-                if call.get("id")
-            }
-            results = {
-                str(message.tool_call_id): message.ref
-                for message in source.messages
-                if message.tool_call_id
-            }
-            for call_id, call_ref in calls.items():
-                result_ref = results.get(call_id)
-                if result_ref is None:
-                    continue
-                pair = {evidence_ref_key(call_ref), evidence_ref_key(result_ref)}
-                if pair & selected_keys:
-                    required.update(pair)
-        return required
+        selected = tuple(ref for ref in bundle.evidence_frontier if evidence_ref_key(ref) in selected_keys)
+        return {evidence_ref_key(ref) for ref in tool_exchange_closure(bundle.evidence, selected)}

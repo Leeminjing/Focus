@@ -3,6 +3,7 @@
 输入为真实桌面 API、数据库、图片上传和可捕获的 Agent 工厂；输出为无图片、普通附件、
 附件加必看三种 middleware 组合及协作工具断言，并锁定主运行不得绑定 provider 结构化输出。
 具体工作流为保留 start_run/worker/StreamBridge/DB，只替换外部工具池和模型图构建，避免网络依赖。
+草稿保存使用v3文档/CAS，预览和启动仍调用真实模型/工具准备；测试图接收并检查sync耐久执行合同。
 
 示例：python -m pytest backend/tests/test_subagent_assembly.py。
 """
@@ -30,6 +31,7 @@ from backend.app.desktop.models import (
 )
 from backend.app.desktop.service import DesktopService
 from backend.app.gateway.app import app
+from backend.tests.patrol_draft_support import save_patrol_draft
 
 SESSION = {"X-Focus-Session": "focus-dev-session"}
 
@@ -56,7 +58,7 @@ async def _cleanup(service: DesktopService, task_id: str, workspace_id: str, thr
         await session.commit()
 
 
-def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
+def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monkeypatch):
     """主 Agent/小兵按角色装配协作工具 + Mailbox 回合注入（fake 装配捕获，真实链路）。
 
     仅替换 make_lead_agent 为捕获型 fake 图，其余（start_run/worker/StreamBridge/DB）全真实。
@@ -66,11 +68,13 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
     captured: list[dict] = []
 
     class FakeGraph:
-        async def astream(self, graph_input, config=None, context=None, stream_mode=None):
+        async def astream(self, graph_input, config=None, context=None, stream_mode=None, durability=None):
+            assert durability == "sync"
             yield "values", {"messages": [AIMessage(content="完成")]}
 
     async def fake_make_lead_agent(**kwargs):
         captured.append(kwargs)
+        await original(**kwargs)
         return FakeGraph()
 
     async def fake_get_available_tools():
@@ -93,6 +97,15 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
             ).json()
             service = app.state.desktop_service
             task_id = task["task_id"]
+            model = service.app_config.get_model("deepseek-v4-flash")
+            monkeypatch.setattr(model, "use", "focus.models.responses:FocusResponsesChatModel")
+            monkeypatch.setattr(model, "protocol", "responses")
+            monkeypatch.setattr(model, "provider", "deepseek")
+
+            async def run_settled(run_id: str) -> bool:
+                async with service.session_factory() as session:
+                    persisted = await session.get(DesktopRun, run_id)
+                    return persisted is not None and persisted.status == "success" and persisted.settled_at is not None
 
             # 给小兵与主 Agent 各塞一条未读消息（主 Agent 链路的注入断言）
             async def seed_mailbox() -> None:
@@ -169,6 +182,8 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
             assert main_cfg["inbox_middleware"].__class__.__name__ == "DurableInboxMiddleware"
             assert "<agent_messages>" not in main_cfg["system_prompt"]
             assert "patrol-x" not in main_cfg["system_prompt"]
+            wait_until(lambda: client.portal.call(run_settled, run["run_id"]), timeout=15,
+                message="主执行未完成耐久结算")
 
             base_equipment = {
                 "model_name": None,
@@ -224,16 +239,22 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
             # 小兵链路：open_draft → update → deploy
             captured.clear()
             draft = client.post(f"/desktop/api/tasks/{task_id}/drafts/open", headers=SESSION).json()
-            draft = client.put(f"/desktop/api/drafts/{draft['draft_id']}", headers=SESSION, json={
-                "system_prompt": "小兵提示",
-                "history_messages": [],
-                "final_human_message": "执行任务",
-                "equipment": {"model_name": None, "skills": [], "permissions": ["read"]},
-            }).json()
-            run2 = client.post(
+            saved = save_patrol_draft(client, draft, headers=SESSION, system_prompt="小兵提示",
+                history_messages=[], final_human_message="执行任务",
+                equipment={"model_name": "deepseek-v4-flash", "skills": [], "permissions": ["read"]})
+            assert saved.status_code == 200, saved.text
+            draft = saved.json()
+            preview_response = client.post(f"/desktop/api/drafts/{draft['draft_id']}/preview", headers=SESSION)
+            assert preview_response.status_code == 200, preview_response.text
+            preview = preview_response.json()
+            assert preview["executable"], preview["diagnostics"]
+            captured.clear()
+            run2_response = client.post(
                 f"/desktop/api/drafts/{draft['draft_id']}/deploy", headers=SESSION,
-                json={"deployment_id": uuid.uuid4().hex},
-            ).json()
+                json={"deployment_id": uuid.uuid4().hex, "preview_token": preview["preview_token"]},
+            )
+            assert run2_response.status_code == 200, run2_response.text
+            run2 = run2_response.json()
             assert run2["status"] == "pending"
             wait_until(lambda: captured, timeout=15, message="小兵装配未被捕获")
             patrol_cfg = captured[-1]
@@ -247,6 +268,8 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
             assert "<agent_messages>" not in patrol_cfg["system_prompt"]
             assert patrol_cfg["middlewares"] == []
             assert len(patrol_cfg["additional_middlewares"]) == 1
+            wait_until(lambda: client.portal.call(run_settled, run2["run_id"]), timeout=15,
+                message="小兵执行未完成耐久结算")
 
             # 机制③④：teammate / worker 装配（直接走装配矩阵，fake 捕获工具集与注入）
             captured.clear()
@@ -277,22 +300,21 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
             captured.clear()
             wake_agent_id = uuid.uuid4().hex
 
-            def wake_context() -> dict:
-                """父执行上下文按服务端唯一派生构造：wake 沿用父级能力权限与访问模式。"""
-                run = DesktopRun(
-                    run_id=uuid.uuid4().hex, task_id=task_id, agent_id=f"main:{task_id}",
-                    kind="main", status="pending",
-                )
+            async def wake_context() -> dict:
+                async with service.session_factory() as session:
+                    parent_run = await session.get(DesktopRun, run["run_id"])
+                assert parent_run is not None
                 return service._governed_context(
-                    thread_id=task["thread_id"], run=run, workspace_id=ws["workspace_id"],
-                    workspace_path=str(workspace_folder), permissions=["read"],
-                    access_mode="workspace", checkpoint_ns="", agent_role="main",
-                    model_name=None, allow_global_config=False, extras={"task_id": task_id},
+                    thread_id=task["thread_id"], run=parent_run, workspace_id=ws["workspace_id"],
+                    workspace_path=str(workspace_folder), permissions=parent_run.equipment["permissions"],
+                    access_mode=parent_run.equipment["access_mode"], checkpoint_ns="", agent_role="main",
+                    model_name=parent_run.equipment.get("model_name"), allow_global_config=False,
+                    extras={"task_id": task_id},
                 )
 
             async def inspect_wake() -> str:
                 await service.agent_collab.create_swarm_agent(wake_agent_id, task_id, "teammate", ["read"])
-                return await service._wake_swarm(wake_agent_id, "继续调研竞品定价", wake_context())
+                return await service._wake_swarm(wake_agent_id, "继续调研竞品定价", await wake_context())
 
             wake_run_id = client.portal.call(inspect_wake)
             wait_until(lambda: captured, timeout=15, message="wake 装配未被捕获")
@@ -302,6 +324,8 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
             # teammate 工具集 + 权限沿用 ["read"]（无 write_file，不放大）
             assert {"send_message", "request_plan_approval", "request_shutdown"} <= wake_names
             assert "write_file" not in wake_names
+            wait_until(lambda: client.portal.call(run_settled, wake_run_id), timeout=15,
+                message="显式唤醒执行未完成耐久结算")
             # 消息直接进输入，不落 mailbox（避免回合注入重复带入）
             async def check_no_mailbox_copy() -> bool:
                 from sqlalchemy import func, select
@@ -321,7 +345,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
             async def stop_and_wake() -> Exception | None:
                 await service.agent_collab._stop_swarm_agent(wake_agent_id)
                 try:
-                    await service._wake_swarm(wake_agent_id, "再干一轮", wake_context())
+                    await service._wake_swarm(wake_agent_id, "再干一轮", await wake_context())
                 except HTTPException as exc:
                     return exc
                 return None
@@ -333,8 +357,15 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until):
             captured.clear()
             auto_id = uuid.uuid4().hex
 
-            async def inspect_auto_wake() -> None:
+            async def start_auto_parent() -> str:
                 await service.agent_collab.create_swarm_agent(auto_id, task_id, "teammate", ["read"])
+                return await service._wake_swarm(auto_id, "建立真实自动唤醒父执行", await wake_context())
+
+            auto_parent_id = client.portal.call(start_auto_parent)
+            wait_until(lambda: client.portal.call(run_settled, auto_parent_id), timeout=15,
+                message="自动唤醒的真实父执行未结算")
+            captured.clear()
+            async def inspect_auto_wake() -> None:
                 await service._auto_wake_swarm(auto_id, "自动唤醒第一轮", 1)
                 await service._auto_wake_swarm(auto_id, "自动唤醒第二轮", 2)  # 目标忙（上轮 pending）→ 跳过
 

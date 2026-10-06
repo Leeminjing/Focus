@@ -1,8 +1,9 @@
 r"""本文件对外提供 LoopRunExecutionBoundary。
 
 输入为已持久化的 Loop Run 身份、规划工作区与通用 Run 执行资源；输出为经当前授权复检后启动的 RunRecord 和可冲刷的实时活动桥。
-具体工作流为装配前及启动时读取同一 Run 计划，锁定 Loop、Directive 和当前 Context，核对授权与 revision；实际执行启动成功后记录 directive.run_started，随后在 Run 结束时冲刷 journal。
+具体工作流为装配前及启动时读取同一 Run 计划，锁定 Loop、Directive 和当前 Context，核对授权与 revision；注入实际凭据值供活动桥脱敏测试标题，实际执行启动成功后记录 directive.run_started，随后在 Run 结束时冲刷 journal。
 示例：`record = await boundary.start(assembly, resources, execute_prepared_run)`。
+直接用户消息也必须绑定正式 Directive，observed/交付/运行分别记录；Directive 存在时只由其因果记录器发布一次 Run 事件。
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from backend.app.desktop.agent_loop.run_activity_bridge import LoopRunActivityBr
 from backend.app.desktop.agent_loop.user_run_events import LoopUserRunEventRecorder
 from backend.app.desktop.models import DesktopRun, DesktopThread
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+from backend.app.desktop.secret_redaction import configured_secret_values
 
 
 class LoopRunExecutionBoundary:
@@ -48,6 +50,7 @@ class LoopRunExecutionBoundary:
                     run_id=run.run_id,
                     correlation_id=self._correlation_id(directive, intent) or f"initial-run:{run.run_id}",
                     anchor_message_id=run.origin_message_id or (directive.message_id if directive is not None else ""),
+                    secrets=configured_secret_values(resources.app_config),
                 )
                 adapted = type(resources)(
                     bridge=activity,
@@ -66,11 +69,11 @@ class LoopRunExecutionBoundary:
                     directive.status = "launched"
                     directive.launched_run_id = run.run_id
                 if intent is not None:
-                    if intent.delivery_state == "accepted":
+                    if intent.delivery_state == "observed" or (intent.intent_kind != "direct_message" and intent.delivery_state == "accepted"):
                         await self._interventions.transition(session, intent.intent_id, "delivered", run_id=run.run_id)
                     if intent.delivery_state == "delivered":
                         await self._interventions.transition(session, intent.intent_id, "run_started", run_id=run.run_id)
-                if run.origin == "direct_user":
+                if run.origin == "direct_user" and directive is None:
                     await self._user_events.started(session, intent, run)
             record.loop_activity_task = asyncio.create_task(
                 self._finish(record, activity),
@@ -109,7 +112,7 @@ class LoopRunExecutionBoundary:
         intent = await session.get(LoopUserIntent, run.user_intent_id, with_for_update=lock) if run.user_intent_id else None
         if run.user_intent_id and (
             intent is None or intent.loop_id != run.loop_id or intent.target_context_id != run.task_id
-            or intent.delivery_state not in {"accepted", "delivered", "run_started"}
+            or intent.delivery_state not in ({"observed", "delivered", "run_started"} if intent.intent_kind == "direct_message" else {"accepted", "delivered", "run_started"})
             or (intent.resulting_run_id is not None and intent.resulting_run_id != run.run_id)
         ):
             raise LookupError("Loop 用户消息 intent 已失效")

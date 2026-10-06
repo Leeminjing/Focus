@@ -1,8 +1,11 @@
-r"""本文件验证 Agent Loop 的纯合同、Mission 引用、用户介入、Patrol 选择性读取和预算边界。
+r"""本文件对外提供 Agent Loop 的纯合同、Mission 引用、用户介入、Patrol 选择性读取和预算边界验收。
 
 输入为 delegated directive、Patrol cognitive step、workspace adoption action 与 budget usage；输出为模型侧
 纯 HumanMessage、真实 OpenAI-compatible 请求、按角色且取值封闭的 Mission 引用、reads/decision 互斥校验、闭合 action 解析和硬预算裁决。
 具体工作流为构造严格 schema，并在无网络的 ChatOpenAI invoke 边界截获 provider payload。示例：`pytest test_agent_loop_contracts.py`。
+Mission 角色校验夹具声明空 user_intents，保持直接消息不可用 continuation 改写的真实合同。
+旧观察夹具显式声明缺省完成准入合同，与当前 Envelope 的可选字段一致。
+聚合统计仍核对精确数量及失败结论，新增named_results必须明确unknown且不伪造命名覆盖。
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from backend.app.desktop.agent_loop.round_orchestration import (
 )
 from backend.app.desktop.agent_loop.schemas import LoopBudgetContract, LoopInterventionRequest, PATROL_ACTION_ADAPTER
 from backend.app.desktop.agent_loop.fact_projection import LoopFactProjectionService
+from backend.app.desktop.domain_evidence.identity import canonical_hash
 
 
 def test_delegated_model_message_contains_no_provenance_marker() -> None:
@@ -150,7 +154,7 @@ def test_patrol_proposal_references_mission_by_semantic_role() -> None:
         mission_references=({"role": "completion_check", "reference_id": "tests"},),
         actions=({"action": "request_completion_verifier", "candidate_context_ids": ["context-1"]},),
     )
-    observation = SimpleNamespace(mission={"completion_checks": [{"check_id": "tests"}]}, expansion_assessment=None)
+    observation = SimpleNamespace(mission={"completion_checks": [{"check_id": "tests"}]}, expansion_assessment=None, user_intents=(), completion_admission=None)
     contract = PatrolDecisionContract()
 
     contract.validate(actions=normal.actions, mission_references=normal.mission_references, observation=observation)
@@ -276,7 +280,11 @@ def test_fact_projection_only_claims_explicit_test_counts() -> None:
         "summary": "12 passed · 2 failed · 1 skipped",
         "metrics": {"passed": 12, "failed": 2, "skipped": 1, "count_status": "exact"},
         "status": "failed",
+        "named_results": {"protocol": "tap", "report_hash": canonical_hash("12 passed, 2 failed, 1 skipped in 4.2s"),
+                          "status": "unknown", "cases": [], "suites": []},
     }
     assert unknown["metrics"]["count_status"] == "unknown"
     assert unknown["status"] == "unknown"
+    assert unknown["named_results"]["status"] == "unknown"
+    assert unknown["named_results"]["cases"] == []
     assert unrelated is None

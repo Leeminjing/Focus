@@ -2,8 +2,9 @@ r"""本文件对外提供 LoopLiveProjectionReducer 与 ProjectionSequenceGap。
 
 输入为不可变 LoopLiveProjection 和下一条 CanonicalEventEnvelope；输出为确定性新投影。具体工作流为先执行
 sequence 去重/缺口检查，再按 entity_type 调用单实体或实体集合 reducer（含 Context 派生边集合），拒绝陈旧
-entity revision，历史 tool fact 不进入领域集合，最后追加有界安全活动摘要；未知 kind 保持前向兼容但不修改已知实体。
+同一 entity identity 的 revision；切换实体时重新建立状态，以 Round 单调轮号及 Patrol 的当前 Round 绑定拒绝迟到旧实体，历史 tool fact 不进入领域集合，最后追加有界安全活动摘要；未知 kind 保持前向兼容但不修改已知实体。
 示例：`next_state = reducer.reduce(state, event)`。
+用户 intervention 按其不可变 revision 更新独立集合，活动保留 origin/type/state 供真实因果展示。
 """
 
 from __future__ import annotations
@@ -23,10 +24,11 @@ class ProjectionSequenceGap(RuntimeError):
 
 
 class LoopLiveProjectionReducer:
-    _SINGULAR = frozenset({"loop", "mission", "patrol_session", "round", "portfolio"})
-    _ACTIVITY_ONLY = frozenset({"tool", "artifact", "model_call"})
+    _SINGULAR = frozenset({"loop", "mission", "patrol_session", "round", "portfolio", "accounting"})
+    _ACTIVITY_ONLY = frozenset({"tool", "artifact", "model_call", "loop_activity"})
     _COLLECTIONS: ClassVar[dict[str, str]] = {
         "context": "contexts",
+        "intervention": "interventions",
         "context_lineage": "lineage",
         "run": "runs",
         "context_run": "runs",
@@ -63,9 +65,20 @@ class LoopLiveProjectionReducer:
             payload = {**payload, "correlation_id": event.correlation_id}
         if event.entity_type in self._SINGULAR:
             current = getattr(projection, event.entity_type)
-            state = {**(current.state if current is not None else {}), **payload}
+            if event.entity_type == "patrol_session" and projection.round is not None and payload.get("round_id") not in {None, projection.round.entity_id}:
+                return {}
+            same = current is not None and current.entity_id == event.entity_id
+            if same and current.revision >= event.entity_revision:
+                return {}
+            if event.entity_type == "round" and current is not None and not same and int(payload.get("number") or 0) <= int(current.state.get("number") or 0):
+                return {}
+            state = {**(current.state if same else {}), **payload}
             entity = ProjectedEntity(entity_id=event.entity_id, revision=event.entity_revision, updated_sequence=event.sequence, state=state)
-            return {} if current is not None and current.revision >= entity.revision else {event.entity_type: entity}
+            changes = {event.entity_type: entity}
+            if event.entity_type == "round" and not same and projection.patrol_session is not None:
+                if projection.patrol_session.state.get("round_id") != event.entity_id:
+                    changes["patrol_session"] = None
+            return changes
         field = self._COLLECTIONS.get(event.entity_type)
         if field is None:
             if event.entity_type in self._ACTIVITY_ONLY:
@@ -117,5 +130,5 @@ class LoopLiveProjectionReducer:
     @staticmethod
     def _activity(event: CanonicalEventEnvelope) -> ActivityEntry:
         summary = event.payload.get("summary") or event.payload.get("status") or event.kind
-        detail = {key: event.payload.get(key) for key in ("context_id", "source_context_id", "run_id", "tool_name", "status", "directive_id", "opportunity_id", "blocker_code") if event.payload.get(key) is not None}
+        detail = {key: event.payload.get(key) for key in ("context_id", "source_context_id", "run_id", "tool_name", "status", "directive_id", "opportunity_id", "blocker_code", "origin", "intent_kind", "state") if event.payload.get(key) is not None}
         return ActivityEntry(event_id=event.event_id, sequence=event.sequence, kind=event.kind, entity_type=event.entity_type, entity_id=event.entity_id, summary=str(summary)[:500], occurred_at=event.occurred_at, correlation_id=event.correlation_id, causation_id=event.causation_id, detail=detail)

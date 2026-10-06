@@ -3,7 +3,9 @@ r"""本文件对外提供 LoopWaveDispatcher、LoopRunWorkspaceBinder、DesktopD
 输入为已授权 Directive、规划出的 workspace slot 与 Run 请求；输出为持久的 Run/dispatch 交付和启动时的 workspace lease。
 具体工作流为 Dispatcher 认领 directive 并分配 slot，LaunchPort 将计划随 Run 准入原子提交，通用 durable worker 在启动边界调用 Binder 获取 lease；交付状态与实际启动状态分别记录。
 启动边界可先于 launcher 返回推进 Directive；交付确认仍须幂等收口 Expansion 的 dispatched 状态，不以 delivering 作为唯一入口。
+每次工具效果检查同时复核持久 Loop 控制及 workspace lease，暂停或撤权后拒绝旧执行。
 示例：`run_ids = await dispatcher.dispatch(loop_id, round_id)`。
+用户 Directive 从不可变请求交付原始 HumanMessage、材料和焦点，服务端当前角色解析装备，固定 direct_user/user_intent_id；通用 dispatch 与启动边界共同幂等确认交付。
 """
 
 from __future__ import annotations
@@ -22,6 +24,8 @@ from backend.app.desktop.agent_loop.directive_lifecycle import (
 )
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
+from backend.app.desktop.agent_loop.user_message_delivery import LoopUserMessageDelivery
+from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
 from backend.app.desktop.agent_loop.workspace_planning import WorkspaceRunPlanner
 from backend.app.desktop.models import DesktopRun
 from backend.app.desktop.workspace_coordination.leases import WorkspaceLeaseManager
@@ -64,9 +68,11 @@ class LoopWaveDispatcher:
         for plan in plans:
             directive = by_directive[plan.directive_id]
             try:
+                async with self._sessions() as session:
+                    message = await LoopUserMessageDelivery.model_message(session, directive) if directive.origin_kind == "direct_user" else DelegatedDirectiveFactory.to_model_message(directive)
                 run_id = await self._launcher(
                     directive,
-                    DelegatedDirectiveFactory.to_model_message(directive),
+                    message,
                     plan.slot_id,
                 )
                 await self._record_delivery(directive.directive_id, run_id)
@@ -87,6 +93,12 @@ class LoopWaveDispatcher:
                 directive.launched_run_id = run_id
             if directive.lifecycle_state == "delivering":
                 await self._lifecycle.transition(session, directive_id, "delivered", run_id=run_id)
+            if directive.origin_kind == "direct_user" and directive.launched_run_id == run_id:
+                from backend.app.desktop.agent_loop.models import LoopUserIntent
+
+                intent = await session.get(LoopUserIntent, directive.correlation_id, with_for_update=True)
+                if intent is not None and intent.delivery_state == "observed":
+                    await InterventionLifecycleRepository().transition(session, intent.intent_id, "delivered", run_id=run_id)
             if directive.launched_run_id == run_id and directive.lifecycle_state in {"delivered", "run_started", "settled", "failed"}:
                 expansion = await self._expansions.by_directive(session, directive.directive_id)
                 if expansion is not None and expansion.state == "committed":
@@ -188,7 +200,17 @@ class LoopRunWorkspaceBinder:
             "mode": lease.mode.value if hasattr(lease.mode, "value") else str(lease.mode),
             "ttl_seconds": 120,
         }
-        body.context["workspace_lease_guard"] = self._leases.assert_valid
+        async def assert_execution(lease_id: str, token: int) -> None:
+            from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
+
+            async with self._sessions.begin() as session:
+                current = await session.get(DesktopRun, run_id)
+                if current is None:
+                    raise LookupError("Run 已不存在")
+                await RunOwnershipPolicy().assert_live(session, current)
+            await self._leases.assert_valid(lease_id, token)
+
+        body.context["workspace_lease_guard"] = assert_execution
         body.context["workspace_lease_renew"] = self._leases.renew
         return slot, lease
 
@@ -259,7 +281,13 @@ class DesktopDirectiveLaunchPort:
             loop = await session.get(AgentLoop, directive.loop_id)
             if loop is None:
                 raise LookupError("directive 所属 Loop 不存在")
-            equipment = loop.equipment or {}
+            from backend.app.desktop.agent_loop.directive_equipment import resolve_directive_equipment
+
+            equipment = await resolve_directive_equipment(session, loop, directive)
+            from backend.app.desktop.agent_loop.models import LoopUserIntent
+
+            user_intent = await session.get(LoopUserIntent, directive.correlation_id) if directive.origin_kind == "direct_user" else None
+            user_request = (user_intent.request_payload.get("request") or {}) if user_intent else {}
             prior_attempts = int(
                 await session.scalar(
                     select(func.count()).select_from(DesktopRun).where(
@@ -276,10 +304,15 @@ class DesktopDirectiveLaunchPort:
             skills=list(equipment.get("skills") or []),
             memory_ids=list(equipment.get("memory_ids") or []),
             access_mode=equipment.get("access_mode"),
+            spatial_focus=user_request.get("spatial_focus"),
+            material_inputs=self._material_inputs(user_request),
+            attached_material_ids=user_request.get("attached_material_ids"),
+            must_view_material_ids=user_request.get("must_view_material_ids") or [],
             run_identity={
                 "run_id": run_id,
                 "message_id": directive.message_id,
-                "origin": "delegated_patrol",
+                "origin": "direct_user" if user_intent is not None else "delegated_patrol",
+                "user_intent_id": user_intent.intent_id if user_intent is not None else None,
                 "directive_id": directive.directive_id,
                 "loop_id": directive.loop_id,
                 "round_id": directive.round_id,
@@ -291,3 +324,10 @@ class DesktopDirectiveLaunchPort:
             admit_only=True,
         )
         return str(prepared.payload.get("run_id") or run_id)
+
+    @staticmethod
+    def _material_inputs(request):
+        from backend.app.desktop.run_materials import RunMaterialRequest
+
+        items = request.get("material_inputs")
+        return [RunMaterialRequest(material_id=item["material_id"], note=item.get("note")) for item in items] if items is not None else None

@@ -3,6 +3,7 @@ r"""本文件对外提供 StructuredWorkerModel 及其 provider 单请求窗口�
 输入为 AppConfig、可选模型名、Pydantic 输出 schema、角色专属 authority prompt 与冻结 JSON payload；输出为严格 schema 校验的
 结构化模型结果、请求窗口、最近一次调用及累计 ModelUsage，并标明 provider 是否报告真实 Token 与可用模型元数据。具体工作流为按 curation 配置读取窗口与输出限制，创建无工具 chat model，使用 prompt_json 或 provider
 structured output 调用，统一剥离 fenced JSON、校验 extra-forbid schema，并以独立 callback 记录每次调用 usage 或显式标记缺失；本模块不决定业务阶段或状态。
+request_messages 提供与实际发送相同的完整消息供外部容量准入，request_model_config 提供该请求的模型配置。
 示例：`result = await StructuredWorkerModel(config).invoke(MySchema, system, payload)`。
 """
 
@@ -28,6 +29,14 @@ class StructuredWorkerModel:
         self.last_usage = ModelUsage()
         self.last_usage_reported = False
         self.last_model_metadata = {}
+        self._usage_receipts = None
+
+    def bind_usage_receipts(self, receipts) -> None:
+        self._usage_receipts = receipts
+
+    @property
+    def usage_managed(self) -> bool:
+        return self._usage_receipts is not None
 
     @property
     def context_window_tokens(self) -> int | None:
@@ -58,9 +67,11 @@ class StructuredWorkerModel:
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        messages = frozen_request_messages(system, f"<worker_input>{document}</worker_input>\nJSON Schema: {json_schema}",
-                                           scope="round", source_refs=({"payload_hash": content_hash(payload)},))
+        messages = self.request_messages(schema, system, payload)
         callback = UsageMetadataCallbackHandler()
+        receipt = None
+        if self._usage_receipts is not None:
+            receipt = await self._usage_receipts.reserve(len(document.encode("utf-8")) + len(json_schema.encode("utf-8")) + len(system.encode("utf-8")), config.curation_max_output_tokens)
         try:
             invoke_config = {"callbacks": [callback]}
             if config.curation_output_method == "prompt_json":
@@ -103,6 +114,7 @@ class StructuredWorkerModel:
                 else schema.model_validate(response)
             )
         finally:
+            self.last_model_metadata["usage_reported"] = bool(getattr(callback, "usage_metadata", None))
             self.last_model_metadata["usage_model_ids"] = tuple(
                 (getattr(callback, "usage_metadata", None) or {}).keys()
             )
@@ -115,6 +127,19 @@ class StructuredWorkerModel:
                 measured if measured.model_calls else ModelUsage(model_calls=1)
             )
             self.usage += self.last_usage
+            if receipt is not None:
+                await self._usage_receipts.settle(receipt, self.last_usage, self.last_usage_reported)
+
+    @staticmethod
+    def request_messages(schema, system, payload):
+        document = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        json_schema = json.dumps(schema.model_json_schema(), ensure_ascii=False, separators=(",", ":"))
+        return frozen_request_messages(system, f"<worker_input>{document}</worker_input>\nJSON Schema: {json_schema}",
+                                       scope="round", source_refs=({"payload_hash": content_hash(payload)},))
+
+    @property
+    def request_model_config(self):
+        return self._model_config()
 
     @staticmethod
     def _json_text(value: str) -> str:

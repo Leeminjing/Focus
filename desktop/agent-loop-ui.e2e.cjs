@@ -1,9 +1,11 @@
 /*
  * 本文件对外提供 Context-governed Agent Loop 的真实 Electron 长流程、终止态退出与后继 Loop 激活回归。
  * 输入为确定性 Loop/Console API、真实 index.html/app.js 与结构化 Mission 表单动作；输出为 Context 图、完整会话、
- * 三类介入、自主压缩阈值到 resume 后续轮次、来源恢复、恢复重连、用户确认 Mission 修订、完成路径、事实表和可选视觉基线截图。具体工作流为在隐藏 BrowserWindow 中执行
+ * 三类介入、自主压缩阈值到 resume 后续轮次、来源恢复、恢复重连、类型化等待按钮响应、用户确认 Mission 修订、完成路径、事实表和可选视觉基线截图。具体工作流为在隐藏 BrowserWindow 中执行
  * 完整交互并检查请求与 DOM，并执行停止 Loop、在同一 Context 发送新直接用户消息、授权和观察后继 Loop；设置 `FOCUS_AGENT_LOOP_SCREENSHOT` 时输出真实页面截图供设计 QA 使用。
  * 示例：`npx electron agent-loop-ui.e2e.cjs`。
+ * 切页恢复断言等待权威 Live snapshot 应用完成；DOM 出现只代表兼容视图就绪，不代表游标同步完成。
+ * 用户原文双提交只受理一次，accepted 未冒充 Run，重绘后的当前表单成功清空。
  */
 "use strict";
 
@@ -94,7 +96,13 @@ async function run() {
     let form = document.querySelector('#loopInterventionForm');
     form.elements.content.value = '直接继续测试修复';
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     for (let count = 0; count < 150 && window.__agentLoopTest.directMessages.length === 0; count += 1) await new Promise(next => setTimeout(next, 20));
+    for (let count = 0; count < 150 && document.querySelector('#loopInterventionForm')?.elements.content.value; count += 1) await new Promise(next => setTimeout(next, 20));
+    for (let count = 0; count < 150 && !document.querySelector('.context-conversation')?.textContent.includes('已受理 · 待观察授权'); count += 1) await new Promise(next => setTimeout(next, 20));
+    const acceptedText = document.querySelector('.context-conversation')?.textContent || '';
+    if (window.__agentLoopTest.directMessages.length !== 1 || document.querySelector('#loopInterventionForm')?.elements.content.value !== ''
+        || !acceptedText.includes('已受理 · 待观察授权')) throw new Error('原文提交合同失败: ' + JSON.stringify({count:window.__agentLoopTest.directMessages.length, draft:document.querySelector('#loopInterventionForm')?.elements.content.value, acceptedText}));
     document.querySelector('[data-action="loop-intervention-mode"][data-mode="patrol_context_intent"]').click();
     form = document.querySelector('#loopInterventionForm');
     form.elements.content.value = '这个 Context 只分析测试失败';
@@ -112,10 +120,10 @@ async function run() {
   const resumed = await win.webContents.executeJavaScript(`(async () => {
     state.view = 'focus'; render();
     await openLoopView();
-    for (let count = 0; count < 150 && !document.querySelector('.loop-dashboard'); count += 1) await new Promise(next => setTimeout(next, 20));
+    for (let count = 0; count < 150 && (!document.querySelector('.loop-dashboard') || loopStore.get().cursor !== window.__agentLoopTest.liveSequence); count += 1) await new Promise(next => setTimeout(next, 20));
     return { loopId: state.loop.loopId, cursor: loopStore.get().cursor, text: document.querySelector('.loop-dashboard')?.textContent || '' };
   })()`);
-  if (!resumed.loopId || resumed.cursor !== 1 || !resumed.text.includes("已放弃探索")) throw new Error(`离开后恢复或事件重连失败: ${JSON.stringify(resumed)}`);
+  if (!resumed.loopId || resumed.cursor !== 2 || !resumed.text.includes("已放弃探索")) throw new Error(`离开后恢复或事件重连失败: ${JSON.stringify(resumed)}`);
 
   const adjusted = await win.webContents.executeJavaScript(`(async () => {
     const form = document.querySelector('#agentLoopBudgetForm');
@@ -125,6 +133,17 @@ async function run() {
     return { mutations: window.__agentLoopTest.grantMutations, revision: loopStore.get().snapshot.authority_revision };
   })()`);
   if (adjusted.mutations[0]?.command !== "adjust_budgets" || adjusted.mutations[0]?.budgets?.max_output_tokens !== 700000 || adjusted.revision !== 2) throw new Error(`授权预算变更失败: ${JSON.stringify(adjusted)}`);
+
+  const memoryRetry = await win.webContents.executeJavaScript(`(async () => {
+    const request = { request_id: 'memory-wait', revision: 3, kind: 'recovery_action', status: 'open', created_by: 'progress-memory', prompt: '任务记忆沉淀受阻', response_mode: 'action', scope: { component: 'progress_memory', observation_id: 'frozen-input' }, response_contract: { actions: [{ action: 'retry', label: '重试任务记忆' }, { action: 'stop', label: '停止 Loop' }] } };
+    window.__agentLoopTest.snapshot = { ...window.__agentLoopTest.snapshot, status: 'waiting_user', health: 'progress_blocked', wait_request: request };
+    await openLoopView();
+    for (let count = 0; count < 150 && !document.querySelector('[data-wait-action="retry"]'); count += 1) await new Promise(next => setTimeout(next, 20));
+    document.querySelector('[data-wait-action="retry"]').click();
+    for (let count = 0; count < 150 && (window.__agentLoopTest.waitResponses.length !== 1 || loopStore.get().snapshot.status !== 'running'); count += 1) await new Promise(next => setTimeout(next, 20));
+    return { responses: window.__agentLoopTest.waitResponses, status: loopStore.get().snapshot.status, roundId: loopStore.get().snapshot.current_round_id };
+  })()`);
+  if (memoryRetry.responses.length !== 1 || memoryRetry.responses[0].request_id !== "memory-wait" || memoryRetry.responses[0].request_revision !== 3 || memoryRetry.responses[0].answer?.action !== "retry" || !memoryRetry.responses[0].idempotency_key || memoryRetry.status !== "running" || memoryRetry.roundId !== "round-12") throw new Error(`记忆恢复按钮未提交唯一响应或改变 Round: ${JSON.stringify(memoryRetry)}`);
 
   const takeover = await win.webContents.executeJavaScript(`(async () => {
     window.__agentLoopTest.snapshot = { ...window.__agentLoopTest.snapshot, status: 'waiting_user', health: 'blocked', waiting_reason: '必须由用户决定是否接受冲突结果' };

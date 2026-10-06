@@ -2,9 +2,11 @@ r"""本文件对外提供问候 Run 与新 Mission 交接、Kernel 幂等提交�
 
 输入为临时测试 Vault、已结算且只收到“你好”的直接用户 Run，以及明确的结构化工程 Mission；输出为
 Loop 不会因虚构的目标缺失而创建澄清请求、Mission 正文仅一次交付和 Worker 投影一致的断言。具体工作流为播种独立 workspace/Context revision，
-启动 Loop，经协调器、Kernel 与 Dispatcher 验证交付，检查结构化与旧版 Worker 载荷，再提交错误的等待提案并检查确定性拒绝。示例：
+启动 Loop，经协调器、Kernel 与 Dispatcher 验证交付，持久 Worker 经真实领取后检查结构化与旧版载荷，再提交错误的等待提案并检查确定性拒绝。示例：
 `python -m pytest backend/tests/test_loop_mission_bootstrap.py -q`。
 派发测试的 launcher 持久化 pending Run 并调用真实 LoopRunExecutionBoundary，不把返回随机 identity 当作实际启动。
+编排测试用脚本化 Patrol 模型走真实 PortfolioPatrol attempt、Expansion assessment 与 Kernel，首轮不绕过决策。
+同次真实授权和启动产生的journal交付读面须与服务端评估一致，不把Patrol来源当成交付缺失。
 """
 
 from __future__ import annotations
@@ -54,6 +56,7 @@ from backend.app.desktop.agent_loop.models import (
     LoopDirective,
     LoopGoalRevision,
     LoopPendingDecision,
+    LoopPatrolAttempt,
     LoopRound,
     LoopWorkerRequest,
     MessageProvenance,
@@ -88,6 +91,27 @@ from backend.app.desktop.context_evolution import (
 )
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
 from backend.tests.config_helpers import app_config_for
+from focus.runtime.runs.usage import ModelUsage
+
+
+def _script_first_patrol(orchestrator, sessions, fixture):
+    class Model:
+        usage = ModelUsage(model_calls=1, input_tokens=20, output_tokens=5)
+
+        async def __call__(self, observation):
+            async with sessions() as session:
+                loop = await session.get(AgentLoop, fixture["loop_id"])
+                round_row = await session.get(LoopRound, observation.round_id)
+                assessment = await MissionBootstrapStage().assess(session, loop, round_row)
+            assert assessment.intent is not None
+            actions = tuple(action.model_copy(update={"message": "执行并验证所有必要检查"})
+                            if action.action == "continue_context" else action for action in assessment.intent.actions)
+            return assessment.intent.model_copy(update={"origin_kind": "patrol", "actions": actions,
+                "observed_projection_sequence": observation.projection_sequence,
+                "base_entity_revisions": observation.base_entity_revisions})
+
+    orchestrator._decision_model = lambda _name: Model()
+    orchestrator._curators.scopes = lambda _observation: ()
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -337,11 +361,19 @@ def test_coordinator_bootstrap_and_replayed_dispatch_start_one_run(tmp_path: Pat
             claim = await coordinator.claim_for_loop(fixture["loop_id"], "mission-bootstrap-test")
             assert claim is not None
             orchestrator = LoopRoundOrchestrator(sessions, app_config_for("patrol-test", None), LoopKernel(sessions), _FrozenCheckpointer())
+            _script_first_patrol(orchestrator, sessions, fixture)
             committed = await orchestrator.process(claim)
             replay = await orchestrator.process(claim)
             assert committed is not None and committed.status == "committed"
             assert replay is None
             await coordinator.release(claim)
+            from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
+            async with sessions() as session:
+                authorized_event = await session.scalar(select(LoopJournalEvent).where(
+                    LoopJournalEvent.entity_id == committed.directive_ids[0], LoopJournalEvent.kind == "directive.authorized"))
+                assert authorized_event.payload["origin"] == "patrol"
+                assert authorized_event.payload["mission_delivery"]["state"] == "authorized"
+                assert authorized_event.payload["mission_delivery"]["directive_id"] == committed.directive_ids[0]
             launches = []
 
             async def launch(directive, message, _slot_id):
@@ -370,8 +402,22 @@ def test_coordinator_bootstrap_and_replayed_dispatch_start_one_run(tmp_path: Pat
                 directive = await session.get(LoopDirective, committed.directive_ids[0])
                 original = await session.get(DesktopRun, fixture["run_id"])
             assert directive.lifecycle_state == "run_started"
-            assert directive.origin_kind == "mission_bootstrap"
+            assert directive.origin_kind == "patrol"
             assert original.input_messages == [{"role": "user", "content": "你好"}]
+            async with sessions() as session:
+                started_event = await session.scalar(select(LoopJournalEvent).where(
+                    LoopJournalEvent.entity_id == directive.directive_id, LoopJournalEvent.kind == "directive.run_started"))
+            assert started_event.payload["mission_delivery"] == (await fixture["service"].get(fixture["loop_id"]))["mission_delivery"]
+            assert started_event.payload["mission_delivery"]["run_id"] == directive.launched_run_id
+            from backend.app.desktop.agent_loop.live_api import LoopLiveSnapshotService
+            from sqlalchemy import text
+            async with sessions() as session:
+                await session.execute(text("SET TRANSACTION READ ONLY"))
+                live = await LoopLiveSnapshotService().read(session, fixture["loop_id"])
+            assert live["loop"]["state"]["mission_delivery"] == started_event.payload["mission_delivery"]
+            async with sessions() as session:
+                attempts = tuple((await session.scalars(select(LoopPatrolAttempt).where(LoopPatrolAttempt.loop_id == fixture["loop_id"]))).all())
+                assert len(attempts) == 1 and attempts[0].status == "success"
             assert await LoopWaveDispatcher(sessions, launch).dispatch(fixture["loop_id"], claim.round_id, 1) == ()
             assert len(launches) == 1
         finally:
@@ -476,6 +522,7 @@ def test_bootstrap_blocker_commits_typed_wait_through_kernel(tmp_path: Path, blo
             assert claim is not None
             try:
                 orchestrator = LoopRoundOrchestrator(sessions, app_config_for("patrol-test", None), LoopKernel(sessions), _FrozenCheckpointer())
+                _script_first_patrol(orchestrator, sessions, fixture)
                 result = await orchestrator.process(claim)
                 assert result is not None and result.status == "committed"
             finally:
@@ -561,6 +608,9 @@ def test_worker_evidence_uses_the_canonical_structured_and_legacy_mission(tmp_pa
                 worker_request_id=uuid.uuid4().hex, loop_id=structured_fixture["loop_id"],
                 round_id=structured_fixture["snapshot"]["current_round_id"], kind="lane_curator", scope={},
             )
+            async with sessions.begin() as session:
+                session.add(structured_request)
+            structured_request = (await runtime._claim_many(1, structured_fixture["loop_id"]))[0]
             structured_payload, _, _ = await runtime._evidence(structured_request)
             async with sessions() as session:
                 structured = await session.scalar(select(LoopMissionRevision).where(LoopMissionRevision.loop_id == structured_fixture["loop_id"]))
@@ -576,6 +626,9 @@ def test_worker_evidence_uses_the_canonical_structured_and_legacy_mission(tmp_pa
                 worker_request_id=uuid.uuid4().hex, loop_id=legacy_fixture["loop_id"],
                 round_id=legacy_fixture["snapshot"]["current_round_id"], kind="lane_curator", scope={},
             )
+            async with sessions.begin() as session:
+                session.add(legacy_request)
+            legacy_request = (await runtime._claim_many(1, legacy_fixture["loop_id"]))[0]
             legacy_payload, _, _ = await runtime._evidence(legacy_request)
             async with sessions() as session:
                 legacy = await session.scalar(select(LoopGoalRevision).where(LoopGoalRevision.loop_id == legacy_fixture["loop_id"]))

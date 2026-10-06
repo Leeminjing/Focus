@@ -3,6 +3,7 @@
  * 输入为桌面运行时、Loop 请求、控制台查询、sequence 游标与 Live 取消信号；输出为共享响应解码后的规范化结果、分页会话、事实、显式沿用当前 Mission 的等待恢复、压缩来源恢复与单路 Live 订阅。
  * 具体工作流为封装同源 API，所有普通响应先经纯 HTTP decoder 保留 JSON/文本失败因果，再做 Loop identity 格式化；Live 通道解析 canonical SSE 与重同步控制帧，Context 直接发言复用 Main Run。
  * 示例：`FocusLoopApi.create(runtime)`。
+ * 直接消息仅发送原文和稳定请求身份，服务端沿用目标 Context 装备，不读取 UI 缓存补默认值。
  */
 (function (root, factory) {
   const responseApi = root?.FocusHttpResponse || (typeof require === "function" ? require("./http-response.js") : null);
@@ -121,19 +122,13 @@
       },
       liveSnapshot: (loopId, signal) => request(`/${encodeURIComponent(loopId)}/live`, { signal }),
       liveStream,
-      async directMessage(contextId, content) {
-        const taskResponse = await fetchImpl(`${root}/tasks/${encodeURIComponent(contextId)}`, { headers });
-        const task = await decode(taskResponse, "读取 Context 装备");
-        const equipment = task?.ui_state?._main_run_equipment || {};
+      async directMessage(contextId, content, requestId = crypto.randomUUID()) {
         const response = await fetchImpl(`${root}/tasks/${encodeURIComponent(contextId)}/main/runs`, {
           method: "POST",
           headers,
           body: JSON.stringify({
             message: content,
-            model_name: equipment.model_name || null,
-            skills: Array.isArray(equipment.skills) ? equipment.skills : [],
-            permissions: Array.isArray(equipment.permissions) && equipment.permissions.length ? equipment.permissions : ["read", "write"],
-            access_mode: equipment.access_mode || "workspace-write",
+            idempotency_key: requestId,
           }),
         });
         return decode(response, "发送 Context 消息");

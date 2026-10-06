@@ -5,9 +5,13 @@ r"""本文件对外提供 LoopKernel、KernelCommitResult 与 KernelRejected 唯
 澄清动作在同一事务内根据当前事实再次验证 cause 与 evidence identity，只有准入后才写等待请求；
 无副作用 decline_expansion 仅形成审计 action，普通动作
 单事务提交，Context Portfolio 与 workspace adoption 先持久授权意图，再由专用 Kernel port 执行外部准备并
-原子收口权威状态；Mission bootstrap 与 Patrol 共用 continuation 提交边界且只在外部记录来源；配置异步 publication 时只提交持久授权并交给独立发布队列，拒绝或被取代的决策必须在同一事务内把该 round 收敛为终态（拒绝还会把当前轮所属
-Loop 交回用户），提交成功后收口该 round 已观察的用户意图；自主压缩由专用 committer 在同一事务内只提交
-resolution、不触碰 graph；completed/stopped/failed 委托 TerminalLifecycle 原子收敛并释放策展所有权；Worker 无提交端口。示例：`result = await kernel.commit(intent)`。
+原子收口权威状态；Mission bootstrap 与 Patrol 共用 continuation 提交边界且只在外部记录来源；配置异步 publication 时只提交持久授权并交给独立发布队列，拒绝或被取代的延迟决策必须在同一事务内复用Round终止入口记录结算和事件，并把仍运行的当前轮所属
+Loop交回用户；已暂停或后继轮保持，提交成功后收口该round已观察的用户意图；自主压缩由专用committer在同一事务内只提交
+resolution、不触碰 graph；completed/stopped/failed 委托 TerminalLifecycle 原子收敛并释放策展所有权；执行阶段与控制状态由共享生命周期入口发布，实体版本不代替控制版本；Worker 无提交端口。示例：`result = await kernel.commit(intent)`。
+直接用户消息经专职适配器核验冻结身份并生成用户来源 Directive；普通意见收口不会把直接消息标为 addressed，未处理消息阻止完成。
+完成动作复用共享只读资格政策并在当前权威事务重读具体验证及来源。
+完成 Worker 受理前在当前控制事务复检同源语义输入，等价已验证输入零新 Worker；语义合同与审计来源保存于现有 scope。
+延迟失败只先读取决策归属，再依 Loop、Round、Decision 顺序加锁并刷新；已落定的决策原样返回，迟到回调不覆盖暂停终态。
 """
 
 from __future__ import annotations
@@ -23,23 +27,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.desktop.agent_loop.authority import AuthorityViolation, DelegatedAuthorityGuard
 from backend.app.desktop.agent_loop.budgets import LoopBudgetGuard, configured_provider_count
 from backend.app.desktop.agent_loop.clarification_admission import ClarificationAdmissionPolicy, ClarificationFactsReader, ClarificationRejected
-from backend.app.desktop.agent_loop.completion_policy import CompletionCheckPolicy
 from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
 from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
 from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
-from backend.app.desktop.agent_loop.mission_contract import LegacyMissionAdapter
+from backend.app.desktop.agent_loop.user_message_delivery import LoopUserMessageDelivery, UserMessageDeliveryRejected
 from backend.app.desktop.agent_loop.mission_authority import MissionAuthorityGuard, MissionAuthorityViolation
-from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
 from backend.app.desktop.agent_loop.ownership import KernelFencingRejected, LoopFencingGuard
 from backend.app.desktop.agent_loop.models import (
-    AgentLoop, CompletionVerification, LoopAction, LoopBudgetUsage, LoopContextMembership, LoopDecision, LoopGoalRevision,
+    AgentLoop, CompletionVerification, LoopAction, LoopBudgetUsage, LoopContextMembership, LoopDecision,
     LoopDelegationGrant, LoopDirective, LoopEventOutbox, LoopPendingDecision,
     LoopObservation, LoopRound, LoopUserIntent, LoopWorkerRequest,
 )
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
 from backend.app.desktop.agent_loop.rounds import UNDECIDED_ROUND_STATUSES, terminate_round
-from backend.app.desktop.agent_loop.schemas import CriterionVerification, PatrolDecisionIntent
+from backend.app.desktop.agent_loop.schemas import PatrolDecisionIntent
 from backend.app.desktop.agent_loop.compression_authority.commit import CompressionAuthorityCommitter, CompressionCommitRejected
 from backend.app.desktop.agent_loop.context_expansion.repository import ContextExpansionRepository
 from backend.app.desktop.agent_loop.context_expansion.models import LoopContextExpansion
@@ -48,7 +50,7 @@ from backend.app.desktop.agent_loop.context_recovery import (
     ContextRecoveryAuthorityValidator,
     ContextRecoveryOpportunityRepository,
 )
-from backend.app.desktop.context_curation.models import CurationLane, CurationProgram, PortfolioLaneCandidate, PortfolioRevision
+from backend.app.desktop.context_curation.models import CurationLane, PortfolioRevision
 from backend.app.desktop.context_curation.portfolio_publisher import PortfolioSuperseded
 from backend.app.desktop.context_evolution.models import ContextRevision
 from backend.app.desktop.models import DesktopRun, DesktopThread
@@ -100,6 +102,7 @@ class LoopKernel:
         self._directive_lifecycle = DirectiveLifecycleRepository()
         self._journal = LoopEventJournal()
         self._interventions = InterventionLifecycleRepository()
+        self._user_messages = LoopUserMessageDelivery()
         self._recovery_opportunities = ContextRecoveryOpportunityRepository()
         self._recovery_authority = ContextRecoveryAuthorityValidator()
         self._compression = CompressionAuthorityCommitter()
@@ -227,6 +230,11 @@ class LoopKernel:
             round_row.status = deferred_status
             loop.health = deferred_status
             loop.revision += 1
+            from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
+            from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
+
+            await RoundStateEventRecorder().record(session, round_row)
+            await LoopLifecycleEventRecorder().record(session, loop)
             await self._event(
                 session,
                 loop.loop_id,
@@ -256,9 +264,17 @@ class LoopKernel:
             )
             return None, None, KernelCommitResult(decision.decision_id, "rejected", tuple(action_ids), tuple(directive_ids), str(exc))
         round_row.decision_id = decision.decision_id
-        round_row.status = self._round_status(intent)
+        desired_status = self._round_status(intent)
+        round_row.status = "running" if desired_status == "settled" else desired_status
+        if desired_status == "settled":
+            from backend.app.desktop.agent_loop.rounds import settle_round
+
+            await settle_round(session, loop, round_row)
         loop.health = self._health(intent)
         loop.revision += 1
+        from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
+
+        await LoopLifecycleEventRecorder().record(session, loop)
         await self._address_user_intents(session, round_row.round_id)
         await self._event(session, loop.loop_id, "LoopDecisionCommitted", {"decision_id": decision.decision_id, "round_id": round_row.round_id}, f"decision:{decision.decision_id}")
         return None, None, KernelCommitResult(decision.decision_id, "committed", tuple(action_ids), tuple(directive_ids))
@@ -274,6 +290,8 @@ class LoopKernel:
             ).all()
         )
         for intent in intents:
+            if intent.intent_kind == "direct_message":
+                continue
             intent.status = "addressed"
             if intent.delivery_state == "observed":
                 await self._interventions.transition(session, intent.intent_id, "addressed")
@@ -327,6 +345,13 @@ class LoopKernel:
         return None
 
     async def _validate_runtime(self, session, loop, round_row, grant, intent) -> None:
+        message_targets = []
+        for action in intent.actions:
+            if action.action == "deliver_user_message":
+                try:
+                    message_targets.append(await self._user_messages.validate(session, loop, round_row, grant, action.intent_id))
+                except UserMessageDeliveryRejected as exc:
+                    raise KernelRejected(str(exc)) from exc
         wait_actions = tuple(action for action in intent.actions if action.action == "wait_for_user")
         if wait_actions:
             facts = await self._clarification_facts.read(session, loop, grant, round_row)
@@ -380,10 +405,10 @@ class LoopKernel:
             action.context_id
             for action in intent.actions
             if action.action == "continue_context"
-        ]
+        ] + message_targets
         if len(direct_targets) != len(set(direct_targets)):
             raise KernelRejected("同一 round 不得向同一 Context 派发多个并行 Run")
-        unsafe_while_active = {"continue_context", "update_lane", "merge_contexts", "pause_lane"}
+        unsafe_while_active = {"continue_context", "deliver_user_message", "update_lane", "merge_contexts", "pause_lane"}
         if active and any(action.action in unsafe_while_active for action in intent.actions):
             raise KernelRejected("Loop 已有活动 Run")
         created = tuple(action for action in intent.actions if action.action == "create_lane")
@@ -542,10 +567,15 @@ class LoopKernel:
         superseded: bool = False,
     ) -> KernelCommitResult:
         async with self._sessions.begin() as session:
-            decision = await session.get(LoopDecision, decision_id, with_for_update=True)
+            decision = await session.get(LoopDecision, decision_id)
             if decision is None:
                 raise KernelRejected("待恢复的 Portfolio decision 不存在")
-            if decision.status == "committed":
+            loop = await session.get(AgentLoop, decision.loop_id, with_for_update=True, populate_existing=True)
+            round_row = await session.get(LoopRound, decision.round_id, with_for_update=True, populate_existing=True)
+            decision = await session.get(LoopDecision, decision_id, with_for_update=True, populate_existing=True)
+            if decision is None:
+                raise KernelRejected("待恢复的 Portfolio decision 不存在")
+            if decision.status not in {"publishing", "adopting"}:
                 return await self._result(session, decision)
             status = "superseded" if superseded else "rejected"
             decision.status = status
@@ -566,11 +596,12 @@ class LoopKernel:
                 "superseded" if superseded else "failed",
                 reason,
             )
-            round_row = await session.get(LoopRound, decision.round_id, with_for_update=True)
-            loop = await session.get(AgentLoop, decision.loop_id, with_for_update=True)
-            if round_row is not None and round_row.status in {"publishing", "adopting"}:
-                round_row.status = "superseded" if superseded else "error"
-            if loop is not None and loop.status == "running" and not superseded:
+            if round_row is not None:
+                await terminate_round(session, loop, round_row, category="deferred_superseded" if superseded else "deferred_failure",
+                    reason=reason, decision_id=decision_id, allowed_statuses={"publishing", "adopting"},
+                    terminal_status="superseded" if superseded else "error", wait_for_user=False)
+            if (loop is not None and loop.status == "running"
+                and loop.current_round_id == decision.round_id):
                 loop.health = "degraded"
                 await open_recovery_wait(
                     session,
@@ -605,7 +636,15 @@ class LoopKernel:
             action = LoopAction(action_id=action_id, decision_id=decision.decision_id, loop_id=loop.loop_id, position=position, action_type=intent_action.action, payload=intent_action.model_dump(mode="json"), status="committed")
             session.add(action)
             action_ids.append(action_id)
-            if intent_action.action == "continue_context":
+            if intent_action.action == "deliver_user_message":
+                directive, provenance = await self._user_messages.create(
+                    session, loop, round_row, grant, decision, action, intent_action.intent_id)
+                session.add_all([directive, provenance])
+                await session.flush()
+                await self._directive_lifecycle.register(session, directive)
+                await self._directive_lifecycle.transition(session, directive.directive_id, "authorized")
+                directive_ids.append(directive.directive_id)
+            elif intent_action.action == "continue_context":
                 directive, provenance = self._directives.create(
                     loop_id=loop.loop_id, round_id=round_row.round_id, decision_id=decision.decision_id,
                     action_id=action_id, context_id=intent_action.context_id,
@@ -655,7 +694,14 @@ class LoopKernel:
                 membership.status = "discarded"
                 action.status = "applied"
             elif intent_action.action in {"request_lane_curator", "request_completion_verifier"}:
-                session.add(LoopWorkerRequest(worker_request_id=uuid.uuid4().hex, loop_id=loop.loop_id, round_id=round_row.round_id, kind=intent_action.action.removeprefix("request_"), scope=intent_action.model_dump(mode="json")))
+                scope = intent_action.model_dump(mode="json")
+                if intent_action.action == 'request_completion_verifier':
+                    from backend.app.desktop.agent_loop.completion_admission import CompletionRequestAdmission
+
+                    admission = await CompletionRequestAdmission().read(session, loop, round_row)
+                    CompletionRequestAdmission.require_allowed(admission)
+                    scope['completion_admission_input'] = admission['input']
+                session.add(LoopWorkerRequest(worker_request_id=uuid.uuid4().hex, loop_id=loop.loop_id, round_id=round_row.round_id, kind=intent_action.action.removeprefix("request_"), scope=scope))
             elif intent_action.action == "wait_for_user":
                 await LoopWaitRequestService().open(
                     session,
@@ -851,81 +897,12 @@ class LoopKernel:
 
     @staticmethod
     async def _validate_completion(session, loop, round_row, action, active, human_gate) -> None:
-        verification = await session.get(CompletionVerification, action.verification_id)
-        if verification is None or verification.loop_id != loop.loop_id:
-            raise KernelRejected("缺少独立 Completion Verifier 证据")
-        if verification.goal_revision != loop.goal_revision or verification.frontier_hash != round_row.frontier_hash or verification.workspace_revision != round_row.workspace_revision:
-            raise KernelRejected("Completion verification 已过期")
-        if verification.conclusion != "satisfied" or any(item.get("status") != "satisfied" for item in verification.criteria):
-            raise KernelRejected("Completion criteria 未全部满足")
-        if verification.unresolved:
-            raise KernelRejected("Completion verification 仍有 unresolved 项")
-        mission = await session.scalar(select(LoopMissionRevision).where(LoopMissionRevision.loop_id == loop.loop_id, LoopMissionRevision.revision == loop.goal_revision))
-        goal = None if mission is not None else await session.scalar(select(LoopGoalRevision).where(LoopGoalRevision.loop_id == loop.loop_id, LoopGoalRevision.revision == loop.goal_revision))
-        checks = (
-            mission.completion_checks
-            if mission is not None
-            else [item.model_dump(mode="json") for item in LegacyMissionAdapter.convert(goal=goal.goal, task_contract=goal.task_contract, acceptance_criteria=goal.acceptance_criteria).completion_checks]
-            if goal is not None
-            else []
-        )
-        criteria = tuple(CriterionVerification.model_validate(item) for item in verification.criteria)
-        CompletionCheckPolicy().validate(checks, criteria)
-        required = {str(item.get("check_id")) for item in checks if item.get("required", True)}
-        satisfied = {item.check_id for item in criteria if item.status == "satisfied"}
-        if not required or not required.issubset(satisfied):
-            raise KernelRejected("Completion verification 未覆盖全部必需验收条件")
-        if active or human_gate:
-            raise KernelRejected("仍有活动 Run 或人工 gate")
-        pending_decisions = await session.scalar(
-            select(func.count()).select_from(LoopPendingDecision).where(
-                LoopPendingDecision.loop_id == loop.loop_id,
-                LoopPendingDecision.status == "pending",
-            )
-        )
-        if pending_decisions:
-            raise KernelRejected("仍有未解决的 pending decision")
-        queued = await session.scalar(
-            select(func.count()).select_from(LoopDirective).where(
-                LoopDirective.loop_id == loop.loop_id,
-                LoopDirective.status.in_(["created", "launching", "blocked"]),
-            )
-        )
-        if queued:
-            raise KernelRejected("仍有待派发 delegated directive")
-        unadopted = await session.scalar(
-            select(func.count())
-            .select_from(RunExecutionAnchor)
-            .join(DesktopRun, DesktopRun.run_id == RunExecutionAnchor.run_id)
-            .where(
-                DesktopRun.loop_id == loop.loop_id,
-                RunExecutionAnchor.adoption_state.in_(["pending", "conflict", "required"]),
-            )
-        )
-        if unadopted:
-            raise KernelRejected("仍有未采用或冲突的隔离 workspace 结果")
-        program = await session.get(CurationProgram, loop.program_id)
-        portfolio = await session.get(PortfolioRevision, loop.current_portfolio_revision_id) if loop.current_portfolio_revision_id else None
-        if program is None or portfolio is None or program.current_portfolio_revision_id != portfolio.portfolio_revision_id or portfolio.status != "published":
-            raise KernelRejected("最终 Portfolio publication 不完整")
-        memberships = set((await session.scalars(select(LoopContextMembership.context_id).where(LoopContextMembership.loop_id == loop.loop_id, LoopContextMembership.status == "active"))).all())
-        if not set(action.final_context_ids).issubset(memberships):
-            raise KernelRejected("最终 Context 路径不属于活动 Portfolio")
-        published_contexts = set(
-            (
-                await session.scalars(
-                    select(PortfolioLaneCandidate.target_context_id).where(
-                        PortfolioLaneCandidate.portfolio_revision_id == portfolio.portfolio_revision_id,
-                        PortfolioLaneCandidate.status.in_(["prepared", "unchanged", "published"]),
-                    )
-                )
-            ).all()
-        )
-        if not set(action.final_context_ids).issubset(published_contexts):
-            raise KernelRejected("最终 Context 路径未进入当前已发布 Portfolio")
-        slot = await session.get(WorkspaceSlot, action.final_slot_id)
-        if slot is None or slot.kind != "authoritative" or slot.revision != round_row.workspace_revision:
-            raise KernelRejected("最终 workspace 未采用到当前权威 revision")
+        from backend.app.desktop.agent_loop.completion_eligibility import CompletionEligibilityPolicy, CompletionEligibilityRejected
+
+        try:
+            await CompletionEligibilityPolicy().require_current(session, loop, round_row, action)
+        except CompletionEligibilityRejected as exc:
+            raise KernelRejected(str(exc)) from exc
 
     @staticmethod
     def _rejection_reason(intent: PatrolDecisionIntent, exc: Exception) -> str:
@@ -941,9 +918,9 @@ class LoopKernel:
     def _round_status(intent: PatrolDecisionIntent) -> str:
         if any(action.action == "apply_context_compression" for action in intent.actions):
             return "resolving_gate"
-        if any(action.action.startswith("request_") for action in intent.actions):
+        if any(action.action in {"request_lane_curator", "request_completion_verifier"} for action in intent.actions):
             return "waiting_workers"
-        if any(action.action in {"continue_context", "create_lane", "update_lane", "merge_contexts"} for action in intent.actions):
+        if any(action.action in {"continue_context", "deliver_user_message", "create_lane", "update_lane", "merge_contexts"} for action in intent.actions):
             return "ready"
         return "settled"
 
@@ -951,9 +928,9 @@ class LoopKernel:
     def _health(intent: PatrolDecisionIntent) -> str:
         if any(action.action == "apply_context_compression" for action in intent.actions):
             return "resuming"
-        if any(action.action.startswith("request_") for action in intent.actions):
+        if any(action.action in {"request_lane_curator", "request_completion_verifier"} for action in intent.actions):
             return "waiting_workers"
-        if any(action.action in {"continue_context", "create_lane", "update_lane", "merge_contexts"} for action in intent.actions):
+        if any(action.action in {"continue_context", "deliver_user_message", "create_lane", "update_lane", "merge_contexts"} for action in intent.actions):
             return "dispatching"
         return "idle"
 

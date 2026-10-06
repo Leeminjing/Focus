@@ -2,7 +2,7 @@ r"""本文件对外提供 Bootstrap/Lane CuratorScope、CuratorAssignmentReposit
 
 输入为 Patrol Session、Worker request、稳定 assignment key、受限 scope、安全摘要和 evidence references；输出为
 queued/reading/analyzing/proposed/consumed/failed/cancelled 的持久 Curator 当前状态与规范事件。具体工作流为
-create 幂等登记 assignment，transition 行锁验证单向状态机并追加 revision，查询按 round 保留部分完成顺序。
+create 幂等登记 assignment，transition 行锁验证单向状态机并追加 revision，授权 retry 重开 failed assignment，查询按 round 保留部分完成顺序。
 示例：`assignment = await repository.create(session, ...)`。
 """
 
@@ -118,6 +118,18 @@ class CuratorAssignmentRepository:
         if lock:
             query = query.with_for_update()
         return await session.scalar(query)
+
+    async def retry(self, session: AsyncSession, worker_request_id: str) -> None:
+        row = await self.by_worker(session, worker_request_id, lock=True)
+        if row is None:
+            return
+        if row.state != "failed":
+            raise CuratorAssignmentRejected("仅失败的 Curator assignment 可显式重试")
+        row.state = "queued"
+        row.revision += 1
+        row.completed_at = None
+        row.failure = None
+        await self._event(session, row, "curator.assignment.queued", "已获准显式重试原 Curator assignment")
 
     async def by_session(self, session: AsyncSession, session_id: str) -> tuple[LoopCuratorAssignment, ...]:
         return tuple(

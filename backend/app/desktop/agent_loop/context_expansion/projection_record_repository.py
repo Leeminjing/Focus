@@ -3,6 +3,7 @@ r"""本文件对外提供 ProjectionRecordRepository。
 输入为独立 AsyncSession、Context identity 和局部验证 records；输出为经完整性检查的记录与首个提交赢家。
 具体工作流为按 Context 隔离，DO NOTHING 处理唯一键竞争，随后 SELECT 权威 payload 并校验列与内容身份。
 resolve_existing 在综合前批量采用已有局部赢家；by_ids 依库存顺序返回，put 的竞争赢家用于原子发布。
+for_segment 在模型调用前按 Context 与原局部缓存键读取，校验完整 payload 和精确冻结消息，综合合同变化不触发已命中局部模型重算。
 示例：records = await repository.resolve_existing(session, context_id, records)；综合读取这些权威局部线索。
 """
 
@@ -14,6 +15,17 @@ from .segment_projection import SegmentProjectionRecord
 
 
 class ProjectionRecordRepository:
+    async def for_segment(self, session, context_id, segment, messages, contract):
+        row = await session.scalar(select(LoopSegmentProjectionRecord).where(
+            LoopSegmentProjectionRecord.context_id == context_id,
+            LoopSegmentProjectionRecord.cache_key == SegmentProjectionRecord.cache_key_for(segment, contract),
+        ))
+        if row is None:
+            return None
+        record = self._validated(row)
+        record.validate_target(segment, messages, contract)
+        return record
+
     async def resolve_existing(self, session, context_id, records):
         rows = (
             await session.scalars(

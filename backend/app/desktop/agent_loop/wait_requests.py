@@ -2,7 +2,10 @@ r"""本文件对外提供 WaitRequestDraft、LoopWaitRequestFactory 与 LoopWait
 
 输入为等待场景、Loop 行、类型化响应和幂等标识；输出为规范化的等待请求、唯一响应与受约束的 Loop 状态转换。
 具体工作流为 factory 只声明交互策略，service 在锁定 Loop/请求后原子执行 open、resolve、cancel 或 supersede，
-所有 JSON/text 写入先经过统一持久化安全边界。示例：`draft = LoopWaitRequestFactory.clarification("请选择目标")`。
+所有 JSON/text 写入先经过统一持久化安全边界；记忆阻塞请求绑定 Observation identity 和具体失败种类；进入/离开 waiting_user 同事务发布 Loop 生命周期事件，实时读面不靠等待请求猜测执行状态。
+示例：`draft = LoopWaitRequestFactory.clarification("请选择目标")`。
+响应和终结统一按 Loop → WaitRequest 锁定并刷新实体，避免旧 ORM 状态或请求先锁造成权威变更竞态与死锁。
+开放请求默认绑定当前 Round；旧轮遗留请求只能被新等待 supersede，响应必须属于当前 waiting_user 事务，历史响应重放不重复提交。
 """
 
 from __future__ import annotations
@@ -77,6 +80,15 @@ class LoopWaitRequestFactory:
         )
 
     @staticmethod
+    def progress_memory(observation_id: str, failure_kind: str | None) -> WaitRequestDraft:
+        return WaitRequestDraft(
+            kind="recovery_action", prompt=f"任务记忆沉淀受阻（{failure_kind or 'unknown'}），需要重试或停止。Observation: {observation_id}",
+            response_mode="action",
+            response_contract={"actions": [{"action": "retry", "label": "重试任务记忆"}, {"action": "stop", "label": "停止 Loop"}]},
+            scope={"component": "progress_memory", "observation_id": observation_id, "failure_kind": failure_kind},
+        )
+
+    @staticmethod
     def legacy_recovery(reason: str) -> WaitRequestDraft:
         draft = LoopWaitRequestFactory.retry_or_stop(reason, {"legacy": True})
         return WaitRequestDraft(
@@ -109,16 +121,19 @@ class LoopWaitRequestService:
         causation_id: str | None = None,
         round_id: str | None = None,
     ) -> LoopWaitRequest:
+        target_round_id = round_id if round_id is not None else loop.current_round_id
         existing = await self.active(session, loop.loop_id, lock=True)
         if existing is not None:
-            return existing
+            if loop.status == "waiting_user" and existing.round_id in {None, target_round_id}:
+                return existing
+            await self.cancel(session, existing.request_id, superseded=True)
         prompt = PersistencePayloadNormalizer.normalize(draft.prompt, "loop-wait-request.prompt")
         contract = PersistencePayloadNormalizer.normalize(draft.response_contract, "loop-wait-request.contract")
         scope = PersistencePayloadNormalizer.normalize(draft.scope, "loop-wait-request.scope")
         request = LoopWaitRequest(
             request_id=uuid.uuid4().hex,
             loop_id=loop.loop_id,
-            round_id=round_id,
+            round_id=target_round_id,
             kind=draft.kind,
             prompt=prompt.value,
             response_mode=draft.response_mode,
@@ -136,6 +151,7 @@ class LoopWaitRequestService:
         session.add(request)
         await session.flush()
         await self._append_opened(session, request)
+        await self._append_loop_state(session, loop, request.request_id)
         return request
 
     async def resolve(
@@ -157,14 +173,14 @@ class LoopWaitRequestService:
             if request is None:
                 raise LookupError(existing.request_id)
             return request, existing, False
-        request = await session.get(LoopWaitRequest, request_id, with_for_update=True)
-        if request is None:
-            raise LookupError(request_id)
+        loop, request = await self._lock_request(session, request_id)
         committed = await session.scalar(select(LoopWaitResponse).where(LoopWaitResponse.request_id == request_id))
         if committed is not None:
             raise WaitRequestConflict("等待请求已经提交响应", committed)
         if request.status != "open" or request.revision != request_revision:
             raise WaitRequestConflict(f"等待请求状态或版本已变化: {request.status}@{request.revision}")
+        if loop.status != "waiting_user" or (request.round_id is not None and request.round_id != loop.current_round_id):
+            raise WaitRequestConflict("等待请求不属于当前等待事务")
         safe = PersistencePayloadNormalizer.normalize(answer, "loop-wait-response.answer")
         request.status = "resolving"
         request.revision += 1
@@ -179,15 +195,22 @@ class LoopWaitRequestService:
         request.status = "resolved"
         request.revision += 1
         request.resolved_at = datetime.now(UTC)
-        loop = await session.get(AgentLoop, request.loop_id, with_for_update=True)
-        if loop is not None and loop.status == "waiting_user":
+        resumed = loop is not None and loop.status == "waiting_user"
+        if resumed:
             loop.status = "running"
             loop.waiting_reason = None
             loop.revision += 1
         session.add(response)
         await session.flush()
         await self._append_resolved(session, request, response)
+        if resumed:
+            await self._append_loop_state(session, loop, response.response_id)
         return request, response, True
+
+    async def _append_loop_state(self, session, loop, cause_id):
+        from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
+
+        await LoopLifecycleEventRecorder().record(session, loop, cause_id=cause_id)
 
     async def _append_opened(self, session: AsyncSession, request: LoopWaitRequest) -> None:
         await self._journal.append(
@@ -200,7 +223,7 @@ class LoopWaitRequestService:
                 entity_revision=request.revision,
                 correlation_id=request.correlation_id,
                 causation_id=request.causation_id,
-                payload={"request_id": request.request_id, "kind": request.kind, "prompt": request.prompt, "response_mode": request.response_mode, "response_contract": request.response_contract, "scope": request.scope, "status": request.status, "round_id": request.round_id},
+                payload={"request_id": request.request_id, "kind": request.kind, "prompt": request.prompt, "response_mode": request.response_mode, "response_contract": request.response_contract, "scope": request.scope, "status": request.status, "round_id": request.round_id, "created_by": request.created_by},
                 idempotency_key=f"loop-wait:{request.request_id}:opened",
             ),
         )
@@ -241,9 +264,7 @@ class LoopWaitRequestService:
         )
 
     async def cancel(self, session: AsyncSession, request_id: str, *, superseded: bool = False) -> LoopWaitRequest:
-        request = await session.get(LoopWaitRequest, request_id, with_for_update=True)
-        if request is None:
-            raise LookupError(request_id)
+        _, request = await self._lock_request(session, request_id)
         if request.status not in {"open", "resolving"}:
             raise WaitRequestConflict(f"等待请求不能从 {request.status} 转换")
         request.status = "superseded" if superseded else "cancelled"
@@ -265,6 +286,17 @@ class LoopWaitRequestService:
             ),
         )
         return request
+
+    @staticmethod
+    async def _lock_request(session: AsyncSession, request_id: str) -> tuple[AgentLoop, LoopWaitRequest]:
+        loop_id = await session.scalar(select(LoopWaitRequest.loop_id).where(LoopWaitRequest.request_id == request_id))
+        if loop_id is None:
+            raise LookupError(request_id)
+        loop = await session.get(AgentLoop, loop_id, with_for_update=True, populate_existing=True)
+        request = await session.get(LoopWaitRequest, request_id, with_for_update=True, populate_existing=True)
+        if loop is None or request is None:
+            raise LookupError(request_id)
+        return loop, request
 
     @staticmethod
     async def active(session: AsyncSession, loop_id: str, *, lock: bool = False) -> LoopWaitRequest | None:

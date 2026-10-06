@@ -5,7 +5,8 @@ r"""本文件对外提供以下合同的验证唯一 RunLauncher、持久 Run id
 以及重启后恰好一次消费断言。具体工作流为使用隔离 PostgreSQL 建立 Context revision，再分别穿过
 registrar、launcher、finalizer 和 consumer，并验证中断 tool call 的 authored/execution 双视图与可审计 repair manifest。
 集成续跑用严格 provider 合同校验 repaired execution，再发布下一代 Context；错误 Run 不能认领继承调用的中断因果。
-V2 authored 只保存定义，真实调用仍保留在 display/checkpoint，合成 repair 只在 execution；fixture 清理先释放耐久领域来源引用。
+实际 Run 装配的只读 execution 解析必须消费同一已发布补全，并拒绝 checkpoint 身份错配。
+V2 authored 只保存定义，真实调用仍保留在 display/checkpoint，合成 repair 只在 execution；fixture 清理先释放耐久领域来源引用；outbox 验证按当前实际 backlog 排空，保持目标事件恰好一次。
 示例：`pytest backend/tests/test_unified_run_orchestration.py`。
 """
 
@@ -281,7 +282,11 @@ def test_finalization_is_atomic_idempotent_and_restart_consumer_drains() -> None
                     + 1,
                 }
 
-            assert await consumer.drain("loop-coordinator", handle) >= 1
+            async with sessions() as session:
+                pending = len(list(await session.scalars(select(RunOutboxEvent.event_id).where(
+                    RunOutboxEvent.status.in_(("pending", "error"))))))
+            assert pending >= 1
+            assert await consumer.drain("loop-coordinator", handle, limit=pending + 1) == pending
             assert await consumer.drain("loop-coordinator", handle) == 0
             async with sessions() as session:
                 persisted = await session.get(DesktopRun, run_id)
@@ -360,6 +365,16 @@ def test_interrupted_run_publishes_repaired_execution_without_mutating_checkpoin
             assert execution.messages[-1]["focus_interruption_status"] == "interrupted"
             assert contract.repair_manifest[0]["source_run_id"] == run_id
             assert contract.repair_manifest[0]["cause"] == "interrupted"
+            from backend.app.desktop.run_orchestration.execution_history import repaired_execution_for_run
+
+            async with sessions() as session:
+                next_run = SimpleNamespace(kind="main", context_revision_id=contract.ref.revision_id,
+                    task_id=context_id, execution_thread_id=contract.ref.execution_thread_id,
+                    checkpoint_ns=contract.ref.checkpoint_ns, context_checkpoint_id=contract.ref.checkpoint_id)
+                assert await repaired_execution_for_run(session, next_run, checkpointer) == execution.messages
+                next_run.context_checkpoint_id = "foreign-checkpoint"
+                with pytest.raises(ValueError, match="execution"):
+                    await repaired_execution_for_run(session, next_run, checkpointer)
 
             async def strict_provider(messages):
                 validate_messages(list(messages))

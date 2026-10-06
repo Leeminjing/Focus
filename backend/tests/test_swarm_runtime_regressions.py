@@ -1,7 +1,7 @@
 """本文件对外提供 Swarm 后台运行、恢复与有界等待回归验证。
 
 输入为真实测试数据库、明确 Run 准入和隔离运行配置；输出为 checkpoint lineage、等待与协作断言。
-具体工作流为创建独立 Swarm 主体，执行新输入或恢复，再核对运行元数据与已提交历史。
+具体工作流为创建独立 Swarm 主体、耐久受理后由真实 dispatch worker 执行新输入或恢复，再核对 running 与已提交历史。
 示例：pytest backend/tests/test_swarm_runtime_regressions.py；测试不使用用户数据库。
 """
 
@@ -47,6 +47,7 @@ from focus.runtime.runs.limits import DEFAULT_AGENT_RECURSION_LIMIT  # noqa: E40
 from focus.runtime.runs.schemas import RunStatus  # noqa: E402
 from focus.runtime.stream_bridge.memory import MemoryStreamBridge  # noqa: E402
 from backend.tests.runtime_context_support import tool_runtime  # noqa: E402
+from backend.tests.config_helpers import app_config_for
 
 
 def _runtime(task_id: str) -> ToolRuntime:
@@ -98,9 +99,17 @@ def _service(run_manager=None) -> DesktopService:
         checkpointer=_EmptyCheckpointer(serde=object()),
         store=object(),
         bridge=object(),
-        app_config=SimpleNamespace(models=[], context_run_admission=True, commitment=SimpleNamespace(enabled=False)),
+        app_config=app_config_for("fixture", False).model_copy(update={"context_run_admission": True}),
         run_manager=run_manager or SimpleNamespace(),
     )
+
+
+async def _dispatch(service, run_id):
+    service._run_dispatch_worker._on_started = service.attach_run_sync
+    assert await service._run_dispatch_worker.drain(limit=1) == 1
+    async with _SESSION_FACTORY() as session:
+        run = await session.get(DesktopRun, run_id)
+        assert run.status == "running", run.error
 
 
 def test_swarm_run_uses_clean_context_and_own_metadata(monkeypatch):
@@ -127,7 +136,7 @@ def test_swarm_run_uses_clean_context_and_own_metadata(monkeypatch):
         service = _service(manager)
         monkeypatch.setattr("backend.app.desktop.service.run_agent", fake_run_agent)
         monkeypatch.setattr(service, "attach_run_sync", lambda record: None)
-        monkeypatch.setattr(service, "_build_agent_factory", lambda *args: object())
+        monkeypatch.setattr(service, "_build_agent_factory", lambda *args, **kwargs: object())
         parent = {"metadata": {"run_id": "parent-main-run"}}
         token = var_child_runnable_config.set(parent)
         try:
@@ -135,6 +144,7 @@ def test_swarm_run_uses_clean_context_and_own_metadata(monkeypatch):
                 task_id, agent_id, "worker", "执行任务", "worker prompt",
                 workspace_id, f"C:/tmp/{workspace_id}", {"permissions": ["read"]},
             )
+            await _dispatch(service, run_id)
             await manager.record.task
         finally:
             var_child_runnable_config.reset(token)
@@ -161,7 +171,7 @@ def test_second_swarm_run_applies_new_input_and_updates_checkpoint_lineage(monke
             checkpointer=saver,
             store=None,
             bridge=MemoryStreamBridge(),
-            app_config=SimpleNamespace(models=[], context_run_admission=True, commitment=SimpleNamespace(enabled=False)),
+            app_config=app_config_for("fixture", False).model_copy(update={"context_run_admission": True}),
             run_manager=manager,
         )
         seen: list[str] = []
@@ -188,11 +198,13 @@ def test_second_swarm_run_applies_new_input_and_updates_checkpoint_lineage(monke
                 task_id, agent_id, "worker", "first", "worker prompt",
                 workspace_id, f"C:/tmp/{workspace_id}", {"permissions": ["read"]},
             )
+            await _dispatch(service, first_run)
             await manager.get(first_run).task
             second_run = await service._launch_swarm_run(
                 task_id, agent_id, "worker", "second", "worker prompt",
                 workspace_id, f"C:/tmp/{workspace_id}", {"permissions": ["read"]},
             )
+            await _dispatch(service, second_run)
             await manager.get(second_run).task
 
             namespaced = NamespacedCheckpointer(saver, f"swarm:{agent_id}")
@@ -224,7 +236,7 @@ def test_swarm_run_recovers_from_latest_invalid_checkpoint(monkeypatch):
             checkpointer=saver,
             store=None,
             bridge=MemoryStreamBridge(),
-            app_config=SimpleNamespace(models=[], context_run_admission=True, commitment=SimpleNamespace(enabled=False)),
+            app_config=app_config_for("fixture", False).model_copy(update={"context_run_admission": True}),
             run_manager=manager,
         )
         seen: list[str] = []
@@ -262,6 +274,7 @@ def test_swarm_run_recovers_from_latest_invalid_checkpoint(monkeypatch):
                 task_id, agent_id, "worker", "first", "worker prompt",
                 workspace_id, f"C:/tmp/{workspace_id}", {"permissions": ["read"]},
             )
+            await _dispatch(service, first_run)
             await manager.get(first_run).task
             assert manager.get(first_run).status == RunStatus.success
 
@@ -276,6 +289,7 @@ def test_swarm_run_recovers_from_latest_invalid_checkpoint(monkeypatch):
                 task_id, agent_id, "worker", "second", "worker prompt",
                 workspace_id, f"C:/tmp/{workspace_id}", {"permissions": ["read"]},
             )
+            await _dispatch(service, second_run)
             await manager.get(second_run).task
 
             assert manager.get(second_run).status == RunStatus.success

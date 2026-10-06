@@ -1,8 +1,8 @@
-r"""本文件对外提供 RoleBoundStructuredModel 与结构化结果验证异常。
+r"""本文件对外提供 RoleBoundStructuredModel、结构化结果验证异常及 safe_validation_message。
 
 输入为 AppConfig、无权派生 role、schema、冻结 payload、结果 validator 及可选逐 attempt request guard；输出为结构化结果和真实 attempts／usage。
-具体工作流为每次 attempt 新建独立 StructuredWorkerModel，先准入，再有界调用／验证；失败、取消和预算中止保存实际用量。
-cache_identity 只哈希非凭据模型配置；bind_request_guard 为索引共享预算提供逐次检查，不读 Context 或提交 Portfolio。
+具体工作流为每次 attempt 新建独立 StructuredWorkerModel，先准入，再有界调用／验证；同步校验直接执行，异步返回确实等待；失败、取消和预算中止保存实际用量。
+cache_identity 只哈希非凭据模型配置；bind_request_guard 为索引共享预算提供逐次检查，不读 Context 或提交 Portfolio。safe_validation_message 排除 Pydantic 的原候选输入，供反馈和持久失败共用。
 示例：model.bind_request_guard(budget.admit); result = await model.invoke_validated(Schema, prompt, payload, validator)。
 """
 
@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
+from inspect import isawaitable
+from contextvars import ContextVar
+from collections.abc import Awaitable, Callable
 from hashlib import sha256
 from typing import Any, Literal
 
@@ -27,6 +29,12 @@ DerivationWorkerRole = Literal[
     "claim_verifier",
     "context_quality_verifier",
 ]
+
+
+def safe_validation_message(exc):
+    if isinstance(exc, ValidationError):
+        return json.dumps(exc.errors(include_input=False, include_context=False, include_url=False), ensure_ascii=False)
+    return str(exc)
 
 
 class StructuredResultValidationError(ValueError):
@@ -63,6 +71,14 @@ class RoleBoundStructuredModel:
         self.last_usage = ModelUsage()
         self.usage = ModelUsage()
         self._request_guard = None
+        self._usage_receipts = ContextVar("owned_model_usage", default=None)
+
+    def bind_usage_receipts(self, receipts) -> None:
+        self._usage_receipts.set(receipts)
+
+    @property
+    def usage_managed(self) -> bool:
+        return self._usage_receipts.get() is not None
 
     @property
     def cache_identity(self) -> str:
@@ -87,7 +103,7 @@ class RoleBoundStructuredModel:
         schema,
         system: str,
         payload: dict[str, Any],
-        validator: Callable[[Any], None],
+        validator: Callable[[Any], None | Awaitable[None]],
     ):
         return await self._invoke(schema, system, payload, validator)
 
@@ -96,7 +112,7 @@ class RoleBoundStructuredModel:
         schema,
         system: str,
         payload: dict[str, Any],
-        validator: Callable[[Any], None] | None,
+        validator: Callable[[Any], None | Awaitable[None]] | None,
     ):
         records: list[dict[str, Any]] = []
         invocation_usage = ModelUsage()
@@ -104,6 +120,8 @@ class RoleBoundStructuredModel:
         feedback: dict[str, str] | None = None
         for attempt in range(1, self._max_attempts + 1):
             worker = StructuredWorkerModel(self._app_config, self._model_name)
+            if self._usage_receipts.get() is not None:
+                worker.bind_usage_receipts(self._usage_receipts.get())
             if self._request_guard is not None:
                 try:
                     await self._request_guard(
@@ -119,7 +137,9 @@ class RoleBoundStructuredModel:
                     self._attempt_payload(payload, feedback),
                 )
                 if validator is not None:
-                    validator(result)
+                    validation = validator(result)
+                    if isawaitable(validation):
+                        await validation
             except asyncio.CancelledError:
                 invocation_usage += worker.usage
                 records.append(
@@ -191,6 +211,8 @@ class RoleBoundStructuredModel:
             "failure_category": failure_category,
             "validation_feedback": validation_feedback,
             "model_metadata": model_metadata or {},
+            "usage_reported": bool((model_metadata or {}).get("usage_reported")),
+            "usage_managed": self.usage_managed,
         }
 
     @staticmethod
@@ -220,10 +242,11 @@ class RoleBoundStructuredModel:
 
     @staticmethod
     def _failure_feedback(exc: Exception, category: str) -> dict[str, str]:
+        message = safe_validation_message(exc)
         feedback = {
             "category": category,
             "error_type": type(exc).__name__,
-            "message": str(exc)[:1000],
+            "message": message[:1000],
         }
         if isinstance(exc, StructuredResultValidationError):
             feedback.update(

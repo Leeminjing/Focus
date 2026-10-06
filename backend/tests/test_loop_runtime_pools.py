@@ -1,8 +1,8 @@
-r"""本文件验证发布队列、Context Run 排队、Curator 重试与 pause 收敛。
+r"""本文件对外提供发布队列、Context Run 排队、Curator 重试与 pause 收敛回归。
 
 输入为真实 PostgreSQL Loop、阻塞发布、耗尽的 Context 容量、失败 Worker 和 pause 控制；输出为独立进度、
 持久 queued_reason、有界 attempt identity 及全部活动工作终态断言。具体工作流为创建最小 Loop 后逐一驱动
-三个独立运行路径，以提交后的完成事件同步 Worker，再从持久实体读取结果。示例：`pytest backend/tests/test_loop_runtime_pools.py`。
+三个独立运行路径，以提交后的完成事件同步 Worker，重试须重新领取唯一身份，再从持久实体读取结果。示例：`pytest backend/tests/test_loop_runtime_pools.py`。
 """
 
 from __future__ import annotations
@@ -186,10 +186,9 @@ def test_curator_retry_identity_is_bounded(tmp_path) -> None:
                 request = await session.get(LoopWorkerRequest, request_id, with_for_update=True)
                 assert request.status == "pending"
                 assert request.attempt == 2
-                assert request.retry_identity.endswith(":attempt:2")
-                request.status = "running"
-            async with sessions() as session:
-                request = await session.get(LoopWorkerRequest, request_id)
+                assert request.retry_identity is None
+            request = (await runtime._claim_many(1, snapshot["loop_id"]))[0]
+            assert ":attempt:2:" in request.retry_identity
             await runtime._fail(request, RuntimeError("still failing"))
             async with sessions() as session:
                 request = await session.get(LoopWorkerRequest, request_id)

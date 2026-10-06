@@ -1,9 +1,13 @@
 """本文件对外提供 LoopObservationService 与 PatrolReadRequest 的冻结世界和精确读取端口。
 
 输入为持久 Loop/Round 和已定位不可变 Context 内容；输出为不可变基础 Observation、三项冻结输入和工作登记，或 ObservationCaptureSuperseded。
-具体工作流为事务外准备精确内容，再于一致短事务冻结前序进度、当前世界及真实血缘；selective_read 仅接受冻结 handles。
+具体工作流为事务外准备精确内容，再于一致短事务冻结前序进度、当前世界及真实血缘并发布该 Round 的规范状态；selective_read 仅接受冻结 handles。
 新冻结在锁定 Loop/Round 后重验活动状态与授权版本，停止、撤销、过期或已终结的轮次不登记记忆；已冻结记录仍可恢复读取。
 示例：await service.capture(loop_id, round_id)。认知产物通过独立 decision_context 装配，不改写基础观察。
+直接用户消息冻结类型及原始请求 hash；已观察但未交付的消息继续进入后继观察，原文由耐久请求提供，不由预览重写。
+Worker 认知读取复用冻结基础及持久补充来源，精确分页核验当前授权、完整 hash 与所属领域，历史材料不变成本轮准备证明。
+新观察冻结同源完成请求资格及语义输入，供 Patrol 反馈与稳定 Round 进展比较；原冻结 hash 不重写。
+具体验证的完成资格由共享只读 CompletionEligibilityPolicy 冻结，不从 allowed 新验证推断完成。
 """
 
 from __future__ import annotations
@@ -46,6 +50,7 @@ from backend.app.desktop.agent_loop.observation import (
 )
 from backend.app.desktop.agent_loop.rounds import TERMINAL_ROUND_STATUSES
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
+from backend.app.desktop.agent_loop.patrol_read_view import PatrolReadView, PatrolWorkerReadRequest
 from backend.app.desktop.agent_loop.task_progress.baseline import legacy_baseline
 from backend.app.desktop.agent_loop.task_progress.consolidation import initial_progress
 from backend.app.desktop.agent_loop.task_progress.contracts import (
@@ -228,6 +233,9 @@ class LoopObservationService:
             )
             await self._progress.freeze(session, loop_id, inputs)
             round_row.observation_id = row.observation_id
+            from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
+
+            await RoundStateEventRecorder().record(session, round_row)
             loop.health = "deciding"
             if loop.waiting_reason and loop.waiting_reason.startswith(
                 "progress_memory_"
@@ -303,6 +311,12 @@ class LoopObservationService:
             runs=tuple(runs),
         )
         journal_sequence = await session.get(LoopJournalSequence, loop.loop_id)
+        from backend.app.desktop.agent_loop.completion_admission import CompletionRequestAdmission
+
+        completion_admission = await CompletionRequestAdmission().read(session, loop, round_row)
+        from backend.app.desktop.agent_loop.completion_eligibility import CompletionEligibilityPolicy
+
+        completion_eligibility = await CompletionEligibilityPolicy().read(session, loop, round_row)
         base_entity_revisions = {
             "loop": loop.revision,
             "mission": loop.goal_revision,
@@ -325,6 +339,8 @@ class LoopObservationService:
             ),
             base_entity_revisions=base_entity_revisions,
             mission=mission_contract,
+            completion_admission=completion_admission,
+            completion_eligibility=completion_eligibility,
             grant=self._grant_view(grant),
             portfolio_frontier=frontier,
             stable_results=self._run_views(runs),
@@ -352,6 +368,7 @@ class LoopObservationService:
             worker_results=tuple(
                 {
                     "request_id": row.worker_request_id,
+                    "round_id": row.round_id,
                     "kind": row.kind,
                     "status": row.status,
                     "result": row.result,
@@ -361,6 +378,8 @@ class LoopObservationService:
             user_intents=tuple(
                 {
                     "intent_id": row.intent_id,
+                    "intent_kind": row.intent_kind,
+                    "request_hash": (row.request_payload or {}).get("request_hash"),
                     "scope": row.scope,
                     "context_id": row.target_context_id,
                     "content": row.content,
@@ -442,7 +461,6 @@ class LoopObservationService:
                         LoopWorkerRequest.status.in_(["success", "error"]),
                     )
                     .order_by(LoopWorkerRequest.created_at.desc())
-                    .limit(16)
                 )
             ).all()
         )
@@ -457,7 +475,8 @@ class LoopObservationService:
                     select(LoopUserIntent)
                     .where(
                         LoopUserIntent.loop_id == loop_id,
-                        LoopUserIntent.status == "pending",
+                        ((LoopUserIntent.status == "pending") | ((LoopUserIntent.intent_kind == "direct_message") &
+                         (LoopUserIntent.status == "observed") & (LoopUserIntent.delivery_state == "observed"))),
                     )
                     .order_by(LoopUserIntent.created_at)
                     .limit(32)
@@ -560,7 +579,7 @@ class LoopObservationService:
     async def selective_read(
         self,
         observation: LoopObservationEnvelope,
-        requests: tuple[PatrolReadRequest, ...],
+        requests: tuple[PatrolReadRequest | PatrolWorkerReadRequest, ...],
     ) -> tuple[dict[str, Any], ...]:
         allowed = {
             (str(item.get("context_id")), str(item.get("revision_id"))): item.get(
@@ -572,6 +591,9 @@ class LoopObservationService:
         results: list[dict[str, Any]] = []
         async with self._sessions() as session:
             for request in requests:
+                if isinstance(request, PatrolWorkerReadRequest):
+                    results.append(await self._worker_page(session, observation, request))
+                    continue
                 payload = allowed.get((request.context_id, request.revision_id))
                 if payload is None:
                     raise ValueError(
@@ -589,6 +611,49 @@ class LoopObservationService:
                     }
                 )
         return tuple(results)
+
+    async def worker_sources(self, observation) -> tuple[dict, ...]:
+        async with self._sessions() as session:
+            return await self._frozen_worker_sources(session, observation)
+
+    async def _frozen_worker_sources(self, session, observation) -> tuple[dict, ...]:
+        from backend.app.desktop.agent_loop.decision_context import DecisionSupplementRepository
+
+        base = await session.scalar(select(LoopObservation).where(
+            LoopObservation.loop_id == observation.loop_id, LoopObservation.round_id == observation.round_id))
+        if base is None:
+            raise ValueError("Patrol Worker 来源缺少冻结 Observation")
+        if observation_hash(LoopObservationEnvelope.model_validate(base.envelope)) != base.envelope_hash:
+            raise ValueError("Patrol Worker 冻结 Observation hash 不匹配")
+        supplement = await DecisionSupplementRepository().get(session, base.observation_id, "curator_results")
+        sources = {(item["request_id"], canonical_hash(item.get("result") or {})): item for item in base.envelope.get("worker_results", ())}
+        for item in (supplement or {}).get("results", ()):
+            sources[(item["request_id"], canonical_hash(item.get("result") or {}))] = item
+        identities = tuple({identity for identity, _ in sources})
+        rounds = dict((await session.execute(select(LoopWorkerRequest.worker_request_id, LoopWorkerRequest.round_id).where(
+            LoopWorkerRequest.loop_id == observation.loop_id, LoopWorkerRequest.worker_request_id.in_(identities)))).all()) if identities else {}
+        return tuple({**item, "round_id": item.get("round_id") or rounds.get(identity)} for (identity, _), item in sources.items())
+
+    async def _worker_page(self, session, observation, request) -> dict:
+        loop = await session.get(AgentLoop, observation.loop_id)
+        if loop is None or loop.current_round_id != observation.round_id or loop.authority_revision != observation.authority_revision:
+            raise ValueError("Patrol Worker 来源授权已失效")
+        grant = await session.scalar(select(LoopDelegationGrant).where(
+            LoopDelegationGrant.loop_id == loop.loop_id, LoopDelegationGrant.revision == observation.authority_revision))
+        if grant is None or grant.status != "active" or (grant.expires_at is not None and grant.expires_at <= datetime.now(UTC)):
+            raise ValueError("Patrol Worker 来源授权已失效")
+        sources = await self._frozen_worker_sources(session, observation)
+        source = next((item for item in sources if item["request_id"] == request.request_id and canonical_hash(item.get("result") or {}) == request.result_hash), None)
+        worker = await session.get(LoopWorkerRequest, request.request_id)
+        if worker is None or worker.loop_id != observation.loop_id or not any(item["request_id"] == request.request_id for item in sources):
+            raise ValueError("Patrol Worker 来源超出冻结领域")
+        if source is None:
+            raise ValueError("Patrol Worker 来源 hash 已改变或未冻结")
+        if source.get("round_id") is not None and source["round_id"] != worker.round_id:
+            raise ValueError("Patrol Worker 所属轮次不匹配")
+        if canonical_hash(worker.result or {}) != request.result_hash:
+            raise ValueError("Patrol Worker 来源已改变")
+        return PatrolReadView.page({**source, "round_id": worker.round_id}, request)
 
     @staticmethod
     def _ref(payload):

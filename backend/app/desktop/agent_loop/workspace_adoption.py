@@ -3,14 +3,15 @@ r"""本文件对外提供 LoopWorkspaceAdoptionService。
 输入为 Kernel 已授权的单个 adopt_workspace_result decision；输出为 adopted 或 conflict 的 Kernel 结果。
 具体工作流为重验当前 fencing、用户 delegation、来源 slot 所有权和目标 workspace revision，调用可恢复的
 WorkspaceAdopter 应用隔离 Git 结果，再提交 action/decision/anchor、推进新观察轮并写持久事件；Worker
-和 Patrol 模型都不能直接改权威文件。成功提交同时保存独立 adoption 领域来源，供下一轮任务记忆吸收。
+和 Patrol 模型都不能直接改权威文件。成功提交同时保存独立 adoption 领域来源及规范控制状态，供下一轮任务记忆和 live projection 吸收。
+请求和收口统一按 Loop→Round→Decision 刷新并锁定权威身份；已终结决策的迟到结果只返回原状态。
+采用成功等待全轮后果稳定，再调用共享 advance_settled_round 记录语义进展与唯一后继轮，不独立构造轮次。
 示例：`result = await service.adopt(decision_id)`。
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -24,6 +25,7 @@ from backend.app.desktop.agent_loop.models import (
     LoopRound,
 )
 from backend.app.desktop.agent_loop.ownership import LoopFencingGuard
+from backend.app.desktop.agent_loop.rounds import SETTLED_DECISION_STATUSES, advance_settled_round, settle_round
 from backend.app.desktop.agent_loop.schemas import AdoptWorkspaceResultAction
 from backend.app.desktop.agent_loop.wait_requests import open_recovery_wait
 from backend.app.desktop.domain_evidence.repository import DomainResultRepository
@@ -49,11 +51,8 @@ class LoopWorkspaceAdoptionService:
             return await self._finish(session, decision_id, adoption)
 
     async def _request(self, session: AsyncSession, decision_id: str) -> WorkspaceAdoptionRequest:
-        decision = await session.get(LoopDecision, decision_id, with_for_update=True)
-        if decision is None or decision.status != "adopting":
-            raise RuntimeError("Workspace adoption decision 已失效")
-        loop = await session.get(AgentLoop, decision.loop_id, with_for_update=True)
-        round_row = await session.get(LoopRound, decision.round_id, with_for_update=True)
+        loop, round_row, decision = await self._lock_owner(session, decision_id)
+        self._require_current_owner(loop, round_row, decision)
         action_row = await session.scalar(
             select(LoopAction).where(LoopAction.decision_id == decision_id).with_for_update()
         )
@@ -97,18 +96,18 @@ class LoopWorkspaceAdoptionService:
     async def _finish(self, session: AsyncSession, decision_id: str, adoption):
         from backend.app.desktop.agent_loop.kernel import KernelCommitResult
 
-        decision = await session.get(LoopDecision, decision_id, with_for_update=True)
+        loop, round_row, decision = await self._lock_owner(session, decision_id)
         action = await session.scalar(
             select(LoopAction).where(LoopAction.decision_id == decision_id).with_for_update()
+            .execution_options(populate_existing=True)
         )
-        loop = await session.get(AgentLoop, decision.loop_id, with_for_update=True) if decision else None
-        round_row = await session.get(LoopRound, decision.round_id, with_for_update=True) if decision else None
-        if decision is None or action is None or loop is None or round_row is None:
+        if action is None:
             raise RuntimeError("Workspace adoption completion identity 不完整")
+        if decision.status in SETTLED_DECISION_STATUSES:
+            return KernelCommitResult(decision_id, decision.status, (action.action_id,), ())
+        self._require_current_owner(loop, round_row, decision)
         if decision.fencing_token:
             await LoopFencingGuard().validate_current(session, decision.round_id, decision.fencing_token)
-        if decision.status == "committed":
-            return KernelCommitResult(decision_id, "committed", (action.action_id,), ())
         anchors = list(
             (
                 await session.scalars(
@@ -150,32 +149,34 @@ class LoopWorkspaceAdoptionService:
         }
         decision.status = "committed"
         await DomainResultRepository().record(session, kind="workspace", source_id=adoption.adoption_id, loop_id=loop.loop_id, context_id=None, payload={"status": "adopted", "source_revision": adoption.source_revision, "resulting_target_revision": adoption.resulting_target_revision}, audit={"decision_id": decision_id})
-        round_row.status = "settled"
-        round_row.settled_at = datetime.now(UTC)
-        number = int(
-            await session.scalar(
-                select(func.coalesce(func.max(LoopRound.number), 0)).where(
-                    LoopRound.loop_id == loop.loop_id
-                )
-            )
-            or 0
-        ) + 1
-        next_round = LoopRound(
-            round_id=uuid.uuid4().hex,
-            loop_id=loop.loop_id,
-            number=number,
-            authority_revision=loop.authority_revision,
-            goal_revision=loop.goal_revision,
-            frontier_hash=round_row.frontier_hash,
-            workspace_revision=adoption.resulting_target_revision,
-        )
-        session.add(next_round)
-        loop.current_round_id = next_round.round_id
-        loop.health = "observing"
-        loop.revision += 1
+        if not await settle_round(session, loop, round_row):
+            return KernelCommitResult(decision_id, "committed", (action.action_id,), (), loop.waiting_reason)
+        next_round = await advance_settled_round(session, loop, round_row)
         await self._event(session, loop.loop_id, "WorkspaceResultAdopted", action.result, f"adoption:{adoption.adoption_id}")
-        await self._event(session, loop.loop_id, "RoundObserved", {"round_id": next_round.round_id}, f"adoption-round:{adoption.adoption_id}")
+        if next_round is not None:
+            await self._event(session, loop.loop_id, "RoundObserved", {"round_id": next_round.round_id}, f"adoption-round:{adoption.adoption_id}")
         return KernelCommitResult(decision_id, "committed", (action.action_id,), ())
+
+    @staticmethod
+    async def _lock_owner(session: AsyncSession, decision_id: str) -> tuple[AgentLoop, LoopRound, LoopDecision]:
+        await session.flush()
+        probe = await session.get(LoopDecision, decision_id)
+        if probe is None:
+            raise RuntimeError("Workspace adoption decision identity 不完整")
+        loop = await session.get(AgentLoop, probe.loop_id, with_for_update=True, populate_existing=True)
+        round_row = await session.get(LoopRound, probe.round_id, with_for_update=True, populate_existing=True)
+        decision = await session.get(LoopDecision, decision_id, with_for_update=True, populate_existing=True)
+        if loop is None or round_row is None or decision is None:
+            raise RuntimeError("Workspace adoption authority identity 不完整")
+        return loop, round_row, decision
+
+    @staticmethod
+    def _require_current_owner(loop: AgentLoop, round_row: LoopRound, decision: LoopDecision) -> None:
+        if (loop.status != "running" or loop.current_round_id != round_row.round_id
+            or round_row.status != "adopting" or decision.status != "adopting"
+            or round_row.authority_revision != loop.authority_revision
+            or round_row.goal_revision != loop.goal_revision):
+            raise RuntimeError("Workspace adoption owner 已失效")
 
     @staticmethod
     async def _event(session, loop_id: str, event_type: str, payload: dict, key: str) -> None:
