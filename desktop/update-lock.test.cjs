@@ -14,7 +14,9 @@ $DesktopDir = Join-Path $AppDir 'desktop'
 $LocksDir = Join-Path $FocusHome 'locks'
 $ExpectedRepository = 'https://github.com/Leeminjing/Focus.git'
 $ExpectedBranch = 'main'
-$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:FOCUS_TEST_SCRIPT, [ref]$null, [ref]$null)
+$parseErrors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:FOCUS_TEST_SCRIPT, [ref]$null, [ref]$parseErrors)
+if ($parseErrors) { throw ($parseErrors.Message -join '; ') }
 $ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]}, $false) | ForEach-Object { Invoke-Expression $_.Extent.Text }
 function Assert-ManagedInstall {}
 function Get-ApplicationPath { param($Name) 'fixture.exe' }

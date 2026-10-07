@@ -136,8 +136,8 @@ function Resolve-PythonRuntime {
     throw "Python 3.11 or newer was not found. Install Python and run 'focus update' again."
 }
 
-# electron 43 的安装器依赖 @electron/get 5（ESM-only），要求 Node >= 22.12.0；
-# 更低版本无法执行安装器，会留下没有二进制的残缺 node_modules。
+# Electron 43 uses @electron/get 5 (ESM-only), requiring Node >= 22.12.0.
+# Older Node versions can leave node_modules without a usable Electron binary.
 function Assert-NodeRuntime {
     $node = Get-ApplicationPath "node.exe"
 
