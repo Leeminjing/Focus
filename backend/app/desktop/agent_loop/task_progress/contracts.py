@@ -4,7 +4,7 @@
 具体工作流为 schema 校验来源身份、修正关系和支持程度，再以 canonical_hash 绑定内容。
 Tool、Message、Checkpoint 定位只属于独立审计记录，不是任务条目类型。
 示例：TaskItem(item_id="check:tests", description="测试通过", state="not_started")。
-全部来源须有变化或显式来源解释，unknown 保留未决；Lineage 验证完整节点/边身份及可重算拓扑 hash。
+全部来源须有变化或显式来源解释，unknown 保留未决；CandidateIssue 只承载安全错误码、路径和引用投影；Lineage 验证完整节点/边身份及可重算拓扑 hash。
 """
 
 from __future__ import annotations
@@ -125,6 +125,12 @@ class RoundContribution(MemoryContract):
 class ProgressCandidate(MemoryContract):
     changes: tuple[TaskItem, ...] = ()
     source_assessments: tuple[SourceAssessment, ...] = ()
+
+
+class CandidateIssue(MemoryContract):
+    code: str
+    path: tuple[str | int, ...]
+    references: tuple[dict[str, Any], ...] = ()
 
 
 class RoundDecisionInputs(MemoryContract):

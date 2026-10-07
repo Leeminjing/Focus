@@ -1,7 +1,7 @@
 """本文件对外提供 TaskProgressRepository 的初始、冻结、readiness、授权重试和原子发布端口。
 
-输入为调用方短事务、不可变合同和 fence；输出为唯一版本或明确 stale/readiness 错误。
-具体工作流为 Loop→head→work 锁序，readiness 携带未完成工作身份，重试复检当前预算授权并保留冻结输入和消费，前序 CAS、输入 hash 和租约共同验证，再原子插入版本与 receipts。
+输入为调用方短事务、不可变合同、fence 和有界安全候选诊断；输出为按尝试诊断、唯一版本或明确 stale/readiness 错误。
+具体工作流为 Loop→head→work 锁序，诊断复检有效领取及冻结身份，重试复检预算授权并保留历史反馈和消费，前序 CAS、输入 hash 和租约共同验证，再原子插入版本与 receipts。
 无模型调用或 Context 发布权限。示例：await repository.publish(session, observation_id, fence, document, contribution)。
 """
 
@@ -27,6 +27,7 @@ from backend.app.desktop.agent_loop.task_progress.models import (
     LoopProgressWork,
     LoopTaskProgress,
 )
+from backend.app.desktop.agent_loop.task_progress.candidate_interpretation import legacy_candidate_failure
 
 
 class ProgressNotReady(RuntimeError):
@@ -115,7 +116,8 @@ class TaskProgressRepository:
         work.retry_budget_authorization = {"grant_id": grant.grant_id, "grant_revision": grant.revision,
             "limits": grant.budgets, "approved_at": datetime.now(UTC).isoformat()}
         work.attempt_events = [*work.attempt_events, {"event": "explicit_retry",
-            "budget_authorization": work.retry_budget_authorization}]
+            "budget_authorization": work.retry_budget_authorization,
+            "legacy_candidate_failure": legacy_candidate_failure(work.error)}]
         work.state = "pending"
         work.attempts = 0
         work.error = None
@@ -145,6 +147,21 @@ class TaskProgressRepository:
         if row is None or canonical_hash(row.payload) != row.content_hash:
             raise ProgressPublicationRejected("冻结输入缺失或内容 hash 不一致")
         return RoundDecisionInputs.model_validate(row.payload)
+
+    async def record_validation(self, session, inputs, fence, diagnostic):
+        identity = await session.get(LoopProgressWork, inputs.observation_id)
+        if identity is None:
+            raise ProgressPublicationRejected("进度工作不存在")
+        await session.get(AgentLoop, identity.loop_id, with_for_update=True)
+        work = await session.get(LoopProgressWork, inputs.observation_id, with_for_update=True, populate_existing=True)
+        if (work.state != "claimed" or work.fence != fence or work.lease_expires_at is None
+                or work.lease_expires_at <= datetime.now(UTC)):
+            raise ProgressPublicationRejected("进度诊断 worker fence/lease 已失效")
+        frozen = await self.inputs(session, inputs.observation_id)
+        if (frozen != inputs or diagnostic["inputs_hash"] != canonical_hash(frozen)
+                or diagnostic["manifest_hash"] != frozen.manifest_hash or diagnostic["fence"] != fence):
+            raise ProgressPublicationRejected("进度诊断冻结身份不一致")
+        work.attempt_events = [*work.attempt_events, diagnostic]
 
     async def publish(
         self,

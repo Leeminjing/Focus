@@ -24,6 +24,18 @@ Curator proposal → Patrol 选择 → Kernel 校验 → Portfolio 真正提交
 
 P(N) 未就绪时，下一次正式 capture 显示 `progress_memory_pending/claimed/blocked`，不跳过前序。暂停、停止、用户指令继续走已有控制入口。诊断为 `GET /desktop/api/agent-loops/{loop_id}/task-progress`；明确 blocked 的工作可通过 `POST /desktop/api/agent-loops/{loop_id}/task-progress/{observation_id}/retry` 恢复。用户先增加授权预算，再显式重试，work 记录 grant identity/revision、限制与确认时间；调用前重新验证该授权仍有效。三项冻结认知输入及原预算快照不变，每次用量保留实际消费的授权版本。反复重试自身不会增加授权。
 
+## 候选引用准入和修正反馈
+
+`candidate_contract` 为每份冻结增量构建请求专属来源枚举，并统一验证候选结构、来源覆盖、按 source_key 的解释唯一、任务修正关系和完成证据。`consolidation` 先经同一准入再转换记忆，repository 在原子发布事务中再次重算。Provider schema 通过不能代替服务器准入；重复解释不会通过转为 set 或字典覆盖被静默清理。
+
+`candidate_interpretation` 只负责请求、反馈与安全诊断投影。校验失败后，下一次既有尝试使用同一冻结输入并携带 `validation_feedback`；反馈不是任务事实。一次领取最多调用模型一次，完整 schema 和反馈计入窗口与共享预算，仍遵守原三次尝试上限、lease/fence 与独立用量记账。
+
+容量预览由 `StructuredWorkerModel.estimate_input_tokens` 读取真实 Runnable 的绑定参数并复用 adapter/SDK 的请求序列化，计入消息之外的 `text.format`、`response_format` 和工具 schema。Runtime 使用同一估算核对模型窗口和共享输入消费，先扣除输出预留再调用；预览不发送请求。离线测试将预览与 MockTransport 捕获的实际 SDK 请求比较，并覆盖超窗、共享预算不足和完整输入预留，防止只统计消息正文而漏掉结构化输出合同。
+
+只读诊断的 `work[].attempt_events` 中新增版本为 1 的 `candidate_validation` 事件，含 observation/input/manifest 身份、fence、usage fence、valid、errors、error_count/error_counts 和候选引用投影。重复解释、解释越界、变化证据越界及来源遗漏分别有稳定 code 与字段 path；语法/schema 失败使用安全结构诊断。未知引用仅保留 hash 和长度，description、explanation、原始响应和私有推理不入记录或反馈。诊断和反馈各最多 64 KiB，超限明确标记 truncated、总数量与保留数量，并保留完整安全投影的 hash；完整准入和冻结来源不受该上限裁剪。
+
+重启从同一输入的持久诊断恢复剩余尝试；失败或事务回滚不推进 head、不吸收来源。已有 blocked 工作不会因部署自动恢复，仍需用户显式重试并验证有效授权。旧记录只有合并来源错误时，反馈标注 `evidence_missing`，不能补造历史非法键；重新尝试才产生新版诊断。回滚实现时保留 JSONB 事件与消费记录，旧读者可以忽略新增字段。
+
 Lineage 权威仍是 Context current pointer、Revision/source 图与同事务 publication receipt。读取器完整回溯 Revision DAG，保留跨 Context 多父来源；同 Context 来源用于追溯，不作为派生边。Architecture R4→Implementation R7→Architecture R5 可终止回溯，即使 Context 层面存在回流。assignment 使用相关 Context 与全部祖先的子图，只提供拓扑身份，不借路径泄漏祖先消息。当前成员展示图继续独立使用原 resolver。
 
 只有已通过 projection 审核的根可以进入真实路径。若当前 pointer 指向 approval_required 等候选，读面使用该 Context 最近的真实 publication receipt；候选不生成 receipt，不能提前改变路径。归档成员不删除已提交祖先。
