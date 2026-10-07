@@ -5,6 +5,7 @@ r"""本文件对外提供 ContextQualityPreflight、ContextQualityAssessment、Q
 的 requirement/claim/protocol 用途与 workspace 边界，再只接受 minimality、sufficiency、coherence 三个独立语义 verdict；三者必须
 同时 pass 才允许 compilation。持久评估恢复重新验证冻结输入、版本和引用成员，并按原三维判定重建结果，不调用模型。
 示例：`result = verifier.restore(work_spec, bundle, dossier, saved_assessment)`。
+新增问题处置先核对平台实际能力，未解决 prerequisite 机械阻断；该检查不替代独立三维语义评估。
 """
 
 from __future__ import annotations
@@ -209,6 +210,16 @@ class ContextQualityVerifier:
         if not question_ids.issubset(covered_questions | unresolved):
             codes.append("required_question_uncovered")
             reasons.append("Dossier 未回答或显式保留全部 WorkSpec questions")
+        if dossier.question_dispositions:
+            try:
+                if dossier.execution_readiness is None:
+                    raise ValueError("缺少平台执行条件")
+                dossier.execution_readiness.validate_plans(dossier.question_dispositions, work_spec.questions)
+                if any(p.disposition == "prerequisite" for p in dossier.question_dispositions):
+                    raise ValueError("存在未解决的必要前置输入")
+            except ValueError as exc:
+                codes.append("start_readiness_blocked")
+                reasons.append(str(exc))
         requirement_evidence = {evidence_ref_key(item.ref) for item in bundle.items}
         try:
             protocol = self._protocol_closure(bundle, requirement_evidence | cited)

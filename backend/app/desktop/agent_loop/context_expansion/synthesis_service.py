@@ -2,6 +2,7 @@ r"""本文件对外提供 StructuredContextSynthesisService。
 
 输入为冻结 WorkContextSpec、ResolvedEvidenceBundle、Loop observation 与只提供 schema-constrained 调用的模型；输出为经过独立
 claim direct-support 检查的 ValidatedContextDossier 或显式 blocker。具体工作流为 dossier_synthesizer 先生成带本地 claim keys 的
+任务相关材料；平台执行条件校验未解问题的实际研究能力，独立质量反馈只用于生成新材料，不改写原判定或来源。
 section 内嵌 claim graph，服务端从唯一声明归属物化稳定 claim identities 并复用结构准入；非法引用或 graph 在既有有界模型调用内反馈，成功后才读取引用。
 作者引用只能选择本次 citation_catalog 的键，结构 Schema 表达权威的引用/前提形状，解析后保留原精确引用；空目录调用前阻断。
 claim_verifier 的输出须恰好覆盖 confirmed identities，再判断是否被其冻结 citations 直接支持；
@@ -41,7 +42,7 @@ from backend.app.desktop.agent_loop.derivation_worker import StructuredResultVal
 
 
 class StructuredContextSynthesisService:
-    VERSION = "structured-context-synthesizer-v9"
+    VERSION = "structured-context-synthesizer-v10"
 
     def __init__(self, synthesis_model, claim_verifier_model=None) -> None:
         self._synthesis_model = synthesis_model
@@ -58,6 +59,9 @@ class StructuredContextSynthesisService:
         observation: LoopObservationEnvelope,
         work_spec: WorkContextSpec,
         bundle: ResolvedEvidenceBundle,
+        *,
+        execution_readiness=None,
+        feedback=None,
     ) -> ContextSynthesisResult:
         attempts: list[dict[str, Any]] = []
         draft: ContextSynthesisDraft | None = None
@@ -78,8 +82,13 @@ class StructuredContextSynthesisService:
                         key: ref.model_dump(mode="json")
                         for key, ref in ContextSynthesisWorkerDraft.citation_catalog(bundle).items()
                     },
+                    "execution_readiness": execution_readiness.model_dump(mode="json") if execution_readiness else None,
+                    "revision_feedback": feedback,
+                    "content_scope": {"target": "selected_work_objective_and_questions",
+                        "source_purpose": "immutable_provenance_not_a_claim_checklist",
+                        "required_boundaries": "retain_applicable_global_invariants_and_prohibitions"},
                 },
-                partial(self._validate_worker_draft, work_spec=work_spec, bundle=bundle),
+                partial(self._validate_worker_draft, work_spec=work_spec, bundle=bundle, execution_readiness=execution_readiness),
                 attempts=attempts,
             )
             draft = worker_draft.materialize()
@@ -90,6 +99,7 @@ class StructuredContextSynthesisService:
                 draft,
                 assessments,
                 synthesizer_version=self.VERSION,
+                execution_readiness=execution_readiness,
             )
         except (KeyError, TypeError, ValueError) as exc:
             return ContextSynthesisResult(
@@ -156,9 +166,15 @@ class StructuredContextSynthesisService:
         finally:
             attempts.extend(tuple(getattr(model, "last_attempt_records", ())))
 
-    def _validate_worker_draft(self, worker_draft, *, work_spec, bundle):
+    def _validate_worker_draft(self, worker_draft, *, work_spec, bundle, execution_readiness=None):
         try:
-            self._validator.validate_draft(work_spec, bundle, worker_draft.materialize())
+            draft = worker_draft.materialize()
+            self._validator.validate_draft(work_spec, bundle, draft)
+            if execution_readiness is not None:
+                execution_readiness.validate_plans(draft.question_dispositions, work_spec.questions)
+                unresolved = {self._validator.question_id(q) for q in draft.unresolved_questions}
+                if unresolved != {p.question_id for p in draft.question_dispositions}:
+                    raise ValueError("未解问题须逐项说明前置输入或执行研究路径")
         except (KeyError, TypeError, ValueError) as exc:
             raise StructuredResultValidationError(
                 "synthesis_graph_invalid",
@@ -198,7 +214,17 @@ class StructuredContextSynthesisService:
 
     @staticmethod
     def _synthesis_authority() -> str:
-        return "你是无权 dossier_synthesizer。只基于输入冻结 WorkSpec 与 ResolvedEvidenceBundle 生成按 section 内嵌的唯一原子 claim 清单；citations 必须选择 citation_catalog 的字符串键，不得自行拼写引用对象或添加目录外身份；confirmed 只能表达 citation 直接支持的事实且不得有 premise，跨来源关系必须标为 inference 且至少有一个 premise，premise 只能引用本输出已声明的本地 claim_key 且依赖无环，分组显示顺序不决定依赖顺序，未证实原因必须 hypothesis 且保留 citation 或 premise。每个 required requirement/question 必须映射或显式列为 unresolved。不得读取外部历史、改写 WorkSpec、执行工作或创建 Context。"
+        return (
+            "你是无权 dossier_synthesizer。只基于冻结 WorkSpec 与 ResolvedEvidenceBundle 生成服务当前 objective/questions 的最小材料。"
+            "来源正文用于溯源，不是必须逐句展开的清单；只选择相关需求及必须保留的全局模块/权限/安全边界，避免展开其他子任务功能或重复验收条款。"
+            "按 section 内嵌唯一原子 claim；citations 只能选择 citation_catalog 键，confirmed 只表达直接支持事实且不得有 premise，"
+            "跨来源关系为 inference 且依赖已声明的无环 premise，未证实原因为 hypothesis 且保留 citation/premise。"
+            "每个 required requirement/question 须映射或显式 unresolved。若提供 execution_readiness，所有 unresolved_questions 须恰好各有一个"
+            " question_dispositions，绑定 question_identities：必要用户输入为 prerequisite；可在执行期间调查的问题为 execution_research，"
+            "写出具体调查目标和所需 read/write/host_command 能力，能力必须在平台给出的集合内。此路径是计划而非已证实答案。"
+            "revision_feedback 是独立评估的修订建议，须实际缩减冗余或明确研究路径，不能宣称自己质量通过。"
+            "不得读取外部历史、改写 WorkSpec、执行工作或创建 Context；必须保留来源冲突。"
+        )
 
     @staticmethod
     def _verification_authority() -> str:

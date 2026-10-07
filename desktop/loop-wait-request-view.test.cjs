@@ -21,6 +21,20 @@ const LiveSchema = require("./loop-live-schema.js");
 const LiveReducer = require("./loop-live-reducer.js");
 const LiveSelectors = require("./loop-live-selectors.js");
 
+test("quality recovery renders safe dimensions and typed revision actions without private material", () => {
+  const request = { request_id: "q1", response_mode: "action", prompt: "quality blocked",
+    response_contract: { actions: [{ action: "retry", label: "恢复同一次尝试" }, { action: "revise_material", label: "修订材料后重试" }] },
+    scope: { quality_recovery: { revision_count: 1, failed_dimensions: ["minimality"],
+      work_spec_id: "work1", assessment_id: "assessment1", reasons: [{ dimension: "minimality", reason: "材料包含重复声明 <script>" }] } } };
+  const html = WaitView.render(request);
+  assert.match(html, /材料修订 1\/2/);
+  assert.match(html, /data-wait-action="revise_material"/);
+  assert.match(html, /恢复同一次尝试/);
+  assert.match(html, /&lt;script&gt;/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(WaitView.render(request, { pending: true }), /data-wait-action="revise_material" disabled/);
+});
+
 test("renders text and typed action requests without magic chat text", () => {
   const text = WaitView.render({ wait_request_id: "w1", prompt: "Which target?", response_mode: "text", response_contract: { max_length: 20 }, scope: { kind: "portfolio" } });
   const action = WaitView.render({ wait_request_id: "w2", prompt: "Budget exhausted", response_mode: "action", response_contract: { actions: [{ action: "revise_budget", label: "Revise" }, { action: "stop", label: "Stop" }] }, scope: { kind: "loop" } });

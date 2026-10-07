@@ -4,6 +4,7 @@ r"""本文件对外提供 Context expansion 的工作规格、语义证据、阶
 `WorkContextSpec`、`ContextSemanticManifest`、`ResolvedEvidenceBundle`、opportunity、assessment、CandidateEvidenceRejection、intent 与 outcome。
 具体工作流为把 identity-bearing 数据规范化为深度不可变结构，对 canonical JSON 求哈希，并验证 confirmed statement、
 required coverage、引用 frontier 与编译证据用量账本，使规划、解析、重放和提交共享同一语义身份。示例：`spec = WorkContextSpec.create(...)`。
+质量修订阶段与 blocker 的安全恢复诊断为增量合同，旧产物没有这些字段时保持原含义。
 """
 
 from __future__ import annotations
@@ -58,6 +59,7 @@ DerivationStage = Literal[
     "evidence_resolution",
     "dossier_synthesis",
     "context_quality",
+    "quality_revision",
     "compilation",
     "shadow_comparison",
 ]
@@ -692,6 +694,7 @@ class ExpansionBlocker(_ExpansionModel):
     opportunity_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     retryable: bool = False
     stage_records: tuple[DerivationStageRecord, ...] = ()
+    quality_recovery: dict[str, Any] | None = None
 
 
 class CandidateEvidenceRejection(_ExpansionModel):

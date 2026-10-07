@@ -10,6 +10,7 @@ stall_reasons 依轮内尝试次数、同状态停留时长与无进展计数判
 select_stalled_rounds 只把生命周期已终止的决策计为落定（publishing/adopting 表示专职组件仍在推进该决策，
 不构成落定），再在排除仍被有效租约持有的候选后给出可收敛集合。本模块只做状态转移与只读筛选，
 不提交事务。示例：`await terminate_round(session, loop, round_row, category="rejected", reason="...", allowed_statuses=UNDECIDED_ROUND_STATUSES)`。
+质量阻断的安全原因与累计次数经 wait_scope 同事务进入等待请求，不改变终结或恢复的权威。
 收口屏障保存共享后果读取器的历史缺 Decision 诊断，保持原计数和稳定条件。
 advance_settled_round 是 Worker/协调者/维护流程共用的唯一推进事务：先 flush，再按 Loop→Round→usage 刷新锁定当前身份，稳定后更新一次语义进展并创建唯一后继轮。
 看门狗也先 flush 并按 Loop→Round 刷新锁定，候选读取后控制已暂停时不再终结；有效租约仍优先。
@@ -213,6 +214,7 @@ async def terminate_round(
     decision_id: str | None = None,
     wait_for_user: bool = True,
     terminal_status: Literal["error", "superseded"] = "error",
+    wait_scope: dict | None = None,
 ) -> bool:
     """把 round 收敛为终态；仅当它仍是 loop 当前轮时才把 loop 交回用户并记录原因。
 
@@ -233,7 +235,7 @@ async def terminate_round(
             reason[:_WAITING_REASON_LIMIT],
             source="round-termination",
             round_id=round_row.round_id,
-            scope={"category": category, "decision_id": decision_id},
+            scope={"category": category, "decision_id": decision_id, **(wait_scope or {})},
         )
     from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
 

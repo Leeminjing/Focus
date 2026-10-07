@@ -8,7 +8,8 @@ statement 表达来源领域命题，生成图的分组/依赖/覆盖由类型�
 validate 再独立检查 direct-support。ClaimSupportProposal.schema_for 约束 confirmed 身份与数量，不预设 verdict。
 失败摘要仅保留实际拒绝计数及首条身份；ContextSynthesisReview 在私有失败产物保存已结构准入候选与实际判定，未核验为 None，
 不进入 ready 缓存。持久引用先类型化再排序，冻结输入及 synthesizer version 决定 dossier 身份，不读取最新 Portfolio 或补造证据。
-示例：`dossier = validator.validate(work_spec, bundle, draft, support_verdicts)`。
+问题处置绑定已有 question identity；平台 ExecutionReadiness 校验实际研究能力并进入新 dossier 身份，旧材料默认无处置仍可恢复。
+示例：`dossier = validator.validate(work_spec, bundle, draft, support_verdicts, execution_readiness=scope, synthesizer_version="v1")`。
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from backend.app.desktop.context_curation import EvidenceRef, evidence_ref_key
 
 ClaimAuthority = Literal["confirmed", "inference", "hypothesis"]
 ClaimSupportVerdict = Literal["supported", "unsupported", "unknown"]
+from backend.app.desktop.agent_loop.context_expansion.start_readiness import ExecutionReadiness, QuestionDisposition, work_question_id
 
 
 class _SynthesisModel(BaseModel):
@@ -146,6 +148,7 @@ class SynthesisSectionDraft(_SynthesisModel):
 class ContextSynthesisWorkerDraft(_SynthesisModel):
     sections: tuple[SynthesisSectionDraft, ...] = Field(min_length=1)
     unresolved_questions: tuple[str, ...] = ()
+    question_dispositions: tuple[QuestionDisposition, ...] = ()
 
     @staticmethod
     def citation_catalog(bundle: ResolvedEvidenceBundle) -> dict[str, EvidenceRef]:
@@ -205,6 +208,7 @@ class ContextSynthesisWorkerDraft(_SynthesisModel):
             sections=sections,
             claims=tuple(by_key.values()),
             unresolved_questions=self.unresolved_questions,
+            question_dispositions=self.question_dispositions,
         )
 
     @staticmethod
@@ -238,6 +242,7 @@ class ContextSynthesisDraft(_SynthesisModel):
     sections: tuple[SynthesisSection, ...] = Field(min_length=1)
     claims: tuple[ContextSynthesisClaim, ...] = Field(min_length=1)
     unresolved_questions: tuple[str, ...] = ()
+    question_dispositions: tuple[QuestionDisposition, ...] = ()
 
 
 class ClaimSupportAssessment(_SynthesisModel):
@@ -281,6 +286,8 @@ class ValidatedContextDossier(_SynthesisModel):
     claims: tuple[ContextSynthesisClaim, ...]
     unresolved_questions: tuple[str, ...]
     support_assessments: tuple[ClaimSupportAssessment, ...]
+    question_dispositions: tuple[QuestionDisposition, ...] = ()
+    execution_readiness: ExecutionReadiness | None = None
 
 
 class ContextSynthesisReview(_SynthesisModel):
@@ -341,9 +348,14 @@ class ContextSynthesisValidator:
         support_assessments: tuple[ClaimSupportAssessment, ...],
         *,
         synthesizer_version: str,
+        execution_readiness: ExecutionReadiness | None = None,
     ) -> ValidatedContextDossier:
         self.validate_draft(work_spec, bundle, draft)
         assessments = self._validated_support(draft.claims, support_assessments)
+        if draft.question_dispositions:
+            if execution_readiness is None:
+                raise ValueError("问题处置缺少平台冻结的实际执行条件")
+            execution_readiness.validate_plans(draft.question_dispositions, work_spec.questions)
         payload = (
             work_spec.work_spec_id,
             bundle.resolution_id,
@@ -353,6 +365,9 @@ class ContextSynthesisValidator:
             tuple(sorted(set(draft.unresolved_questions))),
             tuple(item.model_dump(mode="json") for item in assessments),
         )
+        if draft.question_dispositions or execution_readiness is not None:
+            payload += (tuple(p.model_dump(mode="json") for p in draft.question_dispositions),
+                        execution_readiness.model_dump(mode="json") if execution_readiness else None)
         return ValidatedContextDossier(
             dossier_id=stable_expansion_hash("validated-context-dossier", *payload),
             work_spec_id=work_spec.work_spec_id,
@@ -362,6 +377,8 @@ class ContextSynthesisValidator:
             claims=draft.claims,
             unresolved_questions=tuple(sorted(set(draft.unresolved_questions))),
             support_assessments=assessments,
+            question_dispositions=draft.question_dispositions,
+            execution_readiness=execution_readiness,
         )
 
     @staticmethod
@@ -437,12 +454,15 @@ class ContextSynthesisValidator:
             raise ValueError("synthesis 未覆盖 required evidence requirements")
         covered_questions = {identity for claim in draft.claims for identity in claim.question_ids}
         unresolved = {self.question_id(question) for question in draft.unresolved_questions}
+        plans = [p.question_id for p in draft.question_dispositions]
+        if len(plans) != len(set(plans)) or set(plans) - question_ids:
+            raise ValueError("问题处置必须绑定唯一现有 question")
         if not question_ids.issubset(covered_questions | unresolved):
             raise ValueError("synthesis 未覆盖 WorkSpec required questions")
 
     @staticmethod
     def question_id(question: str) -> str:
-        return stable_expansion_hash("work-spec-question", " ".join(question.split()).casefold())
+        return work_question_id(question)
 
     @staticmethod
     def _require_acyclic(claims: dict[str, ContextSynthesisClaim]) -> None:
@@ -525,4 +545,11 @@ def render_context_dossier(dossier: ValidatedContextDossier) -> str:
     if dossier.unresolved_questions:
         lines.append("\n## Unresolved Questions")
         lines.extend(f"- {item}" for item in dossier.unresolved_questions)
+    if dossier.question_dispositions:
+        lines.append("\n## Question Dispositions (plans, not established facts)")
+        lines.extend(f"- [{p.disposition}] {p.question_id}: {p.investigation}; required: {', '.join(p.required_capabilities)}"
+                     for p in dossier.question_dispositions)
+    if dossier.execution_readiness and dossier.execution_readiness.mission_boundaries:
+        lines.append("\n## Mandatory Mission Boundaries (platform projection)")
+        lines.extend(f"- {b}" for b in dossier.execution_readiness.mission_boundaries.statements())
     return "\n".join(lines)
