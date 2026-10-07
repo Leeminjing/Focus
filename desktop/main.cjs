@@ -12,6 +12,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
+const { setTimeout: delay } = require("node:timers/promises");
 
 const desktopDir = __dirname;
 const rootDir = path.resolve(desktopDir, "..");
@@ -61,6 +62,8 @@ let backend = null;
 let splashWindow = null;
 let mainWindow = null;
 let fatalErrorShown = false;
+let startupStage = "正在加载启动窗口";
+const startupAbort = new AbortController();
 
 if (process.env.FOCUS_DISABLE_HARDWARE_ACCELERATION === "1") {
   app.disableHardwareAcceleration();
@@ -157,6 +160,7 @@ function createSplashWindow() {
 }
 
 async function updateSplashStage(label, progress) {
+  startupStage = label;
   if (!splashWindow || splashWindow.isDestroyed()) return;
   await splashWindow.webContents.executeJavaScript(
     `window.setFocusSplashStage(${JSON.stringify(label)}, ${Number(progress) || 0})`,
@@ -180,15 +184,24 @@ function freePort() {
 }
 
 async function waitForHealth(url, timeoutMs = 30000) {
+  const signal = startupAbort.signal;
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  let lastFailure = "尚未收到响应";
+  for (let remaining; (remaining = deadline - Date.now()) > 0;) {
+    signal.throwIfAborted();
     try {
-      const response = await fetch(`${url}/health`);
+      const response = await fetch(`${url}/health`, {
+        signal: AbortSignal.any([signal, AbortSignal.timeout(Math.min(1000, remaining))]),
+      });
       if (response.ok) return;
-    } catch {}
-    await new Promise(resolve => setTimeout(resolve, 350));
+      lastFailure = `HTTP ${response.status}`;
+    } catch (error) {
+      signal.throwIfAborted();
+      lastFailure = error.message;
+    }
+    await delay(Math.min(350, Math.max(0, deadline - Date.now())), undefined, { signal });
   }
-  throw new Error("FastAPI 在 30 秒内未通过健康检查");
+  throw new Error(`FastAPI 在 ${timeoutMs / 1000} 秒内未通过健康检查（${lastFailure}）`);
 }
 
 function errorWindow(error) {
@@ -203,15 +216,34 @@ function errorWindow(error) {
     button{min-height:38px;margin-top:10px;padding:0 18px;border:1px solid #cbd3df;border-radius:9px;background:#fff;color:#172033;font:inherit;cursor:pointer}
     button:focus-visible{outline:3px solid rgba(11,108,245,.28);outline-offset:2px}
   </style><body><main><small>STARTUP ERROR</small><h1>Focus 未能启动</h1><p>本地服务尚未就绪。请确认 Python、Git、Docker Desktop 和项目 Python 依赖均已安装并可运行。</p><pre>${message}</pre><button onclick="window.close()">关闭 Focus</button></main></body></html>`;
-  win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(page)}`);
+  win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(page)}`).catch(error => {
+    console.error("Focus 错误窗口加载失败:", error);
+    app.quit();
+  });
   return win;
+}
+
+function stopBackend() {
+  const child = backend;
+  backend = null;
+  if (child && !child.killed) child.kill();
 }
 
 function showFatalError(error) {
   if (fatalErrorShown || app.isQuitting) return;
   fatalErrorShown = true;
+  console.error(`Focus 启动失败（${startupStage}）:`, error);
+  startupAbort.abort(error);
+  stopBackend();
+  // Keep a native window alive throughout the handoff: closing the last one quits Electron.
+  try {
+    errorWindow(new Error(`${startupStage}: ${error?.message || error}`));
+  } catch (windowError) {
+    console.error("Focus 错误窗口创建失败:", windowError);
+    app.quit();
+    return;
+  }
   closeSplashWindow();
-  errorWindow(error);
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
   mainWindow = null;
 }
@@ -242,6 +274,7 @@ function protectAppNavigation(win, apiBase) {
 async function start() {
   Menu.setApplicationMenu(null);
   await createSplashWindow();
+  startupAbort.signal.throwIfAborted();
   // 首次启动自动创建全局配置家目录 ~/.focus（含 plugins/、users/）
   try { ensureFocusHome(); } catch (error) { console.error("创建 ~/.focus 失败:", error); }
   await updateSplashStage("正在检查本地运行环境", 10);
@@ -271,12 +304,14 @@ async function start() {
   });
   backend.stdout.on("data", data => process.stdout.write(data));
   backend.stderr.on("data", data => process.stderr.write(data));
+  backend.once("error", showFatalError);
   backend.once("exit", (code, signal) => {
     backend = null;
     if (!app.isQuitting) showFatalError(new Error(`FastAPI 已退出（代码 ${code ?? "—"}${signal ? `，信号 ${signal}` : ""}）`));
   });
   await waitForHealth(apiBase);
   await updateSplashStage("正在加载工作区", 84);
+  startupAbort.signal.throwIfAborted();
   const mainWindowOptions = {
     show: false,
     width: 1440,
@@ -309,6 +344,7 @@ async function start() {
   // 决策 7：同源加载（页面与 API 同一 Origin，无需 CORS）
   await mainWindow.loadURL(`${apiBase}/desktop/`);
   await updateSplashStage("Focus 已就绪", 100);
+  startupAbort.signal.throwIfAborted();
   mainWindow.show();
   closeSplashWindow();
 }
@@ -356,6 +392,10 @@ if (!app.requestSingleInstanceLock()) {
 }
 app.on("before-quit", () => {
   app.isQuitting = true;
+  startupAbort.abort();
   closeSplashWindow();
-  if (backend && !backend.killed) backend.kill();
+  stopBackend();
+});
+app.on("will-quit", () => {
+  if (fatalErrorShown) app.exit(1);
 });
