@@ -3,7 +3,9 @@ r"""本文件对外提供 StructuredWorkerModel 及其 provider 单请求窗口�
 输入为 AppConfig、可选模型名、Pydantic 输出 schema、角色专属 authority prompt 与冻结 JSON payload；输出为严格 schema 校验的
 结构化模型结果、请求窗口、最近一次调用及累计 ModelUsage，并标明 provider 是否报告真实 Token 与可用模型元数据。具体工作流为按 curation 配置读取窗口与输出限制，创建无工具 chat model，使用 prompt_json 或 provider
 structured output 调用，统一剥离 fenced JSON、校验 extra-forbid schema，并以独立 callback 记录每次调用 usage 或显式标记缺失；本模块不决定业务阶段或状态。
-request_messages 提供与实际发送相同的完整消息供外部容量准入，request_model_config 提供该请求的模型配置。
+request_messages 提供冻结消息；estimate_input_tokens 复用真实 Runnable 的绑定参数和 adapter/SDK 序列化，
+完整计入消息、text.format、response_format 与工具合同，供外部窗口准入及消费预留；预览不发请求、不产生用量。
+request_model_config 提供该请求的模型配置。Responses 复用完整请求预算，legacy Chat 复用 SDK 严格 schema 转换及既有预算估算。
 示例：`result = await StructuredWorkerModel(config).invoke(MySchema, system, payload)`。
 """
 
@@ -17,8 +19,12 @@ from focus.models.factory import create_chat_model
 from focus.context.requests import frozen_request_messages
 from focus.history import content_hash
 from focus.runtime.runs.usage import ModelUsage, callback_usage
+from focus.messages.request_budget import estimate_request_budget, estimate_responses_budget
+from focus.models.responses import FocusResponsesChatModel
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableBinding, RunnableParallel
+from openai.lib._parsing import type_to_response_format_param
 
 
 class StructuredWorkerModel:
@@ -51,14 +57,38 @@ class StructuredWorkerModel:
             self._model_name or self._app_config.resolve_default_model_name()
         )
 
+    def _chat_model(self):
+        config = self._model_config()
+        return create_chat_model(name=config.name, app_config=self._app_config,
+                                 max_tokens=config.curation_max_output_tokens)
+
+    @staticmethod
+    def _structured_request(model, schema, method):
+        return model.with_structured_output(schema, method=method, include_raw=True)
+
+    def estimate_input_tokens(self, schema, system, payload) -> int:
+        model = self._chat_model()
+        messages = self.request_messages(schema, system, payload)
+        method = self._model_config().curation_output_method
+        options = {}
+        if method != "prompt_json":
+            binding = self._structured_request(model, schema, method).first
+            if isinstance(binding, RunnableParallel):
+                binding = binding.steps__.get("raw")
+            if not isinstance(binding, RunnableBinding) or binding.bound is not model:
+                raise ValueError("structured_request_budget_unsupported_binding")
+            options = {key: value for key, value in binding.kwargs.items() if not key.startswith("ls_")}
+        if isinstance(model, FocusResponsesChatModel):
+            return estimate_responses_budget(model.request_payload(messages, validate_window=False, **options))
+        request = model._get_request_payload(messages, **options)
+        if "response_format" in request:
+            request["response_format"] = type_to_response_format_param(request["response_format"])
+        return estimate_request_budget(request.pop("messages"), format_spec=request)
+
     async def invoke(self, schema, system: str, payload: dict[str, Any]):
         config = self._model_config()
         self.last_model_metadata = {"configured_model": config.model}
-        model = create_chat_model(
-            name=config.name,
-            app_config=self._app_config,
-            max_tokens=config.curation_max_output_tokens,
-        )
+        model = self._chat_model()
         document = json.dumps(
             payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )
@@ -96,11 +126,7 @@ class StructuredWorkerModel:
                 )
                 candidate = self._json_text(text)
                 return schema.model_validate(json.loads(candidate))
-            response = await model.with_structured_output(
-                schema,
-                method=config.curation_output_method,
-                include_raw=True,
-            ).ainvoke(messages, config=invoke_config)
+            response = await self._structured_request(model, schema, config.curation_output_method).ainvoke(messages, config=invoke_config)
             if isinstance(response, dict) and "raw" in response:
                 metadata = getattr(response["raw"], "response_metadata", {}) or {}
                 self.last_model_metadata.update({key: metadata[key] for key in
