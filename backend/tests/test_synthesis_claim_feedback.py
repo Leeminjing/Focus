@@ -1,8 +1,8 @@
 """本文件对外提供正式 Dossier 合同校验与有界模型纠错回归。
 输入为冻结单来源证据、生产 RoleBoundStructuredModel 和仅替换远端响应的 Provider；输出为严格来源、纠错反馈与实际消费断言。
-具体工作流为通过生产 synthesis 服务提交非法引用或 claim graph，核对在成功记录前拒绝并在原上限内纠正；独立支持失败仍阻断。
+具体工作流为提交非法引用/claim graph，核对有界纠错；编译恢复 fixture 从真实 Loop snapshot 绑定不可变 observation。
 实际 Provider 请求须包含冻结 claim identity 枚举和精确 assessment 数量，重复集合仍由同一确定性 validator 拒绝。
-作者响应使用 section 内嵌的唯一声明清单；跨组重复本地 key 仍拒绝，服务端物化完整归属而不补造或忽略声明。
+作者响应使用 section 内嵌的唯一声明清单及冻结问题选择；跨组重复本地 key 仍拒绝，不补造或忽略声明。
 受控作者从实际冻结目录选择引用键；非法引用保持未知键，较早的 Schema 拒绝如实记录，原两次上限保持。
 示例：pytest backend/tests/test_synthesis_claim_feedback.py -q；不连接用户 Vault、不伪造独立支持或修改证据。
 """
@@ -18,6 +18,7 @@ from backend.app.desktop.agent_loop.context_expansion.contracts import EvidenceR
 from backend.app.desktop.agent_loop.context_expansion.synthesis import ClaimSupportProposal, ContextSynthesisValidator
 from backend.app.desktop.agent_loop.context_expansion.synthesis_service import StructuredContextSynthesisService
 from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.agent_loop.observation import LoopObservationBuilder
 from backend.app.desktop.context_curation import EvidenceRef, MissionEvidenceRef, MultiSourceEvidence, StructuredEvidence, evidence_ref_key
 from backend.tests._semantic_context_fixtures import single_source_fixture
 from backend.tests.config_helpers import app_config_for
@@ -37,6 +38,16 @@ def _inputs(*, mission=False):
     bundle = ResolvedEvidenceBundle.create(work_spec=spec, evidence=evidence,
         items=(ResolvedEvidenceItem(requirement_id="state", ref=ref, content_hash=evidence.sources[0].content_hash, relevance_reason="Exact source"),))
     return spec, bundle
+
+
+def _compiler_observation(seeded):
+    snapshot = seeded["snapshot"]
+    return LoopObservationBuilder().build(loop_id=seeded["loop_id"], round_id=seeded["round_id"],
+        loop_revision=snapshot["revision"], goal_revision=snapshot["goal_revision"],
+        authority_revision=snapshot["authority_revision"], observed_frontier_hash="a" * 64,
+        mission={key: snapshot["mission"][key] for key in ("outcome", "boundaries", "completion_checks")},
+        goal=snapshot["goal"], grant=snapshot["grant"],
+        portfolio_frontier=(), workspace={"workspace_id": snapshot["workspace_id"]}, budget={})
 
 
 def _draft(spec, bundle, invalid=None):
@@ -121,7 +132,7 @@ def test_invalid_graph_is_corrected_before_success_and_verification(monkeypatch,
         assert result.dossier is not None, result.blocker_summary
         assert [role for role, _ in calls] == ["synthesis", "synthesis", "verifier"]
         assert [record["outcome"] for record in synthesis.last_attempt_records] == ["error", "success"]
-        category = "model_schema_error" if invalid in {"citation", "mission"} else "synthesis_graph_invalid"
+        category = "model_schema_error" if invalid in {"citation", "mission", "question"} else "synthesis_graph_invalid"
         assert calls[1][1]["previous_attempt_failure"]["category"] == category
         assert synthesis.last_usage.model_calls == 2 and verifier.last_usage.model_calls == 1
         assert sum(record["input_tokens"] for record in result.attempt_records) == 120

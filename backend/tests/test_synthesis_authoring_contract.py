@@ -1,5 +1,5 @@
 """本文件对外提供正式作者冻结引用选择和权威形状合同回归。
-输入为六类原类型化引用、生产 RoleBound 请求及合法或非法作者声明；输出为精确目录枚举、原身份恢复与拒绝断言。
+输入为六类原类型化引用、冻结 WorkSpec、生产 RoleBound 请求及作者声明；输出为精确目录枚举、原身份恢复与拒绝断言。
 具体工作流为冻结目录进入实际请求 Schema，选择绑定回原引用，物化与持久 DTO 往返保持，未知来源及无根图不进入 Provider。
 示例：pytest backend/tests/test_synthesis_authoring_contract.py -q；受控远端响应只检验协议，不替代真实支持核验或正式派生。
 """
@@ -41,7 +41,7 @@ def test_frozen_selection_preserves_typed_reference_claim_identity_and_canonical
         sources=original.evidence.sources, structured=(StructuredEvidence(ref=ref, content='Frozen state'),), evidence_frontier=(ref,))
     bundle = ResolvedEvidenceBundle.create(work_spec=spec, evidence=evidence,
         items=(original.items[0].model_copy(update={'ref': ref}),))
-    selected = ContextSynthesisWorkerDraft.schema_for(bundle).model_validate(_selection(spec, bundle))
+    selected = ContextSynthesisWorkerDraft.schema_for(bundle, work_spec=spec).model_validate(_selection(spec, bundle))
     canonical = ContextSynthesisWorkerDraft.model_validate(_draft(spec, bundle))
     assert selected.sections[0].claims[0].citations == (ref,)
     assert type(selected.sections[0].claims[0].citations[0]) is type(ref)
@@ -64,7 +64,7 @@ def test_unknown_source_and_authority_lineage_rejected_at_author_parse(invalid):
         claim.update(citations=[], premise_claim_keys=[], authority={
             'confirmed-empty': 'confirmed', 'inference-empty': 'inference', 'hypothesis-empty': 'hypothesis'}[invalid])
     with pytest.raises(ValidationError):
-        ContextSynthesisWorkerDraft.schema_for(bundle).model_validate(payload)
+        ContextSynthesisWorkerDraft.schema_for(bundle, work_spec=spec).model_validate(payload)
 
 
 @pytest.mark.parametrize('authority,with_citation,with_premise', [
@@ -78,7 +78,7 @@ def test_existing_legal_lineage_preserved(authority, with_citation, with_premise
     child = {**root, 'claim_key': 'child', 'statement': 'Dependent state.', 'authority': authority,
         'citations': root['citations'] if with_citation else [], 'premise_claim_keys': ['state'] if with_premise else []}
     payload['sections'][0]['claims'].append(child)
-    worker = ContextSynthesisWorkerDraft.schema_for(bundle).model_validate(payload)
+    worker = ContextSynthesisWorkerDraft.schema_for(bundle, work_spec=spec).model_validate(payload)
     assert worker.materialize() == ContextSynthesisWorkerDraft.model_validate(worker.model_dump(mode='json')).materialize()
 
 
@@ -88,7 +88,7 @@ def test_source_selection_does_not_relax_unknown_premise_or_cycle(premise):
     payload = _selection(spec, bundle)
     payload['sections'][0]['claims'].append({'claim_key': 'child', 'statement': 'Dependent state.',
         'authority': 'inference', 'premise_claim_keys': [premise]})
-    worker = ContextSynthesisWorkerDraft.schema_for(bundle).model_validate(payload)
+    worker = ContextSynthesisWorkerDraft.schema_for(bundle, work_spec=spec).model_validate(payload)
     with pytest.raises(ValueError, match='已知|无环'):
         worker.materialize()
 

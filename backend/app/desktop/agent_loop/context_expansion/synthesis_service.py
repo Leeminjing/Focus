@@ -12,7 +12,8 @@ claim_verifier 的输出须恰好覆盖 confirmed identities，再判断是否�
 本次身份枚举与精确数量进入同一请求 schema 和既有容量准入，不能输出新身份或用少量结果替代全部评估。
 最后交给 deterministic ContextSynthesisValidator；失败保留已结构准入的 ContextSynthesisReview 与实际独立判定，供私有阶段审计精确复查。
 每次模型调用在同一 finally 中收集本次 attempts；没有调用的角色不读取其上次结果，也不对真实的不同调用按内容去重。
-错误摘要与 attempt 日志不包含候选正文或核验理由，未成功的作者不补造候选，未完成的核验不补造 verdict；任何失败均不回退为逐 evidence 复制。示例：
+冻结问题目录约束作者选择；覆盖/计划缺项的安全结构化诊断进入原有有界纠错和 attempt，不记录候选正文或核验理由。
+未成功的作者不补造候选，未完成的核验不补造 verdict；任何失败均不回退为逐 evidence 复制。示例：
 `result = await service.synthesize(observation, work_spec, bundle)`。
 """
 
@@ -39,10 +40,11 @@ from backend.app.desktop.agent_loop.context_expansion.synthesis import (
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 from backend.app.desktop.context_curation import NamespacedMessageRef, evidence_ref_key
 from backend.app.desktop.agent_loop.derivation_worker import StructuredResultValidationError, safe_validation_message
+from backend.app.desktop.agent_loop.context_expansion.start_readiness import QuestionContractViolation, question_catalog
 
 
 class StructuredContextSynthesisService:
-    VERSION = "structured-context-synthesizer-v10"
+    VERSION = "structured-context-synthesizer-v11"
 
     def __init__(self, synthesis_model, claim_verifier_model=None) -> None:
         self._synthesis_model = synthesis_model
@@ -69,14 +71,11 @@ class StructuredContextSynthesisService:
         try:
             worker_draft = await self._invoke_validated(
                 self._synthesis_model,
-                ContextSynthesisWorkerDraft.schema_for(bundle),
+                ContextSynthesisWorkerDraft.schema_for(bundle, work_spec=work_spec),
                 self._synthesis_authority(),
                 {
                     "work_spec": work_spec.model_dump(mode="json"),
-                    "question_identities": {
-                        self._validator.question_id(question): question
-                        for question in work_spec.questions
-                    },
+                    "question_identities": question_catalog(work_spec.questions),
                     "resolved_evidence": bundle.model_dump(mode="json"),
                     "citation_catalog": {
                         key: ref.model_dump(mode="json")
@@ -169,19 +168,16 @@ class StructuredContextSynthesisService:
     def _validate_worker_draft(self, worker_draft, *, work_spec, bundle, execution_readiness=None):
         try:
             draft = worker_draft.materialize()
-            self._validator.validate_draft(work_spec, bundle, draft)
-            if execution_readiness is not None:
-                execution_readiness.validate_plans(draft.question_dispositions, work_spec.questions)
-                unresolved = {self._validator.question_id(q) for q in draft.unresolved_questions}
-                if unresolved != {p.question_id for p in draft.question_dispositions}:
-                    raise ValueError("未解问题须逐项说明前置输入或执行研究路径")
+            self._validator.validate_draft(work_spec, bundle, draft, execution_readiness=execution_readiness)
         except (KeyError, TypeError, ValueError) as exc:
             raise StructuredResultValidationError(
                 "synthesis_graph_invalid",
                 "Claim graph 必须使用冻结 bundle 的精确引用、已声明的 requirement/question 和有效本地 claim keys。"
                 f"失败规则：{safe_validation_message(exc)[:800]}",
                 unit_identity=work_spec.work_spec_id,
-                violated_rule="frozen_claim_graph",
+                violated_rule="question_coverage" if isinstance(exc, QuestionContractViolation) else "frozen_claim_graph",
+                details=exc.diagnostics.model_dump(mode="json", exclude_defaults=True)
+                    if isinstance(exc, QuestionContractViolation) else None,
             ) from exc
 
     @staticmethod
