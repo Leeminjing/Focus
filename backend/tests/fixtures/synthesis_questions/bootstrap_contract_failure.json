@@ -1,0 +1,656 @@
+{
+  "source": {
+    "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+    "expansion_id": "f9b40c98c0aa49634a03272101ea8eb58d20479893ec1a1d0cb0ba8f71e69018",
+    "description": "Frozen work specification and resolved Mission evidence from 2026-10-07. Invalid author responses were not retained; test responses and capability scope are controlled, not captured Provider output."
+  },
+  "work_spec": {
+    "objective": "建立 Obsidian 桌面宠物 Agent 插件的工程骨架与构建/交付基础：包括 manifest.json、构建配置、插件生命周期入口、基础配置持久化和模块边界骨架，使仓库可安装依赖、可生产构建，并为后续模型层、Agent Runtime、Obsidian Tools 和 UI 提供稳定接入点。",
+    "questions": [
+      "manifest.json、构建配置和模块边界骨架应如何组织，以支持后续 UI、Agent Runtime、Model Adapter、Obsidian Tools、配置持久化和会话状态模块化解耦？",
+      "当前仓库应采用什么构建工具链、目录结构和插件入口，才能产出可安装的 Obsidian 插件？",
+      "配置持久化基础应放在哪一层，如何保证 System Prompt、模型配置和宠物状态后续可复用且 API Key 不泄露？"
+    ],
+    "work_spec_id": "a980534c95733d0d4f56cf0278fba0ad11e800d4084b3c9714857dabae3e9029",
+    "planner_version": "retrieval-worker-cognitive-planner-v2",
+    "separation_reason": "该 context 负责构建、打包、插件生命周期和配置持久化基础，是其余模块的运行前提；模型 Provider 抽象、Agent 工具语义、宠物 UI 交互和最终全量验收各自有独立接口与测试标准，不应与工程骨架共享同一认知历史。",
+    "completion_criteria": [
+      "与工程骨架和配置持久化基础相关的单元测试通过。",
+      "仓库包含 manifest.json、构建配置、入口源码和可安装产物生成流程。",
+      "依赖安装和生产构建能够成功执行。",
+      "插件生命周期入口和模块边界骨架已定义，后续模型、运行时、工具、UI 可独立接入。",
+      "配置持久化基础接口可用，敏感配置不会硬编码进源码、测试结果或日志。"
+    ],
+    "evidence_requirements": [
+      {
+        "role": "requirement",
+        "question": "工程骨架和配置持久化基础不得违反哪些边界与不变量？",
+        "necessity": "required",
+        "candidate_refs": [
+          {
+            "source": null,
+            "entry_id": "a70d63c7dac1bea195e566f6596c5ba71ec3635d11e707d42c9c6db3d74c7120",
+            "index_id": "caa68916b145fa93fd01fc3bf34011f41f72d27280fed0757b77620a06453cf1",
+            "entry_kind": "mission_section",
+            "mission_ref": {
+              "kind": "mission",
+              "item_id": "required_invariants",
+              "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+              "content_hash": "1f79ccc1c831fbeee8182089f771a71260c3e7070a9dc97ef3c2cddd2a3b8def",
+              "section_kind": "boundary",
+              "goal_revision": 1,
+              "identity_version": "mission-section-v2"
+            },
+            "source_type": "mission",
+            "candidate_id": "45a8786516dbbfea6f9abd0ce34fb34343d05f06ca77631734f3849e3933ccfd",
+            "identity_version": "candidate-source-v2",
+            "source_content_hash": "1f79ccc1c831fbeee8182089f771a71260c3e7070a9dc97ef3c2cddd2a3b8def"
+          },
+          {
+            "source": null,
+            "entry_id": "6eee3128c47c402c1afbaf3f331b8e6454351ed9de43007ee895fa40b09a5763",
+            "index_id": "caa68916b145fa93fd01fc3bf34011f41f72d27280fed0757b77620a06453cf1",
+            "entry_kind": "mission_section",
+            "mission_ref": {
+              "kind": "mission",
+              "item_id": "prohibited_actions",
+              "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+              "content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133",
+              "section_kind": "boundary",
+              "goal_revision": 1,
+              "identity_version": "mission-section-v2"
+            },
+            "source_type": "mission",
+            "candidate_id": "7d371bfe3e71215272aa4b71fb345b5960b9273a0020b2039c8ffced53c14e60",
+            "identity_version": "candidate-source-v2",
+            "source_content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133"
+          }
+        ],
+        "requirement_id": "foundation-boundaries-invariants",
+        "candidate_unit_ids": [],
+        "coverage_criterion": "覆盖 prohibited_actions 对仓库外文件、真实 Vault 和公开发布的禁止，以及 required_invariants 对不破坏既有测试、模块化边界和敏感配置不硬编码的要求。",
+        "source_constraints": {
+          "context_ids": [],
+          "context_roles": [],
+          "evidence_kinds": []
+        }
+      },
+      {
+        "role": "requirement",
+        "question": "mission 对完整仓库、manifest、构建配置、配置持久化和 in-scope 文件范围提出了哪些要求？",
+        "necessity": "required",
+        "candidate_refs": [
+          {
+            "source": null,
+            "entry_id": "e07005d62f8c28c02ae6c2b3d0a5d55ec189dc6c696e19255ee19cc8e1d567f4",
+            "index_id": "caa68916b145fa93fd01fc3bf34011f41f72d27280fed0757b77620a06453cf1",
+            "entry_kind": "mission_section",
+            "mission_ref": {
+              "kind": "mission",
+              "item_id": "outcome",
+              "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+              "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+              "section_kind": "outcome",
+              "goal_revision": 1,
+              "identity_version": "mission-section-v2"
+            },
+            "source_type": "mission",
+            "candidate_id": "2039cdf396fe5385da1c703da7dfa482b2d87a49f62de299b7bfb720e0bcf639",
+            "identity_version": "candidate-source-v2",
+            "source_content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced"
+          },
+          {
+            "source": null,
+            "entry_id": "a20135f082852cbb1ea554f6378832b45bedb2e347f33110bc3bd9adfbc3e4a4",
+            "index_id": "caa68916b145fa93fd01fc3bf34011f41f72d27280fed0757b77620a06453cf1",
+            "entry_kind": "mission_section",
+            "mission_ref": {
+              "kind": "mission",
+              "item_id": "check-1",
+              "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+              "content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c",
+              "section_kind": "completion_check",
+              "goal_revision": 1,
+              "identity_version": "mission-section-v2"
+            },
+            "source_type": "mission",
+            "candidate_id": "31d37709803fba01c083ad0f9a1f93b7b04bfbd39243afb4eb03ca981778ca60",
+            "identity_version": "candidate-source-v2",
+            "source_content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c"
+          },
+          {
+            "source": null,
+            "entry_id": "d61cbc0ba2d148f0c62e121f9bbd297db4d089a411fce93e2b06d824a4b1cc13",
+            "index_id": "caa68916b145fa93fd01fc3bf34011f41f72d27280fed0757b77620a06453cf1",
+            "entry_kind": "mission_section",
+            "mission_ref": {
+              "kind": "mission",
+              "item_id": "check-9",
+              "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+              "content_hash": "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4",
+              "section_kind": "completion_check",
+              "goal_revision": 1,
+              "identity_version": "mission-section-v2"
+            },
+            "source_type": "mission",
+            "candidate_id": "6efb8fa802647d2523cede5ccb17af5418e842fb895fde2f1d1a46185d450ee1",
+            "identity_version": "candidate-source-v2",
+            "source_content_hash": "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4"
+          },
+          {
+            "source": null,
+            "entry_id": "f1745e0e8e14d015c1159f1a9a7e55285385b70ec50e37d7c60c01852170f500",
+            "index_id": "caa68916b145fa93fd01fc3bf34011f41f72d27280fed0757b77620a06453cf1",
+            "entry_kind": "mission_section",
+            "mission_ref": {
+              "kind": "mission",
+              "item_id": "in_scope",
+              "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+              "content_hash": "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640",
+              "section_kind": "boundary",
+              "goal_revision": 1,
+              "identity_version": "mission-section-v2"
+            },
+            "source_type": "mission",
+            "candidate_id": "b1413a45c640a9f0b29d264eae4e8e05638aed0cf0e3736d106d38d6d232fd29",
+            "identity_version": "candidate-source-v2",
+            "source_content_hash": "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640"
+          }
+        ],
+        "requirement_id": "foundation-outcome-scope-build",
+        "candidate_unit_ids": [],
+        "coverage_criterion": "覆盖 outcome 中完整可构建仓库、manifest、构建配置、配置持久化和模块化解耦目标，以及 in_scope 对仓库内源码、测试、配置、构建脚本、manifest、文档和 fixture 的授权，和 check-1/check-9 对生产构建与交付文件的要求。",
+        "source_constraints": {
+          "context_ids": [],
+          "context_roles": [],
+          "evidence_kinds": []
+        }
+      },
+      {
+        "role": "requirement",
+        "question": "配置持久化基础需要满足哪些重载恢复要求？",
+        "necessity": "required",
+        "candidate_refs": [
+          {
+            "source": null,
+            "entry_id": "932f019bd89d096cbc253a508549dab176675cfa1653c696095e0c71ca110858",
+            "index_id": "caa68916b145fa93fd01fc3bf34011f41f72d27280fed0757b77620a06453cf1",
+            "entry_kind": "mission_section",
+            "mission_ref": {
+              "kind": "mission",
+              "item_id": "check-6",
+              "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+              "content_hash": "d1137825cf7ab87a679062e7a8481755aac301c73ef9070b14b65480ea4c6ac9",
+              "section_kind": "completion_check",
+              "goal_revision": 1,
+              "identity_version": "mission-section-v2"
+            },
+            "source_type": "mission",
+            "candidate_id": "3486b96b7f8a7e7d9f4fd1afbc3008b9c0f85e5a9fc5eb1b47a9018ce724b53b",
+            "identity_version": "candidate-source-v2",
+            "source_content_hash": "d1137825cf7ab87a679062e7a8481755aac301c73ef9070b14b65480ea4c6ac9"
+          }
+        ],
+        "requirement_id": "foundation-persistence-check",
+        "candidate_unit_ids": [],
+        "coverage_criterion": "覆盖 check-6 对 System Prompt、模型配置、宠物位置和显示状态在插件重新加载后恢复的要求，作为基础持久化层的验收依据。",
+        "source_constraints": {
+          "context_ids": [],
+          "context_roles": [],
+          "evidence_kinds": []
+        }
+      }
+    ],
+    "workspace_requirement": "isolated_write"
+  },
+  "bundle": {
+    "items": [
+      {
+        "ref": {
+          "kind": "mission",
+          "item_id": "prohibited_actions",
+          "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+          "content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133",
+          "section_kind": "boundary",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        "content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133",
+        "requirement_id": "foundation-boundaries-invariants",
+        "relevance_reason": "Exact semantic binding satisfies foundation-boundaries-invariants: 工程骨架和配置持久化基础不得违反哪些边界与不变量？ Coverage criterion: 覆盖 prohibited_actions 对仓库外文件、真实 Vault 和公开发布的禁止，以及 required_invariants 对不破坏既有测试、模块化边界和敏感配置不硬编码的要求。"
+      },
+      {
+        "ref": {
+          "kind": "mission",
+          "item_id": "required_invariants",
+          "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+          "content_hash": "1f79ccc1c831fbeee8182089f771a71260c3e7070a9dc97ef3c2cddd2a3b8def",
+          "section_kind": "boundary",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        "content_hash": "1f79ccc1c831fbeee8182089f771a71260c3e7070a9dc97ef3c2cddd2a3b8def",
+        "requirement_id": "foundation-boundaries-invariants",
+        "relevance_reason": "Exact semantic binding satisfies foundation-boundaries-invariants: 工程骨架和配置持久化基础不得违反哪些边界与不变量？ Coverage criterion: 覆盖 prohibited_actions 对仓库外文件、真实 Vault 和公开发布的禁止，以及 required_invariants 对不破坏既有测试、模块化边界和敏感配置不硬编码的要求。"
+      },
+      {
+        "ref": {
+          "kind": "mission",
+          "item_id": "in_scope",
+          "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+          "content_hash": "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640",
+          "section_kind": "boundary",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        "content_hash": "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640",
+        "requirement_id": "foundation-outcome-scope-build",
+        "relevance_reason": "Exact semantic binding satisfies foundation-outcome-scope-build: mission 对完整仓库、manifest、构建配置、配置持久化和 in-scope 文件范围提出了哪些要求？ Coverage criterion: 覆盖 outcome 中完整可构建仓库、manifest、构建配置、配置持久化和模块化解耦目标，以及 in_scope 对仓库内源码、测试、配置、构建脚本、manifest、文档和 fixture 的授权，和 check-1/check-9 对生产构建与交付文件的要求。"
+      },
+      {
+        "ref": {
+          "kind": "mission",
+          "item_id": "check-1",
+          "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+          "content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c",
+          "section_kind": "completion_check",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        "content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c",
+        "requirement_id": "foundation-outcome-scope-build",
+        "relevance_reason": "Exact semantic binding satisfies foundation-outcome-scope-build: mission 对完整仓库、manifest、构建配置、配置持久化和 in-scope 文件范围提出了哪些要求？ Coverage criterion: 覆盖 outcome 中完整可构建仓库、manifest、构建配置、配置持久化和模块化解耦目标，以及 in_scope 对仓库内源码、测试、配置、构建脚本、manifest、文档和 fixture 的授权，和 check-1/check-9 对生产构建与交付文件的要求。"
+      },
+      {
+        "ref": {
+          "kind": "mission",
+          "item_id": "check-9",
+          "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+          "content_hash": "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4",
+          "section_kind": "completion_check",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        "content_hash": "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4",
+        "requirement_id": "foundation-outcome-scope-build",
+        "relevance_reason": "Exact semantic binding satisfies foundation-outcome-scope-build: mission 对完整仓库、manifest、构建配置、配置持久化和 in-scope 文件范围提出了哪些要求？ Coverage criterion: 覆盖 outcome 中完整可构建仓库、manifest、构建配置、配置持久化和模块化解耦目标，以及 in_scope 对仓库内源码、测试、配置、构建脚本、manifest、文档和 fixture 的授权，和 check-1/check-9 对生产构建与交付文件的要求。"
+      },
+      {
+        "ref": {
+          "kind": "mission",
+          "item_id": "outcome",
+          "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+          "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+          "section_kind": "outcome",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+        "requirement_id": "foundation-outcome-scope-build",
+        "relevance_reason": "Exact semantic binding satisfies foundation-outcome-scope-build: mission 对完整仓库、manifest、构建配置、配置持久化和 in-scope 文件范围提出了哪些要求？ Coverage criterion: 覆盖 outcome 中完整可构建仓库、manifest、构建配置、配置持久化和模块化解耦目标，以及 in_scope 对仓库内源码、测试、配置、构建脚本、manifest、文档和 fixture 的授权，和 check-1/check-9 对生产构建与交付文件的要求。"
+      },
+      {
+        "ref": {
+          "kind": "mission",
+          "item_id": "check-6",
+          "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+          "content_hash": "d1137825cf7ab87a679062e7a8481755aac301c73ef9070b14b65480ea4c6ac9",
+          "section_kind": "completion_check",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        "content_hash": "d1137825cf7ab87a679062e7a8481755aac301c73ef9070b14b65480ea4c6ac9",
+        "requirement_id": "foundation-persistence-check",
+        "relevance_reason": "Exact semantic binding satisfies foundation-persistence-check: 配置持久化基础需要满足哪些重载恢复要求？ Coverage criterion: 覆盖 check-6 对 System Prompt、模型配置、宠物位置和显示状态在插件重新加载后恢复的要求，作为基础持久化层的验收依据。"
+      }
+    ],
+    "evidence": {
+      "sources": [
+        {
+          "source": {
+            "context_id": "4fe6d93cec9d4733b3af8313ec17de7e",
+            "generation": 1,
+            "revision_id": "0090f3fff2fe4287bc9ea14f61429398",
+            "payload_mode": "checkpoint",
+            "checkpoint_id": "1f1c20af-ca4c-63ff-800c-3ba4139cd992",
+            "checkpoint_ns": "",
+            "execution_thread_id": "04f41ddf66654b3e86ce4155cf243bc9"
+          },
+          "messages": [],
+          "content_hash": "5ca41a7de65a47f682c5692ed58c13ba797252618c14bce89d945df9305f04b6",
+          "projection_hash": "31618af4bf4017b92b1b2ec2f0ddf3275c02cac6bf97beea36e2830e3203403c"
+        }
+      ],
+      "structured": [
+        {
+          "ref": {
+            "kind": "mission",
+            "item_id": "outcome",
+            "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+            "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+            "section_kind": "outcome",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          },
+          "content": "交付一个完整、可构建、可安装、可实际运行的 Obsidian 桌面宠物 Agent 插件仓库。桌面宠物支持点击、拖拽、展开/收起对话、隐藏/唤出；Agent 可读取 Obsidian 上下文并通过授权工具操作 Vault；支持自定义 System Prompt 和模型配置并持久化；模型层、Agent Runtime、Obsidian Tools、UI、配置和会话状态模块化解耦；具备完整异常处理、单元测试、集成测试和关键流程自动化测试；最终所有要求的测试、构建和验收检查全部通过，并包含 manifest.json、构建配置、README、安装配置说明和架构说明。"
+        },
+        {
+          "ref": {
+            "kind": "mission",
+            "item_id": "in_scope",
+            "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+            "content_hash": "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640",
+            "section_kind": "boundary",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          },
+          "content": [
+            "当前 Obsidian 插件项目仓库内的源码、测试、配置、构建脚本、manifest、文档和测试 fixture。",
+            "可以创建、修改、删除当前项目仓库内部为实现该插件所必需的文件。"
+          ]
+        },
+        {
+          "ref": {
+            "kind": "mission",
+            "item_id": "required_invariants",
+            "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+            "content_hash": "1f79ccc1c831fbeee8182089f771a71260c3e7070a9dc97ef3c2cddd2a3b8def",
+            "section_kind": "boundary",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          },
+          "content": [
+            "不得破坏已经通过的功能和测试；修改现有接口时必须同步更新其调用方和测试。",
+            "UI、Agent Runtime、Model Adapter、Obsidian Tools、配置持久化、会话状态必须保持模块化边界。",
+            "API Key 等敏感配置不得硬编码进源码、测试结果或日志。"
+          ]
+        },
+        {
+          "ref": {
+            "kind": "mission",
+            "item_id": "prohibited_actions",
+            "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+            "content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133",
+            "section_kind": "boundary",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          },
+          "content": [
+            "不得修改当前项目仓库之外的文件、系统配置或其他项目。",
+            "不得操作用户真实 Obsidian Vault 中的数据，只允许使用测试 Vault / fixture 完成自动化验证。",
+            "不得执行发布到 Obsidian Community Plugins、npm 或其他公开平台的操作。"
+          ]
+        },
+        {
+          "ref": {
+            "kind": "mission",
+            "item_id": "check-1",
+            "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+            "content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c",
+            "section_kind": "completion_check",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          },
+          "content": {
+            "claim": "项目能够成功安装依赖并完成生产构建。",
+            "check_id": "check-1",
+            "required": true,
+            "user_verification": false,
+            "expected_evidence_kinds": [
+              "test"
+            ]
+          }
+        },
+        {
+          "ref": {
+            "kind": "mission",
+            "item_id": "check-6",
+            "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+            "content_hash": "d1137825cf7ab87a679062e7a8481755aac301c73ef9070b14b65480ea4c6ac9",
+            "section_kind": "completion_check",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          },
+          "content": {
+            "claim": "System Prompt、模型配置、宠物位置和显示状态在插件重新加载后能够恢复。",
+            "check_id": "check-6",
+            "required": true,
+            "user_verification": false,
+            "expected_evidence_kinds": [
+              "test"
+            ]
+          }
+        },
+        {
+          "ref": {
+            "kind": "mission",
+            "item_id": "check-9",
+            "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+            "content_hash": "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4",
+            "section_kind": "completion_check",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          },
+          "content": {
+            "claim": "最终仓库包含 manifest.json、完整源码、构建配置、测试代码、README、安装配置说明和架构扩展说明。",
+            "check_id": "check-9",
+            "required": true,
+            "user_verification": false,
+            "expected_evidence_kinds": [
+              "artifact"
+            ]
+          }
+        }
+      ],
+      "evidence_frontier": [
+        {
+          "kind": "mission",
+          "item_id": "in_scope",
+          "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+          "content_hash": "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640",
+          "section_kind": "boundary",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        {
+          "kind": "mission",
+          "item_id": "prohibited_actions",
+          "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+          "content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133",
+          "section_kind": "boundary",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        {
+          "kind": "mission",
+          "item_id": "required_invariants",
+          "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+          "content_hash": "1f79ccc1c831fbeee8182089f771a71260c3e7070a9dc97ef3c2cddd2a3b8def",
+          "section_kind": "boundary",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        {
+          "kind": "mission",
+          "item_id": "check-1",
+          "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+          "content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c",
+          "section_kind": "completion_check",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        {
+          "kind": "mission",
+          "item_id": "check-6",
+          "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+          "content_hash": "d1137825cf7ab87a679062e7a8481755aac301c73ef9070b14b65480ea4c6ac9",
+          "section_kind": "completion_check",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        {
+          "kind": "mission",
+          "item_id": "check-9",
+          "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+          "content_hash": "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4",
+          "section_kind": "completion_check",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        {
+          "kind": "mission",
+          "item_id": "outcome",
+          "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+          "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+          "section_kind": "outcome",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        }
+      ]
+    },
+    "usage_ledger": {
+      "charges": [
+        {
+          "kind": "compiled_evidence_item",
+          "units": 1,
+          "input_tokens": 0,
+          "operation_id": "a8758c982589e2ef2d480d3ea6d5bc13160b0621d1e5fb4008681855a870f4ed",
+          "output_tokens": 0,
+          "usage_reported": true
+        },
+        {
+          "kind": "compiled_evidence_item",
+          "units": 1,
+          "input_tokens": 0,
+          "operation_id": "66ceeb408fc820592f239c72264187eec1bb17826a76b2e744e74811bc15ff81",
+          "output_tokens": 0,
+          "usage_reported": true
+        },
+        {
+          "kind": "compiled_evidence_item",
+          "units": 1,
+          "input_tokens": 0,
+          "operation_id": "41756bb122fcdc92d46a460d0fbbf6c3478c58d52aa5c8c37b04cecb8da845fd",
+          "output_tokens": 0,
+          "usage_reported": true
+        },
+        {
+          "kind": "compiled_evidence_item",
+          "units": 1,
+          "input_tokens": 0,
+          "operation_id": "ef049a99b632a7e716b9ded1868d331fa604f17af5674ab0357ec4db994d2a94",
+          "output_tokens": 0,
+          "usage_reported": true
+        },
+        {
+          "kind": "compiled_evidence_item",
+          "units": 1,
+          "input_tokens": 0,
+          "operation_id": "cabde3842fcca31ac034a23ca19e5a8ed31477288c0be9411b8a2fdcc5958606",
+          "output_tokens": 0,
+          "usage_reported": true
+        },
+        {
+          "kind": "compiled_evidence_item",
+          "units": 1,
+          "input_tokens": 0,
+          "operation_id": "192fea6311245f0afc00beda4e53224e3056474390db6776da541e2b471b9736",
+          "output_tokens": 0,
+          "usage_reported": true
+        },
+        {
+          "kind": "compiled_evidence_item",
+          "units": 1,
+          "input_tokens": 0,
+          "operation_id": "242aef4f095373c57256b8c3822771fec72d832bf47258fd61771261df77205f",
+          "output_tokens": 0,
+          "usage_reported": true
+        }
+      ],
+      "ledger_id": "dd369a4a7990805b69329fcdd779000ec32525728b441b790555790edfbf91a6"
+    },
+    "work_spec_id": "a980534c95733d0d4f56cf0278fba0ad11e800d4084b3c9714857dabae3e9029",
+    "resolution_id": "dd369a4a7990805b69329fcdd779000ec32525728b441b790555790edfbf91a6",
+    "source_frontier": [
+      {
+        "context_id": "4fe6d93cec9d4733b3af8313ec17de7e",
+        "generation": 1,
+        "revision_id": "0090f3fff2fe4287bc9ea14f61429398",
+        "payload_mode": "checkpoint",
+        "checkpoint_id": "1f1c20af-ca4c-63ff-800c-3ba4139cd992",
+        "checkpoint_ns": "",
+        "execution_thread_id": "04f41ddf66654b3e86ce4155cf243bc9"
+      }
+    ],
+    "evidence_frontier": [
+      {
+        "kind": "mission",
+        "item_id": "in_scope",
+        "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+        "content_hash": "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640",
+        "section_kind": "boundary",
+        "goal_revision": 1,
+        "identity_version": "mission-section-v2"
+      },
+      {
+        "kind": "mission",
+        "item_id": "prohibited_actions",
+        "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+        "content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133",
+        "section_kind": "boundary",
+        "goal_revision": 1,
+        "identity_version": "mission-section-v2"
+      },
+      {
+        "kind": "mission",
+        "item_id": "required_invariants",
+        "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+        "content_hash": "1f79ccc1c831fbeee8182089f771a71260c3e7070a9dc97ef3c2cddd2a3b8def",
+        "section_kind": "boundary",
+        "goal_revision": 1,
+        "identity_version": "mission-section-v2"
+      },
+      {
+        "kind": "mission",
+        "item_id": "check-1",
+        "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+        "content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c",
+        "section_kind": "completion_check",
+        "goal_revision": 1,
+        "identity_version": "mission-section-v2"
+      },
+      {
+        "kind": "mission",
+        "item_id": "check-6",
+        "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+        "content_hash": "d1137825cf7ab87a679062e7a8481755aac301c73ef9070b14b65480ea4c6ac9",
+        "section_kind": "completion_check",
+        "goal_revision": 1,
+        "identity_version": "mission-section-v2"
+      },
+      {
+        "kind": "mission",
+        "item_id": "check-9",
+        "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+        "content_hash": "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4",
+        "section_kind": "completion_check",
+        "goal_revision": 1,
+        "identity_version": "mission-section-v2"
+      },
+      {
+        "kind": "mission",
+        "item_id": "outcome",
+        "loop_id": "9d1273b69d5d4f97912bb0ca9b2300bb",
+        "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+        "section_kind": "outcome",
+        "goal_revision": 1,
+        "identity_version": "mission-section-v2"
+      }
+    ],
+    "required_requirement_ids": [
+      "foundation-boundaries-invariants",
+      "foundation-outcome-scope-build",
+      "foundation-persistence-check"
+    ]
+  }
+}

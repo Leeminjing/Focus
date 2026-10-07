@@ -1,6 +1,6 @@
 r"""本文件对外提供 RoleBoundStructuredModel、结构化结果验证异常及 safe_validation_message。
 
-输入为 AppConfig、无权派生 role、schema、冻结 payload、结果 validator 及可选逐 attempt request guard；输出为结构化结果和真实 attempts／usage。
+输入为 AppConfig、无权派生 role、schema、冻结 payload、结果 validator 及可选逐 attempt request guard；输出为结构化结果、安全诊断和真实 attempts／usage。
 具体工作流为每次 attempt 新建独立 StructuredWorkerModel，先准入，再有界调用／验证；同步校验直接执行，异步返回确实等待；失败、取消和预算中止保存实际用量。
 cache_identity 只哈希非凭据模型配置；bind_request_guard 为索引共享预算提供逐次检查，不读 Context 或提交 Portfolio。safe_validation_message 排除 Pydantic 的原候选输入，供反馈和持久失败共用。
 示例：model.bind_request_guard(budget.admit); result = await model.invoke_validated(Schema, prompt, payload, validator)。
@@ -45,11 +45,13 @@ class StructuredResultValidationError(ValueError):
         *,
         unit_identity: str,
         violated_rule: str,
+        details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.unit_identity = unit_identity
         self.violated_rule = violated_rule
+        self.details = details
 
 
 class RoleBoundStructuredModel:
@@ -117,7 +119,7 @@ class RoleBoundStructuredModel:
         records: list[dict[str, Any]] = []
         invocation_usage = ModelUsage()
         last_error: Exception | None = None
-        feedback: dict[str, str] | None = None
+        feedback: dict[str, Any] | None = None
         for attempt in range(1, self._max_attempts + 1):
             worker = StructuredWorkerModel(self._app_config, self._model_name)
             if self._usage_receipts.get() is not None:
@@ -197,7 +199,7 @@ class RoleBoundStructuredModel:
         usage: ModelUsage,
         error_type: str | None = None,
         failure_category: str | None = None,
-        validation_feedback: dict[str, str] | None = None,
+        validation_feedback: dict[str, Any] | None = None,
         model_metadata: dict | None = None,
     ) -> dict[str, Any]:
         return {
@@ -218,7 +220,7 @@ class RoleBoundStructuredModel:
     @staticmethod
     def _attempt_payload(
         payload: dict[str, Any],
-        feedback: dict[str, str] | None,
+        feedback: dict[str, Any] | None,
     ) -> dict[str, Any]:
         if feedback is None:
             return payload
@@ -241,7 +243,7 @@ class RoleBoundStructuredModel:
         return "model_worker_error"
 
     @staticmethod
-    def _failure_feedback(exc: Exception, category: str) -> dict[str, str]:
+    def _failure_feedback(exc: Exception, category: str) -> dict[str, Any]:
         message = safe_validation_message(exc)
         feedback = {
             "category": category,
@@ -255,4 +257,6 @@ class RoleBoundStructuredModel:
                     "violated_rule": exc.violated_rule,
                 }
             )
+            if exc.details is not None:
+                feedback["details"] = exc.details
         return feedback

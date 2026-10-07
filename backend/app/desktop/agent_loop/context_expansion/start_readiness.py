@@ -1,10 +1,13 @@
-"""本文件对外提供 QuestionDisposition、ExecutionReadiness 与冻结能力读取入口。
+"""本文件对外提供冻结问题目录、问题覆盖诊断、QuestionDisposition、ExecutionReadiness 与能力读取入口。
 
 输入为已有问题身份、调查目标和所需执行权限，以及实际 Loop 装备/Grant；输出为类型化问题处置与平台能力事实。
-具体工作流为校验问题身份，按角色缩权和有效授权交集读取能力；研究计划只提出需求，不授予权限或证明结果。
+具体工作流为复用稳定问题身份，汇总缺覆盖和计划关系缺项；诊断只含合法身份及未知引用哈希。
+按角色缩权和有效授权交集读取能力；研究计划只提出需求，不授予权限或证明结果。
 示例：scope = await load_execution_readiness(sessions, observation, work_spec)；scope.validate_plans(plans, questions)。
 """
 
+from collections import Counter
+from collections.abc import Iterable
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -20,6 +23,47 @@ from focus.tools.builtins.workspace_tools import select_workspace_tools, TOOL_NA
 
 def work_question_id(question: str) -> str:
     return stable_expansion_hash("work-spec-question", " ".join(question.split()).casefold())
+
+
+def question_catalog(questions: tuple[str, ...]) -> dict[str, str]:
+    return dict(sorted((work_question_id(question), question) for question in questions))
+
+
+class QuestionCoverageDiagnostics(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    missing_question_ids: tuple[str, ...] = ()
+    missing_plan_ids: tuple[str, ...] = ()
+    duplicate_plan_ids: tuple[str, ...] = ()
+    extra_plan_ids: tuple[str, ...] = ()
+    unknown_reference_hashes: tuple[str, ...] = ()
+
+
+class QuestionContractViolation(ValueError):
+    def __init__(self, diagnostics: QuestionCoverageDiagnostics) -> None:
+        super().__init__("synthesis 未覆盖 WorkSpec required questions 或未解问题的逐项处置不合法")
+        self.diagnostics = diagnostics
+
+
+def validate_question_coverage(
+    questions: tuple[str, ...], covered_ids: Iterable[str], unresolved_questions: tuple[str, ...],
+    plans: tuple["QuestionDisposition", ...], *, require_plans: bool = False,
+) -> None:
+    known = set(question_catalog(questions))
+    covered = set(covered_ids)
+    unresolved = {work_question_id(q) for q in unresolved_questions}
+    plan_counts = Counter(p.question_id for p in plans)
+    plan_ids = set(plan_counts)
+    unknown = (covered | unresolved | plan_ids) - known
+    diagnostics = QuestionCoverageDiagnostics(
+        missing_question_ids=tuple(sorted(known - covered - unresolved)),
+        missing_plan_ids=tuple(sorted((unresolved & known) - plan_ids)) if require_plans or plans else (),
+        duplicate_plan_ids=tuple(sorted(key for key, count in plan_counts.items() if count > 1 and key in known)),
+        extra_plan_ids=tuple(sorted((plan_ids & known) - unresolved)),
+        unknown_reference_hashes=tuple(sorted(stable_expansion_hash("unknown-question-reference", key) for key in unknown)),
+    )
+    if diagnostics.model_dump(exclude_defaults=True):
+        raise QuestionContractViolation(diagnostics)
 
 
 class QuestionDisposition(BaseModel):

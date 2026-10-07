@@ -2,13 +2,13 @@ r"""本文件对外提供 Context synthesis DTO、ContextSynthesisValidator、Wo
 
 输入为冻结 WorkContextSpec、ResolvedEvidenceBundle、原子 claims、引用/前提/覆盖映射及独立支持判定；输出为身份稳定的
 ValidatedContextDossier 或明确 blocker。具体工作流为作者 citation_catalog/schema_for 仅允许冻结目录键，解析绑定回原类型化引用，
-Schema 表达 confirmed/inference/hypothesis 的既有引用与前提规则；空目录拒绝，通用 DTO 保留完整引用 JSON 恢复。
+Schema 表达声明形状及冻结问题/处置选择；空目录和异源 WorkSpec 拒绝，通用 DTO 保留完整引用 JSON 恢复。
 section 内嵌清单是唯一声明归属；materialize 按拓扑生成稳定身份，拒绝重复 key、未知 premise、循环和非法 authority。
 statement 表达来源领域命题，生成图的分组/依赖/覆盖由类型化字段表达。validate_draft 在成功记录前检查冻结引用和完整覆盖，
 validate 再独立检查 direct-support。ClaimSupportProposal.schema_for 约束 confirmed 身份与数量，不预设 verdict。
 失败摘要仅保留实际拒绝计数及首条身份；ContextSynthesisReview 在私有失败产物保存已结构准入候选与实际判定，未核验为 None，
 不进入 ready 缓存。持久引用先类型化再排序，冻结输入及 synthesizer version 决定 dossier 身份，不读取最新 Portfolio 或补造证据。
-问题处置绑定已有 question identity；平台 ExecutionReadiness 校验实际研究能力并进入新 dossier 身份，旧材料默认无处置仍可恢复。
+问题目录驱动覆盖及逐项计划反馈；平台校验实际研究能力，旧材料仍可按静态 DTO 恢复。
 示例：`dossier = validator.validate(work_spec, bundle, draft, support_verdicts, execution_readiness=scope, synthesizer_version="v1")`。
 """
 
@@ -41,7 +41,9 @@ from backend.app.desktop.context_curation import EvidenceRef, evidence_ref_key
 
 ClaimAuthority = Literal["confirmed", "inference", "hypothesis"]
 ClaimSupportVerdict = Literal["supported", "unsupported", "unknown"]
-from backend.app.desktop.agent_loop.context_expansion.start_readiness import ExecutionReadiness, QuestionDisposition, work_question_id
+from backend.app.desktop.agent_loop.context_expansion.start_readiness import (
+    ExecutionReadiness, QuestionDisposition, question_catalog, validate_question_coverage, work_question_id,
+)
 
 
 class _SynthesisModel(BaseModel):
@@ -158,11 +160,15 @@ class ContextSynthesisWorkerDraft(_SynthesisModel):
         }
 
     @classmethod
-    def schema_for(cls, bundle: ResolvedEvidenceBundle) -> type[ContextSynthesisWorkerDraft]:
+    def schema_for(cls, bundle: ResolvedEvidenceBundle, *, work_spec: WorkContextSpec) -> type[ContextSynthesisWorkerDraft]:
+        if bundle.work_spec_id != work_spec.work_spec_id:
+            raise ValueError("synthesis inputs 的 WorkSpec identity 不一致")
         catalog = cls.citation_catalog(bundle)
         if not catalog:
             raise ValueError("synthesis 作者缺少冻结 citation，无法构造合法声明根")
-        identity = stable_expansion_hash("synthesis-author-contract-v1", bundle.resolution_id, tuple(catalog))[:12]
+        questions = question_catalog(work_spec.questions)
+        identity = stable_expansion_hash("synthesis-author-contract-v2", bundle.resolution_id, work_spec.work_spec_id,
+            tuple(catalog), tuple(questions.items()))[:12]
         choices = Enum(f"FrozenCitationChoices_{identity}",
             {f"citation_{index}": key for index, key in enumerate(catalog)}, type=str)
 
@@ -172,14 +178,38 @@ class ContextSynthesisWorkerDraft(_SynthesisModel):
             return catalog[value]
 
         citation = Annotated[EvidenceRef, BeforeValidator(resolve, json_schema_input_type=choices)]
-        variants = cls._claim_shapes(citation, identity)
+        question = cls._question_choice(tuple(questions), f"FrozenQuestionIds_{identity}")
+        unresolved = cls._question_choice(tuple(questions.values()), f"FrozenQuestionText_{identity}")
+        variants = cls._claim_shapes(citation, question, identity)
         section = create_model(f"FrozenSynthesisSection_{identity}", __base__=SynthesisSectionDraft,
             claims=(tuple[Union[variants], ...], Field(min_length=1)))
+        plans = cls._disposition_shapes(question, identity)
         return create_model(f"FrozenSynthesisWorker_{identity}", __base__=cls,
-            sections=(tuple[section, ...], Field(min_length=1)))
+            sections=(tuple[section, ...], Field(min_length=1)),
+            unresolved_questions=(tuple[unresolved, ...], ()),
+            question_dispositions=(tuple[Union[plans], ...], ()))
 
     @staticmethod
-    def _claim_shapes(citation: Any, identity: str) -> tuple[type[SynthesisClaimDraft], ...]:
+    def _question_choice(values: tuple[str, ...], name: str) -> Any:
+        choices = Enum(name, {f"question_{index}": value for index, value in enumerate(values)}, type=str)
+
+        def resolve(value: Any) -> str:
+            if not isinstance(value, str) or value not in values:
+                raise ValueError("question 必须选择本次冻结目录中的身份或原文")
+            return value
+
+        return Annotated[str, BeforeValidator(resolve, json_schema_input_type=choices)]
+
+    @staticmethod
+    def _disposition_shapes(question: Any, identity: str) -> tuple[type[QuestionDisposition], ...]:
+        capabilities = QuestionDisposition.model_fields["required_capabilities"].annotation
+        return tuple(create_model(f"Frozen{mode.title()}Plan_{identity}", __base__=QuestionDisposition,
+            question_id=(question, ...), disposition=(Literal[mode], ...),
+            required_capabilities=(capabilities, Field(min_length=1) if mode == "execution_research" else Field(default=())))
+            for mode in ("prerequisite", "execution_research"))
+
+    @staticmethod
+    def _claim_shapes(citation: Any, question: Any, identity: str) -> tuple[type[SynthesisClaimDraft], ...]:
         shapes = (
             ("Confirmed", "confirmed", Field(min_length=1), Field(default=(), max_length=0)),
             ("Inference", "inference", Field(default=()), Field(min_length=1)),
@@ -188,7 +218,7 @@ class ContextSynthesisWorkerDraft(_SynthesisModel):
         )
         return tuple(create_model(f"Frozen{name}_{identity}", __base__=SynthesisClaimDraft,
             authority=(Literal[authority], ...), citations=(tuple[citation, ...], citations),
-            premise_claim_keys=(tuple[str, ...], premises))
+            premise_claim_keys=(tuple[str, ...], premises), question_ids=(tuple[question, ...], ()))
             for name, authority, citations, premises in shapes)
 
     def materialize(self) -> ContextSynthesisDraft:
@@ -208,7 +238,8 @@ class ContextSynthesisWorkerDraft(_SynthesisModel):
             sections=sections,
             claims=tuple(by_key.values()),
             unresolved_questions=self.unresolved_questions,
-            question_dispositions=self.question_dispositions,
+            question_dispositions=tuple(QuestionDisposition.model_validate(p.model_dump(mode="json"))
+                for p in self.question_dispositions),
         )
 
     @staticmethod
@@ -350,12 +381,8 @@ class ContextSynthesisValidator:
         synthesizer_version: str,
         execution_readiness: ExecutionReadiness | None = None,
     ) -> ValidatedContextDossier:
-        self.validate_draft(work_spec, bundle, draft)
+        self.validate_draft(work_spec, bundle, draft, execution_readiness=execution_readiness)
         assessments = self._validated_support(draft.claims, support_assessments)
-        if draft.question_dispositions:
-            if execution_readiness is None:
-                raise ValueError("问题处置缺少平台冻结的实际执行条件")
-            execution_readiness.validate_plans(draft.question_dispositions, work_spec.questions)
         payload = (
             work_spec.work_spec_id,
             bundle.resolution_id,
@@ -416,6 +443,8 @@ class ContextSynthesisValidator:
         work_spec: WorkContextSpec,
         bundle: ResolvedEvidenceBundle,
         draft: ContextSynthesisDraft,
+        *,
+        execution_readiness: ExecutionReadiness | None = None,
     ) -> None:
         if bundle.work_spec_id != work_spec.work_spec_id:
             raise ValueError("synthesis inputs 的 WorkSpec identity 不一致")
@@ -427,7 +456,6 @@ class ContextSynthesisValidator:
             raise ValueError("synthesis sections 必须恰好组织全部 claims")
         allowed_refs = {evidence_ref_key(item) for item in bundle.evidence_frontier}
         requirement_ids = {item.requirement_id for item in work_spec.evidence_requirements}
-        question_ids = {self.question_id(question) for question in work_spec.questions}
         for claim in draft.claims:
             if {evidence_ref_key(item) for item in claim.citations} - allowed_refs:
                 raise ValueError("synthesis claim 引用了 bundle 之外的 evidence")
@@ -435,8 +463,6 @@ class ContextSynthesisValidator:
                 raise ValueError("synthesis claim 引用了未知 premise")
             if set(claim.requirement_ids) - requirement_ids:
                 raise ValueError("synthesis claim 引用了未知 requirement")
-            if set(claim.question_ids) - question_ids:
-                raise ValueError("synthesis claim 引用了未知 question")
         self._require_acyclic(claims)
         for claim in draft.claims:
             if claim.authority == "inference" and any(
@@ -452,13 +478,13 @@ class ContextSynthesisValidator:
         covered_requirements = {identity for claim in draft.claims for identity in claim.requirement_ids}
         if not required.issubset(covered_requirements):
             raise ValueError("synthesis 未覆盖 required evidence requirements")
-        covered_questions = {identity for claim in draft.claims for identity in claim.question_ids}
-        unresolved = {self.question_id(question) for question in draft.unresolved_questions}
-        plans = [p.question_id for p in draft.question_dispositions]
-        if len(plans) != len(set(plans)) or set(plans) - question_ids:
-            raise ValueError("问题处置必须绑定唯一现有 question")
-        if not question_ids.issubset(covered_questions | unresolved):
-            raise ValueError("synthesis 未覆盖 WorkSpec required questions")
+        validate_question_coverage(work_spec.questions,
+            (identity for claim in draft.claims for identity in claim.question_ids),
+            draft.unresolved_questions, draft.question_dispositions, require_plans=execution_readiness is not None)
+        if draft.question_dispositions and execution_readiness is None:
+            raise ValueError("问题处置缺少平台冻结的实际执行条件")
+        if execution_readiness is not None:
+            execution_readiness.validate_plans(draft.question_dispositions, work_spec.questions)
 
     @staticmethod
     def question_id(question: str) -> str:
