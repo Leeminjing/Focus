@@ -164,14 +164,16 @@ def test_verifier_contract_covers_exactly_frozen_confirmed_claims(monkeypatch, i
     asyncio.run(run())
 
 
-def test_unsupported_verdict_is_not_rewritten_or_retried(monkeypatch):
+def test_unsupported_verdict_is_preserved_while_author_gets_bounded_repair(monkeypatch):
     async def run():
         service, spec, bundle, synthesis, verifier, calls = _service(monkeypatch, verifier_error="unsupported")
         result = await service.synthesize(None, spec, bundle)
         assert result.dossier is None and result.blocker_code == "synthesis_invalid"
         assert "direct-support" in result.blocker_summary
-        assert [role for role, _ in calls] == ["synthesis", "verifier"]
-        assert all(record["outcome"] == "success" for record in result.attempt_records)
+        assert [role for role, _ in calls] == ["synthesis", "verifier", "synthesis"]
+        assert len(result.rejected_reviews) == 1
+        assert [record["outcome"] for record in synthesis.last_attempt_records] == ["error", "error"]
+        assert verifier.usage.model_calls == 1
     asyncio.run(run())
 
 

@@ -40,8 +40,8 @@ def test_rejected_candidate_preserves_actual_independent_assessment(monkeypatch)
         restored = ContextSynthesisReview.model_validate_json(review.model_dump_json())
         assert restored == review and restored.support_assessments[0].verdict == "unsupported"
         assert claim.statement not in result.blocker_summary and assessment.reason not in result.blocker_summary
-        assert [role for role, _ in calls] == ["synthesis", "verifier"]
-        assert synthesis.last_usage.model_calls == verifier.last_usage.model_calls == 1
+        assert [role for role, _ in calls] == ["synthesis", "verifier", "synthesis"]
+        assert synthesis.last_usage.model_calls == 2 and verifier.last_usage.model_calls == 1
     asyncio.run(run())
 
 
@@ -115,7 +115,7 @@ def test_compiler_persists_rejection_review_without_ready_cache(tmp_path, monkey
                 assert review is not None, "durable rejection retained only its summary"
                 assert review["draft"]["claims"][0]["claim_id"] == review["support_assessments"][0]["claim_id"]
                 assert review["support_assessments"][0]["verdict"] == "unsupported"
-                assert len(artifact.attempt_records) == len(calls) == 2
+                assert len(artifact.attempt_records) == len(calls) == 3
             assert await compiler._artifact_payload(opportunity, "dossier_synthesis", inputs, service.VERSION) is None
             assert review["draft"]["claims"][0]["statement"] not in blocker.summary
         finally:

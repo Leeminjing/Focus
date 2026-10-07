@@ -11,7 +11,8 @@ claim_verifier 的输出须恰好覆盖 confirmed identities，再判断是否�
 同正文不同身份/角色仍分别保留，声明与输出评估身份及完整请求容量准入保持。
 本次身份枚举与精确数量进入同一请求 schema 和既有容量准入，不能输出新身份或用少量结果替代全部评估。
 最后交给 deterministic ContextSynthesisValidator；失败保留已结构准入的 ContextSynthesisReview 与实际独立判定，供私有阶段审计精确复查。
-每次模型调用在同一 finally 中收集本次 attempts；没有调用的角色不读取其上次结果，也不对真实的不同调用按内容去重。
+完整独立核验进入作者既有有界校验入口；私有拒绝反馈指导新候选，按正文和冻结引用复用原判定，标签变化不触发重抽。
+依赖失败不占用作者修订；每次调用在同一 finally 中收集本次 attempts，作者记录先于嵌套核验记录，不继承上次消费。
 冻结问题目录约束作者选择；覆盖/计划缺项的安全结构化诊断进入原有有界纠错和 attempt，不记录候选正文或核验理由。
 未成功的作者不补造候选，未完成的核验不补造 verdict；任何失败均不回退为逐 evidence 复制。示例：
 `result = await service.synthesize(observation, work_spec, bundle)`。
@@ -20,6 +21,7 @@ claim_verifier 的输出须恰好覆盖 confirmed identities，再判断是否�
 from __future__ import annotations
 
 from functools import partial
+from inspect import isawaitable
 from typing import Any
 
 from backend.app.desktop.agent_loop.context_expansion.contracts import (
@@ -36,6 +38,7 @@ from backend.app.desktop.agent_loop.context_expansion.synthesis import (
     ContextSynthesisValidator,
     ContextSynthesisWorkerDraft,
     SynthesisSection,
+    ValidatedContextDossier,
 )
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 from backend.app.desktop.context_curation import NamespacedMessageRef, evidence_ref_key
@@ -44,7 +47,7 @@ from backend.app.desktop.agent_loop.context_expansion.start_readiness import Que
 
 
 class StructuredContextSynthesisService:
-    VERSION = "structured-context-synthesizer-v11"
+    VERSION = "structured-context-synthesizer-v12"
 
     def __init__(self, synthesis_model, claim_verifier_model=None) -> None:
         self._synthesis_model = synthesis_model
@@ -68,8 +71,45 @@ class StructuredContextSynthesisService:
         attempts: list[dict[str, Any]] = []
         draft: ContextSynthesisDraft | None = None
         assessments: tuple[ClaimSupportAssessment, ...] | None = None
+        dossier: ValidatedContextDossier | None = None
+        rejected_reviews: list[ContextSynthesisReview] = []
+        support_cache: dict[tuple, ClaimSupportAssessment] = {}
+
+        async def validate_candidate(worker_draft):
+            nonlocal draft, assessments, dossier
+            self._validate_worker_draft(worker_draft, work_spec=work_spec, bundle=bundle,
+                execution_readiness=execution_readiness)
+            draft = worker_draft.materialize()
+            assessments = None
+            confirmed = tuple(c for c in draft.claims if c.authority == "confirmed")
+            pending = tuple({self._support_identity(c): c for c in confirmed
+                if self._support_identity(c) not in support_cache}.values())
+            try:
+                if pending:
+                    fresh = await self._assess_support(pending, bundle, attempts)
+                    support_cache.update((self._support_identity(c), a) for c, a in zip(pending, fresh, strict=True))
+            except Exception as exc:
+                # A failed dependency cannot be repaired by asking the author to rewrite its draft.
+                raise StructuredResultValidationError("synthesis_verification_failed", "独立声明核验未完成。",
+                    unit_identity=work_spec.work_spec_id, violated_rule="independent_verification",
+                    retryable=False) from exc
+            assessments = tuple(support_cache[self._support_identity(c)].model_copy(update={"claim_id": c.claim_id})
+                for c in confirmed)
+            try:
+                dossier = self._validator.validate(work_spec, bundle, draft, assessments,
+                    synthesizer_version=self.VERSION, execution_readiness=execution_readiness)
+            except ValueError as exc:
+                review = ContextSynthesisReview(work_spec_id=work_spec.work_spec_id,
+                    resolution_id=bundle.resolution_id, synthesizer_version=self.VERSION,
+                    draft=draft, support_assessments=assessments)
+                if review not in rejected_reviews:
+                    rejected_reviews.append(review)
+                raise StructuredResultValidationError("synthesis_support_rejected", safe_validation_message(exc),
+                    unit_identity=work_spec.work_spec_id, violated_rule="frozen_direct_support",
+                    retry_context={"rejected_review": review.model_dump(mode="json")}) from exc
+
         try:
-            worker_draft = await self._invoke_validated(
+            await self._invoke_validated(
                 self._synthesis_model,
                 ContextSynthesisWorkerDraft.schema_for(bundle, work_spec=work_spec),
                 self._synthesis_authority(),
@@ -87,24 +127,19 @@ class StructuredContextSynthesisService:
                         "source_purpose": "immutable_provenance_not_a_claim_checklist",
                         "required_boundaries": "retain_applicable_global_invariants_and_prohibitions"},
                 },
-                partial(self._validate_worker_draft, work_spec=work_spec, bundle=bundle, execution_readiness=execution_readiness),
+                validate_candidate,
                 attempts=attempts,
             )
-            draft = worker_draft.materialize()
-            assessments = await self._assess_support(draft, bundle, attempts)
-            dossier = self._validator.validate(
-                work_spec,
-                bundle,
-                draft,
-                assessments,
-                synthesizer_version=self.VERSION,
-                execution_readiness=execution_readiness,
-            )
         except (KeyError, TypeError, ValueError) as exc:
+            if isinstance(exc, StructuredResultValidationError) and not exc.retryable:
+                exc = exc.__cause__ or exc
+                if not isinstance(exc, (KeyError, TypeError, ValueError)):
+                    raise exc
             return ContextSynthesisResult(
                 blocker_code="synthesis_invalid",
                 blocker_summary=f"claim-level synthesis failed: {safe_validation_message(exc)[:1600]}",
                 attempt_records=tuple(attempts),
+                rejected_reviews=tuple(rejected_reviews),
                 review=ContextSynthesisReview(
                     work_spec_id=work_spec.work_spec_id,
                     resolution_id=bundle.resolution_id,
@@ -113,13 +148,18 @@ class StructuredContextSynthesisService:
                     support_assessments=assessments,
                 ) if draft is not None else None,
             )
-        return ContextSynthesisResult(dossier=dossier, attempt_records=tuple(attempts))
+        return ContextSynthesisResult(dossier=dossier, attempt_records=tuple(attempts),
+            rejected_reviews=tuple(rejected_reviews))
+
+    @staticmethod
+    def _support_identity(claim):
+        # Support depends on the statement and frozen citations, not section or coverage labels.
+        return claim.statement, tuple(evidence_ref_key(ref) for ref in claim.citations)
 
     async def _assess_support(
-        self, draft: ContextSynthesisDraft, bundle: ResolvedEvidenceBundle,
+        self, confirmed: tuple[ContextSynthesisClaim, ...], bundle: ResolvedEvidenceBundle,
         attempts: list[dict[str, Any]],
     ) -> tuple[ClaimSupportAssessment, ...]:
-        confirmed = tuple(item for item in draft.claims if item.authority == "confirmed")
         proposal = await self._invoke_validated(
             self._claim_verifier_model,
             ClaimSupportProposal.schema_for(tuple(claim.claim_id for claim in confirmed)),
@@ -155,15 +195,18 @@ class StructuredContextSynthesisService:
 
     @staticmethod
     async def _invoke_validated(model, schema, authority, payload, validator, *, attempts):
+        offset = len(attempts)
         try:
             invoke_validated = getattr(model, "invoke_validated", None)
             if invoke_validated is not None:
                 return await invoke_validated(schema, authority, payload, validator)
             result = await model.invoke(schema, authority, payload)
-            validator(result)
+            validation = validator(result)
+            if isawaitable(validation):
+                await validation
             return result
         finally:
-            attempts.extend(tuple(getattr(model, "last_attempt_records", ())))
+            attempts[offset:offset] = tuple(getattr(model, "last_attempt_records", ()))
 
     def _validate_worker_draft(self, worker_draft, *, work_spec, bundle, execution_readiness=None):
         try:
@@ -214,17 +257,24 @@ class StructuredContextSynthesisService:
             "你是无权 dossier_synthesizer。只基于冻结 WorkSpec 与 ResolvedEvidenceBundle 生成服务当前 objective/questions 的最小材料。"
             "来源正文用于溯源，不是必须逐句展开的清单；只选择相关需求及必须保留的全局模块/权限/安全边界，避免展开其他子任务功能或重复验收条款。"
             "按 section 内嵌唯一原子 claim；citations 只能选择 citation_catalog 键，confirmed 只表达直接支持事实且不得有 premise，"
+            "每条 confirmed 须引用直接支持其完整表述的具体来源；保留来源术语，术语替换或跨节合并须由该条引用直接支持。"
             "跨来源关系为 inference 且依赖已声明的无环 premise，未证实原因为 hypothesis 且保留 citation/premise。"
             "每个 required requirement/question 须映射或显式 unresolved。若提供 execution_readiness，所有 unresolved_questions 须恰好各有一个"
             " question_dispositions，绑定 question_identities：必要用户输入为 prerequisite；可在执行期间调查的问题为 execution_research，"
             "写出具体调查目标和所需 read/write/host_command 能力，能力必须在平台给出的集合内。此路径是计划而非已证实答案。"
             "revision_feedback 是独立评估的修订建议，须实际缩减冗余或明确研究路径，不能宣称自己质量通过。"
+            "previous_attempt_correction.rejected_review 保留原候选和独立支持判定：据此修正表述或从冻结目录选择正确引用，"
+            "不能改写原判定、重抽同一声明的支持结果，或仅为通过校验将要求降为 hypothesis；仍须完整覆盖当前任务。"
             "不得读取外部历史、改写 WorkSpec、执行工作或创建 Context；必须保留来源冲突。"
         )
 
     @staticmethod
     def _verification_authority() -> str:
-        return "你是无权 claim_verifier。evidence 是按精确 identity 保留正文与来源的共享目录；每条 claim 的 citations 只列其获准引用的 identities，按 identity 查找对应 evidence 后逐项判断 confirmed atomic claim 是否被这些 citations 直接蕴含，只返回 supported、unsupported 或 unknown 与简短理由；不得使用未被该 claim 引用的其他 evidence、补充证据、改写 claim、进行常识推断或输出执行指令。"
+        return ("你是无权 claim_verifier。evidence 是按精确 identity 保留正文与来源的共享目录；每条 claim 的 citations 只列其获准引用的 identities，"
+            "按 identity 查找对应 evidence 后逐项判断 confirmed atomic claim 是否被这些 citations 直接蕴含。"
+            "直接支持判断语义蕴含，不是逐字匹配；忠实释义可以 supported，但新增概念、范围或约束仍必须由该条引用支持，"
+            "不得凭未引用的术语定义或常识认定两个概念等同。只返回 supported、unsupported 或 unknown 与简短理由；"
+            "不得使用未被该 claim 引用的其他 evidence、补充证据、改写 claim、进行常识推断或输出执行指令。")
 
 
 class DeterministicTestContextSynthesisService:

@@ -1,7 +1,7 @@
 """本文件对外提供冻结声明支持拒绝的安全诊断回归。
 输入为真实ContextSynthesisValidator、生产RoleBound模型入口与合成冻结证据；输出为精确判定、稳定身份及无秘密正文的断言。
 具体工作流为同时保留unsupported、unknown和citation不匹配，核对统一校验的完整计数与首条稳定身份，再检查生产blocker保留诊断及消费。
-示例：pytest backend/tests/test_synthesis_support_diagnostics.py -q；不会改写verdict、重试语义拒绝或启动真实Provider。
+示例：pytest backend/tests/test_synthesis_support_diagnostics.py -q；作者有界修订，原 verdict 保留，不启动真实 Provider。
 """
 
 import asyncio
@@ -69,7 +69,7 @@ def test_mixed_support_rejection_is_order_independent_and_counts_all_failures():
     assert diagnostic["first_claim_id"] == ordered[0].claim_id and diagnostic["first_verdict"] == "unknown"
 
 
-def test_production_synthesis_preserves_exact_rejection_without_retry(monkeypatch):
+def test_production_synthesis_preserves_exact_rejection_after_bounded_author_repair(monkeypatch):
     async def run():
         service, spec, bundle, synthesis, verifier, calls = _service(monkeypatch, verifier_error="unsupported")
         result = await service.synthesize(None, spec, bundle)
@@ -77,7 +77,8 @@ def test_production_synthesis_preserves_exact_rejection_without_retry(monkeypatc
         diagnostic = json.loads(result.blocker_summary.split("direct-support 验证: ", 1)[1])
         assert diagnostic["unsupported_count"] == diagnostic["rejected_count"] == 1
         assert diagnostic["unknown_count"] == 0 and diagnostic["first_citation_match"] is True
-        assert [role for role, _ in calls] == ["synthesis", "verifier"]
-        assert synthesis.last_usage.model_calls == verifier.last_usage.model_calls == 1
-        assert len(result.attempt_records) == 2 and all(record["outcome"] == "success" for record in result.attempt_records)
+        assert [role for role, _ in calls] == ["synthesis", "verifier", "synthesis"]
+        assert synthesis.last_usage.model_calls == 2 and verifier.last_usage.model_calls == 1
+        assert len(result.attempt_records) == 3
+        assert len(result.rejected_reviews) == 1
     asyncio.run(run())
