@@ -16,6 +16,7 @@ patrol_contract.PatrolDecisionContract 校验，形状或合同不合法时在�
 用尽才收敛为 waiting_user，最后 Kernel 校验并提交。首轮 Mission renderer 只补全 Patrol 已决定的 Primary continuation，
 不独立提交权威决策；初始证据 Run 完成前不冻结首轮观察。
 真实 Patrol 只对直接用户消息选择 intent_id；普通 Portfolio 意见不注入执行 Agent。
+质量编译阻断同时投影安全失败维度与耐久修订次数；材料修订由 compiler 的专责模块执行，不由本编排扩张权限。
 模型读面保留完整来源目录及同政策合法等待身份，Worker 正文按精确 hash 分页；请求发送前检查完整窗口，准备恢复不凭 phase 宣称完成。
 完成输入等价的候选由共享冻结准入反馈有界纠错；用尽以 completion_evidence_unchanged 一致收敛，不创建拒绝后继轮。
 预算、派生阻断和旧决策的失败收口统一先锁 Loop 再锁 Round，并刷新控制事实；正式暂停与收口竞争不反向持锁。
@@ -728,6 +729,7 @@ class LoopRoundOrchestrator:
                     round_row,
                     category="context_expansion_blocked",
                     reason=reason,
+                    wait_scope={"quality_recovery": blocker.quality_recovery} if blocker.quality_recovery else None,
                     allowed_statuses=UNDECIDED_ROUND_STATUSES,
                 )
         current = await self._patrol_sessions.get(session_id)

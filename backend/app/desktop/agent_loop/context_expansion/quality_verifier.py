@@ -5,6 +5,7 @@ ContextQualityResult。具体工作流为先运行与Resolver共享完整工具�
 minimality、sufficiency、coherence 返回 verdict、理由和已有 identities。冻结引用与维度合同进入模型已有的有界结果校验，成功前拒绝非法输出；合法fail/unknown不重试或改写。
 随后 fail-closed policy 要求三维全部 pass；无校验入口的适配器只调用一次并复用相同校验。本模块不改写
 work、dossier 或 evidence。示例：`result = await service.verify(work_spec, bundle, dossier)`。
+评价目标是足以开始工作；可行研究计划与必要前置输入区分，审计引用不单独视为冗余，原合法失败仍持久保留。
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ class QualityWorkerProposal(BaseModel):
 
 
 class StructuredContextQualityService:
-    VERSION = "structured-context-quality-service-v4"
+    VERSION = "structured-context-quality-service-v5"
 
     def __init__(self, model) -> None:
         self._model = model
@@ -120,6 +121,11 @@ class StructuredContextQualityService:
             "而当作冗余。其他选择或claim的冗余、来源冲突与输入不足仍须独立评价。"
             "不得重写 objective、claims、evidence、completion criteria，不得新增执行指令或修改状态。"
             "形式 coverage 不等于充分；来源冲突必须显式保留。"
+            "当前充分性标准是足以开始 WorkSpec 工作，非预先知道所有实现知识。execution_readiness 是平台实际装备/授权事实，"
+            "question_dispositions 中可行的 execution_research 明确在执行期间调查技术规范/实现方案，不能仅因答案尚未存在判不足；"
+            "必要用户输入、特定历史材料、冲突需求和缺权限仍可阻断，笼统的以后再研究不构成调查路径。"
+            "minimality 评价服务当前任务和必要全局边界的语义声明；原始证据、精确 citations 和独立 support_assessments 是必要审计数据，"
+            "不得仅因这些必要表示与声明重复就判冗余。无关功能和语义重复的 dossier claims 仍可失败。"
         )
 
 

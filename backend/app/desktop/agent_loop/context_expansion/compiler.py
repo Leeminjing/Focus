@@ -7,6 +7,7 @@ r"""本文件对外提供 ExpansionPlanCompilerPort、ContextExpansionPlanCompil
 `compiled = await compiler.compile(observation, opportunity, intent)`。
 生产 façade 以受保护的证据解析、dossier 合成和质量验证阶段编排恢复与阶段记录；质量模块重验恢复身份并重建原判定 blocker，不新增模型消费。
 生产 façade 向 synthesis 与 quality gate 绑定所属 Loop/Round 的消费 receipt；已由 receipt 管理的调用不再重复记入聚合账本。
+平台开始条件进入材料身份；合法质量失败交给独立耐久修订协调，最多两次改变材料，不重抽原判定；公开 blocker 只包含原因分类与身份。
 失败 synthesis 的私有 blocked artifact 原样保留类型化候选 review，供冻结来源复查；公开 blocker/stage 摘要不携带候选或核验理由，blocked 仍不能作为 ready 缓存恢复。
 """
 
@@ -149,6 +150,14 @@ class ContextExpansionPlanCompiler:
             if hasattr(service, "bind_usage_receipts"):
                 service.bind_usage_receipts(receipts)
         records: list[DerivationStageRecord] = []
+        revision_owner = None
+        if persist_artifacts and isinstance(self._synthesizer, StructuredContextSynthesisService):
+            from backend.app.desktop.agent_loop.context_expansion.quality_revision import QualityRevisionRepository, QualityRevisionBlocked
+
+            try:
+                revision_owner = await QualityRevisionRepository(self._sessions).capture_owner(observation)
+            except QualityRevisionBlocked as exc:
+                return self._blocked(opportunity, "authority_missing", str(exc))
         resolved = await self._resolve_evidence_stage(
             observation, opportunity, records,
             artifact_expansion_id=artifact_expansion_id, persist_artifacts=persist_artifacts,
@@ -166,7 +175,13 @@ class ContextExpansionPlanCompiler:
             artifact_expansion_id=artifact_expansion_id, persist_artifacts=persist_artifacts,
         )
         if isinstance(quality_assessment, ExpansionBlocker):
-            return quality_assessment
+            if (persist_artifacts and quality_assessment.code == "context_quality_failed"
+                    and isinstance(self._synthesizer, StructuredContextSynthesisService)):
+                dossier, quality_assessment = await self._revise_quality_stage(
+                    observation, opportunity, resolved, dossier, quality_assessment, records,
+                    artifact_expansion_id=artifact_expansion_id, revision_owner=revision_owner)
+            if isinstance(quality_assessment, ExpansionBlocker):
+                return quality_assessment
         compilation_timer = DerivationStageTimer(
             "compilation",
             (
@@ -276,6 +291,14 @@ class ContextExpansionPlanCompiler:
             type(self._synthesizer).__name__,
         )
         dossier_inputs = (resolved.resolution_id,)
+        readiness = None
+        if isinstance(self._synthesizer, StructuredContextSynthesisService):
+            from backend.app.desktop.agent_loop.context_expansion.start_readiness import load_execution_readiness
+            try:
+                readiness = await load_execution_readiness(self._sessions, observation, opportunity.work_spec)
+            except ValueError as exc:
+                return self._blocked(opportunity, "stale_source", str(exc), tuple(records))
+            dossier_inputs += (stable_expansion_hash("execution-readiness", readiness.model_dump(mode="json")),)
         synthesizer_version = str(getattr(self._synthesizer, "VERSION", type(self._synthesizer).__name__))
         recovered_dossier = await self._artifact_payload(
             opportunity,
@@ -291,6 +314,7 @@ class ContextExpansionPlanCompiler:
                 observation,
                 opportunity.work_spec,
                 resolved,
+                **({"execution_readiness": readiness} if readiness else {}),
             )
             await self._record_attempt_usage(opportunity.loop_id, dossier_result.attempt_records)
             if dossier_result.dossier is not None and persist_artifacts:
@@ -333,6 +357,44 @@ class ContextExpansionPlanCompiler:
                 tuple(records),
             )
         return dossier_result.dossier
+
+    async def _revise_quality_stage(self, observation, opportunity, resolved, dossier, blocker, records, *, artifact_expansion_id, revision_owner=None):
+        from backend.app.desktop.agent_loop.context_expansion.quality_revision import QualityRevisionBlocked, QualityRevisionCoordinator, quality_recovery_diagnostics
+
+        coordinator = QualityRevisionCoordinator(self._sessions, self._synthesizer, self._record_attempt_usage, expected_token=revision_owner)
+        count = await coordinator.count(observation, opportunity.work_spec)
+        diagnostics = None
+        for _ in range(2):
+            assessment = await self._saved_quality_assessment(opportunity, resolved, dossier)
+            if assessment is None:
+                break
+            diagnostics = quality_recovery_diagnostics(assessment, opportunity.work_spec, observation, count)
+            timer = DerivationStageTimer("quality_revision", (assessment.assessment_id,), coordinator.VERSION)
+            try:
+                candidate, count = await coordinator.revise(observation, opportunity, resolved, dossier, assessment)
+            except QualityRevisionBlocked as exc:
+                diagnostics["revision_count"] = await coordinator.count(observation, opportunity.work_spec)
+                records.append(timer.finish((), str(exc), failure_code="context_quality_failed"))
+                return dossier, blocker.model_copy(update={"summary": blocker.summary + "；" + str(exc),
+                    "stage_records": tuple(records), "quality_recovery": diagnostics})
+            records.append(timer.finish((candidate.dossier_id,), f"材料修订 {count}/2 已完成，重新独立评估"))
+            dossier = candidate
+            blocker = await self._verify_quality_stage(opportunity, resolved, dossier, records,
+                artifact_expansion_id=artifact_expansion_id, persist_artifacts=True)
+            if not isinstance(blocker, ExpansionBlocker) or blocker.code != "context_quality_failed":
+                return dossier, blocker
+        if isinstance(blocker, ExpansionBlocker):
+            assessment = await self._saved_quality_assessment(opportunity, resolved, dossier)
+            if assessment is not None:
+                diagnostics = quality_recovery_diagnostics(assessment, opportunity.work_spec, observation, count)
+            blocker = blocker.model_copy(update={"quality_recovery": diagnostics})
+        return dossier, blocker
+
+    async def _saved_quality_assessment(self, opportunity, resolved, dossier):
+        payload = await self._artifact_payload(opportunity, "context_quality",
+            (opportunity.work_spec.work_spec_id, resolved.resolution_id, dossier.dossier_id),
+            str(getattr(self._quality, "VERSION", type(self._quality).__name__)))
+        return ContextQualityAssessment.model_validate(payload) if payload and "assessment_id" in payload else None
 
     async def _verify_quality_stage(
         self,

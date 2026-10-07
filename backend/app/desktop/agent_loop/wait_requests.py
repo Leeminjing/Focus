@@ -6,6 +6,7 @@ r"""本文件对外提供 WaitRequestDraft、LoopWaitRequestFactory 与 LoopWait
 示例：`draft = LoopWaitRequestFactory.clarification("请选择目标")`。
 响应和终结统一按 Loop → WaitRequest 锁定并刷新实体，避免旧 ORM 状态或请求先锁造成权威变更竞态与死锁。
 开放请求默认绑定当前 Round；旧轮遗留请求只能被新等待 supersede，响应必须属于当前 waiting_user 事务，历史响应重放不重复提交。
+质量等待合同区分恢复同次尝试与修订材料，并按已消费次数隐藏耗尽的修订动作；服务端仍负责最终准入。
 """
 
 from __future__ import annotations
@@ -71,11 +72,16 @@ class LoopWaitRequestFactory:
 
     @staticmethod
     def retry_or_stop(reason: str, scope: dict[str, Any] | None = None) -> WaitRequestDraft:
+        quality = (scope or {}).get("quality_recovery")
+        actions = [{"action": "retry", "label": "恢复同一次尝试" if quality else "重试"}]
+        if quality and quality.get("revision_count", 2) < 2:
+            actions.append({"action": "revise_material", "label": "修订材料后重试"})
+        actions.append({"action": "stop", "label": "停止 Loop"})
         return WaitRequestDraft(
             kind="recovery_action",
             prompt=reason,
             response_mode="action",
-            response_contract={"actions": [{"action": "retry", "label": "重试"}, {"action": "stop", "label": "停止 Loop"}]},
+            response_contract={"actions": actions},
             scope=scope or {},
         )
 

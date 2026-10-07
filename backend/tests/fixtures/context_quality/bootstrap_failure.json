@@ -1,0 +1,1490 @@
+{
+  "evidence_resolution": {
+    "items": [
+      {
+        "ref": {
+          "kind": "mission",
+          "item_id": "check-9",
+          "loop_id": "65416d17f2c445f08237cf6a8293d910",
+          "content_hash": "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4",
+          "section_kind": "completion_check",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        "content_hash": "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4",
+        "requirement_id": "scaffold-artifacts",
+        "relevance_reason": "Exact semantic binding satisfies scaffold-artifacts: 最终仓库必须包含哪些 artifact？ Coverage criterion: check-9 列出 manifest.json、完整源码、构建配置、测试代码、README、安装配置说明和架构扩展说明。"
+      },
+      {
+        "ref": {
+          "kind": "mission",
+          "item_id": "check-1",
+          "loop_id": "65416d17f2c445f08237cf6a8293d910",
+          "content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c",
+          "section_kind": "completion_check",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        "content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c",
+        "requirement_id": "scaffold-build",
+        "relevance_reason": "Exact semantic binding satisfies scaffold-build: 构建验收标准是什么？ Coverage criterion: check-1 要求项目能够成功安装依赖并完成生产构建。"
+      },
+      {
+        "ref": {
+          "kind": "mission",
+          "item_id": "in_scope",
+          "loop_id": "65416d17f2c445f08237cf6a8293d910",
+          "content_hash": "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640",
+          "section_kind": "boundary",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        "content_hash": "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640",
+        "requirement_id": "scaffold-in-scope",
+        "relevance_reason": "Exact semantic binding satisfies scaffold-in-scope: 允许在哪些范围内创建或修改文件？ Coverage criterion: in_scope 允许在当前 Obsidian 插件项目仓库内创建、修改、删除为实现插件所必需的文件，包括源码、测试、配置、构建脚本、manifest、文档和 fixture。"
+      },
+      {
+        "ref": {
+          "kind": "mission",
+          "item_id": "outcome",
+          "loop_id": "65416d17f2c445f08237cf6a8293d910",
+          "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+          "section_kind": "outcome",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+        "requirement_id": "scaffold-outcome",
+        "relevance_reason": "Exact semantic binding satisfies scaffold-outcome: Mission 对最终插件仓库的完整交付物提出了哪些要求？ Coverage criterion: outcome 明确要求完整、可构建、可安装、可运行的仓库，并包含 manifest.json、构建配置、README、安装配置说明和架构说明。"
+      },
+      {
+        "ref": {
+          "kind": "mission",
+          "item_id": "prohibited_actions",
+          "loop_id": "65416d17f2c445f08237cf6a8293d910",
+          "content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133",
+          "section_kind": "boundary",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        "content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133",
+        "requirement_id": "scaffold-prohibited",
+        "relevance_reason": "Exact semantic binding satisfies scaffold-prohibited: 仓库外操作和发布有哪些禁止项？ Coverage criterion: prohibited_actions 禁止修改仓库之外的文件/系统/项目，禁止操作真实 Vault，禁止发布到公开平台。"
+      }
+    ],
+    "evidence": {
+      "sources": [
+        {
+          "source": {
+            "context_id": "1eadc673899b4671b1e4d9bce6d93a7a",
+            "generation": 1,
+            "revision_id": "257f1ab85d8d423fa1bb629f6eefb2a1",
+            "payload_mode": "checkpoint",
+            "checkpoint_id": "1f1c1f4f-4d02-6237-800c-a80af950bb7b",
+            "checkpoint_ns": "",
+            "execution_thread_id": "3cd948b1a2cd463795c6ffb62f355f59"
+          },
+          "messages": [],
+          "content_hash": "4b236c0b9453da1336636c5184f5dca49ba346540cbfa6421e41a0a8bfea5aef",
+          "projection_hash": "df18a2a6d8fc046e0a588b75effc39dd988903004e1208fdc4476361975626e2"
+        }
+      ],
+      "structured": [
+        {
+          "ref": {
+            "kind": "mission",
+            "item_id": "outcome",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+            "section_kind": "outcome",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          },
+          "content": "交付一个完整、可构建、可安装、可实际运行的 Obsidian 桌面宠物 Agent 插件仓库。桌面宠物支持点击、拖拽、展开/收起对话、隐藏/唤出；Agent 可读取 Obsidian 上下文并通过授权工具操作 Vault；支持自定义 System Prompt 和模型配置并持久化；模型层、Agent Runtime、Obsidian Tools、UI、配置和会话状态模块化解耦；具备完整异常处理、单元测试、集成测试和关键流程自动化测试；最终所有要求的测试、构建和验收检查全部通过，并包含 manifest.json、构建配置、README、安装配置说明和架构说明。"
+        },
+        {
+          "ref": {
+            "kind": "mission",
+            "item_id": "in_scope",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640",
+            "section_kind": "boundary",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          },
+          "content": [
+            "当前 Obsidian 插件项目仓库内的源码、测试、配置、构建脚本、manifest、文档和测试 fixture。",
+            "可以创建、修改、删除当前项目仓库内部为实现该插件所必需的文件。"
+          ]
+        },
+        {
+          "ref": {
+            "kind": "mission",
+            "item_id": "prohibited_actions",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133",
+            "section_kind": "boundary",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          },
+          "content": [
+            "不得修改当前项目仓库之外的文件、系统配置或其他项目。",
+            "不得操作用户真实 Obsidian Vault 中的数据，只允许使用测试 Vault / fixture 完成自动化验证。",
+            "不得执行发布到 Obsidian Community Plugins、npm 或其他公开平台的操作。"
+          ]
+        },
+        {
+          "ref": {
+            "kind": "mission",
+            "item_id": "check-1",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c",
+            "section_kind": "completion_check",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          },
+          "content": {
+            "claim": "项目能够成功安装依赖并完成生产构建。",
+            "check_id": "check-1",
+            "required": true,
+            "user_verification": false,
+            "expected_evidence_kinds": [
+              "test"
+            ]
+          }
+        },
+        {
+          "ref": {
+            "kind": "mission",
+            "item_id": "check-9",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4",
+            "section_kind": "completion_check",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          },
+          "content": {
+            "claim": "最终仓库包含 manifest.json、完整源码、构建配置、测试代码、README、安装配置说明和架构扩展说明。",
+            "check_id": "check-9",
+            "required": true,
+            "user_verification": false,
+            "expected_evidence_kinds": [
+              "artifact"
+            ]
+          }
+        }
+      ],
+      "evidence_frontier": [
+        {
+          "kind": "mission",
+          "item_id": "in_scope",
+          "loop_id": "65416d17f2c445f08237cf6a8293d910",
+          "content_hash": "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640",
+          "section_kind": "boundary",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        {
+          "kind": "mission",
+          "item_id": "prohibited_actions",
+          "loop_id": "65416d17f2c445f08237cf6a8293d910",
+          "content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133",
+          "section_kind": "boundary",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        {
+          "kind": "mission",
+          "item_id": "check-1",
+          "loop_id": "65416d17f2c445f08237cf6a8293d910",
+          "content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c",
+          "section_kind": "completion_check",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        {
+          "kind": "mission",
+          "item_id": "check-9",
+          "loop_id": "65416d17f2c445f08237cf6a8293d910",
+          "content_hash": "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4",
+          "section_kind": "completion_check",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        },
+        {
+          "kind": "mission",
+          "item_id": "outcome",
+          "loop_id": "65416d17f2c445f08237cf6a8293d910",
+          "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+          "section_kind": "outcome",
+          "goal_revision": 1,
+          "identity_version": "mission-section-v2"
+        }
+      ]
+    },
+    "usage_ledger": {
+      "charges": [
+        {
+          "kind": "compiled_evidence_item",
+          "units": 1,
+          "input_tokens": 0,
+          "operation_id": "dbb8adbaab1d772fbbbc2ad3413c8fb52980021e360e6c32f8ce8a318b8adce0",
+          "output_tokens": 0,
+          "usage_reported": true
+        },
+        {
+          "kind": "compiled_evidence_item",
+          "units": 1,
+          "input_tokens": 0,
+          "operation_id": "dc1268d8ac6f8017e76c83b1e1da5147baeef3504e0762e20a6ed0220b8195ec",
+          "output_tokens": 0,
+          "usage_reported": true
+        },
+        {
+          "kind": "compiled_evidence_item",
+          "units": 1,
+          "input_tokens": 0,
+          "operation_id": "218c0ef8793c49ec5fb7be838da3c2a2a9756994d4f30758ba2e7e4b8d8261b1",
+          "output_tokens": 0,
+          "usage_reported": true
+        },
+        {
+          "kind": "compiled_evidence_item",
+          "units": 1,
+          "input_tokens": 0,
+          "operation_id": "329ee07c4f77033aef7d3810b4ac7837ca7980ac7734637da9e9fafe630a3521",
+          "output_tokens": 0,
+          "usage_reported": true
+        },
+        {
+          "kind": "compiled_evidence_item",
+          "units": 1,
+          "input_tokens": 0,
+          "operation_id": "9ba2b923b7ddc21bbccc89c2343746a6b5d7acaef7ecf9a5306a3a21c9a51615",
+          "output_tokens": 0,
+          "usage_reported": true
+        }
+      ],
+      "ledger_id": "af5f90e1130d98b7a4c94bebcddff10dbc9122ac8467cdd9bc4634f6ba1b7808"
+    },
+    "work_spec_id": "ef1bc6697d35a20858bc424577a4034400c8d93675a8257245b26b078918c53a",
+    "resolution_id": "af5f90e1130d98b7a4c94bebcddff10dbc9122ac8467cdd9bc4634f6ba1b7808",
+    "source_frontier": [
+      {
+        "context_id": "1eadc673899b4671b1e4d9bce6d93a7a",
+        "generation": 1,
+        "revision_id": "257f1ab85d8d423fa1bb629f6eefb2a1",
+        "payload_mode": "checkpoint",
+        "checkpoint_id": "1f1c1f4f-4d02-6237-800c-a80af950bb7b",
+        "checkpoint_ns": "",
+        "execution_thread_id": "3cd948b1a2cd463795c6ffb62f355f59"
+      }
+    ],
+    "evidence_frontier": [
+      {
+        "kind": "mission",
+        "item_id": "in_scope",
+        "loop_id": "65416d17f2c445f08237cf6a8293d910",
+        "content_hash": "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640",
+        "section_kind": "boundary",
+        "goal_revision": 1,
+        "identity_version": "mission-section-v2"
+      },
+      {
+        "kind": "mission",
+        "item_id": "prohibited_actions",
+        "loop_id": "65416d17f2c445f08237cf6a8293d910",
+        "content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133",
+        "section_kind": "boundary",
+        "goal_revision": 1,
+        "identity_version": "mission-section-v2"
+      },
+      {
+        "kind": "mission",
+        "item_id": "check-1",
+        "loop_id": "65416d17f2c445f08237cf6a8293d910",
+        "content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c",
+        "section_kind": "completion_check",
+        "goal_revision": 1,
+        "identity_version": "mission-section-v2"
+      },
+      {
+        "kind": "mission",
+        "item_id": "check-9",
+        "loop_id": "65416d17f2c445f08237cf6a8293d910",
+        "content_hash": "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4",
+        "section_kind": "completion_check",
+        "goal_revision": 1,
+        "identity_version": "mission-section-v2"
+      },
+      {
+        "kind": "mission",
+        "item_id": "outcome",
+        "loop_id": "65416d17f2c445f08237cf6a8293d910",
+        "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+        "section_kind": "outcome",
+        "goal_revision": 1,
+        "identity_version": "mission-section-v2"
+      }
+    ],
+    "required_requirement_ids": [
+      "scaffold-artifacts",
+      "scaffold-build",
+      "scaffold-in-scope",
+      "scaffold-outcome",
+      "scaffold-prohibited"
+    ]
+  },
+  "dossier_synthesis": {
+    "claims": [
+      {
+        "claim_id": "780cff811587377ee9c4af54fe5d168509fe88c064af912d4f277ee92a0a1faa",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "outcome",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+            "section_kind": "outcome",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "最终必须交付一个完整的 Obsidian 桌面宠物 Agent 插件仓库。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-outcome"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "022bf0d08113e19ae9e9b980c916415762ddc6ff404d460793dfcc0d5ed2f4ae",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "outcome",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+            "section_kind": "outcome",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "该仓库必须可构建、可安装并可实际运行。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-outcome"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "d17900773d6a7e7cd9d0a6815360bcd811c021c102088cbbabd9a075b69e29cc",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "outcome",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+            "section_kind": "outcome",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "桌面宠物必须支持点击、拖拽、展开/收起对话、隐藏/唤出。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-outcome"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "9d94338f860bf34cd40cb22a6b2cff34b79d4f8c76fd4414059e15090e273363",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "outcome",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+            "section_kind": "outcome",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "Agent 必须能够读取 Obsidian 上下文，并通过授权工具操作 Vault。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-outcome"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "bd6a84c7aac5e0a7a73dff282c3d823c0a1e8783b394456782ba03ffff08bfbd",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "outcome",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+            "section_kind": "outcome",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "插件必须支持自定义 System Prompt 和模型配置，并对其持久化。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-outcome"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "375b24e1ff94a1fb0b172b775b15d00b59b5ab4757cbcc5a58edd188c1f60dbf",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "outcome",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+            "section_kind": "outcome",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "模型层、Agent Runtime、Obsidian Tools、UI、配置和会话状态必须模块化解耦。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-outcome"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "56ec4b39f30448fa46323ccbabf4bdf3f00f2c9e69a3baedde8613479c450935",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "outcome",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+            "section_kind": "outcome",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "插件必须具备完整异常处理、单元测试、集成测试和关键流程自动化测试。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-outcome"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "87851b8f9da268ad01dd52a3cc7564a6c643897fd97a389a9b1eeb15b72103b3",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "outcome",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+            "section_kind": "outcome",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "最终所有要求的测试、构建和验收检查必须全部通过。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-outcome"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "cd3a0e1f2d63e2fc64eaced5a36153697dfd10f9ac2e53bb870d276fac7612b7",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "outcome",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+            "section_kind": "outcome",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "outcome 要求交付物包含 manifest.json、构建配置、README、安装配置说明和架构说明。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-outcome"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "abd08710a3e326827683b91e140296b7fe2613eaac24fff1c86a24ff1caa67d6",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "check-9",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4",
+            "section_kind": "completion_check",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "最终仓库必须包含 manifest.json、完整源码、构建配置、测试代码、README、安装配置说明和架构扩展说明。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-artifacts"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "ba2faf4fefb47565b378a2170e0f40bd0229da0a2693ff73ea958ecce2001eba",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "check-9",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4",
+            "section_kind": "completion_check",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "check-9 是 required 的完成检查，期望证据类型为 artifact。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-artifacts"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "66da50abc4533af83798e28f274ff9f16bc86e852fdaee8ccf7cf410906c55c7",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "check-1",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c",
+            "section_kind": "completion_check",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "项目必须能够成功安装依赖。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-build"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "ffc372c11748479219b4b74ee4e77320f38eeac416f42614858db748a4cc0ee9",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "check-1",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c",
+            "section_kind": "completion_check",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "项目必须能够完成生产构建。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-build"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "a92ab3d6ac5700bec6b6cf067e60f4bbe454dad4db371542962056107a30b74e",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "check-1",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c",
+            "section_kind": "completion_check",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "check-1 是 required 的完成检查，期望证据类型为 test。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-build"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "e47779f3d80761174a4fe025913071dd11fdd940c99bf62a722169bccdae3040",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "in_scope",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640",
+            "section_kind": "boundary",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "当前 Obsidian 插件项目仓库内的源码、测试、配置、构建脚本、manifest、文档和测试 fixture 属于允许操作范围。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-in-scope"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "a0a2cb5d112a9e066abcc6ec119a7439c4c232ef73ea875e031f9c4dcada13cc",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "in_scope",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640",
+            "section_kind": "boundary",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "可以在当前项目仓库内部创建、修改、删除为实现该插件所必需的文件。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-in-scope"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "9cb361e276b026a8c7dd85e9a703b489f739063b3521cbf00833e65a8f6c84dc",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "prohibited_actions",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133",
+            "section_kind": "boundary",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "不得修改当前项目仓库之外的文件、系统配置或其他项目。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-prohibited"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "b7304f5a3847ca49483072e22df258fb529c8dc76110110e0919367528e7b83d",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "prohibited_actions",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133",
+            "section_kind": "boundary",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "不得操作用户真实 Obsidian Vault 中的数据，只允许使用测试 Vault / fixture 完成自动化验证。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-prohibited"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "fe38b3012be49410699e91bc69c15c5a41fbb6f11a07c35152d72f17fef93762",
+        "authority": "confirmed",
+        "citations": [
+          {
+            "kind": "mission",
+            "item_id": "prohibited_actions",
+            "loop_id": "65416d17f2c445f08237cf6a8293d910",
+            "content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133",
+            "section_kind": "boundary",
+            "goal_revision": 1,
+            "identity_version": "mission-section-v2"
+          }
+        ],
+        "statement": "不得执行发布到 Obsidian Community Plugins、npm 或其他公开平台的操作。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-prohibited"
+        ],
+        "premise_claim_ids": []
+      },
+      {
+        "claim_id": "ea6a7c48eb70470aa271edf3f3260ea3db3374853649516cdc9f427086dc8e07",
+        "authority": "inference",
+        "citations": [],
+        "statement": "check-9 要求的最终仓库 artifact 清单覆盖 outcome 中关于 manifest.json、构建配置、README、安装配置说明和架构说明的交付要求。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-artifacts",
+          "scaffold-outcome"
+        ],
+        "premise_claim_ids": [
+          "abd08710a3e326827683b91e140296b7fe2613eaac24fff1c86a24ff1caa67d6",
+          "cd3a0e1f2d63e2fc64eaced5a36153697dfd10f9ac2e53bb870d276fac7612b7"
+        ]
+      },
+      {
+        "claim_id": "13081ceec11d2ecba20ae0f869334f537dd9274be980b54a1583405fea182b4d",
+        "authority": "inference",
+        "citations": [],
+        "statement": "若最终仓库满足 check-9 的 artifact 清单并通过 check-1 的依赖安装和生产构建，则它满足 outcome 中关于完整、可构建、可安装的工程交付要求。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-artifacts",
+          "scaffold-build",
+          "scaffold-outcome"
+        ],
+        "premise_claim_ids": [
+          "022bf0d08113e19ae9e9b980c916415762ddc6ff404d460793dfcc0d5ed2f4ae",
+          "66da50abc4533af83798e28f274ff9f16bc86e852fdaee8ccf7cf410906c55c7",
+          "780cff811587377ee9c4af54fe5d168509fe88c064af912d4f277ee92a0a1faa",
+          "abd08710a3e326827683b91e140296b7fe2613eaac24fff1c86a24ff1caa67d6",
+          "ffc372c11748479219b4b74ee4e77320f38eeac416f42614858db748a4cc0ee9"
+        ]
+      },
+      {
+        "claim_id": "f6f1dc531c2f681387f519e5e0861b95ac7f87bf1cfb939e41bef11da754bc8d",
+        "authority": "inference",
+        "citations": [],
+        "statement": "在 in_scope 允许的当前项目仓库内部创建、修改或删除文件，与 prohibited_actions 禁止仓库外修改、真实 Vault 操作和公开发布并不冲突。",
+        "question_ids": [],
+        "requirement_ids": [
+          "scaffold-in-scope",
+          "scaffold-prohibited"
+        ],
+        "premise_claim_ids": [
+          "9cb361e276b026a8c7dd85e9a703b489f739063b3521cbf00833e65a8f6c84dc",
+          "a0a2cb5d112a9e066abcc6ec119a7439c4c232ef73ea875e031f9c4dcada13cc",
+          "b7304f5a3847ca49483072e22df258fb529c8dc76110110e0919367528e7b83d",
+          "fe38b3012be49410699e91bc69c15c5a41fbb6f11a07c35152d72f17fef93762"
+        ]
+      }
+    ],
+    "sections": [
+      {
+        "title": "Mission 交付要求",
+        "claim_ids": [
+          "780cff811587377ee9c4af54fe5d168509fe88c064af912d4f277ee92a0a1faa",
+          "022bf0d08113e19ae9e9b980c916415762ddc6ff404d460793dfcc0d5ed2f4ae",
+          "d17900773d6a7e7cd9d0a6815360bcd811c021c102088cbbabd9a075b69e29cc",
+          "9d94338f860bf34cd40cb22a6b2cff34b79d4f8c76fd4414059e15090e273363",
+          "bd6a84c7aac5e0a7a73dff282c3d823c0a1e8783b394456782ba03ffff08bfbd",
+          "375b24e1ff94a1fb0b172b775b15d00b59b5ab4757cbcc5a58edd188c1f60dbf",
+          "56ec4b39f30448fa46323ccbabf4bdf3f00f2c9e69a3baedde8613479c450935",
+          "87851b8f9da268ad01dd52a3cc7564a6c643897fd97a389a9b1eeb15b72103b3",
+          "cd3a0e1f2d63e2fc64eaced5a36153697dfd10f9ac2e53bb870d276fac7612b7"
+        ]
+      },
+      {
+        "title": "完成检查与范围",
+        "claim_ids": [
+          "abd08710a3e326827683b91e140296b7fe2613eaac24fff1c86a24ff1caa67d6",
+          "ba2faf4fefb47565b378a2170e0f40bd0229da0a2693ff73ea958ecce2001eba",
+          "66da50abc4533af83798e28f274ff9f16bc86e852fdaee8ccf7cf410906c55c7",
+          "ffc372c11748479219b4b74ee4e77320f38eeac416f42614858db748a4cc0ee9",
+          "a92ab3d6ac5700bec6b6cf067e60f4bbe454dad4db371542962056107a30b74e",
+          "e47779f3d80761174a4fe025913071dd11fdd940c99bf62a722169bccdae3040",
+          "a0a2cb5d112a9e066abcc6ec119a7439c4c232ef73ea875e031f9c4dcada13cc",
+          "9cb361e276b026a8c7dd85e9a703b489f739063b3521cbf00833e65a8f6c84dc",
+          "b7304f5a3847ca49483072e22df258fb529c8dc76110110e0919367528e7b83d",
+          "fe38b3012be49410699e91bc69c15c5a41fbb6f11a07c35152d72f17fef93762"
+        ]
+      },
+      {
+        "title": "跨来源综合",
+        "claim_ids": [
+          "ea6a7c48eb70470aa271edf3f3260ea3db3374853649516cdc9f427086dc8e07",
+          "13081ceec11d2ecba20ae0f869334f537dd9274be980b54a1583405fea182b4d",
+          "f6f1dc531c2f681387f519e5e0861b95ac7f87bf1cfb939e41bef11da754bc8d"
+        ]
+      }
+    ],
+    "dossier_id": "5b86e0a532b8ba2068b5c6b83780ea3364778117078b099b512eba429dd0eb4d",
+    "work_spec_id": "ef1bc6697d35a20858bc424577a4034400c8d93675a8257245b26b078918c53a",
+    "resolution_id": "af5f90e1130d98b7a4c94bebcddff10dbc9122ac8467cdd9bc4634f6ba1b7808",
+    "support_assessments": [
+      {
+        "reason": "outcome 明确写明该仓库必须可构建、可安装、可实际运行。",
+        "verdict": "supported",
+        "claim_id": "022bf0d08113e19ae9e9b980c916415762ddc6ff404d460793dfcc0d5ed2f4ae",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "outcome",
+            "outcome",
+            "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced"
+          ]
+        ]
+      },
+      {
+        "reason": "outcome 明确要求模型层、Agent Runtime、Obsidian Tools、UI、配置和会话状态模块化解耦。",
+        "verdict": "supported",
+        "claim_id": "375b24e1ff94a1fb0b172b775b15d00b59b5ab4757cbcc5a58edd188c1f60dbf",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "outcome",
+            "outcome",
+            "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced"
+          ]
+        ]
+      },
+      {
+        "reason": "outcome 明确要求具备完整异常处理、单元测试、集成测试和关键流程自动化测试。",
+        "verdict": "supported",
+        "claim_id": "56ec4b39f30448fa46323ccbabf4bdf3f00f2c9e69a3baedde8613479c450935",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "outcome",
+            "outcome",
+            "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced"
+          ]
+        ]
+      },
+      {
+        "reason": "check-1 的 claim 明确包含项目能够成功安装依赖，且该检查为 required。",
+        "verdict": "supported",
+        "claim_id": "66da50abc4533af83798e28f274ff9f16bc86e852fdaee8ccf7cf410906c55c7",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "completion_check",
+            "check-1",
+            "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c"
+          ]
+        ]
+      },
+      {
+        "reason": "outcome 明确要求交付一个完整、可构建、可安装、可实际运行的 Obsidian 桌面宠物 Agent 插件仓库。",
+        "verdict": "supported",
+        "claim_id": "780cff811587377ee9c4af54fe5d168509fe88c064af912d4f277ee92a0a1faa",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "outcome",
+            "outcome",
+            "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced"
+          ]
+        ]
+      },
+      {
+        "reason": "outcome 明确写明最终所有要求的测试、构建和验收检查全部通过。",
+        "verdict": "supported",
+        "claim_id": "87851b8f9da268ad01dd52a3cc7564a6c643897fd97a389a9b1eeb15b72103b3",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "outcome",
+            "outcome",
+            "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced"
+          ]
+        ]
+      },
+      {
+        "reason": "prohibited_actions 明确写明不得修改当前项目仓库之外的文件、系统配置或其他项目。",
+        "verdict": "supported",
+        "claim_id": "9cb361e276b026a8c7dd85e9a703b489f739063b3521cbf00833e65a8f6c84dc",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "boundary",
+            "prohibited_actions",
+            "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133"
+          ]
+        ]
+      },
+      {
+        "reason": "outcome 明确写明 Agent 可读取 Obsidian 上下文并通过授权工具操作 Vault。",
+        "verdict": "supported",
+        "claim_id": "9d94338f860bf34cd40cb22a6b2cff34b79d4f8c76fd4414059e15090e273363",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "outcome",
+            "outcome",
+            "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced"
+          ]
+        ]
+      },
+      {
+        "reason": "in_scope 明确写明可以创建、修改、删除当前项目仓库内部为实现该插件所必需的文件。",
+        "verdict": "supported",
+        "claim_id": "a0a2cb5d112a9e066abcc6ec119a7439c4c232ef73ea875e031f9c4dcada13cc",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "boundary",
+            "in_scope",
+            "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640"
+          ]
+        ]
+      },
+      {
+        "reason": "check-1 的 required 为 true，expected_evidence_kinds 为 test。",
+        "verdict": "supported",
+        "claim_id": "a92ab3d6ac5700bec6b6cf067e60f4bbe454dad4db371542962056107a30b74e",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "completion_check",
+            "check-1",
+            "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c"
+          ]
+        ]
+      },
+      {
+        "reason": "check-9 为 required 且其 claim 明确要求最终仓库包含这些文件与说明。",
+        "verdict": "supported",
+        "claim_id": "abd08710a3e326827683b91e140296b7fe2613eaac24fff1c86a24ff1caa67d6",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "completion_check",
+            "check-9",
+            "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4"
+          ]
+        ]
+      },
+      {
+        "reason": "prohibited_actions 明确写明不得操作用户真实 Obsidian Vault 中的数据，只允许使用测试 Vault/fixture 完成自动化验证。",
+        "verdict": "supported",
+        "claim_id": "b7304f5a3847ca49483072e22df258fb529c8dc76110110e0919367528e7b83d",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "boundary",
+            "prohibited_actions",
+            "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133"
+          ]
+        ]
+      },
+      {
+        "reason": "check-9 的 required 为 true，expected_evidence_kinds 为 artifact。",
+        "verdict": "supported",
+        "claim_id": "ba2faf4fefb47565b378a2170e0f40bd0229da0a2693ff73ea958ecce2001eba",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "completion_check",
+            "check-9",
+            "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4"
+          ]
+        ]
+      },
+      {
+        "reason": "outcome 明确要求支持自定义 System Prompt 和模型配置并持久化。",
+        "verdict": "supported",
+        "claim_id": "bd6a84c7aac5e0a7a73dff282c3d823c0a1e8783b394456782ba03ffff08bfbd",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "outcome",
+            "outcome",
+            "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced"
+          ]
+        ]
+      },
+      {
+        "reason": "outcome 明确列出交付物包含 manifest.json、构建配置、README、安装配置说明和架构说明。",
+        "verdict": "supported",
+        "claim_id": "cd3a0e1f2d63e2fc64eaced5a36153697dfd10f9ac2e53bb870d276fac7612b7",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "outcome",
+            "outcome",
+            "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced"
+          ]
+        ]
+      },
+      {
+        "reason": "outcome 明确列出桌面宠物支持点击、拖拽、展开/收起对话、隐藏/唤出。",
+        "verdict": "supported",
+        "claim_id": "d17900773d6a7e7cd9d0a6815360bcd811c021c102088cbbabd9a075b69e29cc",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "outcome",
+            "outcome",
+            "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced"
+          ]
+        ]
+      },
+      {
+        "reason": "in_scope 明确列出当前 Obsidian 插件项目仓库内的源码、测试、配置、构建脚本、manifest、文档和测试 fixture 属于允许操作范围。",
+        "verdict": "supported",
+        "claim_id": "e47779f3d80761174a4fe025913071dd11fdd940c99bf62a722169bccdae3040",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "boundary",
+            "in_scope",
+            "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640"
+          ]
+        ]
+      },
+      {
+        "reason": "prohibited_actions 明确写明不得执行发布到 Obsidian Community Plugins、npm 或其他公开平台的操作。",
+        "verdict": "supported",
+        "claim_id": "fe38b3012be49410699e91bc69c15c5a41fbb6f11a07c35152d72f17fef93762",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "boundary",
+            "prohibited_actions",
+            "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133"
+          ]
+        ]
+      },
+      {
+        "reason": "check-1 的 claim 明确包含完成生产构建，且该检查为 required。",
+        "verdict": "supported",
+        "claim_id": "ffc372c11748479219b4b74ee4e77320f38eeac416f42614858db748a4cc0ee9",
+        "citation_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "completion_check",
+            "check-1",
+            "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c"
+          ]
+        ]
+      }
+    ],
+    "synthesizer_version": "structured-context-synthesizer-v9",
+    "unresolved_questions": [
+      "README、安装配置说明和架构扩展说明应覆盖哪些内容？",
+      "manifest.json 和构建配置必须满足哪些 Obsidian 插件要求？",
+      "需要哪些最小工程文件和构建脚本才能让 Obsidian 插件成功构建？"
+    ]
+  },
+  "context_quality": {
+    "dimensions": [
+      {
+        "reasons": [
+          "in_scope 允许仓库内创建/修改/删除文件与 prohibited_actions 禁止仓库外修改、真实 Vault 操作和公开发布之间的表面张力，已由 inference claim f6f1dc531c2f681387f519e5e0861b95ac7f87bf1cfb939e41bef11da754bc8d 明确解释为不冲突，且该推理前提完整。",
+          "preflight.eligible 为 true，blocker_codes 为空，unused_evidence_keys 为空，进一步表明输入内部一致且无未解决的阻塞。",
+          "所有 mission 来源的 claims 与其 citations 一致，support_assessments 全部 supported，没有相互矛盾的来源。"
+        ],
+        "verdict": "pass",
+        "claim_ids": [
+          "f6f1dc531c2f681387f519e5e0861b95ac7f87bf1cfb939e41bef11da754bc8d"
+        ],
+        "conflicts": [],
+        "dimension": "coherence",
+        "evidence_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "boundary",
+            "in_scope",
+            "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640"
+          ],
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "boundary",
+            "prohibited_actions",
+            "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133"
+          ],
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "outcome",
+            "outcome",
+            "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced"
+          ]
+        ],
+        "requirement_ids": [
+          "scaffold-in-scope",
+          "scaffold-prohibited"
+        ]
+      },
+      {
+        "reasons": [
+          "protocol_only_evidence_keys 为空，没有共享 Tool Exchange 原子闭包强制保留这些重复内容；因此这些派生 claim 和支持评估构成可去除的冗余。",
+          "其中多条 claim 描述 Agent 运行时、UI 交互、模块化解耦和测试等具体功能（如 claim_id d17900773d6a7e7cd9d0a6815360bcd811c021c102088cbbabd9a075b69e29cc、9d94338f860bf34cd40cb22a6b2cff34b79d4f8c76fd4414059e15090e273363、375b24e1ff94a1fb0b172b775b15d00b59b5ab4757cbcc5a58edd188c1f60dbf、56ec4b39f30448fa46323ccbabf4bdf3f00f2c9e69a3baedde8613479c450935），超出当前 WorkSpec 的 scaffold 目标（仅限项目骨架、构建配置、manifest 和文档），这些 claim 对执行当前 WorkSpec 不是必需。",
+          "输入包含大量对同一 mission 来源的重复分解：dossier 中 outcome 被拆成 9 条 claim，check-1 3 条，check-9 2 条，in_scope 2 条，prohibited_actions 3 条，另有 3 条 inference claim，且每条均有 support_assessments，但 resolved_evidence.structured 已包含同样五个 mission section 的完整正文。"
+        ],
+        "verdict": "fail",
+        "claim_ids": [
+          "375b24e1ff94a1fb0b172b775b15d00b59b5ab4757cbcc5a58edd188c1f60dbf",
+          "56ec4b39f30448fa46323ccbabf4bdf3f00f2c9e69a3baedde8613479c450935",
+          "9d94338f860bf34cd40cb22a6b2cff34b79d4f8c76fd4414059e15090e273363",
+          "d17900773d6a7e7cd9d0a6815360bcd811c021c102088cbbabd9a075b69e29cc"
+        ],
+        "conflicts": [],
+        "dimension": "minimality",
+        "evidence_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "completion_check",
+            "check-1",
+            "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c"
+          ],
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "completion_check",
+            "check-9",
+            "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4"
+          ],
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "outcome",
+            "outcome",
+            "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced"
+          ]
+        ],
+        "requirement_ids": [
+          "scaffold-outcome"
+        ]
+      },
+      {
+        "reasons": [
+          "WorkSpec 的 questions 和 unresolved_questions 明确指出需要回答 README/安装配置/架构说明内容、manifest.json 与构建配置的 Obsidian 要求、以及最小工程文件和构建脚本；当前输入没有任何来源或证据提供这些技术规范或示例。",
+          "check-1 仅要求依赖安装和生产构建成功，check-9 仅列出 artifact 清单，二者都只给出验收结果，不包含如何配置 manifest、构建工具或最小文件集的可执行信息。",
+          "虽然 evidence_requirements 的每个 required requirement 都有 candidate_ref 指向 mission section，但形式覆盖不等于充分；执行者无法仅凭这些 mission 高层要求确定 scaffold 的具体技术实现。"
+        ],
+        "verdict": "fail",
+        "claim_ids": [
+          "66da50abc4533af83798e28f274ff9f16bc86e852fdaee8ccf7cf410906c55c7",
+          "abd08710a3e326827683b91e140296b7fe2613eaac24fff1c86a24ff1caa67d6",
+          "ffc372c11748479219b4b74ee4e77320f38eeac416f42614858db748a4cc0ee9"
+        ],
+        "conflicts": [],
+        "dimension": "sufficiency",
+        "evidence_keys": [
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "completion_check",
+            "check-1",
+            "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c"
+          ],
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "completion_check",
+            "check-9",
+            "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4"
+          ],
+          [
+            "mission",
+            "mission-section-v2",
+            "65416d17f2c445f08237cf6a8293d910",
+            "1",
+            "outcome",
+            "outcome",
+            "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced"
+          ]
+        ],
+        "requirement_ids": [
+          "scaffold-artifacts",
+          "scaffold-build",
+          "scaffold-outcome"
+        ]
+      }
+    ],
+    "dossier_id": "5b86e0a532b8ba2068b5c6b83780ea3364778117078b099b512eba429dd0eb4d",
+    "preflight_id": "f4549c20717ce3e142472484ae67e22aa75d64dea9506600419c4029c3566cf1",
+    "work_spec_id": "ef1bc6697d35a20858bc424577a4034400c8d93675a8257245b26b078918c53a",
+    "assessment_id": "4b52d7742fecfde972b265b90ca8ba1c2730cf5ffdf012343ed25bbfcd872ed2",
+    "resolution_id": "af5f90e1130d98b7a4c94bebcddff10dbc9122ac8467cdd9bc4634f6ba1b7808",
+    "policy_version": "derived-context-quality-policy-v2",
+    "verifier_version": "context-quality-verifier-v2"
+  },
+  "work_spec": {
+    "objective": "搭建 Obsidian 桌面宠物 Agent 插件的项目骨架、构建配置、manifest 和文档，使仓库可安装依赖并完成生产构建。",
+    "questions": [
+      "README、安装配置说明和架构扩展说明应覆盖哪些内容？",
+      "manifest.json 和构建配置必须满足哪些 Obsidian 插件要求？",
+      "需要哪些最小工程文件和构建脚本才能让 Obsidian 插件成功构建？"
+    ],
+    "work_spec_id": "ef1bc6697d35a20858bc424577a4034400c8d93675a8257245b26b078918c53a",
+    "planner_version": "retrieval-worker-cognitive-planner-v2",
+    "separation_reason": "项目脚手架、构建打包与仓库文档是与业务逻辑不同的认知职责：它关注工程可构建性和交付物完整性，不依赖 Agent 运行时或 UI 的具体实现；独立历史可避免构建配置与业务代码变更互相干扰。",
+    "completion_criteria": [
+      "仓库内包含源码目录、测试目录、构建配置、manifest.json 和文档。",
+      "所有创建和修改限定在当前项目仓库内，不触发 prohibited_actions。",
+      "执行依赖安装和生产构建命令能够成功完成并通过 check-1。",
+      "最终仓库包含 check-9 要求的 manifest.json、完整源码、构建配置、测试代码、README、安装配置说明和架构扩展说明。"
+    ],
+    "evidence_requirements": [
+      {
+        "role": "requirement",
+        "question": "最终仓库必须包含哪些 artifact？",
+        "necessity": "required",
+        "candidate_refs": [
+          {
+            "source": null,
+            "entry_id": "5f285e46bb5abdbf16d5fd948f8a112b7d71e26f52cd9cb392ec20cf655016c3",
+            "index_id": "785f4ad2eae09c893f7a77e3f23b52a1fe7955d2dc17de9c40a27f23059a440f",
+            "entry_kind": "mission_section",
+            "mission_ref": {
+              "kind": "mission",
+              "item_id": "check-9",
+              "loop_id": "65416d17f2c445f08237cf6a8293d910",
+              "content_hash": "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4",
+              "section_kind": "completion_check",
+              "goal_revision": 1,
+              "identity_version": "mission-section-v2"
+            },
+            "source_type": "mission",
+            "candidate_id": "8b5178e7660fa959daaa58bf0187b5b417edaf86c308f2dc43adcac930613238",
+            "identity_version": "candidate-source-v2",
+            "source_content_hash": "c96e6c865a64bcd445b8415170dc3febfa29352d40f5777270bd3f6534b6b0a4"
+          }
+        ],
+        "requirement_id": "scaffold-artifacts",
+        "candidate_unit_ids": [],
+        "coverage_criterion": "check-9 列出 manifest.json、完整源码、构建配置、测试代码、README、安装配置说明和架构扩展说明。",
+        "source_constraints": {
+          "context_ids": [],
+          "context_roles": [],
+          "evidence_kinds": []
+        }
+      },
+      {
+        "role": "requirement",
+        "question": "构建验收标准是什么？",
+        "necessity": "required",
+        "candidate_refs": [
+          {
+            "source": null,
+            "entry_id": "683dab0c0676b4fb36676f4e8e9b39713c63e01f0bdb3b654c77862fc9176b1c",
+            "index_id": "785f4ad2eae09c893f7a77e3f23b52a1fe7955d2dc17de9c40a27f23059a440f",
+            "entry_kind": "mission_section",
+            "mission_ref": {
+              "kind": "mission",
+              "item_id": "check-1",
+              "loop_id": "65416d17f2c445f08237cf6a8293d910",
+              "content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c",
+              "section_kind": "completion_check",
+              "goal_revision": 1,
+              "identity_version": "mission-section-v2"
+            },
+            "source_type": "mission",
+            "candidate_id": "87d8176b9f49284f1e1c0411d8a0c98dc9a3c190ad040a08c9c64928df545ed4",
+            "identity_version": "candidate-source-v2",
+            "source_content_hash": "1802eeceb89b701b2e64c2de195df07324d8fc271a5de7ad5848e04cda68286c"
+          }
+        ],
+        "requirement_id": "scaffold-build",
+        "candidate_unit_ids": [],
+        "coverage_criterion": "check-1 要求项目能够成功安装依赖并完成生产构建。",
+        "source_constraints": {
+          "context_ids": [],
+          "context_roles": [],
+          "evidence_kinds": []
+        }
+      },
+      {
+        "role": "requirement",
+        "question": "允许在哪些范围内创建或修改文件？",
+        "necessity": "required",
+        "candidate_refs": [
+          {
+            "source": null,
+            "entry_id": "eff3df7013719dd6b2b1ba1e57e30e415277b17fd0e9ab6aa78db9aab990f62e",
+            "index_id": "785f4ad2eae09c893f7a77e3f23b52a1fe7955d2dc17de9c40a27f23059a440f",
+            "entry_kind": "mission_section",
+            "mission_ref": {
+              "kind": "mission",
+              "item_id": "in_scope",
+              "loop_id": "65416d17f2c445f08237cf6a8293d910",
+              "content_hash": "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640",
+              "section_kind": "boundary",
+              "goal_revision": 1,
+              "identity_version": "mission-section-v2"
+            },
+            "source_type": "mission",
+            "candidate_id": "1b15c4f2192c457bdf8cad7c26594383fd0abc16be0e6b2ab634b0ec37c115fa",
+            "identity_version": "candidate-source-v2",
+            "source_content_hash": "bc1c2c270b753c77f7961e138dceee4813d035d6df73ec781807d0bb68da2640"
+          }
+        ],
+        "requirement_id": "scaffold-in-scope",
+        "candidate_unit_ids": [],
+        "coverage_criterion": "in_scope 允许在当前 Obsidian 插件项目仓库内创建、修改、删除为实现插件所必需的文件，包括源码、测试、配置、构建脚本、manifest、文档和 fixture。",
+        "source_constraints": {
+          "context_ids": [],
+          "context_roles": [],
+          "evidence_kinds": []
+        }
+      },
+      {
+        "role": "requirement",
+        "question": "Mission 对最终插件仓库的完整交付物提出了哪些要求？",
+        "necessity": "required",
+        "candidate_refs": [
+          {
+            "source": null,
+            "entry_id": "47494a32cd0387f4ba6d9140a2f05140df576da0fb8ac09e00ae02fdfde114bf",
+            "index_id": "785f4ad2eae09c893f7a77e3f23b52a1fe7955d2dc17de9c40a27f23059a440f",
+            "entry_kind": "mission_section",
+            "mission_ref": {
+              "kind": "mission",
+              "item_id": "outcome",
+              "loop_id": "65416d17f2c445f08237cf6a8293d910",
+              "content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced",
+              "section_kind": "outcome",
+              "goal_revision": 1,
+              "identity_version": "mission-section-v2"
+            },
+            "source_type": "mission",
+            "candidate_id": "9387347143cb27653dc4fafe424c978b467a03121bb98f16fef7b2a436033ca8",
+            "identity_version": "candidate-source-v2",
+            "source_content_hash": "1ad5464beabc00ea2c39a3475846d5875c3e1ca8e9a5c94657f2964eccef4ced"
+          }
+        ],
+        "requirement_id": "scaffold-outcome",
+        "candidate_unit_ids": [],
+        "coverage_criterion": "outcome 明确要求完整、可构建、可安装、可运行的仓库，并包含 manifest.json、构建配置、README、安装配置说明和架构说明。",
+        "source_constraints": {
+          "context_ids": [],
+          "context_roles": [],
+          "evidence_kinds": []
+        }
+      },
+      {
+        "role": "requirement",
+        "question": "仓库外操作和发布有哪些禁止项？",
+        "necessity": "required",
+        "candidate_refs": [
+          {
+            "source": null,
+            "entry_id": "ce0f9e9f1dd8671e88ff0fb070e1c3366f6cd7b6285b0d0774d613afd57ce139",
+            "index_id": "785f4ad2eae09c893f7a77e3f23b52a1fe7955d2dc17de9c40a27f23059a440f",
+            "entry_kind": "mission_section",
+            "mission_ref": {
+              "kind": "mission",
+              "item_id": "prohibited_actions",
+              "loop_id": "65416d17f2c445f08237cf6a8293d910",
+              "content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133",
+              "section_kind": "boundary",
+              "goal_revision": 1,
+              "identity_version": "mission-section-v2"
+            },
+            "source_type": "mission",
+            "candidate_id": "9f26e6b9f6e40840453b3d4df48d4ba42379aeadc34f4c4bfdafe97f0de8aad1",
+            "identity_version": "candidate-source-v2",
+            "source_content_hash": "865ffd8d700d8561001ac3008c558168be67c39dd74da5a7c811f9676f0f6133"
+          }
+        ],
+        "requirement_id": "scaffold-prohibited",
+        "candidate_unit_ids": [],
+        "coverage_criterion": "prohibited_actions 禁止修改仓库之外的文件/系统/项目，禁止操作真实 Vault，禁止发布到公开平台。",
+        "source_constraints": {
+          "context_ids": [],
+          "context_roles": [],
+          "evidence_kinds": []
+        }
+      }
+    ],
+    "workspace_requirement": "isolated_write"
+  }
+}

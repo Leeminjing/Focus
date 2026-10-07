@@ -9,6 +9,7 @@ r"""本文件对外提供 AgentLoopService 创建、查询、Mission 修订、�
 Mission交付快照与Directive事件使用同一个评估序列化，不以Patrol或旧bootstrap来源代替实际交付状态。
 Mission 恢复与其他控制入口均按 Loop → 等待请求锁定；通用控制由收敛模块终结旧等待，不让请求反向持锁或控制后继事务。
 已提交等待响应的幂等重放只返回历史提交身份和当前状态，不重复执行停止、预算修订或恢复效果。
+材料修订响应在已锁定 Loop 的等待事务内复查实际授权、目标和耐久次数，普通 retry 保持原恢复含义。
 人工访问门禁的正式retry先核对同主体人工恢复及严格检查点，再与等待响应同事务收口投影；未处理或无法证明仍阻断，不代替用户批准工具。
 """
 
@@ -369,6 +370,13 @@ class AgentLoopService:
                     detail["committed_answer"] = exc.committed.answer
                 raise HTTPException(409, detail) from exc
             action = str(body.answer.get("action") or "")
+            if created and action == "revise_material":
+                from backend.app.desktop.agent_loop.context_expansion.quality_revision import admit_manual_revision
+
+                try:
+                    await admit_manual_revision(session, loop, request.scope.get("quality_recovery"))
+                except ValueError as exc:
+                    raise HTTPException(409, {"code": "quality_revision_not_admitted", "message": str(exc)}) from exc
             if created and action == "retry" and request.scope.get("kind") == "access_approval":
                 if self._user_gate_recovery is None:
                     raise HTTPException(409, {"code": "user_gate_not_resolved", "message": "人工访问审批缺少来源核对端口"})
