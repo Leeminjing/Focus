@@ -99,15 +99,13 @@ function Open-ExclusiveLock {
 }
 
 function Assert-FocusIsStopped {
-    $probe = $null
-    try {
-        $probe = Open-ExclusiveLock "running.lock"
-    } catch [System.IO.IOException] {
-        throw "Focus is running. Close it before running 'focus update'."
-    } finally {
-        if ($null -ne $probe) {
-            $probe.Dispose()
-        }
+    # Direct Electron launches do not hold the CLI lock but still keep DLLs mapped.
+    $electronPath = Join-Path $DesktopDir "node_modules\electron\dist\electron.exe"
+    $running = @(Get-CimInstance Win32_Process -Filter "Name = 'electron.exe'" | Where-Object {
+        $_.ExecutablePath -and [System.IO.Path]::GetFullPath($_.ExecutablePath) -eq $electronPath
+    })
+    if ($running.Count -gt 0) {
+        throw "Focus is running (PID $($running.ProcessId -join ', ')). Close it before running 'focus update'."
     }
 }
 
@@ -218,9 +216,6 @@ function Sync-FocusDependencies {
 
 function Start-Focus {
     Assert-ManagedInstall
-    if (-not (Test-DependenciesReady)) {
-        throw "Focus dependencies are missing. Run 'focus update' first."
-    }
 
     $npm = Get-ApplicationPath "npm.cmd"
     $runLock = $null
@@ -228,7 +223,10 @@ function Start-Focus {
         try {
             $runLock = Open-ExclusiveLock "running.lock"
         } catch [System.IO.IOException] {
-            throw "Focus is already running."
+            throw "Focus is already running or being updated."
+        }
+        if (-not (Test-DependenciesReady)) {
+            throw "Focus dependencies are missing. Run 'focus update' first."
         }
 
         $env:FOCUS_GLOBAL_HOME = $FocusHome
@@ -249,15 +247,21 @@ function Start-Focus {
 
 function Update-Focus {
     Assert-ManagedInstall
-    Assert-FocusIsStopped
 
     $updateLock = $null
+    $runLock = $null
     try {
         try {
             $updateLock = Open-ExclusiveLock "update.lock"
         } catch [System.IO.IOException] {
             throw "Another Focus update is already running."
         }
+        try {
+            $runLock = Open-ExclusiveLock "running.lock"
+        } catch [System.IO.IOException] {
+            throw "Focus is running. Close it before running 'focus update'."
+        }
+        Assert-FocusIsStopped
 
         $git = Get-ApplicationPath "git.exe"
         $origin = Invoke-NativeOutput $git @("-C", $AppDir, "remote", "get-url", "origin")
@@ -295,6 +299,9 @@ function Update-Focus {
             Write-Host "Focus updated successfully: $($previousCommit.Substring(0, 7)) -> $($targetCommit.Substring(0, 7))."
         }
     } finally {
+        if ($null -ne $runLock) {
+            $runLock.Dispose()
+        }
         if ($null -ne $updateLock) {
             $updateLock.Dispose()
         }
