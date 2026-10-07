@@ -187,6 +187,7 @@ class QualityRevisionCoordinator:
             saved = {"ordinal": reservation.ordinal, "lineage": reservation.lineage,
                 "parent_assessment_id": assessment.assessment_id, "parent_dossier_id": dossier.dossier_id,
                 "dossier": result.dossier.model_dump(mode="json") if result.dossier else None,
+                "rejected_reviews": [review.model_dump(mode="json") for review in result.rejected_reviews],
                 "blocker_code": result.blocker_code}
             await self._repository.complete(observation, reservation, saved)
         if saved["dossier"] is None:

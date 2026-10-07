@@ -3,6 +3,7 @@ r"""本文件对外提供 RoleBoundStructuredModel、结构化结果验证异常
 输入为 AppConfig、无权派生 role、schema、冻结 payload、结果 validator 及可选逐 attempt request guard；输出为结构化结果、安全诊断和真实 attempts／usage。
 具体工作流为每次 attempt 新建独立 StructuredWorkerModel，先准入，再有界调用／验证；同步校验直接执行，异步返回确实等待；失败、取消和预算中止保存实际用量。
 cache_identity 只哈希非凭据模型配置；bind_request_guard 为索引共享预算提供逐次检查，不读 Context 或提交 Portfolio。safe_validation_message 排除 Pydantic 的原候选输入，供反馈和持久失败共用。
+retry_context 仅进入受预算准入的下一次模型请求，不进入 attempt 诊断；不可由作者修订的依赖失败显式终止当前有界调用。
 示例：model.bind_request_guard(budget.admit); result = await model.invoke_validated(Schema, prompt, payload, validator)。
 """
 
@@ -46,12 +47,17 @@ class StructuredResultValidationError(ValueError):
         unit_identity: str,
         violated_rule: str,
         details: dict[str, Any] | None = None,
+        retry_context: dict[str, Any] | None = None,
+        retryable: bool = True,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.unit_identity = unit_identity
         self.violated_rule = violated_rule
         self.details = details
+        # Private correction input is never copied into attempt diagnostics.
+        self.retry_context = retry_context
+        self.retryable = retryable
 
 
 class RoleBoundStructuredModel:
@@ -120,6 +126,7 @@ class RoleBoundStructuredModel:
         invocation_usage = ModelUsage()
         last_error: Exception | None = None
         feedback: dict[str, Any] | None = None
+        retry_context: dict[str, Any] | None = None
         for attempt in range(1, self._max_attempts + 1):
             worker = StructuredWorkerModel(self._app_config, self._model_name)
             if self._usage_receipts.get() is not None:
@@ -127,7 +134,7 @@ class RoleBoundStructuredModel:
             if self._request_guard is not None:
                 try:
                     await self._request_guard(
-                        worker, schema, system, self._attempt_payload(payload, feedback)
+                        worker, schema, system, self._attempt_payload(payload, feedback, retry_context)
                     )
                 except BaseException:
                     self._finish(invocation_usage, records)
@@ -136,7 +143,7 @@ class RoleBoundStructuredModel:
                 result = await worker.invoke(
                     schema,
                     system,
-                    self._attempt_payload(payload, feedback),
+                    self._attempt_payload(payload, feedback, retry_context),
                 )
                 if validator is not None:
                     validation = validator(result)
@@ -159,6 +166,7 @@ class RoleBoundStructuredModel:
                 invocation_usage += worker.usage
                 category = self._failure_category(exc)
                 feedback = self._failure_feedback(exc, category)
+                retry_context = exc.retry_context if isinstance(exc, StructuredResultValidationError) else None
                 records.append(
                     self._record(
                         attempt,
@@ -170,6 +178,8 @@ class RoleBoundStructuredModel:
                         model_metadata=getattr(worker, "last_model_metadata", {}),
                     )
                 )
+                if isinstance(exc, StructuredResultValidationError) and not exc.retryable:
+                    break
                 continue
             invocation_usage += worker.usage
             records.append(
@@ -221,6 +231,7 @@ class RoleBoundStructuredModel:
     def _attempt_payload(
         payload: dict[str, Any],
         feedback: dict[str, Any] | None,
+        retry_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if feedback is None:
             return payload
@@ -228,6 +239,7 @@ class RoleBoundStructuredModel:
             **payload,
             "previous_attempt_failure": feedback,
             "retry_instruction": "Correct the previous failure and return a fresh response matching the requested schema.",
+            **({"previous_attempt_correction": retry_context} if retry_context is not None else {}),
         }
 
     @staticmethod

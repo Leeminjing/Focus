@@ -9,6 +9,7 @@ r"""本文件对外提供 ExpansionPlanCompilerPort、ContextExpansionPlanCompil
 生产 façade 向 synthesis 与 quality gate 绑定所属 Loop/Round 的消费 receipt；已由 receipt 管理的调用不再重复记入聚合账本。
 平台开始条件进入材料身份；合法质量失败交给独立耐久修订协调，最多两次改变材料，不重抽原判定；公开 blocker 只包含原因分类与身份。
 失败 synthesis 的私有 blocked artifact 原样保留类型化候选 review，供冻结来源复查；公开 blocker/stage 摘要不携带候选或核验理由，blocked 仍不能作为 ready 缓存恢复。
+作者修订成功前的拒绝 review 单独记录为审计产物，不作为 ready 输入恢复，也不重复记入模型用量。
 """
 
 from __future__ import annotations
@@ -317,6 +318,12 @@ class ContextExpansionPlanCompiler:
                 **({"execution_readiness": readiness} if readiness else {}),
             )
             await self._record_attempt_usage(opportunity.loop_id, dossier_result.attempt_records)
+            if dossier_result.rejected_reviews and persist_artifacts:
+                await self._save_artifact(
+                    opportunity, "dossier_synthesis_reviews", dossier_inputs, synthesizer_version,
+                    {"reviews": [review.model_dump(mode="json") for review in dossier_result.rejected_reviews]},
+                    expansion_id=artifact_expansion_id, outcome="recorded",
+                )
             if dossier_result.dossier is not None and persist_artifacts:
                 await self._save_artifact(
                     opportunity,

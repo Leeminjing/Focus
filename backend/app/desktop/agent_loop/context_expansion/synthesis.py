@@ -8,6 +8,7 @@ statement 表达来源领域命题，生成图的分组/依赖/覆盖由类型�
 validate 再独立检查 direct-support。ClaimSupportProposal.schema_for 约束 confirmed 身份与数量，不预设 verdict。
 失败摘要仅保留实际拒绝计数及首条身份；ContextSynthesisReview 在私有失败产物保存已结构准入候选与实际判定，未核验为 None，
 不进入 ready 缓存。持久引用先类型化再排序，冻结输入及 synthesizer version 决定 dossier 身份，不读取最新 Portfolio 或补造证据。
+rejected_reviews 保留有界修订中每个不同的拒绝候选及原独立判定，与最终 ready dossier 分开存入私有审计。
 问题目录驱动覆盖及逐项计划反馈；平台校验实际研究能力，旧材料仍可按静态 DTO 恢复。
 示例：`dossier = validator.validate(work_spec, bundle, draft, support_verdicts, execution_readiness=scope, synthesizer_version="v1")`。
 """
@@ -344,6 +345,7 @@ class ContextSynthesisResult(_SynthesisModel):
     blocker_summary: str | None = None
     attempt_records: tuple[dict[str, Any], ...] = ()
     review: ContextSynthesisReview | None = Field(default=None, repr=False)
+    rejected_reviews: tuple[ContextSynthesisReview, ...] = Field(default=(), repr=False)
 
     @model_validator(mode="after")
     def require_result_shape(self) -> Self:
