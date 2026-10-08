@@ -3,6 +3,8 @@ r"""本文件对外提供发布队列、Context Run 排队、Curator 重试与 p
 输入为真实 PostgreSQL Loop、阻塞发布、耗尽的 Context 容量、失败 Worker 和 pause 控制；输出为独立进度、
 持久 queued_reason、有界 attempt identity 及全部活动工作终态断言。具体工作流为创建最小 Loop 后逐一驱动
 三个独立运行路径，以提交后的完成事件同步 Worker，重试须重新领取唯一身份，再从持久实体读取结果。示例：`pytest backend/tests/test_loop_runtime_pools.py`。
+波次夹具使用真实 Context、Lane 和 Kernel 授权；事件屏障验证批量容量预留与 running Round 补位，不以轮询延迟假装并行。
+多 Loop 竞争与失败重放检查按 Run 预留的全局上限及独立 AsyncSession，不共享事务会话。
 """
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ from backend.app.desktop.agent_loop import (
 from backend.app.desktop.agent_loop.models import (
     AgentLoop,
     LoopDecision,
+    LoopContextMembership,
+    LoopDelegationGrant,
     LoopDirective,
     LoopRound,
     LoopWorkerRequest,
@@ -44,6 +48,8 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionRepository,
 )
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.app.desktop.context_curation.models import CurationLane
+from backend.app.desktop.agent_loop.rounds import current_frontier_hash
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -262,7 +268,7 @@ def test_curator_pool_has_its_own_bounded_capacity(tmp_path) -> None:
     asyncio.run(run())
 
 
-async def _create_loop(sessions, tmp_path):
+async def _create_loop(sessions, tmp_path, *, git=False):
     suffix = uuid.uuid4().hex[:8]
     workspace_id = f"ws-pool-{suffix}"
     context_id = f"context-pool-{suffix}"
@@ -270,6 +276,10 @@ async def _create_loop(sessions, tmp_path):
     loop_id = uuid.uuid4().hex
     workspace_path = tmp_path / workspace_id
     workspace_path.mkdir()
+    if git:
+        from backend.tests.test_git_workspace_adoption import _repository
+
+        _repository(workspace_path)
     async with sessions.begin() as session:
         session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(workspace_path), display_name="pool"))
         await session.flush()
@@ -288,3 +298,156 @@ async def _create_loop(sessions, tmp_path):
 async def _frontier(sessions, round_id: str) -> str:
     async with sessions() as session:
         return (await session.get(LoopRound, round_id)).frontier_hash
+
+
+async def _create_wave(sessions, tmp_path, *, count=3, writing=False, git=False, action_count=None):
+    service, snapshot, primary_id, primary_revision = await _create_loop(sessions, tmp_path, git=git)
+    loop_id, round_id = snapshot["loop_id"], snapshot["current_round_id"]
+    contexts = [(primary_id, primary_revision)]
+    repository = ContextRevisionRepository()
+    async with sessions.begin() as session:
+        loop = await session.get(AgentLoop, loop_id)
+        loop.equipment = {"permissions": ["read", "write"] if writing else ["read"]}
+        for index in range(1, count):
+            context_id, revision_id, lane_id = (uuid.uuid4().hex for _ in range(3))
+            session.add(DesktopThread(task_id=context_id, workspace_id=loop.workspace_id,
+                                      thread_id=f"thread-{context_id}", title=f"module-{index}"))
+            await session.flush()
+            ref = ContextRevisionRef(context_id=context_id, revision_id=revision_id, generation=1,
+                execution_thread_id=f"thread-{context_id}", checkpoint_ns="", checkpoint_id="fixture-checkpoint",
+                payload_mode=ContextRevisionPayloadMode.CHECKPOINT)
+            await repository.insert(session, ContextRevisionContract(ref=ref, content_hash="d" * 64,
+                projection_status=ContextRevisionProjectionStatus.VALID,
+                origin_kind=ContextRevisionOriginKind.ROOT, created_at=datetime.now(UTC)))
+            await repository.switch_current(session, ref, None)
+            session.add(CurationLane(lane_id=lane_id, program_id=loop.program_id,
+                managed_context_id=context_id, purpose=f"module-{index}", normalized_purpose=f"module-{index}",
+                lane_policy={"workspace_mode": "isolated_write" if writing else "read_only"}))
+            await session.flush()
+            session.add(LoopContextMembership(membership_id=uuid.uuid4().hex, loop_id=loop_id,
+                context_id=context_id, lane_id=lane_id, role="side", status="active"))
+            contexts.append((context_id, revision_id))
+        grant = await session.get(LoopDelegationGrant, snapshot["grant"]["grant_id"])
+        grant.context_scope = [context_id for context_id, _ in contexts]
+        if writing:
+            grant.capabilities = [*grant.capabilities, "isolate_workspace", "adopt_workspace_result"]
+        await session.flush()
+        round_row = await session.get(LoopRound, round_id)
+        round_row.frontier_hash = await current_frontier_hash(session, loop_id)
+    intent = PatrolDecisionIntent(decision_id=uuid.uuid4().hex, idempotency_key=f"wave:{round_id}",
+        loop_id=loop_id, loop_revision=snapshot["revision"], round_id=round_id,
+        holder_id=snapshot["holder_id"], grant_id=snapshot["grant"]["grant_id"], grant_revision=1,
+        goal_revision=1, observed_frontier_hash=await _frontier(sessions, round_id),
+        observed_workspace_revision=1, rationale="Independent modules share a verified input contract.",
+        actions=tuple({"action": "continue_context", "context_id": context_id,
+            "context_revision_id": revision_id, "message": f"Implement module {index}."}
+            for index, (context_id, revision_id) in enumerate(contexts[:action_count])))
+    result = await LoopKernel(sessions).commit(intent)
+    assert result.status == "committed", result
+    return service, snapshot, contexts, result.directive_ids
+
+
+@pytest.mark.parametrize("round_status", ["ready", "running"])
+@pytest.mark.parametrize("global_limit,loop_limit,expected", [(1, 2, 1), (2, 1, 1), (2, 2, 2)])
+def test_context_pool_reserves_a_wave_and_refills_running_round(tmp_path, round_status, global_limit, loop_limit, expected):
+    async def run():
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        service, snapshot, _, _ = await _create_wave(sessions, tmp_path)
+        release, started = asyncio.Event(), asyncio.Event()
+        capacities = []
+
+        class Coordinator:
+            async def dispatch_ready(self, claim, dispatcher, concurrency):
+                capacities.append(concurrency)
+                started.set()
+                await release.wait()
+                return ()
+
+        pool = ContextRunPool(sessions, Coordinator(), object(), concurrency=global_limit)
+        try:
+            async with sessions.begin() as session:
+                grant = await session.get(LoopDelegationGrant, snapshot["grant"]["grant_id"])
+                grant.budgets = {**grant.budgets, "max_concurrent_runs": loop_limit}
+                row = await session.get(LoopRound, snapshot["current_round_id"])
+                row.status = round_status
+            assert await pool.drain(snapshot["loop_id"]) == 1
+            await asyncio.wait_for(started.wait(), 2)
+            assert capacities == [expected]
+            assert await pool.drain(snapshot["loop_id"]) == 0
+        finally:
+            release.set()
+            await pool.close()
+            await service.control(snapshot["loop_id"], "stop")
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_multiple_loops_compete_with_run_reservations_and_failed_launch_releases_capacity(tmp_path):
+    async def run():
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        first, a, _, _ = await _create_wave(sessions, tmp_path)
+        second, b, _, _ = await _create_wave(sessions, tmp_path)
+        release = asyncio.Event()
+        started = asyncio.Event()
+        calls = []
+        async with sessions.begin() as session:
+            for snapshot in (a, b):
+                grant = await session.get(LoopDelegationGrant, snapshot["grant"]["grant_id"])
+                grant.budgets = {**grant.budgets, "max_concurrent_runs": 1}
+        class Coordinator:
+            async def dispatch_ready(self, claim, dispatcher, concurrency):
+                calls.append((claim.loop_id, concurrency))
+                if len(calls) == 2:
+                    started.set()
+                await release.wait()
+                if claim.loop_id == a["loop_id"]:
+                    raise RuntimeError("test launch failure")
+                return ()
+        pool = ContextRunPool(sessions, Coordinator(), object(), concurrency=2)
+        try:
+            assert await asyncio.gather(pool.drain(), pool.drain()) == [2, 0]
+            await asyncio.wait_for(started.wait(), 5)
+            assert sorted(calls) == sorted([(a["loop_id"], 1), (b["loop_id"], 1)])
+            release.set()
+            await asyncio.gather(*(task for _, _, task in pool._tasks.values()))
+            assert await pool.drain() == 2
+        finally:
+            release.set()
+            await pool.close()
+            await first.control(a["loop_id"], "stop")
+            await second.control(b["loop_id"], "stop")
+            await engine.dispose()
+    asyncio.run(run())
+
+
+def test_loop_at_its_limit_does_not_hide_another_loop_with_global_capacity(tmp_path):
+    async def run():
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        first, a, contexts, _ = await _create_wave(sessions, tmp_path)
+        second, b, _, _ = await _create_wave(sessions, tmp_path)
+        async with sessions.begin() as session:
+            grant = await session.get(LoopDelegationGrant, a["grant"]["grant_id"])
+            grant.budgets = {**grant.budgets, "max_concurrent_runs": 1}
+            session.add(DesktopRun(run_id=uuid.uuid4().hex, task_id=contexts[0][0], agent_id="capacity-worker",
+                kind="teammate", status="running", origin="delegated_patrol", execution_thread_id=uuid.uuid4().hex,
+                loop_id=a["loop_id"], round_id=a["current_round_id"]))
+        calls = []
+        class Coordinator:
+            async def dispatch_ready(self, claim, dispatcher, concurrency):
+                calls.append((claim.loop_id, concurrency))
+                return ()
+        pool = ContextRunPool(sessions, Coordinator(), object(), concurrency=2)
+        try:
+            assert await pool.drain() == 1
+            await asyncio.gather(*(task for _, _, task in pool._tasks.values()))
+            assert calls == [(b["loop_id"], 1)]
+        finally:
+            await pool.close()
+            await first.control(a["loop_id"], "stop")
+            await second.control(b["loop_id"], "stop")
+            await engine.dispose()
+    asyncio.run(run())

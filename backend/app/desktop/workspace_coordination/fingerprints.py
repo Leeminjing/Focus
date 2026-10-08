@@ -1,6 +1,8 @@
-r"""本文件对外提供 WorkspaceFingerprinter 与 WorkspaceRevisionConflict。
+r"""本文件对外提供 WorkspaceFingerprinter（capture、compare_and_advance、git_state）与 WorkspaceRevisionConflict。
 
 输入为已验证的 workspace 根路径或持久 slot；输出为稳定内容 fingerprint、文件统计和可选 Git revision。
+Git revision 只描述以该根为顶层的仓库，子目录不借用父仓库 baseline，以保持 worktree 文件路径一致。
+git_state 输入根目录，输出 (HEAD commit 或 None, 是否有未提交修改)；非仓库根输出 (None, False)。
 具体工作流为按相对路径排序散列文件类型、路径、大小与内容，忽略 Git 管理数据，并以 compare_and_advance
 锁定 slot 后推进 revision。示例：`result = fingerprinter.capture(Path(root))`。
 """
@@ -43,7 +45,7 @@ class WorkspaceFingerprinter:
                     digest.update(block)
             file_count += 1
             byte_count += size
-        vcs_revision, dirty = self._git_state(resolved)
+        vcs_revision, dirty = self.git_state(resolved)
         digest.update((vcs_revision or "").encode("ascii"))
         digest.update(b"1" if dirty else b"0")
         return WorkspaceFingerprint(
@@ -77,8 +79,14 @@ class WorkspaceFingerprinter:
         )
 
     @staticmethod
-    def _git_state(root: Path) -> tuple[str | None, bool]:
+    def git_state(root: Path) -> tuple[str | None, bool]:
         try:
+            top_level = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+                check=True, capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+            if Path(top_level).resolve() != root.resolve():
+                return None, False
             revision = subprocess.run(
                 ["git", "-C", str(root), "rev-parse", "HEAD"],
                 check=True,

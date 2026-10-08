@@ -1,9 +1,10 @@
-r"""本文件对外提供 GitWorktreeIsolationProvider 安全隔离写实现。
+r"""本文件对外提供 GitWorktreeIsolationProvider 安全隔离写实现与 WorkspaceIsolationCapacity 配额等待异常。
 
 输入为已解析 source/target 根、存在的共同 baseline、Loop/Lane owner 与配额；输出为通过 Git worktree
 创建的隔离 slot 结果。具体工作流为验证 source 是仓库、target 位于受管根且未存在、核对配额，调用
 工作线程中的非 shell Git 创建 worktree，并保存主仓库路径作为清理句柄以避免 Windows 从待删目录执行命令。
 示例：`result = await provider.prepare(request)`。
+配额耗尽输出 WorkspaceIsolationCapacity，调用方将其作为资源等待；不修改或初始化源仓库。
 """
 
 from __future__ import annotations
@@ -15,6 +16,10 @@ import subprocess
 from backend.app.desktop.workspace_coordination.isolation import IsolationRequest, IsolationResult
 
 
+class WorkspaceIsolationCapacity(RuntimeError):
+    pass
+
+
 class GitWorktreeIsolationProvider:
     def __init__(self, managed_root: Path, quota: int = 8) -> None:
         self._root = managed_root.resolve()
@@ -24,12 +29,14 @@ class GitWorktreeIsolationProvider:
         source = request.source_root.resolve(strict=True)
         target = request.target_root.resolve(strict=False)
         self._validate_target(target)
-        await self._git(source, "rev-parse", "--is-inside-work-tree")
+        top_level = await self._git(source, "rev-parse", "--show-toplevel")
+        if Path(top_level).resolve() != source:
+            raise ValueError("隔离 source 必须是 Git 工作区根目录")
         await self._git(source, "cat-file", "-e", f"{request.baseline}^{{commit}}")
         if target.exists():
             raise ValueError("隔离 worktree 目标已存在")
         if self._active_count() >= self._quota:
-            raise RuntimeError("隔离 workspace 配额已用尽")
+            raise WorkspaceIsolationCapacity("隔离 workspace 配额已用尽")
         target.parent.mkdir(parents=True, exist_ok=True)
         await self._git(source, "worktree", "add", "--detach", str(target), request.baseline)
         return IsolationResult(
