@@ -2,6 +2,7 @@
 
 输入为脚本化模型 JSON 与协调器桩；输出为语义引用、折叠结果、违例携带的模型原始输出及重试计数断言。具体工作流为在
 无网络条件下调用结构化解析边界、决策合同与调度重试。示例：`pytest test_patrol_cognitive_contract.py`。
+冻结阶段演练通过既有模型入口核验合法串行、required 的独立模块子集及单结果采用，真实模型结果另行记录。
 """
 
 import asyncio
@@ -102,6 +103,22 @@ def test_curator_input_projects_legacy_goal_to_one_mission():
     assert payload["mission"]["boundaries"]["legacy_text"] == "边界原文"
     assert payload["mission"]["completion_checks"][0]["check_id"] == "tests"
     assert "goal" not in payload
+
+
+@pytest.mark.parametrize("stage", ["foundation", "modules", "shared_interface", "adoption"])
+def test_stage_actions_use_existing_frozen_contract_and_required_subset(monkeypatch, stage):
+    from backend.tests.worktree_stage_drill_support import stage_observations, accepts_stage_decision
+
+    if stage == "modules":
+        actions = [{"action": "spawn_context", "opportunity_id": identity * 64} for identity in ("c", "d")]
+    elif stage == "adoption":
+        actions = [{"action": "adopt_workspace_result", "source_slot_id": "slot-a", "source_revision": 2, "rationale": "Verified result"}]
+    else:
+        actions = [{"action": "continue_context", "context_id": "primary", "context_revision_id": "revision-primary", "message": "Validate foundation/interface first"}]
+    model = _scripted_model(json.dumps({**_DECISION, "actions": actions}))
+    monkeypatch.setattr(module, "create_chat_model", lambda **kwargs: model)
+    intent = _run(StructuredPatrolDecisionModel(_prompt_json_config())(stage_observations()[stage]))
+    assert accepts_stage_decision(stage, intent.actions)
 
 
 def test_invalid_shape_raises_retryable_violation_with_raw_output():

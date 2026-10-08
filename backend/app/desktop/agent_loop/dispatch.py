@@ -5,6 +5,7 @@ r"""本文件对外提供 LoopWaveDispatcher、LoopRunWorkspaceBinder、DesktopD
 启动边界可先于 launcher 返回推进 Directive；交付确认仍须幂等收口 Expansion 的 dispatched 状态，不以 delivering 作为唯一入口。
 认领、交付确认与释放统一先锁 Loop，再锁 Directive，与 Run 启动和控制事务保持相同顺序。
 每次工具效果检查同时复核持久 Loop 控制及 workspace lease，暂停或撤权后拒绝旧执行。
+资源等待释放认领且不消耗启动 attempt；准备失败释放整批认领，交付失败只计入真正尝试的 Directive，其余继续排队。
 示例：`run_ids = await dispatcher.dispatch(loop_id, round_id)`。
 用户 Directive 从不可变请求交付原始 HumanMessage、材料和焦点，服务端当前角色解析装备，固定 direct_user/user_intent_id；通用 dispatch 与启动边界共同幂等确认交付。
 """
@@ -12,6 +13,7 @@ r"""本文件对外提供 LoopWaveDispatcher、LoopRunWorkspaceBinder、DesktopD
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from sqlalchemy import func, select
@@ -23,7 +25,7 @@ from backend.app.desktop.agent_loop.context_expansion.repository import (
 from backend.app.desktop.agent_loop.directive_lifecycle import (
     DirectiveLifecycleRepository,
 )
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective
+from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopDirective, LoopRound
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
 from backend.app.desktop.agent_loop.user_message_delivery import LoopUserMessageDelivery
 from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
@@ -56,14 +58,16 @@ class LoopWaveDispatcher:
         directives = await self._claim(loop_id, round_id, concurrency)
         if not directives:
             return ()
-        plans = await self._workspaces.plan_wave(
-            loop_id,
-            tuple(item.directive_id for item in directives),
-            concurrency,
-        )
+        identities = {item.directive_id for item in directives}
+        try:
+            plans = await self._workspaces.plan_wave(loop_id, tuple(identities), concurrency)
+        except BaseException as exc:
+            await self._release_claims(loop_id, identities, f"workspace_prepare_failed:{type(exc).__name__}",
+                                       consume_attempt=isinstance(exc, Exception))
+            raise
         by_directive = {item.directive_id: item for item in directives}
         planned = {item.directive_id for item in plans}
-        await self._release_claims(loop_id, set(by_directive) - planned, "workspace_capacity")
+        await self._release_claims(loop_id, set(by_directive) - planned, "workspace_capacity", consume_attempt=False)
         run_ids: list[str] = []
         remaining_claims = set(planned)
         for plan in plans:
@@ -79,8 +83,11 @@ class LoopWaveDispatcher:
                 await self._record_delivery(directive.directive_id, run_id)
                 run_ids.append(run_id)
                 remaining_claims.discard(directive.directive_id)
-            except Exception as exc:
-                await self._release_claims(loop_id, remaining_claims, f"launch_failed:{type(exc).__name__}:{str(exc)[:500]}")
+            except BaseException as exc:
+                await self._release_claims(loop_id, {directive.directive_id},
+                    f"launch_failed:{type(exc).__name__}:{str(exc)[:500]}", consume_attempt=isinstance(exc, Exception))
+                await self._release_claims(loop_id, remaining_claims - {directive.directive_id},
+                                           "wave_delivery_pending", consume_attempt=False)
                 raise
         return tuple(run_ids)
 
@@ -89,7 +96,6 @@ class LoopWaveDispatcher:
             identity = await session.get(LoopDirective, directive_id)
             if identity is None:
                 raise LookupError("已启动 Run 的 Directive 不存在")
-            # 无锁读取归属，取得 Loop 锁后再刷新并锁定 Directive。
             await session.get(AgentLoop, identity.loop_id, with_for_update=True)
             directive = await session.get(LoopDirective, directive_id, with_for_update=True, populate_existing=True)
             if directive is None:
@@ -119,7 +125,22 @@ class LoopWaveDispatcher:
     async def _claim(self, loop_id: str, round_id: str, concurrency: int) -> tuple[LoopDirective, ...]:
         async with self._sessions.begin() as session:
             loop = await session.get(AgentLoop, loop_id, with_for_update=True)
-            if loop is None:
+            round_row = await session.get(LoopRound, round_id)
+            if (loop is None or loop.status != "running" or loop.current_round_id != round_id
+                    or round_row is None or round_row.status not in {"ready", "running"}):
+                return ()
+            grant = await session.scalar(select(LoopDelegationGrant).where(
+                LoopDelegationGrant.loop_id == loop_id, LoopDelegationGrant.revision == loop.authority_revision,
+                LoopDelegationGrant.status == "active"))
+            if (grant is None or (grant.expires_at and grant.expires_at <= datetime.now(UTC))
+                    or round_row.authority_revision != loop.authority_revision or round_row.goal_revision != loop.goal_revision):
+                return ()
+            active = int(await session.scalar(select(func.count()).select_from(DesktopRun).where(
+                DesktopRun.loop_id == loop_id, DesktopRun.status.in_(("pending", "running")))) or 0)
+            reserved = int(await session.scalar(select(func.count()).select_from(LoopDirective).where(
+                LoopDirective.loop_id == loop_id, LoopDirective.status == "launching")) or 0)
+            concurrency = min(concurrency, int((grant.budgets or {}).get("max_concurrent_runs") or concurrency) - active - reserved)
+            if concurrency <= 0:
                 return ()
             directives = list(
                 (
@@ -130,6 +151,9 @@ class LoopWaveDispatcher:
                             LoopDirective.round_id == round_id,
                             LoopDirective.status == "created",
                             LoopDirective.lifecycle_state == "authorized",
+                            LoopDirective.grant_id == grant.grant_id,
+                            LoopDirective.grant_revision == loop.authority_revision,
+                            LoopDirective.goal_revision == loop.goal_revision,
                             LoopDirective.attempt < LoopDirective.max_attempts,
                         )
                         .order_by(LoopDirective.created_at, LoopDirective.directive_id)
@@ -145,7 +169,7 @@ class LoopWaveDispatcher:
                 await self._lifecycle.transition(session, directive.directive_id, "delivering")
             return tuple(directives)
 
-    async def _release_claims(self, loop_id: str, directive_ids: set[str], reason: str) -> None:
+    async def _release_claims(self, loop_id: str, directive_ids: set[str], reason: str, *, consume_attempt: bool = True) -> None:
         if not directive_ids:
             return
         async with self._sessions.begin() as session:
@@ -161,8 +185,11 @@ class LoopWaveDispatcher:
             )
             for row in rows:
                 if row.status == "launching":
+                    if not consume_attempt:
+                        row.attempt = max(0, row.attempt - 1)
                     row.status = "blocked" if row.attempt >= row.max_attempts else "created"
-                    row.queued_reason = "attempts_exhausted" if row.status == "blocked" else f"{reason}:attempt:{row.attempt + 1}"
+                    row.queued_reason = ("attempts_exhausted" if row.status == "blocked" else
+                        f"{reason}:attempt:{row.attempt + 1}" if consume_attempt else row.queued_reason or reason)
                     await self._lifecycle.transition(
                         session,
                         row.directive_id,

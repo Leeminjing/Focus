@@ -8,12 +8,15 @@
 Worker 认知读取复用冻结基础及持久补充来源，精确分页核验当前授权、完整 hash 与所属领域，历史材料不变成本轮准备证明。
 新观察冻结同源完成请求资格及语义输入，供 Patrol 反馈与稳定 Round 进展比较；原冻结 hash 不重写。
 具体验证的完成资格由共享只读 CompletionEligibilityPolicy 冻结，不从 allowed 新验证推断完成。
+工作区 Git 状态在事务外读取，冻结时重验 slot 版本；原 workspace 投影同时提供隔离授权、slot 和 adoption
+事实，stable_results 包含执行 slot 锚点，供 Patrol 判断阶段与显式串行采用，不修改物理仓库。
 """
 
 from __future__ import annotations
 
 import asyncio
 import uuid
+from pathlib import Path
 from datetime import UTC, datetime
 from typing import Any
 
@@ -246,6 +249,10 @@ class LoopObservationService:
     async def _prepare_views(self, loop_id: str) -> dict:
         views = {}
         async with self._sessions() as session:
+            loop = await session.get(AgentLoop, loop_id)
+            slot = await session.scalar(select(WorkspaceSlot).where(
+                WorkspaceSlot.workspace_id == loop.workspace_id, WorkspaceSlot.kind == "authoritative",
+                WorkspaceSlot.lifecycle == "active")) if loop else None
             contexts = tuple(
                 (
                     await session.scalars(
@@ -268,6 +275,11 @@ class LoopObservationService:
                         views[
                             (revision.ref.revision_id, view)
                         ] = await self._reader.read(session, revision.ref, view)
+        if slot is not None:
+            from backend.app.desktop.workspace_coordination.fingerprints import WorkspaceFingerprinter
+
+            head, dirty = await asyncio.to_thread(WorkspaceFingerprinter.git_state, Path(slot.root_path))
+            views["workspace"] = (slot.slot_id, slot.revision, slot.current_fingerprint, head, dirty)
         return views
 
     async def _build(
@@ -299,6 +311,19 @@ class LoopObservationService:
                 WorkspaceSlot.lifecycle != "deleted",
             )
         )
+        prepared_workspace = views.get("workspace")
+        if slot and (not prepared_workspace or prepared_workspace[:3] !=
+                     (slot.slot_id, slot.revision, slot.current_fingerprint)):
+            raise _PreparedViewsChanged("工作区在准备后变化，重新冻结")
+        isolated_slots = (await session.scalars(select(WorkspaceSlot).where(
+            WorkspaceSlot.workspace_id == loop.workspace_id, WorkspaceSlot.owner_loop_id == loop.loop_id,
+            WorkspaceSlot.kind == "isolated", WorkspaceSlot.lifecycle.in_(("active", "retained"))
+        ).order_by(WorkspaceSlot.created_at, WorkspaceSlot.slot_id))).all()
+        from backend.app.desktop.workspace_coordination.models import WorkspaceAdoption
+
+        adoptions = (await session.scalars(select(WorkspaceAdoption).where(
+            WorkspaceAdoption.source_slot_id.in_([item.slot_id for item in isolated_slots])
+        ).order_by(WorkspaceAdoption.created_at.desc()).limit(24))).all()
         recovery = await ContextRecoveryOpportunityService(
             _PreparedContextReader(views)
         ).discover(
@@ -348,6 +373,17 @@ class LoopObservationService:
                 "slot_id": slot.slot_id if slot else None,
                 "revision": slot.revision if slot else round_row.workspace_revision,
                 "fingerprint": slot.current_fingerprint if slot else None,
+                "git_revision": prepared_workspace[3] if prepared_workspace else None,
+                "git_dirty": prepared_workspace[4] if prepared_workspace else None,
+                "isolation_authorized": "isolate_workspace" in (grant.capabilities or []),
+                "isolated_slots": tuple({"slot_id": item.slot_id, "revision": item.revision,
+                    "base_revision": item.base_revision, "fingerprint": item.current_fingerprint,
+                    "lane_id": item.owner_lane_id, "lifecycle": item.lifecycle} for item in isolated_slots),
+                "adoptions": tuple({"adoption_id": item.adoption_id, "source_slot_id": item.source_slot_id,
+                    "source_revision": item.source_revision, "status": item.status,
+                    "expected_target_revision": item.expected_target_revision,
+                    "resulting_target_revision": item.resulting_target_revision, "conflict": item.conflict}
+                    for item in adoptions),
             },
             budget={
                 "limits": grant.budgets,
@@ -517,6 +553,7 @@ class LoopObservationService:
                 "error": row.error,
                 "final_checkpoint_id": row.final_checkpoint_id,
                 "workspace_result": row.workspace_result,
+                "workspace_anchor": row.workspace_anchor,
             }
             for row in runs
         )

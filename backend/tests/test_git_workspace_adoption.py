@@ -3,6 +3,7 @@ r"""本文件验证 Git 隔离 workspace 的多文件采用与冲突前置检查
 输入为临时 Git 权威工作区、共同 baseline、隔离 worktree 和持久 slot fingerprint；输出为完整 binary
 patch 应用、新文件保留与目标漂移拒绝。具体工作流为真实创建 worktree、修改隔离结果、调用公开
 GitWorkspaceResultApplier，再断言主工作区没有部分或遗漏结果。示例：`pytest test_git_workspace_adoption.py`。
+Git 根范围回归确认子目录不能借用父仓库 baseline；fixture 初始化仅针对调用方新建的临时测试目录。
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ def _git(root: Path, *arguments: str) -> str:
 
 
 def _repository(root: Path) -> str:
-    root.mkdir()
+    root.mkdir(exist_ok=True)
     _git(root, "init")
     _git(root, "config", "user.email", "focus-tests@example.invalid")
     _git(root, "config", "user.name", "Focus Tests")
@@ -133,4 +134,19 @@ def test_git_workspace_result_rejects_changed_authoritative_target(tmp_path: Pat
             await GitWorkspaceResultApplier()(source, destination)
         assert (target / "tracked.txt").read_text(encoding="utf-8") == "user edit\n"
 
+    asyncio.run(run())
+
+
+def test_subdirectory_does_not_borrow_parent_repository_baseline(tmp_path):
+    parent = tmp_path / "parent"
+    baseline = _repository(parent)
+    child = parent / "project"
+    child.mkdir()
+    assert WorkspaceFingerprinter.git_state(parent) == (baseline, False)
+    assert WorkspaceFingerprinter.git_state(child) == (None, False)
+    async def run():
+        with pytest.raises(ValueError, match="根目录"):
+            await GitWorktreeIsolationProvider(tmp_path / "managed").prepare(IsolationRequest(
+                source_root=child, target_root=tmp_path / "managed" / "loop" / "lane",
+                baseline=baseline, loop_id="loop", lane_id="lane"))
     asyncio.run(run())

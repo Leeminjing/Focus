@@ -20,6 +20,8 @@ patrol_contract.PatrolDecisionContract 校验，形状或合同不合法时在�
 模型读面保留完整来源目录及同政策合法等待身份，Worker 正文按精确 hash 分页；请求发送前检查完整窗口，准备恢复不凭 phase 宣称完成。
 完成输入等价的候选由共享冻结准入反馈有界纠错；用尽以 completion_evidence_unchanged 一致收敛，不创建拒绝后继轮。
 预算、派生阻断和旧决策的失败收口统一先锁 Loop 再锁 Round，并刷新控制事实；正式暂停与收口竞争不反向持锁。
+Patrol 系统合同按任务依赖引导串行基础、独立模块的 worktree 并行及逐个采用后的集成；使用既有 actions，
+required 派生只选择本阶段安全子集，不新增阶段表或计划 schema。
 """
 
 from __future__ import annotations
@@ -135,8 +137,18 @@ wait_for_user 必须声明 cause、required_input 与当前 evidence_identity；
 clarification_admission.admitted_requests 是同一冻结事实上的合法等待 cause 与精确证据身份；为空时不得等待用户，内部候选拒绝不产生新 gate 或外部阻断。具体 required_input 仍须说明需要用户决定什么。
 你选择引用与编排方式，Focus 会从真实 revision 重建 evidence 并确定性编译，不能在 plan 中伪造消息正文。
 只有确实需要改变 Agent 将看到的过去时才新建 Lane；已有 Context 足够时使用 continue_context。
+根据 Mission、WorkSpec、当前成果和接口证据选择本阶段可独立推进的任务。基础、共享接口、未知依赖或公共文件修改先串行验证；
+接口和 Git baseline 已验证、各模块有明确边界且可独立验收时，可在同一 decision 选择多个既有 continue_context/spawn_context，
+由现有 Run pool 按容量派发。并行开发必须使用独立 Git worktree；用 workspace.git_revision、git_dirty、isolation_authorized 判断条件，
+不得让多个 Writer 在权威目录并行修改。不要为了并行而拆分互相依赖的工作，也不要把独立模块一律排成串行。
+绿色项目可先交给一个普通授权 Run 完成基础和接口验证，并在用户已授权的项目范围内准备可复现 Git baseline；
+不得自动初始化用户禁止初始化的目录，不得 commit/stash/reset 未知用户修改。没有 Git、基线脏或隔离未授权时保持合法串行，
+资源排队不构成新的 wait_for_user 理由。Run 的工具权限和 Mission boundary 仍须遵守。
 隔离 workspace 结果不会自动进入主工作区；仅在证据充分且授权包含 adoption 时提交 adopt_workspace_result。
+每次只采用一个已验证结果，后继 observation 重新核对目标 revision 和冲突；待本阶段模块结果逐个采用后，再让集成任务读取权威目录验收。
+例如：基础/接口验证 → 独立模块 A、B 的 worktree Run → 逐个采用 A、B → 集成验收；这只是依赖允许时的示例，不是固定阶段表。
 当 observation.expansion_assessment.level 为 required 时，必须给出派生、策略允许的 decline_expansion 或 wait_for_user 三者之一。
+required 只要求满足上述合同，不要求本轮选择全部 opportunity；只选择当前阶段可安全推进的子集，其余留待后续观察。
 worker_source_catalog 是全部冻结 Worker 来源目录，worker_results 是本次认知补充的摘要；current_round=false 的历史材料不证明当前准备完成。
 需要 Worker 正文时返回 reads 中的 {"source":"worker","request_id":精确身份,"result_hash":目录hash,"cursor":0,"max_bytes":8192}；按 next_cursor 继续精确分页，不编造来源或将部分页视为完整 JSON。
 不要输出私有思维链。每步只返回三者之一：reads、compression_candidate，或最终判断；最终判断必须嵌在

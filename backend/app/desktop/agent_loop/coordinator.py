@@ -14,6 +14,7 @@ Run 结算只推进与该 Directive 当前绑定尝试一致的 Directive：结�
 Run 结算先 flush 当前已发生事实，再按 Loop→Round 刷新锁定所有者，之后收口消息与 Directive；该顺序与 Worker、维护和控制事务一致。
 执行阶段变化发布独立实体版本，不通过改变控制版本使正在执行的 Run 失效。示例：`runtime = LoopCoordinatorRuntime(...)`。
 新直接消息沿 Directive 统一结算，observed 阶段启动失败保留 delivery_failed；有 Directive 的 Run 不重复发布旧用户 Run 事件。
+派发接受当前 ready/running Round 中已授权的就绪工作；运行期补位不改变控制版本，活动和排队后果仍经同一收口屏障。
 """
 
 from __future__ import annotations
@@ -149,7 +150,6 @@ class LoopCoordinator:
 
     @property
     def stall_limits(self) -> RoundStallLimits:
-        """恢复路径复用同一套无进展界限，避免运行期与启动期判定分叉。"""
         return self._stall_limits
 
     @property
@@ -258,7 +258,6 @@ class LoopCoordinator:
             )
 
     async def maintain_rounds(self) -> tuple[str, ...]:
-        """运行期看门狗：收敛已无进展的 round 并释放其名额，使后续候选在同一轮内可被领取。"""
         now = datetime.now(UTC)
         async with self._sessions.begin() as session:
             loops = tuple((await session.scalars(select(AgentLoop).join(
@@ -292,7 +291,6 @@ class LoopCoordinator:
         return tuple(terminated)
 
     async def release_rounds(self, round_ids: Sequence[str]) -> int:
-        """清除指定 round 的租约行：收敛本身已使其不再是候选，此处保证租约表只保留真实持有者。"""
         if not round_ids:
             return 0
         async with self._sessions.begin() as session:
@@ -387,7 +385,8 @@ class LoopCoordinator:
                 )
             ) if loop else None
             usage = await session.get(LoopBudgetUsage, claim.loop_id) if loop else None
-        if loop is None or round_row is None or round_row.status != "ready":
+        if (loop is None or loop.status != "running" or round_row is None
+                or loop.current_round_id != round_row.round_id or round_row.status not in {"ready", "running"}):
             return None
         usage_values = {
             field: int(getattr(usage, field, 0) or 0)
@@ -402,7 +401,7 @@ class LoopCoordinator:
             await self._context_count(claim.loop_id)
         )
         budget = LoopBudgetGuard().evaluate(usage_values, grant.budgets if grant else {}, "dispatch")
-        if grant is None or budget.status == "exhausted":
+        if grant is None or grant.status != "active" or budget.status == "exhausted":
             async with self._sessions.begin() as session:
                 current_loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True, populate_existing=True)
                 current = await session.get(LoopRound, claim.round_id, with_for_update=True, populate_existing=True)
@@ -410,29 +409,39 @@ class LoopCoordinator:
                     await terminate_round(session, current_loop, current, category="budget", reason="Loop hard budget 已耗尽，未启动新的 Run", allowed_statuses=("ready",))
             return ()
         configured = int((grant.budgets if grant else {}).get("max_concurrent_runs", concurrency))
-        run_ids = await dispatcher.dispatch(claim.loop_id, claim.round_id, min(concurrency, configured))
+        run_ids = ()
+        try:
+            run_ids = await dispatcher.dispatch(claim.loop_id, claim.round_id, min(concurrency, configured))
+        finally:
+            current = await self._record_dispatch_state(claim, run_ids)
+        return run_ids if current else None
+
+    async def _record_dispatch_state(self, claim: CoordinatorClaim, run_ids: tuple[str, ...]) -> bool:
         async with self._sessions.begin() as session:
             loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True, populate_existing=True)
             current = await session.get(LoopRound, claim.round_id, with_for_update=True, populate_existing=True)
-            if current is None or loop is None or current.status != "ready":
-                return None
+            if (current is None or loop is None or loop.status != "running"
+                    or loop.current_round_id != current.round_id or current.status not in {"ready", "running"}):
+                return False
             queued = int(
                 await session.scalar(
                     select(func.count()).select_from(LoopDirective).where(
                         LoopDirective.round_id == claim.round_id,
-                        LoopDirective.status == "created",
+                        LoopDirective.status.in_(("created", "launching")),
                     )
                 )
                 or 0
             )
-            current.status = "running" if run_ids else "ready" if queued else "error"
-            loop.health = "waiting_runs" if run_ids else "dispatching" if queued else "degraded"
+            active = int(await session.scalar(select(func.count()).select_from(DesktopRun).where(
+                DesktopRun.round_id == current.round_id, DesktopRun.status.in_(("pending", "running")))) or 0)
+            current.status = "running" if run_ids or active else "ready" if queued else "error"
+            loop.health = "waiting_runs" if run_ids or active else "dispatching" if queued else "degraded"
             from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
             from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
 
             await RoundStateEventRecorder().record(session, current)
             await LoopLifecycleEventRecorder().record(session, loop)
-        return run_ids
+        return True
 
     async def _context_count(self, loop_id: str) -> int:
         async with self._sessions() as session:
