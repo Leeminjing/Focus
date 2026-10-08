@@ -19,6 +19,7 @@ from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import Pr
 from backend.app.desktop.context_evolution import ContextRevisionRef
 from backend.app.desktop.agent_loop import derivation_worker
 from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.agent_loop.structured_worker import StructuredWorkerModel
 from backend.tests.config_helpers import app_config_for
 from focus.runtime.runs.usage import ModelUsage
 
@@ -99,8 +100,37 @@ def test_invalid_read_does_not_mutate_dependencies():
         assert (inputs.provided, inputs.requests, inputs.payload()) == before
 
 
+@pytest.mark.parametrize("model_name", [None, "window-test"])
+def test_real_wrapper_preflight_uses_provider_limits_without_policy_cap(model_name):
+    config = app_config_for("window-test", None)
+    config.models[0].context_window = 1_000_000
+    config.models[0].curation_max_output_tokens = 65_536
+    resources = _resources()
+    resources.policy.output_token_reserve = None
+    budget = IndexModelBudget(resources)
+    model = RoleBoundStructuredModel(config, "semantic_index_projector", model_name)
+    worker = StructuredWorkerModel(config, model_name)
+    wrapped = BudgetedIndexModel(model, budget)
+
+    for size, fits in [(800_000, True), (950_000, False), (1_219_235, False)]:
+        payload = {"segments": "x" * size}
+        assert wrapped.fits_request(RevisionInterpretationProposal, INTERPRETATION_PROMPT, payload) is fits
+        assert budget.fits_request(worker, RevisionInterpretationProposal, INTERPRETATION_PROMPT, payload) is fits
+        if fits:
+            assert wrapped.require_fit(RevisionInterpretationProposal, INTERPRETATION_PROMPT, payload) == budget.require_fit(
+                worker, RevisionInterpretationProposal, INTERPRETATION_PROMPT, payload)
+        else:
+            with pytest.raises(IndexBudgetExceeded) as failure:
+                wrapped.require_fit(RevisionInterpretationProposal, INTERPRETATION_PROMPT, payload)
+            assert failure.value.request_diagnostic["input_limit"] == 934_464
+            assert failure.value.request_diagnostic["output_reserve"] == 65_536
+    assert model.usage.model_calls == 0
+    assert wrapped.last_attempt_records == ()
+
+
+@pytest.mark.parametrize("input_limit", [None, 13488])
 @pytest.mark.parametrize("corrected", [True, False])
-def test_actual_bounded_model_feedback_rejects_window_before_mutation(monkeypatch, corrected):
+def test_actual_bounded_model_feedback_rejects_window_before_mutation(monkeypatch, corrected, input_limit):
     index, records = _source()
     ids = tuple(s.segment_id for s in index.segments)
     replies = iter([{"action": "read", "read_segments": ids},
@@ -123,7 +153,7 @@ def test_actual_bounded_model_feedback_rejects_window_before_mutation(monkeypatc
 
     monkeypatch.setattr(derivation_worker, "StructuredWorkerModel", Worker)
     resources = _resources()
-    resources.policy.max_request_input_tokens = 13488
+    resources.policy.max_request_input_tokens = input_limit
     config = app_config_for("window-test", None)
     raw = RoleBoundStructuredModel(config, "semantic_index_projector", max_attempts=2)
     budget = IndexModelBudget(resources)
