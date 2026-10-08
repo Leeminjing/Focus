@@ -18,6 +18,13 @@
   const escape = value => String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
   const list = values => escape((values || []).join(", "));
 
+  function curatorScopeLabel(scope, fallback) {
+    if (typeof scope === "string") return scope || fallback;
+    if (!scope || typeof scope !== "object") return fallback;
+    const label = scope.role || (scope.mode === "bootstrap" ? "初始 Context" : scope.mode === "lane" ? "Lane" : "");
+    return [label, scope.lane_id || scope.context_id].filter(value => typeof value === "string" && value).join(" · ") || fallback;
+  }
+
   const budgetInputs = budgets => expansionBudget.renderLoopInputs(budgets);
 
   function freshDirectRun(context) {
@@ -173,7 +180,7 @@
     const connectionLabel = ({ live: "实时", syncing: "同步中", connecting: "连接中", reconnecting: "重连中", resyncing: "重同步", idle: "离线" })[connection.status] || connection.status;
     const current = currentActivity(live);
     const rows = entries.map(item => `<li data-event-id="${escape(item.event_id)}"><time>${escape(timeLabel(item.occurred_at))}</time><span>${escape(item.summary)}</span><small>${escape(item.kind)}</small></li>`).join("");
-    const workers = curators.map(item => `<li data-curator-id="${escape(item.entity_id)}"><span class="curator-state is-${escape(item.state.state)}">${escape(item.state.state)}</span><strong>${escape(item.state.scope || item.entity_id)}</strong><small>${escape(item.state.safe_summary || "等待结构化结果")}</small></li>`).join("");
+    const workers = curators.map(item => `<li data-curator-id="${escape(item.entity_id)}"><span class="curator-state is-${escape(item.state.state)}">${escape(item.state.state)}</span><strong>${escape(curatorScopeLabel(item.state.scope, item.entity_id))}</strong><small>${escape(item.state.safe_summary || "等待结构化结果")}</small></li>`).join("");
     const expansionRows = expansions.map(item => `<li data-expansion-id="${escape(item.entity_id)}"><span class="expansion-state is-${escape(item.state.state)}">${escape(item.state.state)}</span><strong>${escape(item.state.safe_summary || item.state.independence_key || item.entity_id)}</strong><small>${escape(item.state.blocker_code || item.state.workspace_mode || item.state.level || "等待下一阶段")}</small></li>`).join("");
     return `<section class="patrol-activity-rail" aria-label="Loop 实时活动"><div class="patrol-activity-now" aria-live="polite" aria-atomic="true"><span class="loop-kicker">Round ${escape(round)} · ${escape(current.label)}</span><strong>${escape(current.summary)}</strong><small>${escape(current.detail)}</small></div><span class="live-connection is-${escape(connection.status)}"><i aria-hidden="true"></i>${escape(connectionLabel)}</span><details class="patrol-activity-drawer"><summary>查看记录</summary><div class="patrol-drawer-panel"><header><div><span class="loop-kicker">Loop Activity</span><h3>Round ${escape(round)} · ${escape(current.label)}</h3></div><span>${escape(patrol?.status || live.loop?.state?.status || "waiting")}</span></header><section><h4>结构化活动</h4><ol>${rows || "<li><span>尚无已提交活动</span></li>"}</ol></section><section><h4>Context Expansions</h4><ul data-expansion-list>${expansionRows || "<li><span>尚无派生评估</span></li>"}</ul></section><section><h4>并行 Curators</h4><ul data-curator-list>${workers || "<li><span>本轮未分派 Curator</span></li>"}</ul></section></div></details></section>`;
   }
