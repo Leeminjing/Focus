@@ -5,7 +5,7 @@ authority、goal 与 workspace revision 的新 LoopRound，或把 round 与 loop
 确定性状态转移。具体工作流为：current_frontier_hash 读取活跃 Context 的当前 revisions，create_observation_round
 据此读取权威 Workspace Slot 并分配单调轮号；
 settle_round 读取该事务全部耐久后果，稳定后幂等收口并计数，活动后果保留身份和等待原因，发布/采用失败转为 error 并交回用户；
-stall_reasons 依轮内尝试次数、同状态停留时长与无进展计数判定越界；terminate_round 只收敛调用方显式声明
+stall_reasons 依轮内尝试次数、最近耐久进展后的空闲时长与无进展计数判定越界；terminate_round 只收敛调用方显式声明
 前置状态的round（默认error，延迟发布可明确superseded，记录结算及同一终结事件；仅当其仍是loop当前轮时交回用户）；
 select_stalled_rounds 只把生命周期已终止的决策计为落定（publishing/adopting 表示专职组件仍在推进该决策，
 不构成落定），再在排除仍被有效租约持有的候选后给出可收敛集合。本模块只做状态转移与只读筛选，
@@ -13,7 +13,8 @@ select_stalled_rounds 只把生命周期已终止的决策计为落定（publish
 质量阻断的安全原因与累计次数经 wait_scope 同事务进入等待请求，不改变终结或恢复的权威。
 收口屏障保存共享后果读取器的历史缺 Decision 诊断，保持原计数和稳定条件。
 advance_settled_round 是 Worker/协调者/维护流程共用的唯一推进事务：先 flush，再按 Loop→Round→usage 刷新锁定当前身份，稳定后更新一次语义进展并创建唯一后继轮。
-看门狗也先 flush 并按 Loop→Round 刷新锁定，候选读取后控制已暂停时不再终结；有效租约仍优先。
+看门狗也先 flush 并按 Loop→Round→usage 刷新锁定，重查候选后的进展与限制；有效租约仍优先。
+计时复用 Round 规范状态、实际 phase 转移、Patrol/Worker 完成和同轮模型结算；租约续期、轮询和未结算预留不算进展。
 错误收口在调用方同一事务结束该轮仍活动的 Patrol Session，记录失败前的实际 phase、原因分类与冻结身份；终态重放不追加等待或伪造 Decision。
 """
 
@@ -27,7 +28,7 @@ import hashlib
 import json
 import uuid
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.agent_loop.models import (
@@ -39,7 +40,11 @@ from backend.app.desktop.agent_loop.models import (
     LoopEventOutbox,
     LoopPatrolAttempt,
     LoopRound,
+    LoopWorkerRequest,
 )
+from backend.app.desktop.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
+from backend.app.desktop.agent_loop.patrol_session_models import LoopPatrolPhaseTransition
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
 from backend.app.desktop.models import DesktopThread
 from backend.app.desktop.agent_loop.wait_requests import open_recovery_wait
@@ -103,29 +108,32 @@ class StalledRound:
     decision_id: str | None = None
 
 
-async def select_stalled_rounds(session: AsyncSession, limits: RoundStallLimits, now: datetime) -> list[StalledRound]:
+async def select_stalled_rounds(
+    session: AsyncSession, limits: RoundStallLimits, now: datetime,
+    *, round_ids: Collection[str] | None = None,
+) -> list[StalledRound]:
     """筛选已不可能推进的 round：已有落定 decision，或越过任一无进展维度且未被有效租约持有。"""
-    rounds = list(
-        (
-            await session.scalars(
-                select(LoopRound)
-                .join(AgentLoop, AgentLoop.loop_id == LoopRound.loop_id)
-                .outerjoin(LoopCoordinatorLease, LoopCoordinatorLease.round_id == LoopRound.round_id)
-                .where(
-                    AgentLoop.status == "running",
-                    LoopRound.status.in_(STALL_SCAN_ROUND_STATUSES),
-                    or_(LoopCoordinatorLease.lease_id.is_(None), LoopCoordinatorLease.expires_at <= now),
-                )
-                .order_by(LoopRound.started_at)
-            )
-        ).all()
+    query = (
+        select(LoopRound)
+        .join(AgentLoop, AgentLoop.loop_id == LoopRound.loop_id)
+        .outerjoin(LoopCoordinatorLease, LoopCoordinatorLease.round_id == LoopRound.round_id)
+        .where(
+            AgentLoop.status == "running",
+            LoopRound.status.in_(STALL_SCAN_ROUND_STATUSES),
+            or_(LoopCoordinatorLease.lease_id.is_(None), LoopCoordinatorLease.expires_at <= now),
+        )
+        .order_by(LoopRound.started_at)
     )
+    if round_ids is not None:
+        query = query.where(LoopRound.round_id.in_(round_ids))
+    rounds = list((await session.scalars(query)).all())
     if not rounds:
         return []
     round_ids = [row.round_id for row in rounds]
     attempts = await _attempt_counts(session, round_ids)
     settled = await _settled_decisions(session, round_ids)
     progress = await _no_progress_counts(session, [row.loop_id for row in rounds])
+    last_progress = await _last_progress_times(session, rounds)
     stalled: list[StalledRound] = []
     for row in rounds:
         if row.round_id in settled:
@@ -134,6 +142,7 @@ async def select_stalled_rounds(session: AsyncSession, limits: RoundStallLimits,
         reasons = stall_reasons(
             status=row.status,
             started_at=row.started_at,
+            last_progress_at=last_progress.get(row.round_id),
             attempts=attempts.get(row.round_id, 0),
             no_progress_count=progress.get(row.loop_id, 0),
             now=now,
@@ -152,12 +161,16 @@ def stall_reasons(
     no_progress_count: int,
     now: datetime,
     limits: RoundStallLimits,
+    last_progress_at: datetime | None = None,
 ) -> tuple[str, ...]:
     """纯判定：返回越界维度名元组；空元组表示本 round 仍可能自行推进。"""
     reasons: list[str] = []
     if status == "observed" and attempts >= limits.max_patrol_attempts:
         reasons.append("patrol_attempts")
-    if _age_seconds(started_at, now) >= limits.max_round_seconds:
+    idle_seconds = _age_seconds(started_at, now)
+    if last_progress_at is not None:
+        idle_seconds = min(idle_seconds, _age_seconds(last_progress_at, now))
+    if idle_seconds >= limits.max_round_seconds:
         reasons.append("round_seconds")
     if attempts >= 1 and no_progress_count >= limits.max_no_progress:
         reasons.append("no_progress")
@@ -181,8 +194,11 @@ async def terminate_stalled_rounds(
         round_row = await session.get(LoopRound, candidate.round_id, with_for_update=True, populate_existing=True)
         if round_row is None or round_row.status not in STALL_SCAN_ROUND_STATUSES:
             continue
-        if await _has_live_lease(session, candidate.round_id, now):
+        await session.get(LoopBudgetUsage, candidate.loop_id, with_for_update=True, populate_existing=True)
+        refreshed = await select_stalled_rounds(session, limits, now, round_ids=(candidate.round_id,))
+        if not refreshed:
             continue
+        candidate = refreshed[0]
         terminated_now = await terminate_round(
             session,
             loop,
@@ -372,14 +388,33 @@ async def _no_progress_counts(session: AsyncSession, loop_ids: list[str]) -> dic
     return {loop_id: int(count or 0) for loop_id, count in rows.all()}
 
 
-async def _has_live_lease(session: AsyncSession, round_id: str, now: datetime) -> bool:
-    lease = await session.scalar(
-        select(LoopCoordinatorLease).where(
-            LoopCoordinatorLease.round_id == round_id,
-            LoopCoordinatorLease.expires_at > now,
-        )
-    )
-    return lease is not None
+async def _last_progress_times(session: AsyncSession, rounds: list[LoopRound]) -> dict[str, datetime]:
+    """读取当前轮可追溯的实际进展，不把控制心跳或未完成请求当作工作完成。"""
+    round_ids = [row.round_id for row in rounds]
+    loop_ids = [row.loop_id for row in rounds]
+    receipt_round = LoopIndexBudgetReservation.actual_usage["round_id"].as_string()
+    progress = union_all(
+        select(LoopJournalEvent.entity_id.label("round_id"), LoopJournalEvent.occurred_at.label("at")).where(
+            LoopJournalEvent.loop_id.in_(loop_ids), LoopJournalEvent.entity_id.in_(round_ids),
+            LoopJournalEvent.entity_type == "round", LoopJournalEvent.kind == "loop.round.state_changed",
+            or_(LoopJournalEvent.payload["status"].as_string() != "observed",
+                LoopJournalEvent.payload["observation_id"].as_string().is_not(None))),
+        select(LoopPatrolPhaseTransition.round_id, LoopPatrolPhaseTransition.occurred_at).where(
+            LoopPatrolPhaseTransition.round_id.in_(round_ids),
+            LoopPatrolPhaseTransition.from_phase != LoopPatrolPhaseTransition.to_phase),
+        select(LoopWorkerRequest.round_id, LoopWorkerRequest.completed_at).where(
+            LoopWorkerRequest.round_id.in_(round_ids), LoopWorkerRequest.status.in_(("success", "error")),
+            LoopWorkerRequest.completed_at.is_not(None)),
+        select(LoopPatrolAttempt.round_id, LoopPatrolAttempt.completed_at).where(
+            LoopPatrolAttempt.round_id.in_(round_ids), LoopPatrolAttempt.status.in_(("success", "error")),
+            LoopPatrolAttempt.completed_at.is_not(None)),
+        select(receipt_round, LoopIndexBudgetReservation.settled_at).where(
+            LoopIndexBudgetReservation.loop_id.in_(loop_ids), receipt_round.in_(round_ids),
+            LoopIndexBudgetReservation.settled_at.is_not(None),
+            LoopIndexBudgetReservation.actual_usage["model_calls"].as_integer() > 0),
+    ).subquery()
+    rows = await session.execute(select(progress.c.round_id, func.max(progress.c.at)).group_by(progress.c.round_id))
+    return dict(rows.all())
 
 
 def _age_seconds(started_at: datetime, now: datetime) -> int:

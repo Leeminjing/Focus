@@ -829,6 +829,23 @@ test("option 3 renders committed Patrol activity and connection recovery without
   assert.match(html, /重同步/);
 });
 
+test("Curator activity formats structured scopes and escapes labels", () => {
+  const html = LoopView.render({
+    snapshot: { loop_id: "l1", status: "running" },
+    live: { curators: {
+      root: { entity_id: "root", updated_sequence: 4, state: { state: "reading", scope: { mode: "bootstrap", context_id: "context-root", revision_id: "rev-root", role: null } } },
+      lane: { entity_id: "lane", updated_sequence: 3, state: { state: "analyzing", scope: { mode: "lane", lane_id: "lane-tests", context_id: "context-tests", revision_id: "rev-tests", role: "<Testing>" } } },
+      legacy: { entity_id: "legacy", updated_sequence: 2, state: { state: "reading", scope: "implementation" } },
+      empty: { entity_id: "fallback", updated_sequence: 1, state: { state: "queued", scope: {} } },
+    } },
+  });
+  assert.match(html, /<strong>初始 Context · context-root<\/strong>/);
+  assert.match(html, /<strong>&lt;Testing&gt; · lane-tests<\/strong>/);
+  assert.match(html, /<strong>implementation<\/strong>/);
+  assert.match(html, /<strong>fallback<\/strong>/);
+  assert.doesNotMatch(html, /\[object Object\]|<Testing>/);
+});
+
 test("first round displays committed Context Run activity before Patrol exists", () => {
   const html = LoopView.render({
     snapshot: {
