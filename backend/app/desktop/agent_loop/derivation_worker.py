@@ -85,6 +85,14 @@ class RoleBoundStructuredModel:
         self._usage_receipts.set(receipts)
 
     @property
+    def context_window_tokens(self) -> int | None:
+        return StructuredWorkerModel(self._app_config, self._model_name).context_window_tokens
+
+    @property
+    def max_output_tokens(self) -> int:
+        return StructuredWorkerModel(self._app_config, self._model_name).max_output_tokens
+
+    @property
     def usage_managed(self) -> bool:
         return self._usage_receipts.get() is not None
 
