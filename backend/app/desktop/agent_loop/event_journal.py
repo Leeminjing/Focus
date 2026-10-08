@@ -1,7 +1,7 @@
 r"""本文件对外提供 LoopEventJournal、ReplayUnavailable 与 StaleEntityRevision。
 
 输入为调用方事务中的 AsyncSession、Loop id、CanonicalEventDraft、replay cursor、保留配置和 canonical emission 开关；输出为安全规范化后原子分配的
-CanonicalEventEnvelope/显式跳过、严格有序分页或 snapshot-required 错误。具体工作流为开关启用时锁定每 Loop sequence 行，
+CanonicalEventEnvelope/显式跳过、严格有序分页或 snapshot-required 错误。具体工作流为开关启用时先取父 Loop 的 KEY SHARE，再锁定 sequence 行，
 在同一事务内复查幂等/实体 revision 后追加事件；读取先核对 retention，清理只推进最早可重放边界。
 示例：`event = await journal.append(session, loop_id, draft)`。
 """
@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft, CanonicalEventEnvelope, EventVisibility
 from backend.app.desktop.agent_loop.feature_flags import LoopFeatureFlags
 from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent, LoopJournalSequence, LoopReplayRetention
+from backend.app.desktop.agent_loop.models import AgentLoop
 from backend.app.desktop.persistence_safety import PersistencePayloadNormalizer
 
 
@@ -43,6 +44,8 @@ class LoopEventJournal:
     ) -> CanonicalEventEnvelope | None:
         if not self._enabled:
             return None
+        # 外键检查需要父 Loop 的 KEY SHARE；必须先取得它，避免持有序号锁后反向等待 Loop。
+        await session.get(AgentLoop, loop_id, with_for_update={"read": True, "key_share": True})
         existing = await self._existing(session, loop_id, draft)
         if existing is not None:
             return self._envelope(existing)

@@ -17,6 +17,7 @@ import uuid
 
 import pytest
 from focus.runtime.stream_bridge.memory import MemoryStreamBridge
+from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -311,6 +312,7 @@ def test_occupied_planned_writer_slot_fails_without_workspace_fallback(tmp_path:
             service = object.__new__(DesktopService)
             service.session_factory = sessions
             prepared_paths: list[str] = []
+            service.checkpointer = InMemorySaver()
 
             async def prepare(*args, **kwargs):
                 prepared_paths.append(args[3])
