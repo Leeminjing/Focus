@@ -53,6 +53,7 @@ class _Admission:
     denied: tuple[Path, ...] = ()
     requested_mode: AccessMode | None = None
     capability_denied: str | None = None
+    invalid_escalation: bool = False
 
     @property
     def targets(self) -> tuple[Path, ...]:
@@ -69,6 +70,8 @@ class AccessPolicyMiddleware(AgentMiddleware):
     ) -> ToolResult:
         _reject_sync_workspace_lease(request)
         admission = _admit(request)
+        if admission.invalid_escalation:
+            return _invalid_escalation(request)
         if admission.capability_denied:
             return _capability_denied(request, admission.capability_denied)
         if admission.denied:
@@ -92,6 +95,8 @@ class AccessPolicyMiddleware(AgentMiddleware):
         )
         await _assert_workspace_lease(request)
         admission = _admit(request)
+        if admission.invalid_escalation:
+            return _invalid_escalation(request)
         if admission.capability_denied:
             return _capability_denied(request, admission.capability_denied)
         if admission.denied:
@@ -154,7 +159,10 @@ def _admit(request: ToolCallRequest) -> _Admission:
     policy = policy_from_context(context)
 
     if args.get("requested_mode") is not None:
-        return _admit_escalation(request, policy, context, args, contract)
+        try:
+            return _admit_escalation(request, policy, context, args, contract)
+        except ValueError:
+            return _Admission(False, args, invalid_escalation=True)
     if contract.kind in (ToolEffectKind.NO_LOCAL_EFFECT, ToolEffectKind.DELEGATED_EXECUTION):
         return _Admission(False, args)
     if contract.kind is ToolEffectKind.SANDBOXED_SHELL:
@@ -304,6 +312,20 @@ def _policy_denied(request: ToolCallRequest, admission: _Admission) -> ToolMessa
             "若确需本次放宽，请在原工具调用提供足够的最小 requested_mode 和非空 reason，"
             "由用户单次批准；先核对已完成的副作用，再决定是否重试。"
         ),
+        tool_call_id=request.tool_call.get("id"),
+        status="error",
+    )
+
+
+def _invalid_escalation(request: ToolCallRequest) -> ToolMessage:
+    policy = policy_from_context(_context_of(request))
+    return ToolMessage(
+        content=(
+            f"INVALID_MODE_ESCALATION: 当前模式 {policy.mode}。requested_mode 仅用于申请更宽权限，"
+            "必须使用 workspace-write 或 danger-full-access 并提供非空 reason；仅支持写文件和 Shell。"
+            "当前权限已经足够时，删除 requested_mode 和 reason 后重新调用。此次未执行工具。"
+        ),
+        name=request.tool_call.get("name"),
         tool_call_id=request.tool_call.get("id"),
         status="error",
     )

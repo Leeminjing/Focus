@@ -3,6 +3,7 @@ r"""本文件对外提供 LoopWaveDispatcher、LoopRunWorkspaceBinder、DesktopD
 输入为已授权 Directive、规划出的 workspace slot 与 Run 请求；输出为持久的 Run/dispatch 交付和启动时的 workspace lease。
 具体工作流为 Dispatcher 认领 directive 并分配 slot，LaunchPort 将计划随 Run 准入原子提交，通用 durable worker 在启动边界调用 Binder 获取 lease；交付状态与实际启动状态分别记录。
 启动边界可先于 launcher 返回推进 Directive；交付确认仍须幂等收口 Expansion 的 dispatched 状态，不以 delivering 作为唯一入口。
+认领、交付确认与释放统一先锁 Loop，再锁 Directive，与 Run 启动和控制事务保持相同顺序。
 每次工具效果检查同时复核持久 Loop 控制及 workspace lease，暂停或撤权后拒绝旧执行。
 示例：`run_ids = await dispatcher.dispatch(loop_id, round_id)`。
 用户 Directive 从不可变请求交付原始 HumanMessage、材料和焦点，服务端当前角色解析装备，固定 direct_user/user_intent_id；通用 dispatch 与启动边界共同幂等确认交付。
@@ -62,7 +63,7 @@ class LoopWaveDispatcher:
         )
         by_directive = {item.directive_id: item for item in directives}
         planned = {item.directive_id for item in plans}
-        await self._release_claims(set(by_directive) - planned, "workspace_capacity")
+        await self._release_claims(loop_id, set(by_directive) - planned, "workspace_capacity")
         run_ids: list[str] = []
         remaining_claims = set(planned)
         for plan in plans:
@@ -79,13 +80,18 @@ class LoopWaveDispatcher:
                 run_ids.append(run_id)
                 remaining_claims.discard(directive.directive_id)
             except Exception as exc:
-                await self._release_claims(remaining_claims, f"launch_failed:{type(exc).__name__}:{str(exc)[:500]}")
+                await self._release_claims(loop_id, remaining_claims, f"launch_failed:{type(exc).__name__}:{str(exc)[:500]}")
                 raise
         return tuple(run_ids)
 
     async def _record_delivery(self, directive_id: str, run_id: str) -> None:
         async with self._sessions.begin() as session:
-            directive = await session.get(LoopDirective, directive_id, with_for_update=True)
+            identity = await session.get(LoopDirective, directive_id)
+            if identity is None:
+                raise LookupError("已启动 Run 的 Directive 不存在")
+            # 无锁读取归属，取得 Loop 锁后再刷新并锁定 Directive。
+            await session.get(AgentLoop, identity.loop_id, with_for_update=True)
+            directive = await session.get(LoopDirective, directive_id, with_for_update=True, populate_existing=True)
             if directive is None:
                 raise LookupError("已启动 Run 的 Directive 不存在")
             if directive.status == "launching":
@@ -112,7 +118,7 @@ class LoopWaveDispatcher:
 
     async def _claim(self, loop_id: str, round_id: str, concurrency: int) -> tuple[LoopDirective, ...]:
         async with self._sessions.begin() as session:
-            loop = await session.get(AgentLoop, loop_id)
+            loop = await session.get(AgentLoop, loop_id, with_for_update=True)
             if loop is None:
                 return ()
             directives = list(
@@ -139,15 +145,16 @@ class LoopWaveDispatcher:
                 await self._lifecycle.transition(session, directive.directive_id, "delivering")
             return tuple(directives)
 
-    async def _release_claims(self, directive_ids: set[str], reason: str) -> None:
+    async def _release_claims(self, loop_id: str, directive_ids: set[str], reason: str) -> None:
         if not directive_ids:
             return
         async with self._sessions.begin() as session:
+            await session.get(AgentLoop, loop_id, with_for_update=True)
             rows = list(
                 (
                     await session.scalars(
                         select(LoopDirective)
-                        .where(LoopDirective.directive_id.in_(directive_ids))
+                        .where(LoopDirective.loop_id == loop_id, LoopDirective.directive_id.in_(directive_ids))
                         .with_for_update()
                     )
                 ).all()

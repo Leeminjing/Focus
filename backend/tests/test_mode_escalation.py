@@ -23,7 +23,7 @@ from focus.security.execution import bind_call_execution
 from focus.security.middleware import AccessPolicyMiddleware, _admit
 from focus.security.policy import AccessMode
 from focus.sandbox import WindowsAclBackend
-from focus.tools.builtins.workspace_tools import powershell, write_file
+from focus.tools.builtins.workspace_tools import powershell, read_file, write_file
 from focus.tools.builtins import workspace_tools
 from windows_sandbox_fixture import windows_sandbox_roots
 
@@ -61,6 +61,82 @@ def test_valid_escalation_steps(current, target):
 def test_invalid_escalation_fails_before_execution(current, target, reason):
     with pytest.raises(ValueError):
         validate_escalation(current, target, reason)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("target,reason", [
+    ("workspace-write", "write fixture"),
+    ("danger-full-access", "same mode"),
+    ("bogus", "invalid mode"),
+    ("workspace-write", ""),
+])
+def test_invalid_escalation_is_a_recoverable_tool_result(tmp_path, target, reason, asynchronous):
+    request = _request(powershell, tmp_path, AccessMode.DANGER_FULL_ACCESS,
+        {"command": "echo ready", "requested_mode": target, "reason": reason})
+    seen = []
+
+    def handler(active):
+        seen.append(active)
+        return ToolMessage(content="executed", tool_call_id="call-1")
+
+    async def async_handler(active):
+        return handler(active)
+
+    middleware = AccessPolicyMiddleware()
+    result = (asyncio.run(middleware.awrap_tool_call(request, async_handler))
+              if asynchronous else middleware.wrap_tool_call(request, handler))
+    assert (result.name, result.tool_call_id, result.status) == ("powershell", "call-1", "error")
+    assert "requested_mode" in result.content
+    assert seen == []
+
+
+def test_agent_corrects_invalid_escalation_without_losing_the_run(tmp_path, monkeypatch):
+    from langchain_core.messages import AIMessage, HumanMessage
+    from backend.app.desktop.tool_error_provider import build_tool_error_middleware
+    from backend.tests.config_helpers import app_config_for, ToolCapableFakeChatModel
+    from backend.tests.tool_catalog_support import registry_for
+    import focus.agents.lead.agent as lead
+
+    async def run():
+        model = ToolCapableFakeChatModel(scripted=[
+            AIMessage(content="", tool_calls=[{"name": "write_file", "id": "bad", "args": {
+                "path": "rejected.txt", "content": "bad", "requested_mode": "workspace-write", "reason": "write fixture"}}]),
+            AIMessage(content="", tool_calls=[{"name": "write_file", "id": "corrected", "args": {
+                "path": "accepted.txt", "content": "corrected"}}]),
+            AIMessage(content="done"),
+        ])
+        monkeypatch.setattr(lead, "create_chat_model", lambda **kwargs: model)
+        monkeypatch.setattr(lead, "get_plugin_registry", lambda: registry_for([]))
+        graph = await lead.make_lead_agent(model_name="fixture", tools=[write_file], middlewares=[],
+            additional_middlewares=[build_tool_error_middleware()], app_config=app_config_for("fixture", None))
+        result = await graph.ainvoke({"messages": [HumanMessage(content="write fixture")]},
+            context=runtime_context(agent_id="main", task_id="fixture", workspace=str(tmp_path),
+                permissions=("read", "write"), access_mode=AccessMode.DANGER_FULL_ACCESS))
+        messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+        assert [(m.tool_call_id, m.status) for m in messages] == [("bad", "error"), ("corrected", "success")]
+        assert not (tmp_path / "rejected.txt").exists()
+        assert (tmp_path / "accepted.txt").read_text() == "corrected"
+        assert result["messages"][-1].content == "done"
+
+    asyncio.run(run())
+
+
+def test_read_only_tool_cannot_request_escalation(tmp_path):
+    request = _request(read_file, tmp_path, AccessMode.READ_ONLY,
+        {"path": "fixture.txt", "requested_mode": "workspace-write", "reason": "read fixture"})
+    seen = []
+    result = AccessPolicyMiddleware().wrap_tool_call(request, lambda active: seen.append(active))
+    assert (result.name, result.status) == ("read_file", "error")
+    assert seen == []
+
+
+def test_rejected_escalation_does_not_echo_untrusted_arguments(tmp_path):
+    untrusted = "not-a-mode:dummy-sensitive-value"
+    request = _request(powershell, tmp_path, AccessMode.READ_ONLY,
+        {"command": "echo ready", "requested_mode": untrusted, "reason": "write fixture"})
+    result = AccessPolicyMiddleware().wrap_tool_call(request, lambda active: pytest.fail("must not execute"))
+    assert result.status == "error"
+    assert untrusted not in result.content
 
 
 def test_approval_payload_binds_subject_workspace_command_and_reason(tmp_path):

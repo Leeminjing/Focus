@@ -404,16 +404,16 @@ class LoopCoordinator:
         budget = LoopBudgetGuard().evaluate(usage_values, grant.budgets if grant else {}, "dispatch")
         if grant is None or budget.status == "exhausted":
             async with self._sessions.begin() as session:
-                current = await session.get(LoopRound, claim.round_id, with_for_update=True)
-                current_loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True)
+                current_loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True, populate_existing=True)
+                current = await session.get(LoopRound, claim.round_id, with_for_update=True, populate_existing=True)
                 if current is not None:
                     await terminate_round(session, current_loop, current, category="budget", reason="Loop hard budget 已耗尽，未启动新的 Run", allowed_statuses=("ready",))
             return ()
         configured = int((grant.budgets if grant else {}).get("max_concurrent_runs", concurrency))
         run_ids = await dispatcher.dispatch(claim.loop_id, claim.round_id, min(concurrency, configured))
         async with self._sessions.begin() as session:
-            current = await session.get(LoopRound, claim.round_id, with_for_update=True)
-            loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True)
+            loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True, populate_existing=True)
+            current = await session.get(LoopRound, claim.round_id, with_for_update=True, populate_existing=True)
             if current is None or loop is None or current.status != "ready":
                 return None
             queued = int(
