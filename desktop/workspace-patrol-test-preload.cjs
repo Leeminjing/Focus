@@ -1,6 +1,6 @@
 /* 本文件对外提供真实 Patrol/普通会话页面验收的离线 HTTP 与 Live fixture。
- * 输入为 index.html 的实际 API 请求；输出为逐工作区绑定、稳定输入回执和独立事件。
- * 工作流为沿用普通会话 fixture，仅接管新工作区路由；发送持久后可延迟响应，Progress/Lineage/Fact 各自提交。
+ * 输入为 index.html 的实际 API 请求；输出为可变工作区列表、文件夹绑定、稳定输入回执和独立事件。
+ * 工作流为沿用普通会话 fixture，仅接管工作区路由；可暂停列表响应或拒绝读取/文件夹选择，发送持久后可延迟响应，Progress/Lineage/Fact 各自提交。
  * 示例：BrowserWindow({ webPreferences: { preload: __filename, contextIsolation: false } })。
  */
 require("./context-ui-test-preload.cjs");
@@ -12,17 +12,33 @@ const streams = new Map();
 let sequence = 0;
 window.patrolFixture = {
   submissions: [], releases: [], hold: false,
+  workspaces: ["information", "outcome", "boundary", "completion_check"].map(type => ({ workspace_id: type, display_name: type, path: `C:/test/${type}` })),
+  workspaceError: false, holdWorkspaces: false, releaseWorkspaces: null,
+  folder: null, folderError: false, workspaceBinds: [],
   lineage: { roots: {}, nodes: [], edges: [], complete: true },
   emit(loopId, entity_type, entity_id, entity_revision, payload) {
     const event = { event_id: `event-${++sequence}`, loop_id: loopId, sequence, kind: `${entity_type}.updated`, entity_type, entity_id, entity_revision, payload, occurred_at: new Date().toISOString(), schema_version: 1 };
     streams.get(loopId)?.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
   },
 };
+window.focusDesktop.selectWorkspace = async () => {
+  if (window.patrolFixture.folderError) throw new Error("文件夹选择失败");
+  return window.patrolFixture.folder;
+};
 window.fetch = async (input, options = {}) => {
   const url = new URL(String(input), "http://focus.test");
   const path = url.pathname;
   const prefix = "/desktop/api/agent-loops";
-  if (path === `${prefix}/workspace`) return json(["information", "outcome", "boundary", "completion_check"].map(type => ({ workspace_id: type, display_name: type, path: `C:/test/${type}` })));
+  if (path === `${prefix}/workspace`) {
+    const rows = [...window.patrolFixture.workspaces];
+    if (window.patrolFixture.holdWorkspaces) await new Promise(resolve => { window.patrolFixture.releaseWorkspaces = resolve; });
+    return window.patrolFixture.workspaceError ? new Response("工作区列表读取失败", { status: 500 }) : json(rows);
+  }
+  if (path === "/desktop/api/workspaces" && options.method === "POST") {
+    const body = JSON.parse(options.body);
+    window.patrolFixture.workspaceBinds.push(body);
+    return json({ workspace_id: "bound-workspace", display_name: "绑定测试", path: body.path });
+  }
   const workspace = path.match(/\/workspace\/([^/]+)(\/inputs)?$/);
   if (workspace) {
     const id = workspace[1];
