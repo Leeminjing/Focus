@@ -1,7 +1,7 @@
 /*
- * 本文件对外提供 Loop Mission、Store/Console Store、API/完整会话协议、连接提示、Portfolio、事实、终止态和 provenance 的回归测试。
+ * 本文件对外提供 Loop Mission、Store/Console Store、API/完整会话协议、连接提示、Portfolio、事实和终止态的回归测试。
  * 输入为重复/乱序事件、千条会话页、模拟 fetch、Lane revisions 和多父边；输出为幂等 cursor、固定
- * 消息窗口、视口恢复、正确请求、完整 secondary source 与不污染消息正文的 badge 断言。具体工作流为
+ * 消息窗口、视口恢复、正确请求与完整 secondary source 断言。具体工作流为
  * 直接加载无 DOM UMD 模块并调用纯函数；示例：`node --test desktop/agent-loop-modules.test.js`。
  * 原文空白保持、失败重放同一身份、交付生命周期及历史缺决策诊断均依据实际合同断言。
  */
@@ -15,9 +15,6 @@ const LoopStore = require("./loop-store.js");
 const MissionEditor = require("./loop-mission-editor.js");
 globalThis.FocusLoopMissionEditor = MissionEditor;
 const LoopView = require("./loop-view.js");
-const Portfolio = require("./portfolio-view.js");
-const Evolution = require("./context-evolution-view.js");
-const Provenance = require("./message-provenance-view.js");
 const ConsoleStore = require("./loop-console-store.js");
 const PortfolioMap = require("./portfolio-map-view.js");
 const Conversation = require("./context-conversation-view.js");
@@ -631,28 +628,6 @@ test("api replays persisted SSE frames by cursor", async () => {
   const cursor = await api.stream("l1", 7, events => received.push(...events));
   assert.equal(cursor, 8);
   assert.equal(received[0].event_id, "e8");
-});
-
-
-test("portfolio and evolution preserve keep and secondary sources", () => {
-  const previous = { lanes: [{ lane_id: "a", revision_id: "r1" }] };
-  const current = { lanes: [{ lane_id: "a", revision_id: "r1", purpose: "test" }, { lane_id: "b", revision_id: "r2", purpose: "review" }] };
-  assert.deepEqual(Portfolio.diff(previous, current).map(item => item.change), ["keep", "create"]);
-  const graph = Evolution.project({ revisions: [{ revision_id: "r3", context_id: "c", generation: 3 }], edges: [{ target_revision_id: "r3", source_revision_id: "r1", position: 0 }, { target_revision_id: "r3", source_revision_id: "r2", position: 1 }] });
-  assert.equal(graph[0].sources.length, 2);
-  assert.equal(graph[0].first_parent.source_revision_id, "r1");
-  const rendered = Evolution.render({ revisions: [{ revision_id: "r3", context_id: "c", generation: 3 }], edges: [] }, {}, { final_path: [{ context_id: "c" }] });
-  assert.match(rendered, /data-action="open-loop-revision"/);
-  assert.match(rendered, /is-adopted/);
-});
-
-
-test("delegated source badge stays outside message content", () => {
-  const message = { content: "Run tests." };
-  const badge = Provenance.badge({ source_kind: "delegated_patrol", provenance_id: "p1" });
-  assert.equal(message.content, "Run tests.");
-  assert.match(badge, /Patrol 依据授权生成/);
-  assert.doesNotMatch(message.content, /Patrol|delegated/);
 });
 
 

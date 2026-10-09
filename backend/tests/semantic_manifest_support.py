@@ -1,9 +1,9 @@
-r"""本文件对外提供 SemanticManifestProjector。
+r"""本文件对外提供旧格式测试用的 SemanticManifestProjector。
 
 输入为冻结 `LoopObservationEnvelope` 中带精确 Revision、content hash 与 message evidence preview 的 Portfolio frontier；
 输出为按 Revision hash/version 缓存的 `ContextSemanticManifest` 集合。具体工作流为先验证 scope、frontier identity、
 hash 与 message identity，再把每条可引用预览保留为带 `NamespacedMessageRef` 的 semantic unit，保持显式 semantic kind
-并拒绝无支撑、越界或不完整来源。
+并拒绝无支撑、越界或不完整来源。该实现仅构造测试输入，生产策展使用完整 Revision 索引。
 示例：`manifests = SemanticManifestProjector().project(observation)`。
 """
 

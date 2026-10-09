@@ -122,19 +122,6 @@ def _rewrite_save_url(url: str, public_origin: str, internal_origins: set[str]) 
     ))
 
 
-def callback_transition(status: int, *, dirty: bool) -> tuple[str, bool]:
-    """Return (session state, requires package download)."""
-    if status == 1:
-        return "editing", False
-    if status in {2, 6}:
-        return "saving", True
-    if status == 4:
-        return ("recoverable" if dirty else "closed"), False
-    if status in {3, 7}:
-        return "recoverable", False
-    return "ready", False
-
-
 def _document_server_token(body: dict[str, Any], header: str | None) -> str:
     """Extract ONLYOFFICE's outgoing JWT using its body-first precedence."""
     body_token = body.get("token")

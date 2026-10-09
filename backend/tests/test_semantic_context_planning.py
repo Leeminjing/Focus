@@ -19,7 +19,7 @@ from backend.app.desktop.agent_loop.context_expansion.manifest_adapter import (
 from backend.app.desktop.agent_loop.context_expansion.planner import (
     WorkerResultCognitivePlanner,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_manifest import (
+from backend.tests.semantic_manifest_support import (
     SemanticManifestProjector,
 )
 from backend.app.desktop.agent_loop.context_expansion.signals import (

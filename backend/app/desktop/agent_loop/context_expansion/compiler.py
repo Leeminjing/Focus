@@ -1,4 +1,4 @@
-r"""本文件对外提供 ExpansionPlanCompilerPort、ContextExpansionPlanCompiler 与 DeterministicExpansionPlanCompiler。
+r"""本文件对外提供 ContextExpansionPlanCompiler 与 DeterministicExpansionPlanCompiler。
 
 输入为冻结 observation、identity-only SpawnContextIntent、WorkContext opportunity、resolved multi-source evidence、validated claim dossier
 与三维 quality assessment；输出为 CompiledExpansion 或阶段专属 ExpansionBlocker。具体工作流为 production façade 重建 manifests、
@@ -77,15 +77,6 @@ from backend.app.desktop.context_curation import (
     compile_lane,
     evidence_ref_key,
 )
-
-
-class ExpansionPlanCompilerPort(Protocol):
-    async def compile(
-        self,
-        observation: LoopObservationEnvelope,
-        opportunity: ExpansionOpportunity,
-        intent: SpawnContextIntent,
-    ) -> CompiledExpansion | ExpansionBlocker: ...
 
 
 class ContextQualityServicePort(Protocol):

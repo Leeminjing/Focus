@@ -2,7 +2,6 @@
 
 对外提供:
     image_dimensions — 从图像字节解析像素宽高
-    image_mime_from_name — 由文件名推断图像 MIME
     is_image_name — 判定文件名是否为受支持的图像
     measure_image_tokens — 按 patch 网格把像素宽高折算为 token 数
     scale_for_model — 把原图等比缩小到送模尺寸上限，返回 (mime, 缩放后字节)
@@ -15,7 +14,7 @@
 
 输出:
     image_dimensions → tuple[int, int] | None（非图像或无法解析返回 None）
-    image_mime_from_name / image_mime_of → str | None；is_image_name → bool
+    is_image_name → bool
     measure_image_tokens → int；scale_for_model → tuple[str, bytes]；to_data_url → str
 
 具体工作流:
@@ -60,10 +59,6 @@ DEFAULT_IMAGE_MIME = "image/png"
 
 def is_image_name(name: str) -> bool:
     return Path(name).suffix.lower() in IMAGE_MIME_BY_SUFFIX
-
-
-def image_mime_from_name(name: str) -> str | None:
-    return IMAGE_MIME_BY_SUFFIX.get(Path(name).suffix.lower())
 
 
 def image_dimensions(data: bytes) -> tuple[int, int] | None:
