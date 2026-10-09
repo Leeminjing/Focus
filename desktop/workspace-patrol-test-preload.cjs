@@ -1,6 +1,6 @@
 /* 本文件对外提供真实 Patrol/普通会话页面验收的离线 HTTP 与 Live fixture。
- * 输入为 index.html 的实际 API 请求；输出为可变工作区列表、文件夹绑定、稳定输入回执和独立事件。
- * 工作流为沿用普通会话 fixture，仅接管工作区路由；可暂停列表响应或拒绝读取/文件夹选择，发送持久后可延迟响应，Progress/Lineage/Fact 各自提交。
+ * 输入为 index.html 的实际 API 请求和系统目录选择调用；输出为精确选中路径、文件夹绑定、稳定输入回执和独立事件。
+ * 工作流为沿用普通会话 fixture，可取消/拒绝/暂停目录选择和绑定；旧目录列表请求显式失败，发送回执和观测仍独立提交。
  * 示例：BrowserWindow({ webPreferences: { preload: __filename, contextIsolation: false } })。
  */
 require("./context-ui-test-preload.cjs");
@@ -12,9 +12,8 @@ const streams = new Map();
 let sequence = 0;
 window.patrolFixture = {
   submissions: [], releases: [], hold: false,
-  workspaces: ["information", "outcome", "boundary", "completion_check"].map(type => ({ workspace_id: type, display_name: type, path: `C:/test/${type}` })),
-  workspaceError: false, holdWorkspaces: false, releaseWorkspaces: null,
-  folder: null, folderError: false, workspaceBinds: [],
+  folder: null, folderError: false, folderCalls: 0, holdFolder: false, releaseFolder: null,
+  workspaceBinds: [], bindError: false, holdBind: false, releaseBind: null, historyListRequests: 0,
   lineage: { roots: {}, nodes: [], edges: [], complete: true },
   emit(loopId, entity_type, entity_id, entity_revision, payload) {
     const event = { event_id: `event-${++sequence}`, loop_id: loopId, sequence, kind: `${entity_type}.updated`, entity_type, entity_id, entity_revision, payload, occurred_at: new Date().toISOString(), schema_version: 1 };
@@ -22,22 +21,27 @@ window.patrolFixture = {
   },
 };
 window.focusDesktop.selectWorkspace = async () => {
+  window.patrolFixture.folderCalls++;
   if (window.patrolFixture.folderError) throw new Error("文件夹选择失败");
-  return window.patrolFixture.folder;
+  const chosen = window.patrolFixture.folder;
+  if (window.patrolFixture.holdFolder) await new Promise(resolve => { window.patrolFixture.releaseFolder = resolve; });
+  return chosen;
 };
 window.fetch = async (input, options = {}) => {
   const url = new URL(String(input), "http://focus.test");
   const path = url.pathname;
   const prefix = "/desktop/api/agent-loops";
   if (path === `${prefix}/workspace`) {
-    const rows = [...window.patrolFixture.workspaces];
-    if (window.patrolFixture.holdWorkspaces) await new Promise(resolve => { window.patrolFixture.releaseWorkspaces = resolve; });
-    return window.patrolFixture.workspaceError ? new Response("工作区列表读取失败", { status: 500 }) : json(rows);
+    window.patrolFixture.historyListRequests++;
+    return new Response("工作区必须从系统文件夹选择器选择", { status: 500 });
   }
   if (path === "/desktop/api/workspaces" && options.method === "POST") {
     const body = JSON.parse(options.body);
     window.patrolFixture.workspaceBinds.push(body);
-    return json({ workspace_id: "bound-workspace", display_name: "绑定测试", path: body.path });
+    if (window.patrolFixture.holdBind) await new Promise(resolve => { window.patrolFixture.releaseBind = resolve; });
+    if (window.patrolFixture.bindError) return new Response("工作区绑定失败", { status: 500 });
+    const name = body.path.split(/[\\/]/).filter(Boolean).at(-1);
+    return json({ workspace_id: name, display_name: name, path: body.path });
   }
   const workspace = path.match(/\/workspace\/([^/]+)(\/inputs)?$/);
   if (workspace) {

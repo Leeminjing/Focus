@@ -31,7 +31,9 @@ final result: passed
 
 ---
 
-# Patrol 工作区选择页设计验收
+# Patrol 工作区选择页设计验收（历史目录方案，已撤销）
+
+本节保留修改记录。用户随后明确工作区必须来自电脑文件系统；该方案的数据源和下方旧验收结论已失效，以文末“文件系统选择修正”验收为准。
 
 用户选择本轮显示的第 2 张设计，并明确要求直接改造现有代码、不新开 OpenSpec change。基线为 8bd8537；本次只改工作区选择入口及其壳层生命周期，复用原文件夹绑定、Patrol 输入和 Live，未增加后端机制或依赖。
 
@@ -82,5 +84,27 @@ final result: passed
 - [x] 修复 P1/P2 后重新进行同画幅视觉比较。
 
 Follow-up polish：生成图与系统字体的抗锯齿、原生外壳高度存在少量预期差异，不影响内容层级和核心流程。
+
+final result: passed
+
+## 文件系统选择修正：当前验收
+
+有效需求来源为用户最新明确指令“工作区是从电脑文件系统选”，及 C:/Users/brubing/AppData/Local/Temp/codex-clipboard-caacf9b7-9826-41a5-b6f4-d014e017b3e7.png（2159 × 1222）。该截图标示错误入口，不再按历史目录列表图稿实施。
+
+[P1，已修复] 数据源错误：删除历史工作区列表、搜索、选中首项、全部目录查询 API/服务及对应夹具。页面复用 preload.selectWorkspace → focus:select-workspace → dialog.showOpenDialog(openDirectory)；浏览器兼容入口继续沿原 /workspaces/select。选择只保存本页返回路径，点击“进入 Patrol”才复用原 create_workspace 登记绑定，首条信息才启动执行。
+
+改代码前已调用 Context7 /electron/electron，核对原生目录对话框返回的 canceled/filePaths 及现有 invoke/handle 桥：[Electron dialog](https://www.electronjs.org/docs/latest/api/dialog)。没有另建文件浏览器、数据模型或执行链。原导航偏好改为保存已确认工作区的 metadata，重载直接恢复该工作区；此前仅存数据库 UUID 的旧值不再触发历史目录选择。
+
+当前实现截图：C:/Users/brubing/.codex/visualizations/2026/10/09/01a11eb8-bbed-77d0-a00a-35cdad56696a/filesystem-picker-selected.jpg，1600 × 900。全视图比较为同目录 filesystem-correction-comparison.jpg：左侧用户标示的错误页，右侧当前实际页面。源图等比显示为 800 × 453，实际页在 1600 × 900 iframe 中以 50% 显示为 800 × 450；两者比例未被拉伸。比较以已纠正的数据源和确认流程为准，不将来源错误的旧布局继续当作像素目标。
+
+五项视觉面已复查：保留宿主 Segoe UI/微软雅黑字号层级、语义颜色和真实离线图标；删除列表后的页面只表达本次路径及两个明确操作；完整路径换行、720px 无横向溢出；文案说明系统选择、显式确认与首输入执行边界。主要控件和路径在全尺寸截图可读，无需另生成局部裁图。
+
+验证：85 项 Node/Electron 定向回归及 4 项后端合同测试通过，相关 Python Ruff F、JS 语法与 git diff --check 通过。回归验证取消选择不登记、重选取消保留旧路径、重复选择不双开、绑定失败重试、迟到选择/绑定不接管已离开的页面、已确认工作区重载、四类型首次输入、普通会话和历史记录；旧历史列表 HTTP 请求次数必须为零。只替换了原错误搜索场景测试，必要执行与草稿回归保留。
+
+CUA 实际检查空选择页 → 点击选择 → 精确路径确认，独立页面 console 无 error/warn。预览与自动测试在原生桥边界使用离线返回路径，没有操作用户真实系统对话框或正式目录；现有 Electron 生产 IPC 和 openDirectory 配置已核对。该限制不被表述为真实文件系统端到端测试。
+
+相对 e538494：业务新增 67、删除 201、净减少 134 行；测试新增 59、删除 55、净增 4 行。增长为路径确认、原导航偏好恢复和异步边界断言，主要删除来自误加的历史列表/查询及其样式。无新 OpenSpec change、运行依赖、提交或推送。
+
+Implementation checklist：原生目录来源、选择与登记分离、取消/异步收口、删除失效路径、定向测试、实际页面截图均完成。无未解决 P0/P1/P2；普通会话检查器和原输入机制保持其既有职责。
 
 final result: passed
