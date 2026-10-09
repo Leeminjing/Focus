@@ -5,7 +5,7 @@ r"""本文件对外提供 agent_loop_router，作为 Loop、Mission、授权、�
 service/Kernel，不在 HTTP 边界写领域状态或运行模型。
 示例：`app.include_router(agent_loop_router)`。
 task-progress/{observation_id}/retry 只恢复本 Loop 的 blocked 记忆工作，不启动 Run 或改变 Context。
-工作区绑定、逐条输入、历史分页、显式后继和已提交 Lineage 复用认证边界与领域服务；Progress 只读查询由 query_routes 提供，普通 Context 路由仍独立。
+系统文件夹选择和登记由原 Desktop 路由负责；本路由只定位已绑定工作区 Patrol、逐条受理、历史分页、显式后继和已提交 Lineage。Progress 只读查询由 query_routes 提供，普通 Context 路由仍独立。
 """
 
 from __future__ import annotations
@@ -35,11 +35,6 @@ from backend.app.desktop.agent_loop.schemas import (
 )
 
 agent_loop_router = APIRouter(prefix="/desktop/api/agent-loops", tags=["agent-loops"])
-
-
-@agent_loop_router.get("/workspace")
-async def patrol_workspaces(request: Request) -> list[dict]:
-    return await request.app.state.workspace_patrol.workspaces()
 
 
 @agent_loop_router.get("/workspace/{workspace_id}")

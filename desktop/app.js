@@ -29,8 +29,8 @@
  * 主任务 Composer 仅在存在错误或需处理的提醒时显示反馈，不为常态和运行提示预留空行；
  * 审批弹窗区分单次放宽和常驻切换；Agent Loop 的 snapshot、sequence reducer、断线重放和重同步
  * 由独立 Live Store/Connection 负责，切换 Loop 时清除旧投影，启动边界观察意外连接拒绝并归入连接状态；Expansion 表单和阻断视图委托 FocusLoopExpansionBudget，普通 API 响应统一委托无 DOM 的 FocusHttpResponse 解码，本文件只组合页面生命周期和控制请求。
- * 独立 Patrol 工作区入口只协调原生文件夹绑定和模块宿主；搜索/选择/详情由专职 picker 管理，显式进入不启动执行。
- * 普通会话照旧，workspace Loop 不进入旧 Mission/介入控制台，草稿和单路 Live 由专责控制器保持；Patrol 不展示普通会话检查器，选择页在壳层刷新时保留搜索与焦点。
+ * 独立 Patrol 入口经系统文件夹选择器选取路径，picker 仅确认本次选择，显式进入才登记绑定；原导航偏好保存已确认工作区，重载不读取历史目录列表。
+ * 普通会话照旧，workspace Loop 不进入旧 Mission/介入控制台，草稿和单路 Live 由专责控制器保持；Patrol 不展示普通会话检查器，壳层刷新保留本次路径选择。
  */
 "use strict";
 
@@ -108,6 +108,7 @@ const ZOOM_LEVEL_MAX = 5;
 
 const state = {
   view: localStorage.getItem("focus-interaction-entry") === "patrol" ? "patrol" : "focus",
+  patrolWorkspace: readPatrolWorkspace(),
   tasks: [],
   activeTaskId: null,
   details: new Map(),
@@ -793,21 +794,29 @@ async function renderWorkspacePatrol() {
     return;
   }
   if (workspacePatrolPicker) return;
-  workspacePatrolPicker = window.FocusWorkspacePatrolPicker.create({
-    api: loopApi,
-    rememberedId: localStorage.getItem("focus-patrol-workspace"),
-    restoreRemembered: !state.patrolChoosing,
-    onEnter(workspace) {
+  const picker = window.FocusWorkspacePatrolPicker.create({
+    async onEnter(path) {
+      const workspace = await api("/desktop/api/workspaces", { method: "POST", body: JSON.stringify({ path }) });
+      if (state.view !== "patrol" || workspacePatrolPicker !== picker) return;
       state.patrolWorkspace = workspace;
-      localStorage.setItem("focus-patrol-workspace", workspace.workspace_id);
+      localStorage.setItem("focus-patrol-workspace", JSON.stringify(workspace));
       render();
     },
     async chooseFolder() {
-      const path = window.focusDesktop?.selectWorkspace ? await window.focusDesktop.selectWorkspace() : (await api("/desktop/api/workspaces/select", { method: "POST" })).path;
-      return path ? api("/desktop/api/workspaces", { method: "POST", body: JSON.stringify({ path }) }) : null;
+      return window.focusDesktop?.selectWorkspace ? window.focusDesktop.selectWorkspace() : (await api("/desktop/api/workspaces/select", { method: "POST" })).path;
     },
   });
-  await workspacePatrolPicker.mount(app);
+  workspacePatrolPicker = picker;
+  picker.mount(app);
+}
+
+function readPatrolWorkspace() {
+  try {
+    const workspace = JSON.parse(localStorage.getItem("focus-patrol-workspace") || "null");
+    return typeof workspace?.workspace_id === "string" && typeof workspace?.path === "string" ? workspace : null;
+  } catch {
+    return null;
+  }
 }
 
 function observeLoopConnection(loopId) {
@@ -6137,8 +6146,7 @@ async function handleDocumentClick(event) {
     if (state.view === "focus") persistFocusState();
     workspacePatrolPicker?.dispose();
     workspacePatrolPicker = null;
-    state.patrolWorkspace = null;
-    state.patrolChoosing = state.view === "patrol" || button.hasAttribute("data-patrol-switch");
+    state.patrolWorkspace = state.view === "patrol" || button.hasAttribute("data-patrol-switch") ? null : readPatrolWorkspace();
     state.inspector.open = false;
     state.view = "patrol";
     return render();

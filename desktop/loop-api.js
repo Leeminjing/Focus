@@ -92,7 +92,6 @@
       }
     }
     return Object.freeze({
-      patrolWorkspaces: () => request("/workspace"),
       restartWorkspacePatrol: workspaceId => request(`/workspace/${encodeURIComponent(workspaceId)}/restart`, { method: "POST" }),
       workspacePatrol: workspaceId => request(`/workspace/${encodeURIComponent(workspaceId)}`),
       submitWorkspaceInput: (workspaceId, body) => request(`/workspace/${encodeURIComponent(workspaceId)}/inputs`, { method: "POST", body: JSON.stringify(body) }),

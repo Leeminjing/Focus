@@ -1,5 +1,5 @@
 /* 本文件对外提供隐藏 Electron 中两种真实页面的隔离验收。
- * 输入为新 userData 目录、生产 index.html 与离线 API fixture；输出为分栏选择、搜索/绑定/迟到响应、首次四类输入、连续草稿、折叠和观测断言。
+ * 输入为新 userData 目录、生产 index.html 与离线 API fixture；输出为系统目录选择、显式确认/取消/迟到响应、首次四类输入、连续草稿、折叠和观测断言。
  * 工作流为无可见窗口加载完整应用，操作真实 DOM 与单路 Live；普通会话继续展示原 Agent 消息。
  * 示例：node --test desktop/workspace-patrol-page.test.cjs。没有外部 Provider、生产库或安装应用写入。
  */
@@ -35,63 +35,62 @@ if (!process.versions.electron) {
     await until('document.body.dataset.view === "focus" && document.querySelector(".conversation-message, .message")');
     const ordinary = await run('document.querySelector("#app").textContent');
     assert.ok(ordinary.length > 100);
-    const types = await run('window.patrolFixture.workspaces');
-    const dense = [{ workspace_id: "focus", display_name: "Focus", path: "C:\\Users\\brubing\\Desktop\\ag-project\\focus" },
-      { workspace_id: "duplicate-a", display_name: "workspace", path: "C:/first/same-name" },
-      { workspace_id: "duplicate-b", display_name: "workspace", path: "C:/second/same-name/unique-tail" },
-      { workspace_id: "escaped", display_name: '<img src=x onerror="window.unsafePicker=true">', path: 'C:/<unsafe>/"quoted"' },
-      ...Array.from({ length: 100 }, (_, i) => ({ workspace_id: `dense-${i}`, display_name: `workspace ${i}`, path: `C:/temporary/${"long-directory/".repeat(8)}${i}` }))];
-    await run(`window.patrolFixture.workspaces = ${JSON.stringify(dense)}; document.querySelector("[data-action=show-patrol]").click()`);
-    await until('document.querySelectorAll("[data-patrol-workspace-id]").length === 104');
-    assert.equal(await run('document.querySelector("[data-patrol-workspace-detail] h2").textContent'), "Focus");
-    const layout = await run('(() => { const list=document.querySelector("[data-patrol-workspaces]"), detail=document.querySelector("[data-patrol-workspace-detail]"), button=document.querySelector("[data-patrol-enter]"); return {scrollable:list.scrollHeight>list.clientHeight, separate:detail.getBoundingClientRect().left>list.getBoundingClientRect().right, enter:button.getBoundingClientRect().bottom<=innerHeight, overflow:document.documentElement.scrollWidth>innerWidth}; })()');
-    assert.deepEqual(layout, { scrollable: true, separate: true, enter: true, overflow: false });
-    await run('document.querySelector("[data-patrol-workspace-id=duplicate-b]").click()');
-    assert.ok((await run('document.querySelector(".patrol-workspace-path").textContent')).includes("second/same-name"));
-    assert.equal(await run('window.patrolFixture.submissions.length'), 0);
-    assert.equal(await run('Boolean(document.querySelector("[data-patrol-content]"))'), false);
-    await run('document.querySelector("[data-patrol-workspace-id=escaped]").click()');
-    assert.equal(await run('Boolean(window.unsafePicker) || Boolean(document.querySelector("[data-patrol-workspace-detail] img"))'), false);
-    await run('const search=document.querySelector("[data-patrol-search]"); search.focus(); search.value="SECOND\\\\SAME-NAME\\\\UNIQUE-TAIL"; search.dispatchEvent(new Event("input"))');
-    assert.equal(await run('document.querySelectorAll("[data-patrol-workspace-id]").length'), 1);
-    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-search")'), true);
-    await run('render()');
-    assert.equal(await run('document.querySelectorAll("[data-patrol-workspace-id]").length'), 1);
-    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-search")'), true);
-    await run('document.querySelector("[data-patrol-search]").value="not-a-workspace"; document.querySelector("[data-patrol-search]").dispatchEvent(new Event("input"))');
-    assert.ok((await run('document.querySelector("[data-patrol-workspaces]").textContent')).includes("没有匹配"));
-    assert.equal(await run('Boolean(document.querySelector("[data-patrol-enter]"))'), false);
-    await run('document.querySelector("[data-patrol-search]").value=""; document.querySelector("[data-patrol-search]").dispatchEvent(new Event("input"))');
-    win.setContentSize(720, 800);
-    const narrow = await run('(() => {const list=document.querySelector("[data-patrol-workspaces]").getBoundingClientRect(), detail=document.querySelector("[data-patrol-workspace-detail]").getBoundingClientRect(); return {stacked:detail.top>=list.bottom, overflow:document.documentElement.scrollWidth>innerWidth};})()');
-    assert.deepEqual(narrow, { stacked: true, overflow: false });
-    win.setContentSize(1280, 900);
+    await run('localStorage.setItem("focus-patrol-workspace", "old-database-workspace-id"); document.querySelector("[data-action=show-patrol]").click()');
+    await until('document.querySelector("[data-patrol-bind]")');
+    assert.equal(await run('Boolean(document.querySelector("[data-patrol-search], [data-patrol-workspaces], [data-patrol-enter]"))'), false);
     await run('document.querySelector("[data-patrol-bind]").click()');
     await until('!document.querySelector("[data-patrol-bind]").disabled');
     assert.equal(await run('window.patrolFixture.workspaceBinds.length'), 0);
     await run('window.patrolFixture.folderError=true; document.querySelector("[data-patrol-bind]").click()');
     await until('!document.querySelector("[data-patrol-binding-error]").hidden');
     assert.ok((await run('document.querySelector("[data-patrol-binding-error]").textContent')).includes("文件夹选择失败"));
-    await run('window.patrolFixture.folderError=false; window.patrolFixture.folder="C:/bound-folder"; document.querySelector("[data-patrol-bind]").click()');
-    await until('document.querySelector("[data-patrol-content]")');
-    assert.deepEqual(await run('window.patrolFixture.workspaceBinds'), [{ path: "C:/bound-folder" }]);
-    assert.equal(await run('window.patrolFixture.submissions.length'), 0);
-    await run('window.patrolFixture.workspaces=[]; document.querySelector("[data-action=show-patrol]").click()');
-    await until('document.querySelector("[data-patrol-workspaces]").getAttribute("aria-busy")==="false"');
-    assert.ok((await run('document.querySelector("[data-patrol-workspaces]").textContent')).includes("还没有工作区"));
-    await run(`window.patrolFixture.workspaces=${JSON.stringify(types)}; window.patrolFixture.workspaceError=true; document.querySelector("[data-action=show-patrol]").click()`);
+    const chosen = "C:/picked/from-filesystem/很长的项目父目录/project";
+    await run(`window.patrolFixture.folderError=false; window.patrolFixture.folder=${JSON.stringify(chosen)}; document.querySelector("[data-patrol-bind]").click()`);
+    await until('document.querySelector("[data-patrol-enter]")');
+    assert.equal(await run('document.querySelector(".patrol-workspace-path").textContent'), chosen);
+    assert.equal(await run('window.patrolFixture.workspaceBinds.length'), 0);
+    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-enter")'), true);
+    await run('render()');
+    assert.equal(await run('document.querySelector(".patrol-workspace-path").textContent'), chosen);
+    await run('window.patrolFixture.folder=null; document.querySelector("[data-patrol-bind]").click()');
+    await until('!document.querySelector("[data-patrol-bind]").disabled');
+    assert.equal(await run('document.querySelector(".patrol-workspace-path").textContent'), chosen);
+    win.setContentSize(720, 800);
+    assert.equal(await run('document.documentElement.scrollWidth > innerWidth'), false);
+    win.setContentSize(1280, 900);
+    await run('window.patrolFixture.bindError=true; document.querySelector("[data-patrol-enter]").click()');
     await until('!document.querySelector("[data-patrol-binding-error]").hidden');
-    assert.equal(await run('document.querySelector("[data-patrol-bind]").disabled'), false);
-    await run('window.patrolFixture.workspaceError=false; window.patrolFixture.holdWorkspaces=true; document.querySelector("[data-action=show-patrol]").click()');
-    await until('Boolean(window.patrolFixture.releaseWorkspaces)');
-    await run('document.querySelector("[data-action=focus-home]").click(); window.patrolFixture.releaseWorkspaces(); window.patrolFixture.holdWorkspaces=false');
+    assert.ok((await run('document.querySelector("[data-patrol-binding-error]").textContent')).includes("工作区绑定失败"));
+    await run('window.patrolFixture.bindError=false; document.querySelector("[data-patrol-enter]").click()');
+    await until('document.querySelector("[data-patrol-content]")');
+    assert.equal(await run('window.patrolFixture.workspaceBinds.at(-1).path'), chosen);
+    assert.equal(await run('window.patrolFixture.submissions.length'), 0);
+    const calls = await run('window.patrolFixture.folderCalls');
+    await run('document.querySelector("[data-action=show-patrol]").click()');
+    await until('document.querySelector("[data-patrol-bind]")');
+    await run('window.patrolFixture.folder="C:/late/selected"; window.patrolFixture.holdFolder=true; document.querySelector("[data-patrol-bind]").click(); document.querySelector("[data-patrol-bind]").click()');
+    await until('Boolean(window.patrolFixture.releaseFolder)');
+    assert.equal(await run('window.patrolFixture.folderCalls'), calls + 1);
+    await run('document.querySelector("[data-action=focus-home]").click(); window.patrolFixture.releaseFolder(); window.patrolFixture.holdFolder=false');
     await until('document.body.dataset.view === "focus"');
     assert.equal(await run('Boolean(document.querySelector(".patrol-workspace-picker"))'), false);
+    await run('document.querySelector("[data-action=show-patrol]").click()');
+    await until('document.querySelector("[data-patrol-switch]")');
+    await run('document.querySelector("[data-patrol-switch]").click()');
+    await until('document.querySelector("[data-patrol-bind]")');
+    await run('window.patrolFixture.folder="C:/late/binding"; document.querySelector("[data-patrol-bind]").click()');
+    await until('document.querySelector("[data-patrol-enter]")');
+    await run('window.patrolFixture.holdBind=true; document.querySelector("[data-patrol-enter]").click()');
+    await until('Boolean(window.patrolFixture.releaseBind)');
+    await run('document.querySelector("[data-action=focus-home]").click(); window.patrolFixture.releaseBind(); window.patrolFixture.holdBind=false');
+    await until('document.body.dataset.view === "focus"');
+    assert.equal(await run('JSON.parse(localStorage.getItem("focus-patrol-workspace")).path'), chosen);
     await run('localStorage.removeItem("focus-patrol-workspace")');
     for (const input_type of ["information", "outcome", "boundary", "completion_check"]) {
       await run('document.querySelector("[data-action=show-patrol]").click()');
-      await until('document.querySelector("[data-patrol-workspaces] button")');
-      await run(`document.querySelector('[data-patrol-workspace-id="${input_type}"]').click()`);
+      await until('document.querySelector("[data-patrol-bind]")');
+      await run(`window.patrolFixture.folder=${JSON.stringify("C:/test/" + input_type)}; document.querySelector("[data-patrol-bind]").click()`);
+      await until('document.querySelector("[data-patrol-enter]")');
       await run('document.querySelector("[data-patrol-enter]").click()');
       await until('document.querySelector("[data-patrol-content]")');
       await run(`document.querySelector("[data-patrol-type]").value = ${JSON.stringify(input_type)}; document.querySelector("[data-patrol-type]").dispatchEvent(new Event("change")); document.querySelector("[data-patrol-content]").value="首条模糊信息"; document.querySelector("[data-patrol-content]").dispatchEvent(new Event("input")); document.querySelector("[data-patrol-composer]").requestSubmit()`);
@@ -137,6 +136,7 @@ if (!process.versions.electron) {
     await run('document.querySelector("[data-action=focus-home]").click()');
     await until('document.body.dataset.view === "focus"');
     assert.ok((await run('document.querySelector("#app").textContent')).length > 100);
+    assert.equal(await run('window.patrolFixture.historyListRequests'), 0);
     assert.deepEqual(errors, []);
     console.log("PATROL_UI_PASS: four first types, rapid inputs, draft, folding, requests, independent progress/facts, ordinary page");
     win.destroy(); app.quit();

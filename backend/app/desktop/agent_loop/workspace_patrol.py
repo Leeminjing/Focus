@@ -1,6 +1,7 @@
 """本文件对外提供 WorkspacePatrolService 和 WorkspacePatrolBootstrap。
 
 输入为已有工作区、首条用户输入和共享 Desktop/Context 资源；输出为唯一工作区 Patrol、耐久回执及首个可运行 Revision。
+工作区由原 Desktop 用例登记系统选择的本地目录；本文件不提供历史目录选择列表。
 具体工作流为短事务创建首线程身份、Program/Lane/grant/P0 和输入，再由既有 Round 监督调用 shadow publisher
 完成首 Revision/Portfolio；恢复使用原身份，不合成 Main Run。示例：await service.submit(workspace_id, input)。
 """
@@ -43,20 +44,6 @@ class WorkspacePatrolService:
         self._sessions = sessions
         self._desktop = desktop
         self._inputs = PatrolInputRepository()
-
-    async def workspaces(self):
-        async with self._sessions() as session:
-            rows = await session.scalars(
-                select(DesktopWorkspace).order_by(DesktopWorkspace.display_name)
-            )
-            return [
-                {
-                    "workspace_id": row.workspace_id,
-                    "display_name": row.display_name,
-                    "path": row.path,
-                }
-                for row in rows
-            ]
 
     async def current(self, workspace_id):
         async with self._sessions() as session:

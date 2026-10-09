@@ -1,98 +1,29 @@
-/* 本文件对外提供 Patrol 工作区选择与三观测区的响应式布局。
- * 输入为 picker / workspace-patrol DOM；输出为独立滚动列表、项目详情及持续可用的执行输入区。
- * 工作流为 picker 分离名称/路径与进入操作，窄屏转为上下布局；执行页沿用双栏观测和 sticky composer，
- * 颜色、焦点与图标复用宿主语义令牌，不修改普通会话。示例：section.patrol-workspace-picker。
+/* 本文件对外提供系统目录选择确认页和 Patrol 执行观测面的响应式布局。
+ * 输入为 picker / workspace-patrol DOM；输出为完整路径、选择/进入操作和持续可用的执行输入区。
+ * 工作流为在系统选择返回后确认本次路径，窄屏保持可读；执行页沿用原观测和 composer。
+ * 颜色、焦点与图标复用宿主令牌，不修改普通会话。示例：section.patrol-workspace-picker。
  */
-#app:has(.patrol-workspace-picker) { overflow: hidden; padding: 0; }
-.patrol-workspace-picker {
-  height: 100%;
-  min-height: 0;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
-  padding: 28px 32px 24px;
-}
-.patrol-picker-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 24px;
-}
+#app:has(.patrol-workspace-picker) { overflow: auto; padding: 0; }
+.patrol-workspace-picker { min-height: 100%; display: grid; grid-template-rows: auto auto 1fr; padding: 28px 32px 24px; }
 .patrol-picker-heading h1 { margin: 0 0 4px; font-size: 26px; line-height: 1.35; font-weight: 700; }
 .patrol-picker-heading p { margin: 0; color: var(--text-secondary); font-size: 15px; }
-.patrol-picker-heading > button { padding: 8px 14px; white-space: nowrap; }
-.patrol-picker-error { margin: 0 0 16px; color: var(--text-danger); }
-.patrol-picker-columns { grid-row: 3; display: grid; grid-template-columns: 424px minmax(0, 1fr); min-height: 0; }
-.patrol-picker-browser {
-  min-width: 0;
-  min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: 12px;
-  padding-right: 20px;
-}
-.patrol-picker-search { position: relative; display: flex; align-items: center; }
-.patrol-picker-search > .ui-icon { position: absolute; left: 14px; color: var(--text-secondary); pointer-events: none; }
-.patrol-picker-search input { width: 100%; min-width: 0; height: 40px; padding: 8px 12px 8px 40px; }
-.patrol-picker-search input::placeholder { color: var(--text-tertiary); }
-.patrol-picker-list { min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
-.patrol-picker-list ul { margin: 0; padding: 0; list-style: none; }
-.patrol-picker-list li + li { border-top: 1px solid var(--border-subtle); }
-.patrol-workspace-row {
-  width: 100%;
-  min-width: 0;
-  min-height: 66px;
-  display: flex;
-  justify-content: flex-start;
-  gap: 14px;
-  padding: 12px 14px;
-  border: 0;
-  background: transparent;
-  text-align: left;
-}
-.patrol-workspace-row > .icon-folder { width: 24px; height: 24px; color: var(--text-secondary); }
-.patrol-workspace-row > .icon-chevron-right { margin-left: auto; color: var(--text-tertiary); }
-.patrol-workspace-row:hover { background: var(--surface-selected); }
-.patrol-workspace-row[aria-pressed="true"] { background: var(--surface-accent); }
-.patrol-workspace-row[aria-pressed="true"] > .ui-icon { color: var(--accent-primary); }
-.patrol-workspace-row:focus-visible { outline-offset: -3px; }
-.patrol-workspace-label { min-width: 0; flex: 1; display: grid; gap: 2px; }
-.patrol-workspace-label strong, .patrol-workspace-label > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.patrol-workspace-label strong { font-size: 15px; font-weight: 650; }
-.patrol-workspace-label > span { color: var(--text-secondary); font-size: 12px; }
-.patrol-picker-count { margin: 0; color: var(--text-tertiary); font-size: 12px; }
-.patrol-picker-detail {
-  min-width: 0;
-  overflow: auto;
-  display: flex;
-  align-items: safe center;
-  border-left: 1px solid var(--border-default);
-  padding: 32px clamp(24px, 6vw, 88px);
-}
-.patrol-workspace-summary { width: 100%; max-width: 640px; }
+.patrol-picker-error { margin: 16px 0 0; color: var(--text-danger); }
+.patrol-picker-detail { grid-row: 3; min-width: 0; display: flex; align-items: safe center; justify-content: center; padding: 40px 24px; }
+.patrol-workspace-summary { width: 100%; max-width: 760px; }
 .patrol-workspace-emblem { display: grid; place-items: center; width: 112px; height: 112px; margin-bottom: 24px; border-radius: var(--radius-panel); background: var(--surface-muted); color: var(--text-secondary); }
 .patrol-workspace-emblem .ui-icon { width: 48px; height: 48px; }
 .patrol-workspace-summary h2 { margin: 0 0 12px; font-size: 36px; font-weight: 700; line-height: 1.25; overflow-wrap: anywhere; }
 .patrol-workspace-path { padding: 12px 16px; border-radius: var(--radius-control); background: var(--surface-muted); color: var(--text-secondary); font: 15px/1.6 Consolas, "Microsoft YaHei UI", monospace; overflow-wrap: anywhere; }
 .patrol-workspace-description { margin: 20px 0 24px; color: var(--text-secondary); font-size: 16px; line-height: 1.7; }
+.patrol-picker-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .patrol-workspace-enter { min-width: 220px; min-height: 52px; padding: 10px 28px; font-size: 16px; }
+.patrol-picker-actions .quiet-button { min-height: 44px; padding: 8px 16px; }
 .patrol-workspace-note { margin: 24px 0 0; color: var(--text-secondary); font-size: 14px; }
-.patrol-picker-empty { margin: 0; padding: 28px 16px; color: var(--text-secondary); line-height: 1.8; }
-@media (max-width: 1100px) {
-  .patrol-workspace-picker { padding: 24px; }
-  .patrol-picker-columns { grid-template-columns: 320px minmax(0, 1fr); }
-  .patrol-picker-detail { padding: 24px; }
-  .patrol-workspace-summary h2 { font-size: 30px; }
-}
 @media (max-width: 760px) {
-  #app:has(.patrol-workspace-picker) { overflow: auto; }
-  .patrol-workspace-picker { height: auto; min-height: 100%; padding: 20px 16px; }
-  .patrol-picker-heading { flex-wrap: wrap; gap: 12px; }
+  .patrol-workspace-picker { padding: 20px 16px; }
   .patrol-picker-heading h1 { font-size: 24px; }
-  .patrol-picker-columns { grid-template-columns: minmax(0, 1fr); gap: 24px; }
-  .patrol-picker-browser { padding-right: 0; }
-  .patrol-picker-list { max-height: 300px; }
-  .patrol-picker-detail { border-left: 0; border-top: 1px solid var(--border-default); padding: 24px 0 8px; overflow: visible; }
+  .patrol-picker-detail { padding: 32px 0; }
+  .patrol-workspace-summary h2 { font-size: 28px; }
   .patrol-workspace-emblem { width: 72px; height: 72px; margin-bottom: 16px; }
   .patrol-workspace-emblem .ui-icon { width: 32px; height: 32px; }
 }
