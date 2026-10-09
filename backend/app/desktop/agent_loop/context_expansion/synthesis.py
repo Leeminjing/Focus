@@ -1,4 +1,4 @@
-r"""本文件对外提供 Context synthesis DTO、ContextSynthesisValidator、WorkerResultContextSynthesizer 与渲染函数。
+r"""本文件对外提供 Context synthesis DTO、ContextSynthesisValidator 与渲染函数。
 
 输入为冻结 WorkContextSpec、ResolvedEvidenceBundle、原子 claims、引用/前提/覆盖映射及独立支持判定；输出为身份稳定的
 ValidatedContextDossier 或明确 blocker。具体工作流为作者 citation_catalog/schema_for 仅允许冻结目录键，解析绑定回原类型化引用，
@@ -25,8 +25,6 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
-    TypeAdapter,
-    ValidationError,
     create_model,
     field_validator,
     model_validator,
@@ -510,54 +508,6 @@ class ContextSynthesisValidator:
 
         for claim_id in claims:
             visit(claim_id)
-
-
-class WorkerResultContextSynthesizer:
-    VERSION = "worker-context-synthesizer-v1"
-
-    def __init__(self, validator: ContextSynthesisValidator | None = None) -> None:
-        self._validator = validator or ContextSynthesisValidator()
-
-    async def synthesize(
-        self,
-        observation: LoopObservationEnvelope,
-        work_spec: WorkContextSpec,
-        bundle: ResolvedEvidenceBundle,
-    ) -> ContextSynthesisResult:
-        synthesis = self._last_success(observation, "dossier_synthesizer")
-        support = self._last_success(observation, "claim_verifier")
-        if synthesis is None or support is None:
-            return ContextSynthesisResult(
-                blocker_code="synthesis_worker_missing",
-                blocker_summary="缺少 dossier_synthesizer 或 claim_verifier 的受监督结果",
-            )
-        try:
-            draft = ContextSynthesisDraft.model_validate(synthesis)
-            assessments = TypeAdapter(tuple[ClaimSupportAssessment, ...]).validate_python(
-                support.get("assessments") or ()
-            )
-            dossier = self._validator.validate(
-                work_spec,
-                bundle,
-                draft,
-                assessments,
-                synthesizer_version=self.VERSION,
-            )
-        except (TypeError, ValidationError, ValueError) as exc:
-            return ContextSynthesisResult(
-                blocker_code="synthesis_invalid",
-                blocker_summary=f"claim-level synthesis validation failed: {str(exc)[:1600]}",
-            )
-        return ContextSynthesisResult(dossier=dossier)
-
-    @staticmethod
-    def _last_success(observation: LoopObservationEnvelope, kind: str) -> dict[str, Any] | None:
-        results = tuple(
-            item.get("result") or {}
-            for item in observation.worker_results
-            if item.get("kind") == kind and item.get("status") in {"success", "proposed", "consumed"}
-        )
-        return results[-1] if results else None
 
 
 def render_context_dossier(dossier: ValidatedContextDossier) -> str:

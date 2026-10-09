@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -112,63 +112,5 @@ class DocxSemanticRegion(_Strict):
         return self
 
 
-def parse_semantic_region(value: dict[str, Any]) -> DocxSemanticRegion:
-    return DocxSemanticRegion.model_validate(value)
-
-
 def serialize_semantic_region(region: DocxSemanticRegion) -> dict[str, Any]:
     return region.model_dump(mode="json")
-
-
-def _path_key(target: SemanticTarget) -> tuple[tuple[str, int, str | None], ...]:
-    return tuple((step.kind, step.index, step.key) for step in target.structure_path)
-
-
-def _fingerprint_score(expected: TargetFingerprint, candidate: TargetFingerprint) -> int:
-    score = 0
-    if expected.exact and expected.exact == candidate.exact:
-        score += 8
-    if expected.prefix and candidate.prefix.endswith(expected.prefix):
-        score += 2
-    if expected.suffix and candidate.suffix.startswith(expected.suffix):
-        score += 2
-    if expected.style and expected.style == candidate.style:
-        score += 1
-    return score
-
-
-def recover_target(
-    region: DocxSemanticRegion,
-    candidates: list[SemanticTarget],
-) -> SemanticTarget | None:
-    """Stable id, then structural path, then unique fingerprint; never guess."""
-    expected = region.target
-    if expected.stable_id:
-        stable = [item for item in candidates if item.stable_id == expected.stable_id]
-        if len(stable) == 1:
-            return stable[0]
-        if len(stable) > 1:
-            return None
-    path = _path_key(expected)
-    if path:
-        structural = [item for item in candidates if _path_key(item) == path]
-        if len(structural) == 1 and _fingerprint_score(
-            expected.fingerprint, structural[0].fingerprint
-        ) >= 2:
-            return structural[0]
-        if len(structural) > 1:
-            return None
-    scored = [
-        (item, _fingerprint_score(expected.fingerprint, item.fingerprint))
-        for item in candidates
-        if item.kind == expected.kind
-    ]
-    if not scored:
-        return None
-    best_score = max(score for _, score in scored)
-    best = [item for item, score in scored if score == best_score and score >= 8]
-    return best[0] if len(best) == 1 else None
-
-
-def is_legacy_docx_region(value: dict[str, Any] | None) -> bool:
-    return not isinstance(value, dict) or value.get("coordinate_space") != DOCX_COORDINATE_SPACE

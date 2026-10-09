@@ -20,7 +20,7 @@ from backend.app.desktop.agent_loop.context_expansion.coordinator import (
 from backend.app.desktop.agent_loop.context_expansion.policy import (
     ExpansionAdmissionPolicy,
 )
-from backend.app.desktop.agent_loop.context_expansion.semantic_manifest import (
+from backend.tests.semantic_manifest_support import (
     SemanticManifestProjector,
 )
 from backend.tests.test_semantic_context_planning import _draft, _observation

@@ -11,7 +11,7 @@ RECORD_VERSION 标识可读取的 proof 规则；VERSION 参与模型／配置�
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -140,16 +140,6 @@ class SemanticGroundingError(ValueError):
         self.code = code
         self.summary = summary
         self.retryable = retryable
-
-
-class SemanticClaimSupportVerifier(Protocol):
-    @property
-    def attempt_records(self) -> tuple[dict[str, Any], ...]: ...
-
-    async def verify(
-        self,
-        drafts: tuple[SegmentSemanticUnitDraft, ...],
-    ) -> tuple[SemanticClaimSupportAssessment, ...]: ...
 
 
 class SupervisedSemanticClaimSupportVerifier:

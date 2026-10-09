@@ -33,7 +33,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -129,8 +129,3 @@ def authority_surface_for(
         if is_within(surface.path, target):
             return surface
     return None
-
-
-def authority_paths(surfaces: Iterable[AuthoritySurface]) -> tuple[Path, ...]:
-    """权柄面的路径集合，供需要按路径比较的调用方使用。"""
-    return tuple(surface.path for surface in surfaces)
