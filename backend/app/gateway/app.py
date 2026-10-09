@@ -22,6 +22,7 @@
 示例:
     uvicorn backend.app.gateway.app:app --host 0.0.0.0 --port 8000
     uvicorn backend.app.gateway.app:app --host 127.0.0.1 --port 8765   # Electron 桌面模式
+workspace_patrol 服务与原 Loop runtime 共用 sessions、Desktop/Context evolution 和后台调度，不建立第二运行器。
 """
 
 import asyncio
@@ -136,6 +137,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.agent_loop_service = AgentLoopService(
             sessions, app.state.run_manager, user_gate_recovery=UserAccessGateRecovery(app.state.checkpointer)
         )
+        from backend.app.desktop.agent_loop.workspace_patrol import WorkspacePatrolService
+        app.state.workspace_patrol = WorkspacePatrolService(sessions, service)
         app.state.agent_loop_interventions = LoopInterventionService(sessions)
         app.state.agent_loop_authority = LoopAuthorityService(sessions, app.state.run_manager)
         app.state.agent_loop_workspace = LoopRunWorkspaceBinder(sessions)
@@ -188,7 +191,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             app.state.agent_loop_coordinator,
             app.state.agent_loop_run_events,
             dispatcher,
-            LoopRoundOrchestrator(sessions, app_config, app.state.agent_loop_kernel, app.state.checkpointer),
+            LoopRoundOrchestrator(sessions, app_config, app.state.agent_loop_kernel, app.state.checkpointer, context_evolution=service.contexts.evolution),
             LoopWorkerRuntime(sessions, app_config),
             app.state.agent_loop_recovery,
             app.state.agent_loop_compression_resolutions,

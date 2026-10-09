@@ -3,6 +3,7 @@
  * 输入为有效/畸形 snapshot、重复/陈旧/缺口事件、HTTP 故障和模拟 Live API；输出为确定性 projection、原子重同步、取消信号、退避及单连接断言。
  * 具体工作流为使用 Node test 直接加载 UMD 模块并驱动 Store/Connection/API，验证新 Round/Patrol 的局部版本与迟到旧实体隔离；示例：`node --test desktop/loop-live-projection.test.js`。
  * Mission交付使用服务端评估，覆盖Patrol真实来源、终态Run身份保留及跨Mission事件隔离。
+  * 独立 Task Progress head 按 generation/revision 归约，陈旧事件不能回退已提交记忆。
  */
 "use strict";
 
@@ -63,6 +64,17 @@ test("schema loads a normalized snapshot and rejects malformed required state", 
   assert.ok(Object.isFrozen(normalized.contexts));
   assert.throws(() => Schema.validateSnapshot({ loop_id: "l1", last_sequence: "2" }), /last_sequence/);
   assert.throws(() => Schema.validateSnapshot(snapshot(2, { contexts: { wrong: entity("c1", 1, 2) } })), /集合键不一致/);
+});
+
+test("committed task progress is independent and rejects stale head events", () => {
+  const store = LiveStore.create();
+  store.replaceSnapshot(snapshot(1, { task_progress: entity("l1", 4, 1, { generation: 3, document: { items: [{ description: "真实成果" }] } }) }));
+  store.applyEvent(event(2, { kind: "task_progress.published", entity_type: "task_progress", entity_id: "l1", entity_revision: 2, payload: { generation: 1, document: { items: [] } } }));
+  assert.equal(store.get().projection.task_progress.state.generation, 3);
+  store.applyEvent(event(3, { kind: "task_progress.published", entity_type: "task_progress", entity_id: "l1", entity_revision: 5, payload: { generation: 4, document: { items: [{ description: "更新成果" }] } } }));
+  assert.equal(store.get().projection.task_progress.state.generation, 4);
+  assert.equal(store.get().projection.last_sequence, 3);
+  assert.deepEqual(store.get().projection.lineage, {});
 });
 
 test("lineage events land in the projection and selectors drop self edges and missing endpoints", () => {

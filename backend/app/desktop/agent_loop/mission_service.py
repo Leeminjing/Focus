@@ -3,6 +3,7 @@ r"""本文件对外提供 MissionRevisionService。
 输入为数据库 session、Loop/revision identity、强类型 Mission contract 与明确作者；输出为只允许用户创建的
 Mission revision。具体工作流为拒绝隐式或非用户修订，再委托 Repository 追加不可变记录，事务提交仍由调用方
 拥有。示例：`await service.record(session, loop_id="l1", revision=2, contract=mission, authored_by="user")`。
+input_sources 与用户确认分区一起追加，工作区初始空 Mission 不代表虚构的用户目标。
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ class MissionRevisionService:
         contract: LoopMissionContract,
         authored_by: str,
         legacy_goal_revision_id: str | None = None,
+        input_sources: dict | None = None,
     ) -> LoopMissionRevision:
         self._require_user_author(authored_by)
         return await self._repository.append(
@@ -36,6 +38,7 @@ class MissionRevisionService:
             contract=contract,
             authored_by=authored_by,
             legacy_goal_revision_id=legacy_goal_revision_id,
+            input_sources=input_sources,
         )
 
     @staticmethod

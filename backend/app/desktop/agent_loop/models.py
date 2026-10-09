@@ -5,7 +5,8 @@ r"""本文件对外提供 Agent Loop、delegation、fencing、round、directive�
 decision/action 记录判断与异步发布尝试，recovery opportunity 冻结单来源恢复 authority 并记录原子消费，user intent 保存用户对 Context 或 Portfolio 的外部控制意见，
 directive/provenance 以可见排队原因驱动 Run，fencing counter 拒绝旧 owner，completion/outbox 收敛生命周期。
 示例：`loop = AgentLoop(loop_id="l1", status="running", ...)`。
-用户 intent 显式区分 patrol_opinion/direct_message，request_payload 保留原始请求、稳定 hash 和受理轮身份；旧数据默认普通意见，不补造历史决策。
+用户 intent 显式区分 patrol_opinion/direct_message/workspace_input，request_payload 保留原文类型、稳定 hash 和定向回答；旧数据默认普通意见，不补造历史决策。
+interaction_mode 区分 Context Loop 和工作区 Patrol，同一工作区最多一个非终态 Patrol。
 """
 
 from __future__ import annotations
@@ -26,9 +27,12 @@ class AgentLoop(Base):
         CheckConstraint("status IN ('draft','running','pausing','paused','waiting_user','completing','completed','stopping','stopped','failed')", name="ck_agent_loop_status"),
         CheckConstraint("revision > 0 AND authority_revision > 0 AND goal_revision > 0", name="ck_agent_loop_revisions"),
         Index("uq_agent_loop_active_context", "initial_context_id", unique=True, postgresql_where=text("status IN ('running','pausing','paused','waiting_user','completing')")),
+        CheckConstraint("interaction_mode IN ('context_loop','workspace_patrol')", name="ck_loop_interaction_mode"),
+        Index("uq_workspace_patrol_active", "workspace_id", unique=True, postgresql_where=text("interaction_mode = 'workspace_patrol' AND status NOT IN ('completed','stopped','failed')")),
     )
 
     loop_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    interaction_mode: Mapped[str] = mapped_column(String(24), nullable=False, default="context_loop", server_default="context_loop")
     workspace_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_workspaces.workspace_id", ondelete="CASCADE"), nullable=False, index=True)
     initial_context_id: Mapped[str] = mapped_column(String(32), ForeignKey("desktop_threads.task_id", ondelete="RESTRICT"), nullable=False, index=True)
     program_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("curation_programs.program_id", ondelete="SET NULL"), nullable=True)

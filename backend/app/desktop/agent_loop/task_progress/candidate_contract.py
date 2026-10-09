@@ -3,6 +3,7 @@
 输入为完整冻结决策输入及模型候选；输出为绑定来源的请求模型、规范合法候选或安全类型化错误。
 具体工作流为派生请求枚举、重新验证候选结构、统一验证来源覆盖和任务修正证据；不清理非法条目、不调用模型或数据库。
 示例：schema = candidate_schema(inputs)；candidate = validate_candidate(inputs, response)。
+未确认 workspace 输入只能支撑新未决信息，不能修改旧有效事项或宣称工作开始；实际 decision 处置使用同源后继版本。
 """
 
 from typing import Literal
@@ -27,6 +28,7 @@ _MESSAGES = {
     "missing_correction": "修改旧事项必须显式 corrects 原 identity",
     "unsupported_claim": "Agent 自述不能单独构成 supported",
     "unverified_completion": "失败或未知测试不能支持完成",
+    "workspace_input_not_effective": "未确认工作区输入只能保留未决信息，不能改写有效任务",
 }
 _FIELDS = frozenset(ProgressCandidate.model_fields) | frozenset(TaskItem.model_fields) | frozenset(SourceAssessment.model_fields)
 
@@ -130,6 +132,11 @@ def _change_references(candidate, sources, previous, issue):
             referenced.add(key)
         if not change.evidence_keys:
             issue("missing_evidence", (*path, "evidence_keys"))
+        selected = [sources[key] for key in change.evidence_keys if key in sources]
+        if (any(source.kind == "user_revision" and source.payload.get("intent_kind") == "workspace_input"
+                and source.payload.get("disposition") != "decision" for source in selected)
+                and (change.state not in {"unknown", "conflicted"} or change.corrects or change.supersedes)):
+            issue("workspace_input_not_effective", (*path, "state"), *change.evidence_keys)
         for position, identity in enumerate(change.corrects):
             if identity not in previous:
                 issue("unknown_correction", (*path, "corrects", position), identity)

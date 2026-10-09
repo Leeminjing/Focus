@@ -10,6 +10,7 @@ Worker 认知读取复用冻结基础及持久补充来源，精确分页核验�
 具体验证的完成资格由共享只读 CompletionEligibilityPolicy 冻结，不从 allowed 新验证推断完成。
 工作区 Git 状态在事务外读取，冻结时重验 slot 版本；原 workspace 投影同时提供隔离授权、slot 和 adoption
 事实，stable_results 包含执行 slot 锚点，供 Patrol 判断阶段与显式串行采用，不修改物理仓库。
+workspace 输入按完整有界集合冻结，未处置和显式延后来源进入后继；同工作区终态 predecessor 输入保留原身份。补充卡片和已受理答案独立冻结，迟到输入不归旧轮处置。
 """
 
 from __future__ import annotations
@@ -353,6 +354,8 @@ class LoopObservationService:
             },
         }
         return self._builder.build(
+            interaction_mode=loop.interaction_mode,
+            information_requests=await self._information_requests(session, loop.loop_id),
             loop_id=loop.loop_id,
             loop_revision=loop.revision,
             round_id=round_row.round_id,
@@ -416,6 +419,8 @@ class LoopObservationService:
                     "intent_id": row.intent_id,
                     "intent_kind": row.intent_kind,
                     "request_hash": (row.request_payload or {}).get("request_hash"),
+                    "input_type": ((row.request_payload or {}).get("request") or {}).get("input_type"),
+                    "request_id": ((row.request_payload or {}).get("request") or {}).get("request_id"),
                     "scope": row.scope,
                     "context_id": row.target_context_id,
                     "content": row.content,
@@ -505,20 +510,25 @@ class LoopObservationService:
     async def _observe_intents(
         self, session: AsyncSession, loop_id: str, round_id: str
     ):
+        loop = await session.get(AgentLoop, loop_id)
+        workspace_mode = loop.interaction_mode == "workspace_patrol"
+        from backend.app.desktop.agent_loop.patrol_inputs import workspace_input_scope
         user_intents = list(
             (
                 await session.scalars(
                     select(LoopUserIntent)
                     .where(
-                        LoopUserIntent.loop_id == loop_id,
-                        ((LoopUserIntent.status == "pending") | ((LoopUserIntent.intent_kind == "direct_message") &
+                        workspace_input_scope(loop) if workspace_mode else LoopUserIntent.loop_id == loop_id,
+                        ((LoopUserIntent.status == "pending") | ((LoopUserIntent.intent_kind.in_(("direct_message", "workspace_input"))) &
                          (LoopUserIntent.status == "observed") & (LoopUserIntent.delivery_state == "observed"))),
                     )
                     .order_by(LoopUserIntent.created_at)
-                    .limit(32)
+                    .limit(4097 if workspace_mode else 32)
                 )
             ).all()
         )
+        if workspace_mode and len(user_intents) > 4096:
+            raise ValueError("patrol_input_budget_exceeded: 待处理输入未完整冻结")
         for intent in user_intents:
             intent.status = "observed"
             intent.observed_round_id = round_id
@@ -527,6 +537,21 @@ class LoopObservationService:
                     session, intent.intent_id, "observed"
                 )
         return user_intents
+
+    @staticmethod
+    async def _information_requests(session, loop_id):
+        from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest, LoopWaitResponse
+        rows = tuple(await session.scalars(select(LoopWaitRequest).where(LoopWaitRequest.loop_id == loop_id,
+            LoopWaitRequest.kind == "clarification", LoopWaitRequest.status == "open",
+            LoopWaitRequest.scope["information_only"].astext == "true")))
+        result = []
+        for row in rows:
+            answer = await session.scalar(select(LoopWaitResponse).where(LoopWaitResponse.request_id == row.request_id))
+            result.append({"request_id": row.request_id, "revision": row.revision, "prompt": row.prompt,
+                           "scope": row.scope, "answered": answer is not None,
+                           "response": None if answer is None else {"response_id": answer.response_id,
+                               "submission_id": answer.answer.get("submission_id"), "text": answer.answer.get("text")}})
+        return tuple(result)
 
     @staticmethod
     def _grant_view(grant: LoopDelegationGrant) -> dict:

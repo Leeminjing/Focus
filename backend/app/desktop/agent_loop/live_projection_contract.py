@@ -4,6 +4,7 @@ r"""本文件对外提供 LoopLiveProjection、ProjectedEntity、ActivityEntry �
 Context 派生边和独立 accounting 状态；输出为可序列化的单边界 Live Snapshot。具体工作流为每个实体保留 revision/sequence，消费读模型不改变 Loop 控制版本，
 timeline 有界保存安全摘要，last_sequence 标记整个快照的提交边界。示例：`LoopLiveProjection(loop_id="l1")`。
 interventions 独立集合保存类型化用户消息交付状态，和 Run 当前状态分离。
+task_progress 是独立单实体，identity 为 Loop，revision 为已提交 generation+1；未完成沉淀不替换 head。
 """
 
 from __future__ import annotations
@@ -57,6 +58,7 @@ class LoopLiveProjection(_ProjectionModel):
     patrol_session: ProjectedEntity | None = None
     round: ProjectedEntity | None = None
     accounting: ProjectedEntity | None = None
+    task_progress: ProjectedEntity | None = None
     contexts: dict[str, ProjectedEntity] = Field(default_factory=dict)
     interventions: dict[str, ProjectedEntity] = Field(default_factory=dict)
     lineage: dict[str, ProjectedEntity] = Field(default_factory=dict)

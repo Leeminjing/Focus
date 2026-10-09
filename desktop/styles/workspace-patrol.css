@@ -1,0 +1,22 @@
+/* 本文件对外提供 Patrol 三观测区、输入记录与统一 composer 的响应式布局。
+ * 输入为 workspace-patrol 页面 DOM；输出为可滚动观测面和持续可用的输入区。
+ * 工作流为桌面双栏观测、窄屏单栏，不修改普通会话。示例：section.workspace-patrol。
+ */
+.workspace-patrol { padding: 24px; display: grid; gap: 20px; }
+.workspace-patrol > header, .workspace-patrol article header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.workspace-patrol h1 { flex: 1; }
+.workspace-patrol h2 { font-size: 18px; margin: 0 0 12px; }
+.workspace-patrol h3 { font-size: 14px; }
+.patrol-observations { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(300px, 2fr); gap: 16px; }
+.patrol-observations > section, .workspace-patrol article { border: 1px solid var(--border-default); background: var(--surface-base); padding: 16px; border-radius: 10px; }
+.patrol-observations > section:last-child { grid-column: 1 / -1; }
+.patrol-facts { max-height: 280px; overflow: auto; }
+.patrol-facts table { width: 100%; text-align: left; }
+.patrol-facts td { padding: 8px; }
+.patrol-facts td span { display: block; }
+[data-patrol-lineage] { max-height: 400px; overflow: auto; }
+[data-patrol-history], [data-patrol-requests] { display: grid; gap: 10px; }
+.workspace-patrol pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+[data-patrol-composer] { display: grid; gap: 10px; position: sticky; bottom: 0; background: var(--surface-base); border: 1px solid var(--border-default); padding: 16px; border-radius: 10px; }
+[data-patrol-composer] textarea { width: 100%; resize: vertical; }
+@media (max-width: 850px) { .patrol-observations { grid-template-columns: 1fr; } .workspace-patrol { padding: 12px; } }

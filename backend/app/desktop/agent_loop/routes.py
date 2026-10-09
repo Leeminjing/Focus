@@ -5,6 +5,7 @@ r"""本文件对外提供 agent_loop_router，作为 Loop、Mission、授权、�
 service/Kernel，不在 HTTP 边界写领域状态或运行模型。
 示例：`app.include_router(agent_loop_router)`。
 task-progress/{observation_id}/retry 只恢复本 Loop 的 blocked 记忆工作，不启动 Run 或改变 Context。
+工作区绑定、逐条输入、历史分页、显式后继和已提交 Lineage 复用认证边界与领域服务；Progress 只读查询由 query_routes 提供，普通 Context 路由仍独立。
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.desktop.agent_loop.kernel import KernelRejected
+from backend.app.desktop.agent_loop.patrol_inputs import PatrolInputRequest
 from backend.app.desktop.agent_loop.mission_contract import (
     LegacyMissionAdapter,
     LoopMissionContract,
@@ -33,6 +35,32 @@ from backend.app.desktop.agent_loop.schemas import (
 )
 
 agent_loop_router = APIRouter(prefix="/desktop/api/agent-loops", tags=["agent-loops"])
+
+
+@agent_loop_router.get("/workspace")
+async def patrol_workspaces(request: Request) -> list[dict]:
+    return await request.app.state.workspace_patrol.workspaces()
+
+
+@agent_loop_router.get("/workspace/{workspace_id}")
+async def workspace_patrol(workspace_id: str, request: Request) -> dict | None:
+    return await request.app.state.workspace_patrol.current(workspace_id)
+
+
+@agent_loop_router.post("/workspace/{workspace_id}/inputs")
+async def submit_workspace_input(workspace_id: str, body: "PatrolInputRequest", request: Request) -> dict:
+    return await request.app.state.workspace_patrol.submit(workspace_id, body)
+
+
+@agent_loop_router.post("/workspace/{workspace_id}/restart")
+async def restart_workspace_patrol(workspace_id: str, request: Request) -> dict:
+    return await request.app.state.workspace_patrol.restart(workspace_id)
+
+
+@agent_loop_router.get("/workspace/{workspace_id}/inputs")
+async def workspace_input_history(workspace_id: str, request: Request, before: str | None = None,
+                                  limit: int = Query(default=50, ge=1, le=100)) -> dict:
+    return await request.app.state.workspace_patrol.history(workspace_id, before, limit)
 
 
 class LoopControlRequest(BaseModel):
@@ -91,6 +119,11 @@ async def get_loop_activation_eligibility(context_id: str, request: Request) -> 
 @agent_loop_router.get("/{loop_id}")
 async def get_loop(loop_id: str, request: Request) -> dict:
     return await request.app.state.agent_loop_service.get(loop_id)
+
+
+@agent_loop_router.get("/{loop_id}/lineage")
+async def read_committed_lineage(loop_id: str, request: Request) -> dict:
+    return await request.app.state.workspace_patrol.lineage(loop_id)
 
 
 @agent_loop_router.post("/{loop_id}/task-progress/{observation_id}/retry")

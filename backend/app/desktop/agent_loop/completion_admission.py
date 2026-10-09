@@ -8,6 +8,7 @@ frontier_identity 以正式 Context 内容哈希、角色和资格表达语义�
 v3 以完整正文合同、编码与原字节摘要表达真实正文信息，脱敏配置变化不当作任务进展；旧 v2 从已保存语义升级合同标签，
 旧 v1/缺失身份的冻结材料比较禁止补读新正文，原输入与 hash 不写回。
 示例：view = await policy.read(session, loop, round_row)；policy.require_allowed(view)。
+空检查返回 completion_checks_not_defined，不允许空 verifier 请求或空集合验收通过。
 """
 
 from copy import deepcopy
@@ -47,6 +48,10 @@ class CompletionRequestAdmission:
 
     async def read(self, session, loop, round_row):
         current = await self.current_input(session, loop, round_row)
+        if not current['semantic']['mission'].get('completion_checks'):
+            return {'input': current, 'allowed': False, 'code': 'completion_checks_not_defined',
+                    'verification_id': None, 'unresolved': [], 'satisfied_check_ids': [],
+                    'previous_input_fingerprint': None}
         latest = await session.scalar(select(CompletionVerification).where(
             CompletionVerification.loop_id == loop.loop_id).order_by(CompletionVerification.created_at.desc()).limit(1))
         previous = None
@@ -76,7 +81,7 @@ class CompletionRequestAdmission:
     @staticmethod
     def require_allowed(view):
         if not view['allowed']:
-            raise ValueError('completion_evidence_unchanged: verification=' + str(view['verification_id'])
+            raise ValueError(str(view.get('code') or 'completion_evidence_unchanged') + ': verification=' + str(view['verification_id'])
                              + '; unresolved=' + ','.join(view['unresolved']))
 
     @classmethod

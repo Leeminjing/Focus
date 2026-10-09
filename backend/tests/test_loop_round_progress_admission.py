@@ -5,6 +5,7 @@
 语义回归排除报告输出顺序及随机身份，旧 v1 Worker 输入重新投影不产生重复验证。
 历史哈希基线排除两项新增缺省完成字段，保持原冻结字段集合。
 示例：pytest backend/tests/test_loop_round_progress_admission.py；脚本化 Provider 只替代远端响应。
+历史 hash 夹具显式排除后加入的交互模式与补充请求默认字段。
 """
 
 import asyncio
@@ -209,6 +210,8 @@ def test_legacy_observation_hash_retains_original_field_set():
     original = envelope.model_dump(mode='json')
     original.pop('completion_admission')
     original.pop('completion_eligibility')
+    original.pop('interaction_mode')
+    original.pop('information_requests')
     expected = hashlib.sha256(json.dumps(original, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     assert observation_hash(envelope) == expected
 

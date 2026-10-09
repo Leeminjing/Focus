@@ -1,8 +1,10 @@
 r"""本文件对外提供 LoopWaitRequest 与 LoopWaitResponse 持久化实体。
 
-输入为 Loop 等待原因、类型化响应合同、因果标识、乐观版本与用户响应；输出为可审计且至多一个开放请求、
+输入为 Loop 等待原因、类型化响应合同、因果标识、乐观版本与用户响应；输出为可审计且各作用域至多一个开放请求、
 至多一个已提交响应的数据库状态。具体工作流为请求随 Loop 进入 waiting_user 原子创建，响应以 idempotency key
 去重并引用请求 revision，随后请求转入 resolved、cancelled 或 superseded。示例：`LoopWaitRequest(kind="clarification", ...)`。
+workspace 的 information_only 请求可在 Loop 继续安全工作时独立保持开放；专用 gate/recovery/action 仍沿原状态协议。
+信息与安全等待按现有 scope.information_only 分区各保留一个开放请求；普通 Context Loop 的原单等待约束保持。
 """
 
 from __future__ import annotations
@@ -33,7 +35,11 @@ class LoopWaitRequest(Base):
             "uq_loop_wait_request_active",
             "loop_id",
             unique=True,
-            postgresql_where=text("status IN ('open','resolving')"),
+            postgresql_where=text("status IN ('open','resolving') AND COALESCE(scope->>'information_only','false') <> 'true'"),
+        ),
+        Index(
+            "uq_loop_information_request_active", "loop_id", unique=True,
+            postgresql_where=text("status IN ('open','resolving') AND scope->>'information_only' = 'true'"),
         ),
     )
 

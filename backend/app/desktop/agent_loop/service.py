@@ -11,6 +11,7 @@ Mission 恢复与其他控制入口均按 Loop → 等待请求锁定；通用�
 已提交等待响应的幂等重放只返回历史提交身份和当前状态，不重复执行停止、预算修订或恢复效果。
 材料修订响应在已锁定 Loop 的等待事务内复查实际授权、目标和耐久次数，普通 retry 保持原恢复含义。
 人工访问门禁的正式retry先核对同主体人工恢复及严格检查点，再与等待响应同事务收口投影；未处理或无法证明仍阻断，不代替用户批准工具。
+普通 Context Loop 的 Run 资格继续保留；Mission/P0/首 Portfolio 初始化共用端口。快照公开交互归属，workspace idle 可显式暂停，信息型卡片不作为全局恢复 gate。
 """
 
 from __future__ import annotations
@@ -75,7 +76,6 @@ from backend.app.desktop.agent_loop.models import (
     LoopGoalRevision,
     LoopPendingDecision,
     LoopRound,
-    LoopUserIntent,
 )
 from backend.app.desktop.agent_loop.rounds import create_observation_round
 from backend.app.desktop.agent_loop.runtime_convergence import LoopRuntimeConvergence
@@ -89,7 +89,6 @@ from backend.app.desktop.agent_loop.terminal_lifecycle import LoopTerminalLifecy
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest
 from backend.app.desktop.agent_loop.wait_requests import (
-    LoopWaitRequestFactory,
     LoopWaitRequestService,
     WaitRequestConflict,
 )
@@ -97,8 +96,6 @@ from backend.app.desktop.context_curation.models import (
     CurationLane,
     CurationProgram,
     CurationSourceSubscription,
-    PortfolioLaneCandidate,
-    PortfolioRevision,
 )
 from backend.app.desktop.context_evolution.models import ContextRevision
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
@@ -205,7 +202,6 @@ class AgentLoopService:
                 raise HTTPException(409, exc.detail()) from exc
             program_id = uuid.uuid4().hex
             lane_id = uuid.uuid4().hex
-            portfolio_id = uuid.uuid4().hex
             frontier = [{"context_id": context.task_id, "revision_id": context_revision.revision_id, "checkpoint_id": context_revision.checkpoint_id}]
             frontier_hash = self._hash(frontier)
             program = CurationProgram(program_id=program_id, workspace_id=workspace.workspace_id, policy={"owner_loop_id": request.loop_id}, revision=1)
@@ -214,13 +210,6 @@ class AgentLoopService:
             loop = AgentLoop(loop_id=request.loop_id, workspace_id=request.workspace_id, initial_context_id=request.initial_context_id, program_id=program_id, holder_id=request.holder_id, status="running", health="observing", equipment=equipment)
             session.add(loop)
             await session.flush()
-            from backend.app.desktop.agent_loop.task_progress.consolidation import (
-                initial_progress,
-            )
-            from backend.app.desktop.agent_loop.task_progress.repository import (
-                TaskProgressRepository,
-            )
-            await TaskProgressRepository().initialize(session, loop.loop_id, initial_progress(mission.model_dump(mode="json"), 1))
             session.add(
                 LoopActivation(
                     activation_id=uuid.uuid4().hex,
@@ -234,14 +223,8 @@ class AgentLoopService:
             goal = LoopGoalRevision(goal_revision_id=uuid.uuid4().hex, loop_id=loop.loop_id, revision=1, goal=legacy_mission["goal"], task_contract=legacy_mission["task_contract"], acceptance_criteria=legacy_mission["acceptance_criteria"], authored_by="user")
             session.add(goal)
             await session.flush()
-            await self._missions.record(
-                session,
-                loop_id=loop.loop_id,
-                revision=1,
-                contract=mission,
-                authored_by="user",
-                legacy_goal_revision_id=goal.goal_revision_id,
-            )
+            from backend.app.desktop.agent_loop.initialization import initialize_task_state
+            await initialize_task_state(session, loop, mission, legacy_goal_revision_id=goal.goal_revision_id)
             grant = LoopDelegationGrant(grant_id=uuid.uuid4().hex, loop_id=loop.loop_id, revision=1, holder_id=request.holder_id, capabilities=list(request.capabilities), context_scope=list(request.context_scope), permission_scope=list(dict.fromkeys([*equipment["permissions"], *(item for item in request.permission_scope if item not in {"read", "write", "host_command"})])), budgets=request.budgets.as_grant_budgets(), delegable_gates=list(request.delegable_gates), compression_policy=compression_policy, expires_at=datetime.fromisoformat(request.expires_at) if request.expires_at else None)
             subscription = CurationSourceSubscription(subscription_id=uuid.uuid4().hex, program_id=program_id, source_context_id=context.task_id, source_role="initial", selection_policy={}, position=0)
             lane = CurationLane(lane_id=lane_id, program_id=program_id, managed_context_id=context.task_id, purpose="Primary execution", normalized_purpose="primary execution", lane_policy={}, current_source_frontier_hash=frontier_hash, current_semantic_fingerprint=context_revision.content_hash)
@@ -263,12 +246,11 @@ class AgentLoopService:
                 predecessor=predecessor_ownership,
                 reason="successor_authorization",
             )
-            portfolio = PortfolioRevision(portfolio_revision_id=portfolio_id, program_id=program_id, generation=1, source_frontier=frontier, frontier_hash=frontier_hash, base_program_revision=1, control_revisions={"loop_revision": 1, "grant_revision": 1, "workspace_revision": "1"}, target_lanes=[{"lane_id": lane_id, "action": "keep"}], status="published", completed_at=datetime.now(UTC), published_at=datetime.now(UTC))
-            session.add(portfolio)
-            await session.flush()
-            candidate = PortfolioLaneCandidate(candidate_id=uuid.uuid4().hex, portfolio_revision_id=portfolio_id, lane_id=lane_id, action="keep", target_context_id=context.task_id, base_publisher_epoch=1, base_context_revision_id=context_revision.revision_id, candidate_context_revision_id=context_revision.revision_id, purpose=lane.purpose, source_allocation=frontier, source_frontier_hash=frontier_hash, semantic_fingerprint=context_revision.content_hash, status="unchanged")
-            program.current_portfolio_revision_id = portfolio_id
-            loop.current_portfolio_revision_id = portfolio_id
+            from backend.app.desktop.agent_loop.initialization import publish_initial_portfolio
+            from backend.app.desktop.context_evolution.repository import ContextRevisionRepository
+            initial_revision = await ContextRevisionRepository().get_by_id(session, context_revision.revision_id)
+            portfolio = await publish_initial_portfolio(session, loop, lane, initial_revision)
+            portfolio_id = portfolio.portfolio_revision_id
             membership = LoopContextMembership(membership_id=uuid.uuid4().hex, loop_id=loop.loop_id, context_id=request.initial_context_id, lane_id=lane_id, role="primary")
             slot = await session.scalar(select(WorkspaceSlot).where(WorkspaceSlot.workspace_id == workspace.workspace_id, WorkspaceSlot.kind == "authoritative", WorkspaceSlot.lifecycle != "deleted").with_for_update())
             if slot is None:
@@ -297,13 +279,10 @@ class AgentLoopService:
                 input_tokens=0,
                 output_tokens=0,
             )
-            current_round = round_row
             if active_initial_run:
                 loop.health = "waiting_runs"
-            loop.current_round_id = current_round.round_id
-            rows = [grant, candidate, membership, round_row, usage, LoopEventOutbox(event_id=uuid.uuid4().hex, loop_id=loop.loop_id, sequence=1, event_type="LoopStarted", payload={"round_id": round_row.round_id, "current_round_id": current_round.round_id, "initial_run_id": initial_run.run_id, "program_id": program_id, "portfolio_revision_id": portfolio_id}, idempotency_key=f"loop:{loop.loop_id}:started")]
-            if current_round is not round_row:
-                rows.append(current_round)
+            loop.current_round_id = round_row.round_id
+            rows = [grant, membership, round_row, usage, LoopEventOutbox(event_id=uuid.uuid4().hex, loop_id=loop.loop_id, sequence=1, event_type="LoopStarted", payload={"round_id": round_row.round_id, "current_round_id": round_row.round_id, "initial_run_id": initial_run.run_id, "program_id": program_id, "portfolio_revision_id": portfolio_id}, idempotency_key=f"loop:{loop.loop_id}:started")]
             session.add_all(rows)
             await session.flush()
             await self._lineage_events.record_loop_members(session, loop_id=loop.loop_id)
@@ -533,11 +512,13 @@ class AgentLoopService:
             if loop is None:
                 raise HTTPException(404, "Agent Loop 不存在")
             allowed, target = transitions[command]
+            if command == "pause" and loop.interaction_mode == "workspace_patrol" and loop.waiting_reason == "awaiting_input":
+                allowed = allowed | {"waiting_user"}
             if loop.status not in allowed:
                 raise HTTPException(409, f"Loop 状态 {loop.status} 不允许 {command}")
             if command == "resume" and loop.status == "waiting_user":
                 active_wait = await self._waits.active(session, loop_id, lock=True)
-                if active_wait is not None:
+                if active_wait is not None and not active_wait.scope.get("information_only"):
                     raise HTTPException(409, {"code": "wait_response_required", "request_id": active_wait.request_id})
             if command == "resume":
                 grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.loop_id == loop_id, LoopDelegationGrant.status == "active"))
@@ -589,11 +570,15 @@ class AgentLoopService:
             task_contract=task_contract or "",
             acceptance_criteria=acceptance_criteria or (),
         )
+        if not resolved_mission.outcome or not resolved_mission.completion_checks:
+            raise HTTPException(422, "旧 Context Loop 表单仍需完整最终结果和完成检查")
         legacy_mission = LegacyMissionAdapter.export(resolved_mission)
         async with self._sessions.begin() as session:
             loop = await session.scalar(select(AgentLoop).where(AgentLoop.loop_id == loop_id).with_for_update())
             if loop is None:
                 raise HTTPException(404, "Agent Loop 不存在")
+            if loop.interaction_mode == "workspace_patrol":
+                raise HTTPException(409, "工作区 Patrol 的决定请通过统一输入提交")
             loop.revision += 1
             loop.goal_revision += 1
             loop.authority_revision += 1
@@ -724,7 +709,7 @@ class AgentLoopService:
         delivery = await self._mission_bootstrap.assess(session, loop, round_row) if round_row is not None else None
         delivery_payload = None if delivery is None else delivery.to_payload()
         accounting = await LoopAccountingQuery().read(session, loop.loop_id)
-        return {"loop_id": loop.loop_id, "workspace_id": loop.workspace_id, "initial_context_id": loop.initial_context_id, "program_id": loop.program_id, "status": loop.status, "health": loop.health, "revision": loop.revision, "goal_revision": loop.goal_revision, "active_mission_revision": loop.goal_revision, "authority_revision": loop.authority_revision, "holder_id": loop.holder_id, "current_round_id": loop.current_round_id, "current_portfolio_revision_id": loop.current_portfolio_revision_id, "waiting_reason": loop.waiting_reason, "wait_request": None if wait_request is None else self._wait_request_payload(wait_request), "mission_delivery": delivery_payload, "equipment": loop.equipment, "accounting": accounting, "mission": mission_payload, "goal": None if goal is None else {"goal": goal.goal, "task_contract": goal.task_contract, "acceptance_criteria": goal.acceptance_criteria}, "grant": None if grant is None else {"grant_id": grant.grant_id, "status": grant.status, "capabilities": grant.capabilities, "context_scope": grant.context_scope, "permission_scope": grant.permission_scope, "budgets": grant.budgets, "delegable_gates": grant.delegable_gates, "compression_policy": grant.compression_policy, "expires_at": grant.expires_at.isoformat() if grant.expires_at else None}, "usage": None if usage is None else {"rounds": accounting["completed_rounds"], "duration_seconds": duration_seconds, "model_calls": usage.model_calls, "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens, "retries": usage.retries, "lanes": usage.lanes, "contexts": context_count, "providers": configured_provider_count(loop.equipment or {}), "no_progress_count": usage.no_progress_count}, "expansion_resources": expansion_resources, "final_result": loop.final_result}
+        return {"loop_id": loop.loop_id, "workspace_id": loop.workspace_id, "interaction_mode": loop.interaction_mode, "initial_context_id": loop.initial_context_id, "program_id": loop.program_id, "status": loop.status, "health": loop.health, "revision": loop.revision, "goal_revision": loop.goal_revision, "active_mission_revision": loop.goal_revision, "authority_revision": loop.authority_revision, "holder_id": loop.holder_id, "current_round_id": loop.current_round_id, "current_portfolio_revision_id": loop.current_portfolio_revision_id, "waiting_reason": loop.waiting_reason, "wait_request": None if wait_request is None else self._wait_request_payload(wait_request), "mission_delivery": delivery_payload, "equipment": loop.equipment, "accounting": accounting, "mission": mission_payload, "goal": None if goal is None else {"goal": goal.goal, "task_contract": goal.task_contract, "acceptance_criteria": goal.acceptance_criteria}, "grant": None if grant is None else {"grant_id": grant.grant_id, "status": grant.status, "capabilities": grant.capabilities, "context_scope": grant.context_scope, "permission_scope": grant.permission_scope, "budgets": grant.budgets, "delegable_gates": grant.delegable_gates, "compression_policy": grant.compression_policy, "expires_at": grant.expires_at.isoformat() if grant.expires_at else None}, "usage": None if usage is None else {"rounds": accounting["completed_rounds"], "duration_seconds": duration_seconds, "model_calls": usage.model_calls, "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens, "retries": usage.retries, "lanes": usage.lanes, "contexts": context_count, "providers": configured_provider_count(loop.equipment or {}), "no_progress_count": usage.no_progress_count}, "expansion_resources": expansion_resources, "final_result": loop.final_result}
 
     @staticmethod
     def _wait_request_payload(request: LoopWaitRequest) -> dict:
@@ -826,13 +811,6 @@ class AgentLoopService:
                 idempotency_key=f"loop-wait:{request.request_id}:{'terminated' if terminated else 'resumed'}",
             ),
         )
-
-    @staticmethod
-    async def _revoke(session, loop) -> None:
-        grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.loop_id == loop.loop_id, LoopDelegationGrant.status == "active").with_for_update())
-        if grant is not None:
-            grant.status = "revoked"
-            grant.revoked_at = datetime.now(UTC)
 
     @staticmethod
     async def _append_event(session, loop, event_type, payload) -> None:

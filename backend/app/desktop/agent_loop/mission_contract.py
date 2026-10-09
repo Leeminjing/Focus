@@ -2,7 +2,7 @@ r"""本文件对外提供 ExecutionBoundaries、CompletionCheckDefinition、Loop
 
 输入为用户编写的最终结果、边界分组、完成检查或旧 goal/task_contract/acceptance_criteria；输出为不可变、
 职责互斥且可序列化的 Mission contract。具体工作流为先规范化文本和证据类别，再验证跨分区重复、检查标识
-与证据要求；禁止动作中的规范 action name 和范围中的 `context:<id>` 可供 Kernel 确定性执行，旧数据则
+与证据要求；三个分区允许独立缺省，缺省不产生目标或验收通过。禁止动作中的规范 action name 和范围中的 `context:<id>` 可供 Kernel 确定性执行，旧数据则
 保留完整 contract 文本并生成稳定检查标识。示例：`LegacyMissionAdapter.convert(...)`。
 """
 
@@ -109,19 +109,19 @@ class CompletionCheckDefinition(_MissionModel):
 
 
 class LoopMissionContract(_MissionModel):
-    outcome: str = Field(min_length=1, max_length=12000)
+    outcome: str | None = Field(default=None, min_length=1, max_length=12000)
     boundaries: ExecutionBoundaries = Field(default_factory=ExecutionBoundaries)
-    completion_checks: tuple[CompletionCheckDefinition, ...] = Field(min_length=1)
+    completion_checks: tuple[CompletionCheckDefinition, ...] = ()
 
     @field_validator("outcome", mode="before")
     @classmethod
-    def normalize_outcome(cls, value: Any) -> str:
-        return _normalized_text(value)
+    def normalize_outcome(cls, value: Any) -> str | None:
+        return None if value is None else _normalized_text(value)
 
     @model_validator(mode="after")
     def separate_semantic_roles(self) -> "LoopMissionContract":
         entries = [
-            ("最终结果", self.outcome),
+            *((("最终结果", self.outcome),) if self.outcome else ()),
             *(("执行边界", item) for item in self.boundaries.statements()),
             *(("完成检查", item.claim) for item in self.completion_checks),
         ]

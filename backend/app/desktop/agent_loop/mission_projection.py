@@ -4,6 +4,7 @@ r"""本文件对外提供 EffectiveMission 与 EffectiveMissionProjector，统�
 EffectiveMission 或单一模型可见 Mission。具体工作流为优先读取结构化 revision，旧记录经 LegacyMissionAdapter 无损保留原始字段，
 再按分区生成确定性哈希；model_payload 与 observation_payload 不暴露兼容来源的重复目标。
 示例：`view = EffectiveMissionProjector.from_rows(structured=mission, legacy=None)`。
+缺省 outcome 不产生有效来源哈希；非空 input_sources 保留精确分区来源，旧记录的空来源字段不进入 payload/hash。
 """
 
 from __future__ import annotations
@@ -24,14 +25,18 @@ class EffectiveMission(BaseModel):
 
     revision: int = Field(gt=0)
     source_format: Literal["structured", "legacy_adapter"]
-    outcome: str
+    outcome: str | None
     boundaries: dict[str, Any]
     completion_checks: tuple[dict[str, Any], ...]
     section_hashes: dict[str, str]
     legacy_source: dict[str, Any] | None = None
+    input_sources: dict[str, Any] = Field(default_factory=dict)
 
     def model_payload(self) -> dict[str, Any]:
-        return self.model_dump(mode="json", exclude={"legacy_source"})
+        excluded = {"legacy_source"}
+        if not self.input_sources:
+            excluded.add("input_sources")
+        return self.model_dump(mode="json", exclude=excluded)
 
 
 class EffectiveMissionProjector:
@@ -77,7 +82,8 @@ class EffectiveMissionProjector:
                 "boundaries": structured.boundaries,
                 "completion_checks": structured.completion_checks,
             })
-            return cls._project(contract, structured.revision, "structured", None)
+            return cls._project(contract, structured.revision, "structured", None).model_copy(
+                update={"input_sources": getattr(structured, "input_sources", None) or {}})
         if legacy is None:
             raise ValueError("当前 Loop 缺少 Mission revision")
         source = {
@@ -97,7 +103,7 @@ class EffectiveMissionProjector:
     ) -> EffectiveMission:
         boundaries = contract.boundaries.model_dump(mode="json")
         checks = tuple(item.model_dump(mode="json") for item in contract.completion_checks)
-        sections: dict[str, Any] = {"outcome": contract.outcome}
+        sections: dict[str, Any] = {"outcome": contract.outcome} if contract.outcome else {}
         for group in ("in_scope", "required_invariants", "prohibited_actions", "legacy_text"):
             if boundaries.get(group):
                 sections[f"boundary:{group}"] = boundaries[group]

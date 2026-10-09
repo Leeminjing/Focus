@@ -29,6 +29,7 @@
  * 主任务 Composer 仅在存在错误或需处理的提醒时显示反馈，不为常态和运行提示预留空行；
  * 审批弹窗区分单次放宽和常驻切换；Agent Loop 的 snapshot、sequence reducer、断线重放和重同步
  * 由独立 Live Store/Connection 负责，切换 Loop 时清除旧投影，启动边界观察意外连接拒绝并归入连接状态；Expansion 表单和阻断视图委托 FocusLoopExpansionBudget，普通 API 响应统一委托无 DOM 的 FocusHttpResponse 解码，本文件只组合页面生命周期和控制请求。
+  * 独立 Patrol 工作区入口只协调绑定和模块宿主；普通会话照旧，workspace Loop 不进入旧 Mission/介入控制台，草稿和单路 Live 由专责控制器保持。
  */
 "use strict";
 
@@ -105,7 +106,7 @@ const ZOOM_LEVEL_MIN = -3;
 const ZOOM_LEVEL_MAX = 5;
 
 const state = {
-  view: "focus",
+  view: localStorage.getItem("focus-interaction-entry") === "patrol" ? "patrol" : "focus",
   tasks: [],
   activeTaskId: null,
   details: new Map(),
@@ -220,6 +221,8 @@ const accessMode = window.FocusAccessMode;
 const composerDraft = window.FocusComposerDraft;
 const taskRunOperations = window.FocusTaskRunOperations?.create();
 const loopApi = window.FocusLoopApi?.create(runtime);
+const workspacePatrolInputs = new Map();
+let workspacePatrolController = null;
 const loopWaitDrafts = window.FocusLoopWaitRequestView?.createDraftStore();
 const loopWaitUi = new Map();
 const loopLiveSelectors = window.FocusLoopLiveSelectors;
@@ -721,17 +724,20 @@ async function hydrateActive(taskId = state.activeTaskId) {
 }
 
 function render() {
+  localStorage.setItem("focus-interaction-entry", state.view === "patrol" ? "patrol" : "focus");
+  if (state.view !== "patrol") workspacePatrolController?.leave();
   const shownDraft = document.querySelector('#patrolWorkbench')?.dataset?.draftId;
   if (shownDraft && (state.view !== 'draft' || state.drafts.get(state.activeTaskId)?.draft_id !== shownDraft)) window.FocusPatrolWorkbench?.leave(shownDraft);
   if (state.view !== "loop") loopConnection?.stop();
   document.body.dataset.view = state.view;
   renderShellChrome();
-  if (!state.tasks.length && state.view !== "map") {
+  if (!state.tasks.length && !["map", "patrol"].includes(state.view)) {
     app.replaceChildren(document.querySelector("#emptyTemplate").content.cloneNode(true));
     interfaceI18n.apply(app);
     return;
   }
-  if (state.view === "focus") {
+  if (state.view === "patrol") renderWorkspacePatrol();
+  else if (state.view === "focus") {
     const task = activeTask();
     if (!task) renderNoActiveTask();
     else renderFocus(task);
@@ -762,6 +768,44 @@ function render() {
 function renderNoActiveTask() {
   const english = interfaceI18n.locale() === "en-US";
   app.innerHTML = `<section class="empty-state"><h1>${english ? "No active Context" : "暂无活动 Context"}</h1><p>${english ? "There is no active Context. Create a task or restore an archived Context from Settings." : "当前没有可进入的活动 Context。可以新建任务，或从设置中恢复已归档的 Context。"}</p><div class="ui-toolbar"><button class="primary" data-action="new-task">${uiText("header.new_task", "新增任务")}</button><button class="text-button" data-action="open-settings">${english ? "View Archived Contexts" : "查看已归档 Context"}</button></div></section>`;
+}
+
+async function renderWorkspacePatrol() {
+  workspacePatrolController?.dispose();
+  workspacePatrolController = null;
+  if (state.patrolWorkspace) {
+    const workspace = state.patrolWorkspace;
+    if (!workspacePatrolInputs.has(workspace.workspace_id)) workspacePatrolInputs.set(workspace.workspace_id, window.FocusWorkspacePatrolInputs.create(undefined, accessMode.readNewSessionDefault(window.localStorage)));
+    const store = window.FocusLoopLiveStore.create();
+    const connection = window.FocusLoopLiveConnection.create({ api: loopApi, store });
+    workspacePatrolController = window.FocusWorkspacePatrolController.create({
+      api: loopApi, inputs: workspacePatrolInputs.get(workspace.workspace_id), liveStore: store, connection,
+    });
+    await workspacePatrolController.mount(app, workspace);
+    return;
+  }
+  app.innerHTML = '<section class="workspace-patrol"><h1>Patrol 工作区</h1><p>绑定工作区后，直接输入想法、问题或决定即可开始。</p><div data-patrol-workspaces></div><button data-patrol-bind>绑定工作区文件夹</button><p data-patrol-binding-error role="alert"></p></section>';
+  const page = app.firstElementChild;
+  const bind = workspace => { state.patrolWorkspace = workspace; localStorage.setItem("focus-patrol-workspace", workspace.workspace_id); render(); };
+  page.querySelector("[data-patrol-bind]").addEventListener("click", async () => {
+    try {
+      const path = window.focusDesktop?.selectWorkspace ? await window.focusDesktop.selectWorkspace() : (await api("/desktop/api/workspaces/select", { method: "POST" })).path;
+      if (path) bind(await api("/desktop/api/workspaces", { method: "POST", body: JSON.stringify({ path }) }));
+    } catch (error) { page.querySelector("[data-patrol-binding-error]").textContent = error.message; }
+  });
+  try {
+    const workspaces = await loopApi.patrolWorkspaces();
+    if (state.view !== "patrol" || app.firstElementChild !== page) return;
+    const remembered = workspaces.find(workspace => workspace.workspace_id === localStorage.getItem("focus-patrol-workspace"));
+    if (remembered && !state.patrolChoosing) return bind(remembered);
+    const list = page.querySelector("[data-patrol-workspaces]");
+    for (const workspace of workspaces) {
+      const button = document.createElement("button");
+      button.textContent = `${workspace.display_name} · ${workspace.path}`;
+      button.addEventListener("click", () => bind(workspace));
+      list.append(button);
+    }
+  } catch (error) { if (app.firstElementChild === page) page.querySelector("[data-patrol-binding-error]").textContent = error.message; }
 }
 
 function observeLoopConnection(loopId) {
@@ -812,6 +856,11 @@ async function openLoopView() {
       return;
     }
     const snapshot = await loopApi.get(state.loop.loopId);
+    if (snapshot.interaction_mode === "workspace_patrol") {
+      state.patrolWorkspace = { workspace_id: snapshot.workspace_id, display_name: task.workspace_name || "工作区" };
+      state.view = "patrol";
+      return render();
+    }
     loopStore.reconcile(snapshot);
     loopStore.reconcileRelated(await loopApi.related(snapshot));
     await loopConsoleController?.load(state.loop.loopId);
@@ -1189,6 +1238,7 @@ async function overrideAgentLoop(form) {
 }
 
 function activeNavigationKey() {
+  if (state.view === "patrol") return "patrol";
   if (state.view === "map") return "map";
   if (state.view === "plugins") return "plugins";
   if (state.view === "memory") return "memory";
@@ -1199,15 +1249,15 @@ function activeNavigationKey() {
 
 function renderShellChrome() {
   const task = activeTask();
-  if (shellTaskTitle) shellTaskTitle.textContent = task?.title || uiText("header.no_task", "尚未选择任务");
-  if (shellTaskMeta) shellTaskMeta.textContent = task
+  if (shellTaskTitle) shellTaskTitle.textContent = state.view === "patrol" ? `Patrol${state.patrolWorkspace?.display_name ? ` · ${state.patrolWorkspace.display_name}` : ""}` : task?.title || uiText("header.no_task", "尚未选择任务");
+  if (shellTaskMeta) shellTaskMeta.textContent = state.view === "patrol" ? "工作区统一输入" : task
     ? `${task.workspace_name || uiText("common.local_workspace", "本地工作区")} · ${task.task_id.slice(0, 8)}`
     : uiText("header.workbench", "本地 Agent 工作台");
   const current = activeNavigationKey();
   document.querySelectorAll?.("[data-nav-key]").forEach(button => {
     if (button.dataset.navKey === current) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
-    button.disabled = !state.tasks.length && !["plugins", "assembly", "memory"].includes(button.dataset.navKey);
+    button.disabled = !state.tasks.length && !["patrol", "plugins", "assembly", "memory"].includes(button.dataset.navKey);
   });
   renderInspector();
 }
@@ -6080,6 +6130,14 @@ async function handleDocumentClick(event) {
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const action = button.dataset.action;
+  if (action === "show-patrol") {
+    if (state.view === "focus") persistFocusState();
+    state.patrolWorkspace = null;
+    state.patrolChoosing = state.view === "patrol" || button.hasAttribute("data-patrol-switch");
+    state.inspector.open = false;
+    state.view = "patrol";
+    return render();
+  }
   if (action === "reload") return bootstrap();
   if (action === "toggle-nav-collapse") {
     // 已折叠则展开（恢复到 navWidth），未折叠则折叠为 0。

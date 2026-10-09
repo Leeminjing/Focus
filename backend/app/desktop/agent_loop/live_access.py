@@ -2,6 +2,7 @@ r"""本文件对外提供 LiveAccess、LoopLiveAccessPolicy 与 LoopLiveRedactio
 
 输入为 Loop identity、当前 delegation grant、projection 和权限集合；输出为当前授权快照或递归脱敏后的 Live projection。
 具体工作流为读取最新 grant 建立访问边界，再从所有实体 state 移除秘密、隐藏推理和无权证据；示例：`access = await policy.resolve(session, loop_id)`。
+任务进度单实体沿用相同递归脱敏与证据访问规则。
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ class LoopLiveRedactionPolicy:
             "patrol_session": redact(projection.patrol_session),
             "round": redact(projection.round),
             "portfolio": redact(projection.portfolio),
+            "task_progress": redact(projection.task_progress),
             "contexts": {key: redact(value) for key, value in projection.contexts.items()},
             "lineage": {key: redact(value) for key, value in projection.lineage.items()},
             "runs": {key: redact(value) for key, value in projection.runs.items()},

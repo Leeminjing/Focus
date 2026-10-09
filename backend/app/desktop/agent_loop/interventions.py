@@ -4,6 +4,7 @@ r"""本文件对外提供 LoopInterventionService，持久化用户给 Portfolio
 是否已建立新观察轮。具体工作流为校验有效 delegation 与 membership，废弃尚未提交的 Patrol 判断，
 在无活动 Run 时建立新的 observation round；有活动 Run 时让意图等待稳定边界，不中断执行 Agent。
 示例：`await service.submit(loop_id, request)`。
+本端口仅保留旧 context_loop 意见兼容；workspace_patrol 只从工作区统一输入受理。
 """
 
 from __future__ import annotations
@@ -53,6 +54,8 @@ class LoopInterventionService:
             )
             if loop is None:
                 raise HTTPException(404, "Agent Loop 不存在")
+            if loop.interaction_mode == "workspace_patrol":
+                raise HTTPException(409, "工作区 Patrol 请使用统一输入，无需选择作用范围")
             if loop.status not in {"running", "paused", "waiting_user"}:
                 raise HTTPException(409, f"Loop 状态 {loop.status} 不接受新意见")
             grant = await session.scalar(

@@ -5,6 +5,7 @@ r"""本文件对外提供 ClarificationFacts、ClarificationFactsReader 和 Clar
 不存在补充时兼容基础 envelope；当前授权、预算、gate 与 Run 仍由权威事实组装。Policy 的读面与验证共享证据资格，
 Kernel 另核对尚未交付 Mission 的 Primary 授权缺口。完整 Mission、安全继续及没有派生机会不能构成缺失目标等待。
 示例：`view = ClarificationAdmissionPolicy.read_view(facts)`；`ClarificationAdmissionPolicy().validate(action, facts)`。
+workspace 不以缺少 outcome/checks 索取补表，可由冻结用户输入证明具体缺口，活动安全工作不阻止独立信息请求。
 """
 
 from __future__ import annotations
@@ -42,6 +43,8 @@ class ClarificationFacts:
     active_run: bool = False
     missing_input_ids: frozenset[str] = frozenset()
     permission_needs: frozenset[str] = frozenset()
+    workspace_patrol: bool = False
+    user_input_ids: frozenset[str] = frozenset()
 
     @classmethod
     def from_observation(cls, observation: LoopObservationEnvelope) -> ClarificationFacts:
@@ -66,6 +69,8 @@ class ClarificationFacts:
         primary = str(observation.portfolio_frontier[0].get("context_id")) if observation.portfolio_frontier else ""
         safe = "continue_context" in capabilities and primary in scope and not pending and not exhausted and not external
         return cls(
+            workspace_patrol=observation.interaction_mode == "workspace_patrol",
+            user_input_ids=frozenset(item["intent_id"] for item in observation.user_intents if item.get("intent_kind") == "workspace_input"),
             mission_revision=observation.goal_revision,
             outcome=str(mission.get("outcome") or ""),
             check_ids=frozenset(str(item.get("check_id")) for item in mission.get("completion_checks") or () if item.get("check_id")),
@@ -106,8 +111,11 @@ class ClarificationFactsReader:
         if bootstrap_need is not None:
             permission_needs = permission_needs | {bootstrap_need}
         return ClarificationFacts(
+            workspace_patrol=loop.interaction_mode == "workspace_patrol",
+            user_input_ids=frozenset(item["intent_id"] for item in (observation.envelope if observation else {}).get("user_intents", ())
+                if item.get("intent_kind") == "workspace_input"),
             mission_revision=loop.goal_revision,
-            outcome=view.outcome,
+            outcome=view.outcome or "",
             check_ids=frozenset(str(item["check_id"]) for item in view.completion_checks),
             capabilities=capabilities,
             pending_gate_ids=gates,
@@ -143,7 +151,7 @@ class ClarificationAdmissionPolicy:
 
     @staticmethod
     def _admitted_evidence(facts: ClarificationFacts) -> tuple[tuple[str, str, str], ...]:
-        if facts.active_run:
+        if facts.active_run and not facts.workspace_patrol:
             return ()
         options = [
             ("human_gate", "gate", facts.pending_gate_ids),
@@ -152,8 +160,10 @@ class ClarificationAdmissionPolicy:
         ]
         if not facts.safe_continuation:
             options.extend((("missing_input", "input", facts.missing_input_ids), ("external_blocker", "external", facts.external_blockers)))
-            if not (facts.outcome.strip() and facts.check_ids):
+            if not facts.workspace_patrol and not (facts.outcome.strip() and facts.check_ids):
                 options.append(("missing_goal", "mission", frozenset({"outcome"})))
+        if facts.workspace_patrol:
+            options.append(("missing_input", "input", facts.user_input_ids))
         return tuple(sorted((cause, kind, reference) for cause, kind, references in options for reference in references))
 
     @staticmethod
@@ -170,12 +180,14 @@ class ClarificationAdmissionPolicy:
         return frozenset(needs)
 
     def validate(self, action: WaitForUserAction, facts: ClarificationFacts) -> None:
+        if action.cause == "awaiting_input" and facts.workspace_patrol:
+            return
         if action.cause is None or action.evidence_identity is None or not action.required_input:
             raise ClarificationRejected("wait_for_user 必须声明类型化 cause、具体所需输入及当前证据 identity")
         evidence = action.evidence_identity
         if evidence.revision is not None and evidence.revision != facts.mission_revision:
             raise ClarificationRejected("wait_for_user evidence revision 已过期")
-        if facts.active_run:
+        if facts.active_run and not facts.workspace_patrol:
             raise ClarificationRejected("活动 Run 尚未结算，不得请求用户重述任务")
         if (action.cause, evidence.kind, evidence.reference_id) in self._admitted_evidence(facts):
             return
