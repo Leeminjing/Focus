@@ -10,6 +10,7 @@ LoopCreateRequest.inherit_initial_equipment 显式要求服务端继承初始 Ru
 deliver_user_message 只接受已冻结 intent_id，不接受模型提供正文、目标或装备。
 completion_admission 冻结当前完成请求语义身份、原验证及准入 blocker，历史 envelope 可缺省。
 completion_eligibility 独立冻结具体验证的版本化完成资格，历史输入缺省不回填或改写。
+workspace_patrol、精确用户输入处置与 awaiting_input 扩展现有联合；缺省交互模式继续兼容旧 Observation。
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ from backend.app.desktop.agent_loop.mission_contract import (
     LegacyMissionAdapter,
     LoopMissionContract,
 )
+from backend.app.desktop.agent_loop.patrol_inputs import ApplyUserInputsAction
 from backend.app.desktop.agent_loop.task_progress.contracts import (
     TaskDeltaManifest,
     TaskProgressDocument,
@@ -163,7 +165,7 @@ class WaitEvidenceIdentity(StrictModel):
 class WaitForUserAction(StrictModel):
     action: Literal["wait_for_user"]
     reason: str = Field(min_length=1)
-    cause: Literal["missing_goal", "missing_input", "human_gate", "permission", "budget", "external_blocker"] | None = None
+    cause: Literal["missing_goal", "missing_input", "human_gate", "permission", "budget", "external_blocker", "awaiting_input"] | None = None
     required_input: str | None = Field(default=None, min_length=1, max_length=1000)
     evidence_identity: WaitEvidenceIdentity | None = None
 
@@ -174,7 +176,7 @@ class StopLoopAction(StrictModel):
 
 
 PatrolAction = Annotated[
-    ContinueContextAction | DeliverUserMessageAction | CreateLaneAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
+    ContinueContextAction | DeliverUserMessageAction | ApplyUserInputsAction | CreateLaneAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
     PauseLaneAction | DiscardMembershipAction | RequestLaneCuratorAction |
     RequestCompletionVerifierAction | RequestCompletionAction | AdoptWorkspaceResultAction |
     ApplyContextCompressionAction | WaitForUserAction | StopLoopAction,
@@ -183,7 +185,7 @@ PatrolAction = Annotated[
 PATROL_ACTION_ADAPTER = TypeAdapter(PatrolAction)
 
 PatrolModelAction = Annotated[
-    ContinueContextAction | DeliverUserMessageAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
+    ContinueContextAction | DeliverUserMessageAction | ApplyUserInputsAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
     PauseLaneAction | DiscardMembershipAction | RequestLaneCuratorAction |
     RequestCompletionVerifierAction | RequestCompletionAction | AdoptWorkspaceResultAction |
     ApplyContextCompressionAction | WaitForUserAction | StopLoopAction,
@@ -299,6 +301,8 @@ class LoopCreateRequest(StrictModel):
             raise ValueError("mission 与旧 goal/task_contract/acceptance_criteria 不能同时提交")
         if self.mission is None and any(value is None for value in legacy):
             raise ValueError("必须提交 mission 或完整旧目标字段")
+        if self.mission is not None and (not self.mission.outcome or not self.mission.completion_checks):
+            raise ValueError("旧 Context Loop 启动仍需完整最终结果和完成检查；工作区 Patrol 使用统一输入")
         return self
 
     def resolved_mission(self) -> LoopMissionContract:
@@ -333,6 +337,8 @@ class ResumeWithCurrentMissionRequest(StrictModel):
 
 
 class LoopObservationEnvelope(StrictModel):
+    interaction_mode: Literal["context_loop", "workspace_patrol"] = "context_loop"
+    information_requests: tuple[dict[str, Any], ...] = ()
     input_schema_version: Literal[0, 1] = 0
     decision_inputs_ref: str | None = None
     previous_task_progress: dict[str, Any] | None = None

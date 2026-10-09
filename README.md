@@ -33,6 +33,16 @@ Prevents Context Drift    Prevents Attention Drift
 
 ## Focus Agent Loop: contexts that evolve with the task
 
+Focus has two interaction entrances. Ordinary conversations keep their existing messages, Agent replies and execution results. **Workspace Patrol** is a separate entrance: `User → Patrol → an evolving collection of Contexts`.
+
+Bind a workspace and send any nonblank input to start Patrol. There is no prerequisite Context, Main Run or Mission form. The same composer accepts ordinary information, desired outcomes, execution boundaries and completion checks; the three special kinds are optional and can be supplied or revised independently. New Patrols use the saved default file access mode and the existing finite permissions and budgets.
+
+Input receipts show the user's original text and whether it was received. They do not mean a decision has taken effect. The four kinds share a folded history of the latest three records, with earlier records available on expansion. Patrol's ordinary answers and scheduling reasoning are not a chat transcript in this entrance. Separate information requests remain visible and can receive targeted answers through the same composer.
+
+Task Progress shows the latest committed work state; Current Derivation Lineage shows published Context ancestry; LoopFact shows Round and Run facts across the Loop. Inspecting a Context preserves the Patrol composer and its draft. Input remains available during execution, explicit pause and idle. New input wakes idle work, while explicit pause and stop remain authoritative. With no known work to advance, Patrol waits for new input; absent completion checks never imply that an undefined project goal passed acceptance. Explicit reactivation after stop creates a successor using the existing Contexts and task state.
+
+The execution mechanisms described below are shared by workspace Patrol and the retained Context Loop entrance.
+
 Most agent loops solve one problem: how to run the agent again. When one run ends, an outer script sends another prompt and the agent continues with the same increasingly bloated history.
 
 More runs do not fix a drifting direction or a polluted context.

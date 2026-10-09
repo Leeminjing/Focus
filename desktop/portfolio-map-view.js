@@ -5,6 +5,7 @@
  * 节点卡只显示一次描述文字，purpose 与节点名称相同时不再重复渲染；层级只由跨 Context 依赖决定（自环不参与），
  * 无依赖的 Context 位于根层，每条派生连线带方向标记。
  * 示例：`FocusPortfolioMapView.render(manifest, selectedId, graphActivity)`。
+  * 来源连线保留真实 source/target Revision 的可查看身份。
  */
 (function (root, factory) {
   const api = factory();
@@ -84,7 +85,7 @@
       const x2 = target.x + 110;
       const y2 = target.y;
       const middle = (y1 + y2) / 2;
-      return `<path data-edge-id="${escape(`${edge.source_context_id}:${edge.target_context_id}:${edge.target_revision_id || "current"}`)}" marker-end="url(#portfolio-edge-arrow)" d="M ${x1} ${y1} C ${x1} ${middle}, ${x2} ${middle}, ${x2} ${y2}" />`;
+      return `<path data-edge-id="${escape(`${edge.source_context_id}:${edge.target_context_id}:${edge.target_revision_id || "current"}`)}" marker-end="url(#portfolio-edge-arrow)" d="M ${x1} ${y1} C ${x1} ${middle}, ${x2} ${middle}, ${x2} ${y2}"><title>${escape(edge.source_revision_id || edge.source_context_id)} → ${escape(edge.target_revision_id || edge.target_context_id)}</title></path>`;
     }).join("");
     const activityLines = graphActivity.map(item => {
       const target = geometry.positions.get(item.target_context_id);

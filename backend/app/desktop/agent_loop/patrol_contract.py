@@ -12,6 +12,7 @@ assessment）；输出为合同通过，或携带稳定拒绝原因的 PatrolCon
 消息交付只允许选本轮冻结的唯一 intent identity；未处理直接消息阻止完成提案，模型不能改写正文。
 完成重请求复用冻结的 CompletionRequestAdmission，等价输入反馈进入原有有界候选纠错，最终 Kernel 仍复检。
 完成动作精确选择 completion_eligibility 冻结目录中的可用验证，拒绝码进入同一纠错流程，不把新验证准入当完成许可。
+普通工作区提案可引用精确 input 或 current progress；缺省分区不成为要求引用，用户 Mission 修订后重新冻结再评估派生。
 """
 
 from __future__ import annotations
@@ -63,8 +64,18 @@ class CompletionCheckReference(_ContractModel):
     reference_id: str = Field(min_length=1, max_length=96)
 
 
+class InputReference(_ContractModel):
+    role: Literal["input"] = "input"
+    reference_id: str = Field(min_length=1, max_length=32)
+
+
+class ProgressReference(_ContractModel):
+    role: Literal["progress"] = "progress"
+    reference_id: Literal["current"] = "current"
+
+
 MissionReference = Annotated[
-    OutcomeReference | BoundaryReference | CompletionCheckReference,
+    OutcomeReference | BoundaryReference | CompletionCheckReference | InputReference | ProgressReference,
     Field(discriminator="role"),
 ]
 
@@ -128,8 +139,18 @@ class PatrolDecisionContract:
         observation: LoopObservationEnvelope,
     ) -> None:
         mission = observation.mission or {}
+        inputs = {item["intent_id"] for item in observation.user_intents}
         check_ids = tuple(str(item.get("check_id")) for item in mission.get("completion_checks", ()) if item.get("check_id"))
         for reference in mission_references:
+            if getattr(observation, "interaction_mode", "context_loop") == "workspace_patrol":
+                if reference.role == "outcome" and not mission.get("outcome"):
+                    raise PatrolContractViolation("未提供最终结果，不能制造 outcome 引用")
+                if reference.role == "boundary" and not (mission.get("boundaries") or {}).get(reference.reference_id):
+                    raise PatrolContractViolation("未提供该边界分区，不能制造 boundary 引用")
+            if reference.role == "input" and reference.reference_id not in inputs:
+                raise PatrolContractViolation("输入引用不属于当前冻结集合")
+            if reference.role == "progress" and getattr(observation, "previous_task_progress", None) is None:
+                raise PatrolContractViolation("当前冻结任务进度不存在")
             if reference.role != "completion_check":
                 continue
             if reference.reference_id not in check_ids:
@@ -143,6 +164,9 @@ class PatrolDecisionContract:
         observation: LoopObservationEnvelope,
     ) -> None:
         assessment = observation.expansion_assessment or {}
+        if (getattr(observation, "interaction_mode", "context_loop") == "workspace_patrol"
+                and len(actions) == 1 and actions[0].action == "apply_user_inputs" and actions[0].changes):
+            return
         opportunities = self._opportunity_ids(assessment)
         blockers = self._blockers(assessment)
         expansion_actions = tuple(action for action in actions if action.action in _EXPANSION_ACTIONS)

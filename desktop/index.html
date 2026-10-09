@@ -24,6 +24,7 @@
   <link rel="stylesheet" href="./styles/conversation-events.css">
   <link rel="stylesheet" href="./styles/patrol-avatar.css?v=20260905b">
   <link rel="stylesheet" href="./styles/loop-console.css?v=20260916b">
+  <link rel="stylesheet" href="./styles/workspace-patrol.css">
 </head>
 <body>
   <div class="app-frame">
@@ -39,6 +40,7 @@
     <section id="accessPending" class="access-pending" role="region" aria-label="后台执行主体的本机资源请求" data-i18n-aria-label="access.background_title" hidden></section>
     <div class="app-shell">
       <nav id="appNavigation" class="app-navigation" aria-label="全局导航">
+        <button class="app-nav-item" data-action="show-patrol" data-nav-key="patrol"><span class="app-nav-label">Patrol</span></button>
         <button class="app-nav-item" data-action="focus-home" data-nav-key="focus">
           <span class="app-nav-label" data-i18n="nav.tasks">任务</span>
         </button>
@@ -255,6 +257,9 @@
   <script src="./context-evolution-view.js?v=20260915a"></script>
   <script src="./message-provenance-view.js?v=20260915a"></script>
   <script src="./workspace-slots-view.js?v=20260915a"></script>
+  <script src="./workspace-patrol-inputs.js"></script>
+  <script src="./workspace-patrol-view.js"></script>
+  <script src="./workspace-patrol-controller.js"></script>
   <link rel="stylesheet" href="./patrol-workbench.css">
   <script src="./patrol-authoring.js"></script>
   <script src="./patrol-document.js"></script>

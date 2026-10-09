@@ -5,8 +5,9 @@ r"""本文件对外提供 LoopRuntimeConvergence。
 业务终止不填写 Run settled_at，消费与工作区清理由真实 finalizer 完成；Round 终态同事务发布规范事件，再追加一个不覆盖 Loop 投影主体的规范活动事件。
 示例：`run_ids = await convergence.converge(session, loop, "loop_paused")`。
 已授权直接用户消息随其 Directive 取消；尚未交付的消息可跨暂停或新发言保留，撤权/终止/Mission 修订明确取消，不让迟到结算恢复。
-活动等待同事务通过既有等待服务终结；新发言、Mission 或授权变更使旧请求 superseded，终止/暂停使其 cancelled。
+安全等待同事务通过既有服务终结；信息等待跨非终态控制保留，终态时一起 cancelled。
 历史请求与规范事件保留，晚到响应不能再控制后继 Round，也不能阻塞新等待请求的唯一活动槽。
+workspace 信息型澄清跨显式暂停保留；暂停输入不恢复执行，专用安全 gate 仍沿原终结协议。
 """
 
 from __future__ import annotations
@@ -46,9 +47,13 @@ class LoopRuntimeConvergence:
 
     async def converge(self, session: AsyncSession, loop: AgentLoop, reason: str) -> tuple[str, ...]:
         now = datetime.now(UTC)
-        active_wait = await self._waits.active(session, loop.loop_id, lock=True)
-        if active_wait is not None:
-            await self._waits.cancel(session, active_wait.request_id,
+        from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest
+        waits = tuple(await session.scalars(select(LoopWaitRequest).where(LoopWaitRequest.loop_id == loop.loop_id,
+            LoopWaitRequest.status.in_(("open", "resolving"))).order_by(LoopWaitRequest.request_id).with_for_update()))
+        for request in waits:
+            if request.scope.get("information_only") and loop.status not in {"completed", "stopped", "failed"}:
+                continue
+            await self._waits.cancel(session, request.request_id,
                 superseded=reason in {"direct_user_message", "mission_revision", "authority_changed"})
             loop.waiting_reason = None
         terminated_rounds = tuple((await session.scalars(

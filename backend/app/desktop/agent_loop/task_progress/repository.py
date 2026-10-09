@@ -3,6 +3,7 @@
 输入为调用方短事务、不可变合同、fence 和有界安全候选诊断；输出为按尝试诊断、唯一版本或明确 stale/readiness 错误。
 具体工作流为 Loop→head→work 锁序，诊断复检有效领取及冻结身份，重试复检预算授权并保留历史反馈和消费，前序 CAS、输入 hash 和租约共同验证，再原子插入版本与 receipts。
 无模型调用或 Context 发布权限。示例：await repository.publish(session, observation_id, fence, document, contribution)。
+Progress head、来源 receipts 与 task_progress.published journal 在同一发布事务提交，读面可独立于用户发送和执行事实更新。
 """
 
 from __future__ import annotations
@@ -260,4 +261,11 @@ class TaskProgressRepository:
                 "at": datetime.now(UTC).isoformat(),
             },
         ]
+        from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
+        from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
+        await LoopEventJournal().append(session, work.loop_id, CanonicalEventDraft(
+            kind="task_progress.published", entity_type="task_progress", entity_id=work.loop_id,
+            entity_revision=row.generation + 1, idempotency_key=f"progress:{row.progress_id}:published",
+            payload={"progress_id": row.progress_id, "generation": row.generation,
+                     "content_hash": row.content_hash, "document": row.document}))
         return row

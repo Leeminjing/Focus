@@ -7,6 +7,8 @@ r"""本文件对外提供 WaitRequestDraft、LoopWaitRequestFactory 与 LoopWait
 响应和终结统一按 Loop → WaitRequest 锁定并刷新实体，避免旧 ORM 状态或请求先锁造成权威变更竞态与死锁。
 开放请求默认绑定当前 Round；旧轮遗留请求只能被新等待 supersede，响应必须属于当前 waiting_user 事务，历史响应重放不重复提交。
 质量等待合同区分恢复同次尝试与修订材料，并按已消费次数隐藏耗尽的修订动作；服务端仍负责最终准入。
+information_only 澄清只创建独立卡片，不暂停整个 Loop；回答通过统一输入受理，在 Kernel 精确冻结版本中决定是否解决，普通新输入不自动恢复或关闭请求。
+通用 active 优先安全等待，open 只替代同作用域请求，不让预算/恢复卡片吞掉尚未解决的信息卡片。
 """
 
 from __future__ import annotations
@@ -128,8 +130,12 @@ class LoopWaitRequestService:
         round_id: str | None = None,
     ) -> LoopWaitRequest:
         target_round_id = round_id if round_id is not None else loop.current_round_id
-        existing = await self.active(session, loop.loop_id, lock=True)
+        information = (loop.interaction_mode == "workspace_patrol" and draft.kind == "clarification"
+                       and draft.scope.get("cause") == "missing_input")
+        existing = await self.active(session, loop.loop_id, lock=True, information=information)
         if existing is not None:
+            if information and existing.scope.get("information_only"):
+                return existing
             if loop.status == "waiting_user" and existing.round_id in {None, target_round_id}:
                 return existing
             await self.cancel(session, existing.request_id, superseded=True)
@@ -144,16 +150,17 @@ class LoopWaitRequestService:
             prompt=prompt.value,
             response_mode=draft.response_mode,
             response_contract=contract.value,
-            scope=scope.value,
+            scope={**scope.value, **({"information_only": True} if information else {})},
             status="open",
             revision=1,
             correlation_id=correlation_id,
             causation_id=causation_id,
             created_by=created_by,
         )
-        loop.status = "waiting_user"
-        loop.waiting_reason = prompt.value
-        loop.revision += 1
+        if not information:
+            loop.status = "waiting_user"
+            loop.waiting_reason = prompt.value
+            loop.revision += 1
         session.add(request)
         await session.flush()
         await self._append_opened(session, request)
@@ -180,6 +187,8 @@ class LoopWaitRequestService:
                 raise LookupError(existing.request_id)
             return request, existing, False
         loop, request = await self._lock_request(session, request_id)
+        if request.scope.get("information_only"):
+            raise WaitRequestConflict("请通过 Patrol 统一输入入口回答此信息请求")
         committed = await session.scalar(select(LoopWaitResponse).where(LoopWaitResponse.request_id == request_id))
         if committed is not None:
             raise WaitRequestConflict("等待请求已经提交响应", committed)
@@ -217,6 +226,21 @@ class LoopWaitRequestService:
         from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
 
         await LoopLifecycleEventRecorder().record(session, loop, cause_id=cause_id)
+
+    async def finish_information(self, session, request, input_ids):
+        if not request.scope.get("information_only"):
+            raise WaitRequestConflict("普通输入不能替代人工批准或控制恢复")
+        response = await session.scalar(select(LoopWaitResponse).where(LoopWaitResponse.request_id == request.request_id))
+        if response is None:
+            response = LoopWaitResponse(response_id=uuid.uuid4().hex, request_id=request.request_id,
+                actor_id="user", answer={"input_ids": list(input_ids)}, request_revision=request.revision,
+                idempotency_key="patrol-information:" + request.request_id)
+            session.add(response)
+        request.status = "resolved"
+        request.revision += 1
+        request.resolved_at = datetime.now(UTC)
+        await session.flush()
+        await self._append_resolved(session, request, response)
 
     async def _append_opened(self, session: AsyncSession, request: LoopWaitRequest) -> None:
         await self._journal.append(
@@ -305,11 +329,16 @@ class LoopWaitRequestService:
         return loop, request
 
     @staticmethod
-    async def active(session: AsyncSession, loop_id: str, *, lock: bool = False) -> LoopWaitRequest | None:
+    async def active(session: AsyncSession, loop_id: str, *, lock: bool = False, information: bool | None = None) -> LoopWaitRequest | None:
+        from sqlalchemy import case, func
+        is_information = func.coalesce(LoopWaitRequest.scope["information_only"].astext, "false") == "true"
         query = select(LoopWaitRequest).where(
             LoopWaitRequest.loop_id == loop_id,
             LoopWaitRequest.status.in_(("open", "resolving")),
-        ).order_by(LoopWaitRequest.created_at.desc()).limit(1)
+        )
+        if information is not None:
+            query = query.where(is_information if information else ~is_information)
+        query = query.order_by(case((is_information, 1), else_=0), LoopWaitRequest.created_at.desc()).limit(1)
         if lock:
             query = query.with_for_update()
         return await session.scalar(query)

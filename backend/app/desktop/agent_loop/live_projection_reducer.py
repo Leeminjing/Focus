@@ -5,6 +5,7 @@ sequence 去重/缺口检查，再按 entity_type 调用单实体或实体集合
 同一 entity identity 的 revision；切换实体时重新建立状态，以 Round 单调轮号及 Patrol 的当前 Round 绑定拒绝迟到旧实体，历史 tool fact 不进入领域集合，最后追加有界安全活动摘要；未知 kind 保持前向兼容但不修改已知实体。
 示例：`next_state = reducer.reduce(state, event)`。
 用户 intervention 按其不可变 revision 更新独立集合，活动保留 origin/type/state 供真实因果展示。
+task_progress 沿用单实体 revision/sequence 归约，旧事件不能使已提交 head 回退。
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ class ProjectionSequenceGap(RuntimeError):
 
 
 class LoopLiveProjectionReducer:
-    _SINGULAR = frozenset({"loop", "mission", "patrol_session", "round", "portfolio", "accounting"})
+    _SINGULAR = frozenset({"loop", "mission", "patrol_session", "round", "portfolio", "accounting", "task_progress"})
     _ACTIVITY_ONLY = frozenset({"tool", "artifact", "model_call", "loop_activity"})
     _COLLECTIONS: ClassVar[dict[str, str]] = {
         "context": "contexts",

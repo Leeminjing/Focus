@@ -7,6 +7,7 @@ Context revision；已授权等待的具体 blocker 形成带证据身份的 Ker
 complete_patrol_delivery 仅向 Patrol 已选择的 Primary continuation 补入完整正文，权威 identity 与其他动作保持该次 Patrol 来源。
 MissionBootstrapAssessment.to_payload 对外提供快照与规范事件共用的交付读面，不输出候选intent或正文。
 示例：`assessment = await MissionBootstrapStage().assess(session, loop, round_row)`。
+workspace_patrol 首线程从耐久首输入准备，不走强制 Mission bootstrap；renderer 只渲染实际提供分区，完整旧 Mission 保留原指令格式。
 """
 
 from __future__ import annotations
@@ -52,7 +53,10 @@ class MissionInstructionRenderer:
 
     @classmethod
     def render(cls, mission: EffectiveMission) -> str:
-        lines = ["请执行当前用户授权的任务。", "最终结果：", mission.outcome, "执行边界："]
+        lines = ["请执行当前用户授权的任务。" if mission.outcome else "请在现有信息与授权范围内推进工作。"]
+        if mission.outcome:
+            lines.extend(("最终结果：", mission.outcome))
+        lines.append("执行边界：")
         for label, key in (
             ("允许范围", "in_scope"),
             ("必须保持", "required_invariants"),
@@ -100,6 +104,8 @@ class MissionBootstrapStage:
 
     async def assess(self, session: AsyncSession, loop: AgentLoop, round_row: LoopRound) -> MissionBootstrapAssessment:
         revision = loop.goal_revision
+        if getattr(loop, "interaction_mode", None) == "workspace_patrol":
+            return MissionBootstrapAssessment("not_required", revision, "workspace_user_input")
         existing = await session.scalar(
             select(LoopDirective)
             .where(LoopDirective.loop_id == loop.loop_id, LoopDirective.goal_revision == revision)

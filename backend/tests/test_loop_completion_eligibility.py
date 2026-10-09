@@ -3,6 +3,7 @@
 输入为隔离 PostgreSQL、真实 Loop/Verifier 及受控远端模型响应；输出为候选拒绝、实际消费、最终受理和历史 hash 断言。
 具体工作流为独立验证经生产领取与保存，再冻结观察、调用生产候选合同及 Kernel；证据通过真实 fixture 命令产生。
 示例：python -m pytest backend/tests/test_loop_completion_eligibility.py；不操作真实 Vault。
+历史 hash 夹具不把新 workspace 默认字段回填到旧字段集。
 """
 
 import asyncio
@@ -31,13 +32,15 @@ pytestmark = pytest.mark.usefixtures('runtime_postgres_database')
 
 
 @asynccontextmanager
-async def _lab(tmp_path, *, stale=True, complete=False):
+async def _lab(tmp_path, *, stale=True, complete=False, mode='context_loop'):
     engine = create_async_engine(os.environ['FOCUS_DATABASE_URL'])
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     fixture = await _seed_loop(sessions, tmp_path, label='d10', started_at=datetime.now(UTC))
     try:
         worker_id = uuid.uuid4().hex
         async with sessions.begin() as session:
+            loop = await session.get(AgentLoop, fixture['loop_id'])
+            loop.interaction_mode = mode
             grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.loop_id == fixture['loop_id']))
             grant.capabilities = [*grant.capabilities, 'request_completion', 'request_completion_verifier']
             round_row = await session.get(LoopRound, fixture['round_id'])
@@ -160,6 +163,25 @@ def test_credible_complete_verification_passes_candidate_stage_and_kernel(tmp_pa
     asyncio.run(run())
 
 
+def test_workspace_completion_keeps_delegation_and_waits_for_new_input(tmp_path):
+    from backend.app.desktop.agent_loop.kernel import LoopKernel
+    from backend.app.desktop.context_curation.models import CurationLane
+    from backend.tests.test_loop_round_progress_admission import _intent
+    async def run():
+        async with _lab(tmp_path, stale=False, complete=True, mode='workspace_patrol') as (sessions, fixture, frozen, action):
+            result = await LoopKernel(sessions).commit(_intent(frozen).model_copy(update={'actions': (action,)}))
+            assert result.status == 'committed', result.reason
+            async with sessions() as session:
+                loop = await session.get(AgentLoop, fixture['loop_id'])
+                assert loop.status == 'waiting_user' and loop.waiting_reason == 'awaiting_input'
+                assert loop.final_result and loop.completed_at is None
+                grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.loop_id == loop.loop_id))
+                assert grant.status == 'active'
+                lanes = tuple(await session.scalars(select(CurationLane).where(CurationLane.program_id == loop.program_id)))
+                assert lanes and all(lane.lifecycle != 'retired' for lane in lanes)
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('change', ['workspace', 'source', 'run', 'pause', 'revoke', 'frontier', 'mission'])
 def test_final_state_changes_reject_previously_eligible_frozen_candidate(tmp_path, change):
     from backend.app.desktop.agent_loop.context_expansion.coordinator import ContextExpansionStage
@@ -218,6 +240,8 @@ def test_historical_absent_eligibility_keeps_original_hash(tmp_path):
         async with _lab(tmp_path) as (_, _, frozen, _):
             historical = frozen.model_dump(mode='json')
             historical.pop('completion_eligibility')
+            historical.pop('interaction_mode')
+            historical.pop('information_requests')
             expected = hashlib.sha256(json.dumps(historical, ensure_ascii=False, sort_keys=True,
                 separators=(',', ':')).encode()).hexdigest()
             restored = LoopObservationEnvelope.model_validate(historical)

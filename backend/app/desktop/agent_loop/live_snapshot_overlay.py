@@ -8,6 +8,7 @@ ContextLineageResolver 从权威 revision 来源解析，作为客户端在快�
 interventions 从耐久用户消息表补齐类型、来源、交付状态和 Run 身份，快照重启不丢失接受提交后的状态。
 Round 快照公开真实 Observation/Decision 身份，accounting 历史诊断不回写旧事务。
 Mission交付调用与兼容快照/Directive事件相同的只读评估；重连使用当前事实，旧journal不被补写。
+task_progress 从既有持久 head 读取并独立补齐；Loop 显式提供交互模式，用户受理不构造任务结果。
 """
 
 from __future__ import annotations
@@ -88,10 +89,15 @@ class LoopLiveProjectionOverlay:
             session,
             {row.task_id: row.current_revision_id for row in contexts if row.current_revision_id},
         )
+        from backend.app.desktop.agent_loop.task_progress.repository import TaskProgressRepository
+        progress = await TaskProgressRepository().current(session, loop.loop_id)
         return projection.model_copy(update={
+            "task_progress": None if progress is None else self._entity(loop.loop_id, progress.generation + 1, sequence,
+                {"progress_id": progress.progress_id, "generation": progress.generation,
+                 "content_hash": progress.content_hash, "document": progress.document}),
             "accounting": self._entity(loop.loop_id, projection.accounting.revision if projection.accounting else 1,
                 sequence, {"accounting": accounting, "usage": {**self._usage(usage, len(contexts)), "rounds": accounting["completed_rounds"]}}),
-            "loop": self._entity(loop.loop_id, projection.loop.revision if projection.loop is not None else 1, sequence, {"loop_id": loop.loop_id, "workspace_id": loop.workspace_id, "initial_context_id": loop.initial_context_id, "program_id": loop.program_id, "status": loop.status, "health": loop.health, "revision": loop.revision, "authority_revision": loop.authority_revision, "goal_revision": loop.goal_revision, "active_mission_revision": loop.goal_revision, "current_round_id": loop.current_round_id, "current_portfolio_revision_id": loop.current_portfolio_revision_id, "waiting_reason": loop.waiting_reason, "equipment": loop.equipment, "final_result": loop.final_result, "grant": self._grant(grant), "usage": {**self._usage(usage, len(contexts)), "rounds": accounting["completed_rounds"]}, "accounting": accounting, "mission_delivery": None if delivery is None else delivery.to_payload()}),
+            "loop": self._entity(loop.loop_id, projection.loop.revision if projection.loop is not None else 1, sequence, {"loop_id": loop.loop_id, "workspace_id": loop.workspace_id, "interaction_mode": loop.interaction_mode, "initial_context_id": loop.initial_context_id, "program_id": loop.program_id, "status": loop.status, "health": loop.health, "revision": loop.revision, "authority_revision": loop.authority_revision, "goal_revision": loop.goal_revision, "active_mission_revision": loop.goal_revision, "current_round_id": loop.current_round_id, "current_portfolio_revision_id": loop.current_portfolio_revision_id, "waiting_reason": loop.waiting_reason, "equipment": loop.equipment, "final_result": loop.final_result, "grant": self._grant(grant), "usage": {**self._usage(usage, len(contexts)), "rounds": accounting["completed_rounds"]}, "accounting": accounting, "mission_delivery": None if delivery is None else delivery.to_payload()}),
             "mission": None if mission is None else self._entity(mission.mission_revision_id, mission.revision, sequence, {"outcome": mission.outcome, "boundaries": mission.boundaries, "completion_checks": mission.completion_checks, "authored_by": mission.authored_by}),
             "round": None if round_row is None else self._entity(round_row.round_id, projection.round.revision if projection.round is not None and projection.round.entity_id == round_row.round_id else 1, sequence, {"round_id": round_row.round_id, "number": round_row.number, "status": round_row.status, "observation_id": round_row.observation_id, "decision_id": round_row.decision_id, "barrier": round_row.barrier, "frontier_hash": round_row.frontier_hash, "workspace_revision": round_row.workspace_revision}),
             "patrol_session": None if patrol is None else self._entity(patrol.session_id, patrol.revision, sequence, {"round_id": patrol.round_id, "phase": patrol.current_phase, "status": patrol.status, "safe_summary": patrol.safe_summary, "wait_reason": patrol.wait_reason, "wait_targets": patrol.wait_targets, "terminal_outcome": patrol.terminal_outcome}),

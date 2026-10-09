@@ -4,6 +4,7 @@ r"""本文件对外提供 MissionWaitRecoveryGuard 与 MissionWaitRecoveryReject
 当前 LoopRound，或具体拒绝原因。具体工作流为拒绝无法证明语义的旧版文本澄清及真实缺失输入，验证当前 Mission revision、有效授权、
 无活动 Run/人工 gate、活跃 Primary frontier 和硬预算，再交由调用方原子 supersede 请求并创建继任轮。
 示例：`current = await guard.validate(session, loop, request, request_revision=1)`。
+缺省 outcome 按未提供处理，不授予旧 missing_goal 的自动恢复资格。
 """
 
 from __future__ import annotations
@@ -73,7 +74,7 @@ class MissionWaitRecoveryGuard:
         if structured is None and legacy is None:
             raise MissionWaitRecoveryRejected("当前 Mission revision 不存在")
         mission = EffectiveMissionProjector.from_rows(structured=structured, legacy=legacy)
-        if not mission.outcome.strip() or not mission.completion_checks:
+        if not (mission.outcome or "").strip() or not mission.completion_checks:
             raise MissionWaitRecoveryRejected("当前 Mission 缺少最终结果或完成检查")
 
     @staticmethod

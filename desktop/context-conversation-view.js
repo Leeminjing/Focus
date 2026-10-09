@@ -5,6 +5,7 @@
  * 标题与描述同源时只显示一次，不在页头重复渲染同一段 purpose。
  * 示例：`FocusContextConversationView.render(consoleState)`。
  * 直接消息分别展示受理、待授权、交付、运行、终态，用户来源 Directive 使用独立标签。
+  * renderInspection 复用同一消息渲染的只读检查面，不附加投递方式表单或来源恢复写按钮。
  */
 (function (root, factory) {
   const api = factory();
@@ -28,14 +29,14 @@
     });
   }
 
-  function messageCard(item) {
+  function messageCard(item, readOnly = false) {
     const message = item.message || {};
     const itemRole = role(message);
     const provenance = item.provenance;
     const compression = message.compression || message.additional_kwargs?.compression;
     const source = provenance ? `<span class="message-provenance" title="该信息仅用于 Focus 审计，不进入模型 Context">${escape(provenance.source_kind === "delegated_patrol" ? "Patrol delegated" : provenance.source_kind)}</span>` : itemRole === "human" ? '<span class="message-provenance is-direct">Direct human</span>' : "";
     const toolMeta = itemRole === "tool" ? `<small>${escape(message.name || "tool")} · ${escape(message.tool_call_id || "")}</small>` : "";
-    const compressed = compression ? `<details class="compression-audit"><summary>${compression.deleted ? "已删除块" : "压缩块"} · 原始来源可恢复</summary><pre>${escape(JSON.stringify(compression.source || [], null, 2))}</pre>${message.id ? `<button type="button" class="text-button" data-action="loop-restore-compression" data-context-id="${escape(item.context_id || "")}" data-message-id="${escape(message.id)}">恢复原始消息并发布新 Revision</button>` : ""}</details>` : "";
+    const compressed = compression ? `<details class="compression-audit"><summary>${compression.deleted ? "已删除块" : "压缩块"} · 原始来源可恢复</summary><pre>${escape(JSON.stringify(compression.source || [], null, 2))}</pre>${message.id && !readOnly ? `<button type="button" class="text-button" data-action="loop-restore-compression" data-context-id="${escape(item.context_id || "")}" data-message-id="${escape(message.id)}">恢复原始消息并发布新 Revision</button>` : ""}</details>` : "";
     return `<article class="loop-message is-${escape(itemRole)}" data-message-index="${item.index}" data-message-role="${escape(itemRole)}"><header><strong>${escape(itemRole)}</strong>${source}<span>#${item.index + 1}</span></header><pre>${escape(content(message))}</pre>${toolMeta}${compressed}</article>`;
   }
 
@@ -107,5 +108,10 @@
     return causality(state.causality);
   }
 
-  return Object.freeze({ render, renderExecutionActivity, renderCausality });
+  function renderInspection(conversation) {
+    const messages = conversation?.messages || [];
+    return `<section class="context-conversation"><p>Context 检查 · 固定 Revision · ${escape(conversation?.total || 0)} 条消息</p><div class="loop-transcript">${messages.map(item => messageCard(item, true)).join("") || "暂无消息"}</div>${conversation?.has_more ? `<button data-patrol-context-older>加载更早消息</button>` : ""}</section>`;
+  }
+
+  return Object.freeze({ render, renderExecutionActivity, renderCausality, renderInspection });
 });

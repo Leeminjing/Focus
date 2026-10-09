@@ -3,6 +3,7 @@ r"""本文件对外提供 Loop Mission contract 的迁移、有效投影、冻�
 输入为旧 Goal revision、新 Mission contract 请求及隔离 PostgreSQL；输出为 schema 往返、无损 legacy
 边界、稳定完成检查标识与用户修订约束的断言。具体工作流为先验证 additive 迁移，再覆盖纯领域转换与
 Repository/Service 事务行为。示例：`pytest backend/tests/test_loop_mission_contract.py`。
+迁移验证覆盖新增输入来源列；旧非空 Mission 的身份与来源保持。
 """
 
 import os
@@ -63,6 +64,7 @@ def test_mission_contract_migration_is_additive_and_reversible(isolated_postgres
             "legacy_goal_revision_id",
             "authored_by",
             "created_at",
+            "input_sources",
         } == columns
     finally:
         command.upgrade(config, "head")

@@ -12,6 +12,7 @@ resolution、不触碰 graph；completed/stopped/failed 委托 TerminalLifecycle
 完成动作复用共享只读资格政策并在当前权威事务重读具体验证及来源。
 完成 Worker 受理前在当前控制事务复检同源语义输入，等价已验证输入零新 Worker；语义合同与审计来源保存于现有 scope。
 延迟失败只先读取决策归属，再依 Loop、Round、Decision 顺序加锁并刷新；已落定的决策原样返回，迟到回调不覆盖暂停终态。
+workspace_input 只由 apply_user_inputs 精确处置，有来源的 Mission 修订独立提交并重新冻结；workspace 完成落点保留绑定并 idle，旧 Context Loop 仍走终态。Savepoint 回退后显式刷新控制实体，避免异步隐式读取已失效状态。
 """
 
 from __future__ import annotations
@@ -250,6 +251,8 @@ class LoopKernel:
             async with session.begin_nested():
                 action_ids, directive_ids = await self._apply_actions(session, loop, round_row, grant, decision, intent)
         except (KernelRejected, ValueError, LookupError) as exc:
+            for entity in (loop, round_row, grant, decision):
+                await session.refresh(entity)
             decision.status = "rejected"
             decision.rejection = {"reason": str(exc)}
             action_ids, directive_ids = await self._record_rejected_actions(session, loop, round_row, grant, decision, intent, str(exc))
@@ -266,11 +269,15 @@ class LoopKernel:
         round_row.decision_id = decision.decision_id
         desired_status = self._round_status(intent)
         round_row.status = "running" if desired_status == "settled" else desired_status
+        waiting_reason = loop.waiting_reason
         if desired_status == "settled":
             from backend.app.desktop.agent_loop.rounds import settle_round
 
             await settle_round(session, loop, round_row)
-        loop.health = self._health(intent)
+        if loop.status == "running":
+            loop.health = self._health(intent)
+        elif loop.status == "waiting_user":
+            loop.waiting_reason = waiting_reason
         loop.revision += 1
         from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
 
@@ -290,7 +297,7 @@ class LoopKernel:
             ).all()
         )
         for intent in intents:
-            if intent.intent_kind == "direct_message":
+            if intent.intent_kind in {"direct_message", "workspace_input"}:
                 continue
             intent.status = "addressed"
             if intent.delivery_state == "observed":
@@ -345,6 +352,9 @@ class LoopKernel:
         return None
 
     async def _validate_runtime(self, session, loop, round_row, grant, intent) -> None:
+        applications = [action for action in intent.actions if action.action == "apply_user_inputs"]
+        if len(applications) > 1 or (any(action.changes for action in applications) and len(intent.actions) != 1):
+            raise KernelRejected("Mission 修订须独立提交并重新冻结后续执行依据")
         message_targets = []
         for action in intent.actions:
             if action.action == "deliver_user_message":
@@ -352,7 +362,7 @@ class LoopKernel:
                     message_targets.append(await self._user_messages.validate(session, loop, round_row, grant, action.intent_id))
                 except UserMessageDeliveryRejected as exc:
                     raise KernelRejected(str(exc)) from exc
-        wait_actions = tuple(action for action in intent.actions if action.action == "wait_for_user")
+        wait_actions = tuple(action for action in intent.actions if action.action == "wait_for_user" and action.cause != "awaiting_input")
         if wait_actions:
             facts = await self._clarification_facts.read(session, loop, grant, round_row)
             for action in wait_actions:
@@ -631,6 +641,8 @@ class LoopKernel:
     async def _apply_actions(self, session, loop, round_row, grant, decision, intent):
         action_ids: list[str] = []
         directive_ids: list[str] = []
+        deferred_inputs = tuple(item.intent_id for action in intent.actions if action.action == "apply_user_inputs"
+            for item in action.inputs if item.disposition == "deferred")
         for position, intent_action in enumerate(intent.actions):
             action_id = uuid.uuid4().hex
             action = LoopAction(action_id=action_id, decision_id=decision.decision_id, loop_id=loop.loop_id, position=position, action_type=intent_action.action, payload=intent_action.model_dump(mode="json"), status="committed")
@@ -644,6 +656,9 @@ class LoopKernel:
                 await self._directive_lifecycle.register(session, directive)
                 await self._directive_lifecycle.transition(session, directive.directive_id, "authorized")
                 directive_ids.append(directive.directive_id)
+            elif intent_action.action == "apply_user_inputs":
+                from backend.app.desktop.agent_loop.input_application import UserInputApplication
+                action.result = await UserInputApplication().apply(session, loop, round_row, intent_action)
             elif intent_action.action == "continue_context":
                 directive, provenance = self._directives.create(
                     loop_id=loop.loop_id, round_id=round_row.round_id, decision_id=decision.decision_id,
@@ -703,10 +718,13 @@ class LoopKernel:
                     scope['completion_admission_input'] = admission['input']
                 session.add(LoopWorkerRequest(worker_request_id=uuid.uuid4().hex, loop_id=loop.loop_id, round_id=round_row.round_id, kind=intent_action.action.removeprefix("request_"), scope=scope))
             elif intent_action.action == "wait_for_user":
+                if intent_action.cause == "awaiting_input":
+                    await self._park_workspace(session, loop, deferred_inputs=deferred_inputs)
+                    continue
                 await LoopWaitRequestService().open(
                     session,
                     loop,
-                    LoopWaitRequestFactory.clarification(intent_action.reason, {
+                    LoopWaitRequestFactory.clarification("\n".join(filter(None, (intent_action.reason, intent_action.required_input))), {
                         "decision_id": decision.decision_id,
                         "cause": intent_action.cause,
                         "required_input": intent_action.required_input,
@@ -717,10 +735,16 @@ class LoopKernel:
                     correlation_id=decision.decision_id,
                     round_id=round_row.round_id,
                 )
+                if loop.interaction_mode == "workspace_patrol" and intent_action.cause == "missing_input":
+                    await self._park_workspace(session, loop, required=False, deferred_inputs=deferred_inputs)
             elif intent_action.action == "stop_loop":
                 await self._terminal.finalize(session, loop, "stopped", "patrol_stop_loop")
             elif intent_action.action == "request_completion":
                 final_result = await self._completion_result(session, loop, intent_action)
+                if loop.interaction_mode == "workspace_patrol":
+                    loop.final_result = final_result
+                    await self._park_workspace(session, loop)
+                    continue
                 await self._terminal.finalize(
                     session,
                     loop,
@@ -729,6 +753,34 @@ class LoopKernel:
                     final_result=final_result,
                 )
         return action_ids, directive_ids
+
+    @staticmethod
+    async def _park_workspace(session, loop, *, required=True, deferred_inputs=()):
+        if loop.interaction_mode != "workspace_patrol":
+            raise KernelRejected("等待新输入只适用于工作区 Patrol")
+        await session.flush()
+        from backend.app.desktop.agent_loop.patrol_inputs import workspace_input_scope
+        pending = await session.scalar(select(LoopUserIntent.intent_id).where(workspace_input_scope(loop),
+            LoopUserIntent.intent_id.not_in(deferred_inputs),
+            LoopUserIntent.status.in_(("pending", "observed"))).limit(1))
+        active = await session.scalar(select(DesktopRun.run_id).where(DesktopRun.loop_id == loop.loop_id,
+            DesktopRun.status.in_(("pending", "running"))).limit(1))
+        gate = await session.scalar(select(LoopPendingDecision.pending_decision_id).where(
+            LoopPendingDecision.loop_id == loop.loop_id, LoopPendingDecision.status == "pending").limit(1))
+        worker = await session.scalar(select(LoopWorkerRequest.worker_request_id).where(
+            LoopWorkerRequest.loop_id == loop.loop_id, LoopWorkerRequest.status.in_(("pending", "running"))).limit(1))
+        directive = await session.scalar(select(LoopDirective.directive_id).where(
+            LoopDirective.loop_id == loop.loop_id, LoopDirective.lifecycle_state.in_(("authorized", "delivering", "delivered", "run_started"))).limit(1))
+        from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest
+        safety_wait = await session.scalar(select(LoopWaitRequest.request_id).where(LoopWaitRequest.loop_id == loop.loop_id,
+            LoopWaitRequest.status.in_(("open", "resolving")),
+            func.coalesce(LoopWaitRequest.scope["information_only"].astext, "false") != "true").limit(1))
+        if any((pending, active, gate, worker, directive, safety_wait)):
+            if not required:
+                return False
+            raise KernelRejected("仍有待处理输入、Run、请求或执行后果，不能等待新输入")
+        loop.status, loop.health, loop.waiting_reason = "waiting_user", "idle", "awaiting_input"
+        return True
 
     async def _record_rejected_actions(self, session, loop, round_row, grant, decision, intent, reason: str):
         action_ids: list[str] = []

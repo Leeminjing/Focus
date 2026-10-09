@@ -2,7 +2,7 @@
 
 输入为唯一前序、冻结领域来源、Mission 与受校验 semantic patch；输出为完整后继及 Round/Run 贡献。
 具体工作流为复用 candidate_contract 统一准入，保留全部旧事项，替代项保留为不再适用，再按执行/观察归属组织贡献。
-它不访问实时世界、数据库、模型或执行权威。示例：consolidator.apply(inputs, candidate, mission)。
+缺省目标不创建伪造待办。它不访问实时世界、数据库、模型或执行权威。示例：consolidator.apply(inputs, candidate, mission)。
 """
 
 from __future__ import annotations
@@ -24,10 +24,10 @@ def initial_progress(
     items = [
         TaskItem(
             item_id=f"mission:{revision}:outcome",
-            description=str(mission.get("outcome") or "任务目标待确认"),
+            description=mission["outcome"],
             state="not_started",
         )
-    ]
+    ] if mission.get("outcome") else []
     for check in mission.get("completion_checks") or ():
         items.append(
             TaskItem(
@@ -149,11 +149,6 @@ class TaskProgressConsolidator:
                 ):
                     items[item_id] = old.model_copy(update={"state": "not_applicable"})
             item_id = f"mission:{revision}:outcome"
-            items.setdefault(
-                item_id,
-                TaskItem(
-                    item_id=item_id,
-                    description=str(mission.get("outcome") or "任务目标待确认"),
-                    state="not_started",
-                ),
-            )
+            if mission.get("outcome"):
+                items.setdefault(item_id, TaskItem(item_id=item_id,
+                    description=mission["outcome"], state="not_started"))

@@ -4,6 +4,7 @@
 具体工作流为补录遗留终态来源与直接用户修订，按稳定 key 分页读取独立领域结果并排除吸收 receipts；
 容量不足明确 blocker，不使用近期 Run 切片、Fact 表或展示 journal。
 示例：await reader.capture(session, loop, boundary="snapshot-id")。
+workspace 输入携带真实类型，显式后继复用同工作区原始来源和吸收 receipts，不改写 predecessor 历史。
 """
 
 from __future__ import annotations
@@ -35,6 +36,8 @@ class TaskDeltaSourceReader:
     ) -> TaskDeltaManifest:
         await self._legacy_runs(session, loop.loop_id)
         await self._user_revisions(session, loop.loop_id)
+        prior_loops = select(AgentLoop.loop_id).where(AgentLoop.workspace_id == loop.workspace_id,
+            AgentLoop.interaction_mode == "workspace_patrol") if loop.interaction_mode == "workspace_patrol" else (loop.loop_id,)
         absorbed = exists(
             select(LoopProgressReceipt.source_key).where(
                 LoopProgressReceipt.loop_id == loop.loop_id,
@@ -46,8 +49,8 @@ class TaskDeltaSourceReader:
             .outerjoin(DesktopRun, DesktopRun.run_id == DesktopDomainResult.run_id)
             .where(
                 or_(
-                    DesktopDomainResult.loop_id == loop.loop_id,
-                    DesktopRun.loop_id == loop.loop_id,
+                    DesktopDomainResult.loop_id.in_(prior_loops),
+                    DesktopRun.loop_id.in_(prior_loops),
                 ),
                 ~absorbed,
             )
@@ -132,6 +135,8 @@ class TaskDeltaSourceReader:
             cursor = runs[-1].run_id
 
     async def _user_revisions(self, session: AsyncSession, loop_id: str) -> None:
+        loop = await session.get(AgentLoop, loop_id)
+        from backend.app.desktop.agent_loop.patrol_inputs import workspace_input_scope
         recorded = exists(
             select(DesktopDomainResult.result_key).where(
                 DesktopDomainResult.kind == "user_revision",
@@ -142,7 +147,7 @@ class TaskDeltaSourceReader:
             (
                 await session.scalars(
                     select(LoopUserIntent).where(
-                        LoopUserIntent.loop_id == loop_id, ~recorded
+                        workspace_input_scope(loop) if loop.interaction_mode == "workspace_patrol" else LoopUserIntent.loop_id == loop_id, ~recorded
                     )
                 )
             ).all()
@@ -157,6 +162,8 @@ class TaskDeltaSourceReader:
                 payload={
                     "scope": intent.scope,
                     "instruction": intent.content,
+                    "input_type": (intent.request_payload.get("request") or {}).get("input_type"),
+                    "intent_kind": intent.intent_kind,
                     "mission_revision": intent.goal_revision,
                 },
             )

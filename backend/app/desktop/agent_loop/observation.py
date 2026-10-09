@@ -6,6 +6,7 @@ r"""本文件对外提供 LoopObservationBuilder 与 observation_hash。
 示例：`envelope = builder.build(**facts)`。
 完成准入事实保持完整；历史 envelope 缺少此字段时哈希仍按原字段集合计算，不改写冻结身份。
 具体完成资格目录也保持完整，缺省字段从历史哈希排除，与新验证请求准入分开。
+工作区原始输入、Mission 和待补充请求保持精确冻结，不按展示长度截断；历史缺省模式和空请求从原 hash 字段集排除。
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ class LoopObservationBuilder:
         self._max_text = max_text
 
     def build(self, **facts: Any) -> LoopObservationEnvelope:
-        exact = {key: value for key, value in facts.items() if key in {"previous_task_progress", "task_delta", "committed_lineage", "decision_inputs_ref", "portfolio_frontier", "base_entity_revisions", "worker_results", "user_intents", "completion_admission", "completion_eligibility"}}
+        exact = {key: value for key, value in facts.items() if key in {"previous_task_progress", "task_delta", "committed_lineage", "decision_inputs_ref", "portfolio_frontier", "base_entity_revisions", "worker_results", "user_intents", "completion_admission", "completion_eligibility", "mission", "information_requests"}}
         sanitized = {**self._sanitize({key: value for key, value in facts.items() if key not in exact}), **exact}
         return LoopObservationEnvelope.model_validate(sanitized)
 
@@ -43,6 +44,10 @@ class LoopObservationBuilder:
 
 def observation_hash(envelope: LoopObservationEnvelope) -> str:
     document = envelope.model_dump(mode="json")
+    if document.get("interaction_mode") == "context_loop":
+        document.pop("interaction_mode", None)
+    if not document.get("information_requests"):
+        document.pop("information_requests", None)
     if document.get('completion_admission') is None:
         document.pop('completion_admission', None)
     if document.get('completion_eligibility') is None:

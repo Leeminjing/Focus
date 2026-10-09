@@ -3,6 +3,7 @@
 输入为合成的 78 来源冻结合同和合法/非法模型候选；输出为引用、schema、诊断及反馈边界断言。
 具体工作流为构造真实来源形状，注入重复、越界、历史引用、完成证据或遗漏并比较合法对照；核对多错误安全投影，不读取事故正文或调用模型。
 示例：python -m pytest backend/tests/test_task_progress_candidate_contract.py -q。
+工作区 received/deferred/discussion 与已提交 decision 的状态效力分别验证。
 """
 
 import json
@@ -49,6 +50,27 @@ def covered_candidate(inputs):
         SourceAssessment(source_key=source.source_key, disposition="unknown", explanation="待验证")
         for source in inputs.task_delta.sources
     ))
+
+
+@pytest.mark.parametrize("disposition", [None, "deferred", "discussion", "decision"])
+def test_workspace_input_effect_is_required_before_changing_work(disposition):
+    inputs = frozen_inputs()
+    payload = {"intent_kind": "workspace_input", "instruction": "做本地保存"}
+    if disposition:
+        payload["disposition"] = disposition
+    version = canonical_hash(payload)
+    source = TaskSource(source_key=canonical_hash(["user_revision", "input", version]), kind="user_revision",
+        source_id="input", version=version, payload=payload)
+    manifest = inputs.task_delta.model_copy(update={"sources": (source,)})
+    inputs = inputs.model_copy(update={"task_delta": manifest, "manifest_hash": canonical_hash(manifest)})
+    candidate = ProgressCandidate(changes=(TaskItem(item_id="new-work", description="本地保存", state="not_started", evidence_keys=(source.source_key,)),))
+    if disposition == "decision":
+        assert validate_candidate(inputs, candidate) == candidate
+    else:
+        with pytest.raises(CandidateValidationError, match="workspace_input_not_effective"):
+            validate_candidate(inputs, candidate)
+        pending = candidate.model_copy(update={"changes": (candidate.changes[0].model_copy(update={"state": "unknown"}),)})
+        assert validate_candidate(inputs, pending) == pending
 
 
 def test_complete_real_shaped_source_fixture_is_accepted_without_mutation():

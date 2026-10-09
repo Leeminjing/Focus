@@ -4,6 +4,7 @@ r"""本文件对外提供 FrozenMissionSectionCatalog、MissionSectionEntry 与 
 及完成检查的类型化证据条目，或精确的 revision/section/hash 不一致错误。具体工作流为使用 Mission 投影中
 已计算的分区哈希编制目录，再按完整引用解析，不把 Mission 内容伪装为 Context 消息或完成证据。
 示例：`entry = FrozenMissionSectionCatalog.from_mission("loop-1", mission).resolve(ref)`。
+缺省 outcome/checks 不创建目录条目；空目录是有效输入，但不能用作已完成证据。
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ class FrozenMissionSectionCatalog(BaseModel):
     catalog_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     loop_id: str = Field(min_length=1)
     mission_revision: int = Field(gt=0)
-    entries: tuple[MissionSectionEntry, ...] = Field(min_length=1)
+    entries: tuple[MissionSectionEntry, ...] = ()
 
     @model_validator(mode="after")
     def require_frozen_identity(self) -> FrozenMissionSectionCatalog:
@@ -57,7 +58,7 @@ class FrozenMissionSectionCatalog(BaseModel):
 
     @classmethod
     def from_mission(cls, loop_id: str, mission: EffectiveMission) -> FrozenMissionSectionCatalog:
-        sections: list[tuple[str, str, Any]] = [("outcome", "outcome", mission.outcome)]
+        sections: list[tuple[str, str, Any]] = [("outcome", "outcome", mission.outcome)] if mission.outcome else []
         sections.extend(
             ("boundary", group, mission.boundaries[group])
             for group in ("in_scope", "required_invariants", "prohibited_actions", "legacy_text")

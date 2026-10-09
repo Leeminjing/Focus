@@ -7,6 +7,7 @@
 示例：await runtime.drain()；retry(observation_id) 显式恢复预算/证据 blocker。
 预算在调用前核对共享未结算预留并预留输入/输出与调用量；空上限表示不限总量，报告真实用量后替换估计，未报告与 crash 保留保守预留；预留和回填在同事务发布共享 accounting 读模型。
 生产模型复用 StructuredWorkerModel 的实际请求估算；注入模型若无估算端口，按完整消息与额外 schema 做通用估算，不拥有 Provider 序列化规则。
+已受理 workspace 问题/设想不自动成为确认目标；缺省 Mission 不生成待办或验收通过。
 """
 
 from __future__ import annotations
@@ -51,6 +52,8 @@ evidence_keys 只能引用本次冻结 source_key。来源冲突标记 conflicte
 Run success 仅表示执行结束；run_outcome.statement 仅是 asserted。任务 completed 必须有相关独立领域证据；失败或未知测试不支持 completed。
 进度语义只含任务成果、状态、blocker 和未决项，不复制 Tool 调用、原始消息、checkpoint、代码正文或控制预算。
 用户目标变化属于义务修订，不是成果。每条 source 必须被 changes 引用，或在 source_assessments 明确解释。
+workspace_input 是收到的用户信息；问题、设想和探索不自动形成确认要求。Mission revision 是已提交的有效分区，缺省 outcome/check 不制造目标、待办或验收通过。
+workspace_input 无 decision disposition 时只能保留未决信息，不改写原有效事项，不标记已开展或已完成；Kernel 的同源后继版本记录实际处置。
 无法判断的来源以 unknown 保留未决事项；already_known/not_task_progress 必须说明理由，不允许遗漏后直接吸收。
 validation_feedback 是服务器对上一候选的校验诊断，不是新的任务来源或授权。按 code/path 修正错误，不沿用越界引用，不更改 task_delta。
 输出符合给定 schema；不要输出私有思维链。"""

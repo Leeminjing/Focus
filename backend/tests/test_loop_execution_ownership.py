@@ -4,6 +4,7 @@ r"""本文件对外提供 Loop Run 单一 durable 启动者的竞争与授权回
 直接用户消息夹具先经真实受理、冻结和 Patrol/Kernel 决策，启动前仍为 observed，成功启动后才绑定 Run。
 调度恢复在独立运行时数据库验证执行前安全重排保留计划，执行后恢复必须中断，不用新消息用例替代该原有合同。
 具体工作流为模拟通用 worker 竞争同一调度行，使用真实 fencing 与 Loop 启动边界，并在 Run 结算前查询持久状态。示例：`pytest backend/tests/test_loop_execution_ownership.py -q`。
+竞争启动用例使用 runtime 隔离库，避免其它测试的真实 accepted 调度行被第二个全局 worker 领取。
 """
 
 from __future__ import annotations
@@ -135,7 +136,7 @@ async def _admit_run(sessions, fixture: dict, directive_id: str) -> str:
     return run_id
 
 
-def test_competing_durable_workers_start_one_loop_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_competing_durable_workers_start_one_loop_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime_postgres_database) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
