@@ -108,3 +108,52 @@ CUA 实际检查空选择页 → 点击选择 → 精确路径确认，独立页
 Implementation checklist：原生目录来源、选择与登记分离、取消/异步收口、删除失效路径、定向测试、实际页面截图均完成。无未解决 P0/P1/P2；普通会话检查器和原输入机制保持其既有职责。
 
 final result: passed
+
+---
+
+# Patrol 关系工作台：2026-10-10 本轮视觉核对
+
+本节对应 `refactor-patrol-graph-workbench`。保留上文历史记录；本轮只评价新增关系工作台，既有原生 Acrylic 运行环境限制单列在实施记录中。
+
+## 比较证据
+
+源图：`openspec/changes/refactor-patrol-graph-workbench/references/target-workbench.png`，1748×904 px。
+
+生产页面实际截图：`openspec/changes/refactor-patrol-graph-workbench/evidence/after/reference-1748.png`，1750×905 px。请求视口1748×904，Windows/Electron尺寸取整为1750×905 CSS px，JS devicePixelRatio=1；capturePage 原始2625×1358，使用 Electron nativeImage.resize 还原CSS密度。两个完整图像已在同一次工具结果中以 original 尺寸一起打开比较。
+
+状态：详情展开、选中桌宠交互、进度/事实/来源面板可见；实际32节点属于隔离fixture，数据量和来源数不同于参考，未将9/14、阶段分区或示例进度写入生产。
+
+| 参考 | 生产页面截图（隔离数据） |
+|---|---|
+| ![目标](C:/Users/brubing/Desktop/ag-project/focus/openspec/changes/refactor-patrol-graph-workbench/references/target-workbench.png) | ![实现](C:/Users/brubing/Desktop/ag-project/focus/openspec/changes/refactor-patrol-graph-workbench/evidence/after/reference-1748.png) |
+
+几何：实际左栏231px、右栏280px、中央1159px；图区域718px高、输入89px高。参考左栏约226px、右栏约276px、输入约79px。顶部保留原生56px安全区及退出/工作控制，输入保留真实回执和历史，因此比参考略高。这是已确认业务/原生约束，不压小正文来完全贴合像素。
+
+## 比较历史与修正
+
+1. [P1，已修复] 原四卡布局把关系图限制在左上。改为中央连续图、两侧浮动读面及底部输入；右侧所选工作线接入原ContextInspector。
+2. [P2，已修复] 第一版输入框过高、重点卡聚集，单节点靠左。收紧输入区、复用既有脑图标；重点卡在真实一跳范围内按几何间距筛选，坐标不随选择重排；单节点居中。
+3. [P2，已修复] 中等窗口点节点没有切到所选工作线面，进度尾部和观察摘要挤压。900–1199px选择时显式切换右面板；增加进度占比、列表独立滚动、固定页脚，缩减观察重复文案。
+4. [P1，已修复] 128节点下不相关事实也重新对账图/进度，导致秒级停顿。使用原投影结构共享判断更新区域；新增事实修订不触碰图DOM/进度焦点断言。修复后的同一压力用例见 performance-comparison.json。
+
+修复后证据为上表最新截图，以及 after/ 下 empty、error、responsive-1440-1、responsive-900-1、responsive-390-1、responsive-1280-2、forced-colors、prefers-reduced-motion、prefers-reduced-transparency、global-approval 截图。控制台捕获无Uncaught错误。
+
+## 五类视觉表面
+
+- 字体与层级：沿用系统Segoe UI / 微软雅黑；面板标题14px、正文12–14px、重点节点17–20px、进度数44px，短元数据10px。已在原尺寸图中逐项核对左侧进度、选中节点、右侧来源和底部输入；没有用整页缩放掩盖比例问题。
+- 间距与排版：中央大画布、轻量点标、最多5张重点卡、两侧独立滚动、细边和双层高光均落地。元数据更长时保留滚动与完整检查入口。图位置由真实拓扑决定，不硬编码成示例的每一个坐标。
+- 颜色与材质：灰白连续底、低遮盖白色玻璃、灰蓝普通边/强调边、柔和阴影。去掉原白色大图卡与点阵；没有窗光图片或生成壁纸。普通浏览器回退已核对；原生后景透出不在本次视觉通过结论内。
+- 图像/资产：参考主体为数据图与控件，没有新增装饰性位图。SVG用于真实可交互来源边，图标复用既有离线Lucide资产；未把界面烘焙成图片。
+- 文案/内容：保留真实“已受理”“当前Live”“只读检查”及版本/权限说明。缺少权威阶段字段时不画假阶段；空数据不画虚构节点、百分比或运行状态。
+
+局部核对使用同组原尺寸图中进度区域、选中节点和来源区域、composer区域逐项查看（源图约x4–231/y35–585、x783–987/y223–325、x1431–1708/y500–874、x269–1392/y788–868；实现对应区域见 geometry.json）。1×图已可清晰读取字号、来源版本与控件，不另做放大插值图作为“更清晰”证据。
+
+## 状态与范围
+
+真实指针/键盘验证关系线命中、重叠版本选择、拖拽、来源检查、面板切换和输入。390/900/1440/约1748、200%缩放下持久输入可见，无页面横向溢出。全局审批保留可达层级。
+
+渲染层没有剩余P0/P1/P2视觉问题。P3差异为系统字体光学细节、原生安全区和业务文字导致的少量间距差异；没有伪造像素级一致或还原度百分比。
+
+尚未完成的整体验收：Windows Acrylic 两个受控后景未出现预期变化，且未修改的基线在同一环境同样失败；真实Windows输入法候选窗未覆盖。OpenSpec 5.1/5.2 保留未勾选，不据此宣称整个change验收完成。
+
+final result: passed

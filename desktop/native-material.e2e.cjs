@@ -1,5 +1,5 @@
 /* 本文件对外提供系统材质隔离验收入口。输入为 FOCUS_NATIVE_EVIDENCE 输出目录；输出为原生窗口截图和 JSON 结果。
- * 工作流为独立 userData 加载生产六页，在两个受控后景前捕获本测试窗口，记录未绑定工作区的参考比例，检查系统合成变化、原生最大化/还原和主题监听清理。
+ * 工作流为独立 userData 加载生产六页，在两个受控后景前将测试窗口置顶并聚焦后捕获，记录焦点与页面透明层，检查系统合成变化、原生最大化/还原和主题监听清理。
  * 示例：node desktop/native-material.e2e.cjs。网络由原 fixture 提供；只捕获本测试窗口，不采集用户桌面。
  */
 const fs = require("node:fs");
@@ -31,7 +31,10 @@ if (!process.versions.electron) {
     await win.loadFile(path.join(__dirname, "index.html"));
     await win.webContents.executeJavaScript("document.documentElement.dataset.nativeMaterial='acrylic'");
     win.show(); win.focus(); await sleep(1400);
+    const captures = [];
     const capture = async name => {
+      win.moveTop(); win.focus(); await sleep(200);
+      captures.push({name, focused:win.isFocused(), layers:await win.webContents.executeJavaScript(`['html','body','.app-frame','#app'].map(selector=>({selector,background:getComputedStyle(document.querySelector(selector)).backgroundColor}))`)});
       const bounds = win.getBounds();
       const left = Math.max(area.x, bounds.x), top = Math.max(area.y, bounds.y);
       const r = screen.dipToScreenRect(win, { x: left, y: top, width: Math.min(area.x + area.width, bounds.x + bounds.width) - left, height: Math.min(area.y + area.height, bounds.y + bounds.height) - top });
@@ -88,7 +91,7 @@ if (!process.versions.electron) {
     const theme = { prefersReducedTransparency: nativeTheme.prefersReducedTransparency, highContrast: nativeTheme.shouldUseHighContrastColors };
     win.destroy(); behind.destroy();
     assert.equal(nativeTheme.listenerCount("updated"), listeners);
-    const result = { windows:os.release(), electron:process.versions.electron, meanDifference, nativeTransparencyObserved:meanDifference>2, theme, normal, restored:true, minimized:true, zoom:2, listenerCleanup:true, fixture:true };
+    const result = { windows:os.release(), electron:process.versions.electron, meanDifference, nativeTransparencyObserved:meanDifference>2, captures, theme, normal, restored:true, minimized:true, zoom:2, listenerCleanup:true, fixture:true };
     fs.writeFileSync(path.join(output,"report.json"), JSON.stringify(result,null,2));
     console.log(JSON.stringify(result));
     assert.ok(meanDifference>2, "Native transparency has not been visually confirmed");

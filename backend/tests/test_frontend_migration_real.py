@@ -1,6 +1,6 @@
 """本文件对外提供前端真实 Patrol 链路与截图的隔离验收。
 
-输入为独立 PostgreSQL、临时目录、生产 Bootstrap 和 Electron；输出为四类真实 HTTP 输入、SSE/冻结检查、暂停保持及零虚假 Run 断言。
+输入为独立 PostgreSQL、临时目录、生产 Bootstrap 和 Electron；输出为四类真实 HTTP 输入、SSE/冻结检查、暂停保持、选线后仍向工作区受理及零虚假 Run 断言。
 具体工作流为启动仅本用例的服务，UI 首次受理后保存实际 checkpoint，生产冻结后由 UI 检查；Provider 不参与本测试。
 示例：python -m pytest backend/tests/test_frontend_migration_real.py -q。
 """
@@ -123,7 +123,7 @@ def test_real_patrol_frontend_intake_frozen_inspection_and_pause(tmp_path):
                     assert loop.status == "paused"
                     observation = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == round_id))
                     assert observation.observation_id in complete["frozen"]
-                    assert await session.scalar(select(func.count()).select_from(LoopUserIntent).where(LoopUserIntent.loop_id == loop_id)) == 5
+                    assert await session.scalar(select(func.count()).select_from(LoopUserIntent).where(LoopUserIntent.loop_id == loop_id)) == 6
                     assert await session.scalar(select(func.count()).select_from(DesktopRun).where(DesktopRun.loop_id == loop_id)) == 0
                 assert len(list(evidence.glob("*.png"))) == 7
                 output = repo / ".tmp-focus-frontend-evidence"
