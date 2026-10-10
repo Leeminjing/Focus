@@ -1,12 +1,12 @@
-/* 本文件对外提供六项导航、品牌、主工作区与检查器布局。输入为宿主语义 DOM、用户拖拽宽度与折叠状态；输出为单层玻璃导航、清晰阅读面与可缩放工作面。
- * 具体工作流为统一宽度 token 控制栏位，保留导航恢复按钮与窄屏检查器入口。示例：.app-shell.is-nav-collapsed。
+/* 本文件对外提供六项导航、品牌、主工作区与检查器布局。输入为宿主语义 DOM、用户拖拽宽度与折叠状态；输出为内嵌双轮廓玻璃导航、清晰阅读面与可缩放工作面。
+ * 具体工作流为统一宽度 token 控制栏位，默认侧栏随窗口比例伸缩，保留用户拖拽、导航恢复按钮与窄屏检查器入口。示例：.app-shell.is-nav-collapsed。
  */
 .app-header {
   display: grid;
   position: absolute;
   z-index: 32;
   top: calc(var(--shell-header-height) + 16px);
-  left: 16px;
+  left: 24px;
   width: 200px;
   height: 48px;
   grid-template-columns: auto minmax(0, 1fr);
@@ -20,9 +20,9 @@
 }
 
 .app-header button { -webkit-app-region: no-drag; }
+.app-frame::after { content: ""; position: fixed; z-index: 33; inset: 2px; border: 1px solid rgb(255 255 255 / 48%); border-radius: 10px; box-shadow: inset 0 1px 2px #ffffff70; pointer-events: none; }
 .app-frame::before { content: ""; position: absolute; inset: 0 0 auto; height: var(--shell-header-height); -webkit-app-region: drag; }
 
-/* 导航折叠态：宽度 0 且隐藏内容，中间工作区自动占用释放空间。 */
 .app-shell.is-nav-collapsed .app-navigation {
   overflow: hidden;
   border-right: 0;
@@ -32,7 +32,6 @@
   visibility: hidden;
 }
 
-/* 左上角 logo：折叠/展开导航触发器。保持无痕——无 :hover 背景，仅以 cursor 与键盘焦点提示可点击。 */
 .app-mark {
   display: grid;
   width: 40px;
@@ -59,7 +58,7 @@
   min-width: 0;
   min-height: 0;
   grid-template-rows: minmax(0, 1fr);
-  padding-top: var(--shell-header-height);
+  padding: var(--shell-header-height) 8px 12px;
   overflow: hidden;
   background: transparent;
 }
@@ -81,10 +80,10 @@
 .shell-task-context span { color: var(--text-secondary); font-size: 11px; }
 .global-status { font-size: 11px; color: var(--text-secondary); overflow-wrap: anywhere; }
 .app-header > .quiet-button { display: none; }
-.shell-brand { font-size: 25px; font-weight: 650; letter-spacing: -1.2px; }
+.shell-brand { font-size: 28px; font-weight: 650; letter-spacing: -1.2px; }
 .shell-brand span { color: var(--accent-primary); }
 .app-frame:has(.is-nav-collapsed) .shell-brand { display: none; }
-.shell-workspace-button { text-align: left; margin-bottom: 24px; display: grid; gap: 4px; padding: 12px; border: 1px solid var(--border-default); border-radius: 12px; background: #ffffff70; }
+.shell-workspace-button { text-align: left; margin-bottom: 24px; display: grid; gap: 4px; padding: 12px; border: 1px solid var(--material-rim); border-radius: 14px; background: linear-gradient(135deg, #ffffff50, #ffffff18); box-shadow: inset 0 1px 1px white; }
 .shell-workspace-button span { color: var(--text-secondary); font-size: 11px; }
 
 #app {
@@ -96,12 +95,12 @@
 }
 
 .app-shell {
+  position: relative;
   display: flex;
   flex-direction: row;
   width: 100%;
   height: 100%;
-  /* 三栏尺寸的唯一来源：默认值可用媒体查询覆盖，用户拖拽用内联自定义属性覆盖。 */
-  --shell-nav-width: 228px;
+  --shell-nav-width: clamp(228px, 18.4vw, 280px);
   --inspector-width: clamp(280px, 23vw, 360px);
   min-width: 0;
   min-height: 0;
@@ -109,8 +108,6 @@
   background: transparent;
 }
 
-/* 三栏拖拽手柄：绝对定位到 .app-shell 上，位置由同一宽度自定义属性推导，
-   不参与 flex 流（.app-shell 仍是导航/工作区/检查器三个直接区域）。 */
 .shell-resizer {
   position: absolute;
   z-index: 30;
@@ -130,6 +127,7 @@
 .shell-resizer[aria-hidden="true"] { display: none; }
 
 .app-navigation {
+  position: relative;
   display: flex;
   flex: 0 1 var(--shell-nav-width);
   flex-direction: column;
@@ -138,9 +136,8 @@
   max-width: var(--shell-nav-max-width);
   gap: var(--space-1);
   padding: 86px 16px 16px;
-  border-right: 1px solid var(--border-subtle);
-  border-radius: 24px;
-  box-shadow: inset -1px 0 1px var(--material-light), inset 0 1px 1px white;
+  border: 1px solid var(--material-rim);
+  border-radius: 26px;
 }
 
 .app-nav-item {
@@ -161,9 +158,9 @@
 }
 
 .app-nav-item:hover { color: var(--text-primary); background: var(--surface-subtle); }
-.app-nav-item[aria-current="page"] { color: var(--accent-primary); background: linear-gradient(115deg, #e6f3ffcf, #dae7ffc2); box-shadow: inset 0 0 0 1px white, 0 2px 12px #436da012; font-weight: 650; }
+.app-nav-item[aria-current="page"] { color: var(--accent-primary); background: linear-gradient(115deg, #ddecff66, #b7d4ff50); box-shadow: inset 0 0 0 1px white, inset 0 2px 5px #ffffffcc, inset -3px -3px 6px #ffffffd9, 0 0 0 3px #ffffff32, 0 2px 12px #436da018; font-weight: 650; }
 .app-nav-item[aria-current="page"]:hover { background: var(--surface-selected-hover); }
-.app-nav-item.app-nav-settings { margin-top: auto; gap: var(--space-2); color: var(--text-secondary); }
+.app-nav-item.app-nav-settings { margin-top: auto; border-top: 1px solid var(--material-rim); border-radius: 0; padding-top: 12px; gap: var(--space-2); color: var(--text-secondary); }
 .app-nav-item.app-nav-settings .app-nav-label { flex: 0 0 auto; }
 
 .app-workspace {
@@ -238,8 +235,12 @@
 .inspector-list .agent-chip { width: 100%; }
 .overlay-root { position: fixed; z-index: 40; inset: 0; pointer-events: none; }
 
+@media (min-width: 1101px) {
+  .app-nav-item { font-size: 16px; }
+  .shell-workspace-button { font-size: 15px; }
+}
+
 @media (max-width: 1100px) {
-  /* 只覆盖默认宽度，不改 flex 简写，避免覆盖用户拖拽的内联值。 */
   .app-shell { --shell-nav-width: var(--shell-nav-collapsed); }
   .app-header { width: calc(var(--shell-nav-collapsed) - 32px); }
   .shell-brand { display: none; }
@@ -251,7 +252,6 @@
     padding-right: max(var(--space-3), calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)));
   }
   #app { padding: var(--space-2); }
-  .app-shell { position: relative; }
   .app-navigation { padding-inline: var(--space-2); }
   .app-nav-item { justify-content: flex-start; padding-inline: var(--space-3); }
   .app-inspector {
@@ -264,11 +264,11 @@
     max-width: none;
     box-shadow: var(--shadow-overlay);
   }
-  /* 覆盖层形态下工作区↔检查器分界不可拖拽。 */
   .shell-resizer.shell-resizer-inspector { display: none; }
 }
 
 @media (max-width: 640px) {
+  .app-frame { padding-inline: 0; padding-bottom: 0; }
   .app-workspace { min-width: 0; }
   .app-navigation { flex-basis: 56px; padding-inline: 6px; }
   .app-nav-item { padding-inline: 10px; justify-content: center; }

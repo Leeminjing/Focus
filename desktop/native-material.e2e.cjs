@@ -1,5 +1,5 @@
 /* 本文件对外提供系统材质隔离验收入口。输入为 FOCUS_NATIVE_EVIDENCE 输出目录；输出为原生窗口截图和 JSON 结果。
- * 工作流为独立 userData 加载生产六页，在两个受控后景前捕获本测试窗口，检查系统合成变化、原生最大化/还原和主题监听清理。
+ * 工作流为独立 userData 加载生产六页，在两个受控后景前捕获本测试窗口，记录未绑定工作区的参考比例，检查系统合成变化、原生最大化/还原和主题监听清理。
  * 示例：node desktop/native-material.e2e.cjs。网络由原 fixture 提供；只捕获本测试窗口，不采集用户桌面。
  */
 const fs = require("node:fs");
@@ -21,7 +21,7 @@ if (!process.versions.electron) {
     assert.ok(supportsAcrylic(process.platform, os.release()));
     nativeTheme.themeSource = "light";
     const area = screen.getPrimaryDisplay().workArea;
-    const bounds = { x: area.x + 24, y: area.y + 24, width: Math.min(1280, area.width - 48), height: Math.min(880, area.height - 48) };
+    const bounds = { x: area.x + 24, y: area.y + 24, width: Math.min(1440, area.width - 48), height: Math.min(800, area.height - 48) };
     const behind = new BrowserWindow({ ...area, show: false, frame: false, webPreferences: { sandbox: true } });
     await behind.loadURL("data:text/html,<body style='margin:0;background:%233274b5'></body>");
     behind.showInactive();
@@ -58,6 +58,12 @@ if (!process.versions.electron) {
       }
     };
     await behind.webContents.executeJavaScript("document.body.style.background='linear-gradient(120deg,#c2d2e2,#f2f4f7 48%,#d3dfd2)'");
+    await sleep(500); await capture("patrol-unbound");
+    const referenceGeometry = await run(`(() => {
+      const rect = selector => { const {x,y,width,height} = document.querySelector(selector).getBoundingClientRect(); return {x,y,width,height}; };
+      return { viewport: { width:innerWidth, height:innerHeight }, navigation:rect('.app-navigation'), heading:rect('.patrol-quiet-heading'), composer:rect('[data-patrol-composer]') };
+    })()`);
+    fs.writeFileSync(path.join(output,"reference-geometry.json"), JSON.stringify(referenceGeometry,null,2));
     await run("state.patrolWorkspace={workspace_id:'native',display_name:'材质验收',path:'C:/isolated/native'}; render()");
     await until('!document.querySelector("[data-patrol-content]").disabled');
     await sleep(500); await capture("patrol-quiet");
