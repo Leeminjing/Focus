@@ -1,13 +1,13 @@
-/* 本文件对外提供六项导航、品牌、主工作区与检查器布局。输入为宿主语义 DOM、用户拖拽宽度与折叠状态；输出为单层控制玻璃导航、实色内容与可缩放工作面。
+/* 本文件对外提供六项导航、品牌、主工作区与检查器布局。输入为宿主语义 DOM、用户拖拽宽度与折叠状态；输出为单层玻璃导航、清晰阅读面与可缩放工作面。
  * 具体工作流为统一宽度 token 控制栏位，保留导航恢复按钮与窄屏检查器入口。示例：.app-shell.is-nav-collapsed。
  */
 .app-header {
   display: grid;
   position: absolute;
   z-index: 32;
-  top: 20px;
+  top: calc(var(--shell-header-height) + 16px);
   left: 16px;
-  width: 180px;
+  width: 200px;
   height: 48px;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
@@ -20,6 +20,7 @@
 }
 
 .app-header button { -webkit-app-region: no-drag; }
+.app-frame::before { content: ""; position: absolute; inset: 0 0 auto; height: var(--shell-header-height); -webkit-app-region: drag; }
 
 /* 导航折叠态：宽度 0 且隐藏内容，中间工作区自动占用释放空间。 */
 .app-shell.is-nav-collapsed .app-navigation {
@@ -58,8 +59,9 @@
   min-width: 0;
   min-height: 0;
   grid-template-rows: minmax(0, 1fr);
+  padding-top: var(--shell-header-height);
   overflow: hidden;
-  background: var(--surface-canvas);
+  background: transparent;
 }
 
 .shell-task-context {
@@ -99,12 +101,12 @@
   width: 100%;
   height: 100%;
   /* 三栏尺寸的唯一来源：默认值可用媒体查询覆盖，用户拖拽用内联自定义属性覆盖。 */
-  --shell-nav-width: 204px;
-  --inspector-width: clamp(var(--inspector-min-width), 22vw, var(--inspector-max-width));
+  --shell-nav-width: 228px;
+  --inspector-width: clamp(280px, 23vw, 360px);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--surface-canvas);
+  background: transparent;
 }
 
 /* 三栏拖拽手柄：绝对定位到 .app-shell 上，位置由同一宽度自定义属性推导，
@@ -135,16 +137,16 @@
   min-height: 0;
   max-width: var(--shell-nav-max-width);
   gap: var(--space-1);
-  padding: 102px 14px 16px;
+  padding: 86px 16px 16px;
   border-right: 1px solid var(--border-subtle);
-  border-radius: 0;
-  box-shadow: inset -1px 0 1px var(--material-light);
+  border-radius: 24px;
+  box-shadow: inset -1px 0 1px var(--material-light), inset 0 1px 1px white;
 }
 
 .app-nav-item {
   display: flex;
   justify-content: flex-start;
-  min-height: 44px;
+  min-height: 48px;
   align-items: center;
   padding: 0 var(--space-3);
   gap: 12px;
@@ -159,7 +161,7 @@
 }
 
 .app-nav-item:hover { color: var(--text-primary); background: var(--surface-subtle); }
-.app-nav-item[aria-current="page"] { color: var(--accent-primary); background: var(--surface-base); box-shadow: var(--shadow-raised); font-weight: 650; }
+.app-nav-item[aria-current="page"] { color: var(--accent-primary); background: linear-gradient(115deg, #e6f3ffcf, #dae7ffc2); box-shadow: inset 0 0 0 1px white, 0 2px 12px #436da012; font-weight: 650; }
 .app-nav-item[aria-current="page"]:hover { background: var(--surface-selected-hover); }
 .app-nav-item.app-nav-settings { margin-top: auto; gap: var(--space-2); color: var(--text-secondary); }
 .app-nav-item.app-nav-settings .app-nav-label { flex: 0 0 auto; }
@@ -185,7 +187,7 @@
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   border-left: 1px solid var(--border-subtle);
-  background: var(--surface-base);
+  background: var(--surface-reading);
   box-shadow: none;
 }
 
@@ -197,7 +199,6 @@
   gap: 2px;
   margin: var(--space-2);
   padding: 3px;
-  border: 0;
   border-radius: var(--radius-card);
   border: 1px solid var(--material-rim);
 }
@@ -217,7 +218,7 @@
 
 .inspector-tabs button[aria-selected="true"] {
   color: var(--text-primary);
-  background: var(--surface-base);
+  background: var(--surface-reading);
   box-shadow: none;
   font-weight: 650;
 }

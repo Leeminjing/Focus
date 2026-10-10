@@ -1,6 +1,7 @@
 /*
  * 本文件对 F20 全部主要工作台执行真实 Electron 稳定性矩阵。输入为确定性任务/Context/插件数据、
- * 11 类界面状态与 5 组尺寸缩放，输出为未捕获错误、DOM/ARIA、交互嵌套和页面溢出断言。
+ * 13 类界面状态与 5 组尺寸缩放，输出为未捕获错误、DOM/ARIA、交互嵌套和页面溢出断言。
+ * 工作流为从默认 Patrol 通过任务导航进入旧工作台，再检查各入口；示例：electron desktop/f20-view-audit.e2e.cjs。数据由隔离 fixture 提供。
  */
 "use strict";
 
@@ -50,6 +51,7 @@ async function run() {
   await win.loadFile(path.join(__dirname, "index.html"));
   await win.webContents.executeJavaScript(`new Promise(async (resolve, reject) => {
     for (let count = 0; count < 150; count += 1) {
+      if (document.body.dataset.view === 'patrol') document.querySelector('[data-action=focus-home]')?.click();
       if (document.querySelector('.focus-view')) return resolve();
       await new Promise(next => setTimeout(next, 20));
     }

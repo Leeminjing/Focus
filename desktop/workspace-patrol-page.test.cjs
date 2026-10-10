@@ -1,6 +1,6 @@
-/* 本文件对外提供隐藏 Electron 中两种真实页面的隔离验收。
+/* 本文件对外提供隐藏 Electron 中六个主页面的隔离验收。
  * 输入为新 userData 目录、生产 index.html 与离线 API fixture；输出为目录选择、四类输入、草稿、观测和中断过渡/检查身份断言。
- * 工作流为无可见窗口加载完整应用，操作默认折叠、六导航、按需检查与单路 Live，核对请求可见身份、关系图装备/键盘选择及边对账；普通会话继续展示原 Agent 消息。截图只证明布局，离线 fixture 不代替业务端到端。
+ * 工作流为无可见窗口加载完整应用，操作默认折叠、六导航、按需检查与单路 Live，核对请求身份、清空正文、库布局焦点/失败态、关系图键盘选择及边对账；普通会话继续展示原 Agent 消息。截图只证明布局，离线 fixture 不代替业务端到端。
  * 示例：node --test desktop/workspace-patrol-page.test.cjs。没有外部 Provider、生产库或安装应用写入。
  */
 const assert = require("node:assert/strict");
@@ -145,6 +145,14 @@ if (!process.versions.electron) {
     await until('document.querySelector("[data-patrol-receipt]").textContent.includes("已受理")');
     assert.match(await run('document.querySelector("[data-patrol-target]").textContent'), /question-next · 版本 3/);
     assert.equal(await run('document.querySelector("[data-patrol-content]").value'), "新回答草稿");
+    const submissionsBeforeClear = await run('window.patrolFixture.submissions.length');
+    await until('!document.querySelector("[data-patrol-dialog]").open');
+    await run('document.querySelector("[data-patrol-clear-draft]").click()');
+    assert.equal(await run('document.querySelector("[data-patrol-content]").value'), "");
+    assert.match(await run('document.querySelector("[data-patrol-target]").textContent'), /question-next · 版本 3/);
+    assert.equal(await run('window.patrolFixture.submissions.length'), submissionsBeforeClear);
+    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-content")'), true);
+    await run('document.querySelector("[data-patrol-content]").value="新回答草稿"; document.querySelector("[data-patrol-content]").dispatchEvent(new Event("input"))');
     await run('document.querySelector("[data-patrol-clear-target]").click()');
     await run(`(async () => {
       const form=document.querySelector('[data-patrol-composer]'), input=document.querySelector('[data-patrol-content]');
@@ -306,12 +314,22 @@ if (!process.versions.electron) {
       await run(`window.patrolFixture.pageError="隔离读取失败"; document.querySelector('[data-action=${action}]').click()`);
       await until(`document.body.dataset.view === '${page}' && document.querySelector('#app [role=alert]')`);
       assert.match(await run('document.querySelector("#app [role=alert]").textContent'), /隔离读取失败/);
+      if (page === "memory") assert.equal(await run('Boolean(document.querySelector(".memory-empty"))'), false);
       await run(`window.patrolFixture.pageError=null; document.querySelector('[data-action=refresh-${page}]').click()`);
       await until(`!document.querySelector('#app [role=alert]') && document.querySelector('[data-page-search=${page}]')`);
       await snapshot(page);
+      const selectionBefore = await run(`state.${page}.${page === "plugins" ? "selectedName" : "selectedId"}`);
+      await run(`document.querySelector('[data-library=${page}][data-layout=list]').focus()`);
+      win.webContents.sendInputEvent({ type: "keyDown", keyCode: "Space" });
+      win.webContents.sendInputEvent({ type: "keyUp", keyCode: "Space" });
+      await until(`state.${page}.layout === 'list'`);
+      assert.equal(await run('document.activeElement.dataset.layout'), "list");
+      assert.equal(await run(`state.${page}.${page === "plugins" ? "selectedName" : "selectedId"}`), selectionBefore);
+      await run(`document.querySelector('[data-library=${page}][data-layout=cards]').click()`);
       assert.equal(await run('document.querySelector("[data-nav-key][aria-current=page]").dataset.navKey'), page);
       await run(`document.querySelector('[data-page-search=${page}]').value='无匹配记录'; document.querySelector('[data-page-search=${page}]').dispatchEvent(new Event('input', {bubbles:true}))`);
       assert.equal(await run('document.querySelectorAll("#app .plugin-card, #app .memory-card").length'), 0);
+      if (page === "memory") assert.match(await run('document.querySelector("#app").textContent'), /没有匹配的记忆/);
       await run(`document.querySelector('[data-page-search=${page}]').value=''; document.querySelector('[data-page-search=${page}]').dispatchEvent(new Event('input', {bubbles:true}))`);
     }
     await run('document.querySelector("[data-action=show-plugins]").click()');

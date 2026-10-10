@@ -1,4 +1,6 @@
 /*
+ * 本文件对外提供应用组合根；输入为真实 API/Live 与用户导航动作，输出为六页及原业务入口。
+ * 工作流为沿原控制器装配页面、按任务保留草稿，卡片/列表偏好仅留在页面状态。示例：renderPlugins() 展示 registry 的当前状态。
  * Loop 激活由服务端解析初始 Run 装备，客户端不从详情缓存猜测权限；继承请求输出完整有效授权快照。Main 接口的 direct_message 回执仅表示受理，不写 active_run 或材料执行历史。默认 Patrol，任务列表与材料检查器承接传统操作，复杂能力通过明确次级入口使用原业务用例。
  * 控制材质复用语义 token；检查器显隐使用 FocusSurfaceTransition 保留壳层，退出即隔离命中、结束后退出布局；业务状态仍来自原 API/Live。
  * Loop 介入提交保留原文；成功后只清空同一 Context、模式和内容的当前表单，重绘替换及提交期间的新草稿不被旧节点重置影响。全图节点在选择/装备模式复用原操作，普通检查仍不改变发送目标；选择重绘恢复原节点焦点。
@@ -2426,6 +2428,7 @@ async function interruptMainRun() {
 
 function renderPlugins() {
   app.innerHTML = pluginView.render(state.plugins.plugins, state.plugins.interfaces, state.plugins.traces, state.plugins);
+  interfaceI18n.apply(app);
 }
 
 async function hydratePlugins() {
@@ -2474,6 +2477,7 @@ function renderMemory() {
     loading: s.loading,
     error: s.error,
     query: s.query,
+    layout: s.layout,
     selectedId: s.selectedId,
     composing: s.composing,
     draft: s.draft,
@@ -2494,6 +2498,7 @@ function renderMemory() {
     selectedSourcesForMerge: s.selectedSourcesForMerge || [],
   });
   bindMemoryResizers();
+  interfaceI18n.apply(app);
   restoreMemoryScroll();
 }
 
@@ -6431,6 +6436,15 @@ async function handleDocumentClick(event) {
       state.plugins = { ...state.plugins, loading: false, error: error.message };
       if (state.view === "plugins") renderPlugins();
     }
+    return;
+  }
+  if (action === "set-library-layout") {
+    const library = button.dataset.library;
+    if (!["plugins", "memory"].includes(library) || !["cards", "list"].includes(button.dataset.layout)) return;
+    const layout = button.dataset.layout;
+    state[library].layout = layout;
+    library === "plugins" ? renderPlugins() : renderMemory();
+    app.querySelector(`[data-library="${library}"][data-layout="${layout}"]`)?.focus({ preventScroll: true });
     return;
   }
   if (action === "refresh-memory") { await hydrateMemory(); return render(); }

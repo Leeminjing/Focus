@@ -1,5 +1,5 @@
 /* 本文件对外提供 Desktop 中英文文案与本地语言选择。输入为文案键和语言，输出为可显示的翻译。
-   具体工作流为从当前语言表取值并回退到默认语言；文件沙箱模式、独立会话目录范围、审批和部分约束文案同源。
+   具体工作流为从当前语言表取值并回退到默认语言；Patrol、资料库布局/空态、文件沙箱模式、独立会话目录范围和审批文案同源。
    示例：t("access.mode_workspace_write") 返回当前语言的工作区可写名称。 */
 (function exposeFocusI18n(global) {
   "use strict";
@@ -9,6 +9,21 @@
   const SUPPORTED_LOCALES = new Set(["zh-CN", "en-US"]);
   const messages = Object.freeze({
     "zh-CN": Object.freeze({
+      "patrol.tagline": "说出你的想法，剩下的交给 Patrol。",
+      "patrol.clear_draft": "清空输入",
+      "patrol.placeholder": "描述你的任务、问题或想法…",
+      "patrol.contexts": "上下文关系",
+      "patrol.progress": "任务进度",
+      "patrol.observation": "本轮观察",
+      "patrol.facts": "LoopFact · 相关事实",
+      "view.cards": "卡片",
+      "view.list": "列表",
+      "view.layout": "显示布局",
+      "memory.no_matches": "没有匹配的记忆",
+      "memory.no_matches_help": "换一个关键词，或清空搜索查看全部记忆。",
+      "memory.empty_title": "还没有任何记忆",
+      "memory.empty_help": "把重要的想法、经验和资料记录在这里，在需要时重新找到。",
+      "memory.create": "新建记忆",
       "nav.tasks": "任务",
       "nav.map": "全图",
       "nav.contexts": "上下文",
@@ -177,6 +192,21 @@
       "access.risk_cancel": "取消"
     }),
     "en-US": Object.freeze({
+      "patrol.tagline": "Share your thoughts. Let Patrol take it from here.",
+      "patrol.clear_draft": "Clear input",
+      "patrol.placeholder": "Describe your task, question or idea…",
+      "patrol.contexts": "Context relationships",
+      "patrol.progress": "Task progress",
+      "patrol.observation": "Round observation",
+      "patrol.facts": "LoopFact · Related facts",
+      "view.cards": "Cards",
+      "view.list": "List",
+      "view.layout": "Display layout",
+      "memory.no_matches": "No matching memories",
+      "memory.no_matches_help": "Try another keyword or clear your search to see all memories.",
+      "memory.empty_title": "No memories yet",
+      "memory.empty_help": "Keep important ideas, experience and information here to find them when needed.",
+      "memory.create": "Create memory",
       "nav.tasks": "Task",
       "nav.map": "Map",
       "nav.contexts": "Contexts",
