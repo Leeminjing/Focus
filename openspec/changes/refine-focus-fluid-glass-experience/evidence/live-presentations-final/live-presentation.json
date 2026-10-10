@@ -1,0 +1,527 @@
+{
+  "fixture": true,
+  "method": "enqueue-to-presented-pixel-change; only dirty frames; one pending update; incremental title-pixel SHA256; includes IPC and readback; 5 warmups",
+  "nodes": 128,
+  "facts": 200,
+  "n": 100,
+  "p95": 121.8056,
+  "max": 127.4587,
+  "skippedTicks": 84,
+  "rect": {
+    "x": 304.3333435058594,
+    "y": 360.8645935058594,
+    "width": 192.6666717529297,
+    "height": 21.697917938232422,
+    "dpr": 1.5
+  },
+  "rows": [
+    {
+      "index": 1,
+      "duration": 44.0465
+    },
+    {
+      "index": 2,
+      "duration": 42.4334
+    },
+    {
+      "index": 3,
+      "duration": 42.4562
+    },
+    {
+      "index": 4,
+      "duration": 43.6183
+    },
+    {
+      "index": 5,
+      "duration": 44.226
+    },
+    {
+      "index": 6,
+      "duration": 42.9913
+    },
+    {
+      "index": 7,
+      "duration": 39.9461
+    },
+    {
+      "index": 8,
+      "duration": 36.6412
+    },
+    {
+      "index": 9,
+      "duration": 39.7463
+    },
+    {
+      "index": 10,
+      "duration": 44.2265
+    },
+    {
+      "index": 11,
+      "duration": 41.2614
+    },
+    {
+      "index": 12,
+      "duration": 55.6533
+    },
+    {
+      "index": 13,
+      "duration": 54.008
+    },
+    {
+      "index": 14,
+      "duration": 62.9279
+    },
+    {
+      "index": 15,
+      "duration": 52.0151
+    },
+    {
+      "index": 16,
+      "duration": 57.5453
+    },
+    {
+      "index": 17,
+      "duration": 49.5262
+    },
+    {
+      "index": 18,
+      "duration": 58.2058
+    },
+    {
+      "index": 19,
+      "duration": 51.2275
+    },
+    {
+      "index": 20,
+      "duration": 60.1995
+    },
+    {
+      "index": 21,
+      "duration": 58.4133
+    },
+    {
+      "index": 22,
+      "duration": 62.4508
+    },
+    {
+      "index": 23,
+      "duration": 59.8771
+    },
+    {
+      "index": 24,
+      "duration": 65.9382
+    },
+    {
+      "index": 25,
+      "duration": 58.9898
+    },
+    {
+      "index": 26,
+      "duration": 66.7881
+    },
+    {
+      "index": 27,
+      "duration": 63.1191
+    },
+    {
+      "index": 28,
+      "duration": 60.9691
+    },
+    {
+      "index": 29,
+      "duration": 73.8926
+    },
+    {
+      "index": 30,
+      "duration": 74.1279
+    },
+    {
+      "index": 31,
+      "duration": 71.7107
+    },
+    {
+      "index": 32,
+      "duration": 63.7144
+    },
+    {
+      "index": 33,
+      "duration": 69.3577
+    },
+    {
+      "index": 34,
+      "duration": 69.5141
+    },
+    {
+      "index": 35,
+      "duration": 78.2581
+    },
+    {
+      "index": 36,
+      "duration": 107.1442
+    },
+    {
+      "index": 37,
+      "duration": 62.7238
+    },
+    {
+      "index": 38,
+      "duration": 62.3256
+    },
+    {
+      "index": 39,
+      "duration": 60.6918
+    },
+    {
+      "index": 40,
+      "duration": 64.8548
+    },
+    {
+      "index": 41,
+      "duration": 77.376
+    },
+    {
+      "index": 42,
+      "duration": 61.5983
+    },
+    {
+      "index": 43,
+      "duration": 68.9153
+    },
+    {
+      "index": 44,
+      "duration": 73.8056
+    },
+    {
+      "index": 45,
+      "duration": 78.9042
+    },
+    {
+      "index": 46,
+      "duration": 84.3628
+    },
+    {
+      "index": 47,
+      "duration": 72.9815
+    },
+    {
+      "index": 48,
+      "duration": 76.8716
+    },
+    {
+      "index": 49,
+      "duration": 87.3638
+    },
+    {
+      "index": 50,
+      "duration": 84.8792
+    },
+    {
+      "index": 51,
+      "duration": 87.77
+    },
+    {
+      "index": 52,
+      "duration": 84.8942
+    },
+    {
+      "index": 53,
+      "duration": 81.5546
+    },
+    {
+      "index": 54,
+      "duration": 91.4307
+    },
+    {
+      "index": 55,
+      "duration": 86.8708
+    },
+    {
+      "index": 56,
+      "duration": 78.2626
+    },
+    {
+      "index": 57,
+      "duration": 87.5932
+    },
+    {
+      "index": 58,
+      "duration": 92.921
+    },
+    {
+      "index": 59,
+      "duration": 86.0158
+    },
+    {
+      "index": 60,
+      "duration": 81.228
+    },
+    {
+      "index": 61,
+      "duration": 81.5374
+    },
+    {
+      "index": 62,
+      "duration": 77.7914
+    },
+    {
+      "index": 63,
+      "duration": 86.8
+    },
+    {
+      "index": 64,
+      "duration": 89.697
+    },
+    {
+      "index": 65,
+      "duration": 111.6104
+    },
+    {
+      "index": 66,
+      "duration": 89.7594
+    },
+    {
+      "index": 67,
+      "duration": 93.8987
+    },
+    {
+      "index": 68,
+      "duration": 93.7945
+    },
+    {
+      "index": 69,
+      "duration": 87.5128
+    },
+    {
+      "index": 70,
+      "duration": 100.4665
+    },
+    {
+      "index": 71,
+      "duration": 94.5978
+    },
+    {
+      "index": 72,
+      "duration": 95.5514
+    },
+    {
+      "index": 73,
+      "duration": 101.0378
+    },
+    {
+      "index": 74,
+      "duration": 102.3602
+    },
+    {
+      "index": 75,
+      "duration": 103.7243
+    },
+    {
+      "index": 76,
+      "duration": 90.4993
+    },
+    {
+      "index": 77,
+      "duration": 111.102
+    },
+    {
+      "index": 78,
+      "duration": 93.8008
+    },
+    {
+      "index": 79,
+      "duration": 94.7137
+    },
+    {
+      "index": 80,
+      "duration": 101.8401
+    },
+    {
+      "index": 81,
+      "duration": 94.7242
+    },
+    {
+      "index": 82,
+      "duration": 105.9749
+    },
+    {
+      "index": 83,
+      "duration": 109.4091
+    },
+    {
+      "index": 84,
+      "duration": 116.4009
+    },
+    {
+      "index": 85,
+      "duration": 111.403
+    },
+    {
+      "index": 86,
+      "duration": 107.8209
+    },
+    {
+      "index": 87,
+      "duration": 110.1898
+    },
+    {
+      "index": 88,
+      "duration": 107.4806
+    },
+    {
+      "index": 89,
+      "duration": 101.7153
+    },
+    {
+      "index": 90,
+      "duration": 111.2046
+    },
+    {
+      "index": 91,
+      "duration": 104.6491
+    },
+    {
+      "index": 92,
+      "duration": 119.4106
+    },
+    {
+      "index": 93,
+      "duration": 111.2025
+    },
+    {
+      "index": 94,
+      "duration": 109.7871
+    },
+    {
+      "index": 95,
+      "duration": 107.5303
+    },
+    {
+      "index": 96,
+      "duration": 123.35
+    },
+    {
+      "index": 97,
+      "duration": 113.9017
+    },
+    {
+      "index": 98,
+      "duration": 123.3573
+    },
+    {
+      "index": 99,
+      "duration": 127.4587
+    },
+    {
+      "index": 100,
+      "duration": 118.9498
+    },
+    {
+      "index": 101,
+      "duration": 127.1299
+    },
+    {
+      "index": 102,
+      "duration": 110.6482
+    },
+    {
+      "index": 103,
+      "duration": 121.1033
+    },
+    {
+      "index": 104,
+      "duration": 121.8056
+    },
+    {
+      "index": 105,
+      "duration": 122.2726
+    }
+  ],
+  "gpu": {
+    "auxAttributes": {
+      "amdSwitchable": false,
+      "canSupportThreadedTextureMailbox": false,
+      "directMLFeatureLevel": "Not supported",
+      "displayType": "ANGLE_D3D11",
+      "dx12FeatureLevel": "Not supported",
+      "glExtensions": "GL_AMD_performance_monitor GL_ANGLE_base_vertex_base_instance_shader_builtin GL_ANGLE_blob_cache GL_ANGLE_client_arrays GL_ANGLE_clip_cull_distance GL_ANGLE_copy_texture_3d GL_ANGLE_depth_texture GL_ANGLE_framebuffer_blit GL_ANGLE_framebuffer_multisample GL_ANGLE_get_serialized_context_string GL_ANGLE_get_tex_level_parameter GL_ANGLE_instanced_arrays GL_ANGLE_lossy_etc_decode GL_ANGLE_memory_size GL_ANGLE_multiview_multisample GL_ANGLE_pack_reverse_row_order GL_ANGLE_polygon_mode GL_ANGLE_program_binary_readiness_query GL_ANGLE_program_cache_control GL_ANGLE_provoking_vertex GL_ANGLE_renderability_validation GL_ANGLE_request_extension GL_ANGLE_robust_client_memory GL_ANGLE_shader_pixel_local_storage GL_ANGLE_shader_pixel_local_storage_coherent GL_ANGLE_stencil_texturing GL_ANGLE_texture_compression_dxt3 GL_ANGLE_texture_compression_dxt5 GL_ANGLE_texture_multisample GL_ANGLE_texture_usage GL_ANGLE_translated_shader_source GL_APPLE_clip_distance GL_ARM_rgba8 GL_CHROMIUM_bind_generates_resource GL_CHROMIUM_bind_uniform_location GL_CHROMIUM_copy_compressed_texture GL_CHROMIUM_copy_texture GL_CHROMIUM_lose_context GL_EXT_EGL_image_external_wrap_modes GL_EXT_base_instance GL_EXT_blend_func_extended GL_EXT_blend_minmax GL_EXT_clip_control GL_EXT_clip_cull_distance GL_EXT_color_buffer_float GL_EXT_color_buffer_half_float GL_EXT_conservative_depth GL_EXT_debug_label GL_EXT_debug_marker GL_EXT_depth_clamp GL_EXT_discard_framebuffer GL_EXT_disjoint_timer_query GL_EXT_draw_buffers GL_EXT_draw_buffers_indexed GL_EXT_draw_elements_base_vertex GL_EXT_float_blend GL_EXT_frag_depth GL_EXT_instanced_arrays GL_EXT_map_buffer_range GL_EXT_occlusion_query_boolean GL_EXT_polygon_offset_clamp GL_EXT_read_format_bgra GL_EXT_render_snorm GL_EXT_robustness GL_EXT_sRGB GL_EXT_shader_texture_lod GL_EXT_texture_border_clamp GL_EXT_texture_compression_bptc GL_EXT_texture_compression_dxt1 GL_EXT_texture_compression_rgtc GL_EXT_texture_compression_s3tc_srgb GL_EXT_texture_filter_anisotropic GL_EXT_texture_format_BGRA8888 GL_EXT_texture_mirror_clamp_to_edge GL_EXT_texture_norm16 GL_EXT_texture_rg GL_EXT_texture_storage GL_EXT_texture_type_2_10_10_10_REV GL_EXT_unpack_subimage GL_KHR_debug GL_KHR_parallel_shader_compile GL_KHR_robustness GL_NV_EGL_stream_consumer_external GL_NV_fence GL_NV_framebuffer_blit GL_NV_pack_subimage GL_NV_pixel_buffer_object GL_NV_shader_noperspective_interpolation GL_OES_EGL_image GL_OES_EGL_image_external GL_OES_EGL_image_external_essl3 GL_OES_compressed_EAC_R11_signed_texture GL_OES_compressed_EAC_R11_unsigned_texture GL_OES_compressed_EAC_RG11_signed_texture GL_OES_compressed_EAC_RG11_unsigned_texture GL_OES_compressed_ETC2_RGB8_texture GL_OES_compressed_ETC2_RGBA8_texture GL_OES_compressed_ETC2_punchthroughA_RGBA8_texture GL_OES_compressed_ETC2_punchthroughA_sRGB8_alpha_texture GL_OES_compressed_ETC2_sRGB8_alpha8_texture GL_OES_compressed_ETC2_sRGB8_texture GL_OES_depth24 GL_OES_depth32 GL_OES_draw_buffers_indexed GL_OES_draw_elements_base_vertex GL_OES_element_index_uint GL_OES_fbo_render_mipmap GL_OES_get_program_binary GL_OES_mapbuffer GL_OES_packed_depth_stencil GL_OES_required_internalformat GL_OES_rgb8_rgba8 GL_OES_sample_variables GL_OES_shader_multisample_interpolation GL_OES_standard_derivatives GL_OES_surfaceless_context GL_OES_texture_border_clamp GL_OES_texture_float GL_OES_texture_float_linear GL_OES_texture_half_float GL_OES_texture_half_float_linear GL_OES_texture_npot GL_OES_texture_stencil8 GL_OES_texture_storage_multisample_2d_array GL_OES_vertex_array_object GL_OVR_multiview GL_OVR_multiview2 GL_WEBGL_video_texture ",
+      "glImplementationParts": "(gl=egl-angle,angle=d3d11)",
+      "glRenderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A788) Direct3D11 vs_5_0 ps_5_0, D3D11-32.0.101.6556)",
+      "glResetNotificationStrategy": 33362,
+      "glVendor": "Google Inc. (Intel)",
+      "glVersion": "OpenGL ES 3.0 (ANGLE 2.1.27953 git hash: 13e691adf3d4)",
+      "glWsExtensions": "EGL_EXT_create_context_robustness EGL_ANGLE_d3d_share_handle_client_buffer EGL_ANGLE_d3d_texture_client_buffer EGL_ANGLE_surface_d3d_texture_2d_share_handle EGL_ANGLE_query_surface_pointer EGL_ANGLE_window_fixed_size EGL_ANGLE_keyed_mutex EGL_ANGLE_surface_orientation EGL_ANGLE_direct_composition EGL_NV_post_sub_buffer EGL_KHR_create_context EGL_KHR_image EGL_KHR_image_base EGL_KHR_gl_texture_2D_image EGL_KHR_gl_texture_cubemap_image EGL_KHR_gl_renderbuffer_image EGL_KHR_get_all_proc_addresses EGL_KHR_stream EGL_KHR_stream_consumer_gltexture EGL_NV_stream_consumer_gltexture_yuv EGL_ANGLE_stream_producer_d3d_texture EGL_ANGLE_create_context_webgl_compatibility EGL_CHROMIUM_create_context_bind_generates_resource EGL_CHROMIUM_sync_control EGL_EXT_pixel_format_float EGL_KHR_surfaceless_context EGL_ANGLE_display_texture_share_group EGL_ANGLE_display_semaphore_share_group EGL_ANGLE_create_context_client_arrays EGL_ANGLE_program_cache_control EGL_ANGLE_robust_resource_initialization EGL_ANGLE_create_context_extensions_enabled EGL_ANDROID_blob_cache EGL_ANDROID_recordable EGL_ANGLE_image_d3d11_texture EGL_ANGLE_create_context_backwards_compatible EGL_KHR_no_config_context EGL_KHR_create_context_no_error EGL_KHR_reusable_sync EGL_ANGLE_memory_usage_report ",
+      "glWsVendor": "Google Inc. (Intel)",
+      "glWsVersion": "1.5 (ANGLE 2.1.27953 git hash: 13e691adf3d4)",
+      "inProcessGpu": false,
+      "initializationTime": 95.935,
+      "isAsan": false,
+      "isClangCoverage": false,
+      "jpegDecodeAcceleratorSupported": false,
+      "maxMsaaSamples": "8",
+      "optimus": false,
+      "overlayInfo": {
+        "bgra8OverlaySupport": "SCALING",
+        "directComposition": true,
+        "nv12OverlaySupport": "SCALING",
+        "p010OverlaySupport": "SOFTWARE",
+        "rgb10a2OverlaySupport": "SOFTWARE",
+        "supportsOverlays": true,
+        "yuy2OverlaySupport": "SCALING"
+      },
+      "passthroughCmdDecoder": true,
+      "pixelShaderVersion": "5.0",
+      "sandboxed": true,
+      "skiaBackendType": "GaneshGL",
+      "subpixelFontRendering": true,
+      "supportsD3dSharedImages": true,
+      "supportsDirectML": false,
+      "supportsDx12": false,
+      "supportsVulkan": false,
+      "targetCpuBits": 64,
+      "vertexShaderVersion": "5.0",
+      "videoDecodeAcceleratorSupportedProfile": {
+        "encrypted_only": false,
+        "maxResolutionHeight": 16384,
+        "maxResolutionWidth": 16384,
+        "minResolutionHeight": 64,
+        "minResolutionWidth": 64,
+        "profile": 29
+      },
+      "visibilityCallbackCallCount": 0,
+      "vulkanVersion": "Not supported"
+    },
+    "gpuDevice": [
+      {
+        "active": true,
+        "deviceId": 42888,
+        "deviceString": "Intel(R) UHD Graphics",
+        "driverVendor": "Intel",
+        "driverVersion": "32.0.101.6556",
+        "gpuPreference": 2,
+        "revision": 4,
+        "subSysId": -1951723460,
+        "vendorId": 32902
+      },
+      {
+        "active": false,
+        "deviceId": 10464,
+        "deviceString": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "driverVersion": "32.0.15.9282",
+        "gpuPreference": 3,
+        "revision": 161,
+        "subSysId": -1951723460,
+        "vendorId": 4318
+      },
+      {
+        "active": false,
+        "deviceId": 140,
+        "deviceString": "Microsoft Basic Render Driver",
+        "driverVersion": "10.0.26100.9278",
+        "gpuPreference": 0,
+        "revision": 0,
+        "subSysId": 0,
+        "vendorId": 5140
+      }
+    ]
+  }
+}

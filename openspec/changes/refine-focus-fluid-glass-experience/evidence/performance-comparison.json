@@ -1,0 +1,524 @@
+{
+  "verified-before": {
+    "groups": [
+      {
+        "MOUSE_PRESSED": {
+          "n": 30,
+          "p95": 17.86,
+          "max": 17.977
+        },
+        "MOUSE_RELEASED": {
+          "n": 30,
+          "p95": 17.747,
+          "max": 17.926
+        }
+      },
+      {
+        "MOUSE_PRESSED": {
+          "n": 30,
+          "p95": 18.347,
+          "max": 18.447
+        },
+        "MOUSE_RELEASED": {
+          "n": 30,
+          "p95": 18.211,
+          "max": 18.35
+        }
+      },
+      {
+        "MOUSE_PRESSED": {
+          "n": 30,
+          "p95": 17.845,
+          "max": 18.248
+        },
+        "MOUSE_RELEASED": {
+          "n": 30,
+          "p95": 17.747,
+          "max": 18.156
+        }
+      }
+    ],
+    "phases": [
+      {
+        "phase": "32-frames",
+        "duration": 2004,
+        "longtasks": {
+          "n": 0,
+          "total": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "stages": {
+          "FunctionCall": {
+            "n": 241,
+            "inclusive_ms": 9.738
+          },
+          "UpdateLayoutTree": {
+            "n": 1,
+            "inclusive_ms": 1.144
+          },
+          "Layout": {
+            "n": 1,
+            "inclusive_ms": 2.682
+          },
+          "Paint": {
+            "n": 34,
+            "inclusive_ms": 1.133
+          },
+          "Layerize": {
+            "n": 237,
+            "inclusive_ms": 0.737
+          }
+        }
+      },
+      {
+        "phase": "32-updates",
+        "duration": 6104.0,
+        "longtasks": {
+          "n": 0,
+          "total": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "stages": {
+          "FunctionCall": {
+            "n": 102,
+            "inclusive_ms": 18.759
+          },
+          "UpdateLayoutTree": {
+            "n": 126,
+            "inclusive_ms": 601.507
+          },
+          "Layout": {
+            "n": 126,
+            "inclusive_ms": 1030.754
+          },
+          "Paint": {
+            "n": 4194,
+            "inclusive_ms": 472.541
+          },
+          "Layerize": {
+            "n": 126,
+            "inclusive_ms": 49.091
+          }
+        }
+      },
+      {
+        "phase": "128-frames",
+        "duration": 2006.6000000089407,
+        "longtasks": {
+          "n": 0,
+          "total": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "stages": {
+          "FunctionCall": {
+            "n": 240,
+            "inclusive_ms": 9.737
+          },
+          "UpdateLayoutTree": {
+            "n": 0,
+            "inclusive_ms": 0.0
+          },
+          "Layout": {
+            "n": 0,
+            "inclusive_ms": 0.0
+          },
+          "Paint": {
+            "n": 0,
+            "inclusive_ms": 0.0
+          },
+          "Layerize": {
+            "n": 233,
+            "inclusive_ms": 0.468
+          }
+        }
+      },
+      {
+        "phase": "128-updates",
+        "duration": 6909.699999988079,
+        "longtasks": {
+          "n": 2,
+          "total": 105,
+          "p95": 54,
+          "max": 54
+        },
+        "stages": {
+          "FunctionCall": {
+            "n": 105,
+            "inclusive_ms": 18.14
+          },
+          "UpdateLayoutTree": {
+            "n": 143,
+            "inclusive_ms": 1038.993
+          },
+          "Layout": {
+            "n": 143,
+            "inclusive_ms": 1389.118
+          },
+          "Paint": {
+            "n": 4802,
+            "inclusive_ms": 528.165
+          },
+          "Layerize": {
+            "n": 143,
+            "inclusive_ms": 53.95
+          }
+        }
+      },
+      {
+        "phase": "conversation",
+        "duration": 20760.69999998808,
+        "longtasks": {
+          "n": 0,
+          "total": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "stages": {
+          "FunctionCall": {
+            "n": 2060,
+            "inclusive_ms": 71.198
+          },
+          "UpdateLayoutTree": {
+            "n": 50,
+            "inclusive_ms": 6.003
+          },
+          "Layout": {
+            "n": 11,
+            "inclusive_ms": 28.265
+          },
+          "Paint": {
+            "n": 52,
+            "inclusive_ms": 13.33
+          },
+          "Layerize": {
+            "n": 2167,
+            "inclusive_ms": 4.598
+          }
+        }
+      },
+      {
+        "phase": "idle",
+        "duration": 10013.79999999702,
+        "longtasks": {
+          "n": 0,
+          "total": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "stages": {
+          "FunctionCall": {
+            "n": 2,
+            "inclusive_ms": 0.293
+          },
+          "UpdateLayoutTree": {
+            "n": 0,
+            "inclusive_ms": 0.0
+          },
+          "Layout": {
+            "n": 0,
+            "inclusive_ms": 0.0
+          },
+          "Paint": {
+            "n": 0,
+            "inclusive_ms": 0.0
+          },
+          "Layerize": {
+            "n": 0,
+            "inclusive_ms": 0.0
+          }
+        }
+      }
+    ],
+    "raf_proxy": [
+      {
+        "nodes": 32,
+        "p95": 8.5
+      },
+      {
+        "nodes": 128,
+        "p95": 8.5
+      }
+    ],
+    "terminal": {
+      "nodes": 1730,
+      "idleNodes": 1730,
+      "animations": 0,
+      "detailsHidden": true,
+      "detailsInert": false,
+      "drawerHidden": true
+    },
+    "gpu": "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A788) Direct3D11 vs_5_0 ps_5_0, D3D11-32.0.101.6556)",
+    "errors": [],
+    "conversation": {
+      "start": 63298.90000000596,
+      "end": 84059.59999999404,
+      "messages": 1000,
+      "rendered": 80,
+      "draft": "保留任务草稿 90"
+    }
+  },
+  "verified-after": {
+    "groups": [
+      {
+        "MOUSE_PRESSED": {
+          "n": 30,
+          "p95": 17.254,
+          "max": 18.139
+        },
+        "MOUSE_RELEASED": {
+          "n": 30,
+          "p95": 17.185,
+          "max": 18.072
+        }
+      },
+      {
+        "MOUSE_PRESSED": {
+          "n": 30,
+          "p95": 18.001,
+          "max": 19.274
+        },
+        "MOUSE_RELEASED": {
+          "n": 30,
+          "p95": 17.909,
+          "max": 19.181
+        }
+      },
+      {
+        "MOUSE_PRESSED": {
+          "n": 30,
+          "p95": 18.145,
+          "max": 18.301
+        },
+        "MOUSE_RELEASED": {
+          "n": 30,
+          "p95": 18.091,
+          "max": 18.181
+        }
+      }
+    ],
+    "phases": [
+      {
+        "phase": "32-frames",
+        "duration": 2003.2000000029802,
+        "longtasks": {
+          "n": 0,
+          "total": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "stages": {
+          "FunctionCall": {
+            "n": 241,
+            "inclusive_ms": 8.789
+          },
+          "UpdateLayoutTree": {
+            "n": 1,
+            "inclusive_ms": 1.202
+          },
+          "Layout": {
+            "n": 1,
+            "inclusive_ms": 2.463
+          },
+          "Paint": {
+            "n": 34,
+            "inclusive_ms": 1.217
+          },
+          "Layerize": {
+            "n": 236,
+            "inclusive_ms": 0.568
+          }
+        }
+      },
+      {
+        "phase": "32-updates",
+        "duration": 6711.399999991059,
+        "longtasks": {
+          "n": 0,
+          "total": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "stages": {
+          "FunctionCall": {
+            "n": 102,
+            "inclusive_ms": 17.865
+          },
+          "UpdateLayoutTree": {
+            "n": 57,
+            "inclusive_ms": 503.506
+          },
+          "Layout": {
+            "n": 57,
+            "inclusive_ms": 669.651
+          },
+          "Paint": {
+            "n": 1881,
+            "inclusive_ms": 393.026
+          },
+          "Layerize": {
+            "n": 57,
+            "inclusive_ms": 66.159
+          }
+        }
+      },
+      {
+        "phase": "128-frames",
+        "duration": 2005.7000000029802,
+        "longtasks": {
+          "n": 0,
+          "total": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "stages": {
+          "FunctionCall": {
+            "n": 207,
+            "inclusive_ms": 8.014
+          },
+          "UpdateLayoutTree": {
+            "n": 1,
+            "inclusive_ms": 13.31
+          },
+          "Layout": {
+            "n": 1,
+            "inclusive_ms": 14.059
+          },
+          "Paint": {
+            "n": 35,
+            "inclusive_ms": 7.714
+          },
+          "Layerize": {
+            "n": 200,
+            "inclusive_ms": 1.602
+          }
+        }
+      },
+      {
+        "phase": "128-updates",
+        "duration": 8849.60000000894,
+        "longtasks": {
+          "n": 34,
+          "total": 2333,
+          "p95": 81,
+          "max": 82
+        },
+        "stages": {
+          "FunctionCall": {
+            "n": 136,
+            "inclusive_ms": 20.923
+          },
+          "UpdateLayoutTree": {
+            "n": 34,
+            "inclusive_ms": 819.179
+          },
+          "Layout": {
+            "n": 34,
+            "inclusive_ms": 691.28
+          },
+          "Paint": {
+            "n": 1122,
+            "inclusive_ms": 482.731
+          },
+          "Layerize": {
+            "n": 34,
+            "inclusive_ms": 75.233
+          }
+        }
+      },
+      {
+        "phase": "conversation",
+        "duration": 20849.20000000298,
+        "longtasks": {
+          "n": 0,
+          "total": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "stages": {
+          "FunctionCall": {
+            "n": 2071,
+            "inclusive_ms": 70.196
+          },
+          "UpdateLayoutTree": {
+            "n": 36,
+            "inclusive_ms": 5.228
+          },
+          "Layout": {
+            "n": 10,
+            "inclusive_ms": 25.725
+          },
+          "Paint": {
+            "n": 52,
+            "inclusive_ms": 14.739
+          },
+          "Layerize": {
+            "n": 2182,
+            "inclusive_ms": 4.454
+          }
+        }
+      },
+      {
+        "phase": "idle",
+        "duration": 10001.60000000894,
+        "longtasks": {
+          "n": 0,
+          "total": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "stages": {
+          "FunctionCall": {
+            "n": 1,
+            "inclusive_ms": 0.386
+          },
+          "UpdateLayoutTree": {
+            "n": 0,
+            "inclusive_ms": 0.0
+          },
+          "Layout": {
+            "n": 0,
+            "inclusive_ms": 0.0
+          },
+          "Paint": {
+            "n": 0,
+            "inclusive_ms": 0.0
+          },
+          "Layerize": {
+            "n": 0,
+            "inclusive_ms": 0.0
+          }
+        }
+      }
+    ],
+    "raf_proxy": [
+      {
+        "nodes": 32,
+        "p95": 8.5
+      },
+      {
+        "nodes": 128,
+        "p95": 8.5
+      }
+    ],
+    "terminal": {
+      "nodes": 1731,
+      "idleNodes": 1731,
+      "animations": 0,
+      "detailsHidden": false,
+      "detailsInert": false,
+      "drawerHidden": true
+    },
+    "gpu": "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A788) Direct3D11 vs_5_0 ps_5_0, D3D11-32.0.101.6556)",
+    "errors": [],
+    "conversation": {
+      "start": 67577.09999999404,
+      "end": 88426.29999999702,
+      "messages": 1000,
+      "rendered": 80,
+      "draft": "保留任务草稿 90"
+    }
+  }
+}

@@ -1,4 +1,7 @@
-/* 会话 Patrol 小兵组件：只定义浮层、真实图像资源、气泡和原生交互状态。 */
+/* 本文件对外提供会话 Patrol 小兵的浮层、图像、真实状态和交互反馈。
+ * 输入为 avatar 的语义 DOM/status；输出为可拖拽、键盘可达的静止入口。
+ * 工作流为状态决定文字与轮廓，按压/拖拽局部反馈，不播放装饰循环。示例：.patrol-avatar[data-status="pending"]。
+ */
 .focus-view:has(> .patrol-avatar-layer) {
   position: relative;
   isolation: isolate;
@@ -53,12 +56,12 @@
   object-fit: contain;
   pointer-events: none;
   filter: drop-shadow(0 8px 10px rgb(15 37 66 / 10%));
-  animation: patrol-avatar-hover 2.8s var(--ease-standard) infinite;
+  transition: filter var(--motion-fast) var(--ease-standard);
 }
 
-.patrol-avatar[data-status="pending"] .patrol-avatar__image { animation: patrol-avatar-pulse 1.25s ease-in-out infinite; }
-.patrol-avatar[data-status="running"] .patrol-avatar__image { animation-duration: 1.8s; }
-.patrol-avatar.is-dragging .patrol-avatar__image { animation: none; filter: drop-shadow(0 14px 16px rgb(15 37 66 / 18%)); }
+.patrol-avatar[data-status="pending"] { outline: 1px solid var(--border-warning); }
+.patrol-avatar[data-status="running"] { outline: 1px solid var(--border-accent); }
+.patrol-avatar.is-dragging .patrol-avatar__image { filter: drop-shadow(0 14px 16px rgb(15 37 66 / 18%)); }
 
 .patrol-avatar__fallback {
   display: grid;
@@ -179,17 +182,3 @@
 }
 
 .patrol-avatar__action.is-secondary:hover { background: var(--surface-accent); }
-
-@keyframes patrol-avatar-hover {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-5px); }
-}
-
-@keyframes patrol-avatar-pulse {
-  0%, 100% { transform: translateY(0) scale(1); opacity: .92; }
-  50% { transform: translateY(-4px) scale(1.025); opacity: 1; }
-}
-
-@media (prefers-reduced-motion: reduce), (update: slow) {
-  .patrol-avatar__image { animation: none !important; }
-}

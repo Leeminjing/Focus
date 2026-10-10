@@ -1,0 +1,121 @@
+{
+  "business": {
+    "added": 352,
+    "deleted": 180,
+    "files": [
+      {
+        "path": "desktop/app.js",
+        "added": 35,
+        "deleted": 20
+      },
+      {
+        "path": "desktop/context-inspector.js",
+        "added": 17,
+        "deleted": 7
+      },
+      {
+        "path": "desktop/index.html",
+        "added": 4,
+        "deleted": 3
+      },
+      {
+        "path": "desktop/loop-facts-view.js",
+        "added": 12,
+        "deleted": 8
+      },
+      {
+        "path": "desktop/portfolio-map-view.js",
+        "added": 25,
+        "deleted": 15
+      },
+      {
+        "path": "desktop/styles/base.css",
+        "added": 13,
+        "deleted": 1
+      },
+      {
+        "path": "desktop/styles/components.css",
+        "added": 24,
+        "deleted": 15
+      },
+      {
+        "path": "desktop/styles/loop-console.css",
+        "added": 12,
+        "deleted": 12
+      },
+      {
+        "path": "desktop/styles/patrol-avatar.css",
+        "added": 8,
+        "deleted": 19
+      },
+      {
+        "path": "desktop/styles/shell.css",
+        "added": 5,
+        "deleted": 10
+      },
+      {
+        "path": "desktop/styles/tokens.css",
+        "added": 13,
+        "deleted": 5
+      },
+      {
+        "path": "desktop/styles/views.css",
+        "added": 8,
+        "deleted": 16
+      },
+      {
+        "path": "desktop/styles/workspace-patrol.css",
+        "added": 21,
+        "deleted": 20
+      },
+      {
+        "path": "desktop/workspace-patrol-controller.js",
+        "added": 69,
+        "deleted": 19
+      },
+      {
+        "path": "desktop/workspace-patrol-picker.js",
+        "added": 9,
+        "deleted": 5
+      },
+      {
+        "path": "desktop/workspace-patrol-view.js",
+        "added": 5,
+        "deleted": 5
+      },
+      {
+        "path": "desktop/surface-transition.js",
+        "added": 72,
+        "deleted": 0
+      }
+    ],
+    "net": 172
+  },
+  "tests": {
+    "added": 286,
+    "deleted": 5,
+    "files": [
+      {
+        "path": "desktop/frontend-migration-real.e2e.cjs",
+        "added": 5,
+        "deleted": 2
+      },
+      {
+        "path": "desktop/workspace-patrol-page.test.cjs",
+        "added": 73,
+        "deleted": 2
+      },
+      {
+        "path": "desktop/workspace-patrol-test-preload.cjs",
+        "added": 6,
+        "deleted": 1
+      },
+      {
+        "path": "desktop/surface-experience.e2e.cjs",
+        "added": 202,
+        "deleted": 0
+      }
+    ],
+    "net": 281
+  }
+}

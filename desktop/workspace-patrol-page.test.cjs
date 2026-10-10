@@ -1,5 +1,5 @@
 /* 本文件对外提供隐藏 Electron 中两种真实页面的隔离验收。
- * 输入为新 userData 目录、生产 index.html 与离线 API fixture；输出为系统目录选择、显式确认/取消/迟到响应、首次四类输入、连续草稿、折叠和观测断言。
+ * 输入为新 userData 目录、生产 index.html 与离线 API fixture；输出为目录选择、四类输入、草稿、观测和中断过渡/检查身份断言。
  * 工作流为无可见窗口加载完整应用，操作默认折叠、六导航、按需检查与单路 Live，核对请求可见身份、关系图装备/键盘选择及边对账；普通会话继续展示原 Agent 消息。截图只证明布局，离线 fixture 不代替业务端到端。
  * 示例：node --test desktop/workspace-patrol-page.test.cjs。没有外部 Provider、生产库或安装应用写入。
  */
@@ -146,9 +146,78 @@ if (!process.versions.electron) {
     assert.match(await run('document.querySelector("[data-patrol-target]").textContent'), /question-next · 版本 3/);
     assert.equal(await run('document.querySelector("[data-patrol-content]").value'), "新回答草稿");
     await run('document.querySelector("[data-patrol-clear-target]").click()');
+    await run(`(async () => {
+      const form=document.querySelector('[data-patrol-composer]'), input=document.querySelector('[data-patrol-content]');
+      const details=document.querySelector('[data-patrol-details-content]');
+      input.setSelectionRange(1,4); const draft=input.value;
+      for (const interval of [40,80,120]) for(let i=0;i<7;i++) {
+        form.querySelector('[data-patrol-details]').click();
+        await new Promise(resolve=>setTimeout(resolve,interval));
+        form.querySelector('[data-patrol-details]').click();
+        if (!details.inert) throw new Error('退出详情仍可命中/Tab');
+        await Promise.all([...form.getAnimations(),...details.getAnimations()].map(animation=>animation.finished.catch(()=>{})));
+        if (!details.hidden || document.getAnimations().some(a=>a.effect.target===form)) throw new Error('反向过渡没有收口');
+      }
+      if (form!==document.querySelector('[data-patrol-composer]') || input.value!==draft || input.selectionStart!==1 || input.selectionEnd!==4) throw new Error('反向操作丢失输入');
+      const panel=document.createElement('aside');panel.hidden=true;panel.className='patrol-context-drawer';panel.innerHTML='<div data-patrol-context-content></div>';document.body.append(panel);
+      const replies=[];const inspector=FocusContextInspector.create({api:{conversation:()=>new Promise(resolve=>replies.push(resolve))},onOpenTask:()=>{throw new Error('检查不能打开任务')}});
+      inspector.mount(panel);
+      const first=inspector.select('loop-a','a',{title:'对象 A'},input);
+      const second=inspector.select('loop-a','b',{title:'对象 B'},input);
+      replies[1]({revision:{revision_id:'b-r'},messages:[]});await second;
+      replies[0]({revision:{revision_id:'a-r'},messages:[]});await first;
+      if (!panel.textContent.includes('b-r') || panel.textContent.includes('a-r')) throw new Error('迟到响应污染检查身份');
+      inspector.close(); if (!panel.inert || document.activeElement!==input) throw new Error('关闭没有隔离命中/归还焦点');
+      const reopen=inspector.select('loop-a','c',{title:'对象 C'},input); replies[2]({revision:{revision_id:'c-r'},messages:[]});await reopen;
+      await new Promise(resolve=>setTimeout(resolve,240));
+      if(panel.hidden || panel.inert || !panel.textContent.includes('c-r')) throw new Error('旧退出覆盖重开');
+      inspector.close();await new Promise(resolve=>setTimeout(resolve,240));
+      if(!panel.hidden || panel.getAnimations().length) throw new Error('抽屉退出未收口');
+      inspector.dispose();panel.remove();
+    })()`);
+    await run('document.querySelector("[data-patrol-composer] [data-patrol-details]").click()');
+    await win.webContents.debugger.attach("1.3");
+    await win.webContents.debugger.sendCommand("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    await until('document.querySelector("[data-patrol-composer]").getAnimations().length===0 && document.querySelector("[data-patrol-details-content]").getAnimations().length===0');
+    await run('document.querySelector("[data-patrol-composer] [data-patrol-details]").click()');
+    assert.equal(await run('document.querySelector("[data-patrol-details-content]").hidden && document.querySelector("[data-patrol-details-content]").inert'), true);
+    await win.webContents.debugger.sendCommand("Emulation.setEmulatedMedia", { features: [] });
+    await win.webContents.debugger.detach();
     await run('document.querySelector("[data-patrol-composer] [data-patrol-details]").click()');
     await run('window.patrolFixture.lineage = { roots:{root:"r1"}, nodes:[{context_id:"root",revision_id:"r1",generation:1}],edges:[],complete:true }; window.patrolFixture.emit("loop-completion_check", "context", "root", 1, {current_revision_id:"r1",title:"首线程"})');
     await until('document.querySelector("[data-patrol-lineage] [data-context-id=root]")');
+    await run(`(() => {
+      const manifest={nodes:Array.from({length:10},(_,i)=>({context_id:'stable-'+i,title:'稳定节点 '+i,revision:{generation:1},status:'active'})),edges:[]};
+      const host=document.createElement('div');host.style.cssText='position:fixed;inset:0;width:400px;height:300px';host.innerHTML=FocusPortfolioMapView.render(manifest,null,[]);document.body.append(host);FocusPortfolioMapView.bind(host);
+      host.querySelector('[data-portfolio-zoom=in]').click();
+      const node=host.querySelector('[data-context-id="stable-0"]');node.focus({preventScroll:true});
+      const scroll=host.querySelector('.portfolio-map-scroll');scroll.scrollLeft=30;const position=scroll.scrollLeft;
+      const observer=new MutationObserver(()=>{});observer.observe(host,{subtree:true,attributes:true,childList:true,characterData:true});
+      FocusPortfolioMapView.reconcile(host,manifest,null,[]);
+      if(observer.takeRecords().length) throw new Error('未变图谱仍改写活动 DOM');
+      manifest.nodes[0].title='真实元数据更新';FocusPortfolioMapView.reconcile(host,manifest,null,[]);
+      if(node!==host.querySelector('[data-context-id="stable-0"]') || document.activeElement!==node || scroll.scrollLeft!==position || host.querySelector('.portfolio-map').dataset.zoom!=='1.15') throw new Error('元数据更新丢失图节点/焦点/阅读/缩放');
+      observer.disconnect();host.remove();
+      const table=document.createElement('table');table.innerHTML='<tbody></tbody>';document.body.append(table);
+      const tbody=table.firstElementChild, facts=Array.from({length:20},(_,i)=>({fact_id:'stable-fact-'+i,revision:1,kind:'test',status:'observed',title:'事实 '+i}));
+      FocusLoopFactsView.reconcileRows(tbody,facts);const factButton=tbody.querySelector('button');factButton.focus({preventScroll:true});
+      observer.observe(tbody,{subtree:true,attributes:true,childList:true,characterData:true});FocusLoopFactsView.reconcileRows(tbody,facts);
+      if(observer.takeRecords().length || document.activeElement!==factButton) throw new Error('未变事实仍移动行或丢失焦点');
+      facts[0]={...facts[0],revision:2,status:'verified'};FocusLoopFactsView.reconcileRows(tbody,facts);
+      if(document.activeElement?.dataset.factId!=='stable-fact-0' || !tbody.firstElementChild.textContent.includes('已验证')) throw new Error('真实事实修订未更新或丢失焦点');
+      observer.disconnect();table.remove();
+    })()`);
+    await run('window.savedGraphNode=document.querySelector("[data-patrol-lineage] [data-context-id=root]"); window.patrolFixture.emit("loop-completion_check","context","root",2,{current_revision_id:"r1",title:"首线程更新"})');
+    await until('document.querySelector("[data-patrol-lineage] [data-context-id=root]").textContent.includes("首线程更新")');
+    assert.equal(await run('savedGraphNode===document.querySelector("[data-patrol-lineage] [data-context-id=root]")'), true);
+    await run('window.patrolFixture.holdControl=true; window.patrolFixture.controlError=true; document.querySelector("[data-patrol-control=pause]").click()');
+    assert.equal(await run('document.querySelector("[data-patrol-control=pause]").getAttribute("aria-busy")'), "true");
+    assert.match(await run('document.querySelector("[data-patrol-state]").textContent'), /推进中/);
+    await run('window.patrolFixture.releaseControl(); window.patrolFixture.holdControl=false');
+    await until('document.querySelector("[data-patrol-error]").textContent.includes("工作控制读取失败")');
+    assert.equal(await run('document.querySelector("[data-patrol-control=pause]").hasAttribute("aria-busy")'), false);
+    assert.match(await run('document.querySelector("[data-patrol-state]").textContent'), /推进中/);
+    await run('window.patrolFixture.controlError=false');
     await run('window.patrolFixture.observationError=true; window.patrolFixture.emit("loop-completion_check", "round", "round-1", 1, {number:1,observation_id:"observation-1"})');
     await until('document.querySelector("[data-patrol-observation-retry]")');
     await run('window.patrolFixture.observationError=false; document.querySelector("[data-patrol-observation-retry]").click()');
@@ -173,9 +242,10 @@ if (!process.versions.electron) {
     assert.equal(await run('window.patrolFixture.grantChanges[0].body.budgets.max_rounds'), 12);
     await run('document.querySelector("[data-patrol-dialog-close]").click(); window.patrolFixture.emit("loop-completion_check", "loop_wait_request", "typed-question", 1, {status:"open",response_mode:"text",prompt:"补充目标",response_contract:{max_length:200},scope:{}})');
     await until('document.querySelector("[data-wait-request-id=typed-question] textarea")');
-    await run('document.querySelector("[data-patrol-pending]").click(); document.querySelector("[data-wait-request-id=typed-question] textarea").value="保留回答草稿"; document.querySelector("[data-wait-request-id=typed-question] textarea").dispatchEvent(new Event("input",{bubbles:true})); window.patrolFixture.emit("loop-completion_check","fact","draft-update",1,{kind:"run",status:"observed",title:"Live 草稿验收更新"})');
+    await run('document.querySelector("[data-patrol-pending]").click(); window.savedWaitInput=document.querySelector("[data-wait-request-id=typed-question] textarea"); savedWaitInput.value="保留回答草稿"; savedWaitInput.dispatchEvent(new Event("input",{bubbles:true})); savedWaitInput.focus(); savedWaitInput.setSelectionRange(1,4); window.patrolFixture.emit("loop-completion_check","fact","draft-update",1,{kind:"run",status:"observed",title:"Live 草稿验收更新"})');
     await until('document.querySelector("[data-patrol-facts]").textContent.includes("Live 草稿验收更新")');
     assert.equal(await run('document.querySelector("[data-wait-request-id=typed-question] textarea").value'), "保留回答草稿");
+    assert.equal(await run('savedWaitInput===document.querySelector("[data-wait-request-id=typed-question] textarea") && document.activeElement===savedWaitInput && savedWaitInput.selectionStart===1 && savedWaitInput.selectionEnd===4'), true);
     await run('document.querySelector("[data-wait-request-id=typed-question] form").requestSubmit()');
     await until('window.patrolFixture.waitAnswers.length === 1');
     assert.equal(await run('window.patrolFixture.waitAnswers[0].answer.text'), "保留回答草稿");
@@ -283,6 +353,7 @@ if (!process.versions.electron) {
     await until('document.querySelector("#settingsDialog").open');
     await snapshot("settings");
     await run('document.querySelector("[data-action=close-settings]").click()');
+    await until('!document.querySelector("#settingsDialog").open');
     await run('document.querySelector("[data-action=show-patrol]:not([data-patrol-switch])").click()');
     await until('document.querySelector("[data-patrol-composer]")');
     win.setContentSize(390, 844);

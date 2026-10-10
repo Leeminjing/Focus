@@ -1,6 +1,6 @@
 /* 本文件对外提供 Patrol 与全图共用的只读 Context 检查器。
  * 输入为 Loop API、精确 Loop/Context 身份、节点摘要和显式任务打开回调；输出为非模态三页签、会话分页及版本来源。
- * 具体工作流为取消旧读请求并按 owner 隔离迟到响应；检查不改变发送身份，只有显式打开任务调用操作回调。
+ * 具体工作流为取消旧读请求并按 owner 隔离迟到响应，保留表面与阅读位置、可逆退出后归还焦点；检查不改变发送身份，只有显式打开任务调用操作回调。
  * 示例：const inspector = FocusContextInspector.create({ api, onOpenTask }); inspector.mount(panel); await inspector.select(loopId, contextId, node, trigger)。
  */
 (function (root) {
@@ -10,8 +10,13 @@
     let lifetime = null, request = null, generation = 0;
     function render() {
       if (!panel || !active) return;
-      panel.hidden = false;
-      panel.querySelector("[data-patrol-context-content]").innerHTML = view.context({ ...active.page, context_id: active.contextId }, active.node, tab);
+      const content = panel.querySelector("[data-patrol-context-content]");
+      const focused = root.document.activeElement;
+      const selector = panel.contains(focused) ? [...focused.attributes].filter(item => item.name.startsWith("data-")).map(item => `[${item.name}="${root.CSS.escape(item.value)}"]`).join("") : "";
+      const scroll = panel.scrollTop;
+      content.innerHTML = view.context({ ...active.page, context_id: active.contextId }, active.node, tab);
+      panel.scrollTop = scroll;
+      if (selector) content.querySelector(selector)?.focus({ preventScroll: true });
     }
     function failure(error) {
       if (!panel || error.name === "AbortError") return;
@@ -29,8 +34,10 @@
           before: older ? identity.page?.next_before ?? identity.page?.range?.start : undefined,
         });
         if (owner !== generation || active !== identity) return;
+        const scroll = panel.scrollTop, height = panel.scrollHeight;
         active.page = { ...page, messages: older ? [...page.messages, ...(identity.page?.messages || [])] : page.messages };
         render();
+        if (older) panel.scrollTop = scroll + panel.scrollHeight - height;
         if (tab === "sources") await sources();
       } catch (error) { if (owner === generation) failure(error); }
     }
@@ -49,8 +56,10 @@
     }
     function close() {
       if (!panel || panel.hidden) return;
-      generation++; request?.abort(); panel.hidden = true;
-      if (returnFocus?.isConnected) returnFocus.focus();
+      generation++; request?.abort(); active = null;
+      void root.FocusSurfaceTransition.visible(panel, false, { axis: "x", distance: 40 });
+      if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+      else root.document.querySelector("[data-patrol-content], #app")?.focus({ preventScroll: true });
     }
     async function click(event) {
       const button = event.target.closest("button");
@@ -71,10 +80,11 @@
     async function select(loopId, contextId, node, trigger) {
       active = { loopId, contextId, node: { context_id: contextId, ...node }, page: {} };
       tab = "overview"; returnFocus = trigger; render();
-      panel.querySelector("[data-patrol-context-close]").focus();
+      if (panel.hidden || panel.inert) void root.FocusSurfaceTransition.visible(panel, true, { axis: "x", distance: 40 });
+      panel.querySelector("[data-patrol-context-close]").focus({ preventScroll: true });
       await read();
     }
-    function dispose() { generation++; lifetime?.abort(); request?.abort(); panel = null; active = null; returnFocus = null; }
+    function dispose() { generation++; lifetime?.abort(); request?.abort(); if (panel) root.FocusSurfaceTransition.finish(panel); panel = null; active = null; returnFocus = null; }
     return Object.freeze({ mount, select, close, dispose });
   }
   root.FocusContextInspector = Object.freeze({ create });

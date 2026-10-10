@@ -1,5 +1,5 @@
 /* 本文件对外提供通用控件、卡片与对话框的视觉合同。输入为语义 class 和设计 token；输出为统一控件状态。
- * 具体工作流为重置原生按钮背景/边框后应用明确的主操作、安静操作与状态；不承载业务提交。示例：button.primary。
+ * 具体工作流为重置原生按钮背景/边框后应用明确的主操作、安静操作与状态；玻璃限于导航、输入和浮层控制面，正文保留实色；反馈不承载业务提交。示例：button.primary、.glass-surface。
  */
 button { border: 1px solid transparent; background: transparent; }
 .primary,
@@ -17,10 +17,21 @@ button {
     background var(--motion-fast) var(--ease-standard),
     color var(--motion-fast) var(--ease-standard),
     box-shadow var(--motion-fast) var(--ease-standard),
-    transform var(--motion-instant) var(--ease-out);
+    outline-color var(--motion-instant) var(--ease-out);
 }
 
-button:active:not(:disabled) { transform: scale(.985); }
+:where(button):hover:not(:disabled):where(:not(.portfolio-context-node, .app-nav-item)) { background-color: var(--control-hover); }
+button:active:not(:disabled) { background-color: var(--control-press); box-shadow: inset 0 1px 3px var(--material-shade); }
+button[aria-busy="true"] { outline: 1px solid var(--border-accent); outline-offset: 1px; cursor: progress; }
+button[aria-busy="true"]::after { content: "请求中"; font-size: 12px; color: var(--text-secondary); }
+.glass-surface {
+  background: linear-gradient(145deg, rgb(255 255 255 / 18%), transparent 46%, rgb(201 212 229 / 12%)), var(--material-fill);
+  border: 1px solid var(--material-rim);
+  backdrop-filter: var(--material-backdrop);
+  box-shadow: inset 0 2px 1px var(--material-light), inset 1px 0 1px rgb(255 255 255 / 65%), inset 0 -2px 2px var(--material-shade), var(--material-depth);
+}
+
+.glass-surface:focus-within { --material-rim: var(--border-accent); --material-light: white; }
 
 .primary {
   border: 1px solid var(--accent-primary);
@@ -145,19 +156,17 @@ dialog {
   box-shadow: var(--shadow-overlay);
 }
 
-dialog[open] { animation: dialog-enter var(--motion-deliberate) var(--ease-out); }
-
-dialog::backdrop { background: rgb(24 32 45 / 42%); animation: backdrop-enter var(--motion-standard) var(--ease-standard); }
-
-@keyframes dialog-enter {
-  from { opacity: 0; transform: translateY(6px) scale(.99); }
-  to { opacity: 1; transform: none; }
+dialog::backdrop { background: rgb(24 32 45 / 28%); opacity: 0; transition: opacity var(--motion-standard) var(--ease-standard); }
+dialog[open]::backdrop { opacity: 1; }
+dialog[data-surface-closing]::backdrop { opacity: 0; }
+@starting-style { dialog[open]::backdrop { opacity: 0; } }
+dialog:not([data-surface-managed]) {
+  opacity: 0;
+  translate: 0 10px;
+  transition: opacity var(--motion-standard) var(--ease-standard), translate var(--motion-standard) var(--ease-standard), display var(--motion-standard) allow-discrete, overlay var(--motion-standard) allow-discrete;
 }
-
-@keyframes backdrop-enter {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
+dialog[open]:not([data-surface-managed]) { opacity: 1; translate: 0 0; }
+@starting-style { dialog[open]:not([data-surface-managed]) { opacity: 0; translate: 0 10px; } }
 
 .ui-meta {
   min-width: 0;

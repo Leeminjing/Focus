@@ -1,27 +1,27 @@
 /* 本文件对外提供 Patrol 安静输入、工作详情、冻结检查与目录确认的布局。
- * 输入为 workspace-patrol/picker 的语义 DOM 和宿主 token；输出为桌面主辅列、可访问浮层及窄屏输入。
+ * 输入为 workspace-patrol/picker 的语义 DOM 和宿主 token；输出为内容实色、单层控制玻璃、桌面主辅列和窄屏输入。
  * 具体工作流为默认居中 composer，显式详情展开图/进度/观察/事实；dialog 处理模态，Context 保持非模态，长请求身份在输入区换行可读。
  * 示例：.workspace-patrol.is-quiet；所有颜色沿用宿主 token。
  */
 #app:has(.workspace-patrol) { padding: 0; }
-.workspace-patrol { min-height: 100%; padding: 26px 30px 18px; display: flex; flex-direction: column; gap: 18px; }
-.workspace-patrol.is-quiet { justify-content: center; align-items: center; background: radial-gradient(ellipse at 48% 60%, #edf2fc70, transparent 58%), #fbfbfd; }
-.workspace-patrol.is-quiet [data-patrol-composer] { width: min(770px, 88%); padding: 20px 22px 18px; border-radius: 24px; box-shadow: 0 18px 55px -20px #627faf28, 0 6px 18px #4c648209; }
+.workspace-patrol { position: relative; min-height: 100%; padding: 26px 30px 18px; display: flex; flex-direction: column; gap: 18px; }
+.workspace-patrol.is-quiet { justify-content: center; align-items: center; background: var(--surface-canvas); }
+.workspace-patrol.is-quiet [data-patrol-composer] { width: min(770px, 88%); border-radius: 24px; }
+[data-patrol-details-content][data-surface-closing] { position: absolute; inset: 26px 30px auto; }
 .patrol-composer-identity, .patrol-composer-footer, .patrol-composer-footer > div, .patrol-page-heading, .patrol-observations header { display: flex; align-items: center; gap: 10px; }
 .patrol-composer-identity strong { font-size: 14px; }
 .patrol-composer-identity > span, .patrol-composer-identity > button { color: var(--text-secondary); font-size: 12px; }
 .patrol-composer-identity > button { max-width: 100%; min-width: 0; overflow-wrap: anywhere; word-break: break-word; margin-left: auto; border: 1px solid var(--border-subtle); background: var(--surface-subtle); border-radius: 7px; padding: 5px 8px; }
-[data-patrol-composer] { width: 100%; position: sticky; bottom: 0; z-index: 3; border: 1px solid var(--border-subtle); background: var(--surface-base); padding: 12px 16px; border-radius: 19px; }
-[data-patrol-composer] textarea { display: block; width: 100%; min-height: 58px; height: 58px; border: 0; outline: 0; resize: none; background: transparent; padding: 12px 0; line-height: 1.7; }
-.is-quiet [data-patrol-composer] textarea { min-height: 108px; height: 108px; font-size: 20px; padding-top: 25px; }
-[data-patrol-composer] textarea::placeholder { color: #91a1b9; }
-[data-patrol-composer]:focus-within { border-color: #b4cff6; box-shadow: var(--focus-ring); }
+[data-patrol-composer] { width: 100%; position: sticky; bottom: 0; z-index: 3; padding: 18px 22px; border-radius: 24px; }
+[data-patrol-composer] textarea { display: block; width: 100%; min-height: 96px; height: 96px; font-size: 18px; border: 0; outline: 0; resize: none; background: transparent; padding: 12px 0; line-height: 1.7; }
+[data-patrol-composer] textarea::placeholder { color: var(--text-secondary); }
+[data-patrol-composer]:focus-within { border-color: var(--border-accent); outline: 2px solid var(--accent-primary); outline-offset: 3px; }
 .patrol-composer-footer { justify-content: space-between; flex-wrap: wrap; font-size: 12px; }
 [data-patrol-target] { min-width: 0; overflow-wrap: anywhere; }
 .patrol-composer-footer button, .patrol-composer-footer select { border: 0; background: transparent; padding: 5px; border-radius: 7px; }
 .patrol-composer-footer button { color: var(--text-accent); }
 .patrol-composer-footer button[type=submit] { background: var(--accent-primary); color: white; font-size: 22px; width: 33px; height: 33px; padding: 0; border-radius: 11px; }
-[data-patrol-state], [data-patrol-receipt] { display: block; font-size: 11px; color: var(--text-secondary); overflow-wrap: anywhere; }
+[data-patrol-state], [data-patrol-receipt] { display: block; font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
 [data-patrol-state] { margin-top: 8px; }
 [data-patrol-error] { color: var(--text-danger); font-size: 12px; }
 .patrol-page-heading { margin-bottom: 24px; }
@@ -29,7 +29,8 @@
 .patrol-page-heading h1 { margin: 8px 0; font-size: 29px; font-weight: 650; }
 .patrol-page-heading p, .patrol-page-heading small { color: var(--text-secondary); }
 .patrol-control-menu { position: relative; }
-.patrol-control-menu[open] { background: var(--surface-base); padding: 12px; border-radius: 12px; box-shadow: var(--shadow-overlay); }
+.patrol-control-menu::details-content { position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; min-width: 180px; padding: 12px; border-radius: 12px; background: var(--material-fill); backdrop-filter: var(--material-backdrop); border: 1px solid var(--material-rim); box-shadow: inset 0 1px var(--material-light), var(--shadow-overlay); opacity: 0; translate: 0 -6px; transition: opacity var(--motion-standard) var(--ease-standard), translate var(--motion-standard) var(--ease-standard), content-visibility var(--motion-standard) allow-discrete; }
+.patrol-control-menu[open]::details-content { opacity: 1; translate: 0 0; }
 .patrol-control-menu button { display: block; width: 100%; margin-top: 8px; text-align: left; }
 .patrol-observations { display: grid; grid-template-columns: minmax(0, 1fr) minmax(270px, 320px); grid-template-rows: auto auto auto; gap: 18px; }
 .patrol-observations > section { padding: 18px 20px; background: var(--surface-base); border: 1px solid var(--border-subtle); border-radius: 20px; box-shadow: var(--shadow-raised); min-width: 0; }
@@ -39,13 +40,13 @@
 .patrol-graph-card > p { color: var(--text-secondary); font-size: 12px; }
 .patrol-observation-card { grid-column: 2; }
 .patrol-facts-card { grid-column: 1 / -1; }
-.patrol-facts-card header > span, .patrol-observation-card header > span { font-size: 11px; color: var(--text-secondary); }
+.patrol-facts-card header > span, .patrol-observation-card header > span { font-size: 12px; color: var(--text-secondary); }
 [data-patrol-lineage] { height: clamp(260px, calc(100vh - 500px), 430px); overflow: auto; }
 [data-patrol-lineage] .portfolio-map { background: transparent; }
 [data-patrol-lineage] .portfolio-map-toolbar { display: none; }
 .patrol-progress-number { font-size: 38px; line-height: 1.5; color: #456081; }
 .patrol-progress-number small { font-size: 24px; color: var(--text-secondary); }
-[data-patrol-progress] p, [data-patrol-progress] small { font-size: 11px; color: var(--text-secondary); }
+[data-patrol-progress] p, [data-patrol-progress] small { font-size: 12px; color: var(--text-secondary); }
 [data-patrol-progress] ul { list-style: none; padding: 0; }
 [data-patrol-progress] li { display: grid; gap: 4px; padding: 10px 0; border-bottom: 1px solid var(--border-subtle); }
 [data-patrol-progress] li span { font-size: 12px; color: var(--text-secondary); }
@@ -53,25 +54,25 @@
 .patrol-facts table { width: 100%; text-align: left; font-size: 12px; border-collapse: collapse; }
 .patrol-facts td { padding: 10px 8px; border-bottom: 1px solid var(--border-subtle); }
 .patrol-facts td span { display: block; }
-.patrol-dialog, .patrol-picker-dialog { width: min(988px, calc(100vw - 40px)); max-height: 90vh; padding: 0; border: 1px solid var(--border-subtle); border-radius: 24px; box-shadow: var(--shadow-overlay); }
-.patrol-dialog::backdrop, .patrol-picker-dialog::backdrop { background: #56617330; backdrop-filter: blur(4px); }
+.patrol-dialog, .patrol-picker-dialog { width: min(988px, calc(100vw - 40px)); max-height: 90vh; padding: 0; border-radius: 24px; }
+.patrol-dialog::backdrop, .patrol-picker-dialog::backdrop { background: rgb(24 32 45 / 28%); }
 .patrol-dialog > header, .patrol-context-drawer header { display: flex; align-items: center; justify-content: space-between; padding: 24px 28px; border-bottom: 1px solid var(--border-subtle); }
 .patrol-dialog h2 { margin: 0; }
-[data-patrol-dialog-body] { padding: 24px 28px; overflow: auto; }
+[data-patrol-dialog-body] { background: var(--surface-base); padding: 24px 28px; overflow: auto; }
 .patrol-dialog article { padding: 18px 0; border-bottom: 1px solid var(--border-subtle); }
 .workspace-patrol pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .patrol-context-drawer { position: fixed; z-index: 35; right: 0; top: 0; bottom: 0; width: min(510px, 42vw); background: var(--surface-base); border-left: 1px solid var(--border-subtle); box-shadow: -10px 0 35px #23365812; overflow: auto; }
-.patrol-context-body { padding: 24px 28px; }
+.patrol-context-body { min-height: 160px; padding: 24px 28px; }
+.patrol-context-drawer header { position: sticky; z-index: 1; top: 0; background: var(--material-fill); backdrop-filter: var(--material-backdrop); box-shadow: inset 0 1px var(--material-light), 0 1px 4px var(--material-shade); }
 .patrol-context-drawer footer { padding: 18px 28px; border-top: 1px solid var(--border-subtle); background: var(--surface-subtle); }
 .patrol-tabs { display: flex; gap: 14px; padding: 16px 28px; border-bottom: 1px solid var(--border-subtle); flex-wrap: wrap; }
 .patrol-tabs [aria-pressed=true] { color: var(--text-accent); border-bottom: 2px solid var(--border-accent); }
-.observation-identities { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.observation-identities { margin: 24px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .observation-identities section { padding: 20px; border: 1px solid var(--border-subtle); background: var(--surface-subtle); border-radius: 14px; }
 .observation-identities strong { font-size: 20px; overflow-wrap: anywhere; }
 .observation-meta { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: var(--text-secondary); font-size: 12px; }
 .observation-question { font-size: 24px; font-weight: 500; margin: 24px 0 12px; }
 .observation-inspection { color: #456081; }
-.observation-identities { margin: 24px 0; }
 .observation-frontier { padding: 20px; border: 1px solid var(--border-subtle); border-radius: 12px; }
 .observation-source-list { list-style: none; padding: 0; }
 .observation-source-list li { padding: 18px 0; border-bottom: 1px solid var(--border-subtle); }
@@ -82,7 +83,7 @@
 .patrol-picker-heading { padding: 24px 28px; display: flex; flex-wrap: wrap; gap: 12px; border-bottom: 1px solid var(--border-subtle); }
 .patrol-picker-heading h1 { flex: 1; font-size: 20px; margin: 0; }
 .patrol-picker-heading p { width: 100%; color: var(--text-secondary); margin: 0; }
-.patrol-picker-detail { padding: 30px; text-align: center; }
+.patrol-picker-detail { background: var(--surface-base); padding: 30px; text-align: center; }
 .patrol-workspace-emblem { margin: 10px auto 20px; width: 72px; height: 72px; display: grid; place-items: center; background: var(--surface-accent); border-radius: 20px; }
 .patrol-workspace-path { overflow-wrap: anywhere; padding: 12px; background: var(--surface-subtle); }
 .patrol-picker-actions { display: flex; justify-content: center; gap: 10px; margin: 24px 0; flex-wrap: wrap; }

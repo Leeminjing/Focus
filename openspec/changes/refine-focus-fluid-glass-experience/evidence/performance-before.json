@@ -1,0 +1,78 @@
+{
+  "groups": [
+    {
+      "n": 30,
+      "p95": 17.318,
+      "max": 17.748
+    },
+    {
+      "n": 30,
+      "p95": 17.765,
+      "max": 18.103
+    },
+    {
+      "n": 30,
+      "p95": 17.613,
+      "max": 17.972
+    }
+  ],
+  "events_over_16": {
+    "n": 96,
+    "p95": 24
+  },
+  "longtasks": {
+    "n": 18,
+    "total": 3380,
+    "max": 1713
+  },
+  "raf_proxy": [
+    {
+      "nodes": 32,
+      "p95": 8.5
+    },
+    {
+      "nodes": 128,
+      "p95": 8.5
+    }
+  ],
+  "stages": {
+    "EventDispatch": {
+      "n": 4866,
+      "inclusive_ms": 150.17
+    },
+    "UpdateLayoutTree": {
+      "n": 827,
+      "inclusive_ms": 2296.29
+    },
+    "Layout": {
+      "n": 661,
+      "inclusive_ms": 3157.32
+    },
+    "Paint": {
+      "n": 11509,
+      "inclusive_ms": 1332.82
+    },
+    "Layerize": {
+      "n": 3223,
+      "inclusive_ms": 148.04
+    },
+    "CompositeLayers": {
+      "n": 0,
+      "inclusive_ms": 0.0
+    }
+  },
+  "gpu": "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A788) Direct3D11 vs_5_0 ps_5_0, D3D11-32.0.101.6556)",
+  "terminal": {
+    "animations": 0,
+    "detailsHidden": true,
+    "detailsInert": false,
+    "drawerHidden": true
+  },
+  "conversation": {
+    "start": 63718.39999999106,
+    "end": 84566.19999998808,
+    "messages": 1000,
+    "rendered": 80,
+    "draft": "保留任务草稿 90"
+  }
+}

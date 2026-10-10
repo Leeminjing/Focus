@@ -1,0 +1,11 @@
+AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
++ actual - expected
+
+  [
++   17,
++   17
+-   2,
+-   5
+  ]
+
+    at C:\Users\brubing\Desktop\ag-project\focus\desktop\surface-experience.e2e.cjs:84:10

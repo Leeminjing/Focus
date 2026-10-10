@@ -1,5 +1,6 @@
 /*
  * Loop 激活由服务端解析初始 Run 装备，客户端不从详情缓存猜测权限；继承请求输出完整有效授权快照。Main 接口的 direct_message 回执仅表示受理，不写 active_run 或材料执行历史。默认 Patrol，任务列表与材料检查器承接传统操作，复杂能力通过明确次级入口使用原业务用例。
+ * 控制材质复用语义 token；检查器显隐使用 FocusSurfaceTransition 保留壳层，退出即隔离命中、结束后退出布局；业务状态仍来自原 API/Live。
  * Loop 介入提交保留原文；成功后只清空同一 Context、模式和内容的当前表单，重绘替换及提交期间的新草稿不被旧节点重置影响。全图节点在选择/装备模式复用原操作，普通检查仍不改变发送目标；选择重绘恢复原节点焦点。
  * 任务工具提供手工整理并复用既有 quick-apply；已有压缩待决仍使用原 resume。授权/等待表单解析复用共享视图，文件预览暂时隐藏材料检查器，关闭后恢复原 UI 偏好；独立会话的内部目录不呈现为用户已绑定工作区。
  * 会话 standard Patrol 由独立 Document/Workbench/Branches 模块负责 typed 左右编排、精确来源选择、保存、只读请求预览和精确执行分支；本文件组合路由、装备、检查器与运行订阅，材料变更按所属任务使检查过期并按当前页面刷新，保留编辑挂载。
@@ -191,7 +192,9 @@ const inspectorContent = document.querySelector("#inspectorContent");
 const shellTaskTitle = document.querySelector("#shellTaskTitle");
 const shellTaskMeta = document.querySelector("#shellTaskMeta");
 const dialog = document.querySelector("#taskDialog");
+dialog?.addEventListener("cancel", event => { event.preventDefault(); void window.FocusSurfaceTransition.visible(dialog, false, { modal: true }); });
 const settingsDialog = document.querySelector("#settingsDialog");
+settingsDialog?.addEventListener("cancel", event => { event.preventDefault(); void window.FocusSurfaceTransition.visible(settingsDialog, false, { modal: true }); });
 const skillPicker = window.FocusSkillPicker;
 const contextEditor = window.FocusContextEditor;
 const compressionPanel = window.FocusCompressionPanel;
@@ -1328,7 +1331,8 @@ function renderMaterialGroups(task) {
 function renderInspector() {
   if (!appInspector?.setAttribute || !inspectorContent) return;
   const open = state.inspector.open && state.view !== "patrol" && !(state.view === "focus" && state.filesPanel);
-  appInspector.hidden = !open;
+  if (!appInspector.hasAttribute("data-surface-closing")) appInspector.hidden = !open;
+  appInspector.inert = !open;
   appInspector.setAttribute("aria-hidden", String(!open));
   syncShellResizerVisibility();
   if (!open) return;
@@ -1395,6 +1399,8 @@ function openInspector(tab, trigger) {
   state.inspector.tab = tab;
   if (trigger && !trigger.matches?.('[role="tab"]')) state.inspector.returnFocus = trigger;
   else if (!wasOpen || !state.inspector.returnFocus) state.inspector.returnFocus = trigger || document.activeElement;
+  const exiting = appInspector?.inert;
+  if (!wasOpen || exiting) void window.FocusSurfaceTransition.visible(appInspector, true, { axis: "x", distance: 24 });
   renderShellChrome();
   requestAnimationFrame(() => {
     if (wasOpen && trigger?.matches?.('[role="tab"]')) trigger.focus();
@@ -1406,8 +1412,10 @@ function closeInspector() {
   const returnFocus = state.inspector.returnFocus;
   state.inspector.open = false;
   state.inspector.returnFocus = null;
+  appInspector.dataset.surfaceClosing = "";
+  void window.FocusSurfaceTransition.visible(appInspector, false, { axis: "x", distance: 24 }).then(done => { if (done && !state.inspector.open) syncShellResizerVisibility(); });
   renderShellChrome();
-  requestAnimationFrame(() => { if (returnFocus?.isConnected) returnFocus.focus(); else app.focus(); });
+  if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true }); else app.focus();
 }
 
 function normalizeSkillNames(value) {
@@ -1678,7 +1686,7 @@ function renderFocus(task = activeTask()) {
         <div class="conversation" id="conversation"></div>
         <div class="patrol-avatar-layer" id="patrolAvatarLayer" aria-label="会话 Patrol 小兵"${detail.ui_state?.show_session_patrol ? "" : " hidden"}></div>
         <div class="focus-bottom">
-          <div class="composer-shell">
+          <div class="composer-shell glass-surface">
             <div class="composer-context"><span class="ui-badge is-active">${isAssembly ? uiText("focus.free_session", "自由会话") : uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
             <div class="composer">
               ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(composerDraft.value(task.task_id, detail.ui_state?.input || ""))}</textarea>`, true)}
@@ -3114,7 +3122,7 @@ function renderMap(focusKey = null) {
       <button class="text-button" data-action="batch-cascade-delete-selected" ${sel ? "" : "disabled"}>级联删除</button>
       <button class="text-button" data-action="toggle-selection-mode">取消</button>`
     : `<button class="text-button" data-action="toggle-selection-mode">批量删除</button>`;
-  const toolbar = `<div class="map-toolbar">${presentationControls}<button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">${state.soldierArmed ? "已装备小兵 · 选择任务" : "装备小兵"}</button>${batchControls}</div>`;
+  const toolbar = `<div class="map-toolbar glass-surface">${presentationControls}<button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">${state.soldierArmed ? "已装备小兵 · 选择任务" : "装备小兵"}</button>${batchControls}</div>`;
   const manifest = mapPortfolio.manifest;
   const projection = manifest ? { contexts: Object.fromEntries(manifest.nodes.map(node => [node.context_id, { entity_id: node.context_id, state: node }])) } : null;
   const graph = mapPortfolio.snapshot ? window.FocusWorkspacePatrolView.lineage(mapPortfolio.snapshot, projection) : `<p>${escapeHtml(mapPortfolio.error || (mapPortfolio.loading ? "正在读取已提交关系" : "此工作区尚无已提交 Patrol 关系，可使用层次/卡片浏览已有任务。"))}</p>`;
@@ -4679,7 +4687,7 @@ function renderAccessModePicker(target) {
     </button>`).join("");
   return `<div class="access-mode-picker" data-access-mode-target="${target}" data-mode="${mode}">
     <button type="button" class="access-mode-chip is-${mode}" data-action="toggle-access-mode" data-access-mode-target="${target}" aria-haspopup="menu" aria-expanded="false" title="${escapeHtml(uiText("access.mode_switch_hint", "切换本机资源访问模式"))}">${shield}<span class="access-mode-label">${escapeHtml(label)}</span><span class="access-mode-caret" aria-hidden="true">▾</span></button>
-    <div class="access-mode-menu" role="menu" hidden>
+    <div class="access-mode-menu glass-surface" role="menu" hidden>
       <div class="access-mode-menu-head"><strong>${escapeHtml(uiText("access.mode_menu_title", "文件访问模式"))}</strong><span>${escapeHtml(uiText("access.mode_menu_scope", "当前会话"))}</span></div>
       <div class="access-mode-options">${options}</div>
       <p class="access-mode-menu-note">${escapeHtml(uiText("access.ability_boundary", "工具是否可用与进程文件边界分别生效"))}</p>
@@ -4696,10 +4704,12 @@ function readAccessModeFromDom(target) {
 
 function closeAccessModeMenus() {
   document.querySelectorAll(".access-mode-menu").forEach(menu => {
-    menu.hidden = true;
-    menu.dataset.confirming = "false";
-    const risk = menu.querySelector(".access-mode-risk");
-    if (risk) risk.hidden = true;
+    void window.FocusSurfaceTransition.visible(menu, false, { distance: 8 }).then(done => {
+      if (!done) return;
+      menu.dataset.confirming = "false";
+      const risk = menu.querySelector(".access-mode-risk");
+      if (risk) risk.hidden = true;
+    });
   });
   document.querySelectorAll('[data-action="toggle-access-mode"]').forEach(button => {
     button.setAttribute("aria-expanded", "false");
@@ -4710,9 +4720,9 @@ function toggleAccessModeMenu(button) {
   const picker = button.closest(".access-mode-picker");
   const menu = picker?.querySelector(".access-mode-menu");
   if (!menu) return;
-  const open = menu.hidden;
+  const open = menu.hidden || menu.inert;
   closeAccessModeMenus();
-  menu.hidden = !open;
+  if (open) void window.FocusSurfaceTransition.visible(menu, true, { distance: 8 });
   button.setAttribute("aria-expanded", String(open));
   const risk = picker.querySelector(".access-mode-risk");
   if (risk) risk.hidden = true;
@@ -5491,7 +5501,7 @@ async function createTask(form) {
       method: "POST",
       body: JSON.stringify({ title, access_mode: accessMode.readNewSessionDefault(window.localStorage) }),
     });
-    dialog.close(); replaceTasks([...state.tasks, task]); state.activeTaskId = task.task_id; state.view = "focus";
+    void window.FocusSurfaceTransition.visible(dialog, false, { modal: true }); replaceTasks([...state.tasks, task]); state.activeTaskId = task.task_id; state.view = "focus";
     await hydrateActive(); render();
   } catch (error) { setStatus(error.message, true); }
   finally {
@@ -5749,7 +5759,7 @@ async function deleteContext(contextId, cascade) {
   try {
     await api(`/desktop/api/contexts/${contextId}${cascade ? "?cascade=true" : ""}`, { method: "DELETE" });
     setStatus(cascade ? "已级联删除会话" : "已删除会话");
-    if (settingsDialog?.open) settingsDialog.close();
+    if (settingsDialog?.open) void window.FocusSurfaceTransition.visible(settingsDialog, false, { modal: true });
     return refreshAfterSessionChange();
   } catch (error) { return setStatus(error.message, true); }
 }
@@ -6147,6 +6157,7 @@ function syncLanguageControls() {
 }
 
 async function openSettings() {
+  if (!settingsDialog?.open || settingsDialog.inert) void window.FocusSurfaceTransition.visible(settingsDialog, true, { modal: true, source: document.activeElement });
   try {
     const sessions = await api("/desktop/api/sessions/archived");
     const list = document.querySelector("#archivedSessions");
@@ -6185,7 +6196,6 @@ async function openSettings() {
       sandboxHost.textContent = error.message;
     }
   }
-  if (!settingsDialog?.open) settingsDialog?.showModal();
 }
 
 function renderSandboxStatus(status) {
@@ -6279,9 +6289,9 @@ async function handleDocumentClick(event) {
     if (titleInput && ["新任务", "New Task"].includes(titleInput.value)) {
       titleInput.value = uiText("dialog.default_title", "新任务");
     }
-    return dialog.showModal();
+    return window.FocusSurfaceTransition.visible(dialog, true, { modal: true, source: button });
   }
-  if (action === "close-task-dialog") return dialog.close();
+  if (action === "close-task-dialog") return window.FocusSurfaceTransition.visible(dialog, false, { modal: true });
   if (action === "pick-workspace") return pickWorkspace();
   if (action === "select-skill") return selectSkill(button.dataset.pickerKind, button.dataset.skillName);
   if (action === "select-commit") return selectCommitCommand(button.dataset.pickerKind);
@@ -6327,12 +6337,17 @@ async function handleDocumentClick(event) {
     const loopId = state.loop.loopId;
     if (!loopId) return;
     const detail = await loopApi.factDetail(loopId, button.dataset.factId);
+    if (state.loop.loopId !== loopId) return;
     const panel = document.createElement("dialog");
-    panel.className = "patrol-dialog";
-    panel.innerHTML = `<header><h2>事实与来源</h2><form method="dialog"><button aria-label="关闭">×</button></form></header>${window.FocusLoopFactsView.renderDetail(detail)}`;
+    panel.className = "patrol-dialog glass-surface";
+    panel.setAttribute("aria-label", "事实与来源");
+    panel.innerHTML = `<header><h2>事实与来源</h2><form method="dialog"><button aria-label="关闭">×</button></form></header><div data-patrol-dialog-body>${window.FocusLoopFactsView.renderDetail(detail)}</div>`;
     document.body.append(panel);
     panel.addEventListener("close", () => panel.remove(), { once: true });
-    panel.showModal();
+    const dismiss = event => { event.preventDefault(); void window.FocusSurfaceTransition.visible(panel, false, { modal: true }); };
+    panel.addEventListener("cancel", dismiss);
+    panel.querySelector("form").addEventListener("submit", dismiss);
+    void window.FocusSurfaceTransition.visible(panel, true, { modal: true, source: button });
     return;
   }
   if (action === "loop-resume-current-mission") return resumeLoopWithCurrentMission(loopStore?.get().snapshot?.wait_request);
@@ -6433,7 +6448,7 @@ async function handleDocumentClick(event) {
   if (action === "derive-context") return openContextEditor(state.activeTaskId);
   if (action === "organize-context") return openCompressionView(activeTask(), null, null, true);
   if (action === "open-settings") return openSettings();
-  if (action === "close-settings") return settingsDialog.close();
+  if (action === "close-settings") return void window.FocusSurfaceTransition.visible(settingsDialog, false, { modal: true });
   if (action === "settings-tab") return selectSettingsTab(button.dataset.settingsTab);
   if (action === "model-add") return runUiAction(addModelEntry);
   if (action === "model-edit") return runUiAction(() => startModelDraft(Number(button.dataset.modelIndex)));

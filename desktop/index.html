@@ -39,7 +39,7 @@
     </header>
     <section id="accessPending" class="access-pending" role="region" aria-label="后台执行主体的本机资源请求" data-i18n-aria-label="access.background_title" hidden></section>
     <div class="app-shell">
-      <nav id="appNavigation" class="app-navigation" aria-label="全局导航">
+      <nav id="appNavigation" class="app-navigation glass-surface" aria-label="全局导航">
         <button class="shell-workspace-button" data-action="show-patrol" data-patrol-switch><strong id="shellWorkspaceName">选择工作区</strong><span>Patrol 工作区</span></button>
         <button class="app-nav-item" data-action="show-patrol" data-nav-key="patrol"><span class="app-nav-label">Patrol</span></button>
         <button class="app-nav-item" data-action="focus-home" data-nav-key="focus">
@@ -69,7 +69,7 @@
       </section>
       <div class="shell-resizer shell-resizer-inspector" role="separator" aria-orientation="vertical" aria-label="调整检查器宽度" title="拖拽调整检查器宽度"></div>
       <aside id="appInspector" class="app-inspector" tabindex="-1" aria-label="任务检查器" hidden>
-        <div class="inspector-tabs" role="tablist" aria-label="检查器内容">
+        <div class="inspector-tabs glass-surface" role="tablist" aria-label="检查器内容">
           <button role="tab" data-action="open-inspector-tab" data-inspector-tab="context" data-i18n="inspector.contexts">上下文</button>
           <button role="tab" data-action="open-inspector-tab" data-inspector-tab="materials" data-i18n="inspector.materials">材料</button>
           <button role="tab" data-action="open-inspector-tab" data-inspector-tab="agents" data-i18n="inspector.agents">代理</button>
@@ -93,7 +93,7 @@
     </form>
   </dialog>
   <dialog id="settingsDialog" class="settings-dialog">
-    <header class="settings-dialog-head">
+    <header class="settings-dialog-head glass-surface">
       <div>
         <h2 data-i18n="settings.title">设置</h2>
         <span class="muted tiny" data-i18n="settings.subtitle">Focus 桌面配置</span>
@@ -247,6 +247,7 @@
   <script src="./loop-console-view.js?v=20260916b"></script>
   <script src="./loop-expansion-budget.js?v=20260926a"></script>
   <script src="./loop-view.js?v=20260926a"></script>
+  <script src="./surface-transition.js"></script>
   <script src="./workspace-patrol-inputs.js"></script>
   <script src="./workspace-patrol-view.js"></script>
   <script src="./observation-view.js"></script>

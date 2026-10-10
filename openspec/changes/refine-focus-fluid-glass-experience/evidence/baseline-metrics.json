@@ -1,0 +1,865 @@
+{
+  "samples": [
+    {
+      "label": "toggle-0-sync",
+      "t": 4383.199999988079,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-0-frame",
+      "t": 4383.899999991059,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-1-sync",
+      "t": 4384.79999999702,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-1-frame",
+      "t": 4393,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-2-sync",
+      "t": 4394.199999988079,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-2-frame",
+      "t": 4409.0999999940395,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-3-sync",
+      "t": 4409.899999991059,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-3-frame",
+      "t": 4425.899999991059,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-4-sync",
+      "t": 4427.5,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-4-frame",
+      "t": 4442.699999988079,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-5-sync",
+      "t": 4443.29999999702,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-5-frame",
+      "t": 4459.5999999940395,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-6-sync",
+      "t": 4461,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-6-frame",
+      "t": 4476.199999988079,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-7-sync",
+      "t": 4476.79999999702,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-7-frame",
+      "t": 4493.5,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-8-sync",
+      "t": 4494.899999991059,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-8-frame",
+      "t": 4509.5,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-9-sync",
+      "t": 4510.0999999940395,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-9-frame",
+      "t": 4525.5999999940395,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-10-sync",
+      "t": 4527.0999999940395,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-10-frame",
+      "t": 4543.5,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-11-sync",
+      "t": 4544.199999988079,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-11-frame",
+      "t": 4559.29999999702,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-12-sync",
+      "t": 4560.79999999702,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-12-frame",
+      "t": 4575.79999999702,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-13-sync",
+      "t": 4576.29999999702,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-13-frame",
+      "t": 4592.79999999702,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-14-sync",
+      "t": 4594.0999999940395,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-14-frame",
+      "t": 4610,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-15-sync",
+      "t": 4610.5,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-15-frame",
+      "t": 4625.899999991059,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-16-sync",
+      "t": 4627.29999999702,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-16-frame",
+      "t": 4642,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-17-sync",
+      "t": 4642.699999988079,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-17-frame",
+      "t": 4658.79999999702,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-18-sync",
+      "t": 4660.5,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-18-frame",
+      "t": 4676.5,
+      "x": 234,
+      "y": 735.953125,
+      "width": 1326,
+      "height": 177.046875,
+      "detailsHidden": false,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-19-sync",
+      "t": 4677.0999999940395,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    },
+    {
+      "label": "toggle-19-frame",
+      "t": 4692.79999999702,
+      "x": 517,
+      "y": 339.96875,
+      "width": 770,
+      "height": 241.046875,
+      "detailsHidden": true,
+      "animations": 0,
+      "draft": "基线草稿：未发送",
+      "selection": [
+        2,
+        5
+      ],
+      "focus": false
+    }
+  ],
+  "latencies": [
+    1,
+    9,
+    16.099999994039536,
+    16.799999997019768,
+    16.700000002980232,
+    16.900000005960464,
+    16.599999994039536,
+    17.30000001192093,
+    15.899999991059303,
+    16.099999994039536,
+    17.80000001192093,
+    15.799999997019768,
+    16.399999991059303,
+    17,
+    17.200000002980232,
+    15.899999991059303,
+    16,
+    16.799999997019768,
+    17.600000008940697,
+    16.299999997019768
+  ],
+  "frames": [
+    15.500000002980414,
+    16.699999999999818,
+    16.699999999999818,
+    16.699999999999818,
+    16.600000000000364,
+    16.699999999999818,
+    16.699999999999818,
+    16.700000000000728,
+    16.599999999999454,
+    16.699999999999818,
+    16.700000000000728,
+    16.599999999999454,
+    16.699999999999818,
+    16.600000000000364,
+    16.699999999999818,
+    16.699999999999818,
+    16.600000000000364,
+    16.699999999999818,
+    16.699999999999818,
+    16.600000000000364,
+    16.699999999999818,
+    16.699999999999818,
+    16.700000000000728,
+    16.599999999999454,
+    16.699999999999818,
+    16.700000000000728,
+    16.599999999999454,
+    16.699999999999818,
+    16.700000000000728,
+    16.599999999999454,
+    16.699999999999818,
+    16.600000000000364,
+    16.699999999999818,
+    16.699999999999818,
+    16.600000000000364,
+    16.699999999999818,
+    16.600000000000364,
+    16.800000000000182,
+    16.599999999999454,
+    16.600000000000364,
+    16.800000000000182,
+    16.599999999999454,
+    16.699999999999818,
+    16.600000000000364,
+    16.699999999999818,
+    16.699999999999818,
+    16.700000000000728,
+    16.599999999999454,
+    16.699999999999818,
+    16.600000000000364,
+    16.600000000000364,
+    16.799999999999272,
+    16.600000000000364,
+    16.600000000000364,
+    16.799999999999272,
+    16.600000000000364,
+    16.699999999999818,
+    16.600000000000364,
+    16.699999999999818,
+    16.699999999999818,
+    16.600000000000364
+  ],
+  "longTasks": [],
+  "formRetained": true,
+  "environment": {
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.129 Electron/43.2.0 Safari/537.36",
+    "dpr": 1,
+    "viewport": [
+      1600,
+      913
+    ],
+    "reducedMotion": false
+  },
+  "styles": [
+    {
+      "selector": "[data-patrol-composer]",
+      "background": "rgb(255, 255, 255)",
+      "backdropFilter": "none",
+      "transition": "all",
+      "animation": "none"
+    },
+    {
+      "selector": ".patrol-context-drawer",
+      "background": "rgb(255, 255, 255)",
+      "backdropFilter": "none",
+      "transition": "all",
+      "animation": "none"
+    },
+    {
+      "selector": ".app-navigation",
+      "background": "rgba(0, 0, 0, 0)",
+      "backdropFilter": "none",
+      "transition": "all",
+      "animation": "none"
+    }
+  ],
+  "runtime": {
+    "node": "24.18.0",
+    "acorn": "8.16.0",
+    "ada": "3.4.4",
+    "amaro": "1.1.9",
+    "ares": "1.34.6",
+    "brotli": "1.2.0",
+    "cldr": "48.0",
+    "icu": "78.2",
+    "llhttp": "9.4.2",
+    "merve": "1.2.2",
+    "modules": "148",
+    "napi": "10",
+    "nbytes": "0.1.4",
+    "ncrypto": "0.0.1",
+    "nghttp2": "1.69.0",
+    "nghttp3": "",
+    "ngtcp2": "",
+    "openssl": "0.0.0",
+    "simdjson": "4.6.4",
+    "simdutf": "7.7.0",
+    "sqlite": "3.53.1",
+    "tz": "2025c",
+    "undici": "7.28.0",
+    "unicode": "17.0",
+    "uv": "1.52.1",
+    "uvwasi": "0.0.23",
+    "v8": "15.0.1240245-electron.0",
+    "zlib": "1.3.2.1-motley",
+    "zstd": "1.6.0",
+    "electron": "43.2.0",
+    "chrome": "150.0.7871.129"
+  },
+  "graphics": {
+    "auxAttributes": {
+      "amdSwitchable": false,
+      "canSupportThreadedTextureMailbox": false,
+      "directMLFeatureLevel": "Not supported",
+      "dx12FeatureLevel": "Not supported",
+      "glImplementationParts": "(gl=none,angle=none)",
+      "glResetNotificationStrategy": 0,
+      "inProcessGpu": true,
+      "initializationTime": 0,
+      "isAsan": false,
+      "isClangCoverage": false,
+      "jpegDecodeAcceleratorSupported": false,
+      "optimus": false,
+      "overlayInfo": {
+        "bgra8OverlaySupport": "NONE",
+        "directComposition": false,
+        "nv12OverlaySupport": "NONE",
+        "p010OverlaySupport": "NONE",
+        "rgb10a2OverlaySupport": "NONE",
+        "supportsOverlays": false,
+        "yuy2OverlaySupport": "NONE"
+      },
+      "passthroughCmdDecoder": false,
+      "sandboxed": false,
+      "skiaBackendType": "None",
+      "subpixelFontRendering": true,
+      "supportsD3dSharedImages": false,
+      "supportsDirectML": false,
+      "supportsDx12": false,
+      "supportsVulkan": false,
+      "targetCpuBits": 64,
+      "visibilityCallbackCallCount": 0,
+      "vulkanVersion": "Not supported"
+    },
+    "gpuDevice": [
+      {
+        "active": false,
+        "deviceId": 42888,
+        "deviceString": "Intel(R) UHD Graphics",
+        "driverVersion": "32.0.101.6556",
+        "gpuPreference": 2,
+        "revision": 4,
+        "subSysId": -1951723460,
+        "vendorId": 32902
+      },
+      {
+        "active": false,
+        "deviceId": 10464,
+        "deviceString": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "driverVersion": "32.0.15.9282",
+        "gpuPreference": 3,
+        "revision": 161,
+        "subSysId": -1951723460,
+        "vendorId": 4318
+      },
+      {
+        "active": false,
+        "deviceId": 140,
+        "deviceString": "Microsoft Basic Render Driver",
+        "driverVersion": "10.0.26100.9278",
+        "gpuPreference": 0,
+        "revision": 0,
+        "subSysId": 0,
+        "vendorId": 5140
+      }
+    ]
+  },
+  "hardwareAccelerationEnabled": false
+}
