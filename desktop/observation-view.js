@@ -1,5 +1,5 @@
 /* 本文件对外提供冻结 Observation 的摘要与分页检查 HTML。
- * 输入为同一 Observation 白名单响应和已读取 section；输出为人类可读依据、独立前序与折叠精确身份。
+ * 输入为同一 Observation 白名单响应和已读取 section；输出为人类可读依据、可选紧凑工作台摘要、独立前序与折叠精确身份。
  * 具体工作流为只按冻结内容呈现来源/状态和分页，分别显示来源、前序历史、关系覆盖与分页完整性，保留 legacy/权限边界，不以实时状态填充历史。
  * 示例：FocusObservationView.render(summary, { sources: page })。
  */
@@ -28,8 +28,9 @@
     const fields = [["冻结来源覆盖", summary.sources?.complete], ["前序历史覆盖", summary.previous_progress?.history_complete], ["来源关系覆盖", summary.lineage?.complete]];
     return `<p class="observation-coverage">${fields.map(([label, value]) => `${label}：${value === true ? "完整" : value === false ? "不完整" : "未确认"}`).join(" · ")}</p>`;
   }
-  function card(summary) {
+  function card(summary, { compact = false } = {}) {
     if (!summary) return "本轮尚未冻结";
+    if (compact) return `<h3>OBSERVATION · Round ${escape(summary.round_number ?? "—")}</h3><p>本轮冻结 ${summary.sources.total} 个任务来源与 ${summary.lineage.node_count} 个 Revision。</p>`;
     return `<h3>Round ${escape(summary.round_number ?? "—")} 看到了什么</h3><p>本轮冻结 ${summary.sources.total} 个任务来源与 ${summary.lineage.node_count} 个 Revision。</p><small>基于前序 ${short(summary.previous_progress.progress_id)} · ${time(summary.frozen_at)}</small>${coverage(summary)}`;
   }
   function render(summary, sections = {}) {

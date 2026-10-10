@@ -1,6 +1,6 @@
 /* 本文件对外提供真实 Patrol/普通会话页面验收的离线 HTTP 与 Live fixture。
  * 输入为 index.html 的实际 API 请求和系统目录选择调用；输出为精确选中路径、文件夹绑定、稳定输入回执和独立事件。
- * 工作流为沿用普通会话 fixture，可取消/拒绝/暂停目录选择和绑定；旧目录列表请求显式失败，发送回执和观测独立提交，冻结覆盖不完整但页已读完，记录装备调用的实际 draft-open 路由。
+ * 工作流为沿用普通会话 fixture，可取消/拒绝/暂停目录选择和绑定；旧目录列表请求显式失败，发送回执和观测独立提交，冻结覆盖不完整但页已读完，记录装备调用的实际 draft-open 路由；可注入图读取失败及精确版本会话，均仅限隔离测试。
  * 示例：BrowserWindow({ webPreferences: { preload: __filename, contextIsolation: false } })。
  */
 require("./context-ui-test-preload.cjs");
@@ -103,7 +103,14 @@ window.fetch = async (input, options = {}) => {
     task_progress: { entity_id: live[1], revision: 1, updated_sequence: Math.max(1, sequence), state: { generation: 0, document: { items: [] } } } });
   const stream = path.match(/\/agent-loops\/(loop-[^/]+)\/live\/stream$/);
   if (stream) return new Response(new ReadableStream({ start(controller) { streams.set(stream[1], controller); options.signal?.addEventListener("abort", () => { streams.delete(stream[1]); controller.close(); }, { once: true }); } }), { headers: { "Content-Type": "text/event-stream" } });
-  if (path.endsWith("/lineage") && path.startsWith(prefix)) return json(window.patrolFixture.lineage);
+  if (path.endsWith("/lineage") && path.startsWith(prefix)) return window.patrolFixture.lineageError ? new Response("关系读取失败", {status:503}) : json(window.patrolFixture.lineage);
+  const graphContext = path.match(/\/agent-loops\/[^/]+\/contexts\/([^/]+)\/conversation$/);
+  if (graphContext && window.patrolFixture.graphConversations) {
+    const id = graphContext[1], revision = url.searchParams.get("revision_id") || window.patrolFixture.lineage.roots[id];
+    if (!window.patrolFixture.lineage.roots[id]) return new Response("Context 不属于当前 Loop", {status:404});
+    const node = window.patrolFixture.lineage.nodes.find(node => node.revision_id === revision);
+    return json({ revision:{revision_id:revision,generation:node?.generation}, messages:[{index:0,message:{role:"ai",content:"隔离版本检查 "+revision}}],total:1,has_more:false });
+  }
   const observation = path.match(/\/agent-loops\/[^/]+\/observations\/([^/]+)$/);
   if (observation) {
     if (window.patrolFixture.observationError) return new Response("冻结读取暂不可用", { status: 503 });

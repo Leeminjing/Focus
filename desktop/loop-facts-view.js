@@ -1,6 +1,6 @@
 /*
- * 本文件对外提供 Agent Loop 可追溯事实抽屉、renderRows、reconcileRows、共用详情及验证状态/业务结果筛选选项。
- * 输入为物化事实、当前 Context 和筛选；输出为事实表 HTML，或按 fact_id 原位更新的 DOM 行。
+ * 本文件对外提供 Agent Loop 可追溯事实抽屉、renderRows、reconcileRows、时间流 renderTimeline/reconcileTimeline、共用详情及验证状态/业务结果筛选选项。
+ * 输入为物化事实、当前 Context 和筛选；输出为事实表或时间流 HTML，或按 fact_id 原位更新的 DOM；两种呈现共用状态和证据标签。
  * 具体工作流为只呈现领域 revision 并排除历史 tool 条目；未变行不移出 tbody、不改写签名，按实际顺序原位更新状态；稳定 fact_id 来源按钮进入真实证据检查。
  * 示例：`FocusLoopFactsView.reconcileRows(tbody, facts)`。
  */
@@ -30,14 +30,23 @@
     return `<tr data-fact-id="${escape(item.fact_id)}" data-fact-revision="${escape(item.revision || 1)}" class="is-${escape(item.status)}"><td>${escape(timeLabel(item.occurred_at))}</td><td><strong>${escape(item.context_id)}</strong></td><td><span class="fact-kind">${escape(item.kind)}</span></td><td><strong>${escape(item.title)}</strong><span>${escape(item.summary)}</span></td><td><span class="fact-status is-${escape(item.status)}">${escape(factStates[item.status] || item.status)}</span>${item.outcome_status ? `<small>${escape(outcomeStates[item.outcome_status] || item.outcome_status)}</small>` : ""}</td><td><button class="text-button" data-action="inspect-loop-fact" data-fact-id="${escape(item.fact_id)}">${escape(evidenceLabel(item))} ↗</button></td></tr>`;
   }
 
+  function timelineHtml(item) {
+    return `<article data-fact-id="${escape(item.fact_id)}" data-fact-revision="${escape(item.revision || 1)}" class="is-${escape(item.status)}"><time>${escape(timeLabel(item.occurred_at))}</time><button data-fact-id="${escape(item.fact_id)}" data-action="inspect-loop-fact">${escape(item.title || item.kind)}</button><p>${escape(item.summary)}</p><small>${escape(factStates[item.status] || item.status || "待确认")}${item.outcome_status ? ` · 结果${escape(outcomeStates[item.outcome_status] || item.outcome_status)}` : ""}</small></article>`;
+  }
+  function renderTimeline(items) {
+    return items.filter(item => item.kind !== "tool").map(timelineHtml).join("") || '<p data-fact-empty>暂无可验证事实</p>';
+  }
+  const reconcileTimeline = (host, items) => reconcileRows(host, items, "timeline");
+
   function renderRows(items) {
     return items.filter(item => item.kind !== "tool").map(rowHtml).join("") || '<tr data-fact-empty><td colspan="6" class="history-boundary">暂无可验证事实</td></tr>';
   }
 
-  function reconcileRows(tbody, items) {
+  function reconcileRows(tbody, items, presentation = "table") {
+    const itemHtml = presentation === "timeline" ? timelineHtml : rowHtml;
     items = items.filter(item => item.kind !== "tool");
     if (!tbody || typeof document !== "object") return false;
-    const existing = new Map([...tbody.querySelectorAll("tr[data-fact-id]")].map(row => [row.dataset.factId, row]));
+    const existing = new Map([...tbody.querySelectorAll(":scope > [data-fact-id]")].map(row => [row.dataset.factId, row]));
     const focusId = tbody.contains(document.activeElement) ? document.activeElement.dataset.factId : null;
     let previous = null;
     for (const item of items) {
@@ -45,13 +54,13 @@
       let row = existing.get(item.fact_id);
       if (!row) {
         const template = document.createElement("template");
-        template.innerHTML = rowHtml(item);
+        template.innerHTML = itemHtml(item);
         row = template.content.firstElementChild;
       } else {
         existing.delete(item.fact_id);
         if (row.dataset.factSignature !== signature) {
           const template = document.createElement("template");
-          template.innerHTML = rowHtml(item);
+          template.innerHTML = itemHtml(item);
           const next = template.content.firstElementChild;
           row.className = next.className;
           row.dataset.factRevision = next.dataset.factRevision;
@@ -67,7 +76,7 @@
     if (items.length) tbody.querySelector("[data-fact-empty]")?.remove();
     if (!items.length && !tbody.querySelector("[data-fact-empty]")) {
       const template = document.createElement("template");
-      template.innerHTML = renderRows(items);
+      template.innerHTML = presentation === "timeline" ? renderTimeline(items) : renderRows(items);
       tbody.append(template.content.firstElementChild);
     }
     const target = focusId ? tbody.querySelector(`button[data-fact-id="${CSS.escape(focusId)}"]`) : null;
@@ -99,5 +108,5 @@
     return `<section class="fact-inspection"><h3>${escape(fact.title || fact.kind)}</h3><p>${escape(fact.summary)}</p><p>事实状态：${escape(factStates[fact.status] || fact.status)} · 业务结果：${escape(outcomeStates[fact.outcome_status] || fact.outcome_status || "未知")}</p>${fact.kind === "test" ? `<p>${metrics.count_status === "exact" ? `${escape(metrics.passed ?? 0)} passed · ${escape(metrics.failed ?? 0)} failed · ${escape(metrics.skipped ?? 0)} skipped` : "测试数量尚未明确，不计为成功"}</p>` : ""}<h3>事实修订</h3><ul>${(detail.revisions || []).map(row => `<li>版本 ${row.revision} · ${escape(factStates[row.state] || row.state)}<p>${escape(row.reason || row.presentation?.summary)}</p></li>`).join("") || "<li>暂无修订历史</li>"}</ul><details><summary>证据与精确来源</summary><pre>${escape(JSON.stringify({ fact_id: fact.fact_id, context_id: fact.context_id, run_id: fact.run_id, evidence: fact.evidence, relationships: detail.relationships }, null, 2))}</pre></details>${fact.evidence ? "" : "<p>证据正文未在当前权限下返回。</p>"}</section>`;
   }
 
-  return Object.freeze({ render, renderRows, reconcileRows, renderDetail, statusOptions, outcomeOptions });
+  return Object.freeze({ render, renderRows, reconcileRows, renderTimeline, reconcileTimeline, renderDetail, statusOptions, outcomeOptions });
 });

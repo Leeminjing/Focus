@@ -1,5 +1,5 @@
 /* 本文件对外提供真实 PostgreSQL/HTTP/SSE 的 Patrol 浏览器迁移验证。
- * 输入为隔离服务、工作区、结果文件和截图目录；输出为首输入/连续表达、真实受理、冻结身份、暂停保持、收回再提交及检查不改目标证据。
+ * 输入为隔离服务、工作区、结果文件和截图目录；输出为首输入/连续表达、真实受理、冻结身份、暂停保持、工作台精确版本选择后再次提交、收回再提交及检查不改目标证据。
  * 具体工作流为隐藏 Electron 加载生产页面，关键业务全部走 HTTP；等待测试 Bootstrap 发布真实 Revision 后检查。
  * 示例：electron frontend-migration-real.e2e.cjs；非 Patrol 页的静态壳 fixture 不作为业务证据。
  */
@@ -63,8 +63,14 @@ app.whenReady().then(async () => {
   await evaluate('document.querySelector("[data-patrol-context-tab=conversation]").click()');
   await wait('document.querySelector("[data-patrol-context-content]").textContent.includes("真实迁移表达")');
   await snapshot("real-context");
+  const inspected = await evaluate('document.querySelector("[data-patrol-context-content]").textContent');
+  await evaluate('document.querySelector("[data-patrol-content]").value="查看已提交版本后继续工作区表达"; document.querySelector("[data-patrol-content]").dispatchEvent(new Event("input")); document.querySelector("[data-patrol-composer]").requestSubmit()');
+  await wait('document.querySelector("[data-patrol-history]").textContent.includes("查看已提交版本后继续工作区表达")');
+  await wait('document.querySelector("[data-patrol-receipt]").textContent.includes("已受理")');
+  assert.equal(await evaluate('document.querySelector("[data-patrol-context-content]").textContent'), inspected);
+  assert.equal(await evaluate('document.body.dataset.view'), "patrol");
   await evaluate('window.closedLoopForm=document.querySelector("[data-patrol-composer]"); document.querySelector("[data-patrol-context-close]").click(); closedLoopForm.querySelector("[data-patrol-details]").click()');
-  await wait('document.querySelector("[data-patrol-details-content]").hidden && document.querySelector("[data-patrol-context]").hidden');
+  await wait('document.querySelector("[data-patrol-details-content]").hidden && !document.querySelector("[data-patrol-context-close]")');
   await evaluate('document.querySelector("[data-patrol-content]").value="暂停后继续表达"; document.querySelector("[data-patrol-content]").dispatchEvent(new Event("input")); document.querySelector("[data-patrol-composer]").requestSubmit()');
   await wait('document.querySelector("[data-patrol-history]").textContent.includes("暂停后继续表达")');
   await wait('document.querySelector("[data-patrol-receipt]").textContent.includes("已受理")');

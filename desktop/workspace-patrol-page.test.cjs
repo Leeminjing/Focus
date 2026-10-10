@@ -1,7 +1,7 @@
 /* 本文件对外提供隐藏 Electron 中六个主页面的隔离验收。
  * 输入为新 userData 目录、生产 index.html 与离线 API fixture；输出为目录选择、四类输入、草稿、观测和中断过渡/检查身份断言。
  * 工作流为无可见窗口加载完整应用，操作默认折叠、六导航、按需检查与单路 Live，核对请求身份、清空正文、库布局焦点/失败态、关系图键盘选择及边对账；普通会话继续展示原 Agent 消息。截图只证明布局，离线 fixture 不代替业务端到端。
- * 示例：node --test desktop/workspace-patrol-page.test.cjs。没有外部 Provider、生产库或安装应用写入。
+ * 示例：node --test desktop/workspace-patrol-page.test.cjs。没有外部 Provider、生产库或安装应用写入；退出检查等待实际动画完成，避免离屏帧时钟与墙钟偏差。
  */
 const assert = require("node:assert/strict");
 const path = require("node:path");
@@ -179,8 +179,8 @@ if (!process.versions.electron) {
       const reopen=inspector.select('loop-a','c',{title:'对象 C'},input); replies[2]({revision:{revision_id:'c-r'},messages:[]});await reopen;
       await new Promise(resolve=>setTimeout(resolve,240));
       if(panel.hidden || panel.inert || !panel.textContent.includes('c-r')) throw new Error('旧退出覆盖重开');
-      inspector.close();await new Promise(resolve=>setTimeout(resolve,240));
-      if(!panel.hidden || panel.getAnimations().length) throw new Error('抽屉退出未收口');
+      inspector.close();await Promise.all(panel.getAnimations().map(animation=>animation.finished.catch(()=>{})));await new Promise(resolve=>requestAnimationFrame(resolve));
+      if(!panel.hidden || panel.getAnimations().length) throw new Error('抽屉退出未收口 '+JSON.stringify({hidden:panel.hidden,inert:panel.inert,animations:panel.getAnimations().map(a=>({time:a.currentTime,state:a.playState,timing:a.effect.getTiming()}))}));
       inspector.dispose();panel.remove();
     })()`);
     await run('document.querySelector("[data-patrol-composer] [data-patrol-details]").click()');
