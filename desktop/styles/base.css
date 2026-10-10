@@ -1,5 +1,5 @@
 /* 本文件对外提供原生 DOM 的排版、表单、隐藏、焦点和减少动画基线。输入为宿主/插件语义 DOM；输出为一致可访问渲染。
- * 具体工作流为应用系统字体与原生 hidden 语义，偏好或透明不可用时降级实色，焦点和业务信息保留。示例：hidden 属性使待处理区不参与布局。
+ * 具体工作流为应用系统字体与原生 hidden 语义；原生材质能力标识开放透明根层，系统偏好或不支持时保留实色，焦点和业务信息保留。示例：html[data-native-material] body。
  */
 [hidden] { display: none !important; }
 html,
@@ -9,6 +9,7 @@ body {
   min-width: 0;
   overflow: hidden;
 }
+html { background: transparent; }
 
 .visually-hidden {
   position: absolute !important;
@@ -29,9 +30,12 @@ body {
   font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
   font-size: 14px;
   line-height: 1.55;
+  font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
 }
+
+html[data-native-material] body { background: rgb(255 255 255 / 32%); }
 
 button,
 input,
@@ -43,6 +47,7 @@ select {
 
 button,
 [role="button"] {
+  cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -104,14 +109,16 @@ a:hover { color: var(--accent-hover); }
   .conversation-event-detail { transform: none !important; }
 }
 
-@media (prefers-reduced-transparency: reduce) {
-  :root { --material-fill: var(--surface-base); --material-backdrop: none; }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  html[data-native-material] body { background: var(--surface-canvas); }
+  :root { --material-fill: var(--surface-base); --surface-panel: var(--surface-base); --surface-reading: var(--surface-base); --material-backdrop: none; }
 }
 @supports not (backdrop-filter: blur(1px)) {
-  :root { --material-fill: var(--surface-base); --material-backdrop: none; }
+  :root { --material-fill: var(--surface-base); --surface-panel: var(--surface-base); --surface-reading: var(--surface-base); --material-backdrop: none; }
 }
 @media (forced-colors: active) {
-  :root { --material-fill: Canvas; --material-backdrop: none; --material-rim: CanvasText; }
+  html[data-native-material] body { background: Canvas; }
+  :root { --material-fill: Canvas; --surface-panel: Canvas; --surface-reading: Canvas; --material-backdrop: none; --material-rim: CanvasText; }
   .glass-surface { background: Canvas; border-color: CanvasText; box-shadow: none; }
   button[aria-busy="true"] { outline-color: Highlight; }
 }

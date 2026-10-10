@@ -1,12 +1,16 @@
 /*
  * 本文件启动 Focus 桌面运行时。输入为本机 Python/Git/Docker 能力、品牌资源与环境变量，输出为
  * 本地启动动画、单一动态 loopback FastAPI 及同源隔离主窗口；失败时原子切换到带品牌的说明窗口。
+ * 主窗口复用 window-material 配置 Windows Acrylic 与可访问性退化，保持原生控制和缩放；
+ * 示例：Electron 加载本文件后，启动服务并在健康检查成功时显示主窗口。
  *
  * 单实例闸门在 app.whenReady 之前取得，且不通过即退出：启动链路会拉起 uvicorn、docker compose
  * 与 alembic 迁移，若允许第二个实例进入，将重复起后端、重复迁移并再开一整套窗口。第二个实例的
  * 启动请求改由首个实例接管——恢复并聚焦既有主窗口。
  */
-const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell, nativeTheme } = require("electron");
+const { supportsAcrylic, bindWindowMaterial } = require("./window-material.cjs");
+const nativeMaterialSupported = supportsAcrylic(process.platform, require("node:os").release());
 const { execFileSync, spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -320,7 +324,8 @@ async function start() {
     minHeight: 680,
     autoHideMenuBar: true,
     titleBarStyle: "hidden",
-    backgroundColor: "#fbfbfc",
+    backgroundColor: nativeMaterialSupported ? "#00000000" : "#f3f6fb",
+    ...(nativeMaterialSupported ? { backgroundMaterial: "acrylic" } : {}),
     icon: focusIconPath,
     webPreferences: {
       preload: path.join(desktopDir, "preload.cjs"),
@@ -328,6 +333,7 @@ async function start() {
       nodeIntegration: false,
       // Chromium renderer isolation only; Python Agents still use real host paths with no Agent sandbox.
       sandbox: true,
+      additionalArguments: nativeMaterialSupported ? ["--focus-native-material=acrylic"] : [],
     },
   };
   // macOS uses its native traffic-light title bar; titleBarOverlay is for the Windows/Linux shell.
@@ -339,6 +345,8 @@ async function start() {
     };
   }
   mainWindow = new BrowserWindow(mainWindowOptions);
+  nativeTheme.themeSource = "light";
+  bindWindowMaterial(mainWindow, nativeTheme, nativeMaterialSupported);
   mainWindow.setMenuBarVisibility(false);
   protectAppNavigation(mainWindow, apiBase);
   // 决策 7：同源加载（页面与 API 同一 Origin，无需 CORS）

@@ -1,5 +1,5 @@
 /* 本文件对外提供生产任务三栏与真实 Main/材料链的 Electron 验收。
- * 输入为隔离 HTTP 服务、任务/材料身份及截图目录；输出为真实文件预览、选材快照、Run/SSE 终态与独立会话断言。
+ * 输入为隔离 HTTP 服务、任务/材料身份及截图目录；输出为真实文件预览、选材快照、Run/SSE 终态、记忆创建/读取/删除与独立会话断言。
  * 具体工作流为加载生产 index，显式进入任务，预览磁盘材料并提交，检查真实终态会话，再进入独立会话验证身份隔离并记录窄屏布局。
  * 示例：electron frontend-task-real.e2e.cjs；模型采样由 Python 夹具替换，HTTP/运行图/存储均为生产实现。
  */
@@ -68,6 +68,27 @@ app.whenReady().then(async () => {
   assert.notEqual(await execute('state.activeTaskId'), result.task_id);
   assert.equal(await execute('document.querySelector("#mainInput").value'), "");
   await shot("real-standalone");
+  const assemblyId = await execute('state.activeTaskId');
+  await execute('document.querySelector("[data-action=show-memory]").click()');
+  await until('document.body.dataset.view === "memory" && !state.memory.loading');
+  await execute('document.querySelector("[data-action=new-memory]").click()');
+  await until('document.querySelector("[data-memory-field=content]")');
+  await execute(`for (const [key,value] of Object.entries({title:"透明材质真实记忆验收",content:"使用真实 API 保存、重新加载与删除"})) { const input=document.querySelector('[data-memory-field='+key+']'); input.value=value; input.dispatchEvent(new Event('input',{bubbles:true})); } document.querySelector('[data-action=save-memory]').click()`);
+  await until('!state.memory.composing && state.memory.memories.some(item=>item.title==="透明材质真实记忆验收")');
+  const memoryId = await execute('state.memory.memories.find(item=>item.title==="透明材质真实记忆验收").memory_id');
+  await execute('document.querySelector("[data-action=show-assembly]").click()');
+  await until('activeTask()?.harness_mode === "assembly" && document.querySelector("#mainInput")');
+  await execute('document.querySelector("[data-action=show-memory]").click()');
+  await until('!state.memory.loading && document.querySelector(".memory-card")');
+  await execute(`document.querySelector('[data-action=select-memory][data-memory-id="${memoryId}"]').click()`);
+  assert.match(await execute('document.querySelector(".memory-detail-content").textContent'), /使用真实 API 保存、重新加载与删除/);
+  await shot("real-memory");
+  await execute(`document.querySelector('[data-action=delete-memory][data-memory-id="${memoryId}"]').click()`);
+  await until(`!state.memory.memories.some(item=>item.memory_id===${JSON.stringify(memoryId)})`);
+  result.memory = { created: memoryId, reloaded: true, deleted: true };
+  await execute('document.querySelector("[data-action=show-assembly]").click()');
+  await until('activeTask()?.harness_mode === "assembly" && document.querySelector("#mainInput")');
+  assert.equal(await execute('state.activeTaskId'), assemblyId);
   win.setContentSize(900, 850);
   await execute('document.querySelector("[data-action=close-inspector]").click()');
   await shot("real-standalone-900");

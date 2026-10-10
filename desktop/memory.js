@@ -1,6 +1,6 @@
 /*
  * 本文件对外提供记忆库的纯渲染器。输入为记忆库列表与整理态状态，
- * 输出为可检索记忆卡片及三栏整理器 HTML；工作流在完整已加载列表检索，保留创建/编辑/来源/合并/分段，不改变持久化语义。示例：FocusMemoryView.render(memories, { query: "本地" })。
+ * 输出为可检索记忆卡片/列表、区分加载失败/空库/零匹配及三栏整理器 HTML；工作流在完整已加载列表检索，保留创建/编辑/来源/合并/分段，不改变持久化语义。示例：FocusMemoryView.render(memories, { query: "本地" })。
  */
 (function (root, factory) {
   const api = factory();
@@ -87,9 +87,10 @@
     const query = String(options.query || "").trim().toLowerCase();
     const all = (memories || []).filter(memory => !query || `${memory.title} ${memory.content}`.toLowerCase().includes(query));
     const selected = all.find(m => m.memory_id === options.selectedId) || null;
+    if (!all.length) return `<section class="memory-empty"><span class="ui-icon icon-file-text" aria-hidden="true"></span><h2 data-i18n="${memories?.length ? "memory.no_matches" : "memory.empty_title"}">${memories?.length ? "没有匹配的记忆" : "还没有任何记忆"}</h2><p data-i18n="${memories?.length ? "memory.no_matches_help" : "memory.empty_help"}">${memories?.length ? "换一个关键词，或清空搜索查看全部记忆。" : "把重要的想法、经验和资料记录在这里，在需要时重新找到。"}</p><button class="primary" data-action="new-memory" data-i18n="memory.create">新建记忆</button></section>`;
     return `<div class="memory-workbench">
-      <aside class="memory-list"><header><strong>记忆</strong><span class="memory-list-actions"><button type="button" class="text-button" data-action="new-memory">新建</button><span>${all.length}</span></span></header>
-        <div class="memory-list-scroll">${all.map(m => card(m, m === selected)).join("") || `<section class="ui-empty-state"><h1>尚无记忆</h1><p>新建一条，沉淀跨会话知识。</p></section>`}</div>
+      <aside class="memory-list${options.layout === "list" ? " is-list" : ""}"><header><strong>记忆</strong><span class="memory-list-actions"><button type="button" class="text-button" data-action="new-memory">新建</button><span>${all.length}</span></span></header>
+        <div class="memory-list-scroll">${all.map(m => card(m, m === selected)).join("")}</div>
       </aside>
       ${selected ? `<main class="memory-detail">${detail(selected)}</main>` : ""}
     </div>`;
@@ -232,11 +233,11 @@
 
   function render(memories, options = {}) {
     return `<section class="memory-view">
-      <header class="memory-page-heading"><div><h1>记忆库</h1><p>让重要的决定留下来，让重复的解释少一点。</p></div><button data-action="new-memory">＋ 新增记忆</button></header>
-      ${options.composing ? "" : `<label class="page-search">检索已加载记忆 <input type="search" data-page-search="memory" value="${escapeHtml(options.query || "")}" placeholder="搜索决定与约定…"></label>`}
+      <header class="memory-page-heading"><div><h1>记忆库</h1><p>让重要的决定留下来，让重复的解释少一点。</p></div><button class="primary" data-action="new-memory" data-i18n="memory.create">新建记忆</button></header>
+      ${options.composing ? "" : `<div class="library-toolbar"><label class="page-search">检索已加载记忆 <input type="search" data-page-search="memory" value="${escapeHtml(options.query || "")}" placeholder="搜索决定与约定…"></label><div class="library-layout" role="group" aria-label="记忆布局" data-i18n-aria-label="view.layout">${["cards", "list"].map(layout => `<button data-action="set-library-layout" data-library="memory" data-layout="${layout}" aria-pressed="${(options.layout || "cards") === layout}" data-i18n="view.${layout}">${layout === "cards" ? "卡片" : "列表"}</button>`).join("")}</div></div>`}
       ${options.loading ? '<p role="status">正在读取记忆…</p>' : ""}
       ${options.error ? `<p role="alert">读取失败：${escapeHtml(options.error)} <button data-action="refresh-memory">重试</button></p>` : ""}
-      ${options.composing ? compose(options) : workbench(memories, options)}
+      ${options.composing ? compose(options) : ((options.loading || options.error) && !memories?.length ? "" : workbench(memories, options))}
     </section>`;
   }
 

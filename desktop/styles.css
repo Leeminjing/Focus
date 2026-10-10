@@ -1,26 +1,7 @@
-:root {
-  color-scheme: light;
-  --bg: #fbfbfc;
-  --panel: #ffffff;
-  --ink: #15171c;
-  --muted: #737986;
-  --line: #d9dde5;
-  --line-soft: #eceef2;
-  --blue: #0867f2;
-  --blue-soft: #eef5ff;
-  --green: #18b875;
-  --danger: #c73a3a;
-  --radius: 8px;
-  font-family: Inter, "Segoe UI", "Microsoft YaHei UI", sans-serif;
-  font-synthesis: none;
-}
-
-* { box-sizing: border-box; }
-html, body { width: 100%; height: 100%; margin: 0; background: var(--bg); color: var(--ink); }
-body { min-width: 840px; overflow: hidden; }
-button, input, textarea, select { font: inherit; color: inherit; }
-button { cursor: pointer; }
-
+/* 本文件对外提供尚在使用的旧业务组件样式。输入为 Context、材料、合同、编辑器与文件工作台 DOM；输出为其布局和内容呈现。
+ * 工作流为先加载业务规则，再由分层 styles 的公共 token/base 与页面布局承接统一材质；根背景、字体和重置仅由 base/tokens 提供。
+ * 示例：.context-rail 保留高级 Context 导航，主导航由 styles/shell.css 控制。
+ */
 .icon-button, .quiet-button {
   border: 1px solid transparent;
   background: transparent;

@@ -1,11 +1,13 @@
 /*
- * 本文件对外提供桌面与插件共用视觉 token。输入为语义变量引用；输出为内容实色、控制材质及统一间距、焦点和状态。
+ * 本文件对外提供桌面与插件共用视觉 token。输入为语义变量引用；输出为高不透明度阅读底、透明控制材质及统一间距、焦点和状态。
  * 具体工作流为所有页面消费同一语义值，旧宿主和插件变量映射到同一来源。示例：background: var(--surface-base)。
  */
 :root {
   color-scheme: light;
 
-  --surface-canvas: #f6f7f9;
+  --surface-canvas: #f3f6fb;
+  --surface-reading: rgb(255 255 255 / 92%);
+  --surface-panel: rgb(255 255 255 / 70%);
   --surface-base: #ffffff;
   --surface-subtle: #f8fafc;
   --surface-muted: #eef2f6;
@@ -18,11 +20,11 @@
   --surface-code: #f5f7fa;
   --surface-inverse: #202733;
 
-  --text-primary: #202631;
-  --text-secondary: #4d596b;
-  --text-tertiary: #596579;
+  --text-primary: #142039;
+  --text-secondary: #50627b;
+  --text-tertiary: #50627b;
   --text-inverse: #ffffff;
-  --text-accent: #2468d7;
+  --text-accent: #0766ed;
   --text-success: #137a4f;
   --text-warning: #946019;
   --text-danger: #ba3341;
@@ -33,7 +35,7 @@
   --border-accent: #77aef7;
   --border-warning: #e2bb79;
 
-  --accent-primary: #2468d7;
+  --accent-primary: #0766ed;
   --accent-hover: #095dce;
   --accent-pressed: #084ca8;
   --accent-soft: #eaf3ff;
@@ -51,18 +53,18 @@
   --space-8: 32px;
   --space-10: 40px;
 
-  --radius-control: 8px;
+  --radius-control: 12px;
   --radius-card: 16px;
   --radius-panel: 20px;
   --radius-round: 999px;
 
   --shadow-raised: 0 3px 14px rgb(36 48 70 / 3%), 0 1px 2px rgb(36 48 70 / 2%);
   --shadow-overlay: 0 16px 48px rgb(20 31 48 / 18%);
-  --material-fill: rgb(255 255 255 / 84%);
-  --material-rim: rgb(111 128 151 / 38%);
+  --material-fill: rgb(255 255 255 / 64%);
+  --material-rim: rgb(255 255 255 / 88%);
   --material-light: rgb(255 255 255 / 96%);
   --material-shade: rgb(50 67 90 / 10%);
-  --material-backdrop: blur(18px) saturate(1.18);
+  --material-backdrop: blur(24px) saturate(1.25);
   --material-depth: 0 12px 36px -18px rgb(29 46 73 / 26%), 0 2px 5px rgb(29 46 73 / 7%);
   --control-hover: rgb(36 104 215 / 7%);
   --control-press: rgb(36 104 215 / 14%);
@@ -76,17 +78,16 @@
   --ease-out: cubic-bezier(.16, 1, .3, 1);
 
   --shell-header-height: 56px;
-  --shell-nav-width: 204px;
+  --shell-nav-width: 228px;
   --shell-nav-collapsed: 120px;
   --shell-nav-max-width: 288px;
   --workspace-min-width: 320px;
   --inspector-min-width: 240px;
   --inspector-max-width: 480px;
-  --inspector-width: clamp(var(--inspector-min-width), 22vw, var(--inspector-max-width));
+  --inspector-width: clamp(280px, 23vw, 360px);
   --reading-width: 760px;
   --composer-width: 900px;
 
-  /* 迁移期兼容旧宿主变量。 */
   --bg: var(--surface-canvas);
   --panel: var(--surface-base);
   --ink: var(--text-primary);
@@ -99,7 +100,6 @@
   --danger: var(--status-danger);
   --radius: var(--radius-card);
 
-  /* 插件公开契约：插件不得复制宿主色值或覆盖非插件根节点。 */
   --focus-plugin-surface: var(--surface-base);
   --focus-plugin-surface-subtle: var(--surface-subtle);
   --focus-plugin-surface-inverse: var(--surface-inverse);

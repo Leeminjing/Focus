@@ -1,7 +1,8 @@
 /* 本文件对外提供工作区 Patrol 页面控制器。
  * 输入为已绑定工作区、共享 Loop API、Live Store/Connection 及输入 store；输出为逐条耐久回执和独立观测更新。
  * 具体工作流为先读取绑定/历史再订阅已有单路 Live，区域更新保留 composer 和未变等待表单 DOM，异步响应按工作区代际隔离；
- * 主输入走 workspace intake，查看 Context 不改变目标；显隐复用 SurfaceTransition 保留输入节点，原生 dialog 管理焦点，AbortController 清理监听与读请求。示例：await controller.mount(host, workspace)。
+ * 主输入走 workspace intake，查看 Context 不改变目标；清空仅编辑未提交正文并返回输入焦点，不触及回答目标、历史或运行。
+ * 显隐复用 SurfaceTransition 保留输入节点，原生 dialog 管理焦点，AbortController 清理监听与读请求。示例：await controller.mount(host, workspace)。
  */
 (function (root, factory) {
   const api = factory(root);
@@ -336,6 +337,7 @@
         else if (button.dataset.patrolRetry) { const row = inputs.retry(button.dataset.patrolRetry); if (row) void send(row); }
         else if (button.dataset.patrolAnswer) { inputs.edit({ request_id: button.dataset.patrolAnswer, request_revision: Number(button.dataset.requestRevision) }); const owner = token; if (await closeDialog() && owner === token) host.querySelector("textarea").focus(); }
         else if (button.hasAttribute("data-patrol-clear-target")) inputs.edit({ request_id: null, request_revision: null });
+        else if (button.hasAttribute("data-patrol-clear-draft")) { inputs.edit({ content: "" }); host.querySelector("[data-patrol-content]").focus(); }
         else if (button.dataset.patrolControl && loopId) {
           if (button.getAttribute("aria-busy") === "true") return;
           button.setAttribute("aria-busy", "true");

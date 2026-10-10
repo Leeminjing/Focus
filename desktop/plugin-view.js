@@ -1,6 +1,6 @@
 /*
  * 本文件对外提供插件中心的纯渲染器。输入为插件清单、接口注册表、执行轨迹与本地筛选/选中状态，
- * 输出为真实插件卡片和按需详情 HTML；工作流在完整已加载清单中检索/筛选，呈现解析结果，不改变注入顺序和生命周期。示例：FocusPluginView.render(plugins, interfaces, traces, { query: "file" })。
+ * 输出为真实插件卡片/列表和按需详情 HTML；工作流在完整已加载清单中检索/筛选，呈现解析结果，不改变注入顺序和生命周期。示例：FocusPluginView.render(plugins, interfaces, traces, { query: "file" })。
  */
 (function (root, factory) {
   const api = factory();
@@ -113,12 +113,12 @@
         <button class="text-button" data-action="reload-plugins"${options.loading ? " disabled" : ""}>重新加载</button>
         <button class="text-button" data-action="refresh-plugins">刷新</button>
       </header>
-      <div class="plugin-filter segmented" role="group" aria-label="按插件状态筛选">${filters}</div>
-      <label class="page-search">检索已加载插件 <input type="search" data-page-search="plugins" value="${escapeHtml(options.query || "")}" placeholder="查找能力…"></label>
+      <div class="library-toolbar"><div class="plugin-filter segmented" role="group" aria-label="按插件状态筛选">${filters}</div>
+      <label class="page-search">检索已加载插件 <input type="search" data-page-search="plugins" value="${escapeHtml(options.query || "")}" placeholder="查找能力…"></label><div class="library-layout" role="group" aria-label="插件布局" data-i18n-aria-label="view.layout">${["cards", "list"].map(layout => `<button data-action="set-library-layout" data-library="plugins" data-layout="${layout}" aria-pressed="${(options.layout || "cards") === layout}" data-i18n="view.${layout}">${layout === "cards" ? "卡片" : "列表"}</button>`).join("")}</div></div>
       ${options.loading ? '<p role="status">正在读取插件状态…</p>' : ""}
       ${options.error ? `<p role="alert">读取失败：${escapeHtml(options.error)} <button data-action="refresh-plugins">重试</button></p>` : ""}
       <div class="plugins-workbench">
-        <aside class="plugins-list"><header><strong>插件</strong><span>${filtered.length}/${all.length}</span></header><div class="plugin-list-scroll">${filtered.map(plugin => renderPluginCard(plugin, plugin === selected)).join("") || `<section class="ui-empty-state"><h1>${all.length ? "没有匹配项" : "尚无插件"}</h1><p>${all.length ? "切换筛选查看其他状态。" : "plugins/ 目录为空，宿主仍可独立启动。"}</p></section>`}</div></aside>
+        <aside class="plugins-list${options.layout === "list" ? " is-list" : ""}"><header><strong>插件</strong><span>${filtered.length}/${all.length}</span></header><div class="plugin-list-scroll">${filtered.map(plugin => renderPluginCard(plugin, plugin === selected)).join("") || `<section class="ui-empty-state"><h1>${all.length ? "没有匹配项" : "尚无插件"}</h1><p>${all.length ? "切换筛选查看其他状态。" : "plugins/ 目录为空，宿主仍可独立启动。"}</p></section>`}</div></aside>
         ${selected ? `<details class="plugins-detail"${options.selectedName ? " open" : ""}><summary>接口、依赖与执行轨迹 · ${escapeHtml(selected.name)}</summary>${renderPluginDetail(selected, interfaces, traces)}</details>` : ""}
       </div>
     </section>`;
