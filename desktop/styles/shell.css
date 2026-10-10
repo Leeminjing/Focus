@@ -1,4 +1,4 @@
-/* 本文件对外提供六项导航、品牌、主工作区与检查器布局。输入为宿主语义 DOM、用户拖拽宽度与折叠状态；输出为银灰导航和可缩放工作面。
+/* 本文件对外提供六项导航、品牌、主工作区与检查器布局。输入为宿主语义 DOM、用户拖拽宽度与折叠状态；输出为单层控制玻璃导航、实色内容与可缩放工作面。
  * 具体工作流为统一宽度 token 控制栏位，保留导航恢复按钮与窄屏检查器入口。示例：.app-shell.is-nav-collapsed。
  */
 .app-header {
@@ -137,7 +137,8 @@
   gap: var(--space-1);
   padding: 102px 14px 16px;
   border-right: 1px solid var(--border-subtle);
-  background: linear-gradient(160deg, #f0f1f5, #eef0f3 65%, #edeff3);
+  border-radius: 0;
+  box-shadow: inset -1px 0 1px var(--material-light);
 }
 
 .app-nav-item {
@@ -154,7 +155,7 @@
   text-align: left;
   transition: color var(--motion-fast) var(--ease-standard),
     background-color var(--motion-fast) var(--ease-standard),
-    transform var(--motion-instant) var(--ease-out);
+    box-shadow var(--motion-instant) var(--ease-out);
 }
 
 .app-nav-item:hover { color: var(--text-primary); background: var(--surface-subtle); }
@@ -186,7 +187,6 @@
   border-left: 1px solid var(--border-subtle);
   background: var(--surface-base);
   box-shadow: none;
-  animation: inspector-enter var(--motion-deliberate) var(--ease-out);
 }
 
 .app-inspector[hidden] { display: none; }
@@ -199,7 +199,7 @@
   padding: 3px;
   border: 0;
   border-radius: var(--radius-card);
-  background: var(--surface-muted);
+  border: 1px solid var(--material-rim);
 }
 
 .inspector-tabs button {
@@ -236,11 +236,6 @@
 .inspector-list .material-row,
 .inspector-list .agent-chip { width: 100%; }
 .overlay-root { position: fixed; z-index: 40; inset: 0; pointer-events: none; }
-
-@keyframes inspector-enter {
-  from { opacity: 0; transform: translateX(-4px); }
-  to { opacity: 1; transform: none; }
-}
 
 @media (max-width: 1100px) {
   /* 只覆盖默认宽度，不改 flex 简写，避免覆盖用户拖拽的内联值。 */

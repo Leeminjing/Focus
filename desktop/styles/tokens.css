@@ -1,5 +1,5 @@
 /*
- * 本文件对外提供桌面与插件共用视觉 token。输入为语义变量引用；输出为雾白/银灰/克制蓝及统一圆角、间距、焦点。
+ * 本文件对外提供桌面与插件共用视觉 token。输入为语义变量引用；输出为内容实色、控制材质及统一间距、焦点和状态。
  * 具体工作流为所有页面消费同一语义值，旧宿主和插件变量映射到同一来源。示例：background: var(--surface-base)。
  */
 :root {
@@ -19,10 +19,10 @@
   --surface-inverse: #202733;
 
   --text-primary: #202631;
-  --text-secondary: #718096;
-  --text-tertiary: #7b8494;
+  --text-secondary: #4d596b;
+  --text-tertiary: #596579;
   --text-inverse: #ffffff;
-  --text-accent: #4675b8;
+  --text-accent: #2468d7;
   --text-success: #137a4f;
   --text-warning: #946019;
   --text-danger: #ba3341;
@@ -33,7 +33,7 @@
   --border-accent: #77aef7;
   --border-warning: #e2bb79;
 
-  --accent-primary: #377cec;
+  --accent-primary: #2468d7;
   --accent-hover: #095dce;
   --accent-pressed: #084ca8;
   --accent-soft: #eaf3ff;
@@ -58,6 +58,14 @@
 
   --shadow-raised: 0 3px 14px rgb(36 48 70 / 3%), 0 1px 2px rgb(36 48 70 / 2%);
   --shadow-overlay: 0 16px 48px rgb(20 31 48 / 18%);
+  --material-fill: rgb(255 255 255 / 84%);
+  --material-rim: rgb(111 128 151 / 38%);
+  --material-light: rgb(255 255 255 / 96%);
+  --material-shade: rgb(50 67 90 / 10%);
+  --material-backdrop: blur(18px) saturate(1.18);
+  --material-depth: 0 12px 36px -18px rgb(29 46 73 / 26%), 0 2px 5px rgb(29 46 73 / 7%);
+  --control-hover: rgb(36 104 215 / 7%);
+  --control-press: rgb(36 104 215 / 14%);
   --focus-ring: 0 0 0 3px rgb(11 108 245 / 20%);
 
   --motion-instant: 80ms;

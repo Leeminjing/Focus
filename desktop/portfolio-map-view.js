@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Context Portfolio 的稳定拓扑图视图。
- * 输入为轻量 nodes/edges、选中 Context 与 canonical directive/Run 活动；输出为简短节点、精确来源及缩放/平移的横向演化图。
- * 具体工作流为仅在拓扑变化时重算坐标，普通状态沿用位置；活动效果严格由 directive lifecycle 和 Run state 驱动，空闲时不循环播放；
+ * 输入为轻量 nodes/edges、选中 Context 与 canonical directive/Run 活动；输出为简短节点、精确来源及单层控制材质的缩放/平移横向演化图。
+ * 具体工作流为仅在拓扑变化时重算坐标，普通状态沿用位置，未变属性/工具条不写回活动 DOM；活动效果严格由 directive lifecycle 和 Run state 驱动，空闲时不循环播放；
  * 节点卡只显示一次描述文字，purpose 与节点名称相同时不再重复渲染；层级只由跨 Context 依赖决定（自环不参与），
  * 无依赖的 Context 位于根层，每条派生连线带方向标记。
  * 示例：`FocusPortfolioMapView.render(manifest, selectedId, graphActivity)`。
@@ -106,7 +106,7 @@
       const name = node.topic || node.title;
       return `<button type="button" class="portfolio-context-node${node.context_id === selectedId ? " is-selected" : ""}" style="left:${point.x}px;top:${point.y}px" data-action="loop-select-context" data-context-id="${escape(node.context_id)}"><span class="context-node-eyebrow">${escape(node.context_id.slice(0, 8))}<span><i class="run-dot is-${escape(run?.status || node.status)}" aria-hidden="true"></i>${escape(statusLabel(run?.status || node.status))}</span></span><span class="context-node-top"><strong>${escape(name)}</strong></span><span class="context-node-meta">R${escape(node.revision?.generation || "—")} · ${evidence || "暂无运行证据"}</span></button>`;
     }).join("");
-    return `<section class="portfolio-map" aria-label="Context Portfolio"><div class="portfolio-map-toolbar"><span><strong>${escape(nodes.length)}</strong> 个 Context · 来源关系</span></div><div class="portfolio-map-scroll" tabindex="0" aria-label="上下文图，可用方向键滚动或拖动空白处"><div class="portfolio-map-canvas" style="width:${geometry.width}px;height:${geometry.height}px"><svg width="${geometry.width}" height="${geometry.height}" aria-label="Context 的真实来源关系"><defs><marker id="portfolio-edge-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><polygon points="0 0, 10 5, 0 10" /></marker></defs>${lines}${activityLines}</svg>${cards}</div></div><div class="portfolio-map-zoom"><button data-portfolio-zoom="out" aria-label="缩小图">−</button><span data-portfolio-scale>100%</span><button data-portfolio-zoom="in" aria-label="放大图">＋</button><button data-portfolio-zoom="fit">适应画布</button></div></section>`;
+    return `<section class="portfolio-map" aria-label="Context Portfolio"><div class="portfolio-map-toolbar"><span><strong>${escape(nodes.length)}</strong> 个 Context · 来源关系</span></div><div class="portfolio-map-scroll" tabindex="0" aria-label="上下文图，可用方向键滚动或拖动空白处"><div class="portfolio-map-canvas" style="width:${geometry.width}px;height:${geometry.height}px"><svg width="${geometry.width}" height="${geometry.height}" aria-label="Context 的真实来源关系"><defs><marker id="portfolio-edge-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><polygon points="0 0, 10 5, 0 10" /></marker></defs>${lines}${activityLines}</svg>${cards}</div></div><div class="portfolio-map-zoom glass-surface"><button data-portfolio-zoom="out" aria-label="缩小图">−</button><span data-portfolio-scale>100%</span><button data-portfolio-zoom="in" aria-label="放大图">＋</button><button data-portfolio-zoom="fit">适应画布</button></div></section>`;
   }
 
   function bind(host) {
@@ -148,39 +148,49 @@
     const currentCanvas = current.querySelector(".portfolio-map-canvas");
     const nextCanvas = next?.querySelector(".portfolio-map-canvas");
     if (!next || !currentCanvas || !nextCanvas) return false;
-    current.querySelector(".portfolio-map-toolbar")?.replaceWith(next.querySelector(".portfolio-map-toolbar"));
-    currentCanvas.setAttribute("style", nextCanvas.getAttribute("style") || "");
-    if (current.dataset.zoom) currentCanvas.style.zoom = current.dataset.zoom;
+    const focused = current.contains(document.activeElement) ? document.activeElement : null;
+    const toolbar = current.querySelector(".portfolio-map-toolbar"), nextToolbar = next.querySelector(".portfolio-map-toolbar");
+    if (toolbar && nextToolbar && toolbar.innerHTML !== nextToolbar.innerHTML) toolbar.replaceWith(nextToolbar);
+    if (current.dataset.zoom) nextCanvas.style.zoom = current.dataset.zoom;
+    if (currentCanvas.getAttribute("style") !== nextCanvas.getAttribute("style")) currentCanvas.setAttribute("style", nextCanvas.getAttribute("style") || "");
     const currentSvg = currentCanvas.querySelector("svg");
     const nextSvg = nextCanvas.querySelector("svg");
     if (currentSvg && nextSvg) {
-      currentSvg.setAttribute("width", nextSvg.getAttribute("width"));
-      currentSvg.setAttribute("height", nextSvg.getAttribute("height"));
+      for (const name of ["width", "height"]) if (currentSvg.getAttribute(name) !== nextSvg.getAttribute(name)) currentSvg.setAttribute(name, nextSvg.getAttribute(name));
       const existingShapes = new Map([...currentSvg.querySelectorAll("[data-edge-id], [data-directive-id]")].map(item => [item.getAttribute("data-edge-id") || `directive:${item.getAttribute("data-directive-id")}`, item]));
+      let previousShape = currentSvg.querySelector("defs");
       for (const shape of [...nextSvg.querySelectorAll("[data-edge-id], [data-directive-id]")]) {
         const key = shape.getAttribute("data-edge-id") || `directive:${shape.getAttribute("data-directive-id")}`;
         const prior = existingShapes.get(key);
+        let placed = shape;
         if (prior) {
           existingShapes.delete(key);
           if (prior.outerHTML !== shape.outerHTML) prior.replaceWith(shape);
-          else currentSvg.append(prior);
-        } else currentSvg.append(shape);
+          else placed = prior;
+        }
+        const reference = previousShape ? previousShape.nextSibling : currentSvg.firstChild;
+        if (placed !== reference) currentSvg.insertBefore(placed, reference);
+        previousShape = placed;
       }
       existingShapes.forEach(shape => shape.remove());
     }
     const existingNodes = new Map([...currentCanvas.querySelectorAll(".portfolio-context-node")].map(node => [node.dataset.contextId, node]));
+    let previousNode = currentSvg;
     for (const node of [...nextCanvas.querySelectorAll(".portfolio-context-node")]) {
       const prior = existingNodes.get(node.dataset.contextId);
-      if (!prior) currentCanvas.append(node);
-      else {
+      const placed = prior || node;
+      if (prior) {
         existingNodes.delete(node.dataset.contextId);
-        prior.className = node.className;
-        prior.setAttribute("style", node.getAttribute("style") || "");
+        if (prior.className !== node.className) prior.className = node.className;
+        if (prior.getAttribute("style") !== node.getAttribute("style")) prior.setAttribute("style", node.getAttribute("style") || "");
         if (prior.innerHTML !== node.innerHTML) prior.innerHTML = node.innerHTML;
-        currentCanvas.append(prior);
       }
+      const reference = previousNode ? previousNode.nextSibling : currentCanvas.firstChild;
+      if (placed !== reference) currentCanvas.insertBefore(placed, reference);
+      previousNode = placed;
     }
     existingNodes.forEach(node => node.remove());
+    if (focused?.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });
     return true;
   }
 

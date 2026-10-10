@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 Agent Loop 可追溯事实抽屉、renderRows、reconcileRows、共用详情及验证状态/业务结果筛选选项。
  * 输入为物化事实、当前 Context 和筛选；输出为事实表 HTML，或按 fact_id 原位更新的 DOM 行。
- * 具体工作流为只呈现领域 revision 并排除历史 tool 条目；增量更新复用未变化行并原位更新状态；稳定 fact_id 来源按钮进入真实证据检查。
+ * 具体工作流为只呈现领域 revision 并排除历史 tool 条目；未变行不移出 tbody、不改写签名，按实际顺序原位更新状态；稳定 fact_id 来源按钮进入真实证据检查。
  * 示例：`FocusLoopFactsView.reconcileRows(tbody, facts)`。
  */
 (function (root, factory) {
@@ -38,7 +38,8 @@
     items = items.filter(item => item.kind !== "tool");
     if (!tbody || typeof document !== "object") return false;
     const existing = new Map([...tbody.querySelectorAll("tr[data-fact-id]")].map(row => [row.dataset.factId, row]));
-    const fragment = document.createDocumentFragment();
+    const focusId = tbody.contains(document.activeElement) ? document.activeElement.dataset.factId : null;
+    let previous = null;
     for (const item of items) {
       const signature = JSON.stringify(item);
       let row = existing.get(item.fact_id);
@@ -57,17 +58,20 @@
           row.innerHTML = next.innerHTML;
         }
       }
-      row.dataset.factSignature = signature;
-      fragment.append(row);
+      if (row.dataset.factSignature !== signature) row.dataset.factSignature = signature;
+      const reference = previous ? previous.nextSibling : tbody.firstChild;
+      if (row !== reference) tbody.insertBefore(row, reference);
+      previous = row;
     }
     existing.forEach(row => row.remove());
-    tbody.querySelector("[data-fact-empty]")?.remove();
-    if (!items.length) {
+    if (items.length) tbody.querySelector("[data-fact-empty]")?.remove();
+    if (!items.length && !tbody.querySelector("[data-fact-empty]")) {
       const template = document.createElement("template");
       template.innerHTML = renderRows(items);
-      fragment.append(template.content.firstElementChild);
+      tbody.append(template.content.firstElementChild);
     }
-    tbody.append(fragment);
+    const target = focusId ? tbody.querySelector(`button[data-fact-id="${CSS.escape(focusId)}"]`) : null;
+    if (target && document.activeElement !== target) target.focus({ preventScroll: true });
     return true;
   }
 

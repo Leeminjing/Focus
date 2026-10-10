@@ -16,6 +16,7 @@ window.patrolFixture = {
   submissions: [], releases: [], hold: false, failReply: false, draftOpens: [],
   folder: null, folderError: false, folderCalls: 0, holdFolder: false, releaseFolder: null,
   workspaceBinds: [], bindError: false, holdBind: false, releaseBind: null, historyListRequests: 0,
+  connected: loopId => streams.has(loopId),
   lineage: { roots: {}, nodes: [], edges: [], complete: true },
   emit(loopId, entity_type, entity_id, entity_revision, payload) {
     const event = { event_id: `event-${++sequence}`, loop_id: loopId, sequence, kind: `${entity_type}.updated`, entity_type, entity_id, entity_revision, payload, occurred_at: new Date().toISOString(), schema_version: 1 };
@@ -114,6 +115,10 @@ window.fetch = async (input, options = {}) => {
   if (path === "/desktop/api/contexts/root/revisions") return json([{revision_id:"r1",generation:1,origin_kind:"bootstrap"},{revision_id:"r2",generation:2,origin_kind:"curation",current:true}]);
   if (/\/context-revisions\/r[12]$/.test(path)) return json({revision:{sources:[{source:{context_id:"source",revision_id:"source-r1"}}]}});
   if (path.endsWith("/contexts/root/conversation") && path.startsWith(prefix)) return json({ revision:{revision_id:url.searchParams.get("revision_id") || "r2"}, messages: [{ index: 0, message: { role: "ai", content: "Context 执行结果" } }], total: 1, has_more: false });
-  if (path.endsWith("/control") && path.startsWith(prefix)) return json({ status: JSON.parse(options.body).command });
+  if (path.endsWith("/control") && path.startsWith(prefix)) {
+    if (window.patrolFixture.holdControl) await new Promise(resolve => { window.patrolFixture.releaseControl = resolve; });
+    if (window.patrolFixture.controlError) return new Response("工作控制读取失败", { status: 503 });
+    return json({ status: JSON.parse(options.body).command });
+  }
   return base(input, options);
 };
