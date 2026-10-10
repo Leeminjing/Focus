@@ -1,7 +1,7 @@
 <!doctype html>
 <!--
   本文件提供 Focus 桌面宿主的持久挂载结构。输入为 app.js 的同源数据与原生 DOM 更新，
-  输出为受内容安全策略保护的全局导航、任务上下文、工作区、Loop Portfolio 控制台、检查器、
+  输出为受内容安全策略保护的六项主导航、默认 Patrol、传统任务三栏、Loop Portfolio 控制台、检查器、
   材料 Blob 加载器、浮层、对话框和可复用模板。具体工作流为先约束资源来源，再加载 Expansion 预算模块、无状态 UI、Live Loop schema/reducer/连接器、兼容读模型与材料 loader，加载独立 Patrol 文档/来源/编排/交互/检查/分支模块，最后启动 app.js。
   示例：浏览器加载 index.html 后由 app.js 挂载 #app。
 -->
@@ -30,31 +30,23 @@
   <div class="app-frame">
     <header class="app-header">
       <button class="app-mark" data-action="toggle-nav-collapse" aria-controls="appNavigation" aria-expanded="true" aria-label="收起导航" data-i18n-aria-label="nav.collapse"><img src="./assets/focus-icon.png" alt="" aria-hidden="true"></button>
+      <strong class="shell-brand">Focus<span>.</span></strong>
       <div class="shell-task-context" aria-live="polite">
         <strong id="shellTaskTitle" data-i18n="header.no_task">尚未选择任务</strong>
         <span id="shellTaskMeta" data-i18n="header.workbench">本地 Agent 工作台</span>
       </div>
-      <span id="globalStatus" class="global-status" role="status" aria-atomic="true"></span>
       <button class="quiet-button" data-action="new-task"><span class="ui-icon is-sm icon-plus" aria-hidden="true"></span><span data-i18n="header.new_task">新增任务</span></button>
     </header>
     <section id="accessPending" class="access-pending" role="region" aria-label="后台执行主体的本机资源请求" data-i18n-aria-label="access.background_title" hidden></section>
     <div class="app-shell">
       <nav id="appNavigation" class="app-navigation" aria-label="全局导航">
+        <button class="shell-workspace-button" data-action="show-patrol" data-patrol-switch><strong id="shellWorkspaceName">选择工作区</strong><span>Patrol 工作区</span></button>
         <button class="app-nav-item" data-action="show-patrol" data-nav-key="patrol"><span class="app-nav-label">Patrol</span></button>
         <button class="app-nav-item" data-action="focus-home" data-nav-key="focus">
           <span class="app-nav-label" data-i18n="nav.tasks">任务</span>
         </button>
         <button class="app-nav-item" data-action="show-map" data-nav-key="map">
           <span class="app-nav-label" data-i18n="nav.map">全图</span>
-        </button>
-        <button class="app-nav-item" data-action="show-contexts" data-nav-key="contexts">
-          <span class="app-nav-label" data-i18n="nav.contexts">上下文</span>
-        </button>
-        <button class="app-nav-item" data-action="show-agents" data-nav-key="agents">
-          <span class="app-nav-label" data-i18n="nav.agents">代理</span>
-        </button>
-        <button class="app-nav-item" data-action="show-loop" data-nav-key="loop">
-          <span class="app-nav-label">Agent Loop</span>
         </button>
         <button class="app-nav-item" data-action="show-plugins" data-nav-key="plugins">
           <span class="app-nav-label" data-i18n="nav.plugins">插件</span>
@@ -69,6 +61,7 @@
           <span class="ui-icon is-sm icon-settings" aria-hidden="true"></span>
           <span class="app-nav-label" data-i18n="nav.settings">设置</span>
         </button>
+        <span id="globalStatus" class="global-status" role="status" aria-atomic="true"></span>
       </nav>
       <div class="shell-resizer shell-resizer-nav" role="separator" aria-orientation="vertical" aria-label="调整导航宽度" title="拖拽调整导航宽度"></div>
       <section class="app-workspace">
@@ -81,6 +74,7 @@
           <button role="tab" data-action="open-inspector-tab" data-inspector-tab="materials" data-i18n="inspector.materials">材料</button>
           <button role="tab" data-action="open-inspector-tab" data-inspector-tab="agents" data-i18n="inspector.agents">代理</button>
           <button role="tab" data-action="open-inspector-tab" data-inspector-tab="run" data-i18n="inspector.run">运行</button>
+          <button data-action="close-inspector" aria-label="关闭任务检查器">×</button>
         </div>
         <div id="inspectorContent" class="inspector-content"></div>
       </aside>
@@ -255,6 +249,8 @@
   <script src="./loop-view.js?v=20260926a"></script>
   <script src="./workspace-patrol-inputs.js"></script>
   <script src="./workspace-patrol-view.js"></script>
+  <script src="./observation-view.js"></script>
+  <script src="./context-inspector.js"></script>
   <script src="./workspace-patrol-picker.js"></script>
   <script src="./workspace-patrol-controller.js"></script>
   <link rel="stylesheet" href="./patrol-workbench.css">

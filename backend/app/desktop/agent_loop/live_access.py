@@ -2,7 +2,7 @@ r"""本文件对外提供 LiveAccess、LoopLiveAccessPolicy 与 LoopLiveRedactio
 
 输入为 Loop identity、当前 delegation grant、projection 和权限集合；输出为当前授权快照或递归脱敏后的 Live projection。
 具体工作流为读取最新 grant 建立访问边界，再从所有实体 state 移除秘密、隐藏推理和无权证据；示例：`access = await policy.resolve(session, loop_id)`。
-任务进度单实体沿用相同递归脱敏与证据访问规则。
+任务进度单实体及 Observation 的白名单载荷通过 redact_value 沿用相同递归脱敏与证据访问规则。
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ class LoopLiveRedactionPolicy:
         def redact(entity: ProjectedEntity | None) -> ProjectedEntity | None:
             if entity is None:
                 return None
-            return entity.model_copy(update={"state": cls._value(entity.state, permissions)})
+            return entity.model_copy(update={"state": cls.redact_value(entity.state, permissions)})
         return projection.model_copy(update={
             "loop": redact(projection.loop),
             "mission": redact(projection.mission),
@@ -58,12 +58,12 @@ class LoopLiveRedactionPolicy:
         })
 
     @classmethod
-    def _value(cls, value: Any, permissions: frozenset[str]) -> Any:
+    def redact_value(cls, value: Any, permissions: frozenset[str]) -> Any:
         if isinstance(value, dict):
             hidden = {"chain_of_thought", "private_reasoning", "raw_prompt", "reasoning_content", "secret", "token", "tool_arguments"}
             if "view_evidence" not in permissions:
                 hidden |= {"evidence", "evidence_references", "workspace_result"}
-            return {key: cls._value(item, permissions) for key, item in value.items() if key.casefold() not in hidden}
+            return {key: cls.redact_value(item, permissions) for key, item in value.items() if key.casefold() not in hidden}
         if isinstance(value, list):
-            return [cls._value(item, permissions) for item in value]
+            return [cls.redact_value(item, permissions) for item in value]
         return value

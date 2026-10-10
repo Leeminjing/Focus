@@ -1,7 +1,7 @@
 /*
- * 本文件对外提供 Agent Loop 可追溯事实抽屉、renderRows 与 reconcileRows。
+ * 本文件对外提供 Agent Loop 可追溯事实抽屉、renderRows、reconcileRows、共用详情及验证状态/业务结果筛选选项。
  * 输入为物化事实、当前 Context 和筛选；输出为事实表 HTML，或按 fact_id 原位更新的 DOM 行。
- * 具体工作流为只呈现领域 revision 并排除历史 tool 条目；增量更新复用未变化行并原位更新状态。
+ * 具体工作流为只呈现领域 revision 并排除历史 tool 条目；增量更新复用未变化行并原位更新状态；稳定 fact_id 来源按钮进入真实证据检查。
  * 示例：`FocusLoopFactsView.reconcileRows(tbody, facts)`。
  */
 (function (root, factory) {
@@ -12,8 +12,12 @@
   "use strict";
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 
+  const statusOptions = [["", "全部事实状态"], ["observed", "已观察"], ["verifying", "验证中"], ["verified", "已验证"], ["contradicted", "已被反证"], ["superseded", "已替代"]];
+  const outcomeOptions = [["", "全部业务结果"], ["success", "成功"], ["failed", "失败"], ["unknown", "未知"]];
+  const factStates = Object.fromEntries(statusOptions);
+  const outcomeStates = Object.fromEntries(outcomeOptions);
   function evidenceLabel(item) {
-    return item.evidence?.run_id || item.evidence?.tool_name || item.evidence?.message_id || "evidence";
+    return item.run_id || item.evidence?.[0]?.run_id || item.evidence?.run_id || item.evidence?.tool_name || item.evidence?.message_id || "evidence";
   }
 
   function timeLabel(value) {
@@ -23,7 +27,7 @@
   }
 
   function rowHtml(item) {
-    return `<tr data-fact-id="${escape(item.fact_id)}" data-fact-revision="${escape(item.revision || 1)}" class="is-${escape(item.status)}"><td>${escape(timeLabel(item.occurred_at))}</td><td><strong>${escape(item.context_id)}</strong></td><td><span class="fact-kind">${escape(item.kind)}</span></td><td><strong>${escape(item.title)}</strong><span>${escape(item.summary)}</span></td><td><span class="fact-status is-${escape(item.status)}">${escape(item.status)}</span></td><td><code>${escape(evidenceLabel(item))}</code></td></tr>`;
+    return `<tr data-fact-id="${escape(item.fact_id)}" data-fact-revision="${escape(item.revision || 1)}" class="is-${escape(item.status)}"><td>${escape(timeLabel(item.occurred_at))}</td><td><strong>${escape(item.context_id)}</strong></td><td><span class="fact-kind">${escape(item.kind)}</span></td><td><strong>${escape(item.title)}</strong><span>${escape(item.summary)}</span></td><td><span class="fact-status is-${escape(item.status)}">${escape(factStates[item.status] || item.status)}</span>${item.outcome_status ? `<small>${escape(outcomeStates[item.outcome_status] || item.outcome_status)}</small>` : ""}</td><td><button class="text-button" data-action="inspect-loop-fact" data-fact-id="${escape(item.fact_id)}">${escape(evidenceLabel(item))} ↗</button></td></tr>`;
   }
 
   function renderRows(items) {
@@ -70,7 +74,7 @@
   function render(state) {
     const all = (state.facts?.facts || []).filter(item => item.kind !== "tool");
     const factStatus = state.factStatus || "all";
-    const filtered = all.filter(item => (state.factFilter === "all" || item.kind === state.factFilter) && (factStatus === "all" || item.status === factStatus) && (state.factScope === "all" || !state.selectedContextId || item.context_id === state.selectedContextId));
+    const filtered = all.filter(item => (state.factFilter === "all" || item.kind === state.factFilter) && (factStatus === "all" || item.status === factStatus || item.outcome_status === factStatus) && (state.factScope === "all" || !state.selectedContextId || item.context_id === state.selectedContextId));
     const tests = filtered.filter(item => item.kind === "test");
     const totals = tests.reduce((result, item) => {
       if (item.metrics?.count_status !== "exact") result.unknown += 1;
@@ -85,5 +89,11 @@
     return `<section class="loop-facts-drawer"><header><div><span class="loop-kicker">Live Facts</span><h3>持续演化的事实</h3></div><div class="fact-totals"><strong>${totals.passed}</strong> passed <strong>${totals.failed}</strong> failed <strong>${totals.skipped}</strong> skipped${totals.unknown ? ` · ${totals.unknown} unknown` : ""}</div><div class="fact-filters"><button type="button" data-action="loop-fact-scope" data-scope="${state.factScope === "all" ? "current" : "all"}">${state.factScope === "all" ? "全部 Context" : "当前 Context"}</button>${filters.map(value => `<button type="button" data-action="loop-fact-filter" data-filter="${value}" class="${state.factFilter === value ? "is-active" : ""}">${value}</button>`).join("")}${statuses.map(([value, label]) => `<button type="button" data-action="loop-fact-status" data-status="${value}" class="${factStatus === value ? "is-active" : ""}">${label}</button>`).join("")}</div></header><div class="fact-table-scroll" data-loop-fact-list>${older}<table class="fact-table"><thead><tr><th>时间</th><th>Context</th><th>类型</th><th>事实内容</th><th>状态</th><th>证据</th></tr></thead><tbody>${renderRows(filtered)}</tbody></table></div></section>`;
   }
 
-  return Object.freeze({ render, renderRows, reconcileRows });
+  function renderDetail(detail) {
+    const fact = detail.fact || {};
+    const metrics = fact.metrics || {};
+    return `<section class="fact-inspection"><h3>${escape(fact.title || fact.kind)}</h3><p>${escape(fact.summary)}</p><p>事实状态：${escape(factStates[fact.status] || fact.status)} · 业务结果：${escape(outcomeStates[fact.outcome_status] || fact.outcome_status || "未知")}</p>${fact.kind === "test" ? `<p>${metrics.count_status === "exact" ? `${escape(metrics.passed ?? 0)} passed · ${escape(metrics.failed ?? 0)} failed · ${escape(metrics.skipped ?? 0)} skipped` : "测试数量尚未明确，不计为成功"}</p>` : ""}<h3>事实修订</h3><ul>${(detail.revisions || []).map(row => `<li>版本 ${row.revision} · ${escape(factStates[row.state] || row.state)}<p>${escape(row.reason || row.presentation?.summary)}</p></li>`).join("") || "<li>暂无修订历史</li>"}</ul><details><summary>证据与精确来源</summary><pre>${escape(JSON.stringify({ fact_id: fact.fact_id, context_id: fact.context_id, run_id: fact.run_id, evidence: fact.evidence, relationships: detail.relationships }, null, 2))}</pre></details>${fact.evidence ? "" : "<p>证据正文未在当前权限下返回。</p>"}</section>`;
+  }
+
+  return Object.freeze({ render, renderRows, reconcileRows, renderDetail, statusOptions, outcomeOptions });
 });

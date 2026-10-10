@@ -6,6 +6,7 @@
  * 并按"完整工具调用组"回退到安全起点）、stats/resetStats（渲染计数与缓存规模，供预算检查）。
  * 输入为 detail、task、渲染依赖（renderMessage、renderDivider、events 归一、expandMessages、markdown 渲染器）
  * 与运行态快照（activeTaskId、streamBuffers、materialHistory、pluginViewCount）；输出为单元列表、会话 HTML、
+ * 无工作区模式以独立输入/附加材料的安静空态承接，不以插件配置提示替代真实会话。
  * 流式块 HTML 与统计计数。具体工作流为按窗口截取消息 → 逐段归一为单元 → 按内容签名命中缓存 →
  * 未命中才调用传入的渲染函数；普通段落的流式正文从已结束的空行边界续解析，复杂语法从最近安全边界重解析。
  * 可见正文边界约定：可见渲染与缓冲语义分离——缓冲照旧累积（完成态判据取正文前缀），而超过
@@ -228,9 +229,9 @@
       key: "placeholder",
       html: _unitHtml("placeholder", signature, () => (task.harness_mode === "assembly"
         ? `<div class="assembly-empty">
-          <p class="assembly-empty-title">无工作区模式</p>
-          <p>配置全局 skill、mcp tools、插件等</p>
-          <p>创造插件</p>
+          <p class="assembly-empty-title">从一个问题开始。</p>
+          <p>讨论、梳理材料、探索想法。</p>
+          <p>此会话不绑定用户工作区，附加材料与输入独立保存。</p>
         </div>`
         : `<article class="work-record message system"><header class="work-record-header"><span class="work-record-kicker">READY</span><span class="message-role">任务已就绪</span></header><div class="message-content"><span class="muted">这是该工作区与线程的第一页。输入任务即可开始。</span><details class="message-details"><summary>工作区路径</summary><pre>${escapeHtml(task.workspace_path)}</pre></details></div></article>`)),
     };

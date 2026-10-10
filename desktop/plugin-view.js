@@ -1,6 +1,6 @@
 /*
  * 本文件对外提供插件中心的纯渲染器。输入为插件清单、接口注册表、执行轨迹与本地筛选/选中状态，
- * 输出为主从插件工作台 HTML；工作流只呈现插件解析结果，不改变注入顺序和插件生命周期。
+ * 输出为真实插件卡片和按需详情 HTML；工作流在完整已加载清单中检索/筛选，呈现解析结果，不改变注入顺序和生命周期。示例：FocusPluginView.render(plugins, interfaces, traces, { query: "file" })。
  */
 (function (root, factory) {
   const api = factory();
@@ -98,8 +98,9 @@
   function render(plugins, interfaces, traces, options = {}) {
     const all = plugins || [];
     const filter = options.filter || "all";
-    const filtered = all.filter(plugin => filter === "all" || plugin.status === filter);
-    const selected = filtered.find(plugin => plugin.name === options.selectedName) || filtered[0] || null;
+    const query = String(options.query || "").trim().toLowerCase();
+    const filtered = all.filter(plugin => (filter === "all" || plugin.status === filter) && (!query || `${plugin.name} ${(plugin.injected || []).join(" ")}`.toLowerCase().includes(query)));
+    const selected = filtered.find(plugin => plugin.name === options.selectedName) || null;
     const filters = [
       ["all", "全部"], ["active", "已生效"], ["unavailable", "不可用"], ["rejected", "已拒绝"],
     ].map(([status, label]) => {
@@ -108,14 +109,17 @@
     }).join("");
     return `<section class="plugins-view">
       <header class="plugins-heading">
-        <div><strong>插件运行状况</strong><p class="muted">检查能力注入、依赖、冲突与实际执行轨迹。</p></div>
-        <button class="text-button" data-action="reload-plugins">重新加载</button>
+        <div><h1>插件</h1><p class="muted">能力状态、依赖与实际执行轨迹。</p></div>
+        <button class="text-button" data-action="reload-plugins"${options.loading ? " disabled" : ""}>重新加载</button>
         <button class="text-button" data-action="refresh-plugins">刷新</button>
       </header>
       <div class="plugin-filter segmented" role="group" aria-label="按插件状态筛选">${filters}</div>
+      <label class="page-search">检索已加载插件 <input type="search" data-page-search="plugins" value="${escapeHtml(options.query || "")}" placeholder="查找能力…"></label>
+      ${options.loading ? '<p role="status">正在读取插件状态…</p>' : ""}
+      ${options.error ? `<p role="alert">读取失败：${escapeHtml(options.error)} <button data-action="refresh-plugins">重试</button></p>` : ""}
       <div class="plugins-workbench">
         <aside class="plugins-list"><header><strong>插件</strong><span>${filtered.length}/${all.length}</span></header><div class="plugin-list-scroll">${filtered.map(plugin => renderPluginCard(plugin, plugin === selected)).join("") || `<section class="ui-empty-state"><h1>${all.length ? "没有匹配项" : "尚无插件"}</h1><p>${all.length ? "切换筛选查看其他状态。" : "plugins/ 目录为空，宿主仍可独立启动。"}</p></section>`}</div></aside>
-        <main class="plugins-detail">${renderPluginDetail(selected, interfaces, traces)}</main>
+        ${selected ? `<details class="plugins-detail"${options.selectedName ? " open" : ""}><summary>接口、依赖与执行轨迹 · ${escapeHtml(selected.name)}</summary>${renderPluginDetail(selected, interfaces, traces)}</details>` : ""}
       </div>
     </section>`;
   }

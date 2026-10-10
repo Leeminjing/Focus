@@ -9,9 +9,9 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { createAppHarness, readAppSource } = require("./test-helper.cjs");
+const { createAppHarness, createNode, readAppSource } = require("./test-helper.cjs");
 
-const appNode = { dataset: {}, innerHTML: "" };
+const appNode = createNode();
 const harness = createAppHarness({ selectors: { "#app": appNode } });
 harness.vm.runInContext(readAppSource(), harness.context);
 

@@ -12,7 +12,7 @@
 const assert = require("node:assert");
 const test = require("node:test");
 const path = require("node:path");
-const { createAppHarness, readAppSource } = require(path.resolve(__dirname, "test-helper.cjs"));
+const { createAppHarness, readAppSource, createNode } = require(path.resolve(__dirname, "test-helper.cjs"));
 const { createElement } = require(path.resolve(__dirname, "test-dom.cjs"));
 
 function buildApp() {
@@ -34,7 +34,8 @@ function buildApp() {
     get() { return markup; },
     set(next) { markup = String(next ?? ""); typed = null; },
   });
-  appNode.querySelector = selector => (selector === "#conversation" ? conversation : null);
+  const workspaceLayout = createNode();
+  appNode.querySelector = selector => selector === "#conversation" ? conversation : selector === ".task-workspace-layout" ? workspaceLayout : null;
   // window 级监听器在脚手架里默认不可派发（window === 全局对象）；收集起来供本文件按需派发
   const windowListeners = new Map();
   // 定时器同样默认是空实现：收集起来，使"去抖落盘"这条路径可被确定性触发

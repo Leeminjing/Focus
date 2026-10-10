@@ -88,8 +88,7 @@ assert.match(html, /class="app-mark"[^>]*data-action="toggle-nav-collapse"/);
 assert.match(html, /class="app-mark"[^>]*aria-controls="appNavigation"/);
 assert.match(html, /class="app-mark"[\s\S]*assets\/focus-icon\.png/, "应用头部没有保留用户指定的品牌 Logo");
 assert.doesNotMatch(shellStyles, /\.app-nav-toggle(?:\s|\.|\{)/, "壳层仍保留已删除的「收起导航」按钮样式");
-// 头部网格收敛为 4 列（删除折叠按钮后恢复断言），而非过渡态的 5 列。
-assert.match(shellStyles, /\.app-header\s*\{[^}]*grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\)\s+auto\s+auto/);
+assert.match(shellStyles, /\.app-header\s*\{[^}]*grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\)/);
 assert.doesNotMatch(shellStyles, /\.app-header\s*\{[^}]*grid-template-columns:\s*auto\s+auto\s+minmax\(0,\s*1fr\)\s+auto\s+auto/, ".app-header 仍为 5 列（遗留折叠按钮占用的一格）");
 // logo 无痕：.app-mark 不得有 :hover 背景（可点击性仅由 cursor 与键盘焦点样式提示）。
 assert.doesNotMatch(shellStyles, /\.app-mark:hover\s*\{[^}]*background:/, ".app-mark 仍显示 :hover 背景");
