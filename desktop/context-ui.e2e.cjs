@@ -1,6 +1,6 @@
 /*
  * 本文件以 Electron 加载真实桌面页面并验证 Context 与壳层交互。输入为 preload 提供的固定
- * 工作区，输出为树排序、Pointer/键盘拖拽、滚动、reduced-motion、窄屏 Inspector 和焦点归还断言。
+ * 工作区，输出为显式任务/Context 次级入口、六导航、树排序、Pointer/键盘拖拽、滚动、reduced-motion、窄屏 Inspector 和焦点归还断言。
  */
 const path = require("node:path");
 const fs = require("node:fs");
@@ -45,9 +45,12 @@ async function run() {
     const failures = [];
     const flushAction = () => new Promise(resolve => setTimeout(resolve, 0));
     await waitFor('[data-action="show-map"]');
+    document.querySelector('[data-action="focus-home"]').click();
+    await waitFor('.focus-view');
+    document.querySelector('[data-action="show-contexts"]').click();
     const rail = await waitFor('.context-rail');
     const navItems = [...document.querySelectorAll('.app-nav-item[data-nav-key]')];
-    if (navItems.length !== 8 || navItems.some(item => item.querySelector('.ui-icon'))) failures.push('左侧导航仍包含图标或图标占位');
+    if (navItems.length !== 6 || navItems.some(item => !item.querySelector('.ui-icon'))) failures.push('六项导航或图标未按新布局呈现');
     if (navItems.some(item => item.querySelector('.app-nav-label')?.getBoundingClientRect().width < 12)) failures.push('左侧导航文字未完整显示');
     const railOrder = [...rail.querySelectorAll('.context-rail-card')].map(card => card.dataset.taskId);
     if (railOrder.slice(0, 5).join(',') !== 'root,child,merged,blocked,sibling') failures.push('Focus 页没有按树展示分支与合并 Context：' + railOrder.join(','));
@@ -112,6 +115,8 @@ async function run() {
     document.querySelector('[data-action="exit-context-editor"]').click();
     await waitFor('.task-card');
     document.querySelector('.task-card[data-task-id="child"]').click();
+    await waitFor('.focus-view');
+    document.querySelector('[data-action="show-contexts"]').click();
     await waitFor('[data-action="derive-context"]');
     document.querySelector('[data-action="edit-context-definition"][data-context-id="child"]').click();
     await waitFor('.context-definition-panel');
@@ -121,6 +126,8 @@ async function run() {
     document.querySelector('[data-action="exit-context-editor"]').click();
     await waitFor('.task-card[data-task-id="child"]');
     document.querySelector('.task-card[data-task-id="child"]').click();
+    await waitFor('.focus-view');
+    document.querySelector('[data-action="show-contexts"]').click();
     await waitFor('[data-action="derive-context"]');
     document.querySelector('[data-action="derive-context"]').click();
     let panel = await waitFor('.context-definition-panel');
@@ -230,6 +237,7 @@ async function run() {
   if (result.failures.length) throw new Error(`${result.failures.join("\n")}\nscrollTop: ${result.before} -> ${result.after}`);
   window.setSize(900, 680);
   const responsive = await window.webContents.executeJavaScript(`(async () => {
+    await goFocusHome();
     await new Promise(resolve => setTimeout(resolve, 120));
     const failures = [];
     if (document.documentElement.scrollWidth > document.documentElement.clientWidth) failures.push('900×680 存在页面级横向滚动');
@@ -237,6 +245,7 @@ async function run() {
     if (nav.getBoundingClientRect().width > 124) failures.push('900×680 文字导航过宽');
     if ([...nav.querySelectorAll('.app-nav-label')].some(label => label.getBoundingClientRect().width < 12)) failures.push('900×680 导航文字被隐藏');
     const trigger = document.querySelector('[data-action="show-contexts"]');
+    trigger.closest('details').open = true;
     trigger.focus();
     trigger.click();
     await new Promise(resolve => requestAnimationFrame(resolve));

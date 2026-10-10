@@ -1,14 +1,21 @@
-/* F20 壳层：持久导航、主工作区、检查器与覆盖式窄屏形态。 */
+/* 本文件对外提供六项导航、品牌、主工作区与检查器布局。输入为宿主语义 DOM、用户拖拽宽度与折叠状态；输出为银灰导航和可缩放工作面。
+ * 具体工作流为统一宽度 token 控制栏位，保留导航恢复按钮与窄屏检查器入口。示例：.app-shell.is-nav-collapsed。
+ */
 .app-header {
   display: grid;
-  height: var(--shell-header-height);
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  position: absolute;
+  z-index: 32;
+  top: 20px;
+  left: 16px;
+  width: 180px;
+  height: 48px;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: var(--space-3);
   padding-left: max(var(--space-4), env(titlebar-area-x, 0px));
   padding-right: max(var(--space-4), calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)));
-  border-bottom: 1px solid var(--border-subtle);
-  background: rgb(255 255 255 / 96%);
+  border: 0;
+  background: transparent;
   -webkit-app-region: drag;
 }
 
@@ -50,13 +57,13 @@
   height: 100%;
   min-width: 0;
   min-height: 0;
-  grid-template-rows: var(--shell-header-height) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
   background: var(--surface-canvas);
 }
 
 .shell-task-context {
-  display: grid;
+  display: none;
   min-width: 0;
   gap: 1px;
 }
@@ -70,7 +77,13 @@
 
 .shell-task-context strong { font-size: 13px; font-weight: 650; }
 .shell-task-context span { color: var(--text-secondary); font-size: 11px; }
-.global-status { max-width: min(34vw, 460px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.global-status { font-size: 11px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.app-header > .quiet-button { display: none; }
+.shell-brand { font-size: 25px; font-weight: 650; letter-spacing: -1.2px; }
+.shell-brand span { color: var(--accent-primary); }
+.app-frame:has(.is-nav-collapsed) .shell-brand { display: none; }
+.shell-workspace-button { text-align: left; margin-bottom: 24px; display: grid; gap: 4px; padding: 12px; border: 1px solid var(--border-default); border-radius: 12px; background: #ffffff70; }
+.shell-workspace-button span { color: var(--text-secondary); font-size: 11px; }
 
 #app {
   height: auto;
@@ -86,7 +99,7 @@
   width: 100%;
   height: 100%;
   /* 三栏尺寸的唯一来源：默认值可用媒体查询覆盖，用户拖拽用内联自定义属性覆盖。 */
-  --shell-nav-width: 172px;
+  --shell-nav-width: 204px;
   --inspector-width: clamp(var(--inspector-min-width), 22vw, var(--inspector-max-width));
   min-width: 0;
   min-height: 0;
@@ -122,18 +135,20 @@
   min-height: 0;
   max-width: var(--shell-nav-max-width);
   gap: var(--space-1);
-  padding: var(--space-3) var(--space-2);
+  padding: 102px 14px 16px;
   border-right: 1px solid var(--border-subtle);
-  background: var(--surface-base);
+  background: linear-gradient(160deg, #f0f1f5, #eef0f3 65%, #edeff3);
 }
 
 .app-nav-item {
   display: flex;
-  min-height: 40px;
+  justify-content: flex-start;
+  min-height: 44px;
   align-items: center;
   padding: 0 var(--space-3);
+  gap: 12px;
   border: 0;
-  border-radius: var(--radius-card);
+  border-radius: 10px;
   color: var(--text-secondary);
   background: transparent;
   text-align: left;
@@ -143,7 +158,7 @@
 }
 
 .app-nav-item:hover { color: var(--text-primary); background: var(--surface-subtle); }
-.app-nav-item[aria-current="page"] { color: var(--text-primary); background: var(--surface-selected); box-shadow: none; font-weight: 650; }
+.app-nav-item[aria-current="page"] { color: var(--accent-primary); background: var(--surface-base); box-shadow: var(--shadow-raised); font-weight: 650; }
 .app-nav-item[aria-current="page"]:hover { background: var(--surface-selected-hover); }
 .app-nav-item.app-nav-settings { margin-top: auto; gap: var(--space-2); color: var(--text-secondary); }
 .app-nav-item.app-nav-settings .app-nav-label { flex: 0 0 auto; }
@@ -178,7 +193,7 @@
 
 .inspector-tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr)) 28px;
   gap: 2px;
   margin: var(--space-2);
   padding: 3px;
@@ -230,6 +245,8 @@
 @media (max-width: 1100px) {
   /* 只覆盖默认宽度，不改 flex 简写，避免覆盖用户拖拽的内联值。 */
   .app-shell { --shell-nav-width: var(--shell-nav-collapsed); }
+  .app-header { width: calc(var(--shell-nav-collapsed) - 32px); }
+  .shell-brand { display: none; }
 }
 
 @media (max-width: 900px) {
@@ -256,6 +273,11 @@
 }
 
 @media (max-width: 640px) {
+  .app-workspace { min-width: 0; }
+  .app-navigation { flex-basis: 56px; padding-inline: 6px; }
+  .app-nav-item { padding-inline: 10px; justify-content: center; }
+  .app-nav-item .app-nav-label, .shell-workspace-button, .shell-brand { display: none; }
+  .app-header { width: 44px; left: 6px; padding: 0; }
   .shell-task-context { display: none; }
-  .global-status { justify-self: end; }
+  .global-status { display: none; }
 }

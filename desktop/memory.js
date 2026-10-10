@@ -1,6 +1,6 @@
 /*
  * 本文件对外提供记忆库的纯渲染器。输入为记忆库列表与整理态状态，
- * 输出为记忆库工作台 HTML；工作流只呈现记忆实体与三栏整理器，不改变记忆持久化语义。
+ * 输出为可检索记忆卡片及三栏整理器 HTML；工作流在完整已加载列表检索，保留创建/编辑/来源/合并/分段，不改变持久化语义。示例：FocusMemoryView.render(memories, { query: "本地" })。
  */
 (function (root, factory) {
   const api = factory();
@@ -84,13 +84,14 @@
   }
 
   function workbench(memories, options) {
-    const all = memories || [];
-    const selected = all.find(m => m.memory_id === options.selectedId) || all[0] || null;
+    const query = String(options.query || "").trim().toLowerCase();
+    const all = (memories || []).filter(memory => !query || `${memory.title} ${memory.content}`.toLowerCase().includes(query));
+    const selected = all.find(m => m.memory_id === options.selectedId) || null;
     return `<div class="memory-workbench">
       <aside class="memory-list"><header><strong>记忆</strong><span class="memory-list-actions"><button type="button" class="text-button" data-action="new-memory">新建</button><span>${all.length}</span></span></header>
         <div class="memory-list-scroll">${all.map(m => card(m, m === selected)).join("") || `<section class="ui-empty-state"><h1>尚无记忆</h1><p>新建一条，沉淀跨会话知识。</p></section>`}</div>
       </aside>
-      <main class="memory-detail">${selected ? detail(selected) : '<section class="ui-empty-state"><h1>选择一条记忆</h1><p>查看、编辑或删除。</p></section>'}</main>
+      ${selected ? `<main class="memory-detail">${detail(selected)}</main>` : ""}
     </div>`;
   }
 
@@ -231,6 +232,10 @@
 
   function render(memories, options = {}) {
     return `<section class="memory-view">
+      <header class="memory-page-heading"><div><h1>记忆库</h1><p>让重要的决定留下来，让重复的解释少一点。</p></div><button data-action="new-memory">＋ 新增记忆</button></header>
+      ${options.composing ? "" : `<label class="page-search">检索已加载记忆 <input type="search" data-page-search="memory" value="${escapeHtml(options.query || "")}" placeholder="搜索决定与约定…"></label>`}
+      ${options.loading ? '<p role="status">正在读取记忆…</p>' : ""}
+      ${options.error ? `<p role="alert">读取失败：${escapeHtml(options.error)} <button data-action="refresh-memory">重试</button></p>` : ""}
       ${options.composing ? compose(options) : workbench(memories, options)}
     </section>`;
   }

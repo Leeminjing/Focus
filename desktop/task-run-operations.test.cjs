@@ -1,7 +1,7 @@
 /**
  * 本文件对外提供任务级 Run 操作状态的隔离回归测试。
  * 输入为两个 task、独立请求和 Run 事件；输出为互不污染的 pending/error/stream 快照。
- * 具体工作流为载入纯 store、并发变更两个 task、完成其中一个请求并验证另一个保持原状。
+ * 具体工作流为载入纯 store、并发变更两个 task、完成其中一个请求并验证另一个保持原状；耐久 direct_message 回执不伪造 Run。
  * 示例：`node --test desktop/task-run-operations.test.cjs`。
  */
 
@@ -35,6 +35,18 @@ test("stale completion cannot clear a newer request", () => {
   store.fail("task-a", "request-old", "late");
   assert.equal(store.get("task-a").submission.request_id, "request-new");
   assert.equal(store.get("task-a").submission.status, "pending");
+});
+
+test("durable user message admission preserves actual Run identity", () => {
+  const store = Operations.create();
+  store.begin("task", "r1");
+  store.accept("task", "r1", { intent_kind: "direct_message", intent_id: "i1", run_id: null, status: "pending" });
+  assert.equal(store.get("task").active_run, null);
+  store.begin("task", "r2");
+  store.accept("task", "r2", { run_id: "real", status: "running" });
+  store.begin("task", "r3");
+  store.accept("task", "r3", { intent_kind: "direct_message", run_id: "other", status: "settled" });
+  assert.equal(store.get("task").active_run.run_id, "real");
 });
 
 test("background Run updates stay with their owner while another task is pending", () => {

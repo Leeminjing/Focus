@@ -1,23 +1,23 @@
 /* 本文件对外提供 FocusWorkspacePatrolPicker.create 的工作区选择页面。
- * 输入为系统文件夹选择回调和显式进入回调；输出为用户选中路径的确认页面。
+ * 输入为系统文件夹选择回调和显式进入回调；输出为默认输入区及原生路径确认对话框。
  * 工作流为打开原生文件夹选择器，选择仅更新本页路径，确认进入才调用原绑定用例；取消保留原选择，
  * 离开后忽略迟到响应。页面不读取已登记目录，不创建 Context/Run；图标与转义复用宿主资产和 Patrol view。
  * 示例：const picker = FocusWorkspacePatrolPicker.create({ chooseFolder, onEnter }); picker.mount(host)。
  */
 (function (root, factory) {
   const view = root.FocusWorkspacePatrolView || (typeof require === "function" ? require("./workspace-patrol-view.js") : null);
-  const api = factory(view.escape);
+  const api = factory(view.escape, view.composer);
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.FocusWorkspacePatrolPicker = api;
-})(globalThis, function (escape) {
+})(globalThis, function (escape, composer) {
   "use strict";
   const icon = name => `<span class="ui-icon icon-${name}" aria-hidden="true"></span>`;
 
   function shell() {
-    return `<section class="patrol-workspace-picker" aria-labelledby="patrolPickerTitle">
-      <header class="patrol-picker-heading"><h1 id="patrolPickerTitle">选择工作区文件夹</h1><p>从电脑文件系统选择项目文件夹，Patrol 将在其中组织讨论与执行。</p></header>
+    return `<section class="workspace-patrol is-quiet patrol-workspace-picker">${composer(null)}<dialog class="patrol-picker-dialog" aria-labelledby="patrolPickerTitle">
+      <header class="patrol-picker-heading"><h1 id="patrolPickerTitle">选择工作区文件夹</h1><button type="button" data-patrol-picker-close aria-label="关闭选择">×</button><p>从电脑文件系统选择项目文件夹，确认后进入工作区。</p></header>
       <p class="patrol-picker-error" data-patrol-binding-error role="alert" hidden></p>
-      <section class="patrol-picker-detail" data-patrol-workspace-detail aria-label="工作区路径确认">${detail(null)}</section></section>`;
+      <section class="patrol-picker-detail" data-patrol-workspace-detail aria-label="工作区路径确认">${detail(null)}</section></dialog></section>`;
   }
 
   function detail(path) {
@@ -30,9 +30,10 @@
       <p class="patrol-workspace-note">选择工作区不会启动执行，发送首条信息后开始。</p></div>`;
   }
 
-  function create({ chooseFolder, onEnter }) {
+  function create({ chooseFolder, onEnter, onCancel }) {
     let page = null;
     let path = null;
+    let entering = false;
     const alive = () => Boolean(page?.isConnected);
 
     function showError(failure) {
@@ -48,7 +49,7 @@
       for (const control of page.querySelectorAll("button")) control.disabled = true;
       showError(null);
       try {
-        if (button.hasAttribute("data-patrol-enter")) await onEnter(path);
+        if (button.hasAttribute("data-patrol-enter")) { entering = true; await onEnter(path); }
         else {
           const chosen = await chooseFolder();
           if (page === owner && alive() && chosen) {
@@ -58,6 +59,7 @@
           }
         }
       } catch (failure) {
+        entering = false;
         if (page === owner) showError(failure);
       } finally {
         if (page === owner && alive()) for (const control of page.querySelectorAll("button")) control.disabled = false;
@@ -67,7 +69,14 @@
     function click(event) {
       const button = event.target.closest("button");
       if (!button || !page.contains(button)) return;
-      if (button.hasAttribute("data-patrol-bind") || (button.hasAttribute("data-patrol-enter") && path)) void act(button);
+      event.stopPropagation();
+      if (button.hasAttribute("data-patrol-picker-close")) return page.querySelector("dialog").close();
+      if (button.hasAttribute("data-patrol-switch")) return page.querySelector("dialog").showModal();
+      if (button.hasAttribute("data-patrol-bind") || (button.hasAttribute("data-patrol-enter") && path)) {
+        const dialog = page.querySelector("dialog");
+        if (!dialog.open) dialog.showModal();
+        void act(button);
+      }
     }
 
     function mount(host) {
@@ -75,13 +84,20 @@
       host.innerHTML = shell();
       page = host.firstElementChild;
       page.addEventListener("click", click);
+      page.querySelector("dialog").addEventListener("close", cancelled);
+      page.querySelector("[data-patrol-history-open]").hidden = true;
+      page.querySelector("[data-patrol-details]").hidden = true;
     }
 
     function dispose() {
+      page?.querySelector("dialog")?.removeEventListener("close", cancelled);
+      page?.querySelector("dialog")?.close();
       page?.removeEventListener("click", click);
       page = null;
       path = null;
+      entering = false;
     }
+    function cancelled() { if (!entering && alive()) onCancel?.(); }
     return Object.freeze({ mount, dispose });
   }
   return Object.freeze({ create });

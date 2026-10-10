@@ -1,5 +1,5 @@
 /**
- * 本文件对外提供 FocusLoopWaitRequestView 的 WaitRequest 渲染与草稿 store。
+ * 本文件对外提供 FocusLoopWaitRequestView 的 WaitRequest 渲染、表单响应解析、草稿序列化与逐请求 store。
  * 输入为类型化等待请求、逐请求 UI 状态和转义函数；输出为绑定 request id 的安全控件 HTML 与隔离草稿。
  * 具体工作流为按 response_mode 选择 text/choice/structured/action 控件，action 按钮使用全局委托入口提交类型化响应，展示来源与作用域，只有证据身份明确的缺失目标澄清另呈显式沿用当前 Mission 的恢复按钮，提交状态只禁用本请求，草稿按 request id 持久保存并恢复。
  * 示例：`FocusLoopWaitRequestView.render(request, { pending: false })`。
@@ -75,5 +75,22 @@
     try { return JSON.parse(value); } catch { return {}; }
   }
 
-  global.FocusLoopWaitRequestView = Object.freeze({ createDraftStore, render });
+  function readAnswer(form, mode) {
+    const values = new FormData(form);
+    if (mode === "text") return { text: String(values.get("answer") || "") };
+    if (mode === "single_choice") return { choice: values.get("choice") };
+    if (mode === "multiple_choice") return { choices: values.getAll("choice") };
+    return Object.fromEntries(values);
+  }
+
+  function serializeDraft(form) {
+    const draft = {};
+    for (const [name, value] of new FormData(form)) {
+      if (Object.prototype.hasOwnProperty.call(draft, name)) draft[name] = Array.isArray(draft[name]) ? [...draft[name], String(value)] : [draft[name], String(value)];
+      else draft[name] = String(value);
+    }
+    return JSON.stringify(draft);
+  }
+
+  global.FocusLoopWaitRequestView = Object.freeze({ createDraftStore, render, readAnswer, serializeDraft });
 })(window);

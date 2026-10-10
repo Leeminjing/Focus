@@ -1,6 +1,6 @@
 r"""本文件对外提供 MaterializedFactQueryService 与 FactParityService。
 
-输入为 Loop、事实过滤、事实游标和可选旧版事实列表；输出为 current fact 页、单事实完整修订/关系历史或 parity 差异。
+输入为 Loop、事实状态/业务结果独立过滤、事实游标和可选旧版事实列表；输出为 current fact 页、单事实完整修订/关系历史或 parity 差异。
 具体工作流为直接读取 `loop_facts` current rows，以 fact_id/occurred_at 稳定分页，详情连接不可变 revisions 和双向关系；
 公共分页、计数、详情及关系端点一致排除历史 tool rows；parity 仅比较规范化类型、来源与展示语义，不改变读取状态。
 示例：`page = await service.read(session, loop_id, ...)`。
@@ -33,6 +33,7 @@ class MaterializedFactQueryService:
         status: str | None,
         before: int | None,
         limit: int,
+        outcome_status: str | None = None,
     ) -> dict:
         await self._authorize_scope(session, loop_id, context_id)
         predicates = [LoopFact.loop_id == loop_id, LoopFact.fact_type != "tool"]
@@ -42,6 +43,8 @@ class MaterializedFactQueryService:
             predicates.append(LoopFact.fact_type == kind)
         if status:
             predicates.append(LoopFact.state == status)
+        if outcome_status:
+            predicates.append(LoopFact.presentation["outcome_status"].astext == outcome_status)
         total = int(await session.scalar(select(func.count()).select_from(LoopFact).where(*predicates)) or 0)
         end = total if before is None else min(max(before, 0), total)
         start = max(0, end - max(1, limit))

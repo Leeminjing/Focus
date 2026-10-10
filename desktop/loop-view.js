@@ -1,5 +1,5 @@
 /*
- * 本文件对外提供 Agent Loop 生命周期外壳、Option 3 Patrol 活动轨、Mission 表单、Expansion 资源状态、授权控制与轻量生命周期补丁函数。
+ * 本文件对外提供 Agent Loop 生命周期外壳、Patrol 活动轨、Mission 表单、Expansion 资源状态、共享授权表单/收窄解析与轻量生命周期补丁函数。
  * 输入为兼容 Loop 读模型、Mission 交付与有效 Expansion 预算快照、权威 Live projection、连接状态、当前 Context 与 Console 读模型；输出为紧凑顶栏、独立连接提示、交付/资源/阻断状态及现有图/会话/事实工作区。
  * 具体工作流为启动态编辑 Mission 与显式 Expansion 容量；运行态以当前 Live round 显示轮次，消费分开显示实际、未报告预留和预算占用，预算环按占用计算；分别显示事务完成计数、初始证据和待清理，连接提示随生命周期补丁更新，再把图、会话、事实交给专用视图。
  * 示例：`FocusLoopView.render(loopState, context, consoleState)`；SSE 到达时调用 `patchLifecycle(container, state)`。
@@ -217,6 +217,21 @@
     }).join("");
   }
 
+  function readNarrowGrant(form, grant) {
+    const values = new FormData(form);
+    const enabled = values.get("autonomousCompression") === "on";
+    const split = name => String(values.get(name) || "").split(",").map(value => value.trim()).filter(Boolean);
+    return {
+      command: "narrow",
+      capabilities: split("capabilities").filter(value => enabled || value !== "apply_context_compression"),
+      context_scope: split("contextScope"),
+      permission_scope: split("permissionScope"),
+      delegable_gates: split("delegableGates").filter(value => enabled || value !== "compression"),
+      compression_policy: enabled ? grant?.compression_policy || null : null,
+      expires_at: String(values.get("expiresAt") || "").trim() || null,
+    };
+  }
+
   function transactionHistory(loop) {
     return `<details class="loop-round-history"><summary>事务轮次记录</summary><ol>${(loop.accounting?.round_history || []).map(row => `<li>Round ${escape(row.number)} · ${escape(row.status)} · ${row.completed_transaction ? "完整事务" : "未完成事务"}<div>Observation ${escape(row.observation_id || "—")} · Decision ${escape(row.decision_id || "—")}</div>${(row.diagnostics || []).map(code => `<code>${escape(code)}</code>`).join(" ")}</li>`).join("")}</ol></details>`;
   }
@@ -282,5 +297,5 @@
     return true;
   }
 
-  return Object.freeze({ render, patchLifecycle });
+  return Object.freeze({ render, patchLifecycle, grantControls, readNarrowGrant });
 });

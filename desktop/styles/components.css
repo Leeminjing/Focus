@@ -1,4 +1,7 @@
-/* F20 公共组件层：只表达跨工作流语义，不承载业务提交逻辑。 */
+/* 本文件对外提供通用控件、卡片与对话框的视觉合同。输入为语义 class 和设计 token；输出为统一控件状态。
+ * 具体工作流为重置原生按钮背景/边框后应用明确的主操作、安静操作与状态；不承载业务提交。示例：button.primary。
+ */
+button { border: 1px solid transparent; background: transparent; }
 .primary,
 .quiet-button,
 .icon-button,

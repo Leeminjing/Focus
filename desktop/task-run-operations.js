@@ -1,13 +1,13 @@
 /**
  * 本文件对外提供 FocusTaskRunOperations 任务级异步操作 store。
- * 输入为 task id、request id、Run payload、stream transition 或错误；输出为按 task 隔离的只读状态快照。
- * 具体工作流为 begin 建立请求所有权，accept/fail 仅处理匹配请求，updateRun 按 Run 身份更新，finally 清理本请求资源。
+ * 输入为 task id、request id、Run 或耐久消息受理回执、stream transition 或错误；输出为按 task 隔离的只读状态和受理凭证，凭证不宣称后续执行阶段。
+ * 具体工作流为 begin 建立请求所有权，accept/fail 仅处理匹配请求，只有带 Run 身份且非 direct_message 的回执更新 active_run；updateRun 按 Run 身份更新，finally 清理本请求资源。
  * 示例：`const operations = FocusTaskRunOperations.create(); operations.begin("task-1", "request-1")`。
  */
 
 (function initTaskRunOperations(global) {
   function empty(taskId) {
-    return { task_id: taskId, submission: null, active_run: null, streams: {}, error: null };
+    return { task_id: taskId, submission: null, admission: null, active_run: null, streams: {}, error: null };
   }
 
   function clone(value) {
@@ -34,7 +34,8 @@
         write(taskId, {
           ...current,
           submission: { request_id: requestId, status: "accepted", controller: null },
-          active_run: clone(run),
+          admission: run?.intent_kind === "direct_message" ? clone(run) : null,
+          active_run: run?.run_id && run.intent_kind !== "direct_message" ? clone(run) : current.active_run,
           error: null,
         });
         return true;

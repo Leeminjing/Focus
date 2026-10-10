@@ -1,5 +1,5 @@
 /* 本文件对外提供 Desktop 中英文文案与本地语言选择。输入为文案键和语言，输出为可显示的翻译。
-   具体工作流为从当前语言表取值并回退到默认语言；文件沙箱模式、审批和部分约束文案同源。
+   具体工作流为从当前语言表取值并回退到默认语言；文件沙箱模式、独立会话目录范围、审批和部分约束文案同源。
    示例：t("access.mode_workspace_write") 返回当前语言的工作区可写名称。 */
 (function exposeFocusI18n(global) {
   "use strict";
@@ -96,6 +96,7 @@
       "common.no_archived": "暂无已归档会话",
       "common.close": "关闭",
       "focus.current_task": "当前任务",
+      "focus.free_session": "自由会话",
       "focus.run_details": "运行详情",
       "focus.input_label": "任务输入",
       "focus.input_placeholder": "描述下一步，或输入 / 选择技能…",
@@ -142,6 +143,7 @@
       "access.mode_switch_hint": "切换本机资源访问模式",
       "access.ability_boundary": "工具是否可用与进程文件边界分别生效",
       "access.persistent_impact": "首次受限运行会持久调整工作区权限",
+      "access.internal_scope": "模式作用于 Focus 内部目录；未绑定项目工作区",
       "settings.sandbox_status": "Windows 文件沙箱",
       "sandbox.unrestricted": "完全访问：未应用文件沙箱",
       "sandbox.prepared": "已准备或曾尝试准备的工作区",
@@ -262,6 +264,7 @@
       "common.no_archived": "No archived sessions",
       "common.close": "Close",
       "focus.current_task": "Current Task",
+      "focus.free_session": "Free Conversation",
       "focus.run_details": "Run Details",
       "focus.input_label": "Task input",
       "focus.input_placeholder": "Describe the next step, or type / to choose a skill…",
@@ -308,6 +311,7 @@
       "access.mode_switch_hint": "Change local resource access mode",
       "access.ability_boundary": "Tool availability and process file boundaries are separate",
       "access.persistent_impact": "First confined run leaves workspace permission changes in place",
+      "access.internal_scope": "Mode applies to Focus's internal directory; no project workspace is bound",
       "settings.sandbox_status": "Windows file sandbox",
       "sandbox.unrestricted": "Full access: file sandbox not applied",
       "sandbox.prepared": "Prepared or attempted workspaces",

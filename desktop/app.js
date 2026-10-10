@@ -1,6 +1,7 @@
 /*
- * Loop 激活由服务端解析初始 Run 装备，客户端不从详情缓存猜测权限；继承请求输出完整有效授权快照。
- * Loop 介入提交保留原文；成功后只清空同一 Context、模式和内容的当前表单，重绘替换及提交期间的新草稿不被旧节点重置影响。
+ * Loop 激活由服务端解析初始 Run 装备，客户端不从详情缓存猜测权限；继承请求输出完整有效授权快照。Main 接口的 direct_message 回执仅表示受理，不写 active_run 或材料执行历史。默认 Patrol，任务列表与材料检查器承接传统操作，复杂能力通过明确次级入口使用原业务用例。
+ * Loop 介入提交保留原文；成功后只清空同一 Context、模式和内容的当前表单，重绘替换及提交期间的新草稿不被旧节点重置影响。全图节点在选择/装备模式复用原操作，普通检查仍不改变发送目标；选择重绘恢复原节点焦点。
+ * 任务工具提供手工整理并复用既有 quick-apply；已有压缩待决仍使用原 resume。授权/等待表单解析复用共享视图，文件预览暂时隐藏材料检查器，关闭后恢复原 UI 偏好；独立会话的内部目录不呈现为用户已绑定工作区。
  * 会话 standard Patrol 由独立 Document/Workbench/Branches 模块负责 typed 左右编排、精确来源选择、保存、只读请求预览和精确执行分支；本文件组合路由、装备、检查器与运行订阅，材料变更按所属任务使检查过期并按当前页面刷新，保留编辑挂载。
  * 示例：refreshMaterialView(taskId, true) 使该任务材料变更后的检查过期并刷新当前路由；await sendMain()。模型配置显式选择 Provider 与协议，详情展示有效协议。
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
@@ -72,13 +73,13 @@ const materialContentLoader = window.MaterialContentLoader
 const MAP_VIEW_PREFERENCES_KEY = "focus-map-view-v1";
 
 function readMapViewPreferences() {
-  const fallback = { mode: "tree", workspaceIds: [], contextIds: [] };
+  const fallback = { mode: "graph", workspaceIds: [], contextIds: [] };
   try {
     const raw = localStorage.getItem(MAP_VIEW_PREFERENCES_KEY);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw);
     return {
-      mode: ["tree", "cards"].includes(parsed?.mode) ? parsed.mode : fallback.mode,
+      mode: ["graph", "tree", "cards"].includes(parsed?.mode) ? parsed.mode : fallback.mode,
       workspaceIds: Array.isArray(parsed?.workspaceIds) ? parsed.workspaceIds.filter(id => typeof id === "string") : [],
       contextIds: Array.isArray(parsed?.contextIds) ? parsed.contextIds.filter(id => typeof id === "string") : [],
     };
@@ -107,7 +108,7 @@ const ZOOM_LEVEL_MIN = -3;
 const ZOOM_LEVEL_MAX = 5;
 
 const state = {
-  view: localStorage.getItem("focus-interaction-entry") === "patrol" ? "patrol" : "focus",
+  view: "patrol",
   patrolWorkspace: readPatrolWorkspace(),
   tasks: [],
   activeTaskId: null,
@@ -175,7 +176,7 @@ const state = {
   plugins: { plugins: [], interfaces: {}, traces: [], filter: "all", selectedName: null },
   memory: { memories: [], selectedId: null, composing: false, draft: null, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], textSelection: "", textMessageId: null, textRange: null, editorRatio: 0.5, sourceRatio: 0.5, contentMode: "complete", segments: [], expandedGroups: [], mergeMode: false, selectedSourcesForMerge: [], sessionScrollTop: 0 },
   loop: { loopId: null, loading: false, revisionSnapshot: null },
-  inspector: { open: window.innerWidth > 1100, tab: "context", returnFocus: null },
+  inspector: { open: window.innerWidth > 1100, tab: "materials", returnFocus: null },
   filesPanel: null,   // f18:右侧文件面板当前打开的 material(relative_path 等)
   panelWidth: normalizePanelWidth(localStorage.getItem("focus-panel-width") || 400),
   shellLayout: normalizeShellLayout(readShellLayout(), window.innerWidth),
@@ -226,6 +227,10 @@ const loopApi = window.FocusLoopApi?.create(runtime);
 const workspacePatrolInputs = new Map();
 let workspacePatrolController = null;
 let workspacePatrolPicker = null;
+let patrolWorkspaceBeforePick = null;
+let mapPortfolio = { workspaceId: null, loading: false, snapshot: null, manifest: null, error: null };
+let mapPortfolioSequence = 0;
+let mapContextInspector = null;
 const loopWaitDrafts = window.FocusLoopWaitRequestView?.createDraftStore();
 const loopWaitUi = new Map();
 const loopLiveSelectors = window.FocusLoopLiveSelectors;
@@ -309,7 +314,7 @@ function normalizePanelWidth(value, viewportWidth = window.innerWidth) {
 
 function shellLayoutDefaults() {
   return {
-    navWidth: 172,
+    navWidth: 204,
     inspectorWidth: Math.round(Math.min(SHELL_LAYOUT_BOUNDS.inspectorMax, Math.max(SHELL_LAYOUT_BOUNDS.inspectorMin, window.innerWidth * 0.22))),
     navCollapsed: false,
     // 用户是否手动拖拽/折叠过；未定制时壳层完全由 CSS 断点默认驱动，不写内联宽度。
@@ -727,6 +732,8 @@ async function hydrateActive(taskId = state.activeTaskId) {
 }
 
 function render() {
+  if (state.view !== "focus" && appInspector.parentElement !== document.querySelector(".app-shell")) document.querySelector(".app-shell").append(appInspector);
+  if (state.view !== "map") { mapContextInspector?.dispose(); mapContextInspector = null; }
   localStorage.setItem("focus-interaction-entry", state.view === "patrol" ? "patrol" : "focus");
   if (state.view !== "patrol") {
     workspacePatrolController?.leave();
@@ -738,7 +745,7 @@ function render() {
   if (state.view !== "loop") loopConnection?.stop();
   document.body.dataset.view = state.view;
   renderShellChrome();
-  if (!state.tasks.length && !["map", "patrol"].includes(state.view)) {
+  if (!state.tasks.length && ["draft", "compress", "context", "loop"].includes(state.view)) {
     app.replaceChildren(document.querySelector("#emptyTemplate").content.cloneNode(true));
     interfaceI18n.apply(app);
     return;
@@ -773,11 +780,14 @@ function render() {
 }
 
 function renderNoActiveTask() {
+  if (appInspector.parentElement !== document.querySelector(".app-shell")) document.querySelector(".app-shell").append(appInspector);
+  appInspector.hidden = true;
   const english = interfaceI18n.locale() === "en-US";
   app.innerHTML = `<section class="empty-state"><h1>${english ? "No active Context" : "暂无活动 Context"}</h1><p>${english ? "There is no active Context. Create a task or restore an archived Context from Settings." : "当前没有可进入的活动 Context。可以新建任务，或从设置中恢复已归档的 Context。"}</p><div class="ui-toolbar"><button class="primary" data-action="new-task">${uiText("header.new_task", "新增任务")}</button><button class="text-button" data-action="open-settings">${english ? "View Archived Contexts" : "查看已归档 Context"}</button></div></section>`;
 }
 
 async function renderWorkspacePatrol() {
+  if (workspacePatrolController?.isMounted(app, state.patrolWorkspace?.workspace_id)) return;
   workspacePatrolController?.dispose();
   workspacePatrolController = null;
   if (state.patrolWorkspace) {
@@ -789,6 +799,11 @@ async function renderWorkspacePatrol() {
     const connection = window.FocusLoopLiveConnection.create({ api: loopApi, store });
     workspacePatrolController = window.FocusWorkspacePatrolController.create({
       api: loopApi, inputs: workspacePatrolInputs.get(workspace.workspace_id), liveStore: store, connection,
+      onOpenTask: async contextId => {
+        if (!state.tasks.some(item => item.task_id === contextId)) await refreshTasks();
+        if (state.tasks.some(item => item.task_id === contextId)) await switchTask(contextId);
+        else setStatus("此 Context 暂不可从任务入口打开，请刷新工作区", true);
+      },
     });
     await workspacePatrolController.mount(app, workspace);
     return;
@@ -799,11 +814,18 @@ async function renderWorkspacePatrol() {
       const workspace = await api("/desktop/api/workspaces", { method: "POST", body: JSON.stringify({ path }) });
       if (state.view !== "patrol" || workspacePatrolPicker !== picker) return;
       state.patrolWorkspace = workspace;
+      patrolWorkspaceBeforePick = null;
       localStorage.setItem("focus-patrol-workspace", JSON.stringify(workspace));
       render();
     },
     async chooseFolder() {
       return window.focusDesktop?.selectWorkspace ? window.focusDesktop.selectWorkspace() : (await api("/desktop/api/workspaces/select", { method: "POST" })).path;
+    },
+    onCancel() {
+      if (state.view !== "patrol" || workspacePatrolPicker !== picker) return;
+      state.patrolWorkspace = patrolWorkspaceBeforePick;
+      patrolWorkspaceBeforePick = null;
+      if (state.patrolWorkspace) render();
     },
   });
   workspacePatrolPicker = picker;
@@ -1180,10 +1202,6 @@ function loopBudgetPayload(values, starting = false) {
   return window.FocusLoopExpansionBudget.readLoop(values, starting);
 }
 
-function loopListValue(values, name) {
-  return String(values.get(name) || "").split(",").map(value => value.trim()).filter(Boolean);
-}
-
 async function mutateAgentLoopGrant(body) {
   const loopId = state.loop.loopId;
   if (!loopId || !loopApi) return;
@@ -1200,19 +1218,7 @@ async function mutateAgentLoopGrant(body) {
 }
 
 function narrowAgentLoopGrant(form) {
-  const values = new FormData(form);
-  const compressionEnabled = values.get("autonomousCompression") === "on";
-  const capabilities = loopListValue(values, "capabilities").filter(value => compressionEnabled || value !== "apply_context_compression");
-  const gates = loopListValue(values, "delegableGates").filter(value => compressionEnabled || value !== "compression");
-  return mutateAgentLoopGrant({
-    command: "narrow",
-    capabilities,
-    context_scope: loopListValue(values, "contextScope"),
-    permission_scope: loopListValue(values, "permissionScope"),
-    delegable_gates: gates,
-    compression_policy: compressionEnabled ? state.loop.snapshot?.grant?.compression_policy || null : null,
-    expires_at: String(values.get("expiresAt") || "").trim() || null,
-  });
+  return mutateAgentLoopGrant(loopView.readNarrowGrant(form, state.loop.snapshot?.grant));
 }
 
 function adjustAgentLoopBudgets(form) {
@@ -1253,22 +1259,30 @@ function activeNavigationKey() {
   if (state.view === "map") return "map";
   if (state.view === "plugins") return "plugins";
   if (state.view === "memory") return "memory";
-  if (state.view === "loop") return "loop";
+  if (state.view === "loop") return "focus";
   if (activeTask()?.harness_mode === "assembly") return "assembly";
   return "focus";
 }
 
 function renderShellChrome() {
   const task = activeTask();
+  const workspaceName = document.querySelector("#shellWorkspaceName");
+  if (workspaceName) workspaceName.textContent = state.patrolWorkspace?.display_name || (task?.harness_mode !== "assembly" && task?.workspace_name) || "选择工作区";
   if (shellTaskTitle) shellTaskTitle.textContent = state.view === "patrol" ? `Patrol${state.patrolWorkspace?.display_name ? ` · ${state.patrolWorkspace.display_name}` : ""}` : task?.title || uiText("header.no_task", "尚未选择任务");
   if (shellTaskMeta) shellTaskMeta.textContent = state.view === "patrol" ? "工作区统一输入" : task
     ? `${task.workspace_name || uiText("common.local_workspace", "本地工作区")} · ${task.task_id.slice(0, 8)}`
     : uiText("header.workbench", "本地 Agent 工作台");
   const current = activeNavigationKey();
   document.querySelectorAll?.("[data-nav-key]").forEach(button => {
+    const label = button.querySelector(".app-nav-label")?.textContent || button.dataset.navKey;
+    button.setAttribute("aria-label", label); button.title = label;
+    if (!button.querySelector(".ui-icon")) {
+      const names = { patrol: "brain-circuit", focus: "file-text", map: "package", plugins: "wrench", assembly: "folder", memory: "file-text" };
+      button.insertAdjacentHTML("afterbegin", `<span class="ui-icon icon-${names[button.dataset.navKey]}" aria-hidden="true"></span>`);
+    }
     if (button.dataset.navKey === current) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
-    button.disabled = !state.tasks.length && !["patrol", "plugins", "assembly", "memory"].includes(button.dataset.navKey);
+    button.disabled = false;
   });
   renderInspector();
 }
@@ -1313,7 +1327,7 @@ function renderMaterialGroups(task) {
 
 function renderInspector() {
   if (!appInspector?.setAttribute || !inspectorContent) return;
-  const open = state.inspector.open && state.view !== "patrol";
+  const open = state.inspector.open && state.view !== "patrol" && !(state.view === "focus" && state.filesPanel);
   appInspector.hidden = !open;
   appInspector.setAttribute("aria-hidden", String(!open));
   syncShellResizerVisibility();
@@ -1379,7 +1393,8 @@ function openInspector(tab, trigger) {
   const wasOpen = state.inspector.open;
   state.inspector.open = true;
   state.inspector.tab = tab;
-  if (!wasOpen || !state.inspector.returnFocus) state.inspector.returnFocus = trigger || document.activeElement;
+  if (trigger && !trigger.matches?.('[role="tab"]')) state.inspector.returnFocus = trigger;
+  else if (!wasOpen || !state.inspector.returnFocus) state.inspector.returnFocus = trigger || document.activeElement;
   renderShellChrome();
   requestAnimationFrame(() => {
     if (wasOpen && trigger?.matches?.('[role="tab"]')) trigger.focus();
@@ -1392,7 +1407,7 @@ function closeInspector() {
   state.inspector.open = false;
   state.inspector.returnFocus = null;
   renderShellChrome();
-  requestAnimationFrame(() => returnFocus?.focus?.());
+  requestAnimationFrame(() => { if (returnFocus?.isConnected) returnFocus.focus(); else app.focus(); });
 }
 
 function normalizeSkillNames(value) {
@@ -1620,8 +1635,16 @@ function renderContextRail(task) {
   </aside>`;
 }
 
+function renderTaskRail(task) {
+  const tasks = state.tasks.filter(item => item.harness_mode !== "assembly" && !item.archived_at && !item.deleted_at);
+  return `<aside class="task-workspace-list"><header><strong>工作区任务</strong><button data-action="new-task" aria-label="新建任务">＋</button></header><nav>${tasks.map(item => `<button data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.workspace_name || "本地工作区")} · ${escapeHtml(presentRunStatus(state.details.get(item.task_id)?.active_run?.status).label)}</small></button>`).join("")}</nav><footer>这里的输入只发送到当前选中的任务。</footer></aside>`;
+}
+
 function renderFocus(task = activeTask()) {
   if (!task) return renderNoActiveTask();
+  const isAssembly = task.harness_mode === "assembly";
+  const admission = taskRunOperations?.get(task.task_id)?.admission;
+  if (appInspector.parentElement !== document.querySelector(".app-shell")) document.querySelector(".app-shell").append(appInspector);
   const detail = state.details.get(task.task_id) || { messages: [] };
   const projectionStatus = detail.context?.projection_status || "root";
   const projectionBlocked = !["root", "valid", "repaired", "approved"].includes(projectionStatus);
@@ -1642,28 +1665,32 @@ function renderFocus(task = activeTask()) {
   patrolAvatarController?.destroy();
   patrolAvatarController = null;
   app.innerHTML = `
-    <section class="focus-shell" style="${shellStyle}">
+    <header class="task-page-heading"><div><small>${task.harness_mode === "assembly" ? "独立会话" : escapeHtml(task.workspace_name || "本地工作区")}</small><h1>${task.harness_mode === "assembly" ? "无工作区模式" : "任务"}</h1><p>${task.harness_mode === "assembly" ? "从一个问题或一份材料开始。" : "一条任务，一条持续会话。"}</p></div><div><button data-action="show-patrol">回到 Patrol</button><button data-action="new-task">＋ 新建任务</button></div></header>
+    <section class="task-workspace-layout${task.harness_mode === "assembly" ? " is-assembly" : ""}">${task.harness_mode === "assembly" ? "" : renderTaskRail(task)}<section class="focus-shell" style="${shellStyle}">
       <section class="focus-view" data-task-id="${task.task_id}">
+        <header class="task-workspace-tools"><strong>${escapeHtml(task.title)}</strong><details><summary>任务工具</summary><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-loop">任务 Loop 控制台</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details></header>
+        ${admission ? `<section class="task-admission-receipt" role="status"><span>消息受理回执 · ${escapeHtml(admission.intent_id)}。交付与执行以实际状态为准。</span><button data-action="show-loop">查看任务 Loop 的交付状态</button></section>` : ""}
         ${contextBlock}
         <div class="commitment-progress" id="commitmentProgress" hidden>
           <div class="progress-heading"><strong>任务合同</strong><span id="progressLabel"></span></div>
           <ol id="progressSteps"></ol>
         </div>
         <div class="conversation" id="conversation"></div>
-        <div class="patrol-avatar-layer" id="patrolAvatarLayer" aria-label="会话 Patrol 小兵"></div>
+        <div class="patrol-avatar-layer" id="patrolAvatarLayer" aria-label="会话 Patrol 小兵"${detail.ui_state?.show_session_patrol ? "" : " hidden"}></div>
         <div class="focus-bottom">
           <div class="composer-shell">
-            <div class="composer-context"><span class="ui-badge is-active">${uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
+            <div class="composer-context"><span class="ui-badge is-active">${isAssembly ? uiText("focus.free_session", "自由会话") : uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
             <div class="composer">
               ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(composerDraft.value(task.task_id, detail.ui_state?.input || ""))}</textarea>`, true)}
-              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
+              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly ? uiText("access.internal_scope", "模式作用于 Focus 内部目录；未绑定项目工作区") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
             </div>
             <p id="composerFeedback" class="composer-feedback${feedback ? ` is-${feedback.kind}` : ""}" role="status"${feedback ? "" : " hidden"}>${feedback ? escapeHtml(feedback.text) : ""}</p>
           </div>
         </div>
       </section>
       ${panelOpen ? `<aside class="file-panel" id="filePanel"><div class="panel-resizer" id="panelResizer" title="拖拽调整面板宽度"></div><div class="file-panel-inner"></div></aside>` : ""}
-    </section>`;
+    </section></section>`;
+  app.querySelector(".task-workspace-layout").append(appInspector);
   app.dataset.taskId = task.task_id;
   const freshConversation = document.querySelector("#conversation");
   if (previousConversation && freshConversation && typeof freshConversation.replaceWith === "function") {
@@ -2236,13 +2263,18 @@ function mountPatrolAvatarLayer(task, detail) {
   const root = document.querySelector("#patrolAvatarLayer");
   if (!root || !patrolAvatar) return;
   patrolAvatarController = patrolAvatar.mount(root, patrolAvatarOptions(task, detail));
+  root.hidden = !detail.ui_state?.show_session_patrol;
 }
 
 function updatePatrolAvatarLayer(taskId = state.activeTaskId) {
   if (!patrolAvatarController || state.view !== "focus" || taskId !== state.activeTaskId) return;
   const task = activeTask();
   const detail = state.details.get(taskId);
-  if (task && detail) patrolAvatarController.update(patrolAvatarOptions(task, detail));
+  if (task && detail) {
+    patrolAvatarController.update(patrolAvatarOptions(task, detail));
+    const layer = document.querySelector("#patrolAvatarLayer");
+    if (layer) layer.hidden = !detail.ui_state?.show_session_patrol;
+  }
 }
 
 function savePatrolAvatarPosition(taskId, avatarId, position) {
@@ -2385,12 +2417,13 @@ async function interruptMainRun() {
 }
 
 function renderPlugins() {
-  const { plugins, interfaces, traces, filter, selectedName } = state.plugins;
-  app.innerHTML = pluginView.render(plugins, interfaces, traces, { filter, selectedName });
+  app.innerHTML = pluginView.render(state.plugins.plugins, state.plugins.interfaces, state.plugins.traces, state.plugins);
 }
 
 async function hydratePlugins() {
   const requestId = ++pluginHydrationSequence;
+  state.plugins = { ...state.plugins, loading: true, error: null };
+  if (state.view === "plugins") renderPlugins();
   try {
     const [data, traceData] = await Promise.all([
       api("/desktop/api/plugins"),
@@ -2400,10 +2433,18 @@ async function hydratePlugins() {
     if (requestId !== pluginHydrationSequence) return false;
     const selectedName = plugins.some(item => item.name === state.plugins.selectedName)
       ? state.plugins.selectedName
-      : (plugins.find(item => item.status === "rejected" || item.status === "unavailable") || plugins[0])?.name || null;
-    state.plugins = { plugins, interfaces: data.interfaces || {}, traces: traceData.traces || [], filter: state.plugins.filter || "all", selectedName };
+      : null;
+    state.plugins = { plugins, interfaces: data.interfaces || {}, traces: traceData.traces || [], filter: state.plugins.filter || "all", selectedName, query: state.plugins.query || "" };
     return true;
-  } catch (error) { if (requestId === pluginHydrationSequence) setStatus(error.message, true); return false; }
+  } catch (error) {
+    if (requestId === pluginHydrationSequence) state.plugins = { ...state.plugins, error: error.message };
+    return false;
+  } finally {
+    if (requestId === pluginHydrationSequence) {
+      state.plugins.loading = false;
+      if (state.view === "plugins") renderPlugins();
+    }
+  }
 }
 
 async function openPluginsView() {
@@ -2411,6 +2452,8 @@ async function openPluginsView() {
   cancelPendingViewRequests();
   const requestId = pluginViewRequestSequence;
   state.inspector.open = false;
+  state.view = "plugins";
+  render();
   await hydratePlugins();
   if (requestId !== pluginViewRequestSequence) return;
   state.view = "plugins";
@@ -2420,6 +2463,9 @@ async function openPluginsView() {
 function renderMemory() {
   const s = state.memory;
   app.innerHTML = memoryView.render(s.memories, {
+    loading: s.loading,
+    error: s.error,
+    query: s.query,
     selectedId: s.selectedId,
     composing: s.composing,
     draft: s.draft,
@@ -2479,16 +2525,26 @@ function editMemorySegment(index, field, value) {
 
 async function hydrateMemory() {
   const requestId = ++memoryHydrationSequence;
+  state.memory = { ...state.memory, loading: true, error: null };
+  if (state.view === "memory") renderMemory();
   try {
     const data = await api("/desktop/api/memory");
     if (requestId !== memoryHydrationSequence) return false;
     const memories = data.memories || [];
     const selectedId = memories.some(item => item.memory_id === state.memory.selectedId)
       ? state.memory.selectedId
-      : (memories[0]?.memory_id || null);
+      : null;
     state.memory = { ...state.memory, memories, selectedId };
     return true;
-  } catch (error) { if (requestId === memoryHydrationSequence) setStatus(error.message, true); return false; }
+  } catch (error) {
+    if (requestId === memoryHydrationSequence) state.memory = { ...state.memory, error: error.message };
+    return false;
+  } finally {
+    if (requestId === memoryHydrationSequence) {
+      state.memory.loading = false;
+      if (state.view === "memory") renderMemory();
+    }
+  }
 }
 
 async function openMemoryView() {
@@ -2497,6 +2553,8 @@ async function openMemoryView() {
   const requestId = memoryViewRequestSequence;
   state.inspector.open = false;
   state.memory = { ...state.memory, composing: false, selectedId: state.memory.selectedId, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], draft: null };
+  state.view = "memory";
+  render();
   await hydrateMemory();
   if (requestId !== memoryViewRequestSequence) return;
   state.view = "memory";
@@ -3018,14 +3076,35 @@ function renderMapGroups(activeTasks) {
  * 工作区与根 Context 组都是从任务反推的，所以过滤放在这里一处即可同时决定折叠视图与卡片视图，
  * 并在没有活动 Context 时让整个页面留白（空工作区行、空态文案都不再需要）。
  */
+async function hydrateMapPortfolio(workspaceId, force = false) {
+  if (!workspaceId || (!force && mapPortfolio.workspaceId === workspaceId)) return;
+  const owner = ++mapPortfolioSequence;
+  mapPortfolio = { workspaceId, loading: true, snapshot: null, manifest: null, error: null };
+  try {
+    const binding = await loopApi.workspacePatrol(workspaceId);
+    const [snapshot, manifest] = binding ? await Promise.all([loopApi.committedLineage(binding.loop_id), loopApi.console(binding.loop_id)]) : [null, null];
+    if (owner !== mapPortfolioSequence) return;
+    mapPortfolio = { workspaceId, loading: false, snapshot, manifest, error: null };
+  } catch (error) {
+    if (owner !== mapPortfolioSequence) return;
+    mapPortfolio = { workspaceId, loading: false, snapshot: null, manifest: null, error: error.message };
+  }
+  if (state.view === "map") renderMap();
+}
+
 function renderMap(focusKey = null) {
   const sel = state.selectedContextIds.size;
   const treeMode = state.mapViewMode === "tree";
-  const activeTasks = state.tasks.filter(task => sessionLifecycle(task) === "active");
+  const query = String(state.mapQuery || "").trim().toLowerCase();
+  const activeTasks = state.tasks.filter(task => sessionLifecycle(task) === "active" && (!query || `${task.title} ${task.task_id} ${task.workspace_name}`.toLowerCase().includes(query)));
+  const graphMode = state.mapViewMode === "graph";
+  const workspaceId = state.patrolWorkspace?.workspace_id || activeTask()?.workspace_id;
+  if (graphMode && workspaceId !== mapPortfolio.workspaceId) void hydrateMapPortfolio(workspaceId);
   const presentationControls = `<div class="map-presentation-controls">
     <div class="map-presentation-switch" role="group" aria-label="全图展示方式">
+      <button type="button" data-action="set-map-view" data-map-view="graph" aria-pressed="${graphMode}">Context 关系</button>
       <button type="button" data-action="set-map-view" data-map-view="tree" aria-pressed="${treeMode}">折叠视图</button>
-      <button type="button" data-action="set-map-view" data-map-view="cards" aria-pressed="${!treeMode}">卡片视图</button>
+      <button type="button" data-action="set-map-view" data-map-view="cards" aria-pressed="${state.mapViewMode === "cards"}">卡片与生命周期</button>
     </div>
     ${treeMode ? '<button type="button" class="text-button map-collapse-all" data-action="collapse-map-tree">全部折叠</button>' : ""}
   </div>`;
@@ -3035,15 +3114,31 @@ function renderMap(focusKey = null) {
       <button class="text-button" data-action="batch-cascade-delete-selected" ${sel ? "" : "disabled"}>级联删除</button>
       <button class="text-button" data-action="toggle-selection-mode">取消</button>`
     : `<button class="text-button" data-action="toggle-selection-mode">批量删除</button>`;
-  const toolbar = activeTasks.length
-    ? `<div class="map-toolbar">${presentationControls}<button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">${state.soldierArmed ? "已装备小兵 · 选择任务" : "装备小兵"}</button>${batchControls}</div>`
-    : "";
+  const toolbar = `<div class="map-toolbar">${presentationControls}<button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">${state.soldierArmed ? "已装备小兵 · 选择任务" : "装备小兵"}</button>${batchControls}</div>`;
+  const manifest = mapPortfolio.manifest;
+  const projection = manifest ? { contexts: Object.fromEntries(manifest.nodes.map(node => [node.context_id, { entity_id: node.context_id, state: node }])) } : null;
+  const graph = mapPortfolio.snapshot ? window.FocusWorkspacePatrolView.lineage(mapPortfolio.snapshot, projection) : `<p>${escapeHtml(mapPortfolio.error || (mapPortfolio.loading ? "正在读取已提交关系" : "此工作区尚无已提交 Patrol 关系，可使用层次/卡片浏览已有任务。"))}</p>`;
   app.innerHTML = `<section class="map-view">
-    ${toolbar}<div class="${treeMode ? "map-tree-host" : "map-groups"}">${activeTasks.length ? (treeMode ? renderMapTree(activeTasks) : renderMapGroups(activeTasks)) : ""}</div>
+    <header class="task-page-heading"><div><h1>全图</h1><p>沿精确来源关系检查工作。层次与卡片浏览保留所有工作区操作。</p></div><button data-action="show-patrol">回到 Patrol</button></header>
+    ${toolbar}<label class="page-search">检索已加载任务 <input type="search" data-page-search="map" value="${escapeHtml(state.mapQuery || "")}" placeholder="查找 Context…"></label>
+    ${graphMode ? `<section class="map-portfolio-surface"><header><h2>上下文集合 · 当前工作区已提交关系</h2><button data-action="refresh-map-portfolio">刷新</button></header>${graph}<small>检查节点不改变输入目标；显式打开任务后才切换交互模式。</small></section><aside data-patrol-context class="patrol-context-drawer" aria-label="只读 Context 检查" hidden><div data-patrol-context-content></div></aside>` : `<div class="${treeMode ? "map-tree-host" : "map-groups"}">${activeTasks.length ? (treeMode ? renderMapTree(activeTasks) : renderMapGroups(activeTasks)) : '<p>暂无匹配的活动任务</p>'}</div>`}
   </section>`;
+  window.FocusPortfolioMapView?.bind(app);
+  if (graphMode && state.selectionMode) app.querySelectorAll(".portfolio-context-node").forEach(node => {
+    const selected = state.selectedContextIds.has(node.dataset.contextId);
+    node.classList.toggle("is-selected", selected);
+    node.setAttribute("aria-pressed", String(selected));
+  });
+  mapContextInspector?.dispose(); mapContextInspector = null;
+  if (graphMode) {
+    mapContextInspector = window.FocusContextInspector.create({ api: loopApi, onOpenTask: switchTask });
+    mapContextInspector.mount(app.querySelector("[data-patrol-context]"));
+  }
+  if (graphMode && query) app.querySelectorAll(".portfolio-context-node").forEach(node => { node.classList.toggle("is-search-muted", !node.textContent.toLowerCase().includes(query)); });
   if (focusKey) {
     const target = [...app.querySelectorAll("[role='treeitem'][data-tree-key]")]
       .find(item => item.dataset.treeKey === focusKey)
+      || [...app.querySelectorAll(".portfolio-context-node")].find(item => `context:${item.dataset.contextId}` === focusKey)
       || app.querySelector("[role='treeitem'][tabindex='0']");
     target?.focus();
   }
@@ -3792,6 +3887,7 @@ async function sendMainOnce(taskId, requestId) {
       return;
     }
   }
+  const selectionSignature = JSON.stringify(materialSelection(taskId));
   const outgoing = runMaterialPicker.buildOutgoing(
     state.materials.get(taskId) || [], message, materialSelection(taskId)
   );
@@ -3811,6 +3907,20 @@ async function sendMainOnce(taskId, requestId) {
       }),
     });
     taskRunOperations?.accept(taskId, requestId, run);
+    if (run.intent_kind === "direct_message") {
+      if (JSON.stringify(materialSelection(taskId)) === selectionSignature) state.materialSelections.set(taskId, runMaterialPicker.empty());
+      const unchanged = composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
+      if (unchanged) composerDraft.release(taskId);
+      detail.ui_state = { ...(detail.ui_state || {}), input: unchanged ? "" : composerDraft.value(taskId) };
+      state.details.set(taskId, detail);
+      if (state.activeTaskId === taskId) {
+        if (unchanged && document.querySelector("#mainInput") === input) input.value = "";
+        persistFocusState();
+        if (state.view === "focus") renderFocus();
+        setStatus("消息已受理，交付与执行以实际工作状态为准");
+      }
+      return;
+    }
     const contextNode = (state.contextTrees.get(task.workspace_id) || [])
       .find(item => item.context_id === taskId);
     if (contextNode) contextNode.editable = false;
@@ -3836,11 +3946,12 @@ async function sendMainOnce(taskId, requestId) {
       ...(state.materialHistory.get(taskId) || []),
       ...optimisticHistory,
     ]);
-    state.materialSelections.set(taskId, runMaterialPicker.empty());
+    if (JSON.stringify(materialSelection(taskId)) === selectionSignature) state.materialSelections.set(taskId, runMaterialPicker.empty());
     state.composerErrors.delete(taskId);
-    detail.messages = [...(detail.messages || []), { role: "human", content: messagePayload, id: run.message_id }];
-    detail.ui_state = { ...(detail.ui_state || {}), input: "", skills: [] };
-    composerDraft.release(taskId);
+    if (!(detail.messages || []).some(item => item.id === run.message_id)) detail.messages = [...(detail.messages || []), { role: "human", content: messagePayload, id: run.message_id }];
+    const unchanged = composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
+    detail.ui_state = { ...(detail.ui_state || {}), input: unchanged ? "" : composerDraft.value(taskId), skills: unchanged ? [] : detail.ui_state?.skills || [] };
+    if (unchanged) composerDraft.release(taskId);
     state.details.set(taskId, detail);
     if (state.activeTaskId === taskId && state.view === "focus") {
       renderFocus();
@@ -4983,7 +5094,7 @@ function compressionBelongsToTask(envelope) {
   return true;
 }
 
-async function openCompressionView(task, request, quickKeyword) {
+async function openCompressionView(task, request, quickKeyword, manual = false) {
   if (!task) return setStatus("当前没有活动任务", true);
   if (state.compression.busy && state.compression.taskId === task.task_id) return;
   const requestId = ++compressionRequestSequence;
@@ -5004,6 +5115,7 @@ async function openCompressionView(task, request, quickKeyword) {
       busy: false,
       recovery: detail.compression_recovery || null,
       quick: quickKeyword ? { keyword: quickKeyword } : null,
+      manual: manual && !request && !detail.pending_compression,
     };
     // 快捷关键字压缩：自动把命中该词的消息勾选进 SOURCE，供用户调粒度
     if (quickKeyword) {
@@ -5014,6 +5126,8 @@ async function openCompressionView(task, request, quickKeyword) {
       });
       state.compression.selected = new Set(indexes);
       setStatus(`关键字快捷压缩「${quickKeyword}」共命中 ${indexes.length} 条，请确认后继续`);
+    } else if (manual) {
+      setStatus("选择需要整理的消息；确认前不会修改上下文");
     } else {
       setStatus("上下文接近上限，等待压缩确认");
     }
@@ -5277,21 +5391,21 @@ async function confirmCompression() {
       : { source_ids: range.source_ids, replacement: range.replacement });
   c.busy = true;
   try {
-    if (c.quick) {
+    if (c.quick || c.manual) {
       // 快捷关键字压缩：先机械剥离禁用词再写回，不走 resume
-      const keyword = c.quick.keyword;
+      const keyword = c.quick?.keyword;
       await api("/desktop/api/compression/quick-apply", {
         method: "POST",
         body: JSON.stringify({
           task_id: task.task_id,
           ranges,
-          scrub_terms: [keyword],
+          scrub_terms: keyword ? [keyword] : [],
         }),
       });
       // 快捷 apply 无 run/SSE，需手动重载会话与上下文树，否则压缩块不会立刻显示
       await refreshActiveAfterTxn();
       closeCompressionView();
-      setStatus(`已关键字快捷压缩「${keyword}」，上下文已更新`);
+      setStatus(keyword ? `已关键字快捷压缩「${keyword}」，上下文已更新` : "上下文整理已提交");
       return;
     }
     const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
@@ -5320,11 +5434,11 @@ async function cancelCompression() {
   if (!task) return setStatus("当前没有活动任务", true);
   c.busy = true;
   try {
-    if (c.quick) {
+    if (c.quick || c.manual) {
       // 快捷关键字压缩不经 interrupt/resume 通道（quick-apply 直接写回，无中断可取消）：
       // 取消只需关闭本地面板并清空状态，调用 resume 只会得到 409「无可恢复的承诺流程」。
       closeCompressionView();
-      setStatus("已取消关键字快捷压缩");
+      setStatus(c.manual ? "已取消上下文整理" : "已取消关键字快捷压缩");
       return;
     }
     const run = await api(`/desktop/api/threads/${task.thread_id}/runs/resume`, {
@@ -5565,6 +5679,7 @@ async function moveMaterialGroupOrder(groupId, direction) {
 
 async function switchTask(taskId) {
   const requestId = ++taskSwitchSequence;
+  if (state.view !== "focus") { state.inspector.open = true; state.inspector.tab = "materials"; }
   cancelPendingViewRequests();
   if (state.view === "focus") persistFocusState();
   const previousTaskId = state.activeTaskId;
@@ -5585,12 +5700,14 @@ async function goFocusHome() {
   if (activeTask()?.harness_mode === "assembly") {
     const recent = [...state.tasks].reverse().find(task => task.harness_mode !== "assembly");
     if (recent) return switchTask(recent.task_id);
+    persistFocusState(); state.activeTaskId = null; state.view = "focus"; return render();
   }
   const taskId = state.activeTaskId;
   if (!taskId) return;
   if (state.view === "focus") persistFocusState();
   cancelPendingViewRequests();
-  state.inspector.open = false;
+  state.inspector.open = true;
+  state.inspector.tab = "materials";
   state.view = "focus";
   render();
   await hydrateActive(taskId);
@@ -5651,7 +5768,7 @@ function toggleSelectSession(contextId) {
   const ids = new Set(state.selectedContextIds);
   ids.has(contextId) ? ids.delete(contextId) : ids.add(contextId);
   state.selectedContextIds = ids;
-  if (state.view === "map" && state.mapViewMode === "tree") {
+  if (state.view === "map" && ["tree", "graph"].includes(state.mapViewMode)) {
     state.mapTreeFocusKey = `context:${contextId}`;
     return renderMap(state.mapTreeFocusKey);
   }
@@ -6146,7 +6263,8 @@ async function handleDocumentClick(event) {
     if (state.view === "focus") persistFocusState();
     workspacePatrolPicker?.dispose();
     workspacePatrolPicker = null;
-    state.patrolWorkspace = state.view === "patrol" || button.hasAttribute("data-patrol-switch") ? null : readPatrolWorkspace();
+    if (button.hasAttribute("data-patrol-switch")) patrolWorkspaceBeforePick = state.patrolWorkspace || patrolWorkspaceBeforePick;
+    state.patrolWorkspace = button.hasAttribute("data-patrol-switch") ? null : state.patrolWorkspace || readPatrolWorkspace();
     state.inspector.open = false;
     state.view = "patrol";
     return render();
@@ -6171,7 +6289,7 @@ async function handleDocumentClick(event) {
   if (action === "show-map") { if (state.view === "focus") persistFocusState(); cancelPendingViewRequests(); state.inspector.open = false; state.view = "map"; return render(); }
   if (action === "set-map-view") {
     const mode = button.dataset.mapView;
-    if (!["tree", "cards"].includes(mode)) return;
+    if (!["graph", "tree", "cards"].includes(mode)) return;
     state.mapViewMode = mode;
     state.mapTreeFocusKey = "";
     if (mode === "tree") state.mapExpandedForTaskId = null;
@@ -6191,11 +6309,32 @@ async function handleDocumentClick(event) {
     return;
   }
   if (action === "collapse-map-tree") return collapseMapTree();
+  if (action === "refresh-map-portfolio") return hydrateMapPortfolio(mapPortfolio.workspaceId, true);
   if (action === "show-contexts") return openInspector("context", button);
   if (action === "show-agents") return openInspector("agents", button);
+  if (action === "toggle-session-patrol") {
+    const detail = state.details.get(state.activeTaskId);
+    if (!detail) return;
+    detail.ui_state = { ...(detail.ui_state || {}), show_session_patrol: !detail.ui_state?.show_session_patrol };
+    document.querySelector("#patrolAvatarLayer").hidden = !detail.ui_state.show_session_patrol;
+    persistFocusState();
+    return;
+  }
   if (action === "show-loop") return openLoopView();
   if (loopMissionEditor?.handleAction(button)) return;
   if (action === "loop-control") return controlLoop(button.dataset.loopControl);
+  if (action === "inspect-loop-fact") {
+    const loopId = state.loop.loopId;
+    if (!loopId) return;
+    const detail = await loopApi.factDetail(loopId, button.dataset.factId);
+    const panel = document.createElement("dialog");
+    panel.className = "patrol-dialog";
+    panel.innerHTML = `<header><h2>事实与来源</h2><form method="dialog"><button aria-label="关闭">×</button></form></header>${window.FocusLoopFactsView.renderDetail(detail)}`;
+    document.body.append(panel);
+    panel.addEventListener("close", () => panel.remove(), { once: true });
+    panel.showModal();
+    return;
+  }
   if (action === "loop-resume-current-mission") return resumeLoopWithCurrentMission(loopStore?.get().snapshot?.wait_request);
   if (button.dataset.waitAction) {
     const request = loopStore?.get().snapshot?.wait_request;
@@ -6211,7 +6350,12 @@ async function handleDocumentClick(event) {
   }
   if (action === "loop-exit") return exitAgentLoop(false);
   if (action === "loop-prepare-new" || action === "loop-new-run") return exitAgentLoop(true);
-  if (action === "loop-select-context") return loopConsoleController?.selectContext(button.dataset.contextId);
+  if (action === "loop-select-context") {
+    if (state.view !== "map") return loopConsoleController?.selectContext(button.dataset.contextId);
+    if (state.selectionMode) return toggleSelectSession(button.dataset.contextId);
+    if (state.soldierArmed) return openDraft(button.dataset.contextId);
+    return mapContextInspector?.select(mapPortfolio.manifest.loop_id, button.dataset.contextId, mapPortfolio.manifest.nodes.find(item => item.context_id === button.dataset.contextId), button);
+  }
   if (action === "loop-restore-compression") return runUiAction(async () => {
     await loopApi.restoreCompression(button.dataset.contextId, button.dataset.messageId);
     await loopConsoleController?.selectContext(button.dataset.contextId, { preserveSelection: true, force: true });
@@ -6229,6 +6373,7 @@ async function handleDocumentClick(event) {
   if (action === "open-loop-revision") return openLoopRevision(button.dataset.openRevision);
   if (action === "close-loop-revision") { state.loop.revisionSnapshot = null; return renderLoop(); }
   if (action === "open-inspector-tab") return openInspector(button.dataset.inspectorTab, button);
+  if (action === "close-inspector") return closeInspector();
   if (action === "show-plugins") return openPluginsView();
   if (action === "show-memory") return openMemoryView();
   if (action === "new-memory") return openMemoryCompose(false);
@@ -6260,6 +6405,20 @@ async function handleDocumentClick(event) {
     return render();
   }
   if (action === "refresh-plugins") { await hydratePlugins(); return render(); }
+  if (action === "reload-plugins") {
+    if (state.plugins.loading) return;
+    state.plugins = { ...state.plugins, loading: true, error: null };
+    renderPlugins();
+    try {
+      await api("/desktop/api/plugins/reload", { method: "POST" });
+      await hydratePlugins();
+    } catch (error) {
+      state.plugins = { ...state.plugins, loading: false, error: error.message };
+      if (state.view === "plugins") renderPlugins();
+    }
+    return;
+  }
+  if (action === "refresh-memory") { await hydrateMemory(); return render(); }
   if (action === "filter-plugins") {
     state.plugins.filter = button.dataset.pluginStatus || "all";
     const visible = state.plugins.plugins.filter(item => state.plugins.filter === "all" || item.status === state.plugins.filter);
@@ -6270,8 +6429,9 @@ async function handleDocumentClick(event) {
     state.plugins.selectedName = button.dataset.pluginName || null;
     return renderPlugins();
   }
-  if (action === "focus-home" && state.activeTaskId) return goFocusHome();
+  if (action === "focus-home") return state.activeTaskId ? goFocusHome() : (state.view = "focus", render());
   if (action === "derive-context") return openContextEditor(state.activeTaskId);
+  if (action === "organize-context") return openCompressionView(activeTask(), null, null, true);
   if (action === "open-settings") return openSettings();
   if (action === "close-settings") return settingsDialog.close();
   if (action === "settings-tab") return selectSettingsTab(button.dataset.settingsTab);
@@ -6475,6 +6635,18 @@ document.addEventListener("drop", event => {
 });
 
 document.addEventListener("input", event => {
+  if (event.target.dataset?.pageSearch) {
+    const page = event.target.dataset.pageSearch;
+    const position = event.target.selectionStart;
+    if (event.isComposing) { if (page === "map") state.mapQuery = event.target.value; else state[page].query = event.target.value; return; }
+    if (page === "plugins") { state.plugins.query = event.target.value; renderPlugins(); }
+    else if (page === "memory") { state.memory.query = event.target.value; renderMemory(); }
+    else if (page === "map") { state.mapQuery = event.target.value; renderMap(); }
+    const input = app.querySelector(`[data-page-search="${page}"]`);
+    input?.focus();
+    input?.setSelectionRange(position, position);
+    return;
+  }
   if (event.target.id === "mainInput") {
     updateAtHighlight(event.target);
     composerDraft.claim(state.activeTaskId, event.target.value);
@@ -6557,6 +6729,13 @@ function handleMapTreeKeydown(event, treeItem) {
 }
 
 document.addEventListener("keydown", event => {
+  if (document.querySelector("dialog[open]") && event.key === "Escape") return;
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key === "1") {
+    event.preventDefault(); document.querySelector("[data-nav-key=patrol]").click(); return;
+  }
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "k") {
+    event.preventDefault(); (app.querySelector("[data-page-search]") || app.querySelector("[data-patrol-content]:not(:disabled), #mainInput") || app.querySelector("[data-patrol-switch]"))?.focus(); return;
+  }
   if (event.key === "Escape" && contextPointerDrag) {
     event.preventDefault();
     return cancelContextPointerDrag();
@@ -6911,12 +7090,7 @@ document.addEventListener("submit", event => {
     event.preventDefault();
     const request = loopStore?.get().snapshot?.wait_request;
     if (!request) return;
-    const values = new FormData(event.target);
-    let answer;
-    if (request.response_mode === "text") answer = { text: String(values.get("answer") || "") };
-    else if (request.response_mode === "multiple_choice") answer = { choices: values.getAll("choice") };
-    else if (request.response_mode === "single_choice") answer = { choice: values.get("choice") };
-    else answer = Object.fromEntries(values.entries());
+    const answer = window.FocusLoopWaitRequestView.readAnswer(event.target, request.response_mode);
     respondToLoopWait(request, answer);
     return;
   }
@@ -6970,13 +7144,7 @@ document.addEventListener("change", event => {
 });
 
 function serializeWaitDraft(form) {
-  const values = new FormData(form);
-  const draft = {};
-  for (const [name, value] of values.entries()) {
-    if (Object.prototype.hasOwnProperty.call(draft, name)) draft[name] = Array.isArray(draft[name]) ? [...draft[name], String(value)] : [draft[name], String(value)];
-    else draft[name] = String(value);
-  }
-  return JSON.stringify(draft);
+  return window.FocusLoopWaitRequestView.serializeDraft(form);
 }
 async function uploadMaterialFile(file) {
   if (!file) return;

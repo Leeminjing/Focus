@@ -217,6 +217,7 @@ new vm.Script(readAppSource()).runInContext(harness.context);
 const seedTask = () => new vm.Script(`
   state.tasks = [{ task_id: "task", thread_id: "thread", workspace_id: "ws", workspace_path: "C:/workspace" }];
   state.activeTaskId = "task";
+  state.view = "focus";
   state.details.set("task", { messages: [], ui_state: {}, active_run: { run_id: "run-access" } });
   state.accessReviews = { panel: null, payload: null, taskId: null, key: null, busy: false };
   clearStreamBuffer("run-access");

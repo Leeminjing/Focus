@@ -4,7 +4,7 @@ r"""本文件对外提供 Loop Console、Mission 历史、完整会话、物化�
 拓扑、分页完整会话、可追溯 current facts/历史、revision graph 和执行 slot。具体工作流为路由把只读参数交给专用
 query service，不修改 Context 或模型输入；只读 audit 关联 Expansion planning session 的冻结策略/用量/阻断，以及自主压缩的 gate、candidate、resolution、Run 与 revision。
 示例：`app.include_router(loop_query_router)`。
-TaskProgress 诊断输出前序、Observation、manifest、Lineage refs/hash 及独立后台工作的 readiness 和用量。
+TaskProgress 诊断输出前序、Observation、manifest、Lineage refs/hash 及独立后台工作的 readiness 和用量；Observation 检查按当前权限分页读取同一冻结内容。
 """
 
 from __future__ import annotations
@@ -43,6 +43,8 @@ from backend.app.desktop.agent_loop.models import (
     LoopWorkerRequest,
     MessageProvenance,
 )
+from backend.app.desktop.agent_loop.live_access import LoopLiveAccessPolicy, LoopLiveRedactionPolicy
+from backend.app.desktop.agent_loop.observation_query import ObservationInspectionQuery, ObservationSection
 from backend.app.desktop.context_curation.models import (
     CurationLane,
     CurationProgram,
@@ -80,11 +82,25 @@ async def loop_mission_history(loop_id: str, request: Request) -> dict:
 
 
 @loop_query_router.get("/agent-loops/{loop_id}/task-progress")
-async def loop_task_progress(loop_id: str, request: Request) -> dict:
+async def loop_task_progress(loop_id: str, request: Request, progress_id: str | None = None) -> dict:
     from backend.app.desktop.agent_loop.task_progress.query import TaskProgressQuery
 
     async with request.app.state.desktop_service.session_factory() as session:
-        return await TaskProgressQuery().read(session, loop_id)
+        query = TaskProgressQuery()
+        return await query.read(session, loop_id, progress_id) if progress_id else await query.read(session, loop_id)
+
+
+@loop_query_router.get("/agent-loops/{loop_id}/observations/{observation_id}")
+async def loop_observation(
+    loop_id: str, observation_id: str, request: Request,
+    section: ObservationSection = "summary",
+    cursor: str | None = Query(default=None, max_length=1024),
+    limit: int = Query(default=40, ge=1, le=120),
+) -> dict:
+    async with request.app.state.desktop_service.session_factory() as session:
+        return await ObservationInspectionQuery().read(
+            session, loop_id, observation_id, section=section, cursor=cursor, limit=limit,
+        )
 
 
 @loop_query_router.get("/agent-loops/{loop_id}/contexts/{context_id}/conversation")
@@ -116,21 +132,25 @@ async def loop_facts(
     context_id: str | None = None,
     kind: str | None = None,
     status: str | None = None,
+    outcome_status: str | None = None,
     before: int | None = Query(default=None, ge=0),
     limit: int = Query(default=80, ge=1, le=200),
 ) -> dict:
     async with request.app.state.desktop_service.session_factory() as session:
         flags = getattr(request.app.state, "loop_feature_flags", None) or LoopFeatureFlags()
         service = MaterializedFactQueryService() if flags.materialized_fact_reads else LoopFactProjectionService(request.app.state.desktop_service.checkpointer)
-        return await service.read(
+        result = await service.read(
             session,
             loop_id,
             context_id=context_id,
             kind=kind,
-            status=status,
+            status=status if flags.materialized_fact_reads else outcome_status or status,
             before=before,
             limit=limit,
+            **({"outcome_status": outcome_status} if flags.materialized_fact_reads else {}),
         )
+        access = await LoopLiveAccessPolicy().resolve(session, loop_id)
+        return LoopLiveRedactionPolicy.redact_value(result, access.permissions)
 
 
 @loop_query_router.get("/agent-loops/{loop_id}/facts/{fact_id}")
@@ -139,7 +159,9 @@ async def loop_fact_detail(loop_id: str, fact_id: str, request: Request) -> dict
     if not flags.materialized_fact_reads:
         raise HTTPException(404, "旧版事实端口不提供稳定 fact detail")
     async with request.app.state.desktop_service.session_factory() as session:
-        return await MaterializedFactQueryService().detail(session, loop_id, fact_id)
+        result = await MaterializedFactQueryService().detail(session, loop_id, fact_id)
+        access = await LoopLiveAccessPolicy().resolve(session, loop_id)
+        return LoopLiveRedactionPolicy.redact_value(result, access.permissions)
 
 
 @loop_query_router.get("/workspaces/{workspace_id}/context-evolution")

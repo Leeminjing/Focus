@@ -4,7 +4,7 @@
  * 具体工作流为封装同源 API，所有普通响应先经纯 HTTP decoder 保留 JSON/文本失败因果，再做 Loop identity 格式化；Live 通道解析 canonical SSE 与重同步控制帧，Context 直接发言复用 Main Run。
  * 示例：`FocusLoopApi.create(runtime)`。
  * 直接消息仅发送原文和稳定请求身份，服务端沿用目标 Context 装备，不读取 UI 缓存补默认值。
- * 工作区统一受理、完整用户历史、显式后继和已提交 Lineage 使用相同会话头与 decoder；任务进度由 Live 投影提供。
+ * 工作区统一受理、完整用户历史、显式后继、已提交 Lineage 与精确 Observation 分页使用相同会话头与 decoder；当前进度由 Live 投影提供，历史进度按精确身份读取，事实验证状态与业务结果分别查询。
  */
 (function (root, factory) {
   const responseApi = root?.FocusHttpResponse || (typeof require === "function" ? require("./http-response.js") : null);
@@ -96,7 +96,7 @@
       workspacePatrol: workspaceId => request(`/workspace/${encodeURIComponent(workspaceId)}`),
       submitWorkspaceInput: (workspaceId, body) => request(`/workspace/${encodeURIComponent(workspaceId)}/inputs`, { method: "POST", body: JSON.stringify(body) }),
       workspaceInputs: (workspaceId, before = null) => request(`/workspace/${encodeURIComponent(workspaceId)}/inputs${before ? `?before=${encodeURIComponent(before)}` : ""}`),
-      committedLineage: loopId => request(`/${encodeURIComponent(loopId)}/lineage`),
+      committedLineage: (loopId, signal) => request(`/${encodeURIComponent(loopId)}/lineage`, { signal }),
       start: body => request("", { method: "POST", body: JSON.stringify(body) }),
       activationEligibility: contextId => request(`/activation-eligibility/by-context/${encodeURIComponent(contextId)}`),
       findByContext: contextId => request(`/by-context/${encodeURIComponent(contextId)}`),
@@ -122,10 +122,21 @@
         if (options.contextId) query.set("context_id", options.contextId);
         if (options.kind) query.set("kind", options.kind);
         if (options.status) query.set("status", options.status);
+        if (options.outcomeStatus) query.set("outcome_status", options.outcomeStatus);
         if (options.before != null) query.set("before", String(options.before));
         if (options.limit) query.set("limit", String(options.limit));
         return request(`/${encodeURIComponent(loopId)}/facts${query.size ? `?${query}` : ""}`, { signal: options.signal });
       },
+      observation: (loopId, observationId, options = {}) => {
+        const query = new URLSearchParams();
+        if (options.section) query.set("section", options.section);
+        if (options.cursor) query.set("cursor", options.cursor);
+        if (options.limit) query.set("limit", String(options.limit));
+        return request(`/${encodeURIComponent(loopId)}/observations/${encodeURIComponent(observationId)}${query.size ? `?${query}` : ""}`, { signal: options.signal });
+      },
+      taskProgress: (loopId, progressId, signal) => request(`/${encodeURIComponent(loopId)}/task-progress${progressId ? `?progress_id=${encodeURIComponent(progressId)}` : ""}`, { signal }),
+      retryTaskProgress: (loopId, observationId) => request(`/${encodeURIComponent(loopId)}/task-progress/${encodeURIComponent(observationId)}/retry`, { method: "POST" }),
+      factDetail: (loopId, factId, signal) => request(`/${encodeURIComponent(loopId)}/facts/${encodeURIComponent(factId)}`, { signal }),
       liveSnapshot: (loopId, signal) => request(`/${encodeURIComponent(loopId)}/live`, { signal }),
       liveStream,
       async directMessage(contextId, content, requestId = crypto.randomUUID()) {
@@ -148,8 +159,12 @@
         return decode(response, "恢复压缩来源");
       },
       events: (loopId, after = 0) => request(`/${encodeURIComponent(loopId)}/events?after=${Number(after) || 0}`),
-      revision: async revisionId => {
-        const response = await fetchImpl(`${root}/context-revisions/${encodeURIComponent(revisionId)}`, { headers });
+      revisions: async (contextId, signal) => {
+        const response = await fetchImpl(`${root}/contexts/${encodeURIComponent(contextId)}/revisions`, { headers, signal });
+        return decode(response, "读取 Context 版本列表");
+      },
+      revision: async (revisionId, signal) => {
+        const response = await fetchImpl(`${root}/context-revisions/${encodeURIComponent(revisionId)}`, { headers, signal });
         return decode(response, "读取 Context revision");
       },
       stream,

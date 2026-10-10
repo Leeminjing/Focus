@@ -1,6 +1,6 @@
 """本文件对外提供 TaskProgressQuery 的只读长期记忆诊断。
 
-输入为已授权 Desktop 会话中的 Loop identity；输出为当前记忆、最近贡献修正链、冻结 refs/hash 和工作 readiness/用量。
+输入为 Desktop 会话中的 Loop identity 和可选精确 progress_id；输出为当前及选定历史版本、最近贡献修正链、冻结 refs/hash 和工作 readiness/用量。
 具体工作流为读取独立记忆表，隐藏原始审计内容；没有拓扑、任务或执行写入口。
 示例：await TaskProgressQuery().read(session, loop_id)。
 """
@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.agent_loop.models import AgentLoop
+from backend.app.desktop.agent_loop.live_access import LoopLiveAccessPolicy, LoopLiveRedactionPolicy
 from backend.app.desktop.agent_loop.task_progress.models import (
     LoopDecisionInputs,
     LoopProgressWork,
@@ -21,10 +22,14 @@ from backend.app.desktop.agent_loop.task_progress.repository import (
 
 
 class TaskProgressQuery:
-    async def read(self, session: AsyncSession, loop_id: str) -> dict:
+    async def read(self, session: AsyncSession, loop_id: str, progress_id: str | None = None) -> dict:
         if await session.get(AgentLoop, loop_id) is None:
             raise HTTPException(404, "Agent Loop 不存在")
         current = await TaskProgressRepository().current(session, loop_id)
+        selected = await session.get(LoopTaskProgress, progress_id) if progress_id else current
+        if progress_id and (selected is None or selected.loop_id != loop_id):
+            raise HTTPException(404, "Task Progress 不属于此 Loop")
+        access = await LoopLiveAccessPolicy().resolve(session, loop_id)
         rows = (
             await session.execute(
                 select(LoopProgressWork, LoopDecisionInputs)
@@ -48,7 +53,7 @@ class TaskProgressQuery:
                 )
             ).all()
         )
-        return {
+        result = {
             "loop_id": loop_id,
             "current": None
             if current is None
@@ -73,6 +78,13 @@ class TaskProgressQuery:
                 for version in history[:32]
             ],
         }
+        if selected is not None:
+            result["selected"] = {
+                "progress_id": selected.progress_id, "generation": selected.generation,
+                "content_hash": selected.content_hash, "previous_progress_id": selected.previous_progress_id,
+                "document": selected.document, "observation_id": selected.observation_id,
+            }
+        return LoopLiveRedactionPolicy.redact_value(result, access.permissions)
 
     @staticmethod
     def _work_view(work: LoopProgressWork, frozen: LoopDecisionInputs) -> dict:

@@ -1,0 +1,78 @@
+/* 本文件对外提供生产任务三栏与真实 Main/材料链的 Electron 验收。
+ * 输入为隔离 HTTP 服务、任务/材料身份及截图目录；输出为真实文件预览、选材快照、Run/SSE 终态与独立会话断言。
+ * 具体工作流为加载生产 index，显式进入任务，预览磁盘材料并提交，检查真实终态会话，再进入独立会话验证身份隔离并记录窄屏布局。
+ * 示例：electron frontend-task-real.e2e.cjs；模型采样由 Python 夹具替换，HTTP/运行图/存储均为生产实现。
+ */
+const { app, BrowserWindow } = require("electron");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "focus-task-real-")));
+app.disableHardwareAcceleration();
+app.whenReady().then(async () => {
+  const win = new BrowserWindow({
+    show: false,
+    width: 1440,
+    height: 1000,
+    webPreferences: {
+      contextIsolation: false,
+      sandbox: false,
+      backgroundThrottling: false,
+      offscreen: true,
+      preload: path.join(__dirname, "frontend-task-real-preload.cjs"),
+    },
+  });
+  const execute = code => win.webContents.executeJavaScript(code, true);
+  const until = async code => {
+    const end = Date.now() + 20000;
+    while (!await execute(`Boolean(${code})`)) {
+      if (Date.now() > end) {
+        await shot("real-task-failure");
+        throw Error("UI timeout: " + code + " · " + await execute('document.querySelector("#app")?.textContent.slice(0,1000)'));
+      }
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+  };
+  const shot = async name => {
+    await new Promise(resolve => setTimeout(resolve, 250));
+    win.webContents.invalidate();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    fs.writeFileSync(path.join(process.env.FOCUS_TASK_REAL_EVIDENCE, name + ".png"), (await win.webContents.capturePage()).toPNG());
+  };
+  await win.loadURL(process.env.FOCUS_TASK_REAL_URL + "/desktop/");
+  await until('state.tasks.length && document.body.dataset.view === "patrol"');
+  await execute(`switchTask(${JSON.stringify(process.env.FOCUS_TASK_REAL_ID)})`);
+  await until('document.querySelector("#mainInput") && state.materials.get(state.activeTaskId)?.length');
+  assert.equal(await execute('document.querySelector(".task-workspace-list") !== null'), true);
+  assert.equal(await execute('document.querySelector(".task-workspace-layout > #appInspector") !== null'), true);
+  await execute(`document.querySelector('[data-material-id="${process.env.FOCUS_TASK_REAL_MATERIAL}"] [data-action=open-material]').click()`);
+  await until('document.querySelector("#filePanel")?.textContent.includes("真实磁盘材料正文")');
+  await shot("real-task-material");
+  await execute(`document.querySelector('[data-panel-action="close"]').click()`);
+  await until('!document.querySelector("#filePanel")');
+  await execute(`document.querySelector('[data-material-id="${process.env.FOCUS_TASK_REAL_MATERIAL}"] [data-action=toggle-run-material]').click()`);
+  await until('materialSelection().bindings.length === 1');
+  await execute('document.querySelector("#mainInput").value="真实传统任务提交"; document.querySelector("#mainInput").dispatchEvent(new Event("input",{bubbles:true})); sendMain()');
+  await until('taskRunOperations.get(state.activeTaskId)?.active_run?.status === "success"');
+  await until('document.querySelector("#conversation").textContent.includes("真实任务响应")');
+  await until('!state.details.get(state.activeTaskId)?.active_run');
+  const result = await execute('({run_id:taskRunOperations.get(state.activeTaskId).active_run.run_id, materialHistory:state.materialHistory.get(state.activeTaskId), task_id:state.activeTaskId})');
+  await shot("real-task-complete");
+  await execute('document.querySelector("[data-action=organize-context]").click()');
+  await until('document.body.dataset.view === "compress"');
+  await execute('document.querySelector("[data-action=cancel-compression]").click()');
+  await until('document.body.dataset.view === "focus"');
+  await execute('document.querySelector("[data-action=show-assembly]").click()');
+  await until('activeTask()?.harness_mode === "assembly" && document.querySelector("#mainInput")');
+  assert.notEqual(await execute('state.activeTaskId'), result.task_id);
+  assert.equal(await execute('document.querySelector("#mainInput").value'), "");
+  await shot("real-standalone");
+  win.setContentSize(900, 850);
+  await execute('document.querySelector("[data-action=close-inspector]").click()');
+  await shot("real-standalone-900");
+  win.setContentSize(390, 844);
+  await shot("real-standalone-390");
+  fs.writeFileSync(process.env.FOCUS_TASK_REAL_RESULT, JSON.stringify(result));
+  win.destroy(); app.quit();
+}).catch(error => { console.error(error); app.exit(1); });
