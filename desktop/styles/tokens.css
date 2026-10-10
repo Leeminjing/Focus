@@ -1,5 +1,5 @@
 /*
- * 本文件对外提供桌面与插件共用视觉 token。输入为语义变量引用；输出为高不透明度阅读底、透明控制材质及统一间距、焦点和状态。
+ * 本文件对外提供桌面与插件共用视觉 token。输入为语义变量引用；输出为高不透明度阅读底、低遮盖率控制材质、双层弧面边缘及统一间距、焦点和状态。
  * 具体工作流为所有页面消费同一语义值，旧宿主和插件变量映射到同一来源。示例：background: var(--surface-base)。
  */
 :root {
@@ -60,11 +60,11 @@
 
   --shadow-raised: 0 3px 14px rgb(36 48 70 / 3%), 0 1px 2px rgb(36 48 70 / 2%);
   --shadow-overlay: 0 16px 48px rgb(20 31 48 / 18%);
-  --material-fill: rgb(255 255 255 / 64%);
+  --material-fill: rgb(255 255 255 / 24%);
   --material-rim: rgb(255 255 255 / 88%);
   --material-light: rgb(255 255 255 / 96%);
   --material-shade: rgb(50 67 90 / 10%);
-  --material-backdrop: blur(24px) saturate(1.25);
+  --material-backdrop: blur(18px) saturate(1.35);
   --material-depth: 0 12px 36px -18px rgb(29 46 73 / 26%), 0 2px 5px rgb(29 46 73 / 7%);
   --control-hover: rgb(36 104 215 / 7%);
   --control-press: rgb(36 104 215 / 14%);
@@ -78,7 +78,7 @@
   --ease-out: cubic-bezier(.16, 1, .3, 1);
 
   --shell-header-height: 56px;
-  --shell-nav-width: 228px;
+  --shell-nav-width: clamp(228px, 18.4vw, 280px);
   --shell-nav-collapsed: 120px;
   --shell-nav-max-width: 288px;
   --workspace-min-width: 320px;

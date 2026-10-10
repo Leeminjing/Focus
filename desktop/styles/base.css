@@ -1,5 +1,5 @@
 /* 本文件对外提供原生 DOM 的排版、表单、隐藏、焦点和减少动画基线。输入为宿主/插件语义 DOM；输出为一致可访问渲染。
- * 具体工作流为应用系统字体与原生 hidden 语义；原生材质能力标识开放透明根层，系统偏好或不支持时保留实色，焦点和业务信息保留。示例：html[data-native-material] body。
+ * 具体工作流为应用系统字体与原生 hidden 语义；原生材质能力标识开放低遮盖透明根层，系统偏好或不支持时保留实色，焦点和业务信息保留。示例：html[data-native-material] body。
  */
 [hidden] { display: none !important; }
 html,
@@ -35,7 +35,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-html[data-native-material] body { background: rgb(255 255 255 / 32%); }
+html[data-native-material] body { background: rgb(255 255 255 / 10%); }
 
 button,
 input,
@@ -119,6 +119,7 @@ a:hover { color: var(--accent-hover); }
 @media (forced-colors: active) {
   html[data-native-material] body { background: Canvas; }
   :root { --material-fill: Canvas; --surface-panel: Canvas; --surface-reading: Canvas; --material-backdrop: none; --material-rim: CanvasText; }
+  .app-frame::after, .app-navigation::before, [data-patrol-composer]::before { display: none; }
   .glass-surface { background: Canvas; border-color: CanvasText; box-shadow: none; }
   button[aria-busy="true"] { outline-color: Highlight; }
 }
