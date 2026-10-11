@@ -1,5 +1,5 @@
 /* 本文件对外提供生产任务三栏与真实 Main/材料链的 Electron 验收。
- * 输入为隔离 HTTP 服务、任务/材料身份及截图目录；输出为真实文件预览、选材快照、Run/SSE 终态、记忆创建/读取/删除与独立会话断言。
+ * 输入为隔离 HTTP 服务、任务/材料/已发布关系身份及截图目录；输出为全图精确版本检查、显式任务打开、真实文件预览、Run/SSE、记忆与独立会话断言。
  * 具体工作流为加载生产 index，显式进入任务，预览磁盘材料并提交，检查真实终态会话，再进入独立会话验证身份隔离并记录窄屏布局。
  * 示例：electron frontend-task-real.e2e.cjs；模型采样由 Python 夹具替换，HTTP/运行图/存储均为生产实现。
  */
@@ -24,6 +24,7 @@ app.whenReady().then(async () => {
     },
   });
   const execute = code => win.webContents.executeJavaScript(code, true);
+  win.webContents.on('console-message',(_event,level,message)=>{if(level>=3)console.error(message)});
   const until = async code => {
     const end = Date.now() + 20000;
     while (!await execute(`Boolean(${code})`)) {
@@ -42,6 +43,19 @@ app.whenReady().then(async () => {
   };
   await win.loadURL(process.env.FOCUS_TASK_REAL_URL + "/desktop/");
   await until('state.tasks.length && document.body.dataset.view === "patrol"');
+  const map = JSON.parse(process.env.FOCUS_MAP_REAL);
+  await execute(`state.patrolWorkspace={workspace_id:${JSON.stringify(map.workspace_id)},display_name:'真实全图验收'};document.querySelector('[data-action=show-map]').click()`);
+  await until('!mapPortfolio.loading && document.querySelector(".workbench-node")');
+  const previousTask = await execute('state.activeTaskId');
+  await execute(`document.querySelector('[data-context-id="${map.context_id}"]').click()`);
+  await until('document.querySelector("[data-patrol-context-content]").textContent.includes("全图真实发布内容")');
+  assert.equal(await execute('mapContextInspector.selection().revisionId'),map.revision_id);
+  assert.equal(await execute('state.activeTaskId'),previousTask);
+  await shot('real-global-map-inspection');
+  await execute('document.querySelector("[data-patrol-open-task]").click()');
+  await until('document.body.dataset.view === "focus" && document.querySelector("#conversation")?.textContent.includes("全图真实发布内容")');
+  assert.equal(await execute('state.activeTaskId'),map.context_id);
+  await shot('real-global-map-task');
   await execute(`switchTask(${JSON.stringify(process.env.FOCUS_TASK_REAL_ID)})`);
   await until('document.querySelector("#mainInput") && state.materials.get(state.activeTaskId)?.length');
   assert.equal(await execute('document.querySelector(".task-workspace-list") !== null'), true);
@@ -58,6 +72,7 @@ app.whenReady().then(async () => {
   await until('document.querySelector("#conversation").textContent.includes("真实任务响应")');
   await until('!state.details.get(state.activeTaskId)?.active_run');
   const result = await execute('({run_id:taskRunOperations.get(state.activeTaskId).active_run.run_id, materialHistory:state.materialHistory.get(state.activeTaskId), task_id:state.activeTaskId})');
+  result.map={context_id:map.context_id,revision_id:map.revision_id,opened_task_id:map.context_id};
   await shot("real-task-complete");
   await execute('document.querySelector("[data-action=organize-context]").click()');
   await until('document.body.dataset.view === "compress"');

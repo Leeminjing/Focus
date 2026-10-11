@@ -1,7 +1,7 @@
 """本文件对外提供传统任务、磁盘材料和实际 Run 的浏览器集成验收。
 
-输入为复用的隔离 Desktop 服务、真实工作目录和受控采样图；输出为 UI 与持久 Run/选材记录一致的断言及截图。
-具体工作流为只在测试 HTTP bridge 转发生产响应，替换模型采样而保留运行图、Main/SSE、checkpoint 和材料读取；不调用外部 Provider。
+输入为复用的隔离 Desktop 服务、真实工作目录和受控采样图；输出为全图精确版本到任务、UI 与持久 Run/选材记录一致的断言及截图。
+具体工作流为关闭本测试 Loop 自主调度后调用生产 Bootstrap 发布版本，HTTP bridge 转发生产响应；替换模型采样而保留 Main/SSE、checkpoint 和材料读取，不调用外部 Provider。
 示例：python -m pytest backend/tests/test_frontend_task_real.py -q。
 """
 import json
@@ -14,7 +14,7 @@ import threading
 from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 import pytest
-from test_session_patrol_workbench_api import client, SESSION
+from test_session_patrol_workbench_api import client as client, SESSION
 
 
 def test_task_material_main_and_standalone_real_ui(client, tmp_path, monkeypatch):
@@ -25,6 +25,20 @@ def test_task_material_main_and_standalone_real_ui(client, tmp_path, monkeypatch
 
     monkeypatch.setattr(service_module, "make_lead_agent", make_graph)
     http, task, workspace, _requests = client
+    from backend.app.gateway.app import app
+    from backend.app.desktop.agent_loop.workspace_patrol import WorkspacePatrolBootstrap
+
+    http.portal.call(app.state.agent_loop_runtime.close)
+    receipt = http.post(f"/desktop/api/agent-loops/workspace/{task['workspace_id']}/inputs", headers=SESSION, json={
+        "submission_id": "global-map-real", "content": "全图真实发布内容", "input_type": "information",
+    })
+    assert receipt.status_code == 200, receipt.text
+    loop_id = receipt.json()["loop_id"]
+    service = app.state.desktop_service
+    http.portal.call(WorkspacePatrolBootstrap(service.session_factory, service.contexts.evolution).prepare, loop_id)
+    assert http.post(f"/desktop/api/agent-loops/{loop_id}/control", headers=SESSION, json={"command": "pause"}).status_code == 200
+    lineage = http.get(f"/desktop/api/agent-loops/{loop_id}/lineage", headers=SESSION).json()
+    context_id, revision_id = next(iter(lineage["roots"].items()))
     source = workspace / "source.md"
     source.write_text("真实磁盘材料正文", encoding="utf-8")
     response = http.post(f"/desktop/api/tasks/{task['task_id']}/materials", headers=SESSION, json={"path": str(source)})
@@ -62,6 +76,7 @@ def test_task_material_main_and_standalone_real_ui(client, tmp_path, monkeypatch
             headers = dict(SESSION)
             if self.headers.get("Idempotency-Key"):
                 headers["Idempotency-Key"] = self.headers["Idempotency-Key"]
+            traffic.append((self.command, self.path.split("?")[0], "pending"))
             response = http.request(self.command, self.path, headers=headers, json=json.loads(body) if body else None)
             traffic.append((self.command, self.path.split("?")[0], response.status_code))
             self.reply(response.status_code, response.content, response.headers.get("content-type", "application/json"))
@@ -81,10 +96,14 @@ def test_task_material_main_and_standalone_real_ui(client, tmp_path, monkeypatch
     env = dict(os.environ)
     env.pop("ELECTRON_RUN_AS_NODE", None)
     env.update(FOCUS_TASK_REAL_URL=f"http://127.0.0.1:{bridge.server_port}", FOCUS_TASK_REAL_ID=task["task_id"], FOCUS_TASK_REAL_MATERIAL=material["material_id"], FOCUS_TASK_REAL_RESULT=str(result_file), FOCUS_TASK_REAL_EVIDENCE=str(evidence))
+    env["FOCUS_MAP_REAL"] = json.dumps({"workspace_id": task["workspace_id"], "context_id": context_id, "revision_id": revision_id})
     try:
         result = subprocess.run([str(electron), str(repo / "desktop/frontend-task-real.e2e.cjs")], cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=80)
         assert result.returncode == 0, result.stdout + result.stderr + str(traffic[-25:])
         ui = json.loads(result_file.read_text(encoding="utf-8"))
+        assert ui["map"] == {"context_id": context_id, "revision_id": revision_id, "opened_task_id": context_id}
+        for route in (f"/desktop/api/agent-loops/{loop_id}/lineage", f"/desktop/api/agent-loops/{loop_id}/contexts/{context_id}/conversation", f"/desktop/api/tasks/{context_id}"):
+            assert ("GET", route, 200) in traffic
         run = http.get(f"/desktop/api/runs/{ui['run_id']}", headers=SESSION).json()
         assert run["status"] == "success" and run["task_id"] == task["task_id"]
         history = http.get(f"/desktop/api/tasks/{task['task_id']}/material-history", headers=SESSION).json()

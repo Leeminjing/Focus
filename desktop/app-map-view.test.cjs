@@ -1,6 +1,6 @@
 /*
  * 本文件验证全图页面只展示活动 Context。输入为混合 active/archived/deleted 的任务与 Context tree，
- * 输出为工作区可见性与空态留白的断言；工作流走 VM DOM 替身，覆盖折叠视图与卡片视图两条渲染路径。
+ * 输出为活动工作区过滤及空态导航保留的断言；工作流走 VM DOM 替身，覆盖折叠视图、卡片视图及原任务空态。
  * 示例：`node app-map-view.test.cjs`
  */
 "use strict";
@@ -24,7 +24,6 @@ function task(id, workspaceId, lifecycle = "active") {
   };
 }
 
-// 活动 Context 与它的工作区 / 只剩归档 Context 的工作区 / 只剩已删除 Context 的工作区
 const tasks = [
   task("living", "workspace-living"),
   task("archived-root", "workspace-archived", "archived"),
@@ -57,7 +56,6 @@ function renderMapHtml(viewMode) {
   return appNode.innerHTML;
 }
 
-// 折叠视图：只有含活动 Context 的工作区出现，归档/删除的工作区整行消失
 const treeHtml = renderMapHtml("tree");
 assert.match(treeHtml, /workspace-living/, "有活动 Context 的工作区必须保留");
 assert.doesNotMatch(treeHtml, /workspace-archived/, "只剩归档 Context 的工作区不能出现在全图");
@@ -65,7 +63,6 @@ assert.doesNotMatch(treeHtml, /workspace-deleted/, "只剩已删除 Context 的�
 assert.doesNotMatch(treeHtml, /0 个 Context/, "全图不应再有 0 个 Context 的空工作区行");
 assert.doesNotMatch(treeHtml, /archived-tail/, "归档 Context 不进入全图");
 
-// 卡片视图：与折叠视图同一套过滤规则（两条渲染路径都从 renderMap 拿到已过滤的任务）
 const cardsHtml = renderMapHtml("cards");
 assert.match(cardsHtml, /workspace-living/, "卡片视图保留有活动 Context 的工作区");
 assert.doesNotMatch(cardsHtml, /workspace-archived/, "卡片视图同样过滤只剩归档 Context 的工作区");
@@ -73,7 +70,6 @@ assert.doesNotMatch(cardsHtml, /workspace-deleted/, "卡片视图同样过滤只
 assert.match(cardsHtml, /1 个 Context/, "卡片视图计数只统计活动 Context");
 assert.doesNotMatch(cardsHtml, /0 个 Context/, "卡片视图不应出现 0 个 Context");
 
-// 没有一个活动 Context 时整页留白：工具栏、折叠视图、工作区分组、占位文案都不渲染
 appNode.innerHTML = "";
 harness.vm.runInContext(`(() => {
   state.tasks = ${JSON.stringify(tasks.filter(item => item.lifecycle !== "active"))};
@@ -82,10 +78,10 @@ harness.vm.runInContext(`(() => {
   return true;
 })()`, harness.context);
 const emptyHtml = appNode.innerHTML;
-assert.doesNotMatch(emptyHtml, /map-toolbar/, "空态不渲染只有空操作的全图工具栏");
+assert.match(emptyHtml, /data-map-view="graph"/, "空态仍能切回已提交关系");
 assert.doesNotMatch(emptyHtml, /map-collapsible-view/, "空态不渲染折叠视图");
 assert.doesNotMatch(emptyHtml, /map-workspace-group/, "空态不渲染工作区分组");
-assert.doesNotMatch(emptyHtml, /暂无/, "空态不显示任何占位文案");
+assert.match(emptyHtml, /暂无匹配的活动任务/, "空态说明当前任务范围");
 
 const templateNode = { innerHTML: "<p>GLOBAL-EMPTY-TEMPLATE</p>", content: { cloneNode: () => templateNode } };
 const renderAppNode = { dataset: {}, innerHTML: "", replaceChildren: node => { renderAppNode.innerHTML = node.innerHTML; } };
@@ -95,7 +91,6 @@ const renderHarness = createAppHarness({
 });
 renderHarness.vm.runInContext(readAppSource(), renderHarness.context);
 
-// render() 对全图不得套用全局空态模板：tasks 为空时 state.view === "map" 仍要渲染留白的全图
 renderAppNode.innerHTML = "";
 renderHarness.vm.runInContext(`(() => {
   state.tasks = [];
@@ -107,11 +102,10 @@ renderHarness.vm.runInContext(`(() => {
 })()`, renderHarness.context);
 const blankMapHtml = renderAppNode.innerHTML;
 assert.doesNotMatch(blankMapHtml, /GLOBAL-EMPTY-TEMPLATE/, "全图不能被全局空态模板替换");
-assert.doesNotMatch(blankMapHtml, /map-toolbar/, "空的全图不渲染工具栏");
+assert.match(blankMapHtml, /data-action="show-patrol"/, "空的全图仍能返回 Patrol");
 assert.doesNotMatch(blankMapHtml, /map-collapsible-view/, "空的全图不渲染折叠视图");
 assert.doesNotMatch(blankMapHtml, /map-workspace-group/, "空的全图不渲染工作区分组");
 
-// 任务视图保留全局空态兜底
 renderAppNode.innerHTML = "";
 renderHarness.vm.runInContext(`(() => {
   state.tasks = [];
@@ -119,6 +113,8 @@ renderHarness.vm.runInContext(`(() => {
   render();
   return true;
 })()`, renderHarness.context);
-assert.match(renderAppNode.innerHTML, /GLOBAL-EMPTY-TEMPLATE/, "任务视图在没有任何任务时仍显示全局空态");
+assert.match(renderAppNode.innerHTML, /暂无活动 Context/, "任务视图显示实际活动范围空态");
+assert.match(renderAppNode.innerHTML, /data-action="new-task"/, "任务空态仍可新增任务");
+assert.match(renderAppNode.innerHTML, /data-action="open-settings"/, "任务空态仍可查看归档");
 
-console.log("app-map-view: 全图只展示活动 Context、两个视图一致、空态整页留白通过");
+console.log("app-map-view: 活动 Context 过滤、模式导航与空态恢复入口通过");

@@ -2,6 +2,7 @@
  * 输入为已绑定工作区与真实查询/Live 投影；输出为转义的工作台、进度定位与精确版本关系摘要。
  * 具体工作流为安静态呈现标题与大输入，详情以图为主、左右读面承接原图/事实/会话；清空只作用于草稿，检查与输入身份分离。
  * 示例：host.innerHTML = FocusWorkspacePatrolView.skeleton(workspace)。
+ * lineageManifest 输入 Live 投影或 console 节点摘要，输出保留真实最新 Run、roots 与历史祖先的共享图数据；来源按钮交回同一只读检查器。
  */
 (function (root, factory) {
   const api = factory(root);
@@ -64,7 +65,18 @@
       if (rootNode) contexts.set(contextId, rootNode);
     }
     const cards = new Map((root.FocusLoopLiveSelectors?.selectContextCards(projection) || []).map(item => [item.id, item]));
-    const nodes = [...contexts.values()].map(node => ({ ...(snapshot.roots?.[node.context_id] ? cards.get(node.context_id) : {}), ...node, historical: !snapshot.roots?.[node.context_id], title: projection?.contexts?.[node.context_id]?.state.title || node.context_id, status: projection?.contexts?.[node.context_id]?.state.status, current_revision_id: node.revision_id, revision: { revision_id: node.revision_id, generation: node.generation } }));
+    const nodes = [...contexts.values()].map(node => {
+      const historical = !snapshot.roots?.[node.context_id];
+      const context = projection?.contexts?.[node.context_id]?.state;
+      const card = cards.get(node.context_id);
+      return {
+        ...(historical ? {} : card), ...node, historical,
+        latest_run: historical ? null : (projection?.runs ? card?.latest_run : context?.latest_run),
+        title: context?.title || node.context_id, status: context?.status,
+        current_revision_id: node.revision_id,
+        revision: { revision_id: node.revision_id, generation: node.generation },
+      };
+    });
     return { nodes, edges: snapshot.edges, revisions: snapshot.nodes };
   }
   function lineage(snapshot, projection, selectedId, options = {}) {
@@ -90,7 +102,7 @@
       }).join("") || '<li>本版本没有外部来源</li>'}</ul><small>被 ${consumers.size} 条工作线采用</small><small class="workbench-scope">当前已返回的已提交关系范围</small><nav class="patrol-tabs"><button data-patrol-context-tab="conversation">会话</button><button data-patrol-context-tab="sources">来源与版本</button></nav></div><footer><p>查看不会改变 Patrol 的发送目标</p><button data-patrol-open-task="${escape(id)}">在任务中打开 ↗</button></footer>`;
     }
     const overview = `${page.revision ? "" : '<p role="status">正在读取已提交版本</p>'}<h3>这条工作线要解决什么</h3><p>${escape(node?.purpose || "暂无独立目的说明")}</p><h3>当前做到哪里了</h3><p>${escape(node?.status || page.revision?.projection_status || "以真实运行与版本为准")}</p><p>正在检查 Revision ${escape(page.revision?.revision_id || "—")}</p>`;
-    const sources = `<h3>精确来源与版本</h3><p>正在检查 ${escape(page.revision?.revision_id || "当前版本")}</p>${(page.versions || []).map(item => `<button data-patrol-inspect-revision="${escape(item.revision_id)}" aria-pressed="${item.revision_id === page.revision?.revision_id}">R${escape(item.generation)} · ${escape(item.origin_kind)}${item.current ? " · 当前" : ""}</button>`).join("")}<h3>本版本精确来源</h3>${page.sources ? page.sources.map(item => `<p>${escape(item.source?.context_id || item.context_id)} · ${escape(item.source?.revision_id || item.revision_id)}</p>`).join("") || "<p>本版本没有外部来源</p>" : "<p>正在按需读取来源与版本</p>"}`;
+    const sources = `<h3>精确来源与版本</h3><p>正在检查 ${escape(page.revision?.revision_id || "当前版本")}</p>${(page.versions || []).map(item => `<button data-patrol-inspect-revision="${escape(item.revision_id)}" aria-pressed="${item.revision_id === page.revision?.revision_id}">R${escape(item.generation)} · ${escape(item.origin_kind)}${item.current ? " · 当前" : ""}</button>`).join("")}<h3>本版本精确来源</h3>${page.sources ? page.sources.map(item => `<p><button data-context-related="${escape(item.source?.context_id || item.context_id)}" data-revision-id="${escape(item.source?.revision_id || item.revision_id)}">${escape(item.source?.context_id || item.context_id)} · ${escape(item.source?.revision_id || item.revision_id)}</button></p>`).join("") || "<p>本版本没有外部来源</p>" : "<p>正在按需读取来源与版本</p>"}`;
     return `<header><div><h2>${escape(node?.title || page.title || id)}</h2><small>${escape(id)} · 只读检查</small></div><button data-patrol-context-close aria-label="关闭 Context 检查">×</button></header><nav class="patrol-tabs">${[["overview", "概要"], ["conversation", "会话"], ["sources", "来源与版本"]].map(([key, label]) => `<button data-patrol-context-tab="${key}" aria-pressed="${tab === key}">${label}</button>`).join("")}</nav><div class="patrol-context-body">${tab === "conversation" ? root.FocusContextConversationView.renderInspection(page) : tab === "sources" ? sources : overview}</div><footer><p>查看 Context 不会改变 Patrol 的发送目标。</p><button data-patrol-open-task="${escape(id)}">在任务中打开 ↗</button></footer>`;
   }
   return Object.freeze({ skeleton, composer, history, progress, requests, lineageManifest, lineage, context, contextEmpty, escape });
