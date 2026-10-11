@@ -16,7 +16,8 @@
     (2) 对特殊阶段执行确定性 Context7 查询、版本处理或结果规范化。
     (3) 使用独立 Evaluator 按 TaskEnvelope 验收条件审核结果。
     (4) Evaluator 不合格时携带反馈创建新的 Worker，最多执行三次。
-    (5) 流式发布 Worker 和 Evaluator 各自的真实 messages，不读取私密 reasoning 字段。
+    (5) 流式发布 Worker 和 Evaluator 各自的真实 messages；正文增量携带 delta 模式和由
+        stream_id、业务 attempt、transport_attempt 组成的稳定身份，重试不续接失败正文，不读取私密 reasoning 字段。
     (6) 工具只向 Supervisor 返回最终通过结果或最后反馈。
 
 示例:
@@ -206,6 +207,8 @@ class ReviewedDelegator:
                         stage=stage,
                         attempt=attempt,
                         messages=[message_chunk],
+                        content_mode="delta",
+                        stream_id=f"{stream_id}:{attempt}:{transport_attempt}",
                     )
             except TransportError as exc:
                 last_reason = f"{type(exc).__name__}: {exc}"

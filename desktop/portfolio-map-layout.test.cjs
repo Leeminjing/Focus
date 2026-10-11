@@ -1,10 +1,10 @@
 /* 本文件对外提供共享图布局和真实版本呈现的定向合同测试。
- * 输入为有自环、多来源、多版本和历史祖先的规范化图；输出为稳定几何、精确版本与验证计数断言。
+ * 输入为有自环、多来源、多版本、历史祖先及 128 个同时运行的规范化图；输出为稳定几何、精确版本、运行卡覆盖与连线端点断言。
  * 工作流为读取纯布局和现有视图，检查可观察行为；示例：node --test desktop/portfolio-map-layout.test.cjs。
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { layout } = require("./portfolio-map-layout.js");
+const { layout, nodeSizes } = require("./portfolio-map-layout.js");
 const graph = require("./portfolio-map-view.js");
 const view = require("./workspace-patrol-view.js");
 
@@ -65,4 +65,49 @@ test("console latest Run survives shared lineage adaptation without lending it t
   assert.equal(manifest.nodes[1].latest_run,null);
   assert.equal(view.lineageManifest(snapshot,{contexts,runs:{}}).nodes[0].latest_run,null);
   delete global.FocusLoopLiveSelectors;
+});
+
+test("every running root has a live card beyond the featured limit and retains exact history boundaries", () => {
+  const nodes = Array.from({ length: 8 }, (_, i) => ({ context_id: `live-${i}`, current_revision_id: `r-${i}`, revision: { generation: 1 }, latest_run: { run_id: `run-${i}`, status: "running" } }));
+  nodes.push({ context_id: "history", historical: true, latest_run: { run_id: "old", status: "running" } });
+  for (const status of ["queued", "pending", "success", "error", "interrupted", "timeout"]) nodes.push({ context_id: status, latest_run: { run_id: status, status } });
+  const manifest = { nodes, edges: [] };
+  const live = graph.render(manifest, null, [], { presentation: "workbench" });
+  assert.equal((live.match(/data-live-run-id=/g) || []).length, 8);
+  assert.equal((live.match(/data-context-preview/g) || []).length, 8);
+  assert.doesNotMatch(graph.render(manifest), /data-live-run-id|context-live-preview/);
+  const historical = graph.render(manifest, "live-0", [], { presentation: "workbench", selectedRevisionId: "old-r" });
+  assert.equal((historical.match(/data-live-run-id=/g) || []).length, 7);
+  assert.doesNotMatch(historical, /data-live-run-id="run-0"/);
+  nodes[0].active_run = nodes[0].latest_run;
+  nodes[0].latest_run = {run_id:"queued-after-running",status:"queued"};
+  assert.match(graph.render(manifest, null, [], {presentation:"workbench"}), /data-live-run-id="run-0"/);
+});
+
+test("fixed live envelopes never overlap and status changes do not relayout", () => {
+  for (const count of [1, 2, 7, 32, 128]) {
+    const nodes = Array.from({ length: count }, (_, i) => ({ context_id: `n-${i}` }));
+    const edges = nodes.slice(1).map((node, i) => ({ source_context_id: nodes[i].context_id, target_context_id: node.context_id }));
+    const result = layout(nodes, edges, "workbench");
+    assert.equal(result, layout(nodes.map(node => ({ ...node, latest_run: { status: "running" }, title: "很长的实时标题" })), edges, "workbench"));
+    const points = [...result.positions.values()];
+    for (const [i, point] of points.entries()) {
+      assert.ok(point.x - nodeSizes.live.width / 2 >= 0 && point.x + nodeSizes.live.width / 2 <= result.width);
+      assert.ok(point.y - nodeSizes.live.height / 2 >= 0 && point.y + nodeSizes.live.height / 2 <= result.height);
+      for (const other of points.slice(i + 1)) assert.ok(Math.abs(point.x - other.x) >= nodeSizes.live.width || Math.abs(point.y - other.y) >= nodeSizes.live.height, `overlap at ${count}: ${JSON.stringify([point, other])}`);
+    }
+  }
+});
+
+test("source curves meet actual live and static card widths", () => {
+  const nodes = [
+    { context_id: "a", current_revision_id: "a1", latest_run: { run_id: "a-run", status: "running" } },
+    { context_id: "b", current_revision_id: "b1" },
+  ];
+  const edges = [{ source_context_id: "a", source_revision_id: "a1", target_context_id: "b", target_revision_id: "b1" }];
+  const geometry = layout(nodes, edges, "workbench");
+  const a = geometry.positions.get("a"), b = geometry.positions.get("b");
+  const html = graph.render({ nodes, edges }, "b", [], { presentation: "workbench" });
+  const x1 = a.x + nodeSizes.live.width / 2, x2 = b.x - nodeSizes.card.width / 2;
+  assert.ok(html.includes(`M ${x1} ${a.y} C ${(x1 + x2) / 2} ${a.y}, ${(x1 + x2) / 2} ${b.y}, ${x2} ${b.y}`));
 });

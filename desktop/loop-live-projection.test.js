@@ -3,6 +3,7 @@
  * 输入为有效/畸形 snapshot、重复/陈旧/缺口事件、HTTP 故障和模拟 Live API；输出为确定性 projection、原子重同步、取消信号、退避及单连接断言。
  * 具体工作流为使用 Node test 直接加载 UMD 模块并驱动 Store/Connection/API，验证新 Round/Patrol 的局部版本与迟到旧实体隔离；示例：`node --test desktop/loop-live-projection.test.js`。
  * Mission交付使用服务端评估，覆盖Patrol真实来源、终态Run身份保留及跨Mission事件隔离。
+ * 运行选择优先真实 running，保留独立的最新排队 Run 身份，避免队列遮盖实时输出。
   * 独立 Task Progress head 按 generation/revision 归约，陈旧事件不能回退已提交记忆。
  */
 "use strict";
@@ -704,6 +705,18 @@ test("bursty canonical reduction stays deterministic within the existing interac
   assert.equal(projection.runs.r1.state.status, "success");
   assert.equal(projection.activity_timeline.length, 200);
   assert.ok(elapsed < 500, `2000-event reduction took ${elapsed.toFixed(1)}ms`);
+});
+
+test("a newer queued run cannot hide the Context's running output", () => {
+  const projection = snapshot(3, { contexts: { c1: entity("c1", 1, 1, { title: "当前任务" }) }, runs: {
+    running: entity("running", 1, 2, { context_id: "c1", status: "running" }),
+    queued: entity("queued", 1, 3, { context_id: "c1", status: "queued" }),
+  } });
+  const [card] = Selectors.selectContextCards(projection);
+  assert.equal(card.active_run.id, "running");
+  assert.equal(card.latest_run.id, "queued");
+  projection.runs.running.state.status = "success";
+  assert.equal(Selectors.selectContextCards(projection)[0].active_run.id, "queued");
 });
 
 test("live workspace exposes semantic labels and a reduced-motion equivalent", () => {

@@ -2,14 +2,14 @@
  * 本文件验证主运行中断与必看报告恢复 UI。输入为可控运行状态、SSE/HTTP 载荷和桌面 DOM；
  * 输出为中断按钮状态、取消竞态、必看报告原因及 retry/cancel 恢复请求断言。
  * 具体工作流在 VM 中执行 app.js 并记录同源 API 调用；桌面 DOM 桩把会话容器内容并回整页 HTML，
- * 使整页断言在"会话区由对账写入"之后仍然成立。示例：node desktop/app-interrupt.test.cjs。
+ * 使整页断言在"会话区由对账写入"之后仍然成立，并复用宿主挂载节点桩支持任务检查器。示例：node desktop/app-interrupt.test.cjs。
  */
 const assert = require("node:assert/strict");
 const vm = require("node:vm");
-const { createAppHarness, readAppSource } = require("./test-helper.cjs");
+const { createAppHarness, createNode, readAppSource } = require("./test-helper.cjs");
 
 let lastHtml = "";
-const app = { dataset: {} };
+const app = createNode();
 Object.defineProperty(app, "innerHTML", {
   set(value) { lastHtml = value; },
   get() { return lastHtml; },
@@ -40,6 +40,7 @@ const task = { task_id: "task", workspace_path: "C:/workspace", workspace_name: 
 
 function renderTask(activeRun) {
   return new vm.Script(`
+    state.view = "focus";
     state.tasks = [{ task_id: "task", workspace_path: "C:/workspace", workspace_name: "workspace" }];
     state.activeTaskId = "task";
     state.details.set("task", { messages: [], ui_state: {}, active_run: ${JSON.stringify(activeRun || null)} });

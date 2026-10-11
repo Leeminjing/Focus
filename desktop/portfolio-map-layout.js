@@ -1,6 +1,7 @@
 /* 本文件对外提供共享 Portfolio 图的纯 layout 函数。
  * 输入为 Context 节点、精确来源边与 default/workbench 呈现；输出为稳定坐标及画布尺寸。
- * 工作流为拓扑排序后进行有限层内排序，工作台折叠为有界列并预留节点命中与卡片空间；缓存只由拓扑和呈现决定，不接触 DOM、网络或业务状态。
+ * 工作流为拓扑排序后进行有限层内排序，工作台折叠为有界列并为每个节点预留固定运行卡包络；缓存只由拓扑和呈现决定，不接触 DOM、网络或业务状态。
+ * nodeSizes 提供同一节点的 default、card、live、point 尺寸，用于布局与连线端点，运行内容变化不改变坐标。
  * 示例：FocusPortfolioMapLayout.layout(nodes, edges, "workbench")。
  */
 (function (root, factory) {
@@ -10,6 +11,12 @@
 })(globalThis, function () {
   "use strict";
   const caches = new Map();
+  const nodeSizes = Object.freeze({
+    default: Object.freeze({ width: 220, height: 96 }),
+    card: Object.freeze({ width: 188, height: 82 }),
+    live: Object.freeze({ width: 280, height: 164 }),
+    point: Object.freeze({ width: 164, height: 42 }),
+  });
 
   function layout(nodes, edges, presentation = "default") {
     const fingerprint = JSON.stringify({ presentation, nodes: nodes.map(node => node.context_id).sort(), edges: edges.map(edge => [edge.source_context_id, edge.target_context_id]).sort() });
@@ -68,10 +75,11 @@
         const anchor = [...band].sort((a, b) => degree(b) - degree(a) || a.localeCompare(b))[0];
         if (anchor && band.length > 2) { band.splice(band.indexOf(anchor), 1); band.splice(Math.floor(band.length / 2), 0, anchor); }
       }
-      const width = Math.max(900, columns * 194 + 16), height = Math.max(620, rows * 106 + 24);
+      const columnSpace = nodeSizes.live.width + 56, rowSpace = nodeSizes.live.height + 48;
+      const width = Math.max(900, columns * columnSpace), height = Math.max(620, rows * rowSpace + 90);
       bands.forEach((band, column) => band.forEach((id, row) => {
-        const x = columns === 1 ? width / 2 : 108 + column * (width - 216) / (columns - 1);
-        const y = band.length === 1 ? height / 2 : 70 + row * (height - 150) / (band.length - 1);
+        const x = columns === 1 ? width / 2 : columnSpace / 2 + column * (width - columnSpace) / (columns - 1);
+        const y = band.length === 1 ? height / 2 : rowSpace / 2 + row * (height - rowSpace - 90) / (band.length - 1);
         positions.set(id, { x: x + (columns === 1 ? 0 : row % 2 ? -12 : 12), y: y + (column % 2 ? 26 : 0) });
       }));
       const result = { fingerprint, positions, width, height };
@@ -79,7 +87,7 @@
       caches.set(fingerprint, result);
       return result;
     }
-    const cardWidth = 220;
+    const cardWidth = nodeSizes.default.width;
     const xGap = 34;
     const yGap = 142;
     const largestLayer = Math.max(1, ...[...layers.values()].map(layer => layer.length));
@@ -100,5 +108,5 @@
     return result;
   }
 
-  return Object.freeze({ layout });
+  return Object.freeze({ layout, nodeSizes });
 });

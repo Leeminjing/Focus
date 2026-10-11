@@ -5,12 +5,14 @@
     actor — supervisor、worker 或 evaluator。
     stage / attempt — 当前业务阶段和审核轮次。
     messages — 该角色本次新增或当前完整的 BaseMessage 数组。
+    content_mode — snapshot 表示完整消息，delta 表示同次输出的正文增量。
+    stream_id — delta 的稳定输出身份；模型传输重试使用新的身份。
 
 输出:
     None — 消息数组写入 LangGraph custom 流；非流式调用时静默跳过。
 
 具体工作流:
-    (1) 组装角色、阶段和真实 messages 数组。
+    (1) 组装角色、阶段、正文模式和真实 messages 数组，保留原字段兼容既有消费者。
     (2) 获取当前 LangGraph stream writer。
     (3) 由外层 middleware/worker 转发到现有 SSE events 通道。
 
@@ -18,9 +20,12 @@
     emit_commitment_messages(
         actor="worker",
         stage=2,
-        messages=[AIMessage(content="...")],
+        messages=[AIMessageChunk(content="...")],
+        content_mode="delta", stream_id="worker-2:1:1",
     )
 """
+
+from typing import Literal
 
 from langchain_core.messages import BaseMessage
 from langgraph.config import get_stream_writer
@@ -40,11 +45,14 @@ def emit_commitment_messages(
     stage: int,
     messages: list[BaseMessage],
     attempt: int | None = None,
+    content_mode: Literal["delta", "snapshot"] = "snapshot",
+    stream_id: str | None = None,
 ) -> None:
     payload: dict[str, object] = {
         "type": "commitment_messages",
         "actor": actor,
         "stage": stage,
+        "content_mode": content_mode,
         "messages": [
             message.model_copy(update={"additional_kwargs": {}})
             for message in messages
@@ -52,6 +60,8 @@ def emit_commitment_messages(
     }
     if attempt is not None:
         payload["attempt"] = attempt
+    if stream_id is not None:
+        payload["stream_id"] = stream_id
     _write_commitment_messages(payload)
 
 

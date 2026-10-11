@@ -2,7 +2,7 @@
  * 输入为已绑定工作区、共享 Loop API、Live Store/Connection 及输入 store；输出为逐条耐久回执和图主导工作台更新；选择身份由原 ContextInspector 持有。
  * 具体工作流为先读取绑定/历史再订阅已有单路 Live，依据投影结构共享只更新变化区域，保留 composer、进度和未变等待表单 DOM，异步响应按工作区代际隔离；
  * 主输入走 workspace intake，查看 Context 不改变目标；清空仅编辑未提交正文并返回输入焦点，不触及回答目标、历史或运行。
- * 显隐复用 SurfaceTransition 保留输入节点，原生 dialog 管理焦点，关系内容复用共享图视图，AbortController 清理监听与读请求。示例：await controller.mount(host, workspace)。
+ * 显隐复用 SurfaceTransition 保留输入节点，运行预览复用共享 Run 观察器，折叠/离开释放订阅；原生 dialog 管理焦点，AbortController 清理监听与读请求。示例：await controller.mount(host, workspace)。
  */
 (function (root, factory) {
   const api = factory(root);
@@ -10,7 +10,7 @@
   if (root) root.FocusWorkspacePatrolController = api;
 })(globalThis, function (root) {
   "use strict";
-  function create({ api, inputs, liveStore, connection, onOpenTask, view = root.FocusWorkspacePatrolView }) {
+  function create({ api, inputs, liveStore, connection, onOpenTask, createRunPreviews, view = root.FocusWorkspacePatrolView }) {
     let host = null;
     let workspace = null;
     let loopId = null;
@@ -50,6 +50,15 @@
     let grantInspection = null;
     const waitDrafts = root.FocusLoopWaitRequestView.createDraftStore();
     const waitUi = new Map();
+    const previews = createRunPreviews?.((values, structural) => {
+      if (!host || !detailsOpen) return;
+      if (structural) patchGraph();
+      else root.FocusPortfolioMapView.patchPreviews(host.querySelector("[data-patrol-lineage]"), values);
+      patchRetry();
+    });
+    function patchRetry() {
+      if (host) host.querySelector("[data-patrol-live-retry]").hidden = liveStore.get().connection.status !== "unavailable" && !Object.values(previews?.get() || {}).some(item => item.status === "unavailable");
+    }
     const error = value => {
       if (!host) return;
       const node = host.querySelector("[data-patrol-error]");
@@ -90,8 +99,8 @@
       });
       for (const button of host.querySelectorAll("[data-patrol-details]")) button.setAttribute("aria-expanded", String(detailsOpen));
       composer.querySelector("[data-patrol-details]").textContent = detailsOpen ? "收起详情 ↙" : "查看工作详情 ↗";
-      if (!detailsOpen) closeInspection();
-      else if (projection) { void refreshLineage(projection); void refreshObservation(); }
+      if (!detailsOpen) { previews?.stop(); closeInspection(); }
+      else if (projection) { patchGraph(); void refreshLineage(projection); void refreshObservation(); }
     }
     function closeInspection() { inspector?.close(); }
     const manifest = () => lineageSnapshot ? view.lineageManifest(lineageSnapshot, projection) : { nodes: [], edges: [] };
@@ -103,10 +112,13 @@
       if (!host || !detailsOpen || !lineageSnapshot) return;
       const graph = host.querySelector("[data-patrol-lineage]"), selected = inspector?.selection();
       const options = { presentation: "workbench", selectedRevisionId: selected?.revisionId, relatedOnly, highlightIds };
-      const data = manifest(), activity = root.FocusLoopLiveSelectors?.selectGraphActivity(projection);
+      const raw = manifest(), activity = root.FocusLoopLiveSelectors?.selectGraphActivity(projection);
+      previews?.sync({ workspaceId: workspace.workspace_id, loopId, nodes: raw.nodes });
+      const data = previews?.decorate(raw) || raw;
       const existing = graph.querySelector(".portfolio-map");
       if (!root.FocusPortfolioMapView.reconcile(graph, data, selected?.contextId, activity, options)) graph.innerHTML = root.FocusPortfolioMapView.render(data, selected?.contextId, activity, options);
       root.FocusPortfolioMapView.bind(graph);
+      if (previews) root.FocusPortfolioMapView.patchPreviews(graph, previews.get());
       if (!existing) requestAnimationFrame(() => { if (graph.isConnected) graph.querySelector('[data-portfolio-zoom="fit"]')?.click(); });
       const button = host.querySelector("[data-patrol-related]");
       button.disabled = !selected;
@@ -281,7 +293,7 @@
     }
     function patchLive({ projection: next, connection: status }) {
       if (!host) return;
-      host.querySelector("[data-patrol-live-retry]").hidden = status?.status !== "unavailable";
+      patchRetry();
       if (!next) {
         host.querySelector("[data-patrol-state]").textContent = status?.status === "unavailable" ? "连接不可用 · 正在保留输入" : "正在连接工作状态";
         return;
@@ -337,6 +349,7 @@
       }
     }
     function connect(identity) {
+      if (loopId !== identity) previews?.stop();
       loopId = identity;
       void connection.start(identity).catch(failure => { if (loopId === identity) error(failure); });
     }
@@ -376,7 +389,7 @@
         else if (button.hasAttribute("data-patrol-pending")) showDialog("requests", "待处理工作", "", host.querySelector("[data-patrol-requests]"));
         else if (button.hasAttribute("data-patrol-progress-open")) { progressFilter = "all"; await openProgress(); }
         else if (button.hasAttribute("data-patrol-grant-open")) await openGrant();
-        else if (button.hasAttribute("data-patrol-live-retry") && loopId) connect(loopId);
+        else if (button.hasAttribute("data-patrol-live-retry") && loopId) { previews?.retry(); connect(loopId); }
         else if (button.dataset.action === "loop-revoke-grant") {
           if (!root.confirm("确认撤销当前工作区 Patrol 的授权？现有工作会保留。")) return;
           await api.mutateGrant(loopId, { command: "revoke" });
@@ -394,7 +407,7 @@
         }
         else if (button.dataset.patrolObservationSection) await loadObservationSection(button.dataset.patrolObservationSection);
         else if (button.hasAttribute("data-patrol-observation-retry")) await refreshObservation(true);
-        else if (button.hasAttribute("data-patrol-lineage-retry") && projection) await refreshLineage(projection);
+        else if (button.hasAttribute("data-patrol-lineage-retry") && projection) { previews?.retry(); await refreshLineage(projection); }
         else if (button.hasAttribute("data-patrol-facts-open")) await loadFacts();
         else if (button.hasAttribute("data-patrol-facts-older")) await loadFacts(true);
         else if (button.hasAttribute("data-patrol-fold")) inputs.expand(!inputs.get().expanded);
@@ -499,6 +512,7 @@
       } catch (failure) { if (current === token) error(failure); }
     }
     function leave() {
+      previews?.stop();
       root.document.body.classList.remove("has-patrol-workbench");
       relatedOnly = false; highlightIds = [];
       token++; lineageToken++; historyToken++; observationVersion++; factVersion++; progressVersion++;
