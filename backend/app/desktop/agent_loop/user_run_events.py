@@ -1,7 +1,7 @@
 r"""本文件对外提供 LoopUserRunEventRecorder。
 
 输入为直接用户 Loop intent（首轮初始 Run 可为空）、Run 身份和可选结算事件；输出为可重放的 Context Run 启动与结算里程碑。
-具体工作流为使用 Run identity 生成稳定幂等键，只把状态和安全摘要写入 Loop journal，保证首轮和后续无 Directive 的直接用户 Run 都能进入当前执行投影。
+具体工作流为使用 Run identity 生成稳定幂等键，只把状态、所属轮授权和安全摘要写入 Loop journal，保证首轮和后续无 Directive 的直接用户 Run 都能进入当前执行投影；缺失授权保持未知，不借全局会话模式补齐。
 示例：`await recorder.started(session, intent, run)`。
 """
 
@@ -32,6 +32,9 @@ class LoopUserRunEventRecorder:
                     "run_id": run.run_id,
                     "context_id": run.task_id,
                     "status": "running",
+                    "round_id": run.round_id,
+                    "round_authorization": (run.equipment or {}).get("round_authorization"),
+                    "settlement_status": "pending",
                     "summary": "用户 Context Run 已启动",
                 },
                 idempotency_key=f"context-run:{run.run_id}:started",
@@ -52,6 +55,9 @@ class LoopUserRunEventRecorder:
                     "run_id": run.run_id,
                     "context_id": run.task_id,
                     "status": run.status,
+                    "round_id": run.round_id,
+                    "round_authorization": (run.equipment or {}).get("round_authorization"),
+                    "settlement_status": "settled" if run.settled_at else "pending",
                     "summary": f"用户 Context Run 已进入 {run.status}",
                 },
                 idempotency_key=f"context-run:{run.run_id}:settled",

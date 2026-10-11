@@ -21,11 +21,59 @@ from test_agent_loop_round_liveness import _seed_loop, _stop
 from test_round_task_progress import _Checkpointer, _source
 
 from backend.app.desktop.agent_loop.models import LoopDelegationGrant, LoopObservation
+from backend.app.desktop.agent_loop.models import LoopRound
+from backend.app.desktop.agent_loop.observation_query import ObservationInspectionQuery
 from backend.app.desktop.agent_loop.fact_models import LoopFact
 from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
 from backend.app.desktop.agent_loop.query_routes import loop_query_router
 from backend.app.desktop.agent_loop.task_progress.models import LoopDecisionInputs, LoopProgressHead, LoopTaskProgress
 from backend.app.desktop.domain_evidence.identity import canonical_hash
+
+
+@pytest.mark.usefixtures("isolated_postgres_database")
+def test_exact_versions_and_causal_pages_never_fill_old_snapshot_from_current_state(tmp_path):
+    async def run():
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        seed = await _seed_loop(sessions, tmp_path, label="causal", started_at=datetime.now(UTC))
+        loop_id = seed["loop_id"]
+        ids = [uuid4().hex for _ in range(3)]
+        chain = []
+        try:
+            async with sessions.begin() as session:
+                for index, identity in enumerate(ids, 1):
+                    before = {"intervention": {"server_sequence": index * 10, "rounds": [{"round_id": "old", "number": 5,
+                        "decision": {"intent": {"private_reasoning": "hidden-intent"}}}],
+                        "facts": [{"fact_id": "fact", "revision": index, "presentation": {"title": "evidence-content"}}],
+                        "visible_context": {"live_sequence": index * 10 - 2}, "projection": {"cursor": index * 10 - 4, "failures": []}}}
+                    chain.append({"intent_id": f"u{index}", "submission_id": f"s{index}", "observation_id": identity,
+                        "generation": index, "snapshot_hash": canonical_hash(before), "accepted_sequence": index * 10,
+                        "input": {"content": f"原文 {index}", "input_type": "information"}})
+                    envelope = {"pre_input_state": before, "pre_input_hash": canonical_hash(before), "causal_chain": list(chain)}
+                    session.add(LoopObservation(observation_id=identity, loop_id=loop_id, round_id=seed["round_id"],
+                        generation=index, envelope=envelope, envelope_hash=canonical_hash(envelope)))
+                round_row = await session.get(LoopRound, seed["round_id"])
+                round_row.observation_id = ids[-1]
+            query = ObservationInspectionQuery()
+            async with sessions() as session:
+                old = await query.read(session, loop_id, ids[0], section="snapshot")
+                assert old["decision_state"] == "superseded"
+                assert old["boundary"]["server_sequence"] == 10
+                assert next(item for item in old["items"] if item["kind"] == "fact")["revision"] == 1
+                assert "hidden-intent" not in json.dumps(old) and "evidence-content" not in json.dumps(old)
+                first = await query.read(session, loop_id, ids[-1], section="causal_chain", limit=1)
+                second = await query.read(session, loop_id, ids[-1], section="causal_chain", cursor=first["next_cursor"], limit=2)
+                assert [item["input"]["content"] for item in first["items"] + second["items"]] == ["原文 1", "原文 2", "原文 3"]
+                assert first["total"] == 3 and not second["has_more"]
+                versions = await query.read(session, loop_id, ids[0], section="versions")
+                assert [item["observation_id"] for item in versions["items"]] == ids[:1]
+                with pytest.raises(Exception) as error:
+                    await query.read(session, loop_id, ids[0], section="causal_chain", cursor=first["next_cursor"])
+                assert error.value.status_code == 422
+        finally:
+            await _stop(seed["service"], loop_id)
+            await engine.dispose()
+    asyncio.run(run())
 
 
 @pytest.mark.usefixtures("isolated_postgres_database")

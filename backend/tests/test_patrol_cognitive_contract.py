@@ -29,6 +29,38 @@ _DECISION = {"rationale": "继续推进", "evidence": [], "mission_references": 
 _FLAT = {"rationale": _DECISION["rationale"], "evidence": [], "mission_references": _DECISION["mission_references"], "actions": _DECISION["actions"]}
 
 
+@pytest.mark.parametrize("damage", [None, "missing_page", "cursor_gap", "changed_total", "wrong_identity", "wrong_hash"])
+def test_causal_read_reconstructs_exact_full_utf8_history(damage):
+    from backend.app.desktop.agent_loop.patrol_read_view import PatrolReadView
+    from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
+
+    snapshot = {"meaning": "用户此前看到的局面" * 1600}
+    digest = canonical_hash(snapshot)
+    observation = SimpleNamespace(causal_chain=({"intent_id": "intent-1", "snapshot_hash": digest},))
+
+    async def reader(envelope, requests):
+        request = requests[0]
+        actual = {**snapshot, "changed": True} if damage == "wrong_hash" else snapshot
+        page = PatrolReadView.causal_page(actual, request.model_copy(update={"snapshot_hash": canonical_hash(actual)}))
+        page["snapshot_hash"] = digest
+        if damage == "missing_page":
+            page["next_cursor"] = None
+        elif damage == "cursor_gap":
+            page["next_cursor"] += 1
+        elif damage == "changed_total" and request.cursor:
+            page["total_bytes"] += 1
+        elif damage == "wrong_identity":
+            page["intent_id"] = "different-input"
+        return (page,)
+
+    model = StructuredPatrolDecisionModel(object(), reader=reader)
+    if damage:
+        with pytest.raises(ValueError, match="causal_history_"):
+            _run(model._causal_evidence(observation))
+    else:
+        assert _run(model._causal_evidence(observation))[0]["snapshot"] == snapshot
+
+
 def _run(coro):
     return asyncio.run(coro)
 

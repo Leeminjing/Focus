@@ -23,7 +23,8 @@ from backend.app.desktop.agent_loop.context_expansion.synthesis import ContextSy
 from backend.app.desktop.agent_loop.context_expansion.synthesis_service import DeterministicTestContextSynthesisService
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopCoordinatorFence, LoopCoordinatorLease
 from backend.app.desktop.agent_loop.wait_requests import LoopWaitRequestFactory
-from backend.app.desktop.agent_loop.rounds import create_observation_round
+from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
+from test_round_task_progress import _Checkpointer
 from backend.app.desktop.agent_loop.models import LoopRound
 from backend.tests.test_synthesis_claim_feedback import _inputs
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
@@ -47,8 +48,8 @@ def test_quality_revision_is_exclusive_recoverable_and_bounded(tmp_path, runtime
                 session.add(LoopCoordinatorFence(round_id=seeded["round_id"], fencing_token=1))
                 session.add(LoopCoordinatorLease(lease_id=uuid.uuid4().hex, round_id=seeded["round_id"],
                     owner_id="revision-test", fencing_token="1", expires_at=datetime.now(UTC) + timedelta(minutes=5)))
-            observation = SimpleNamespace(loop_id=seeded["loop_id"], round_id=seeded["round_id"],
-                goal_revision=1, authority_revision=1, observed_frontier_hash="a" * 64)
+            observations = LoopObservationService(sessions, _Checkpointer())
+            observation = await observations.capture(seeded["loop_id"], seeded["round_id"])
             spec, bundle = _inputs()
             dossier = (await DeterministicTestContextSynthesisService().synthesize(None, spec, bundle)).dossier
             opportunity = ExpansionOpportunity.create(loop_id=seeded["loop_id"], round_id=seeded["round_id"],
@@ -79,25 +80,25 @@ def test_quality_revision_is_exclusive_recoverable_and_bounded(tmp_path, runtime
                 await repo.reserve(observation, opportunity, dossier, _assessment(spec, bundle, dossier, 3))
             async with sessions.begin() as session:
                 loop = await session.get(AgentLoop, observation.loop_id, with_for_update=True)
-                old_round = await session.get(LoopRound, observation.round_id)
-                next_round = await create_observation_round(session, loop, old_round, "a" * 64)
-                session.add(next_round)
-                await session.flush()
-                loop.current_round_id = next_round.round_id
-                session.add(LoopCoordinatorFence(round_id=next_round.round_id, fencing_token=1))
-                session.add(LoopCoordinatorLease(lease_id=uuid.uuid4().hex, round_id=next_round.round_id,
-                    owner_id="revision-next-round", fencing_token="1", expires_at=datetime.now(UTC) + timedelta(minutes=5)))
-                next_id = next_round.round_id
-            next_observation = SimpleNamespace(**{**vars(observation), "round_id": next_id})
-            next_opportunity = opportunity.model_copy(update={"round_id": next_id})
-            with pytest.raises(QualityRevisionBlocked, match="两次"):
-                await QualityRevisionRepository(sessions).reserve(next_observation, next_opportunity, dossier,
-                    _assessment(spec, bundle, dossier, 3))
-            async with sessions.begin() as session:
-                loop = await session.get(AgentLoop, observation.loop_id, with_for_update=True)
                 with pytest.raises(ValueError, match="次数"):
-                    await admit_manual_revision(session, loop, {"lineage": repo.lineage(spec, 1), "goal_revision": 1})
-            changed = SimpleNamespace(**{**vars(observation), "authority_revision": 2})
+                    await admit_manual_revision(session, loop, {
+                        "lineage": repo.lineage(spec, 1, observation.decision_inputs_ref),
+                        "observation_id": observation.decision_inputs_ref, "goal_revision": 1})
+            next_observation = await observations.refresh(observation.loop_id, observation.round_id)
+            async with sessions.begin() as session:
+                fence = await session.get(LoopCoordinatorFence, seeded["round_id"])
+                lease = await session.scalar(select(LoopCoordinatorLease).where(LoopCoordinatorLease.round_id == seeded["round_id"]))
+                assert lease is None
+                session.add(LoopCoordinatorLease(lease_id=uuid.uuid4().hex, round_id=seeded["round_id"],
+                    owner_id="revision-new-observation", fencing_token=str(fence.fencing_token),
+                    expires_at=datetime.now(UTC) + timedelta(minutes=5)))
+            assert next_observation.generation == observation.generation + 1
+            assert await repo.count(next_observation, spec) == 0
+            fresh, cached = await repo.reserve(next_observation, opportunity, dossier, _assessment(spec, bundle, dossier, 3))
+            assert fresh.ordinal == 1 and cached is None
+            with pytest.raises(QualityRevisionBlocked, match="Observation"):
+                await repo.complete(observation, recovered, payload)
+            changed = observation.model_copy(update={"authority_revision": 2})
             with pytest.raises(QualityRevisionBlocked):
                 await repo.reserve(changed, opportunity, dossier, assessment)
         finally:

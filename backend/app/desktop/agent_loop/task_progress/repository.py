@@ -2,7 +2,7 @@
 
 输入为调用方短事务、不可变合同、fence 和有界安全候选诊断；输出为按尝试诊断、唯一版本或明确 stale/readiness 错误。
 具体工作流为 Loop→head→work 锁序，诊断复检有效领取及冻结身份，重试复检预算授权并保留历史反馈和消费，前序 CAS、输入 hash 和租约共同验证，再原子插入版本与 receipts。
-无模型调用或 Context 发布权限。示例：await repository.publish(session, observation_id, fence, document, contribution)。
+无模型调用或 Context 发布权限。示例：await repository.publish(session, work_id, fence, document, contribution)。
 Progress head、来源 receipts 与 task_progress.published journal 在同一发布事务提交，读面可独立于用户发送和执行事实更新。
 """
 
@@ -18,6 +18,7 @@ from backend.app.desktop.agent_loop.models import AgentLoop, LoopObservation, Lo
 from backend.app.desktop.agent_loop.task_progress.contracts import (
     RoundContribution,
     RoundDecisionInputs,
+    ConsolidationInputs,
     TaskProgressDocument,
     canonical_hash,
 )
@@ -32,11 +33,11 @@ from backend.app.desktop.agent_loop.task_progress.candidate_interpretation impor
 
 
 class ProgressNotReady(RuntimeError):
-    def __init__(self, observation_id, state, error=None):
-        self.observation_id = observation_id
+    def __init__(self, work_id, state, error=None):
+        self.work_id = work_id
         self.state = state
         self.failure_kind = error.split(":", 1)[0] if error else None
-        super().__init__(f"progress_memory_{state}: {observation_id}; {error or '等待上一轮任务记忆'}")
+        super().__init__(f"progress_memory_{state}: {work_id}; {error or '等待上一轮任务记忆'}")
 
 
 class ProgressPublicationRejected(RuntimeError):
@@ -92,20 +93,20 @@ class TaskProgressRepository:
             select(LoopProgressWork)
             .where(
                 LoopProgressWork.loop_id == loop_id,
-                LoopProgressWork.state != "published",
+                LoopProgressWork.state.not_in(("published", "superseded")),
             )
             .order_by(LoopProgressWork.created_at)
             .limit(1)
         )
         if unfinished is not None:
-            raise ProgressNotReady(unfinished.observation_id, unfinished.state, unfinished.error)
+            raise ProgressNotReady(unfinished.work_id, unfinished.state, unfinished.error)
 
-    async def retry(self, session, observation_id, *, loop_id=None):
-        identity = await session.get(LoopProgressWork, observation_id)
+    async def retry(self, session, work_id, *, loop_id=None):
+        identity = await session.get(LoopProgressWork, work_id)
         if identity is None or (loop_id is not None and identity.loop_id != loop_id):
             raise ValueError("任务记忆工作不存在或不属于本 Loop")
         loop = await session.get(AgentLoop, identity.loop_id, with_for_update=True)
-        work = await session.get(LoopProgressWork, observation_id, with_for_update=True, populate_existing=True)
+        work = await session.get(LoopProgressWork, work_id, with_for_update=True, populate_existing=True)
         if work.state != "blocked":
             raise ValueError("只有明确 blocked 的任务记忆工作可以恢复")
         grant = await session.scalar(select(LoopDelegationGrant).where(
@@ -137,9 +138,6 @@ class TaskProgressRepository:
             )
         )
         await session.flush()
-        session.add(
-            LoopProgressWork(observation_id=inputs.observation_id, loop_id=loop_id)
-        )
 
     async def inputs(
         self, session: AsyncSession, observation_id: str
@@ -150,29 +148,35 @@ class TaskProgressRepository:
         return RoundDecisionInputs.model_validate(row.payload)
 
     async def record_validation(self, session, inputs, fence, diagnostic):
-        identity = await session.get(LoopProgressWork, inputs.observation_id)
+        identity = await session.get(LoopProgressWork, inputs.work_id)
         if identity is None:
             raise ProgressPublicationRejected("进度工作不存在")
         await session.get(AgentLoop, identity.loop_id, with_for_update=True)
-        work = await session.get(LoopProgressWork, inputs.observation_id, with_for_update=True, populate_existing=True)
+        work = await session.get(LoopProgressWork, inputs.work_id, with_for_update=True, populate_existing=True)
         if (work.state != "claimed" or work.fence != fence or work.lease_expires_at is None
                 or work.lease_expires_at <= datetime.now(UTC)):
             raise ProgressPublicationRejected("进度诊断 worker fence/lease 已失效")
-        frozen = await self.inputs(session, inputs.observation_id)
+        frozen = await self.consolidation_inputs(session, inputs.work_id)
         if (frozen != inputs or diagnostic["inputs_hash"] != canonical_hash(frozen)
                 or diagnostic["manifest_hash"] != frozen.manifest_hash or diagnostic["fence"] != fence):
             raise ProgressPublicationRejected("进度诊断冻结身份不一致")
         work.attempt_events = [*work.attempt_events, diagnostic]
 
+    async def consolidation_inputs(self, session, work_id) -> ConsolidationInputs:
+        work = await session.get(LoopProgressWork, work_id)
+        if work is None or work.consolidation_payload is None or canonical_hash(work.consolidation_payload) != work.consolidation_hash:
+            raise ProgressPublicationRejected("沉淀输入缺失或内容 hash 不一致")
+        return ConsolidationInputs.model_validate(work.consolidation_payload)
+
     async def publish(
         self,
         session: AsyncSession,
-        observation_id: str,
+        work_id: str,
         fence: int,
         document: TaskProgressDocument,
         contribution: RoundContribution,
     ) -> LoopTaskProgress:
-        work_identity = await session.get(LoopProgressWork, observation_id)
+        work_identity = await session.get(LoopProgressWork, work_id)
         if work_identity is None:
             raise ProgressPublicationRejected("进度工作不存在")
         await session.get(AgentLoop, work_identity.loop_id, with_for_update=True)
@@ -181,13 +185,13 @@ class TaskProgressRepository:
         )
         work = await session.get(
             LoopProgressWork,
-            observation_id,
+            work_id,
             with_for_update=True,
             populate_existing=True,
         )
         existing = await session.scalar(
             select(LoopTaskProgress).where(
-                LoopTaskProgress.observation_id == observation_id
+                LoopTaskProgress.work_id == work_id
             )
         )
         if existing is not None:
@@ -199,14 +203,16 @@ class TaskProgressRepository:
             or work.lease_expires_at <= datetime.now(UTC)
         ):
             raise ProgressPublicationRejected("进度 worker fence/lease 已失效")
-        inputs = await self.inputs(session, observation_id)
-        observation = await session.get(LoopObservation, observation_id)
-        if observation is None or observation.envelope_hash != inputs.observation_hash:
-            raise ProgressPublicationRejected("基础 Observation 被改写")
+        inputs = await self.consolidation_inputs(session, work_id)
+        if inputs.origin_observation_id is not None:
+            observation = await session.get(LoopObservation, inputs.origin_observation_id)
+            if observation is None or observation.envelope_hash != inputs.origin_observation_hash:
+                raise ProgressPublicationRejected("基础 Observation 被改写")
         if (
             head is None
             or head.progress_id != inputs.previous_progress_id
-            or contribution.round_id != inputs.round_id
+            or contribution.work_id != inputs.work_id
+            or contribution.round_id != inputs.origin_round_id
         ):
             raise ProgressPublicationRejected("进度前序 CAS 或 Round 归属失效")
         previous = await session.get(LoopTaskProgress, head.progress_id)
@@ -224,7 +230,7 @@ class TaskProgressRepository:
             source_assessments=contribution.source_assessments,
         )
         expected, expected_contribution = TaskProgressConsolidator().apply(
-            inputs, candidate, observation.envelope.get("mission") or {}
+            inputs, candidate, inputs.mission
         )
         if document != expected or contribution != expected_contribution:
             raise ProgressPublicationRejected("候选正文或贡献不符合冻结来源验证")
@@ -232,7 +238,8 @@ class TaskProgressRepository:
             progress_id=uuid.uuid4().hex,
             loop_id=work.loop_id,
             generation=previous.generation + 1,
-            observation_id=observation_id,
+            observation_id=inputs.origin_observation_id,
+            work_id=work_id,
             previous_progress_id=previous.progress_id,
             document=document.model_dump(mode="json"),
             content_hash=canonical_hash(document),

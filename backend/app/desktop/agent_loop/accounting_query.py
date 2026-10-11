@@ -2,7 +2,8 @@
 
 输入为只读事务及 Loop identity；输出为实际 Round、legacy 轮、结算待清理数量、预留和未知消费、问候 baseline。
 具体工作流为仅连接可信 Run/attempt/activation 及冻结任务记忆 work 身份读取事实，初始 Run 计数缺失时回读其精确 audit，
-区分已报告实际消费、未报告预留和失去活动 owner 的未知消费；不按 task_id 猜测历史后代，不修改冻结历史或预算余额。
+区分已报告实际消费、未报告预留和失去活动 owner 的未知消费；认知 owner 按所属 Round 和精确 Observation 读取，不以最新轮排除旧轮执行。
+不按 task_id 猜测历史后代，不修改冻结历史或预算余额。
 示例：view = await LoopAccountingQuery().read(session, loop.loop_id)，同一快照可用于 API 与 Live overlay。
 round_history 只读保存各轮冻结身份与实际执行是否缺少 Patrol Decision；待观察轮没有执行时不误报历史违约。
 """
@@ -37,7 +38,8 @@ class LoopAccountingQuery:
         loop = await session.get(AgentLoop, loop_id)
         active_owners = await self._active_model_owners(session, loop)
         index_unknown = [row for row in index_pending if (row.actual_usage or {}).get("receipt_state") == "unknown"
-            or ((row.actual_usage or {}).get("owner_kind"), (row.actual_usage or {}).get("owner_id")) not in active_owners]
+            or ((row.actual_usage or {}).get("owner_kind"), (row.actual_usage or {}).get("owner_id"),
+                (row.actual_usage or {}).get("observation_id")) not in active_owners]
         memory_work = tuple((await session.scalars(select(LoopProgressWork).where(LoopProgressWork.loop_id == loop_id))).all())
         memory_unreported = [{"model_calls": int(item.get("reserved_calls") or 0),
             "input_tokens": int(item.get("estimated_input_tokens") or 0),
@@ -98,12 +100,15 @@ class LoopAccountingQuery:
         owners = set()
         for kind, model, identity in (("patrol", LoopPatrolAttempt, LoopPatrolAttempt.patrol_attempt_id),
                 ("worker", LoopWorkerRequest, LoopWorkerRequest.worker_request_id)):
-            ids = await session.scalars(select(identity).where(model.loop_id == loop.loop_id,
-                model.round_id == loop.current_round_id, model.status == "running"))
-            owners.update((kind, value) for value in ids)
-        current = await session.get(LoopRound, loop.current_round_id) if loop.current_round_id else None
-        if current is not None and current.observation_id and current.status not in {"settled", "error", "superseded"}:
-            owners.add(("round", current.round_id))
+            rows = await session.execute(select(identity, model.observation_id).join(LoopRound,
+                LoopRound.round_id == model.round_id).where(model.loop_id == loop.loop_id,
+                model.status == "running", model.observation_id == LoopRound.observation_id,
+                LoopRound.status.not_in(("settled", "error", "superseded"))))
+            owners.update((kind, identity, observation_id) for identity, observation_id in rows)
+        rounds = await session.scalars(select(LoopRound).where(LoopRound.loop_id == loop.loop_id,
+            LoopRound.observation_id.is_not(None), LoopRound.decision_id.is_(None),
+            LoopRound.status.not_in(("settled", "error", "superseded"))))
+        owners.update(("round", current.round_id, current.observation_id) for current in rounds)
         return owners
 
     @staticmethod

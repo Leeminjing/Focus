@@ -25,7 +25,7 @@ from config_helpers import app_config_for
 from focus.runtime.runs.usage import ModelUsage
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from loop_run_boundary_support import start_loop_run
+from loop_run_boundary_support import start_loop_run, freeze_patrol_intent
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -73,7 +73,7 @@ from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import 
     PortfolioIndexCatalog,
     RetrievalBudget,
 )
-from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
+from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
 from backend.app.desktop.agent_loop.expansion_resource_policy import (
     ExpansionResourcePolicy,
     resolve_expansion_resources,
@@ -422,6 +422,7 @@ def test_real_worker_negative_planning_preserves_portfolio(
                 loop_id=seeded["loop_id"],
                 round_id=seeded["round_id"],
                 kind="lane_curator",
+                observation_id=observation.observation_id, observation_generation=observation.generation,
                 scope={"derivation_input": {
                     "portfolio_index_catalog": catalog.model_dump(mode="json"),
                     "frozen_expansion_resources": frozen.model_dump(mode="json"),
@@ -1136,7 +1137,7 @@ def test_stale_source_supersedes_compiled_expansion_before_authorization(
                     select(LoopContextMembership).where(LoopContextMembership.loop_id == seeded["loop_id"])
                 )).all()))
             assert result.status == "superseded"
-            assert result.reason == ("mission_revision_changed" if stale_boundary == "mission" else "frontier_changed")
+            assert result.reason == ("round_terminated" if stale_boundary == "mission" else "frontier_changed")
             assert expansion.state == "superseded"
             assert expansion.safe_summary == result.reason
             assert membership_count == 1
@@ -1147,7 +1148,7 @@ def test_stale_source_supersedes_compiled_expansion_before_authorization(
     asyncio.run(run())
 
 
-def test_compiler_blocker_settles_round_and_terminal_history_prevents_retry(tmp_path: Path, monkeypatch) -> None:
+def test_compiler_blocker_keeps_undecided_round_and_terminal_history_prevents_retry(tmp_path: Path, monkeypatch) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -1184,12 +1185,8 @@ def test_compiler_blocker_settles_round_and_terminal_history_prevents_retry(tmp_
             assert opportunity.opportunity_id not in {item.opportunity_id for item in repeated.opportunities}
             assert any(item.code == "compiler_failed" for item in repeated.blockers)
 
-            claim = CoordinatorClaim(
-                lease_id=uuid.uuid4().hex,
-                loop_id=seeded["loop_id"],
-                round_id=seeded["round_id"],
-                fencing_token="1",
-            )
+            claim = await LoopCoordinator(sessions).claim_for_loop(seeded["loop_id"], "compiler-blocker")
+            assert claim is not None
             lifecycle = PatrolSessionLifecycle(sessions)
             patrol = await lifecycle.begin(claim)
             await lifecycle.transition(patrol.session_id, PatrolPhase.OBSERVING, PatrolActivity(summary="已冻结观察"))
@@ -1210,7 +1207,7 @@ def test_compiler_blocker_settles_round_and_terminal_history_prevents_retry(tmp_
             patrol_state = await lifecycle.get(patrol.session_id)
             assert expansion.state == "blocked"
             assert expansion.blocker_code == "compiler_failed"
-            assert round_row.status == "error"
+            assert round_row.status == "observed"
             assert loop.status == "waiting_user"
             assert "compiler_failed" in (loop.waiting_reason or "")
             assert patrol_state.phase == PatrolPhase.FAILED
@@ -1236,7 +1233,17 @@ def test_compiler_blocker_settles_round_and_terminal_history_prevents_retry(tmp_
 
 
 async def _grant_create_lane_and_add_active_run(sessions, seeded: dict) -> None:
+    from backend.app.desktop.agent_loop.models import LoopObservation
+    from backend.app.desktop.agent_loop.observation import observation_hash
+
+    seeded["observation_id"] = uuid.uuid4().hex
+    envelope = _expansion_observation(seeded)
     async with sessions.begin() as session:
+        session.add(LoopObservation(observation_id=envelope.observation_id, loop_id=seeded["loop_id"],
+            round_id=seeded["round_id"], generation=1, envelope=envelope.model_dump(mode="json"),
+            envelope_hash=observation_hash(envelope)))
+        await session.flush()
+        (await session.get(LoopRound, seeded["round_id"])).observation_id = envelope.observation_id
         grant = await session.scalar(
             select(LoopDelegationGrant).where(
                 LoopDelegationGrant.loop_id == seeded["loop_id"],
@@ -1390,6 +1397,9 @@ def _multi_source_expansion_observation(
     )
     return LoopObservationEnvelope.model_validate(
         {
+            "observation_id": seeded["observation_id"],
+            "decision_inputs_ref": seeded["observation_id"],
+            "generation": 1,
             "loop_id": seeded["loop_id"],
             "loop_revision": snapshot["revision"],
             "round_id": seeded["round_id"],
@@ -1631,6 +1641,9 @@ def _expansion_observation(seeded: dict, *, multi_domain: bool = False) -> LoopO
     )
     return LoopObservationEnvelope.model_validate(
         {
+            "observation_id": seeded["observation_id"],
+            "decision_inputs_ref": seeded["observation_id"],
+            "generation": 1,
             "loop_id": seeded["loop_id"],
             "loop_revision": snapshot["revision"],
             "round_id": seeded["round_id"],
@@ -1849,7 +1862,7 @@ async def _create_lane_intent(
     async with sessions() as session:
         round_row = await session.get(LoopRound, seeded["round_id"])
     snapshot = seeded["snapshot"]
-    return PatrolDecisionIntent(
+    return await freeze_patrol_intent(sessions, PatrolDecisionIntent(
         decision_id=uuid.uuid4().hex,
         idempotency_key=f"create-{workspace_mode}-{uuid.uuid4().hex}",
         loop_id=seeded["loop_id"],
@@ -1869,4 +1882,4 @@ async def _create_lane_intent(
                 "message": "Verify the active source independently.",
             },
         ),
-    )
+    ))

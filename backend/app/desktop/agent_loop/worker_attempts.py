@@ -1,7 +1,7 @@
 """本文件对外提供 WorkerAttemptAuthority 与 WorkerAttemptRejected。
 
 输入为事务、持久 Worker 和领取身份；输出为已锁定且获当前授权的 Loop/Worker，或明确过期错误。
-具体工作流为按 Loop→Worker 顺序加锁，核对 Round、控制/Mission 版本及唯一 retry_identity；
+具体工作流为按 Loop→Worker 顺序加锁，核对所属 Round 授权、Observation 版本及唯一 retry_identity；较新轮与 Mission 不单独撤销已提交旧轮工作。
 领取时产生唯一身份，写回时追加该尝试历史，模型消费与结果提交共用资格检查。
 示例：loop, worker = await WorkerAttemptAuthority().require_current(session, request)。
 """
@@ -11,7 +11,7 @@ import uuid
 
 from sqlalchemy import select
 
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopRound, LoopWorkerRequest
+from backend.app.desktop.agent_loop.models import AgentLoop, LoopDecision, LoopDelegationGrant, LoopObservation, LoopRound, LoopWorkerRequest
 
 
 class WorkerAttemptRejected(ValueError):
@@ -31,13 +31,26 @@ class WorkerAttemptAuthority:
 
     async def require_authorized(self, session, loop, row):
         round_row = await session.get(LoopRound, row.round_id)
-        if (loop.status != "running" or loop.current_round_id != row.round_id
+        if (loop.status != "running"
             or round_row is None or round_row.loop_id != loop.loop_id
             or round_row.status in {"settled", "superseded", "error"}
-            or (round_row.authority_revision, round_row.goal_revision) != (loop.authority_revision, loop.goal_revision)
+            or round_row.authority_revision != loop.authority_revision
             or row.scope.get("execution_authority_revision", loop.authority_revision) != loop.authority_revision
-            or row.scope.get("execution_goal_revision", loop.goal_revision) != loop.goal_revision):
+            or row.scope.get("execution_goal_revision", round_row.goal_revision) != round_row.goal_revision):
             raise WorkerAttemptRejected("Worker Round 或控制身份已过期")
+        if row.observation_id and row.observation_id != round_row.observation_id:
+            raise WorkerAttemptRejected("Worker Observation 已被替换")
+        if row.observation_id:
+            observation = await session.get(LoopObservation, row.observation_id)
+            if observation is None or row.observation_generation != observation.generation:
+                raise WorkerAttemptRejected("Worker Observation generation 不匹配")
+        if round_row.decision_id:
+            decision = await session.get(LoopDecision, round_row.decision_id)
+            if (decision is None or decision.authority_committed_at is None
+                    or (decision.loop_id, decision.round_id) != (loop.loop_id, row.round_id)):
+                raise WorkerAttemptRejected("Worker 所属 Round 缺少成功权威提交")
+        if not round_row.decision_id and row.observation_id is None and round_row.observation_id is not None:
+            raise WorkerAttemptRejected("认知 Worker 缺少 Observation 绑定")
         grant = await session.scalar(select(LoopDelegationGrant).where(
             LoopDelegationGrant.loop_id == loop.loop_id,
             LoopDelegationGrant.revision == loop.authority_revision,
@@ -47,11 +60,11 @@ class WorkerAttemptAuthority:
         return grant
 
     @staticmethod
-    def claim(loop, row):
+    def claim(loop, row, *, goal_revision=None):
         row.status = "running"
         row.retry_identity = f"worker:{row.worker_request_id}:attempt:{row.attempt}:{uuid.uuid4().hex}"
         row.scope = {**row.scope, "execution_authority_revision": loop.authority_revision,
-                     "execution_goal_revision": loop.goal_revision}
+                     "execution_goal_revision": goal_revision if goal_revision is not None else loop.goal_revision}
 
     @staticmethod
     def archive(row, status, result):

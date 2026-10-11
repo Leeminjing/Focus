@@ -42,12 +42,20 @@ pytestmark = pytest.mark.usefixtures("runtime_postgres_database")
 
 async def authorize_message(sessions, fixture, claim, intent_id):
     observation = await LoopObservationService(sessions, _Checkpointer()).capture(fixture["loop_id"], claim.round_id)
+    from backend.app.desktop.agent_loop.schemas import ContextPermission
+
+    async with sessions() as session:
+        loop = await session.get(AgentLoop, fixture["loop_id"])
+        permissions = tuple([ContextPermission(context_id=item["context_id"], access_mode=(
+            await resolve_context_equipment(session, loop, item["context_id"]))["access_mode"])
+            for item in observation.portfolio_frontier])
 
     async def model(frozen):
         return PatrolDecisionIntent(decision_id=uuid.uuid4().hex, idempotency_key=f"user-decision:{claim.round_id}",
             loop_id=frozen.loop_id, loop_revision=frozen.loop_revision, round_id=frozen.round_id,
             holder_id=frozen.grant["holder_id"], grant_id=frozen.grant["grant_id"], grant_revision=frozen.grant["revision"],
             goal_revision=frozen.goal_revision, fencing_token=claim.fencing_token,
+            context_permissions=permissions,
             observed_frontier_hash=frozen.observed_frontier_hash, observed_workspace_revision=frozen.workspace["revision"],
             observed_projection_sequence=frozen.projection_sequence, base_entity_revisions=frozen.base_entity_revisions,
             rationale="交付冻结用户原文", actions=({"action": "deliver_user_message", "intent_id": intent_id},))

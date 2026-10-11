@@ -40,7 +40,6 @@ from backend.app.desktop.agent_loop.models import (
     LoopEventOutbox,
     LoopRound,
 )
-from backend.app.desktop.agent_loop.ownership import LoopFencingGuard
 from backend.app.desktop.agent_loop.portfolio_events import (
     ContextPublicationEventRecorder,
     PortfolioPublicationEventRecorder,
@@ -132,14 +131,14 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
         revisions: tuple[ContextRevisionRef, ...],
         controls: PortfolioControlRevisions,
     ) -> None:
-        decision = await session.get(LoopDecision, self._decision_id, with_for_update=True)
+        decision = await session.get(LoopDecision, self._decision_id)
         if decision is None or decision.status not in {"publishing", "publishing_run"}:
             raise PortfolioSuperseded("Loop decision 已失效")
-        if decision.fencing_token:
-            await LoopFencingGuard().validate_current(session, decision.round_id, decision.fencing_token)
         loop = await session.get(AgentLoop, decision.loop_id, with_for_update=True)
         round_row = await session.get(LoopRound, decision.round_id, with_for_update=True)
-        if loop is None or round_row is None or round_row.decision_id != decision.decision_id:
+        decision = await session.get(LoopDecision, self._decision_id, with_for_update=True, populate_existing=True)
+        if (loop is None or round_row is None or round_row.decision_id != decision.decision_id
+                or decision.authority_committed_at is None or decision.status not in {"publishing", "publishing_run"}):
             raise PortfolioSuperseded("Loop/round authority identity 已变化")
         grant = await session.scalar(
             select(LoopDelegationGrant)
@@ -164,6 +163,8 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
         intent = decision.intent
         for action_row, raw_action in zip(actions, intent["actions"]):
             parsed = PATROL_ACTION_ADAPTER.validate_python(raw_action)
+            if parsed.action in {"apply_user_inputs", "cancel_execution"} and action_row.status == "applied":
+                continue
             if parsed.action in _LANE_MUTATIONS:
                 await self._commit_lane(session, loop, round_row, grant, decision, action_row, parsed, by_lane)
             elif parsed.action == "continue_context":
@@ -229,9 +230,11 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
     async def _validate_authority(session, loop, round_row, grant, controls) -> None:
         if loop.status != "running" or grant is None or grant.status != "active":
             raise PortfolioSuperseded("Loop delegation 已撤销")
-        if loop.revision != controls.loop_revision or grant.revision != controls.grant_revision:
+        if round_row.status in {"settled", "error", "superseded"}:
+            raise PortfolioSuperseded("所属 Round 已终止")
+        if grant.revision != controls.grant_revision:
             raise PortfolioSuperseded("Loop/grant revision 已变化")
-        if round_row.authority_revision != grant.revision or round_row.goal_revision != loop.goal_revision:
+        if round_row.authority_revision != grant.revision:
             raise PortfolioSuperseded("round authority/goal revision 已变化")
         slot = await session.scalar(
             select(WorkspaceSlot)
@@ -349,7 +352,7 @@ class LoopPortfolioAuthorityHook(PortfolioAuthorityCommitHook):
             actor_id=loop.holder_id,
             grant_id=grant.grant_id,
             grant_revision=grant.revision,
-            goal_revision=loop.goal_revision,
+            goal_revision=round_row.goal_revision,
             idempotency_key=f"{decision.idempotency_key}:directive:{action_row.position}",
         )
         session.add_all([directive, provenance])
@@ -441,9 +444,14 @@ class LoopPortfolioPublicationService:
 
     async def _build(self, decision_id: str):
         async with self._sessions.begin() as session:
-            decision = await session.get(LoopDecision, decision_id, with_for_update=True)
+            decision = await session.get(LoopDecision, decision_id)
             if decision is None:
                 raise PortfolioSuperseded("Loop decision 不存在")
+            loop = await session.get(AgentLoop, decision.loop_id, with_for_update=True)
+            round_row = await session.get(LoopRound, decision.round_id, with_for_update=True)
+            decision = await session.get(LoopDecision, decision_id, with_for_update=True, populate_existing=True)
+            if (round_row is None or round_row.decision_id != decision_id or decision.authority_committed_at is None):
+                raise PortfolioSuperseded("Loop publication 缺少所属 Round 成功授权")
             actions = list(
                 (
                     await session.scalars(
@@ -468,8 +476,6 @@ class LoopPortfolioPublicationService:
                 return None, {}, existing_id
             if decision.status not in {"publishing", "publishing_run"}:
                 raise PortfolioSuperseded("Loop decision 不处于 publishing")
-            loop = await session.get(AgentLoop, decision.loop_id, with_for_update=True)
-            round_row = await session.get(LoopRound, decision.round_id, with_for_update=True)
             program = await session.get(CurationProgram, loop.program_id, with_for_update=True) if loop else None
             if loop is None or round_row is None or program is None:
                 raise PortfolioSuperseded("Loop publication identity 不完整")

@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.desktop.agent_loop.directive_causality import DirectiveCausalityRecorder
 from backend.app.desktop.agent_loop.directive_lifecycle import DirectiveLifecycleRepository
 from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopDirective, LoopUserIntent
+from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopDirective, LoopUserIntent, LoopRound
 from backend.app.desktop.agent_loop.run_activity_bridge import LoopRunActivityBridge
 from backend.app.desktop.agent_loop.user_run_events import LoopUserRunEventRecorder
 from backend.app.desktop.models import DesktopRun, DesktopThread
@@ -94,8 +94,11 @@ class LoopRunExecutionBoundary:
         if run is None or run.loop_id is None or run.status not in {"pending", "running"}:
             raise LookupError("Loop Run 执行身份已失效")
         loop = await session.get(AgentLoop, run.loop_id, with_for_update=lock)
+        round_row = await session.get(LoopRound, run.round_id, with_for_update=lock)
+        if round_row is None or round_row.loop_id != run.loop_id or round_row.status in {"settled", "error", "superseded"}:
+            raise LookupError("Run Round 已终止")
         task = await session.get(DesktopThread, run.task_id, with_for_update=lock)
-        if loop is None or loop.status != "running" or task is None or loop.current_round_id != run.round_id:
+        if loop is None or loop.status != "running" or task is None:
             raise LookupError("Loop 或 Context 已停止")
         if run.context_revision_id != task.current_revision_id:
             raise LookupError("Loop Run 目标 Context revision 已变化")
@@ -130,7 +133,7 @@ class LoopRunExecutionBoundary:
             if (
                 grant is None or grant.status != "active" or grant.loop_id != loop.loop_id
                 or grant.revision != directive.grant_revision or loop.authority_revision != directive.grant_revision
-                or loop.goal_revision != directive.goal_revision
+                or round_row.goal_revision != directive.goal_revision
                 or run.context_revision_id != directive.target_context_revision_id
                 or task.current_revision_id != directive.target_context_revision_id
                 or (grant.expires_at is not None and grant.expires_at <= datetime.now(UTC))

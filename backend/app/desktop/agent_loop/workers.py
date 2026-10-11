@@ -165,6 +165,17 @@ class LoopWorkerRuntime:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
 
+    async def cancel_requests(self, request_ids, *, timeout: float = 0.1) -> bool:
+        identities = set(request_ids)
+        tasks = tuple(task for identity, task in self._tasks.items()
+                      if any(identity.startswith(f"worker:{request_id}:attempt:") for request_id in identities))
+        for task in tasks:
+            if not task.cancelling():
+                task.cancel()
+        pending = (await asyncio.wait(tasks, timeout=timeout))[1] if tasks else ()
+        self._reap()
+        return not pending
+
     async def _run_one(self, request: LoopWorkerRequest) -> None:
         usage_receipts = WorkerModelUsage(self._sessions, request)
         try:
@@ -255,7 +266,7 @@ class LoopWorkerRuntime:
                 if loop is None or loop.status != "running":
                     continue
                 candidates = await session.scalars(select(LoopWorkerRequest).where(
-                    LoopWorkerRequest.loop_id == loop.loop_id, LoopWorkerRequest.round_id == loop.current_round_id,
+                    LoopWorkerRequest.loop_id == loop.loop_id,
                     LoopWorkerRequest.status == "pending", LoopWorkerRequest.attempt <= LoopWorkerRequest.max_attempts)
                     .order_by(LoopWorkerRequest.created_at).with_for_update(skip_locked=True).limit(limit - len(rows)))
                 for row in candidates:
@@ -263,7 +274,8 @@ class LoopWorkerRuntime:
                         await WorkerAttemptAuthority().require_authorized(session, loop, row)
                     except WorkerAttemptRejected:
                         continue
-                    WorkerAttemptAuthority.claim(loop, row)
+                    round_row = await session.get(LoopRound, row.round_id)
+                    WorkerAttemptAuthority.claim(loop, row, goal_revision=round_row.goal_revision)
                     rows.append(row)
                 if len(rows) >= limit:
                     break
@@ -583,12 +595,12 @@ class LoopWorkerRuntime:
         return receipts
 
     async def _settle_late_usage(self, request, receipts):
-        if not receipts.has_pending:
-            return
         async with self._sessions.begin() as session:
             await session.get(AgentLoop, request.loop_id, with_for_update=True)
-            await session.get(LoopWorkerRequest, request.worker_request_id, with_for_update=True)
+            row = await session.get(LoopWorkerRequest, request.worker_request_id, with_for_update=True)
             await receipts.flush_pending(session)
+            if row and row.retry_identity == request.retry_identity and row.status in {"superseded", "cancelled"}:
+                row.completed_at = datetime.now(UTC)
 
     async def _evidence(self, request: LoopWorkerRequest) -> tuple[dict[str, Any], AgentLoop, LoopRound]:
         async with self._sessions() as session:
@@ -607,7 +619,8 @@ class LoopWorkerRuntime:
                     LoopObservationEnvelope,
                 )
 
-                base = await session.get(LoopObservation, frozen_ref) if frozen_ref else await session.scalar(select(LoopObservation).where(LoopObservation.round_id == request.round_id, LoopObservation.loop_id == loop.loop_id))
+                observation_id = frozen_ref or request.observation_id or round_row.observation_id
+                base = await session.get(LoopObservation, observation_id) if observation_id else None
                 if frozen_ref and (base is None or base.loop_id != loop.loop_id or base.round_id != request.round_id):
                     raise ValueError("Curator 冻结 Observation 归属不一致")
                 if base is not None and base.envelope.get("input_schema_version") == 1:
@@ -619,8 +632,8 @@ class LoopWorkerRuntime:
                     scope = {**request.scope, "derivation_input": {**derivation, **memory}}
                     payload = {**memory, "mission": envelope.mission, "scope": scope, "frontier_hash": envelope.observed_frontier_hash, "workspace": envelope.workspace, "run_evidence": memory["stable_results"]}
                     return payload, loop, round_row
-            mission = await session.scalar(select(LoopMissionRevision).where(LoopMissionRevision.loop_id == loop.loop_id, LoopMissionRevision.revision == loop.goal_revision))
-            goal = None if mission is not None else await session.scalar(select(LoopGoalRevision).where(LoopGoalRevision.loop_id == loop.loop_id, LoopGoalRevision.revision == loop.goal_revision))
+            mission = await session.scalar(select(LoopMissionRevision).where(LoopMissionRevision.loop_id == loop.loop_id, LoopMissionRevision.revision == round_row.goal_revision))
+            goal = None if mission is not None else await session.scalar(select(LoopGoalRevision).where(LoopGoalRevision.loop_id == loop.loop_id, LoopGoalRevision.revision == round_row.goal_revision))
             if mission is None and goal is None:
                 raise LookupError("Worker 所属 Loop 缺少当前 Mission")
             mission_payload = EffectiveMissionProjector.from_rows(structured=mission, legacy=goal).model_payload()
@@ -652,7 +665,7 @@ class LoopWorkerRuntime:
                 return
             loop = await session.get(AgentLoop, loop_id, with_for_update=True, populate_existing=True)
             current = await session.get(LoopRound, round_id, with_for_update=True, populate_existing=True)
-            if loop is None or current is None or loop.status != "running" or loop.current_round_id != round_id:
+            if loop is None or current is None or loop.status != "running":
                 return
             curator_count = int(
                 await session.scalar(
@@ -706,6 +719,9 @@ class LoopWorkerRuntime:
             except WorkerAttemptRejected:
                 if usage_receipts is not None:
                     await usage_receipts.flush_pending(session)
+                stale = await session.get(LoopWorkerRequest, request.worker_request_id, with_for_update=True)
+                if stale and stale.retry_identity == request.retry_identity and stale.status in {"superseded", "cancelled"}:
+                    stale.completed_at = datetime.now(UTC)
                 return
             if usage_receipts is not None:
                 await usage_receipts.flush_pending(session)
@@ -741,9 +757,10 @@ class LoopWorkerRuntime:
             row = await session.get(LoopWorkerRequest, request.worker_request_id, with_for_update=True)
             if usage_receipts is not None:
                 await usage_receipts.flush_pending(session)
-            if row is not None and row.status == "running" and request.retry_identity and row.retry_identity == request.retry_identity:
+            if row is not None and row.status in {"running", "superseded", "cancelled"} and request.retry_identity and row.retry_identity == request.retry_identity:
                 WorkerAttemptAuthority.archive(row, "cancelled", {"reason": reason})
-                row.status = "cancelled"
+                if row.status == "running":
+                    row.status = "cancelled"
                 row.result = {"reason": reason}
                 row.completed_at = datetime.now(UTC)
                 assignment = await self._curator_assignments.by_worker(session, row.worker_request_id, lock=True)

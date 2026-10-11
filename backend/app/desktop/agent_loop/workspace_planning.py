@@ -156,9 +156,9 @@ class WorkspaceRunPlanner:
             loop = await session.get(AgentLoop, loop_id)
             round_row = await session.get(LoopRound, round_id)
             current = await session.get(WorkspaceSlot, slot.slot_id)
-            if (loop is None or loop.status != "running" or loop.current_round_id != round_id
+            if (loop is None or loop.status != "running"
                     or round_row is None or round_row.status not in {"ready", "running"}
-                    or round_row.authority_revision != loop.authority_revision or round_row.goal_revision != loop.goal_revision
+                    or round_row.authority_revision != loop.authority_revision
                     or current is None or current.lifecycle != "active" or current.revision != slot.revision
                     or current.revision != round_row.workspace_revision or current.current_fingerprint != baseline.digest):
                 return False

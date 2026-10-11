@@ -1,6 +1,6 @@
 """本文件对外提供 LoopObservationService 与 PatrolReadRequest 的冻结世界和精确读取端口。
 
-输入为持久 Loop/Round 和已定位不可变 Context 内容；输出为不可变基础 Observation、三项冻结输入和工作登记，或 ObservationCaptureSuperseded。
+输入为持久 Loop/Round、可选新用户输入与精确 Context 内容；输出为不可变版本、三项冻结输入和因果历史，或 ObservationCaptureSuperseded。
 具体工作流为事务外准备精确内容，再于一致短事务冻结前序进度、当前世界及真实血缘并发布该 Round 的规范状态；selective_read 仅接受冻结 handles。
 新冻结在锁定 Loop/Round 后重验活动状态与授权版本，停止、撤销、过期或已终结的轮次不登记记忆；已冻结记录仍可恢复读取。
 示例：await service.capture(loop_id, round_id)。认知产物通过独立 decision_context 装配，不改写基础观察。
@@ -11,6 +11,8 @@ Worker 认知读取复用冻结基础及持久补充来源，精确分页核验�
 工作区 Git 状态在事务外读取，冻结时重验 slot 版本；原 workspace 投影同时提供隔离授权、slot 和 adoption
 事实，stable_results 包含执行 slot 锚点，供 Patrol 判断阶段与显式串行采用，不修改物理仓库。
 workspace 输入按完整有界集合冻结，未处置和显式延后来源进入后继；同工作区终态 predecessor 输入保留原身份。补充卡片和已受理答案独立冻结，迟到输入不归旧轮处置。
+输入事务通过 prepare_views、prepare_state、freeze_version 复用同一证据读取器；冻结不登记沉淀任务，成功授权另行登记。
+workspace 输入的 introduced identity 固定原 Oi，observed_round_id 跟随当前处置轮；deferred 跨轮重新观察而不改写原因果。
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -54,7 +56,7 @@ from backend.app.desktop.agent_loop.observation import (
 )
 from backend.app.desktop.agent_loop.rounds import TERMINAL_ROUND_STATUSES
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
-from backend.app.desktop.agent_loop.patrol_read_view import PatrolReadView, PatrolWorkerReadRequest
+from backend.app.desktop.agent_loop.patrol_read_view import PatrolReadView, PatrolWorkerReadRequest, PatrolCausalReadRequest
 from backend.app.desktop.agent_loop.task_progress.baseline import legacy_baseline
 from backend.app.desktop.agent_loop.task_progress.consolidation import initial_progress
 from backend.app.desktop.agent_loop.task_progress.contracts import (
@@ -108,18 +110,18 @@ class LoopObservationService:
     async def capture(self, loop_id: str, round_id: str) -> LoopObservationEnvelope:
         for attempt in range(3):
             async with self._sessions() as session:
-                existing = await session.scalar(
-                    select(LoopObservation).where(
-                        LoopObservation.round_id == round_id,
-                        LoopObservation.loop_id == loop_id,
-                    )
-                )
-                if existing is not None:
+                round_row = await session.get(LoopRound, round_id)
+                if round_row is None or round_row.loop_id != loop_id:
+                    raise LookupError("Loop 或 round 不存在")
+                existing = await session.get(LoopObservation, round_row.observation_id) if round_row.observation_id else None
+                refresh = existing is not None and await self._bootstrap_changed(session, existing)
+                if existing is not None and not refresh:
                     return LoopObservationEnvelope.model_validate(existing.envelope)
-                await self._progress.require_ready(session, loop_id)
+                if round_row.trigger_kind != "user_input":
+                    await self._progress.require_ready(session, loop_id)
             views = await self._prepare_views(loop_id)
             try:
-                return await self._capture_once(loop_id, round_id, views)
+                return await self._capture_once(loop_id, round_id, views, refresh_id=existing.observation_id if refresh else None)
             except _PreparedViewsChanged:
                 if attempt == 2:
                     raise
@@ -132,8 +134,28 @@ class LoopObservationService:
             await asyncio.sleep(0.02 * (attempt + 1))
         raise RuntimeError("Observation 冻结重试耗尽")
 
+    async def refresh(self, loop_id: str, round_id: str) -> LoopObservationEnvelope:
+        for attempt in range(3):
+            async with self._sessions() as session:
+                round_row = await session.get(LoopRound, round_id)
+                if round_row is None or round_row.loop_id != loop_id or round_row.decision_id:
+                    raise ObservationCaptureSuperseded("observation_authority_superseded")
+                identity = round_row.observation_id
+            views = await self._prepare_views(loop_id)
+            try:
+                return await self._capture_once(loop_id, round_id, views, refresh_id=identity)
+            except _PreparedViewsChanged:
+                if attempt == 2:
+                    raise
+            except DBAPIError as exc:
+                state = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+                if state not in {"40001", "40P01"} or attempt == 2:
+                    raise
+            await asyncio.sleep(0.02 * (attempt + 1))
+        raise RuntimeError("Observation 更新重试耗尽")
+
     async def _capture_once(
-        self, loop_id: str, round_id: str, views: dict
+        self, loop_id: str, round_id: str, views: dict, *, refresh_id=None
     ) -> LoopObservationEnvelope:
         async with self._sessions.begin() as session:
             await session.connection(
@@ -143,11 +165,12 @@ class LoopObservationService:
             round_row = await session.get(LoopRound, round_id, with_for_update=True)
             if loop is None or round_row is None or round_row.loop_id != loop_id:
                 raise LookupError("Loop 或 round 不存在")
-            existing = await session.scalar(
-                select(LoopObservation).where(LoopObservation.round_id == round_id)
-            )
-            if existing is not None:
+            existing = await session.get(LoopObservation, round_row.observation_id) if round_row.observation_id else None
+            if existing is not None and existing.observation_id != refresh_id:
                 return LoopObservationEnvelope.model_validate(existing.envelope)
+            if refresh_id and round_row.decision_id is None:
+                round_row.authority_revision, round_row.goal_revision = loop.authority_revision, loop.goal_revision
+                round_row.status = "observed"
             if (
                 loop.status != "running"
                 or round_row.status in TERMINAL_ROUND_STATUSES
@@ -155,97 +178,204 @@ class LoopObservationService:
                 or round_row.goal_revision != loop.goal_revision
             ):
                 raise ObservationCaptureSuperseded("observation_authority_superseded")
-            await self._progress.require_ready(session, loop_id)
-            envelope = await self._build(session, loop, round_row, views)
-            observation_id = uuid.uuid4().hex
-            manifest = await self._sources.capture(
-                session, loop, boundary=observation_id
-            )
-            if not manifest.complete:
-                raise ValueError(manifest.blocker)
-            previous = await self._progress.current(session, loop_id)
-            if previous is None:
-                legacy = await session.scalar(
-                    select(LoopObservation.observation_id)
-                    .where(LoopObservation.loop_id == loop_id)
-                    .limit(1)
-                )
-                document = initial_progress(
-                    envelope.mission or {},
-                    loop.goal_revision,
-                    migration=legacy is not None,
-                )
-                baseline_keys = ()
-                if legacy is not None:
-                    document = legacy_baseline(
-                        envelope.mission or {}, loop.goal_revision, manifest
-                    )
-                    baseline_keys = tuple(
-                        source.source_key for source in manifest.sources
-                    )
-                previous = await self._progress.initialize(
-                    session, loop_id, document, source_keys=baseline_keys
-                )
-                if legacy is not None:
-                    manifest = manifest.model_copy(update={"sources": ()})
-            context_ids = tuple(
-                (
-                    await session.scalars(
-                        select(LoopContextMembership.context_id).where(
-                            LoopContextMembership.loop_id == loop_id
-                        )
-                    )
-                ).all()
-            )
-            roots = await self._lineage.published_roots(session, context_ids)
-            lineage = await self._lineage.snapshot(
-                session, roots, workspace_id=loop.workspace_id
-            )
-            envelope = envelope.model_copy(
-                update={
-                    "input_schema_version": 1,
-                    "decision_inputs_ref": observation_id,
-                    "previous_task_progress": previous.document,
-                    "task_delta": manifest.model_dump(mode="json"),
-                    "committed_lineage": lineage,
-                }
-            )
-            row = LoopObservation(
-                observation_id=observation_id,
-                loop_id=loop_id,
-                round_id=round_id,
-                envelope=envelope.model_dump(mode="json"),
-                envelope_hash=observation_hash(envelope),
-                projection_sequence=envelope.projection_sequence,
-                base_entity_revisions=envelope.base_entity_revisions,
-            )
-            session.add(row)
-            await session.flush()
-            inputs = RoundDecisionInputs(
-                round_id=round_id,
-                observation_id=observation_id,
-                observation_hash=row.envelope_hash,
-                previous_progress_id=previous.progress_id,
-                previous_progress_hash=previous.content_hash,
-                previous_progress=TaskProgressDocument.model_validate(
-                    previous.document
-                ),
-                task_delta=manifest,
-                manifest_hash=canonical_hash(manifest),
-                lineage=lineage,
-                topology_hash=lineage["topology_hash"],
-            )
-            await self._progress.freeze(session, loop_id, inputs)
-            round_row.observation_id = row.observation_id
-            from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
+            if round_row.trigger_kind != "user_input":
+                await self._progress.require_ready(session, loop_id)
+            if refresh_id:
+                from backend.app.desktop.agent_loop.rounds import current_frontier_hash
 
-            await RoundStateEventRecorder().record(session, round_row)
+                round_row.frontier_hash = await current_frontier_hash(session, loop_id) or round_row.frontier_hash
+                slot = await session.scalar(select(WorkspaceSlot).where(WorkspaceSlot.workspace_id == loop.workspace_id,
+                    WorkspaceSlot.kind == "authoritative", WorkspaceSlot.lifecycle == "active"))
+                if slot is not None:
+                    round_row.workspace_revision = slot.revision
+            envelope = await self.prepare_state(session, loop, round_row, views)
+            envelope = await self.freeze_version(session, loop, round_row, envelope)
+            from backend.app.desktop.agent_loop.models import LoopEventOutbox
+
+            preemption = await session.scalar(select(LoopEventOutbox.payload).where(
+                LoopEventOutbox.idempotency_key == f"cognition-preempted:{envelope.observation_id}"))
+        if preemption is not None:
+            from backend.app.desktop.agent_loop.cognition import notify_preemption
+
+            await notify_preemption(preemption)
+        return envelope
+
+    @staticmethod
+    async def _bootstrap_changed(session, observation):
+        round_row = await session.get(LoopRound, observation.round_id)
+        if round_row.decision_id is not None:
+            return False
+        for item in observation.envelope.get("portfolio_frontier", ()):
+            if item.get("revision_id") is None:
+                context = await session.get(DesktopThread, item["context_id"])
+                if context is not None and context.current_revision_id is not None:
+                    return True
+        return False
+
+    async def prepare_views(self, loop_id: str) -> dict:
+        return await self._prepare_views(loop_id)
+
+    async def prepare_state(self, session, loop, round_row, views, *, visible_context=None, intake=False):
+        envelope = await self._build(session, loop, round_row, views, intake=intake)
+        manifest = await self._sources.capture(session, loop, boundary=uuid.uuid4().hex)
+        if not manifest.complete:
+            raise ValueError(manifest.blocker)
+        previous = await self._progress.current(session, loop.loop_id)
+        if previous is None:
+            legacy = await session.scalar(
+                select(LoopObservation.observation_id)
+                .where(LoopObservation.loop_id == loop.loop_id)
+                .limit(1)
+            )
+            document = initial_progress(
+                envelope.mission or {},
+                loop.goal_revision,
+                migration=legacy is not None,
+            )
+            baseline_keys = ()
+            if legacy is not None:
+                document = legacy_baseline(
+                    envelope.mission or {}, loop.goal_revision, manifest
+                )
+                baseline_keys = tuple(
+                    source.source_key for source in manifest.sources
+                )
+            previous = await self._progress.initialize(
+                session, loop.loop_id, document, source_keys=baseline_keys
+            )
+            if legacy is not None:
+                manifest = manifest.model_copy(update={"sources": ()})
+        context_ids = tuple(
+            (
+                await session.scalars(
+                    select(LoopContextMembership.context_id).where(
+                        LoopContextMembership.loop_id == loop.loop_id
+                    )
+                )
+            ).all()
+        )
+        roots = await self._lineage.published_roots(session, context_ids)
+        lineage = await self._lineage.snapshot(
+            session, roots, workspace_id=loop.workspace_id
+        )
+        from backend.app.desktop.agent_loop.causal_snapshot import CausalSnapshotReader
+
+        intervention = await CausalSnapshotReader().capture(session, loop, visible_context)
+        envelope = envelope.model_copy(
+            update={
+                "input_schema_version": 1,
+                "decision_inputs_ref": manifest.boundary,
+                "previous_task_progress": previous.document,
+                "task_delta": manifest.model_dump(mode="json"),
+                "committed_lineage": lineage,
+                "intervention": intervention,
+            }
+        )
+        return envelope
+
+    async def freeze_version(self, session, loop, round_row, envelope, *, intent=None):
+        observation_id = uuid.uuid4().hex
+        prior_id = round_row.observation_id
+        generation = int(await session.scalar(select(func.max(LoopObservation.generation)).where(
+            LoopObservation.round_id == round_row.round_id)) or 0) + 1
+        previous = await self._progress.current(session, loop.loop_id)
+        if previous is None:
+            raise RuntimeError("Observation 缺少已发布 Task Progress")
+        pre_state = None
+        pre_hash = None
+        if intent is not None:
+            pre_state = envelope.model_dump(mode="json", exclude={"observation_id", "generation", "pre_input_state", "pre_input_hash", "causal_chain", "decision_inputs_ref"})
+            pre_hash = canonical_hash(pre_state)
+            intent.introduced_observation_id = observation_id
+            intent.introduced_generation = generation
+            intent.snapshot_hash = pre_hash
+            intent.observed_round_id = round_row.round_id
+            intent.request_payload = {**intent.request_payload, "accepted_sequence": envelope.projection_sequence,
+                "accepted_at": (intent.created_at or datetime.now(UTC)).isoformat()}
+        intents = await self._observe_intents(session, loop.loop_id, round_row.round_id, mark=True)
+        chain = await self._causal_chain(session, intents)
+        manifest = await self._sources.capture(session, loop, boundary=observation_id)
+        if not manifest.complete:
+            raise ValueError(manifest.blocker)
+        envelope = envelope.model_copy(update={"observation_id": observation_id, "generation": generation,
+            "decision_inputs_ref": observation_id, "pre_input_state": pre_state, "pre_input_hash": pre_hash,
+            "causal_chain": chain, "user_intents": tuple(self._intent_view(row) for row in intents),
+            "task_delta": manifest.model_dump(mode="json")})
+        lineage = envelope.committed_lineage
+        row = LoopObservation(
+            observation_id=observation_id,
+            loop_id=loop.loop_id,
+            round_id=round_row.round_id,
+            generation=generation,
+            envelope=envelope.model_dump(mode="json"),
+            envelope_hash=observation_hash(envelope),
+            projection_sequence=envelope.projection_sequence,
+            base_entity_revisions=envelope.base_entity_revisions,
+        )
+        session.add(row)
+        await session.flush()
+        inputs = RoundDecisionInputs(
+            round_id=round_row.round_id,
+            observation_id=observation_id,
+            observation_hash=row.envelope_hash,
+            previous_progress_id=previous.progress_id,
+            previous_progress_hash=previous.content_hash,
+            previous_progress=TaskProgressDocument.model_validate(
+                previous.document
+            ),
+            task_delta=manifest,
+            manifest_hash=canonical_hash(manifest),
+            lineage=lineage,
+            topology_hash=lineage["topology_hash"],
+        )
+        await self._progress.freeze(session, loop.loop_id, inputs)
+        round_row.observation_id = row.observation_id
+        round_row.barrier = {key: value for key, value in (round_row.barrier or {}).items() if key != "refresh_observation"}
+        if intent is not None or prior_id is not None:
+            from backend.app.desktop.agent_loop.cognition import preempt_observation
+
+            await preempt_observation(session, loop, round_row, prior_id, observation_id, generation)
+        from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
+        from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
+
+        await LoopEventJournal().append(session, loop.loop_id, CanonicalEventDraft(
+            kind="observation.frozen", entity_type="observation", entity_id=observation_id,
+            entity_revision=1, correlation_id=round_row.round_id,
+            payload={"observation_id": observation_id, "round_id": round_row.round_id,
+                     "generation": generation, "observation_hash": row.envelope_hash,
+                     "frozen_at": row.created_at.isoformat()},
+            idempotency_key=f"observation-frozen:{observation_id}"))
+        from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
+
+        await RoundStateEventRecorder().record(session, round_row)
+        if loop.status == "running" and loop.health != "preparing":
             loop.health = "deciding"
-            if loop.waiting_reason and loop.waiting_reason.startswith(
-                "progress_memory_"
-            ):
-                loop.waiting_reason = None
-            return envelope
+        if intent is None and loop.waiting_reason and loop.waiting_reason.startswith(
+            "progress_memory_"
+        ):
+            loop.waiting_reason = None
+        return envelope
+
+    @staticmethod
+    async def _causal_chain(session, intents):
+        return tuple({"intent_id": row.intent_id, "submission_id": row.request_payload.get("request", {}).get("submission_id"),
+            "origin_loop_id": row.loop_id,
+            "availability": "available" if row.introduced_observation_id else "legacy_unknown",
+            "observation_id": row.introduced_observation_id, "generation": row.introduced_generation,
+            "snapshot_hash": row.snapshot_hash, "accepted_at": row.request_payload.get("accepted_at"),
+            "accepted_sequence": row.request_payload.get("accepted_sequence"),
+            "input": {"content": row.content, **{key: row.request_payload.get("request", {}).get(key)
+                for key in ("input_type", "request_id", "request_revision")}}}
+            for row in sorted(intents, key=lambda row: (row.created_at, row.request_payload.get("accepted_sequence", -1), row.intent_id))
+            if row.intent_kind == "workspace_input")
+
+    @staticmethod
+    def _intent_view(row):
+        request = (row.request_payload or {}).get("request") or {}
+        return {"intent_id": row.intent_id, "intent_kind": row.intent_kind,
+            "request_hash": row.request_payload.get("request_hash"), "input_type": request.get("input_type"),
+            "request_id": request.get("request_id"), "scope": row.scope, "context_id": row.target_context_id,
+            "content": row.content, "goal_revision": row.goal_revision, "authority_revision": row.authority_revision}
 
     async def _prepare_views(self, loop_id: str) -> dict:
         views = {}
@@ -284,9 +414,9 @@ class LoopObservationService:
         return views
 
     async def _build(
-        self, session: AsyncSession, loop: AgentLoop, round_row: LoopRound, views: dict
+        self, session: AsyncSession, loop: AgentLoop, round_row: LoopRound, views: dict, *, intake=False
     ) -> LoopObservationEnvelope:
-        mission_contract, grant = await self._authority(session, loop)
+        mission_contract, grant = await self._authority(session, loop, allow_inactive=intake)
         memberships = list(
             (
                 await session.scalars(
@@ -299,11 +429,11 @@ class LoopObservationService:
                 )
             ).all()
         )
-        frontier = await self._frontier(session, memberships, views)
+        frontier = await self._frontier(session, loop, memberships, views)
         runs, pending, workers = await self._recent_activity(session, loop.loop_id)
         usage = await session.get(LoopBudgetUsage, loop.loop_id)
         user_intents = await self._observe_intents(
-            session, loop.loop_id, round_row.round_id
+            session, loop.loop_id, round_row.round_id, mark=False
         )
         slot = await session.scalar(
             select(WorkspaceSlot).where(
@@ -313,6 +443,8 @@ class LoopObservationService:
             )
         )
         prepared_workspace = views.get("workspace")
+        if intake and slot and prepared_workspace is None:
+            prepared_workspace = (slot.slot_id, slot.revision, slot.current_fingerprint, slot.base_revision, None)
         if slot and (not prepared_workspace or prepared_workspace[:3] !=
                      (slot.slot_id, slot.revision, slot.current_fingerprint)):
             raise _PreparedViewsChanged("工作区在准备后变化，重新冻结")
@@ -369,7 +501,8 @@ class LoopObservationService:
             mission=mission_contract,
             completion_admission=completion_admission,
             completion_eligibility=completion_eligibility,
-            grant=self._grant_view(grant),
+            grant={**self._grant_view(grant), "equipment": {
+                key: (loop.equipment or {}).get(key) for key in ("permissions", "access_mode")}},
             portfolio_frontier=frontier,
             stable_results=self._run_views(runs),
             workspace={
@@ -438,7 +571,7 @@ class LoopObservationService:
             recovery_waiting_reason=recovery.waiting_reason,
         )
 
-    async def _authority(self, session: AsyncSession, loop: AgentLoop):
+    async def _authority(self, session: AsyncSession, loop: AgentLoop, *, allow_inactive=False):
         mission = await session.scalar(
             select(LoopMissionRevision).where(
                 LoopMissionRevision.loop_id == loop.loop_id,
@@ -463,9 +596,9 @@ class LoopObservationService:
         )
         if mission is None and goal is None or grant is None:
             raise RuntimeError("Loop 缺少当前 Mission 或 grant")
-        if grant.status != "active" or (
+        if not allow_inactive and (grant.status != "active" or (
             grant.expires_at is not None and grant.expires_at <= datetime.now(UTC)
-        ):
+        )):
             raise ObservationCaptureSuperseded("observation_authority_superseded")
         mission_contract = EffectiveMissionProjector.from_rows(
             structured=mission, legacy=goal
@@ -508,7 +641,7 @@ class LoopObservationService:
         return runs, pending, workers
 
     async def _observe_intents(
-        self, session: AsyncSession, loop_id: str, round_id: str
+        self, session: AsyncSession, loop_id: str, round_id: str, *, mark=True
     ):
         loop = await session.get(AgentLoop, loop_id)
         workspace_mode = loop.interaction_mode == "workspace_patrol"
@@ -522,7 +655,7 @@ class LoopObservationService:
                         ((LoopUserIntent.status == "pending") | ((LoopUserIntent.intent_kind.in_(("direct_message", "workspace_input"))) &
                          (LoopUserIntent.status == "observed") & (LoopUserIntent.delivery_state == "observed"))),
                     )
-                    .order_by(LoopUserIntent.created_at)
+                    .order_by(LoopUserIntent.created_at, LoopUserIntent.intent_id)
                     .limit(4097 if workspace_mode else 32)
                 )
             ).all()
@@ -530,8 +663,11 @@ class LoopObservationService:
         if workspace_mode and len(user_intents) > 4096:
             raise ValueError("patrol_input_budget_exceeded: 待处理输入未完整冻结")
         for intent in user_intents:
+            if not mark:
+                continue
             intent.status = "observed"
-            intent.observed_round_id = round_id
+            if intent.intent_kind == "workspace_input" or intent.observed_round_id is None:
+                intent.observed_round_id = round_id
             if intent.delivery_state == "accepted":
                 await self._interventions.transition(
                     session, intent.intent_id, "observed"
@@ -586,6 +722,7 @@ class LoopObservationService:
     async def _frontier(
         self,
         session: AsyncSession,
+        loop: AgentLoop,
         memberships: list[LoopContextMembership],
         views: dict,
     ) -> tuple[dict[str, Any], ...]:
@@ -598,12 +735,22 @@ class LoopObservationService:
                 else None
             )
             messages = self._message_preview(views, revision.ref) if revision else ()
+            from backend.app.desktop.agent_loop.directive_equipment import resolve_context_equipment
+            from backend.app.desktop.context_curation.models import CurationLane
+
+            lane = await session.get(CurationLane, membership.lane_id) if membership.lane_id else None
+            try:
+                equipment = await resolve_context_equipment(session, loop, membership.context_id)
+            except ValueError:
+                equipment = {"permissions": [], "access_mode": "read-only"}
             result.append(
                 {
                     "membership_id": membership.membership_id,
                     "context_id": membership.context_id,
                     "lane_id": membership.lane_id,
                     "role": membership.role,
+                    "lane_policy": {"workspace_mode": (lane.lane_policy or {}).get("workspace_mode")} if lane else {},
+                    "equipment": {key: equipment.get(key) for key in ("permissions", "access_mode")},
                     "required_barrier": membership.required_barrier,
                     "revision": revision.ref.model_dump(mode="json")
                     if revision
@@ -641,7 +788,7 @@ class LoopObservationService:
     async def selective_read(
         self,
         observation: LoopObservationEnvelope,
-        requests: tuple[PatrolReadRequest | PatrolWorkerReadRequest, ...],
+        requests: tuple[PatrolReadRequest | PatrolWorkerReadRequest | PatrolCausalReadRequest, ...],
     ) -> tuple[dict[str, Any], ...]:
         allowed = {
             (str(item.get("context_id")), str(item.get("revision_id"))): item.get(
@@ -653,6 +800,16 @@ class LoopObservationService:
         results: list[dict[str, Any]] = []
         async with self._sessions() as session:
             for request in requests:
+                if isinstance(request, PatrolCausalReadRequest):
+                    from backend.app.desktop.agent_loop.causal_snapshot import read_causal_snapshot
+
+                    entry = next((item for item in observation.causal_chain
+                        if item["intent_id"] == request.intent_id and item["snapshot_hash"] == request.snapshot_hash), None)
+                    if entry is None:
+                        raise ValueError("Patrol 因果读取超出冻结 Observation handles")
+                    snapshot = await read_causal_snapshot(session, observation.loop_id, entry)
+                    results.append(PatrolReadView.causal_page(snapshot, request))
+                    continue
                 if isinstance(request, PatrolWorkerReadRequest):
                     results.append(await self._worker_page(session, observation, request))
                     continue
@@ -678,11 +835,17 @@ class LoopObservationService:
         async with self._sessions() as session:
             return await self._frozen_worker_sources(session, observation)
 
+    async def causal_sources(self, observation) -> tuple[dict, ...]:
+        from backend.app.desktop.agent_loop.causal_snapshot import read_causal_snapshot
+
+        async with self._sessions() as session:
+            return tuple([{**entry, "snapshot": await read_causal_snapshot(session, observation.loop_id, entry)}
+                for entry in observation.causal_chain])
+
     async def _frozen_worker_sources(self, session, observation) -> tuple[dict, ...]:
         from backend.app.desktop.agent_loop.decision_context import DecisionSupplementRepository
 
-        base = await session.scalar(select(LoopObservation).where(
-            LoopObservation.loop_id == observation.loop_id, LoopObservation.round_id == observation.round_id))
+        base = await session.get(LoopObservation, observation.observation_id or observation.decision_inputs_ref)
         if base is None:
             raise ValueError("Patrol Worker 来源缺少冻结 Observation")
         if observation_hash(LoopObservationEnvelope.model_validate(base.envelope)) != base.envelope_hash:
@@ -698,7 +861,9 @@ class LoopObservationService:
 
     async def _worker_page(self, session, observation, request) -> dict:
         loop = await session.get(AgentLoop, observation.loop_id)
-        if loop is None or loop.current_round_id != observation.round_id or loop.authority_revision != observation.authority_revision:
+        round_row = await session.get(LoopRound, observation.round_id)
+        if (loop is None or round_row is None or round_row.observation_id != (observation.observation_id or observation.decision_inputs_ref)
+                or loop.authority_revision != observation.authority_revision):
             raise ValueError("Patrol Worker 来源授权已失效")
         grant = await session.scalar(select(LoopDelegationGrant).where(
             LoopDelegationGrant.loop_id == loop.loop_id, LoopDelegationGrant.revision == observation.authority_revision))

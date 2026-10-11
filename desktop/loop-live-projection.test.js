@@ -59,6 +59,25 @@ const event = (sequence, patch = {}) => ({
   ...patch,
 });
 
+test("overlapping rounds and stale cognition remain historical while V3 stays current", () => {
+  let value = Schema.validateSnapshot(snapshot(10, {
+    rounds: { r5: entity("r5", 2, 8, { number: 5, observation_id: "o5", observation_generation: 1 }),
+      r6: entity("r6", 4, 10, { number: 6, observation_id: "o3", observation_generation: 3 }) },
+    observations: {}, patrol_sessions: { p3: entity("p3", 1, 10, { round_id: "r6", observation_id: "o3", status: "running" }) },
+  }));
+  value = Reducer.reduce(value, event(11, { entity_type: "round", entity_id: "r5", entity_revision: 5, payload: { number: 5, observation_id: "o5", observation_generation: 1, status: "settled" } }));
+  value = Reducer.reduce(value, event(12, { entity_type: "patrol_session", entity_id: "p1", entity_revision: 99, payload: { round_id: "r6", observation_id: "o1", status: "completed" } }));
+  value = Reducer.reduce(value, event(13, { entity_type: "round", entity_id: "r6", entity_revision: 99, payload: { number: 6, observation_id: "o1", observation_generation: 1, status: "settled" } }));
+  assert.equal(value.round.entity_id, "r6");
+  assert.equal(value.round.state.observation_id, "o3");
+  assert.equal(value.patrol_session.entity_id, "p3");
+  assert.equal(value.patrol_sessions.p1.state.status, "completed");
+  assert.equal(value.rounds.r5.state.status, "settled");
+  const restored = Schema.validateSnapshot(JSON.parse(JSON.stringify(value)));
+  assert.equal(restored.patrol_session.entity_id, "p3");
+  assert.equal(restored.round.state.observation_generation, 3);
+});
+
 test("schema loads a normalized snapshot and rejects malformed required state", () => {
   const normalized = Schema.validateSnapshot(snapshot(2, { contexts: { c1: entity("c1", 1, 2, { title: "Testing" }) } }));
   assert.equal(normalized.contexts.c1.state.title, "Testing");

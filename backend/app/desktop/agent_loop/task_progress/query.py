@@ -1,7 +1,7 @@
 """本文件对外提供 TaskProgressQuery 的只读长期记忆诊断。
 
 输入为 Desktop 会话中的 Loop identity 和可选精确 progress_id；输出为当前及选定历史版本、最近贡献修正链、冻结 refs/hash 和工作 readiness/用量。
-具体工作流为读取独立记忆表，隐藏原始审计内容；没有拓扑、任务或执行写入口。
+具体工作流为按独立 work identity 读取决策或汇合工作，首次领取前展示登记边界、领取后展示固定沉淀输入，隐藏原始审计内容；没有拓扑、任务或执行写入口。
 示例：await TaskProgressQuery().read(session, loop_id)。
 """
 
@@ -33,7 +33,7 @@ class TaskProgressQuery:
         rows = (
             await session.execute(
                 select(LoopProgressWork, LoopDecisionInputs)
-                .join(
+                .outerjoin(
                     LoopDecisionInputs,
                     LoopDecisionInputs.observation_id
                     == LoopProgressWork.observation_id,
@@ -72,6 +72,7 @@ class TaskProgressQuery:
                     "generation": version.generation,
                     "previous_progress_id": version.previous_progress_id,
                     "observation_id": version.observation_id,
+                    "work_id": version.work_id,
                     "content_hash": version.content_hash,
                     "contribution": version.contribution,
                 }
@@ -87,11 +88,15 @@ class TaskProgressQuery:
         return LoopLiveRedactionPolicy.redact_value(result, access.permissions)
 
     @staticmethod
-    def _work_view(work: LoopProgressWork, frozen: LoopDecisionInputs) -> dict:
-        payload = frozen.payload
+    def _work_view(work: LoopProgressWork, frozen: LoopDecisionInputs | None) -> dict:
+        payload = work.consolidation_payload or {}
+        manifest = payload.get("task_delta") or work.source_manifest
         return {
+            "work_id": work.work_id,
             "observation_id": work.observation_id,
-            "round_id": frozen.round_id,
+            "round_id": frozen.round_id if frozen else None,
+            "round_ids": work.round_ids,
+            "boundary_key": work.boundary_key,
             "state": work.state,
             "attempts": work.attempts,
             "fence": work.fence,
@@ -102,13 +107,15 @@ class TaskProgressQuery:
             "usage": work.usage,
             "retry_budget_authorization": work.retry_budget_authorization,
             "attempt_events": work.attempt_events,
-            "inputs_hash": frozen.content_hash,
-            "observation_hash": payload["observation_hash"],
-            "previous_progress_id": payload["previous_progress_id"],
-            "previous_progress_hash": payload["previous_progress_hash"],
-            "manifest_hash": payload["manifest_hash"],
-            "manifest_complete": payload["task_delta"]["complete"],
-            "topology_hash": payload["topology_hash"],
+            "inputs_hash": work.consolidation_hash,
+            "decision_inputs_hash": frozen.content_hash if frozen else None,
+            "observation_hash": payload.get("origin_observation_hash") or (frozen.payload.get("observation_hash") if frozen else None),
+            "previous_progress_id": payload.get("previous_progress_id"),
+            "previous_progress_hash": payload.get("previous_progress_hash"),
+            "manifest_hash": payload.get("manifest_hash"),
+            "manifest_complete": manifest["complete"],
+            "topology_hash": payload.get("topology_hash"),
+            "absorbed_sources": payload.get("absorbed_sources", {}),
             "source_refs": [
                 {
                     key: source.get(key)
@@ -121,6 +128,6 @@ class TaskProgressQuery:
                         "execution_round_id",
                     )
                 }
-                for source in payload["task_delta"]["sources"]
+                for source in manifest["sources"]
             ],
         }

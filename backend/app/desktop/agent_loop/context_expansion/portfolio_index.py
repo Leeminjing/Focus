@@ -223,6 +223,7 @@ class PortfolioSemanticIndexService:
         observation: LoopObservationEnvelope,
         *,
         budget_authority_revision: int | None = None,
+        fencing_token: int | None = None,
     ) -> PortfolioIndexBuildResult:
         self._projection_attempts = {}
         timer = DerivationStageTimer(
@@ -243,7 +244,7 @@ class PortfolioSemanticIndexService:
         semaphore = asyncio.Semaphore(self._concurrency)
         try:
             _BUILD_STATE.get().budget = await self._model_budget(
-                observation, budget_authority_revision
+                observation, budget_authority_revision, fencing_token=fencing_token
             )
             self._prepare_contract()
             tasks = [
@@ -307,7 +308,7 @@ class PortfolioSemanticIndexService:
             catalog=catalog,
         )
 
-    async def _model_budget(self, observation, authority_revision=None):
+    async def _model_budget(self, observation, authority_revision=None, *, fencing_token=None):
         snapshot = getattr(observation, "budget", {}) or {}
         revision = getattr(observation, "authority_revision", 1)
         if authority_revision is not None:
@@ -325,21 +326,24 @@ class PortfolioSemanticIndexService:
         }
         return IndexModelBudget(
             resources,
-            usage_receipts=self._owned_usage(observation),
+            usage_receipts=self._owned_usage(observation, fencing_token=fencing_token),
             reservations=IndexBudgetReservationRepository(
                 self._sessions,
                 getattr(observation, "loop_id", ""),
                 resources.grant_revision,
                 limits,
                 usage,
-                owner={"owner_kind": "round", "owner_id": observation.round_id, "round_id": observation.round_id},
+                owner={"owner_kind": "round", "owner_id": observation.round_id, "round_id": observation.round_id,
+                       "observation_id": observation.decision_inputs_ref,
+                       **({"fencing_token": fencing_token} if fencing_token is not None else {})},
             ),
         )
 
-    def _owned_usage(self, observation):
+    def _owned_usage(self, observation, *, fencing_token=None):
         from backend.app.desktop.agent_loop.model_usage_owner import OwnedModelUsage
 
-        return OwnedModelUsage(self._sessions, observation.loop_id, observation.round_id, "round", observation.round_id)
+        return OwnedModelUsage(self._sessions, observation.loop_id, observation.round_id, "round", observation.round_id,
+                               observation_id=observation.decision_inputs_ref, fencing_token=fencing_token)
 
     def _catalog(self, observation, indexes):
         return PortfolioIndexCatalog.create(
@@ -440,6 +444,7 @@ class PortfolioSemanticIndexService:
         )
         scope_fingerprint = stable_expansion_hash(
             "index-stage-scope",
+            observation.decision_inputs_ref,
             _BUILD_STATE.get().contract,
             getattr(getattr(self, "_indexer", None), "segmenter_version", ""),
             getattr(observation, "authority_revision", 1),

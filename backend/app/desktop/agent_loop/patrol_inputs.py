@@ -1,8 +1,8 @@
 """本文件对外提供 PatrolInputRequest、PatrolInputRepository 和 input_identity。
 
 输入为工作区用户提交的四类原文、稳定提交身份和可选补充请求目标；输出为耐久 accepted 记录或冲突及分页历史。
-具体工作流为在调用方 Loop 事务内验证全局提交身份、保存原文与类型、记录既有 intervention 生命周期，
-不恢复图、不取消 Run、不更新 Mission。示例：await repository.accept(session, loop, request)。
+具体工作流为在调用方 Loop 事务内验证全局提交身份、保存原文类型和有界可见线索、记录既有 intervention 生命周期，
+回执保留引入的不可变观察及输入前快照身份；不恢复图、不取消 Run、不更新 Mission。示例：await repository.accept(session, loop, request)。
 同时提供 UserInputUse、MissionInputChange、ApplyUserInputsAction 和 workspace_input_scope；已保存文件模式仅用于首次授权，后续信息不扩大权限。
 """
 
@@ -19,6 +19,32 @@ from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLi
 from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest, LoopWaitResponse
 
 
+class VisibleFactReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    fact_id: str = Field(min_length=1, max_length=32)
+    revision: int = Field(ge=1)
+
+
+class VisibleRunPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    run_id: str = Field(min_length=1, max_length=32)
+    context_id: str = Field(min_length=1, max_length=32)
+    message_id: str | None = Field(default=None, max_length=160)
+    sequence: int | None = Field(default=None, ge=0)
+    role: Literal["human", "assistant", "tool", "system"] = "assistant"
+    text: str = Field(max_length=4096)
+    truncated: bool = False
+    gap: bool = False
+
+
+class VisibleContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    loop_id: str = Field(min_length=1, max_length=32)
+    live_sequence: int | None = Field(default=None, ge=0)
+    fact_refs: tuple[VisibleFactReference, ...] = Field(default=(), max_length=256)
+    run_previews: tuple[VisibleRunPreview, ...] = Field(default=(), max_length=32)
+
+
 class PatrolInputRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     submission_id: str = Field(min_length=1, max_length=160)
@@ -27,6 +53,7 @@ class PatrolInputRequest(BaseModel):
     access_mode: Literal["read-only", "workspace-write", "danger-full-access"] = "workspace-write"
     request_id: str | None = None
     request_revision: int | None = Field(default=None, gt=0)
+    visible_context: VisibleContext | None = None
 
     @model_validator(mode="after")
     def _validate_input(self):
@@ -71,6 +98,10 @@ def input_identity(submission_id: str) -> str:
     return uuid.uuid5(uuid.NAMESPACE_URL, f"focus:patrol-input:{submission_id}").hex
 
 
+def request_document(request: PatrolInputRequest) -> dict:
+    return request.model_dump(mode="json", exclude={"visible_context"} if request.visible_context is None else set())
+
+
 class PatrolInputRepository:
     def __init__(self):
         self._lifecycle = InterventionLifecycleRepository()
@@ -79,7 +110,7 @@ class PatrolInputRepository:
         row = await session.get(LoopUserIntent, input_identity(request.submission_id))
         if row is None:
             return None
-        expected = content_hash([workspace_id, request.model_dump(mode="json")])
+        expected = content_hash([workspace_id, request_document(request)])
         if (
             row.intent_kind != "workspace_input"
             or row.request_payload.get("request_hash") != expected
@@ -129,8 +160,8 @@ class PatrolInputRepository:
             goal_revision=loop.goal_revision,
             authority_revision=loop.authority_revision,
             request_payload={
-                "request": request.model_dump(mode="json"),
-                "request_hash": content_hash([loop.workspace_id, request.model_dump(mode="json")]),
+                "request": request_document(request),
+                "request_hash": content_hash([loop.workspace_id, request_document(request)]),
             },
         )
         session.add(row)
@@ -182,6 +213,11 @@ class PatrolInputRepository:
             "content": row.content,
             "request_id": request.get("request_id"),
             "request_revision": request.get("request_revision"),
+            "round_id": row.observed_round_id,
+            "observation_id": row.introduced_observation_id,
+            "introduced_generation": row.introduced_generation,
+            "snapshot_hash": row.snapshot_hash,
+            "accepted_sequence": row.request_payload.get("accepted_sequence"),
             "status": "accepted",
             "processing_state": row.status,
             "created_at": row.created_at.isoformat() if row.created_at else None,

@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-from loop_run_boundary_support import start_loop_run
+from loop_run_boundary_support import start_loop_run, commit_patrol
 from completion_evidence_support import claim_verifier, record_verified_fixture
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -104,8 +104,8 @@ def test_zero_worker_delegated_directive_and_user_override(tmp_path) -> None:
             assert compression.delegable is True
             assert (await service.get(loop_id))["status"] == "running"
             intent = PatrolDecisionIntent(decision_id=uuid.uuid4().hex, idempotency_key="decision-1", loop_id=loop_id, loop_revision=snapshot["revision"], round_id=snapshot["current_round_id"], holder_id="patrol-1", grant_id=snapshot["grant"]["grant_id"], grant_revision=1, goal_revision=1, observed_frontier_hash=(await _round_frontier(sessions, snapshot["current_round_id"])), observed_workspace_revision=1, rationale="Database work is complete; run tests next.", actions=({"action": "continue_context", "context_id": context_id, "context_revision_id": revision_id, "message": "Run the database tests and fix only relevant failures."},))
-            result = await LoopKernel(sessions).commit(intent)
-            again = await LoopKernel(sessions).commit(intent)
+            result = await commit_patrol(sessions, intent)
+            again = await commit_patrol(sessions, intent)
             assert result == again
             assert result.status == "committed", result.reason
             async with sessions() as session:
@@ -163,7 +163,7 @@ def test_zero_worker_delegated_directive_and_user_override(tmp_path) -> None:
             assert mission_event["payload"]["previous_mission_revision"] == 1
             assert mission_event["payload"]["mission_revision"] == 2
             stale = intent.model_copy(update={"decision_id": uuid.uuid4().hex, "idempotency_key": "stale", "round_id": overridden["current_round_id"]})
-            stale_result = await LoopKernel(sessions).commit(stale)
+            stale_result = await commit_patrol(sessions, stale)
             assert stale_result.status == "superseded"
             assert stale_result.reason == "mission_revision_changed"
             restricted = await service.override(
@@ -189,7 +189,7 @@ def test_zero_worker_delegated_directive_and_user_override(tmp_path) -> None:
                 rationale="Continue even though the current Mission prohibits it.",
                 actions=({"action": "continue_context", "context_id": context_id, "context_revision_id": revision_id, "message": "Continue."},),
             )
-            blocked_result = await LoopKernel(sessions).commit(blocked)
+            blocked_result = await commit_patrol(sessions, blocked)
             assert blocked_result.status == "rejected"
             assert blocked_result.reason == "boundary:prohibited_actions:continue_context"
             async with sessions() as session:
@@ -227,7 +227,7 @@ def test_zero_worker_delegated_directive_and_user_override(tmp_path) -> None:
                 rationale="Target disappeared before authorization.",
                 actions=({"action": "continue_context", "context_id": "missing-context", "context_revision_id": "missing-revision", "message": "Continue."},),
             )
-            missing_result = await LoopKernel(sessions).commit(missing_target)
+            missing_result = await commit_patrol(sessions, missing_target)
             assert missing_result.status == "rejected"
             async with sessions() as session:
                 missing_events = tuple((await session.scalars(select(LoopJournalEvent).where(LoopJournalEvent.entity_type == "directive", LoopJournalEvent.entity_id == missing_result.directive_ids[0]))).all())
@@ -303,7 +303,7 @@ def test_independent_verifier_is_required_before_completion_and_final_result_is_
             retry_identity = await claim_verifier(sessions, loop_id, worker_id)
             await CompletionEvidenceService(sessions).record(verification, worker_id, retry_identity=retry_identity)
             intent = PatrolDecisionIntent(decision_id=uuid.uuid4().hex, idempotency_key=f"complete-{suffix}", loop_id=loop_id, loop_revision=snapshot["revision"], round_id=round_row.round_id, holder_id="patrol-complete", grant_id=snapshot["grant"]["grant_id"], grant_revision=1, goal_revision=1, observed_frontier_hash=round_row.frontier_hash, observed_workspace_revision=round_row.workspace_revision, rationale="Independent evidence satisfies every required criterion.", actions=({"action": "request_completion", "verification_id": verification.verification_id, "final_context_ids": [context_id], "final_slot_id": slot.slot_id},))
-            result = await LoopKernel(sessions).commit(intent)
+            result = await commit_patrol(sessions, intent)
             assert result.status == "committed", result.reason
             async with sessions() as session:
                 loop = await session.get(AgentLoop, loop_id)

@@ -3,6 +3,7 @@
 输入为目标 Context、稳定请求身份和显式原始请求；输出为耐久用户消息受理身份或冲突，不产生 Run。
 具体工作流为按请求身份串行化重放，锁定当前 Loop 和授权，验证角色装备，冻结原文及请求 hash，
 推进控制版本并收敛旧工作，再创建观察轮；事务提交后通知取消。既有协调器读取此轮，不另建调度器。
+本端口仅服务旧 context_loop 定向消息；workspace_patrol 拒绝此入口，由工作区统一输入冻结 Oi/Vi。
 示例：await admission.submit(context_id, request_id, {"message": "继续检查"})。
 """
 
@@ -59,6 +60,8 @@ class LoopUserMessageAdmission:
             loop = await self._loop(session, context_id)
             if loop is None:
                 return None
+            if loop.interaction_mode == "workspace_patrol":
+                raise HTTPException(409, "工作区 Patrol 请使用工作区统一输入")
             grant = await self._grant(session, loop, context_id)
             overrides = {key: value for key, value in payload.items()
                          if key in {"model_name", "skills", "memory_ids", "permissions", "access_mode"} and value is not None}

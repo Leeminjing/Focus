@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from test_agent_loop_round_liveness import _seed_loop, _stop
 from test_round_task_progress import _Checkpointer
+from progress_test_support import register_progress
 from test_round_memory_boundaries import _next_round
 
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage
@@ -76,9 +77,10 @@ def test_invalid_candidate_feedback_survives_restart_and_publishes_once(tmp_path
         loop_id = fixture["loop_id"]
         try:
             observation = await LoopObservationService(sessions, _Checkpointer()).capture(loop_id, fixture["round_id"])
-            identity = observation.decision_inputs_ref
+            work_id = await register_progress(sessions, observation)
+            identity = work_id
             async with sessions() as session:
-                inputs = await TaskProgressRepository().inputs(session, identity)
+                frozen = await TaskProgressRepository().inputs(session, observation.decision_inputs_ref)
                 head = await TaskProgressRepository().current(session, loop_id)
                 receipts = await _receipt_count(session, loop_id)
                 ledger = await session.get(LoopBudgetUsage, loop_id)
@@ -87,6 +89,7 @@ def test_invalid_candidate_feedback_survives_restart_and_publishes_once(tmp_path
             assert await TaskProgressRuntime(sessions, None, model_factory=lambda name: model).drain(loop_id=loop_id) == 1
             async with sessions() as session:
                 work = await session.get(LoopProgressWork, identity)
+                inputs = await TaskProgressRepository().consolidation_inputs(session, identity)
                 diagnostic = [event for event in work.attempt_events if event["event"] == "candidate_validation"][0]
                 assert code in {error["code"] for error in diagnostic["errors"]}
                 assert diagnostic["inputs_hash"] == canonical_hash(inputs)
@@ -106,7 +109,8 @@ def test_invalid_candidate_feedback_survives_restart_and_publishes_once(tmp_path
                 assert work.state == "published"
                 assert (await TaskProgressRepository().current(session, loop_id)).generation == head.generation + 1
                 assert await _receipt_count(session, loop_id) == receipts + len(inputs.task_delta.sources)
-                assert await TaskProgressRepository().inputs(session, identity) == inputs
+                assert await TaskProgressRepository().consolidation_inputs(session, identity) == inputs
+                assert await TaskProgressRepository().inputs(session, observation.decision_inputs_ref) == frozen
                 ledger = await session.get(LoopBudgetUsage, loop_id)
                 assert (ledger.model_calls - before[0], ledger.input_tokens - before[1], ledger.output_tokens - before[2]) == (2, 34, 18)
                 assert len([event for event in work.attempt_events if event["event"] == "candidate_validation"]) == 2
@@ -124,6 +128,7 @@ def test_continuous_invalidity_stops_after_three_calls_and_keeps_each_diagnostic
         fixture = await _seed_loop(sessions, tmp_path, label="invalid", started_at=datetime.now(UTC))
         try:
             observation = await LoopObservationService(sessions, _Checkpointer()).capture(fixture["loop_id"], fixture["round_id"])
+            work_id = await register_progress(sessions, observation)
             model = _Model("duplicate", always=True)
             runtime = TaskProgressRuntime(sessions, None, model_factory=lambda name: model)
             for _ in range(3):
@@ -131,7 +136,7 @@ def test_continuous_invalidity_stops_after_three_calls_and_keeps_each_diagnostic
             assert await runtime.drain(loop_id=fixture["loop_id"]) == 0
             assert len(model.payloads) == 3
             async with sessions() as session:
-                work = await session.get(LoopProgressWork, observation.decision_inputs_ref)
+                work = await session.get(LoopProgressWork, work_id)
                 assert work.state == "blocked" and work.attempts == 3
                 assert len(work.usage) == 3 and all(item["accounted"] for item in work.usage)
                 assert len([event for event in work.attempt_events if event["event"] == "candidate_validation"]) == 3
@@ -151,6 +156,7 @@ def test_persistence_failure_does_not_publish_or_absorb_and_recovers(tmp_path, f
         fixture = await _seed_loop(sessions, tmp_path, label=f"p-{failure[:3]}", started_at=datetime.now(UTC))
         try:
             observation = await LoopObservationService(sessions, _Checkpointer()).capture(fixture["loop_id"], fixture["round_id"])
+            work_id = await register_progress(sessions, observation)
             model = _Model()
             runtime = TaskProgressRuntime(sessions, None, model_factory=lambda name: model)
             async def reject(*args, **kwargs):
@@ -162,10 +168,10 @@ def test_persistence_failure_does_not_publish_or_absorb_and_recovers(tmp_path, f
             async with sessions() as session:
                 assert (await TaskProgressRepository().current(session, fixture["loop_id"])).generation == 0
                 assert await _receipt_count(session, fixture["loop_id"]) == 0
-                assert (await session.get(LoopProgressWork, observation.decision_inputs_ref)).state == "pending"
+                assert (await session.get(LoopProgressWork, work_id)).state == "pending"
             await TaskProgressRuntime(sessions, None, model_factory=lambda name: model).drain(loop_id=fixture["loop_id"])
             async with sessions() as session:
-                assert (await session.get(LoopProgressWork, observation.decision_inputs_ref)).state == "published"
+                assert (await session.get(LoopProgressWork, work_id)).state == "published"
         finally:
             await _stop(fixture["service"], fixture["loop_id"])
             await engine.dispose()
@@ -179,8 +185,9 @@ def test_legacy_blocked_work_requires_explicit_authority_and_preserves_missing_e
         fixture = await _seed_loop(sessions, tmp_path, label="legacy", started_at=datetime.now(UTC))
         try:
             observation = await LoopObservationService(sessions, _Checkpointer()).capture(fixture["loop_id"], fixture["round_id"])
+            work_id = await register_progress(sessions, observation)
             async with sessions.begin() as session:
-                work = await session.get(LoopProgressWork, observation.decision_inputs_ref)
+                work = await session.get(LoopProgressWork, work_id)
                 work.state = "blocked"
                 work.attempts = 3
                 work.error = "ValueError: 来源解释重复或引用冻结范围之外的来源"
@@ -190,20 +197,20 @@ def test_legacy_blocked_work_requires_explicit_authority_and_preserves_missing_e
             runtime = TaskProgressRuntime(sessions, None, model_factory=lambda name: model)
             assert await runtime.drain(loop_id=fixture["loop_id"]) == 0
             assert not model.payloads
-            await runtime.retry(observation.decision_inputs_ref, loop_id=fixture["loop_id"])
+            await runtime.retry(work_id, loop_id=fixture["loop_id"])
             assert await runtime.drain(loop_id=fixture["loop_id"]) == 1
             assert model.payloads[0]["validation_feedback"]["evidence_missing"]
             async with sessions() as session:
-                work = await session.get(LoopProgressWork, observation.decision_inputs_ref)
+                work = await session.get(LoopProgressWork, work_id)
                 assert work.state == "published" and work.attempt_events[0]["event"] == "blocked"
                 assert work.retry_budget_authorization is not None
                 assert await TaskProgressRepository().inputs(session, observation.decision_inputs_ref) == frozen
             await _stop(fixture["service"], fixture["loop_id"])
             async with sessions.begin() as session:
-                work = await session.get(LoopProgressWork, observation.decision_inputs_ref)
+                work = await session.get(LoopProgressWork, work_id)
                 work.state = "blocked"
             with pytest.raises(ValueError, match="有效的预算授权"):
-                await runtime.retry(observation.decision_inputs_ref, loop_id=fixture["loop_id"])
+                await runtime.retry(work_id, loop_id=fixture["loop_id"])
         finally:
             await _stop(fixture["service"], fixture["loop_id"])
             await engine.dispose()
@@ -217,12 +224,13 @@ def test_stale_worker_cannot_append_diagnostic_or_override_new_claim(tmp_path):
         fixture = await _seed_loop(sessions, tmp_path, label="fence", started_at=datetime.now(UTC))
         try:
             observation = await LoopObservationService(sessions, _Checkpointer()).capture(fixture["loop_id"], fixture["round_id"])
+            work_id = await register_progress(sessions, observation)
             runtime = TaskProgressRuntime(sessions, None)
             old = await runtime._claim(loop_id=fixture["loop_id"])
             async with sessions.begin() as session:
                 work = await session.get(LoopProgressWork, old[0])
                 work.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
-                inputs = await TaskProgressRepository().inputs(session, old[0])
+                inputs = await TaskProgressRepository().consolidation_inputs(session, old[0])
             newer = await runtime._claim(loop_id=fixture["loop_id"])
             diagnostic = validation_diagnostic(inputs, old[1], ProgressCandidate(), ())
             with pytest.raises(ProgressPublicationRejected, match="fence/lease"):
@@ -247,13 +255,15 @@ def test_empty_delta_publishes_once_without_model_or_reservation(tmp_path):
         loop_id = fixture["loop_id"]
         try:
             service = LoopObservationService(sessions, _Checkpointer())
-            await service.capture(loop_id, fixture["round_id"])
+            initial = await service.capture(loop_id, fixture["round_id"])
+            await register_progress(sessions, initial)
             await TaskProgressRuntime(sessions, None, model_factory=lambda name: _Model()).drain(loop_id=loop_id)
             next_round = await _next_round(sessions, fixture)
             observation = await service.capture(loop_id, next_round)
-            identity = observation.decision_inputs_ref
+            work_id = await register_progress(sessions, observation)
+            identity = work_id
             async with sessions() as session:
-                inputs = await TaskProgressRepository().inputs(session, identity)
+                inputs = await TaskProgressRepository().inputs(session, observation.decision_inputs_ref)
                 assert not inputs.task_delta.sources
                 previous = await TaskProgressRepository().current(session, loop_id)
                 receipt_count = await _receipt_count(session, loop_id)
@@ -289,10 +299,11 @@ def test_publication_revalidates_tampered_candidate_body_and_contribution(tmp_pa
         loop_id = fixture["loop_id"]
         try:
             observation = await LoopObservationService(sessions, _Checkpointer()).capture(loop_id, fixture["round_id"])
+            work_id = await register_progress(sessions, observation)
             runtime = TaskProgressRuntime(sessions, None)
             identity, fence = await runtime._claim(loop_id=loop_id)
             async with sessions() as session:
-                inputs = await TaskProgressRepository().inputs(session, identity)
+                inputs = await TaskProgressRepository().consolidation_inputs(session, identity)
                 previous = await TaskProgressRepository().current(session, loop_id)
                 receipts = await _receipt_count(session, loop_id)
             candidate = await _Model().invoke(candidate_schema(inputs), _SYSTEM, interpretation_payload(inputs, observation.mission))
@@ -327,6 +338,7 @@ def test_distinct_reference_failures_keep_same_work_history_across_restart(tmp_p
         loop_id = fixture["loop_id"]
         try:
             observation = await LoopObservationService(sessions, _Checkpointer()).capture(loop_id, fixture["round_id"])
+            work_id = await register_progress(sessions, observation)
             model = _Model(("duplicate", "outside", None))
             for _ in range(3):
                 assert await TaskProgressRuntime(sessions, None, model_factory=lambda name: model).drain(loop_id=loop_id) == 1
@@ -335,7 +347,7 @@ def test_distinct_reference_failures_keep_same_work_history_across_restart(tmp_p
                 "duplicate_source_assessment", "unknown_assessment_source"]
             assert all(payload["task_delta"] == model.payloads[0]["task_delta"] for payload in model.payloads)
             async with sessions() as session:
-                work = await session.get(LoopProgressWork, observation.decision_inputs_ref)
+                work = await session.get(LoopProgressWork, work_id)
                 diagnostics = [event for event in work.attempt_events if event["event"] == "candidate_validation"]
                 assert work.state == "published" and work.attempts == 3
                 assert [event["fence"] for event in diagnostics] == [1, 2, 3]
@@ -366,6 +378,7 @@ def test_full_request_input_budget_is_checked_and_reserved(tmp_path, monkeypatch
                                        provider_contract=ProviderContract(provider="openai", protocol="responses"))
         try:
             observation = await LoopObservationService(sessions, _Checkpointer()).capture(loop_id, fixture["round_id"])
+            work_id = await register_progress(sessions, observation)
             config = SimpleNamespace(name="fixture", model="fixture", curation_output_method="json_schema",
                                      curation_max_output_tokens=1000, context_window=100000)
             app = SimpleNamespace(get_model=lambda name: config, resolve_default_model_name=lambda: "fixture")
@@ -374,7 +387,7 @@ def test_full_request_input_budget_is_checked_and_reserved(tmp_path, monkeypatch
             runtime = TaskProgressRuntime(sessions, app, model_factory=lambda name: worker)
             identity, fence = await runtime._claim(loop_id=loop_id)
             async with sessions() as session:
-                inputs = await TaskProgressRepository().inputs(session, identity)
+                inputs = await TaskProgressRepository().consolidation_inputs(session, identity)
                 ledger = await session.get(LoopBudgetUsage, loop_id)
                 before = (ledger.model_calls, ledger.input_tokens, ledger.output_tokens)
             schema = candidate_schema(inputs)
@@ -408,7 +421,7 @@ def test_full_request_input_budget_is_checked_and_reserved(tmp_path, monkeypatch
                 else:
                     assert work.usage[0]["estimated_input_tokens"] == complete
                     assert ledger.input_tokens - before[1] == complete
-                assert await TaskProgressRepository().inputs(session, identity) == inputs
+                assert await TaskProgressRepository().consolidation_inputs(session, identity) == inputs
         finally:
             model._client.close()
             await _stop(fixture["service"], loop_id)

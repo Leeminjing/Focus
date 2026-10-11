@@ -7,7 +7,7 @@ r"""本文件对外提供 RunLifecycleFinalizer 与 RunSettlement。
 按 lease 模式结算 workspace effect、释放 lease，保存使用当前注入秘密值脱敏的类型化任务领域来源并 enqueue outbox；Reader 只记录并发变化，隔离 Writer 保留待采用结果，
 权威 Writer 才推进权威 slot。控制终止只改变业务状态，finalize 仍回填用量与清理且不复活执行；
 未启动的 abort_prepared 同事务按 Run→Dispatch 顺序保存终态、终结派发和释放租约，再登记 outbox。
-重复 finalize 返回同一事实，陈旧 Context 不覆盖用户的新 current pointer。
+重复 finalize 返回同一事实，陈旧 Context 不覆盖用户的新 current pointer。Run.workspace_result 中未清理的 Shell attempt 阻止结算、派发完成和租约释放；重启只记录 interrupted，绝不将未知进程树当作已退出。
 checkpoint 的 canonical typed bridge 在结算前验证，新 publication 保存 V2 execution Items，UI codec 不参与恢复。
 示例：`settlement = await finalizer.finalize(record)`。
 """
@@ -111,6 +111,8 @@ class RunLifecycleFinalizer:
                 raise LookupError(f"Run 不存在: {record.run_id}")
             if locked.settled_at is not None:
                 return await self._settlement(session, locked, idempotent=True)
+            if (locked.workspace_result or {}).get("shell_cleanup"):
+                raise RuntimeError("Shell 进程树清理未确认，Run 结算保持阻塞")
             terminal_status = record.status.value
             terminal_error = record.error
             if locked.status == "interrupted":
@@ -198,9 +200,13 @@ class RunLifecycleFinalizer:
                     )
                 ).all()
             )
+            settled = 0
             for run in runs:
                 run.status = "interrupted"
                 run.error = self._safe_text(reason, "desktop-run.error")
+                if (run.workspace_result or {}).get("shell_cleanup"):
+                    run.error = "进程重启后 Shell 清理证据仍不完整；保留 Run、派发与工作区，禁止自动重放"
+                    continue
                 from backend.app.desktop.execution_attempts.usage_receipts import ModelUsageReceipts
                 from backend.app.desktop.models import ModelAttemptAudit
                 from backend.app.desktop.run_orchestration.dispatch import RunDispatchRepository
@@ -233,7 +239,8 @@ class RunLifecycleFinalizer:
                     run.run_id,
                     self._payload(run, None, "unknown_after_restart"),
                 )
-            return len(runs)
+                settled += 1
+            return settled
 
     @staticmethod
     async def _reconcile_workspace_evidence(session: AsyncSession, run: DesktopRun, captured) -> dict[str, Any]:
@@ -271,6 +278,8 @@ class RunLifecycleFinalizer:
         async with self._sessions.begin() as session:
             run = await session.get(DesktopRun, run_id, with_for_update=True)
             if run is None or run.settled_at is not None:
+                return False
+            if (run.workspace_result or {}).get("shell_cleanup"):
                 return False
             if run.status != "interrupted":
                 run.status = "error"

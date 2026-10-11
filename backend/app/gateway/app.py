@@ -200,6 +200,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             context_runs=app.state.agent_loop_context_runs,
             fact_projector=app.state.agent_loop_fact_projector,
             task_progress=app.state.agent_loop_task_progress,
+            run_manager=service.run_manager,
         )
         app.state.agent_loop_completion = CompletionEvidenceService(sessions)
         app.state.session_key = os.getenv("FOCUS_DESKTOP_SESSION", "focus-dev-session")

@@ -684,10 +684,11 @@ def test_portfolio_index_build_is_bounded_retried_and_atomically_published() -> 
                 self._active -= 1
 
     def observation(names):
-            return SimpleNamespace(
-                loop_id="loop-index-build",
-                round_id="round-index-build",
-                portfolio_frontier=tuple(
+        return SimpleNamespace(
+            loop_id="loop-index-build",
+            round_id="round-index-build",
+            decision_inputs_ref="observation-index-build",
+            portfolio_frontier=tuple(
                 {
                     "revision": _source(name).model_dump(mode="json"),
                     "content_hash": f"{index + 1}" * 64,
@@ -741,7 +742,7 @@ def test_portfolio_index_cancellation_never_publishes_partial_ready_state() -> N
             self.started = asyncio.Event()
             self.release = asyncio.Event()
 
-        async def _model_budget(self, observation, authority_revision=None):
+        async def _model_budget(self, observation, authority_revision=None, *, fencing_token=None):
             from backend.app.desktop.agent_loop.context_expansion.index_model_budget import (
                 IndexModelBudget,
             )
@@ -759,6 +760,9 @@ def test_portfolio_index_cancellation_never_publishes_partial_ready_state() -> N
     async def run():
         service = CancelService()
         observation = SimpleNamespace(
+            loop_id="loop-index-cancel",
+            round_id="round-index-cancel",
+            decision_inputs_ref="observation-index-cancel",
             portfolio_frontier=(
                 {"revision": _source("cancel-a").model_dump(mode="json")},
                 {"revision": _source("cancel-b").model_dump(mode="json")},

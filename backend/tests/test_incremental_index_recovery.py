@@ -2,7 +2,8 @@ r"""本文件对外提供索引独立进程重启与 additive migration 的 Post
 
 输入为真实隔离数据库、冻结输入和独立子进程；输出为强杀提交前不泄漏、提交后零调用恢复及迁移不改权威记忆的断言。
 具体工作流为通过真实 Observation 服务冻结调用所有权，再只在测试目录启动隐藏子进程，等待信号后强杀，另一个新进程重放并继续继承；迁移使用独立随机数据库。
-综合参与真实计费及进程边界；崩溃未知预留仍占额度，结算后可升降级，bf2a3b4c5d6e 回撤新综合 artifact 保留权威记忆。
+综合参与真实计费及进程边界；崩溃未知预留仍占额度，索引组件迁移拒绝未结算消费，回撤综合 artifact 保留权威记忆。
+组件迁移仅在隔离库调用 9d0e1f2a3b4c 至 bf2a3b4c5d6e 的正式迁移函数，不回退新版多 Observation 的数据库 head。
 示例：python -m pytest backend/tests/test_incremental_index_recovery.py -q。
 """
 
@@ -18,6 +19,8 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import make_url
@@ -185,17 +188,26 @@ def test_projection_record_migration_round_trip_preserves_control_tables(
                 from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
                 from backend.tests.incremental_index_support import Checkpoints
 
-                await LoopObservationService(sessions, Checkpoints()).capture(
+                frozen = await LoopObservationService(sessions, Checkpoints()).capture(
                     fixture["loop_id"], fixture["round_id"]
                 )
+                fixture["observation_id"] = frozen.decision_inputs_ref
                 return fixture, target_revision
             finally:
                 await database.dispose()
 
         fixture, target_revision = asyncio.run(seed_control())
         assert target_revision.history_payload is None
-        command.downgrade(config, "8c9d0e1f2a3b")
         engine = create_engine(target.set(drivername="postgresql+psycopg", query={}))
+        revisions = tuple(ScriptDirectory.from_config(config).iterate_revisions("bf2a3b4c5d6e", "8c9d0e1f2a3b"))
+
+        def migrate_components(direction):
+            with engine.begin() as connection:
+                with Operations.context(MigrationContext.configure(connection)):
+                    for revision in revisions if direction == "downgrade" else reversed(revisions):
+                        getattr(revision.module, direction)()
+
+        migrate_components("downgrade")
         tables = [
             "desktop_context_revisions",
             "desktop_context_publications",
@@ -212,7 +224,7 @@ def test_projection_record_migration_round_trip_preserves_control_tables(
 
         before = snapshot()
         assert before["desktop_context_revisions"] and before["loop_task_progress"]
-        command.upgrade(config, "head")
+        migrate_components("upgrade")
         with engine.connect() as c:
             assert c.scalar(
                 text("SELECT to_regclass('loop_segment_projection_records')")
@@ -269,7 +281,7 @@ def test_projection_record_migration_round_trip_preserves_control_tables(
                 {"id": pending_id, "loop": fixture["loop_id"]},
             )
         with pytest.raises(RuntimeError, match="unsettled index budget"):
-            command.downgrade(config, "8c9d0e1f2a3b")
+            migrate_components("downgrade")
         with engine.begin() as c:
             assert (
                 c.scalar(text("SELECT version_num FROM alembic_version"))
@@ -281,7 +293,7 @@ def test_projection_record_migration_round_trip_preserves_control_tables(
                 ),
                 {"id": pending_id},
             )
-        command.downgrade(config, "8c9d0e1f2a3b")
+        migrate_components("downgrade")
         with engine.connect() as c:
             assert (
                 c.scalar(text("SELECT to_regclass('loop_segment_projection_records')"))
@@ -293,7 +305,7 @@ def test_projection_record_migration_round_trip_preserves_control_tables(
                 ).scalars()
             )
             assert current_id not in remaining and legacy_id in remaining
-        command.upgrade(config, "head")
+        migrate_components("upgrade")
         assert snapshot() == before
     finally:
         if engine:

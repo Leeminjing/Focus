@@ -65,7 +65,8 @@ async def _case(tmp_path, monkeypatch):
     observation = await LoopObservationService(sessions, _Checkpointer()).capture(fixture["loop_id"], fixture["round_id"])
     async with sessions.begin() as session:
         session.add(LoopWorkerRequest(worker_request_id=identity, loop_id=fixture["loop_id"],
-            round_id=fixture["round_id"], kind="completion_verifier", scope={}))
+            round_id=fixture["round_id"], observation_id=observation.observation_id,
+            observation_generation=observation.generation, kind="completion_verifier", scope={}))
     try:
         yield sessions, fixture, runtime, provider, identity, observation
     finally:

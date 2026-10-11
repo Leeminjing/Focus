@@ -2,7 +2,7 @@ r"""本文件对外提供 ExpansionSignal、ExpansionSignalSet 与 ExpansionSign
 
 输入为冻结 `LoopObservationEnvelope`；输出为只描述 Mission、failure、Token、用户 authority、预算和 Workspace
 事实的稳定 signal 集合。具体工作流为读取结构化字段、规范化事实并生成 identity，不创建工作目标、Context 类型、
-workspace mode 或证据选择。示例：`signals = ExpansionSignalCollector().collect(observation)`。
+workspace mode 或证据选择；signal-observation 身份包含精确 Vi，同内容的新版本重新规划。示例：`signals = ExpansionSignalCollector().collect(observation)`。
 """
 
 from __future__ import annotations
@@ -76,6 +76,7 @@ class ExpansionSignalCollector:
             self.VERSION,
             observation.loop_id,
             observation.round_id,
+            observation.decision_inputs_ref,
             observation.observed_frontier_hash,
             tuple(signal.signal_id for signal in present),
         )

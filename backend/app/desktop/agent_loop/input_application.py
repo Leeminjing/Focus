@@ -73,9 +73,7 @@ class UserInputApplication:
 
     @staticmethod
     async def _frozen_inputs(session, loop, round_row, action):
-        observation = await session.scalar(
-            select(LoopObservation).where(LoopObservation.round_id == round_row.round_id)
-        )
+        observation = await session.get(LoopObservation, round_row.observation_id) if round_row.observation_id else None
         frozen = (
             {item["intent_id"]: item for item in observation.envelope.get("user_intents", ())}
             if observation
@@ -84,6 +82,9 @@ class UserInputApplication:
         uses = {item.intent_id: item for item in action.inputs}
         if len(uses) != len(action.inputs):
             raise ValueError("输入处置身份重复")
+        required = {identity for identity, item in frozen.items() if item.get("intent_kind") == "workspace_input"}
+        if set(uses) != required:
+            raise ValueError("必须显式处置当前 Observation 的完整工作区输入集合")
         rows = {}
         for identity in uses:
             row = await session.get(LoopUserIntent, identity, with_for_update=True)

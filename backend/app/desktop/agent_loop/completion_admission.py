@@ -67,7 +67,7 @@ class CompletionRequestAdmission:
                     frozen = worker.scope['frozen_worker_input']
                     projected = await CompletionEvidenceCatalog().project(session, frozen, loop.loop_id, latest.workspace_revision,
                         include_artifact_content=False)
-                    observation = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == worker.round_id))
+                    observation = await session.get(LoopObservation, worker.observation_id) if worker.observation_id else None
                     frontier = self.frozen_frontier(observation.envelope) if observation else frozen.get('frontier_hash')
                     previous = self.input_identity(projected, frontier_hash=frontier)
         repeated = bool(previous and previous['fingerprint'] == current['fingerprint'])

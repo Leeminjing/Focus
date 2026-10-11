@@ -23,6 +23,7 @@ from backend.app.desktop.agent_loop.models import AgentLoop, LoopCoordinatorLeas
 from backend.app.desktop.agent_loop.ownership import KernelFencingRejected, LoopFencingGuard
 from backend.app.desktop.context_evolution import ContextRevisionContract, ContextRevisionOriginKind, ContextRevisionPayloadMode, ContextRevisionProjectionStatus, ContextRevisionRef, ContextRevisionRepository
 from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspace
+from backend.tests.loop_run_boundary_support import freeze_patrol_intent
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
@@ -69,6 +70,20 @@ def test_monotonic_token_and_commit_time_rejection(tmp_path) -> None:
                 fencing_token=int(first.fencing_token),
             )
             kernel = LoopKernel(sessions, require_fencing=True)
+            intent = await freeze_patrol_intent(sessions, intent)
+            from backend.app.desktop.agent_loop.models import LoopObservation
+            from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
+            from backend.app.desktop.agent_loop.patrol import PortfolioPatrol
+
+            async with sessions() as session:
+                observation = LoopObservationEnvelope.model_validate((await session.get(LoopObservation, intent.observation_id)).envelope)
+
+            async def forbidden_model(_observation):
+                raise AssertionError("old owner must not sample with the replacement fence")
+
+            with pytest.raises(KernelFencingRejected, match="superseded"):
+                await PortfolioPatrol(sessions, forbidden_model).decide(
+                    observation, snapshot["holder_id"], fencing_token=int(first.fencing_token))
             with pytest.raises(KernelFencingRejected):
                 await kernel.commit(intent)
             committed = await kernel.commit(

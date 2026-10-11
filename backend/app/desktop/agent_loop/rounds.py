@@ -87,7 +87,8 @@ async def settle_round(session: AsyncSession, loop: AgentLoop, round_row: LoopRo
     from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
 
     await RoundStateEventRecorder().record(session, round_row)
-    loop.waiting_reason = None
+    if loop.waiting_reason and loop.waiting_reason.startswith("round_consequences:"):
+        loop.waiting_reason = None
     return True
 
 
@@ -241,7 +242,9 @@ async def terminate_round(
     round_row.status = terminal_status
     round_row.settled_at = datetime.now(UTC)
     if decision_id is not None:
-        round_row.decision_id = decision_id
+        decision = await session.get(LoopDecision, decision_id)
+        if decision is not None and decision.authority_committed_at is not None:
+            round_row.decision_id = decision_id
     await _terminate_patrol(session, round_row, category, reason)
     if wait_for_user and loop is not None and loop.status == "running" and loop.current_round_id == round_row.round_id:
         loop.health = "degraded"
@@ -256,32 +259,78 @@ async def terminate_round(
     from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
 
     await RoundStateEventRecorder().record(session, round_row)
-    await _append_termination_event(session, round_row.loop_id, round_row.round_id, category, reason)
+    await _append_termination_event(session, round_row.loop_id, round_row.round_id, category, reason,
+        authority_committed=round_row.decision_id is not None)
+    return True
+
+
+async def suspend_round(session, loop, round_row, *, category, reason, wait_scope=None):
+    if round_row.decision_id is not None or round_row.status in TERMINAL_ROUND_STATUSES:
+        return False
+    round_row.status = "observed"
+    await _terminate_patrol(session, round_row, category, reason)
+    loop.health = "degraded"
+    await open_recovery_wait(session, loop, reason[:_WAITING_REASON_LIMIT], source="round-recovery",
+        round_id=round_row.round_id, scope={"category": category,
+            "observation_id": round_row.observation_id, **(wait_scope or {})})
+    from backend.app.desktop.agent_loop.round_events import RoundStateEventRecorder
+
+    await RoundStateEventRecorder().record(session, round_row)
     return True
 
 
 async def advance_settled_round(session: AsyncSession, loop: AgentLoop, round_row: LoopRound) -> LoopRound | None:
     from backend.app.desktop.agent_loop.round_progress import RoundProgressReader
+    from backend.app.desktop.agent_loop.round_consequences import RoundConsequenceReader
     from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
+    from backend.app.desktop.agent_loop.task_progress.work_queue import TaskProgressQueue
+    from backend.app.desktop.agent_loop.models import LoopAction, LoopPendingDecision, LoopUserIntent
+    from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest
 
     await session.flush()
     loop = await session.get(AgentLoop, loop.loop_id, with_for_update=True, populate_existing=True)
-    round_row = await session.get(LoopRound, round_row.round_id, with_for_update=True, populate_existing=True)
-    if (loop.status != 'running' or loop.current_round_id != round_row.round_id
-        or round_row.status != 'settled' or round_row.authority_revision != loop.authority_revision
-        or round_row.goal_revision != loop.goal_revision):
+    if loop.status != "running":
+        return None
+    rounds = tuple(await session.scalars(select(LoopRound).where(LoopRound.loop_id == loop.loop_id)
+        .order_by(LoopRound.number).with_for_update().execution_options(populate_existing=True)))
+    if any(row.decision_id is None and row.status not in TERMINAL_ROUND_STATUSES for row in rounds):
+        return None
+    state = await RoundConsequenceReader().read_loop(session, loop.loop_id)
+    if not state.stable:
+        return None
+    if await session.scalar(select(LoopPendingDecision.pending_decision_id).where(
+        LoopPendingDecision.loop_id == loop.loop_id, LoopPendingDecision.status == "pending").limit(1)):
+        return None
+    if await session.scalar(select(LoopWaitRequest.request_id).where(
+        LoopWaitRequest.loop_id == loop.loop_id, LoopWaitRequest.status.in_(("open", "resolving")),
+        func.coalesce(LoopWaitRequest.scope["information_only"].astext, "false") != "true").limit(1)):
+        return None
+    inputs = tuple(await session.scalars(select(LoopUserIntent).where(LoopUserIntent.loop_id == loop.loop_id,
+        LoopUserIntent.status.in_(("pending", "observed")))))
+    if inputs:
+        actions = tuple(await session.scalars(select(LoopAction).join(LoopDecision,
+            LoopDecision.decision_id == LoopAction.decision_id).where(LoopDecision.loop_id == loop.loop_id,
+            LoopDecision.authority_committed_at.is_not(None), LoopAction.action_type == "apply_user_inputs")))
+        covered = {item["intent_id"] for action in actions for item in action.payload.get("inputs", ())}
+        if any(item.intent_id not in covered for item in inputs):
+            return None
+    joined = tuple(row for row in rounds if not (row.barrier or {}).get("joined_by") and row.decision_id)
+    if not joined or any(row.status != "settled" for row in joined):
+        return None
+    if not await TaskProgressQueue().ensure_join_ready(session, loop, tuple(row.round_id for row in joined)):
+        loop.health, loop.waiting_reason = "progress_waiting", "round_join_progress"
         return None
     usage = await session.get(LoopBudgetUsage, loop.loop_id, with_for_update=True, populate_existing=True)
-    frontier = await current_frontier_hash(session, loop.loop_id) or round_row.frontier_hash
-    progress = await RoundProgressReader().read(session, loop, round_row, frontier)
+    frontier = await current_frontier_hash(session, loop.loop_id) or joined[-1].frontier_hash
+    progress = await RoundProgressReader().read(session, loop, joined[0], frontier)
     if usage is not None:
-        usage.no_progress_count = 0 if progress['progressed'] else int(usage.no_progress_count or 0) + 1
-        usage.no_progress_fingerprint = progress['fingerprint']
-    round_row.barrier = {**(round_row.barrier or {}), 'progress': progress}
-    next_round = await create_observation_round(session, loop, round_row, frontier)
+        usage.no_progress_count = 0 if progress["progressed"] else int(usage.no_progress_count or 0) + 1
+        usage.no_progress_fingerprint = progress["fingerprint"]
+    next_round = await create_observation_round(session, loop, joined[-1], frontier)
     session.add(next_round)
-    loop.current_round_id = next_round.round_id
-    loop.health = 'observing'
+    for row in joined:
+        row.barrier = {**(row.barrier or {}), "progress": progress, "joined_by": next_round.round_id}
+    loop.current_round_id, loop.health, loop.waiting_reason = next_round.round_id, "observing", None
     loop.revision += 1
     await LoopLifecycleEventRecorder().record(session, loop)
     return next_round
@@ -292,7 +341,7 @@ async def _terminate_patrol(session, round_row, category, reason) -> None:
     from backend.app.desktop.agent_loop.patrol_session_repository import PatrolSessionRepository
     from backend.app.desktop.agent_loop.patrol_session_state import PatrolActivity, PatrolPhase
 
-    patrol = await session.scalar(select(LoopPatrolSession).where(LoopPatrolSession.round_id == round_row.round_id).with_for_update())
+    patrol = await session.scalar(select(LoopPatrolSession).where(LoopPatrolSession.observation_id == round_row.observation_id).with_for_update())
     if patrol is None or patrol.status != "active":
         return
     failed_phase = patrol.current_phase
@@ -344,7 +393,8 @@ async def current_frontier_hash(session: AsyncSession, loop_id: str) -> str | No
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-async def _append_termination_event(session: AsyncSession, loop_id: str, round_id: str, category: str, reason: str) -> None:
+async def _append_termination_event(session: AsyncSession, loop_id: str, round_id: str, category: str, reason: str,
+                                    *, authority_committed: bool) -> None:
     sequence = int(
         await session.scalar(select(func.coalesce(func.max(LoopEventOutbox.sequence), 0)).where(LoopEventOutbox.loop_id == loop_id))
         or 0
@@ -355,7 +405,8 @@ async def _append_termination_event(session: AsyncSession, loop_id: str, round_i
             loop_id=loop_id,
             sequence=sequence,
             event_type=TERMINATION_EVENT,
-            payload={"round_id": round_id, "category": category, "reason": reason},
+            payload={"round_id": round_id, "category": category, "reason": reason,
+                     "authority_committed": authority_committed},
             idempotency_key=_TERMINATION_KEY.format(round_id=round_id),
         )
     )
@@ -373,8 +424,10 @@ async def _attempt_counts(session: AsyncSession, round_ids: list[str]) -> dict[s
 async def _settled_decisions(session: AsyncSession, round_ids: list[str]) -> dict[str, str]:
     """只承认生命周期已终止的决策：publishing/adopting 表示专职组件仍在推进，不算落定。"""
     rows = await session.execute(
-        select(LoopDecision.round_id, LoopDecision.decision_id).where(
+        select(LoopDecision.round_id, LoopDecision.decision_id).join(LoopRound,
+            LoopRound.decision_id == LoopDecision.decision_id).where(
             LoopDecision.round_id.in_(round_ids),
+            LoopDecision.authority_committed_at.is_not(None),
             LoopDecision.status.in_(SETTLED_DECISION_STATUSES),
         )
     )

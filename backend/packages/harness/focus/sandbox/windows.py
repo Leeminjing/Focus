@@ -1,10 +1,10 @@
-"""本文件对外提供 WindowsAclBackend，以 Focus 自有 Windows 后端执行本机受限 Shell。
+"""本文件对外提供 WindowsAclBackend，以 Focus 自有 Windows 后端执行三档本机 Shell。
 
 输入为服务端绑定的模式、真实工作区、目标参数和 Focus 自有 Node 桥。
 输出为目标输出、退出或启动后控制故障事实；启动前后端缺失或授权失败时抛 SandboxUnavailable。
 具体工作流为验证后端、先登记并排除重叠工作区、再准备独立临时授权，创建状态文件，
-再用无 Shell 插值的 argv 启动适配器；适配器构造 Low 限制令牌和受管理子进程，
-状态文件区分目标退出与准备故障，超时关闭其 Job 以终止进程树。
+再用无 Shell 插值的 argv 启动适配器；受限模式构造 Low 令牌，完全访问模式保留原用户权限；
+三档均由 Job 管理后代。超时、取消和 close 发送控制文件，等待 runner 确认整个 Job 已退出后返回；进程启动后的通道故障保持 unknown 清理证据，绝不以控制端已结束冒充目标已清理。
 示例：WindowsAclBackend().run(ShellExecutionRequest(binding, "cmd.exe", ("/c", "echo ok")))。
 """
 
@@ -49,7 +49,7 @@ class WindowsAclBackend:
         self._prepared = PreparedWorkspaceRegistry(
             Path(prepared_registry_path) if prepared_registry_path is not None else None
         )
-        self._active: set[subprocess.Popen[bytes]] = set()
+        self._active: dict[subprocess.Popen[bytes], Path] = {}
         self._lock = threading.RLock()
         self._closed = False
 
@@ -80,6 +80,7 @@ class WindowsAclBackend:
             raise SandboxUnavailable(f"Windows ACL 状态通道创建失败: {error}") from error
         os.close(status_fd)
         status_path = Path(status_name)
+        cancel_path = status_path.with_name(status_path.name + ".cancel")
         argv = [
             node, str(runner), str(status_path), str(workspace),
             str(temp_dir), str(request.binding.mode),
@@ -95,19 +96,17 @@ class WindowsAclBackend:
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True,
                         env=os.environ.copy(),
                     )
-                    self._active.add(process)
+                    self._active[process] = cancel_path
             except OSError as error:
                 raise SandboxUnavailable(f"Windows ACL runner 启动失败: {error}") from error
+            cleanup = "unknown"
             try:
-                status, stdout, stderr = self._wait(process, request)
-                if status != "exited":
-                    fact = self._read_status(status_path)
-                    if fact.get("phase") not in ("started", "exited"):
-                        raise SandboxUnavailable(f"Windows ACL 目标未确认受限启动: {fact}")
-                    return self._result(request, stdout, stderr, None, status)
+                status, stdout, stderr = self._wait(process, request, cancel_path)
                 fact = self._read_status(status_path)
+                cleanup = "confirmed" if fact.get("jobDrained") is True else "unknown"
                 if fact.get("phase") == "failed":
-                    raise SandboxUnavailable(str(fact.get("error") or "Windows ACL 准备失败"))
+                    cleanup = "not_started"
+                    raise SandboxUnavailable(str(fact.get("error") or "Windows ACL 准备失败"), process_cleanup=cleanup)
                 if fact.get("phase") == "control_failed" or (
                     fact.get("phase") == "started" and process.returncode == 126
                 ):
@@ -115,10 +114,14 @@ class WindowsAclBackend:
                     warning = str(fact.get("error") or "Windows ACL 控制端在目标启动后失败")
                     return self._result(
                         request, stdout, stderr, code if type(code) is int else None,
-                        "control_failed", (warning,),
+                        "control_failed", (warning,), process_cleanup=cleanup,
                     )
                 if fact.get("phase") != "exited":
                     raise SandboxUnavailable(f"Windows ACL runner 未完成目标退出协议: {fact}")
+                if fact.get("jobDrained") is not True:
+                    raise SandboxUnavailable("Windows Shell 后代进程未确认退出")
+                if status != "exited":
+                    return self._result(request, stdout, stderr, None, status, process_cleanup=cleanup)
                 if type(fact.get("exitCode")) is not int:
                     raise SandboxUnavailable(f"Windows ACL 目标退出码协议无效: {fact}")
                 if fact.get("exitCode") != process.returncode and process.returncode != 126:
@@ -130,12 +133,14 @@ class WindowsAclBackend:
                     warnings.append("Windows ACL 控制端在目标退出后发生故障")
                 for warning in warnings:
                     _log.warning("Windows sandbox cleanup: %s", warning)
-                return self._result(request, stdout, stderr, fact["exitCode"], status, tuple(warnings))
+                return self._result(request, stdout, stderr, fact["exitCode"], fact.get("termination") or status, tuple(warnings), process_cleanup=cleanup)
+            except (SandboxUnavailable, OSError) as error:
+                raise SandboxUnavailable(str(error), process_cleanup=cleanup) from error
             finally:
                 with self._lock:
-                    self._active.discard(process)
+                    self._active.pop(process, None)
         finally:
-            for cleanup_path in (status_path, status_path.with_name(status_path.name + ".pending")):
+            for cleanup_path in (status_path, status_path.with_name(status_path.name + ".pending"), cancel_path):
                 try:
                     cleanup_path.unlink(missing_ok=True)
                 except OSError as error:
@@ -144,17 +149,12 @@ class WindowsAclBackend:
     def close(self) -> tuple[str, ...]:
         with self._lock:
             self._closed = True
-            active = tuple(self._active)
-        for process in active:
+            active = tuple(self._active.items())
+        for process, cancel_path in active:
             if process.poll() is None:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
+                cancel_path.write_text("cancelled", encoding="utf-8")
+        for process, _ in active:
+            process.wait()
         node = self._node_binary or shutil.which("node")
         if not node:
             warnings = ("无法撤销私有临时授权：Node 运行时不可用",)
@@ -178,31 +178,27 @@ class WindowsAclBackend:
         return value
 
     @staticmethod
-    def _wait(process: subprocess.Popen[bytes], request: ShellExecutionRequest) -> tuple[str, bytes, bytes]:
+    def _wait(process: subprocess.Popen[bytes], request: ShellExecutionRequest, cancel_path: Path) -> tuple[str, bytes, bytes]:
         deadline = time.monotonic() + request.timeout_seconds
+        status = "exited"
         while True:
-            if request.cancel_event is not None and request.cancel_event.is_set():
+            if status == "exited" and request.cancel_event is not None and request.cancel_event.is_set():
                 status = "cancelled"
-                break
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+                cancel_path.write_text(status, encoding="utf-8")
+            if status == "exited" and time.monotonic() >= deadline:
                 status = "timeout"
-                break
+                cancel_path.write_text(status, encoding="utf-8")
             try:
-                stdout, stderr = process.communicate(timeout=min(remaining, 0.2))
-                return "exited", stdout, stderr
+                stdout, stderr = process.communicate(timeout=0.2)
+                return status, stdout, stderr
             except subprocess.TimeoutExpired:
                 continue
-        if process.poll() is None:
-            process.kill()
-        stdout, stderr = process.communicate()
-        return status, stdout, stderr
 
     def _require_backend(self, request: ShellExecutionRequest) -> tuple[str, Path, Path]:
         if os.name != "nt":
             raise SandboxUnavailable("Windows ACL 后端只支持 Windows 原生执行")
-        if request.binding.mode not in (AccessMode.READ_ONLY, AccessMode.WORKSPACE_WRITE):
-            raise ValueError("Windows ACL 后端仅处理受限模式")
+        if request.binding.mode not in (AccessMode.READ_ONLY, AccessMode.WORKSPACE_WRITE, AccessMode.FULL):
+            raise ValueError("Windows Shell 模式无效")
         node = self._node_binary or shutil.which("node")
         if not node or not Path(node).is_file():
             raise SandboxUnavailable("未找到 Node 运行时")
@@ -243,13 +239,16 @@ class WindowsAclBackend:
     def _result(
         request: ShellExecutionRequest, stdout: bytes, stderr: bytes,
         exit_code: int | None, status: str, cleanup_warnings: tuple[str, ...] = (),
+        *, process_cleanup: str = "unknown",
     ) -> ShellExecutionResult:
         return ShellExecutionResult(
             mode=request.binding.mode, workspace=request.binding.workspace,
-            backend_applied=True, enforcement="partial",
+            backend_applied=request.binding.mode is not AccessMode.FULL,
+            enforcement="none" if request.binding.mode is AccessMode.FULL else "partial",
             stdout=stdout.decode("utf-8", errors="replace"),
             stderr=stderr.decode("utf-8", errors="replace"),
             exit_code=exit_code, status=status,
             approval_id=request.binding.approval_id,
             cleanup_warnings=cleanup_warnings,
+            process_cleanup=process_cleanup,
         )

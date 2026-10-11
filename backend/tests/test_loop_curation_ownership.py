@@ -8,12 +8,13 @@ r"""本文件对外提供 Loop 策展所有权与终态生命周期的 PostgreSQ
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 from pathlib import Path
 import uuid
 
-from alembic import command
-from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import make_url
@@ -255,9 +256,12 @@ def test_startup_recovery_is_idempotent_and_completes_migration_audit(tmp_path: 
 
 
 def test_migration_retires_only_proven_terminal_owners_and_downgrade_keeps_them_safe(tmp_path: Path) -> None:
-    migrations = Path(__file__).parents[1] / "packages" / "harness" / "focus" / "persistence" / "migrations" / "alembic.ini"
-    config = Config(str(migrations))
+    migration = importlib.import_module("focus.persistence.migrations.versions.2c3d4e5f6a7b_retire_terminal_loop_curation_ownership")
     engine = create_engine(make_url(os.environ["FOCUS_DATABASE_URL"]).set(drivername="postgresql+psycopg"))
+    def migrate(operation):
+        with engine.begin() as connection:
+            with Operations.context(MigrationContext.configure(connection)):
+                getattr(migration, operation)()
     workspace_id = uuid.uuid4().hex
     terminal_context_id = uuid.uuid4().hex
     running_context_id = uuid.uuid4().hex
@@ -268,7 +272,7 @@ def test_migration_retires_only_proven_terminal_owners_and_downgrade_keeps_them_
     terminal_lane_id = uuid.uuid4().hex
     running_lane_id = uuid.uuid4().hex
     try:
-        command.downgrade(config, "1b2c3d4e5f6a")
+        migrate("downgrade")
         with Session(engine) as session, session.begin():
             session.add(DesktopWorkspace(workspace_id=workspace_id, path=str(tmp_path), display_name="ownership-migration"))
             session.flush()
@@ -285,7 +289,7 @@ def test_migration_retires_only_proven_terminal_owners_and_downgrade_keeps_them_
                 CurationLane(lane_id=terminal_lane_id, program_id=terminal_program_id, managed_context_id=terminal_context_id, purpose="terminal", normalized_purpose="terminal", lane_policy={}),
                 CurationLane(lane_id=running_lane_id, program_id=running_program_id, managed_context_id=running_context_id, purpose="running", normalized_purpose="running", lane_policy={}),
             ])
-        command.upgrade(config, "head")
+        migrate("upgrade")
         with Session(engine) as session:
             terminal_lane = session.get(CurationLane, terminal_lane_id)
             running_lane = session.get(CurationLane, running_lane_id)
@@ -293,12 +297,11 @@ def test_migration_retires_only_proven_terminal_owners_and_downgrade_keeps_them_
             assert terminal_lane.publisher_epoch == 2
             assert running_lane.lifecycle == "active"
             assert session.get(AgentLoop, terminal_loop_id).program_id == terminal_program_id
-        command.downgrade(config, "1b2c3d4e5f6a")
+        migrate("downgrade")
         with Session(engine) as session:
             assert session.get(CurationLane, terminal_lane_id).lifecycle == "retired"
-        command.upgrade(config, "head")
+        migrate("upgrade")
         with Session(engine) as session:
             assert session.get(CurationLane, terminal_lane_id).publisher_epoch == 2
     finally:
-        command.upgrade(config, "head")
         engine.dispose()

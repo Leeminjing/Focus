@@ -150,7 +150,7 @@ class LoopPortfolioPublicationQueue:
             loop, round_row, decision = await self._failure_rows(session, decision_id)
             if decision is None or decision.status != "publishing_run":
                 return False
-            current = loop is not None and loop.status == "running" and loop.current_round_id == decision.round_id
+            current = loop is not None and loop.status == "running" and decision.authority_committed_at is not None
             if not superseded and current and decision.deferred_attempt < self._max_attempts:
                 decision.status = "publishing"
                 decision.queued_reason = f"retry:{decision.decision_id}:attempt:{decision.deferred_attempt + 1}:{reason[:500]}"

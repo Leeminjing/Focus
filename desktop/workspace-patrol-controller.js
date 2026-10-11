@@ -1,7 +1,7 @@
 /* 本文件对外提供工作区 Patrol 页面控制器。
  * 输入为已绑定工作区、共享 Loop API、Live Store/Connection 及输入 store；输出为逐条耐久回执和图主导工作台更新；选择身份由原 ContextInspector 持有。
  * 具体工作流为先读取绑定/历史再订阅已有单路 Live，依据投影结构共享只更新变化区域，保留 composer、进度和未变等待表单 DOM，异步响应按工作区代际隔离；
- * 主输入走 workspace intake，查看 Context 不改变目标；清空仅编辑未提交正文并返回输入焦点，不触及回答目标、历史或运行。
+ * 主输入走 workspace intake，固定当时可见的 Live 游标、Fact revision 与独立 Run 有界片段；旧请求重试复用原文和证据。Observation 按精确版本检视，迟到分页不得进入另一版本。
  * 显隐复用 SurfaceTransition 保留输入节点，运行预览复用共享 Run 观察器，折叠/离开释放订阅；原生 dialog 管理焦点，AbortController 清理监听与读请求。示例：await controller.mount(host, workspace)。
  */
 (function (root, factory) {
@@ -36,12 +36,14 @@
     let observationSections = {};
     let observationInspection = null;
     let observationLoading = new Set();
+    let inspectionVersion = 0;
     let dialogKind = null;
     let movedPanel = null;
 
 
 
     let factPage = null;
+    let visibleFact = null;
     let factOptions = { kind: "", status: "", outcomeStatus: "", contextId: "" };
     let factVersion = 0;
     let progressInspection = null;
@@ -81,7 +83,7 @@
       if (!dialog.open || dialog.inert) void root.FocusSurfaceTransition.visible(dialog, true, { modal: true, source: root.document.activeElement });
     }
     function closeDialog() {
-      dialogKind = null; progressVersion++; factVersion++; observationInspection = null;
+      dialogKind = null; progressVersion++; factVersion++; inspectionVersion++; observationInspection = null;
       return root.FocusSurfaceTransition.visible(host.querySelector("[data-patrol-dialog]"), false, { modal: true });
     }
     function toggleDetails() {
@@ -182,6 +184,23 @@
         if (dialogKind === "observation") showDialog("observation", "Observation", root.FocusObservationView.render(selected, observationSections));
       } finally { loading.delete(section); }
     }
+    async function openObservation(id) {
+      const owner = token, version = ++inspectionVersion;
+      observationInspection = null; observationSections = {}; observationLoading = new Set();
+      showDialog("observation", "Observation", "正在读取所选冻结版本");
+      const value = await api.observation(loopId, id, { signal: lifetime.signal });
+      if (owner !== token || version !== inspectionVersion || dialogKind !== "observation") return;
+      observationInspection = value;
+      showDialog("observation", "Observation", root.FocusObservationView.render(value, observationSections));
+    }
+    function visibleContext() {
+      if (!projection || projection.loop_id !== loopId) return null;
+      const shown = selector => detailsOpen && Boolean(host.querySelector(selector)?.getClientRects().length);
+      const facts = [...(shown("[data-patrol-facts]") ? root.FocusLoopLiveSelectors.selectFacts(projection) : []),
+        ...(dialogKind === "facts" ? factPage?.facts || [] : []), ...(dialogKind === "fact" && visibleFact ? [visibleFact] : [])];
+      return root.FocusWorkspacePatrolInputs.captureVisibleContext({ projection, facts,
+        previews: shown("[data-patrol-lineage]") ? previews?.get() || {} : {} });
+    }
     function renderProgressInspection() {
       const page = progressInspection;
       if (!page || dialogKind !== "progress") return;
@@ -189,7 +208,7 @@
       const versions = [...(page.history || [])];
       if (selected && !versions.some(item => item.progress_id === selected.progress_id)) versions.unshift(selected);
       const toolbar = `<label>查看已提交版本<select data-patrol-progress-version>${versions.map(item => `<option value="${view.escape(item.progress_id)}"${item.progress_id === selected?.progress_id ? " selected" : ""}>P${item.generation}${item.progress_id === page.current?.progress_id ? " · 当前" : ""}</option>`).join("")}</select></label>${page.history_has_more ? "<p>列表为最近 32 个版本；Observation 可读取本轮精确前序。</p>" : ""}<p>版本 ${view.escape(selected?.progress_id || "尚未提交")}，不会随实时事件改写此份检查。</p>`;
-      showDialog("progress", "Task Progress · 已提交版本", toolbar + view.progress(selected, true, progressFilter) + (page.work || []).map(work => `<p>进度沉淀：${view.escape(work.state)}${work.failure_kind ? ` · ${view.escape(work.failure_kind)}` : ""}${work.state === "blocked" ? ` <button data-patrol-progress-retry="${view.escape(work.observation_id)}">重试这份冻结进度</button>` : ""}</p>`).join(""));
+      showDialog("progress", "Task Progress · 已提交版本", toolbar + view.progress(selected, true, progressFilter) + (page.work || []).map(work => `<p>进度沉淀：${view.escape(work.state)}${work.failure_kind ? ` · ${view.escape(work.failure_kind)}` : ""}${work.state === "blocked" ? ` <button data-patrol-progress-retry="${view.escape(work.work_id || work.observation_id)}">重试这份冻结进度</button>` : ""}</p>`).join(""));
     }
     async function openProgress(progressId = null) {
       const owner = token, version = ++progressVersion;
@@ -310,6 +329,9 @@
       const stateText = loop.status === "waiting_user" && loop.waiting_reason === "awaiting_input" ? "等待新输入" : `${states[loop.status] || "准备中"} · ${connections[status.status] || "同步中"}`;
       host.querySelector("[data-workbench-status]").textContent = stateText;
       host.querySelector("[data-workbench-round]").textContent = projection.round?.state?.number ? `当前 Round ${projection.round.state.number} · Live 事实` : "当前 Live 事实";
+      if (["rounds", "runs", "patrol_sessions", "loop", "directives"].some(key => previous?.[key] !== projection[key])) {
+        host.querySelector("[data-patrol-rounds]").innerHTML = root.FocusObservationView.rounds(projection);
+      }
       const stateNode = host.querySelector("[data-patrol-state]");
       if (stateNode.textContent !== stateText) stateNode.textContent = stateText;
       host.querySelector('[data-patrol-control="pause"]').disabled = !(loop.status === "running" || (loop.status === "waiting_user" && loop.waiting_reason === "awaiting_input"));
@@ -329,7 +351,7 @@
       if (previous?.facts !== projection.facts) root.FocusLoopFactsView?.reconcileTimeline(host.querySelector("[data-patrol-facts]"), root.FocusLoopLiveSelectors.selectFacts(projection));
       if (detailsOpen) {
         if (["loop", "portfolio", "lineage", "contexts"].some(key => previous?.[key] !== projection[key])) void refreshLineage(projection);
-        if (previous?.round !== projection.round) void refreshObservation();
+        if (previous?.round !== projection.round) void refreshObservation(true);
         if (lineageSnapshot && ["contexts", "runs", "task_progress"].some(key => previous?.[key] !== projection[key])) patchGraph();
       }
       if (!projection.round?.state?.observation_id) {
@@ -402,10 +424,12 @@
         else if (button.dataset.patrolProgressFilter) { progressFilter = button.dataset.patrolProgressFilter; renderProgressInspection(); }
         else if (button.dataset.patrolObservationProgress) await openProgress(button.dataset.patrolObservationProgress);
         else if (button.hasAttribute("data-patrol-observation-open")) {
+          inspectionVersion++;
           observationInspection = observation; observationSections = {}; observationLoading = new Set();
           showDialog("observation", "Observation", root.FocusObservationView.render(observationInspection, observationSections));
         }
         else if (button.dataset.patrolObservationSection) await loadObservationSection(button.dataset.patrolObservationSection);
+        else if (button.dataset.patrolObservationVersion) await openObservation(button.dataset.patrolObservationVersion);
         else if (button.hasAttribute("data-patrol-observation-retry")) await refreshObservation(true);
         else if (button.hasAttribute("data-patrol-lineage-retry") && projection) { previews?.retry(); await refreshLineage(projection); }
         else if (button.hasAttribute("data-patrol-facts-open")) await loadFacts();
@@ -442,7 +466,7 @@
         else if (button.dataset.factId) {
           const owner = token;
           const detail = await api.factDetail(loopId, button.dataset.factId, lifetime.signal);
-          if (owner === token) showDialog("fact", "事实与来源", root.FocusLoopFactsView.renderDetail(detail));
+          if (owner === token) { visibleFact = detail.fact; showDialog("fact", "事实与来源", root.FocusLoopFactsView.renderDetail(detail)); }
         }
       } catch (failure) {
         if (clickOwner !== token) return;
@@ -459,7 +483,7 @@
       inspector.mount(host.querySelector("[data-patrol-context]"));
       unlisten = inputs.subscribe(patchInputs);
       const options = { signal: lifetime.signal };
-      host.querySelector("[data-patrol-composer]").addEventListener("submit", event => { event.preventDefault(); try { error(null); void send(inputs.submit()); } catch (failure) { error(failure); } }, options);
+      host.querySelector("[data-patrol-composer]").addEventListener("submit", event => { event.preventDefault(); try { error(null); void send(inputs.submit(visibleContext())); } catch (failure) { error(failure); } }, options);
       const content = host.querySelector("[data-patrol-content]");
       content.addEventListener("input", event => inputs.edit({ content: event.target.value }), options);
       content.addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); content.form.requestSubmit(); } }, options);
@@ -515,7 +539,7 @@
       previews?.stop();
       root.document.body.classList.remove("has-patrol-workbench");
       relatedOnly = false; highlightIds = [];
-      token++; lineageToken++; historyToken++; observationVersion++; factVersion++; progressVersion++;
+      token++; lineageToken++; historyToken++; observationVersion++; factVersion++; progressVersion++; inspectionVersion++;
       lifetime?.abort(); lifetime = null;
       if (host) for (const element of host.querySelectorAll("[data-surface-managed], [data-patrol-composer]")) root.FocusSurfaceTransition.finish(element);
       host?.querySelector("[data-patrol-dialog]")?.close();

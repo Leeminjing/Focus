@@ -1,7 +1,7 @@
 r"""本文件对外提供 workspace slot、lease、fingerprint、执行锚点与 adoption 严格合同。
 
 输入为可信 workspace identity、Run 装备、工具 effect、路径与版本；输出为服务端推导的访问意图、
-不可变执行锚点和采用结果。具体工作流为拒绝额外字段，统一规范读写模式与版本，再交给协调服务。
+不可变执行锚点和采用结果。具体工作流为文件模式与工具能力共同限定读写，未知效果保守占写租约，再交给协调服务。
 示例：`intent = WorkspaceIntentDeriver.derive(equipment, effects)`。
 """
 
@@ -89,7 +89,7 @@ class WorkspaceIntentDeriver:
     ) -> WorkspaceExecutionIntent:
         reasons: list[str] = []
         permissions = {str(item) for item in equipment.get("permissions", [])}
-        if permissions.intersection({"write", "host_command"}):
+        if equipment.get("access_mode") != "read-only" and permissions.intersection({"write", "host_command"}):
             reasons.append("execution_profile_allows_write")
         for effect in tool_effects:
             if cls._effect_may_write(effect):

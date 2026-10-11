@@ -2,6 +2,7 @@
 
 输入为隔离 PostgreSQL、新问候 Loop 与受理的三代执行；输出为完整归属、实时预算阻断、幂等消费与迟到结算不复活断言。
 具体工作流为经真实 admission 验证来源、逐 attempt 预留和结算、主动暂停，再由 finalizer 补齐业务终态及用量；结构化索引使用生产模型包装器验证已报告失败与取消预留分开结算。
+后代沿用父执行的原 Round 权限绑定，认知预算 owner 引用实际冻结的 Observation。
 示例：python -m pytest backend/tests/test_loop_governance_accounting.py -q。
 历史已执行轮缺 Decision 时显示精确诊断；新待观察轮保持未完成而不被误报，只读查询不补写冻结事实。
 """
@@ -50,7 +51,7 @@ def test_owned_descendants_reserve_live_budget_and_settle_after_pause(tmp_path):
                 for _ in range(2):
                     child = DesktopRun(run_id=uuid.uuid4().hex, task_id=parent.task_id, agent_id=uuid.uuid4().hex,
                         kind="worker", status="pending", loop_id=parent.loop_id, round_id=parent.round_id,
-                        directive_id=directive_id, parent_run_id=run_ids[-1], equipment={"permissions": ["read"], "access_mode": "read-only"})
+                        directive_id=directive_id, parent_run_id=run_ids[-1], equipment={**parent.equipment, "permissions": ["read"], "access_mode": "read-only"})
                     await RunAdmissionService(RunOwnershipPolicy().admit).admit(session, child)
                     run_ids.append(child.run_id)
                 round_row = await session.get(LoopRound, fixture["round_id"])
@@ -152,12 +153,13 @@ def test_production_index_attempts_keep_reported_failure_and_cancelled_reservati
         task = None
         try:
             fixture = await _seed_loop(sessions, tmp_path, label="index-receipt", started_at=datetime.now(UTC))
-            await LoopObservationService(sessions, Checkpoints()).capture(fixture["loop_id"], fixture["round_id"])
+            observation = await LoopObservationService(sessions, Checkpoints()).capture(fixture["loop_id"], fixture["round_id"])
             config = app_config_for("receipt-test", None)
             config.models[0].curation_output_method = "prompt_json"
             model = RoleBoundStructuredModel(config, "semantic_index_projector", max_attempts=2)
             wrapped = BudgetedIndexModel(model, IndexModelBudget(resolve_expansion_resources({}, 1),
-                usage_receipts=OwnedModelUsage(sessions, fixture["loop_id"], fixture["round_id"], "round", fixture["round_id"])))
+                usage_receipts=OwnedModelUsage(sessions, fixture["loop_id"], fixture["round_id"], "round", fixture["round_id"],
+                    observation_id=observation.decision_inputs_ref)))
             task = asyncio.create_task(wrapped.invoke(Result, "Return an answer", {"frozen": True}))
             await asyncio.wait_for(sent.wait(), 5)
             await fixture["service"].control(fixture["loop_id"], "pause")

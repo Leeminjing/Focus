@@ -3,7 +3,7 @@ r"""本文件对外提供 WorkspaceSlotLifecycle 与 WorkspaceRunReconciler。
 输入为 slot、租约、执行锚点、当前 fingerprint、审计策略与截止时间；输出为安全保留/清理决定或
 Writer 部分副作用 observation。具体工作流为先回收过期 lease，再阻止清理活动租约和未采用变更，
 符合条件时先封锁 slot、由受管 provider 删除物理 worktree，最后写墓碑并保留 deleted identity；
-中断 Reader 可重试，Writer 必须先观察 diff。示例：`await lifecycle.cleanup(slot_id)`。
+中断 Reader 可重试，Writer 必须先观察 diff；未确认 Shell 清理的 Run 阻止物理 slot 删除，包括强制清理。示例：`await lifecycle.cleanup(slot_id)`。
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from backend.app.desktop.workspace_coordination.models import (
 )
 from backend.app.desktop.workspace_coordination.git_worktree import GitWorktreeIsolationProvider
 from backend.app.desktop.workspace_coordination.isolation import IsolationResult
+from backend.app.desktop.models import DesktopRun
 
 
 class WorkspaceSlotLifecycle:
@@ -34,6 +35,12 @@ class WorkspaceSlotLifecycle:
         async with self._sessions.begin() as session:
             slot = await session.scalar(select(WorkspaceSlot).where(WorkspaceSlot.slot_id == slot_id).with_for_update())
             if slot is None or slot.kind == "authoritative":
+                return False
+            unresolved = await session.scalar(select(DesktopRun.run_id).where(
+                DesktopRun.workspace_anchor["slot_id"].astext == slot_id, DesktopRun.settled_at.is_(None),
+                DesktopRun.workspace_result["shell_cleanup"].astext.not_in(("{}", "null")),
+            ).limit(1))
+            if unresolved is not None:
                 return False
             await session.execute(
                 update(WorkspaceLease)

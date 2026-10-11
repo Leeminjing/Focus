@@ -23,7 +23,7 @@
     (4) read_file 按内容分发：.pdf/.docx/.doc → focus.readers 解析；图片与二进制内容
         → 抛可修正的 ToolException（绝不静默返回替换字符乱码）；其余按 UTF-8 读取
     (5) Shell 先排除 Windows WSL 启动器，再绑定服务端执行身份和本次调用；受限模式经 Focus Windows ACL 后端执行，
-        完全访问模式明确跳过文件沙箱；后端失败时不启动未受限替代命令
+        Windows 三档模式共用可取消且等待进程树退出的 Job；实际启动前将服务端清理回执置 unknown，明确未启动或整个 Job 退出才解除结算屏障；完全访问跳过文件限制，后端失败不启动替代命令
 
 效果声明：三个文件工具的目标就是参数里的 path，可由确定性解析完整枚举，故声明为可结构化
 枚举；四个 Shell 仅因实际走受限后端而声明受限效果，未知宿主工具仍按不透明效果审批。
@@ -201,7 +201,8 @@ def _run_shell(command: str, runtime: ToolRuntime[dict], exe_name: str, args: li
         raise RuntimeError("UNSUPPORTED_SHELL: Windows WSL 启动器不属于本机文件沙箱范围")
     binding = bind_call_execution(runtime.context, str(runtime.tool_call_id or ""))
     cancel_event = security_context_of(runtime.context).extras.get("sandbox_cancel_event")
-    if binding.mode is AccessMode.DANGER_FULL_ACCESS:
+    receipt = security_context_of(runtime.context).extras.get("shell_cleanup_receipt")
+    if binding.mode is AccessMode.DANGER_FULL_ACCESS and os.name != "nt":
         try:
             process = subprocess.run(
                 [exe_path, *args, command], cwd=binding.workspace,
@@ -212,14 +213,20 @@ def _run_shell(command: str, runtime: ToolRuntime[dict], exe_name: str, args: li
             return _shell_fact(binding, False, "timeout", None, str(error.stdout or ""), str(error.stderr or ""))
         return _shell_fact(binding, False, "exited", process.returncode, process.stdout, process.stderr)
     try:
+        if receipt is not None:
+            receipt["process_cleanup"] = "unknown"
         result = _SHELL_BACKEND.run(
             ShellExecutionRequest(binding, exe_path, (*args, command), cancel_event=cancel_event)
         )
     except SandboxUnavailable as error:
-        return _shell_fact(binding, False, "SANDBOX_UNAVAILABLE", None, "", str(error))
+        if receipt is not None:
+            receipt["process_cleanup"] = error.process_cleanup
+        return _shell_fact(binding, False, "SANDBOX_UNAVAILABLE", None, "", str(error), process_cleanup=error.process_cleanup)
+    if receipt is not None:
+        receipt["process_cleanup"] = result.process_cleanup
     return _shell_fact(
         binding, result.backend_applied, result.status, result.exit_code,
-        result.stdout, result.stderr, result.cleanup_warnings,
+        result.stdout, result.stderr, result.cleanup_warnings, process_cleanup=result.process_cleanup,
     )
 
 
@@ -236,6 +243,7 @@ def _is_wsl_launcher(executable: str) -> bool:
 def _shell_fact(
     binding: Any, applied: bool, status: str, exit_code: int | None,
     stdout: str, stderr: str, cleanup_warnings: tuple[str, ...] = (),
+    *, process_cleanup: str = "unknown",
 ) -> str:
     output = stdout + stderr
     truncated = len(output) > 30000
@@ -255,6 +263,7 @@ def _shell_fact(
         "output": output[-30000:] if truncated else output,
         "truncated": truncated, "approval_id": binding.approval_id,
         "cleanup_warnings": list(cleanup_warnings),
+        "process_cleanup": process_cleanup,
     }, ensure_ascii=False)
 
 

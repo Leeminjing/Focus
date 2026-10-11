@@ -7,6 +7,7 @@ WorkContextSpec、候选证据准入、relation reconciliation 与 admission；S
 验证的内部 LanePlan；Stage 另提供不创建 expansion/Context/Portfolio mutation 的 observe-only comparison，并可通过部署开关停止自动写入。
 示例：`resolution = await stage.resolve(observation, intent)`。
 完成动作在 Stage 的只读事务复用 CompletionEligibilityPolicy 重验当前资格，提交权和最后复检仍归 Kernel。
+认知阶段缓存及机会绑定精确 Observation；旧版本只保留审计，迟到机会写入在 Loop→Round 锁内拒绝。
 """
 
 from __future__ import annotations
@@ -102,6 +103,7 @@ class ContextExpansionCoordinator:
         observation: LoopObservationEnvelope,
         *,
         existing_independence_keys: frozenset[str] = frozenset(),
+        fencing_token: int | None = None,
     ) -> ExpansionAssessment:
         records: list[DerivationStageRecord] = []
         signal_timer = DerivationStageTimer(
@@ -244,6 +246,8 @@ class ContextExpansionCoordinator:
                     observation.round_id,
                     planned.work_specs,
                     planned.required_work_spec_ids,
+                    observation_id=observation.decision_inputs_ref,
+                    fencing_token=fencing_token,
                 )
             else:
                 relations = await self._relation_evaluator.evaluate(planned.work_specs)
@@ -422,21 +426,24 @@ class ContextExpansionStage:
             else writes_enabled
         )
 
-    async def assess(self, observation: LoopObservationEnvelope) -> ExpansionAssessment:
+    async def assess(self, observation: LoopObservationEnvelope, *, fencing_token: int | None = None) -> ExpansionAssessment:
         async with self._sessions() as session:
             existing = await self._repository.active_independence_keys(
                 session,
                 observation.loop_id,
                 exclude_round_id=observation.round_id,
             )
-            prior = await self._repository.by_round(session, observation.round_id)
+            current_scope = ExpansionSignalCollector().collect(observation).observation_hash
+            prior = tuple(row for row in await self._repository.by_round(session, observation.round_id)
+                          if row.opportunity.get("observation_hash") == current_scope)
         assessment = await self._coordinator.assess(
             observation,
             existing_independence_keys=existing,
+            **({"fencing_token": fencing_token} if fencing_token is not None else {}),
         )
         assessment = self._terminalized_assessment(assessment, prior)
         await self._record_stage_artifacts(observation, assessment)
-        await self._record(observation, assessment)
+        await self._record(observation, assessment, fencing_token=fencing_token)
         return assessment
 
     async def _record_stage_artifacts(
@@ -451,7 +458,7 @@ class ContextExpansionStage:
                     loop_id=observation.loop_id,
                     round_id=observation.round_id,
                     stage=record.stage,
-                    input_identities=record.input_identities,
+                    input_identities=(observation.decision_inputs_ref, *record.input_identities),
                     version=record.version,
                 )
                 if existing is not None:
@@ -461,7 +468,7 @@ class ContextExpansionStage:
                     loop_id=observation.loop_id,
                     round_id=observation.round_id,
                     stage=record.stage,
-                    input_identities=record.input_identities,
+                    input_identities=(observation.decision_inputs_ref, *record.input_identities),
                     version=record.version,
                     outcome="blocked" if record.failure_code else "ready",
                     payload={**record.model_dump(mode="json"), **({"rejected_candidates":
@@ -473,6 +480,7 @@ class ContextExpansionStage:
         self,
         observation: LoopObservationEnvelope,
         intent: PatrolDecisionIntent,
+        *, fencing_token: int | None = None,
     ) -> ExpansionResolution:
         completion = tuple(action for action in intent.actions if action.action == 'request_completion')
         if completion:
@@ -498,7 +506,7 @@ class ContextExpansionStage:
                             blocker=blocker,
                         )
                     return ExpansionResolution(intent=None, blocker=blocker)
-                result = await self._resolve_spawn(observation, opportunities, action)
+                result = await self._resolve_spawn(observation, opportunities, action, fencing_token=fencing_token)
                 if isinstance(result, ExpansionBlocker):
                     return ExpansionResolution(intent=None, blocker=result)
                 resolved.append(result)
@@ -596,7 +604,7 @@ class ContextExpansionStage:
                 loop_id=observation.loop_id,
                 round_id=observation.round_id,
                 stage="shadow_comparison",
-                input_identities=(observation.observed_frontier_hash,),
+                input_identities=(observation.decision_inputs_ref, observation.observed_frontier_hash),
                 version="semantic-derivation-shadow-v1",
                 outcome="ready",
                 payload=report.model_dump(mode="json"),
@@ -604,7 +612,7 @@ class ContextExpansionStage:
             )
         return report
 
-    async def _resolve_spawn(self, observation, opportunities, action) -> CreateLaneAction | ExpansionBlocker:
+    async def _resolve_spawn(self, observation, opportunities, action, *, fencing_token=None) -> CreateLaneAction | ExpansionBlocker:
         opportunity = opportunities.get(action.opportunity_id)
         if opportunity is None:
             return ExpansionBlocker(
@@ -618,6 +626,7 @@ class ContextExpansionStage:
             opportunity,
             SpawnContextIntent.model_validate(action.model_dump(mode="json")),
             artifact_expansion_id=opportunity.opportunity_id,
+            **({"expected_token": fencing_token} if fencing_token is not None else {}),
         )
         if isinstance(compiled, ExpansionBlocker):
             await self._transition(
@@ -632,7 +641,7 @@ class ContextExpansionStage:
                 },
             )
             return compiled
-        await self._record_compiled_artifacts(opportunity, compiled)
+        await self._record_compiled_artifacts(observation, opportunity, compiled)
         records = {item.stage: item.model_dump(mode="json") for item in compiled.stage_records}
         await self._transition(
             opportunity.opportunity_id,
@@ -733,9 +742,20 @@ class ContextExpansionStage:
             ),
         )
 
-    async def _record(self, observation: LoopObservationEnvelope, assessment: ExpansionAssessment) -> None:
+    async def _record(self, observation: LoopObservationEnvelope, assessment: ExpansionAssessment, *, fencing_token=None) -> None:
+        from backend.app.desktop.agent_loop.models import AgentLoop, LoopRound
+
         blockers = {item.opportunity_id: item for item in assessment.blockers if item.opportunity_id}
         async with self._sessions.begin() as session:
+            await session.get(AgentLoop, observation.loop_id, with_for_update=True)
+            round_row = await session.get(LoopRound, observation.round_id, with_for_update=True, populate_existing=True)
+            if (round_row is None or round_row.observation_id != observation.decision_inputs_ref
+                    or round_row.decision_id is not None):
+                raise ValueError("expansion_observation_superseded")
+            if fencing_token is not None:
+                from backend.app.desktop.agent_loop.ownership import LoopFencingGuard
+
+                await LoopFencingGuard().validate_current(session, round_row.round_id, fencing_token)
             for opportunity in assessment.opportunities:
                 row = await self._repository.create(
                     session,
@@ -755,7 +775,7 @@ class ContextExpansionStage:
                         blocker_code=blocker.code,
                     )
 
-    async def _record_compiled_artifacts(self, opportunity, compiled) -> None:
+    async def _record_compiled_artifacts(self, observation, opportunity, compiled) -> None:
         payloads = (
             (
                 "compilation",
@@ -780,7 +800,7 @@ class ContextExpansionStage:
                     round_id=opportunity.round_id,
                     expansion_id=opportunity.opportunity_id,
                     stage=stage,
-                    input_identities=inputs,
+                    input_identities=(observation.decision_inputs_ref, *inputs),
                     version=version,
                     outcome="ready",
                     payload=payload,

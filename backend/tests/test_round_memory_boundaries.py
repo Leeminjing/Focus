@@ -1,7 +1,7 @@
 """本文件对外提供 Round 冻结、真实 Portfolio 发布和后台记忆失败的边界验收测试。
 
 输入为隔离 PostgreSQL、生产发布服务及指定事务位置的并发/故障；输出为一致快照、回滚和有限恢复断言。
-具体工作流为准备候选，交错提交与冻结，检查三项持久输入，再验证旧轮读取、新轮派生和预算边界。
+具体工作流为准备候选，交错提交与冻结，检查持久输入与仅在权威提交后登记的独立记忆工作，再验证旧轮读取、新轮派生和预算边界。
 示例：python -m pytest backend/tests/test_round_memory_boundaries.py -q；不调用外部模型。
 """
 
@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from test_agent_loop_round_liveness import _seed_loop, _stop
 from test_atomic_portfolio_publication import _CheckpointWriter, _compiled, _contract
 from test_round_task_progress import _Checkpointer
+from progress_test_support import register_progress
 
 from backend.app.desktop.agent_loop.authority_control import LoopAuthorityService
 from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim
@@ -239,12 +240,12 @@ def test_real_portfolio_publication_races_with_freeze(tmp_path, monkeypatch, com
             else:
                 original = capture._build
 
-                async def intercept(session, loop, round_row, views):
+                async def intercept(session, loop, round_row, views, **kwargs):
                     nonlocal attempts
                     attempts += 1
                     ready.set()
                     await release.wait()
-                    return await original(session, loop, round_row, views)
+                    return await original(session, loop, round_row, views, **kwargs)
 
                 monkeypatch.setattr(capture, "_build", intercept)
             async with asyncio.timeout(10):
@@ -282,9 +283,9 @@ def test_real_portfolio_publication_races_with_freeze(tmp_path, monkeypatch, com
             assert (
                 counts["loop_observations"]
                 == counts["loop_decision_inputs"]
-                == counts["loop_progress_work"]
                 == 1
             )
+            assert counts["loop_progress_work"] == 0
             async with sessions() as session:
                 context = await session.get(DesktopThread, fixture["context_id"])
                 assert context.current_revision_id == current
@@ -337,7 +338,7 @@ def test_freeze_retries_whole_transaction_without_partial_records(
             assert counts == {
                 "loop_observations": int(success),
                 "loop_decision_inputs": int(success),
-                "loop_progress_work": int(success),
+                "loop_progress_work": 0,
                 "loop_task_progress": 1,
                 "loop_progress_heads": 1,
                 "loop_progress_receipts": 0,
@@ -355,6 +356,7 @@ def test_successful_child_publication_keeps_old_round_and_advances_next(tmp_path
             capture = LoopObservationService(sessions, _Checkpointer())
             old = await capture.capture(fixture["loop_id"], fixture["round_id"])
             before = old.model_dump(mode="json")
+            await register_progress(sessions, old)
             published = await publisher.publish(
                 frozen.portfolio_revision_id, frozen.controls
             )
@@ -382,6 +384,8 @@ def test_successful_child_publication_keeps_old_round_and_advances_next(tmp_path
                     worker_request_id=uuid.uuid4().hex,
                     loop_id=fixture["loop_id"],
                     round_id=fixture["round_id"],
+                    observation_id=old.observation_id,
+                    observation_generation=old.generation,
                     kind=kind,
                     scope={"assignments": [{"context_id": fixture["context_id"]}]},
                 )
@@ -426,6 +430,7 @@ def test_memory_bounds_leave_frozen_inputs_and_receipts_unchanged(tmp_path, mode
             observation = await LoopObservationService(
                 sessions, _Checkpointer()
             ).capture(fixture["loop_id"], fixture["round_id"])
+            work_id = await register_progress(sessions, observation)
             model = _Model(
                 failing=mode == "provider", window=1 if mode == "window" else 100000
             )
@@ -441,7 +446,7 @@ def test_memory_bounds_leave_frozen_inputs_and_receipts_unchanged(tmp_path, mode
                 assert await runtime.drain(loop_id=fixture["loop_id"]) == 1
                 async with sessions() as session:
                     work = await session.get(
-                        LoopProgressWork, observation.decision_inputs_ref
+                        LoopProgressWork, work_id
                     )
                     assert work.attempts == index + 1
                     assert work.state == (
@@ -455,7 +460,7 @@ def test_memory_bounds_leave_frozen_inputs_and_receipts_unchanged(tmp_path, mode
                 )
             async with sessions() as session:
                 work = await session.get(
-                    LoopProgressWork, observation.decision_inputs_ref
+                    LoopProgressWork, work_id
                 )
                 assert (
                     "context_budget" if mode == "window" else "provider failure"
@@ -576,6 +581,7 @@ def test_process_restart_between_curator_and_patrol_reuses_frozen_world(tmp_path
                 observation = await LoopObservationService(
                     sessions, _Checkpointer()
                 ).capture(fixture["loop_id"], fixture["round_id"])
+                await register_progress(sessions, observation)
                 curator = DrillProcess(
                     ROOT,
                     tmp_path / "curator",

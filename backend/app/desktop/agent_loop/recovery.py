@@ -57,6 +57,9 @@ class AgentLoopRecovery:
         coordinator_leases = await self._coordinator.recover()
         run_events = await self._run_events.recover()
         async with self._sessions.begin() as session:
+            for model in (LoopPatrolAttempt, LoopWorkerRequest):
+                await session.execute(update(model).where(model.status.in_(("superseded", "cancelled", "interrupted")),
+                    model.completed_at.is_(None)).values(completed_at=datetime.now(UTC)))
             patrol_rows = list((await session.scalars(select(LoopPatrolAttempt).where(LoopPatrolAttempt.status == "running"))).all())
             worker_rows = list((await session.scalars(select(LoopWorkerRequest).where(LoopWorkerRequest.status == "running"))).all())
             retries_by_loop: dict[str, int] = {}
@@ -95,7 +98,7 @@ class AgentLoopRecovery:
                     row.status = "error"
                     row.result = {"error": "process_restarted", "retrying": False}
                     row.completed_at = datetime.now(UTC)
-            await WorkerReceiptRecovery().reconcile(session)
+            await WorkerReceiptRecovery().reconcile(session, process_restarted=True)
             await WorkerRecoveryRepository().reconcile(session)
             for loop_id, retries in retries_by_loop.items():
                 usage = await session.get(LoopBudgetUsage, loop_id, with_for_update=True)

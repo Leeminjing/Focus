@@ -2,7 +2,7 @@
  * 本文件对外提供 validateSnapshot、validateEvent 与 emptyProjection 函数。
  * 输入为 Live Loop API 返回的未知 JSON 值及可选独立 accounting 读模型；输出为结构规范、可安全归约的 projection 或带字段路径的 TypeError。
  * 具体工作流为校验实体信封，排除历史 tool facts，复制集合和独立活动时间线并冻结结果；示例：`validateSnapshot(await api.liveSnapshot(loopId))`。
- * interventions 为向后兼容独立集合，旧快照缺字段时读为空集合。
+ * Round/Observation/Session 保存为身份集合，旧单实体快照集中适配；round/patrol_session 是集合派生的当前视图，不作为另一份领域状态。
   * task_progress 为可缺省的单实体，旧快照无该字段时保持 null。
  */
 (function (root, factory) {
@@ -12,7 +12,7 @@
 })(typeof globalThis === "object" ? globalThis : this, function () {
   "use strict";
 
-  const COLLECTIONS = Object.freeze(["contexts", "lineage", "runs", "curators", "expansions", "directives", "interventions", "facts", "wait_requests", "wait_responses"]);
+  const COLLECTIONS = Object.freeze(["rounds", "observations", "patrol_sessions", "contexts", "lineage", "runs", "curators", "expansions", "directives", "interventions", "facts", "wait_requests", "wait_responses"]);
   const SINGULAR = Object.freeze(["loop", "mission", "patrol_session", "round", "portfolio", "accounting", "task_progress"]);
 
   function record(value, path) {
@@ -55,6 +55,9 @@
       mission: null,
       patrol_session: null,
       round: null,
+      rounds: Object.freeze({}),
+      observations: Object.freeze({}),
+      patrol_sessions: Object.freeze({}),
       contexts: Object.freeze({}),
       lineage: Object.freeze({}),
       runs: Object.freeze({}),
@@ -81,13 +84,28 @@
     const result = { ...emptyProjection(source.loop_id), ...source };
     for (const name of SINGULAR) result[name] = entity(source[name] ?? null, `snapshot.${name}`);
     for (const name of COLLECTIONS) result[name] = collection(source[name] ?? {}, `snapshot.${name}`);
+    if (!source.rounds && result.round) result.rounds = Object.freeze({ [result.round.entity_id]: result.round });
+    if (!source.patrol_sessions && result.patrol_session) {
+      const legacy = result.patrol_session;
+      const adapted = legacy.state.round_id || !result.round ? legacy : Object.freeze({ ...legacy, state: Object.freeze({ ...legacy.state, round_id: result.round.entity_id }) });
+      result.patrol_sessions = Object.freeze({ [adapted.entity_id]: adapted });
+    }
     if (!Array.isArray(source.activity_timeline ?? [])) throw new TypeError("snapshot.activity_timeline 必须是数组");
     if (!Array.isArray(source.unknown_kinds ?? [])) throw new TypeError("snapshot.unknown_kinds 必须是数组");
     result.activity_timeline = Object.freeze([...(source.activity_timeline ?? [])].slice(-200).map(item => Object.freeze({ ...record(item, "snapshot.activity_timeline[]") })));
     result.unknown_kinds = Object.freeze([...(source.unknown_kinds ?? [])]);
     const diagnostics = source.diagnostics || emptyProjection().diagnostics;
     result.diagnostics = Object.freeze({ ...emptyProjection().diagnostics, ...diagnostics, degraded_scope: Object.freeze([...(diagnostics.degraded_scope || [])]), quarantined_units: Object.freeze([...(diagnostics.quarantined_units || [])]) });
-    return Object.freeze(result);
+    return currentEntities(result);
+  }
+
+  function currentEntities(projection) {
+    const round = Object.values(projection.rounds || {}).reduce((latest, item) => !latest || Number(item.state.number || 0) > Number(latest.state.number || 0) ? item : latest, null);
+    const observationId = round?.state.observation_id;
+    const patrol = Object.values(projection.patrol_sessions || {}).filter(item => round && item.state.round_id === round.entity_id
+      && (!observationId || item.state.observation_id === observationId))
+      .reduce((latest, item) => !latest || item.updated_sequence > latest.updated_sequence ? item : latest, null);
+    return Object.freeze({ ...projection, round, patrol_session: patrol });
   }
 
   function validateEvent(value) {
@@ -101,5 +119,5 @@
     return Object.freeze({ ...source, payload: Object.freeze({ ...source.payload }) });
   }
 
-  return Object.freeze({ COLLECTIONS, SINGULAR, emptyProjection, validateSnapshot, validateEvent });
+  return Object.freeze({ COLLECTIONS, SINGULAR, emptyProjection, validateSnapshot, validateEvent, currentEntities });
 });

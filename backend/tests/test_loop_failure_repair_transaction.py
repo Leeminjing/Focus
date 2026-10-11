@@ -97,6 +97,12 @@ async def _authorize(sessions, fixture, claim, message, failure=None):
         assert source["execution_round_id"] == failure["round_id"] and source["run_id"] == failure["run_id"]
 
     async def model(frozen):
+        from backend.app.desktop.agent_loop.directive_equipment import resolve_context_equipment
+        async with sessions() as session:
+            current = await session.get(AgentLoop, frozen.loop_id)
+            permissions = [{"context_id": row["context_id"], "access_mode":
+                (await resolve_context_equipment(session, current, row["context_id"]))["access_mode"]}
+                for row in frozen.portfolio_frontier]
         return PatrolDecisionIntent(decision_id=uuid.uuid4().hex, idempotency_key=f"repair:{claim.round_id}",
             loop_id=frozen.loop_id, loop_revision=frozen.loop_revision, round_id=frozen.round_id,
             holder_id=fixture["snapshot"]["holder_id"], grant_id=frozen.grant["grant_id"], grant_revision=frozen.grant["revision"],
@@ -104,6 +110,7 @@ async def _authorize(sessions, fixture, claim, message, failure=None):
             observed_frontier_hash=frozen.observed_frontier_hash, observed_workspace_revision=frozen.workspace["revision"],
             observed_projection_sequence=frozen.projection_sequence, base_entity_revisions=frozen.base_entity_revisions,
             rationale=message, evidence=({"kind": "test", "source_id": failure["call_id"]},) if failure else (),
+            context_permissions=permissions,
             actions=({"action": "continue_context", "context_id": fixture["context_id"],
                 "context_revision_id": fixture["revision_id"], "message": message},))
 
@@ -123,14 +130,16 @@ async def _launch(sessions, fixture, coordinator, claim):
     async def admit(directive, message, slot_id):
         slot_holder["slot_id"] = slot_id
         async with sessions.begin() as session:
+            from backend.app.desktop.agent_loop.directive_equipment import resolve_directive_equipment
             loop = await session.get(AgentLoop, fixture["loop_id"])
+            equipment = await resolve_directive_equipment(session, loop, directive)
             await RunAdmissionService(RunOwnershipPolicy().admit).admit(session, DesktopRun(
                 run_id=run_id, task_id=fixture["context_id"], agent_id=f"main:{fixture['context_id']}",
                 kind="main", status="pending", origin="direct_user" if directive.origin_kind == "direct_user" else "delegated_patrol", execution_thread_id=f"thread-{fixture['context_id']}",
                 origin_message_id=directive.message_id, context_revision_id=fixture["revision_id"], directive_id=directive.directive_id,
                 action_id=directive.action_id, loop_id=loop.loop_id, round_id=claim.round_id,
                 user_intent_id=directive.correlation_id if directive.origin_kind == "direct_user" else None,
-                equipment=dict(loop.equipment), workspace_anchor={"slot_id": slot_id},
+                equipment=equipment, workspace_anchor={"slot_id": slot_id},
                 input_messages=[{"role": "human", "id": message.id, "content": message.content}]))
         return run_id
 

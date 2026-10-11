@@ -89,7 +89,8 @@ class PatrolSessionLifecycle:
 
     async def current(self, round_id: str) -> PatrolSessionHandle | None:
         async with self._sessions() as session:
-            row = await session.scalar(select(LoopPatrolSession).where(LoopPatrolSession.round_id == round_id))
+            row = await session.scalar(select(LoopPatrolSession).join(LoopRound,
+                LoopRound.observation_id == LoopPatrolSession.observation_id).where(LoopRound.round_id == round_id))
             return None if row is None else PatrolSessionHandle(row.session_id, row.current_phase)
 
     async def get(self, session_id: str) -> PatrolSessionHandle | None:
@@ -150,7 +151,7 @@ class CuratorCoordinationStage:
     async def dispatch(self, session_id: str, observation: LoopObservationEnvelope, scopes: tuple[dict, ...], *, fencing_token: int | None = None) -> int:
         async with self._sessions() as session:
             prepared = await self._assignments.by_session(session, session_id)
-        derivation_input = None if prepared else await self._derivation_input(observation)
+        derivation_input = None if prepared else await self._derivation_input(observation, fencing_token=fencing_token)
         async with self._sessions.begin() as session:
             loop, round_row, patrol = await self._lock_dispatch(session, session_id, observation, fencing_token)
             existing = await self._assignments.by_session(session, session_id)
@@ -163,6 +164,8 @@ class CuratorCoordinationStage:
                         worker_request_id=request_id,
                         loop_id=patrol.loop_id,
                         round_id=patrol.round_id,
+                        observation_id=patrol.observation_id,
+                        observation_generation=patrol.observation_generation,
                         kind="lane_curator",
                         scope={
                             "assignments": [scope],
@@ -215,8 +218,9 @@ class CuratorCoordinationStage:
         patrol = await session.get(LoopPatrolSession, session_id, with_for_update=True, populate_existing=True)
         if loop is None or round_row is None or patrol is None:
             raise KernelFencingRejected("curator_preparation_missing_owner")
-        if (loop.status != "running" or loop.current_round_id != observation.round_id
-            or loop.authority_revision != observation.authority_revision or loop.revision != observation.loop_revision
+        if (loop.status != "running" or round_row.observation_id != observation.decision_inputs_ref
+            or patrol.observation_id != round_row.observation_id
+            or loop.authority_revision != observation.authority_revision
             or round_row.status in {"error", "superseded", "settled"} or patrol.status != "active"
             or patrol.current_phase not in {PatrolPhase.DISPATCHING_CURATORS.value, PatrolPhase.COLLECTING_CURATORS.value}
             or patrol.loop_id != loop.loop_id or patrol.round_id != round_row.round_id):
@@ -238,16 +242,20 @@ class CuratorCoordinationStage:
                 or not worker.scope.get("derivation_input", {}).get("portfolio_index_catalog")):
                 raise ValueError("curator_preparation_incomplete: 缺少 Worker 或完整索引输入")
 
-    async def _derivation_input(self, observation: LoopObservationEnvelope) -> dict:
+    async def _derivation_input(self, observation: LoopObservationEnvelope, *, fencing_token=None) -> dict:
         if self._index_service is None:
             raise RuntimeError("CuratorCoordinationStage 缺少完整 Revision semantic index service")
-        built = await self._index_service.build(observation)
+        built = await self._index_service.build(observation, **({"fencing_token": fencing_token} if fencing_token is not None else {}))
         if built.catalog is None:
             raise ValueError(
                 f"{built.blocker_code or 'portfolio_index_failed'}: "
                 f"{built.blocker_summary or 'Portfolio semantic index 不可用'}"
             )
+        from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
+
+        causal_evidence = await LoopObservationService(self._sessions, None).causal_sources(observation) if observation.causal_chain else ()
         return {
+            "causal_evidence": causal_evidence,
             "mission": EffectiveMissionProjector.observation_payload(observation)["effective_mission"],
             "portfolio_index_catalog": built.catalog.model_dump(mode="json"),
             "semantic_index_ids": tuple(item.index_id for item in built.indexes),
@@ -287,8 +295,19 @@ class CuratorCoordinationStage:
                 )
             return tuple(results)
 
-    async def consume(self, session_id: str) -> int:
+    async def consume(self, session_id: str, *, fencing_token: int | None = None) -> int:
         async with self._sessions.begin() as session:
+            from backend.app.desktop.agent_loop.cognition import require_observation
+            from backend.app.desktop.agent_loop.ownership import LoopFencingGuard
+
+            patrol = await session.get(LoopPatrolSession, session_id)
+            if patrol is None:
+                return 0
+            await session.get(AgentLoop, patrol.loop_id, with_for_update=True)
+            await session.get(LoopRound, patrol.round_id, with_for_update=True, populate_existing=True)
+            await require_observation(session, patrol.round_id, patrol.observation_id, patrol.observation_generation)
+            if fencing_token is not None:
+                await LoopFencingGuard().validate_active(session, patrol.round_id, fencing_token)
             assignments = await self._assignments.by_session(session, session_id)
             consumed = 0
             for assignment in assignments:

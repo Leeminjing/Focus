@@ -24,7 +24,6 @@ from backend.app.desktop.agent_loop.models import (
     LoopEventOutbox,
     LoopRound,
 )
-from backend.app.desktop.agent_loop.ownership import LoopFencingGuard
 from backend.app.desktop.agent_loop.rounds import SETTLED_DECISION_STATUSES, advance_settled_round, settle_round
 from backend.app.desktop.agent_loop.schemas import AdoptWorkspaceResultAction
 from backend.app.desktop.agent_loop.wait_requests import open_recovery_wait
@@ -78,7 +77,7 @@ class LoopWorkspaceAdoptionService:
             raise RuntimeError("Workspace adoption slot 或 Loop 状态已失效")
         if source.owner_loop_id != loop.loop_id or source.kind != "isolated":
             raise RuntimeError("Workspace adoption 来源不属于当前 Loop")
-        if round_row.authority_revision != grant.revision or round_row.goal_revision != loop.goal_revision:
+        if round_row.authority_revision != grant.revision:
             raise RuntimeError("Workspace adoption authority/goal revision 已变化")
         return WorkspaceAdoptionRequest(
             adoption_id=action_row.action_id,
@@ -106,8 +105,6 @@ class LoopWorkspaceAdoptionService:
         if decision.status in SETTLED_DECISION_STATUSES:
             return KernelCommitResult(decision_id, decision.status, (action.action_id,), ())
         self._require_current_owner(loop, round_row, decision)
-        if decision.fencing_token:
-            await LoopFencingGuard().validate_current(session, decision.round_id, decision.fencing_token)
         anchors = list(
             (
                 await session.scalars(
@@ -172,10 +169,12 @@ class LoopWorkspaceAdoptionService:
 
     @staticmethod
     def _require_current_owner(loop: AgentLoop, round_row: LoopRound, decision: LoopDecision) -> None:
-        if (loop.status != "running" or loop.current_round_id != round_row.round_id
+        if round_row.decision_id != decision.decision_id or decision.authority_committed_at is None:
+            raise ValueError("Workspace adoption 缺少所属 Round 的成功权威提交")
+        if (loop.status != "running"
             or round_row.status != "adopting" or decision.status != "adopting"
             or round_row.authority_revision != loop.authority_revision
-            or round_row.goal_revision != loop.goal_revision):
+           ):
             raise RuntimeError("Workspace adoption owner 已失效")
 
     @staticmethod

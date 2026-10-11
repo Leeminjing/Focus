@@ -88,12 +88,12 @@ class LoopWaitRequestFactory:
         )
 
     @staticmethod
-    def progress_memory(observation_id: str, failure_kind: str | None) -> WaitRequestDraft:
+    def progress_memory(work_id: str, failure_kind: str | None) -> WaitRequestDraft:
         return WaitRequestDraft(
-            kind="recovery_action", prompt=f"任务记忆沉淀受阻（{failure_kind or 'unknown'}），需要重试或停止。Observation: {observation_id}",
+            kind="recovery_action", prompt=f"任务记忆沉淀受阻（{failure_kind or 'unknown'}），需要重试或停止。Work: {work_id}",
             response_mode="action",
             response_contract={"actions": [{"action": "retry", "label": "重试任务记忆"}, {"action": "stop", "label": "停止 Loop"}]},
-            scope={"component": "progress_memory", "observation_id": observation_id, "failure_kind": failure_kind},
+            scope={"component": "progress_memory", "work_id": work_id, "failure_kind": failure_kind},
         )
 
     @staticmethod

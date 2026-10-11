@@ -1,7 +1,7 @@
 r"""本文件对外提供 ContextExpansionPlanCompiler 与 DeterministicExpansionPlanCompiler。
 
 输入为冻结 observation、identity-only SpawnContextIntent、WorkContext opportunity、resolved multi-source evidence、validated claim dossier
-与三维 quality assessment；输出为 CompiledExpansion 或阶段专属 ExpansionBlocker。具体工作流为 production façade 重建 manifests、
+与三维 quality assessment；全部规划阶段缓存绑定精确 Observation，基础语义索引独立复用；输出为 CompiledExpansion 或阶段专属 ExpansionBlocker。具体工作流为 production façade 重建 manifests、
 读取授权 corpus、按冻结资源策略解析 required evidence 并记录证据账本、调用受监督 synthesis 与独立 quality gate，再由纯 compiler 只接受 identity 匹配且三维 pass
 的 package，按 Work Contract、Ledger、Dossier、Primary Evidence 编译；不存在 extractive fallback 或 quality bypass。示例：
 `compiled = await compiler.compile(observation, opportunity, intent)`。
@@ -132,12 +132,14 @@ class ContextExpansionPlanCompiler:
         *,
         artifact_expansion_id: str | None = None,
         persist_artifacts: bool = True,
+        expected_token: int | None = None,
     ) -> CompiledExpansion | ExpansionBlocker:
         if intent.opportunity_id != opportunity.opportunity_id:
             return self._blocked(opportunity, "stale_source", "semantic intent 与冻结 opportunity 不一致")
         from backend.app.desktop.agent_loop.model_usage_owner import OwnedModelUsage
 
-        receipts = OwnedModelUsage(self._sessions, opportunity.loop_id, opportunity.round_id, "round", opportunity.round_id)
+        receipts = OwnedModelUsage(self._sessions, opportunity.loop_id, opportunity.round_id, "round", opportunity.round_id,
+            observation_id=observation.decision_inputs_ref, fencing_token=expected_token)
         for service in (self._synthesizer, self._quality):
             if hasattr(service, "bind_usage_receipts"):
                 service.bind_usage_receipts(receipts)
@@ -147,7 +149,7 @@ class ContextExpansionPlanCompiler:
             from backend.app.desktop.agent_loop.context_expansion.quality_revision import QualityRevisionRepository, QualityRevisionBlocked
 
             try:
-                revision_owner = await QualityRevisionRepository(self._sessions).capture_owner(observation)
+                revision_owner = await QualityRevisionRepository(self._sessions, expected_token=expected_token).capture_owner(observation)
             except QualityRevisionBlocked as exc:
                 return self._blocked(opportunity, "authority_missing", str(exc))
         resolved = await self._resolve_evidence_stage(
@@ -163,7 +165,7 @@ class ContextExpansionPlanCompiler:
         if isinstance(dossier, ExpansionBlocker):
             return dossier
         quality_assessment = await self._verify_quality_stage(
-            opportunity, resolved, dossier, records,
+            observation, opportunity, resolved, dossier, records,
             artifact_expansion_id=artifact_expansion_id, persist_artifacts=persist_artifacts,
         )
         if isinstance(quality_assessment, ExpansionBlocker):
@@ -211,7 +213,7 @@ class ContextExpansionPlanCompiler:
             (opportunity.work_spec.work_spec_id, *opportunity.manifest_ids),
             self._resolver.VERSION,
         )
-        resolution_inputs = (opportunity.work_spec.work_spec_id, *opportunity.manifest_ids)
+        resolution_inputs = (observation.decision_inputs_ref, opportunity.work_spec.work_spec_id, *opportunity.manifest_ids)
         recovered_resolution = await self._artifact_payload(
             opportunity,
             "evidence_resolution",
@@ -282,7 +284,7 @@ class ContextExpansionPlanCompiler:
             (resolved.resolution_id,),
             type(self._synthesizer).__name__,
         )
-        dossier_inputs = (resolved.resolution_id,)
+        dossier_inputs = (observation.decision_inputs_ref, resolved.resolution_id,)
         readiness = None
         if isinstance(self._synthesizer, StructuredContextSynthesisService):
             from backend.app.desktop.agent_loop.context_expansion.start_readiness import load_execution_readiness
@@ -363,7 +365,7 @@ class ContextExpansionPlanCompiler:
         count = await coordinator.count(observation, opportunity.work_spec)
         diagnostics = None
         for _ in range(2):
-            assessment = await self._saved_quality_assessment(opportunity, resolved, dossier)
+            assessment = await self._saved_quality_assessment(observation, opportunity, resolved, dossier)
             if assessment is None:
                 break
             diagnostics = quality_recovery_diagnostics(assessment, opportunity.work_spec, observation, count)
@@ -377,25 +379,26 @@ class ContextExpansionPlanCompiler:
                     "stage_records": tuple(records), "quality_recovery": diagnostics})
             records.append(timer.finish((candidate.dossier_id,), f"材料修订 {count}/2 已完成，重新独立评估"))
             dossier = candidate
-            blocker = await self._verify_quality_stage(opportunity, resolved, dossier, records,
+            blocker = await self._verify_quality_stage(observation, opportunity, resolved, dossier, records,
                 artifact_expansion_id=artifact_expansion_id, persist_artifacts=True)
             if not isinstance(blocker, ExpansionBlocker) or blocker.code != "context_quality_failed":
                 return dossier, blocker
         if isinstance(blocker, ExpansionBlocker):
-            assessment = await self._saved_quality_assessment(opportunity, resolved, dossier)
+            assessment = await self._saved_quality_assessment(observation, opportunity, resolved, dossier)
             if assessment is not None:
                 diagnostics = quality_recovery_diagnostics(assessment, opportunity.work_spec, observation, count)
             blocker = blocker.model_copy(update={"quality_recovery": diagnostics})
         return dossier, blocker
 
-    async def _saved_quality_assessment(self, opportunity, resolved, dossier):
+    async def _saved_quality_assessment(self, observation, opportunity, resolved, dossier):
         payload = await self._artifact_payload(opportunity, "context_quality",
-            (opportunity.work_spec.work_spec_id, resolved.resolution_id, dossier.dossier_id),
+            (observation.decision_inputs_ref, opportunity.work_spec.work_spec_id, resolved.resolution_id, dossier.dossier_id),
             str(getattr(self._quality, "VERSION", type(self._quality).__name__)))
         return ContextQualityAssessment.model_validate(payload) if payload and "assessment_id" in payload else None
 
     async def _verify_quality_stage(
         self,
+        observation: LoopObservationEnvelope,
         opportunity: ExpansionOpportunity,
         resolved: ResolvedEvidenceBundle,
         dossier: ValidatedContextDossier,
@@ -410,6 +413,7 @@ class ContextExpansionPlanCompiler:
             type(self._quality).__name__,
         )
         quality_inputs = (
+            observation.decision_inputs_ref,
             opportunity.work_spec.work_spec_id,
             resolved.resolution_id,
             dossier.dossier_id,

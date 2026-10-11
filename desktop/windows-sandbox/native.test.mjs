@@ -13,7 +13,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { resolveBoundary } from "./boundary.mjs";
 import { prepareGrant, releaseGrant } from "./grants.mjs";
-import { startRestricted } from "./process.mjs";
+import { startManaged } from "./process.mjs";
 import { createCallToken } from "./token.mjs";
 import { win32 } from "./win32.mjs";
 
@@ -33,13 +33,13 @@ test("native preparation and process protection fail before target code", async 
     assert.throws(() => createCallToken("workspace-write", "invalid-sid", boundary.tempWriteSid), /ConvertStringSidToSidW/);
     token = createCallToken("workspace-write", boundary.writeSid, boundary.tempWriteSid);
     const command = `echo ran > "${marker}"`;
-    const invoke = (controls) => startRestricted(token, "cmd.exe", ["/c", command], work, controls);
+    const invoke = (controls) => startManaged(token, "cmd.exe", ["/c", command], work, controls);
     assert.throws(() => invoke({ stdio: () => { throw new Error("injected handle failure"); } }), /handle failure/);
     assert.throws(() => invoke({ job: () => { throw new Error("injected Job failure"); } }), /Job failure/);
     assert.throws(() => invoke({ assignProcess: () => 0 }), /AssignProcessToJobObject/);
     assert.throws(() => invoke({ beforeResume: () => { throw new Error("injected status failure"); } }), /status failure/);
     assert.throws(() => invoke({ resumeThread: () => 0xffffffff }), /ResumeThread/);
-    assert.throws(() => startRestricted(token, join(work, "missing.exe"), [], work), /CreateProcessAsUserW/);
+    assert.throws(() => startManaged(token, join(work, "missing.exe"), [], work), /CreateProcessAsUserW/);
     await new Promise((done) => setTimeout(done, 300));
     assert.equal(existsSync(marker), false);
   } finally {
@@ -67,10 +67,10 @@ test("abrupt controller exit before Job assignment leaves target unexecuted", as
     const code = `
       import { writeFileSync } from 'node:fs';
       import { createCallToken } from ${JSON.stringify(modulePath("token"))};
-      import { startRestricted } from ${JSON.stringify(modulePath("process"))};
+      import { startManaged } from ${JSON.stringify(modulePath("process"))};
       import { win32 } from ${JSON.stringify(modulePath("win32"))};
       const token = createCallToken('workspace-write', ${JSON.stringify(boundary.writeSid)}, ${JSON.stringify(boundary.tempWriteSid)});
-      startRestricted(token, process.execPath,
+      startManaged(token, process.execPath,
         ['-e', ${JSON.stringify(`require('fs').writeFileSync(${JSON.stringify(marker)},'ran')`)}],
         ${JSON.stringify(work)}, { assignProcess: (_job, child, thread) => {
           writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify({

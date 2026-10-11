@@ -1,8 +1,8 @@
 /**
- * 本文件对外提供受限目标的挂起创建、显式标准句柄继承、Job 纳管与退出等待。
- * 输入为 Low 受限令牌、目标 argv、真实工作区及可选的启动前状态回调；输出为可等待且可终止整个普通后代进程树的受控执行对象。
- * 具体工作流为准备独立标准句柄列表及 kill-on-close Job，挂起创建目标，先指派 Job 并确认状态通道，再恢复线程；任一步失败即终止挂起目标。
- * 示例：const running = startRestricted(token, 'cmd.exe', ['/c', 'echo ok'], 'C:\\work'); const code = running.poll(); running.close()。
+ * 本文件对外提供 startManaged 的挂起创建、显式标准句柄继承、Job 纳管与退出等待。
+ * 输入为受限令牌（完全访问时为 null）、目标 argv、工作区及启动回调；输出为可轮询、取消并等待整个普通后代进程树退出的对象。
+ * 具体工作流为创建 kill-on-close Job，挂起创建目标，指派 Job 后恢复线程；finish 终止遗留后代并等待 ActiveProcesses 归零才关闭句柄。启动失败同时核实未纳管目标已退出；缺失证明不触发清理确认回调。
+ * 示例：const running = startManaged(null, 'cmd.exe', ['/c', 'echo ok'], 'C:\\work'); const code = running.poll(); await running.finish()。
  */
 import { win32 } from "./win32.mjs";
 
@@ -80,17 +80,20 @@ function startup(handles) {
   }
 }
 
-function targetProcess(token, command, args, cwd, handles, controllingJob, controls) {
+function targetProcess(token, command, args, cwd, handles, controllingJob, controls, proof) {
   const start = startup(handles);
   const output = n.slot(n.processInfo);
   let processHandle = null, threadHandle = null;
   try {
     const line = commandLine(command, args);
-    n.check(api.createProcessAsUserW(token, null, line, null, null, 1,
-      0x80004, null, cwd, start.info, output), "CreateProcessAsUserW", line);
+    const parameters = [null, line, null, null, 1, 0x8080004, null, cwd, start.info, output];
+    n.check(token === null ? api.createProcessW(...parameters) : api.createProcessAsUserW(token, ...parameters),
+      token === null ? "CreateProcessW" : "CreateProcessAsUserW", line);
+    proof.created = true;
     const info = n.value(output, n.processInfo);
     processHandle = info.hProcess;
     threadHandle = info.hThread;
+    controls.afterCreate?.(info.dwProcessId);
     if (n.isNull(processHandle) || n.isNull(threadHandle)) throw new Error("CreateProcessAsUserW returned missing handles");
     n.check((controls.assignProcess ?? api.assignProcessToJobObject)(controllingJob, processHandle, threadHandle),
       "AssignProcessToJobObject", `PID ${info.dwProcessId}`);
@@ -98,14 +101,19 @@ function targetProcess(token, command, args, cwd, handles, controllingJob, contr
     if ((controls.resumeThread ?? api.resumeThread)(threadHandle) === 0xffffffff) {
       throw n.failure("ResumeThread", api.getLastError(), `PID ${info.dwProcessId}`);
     }
-    controls.afterResume?.(info.dwProcessId);
     n.close(threadHandle);
     threadHandle = null;
     const result = { pid: info.dwProcessId, handle: processHandle };
     processHandle = null;
     return result;
   } catch (error) {
-    if (!n.isNull(processHandle)) api.terminateProcess(processHandle, 1);
+    if (proof.created) {
+      if (n.isNull(processHandle)) throw new Error("Created process cleanup handle unavailable");
+      n.check(api.terminateProcess(processHandle, 1), "TerminateProcess");
+      if (!n.isNull(threadHandle)) api.resumeThread(threadHandle);
+      if (api.waitForSingleObject(processHandle, 0xffffffff) !== 0) throw n.failure("WaitForSingleObject");
+      proof.exited = true;
+    }
     throw error;
   } finally {
     if (!n.isNull(threadHandle)) n.close(threadHandle);
@@ -114,13 +122,21 @@ function targetProcess(token, command, args, cwd, handles, controllingJob, contr
   }
 }
 
-export function startRestricted(token, command, args, cwd, controls = {}) {
+function activeProcesses(handle) {
+  const accounting = Buffer.alloc(48);
+  n.check(api.queryInformationJobObject(handle, 1, accounting, accounting.length, null), "QueryInformationJobObject");
+  return accounting.readUInt32LE(40);
+}
+
+export function startManaged(token, command, args, cwd, controls = {}) {
   let controllingJob = null;
+  const proof = { created: false, exited: false };
   const handles = (controls.stdio ?? inheritedStdio)();
   try {
     controllingJob = (controls.job ?? job)();
-    const process = targetProcess(token, command, args, cwd, handles, controllingJob, controls);
+    const process = targetProcess(token, command, args, cwd, handles, controllingJob, controls, proof);
     let closed = false;
+    let terminating = false;
     return {
       pid: process.pid,
       poll() {
@@ -131,8 +147,15 @@ export function startRestricted(token, command, args, cwd, controls = {}) {
         n.check(api.getExitCodeProcess(process.handle, output), "GetExitCodeProcess");
         return n.value(output, "uint32");
       },
-      close() {
+      terminate() {
+        if (closed || terminating) return;
+        n.check(api.terminateJobObject(controllingJob, 1), "TerminateJobObject");
+        terminating = true;
+      },
+      async finish() {
         if (closed) return [];
+        if (!terminating && activeProcesses(controllingJob)) this.terminate();
+        while (activeProcesses(controllingJob)) await new Promise(resolve => setTimeout(resolve, 20));
         closed = true;
         const warnings = [];
         try { n.close(controllingJob); }
@@ -146,7 +169,12 @@ export function startRestricted(token, command, args, cwd, controls = {}) {
       },
     };
   } catch (error) {
-    if (!n.isNull(controllingJob)) n.close(controllingJob);
+    if (!n.isNull(controllingJob)) {
+      n.check(api.terminateJobObject(controllingJob, 1), "TerminateJobObject");
+      while (activeProcesses(controllingJob)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      n.close(controllingJob);
+    }
+    if (!proof.created || proof.exited) controls.afterCleanup?.();
     throw error;
   } finally {
     for (const handle of handles) n.close(handle);

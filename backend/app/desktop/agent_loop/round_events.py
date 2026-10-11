@@ -18,8 +18,15 @@ from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
 class RoundStateEventRecorder:
     async def record(self, session, round_row):
         await session.flush()
+        from backend.app.desktop.agent_loop.models import LoopObservation, LoopDecision
+
+        observation = await session.get(LoopObservation, round_row.observation_id) if round_row.observation_id else None
+        decision = await session.get(LoopDecision, round_row.decision_id) if round_row.decision_id else None
         payload = {"round_id": round_row.round_id, "number": round_row.number, "status": round_row.status,
             "observation_id": round_row.observation_id, "decision_id": round_row.decision_id,
+            "observation_generation": observation.generation if observation else None,
+            "authority_committed_at": decision.authority_committed_at.isoformat() if decision and decision.authority_committed_at else None,
+            "trigger_kind": round_row.trigger_kind,
             "barrier": json.loads(json.dumps(round_row.barrier or {}))}
         latest = await session.scalar(select(LoopJournalEvent).where(
             LoopJournalEvent.loop_id == round_row.loop_id, LoopJournalEvent.entity_type == "round",

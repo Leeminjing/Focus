@@ -2,7 +2,7 @@ r"""本文件对外提供 ContextRunPool。
 
 输入为 Kernel 已授权的 LoopDirective、可选 Loop scope、活动 delegation/budget、Context Run 容量和 dispatcher；输出为独立于
 Patrol/Curator 的有界 Run 启动任务及持久 queued_reason。具体工作流为串行计算当前 Loop 的 ready/running round，
-扣除活动 Run 和按 Run 数量预留的派发容量，在全局与每 Loop 上限内交付已授权波次；运行中的同轮允许补位，
+扣除活动或尚未结算 Run 和按 Run 数量预留的派发容量，在全局与每 Loop 上限内交付已授权波次；运行中的同轮允许补位，
 资源不足只更新排队原因，关闭时取消派发并释放预留，Round 收口仍由 Coordinator 负责。
 示例：`await pool.drain()`。
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim, LoopCoordinator
@@ -91,7 +91,7 @@ class ContextRunPool:
                     & (LoopDirective.lifecycle_state == "authorized")
                     & (LoopDirective.attempt < LoopDirective.max_attempts),
                 )
-                .where(AgentLoop.status == "running", AgentLoop.current_round_id == LoopRound.round_id,
+                .where(AgentLoop.status == "running", LoopRound.decision_id.is_not(None),
                        LoopRound.status.in_(("ready", "running")), LoopRound.round_id.not_in(tuple(self._tasks)))
                 .group_by(AgentLoop.loop_id, LoopRound.round_id, LoopDelegationGrant.budgets, LoopRound.started_at)
                 .order_by(LoopRound.started_at, LoopRound.round_id)
@@ -122,7 +122,8 @@ class ContextRunPool:
     async def _active_run_count(self, loop_id: str | None = None) -> int:
         async with self._sessions() as session:
             query = select(func.count()).select_from(DesktopRun).where(
-                DesktopRun.loop_id.is_not(None), DesktopRun.status.in_(("pending", "running"))
+                DesktopRun.loop_id.is_not(None),
+                or_(DesktopRun.status.in_(("pending", "running")), DesktopRun.settled_at.is_(None))
             )
             if loop_id is not None:
                 query = query.where(DesktopRun.loop_id == loop_id)

@@ -1,7 +1,7 @@
 r"""本文件对外提供隔离索引测试的 Revision 播种、冻结 Observation 和计数模型端口。
 
 输入为真实隔离 PostgreSQL sessionmaker 与执行消息；输出为已提交的 Context Revision、最小冻结输入和可观测模型调用。
-工作流为真实 Loop bootstrap，发布权威后继，模型只从请求原文生成 drafts；默认综合完成空结果。
+工作流为真实 Loop bootstrap，显式绑定已冻结 Observation 身份，发布权威后继，模型只从请求原文生成 drafts；默认综合完成空结果。
 calls 记录全部尝试；interpretation_calls 为综合回合，local_calls 仅排除综合回合，联合 verifier 通过 payload 或 index_phase 另行识别。
 示例：probe = ModelProbe(); service = probe.service(sessions)。测试模型不访问 provider，不隐藏模型 payload。
 """
@@ -90,6 +90,7 @@ def observation(seed, target, *, budget=None, scope=None, hash_override=None):
     return SimpleNamespace(
         loop_id=seed["loop_id"],
         round_id=seed["round_id"],
+        decision_inputs_ref=seed["observation_id"],
         portfolio_frontier=(
             {
                 "revision": target.ref.model_dump(mode="json"),

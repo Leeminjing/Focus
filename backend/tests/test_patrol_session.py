@@ -4,7 +4,7 @@ r"""本文件对外提供可恢复 Patrol Session 状态机、结构化历史与
 终态封闭、隐私合同拒绝、合同违例逐次留痕与派生评估可回读断言。具体工作流为跨两个 Repository 实例写入并读取同一 session，
 并以真实数据库核对 Patrol attempt 与 observation 的持久化事实。
 示例：`pytest backend/tests/test_patrol_session.py`。
-assessment 和 Curator 结果独立持久化，基础 Observation 与 hash 保持不变。
+assessment 和 Curator 结果独立持久化，基础 Observation 与 hash 保持不变；同轮多版本审计默认当前指针且支持精确历史版本，阶段与 Curator 不串流。
 Curator 派发使用真实 Coordinator claim/lease 验证准备 fencing，不以手造 token 绕过生产授权检查。
 """
 
@@ -101,11 +101,12 @@ def test_session_history_survives_repository_restart(tmp_path) -> None:
         service, snapshot = await _create_loop(sessions, tmp_path)
         try:
             repository = PatrolSessionRepository()
+            observation = await _persist_observation(sessions, _observation_envelope(snapshot["loop_id"], snapshot["current_round_id"]))
             async with sessions.begin() as session:
                 patrol = await repository.begin(session, snapshot["loop_id"], snapshot["current_round_id"], 7)
                 session_id = patrol.session_id
                 await repository.transition(session, session_id, PatrolPhase.FREEZING_OBSERVATION, PatrolActivity(summary="正在冻结 Portfolio observation"))
-                await repository.transition(session, session_id, PatrolPhase.OBSERVING, PatrolActivity(summary="发现 3 个活动 Context"), observation_id="observation-1", observation_sequence=12)
+                await repository.transition(session, session_id, PatrolPhase.OBSERVING, PatrolActivity(summary="发现 3 个活动 Context"), observation_id=observation.observation_id, observation_sequence=12)
                 await repository.transition(session, session_id, PatrolPhase.DISPATCHING_CURATORS, PatrolActivity(summary="向 3 个 Curator 分派证据检查"))
                 await repository.transition(session, session_id, PatrolPhase.COLLECTING_CURATORS, PatrolActivity(summary="收到 Testing Curator 结果"))
                 await repository.transition(session, session_id, PatrolPhase.COLLECTING_CURATORS, PatrolActivity(summary="仍在等待 Architecture Curator"))
@@ -149,7 +150,7 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
 
         class IndexService:
             @staticmethod
-            async def build(observation):
+            async def build(observation, *, fencing_token=None):
                 return SimpleNamespace(
                     catalog=Catalog(),
                     indexes=(),
@@ -165,7 +166,6 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
         orchestrator._curators = coordination
         try:
             claim = await LoopCoordinator(sessions).claim_for_loop(snapshot["loop_id"], "curator-preparation-test")
-            patrol = await lifecycle.begin(claim)
             observation = LoopObservationEnvelope(
                 loop_id=snapshot["loop_id"],
                 loop_revision=snapshot["revision"],
@@ -188,8 +188,8 @@ def test_curator_assignments_publish_partial_progress_without_authority(tmp_path
                 budget={},
             )
 
-            async with sessions.begin() as session:
-                session.add(LoopObservation(observation_id=uuid.uuid4().hex, loop_id=claim.loop_id, round_id=claim.round_id, envelope=observation.model_dump(mode="json"), envelope_hash=observation_hash(observation), projection_sequence=0, base_entity_revisions={}))
+            observation = await _persist_observation(sessions, observation)
+            patrol = await lifecycle.begin(claim)
 
             class FrozenObservations:
                 async def capture(self, loop_id: str, round_id: str):
@@ -297,9 +297,10 @@ def test_kernel_rejects_forged_and_newer_observation_base_revisions(tmp_path) ->
                 loop = await session.get(AgentLoop, snapshot["loop_id"], with_for_update=True)
                 round_row = await session.get(LoopRound, snapshot["current_round_id"], with_for_update=True)
                 base = {"loop": loop.revision, "mission": loop.goal_revision, "grant": loop.authority_revision, "workspace": round_row.workspace_revision}
+                round_row.observation_id = uuid.uuid4().hex
                 session.add(
                     LoopObservation(
-                        observation_id=uuid.uuid4().hex,
+                        observation_id=round_row.observation_id,
                         loop_id=loop.loop_id,
                         round_id=round_row.round_id,
                         envelope={},
@@ -406,19 +407,7 @@ def test_expansion_assessment_is_persisted_and_readable(tmp_path) -> None:
         service, snapshot = await _create_loop(sessions, tmp_path)
         loop_id, round_id = snapshot["loop_id"], snapshot["current_round_id"]
         try:
-            envelope = _observation_envelope(loop_id, round_id)
-            async with sessions.begin() as session:
-                session.add(
-                    LoopObservation(
-                        observation_id=uuid.uuid4().hex,
-                        loop_id=loop_id,
-                        round_id=round_id,
-                        envelope=envelope.model_dump(mode="json"),
-                        envelope_hash="b" * 64,
-                        projection_sequence=0,
-                        base_entity_revisions={},
-                    )
-                )
+            envelope = await _persist_observation(sessions, _observation_envelope(loop_id, round_id))
 
             observations = LoopObservationService(sessions, None)
             async with sessions() as session:
@@ -438,7 +427,7 @@ def test_expansion_assessment_is_persisted_and_readable(tmp_path) -> None:
             async with sessions() as session:
                 row = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == round_id))
                 assert row.envelope["expansion_assessment"] is None
-                assert row.envelope_hash == "b" * 64
+                assert row.envelope_hash == observation_hash(envelope)
                 assert await supplements.get(session, row.observation_id, "expansion_assessment") == required
             assert (await observations.capture(loop_id, round_id)).expansion_assessment is None
         finally:
@@ -448,6 +437,71 @@ def test_expansion_assessment_is_persisted_and_readable(tmp_path) -> None:
             await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_round_audit_selects_current_or_exact_version_without_mixing_sessions(tmp_path):
+    async def exercise():
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        service, snapshot = await _create_loop(sessions, tmp_path)
+        loop_id, round_id = snapshot["loop_id"], snapshot["current_round_id"]
+        versions = []
+        try:
+            repository = PatrolSessionRepository()
+            for generation in range(1, 4):
+                observation = await _persist_observation(sessions, _observation_envelope(loop_id, round_id), generation=generation)
+                async with sessions.begin() as session:
+                    patrol = await repository.begin(session, loop_id, round_id, generation)
+                    worker_id = uuid.uuid4().hex
+                    session.add(LoopWorkerRequest(worker_request_id=worker_id, loop_id=loop_id, round_id=round_id,
+                        observation_id=observation.observation_id, observation_generation=generation,
+                        kind="lane_curator", scope={}, status="success", result={}))
+                    await session.flush()
+                    session.add(LoopCuratorAssignment(assignment_id=uuid.uuid4().hex, assignment_key=f"v{generation}",
+                        session_id=patrol.session_id, loop_id=loop_id, round_id=round_id, worker_request_id=worker_id,
+                        state="proposed", scope={}, result_summary=f"version {generation}"))
+                    if generation < 3:
+                        await repository.transition(session, patrol.session_id, PatrolPhase.SUPERSEDED,
+                            PatrolActivity(summary=f"version {generation} superseded"))
+                    versions.append((observation.observation_id, patrol.session_id))
+            audit = PatrolAuditRepository()
+            async with sessions() as session:
+                current = await audit.round_history(session, loop_id, round_id)
+                assert current["session"]["observation_id"] == versions[2][0]
+                assert current["session"]["observation_generation"] == 3
+                for generation, (observation_id, session_id) in enumerate(versions, 1):
+                    selected = await audit.round_history(session, loop_id, round_id, observation_id=observation_id)
+                    assert selected["session"]["session_id"] == session_id
+                    assert {item["session_id"] for item in selected["phases"]} == {session_id}
+                    assert {item["observation_id"] for item in selected["phases"]} == {observation_id}
+                    assert {item["observation_generation"] for item in selected["phases"]} == {generation}
+                    assert [item["result_summary"] for item in selected["curators"]] == [f"version {generation}"]
+                all_phases = await repository.history(session, loop_id, round_id)
+                assert {item["observation_id"] for item in all_phases} == {item[0] for item in versions}
+                with pytest.raises(LookupError, match="不属于指定 Round"):
+                    await audit.round_history(session, loop_id, round_id, observation_id=uuid.uuid4().hex)
+                with pytest.raises(LookupError, match="不属于指定 Loop"):
+                    await audit.round_history(session, uuid.uuid4().hex, round_id, observation_id=versions[0][0])
+            await _persist_observation(sessions, _observation_envelope(loop_id, round_id), generation=4)
+            async with sessions() as session:
+                assert await audit.round_history(session, loop_id, round_id) == {"session": None, "phases": (), "curators": ()}
+                assert (await audit.round_history(session, loop_id, round_id, observation_id=versions[0][0]))["session"]["status"] == "superseded"
+        finally:
+            await service.control(loop_id, "stop")
+            await engine.dispose()
+    asyncio.run(exercise())
+
+
+async def _persist_observation(sessions, observation, *, generation=1):
+    identity = uuid.uuid4().hex
+    observation = observation.model_copy(update={"observation_id": identity, "generation": generation, "decision_inputs_ref": identity})
+    async with sessions.begin() as session:
+        row = await session.get(LoopRound, observation.round_id, with_for_update=True)
+        row.observation_id = identity
+        session.add(LoopObservation(observation_id=identity, loop_id=observation.loop_id, round_id=row.round_id,
+            generation=generation, envelope=observation.model_dump(mode="json"), envelope_hash=observation_hash(observation),
+            projection_sequence=observation.projection_sequence, base_entity_revisions=observation.base_entity_revisions))
+    return observation
 
 
 def _observation_envelope(loop_id: str, round_id: str) -> LoopObservationEnvelope:

@@ -98,7 +98,7 @@ class ClarificationFactsReader:
         budget_values["duration_seconds"] = max(0, int((datetime.now(UTC) - created_at).total_seconds()))
         budget = LoopBudgetGuard().evaluate(budget_values, grant.budgets if grant is not None else {}, "continue_context")
         exhausted = frozenset(budget.reasons if budget.status == "exhausted" else ())
-        observation = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == round_row.round_id))
+        observation = await session.get(LoopObservation, round_row.observation_id) if round_row.observation_id else None
         external = frozenset({"recovery_waiting_reason"} if observation is not None and (observation.envelope or {}).get("recovery_waiting_reason") else ())
         capabilities = frozenset(grant.capabilities or ()) if grant is not None else frozenset()
         permissions = frozenset(grant.permission_scope or ()) if grant is not None else frozenset()

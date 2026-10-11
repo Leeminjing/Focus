@@ -62,9 +62,10 @@ def exercise(tmp_path, operation):
                 "max_input_tokens": 10000000,
                 "max_output_tokens": 10000000,
             }
-        await LoopObservationService(sessions, Checkpoints()).capture(
+        frozen = await LoopObservationService(sessions, Checkpoints()).capture(
             seed["loop_id"], seed["round_id"]
         )
+        seed["observation_id"] = frozen.decision_inputs_ref
         try:
             await operation(sessions, seed)
         finally:

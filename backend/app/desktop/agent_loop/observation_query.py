@@ -1,7 +1,7 @@
 """本文件对外提供 ObservationInspectionQuery 的冻结输入只读检查。
 
 输入为 Desktop 会话、Loop/Observation 身份、section 与绑定内容哈希的游标；输出为安全摘要或有界冻结条目。
-具体工作流为复用当前 Live 权限，核对不可变输入身份，白名单投影并分页；计数仅公开非负整数，异常指标降级 unknown，不读取当前 head 回填历史，不写领域状态。
+具体工作流为复用当前 Live 权限，核对不可变输入身份，白名单投影并分页；版本清单截止所选 generation，因果链保留完整原文和精确 Oi 引用，输入前证据不读取当前 head 回填历史，不写领域状态。
 示例：await ObservationInspectionQuery().read(session, "loop", "observation", section="sources", limit=40)。
 """
 
@@ -12,15 +12,18 @@ import json
 from typing import Literal
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.agent_loop.live_access import LoopLiveAccessPolicy, LoopLiveRedactionPolicy
-from backend.app.desktop.agent_loop.models import LoopObservation, LoopRound
+from backend.app.desktop.agent_loop.models import LoopDecision, LoopObservation, LoopRound
+from backend.app.desktop.agent_loop.observation_inspection_snapshot import ObservationSnapshotView
+from backend.app.desktop.agent_loop.causal_snapshot import read_causal_snapshot
 from backend.app.desktop.agent_loop.task_progress.models import LoopDecisionInputs
 from backend.app.desktop.domain_evidence.identity import canonical_hash
 
 
-ObservationSection = Literal["summary", "previous_progress", "sources", "lineage"]
+ObservationSection = Literal["summary", "previous_progress", "sources", "lineage", "versions", "causal_chain", "snapshot"]
 
 
 class ObservationInspectionQuery:
@@ -43,18 +46,48 @@ class ObservationInspectionQuery:
             raise HTTPException(409, "冻结输入身份不一致")
         round_row = await session.get(LoopRound, observation.round_id)
         summary = self._summary(observation, frozen, round_row, access.permissions)
+        candidates = tuple(await session.scalars(select(LoopDecision).where(LoopDecision.observation_id == observation_id)))
+        committed = next((item for item in candidates if item.authority_committed_at is not None), None)
+        summary["decision_state"] = "committed" if committed else "superseded" if round_row and round_row.observation_id != observation_id else "rejected" if candidates else "current"
+        summary["decision_id"] = committed.decision_id if committed else None
+        summary["candidate_statuses"] = [item.status for item in candidates]
         if section == "summary":
             if cursor:
                 raise HTTPException(422, "摘要不接受分页游标")
             return summary
-        if section not in {"previous_progress", "sources", "lineage"} or not 1 <= limit <= 120:
+        if section not in {"previous_progress", "sources", "lineage", "versions", "causal_chain", "snapshot"} or not 1 <= limit <= 120:
             raise HTTPException(422, "无效的冻结读取范围")
         binding = [loop_id, observation_id, observation.envelope_hash, frozen.content_hash if frozen else None, section]
         offset = self._offset(cursor, binding)
-        rows = self._rows(payload, section, access.permissions)
+        if section == "versions":
+            versions = await session.scalars(select(LoopObservation).where(
+                LoopObservation.round_id == observation.round_id,
+                LoopObservation.generation <= observation.generation,
+            ).order_by(LoopObservation.generation))
+            rows = [{"observation_id": item.observation_id, "generation": item.generation,
+                     "observation_hash": item.envelope_hash, "frozen_at": item.created_at.isoformat()}
+                    for item in versions]
+        elif section == "causal_chain":
+            rows = [self._pick(item, ("intent_id", "submission_id", "observation_id", "generation", "snapshot_hash", "accepted_at", "accepted_sequence", "input")) for item in observation.envelope.get("causal_chain", [])]
+            rows = LoopLiveRedactionPolicy.redact_value(rows, access.permissions)
+        elif section == "snapshot":
+            rows = ObservationSnapshotView.rows(observation.envelope, access.permissions)
+            before = ObservationSnapshotView.frozen(observation.envelope)
+            evidence = {"previous_progress": before.get("previous_task_progress"),
+                        "task_delta": before.get("task_delta"), "lineage": before.get("committed_lineage")}
+            for name in ("previous_progress", "sources", "lineage"):
+                rows.extend({"snapshot_section": name, **item} for item in self._rows(evidence, name, access.permissions))
+        else:
+            rows = self._rows(payload, section, access.permissions)
         if offset > len(rows):
             raise HTTPException(422, "游标超出冻结集合")
         end = min(offset + limit, len(rows))
+        if section == "causal_chain":
+            try:
+                for entry in rows[offset:end]:
+                    await read_causal_snapshot(session, loop_id, entry)
+            except (ValueError, KeyError) as exc:
+                raise HTTPException(409, "原始输入因果快照无法完整读取") from exc
         return {
             **summary, "section": section, "items": rows[offset:end], "total": len(rows),
             "has_more": end < len(rows),
@@ -71,6 +104,10 @@ class ObservationInspectionQuery:
         return {
             "loop_id": observation.loop_id, "observation_id": observation.observation_id,
             "round_id": observation.round_id, "round_number": round_row.number if round_row else None,
+            "generation": observation.generation,
+            "current_observation_id": round_row.observation_id if round_row else None,
+            "causal_chain_count": len(envelope.get("causal_chain") or []),
+            "boundary": ObservationSnapshotView.summary(envelope),
             "observation_hash": observation.envelope_hash,
             "frozen_at": observation.created_at.isoformat(),
             "inputs_hash": frozen.content_hash if frozen else None,

@@ -1,7 +1,7 @@
 r"""本文件对外提供 PersistedWorkSpecReconciliationStage。
 
 输入为 Loop/round identity、冻结 WorkContextSpec candidate set、required candidate identities、relation evaluator 与 deterministic
-reconciler；输出为可恢复 WorkSpecReconciliation。具体工作流为按顺序无关 candidate identity 集合查询 stage artifact，命中时严格
+reconciler；输出为可恢复 WorkSpecReconciliation。具体工作流为按 Observation 和顺序无关 candidate identity 集合查询 stage artifact，命中时严格
 反序列化复用；未命中时调用受监督 relation evaluator、累计其 attempt/model usage、执行保守 canonicalization 并立即持久化 immutable
 result，使进程重启不再重新判定同一冻结输入。示例：`result = await stage.reconcile(loop_id, round_id, specs, required)`。
 """
@@ -42,8 +42,9 @@ class PersistedWorkSpecReconciliationStage:
         round_id: str,
         candidates: tuple[WorkContextSpec, ...],
         required_candidate_ids: tuple[str, ...],
+        *, observation_id: str, fencing_token: int | None = None,
     ) -> WorkSpecReconciliation:
-        inputs = self._input_identities(candidates, required_candidate_ids)
+        inputs = (observation_id, *self._input_identities(candidates, required_candidate_ids))
         async with self._sessions() as session:
             row = await self._artifacts.stage_artifact(
                 session,
@@ -58,7 +59,8 @@ class PersistedWorkSpecReconciliationStage:
         if hasattr(self._evaluator, "bind_usage_receipts"):
             from backend.app.desktop.agent_loop.model_usage_owner import OwnedModelUsage
 
-            self._evaluator.bind_usage_receipts(OwnedModelUsage(self._sessions, loop_id, round_id, "round", round_id))
+            self._evaluator.bind_usage_receipts(OwnedModelUsage(self._sessions, loop_id, round_id, "round", round_id,
+                observation_id=observation_id, fencing_token=fencing_token))
         relations = await self._evaluator.evaluate(candidates)
         attempts = tuple(getattr(self._evaluator, "attempt_records", ()))
         await self._record_attempt_usage(loop_id, attempts)

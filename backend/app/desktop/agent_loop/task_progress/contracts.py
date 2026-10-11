@@ -1,6 +1,6 @@
 """本文件对外提供 TaskProgressDocument、贡献、来源清单和冻结决策输入合同。
 
-输入为稳定任务身份、类型化领域证据和不可变来源版本；输出为禁止额外字段的冻结模型。
+输入为稳定任务身份、类型化领域证据和不可变来源版本；输出为决策输入或串行沉淀输入。
 具体工作流为 schema 校验来源身份、修正关系和支持程度，再以 canonical_hash 绑定内容。
 Tool、Message、Checkpoint 定位只属于独立审计记录，不是任务条目类型。
 示例：TaskItem(item_id="check:tests", description="测试通过", state="not_started")。
@@ -108,14 +108,18 @@ class SourceAssessment(MemoryContract):
 class RunContribution(MemoryContract):
     run_id: str
     execution_round_id: str | None = None
-    observed_round_id: str
+    observed_round_id: str | None
+    consolidation_work_id: str | None = None
     source_keys: tuple[str, ...]
     changes: tuple[TaskItem, ...] = ()
     source_assessments: tuple[SourceAssessment, ...] = ()
 
 
 class RoundContribution(MemoryContract):
-    round_id: str
+    round_id: str | None
+    work_id: str | None = None
+    observation_id: str | None = None
+    round_ids: tuple[str, ...] = ()
     run_contributions: tuple[RunContribution, ...] = ()
     direct_source_keys: tuple[str, ...] = ()
     changes: tuple[TaskItem, ...] = ()
@@ -133,11 +137,7 @@ class CandidateIssue(MemoryContract):
     references: tuple[dict[str, Any], ...] = ()
 
 
-class RoundDecisionInputs(MemoryContract):
-    schema_version: Literal[1] = 1
-    round_id: str
-    observation_id: str
-    observation_hash: str
+class ProgressInputs(MemoryContract):
     previous_progress_id: str
     previous_progress_hash: str
     previous_progress: TaskProgressDocument
@@ -156,3 +156,22 @@ class RoundDecisionInputs(MemoryContract):
             raise ValueError("冻结 Lineage hash 不一致")
         LineageSnapshot.model_validate(self.lineage)
         return self
+
+
+class RoundDecisionInputs(ProgressInputs):
+    schema_version: Literal[1] = 1
+    round_id: str
+    observation_id: str
+    observation_hash: str
+
+
+class ConsolidationInputs(ProgressInputs):
+    schema_version: Literal[1] = 1
+    work_id: str
+    origin_observation_id: str | None = None
+    origin_observation_hash: str | None = None
+    origin_round_id: str | None = None
+    round_ids: tuple[str, ...]
+    mission: dict[str, Any]
+    budget: dict[str, Any]
+    absorbed_sources: dict[str, str] = Field(default_factory=dict)

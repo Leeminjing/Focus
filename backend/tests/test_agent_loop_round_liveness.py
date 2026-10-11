@@ -2,8 +2,8 @@ r"""本文件对外提供 Agent Loop round 活性契约测试：领取公平性�
 
 输入为真实 PostgreSQL 中的同工作区多 Loop、可由他人占用的与已过期的 coordinator 租约、停滞 round 的
 attempt 计数、legacy 落定 decision 与 Kernel/Coordinator/Recovery 真实调用；输出为"队头被占用仍顺延领取"
-"过期租约即时清除""拒绝即终结 round 并交回用户""已有落定 decision 的 round 零认知调用收敛""看门狗收敛
-停滞队头而不误伤健康 round""在飞决策的 round 不被看门狗收敛""恢复收敛存量僵尸且不改写已提交事实""终结事件只追加一次且控制台可读原因"断言。
+"过期租约即时清除""拒绝保留未决 round 并交回用户""已有落定 decision 的 round 零认知调用收敛""看门狗收敛
+停滞队头而不误伤健康 round""在飞决策的 round 不被看门狗收敛""恢复保留失败候选审计且不误认成功提交""终结事件只追加一次且控制台可读原因"断言。
 具体工作流为播种最小 Context revision 与已 settle 初始 Run、经 AgentLoopService.start 建 Loop，再直接驱动
 coordinator/orchestrator/kernel/recovery 并读取只读控制台投影。
 示例：`python -m pytest backend/tests/test_agent_loop_round_liveness.py -q`。
@@ -62,6 +62,7 @@ from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspa
 from backend.app.desktop.run_orchestration import RunOutboxConsumer
 
 from config_helpers import app_config_for
+from loop_run_boundary_support import commit_patrol
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
@@ -227,7 +228,7 @@ def test_expired_lease_is_purged_and_round_becomes_claimable(tmp_path: Path) -> 
     asyncio.run(run())
 
 
-def test_rejected_decision_terminates_round_and_hands_back_loop(tmp_path: Path) -> None:
+def test_rejected_decision_preserves_undecided_round_and_hands_back_loop(tmp_path: Path) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -264,7 +265,8 @@ def test_rejected_decision_terminates_round_and_hands_back_loop(tmp_path: Path) 
                 goal_revision=1,
                 observed_frontier_hash=observed_frontier_hash,
                 observed_workspace_revision=observed_workspace_revision,
-                rationale="Continue in the current Context.",
+                rationale="Request an unauthorized file mode.",
+                context_permissions=[{"context_id": fixture["context_id"], "access_mode": "danger-full-access"}],
                 actions=(
                     {
                         "action": "continue_context",
@@ -275,10 +277,10 @@ def test_rejected_decision_terminates_round_and_hands_back_loop(tmp_path: Path) 
                 ),
             )
 
-            result = await LoopKernel(sessions).commit(intent)
+            result = await commit_patrol(sessions, intent)
 
             assert result.status == "rejected"
-            assert "已有活动 Run" in (result.reason or "")
+            assert "文件模式超出" in (result.reason or "")
             async with sessions() as session:
                 round_row = await session.get(LoopRound, fixture["round_id"])
                 loop = await session.get(AgentLoop, fixture["loop_id"])
@@ -292,15 +294,11 @@ def test_rejected_decision_terminates_round_and_hands_back_loop(tmp_path: Path) 
                         )
                     ).all()
                 )
-            assert round_row.status == "error", "被拒绝的 round 必须收敛为终态，不得停留在可领取状态"
-            assert round_row.settled_at is not None
-            assert round_row.decision_id == result.decision_id
+            assert round_row.status == "observed"
+            assert round_row.settled_at is None and round_row.decision_id is None
             assert loop.status == "waiting_user"
-            assert loop.health == "degraded"
-            assert "已有活动 Run" in (loop.waiting_reason or "")
-            assert len(events) == 1, "拒绝终结必须追加一条可观测事件"
-            assert events[0].payload["category"] == "rejected"
-            assert events[0].payload["reason"] == "Loop 已有活动 Run"
+            assert "文件模式超出" in (loop.waiting_reason or "")
+            assert events == []
         finally:
             if fixture is not None:
                 await _stop(fixture["service"], fixture["loop_id"])
@@ -325,12 +323,16 @@ def test_legacy_decided_round_is_converged_without_cognition(tmp_path: Path, mon
                         round_id=fixture["round_id"],
                         holder_id=fixture["snapshot"]["holder_id"],
                         intent={},
-                        rationale="legacy rejected decision",
-                        status="rejected",
+                        rationale="legacy committed decision",
+                        status="committed",
+                        authority_committed_at=datetime.now(UTC),
                         idempotency_key=f"patrol:{fixture['round_id']}:legacy",
                         rejection={"reason": "Loop 已有活动 Run"},
                     )
                 )
+
+            async with sessions.begin() as session:
+                (await session.get(LoopRound, fixture["round_id"])).decision_id = decision_id
 
             orchestrator = LoopRoundOrchestrator(
                 sessions,
@@ -440,7 +442,7 @@ def test_termination_refuses_rounds_that_already_carry_committed_authority(tmp_p
     asyncio.run(run())
 
 
-def test_superseded_decision_converges_round_to_terminal(tmp_path: Path) -> None:
+def test_superseded_decision_leaves_current_round_undecided(tmp_path: Path) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -481,7 +483,7 @@ def test_superseded_decision_converges_round_to_terminal(tmp_path: Path) -> None
                 ),
             )
 
-            result = await LoopKernel(sessions).commit(intent)
+            result = await commit_patrol(sessions, intent)
 
             assert result.status == "superseded"
             async with sessions() as session:
@@ -496,10 +498,9 @@ def test_superseded_decision_converges_round_to_terminal(tmp_path: Path) -> None
                         )
                     ).all()
                 )
-            assert round_row.status == "error", "被取代的决策同样必须终结该 round"
-            assert round_row.settled_at is not None
-            assert round_row.decision_id == result.decision_id
-            assert len(events) == 1 and events[0].payload["category"] == "superseded"
+            assert round_row.status == "observed"
+            assert round_row.settled_at is None and round_row.decision_id is None
+            assert events == []
         finally:
             if fixture is not None:
                 await _stop(fixture["service"], fixture["loop_id"])
@@ -690,20 +691,22 @@ def test_watchdog_keeps_round_whose_decision_is_still_in_flight(tmp_path: Path) 
                     (in_flight, "publishing", "publishing"),
                     (zombie, "committed", "observed"),
                 ):
+                    decision_id = uuid.uuid4().hex
                     session.add(
                         LoopDecision(
-                            decision_id=uuid.uuid4().hex,
+                            decision_id=decision_id,
                             loop_id=fixture["loop_id"],
                             round_id=fixture["round_id"],
                             holder_id=fixture["snapshot"]["holder_id"],
                             intent={},
                             rationale=f"{decision_status} decision",
                             status=decision_status,
+                            authority_committed_at=datetime.now(UTC),
                             idempotency_key=f"patrol:{fixture['round_id']}:{decision_status}",
                         )
                     )
                     round_row = await session.get(LoopRound, fixture["round_id"], with_for_update=True)
-                    round_row.status = round_status
+                    round_row.status, round_row.decision_id = round_status, decision_id
             coordinator = LoopCoordinator(
                 sessions,
                 stall_limits=RoundStallLimits(max_round_seconds=1800, max_patrol_attempts=12, max_no_progress=5),
@@ -769,7 +772,7 @@ def test_termination_is_idempotent_and_emits_one_event(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
-def test_recovery_converges_legacy_zombie_and_preserves_committed_facts(tmp_path: Path) -> None:
+def test_recovery_preserves_uncommitted_rejected_candidate_without_sealing_round(tmp_path: Path) -> None:
     async def run() -> None:
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -795,7 +798,7 @@ def test_recovery_converges_legacy_zombie_and_preserves_committed_facts(tmp_path
 
             report = await AgentLoopRecovery(sessions, LoopCoordinator(sessions), RunOutboxConsumer(sessions)).reconcile()
 
-            assert report.stalled_rounds >= 1
+            assert report.stalled_rounds == 0
             async with sessions() as session:
                 zombie_round = await session.get(LoopRound, zombie["round_id"])
                 zombie_loop = await session.get(AgentLoop, zombie["loop_id"])
@@ -811,8 +814,8 @@ def test_recovery_converges_legacy_zombie_and_preserves_committed_facts(tmp_path
                         )
                     ).all()
                 )
-            assert zombie_round.status == "error" and zombie_round.decision_id == decision_id
-            assert zombie_loop.status == "waiting_user"
+            assert zombie_round.status == "observed" and zombie_round.decision_id is None
+            assert zombie_loop.status == "running"
             assert preserved.status == "rejected" and preserved.rejection == {"reason": "Loop 已有活动 Run"}
             assert survivor_round.status == "observed", "恢复不得触碰仍在 running 且健康的 round"
             assert survivor_loop.status == "running"
@@ -821,7 +824,7 @@ def test_recovery_converges_legacy_zombie_and_preserves_committed_facts(tmp_path
             claim = await LoopCoordinator(sessions).claim("agent-loop-coordinator")
 
             assert claim is not None
-            assert claim.round_id != zombie["round_id"], "被收敛的 round 不得再成为候选"
+            assert claim.round_id == zombie["round_id"], "失败候选不得消耗未决 Round 的决策资格"
         finally:
             for fixture in (zombie, healthy):
                 if fixture is not None:

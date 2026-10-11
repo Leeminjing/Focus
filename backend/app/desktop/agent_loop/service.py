@@ -372,7 +372,7 @@ class AgentLoopService:
                 from backend.app.desktop.agent_loop.task_progress.repository import TaskProgressRepository
 
                 try:
-                    await TaskProgressRepository().retry(session, request.scope["observation_id"], loop_id=loop_id)
+                    await TaskProgressRepository().retry(session, request.scope.get("work_id") or request.scope["observation_id"], loop_id=loop_id)
                 except ValueError as exc:
                     raise HTTPException(409, str(exc)) from exc
             elif created and action == "retry" and request.scope.get("worker_request_id"):
@@ -525,6 +525,13 @@ class AgentLoopService:
                 if grant is None:
                     raise HTTPException(409, "Patrol delegation 已撤销，不能恢复无人值守 Loop")
                 current = await session.get(LoopRound, loop.current_round_id, with_for_update=True) if loop.current_round_id else None
+                pending = await session.scalar(select(LoopRound).where(LoopRound.loop_id == loop.loop_id,
+                    LoopRound.decision_id.is_(None), LoopRound.status.in_(("observed", "curated", "waiting_workers"))).with_for_update())
+                if pending is not None:
+                    current = pending
+                    loop.current_round_id = current.round_id
+                    current.status = "observed"
+                    current.barrier = {**(current.barrier or {}), "refresh_observation": bool(current.observation_id)}
                 if current is None or current.status in {"settled", "superseded", "error"}:
                     resumed = await create_observation_round(
                         session,
@@ -770,6 +777,14 @@ class AgentLoopService:
     ) -> None:
         loop.revision += 1
         current = await session.get(LoopRound, loop.current_round_id, with_for_update=True) if loop.current_round_id else None
+        pending = await session.scalar(select(LoopRound).where(LoopRound.loop_id == loop.loop_id,
+            LoopRound.decision_id.is_(None), LoopRound.status.in_(("observed", "curated", "waiting_workers"))).with_for_update())
+        if pending is not None:
+            current = pending
+            loop.current_round_id = current.round_id
+            if not request.scope.get("worker_request_id") and request.scope.get("component") != "progress_memory":
+                current.status = "observed"
+                current.barrier = {**(current.barrier or {}), "refresh_observation": bool(current.observation_id)}
         if current is not None and current.status not in {"settled", "superseded", "error"}:
             loop.health = "observing"
             return

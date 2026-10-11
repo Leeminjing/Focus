@@ -67,6 +67,19 @@ class DeliverUserMessageAction(StrictModel):
     intent_id: str = Field(min_length=1, max_length=32)
 
 
+class CancelExecutionAction(StrictModel):
+    action: Literal["cancel_execution"]
+    target_kind: Literal["run", "directive", "worker"]
+    target_id: str = Field(min_length=1)
+    round_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class ContextPermission(StrictModel):
+    context_id: str = Field(min_length=1)
+    access_mode: Literal["read-only", "workspace-write", "danger-full-access"] | None
+
+
 class CreateLaneAction(StrictModel):
     action: Literal["create_lane"]
     plan: CreateLanePlan
@@ -176,7 +189,7 @@ class StopLoopAction(StrictModel):
 
 
 PatrolAction = Annotated[
-    ContinueContextAction | DeliverUserMessageAction | ApplyUserInputsAction | CreateLaneAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
+    ContinueContextAction | DeliverUserMessageAction | CancelExecutionAction | ApplyUserInputsAction | CreateLaneAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
     PauseLaneAction | DiscardMembershipAction | RequestLaneCuratorAction |
     RequestCompletionVerifierAction | RequestCompletionAction | AdoptWorkspaceResultAction |
     ApplyContextCompressionAction | WaitForUserAction | StopLoopAction,
@@ -185,7 +198,7 @@ PatrolAction = Annotated[
 PATROL_ACTION_ADAPTER = TypeAdapter(PatrolAction)
 
 PatrolModelAction = Annotated[
-    ContinueContextAction | DeliverUserMessageAction | ApplyUserInputsAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
+    ContinueContextAction | DeliverUserMessageAction | CancelExecutionAction | ApplyUserInputsAction | SpawnContextAction | RecoverContextAction | DeclineExpansionAction | UpdateLaneAction | MergeContextsAction |
     PauseLaneAction | DiscardMembershipAction | RequestLaneCuratorAction |
     RequestCompletionVerifierAction | RequestCompletionAction | AdoptWorkspaceResultAction |
     ApplyContextCompressionAction | WaitForUserAction | StopLoopAction,
@@ -201,6 +214,9 @@ class PatrolDecisionIntent(StrictModel):
     loop_id: str
     loop_revision: int = Field(gt=0)
     round_id: str
+    observation_id: str | None = None
+    observation_generation: int = Field(default=1, ge=1)
+    observed_envelope_hash: str | None = None
     holder_id: str
     grant_id: str
     grant_revision: int = Field(gt=0)
@@ -213,6 +229,7 @@ class PatrolDecisionIntent(StrictModel):
     rationale: str = Field(min_length=1, max_length=4000)
     evidence: tuple[dict[str, Any], ...] = ()
     actions: tuple[PatrolAction, ...] = Field(min_length=1)
+    context_permissions: tuple[ContextPermission, ...] = ()
 
 
 class LoopBudgetContract(StrictModel):
@@ -337,6 +354,12 @@ class ResumeWithCurrentMissionRequest(StrictModel):
 
 
 class LoopObservationEnvelope(StrictModel):
+    observation_id: str | None = None
+    generation: int = Field(default=0, ge=0)
+    intervention: dict[str, Any] | None = None
+    pre_input_state: dict[str, Any] | None = None
+    pre_input_hash: str | None = None
+    causal_chain: tuple[dict[str, Any], ...] = ()
     interaction_mode: Literal["context_loop", "workspace_patrol"] = "context_loop"
     information_requests: tuple[dict[str, Any], ...] = ()
     input_schema_version: Literal[0, 1] = 0

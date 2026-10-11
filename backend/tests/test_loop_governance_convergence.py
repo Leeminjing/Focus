@@ -147,7 +147,7 @@ def test_last_worker_cleanup_and_publication_only_round_advance_once(tmp_path):
                 current = await _freeze(session, fixture)
                 session.add(LoopDecision(decision_id=decision_id, loop_id=fixture["loop_id"],
                     round_id=current.round_id, holder_id="patrol", intent={}, rationale="Publication only",
-                    status="committed", idempotency_key=decision_id))
+                    status="committed", authority_committed_at=datetime.now(UTC), idempotency_key=decision_id))
                 session.add(LoopWorkerRequest(worker_request_id=worker_id, loop_id=fixture["loop_id"],
                     round_id=current.round_id, kind="advisor", scope={}, status="running"))
                 current.decision_id, current.status = decision_id, "running"
@@ -162,6 +162,11 @@ def test_last_worker_cleanup_and_publication_only_round_advance_once(tmp_path):
                 assert await settle_round(session, loop, current)
             coordinator = LoopCoordinator(sessions)
             await coordinator.maintain_rounds()
+            from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime
+            from backend.tests.test_loop_memory_execution_recovery import ControlledMemory
+            memory = ControlledMemory()
+            memory.release.set()
+            await TaskProgressRuntime(sessions, None, model_factory=lambda name: memory).drain(loop_id=fixture["loop_id"])
             await coordinator.maintain_rounds()
             async with sessions() as session:
                 assert await session.scalar(select(func.count()).select_from(LoopRound).where(LoopRound.loop_id == fixture["loop_id"])) == 2
@@ -225,18 +230,25 @@ def test_typed_model_owners_share_budget_and_unknown_receipts_survive_pause(tmp_
         async with _loop(tmp_path, "owners", {"max_model_calls": 3}) as (sessions, fixture):
             patrol_id, worker_id = uuid.uuid4().hex, uuid.uuid4().hex
             async with sessions.begin() as session:
-                await _freeze(session, fixture)
+                current = await _freeze(session, fixture)
+                observation_id = current.observation_id
+            claim = await LoopCoordinator(sessions).claim_for_loop(fixture["loop_id"], "owner-budget-test")
+            assert claim is not None
+            async with sessions.begin() as session:
                 session.add(LoopPatrolAttempt(patrol_attempt_id=patrol_id, loop_id=fixture["loop_id"],
                     round_id=fixture["round_id"], attempt=1, execution_thread_id="patrol", checkpoint_ns="patrol",
-                    observation_hash="a" * 64, status="running"))
+                    observation_hash="a" * 64, observation_id=observation_id, observation_generation=1,
+                    fencing_token=int(claim.fencing_token), status="running"))
                 session.add(LoopWorkerRequest(worker_request_id=worker_id, loop_id=fixture["loop_id"],
-                    round_id=fixture["round_id"], kind="completion_verifier", scope={}, status="pending"))
+                    round_id=fixture["round_id"], observation_id=observation_id, observation_generation=1,
+                    kind="completion_verifier", scope={}, status="pending"))
             from backend.app.desktop.agent_loop.workers import LoopWorkerRuntime
 
             worker = (await LoopWorkerRuntime(sessions, None)._claim_many(1, fixture["loop_id"]))[0]
             receipts = []
             for kind, source in (("patrol", patrol_id), ("worker", worker_id), ("round", fixture["round_id"])):
                 receipts.append(await OwnedModelUsage(sessions, fixture["loop_id"], fixture["round_id"], kind, source,
+                    observation_id=observation_id, fencing_token=int(claim.fencing_token),
                     retry_identity=worker.retry_identity if kind == "worker" else None).reserve(100, 50))
             with pytest.raises(IndexBudgetExceeded, match="exhausted"):
                 await OwnedModelUsage(sessions, fixture["loop_id"], fixture["round_id"], "worker", worker_id, retry_identity=worker.retry_identity).reserve(100, 50)
@@ -245,6 +257,18 @@ def test_typed_model_owners_share_budget_and_unknown_receipts_survive_pause(tmp_
                 assert view["consumption"]["occupied"]["model_calls"] == 3
                 assert view["consumption"]["actual"]["model_calls"] == 0
                 assert view["unknown_model_attempts"] == 0
+            from backend.app.desktop.agent_loop.context_expansion.models import LoopIndexBudgetReservation
+            from backend.app.desktop.agent_loop.worker_receipt_recovery import WorkerReceiptRecovery
+
+            async with sessions.begin() as session:
+                assert await WorkerReceiptRecovery().reconcile(session) == 0
+                legacy = await session.scalar(select(LoopIndexBudgetReservation).where(
+                    LoopIndexBudgetReservation.loop_id == fixture["loop_id"],
+                    LoopIndexBudgetReservation.actual_usage["owner_id"].astext == worker_id))
+                legacy.actual_usage = {key: value for key, value in legacy.actual_usage.items() if key != "observation_id"}
+                await session.flush()
+                assert await WorkerReceiptRecovery().reconcile(session) == 1
+                assert legacy.actual_usage["receipt_state"] == "unknown"
             await receipts[0].settle(LoopUsageDelta(model_calls=1, input_tokens=25, output_tokens=10))
             await receipts[0].settle(LoopUsageDelta(model_calls=1, input_tokens=25, output_tokens=10))
             await fixture["service"].control(fixture["loop_id"], "pause")

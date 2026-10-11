@@ -1,6 +1,6 @@
 /*
  * 本文件对外提供桌面测试用的最小 DOM：createDocument / createElement / createTextNode / parseHtml，
- * 以及元素的子节点、属性、classList、dataset、选择器查询与增删改语义。
+ * 以及元素的子节点、属性、classList、dataset、contains 包含关系、选择器查询与增删改语义。
  * 输入为 HTML 字符串或标签名；输出为可被会话写入路径真实操作的节点树——子节点数组、插入/替换/删除与
  * 按选择器查询均有真实效果，且属性值与文本保留源文本，使 outerHTML 能原样回读（对账签名依赖它）。
  * 具体工作流为 扫描分词 → 建树（区分空元素、自闭合与原始文本元素）→ 暴露节点 API；选择器引擎支持
@@ -154,6 +154,13 @@ class DomNode {
     while (node) {
       if (node.rootMarker) return true;
       node = node.parentNode;
+    }
+    return false;
+  }
+
+  contains(node) {
+    for (let current = node; current; current = current.parentNode) {
+      if (current === this) return true;
     }
     return false;
   }

@@ -153,6 +153,9 @@ class IndexBudgetReservationRepository:
             source_kind="index_receipt", source_id=self._reservation_id, transition=transition)
 
     async def _locked_usage(self, session):
+        # Accounting emission also locks Loop. Match TaskProgress/Kernel order even
+        # when settling an old receipt; otherwise usage -> Loop deadlocks Loop -> usage.
+        await session.get(AgentLoop, self._loop_id, with_for_update=True)
         usage = await session.get(LoopBudgetUsage, self._loop_id, with_for_update=True, populate_existing=True)
         if usage is None:
             raise IndexBudgetExceeded("semantic index authority usage ledger 不存在")
@@ -168,13 +171,29 @@ class IndexBudgetReservationRepository:
         source = await session.get(model, self._owner.get("owner_id"), with_for_update=True) if model else None
         loop = await session.get(AgentLoop, self._loop_id)
         round_id = self._owner.get("round_id")
-        if (source is None or loop.current_round_id != round_id
+        if (source is None
                 or (source.loop_id, source.round_id) != (loop.loop_id, round_id)
                 or (kind != "round" and source.status != "running")
                 or (kind == "round" and (not source.observation_id or source.status in {"settled", "error", "superseded"}))):
             raise IndexBudgetExceeded("model owner 已取消或 superseded")
+        round_row = source if kind == "round" else await session.get(LoopRound, round_id)
+        if (round_row is None or round_row.status in {"settled", "error", "superseded"}
+                or round_row.authority_revision != loop.authority_revision
+                or (kind in {"round", "patrol"} and round_row.decision_id is not None)):
+            raise IndexBudgetExceeded("model owner Round 已终止或授权完成")
+        observation_id = self._owner.get("observation_id")
+        if observation_id != round_row.observation_id:
+            raise IndexBudgetExceeded("model owner Observation 已被替换")
         if kind == "worker" and (not self._owner.get("retry_identity") or source.retry_identity != self._owner["retry_identity"]):
             raise IndexBudgetExceeded("model owner Worker attempt 已过期")
+        if kind == "patrol" and source.observation_id:
+            from backend.app.desktop.agent_loop.ownership import LoopFencingGuard
+
+            await LoopFencingGuard().validate_current(session, source.round_id, source.fencing_token)
+        if kind == "round" and self._owner.get("fencing_token") is not None:
+            from backend.app.desktop.agent_loop.ownership import LoopFencingGuard
+
+            await LoopFencingGuard().validate_current(session, source.round_id, int(self._owner["fencing_token"]))
 
     @staticmethod
     async def _authorized_grant(session, loop_id, revision):

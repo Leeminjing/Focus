@@ -2,7 +2,7 @@ r"""本文件对外提供 RunAdmissionService 与 RunAdmissionResult。
 
 输入为调用方事务中已构造但未提交的 DesktopRun；输出为同事务持久化的唯一 Run 与 accepted RunDispatch。
 具体工作流为已存在的幂等 Loop Run 直接重放；新 Loop Run 先取得权威控制锁，再取得 task/idempotency 互斥锁及 Main Run 行锁，
-锁后再次核对幂等赢家，仅 Main 执行查询活跃 Main，随后复核父链、绑定输入来源并同时写 Run/dispatch；控制与准入均按 Loop→Run 顺序，不创建 Agent。
+锁后再次核对幂等赢家，仅 Main 执行查询活跃或尚未结算的 Main，随后复核父链、绑定输入来源并同时写 Run/dispatch；控制与准入均按 Loop→Run 顺序，不创建 Agent。
 示例：`result = await service.admit(session, run)`。
 """
 
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import hashlib
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.models import DesktopRun
@@ -60,7 +60,7 @@ class RunAdmissionService:
                 select(DesktopRun).where(
                     DesktopRun.task_id == run.task_id,
                     DesktopRun.kind == "main",
-                    DesktopRun.status.in_(("pending", "running")),
+                    or_(DesktopRun.status.in_(("pending", "running")), DesktopRun.settled_at.is_(None)),
                     DesktopRun.run_id != run.run_id,
                 ).with_for_update().limit(1)
             )

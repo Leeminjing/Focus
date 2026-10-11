@@ -2,6 +2,7 @@
 
 输入为隔离库、临时工作区和无采样 graph writer，输出为真实输入事务及 Context/Portfolio 发布断言。
 具体工作流为使用生产受理/发布服务，验证首输入无 Main Run、身份重试及暂停不恢复。
+旧 Context Main Run 路由在 workspace_patrol 模式明确拒绝，不再建立第二条输入/全局取消链路。
 示例：python -m pytest backend/tests/test_workspace_patrol.py -q。
 """
 
@@ -28,6 +29,38 @@ from backend.app.desktop.agent_loop.workspace_patrol import (
 from backend.app.desktop.context_evolution import ContextEvolutionService
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
+
+
+def test_legacy_context_main_route_cannot_bypass_workspace_input(tmp_path):
+    async def run():
+        from backend.app.desktop.agent_loop.service import AgentLoopService
+        from backend.app.desktop.models import MainRunCreate
+        from backend.app.desktop.routes import start_main_run
+
+        engine, sessions, workspace_id, service = await _setup(tmp_path)
+        try:
+            receipt = await service.submit(workspace_id, PatrolInputRequest(submission_id=uuid.uuid4().hex, content="统一输入"))
+            async with sessions() as session:
+                loop = await session.get(AgentLoop, receipt["loop_id"])
+                original = (loop.revision, loop.authority_revision, loop.current_round_id)
+                context_id = loop.initial_context_id
+
+            def forbid(*args, **kwargs):
+                raise AssertionError("workspace_patrol 不能绕回裸 Main Run 路径")
+
+            request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(agent_loop_service=AgentLoopService(sessions),
+                desktop_service=SimpleNamespace(start_main_run=forbid, notify_run_dispatch=forbid, run_by_idempotency=forbid))))
+            with pytest.raises(HTTPException) as rejected:
+                await start_main_run(context_id, MainRunCreate(message="绕过统一输入", idempotency_key=uuid.uuid4().hex), request, None)
+            assert rejected.value.status_code == 409 and "统一输入" in rejected.value.detail
+            async with sessions() as session:
+                loop = await session.get(AgentLoop, receipt["loop_id"])
+                assert (loop.revision, loop.authority_revision, loop.current_round_id) == original
+                assert await session.scalar(select(func.count()).select_from(LoopUserIntent).where(LoopUserIntent.loop_id == loop.loop_id)) == 1
+                assert await session.scalar(select(func.count()).select_from(DesktopRun).where(DesktopRun.loop_id == loop.loop_id)) == 0
+        finally:
+            await engine.dispose()
+    asyncio.run(run())
 
 
 async def _setup(tmp_path):
@@ -83,7 +116,7 @@ def test_first_input_without_context_or_run_and_retry(tmp_path, input_type):
                 loop = await session.get(AgentLoop, loop.loop_id)
                 assert context.current_revision_id and loop.current_portfolio_revision_id
                 source = await session.get(LoopUserIntent, accepted["intent_id"])
-                assert source.content == request.content and source.status == "pending"
+                assert source.content == request.content and source.status == "observed"
                 assert len((await service.history(workspace_id))["items"]) == 1
         finally:
             await engine.dispose()
@@ -269,6 +302,10 @@ def test_real_observation_kernel_input_application_idle_and_wakeup(tmp_path):
                 loop_id=loop.loop_id,
                 loop_revision=loop.revision,
                 round_id=loop.current_round_id,
+                observation_id=observation.observation_id,
+                observation_generation=observation.generation,
+                context_permissions=[{"context_id": item["context_id"], "access_mode": None}
+                    for item in observation.portfolio_frontier],
                 holder_id=loop.holder_id,
                 grant_id=grant.grant_id,
                 grant_revision=grant.revision,

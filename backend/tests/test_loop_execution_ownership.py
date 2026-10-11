@@ -47,6 +47,7 @@ pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 
 async def _seed_launching_directive(sessions, fixture: dict, *, label: str) -> str:
+    from backend.app.desktop.agent_loop.models import LoopRound
     directive_id = uuid.uuid4().hex
     decision_id = uuid.uuid4().hex
     action_id = uuid.uuid4().hex
@@ -57,7 +58,8 @@ async def _seed_launching_directive(sessions, fixture: dict, *, label: str) -> s
                 loop_id=fixture["loop_id"],
                 round_id=fixture["round_id"],
                 holder_id=fixture["snapshot"]["holder_id"],
-                intent={},
+                intent={"context_permissions": [{"context_id": fixture["context_id"], "access_mode": "read-only"}]},
+                authority_committed_at=datetime.now(UTC),
                 rationale=f"{label} launch decision",
                 status="committed",
                 idempotency_key=f"decision-{directive_id}",
@@ -103,10 +105,12 @@ async def _seed_launching_directive(sessions, fixture: dict, *, label: str) -> s
                 idempotency_key=f"directive-{directive_id}",
             )
         )
+        round_row = await session.get(LoopRound, fixture["round_id"])
+        round_row.decision_id, round_row.status = decision_id, "ready"
     return directive_id
 
 
-async def _admit_run(sessions, fixture: dict, directive_id: str) -> str:
+async def _admit_run(sessions, fixture: dict, directive_id: str, *, slot_id: str | None = None) -> str:
     run_id = uuid.uuid4().hex
     async with sessions.begin() as session:
         directive = await session.get(LoopDirective, directive_id)
@@ -116,6 +120,11 @@ async def _admit_run(sessions, fixture: dict, directive_id: str) -> str:
             WorkspaceSlot.kind == "authoritative",
         ))
         assert slot is not None
+        from backend.app.desktop.agent_loop.directive_equipment import resolve_directive_equipment
+        from backend.app.desktop.agent_loop.models import AgentLoop
+
+        loop = await session.get(AgentLoop, fixture["loop_id"])
+        equipment = await resolve_directive_equipment(session, loop, directive)
         admission = await RunAdmissionService(RunOwnershipPolicy().admit).admit(session, DesktopRun(
             run_id=run_id,
             task_id=fixture["context_id"],
@@ -129,11 +138,48 @@ async def _admit_run(sessions, fixture: dict, directive_id: str) -> str:
             directive_id=directive_id,
             loop_id=fixture["loop_id"],
             round_id=fixture["round_id"],
-            equipment={"_durable_dispatch_execution": {"agent_role": "main", "base_prompt": "test"}},
-            workspace_anchor={"slot_id": slot.slot_id},
+            equipment={**equipment, "_durable_dispatch_execution": {"agent_role": "main", "base_prompt": "test"}},
+            workspace_anchor={"slot_id": slot_id or slot.slot_id},
         ))
         admission.dispatch.accepted_at = datetime(2000, 1, 1, tzinfo=UTC)
     return run_id
+
+
+def test_interrupted_unsettled_main_keeps_context_and_capacity_with_another_slot(tmp_path: Path) -> None:
+    from backend.app.desktop.agent_loop.context_run_pool import ContextRunPool
+    from backend.app.desktop.run_orchestration.admission import RunAdmissionConflict
+
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        fixture = await _seed_loop(sessions, tmp_path, label="cleanup-slot", started_at=datetime.now(UTC))
+        try:
+            directive_id = await _seed_launching_directive(sessions, fixture, label="cleanup-slot")
+            old_id = await _admit_run(sessions, fixture, directive_id)
+            new_slot_id = uuid.uuid4().hex
+            async with sessions.begin() as session:
+                old = await session.get(DesktopRun, old_id)
+                old.status = "interrupted"
+                original = await session.get(WorkspaceSlot, old.workspace_anchor["slot_id"])
+                session.add(WorkspaceSlot(slot_id=new_slot_id, workspace_id=original.workspace_id,
+                    kind="isolated", root_path=str(tmp_path / "other-slot"), current_fingerprint="b" * 64))
+            pool = ContextRunPool(sessions, LoopCoordinator(sessions), None)
+            assert await pool._active_run_count(fixture["loop_id"]) == 1
+            with pytest.raises(RunAdmissionConflict, match="活跃 Main"):
+                await _admit_run(sessions, fixture, directive_id, slot_id=new_slot_id)
+            async with sessions.begin() as session:
+                (await session.get(DesktopRun, old_id)).settled_at = datetime.now(UTC)
+                await RunDispatchRepository().settle_by_run(session, old_id)
+            assert await pool._active_run_count(fixture["loop_id"]) == 0
+            replacement_id = await _admit_run(sessions, fixture, directive_id, slot_id=new_slot_id)
+            await RunLifecycleFinalizer(sessions, None).abort_prepared(replacement_id, "fixture complete")
+            async with sessions.begin() as session:
+                await RunDispatchRepository().settle_by_run(session, replacement_id)
+        finally:
+            await _stop(fixture["service"], fixture["loop_id"])
+            await engine.dispose()
+
+    asyncio.run(run())
 
 
 def test_competing_durable_workers_start_one_loop_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime_postgres_database) -> None:

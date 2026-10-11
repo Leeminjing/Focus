@@ -13,9 +13,53 @@ from sqlalchemy import select
 
 from backend.app.desktop.agent_loop.models import AgentLoop
 from backend.app.desktop.agent_loop.run_execution import LoopRunExecutionBoundary
-from backend.app.desktop.models import DesktopRun
+from backend.app.desktop.models import DesktopRun, DesktopThread
 from backend.app.desktop.run_orchestration.executor import RunExecutionResources
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+
+
+async def freeze_patrol_intent(sessions, intent):
+    import uuid
+    from backend.app.desktop.agent_loop.models import LoopObservation, LoopRound, LoopContextMembership
+    from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope, ContextPermission
+    from backend.app.desktop.agent_loop.observation import observation_hash
+    from backend.app.desktop.agent_loop.directive_equipment import resolve_context_equipment
+
+    async with sessions.begin() as session:
+        loop = await session.get(AgentLoop, intent.loop_id, with_for_update=True)
+        round_row = await session.get(LoopRound, intent.round_id, with_for_update=True)
+        row = await session.get(LoopObservation, round_row.observation_id) if round_row.observation_id else None
+        contexts = tuple(await session.scalars(select(LoopContextMembership.context_id).where(
+            LoopContextMembership.loop_id == loop.loop_id, LoopContextMembership.status == "active")))
+        permissions = tuple([ContextPermission(context_id=context_id,
+            access_mode=(await resolve_context_equipment(session, loop, context_id))["access_mode"]) for context_id in contexts])
+        permissions += tuple(ContextPermission(context_id=f"action:{index}", access_mode="read-only")
+            for index, action in enumerate(intent.actions)
+            if action.action in {"create_lane", "update_lane", "merge_contexts", "spawn_context", "recover_context"})
+        if row is None:
+            identity = uuid.uuid4().hex
+            envelope = LoopObservationEnvelope(observation_id=identity, generation=1,
+                decision_inputs_ref=identity, loop_id=loop.loop_id, round_id=round_row.round_id,
+                loop_revision=intent.loop_revision, goal_revision=intent.goal_revision,
+                authority_revision=intent.grant_revision, observed_frontier_hash=intent.observed_frontier_hash,
+                goal={}, grant={"grant_id": intent.grant_id, "holder_id": intent.holder_id},
+                portfolio_frontier=tuple([{"context_id": context_id,
+                    "revision_id": (await session.get(DesktopThread, context_id)).current_revision_id} for context_id in contexts]),
+                workspace={"revision": intent.observed_workspace_revision}, budget={})
+            row = LoopObservation(observation_id=identity, loop_id=loop.loop_id, round_id=round_row.round_id,
+                generation=1, envelope=envelope.model_dump(mode="json"), envelope_hash=observation_hash(envelope))
+            session.add(row)
+            await session.flush()
+            round_row.observation_id = identity
+        return intent.model_copy(update={"observation_id": row.observation_id,
+            "observation_generation": row.generation, "observed_envelope_hash": row.envelope_hash,
+            "context_permissions": intent.context_permissions or permissions})
+
+
+async def commit_patrol(sessions, intent):
+    from backend.app.desktop.agent_loop.kernel import LoopKernel
+
+    return await LoopKernel(sessions).commit(await freeze_patrol_intent(sessions, intent))
 
 
 async def start_loop_run(sessions, run_id):

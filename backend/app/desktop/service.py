@@ -13,6 +13,7 @@ RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以
 Main 执行池按来源选择 custom／MCP；工作区工具和插件桥各自独占内置／插件注入，发现目录仍完整用于装备展示。
 协作消息由耐久 inbox 准备，模型与工具尝试通过独立审计端口确认；临时运行控制不进入 authored 或 semantic 历史。
 Loop 工具 claim 通过组合根注入的实时版本校验受理，暂停后的新效果意图被拒绝，已开始调用仍保留迟到结果。
+Loop 文件模式按所属 Round 的成功决策实时复核，普通会话继续读取会话模式；重叠轮与内联子执行保留各自授信边界。
 协作等待秒数使用 collaboration_contracts 的同一受约束类型生成 schema 并验证直接调用。
 具体工作流为：登记真实宿主机工作区与线程，复制已提交 checkpoint 形成冻结草稿，
 准备受文件沙箱约束的工作区 Agent 装配参数（经统一执行链路 worker.run_agent 执行），并把上传、
@@ -1886,15 +1887,28 @@ class DesktopService:
         self, context: dict[str, Any], run: DesktopRun, equipment: dict[str, Any],
     ) -> None:
         security = security_context_of(context)
+        resolver_name = "round_mode_resolver" if run.loop_id else "session_mode_resolver"
+        resolver = self._round_mode_resolver(run.run_id) if run.loop_id else self._session_mode_resolver(
+            run.task_id, _resolve_access_mode(equipment.get("access_mode")))
         context["security_context"] = replace(
             security,
             extras={
                 **security.extras,
-                "session_mode_resolver": self._session_mode_resolver(
-                    run.task_id, _resolve_access_mode(equipment.get("access_mode")),
-                ),
+                resolver_name: resolver,
+                **({"round_authorization": equipment.get("round_authorization")} if run.loop_id else {}),
             },
         )
+
+    def _round_mode_resolver(self, run_id: str):
+        async def current() -> AccessMode:
+            from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
+            async with self.session_factory() as session:
+                run = await session.get(DesktopRun, run_id)
+                if run is None:
+                    raise RuntimeError("所属 Round 的 Run 已不存在")
+                await RunOwnershipPolicy().assert_live(session, run)
+                return _resolve_access_mode((run.equipment or {}).get("access_mode"))
+        return current
 
     def _session_mode_resolver(self, task_id: str, initial: AccessMode):
         async def current() -> AccessMode:

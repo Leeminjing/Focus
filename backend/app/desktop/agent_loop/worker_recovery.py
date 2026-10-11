@@ -23,7 +23,6 @@ class WorkerRecoveryRepository:
     async def retry(self, session, loop, request):
         row = await session.get(LoopWorkerRequest, request.scope.get("worker_request_id"), with_for_update=True)
         if (row is None or row.status != "error" or request.kind != "recovery_action"
-            or request.round_id != loop.current_round_id
             or (row.loop_id, row.round_id, row.kind) != (loop.loop_id, request.round_id, request.scope.get("worker_kind"))):
             raise WorkerAttemptRejected("Worker retry scope 或失败状态不匹配")
         grant = await WorkerAttemptAuthority().require_authorized(session, loop, row)

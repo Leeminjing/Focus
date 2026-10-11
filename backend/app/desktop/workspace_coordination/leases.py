@@ -2,7 +2,7 @@ r"""本文件对外提供 WorkspaceLeaseManager 与 WorkspaceLeaseConflict。
 
 输入为 slot、Run、服务端推导的访问模式和期限；输出为可续约 lease 或确定性并发拒绝。
 具体工作流为按 slot 行锁回收过期租约、允许 Reader 共享稳定版本但令 Writer 与全部其他 lease 互斥、
-递增 fencing token 并以部分唯一索引兜底，工具调用前用 assert_valid 拒绝过期或陈旧 token。
+递增 fencing token 并以部分唯一索引兜底，工具调用前用 assert_valid 拒绝过期或陈旧 token；含未确认 Shell 清理证据的 Run 持续占用 slot，租约过期不构成进程退出证明。
 示例：`grant = await manager.acquire(request)`。
 """
 
@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.workspace_coordination.models import WorkspaceLease, WorkspaceSlot
 from backend.app.desktop.workspace_coordination.schemas import WorkspaceLeaseGrant, WorkspaceLeaseRequest
+from backend.app.desktop.models import DesktopRun
 
 
 class WorkspaceLeaseConflict(RuntimeError):
@@ -35,6 +36,12 @@ class WorkspaceLeaseManager:
             )
             if slot is None or slot.lifecycle != "active":
                 raise WorkspaceLeaseConflict("workspace slot 不可用")
+            unresolved = await session.scalar(select(DesktopRun.run_id).where(
+                DesktopRun.workspace_anchor["slot_id"].astext == request.slot_id, DesktopRun.settled_at.is_(None),
+                DesktopRun.workspace_result["shell_cleanup"].astext.not_in(("{}", "null")),
+            ).limit(1))
+            if unresolved is not None:
+                raise WorkspaceLeaseConflict("workspace slot 的 Shell 进程树清理未确认")
             await self._expire(session, request.slot_id, now)
             existing = await session.scalar(select(WorkspaceLease).where(WorkspaceLease.run_id == request.run_id))
             if existing is not None and existing.status == "active" and existing.expires_at > now:

@@ -6,18 +6,18 @@ r"""本文件对外提供 LoopObservationService、带 Mission/Expansion/Recover
 决策的 round（终局短路，不产生观察与认知调用），再冻结 Context frontier、
 待处理用户意图、持久单来源 recovery opportunity 与事实并保存观察，Patrol Session collaborator 扇出并独立收集 Curator assignment，
 ContextExpansionStage 评估结构化派生机会，结果作为独立持久认知补充与冻结基础输入组合；基础内容和 hash 永不替换。
-Observation capture 由专责模块共同冻结上一版任务记忆、当前世界与真实 Lineage；后继正式冻结等待前序记忆就绪；
+Observation capture 冻结已发布任务记忆、当前世界与真实 Lineage；用户输入可追加同轮版本，自动后继由全 Loop 汇合保证前序成果吸收；
 冻结准备期间若 Loop/round/授权失效，编排收口该尝试，不创建新的 Observation 或记忆工作；已冻结输入继续可读；前序记忆 blocked 时建立带精确工作身份的 recovery wait，等待用户显式重试，不伪造新观察。
 模型只读取单一 effective Mission 并返回无权 proposal 或 identity 级 semantic spawn/decline/recover，Stage 再确定性编译内部
-LanePlan；编译 blocker 会先终结 round 并持久化 Patrol 失败结果，避免 Supervisor 重试终态 opportunity。系统随后绑定唯一 holder
+LanePlan；编译 blocker 挂起未决 round 并持久化 Patrol 失败结果，恢复时保留输入链并追加观察，避免 Supervisor 重试终态 opportunity。系统随后绑定唯一 holder
 和全部版本，PortfolioPatrol 记录 attempt；决策合同（mission 引用取值与 required 派生出口）由
 patrol_contract.PatrolDecisionContract 校验，形状或合同不合法时在同一冻结观察上携带仅有界公开错误的反馈重试、
 违例有界原始输出与已解析动作的脱敏结构仅留既有审计，后者不因长理由丢失等待 cause/证据种类，
 用尽才收敛为 waiting_user，最后 Kernel 校验并提交。首轮 Mission renderer 只补全 Patrol 已决定的 Primary continuation，
-不独立提交权威决策；初始证据 Run 完成前不冻结首轮观察。
+不独立提交权威决策；旧 Context Loop 的初始证据 Run 完成前不开展首轮认知。
 真实 Patrol 只对直接用户消息选择 intent_id；普通 Portfolio 意见不注入执行 Agent。
 质量编译阻断同时投影安全失败维度与耐久修订次数；材料修订由 compiler 的专责模块执行，不由本编排扩张权限。
-模型读面保留完整来源目录及同政策合法等待身份，Worker 正文按精确 hash 分页；请求发送前检查完整窗口，准备恢复不凭 phase 宣称完成。
+模型读面保留完整来源目录及同政策合法等待身份，Worker 正文按精确 hash 分页；完整原输入 Oi 链经校验装配后才进入模型窗口，无法装入时使用既有容量 blocker，不能静默删历史。
 完成输入等价的候选由共享冻结准入反馈有界纠错；用尽以 completion_evidence_unchanged 一致收敛，不创建拒绝后继轮。
 预算、派生阻断和旧决策的失败收口统一先锁 Loop 再锁 Round，并刷新控制事实；正式暂停与收口竞争不反向持锁。
 Patrol 系统合同按任务依赖引导串行基础、独立模块的 worktree 并行及逐个采用后的集成；使用既有 actions，
@@ -82,6 +82,7 @@ from backend.app.desktop.agent_loop.observation_capture import (
     ObservationCaptureSuperseded,
     PatrolReadRequest,
 )
+from backend.app.desktop.agent_loop.patrol_read_view import PatrolCausalReadRequest
 from backend.app.desktop.agent_loop.ownership import KernelFencingRejected
 from backend.app.desktop.agent_loop.patrol import (
     PatrolContractViolation,
@@ -104,8 +105,10 @@ from backend.app.desktop.agent_loop.rounds import (
     TERMINAL_ROUND_STATUSES,
     UNDECIDED_ROUND_STATUSES,
     terminate_round,
+    suspend_round,
 )
 from backend.app.desktop.agent_loop.schemas import (
+    ContextPermission,
     LoopObservationEnvelope,
     PatrolDecisionIntent,
     PatrolModelAction,
@@ -145,6 +148,13 @@ clarification_admission.admitted_requests 是同一冻结事实上的合法澄�
 绿色项目可先交给一个普通授权 Run 完成基础和接口验证，并在用户已授权的项目范围内准备可复现 Git baseline；
 不得自动初始化用户禁止初始化的目录，不得 commit/stash/reset 未知用户修改。没有 Git、基线脏或隔离未授权时保持合法串行，
 资源排队不构成新的 wait_for_user 理由。Run 的工具权限和 Mission boundary 仍须遵守。
+每次 decision 必须提供 context_permissions，完整列出 observation.portfolio_frontier 的所有 Context，
+每项为 {"context_id":精确身份,"access_mode":"read-only"|"workspace-write"|"danger-full-access"|null}。
+派生新 Context 还须列出 context_id="action:<从0开始的动作位置>"；位置按本 decision.actions 顺序计算，spawn/recover/create/update/merge 均如此。
+null 表示本轮不授予执行权限，有执行动作的目标必须明确授予一种模式。文件模式不能超出 frozen grant.equipment 和各 portfolio_frontier[].equipment 的上限，派生目标仍受可信 opportunity 的 workspace_mode 限制。
+该权限只约束所属 Round 的执行，最长到本轮结束；新轮须重新完整分配，不继承上一轮，也不改变已提交旧轮仍有效的权限。
+新旧工作之间的语义矛盾由你判断。需要停止旧工作时，使用 {"action":"cancel_execution","target_kind":"run"|"directive"|"worker","target_id":冻结证据中的精确身份,"round_id":其所属轮身份,"reason":简洁原因}。
+省略、降权、新 Mission 或新的 Context 权限清单都不会隐式取消旧轮；明确取消与保留旧工作、新执行、输入处置可在同一 decision 中提交。
 隔离 workspace 结果不会自动进入主工作区；仅在证据充分且授权包含 adoption 时提交 adopt_workspace_result。
 每次只采用一个已验证结果，后继 observation 重新核对目标 revision 和冲突；待本阶段模块结果逐个采用后，再让集成任务读取权威目录验收。
 例如：基础/接口验证 → 独立模块 A、B 的 worktree Run → 逐个采用 A、B → 集成验收；这只是依赖允许时的示例，不是固定阶段表。
@@ -153,7 +163,7 @@ required 只要求满足上述合同，不要求本轮选择全部 opportunity�
 worker_source_catalog 是全部冻结 Worker 来源目录，worker_results 是本次认知补充的摘要；current_round=false 的历史材料不证明当前准备完成。
 需要 Worker 正文时返回 reads 中的 {"source":"worker","request_id":精确身份,"result_hash":目录hash,"cursor":0,"max_bytes":8192}；按 next_cursor 继续精确分页，不编造来源或将部分页视为完整 JSON。
 不要输出私有思维链。每步只返回三者之一：reads、compression_candidate，或最终判断；最终判断必须嵌在
-decision 下，形如 {"decision": {"rationale": 简洁理由, "evidence": [事实引用], "mission_references": [Mission 语义引用], "actions": [动作]}}，
+decision 下，形如 {"decision": {"rationale": 简洁理由, "evidence": [事实引用], "mission_references": [Mission 语义引用], "context_permissions": [本轮各目标权限], "actions": [动作]}}，
 顶层不得出现其它键。
 每次 final decision 必须提供 mission_references，其取值以当次随附 JSON Schema 中的枚举为准。普通推进引用实际提供的 outcome/boundary、冻结 input 或 current progress；完成验证与完成请求
 只能用 completion_check 引用 observation.effective_mission.completion_checks 中稳定的 check_id。
@@ -162,8 +172,8 @@ workspace_patrol 是用户—Patrol—上下文集合入口。workspace_input �
 outcome、boundary、completion_check 均可缺省。普通信息足以支持下一步时不得要求补表。
 每轮用 apply_user_inputs 明确处置冻结输入：inputs 每项含 intent_id、disposition（discussion/decision/reference/deferred）和 explanation。
 changes 仅用于用户明确决定，须用原文中的精确 quote，section 为 outcome/boundary/completion_check；补充保留旧条目，revise/remove 用 supersedes 引用 effective_mission.input_sources 中同分区 entry_id。
-特殊类型只能改对应分区。检查 evidence_kinds 来自其要求，可缺省但不伪造证据；改变 Mission 必须单独提交 apply_user_inputs，下一轮重新冻结再执行。
-不改 Mission 的处置可与继续 Context 或信息请求合并。普通推进可引用 {role:input,reference_id:输入identity} 或 {role:progress,reference_id:current}。
+特殊类型只能改对应分区。检查 evidence_kinds 来自其要求，可缺省但不伪造证据；改变 Mission 可与精确取消和新执行授权同一提交，后续动作必须符合修改后的要求。
+输入处置可与继续 Context、精确取消或信息请求合并。普通推进可引用 {role:input,reference_id:输入identity} 或 {role:progress,reference_id:current}。
 information_requests 是独立补充卡片，主动输入不自动解决它；定向回答 request_id 精确关联。解决某请求用 apply_user_inputs.resolved_request_ids，回答不足时只问剩余缺口。
 具体缺口用 wait_for_user cause=missing_input、evidence_identity kind=input/reference_id=本轮输入identity、required_input=具体问题。
 请求补充前要明确处置相关输入；已判断需后续信息的输入可以 deferred，按此输入身份保留后继资格。没有可推进事项且后果稳定时用 wait_for_user cause=awaiting_input，不制造任务或线程；空检查不等于验收通过。
@@ -181,6 +191,7 @@ class PatrolDecisionProposal(BaseModel):
     evidence: tuple[dict[str, Any], ...] = ()
     mission_references: tuple[MissionReference, ...] = Field(min_length=1)
     actions: tuple[PatrolModelAction, ...] = Field(min_length=1)
+    context_permissions: tuple[ContextPermission, ...] = ()
 
     @model_validator(mode="after")
     def require_references_for_action_role(self) -> PatrolDecisionProposal:
@@ -199,7 +210,7 @@ class PatrolDecisionProposal(BaseModel):
 class PatrolCognitiveStep(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    reads: tuple[PatrolReadRequest | PatrolWorkerReadRequest, ...] = Field(default=(), max_length=4)
+    reads: tuple[PatrolReadRequest | PatrolWorkerReadRequest | PatrolCausalReadRequest, ...] = Field(default=(), max_length=4)
     compression_candidate: CompressionCandidateRequest | None = None
     decision: PatrolDecisionProposal | None = None
 
@@ -208,7 +219,7 @@ class PatrolCognitiveStep(BaseModel):
     def _fold_flat_proposal(cls, value: Any) -> Any:
         if not isinstance(value, dict):
             return value
-        flat = {key: value[key] for key in ("rationale", "evidence", "mission_references", "actions") if key in value}
+        flat = {key: value[key] for key in ("rationale", "evidence", "mission_references", "actions", "context_permissions") if key in value}
         if not flat or value.get("decision") is not None:
             return value
         if value.get("reads") or value.get("compression_candidate") is not None:
@@ -266,6 +277,10 @@ class StructuredPatrolDecisionModel:
         messages = frozen_request_messages(PATROL_SYSTEM_CONTRACT, f"<loop_observation>{prompt}</loop_observation>", scope="round",
             source_refs=({"loop_id": observation.loop_id, "round_id": observation.round_id,
                           "observation_hash": observation_hash(observation), "frontier_hash": observation.observed_frontier_hash},))
+        causal_evidence = await self._causal_evidence(observation)
+        if causal_evidence:
+            messages.append(HumanMessage(content="<causal_evidence>" + json.dumps(causal_evidence,
+                ensure_ascii=False, separators=(",", ":")) + "</causal_evidence>"))
         if self._rejection_feedback:
             messages.append(HumanMessage(content=f"<proposal_validation_feedback>{self._rejection_feedback}</proposal_validation_feedback>\n请针对该错误修正提案；不要重新解释或改变冻结的 Mission、授权与 frontier。"))
         proposal = await self._decide(model, messages, config.curation_output_method, observation)
@@ -280,10 +295,13 @@ class StructuredPatrolDecisionModel:
         grant = observation.grant
         return PatrolDecisionIntent(
             decision_id=uuid.uuid4().hex,
-            idempotency_key=f"patrol:{observation.round_id}:{observation_hash(observation)}",
+            idempotency_key=f"patrol:{observation.round_id}:{uuid.uuid4().hex}",
             loop_id=observation.loop_id,
             loop_revision=observation.loop_revision,
             round_id=observation.round_id,
+            observation_id=observation.observation_id or observation.decision_inputs_ref,
+            observation_generation=max(1, observation.generation),
+            context_permissions=proposal.context_permissions,
             holder_id=str(grant["holder_id"]),
             grant_id=str(grant["grant_id"]),
             grant_revision=observation.authority_revision,
@@ -299,6 +317,43 @@ class StructuredPatrolDecisionModel:
 
     def _raw_output(self, proposal: PatrolDecisionProposal) -> str:
         return (self._last_raw_text or proposal.model_dump_json())[:_RAW_OUTPUT_LIMIT]
+
+    async def _causal_evidence(self, observation):
+        from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
+
+        evidence = []
+        for source in observation.causal_chain:
+            if self._reader is None or not source.get("snapshot_hash"):
+                raise ValueError("causal_history_unavailable")
+            cursor, chunks, total_bytes = 0, [], None
+            while True:
+                request = PatrolCausalReadRequest(intent_id=source["intent_id"], snapshot_hash=source["snapshot_hash"], cursor=cursor)
+                pages = await self._reader(observation, (request,))
+                if len(pages) != 1:
+                    raise ValueError("causal_history_incomplete")
+                page = pages[0]
+                size, content = page.get("total_bytes"), page.get("content")
+                if (page.get("source") != "causal" or page.get("intent_id") != source["intent_id"]
+                        or page.get("cursor") != cursor or page.get("snapshot_hash") != source["snapshot_hash"]
+                        or not isinstance(size, int) or size < 1 or not isinstance(content, str)
+                        or (total_bytes is not None and size != total_bytes)):
+                    raise ValueError("causal_history_incomplete")
+                total_bytes = size
+                end = cursor + len(content.encode("utf-8"))
+                chunks.append(content)
+                following = page.get("next_cursor")
+                if following is None:
+                    if end != total_bytes:
+                        raise ValueError("causal_history_incomplete")
+                    break
+                if following != end or not cursor < end < total_bytes:
+                    raise ValueError("causal_history_incomplete")
+                cursor = following
+            snapshot = json.loads("".join(chunks))
+            if canonical_hash(snapshot) != source["snapshot_hash"]:
+                raise ValueError("causal_history_hash_changed")
+            evidence.append({**source, "snapshot": snapshot})
+        return evidence
 
     async def _decide(self, model, messages, method: str, observation) -> PatrolDecisionProposal:
         if self._reader is None:
@@ -451,13 +506,13 @@ class LoopRoundOrchestrator:
             loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True)
             if loop is None or loop.status != "running" or loop.current_round_id != claim.round_id:
                 return
-            work = await session.get(LoopProgressWork, error.observation_id, with_for_update=True)
+            work = await session.get(LoopProgressWork, error.work_id, with_for_update=True)
             if work is not None and work.loop_id == loop.loop_id and work.state == "blocked":
                 loop.health = "progress_blocked"
                 failure_kind = work.error.split(":", 1)[0] if work.error else None
                 await LoopWaitRequestService().open(session, loop,
-                    LoopWaitRequestFactory.progress_memory(work.observation_id, failure_kind),
-                    created_by="progress-memory", correlation_id=f"progress-memory:{work.observation_id}",
+                    LoopWaitRequestFactory.progress_memory(work.work_id, failure_kind),
+                    created_by="progress-memory", correlation_id=f"progress-memory:{work.work_id}",
                     round_id=claim.round_id)
             else:
                 loop.health = "observing" if work is None or work.state == "published" else "progress_waiting"
@@ -481,13 +536,14 @@ class LoopRoundOrchestrator:
             if round_row.status in TERMINAL_ROUND_STATUSES:
                 return None
             round_status = round_row.status
+            refresh_observation = bool((round_row.barrier or {}).get("refresh_observation"))
             if round_row.status in {"publishing", "adopting"}:
                 decision = await session.get(LoopDecision, round_row.decision_id) if round_row.decision_id else None
                 publishing_intent = PatrolDecisionIntent.model_validate(decision.intent) if decision else None
             elif round_row.status not in {"observed", "curated"}:
                 return None
             else:
-                settled = await session.scalar(select(LoopDecision.decision_id).where(LoopDecision.round_id == round_row.round_id))
+                settled = round_row.decision_id
                 if settled is not None:
                     decided_decision_id = settled
                 else:
@@ -495,6 +551,9 @@ class LoopRoundOrchestrator:
                     model_name = (loop.equipment or {}).get("patrol_model_name") or (loop.equipment or {}).get("model_name")
         if decided_decision_id is not None:
             await self._terminate_decided_round(claim, decided_decision_id)
+            return None
+        if refresh_observation:
+            await self._observations.refresh(claim.loop_id, claim.round_id)
             return None
         if publishing_intent is not None:
             try:
@@ -531,6 +590,11 @@ class LoopRoundOrchestrator:
         except ProgressNotReady as exc:
             await self._wait_for_progress(claim, exc)
             return None
+        async with self._sessions.begin() as session:
+            try:
+                await self._require_current(session, claim, frozen.observation_id or frozen.decision_inputs_ref)
+            except KernelFencingRejected:
+                return None
         async with self._sessions() as session:
             loop = await session.get(AgentLoop, claim.loop_id)
             round_row = await session.get(LoopRound, claim.round_id)
@@ -547,12 +611,13 @@ class LoopRoundOrchestrator:
             return None
         if observation is None:
             return None
-        observation_id = await self._observation_id(claim.round_id)
+        observation_id = observation.observation_id or observation.decision_inputs_ref
         async with self._sessions() as session:
             assessment = await self._supplements.get(session, observation_id, "expansion_assessment")
         if assessment is None:
-            expansion_assessment = await self._expansions.assess(observation)
+            expansion_assessment = await self._expansions.assess(observation, fencing_token=int(claim.fencing_token))
             async with self._sessions.begin() as session:
+                await self._require_current(session, claim, observation_id)
                 assessment = await self._supplements.put(session, observation_id, "expansion_assessment", expansion_assessment.model_dump(mode="json"))
         observation = PatrolDecisionContext(observation, expansion_assessment=assessment).model_observation()
         budget = LoopBudgetGuard().evaluate(
@@ -588,19 +653,20 @@ class LoopRoundOrchestrator:
             )
         elif recovery_resolution.intent is not None:
             intent = recovery_resolution.intent
-        resolution = await self._expansions.resolve(observation, intent)
+        resolution = await self._expansions.resolve(observation, intent, fencing_token=int(claim.fencing_token))
         if resolution.blocker is not None:
             await self._settle_expansion_blocker(claim, patrol_session.session_id, resolution.blocker)
             return None
         if resolution.intent is None:
             raise RuntimeError("Context expansion resolution 缺少 intent 与 blocker")
         intent = resolution.intent
-        current_session = await self._patrol_sessions.current(claim.round_id)
+        current_session = await self._patrol_sessions.get(patrol_session.session_id)
         if current_session is not None and current_session.phase == PatrolPhase.PROPOSING:
             await self._patrol_sessions.transition(
                 current_session.session_id,
                 PatrolPhase.AUTHORIZING,
                 PatrolActivity(summary="正在请求 Kernel 授权 Patrol proposal"),
+                fencing_token=int(claim.fencing_token),
             )
         try:
             result = await self._kernel.commit(intent)
@@ -627,6 +693,7 @@ class LoopRoundOrchestrator:
                 PatrolPhase.OBSERVING,
                 PatrolActivity(summary=f"发现 {len(observation.portfolio_frontier)} 个活动 Context"),
                 observation_id=observation_id,
+                fencing_token=int(claim.fencing_token),
             )
         scopes = self._curators.scopes(observation)
         if round_status == "curated" or (scopes and current is not None and current.phase == PatrolPhase.PROPOSING):
@@ -640,15 +707,18 @@ class LoopRoundOrchestrator:
                     session_id,
                     PatrolPhase.COLLECTING_CURATORS,
                     PatrolActivity(summary=f"已收到 {len(results)} 个 Curator 结果"),
+                    fencing_token=int(claim.fencing_token),
                 )
-                await self._curators.consume(session_id)
+                await self._curators.consume(session_id, fencing_token=int(claim.fencing_token))
                 await self._patrol_sessions.transition(
                     session_id,
                     PatrolPhase.PROPOSING,
                     PatrolActivity(summary="正在综合 Curator 证据形成 proposal"),
+                    fencing_token=int(claim.fencing_token),
                 )
-            observation_id = await self._observation_id(claim.round_id)
+            observation_id = observation.observation_id or observation.decision_inputs_ref
             async with self._sessions.begin() as session:
+                await self._require_current(session, claim, observation_id)
                 saved = await self._supplements.put(session, observation_id, "curator_results", {"results": list(results)})
             return PatrolDecisionContext(observation, curator_results=tuple(saved["results"])).model_observation()
         if scopes and current is not None and current.phase in {PatrolPhase.OBSERVING, PatrolPhase.DISPATCHING_CURATORS}:
@@ -657,6 +727,7 @@ class LoopRoundOrchestrator:
                     session_id,
                     PatrolPhase.DISPATCHING_CURATORS,
                     PatrolActivity(summary=f"向 {len(scopes)} 个 Curator 分派证据检查"),
+                    fencing_token=int(claim.fencing_token),
                 )
             await self._curators.dispatch(session_id, observation, scopes, fencing_token=int(claim.fencing_token))
             return None
@@ -667,12 +738,26 @@ class LoopRoundOrchestrator:
                 session_id,
                 PatrolPhase.PROPOSING,
                 PatrolActivity(summary="正在根据冻结 observation 形成 proposal"),
+                fencing_token=int(claim.fencing_token),
             )
         return PatrolDecisionContext(observation, curator_results=()).model_observation()
 
     async def _observation_id(self, round_id: str) -> str | None:
         async with self._sessions() as session:
-            return await session.scalar(select(LoopObservation.observation_id).where(LoopObservation.round_id == round_id))
+            return await session.scalar(select(LoopRound.observation_id).where(LoopRound.round_id == round_id))
+
+    @staticmethod
+    async def _require_current(session, claim, observation_id):
+        from backend.app.desktop.agent_loop.cognition import require_observation
+        from backend.app.desktop.agent_loop.ownership import LoopFencingGuard
+
+        await session.get(AgentLoop, claim.loop_id, with_for_update=True)
+        await session.get(LoopRound, claim.round_id, with_for_update=True)
+        await LoopFencingGuard().validate_current(session, claim.round_id, int(claim.fencing_token))
+        try:
+            await require_observation(session, claim.round_id, observation_id)
+        except ValueError as exc:
+            raise KernelFencingRejected(str(exc)) from exc
 
     @staticmethod
     def _bind_fencing(intent: PatrolDecisionIntent, claim: CoordinatorClaim) -> PatrolDecisionIntent:
@@ -702,7 +787,8 @@ class LoopRoundOrchestrator:
             if feedback is not None:
                 decision_model.set_rejection_feedback(feedback)
             try:
-                intent = await PortfolioPatrol(self._sessions, decision_model).decide(observation, holder_id)
+                intent = await PortfolioPatrol(self._sessions, decision_model).decide(
+                    observation, holder_id, fencing_token=int(claim.fencing_token))
             except PatrolContractViolation as exc:
                 if not getattr(decision_model, "usage_managed", False):
                     await self._record_usage(claim.loop_id, decision_model.usage)
@@ -743,7 +829,8 @@ class LoopRoundOrchestrator:
             round_row = await session.get(LoopRound, claim.round_id, with_for_update=True, populate_existing=True)
             if round_row is None:
                 return
-            await terminate_round(session, loop, round_row, category="budget", reason="Loop hard budget 已耗尽: " + ", ".join(reasons), allowed_statuses=UNDECIDED_ROUND_STATUSES)
+            await self._require_current(session, claim, round_row.observation_id)
+            await suspend_round(session, loop, round_row, category="budget", reason="Loop hard budget 已耗尽: " + ", ".join(reasons))
 
     async def _settle_expansion_blocker(
         self,
@@ -756,14 +843,14 @@ class LoopRoundOrchestrator:
             loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True, populate_existing=True)
             round_row = await session.get(LoopRound, claim.round_id, with_for_update=True, populate_existing=True)
             if round_row is not None:
-                await terminate_round(
+                await self._require_current(session, claim, round_row.observation_id)
+                await suspend_round(
                     session,
                     loop,
                     round_row,
                     category="context_expansion_blocked",
                     reason=reason,
                     wait_scope={"quality_recovery": blocker.quality_recovery} if blocker.quality_recovery else None,
-                    allowed_statuses=UNDECIDED_ROUND_STATUSES,
                 )
         current = await self._patrol_sessions.get(session_id)
         if current is not None and current.phase not in {
@@ -777,6 +864,7 @@ class LoopRoundOrchestrator:
                 PatrolPhase.FAILED,
                 PatrolActivity(summary="Context 派生计划无法安全编译"),
                 terminal_outcome={"status": "blocked", "reason_code": blocker.code, "reason": blocker.summary},
+                fencing_token=int(claim.fencing_token),
             )
 
     async def _terminate_decided_round(self, claim: CoordinatorClaim, decision_id: str) -> bool:
@@ -802,9 +890,9 @@ class LoopRoundOrchestrator:
                 await LoopFencingGuard().validate_current(session, claim.round_id, int(claim.fencing_token))
             except KernelFencingRejected:
                 return
-            patrol = await session.scalar(select(LoopPatrolSession).where(LoopPatrolSession.round_id == claim.round_id).with_for_update())
+            patrol = await session.scalar(select(LoopPatrolSession).where(LoopPatrolSession.observation_id == round_row.observation_id).with_for_update())
             if patrol is not None and patrol.fencing_token != int(claim.fencing_token):
                 return
             category = ('completion_evidence_unchanged' if 'completion_evidence_unchanged' in str(exc)
                         else "provider_request_window" if "provider_request_window" in str(exc) else "patrol_failed")
-            await terminate_round(session, loop, round_row, category=category, reason=f"Portfolio Patrol 准备/调用失败: {str(exc)[:1000]}", allowed_statuses=UNDECIDED_ROUND_STATUSES)
+            await suspend_round(session, loop, round_row, category=category, reason=f"Portfolio Patrol 准备/调用失败: {str(exc)[:1000]}")

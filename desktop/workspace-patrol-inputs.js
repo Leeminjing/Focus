@@ -1,6 +1,6 @@
 /* 本文件对外提供工作区 Patrol 的输入记录与提交快照 store。
  * 输入为四类草稿、指定请求、历史页及耐久回执；输出为独立发送状态和合计最近三条记录。
- * 具体工作流为提交时冻结正文/类型/目标并立即释放该草稿，回调仅修改对应记录；重试沿用身份，
+ * 具体工作流为提交时深复制并冻结正文/类型/目标与可见因果线索，立即释放该草稿，回调仅修改对应记录；重试沿用身份与原时点，
  * 新草稿、折叠和历史分页互不覆盖。示例：const row = store.submit(); await send(row.request)。
  */
 (function (root, factory) {
@@ -10,6 +10,8 @@
 })(globalThis, function () {
   "use strict";
   const types = Object.freeze({ information: "普通信息", outcome: "最终结果", boundary: "执行边界", completion_check: "完成检查" });
+  const frozenCopy = value => value && typeof value === "object"
+    ? Object.freeze(Array.isArray(value) ? value.map(frozenCopy) : Object.fromEntries(Object.entries(value).map(([key, item]) => [key, frozenCopy(item)]))) : value;
   function create(identity = () => crypto.randomUUID(), accessMode = "workspace-write") {
     let draft = { content: "", input_type: "information", request_id: null, request_revision: null };
     let expanded = false;
@@ -28,9 +30,9 @@
       subscribe(listener) { listeners.add(listener); listener(get()); return () => listeners.delete(listener); },
       edit(patch) { draft = { ...draft, ...patch }; publish(); },
       expand(value) { expanded = value; publish(); },
-      submit() {
+      submit(visibleContext = null) {
         if (!draft.content.trim()) throw new Error("请输入非空信息");
-        const request = Object.freeze({ submission_id: identity(), access_mode: accessMode, ...draft });
+        const request = frozenCopy({ submission_id: identity(), access_mode: accessMode, ...draft, ...(visibleContext ? { visible_context: visibleContext } : {}) });
         const row = { request, ...request, status: "sending", error: null, order: ++order, created_at: new Date().toISOString() };
         rows.set(request.submission_id, row);
         draft = { ...draft, content: "", request_id: null, request_revision: null };
@@ -51,5 +53,18 @@
       },
     });
   }
-  return Object.freeze({ create, types });
+  function captureVisibleContext({ projection, facts = [], previews = {} }) {
+    if (!projection?.loop_id) return null;
+    const refs = new Map(facts.filter(item => item.fact_id && Number.isInteger(item.revision)).map(item => [`${item.fact_id}:${item.revision}`, { fact_id: item.fact_id, revision: item.revision }]));
+    return frozenCopy({ loop_id: projection.loop_id, live_sequence: projection.last_sequence ?? null,
+      fact_refs: [...refs.values()].slice(0, 256),
+      run_previews: Object.values(previews).filter(item => item.run_id && item.identity?.context_id && item.text).slice(0, 32).map(item => ({
+        run_id: item.run_id, context_id: item.identity.context_id, message_id: item.message_id || null,
+        sequence: item.last_sequence ?? null, role: item.tool_name || item.role === "Tool" ? "tool" : "assistant",
+        text: Array.from(item.text).slice(-4096).join(""), truncated: Array.from(item.text).length >= 4096,
+        gap: Boolean(item.notice) || ["reconnecting", "unavailable"].includes(item.connection_status),
+      })),
+    });
+  }
+  return Object.freeze({ create, types, captureVisibleContext });
 });

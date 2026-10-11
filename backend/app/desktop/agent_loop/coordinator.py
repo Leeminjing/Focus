@@ -14,7 +14,8 @@ Run 结算只推进与该 Directive 当前绑定尝试一致的 Directive：结�
 Run 结算先 flush 当前已发生事实，再按 Loop→Round 刷新锁定所有者，之后收口消息与 Directive；该顺序与 Worker、维护和控制事务一致。
 执行阶段变化发布独立实体版本，不通过改变控制版本使正在执行的 Run 失效。示例：`runtime = LoopCoordinatorRuntime(...)`。
 新直接消息沿 Directive 统一结算，observed 阶段启动失败保留 delivery_failed；有 Directive 的 Run 不重复发布旧用户 Run 事件。
-派发接受当前 ready/running Round 中已授权的就绪工作；运行期补位不改变控制版本，活动和排队后果仍经同一收口屏障。
+派发接受所属 ready/running Round 中成功授权的就绪工作，不依赖 current_round_id；正常推进检查全 Loop 后果汇合。
+用户输入提升原未决轮 Observation/fence，既有 outbox 定向取消认知；通知有界返回，重复取消保留 finally 清理，新认知领取等待旧清理证明，不阻塞输入受理。
 """
 
 from __future__ import annotations
@@ -95,6 +96,7 @@ class CoordinatorClaim:
     loop_id: str
     round_id: str
     fencing_token: str
+    observation_id: str | None = None
 
 
 class RoundOrchestratorPort(Protocol):
@@ -186,6 +188,8 @@ class LoopCoordinator:
     async def _claim(self, owner_id: str, loop_id: str | None) -> CoordinatorClaim | None:
         now = datetime.now(UTC)
         async with self._sessions.begin() as session:
+            if loop_id is not None:
+                await session.get(AgentLoop, loop_id, with_for_update=True)
             await session.execute(delete(LoopCoordinatorLease).where(LoopCoordinatorLease.expires_at <= now))
             round_row, lease = await self._unleased_candidate(session, now, loop_id)
             if round_row is None:
@@ -204,7 +208,7 @@ class LoopCoordinator:
                 lease.owner_id = owner_id
                 lease.fencing_token = token
                 lease.expires_at = now + timedelta(seconds=self._ttl)
-            return CoordinatorClaim(lease.lease_id, round_row.loop_id, round_row.round_id, lease.fencing_token)
+            return CoordinatorClaim(lease.lease_id, round_row.loop_id, round_row.round_id, lease.fencing_token, round_row.observation_id)
 
     async def _unleased_candidate(self, session, now, loop_id):
         occupied: set[str] = set()
@@ -215,6 +219,12 @@ class LoopCoordinator:
             round_row = await session.scalar(statement)
             if round_row is None:
                 return None, None
+            if round_row.decision_id is None:
+                from backend.app.desktop.agent_loop.cognition import has_pending_cleanup
+
+                if await has_pending_cleanup(session, round_row.loop_id):
+                    occupied.add(round_row.round_id)
+                    continue
             lease = await session.scalar(select(LoopCoordinatorLease).where(
                 LoopCoordinatorLease.round_id == round_row.round_id,
             ).with_for_update())
@@ -233,6 +243,7 @@ class LoopCoordinator:
                         select(LoopPatrolAttempt)
                         .where(
                             LoopPatrolAttempt.round_id == claim.round_id,
+                            LoopPatrolAttempt.fencing_token == token,
                             LoopPatrolAttempt.status.in_(("pending", "running")),
                         )
                         .with_for_update()
@@ -260,31 +271,19 @@ class LoopCoordinator:
     async def maintain_rounds(self) -> tuple[str, ...]:
         now = datetime.now(UTC)
         async with self._sessions.begin() as session:
-            loops = tuple((await session.scalars(select(AgentLoop).join(
-                LoopRound, LoopRound.round_id == AgentLoop.current_round_id,
-            ).where(
-                AgentLoop.status == "running", or_(LoopRound.status == "settled",
-                    AgentLoop.waiting_reason.startswith("round_consequences:"))
-            ).with_for_update(skip_locked=True))).all())
-            for loop in loops:
-                current = await session.get(LoopRound, loop.current_round_id, with_for_update=True)
-                if current is not None and current.status == "settled":
-                    await self._continue_settled_round(session, loop, current)
-                    continue
-                if current is None or current.status != "running":
-                    continue
-                run = await session.scalar(select(DesktopRun).where(
-                    DesktopRun.loop_id == loop.loop_id, DesktopRun.round_id == current.round_id,
-                    DesktopRun.settled_at.is_not(None),
-                ).order_by(DesktopRun.settled_at.desc()).limit(1))
-                if run is not None:
-                    from backend.app.desktop.run_orchestration.models import RunOutboxEvent
+            loops = tuple(await session.scalars(select(AgentLoop).where(
+                AgentLoop.status == "running").with_for_update(skip_locked=True)))
+            from backend.app.desktop.agent_loop.rounds import settle_round
 
-                    event = await session.scalar(select(RunOutboxEvent).where(
-                        RunOutboxEvent.run_id == run.run_id,
-                        RunOutboxEvent.event_type == "MainRunSettled",
-                    ))
-                    await self._advance_from_run(session, loop, current, run, event)
+            for loop in loops:
+                rounds = tuple(await session.scalars(select(LoopRound).where(LoopRound.loop_id == loop.loop_id,
+                    LoopRound.decision_id.is_not(None)).order_by(LoopRound.number).with_for_update()))
+                for current in rounds:
+                    if current.status in {"running", "ready", "waiting_workers"}:
+                        await settle_round(session, loop, current)
+                settled = next((row for row in reversed(rounds) if row.status == "settled"), None)
+                if settled is not None:
+                    await self._continue_settled_round(session, loop, settled)
             terminated = await terminate_stalled_rounds(session, self._stall_limits, now, category="watchdog")
         if terminated:
             await self.release_rounds(terminated)
@@ -386,7 +385,7 @@ class LoopCoordinator:
             ) if loop else None
             usage = await session.get(LoopBudgetUsage, claim.loop_id) if loop else None
         if (loop is None or loop.status != "running" or round_row is None
-                or loop.current_round_id != round_row.round_id or round_row.status not in {"ready", "running"}):
+                or round_row.status not in {"ready", "running"}):
             return None
         usage_values = {
             field: int(getattr(usage, field, 0) or 0)
@@ -421,7 +420,7 @@ class LoopCoordinator:
             loop = await session.get(AgentLoop, claim.loop_id, with_for_update=True, populate_existing=True)
             current = await session.get(LoopRound, claim.round_id, with_for_update=True, populate_existing=True)
             if (current is None or loop is None or loop.status != "running"
-                    or loop.current_round_id != current.round_id or current.status not in {"ready", "running"}):
+                    or current.status not in {"ready", "running"}):
                 return False
             queued = int(
                 await session.scalar(
@@ -530,7 +529,7 @@ class LoopCoordinator:
         await self._advance_from_run(session, loop, round_row, run, event)
 
     async def _advance_from_run(self, session, loop, round_row, run, event):
-        if loop.status != "running" or loop.current_round_id != round_row.round_id or round_row.status != "running":
+        if loop.status != "running" or round_row.status != "running":
             return
         usage = await session.get(LoopBudgetUsage, loop.loop_id, with_for_update=True)
         projected_gate = None
@@ -622,6 +621,7 @@ class LoopCoordinatorRuntime:
         context_runs: SupervisedQueuePort | None = None,
         fact_projector: SupervisedQueuePort | None = None,
         task_progress=None,
+        run_manager=None,
     ) -> None:
         self._coordinator = coordinator
         self._run_events = run_events
@@ -635,11 +635,16 @@ class LoopCoordinatorRuntime:
         self._context_runs = context_runs
         self._fact_projector = fact_projector
         self._task_progress = task_progress
+        self._run_manager = run_manager
         self._poll_seconds = poll_seconds
         self._max_concurrent_loops = max(1, max_concurrent_loops)
         self._supervisor: LoopSupervisor | None = None
         self._registry = LoopSupervisorRegistry(self._components_for_loop)
         self._round_slots = asyncio.Semaphore(self._max_concurrent_loops)
+        self._claims: dict[str, tuple[CoordinatorClaim, asyncio.Task]] = {}
+        from backend.app.desktop.agent_loop.cognition import register_runtime
+
+        register_runtime(self)
 
     @property
     def supervised_loop_ids(self) -> tuple[str, ...]:
@@ -664,7 +669,8 @@ class LoopCoordinatorRuntime:
             if start is not None:
                 await start()
         await self._reconcile_supervisors()
-        components = [SupervisorComponent("loop_registry", self._reconcile_supervisors, self._poll_seconds)]
+        components = [SupervisorComponent("loop_registry", self._reconcile_supervisors, self._poll_seconds),
+                      SupervisorComponent("cognition_cancellations", self._drain_preemptions, self._poll_seconds)]
         if self._task_progress is not None:
             components.append(SupervisorComponent("task_progress", self._task_progress.drain, self._poll_seconds))
         if self._compression_resolutions is not None:
@@ -717,6 +723,7 @@ class LoopCoordinatorRuntime:
 
     async def _execute_claim(self, claim: CoordinatorClaim) -> None:
         work = asyncio.create_task(self._perform_claim(claim))
+        self._claims[claim.lease_id] = (claim, work)
         renew = getattr(self._coordinator, "renew", None)
         renewal = asyncio.create_task(self._renew_claim(claim, renew)) if renew is not None else None
         try:
@@ -725,7 +732,8 @@ class LoopCoordinatorRuntime:
                 return
             done, _ = await asyncio.wait((work, renewal), return_when=asyncio.FIRST_COMPLETED)
             if renewal in done and renewal.result() is False and not work.done():
-                work.cancel()
+                if not work.cancelling():
+                    work.cancel()
                 await asyncio.gather(work, return_exceptions=True)
                 ownership_lost = getattr(self._coordinator, "ownership_lost", None)
                 if ownership_lost is not None:
@@ -733,14 +741,58 @@ class LoopCoordinatorRuntime:
                 return
             if work in done:
                 await work
+        except asyncio.CancelledError:
+            if asyncio.current_task().cancelling():
+                raise
         finally:
+            self._claims.pop(claim.lease_id, None)
             if renewal is not None:
                 renewal.cancel()
                 await asyncio.gather(renewal, return_exceptions=True)
             if not work.done():
-                work.cancel()
+                if not work.cancelling():
+                    work.cancel()
                 await asyncio.gather(work, return_exceptions=True)
             await self._coordinator.release(claim)
+
+    async def preempt_observation(self, payload) -> bool:
+        claims = tuple((claim, task) for claim, task in self._claims.values()
+            if claim.round_id == payload["round_id"]
+            and task is not asyncio.current_task()
+            and int(claim.fencing_token) < int(payload["fencing_token"]))
+        tasks = tuple(task for _, task in claims)
+        for _, task in claims:
+            if not task.cancelling():
+                task.cancel()
+        cancel = getattr(self._workers, "cancel_requests", None)
+        workers_done = True
+        if cancel is not None:
+            workers_done = await cancel(payload.get("worker_request_ids", ())) is not False
+        pending = (await asyncio.wait(tasks, timeout=0.1))[1] if tasks else ()
+        return workers_done and not pending
+
+    async def _drain_preemptions(self) -> int:
+        async with self._coordinator._sessions() as session:
+            rows = tuple(await session.scalars(select(LoopEventOutbox).where(
+                LoopEventOutbox.event_type.in_(("loop.cognition.preempted", "loop.execution.cancel_requested")), LoopEventOutbox.status == "pending")
+                .order_by(LoopEventOutbox.created_at).limit(100)))
+        for row in rows:
+            if row.event_type == "loop.cognition.preempted":
+                if not await self.preempt_observation(row.payload):
+                    continue
+            else:
+                if row.payload.get("run_ids") and self._run_manager is None:
+                    continue
+                for run_id in row.payload.get("run_ids", ()):
+                    self._run_manager.cancel(run_id, action="interrupt")
+                cancel = getattr(self._workers, "cancel_requests", None)
+                if cancel is not None:
+                    if await cancel(row.payload.get("worker_request_ids", ())) is False:
+                        continue
+            async with self._coordinator._sessions.begin() as session:
+                current = await session.get(LoopEventOutbox, row.event_id, with_for_update=True)
+                current.status = "delivered"
+        return len(rows)
 
     async def _perform_claim(self, claim: CoordinatorClaim) -> None:
         if self._orchestrator is not None:

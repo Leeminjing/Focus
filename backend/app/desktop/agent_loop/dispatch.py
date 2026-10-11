@@ -25,7 +25,7 @@ from backend.app.desktop.agent_loop.context_expansion.repository import (
 from backend.app.desktop.agent_loop.directive_lifecycle import (
     DirectiveLifecycleRepository,
 )
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDelegationGrant, LoopDirective, LoopRound
+from backend.app.desktop.agent_loop.models import AgentLoop, LoopDecision, LoopDelegationGrant, LoopDirective, LoopRound
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
 from backend.app.desktop.agent_loop.user_message_delivery import LoopUserMessageDelivery
 from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
@@ -126,14 +126,19 @@ class LoopWaveDispatcher:
         async with self._sessions.begin() as session:
             loop = await session.get(AgentLoop, loop_id, with_for_update=True)
             round_row = await session.get(LoopRound, round_id)
-            if (loop is None or loop.status != "running" or loop.current_round_id != round_id
-                    or round_row is None or round_row.status not in {"ready", "running"}):
+            if (loop is None or loop.status != "running"
+                    or round_row is None or round_row.loop_id != loop_id
+                    or round_row.status not in {"ready", "running"}):
+                return ()
+            decision = await session.get(LoopDecision, round_row.decision_id) if round_row.decision_id else None
+            if (decision is None or decision.authority_committed_at is None
+                    or (decision.loop_id, decision.round_id) != (loop_id, round_id)):
                 return ()
             grant = await session.scalar(select(LoopDelegationGrant).where(
                 LoopDelegationGrant.loop_id == loop_id, LoopDelegationGrant.revision == loop.authority_revision,
                 LoopDelegationGrant.status == "active"))
             if (grant is None or (grant.expires_at and grant.expires_at <= datetime.now(UTC))
-                    or round_row.authority_revision != loop.authority_revision or round_row.goal_revision != loop.goal_revision):
+                    or round_row.authority_revision != loop.authority_revision):
                 return ()
             active = int(await session.scalar(select(func.count()).select_from(DesktopRun).where(
                 DesktopRun.loop_id == loop_id, DesktopRun.status.in_(("pending", "running")))) or 0)
@@ -149,11 +154,12 @@ class LoopWaveDispatcher:
                         .where(
                             LoopDirective.loop_id == loop_id,
                             LoopDirective.round_id == round_id,
+                            LoopDirective.decision_id == round_row.decision_id,
                             LoopDirective.status == "created",
                             LoopDirective.lifecycle_state == "authorized",
                             LoopDirective.grant_id == grant.grant_id,
                             LoopDirective.grant_revision == loop.authority_revision,
-                            LoopDirective.goal_revision == loop.goal_revision,
+                            LoopDirective.goal_revision == round_row.goal_revision,
                             LoopDirective.attempt < LoopDirective.max_attempts,
                         )
                         .order_by(LoopDirective.created_at, LoopDirective.directive_id)

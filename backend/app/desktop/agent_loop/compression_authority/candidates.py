@@ -3,7 +3,7 @@ r"""本文件对外提供 CompressionCandidateService 的有界 manifest 与非�
 输入为 pending decision、精确 Context revision、可选 message ids、当前 app config 与 Loop budget；
 输出为不含正文的 manifest 或持久化 prepared candidate。具体工作流为短事务冻结身份，读取精确
 revision 后规范化协议范围，事务外复用既有摘要模型，再在第二个短事务重验版本并持久化候选与用量；
-全过程不修改 checkpoint、Context current revision 或 Loop 控制状态。示例：
+人工门禁保留原执行 Round 身份，候选绑定当前决策 Round；准备期间分别校验两者，不因较新 Round 覆盖旧门禁。全过程不修改 checkpoint、Context current revision 或 Loop 控制状态。示例：
 `candidate = await service.prepare(loop_id, request)`。
 """
 
@@ -270,13 +270,16 @@ class CompressionCandidateService:
         if revision is None or revision.ref.revision_id != request.context_revision_id:
             raise ValueError("Context revision 已变化")
         pending_identity = pending.payload or {}
+        source_round = await session.get(LoopRound, pending_identity.get("round_id")) if pending_identity.get("round_id") else None
+        if source_round is None or source_round.loop_id != loop_id:
+            raise ValueError("compression pending decision 缺少所属 Round")
         expected_identity = {
             "context_id": request.context_id,
             "context_revision_id": revision.ref.revision_id,
             "checkpoint_id": revision.ref.checkpoint_id,
-            "round_id": loop.current_round_id,
+            "round_id": source_round.round_id,
             "authority_revision": loop.authority_revision,
-            "goal_revision": loop.goal_revision,
+            "goal_revision": source_round.goal_revision,
         }
         if any(pending_identity.get(key) != value for key, value in expected_identity.items()):
             raise ValueError("compression pending decision 与当前执行身份不一致")

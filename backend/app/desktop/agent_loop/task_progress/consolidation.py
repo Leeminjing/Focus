@@ -10,6 +10,7 @@ from __future__ import annotations
 from backend.app.desktop.agent_loop.task_progress.candidate_contract import validate_candidate
 from backend.app.desktop.agent_loop.task_progress.contracts import (
     ProgressCandidate,
+    ConsolidationInputs,
     RoundContribution,
     RoundDecisionInputs,
     RunContribution,
@@ -46,7 +47,7 @@ def initial_progress(
 
 class TaskProgressConsolidator:
     def apply(
-        self, inputs: RoundDecisionInputs, candidate: ProgressCandidate, mission: dict
+        self, inputs: RoundDecisionInputs | ConsolidationInputs, candidate: ProgressCandidate, mission: dict
     ) -> tuple[TaskProgressDocument, RoundContribution]:
         candidate = validate_candidate(inputs, candidate)
         sources = {item.source_key: item for item in inputs.task_delta.sources}
@@ -83,6 +84,8 @@ class TaskProgressConsolidator:
             baseline_kind="round",
             history_complete=inputs.previous_progress.history_complete,
         )
+        round_id = inputs.origin_round_id if isinstance(inputs, ConsolidationInputs) else inputs.round_id
+        work_id = inputs.work_id if isinstance(inputs, ConsolidationInputs) else None
         by_run: dict[str, list] = {}
         direct = []
         for source in inputs.task_delta.sources:
@@ -94,7 +97,8 @@ class TaskProgressConsolidator:
             RunContribution(
                 run_id=run_id,
                 execution_round_id=group[0].execution_round_id,
-                observed_round_id=inputs.round_id,
+                observed_round_id=round_id,
+                consolidation_work_id=work_id,
                 source_assessments=tuple(
                     assessment
                     for assessment in candidate.source_assessments
@@ -112,7 +116,10 @@ class TaskProgressConsolidator:
             for run_id, group in by_run.items()
         )
         return document, RoundContribution(
-            round_id=inputs.round_id,
+            round_id=round_id,
+            work_id=work_id,
+            observation_id=inputs.origin_observation_id if isinstance(inputs, ConsolidationInputs) else inputs.observation_id,
+            round_ids=inputs.round_ids if isinstance(inputs, ConsolidationInputs) else (inputs.round_id,),
             run_contributions=runs,
             direct_source_keys=tuple(direct),
             changes=candidate.changes,

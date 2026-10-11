@@ -9,7 +9,7 @@ import json
 from collections import Counter
 
 from backend.app.desktop.agent_loop.task_progress.candidate_contract import safe_reference
-from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
+from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash, ConsolidationInputs
 
 
 DIAGNOSTIC_BYTES = 64 * 1024
@@ -51,10 +51,11 @@ def validation_diagnostic(inputs, fence, candidate, issues):
     budget = (DIAGNOSTIC_BYTES - 4096) // 2
     kept_errors = _bounded_rows(errors, budget)
     kept_projection = _bounded_rows(projection, budget)
+    identity = inputs.work_id if isinstance(inputs, ConsolidationInputs) else inputs.observation_id
     diagnostic = {"event": "candidate_validation", "diagnostic_version": 1,
-                  "observation_id": inputs.observation_id, "inputs_hash": canonical_hash(inputs),
+                  "work_id": identity, "observation_id": inputs.origin_observation_id if isinstance(inputs, ConsolidationInputs) else inputs.observation_id, "inputs_hash": canonical_hash(inputs),
                   "manifest_hash": inputs.manifest_hash, "fence": fence, "usage_fence": fence if inputs.task_delta.sources else None,
-                  "attempt_identity": f"{inputs.observation_id}:{fence}", "valid": not issues,
+                  "attempt_identity": f"{identity}:{fence}", "valid": not issues,
                   "errors": kept_errors, "error_count": len(errors), "error_counts": dict(Counter(issue.code for issue in issues)),
                   "retained_error_count": len(kept_errors), "candidate_available": candidate is not None,
                   "candidate_projection": kept_projection, "projection_count": len(projection),

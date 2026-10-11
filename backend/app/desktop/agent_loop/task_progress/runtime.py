@@ -1,10 +1,10 @@
 """本文件对外提供 TaskProgressRuntime 的独立持久后台沉淀和恢复入口。
 
-输入为 sessions、结构化模型配置及 frozen work；输出为每份 Observation 唯一的不可变后继，或可诊断 blocked。
+输入为 sessions、结构化模型配置及 frozen work；输出为每份 work 唯一的不可变后继，或可诊断 blocked。
 具体工作流为按可注入有限政策在短事务领取和续租 fence/lease，事务外有界模型解释冻结来源，失去租约立即取消请求并等待清理，验证 patch 后原子发布；
 每次真实调用独立记账；候选合同绑定冻结来源，按尝试保存安全校验诊断并在下次调用反馈修正；显式重试可绑定新预算授权版本，不改变三项冻结输入。
 终态 Loop 的冻结工作仍可收口但不会启动执行。
-示例：await runtime.drain()；retry(observation_id) 显式恢复预算/证据 blocker。
+示例：await runtime.drain()；retry(work_id) 显式恢复预算/证据 blocker。
 预算在调用前核对共享未结算预留并预留输入/输出与调用量；空上限表示不限总量，报告真实用量后替换估计，未报告与 crash 保留保守预留；预留和回填在同事务发布共享 accounting 读模型。
 生产模型复用 StructuredWorkerModel 的实际请求估算；注入模型若无估算端口，按完整消息与额外 schema 做通用估算，不拥有 Provider 序列化规则。
 已受理 workspace 问题/设想不自动成为确认目标；缺省 Mission 不生成待办或验收通过。
@@ -15,19 +15,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from focus.config.app_config import AppConfig
 from focus.messages.request_budget import estimate_request_budget
 from pydantic import ValidationError
-from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.models import (
     AgentLoop,
     LoopBudgetUsage,
     LoopDelegationGrant,
-    LoopObservation,
 )
 from backend.app.desktop.agent_loop.structured_worker import StructuredWorkerModel
 from backend.app.desktop.agent_loop.task_progress.consolidation import (
@@ -83,26 +81,25 @@ class TaskProgressRuntime:
         claim = await self._claim(loop_id=loop_id)
         if claim is None:
             return 0
-        observation_id, fence = claim
+        work_id, fence = claim
         try:
-            await self._lease.run(observation_id, fence, lambda: self._consolidate(observation_id, fence))
+            await self._lease.run(work_id, fence, lambda: self._consolidate(work_id, fence))
         except asyncio.CancelledError:
             raise
         except CandidateValidationError as exc:
-            _logger.warning("任务记忆候选校验失败 observation=%s code=%s", observation_id, exc.issues[0].code)
-            await self._fail(observation_id, fence, exc)
+            _logger.warning("任务记忆候选校验失败 work=%s code=%s", work_id, exc.issues[0].code)
+            await self._fail(work_id, fence, exc)
         except Exception as exc:
-            _logger.exception("任务记忆沉淀失败 observation=%s", observation_id)
-            await self._fail(observation_id, fence, exc)
+            _logger.exception("任务记忆沉淀失败 work=%s", work_id)
+            await self._fail(work_id, fence, exc)
         return 1
 
-    async def _consolidate(self, observation_id: str, fence: int) -> None:
+    async def _consolidate(self, work_id: str, fence: int) -> None:
         async with self._sessions() as session:
-            inputs = await self._repository.inputs(session, observation_id)
-            observation = await session.get(LoopObservation, observation_id)
-            envelope = dict(observation.envelope)
+            inputs = await self._repository.consolidation_inputs(session, work_id)
+            work = await session.get(LoopProgressWork, work_id)
+            envelope = {"loop_id": work.loop_id, "mission": inputs.mission, "budget": inputs.budget}
             model_name = (envelope.get("budget") or {}).get("progress_model_name")
-            work = await session.get(LoopProgressWork, observation_id)
             payload = interpretation_payload(inputs, envelope.get("mission") or envelope.get("goal"), work.attempt_events, work.error)
         candidate = ProgressCandidate()
         try:
@@ -114,7 +111,7 @@ class TaskProgressRuntime:
             raise
         await self._record_validation(inputs, fence, candidate, ())
         async with self._sessions.begin() as session:
-            await self._repository.publish(session, observation_id, fence, result, contribution)
+            await self._repository.publish(session, work_id, fence, result, contribution)
 
     async def _record_validation(self, inputs, fence, candidate, issues):
         diagnostic = validation_diagnostic(inputs, fence, candidate, issues)
@@ -139,7 +136,7 @@ class TaskProgressRuntime:
                 "progress_memory_context_budget: 完整输入超出模型窗口"
             )
         await self._reserve(
-            inputs.observation_id,
+            inputs.work_id,
             fence,
             envelope,
             estimated_input,
@@ -155,53 +152,18 @@ class TaskProgressRuntime:
             raise CandidateValidationError((CandidateIssue(code="schema_invalid_json", path=("candidate",)),)) from None
         finally:
             await asyncio.shield(
-                self._record_usage(inputs.observation_id, fence, model)
+                self._record_usage(inputs.work_id, fence, model)
             )
 
     async def _claim(self, *, loop_id: str | None = None) -> tuple[str, int] | None:
-        now = datetime.now(UTC)
+        from backend.app.desktop.agent_loop.task_progress.work_queue import TaskProgressQueue
+
         async with self._sessions.begin() as session:
-            query = select(LoopProgressWork).where(
-                or_(
-                    LoopProgressWork.state == "pending",
-                    (LoopProgressWork.state == "claimed")
-                    & (LoopProgressWork.lease_expires_at < now),
-                )
-            )
-            if loop_id is not None:
-                query = query.where(LoopProgressWork.loop_id == loop_id)
-            work = await session.scalar(
-                query.order_by(
-                    LoopProgressWork.created_at, LoopProgressWork.observation_id
-                )
-                .with_for_update(skip_locked=True)
-                .limit(1)
-            )
-            if work is None:
-                return None
-            if work.attempts >= self._policy.max_attempts:
-                work.state = "blocked"
-                work.error = work.error or "progress_memory_attempts_exhausted"
-                work.lease_expires_at = None
-                return None
-            work.state = "claimed"
-            work.fence += 1
-            work.attempts += 1
-            work.lease_expires_at = now + timedelta(seconds=self._policy.lease_seconds)
-            work.attempt_events = [
-                *work.attempt_events,
-                {
-                    "event": "claimed",
-                    "fence": work.fence,
-                    "attempt": work.attempts,
-                    "at": now.isoformat(),
-                },
-            ]
-            return work.observation_id, work.fence
+            return await TaskProgressQueue().claim(session, self._policy, loop_id=loop_id)
 
     async def _reserve(
         self,
-        observation_id: str,
+        work_id: str,
         fence: int,
         envelope: dict,
         input_tokens: int,
@@ -214,7 +176,7 @@ class TaskProgressRuntime:
                 LoopBudgetUsage, envelope["loop_id"], with_for_update=True
             )
             work = await session.get(
-                LoopProgressWork, observation_id, with_for_update=True
+                LoopProgressWork, work_id, with_for_update=True
             )
             if work.state != "claimed" or work.fence != fence or work.lease_expires_at is None or work.lease_expires_at <= datetime.now(UTC):
                 raise ValueError("progress_memory_worker_superseded")
@@ -272,29 +234,30 @@ class TaskProgressRuntime:
             from backend.app.desktop.agent_loop.accounting_events import LoopAccountingEventRecorder
 
             await LoopAccountingEventRecorder().record(session, work.loop_id,
-                source_kind="progress_memory", source_id=f"{observation_id}:{fence}", transition="reserved")
+                source_kind="progress_memory", source_id=f"{work_id}:{fence}", transition="reserved")
 
-    async def _record_usage(self, observation_id: str, fence: int, model) -> None:
+    async def _record_usage(self, work_id: str, fence: int, model) -> None:
         async with self._sessions.begin() as session:
-            identity = await session.get(LoopProgressWork, observation_id)
+            identity = await session.get(LoopProgressWork, work_id)
             await session.get(AgentLoop, identity.loop_id, with_for_update=True)
             usage = await session.get(
                 LoopBudgetUsage, identity.loop_id, with_for_update=True
             )
             work = await session.get(
                 LoopProgressWork,
-                observation_id,
+                work_id,
                 with_for_update=True,
                 populate_existing=True,
             )
             entries = [dict(item) for item in work.usage]
             entry = next((item for item in entries if item["fence"] == fence), None)
-            if entry is None or entry.get("accounted"):
+            if entry is None or (entry.get("accounted") and (
+                    entry.get("settlement") != "unknown" or not model.last_usage_reported)):
                 return
             measured = model.last_usage
             if usage is not None:
                 LoopUsageLedger.apply(
-                    usage, LoopUsageDelta(model_calls=max(0, measured.model_calls - 1))
+                    usage, LoopUsageDelta(model_calls=max(0, measured.model_calls - int(entry.get("model_calls", entry.get("reserved_calls", 1)))))
                 )
                 if model.last_usage_reported:
                     usage.input_tokens = max(
@@ -316,19 +279,23 @@ class TaskProgressRuntime:
                     "input_tokens": measured.input_tokens,
                     "output_tokens": measured.output_tokens,
                     "usage_reported": model.last_usage_reported,
+                    "settlement": "actual" if model.last_usage_reported else "unknown",
                 }
             )
             work.usage = entries
+            if work.state == "superseding" and all(item.get("accounted") for item in entries):
+                work.state = "superseded"
+                work.lease_expires_at = None
             from backend.app.desktop.agent_loop.accounting_events import LoopAccountingEventRecorder
 
             await LoopAccountingEventRecorder().record(session, work.loop_id,
-                source_kind="progress_memory", source_id=f"{observation_id}:{fence}",
+                source_kind="progress_memory", source_id=f"{work_id}:{fence}",
                 transition="actual" if model.last_usage_reported else "unknown")
 
-    async def _fail(self, observation_id: str, fence: int, error: Exception) -> None:
+    async def _fail(self, work_id: str, fence: int, error: Exception) -> None:
         async with self._sessions.begin() as session:
             work = await session.get(
-                LoopProgressWork, observation_id, with_for_update=True
+                LoopProgressWork, work_id, with_for_update=True
             )
             if (work is not None and work.fence == fence and work.state == "claimed"
                     and work.lease_expires_at is not None and work.lease_expires_at > datetime.now(UTC)):
@@ -349,6 +316,6 @@ class TaskProgressRuntime:
                     },
                 ]
 
-    async def retry(self, observation_id: str, *, loop_id: str | None = None) -> None:
+    async def retry(self, work_id: str, *, loop_id: str | None = None) -> None:
         async with self._sessions.begin() as session:
-            await self._repository.retry(session, observation_id, loop_id=loop_id)
+            await self._repository.retry(session, work_id, loop_id=loop_id)

@@ -4,7 +4,7 @@ r"""本文件对外提供 agent_loop_router，作为 Loop、Mission、授权、�
 持久用户意图、Kernel result 或 cursor event。具体工作流为路由解析 Mission 后从 app.state 取得专用
 service/Kernel，不在 HTTP 边界写领域状态或运行模型。
 示例：`app.include_router(agent_loop_router)`。
-task-progress/{observation_id}/retry 只恢复本 Loop 的 blocked 记忆工作，不启动 Run 或改变 Context。
+task-progress/{work_id}/retry 只恢复本 Loop 的 blocked 记忆工作，不启动 Run 或改变 Context。
 系统文件夹选择和登记由原 Desktop 路由负责；本路由只定位已绑定工作区 Patrol、逐条受理、历史分页、显式后继和已提交 Lineage。Progress 只读查询由 query_routes 提供，普通 Context 路由仍独立。
 """
 
@@ -121,14 +121,14 @@ async def read_committed_lineage(loop_id: str, request: Request) -> dict:
     return await request.app.state.workspace_patrol.lineage(loop_id)
 
 
-@agent_loop_router.post("/{loop_id}/task-progress/{observation_id}/retry")
-async def retry_task_progress(loop_id: str, observation_id: str, request: Request) -> dict:
+@agent_loop_router.post("/{loop_id}/task-progress/{work_id}/retry")
+async def retry_task_progress(loop_id: str, work_id: str, request: Request) -> dict:
     await request.app.state.agent_loop_service.get(loop_id)
     try:
-        await request.app.state.agent_loop_task_progress.retry(observation_id, loop_id=loop_id)
+        await request.app.state.agent_loop_task_progress.retry(work_id, loop_id=loop_id)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
-    return {"loop_id": loop_id, "observation_id": observation_id, "state": "pending"}
+    return {"loop_id": loop_id, "work_id": work_id, "state": "pending"}
 
 
 @agent_loop_router.get("/{loop_id}/wait-request")

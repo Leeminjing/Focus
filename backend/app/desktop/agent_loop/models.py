@@ -7,6 +7,7 @@ directive/provenance 以可见排队原因驱动 Run，fencing counter 拒绝旧
 示例：`loop = AgentLoop(loop_id="l1", status="running", ...)`。
 用户 intent 显式区分 patrol_opinion/direct_message/workspace_input，request_payload 保留原文类型、稳定 hash 和定向回答；旧数据默认普通意见，不补造历史决策。
 interaction_mode 区分 Context Loop 和工作区 Patrol，同一工作区最多一个非终态 Patrol。
+同轮不可变 Observation 按 generation 编号，Round 当前指针和成功 Decision 唯一约束分开；输入保留引入版本，认知记录绑定精确观察。
 """
 
 from __future__ import annotations
@@ -159,6 +160,9 @@ class LoopUserIntent(Base):
     goal_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     authority_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     observed_round_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    introduced_observation_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    introduced_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    snapshot_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     addressed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -180,11 +184,16 @@ class LoopInterventionTransition(Base):
 
 class LoopRound(Base):
     __tablename__ = "loop_rounds"
-    __table_args__ = (UniqueConstraint("loop_id", "number", name="uq_loop_round_number"),)
+    __table_args__ = (
+        UniqueConstraint("loop_id", "number", name="uq_loop_round_number"),
+        Index("uq_loop_undecided_round", "loop_id", unique=True,
+              postgresql_where=text("decision_id IS NULL AND status IN ('observed','curated','waiting_workers')")),
+    )
 
     round_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     loop_id: Mapped[str] = mapped_column(String(32), ForeignKey("agent_loops.loop_id", ondelete="CASCADE"), nullable=False, index=True)
     number: Mapped[int] = mapped_column(Integer, nullable=False)
+    trigger_kind: Mapped[str] = mapped_column(String(24), nullable=False, default="automatic", server_default="automatic")
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="observed", server_default="observed")
     observation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     decision_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -199,10 +208,12 @@ class LoopRound(Base):
 
 class LoopObservation(Base):
     __tablename__ = "loop_observations"
+    __table_args__ = (UniqueConstraint("round_id", "generation", name="uq_loop_observation_generation"),)
 
     observation_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     loop_id: Mapped[str] = mapped_column(String(32), ForeignKey("agent_loops.loop_id", ondelete="CASCADE"), nullable=False, index=True)
-    round_id: Mapped[str] = mapped_column(String(32), ForeignKey("loop_rounds.round_id", ondelete="CASCADE"), nullable=False, unique=True)
+    round_id: Mapped[str] = mapped_column(String(32), ForeignKey("loop_rounds.round_id", ondelete="CASCADE"), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     envelope: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     envelope_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     projection_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
@@ -262,11 +273,14 @@ class LoopContextRecoveryOpportunity(Base):
 
 class LoopPatrolAttempt(Base):
     __tablename__ = "loop_patrol_attempts"
-    __table_args__ = (UniqueConstraint("round_id", "attempt", name="uq_loop_patrol_attempt"),)
+    __table_args__ = (UniqueConstraint("observation_id", "attempt", name="uq_loop_patrol_attempt"),)
 
     patrol_attempt_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     loop_id: Mapped[str] = mapped_column(String(32), ForeignKey("agent_loops.loop_id", ondelete="CASCADE"), nullable=False, index=True)
     round_id: Mapped[str] = mapped_column(String(32), ForeignKey("loop_rounds.round_id", ondelete="CASCADE"), nullable=False)
+    observation_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("loop_observations.observation_id", ondelete="RESTRICT"), index=True)
+    observation_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    fencing_token: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     attempt: Mapped[int] = mapped_column(Integer, nullable=False)
     execution_thread_id: Mapped[str] = mapped_column(String(128), nullable=False)
     checkpoint_ns: Mapped[str] = mapped_column(Text, nullable=False)
@@ -280,11 +294,18 @@ class LoopPatrolAttempt(Base):
 
 class LoopDecision(Base):
     __tablename__ = "loop_decisions"
-    __table_args__ = (UniqueConstraint("round_id", name="uq_loop_round_decision"), UniqueConstraint("idempotency_key", name="uq_loop_decision_idempotency"))
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_loop_decision_idempotency"),
+        Index("uq_loop_round_committed_decision", "round_id", unique=True,
+              postgresql_where=text("authority_committed_at IS NOT NULL")),
+    )
 
     decision_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     loop_id: Mapped[str] = mapped_column(String(32), ForeignKey("agent_loops.loop_id", ondelete="CASCADE"), nullable=False, index=True)
     round_id: Mapped[str] = mapped_column(String(32), ForeignKey("loop_rounds.round_id", ondelete="CASCADE"), nullable=False)
+    observation_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("loop_observations.observation_id", ondelete="RESTRICT"), index=True)
+    observation_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    authority_committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     holder_id: Mapped[str] = mapped_column(String(64), nullable=False)
     intent: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     rationale: Mapped[str] = mapped_column(Text, nullable=False)
@@ -397,6 +418,8 @@ class LoopWorkerRequest(Base):
     worker_request_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     loop_id: Mapped[str] = mapped_column(String(32), ForeignKey("agent_loops.loop_id", ondelete="CASCADE"), nullable=False, index=True)
     round_id: Mapped[str] = mapped_column(String(32), ForeignKey("loop_rounds.round_id", ondelete="CASCADE"), nullable=False)
+    observation_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("loop_observations.observation_id", ondelete="RESTRICT"), index=True)
+    observation_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     scope: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", server_default="pending")

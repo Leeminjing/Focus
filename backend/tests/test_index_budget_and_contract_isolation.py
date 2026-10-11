@@ -43,6 +43,26 @@ from backend.tests.test_incremental_revision_index import exercise
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 
+def test_new_observation_reuses_only_identical_revision_index(tmp_path):
+    async def run(sessions, seed):
+        from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
+        from backend.tests.incremental_index_support import Checkpoints
+
+        target = await revision(sessions, seed["context_id"], messages(2))
+        probe = ModelProbe()
+        service = probe.service(sessions)
+        before = await service.build(observation(seed, target))
+        calls = len(probe.calls)
+        assert calls > 0 and before.blocker_code is None
+        current = await LoopObservationService(sessions, Checkpoints()).refresh(seed["loop_id"], seed["round_id"])
+        assert current.decision_inputs_ref != seed["observation_id"]
+        after = await service.build(observation({**seed, "observation_id": current.decision_inputs_ref}, target))
+        assert after.blocker_code is None and after.indexes[0].index_id == before.indexes[0].index_id
+        assert len(probe.calls) == calls
+
+    exercise(tmp_path, run)
+
+
 @pytest.mark.parametrize("limited_source", ["frozen", "live"])
 def test_unlimited_reservations_keep_accounting_and_obey_finite_authority(tmp_path, limited_source):
     async def run(sessions, seed):
@@ -221,7 +241,15 @@ def test_explicit_new_authorization_can_retry_without_changing_frozen_source(
             )
             (await session.get(AgentLoop, seed["loop_id"])).authority_revision = 2
         assert (await service.build(retry)).blocker_code == "portfolio_index_budget"
-        result = await service.build(frozen, budget_authority_revision=2)
+        assert (await service.build(frozen, budget_authority_revision=2)).blocker_code == "portfolio_index_budget"
+        from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
+        from backend.tests.incremental_index_support import Checkpoints
+
+        current = await LoopObservationService(sessions, Checkpoints()).refresh(seed["loop_id"], seed["round_id"])
+        refreshed = SimpleNamespace(**copy.deepcopy(vars(frozen)))
+        refreshed.decision_inputs_ref = current.decision_inputs_ref
+        refreshed.authority_revision = current.authority_revision
+        result = await service.build(refreshed, budget_authority_revision=2)
         assert result.blocker_code == expected_blocker, result.blocker_summary
         if expected_blocker is None:
             assert result.indexes[0].source == target.ref

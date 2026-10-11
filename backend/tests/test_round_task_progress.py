@@ -307,6 +307,9 @@ def test_parser_uses_final_summary_and_does_not_trust_ordinary_text():
     )
 
 
+from progress_test_support import register_progress
+
+
 class _Checkpointer:
     async def aget_tuple(self, config):
         return SimpleNamespace(
@@ -367,6 +370,7 @@ def test_round_freeze_late_sources_readiness_and_atomic_publication(tmp_path):
                 mode="json"
             )
             assert observation_hash(repeated_capture) == observation_hash(envelope)
+            work_id = await register_progress(sessions, envelope)
             frozen_hash = observation_hash(envelope)
             assert (
                 len(
@@ -438,17 +442,17 @@ def test_round_freeze_late_sources_readiness_and_atomic_publication(tmp_path):
                     )
                 )
             with pytest.raises(ProgressNotReady):
-                await observations.capture(loop_id, round_id)
+                async with sessions() as session:
+                    await TaskProgressRepository().require_ready(session, loop_id)
             repository = TaskProgressRepository()
             async with sessions.begin() as session:
                 inputs = await repository.inputs(session, envelope.decision_inputs_ref)
                 assert late not in {
                     item.source_key for item in inputs.task_delta.sources
                 }
-                work = await session.get(LoopProgressWork, envelope.decision_inputs_ref)
-                work.state = "claimed"
-                work.fence = 1
-                work.lease_expires_at = datetime.now(UTC) + timedelta(seconds=60)
+            assert await TaskProgressRuntime(sessions, None)._claim(loop_id=loop_id) == (work_id, 1)
+            async with sessions() as session:
+                inputs = await repository.consolidation_inputs(session, work_id)
             candidate = ProgressCandidate(
                 source_assessments=tuple(
                     SourceAssessment(
@@ -465,7 +469,7 @@ def test_round_freeze_late_sources_readiness_and_atomic_publication(tmp_path):
             assert len(contribution.run_contributions) == 41
             assert (
                 sum(
-                    item.execution_round_id == inputs.round_id
+                    item.execution_round_id == envelope.round_id
                     for item in contribution.run_contributions
                 )
                 >= 40
@@ -473,12 +477,12 @@ def test_round_freeze_late_sources_readiness_and_atomic_publication(tmp_path):
             with pytest.raises(ProgressPublicationRejected):
                 async with sessions.begin() as session:
                     await repository.publish(
-                        session, inputs.observation_id, 0, document, contribution
+                        session, work_id, 0, document, contribution
                     )
             with pytest.raises(RuntimeError, match="crash"):
                 async with sessions.begin() as session:
                     await repository.publish(
-                        session, inputs.observation_id, 1, document, contribution
+                        session, work_id, 1, document, contribution
                     )
                     raise RuntimeError("crash before commit")
             async with sessions() as session:
@@ -493,15 +497,15 @@ def test_round_freeze_late_sources_readiness_and_atomic_publication(tmp_path):
                 )
             async with sessions.begin() as session:
                 first = await repository.publish(
-                    session, inputs.observation_id, 1, document, contribution
+                    session, work_id, 1, document, contribution
                 )
                 first_id = first.progress_id
             async with sessions.begin() as session:
                 repeated = await repository.publish(
-                    session, inputs.observation_id, 1, document, contribution
+                    session, work_id, 1, document, contribution
                 )
                 assert repeated.progress_id == first_id
-                base = await session.get(LoopObservation, inputs.observation_id)
+                base = await session.get(LoopObservation, envelope.decision_inputs_ref)
                 assert base.envelope_hash == frozen_hash
                 assert base.envelope["expansion_assessment"] is None
                 assert await session.scalar(
@@ -531,12 +535,14 @@ def test_round_freeze_late_sources_readiness_and_atomic_publication(tmp_path):
                 request = LoopWorkerRequest(
                     worker_request_id=uuid.uuid4().hex,
                     loop_id=loop_id,
-                    round_id=inputs.round_id,
+                    round_id=envelope.round_id,
+                    observation_id=envelope.decision_inputs_ref,
+                    observation_generation=envelope.generation,
                     kind=kind,
                     scope={
                         "assignments": [{"context_id": fixture["context_id"]}],
                         "derivation_input": {
-                            "decision_inputs_ref": inputs.observation_id
+                            "decision_inputs_ref": envelope.decision_inputs_ref
                         }
                         if kind == "lane_curator"
                         else {},
@@ -560,7 +566,7 @@ def test_round_freeze_late_sources_readiness_and_atomic_publication(tmp_path):
                 )
                 assert (
                     cognition["scope"]["derivation_input"]["decision_inputs_ref"]
-                    == inputs.observation_id
+                    == envelope.decision_inputs_ref
                 )
             async with sessions() as session:
                 diagnostics = await TaskProgressQuery().read(session, loop_id)
@@ -572,7 +578,7 @@ def test_round_freeze_late_sources_readiness_and_atomic_publication(tmp_path):
                 first_work = next(
                     work
                     for work in diagnostics["work"]
-                    if work["observation_id"] == inputs.observation_id
+                    if work["observation_id"] == envelope.decision_inputs_ref
                 )
                 assert first_work["observation_hash"] == frozen_hash
                 assert first_work["manifest_complete"] is True
@@ -639,6 +645,10 @@ def test_legacy_baseline_preserves_observation_and_absorbs_history_once(tmp_path
                         "metrics": {"failed": 2, "count_status": "exact"},
                     },
                 )
+                old_round = await session.get(LoopRound, fixture["round_id"])
+                old_round.status = "settled"
+                old_round.settled_at = datetime.now(UTC)
+                await session.flush()
                 round_id = uuid.uuid4().hex
                 number = (
                     int(
@@ -664,6 +674,7 @@ def test_legacy_baseline_preserves_observation_and_absorbs_history_once(tmp_path
             observation = await LoopObservationService(
                 sessions, _Checkpointer()
             ).capture(loop_id, round_id)
+            await register_progress(sessions, observation)
             assert observation.previous_task_progress["baseline_kind"] == "migration"
             assert observation.previous_task_progress["history_complete"] is False
             assert observation.task_delta["sources"] == []
@@ -762,6 +773,7 @@ def test_explicit_retry_uses_new_budget_without_rewriting_frozen_inputs(tmp_path
             observation = await LoopObservationService(
                 sessions, _Checkpointer()
             ).capture(loop_id, fixture["round_id"])
+            work_id = await register_progress(sessions, observation)
             frozen_hash = observation_hash(observation)
             call_limit = observation.budget["limits"]["max_model_calls"]
             async with sessions.begin() as session:
@@ -796,7 +808,7 @@ def test_explicit_retry_uses_new_budget_without_rewriting_frozen_inputs(tmp_path
             assert model.calls == 0
             async with sessions() as session:
                 assert (
-                    await session.get(LoopProgressWork, observation.decision_inputs_ref)
+                    await session.get(LoopProgressWork, work_id)
                 ).state == "blocked"
                 inputs = await TaskProgressRepository().inputs(
                     session, observation.decision_inputs_ref
@@ -837,7 +849,7 @@ def test_explicit_retry_uses_new_budget_without_rewriting_frozen_inputs(tmp_path
                     == 1
                 )
                 assert (
-                    await session.get(LoopProgressWork, observation.decision_inputs_ref)
+                    await session.get(LoopProgressWork, work_id)
                 ).state == "blocked"
             adjusted = await LoopAuthorityService(sessions).mutate(
                 loop_id,
@@ -846,11 +858,11 @@ def test_explicit_retry_uses_new_budget_without_rewriting_frozen_inputs(tmp_path
                     budgets={"max_model_calls": call_limit + 2},
                 ),
             )
-            await runtime.retry(observation.decision_inputs_ref, loop_id=loop_id)
+            await runtime.retry(work_id, loop_id=loop_id)
             assert await runtime.drain(loop_id=loop_id) == 1
             async with sessions() as session:
                 work = await session.get(
-                    LoopProgressWork, observation.decision_inputs_ref
+                    LoopProgressWork, work_id
                 )
                 assert work.state == "published" and model.calls == 1
                 assert (
@@ -943,6 +955,7 @@ def test_domain_sources_survive_display_journal_failure_and_active_run(tmp_path)
             observation = await LoopObservationService(
                 sessions, _Checkpointer()
             ).capture(loop_id, fixture["round_id"])
+            work_id = await register_progress(sessions, observation)
             partial = [
                 source
                 for source in observation.task_delta["sources"]
@@ -976,6 +989,7 @@ def test_independent_runtime_fencing_failure_usage_and_terminal_close(tmp_path):
             observation = await LoopObservationService(
                 sessions, _Checkpointer()
             ).capture(loop_id, fixture["round_id"])
+            work_id = await register_progress(sessions, observation)
             async with sessions() as session:
                 ledger = await session.get(LoopBudgetUsage, loop_id)
                 initial_usage = (
@@ -1027,7 +1041,7 @@ def test_independent_runtime_fencing_failure_usage_and_terminal_close(tmp_path):
                     await TaskProgressRepository().current(session, loop_id)
                 ).generation == 0
                 work = await session.get(
-                    LoopProgressWork, observation.decision_inputs_ref
+                    LoopProgressWork, work_id
                 )
                 assert work.state == "pending" and work.attempts == 1
                 assert work.usage[0]["accounted"] is True
@@ -1055,7 +1069,7 @@ def test_independent_runtime_fencing_failure_usage_and_terminal_close(tmp_path):
                     == directives
                 )
                 assert (
-                    await session.get(LoopProgressWork, observation.decision_inputs_ref)
+                    await session.get(LoopProgressWork, work_id)
                 ).state == "published"
         finally:
             await _stop(fixture["service"], loop_id)
@@ -1077,13 +1091,14 @@ def test_expired_lease_recovery_rejects_previous_worker_and_reuses_inputs(tmp_pa
             observation = await LoopObservationService(
                 sessions, _Checkpointer()
             ).capture(loop_id, fixture["round_id"])
+            work_id = await register_progress(sessions, observation)
             first = await TaskProgressRuntime(sessions, None)._claim(loop_id=loop_id)
             async with sessions.begin() as session:
                 work = await session.get(
                     LoopProgressWork, first[0], with_for_update=True
                 )
                 work.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
-                inputs = await TaskProgressRepository().inputs(session, first[0])
+                inputs = await TaskProgressRepository().consolidation_inputs(session, first[0])
             second = await TaskProgressRuntime(sessions, None)._claim(loop_id=loop_id)
             assert second == (first[0], first[1] + 1)
             candidate = ProgressCandidate(
@@ -1110,7 +1125,7 @@ def test_expired_lease_recovery_rejects_previous_worker_and_reuses_inputs(tmp_pa
                 )
             async with sessions() as session:
                 assert (
-                    await TaskProgressRepository().inputs(session, first[0]) == inputs
+                    await TaskProgressRepository().consolidation_inputs(session, first[0]) == inputs
                 )
                 assert (
                     await TaskProgressRepository().current(session, loop_id)

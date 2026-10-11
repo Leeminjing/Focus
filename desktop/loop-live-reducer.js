@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供 reduce、reduceBatch 与 SequenceGapError。
  * 输入为已验证的 Live Loop projection 和严格递增的 canonical event；输出为结构共享、确定性的下一份 projection。
- * 具体工作流为拒绝 sequence 缺口，同一 identity 按 revision 更新，切换实体时清空旧状态，以 Round 轮号和 Patrol 当前绑定拒绝迟到旧实体，排除历史工具事实并保留独立活动；示例：`reduce(state, event)`。
+ * 具体工作流为拒绝 sequence 缺口，同一 identity 按 revision 更新，保留各 Round/Observation/Session，并由当前观察身份派生认知视图；旧 generation 仅保留历史，排除工具事实并保留独立活动。示例：`reduce(state, event)`。
  * intervention 按同一 revision/sequence 规则归约，来源、类型及 delivery state 留在公开活动详情。
  */
 (function (root, factory) {
@@ -13,9 +13,9 @@
 })(typeof globalThis === "object" ? globalThis : this, function (Schema) {
   "use strict";
 
-  const SINGULAR = new Set(Schema.SINGULAR);
+  const SINGULAR = new Set(Schema.SINGULAR.filter(name => !["round", "patrol_session"].includes(name)));
   const ACTIVITY_ONLY = new Set(["tool", "artifact", "model_call", "loop_activity"]);
-  const COLLECTION_BY_ENTITY = Object.freeze({ context: "contexts", context_lineage: "lineage", run: "runs", context_run: "runs", curator: "curators", context_expansion: "expansions", directive: "directives", intervention: "interventions", fact: "facts", loop_wait_request: "wait_requests", loop_wait_response: "wait_responses" });
+  const COLLECTION_BY_ENTITY = Object.freeze({ round: "rounds", observation: "observations", patrol_session: "patrol_sessions", context: "contexts", context_lineage: "lineage", run: "runs", context_run: "runs", curator: "curators", context_expansion: "expansions", directive: "directives", intervention: "interventions", fact: "facts", loop_wait_request: "wait_requests", loop_wait_response: "wait_responses" });
 
   class SequenceGapError extends Error {
     constructor(expected, actual) {
@@ -53,6 +53,7 @@
   }
 
   function reduce(projection, input) {
+    if (!projection.rounds || !projection.patrol_sessions || !projection.observations) projection = Schema.validateSnapshot(projection);
     const event = Schema.validateEvent(input);
     if (event.loop_id !== projection.loop_id) throw new TypeError("event 不属于当前 Loop projection");
     if (event.sequence <= projection.last_sequence) return projection;
@@ -63,11 +64,8 @@
     if (SINGULAR.has(event.entity_type)) {
       const prior = projection[event.entity_type];
       const same = prior?.entity_id === event.entity_id;
-      const staleRound = event.entity_type === "round" && prior && !same && Number(payload.number || 0) <= Number(prior.state.number || 0);
-      const wrongPatrolRound = event.entity_type === "patrol_session" && projection.round && payload.round_id && payload.round_id !== projection.round.entity_id;
-      if ((!same || prior.revision < event.entity_revision) && !staleRound && !wrongPatrolRound) {
+      if (!same || prior.revision < event.entity_revision) {
         next[event.entity_type] = Object.freeze({ entity_id: event.entity_id, revision: event.entity_revision, updated_sequence: event.sequence, state: Object.freeze({ ...(same ? prior.state : {}), ...payload }) });
-        if (event.entity_type === "round" && !same && projection.patrol_session?.state.round_id !== event.entity_id) next.patrol_session = null;
       }
     } else {
       const field = COLLECTION_BY_ENTITY[event.entity_type];
@@ -78,7 +76,9 @@
       } else if (field) {
         const prior = projection[field][event.entity_id];
         const incoming = Object.freeze({ entity_id: event.entity_id, revision: event.entity_revision, updated_sequence: event.sequence, state: Object.freeze({ ...(prior?.state || {}), ...payload }) });
-        if (!prior || prior.revision < incoming.revision) next[field] = Object.freeze({ ...projection[field], [event.entity_id]: incoming });
+        const staleObservation = event.entity_type === "round" && prior
+          && Number(payload.observation_generation || 0) < Number(prior.state.observation_generation || 0);
+        if ((!prior || prior.revision < incoming.revision) && !staleObservation) next[field] = Object.freeze({ ...projection[field], [event.entity_id]: incoming });
       } else if (ACTIVITY_ONLY.has(event.entity_type)) {
         const runId = event.payload.run_id;
         const prior = runId && projection.runs[runId];
@@ -100,7 +100,7 @@
       }
     }
     next.activity_timeline = Object.freeze([...projection.activity_timeline, activity(event)].slice(-200));
-    return Object.freeze(next);
+    return Schema.currentEntities(next);
   }
 
   function reduceBatch(projection, events) {

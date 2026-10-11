@@ -1,7 +1,7 @@
 """本文件对外提供 QualityRevisionRepository 与 QualityRevisionCoordinator。
 
 输入为冻结观察、工作谱系、失败评估和已有 synthesis/quality 端口；输出为新候选或保留原判定的阻断。
-具体工作流为 Loop 行锁下预留最多两次修订，阶段产物保存父子身份，模型调用在事务外执行；恢复复用已完成材料，旧 owner 不可提交。
+具体工作流为 Loop 行锁下按不可变 Observation 预留最多两次修订，阶段产物保存父子身份，模型调用在事务外执行；同版本恢复复用已完成材料，旧版本与旧 owner 不可提交。
 反馈只改变材料和问题调查计划，独立质量门仍负责判定；公开诊断只使用固定原因分类，不发布私有评语。
 示例：candidate = await coordinator.revise(observation, opportunity, bundle, dossier, assessment)。
 """
@@ -15,7 +15,7 @@ from backend.app.desktop.agent_loop.context_expansion.artifact_repository import
 from backend.app.desktop.agent_loop.context_expansion.contracts import stable_expansion_hash
 from backend.app.desktop.agent_loop.context_expansion.models import LoopContextDerivationArtifact
 from backend.app.desktop.agent_loop.context_expansion.synthesis import ValidatedContextDossier
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopCoordinatorFence, LoopDelegationGrant
+from backend.app.desktop.agent_loop.models import AgentLoop, LoopCoordinatorFence, LoopDelegationGrant, LoopRound
 from backend.app.desktop.agent_loop.ownership import LoopFencingGuard, KernelFencingRejected
 from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
@@ -44,15 +44,15 @@ class QualityRevisionRepository:
         self._artifacts = SemanticDerivationArtifactRepository()
 
     @staticmethod
-    def lineage(work, goal_revision):
+    def lineage(work, goal_revision, observation_id):
         checks = tuple(sorted({ref.mission_ref.item_id for requirement in work.evidence_requirements
             for ref in requirement.candidate_refs if ref.mission_ref and ref.mission_ref.section_kind == "completion_check"}))
-        return stable_expansion_hash("quality-revision-lineage", goal_revision,
+        return stable_expansion_hash("quality-revision-lineage", observation_id, goal_revision,
             checks or (tuple(sorted(r.requirement_id for r in work.evidence_requirements)),
                        tuple(sorted(" ".join(q.split()).casefold() for q in work.questions))), work.workspace_requirement)
 
     async def reserve(self, observation, opportunity, dossier, assessment):
-        lineage = self.lineage(opportunity.work_spec, observation.goal_revision)
+        lineage = self.lineage(opportunity.work_spec, observation.goal_revision, observation.decision_inputs_ref)
         async with self._sessions.begin() as session:
             token = await self._validate_control(session, observation)
             rows = tuple(await session.scalars(select(LoopContextDerivationArtifact).where(
@@ -80,7 +80,7 @@ class QualityRevisionRepository:
                 row = await self._artifacts.put_stage_artifact(session, loop_id=observation.loop_id,
                     round_id=observation.round_id, stage="quality_revision_reservation",
                     input_identities=(lineage, assessment.assessment_id), version=self.VERSION, outcome="reserved",
-                    payload={"lineage": lineage, "ordinal": len(rows) + 1,
+                    payload={"lineage": lineage, "ordinal": len(rows) + 1, "observation_id": observation.decision_inputs_ref,
                         "parent_assessment_id": assessment.assessment_id, "parent_dossier_id": dossier.dossier_id,
                         "source_frontier_hash": observation.observed_frontier_hash,
                         "goal_revision": observation.goal_revision, "authority_revision": observation.authority_revision})
@@ -126,13 +126,17 @@ class QualityRevisionRepository:
             return int(await session.scalar(select(func.count()).select_from(LoopContextDerivationArtifact).where(
                 LoopContextDerivationArtifact.loop_id == observation.loop_id,
                 LoopContextDerivationArtifact.stage == "quality_revision_reservation",
-                LoopContextDerivationArtifact.payload["lineage"].astext == self.lineage(work, observation.goal_revision))) or 0)
+                LoopContextDerivationArtifact.payload["lineage"].astext == self.lineage(work, observation.goal_revision, observation.decision_inputs_ref))) or 0)
 
     async def _validate_control(self, session, observation):
         loop = await session.get(AgentLoop, observation.loop_id, with_for_update=True, populate_existing=True)
         if (loop is None or loop.status != "running" or loop.current_round_id != observation.round_id
                 or loop.goal_revision != observation.goal_revision or loop.authority_revision != observation.authority_revision):
             raise QualityRevisionBlocked("修订的 Loop 来源或控制版本已失效")
+        round_row = await session.get(LoopRound, observation.round_id, with_for_update=True, populate_existing=True)
+        if (round_row is None or round_row.observation_id != observation.decision_inputs_ref
+                or round_row.decision_id is not None):
+            raise QualityRevisionBlocked("修订的 Observation 已被取代或决策已提交")
         grant = await session.scalar(select(LoopDelegationGrant).where(
             LoopDelegationGrant.loop_id == loop.loop_id, LoopDelegationGrant.revision == loop.authority_revision,
             LoopDelegationGrant.status == "active"))
@@ -207,6 +211,9 @@ async def admit_manual_revision(session, loop, diagnostics):
         raise ValueError("恢复请求缺少质量修订来源")
     if diagnostics.get("goal_revision") != loop.goal_revision:
         raise ValueError("恢复请求的 Mission 已过期")
+    round_row = await session.get(LoopRound, loop.current_round_id)
+    if round_row is None or round_row.observation_id != diagnostics.get("observation_id"):
+        raise ValueError("恢复请求的 Observation 已过期")
     grant = await session.scalar(select(LoopDelegationGrant).where(
         LoopDelegationGrant.loop_id == loop.loop_id, LoopDelegationGrant.revision == loop.authority_revision,
         LoopDelegationGrant.status == "active"))
@@ -229,6 +236,7 @@ def quality_recovery_diagnostics(assessment, work, observation, count):
     failed = [d.dimension for d in assessment.dimensions if d.verdict != "pass"]
     return {"work_spec_id": work.work_spec_id, "assessment_id": assessment.assessment_id,
         "dossier_id": assessment.dossier_id, "goal_revision": observation.goal_revision,
-        "lineage": QualityRevisionRepository.lineage(work, observation.goal_revision),
+        "observation_id": observation.decision_inputs_ref,
+        "lineage": QualityRevisionRepository.lineage(work, observation.goal_revision, observation.decision_inputs_ref),
         "failed_dimensions": failed, "revision_count": count,
         "reasons": [{"dimension": d, "reason": reasons[d]} for d in failed]}

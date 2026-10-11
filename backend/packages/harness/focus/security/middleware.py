@@ -3,12 +3,14 @@
 输入为工具调用、受治理执行上下文、效果契约与下游执行器。
 输出为真实工具结果、文件策略拒绝或明确的审批结局。
 具体工作流为先复查 Loop 租约与受治理身份、能力，再解析结构化目标并按模式拒绝非法写入，随后处理
-敏感路径和未受限的不透明效果审批，最后把已检查的参数交给工具执行。
+敏感路径和未受限的不透明效果审批，最后把已检查的参数交给工具执行。受管理 Shell 独立持有执行任务，取消时设置调用级控制信号并等待真实进程清理后才传播取消；重复取消不得提前释放资源。
 示例：AccessPolicyMiddleware().wrap_tool_call(request, handler) 返回 ToolMessage 或真实结果。
 """
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -60,6 +62,15 @@ class _Admission:
         return (*self.reads, *self.writes)
 
 
+class _ShellCancellation(threading.Event):
+    def __init__(self, parent=None):
+        super().__init__()
+        self._parent = parent
+
+    def is_set(self):
+        return super().is_set() or bool(self._parent and self._parent.is_set())
+
+
 class AccessPolicyMiddleware(AgentMiddleware):
     """唯一准入点：在工具执行前判定，待决交回人类，获批只作用于当前这一次调用。"""
 
@@ -107,7 +118,37 @@ class AccessPolicyMiddleware(AgentMiddleware):
                 return _denied(request, admission, outcome)
         if admission.requested_mode is not None:
             await _assert_workspace_lease(request)
-        return await handler(_with_grant(_with_args(request, admission.args), admission))
+            lease = _context_of(request).get("workspace_lease")
+            if (isinstance(lease, Mapping) and lease.get("mode") == "read"
+                    and admission.requested_mode is not AccessMode.READ_ONLY):
+                raise PermissionError("本次放宽需要写入资源资格；当前 reader lease 不允许执行，请在取得匹配租约后重试")
+        admitted = _with_grant(_with_args(request, admission.args), admission)
+        if effect_of(request.tool).kind is not ToolEffectKind.SANDBOXED_SHELL:
+            return await handler(admitted)
+        return await self._run_managed_shell(admitted, handler)
+
+    @staticmethod
+    async def _run_managed_shell(request, handler):
+        security = security_context_of(_context_of(request))
+        cancellation = _ShellCancellation(security.extras.get("sandbox_cancel_event"))
+        controlled = replace(security, extras={**security.extras, "sandbox_cancel_event": cancellation})
+        request = request.override(runtime=replace(request.runtime,
+            context={**request.runtime.context, **controlled.to_runtime_context()}))
+        task = asyncio.create_task(handler(request))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancellation.set()
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not task.cancelled():
+                task.exception()
+            raise
 
 
 async def _assert_workspace_lease(request: ToolCallRequest) -> None:

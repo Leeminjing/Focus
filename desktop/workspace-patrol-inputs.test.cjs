@@ -5,6 +5,29 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { create } = require("./workspace-patrol-inputs.js");
+const { captureVisibleContext } = require("./workspace-patrol-inputs.js");
+
+test("input freezes independent visible fact and Run cursors across retries", () => {
+  const visible = captureVisibleContext({ projection: { loop_id: "loop", last_sequence: 12 },
+    facts: [{ fact_id: "fact", revision: 9 }], previews: { c: { run_id: "run", identity: { context_id: "c" },
+      text: "界".repeat(4100), message_id: "message", last_sequence: 205, role: "Tool", notice: "gap" } } });
+  const store = create(() => "submission");
+  store.edit({ content: "按这段结果改方向" });
+  const row = store.submit(visible);
+  assert.equal(row.request.visible_context.live_sequence, 12);
+  assert.equal(row.request.visible_context.run_previews[0].sequence, 205);
+  assert.equal(row.request.visible_context.run_previews[0].text.length, 4096);
+  assert.equal(row.request.visible_context.run_previews[0].gap, true);
+  assert.equal(row.request.visible_context.run_previews[0].truncated, true);
+  assert.equal(Object.isFrozen(row.request.visible_context.fact_refs[0]), true);
+  store.failed(row.submission_id, new Error("offline"));
+  assert.equal(store.retry(row.submission_id).request, row.request);
+  const original = { loop_id: "loop", live_sequence: 2, fact_refs: [{ fact_id: "original", revision: 1 }], run_previews: [] };
+  store.edit({ content: "next" });
+  const next = store.submit(original);
+  original.fact_refs[0].revision = 8;
+  assert.equal(next.request.visible_context.fact_refs[0].revision, 1);
+});
 
 test("A/B responses never clear or change C draft, type or target", () => {
   let id = 0;

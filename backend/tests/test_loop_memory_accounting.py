@@ -1,7 +1,7 @@
 """本文件对外提供冻结任务记忆模型的实际、预留与未知消费回归。
 
 输入为隔离 PostgreSQL、生产记忆 Runtime、冻结 Observation 与可控模型用量；输出为逐调用账本、幂等回填和 Live accounting 一致断言。
-具体工作流为经 Runtime 实际领取有效 work/fence/lease 后预留，读取执行中消费，再报告实际或未知用量，重复回填不重复消费；所有数据仅在测试数据库。
+具体工作流为登记成功决策的独立 work，经 Runtime 实际领取有效 work/fence/lease 后预留，读取执行中消费，再报告实际或未知用量，重复回填不重复消费；所有数据仅在测试数据库。
 示例：pytest backend/tests/test_loop_memory_accounting.py，不把预留 Token 当成 Provider 报告的实际消费。
 """
 
@@ -21,6 +21,7 @@ from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRun
 from backend.tests.config_helpers import app_config_for
 from backend.tests.incremental_index_support import Checkpoints
 from test_agent_loop_round_liveness import _seed_loop, _stop
+from progress_test_support import register_progress
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -34,7 +35,7 @@ def test_memory_receipt_projects_reservation_and_actual_or_unknown(reported, tmp
         loop_id = fixture["loop_id"]
         try:
             envelope = await LoopObservationService(sessions, Checkpoints()).capture(loop_id, fixture["round_id"])
-            identity = envelope.decision_inputs_ref
+            identity = await register_progress(sessions, envelope)
             runtime = TaskProgressRuntime(sessions, app_config_for("memory-test", None))
             claimed_identity, fence = await runtime._claim(loop_id=loop_id)
             assert claimed_identity == identity

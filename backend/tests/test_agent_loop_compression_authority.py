@@ -10,14 +10,15 @@ manifest、纯 policy、唯一 resolution、内容哈希、无 Context 副作用
 
 from datetime import UTC, datetime, timedelta
 import asyncio
+import importlib
 import os
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from alembic import command
-from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from pydantic import ValidationError
 
 from backend.app.desktop.agent_loop.compression_authority.contracts import AutonomousCompressionPolicy, CompressionCandidateRequest
@@ -44,22 +45,24 @@ from backend.app.desktop.models import DesktopRun, DesktopThread, DesktopWorkspa
 
 
 def test_compression_authority_migration_downgrades_and_upgrades(isolated_postgres_database) -> None:
-    migrations = Path(__file__).parents[1] / "packages" / "harness" / "focus" / "persistence" / "migrations" / "alembic.ini"
-    config = Config(str(migrations))
+    migration = importlib.import_module("focus.persistence.migrations.versions.f3a4b5c6d7e8_add_loop_compression_authority")
+    def migrate(engine, action):
+        with engine.begin() as connection:
+            with Operations.context(MigrationContext.configure(connection)):
+                action()
     database_url = make_url(os.environ["FOCUS_DATABASE_URL"]).set(drivername="postgresql+psycopg")
     engine = create_engine(database_url)
     try:
-        command.downgrade(config, "e2f3a4b5c6d7")
+        migrate(engine, migration.downgrade)
         schema = inspect(engine)
         assert "loop_compression_candidates" not in schema.get_table_names()
         assert "loop_compression_resolutions" not in schema.get_table_names()
         assert "compression_policy" not in {column["name"] for column in schema.get_columns("loop_delegation_grants")}
-        command.upgrade(config, "head")
+        migrate(engine, migration.upgrade)
         schema = inspect(engine)
         assert {"loop_compression_candidates", "loop_compression_resolutions"} <= set(schema.get_table_names())
         assert "compression_policy" in {column["name"] for column in schema.get_columns("loop_delegation_grants")}
     finally:
-        command.upgrade(config, "head")
         engine.dispose()
 
 
@@ -532,10 +535,23 @@ def test_kernel_commits_one_resolution_without_mutating_context_and_user_overrid
                 "backend.app.desktop.agent_loop.compression_authority.gate_projector.compression_recovery_payload",
                 recovery,
             )
+            from test_loop_execution_ownership import _seed_launching_directive
+            from backend.app.desktop.agent_loop.rounds import create_observation_round
+            old_round_id = snapshot["current_round_id"]
+            directive_id = await _seed_launching_directive(sessions, {"loop_id": loop_id,
+                "round_id": old_round_id, "context_id": context_id, "revision_id": revision_id,
+                "snapshot": snapshot}, label="compression-source")
             async with sessions.begin() as session:
                 loop = await session.get(AgentLoop, loop_id)
+                prior = await session.get(LoopRound, old_round_id)
+                successor = await create_observation_round(session, loop, prior, prior.frontier_hash)
+                session.add(successor)
+                await session.flush()
+                loop.current_round_id = successor.round_id
+                snapshot["current_round_id"] = successor.round_id
                 run = await session.get(DesktopRun, f"initial-{suffix}")
-                run.round_id = snapshot["current_round_id"]
+                run.round_id = old_round_id
+                run.directive_id = directive_id
                 projected = await LoopCompressionGateProjector(None, PendingDecisionProjector(sessions)).project_settled(
                     session,
                     type("Settled", (), {"payload": {"context_revision": {"revision_id": revision_id, "checkpoint_id": "checkpoint-1"}}})(),
@@ -544,7 +560,8 @@ def test_kernel_commits_one_resolution_without_mutating_context_and_user_overrid
                 )
             assert projected is not None and projected.delegable is True
             assert projected.payload["origin_message_id"] == "direct-message"
-            assert projected.payload["round_id"] == snapshot["current_round_id"]
+            assert projected.payload["round_id"] == old_round_id
+            assert old_round_id != snapshot["current_round_id"]
             class RevisionReader:
                 async def read(self, *_args):
                     return SimpleNamespace(
@@ -602,6 +619,8 @@ def test_kernel_commits_one_resolution_without_mutating_context_and_user_overrid
                     "checkpoint_id": "checkpoint-1",
                 },),
             )
+            from loop_run_boundary_support import freeze_patrol_intent
+            intent = await freeze_patrol_intent(sessions, intent)
             kernel = LoopKernel(sessions)
             committed, concurrent_duplicate = await asyncio.gather(kernel.commit(intent), kernel.commit(intent))
             assert committed.status == "committed"

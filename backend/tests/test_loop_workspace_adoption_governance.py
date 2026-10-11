@@ -6,6 +6,7 @@
 """
 
 import asyncio
+from datetime import UTC, datetime
 from functools import partial
 import uuid
 
@@ -37,7 +38,8 @@ async def _seed_adoption(sessions, fixture, *, adopted=True):
         grant.capabilities = [*grant.capabilities, 'adopt_workspace_result']
         decision = LoopDecision(decision_id=decision_id, loop_id=loop.loop_id, round_id=current.round_id,
             holder_id=loop.holder_id, intent={}, rationale='isolated adoption phase fixture',
-            status='adopting', idempotency_key='adoption-test:' + decision_id)
+            status='adopting', idempotency_key='adoption-test:' + decision_id,
+            authority_committed_at=datetime.now(UTC), observation_id=current.observation_id)
         payload = {'action': 'adopt_workspace_result', 'source_slot_id': source_id,
             'source_revision': 2, 'rationale': 'adopt verified isolated fixture'}
         session.add_all([source, decision])
@@ -74,6 +76,14 @@ def test_adoption_records_progress_and_creates_one_successor(tmp_path):
             decision_id, adoption = await _seed_adoption(sessions, fixture)
             assert (await _finish(sessions, decision_id, adoption)).status == 'committed'
             assert (await _finish(sessions, decision_id, adoption)).status == 'committed'
+            from backend.app.desktop.agent_loop.task_progress.runtime import TaskProgressRuntime
+            from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
+            from backend.tests.test_loop_memory_execution_recovery import ControlledMemory
+
+            memory = ControlledMemory()
+            memory.release.set()
+            await TaskProgressRuntime(sessions, None, model_factory=lambda name: memory).drain(loop_id=fixture['loop_id'])
+            await LoopCoordinator(sessions).maintain_rounds()
             async with sessions() as session:
                 usage = await session.get(LoopBudgetUsage, fixture['loop_id'])
                 current = await session.get(LoopRound, fixture['round_id'])

@@ -2,7 +2,7 @@ r"""本文件对外提供 RunDispatchRepository、RunDispatchRecovery 与 Durabl
 
 输入为 accepted/遗留 dispatch、worker identity、租约、fencing token、执行装配器与启动函数；输出为有界领取、running/settled、显式启动失败或重启分类状态。
 具体工作流为 repository 使用 skip-locked 领取并递增 fencing，唯一 durable worker 在租约内装配和启动；recovery 只把带完整 durable Main/standard Patrol/协作执行快照且可证明未启动的工作恢复为 accepted，并把不确定执行标为 interrupted；涉及 Run 的转换统一按 Run→Dispatch 加锁，锁后复检 token 和终态，旧 owner 或已收口执行无法提交。
-示例：`processed = await worker.drain(limit=4)`。
+Shell 清理证据未确认时，重启不重放执行且不填写派发结算时间。示例：`processed = await worker.drain(limit=4)`。
 """
 
 from __future__ import annotations
@@ -89,6 +89,9 @@ class RunDispatchRepository:
         return row
 
     async def settle_by_run(self, session: AsyncSession, run_id: str) -> RunDispatch | None:
+        run = await session.get(DesktopRun, run_id, with_for_update=True)
+        if run is not None and (run.workspace_result or {}).get("shell_cleanup"):
+            raise RuntimeError("Shell 进程树清理未确认，不能结算 Run dispatch")
         row = await session.scalar(select(RunDispatch).where(RunDispatch.run_id == run_id).with_for_update())
         if row is None or row.status in {"settled", "failed_to_start", "interrupted"}:
             return row
@@ -171,7 +174,7 @@ class RunDispatchRecovery:
                         run_id=run.run_id,
                         status="accepted" if restart_safe else "interrupted",
                         error=None if restart_safe else "process_restarted_with_uncertain_execution",
-                        settled_at=None if restart_safe else now,
+                        settled_at=None if restart_safe or (run.workspace_result or {}).get("shell_cleanup") else now,
                     )
                     session.add(dispatch)
                 if restart_safe and dispatch.status in {"accepted", "claimed"}:
@@ -183,13 +186,15 @@ class RunDispatchRecovery:
                     continue
                 dispatch.status = "interrupted"
                 dispatch.error = "process_restarted_with_uncertain_execution"
-                dispatch.settled_at = now
+                dispatch.settled_at = None if (run.workspace_result or {}).get("shell_cleanup") else now
                 dispatch.lease_expires_at = None
                 interrupted.append(run.run_id)
         return RunDispatchRecoveryReport(tuple(safe), tuple(interrupted))
 
     @staticmethod
     def _restart_safe(run: DesktopRun) -> bool:
+        if (run.workspace_result or {}).get("shell_cleanup"):
+            return False
         execution = (run.equipment or {}).get("_durable_dispatch_execution")
         if run.kind not in {"main", "patrol", "teammate", "worker"} or run.status != "pending" or not isinstance(execution, dict) or execution.get("agent_role") not in {"main", "patrol", "teammate", "worker"}:
             return False

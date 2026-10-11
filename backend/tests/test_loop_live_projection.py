@@ -72,6 +72,22 @@ def test_reducer_is_deterministic_for_duplicates_stale_revisions_and_gaps() -> N
         reducer.reduce(LoopLiveProjection(loop_id="l1", last_sequence=1), _envelope(3, "context.updated", "context", "c2", 1, {}))
 
 
+def test_same_round_older_observation_cannot_replace_current_even_with_newer_revision():
+    reducer = LoopLiveProjectionReducer()
+    state = reducer.reduce(LoopLiveProjection(loop_id="l1"), _envelope(1, "round.state", "round", "r6", 3,
+        {"number": 6, "observation_id": "v3", "observation_generation": 3}))
+    state = reducer.reduce(state, _envelope(2, "patrol.state", "patrol_session", "p3", 1,
+        {"round_id": "r6", "observation_id": "v3"}))
+    state = reducer.reduce(state, _envelope(3, "patrol.state", "patrol_session", "p1", 8,
+        {"round_id": "r6", "observation_id": "v1", "status": "completed"}))
+    state = reducer.reduce(state, _envelope(4, "round.state", "round", "r6", 99,
+        {"number": 6, "observation_id": "v1", "observation_generation": 1}))
+    assert state.round.state["observation_id"] == "v3"
+    assert state.patrol_session.entity_id == "p3"
+    assert state.patrol_sessions["p1"].state["status"] == "completed"
+    assert state.last_sequence == 4
+
+
 def test_run_activity_time_tracks_confirmed_events_not_transport_heartbeat() -> None:
     reducer = LoopLiveProjectionReducer()
     state = reducer.reduce(LoopLiveProjection(loop_id="l1"), _envelope(

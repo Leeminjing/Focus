@@ -127,6 +127,12 @@ class CompletionEligibilityPolicy:
         authorized = bool(grant and 'request_completion' in grant.capabilities and
             (grant.expires_at is None or grant.expires_at > datetime.now(UTC)))
         blockers = []
+        from backend.app.desktop.agent_loop.round_consequences import RoundConsequenceReader
+
+        consequences = await RoundConsequenceReader().read_loop(session, loop.loop_id,
+            exclude_undecided_round_id=round_row.round_id)
+        if not consequences.stable:
+            blockers.extend(f"round_consequences:{kind}" for kind in (*consequences.pending, *consequences.failed))
         if (loop.status != 'running' or loop.current_round_id != round_row.round_id
             or loop.authority_revision != round_row.authority_revision or loop.goal_revision != round_row.goal_revision):
             blockers.append('completion_control_changed')
@@ -154,7 +160,7 @@ class CompletionEligibilityPolicy:
 
     @staticmethod
     async def _frontier_changed(session, round_row, memberships):
-        frozen = await session.scalar(select(LoopObservation).where(LoopObservation.round_id == round_row.round_id))
+        frozen = await session.get(LoopObservation, round_row.observation_id) if round_row.observation_id else None
         if frozen is None:
             return False
         expected = {item['context_id']: str(item.get('revision_id') or '')
