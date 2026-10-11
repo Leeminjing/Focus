@@ -2,7 +2,7 @@
  * 输入为已绑定工作区、共享 Loop API、Live Store/Connection 及输入 store；输出为逐条耐久回执和图主导工作台更新；选择身份由原 ContextInspector 持有。
  * 具体工作流为先读取绑定/历史再订阅已有单路 Live，依据投影结构共享只更新变化区域，保留 composer、进度和未变等待表单 DOM，异步响应按工作区代际隔离；
  * 主输入走 workspace intake，查看 Context 不改变目标；清空仅编辑未提交正文并返回输入焦点，不触及回答目标、历史或运行。
- * 显隐复用 SurfaceTransition 保留输入节点，原生 dialog 管理焦点，AbortController 清理监听与读请求。示例：await controller.mount(host, workspace)。
+ * 显隐复用 SurfaceTransition 保留输入节点，原生 dialog 管理焦点，关系内容复用共享图视图，AbortController 清理监听与读请求。示例：await controller.mount(host, workspace)。
  */
 (function (root, factory) {
   const api = factory(root);
@@ -135,11 +135,7 @@
       host.querySelector(`[data-patrol-lineage] [data-context-id="${root.CSS.escape(available[0] || "")}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
     }
     function inspectEdges(identity) {
-      const [sourceId, , targetId] = JSON.parse(identity);
-      const edges = lineageSnapshot.edges.filter(edge => edge.source_context_id === sourceId && edge.target_context_id === targetId);
-      const data = manifest();
-      const endpoint = (id, revisionId) => `<button data-patrol-edge-context="${view.escape(id)}" data-revision-id="${view.escape(revisionId)}">${view.escape(data.nodes.find(node => node.context_id === id)?.title || id)}<small>Revision ${view.escape(revisionId)}</small></button>`;
-      showDialog("relationship", "已提交来源关系", `<p>每一条关系对应精确的来源与目标版本。</p><ul class="workbench-edge-list">${edges.map(edge => `<li>${endpoint(edge.source_context_id, edge.source_revision_id)}<span>→</span>${endpoint(edge.target_context_id, edge.target_revision_id)}</li>`).join("")}</ul>`);
+      showDialog("relationship", "已提交来源关系", root.FocusPortfolioMapView.relationship(manifest(), identity));
     }
     async function refreshObservation(force = false) {
       const id = projection?.round?.state?.observation_id;

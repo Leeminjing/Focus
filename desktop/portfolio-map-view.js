@@ -5,7 +5,7 @@
  * 节点卡只显示一次描述文字，purpose 与节点名称相同时不再重复渲染；层级只由跨 Context 依赖决定（自环不参与），
  * 无依赖的 Context 位于根层，每条派生连线带方向标记。
  * 示例：`FocusPortfolioMapView.render(manifest, selectedId, graphActivity, {presentation: "workbench"})`；工作台使用同一精确边对账、独立边命中与有限重点卡，默认调用方保持原呈现。
- * 来源连线以完整 source/target Context 与 Revision 元组对账，保留可查看身份，避免同一 Context 不同来源版本碰撞。
+ * relationship 输出共用精确关系检查内容；来源连线以完整 source/target Context 与 Revision 元组对账，保留可查看身份，避免同一 Context 不同来源版本碰撞。
  */
 (function (root, factory) {
   const api = factory();
@@ -85,6 +85,13 @@
       return `<button type="button" class="portfolio-context-node${node.context_id === selectedId ? " is-selected" : ""}" style="left:${point.x}px;top:${point.y}px" data-action="loop-select-context" data-context-id="${escape(node.context_id)}"><span class="context-node-eyebrow">${escape(node.context_id.slice(0, 8))}<span><i class="run-dot is-${escape(run?.status || node.status)}" aria-hidden="true"></i>${escape(statusLabel(run?.status || node.status))}</span></span><span class="context-node-top"><strong>${escape(name)}</strong></span><span class="context-node-meta">R${escape(node.revision?.generation || "—")} · ${evidence || "暂无运行证据"}</span></button>`;
     }).join("");
     return `<section class="portfolio-map${workbench ? " is-workbench" : ""}" aria-label="Context Portfolio"><div class="portfolio-map-toolbar"><span><strong>${escape(nodes.length)}</strong> 个 Context · 来源关系</span></div><div class="portfolio-map-scroll" tabindex="0" aria-label="上下文图，可用方向键滚动或拖动空白处"><div class="portfolio-map-canvas" style="width:${geometry.width}px;height:${geometry.height}px"><svg width="${geometry.width}" height="${geometry.height}" aria-label="Context 的真实来源关系"><defs><marker id="portfolio-edge-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><polygon points="0 0, 10 5, 0 10" /></marker></defs>${lines}${activityLines}</svg>${cards}</div></div><div class="portfolio-map-zoom glass-surface"><button data-portfolio-zoom="out" aria-label="缩小图">−</button><span data-portfolio-scale>100%</span><button data-portfolio-zoom="in" aria-label="放大图">＋</button><button data-portfolio-zoom="fit">适应画布</button></div></section>`;
+  }
+
+  function relationship(manifest, identity) {
+    const [sourceId, , targetId] = JSON.parse(identity);
+    const edges = manifest.edges.filter(edge => edge.source_context_id === sourceId && edge.target_context_id === targetId);
+    const endpoint = (id, revisionId) => `<button data-patrol-edge-context="${escape(id)}" data-revision-id="${escape(revisionId)}">${escape(manifest.nodes.find(node => node.context_id === id)?.title || id)}<small>Revision ${escape(revisionId)}</small></button>`;
+    return `<p>每一条关系对应精确的来源与目标版本。</p><ul class="workbench-edge-list">${edges.map(edge => `<li>${endpoint(edge.source_context_id, edge.source_revision_id)}<span>→</span>${endpoint(edge.target_context_id, edge.target_revision_id)}</li>`).join("")}</ul>`;
   }
 
   function bind(host) {
@@ -182,5 +189,5 @@
     return true;
   }
 
-  return Object.freeze({ render, reconcile, bind });
+  return Object.freeze({ render, reconcile, bind, relationship });
 });

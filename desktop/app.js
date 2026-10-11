@@ -34,6 +34,7 @@
  * 审批弹窗区分单次放宽和常驻切换；Agent Loop 的 snapshot、sequence reducer、断线重放和重同步
  * 由独立 Live Store/Connection 负责，切换 Loop 时清除旧投影，启动边界观察意外连接拒绝并归入连接状态；Expansion 表单和阻断视图委托 FocusLoopExpansionBudget，普通 API 响应统一委托无 DOM 的 FocusHttpResponse 解码，本文件只组合页面生命周期和控制请求。
  * 独立 Patrol 入口经系统文件夹选择器选取路径，picker 仅确认本次选择，显式进入才登记绑定；原导航偏好保存已确认工作区，重载不读取历史目录列表。
+ * 全图复用共享玻璃图、精确关系与原检查器，局部更新保留视口和历史版本；批选、装备及只读检查沿既有任务身份分流，生命周期变更成功后重读关系。
  * 普通会话照旧，workspace Loop 不进入旧 Mission/介入控制台，草稿和单路 Live 由专责控制器保持；Patrol 不展示普通会话检查器，壳层刷新保留本次路径选择。
  */
 "use strict";
@@ -236,6 +237,7 @@ let patrolWorkspaceBeforePick = null;
 let mapPortfolio = { workspaceId: null, loading: false, snapshot: null, manifest: null, error: null };
 let mapPortfolioSequence = 0;
 let mapContextInspector = null;
+let mapRelatedOnly = false;
 const loopWaitDrafts = window.FocusLoopWaitRequestView?.createDraftStore();
 const loopWaitUi = new Map();
 const loopLiveSelectors = window.FocusLoopLiveSelectors;
@@ -738,7 +740,7 @@ async function hydrateActive(taskId = state.activeTaskId) {
 
 function render() {
   if (state.view !== "focus" && appInspector.parentElement !== document.querySelector(".app-shell")) document.querySelector(".app-shell").append(appInspector);
-  if (state.view !== "map") { mapContextInspector?.dispose(); mapContextInspector = null; }
+  if (state.view !== "map") { mapContextInspector?.dispose(); mapContextInspector = null; mapRelatedOnly = false; }
   localStorage.setItem("focus-interaction-entry", state.view === "patrol" ? "patrol" : "focus");
   if (state.view !== "patrol") {
     workspacePatrolController?.leave();
@@ -3084,25 +3086,88 @@ function renderMapGroups(activeTasks) {
   }).join("");
 }
 
-/*
- * 全图是「活动 Context」的视图：归档与已删除的 Context 不参与展示，也不贡献工作区。
- * 工作区与根 Context 组都是从任务反推的，所以过滤放在这里一处即可同时决定折叠视图与卡片视图，
- * 并在没有活动 Context 时让整个页面留白（空工作区行、空态文案都不再需要）。
- */
 async function hydrateMapPortfolio(workspaceId, force = false) {
-  if (!workspaceId || (!force && mapPortfolio.workspaceId === workspaceId)) return;
+  if (!force && mapPortfolio.workspaceId === workspaceId) return;
   const owner = ++mapPortfolioSequence;
-  mapPortfolio = { workspaceId, loading: true, snapshot: null, manifest: null, error: null };
+  const sameWorkspace = mapPortfolio.workspaceId === workspaceId;
+  if (!sameWorkspace) {
+    mapContextInspector?.dispose(); mapContextInspector = null; mapRelatedOnly = false;
+    mapPortfolio = { workspaceId, loading: false, snapshot: null, manifest: null, error: null };
+  }
+  if (!workspaceId) return;
+  mapPortfolio = { ...mapPortfolio, loading: true, error: null };
+  patchMapGraph();
   try {
     const binding = await loopApi.workspacePatrol(workspaceId);
     const [snapshot, manifest] = binding ? await Promise.all([loopApi.committedLineage(binding.loop_id), loopApi.console(binding.loop_id)]) : [null, null];
     if (owner !== mapPortfolioSequence) return;
+    if (snapshot && snapshot.complete !== true) throw new Error("来源关系尚未完整返回");
     mapPortfolio = { workspaceId, loading: false, snapshot, manifest, error: null };
   } catch (error) {
     if (owner !== mapPortfolioSequence) return;
-    mapPortfolio = { workspaceId, loading: false, snapshot: null, manifest: null, error: error.message };
+    mapPortfolio = { ...mapPortfolio, loading: false, error: error.message };
   }
-  if (state.view === "map") renderMap();
+  if (state.view === "map") { renderMap(); mapContextInspector?.refresh(); }
+}
+
+function mapGraphManifest() {
+  if (!mapPortfolio.snapshot) return { nodes: [], edges: [] };
+  const contexts = Object.fromEntries((mapPortfolio.manifest?.nodes || []).map(node => [node.context_id, { entity_id: node.context_id, state: node }]));
+  return window.FocusWorkspacePatrolView.lineageManifest(mapPortfolio.snapshot, { contexts });
+}
+
+function patchMapGraph() {
+  const surface = app.querySelector(".map-portfolio-surface");
+  if (state.view !== "map" || state.mapViewMode !== "graph" || !surface || surface.dataset.workspaceId !== (mapPortfolio.workspaceId || "")) return;
+  const data = mapGraphManifest(), selection = mapContextInspector?.selection();
+  if (selection && mapPortfolio.snapshot && !data.nodes.some(node => node.context_id === selection.contextId)) mapContextInspector.close();
+  const selected = mapContextInspector?.selection();
+  const inspecting = !state.selectionMode && !state.soldierArmed;
+  const host = surface.querySelector("[data-map-graph]");
+  const options = { presentation: "workbench", selectedRevisionId: selected?.revisionId, relatedOnly: inspecting && mapRelatedOnly };
+  const selectedId = inspecting ? selected?.contextId : null;
+  const hadMap = host.querySelector(".portfolio-map");
+  if (!window.FocusPortfolioMapView.reconcile(host, data, selectedId, [], options)) host.innerHTML = window.FocusPortfolioMapView.render(data, selectedId, [], options);
+  window.FocusPortfolioMapView.bind(host);
+  if (!hadMap && host.querySelector(".portfolio-map")) requestAnimationFrame(() => { if (host.isConnected) host.querySelector('[data-portfolio-zoom="fit"]')?.click(); });
+  for (const node of host.querySelectorAll(".portfolio-context-node")) {
+    node.classList.toggle("is-search-muted", !!state.mapQuery?.trim() && !`${node.dataset.contextId} ${node.textContent}`.toLowerCase().includes(state.mapQuery.trim().toLowerCase()));
+    node.classList.toggle("is-batch-selected", state.selectionMode && state.selectedContextIds.has(node.dataset.contextId));
+    if (state.selectionMode) node.setAttribute("aria-pressed", String(state.selectedContextIds.has(node.dataset.contextId)));
+  }
+  const status = surface.querySelector("[data-map-status]");
+  status.textContent = mapPortfolio.error ? `${mapPortfolio.snapshot ? "未更新，保留上次完整关系。" : "读取失败。"}${mapPortfolio.error}` : mapPortfolio.loading ? "正在读取已提交关系…" : !mapPortfolio.snapshot ? "此工作区尚无已提交 Patrol 关系，可使用折叠/卡片浏览已有任务。" : "";
+  status.hidden = !status.textContent;
+  const related = surface.querySelector('[data-action="map-related"]');
+  related.disabled = !selected || !inspecting;
+  related.textContent = mapRelatedOnly && inspecting ? "恢复全部关系" : "仅看所选关联";
+  related.setAttribute("aria-pressed", String(mapRelatedOnly && inspecting));
+  const refresh = surface.querySelector('[data-action="refresh-map-portfolio"]');
+  refresh.disabled = mapPortfolio.loading || !mapPortfolio.workspaceId;
+  refresh.textContent = mapPortfolio.error ? "重试" : "刷新";
+}
+
+async function inspectMapContext(contextId, trigger, revisionId) {
+  const node = mapGraphManifest().nodes.find(item => item.context_id === contextId);
+  if (!mapPortfolio.manifest?.loop_id || !mapContextInspector) return;
+  await mapContextInspector.select(mapPortfolio.manifest.loop_id, contextId, node, trigger, revisionId || node?.current_revision_id);
+}
+
+function inspectMapRelationship(identity, trigger) {
+  const workspaceId = mapPortfolio.workspaceId;
+  const panel = document.createElement("dialog");
+  panel.className = "map-relationship-dialog";
+  panel.setAttribute("aria-label", "已提交来源关系");
+  panel.innerHTML = `<header><h2>已提交来源关系</h2><form method="dialog"><button aria-label="关闭关系检查">×</button></form></header>${window.FocusPortfolioMapView.relationship(mapGraphManifest(), identity)}`;
+  app.append(panel);
+  panel.addEventListener("close", () => panel.remove(), { once: true });
+  panel.addEventListener("click", async event => {
+    const endpoint = event.target.closest("[data-patrol-edge-context]");
+    if (!endpoint) return;
+    event.stopPropagation(); panel.close();
+    if (state.view === "map" && workspaceId === mapPortfolio.workspaceId) await inspectMapContext(endpoint.dataset.patrolEdgeContext, trigger, endpoint.dataset.revisionId);
+  });
+  void window.FocusSurfaceTransition.visible(panel, true, { modal: true, source: trigger });
 }
 
 function renderMap(focusKey = null) {
@@ -3128,26 +3193,24 @@ function renderMap(focusKey = null) {
       <button class="text-button" data-action="toggle-selection-mode">取消</button>`
     : `<button class="text-button" data-action="toggle-selection-mode">批量删除</button>`;
   const toolbar = `<div class="map-toolbar glass-surface">${presentationControls}<button class="soldier-source" draggable="true" aria-pressed="${state.soldierArmed}" data-action="arm-soldier">${state.soldierArmed ? "已装备小兵 · 选择任务" : "装备小兵"}</button>${batchControls}</div>`;
-  const manifest = mapPortfolio.manifest;
-  const projection = manifest ? { contexts: Object.fromEntries(manifest.nodes.map(node => [node.context_id, { entity_id: node.context_id, state: node }])) } : null;
-  const graph = mapPortfolio.snapshot ? window.FocusWorkspacePatrolView.lineage(mapPortfolio.snapshot, projection) : `<p>${escapeHtml(mapPortfolio.error || (mapPortfolio.loading ? "正在读取已提交关系" : "此工作区尚无已提交 Patrol 关系，可使用层次/卡片浏览已有任务。"))}</p>`;
-  app.innerHTML = `<section class="map-view">
-    <header class="task-page-heading"><div><h1>全图</h1><p>沿精确来源关系检查工作。层次与卡片浏览保留所有工作区操作。</p></div><button data-action="show-patrol">回到 Patrol</button></header>
-    ${toolbar}<label class="page-search">检索已加载任务 <input type="search" data-page-search="map" value="${escapeHtml(state.mapQuery || "")}" placeholder="查找 Context…"></label>
-    ${graphMode ? `<section class="map-portfolio-surface"><header><h2>上下文集合 · 当前工作区已提交关系</h2><button data-action="refresh-map-portfolio">刷新</button></header>${graph}<small>检查节点不改变输入目标；显式打开任务后才切换交互模式。</small></section><aside data-patrol-context class="patrol-context-drawer" aria-label="只读 Context 检查" hidden><div data-patrol-context-content></div></aside>` : `<div class="${treeMode ? "map-tree-host" : "map-groups"}">${activeTasks.length ? (treeMode ? renderMapTree(activeTasks) : renderMapGroups(activeTasks)) : '<p>暂无匹配的活动任务</p>'}</div>`}
-  </section>`;
-  window.FocusPortfolioMapView?.bind(app);
-  if (graphMode && state.selectionMode) app.querySelectorAll(".portfolio-context-node").forEach(node => {
-    const selected = state.selectedContextIds.has(node.dataset.contextId);
-    node.classList.toggle("is-selected", selected);
-    node.setAttribute("aria-pressed", String(selected));
-  });
-  mapContextInspector?.dispose(); mapContextInspector = null;
-  if (graphMode) {
-    mapContextInspector = window.FocusContextInspector.create({ api: loopApi, onOpenTask: switchTask });
-    mapContextInspector.mount(app.querySelector("[data-patrol-context]"));
+  const mounted = graphMode && app.querySelector(".map-portfolio-surface")?.dataset.workspaceId === (workspaceId || "");
+  if (!mounted) {
+    mapContextInspector?.dispose(); mapContextInspector = null; mapRelatedOnly = false;
+    app.innerHTML = `<section class="map-view">
+      <header class="task-page-heading"><div><h1>全图</h1><p>沿精确来源关系检查工作。层次与卡片浏览保留所有工作区操作。</p></div><button data-action="show-patrol">回到 Patrol</button></header>
+      ${toolbar}<label class="page-search">检索已加载任务 <input type="search" data-page-search="map" value="${escapeHtml(state.mapQuery || "")}" placeholder="查找 Context…"></label>
+      ${graphMode ? `<section class="map-portfolio-surface" data-workspace-id="${escapeHtml(workspaceId || "")}"><header><span>当前工作区 · 已提交来源</span><div><button data-action="map-related" disabled>仅看所选关联</button><button data-action="refresh-map-portfolio">刷新</button></div></header><p data-map-status role="status" hidden></p><div data-map-graph></div><footer class="workbench-legend"><span>已提交来源关系</span><span>所选 Context 的直接关联</span><span>Run 状态以节点为准</span><small>连线可查看来源与目标版本</small></footer></section><aside data-patrol-context class="patrol-context-drawer" aria-label="只读 Context 检查" hidden><div data-patrol-context-content></div></aside>` : `<div class="${treeMode ? "map-tree-host" : "map-groups"}">${activeTasks.length ? (treeMode ? renderMapTree(activeTasks) : renderMapGroups(activeTasks)) : '<p>暂无匹配的活动任务</p>'}</div>`}
+    </section>`;
+    if (graphMode) {
+      mapContextInspector = window.FocusContextInspector.create({ api: loopApi, onOpenTask: switchTask, getManifest: mapGraphManifest, onSelectionChange: selected => { if (!selected) mapRelatedOnly = false; patchMapGraph(); } });
+      mapContextInspector.mount(app.querySelector("[data-patrol-context]"));
+      app.querySelector(".map-portfolio-surface").addEventListener("portfolio-clear-selection", () => { if (!state.selectionMode && !state.soldierArmed) mapContextInspector?.close(); });
+    }
+  } else {
+    const currentToolbar = app.querySelector(".map-toolbar");
+    if (currentToolbar.outerHTML !== toolbar) currentToolbar.outerHTML = toolbar;
   }
-  if (graphMode && query) app.querySelectorAll(".portfolio-context-node").forEach(node => { node.classList.toggle("is-search-muted", !node.textContent.toLowerCase().includes(query)); });
+  if (graphMode) patchMapGraph();
   if (focusKey) {
     const target = [...app.querySelectorAll("[role='treeitem'][data-tree-key]")]
       .find(item => item.dataset.treeKey === focusKey)
@@ -5770,7 +5833,9 @@ async function deleteContext(contextId, cascade) {
 }
 
 async function refreshAfterSessionChange() {
-  return bootstrap();
+  const ready = await bootstrap();
+  if (ready && state.view === "map" && state.mapViewMode === "graph") await hydrateMapPortfolio(mapPortfolio.workspaceId, true);
+  return ready;
 }
 
 function toggleSelectionMode() {
@@ -6271,6 +6336,8 @@ function runUiAction(action) {
 }
 
 async function handleDocumentClick(event) {
+  const edge = event.target.closest(".map-portfolio-surface [data-edge-hit]");
+  if (edge && state.view === "map") return inspectMapRelationship(edge.dataset.edgeHit, app.querySelector('[data-action="map-related"]'));
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const action = button.dataset.action;
@@ -6324,6 +6391,7 @@ async function handleDocumentClick(event) {
     return;
   }
   if (action === "collapse-map-tree") return collapseMapTree();
+  if (action === "map-related") { mapRelatedOnly = !mapRelatedOnly; return patchMapGraph(); }
   if (action === "refresh-map-portfolio") return hydrateMapPortfolio(mapPortfolio.workspaceId, true);
   if (action === "show-contexts") return openInspector("context", button);
   if (action === "show-agents") return openInspector("agents", button);
@@ -6374,7 +6442,7 @@ async function handleDocumentClick(event) {
     if (state.view !== "map") return loopConsoleController?.selectContext(button.dataset.contextId);
     if (state.selectionMode) return toggleSelectSession(button.dataset.contextId);
     if (state.soldierArmed) return openDraft(button.dataset.contextId);
-    return mapContextInspector?.select(mapPortfolio.manifest.loop_id, button.dataset.contextId, mapPortfolio.manifest.nodes.find(item => item.context_id === button.dataset.contextId), button);
+    return inspectMapContext(button.dataset.contextId, button, button.dataset.revisionId);
   }
   if (action === "loop-restore-compression") return runUiAction(async () => {
     await loopApi.restoreCompression(button.dataset.contextId, button.dataset.messageId);

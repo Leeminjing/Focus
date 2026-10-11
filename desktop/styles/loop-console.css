@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供任务 Loop 活动轨、真实因果图、Context 实时卡、会话因果带、事实表与终止态视觉层级；共享紧凑图节点供工作区 Patrol 与全图使用。
  * 输入为 Loop 生命周期、Live 连接状态及专用视图语义 class；输出为连接提示、宽屏左图表/右会话工作台、活动抽屉、窄屏布局、稳定滚动区和 reduced-motion 等价呈现。
- * 具体工作流为连接提示独立于 Loop 状态，命令栏与活动轨固定信息密度，图/事实/会话各自滚动，活动效果仅响应实体状态，点阵画布使用透明面板、缩放控制消费共用材质；长列表使用有界内容与原位更新降低重绘成本。
+ * 具体工作流为连接提示独立于 Loop 状态，命令栏与活动轨固定信息密度，图/事实/会话各自滚动，活动效果仅响应实体状态，默认点阵与 workbench 连续图共用唯一节点/边样式，宿主决定控件定位、缩放控制消费共用材质；长列表使用有界内容与原位更新降低重绘成本。
  * 示例：`.loop-console-main` 在宽屏按可调比例分栏，在 1100px 以下自动切换为单列。
  */
 .loop-dashboard.console-shell {
@@ -500,4 +500,54 @@
   .loop-live-dot,
   .run-dot,
   .live-connection i { box-shadow: none; }
+}
+
+.workbench-legend { display: flex; flex-wrap: wrap; gap: 22px; margin: 12px 0 0; color: var(--workbench-muted); font-size: 10px; }
+.workbench-legend span { display: inline-flex; gap: 8px; align-items: center; }
+.workbench-legend span::before { content: ""; width: 22px; border-top: 1px solid #aebfc9; }
+.workbench-legend span:nth-child(2)::before { border-color: #6388aa; border-width: 2px; }
+.workbench-edge-list { list-style: none; padding: 0; }
+.workbench-edge-list li { display: flex; align-items: center; gap: 20px; margin: 20px 0; }
+.workbench-edge-list button { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.workbench-edge-list small { font-size: 11px; }
+.is-workbench .portfolio-map-toolbar { display: none; }
+.is-workbench.portfolio-map { overflow: visible; }
+.is-workbench .portfolio-map-scroll { background: transparent; scrollbar-width: thin; scrollbar-color: #aabac44d transparent; }
+.is-workbench .portfolio-map-canvas { min-width: 0; min-height: 0; }
+.is-workbench .portfolio-map-canvas path { stroke: #adbac4; stroke-width: 1; }
+.is-workbench .portfolio-map-canvas marker polygon { fill: #adbac4; }
+.is-workbench .portfolio-map-canvas .is-related > path:not(.edge-hit) { stroke: #658fae; stroke-width: 2; }
+.is-workbench .portfolio-map-canvas .edge-hit { stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: pointer; }
+.is-workbench .workbench-node { transform: translate(-50%, -50%); width: 188px; min-height: 42px; padding: 6px 10px 6px 24px; border: 1px solid transparent; border-radius: 17px; box-shadow: none; background: transparent; color: #51616f; }
+.is-workbench .workbench-node .context-node-top { margin: 0; }
+.is-workbench .workbench-node .context-node-top strong { font-size: 13px; font-weight: 400; }
+.is-workbench .workbench-node .context-node-meta { display: block; margin-top: 1px; font-size: 10px; color: #8796a3; line-height: 1.5; }
+.workbench-node-dot { position: absolute; left: 6px; top: 13px; width: 10px; height: 10px; border-radius: 50%; background: #7995ad; border: 3px solid #ffffffed; box-shadow: 0 0 0 1px #9caebb; }
+.workbench-node-dot.is-running { box-shadow: 0 0 0 1px #7096b5, 0 0 0 4px #a5bfd433; }
+.workbench-node-dot.is-failed, .workbench-node-dot.is-error { background: #b66c6c; }
+.is-workbench .workbench-node .context-node-eyebrow { display: none; }
+.is-workbench .workbench-node.is-point.is-related { color: #426e91; }
+.is-workbench .workbench-node.is-point:hover { background: #ffffff50; }
+.is-workbench .workbench-node.is-card { min-height: 82px; padding: 12px 18px; border-color: #ffffffe6; background: linear-gradient(135deg, #ffffffa1, #dbe4eb40); box-shadow: inset 0 0 0 2px #ffffff70, 0 3px 8px #31435512; }
+.is-workbench .workbench-node.is-card .context-node-eyebrow { display: block; font-size: 9px; color: #8496a5; letter-spacing: 1px; margin-bottom: 3px; }
+.is-workbench .workbench-node.is-card .context-node-top strong { font-size: 17px; font-weight: 600; }
+.is-workbench .workbench-node.is-card .workbench-node-dot { left: auto; right: 14px; top: 13px; width: 6px; height: 6px; border: 0; box-shadow: none; }
+.is-workbench .workbench-node.is-selected { border-color: #9dbdd9; background: linear-gradient(140deg, #fffffff2, #deebf58c); box-shadow: inset 0 0 0 2px #ffffffc4, 0 3px 8px #455d7420; color: #315674; }
+.is-workbench .workbench-node.is-selected .context-node-top strong { font-size: 20px; }
+.is-workbench .workbench-node.is-selected .workbench-node-dot { left: -4px; top: 50%; width: 8px; height: 8px; border: 2px solid white; box-shadow: 190px 0 0 -2px #7995ad; }
+.is-workbench .workbench-node.is-point { transform: translate(-10px, -18px); width: 164px; }
+.is-workbench .workbench-node.is-point.is-label-left { transform: translate(calc(-100% + 10px), -18px); padding: 6px 24px 6px 4px; text-align: right; }
+.is-workbench .workbench-node.is-label-left .workbench-node-dot { left: auto; right: 5px; }
+.workbench-node .context-node-top, .workbench-node .context-node-meta { text-shadow: 0 1px 2px #eef1f1, 0 -1px 2px #eef1f1; }
+.is-workbench .portfolio-map-zoom { position: absolute; bottom: 12px; left: 12px; justify-content: space-evenly; width: 188px; min-height: 42px; font-size: 10px; color: #7d8e9b; }
+.is-workbench .portfolio-map-zoom button { min-height: 32px; padding: 2px 4px; font-size: 12px; }
+.is-workbench .portfolio-map-zoom button:last-child { font-size: 10px; }
+.is-workbench .workbench-node.is-batch-selected { outline: 2px solid #6388aa; outline-offset: 3px; background: #dbeaf5b0; }
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  .is-workbench .workbench-node.is-card { background: var(--surface-reading); }
+}
+@media (forced-colors: active) {
+  .is-workbench .portfolio-map-canvas path:not(.edge-hit) { stroke: CanvasText; }
+  .is-workbench .workbench-node { color: CanvasText; }
+  .is-workbench .workbench-node.is-selected, .is-workbench .workbench-node.is-batch-selected { outline: 2px solid Highlight; }
 }

@@ -55,3 +55,14 @@ test("only independently supported completed items count as verified", () => {
   assert.match(html, /2 条工作线/);
   assert.match(view.progress({ document: { items: [] } }), /暂无条目/);
 });
+
+test("console latest Run survives shared lineage adaptation without lending it to history", () => {
+  global.FocusLoopLiveSelectors = require("./loop-live-selectors.js");
+  const snapshot = { roots: {a:"a1"}, nodes:[{context_id:"a",revision_id:"a1",generation:1},{context_id:"h",revision_id:"h1",generation:1}],edges:[] };
+  const contexts = Object.fromEntries(["a","h"].map(id => [id,{entity_id:id,state:{title:id,latest_run:{run_id:"run-"+id,status:"running"}}}]));
+  const manifest = view.lineageManifest(snapshot,{contexts});
+  assert.equal(manifest.nodes[0].latest_run.status,"running");
+  assert.equal(manifest.nodes[1].latest_run,null);
+  assert.equal(view.lineageManifest(snapshot,{contexts,runs:{}}).nodes[0].latest_run,null);
+  delete global.FocusLoopLiveSelectors;
+});

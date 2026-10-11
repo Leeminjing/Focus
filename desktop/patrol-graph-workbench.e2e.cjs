@@ -1,6 +1,6 @@
 /* 本文件对外提供 Patrol 关系工作台的隔离浏览器回归和参考尺寸截图。
  * 输入为现有离线 API fixture 与 FOCUS_WORKBENCH_EVIDENCE；输出为生产页面的真实指针/键盘检查、版本和输入身份断言、32/128 节点更新指标。
- * 工作流为独立 Electron 会话加载生产文件，隔离数据只用于视觉与交互；真实 HTTP/SSE 由 frontend-migration-real 另外验收。
+ * 工作流为独立 Electron 会话加载生产文件，指针队列处理后才继续键盘焦点操作；隔离数据只用于视觉与交互，真实 HTTP/SSE 由 frontend-migration-real 另外验收。
  * 示例：node desktop/patrol-graph-workbench.e2e.cjs；所有截图仅包含本测试窗口。
  */
 const assert = require("node:assert/strict");
@@ -34,6 +34,7 @@ if (!process.versions.electron) {
       point.x = Math.round(point.x * win.webContents.getZoomFactor()); point.y = Math.round(point.y * win.webContents.getZoomFactor());
       win.webContents.sendInputEvent({type:"mouseDown",button:"left",clickCount:1,...point});
       win.webContents.sendInputEvent({type:"mouseUp",button:"left",clickCount:1,...point});
+      await sleep(40);
     };
     await win.loadFile(path.join(__dirname, "index.html"));
     await until('document.querySelector("[data-patrol-content]")');

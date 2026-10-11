@@ -1,6 +1,6 @@
 /* 本文件对外提供真实 Patrol/普通会话页面验收的离线 HTTP 与 Live fixture。
  * 输入为 index.html 的实际 API 请求和系统目录选择调用；输出为精确选中路径、文件夹绑定、稳定输入回执和独立事件。
- * 工作流为沿用普通会话 fixture，可取消/拒绝/暂停目录选择和绑定；旧目录列表请求显式失败，发送回执和观测独立提交，冻结覆盖不完整但页已读完，记录装备调用的实际 draft-open 路由；可注入图读取失败及精确版本会话，均仅限隔离测试。
+ * 工作流为沿用普通会话 fixture，可取消/拒绝/暂停目录选择和绑定；旧目录列表请求显式失败，发送回执和观测独立提交，冻结覆盖不完整但页已读完，记录装备调用的实际 draft-open 路由；可注入图读取失败、删除冲突及精确版本会话，均仅限隔离测试。
  * 示例：BrowserWindow({ webPreferences: { preload: __filename, contextIsolation: false } })。
  */
 require("./context-ui-test-preload.cjs");
@@ -34,6 +34,17 @@ window.fetch = async (input, options = {}) => {
   const url = new URL(String(input), "http://focus.test");
   const path = url.pathname;
   const prefix = "/desktop/api/agent-loops";
+  if (path === '/desktop/api/contexts/batch-delete' && window.patrolFixture.mapDeletes) {
+    const body = JSON.parse(options.body);
+    window.patrolFixture.mapDeletes.push(body);
+    if (window.patrolFixture.deleteError) return new Response('删除被拒绝', {status:409});
+    const removed = new Set(body.context_ids);
+    const snapshot = window.patrolFixture.lineage;
+    snapshot.nodes = snapshot.nodes.filter(node => !removed.has(node.context_id));
+    snapshot.edges = snapshot.edges.filter(edge => !removed.has(edge.source_context_id) && !removed.has(edge.target_context_id));
+    for (const id of removed) delete snapshot.roots[id];
+    return json({deleted_context_ids:body.context_ids});
+  }
   const openDraft = path.match(/^\/desktop\/api\/tasks\/([^/]+)\/drafts\/open$/);
   if (openDraft && options.method === "POST") {
     const taskId = openDraft[1];
@@ -55,7 +66,7 @@ window.fetch = async (input, options = {}) => {
   }
   if (path === "/desktop/api/assembly/task") return json({ task_id: "assembly", title: "自由会话", harness_mode: "assembly", active_run: null });
   if (path === "/desktop/api/sessions/archived") return json([]);
-  if (path.endsWith("/console") && path.startsWith(prefix)) return json({ loop_id: path.split("/").at(-2), nodes: [{context_id:"root", revision_id:"r1", title:"产品想法与范围", status:"active"}], edges: [] });
+  if (path.endsWith("/console") && path.startsWith(prefix)) return json(window.patrolFixture.mapConsole || { loop_id: path.split("/").at(-2), nodes: [{context_id:"root", revision_id:"r1", title:"产品想法与范围", status:"active"}], edges: [] });
   if (/\/agent-loops\/loop-[^/]+$/.test(path)) return json({loop_id:path.split("/").at(-1), status:"running", grant:{capabilities:["read"],context_scope:["root"],permission_scope:["read"],delegable_gates:[],budgets:{max_rounds:7}}});
   if (path.endsWith("/grant") && path.startsWith(prefix)) { window.patrolFixture.grantChanges.push({loopId:path.split("/").at(-2),body:JSON.parse(options.body)}); return json({status:"waiting_user"}); }
   if (path.endsWith("/responses") && path.startsWith(prefix)) { window.patrolFixture.waitAnswers.push(JSON.parse(options.body)); return json({status:"accepted"}); }
@@ -103,7 +114,20 @@ window.fetch = async (input, options = {}) => {
     task_progress: { entity_id: live[1], revision: 1, updated_sequence: Math.max(1, sequence), state: { generation: 0, document: { items: [] } } } });
   const stream = path.match(/\/agent-loops\/(loop-[^/]+)\/live\/stream$/);
   if (stream) return new Response(new ReadableStream({ start(controller) { streams.set(stream[1], controller); options.signal?.addEventListener("abort", () => { streams.delete(stream[1]); controller.close(); }, { once: true }); } }), { headers: { "Content-Type": "text/event-stream" } });
-  if (path.endsWith("/lineage") && path.startsWith(prefix)) return window.patrolFixture.lineageError ? new Response("关系读取失败", {status:503}) : json(window.patrolFixture.lineage);
+  if (path.endsWith("/lineage") && path.startsWith(prefix)) {
+    const snapshot = structuredClone(window.patrolFixture.lineage);
+    if (window.patrolFixture.holdLineage) {
+      window.patrolFixture.holdLineage = false;
+      await new Promise(resolve => { window.patrolFixture.releaseLineage = resolve; });
+    }
+    return window.patrolFixture.lineageError ? new Response("关系读取失败", {status:503}) : json(snapshot);
+  }
+  if (window.patrolFixture.graphConversations) {
+    const context = path.match(/\/contexts\/([^/]+)\/revisions$/);
+    if (context) return json(window.patrolFixture.lineage.nodes.filter(node => node.context_id === context[1]).map(node => ({...node,current:window.patrolFixture.lineage.roots[node.context_id] === node.revision_id})));
+    const revision = path.match(/\/context-revisions\/([^/]+)$/);
+    if (revision) return json({revision:{sources:window.patrolFixture.lineage.edges.filter(edge => edge.target_revision_id === revision[1]).map(edge => ({source:{context_id:edge.source_context_id,revision_id:edge.source_revision_id}}))}});
+  }
   const graphContext = path.match(/\/agent-loops\/[^/]+\/contexts\/([^/]+)\/conversation$/);
   if (graphContext && window.patrolFixture.graphConversations) {
     const id = graphContext[1], revision = url.searchParams.get("revision_id") || window.patrolFixture.lineage.roots[id];

@@ -157,3 +157,52 @@ final result: passed
 尚未完成的整体验收：Windows Acrylic 两个受控后景未出现预期变化，且未修改的基线在同一环境同样失败；真实Windows输入法候选窗未覆盖。OpenSpec 5.1/5.2 保留未勾选，不据此宣称整个change验收完成。
 
 final result: passed
+
+---
+
+# 全图玻璃关系区：2026-10-11
+
+本节对应 `refactor-global-map-glass-graph`，实施范围是用户标注的全图关系区域。红框外的导航、模式和业务入口保持原职责。
+
+## 同尺寸比较
+
+源图：`openspec/changes/refactor-global-map-glass-graph/references/target-graph.png`，1258×826 px。
+
+结果：`openspec/changes/refactor-global-map-glass-graph/evidence/after/selected-reference.png`，1258×826 px。生产页面的 CSS 视口1990×1163，图区域1258×825.531，DPR=1；Electron capturePage 输出按 CSS 密度归一，未对布局做截图专用修改。通过实际窗口尺寸与“适应画布”得到比较区域。
+
+状态：选中一条真实页面内的工作线，原检查器在画布旁。截图中的32节点为隔离视觉 fixture，选中的 R3、5来源/4去向与参考数据不同；真实 PostgreSQL 单节点检查和任务打开证据单独保存在 evidence/real/。图坐标来自既有拓扑布局，不把参考数据或阶段分组写进生产。
+
+| 参考区域 | 实际区域（隔离数据） |
+|---|---|
+| ![参考](C:/Users/brubing/Desktop/ag-project/focus/openspec/changes/refactor-global-map-glass-graph/references/target-graph.png) | ![实现](C:/Users/brubing/Desktop/ag-project/focus/openspec/changes/refactor-global-map-glass-graph/evidence/after/selected-reference.png) |
+
+两张原尺寸图片已在同一次工具结果中并列核对。完整页面证据是 after/reference-full.png 与 selected.png；额外核对了390、900、1440、200%、高对比及减少透明截图。
+
+## 修正历史
+
+1. [P1，已修复] 旧全图仍使用不透明大白卡、点阵及所有节点等重卡片。接入原 workbench 图呈现，保留唯一布局；使用连续灰白底、轻节点及有限重点卡。
+2. [P1，已修复] 原固定检查抽屉覆盖右上“仅看所选关联”。同一检查器在全图宽屏占据旁栏，窄屏位于画布下方；真实鼠标能继续操作过滤/刷新。
+3. [P2，已修复] 隐藏状态行让 Grid 自动排位错位，窄屏底部图例被裁切。显式指定 header/status/graph/footer 行，图层 min-height:0，缩放保持在图内；修复证据 responsive-390-1.png。
+4. [采集差异，已排除] Electron 初始窗口受屏幕高度限制，造成首批截图缩小。setContentSize 获取实际视口并记录 geometry，再以1258×826区域比较；不把该差异当生产字号问题。截图等待有限动画完成，避免记录检查面过渡中半透明帧。
+
+## 五类表面核对
+
+- 字体：沿用系统 Segoe UI/微软雅黑；点节点13px、元信息10px、重点卡17px、选中标题20px。目标图的字形光学细节不是同字体来源，系统抗锯齿属于 P3；未整体压小界面以伪造匹配。
+- 间距与布局：参考与结果相同区域尺寸。灰底贯通、重点卡圆角/双层亮边、细曲线、轻标签与图内缩放已呈现。实际拓扑和选择一跳关系决定卡片位置，结构差异是已确认数据约束；外层三种模式保留。
+- 颜色：普通边灰蓝，选中直接边加深，卡片低遮盖白色渐层及柔和阴影；空状态和错误有明确文字。forced-colors 改用系统色和描边；减少透明使用原阅读底。没有新增窗光背景或原生材质机制。
+- 资产：该参考区域为功能性图谱，没有待生成的照片/插画。沿用已有图标，SVG 仅呈现真实来源边和命中区域；未烘焙节点或用静态图充当交互。
+- 内容：节点名、Revision、来源数、运行状态均来自 API/测试响应；“已提交来源”“只读检查”和显式任务打开保留。刷新受理不当作状态生效，缺少权威阶段字段时不画参考分区文字。
+
+局部检查使用同组1×区域图：选中卡（参考约x574–795/y229–335，结果约x439–640/y304–400）、标签点/连线（参考上半区域，结果x95–420/y120–310）及底部图例/缩放。文字和边界在原尺寸可读，未用插值放大图片代替清晰度证据。
+
+## 交互与限制
+
+真实指针命中精确边、重叠版本分别检查、拖拽不误选；Enter 打开草稿/历史版本，Esc 关闭归焦；搜索和刷新保留视口；批选取消、删除409、确认级联及成功清空；0/1/32/128、失败/加载/恢复和越工作区响应隔离已通过。控制台捕获 errors=[]。
+
+真实 PostgreSQL/HTTP 使用原 Bootstrap 发布版本，UI 检查同一 Revision，再显式打开对应任务；原任务材料、Run/SSE、记忆及独立会话继续通过。没有把多节点 fixture 截图当成真实业务完成证据。
+
+本次关系区域无未解决 P0/P1/P2 视觉问题。已有 Windows Acrylic 后景变化限制、原生输入法候选窗未覆盖情况沿用上轮记录；本轮不宣称原生透明环境修复。
+
+Implementation checklist：共享图/样式收敛、真实接口承接、旧入口保留、响应式/系统偏好、键鼠/错误恢复、同尺寸对照已完成。迁移清单、逐项证据与代码增减见本 change 的 implementation.md。
+
+final result: passed

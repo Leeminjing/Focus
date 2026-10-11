@@ -1,6 +1,6 @@
 /* 本文件对外提供任务三栏、材料检查器、插件/记忆卡片、对话、Composer、Loop Mission 与其它工作流视图的布局样式。输入为 app.js
    输出的语义 class 和公共设计 token，输出为可滚动工作区、职责分离的 Mission 编辑器、可折叠材料组、材料项内逐轮备注框
-   与历史材料卡片；Composer 输入与操作分行，控制层消费共用玻璃材质、正文采用高不透明度阅读底，反馈仅在有内容时占位，文件模式菜单显示清楚的选择层级。工作流先应用通用视图骨架，再为具体工作流补充必要布局。示例：
+   与历史材料卡片及全图连续关系区域；全图仅定位共享玻璃图控件，保持图内滚动和原检查抽屉；Composer 输入与操作分行，控制层消费共用玻璃材质、正文采用高不透明度阅读底，反馈仅在有内容时占位，文件模式菜单显示清楚的选择层级。工作流先应用通用视图骨架，再为具体工作流补充必要布局。示例：
    .run-material-note 把本轮备注输入框就近排在其所属材料条目内。 */
 .focus-view,
 .map-view,
@@ -525,10 +525,35 @@
 
 /* 全图：先按工作区，再按根 Context 分组；技术标识保持可展开而不抢占扫描层级。 */
 .map-view { height: auto; min-height: 100%; grid-template-rows: auto auto; align-content: start; gap: var(--space-3); padding: 26px 30px; }
-.map-portfolio-surface { height: calc(100vh - 270px); min-height: 350px; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; border: 1px solid var(--border-subtle); border-radius: 20px; background: var(--surface-panel); overflow: hidden; }
-.map-portfolio-surface > header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; }
-.map-portfolio-surface h2 { font-size: 14px; }
-.map-portfolio-surface > small { padding: 12px 20px; color: var(--text-secondary); }
+#app:has(.map-portfolio-surface) { overflow: hidden; }
+.map-view:has(.map-portfolio-surface) { height: 100%; min-height: 0; grid-template-rows: auto auto auto minmax(0, 1fr); align-content: stretch; }
+.map-view:has(.map-portfolio-surface):has(> .patrol-context-drawer:not([hidden])) { grid-template-columns: minmax(0, 1fr) minmax(290px, 340px); }
+.map-view:has(.map-portfolio-surface) > :is(.task-page-heading, .map-toolbar, .page-search) { grid-column: 1 / -1; }
+.map-view > .patrol-context-drawer { position: relative; grid-column: 2; grid-row: 4; inset: auto; width: 100%; min-height: 0; border: 1px solid var(--border-subtle); border-radius: 20px; }
+.map-portfolio-surface { --workbench-muted: #7d8e9b; position: relative; height: 100%; min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; border: 0; border-radius: 18px; background: #ecf0f033; overflow: hidden; }
+.map-portfolio-surface > header { grid-row: 1; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 14px; color: var(--workbench-muted); font-size: 11px; }
+.map-portfolio-surface > header > div { display: flex; gap: 8px; }
+.map-portfolio-surface > header button { min-height: 30px; font-size: 11px; border: 1px solid #ffffff80; border-radius: 18px; padding: 4px 12px; color: inherit; background: #ffffff24; }
+.map-portfolio-surface [data-map-status] { grid-row: 2; margin: 0; padding: 0 14px; font-size: 12px; color: var(--text-secondary); }
+.map-portfolio-surface [data-map-graph] { grid-row: 3; min-height: 0; min-width: 0; }
+.map-portfolio-surface .portfolio-map-scroll { display: grid; place-items: safe center; }
+.map-portfolio-surface .portfolio-map-zoom { bottom: 6px; }
+.map-portfolio-surface .workbench-legend { grid-row: 4; margin: 0; padding: 12px 14px 12px 220px; min-height: 50px; align-items: center; }
+.map-portfolio-surface .loop-map-empty { height: 100%; display: grid; place-items: center; }
+html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
+.map-relationship-dialog { width: min(720px, calc(100vw - 32px)); max-height: 85dvh; overflow: auto; }
+.map-relationship-dialog > header { display: flex; justify-content: space-between; align-items: center; }
+@media (max-width: 899px) {
+  .map-view:has(.map-portfolio-surface) { padding: 18px 10px; }
+  .map-view:has(.map-portfolio-surface):has(> .patrol-context-drawer:not([hidden])) { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(240px, 1fr) auto; }
+  .map-view > .patrol-context-drawer { grid-column: 1; grid-row: 5; max-height: 50dvh; }
+  .map-portfolio-surface { min-height: 240px; }
+  #app:has(.map-portfolio-surface) { overflow-y: auto; }
+  .map-portfolio-surface > header { flex-wrap: wrap; }
+  .map-portfolio-surface .workbench-legend { padding: 12px; gap: 8px 16px; }
+  .map-portfolio-surface .portfolio-map-zoom { bottom: 0; }
+  .map-portfolio-surface [data-map-graph] { padding-bottom: 44px; }
+}
 .map-toolbar {
   justify-content: flex-end;
   height: auto;
