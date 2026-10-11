@@ -1,20 +1,19 @@
 """本文件对外提供传统任务、磁盘材料和实际 Run 的浏览器集成验收。
 
 输入为复用的隔离 Desktop 服务、真实工作目录和受控采样图；输出为全图精确版本到任务、UI 与持久 Run/选材记录一致的断言及截图。
-具体工作流为关闭本测试 Loop 自主调度后调用生产 Bootstrap 发布版本，HTTP bridge 转发生产响应；替换模型采样而保留 Main/SSE、checkpoint 和材料读取，不调用外部 Provider。
+具体工作流为关闭本测试 Loop 自主调度后调用生产 Bootstrap 发布版本，共享 ASGI HTTP bridge 逐帧转发生产响应；替换模型采样而保留 Main/SSE、checkpoint 和材料读取，不调用外部 Provider。
 示例：python -m pytest backend/tests/test_frontend_task_real.py -q。
 """
 import json
 import os
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import subprocess
-import threading
 
 from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 import pytest
 from test_session_patrol_workbench_api import client as client, SESSION
+from http_asgi_bridge import ASGIHTTPBridge
 
 
 def test_task_material_main_and_standalone_real_ui(client, tmp_path, monkeypatch):
@@ -55,34 +54,6 @@ def test_task_material_main_and_standalone_real_ui(client, tmp_path, monkeypatch
     assert http.delete(groups_url + f"/{second['group_id']}", headers=SESSION).status_code == 200
     traffic = []
 
-    class Bridge(BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-
-        def reply(self, status, content, content_type="application/json"):
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Access-Control-Allow-Origin", "null")
-            self.send_header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "content-type,x-focus-session,idempotency-key")
-            self.end_headers()
-            self.wfile.write(content)
-
-        def do_OPTIONS(self):
-            self.reply(200, b"{}")
-
-        def forward(self):
-            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
-            headers = dict(SESSION)
-            if self.headers.get("Idempotency-Key"):
-                headers["Idempotency-Key"] = self.headers["Idempotency-Key"]
-            traffic.append((self.command, self.path.split("?")[0], "pending"))
-            response = http.request(self.command, self.path, headers=headers, json=json.loads(body) if body else None)
-            traffic.append((self.command, self.path.split("?")[0], response.status_code))
-            self.reply(response.status_code, response.content, response.headers.get("content-type", "application/json"))
-
-        do_GET = do_POST = do_PUT = do_DELETE = forward
-
     repo = Path(__file__).resolve().parents[2]
     electron = repo / "desktop/node_modules/electron/dist/electron.exe"
     if not electron.is_file():
@@ -90,14 +61,12 @@ def test_task_material_main_and_standalone_real_ui(client, tmp_path, monkeypatch
     evidence = repo / ".tmp-focus-frontend-evidence"
     evidence.mkdir(exist_ok=True)
     result_file = tmp_path / "task-ui.json"
-    bridge = ThreadingHTTPServer(("127.0.0.1", 0), Bridge)
-    thread = threading.Thread(target=bridge.serve_forever, daemon=True)
-    thread.start()
     env = dict(os.environ)
     env.pop("ELECTRON_RUN_AS_NODE", None)
-    env.update(FOCUS_TASK_REAL_URL=f"http://127.0.0.1:{bridge.server_port}", FOCUS_TASK_REAL_ID=task["task_id"], FOCUS_TASK_REAL_MATERIAL=material["material_id"], FOCUS_TASK_REAL_RESULT=str(result_file), FOCUS_TASK_REAL_EVIDENCE=str(evidence))
+    env.update(FOCUS_TASK_REAL_ID=task["task_id"], FOCUS_TASK_REAL_MATERIAL=material["material_id"], FOCUS_TASK_REAL_RESULT=str(result_file), FOCUS_TASK_REAL_EVIDENCE=str(evidence))
     env["FOCUS_MAP_REAL"] = json.dumps({"workspace_id": task["workspace_id"], "context_id": context_id, "revision_id": revision_id})
-    try:
+    with ASGIHTTPBridge(http, headers=SESSION, traffic=traffic) as bridge:
+        env["FOCUS_TASK_REAL_URL"] = bridge.url
         result = subprocess.run([str(electron), str(repo / "desktop/frontend-task-real.e2e.cjs")], cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=80)
         assert result.returncode == 0, result.stdout + result.stderr + str(traffic[-25:])
         ui = json.loads(result_file.read_text(encoding="utf-8"))
@@ -109,7 +78,3 @@ def test_task_material_main_and_standalone_real_ui(client, tmp_path, monkeypatch
         history = http.get(f"/desktop/api/tasks/{task['task_id']}/material-history", headers=SESSION).json()
         assert any(row["run_id"] == ui["run_id"] and row["material_id"] == material["material_id"] for row in history)
         (evidence / "real-task-result.json").write_text(json.dumps(ui, ensure_ascii=False, indent=2), encoding="utf-8")
-    finally:
-        bridge.shutdown()
-        bridge.server_close()
-        thread.join(timeout=3)

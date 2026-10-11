@@ -1,5 +1,6 @@
 /*
  * 本文件对外提供应用组合根；输入为真实 API/Live 与用户导航动作，输出为六页及原业务入口。
+ * 任务与图卡共用 Run SSE 订阅；图卡通过只读观察器呈现真实角色与短尾部，按工作区和 Run 隔离，退出页面释放观察而不触发审批。
  * 工作流为沿原控制器装配页面、按任务保留草稿，卡片/列表偏好仅留在页面状态。示例：renderPlugins() 展示 registry 的当前状态。
  * Loop 激活由服务端解析初始 Run 装备，客户端不从详情缓存猜测权限；继承请求输出完整有效授权快照。Main 接口的 direct_message 回执仅表示受理，不写 active_run 或材料执行历史。默认 Patrol，任务列表与材料检查器承接传统操作，复杂能力通过明确次级入口使用原业务用例。
  * 控制材质复用语义 token；检查器显隐使用 FocusSurfaceTransition 保留壳层，退出即隔离命中、结束后退出布局；业务状态仍来自原 API/Live。
@@ -230,6 +231,7 @@ const accessMode = window.FocusAccessMode;
 const composerDraft = window.FocusComposerDraft;
 const taskRunOperations = window.FocusTaskRunOperations?.create();
 const loopApi = window.FocusLoopApi?.create(runtime);
+const runStreams = window.FocusRunStreamSubscriptions?.create(runtime);
 const workspacePatrolInputs = new Map();
 let workspacePatrolController = null;
 let workspacePatrolPicker = null;
@@ -238,6 +240,12 @@ let mapPortfolio = { workspaceId: null, loading: false, snapshot: null, manifest
 let mapPortfolioSequence = 0;
 let mapContextInspector = null;
 let mapRelatedOnly = false;
+let mapLive = null;
+const mapRunPreviews = createRunPreviews((values, structural) => {
+  if (state.view !== "map" || state.mapViewMode !== "graph") return;
+  if (structural) patchMapGraph();
+  else window.FocusPortfolioMapView.patchPreviews(app.querySelector("[data-map-graph]"), values);
+});
 const loopWaitDrafts = window.FocusLoopWaitRequestView?.createDraftStore();
 const loopWaitUi = new Map();
 const loopLiveSelectors = window.FocusLoopLiveSelectors;
@@ -740,7 +748,7 @@ async function hydrateActive(taskId = state.activeTaskId) {
 
 function render() {
   if (state.view !== "focus" && appInspector.parentElement !== document.querySelector(".app-shell")) document.querySelector(".app-shell").append(appInspector);
-  if (state.view !== "map") { mapContextInspector?.dispose(); mapContextInspector = null; mapRelatedOnly = false; }
+  if (state.view !== "map") { stopMapLive(); mapContextInspector?.dispose(); mapContextInspector = null; mapRelatedOnly = false; }
   localStorage.setItem("focus-interaction-entry", state.view === "patrol" ? "patrol" : "focus");
   if (state.view !== "patrol") {
     workspacePatrolController?.leave();
@@ -806,6 +814,7 @@ async function renderWorkspacePatrol() {
     const connection = window.FocusLoopLiveConnection.create({ api: loopApi, store });
     workspacePatrolController = window.FocusWorkspacePatrolController.create({
       api: loopApi, inputs: workspacePatrolInputs.get(workspace.workspace_id), liveStore: store, connection,
+      createRunPreviews,
       onOpenTask: async contextId => {
         if (!state.tasks.some(item => item.task_id === contextId)) await refreshTasks();
         if (state.tasks.some(item => item.task_id === contextId)) await switchTask(contextId);
@@ -3086,11 +3095,56 @@ function renderMapGroups(activeTasks) {
   }).join("");
 }
 
+function createRunPreviews(onChange) {
+  return runStreams && window.FocusContextRunPreviews?.create({
+    streams: runStreams,
+    loadRun: (runId, signal) => api(`/desktop/api/runs/${encodeURIComponent(runId)}`, { signal }),
+    onChange,
+  });
+}
+
+function stopMapLive() {
+  const previous = mapLive;
+  mapLive = null;
+  previous?.unsubscribe();
+  previous?.connection.stop();
+  mapRunPreviews?.stop();
+}
+
+function ensureMapLive() {
+  const loopId = mapPortfolio.manifest?.loop_id, workspaceId = mapPortfolio.workspaceId;
+  if (!loopId || !window.FocusLoopLiveStore || !window.FocusLoopLiveConnection) return;
+  if (mapLive?.loopId === loopId && mapLive.workspaceId === workspaceId) return;
+  stopMapLive();
+  const store = window.FocusLoopLiveStore.create();
+  const connection = window.FocusLoopLiveConnection.create({ api: loopApi, store });
+  const owner = { loopId, workspaceId, store, connection, roots: null, unsubscribe: () => {} };
+  mapLive = owner;
+  owner.unsubscribe = store.subscribe(({ projection }) => {
+    if (mapLive !== owner || state.view !== "map" || state.mapViewMode !== "graph") return;
+    patchMapGraph();
+    if (!projection) return;
+    const roots = JSON.stringify([
+      Object.values(projection.contexts).map(item => [item.entity_id, item.state.current_revision_id]),
+      projection.portfolio?.revision,
+      Object.values(projection.lineage).map(item => [item.entity_id, item.revision]),
+    ]);
+    if (roots === owner.roots) return;
+    const previous = owner.roots;
+    owner.roots = roots;
+    if (previous !== null) void hydrateMapPortfolio(workspaceId, true);
+  });
+  void connection.start(loopId).catch(error => {
+    if (mapLive === owner) { mapPortfolio.error = error.message; patchMapGraph(); }
+  });
+}
+
 async function hydrateMapPortfolio(workspaceId, force = false) {
   if (!force && mapPortfolio.workspaceId === workspaceId) return;
   const owner = ++mapPortfolioSequence;
   const sameWorkspace = mapPortfolio.workspaceId === workspaceId;
   if (!sameWorkspace) {
+    stopMapLive();
     mapContextInspector?.dispose(); mapContextInspector = null; mapRelatedOnly = false;
     mapPortfolio = { workspaceId, loading: false, snapshot: null, manifest: null, error: null };
   }
@@ -3113,13 +3167,16 @@ async function hydrateMapPortfolio(workspaceId, force = false) {
 function mapGraphManifest() {
   if (!mapPortfolio.snapshot) return { nodes: [], edges: [] };
   const contexts = Object.fromEntries((mapPortfolio.manifest?.nodes || []).map(node => [node.context_id, { entity_id: node.context_id, state: node }]));
-  return window.FocusWorkspacePatrolView.lineageManifest(mapPortfolio.snapshot, { contexts });
+  const live = mapLive?.store.get().projection;
+  return window.FocusWorkspacePatrolView.lineageManifest(mapPortfolio.snapshot, live ? { ...live, contexts: { ...contexts, ...live.contexts } } : { contexts });
 }
 
 function patchMapGraph() {
   const surface = app.querySelector(".map-portfolio-surface");
   if (state.view !== "map" || state.mapViewMode !== "graph" || !surface || surface.dataset.workspaceId !== (mapPortfolio.workspaceId || "")) return;
-  const data = mapGraphManifest(), selection = mapContextInspector?.selection();
+  const raw = mapGraphManifest(), selection = mapContextInspector?.selection();
+  mapRunPreviews?.sync({ workspaceId: mapPortfolio.workspaceId, loopId: mapPortfolio.manifest?.loop_id, nodes: raw.nodes });
+  const data = mapRunPreviews?.decorate(raw) || raw;
   if (selection && mapPortfolio.snapshot && !data.nodes.some(node => node.context_id === selection.contextId)) mapContextInspector.close();
   const selected = mapContextInspector?.selection();
   const inspecting = !state.selectionMode && !state.soldierArmed;
@@ -3129,6 +3186,7 @@ function patchMapGraph() {
   const hadMap = host.querySelector(".portfolio-map");
   if (!window.FocusPortfolioMapView.reconcile(host, data, selectedId, [], options)) host.innerHTML = window.FocusPortfolioMapView.render(data, selectedId, [], options);
   window.FocusPortfolioMapView.bind(host);
+  if (mapRunPreviews) window.FocusPortfolioMapView.patchPreviews(host, mapRunPreviews.get());
   if (!hadMap && host.querySelector(".portfolio-map")) requestAnimationFrame(() => { if (host.isConnected) host.querySelector('[data-portfolio-zoom="fit"]')?.click(); });
   for (const node of host.querySelectorAll(".portfolio-context-node")) {
     node.classList.toggle("is-search-muted", !!state.mapQuery?.trim() && !`${node.dataset.contextId} ${node.textContent}`.toLowerCase().includes(state.mapQuery.trim().toLowerCase()));
@@ -3137,6 +3195,8 @@ function patchMapGraph() {
   }
   const status = surface.querySelector("[data-map-status]");
   status.textContent = mapPortfolio.error ? `${mapPortfolio.snapshot ? "未更新，保留上次完整关系。" : "读取失败。"}${mapPortfolio.error}` : mapPortfolio.loading ? "正在读取已提交关系…" : !mapPortfolio.snapshot ? "此工作区尚无已提交 Patrol 关系，可使用折叠/卡片浏览已有任务。" : "";
+  const connection = mapLive?.store.get().connection;
+  if (!status.textContent && ["unavailable", "reconnecting", "resyncing"].includes(connection?.status)) status.textContent = "运行状态连接中断，正在保留上次状态；可刷新重试。";
   status.hidden = !status.textContent;
   const related = surface.querySelector('[data-action="map-related"]');
   related.disabled = !selected || !inspecting;
@@ -3176,6 +3236,7 @@ function renderMap(focusKey = null) {
   const query = String(state.mapQuery || "").trim().toLowerCase();
   const activeTasks = state.tasks.filter(task => sessionLifecycle(task) === "active" && (!query || `${task.title} ${task.task_id} ${task.workspace_name}`.toLowerCase().includes(query)));
   const graphMode = state.mapViewMode === "graph";
+  if (!graphMode) stopMapLive();
   const workspaceId = state.patrolWorkspace?.workspace_id || activeTask()?.workspace_id;
   if (graphMode && workspaceId !== mapPortfolio.workspaceId) void hydrateMapPortfolio(workspaceId);
   const presentationControls = `<div class="map-presentation-controls">
@@ -3210,7 +3271,7 @@ function renderMap(focusKey = null) {
     const currentToolbar = app.querySelector(".map-toolbar");
     if (currentToolbar.outerHTML !== toolbar) currentToolbar.outerHTML = toolbar;
   }
-  if (graphMode) patchMapGraph();
+  if (graphMode) { ensureMapLive(); patchMapGraph(); }
   if (focusKey) {
     const target = [...app.querySelectorAll("[role='treeitem'][data-tree-key]")]
       .find(item => item.dataset.treeKey === focusKey)
@@ -4058,7 +4119,7 @@ const COMMITMENT_STAGE_NAMES = {
   5: "技术版本", 6: "官方知识", 7: "合同落盘", 8: "产出合同", 9: "交接准备",
 };
 const TRACE_ACTORS = { supervisor: "Supervisor", worker: "Worker", evaluator: "Evaluator" };
-const TERMINAL_RUN_STATUSES = new Set(["success", "error", "interrupted"]);
+const TERMINAL_RUN_STATUSES = new Set(["success", "error", "interrupted", "timeout", "cancelled", "stopped"]);
 
 async function settleRunStream(run, source, ownerTaskId, terminal) {
   if (state.streams.get(run.run_id) !== source) return;
@@ -4118,24 +4179,25 @@ function listenToRun(run) {
       return fallback;
     }
   };
-  const source = new EventSource(`${runtime.apiBase}/desktop/api/runs/${run.run_id}/stream?session=${encodeURIComponent(runtime.session)}`);
-  state.streams.set(run.run_id, source);
-  source.addEventListener("metadata", event => {
+  const handlers = new Map();
+  const listen = (type, handler) => handlers.set(type, handler);
+  let source;
+  listen("metadata", event => {
     const envelope = parseEvent(event);
     if (envelope?.data?.status) {
       syncPatrolRunState(run, envelope.data.status);
       if (ownerTaskId) taskRunOperations?.updateRun(ownerTaskId, run.run_id, { status: envelope.data.status });
     }
   });
-  source.addEventListener("tokens", event => {
+  listen("tokens", event => {
     const token = parseEvent(event);
     if (token) appendToken(token);
   });
-  source.addEventListener("reasoning", event => {
+  listen("reasoning", event => {
     const reasoning = parseEvent(event);
     if (reasoning) appendReasoning(reasoning);
   });
-  source.addEventListener("events", event => {
+  listen("events", event => {
     const envelope = parseEvent(event);
     if (!envelope) return;
     const payload = envelope.data;
@@ -4150,7 +4212,7 @@ function listenToRun(run) {
       replaceConversation(task, messages, envelope.run_id);
     }
   });
-  source.addEventListener("interrupt", event => {
+  listen("interrupt", event => {
     const envelope = parseEvent(event);
     if (!envelope) return;
     const value = envelope.data?.value;
@@ -4182,22 +4244,25 @@ function listenToRun(run) {
       showAccessReview(task, value, envelope.agent_id);
     }
   });
-  source.addEventListener("error", event => {
-    if (!event.data) {
-      void reconcileDisconnectedRun(run, source, ownerTaskId);
-      return;
-    }
+  listen("error", event => {
     const error = parseEvent(event)?.data?.error || "运行失败";
     runError = error;
     syncPatrolRunState(run, "error", error);
     if (ownerTaskId) taskRunOperations?.updateRun(ownerTaskId, run.run_id, { status: "error", error });
     setStatus(error, true);
   });
-  source.addEventListener("end", async event => {
+  listen("end", async event => {
     const terminal = parseEvent(event, { status: "error", error: "运行流异常结束" });
     if (!terminal.error && runError) terminal.error = runError;
     await settleRunStream(run, source, ownerTaskId, terminal);
   });
+  source = runStreams.subscribe(run.run_id, {
+    onFrame: frame => handlers.get(frame.type)?.(frame),
+    onConnection: status => {
+      if (status === "reconnecting") void reconcileDisconnectedRun(run, source, ownerTaskId);
+    },
+  });
+  state.streams.set(run.run_id, source);
 }
 
 // === 承诺进度条 ===
@@ -6392,7 +6457,11 @@ async function handleDocumentClick(event) {
   }
   if (action === "collapse-map-tree") return collapseMapTree();
   if (action === "map-related") { mapRelatedOnly = !mapRelatedOnly; return patchMapGraph(); }
-  if (action === "refresh-map-portfolio") return hydrateMapPortfolio(mapPortfolio.workspaceId, true);
+  if (action === "refresh-map-portfolio") {
+    mapRunPreviews?.retry();
+    if (mapLive) void mapLive.connection.start(mapLive.loopId);
+    return hydrateMapPortfolio(mapPortfolio.workspaceId, true);
+  }
   if (action === "show-contexts") return openInspector("context", button);
   if (action === "show-agents") return openInspector("agents", button);
   if (action === "toggle-session-patrol") {
@@ -7349,6 +7418,9 @@ document.addEventListener("focus:languagechange", () => {
 });
 
 window.addEventListener("beforeunload", () => {
+  stopMapLive();
+  workspacePatrolController?.dispose();
+  for (const source of state.streams.values()) source.close();
   loopConnection?.stop();
   if (loopLifecycleFrame !== null) cancelAnimationFrame(loopLifecycleFrame);
   loopConsoleController?.destroy();

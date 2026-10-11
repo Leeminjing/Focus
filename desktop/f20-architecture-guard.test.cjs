@@ -1,6 +1,6 @@
 /*
  * 本文件对外提供 F20 前端架构静态守卫。输入为桌面清单、Electron 主进程、Gateway 挂载、
- * HTML、渲染入口与 Patrol presence 源码，输出为 Focus 自有沙箱依赖、零外部 CDN、同一 loopback
+ * HTML、渲染入口、共享 Run SSE 与 Patrol presence 源码，输出为 Focus 自有沙箱依赖、零外部 CDN、同一 loopback
  * Origin、无 CORS/代理和无待命后端副作用的断言结果；工作流只读取仓库文件并在约束被
  * 破坏时退出失败。构建阶段仅允许离线 JSON 编辑器依赖，运行依赖仍为 Electron/Koffi。
  * 示例：`node f20-architecture-guard.test.cjs`。
@@ -153,7 +153,9 @@ assert.match(renderer, /agentDetails:\s*\{\s*agentId:\s*null/);
 assert.match(renderer, /openAgentDetails\(agentId\)[\s\S]*openInspector\("agents"/);
 assert.match(renderer, /location\.origin/);
 assert.match(renderer, /fetch\(`\$\{runtime\.apiBase\}\$\{path\}`/);
-assert.match(renderer, /new EventSource\(`\$\{runtime\.apiBase\}\/desktop\/api\/runs\//);
+assert.match(renderer, /FocusRunStreamSubscriptions\?\.create\(runtime\)/);
+assert.doesNotMatch(renderer, /new EventSource\(/);
+assert.match(read("desktop/run-stream-subscriptions.js"), /\/desktop\/api\/runs\/\$\{encodeURIComponent\(runId\)\}\/stream/);
 assert.match(renderer, /script\.onerror = \(\) => \{[\s\S]*pluginScriptAssets\.delete\(src\)[\s\S]*console\.error\("插件脚本加载失败:"[\s\S]*resolve\(\)/);
 assert.match(renderer, /link\.onerror = \(\) => \{[\s\S]*pluginStyleAssets\.delete\(href\)[\s\S]*console\.error\("插件样式加载失败:"/);
 assert.match(renderer, /filter\(plugin => plugin\.status === "active"\)/);

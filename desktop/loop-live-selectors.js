@@ -3,6 +3,7 @@
  * 输入为规范化 projection 与可选 Context identity；输出为 Patrol、等待请求、Expansion、图活动、Context 卡片、跨 Context 派生边、因果链、事实和摘要指标。
  * 具体工作流为从实体 state 派生展示模型并排除工具事实（成员派生边不含自环），不持有领域状态；示例：`selectContextCards(projection)`。
  * 用户 intervention 尚无 Run 时也可按真实目标和 correlation 进入 Context 因果链。
+ * Context 卡的 active_run 优先实际 running，再回落排队/待执行；较新的队列条目不能遮住仍执行的 Run，latest_run 仍保留时间顺序。
  */
 (function (root, factory) {
   const api = factory();
@@ -38,7 +39,8 @@
     const runs = values(projection?.runs);
     return Object.freeze(values(projection?.contexts).map(entity => {
       const contextRuns = runs.filter(run => run.state.context_id === entity.entity_id).sort((left, right) => right.updated_sequence - left.updated_sequence);
-      const activeRun = contextRuns.find(run => ["queued", "pending", "running"].includes(run.state.status)) || null;
+      const activeRun = contextRuns.find(run => run.state.status === "running")
+        || contextRuns.find(run => ["queued", "pending"].includes(run.state.status)) || null;
       const runIds = new Set(contextRuns.map(run => run.entity_id));
       const liveAction = [...(projection?.activity_timeline || [])].reverse().find(item => item.detail?.context_id === entity.entity_id || runIds.has(item.detail?.run_id));
       return Object.freeze({ id: entity.entity_id, revision: entity.revision, ...entity.state, active_run: activeRun ? { id: activeRun.entity_id, ...activeRun.state } : null, latest_run: contextRuns[0] ? { id: contextRuns[0].entity_id, ...contextRuns[0].state } : null, live_action: liveAction || null });

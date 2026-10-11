@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""承诺流程期间消息流隔离：子图冒泡消息不得发布为 lead tokens 事件。"""
+"""本文件对外提供承诺流隔离和具名角色正文模式的测试。
+
+输入为离线承诺图、完整消息及会中断的模型增量；输出为原 lead 隔离、snapshot/delta 与重试身份断言。
+具体工作流为运行承诺图及真实消息序列化，核对具名消息沿原 events 通道传递且不会丢失模式或流身份。
+示例：python -m pytest backend/tests/test_commitment_stream_isolation.py。
+"""
+import asyncio
 import sys
 from pathlib import Path
 
@@ -8,7 +14,8 @@ sys.path.insert(0, str(ROOT / "backend" / "packages" / "harness"))
 sys.path.insert(0, str(ROOT))
 
 from langchain.agents import create_agent
-from langchain.messages import AIMessage, HumanMessage
+from httpx import RemoteProtocolError
+from langchain.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -17,6 +24,8 @@ from focus.agents.commitment import CommitmentMiddleware
 from focus.agents.commitment.schemas import WorkerOutput, ReviewOutput
 from focus.agents.commitment.workflow import _build_supervisor
 from focus.agents.commitment.delegation import ReviewedDelegator
+from focus.agents.commitment import tracing
+from focus.runtime.runs.events import chunk_to_events
 
 
 def _governed_context(workspace: str = "C:/tmp") -> dict:
@@ -79,8 +88,6 @@ def _stream_summary(mode, chunk):
 
 
 def test_commitment_period_stream_modes():
-    import asyncio
-
     model = FakeListChatModel(responses=["ok"])
     delegator = _ScriptedDelegator()
     middleware = CommitmentMiddleware.__new__(CommitmentMiddleware)
@@ -92,8 +99,6 @@ def test_commitment_period_stream_modes():
     agent.checkpointer = saver
     config = {"configurable": {"thread_id": "dbg-s1"}}
     ctx = _governed_context()
-
-    from focus.runtime.runs.events import chunk_to_events
 
     async def collect(graph_input):
         out = []
@@ -118,9 +123,77 @@ def test_commitment_period_stream_modes():
     tokens = published_tokens(events1)
     print(f"tokens 事件数: {tokens}")
     assert tokens == 0, f"承诺期间不应发布 lead token，实际 {tokens} 个"
+    supervisor = [
+        chunk for mode, chunk in events1
+        if mode == "custom" and chunk.get("type") == "commitment_messages"
+        and chunk.get("actor") == "supervisor"
+    ]
+    assert supervisor and all(batch["content_mode"] == "snapshot" for batch in supervisor)
 
     # resume 一轮
     events2 = asyncio.run(collect(Command(resume={"decision": "approve"})))
     tokens = published_tokens(events2)
     print(f"tokens 事件数: {tokens}")
     assert tokens == 0, f"resume 期间不应发布 lead token，实际 {tokens} 个"
+
+
+def test_complete_named_messages_keep_roles_and_snapshot_mode(monkeypatch):
+    published = []
+    monkeypatch.setattr(tracing, "get_stream_writer", lambda: published.append)
+    tracing.emit_commitment_messages(
+        actor="evaluator", stage=2, attempt=3,
+        messages=[
+            HumanMessage(content="审核输入", id="input"),
+            AIMessage(content="完整审核结果", additional_kwargs={"reasoning_content": "private"}),
+        ],
+    )
+    event, = chunk_to_events("custom", published[0], {"run_id": "run-evaluator"})
+    payload = event.data["data"]
+    assert event.event == "events"
+    assert payload == {
+        "type": "commitment_messages", "actor": "evaluator", "stage": 2,
+        "attempt": 3, "content_mode": "snapshot",
+        "messages": [
+            {"role": "human", "content": "审核输入", "id": "input"},
+            {"role": "ai", "content": "完整审核结果"},
+        ],
+    }
+
+
+def test_named_delta_identity_survives_serialization_and_transport_retry(monkeypatch):
+    published = []
+    monkeypatch.setattr(tracing, "get_stream_writer", lambda: published.append)
+
+    class RetryingAgent:
+        def __init__(self):
+            self.calls = 0
+
+        async def astream(self, _input, stream_mode):
+            self.calls += 1
+            for text in ("旧", "片段") if self.calls == 1 else ("新", "结果"):
+                yield "messages", (AIMessageChunk(content=text), {})
+            if self.calls == 1:
+                raise RemoteProtocolError("stream interrupted")
+            yield "values", {"messages": [AIMessage(content="新结果")]}
+
+    agent = RetryingAgent()
+    delegator = ReviewedDelegator.__new__(ReviewedDelegator)
+    result = asyncio.run(delegator._stream_agent(
+        agent, [HumanMessage(content="原输入")], actor="worker", stage=2,
+        stream_id="worker-2", attempt=3,
+    ))
+    payloads = [
+        chunk_to_events("custom", batch, {"run_id": "run-worker"})[0].data["data"]
+        for batch in published
+    ]
+    assert result["messages"][-1].content == "新结果"
+    assert payloads[0]["content_mode"] == "snapshot"
+    assert payloads[0]["messages"][0]["role"] == "human"
+    deltas = payloads[1:]
+    assert [batch["content_mode"] for batch in deltas] == ["delta"] * 4
+    assert [batch["stream_id"] for batch in deltas] == [
+        "worker-2:3:1", "worker-2:3:1", "worker-2:3:2", "worker-2:3:2",
+    ]
+    assert [batch["messages"][0]["content"] for batch in deltas] == ["旧", "片段", "新", "结果"]
+    assert all(batch["messages"][0]["role"] == "ai" for batch in deltas)
+    assert all(batch["actor"] == "worker" and batch["attempt"] == 3 for batch in deltas)

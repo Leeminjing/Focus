@@ -33,7 +33,9 @@ if (!process.versions.electron) {
     await run(`window.patrolFixture.lineageError=true`);await click('[data-action=refresh-map-portfolio]');
     await until('document.querySelector("[data-map-status]").textContent.includes("读取失败")');await capture("error");
     await run(`window.patrolFixture.lineageError=false;window.patrolFixture.graphConversations=true;window.patrolFixture.lineage={complete:true,roots:{root:'r1'},nodes:[{context_id:'root',revision_id:'r1',generation:1}],edges:[]};window.patrolFixture.mapConsole={loop_id:'loop-map',nodes:[{context_id:'root',title:'首条工作线',status:'active',latest_run:{run_id:'run-root',status:'running'}}]}`);
-    await click('[data-action=refresh-map-portfolio]');await until('document.querySelector(".workbench-node .is-running")');await sleep(80);
+    await click('[data-action=refresh-map-portfolio]');
+    await run(`patrolFixture.emit('loop-map','context','root',1,{title:'首条工作线',status:'active',current_revision_id:'r1'});patrolFixture.emit('loop-map','run','run-root',1,{context_id:'root',status:'running'})`);
+    await until('document.querySelector(".workbench-node .is-running")');await sleep(80);
     const centered=await run(`(()=>{const a=document.querySelector('[data-context-id=root]').getBoundingClientRect(),b=document.querySelector('.portfolio-map-scroll').getBoundingClientRect();return {dx:Math.abs(a.x+a.width/2-b.x-b.width/2),dy:Math.abs(a.y+a.height/2-b.y-b.height/2)}})()`);
     assert.ok(centered.dx<12 && centered.dy<12,JSON.stringify(centered));await capture("single");
     await click('[data-action=toggle-selection-mode]');await click('[data-context-id=root]');

@@ -28,6 +28,7 @@
     (4) 将子图 interrupt 原样传播给现有 run/resume 链路。
     (5) 子图完成后以精确耐久 checkpoint 编译批准合同与知识引用，完成子图可幂等重试交付。
     (6) 保留原输入，通过唯一 bridge 提交消息／Items；display 关系表达旧的替换式展示。
+    (7) Supervisor 完整 messages 以 snapshot 模式沿原 custom 流发布，具名角色增量透传原输出身份。
 
 示例:
     middleware = CommitmentMiddleware(model, load_context7_tools, skill_names)
@@ -286,6 +287,7 @@ class CommitmentMiddleware(AgentMiddleware):
                         "type": "commitment_messages",
                         "actor": "supervisor",
                         "stage": int(chunk.get("stage", 0)),
+                        "content_mode": "snapshot",
                         "messages": list(chunk.get("messages", [])),
                     }
                 )

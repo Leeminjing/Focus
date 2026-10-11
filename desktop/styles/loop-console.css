@@ -3,6 +3,8 @@
  * 输入为 Loop 生命周期、Live 连接状态及专用视图语义 class；输出为连接提示、宽屏左图表/右会话工作台、活动抽屉、窄屏布局、稳定滚动区和 reduced-motion 等价呈现。
  * 具体工作流为连接提示独立于 Loop 状态，命令栏与活动轨固定信息密度，图/事实/会话各自滚动，活动效果仅响应实体状态，默认点阵与 workbench 连续图共用唯一节点/边样式，宿主决定控件定位、缩放控制消费共用材质；长列表使用有界内容与原位更新降低重绘成本。
  * 示例：`.loop-console-main` 在宽屏按可调比例分栏，在 1100px 以下自动切换为单列。
+ * `.is-live-card` 承接当前 running Run 的固定 280×164 玻璃卡；正文为固定两行末端对齐窗口，短文本顶部显示，长文本自然裁去开头，换行/缩放无需逐帧测量。
+ * `.context-live-preview[data-preview-status]` 只呈现真实角色、正文与连接状态，无循环假输出或逐 token 可访问播报；历史和终态由视图移除该区域。
  */
 .loop-dashboard.console-shell {
   display: flex;
@@ -534,7 +536,7 @@
 .is-workbench .workbench-node.is-card .workbench-node-dot { left: auto; right: 14px; top: 13px; width: 6px; height: 6px; border: 0; box-shadow: none; }
 .is-workbench .workbench-node.is-selected { border-color: #9dbdd9; background: linear-gradient(140deg, #fffffff2, #deebf58c); box-shadow: inset 0 0 0 2px #ffffffc4, 0 3px 8px #455d7420; color: #315674; }
 .is-workbench .workbench-node.is-selected .context-node-top strong { font-size: 20px; }
-.is-workbench .workbench-node.is-selected .workbench-node-dot { left: -4px; top: 50%; width: 8px; height: 8px; border: 2px solid white; box-shadow: 190px 0 0 -2px #7995ad; }
+.is-workbench .workbench-node.is-selected .workbench-node-dot { left: -4px; top: 50%; width: 8px; height: 8px; border: 2px solid white; box-shadow: calc(var(--context-card-width, 188px) + 2px) 0 0 -2px #7995ad; }
 .is-workbench .workbench-node.is-point { transform: translate(-10px, -18px); width: 164px; }
 .is-workbench .workbench-node.is-point.is-label-left { transform: translate(calc(-100% + 10px), -18px); padding: 6px 24px 6px 4px; text-align: right; }
 .is-workbench .workbench-node.is-label-left .workbench-node-dot { left: auto; right: 5px; }
@@ -543,11 +545,31 @@
 .is-workbench .portfolio-map-zoom button { min-height: 32px; padding: 2px 4px; font-size: 12px; }
 .is-workbench .portfolio-map-zoom button:last-child { font-size: 10px; }
 .is-workbench .workbench-node.is-batch-selected { outline: 2px solid #6388aa; outline-offset: 3px; background: #dbeaf5b0; }
+.is-workbench .workbench-node.is-live-card { box-sizing: border-box; width: var(--context-card-width); height: 164px; min-height: 164px; padding: 13px 16px; border-radius: 22px; border-color: #ffffffed; background: linear-gradient(135deg, #ffffffb5, #e3e8eb68); box-shadow: inset 0 0 0 1px #ffffffa8, 0 6px 16px #3143551a; backdrop-filter: blur(16px) saturate(1.1); }
+.is-workbench .workbench-node.is-live-card.is-selected { border-color: #9bb8ca; box-shadow: inset 0 0 0 1px #ffffffdf, 0 6px 16px #31435522; }
+.is-workbench .workbench-node.is-live-card .context-node-eyebrow { display: flex; justify-content: space-between; height: 13px; margin-bottom: 4px; font-size: 9px; line-height: 13px; letter-spacing: 1px; }
+.context-live-state { padding-right: 11px; letter-spacing: .15px; font-size: 9px; }
+.is-workbench .workbench-node.is-live-card .context-node-top { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 26px; }
+.is-workbench .workbench-node.is-live-card .context-node-top strong { font-size: 22px; font-weight: 600; }
+.context-live-preview { display: block; margin-top: 8px; padding-top: 8px; border-top: 1px solid #a9b5be40; color: #657987; }
+.context-live-preview[hidden] { display: none; }
+.context-preview-heading { display: flex; align-items: center; gap: 6px; height: 18px; min-width: 0; }
+.portfolio-map-canvas svg.context-preview-icon { position: static; inset: auto; width: 14px; height: 14px; flex: 0 0 14px; }
+.portfolio-map-canvas .context-preview-icon path { fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+.context-preview-role { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 18px; }
+.context-preview-indicator { margin-left: auto; font-size: 10px; letter-spacing: 1px; opacity: .35; }
+[data-preview-status="streaming"] .context-preview-indicator { opacity: .8; }
+.context-preview-tail { display: flex; flex-direction: column; justify-content: flex-end; height: 40px; margin-top: 3px; overflow: hidden; font-size: 14px; line-height: 20px; }
+.context-preview-text { display: block; flex: 0 0 auto; min-height: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.context-preview-status { display: block; height: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8796a3; font-size: 8px; line-height: 11px; }
+[data-preview-status="disconnected"] .context-preview-status, [data-preview-status="unavailable"] .context-preview-status { color: #846c58; }
 @media (prefers-reduced-transparency: reduce), (forced-colors: active) {
-  .is-workbench .workbench-node.is-card { background: var(--surface-reading); }
+  .is-workbench .workbench-node.is-card { background: var(--surface-reading); backdrop-filter: none; }
 }
 @media (forced-colors: active) {
   .is-workbench .portfolio-map-canvas path:not(.edge-hit) { stroke: CanvasText; }
   .is-workbench .workbench-node { color: CanvasText; }
+  .context-live-preview, .context-preview-status, [data-preview-status="disconnected"] .context-preview-status, [data-preview-status="unavailable"] .context-preview-status { color: CanvasText; }
+  .context-live-preview { border-color: CanvasText; }
   .is-workbench .workbench-node.is-selected, .is-workbench .workbench-node.is-batch-selected { outline: 2px solid Highlight; }
 }
