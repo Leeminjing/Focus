@@ -37,6 +37,7 @@
  * 独立 Patrol 入口经系统文件夹选择器选取路径，picker 仅确认本次选择，显式进入才登记绑定；原导航偏好保存已确认工作区，重载不读取历史目录列表。
  * 全图复用共享玻璃图、精确关系与原检查器，局部更新保留视口和历史版本；批选、装备及只读检查沿既有任务身份分流，生命周期变更成功后重读关系。
  * 普通会话照旧，workspace Loop 不进入旧 Mission/介入控制台，草稿和单路 Live 由专责控制器保持；Patrol 不展示普通会话检查器，壳层刷新保留本次路径选择。
+ * 记忆库沿用同一 CRUD，区分普通记忆与演化策略编辑，策略三段正文、范围和启停独立保存。
  */
 "use strict";
 
@@ -2488,10 +2489,12 @@ function renderMemory() {
     loading: s.loading,
     error: s.error,
     query: s.query,
+    category: s.category,
     layout: s.layout,
     selectedId: s.selectedId,
     composing: s.composing,
     draft: s.draft,
+    workspaces: [...new Map([...s.memories, ...state.tasks, ...(state.patrolWorkspace ? [state.patrolWorkspace] : [])].filter(t => t.workspace_id).map(t => [t.workspace_id, { id: t.workspace_id, name: t.workspace_name || t.display_name || t.workspace_id }])).values()],
     sessions: s.sessions,
     activeSessionId: s.activeSessionId,
     enabledMessages: s.enabledMessages,
@@ -2534,7 +2537,10 @@ function restoreMemoryScroll() {
 
 function syncMemoryField(field, value) {
   const draft = { ...(state.memory.draft || {}) };
-  if (field === "title") draft.title = value;
+  if (field.startsWith("strategy:")) draft.strategy = { ...draft.strategy, [field.slice(9)]: value };
+  else if (field === "workspace_id") draft.workspace_id = value || null;
+  else if (field === "enabled") draft.enabled = Boolean(value);
+  else if (field === "title") draft.title = value;
   else if (field === "content") { draft.content = value; draft.contentDirty = true; }
   else if (field === "contentMode") { draft.contentMode = value; state.memory = { ...state.memory, draft }; render(); return; }
   state.memory = { ...state.memory, draft };
@@ -2596,6 +2602,8 @@ function openMemoryCompose(editing = false) {
   const fresh = {
     composing: true,
     draft: {
+      memory_id: existing?.memory_id, category: existing?.category || "memory",
+      strategy: existing?.strategy || {}, enabled: existing?.enabled ?? true, workspace_id: existing?.workspace_id || null,
       title: existing?.title || "",
       content: existing?.content || "",
       contentDirty: false,
@@ -2811,6 +2819,18 @@ function memorySourceForApi(source) {
   return Object.fromEntries(Object.entries(source).filter(([key]) => MEMORY_SOURCE_FIELDS.has(key)));
 }
 
+async function saveStrategy() {
+  const draft = state.memory.draft;
+  const body = { title: draft.title, strategy: draft.strategy, enabled: draft.enabled, workspace_id: draft.workspace_id || null };
+  if (!draft.memory_id) body.category = "evolution_strategy";
+  try {
+    await api(`/desktop/api/memory${draft.memory_id ? "/" + draft.memory_id : ""}`, { method: draft.memory_id ? "PUT" : "POST", body: JSON.stringify(body) });
+    state.memory = { ...state.memory, composing: false, draft: null };
+    await hydrateMemory();
+    render();
+  } catch (error) { setStatus(error.message, true); }
+}
+
 async function saveMemory() {
   const draft = state.memory.draft || {};
   const title = (draft.title || "").trim();
@@ -2832,7 +2852,8 @@ async function saveMemory() {
     source: { sources: payloadSources.length ? payloadSources : [{ type: "manual", text: content }] },
   };
   try {
-    await api("/desktop/api/memory", { method: "POST", body: JSON.stringify(body) });
+    if (draft.memory_id) { delete body.source; delete body.source_kind; }
+    await api(`/desktop/api/memory${draft.memory_id ? "/" + draft.memory_id : ""}`, { method: draft.memory_id ? "PUT" : "POST", body: JSON.stringify(body) });
     state.memory = { ...state.memory, composing: false, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], draft: null };
     await hydrateMemory();
     render();
@@ -6533,6 +6554,9 @@ async function handleDocumentClick(event) {
   if (action === "close-inspector") return closeInspector();
   if (action === "show-plugins") return openPluginsView();
   if (action === "show-memory") return openMemoryView();
+  if (action === "memory-category") { state.memory.category = button.dataset.category; return renderMemory(); }
+  if (action === "new-strategy") { openMemoryCompose(false); state.memory.draft = { ...state.memory.draft, category: "evolution_strategy", enabled: true }; renderMemory(); return; }
+  if (action === "save-strategy") return saveStrategy();
   if (action === "new-memory") return openMemoryCompose(false);
   if (action === "select-memory") { state.memory = { ...state.memory, selectedId: button.dataset.memoryId || null }; return render(); }
   if (action === "pick-session") return pickMemorySession(button.dataset.contextId);
@@ -6824,7 +6848,7 @@ document.addEventListener("input", event => {
   }
   if (event.target.matches("[data-skill-input]")) updateSkillMenu(event.target, true);
   if (event.target.matches("[data-draft-field],[data-message-field],[data-equipment],[data-permission],[data-curation-policy]")) scheduleDraftSave();
-  if (event.target.matches("[data-memory-field]")) syncMemoryField(event.target.dataset.memoryField, event.target.value);
+  if (event.target.matches("[data-memory-field]")) syncMemoryField(event.target.dataset.memoryField, event.target.type === "checkbox" ? event.target.checked : event.target.value);
   if (event.target.matches("[data-source-field]")) editSourceText(Number(event.target.dataset.sourceIndex), event.target.value);
   if (event.target.matches("[data-segment-field]")) editMemorySegment(Number(event.target.dataset.segmentIndex), event.target.dataset.segmentField, event.target.value);
   if (event.target.matches("[data-range-index]")) {

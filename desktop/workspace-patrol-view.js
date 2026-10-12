@@ -3,6 +3,7 @@
  * 具体工作流为安静态呈现标题与大输入，详情以图为主、左右读面承接原图/事实/会话；清空只作用于草稿，检查与输入身份分离。
  * 示例：host.innerHTML = FocusWorkspacePatrolView.skeleton(workspace)。
  * lineageManifest 输入 Live 投影或 console 节点摘要，输出保留真实最新 Run、roots 与历史祖先的共享图数据；来源按钮交回同一只读检查器。
+ * 文件详情为非模态 aside，普通输入附加可移除版本引用，选择文件不改变发送目标。
  */
 (function (root, factory) {
   const api = factory(root);
@@ -15,6 +16,7 @@
   function composer(workspace) {
     return `<header class="patrol-quiet-heading"><div><h1>Patrol</h1><p data-i18n="patrol.tagline">说出你的想法，剩下的交给 Patrol。</p></div><button class="quiet-button" type="button" data-patrol-clear-draft${workspace ? "" : " disabled"} data-i18n="patrol.clear_draft">清空输入</button></header><form class="glass-surface" data-patrol-composer><i class="workbench-composer-icon" aria-hidden="true"><span class="ui-icon icon-brain-circuit"></span></i><span class="workbench-composer-label">Patrol · ${escape(workspace?.display_name || "工作区")}</span>
       <textarea data-patrol-content rows="3" aria-label="向 Patrol 输入信息" data-i18n-placeholder="patrol.placeholder" placeholder="描述你的任务、问题或想法…"${workspace ? "" : " disabled"}></textarea>
+      <div data-patrol-file-refs aria-label="已引用文件版本"></div><button type="button" data-patrol-file-picker-open>＠ 引用文件版本</button><div data-patrol-file-picker hidden aria-label="选择文件版本"></div>
       <p data-patrol-error role="alert" hidden></p><div class="patrol-composer-footer"><div><button type="button" data-action="show-patrol" data-patrol-switch>▢ ${escape(workspace?.display_name || "选择工作区")}</button><select data-patrol-type aria-label="输入类型">${Object.entries(labels).map(([key, label]) => `<option value="${key}">${label}</option>`).join("")}</select><span data-patrol-target></span><button type="button" data-patrol-clear-target hidden>改为主动输入</button></div>
       <div><span data-patrol-receipt role="status"></span><button type="button" data-patrol-pending hidden>待处理</button><button type="button" data-patrol-live-retry hidden>重连工作状态</button><button type="button" data-patrol-history-open>输入记录</button><button type="button" data-patrol-details aria-expanded="false" aria-controls="patrolWorkDetails">查看工作详情 ↗</button><button type="submit" aria-label="发送给工作区 Patrol"${workspace ? "" : " disabled"}>↑</button></div></div><small data-patrol-state role="status">${workspace ? "正在读取工作状态" : "先选择工作区文件夹，确认后即可输入"}</small></form>`;
   }
@@ -26,17 +28,18 @@
         <section class="patrol-graph-card"><header><span>当前工作区 · 已提交来源</span><button data-patrol-related aria-pressed="false" disabled>仅看所选关联</button></header><div data-patrol-lineage-error role="status" hidden></div><div data-patrol-lineage>首线程尚未提交</div><p class="workbench-legend"><span>已提交来源关系</span><span>所选 Context 的直接关联</span><span>Run 状态以节点为准</span></p><p data-workbench-location role="status" hidden></p></section>
         <section class="patrol-progress-card workbench-panel glass-surface"><header><h2 data-i18n="patrol.progress">任务进度</h2><button data-patrol-progress-open aria-label="检查已提交进度">↗</button></header><small class="workbench-kicker">TASK PROGRESS</small><div data-patrol-progress>尚无已提交进度</div></section>
         <section class="patrol-observation-card workbench-panel glass-surface"><header><h2 data-i18n="patrol.observation">本轮观察</h2></header><div data-patrol-observation>尚未冻结</div><button data-patrol-observation-open disabled>检查本轮冻结依据 →</button><div data-patrol-rounds></div></section>
-        <section class="patrol-facts-card workbench-panel glass-surface"><header><h2>LoopFact</h2><span class="workbench-fact-label">事实流</span></header><small class="workbench-kicker" data-workbench-round>当前 Live 事实</small><div class="workbench-fact-stream" data-patrol-facts></div><footer><small>当前 Live 窗口</small><button data-patrol-facts-open>全部 ↗</button></footer></section>
+        <section class="patrol-facts-card workbench-panel glass-surface"><header><h2>LoopFact</h2><span class="workbench-fact-label">事实流</span></header><small class="workbench-kicker" data-workbench-round>当前 Live 事实</small><div class="workbench-fact-stream" data-patrol-facts></div><footer><button data-patrol-new-facts hidden>查看新事实 ↓</button><small>当前 Live 窗口</small><button data-patrol-facts-open>全部 ↗</button></footer></section>
         <aside data-patrol-context class="patrol-selected-card workbench-panel glass-surface" aria-label="只读 Context 检查"><div data-patrol-context-content>${contextEmpty()}</div></aside>
       </div></div>
       ${composer(workspace)}
+      <aside data-patrol-file-detail hidden class="patrol-file-detail glass-surface" aria-label="文件版本详情"><header><h2>文件版本</h2><button type="button" data-patrol-file-close aria-label="关闭文件详情">×</button></header><div data-patrol-file-body></div></aside>
       <dialog data-patrol-dialog class="patrol-dialog glass-surface" aria-labelledby="patrolDialogTitle"><header><h2 id="patrolDialogTitle"></h2><button type="button" data-patrol-dialog-close aria-label="关闭详情">×</button></header><div data-patrol-dialog-body></div></dialog>
       <section data-patrol-requests hidden aria-label="待处理工作"></section><section data-patrol-input-history hidden><p>已受理不代表目标已生效，变化以已提交进度为准。</p><div data-patrol-history></div><button data-patrol-fold>展开更早记录</button><button data-patrol-older hidden>加载更早记录</button></section></section>`;
   }
 
   function history(model) {
     const status = { accepted: "已受理", sending: "发送中", failed: "发送失败" };
-    return model.visible.map(row => `<article data-submission-id="${escape(row.submission_id)}"><header><strong>${labels[row.input_type]}</strong><span>${status[row.status]}</span>${row.request_id ? "<span>指定请求的回答</span>" : ""}</header><pre>${escape(row.content)}</pre>${row.status === "failed" ? `<p role="alert">${escape(row.error)}</p><button data-patrol-retry="${escape(row.submission_id)}">重试</button>` : ""}</article>`).join("") || "尚无用户输入";
+    return model.visible.map(row => `<article data-submission-id="${escape(row.submission_id)}"><header><strong>${labels[row.input_type]}</strong><span>${status[row.status]}</span>${row.request_id ? "<span>指定请求的回答</span>" : ""}</header><pre>${escape(row.content)}</pre>${row.status === "failed" ? `<p role="alert">${escape(row.error)}</p><button data-patrol-retry="${escape(row.submission_id)}">重试</button>${row.file_refs?.length ? `<button data-patrol-edit-failed="${escape(row.submission_id)}"${model.draft.content || model.draft.file_refs?.length ? " disabled title=\"先处理当前草稿\"" : ""}>编辑后重发</button>` : ""}` : ""}</article>`).join("") || "尚无用户输入";
   }
   function progress(entity, full = false, filter = "all") {
     const state = entity?.state || entity;

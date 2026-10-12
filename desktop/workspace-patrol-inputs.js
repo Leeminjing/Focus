@@ -2,6 +2,7 @@
  * 输入为四类草稿、指定请求、历史页及耐久回执；输出为独立发送状态和合计最近三条记录。
  * 具体工作流为提交时深复制并冻结正文/类型/目标与可见因果线索，立即释放该草稿，回调仅修改对应记录；重试沿用身份与原时点，
  * 新草稿、折叠和历史分页互不覆盖。示例：const row = store.submit(); await send(row.request)。
+ * file_refs 与正文同时深冻结；校验拒绝只恢复未被后续编辑替换的草稿，editFailed 允许空草稿重新编辑，重试保留原版本。
  */
 (function (root, factory) {
   const api = factory();
@@ -13,9 +14,10 @@
   const frozenCopy = value => value && typeof value === "object"
     ? Object.freeze(Array.isArray(value) ? value.map(frozenCopy) : Object.fromEntries(Object.entries(value).map(([key, item]) => [key, frozenCopy(item)]))) : value;
   function create(identity = () => crypto.randomUUID(), accessMode = "workspace-write") {
-    let draft = { content: "", input_type: "information", request_id: null, request_revision: null };
+    let draft = { content: "", input_type: "information", request_id: null, request_revision: null, file_refs: [] };
     let expanded = false;
     let order = 0;
+    let draftRevision = 0;
     let cursor = null;
     const rows = new Map();
     const listeners = new Set();
@@ -28,20 +30,35 @@
     return Object.freeze({
       get,
       subscribe(listener) { listeners.add(listener); listener(get()); return () => listeners.delete(listener); },
-      edit(patch) { draft = { ...draft, ...patch }; publish(); },
+      edit(patch) { draftRevision++; draft = { ...draft, ...patch, ...(patch.file_refs ? { file_refs: frozenCopy(patch.file_refs) } : {}) }; publish(); },
       expand(value) { expanded = value; publish(); },
       submit(visibleContext = null) {
         if (!draft.content.trim()) throw new Error("请输入非空信息");
         const request = frozenCopy({ submission_id: identity(), access_mode: accessMode, ...draft, ...(visibleContext ? { visible_context: visibleContext } : {}) });
-        const row = { request, ...request, status: "sending", error: null, order: ++order, created_at: new Date().toISOString() };
+        const row = { request, ...request, status: "sending", error: null, order: ++order, draftRevision: ++draftRevision, created_at: new Date().toISOString() };
         rows.set(request.submission_id, row);
-        draft = { ...draft, content: "", request_id: null, request_revision: null };
+        draft = { ...draft, content: "", request_id: null, request_revision: null, file_refs: [] };
         publish();
         return row;
       },
       retry(id) { const row = rows.get(id); if (!row || row.status !== "failed") return null; row.status = "sending"; row.error = null; publish(); return row; },
       accepted(id, receipt) { const row = rows.get(id); if (!row) return; Object.assign(row, receipt, { status: "accepted", error: null }); publish(); },
-      failed(id, error) { const row = rows.get(id); if (!row) return; row.status = "failed"; row.error = String(error.message || error); publish(); },
+      failed(id, error) {
+        const row = rows.get(id); if (!row) return;
+        row.status = "failed"; row.error = String(error.message || error);
+        if (row.file_refs?.length && [403, 404, 409, 422].includes(error.status) && row.draftRevision === draftRevision) {
+          draft = { ...draft, content: row.content, file_refs: row.file_refs, input_type: row.input_type, request_id: row.request_id, request_revision: row.request_revision };
+          draftRevision++;
+        }
+        publish();
+      },
+      editFailed(id) {
+        const row = rows.get(id);
+        if (!row || row.status !== "failed" || draft.content || draft.file_refs.length) return;
+        draftRevision++;
+        draft = { ...draft, content: row.content, file_refs: row.file_refs || [], input_type: row.input_type, request_id: row.request_id, request_revision: row.request_revision };
+        publish();
+      },
       history(page, older = false) {
         for (const item of page.items) {
           const id = item.submission_id;

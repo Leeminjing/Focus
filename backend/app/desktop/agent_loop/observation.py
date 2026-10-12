@@ -8,6 +8,7 @@ r"""本文件对外提供 LoopObservationBuilder 与 observation_hash。
 具体完成资格目录也保持完整，缺省字段从历史哈希排除，与新验证请求准入分开。
 工作区原始输入、Mission 和待补充请求保持精确冻结，不按展示长度截断；历史缺省模式和空请求从原 hash 字段集排除。
 同轮新版本保留输入前快照片段与完整因果清单；历史版本没有新增字段时维持原 hash，完整身份不能被预览截断。
+evolution_strategies 也绕过预览截断，历史空集合不改变已有哈希。
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ class LoopObservationBuilder:
         self._max_text = max_text
 
     def build(self, **facts: Any) -> LoopObservationEnvelope:
-        exact = {key: value for key, value in facts.items() if key in {"grant", "previous_task_progress", "task_delta", "committed_lineage", "decision_inputs_ref", "portfolio_frontier", "base_entity_revisions", "worker_results", "user_intents", "completion_admission", "completion_eligibility", "mission", "information_requests", "intervention", "pre_input_state", "causal_chain"}}
+        exact = {key: value for key, value in facts.items() if key in {"grant", "previous_task_progress", "task_delta", "committed_lineage", "decision_inputs_ref", "portfolio_frontier", "base_entity_revisions", "worker_results", "user_intents", "evolution_strategies", "completion_admission", "completion_eligibility", "mission", "information_requests", "intervention", "pre_input_state", "causal_chain"}}
         sanitized = {**self._sanitize({key: value for key, value in facts.items() if key not in exact}), **exact}
         return LoopObservationEnvelope.model_validate(sanitized)
 
@@ -45,7 +46,7 @@ class LoopObservationBuilder:
 
 def observation_hash(envelope: LoopObservationEnvelope) -> str:
     document = envelope.model_dump(mode="json")
-    for key in ("observation_id", "generation", "intervention", "pre_input_state", "pre_input_hash", "causal_chain"):
+    for key in ("observation_id", "generation", "intervention", "pre_input_state", "pre_input_hash", "causal_chain", "evolution_strategies"):
         if not document.get(key):
             document.pop(key, None)
     if document.get("interaction_mode") == "context_loop":

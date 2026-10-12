@@ -5,6 +5,7 @@
  * 示例：`FocusLoopApi.create(runtime)`。
  * 直接消息仅发送原文和稳定请求身份，服务端沿用目标 Context 装备，不读取 UI 缓存补默认值。
  * 工作区统一受理、完整用户历史、显式后继、已提交 Lineage 与精确 Observation 分页使用相同会话头与 decoder；当前进度由 Live 投影提供，历史进度按精确身份读取，事实验证状态与业务结果分别查询。
+ * factDetail 的可选 revision 请求固定文件历史版本，默认仍返回当前事实详情。
  */
 (function (root, factory) {
   const responseApi = root?.FocusHttpResponse || (typeof require === "function" ? require("./http-response.js") : null);
@@ -136,7 +137,7 @@
       },
       taskProgress: (loopId, progressId, signal) => request(`/${encodeURIComponent(loopId)}/task-progress${progressId ? `?progress_id=${encodeURIComponent(progressId)}` : ""}`, { signal }),
       retryTaskProgress: (loopId, observationId) => request(`/${encodeURIComponent(loopId)}/task-progress/${encodeURIComponent(observationId)}/retry`, { method: "POST" }),
-      factDetail: (loopId, factId, signal) => request(`/${encodeURIComponent(loopId)}/facts/${encodeURIComponent(factId)}`, { signal }),
+      factDetail: (loopId, factId, signal, revision) => request(`/${encodeURIComponent(loopId)}/facts/${encodeURIComponent(factId)}${revision ? `?revision=${encodeURIComponent(revision)}` : ""}`, { signal }),
       liveSnapshot: (loopId, signal) => request(`/${encodeURIComponent(loopId)}/live`, { signal }),
       liveStream,
       async directMessage(contextId, content, requestId = crypto.randomUUID()) {

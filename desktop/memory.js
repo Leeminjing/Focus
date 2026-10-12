@@ -1,6 +1,7 @@
 /*
  * 本文件对外提供记忆库的纯渲染器。输入为记忆库列表与整理态状态，
  * 输出为可检索记忆卡片/列表、区分加载失败/空库/零匹配及三栏整理器 HTML；工作流在完整已加载列表检索，保留创建/编辑/来源/合并/分段，不改变持久化语义。示例：FocusMemoryView.render(memories, { query: "本地" })。
+ * 策略分类展示三段正文并提供范围/启停编辑，普通记忆继续使用原来源整理器。
  */
 (function (root, factory) {
   const api = factory();
@@ -60,22 +61,24 @@
 
   // === 浏览态：左记忆列表，右单条详情 ===
 
+  const strategyText = memory => memory.category === "evolution_strategy" ? Object.values(memory.strategy || {}).join("\n") : memory.content;
+
   function card(memory, selected) {
-    const kind = KIND_LABELS[memory.source_kind] || memory.source_kind || "手动输入";
+    const kind = memory.category === "evolution_strategy" ? `演化策略 · ${memory.enabled ? "启用" : "停用"}` : KIND_LABELS[memory.source_kind] || memory.source_kind || "手动输入";
     return `<button type="button" class="memory-card${selected ? " is-selected" : ""}" data-action="select-memory" data-memory-id="${escapeHtml(memory.memory_id)}" aria-pressed="${selected}">
       <span class="memory-card-heading"><strong>${escapeHtml(memory.title)}</strong><span class="ui-badge is-neutral">${escapeHtml(kind)}</span></span>
-      <span class="memory-card-content">${escapeHtml(memory.content)}</span>
+      <span class="memory-card-content">${escapeHtml(strategyText(memory))}</span>
     </button>`;
   }
 
   function detail(memory) {
-    const kind = KIND_LABELS[memory.source_kind] || memory.source_kind || "手动输入";
+    const kind = memory.category === "evolution_strategy" ? `演化策略 · ${memory.enabled ? "启用" : "停用"}` : KIND_LABELS[memory.source_kind] || memory.source_kind || "手动输入";
     return `<section class="memory-detail-card">
       <header class="memory-detail-heading">
         <div><span class="workspace-kicker">MEMORY</span><h2>${escapeHtml(memory.title)}</h2><p class="muted">${escapeHtml(kind)} · ${escapeHtml((memory.updated_at || "").slice(0, 10)) || ""}</p></div>
         <span class="ui-badge is-neutral">${escapeHtml(kind)}</span>
       </header>
-      <pre class="memory-detail-content">${escapeHtml(memory.content)}</pre>
+      <pre class="memory-detail-content">${escapeHtml(strategyText(memory))}</pre>
       <div class="memory-detail-actions">
         <button class="text-button" type="button" data-action="edit-memory" data-memory-id="${escapeHtml(memory.memory_id)}">编辑</button>
         <button class="text-button danger" type="button" data-action="delete-memory" data-memory-id="${escapeHtml(memory.memory_id)}">删除</button>
@@ -85,7 +88,7 @@
 
   function workbench(memories, options) {
     const query = String(options.query || "").trim().toLowerCase();
-    const all = (memories || []).filter(memory => !query || `${memory.title} ${memory.content}`.toLowerCase().includes(query));
+    const all = (memories || []).filter(memory => (!options.category || (memory.category || "memory") === options.category) && (!query || `${memory.title} ${strategyText(memory)}`.toLowerCase().includes(query)));
     const selected = all.find(m => m.memory_id === options.selectedId) || null;
     if (!all.length) return `<section class="memory-empty"><span class="ui-icon icon-file-text" aria-hidden="true"></span><h2 data-i18n="${memories?.length ? "memory.no_matches" : "memory.empty_title"}">${memories?.length ? "没有匹配的记忆" : "还没有任何记忆"}</h2><p data-i18n="${memories?.length ? "memory.no_matches_help" : "memory.empty_help"}">${memories?.length ? "换一个关键词，或清空搜索查看全部记忆。" : "把重要的想法、经验和资料记录在这里，在需要时重新找到。"}</p><button class="primary" data-action="new-memory" data-i18n="memory.create">新建记忆</button></section>`;
     return `<div class="memory-workbench">
@@ -231,15 +234,28 @@
     </div>`;
   }
 
+  function strategyEditor(draft, workspaces) {
+    const fields = [["applicability", "适用场景"], ["evolution", "演化过程"], ["inheritance", "历史继承"]];
+    return `<form class="memory-detail-card" data-strategy-form>
+      <h2>${draft.memory_id ? "编辑" : "新建"}演化策略</h2>
+      <label>标题<input data-memory-field="title" value="${escapeHtml(draft.title)}"></label>
+      ${fields.map(([key,label]) => `<label>${label}<textarea rows="4" data-memory-field="strategy:${key}">${escapeHtml(draft.strategy?.[key] || "")}</textarea></label>`).join("")}
+      <label>生效范围<select data-memory-field="workspace_id"><option value="">全局</option>${workspaces.map(w => `<option value="${escapeHtml(w.id)}"${w.id === draft.workspace_id ? " selected" : ""}>${escapeHtml(w.name)}</option>`).join("")}</select></label>
+      <label><input type="checkbox" data-memory-field="enabled"${draft.enabled !== false ? " checked" : ""}>启用</label>
+      <button type="button" class="primary" data-action="save-strategy">保存策略</button>
+      <button type="button" data-action="cancel-compose">取消</button></form>`;
+  }
+
   function render(memories, options = {}) {
     return `<section class="memory-view">
-      <header class="memory-page-heading"><div><h1>记忆库</h1><p>让重要的决定留下来，让重复的解释少一点。</p></div><button class="primary" data-action="new-memory" data-i18n="memory.create">新建记忆</button></header>
+      ${options.composing ? "" : `<nav aria-label="记忆分类">${[["", "全部"], ["memory", "普通记忆"], ["evolution_strategy", "演化策略"]].map(([category, label]) => `<button data-action="memory-category" data-category="${category}" aria-pressed="${(options.category || "") === category}">${label}</button>`).join("")}</nav>`}
+      <header class="memory-page-heading"><div><h1>记忆库</h1><p>让重要的决定留下来，让重复的解释少一点。</p></div><span><button data-action="new-strategy">新建演化策略</button><button class="primary" data-action="new-memory" data-i18n="memory.create">新建记忆</button></span></header>
       ${options.composing ? "" : `<div class="library-toolbar"><label class="page-search">检索已加载记忆 <input type="search" data-page-search="memory" value="${escapeHtml(options.query || "")}" placeholder="搜索决定与约定…"></label><div class="library-layout" role="group" aria-label="记忆布局" data-i18n-aria-label="view.layout">${["cards", "list"].map(layout => `<button data-action="set-library-layout" data-library="memory" data-layout="${layout}" aria-pressed="${(options.layout || "cards") === layout}" data-i18n="view.${layout}">${layout === "cards" ? "卡片" : "列表"}</button>`).join("")}</div></div>`}
       ${options.loading ? '<p role="status">正在读取记忆…</p>' : ""}
       ${options.error ? `<p role="alert">读取失败：${escapeHtml(options.error)} <button data-action="refresh-memory">重试</button></p>` : ""}
-      ${options.composing ? compose(options) : ((options.loading || options.error) && !memories?.length ? "" : workbench(memories, options))}
+      ${options.composing ? (options.draft?.category === "evolution_strategy" ? strategyEditor(options.draft, options.workspaces || []) : compose(options)) : ((options.loading || options.error) && !memories?.length ? "" : workbench(memories, options))}
     </section>`;
   }
 
-  return { render, messageText, messagePreview, roleLabel, isDialogueRole };
+  return { render, strategyText, messageText, messagePreview, roleLabel, isDialogueRole };
 });

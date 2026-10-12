@@ -4,6 +4,7 @@ r"""本文件对外提供 RunOutboxRepository 与可重启 RunOutboxConsumer。
 首次消费布尔值。具体工作流为 finalizer 同事务 enqueue，consumer 启动先释放遗留 claim，再直接
 扫描数据库并以 event row lock + delivery receipt 去重处理；进程内 wake 只降低延迟而不承载事实。
 示例：`count = await consumer.drain("loop-coordinator", handler)`。
+ArtifactVersion 使用同一 outbox/receipt 按 result_key 发布运行中文件来源；MainRunSettled 继续按 Run 唯一。
 """
 
 from __future__ import annotations
@@ -25,6 +26,16 @@ RunEventHandler = Callable[[RunOutboxEvent, AsyncSession], Awaitable[None] | Non
 
 
 class RunOutboxRepository:
+    async def enqueue_artifact(self, session, run_id, result_key):
+        event_id = self.event_id(run_id, f"ArtifactVersion:{result_key}")
+        event = await session.get(RunOutboxEvent, event_id)
+        if event is None:
+            event = RunOutboxEvent(event_id=event_id, run_id=run_id,
+                event_type="ArtifactVersion", payload={"result_key": result_key}, status="pending")
+            session.add(event)
+            await session.flush()
+        return event
+
     async def enqueue_settled(
         self,
         session: AsyncSession,

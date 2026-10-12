@@ -4,6 +4,7 @@
 具体工作流为稳定来源 claim、执行和结果保存；Windows Shell 在 claim 同事务登记待清理证据，结果仅凭明确进程清理回执解除结算屏障；缺少可靠结果时阻止重复执行，不替代 Security 的实时裁决。
 delegated execution 使用其独立子执行 checkpoint，普通子 Agent 可继承 ledger 端口保护自己的工具调用。
 示例：make_lead_agent 默认装配此 middleware；Desktop 通过 security.extras 提供 tool_execution_ledger。
+文件采集端口由 ledger 注入本次 Security extras，缓存结果直接返回，采集结果只随本次 complete 提交。
 """
 
 import os
@@ -38,9 +39,10 @@ class ToolExecutionMiddleware(AgentMiddleware):
         if existing is not None:
             return existing
         receipt = {"process_cleanup": "not_started"} if options else None
-        if receipt is not None:
+        capture = await ledger.prepare_file_capture(routing.run_id) if hasattr(ledger, "prepare_file_capture") else None
+        if receipt is not None or capture is not None:
             security = security_context_of(context)
-            security = replace(security, extras={**security.extras, "shell_cleanup_receipt": receipt})
+            security = replace(security, extras={**security.extras, "shell_cleanup_receipt": receipt, "file_version_capture": capture})
             request = request.override(runtime=replace(request.runtime,
                 context={**context, **security.to_runtime_context()}))
         try:
@@ -56,5 +58,7 @@ class ToolExecutionMiddleware(AgentMiddleware):
         if result.id is None:
             result = result.model_copy(update={"id": f"tool-result:{identity}"})
         completion = {"process_cleanup": receipt["process_cleanup"]} if receipt is not None else {}
+        if capture is not None:
+            completion["file_capture"] = capture
         await ledger.complete(identity, result, **completion)
         return result

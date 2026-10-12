@@ -3,6 +3,7 @@
  * 具体工作流为先读取绑定/历史再订阅已有单路 Live，依据投影结构共享只更新变化区域，保留 composer、进度和未变等待表单 DOM，异步响应按工作区代际隔离；
  * 主输入走 workspace intake，固定当时可见的 Live 游标、Fact revision 与独立 Run 有界片段；旧请求重试复用原文和证据。Observation 按精确版本检视，迟到分页不得进入另一版本。
  * 显隐复用 SurfaceTransition 保留输入节点，运行预览复用共享 Run 观察器，折叠/离开释放订阅；原生 dialog 管理焦点，AbortController 清理监听与读请求。示例：await controller.mount(host, workspace)。
+ * 文件详情/候选响应绑定工作区与请求代际；实时文件事实保留历史滚动位置，详情与输入节点独立。
  */
 (function (root, factory) {
   const api = factory(root);
@@ -46,6 +47,8 @@
     let visibleFact = null;
     let factOptions = { kind: "", status: "", outcomeStatus: "", contextId: "" };
     let factVersion = 0;
+    let fileVersion = 0;
+    let fileCandidates = [];
     let progressInspection = null;
     let progressVersion = 0;
     let progressFilter = "all";
@@ -105,6 +108,31 @@
       else if (projection) { patchGraph(); void refreshLineage(projection); void refreshObservation(); }
     }
     function closeInspection() { inspector?.close(); }
+    async function openFilePicker() {
+      if (!loopId) return;
+      const owner = token, version = ++fileVersion;
+      const picker = host.querySelector("[data-patrol-file-picker]");
+      picker.hidden = false;
+      picker.textContent = "正在读取文件版本…";
+      const page = await api.facts(loopId, { kind: "artifact", limit: 100, signal: lifetime.signal });
+      if (owner !== token || version !== fileVersion) return;
+      fileCandidates = page.facts || [];
+      renderFilePicker();
+    }
+    function renderFilePicker() {
+      const query = inputs.get().draft.content.match(/(?:^|\s)@([^@\n]*)$/)?.[1]?.toLowerCase() || "";
+      const candidates = fileCandidates.map(root.FocusLoopFactsView.fileReference).filter(file => file && file.path.toLowerCase().includes(query));
+      host.querySelector("[data-patrol-file-picker]").innerHTML = candidates.map(file => `<button type="button" data-patrol-file-add="${view.escape(JSON.stringify(root.FocusLoopFactsView.inputFileReference(file)))}">${view.escape(file.path)} · ${view.escape((file.sha256 || file.result_key).slice(0, 8))}</button>`).join("") || "没有可引用的文件版本";
+    }
+    function addFileReference(file) {
+      const draft = inputs.get().draft;
+      const refs = [...(draft.file_refs || []).filter(item => item.result_key !== file.result_key), file];
+      if (refs.length > 32) throw new Error("一次输入最多引用 32 个文件版本");
+      const pickerOpen = !host.querySelector("[data-patrol-file-picker]").hidden;
+      inputs.edit({ file_refs: refs, content: pickerOpen ? draft.content.replace(/(^|\s)@[^@\n]*$/, "$1") : draft.content });
+      host.querySelector("[data-patrol-file-picker]").hidden = true;
+      host.querySelector("[data-patrol-content]").focus({ preventScroll: true });
+    }
     const manifest = () => lineageSnapshot ? view.lineageManifest(lineageSnapshot, projection) : { nodes: [], edges: [] };
     function showPanel(name) {
       host.querySelector(".workspace-patrol").dataset.workbenchPanel = name;
@@ -277,6 +305,7 @@
       host.querySelector("[data-patrol-history]").innerHTML = view.history(model);
       const content = host.querySelector("[data-patrol-content]");
       if (content.value !== model.draft.content) content.value = model.draft.content;
+      host.querySelector("[data-patrol-file-refs]").innerHTML = (model.draft.file_refs || []).map(file => `<span>${view.escape(file.path)} · ${view.escape((file.sha256 || file.result_key).slice(0, 8))}<button type="button" data-patrol-file-remove="${view.escape(file.result_key)}" aria-label="移除文件引用">×</button></span>`).join("");
       host.querySelector("[data-patrol-type]").value = model.draft.input_type;
       host.querySelector("[data-patrol-target]").textContent = model.draft.request_id ? `回答请求 ${model.draft.request_id} · 版本 ${model.draft.request_revision ?? "未知"}` : "";
       host.querySelector("[data-patrol-clear-target]").hidden = !model.draft.request_id;
@@ -284,7 +313,18 @@
       host.querySelector("[data-patrol-older]").hidden = !model.expanded || !model.cursor;
       const latest = model.visible[0];
       host.querySelector("[data-patrol-receipt]").textContent = latest ? ({ accepted: "已受理 · 变化以提交进度为准", sending: "发送中", failed: "发送失败 · 可在输入记录重试" }[latest.status] || "") : "";
+      patchFileFacts();
     };
+    function patchFileFacts(announce = false) {
+      if (!host || !projection) return;
+      const stream = host.querySelector("[data-patrol-facts]"), top = stream.scrollTop;
+      const atEnd = stream.scrollHeight - top - stream.clientHeight < 24;
+      const model = inputs.get(), refs = [...model.draft.file_refs, ...model.rows.filter(row => row.status === "accepted").flatMap(row => row.file_refs || [])];
+      const facts = root.FocusLoopFactsView.markFileReferences(root.FocusLoopLiveSelectors.selectFacts(projection), refs);
+      root.FocusLoopFactsView.reconcileTimeline(stream, facts);
+      stream.scrollTop = announce && atEnd ? stream.scrollHeight : top;
+      if (announce) host.querySelector("[data-patrol-new-facts]").hidden = atEnd;
+    }
     async function refreshLineage(projection) {
       const revisions = Object.values(projection.contexts).filter(item => item.state.current_revision_id).map(item => [item.entity_id, item.state.current_revision_id]).sort((a, b) => a[0].localeCompare(b[0]));
       const key = JSON.stringify([projection.loop?.state?.current_portfolio_revision_id, projection.portfolio, projection.lineage, revisions]);
@@ -348,7 +388,9 @@
       pendingButton.hidden = !pending;
       const pendingText = `${pending} 项待处理`;
       if (pendingButton.textContent !== pendingText) pendingButton.textContent = pendingText;
-      if (previous?.facts !== projection.facts) root.FocusLoopFactsView?.reconcileTimeline(host.querySelector("[data-patrol-facts]"), root.FocusLoopLiveSelectors.selectFacts(projection));
+      if (previous?.facts !== projection.facts) {
+        patchFileFacts(true);
+      }
       if (detailsOpen) {
         if (["loop", "portfolio", "lineage", "contexts"].some(key => previous?.[key] !== projection[key])) void refreshLineage(projection);
         if (previous?.round !== projection.round) void refreshObservation(true);
@@ -397,7 +439,13 @@
       button.focus({ preventScroll: true });
       const clickOwner = token;
       try {
-        if (button.hasAttribute("data-patrol-details")) toggleDetails();
+        if (button.hasAttribute("data-patrol-file-picker-open")) await openFilePicker();
+        else if (button.dataset.patrolFileAdd) addFileReference(JSON.parse(button.dataset.patrolFileAdd));
+        else if (button.dataset.patrolFileRemove) inputs.edit({ file_refs: inputs.get().draft.file_refs.filter(item => item.result_key !== button.dataset.patrolFileRemove) });
+        else if (button.dataset.patrolEditFailed) { inputs.editFailed(button.dataset.patrolEditFailed); await closeDialog(); host.querySelector("[data-patrol-content]").focus(); }
+        else if (button.hasAttribute("data-patrol-file-close")) { fileVersion++; host.querySelector("[data-patrol-file-detail]").hidden = true; }
+        else if (button.hasAttribute("data-patrol-new-facts")) { const stream = host.querySelector("[data-patrol-facts]"); stream.scrollTop = stream.scrollHeight; button.hidden = true; }
+        else if (button.hasAttribute("data-patrol-details")) toggleDetails();
         else if (button.dataset.workbenchShow) showPanel(button.dataset.workbenchShow);
         else if (button.hasAttribute("data-patrol-related")) { relatedOnly = !relatedOnly; patchGraph(); }
         else if (button.hasAttribute("data-patrol-progress-locate")) await locateProgress(JSON.parse(button.dataset.patrolProgressLocate), button);
@@ -439,7 +487,7 @@
         else if (button.dataset.patrolRetry) { const row = inputs.retry(button.dataset.patrolRetry); if (row) void send(row); }
         else if (button.dataset.patrolAnswer) { inputs.edit({ request_id: button.dataset.patrolAnswer, request_revision: Number(button.dataset.requestRevision) }); const owner = token; if (await closeDialog() && owner === token) host.querySelector("textarea").focus(); }
         else if (button.hasAttribute("data-patrol-clear-target")) inputs.edit({ request_id: null, request_revision: null });
-        else if (button.hasAttribute("data-patrol-clear-draft")) { inputs.edit({ content: "" }); host.querySelector("[data-patrol-content]").focus(); }
+        else if (button.hasAttribute("data-patrol-clear-draft")) { inputs.edit({ content: "", file_refs: [] }); host.querySelector("[data-patrol-content]").focus(); }
         else if (button.dataset.patrolControl && loopId) {
           if (button.getAttribute("aria-busy") === "true") return;
           button.setAttribute("aria-busy", "true");
@@ -464,9 +512,17 @@
         }
         else if (button.dataset.contextId) await inspectContext(button.dataset.contextId, button, button.dataset.revisionId);
         else if (button.dataset.factId) {
-          const owner = token;
+          const owner = token, version = ++fileVersion;
           const detail = await api.factDetail(loopId, button.dataset.factId, lifetime.signal);
-          if (owner === token) { visibleFact = detail.fact; showDialog("fact", "事实与来源", root.FocusLoopFactsView.renderDetail(detail)); }
+          if (owner === token && version === fileVersion) {
+            visibleFact = detail.fact;
+            if (detail.file) {
+              if (host.querySelector("[data-patrol-dialog]").open) await closeDialog();
+              if (owner !== token || version !== fileVersion) return;
+              host.querySelector("[data-patrol-file-body]").innerHTML = root.FocusLoopFactsView.renderFile(detail.file);
+              host.querySelector("[data-patrol-file-detail]").hidden = false;
+            } else showDialog("fact", "事实与来源", root.FocusLoopFactsView.renderDetail(detail));
+          }
         }
       } catch (failure) {
         if (clickOwner !== token) return;
@@ -485,12 +541,26 @@
       const options = { signal: lifetime.signal };
       host.querySelector("[data-patrol-composer]").addEventListener("submit", event => { event.preventDefault(); try { error(null); void send(inputs.submit(visibleContext())); } catch (failure) { error(failure); } }, options);
       const content = host.querySelector("[data-patrol-content]");
-      content.addEventListener("input", event => inputs.edit({ content: event.target.value }), options);
+      content.addEventListener("input", event => {
+        inputs.edit({ content: event.target.value });
+        if (event.isComposing) return;
+        if (/(?:^|\s)@[^@\n]*$/.test(event.target.value)) {
+          if (host.querySelector("[data-patrol-file-picker]").hidden) void openFilePicker().catch(error);
+          else renderFilePicker();
+        } else host.querySelector("[data-patrol-file-picker]").hidden = true;
+      }, options);
       content.addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); content.form.requestSubmit(); } }, options);
       host.querySelector("[data-patrol-type]").addEventListener("change", event => inputs.edit({ input_type: event.target.value }), options);
       host.addEventListener("click", click, options);
       host.addEventListener("portfolio-clear-selection", () => { highlightIds = []; closeInspection(); }, options);
-      host.addEventListener("keydown", event => { if (event.key === "Escape" && !host.querySelector("[data-patrol-dialog]").open) closeInspection(); }, options);
+      host.addEventListener("keydown", event => {
+        if (event.key !== "Escape" || event.isComposing) return;
+        const file = host.querySelector("[data-patrol-file-detail]"), picker = host.querySelector("[data-patrol-file-picker]");
+        if (!file.hidden || !picker.hidden) {
+          fileVersion++; file.hidden = true; picker.hidden = true;
+          content.focus({ preventScroll: true }); event.preventDefault();
+        } else if (!host.querySelector("[data-patrol-dialog]").open) closeInspection();
+      }, options);
       host.addEventListener("change", event => {
         const key = event.target.dataset.patrolFactFilter;
         if (key) { factOptions[key] = event.target.value; void loadFacts().catch(error); }
@@ -539,7 +609,8 @@
       previews?.stop();
       root.document.body.classList.remove("has-patrol-workbench");
       relatedOnly = false; highlightIds = [];
-      token++; lineageToken++; historyToken++; observationVersion++; factVersion++; progressVersion++; inspectionVersion++;
+      token++; lineageToken++; historyToken++; observationVersion++; factVersion++; fileVersion++; progressVersion++; inspectionVersion++;
+      fileCandidates = [];
       lifetime?.abort(); lifetime = null;
       if (host) for (const element of host.querySelectorAll("[data-surface-managed], [data-patrol-composer]")) root.FocusSurfaceTransition.finish(element);
       host?.querySelector("[data-patrol-dialog]")?.close();

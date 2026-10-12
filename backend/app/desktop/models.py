@@ -14,6 +14,7 @@ DesktopRun.parent_run_id 保存可信执行父链；ModelAttemptAudit.usage_acco
 
 示例：request = MainRunCreate(message="比较", material_inputs=[{"material_id": "m1", "note": "看第三章"}])。
 PatrolDraft 保存宽容 V2 文档、并发版本与冻结来源；PatrolDeploymentDefinition 是数据库不可变审计记录。定义与 Run/dispatch 同事务创建，Run 删除后其审计身份仍可定位，不以外键阻断既有删除流程。
+Memory 在既有表区分类别，三段 strategy 是演化策略单一正文；enabled/workspace_id 控制下一次 Observation 的适用范围。
 """
 
 from datetime import datetime
@@ -507,6 +508,10 @@ class Memory(Base):
     memory_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(String(24), nullable=False, default="memory", server_default="memory")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    workspace_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("desktop_workspaces.workspace_id", ondelete="CASCADE"), nullable=True)
+    strategy: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     content_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="complete")
 

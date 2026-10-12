@@ -50,6 +50,7 @@ _governed_context 由执行身份档案派生受治理上下文（工作根、�
 focus.security 承担（见 openspec add-local-access-policy）。
 
 会话 standard Patrol 的文档、来源、编译、预览与分支生命周期委托 session_patrol；本组合根仅注入 canonical Reader、统一 Agent 工厂观察端口和现有 dispatch/ledger。Context Curator 和 Loop Patrol 保持各自权威流程。
+组合根向执行账本注入当前配置秘密值提供器，文件快照持久化前脱敏。
 """
 
 from __future__ import annotations
@@ -1902,6 +1903,7 @@ class DesktopService:
     def _round_mode_resolver(self, run_id: str):
         async def current() -> AccessMode:
             from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
+            from backend.app.desktop.secret_redaction import configured_secret_values
             async with self.session_factory() as session:
                 run = await session.get(DesktopRun, run_id)
                 if run is None:
@@ -1964,7 +1966,8 @@ class DesktopService:
             from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
 
             runtime_extras["tool_execution_ledger"] = ToolExecutionLedger(
-                self.session_factory, authority_validator=RunOwnershipPolicy().assert_live)
+                self.session_factory, authority_validator=RunOwnershipPolicy().assert_live,
+                secret_provider=lambda: configured_secret_values(self.app_config))
         return assemble_run_context(profile, runtime_extras, dispatch_hints={"swarm_depth": swarm_depth})
 
     def _build_agent_factory(

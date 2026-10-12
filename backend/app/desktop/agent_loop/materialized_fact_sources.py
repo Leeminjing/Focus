@@ -4,11 +4,14 @@ r"""本文件对外提供 RunFactSourceReader，将已提交 Run 证据转换为
 test 候选；新测试优先读取独立持久领域结果，工具轨迹不进入事实。具体工作流为批量读取 anchor/revision，再计算消息增量并复用纯 LoopFactBuilder；历史 checkpoint 已清理时
 保留无需 checkpoint 的事实并跳过消息派生候选；本模块不持久化事实，也不决定验证权力。示例：
 `facts = await reader.read(session, (run,))`。
+同 Run 已发布文件版本覆盖对应路径的旧摘要候选，结算仍保留工作区事实和独立完成核验来源。
 """
 
 from __future__ import annotations
 
 import json
+from os.path import normcase
+from pathlib import Path
 from collections import Counter
 from collections.abc import Iterable
 from typing import Any
@@ -25,7 +28,7 @@ from backend.app.desktop.context_evolution import (
 from backend.app.desktop.context_evolution.models import ContextRevision
 from backend.app.desktop.domain_evidence.models import DesktopDomainResult
 from backend.app.desktop.models import DesktopRun
-from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor
+from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor, WorkspaceSlot
 
 
 class RunFactSourceReader:
@@ -43,9 +46,23 @@ class RunFactSourceReader:
         revision_ids = {row.origin_id: row.revision_id for row in revisions}
         domain_tests = tuple((await session.scalars(select(DesktopDomainResult).where(DesktopDomainResult.run_id.in_(run_ids), DesktopDomainResult.kind == "test").order_by(DesktopDomainResult.created_at, DesktopDomainResult.result_key))).all())
         facts: list[dict] = []
+        file_versions = tuple(await session.scalars(select(DesktopDomainResult).where(
+            DesktopDomainResult.run_id.in_(run_ids), DesktopDomainResult.kind == "artifact",
+            DesktopDomainResult.payload["format"].astext == "file_version_v1")))
+        slot_ids = {row.payload["slot_id"] for row in file_versions}
+        slots = {row.slot_id: row.root_path for row in await session.scalars(select(WorkspaceSlot).where(WorkspaceSlot.slot_id.in_(slot_ids)))} if slot_ids else {}
         for run in selected:
             facts.append(LoopFactBuilder.run_fact(run))
-            facts.extend(LoopFactBuilder.workspace_facts(run, anchors.get(run.run_id)))
+            paths = set()
+            for row in file_versions:
+                if row.run_id != run.run_id:
+                    continue
+                paths.add(normcase(row.payload["path"]).replace("\\", "/"))
+                root = slots.get(row.payload["slot_id"])
+                if root:
+                    paths.add(normcase(str(Path(root) / row.payload["path"])).replace("\\", "/"))
+            facts.extend(item for item in LoopFactBuilder.workspace_facts(run, anchors.get(run.run_id))
+                if item["kind"] != "artifact" or normcase(item["evidence"].get("artifact", "")).replace("\\", "/") not in paths)
             revision_id = revision_ids.get(run.run_id)
             tests = [row for row in domain_tests if row.run_id == run.run_id]
             for result in tests:

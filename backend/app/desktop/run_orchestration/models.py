@@ -3,6 +3,7 @@ r"""本文件对外提供 RunDispatch、MainRunSettled 持久 outbox 与消费 r
 输入为 Run 接受/领取/租约状态、权威终态事件、delivery claim 和 consumer identity；输出为具 fencing 的可恢复调度、事件行与唯一消费事实。
 具体工作流为 admission 同事务写 accepted dispatch，worker 领取并推进 execution，Run finalization 同事务写 event，后台消费者以 receipt 去重。
 示例：`dispatch = RunDispatch(dispatch_id="...", run_id="...", status="accepted")`。
+文件版本事件按稳定 event_id 去重，可在一个 Run 内连续产生；其余事件保留 run_id/event_type 唯一索引。
 """
 
 from __future__ import annotations
@@ -57,7 +58,8 @@ class RunDispatch(Base):
 class RunOutboxEvent(Base):
     __tablename__ = "run_outbox_events"
     __table_args__ = (
-        UniqueConstraint("run_id", "event_type", name="uq_run_outbox_result"),
+        Index("uq_run_outbox_result", "run_id", "event_type", unique=True,
+            postgresql_where=text("event_type <> 'ArtifactVersion'")),
         CheckConstraint(
             "status IN ('pending', 'claimed', 'delivered', 'error')",
             name="ck_run_outbox_status",

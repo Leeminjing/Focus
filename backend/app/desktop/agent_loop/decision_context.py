@@ -4,6 +4,7 @@
 scoped_memory 另接收 Context 集合，输出相关任务事项、增量、完整祖先与因果来源清单；具体 Oi 正文由调用方按冻结身份装配，不重读当前世界。
 具体工作流为只允许追加 worker_results/expansion_assessment，基础预算、授权、来源、血缘与 frontier 保持不变。
 示例：PatrolDecisionContext(base, curator_results=results).model_observation()。
+scoped_memory 同时传递完整策略及作用域内用户原文和文件版本引用；不重新读取当前记忆或文件。
 """
 
 from __future__ import annotations
@@ -32,6 +33,9 @@ def scoped_memory(observation: LoopObservationEnvelope, context_ids: set[str]) -
         "decision_inputs_ref": observation.decision_inputs_ref,
         "observation_id": observation.observation_id,
         "observation_generation": observation.generation,
+        "evolution_strategies": observation.evolution_strategies,
+        "user_intents": tuple(item for item in observation.user_intents
+            if item.get("scope") == "portfolio" or item.get("context_id") in context_ids),
         "causal_chain": observation.causal_chain,
         "intervention": observation.intervention,
         "context_permissions": tuple(item for item in observation.portfolio_frontier

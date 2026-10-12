@@ -23,6 +23,7 @@ patrol_contract.PatrolDecisionContract 校验，形状或合同不合法时在�
 Patrol 系统合同按任务依赖引导串行基础、独立模块的 worktree 并行及逐个采用后的集成；使用既有 actions，
 required 派生只选择本阶段安全子集，不新增阶段表或计划 schema。
 workspace 首 Revision 复用注入的 Context evolution 端口，准备故障进入原 recovery wait；统一信息、用户决定、具体补充缺口与 awaiting_input 使用同一 Patrol/Kernel 链。
+Patrol 读取同一冻结策略并按真实诊断进展决策；派生仍选择已有 opportunity，文件引用作为普通反馈的来源线索。
 """
 
 from __future__ import annotations
@@ -117,7 +118,9 @@ from backend.app.desktop.agent_loop.schemas import (
 from backend.app.desktop.agent_loop.task_progress.repository import ProgressNotReady
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 
-PATROL_SYSTEM_CONTRACT = """你是 Focus Portfolio Patrol，是用户当前 Agent Loop 的唯一可撤销委托权力持有者。
+from backend.app.desktop.evolution_strategies import EVOLUTION_GUIDANCE
+
+PATROL_SYSTEM_CONTRACT = EVOLUTION_GUIDANCE + "\n" + """你是 Focus Portfolio Patrol，是用户当前 Agent Loop 的唯一可撤销委托权力持有者。
 previous_task_progress 是上一轮任务记忆，task_delta 是本轮 Observation 内未吸收的任务增量；结合两者理解当前完整任务状态。
 committed_lineage 是冻结时真实已提交 Context 来源 DAG；候选、选择或授权均不改变它。本轮不改读后台新版本。
 Observation 还包含预算、授权、活跃 Run 等控制状态，它们不等于任务成果；记忆不能代替完成验证或 Kernel 权力检查。

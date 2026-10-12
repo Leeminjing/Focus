@@ -31,6 +31,7 @@
 示例:
     tools = select_workspace_tools(["read", "write"])
     # → [read_file, list_files, write_file]
+已授权 write_file 在真实写入前后调用注入的文件观察端口；Shell 仅在清理已确认后交付工作区变化，端口缺省时沿用原执行。
 """
 
 from __future__ import annotations
@@ -183,7 +184,12 @@ def write_file(
     target = checked_write_target(policy, path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target = checked_write_target(policy, str(target))
+    capture = security_context_of(runtime.context).extras.get("file_version_capture")
+    if capture is not None:
+        capture.before_write(target)
     target.write_text(content, encoding="utf-8")
+    if capture is not None:
+        capture.after_write(target, content)
     return f"已写入真实宿主机路径: {target}"
 
 
@@ -202,6 +208,9 @@ def _run_shell(command: str, runtime: ToolRuntime[dict], exe_name: str, args: li
     binding = bind_call_execution(runtime.context, str(runtime.tool_call_id or ""))
     cancel_event = security_context_of(runtime.context).extras.get("sandbox_cancel_event")
     receipt = security_context_of(runtime.context).extras.get("shell_cleanup_receipt")
+    capture = security_context_of(runtime.context).extras.get("file_version_capture")
+    if capture is not None:
+        capture.before_shell(binding.workspace)
     if binding.mode is AccessMode.DANGER_FULL_ACCESS and os.name != "nt":
         try:
             process = subprocess.run(
@@ -224,6 +233,8 @@ def _run_shell(command: str, runtime: ToolRuntime[dict], exe_name: str, args: li
         return _shell_fact(binding, False, "SANDBOX_UNAVAILABLE", None, "", str(error), process_cleanup=error.process_cleanup)
     if receipt is not None:
         receipt["process_cleanup"] = result.process_cleanup
+    if capture is not None:
+        capture.after_shell(result.process_cleanup)
     return _shell_fact(
         binding, result.backend_applied, result.status, result.exit_code,
         result.stdout, result.stderr, result.cleanup_warnings, process_cleanup=result.process_cleanup,

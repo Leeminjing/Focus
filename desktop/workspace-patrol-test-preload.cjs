@@ -2,7 +2,8 @@
  * 输入为 index.html 的实际 API 请求和系统目录选择调用；输出为精确选中路径、文件夹绑定、稳定输入回执和独立事件。
  * 工作流为沿用普通会话 fixture，可取消/拒绝/暂停目录选择和绑定；旧目录列表请求显式失败，发送回执和观测独立提交，冻结覆盖不完整但页已读完，记录装备调用的实际 draft-open 路由；可注入图读取失败、删除冲突及精确版本会话，均仅限隔离测试。
  * 示例：BrowserWindow({ webPreferences: { preload: __filename, contextIsolation: false } })。
- */
+  * fileFeedbackFetch 是文件版本/策略页面测试的可选 HTTP fixture 扩展入口。
+*/
 require("./context-ui-test-preload.cjs");
 const base = window.fetch;
 const json = body => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
@@ -31,6 +32,8 @@ window.focusDesktop.selectWorkspace = async () => {
   return chosen;
 };
 window.fetch = async (input, options = {}) => {
+  const fileFeedback = await window.fileFeedbackFetch?.(input, options);
+  if (fileFeedback) return fileFeedback;
   const url = new URL(String(input), "http://focus.test");
   const path = url.pathname;
   const prefix = "/desktop/api/agent-loops";

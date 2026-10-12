@@ -4,6 +4,7 @@
 具体工作流为在调用方 Loop 事务内验证全局提交身份、保存原文类型和有界可见线索、记录既有 intervention 生命周期，
 回执保留引入的不可变观察及输入前快照身份；不恢复图、不取消 Run、不更新 Mission。示例：await repository.accept(session, loop, request)。
 同时提供 UserInputUse、MissionInputChange、ApplyUserInputsAction 和 workspace_input_scope；已保存文件模式仅用于首次授权，后续信息不扩大权限。
+file_refs 可选绑定 Fact revision、Artifact result_key、slot/path 和内容 hash；接受时校验同工作区及证据权限，空引用保持旧请求 hash。
 """
 
 import uuid
@@ -45,6 +46,13 @@ class VisibleContext(BaseModel):
     run_previews: tuple[VisibleRunPreview, ...] = Field(default=(), max_length=32)
 
 
+class FileReference(VisibleFactReference):
+    result_key: str = Field(pattern=r"^[a-f0-9]{64}$")
+    slot_id: str = Field(min_length=1, max_length=64)
+    path: str = Field(min_length=1, max_length=4096)
+    sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
 class PatrolInputRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     submission_id: str = Field(min_length=1, max_length=160)
@@ -54,6 +62,7 @@ class PatrolInputRequest(BaseModel):
     request_id: str | None = None
     request_revision: int | None = Field(default=None, gt=0)
     visible_context: VisibleContext | None = None
+    file_refs: tuple[FileReference, ...] = Field(default=(), max_length=32)
 
     @model_validator(mode="after")
     def _validate_input(self):
@@ -99,7 +108,10 @@ def input_identity(submission_id: str) -> str:
 
 
 def request_document(request: PatrolInputRequest) -> dict:
-    return request.model_dump(mode="json", exclude={"visible_context"} if request.visible_context is None else set())
+    exclude = {"visible_context"} if request.visible_context is None else set()
+    if not request.file_refs:
+        exclude.add("file_refs")
+    return request.model_dump(mode="json", exclude=exclude)
 
 
 class PatrolInputRepository:
@@ -122,6 +134,11 @@ class PatrolInputRepository:
         replay = await self.replay(session, loop.workspace_id, request)
         if replay is not None:
             return replay
+        if request.file_refs:
+            from backend.app.desktop.domain_evidence.file_reads import FileVersionReader
+
+            for reference in request.file_refs:
+                await FileVersionReader().validate_reference(session, loop.workspace_id, reference)
         if request.request_id:
             target = await session.get(LoopWaitRequest, request.request_id, with_for_update=True)
             if (
@@ -213,6 +230,7 @@ class PatrolInputRepository:
             "content": row.content,
             "request_id": request.get("request_id"),
             "request_revision": request.get("request_revision"),
+            "file_refs": request.get("file_refs", []),
             "round_id": row.observed_round_id,
             "observation_id": row.introduced_observation_id,
             "introduced_generation": row.introduced_generation,

@@ -3,6 +3,7 @@
  * 输入为物化事实、当前 Context 和筛选；输出为事实表或时间流 HTML，或按 fact_id 原位更新的 DOM；两种呈现共用状态和证据标签。
  * 具体工作流为只呈现领域 revision 并排除历史 tool 条目；未变行不移出 tbody、不改写签名，按实际顺序原位更新状态；稳定 fact_id 来源按钮进入真实证据检查。
  * 示例：`FocusLoopFactsView.reconcileRows(tbody, facts)`。
+ * 文件事件使用紧凑条目和显式来源高亮；renderFile 按执行位置与不可变快照展示预览和可靠 Diff，所有正文转义后输出。
  */
 (function (root, factory) {
   const api = factory();
@@ -31,6 +32,12 @@
   }
 
   function timelineHtml(item) {
+    const file = fileReference(item);
+    if (file) {
+      const importance = item.file_importance || file.importance;
+      const label = importance === "user_reference" ? "用户引用 · " : importance === "declared_artifact" ? "关键产出 · " : "";
+      return `<article data-fact-id="${escape(item.fact_id)}" data-fact-revision="${escape(item.revision || 1)}" class="file-fact${label ? " is-important" : ""} is-${escape(item.status)}"><time>${escape(timeLabel(item.occurred_at))}</time><button data-fact-id="${escape(item.fact_id)}" data-action="inspect-loop-fact" title="${escape(file.path)}">${escape(file.path)}</button><small>${label}${escape({ created: "新建", modified: "修改", deleted: "删除" }[file.operation] || "文件")} · ${escape((file.sha256 || file.result_key).slice(0, 8))} · 查看版本</small></article>`;
+    }
     return `<article data-fact-id="${escape(item.fact_id)}" data-fact-revision="${escape(item.revision || 1)}" class="is-${escape(item.status)}"><time>${escape(timeLabel(item.occurred_at))}</time><button data-fact-id="${escape(item.fact_id)}" data-action="inspect-loop-fact">${escape(item.title || item.kind)}</button><p>${escape(item.summary)}</p><small>${escape(factStates[item.status] || item.status || "待确认")}${item.outcome_status ? ` · 结果${escape(outcomeStates[item.outcome_status] || item.outcome_status)}` : ""}</small></article>`;
   }
   function renderTimeline(items) {
@@ -103,10 +110,37 @@
   }
 
   function renderDetail(detail) {
+    if (detail.file) return renderFile(detail.file);
     const fact = detail.fact || {};
     const metrics = fact.metrics || {};
     return `<section class="fact-inspection"><h3>${escape(fact.title || fact.kind)}</h3><p>${escape(fact.summary)}</p><p>事实状态：${escape(factStates[fact.status] || fact.status)} · 业务结果：${escape(outcomeStates[fact.outcome_status] || fact.outcome_status || "未知")}</p>${fact.kind === "test" ? `<p>${metrics.count_status === "exact" ? `${escape(metrics.passed ?? 0)} passed · ${escape(metrics.failed ?? 0)} failed · ${escape(metrics.skipped ?? 0)} skipped` : "测试数量尚未明确，不计为成功"}</p>` : ""}<h3>事实修订</h3><ul>${(detail.revisions || []).map(row => `<li>版本 ${row.revision} · ${escape(factStates[row.state] || row.state)}<p>${escape(row.reason || row.presentation?.summary)}</p></li>`).join("") || "<li>暂无修订历史</li>"}</ul><details><summary>证据与精确来源</summary><pre>${escape(JSON.stringify({ fact_id: fact.fact_id, context_id: fact.context_id, run_id: fact.run_id, evidence: fact.evidence, relationships: detail.relationships }, null, 2))}</pre></details>${fact.evidence ? "" : "<p>证据正文未在当前权限下返回。</p>"}</section>`;
   }
 
-  return Object.freeze({ render, renderRows, reconcileRows, renderTimeline, reconcileTimeline, renderDetail, statusOptions, outcomeOptions });
+  function fileReference(fact) {
+    const file = fact.file || fact.presentation?.file || (Array.isArray(fact.evidence) ? fact.evidence.find(item => item.kind === "artifact" && item.metadata?.file)?.metadata.file : null);
+    return file ? { ...file, fact_id: fact.fact_id, revision: fact.revision } : null;
+  }
+  function inputFileReference(file) {
+    return Object.fromEntries(["fact_id", "revision", "result_key", "slot_id", "path", "sha256"].map(key => [key, file[key] ?? null]));
+  }
+  function markFileReferences(items, references) {
+    const selected = new Set(references.map(item => JSON.stringify([item.slot_id, item.path])));
+    return items.map(item => { const file = fileReference(item); return file && selected.has(JSON.stringify([file.slot_id, file.path])) ? { ...item, file_importance: "user_reference" } : item; });
+  }
+  function renderFile(file) {
+    const reasons = { before_unobserved: "写入前版本未被观察，无法生成可靠 Diff", unreadable: "无法读取", outside_slot: "超出工作区", over_1_mib: "超过 1 MiB，未保存正文", binary: "二进制文件", non_utf8: "非 UTF-8 文本" };
+    const snapshot = side => side?.available ? `<pre>${escape(side.text)}</pre>` : `<p>${escape(reasons[side?.reason] || "历史快照不可用")}</p>`;
+    const before = file.before, after = file.after;
+    const reliable = before?.available && after?.available;
+    let diff = "";
+    if (reliable) {
+      const left = before.text.split("\n"), right = after.text.split("\n");
+      let prefix = 0, suffix = 0;
+      while (prefix < Math.min(left.length, right.length) && left[prefix] === right[prefix]) prefix++;
+      while (suffix < Math.min(left.length, right.length) - prefix && left[left.length - 1 - suffix] === right[right.length - 1 - suffix]) suffix++;
+      diff = `<pre class="file-diff">${left.slice(0, prefix).map(line => ` ${escape(line)}`).join("\n")}\n${left.slice(prefix, left.length - suffix).map(line => `<span class="removed">−${escape(line)}</span>`).join("\n")}\n${right.slice(prefix, right.length - suffix).map(line => `<span class="added">+${escape(line)}</span>`).join("\n")}\n${suffix ? right.slice(-suffix).map(line => ` ${escape(line)}`).join("\n") : ""}</pre>`;
+    }
+    return `<section class="file-version"><h3>${escape(file.path)}</h3><p>版本 ${(file.sha256 || file.result_key).slice(0, 12)}${before?.redacted || after?.redacted ? " · 已脱敏" : ""}</p><p>执行位置 ${escape(file.slot_id)}${file.context_id ? ` · 工作线 ${escape(file.context_id)}` : ""}</p><button type="button" data-patrol-file-add="${escape(JSON.stringify(inputFileReference(file)))}">＠ 引用此版本</button><details open><summary>此版本内容</summary>${snapshot(after)}</details><details><summary>Diff${reliable ? "" : " · 不可用"}</summary>${reliable ? diff : snapshot(before?.available ? after : before)}</details><details><summary>写入前内容</summary>${snapshot(before)}</details></section>`;
+  }
+  return Object.freeze({ render, renderRows, reconcileRows, renderTimeline, reconcileTimeline, renderDetail, renderFile, fileReference, inputFileReference, markFileReferences, statusOptions, outcomeOptions });
 });

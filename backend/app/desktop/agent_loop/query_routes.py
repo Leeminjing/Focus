@@ -5,6 +5,7 @@ r"""本文件对外提供 Loop Console、Mission 历史、完整会话、物化�
 query service，不修改 Context 或模型输入；只读 audit 关联 Expansion planning session 的冻结策略/用量/阻断，以及自主压缩的 gate、candidate、resolution、Run 与 revision。
 示例：`app.include_router(loop_query_router)`。
 TaskProgress 诊断输出前序、Observation、manifest、Lineage refs/hash 及独立后台工作的 readiness 和用量；Observation 检查按当前权限分页读取同一冻结内容。
+事实详情的可选 revision 固定历史文件预览，继续使用同一 Live 权限与脱敏合同。
 """
 
 from __future__ import annotations
@@ -154,12 +155,12 @@ async def loop_facts(
 
 
 @loop_query_router.get("/agent-loops/{loop_id}/facts/{fact_id}")
-async def loop_fact_detail(loop_id: str, fact_id: str, request: Request) -> dict:
+async def loop_fact_detail(loop_id: str, fact_id: str, request: Request, revision: int | None = None) -> dict:
     flags = getattr(request.app.state, "loop_feature_flags", None) or LoopFeatureFlags()
     if not flags.materialized_fact_reads:
         raise HTTPException(404, "旧版事实端口不提供稳定 fact detail")
     async with request.app.state.desktop_service.session_factory() as session:
-        result = await MaterializedFactQueryService().detail(session, loop_id, fact_id)
+        result = await MaterializedFactQueryService().detail(session, loop_id, fact_id, revision)
         access = await LoopLiveAccessPolicy().resolve(session, loop_id)
         return LoopLiveRedactionPolicy.redact_value(result, access.permissions)
 

@@ -27,12 +27,13 @@
     service = MemoryService(session_factory, app_config, context_reader)
     await service.create(MemoryCreate(title="...", content="...", source=...))
     block = await service.build_memory_block(["mem-1", "mem-2"])
+演化策略沿用 CRUD，以三段正文、启停及工作区范围保存；普通 Run 装备只接受普通记忆，策略由 Observation 完整冻结。
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -42,7 +43,8 @@ from focus.models import create_chat_model
 from focus.context.scoped import FrozenContext
 from focus.context.requests import frozen_request_messages
 
-from backend.app.desktop.models import Memory
+from backend.app.desktop.models import Memory, DesktopWorkspace
+from backend.app.desktop.evolution_strategies import EvolutionStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +110,11 @@ class MemorySelection(_Strict):
 
 class MemoryCreate(_Strict):
     title: str
-    content: str
+    content: str = ""
+    category: Literal["memory", "evolution_strategy"] = "memory"
+    enabled: bool = True
+    workspace_id: str | None = None
+    strategy: EvolutionStrategy | None = None
     content_mode: str = "complete"
     segments: list[dict[str, Any]] = Field(default_factory=list)
     source_kind: str = "manual"
@@ -120,6 +126,9 @@ class MemoryUpdate(_Strict):
     content: str | None = None
     content_mode: str | None = None
     segments: list[dict[str, Any]] | None = None
+    enabled: bool | None = None
+    workspace_id: str | None = None
+    strategy: EvolutionStrategy | None = None
 
 
 class MemorySummarizeRequest(_Strict):
@@ -176,10 +185,15 @@ class MemoryService:
     async def create(self, body: MemoryCreate) -> dict[str, Any]:
         async with self._session_factory() as session:
             session.expire_on_commit = False
+            await self._validate_strategy(session, body.category, body.workspace_id, body.strategy)
+            if body.category == "evolution_strategy" and (body.content or body.segments or body.source):
+                raise HTTPException(422, "策略正文仅使用三段策略字段")
             row = Memory(
                 memory_id=_new_id(),
                 title=body.title,
-                content=body.content,
+                content="" if body.category == "evolution_strategy" else body.content,
+                category=body.category, enabled=body.enabled, workspace_id=body.workspace_id,
+                strategy=body.strategy.model_dump(mode="json") if body.strategy else None,
                 content_mode=body.content_mode,
                 segments=body.segments,
                 source_kind=body.source_kind,
@@ -199,9 +213,18 @@ class MemoryService:
             row = await session.get(Memory, memory_id)
             if not row:
                 raise HTTPException(404, "记忆不存在")
+            workspace_id = body.workspace_id if "workspace_id" in body.model_fields_set else row.workspace_id
+            strategy = body.strategy if "strategy" in body.model_fields_set else row.strategy
+            await self._validate_strategy(session, row.category, workspace_id, strategy)
+            if row.category == "evolution_strategy" and ({"content", "content_mode", "segments"} & body.model_fields_set):
+                raise HTTPException(422, "策略正文仅使用三段策略字段")
+            row.workspace_id = workspace_id
+            row.strategy = strategy.model_dump(mode="json") if isinstance(strategy, EvolutionStrategy) else strategy
+            if body.enabled is not None:
+                row.enabled = body.enabled
             if body.title is not None:
                 row.title = body.title
-            if body.content is not None:
+            if body.content is not None and row.category == "memory":
                 row.content = body.content
             if body.content_mode is not None:
                 row.content_mode = body.content_mode
@@ -210,6 +233,17 @@ class MemoryService:
             await session.commit()
             fresh = await session.get(Memory, memory_id, populate_existing=True)
             return self._payload(fresh)
+
+    @staticmethod
+    async def _validate_strategy(session, category, workspace_id, strategy):
+        if category == "evolution_strategy":
+            if strategy is None:
+                raise HTTPException(422, "演化策略必须包含适用场景、演化过程和历史继承")
+            EvolutionStrategy.model_validate(strategy)
+            if workspace_id is not None and await session.get(DesktopWorkspace, workspace_id) is None:
+                raise HTTPException(422, "策略工作区不存在")
+        elif strategy is not None or workspace_id is not None:
+            raise HTTPException(422, "普通记忆不接受演化策略字段")
 
     async def delete(self, memory_id: str) -> None:
         async with self._session_factory() as session:
@@ -344,7 +378,7 @@ class MemoryService:
             return ""
         async with self._session_factory() as session:
             rows = (
-                await session.scalars(select(Memory).where(Memory.memory_id.in_(memory_ids)))
+                await session.scalars(select(Memory).where(Memory.memory_id.in_(memory_ids), Memory.category == "memory"))
             ).all()
         if not rows:
             return ""
@@ -356,7 +390,7 @@ class MemoryService:
         if not identities:
             return []
         async with self._session_factory() as session:
-            rows = (await session.scalars(select(Memory).where(Memory.memory_id.in_(identities)))).all()
+            rows = (await session.scalars(select(Memory).where(Memory.memory_id.in_(identities), Memory.category == "memory"))).all()
         selected = {row.memory_id: row for row in rows}
         if set(identities) - selected.keys():
             raise HTTPException(422, {"code": "memory_unavailable", "ids": sorted(set(identities) - selected.keys())})
@@ -390,6 +424,8 @@ class MemoryService:
     def _payload(row: Memory) -> dict[str, Any]:
         return {
             "memory_id": row.memory_id,
+            "category": row.category, "enabled": row.enabled,
+            "workspace_id": row.workspace_id, "strategy": row.strategy,
             "title": row.title,
             "content": row.content,
             "content_mode": row.content_mode,

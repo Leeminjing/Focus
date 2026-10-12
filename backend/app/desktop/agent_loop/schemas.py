@@ -11,6 +11,7 @@ deliver_user_message 只接受已冻结 intent_id，不接受模型提供正文�
 completion_admission 冻结当前完成请求语义身份、原验证及准入 blocker，历史 envelope 可缺省。
 completion_eligibility 独立冻结具体验证的版本化完成资格，历史输入缺省不回填或改写。
 workspace_patrol、精确用户输入处置与 awaiting_input 扩展现有联合；缺省交互模式继续兼容旧 Observation。
+evolution_strategies 保存当前观察适用的完整策略正文和身份；旧观察缺省为空，不改变执行权限。
 """
 
 from __future__ import annotations
@@ -385,6 +386,7 @@ class LoopObservationEnvelope(StrictModel):
     pending_decisions: tuple[dict[str, Any], ...] = ()
     worker_results: tuple[dict[str, Any], ...] = ()
     user_intents: tuple[dict[str, Any], ...] = ()
+    evolution_strategies: tuple[dict[str, Any], ...] = ()
     expansion_handles: tuple[dict[str, str], ...] = ()
     expansion_assessment: dict[str, Any] | None = None
     recovery_opportunities: tuple[dict[str, Any], ...] = ()

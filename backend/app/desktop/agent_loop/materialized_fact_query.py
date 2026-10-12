@@ -4,6 +4,7 @@ r"""本文件对外提供 MaterializedFactQueryService 与 FactParityService。
 具体工作流为直接读取 `loop_facts` current rows，以 fact_id/occurred_at 稳定分页，详情连接不可变 revisions 和双向关系；
 公共分页、计数、详情及关系端点一致排除历史 tool rows；parity 仅比较规范化类型、来源与展示语义，不改变读取状态。
 示例：`page = await service.read(session, loop_id, ...)`。
+详情可按 revision 读取不可变文件快照，旧事实没有快照时返回空 file，不回读磁盘补造历史。
 """
 
 from __future__ import annotations
@@ -60,14 +61,17 @@ class MaterializedFactQueryService:
             "facts": [self.serialize(row) for row in rows],
         }
 
-    async def detail(self, session: AsyncSession, loop_id: str, fact_id: str) -> dict:
+    async def detail(self, session: AsyncSession, loop_id: str, fact_id: str, revision: int | None = None) -> dict:
         fact = await session.get(LoopFact, fact_id)
         if fact is None or fact.loop_id != loop_id or fact.fact_type == "tool":
             raise HTTPException(404, "Fact 不存在")
         revisions = tuple((await session.scalars(select(LoopFactRevision).where(LoopFactRevision.fact_id == fact_id).order_by(LoopFactRevision.revision))).all())
         visible_ids = select(LoopFact.fact_id).where(LoopFact.loop_id == loop_id, LoopFact.fact_type != "tool")
         relationships = tuple((await session.scalars(select(LoopFactRelationship).where(LoopFactRelationship.loop_id == loop_id, LoopFactRelationship.source_fact_id.in_(visible_ids), LoopFactRelationship.target_fact_id.in_(visible_ids), or_(LoopFactRelationship.source_fact_id == fact_id, LoopFactRelationship.target_fact_id == fact_id)).order_by(LoopFactRelationship.created_at, LoopFactRelationship.relationship_id))).all())
+        from backend.app.desktop.domain_evidence.file_reads import FileVersionReader
+
         return {
+            "file": await FileVersionReader().read(session, loop_id, fact_id, revision),
             "fact": self.serialize(fact),
             "revisions": [
                 {
@@ -110,6 +114,7 @@ class MaterializedFactQueryService:
             "metrics": fact.presentation.get("metrics") or {},
             "outcome_status": fact.presentation.get("outcome_status"),
             "evidence": fact.evidence,
+            **({"file": fact.presentation["file"]} if fact.presentation.get("file") else {}),
             "observer": fact.observer,
             "verifier": fact.verifier,
             "correlation_id": fact.correlation_id,

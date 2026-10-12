@@ -2,7 +2,8 @@
  * 输入为 workspace-patrol/picker 的语义 DOM 和宿主 token；输出为透明侧面板、连续关系画布、紧凑输入与窄屏视图切换。
  * 具体工作流为安静态以窗口比例决定大标题、横向 composer 和圆形发送控件，显式详情通过三列网格承接图/进度/观察/事实，临时导航由语义 class 控制；dialog 处理模态，Context 保持非模态，长请求身份在输入区换行可读。
  * 示例：.workspace-patrol.is-quiet；阅读与状态颜色沿用宿主 token，玻璃亮边在当前模块定义，共用节点与边材质由 loop-console.css 提供，图工具栏独立于平移画布，完整检查保留可滚动阅读底。
- */
+  * 文件事实固定 60px 高，文件详情保留底部输入空间，窄屏继续使用同一草稿节点。
+*/
 #app:has(.workspace-patrol) { padding: 0; }
 .workspace-patrol { position: relative; min-height: 100%; padding: 28px 32px 20px; display: flex; flex-direction: column; gap: 18px; }
 .workspace-patrol.is-quiet { justify-content: center; align-items: center; gap: 28px; padding: 32px clamp(32px, 4vw, 64px); background: transparent; }
@@ -231,3 +232,21 @@
 
 html:not([data-native-material]) body.has-patrol-workbench { background: #e9eded; }
 .workspace-patrol:not(.is-quiet) .workbench-panel { --material-fill: rgb(255 255 255 / 18%); }
+.workbench-fact-stream .file-fact { box-sizing: border-box; height: 60px; padding: 4px 6px 4px 14px; display: grid; grid-template-columns: 38px minmax(0, 1fr); grid-template-rows: 26px 20px; column-gap: 6px; border-left: 2px solid #7193b0; }
+.workbench-fact-stream .file-fact time { align-self: center; }
+.workbench-fact-stream .file-fact button { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
+.workbench-fact-stream .file-fact > small { grid-column: 2; border: 0; padding: 0; }
+.workbench-fact-stream .file-fact.is-important { border-left-color: #916420; background: #c3902410; }
+.patrol-file-detail { position: fixed; z-index: 45; right: 20px; top: 32px; bottom: 270px; width: min(720px, calc(100vw - 40px)); overflow: auto; padding: 20px; border-radius: 16px; background: var(--surface-base, #fafafa); box-shadow: 0 8px 36px #22334424; }
+.patrol-file-detail > header { display: flex; justify-content: space-between; align-items: center; }
+.patrol-file-detail h2 { margin: 0; font-size: 16px; }
+.file-version h3 { overflow-wrap: anywhere; }
+.file-version pre { white-space: pre; overflow: auto; max-height: 42vh; padding: 10px; background: #8495a510; }
+.file-diff span { display: inline-block; min-width: 100%; }
+.file-diff .removed { background: #bd425317; }
+.file-diff .added { background: #3c935b1c; }
+[data-patrol-file-refs] { display: flex; flex-wrap: wrap; gap: 6px; }
+[data-patrol-file-refs] > span { padding: 2px 8px; background: #7397b51c; border-radius: 8px; overflow-wrap: anywhere; font-size: 12px; }
+[data-patrol-file-picker] { max-height: 160px; overflow: auto; }
+[data-patrol-file-picker] button { display: block; width: 100%; text-align: left; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .patrol-file-detail { top: 12px; right: 8px; bottom: 300px; width: calc(100vw - 16px); padding: 12px; } }

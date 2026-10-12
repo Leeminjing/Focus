@@ -2,8 +2,9 @@
 
 输入为稳定调用 identity、Run 与参数、注入的实时控制校验及 canonical ToolMessage；输出为新 claim、可靠缓存结果或不确定诊断。
 具体工作流为同一短事务先锁控制版本并校验 Run，再提交唯一执行 claim；暂停后的新工具意图拒绝，已开始的调用仍保存结果。
-已有意图但无结果时拒绝恢复重复副作用。Windows Shell 将未确认清理的 attempt identity 保存在 Run.workspace_result；只有服务端逐调用回执中的 confirmed/not_started 可解除，控制失败或回执丢失保留屏障并禁止继续工具执行。本模块通过组合根注入 Loop 政策，不向下引用 Loop 领域。
+已有意图但无结果时拒绝恢复重复副作用。Windows Shell 将未确认清理的 attempt identity 保存在 Run.workspace_result；只有服务端逐调用回执中的 confirmed/not_started 可解除，控制失败或回执丢失保留屏障并禁止继续工具执行。本模块通过组合根注入控制政策，文件结果提交遵循 Loop→Run 的既有锁序。
 示例：cached = await ledger.claim(identity, run_id, call)；await ledger.complete(identity, result)。
+每次工具调用可准备独立文件采集端口；成功工具结果、不可变文件版本与既有 Run outbox 在同一事务提交，失败提交保留原执行不确定性。
 """
 
 from sqlalchemy import select
@@ -14,9 +15,20 @@ from focus.runtime.tool_attempts import ToolExecutionUncertain
 
 
 class ToolExecutionLedger:
-    def __init__(self, sessions, *, authority_validator=None):
+    def __init__(self, sessions, *, authority_validator=None, secret_provider=None):
         self._sessions = sessions
         self._authority_validator = authority_validator
+        self._secret_provider = secret_provider or (lambda: ())
+
+    async def prepare_file_capture(self, run_id):
+        from backend.app.desktop.domain_evidence.file_versions import FileVersionCapture
+        from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+
+        async with self._sessions() as session:
+            run = await session.get(DesktopRun, run_id)
+            slot_id = (run.workspace_anchor or {}).get("slot_id") if run else None
+            slot = await session.get(WorkspaceSlot, slot_id) if slot_id else None
+            return FileVersionCapture(slot_id, slot.root_path, self._secret_provider()) if slot else None
 
     async def claim(self, identity, run_id, call, *, requires_process_cleanup=False):
         digest = content_hash(call)
@@ -48,12 +60,18 @@ class ToolExecutionLedger:
                 raise ToolExecutionUncertain(f"工具 {call['name']} 已有执行意图但结果不确定；请核对副作用后通过新调用明确重试")
             return deserialize_history_message(row.result)
 
-    async def complete(self, identity, result, *, process_cleanup=None):
+    async def complete(self, identity, result, *, process_cleanup=None, file_capture=None):
         cleanup_unknown = False
         async with self._sessions() as session:
             existing = await session.get(ToolExecutionAttempt, identity)
             if existing is None:
                 raise RuntimeError("工具结果缺少唯一执行 claim")
+            if file_capture is not None:
+                from backend.app.desktop.agent_loop.models import AgentLoop
+
+                observed_run = await session.get(DesktopRun, existing.run_id)
+                if observed_run.loop_id:
+                    await session.get(AgentLoop, observed_run.loop_id, with_for_update={"read": True, "key_share": True})
             run = await session.get(DesktopRun, existing.run_id, with_for_update=True, populate_existing=True)
             row = await session.scalar(select(ToolExecutionAttempt).where(ToolExecutionAttempt.attempt_id == identity).with_for_update())
             if row is None or row.status != "claimed":
@@ -70,6 +88,10 @@ class ToolExecutionLedger:
                     run.error = "Shell 进程树清理未确认；已保留 Run 与工作区，需核对实际进程退出证据"
                     cleanup_unknown = True
                 run.workspace_result = {**(run.workspace_result or {}), "shell_cleanup": pending}
+            if file_capture is not None and result is not None and result.status == "success" and not cleanup_unknown:
+                from backend.app.desktop.domain_evidence.file_versions import FileVersionRecorder
+
+                await FileVersionRecorder().record(session, run, row, file_capture)
             await session.commit()
         if cleanup_unknown:
             raise ToolExecutionUncertain("Shell 进程树清理未确认；Run 不可结算，也不可自动重放")

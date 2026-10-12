@@ -5,9 +5,12 @@ r"""本文件对外提供 RetrievalBackedCognitiveAdvisor 及其分步 worker sc
 服务端在授权索引内召回去重候选，模型按持久分页选择 Context/Mission candidates，服务端精读并以实际用量记账；失败尝试可从稳定操作身份恢复，
 最终模型按单请求窗口分页处理所有精读证据，同一Corpus角色政策按当前可引用kind与Context职责在分页容量计算前投影到工作输入，不重复内联不可引用的Run分类；只能引用所在批次已精读 unit identity 生成工作候选，引用校验先于成功缓存，失败进入同一冻结尝试预算的反馈流程，恢复复检缓存而不改写历史。
 同一职责跨页归并且保留全部引用，资源与请求窗口阻断保留因果代码。示例：`result = await advisor.plan(payload, session, indexes)`。
+规划把冻结演化策略作为适用性参考，允许空 work_specs 表达先诊断/继续；策略不构成派生历史或权限。
 """
 
 from __future__ import annotations
+
+from backend.app.desktop.evolution_strategies import EVOLUTION_GUIDANCE
 
 from itertools import count
 from functools import partial
@@ -437,7 +440,7 @@ class RetrievalBackedCognitiveAdvisor:
                 return None, blocked
             error = None
             try:
-                result = await self._model.invoke(schema, authority, payload if feedback is None else {
+                result = await self._model.invoke(schema, authority + "\n" + EVOLUTION_GUIDANCE, payload if feedback is None else {
                     **payload, "previous_attempt_failure": feedback,
                     "retry_instruction": "Correct the previous failure without changing frozen input or evidence identities.",
                 })

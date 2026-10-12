@@ -42,7 +42,7 @@ test("A/B responses never clear or change C draft, type or target", () => {
   const retry = store.retry(a.submission_id);
   assert.equal(retry.request, a.request);
   store.accepted(a.submission_id, { intent_id: "a" });
-  assert.deepEqual(store.get().draft, { content: "C", input_type: "completion_check", request_id: "other", request_revision: 3 });
+  assert.deepEqual(store.get().draft, { content: "C", input_type: "completion_check", request_id: "other", request_revision: 3, file_refs: [] });
   assert.equal(b.request.request_id, "request");
   assert.equal(store.get().rows.every(row => row.status === "accepted"), true);
 });

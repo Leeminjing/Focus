@@ -7,6 +7,7 @@ r"""本文件对外提供 PatrolSessionLifecycle、CuratorCoordinationStage 与 
 Curator 候选始终属于 proposal；分派同事务发布 Round 与 Loop 阶段事实，阶段实体版本不改变执行控制版本；Outcome stage 只映射 Kernel 结果。
 派发恢复只信耐久 assignment/Worker 与完整索引输入，Loop→Round→Session 锁下复检授权和调用者 fence，重复协调者不重复创建请求。
 示例：`handle = await lifecycle.begin(claim)`。
+单 Context 与 Portfolio 派生共享当前 Observation 的 evolution_strategies 和用户意见，不在 worker 中重读策略。
 """
 
 from __future__ import annotations
@@ -262,6 +263,7 @@ class CuratorCoordinationStage:
             "portfolio_index_stage": built.stage_record.model_dump(mode="json") if built.stage_record else None,
             "stable_results": observation.stable_results,
             "user_intents": observation.user_intents,
+            "evolution_strategies": observation.evolution_strategies,
             "workspace": observation.workspace,
             "budget": observation.budget,
             "frozen_expansion_resources": resolve_expansion_resources(

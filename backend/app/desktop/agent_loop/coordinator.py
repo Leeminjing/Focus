@@ -16,6 +16,7 @@ Run 结算先 flush 当前已发生事实，再按 Loop→Round 刷新锁定所�
 新直接消息沿 Directive 统一结算，observed 阶段启动失败保留 delivery_failed；有 Directive 的 Run 不重复发布旧用户 Run 事件。
 派发接受所属 ready/running Round 中成功授权的就绪工作，不依赖 current_round_id；正常推进检查全 Loop 后果汇合。
 用户输入提升原未决轮 Observation/fence，既有 outbox 定向取消认知；通知有界返回，重复取消保留 finally 清理，新认知领取等待旧清理证明，不阻塞输入受理。
+同一 Run outbox 消费器将 ArtifactVersion 转为规范文件事件；该分支不推进 Run 结算或 Round。
 """
 
 from __future__ import annotations
@@ -454,6 +455,11 @@ class LoopCoordinator:
             )
 
     async def handle_run_settled(self, event, session: AsyncSession) -> None:
+        if getattr(event, "event_type", None) == "ArtifactVersion":
+            from backend.app.desktop.domain_evidence.file_versions import FileVersionRecorder
+
+            await FileVersionRecorder().publish(session, event)
+            return
         run = await session.get(DesktopRun, event.run_id)
         if run is None or run.loop_id is None or run.round_id is None:
             return

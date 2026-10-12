@@ -5,6 +5,7 @@ r"""本文件对外提供 CanonicalEventDraft、CanonicalEventEnvelope、EventVi
 隐藏推理和未授权证据字段；历史 tool fact 的公开 replay 使用同 sequence 占位信封，独立 tool activity 仍可审计。
 连续事件流使用不泄露原事件身份的占位信封推进被隐藏 sequence。示例：
 `policy.public_envelope(event, permissions)`。
+文件版本描述和普通输入引用沿用 read 权限；此权限不开放其他证据字段。
 """
 
 from __future__ import annotations
@@ -115,18 +116,19 @@ class LiveEventAuthorizationPolicy:
         required = set(envelope.visibility.required_permissions)
         if not required.issubset(permissions):
             raise EventNotAuthorized("事件权限不足")
-        payload = self._redact_value(envelope.payload)
+        hidden = _REDACTED_KEYS if permissions.intersection({"read", "view_evidence"}) else _REDACTED_KEYS | {"file", "file_refs"}
+        payload = self._redact_value(envelope.payload, hidden)
         if "view_evidence" not in permissions:
             for field in envelope.visibility.evidence_fields:
                 payload.pop(field, None)
         return envelope.model_copy(update={"payload": payload})
 
     @classmethod
-    def _redact_value(cls, value: Any) -> Any:
+    def _redact_value(cls, value: Any, hidden: frozenset[str] = _REDACTED_KEYS) -> Any:
         if isinstance(value, dict):
-            return {key: cls._redact_value(item) for key, item in value.items() if key.casefold() not in _REDACTED_KEYS}
+            return {key: cls._redact_value(item, hidden) for key, item in value.items() if key.casefold() not in hidden}
         if isinstance(value, list):
-            return [cls._redact_value(item) for item in value]
+            return [cls._redact_value(item, hidden) for item in value]
         return value
 
 

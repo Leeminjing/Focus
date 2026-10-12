@@ -13,9 +13,12 @@ Worker 认知读取复用冻结基础及持久补充来源，精确分页核验�
 workspace 输入按完整有界集合冻结，未处置和显式延后来源进入后继；同工作区终态 predecessor 输入保留原身份。补充卡片和已受理答案独立冻结，迟到输入不归旧轮处置。
 输入事务通过 prepare_views、prepare_state、freeze_version 复用同一证据读取器；冻结不登记沉淀任务，成功授权另行登记。
 workspace 输入的 introduced identity 固定原 Oi，observed_round_id 跟随当前处置轮；deferred 跨轮重新观察而不改写原因果。
+冻结时从记忆库读取启用的全局/当前工作区策略；file_refs 随原文及因果链冻结，后续策略编辑和磁盘变化不改旧观察。
 """
 
 from __future__ import annotations
+
+from backend.app.desktop.evolution_strategies import freeze_strategies
 
 import asyncio
 import uuid
@@ -365,7 +368,7 @@ class LoopObservationService:
             "snapshot_hash": row.snapshot_hash, "accepted_at": row.request_payload.get("accepted_at"),
             "accepted_sequence": row.request_payload.get("accepted_sequence"),
             "input": {"content": row.content, **{key: row.request_payload.get("request", {}).get(key)
-                for key in ("input_type", "request_id", "request_revision")}}}
+                  for key in ("input_type", "request_id", "request_revision", "file_refs")}}}
             for row in sorted(intents, key=lambda row: (row.created_at, row.request_payload.get("accepted_sequence", -1), row.intent_id))
             if row.intent_kind == "workspace_input")
 
@@ -374,6 +377,7 @@ class LoopObservationService:
         request = (row.request_payload or {}).get("request") or {}
         return {"intent_id": row.intent_id, "intent_kind": row.intent_kind,
             "request_hash": row.request_payload.get("request_hash"), "input_type": request.get("input_type"),
+            **({"file_refs": request["file_refs"]} if request.get("file_refs") else {}),
             "request_id": request.get("request_id"), "scope": row.scope, "context_id": row.target_context_id,
             "content": row.content, "goal_revision": row.goal_revision, "authority_revision": row.authority_revision}
 
@@ -499,6 +503,7 @@ class LoopObservationService:
             ),
             base_entity_revisions=base_entity_revisions,
             mission=mission_contract,
+            evolution_strategies=await freeze_strategies(session, loop.workspace_id),
             completion_admission=completion_admission,
             completion_eligibility=completion_eligibility,
             grant={**self._grant_view(grant), "equipment": {
@@ -554,6 +559,7 @@ class LoopObservationService:
                     "request_hash": (row.request_payload or {}).get("request_hash"),
                     "input_type": ((row.request_payload or {}).get("request") or {}).get("input_type"),
                     "request_id": ((row.request_payload or {}).get("request") or {}).get("request_id"),
+                    **({"file_refs": row.request_payload["request"]["file_refs"]} if (row.request_payload or {}).get("request", {}).get("file_refs") else {}),
                     "scope": row.scope,
                     "context_id": row.target_context_id,
                     "content": row.content,
