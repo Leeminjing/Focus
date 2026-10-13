@@ -6,7 +6,7 @@ isolated-write 内部 CreateLanePlan；输出为边界 assessment、R3/R8/R5/F2 
 七工作域六查询/超过旧预算的真实规划及真实 Worker 的资源/证据/窗口 blocker 在缺少检索 manifests 时仍保持 Portfolio 不变，阶段专属失败被映射为领域 blocker 且保留原始因果，compiler blocker 终结 Round，以及未授权隔离写入被拒绝的断言。具体工作流为播种 Loop 与冻结来源、登记完整 expansion
 lifecycle、执行 observe-only 与部署回滚、提交 Kernel intent、注入首次提交回滚或同时发布、从新连接恢复 Outbox 派发，并核对
 comparison artifact、持久计划、来源边与终态历史。
-真实 Worker 负例须先持久化并经 WorkerRuntime 领取唯一尝试身份，不以未登记对象绕过执行资格。
+真实 Worker 负例先持久化绑定的 Observation 与请求，经 WorkerRuntime 领取唯一尝试身份并读取冻结输入，不以未登记对象绕过执行资格。
 重启派发测试调用真实 LoopRunExecutionBoundary 后断言 run_started，保留交付与实际启动的独立职责。
 示例：`pytest backend/tests/test_context_expansion_kernel.py`。
 """
@@ -434,9 +434,10 @@ def test_real_worker_negative_planning_preserves_portfolio(
             async with sessions.begin() as session:
                 session.add(request)
             request = (await runtime._claim_many(1, seeded["loop_id"]))[0]
+            payload, _, _ = await runtime._evidence(request)
             worker_result = await runtime._retrieval_backed_advice(
                 request,
-                {"mission": observation.mission, "frontier_hash": observation.observed_frontier_hash},
+                payload,
                 _NegativePlanningModel(),
                 (index.index_id,),
                 observation.authority_revision,

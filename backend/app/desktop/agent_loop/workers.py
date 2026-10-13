@@ -8,6 +8,8 @@ attempt 与模型用量审计；Curator 返回与 Worker 后果稳定后发布�
 Worker 后果收口委托 rounds 唯一推进事务；完成输入的语义身份与审计来源分开保存于现有 scope。
 完成请求正文通过共享只读投影完整脱敏提供，原冻结材料不变；候选与最终记录复检当前正文证明及摘要。
 独立模型回执事务失败后由WorkerModelUsage保留实测值，在结果/失败/取消事务中补交原receipt；控制已失效时仅结算，不发布结果或复活状态。
+检索规划从 request 绑定的 Observation 同时读取正文与 envelope_hash，校验归属、版本和显式引用；Session 身份包含该完整 hash。
+例如同轮 O1 更新为 O2 后独立规划，O1 的相同输入重试仍复用检查点；缺失绑定不回退读取实时状态或旧 frozen_worker_input。
 """
 
 from __future__ import annotations
@@ -399,9 +401,10 @@ class LoopWorkerRuntime:
             max_tokens=policy.max_planner_tokens,
         )
         observation_hash = stable_expansion_hash(
-            "retrieval-planning-observation",
+            "retrieval-planning-observation-v2",
             request.loop_id,
             request.round_id,
+            payload["observation_hash"],
             payload.get("frontier_hash"),
             derivation.get("mission"),
             tuple(request.scope.get("assignments") or ()),
@@ -608,29 +611,44 @@ class LoopWorkerRuntime:
             round_row = await session.get(LoopRound, request.round_id)
             if loop is None or round_row is None:
                 raise LookupError("Worker 所属 Loop/round 不存在")
-            frozen = request.scope.get("frozen_worker_input")
-            if frozen is not None:
-                return frozen, loop, round_row
             derivation = dict(request.scope.get("derivation_input") or {})
             frozen_ref = derivation.get("decision_inputs_ref")
+            retrieval = request.kind == "retrieval_cognitive_planner" or (
+                request.kind == "lane_curator" and bool(derivation.get("semantic_index_ids"))
+            )
+            frozen = request.scope.get("frozen_worker_input")
+            if frozen is not None and not retrieval:
+                return frozen, loop, round_row
             if request.kind in {"lane_curator", "retrieval_cognitive_planner"}:
                 from backend.app.desktop.agent_loop.models import LoopObservation
                 from backend.app.desktop.agent_loop.schemas import (
                     LoopObservationEnvelope,
                 )
 
-                observation_id = frozen_ref or request.observation_id or round_row.observation_id
+                observation_id = request.observation_id if retrieval else (
+                    frozen_ref or request.observation_id or round_row.observation_id
+                )
                 base = await session.get(LoopObservation, observation_id) if observation_id else None
-                if frozen_ref and (base is None or base.loop_id != loop.loop_id or base.round_id != request.round_id):
+                if retrieval and (
+                    base is None or base.loop_id != request.loop_id or base.round_id != request.round_id
+                    or base.generation != request.observation_generation
+                    or (frozen_ref is not None and frozen_ref != base.observation_id)
+                ):
+                    raise ValueError("检索规划冻结 Observation 绑定缺失或不一致")
+                elif frozen_ref and (base is None or base.loop_id != loop.loop_id or base.round_id != request.round_id):
                     raise ValueError("Curator 冻结 Observation 归属不一致")
-                if base is not None and base.envelope.get("input_schema_version") == 1:
+                if base is not None and (retrieval or base.envelope.get("input_schema_version") == 1):
                     envelope = LoopObservationEnvelope.model_validate(base.envelope)
                     context_ids = {str(assignment["context_id"]) for assignment in request.scope.get("assignments") or () if assignment.get("context_id")}
                     if not context_ids:
                         context_ids = set((envelope.grant or {}).get("context_scope") or ())
                     memory = scoped_memory(envelope, context_ids)
                     scope = {**request.scope, "derivation_input": {**derivation, **memory}}
-                    payload = {**memory, "mission": envelope.mission, "scope": scope, "frontier_hash": envelope.observed_frontier_hash, "workspace": envelope.workspace, "run_evidence": memory["stable_results"]}
+                    payload = {
+                        **memory, "observation_hash": base.envelope_hash, "mission": envelope.mission,
+                        "scope": scope, "frontier_hash": envelope.observed_frontier_hash,
+                        "workspace": envelope.workspace, "run_evidence": memory["stable_results"],
+                    }
                     return payload, loop, round_row
             mission = await session.scalar(select(LoopMissionRevision).where(LoopMissionRevision.loop_id == loop.loop_id, LoopMissionRevision.revision == round_row.goal_revision))
             goal = None if mission is not None else await session.scalar(select(LoopGoalRevision).where(LoopGoalRevision.loop_id == loop.loop_id, LoopGoalRevision.revision == round_row.goal_revision))

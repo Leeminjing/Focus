@@ -92,3 +92,29 @@ openspec validate add-context-evolution-and-file-feedback --strict
 主要增长来自原先不存在的实时不可变文件快照及版本读面，其次是普通输入版本引用、紧凑详情、策略 CRUD/冻结和验证这些边界的集成测试。旧当前文件完成核验与新历史预览用途不同，因此保留；重复的结算摘要生成已在原入口收敛。
 
 本次未执行全仓测试、真实模型试跑或生产数据库迁移，未提交/归档变更。预存 `.gitignore`、gateway、模型工厂、插件注册、工作台 E2E 与既有说明文档修改保持原样。
+
+## 2026-10-13：规划 Session 的 Observation 绑定修复
+
+对应 `fix-planning-session-observation-binding`。此前“策略进入规划身份”的验收结论遗漏了生产 Worker：完整 Observation hash 已含策略与反馈，但 Worker 另外计算的窄 hash 未使用它。同一 Round 更新 Observation 后，实际数据库回归复现了新旧请求命中同一 Session，直接返回旧规划。旧策略测试只手工传入不同 digest，无法证明这条生产路径正确。
+
+`workers.py` 现从检索规划请求绑定的 Observation 同时取得冻结正文与已有 envelope_hash，校验 Loop、Round、generation 及显式引用；检索路径不再使用旧 frozen_worker_input 或实时状态作为替代。Session 身份采用 `retrieval-planning-observation-v2` 域并纳入该完整 hash，保留现有分配、目录、资源和预算隔离条件。其他 Worker 的输入模式保持原逻辑。
+
+同一冻结输入的重试仍复用结果、检查点和用量；新观察使用新 Session。旧 Session 保留审计记录，无旧身份回退读取，不修改已执行结果。没有新增数据库表、迁移、状态机或缓存服务。
+
+实施前通过 Context7 查询了 SQLAlchemy 2 的 [AsyncSession.get](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html#sqlalchemy.ext.asyncio.AsyncSession.get) 和 [Session 身份缓存/刷新语义](https://docs.sqlalchemy.org/en/20/orm/session_basics.html#expiring-refreshing)。继续复用现有授权检查的 `with_for_update`/`populate_existing`，模型调用保持在数据库事务之外。
+
+验证汇总为 **75 项定向测试通过**：
+
+- 15 项新增 PostgreSQL 回归覆盖策略、正文、文件版本、观察代际变化；完成结果重放与未完成检查点恢复；旧阻塞、错误绑定、旧身份缓存隔离；旧 Worker 检查点写入拒绝。使用真实 Worker 输入装配、领取、规划器与仓储，模型响应受控，不声称真实模型或完整桌面调度端到端验证。
+- 55 项相关策略、语义派生、Worker 恢复与冻结输入回归通过。
+- 5 项既有真实 Worker 负例改为调用生产冻结输入装配后通过。首次适配重复插入已有 Observation 的夹具问题已纠正，未改弱业务校验。
+
+执行命令（沿用上文 PYTHONPATH 设置）：
+
+```text
+python -m pytest backend/tests/test_evolution_strategies.py backend/tests/test_complete_semantic_context_derivation.py backend/tests/test_loop_worker_recovery.py backend/tests/test_round_task_progress.py::test_round_freeze_late_sources_readiness_and_atomic_publication backend/tests/test_context_expansion_kernel.py::test_real_worker_negative_planning_preserves_portfolio -q --tb=short -p no:cacheprovider
+python -m pytest backend/tests/test_planning_observation_binding.py backend/tests/test_context_expansion_kernel.py::test_real_worker_negative_planning_preserves_portfolio -q --tb=short -p no:cacheprovider
+openspec validate fix-planning-session-observation-binding --strict
+```
+
+此次修复单独统计：业务代码新增 26、删除 8、净增 18 行；测试代码新增 282、删除 8、净增 274 行。测试增长主要来自此前缺失的真实数据库 Session 隔离和恢复边界；复用了已有 Loop、Observation 及索引夹具，删除了手工 digest 失效断言。文档与 OpenSpec 不计入业务/测试统计。未运行全量测试，未提交或推送本次修复。

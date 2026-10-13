@@ -2,6 +2,7 @@
 
 输入为隔离 PostgreSQL 和真实 MemoryService；输出为预置不覆盖、范围隔离和冻结 hash 的断言。
 工作流创建普通/策略记忆，冻结后编辑并复核旧快照和新版本；不调用外部模型。
+受控模型验证策略和用户反馈进入规划载荷；生产 Session 隔离由 test_planning_observation_binding 的数据库回归覆盖。
 示例：python -m pytest backend/tests/test_evolution_strategies.py -q。
 """
 
@@ -132,20 +133,18 @@ def test_strategy_scenarios_use_frozen_planning_and_existing_candidate_contract(
     async def run():
         index = _long_index()
         catalog = PortfolioIndexCatalog.create(frontier_hash="f" * 64, indexes=(index,))
-        def session_for(digest):
-            return PlanningRetrievalSession.create(observation_hash=digest, frontier_hash="f" * 64, catalog=catalog,
-                planner_version=RetrievalBackedCognitiveAdvisor.VERSION, retrieval_version=AuthorizedSemanticRetriever.VERSION,
-                budget=RetrievalBudget(max_queries=2, max_candidates=16, max_exact_reads=4, max_model_calls=3, max_tokens=1000))
+        planning = PlanningRetrievalSession.create(observation_hash="o" * 64, frontier_hash="f" * 64, catalog=catalog,
+            planner_version=RetrievalBackedCognitiveAdvisor.VERSION, retrieval_version=AuthorizedSemanticRetriever.VERSION,
+            budget=RetrievalBudget(max_queries=2, max_candidates=16, max_exact_reads=4, max_model_calls=3, max_tokens=1000))
         payload = {"mission": {"outcome": scenario}, "frontier_hash": "f" * 64,
             "scope": {"derivation_input": {"portfolio_index_catalog": catalog.model_dump(mode="json"),
                 "evolution_strategies": (snapshot,), "user_intents": (feedback,)}}}
         advisor = RetrievalBackedCognitiveAdvisor(ControlledModel())
-        result = await advisor.plan(payload, session_for("o" * 64), (index,))
+        result = await advisor.plan(payload, planning, (index,))
         assert result.session.state == "planned", result.blocker_summary
         assert tuple(item.objective for item in result.proposal.work_specs) == objectives
         assert len(seen) == 3
         resumed = await advisor.plan(payload, result.session, (index,))
         assert resumed.proposal == result.proposal and len(seen) == 3
-        assert session_for("p" * 64).session_id != result.session.session_id
         assert index.index_id == catalog.descriptors[0].index_id
     asyncio.run(run())
