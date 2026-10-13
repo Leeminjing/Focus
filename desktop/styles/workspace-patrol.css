@@ -3,11 +3,13 @@
  * 具体工作流为安静态以窗口比例决定大标题、横向 composer 和圆形发送控件，显式详情通过三列网格承接图/进度/观察/事实，临时导航由语义 class 控制；dialog 处理模态，Context 保持非模态，长请求身份在输入区换行可读。
  * 示例：.workspace-patrol.is-quiet；阅读与状态颜色沿用宿主 token，玻璃亮边在当前模块定义，共用节点与边材质由 loop-console.css 提供，图工具栏独立于平移画布，完整检查保留可滚动阅读底。
   * 文件事实固定 60px 高，文件详情保留底部输入空间，窄屏继续使用同一草稿节点。
+ * 输入记录为固定非模态滚动区域：安静态锚定清空按钮左侧与底边，宽高按 composer 的 34.4%/31.5% 校准并受视口限制；详情锚定 composer 上方。
+ * 安静态采用 safe center 与正常输入框定位，短视口通过页面滚动维持标题、清空按钮和输入框的间距。
 */
 #app:has(.workspace-patrol) { padding: 0; }
 .workspace-patrol { position: relative; min-height: 100%; padding: 28px 32px 20px; display: flex; flex-direction: column; gap: 18px; }
-.workspace-patrol.is-quiet { justify-content: center; align-items: center; gap: 28px; padding: 32px clamp(32px, 4vw, 64px); background: transparent; }
-.workspace-patrol.is-quiet [data-patrol-composer] { width: 100%; max-width: 1240px; padding: 24px 28px; border-radius: 28px; }
+.workspace-patrol.is-quiet { justify-content: safe center; align-items: center; gap: 28px; padding: 32px clamp(32px, 4vw, 64px); background: transparent; }
+.workspace-patrol.is-quiet [data-patrol-composer] { position: relative; width: 100%; max-width: 1240px; padding: 24px 28px; border-radius: 28px; }
 [data-patrol-details-content][data-surface-closing] { position: absolute; inset: 26px 30px auto; }
 .patrol-composer-footer, .patrol-composer-footer > div, .patrol-page-heading, .patrol-observations header { display: flex; align-items: center; gap: 10px; }
 .patrol-quiet-heading, .workbench-composer-icon { display: none; }
@@ -16,7 +18,32 @@
 .patrol-quiet-heading p { margin: 0; font-size: clamp(17px, 1.65vw, 22px); color: var(--text-secondary); }
 .patrol-quiet-heading button { padding: 10px 20px; flex-shrink: 0; border-color: var(--material-rim); background: var(--material-fill); box-shadow: inset 0 2px 2px white, inset 0 -1px 2px #ffffff88; }
 .is-quiet [data-patrol-composer] textarea { height: clamp(108px, 15vh, 144px); min-height: 108px; font-size: clamp(18px, 1.6vw, 22px); }
-[data-patrol-composer] { width: 100%; position: sticky; bottom: 0; z-index: 3; padding: 14px 18px; border-radius: 24px; }
+[data-patrol-composer] { anchor-name: --patrol-composer; width: 100%; position: sticky; bottom: 0; z-index: 3; padding: 14px 18px; border-radius: 24px; }
+[data-patrol-clear-draft] { anchor-name: --patrol-clear; }
+[data-patrol-input-history] {
+  --history-gap: clamp(12px, calc(anchor-size(--patrol-composer width) * .031), 40px);
+  position: fixed; z-index: 30; margin: 0; padding: 18px 22px; border-radius: 22px;
+  left: max(16px, calc(anchor(--patrol-composer right) - anchor-size(--patrol-composer width) * .344));
+  right: anchor(--patrol-composer right);
+  top: max(16px, calc(anchor(--patrol-composer top) - var(--history-gap) - anchor-size(--patrol-composer width) * .315));
+  bottom: calc(anchor(--patrol-composer top) + var(--history-gap));
+  overflow-y: auto; overscroll-behavior: contain; overflow-anchor: none; scrollbar-gutter: stable;
+  font-size: 14px; -webkit-app-region: no-drag;
+}
+.is-quiet [data-patrol-input-history] {
+  left: max(16px, calc(anchor(--patrol-clear left) - var(--history-gap) - anchor-size(--patrol-composer width) * .344));
+  right: calc(anchor(--patrol-clear left) + var(--history-gap));
+  top: max(16px, calc(anchor(--patrol-clear bottom) - anchor-size(--patrol-composer width) * .315));
+  bottom: anchor(--patrol-clear bottom);
+}
+[data-patrol-history] article { padding: 14px 0; border-bottom: 1px solid var(--border-subtle); }
+[data-patrol-history] article:first-child { padding-top: 0; }
+[data-patrol-history] article:last-child { border-bottom: 0; }
+[data-patrol-history] pre { margin: 0 0 6px; font-family: inherit; line-height: 1.6; }
+[data-patrol-history] header { display: flex; flex-wrap: wrap; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+[data-patrol-history] button, [data-patrol-history-retry] { color: var(--text-accent); margin-top: 6px; }
+[data-patrol-history-status] { color: var(--text-secondary); font-size: 12px; }
+@media (max-width: 600px) { .patrol-quiet-heading [data-patrol-clear-draft] { margin-left: auto; } [data-patrol-input-history] { padding: 12px; } }
 [data-patrol-composer] textarea { display: block; width: 100%; min-height: 48px; height: 48px; font-size: 16px; border: 0; outline: 0; resize: none; background: transparent; padding: 8px 0; line-height: 1.7; }
 [data-patrol-composer] textarea::placeholder { color: var(--text-secondary); }
 .is-quiet [data-patrol-composer] textarea:disabled { opacity: .78; }

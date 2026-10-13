@@ -4,6 +4,7 @@
  * 主输入走 workspace intake，固定当时可见的 Live 游标、Fact revision 与独立 Run 有界片段；旧请求重试复用原文和证据。Observation 按精确版本检视，迟到分页不得进入另一版本。
  * 显隐复用 SurfaceTransition 保留输入节点，运行预览复用共享 Run 观察器，折叠/离开释放订阅；原生 dialog 管理焦点，AbortController 清理监听与读请求。示例：await controller.mount(host, workspace)。
  * 文件详情/候选响应绑定工作区与请求代际；实时文件事实保留历史滚动位置，详情与输入节点独立。
+ * 输入记录复用非模态显隐和游标查询，开关只改变面板；草稿更新保留记录 DOM，内容更新恢复可见记录偏移，滚动续页仅允许一个在途请求。
  */
 (function (root, factory) {
   const api = factory(root);
@@ -21,6 +22,11 @@
     let lineageToken = 0;
     let historyKey = null;
     let historyToken = 0;
+    let historyOpen = false;
+    let historyReady = false;
+    let historyLoading = false;
+    let historyFailure = null;
+    let historyHTML = "";
     let unlisten = null;
 
 
@@ -90,6 +96,7 @@
       return root.FocusSurfaceTransition.visible(host.querySelector("[data-patrol-dialog]"), false, { modal: true });
     }
     function toggleDetails() {
+      setHistoryOpen(false);
       detailsOpen = !detailsOpen;
       const section = host.querySelector(".workspace-patrol"), details = host.querySelector("[data-patrol-details-content]");
       const composer = host.querySelector("[data-patrol-composer]");
@@ -300,18 +307,74 @@
       factPage = { ...page, facts: [...new Map(merged.map(item => [item.fact_id, item])).values()] };
       showDialog("facts", "LoopFact", `<div class="patrol-fact-filters"><label>类型<select data-patrol-fact-filter="kind">${["", "run", "test", "context_revision", "artifact", "workspace", "directive"].map(v => `<option value="${v}"${factOptions.kind === v ? " selected" : ""}>${v || "全部"}</option>`).join("")}</select></label><label>事实状态<select data-patrol-fact-filter="status">${root.FocusLoopFactsView.statusOptions.map(([value, label]) => `<option value="${value}"${factOptions.status === value ? " selected" : ""}>${label}</option>`).join("")}</select></label><label>业务结果<select data-patrol-fact-filter="outcomeStatus">${root.FocusLoopFactsView.outcomeOptions.map(([value, label]) => `<option value="${value}"${factOptions.outcomeStatus === value ? " selected" : ""}>${label}</option>`).join("")}</select></label><label>Context<input data-patrol-fact-filter="contextId" value="${view.escape(factOptions.contextId)}" placeholder="精确 Context 身份"></label></div><div class="patrol-facts"><table><tbody>${root.FocusLoopFactsView.renderRows(factPage.facts)}</tbody></table></div><p>${factPage.has_more ? "后续还有事实" : "已到当前查询范围末尾"}</p>${factPage.has_more ? '<button data-patrol-facts-older>加载更早事实</button>' : ""}`);
     }
+    function patchHistory(model) {
+      const panel = host.querySelector("[data-patrol-input-history]"), list = host.querySelector("[data-patrol-history]");
+      const html = view.history(model);
+      if (html !== historyHTML) {
+        const top = panel.scrollTop, edge = panel.getBoundingClientRect().top;
+        const visible = top > 0 ? [...list.children].find(row => row.getBoundingClientRect().bottom > edge) : null;
+        const offset = visible ? visible.getBoundingClientRect().top - edge : 0;
+        const id = visible?.dataset.submissionId;
+        list.innerHTML = html; historyHTML = html;
+        const retained = id && [...list.children].find(row => row.dataset.submissionId === id);
+        panel.scrollTop = retained ? panel.scrollTop + retained.getBoundingClientRect().top - edge - offset : top;
+      }
+      const occupied = Boolean(model.draft.content || model.draft.file_refs?.length);
+      for (const button of list.querySelectorAll("[data-patrol-edit-failed]")) {
+        button.disabled = occupied;
+        button.title = occupied ? "先处理当前草稿" : "";
+      }
+      patchHistoryStatus();
+      void loadOlderHistory();
+    }
+    function patchHistoryStatus() {
+      const status = host.querySelector("[data-patrol-history-status]");
+      status.textContent = historyFailure ? `读取记录失败：${historyFailure.message || historyFailure}` : historyLoading ? "正在读取记录…" : "";
+      status.hidden = !status.textContent;
+      host.querySelector("[data-patrol-history-retry]").hidden = !historyFailure;
+    }
+    function setHistoryOpen(show) {
+      if (!host || historyOpen === show) return;
+      historyOpen = show;
+      const panel = host.querySelector("[data-patrol-input-history]"), button = host.querySelector("[data-patrol-history-open]");
+      button.setAttribute("aria-expanded", String(show));
+      if (!show && panel.contains(root.document.activeElement)) button.focus({ preventScroll: true });
+      const owner = token;
+      void root.FocusSurfaceTransition.visible(panel, show).then(() => {
+        if (owner !== token || !show || !historyOpen) return;
+        panel.scrollTop = 0;
+        void loadOlderHistory();
+      });
+    }
+    async function loadOlderHistory(retry = false) {
+      if (!host || !historyOpen || historyLoading || (historyFailure && !retry)) return;
+      const panel = host.querySelector("[data-patrol-input-history]"), cursor = inputs.get().cursor;
+      if (historyReady && (!cursor || (!retry && panel.scrollHeight - panel.scrollTop - panel.clientHeight > 64))) return;
+      const owner = token, initialize = !historyReady;
+      historyLoading = true; historyFailure = null; patchHistoryStatus();
+      try {
+        const page = await api.workspaceInputs(workspace.workspace_id, initialize ? undefined : cursor);
+        if (owner !== token) return;
+        historyReady = true;
+        inputs.history(page, !initialize, initialize);
+      } catch (failure) { if (owner === token) historyFailure = failure; }
+      finally {
+        if (owner === token) {
+          historyLoading = false; patchHistoryStatus();
+          void loadOlderHistory();
+        }
+      }
+    }
     const patchInputs = model => {
       if (!host) return;
-      host.querySelector("[data-patrol-history]").innerHTML = view.history(model);
+      patchHistory(model);
       const content = host.querySelector("[data-patrol-content]");
       if (content.value !== model.draft.content) content.value = model.draft.content;
       host.querySelector("[data-patrol-file-refs]").innerHTML = (model.draft.file_refs || []).map(file => `<span>${view.escape(file.path)} · ${view.escape((file.sha256 || file.result_key).slice(0, 8))}<button type="button" data-patrol-file-remove="${view.escape(file.result_key)}" aria-label="移除文件引用">×</button></span>`).join("");
       host.querySelector("[data-patrol-type]").value = model.draft.input_type;
       host.querySelector("[data-patrol-target]").textContent = model.draft.request_id ? `回答请求 ${model.draft.request_id} · 版本 ${model.draft.request_revision ?? "未知"}` : "";
       host.querySelector("[data-patrol-clear-target]").hidden = !model.draft.request_id;
-      host.querySelector("[data-patrol-fold]").textContent = model.expanded ? "收起历史" : "展开更早记录";
-      host.querySelector("[data-patrol-older]").hidden = !model.expanded || !model.cursor;
-      const latest = model.visible[0];
+      const latest = model.rows[0];
       host.querySelector("[data-patrol-receipt]").textContent = latest ? ({ accepted: "已受理 · 变化以提交进度为准", sending: "发送中", failed: "发送失败 · 可在输入记录重试" }[latest.status] || "") : "";
       patchFileFacts();
     };
@@ -442,7 +505,7 @@
         if (button.hasAttribute("data-patrol-file-picker-open")) await openFilePicker();
         else if (button.dataset.patrolFileAdd) addFileReference(JSON.parse(button.dataset.patrolFileAdd));
         else if (button.dataset.patrolFileRemove) inputs.edit({ file_refs: inputs.get().draft.file_refs.filter(item => item.result_key !== button.dataset.patrolFileRemove) });
-        else if (button.dataset.patrolEditFailed) { inputs.editFailed(button.dataset.patrolEditFailed); await closeDialog(); host.querySelector("[data-patrol-content]").focus(); }
+        else if (button.dataset.patrolEditFailed) { inputs.editFailed(button.dataset.patrolEditFailed); host.querySelector("[data-patrol-content]").focus(); }
         else if (button.hasAttribute("data-patrol-file-close")) { fileVersion++; host.querySelector("[data-patrol-file-detail]").hidden = true; }
         else if (button.hasAttribute("data-patrol-new-facts")) { const stream = host.querySelector("[data-patrol-facts]"); stream.scrollTop = stream.scrollHeight; button.hidden = true; }
         else if (button.hasAttribute("data-patrol-details")) toggleDetails();
@@ -455,7 +518,8 @@
           showPanel("context");
         }
         else if (button.hasAttribute("data-patrol-dialog-close")) void closeDialog();
-        else if (button.hasAttribute("data-patrol-history-open")) showDialog("history", "输入记录", "", host.querySelector("[data-patrol-input-history]"));
+        else if (button.hasAttribute("data-patrol-history-open")) setHistoryOpen(!historyOpen);
+        else if (button.hasAttribute("data-patrol-history-retry")) void loadOlderHistory(true);
         else if (button.hasAttribute("data-patrol-pending")) showDialog("requests", "待处理工作", "", host.querySelector("[data-patrol-requests]"));
         else if (button.hasAttribute("data-patrol-progress-open")) { progressFilter = "all"; await openProgress(); }
         else if (button.hasAttribute("data-patrol-grant-open")) await openGrant();
@@ -482,8 +546,6 @@
         else if (button.hasAttribute("data-patrol-lineage-retry") && projection) { previews?.retry(); await refreshLineage(projection); }
         else if (button.hasAttribute("data-patrol-facts-open")) await loadFacts();
         else if (button.hasAttribute("data-patrol-facts-older")) await loadFacts(true);
-        else if (button.hasAttribute("data-patrol-fold")) inputs.expand(!inputs.get().expanded);
-        else if (button.hasAttribute("data-patrol-older")) { const owner = token; const page = await api.workspaceInputs(workspace.workspace_id, inputs.get().cursor); if (owner === token) inputs.history(page, true); }
         else if (button.dataset.patrolRetry) { const row = inputs.retry(button.dataset.patrolRetry); if (row) void send(row); }
         else if (button.dataset.patrolAnswer) { inputs.edit({ request_id: button.dataset.patrolAnswer, request_revision: Number(button.dataset.requestRevision) }); const owner = token; if (await closeDialog() && owner === token) host.querySelector("textarea").focus(); }
         else if (button.hasAttribute("data-patrol-clear-target")) inputs.edit({ request_id: null, request_revision: null });
@@ -534,6 +596,7 @@
       leave();
       host = node; workspace = bound; const current = token;
       lifetime = new AbortController();
+      historyLoading = true;
       host.innerHTML = view.skeleton(bound);
       inspector = root.FocusContextInspector.create({ api, onOpenTask, presentation: "workbench", getManifest: manifest, onSelectionChange: selectionChanged });
       inspector.mount(host.querySelector("[data-patrol-context]"));
@@ -552,6 +615,8 @@
       content.addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); content.form.requestSubmit(); } }, options);
       host.querySelector("[data-patrol-type]").addEventListener("change", event => inputs.edit({ input_type: event.target.value }), options);
       host.addEventListener("click", click, options);
+      host.querySelector("[data-patrol-input-history]").addEventListener("scroll", () => { void loadOlderHistory(); }, { ...options, passive: true });
+      root.addEventListener("resize", () => { void loadOlderHistory(); }, options);
       host.addEventListener("portfolio-clear-selection", () => { highlightIds = []; closeInspection(); }, options);
       host.addEventListener("keydown", event => {
         if (event.key !== "Escape" || event.isComposing) return;
@@ -559,7 +624,10 @@
         if (!file.hidden || !picker.hidden) {
           fileVersion++; file.hidden = true; picker.hidden = true;
           content.focus({ preventScroll: true }); event.preventDefault();
-        } else if (!host.querySelector("[data-patrol-dialog]").open) closeInspection();
+        } else if (!host.querySelector("[data-patrol-dialog]").open) {
+          if (historyOpen) { setHistoryOpen(false); event.preventDefault(); }
+          else closeInspection();
+        }
       }, options);
       host.addEventListener("change", event => {
         const key = event.target.dataset.patrolFactFilter;
@@ -601,9 +669,13 @@
       try {
         const [loop, page] = await Promise.all([api.workspacePatrol(bound.workspace_id), api.workspaceInputs(bound.workspace_id)]);
         if (current !== token) return;
-        inputs.history(page);
+        historyReady = true;
+        inputs.history(page, false, true);
         if (loop) connect(loop.loop_id);
-      } catch (failure) { if (current === token) error(failure); }
+      } catch (failure) { if (current === token) { historyFailure = failure; error(failure); } }
+      finally {
+        if (current === token) { historyLoading = false; patchHistoryStatus(); void loadOlderHistory(); }
+      }
     }
     function leave() {
       previews?.stop();
@@ -614,6 +686,9 @@
       lifetime?.abort(); lifetime = null;
       if (host) for (const element of host.querySelectorAll("[data-surface-managed], [data-patrol-composer]")) root.FocusSurfaceTransition.finish(element);
       host?.querySelector("[data-patrol-dialog]")?.close();
+      const history = host?.querySelector("[data-patrol-input-history]");
+      if (history) { history.hidden = true; history.inert = true; }
+      historyOpen = false; historyReady = false; historyLoading = false; historyFailure = null; historyHTML = "";
       inspector?.dispose(); inspector = null; observation = null; observationIdentity = null; observationInspection = null;
       movedPanel = null; dialogKind = null; projection = null; detailsOpen = false; detailsScroll = 0; lineageSnapshot = null;
       unlisten?.(); unlisten = null; host = null; workspace = null; loopId = null; lineageKey = null; historyKey = null; connection.stop();

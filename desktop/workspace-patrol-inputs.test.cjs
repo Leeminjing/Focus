@@ -1,4 +1,4 @@
-/* 本文件对外提供 Patrol 连续输入、稳定重试、历史合并与三条折叠的 Node 回归。
+/* 本文件对外提供 Patrol 连续输入、稳定重试、全量历史合并与分页游标的 Node 回归。
  * 输入为倒序完成的模拟 HTTP 回执；输出为草稿/类型/回答目标和发送状态断言。
  * 工作流为冻结 A/B、编辑 C、重试失败记录并重载历史，不采样模型。示例：node --test desktop/workspace-patrol-inputs.test.cjs。
  */
@@ -47,7 +47,7 @@ test("A/B responses never clear or change C draft, type or target", () => {
   assert.equal(store.get().rows.every(row => row.status === "accepted"), true);
 });
 
-test("four types share three visible records, folding preserves all history", () => {
+test("four types retain all loaded history in descending order", () => {
   let id = 0;
   const store = create(() => String(++id));
   for (const input_type of ["information", "outcome", "boundary", "completion_check"]) {
@@ -55,13 +55,28 @@ test("four types share three visible records, folding preserves all history", ()
     store.submit();
   }
   assert.equal(store.get().rows.length, 4);
-  assert.deepEqual(store.get().visible.map(row => row.input_type), ["completion_check", "boundary", "outcome"]);
-  store.expand(true);
-  assert.equal(store.get().visible.length, 4);
+  assert.deepEqual(store.get().rows.map(row => row.input_type), ["completion_check", "boundary", "outcome", "information"]);
   store.history({ items: [{ submission_id: "older", intent_id: "old", content: "旧边界", input_type: "boundary", created_at: "2020-01-01" }], next_before: "old" }, true);
-  store.expand(false);
   assert.equal(store.get().rows.length, 5);
-  assert.equal(store.get().visible.length, 3);
+  assert.equal(store.get().rows.at(-1).submission_id, "older");
+});
+
+test("latest refresh preserves exhausted traversal, remount starts from latest page", () => {
+  const store = create();
+  const latest = { items: [], next_before: "first" };
+  store.history(latest, false, true);
+  store.history({ items: [], next_before: "second" }, true);
+  store.history(latest);
+  assert.equal(store.get().cursor, "second");
+  store.history({ items: [], next_before: null }, true);
+  store.history(latest);
+  assert.equal(store.get().cursor, null);
+  const newRows = Array.from({ length: 60 }, (_, i) => ({ submission_id: `new-${i}`, intent_id: `new-${i}`, created_at: String(i).padStart(3, "0"), content: String(i), input_type: "information" }));
+  store.history({ items: newRows.slice(10).reverse(), next_before: "new-10" }, false, true);
+  assert.equal(store.get().cursor, "new-10");
+  store.history({ items: newRows.slice(0, 10).reverse(), next_before: null }, true);
+  assert.equal(store.get().rows.length, 60);
+  assert.equal(store.get().cursor, null);
 });
 
 test("reloading accepted history merges identities and never affects draft", () => {

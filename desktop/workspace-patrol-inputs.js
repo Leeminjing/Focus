@@ -1,7 +1,7 @@
 /* 本文件对外提供工作区 Patrol 的输入记录与提交快照 store。
- * 输入为四类草稿、指定请求、历史页及耐久回执；输出为独立发送状态和合计最近三条记录。
+ * 输入为四类草稿、指定请求、历史页及耐久回执；输出为独立发送状态、全部已加载倒序记录及历史游标。
  * 具体工作流为提交时深复制并冻结正文/类型/目标与可见因果线索，立即释放该草稿，回调仅修改对应记录；重试沿用身份与原时点，
- * 新草稿、折叠和历史分页互不覆盖。示例：const row = store.submit(); await send(row.request)。
+ * 新草稿与历史分页互不覆盖；首次页建立本次遍历，普通首页刷新不重启已耗尽游标。示例：store.history(page, false, true); const row = store.submit(); await send(row.request)。
  * file_refs 与正文同时深冻结；校验拒绝只恢复未被后续编辑替换的草稿，editFailed 允许空草稿重新编辑，重试保留原版本。
  */
 (function (root, factory) {
@@ -15,7 +15,7 @@
     ? Object.freeze(Array.isArray(value) ? value.map(frozenCopy) : Object.fromEntries(Object.entries(value).map(([key, item]) => [key, frozenCopy(item)]))) : value;
   function create(identity = () => crypto.randomUUID(), accessMode = "workspace-write") {
     let draft = { content: "", input_type: "information", request_id: null, request_revision: null, file_refs: [] };
-    let expanded = false;
+    let historyInitialized = false;
     let order = 0;
     let draftRevision = 0;
     let cursor = null;
@@ -25,13 +25,12 @@
       const time = String(b.created_at || "").localeCompare(String(a.created_at || ""));
       return time || b.order - a.order || String(b.intent_id || "").localeCompare(String(a.intent_id || ""));
     });
-    const get = () => ({ draft: { ...draft }, expanded, cursor, rows: sorted(), visible: expanded ? sorted() : sorted().slice(0, 3) });
+    const get = () => ({ draft: { ...draft }, cursor, rows: sorted() });
     const publish = () => listeners.forEach(listener => listener(get()));
     return Object.freeze({
       get,
       subscribe(listener) { listeners.add(listener); listener(get()); return () => listeners.delete(listener); },
       edit(patch) { draftRevision++; draft = { ...draft, ...patch, ...(patch.file_refs ? { file_refs: frozenCopy(patch.file_refs) } : {}) }; publish(); },
-      expand(value) { expanded = value; publish(); },
       submit(visibleContext = null) {
         if (!draft.content.trim()) throw new Error("请输入非空信息");
         const request = frozenCopy({ submission_id: identity(), access_mode: accessMode, ...draft, ...(visibleContext ? { visible_context: visibleContext } : {}) });
@@ -59,13 +58,14 @@
         draft = { ...draft, content: row.content, file_refs: row.file_refs || [], input_type: row.input_type, request_id: row.request_id, request_revision: row.request_revision };
         publish();
       },
-      history(page, older = false) {
+      history(page, older = false, initialize = false) {
         for (const item of page.items) {
           const id = item.submission_id;
           const old = rows.get(id);
           rows.set(id, { ...old, ...item, order: old?.order || 0, status: "accepted" });
         }
-        if (older || cursor === null) cursor = page.next_before;
+        if (older || initialize || !historyInitialized) cursor = page.next_before;
+        historyInitialized = true;
         publish();
       },
     });

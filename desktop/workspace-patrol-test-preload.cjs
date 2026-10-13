@@ -3,6 +3,7 @@
  * 工作流为沿用普通会话 fixture，可取消/拒绝/暂停目录选择和绑定；旧目录列表请求显式失败，发送回执和观测独立提交，冻结覆盖不完整但页已读完，记录装备调用的实际 draft-open 路由；可注入图读取失败、删除冲突及精确版本会话，均仅限隔离测试。
  * 示例：BrowserWindow({ webPreferences: { preload: __filename, contextIsolation: false } })。
   * fileFeedbackFetch 是文件版本/策略页面测试的可选 HTTP fixture 扩展入口。
+ * 历史读取按 before 身份倒序分页，historyPageSize/holdHistory/failHistory 可验证连续滚动、失败与迟到响应；seedHistory 仅向隔离 fixture 写入记录。
 */
 require("./context-ui-test-preload.cjs");
 const base = window.fetch;
@@ -14,6 +15,8 @@ let sequence = 0;
 window.patrolFixture = {
   pageError: null, pagesEmpty: false, reloads: 0, mainSubmissions: [], waitAnswers: [], grantChanges: [],
   observationError: false,
+  historyPageSize: 50, historyRequests: [], historyReleases: [], holdHistory: false, failHistory: false,
+  seedHistory(id, rows) { records.set(id, rows); loops.set(id, true); localStorage.setItem(`patrol-fixture:${id}`, JSON.stringify(rows)); },
   submissions: [], releases: [], hold: false, failReply: false, draftOpens: [],
   folder: null, folderError: false, folderCalls: 0, holdFolder: false, releaseFolder: null,
   workspaceBinds: [], bindError: false, holdBind: false, releaseBind: null, historyListRequests: 0,
@@ -99,7 +102,16 @@ window.fetch = async (input, options = {}) => {
       if (stored.length) loops.set(id, true);
     }
     if (!workspace[2]) return json(loops.has(id) ? { loop_id: `loop-${id}`, workspace_id: id } : null);
-    if (!options.method || options.method === "GET") return json({ items: [...(records.get(id) || [])].reverse(), next_before: null, has_more: false });
+    if (!options.method || options.method === "GET") {
+      const before = url.searchParams.get("before"), rows = [...(records.get(id) || [])].reverse();
+      const start = before ? rows.findIndex(row => row.intent_id === before) + 1 : 0;
+      const items = rows.slice(start, start + window.patrolFixture.historyPageSize);
+      const has_more = start + items.length < rows.length;
+      window.patrolFixture.historyRequests.push({ id, before });
+      if (window.patrolFixture.holdHistory) await new Promise(resolve => window.patrolFixture.historyReleases.push(resolve));
+      if (window.patrolFixture.failHistory) { window.patrolFixture.failHistory = false; return new Response("历史读取中断", { status: 503 }); }
+      return json({ items, next_before: has_more ? items.at(-1).intent_id : null, has_more });
+    }
     const body = JSON.parse(options.body);
     window.patrolFixture.submissions.push(body);
     loops.set(id, true);

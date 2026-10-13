@@ -4,6 +4,7 @@
  * 示例：host.innerHTML = FocusWorkspacePatrolView.skeleton(workspace)。
  * lineageManifest 输入 Live 投影或 console 节点摘要，输出保留真实最新 Run、roots 与历史祖先的共享图数据；来源按钮交回同一只读检查器。
  * 文件详情为非模态 aside，普通输入附加可移除版本引用，选择文件不改变发送目标。
+ * 输入记录为无标题的非模态滚动区域，history 输入全部已加载 rows，输出正文和真实发送状态；面板显隐不替换 composer。
  */
 (function (root, factory) {
   const api = factory(root);
@@ -18,7 +19,7 @@
       <textarea data-patrol-content rows="3" aria-label="向 Patrol 输入信息" data-i18n-placeholder="patrol.placeholder" placeholder="描述你的任务、问题或想法…"${workspace ? "" : " disabled"}></textarea>
       <div data-patrol-file-refs aria-label="已引用文件版本"></div><button type="button" data-patrol-file-picker-open>＠ 引用文件版本</button><div data-patrol-file-picker hidden aria-label="选择文件版本"></div>
       <p data-patrol-error role="alert" hidden></p><div class="patrol-composer-footer"><div><button type="button" data-action="show-patrol" data-patrol-switch>▢ ${escape(workspace?.display_name || "选择工作区")}</button><select data-patrol-type aria-label="输入类型">${Object.entries(labels).map(([key, label]) => `<option value="${key}">${label}</option>`).join("")}</select><span data-patrol-target></span><button type="button" data-patrol-clear-target hidden>改为主动输入</button></div>
-      <div><span data-patrol-receipt role="status"></span><button type="button" data-patrol-pending hidden>待处理</button><button type="button" data-patrol-live-retry hidden>重连工作状态</button><button type="button" data-patrol-history-open>输入记录</button><button type="button" data-patrol-details aria-expanded="false" aria-controls="patrolWorkDetails">查看工作详情 ↗</button><button type="submit" aria-label="发送给工作区 Patrol"${workspace ? "" : " disabled"}>↑</button></div></div><small data-patrol-state role="status">${workspace ? "正在读取工作状态" : "先选择工作区文件夹，确认后即可输入"}</small></form>`;
+      <div><span data-patrol-receipt role="status"></span><button type="button" data-patrol-pending hidden>待处理</button><button type="button" data-patrol-live-retry hidden>重连工作状态</button><button type="button" data-patrol-history-open aria-expanded="false" aria-controls="patrolInputHistory">输入记录</button><button type="button" data-patrol-details aria-expanded="false" aria-controls="patrolWorkDetails">查看工作详情 ↗</button><button type="submit" aria-label="发送给工作区 Patrol"${workspace ? "" : " disabled"}>↑</button></div></div><small data-patrol-state role="status">${workspace ? "正在读取工作状态" : "先选择工作区文件夹，确认后即可输入"}</small></form>`;
   }
   function skeleton(workspace) {
     return `<section class="workspace-patrol is-quiet" data-workbench-panel="graph"><div id="patrolWorkDetails" data-patrol-details-content hidden inert>
@@ -34,12 +35,12 @@
       ${composer(workspace)}
       <aside data-patrol-file-detail hidden class="patrol-file-detail glass-surface" aria-label="文件版本详情"><header><h2>文件版本</h2><button type="button" data-patrol-file-close aria-label="关闭文件详情">×</button></header><div data-patrol-file-body></div></aside>
       <dialog data-patrol-dialog class="patrol-dialog glass-surface" aria-labelledby="patrolDialogTitle"><header><h2 id="patrolDialogTitle"></h2><button type="button" data-patrol-dialog-close aria-label="关闭详情">×</button></header><div data-patrol-dialog-body></div></dialog>
-      <section data-patrol-requests hidden aria-label="待处理工作"></section><section data-patrol-input-history hidden><p>已受理不代表目标已生效，变化以已提交进度为准。</p><div data-patrol-history></div><button data-patrol-fold>展开更早记录</button><button data-patrol-older hidden>加载更早记录</button></section></section>`;
+      <section data-patrol-requests hidden aria-label="待处理工作"></section><section id="patrolInputHistory" data-patrol-input-history class="glass-surface" hidden inert tabindex="0" aria-label="输入记录"><div data-patrol-history></div><p data-patrol-history-status role="status" hidden></p><button type="button" data-patrol-history-retry hidden>重试读取</button></section></section>`;
   }
 
   function history(model) {
     const status = { accepted: "已受理", sending: "发送中", failed: "发送失败" };
-    return model.visible.map(row => `<article data-submission-id="${escape(row.submission_id)}"><header><strong>${labels[row.input_type]}</strong><span>${status[row.status]}</span>${row.request_id ? "<span>指定请求的回答</span>" : ""}</header><pre>${escape(row.content)}</pre>${row.status === "failed" ? `<p role="alert">${escape(row.error)}</p><button data-patrol-retry="${escape(row.submission_id)}">重试</button>${row.file_refs?.length ? `<button data-patrol-edit-failed="${escape(row.submission_id)}"${model.draft.content || model.draft.file_refs?.length ? " disabled title=\"先处理当前草稿\"" : ""}>编辑后重发</button>` : ""}` : ""}</article>`).join("") || "尚无用户输入";
+    return model.rows.map(row => `<article data-submission-id="${escape(row.submission_id)}"><pre>${escape(row.content)}</pre><header><span>${labels[row.input_type]}</span><span>${status[row.status]}</span>${row.request_id ? "<span>指定请求的回答</span>" : ""}</header>${row.status === "failed" ? `<p role="alert">${escape(row.error)}</p><button data-patrol-retry="${escape(row.submission_id)}">重试</button>${row.file_refs?.length ? `<button data-patrol-edit-failed="${escape(row.submission_id)}">编辑后重发</button>` : ""}` : ""}</article>`).join("") || "尚无用户输入";
   }
   function progress(entity, full = false, filter = "all") {
     const state = entity?.state || entity;
