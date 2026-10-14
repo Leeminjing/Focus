@@ -2,6 +2,7 @@
  * 输入为新 userData 目录、生产 index.html 与离线 API fixture；输出为目录选择、四类输入、草稿、观测和中断过渡/检查身份断言。
  * 工作流为无可见窗口加载完整应用，操作六导航、按需检查与单路 Live，核对记录非模态开关/持续输入/滚动分页、请求身份、清空正文、库布局焦点/失败态、关系图键盘选择及边对账；普通会话继续展示原 Agent 消息。截图只证明布局，离线 fixture 不代替业务端到端。
  * 示例：node --test desktop/workspace-patrol-page.test.cjs。没有外部 Provider、生产库或安装应用写入；退出检查等待实际动画完成，避免离屏帧时钟与墙钟偏差。
+ * 已选弹窗在关闭重开时保留原等待表单与草稿，并检查正文透出宿主材质；类型切换和排除表面的计算样式由六项材质定向验收补充。
  */
 const assert = require("node:assert/strict");
 const path = require("node:path");
@@ -239,6 +240,7 @@ if (!process.versions.electron) {
     await until('!document.querySelector("[data-patrol-observation-open]").disabled');
     await run('document.querySelector("[data-patrol-observation-open]").click(); document.querySelector("[data-patrol-observation-section=sources]").click()');
     await until('document.querySelector("[data-patrol-dialog]").textContent.includes("frozen-source")');
+    assert.equal(await run('getComputedStyle(document.querySelector("[data-patrol-dialog-body]")).backgroundColor'), "rgba(0, 0, 0, 0)");
     const coverageText = await run('document.querySelector("[data-patrol-dialog]").textContent');
     assert.match(coverageText, /冻结来源覆盖：不完整/);
     assert.match(coverageText, /前序历史覆盖：不完整/);
@@ -261,6 +263,10 @@ if (!process.versions.electron) {
     await until('document.querySelector("[data-patrol-facts]").textContent.includes("Live 草稿验收更新")');
     assert.equal(await run('document.querySelector("[data-wait-request-id=typed-question] textarea").value'), "保留回答草稿");
     assert.equal(await run('savedWaitInput===document.querySelector("[data-wait-request-id=typed-question] textarea") && document.activeElement===savedWaitInput && savedWaitInput.selectionStart===1 && savedWaitInput.selectionEnd===4'), true);
+    await run('document.querySelector("[data-patrol-dialog-close]").click(); document.querySelector("[data-patrol-pending]").click()');
+    await until('document.querySelector("[data-patrol-dialog]").open && !document.querySelector("[data-patrol-dialog]").inert && !document.querySelector("[data-patrol-dialog]").getAnimations().length');
+    assert.equal(await run('savedWaitInput===document.querySelector("[data-wait-request-id=typed-question] textarea") && savedWaitInput.value==="保留回答草稿" && savedWaitInput.selectionStart===1 && savedWaitInput.selectionEnd===4'), true);
+    assert.equal(await run('getComputedStyle(document.querySelector("[data-patrol-dialog-body]")).backgroundColor'), "rgba(0, 0, 0, 0)");
     await run('document.querySelector("[data-wait-request-id=typed-question] form").requestSubmit()');
     await until('window.patrolFixture.waitAnswers.length === 1');
     assert.equal(await run('window.patrolFixture.waitAnswers[0].answer.text'), "保留回答草稿");

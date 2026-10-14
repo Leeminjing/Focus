@@ -5,6 +5,7 @@
  * 显隐复用 SurfaceTransition 保留输入节点，运行预览复用共享 Run 观察器，折叠/离开释放订阅；原生 dialog 管理焦点，AbortController 清理监听与读请求。示例：await controller.mount(host, workspace)。
  * 文件详情/候选响应绑定工作区与请求代际；实时文件事实保留历史滚动位置，详情与输入节点独立。
  * 输入记录复用非模态显隐和游标查询，开关只改变面板；草稿更新保留记录 DOM，内容更新恢复可见记录偏移，滚动续页仅允许一个在途请求。
+ * 弹窗类型由现有 dialogKind 投影为 data-patrol-dialog-kind，供局部材质区分；每次打开同步，关闭动画期间保留，不作为业务状态来源。
  */
 (function (root, factory) {
   const api = factory(root);
@@ -85,6 +86,7 @@
       restorePanel();
       dialogKind = kind;
       const dialog = host.querySelector("[data-patrol-dialog]");
+      dialog.dataset.patrolDialogKind = kind;
       dialog.querySelector("h2").textContent = title;
       const body = dialog.querySelector("[data-patrol-dialog-body]");
       body.innerHTML = html;

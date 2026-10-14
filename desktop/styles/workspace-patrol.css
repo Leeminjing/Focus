@@ -1,8 +1,9 @@
 /* 本文件对外提供 Patrol 安静输入、工作详情、冻结检查与目录确认的布局。
  * 输入为 workspace-patrol/picker 的语义 DOM 和宿主 token；输出为透明侧面板、连续关系画布、紧凑输入与窄屏视图切换。
  * 具体工作流为安静态以窗口比例决定大标题、横向 composer 和圆形发送控件，显式详情通过三列网格承接图/进度/观察/事实，临时导航由语义 class 控制；dialog 处理模态，Context 保持非模态，长请求身份在输入区换行可读。
- * 示例：.workspace-patrol.is-quiet；阅读与状态颜色沿用宿主 token，玻璃亮边在当前模块定义，共用节点与边材质由 loop-console.css 提供，图工具栏独立于平移画布，完整检查保留可滚动阅读底。
-  * 文件事实固定 60px 高，文件详情保留底部输入空间，窄屏继续使用同一草稿节点。
+ * 示例：.workspace-patrol.is-quiet；阅读与状态颜色沿用宿主 token，玻璃亮边在当前模块定义，共用节点与边材质由 loop-console.css 提供，图工具栏独立于平移画布。
+ * data-patrol-dialog-kind 的 requests/progress/grant/observation/facts 与独立 picker 使用连续玻璃正文和局部分组，外壳负责模糊，内层消费可降级 material token；fact/relationship 等未选详情仍保留原阅读底。
+ * 文件事实固定 60px 高，文件详情保留底部输入空间，窄屏继续使用同一草稿节点。
  * 输入记录为固定非模态滚动区域：安静态锚定清空按钮左侧与底边，宽高按 composer 的 34.4%/31.5% 校准并受视口限制；详情锚定 composer 上方。
  * 安静态采用 safe center 与正常输入框定位，短视口通过页面滚动维持标题、清空按钮和输入框的间距。
 */
@@ -75,6 +76,53 @@
 .patrol-dialog h2 { margin: 0; }
 [data-patrol-dialog-body] { background: var(--surface-base); padding: 24px 28px; overflow: auto; }
 .patrol-dialog article { padding: 18px 0; border-bottom: 1px solid var(--border-subtle); }
+.patrol-dialog:is([data-patrol-dialog-kind="requests"], [data-patrol-dialog-kind="progress"], [data-patrol-dialog-kind="grant"], [data-patrol-dialog-kind="observation"], [data-patrol-dialog-kind="facts"]),
+.patrol-picker-dialog {
+  &[open] { display: flex; flex-direction: column; overflow: hidden; }
+  & > header { flex-shrink: 0; border-bottom-color: var(--material-rim); }
+  & :is([data-patrol-dialog-body], .patrol-picker-detail) { min-height: 0; overflow: auto; background: transparent; }
+  & :is(input:not([type="checkbox"], [type="radio"]), textarea, select) {
+    min-width: 0; max-width: 100%; padding: 8px 12px;
+    background: var(--material-fill); border-color: var(--material-rim);
+    &:hover { border-color: var(--border-strong); }
+    &:focus { border-color: var(--border-accent); }
+  }
+  & button:not(.primary, .text-button, .danger, [data-patrol-dialog-close], [data-patrol-picker-close]) {
+    padding: 8px 14px; border-color: var(--material-rim); background: var(--material-fill);
+    box-shadow: inset 0 1px 1px var(--material-light);
+    &:hover:not(:disabled) { background: var(--control-hover); }
+    &:active:not(:disabled), &[aria-pressed="true"] { background: var(--control-press); }
+    &:active:not(:disabled) { box-shadow: inset 0 1px 3px var(--material-shade); }
+    &:focus-visible { box-shadow: var(--focus-ring), inset 0 1px 1px var(--material-light); }
+  }
+  & :is([data-patrol-requests] > article, .observation-identities section, .observation-frontier, .patrol-fact-filters, .loop-grant) {
+    padding: 20px; border: 1px solid var(--material-rim); border-radius: var(--radius-card);
+    background: var(--material-fill); box-shadow: inset 0 1px 1px var(--material-light);
+  }
+  & [data-patrol-requests] > article {
+    margin-bottom: 16px;
+    &:last-child { margin-bottom: 0; }
+    & h3 { margin: 0 0 12px; }
+    & > p { line-height: 1.75; overflow-wrap: anywhere; }
+  }
+  & [data-patrol-answer] { color: var(--text-accent); font-weight: 600; }
+  & :is(.observation-inspection, .observation-meta, .observation-audit, .observation-source-list li p, .loop-start-budget label, .patrol-workspace-description, .patrol-workspace-note, .patrol-picker-heading p) { color: var(--text-primary); }
+  & .patrol-tabs { padding: 16px 0; gap: 8px; }
+  & .patrol-fact-filters { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+  & .patrol-fact-filters label { display: grid; gap: 6px; min-width: 0; }
+  & .patrol-facts { max-height: none; }
+  & .loop-grant > summary { cursor: pointer; font-weight: 600; }
+  & :is(#agentLoopGrantForm, #agentLoopBudgetForm) { display: grid; gap: 16px; margin: 20px 0; }
+  & #agentLoopGrantForm > label { display: grid; gap: 8px; }
+  & #agentLoopGrantForm > .loop-delegation-option { display: flex; align-items: flex-start; gap: 10px; }
+  & #agentLoopGrantForm > .loop-delegation-option input { flex-shrink: 0; }
+  &[data-patrol-dialog-kind="progress"] [data-patrol-dialog-body] > ul {
+    list-style: none; padding: 0;
+    & > li { padding: 16px; margin-top: 12px; border: 1px solid var(--material-rim); border-radius: var(--radius-card); background: var(--material-fill); }
+    & > li :is(strong, span, small) { display: block; overflow-wrap: anywhere; }
+    & > li :is(span, small) { margin-top: 6px; color: var(--text-primary); }
+  }
+}
 .workspace-patrol pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .patrol-context-drawer { position: fixed; z-index: 35; right: 0; top: 0; bottom: 0; width: min(510px, 42vw); background: var(--surface-base); border-left: 1px solid var(--border-subtle); box-shadow: -10px 0 35px #23365812; overflow: auto; }
 .patrol-context-body { min-height: 160px; padding: 24px 28px; }
@@ -98,9 +146,9 @@
 .patrol-picker-heading { padding: 24px 28px; display: flex; flex-wrap: wrap; gap: 12px; border-bottom: 1px solid var(--border-subtle); }
 .patrol-picker-heading h1 { flex: 1; font-size: 20px; margin: 0; }
 .patrol-picker-heading p { width: 100%; color: var(--text-secondary); margin: 0; }
-.patrol-picker-detail { background: var(--surface-base); padding: 30px; text-align: center; }
-.patrol-workspace-emblem { margin: 10px auto 20px; width: 72px; height: 72px; display: grid; place-items: center; background: var(--surface-accent); border-radius: 20px; }
-.patrol-workspace-path { overflow-wrap: anywhere; padding: 12px; background: var(--surface-subtle); }
+.patrol-picker-detail { padding: 30px; text-align: center; }
+.patrol-workspace-emblem { margin: 10px auto 20px; width: 72px; height: 72px; display: grid; place-items: center; background: var(--material-fill); color: var(--text-accent); border: 1px solid var(--material-rim); box-shadow: inset 0 1px 1px var(--material-light); border-radius: 20px; }
+.patrol-workspace-path { overflow-wrap: anywhere; padding: 12px; border: 1px solid var(--material-rim); border-radius: var(--radius-control); background: var(--material-fill); }
 .patrol-picker-actions { display: flex; justify-content: center; gap: 10px; margin: 24px 0; flex-wrap: wrap; }
 .patrol-workspace-note, .patrol-workspace-description { color: var(--text-secondary); font-size: 13px; }
 .patrol-picker-error { color: var(--text-danger); padding: 0 28px; }
