@@ -1698,7 +1698,7 @@ function renderFocus(task = activeTask()) {
           <ol id="progressSteps"></ol>
         </div>
         <div class="conversation" id="conversation"></div>
-        <div class="patrol-avatar-layer" id="patrolAvatarLayer" aria-label="会话 Patrol 小兵"${detail.ui_state?.show_session_patrol ? "" : " hidden"}></div>
+        <div class="patrol-avatar-layer" id="patrolAvatarLayer" aria-label="会话 Patrol 小兵"${detail.ui_state?.show_session_patrol === false ? " hidden" : ""}></div>
         <div class="focus-bottom">
           <div class="composer-shell glass-surface">
             <div class="composer-context"><span class="ui-badge is-active">${isAssembly ? uiText("focus.free_session", "自由会话") : uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
@@ -2285,7 +2285,7 @@ function mountPatrolAvatarLayer(task, detail) {
   const root = document.querySelector("#patrolAvatarLayer");
   if (!root || !patrolAvatar) return;
   patrolAvatarController = patrolAvatar.mount(root, patrolAvatarOptions(task, detail));
-  root.hidden = !detail.ui_state?.show_session_patrol;
+  root.hidden = detail.ui_state?.show_session_patrol === false;
 }
 
 function updatePatrolAvatarLayer(taskId = state.activeTaskId) {
@@ -2295,7 +2295,7 @@ function updatePatrolAvatarLayer(taskId = state.activeTaskId) {
   if (task && detail) {
     patrolAvatarController.update(patrolAvatarOptions(task, detail));
     const layer = document.querySelector("#patrolAvatarLayer");
-    if (layer) layer.hidden = !detail.ui_state?.show_session_patrol;
+    if (layer) layer.hidden = detail.ui_state?.show_session_patrol === false;
   }
 }
 
@@ -6488,7 +6488,7 @@ async function handleDocumentClick(event) {
   if (action === "toggle-session-patrol") {
     const detail = state.details.get(state.activeTaskId);
     if (!detail) return;
-    detail.ui_state = { ...(detail.ui_state || {}), show_session_patrol: !detail.ui_state?.show_session_patrol };
+    detail.ui_state = { ...(detail.ui_state || {}), show_session_patrol: detail.ui_state?.show_session_patrol === false };
     document.querySelector("#patrolAvatarLayer").hidden = !detail.ui_state.show_session_patrol;
     persistFocusState();
     return;
