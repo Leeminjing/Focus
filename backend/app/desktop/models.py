@@ -15,6 +15,7 @@ DesktopRun.parent_run_id 保存可信执行父链；ModelAttemptAudit.usage_acco
 示例：request = MainRunCreate(message="比较", material_inputs=[{"material_id": "m1", "note": "看第三章"}])。
 PatrolDraft 保存宽容 V2 文档、并发版本与冻结来源；PatrolDeploymentDefinition 是数据库不可变审计记录。定义与 Run/dispatch 同事务创建，Run 删除后其审计身份仍可定位，不以外键阻断既有删除流程。
 Memory 在既有表区分类别，三段 strategy 是演化策略单一正文；enabled/workspace_id 控制下一次 Observation 的适用范围。
+材料恰有 task 或 workspace 一种归属；workspace 上传以 intake_upload_key 保存稳定提交项身份，旧任务材料不改变归属。
 """
 
 from datetime import datetime
@@ -317,12 +318,22 @@ class DesktopRun(Base):
 
 class DesktopMaterial(Base):
     __tablename__ = "desktop_materials"
-    __table_args__ = (UniqueConstraint("task_id", "relative_path", name="uq_desktop_material_path"),)
+    __table_args__ = (
+        UniqueConstraint("task_id", "relative_path", name="uq_desktop_material_path"),
+        UniqueConstraint("workspace_id", "relative_path", name="uq_workspace_material_path"),
+        UniqueConstraint("intake_upload_key", name="uq_material_intake_upload"),
+        CheckConstraint("(task_id IS NULL) <> (workspace_id IS NULL)", name="ck_material_exclusive_owner"),
+        CheckConstraint("intake_upload_key IS NULL OR workspace_id IS NOT NULL", name="ck_material_intake_owner"),
+    )
 
     material_id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    task_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=False, index=True
+    task_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("desktop_threads.task_id", ondelete="CASCADE"), nullable=True, index=True
     )
+    workspace_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("desktop_workspaces.workspace_id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    intake_upload_key: Mapped[str | None] = mapped_column(String(65), nullable=True)
     relative_path: Mapped[str] = mapped_column(Text, nullable=False)
     reading_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="full")
     instruction_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="reference")

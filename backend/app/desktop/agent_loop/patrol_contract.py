@@ -13,6 +13,7 @@ assessment）；输出为合同通过，或携带稳定拒绝原因的 PatrolCon
 完成重请求复用冻结的 CompletionRequestAdmission，等价输入反馈进入原有有界候选纠错，最终 Kernel 仍复检。
 完成动作精确选择 completion_eligibility 冻结目录中的可用验证，拒绝码进入同一纠错流程，不把新验证准入当完成许可。
 普通工作区提案可引用精确 input 或 current progress；缺省分区不成为要求引用，用户 Mission 修订后重新冻结再评估派生。
+附件来源同样在模型合同层核验输入身份，错误引用走既有有界纠错；Kernel 仍独立复核工作区与授权。
 """
 
 from __future__ import annotations
@@ -95,6 +96,7 @@ class PatrolDecisionContract:
         self._validate_recovery_decision(actions, observation)
         self._validate_clarification(actions, observation)
         self._validate_user_messages(actions, observation)
+        self._validate_attachment_inputs(actions, observation)
         from backend.app.desktop.agent_loop.completion_eligibility import CompletionEligibilityPolicy, CompletionEligibilityRejected
 
         for action in actions:
@@ -110,6 +112,21 @@ class PatrolDecisionContract:
                 CompletionRequestAdmission.require_allowed(observation.completion_admission)
             except ValueError as exc:
                 raise PatrolContractViolation(str(exc)) from exc
+
+    @staticmethod
+    def _validate_attachment_inputs(actions, observation):
+        from backend.app.desktop.agent_loop.workspace_attachments import WorkspaceAttachments
+
+        for action in actions:
+            identities = getattr(action, "attachment_input_ids", ())
+            if not identities:
+                continue
+            try:
+                WorkspaceAttachments().authorized(observation.model_dump(mode="json"), identities, None)
+            except ValueError as error:
+                raise PatrolContractViolation(
+                    f"{error}；attachment_input_ids 必须选择携带附件的输入 intent_id，不能使用 material_id"
+                ) from error
 
     @staticmethod
     def _validate_user_messages(actions, observation):

@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供本地启动与品牌资源的静态验证。
  * 输入为桌面图标、主进程源码和固定依赖清单；输出为启动行为与资源约束的断言结果。
- * 具体工作流为读取文件并核对图标、启动顺序和 Electron 与 Windows 沙箱依赖版本。
+ * 具体工作流为读取文件并核对图标、机器人默认启动、工作台延迟创建和 Electron 与 Windows 沙箱依赖版本。
  * 示例：运行 node --test desktop/startup-ui.test.cjs。
  */
 "use strict";
@@ -67,8 +67,8 @@ assert.match(main, /if \(process\.platform !== "darwin"\) \{[\s\S]*mainWindowOpt
 assert.match(main, /const TITLEBAR_BASE_HEIGHT = 56/);
 assert.match(main, /show: false,[\s\S]*frame: false,[\s\S]*loadFile\(path\.join\(desktopDir, "splash\.html"\)\)/);
 assert.ok(main.indexOf("await createSplashWindow()") < main.indexOf("const pythonRuntime = resolvePythonRuntime()"));
-assert.ok(main.indexOf("await mainWindow.loadURL") < main.indexOf("mainWindow.show()"));
-assert.ok(main.indexOf("mainWindow.show()") < main.lastIndexOf("closeSplashWindow()"));
+assert.match(main, /if \(patrolEnabled\)[\s\S]*await patrolHost\.start\(\)[\s\S]*else \{\s*await showWorkbench\(\)/);
+assert.match(main, /workbenchLoading = createWorkbench\(\)[\s\S]*await workbenchLoading[\s\S]*mainWindow\.show\(\)/);
 assert.match(main, /import alembic, uvicorn/);
 assert.match(main, /where\.exe/);
 assert.match(main, /app\.setAppUserModelId\("Focus\.Desktop"\)/);

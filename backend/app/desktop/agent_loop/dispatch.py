@@ -8,6 +8,7 @@ r"""本文件对外提供 LoopWaveDispatcher、LoopRunWorkspaceBinder、DesktopD
 资源等待释放认领且不消耗启动 attempt；准备失败释放整批认领，交付失败只计入真正尝试的 Directive，其余继续排队。
 示例：`run_ids = await dispatcher.dispatch(loop_id, round_id)`。
 用户 Directive 从不可变请求交付原始 HumanMessage、材料和焦点，服务端当前角色解析装备，固定 direct_user/user_intent_id；通用 dispatch 与启动边界共同幂等确认交付。
+Patrol 消息动作从已提交决策的精确观察解析授权附件输入；附件因果由 Action 与冻结 Observation 保留，user_intent_id 仅承担直接用户消息交付身份。
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from backend.app.desktop.agent_loop.context_expansion.repository import (
 from backend.app.desktop.agent_loop.directive_lifecycle import (
     DirectiveLifecycleRepository,
 )
-from backend.app.desktop.agent_loop.models import AgentLoop, LoopDecision, LoopDelegationGrant, LoopDirective, LoopRound
+from backend.app.desktop.agent_loop.models import AgentLoop, LoopAction, LoopDecision, LoopDelegationGrant, LoopDirective, LoopObservation, LoopRound
 from backend.app.desktop.agent_loop.provenance import DelegatedDirectiveFactory
 from backend.app.desktop.agent_loop.user_message_delivery import LoopUserMessageDelivery
 from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
@@ -328,6 +329,19 @@ class DesktopDirectiveLaunchPort:
 
             user_intent = await session.get(LoopUserIntent, directive.correlation_id) if directive.origin_kind == "direct_user" else None
             user_request = (user_intent.request_payload.get("request") or {}) if user_intent else {}
+            attachment_ids = []
+            frozen_attachments = []
+            if user_intent is None:
+                from backend.app.desktop.agent_loop.workspace_attachments import WorkspaceAttachments
+
+                action = await session.get(LoopAction, directive.action_id)
+                attachment_ids = (action.payload or {}).get("attachment_input_ids", []) if action else []
+                if attachment_ids:
+                    decision = await session.get(LoopDecision, directive.decision_id)
+                    observation = await session.get(LoopObservation, decision.observation_id) if decision else None
+                    if observation is None:
+                        raise ValueError("附件授权的冻结观察不存在")
+                    frozen_attachments = WorkspaceAttachments().authorized(observation.envelope, attachment_ids, loop.workspace_id)
             prior_attempts = int(
                 await session.scalar(
                     select(func.count()).select_from(DesktopRun).where(
@@ -345,7 +359,7 @@ class DesktopDirectiveLaunchPort:
             memory_ids=list(equipment.get("memory_ids") or []),
             access_mode=equipment.get("access_mode"),
             spatial_focus=user_request.get("spatial_focus"),
-            material_inputs=self._material_inputs(user_request),
+            material_inputs=self._material_inputs(user_request, frozen_attachments),
             attached_material_ids=user_request.get("attached_material_ids"),
             must_view_material_ids=user_request.get("must_view_material_ids") or [],
             run_identity={
@@ -366,8 +380,11 @@ class DesktopDirectiveLaunchPort:
         return str(prepared.payload.get("run_id") or run_id)
 
     @staticmethod
-    def _material_inputs(request):
+    def _material_inputs(request, frozen_attachments=()):
         from backend.app.desktop.run_materials import RunMaterialRequest
 
+        if frozen_attachments:
+            return [RunMaterialRequest(item["material_id"], item.get("note", ""), frozen_snapshot=item)
+                for item in frozen_attachments]
         items = request.get("material_inputs")
         return [RunMaterialRequest(material_id=item["material_id"], note=item.get("note")) for item in items] if items is not None else None

@@ -1,9 +1,10 @@
 """本文件对外提供 MaterialUploadService、StoredMaterial 与 inspect_image_file。
 
-输入为任务 ID、FastAPI UploadFile、数据库 session factory 和 ImageResourceLimits；输出为
+输入为任务或工作区身份、FastAPI UploadFile、数据库 session factory 和 ImageResourceLimits；输出为
 已提交的 DesktopMaterial 与工作区路径。具体工作流为：分块写入本次请求独占的暂存文件并
 实时限制字节数，按实际内容验证图片格式、MIME、解码和像素，以同目录原子硬链接抢占最终文件名，
 在数据库事务中登记材料；任一阶段失败都会回滚并只清理本次请求拥有的暂存/最终文件。
+工作区上传以提交/项身份持有同源事务锁；相同内容重试复用原登记，不同内容或 owner 拒绝。
 
 示例：stored = await MaterialUploadService(factory, limits).store(task_id, upload_file)。
 """
@@ -18,9 +19,11 @@ import uuid
 import warnings
 
 from fastapi import HTTPException, UploadFile
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.material_files import attachments_dir
+from backend.app.desktop.material_ownership import lock_workspace_submission, material_upload_key
 from backend.app.desktop.models import DesktopMaterial, DesktopThread, DesktopWorkspace
 from backend.app.desktop.resource_limits import ImageResourceLimits
 from backend.app.desktop.service_ids import new_desktop_id
@@ -51,17 +54,56 @@ class MaterialUploadService:
         self._limits = limits or ImageResourceLimits()
 
     async def store(self, task_id: str, upload: UploadFile) -> StoredMaterial:
-        filename = Path(upload.filename or "upload.bin").name or "upload.bin"
         workspace_path = await self._workspace_path(task_id)
-        directory = attachments_dir(workspace_path)
-        temporary = directory / f".upload-{uuid.uuid4().hex}.tmp"
+        return await self._store(task_id, upload, workspace_path)
+
+    async def store_workspace(
+        self, workspace_id: str, upload: UploadFile, submission_id: str, item_id: str
+    ) -> StoredMaterial:
+        async with self._session_factory() as session:
+            workspace = await session.get(DesktopWorkspace, workspace_id)
+            if workspace is None or not Path(workspace.path).is_dir():
+                await upload.close()
+                raise HTTPException(404, "工作区不存在或目录不可用")
+            workspace_path = workspace.path
+        return await self._store(None, upload, workspace_path,
+            workspace_id=workspace_id, submission_id=submission_id, item_id=item_id)
+
+    async def _store(
+        self, task_id, upload, workspace_path, *, workspace_id=None, submission_id=None, item_id=None
+    ) -> StoredMaterial:
+        filename = Path(upload.filename or "upload.bin").name or "upload.bin"
+        temporary: Path | None = None
         final: Path | None = None
         try:
+            try:
+                directory = attachments_dir(workspace_path)
+            except ValueError as error:
+                raise HTTPException(422, "材料目录超出工作区") from error
+            temporary = directory / f".upload-{uuid.uuid4().hex}.tmp"
             size = await self._receive(upload, temporary, filename)
             image = inspect_image_file(temporary, self._limits.image_pixels)
             self._validate_claims(filename, upload.content_type, size, image)
-            final = self._promote(temporary, directory, filename)
-            material = await self._register(task_id, workspace_path, final)
+            if workspace_id is None:
+                final = self._promote(temporary, directory, filename)
+                material = await self._register(task_id, workspace_path, final)
+            else:
+                digest = _digest_file(temporary)
+                key = material_upload_key(submission_id, item_id)
+                async with self._session_factory.begin() as session:
+                    await lock_workspace_submission(session, submission_id)
+                    material = await session.scalar(select(DesktopMaterial).where(
+                        DesktopMaterial.intake_upload_key == key).with_for_update())
+                    if material is not None:
+                        if material.workspace_id != workspace_id or material.digest != digest:
+                            raise HTTPException(409, "上传身份已用于不同工作区或内容")
+                        self._cleanup(temporary, None)
+                    else:
+                        final = self._promote(temporary, directory, filename)
+                        material = self._material(None, workspace_path, final)
+                        material.workspace_id = workspace_id
+                        material.intake_upload_key = key
+                        session.add(material)
             return StoredMaterial(material=material, workspace_path=workspace_path)
         except HTTPException:
             self._cleanup(temporary, final)
@@ -146,16 +188,7 @@ class MaterialUploadService:
     async def _register(
         self, task_id: str, workspace_path: str, final: Path
     ) -> DesktopMaterial:
-        material = DesktopMaterial(
-            material_id=new_desktop_id(),
-            task_id=task_id,
-            relative_path=final.relative_to(Path(workspace_path)).as_posix(),
-            reading_mode="full",
-            instruction_mode="reference",
-            retention="removable",
-            digest=_digest_file(final),
-            git_ref=f"refs/focus/materials/{new_desktop_id()}",
-        )
+        material = self._material(task_id, workspace_path, final)
         async with self._session_factory() as session:
             session.add(material)
             try:
@@ -166,7 +199,20 @@ class MaterialUploadService:
         return material
 
     @staticmethod
-    def _cleanup(temporary: Path, final: Path | None) -> None:
+    def _material(task_id: str | None, workspace_path: str, final: Path) -> DesktopMaterial:
+        return DesktopMaterial(
+            material_id=new_desktop_id(),
+            task_id=task_id,
+            relative_path=final.relative_to(Path(workspace_path)).as_posix(),
+            reading_mode="full",
+            instruction_mode="reference",
+            retention="removable",
+            digest=_digest_file(final),
+            git_ref=f"refs/focus/materials/{new_desktop_id()}",
+        )
+
+    @staticmethod
+    def _cleanup(temporary: Path | None, final: Path | None) -> None:
         for path in (temporary, final):
             if path is not None:
                 path.unlink(missing_ok=True)

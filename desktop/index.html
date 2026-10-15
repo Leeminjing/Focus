@@ -4,6 +4,7 @@
   输出为受内容安全策略保护的六项主导航、默认 Patrol、传统任务三栏、Loop Portfolio 控制台、检查器、
   材料 Blob 加载器、浮层、对话框和可复用模板。具体工作流为先约束资源来源，再加载 Expansion 预算模块、无状态 UI、共享 Run 订阅/短预览、共享图纯布局、Live Loop schema/reducer/连接器、兼容读模型与材料 loader，加载独立 Patrol 文档/来源/编排/交互/检查/分支模块，最后启动 app.js。
   示例：浏览器加载 index.html 后由 app.js 挂载 #app。
+  工作区输入编排与材料预览由共享 intake/preview 加载，原生宿主将输入入口转给独立机器人面板。
 -->
 <html lang="zh-CN">
 <head>
@@ -253,6 +254,8 @@
   <script src="./loop-view.js?v=20260926a"></script>
   <script src="./surface-transition.js"></script>
   <script src="./workspace-patrol-inputs.js"></script>
+  <script src="./workspace-patrol-intake.js"></script>
+  <script src="./workspace-patrol-material-preview.js"></script>
   <script src="./workspace-patrol-view.js"></script>
   <script src="./observation-view.js"></script>
   <script src="./context-inspector.js"></script>

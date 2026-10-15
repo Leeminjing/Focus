@@ -6,8 +6,17 @@
  * 文件事实固定 60px 高，文件详情保留底部输入空间，窄屏继续使用同一草稿节点。
  * 输入记录为固定非模态滚动区域：安静态锚定清空按钮左侧与底边，宽高按 composer 的 34.4%/31.5% 校准并受视口限制；详情锚定 composer 上方。
  * 安静态采用 safe center 与正常输入框定位，短视口通过页面滚动维持标题、清空按钮和输入框的间距。
+ * 原生工作台显示机器人唤起按钮；浏览器材料卡保持有界图片与引用文字预览，不改变发送目标。
 */
 #app:has(.workspace-patrol) { padding: 0; }
+.workspace-patrol [data-patrol-materials] { display: flex; flex-wrap: wrap; gap: 8px; }
+.workspace-patrol .patrol-material-card { display: flex; flex-direction: column; gap: 4px; width: 150px; padding: 10px; border: 1px solid var(--material-rim); border-radius: 10px; background: var(--material-fill); font-size: 12px; overflow-wrap: anywhere; }
+.workspace-patrol .patrol-material-card img { height: 90px; object-fit: contain; }
+.workspace-patrol .patrol-material-card pre { max-height: 90px; overflow: auto; white-space: pre-wrap; font: inherit; margin: 0; }
+.workspace-patrol .patrol-material-card button { align-self: end; font-size: 11px; }
+.workspace-patrol .patrol-material-card small { color: var(--text-secondary); }
+.workspace-patrol.is-dragging [data-patrol-composer] { outline: 2px dashed var(--accent-primary); }
+.workspace-patrol [data-patrol-composer].is-remote-composer button[type=submit] { width: auto; height: auto; padding: 8px 14px; border-radius: 10px; font-size: 13px; }
 .workspace-patrol { position: relative; min-height: 100%; padding: 28px 32px 20px; display: flex; flex-direction: column; gap: 18px; }
 .workspace-patrol.is-quiet { justify-content: safe center; align-items: center; gap: 28px; padding: 32px clamp(32px, 4vw, 64px); background: transparent; }
 .workspace-patrol.is-quiet [data-patrol-composer] { position: relative; width: 100%; max-width: 1240px; padding: 24px 28px; border-radius: 28px; }

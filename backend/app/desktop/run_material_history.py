@@ -3,13 +3,14 @@
 输入为异步数据库会话、DesktopRun、RunMaterialInputs 和可选材料快照标识；输出为同事务待提交
 的 binding 行或按线程顺序排列的历史载荷。具体工作流为批量写入有序不可变快照，查询时联接
 运行状态但不依赖当前材料外键，因此材料删除后备注、路径、摘要和 message ID 仍然可追溯。
+当前可用性同时识别同任务材料和运行工作区的直接材料；历史仍只按精确任务和实际 Run binding 读取。
 
 示例：repository.add(session, run, inputs); rows = await repository.list_for_task(session, task_id)。
 """
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.models import DesktopMaterial, DesktopRun, RunMaterialBinding
@@ -54,7 +55,8 @@ class RunMaterialHistoryRepository:
             .join(DesktopRun, DesktopRun.run_id == RunMaterialBinding.run_id)
             .outerjoin(
                 DesktopMaterial,
-                (DesktopMaterial.task_id == RunMaterialBinding.task_id)
+                or_(DesktopMaterial.task_id == RunMaterialBinding.task_id,
+                    DesktopMaterial.workspace_id == DesktopRun.workspace_anchor["workspace_id"].astext)
                 & (DesktopMaterial.material_id == RunMaterialBinding.material_id_snapshot),
             )
             .where(RunMaterialBinding.task_id == task_id)

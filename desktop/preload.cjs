@@ -1,10 +1,18 @@
 /*
  * 本文件对外提供隔离渲染器的最小桌面桥。
- * 输入为主进程设置的 loopback API Origin、会话令牌、Live Loop 前端开关、原生材质能力和受限 IPC；输出为只读 runtime、目录选择、外链与整页缩放函数。
- * 具体工作流为通过 contextBridge 暴露白名单方法，renderer 自行处理同源 HTTP/SSE，本文件不代理网络请求；示例：`window.focusDesktop.runtime()`。
+ * 输入为同源 API、会话令牌、能力开关与受限 IPC；输出为 runtime、目录选择、外链、缩放及 Patrol 窗口白名单函数。
+ * 工作流为 renderer 自行处理同源 HTTP/SSE，机器人将有界字节或文本转给唯一面板，回调只接收数据而不暴露 IPC event。
+ * 示例：await window.focusDesktop.patrol.receive({items:[{kind:'text',text:'参考内容'}]})；File 必须先在 renderer 转成 Uint8Array。
  */
 const { contextBridge, ipcRenderer } = require("electron");
 const nativeMaterial = process.argv.includes("--focus-native-material=acrylic");
+const patrolEnabled = process.argv.includes("--focus-desktop-patrol");
+function subscribe(channel, callback) {
+  if (typeof callback !== "function") throw new TypeError("需要回调函数");
+  const listener = (_event, value) => callback(value);
+  ipcRenderer.on(channel, listener);
+  return () => ipcRenderer.removeListener(channel, listener);
+}
 window.addEventListener("DOMContentLoaded", () => {
   if (nativeMaterial) document.documentElement.dataset.nativeMaterial = "acrylic";
 }, { once: true });
@@ -20,4 +28,19 @@ contextBridge.exposeInMainWorld("focusDesktop", {
   openExternal: url => ipcRenderer.invoke("focus:open-external", url),
   setZoomLevel: level => ipcRenderer.invoke("focus:set-zoom-level", level),
   getZoomLevel: () => ipcRenderer.invoke("focus:get-zoom-level"),
+  patrol: {
+    enabled: patrolEnabled,
+    openPanel: target => ipcRenderer.invoke("focus:patrol-open", target),
+    hidePanel: () => ipcRenderer.invoke("focus:patrol-hide-panel"),
+    hideRobot: () => ipcRenderer.invoke("focus:patrol-hide-robot"),
+    openWorkbench: target => ipcRenderer.invoke("focus:patrol-workbench", target),
+    receive: content => ipcRenderer.invoke("focus:patrol-receive", content),
+    move: position => ipcRenderer.invoke("focus:patrol-move", position),
+    setState: state => ipcRenderer.invoke("focus:patrol-state", state),
+    ready: () => ipcRenderer.invoke("focus:patrol-ready"),
+    onContent: callback => subscribe("focus:patrol-content", callback),
+    onOpen: callback => subscribe("focus:patrol-open", callback),
+    onState: callback => subscribe("focus:patrol-state", callback),
+    onWorkbench: callback => subscribe("focus:patrol-open-workbench", callback),
+  },
 });

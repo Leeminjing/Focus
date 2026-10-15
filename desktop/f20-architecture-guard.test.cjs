@@ -2,7 +2,7 @@
  * 本文件对外提供 F20 前端架构静态守卫。输入为桌面清单、Electron 主进程、Gateway 挂载、
  * HTML、渲染入口、共享 Run SSE 与 Patrol presence 源码，输出为 Focus 自有沙箱依赖、零外部 CDN、同一 loopback
  * Origin、无 CORS/代理和无待命后端副作用的断言结果；工作流只读取仓库文件并在约束被
- * 破坏时退出失败。构建阶段仅允许离线 JSON 编辑器依赖，运行依赖仍为 Electron/Koffi。
+ * 破坏时退出失败；桌面机器人复用同一 Origin，工作台延迟加载。构建阶段仅允许离线 JSON 编辑器依赖，运行依赖仍为 Electron/Koffi。
  * 示例：`node f20-architecture-guard.test.cjs`。
  */
 "use strict";
@@ -112,8 +112,9 @@ assert.match(spatialStyle, /\.file-panel[\s\S]*\.spatial-viewer/);
 const main = read("desktop/main.cjs");
 assert.match(main, /const apiBase = `http:\/\/127\.0\.0\.1:\$\{port\}`/);
 assert.match(main, /process\.env\.FOCUS_DESKTOP_API = apiBase/);
-assert.match(main, /await mainWindow\.loadURL\(`\$\{apiBase\}\/desktop\/`\)/);
-assert.match(main, /mainWindow\.show\(\);[\s\S]*closeSplashWindow\(\)/);
+assert.match(main, /desktopOrigin = apiBase/);
+assert.match(main, /await mainWindow\.loadURL\(`\$\{desktopOrigin\}\/desktop\/`\)/);
+assert.match(main, /await showWorkbench\(\);[\s\S]*closeSplashWindow\(\)/);
 assert.match(main, /setWindowOpenHandler/);
 assert.match(main, /will-navigate/);
 assert.match(main, /new URL\(target\)\.origin === new URL\(apiBase\)\.origin/);

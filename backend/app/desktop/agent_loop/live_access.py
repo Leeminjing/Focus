@@ -3,7 +3,7 @@ r"""本文件对外提供 LiveAccess、LoopLiveAccessPolicy 与 LoopLiveRedactio
 输入为 Loop identity、当前 delegation grant、projection 和权限集合；输出为当前授权快照或递归脱敏后的 Live projection。
 具体工作流为读取最新 grant 建立访问边界，再从所有实体 state 移除秘密、隐藏推理和无权证据；示例：`access = await policy.resolve(session, loop_id)`。
 任务进度单实体及 Observation 的白名单载荷通过 redact_value 沿用相同递归脱敏与证据访问规则。
-文件快照与 file_refs 沿用 read 或 view_evidence 权限，其他证据仍要求 view_evidence。
+文件快照、file_refs 与附件 manifest 沿用 read 或 view_evidence 权限，其他证据仍要求 view_evidence。
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ class LoopLiveRedactionPolicy:
             if "view_evidence" not in permissions:
                 hidden |= {"evidence", "evidence_references", "workspace_result"}
             if not permissions.intersection({"read", "view_evidence"}):
-                hidden |= {"file", "file_refs"}
+                hidden |= {"file", "file_refs", "attachments"}
             return {key: cls.redact_value(item, permissions) for key, item in value.items() if key.casefold() not in hidden}
         if isinstance(value, list):
             return [cls.redact_value(item, permissions) for item in value]

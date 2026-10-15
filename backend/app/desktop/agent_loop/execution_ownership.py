@@ -5,6 +5,7 @@
 实时检查使用所属 Round 的成功决策与授权版本；暂停、撤权和明确取消使执行失效，新 Mission 不撤销旧轮权限。
 示例：await RunOwnershipPolicy().admit(session, run) 在 durable admission 事务内调用。
 类型 direct_message 禁止仅凭 user_intent_id 受理裸 Run，必须同时有当前已授权 Directive 和一致的用户来源。
+新 Run 缺少本轮授权快照时仅从服务端已验证的 Directive/Decision 补齐，已有快照仍按原值校验，不修正伪造或失效绑定。
 """
 
 from datetime import UTC, datetime
@@ -49,7 +50,13 @@ class RunOwnershipPolicy:
             raise ValueError("Loop Run 缺少权威来源，须经 Context/Kernel 派生")
         if not set((run.equipment or {}).get("permissions") or ()).issubset(set(grant.permission_scope)):
             raise ValueError("Run 装备超出当前授权")
-        run.equipment = {**(run.equipment or {}), "_loop_authority_revision": loop.authority_revision,
+        equipment = dict(run.equipment or {})
+        if run.directive_id and "round_authorization" not in equipment:
+            from backend.app.desktop.agent_loop.directive_equipment import resolve_directive_equipment
+
+            authorized = await resolve_directive_equipment(session, loop, source)
+            equipment["round_authorization"] = authorized["round_authorization"]
+        run.equipment = {**equipment, "_loop_authority_revision": loop.authority_revision,
                          "_loop_goal_revision": round_row.goal_revision}
         await self._permission(session, run)
         return loop

@@ -6,6 +6,7 @@
 同身份重放先只读核验原载荷并返回耐久回执，不依赖当前 checkpoint；新输入在受理事务中再次核验，防止并发重复。
 首条信息创建 Context/Program/Lane/grant/P0，由既有 Round 监督调用 shadow publisher
 完成首 Revision/Portfolio；恢复使用原身份，不合成 Main Run。示例：await service.submit(workspace_id, input)。
+工作区附件与原文在同一事务受理，图像能力在受理前核验；只有材料时保持空用户正文并使用中性 Context 标题。
 """
 
 import asyncio
@@ -14,7 +15,7 @@ from pathlib import Path
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 
 from focus.history import content_hash
@@ -125,8 +126,9 @@ class WorkspacePatrolService:
                 DesktopWorkspace.workspace_id == workspace_id).with_for_update(key_share=True))
             if workspace is None or not Path(workspace.path).is_dir():
                 raise HTTPException(422, "请先绑定有效工作区")
-            key = int(input_identity(request.submission_id)[:15], 16)
-            await session.execute(select(func.pg_advisory_xact_lock(key)))
+            from backend.app.desktop.material_ownership import lock_workspace_submission
+
+            await lock_workspace_submission(session, request.submission_id)
             replay = await self._inputs.replay(session, workspace_id, request)
             if replay is not None:
                 return replay, None
@@ -148,6 +150,11 @@ class WorkspacePatrolService:
                 visible_context=request.visible_context, intake=True)
             await self._inputs.accept(session, loop, request)
             intent = await session.get(LoopUserIntent, input_identity(request.submission_id))
+            attachments = intent.request_payload.get("attachments") or []
+            if any(item["material_kind"] == "image" for item in attachments):
+                config = self._desktop.app_config.get_model(loop.equipment.get("model_name") or self._desktop.app_config.resolve_default_model_name())
+                if not config.supports_image_input:
+                    raise HTTPException(422, f"当前 Patrol 模型 {config.name} 未声明支持图像输入")
             round_row.trigger_kind, round_row.status = "user_input", "observed"
             round_row.authority_revision, round_row.goal_revision = loop.authority_revision, loop.goal_revision
             loop.current_round_id = round_row.round_id
@@ -205,7 +212,7 @@ class WorkspacePatrolService:
             task_id=uuid.uuid4().hex,
             workspace_id=workspace.workspace_id,
             thread_id=uuid.uuid4().hex,
-            title=bounded_thread_title(request.content),
+            title=bounded_thread_title(request.content or "参考材料"),
             ui_state={"access_mode": request.access_mode},
         )
         program = CurationProgram(

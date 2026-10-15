@@ -26,7 +26,7 @@ MATERIAL_ATTACHMENTS_SUBDIR = ".focus/attachments"
 
 
 def attachments_dir(workspace_path: str | Path) -> Path:
-    directory = Path(workspace_path).resolve() / MATERIAL_ATTACHMENTS_SUBDIR
+    directory = resolve_material_path(workspace_path, MATERIAL_ATTACHMENTS_SUBDIR)
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 

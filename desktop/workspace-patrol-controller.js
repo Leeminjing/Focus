@@ -6,6 +6,7 @@
  * 文件详情/候选响应绑定工作区与请求代际；实时文件事实保留历史滚动位置，详情与输入节点独立。
  * 输入记录复用非模态显隐和游标查询，开关只改变面板；草稿更新保留记录 DOM，内容更新恢复可见记录偏移，滚动续页仅允许一个在途请求。
  * 弹窗类型由现有 dialogKind 投影为 data-patrol-dialog-kind，供局部材质区分；每次打开同步，关闭动画期间保留，不作为业务状态来源。
+ * intake 统一绑定/上传/投递，浏览器拖放先预览；onCompose 存在时原生工作台只转交输入入口和精确回复目标，不持有第二份可编辑草稿。
  */
 (function (root, factory) {
   const api = factory(root);
@@ -13,7 +14,7 @@
   if (root) root.FocusWorkspacePatrolController = api;
 })(globalThis, function (root) {
   "use strict";
-  function create({ api, inputs, liveStore, connection, onOpenTask, createRunPreviews, view = root.FocusWorkspacePatrolView }) {
+  function create({ api, inputs, intake, onCompose, liveStore, connection, onOpenTask, createRunPreviews, view = root.FocusWorkspacePatrolView }) {
     let host = null;
     let workspace = null;
     let loopId = null;
@@ -29,6 +30,7 @@
     let historyFailure = null;
     let historyHTML = "";
     let unlisten = null;
+    let materialPreview = null;
 
 
     let lifetime = null;
@@ -358,7 +360,7 @@
         const page = await api.workspaceInputs(workspace.workspace_id, initialize ? undefined : cursor);
         if (owner !== token) return;
         historyReady = true;
-        inputs.history(page, !initialize, initialize);
+        intake.history(workspace.workspace_id, page, !initialize, initialize);
       } catch (failure) { if (owner === token) historyFailure = failure; }
       finally {
         if (owner === token) {
@@ -370,6 +372,7 @@
     const patchInputs = model => {
       if (!host) return;
       patchHistory(model);
+      materialPreview?.render(model.draft);
       const content = host.querySelector("[data-patrol-content]");
       if (content.value !== model.draft.content) content.value = model.draft.content;
       host.querySelector("[data-patrol-file-refs]").innerHTML = (model.draft.file_refs || []).map(file => `<span>${view.escape(file.path)} · ${view.escape((file.sha256 || file.result_key).slice(0, 8))}<button type="button" data-patrol-file-remove="${view.escape(file.result_key)}" aria-label="移除文件引用">×</button></span>`).join("");
@@ -473,7 +476,9 @@
         const current = token;
         const version = ++historyToken;
         api.workspaceInputs(workspace.workspace_id).then(page => {
-          if (current === token && version === historyToken) inputs.history(page);
+          if (current === token && version === historyToken) {
+            intake.history(workspace.workspace_id, page);
+          }
         }).catch(failure => { if (current === token) error(failure); });
       }
     }
@@ -486,13 +491,12 @@
       const bound = workspace.workspace_id;
       const current = token;
       try {
-        const receipt = await api.submitWorkspaceInput(bound, row.request);
-        inputs.accepted(row.submission_id, receipt);
+        const receipt = await intake.send(bound, row);
         if (token === current && receipt.loop_id !== loopId) {
           const binding = await api.workspacePatrol(bound);
           if (token === current) connect(binding?.loop_id || receipt.loop_id);
         }
-      } catch (failure) { inputs.failed(row.submission_id, failure); }
+      } catch (failure) { if (token === current) error(failure); }
     }
     async function click(event) {
       const edge = event.target.closest("[data-edge-hit]");
@@ -504,10 +508,17 @@
       button.focus({ preventScroll: true });
       const clickOwner = token;
       try {
+        if (onCompose && (button.dataset.patrolAnswer || button.dataset.patrolRetry || button.dataset.patrolEditFailed || button.dataset.patrolFileAdd)) {
+          await onCompose({ workspaceId: workspace.workspace_id, ...(button.dataset.patrolAnswer ? { requestId: button.dataset.patrolAnswer, requestRevision: Number(button.dataset.requestRevision) } : {}) });
+          return;
+        }
         if (button.hasAttribute("data-patrol-file-picker-open")) await openFilePicker();
         else if (button.dataset.patrolFileAdd) addFileReference(JSON.parse(button.dataset.patrolFileAdd));
         else if (button.dataset.patrolFileRemove) inputs.edit({ file_refs: inputs.get().draft.file_refs.filter(item => item.result_key !== button.dataset.patrolFileRemove) });
-        else if (button.dataset.patrolEditFailed) { inputs.editFailed(button.dataset.patrolEditFailed); host.querySelector("[data-patrol-content]").focus(); }
+        else if (button.dataset.patrolEditFailed) {
+          intake.editFailed(workspace.workspace_id, button.dataset.patrolEditFailed);
+          host.querySelector("[data-patrol-content]").focus();
+        }
         else if (button.hasAttribute("data-patrol-file-close")) { fileVersion++; host.querySelector("[data-patrol-file-detail]").hidden = true; }
         else if (button.hasAttribute("data-patrol-new-facts")) { const stream = host.querySelector("[data-patrol-facts]"); stream.scrollTop = stream.scrollHeight; button.hidden = true; }
         else if (button.hasAttribute("data-patrol-details")) toggleDetails();
@@ -551,7 +562,10 @@
         else if (button.dataset.patrolRetry) { const row = inputs.retry(button.dataset.patrolRetry); if (row) void send(row); }
         else if (button.dataset.patrolAnswer) { inputs.edit({ request_id: button.dataset.patrolAnswer, request_revision: Number(button.dataset.requestRevision) }); const owner = token; if (await closeDialog() && owner === token) host.querySelector("textarea").focus(); }
         else if (button.hasAttribute("data-patrol-clear-target")) inputs.edit({ request_id: null, request_revision: null });
-        else if (button.hasAttribute("data-patrol-clear-draft")) { inputs.edit({ content: "", file_refs: [] }); host.querySelector("[data-patrol-content]").focus(); }
+        else if (button.hasAttribute("data-patrol-clear-draft")) {
+          for (const item of inputs.get().draft.attachments || []) await intake.remove(workspace.workspace_id, item.local_id);
+          inputs.edit({ content: "", file_refs: [] }); host.querySelector("[data-patrol-content]").focus();
+        }
         else if (button.dataset.patrolControl && loopId) {
           if (button.getAttribute("aria-busy") === "true") return;
           button.setAttribute("aria-busy", "true");
@@ -599,12 +613,22 @@
       host = node; workspace = bound; const current = token;
       lifetime = new AbortController();
       historyLoading = true;
-      host.innerHTML = view.skeleton(bound);
+      host.innerHTML = view.skeleton(bound, Boolean(onCompose));
+      if (onCompose) {
+        host.querySelector("[data-patrol-composer]").classList.add("is-remote-composer");
+        host.querySelector("[data-patrol-type]").hidden = true;
+        host.querySelector("[data-patrol-type]").disabled = true;
+        host.querySelector('[data-patrol-composer] button[type="submit"]').textContent = "打开机器人输入 ↗";
+      } else materialPreview = root.FocusWorkspacePatrolMaterialPreview.create({ host, intake, workspaceId: () => bound.workspace_id, onError: error });
       inspector = root.FocusContextInspector.create({ api, onOpenTask, presentation: "workbench", getManifest: manifest, onSelectionChange: selectionChanged });
       inspector.mount(host.querySelector("[data-patrol-context]"));
       unlisten = inputs.subscribe(patchInputs);
       const options = { signal: lifetime.signal };
-      host.querySelector("[data-patrol-composer]").addEventListener("submit", event => { event.preventDefault(); try { error(null); void send(inputs.submit(visibleContext())); } catch (failure) { error(failure); } }, options);
+      host.querySelector("[data-patrol-composer]").addEventListener("submit", event => {
+        event.preventDefault();
+        if (onCompose) { void onCompose({ workspaceId: bound.workspace_id }).catch(error); return; }
+        try { error(null); void send(inputs.submit(visibleContext())); } catch (failure) { error(failure); }
+      }, options);
       const content = host.querySelector("[data-patrol-content]");
       content.addEventListener("input", event => {
         inputs.edit({ content: event.target.value });
@@ -614,7 +638,7 @@
           else renderFilePicker();
         } else host.querySelector("[data-patrol-file-picker]").hidden = true;
       }, options);
-      content.addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); content.form.requestSubmit(); } }, options);
+      content.addEventListener("keydown", event => { if (event.key === "Enter" && event.ctrlKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); content.form.requestSubmit(); } }, options);
       host.querySelector("[data-patrol-type]").addEventListener("change", event => inputs.edit({ input_type: event.target.value }), options);
       host.addEventListener("click", click, options);
       host.querySelector("[data-patrol-input-history]").addEventListener("scroll", () => { void loadOlderHistory(); }, { ...options, passive: true });
@@ -672,7 +696,7 @@
         const [loop, page] = await Promise.all([api.workspacePatrol(bound.workspace_id), api.workspaceInputs(bound.workspace_id)]);
         if (current !== token) return;
         historyReady = true;
-        inputs.history(page, false, true);
+        intake.history(bound.workspace_id, page, false, true);
         if (loop) connect(loop.loop_id);
       } catch (failure) { if (current === token) { historyFailure = failure; error(failure); } }
       finally {
@@ -680,6 +704,7 @@
       }
     }
     function leave() {
+      materialPreview?.dispose(); materialPreview = null;
       previews?.stop();
       root.document.body.classList.remove("has-patrol-workbench");
       relatedOnly = false; highlightIds = [];
@@ -696,7 +721,17 @@
       unlisten?.(); unlisten = null; host = null; workspace = null; loopId = null; lineageKey = null; historyKey = null; connection.stop();
     }
     const unsubscribe = liveStore.subscribe(patchLive);
-    return Object.freeze({ mount, leave, isMounted(node, id) { return host === node && workspace?.workspace_id === id && node.contains(node.querySelector("[data-patrol-composer]")); }, dispose() { leave(); unsubscribe(); } });
+    return Object.freeze({
+      mount, leave,
+      showDetails() { if (host && !detailsOpen) toggleDetails(); },
+      async showContext(contextId, revisionId) {
+        if (!host || !loopId) return;
+        if (!detailsOpen) toggleDetails();
+        await inspectContext(contextId, host.querySelector("[data-patrol-details]"), revisionId);
+      },
+      isMounted(node, id) { return host === node && workspace?.workspace_id === id && node.contains(node.querySelector("[data-patrol-composer]")); },
+      dispose() { leave(); unsubscribe(); },
+    });
   }
   return Object.freeze({ create });
 });

@@ -1,6 +1,6 @@
 """本文件对外提供 MaterialContentService 与 ResolvedMaterialContent。
 
-输入为任务 ID、材料 ID、数据库 session factory 和图片资源限制；输出为已校验归属且仍存在的
+输入为任务或工作区 ID、材料 ID、数据库 session factory 和图片资源限制；输出为已校验归属且仍存在的
 文件路径、可信媒体类型与下载文件名。具体工作流为同时查询 task/material 归属，解析工作区内
 相对路径，拒绝跨任务或缺失文件；图片媒体类型取自实际文件格式，最终交给 FileResponse 传输。
 
@@ -10,15 +10,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 
 from fastapi import HTTPException
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.material_files import resolve_material_path
+from backend.app.desktop.material_ownership import load_material
 from backend.app.desktop.material_upload import inspect_image_file
-from backend.app.desktop.models import DesktopMaterial, DesktopThread, DesktopWorkspace
 from backend.app.desktop.resource_limits import ImageResourceLimits
 
 
@@ -39,27 +39,25 @@ class MaterialContentService:
         self._limits = limits or ImageResourceLimits()
 
     async def resolve(self, task_id: str, material_id: str) -> ResolvedMaterialContent:
+        return await self._resolve(material_id, task_id=task_id)
+
+    async def resolve_workspace(self, workspace_id: str, material_id: str) -> ResolvedMaterialContent:
+        return await self._resolve(material_id, workspace_id=workspace_id)
+
+    async def _resolve(self, material_id, *, task_id=None, workspace_id=None):
         async with self._session_factory() as session:
-            task = await session.get(DesktopThread, task_id)
-            if task is None:
-                raise HTTPException(404, "任务不存在")
-            material = await session.scalar(
-                select(DesktopMaterial).where(
-                    DesktopMaterial.material_id == material_id,
-                    DesktopMaterial.task_id == task_id,
-                )
-            )
-            if material is None:
-                raise HTTPException(404, "材料不存在或不属于当前任务")
-            workspace = await session.get(DesktopWorkspace, task.workspace_id)
-            if workspace is None:
-                raise HTTPException(404, "工作区不存在")
+            material, workspace = await load_material(
+                session, material_id, task_id=task_id, workspace_id=workspace_id)
         try:
             path = resolve_material_path(workspace.path, material.relative_path)
         except ValueError as error:
             raise HTTPException(404, "材料路径无效") from error
         if not path.is_file():
             raise HTTPException(404, "材料文件不存在")
+        if material.workspace_id is not None and material.digest:
+            with path.open("rb") as stream:
+                if hashlib.file_digest(stream, "sha256").hexdigest() != material.digest:
+                    raise HTTPException(409, "材料内容与上传版本不一致")
         media_type = "application/octet-stream"
         try:
             image = inspect_image_file(path, self._limits.image_pixels)

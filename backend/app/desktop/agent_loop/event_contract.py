@@ -5,7 +5,7 @@ r"""本文件对外提供 CanonicalEventDraft、CanonicalEventEnvelope、EventVi
 隐藏推理和未授权证据字段；历史 tool fact 的公开 replay 使用同 sequence 占位信封，独立 tool activity 仍可审计。
 连续事件流使用不泄露原事件身份的占位信封推进被隐藏 sequence。示例：
 `policy.public_envelope(event, permissions)`。
-文件版本描述和普通输入引用沿用 read 权限；此权限不开放其他证据字段。
+文件版本描述、普通输入引用和冻结附件沿用 read 权限；此权限不开放其他证据字段。
 """
 
 from __future__ import annotations
@@ -116,7 +116,7 @@ class LiveEventAuthorizationPolicy:
         required = set(envelope.visibility.required_permissions)
         if not required.issubset(permissions):
             raise EventNotAuthorized("事件权限不足")
-        hidden = _REDACTED_KEYS if permissions.intersection({"read", "view_evidence"}) else _REDACTED_KEYS | {"file", "file_refs"}
+        hidden = _REDACTED_KEYS if permissions.intersection({"read", "view_evidence"}) else _REDACTED_KEYS | {"file", "file_refs", "attachments"}
         payload = self._redact_value(envelope.payload, hidden)
         if "view_evidence" not in permissions:
             for field in envelope.visibility.evidence_fields:

@@ -8,6 +8,7 @@ RunManager 和 AppConfig；输出为供 routes.py 调用的异步业务方法以
 示例：`service = DesktopService(...); await service.start_main_run(task_id, message, ...)`。
 基础行为仅进入 instructions；memory／selected skills／材料 policy／空间选择冻结为 Run 输入，能力目录与权限进入 checkpoint-bound WorldState。
 真实用户与委托输入由 Run admission/装配端口绑定可信来源；模型 role 和正文不能替代该宿主身份。
+授权工作区附件沿来源工作区验证冻结版本，再物化到实际执行目录；含图请求在准入时复核模型视觉能力。
 访问审批投影同时绑定实际Task与中断Run，供用户处理后的正式Loop恢复核对；相同正文的后续请求仍有独立来源身份。
 普通 Main 新输入从精确已发布修复 revision 读取 execution 投影并交给统一分支入口；resume 仍使用原中断任务，不重写历史。
 Main 执行池按来源选择 custom／MCP；工作区工具和插件桥各自独占内置／插件注入，发现目录仍完整用于装备展示。
@@ -51,6 +52,7 @@ focus.security 承担（见 openspec add-local-access-policy）。
 
 会话 standard Patrol 的文档、来源、编译、预览与分支生命周期委托 session_patrol；本组合根仅注入 canonical Reader、统一 Agent 工厂观察端口和现有 dispatch/ledger。Context Curator 和 Loop Patrol 保持各自权威流程。
 组合根向执行账本注入当前配置秘密值提供器，文件快照持久化前脱敏。
+材料修改复用排他 task/workspace owner 校验、提交锁及已受理引用保护；版本写入由共享快照服务处理，任务材料仍按原任务隔离。
 """
 
 from __future__ import annotations
@@ -177,7 +179,8 @@ from focus.agents.must_view import (
     build_must_view_completion_middleware,
     report_must_view_images,
 )
-from focus.images import is_image_name
+from focus.images import IMAGE_MIME_BY_SUFFIX, is_image_name
+from backend.app.desktop.material_ownership import ensure_material_mutable, load_material, lock_material_upload
 from focus.messages import (
     estimate_images_tokens,
     estimate_messages_tokens,
@@ -1165,7 +1168,10 @@ class DesktopService:
                 material_inputs,
                 attached_material_ids,
                 must_view_material_ids or [],
+                execution_workspace_path=execution_path,
             )
+            if run_materials.images.attached and not self._model_supports_image_input(model_name):
+                raise HTTPException(422, "当前执行模型未声明支持图像输入")
             equipment = {
                 "model_name": model_name,
                 "skills": list(dict.fromkeys(skills)),
@@ -1739,22 +1745,28 @@ class DesktopService:
             if material_id is not None:
                 material = await session.get(DesktopMaterial, material_id)
                 if material is not None and material.task_id != task_id:
-                    raise HTTPException(404, "材料不存在或不属于当前任务")
+                    binding = await session.scalar(select(RunMaterialBinding.binding_id).where(
+                        RunMaterialBinding.task_id == task_id,
+                        RunMaterialBinding.material_id_snapshot == material_id,
+                    ).limit(1))
+                    task = await session.get(DesktopThread, task_id)
+                    if not binding or material.workspace_id != task.workspace_id:
+                        raise HTTPException(404, "材料不存在或不属于当前任务")
                 historical_task_id = await session.scalar(
                     select(RunMaterialBinding.task_id).where(
                         RunMaterialBinding.material_id_snapshot == material_id
                     ).limit(1)
                 )
-                if historical_task_id is not None and historical_task_id != task_id:
+                if historical_task_id is not None and historical_task_id != task_id and not (
+                    material is not None and material.workspace_id is not None
+                ):
                     raise HTTPException(404, "材料历史不存在或不属于当前任务")
             return await self.run_material_history.list_for_task(session, task_id, material_id)
 
     async def update_material(self, material_id: str, body: MaterialUpdate) -> dict[str, Any]:
         async with self.session_factory() as session:
-            material = await session.get(DesktopMaterial, material_id)
-            if not material:
-                raise HTTPException(404, "材料不存在")
-            task, workspace = await self._get_task_entities(session, material.task_id)
+            material, workspace = await self._get_material_entities(session, material_id)
+            await ensure_material_mutable(session, material)
             if body.retention == "irreplaceable" and material.retention != "irreplaceable":
                 await self._ensure_git(Path(workspace.path), body.confirm_git_init)
                 material.retention = body.retention
@@ -1768,9 +1780,10 @@ class DesktopService:
     async def clear_material(self, material_id: str) -> dict[str, Any]:
         async with self.session_factory() as session:
             material, workspace = await self._get_material_entities(session, material_id)
+            await ensure_material_mutable(session, material)
             if material.retention != "irreplaceable":
                 raise HTTPException(409, "仅不可遗失材料使用置空操作")
-            path = Path(workspace.path, *Path(material.relative_path).parts)
+            path = resolve_material_path(workspace.path, material.relative_path)
             path.write_bytes(b"")
             await self._save_material_version(session, material, workspace.path, "clear")
             material.needs_confirmation = False
@@ -1780,9 +1793,10 @@ class DesktopService:
     async def delete_material(self, material_id: str) -> None:
         async with self.session_factory() as session:
             material, workspace = await self._get_material_entities(session, material_id)
+            await ensure_material_mutable(session, material)
             if material.retention == "irreplaceable":
                 raise HTTPException(409, "不可遗失材料不能删除，请置空或先解除保护")
-            path = Path(workspace.path, *Path(material.relative_path).parts)
+            path = resolve_material_path(workspace.path, material.relative_path)
             if path.exists():
                 path.unlink()
             await session.delete(material)
@@ -1790,8 +1804,7 @@ class DesktopService:
 
     async def material_versions(self, material_id: str) -> list[dict[str, Any]]:
         async with self.session_factory() as session:
-            if not await session.get(DesktopMaterial, material_id):
-                raise HTTPException(404, "材料不存在")
+            await load_material(session, material_id)
             versions = (
                 await session.scalars(
                     select(MaterialVersion)
@@ -1804,11 +1817,12 @@ class DesktopService:
     async def restore_material(self, material_id: str, version_id: str) -> dict[str, Any]:
         async with self.session_factory() as session:
             material, workspace = await self._get_material_entities(session, material_id)
+            await ensure_material_mutable(session, material)
             version = await session.get(MaterialVersion, version_id)
             if not version or version.material_id != material_id:
                 raise HTTPException(404, "材料版本不存在")
             content = await self._git_bytes(Path(workspace.path), "cat-file", "blob", version.object_id)
-            path = Path(workspace.path, *Path(material.relative_path).parts)
+            path = resolve_material_path(workspace.path, material.relative_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
             await self._save_material_version(session, material, workspace.path, "restore")
@@ -2578,11 +2592,9 @@ class DesktopService:
     async def _get_material_entities(
         self, session: AsyncSession, material_id: str
     ) -> tuple[DesktopMaterial, DesktopWorkspace]:
-        material = await session.get(DesktopMaterial, material_id)
-        if not material:
-            raise HTTPException(404, "材料不存在")
-        _, workspace = await self._get_task_entities(session, material.task_id)
-        return material, workspace
+        material, _ = await load_material(session, material_id)
+        await lock_material_upload(session, material.intake_upload_key)
+        return await load_material(session, material_id, lock=True)
 
     @staticmethod
     def _resolve_workspace_path(root: str | Path, value: str) -> Path:
@@ -2606,30 +2618,8 @@ class DesktopService:
 
     async def _save_material_version(
         self, session: AsyncSession, material: DesktopMaterial, workspace_path: str, source: str
-    ) -> MaterialVersion:
-        workspace = Path(workspace_path)
-        path = Path(workspace, *Path(material.relative_path).parts)
-        digest = self._digest(path)
-        object_id = (await self._git(workspace, "hash-object", "-w", "--", str(path))).strip()
-        tree_line = f"100644 blob {object_id}\tcontent\n"
-        tree_id = (await self._git(workspace, "mktree", stdin=tree_line)).strip()
-        parent = None
-        try:
-            parent = (await self._git(workspace, "rev-parse", "--verify", material.git_ref)).strip()
-        except RuntimeError:
-            pass
-        args = ["commit-tree", tree_id, "-m", f"Focus material {material.material_id}: {source}"]
-        if parent:
-            args[2:2] = ["-p", parent]
-        commit_id = (await self._git(workspace, *args)).strip()
-        await self._git(workspace, "update-ref", material.git_ref, commit_id)
-        version = MaterialVersion(
-            version_id=new_id(), material_id=material.material_id, commit_id=commit_id,
-            object_id=object_id, digest=digest, source=source,
-        )
-        material.digest = digest
-        session.add(version)
-        return version
+    ) -> MaterialVersion | None:
+        return await self.material_snapshots.protect(session, material, workspace_path, source)
 
     async def _git(self, workspace: Path, *args: str, stdin: str | None = None) -> str:
         def run() -> str:
@@ -2910,10 +2900,13 @@ class DesktopService:
         path = resolve_material_path(workspace_path, material.relative_path)
         return {
             "material_id": material.material_id, "task_id": material.task_id,
+            "workspace_id": material.workspace_id, "intake_upload_key": material.intake_upload_key,
+            "name": path.name, "display_name": path.name,
+            "media_type": IMAGE_MIME_BY_SUFFIX.get(path.suffix.lower(), "application/octet-stream"),
             "path": str(path),
             "relative_path": material.relative_path, "reading_mode": material.reading_mode,
             "instruction_mode": material.instruction_mode, "retention": material.retention,
-            "digest": material.digest, "git_ref": material.git_ref,
+            "digest": material.digest, "sha256": material.digest, "git_ref": material.git_ref,
             "needs_confirmation": material.needs_confirmation,
             "is_image": is_image_name(material.relative_path),
             "material_kind": MaterialKindClassifier.classify(material.relative_path),

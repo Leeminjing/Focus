@@ -14,6 +14,7 @@ resolution、不触碰 graph；completed/stopped/failed 委托 TerminalLifecycle
 延迟失败只先读取决策归属，再依 Loop、Round、Decision 顺序加锁并刷新；已落定的决策原样返回，迟到回调不覆盖暂停终态。
 workspace_input 由 apply_user_inputs 完整处置，有来源的 Mission 修订、逐 Context 权限、精确取消与新工作在同一授权事务提交；发布重放只处理尚未生效动作，后续失败不能撤回已提交输入或取消。workspace 完成落点保留绑定并 idle，旧 Context Loop 仍走终态。
 Savepoint 回退后显式刷新控制实体。仅迁移前 schema0 且无 DecisionInputs 的 Observation 不登记认知沉淀 work，执行来源仍由全轮汇合吸收。
+消息动作的附件选择仅来自本轮冻结观察或其精确输入因果链，提交前核验工作区，Dispatcher 从同一已提交观察解析版本。
 """
 
 from __future__ import annotations
@@ -356,6 +357,17 @@ class LoopKernel:
             raise KernelRejected("输入处置动作必须唯一")
         message_targets = []
         for action in intent.actions:
+            attachment_ids = getattr(action, "attachment_input_ids", ())
+            if attachment_ids:
+                from backend.app.desktop.agent_loop.workspace_attachments import WorkspaceAttachments
+
+                observation = await session.get(LoopObservation, round_row.observation_id)
+                if observation is None:
+                    raise KernelRejected("附件授权缺少冻结观察")
+                try:
+                    WorkspaceAttachments().authorized(observation.envelope, attachment_ids, loop.workspace_id)
+                except ValueError as error:
+                    raise KernelRejected(str(error)) from error
             if action.action == "deliver_user_message":
                 try:
                     message_targets.append(await self._user_messages.validate(session, loop, round_row, grant, action.intent_id))

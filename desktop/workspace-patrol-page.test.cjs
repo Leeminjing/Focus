@@ -3,6 +3,7 @@
  * 工作流为无可见窗口加载完整应用，操作六导航、按需检查与单路 Live，核对记录非模态开关/持续输入/滚动分页、请求身份、清空正文、库布局焦点/失败态、关系图键盘选择及边对账；普通会话继续展示原 Agent 消息。截图只证明布局，离线 fixture 不代替业务端到端。
  * 示例：node --test desktop/workspace-patrol-page.test.cjs。没有外部 Provider、生产库或安装应用写入；退出检查等待实际动画完成，避免离屏帧时钟与墙钟偏差。
  * 已选弹窗在关闭重开时保留原等待表单与草稿，并检查正文透出宿主材质；类型切换和排除表面的计算样式由六项材质定向验收补充。
+ * 工作区输入通过共享 intake.store 获取，覆盖迁移后的浏览器入口、迟到绑定及来源导航保护。
  */
 const assert = require("node:assert/strict");
 const path = require("node:path");
@@ -450,7 +451,7 @@ if (!process.versions.electron) {
     await run('document.querySelector("[data-patrol-history-open]").click(); document.querySelector("[data-patrol-history-open]").click()');
     await until('!document.querySelector("[data-patrol-input-history]").getAnimations().length');
     assert.equal(await run('document.querySelector("[data-patrol-input-history]").scrollTop'), 0);
-    await run('const store=workspacePatrolInputs.get(historyWorkspace); store.edit({content:"失败文件引用",file_refs:[{path:"plan.md",result_key:"version-1"}]}); const row=store.submit(); store.failed(row.submission_id,new Error("模拟发送失败")); window.editHistoryButton=document.querySelector("[data-patrol-edit-failed]")');
+    await run('const store=workspacePatrolIntake.store(historyWorkspace); store.edit({content:"失败文件引用",file_refs:[{path:"plan.md",result_key:"version-1"}]}); const row=store.submit(); store.failed(row.submission_id,new Error("模拟发送失败")); window.editHistoryButton=document.querySelector("[data-patrol-edit-failed]")');
     assert.equal(await run('window.editHistoryButton.disabled'), false);
     await run('{ const input=document.querySelector("[data-patrol-content]"); input.value="不能覆盖的新草稿"; input.dispatchEvent(new InputEvent("input",{bubbles:true})); }');
     assert.equal(await run('window.editHistoryButton.isConnected && window.editHistoryButton.disabled'), true);
@@ -504,6 +505,16 @@ if (!process.versions.electron) {
       await until(`document.body.dataset.view === '${page}'`);
       assert.equal(await run('document.querySelector("#app").textContent.includes("桌面服务未就绪")'), false);
     }
+    await run(`window.fileFeedbackFetch = async input => {
+      const id = new URL(String(input), "http://focus.test").pathname.match(/\\/workspaces\\/(nav-[ab])$/)?.[1];
+      if (!id) return null;
+      if (id === "nav-a") await new Promise(resolve => { window.releaseNavigationA = resolve; });
+      return Response.json({ workspace_id: id, display_name: id, path: "C:/test/" + id });
+    }; window.firstNavigation = openPatrolWorkbench({workspaceId:"nav-a"}); void 0`);
+    await until('Boolean(window.releaseNavigationA)');
+    await run('openPatrolWorkbench({workspaceId:"nav-b"})');
+    await run('window.releaseNavigationA(); window.firstNavigation');
+    assert.equal(await run('state.patrolWorkspace.workspace_id'), "nav-b");
     assert.deepEqual(errors, []);
     console.log("PATROL_UI_PASS: four first types, rapid inputs, draft, nonmodal history, requests, independent progress/facts, ordinary page");
     win.destroy(); app.quit();

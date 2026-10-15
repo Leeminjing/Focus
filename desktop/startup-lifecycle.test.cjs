@@ -1,23 +1,31 @@
-// Run the real main process and native windows; only external Python/Docker are fixtures.
+/*
+ * 本文件对外提供真实 Electron 主进程的启动失败、取消、兼容工作台与机器人生命周期回归。
+ * 输入为隔离 userData、受控 Python/Docker 和 HTTP 健康响应；输出为预检控制台隐藏、窗口存活、退出码与单次后端收口断言。
+ * 工作流为逐场景启动真实 main，并验证机器人双窗口、受限 IPC、按需工作台、第二实例与退出提醒；不替代 Explorer 拖放验收。
+ * 示例：node --test desktop/startup-lifecycle.test.cjs。
+ */
 const assert = require("node:assert/strict");
 const { setTimeout: delay } = require("node:timers/promises");
 
 if (process.versions.electron) {
   const { app, BrowserWindow } = require("electron");
   const cp = require("node:child_process");
+  const nativeSpawn = cp.spawn;
   const { EventEmitter } = require("node:events");
   const { PassThrough } = require("node:stream");
   const http = require("node:http");
   const scenario = process.env.FOCUS_STARTUP_TEST;
-  let server, kills = 0, quitting = false, healthRequests = 0;
+  let server, kills = 0, quitting = false, healthRequests = 0, backendStarts = 0, secondInstances = 0;
   const report = value => console.log(`STARTUP_TEST ${JSON.stringify(value)}`);
   const fail = error => { console.error(error); server?.close(); app.exit(90); };
 
-  cp.execFileSync = (command, args) => {
+  cp.execFileSync = (command, args, options) => {
+    assert.equal(options.windowsHide, true, "启动依赖与迁移子进程必须隐藏控制台");
     if (scenario === "preflight" && command === "docker") throw new Error("fixture: Docker unavailable");
     return command === "where.exe" ? `${process.execPath}\n` : "fixture";
   };
   cp.spawn = (_command, args) => {
+    backendStarts++;
     const backend = Object.assign(new EventEmitter(), {
       stdout: new PassThrough(), stderr: new PassThrough(), killed: false,
       kill() { this.killed = true; kills++; server?.close(); setImmediate(() => this.emit("exit", null, "SIGTERM")); },
@@ -25,7 +33,13 @@ if (process.versions.electron) {
     const readyAt = Date.now() + 750;
     server = http.createServer((request, response) => {
       if (request.url === "/health") healthRequests++;
-      if (scenario === "healthy" && Date.now() >= readyAt) { response.end("ok"); }
+      if (["healthy", "companion"].includes(scenario) && Date.now() >= readyAt) {
+        if (request.url === "/desktop/api/materials/limits") {
+          assert.equal(request.headers["x-focus-session"], process.env.FOCUS_DESKTOP_SESSION);
+          response.setHeader("Content-Type", "application/json");
+          response.end(JSON.stringify({ general_file_bytes: 1024, run_material_count: 4 }));
+        } else { response.setHeader("Content-Type", "text/html"); response.end("<!doctype html><title>Host fixture</title><body>host fixture</body>"); }
+      }
       else if (scenario !== "hung-health" && scenario !== "cancel") { response.writeHead(503); response.end("starting"); }
     });
     server.listen(Number(args[args.indexOf("--port") + 1]), "127.0.0.1");
@@ -34,8 +48,12 @@ if (process.versions.electron) {
     if (scenario === "cancel") setTimeout(() => app.quit(), 250);
     return backend;
   };
-  app.on("before-quit", () => { quitting = true; report({ quitting: true, kills }); server?.close(); });
-  app.on("will-quit", () => report({ backendKills: kills }));
+  app.on("second-instance", () => { secondInstances++; });
+  app.on("before-quit", () => {
+    if (scenario !== "companion") { quitting = true; server?.close(); }
+    report({ quitting: true, kills });
+  });
+  app.on("will-quit", () => { server?.close(); report({ backendKills: kills }); });
   app.on("browser-window-created", (_event, win) => {
     win.webContents.on("did-finish-load", async () => {
       try {
@@ -47,6 +65,56 @@ if (process.versions.electron) {
           const text = await win.webContents.executeJavaScript("document.body.innerText");
           report({ errorWindow: true, text, kills });
           win.close();
+        } else if (scenario === "companion" && url.endsWith("?surface=panel")) {
+          await delay(250);
+          assert.equal(BrowserWindow.getAllWindows().length, 2);
+          const panel = win;
+          const robot = BrowserWindow.getAllWindows().find(other => other.webContents.getURL().endsWith("?surface=robot"));
+          assert.ok(robot);
+          assert.equal(robot.webContents.session, panel.webContents.session);
+          const run = (window, script) => window.webContents.executeJavaScript(script);
+          await run(panel, "window.received=[]; window.focusDesktop.patrol.onContent(value=>window.received.push(value)); window.focusDesktop.patrol.ready()");
+          const ready = await run(robot, "window.focusDesktop.patrol.ready()");
+          assert.equal(ready.limits.general_file_bytes, 1024);
+          await run(robot, "window.focusDesktop.patrol.receive({items:[{kind:'file',name:'clipboard.png',type:'image/png',bytes:new Uint8Array([1,2,3])}]})");
+          await delay(30);
+          assert.equal(await run(panel, "received[0].items[0].bytes.byteLength"), 3);
+          await assert.rejects(run(panel, "window.focusDesktop.patrol.receive({items:[{kind:'text',text:'wrong sender'}]})"), /不能调用/);
+          const beforeFocus = BrowserWindow.getFocusedWindow();
+          await run(panel, "window.focusDesktop.patrol.setState({workspaceId:'fixture',workspaceName:'Fixture',state:'working',dirty:true,pending:false})");
+          assert.equal(BrowserWindow.getFocusedWindow(), beforeFocus);
+          panel.close();
+          assert.equal(panel.isDestroyed(), false);
+          await run(robot, "window.focusDesktop.patrol.openPanel()");
+          assert.equal(BrowserWindow.getAllWindows().length, 2);
+          await run(panel, "window.focusDesktop.patrol.openWorkbench({workspaceId:'fixture'})");
+          const workbench = BrowserWindow.getAllWindows().find(other => other.webContents.getURL().endsWith("/desktop/"));
+          assert.ok(workbench);
+          await run(workbench, "window.opened=null; window.focusDesktop.patrol.onWorkbench(value=>window.opened=value); window.focusDesktop.patrol.ready()");
+          await delay(30);
+          assert.equal(await run(workbench, "window.opened.workspaceId"), "fixture");
+          workbench.close();
+          assert.equal(workbench.isDestroyed(), false);
+          const second = nativeSpawn(process.execPath, [__filename], {
+            windowsHide: true, env: { ...process.env, FOCUS_STARTUP_TEST: "secondary" }, stdio: "ignore",
+          });
+          const secondWatchdog = setTimeout(() => second.kill(), 8000);
+          const secondCode = await new Promise((resolve, reject) => { second.once("exit", resolve); second.once("error", reject); });
+          clearTimeout(secondWatchdog);
+          assert.equal(secondCode, 0);
+          assert.equal(secondInstances, 1);
+          assert.equal(backendStarts, 1);
+          assert.equal(BrowserWindow.getAllWindows().length, 3);
+          let prompts = 0;
+          require("electron").dialog.showMessageBox = async () => { prompts++; return { response: 0 }; };
+          app.quit();
+          await delay(30);
+          assert.notEqual(app.isQuitting, true);
+          assert.equal(prompts, 1);
+          assert.equal(kills, 0);
+          await run(panel, "window.focusDesktop.patrol.setState({workspaceId:'fixture',workspaceName:'Fixture',state:'idle',dirty:false,pending:false})");
+          report({ companion: true, backendStarts, secondInstances, windows: 3, prompts });
+          app.quit();
         } else if (scenario === "healthy" && url.endsWith("/desktop/")) {
           await delay(200);
           // windowsHide suppresses native visibility; assert the loaded main window survives instead.
@@ -72,7 +140,7 @@ if (process.versions.electron) {
     let stdout = "", stderr = "";
     const env = { ...process.env, FOCUS_STARTUP_TEST: scenario,
         FOCUS_GLOBAL_HOME: home, FOCUS_ELECTRON_USER_DATA: path.join(home, "electron"),
-        FOCUS_DISABLE_HARDWARE_ACCELERATION: "1" };
+        FOCUS_DISABLE_HARDWARE_ACCELERATION: "1", FOCUS_DESKTOP_PATROL: scenario === "companion" ? "1" : "0" };
     delete env.ELECTRON_RUN_AS_NODE;
     const child = spawn(require("electron"), [__filename], {
       windowsHide: true, env,
@@ -120,5 +188,11 @@ if (process.versions.electron) {
     assert.equal(result.events.some(event => event.errorWindow), false);
     assert.equal(result.events.find(event => "backendKills" in event).backendKills, 1);
     assert.doesNotMatch(result.stderr, /Focus 启动失败/);
+  });
+  test("Windows companion keeps one backend and restores existing windows through native IPC", { skip: process.platform !== "win32" }, async () => {
+    const result = await launch("companion");
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(result.events.some(event => event.companion));
+    assert.equal(result.events.find(event => "backendKills" in event).backendKills, 1);
   });
 }

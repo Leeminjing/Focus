@@ -1,0 +1,30 @@
+<!-- 本页面提供桌面机器人与输入面板的同源壳层。
+输入为 surface 窗口参数及用户材料和要求，输出为机器人入口、预览表单、工作状态与已提交回答。
+工作流为装配共享 intake 和预览模块，显式发送后读取既有 Live；示例：desktop-patrol.html?surface=panel。
+-->
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Focus · Patrol</title><link rel="stylesheet" href="./desktop-patrol.css"></head>
+<body>
+  <main id="robot" hidden><button id="robot-open" aria-label="打开 Patrol，拖入图片、文字或文件"><img src="./assets/patrol-avatar/idle.png" alt="Patrol 机器人" draggable="false"></button><span id="robot-status" role="status">点击开始</span><button id="robot-hide" aria-label="隐藏机器人到托盘">收起</button></main>
+  <main id="panel" hidden>
+    <header class="panel-header"><div><span class="eyebrow">FOCUS / PATROL</span><button id="binding" title="切换绑定工作区">绑定工作区 ↗</button></div><button id="hide" aria-label="收起面板">×</button></header>
+    <div class="panel-scroll">
+      <section class="intro"><h1>把想法放在这里。</h1><p>拖入截图、文字或文件，补一句要求，再发送。</p></section>
+      <form id="compose" data-patrol-composer>
+        <div class="drop-zone"><div data-patrol-materials aria-label="待发送参考材料"></div><button type="button" id="add-material">＋ 添加材料</button><span>也可以拖到机器人上</span><input type="file" id="file-picker" multiple hidden></div>
+        <label for="instruction">你的要求 <small>可选</small></label><textarea id="instruction" rows="3" placeholder="例如：解释这张截图里的问题…"></textarea>
+        <div id="reply-target" hidden><span></span><button type="button" id="clear-reply">取消指定回复</button></div>
+        <div class="send-row"><small>Enter 换行 · Ctrl+Enter 发送</small><button id="send" type="submit">发送 ↑</button></div>
+      </form>
+      <p id="error" role="alert" hidden></p><div class="status-row"><i></i><span id="status" role="status">绑定工作区后即可发送</span><button id="reconnect" hidden>重连</button></div>
+      <section id="requests" aria-label="待处理请求"></section>
+      <section id="results" aria-label="工作区已提交结果"></section>
+      <details id="history"><summary>输入记录 <span id="receipt"></span></summary><div id="history-items"></div><button id="older" hidden>更早的输入</button></details>
+    </div>
+    <footer><span>一个入口，整个工作区</span><button id="workbench">打开工作台 ↗</button></footer>
+  </main>
+  <script src="./http-response.js"></script><script src="./loop-api.js"></script>
+  <script src="./loop-live-schema.js"></script><script src="./loop-live-reducer.js"></script><script src="./loop-live-selectors.js"></script><script src="./loop-live-store.js"></script><script src="./loop-live-connection.js"></script>
+  <script src="./access-mode.js"></script><script src="./workspace-patrol-inputs.js"></script><script src="./workspace-patrol-intake.js"></script><script src="./workspace-patrol-material-preview.js"></script><script src="./workspace-patrol-feedback.js"></script>
+  <script src="./desktop-patrol-robot.js"></script><script src="./desktop-patrol-panel.js"></script>
+</body></html>

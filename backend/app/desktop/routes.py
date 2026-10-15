@@ -6,6 +6,7 @@ Context、任务、草稿、普通/策展 Patrol、运行、文件沙箱状态�
 会话文件模式通过独立请求更新，普通界面状态保存不能改变受治理模式。
 具体工作流为校验本机会话后调用 DesktopService，并保持所有事件按 run_id 订阅；上传把
 UploadFile 直接交给有界上传服务，内容读取在校验 task/material 归属后交给 FileResponse。
+工作区直接材料与资源上限由 workspace_material_router 共享相同服务和会话保护。
 
 示例：POST /desktop/api/tasks/{task_id}/main/runs。
 Loop 内直接用户消息只返回耐久受理身份，冻结和 Patrol/Kernel 授权后沿既有 Directive 启动；Loop 外仍沿 durable Main Run 准入。
@@ -47,6 +48,7 @@ from backend.app.desktop.service import PreparedRun
 from backend.app.desktop.run_materials import RunMaterialRequest
 from backend.app.desktop.run_orchestration import RunLauncher
 from backend.app.desktop.run_stream import durable_run_sse_consumer
+from backend.app.desktop.workspace_material_routes import workspace_material_router
 from backend.app.gateway.services import start_run
 from focus.sandbox.status import sandbox_status
 
@@ -54,6 +56,7 @@ from focus.sandbox.status import sandbox_status
 # 决策 10：桌面 API 只接受 loopback 对等连接（含 host_command 真实宿主机命令）。
 # 保护由 AuthMiddleware（统一会话保护）统一承担，本路由不再挂独立依赖。
 desktop_router = APIRouter(prefix="/desktop/api")
+desktop_router.include_router(workspace_material_router)
 
 
 @desktop_router.get("/sandbox/status")

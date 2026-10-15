@@ -12,6 +12,7 @@ completion_admission 冻结当前完成请求语义身份、原验证及准入 b
 completion_eligibility 独立冻结具体验证的版本化完成资格，历史输入缺省不回填或改写。
 workspace_patrol、精确用户输入处置与 awaiting_input 扩展现有联合；缺省交互模式继续兼容旧 Observation。
 evolution_strategies 保存当前观察适用的完整策略正文和身份；旧观察缺省为空，不改变执行权限。
+可执行消息动作的 attachment_input_ids 仅选择冻结输入来源，不能提供任意材料路径或扩大素材访问范围。
 """
 
 from __future__ import annotations
@@ -55,12 +56,19 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+_ATTACHMENT_INPUT_DESCRIPTION = (
+    "选择携带附件的 user_intents[].intent_id 或 causal_chain[].intent_id；"
+    "每个身份交付该次输入的全部冻结附件。这里不是 material_id、路径或摘要。"
+)
+
+
 class ContinueContextAction(StrictModel):
     action: Literal["continue_context"]
     context_id: str
     context_revision_id: str
     message: str = Field(min_length=1)
     required_barrier: bool = True
+    attachment_input_ids: tuple[str, ...] = Field(default=(), max_length=32, description=_ATTACHMENT_INPUT_DESCRIPTION)
 
 
 class DeliverUserMessageAction(StrictModel):
@@ -85,6 +93,7 @@ class CreateLaneAction(StrictModel):
     action: Literal["create_lane"]
     plan: CreateLanePlan
     message: str = Field(min_length=1)
+    attachment_input_ids: tuple[str, ...] = Field(default=(), max_length=32, description=_ATTACHMENT_INPUT_DESCRIPTION)
 
 
 class SpawnContextAction(StrictModel):
@@ -128,12 +137,14 @@ class UpdateLaneAction(StrictModel):
     action: Literal["update_lane"]
     plan: UpdateLanePlan
     message: str = Field(min_length=1)
+    attachment_input_ids: tuple[str, ...] = Field(default=(), max_length=32, description=_ATTACHMENT_INPUT_DESCRIPTION)
 
 
 class MergeContextsAction(StrictModel):
     action: Literal["merge_contexts"]
     plan: CreateLanePlan
     message: str = Field(min_length=1)
+    attachment_input_ids: tuple[str, ...] = Field(default=(), max_length=32, description=_ATTACHMENT_INPUT_DESCRIPTION)
 
 
 class PauseLaneAction(StrictModel):

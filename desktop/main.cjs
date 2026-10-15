@@ -1,15 +1,14 @@
 /*
- * 本文件启动 Focus 桌面运行时。输入为本机 Python/Git/Docker 能力、品牌资源与环境变量，输出为
- * 本地启动动画、单一动态 loopback FastAPI 及同源隔离主窗口；失败时原子切换到带品牌的说明窗口。
- * 主窗口复用 window-material 配置 Windows Acrylic 与可访问性退化，保持原生控制和缩放；
- * 示例：Electron 加载本文件后，启动服务并在健康检查成功时显示主窗口。
- *
- * 单实例闸门在 app.whenReady 之前取得，且不通过即退出：启动链路会拉起 uvicorn、docker compose
- * 与 alembic 迁移，若允许第二个实例进入，将重复起后端、重复迁移并再开一整套窗口。第二个实例的
- * 启动请求改由首个实例接管——恢复并聚焦既有主窗口。
+ * 本文件启动 Focus 单实例桌面运行时。输入为 Python/Git/Docker、品牌资源和环境变量，输出为
+ * 单一 loopback FastAPI、同源隔离窗口及 Windows 桌面 Patrol 宿主；失败时切换到品牌错误窗口。
+ * 工作流为先取单实例锁，隐藏预检控制台后启动及检查后端，Windows 默认显示机器人，工作台按需打开、关闭仅隐藏；
+ * 明确退出时检查未确认输入，再沿用后端 shutdown。其他平台或 FOCUS_DESKTOP_PATROL=0 保留工作台启动。
+ * 工作台缩放以 Chromium 每级 1.2 倍钳制在 50%~300%，原生标题覆盖层同步 56 CSS px 基础高度。
+ * 示例：electron . 启动机器人，托盘打开工作台；第二实例唤回既有机器人而不再启动后端。
  */
 const { app, BrowserWindow, dialog, ipcMain, Menu, shell, nativeTheme } = require("electron");
 const { supportsAcrylic, bindWindowMaterial } = require("./window-material.cjs");
+const { DesktopPatrolHost } = require("./desktop-patrol-host.cjs");
 const nativeMaterialSupported = supportsAcrylic(process.platform, require("node:os").release());
 const { execFileSync, spawn } = require("node:child_process");
 const crypto = require("node:crypto");
@@ -23,13 +22,10 @@ const rootDir = path.resolve(desktopDir, "..");
 const migrationIni = path.join(rootDir, "backend", "packages", "harness", "focus", "persistence", "migrations", "alembic.ini");
 const focusIconPath = path.join(desktopDir, "assets", process.platform === "win32" ? "focus-icon.ico" : "focus-icon.png");
 
-// 整页缩放级别边界：Chromium zoomLevel 以 0 为原始大小，每级约 ×1.2，默认限制 50%~300%。
 const ZOOM_LEVEL_MIN = -3;
 const ZOOM_LEVEL_MAX = 5;
-
-// 顶部带高：既是原生窗口控制覆盖层的基础高度（DIP），也是页面头部带高（CSS px）。
-// 两者必须相等——页面头部随缩放变化，故覆盖层高度必须随缩放同步，见 syncTitleBarOverlay。
 const TITLEBAR_BASE_HEIGHT = 56;
+const patrolEnabled = process.platform === "win32" && process.env.FOCUS_DESKTOP_PATROL !== "0";
 
 function clampZoomLevel(value) {
   const numeric = Number(value);
@@ -37,17 +33,14 @@ function clampZoomLevel(value) {
   return Math.min(ZOOM_LEVEL_MAX, Math.max(ZOOM_LEVEL_MIN, Math.round(numeric)));
 }
 
-// 缩放因子：Chromium 每级 ×1.2。
 function zoomFactorForLevel(level) {
   return 1.2 ** clampZoomLevel(level);
 }
 
-// 让原生窗口控制覆盖层高度跟随页面缩放：页面头部带物理高 = 56 CSS px × zoomFactor，
-// 覆盖层高度（DIP）取同一值，二者恒相等，避免缩放后头部内容被窗口按钮遮挡/错位。
 function syncTitleBarOverlay(win, level) {
   if (process.platform === "darwin" || !win || win.isDestroyed?.()) return;
   const height = Math.round(TITLEBAR_BASE_HEIGHT * zoomFactorForLevel(level));
-  try { win.setTitleBarOverlay({ height }); } catch { /* 未启用覆盖层时忽略 */ }
+  try { win.setTitleBarOverlay({ height }); } catch {}
 }
 
 function ensureFocusHome() {
@@ -55,7 +48,6 @@ function ensureFocusHome() {
   fs.mkdirSync(home, { recursive: true });
   fs.mkdirSync(path.join(home, "plugins"), { recursive: true });
   fs.mkdirSync(path.join(home, "users"), { recursive: true });
-  // 预创建全局配置占位（仓库/项目态优先，此处作默认/兜底层）
   const extensions = path.join(home, "extensions_config.json");
   if (!fs.existsSync(extensions)) fs.writeFileSync(extensions, '{"mcpServers": {}}', "utf8");
   const config = path.join(home, "config.yaml");
@@ -65,6 +57,9 @@ function ensureFocusHome() {
 let backend = null;
 let splashWindow = null;
 let mainWindow = null;
+let patrolHost = null;
+let desktopOrigin = null;
+let workbenchLoading = null;
 let fatalErrorShown = false;
 let startupStage = "正在加载启动窗口";
 const startupAbort = new AbortController();
@@ -76,7 +71,7 @@ if (process.env.FOCUS_DISABLE_HARDWARE_ACCELERATION === "1") {
 if (process.env.FOCUS_ELECTRON_USER_DATA) app.setPath("userData", process.env.FOCUS_ELECTRON_USER_DATA);
 
 function checked(command, args, options = {}) {
-  return execFileSync(command, args, { cwd: rootDir, encoding: "utf8", stdio: options.stdio || "pipe", env: options.env || process.env });
+  return execFileSync(command, args, { cwd: rootDir, encoding: "utf8", windowsHide: true, stdio: options.stdio || "pipe", env: options.env || process.env });
 }
 
 function pythonEnvironment(session) {
@@ -239,7 +234,6 @@ function showFatalError(error) {
   console.error(`Focus 启动失败（${startupStage}）:`, error);
   startupAbort.abort(error);
   stopBackend();
-  // Keep a native window alive throughout the handoff: closing the last one quits Electron.
   try {
     errorWindow(new Error(`${startupStage}: ${error?.message || error}`));
   } catch (windowError) {
@@ -248,6 +242,8 @@ function showFatalError(error) {
     return;
   }
   closeSplashWindow();
+  patrolHost?.dispose();
+  patrolHost = null;
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
   mainWindow = null;
 }
@@ -279,7 +275,6 @@ async function start() {
   Menu.setApplicationMenu(null);
   await createSplashWindow();
   startupAbort.signal.throwIfAborted();
-  // 首次启动自动创建全局配置家目录 ~/.focus（含 plugins/、users/）
   try { ensureFocusHome(); } catch (error) { console.error("创建 ~/.focus 失败:", error); }
   await updateSplashStage("正在检查本地运行环境", 10);
   const session = crypto.randomBytes(32).toString("hex");
@@ -289,17 +284,15 @@ async function start() {
   checked("git", ["--version"]);
   checked("docker", ["compose", "version"]);
   await updateSplashStage("正在准备数据服务", 28);
-  // ponytail: 镜像已存在时不重复拉取（--pull missing），避免每次启动依赖镜像源网络
   checked("docker", ["compose", "-f", path.join(desktopDir, "compose.yaml"), "up", "-d", "--pull", "missing", "--wait"], { stdio: "inherit" });
   await updateSplashStage("正在应用工作区迁移", 48);
   checkedPython(pythonRuntime, ["-m", "alembic", "-c", migrationIni, "upgrade", "head"], { env, stdio: "inherit" });
   const port = await freePort();
   const apiBase = `http://127.0.0.1:${port}`;
+  desktopOrigin = apiBase;
   process.env.FOCUS_DESKTOP_API = apiBase;
   process.env.FOCUS_DESKTOP_SESSION = session;
   await updateSplashStage("正在启动 Focus Gateway", 66);
-  // 决策 1：桌面功能内嵌 Gateway，Electron 以 loopback 模式启动唯一 FastAPI 应用。
-  // --loop 选择 Selector 事件循环（psycopg async 在 Windows 上不能用 ProactorEventLoop）
   backend = spawn(pythonRuntime.command, [...pythonRuntime.prefix, "-m", "uvicorn", "backend.app.gateway.app:app", "--host", "127.0.0.1", "--port", String(port), "--loop", "backend.app.gateway.app:selector_loop_factory"], {
     cwd: rootDir,
     env: { ...env, FOCUS_DESKTOP_PORT: String(port) },
@@ -316,6 +309,39 @@ async function start() {
   await waitForHealth(apiBase);
   await updateSplashStage("正在加载工作区", 84);
   startupAbort.signal.throwIfAborted();
+  if (patrolEnabled) {
+    const response = await fetch(`${apiBase}/desktop/api/materials/limits`, {
+      headers: { "X-Focus-Session": session }, signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new Error(`读取材料资源限制失败：HTTP ${response.status}`);
+    const limits = await response.json();
+    if (!Number.isSafeInteger(limits.general_file_bytes) || limits.general_file_bytes <= 0
+      || !Number.isSafeInteger(limits.run_material_count) || limits.run_material_count <= 0) throw new Error("材料资源限制无效");
+    patrolHost = new DesktopPatrolHost({
+      electron: require("electron"), apiBase, desktopDir, icon: focusIconPath, limits,
+      openWorkbench: showWorkbench, getWorkbench: () => mainWindow, quit: () => app.quit(),
+    });
+    await patrolHost.start();
+  } else {
+    await showWorkbench();
+  }
+  await updateSplashStage("Focus 已就绪", 100);
+  startupAbort.signal.throwIfAborted();
+  closeSplashWindow();
+}
+
+async function showWorkbench() {
+  if (workbenchLoading) await workbenchLoading;
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    workbenchLoading = createWorkbench();
+    try { await workbenchLoading; } finally { workbenchLoading = null; }
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+async function createWorkbench() {
   const mainWindowOptions = {
     show: false,
     width: 1440,
@@ -331,12 +357,13 @@ async function start() {
       preload: path.join(desktopDir, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
-      // Chromium renderer isolation only; Python Agents still use real host paths with no Agent sandbox.
       sandbox: true,
-      additionalArguments: nativeMaterialSupported ? ["--focus-native-material=acrylic"] : [],
+      additionalArguments: [
+        ...(nativeMaterialSupported ? ["--focus-native-material=acrylic"] : []),
+        ...(patrolEnabled ? ["--focus-desktop-patrol"] : []),
+      ],
     },
   };
-  // macOS uses its native traffic-light title bar; titleBarOverlay is for the Windows/Linux shell.
   if (process.platform !== "darwin") {
     mainWindowOptions.titleBarOverlay = {
       color: "#ffffff",
@@ -348,30 +375,38 @@ async function start() {
   nativeTheme.themeSource = "light";
   bindWindowMaterial(mainWindow, nativeTheme, nativeMaterialSupported);
   mainWindow.setMenuBarVisibility(false);
-  protectAppNavigation(mainWindow, apiBase);
-  // 决策 7：同源加载（页面与 API 同一 Origin，无需 CORS）
-  await mainWindow.loadURL(`${apiBase}/desktop/`);
-  await updateSplashStage("Focus 已就绪", 100);
-  startupAbort.signal.throwIfAborted();
-  mainWindow.show();
-  closeSplashWindow();
+  protectAppNavigation(mainWindow, desktopOrigin);
+  mainWindow.on("close", event => {
+    if (patrolHost && !app.isQuitting) { event.preventDefault(); mainWindow.hide(); }
+  });
+  mainWindow.on("closed", () => { mainWindow = null; });
+  await mainWindow.loadURL(`${desktopOrigin}/desktop/`);
 }
 
-ipcMain.handle("focus:select-workspace", async () => {
-  const result = await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] });
+function assertDesktopSender(event) {
+  if (patrolHost?.accepts(event)) return;
+  if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents && event.senderFrame === event.sender.mainFrame) {
+    try { if (new URL(event.senderFrame.url).origin === desktopOrigin) return; } catch {}
+  }
+  throw new Error("仅允许 Focus 同源窗口调用桌面功能");
+}
+
+ipcMain.handle("focus:select-workspace", async event => {
+  assertDesktopSender(event);
+  const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), { properties: ["openDirectory", "createDirectory"] });
   return result.canceled ? "" : result.filePaths[0];
 });
 
-ipcMain.handle("focus:open-external", async (_event, value) => {
+ipcMain.handle("focus:open-external", async (event, value) => {
+  assertDesktopSender(event);
   const url = externalHttpUrl(value);
   if (!url) throw new Error("仅允许打开 HTTP(S) 外部链接");
   await shell.openExternal(url);
   return true;
 });
 
-// 整页缩放：主进程是缩放权威，对调用方窗口的 webContents 设置/读取级别并钳制；
-// 设置后同步原生覆盖层带高，使原生窗口按钮与（随缩放的）页面头部带始终等高。
 ipcMain.handle("focus:set-zoom-level", (event, value) => {
+  assertDesktopSender(event);
   const level = clampZoomLevel(value);
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win.isDestroyed()) return level;
@@ -381,6 +416,7 @@ ipcMain.handle("focus:set-zoom-level", (event, value) => {
 });
 
 ipcMain.handle("focus:get-zoom-level", event => {
+  assertDesktopSender(event);
   const contents = BrowserWindow.fromWebContents(event.sender)?.webContents;
   return contents ? contents.getZoomLevel() : 0;
 });
@@ -390,18 +426,25 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on("second-instance", () => {
+    if (patrolHost) { patrolHost.restore(); return; }
     if (!mainWindow || mainWindow.isDestroyed()) return;
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();
   });
   app.whenReady().then(start).catch(showFatalError);
-  app.on("window-all-closed", () => app.quit());
+  app.on("window-all-closed", () => { if (!patrolHost || fatalErrorShown) app.quit(); });
 }
-app.on("before-quit", () => {
+app.on("before-quit", event => {
+  if (!fatalErrorShown && patrolHost?.hasUnconfirmedInput()) {
+    event.preventDefault();
+    patrolHost.requestQuit().catch(error => console.error("退出 Focus 失败:", error));
+    return;
+  }
   app.isQuitting = true;
   startupAbort.abort();
   closeSplashWindow();
+  patrolHost?.dispose();
   stopBackend();
 });
 app.on("will-quit", () => {

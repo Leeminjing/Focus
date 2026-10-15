@@ -1,5 +1,6 @@
 /*
  * 本文件对外提供应用组合根；输入为真实 API/Live 与用户导航动作，输出为六页及原业务入口。
+ * 工作区绑定与投递复用 WorkspacePatrolIntake；原生工作台通过白名单桥唤起唯一机器人面板，浏览器保留本页输入，既有任务输入不受影响。来源导航按最新请求身份生效，迟到读取不能覆盖后来选择。
  * 任务与图卡共用 Run SSE 订阅；图卡通过只读观察器呈现真实角色与短尾部，按工作区和 Run 隔离，退出页面释放观察而不触发审批。
  * 工作流为沿原控制器装配页面、按任务保留草稿，卡片/列表偏好仅留在页面状态。示例：renderPlugins() 展示 registry 的当前状态。
  * Loop 激活由服务端解析初始 Run 装备，客户端不从详情缓存猜测权限；继承请求输出完整有效授权快照。Main 接口的 direct_message 回执仅表示受理，不写 active_run 或材料执行历史。默认 Patrol，任务列表与材料检查器承接传统操作，复杂能力通过明确次级入口使用原业务用例。
@@ -115,7 +116,7 @@ const ZOOM_LEVEL_MAX = 5;
 
 const state = {
   view: "patrol",
-  patrolWorkspace: readPatrolWorkspace(),
+  patrolWorkspace: window.FocusWorkspacePatrolIntake.readBinding(localStorage),
   tasks: [],
   activeTaskId: null,
   details: new Map(),
@@ -233,8 +234,12 @@ const composerDraft = window.FocusComposerDraft;
 const taskRunOperations = window.FocusTaskRunOperations?.create();
 const loopApi = window.FocusLoopApi?.create(runtime);
 const runStreams = window.FocusRunStreamSubscriptions?.create(runtime);
-const workspacePatrolInputs = new Map();
+const desktopPatrol = window.focusDesktop?.patrol?.enabled ? window.focusDesktop.patrol : null;
+const workspacePatrolIntake = window.FocusWorkspacePatrolIntake.create({ runtime, api: loopApi,
+  selectWorkspace: window.focusDesktop?.selectWorkspace, accessMode: accessMode.readNewSessionDefault(window.localStorage) });
 let workspacePatrolController = null;
+let workspacePatrolMount = Promise.resolve();
+let workspacePatrolNavigation = 0;
 let workspacePatrolPicker = null;
 let patrolWorkspaceBeforePick = null;
 let mapPortfolio = { workspaceId: null, loading: false, snapshot: null, manifest: null, error: null };
@@ -803,18 +808,18 @@ function renderNoActiveTask() {
 }
 
 async function renderWorkspacePatrol() {
-  if (workspacePatrolController?.isMounted(app, state.patrolWorkspace?.workspace_id)) return;
+  if (workspacePatrolController?.isMounted(app, state.patrolWorkspace?.workspace_id)) return workspacePatrolMount;
   workspacePatrolController?.dispose();
   workspacePatrolController = null;
   if (state.patrolWorkspace) {
     workspacePatrolPicker?.dispose();
     workspacePatrolPicker = null;
     const workspace = state.patrolWorkspace;
-    if (!workspacePatrolInputs.has(workspace.workspace_id)) workspacePatrolInputs.set(workspace.workspace_id, window.FocusWorkspacePatrolInputs.create(undefined, accessMode.readNewSessionDefault(window.localStorage)));
     const store = window.FocusLoopLiveStore.create();
     const connection = window.FocusLoopLiveConnection.create({ api: loopApi, store });
     workspacePatrolController = window.FocusWorkspacePatrolController.create({
-      api: loopApi, inputs: workspacePatrolInputs.get(workspace.workspace_id), liveStore: store, connection,
+      api: loopApi, inputs: workspacePatrolIntake.store(workspace.workspace_id), intake: workspacePatrolIntake,
+      onCompose: desktopPatrol ? target => desktopPatrol.openPanel(target) : null, liveStore: store, connection,
       createRunPreviews,
       onOpenTask: async contextId => {
         if (!state.tasks.some(item => item.task_id === contextId)) await refreshTasks();
@@ -822,21 +827,26 @@ async function renderWorkspacePatrol() {
         else setStatus("此 Context 暂不可从任务入口打开，请刷新工作区", true);
       },
     });
-    await workspacePatrolController.mount(app, workspace);
+    workspacePatrolMount = workspacePatrolController.mount(app, workspace);
+    await workspacePatrolMount;
+    return;
+  }
+  if (desktopPatrol) {
+    app.innerHTML = '<section class="empty-state"><h1>桌面机器人已就绪</h1><p>在机器人旁绑定工作区，拖入材料并发送。</p><button data-action="show-patrol">打开机器人输入 ↗</button></section>';
     return;
   }
   if (workspacePatrolPicker) return;
   const picker = window.FocusWorkspacePatrolPicker.create({
     async onEnter(path) {
-      const workspace = await api("/desktop/api/workspaces", { method: "POST", body: JSON.stringify({ path }) });
+      const workspace = await workspacePatrolIntake.bind(path);
       if (state.view !== "patrol" || workspacePatrolPicker !== picker) return;
       state.patrolWorkspace = workspace;
+      workspacePatrolIntake.remember(workspace);
       patrolWorkspaceBeforePick = null;
-      localStorage.setItem("focus-patrol-workspace", JSON.stringify(workspace));
       render();
     },
     async chooseFolder() {
-      return window.focusDesktop?.selectWorkspace ? window.focusDesktop.selectWorkspace() : (await api("/desktop/api/workspaces/select", { method: "POST" })).path;
+      return workspacePatrolIntake.choose();
     },
     onCancel() {
       if (state.view !== "patrol" || workspacePatrolPicker !== picker) return;
@@ -847,15 +857,6 @@ async function renderWorkspacePatrol() {
   });
   workspacePatrolPicker = picker;
   picker.mount(app);
-}
-
-function readPatrolWorkspace() {
-  try {
-    const workspace = JSON.parse(localStorage.getItem("focus-patrol-workspace") || "null");
-    return typeof workspace?.workspace_id === "string" && typeof workspace?.path === "string" ? workspace : null;
-  } catch {
-    return null;
-  }
 }
 
 function observeLoopConnection(loopId) {
@@ -6428,11 +6429,12 @@ async function handleDocumentClick(event) {
   if (!button) return;
   const action = button.dataset.action;
   if (action === "show-patrol") {
+    if (desktopPatrol) return desktopPatrol.openPanel({ workspaceId: state.patrolWorkspace?.workspace_id });
     if (state.view === "focus") persistFocusState();
     workspacePatrolPicker?.dispose();
     workspacePatrolPicker = null;
     if (button.hasAttribute("data-patrol-switch")) patrolWorkspaceBeforePick = state.patrolWorkspace || patrolWorkspaceBeforePick;
-    state.patrolWorkspace = button.hasAttribute("data-patrol-switch") ? null : state.patrolWorkspace || readPatrolWorkspace();
+    state.patrolWorkspace = button.hasAttribute("data-patrol-switch") ? null : state.patrolWorkspace || workspacePatrolIntake.readBinding();
     state.inspector.open = false;
     state.view = "patrol";
     return render();
@@ -7458,4 +7460,17 @@ bindShellResizers();
 // 整页缩放：启动恢复持久化级别（非法/越界回落 100%），播报文案随语言切换。
 restoreZoomLevel();
 
-runUiAction(bootstrap);
+async function openPatrolWorkbench(target) {
+  const navigation = ++workspacePatrolNavigation;
+  const workspace = target.workspaceId ? await workspacePatrolIntake.workspace(target.workspaceId) : state.patrolWorkspace;
+  if (navigation !== workspacePatrolNavigation) return;
+  state.patrolWorkspace = workspace;
+  state.view = "patrol";
+  render();
+  await renderWorkspacePatrol();
+  if (navigation !== workspacePatrolNavigation) return;
+  workspacePatrolController?.showDetails();
+  if (target.taskId) await workspacePatrolController?.showContext(target.taskId, target.revisionId);
+}
+if (desktopPatrol) desktopPatrol.onWorkbench(target => runUiAction(() => openPatrolWorkbench(target)));
+runUiAction(async () => { await bootstrap(); if (desktopPatrol) await desktopPatrol.ready(); });

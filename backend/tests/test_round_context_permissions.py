@@ -3,6 +3,7 @@
 输入为完整 Context 清单、可信角色上限及真实 PostgreSQL 决策/Directive；输出为缺项、越权拒绝与逐轮失效断言。
 工作流先验证决策合同，再令 R5 与 R6 对同一 Context 分别授权可写和只读，检查新 Mission 不覆盖旧授权，取消、撤权、到期及结算后禁止新调用。
 示例：python -m pytest backend/tests/test_round_context_permissions.py -q；权限读取不启动模型或执行进程。
+Run 准入从可信 Directive 补齐缺失快照，但仍拒绝已有伪造绑定、Context 错配、过期授权与权限扩大。
 """
 
 import asyncio
@@ -52,6 +53,58 @@ def test_permission_inventory_requires_every_context_and_stays_below_role_ceilin
         derived = SimpleNamespace(action="create_lane", plan=SimpleNamespace(lane_policy={"workspace_mode": "isolated_write"}))
         grant = proposal((("writer", None), ("reader", None), ("action:0", "workspace-write")), (derived,))
         assert (await directive_equipment.validate_context_permissions(None, loop, observation, grant))["action:0"]["access_mode"] == "workspace-write"
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.usefixtures("isolated_postgres_database")
+@pytest.mark.parametrize("case", ["missing", "valid", "forged", "empty", "context", "expired", "mode", "revoked"])
+def test_admission_restores_only_missing_authority_from_verified_directive(tmp_path, case):
+    from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
+    from backend.app.desktop.models import DesktopRun
+
+    async def exercise():
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        fixture = await _seed_loop(sessions, tmp_path, label="admit-authority", started_at=datetime.now(UTC))
+        try:
+            directive_id = await _seed_launching_directive(sessions, fixture, label="admit-authority")
+            async with sessions.begin() as session:
+                loop = await session.get(AgentLoop, fixture["loop_id"])
+                directive = await session.get(LoopDirective, directive_id)
+                resolved = await directive_equipment.resolve_directive_equipment(session, loop, directive)
+                binding = resolved["round_authorization"]
+                equipment = {key: value for key, value in resolved.items() if key != "round_authorization"}
+                if case == "valid":
+                    equipment["round_authorization"] = binding
+                elif case == "forged":
+                    equipment["round_authorization"] = {**binding, "decision_id": "not-the-committed-decision"}
+                elif case == "empty":
+                    equipment["round_authorization"] = None
+                elif case == "mode":
+                    equipment["access_mode"] = "danger-full-access"
+                grant = await session.get(LoopDelegationGrant, directive.grant_id)
+                if case == "expired":
+                    grant.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+                elif case == "revoked":
+                    grant.status = "revoked"
+                run = DesktopRun(run_id=uuid.uuid4().hex,
+                    task_id="another-context" if case == "context" else fixture["context_id"],
+                    loop_id=loop.loop_id, round_id=fixture["round_id"], directive_id=directive_id,
+                    status="pending", equipment=equipment)
+                if case in {"missing", "valid"}:
+                    await RunOwnershipPolicy().admit(session, run)
+                    assert run.equipment["round_authorization"] == binding
+                    await RunOwnershipPolicy().assert_live(session, run)
+                else:
+                    with pytest.raises(ValueError):
+                        await RunOwnershipPolicy().admit(session, run)
+                    if case in {"forged", "empty"}:
+                        assert run.equipment["round_authorization"] == equipment["round_authorization"]
+                await session.rollback()
+        finally:
+            await _stop(fixture["service"], fixture["loop_id"])
+            await engine.dispose()
 
     asyncio.run(exercise())
 

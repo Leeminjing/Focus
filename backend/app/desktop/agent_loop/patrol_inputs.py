@@ -5,6 +5,7 @@
 回执保留引入的不可变观察及输入前快照身份；不恢复图、不取消 Run、不更新 Mission。示例：await repository.accept(session, loop, request)。
 同时提供 UserInputUse、MissionInputChange、ApplyUserInputsAction 和 workspace_input_scope；已保存文件模式仅用于首次授权，后续信息不扩大权限。
 file_refs 可选绑定 Fact revision、Artifact result_key、slot/path 和内容 hash；接受时校验同工作区及证据权限，空引用保持旧请求 hash。
+attachments 保存用户选择的材料身份和来源；服务端另外冻结精确内容 manifest，空附件不改变旧请求 hash，纯附件保留空正文。
 """
 
 import uuid
@@ -53,21 +54,32 @@ class FileReference(VisibleFactReference):
     sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
+class WorkspaceAttachmentReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    material_id: str = Field(min_length=1, max_length=32)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    source_kind: Literal["image", "file", "text"]
+    note: str = Field(default="", max_length=4000)
+
+
 class PatrolInputRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     submission_id: str = Field(min_length=1, max_length=160)
     input_type: Literal["information", "outcome", "boundary", "completion_check"] = "information"
-    content: str = Field(min_length=1, max_length=12000)
+    content: str = Field(default="", max_length=12000)
     access_mode: Literal["read-only", "workspace-write", "danger-full-access"] = "workspace-write"
     request_id: str | None = None
     request_revision: int | None = Field(default=None, gt=0)
     visible_context: VisibleContext | None = None
     file_refs: tuple[FileReference, ...] = Field(default=(), max_length=32)
+    attachments: tuple[WorkspaceAttachmentReference, ...] = Field(default=(), max_length=32)
 
     @model_validator(mode="after")
     def _validate_input(self):
-        if not self.content.strip():
+        if not self.content.strip() and not self.attachments:
             raise ValueError("输入不能为空白")
+        if len({item.material_id for item in self.attachments}) != len(self.attachments):
+            raise ValueError("附件材料不能重复")
         if (self.request_id is None) != (self.request_revision is None):
             raise ValueError("回答必须同时指定请求身份和版本")
         return self
@@ -111,6 +123,8 @@ def request_document(request: PatrolInputRequest) -> dict:
     exclude = {"visible_context"} if request.visible_context is None else set()
     if not request.file_refs:
         exclude.add("file_refs")
+    if not request.attachments:
+        exclude.add("attachments")
     return request.model_dump(mode="json", exclude=exclude)
 
 
@@ -134,6 +148,9 @@ class PatrolInputRepository:
         replay = await self.replay(session, loop.workspace_id, request)
         if replay is not None:
             return replay
+        from backend.app.desktop.agent_loop.workspace_attachments import WorkspaceAttachments
+
+        attachments = await WorkspaceAttachments().freeze(session, loop, request)
         if request.file_refs:
             from backend.app.desktop.domain_evidence.file_reads import FileVersionReader
 
@@ -179,6 +196,7 @@ class PatrolInputRepository:
             request_payload={
                 "request": request_document(request),
                 "request_hash": content_hash([loop.workspace_id, request_document(request)]),
+                **({"attachments": attachments} if attachments else {}),
             },
         )
         session.add(row)
@@ -231,6 +249,7 @@ class PatrolInputRepository:
             "request_id": request.get("request_id"),
             "request_revision": request.get("request_revision"),
             "file_refs": request.get("file_refs", []),
+            **({"attachments": row.request_payload["attachments"]} if row.request_payload.get("attachments") else {}),
             "round_id": row.observed_round_id,
             "observation_id": row.introduced_observation_id,
             "introduced_generation": row.introduced_generation,
