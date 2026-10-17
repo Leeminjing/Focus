@@ -123,6 +123,8 @@ const state = {
   drafts: new Map(),
   materials: new Map(),
   materialSelections: new Map(),
+  composerAttachments: new Map(),
+  mainPreparations: new Map(),
   materialGroups: new Map(),
   materialHistory: new Map(),
   agents: new Map(),
@@ -1733,6 +1735,7 @@ function composerFeedback(detail, projectionBlocked) {
     : "尚未确认是否受理。原消息、附件和请求身份已保留，可按原内容重试。" };
   const error = state.composerErrors.get(state.activeTaskId);
   if (error) return { kind: "danger", text: error.startsWith("消息已受理") ? error : `发送失败：${error}` };
+  if (state.mainPreparations.has(state.activeTaskId)) return { kind: "warning", text: "正在准备本次附件，完成后将自动发送…" };
   if (projectionBlocked) return { kind: "warning", text: "该 Context 需要完成执行投影决断后才能继续。" };
   if (activeTaskHasCommitmentLock()) return { kind: "warning", text: "当前任务正在等待 Commitment 审批，请先处理上方审批区。" };
   if (detail?.pending_compression) return { kind: "warning", text: "存在待确认的压缩计划，请先确认或取消。" };
@@ -1756,7 +1759,7 @@ function updateMainRecoveryControls() {
   const input = document.querySelector("#mainInput");
   if (input) input.readOnly = Boolean(recovery && !recovery.editing);
   const send = document.querySelector('[data-action="send-main"]');
-  if (send) send.textContent = recovery ? (recovery.editing ? "发送新请求" : "按原内容重试") : uiText("focus.send", "发送");
+  if (send) send.textContent = state.mainPreparations.has(taskId) ? "等待附件…" : recovery ? (recovery.editing ? "发送新请求" : "按原内容重试") : uiText("focus.send", "发送");
 }
 
 function editMainRequest() {
@@ -1914,8 +1917,9 @@ function renderFocus(task = activeTask()) {
           <div class="composer-shell glass-surface">
             <div class="composer-context"><span class="ui-badge is-active">${isAssembly ? uiText("focus.free_session", "自由会话") : uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
             <div class="composer">
+              <div id="composerAttachments" class="composer-attachments" aria-label="本次消息附件">${renderComposerAttachments(task.task_id)}</div>
               ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(composerInput)}</textarea>`, true)}
-              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
+              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" multiple hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
             </div>
             <p id="composerFeedback" class="composer-feedback${feedback ? ` is-${feedback.kind}` : ""}" role="status"${feedback ? "" : " hidden"}>${feedback ? escapeHtml(feedback.text) : ""}</p>
             <div id="mainSubmissionRecovery" class="main-submission-recovery">${renderMainRecovery(task.task_id)}</div>
@@ -4551,6 +4555,144 @@ async function deployDraft() {
   finally { state.deploying = false; updateTokenState(); }
 }
 
+// 上传条目在输入事件内同步创建，不能等到异步 UI action 或上传回执后才登记。
+function composerAttachments(taskId) {
+  if (!state.composerAttachments.has(taskId)) state.composerAttachments.set(taskId, new Map());
+  return state.composerAttachments.get(taskId);
+}
+
+function createComposerAttachment(file, taskId) {
+  let previewUrl = null;
+  if (file.type?.startsWith("image/") && window.URL?.createObjectURL) {
+    try { previewUrl = URL.createObjectURL(file); } catch { /* 无本地预览时仍可上传。 */ }
+  }
+  const entry = { id: crypto.randomUUID(), file, taskId, previewUrl, status: "preparing", error: "", removed: false };
+  entry.done = new Promise(resolve => { entry.finish = resolve; });
+  entry.cancelled = new Promise(resolve => { entry.cancel = resolve; });
+  composerAttachments(taskId).set(entry.id, entry);
+  refreshComposerAttachments(taskId);
+  return entry;
+}
+
+function releaseComposerAttachment(entry) {
+  entry.removed = true;
+  entry.cancel();
+  if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
+  entry.previewUrl = null;
+  entry.file = null;
+  state.composerAttachments.get(entry.taskId)?.delete(entry.id);
+  if (!state.composerAttachments.get(entry.taskId)?.size) state.composerAttachments.delete(entry.taskId);
+}
+
+function renderComposerAttachments(taskId) {
+  const uploads = [...(state.composerAttachments.get(taskId)?.values() || [])];
+  const materials = new Map((state.materials.get(taskId) || []).map(item => [item.material_id, item]));
+  const cards = uploads.filter(entry => entry.status !== "ready").map(entry => ({ entry }));
+  for (const binding of materialSelection(taskId).bindings) {
+    cards.push({ material: materials.get(binding.materialId), entry: uploads.find(entry => entry.materialId === binding.materialId) });
+  }
+  if (!cards.length) return "";
+  return `<span class="composer-attachments-label">本次附件 · ${cards.length}</span><div class="composer-attachment-list">${cards.map(({ entry, material }) => {
+    const name = material?.relative_path || entry?.file?.name || "附件";
+    const status = material ? "ready" : entry.status;
+    const label = status === "ready" ? "已就绪" : status === "failed" ? "失败" : "准备中";
+    const image = entry?.previewUrl ? `<img src="${escapeHtml(entry.previewUrl)}" alt="">` : material?.is_image ? materialImageMarkup(material.material_id, "", "", null) : '<span class="ui-icon icon-file-text" aria-hidden="true"></span>';
+    return `<article class="composer-attachment is-${status}" data-composer-task="${escapeHtml(taskId)}"${entry ? ` data-composer-upload="${entry.id}"` : ""}${material ? ` data-composer-material="${escapeHtml(material.material_id)}"` : ""}>
+      <button type="button" class="composer-attachment-preview" data-action="composer-preview-attachment" aria-label="预览 ${escapeHtml(name)}"${!material && !entry?.previewUrl ? " disabled" : ""}>${image}</button>
+      <span class="composer-attachment-info"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><small role="status">${label}${entry?.error ? `：${escapeHtml(entry.error)}` : ""}</small></span>
+      ${status === "failed" ? '<button type="button" class="text-button" data-action="composer-retry-attachment">重试</button>' : ""}
+      <button type="button" class="text-button" data-action="composer-remove-attachment" aria-label="移除 ${escapeHtml(name)}">移除</button></article>`;
+  }).join("")}</div>`;
+}
+
+function refreshComposerAttachments(taskId) {
+  if (state.activeTaskId !== taskId) return;
+  const root = document.querySelector("#composerAttachments");
+  if (root) {
+    root.innerHTML = renderComposerAttachments(taskId);
+    materialContentLoader.bindAll(root);
+  }
+}
+
+function clearAttachmentPreparationError(taskId) {
+  if (!state.composerErrors.get(taskId)?.startsWith("附件准备失败：")) return;
+  if ([...(state.composerAttachments.get(taskId)?.values() || [])].some(entry => entry.status === "failed")) return;
+  setComposerError(null, taskId);
+  if (state.activeTaskId === taskId && !state.mainPreparations.has(taskId)) setStatus("");
+}
+
+async function handleComposerAttachmentAction(button) {
+  const card = button.closest("[data-composer-task]");
+  if (!card) return;
+  const taskId = card.dataset.composerTask;
+  const entry = state.composerAttachments.get(taskId)?.get(card.dataset.composerUpload);
+  const materialId = card.dataset.composerMaterial;
+  if (button.dataset.action === "composer-remove-attachment") {
+    if (entry) releaseComposerAttachment(entry);
+    const selection = materialSelection(taskId);
+    if (selection.bindings.some(item => item.materialId === materialId)) {
+      state.materialSelections.set(taskId, runMaterialPicker.toggleMaterial(selection, materialId));
+    }
+    const preparing = state.mainPreparations.get(taskId)?.selection;
+    if (preparing) {
+      preparing.bindings = preparing.bindings.filter(item => item.materialId !== materialId);
+      preparing.requiredImageIds = preparing.requiredImageIds.filter(id => id !== materialId);
+    }
+    refreshComposerAttachments(taskId);
+    clearAttachmentPreparationError(taskId);
+    if (state.activeTaskId === taskId) renderInspector();
+    return;
+  }
+  if (button.dataset.action === "composer-retry-attachment") {
+    if (!entry || entry.status !== "failed") return;
+    entry.status = "preparing";
+    entry.error = "";
+    entry.done = new Promise(resolve => { entry.finish = resolve; });
+    refreshComposerAttachments(taskId);
+    return uploadMaterialFile(entry.file, taskId, entry);
+  }
+  if (entry?.previewUrl) return openImageLightbox(entry.previewUrl, entry.file.name);
+  const material = (state.materials.get(taskId) || []).find(item => item.material_id === materialId);
+  if (material?.is_image) return openImageLightbox(await materialContentLoader.load(taskId, materialId), material.relative_path);
+  if (material) return openFileLink({ path: material.relative_path }, taskId);
+}
+
+async function prepareMainAttachments(taskId, selection, entries) {
+  if (entries.some(entry => !entry.removed && entry.status === "preparing")) {
+    state.mainPreparations.set(taskId, { selection });
+    if (state.activeTaskId === taskId) {
+      setStatus("正在准备本次附件，完成后将自动发送…");
+      setComposerError(null, taskId);
+    }
+    try { await Promise.all(entries.map(entry => Promise.race([entry.done, entry.cancelled]))); }
+    finally {
+      state.mainPreparations.delete(taskId);
+      if (state.activeTaskId === taskId) setComposerError(null, taskId);
+    }
+  }
+  const failed = entries.filter(entry => !entry.removed && entry.status !== "ready");
+  if (failed.length) throw new Error(`附件准备失败：${failed.map(entry => entry.file?.name || "附件").join("、")}。请重试或移除后发送。`);
+  for (const entry of entries) {
+    if (!entry.removed && !selection.bindings.some(item => item.materialId === entry.materialId)) {
+      selection = runMaterialPicker.toggleMaterial(selection, entry.materialId);
+    }
+  }
+  return selection;
+}
+
+function consumeMainAttachments(taskId, outgoing, entries) {
+  const sent = new Map(outgoing.materialInputs.map(item => [item.material_id, item.note]));
+  const selection = materialSelection(taskId);
+  const consumed = new Set(selection.bindings.filter(item => sent.has(item.materialId)
+    && sent.get(item.materialId) === item.note
+    && selection.requiredImageIds.includes(item.materialId) === outgoing.requiredImageIds.includes(item.materialId)).map(item => item.materialId));
+  state.materialSelections.set(taskId, { ...selection, bindings: selection.bindings.filter(item => !consumed.has(item.materialId)), requiredImageIds: selection.requiredImageIds.filter(id => !consumed.has(id)) });
+  for (const entry of [...(state.composerAttachments.get(taskId)?.values() || [])]) {
+    if (consumed.has(entry.materialId) || entries.includes(entry)) releaseComposerAttachment(entry);
+  }
+  refreshComposerAttachments(taskId);
+}
+
 function materialSelection(taskId = state.activeTaskId) {
   if (!state.materialSelections.has(taskId)) {
     state.materialSelections.set(taskId, runMaterialPicker.empty());
@@ -4634,8 +4776,24 @@ async function sendMainOnce(taskId, requestId, retry = null) {
     return openCompressionView(task, null, keyword);
   }
   setComposerError();
+  const submittedInput = retry?.input ?? input.value;
+  let submittedSelection = retry ? null : JSON.parse(JSON.stringify(materialSelection(taskId)));
+  const attachments = retry ? [] : [...(state.composerAttachments.get(taskId)?.values() || [])]
+    .filter(entry => entry.status !== "ready");
+  const requestOptions = retry ? null : {
+    skills: selectedSkills("main"),
+    ...accessMode.requestBody(accessModeOf("main")),
+  };
   const spatialTarget = retry ? null : currentSpatialTarget();
-  if (!retry && spatialTarget?.focus.kind === "patrol"
+  if (attachments.length) {
+    try { submittedSelection = await prepareMainAttachments(taskId, submittedSelection, attachments); }
+    catch (error) {
+      if (state.activeTaskId === taskId) setStatus(error.message, true);
+      setComposerError(error.message, taskId);
+      return;
+    }
+  }
+  if (!retry && !submittedSelection.bindings.length && spatialTarget?.focus.kind === "patrol"
       && typeof spatialTarget.view.sendFocusedMessage === "function") {
     try {
       if (await spatialTarget.view.sendFocusedMessage(message)) {
@@ -4654,23 +4812,22 @@ async function sendMainOnce(taskId, requestId, retry = null) {
       return;
     }
   }
-  const selectionSignature = retry?.selectionSignature || JSON.stringify(materialSelection(taskId));
+  const selectionSignature = retry?.selectionSignature || JSON.stringify(submittedSelection);
   const original = retry ? JSON.parse(retry.body) : null;
   const outgoing = original ? { message: original.message, materialInputs: original.material_inputs, requiredImageIds: original.must_view_material_ids }
-    : runMaterialPicker.buildOutgoing(state.materials.get(taskId) || [], message, materialSelection(taskId));
+    : runMaterialPicker.buildOutgoing(state.materials.get(taskId) || [], message, submittedSelection);
   const messagePayload = outgoing.message;
   let detail = state.details.get(taskId) || {};
   let confirmed = false;
   try {
     const frozen = retry || taskRunOperations?.freeze(taskId, requestId, {
-      input: input.value, message, selectionSignature,
+      input: submittedInput, message, selectionSignature,
       body: JSON.stringify({
         message: messagePayload,
         material_inputs: outgoing.materialInputs,
         must_view_material_ids: outgoing.requiredImageIds,
-        skills: selectedSkills("main"),
+        ...requestOptions,
         spatial_focus: spatialTarget?.focus || null,
-        ...accessMode.requestBody(accessModeOf("main")),
       }),
     });
     state.mainRecoveryRestored.set(taskId, requestId);
@@ -4688,7 +4845,7 @@ async function sendMainOnce(taskId, requestId, retry = null) {
     state.composerErrors.delete(taskId);
     detail = state.details.get(taskId) || detail;
     if (run.intent_kind === "direct_message") {
-      if (JSON.stringify(materialSelection(taskId)) === selectionSignature) state.materialSelections.set(taskId, runMaterialPicker.empty());
+      consumeMainAttachments(taskId, outgoing, attachments);
       const unchanged = composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
       if (unchanged) composerDraft.release(taskId);
       detail.ui_state = { ...(detail.ui_state || {}), input: unchanged ? "" : composerDraft.value(taskId) };
@@ -4726,7 +4883,7 @@ async function sendMainOnce(taskId, requestId, retry = null) {
       ...(state.materialHistory.get(taskId) || []),
       ...optimisticHistory,
     ]);
-    if (JSON.stringify(materialSelection(taskId)) === selectionSignature) state.materialSelections.set(taskId, runMaterialPicker.empty());
+    consumeMainAttachments(taskId, outgoing, attachments);
     state.composerErrors.delete(taskId);
     if (!(detail.messages || []).some(item => item.id === run.message_id)) detail.messages = [...(detail.messages || []), { role: "human", content: messagePayload, id: run.message_id }];
     const unchanged = composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
@@ -7513,6 +7670,7 @@ async function handleDocumentClick(event) {
   if (action === "send-main") return sendMain();
   if (action === "retry-main") return sendMain(true);
   if (action === "edit-main") return editMainRequest();
+  if (action.startsWith("composer-") && action.endsWith("-attachment")) return handleComposerAttachmentAction(button);
   if (action === "load-earlier-conversation") return loadEarlierConversation();
   if (action === "expand-stream-content") {
     const article = button.closest("[data-stream-run]");
@@ -8181,33 +8339,58 @@ document.addEventListener("change", event => {
 function serializeWaitDraft(form) {
   return window.FocusLoopWaitRequestView.serializeDraft(form);
 }
-async function uploadMaterialFile(file, taskId = state.activeTaskId) {
+async function uploadMaterialFile(file, taskId = state.activeTaskId, entry = null) {
   if (!file) return;
   if (!taskId) return setStatus("请先选择任务，再添加材料", true);
-  const body = new FormData(); body.append("file", file);
+  entry ||= createComposerAttachment(file, taskId);
+  if (entry.removed) { entry.finish(); return; }
   try {
+    const body = new FormData(); body.append("file", file);
     const material = await api(`/desktop/api/tasks/${taskId}/materials/upload`, { method: "POST", body });
+    if (!material?.material_id) throw new Error("未收到有效的附件回执");
     const materials = state.materials.get(taskId) || [];
     state.materials.set(taskId, [...materials.filter(item => item.material_id !== material.material_id), material]);
-    const selection = materialSelection(taskId);
-    if (!selection.bindings.some(item => item.materialId === material.material_id)) {
-      state.materialSelections.set(taskId, runMaterialPicker.toggleMaterial(selection, material.material_id));
+    entry.materialId = material.material_id;
+    entry.status = "ready";
+    if (!entry.removed) {
+      const selection = materialSelection(taskId);
+      if (!selection.bindings.some(item => item.materialId === material.material_id)) {
+        state.materialSelections.set(taskId, runMaterialPicker.toggleMaterial(selection, material.material_id));
+      }
     }
-    refreshMaterialView(taskId, true);
-    state.materials.set(taskId, await api(`/desktop/api/tasks/${taskId}/materials`)); refreshMaterialView(taskId);
-  } catch (error) { setStatus(error.message, true); }
+    refreshComposerAttachments(taskId);
+    // 更新检查器，不重建正在输入的 textarea；上传回执已足够用于本次发送。
+    clearAttachmentPreparationError(taskId);
+    const draft = state.drafts.get(taskId);
+    if (draft?.mode === "standard") window.FocusPatrolWorkbench?.get(draft.draft_id)?.configurationChanged();
+    if (state.activeTaskId === taskId) renderInspector();
+  } catch (error) {
+    entry.status = "failed";
+    entry.error = error.message;
+    if (!entry.removed && state.activeTaskId === taskId) setStatus(error.message, true);
+    refreshComposerAttachments(taskId);
+  } finally { entry.finish(); }
+}
+
+function queueComposerAttachments(files, taskId) {
+  const entries = files.map(file => createComposerAttachment(file, taskId));
+  return runUiAction(async () => {
+    for (const entry of entries) {
+      if (entry.removed) { entry.finish(); continue; }
+      await uploadMaterialFile(entry.file, taskId, entry);
+    }
+  });
 }
 
 document.addEventListener("change", event => {
   if (event.target.id !== "fileInput") return;
   const input = event.target;
-  const file = input.files[0];
-  if (!file) return;
+  const files = [...(input.files || [])];
+  if (!files.length) return;
   const taskId = state.activeTaskId;
-  runUiAction(async () => {
-    try { await uploadMaterialFile(file, taskId); }
-    finally { input.value = ""; }
-  });
+  if (!taskId) return setStatus("请先选择任务，再添加材料", true);
+  input.value = "";
+  queueComposerAttachments(files, taskId);
 });
 
 document.addEventListener("input", event => {
@@ -8226,9 +8409,7 @@ document.addEventListener("paste", event => {
   if (!state.activeTaskId) return setStatus("请先选择任务，再粘贴图片", true);
   const taskId = state.activeTaskId;
   const files = images.map(item => item.getAsFile()).filter(Boolean);
-  runUiAction(async () => {
-    for (const file of files) await uploadMaterialFile(file, taskId);
-  });
+  queueComposerAttachments(files, taskId);
 });
 
 function persistUiState(taskId = state.activeTaskId) {
@@ -8305,6 +8486,9 @@ window.addEventListener("beforeunload", () => {
   if (loopLifecycleFrame !== null) cancelAnimationFrame(loopLifecycleFrame);
   loopConsoleController?.destroy();
   materialContentLoader.releaseAll();
+  for (const entries of [...state.composerAttachments.values()]) {
+    for (const entry of [...entries.values()]) releaseComposerAttachment(entry);
+  }
   releaseFileLinkPreview();
 });
 
