@@ -51,6 +51,7 @@ window.fetch = async (input, options = {}) => {
   const url = new URL(String(input), "http://focus.test");
   const path = url.pathname;
   window.patrolFixture.requests.push(path);
+  if (path === "/desktop/api/materials/limits") return json({general_file_bytes:1024*1024,original_image_bytes:512*1024,run_material_count:4});
   if (path === "/desktop/api/settings/models") return json({setup_required:false});
   if (path === "/desktop/api/bootstrap" && process.env.FOCUS_TEST_HOLD_BOOTSTRAP === "1" && !sessionStorage.getItem("focus-test-bootstrap-held")) {
     sessionStorage.setItem("focus-test-bootstrap-held", "1");
@@ -179,7 +180,7 @@ window.fetch = async (input, options = {}) => {
   if (path.endsWith("/task-progress")) return json({ current: { progress_id: "current-progress", generation: 2, document: { items: [] } }, selected: { progress_id: url.searchParams.get("progress_id") || "current-progress", generation: 2, document: { items: [] } }, history: [{ progress_id: "current-progress", generation: 2 }] });
   if (path === "/desktop/api/contexts/root/revisions") return json([{revision_id:"r1",generation:1,origin_kind:"bootstrap"},{revision_id:"r2",generation:2,origin_kind:"curation",current:true}]);
   if (/\/context-revisions\/r[12]$/.test(path)) return json({revision:{sources:[{source:{context_id:"source",revision_id:"source-r1"}}]}});
-  if (path.endsWith("/contexts/root/conversation") && path.startsWith(prefix)) return json({ revision:{revision_id:url.searchParams.get("revision_id") || "r2"}, messages: [{ index: 0, message: { role: "ai", content: "Context 执行结果" } }], total: 1, has_more: false });
+  if (path.endsWith("/contexts/root/conversation") && path.startsWith(prefix)) return json({ revision:{revision_id:url.searchParams.get("revision_id") || "r2"}, messages: [{ index: 0, message: { role: "ai", content: "Context 执行结果\n\n## 可读结果\n\n- 已完成\n\n| 文件 | 状态 |\n| --- | --- |\n| a.js | 完成 |\n\n[文件](file:///C:/work/a.js)\n\n[参考](https://example.com/context)\n\n```js\n\t  x < 2 && y\n```\n", tool_calls: [{name:"read_file",args:{path:"a.js"}}] } }], total: 1, has_more: false });
   if (path.endsWith("/control") && path.startsWith(prefix)) {
     if (window.patrolFixture.holdControl) await new Promise(resolve => { window.patrolFixture.releaseControl = resolve; });
     if (window.patrolFixture.controlError) return new Response("工作控制读取失败", { status: 503 });

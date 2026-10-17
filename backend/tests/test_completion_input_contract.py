@@ -53,6 +53,44 @@ def test_declared_ids_are_in_nested_schema_and_runtime_validation():
         schema.model_validate(invalid)
 
 
+@pytest.mark.parametrize('all_optional', [False, True])
+def test_structured_verifier_accepts_optional_unknown_with_satisfied_conclusion(monkeypatch, all_optional):
+    async def run():
+        from backend.app.desktop.agent_loop.completion import CompletionGuard
+        from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract
+
+        config = app_config_for('optional-verifier', None)
+        config.models[0].curation_output_method = 'prompt_json'
+        checks = tuple({**check, 'required': False if all_optional or check['check_id'] == 'build' else True}
+                       for check in _checks())
+        result = _unknown()
+        result['conclusion'] = 'satisfied'
+        if not all_optional:
+            result['criteria'][0].update(status='satisfied', evidence=[{'kind': 'test', 'source_id': 'verified-tests'}])
+            result['unresolved'] = ['build']
+        calls = []
+
+        class Provider:
+            async def ainvoke(self, messages, config):
+                calls.append(messages)
+                config['callbacks'][0].usage_metadata['optional-verifier'] = {
+                    'input_tokens': 20, 'output_tokens': 10, 'total_tokens': 30}
+                return AIMessage(content=json.dumps(result))
+
+        monkeypatch.setattr('backend.app.desktop.agent_loop.structured_worker.create_chat_model', lambda **kwargs: Provider())
+        worker = RoleBoundStructuredModel(config, 'claim_verifier')
+        proposal = await StructuredCompletionVerifier(worker).verify({'completion_checks': checks})
+        contract = CompletionVerificationContract(verification_id='v', loop_id='l', round_id='r',
+            goal_revision=1, frontier_hash='a' * 64, workspace_revision=1, **proposal.model_dump())
+        guard = CompletionGuard().check(contract, checks=checks, goal_revision=1, frontier_hash='a' * 64,
+            workspace_revision=1, active_or_queued_runs=0, pending_human_gates=0, portfolio_published=True,
+            workspace_adopted=True, grant_allows_completion=True)
+        assert guard.allowed, guard.reasons
+        assert proposal.unresolved == tuple(result['unresolved'])
+        assert len(calls) == worker.usage.model_calls == 1
+    asyncio.run(run())
+
+
 def test_schema_feedback_excludes_original_candidate_content():
     invalid = _unknown()
     invalid["unresolved"] = ["private-key-placeholder"]

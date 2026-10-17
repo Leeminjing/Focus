@@ -126,24 +126,8 @@ body[data-surface=panel] { background:transparent; overflow:hidden; }
 .answer-toggle { display:block; padding:5px 0; color:var(--accent); }
 .answer-reading[open] .answer-preview { display:none; }
 .answer-content { padding:0 0 8px; }
-.answer-markdown { font-size:14px; line-height:1.8; color:#2b3749; overflow-wrap:anywhere; }
-.answer-markdown>:first-child { margin-top:8px; }
-.answer-markdown p { margin:8px 0 12px; }
-#answers .answer-markdown h1 { font-size:20px; line-height:1.5; margin:14px 0 8px; }
-#answers .answer-markdown h2 { font-size:18px; line-height:1.5; margin:14px 0 8px; }
-#answers .answer-markdown h3,#answers .answer-markdown h4,#answers .answer-markdown h5,#answers .answer-markdown h6 { font-size:15px; line-height:1.6; margin:12px 0 6px; }
-.answer-markdown ul,.answer-markdown ol { padding-left:24px; margin:8px 0 12px; }
-.answer-markdown li+li { margin-top:4px; }
-.answer-markdown blockquote { margin:12px 0; border-left:2px solid #a4bdd7; padding-left:12px; color:var(--secondary); }
-.answer-markdown a { color:#426b96; text-decoration:underline; }
-.answer-markdown img { max-width:100%; height:auto; }
-.answer-markdown code { font:12px/1.7 Consolas,monospace; background:#e3edf5; padding:1px 4px; border-radius:3px; }
-.answer-code { background:#fafdff; border:1px solid var(--line); border-radius:8px; margin:12px 0; overflow:hidden; }
-#results .answer-code>button { display:block; margin-left:auto; padding:6px 12px; }
-.answer-markdown pre { margin:0; padding:0 12px 12px; overflow-x:auto; white-space:pre; font:12px/1.7 Consolas,monospace; }
-.answer-markdown pre code { padding:0; background:transparent; }
-.answer-markdown table { display:block; max-width:100%; overflow-x:auto; border-collapse:collapse; margin:12px 0; }
-.answer-markdown th,.answer-markdown td { border:1px solid var(--line); padding:6px 10px; text-align:left; }
+.answer-markdown { font-size:14px; line-height:1.8; color:#2b3749; }
+
 .answer-source { margin:6px 0 8px; color:var(--secondary); }
 .answer-source summary { cursor:pointer; font-size:11px; padding:4px 0; }
 .answer-source small { display:block; font-size:10px; overflow-wrap:anywhere; }

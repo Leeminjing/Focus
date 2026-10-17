@@ -80,7 +80,7 @@
         section.querySelector("h3").title = file.path;
         section.querySelector("p").textContent = `${(file.sha256 || file.result_key).slice(0,8)} · 已提交来源${result.file.after?.redacted || result.file.before?.redacted ? " · 已脱敏" : ""}`;
         tabs.className = "version-tabs"; tabs.setAttribute("role","tablist"); tabs.setAttribute("aria-label","版本内容");
-        const panels = [...section.querySelectorAll("details")];
+        const panels = [...section.querySelectorAll(":scope > details")];
         section.querySelectorAll(":scope > p")[1]?.classList.add("sr-only");
         const cite = section.querySelector("[data-patrol-file-add]");
         section.insertBefore(tabs,cite);
@@ -97,13 +97,23 @@
         });
         function select(index) {
           [...tabs.children].forEach((tab,i) => { tab.setAttribute("aria-selected",String(i === index)); tab.tabIndex = i === index ? 0 : -1; });
-          section.querySelectorAll('[role="tabpanel"]').forEach((panel,i) => { panel.hidden = i !== index; });
+          section.querySelectorAll(':scope > [role="tabpanel"]').forEach((panel,i) => { panel.hidden = i !== index; });
         }
         select(0); section.append(cite);
         root.FocusFilePreview?.mountHistory(body, { ...result.file, fact_id: file.fact_id, revision: file.revision }, id);
         const note = document.createElement("small"); note.className = "version-note"; note.textContent = "固定版本，不随文件更新漂移"; section.append(note);
         body.querySelector("[data-patrol-file-add]")?.addEventListener("click",() => { try { add(file); } catch (error) { onError(error); } });
       } catch (error) { if (owner === epoch && error.name !== "AbortError") body.textContent = "引用版本不可用，请重新选择；原引用和要求已保留。"; }
+    }
+    async function link(reference, taskId) {
+      close();
+      const body = $("#version-body");
+      $("#version-detail").hidden = false;
+      const title = document.createElement("h3"); title.textContent = reference.path;
+      const label = document.createElement("p"); label.textContent = `当前磁盘文件 · 执行位置 ${reference.slot_id || reference.run_id}`;
+      const preview = document.createElement("div");
+      body.replaceChildren(title, label, preview);
+      await root.FocusFilePreview.mount(preview, { name: reference.path, target: { task_id: taskId, link: reference } });
     }
     function render(draft) {
       const refs = draft.file_refs || [], container = $("#file-refs");
@@ -139,7 +149,7 @@
     $("#version-candidates").addEventListener("keydown",navigateCandidates);
     $("#instruction").addEventListener("keydown",event => { if (!event.isComposing && !$("#version-picker").hidden) navigateCandidates(event); });
     $("#older-versions").addEventListener("click",() => void load(true));
-    return {render,open,close,detail,reference(file) { typed = false; add(file); },isOpen:() => !$("#version-picker").hidden || !$("#version-detail").hidden,
+    return {render,open,close,detail,link,reference(file) { typed = false; add(file); },isOpen:() => !$("#version-picker").hidden || !$("#version-detail").hidden,
       input() {
         const match = $("#instruction").value.match(/(?:^|\s)@([^@\n]*)$/);
         if (!match || $("#reference-file").disabled) { if (typed) close(); return; }

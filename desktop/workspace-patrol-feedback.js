@@ -36,7 +36,7 @@
   // 历史刷新只替换内容；保留正在阅读的处理详情及键盘焦点。
   function preserveInputResults(host) {
     const open = new Set([...host.querySelectorAll("details[data-patrol-input-result][open]")].map(node => node.closest("[data-submission-id]")?.dataset.submissionId));
-    const active = host.ownerDocument.activeElement;
+    const active = host.ownerDocument?.activeElement;
     const focused = active?.matches("details[data-patrol-input-result] > summary") ? active.closest("[data-submission-id]")?.dataset.submissionId : null;
     return () => {
       for (const node of host.querySelectorAll("details[data-patrol-input-result]")) {
@@ -77,7 +77,8 @@
       const message = item.message || {}, role = message.role || message.type;
       if (!["assistant", "ai"].includes(role) || message.tool_calls?.length || message.additional_kwargs?.tool_calls?.length) continue;
       const text = typeof message.content === "string" ? message.content : (Array.isArray(message.content) ? message.content.filter(block => ["text", "output_text"].includes(block.type)).map(block => block.text || "").join("\n") : "");
-      if (text.trim()) return { text, message_id: message.id || null };
+      if (text.trim()) return { text, message_id: message.id || null,
+        ...(item.file_context ? { file_context: item.file_context } : {}) };
     }
     return null;
   }

@@ -44,7 +44,7 @@
 
   function history(model) {
     const status = { accepted: "已受理", sending: "发送中", failed: "发送失败", edited: "已转为草稿" };
-    return model.rows.map(row => `<article data-submission-id="${escape(row.submission_id)}"><pre>${escape(row.content)}</pre>${feedback.inputResult(row)}${inputReferences.render(row)}<header><span>${labels[row.input_type]}</span><span>${status[row.status]}</span>${row.request_id ? "<span>指定请求的回答</span>" : ""}</header>${row.status === "failed" ? `<p role="alert">${escape(row.error)}</p><button data-patrol-retry="${escape(row.submission_id)}">重试</button>${row.file_refs?.length || row.attachments?.length ? `<button data-patrol-edit-failed="${escape(row.submission_id)}">编辑后重发</button>` : ""}` : ""}</article>`).join("") || "尚无用户输入";
+    return model.rows.map(row => `<article data-submission-id="${escape(row.submission_id)}"><pre>${escape(row.content)}</pre>${feedback.inputResult(row)}${inputReferences.render(row)}<header><span>${labels[row.input_type]}</span><span>${status[row.status]}</span>${row.request_id ? "<span>指定请求的回答</span>" : ""}</header>${row.status === "failed" ? `<p role="alert">${escape(row.error)}</p><button data-patrol-retry="${escape(row.submission_id)}">重试</button><button data-patrol-edit-failed="${escape(row.submission_id)}">编辑后重发</button>` : ""}</article>`).join("") || "尚无用户输入";
   }
   function progress(entity, full = false, filter = "all") {
     const state = entity?.state || entity;

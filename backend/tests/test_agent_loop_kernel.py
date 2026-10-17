@@ -264,7 +264,7 @@ async def _round_frontier(sessions, round_id: str) -> str:
 
 def test_completion_guard_rejects_unknown() -> None:
     verification = CompletionVerificationContract(verification_id="v", loop_id="l", round_id="r", goal_revision=1, frontier_hash="a" * 64, workspace_revision=1, criteria=(CriterionVerification(criterion_id="tests", status="unknown", explanation="No fresh test run"),), conclusion="unknown", unresolved=("tests",))
-    result = CompletionGuard().check(verification, goal_revision=1, frontier_hash="a" * 64, workspace_revision=1, active_or_queued_runs=0, pending_human_gates=0, portfolio_published=True, workspace_adopted=True, grant_allows_completion=True)
+    result = CompletionGuard().check(verification, checks=({'check_id': 'tests', 'expected_evidence_kinds': ['test']},), goal_revision=1, frontier_hash="a" * 64, workspace_revision=1, active_or_queued_runs=0, pending_human_gates=0, portfolio_published=True, workspace_adopted=True, grant_allows_completion=True)
     assert result.allowed is False
     assert result.waiting_user is True
 
