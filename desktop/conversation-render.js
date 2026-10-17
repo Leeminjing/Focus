@@ -224,14 +224,14 @@
   }
 
   function _placeholderUnit(task, escapeHtml) {
-    const signature = _join(["placeholder", task.harness_mode || "", task.workspace_path || ""]);
+    const signature = _join(["placeholder", task.harness_mode || "", task.workspace_path || "", task.assembly_target?.scope || ""]);
     return {
       key: "placeholder",
       html: _unitHtml("placeholder", signature, () => (task.harness_mode === "assembly"
         ? `<div class="assembly-empty">
           <p class="assembly-empty-title">从一个问题开始。</p>
           <p>讨论、梳理材料、探索想法。</p>
-          <p>此会话不绑定用户工作区，附加材料与输入独立保存。</p>
+          <p>${task.assembly_target?.scope === "workspace" ? "当前装配仅对所选工作区生效。" : "全局装配可供所有工作区使用。"}附加材料与输入按目标独立保存。</p>
         </div>`
         : `<article class="work-record message system"><header class="work-record-header"><span class="work-record-kicker">READY</span><span class="message-role">任务已就绪</span></header><div class="message-content"><span class="muted">这是该工作区与线程的第一页。输入任务即可开始。</span><details class="message-details"><summary>工作区路径</summary><pre>${escapeHtml(task.workspace_path)}</pre></details></div></article>`)),
     };

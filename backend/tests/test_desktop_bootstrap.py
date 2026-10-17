@@ -77,7 +77,8 @@ def test_task_summaries_use_two_queries_without_recovery(isolated_postgres_datab
                 offset = 0 if count == 1 else 1
                 async with sessions.begin() as session:
                     session.add_all([
-                        DesktopThread(task_id=task_id, workspace_id=workspace_id, thread_id=task_id,
+                        DesktopThread(task_id=task_id, workspace_id=workspace_id,
+                                      thread_id=f"focus-assembly:{workspace_id}" if index == 4 else task_id,
                                       title=f"Task {index}", ui_state={"input": "large private draft"},
                                       archived_at=now if index == 2 else None,
                                       deleted_at=now if index == 3 else None)
@@ -110,6 +111,10 @@ def test_task_summaries_use_two_queries_without_recovery(isolated_postgres_datab
                 assert all("ui_state" not in row and "commitment_recovery" not in row for row in ours.values())
             assert ours[task_ids[2]]["lifecycle"] == "archived"
             assert ours[task_ids[3]]["lifecycle"] == "deleted"
+            assert ours[task_ids[4]]["harness_mode"] == "assembly"
+            assert ours[task_ids[4]]["assembly_target"] == {
+                "scope": "workspace", "workspace_id": workspace_id, "path": f"/tmp/{workspace_id}",
+            }
             service._task_payload.assert_not_awaited()
         finally:
             async with sessions.begin() as session:

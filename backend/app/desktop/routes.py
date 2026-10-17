@@ -333,9 +333,14 @@ def _loop_message_text(message: str | list[dict]) -> str:
 
 
 @desktop_router.get("/assembly/task")
-async def get_assembly_task(request: Request) -> dict:
+async def get_assembly_task(request: Request, workspace_id: str | None = None) -> dict:
     """确保「无工作区模式」保留工作区与其任务存在，返回该任务 payload（复用任务页全套能力）。"""
-    return await request.app.state.desktop_service.ensure_assembly_task()
+    return await request.app.state.desktop_service.ensure_assembly_task(workspace_id)
+
+
+@desktop_router.post("/tasks/{task_id}/capabilities/refresh")
+async def refresh_task_capabilities(task_id: str, request: Request) -> dict:
+    return await request.app.state.desktop_service.refresh_task_capabilities(task_id)
 
 
 @desktop_router.post("/threads/{thread_id}/runs/resume")

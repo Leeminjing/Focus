@@ -3,16 +3,16 @@
  * 工作流为无可见窗口加载完整应用，操作六导航、按需检查与单路 Live，核对记录非模态开关/持续输入/滚动分页、请求身份、清空正文、库布局焦点/失败态、关系图键盘选择及边对账；普通会话继续展示原 Agent 消息。截图只证明布局，离线 fixture 不代替业务端到端。
  * 示例：node --test desktop/workspace-patrol-page.test.cjs。没有外部 Provider、生产库或安装应用写入；退出检查等待实际动画完成，避免离屏帧时钟与墙钟偏差。
  * 已选弹窗在关闭重开时保留原等待表单与草稿，并检查正文透出宿主材质；类型切换和排除表面的计算样式由六项材质定向验收补充。
- * 工作区输入通过共享 intake.store 获取，覆盖迁移后的浏览器入口、迟到绑定及来源导航保护。
+ * 工作区输入通过共享 intake.store 获取，同时覆盖浏览器与启用桌面机器人的 App 入口、迟到绑定及来源导航保护。
  */
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
 if (!process.versions.electron) {
-  require("node:test")("Patrol and ordinary pages in hidden Electron", () => {
+  for (const native of [false, true]) require("node:test")(`Patrol and ordinary pages in hidden Electron (${native ? "desktop robot enabled" : "browser"})`, () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "focus-patrol-ui-"));
-    const env = { ...process.env, FOCUS_PATROL_TEST_USER_DATA: directory, FOCUS_TEST_HOLD_BOOTSTRAP: "1" };
+    const env = { ...process.env, FOCUS_PATROL_TEST_USER_DATA: directory, FOCUS_TEST_HOLD_BOOTSTRAP: "1", FOCUS_PATROL_TEST_NATIVE: native ? "1" : "0" };
     delete env.ELECTRON_RUN_AS_NODE;
     const result = require("node:child_process").spawnSync(require("electron"), [__filename], { env, encoding: "utf8", timeout: 90000, windowsHide: true });
     assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -520,6 +520,11 @@ if (!process.versions.electron) {
     await run('openPatrolWorkbench({workspaceId:"nav-b"})');
     await run('window.releaseNavigationA(); window.firstNavigation');
     assert.equal(await run('state.patrolWorkspace.workspace_id'), "nav-b");
+    if (process.env.FOCUS_PATROL_TEST_NATIVE === "1") {
+      assert.equal(await run('patrolFixture.robotReady'), true);
+      assert.equal(await run('typeof patrolFixture.openWorkbench'), "function");
+      assert.deepEqual(await run('patrolFixture.robotPanelOpens'), []);
+    }
     assert.deepEqual(errors, []);
     console.log("PATROL_UI_PASS: four first types, rapid inputs, draft, nonmodal history, requests, independent progress/facts, ordinary page");
     win.destroy(); app.quit();

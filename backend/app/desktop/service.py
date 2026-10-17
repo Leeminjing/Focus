@@ -126,7 +126,7 @@ from backend.app.desktop.models import (
     PatrolDraft,
     SwarmAgent,
 )
-from backend.app.desktop.skills import build_task_skill_catalog, resolve_task_skills
+from backend.app.desktop.skills import build_task_skill_catalog, describe_task_skill_catalog, resolve_task_skills
 from backend.app.desktop.context_assembly import desktop_contexts, skill_catalog_records
 from backend.app.desktop.inbox import AgentInbox, DurableInboxMiddleware
 from backend.app.desktop.execution_attempts import ModelAttemptJournal, ModelAttemptMiddleware, ToolExecutionLedger
@@ -203,9 +203,11 @@ from focus.tools import get_available_tools
 from focus.tools.catalog import execution_pool_tools
 from focus.tools.builtins.web_tools import web_fetch, web_search
 from focus.tools.builtins.workspace_tools import select_workspace_tools
+from focus.tools.builtins.describe_skill_tool import build_describe_skill_tool
 from backend.app.desktop.prompts import (
     MAIN_SYSTEM_PROMPT as _MAIN_SYSTEM_PROMPT,
     ASSEMBLY_SYSTEM_PROMPT as _ASSEMBLY_SYSTEM_PROMPT,
+    assembly_system_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -238,6 +240,10 @@ def _identity_unregistered(what: str) -> HTTPException:
 
 _ASSEMBLY_WORKSPACE_DISPLAY = "无工作区模式"
 _ASSEMBLY_THREAD_ID = "focus-assembly"
+
+
+def _is_assembly_thread(thread_id: str) -> bool:
+    return thread_id == _ASSEMBLY_THREAD_ID or thread_id.startswith(_ASSEMBLY_THREAD_ID + ":")
 
 
 @dataclass
@@ -683,6 +689,18 @@ class DesktopService:
             {"name": skill.name, "description": skill.description}
             for skill in build_task_skill_catalog(workspace.path).values()
         ]
+
+    async def refresh_task_capabilities(self, task_id: str) -> dict[str, Any]:
+        from focus.mcp.cache import get_mcp_tools_cached
+
+        async with self.session_factory() as session:
+            _, workspace = await self._get_task_entities(session, task_id)
+        tools = await get_mcp_tools_cached(workspace.path, force_refresh=True)
+        return {
+            "skills": await self.list_task_skills(task_id),
+            "mcp_tool_count": len(tools),
+            "failed_servers": list(getattr(tools, "failed_servers", ())),
+        }
 
     async def save_ui_state(self, task_id: str, ui_state: dict[str, Any]) -> None:
         async with self.session_factory() as session:
@@ -1185,7 +1203,7 @@ class DesktopService:
                 if execution_workspace_path is not None
                 else workspace.path
             )
-            snapshots = self._freeze_skills(workspace.path, skills)
+            snapshots = self._freeze_skills(execution_path, skills)
             run_id = str(identity.get("run_id") or new_id())
             message_id = str(identity.get("message_id") or new_id())
             run_materials = await self.run_materials.resolve(
@@ -1217,14 +1235,15 @@ class DesktopService:
             checkpoint_id = authoritative_checkpoint_id or await select_checkpoint_base(
                 self.checkpointer, execution_thread_id, execution_checkpoint_ns
             )
-            is_assembly = task_row.thread_id == _ASSEMBLY_THREAD_ID
-            base_prompt = _ASSEMBLY_SYSTEM_PROMPT if is_assembly else _MAIN_SYSTEM_PROMPT
+            is_assembly = _is_assembly_thread(task_row.thread_id)
+            is_global_assembly = task_row.thread_id == _ASSEMBLY_THREAD_ID
+            base_prompt = assembly_system_prompt(execution_path, global_scope=is_global_assembly) if is_assembly else _MAIN_SYSTEM_PROMPT
             equipment["memory_snapshots"] = await self.memory.freeze_selection(memory_ids)
             equipment[_RUN_DISPATCH_EQUIPMENT_KEY] = {
                 "agent_role": "main",
                 "base_prompt": base_prompt,
                 "checkpoint_id": checkpoint_id,
-                "allow_global_config": is_assembly,
+                "allow_global_config": is_global_assembly,
             }
             self._validate_model_window(
                 model_name,
@@ -1315,7 +1334,7 @@ class DesktopService:
             execution_checkpoint_ns,
             "main",
             checkpoint_id,
-            allow_global_config=is_assembly,
+            allow_global_config=is_global_assembly,
         )
         prepared.payload["dispatch"] = {"dispatch_id": admission.dispatch.dispatch_id, "status": admission.dispatch.status, "attempt": admission.dispatch.attempt}
         return prepared
@@ -1336,12 +1355,22 @@ class DesktopService:
                 {"type": kind, "recovery": recovery, **({"source": source} if source is not None else {})},
             )
 
-    async def ensure_assembly_task(self) -> dict[str, Any]:
+    async def ensure_assembly_task(self, workspace_id: str | None = None) -> dict[str, Any]:
 
 
         async with self.session_factory() as session:
-            workspace = await self._ensure_assembly_workspace(session)
-            thread = await self._ensure_assembly_thread(session, workspace)
+            if workspace_id:
+                workspace = await session.get(DesktopWorkspace, workspace_id)
+                if workspace is None:
+                    raise HTTPException(404, "目标工作区不存在")
+                if not Path(workspace.path).is_dir():
+                    raise HTTPException(422, "目标工作区目录不存在")
+            else:
+                workspace = await self._ensure_assembly_workspace(session)
+            from focus.config.layered import global_home
+
+            global_scope = Path(workspace.path).resolve() == global_home().resolve()
+            thread = await self._ensure_assembly_thread(session, workspace, global_scope=global_scope)
             await session.commit()
             return await self._task_payload(session, thread, workspace)
 
@@ -1365,18 +1394,21 @@ class DesktopService:
             await session.flush()
         return workspace
 
-    async def _ensure_assembly_thread(self, session: AsyncSession, workspace: DesktopWorkspace) -> DesktopThread:
+    async def _ensure_assembly_thread(
+        self, session: AsyncSession, workspace: DesktopWorkspace, *, global_scope: bool = True,
+    ) -> DesktopThread:
 
+        thread_id = _ASSEMBLY_THREAD_ID if global_scope else f"{_ASSEMBLY_THREAD_ID}:{workspace.workspace_id}"
         thread = await session.scalar(
             select(DesktopThread).where(
                 DesktopThread.workspace_id == workspace.workspace_id,
-                DesktopThread.thread_id == _ASSEMBLY_THREAD_ID,
+                DesktopThread.thread_id == thread_id,
             )
         )
         if thread is None:
             thread = DesktopThread(
                 task_id=new_id(), workspace_id=workspace.workspace_id,
-                thread_id=_ASSEMBLY_THREAD_ID, title="无工作区模式",
+                thread_id=thread_id, title="无工作区模式" if global_scope else f"装配 · {workspace.display_name}",
             )
             session.add(thread)
             await session.flush()
@@ -1550,7 +1582,10 @@ class DesktopService:
         await session.commit()
         projection = MaterialContextProjector.project(run_materials, workspace.path)
         material_context = projection.policy_text
-        memory_base_prompt = _MAIN_SYSTEM_PROMPT
+        memory_base_prompt = (
+            assembly_system_prompt(workspace.path, global_scope=task.thread_id == _ASSEMBLY_THREAD_ID)
+            if _is_assembly_thread(task.thread_id) else _MAIN_SYSTEM_PROMPT
+        )
         required = list(run_materials.images.required)
         if required:
             material_context += _must_view_prompt(
@@ -2034,7 +2069,7 @@ class DesktopService:
             if agent_role == "main":
 
 
-                pooled = await get_available_tools()
+                pooled = await get_available_tools(workspace=workspace_path)
                 pool_tools = execution_pool_tools(pooled, include_builtin=False)
                 tools = [*tools, *self._build_patrol_reader_tools(task_id),
                          *self._build_swarm_reader_tools(task_id),
@@ -2045,6 +2080,7 @@ class DesktopService:
 
 
             if agent_role == "main":
+                tools = [*tools, build_describe_skill_tool(describe_task_skill_catalog(catalog))]
                 task_skill_names = frozenset(catalog)
                 middlewares = None
             else:
@@ -2744,7 +2780,12 @@ class DesktopService:
         return {
             "task_id": task.task_id, "workspace_id": task.workspace_id, "workspace_path": workspace.path,
             "workspace_name": workspace.display_name, "thread_id": task.thread_id, "title": task.title,
-            "harness_mode": "assembly" if task.thread_id == _ASSEMBLY_THREAD_ID else "workspace",
+            "harness_mode": "assembly" if _is_assembly_thread(task.thread_id) else "workspace",
+            "assembly_target": ({
+                "scope": "global" if task.thread_id == _ASSEMBLY_THREAD_ID else "workspace",
+                "workspace_id": None if task.thread_id == _ASSEMBLY_THREAD_ID else workspace.workspace_id,
+                "path": workspace.path,
+            } if _is_assembly_thread(task.thread_id) else None),
             "lifecycle": (
                 "deleted" if task.deleted_at is not None
                 else "archived" if task.archived_at is not None

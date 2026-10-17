@@ -1,6 +1,6 @@
 /*
  * 本文件对外提供应用组合根；输入为真实 API/Live 与用户导航动作，输出为六页及原业务入口。
- * 工作区绑定与投递复用 WorkspacePatrolIntake；原生工作台通过白名单桥唤起唯一机器人面板，浏览器保留本页输入，既有任务输入不受影响。来源导航按最新请求身份生效，迟到读取不能覆盖后来选择。
+ * 工作区绑定与投递复用 WorkspacePatrolIntake；桌面 App 与浏览器保留本页输入，桌面机器人继续提供独立输入入口，既有任务输入不受影响。来源导航按最新请求身份生效，迟到读取不能覆盖后来选择。
  * 任务与图卡共用 Run SSE 订阅；图卡通过只读观察器呈现真实角色与短尾部，按工作区和 Run 隔离，退出页面释放观察而不触发审批。
  * 工作流为沿原控制器装配页面、按任务保留草稿，卡片/列表偏好仅留在页面状态。示例：renderPlugins() 展示 registry 的当前状态。
  * Loop 激活由服务端解析初始 Run 装备，客户端不从详情缓存猜测权限；继承请求输出完整有效授权快照。Main 接口的 direct_message 回执仅表示受理，不写 active_run 或材料执行历史。默认 Patrol，任务列表与材料检查器承接传统操作，复杂能力通过明确次级入口使用原业务用例。
@@ -853,7 +853,7 @@ async function renderWorkspacePatrol() {
     const connection = window.FocusLoopLiveConnection.create({ api: loopApi, store });
     workspacePatrolController = window.FocusWorkspacePatrolController.create({
       api: loopApi, inputs: workspacePatrolIntake.store(workspace.workspace_id), intake: workspacePatrolIntake,
-      onCompose: desktopPatrol ? target => desktopPatrol.openPanel(target) : null, liveStore: store, connection,
+      liveStore: store, connection,
       createRunPreviews,
       onOpenTask: async contextId => {
         if (!state.tasks.some(item => item.task_id === contextId)) await refreshTasks();
@@ -864,11 +864,6 @@ async function renderWorkspacePatrol() {
     workspacePatrolMount = workspacePatrolController.mount(app, workspace);
     performance.mark("focus:patrol-mounted");
     await workspacePatrolMount;
-    return;
-  }
-  if (desktopPatrol) {
-    app.innerHTML = '<section class="empty-state"><h1>桌面机器人已就绪</h1><p>在机器人旁绑定工作区，拖入材料并发送。</p><button data-action="show-patrol">打开机器人输入 ↗</button></section>';
-    performance.mark("focus:patrol-mounted");
     return;
   }
   if (workspacePatrolPicker) return;
@@ -1700,6 +1695,24 @@ function renderTaskRail(task) {
   return `<aside class="task-workspace-list"><header><strong>工作区任务</strong><button data-action="new-task" aria-label="新建任务">＋</button></header><nav>${tasks.map(item => `<button data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.workspace_name || "本地工作区")} · ${escapeHtml(presentRunStatus(state.details.get(item.task_id)?.active_run?.status).label)}</small></button>`).join("")}</nav><footer>这里的输入只发送到当前选中的任务。</footer></aside>`;
 }
 
+function renderAssemblyTarget(task) {
+  const target = task.assembly_target || { scope: "global", path: task.workspace_path };
+  const workspaces = new Map(state.tasks.filter(item => item.harness_mode !== "assembly" || item.assembly_target?.scope === "workspace")
+    .map(item => [item.workspace_id, { id: item.workspace_id, name: item.workspace_name, path: item.workspace_path }]));
+  if (state.patrolWorkspace) workspaces.set(state.patrolWorkspace.workspace_id, {
+    id: state.patrolWorkspace.workspace_id, name: state.patrolWorkspace.display_name, path: state.patrolWorkspace.path,
+  });
+  if (target.scope === "workspace") workspaces.set(target.workspace_id, { id: target.workspace_id, name: task.workspace_name, path: target.path });
+  return `<div class="assembly-target"><label>装配范围 <select data-assembly-target aria-label="装配范围"><option value=""${target.scope === "global" ? " selected" : ""}>全局 · 所有工作区</option>${[...workspaces.values()].map(item => `<option value="${escapeHtml(item.id)}"${target.workspace_id === item.id ? " selected" : ""}>仅 ${escapeHtml(item.name || item.path)}</option>`).join("")}</select></label><button type="button" data-action="pick-assembly-workspace">选择其他工作区</button><button type="button" data-action="refresh-capabilities">刷新技能 / 重试 MCP</button><small title="${escapeHtml(target.path || "")}">${escapeHtml(target.path || "~/.focus")}</small></div>`;
+}
+
+async function showAssembly(workspaceId = "") {
+  const task = await api(`/desktop/api/assembly/task${workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ""}`);
+  if (!task?.task_id) return;
+  replaceTasks([...state.tasks.filter(item => item.task_id !== task.task_id), task]);
+  return switchTask(task.task_id);
+}
+
 function renderFocus(task = activeTask()) {
   if (!task) return renderNoActiveTask();
   const isAssembly = task.harness_mode === "assembly";
@@ -1728,7 +1741,7 @@ function renderFocus(task = activeTask()) {
     <header class="task-page-heading"><div><small>${task.harness_mode === "assembly" ? "独立会话" : escapeHtml(task.workspace_name || "本地工作区")}</small><h1>${task.harness_mode === "assembly" ? "无工作区模式" : "任务"}</h1><p>${task.harness_mode === "assembly" ? "从一个问题或一份材料开始。" : "一条任务，一条持续会话。"}</p></div><div><button data-action="show-patrol">回到 Patrol</button><button data-action="new-task">＋ 新建任务</button></div></header>
     <section class="task-workspace-layout${task.harness_mode === "assembly" ? " is-assembly" : ""}">${task.harness_mode === "assembly" ? "" : renderTaskRail(task)}<section class="focus-shell" style="${shellStyle}">
       <section class="focus-view" data-task-id="${task.task_id}">
-        <header class="task-workspace-tools"><strong>${escapeHtml(task.title)}</strong><details><summary>任务工具</summary><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-loop">任务 Loop 控制台</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details></header>
+        <header class="task-workspace-tools"><strong>${escapeHtml(task.title)}</strong><details><summary>任务工具</summary><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-loop">任务 Loop 控制台</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details>${isAssembly ? renderAssemblyTarget(task) : ""}</header>
         ${admission ? `<section class="task-admission-receipt" role="status"><span>消息受理回执 · ${escapeHtml(admission.intent_id)}。交付与执行以实际状态为准。</span><button data-action="show-loop">查看任务 Loop 的交付状态</button></section>` : ""}
         ${contextBlock}
         <div class="commitment-progress" id="commitmentProgress" hidden>
@@ -1742,7 +1755,7 @@ function renderFocus(task = activeTask()) {
             <div class="composer-context"><span class="ui-badge is-active">${isAssembly ? uiText("focus.free_session", "自由会话") : uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
             <div class="composer">
               ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(composerDraft.value(task.task_id, detail.ui_state?.input || ""))}</textarea>`, true)}
-              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly ? uiText("access.internal_scope", "模式作用于 Focus 内部目录；未绑定项目工作区") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
+              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
             </div>
             <p id="composerFeedback" class="composer-feedback${feedback ? ` is-${feedback.kind}` : ""}" role="status"${feedback ? "" : " hidden"}>${feedback ? escapeHtml(feedback.text) : ""}</p>
           </div>
@@ -6498,7 +6511,6 @@ async function handleDocumentClick(event) {
   if (!button) return;
   const action = button.dataset.action;
   if (action === "show-patrol") {
-    if (desktopPatrol) return desktopPatrol.openPanel({ workspaceId: state.patrolWorkspace?.workspace_id });
     if (state.view === "focus") persistFocusState();
     workspacePatrolPicker?.dispose();
     workspacePatrolPicker = null;
@@ -6652,12 +6664,32 @@ async function handleDocumentClick(event) {
   if (action === "delete-memory") return deleteMemory(button.dataset.memoryId);
   if (action === "show-assembly") {
     try {
-      const task = await api("/desktop/api/assembly/task");
-      // 只在首次新建时把装配任务并入 state.tasks，避免每次全量刷新（大任务列表耗时）
-      if (task?.task_id && !state.tasks.some(item => item.task_id === task.task_id)) replaceTasks([...state.tasks, task]);
-      if (task?.task_id) return switchTask(task.task_id);
+      return await showAssembly();
     } catch (error) { setStatus(error.message, true); }
     return render();
+  }
+  if (action === "pick-assembly-workspace") {
+    button.disabled = true;
+    try {
+      const path = window.focusDesktop?.selectWorkspace ? await window.focusDesktop.selectWorkspace() : (await api("/desktop/api/workspaces/select", { method: "POST" })).path;
+      if (!path) return;
+      const workspace = await api("/desktop/api/workspaces", { method: "POST", body: JSON.stringify({ path }) });
+      await showAssembly(workspace.workspace_id);
+    } catch (error) { setStatus(error.message, true); }
+    finally { button.disabled = false; }
+    return;
+  }
+  if (action === "refresh-capabilities") {
+    const taskId = state.activeTaskId;
+    button.disabled = true;
+    try {
+      const result = await api(`/desktop/api/tasks/${taskId}/capabilities/refresh`, { method: "POST" });
+      state.skillCatalogs.set(taskId, result.skills);
+      if (state.activeTaskId === taskId) renderFocus();
+      setStatus(result.failed_servers.length ? `MCP 连接失败：${result.failed_servers.join("、")}，可再次重试` : `已刷新 ${result.skills.length} 个技能、${result.mcp_tool_count} 个 MCP 工具；下次运行生效`, !!result.failed_servers.length);
+    } catch (error) { setStatus(error.message, true); }
+    finally { button.disabled = false; }
+    return;
   }
   if (action === "refresh-plugins") { await hydratePlugins(); return render(); }
   if (action === "reload-plugins") {
@@ -7404,6 +7436,15 @@ document.addEventListener("input", event => {
   if (requestId) loopWaitDrafts?.set(requestId, serializeWaitDraft(form));
 });
 document.addEventListener("change", event => {
+  if (event.target.matches?.("[data-assembly-target]")) {
+    const select = event.target;
+    select.disabled = true;
+    runUiAction(async () => {
+      try { await showAssembly(select.value); }
+      finally { if (select.isConnected) { select.disabled = false; renderFocus(); } }
+    });
+    return;
+  }
   const form = event.target.closest?.("[data-loop-wait-response]");
   const requestId = form?.closest?.("[data-wait-request-id]")?.dataset.waitRequestId;
   if (requestId) loopWaitDrafts?.set(requestId, serializeWaitDraft(form));

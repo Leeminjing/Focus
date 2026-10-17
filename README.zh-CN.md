@@ -475,6 +475,19 @@ Loop Console 展示 `prepared → accepted/committed → resuming → applied`�
 
 ---
 
+## Skill 与 MCP 的装配范围
+
+在「无工作区模式」顶部选择 **全局** 或 **指定工作区**，也可通过「选择其他工作区」绑定本地文件夹。每个目标保留独立会话；切换目标后，后续 Run 的工作目录、技能目录与写入权限随目标绑定。
+
+| 能力 | 全局位置 | 工作区位置 | 同名优先级 |
+| --- | --- | --- | --- |
+| 自定义 Skill | `~/.focus/.agents/skills/<name>/SKILL.md` | `<工作区>/.agents/skills/<name>/SKILL.md` | 工作区 > 全局 > 内置 |
+| MCP 配置 | `~/.focus/extensions_config.json` | `<工作区>/.focus/extensions_config.json` | 程序默认 < 全局 < 工作区 |
+
+Skill 列表、手选正文冻结与 `describe_skill` 使用同一套目录解析。工作区 MCP 按字段覆盖全局配置，例如 `{"mcpServers":{"example":{"enabled":false}}}` 只在当前工作区停用对应服务。
+
+配置新增、修改、删除或引用的环境变量变化，会在下一次装配时重新解析。MCP 部分连接失败后会在下次装配时重试，也可点击 **刷新技能 / 重试 MCP**；已成功的连接会复用。正在执行的 Run 保留已装配的工具和手选技能正文，新配置从后续 Run 生效。装配范围与文件访问模式分别控制目标和权限，配置、技能等敏感路径仍走现有访问审批。
+
 ## 技术栈
 
 - **语言/框架**: Python · LangChain · LangGraph（`create_agent`）。

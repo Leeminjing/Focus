@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from backend.app.desktop.skills import build_task_skill_catalog, resolve_task_skills
+from backend.app.desktop.skills import build_task_skill_catalog, describe_task_skill_catalog, resolve_task_skills
 
 
 def _skill(root: Path, folder: str, name: str, description: str) -> None:
@@ -57,3 +57,20 @@ def test_catalog_resolution_preserves_order_deduplicates_and_reports_stale(tmp_p
     assert [snapshot["name"] for snapshot in snapshots] == ["two", "one"]
     assert snapshots[0]["content"].endswith("Instructions for second.\n")
     assert unavailable == ["missing"]
+
+
+def test_global_skills_are_shared_and_workspace_overrides_stay_local(tmp_path, monkeypatch):
+    home = tmp_path / ".focus"
+    monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(home))
+    _skill(home / ".agents" / "skills", "shared", "shared", "global")
+    a, b = tmp_path / "a", tmp_path / "b"
+    _skill(a / ".agents" / "skills", "shared", "shared", "only A")
+    assert build_task_skill_catalog(a)["shared"].description == "only A"
+    assert build_task_skill_catalog(b)["shared"].description == "global"
+    from focus.tools.builtins.describe_skill_tool import build_describe_skill_tool
+
+    catalog = build_task_skill_catalog(a)
+    result = build_describe_skill_tool(describe_task_skill_catalog(catalog)).invoke({"name": "shared"})
+    assert f"Location: {a / '.agents' / 'skills' / 'shared' / 'SKILL.md'}" in result
+    snapshots, _ = resolve_task_skills(catalog, ["shared"])
+    assert snapshots[0]["content"] == catalog["shared"].metadata.skill_file.read_text(encoding="utf-8")

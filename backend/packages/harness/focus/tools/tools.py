@@ -69,12 +69,13 @@ async def _custom_tools() -> list[ToolInfo]:
         return []
 
 
-async def _mcp_tools() -> list[ToolInfo]:
+async def _mcp_tools(workspace=None) -> list[ToolInfo]:
     """从 MCP 缓存获取远端工具（source="mcp"）；效果契约已在摄取边界按信任分层签发。"""
     try:
         from focus.mcp.cache import get_mcp_tools_cached
 
-        return [_wrap_as_toolinfo(tool_, "mcp") for tool_ in await get_mcp_tools_cached()]
+        loaded = await get_mcp_tools_cached(workspace=workspace) if workspace is not None else await get_mcp_tools_cached()
+        return [_wrap_as_toolinfo(tool_, "mcp") for tool_ in loaded]
     except Exception:
         logger.error("MCP 工具加载失败", exc_info=True)
         return []
@@ -94,11 +95,13 @@ async def _plugin_tools() -> list[ToolInfo]:
 async def get_available_tools(
     app_config=None,
     tool_groups: list[str] | None = None,
+    *,
+    workspace=None,
 ) -> list[ToolInfo]:
     """获取全部可用的 tool（builtin + custom + mcp + plugin），每项带 source。"""
     tools: list[ToolInfo] = []
     tools.extend(await _builtin_tools())
     tools.extend(await _custom_tools())
-    tools.extend(await _mcp_tools())
+    tools.extend(await _mcp_tools(workspace))
     tools.extend(await _plugin_tools())
     return tools

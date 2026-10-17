@@ -1,72 +1,46 @@
-"""
-本文件提供 MCP 工具缓存机制，以 extensions_config.json 的文件修改时间 (mtime) 为刷新依据，
-避免每次调用都重新连接所有 MCP Server。
+"""按有效 MCP 配置缓存工具；内容增改删、环境变量与连接失败均可刷新。
 
-对外提供:
-    get_mcp_tools_cached(): 异步函数，返回缓存的 MCP 工具列表，mtime 变更时自动刷新
-
-输入:
-    无参数 — 函数内部通过 get_mcp_tools() 和 os.path.getmtime 自行获取所需数据
-
-输出:
-    list[BaseTool] — 缓存的 MCP 工具列表
-
-工作流:
-    (1) 读取 extensions_config.json 的当前 mtime
-    (2) 首次调用: 记录 mtime → 调用 get_mcp_tools() → 存入缓存并返回
-    (3) mtime 未变: 直接返回缓存的工具列表
-    (4) mtime 变更: 重新调用 get_mcp_tools() → 更新缓存和 mtime
-       常驻 session 由 tools.close_mcp_sessions() 在应用退出时统一关闭
-       刷新失败时保留上次成功缓存的工具列表作为降级返回，不更新 mtime
-
-示例:
-    tools = await get_mcp_tools_cached()
-    for tool in tools:
-        print(tool.name)
+force_refresh 提供显式重试。部分成功结果保留可用工具，但不会阻止下次重试。
+旧配置的 session 保留给已开始的 Run，在 close_mcp_sessions 时统一关闭。
 """
 
+import asyncio
+import hashlib
+import json
 import logging
-import os
+from pathlib import Path
 
 from langchain_core.tools import BaseTool
 
+from focus.config.extensions_config import get_extensions_config
 from focus.mcp.tools import get_mcp_tools
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_NAME = "extensions_config.json"
-
-_mcp_tools: list[BaseTool] | None = None
-_mtime: float | None = None
+_cache: dict[tuple, list[BaseTool]] = {}
+_locks: dict[tuple, asyncio.Lock] = {}
 
 
-async def get_mcp_tools_cached() -> list[BaseTool]:
-    global _mcp_tools, _mtime
+def clear_mcp_tools_cache() -> None:
+    """随应用关闭释放工具快照与事件循环引用。"""
+    _cache.clear()
+    _locks.clear()
 
-    from focus.config.layered import layered_mtime
 
-    current_mtime = layered_mtime(_CONFIG_NAME, _CONFIG_NAME)
-    if current_mtime is None:
-        logger.warning("extensions_config.json 不存在，无法检查 mtime")
-
-    if _mcp_tools is not None and _mtime is not None and current_mtime is not None:
-        if current_mtime <= _mtime:
-            return _mcp_tools
-        logger.info("extensions_config.json mtime 变更 (%.3f → %.3f)，刷新 MCP 工具缓存", _mtime, current_mtime)
-
-    previous_tools = _mcp_tools
-
-    try:
-        tools = await get_mcp_tools()
-    except Exception:
-        logger.error("刷新 MCP 工具缓存失败", exc_info=True)
-        if previous_tools is not None:
-            logger.warning("降级使用上一次缓存的 %d 个工具", len(previous_tools))
-            return previous_tools
-        _mtime = None
-        _mcp_tools = None
-        return []
-
-    _mcp_tools = tools
-    _mtime = current_mtime or 0
-    return tools
+async def get_mcp_tools_cached(
+    workspace: str | Path | None = None, *, force_refresh: bool = False,
+) -> list[BaseTool]:
+    # 配置先解析为实际值再取摘要，不把环境变量引用或秘密值存入缓存键。
+    config = get_extensions_config("extensions_config.json", workspace=workspace)
+    digest = hashlib.sha256(json.dumps(config.model_dump(), sort_keys=True).encode()).hexdigest()
+    key = (asyncio.get_running_loop(), digest)
+    lock = _locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        cached = _cache.get(key)
+        if not force_refresh and cached is not None and getattr(cached, "healthy", True):
+            return cached
+        tools = await get_mcp_tools(config=config)
+        _cache[key] = tools
+        if not getattr(tools, "healthy", True):
+            logger.warning("MCP 部分连接失败，下次装配将自动重试")
+        return tools

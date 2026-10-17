@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from focus.config.layered import global_home
+from focus.skills.catalog import SkillCatalog
 from focus.skills.parser import parse_skill_file
-from focus.skills.types import SKILL_MD_FILE, SkillCategory
+from focus.skills.types import SKILL_MD_FILE, Skill, SkillCategory
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -16,13 +17,14 @@ class DesktopSkill:
     name: str
     description: str
     content: str
+    metadata: Skill
 
 
-def _enabled_public_names(config_path: Path) -> frozenset[str]:
+def _enabled_public_names(config_path: Path, workspace: str | Path) -> frozenset[str]:
     try:
         from focus.config.layered import load_layered_map
 
-        raw = load_layered_map(config_path.name, str(config_path))
+        raw = load_layered_map(config_path.name, str(config_path), workspace=workspace)
     except Exception:
         return frozenset()
     skills = raw.get("skills")
@@ -53,7 +55,7 @@ def _scan(root: Path, category: SkillCategory, enabled: frozenset[str] | None = 
             content = resolved_file.read_text(encoding="utf-8")
         except OSError:
             continue
-        result[skill.name] = DesktopSkill(skill.name, skill.description, content)
+        result[skill.name] = DesktopSkill(skill.name, skill.description, content, skill)
     return result
 
 
@@ -65,10 +67,15 @@ def build_task_skill_catalog(
 ) -> dict[str, DesktopSkill]:
     public_root = public_root or ROOT / "skills" / "public"
     extensions_path = extensions_path or ROOT / "extensions_config.json"
-    public = _scan(public_root, SkillCategory.PUBLIC, _enabled_public_names(extensions_path))
+    public = _scan(public_root, SkillCategory.PUBLIC, _enabled_public_names(extensions_path, workspace))
+    global_skills = _scan(global_home() / ".agents" / "skills", SkillCategory.CUSTOM)
     workspace_skills = _scan(Path(workspace) / ".agents" / "skills", SkillCategory.CUSTOM)
-    merged = {**public, **workspace_skills}
+    merged = {**public, **global_skills, **workspace_skills}
     return dict(sorted(merged.items(), key=lambda item: item[0].casefold()))
+
+
+def describe_task_skill_catalog(catalog: dict[str, DesktopSkill]) -> SkillCatalog:
+    return SkillCatalog(skill.metadata for skill in catalog.values())
 
 
 def resolve_task_skills(

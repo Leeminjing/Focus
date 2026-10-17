@@ -1,19 +1,20 @@
 """
-本文件对外提供两层配置聚合层，定义全局态 `~/.focus` 家目录与「用户偏好优先、文件层兜底」的配置合并。
+本文件提供程序默认与全局偏好的配置聚合，可显式传入工作区增加最高优先级覆盖。
 
 对外提供:
     global_home() — 全局态 `.focus` 家目录 (Path)
     load_global_dotenv() — 启动期加载 `~/.focus/.env` 全局密钥（仅补缺，不覆盖已设置值）
     load_layered_maps(config_name, file_path) — 读取 文件层 + 用户偏好层 两份原始 map
-    load_layered_map(config_name, file_path) — 两层深合并为 dict（用户偏好层优先）
-    layered_candidate_paths(config_name, file_path) — 该配置的物理候选路径（文件层 + 用户偏好层）
-    layered_mtime(config_name, file_path) — 候选文件的最大 mtime（用于 MCP 缓存刷新判定）
+    load_layered_map(config_name, file_path, workspace=...) — 默认 < 全局 < 工作区深合并
+    layered_candidate_paths(config_name, file_path, workspace=...) — 实际加载的配置候选路径
+    layered_mtime(config_name, file_path) — 兼容旧调用的两层最大 mtime；MCP 缓存使用有效配置摘要
     deep_merge(base, overlay) — 深合并两个 dict（overlay 优先）
 
 输入:
     config_name: str — 配置文件基名（如 "config.yaml" / "extensions_config.json"）
     file_path: str — 文件层路径（cwd 相对或绝对）。安装版下它是发行自带的配置，开发检出下
         它是该检出自带的配置；两者都是「这份程序自带的默认」，都不是用户偏好。
+    workspace: str | Path | None — 可选工作区，覆盖来自 <workspace>/.focus/<config_name>
 
 输出:
     global_home → Path；load_global_dotenv → None；load_layered_maps → tuple[dict, dict]；
@@ -103,15 +104,23 @@ def load_layered_maps(config_name: str, file_path: str) -> tuple[dict, dict]:
     return file_map, preference_map
 
 
-def load_layered_map(config_name: str, file_path: str) -> dict:
-    """合并 文件层 + 用户偏好层；用户偏好层优先（作为 overlay）。返回合并后的 dict。"""
+def load_layered_map(config_name: str, file_path: str, *, workspace: str | Path | None = None) -> dict:
+    """程序默认 < 用户全局 < 工作区 .focus 配置；未传工作区时保持两层行为。"""
     file_map, preference_map = load_layered_maps(config_name, file_path)
-    return deep_merge(file_map, preference_map)
+    merged = deep_merge(file_map, preference_map)
+    if workspace is not None and Path(workspace).resolve() != global_home().resolve():
+        merged = deep_merge(merged, _read_yaml_map(Path(workspace) / ".focus" / config_name))
+    return merged
 
 
-def layered_candidate_paths(config_name: str, file_path: str) -> tuple[Path, ...]:
-    """报出该配置的全部物理候选路径（文件层、用户偏好层各一），不区分是否存在。"""
-    return (Path(file_path), global_home() / config_name)
+def layered_candidate_paths(
+    config_name: str, file_path: str, *, workspace: str | Path | None = None,
+) -> tuple[Path, ...]:
+    """报出程序默认、全局与可选工作区的候选路径，不区分是否存在。"""
+    paths = [Path(file_path), global_home() / config_name]
+    if workspace is not None and Path(workspace).resolve() != global_home().resolve():
+        paths.append(Path(workspace) / ".focus" / config_name)
+    return tuple(paths)
 
 
 def layered_mtime(config_name: str, file_path: str) -> float | None:

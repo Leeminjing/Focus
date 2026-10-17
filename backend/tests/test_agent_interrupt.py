@@ -68,7 +68,7 @@ def test_interrupted_main_run_resumes_conversation_from_checkpoint(tmp_path, wai
         calls["n"] += 1
         return _build_graph(slow=calls["n"] == 1)  # 首轮慢图（被中断），后续正常图
 
-    async def fake_get_available_tools():
+    async def fake_get_available_tools(*, workspace=None):
         return []
 
     original = svc.make_lead_agent

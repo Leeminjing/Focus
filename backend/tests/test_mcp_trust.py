@@ -143,6 +143,8 @@ def test_overrides_are_scoped_to_the_server_that_declared_them(monkeypatch):
     from focus.config.extensions_config import ExtensionsConfig
 
     class _FakeSession:
+        is_alive = True
+
         def __init__(self, client, server_name, load_tools):
             self._tools = [_probe()]
 
@@ -195,10 +197,11 @@ def test_trust_override_config_is_an_authority_surface(tmp_path, monkeypatch, mo
     trust_surfaces = [
         surface for surface in surfaces if surface.path.name == "extensions_config.json"
     ]
-    assert len(trust_surfaces) == 2
+    assert len(trust_surfaces) == 3
     assert all(surface.kind is AuthorityKind.TRUST for surface in trust_surfaces)
     assert {surface.path for surface in trust_surfaces} == {
         (tmp_path / "extensions_config.json").resolve(), (config_home / "extensions_config.json").resolve(),
+        (tmp_path / ".focus" / "extensions_config.json").resolve(),
     }
 
     policy = AccessPolicy(

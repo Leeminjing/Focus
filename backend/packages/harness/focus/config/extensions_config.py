@@ -75,11 +75,11 @@ class ExtensionsConfig(BaseModel):
         }
 
 
-def get_extensions_config(json_path: str) -> ExtensionsConfig:
-    """经两层聚合层读取扩展配置：全局态 `~/.focus/extensions_config.json` 为默认，仓库态 <json_path> 优先。"""
+def get_extensions_config(json_path: str, *, workspace: str | Path | None = None) -> ExtensionsConfig:
+    """读取程序默认 < 全局 < 工作区扩展配置，并解析环境变量。"""
     from focus.config.layered import load_layered_map
 
-    raw = load_layered_map(Path(json_path).name, json_path)
+    raw = load_layered_map(Path(json_path).name, json_path, workspace=workspace)
     resolved = resolve_env_vars(raw)
     if not resolved.get("mcpServers"):
         return ExtensionsConfig(mcp_servers={})

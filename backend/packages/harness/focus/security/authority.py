@@ -86,12 +86,16 @@ def authority_surfaces(workspace: Path | None = None) -> tuple[AuthoritySurface,
         ),
     ]
     for name, kind, reason in _LAYERED_CONFIG_SURFACES:
-        for candidate in layered_candidate_paths(name, name):
+        for candidate in layered_candidate_paths(name, name, workspace=workspace if name == "extensions_config.json" else None):
             surfaces.append(
                 AuthoritySurface(kind, Path(candidate).resolve(), reason=reason)
             )
     surfaces.extend(
         [
+            AuthoritySurface(
+                AuthorityKind.INSTRUCTIONS, home / ".agents" / "skills",
+                reason="全局技能目录：会被主动扫描并注入后续运行的指令",
+            ),
             AuthoritySurface(
                 AuthorityKind.TOOL_SET, home / "tools",
                 reason="自定义工具目录：其中的模块在本进程内执行",
