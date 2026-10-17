@@ -104,7 +104,8 @@ def test_install_scope_conflict_export_and_snapshot(isolated_postgres_database, 
             assert updated["status"] == "updated" and not updated["memory"]["locally_modified"]
             duplicate = await service.install_strategy(upgrade.markdown(), workspace_id, enabled=True)
             assert duplicate["status"] == "already_installed" and not duplicate["memory"]["enabled"]
-            assert adopted["strategy"] == original.strategy.model_dump()
+            assert adopted["applicability"] == original.strategy.applicability
+            assert "strategy" not in adopted
             assert adopted["package"]["version"] == "1.0.0"
             with pytest.raises(HTTPException, match="409"):
                 await service.create(MemoryCreate(title=original.metadata.name, category="evolution_strategy", strategy=original.strategy, strategy_package=original.metadata))
@@ -233,7 +234,7 @@ def test_authoring_produces_drafts_and_three_simulations_without_saving(monkeypa
 
 def test_strategy_routes_reject_bad_files_before_install():
     class Service:
-        async def preview_strategy(self, markdown, workspace_id):
+        async def preview_strategy(self, markdown, workspace_id, enabled=True):
             parsed = parse_strategy(markdown)
             return {"metadata": parsed.metadata.model_dump(by_alias=True), "strategy": parsed.strategy.model_dump(), "existing": None}
 

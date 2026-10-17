@@ -62,6 +62,32 @@ test("import preview compares local edits with incoming sections and escapes doc
   assert.match(html, /&lt;script&gt;/);
 });
 
+test("import preview shows collection capacity and safely attributes strategy usage", () => {
+  const html = Memory.render([], { strategyImport: { markdown: "document", enabled: true,
+    preview: { metadata, strategy, capacity: [{ fits: false, workspace_id: "workspace", model_name: "model",
+      input_bound: 70000, previous_input_bound: 30000, strategy_input_limit: 40000,
+      strategies: [{ title: "<Large strategy>", package_id: "tests/large", input_bound: 35000 }] }] } } });
+  assert.match(html, /策略集合容量超限/);
+  assert.match(html, /70000 \/ 40000/);
+  assert.match(html, /&lt;Large strategy&gt;/);
+  assert.match(html, /tests\/large/);
+  assert.match(html, /data-action="install-strategy" disabled/);
+});
+
+test("preview sends the selected disabled state to capacity admission", async () => {
+  const requests = [];
+  const { run } = harness({ requests });
+  run('openStrategyImport(); state.memory.strategyImport.markdown = "document"; state.memory.strategyImport.enabled = false; api = async (path, options) => { requests.push(JSON.parse(options.body)); return {metadata, strategy}; };');
+  await run("previewStrategyImport()");
+  assert.equal(requests[0].enabled, false);
+});
+
+test("capacity preview keeps reductions available for an existing oversized set", () => {
+  const html = Memory.render([], { strategyImport: { markdown: "document", preview: { metadata, strategy,
+    capacity: [{ fits: false, input_bound: 50000, previous_input_bound: 60000, strategy_input_limit: 40000, strategies: [] }] } } });
+  assert.doesNotMatch(html, /data-action="install-strategy" disabled/);
+});
+
 test("changing import content invalidates the preview before any installation", async () => {
   const { run } = harness();
   run('openStrategyImport(); state.memory.strategyImport.preview = { metadata, strategy }; api = async () => { throw new Error("must not install"); }; syncStrategyImportField("markdown", "changed");');

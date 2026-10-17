@@ -2969,7 +2969,7 @@ async function previewStrategyImport() {
   state.memory.strategyImport = { ...draft, busy: true, error: "", preview: null };
   renderMemory();
   try {
-    const preview = await api("/desktop/api/strategies/preview", { method: "POST", body: JSON.stringify({ markdown: draft.markdown, workspace_id: draft.workspace_id }) });
+    const preview = await api("/desktop/api/strategies/preview", { method: "POST", body: JSON.stringify({ markdown: draft.markdown, workspace_id: draft.workspace_id, enabled: draft.enabled }) });
     if (requestId !== strategyImportRequestSequence || !state.memory.strategyImport) return;
     state.memory.strategyImport = { ...draft, preview, busy: false, error: "" };
   } catch (error) {

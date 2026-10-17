@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
 from backend.app.desktop.agent_loop.clarification_admission import ClarificationAdmissionPolicy, ClarificationFacts
 from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
+from backend.app.desktop.evolution_strategies import strategy_catalog
 
 
 class PatrolWorkerReadRequest(BaseModel):
@@ -43,6 +44,7 @@ class PatrolReadView:
     @classmethod
     def payload(cls, observation, sources=None) -> dict:
         payload = EffectiveMissionProjector.observation_payload(observation)
+        payload["evolution_strategies"] = strategy_catalog(observation.evolution_strategies)
         payload["clarification_admission"] = ClarificationAdmissionPolicy.read_view(ClarificationFacts.from_observation(observation))
         payload["worker_results"] = [cls._descriptor(item, observation.round_id) for item in observation.worker_results]
         payload["worker_source_catalog"] = [cls._descriptor(item, observation.round_id) for item in (sources if sources is not None else observation.worker_results)]

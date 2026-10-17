@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app.desktop.memory import MemoryService, MemoryCreate, MemoryUpdate
 from backend.app.desktop.models import DesktopWorkspace
-from backend.app.desktop.evolution_strategies import freeze_strategies
+from backend.app.desktop.evolution_strategies import freeze_strategies, strategy_catalog
 from backend.app.desktop.agent_loop.observation import observation_hash, LoopObservationBuilder
 from backend.app.desktop.agent_loop.decision_context import scoped_memory
 from test_semantic_context_planning import _observation
@@ -60,7 +60,7 @@ def test_strategy_crud_scope_and_snapshot(isolated_postgres_database, tmp_path):
                 after = await freeze_strategies(session, workspace_id)
             old = next(row for row in before if row["memory_id"] == created["memory_id"])
             new = next(row for row in after if row["memory_id"] == created["memory_id"])
-            assert old["strategy"]["evolution"] == "先诊断再派生"
+            assert old["applicability"] == "否定方案" and "strategy" not in old
             assert old["content_hash"] != new["content_hash"]
             await service.update(created["memory_id"], MemoryUpdate(workspace_id=None, enabled=False))
             async with sessions() as session:
@@ -84,7 +84,7 @@ def test_frozen_strategies_are_full_and_old_hash_is_compatible():
     strategy = {"memory_id": "s", "content_hash": "a" * 64, "strategy": {"evolution": "长" * 9000}}
     frozen = LoopObservationBuilder(max_text=4000).build(**{**base.model_dump(), "evolution_strategies": (strategy,)})
     assert frozen.evolution_strategies[0] == strategy
-    assert scoped_memory(frozen, set())["evolution_strategies"] == (strategy,)
+    assert scoped_memory(frozen, set())["evolution_strategies"] == strategy_catalog((strategy,))
     assert observation_hash(frozen) != observation_hash(base)
     assert observation_hash(base) == observation_hash(base.model_copy(update={"evolution_strategies": ()}))
 
@@ -114,7 +114,7 @@ def test_strategy_scenarios_use_frozen_planning_and_existing_candidate_contract(
 
     class ControlledModel:
         async def invoke(self, schema, system, payload):
-            assert payload["derivation"]["evolution_strategies"] == (snapshot,)
+            assert payload["derivation"]["evolution_strategies"] == strategy_catalog((snapshot,))
             assert payload["derivation"]["user_intents"] == (feedback,)
             seen.append(schema)
             if schema is PlannerQueryProposal:
