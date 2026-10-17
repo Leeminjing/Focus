@@ -49,6 +49,7 @@ from backend.app.desktop.run_materials import RunMaterialRequest
 from backend.app.desktop.run_orchestration import RunLauncher
 from backend.app.desktop.run_stream import durable_run_sse_consumer
 from backend.app.desktop.workspace_material_routes import workspace_material_router
+from backend.app.desktop.file_routes import file_router
 from backend.app.gateway.services import start_run
 from focus.sandbox.status import sandbox_status
 
@@ -57,6 +58,7 @@ from focus.sandbox.status import sandbox_status
 # 保护由 AuthMiddleware（统一会话保护）统一承担，本路由不再挂独立依赖。
 desktop_router = APIRouter(prefix="/desktop/api")
 desktop_router.include_router(workspace_material_router)
+desktop_router.include_router(file_router)
 
 
 @desktop_router.get("/sandbox/status")

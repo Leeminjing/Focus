@@ -366,6 +366,15 @@ ipcMain.handle("focus:open-external", async (event, value) => {
   return true;
 });
 
+const fileActions = require("./file-actions.cjs").createFileActions({
+  shell, dialog, BrowserWindow, apiBase: () => desktopOrigin, session: () => process.env.FOCUS_DESKTOP_SESSION,
+});
+ipcMain.handle("focus:file-action", async (event, request) => {
+  assertDesktopSender(event);
+  return fileActions.run(event, request);
+});
+app.on("will-quit", () => { void fileActions.cleanup(); });
+
 ipcMain.handle("focus:set-zoom-level", (event, value) => {
   assertDesktopSender(event);
   const level = clampZoomLevel(value);
