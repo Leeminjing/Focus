@@ -37,6 +37,7 @@ import os
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
+import backend.app.desktop.persistence_registry  # noqa: F401
 from focus.persistence.base import Base
 
 # Alembic Config 对象
@@ -46,7 +47,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
-# autogenerate 支持：绑定声明式基类的 metadata
+# autogenerate 支持：显式注册 ORM，不能依赖读取 revision 图时的导入副作用。
 target_metadata = Base.metadata
 
 

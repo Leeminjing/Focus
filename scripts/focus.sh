@@ -153,7 +153,8 @@ electron_runtime_ready() (
 dependencies_ready() {
     [ -x "$venv_python" ] || return 1
     electron_runtime_ready || return 1
-    "$venv_python" -c 'import alembic, asyncpg, fastapi, psycopg, uvicorn' >/dev/null 2>&1
+    # Full imports run during install/update and native first-run preparation.
+    return 0
 }
 
 sync_focus_dependencies() {
@@ -170,7 +171,7 @@ sync_focus_dependencies() {
     fi
     printf 'Updating Python dependencies...\n'
     "$venv_python" -m pip install --disable-pip-version-check -e "${harness_dir}[desktop]" || return $?
-    "$venv_python" -c 'import alembic, asyncpg, fastapi, psycopg, uvicorn' || return $?
+    node "$desktop_dir/startup-runtime.cjs" --prepare "$venv_python" "$focus_home" || return $?
 }
 
 start_focus() {

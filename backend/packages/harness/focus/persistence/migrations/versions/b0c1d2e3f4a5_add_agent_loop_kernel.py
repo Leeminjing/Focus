@@ -9,8 +9,6 @@ from typing import Sequence, Union
 
 from alembic import op
 
-import backend.app.desktop.persistence_registry
-from focus.persistence.base import Base
 
 
 revision: str = "b0c1d2e3f4a5"
@@ -41,12 +39,20 @@ TABLES = (
 
 
 def upgrade() -> None:
+    # 读取 revision 图时不加载整个后端；仅在执行 DDL 时注册 ORM。
+    import backend.app.desktop.persistence_registry  # noqa: F401
+    from focus.persistence.base import Base
+
     bind = op.get_bind()
     for name in TABLES:
         Base.metadata.tables[name].create(bind=bind, checkfirst=False)
 
 
 def downgrade() -> None:
+    # 读取 revision 图时不加载整个后端；仅在执行 DDL 时注册 ORM。
+    import backend.app.desktop.persistence_registry  # noqa: F401
+    from focus.persistence.base import Base
+
     bind = op.get_bind()
     for name in reversed(TABLES):
         Base.metadata.tables[name].drop(bind=bind, checkfirst=False)
