@@ -30,6 +30,8 @@
   function notify() {
     const status = FocusWorkspacePatrolFeedback.status(live.get().projection, live.get().connection, draftStore().get());
     $("#status").textContent = workspace ? status.text : "先预览材料，绑定工作区后再发送";
+    $("#activity").hidden = !workspace || status.state === "idle";
+    $("#activity").textContent = status.text;
     $("#reconnect").hidden = status.state !== "disconnected";
     const state = { workspaceId: workspace?.workspace_id || "", workspaceName: workspace?.display_name || "", state: status.state, dirty: intake.hasUnfinished(), pending: intake.isSending() };
     const key = JSON.stringify(state);
@@ -73,7 +75,7 @@
     workspace = bound; resultKey = ""; inputKey = "";
     $("#results").replaceChildren(); $("#requests").replaceChildren(); fail(null);
     if (bound) { intake.remember(bound); intake.claimUnbound(bound.workspace_id); }
-    $("#binding").textContent = bound ? `${bound.display_name} ↗` : "绑定工作区 ↗";
+    $("#binding-name").textContent = bound ? bound.display_name : "绑定工作区";
     $("#binding").title = bound?.path || "选择工作区文件夹";
     watchDraft();
     if (!bound) return;
@@ -165,6 +167,17 @@
   $("#binding").addEventListener("click", () => { void enqueue(choose); });
   $("#clear-reply").addEventListener("click", () => draftStore().edit({ request_id: null, request_revision: null }));
   $("#hide").addEventListener("click", () => bridge?.hidePanel());
+  $("#toggle-history").addEventListener("click", () => {
+    const history = $("#history"); history.hidden = !history.hidden; history.open = !history.hidden;
+    $("#toggle-history").setAttribute("aria-expanded", String(!history.hidden));
+    $(".panel-menu").open = false;
+  });
+  document.addEventListener("click", event => { if (!event.target.closest(".panel-menu")) $(".panel-menu").open = false; });
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Escape") return;
+    if ($(".panel-menu").open) { $(".panel-menu").open = false; $(".panel-menu summary").focus(); }
+    else bridge?.hidePanel();
+  });
   $("#workbench").addEventListener("click", () => { void openWorkbench(); });
   $("#reconnect").addEventListener("click", () => { const id = loopId; loopId = null; connect(id); });
   $("#add-material").addEventListener("click", () => $("#file-picker").click());
@@ -179,6 +192,14 @@
     try { intake.history(id, await api.workspaceInputs(id, before), true); } catch (error) { fail(error); } finally { $("#older").disabled = false; }
   });
   watchDraft();
+  const sizeObserver = new ResizeObserver(() => {
+    const contentHeight = $(".panel-header").offsetHeight + $(".panel-content").offsetHeight + 2;
+    const menuHeight = $(".panel-menu").open ? $(".panel-menu-content").getBoundingClientRect().bottom + 10 : 0;
+    const height = Math.ceil(Math.max(contentHeight, menuHeight));
+    if (bridge?.enabled) void bridge.resizePanel(height).catch(fail);
+  });
+  sizeObserver.observe($(".panel-content"));
+  sizeObserver.observe($(".panel-menu-content"));
   await intake.resourceLimits();
   if (bridge?.enabled) {
     bridge.onOpen(target => enqueue(async () => {
@@ -197,5 +218,5 @@
       finally { nativeReady = true; notify(); }
     });
   } else if (intake.readBinding()) await activate(await intake.workspace(intake.readBinding().workspace_id));
-  window.addEventListener("beforeunload", () => { preview.dispose(); connection.stop(); reads.abort(); });
+  window.addEventListener("beforeunload", () => { sizeObserver.disconnect(); preview.dispose(); connection.stop(); reads.abort(); });
 })().catch(error => { const node = document.querySelector("#error"); node.hidden = false; node.textContent = error.message; });

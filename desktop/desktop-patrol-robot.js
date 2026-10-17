@@ -15,6 +15,7 @@
   const stateLabels = { idle: "点击打开 · 拖入材料", sending: "正在发送", accepted: "已受理", running: "工作中", waiting_user: "需要你处理", paused: "已暂停", stopped: "已停止", failed: "需要查看", disconnected: "连接中断", completed: "工作已完成" };
   function update(state) {
     currentWorkspaceId = state.workspaceId || "";
+    host.dataset.active = String(!["idle", "stopped", "completed"].includes(state.state));
     label.textContent = stateLabels[state.state] || "点击打开";
     label.title = state.workspaceName || "绑定工作区";
     const asset = { sending: "loading", accepted: "loading", running: "working", waiting_user: "thinking", failed: "alert", disconnected: "alert", completed: "happy" }[state.state] || "idle";

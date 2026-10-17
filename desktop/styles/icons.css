@@ -44,3 +44,7 @@
 .icon-grip-vertical { --icon-url: url("../assets/icons/grip-vertical.svg"); }
 .icon-chevron-left { --icon-url: url("../assets/icons/chevron-left.svg"); }
 .icon-chevron-right { --icon-url: url("../assets/icons/chevron-right.svg"); }
+.icon-chevron-down { --icon-url: url("../assets/icons/chevron-down.svg"); }
+.icon-ellipsis { --icon-url: url("../assets/icons/ellipsis.svg"); }
+.icon-arrow-up { --icon-url: url("../assets/icons/arrow-up.svg"); }
+.icon-corner-down-left { --icon-url: url("../assets/icons/corner-down-left.svg"); }

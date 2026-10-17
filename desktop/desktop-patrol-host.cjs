@@ -11,7 +11,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const ROBOT_SIZE = { width: 144, height: 164 };
-const PANEL_SIZE = { width: 440, height: 620 };
+const PANEL_SIZE = { width: 560, height: 202 };
 const PREFIX = "focus:patrol-";
 
 function clampBounds(bounds, area) {
@@ -24,10 +24,10 @@ function clampBounds(bounds, area) {
   };
 }
 
-function panelBounds(robot, area) {
+function panelBounds(robot, area, height = PANEL_SIZE.height) {
   const x = robot.x - PANEL_SIZE.width - 8 >= area.x
     ? robot.x - PANEL_SIZE.width - 8 : robot.x + robot.width + 8;
-  return clampBounds({ x, y: robot.y + robot.height - PANEL_SIZE.height, ...PANEL_SIZE }, area);
+  return clampBounds({ x, y: robot.y + robot.height - height, ...PANEL_SIZE, height }, area);
 }
 
 function boundedString(value, limit, name, optional = false) {
@@ -111,7 +111,7 @@ class DesktopPatrolHost {
       },
     };
     this.robot = new BrowserWindow({ ...common, ...bounds, transparent: true, backgroundColor: "#00000000", focusable: false });
-    this.panel = new BrowserWindow({ ...common, ...panelBounds(bounds, screen.getDisplayMatching(bounds).workArea), backgroundColor: "#f4f7fb" });
+    this.panel = new BrowserWindow({ ...common, ...panelBounds(bounds, screen.getDisplayMatching(bounds).workArea), backgroundColor: "#00000000", backgroundMaterial: "acrylic", roundedCorners: true });
     for (const [surface, win] of [["robot", this.robot], ["panel", this.panel]]) {
       this._protectWindow(win, surface);
       win.on("close", event => { if (!this._disposed) { event.preventDefault(); win.hide(); } });
@@ -235,6 +235,12 @@ class DesktopPatrolHost {
     };
     handle("open", ["robot", "panel", "workbench"], value => this.openPanel(value));
     handle("hide-panel", ["robot", "panel"], () => this.panel.hide());
+    handle("resize-panel", ["panel"], height => {
+      if (!Number.isFinite(height)) throw new Error("面板高度无效");
+      this._panelHeight = Math.max(PANEL_SIZE.height, Math.min(620, Math.ceil(height)));
+      this._positionPanel();
+      return true;
+    });
     handle("hide-robot", ["robot", "panel"], () => { this.panel.hide(); this.robot.hide(); });
     handle("workbench", ["robot", "panel"], value => this.openWorkbench(value));
     handle("receive", ["robot"], value => {
@@ -307,7 +313,7 @@ class DesktopPatrolHost {
   _positionPanel() {
     if (!this.robot || this.robot.isDestroyed() || !this.panel || this.panel.isDestroyed()) return;
     const robot = this.robot.getBounds();
-    this.panel.setBounds(panelBounds(robot, this._electron.screen.getDisplayMatching(robot).workArea));
+    this.panel.setBounds(panelBounds(robot, this._electron.screen.getDisplayMatching(robot).workArea, this._panelHeight));
   }
 
   _reposition() {

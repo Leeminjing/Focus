@@ -3,25 +3,30 @@
 工作流为装配共享 intake 和预览模块，显式发送后读取既有 Live；示例：desktop-patrol.html?surface=panel。
 -->
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Focus · Patrol</title><link rel="stylesheet" href="./desktop-patrol.css"></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Focus · Patrol</title><link rel="stylesheet" href="./styles/icons.css"><link rel="stylesheet" href="./desktop-patrol.css"></head>
 <body>
   <main id="robot" hidden><button id="robot-open" aria-label="打开 Patrol，拖入图片、文字或文件"><img src="./assets/patrol-avatar/idle.png" alt="Patrol 机器人" draggable="false"></button><span id="robot-status" role="status">点击开始</span><button id="robot-hide" aria-label="隐藏机器人到托盘">收起</button></main>
   <main id="panel" hidden>
-    <header class="panel-header"><div><span class="eyebrow">FOCUS / PATROL</span><button id="binding" title="切换绑定工作区">绑定工作区 ↗</button></div><button id="hide" aria-label="收起面板">×</button></header>
-    <div class="panel-scroll">
-      <section class="intro"><h1>把想法放在这里。</h1><p>拖入截图、文字或文件，补一句要求，再发送。</p></section>
+    <header class="panel-header">
+      <button id="binding" title="选择工作区文件夹"><span class="ui-icon icon-folder" aria-hidden="true"></span><span id="binding-name">绑定工作区</span><span class="ui-icon icon-chevron-down" aria-hidden="true"></span></button>
+      <details class="panel-menu"><summary aria-label="更多操作" title="更多操作"><span class="ui-icon icon-ellipsis" aria-hidden="true"></span></summary><div class="panel-menu-content">
+        <button id="toggle-history" aria-controls="history" aria-expanded="false">输入记录</button><button id="workbench">打开工作台</button><button id="hide">收起面板 <span>Esc</span></button>
+        <div class="status-row"><i></i><span id="status" role="status">绑定工作区后即可发送</span><button id="reconnect" hidden>重连</button></div>
+      </div></details>
+    </header>
+    <div class="panel-scroll"><div class="panel-content">
       <form id="compose" data-patrol-composer>
-        <div class="drop-zone"><div data-patrol-materials aria-label="待发送参考材料"></div><button type="button" id="add-material">＋ 添加材料</button><span>也可以拖到机器人上</span><input type="file" id="file-picker" multiple hidden></div>
-        <label for="instruction">你的要求 <small>可选</small></label><textarea id="instruction" rows="3" placeholder="例如：解释这张截图里的问题…"></textarea>
+        <label class="sr-only" for="instruction">你的想法或要求</label><textarea id="instruction" rows="2" placeholder="有什么想法？" aria-describedby="compose-help"></textarea>
+        <div data-patrol-materials aria-label="待发送参考材料"></div>
         <div id="reply-target" hidden><span></span><button type="button" id="clear-reply">取消指定回复</button></div>
-        <div class="send-row"><small>Enter 换行 · Ctrl+Enter 发送</small><button id="send" type="submit">发送 ↑</button></div>
+        <div class="send-row"><button type="button" id="add-material" aria-label="添加材料" title="添加图片、文字或文件，也可以拖入或粘贴截图"><span class="ui-icon icon-plus" aria-hidden="true"></span></button><input type="file" id="file-picker" multiple hidden><span id="compose-help" class="sr-only">可拖入图片、文字或文件。Enter 换行，Ctrl+Enter 发送。</span><span class="send-shortcut" title="Ctrl+Enter 发送">Ctrl <span class="ui-icon icon-corner-down-left" aria-hidden="true"></span></span><button id="send" type="submit" aria-label="发送" title="发送 · Ctrl+Enter"><span class="ui-icon icon-arrow-up" aria-hidden="true"></span></button></div>
       </form>
-      <p id="error" role="alert" hidden></p><div class="status-row"><i></i><span id="status" role="status">绑定工作区后即可发送</span><button id="reconnect" hidden>重连</button></div>
+      <p id="error" role="alert" hidden></p>
+      <p id="activity" role="status" hidden></p>
       <section id="requests" aria-label="待处理请求"></section>
       <section id="results" aria-label="工作区已提交结果"></section>
-      <details id="history"><summary>输入记录 <span id="receipt"></span></summary><div id="history-items"></div><button id="older" hidden>更早的输入</button></details>
-    </div>
-    <footer><span>一个入口，整个工作区</span><button id="workbench">打开工作台 ↗</button></footer>
+      <details id="history" hidden><summary>输入记录 <span id="receipt"></span></summary><div id="history-items"></div><button id="older" hidden>更早的输入</button></details>
+    </div></div>
   </main>
   <script src="./http-response.js"></script><script src="./loop-api.js"></script>
   <script src="./loop-live-schema.js"></script><script src="./loop-live-reducer.js"></script><script src="./loop-live-selectors.js"></script><script src="./loop-live-store.js"></script><script src="./loop-live-connection.js"></script>

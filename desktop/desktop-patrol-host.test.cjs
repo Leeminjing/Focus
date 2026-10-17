@@ -101,6 +101,24 @@ test("content accepts pathless clipboard bytes and bounds the entire UTF-8 batch
   ]) assert.throws(() => validateContent(invalid, limits));
 });
 
+test("compact panel expands within display bounds and only accepts resize from its owner", async t => {
+  const f = fixture(t); await f.host.start();
+  assert.equal(f.host.panel.getBounds().width, 560);
+  assert.equal(f.host.panel.getBounds().height, 202);
+  assert.throws(() => f.invoke("resize-panel", f.host.robot, 500), /不能调用/);
+  for (const value of [null, "400", NaN, Infinity]) assert.throws(() => f.invoke("resize-panel", f.host.panel, value), /高度无效/);
+  f.invoke("resize-panel", f.host.panel, 10000);
+  assert.equal(f.host.panel.getBounds().height, 620);
+  f.host.openPanel();
+  assert.equal(f.host.panel.getBounds().height, 620);
+  f.screen.area = { x: 0, y: 0, width: 400, height: 300 };
+  f.screen.emit("display-metrics-changed");
+  assert.equal(f.host.panel.getBounds().height, 300);
+  assert.equal(f.host.panel.getBounds().width, 400);
+  f.invoke("resize-panel", f.host.panel, 0);
+  assert.equal(f.host.panel.getBounds().height, 202);
+});
+
 test("IPC authenticates owner window, main frame, origin and surface before transfer", async t => {
   const f = fixture(t); await f.host.start();
   const handler = f.handlers.get("focus:patrol-receive");

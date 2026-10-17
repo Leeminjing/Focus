@@ -206,3 +206,35 @@ final result: passed
 Implementation checklist：共享图/样式收敛、真实接口承接、旧入口保留、响应式/系统偏好、键鼠/错误恢复、同尺寸对照已完成。迁移清单、逐项证据与代码增减见本 change 的 implementation.md。
 
 final result: passed
+
+---
+
+# Desktop Patrol UI 验收
+
+final result: passed
+
+## 目标与范围
+
+以用户第二张截图为视觉方向，修改现有桌面输入面板及机器人下方提示。复用原有机器人图片、材料上传、工作区绑定、输入历史和 Live 回答流程。
+
+参考图为 1034 × 320 px。面板区域裁取 (40, 20)–(830, 300)，归一化到 840 × 303 px，与 Electron 空面板截图直接并排比较。原生窗口为 560 × 202 CSS px，截图密度为 1.5。预览页只用于展示布局，原生文件夹选择及发送由 Electron 测试验证。
+
+## 检查记录
+
+- 首轮 P2：新增图标的 CSS 变量在共享图标样式表中解析相对路径，导致箭头、下拉和更多图标缺失。已将资源定义移入共享 icons.css，并重新截图确认全部显示。
+- 复查：面板比例、单层圆角玻璃表面、顶部工作区入口、输入占位、圆形添加及发送按钮符合参考方向；菜单完整可见，材料、错误及回答出现时窗口有界展开。
+- 图标、文字和按钮在整张对照图中可清楚辨认，无须额外局部放大。机器人保留现有资产，默认隐藏底部提示，悬停、键盘聚焦或工作状态时显示。
+- 400 px 浏览器窗口下无横向溢出。浏览器请求 320 px 时实际最小视口为 400 px，未声称验证更小尺寸。
+- 浏览器验证了输入后发送启用、清空后禁用、菜单打开及 Escape 关闭，无控制台错误。
+- 24 项 Node/Electron 检查通过：原生窗口边界及 resize IPC 鉴权、拖放、截图粘贴、明确发送、Ctrl+Enter/IME、跨工作区草稿、隐藏恢复、受理回执、已提交回答。图标修正后重新运行 Electron UI 验收通过。
+
+## 证据
+
+- [归一化参考对照](C:/Users/brubing/.codex/visualizations/2026/10/17/01a148eb-f3d2-7aa0-aa6d-2204bc8ba7b5/patrol-ui/reference-comparison.png)
+- [原生空面板](C:/Users/brubing/.codex/visualizations/2026/10/17/01a148eb-f3d2-7aa0-aa6d-2204bc8ba7b5/patrol-ui/desktop-empty.png)
+- [操作菜单](C:/Users/brubing/.codex/visualizations/2026/10/17/01a148eb-f3d2-7aa0-aa6d-2204bc8ba7b5/patrol-ui/desktop-menu.png)
+- [回答展开](C:/Users/brubing/.codex/visualizations/2026/10/17/01a148eb-f3d2-7aa0-aa6d-2204bc8ba7b5/patrol-ui/desktop-committed-answer.png)
+
+## 剩余差异
+
+P3：玻璃折射层次会随桌面背景、Windows 版本及合成设置变化。已配置系统 Acrylic 和 CSS 半透明表面；本次隔离 Electron 测试禁用 GPU，验证了布局与交互，未验证真实桌面背景下的动态模糊效果。
