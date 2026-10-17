@@ -1,14 +1,14 @@
 /* 本文件对外提供 FocusWorkspacePatrolFeedback 的状态与已提交回答投影。
- * 输入为既有 Live 投影、连接和输入记录，或固定 revision 的会话；输出为真实状态和带 Context/revision 来源的回答卡。
+ * 输入为既有 Live 投影、连接和输入记录，或固定 revision 的会话；输出为真实状态和带 Context/revision、消息文件来源身份的回答卡。
  * 工作流为区分受理、执行和完成，按已提交版本查询最终 assistant 正文，忽略工具调用与推理；不把工作区结果猜测归属到某条输入。
  * createReader(api) 为单个面板保留最多 48 个不可变版本的正文（包括空回答），不缓存失败或取消的读取及可变标题。
  * entries + read 支持逐卡片读取与单项重试；results 保留批量调用兼容。本模块不创建 Loop、Run 或任务。
  */
 (function (root, factory) {
-  const api = factory();
+  const api = factory(root.FocusFileLinks || (typeof require === "function" ? require("./file-links.js") : null));
   if (typeof module === "object" && module.exports) module.exports = api;
   root.FocusWorkspacePatrolFeedback = api;
-})(globalThis, function () {
+})(globalThis, function (fileLinks) {
   "use strict";
   function status(projection, connection, model) {
     if (["unavailable", "reconnecting", "resyncing"].includes(connection?.status)) return { state: "disconnected", text: "工作状态连接中断 · 草稿已保留" };
@@ -27,7 +27,7 @@
       const message = item.message || {}, role = message.role || message.type;
       if (!["assistant", "ai"].includes(role) || message.tool_calls?.length || message.additional_kwargs?.tool_calls?.length) continue;
       const text = typeof message.content === "string" ? message.content : (Array.isArray(message.content) ? message.content.filter(block => ["text", "output_text"].includes(block.type)).map(block => block.text || "").join("\n") : "");
-      if (text.trim()) return { text, message_id: message.id || null };
+      if (text.trim()) return { text, message_id: message.id || null, file_source: fileLinks.messageSource(message) };
     }
     return null;
   }

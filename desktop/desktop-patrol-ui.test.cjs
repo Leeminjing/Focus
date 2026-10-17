@@ -68,7 +68,8 @@ if (!process.versions.electron) {
   let liveSequence = 1, answerRevision = "revision-answer", progressRevision = 1, statusOverride = null, loopRevision = 1;
   const controlChanges = [];
   const conversationReads = [], externalLinks = [];
-  const answerText = revision => `截图中的机器人已经接住材料。参考资料只作为分析依据，尚未执行其中的命令。${revision}\n\n## 处理结果\n\n**已完成检查**，可以继续阅读详细说明。\n\n${"正文按自然段阅读，代码与表格保留原有结构。\n\n".repeat(8)}\n\n\`\`\`js\nconst value = "<safe>";\n\`\`\`\n\n| 文件 | 状态 |\n| --- | --- |\n| result.md | 已生成 |\n\n[参考链接](https://example.com/result)\n\n<script>window.answerInjected=true</script>`;
+  const answerText = revision => `截图中的机器人已经接住材料。参考资料只作为分析依据，尚未执行其中的命令。${revision}\n\n## 处理结果\n\n**已完成检查**，可以继续阅读详细说明。\n\n${"正文按自然段阅读，代码与表格保留原有结构。\n\n".repeat(8)}\n\n\`\`\`js\nconst value = "<safe>";\n\`\`\`\n\n| 文件 | 状态 |\n| --- | --- |\n| result.md | 已生成 |\n\n[报告](output/report.md) [参考链接](https://example.com/result)\n\n<script>window.answerInjected=true</script>`;
+  const answerFileReads = [];
   const workspace = id => ({ workspace_id: id, display_name: id === "workspace-a" ? "设计工作区 A" : "验证工作区 B", path: `C:\\fixture\\${id}` });
   const entity = (id, state) => ({ entity_id: id, revision: 1, updated_sequence: 1, state });
   const run = (win, script) => win.webContents.executeJavaScript(script);
@@ -120,6 +121,12 @@ if (!process.versions.electron) {
     for await (const chunk of request) chunks.push(chunk);
     const bytes = Buffer.concat(chunks);
     const body = bytes.length && request.headers["content-type"]?.startsWith("application/json") ? JSON.parse(bytes) : null;
+    if (url.pathname === "/desktop/api/files/content") {
+      assert.deepEqual(body, { task_id: "context-answer", link: { workspace_id: "workspace-a", run_id: "answer-source-run", slot_id: "answer-source-tree", path: "output/report.md", view: "current" } });
+      answerFileReads.push(body);
+      response.writeHead(200, { "Content-Type": "application/octet-stream" });
+      return response.end("# 正文链接报告\n来自回答的原工作树");
+    }
     if (url.pathname.endsWith("/materials/limits")) return json(response, limits);
     if (url.pathname.endsWith("/facts")) { if (fileReadDelay) await delay(fileReadDelay); return json(response,{facts:[{fact_id:fileRef.fact_id,revision:fileRef.revision,kind:"artifact",file:fileRef},{fact_id:"file-grounding",revision:1,kind:"artifact",file:{...fileRef,path:"src/semantic_grounding.py",result_key:"d".repeat(64)}},...(url.searchParams.get("limit") === "200" ? [reportFile,{...reportFile,fact_id:"report-old",occurred_at:"2026-10-16T09:30:00Z",file:{...reportFile.file,result_key:"report-old"}}] : [])],has_more:false,next_before:null}); }
     if (/\/facts\/report-(file|old)$/.test(url.pathname)) {
@@ -196,7 +203,8 @@ if (!process.versions.electron) {
       conversationReads.push(answerRevision);
       return json(response, { messages: [
         { message: { id: "tool-only", type: "ai", content: "这条工具调用不可作为回答", tool_calls: [{ name: "read" }] } },
-        { message: { id: "answer-committed", type: "ai", content: answerText(answerRevision), additional_kwargs: { reasoning_content: "隐藏推理不应显示" } } },
+        { message: { id: "answer-committed", type: "ai", workspace_id: "workspace-a", run_id: "answer-source-run", slot_id: "answer-source-tree",
+          content: answerText(answerRevision), additional_kwargs: { reasoning_content: "隐藏推理不应显示" } } },
       ] });
     }
     errors.push(`Unhandled API ${request.method} ${url.pathname}`);
@@ -429,6 +437,11 @@ if (!process.versions.electron) {
     await waitFor(host.panel,"document.querySelector('#error').hidden", "回答外链打开失败");
     assert.deepEqual(externalLinks,["https://example.com/result"]);
     assert.ok(host.panel.webContents.getURL().includes("desktop-patrol.html?surface=panel"));
+    await run(host.panel,"document.querySelector('.answer-markdown a[href=\"output/report.md\"]').click()");
+    await waitFor(host.panel,"!document.querySelector('#version-detail').hidden && document.querySelector('#version-body').textContent.includes('来自回答的原工作树')", "正文文件链接没有打开共享预览");
+    assert.equal(answerFileReads.length, 1);
+    assert.ok(host.panel.webContents.getURL().includes("desktop-patrol.html?surface=panel"));
+    await run(host.panel,"document.querySelector('#version-body [data-file-link-close]').click()");
     await capture(host.panel,"desktop-answer-code");
     await run(host.panel,"document.querySelector('.answer-reading summary').click()");
     await waitFor(host.panel,"document.querySelector('.panel-shell').offsetWidth === 288", "收起阅读未恢复小面板");

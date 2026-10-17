@@ -20,13 +20,13 @@ const projection = (revision = "r1", patch = {}) => ({ loop_id: "loop-a", loop: 
   contexts: { c: { entity_id: "c", updated_sequence: 1, state: { title: "回答", current_revision_id: revision } } },
   task_progress: { revision: 1, state: { document: { items: [] } } }, interventions: {}, ...patch });
 
-async function panel({ visible = true, read = async (_loop, _context, options) => conversation(options.revisionId) } = {}) {
+async function panel({ visible = true, read = async (_loop, _context, options) => conversation(options.revisionId), fetchImpl } = {}) {
   const body = createElement("body");
   body.innerHTML = fs.readFileSync(path.join(__dirname, "desktop-patrol.html"), "utf8");
   const document = { ...createDocument(), body, querySelector: selector => body.querySelector(selector), hidden: false,
     addEventListener: (...args) => body.addEventListener(...args) };
   let state = { projection: null, connection: { status: "live" } }, listener;
-  const events = {}, calls = [], states = [], stores = new Map(), copied = [];
+  const events = {}, calls = [], states = [], stores = new Map(), copied = [], previews = [], externalLinks = [];
   const store = id => { if (!stores.has(id)) stores.set(id, Inputs.create()); return stores.get(id); };
   const api = { workspacePatrol: async id => ({ loop_id: `loop-${id}` }), workspaceInputs: async () => ({ items: [] }),
     conversation: (...args) => { calls.push(args); return read(...args); } };
@@ -39,20 +39,23 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
     readBinding: () => null, reconcile: async () => {},
     workspace: async id => ({ workspace_id: id, display_name: id }), resourceLimits: async () => ({}),
     history: (id, page) => store(id).history(page) };
-  const window = { markdownit, focusDesktop: { runtime: () => ({}), patrol: bridge }, addEventListener() {} };
-  const context = vm.createContext({ window, document, location: { search: "?surface=panel" }, URLSearchParams,
+  const window = { markdownit, focusDesktop: { runtime: () => ({ apiBase: "http://fixture", session: "test-session" }), patrol: bridge,
+    openExternal: async href => externalLinks.push(href) }, addEventListener() {} };
+  const context = vm.createContext({ window, document, location: { search: "?surface=panel" }, URLSearchParams, URL, Response, fetch: fetchImpl,
     AbortController, navigator: { clipboard: { writeText: async text => copied.push(text) } }, requestAnimationFrame: callback => setImmediate(callback), localStorage: {}, ResizeObserver: class { observe() {} disconnect() {} },
     FocusLoopApi: { create: () => api }, FocusLoopLiveStore: { create: () => ({ get: () => state, subscribe: callback => { listener = callback; callback(state); } }) },
     FocusLoopLiveConnection: { create: () => ({ start: async () => {}, stop() {} }) },
     FocusWorkspacePatrolIntake: { create: () => intake }, FocusWorkspacePatrolMaterialPreview: { create: () => ({ render() {}, dispose() {} }) },
     FocusWorkspacePatrolBudget: { markup: () => "", create: () => ({ update() {}, syncDraft() {}, dispose() {} }) },
+    FocusFilePreview: { mount: async (_host, options) => { previews.push(options); } },
     FocusAccessMode: { readNewSessionDefault() {} }, FocusWorkspacePatrolFeedback: Feedback, FocusWorkspacePatrolInputs: Inputs, FocusLoopFactsView: Facts,
     FocusLoopLiveSelectors: { selectFacts: value => value.files || [] } });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "file-links.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-references.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "artifact-drawer.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "patrol-input-references.js"), "utf8"), context);
   await vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-panel.js"), "utf8"), context);
-  return { calls, states, body, events, api, copied, store,
+  return { calls, states, body, events, api, copied, store, previews, externalLinks,
     async emit(value, connection = state.connection) { state = { ...state, projection: value, connection }; listener(state); await tick(); },
     async visibility(value) { events.visibility?.(value); await tick(); },
     results: () => body.querySelector("#results") };
@@ -253,6 +256,93 @@ test("answers expand as Markdown and copy the full source or an individual code 
   assert.deepEqual(f.copied, [text, 'const value = 1;\n']);
   reading.open = false; reading.dispatchEvent({ type: "toggle" });
   assert.equal(f.body.querySelector("#panel").dataset.reading, "false");
+});
+
+test("answer body file links open shared preview with the selected message's source identity", async () => {
+  const f = await panel({ read: async () => ({ messages: [
+    { message: { id: "answer", role: "assistant", task_id: "source-task", workspace_id: "a", run_id: "source-run", slot_id: "source-tree",
+      content: "[报告](output/report.md) [中文](output/%E6%8A%A5%E5%91%8A.md#L3)" } },
+    { message: { role: "tool", content: "ignored", run_id: "other-run" } },
+  ] }) });
+  await f.emit(projection());
+  const reading = f.body.querySelector(".answer-reading");
+  reading.open = true; reading.dispatchEvent({ type: "toggle" });
+  const links = reading.querySelectorAll("a[href]");
+  for (const [index, link] of links.entries()) {
+    let prevented = false;
+    link.dispatchEvent({ type: "click", preventDefault() { prevented = true; }, stopPropagation() {} });
+    await tick();
+    assert.equal(prevented, true, "正文文件点击必须阻止窗口导航并交给文件解析器");
+    const target = f.previews[index]?.target;
+    assert.equal(target?.task_id, "source-task");
+    assert.equal(target.link.path, index ? "output/报告.md" : "output/report.md");
+    assert.equal(target.link.workspace_id, "a");
+    assert.equal(target.link.run_id, "source-run");
+    assert.equal(target.link.slot_id, "source-tree");
+    assert.equal(target.link.view, "current");
+  }
+  assert.equal(f.body.querySelector("#version-detail").hidden, false);
+});
+
+test("answer links share workbench URL handling and use the answer context when no task is embedded", async () => {
+  const f = await panel({ read: async () => conversation('[文件](file:///C:/work%20tree/report.md#L8) [坏路径](output/%XY.md) [网页](https://example.com/report) [锚点](#section) [危险](javascript:alert(1))') });
+  await f.emit(projection("r1", { runs: { latest: { state: { run_id: "unrelated-run", context_id: "c" } } } }));
+  const reading = f.body.querySelector(".answer-reading");
+  reading.open = true; reading.dispatchEvent({ type: "toggle" });
+  const click = async href => {
+    let prevented = false;
+    reading.querySelector(`a[href="${href}"]`).dispatchEvent({ type: "click", preventDefault() { prevented = true; }, stopPropagation() {} });
+    await tick(); return prevented;
+  };
+  assert.equal(await click("file:///C:/work%20tree/report.md#L8"), true);
+  assert.equal(f.previews[0].target.task_id, "c");
+  assert.equal(f.previews[0].target.link.path, "C:/work tree/report.md");
+  assert.equal(f.previews[0].target.link.workspace_id, "a");
+  assert.equal(f.previews[0].target.link.run_id, undefined, "不能猜测使用 Context 最新 Run 的工作树");
+  // markdown-it encodes a malformed percent sign as %25; exercise a malformed DOM href too.
+  reading.querySelectorAll("a")[1].setAttribute("href", "output/%XY.md");
+  assert.equal(await click("output/%XY.md"), true);
+  assert.equal(f.previews.length, 1);
+  assert.match(f.body.querySelector("#error").textContent, /文件链接无效/);
+  assert.equal(await click("https://example.com/report"), true);
+  assert.deepEqual(f.externalLinks, ["https://example.com/report"]);
+  assert.equal(await click("#section"), false);
+  assert.equal(reading.querySelector('a[href="javascript:alert(1)"]'), null);
+});
+
+test("historical answer links retain exact version and require an explicit switch to disk", async () => {
+  const requests = [];
+  const ref = { workspace_id: "a", run_id: "old-run", slot_id: "old-tree", fact_id: "old-fact", revision: 2, result_key: "old-result", sha256: "old-hash" };
+  const f = await panel({ read: async () => ({ messages: [{ message: { role: "assistant", file_reference: ref, content: "[报告](output/report.md)" } }] }),
+    fetchImpl: async (url, options) => {
+      requests.push({ url, ...options, reference: JSON.parse(options.body) });
+      return new Response(JSON.stringify({ detail: "此历史版本未保存对应内容" }), { status: 409 });
+    } });
+  await f.emit(projection());
+  const reading = f.body.querySelector(".answer-reading");
+  reading.open = true; reading.dispatchEvent({ type: "toggle" });
+  reading.querySelector("a").dispatchEvent({ type: "click", preventDefault() {}, stopPropagation() {} });
+  await tick();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "http://fixture/desktop/api/tasks/c/file-links/content");
+  assert.equal(requests[0].headers["X-Focus-Session"], "test-session");
+  assert.deepEqual(requests[0].reference, { ...ref, path: "output/report.md", view: "history" });
+  assert.equal(f.previews.length, 0, "历史读取失败不能改读当前文件");
+  assert.match(f.body.querySelector("#version-body").textContent, /此历史版本未保存对应内容/);
+  f.body.querySelector("[data-file-link-current]").dispatchEvent({ type: "click" }); await tick();
+  assert.deepEqual(JSON.parse(JSON.stringify(f.previews[0].target)), { task_id: "c", link: {
+    workspace_id: "a", run_id: "old-run", slot_id: "old-tree", path: "output/report.md", view: "current",
+  } });
+});
+
+test("answer file links reject a foreign workspace before opening preview", async () => {
+  const f = await panel({ read: async () => ({ messages: [{ message: { role: "assistant", file_context: { workspace_id: "foreign" }, content: "[报告](output/report.md)" } }] }) });
+  await f.emit(projection());
+  const reading = f.body.querySelector(".answer-reading");
+  reading.open = true; reading.dispatchEvent({ type: "toggle" });
+  reading.querySelector("a").dispatchEvent({ type: "click", preventDefault() {}, stopPropagation() {} }); await tick();
+  assert.equal(f.previews.length, 0);
+  assert.match(f.body.querySelector("#error").textContent, /工作区与来源任务不匹配/);
 });
 
 test("artifact names open fixed version details and can be referenced without leaving the panel", async () => {

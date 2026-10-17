@@ -48,9 +48,7 @@
 // html:false 转义原始 HTML;validateLink 放行 file:// 协议(本地文件链接,
 // 点击经全局拦截器打开右侧文件面板,不触发窗口导航);vendor 文件先行加载。
 const mdRenderer = window.markdownit({ html: false, linkify: true });
-mdRenderer.validateLink = url => /^(https?:|file:)/i.test(url)
-  || /^[a-z]:[\\/]/i.test(url)
-  || (!/^[a-z][a-z\d+.-]*:/i.test(url) && !url.startsWith("//"));
+mdRenderer.validateLink = FocusFileLinks.validateLink;
 // 包装默认规则，保留代码转义、语言类名以及流式/完成态的一致性。
 for (const rule of ["fence", "code_block"]) {
   const renderCode = mdRenderer.renderer.rules[rule];
@@ -1985,21 +1983,16 @@ function mountFilePanel() {
 
 // Link previews are read-only and bound to one complete reference, including the
 // originating task. The plugin editor remains the material workbench entry.
-let fileLinkPreview = null;
+const linkedFilePreview = FocusFileLinks.createPreview({ runtime,
+  isCurrent: target => state.filesPanel === target,
+  onClose: () => window.__focusCloseFilePanel(),
+  onCurrent: (reference, taskId) => openFileLink(reference, taskId),
+  getPreview: () => window.FocusFilePreview });
 
-function releaseFileLinkPreview() {
-  if (fileLinkPreview?.url) URL.revokeObjectURL(fileLinkPreview.url);
-  fileLinkPreview = null;
-}
+function releaseFileLinkPreview() { linkedFilePreview.release(); }
 
 function fileLinkReference(value = {}) {
-  const reference = {};
-  for (const key of ["path", "workspace_id", "run_id", "slot_id", "view", "fact_id", "revision", "result_key", "sha256", "version_id"]) {
-    if (value[key] != null && value[key] !== "") reference[key] = value[key];
-  }
-  if (["fact_id", "revision", "result_key", "sha256", "version_id"].some(key => reference[key] != null)) reference.view = "history";
-  reference.view ||= "current";
-  return reference;
+  return FocusFileLinks.reference(value);
 }
 
 function openFileLink(reference, taskId = state.activeTaskId) {
@@ -2014,56 +2007,7 @@ function openFileLink(reference, taskId = state.activeTaskId) {
 }
 
 async function mountFileLinkPanel(container, target) {
-  // Preserve main's shared previews and native exits, passing the complete link
-  // identity through the same server-side workspace/slot validation.
-  if (target.view === "current" && window.FocusFilePreview) {
-    releaseFileLinkPreview();
-    container.innerHTML = `<header class="file-panel-head"><strong>${escapeHtml(target.path)}</strong><small>当前磁盘文件</small><button type="button" data-file-link-close>关闭</button></header><p class="muted">${escapeHtml(target.workspace_id)}${target.slot_id ? ` · 工作树 ${escapeHtml(target.slot_id)}` : ""}</p><div class="file-link-content" data-linked-preview></div>`;
-    container.querySelector("[data-file-link-close]")?.addEventListener("click", window.__focusCloseFilePanel);
-    return window.FocusFilePreview.mount(container.querySelector("[data-linked-preview]"), {
-      name: target.path, target: { task_id: target.task_id, link: fileLinkReference(target) },
-    });
-  }
-  if (fileLinkPreview?.target !== target) {
-    releaseFileLinkPreview();
-    const entry = { target, url: null, text: null, media: null, error: null };
-    fileLinkPreview = entry;
-    entry.pending = (async () => {
-      try {
-        const response = await fetch(`${runtime.apiBase}/desktop/api/tasks/${encodeURIComponent(target.task_id)}/file-links/content`, {
-          method: "POST",
-          headers: { "X-Focus-Session": runtime.session, "Content-Type": "application/json" },
-          body: JSON.stringify(fileLinkReference(target)),
-        });
-        if (!response.ok) {
-          const body = await response.text();
-          let detail; try { detail = JSON.parse(body).detail; } catch {}
-          throw new Error(typeof detail === "string" ? detail : body || `HTTP ${response.status}`);
-        }
-        entry.identity = JSON.parse(decodeURIComponent(response.headers.get("X-Focus-File-Reference")));
-        entry.media = (response.headers.get("Content-Type") || "").split(";")[0];
-        if (entry.media === "text/plain") entry.text = await response.text();
-        else {
-          const blob = await response.blob();
-          if (fileLinkPreview === entry) entry.url = URL.createObjectURL(blob);
-        }
-      } catch (error) { entry.error = error.message; }
-    })();
-  }
-  const entry = fileLinkPreview;
-  const paint = () => {
-    if (fileLinkPreview !== entry || state.filesPanel !== target) return;
-    const historical = target.view === "history";
-    const version = entry.identity?.sha256 || target.version_id || target.result_key || "";
-    container.innerHTML = `<header class="file-panel-head"><span class="file-panel-title" title="${escapeHtml(target.path)}"><strong>${escapeHtml(target.path.split(/[\\/]/).pop())}</strong><small>${historical ? "历史版本" : "当前磁盘文件"}${version ? ` · ${escapeHtml(version.slice(0, 12))}` : ""}</small></span><span class="file-panel-tools">${historical ? '<button type="button" data-file-link-current>打开当前磁盘文件</button>' : ""}<button type="button" data-file-link-close>关闭</button></span></header><p class="muted">${escapeHtml(entry.identity?.path || target.path)} · ${escapeHtml(target.workspace_id)}${entry.identity?.slot_id || target.slot_id ? ` · 工作树 ${escapeHtml(entry.identity?.slot_id || target.slot_id)}` : ""}${historical ? " · 固定版本，不随磁盘更新" : " · 此处显示的是读取时的磁盘内容"}</p><div class="file-link-content">${entry.error ? `<p role="alert">${escapeHtml(entry.error)}</p>` : entry.text != null ? `<pre>${escapeHtml(entry.text)}</pre>` : entry.url ? entry.media === "application/pdf" ? `<iframe title="PDF 文件预览" src="${escapeHtml(entry.url)}"></iframe>` : `<img alt="文件预览" src="${escapeHtml(entry.url)}">` : "正在读取文件…"}</div>`;
-    container.querySelector("[data-file-link-close]")?.addEventListener("click", window.__focusCloseFilePanel);
-    container.querySelector("[data-file-link-current]")?.addEventListener("click", () => openFileLink({
-      path: target.path, workspace_id: target.workspace_id, slot_id: target.slot_id, run_id: target.run_id, view: "current",
-    }, target.task_id));
-  };
-  paint();
-  await entry.pending;
-  paint();
+  return linkedFilePreview.mount(container, target);
 }
 
 function bindPanelResizer() {
@@ -2224,19 +2168,6 @@ function collectMessageImages(content) {
 // Every artifact has a preview or explicit native file exits.
 const FILE_VIEWABLE_RE = /\S/;
 
-function filePathFromLinkHref(href) {
-  if (!href || href.startsWith("#") || /^https?:/i.test(href)) return null;
-  if (/^[a-z][a-z\d+.-]*:/i.test(href) && !/^file:/i.test(href) && !/^[a-z]:[\\/]/i.test(href)) return null;
-  let path = href.replace(/[?#].*$/, "");
-  if (/^file:/i.test(path)) {
-    path = path.replace(/^file:\/\/(localhost)?(?=\/)/i, "").replace(/^file:/i, "");
-    if (/^\/[a-z]:[\\/]/i.test(path)) path = path.slice(1);
-    else if (!path.startsWith("/")) path = `//${path}`;
-  }
-  return decodeURIComponent(path).replace(/\\/g, "/");
-}
-
-
 function renderFileCards(message) {
   const files = message.files;
   if (!Array.isArray(files) || !files.length) return "";
@@ -2334,9 +2265,7 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
   } else if (kind === "system") {
     header = `<header class="work-record-header"><span class="work-record-kicker">CONTEXT</span><span class="message-role">系统上下文</span>${associations}</header>`;
   }
-  const fileContext = fileLinkReference(message.file_reference || message.file_context || {
-    workspace_id: message.workspace_id, run_id: message.run_id, slot_id: message.slot_id,
-  });
+  const fileContext = FocusFileLinks.messageSource(message).reference;
   return `<article class="work-record message ${kind}" data-message-key="${escapeHtml(messageKey)}" data-file-task-id="${escapeHtml(message.task_id || state.activeTaskId || "")}" data-file-context="${escapeHtml(JSON.stringify(fileContext))}">
     ${header}
     ${renderMessageImages(messageImages)}${renderFileCards(message)}${renderRunMaterialCards(message)}
@@ -7142,34 +7071,12 @@ function openFileCard(button) {
   return openFileLink({ ...source.reference, ...reference }, source.taskId);
 }
 
-// Capture all local links before Electron can navigate. Display text and material
-// filenames never participate in resolution. Real web links remain external.
-document.addEventListener("click", event => {
-  const anchor = event.target.closest("a[href]");
-  if (!anchor) return;
-  const href = anchor.getAttribute("href") || "";
-  if (anchor.hasAttribute?.("download")) return;
-  if (/^https?:\/\//i.test(href)) {
-    event.preventDefault();
-    event.stopPropagation();
-    if (typeof window.focusDesktop?.openExternal !== "function") return setStatus("当前运行环境无法打开外部链接", true);
-    Promise.resolve(window.focusDesktop.openExternal(href)).catch(error => setStatus(error.message, true));
-    return;
-  }
-  if (!href || href.startsWith("#")) return;
-  if (/^[a-z][a-z\d+.-]*:/i.test(href) && !/^file:/i.test(href) && !/^[a-z]:[\\/]/i.test(href)) return;
-  event.preventDefault();
-  event.stopPropagation();
-  try {
-    const path = filePathFromLinkHref(href);
-    if (!path) return setStatus("不支持此文件链接", true);
-    if (!FILE_VIEWABLE_RE.test(path)) return setStatus("当前不支持此文件类型的预览", true);
-    const source = fileContextFromNode(anchor);
-    const reference = anchor.dataset?.fileReference ? JSON.parse(anchor.dataset.fileReference) : {};
-    if (source.reference.view === "history") reference.view = "history";
-    return openFileLink({ ...source.reference, ...reference, path }, source.taskId);
-  } catch (error) { setStatus(`文件链接无效: ${error.message}`, true); }
-}, true);
+// Capture local links before Electron can navigate, using the same router as Patrol.
+document.addEventListener("click", event => FocusFileLinks.handleClick(event, {
+  source: fileContextFromNode, onFile: openFileLink,
+  onExternal: window.focusDesktop?.openExternal,
+  onError: error => setStatus(error.message, true),
+}), true);
 
 // 全局错误可见化:任何未捕获异常显示在状态栏,避免白屏时无从排查
 window.addEventListener("error", event => {

@@ -4,11 +4,15 @@
  */
 (function (root) {
   "use strict";
-  root.FocusDesktopPatrolReferences = { create({ host, api, store, loopId, onError }) {
+  root.FocusDesktopPatrolReferences = { create({ host, api, runtime, store, loopId, onError }) {
     const $ = selector => host.querySelector(selector), view = root.FocusLoopFactsView;
-    let reads = new AbortController(), epoch = 0, candidates = [], before = null, typed = false, rendered = "";
+    let reads = new AbortController(), epoch = 0, candidates = [], before = null, typed = false, rendered = "", linkedTarget = null;
+    const linkedPreview = root.FocusFileLinks.createPreview({ runtime,
+      isCurrent: target => linkedTarget === target, onClose: () => close(true),
+      onCurrent: (reference, taskId) => openLink(reference, taskId) });
     function close(focus = false) {
       epoch++; reads.abort(); reads = new AbortController();
+      linkedTarget = null; linkedPreview.release();
       typed = false;
       $("#version-picker").hidden = true; $("#version-detail").hidden = true;
       $("#reference-file").setAttribute("aria-expanded", "false");
@@ -105,6 +109,12 @@
         body.querySelector("[data-patrol-file-add]")?.addEventListener("click",() => { try { add(file); } catch (error) { onError(error); } });
       } catch (error) { if (owner === epoch && error.name !== "AbortError") body.textContent = "引用版本不可用，请重新选择；原引用和要求已保留。"; }
     }
+    async function openLink(reference, taskId) {
+      close();
+      linkedTarget = { ...reference, task_id: taskId };
+      $("#version-detail").hidden = false;
+      await linkedPreview.mount($("#version-body"), linkedTarget);
+    }
     function render(draft) {
       const refs = draft.file_refs || [], container = $("#file-refs");
       const count = (draft.attachments?.length || 0) + refs.length;
@@ -139,12 +149,12 @@
     $("#version-candidates").addEventListener("keydown",navigateCandidates);
     $("#instruction").addEventListener("keydown",event => { if (!event.isComposing && !$("#version-picker").hidden) navigateCandidates(event); });
     $("#older-versions").addEventListener("click",() => void load(true));
-    return {render,open,close,detail,reference(file) { typed = false; add(file); },isOpen:() => !$("#version-picker").hidden || !$("#version-detail").hidden,
+    return {render,open,close,detail,openLink,reference(file) { typed = false; add(file); },isOpen:() => !$("#version-picker").hidden || !$("#version-detail").hidden,
       input() {
         const match = $("#instruction").value.match(/(?:^|\s)@([^@\n]*)$/);
         if (!match || $("#reference-file").disabled) { if (typed) close(); return; }
         if (!typed || $("#version-picker").hidden) void open(true).catch(onError);
         else { $("#version-query").value = match[1]; renderCandidates(); }
-      }, dispose:() => reads.abort()};
+      }, dispose:() => { reads.abort(); linkedPreview.release(); }};
   }};
 })(globalThis);

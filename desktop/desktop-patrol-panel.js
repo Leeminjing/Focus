@@ -19,6 +19,7 @@
   const connection = FocusLoopLiveConnection.create({ api, store: live });
   const feedback = FocusWorkspacePatrolFeedback.createReader(api);
   const markdown = window.markdownit({ html:false, linkify:true });
+  markdown.validateLink = FocusFileLinks.validateLink;
   const answerCards = new Map();
   const intake = FocusWorkspacePatrolIntake.create({ runtime, api, selectWorkspace: window.focusDesktop?.selectWorkspace,
     recovery: bridge?.enabled ? bridge.recovery : null,
@@ -31,7 +32,7 @@
   let panelVisible = bridge?.enabled ? false : !document.hidden, visibilityKnown = false, resultsNeedReset = false;
   let control = null;
   const draftStore = () => intake.store(workspace?.workspace_id || null);
-  const references = FocusDesktopPatrolReferences.create({ host, api, store:draftStore, loopId:() => loopId, onError:fail });
+  const references = FocusDesktopPatrolReferences.create({ host, api, runtime, store:draftStore, loopId:() => loopId, onError:fail });
   const artifacts = FocusArtifactDrawer.create({ host, api, getLoopId: () => loopId, onSource: id => openWorkbench(id) });
   function openArtifacts() { references.close(); return artifacts.open(); }
   const historyReferences = FocusPatrolInputReferences.create({ host, intake, workspaceId: () => workspace?.workspace_id,
@@ -277,14 +278,16 @@
           copyButton("复制全文", content, result.text);
           const body = element("div", "", content); body.className = "answer-markdown";
           body.innerHTML = markdown.render(result.text);
-          body.addEventListener("click", event => {
-            const href = event.target.closest("a[href]")?.getAttribute("href");
-            if (!href || !/^https?:\/\//i.test(href)) return;
-            if (window.focusDesktop?.openExternal) {
-              event.preventDefault();
-              void Promise.resolve(window.focusDesktop.openExternal(href)).catch(fail);
-            }
-          });
+          const source = { taskId: result.file_source?.taskId || result.context_id,
+            reference: FocusFileLinks.reference({ workspace_id: workspace?.workspace_id, ...result.file_source?.reference }) };
+          body.dataset.fileTaskId = source.taskId;
+          body.dataset.fileContext = JSON.stringify(source.reference);
+          body.addEventListener("click", event => FocusFileLinks.handleClick(event, {
+            source, onFile: (reference, taskId) => {
+              if (reference.workspace_id !== workspace?.workspace_id) throw new Error("文件链接的工作区与来源任务不匹配");
+              return references.openLink(reference, taskId);
+            }, onExternal: window.focusDesktop?.openExternal, onError: fail,
+          }), true);
           for (const pre of body.querySelectorAll("pre")) {
             const code = pre.querySelector("code");
             if (!code) continue;
