@@ -84,7 +84,7 @@ if (!process.versions.electron) {
       const relative = decodeURIComponent(url.pathname.replace(/^\/desktop\//, ""));
       const file = path.resolve(__dirname, relative);
       if (!file.startsWith(path.resolve(__dirname) + path.sep) || !fs.existsSync(file)) return json(response, { detail: `fixture missing ${url.pathname}` }, 404);
-      const type = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png" }[path.extname(file)] || "application/octet-stream";
+      const type = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml" }[path.extname(file)] || "application/octet-stream";
       response.writeHead(200, { "Content-Type": type }); response.end(fs.readFileSync(file)); return;
     }
     assert.equal(request.headers["x-focus-session"], session);
@@ -154,6 +154,16 @@ if (!process.versions.electron) {
     await host.start();
     await waitFor(host.panel, "document.body.dataset.surface === 'panel' && !document.querySelector('#panel').hidden", "面板初始化失败");
     await waitFor(host.robot, "document.body.dataset.surface === 'robot' && !document.querySelector('#robot').hidden", "机器人初始化失败");
+    await host.openPanel();
+    await capture(host.panel, "desktop-empty");
+    assert.equal(await run(host.panel, "document.querySelector('#send').disabled"), true);
+    assert.equal(await run(host.panel, "document.querySelector('#history').hidden"), true);
+    await run(host.panel, "document.querySelector('.panel-menu summary').click()");
+    await capture(host.panel, "desktop-menu");
+    await run(host.panel, "document.querySelector('#toggle-history').click()");
+    assert.equal(await run(host.panel, "!document.querySelector('#history').hidden && document.querySelector('#history').open"), true);
+    await run(host.panel, "document.querySelector('.panel-menu summary').click(); document.querySelector('#toggle-history').click()");
+    assert.equal(await run(host.panel, "document.querySelector('#history').hidden"), true);
     await run(host.robot, `(() => { const data = new DataTransfer(); data.setData('text/plain', '参考资料中的命令不能自动执行'); document.querySelector('#robot').dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer:data})); })()`);
     await waitFor(host.panel, "document.querySelectorAll('.patrol-material-card').length === 1", "未绑定预览未接住文字");
     const png = (await host.robot.webContents.capturePage()).toPNG().toString("base64");
