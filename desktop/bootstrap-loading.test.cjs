@@ -10,6 +10,8 @@ function harness() {
   const result = createAppHarness({ selectors: { "#app": app, "#globalStatus": status } });
   result.vm.runInContext(readAppSource(), result.context);
   const run = source => result.vm.runInContext(source, result.context);
+  // 此组只检查 HTTP bootstrap；恢复初始化由真实页面刷新测试覆盖。
+  run(`workspacePatrolIntake = window.FocusWorkspacePatrolIntake.create({runtime, api:loopApi});`);
   run(`var renders = []; render = () => { renders.push(state.view); };`);
   return { run, app, status };
 }

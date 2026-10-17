@@ -20,15 +20,15 @@ const projection = (revision = "r1", patch = {}) => ({ loop_id: "loop-a", loop: 
   contexts: { c: { entity_id: "c", updated_sequence: 1, state: { title: "回答", current_revision_id: revision } } },
   task_progress: { revision: 1, state: { document: { items: [] } } }, interventions: {}, ...patch });
 
-async function panel({ visible = true, read = async (_loop, _context, options) => conversation(options.revisionId) } = {}) {
+async function panel({ visible = true, read = async (_loop, _context, options) => conversation(options.revisionId), history = async () => ({ items: [] }), waitForActivation = true } = {}) {
   const body = createElement("body");
   body.innerHTML = fs.readFileSync(path.join(__dirname, "desktop-patrol.html"), "utf8");
   const document = { ...createDocument(), body, querySelector: selector => body.querySelector(selector), hidden: false,
     addEventListener: (...args) => body.addEventListener(...args) };
   let state = { projection: null, connection: { status: "live" } }, listener;
-  const events = {}, calls = [], states = [], stores = new Map(), copied = [];
+  const events = {}, calls = [], states = [], stores = new Map(), copied = [], starts = [], loopReads = [];
   const store = id => { if (!stores.has(id)) stores.set(id, Inputs.create()); return stores.get(id); };
-  const api = { workspacePatrol: async id => ({ loop_id: `loop-${id}` }), workspaceInputs: async () => ({ items: [] }),
+  const api = { workspacePatrol: async id => { loopReads.push(id); return { loop_id: `loop-${id}` }; }, workspaceInputs: history,
     conversation: (...args) => { calls.push(args); return read(...args); } };
   const bridge = { enabled: true, onVisibility: callback => { events.visibility = callback; },
     onOpen: callback => { events.open = callback; }, onContent() {},
@@ -43,7 +43,7 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
   const context = vm.createContext({ window, document, markdownit, setTimeout, location: { search: "?surface=panel" }, URLSearchParams,
     AbortController, navigator: { clipboard: { writeText: async text => copied.push(text) } }, requestAnimationFrame: callback => setImmediate(callback), localStorage: {}, ResizeObserver: class { observe() {} disconnect() {} },
     FocusLoopApi: { create: () => api }, FocusLoopLiveStore: { create: () => ({ get: () => state, subscribe: callback => { listener = callback; callback(state); } }) },
-    FocusLoopLiveConnection: { create: () => ({ start: async () => {}, stop() {} }) },
+    FocusLoopLiveConnection: { create: () => ({ start: async id => { starts.push(id); }, stop() {} }) },
     FocusWorkspacePatrolIntake: { create: () => intake }, FocusWorkspacePatrolMaterialPreview: { create: () => ({ render() {}, dispose() {} }) },
     FocusWorkspacePatrolBudget: { markup: () => "", create: () => ({ update() {}, syncDraft() {}, dispose() {} }) },
     FocusAccessMode: { readNewSessionDefault() {} }, FocusWorkspacePatrolFeedback: Feedback, FocusWorkspacePatrolInputs: Inputs, FocusLoopFactsView: Facts,
@@ -53,12 +53,61 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
   vm.runInContext(fs.readFileSync(path.join(__dirname, "patrol-input-references.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "message-reading.js"), "utf8"), context);
   window.FocusMessageReading = context.FocusMessageReading;
-  await vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-panel.js"), "utf8"), context);
-  return { calls, states, body, events, api, copied, store,
+  const activated = vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-panel.js"), "utf8"), context);
+  if (waitForActivation) await activated;
+  else await tick();
+  return { calls, states, body, events, api, copied, store, starts, loopReads, activated,
     async emit(value, connection = state.connection) { state = { ...state, projection: value, connection }; listener(state); await tick(); },
     async visibility(value) { events.visibility?.(value); await tick(); },
     results: () => body.querySelector("#results") };
 }
+
+test("initial history failure leaves panel Live connected and offers a history-only retry", async () => {
+  let reads = 0;
+  const f = await panel({ history: async () => { if (++reads === 1) throw new Error("HTTP 503"); return { items: [] }; } });
+  assert.deepEqual(f.starts, ["loop-a"]);
+  assert.equal(f.body.querySelector("#error").textContent, "");
+  assert.match(f.body.querySelector("#history-status").textContent, /503/);
+  await f.emit(projection());
+  assert.equal(f.body.querySelector("#toggle-work").disabled, false);
+  assert.match(f.results().textContent, /r1/);
+  f.body.querySelector("#retry-history").dispatchEvent({ type: "click" }); await tick();
+  assert.equal(reads, 2);
+  assert.equal(f.body.querySelector("#history-status").hidden, true);
+  assert.deepEqual(f.loopReads, ["a"]);
+  assert.deepEqual(f.starts, ["loop-a"]);
+});
+
+test("pending panel history allows Live results and controls, then coalesces incoming history updates", async () => {
+  let release, reads = 0;
+  const f = await panel({ waitForActivation: false, history: () => {
+    if (++reads === 1) return new Promise(resolve => { release = resolve; });
+    return Promise.resolve({ items: [{ submission_id: "one", content: "latest input" }], next_before: null });
+  } });
+  assert.deepEqual(f.starts, ["loop-a"]);
+  await f.emit(projection());
+  await f.emit(projection("r1", { interventions: { updated: {} } }));
+  assert.equal(f.body.querySelector("#toggle-work").disabled, false);
+  assert.match(f.results().textContent, /r1/);
+  assert.equal(reads, 1);
+  release({ items: [{ submission_id: "one", content: "old input" }], next_before: null });
+  await f.activated; await tick();
+  assert.equal(reads, 2);
+  assert.match(f.body.querySelector("#history-items").textContent, /latest input/);
+});
+
+test("late panel history refresh failures cannot affect another workspace", async () => {
+  const f = await panel();
+  await f.emit(projection());
+  let rejectOld;
+  f.api.workspaceInputs = id => id === "a" ? new Promise((_resolve, reject) => { rejectOld = reject; }) : Promise.resolve({ items: [] });
+  await f.emit(projection("r1", { interventions: { updated: {} } }));
+  await f.events.open({ workspaceId: "b" });
+  rejectOld(new Error("old history 503")); await tick();
+  assert.equal(f.body.querySelector("#history-status").hidden, true);
+  assert.equal(f.body.querySelector("#error").textContent, "");
+  assert.deepEqual(f.starts, ["loop-a", "loop-b"]);
+});
 
 test("panel controls follow authoritative status and connection, including waiting for new input", async () => {
   const f = await panel(), toggle = f.body.querySelector("#toggle-work"), stop = f.body.querySelector("#stop-work");

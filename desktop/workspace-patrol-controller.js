@@ -1,6 +1,6 @@
 /* 本文件对外提供工作区 Patrol 页面控制器。
  * 输入为已绑定工作区、共享 Loop API、Live Store/Connection 及输入 store；输出为逐条耐久回执和图主导工作台更新；选择身份由原 ContextInspector 持有。
- * 具体工作流为先读取绑定/历史再订阅已有单路 Live，依据投影结构共享只更新变化区域，保留 composer、进度和未变等待表单 DOM，异步响应按工作区代际隔离；
+ * 当前 Loop 与历史独立读取，Loop 就绪即订阅单路 Live，历史错误仅留在记录面板；依据投影结构共享只更新变化区域，保留 composer、进度和未变等待表单 DOM，异步响应按工作区代际隔离；
  * 图谱 Live 变化在同一动画帧合并，使用最新投影检查拓扑与更新节点；离开时取消待执行帧。
  * 主输入走 workspace intake，固定当时可见的 Live 游标、Fact revision 与独立 Run 有界片段；旧请求重试复用原文和证据。Observation 按精确版本检视，迟到分页不得进入另一版本。
  * 显隐复用 SurfaceTransition 保留输入节点，运行预览复用共享 Run 观察器，折叠/离开释放订阅；原生 dialog 管理焦点，AbortController 清理监听与读请求。示例：await controller.mount(host, workspace)。
@@ -28,7 +28,9 @@
     let historyOpen = false;
     let historyReady = false;
     let historyLoading = false;
+    let historyRefreshPending = false;
     let historyFailure = null;
+    let historyFailureBefore = null;
     let historyHTML = "";
     let unlisten = null;
     let materialPreview = null;
@@ -345,7 +347,7 @@
         panel.scrollTop = retained ? panel.scrollTop + retained.getBoundingClientRect().top - edge - offset : top;
       }
       historyReferences?.bind(model);
-      const occupied = Boolean(model.draft.content || model.draft.file_refs?.length);
+      const occupied = Boolean(model.draft.content || model.draft.file_refs?.length || model.draft.attachments?.length);
       for (const button of list.querySelectorAll("[data-patrol-edit-failed]")) {
         button.disabled = occupied;
         button.title = occupied ? "先处理当前草稿" : "";
@@ -372,22 +374,43 @@
         void loadOlderHistory();
       });
     }
+    function finishHistoryLoading() {
+      historyLoading = false; patchHistoryStatus();
+      if (historyRefreshPending) { historyRefreshPending = false; void loadLatestHistory(); }
+      else void loadOlderHistory();
+    }
+    async function loadLatestHistory() {
+      if (historyLoading) { historyRefreshPending = true; return; }
+      const current = token, version = ++historyToken, initialize = !historyReady;
+      historyLoading = true; historyFailure = null; patchHistoryStatus();
+      try {
+        const page = await api.workspaceInputs(workspace.workspace_id);
+        if (current !== token || version !== historyToken) return;
+        intake.history(workspace.workspace_id, page, false, initialize);
+        if (initialize) await intake.reconcile(workspace.workspace_id, page);
+        if (current !== token) return;
+        historyReady = true;
+      } catch (failure) {
+        if (current === token && version === historyToken) { historyFailure = failure; historyFailureBefore = null; }
+      } finally { if (current === token) finishHistoryLoading(); }
+    }
     async function loadOlderHistory(retry = false) {
       if (!host || !historyOpen || historyLoading || (historyFailure && !retry)) return;
       const panel = host.querySelector("[data-patrol-input-history]"), cursor = inputs.get().cursor;
+      if (retry && historyFailure && !historyFailureBefore) return loadLatestHistory();
       if (historyReady && (!cursor || (!retry && panel.scrollHeight - panel.scrollTop - panel.clientHeight > 64))) return;
       const owner = token, initialize = !historyReady;
+      const before = initialize ? undefined : cursor;
       historyLoading = true; historyFailure = null; patchHistoryStatus();
       try {
-        const page = await api.workspaceInputs(workspace.workspace_id, initialize ? undefined : cursor);
+        const page = await api.workspaceInputs(workspace.workspace_id, before);
         if (owner !== token) return;
         historyReady = true;
-        intake.history(workspace.workspace_id, page, !initialize, initialize);
-      } catch (failure) { if (owner === token) historyFailure = failure; }
+        intake.history(workspace.workspace_id, page, Boolean(before), initialize);
+      } catch (failure) { if (owner === token) { historyFailure = failure; historyFailureBefore = before; } }
       finally {
         if (owner === token) {
-          historyLoading = false; patchHistoryStatus();
-          void loadOlderHistory();
+          finishHistoryLoading();
         }
       }
     }
@@ -497,15 +520,10 @@
         host.querySelector("[data-patrol-observation-open]").disabled = true;
       }
       const key = JSON.stringify(projection.interventions);
+      if (historyKey === null) historyKey = key;
       if (key !== historyKey) {
         historyKey = key;
-        const current = token;
-        const version = ++historyToken;
-        api.workspaceInputs(workspace.workspace_id).then(page => {
-          if (current === token && version === historyToken) {
-            intake.history(workspace.workspace_id, page);
-          }
-        }).catch(failure => { if (current === token) error(failure); });
+        void loadLatestHistory();
       }
     }
     function connect(identity) {
@@ -641,7 +659,6 @@
       leave();
       host = node; workspace = bound; const current = token;
       lifetime = new AbortController();
-      historyLoading = true;
       host.innerHTML = view.skeleton(bound, Boolean(onCompose));
       artifacts = root.FocusArtifactDrawer.create({ host: host.querySelector(".workspace-patrol"), api, getLoopId: () => loopId,
         onSource: async id => { artifacts.close(); if (!detailsOpen) toggleDetails(); await inspectContext(id, host.querySelector("[data-patrol-files-open]")); } });
@@ -735,16 +752,15 @@
         if (!request) return;
         await respondWait(request, root.FocusLoopWaitRequestView.readAnswer(event.target, request.state.response_mode));
       }, options);
-      try {
-        const [loop, page] = await Promise.all([api.workspacePatrol(bound.workspace_id), api.workspaceInputs(bound.workspace_id)]);
-        if (current !== token) return;
-        historyReady = true;
-        intake.history(bound.workspace_id, page, false, true);
-        if (loop) connect(loop.loop_id);
-      } catch (failure) { if (current === token) { historyFailure = failure; error(failure); } }
-      finally {
-        if (current === token) { historyLoading = false; patchHistoryStatus(); void loadOlderHistory(); }
-      }
+      await Promise.all([
+        (async () => {
+          try {
+            const loop = await api.workspacePatrol(bound.workspace_id);
+            if (current === token && loop) connect(loop.loop_id);
+          } catch (failure) { if (current === token) error(failure); }
+        })(),
+        loadLatestHistory(),
+      ]);
     }
     function leave() {
       artifacts?.dispose(); artifacts = null;
@@ -763,7 +779,7 @@
       host?.querySelector("[data-patrol-dialog]")?.close();
       const history = host?.querySelector("[data-patrol-input-history]");
       if (history) { history.hidden = true; history.inert = true; }
-      historyOpen = false; historyReady = false; historyLoading = false; historyFailure = null; historyHTML = "";
+      historyOpen = false; historyReady = false; historyLoading = false; historyRefreshPending = false; historyFailure = null; historyFailureBefore = null; historyHTML = "";
       inspector?.dispose(); inspector = null; observation = null; observationIdentity = null; observationInspection = null;
       movedPanel = null; dialogKind = null; projection = null; detailsOpen = false; detailsScroll = 0; lineageSnapshot = null;
       unlisten?.(); unlisten = null; host = null; workspace = null; loopId = null; lineageKey = null; historyKey = null; connection.stop();

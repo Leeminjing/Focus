@@ -6,6 +6,58 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { create } = require("./workspace-patrol-inputs.js");
 const { captureVisibleContext } = require("./workspace-patrol-inputs.js");
+const view = require("./workspace-patrol-view.js");
+
+test("overlong content is rejected before identity, history or draft changes", () => {
+  let identities = 0, changes = 0;
+  const store = create(() => String(++identities), "workspace-write", { onChange: () => changes++ });
+  for (const content of ["界".repeat(12001), "🙂".repeat(12001), " ".repeat(12000) + "字"]) {
+    store.edit({ content, input_type: "boundary", request_id: "question", request_revision: 2 });
+    const before = store.snapshot(), changed = changes;
+    assert.throws(() => store.submit(), /12[ ,]?000/);
+    assert.deepEqual(store.snapshot(), before);
+    assert.equal(identities, 0);
+    assert.equal(changes, changed);
+  }
+});
+
+test("12000 Unicode code points are accepted without truncation", () => {
+  let identity = 0;
+  const store = create(() => String(++identity));
+  for (const content of ["界".repeat(12000), "🙂".repeat(12000)]) {
+    store.edit({ content });
+    assert.equal(store.submit().request.content, content);
+    assert.equal(store.get().draft.content, "");
+  }
+});
+
+test("plain text validation rejection restores the unchanged draft for editing", () => {
+  const store = create(() => "rejected");
+  store.edit({ content: "需修改的正文", input_type: "outcome", budget_preset: "long" });
+  const draft = store.get().draft;
+  const row = store.submit();
+  store.failed(row.submission_id, Object.assign(new Error("内容校验失败"), { status: 422 }));
+  assert.deepEqual(store.get().draft, draft);
+  assert.equal(store.get().rows[0].status, "edited");
+  assert.equal(store.retry(row.submission_id), null);
+});
+
+test("plain text failures remain editable without replacing a later draft", () => {
+  const store = create(() => "failed");
+  store.edit({ content: "旧正文", input_type: "boundary" });
+  const row = store.submit();
+  store.edit({ content: "后续草稿" });
+  store.failed(row.submission_id, Object.assign(new Error("内容校验失败"), { status: 422 }));
+  assert.equal(store.get().draft.content, "后续草稿");
+  assert.match(view.history(store.get()), /data-patrol-edit-failed="failed"/);
+  store.editFailed(row.submission_id);
+  assert.equal(store.get().draft.content, "后续草稿");
+  store.edit({ content: "" });
+  store.editFailed(row.submission_id);
+  assert.equal(store.get().draft.content, "旧正文");
+  assert.equal(store.get().draft.input_type, "boundary");
+  assert.equal(store.get().rows[0].status, "edited");
+});
 
 test("input freezes independent visible fact and Run cursors across retries", () => {
   const visible = captureVisibleContext({ projection: { loop_id: "loop", last_sequence: 12 },

@@ -34,7 +34,7 @@
       <p id="control-feedback" role="status" hidden></p>
       <section id="requests" aria-label="待处理请求"></section>
       <section id="results" aria-label="工作区已提交结果"><div id="answers"></div><div id="progress"></div><div id="artifacts"></div></section>
-      <details id="history" hidden><summary>输入记录 <span id="receipt"></span></summary><div id="history-items"></div><button id="older" hidden>更早的输入</button></details>
+      <details id="history" hidden><summary>输入记录 <span id="receipt"></span></summary><div id="history-items"></div><p id="history-status" role="status" hidden></p><button id="retry-history" type="button" hidden>重试读取</button><button id="older" hidden>更早的输入</button></details>
       </div></div>
     </div></div></div>
   </main>
@@ -42,5 +42,6 @@
   <script src="./loop-live-schema.js"></script><script src="./loop-live-reducer.js"></script><script src="./loop-live-selectors.js"></script><script src="./loop-live-store.js"></script><script src="./loop-live-connection.js"></script>
   <script src="./vendor/markdown-it.min.js"></script>
   <script src="./message-reading.js"></script><script src="./access-mode.js"></script><script src="./workspace-patrol-inputs.js"></script><script src="./workspace-patrol-intake.js"></script><script src="./workspace-patrol-material-preview.js"></script><script src="./workspace-patrol-feedback.js"></script><script src="./file-preview.js"></script><script src="./loop-facts-view.js"></script><script src="./desktop-patrol-references.js"></script>
+  <script src="./patrol-browser-recovery.js"></script>
   <script src="./artifact-drawer.js"></script><script src="./patrol-input-references.js"></script><script src="./workspace-patrol-budget.js"></script><script src="./desktop-patrol-robot.js"></script><script src="./desktop-patrol-panel.js"></script>
 </body></html>
