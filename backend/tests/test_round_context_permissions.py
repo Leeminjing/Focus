@@ -144,6 +144,24 @@ def test_committed_round_permissions_survive_new_round_and_expire_independently(
                 assert (await directive_equipment.round_permission_state(session, r6))["access_mode"] == "read-only"
                 assert (await directive_equipment.round_permission_state(session, r5))["valid"]
                 assert (await directive_equipment.round_permission_state(session, r6))["valid"]
+                from sqlalchemy import event
+
+                selects = []
+                def count_selects(conn, cursor, statement, parameters, context, executemany):
+                    if statement.lstrip().upper().startswith("SELECT"):
+                        selects.append(statement)
+                event.listen(engine.sync_engine, "before_cursor_execute", count_selects)
+                try:
+                    r5.run_id = "one"
+                    await directive_equipment.round_permission_states(session, (r5,))
+                    single_count = len(selects)
+                    selects.clear()
+                    many = [SimpleNamespace(**{**vars(r5), "run_id": f"run-{index}"}) for index in range(200)]
+                    states = await directive_equipment.round_permission_states(session, many)
+                    assert len(states) == 200 and all(item["valid"] for item in states.values())
+                    assert len(selects) == single_count <= 8
+                finally:
+                    event.remove(engine.sync_engine, "before_cursor_execute", count_selects)
                 (await session.get(LoopDirective, first_id)).lifecycle_state = "cancelled"
                 assert not (await directive_equipment.round_permission_state(session, r5))["valid"]
                 assert (await directive_equipment.round_permission_state(session, r6))["valid"]

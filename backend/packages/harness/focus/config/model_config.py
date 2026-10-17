@@ -5,7 +5,7 @@
 示例：ModelConfig(..., provider="deepseek", protocol="responses", supports_image_input=False)。
 """
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -24,6 +24,10 @@ class ModelConfig(BaseModel):
     context_window: int | None = None
     curation_output_method: Literal["json_schema", "json_mode", "prompt_json"] | None = None
     curation_max_output_tokens: int = Field(default=8192, ge=512, le=65536)
+    derivation_max_output_tokens: dict[
+        Literal["semantic_index_projector", "semantic_index_interpreter", "claim_verifier"],
+        Annotated[int, Field(ge=512, le=65536)],
+    ] = Field(default_factory=dict)
     curation_default: bool = False
     default: bool = False
     """显式声明该条目为默认模型；取代原先依赖列表顺序的 models[0] 约定。"""

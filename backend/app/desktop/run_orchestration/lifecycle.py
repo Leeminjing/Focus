@@ -207,40 +207,51 @@ class RunLifecycleFinalizer:
                 if (run.workspace_result or {}).get("shell_cleanup"):
                     run.error = "进程重启后 Shell 清理证据仍不完整；保留 Run、派发与工作区，禁止自动重放"
                     continue
-                from backend.app.desktop.execution_attempts.usage_receipts import ModelUsageReceipts
-                from backend.app.desktop.models import ModelAttemptAudit
-                from backend.app.desktop.run_orchestration.dispatch import RunDispatchRepository
-
-                audits = tuple((await session.scalars(select(ModelAttemptAudit).where(ModelAttemptAudit.run_id == run.run_id).with_for_update())).all())
-                for audit in audits:
-                    if audit.status == "prepared":
-                        audit.status = "interrupted"
-                        audit.audit = {"error_type": "process_restarted", "consumption": "unknown"}
-                        audit.settled_at = datetime.now(UTC)
-                        await ModelUsageReceipts().settle(session, audit)
-                run.model_call_count = max(run.model_call_count or 0, len(audits))
-                run.prompt_input_tokens = max(run.prompt_input_tokens or 0, sum(int((audit.usage or {}).get("input_tokens") or 0) for audit in audits))
-                run.prompt_output_tokens = max(run.prompt_output_tokens or 0, sum(int((audit.usage or {}).get("output_tokens") or 0) for audit in audits))
-                await RunDispatchRepository().settle_by_run(session, run.run_id)
-                run.settled_at = datetime.now(UTC)
-                reconciliation = await self._reconcile_workspace_evidence(
-                    session,
-                    run,
-                    captured_by_run.get(run.run_id),
-                )
-                run.workspace_result = self._safe_json({
-                    **(run.workspace_result or {}),
-                    "context_publication": "unknown_after_restart",
-                    "reconciliation": reconciliation,
-                }, "desktop-run.workspace-result")
-                await self._release_workspace_lease(session, run)
-                await self._outbox.enqueue_settled(
-                    session,
-                    run.run_id,
-                    self._payload(run, None, "unknown_after_restart"),
-                )
+                await self._settle_interrupted(session, run, captured_by_run.get(run.run_id))
                 settled += 1
             return settled
+
+    async def recover_shell_cleanup(self, run_id: str, expected: dict, proofs: dict) -> RunSettlement:
+        run, _ = await self._identity(run_id)
+        captured = await self._capture_workspace(run)
+        async with self._sessions.begin() as session:
+            locked = await session.get(DesktopRun, run_id, with_for_update=True)
+            if locked.settled_at is not None:
+                return await self._settlement(session, locked, idempotent=True)
+            pending = (locked.workspace_result or {}).get("shell_cleanup") or {}
+            if locked.status != "interrupted" or not pending or pending != expected or set(proofs) != set(pending):
+                raise ValueError("Shell 执行状态已变化，请重新核验")
+            locked.workspace_result = {**locked.workspace_result, "shell_cleanup": {},
+                "shell_cleanup_recovery": {"verified_at": datetime.now(UTC).isoformat(), "attempts": proofs}}
+            locked.error = "Shell 退出已核验；原 Run 保持中断，未自动重放"
+            await self._settle_interrupted(session, locked, captured)
+            return await self._settlement(session, locked, idempotent=False)
+
+    async def _settle_interrupted(self, session: AsyncSession, run: DesktopRun, captured) -> None:
+        from backend.app.desktop.execution_attempts.usage_receipts import ModelUsageReceipts
+        from backend.app.desktop.run_orchestration.dispatch import RunDispatchRepository
+
+        audits = tuple((await session.scalars(select(ModelAttemptAudit).where(ModelAttemptAudit.run_id == run.run_id).with_for_update())).all())
+        for audit in audits:
+            if audit.status == "prepared":
+                audit.status = "interrupted"
+                audit.audit = {"error_type": "process_restarted", "consumption": "unknown"}
+                audit.settled_at = datetime.now(UTC)
+                await ModelUsageReceipts().settle(session, audit)
+        run.model_call_count = max(run.model_call_count or 0, len(audits))
+        run.prompt_input_tokens = max(run.prompt_input_tokens or 0, sum(int((audit.usage or {}).get("input_tokens") or 0) for audit in audits))
+        run.prompt_output_tokens = max(run.prompt_output_tokens or 0, sum(int((audit.usage or {}).get("output_tokens") or 0) for audit in audits))
+        await RunDispatchRepository().settle_by_run(session, run.run_id)
+        run.settled_at = datetime.now(UTC)
+        reconciliation = await self._reconcile_workspace_evidence(session, run, captured)
+        if (run.workspace_result or {}).get("shell_cleanup_recovery"):
+            reconciliation["retry_safe"] = False
+        run.workspace_result = self._safe_json({
+            **(run.workspace_result or {}), "context_publication": "unknown_after_restart",
+            "reconciliation": reconciliation,
+        }, "desktop-run.workspace-result")
+        await self._release_workspace_lease(session, run)
+        await self._outbox.enqueue_settled(session, run.run_id, self._payload(run, None, "unknown_after_restart"))
 
     @staticmethod
     async def _reconcile_workspace_evidence(session: AsyncSession, run: DesktopRun, captured) -> dict[str, Any]:

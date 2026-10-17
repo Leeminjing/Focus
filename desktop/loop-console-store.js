@@ -23,6 +23,7 @@
     patrol: null,
     graphActivity: Object.freeze([]),
     causality: Object.freeze([]),
+    authorityRevision: null,
     interventionMode: "direct_context_message",
     messageFilter: "all",
     messageSearch: "",
@@ -35,6 +36,9 @@
 
   function create() {
     let current = initial();
+    let liveProjection = null;
+    let liveSelectors = null;
+    let activityHistory = null;
     const listeners = new Set();
     const conversations = new Map();
     const viewports = new Map();
@@ -88,8 +92,13 @@
     return Object.freeze({
       get: () => current,
       subscribe(listener) { listeners.add(listener); listener(current); return () => listeners.delete(listener); },
-      reset() { conversations.clear(); viewports.clear(); return publish(initial()); },
+      reset() { conversations.clear(); viewports.clear(); liveProjection = null; activityHistory = null; return publish(initial()); },
       loadManifest(manifest) {
+        if (current.manifest?.loop_id && current.manifest.loop_id !== manifest?.loop_id) {
+          liveProjection = null;
+          activityHistory = null;
+          publish({ facts: null, authorityRevision: null, causality: Object.freeze([]) });
+        }
         const ids = new Set((manifest?.nodes || []).map(node => node.context_id));
         const selectedContextId = ids.has(current.selectedContextId)
           ? current.selectedContextId
@@ -109,8 +118,14 @@
           error: null,
         });
       },
+      projectHistory(history) {
+        activityHistory = history;
+        return liveProjection && liveSelectors ? publish({ causality: liveSelectors.selectCausality(liveProjection, current.selectedContextId, history) }) : current;
+      },
       projectLive(projection, selectors) {
         if (!projection || !selectors) return current;
+        liveProjection = projection;
+        liveSelectors = selectors;
         const cards = selectors.selectContextCards(projection);
         const priorNodes = new Map((current.manifest?.nodes || []).map(node => [node.context_id, node]));
         const nodes = cards.map(card => {
@@ -161,17 +176,32 @@
         }
         const contextId = current.factScope === "all" ? null : current.selectedContextId;
         const kind = current.factFilter === "all" ? null : current.factFilter;
-        const status = current.factStatus === "all" ? null : current.factStatus;
-        const factRows = selectors.selectFacts(projection, { contextId, kind, status });
-        const facts = { facts: factRows, range: { start: 0, end: factRows.length }, has_more: false, next_before: null, total: factRows.length };
+        const outcomeStatus = ["failed", "unknown", "success"].includes(current.factStatus) ? current.factStatus : null;
+        const status = current.factStatus === "all" || outcomeStatus ? null : current.factStatus;
+        const authorityRevision = projection.loop?.state.authority_revision ?? null;
+        const priorPage = current.authorityRevision !== null && authorityRevision !== current.authorityRevision ? null : current.facts;
+        const factRows = selectors.selectFacts(projection, { contextId, kind, status, outcomeStatus });
+        const incoming = new Map(factRows.map(item => [item.fact_id, item]));
+        const retained = (priorPage?.facts || []).filter(item => {
+          const update = projection.facts?.[item.fact_id];
+          return !update || update.revision <= (item.revision || 0) || incoming.has(item.fact_id);
+        });
+        const merged = new Map(retained.map(item => [item.fact_id, item]));
+        for (const item of factRows) {
+          const prior = merged.get(item.fact_id);
+          if (!prior || item.revision >= (prior.revision || 0)) merged.set(item.fact_id, item);
+        }
+        const facts = priorPage ? { ...priorPage, facts: [...merged.values()] }
+          : { facts: factRows, range: { start: 0, end: factRows.length }, has_more: false, next_before: null, total: factRows.length };
         return publish({
           manifest,
           conversation: revisionChanged ? conversations.get(selectedKey) || null : current.conversation,
           conversationViewport: revisionChanged ? viewports.get(selectedKey) || null : current.conversationViewport,
           facts,
+          authorityRevision,
           patrol: selectors.selectPatrol(projection),
           graphActivity: selectors.selectGraphActivity(projection),
-          causality: selectors.selectCausality(projection, current.selectedContextId),
+          causality: selectors.selectCausality(projection, current.selectedContextId, activityHistory),
           error: null,
         });
       },
@@ -179,6 +209,8 @@
         const cacheKey = expectedKey(contextId);
         return publish({
           selectedContextId: contextId,
+          ...(contextId !== current.selectedContextId && current.factScope === "current" ? { facts: null } : {}),
+          causality: liveProjection && liveSelectors ? liveSelectors.selectCausality(liveProjection, contextId, activityHistory) : current.causality,
           conversation: conversations.get(cacheKey) || null,
           conversationViewport: viewports.get(cacheKey) || null,
           error: null,
@@ -222,9 +254,9 @@
       setMode(interventionMode) { return publish({ interventionMode }); },
       setMessageFilter(messageFilter) { return publish({ messageFilter }); },
       setMessageSearch(messageSearch) { return publish({ messageSearch }); },
-      setFactFilter(factFilter) { return publish({ factFilter }); },
-      setFactStatus(factStatus) { return publish({ factStatus }); },
-      setFactScope(factScope) { return publish({ factScope }); },
+      setFactFilter(factFilter) { return publish({ factFilter, facts: null }); },
+      setFactStatus(factStatus) { return publish({ factStatus, facts: null }); },
+      setFactScope(factScope) { return publish({ factScope, facts: null }); },
       begin(pending) { return publish({ pending, error: null }); },
       complete() { return publish({ pending: null, error: null }); },
       fail(error) { return publish({ pending: null, error: String(error?.message || error) }); },

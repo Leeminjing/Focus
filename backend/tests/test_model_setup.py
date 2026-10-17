@@ -192,7 +192,7 @@ def test_different_chat_and_curation_defaults_use_their_own_credentials(setup_wo
     assert provider["calls"][2][1]["model"] == "curation-model"
 
 
-@pytest.mark.parametrize("role", ["semantic_index_projector", "claim_verifier"])
+@pytest.mark.parametrize("role", ["semantic_index_projector", "semantic_index_interpreter", "claim_verifier"])
 def test_automatic_index_roles_use_curation_default(setup_workspace, provider, role):
     from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
     from backend.app.desktop.agent_loop.patrol_runtime import CuratorCoordinationStage
@@ -203,22 +203,27 @@ def test_automatic_index_roles_use_curation_default(setup_workspace, provider, r
     config = get_app_config("config.yaml")
     saved = _client(config).put("/desktop/api/settings/models", json={
         "models": [
-            {**entry, "curation_default": False, "curation_output_method": None},
+            {**entry, "curation_default": False, "curation_output_method": None,
+             "derivation_max_output_tokens": {role: 4096}},
             {**entry, "name": "curator", "model": "curation-model", "default": False,
-             "context_window": 16384, "curation_max_output_tokens": 2048},
+             "context_window": 16384, "curation_max_output_tokens": 2048,
+             "derivation_max_output_tokens": {role: 1024}},
         ],
     })
     assert saved.json()["verification"]["ok"]
     service = CuratorCoordinationStage(None, object(), app_config=config)._index_service
-    factory = (service._semantic_projector_factory if role == "semantic_index_projector"
-               else service._semantic_claim_verifier_factory)
+    factory = {"semantic_index_projector": service._semantic_projector_factory,
+               "semantic_index_interpreter": service._semantic_interpreter_factory,
+               "claim_verifier": service._semantic_claim_verifier_factory}[role]
     worker = factory()
     assert worker.context_window_tokens == 16384
-    assert worker.max_output_tokens == 2048
+    assert worker.max_output_tokens == 1024
     assert worker.cache_identity == RoleBoundStructuredModel(config, role, "curator").cache_identity
     result = asyncio.run(worker.invoke(CuratedContextPlan, CURATOR_SYSTEM_CONTRACT, {}))
     assert result.outcome == "replace"
     assert provider["calls"][-1][1]["model"] == "curation-model"
+    request = provider["calls"][-1][1]
+    assert request.get("max_completion_tokens", request.get("max_tokens")) == 1024
 
 
 @pytest.mark.parametrize("output", ["not json", '{"units": []}'])

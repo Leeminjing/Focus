@@ -25,6 +25,7 @@ from backend.app.desktop.agent_loop.structured_worker import StructuredWorkerMod
 
 DerivationWorkerRole = Literal[
     "semantic_index_projector",
+    "semantic_index_interpreter",
     "work_spec_reconciler",
     "dossier_synthesizer",
     "claim_verifier",
@@ -90,7 +91,11 @@ class RoleBoundStructuredModel:
 
     @property
     def max_output_tokens(self) -> int:
-        return StructuredWorkerModel(self._app_config, self._model_name).max_output_tokens
+        config = self._app_config.get_model(
+            self._model_name or self._app_config.resolve_curation_model_name()
+        )
+        override = getattr(config, "derivation_max_output_tokens", {}).get(self.role)
+        return override if override is not None else StructuredWorkerModel(self._app_config, self._model_name).max_output_tokens
 
     @property
     def usage_managed(self) -> bool:
@@ -98,12 +103,15 @@ class RoleBoundStructuredModel:
 
     @property
     def cache_identity(self) -> str:
-        config = StructuredWorkerModel(self._app_config, self._model_name).request_model_config
+        config = self._app_config.get_model(
+            self._model_name or self._app_config.resolve_curation_model_name()
+        )
         payload = {
             key: value
             for key, value in config.model_dump(mode="json").items()
-            if key not in {"api_key", "display_name", "default", "curation_default"}
+            if key not in {"api_key", "display_name", "default", "curation_default", "derivation_max_output_tokens"}
         }
+        payload["curation_max_output_tokens"] = self.max_output_tokens
         return sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
     def bind_request_guard(self, guard) -> None:
@@ -134,7 +142,10 @@ class RoleBoundStructuredModel:
         feedback: dict[str, Any] | None = None
         retry_context: dict[str, Any] | None = None
         for attempt in range(1, self._max_attempts + 1):
-            worker = StructuredWorkerModel(self._app_config, self._model_name)
+            config = self._app_config.get_model(self._model_name or self._app_config.resolve_curation_model_name())
+            override = getattr(config, "derivation_max_output_tokens", {}).get(self.role)
+            worker = StructuredWorkerModel(self._app_config, self._model_name,
+                                          **({"max_output_tokens": override} if override is not None else {}))
             if self._usage_receipts.get() is not None:
                 worker.bind_usage_receipts(self._usage_receipts.get())
             if self._request_guard is not None:
