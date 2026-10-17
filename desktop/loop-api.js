@@ -140,6 +140,11 @@
       retryTaskProgress: (loopId, observationId) => request(`/${encodeURIComponent(loopId)}/task-progress/${encodeURIComponent(observationId)}/retry`, { method: "POST" }),
       factDetail: (loopId, factId, signal, revision) => request(`/${encodeURIComponent(loopId)}/facts/${encodeURIComponent(factId)}${revision ? `?revision=${encodeURIComponent(revision)}` : ""}`, { signal }),
       liveSnapshot: (loopId, signal) => request(`/${encodeURIComponent(loopId)}/live`, { signal }),
+      liveHistory: (loopId, { beforeSequence, limit = 50, signal } = {}) => {
+        const query = new URLSearchParams({ limit: String(limit) });
+        if (beforeSequence != null) query.set("before_sequence", String(beforeSequence));
+        return request(`/${encodeURIComponent(loopId)}/live/history?${query}`, { signal });
+      },
       liveStream,
       async directMessage(contextId, content, requestId = crypto.randomUUID()) {
         const response = await fetchImpl(`${root}/tasks/${encodeURIComponent(contextId)}/main/runs`, {

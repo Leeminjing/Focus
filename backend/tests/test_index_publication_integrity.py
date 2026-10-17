@@ -363,9 +363,9 @@ def test_rejected_second_read_settles_only_actual_calls_and_tokens(tmp_path, fai
             )
         assert used.model_calls == 3
         assert used.input_tokens == expected_input and used.output_tokens == 30
-        assert len(rows) == 1 and rows[0].settled_at is not None
-        assert rows[0].actual_usage["model_calls"] == 3
-        assert rows[0].actual_usage["input_tokens"] == expected_input
+        assert len(rows) == 3 and all(row.settled_at is not None for row in rows)
+        assert sum(row.actual_usage["model_calls"] for row in rows) == 3
+        assert sum(row.actual_usage["input_tokens"] for row in rows) == expected_input
         if failure == "budget":
             assert (await service.build(obs)).blocker_code
             assert len(probe.calls) == 3

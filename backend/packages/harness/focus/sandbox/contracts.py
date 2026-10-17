@@ -32,6 +32,8 @@ class ShellExecutionRequest:
     args: tuple[str, ...]
     timeout_seconds: float = 120
     cancel_event: CancellationSignal | None = None
+    recovery_evidence: dict | None = None
+    recovery_status_path: Path | None = None
 
 
 @dataclass(frozen=True)

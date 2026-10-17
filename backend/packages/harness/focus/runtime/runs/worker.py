@@ -73,6 +73,7 @@ from focus.config.app_config import AppConfig
 from focus.history import content_hash, deserialize_history_messages, messages_to_items, validate_items
 from focus.history.bridge import ExecutionHistoryRebuild, branch_messages, synchronize_items
 from focus.history.task_contract import task_contract_state_update
+from focus.mcp.tools import begin_mcp_run, end_mcp_run
 from focus.runtime.runs.events import (
     build_envelope,
     chunk_to_events,
@@ -188,6 +189,7 @@ async def run_agent(
     store: BaseStore | None = None,
 ) -> None:
     agent_ready = False
+    mcp_run = begin_mcp_run()
     try:
 
 
@@ -384,7 +386,7 @@ async def run_agent(
             logger.error("发布 error 事件失败", exc_info=True)
 
     finally:
-
+        end_mcp_run(mcp_run)
         bridge.publish_end(record.run_id)
         bridge.cleanup(record.run_id, delay=300)
         logger.info("run '%s' 流资源已关流，延迟清理已安排", record.run_id)

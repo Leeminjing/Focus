@@ -76,7 +76,7 @@ if (process.versions.electron) {
           assert.ok(robot);
           assert.equal(robot.webContents.session, panel.webContents.session);
           const run = (window, script) => window.webContents.executeJavaScript(script);
-          await run(panel, "window.received=[]; window.focusDesktop.patrol.onContent(value=>window.received.push(value)); window.focusDesktop.patrol.ready()");
+          await run(panel, "window.received=[]; window.focusDesktop.patrol.onContent(value=>window.received.push(value)); window.focusDesktop.patrol.recovery.onFlush(token=>window.focusDesktop.patrol.recovery.flushed({token})); window.focusDesktop.patrol.ready()");
           const ready = await run(robot, "window.focusDesktop.patrol.ready()");
           assert.equal(ready.limits.general_file_bytes, 1024);
           await run(robot, "window.focusDesktop.patrol.receive({items:[{kind:'file',name:'clipboard.png',type:'image/png',bytes:new Uint8Array([1,2,3])}]})");

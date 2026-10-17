@@ -227,6 +227,12 @@ class DesktopPatrolHost {
         });
         if (response !== 1) { this.openPanel(); return false; }
       }
+      try { await this.flushRecovery(); }
+      catch (error) {
+        await this._electron.dialog.showMessageBox({ type: "error", title: "草稿保存失败", message: "暂时无法保存草稿，请重试后退出。", detail: error.message, buttons: ["继续编辑"] });
+        this.openPanel();
+        return false;
+      }
       this._quitConfirmed = true;
       this._quit();
       return true;
@@ -238,10 +244,24 @@ class DesktopPatrolHost {
     return !this._quitConfirmed && (this._state.dirty || this._state.pending || this._queue.length > 0);
   }
 
+  canQuit() { return this._quitConfirmed; }
+
+  async flushRecovery() {
+    if (!this._ready.has("panel") || !this.panel || this.panel.isDestroyed()) { await this._recovery.writes; return; }
+    const token = (this._flushSerial = (this._flushSerial || 0) + 1);
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this._pendingFlush = null; reject(new Error("等待面板保存草稿超时")); }, 10000);
+      this._pendingFlush = { token, finish: error => { clearTimeout(timer); this._pendingFlush = null; error ? reject(new Error(error)) : resolve(); } };
+      this.panel.webContents.send(`${PREFIX}recovery-flush`, token);
+    });
+    await this._recovery.writes;
+  }
+
   dispose() {
     if (this._disposed) return;
     this._writePreferences();
     this._disposed = true;
+    this._pendingFlush?.finish("面板已关闭");
     clearTimeout(this._saveTimer);
     clearTimeout(this._resizeTimer);
     for (const name of this._handlers) this._electron.ipcMain.removeHandler(name);
@@ -266,8 +286,8 @@ class DesktopPatrolHost {
   }
 
   _registerIpc() {
-    // 同步确认磁盘写入后才允许 renderer 上传/投递；只向唯一可编辑面板开放。
-    for (const [operation, callback] of Object.entries({ read: () => this._recovery.read(), put: value => this._recovery.put(value.id, value.bytes), save: value => this._recovery.save(value) })) {
+    // 启动读取保留同步桥；所有写入使用异步 IPC，确认 fsync 后再向面板返回。
+    for (const [operation, callback] of Object.entries({ read: () => this._recovery.read() })) {
       const channel = `${PREFIX}recovery-${operation}`;
       const listener = (event, value) => {
         try {
@@ -278,6 +298,24 @@ class DesktopPatrolHost {
       this._electron.ipcMain.on(channel, listener);
       this._syncHandlers.push([channel, listener]);
     }
+    for (const [operation, callback] of Object.entries({ put: value => this._recovery.put(value.id, value.bytes), save: value => this._recovery.save(value) })) {
+      const channel = `${PREFIX}recovery-${operation}`;
+      this._electron.ipcMain.handle(channel, async (event, value) => {
+        try {
+          if (!this.accepts(event, ["panel"])) throw new Error("此窗口不能访问 Patrol 恢复数据");
+          return { value: await callback(value) };
+        } catch (error) { return { error: error.message }; }
+      });
+      this._handlers.push(channel);
+    }
+    const flushed = `${PREFIX}recovery-flushed`;
+    this._electron.ipcMain.handle(flushed, (event, value) => {
+      if (!this.accepts(event, ["panel"])) throw new Error("此窗口不能确认 Patrol 恢复数据");
+      if (value?.token !== this._pendingFlush?.token) return false;
+      this._pendingFlush.finish(value.error);
+      return true;
+    });
+    this._handlers.push(flushed);
     const handle = (name, roles, callback) => {
       const channel = `${PREFIX}${name}`;
       this._electron.ipcMain.handle(channel, (event, value) => {

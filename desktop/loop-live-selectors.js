@@ -18,6 +18,15 @@
   const MAX_VISIBLE_GRAPH_ACTIVITY = 80;
   const MAX_VISIBLE_FACTS = 200;
 
+  function selectActivityPage(projection, history) {
+    const items = history?.older ? history.items : [...new Map([
+      ...(history?.items || []), ...(projection?.activity_timeline || []),
+    ].map(item => [item.sequence, item])).values()].sort((left, right) => left.sequence - right.sequence).slice(-50);
+    const beforeSequence = history?.older ? history.next_before_sequence
+      : items[0]?.sequence > (history?.minimum_sequence || 1) ? items[0].sequence : null;
+    return { items, beforeSequence };
+  }
+
   function selectPatrol(projection) {
     const session = stateOf(projection?.patrol_session);
     if (!session) return null;
@@ -84,13 +93,15 @@
     return Object.freeze(edges);
   }
 
-  function selectCausality(projection, contextId) {
+  function selectCausality(projection, contextId, history = null) {
     const directives = values(projection?.directives).filter(entity => !contextId || entity.state.target_context_id === contextId);
     const ids = new Set(directives.map(entity => entity.entity_id));
     const interventions = values(projection?.interventions).filter(entity => !contextId || entity.state.target_context_id === contextId);
     const runs = values(projection?.runs).filter(entity => ids.has(entity.state.directive_id) || (!entity.state.directive_id && (!contextId || entity.state.context_id === contextId)));
     const correlations = new Set([...directives, ...runs, ...interventions].map(entity => entity.state.correlation_id).filter(Boolean));
-    return Object.freeze(projection.activity_timeline.filter(item => ids.has(item.entity_id) || correlations.has(item.correlation_id)));
+    const activities = history?.initialized ? selectActivityPage(projection, history).items : projection.activity_timeline;
+    return Object.freeze(activities.filter(item => ids.has(item.entity_id) || correlations.has(item.correlation_id)
+      || (contextId && [item.detail?.context_id, item.detail?.target_context_id, item.detail?.source_context_id].includes(contextId))));
   }
 
   function selectFacts(projection, options = {}) {
@@ -99,6 +110,7 @@
       .filter(entity => !options.contextId || entity.state.context_id === options.contextId)
       .filter(entity => !options.kind || entity.state.kind === options.kind)
       .filter(entity => !options.status || entity.state.status === options.status)
+      .filter(entity => !options.outcomeStatus || entity.state.outcome_status === options.outcomeStatus)
       .sort((left, right) => right.updated_sequence - left.updated_sequence)
       .slice(0, MAX_VISIBLE_FACTS)
       .map(entity => Object.freeze({ fact_id: entity.entity_id, revision: entity.revision, ...entity.state })));
@@ -125,5 +137,5 @@
     });
   }
 
-  return Object.freeze({ MAX_VISIBLE_GRAPH_ACTIVITY, MAX_VISIBLE_FACTS, selectPatrol, selectActiveWaitRequest, selectExpansions, selectGraphActivity, selectContextCards, selectLineage, selectCausality, selectFacts, selectSummary });
+  return Object.freeze({ MAX_VISIBLE_GRAPH_ACTIVITY, MAX_VISIBLE_FACTS, selectActivityPage, selectPatrol, selectActiveWaitRequest, selectExpansions, selectGraphActivity, selectContextCards, selectLineage, selectCausality, selectFacts, selectSummary });
 });

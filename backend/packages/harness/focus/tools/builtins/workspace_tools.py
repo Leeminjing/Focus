@@ -225,7 +225,9 @@ def _run_shell(command: str, runtime: ToolRuntime[dict], exe_name: str, args: li
         if receipt is not None:
             receipt["process_cleanup"] = "unknown"
         result = _SHELL_BACKEND.run(
-            ShellExecutionRequest(binding, exe_path, (*args, command), cancel_event=cancel_event)
+            ShellExecutionRequest(binding, exe_path, (*args, command), cancel_event=cancel_event,
+                recovery_evidence=receipt.get("execution") if receipt else None,
+                recovery_status_path=Path(receipt["status_path"]) if receipt and receipt.get("status_path") else None)
         )
     except SandboxUnavailable as error:
         if receipt is not None:

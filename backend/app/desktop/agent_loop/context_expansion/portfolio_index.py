@@ -79,7 +79,10 @@ from .index_model_budget import (
     BudgetedIndexModel,
     IndexBudgetExceeded,
     IndexModelBudget,
+    index_failure_progress_status,
 )
+from .index_scheduling import IndexModelSlots, SegmentLocks
+from .index_progress import IndexProgressReporter
 from .interpretation_record import (
     RevisionInterpretationProposal,
     RevisionInterpretationRecord,
@@ -107,6 +110,8 @@ class _IndexBuildState:
     interpretation_contract: str = ""
     model_identities: dict = field(default_factory=dict)
     budget_authorization: dict = field(default_factory=dict)
+    progress: Any = None
+    background: bool = False
 
 
 _BUILD_STATE: ContextVar[_IndexBuildState] = ContextVar("semantic_index_build")
@@ -155,7 +160,8 @@ class PortfolioSemanticIndexService:
             max_estimated_tokens=segment_max_estimated_tokens,
         ))
         self._concurrency = max(1, concurrency)
-        self._model_slots = asyncio.Semaphore(self._concurrency)
+        self._model_slots = IndexModelSlots(self._concurrency)
+        self._segment_locks = SegmentLocks()
         self._inflight_builds: dict[str, _SharedIndexBuild] = {}
         self._max_attempts = max(1, max_attempts)
         self._catalog_max_descriptor_chars = catalog_max_descriptor_chars
@@ -323,6 +329,9 @@ class PortfolioSemanticIndexService:
         fencing_token: int | None = None,
     ) -> PortfolioIndexBuildResult:
         self._projection_attempts = {}
+        if isinstance(observation, LoopObservationEnvelope):
+            _BUILD_STATE.get().progress = IndexProgressReporter(self._sessions, observation, fencing_token=fencing_token)
+            await self._progress()
         timer = DerivationStageTimer(
             "portfolio_indexing",
             (observation.observed_frontier_hash,),
@@ -365,6 +374,7 @@ class PortfolioSemanticIndexService:
                 )
                 catalog = self._catalog(observation, indexes)
         except asyncio.CancelledError:
+            await self._progress(status="cancelled")
             raise
         except PortfolioIndexCatalogOverflow as exc:
             return await self._result(
@@ -417,6 +427,7 @@ class PortfolioSemanticIndexService:
         usage = dict(snapshot.get("usage") or {})
         resources = resolve_expansion_resources(limits, revision, usage)
         _BUILD_STATE.get().budget_authorization = {
+            "loop_id": observation.loop_id,
             "grant_revision": revision,
             "limits": limits,
             "usage": usage,
@@ -435,6 +446,54 @@ class PortfolioSemanticIndexService:
                        **({"fencing_token": fencing_token} if fencing_token is not None else {})},
             ),
         )
+
+    async def prewarm_revision(self, loop_id, authority_revision, revision):
+        """只准备不可变局部 records；每次实际请求仍重验授权及发布凭据。"""
+        from .index_prewarm import PrewarmUsage, validate_prewarm_owner
+        from backend.app.desktop.agent_loop.models import AgentLoop
+
+        token = _BUILD_STATE.set(_IndexBuildState(background=True))
+        try:
+            snapshot = await IndexBudgetReservationRepository.authorization_snapshot(
+                self._sessions, loop_id, authority_revision
+            )
+            owner = {"owner_kind": "index_prewarm", "owner_id": revision.ref.revision_id,
+                     "context_id": revision.ref.context_id, "content_hash": revision.content_hash}
+            async with self._sessions.begin() as session:
+                grant = await IndexBudgetReservationRepository._authorized_grant(session, loop_id, authority_revision)
+                loop = await session.get(AgentLoop, loop_id)
+                await validate_prewarm_owner(session, loop, grant, owner)
+                view = await self._reader.read(session, revision.ref, "semantic")
+            resources = resolve_expansion_resources(snapshot["limits"], authority_revision, snapshot["usage"])
+            _BUILD_STATE.get().budget_authorization = {"loop_id": loop_id, "grant_revision": authority_revision, **snapshot}
+            _BUILD_STATE.get().budget = IndexModelBudget(
+                resources,
+                reservations=IndexBudgetReservationRepository(
+                    self._sessions, loop_id, authority_revision, snapshot["limits"], snapshot["usage"], owner=owner),
+                usage_receipts=PrewarmUsage(self._sessions, loop_id, authority_revision,
+                                           snapshot["limits"], snapshot["usage"], owner),
+            )
+            self._prepare_contract()
+            frozen = self._indexer.index(
+                source=revision.ref, source_content_hash=revision.content_hash,
+                context_role="context", active_objective="Current mission",
+                raw_messages=tuple(view.messages), projector_version=self._projection_contract,
+            )
+            _BUILD_STATE.get().telemetry[revision.ref.revision_id] = {
+                "local_cache_hits": 0, "projected_segments": 0,
+                "completed_segments": 0, "total_segments": len(frozen.segments),
+            }
+            for segment in frozen.segments:
+                if self._inflight_builds:
+                    return False
+                await self._project_segment(frozen, segment)
+            return True
+        finally:
+            try:
+                attempts = tuple(a for rows in self._projection_attempts.values() for a in rows)
+                await asyncio.shield(self._record_attempt_usage(loop_id, attempts))
+            finally:
+                _BUILD_STATE.reset(token)
 
     def _owned_usage(self, observation, *, fencing_token=None):
         from backend.app.desktop.agent_loop.model_usage_owner import OwnedModelUsage
@@ -533,6 +592,9 @@ class PortfolioSemanticIndexService:
         blocker_code: str | None = None,
         blocker_summary: str | None = None,
     ) -> PortfolioIndexBuildResult:
+        await self._progress(index_phase="complete", status=(
+            index_failure_progress_status(blocker_summary or "") if blocker_code else "ready"
+        ))
         record = timer.finish(
             tuple(item.index_id for item in indexes),
             blocker_summary
@@ -706,6 +768,10 @@ class PortfolioSemanticIndexService:
         source = frozen.source
         telemetry = _BUILD_STATE.get().telemetry.setdefault(source.revision_id, {})
         telemetry.update(local_cache_hits=0, projected_segments=0)
+        telemetry.update(completed_segments=len(inherited), total_segments=len(frozen.segments))
+        await self._progress(source.revision_id, "local", **{
+            k: telemetry[k] for k in ("completed_segments", "total_segments")
+        })
         local_started = perf_counter_ns()
         records = list(inherited)
         tasks = [
@@ -736,6 +802,7 @@ class PortfolioSemanticIndexService:
             ],
         )
         interpretation_started = perf_counter_ns()
+        await self._progress(source.revision_id, "interpretation")
         try:
             interpretation = await interpreter.build(frozen, records, plan)
         finally:
@@ -766,6 +833,30 @@ class PortfolioSemanticIndexService:
         )
 
     async def _project_segment(self, frozen, segment):
+        state = _BUILD_STATE.get()
+        authority = state.budget_authorization
+        limits = authority.get("limits", {})
+        # Cache fills can cooperate only under the same effective authorization.
+        # A denied build must not wait for another owner's in-flight model call.
+        authorization_key = stable_expansion_hash(
+            authority.get("loop_id"), authority.get("grant_revision"),
+            {name: limits.get(name, default) for name, default in (
+                ("max_model_calls", 200), ("max_input_tokens", 2_000_000),
+                ("max_output_tokens", 500_000), ("max_retries", None),
+            )},
+            state.budget.resources.policy.model_dump(mode="json"),
+        )
+        key = (frozen.source.context_id, SegmentProjectionRecord.cache_key_for(segment, state.local_contract), authorization_key)
+        async with self._segment_locks.hold(key):
+            result = await self._project_segment_locked(frozen, segment)
+        telemetry = _BUILD_STATE.get().telemetry[frozen.source.revision_id]
+        telemetry["completed_segments"] = telemetry.get("completed_segments", 0) + 1
+        await self._progress(frozen.source.revision_id, "local", **{
+            k: telemetry[k] for k in ("completed_segments", "total_segments") if k in telemetry
+        })
+        return result
+
+    async def _project_segment_locked(self, frozen, segment):
         ids = set(segment.message_ids)
         messages = tuple(m for m in frozen.messages if m.message_id in ids)
         contract = _BUILD_STATE.get().local_contract
@@ -802,7 +893,16 @@ class PortfolioSemanticIndexService:
         return BudgetedIndexModel(
             model, _BUILD_STATE.get().budget, semaphore=self._model_slots,
             telemetry_context={"source_revision_id": revision_id, "index_phase": phase},
+            progress=self._progress,
+            background=_BUILD_STATE.get().background,
         )
+
+    async def _progress(self, source_revision_id=None, index_phase="preparing", status="running", **counts):
+        reporter = _BUILD_STATE.get().progress
+        if reporter is not None:
+            telemetry = _BUILD_STATE.get().telemetry.get(source_revision_id, {})
+            counts = {**{k: telemetry[k] for k in ("completed_segments", "total_segments") if k in telemetry}, **counts}
+            await reporter.report(source_revision_id, index_phase, status, **counts)
 
     def _append_attempt(self, revision_id: str, attempt: dict[str, Any]) -> None:
         self._projection_attempts[revision_id] = (

@@ -69,7 +69,9 @@ def test_automatic_categories_distinguish_size_from_message_count():
         select_cases([huge], automatic=True)
 
 
-def test_summary_keeps_blockers_and_rejects_different_control_settings(tmp_path):
+@pytest.mark.parametrize("different_control", [{"concurrency": 8},
+    {"role_output_token_limits": {"semantic_index_interpreter": 2048}}])
+def test_summary_keeps_blockers_and_rejects_different_control_settings(tmp_path, different_control):
     report = {
         "case": "sample", "corpus_case_hash": "frozen", "repeat": 0,
         "configured_model": "model", "provider_model": "provider", "concurrency": 4,
@@ -86,13 +88,14 @@ def test_summary_keeps_blockers_and_rejects_different_control_settings(tmp_path)
     assert len(summary["rows"]) == 4
     assert summary["rows"][0]["blocker_code"] == "window_exceeded"
     assert summary["rows"][1]["status"] == "not_run"
-    other.write_text(json.dumps({**second, "concurrency": 8}), encoding="utf-8")
+    other.write_text(json.dumps({**second, **different_control}), encoding="utf-8")
     with pytest.raises(ValueError, match="incomparable"):
         summarize_reports(tmp_path)
 
 
 @pytest.mark.usefixtures("isolated_postgres_database")
-def test_corpus_replay_reports_cold_appends_exact_and_citation_quality(tmp_path, caplog, monkeypatch):
+@pytest.mark.parametrize("prewarm", ["off", "on"])
+def test_corpus_replay_reports_cold_appends_exact_and_citation_quality(tmp_path, caplog, monkeypatch, prewarm):
     from backend.tests import test_index_real_model_performance as benchmark
     from backend.tests.incremental_index_support import ModelProbe
 
@@ -100,6 +103,7 @@ def test_corpus_replay_reports_cold_appends_exact_and_citation_quality(tmp_path,
 
     class FakeModel:
         last_attempt_records = ()
+        max_output_tokens = 8192
 
         def __init__(self, config, role):
             self.delegate = probe.factory("projector" if role == "semantic_index_projector" else "verifier")()
@@ -125,12 +129,16 @@ def test_corpus_replay_reports_cold_appends_exact_and_citation_quality(tmp_path,
     case = CorpusCase(name="sample", category="multiple_append", snapshots=(
         snapshot(history[:2]), snapshot(history[:3], 2), snapshot(history, 3),
     ))
-    benchmark.test_real_provider_latency_matrix(tmp_path, caplog, 12, 200, 0, case)
+    benchmark.test_real_provider_latency_matrix(tmp_path, caplog, 12, 200, 0, case, prewarm)
     report = json.loads(next((tmp_path / "reports").glob("*.json")).read_text(encoding="utf-8"))
-    assert report["evaluation_complete"] and len(report["phases"]) == 6
+    assert report["evaluation_complete"] and len(report["phases"]) == (9 if prewarm == "on" else 6)
     assert [s["semantic_hash"] for s in report["frozen_sources"]] == [s.semantic_hash for s in case.snapshots]
     assert report["segment_token_limit"] == 200 and report["concurrency"] == 4
     for name, phase in report["phases"].items():
+        if name.startswith("prewarm"):
+            assert phase["model_calls"] == phase["billed_model_calls"]
+            assert all(t["phase"] in {"local_projection", "local_verifier"} for t in phase["timings"])
+            continue
         assert phase["quality"]["citation_validity"] == 1.0
         assert phase["quality"]["accepted_citation_message_coverage"] == 1.0
         assert phase["quality"]["fallback_ratio"] == 0
@@ -155,7 +163,7 @@ def test_benchmark_records_unexpected_failure_and_does_not_claim_cache_hit(tmp_p
     case = CorpusCase(name="failure", category="selected", snapshots=(
         snapshot([{"id": "m", "role": "human", "content": "frozen"}]),
     ))
-    benchmark.test_real_provider_latency_matrix(tmp_path, caplog, 12, None, 0, case)
+    benchmark.test_real_provider_latency_matrix(tmp_path, caplog, 12, None, 0, case, "off")
     report = json.loads(next((tmp_path / "reports").glob("*.json")).read_text(encoding="utf-8"))
     assert report["phases"]["cold"]["blocker_code"] == "benchmark_build_exception"
     assert report["phases"]["cold"]["blocker_summary"] == "RuntimeError"

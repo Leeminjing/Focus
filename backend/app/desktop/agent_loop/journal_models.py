@@ -1,8 +1,8 @@
-r"""本文件对外提供 LoopJournalSequence、LoopJournalEvent、LoopReplayRetention 与 LoopProjectorCursor 持久化实体。
+r"""本文件对外提供 LoopJournalSequence、LoopJournalEvent、LoopReplayRetention、LoopProjectorCursor 与 LoopLiveCheckpoint 持久化实体。
 
 输入为 Loop identity、规范事件 envelope、保留边界和 projector 进度；输出为每 Loop 严格递增的可重放事件日志。
 具体工作流为 sequence 行串行分配提交序号，journal event 保存版本化安全 payload，retention 标记最早可重放位置，
-cursor 记录各投影器消费边界。示例：`session.add(LoopJournalEvent(loop_id="l1", sequence=1, ...))`。
+cursor 记录各投影器消费边界，Live checkpoint 保存可重建的版本化 reducer 投影。示例：`session.add(LoopJournalEvent(loop_id="l1", sequence=1, ...))`。
 """
 
 from __future__ import annotations
@@ -66,4 +66,14 @@ class LoopProjectorCursor(Base):
     loop_id: Mapped[str] = mapped_column(String(32), ForeignKey("agent_loops.loop_id", ondelete="CASCADE"), primary_key=True)
     projector_name: Mapped[str] = mapped_column(String(80), primary_key=True)
     last_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class LoopLiveCheckpoint(Base):
+    __tablename__ = "loop_live_checkpoints"
+
+    loop_id: Mapped[str] = mapped_column(String(32), ForeignKey("agent_loops.loop_id", ondelete="CASCADE"), primary_key=True)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    projection: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

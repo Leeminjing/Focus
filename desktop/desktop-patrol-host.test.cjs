@@ -76,6 +76,7 @@ function fixture(t) {
     fs.rmSync(directory, { recursive: true, force: true });
   });
   const recover = (name, senderEvent, value) => {
+    if (name !== "read") return handlers.get(`focus:patrol-recovery-${name}`)(senderEvent, value);
     electron.ipcMain.emit(`focus:patrol-recovery-${name}`, senderEvent, value);
     return senderEvent.returnValue;
   };
@@ -207,13 +208,34 @@ test("recovery IPC belongs only to the panel main frame and acknowledges durable
   for (const win of [f.host.robot, f.workbench]) assert.match(f.recover("read", f.event(win)).error, /不能访问/);
   assert.match(f.recover("read", { sender: f.host.panel.webContents, senderFrame: { url: f.host.panel.webContents.mainFrame.url } }).error, /不能访问/);
   assert.deepEqual(f.recover("read", f.event(f.host.panel)).value, { state: null, sources: [] });
-  assert.equal(f.recover("put", f.event(f.host.panel), { id: "local", bytes: new Uint8Array([1, 2]) }).value, true);
+  for (const win of [f.host.robot, f.workbench]) assert.match((await f.recover("save", f.event(win), {})).error, /不能访问/);
+  assert.equal((await f.recover("put", f.event(f.host.panel), { id: "local", bytes: new Uint8Array([1, 2]) })).value, true);
   const state = { version: 1, workspaces: [], source_ids: ["local"] };
-  assert.equal(f.recover("save", f.event(f.host.panel), state).value, true);
+  assert.equal((await f.recover("save", f.event(f.host.panel), state)).value, true);
   assert.deepEqual(f.recover("read", f.event(f.host.panel)).value, { state, sources: [["local", new Uint8Array([1, 2])]] });
-  assert.match(f.recover("put", f.event(f.host.panel), { id: "too-big", bytes: new Uint8Array(33) }).error, /总量超限/);
+  assert.match((await f.recover("put", f.event(f.host.panel), { id: "too-big", bytes: new Uint8Array(33) })).error, /总量超限/);
   f.host.panel.webContents.mainFrame.url = "https://example.com/desktop/desktop-patrol.html?surface=panel";
   assert.match(f.recover("read", f.event(f.host.panel)).error, /不能访问/);
+});
+
+test("quit waits for the panel save acknowledgement, rejects other owners and stays open on save failure", async t => {
+  const f = fixture(t); await f.host.start();
+  f.invoke("ready", f.host.panel);
+  const quitting = f.host.requestQuit();
+  assert.equal(f.quits, 0);
+  const message = f.host.panel.messages.at(-1);
+  assert.equal(message.channel, "focus:patrol-recovery-flush");
+  assert.throws(() => f.invoke("recovery-flushed", f.host.robot, { token: message.value }), /不能确认/);
+  assert.equal(f.invoke("recovery-flushed", f.host.panel, { token: -1 }), false);
+  f.invoke("recovery-flushed", f.host.panel, { token: message.value, error: "磁盘已满" });
+  assert.equal(await quitting, false);
+  assert.equal(f.quits, 0);
+  assert.equal(f.host.canQuit(), false);
+  const retry = f.host.requestQuit();
+  f.invoke("recovery-flushed", f.host.panel, { token: f.host.panel.messages.at(-1).value });
+  assert.equal(await retry, true);
+  assert.equal(f.quits, 1);
+  assert.equal(f.host.canQuit(), true);
 });
 
 test("queued content is bounded, panel hide preserves owner and background changes never focus", async t => {
