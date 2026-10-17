@@ -44,6 +44,11 @@ class IndexBudgetReservationRepository:
         repository._reservation_id = receipt.reservation_id
         return repository
 
+    def new_request(self):
+        """Keep the frozen authority while giving each attempt its own receipt."""
+        return type(self)(self._sessions, self._loop_id, self._grant_revision,
+                          self._limits, self._frozen_usage, owner=self._owner)
+
     @classmethod
     async def authorization_snapshot(cls, sessions, loop_id, grant_revision):
         async with sessions.begin() as session:

@@ -1,7 +1,7 @@
 r"""本文件对外提供 IndexModelBudget 与 BudgetedIndexModel。
 
 输入为冻结资源策略、模型窗口和结构化 payload；输出为 attempt 准入、纯窗口预检或显式预算异常。
-具体工作流为按完整请求 UTF-8 字节上界估计输入，预留输出／调用；生产模型绑定逐次 owner receipt，局部窗口/额度检查不重复预留；兼容未托管模型复用批次预留，结束时幂等结算真实用量。
+具体工作流为按完整请求 UTF-8 字节上界估计输入，预留输出／调用；生产模型绑定逐次 owner receipt，局部窗口检查不重复预留；兼容未托管模型逐次预留，结算后同步释放本地差额。
 resources 提供冻结策略；fits_request/require_fit 纯检查容量，后者拒绝时提供安全尺寸诊断；admit 才为局部／综合／verifier attempts 预留额度。未知崩溃预留仍占额度。
 fits_available_budget 为可选原文预取检查窗口与本轮剩余额度，不预留或消费；实际发送仍由 admit 和持久授权准入重验。
 BudgetedIndexModel.last_attempt_records 只包含本次 invocation：准入／配置拒绝返回空记录，已发送的失败或取消保留真实 attempts。
@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 from contextlib import nullcontext
+from dataclasses import dataclass, field
 from hashlib import sha256
 from time import perf_counter_ns
 
@@ -23,6 +24,7 @@ from backend.app.desktop.agent_loop.resource_limits import (
     remaining_capacity,
     request_limits,
 )
+from backend.app.desktop.agent_loop.usage import LoopUsageDelta
 
 _logger = logging.getLogger(__name__)
 
@@ -33,6 +35,41 @@ class IndexBudgetExceeded(ValueError):
         self.request_diagnostic = request_diagnostic
 
 
+@dataclass
+class _LocalReservation:
+    amounts: list[int] = field(default_factory=lambda: [0, 0, 0])
+    receipt: object | None = None
+    settled: bool = False
+
+
+class _BudgetUsageReceipts:
+    """Local and durable accounting share the same per-request lifecycle."""
+
+    def __init__(self, budget, receipts):
+        self._budget = budget
+        self._receipts = receipts
+
+    async def reserve(self, input_tokens, output_tokens, *, retry=False):
+        budget = self._budget
+        output_tokens = max(output_tokens, budget.resources.policy.output_token_reserve or 0)
+        async with budget._lock:
+            budget._check_available(input_tokens, output_tokens)
+            receipt = await self._receipts.reserve(input_tokens, output_tokens, retry=retry)
+            reservation = _LocalReservation([1, input_tokens, output_tokens], receipt)
+            budget._occupy(reservation.amounts)
+            return reservation
+
+    async def settle(self, reservation, measured, reported):
+        async with self._budget._lock:
+            if reservation.settled:
+                return
+            # Never refund locally before durable settlement succeeds. Unknown
+            # receipts retain their entire reservation, including after cancel.
+            await self._receipts.settle(reservation.receipt, measured, reported)
+            if reported:
+                self._budget._reconcile(reservation, measured)
+
+
 class IndexModelBudget:
     def __init__(self, resources, *, reservations=None, usage_receipts=None) -> None:
         self._resources = resources
@@ -41,7 +78,9 @@ class IndexModelBudget:
         self._output = resources.global_output_tokens_remaining
         self._lock = asyncio.Lock()
         self._reservations = reservations
-        self.usage_receipts = usage_receipts
+        self._occupied = [0, 0, 0]
+        self._batch = _LocalReservation(receipt=reservations)
+        self.usage_receipts = _BudgetUsageReceipts(self, usage_receipts) if usage_receipts is not None else None
 
     @property
     def has_reservations(self) -> bool:
@@ -52,11 +91,39 @@ class IndexModelBudget:
         return self._resources
 
     async def settle(self, usage, *, reported=True) -> None:
-        if self._reservations is not None:
+        await self._settle_reservation(self._batch, usage, reported=reported)
+
+    async def _settle_reservation(self, reservation, usage, *, reported):
+        async with self._lock:
+            if reservation.settled or not any(reservation.amounts):
+                return
+            if reservation.receipt is not None:
+                if reported:
+                    await reservation.receipt.settle(usage)
+                else:
+                    await reservation.receipt.mark_unknown()
             if reported:
-                await self._reservations.settle(usage)
-            else:
-                await self._reservations.mark_unknown()
+                self._reconcile(reservation, usage)
+
+    def _check_available(self, estimated, output):
+        if exceeds_limit(1, self._calls) or exceeds_limit(estimated, self._input) or exceeds_limit(output, self._output):
+            raise IndexBudgetExceeded("semantic index authorized_model_budget exhausted")
+
+    def _occupy(self, amounts):
+        # Retain overages even when the displayed remaining capacity is zero;
+        # settling another request must not erase actual consumption above a cap.
+        self._occupied = [used + amount for used, amount in zip(self._occupied, amounts, strict=True)]
+        self._calls, self._input, self._output = (
+            remaining_capacity(limit, used)
+            for limit, used in zip((self._resources.global_model_calls_remaining,
+                                   self._resources.global_input_tokens_remaining,
+                                   self._resources.global_output_tokens_remaining), self._occupied, strict=True)
+        )
+
+    def _reconcile(self, reservation, usage):
+        actual = [max(0, amount) for amount in (usage.model_calls, usage.input_tokens, usage.output_tokens)]
+        self._occupy([used - reserved for used, reserved in zip(actual, reservation.amounts, strict=True)])
+        reservation.settled = True
 
     @staticmethod
     def _estimated_input(schema, system, payload):
@@ -94,18 +161,27 @@ class IndexModelBudget:
             or exceeds_limit(output, self._output)
         )
 
-    async def admit(self, model, schema, system, payload) -> None:
+    async def admit(self, model, schema, system, payload, *, per_attempt=False):
         estimated, _, output = self.require_fit(model, schema, system, payload)
         async with self._lock:
-            if exceeds_limit(1, self._calls) or exceeds_limit(estimated, self._input) or exceeds_limit(output, self._output):
-                raise IndexBudgetExceeded(
-                    "semantic index authorized_model_budget exhausted"
-                )
-            if self._reservations is not None and not getattr(model, "usage_managed", False):
-                await self._reservations.reserve(estimated, output)
-            self._calls = remaining_capacity(self._calls, 1)
-            self._input = remaining_capacity(self._input, estimated)
-            self._output = remaining_capacity(self._output, output)
+            self._check_available(estimated, output)
+            if getattr(model, "usage_managed", False) and self.usage_receipts is not None:
+                # The bound receipt reserves and settles both budgets around the
+                # actual send, including each retry inside one invocation.
+                return None
+            if per_attempt:
+                receipt = self._reservations.new_request() if self._reservations is not None else None
+                reservation = _LocalReservation(receipt=receipt)
+            else:
+                if self._batch.settled and self._reservations is None:
+                    self._batch = _LocalReservation()
+                reservation = self._batch
+            if reservation.receipt is not None:
+                await reservation.receipt.reserve(estimated, output)
+            amounts = [1, estimated, output]
+            reservation.amounts = [old + amount for old, amount in zip(reservation.amounts, amounts, strict=True)]
+            self._occupy(amounts)
+            return reservation
 
     def require_fit(self, model, schema, system, payload):
         estimated = self._estimated_input(schema, system, payload)
@@ -140,6 +216,7 @@ class BudgetedIndexModel:
         self._identity = getattr(model, "cache_identity", None)
         self._guarded = hasattr(model, "bind_request_guard")
         self._last_attempt_records = ()
+        self._admissions = []
         if budget.usage_receipts is not None and hasattr(model, "bind_usage_receipts"):
             model.bind_usage_receipts(budget.usage_receipts)
         if self._guarded:
@@ -149,7 +226,9 @@ class BudgetedIndexModel:
         self._check_identity()
         started = perf_counter_ns()
         try:
-            await self._budget.admit(model, schema, system, payload)
+            reservation = await self._budget.admit(model, schema, system, payload, per_attempt=True)
+            if reservation is not None:
+                self._admissions.append(reservation)
         finally:
             self._admission_ms += (perf_counter_ns() - started) / 1_000_000
 
@@ -181,6 +260,7 @@ class BudgetedIndexModel:
 
     async def _invoke(self, schema, system, payload, validator=None):
         self._last_attempt_records = ()
+        self._admissions = []
         self._admission_ms = 0.0
         started = perf_counter_ns()
         entered = None
@@ -226,3 +306,21 @@ class BudgetedIndexModel:
                 dict(attempt)
                 for attempt in getattr(self._model, "last_attempt_records", ())
             )
+            await self._settle_admissions()
+
+    async def _settle_admissions(self):
+        for position, reservation in enumerate(self._admissions):
+            # Models without a per-attempt guard may report several attempts for
+            # their single invocation reservation. Bill all of them together.
+            attempts = self._last_attempt_records[position:position + 1] if self._guarded else self._last_attempt_records
+            usage = LoopUsageDelta(
+                **{name: sum(max(0, int(item.get(name) or 0)) for item in attempts)
+                   for name in ("model_calls", "input_tokens", "output_tokens")},
+                retries=sum(int(item.get("attempt", 1) > 1) for item in attempts),
+            )
+            await asyncio.shield(self._budget._settle_reservation(
+                reservation, usage, reported=bool(attempts) and all(item.get("usage_reported", True) for item in attempts),
+            ))
+            if reservation.receipt is not None:
+                for attempt in attempts:
+                    attempt["usage_managed"] = True
