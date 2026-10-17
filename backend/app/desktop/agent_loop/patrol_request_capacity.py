@@ -25,6 +25,19 @@ class PatrolRequestCapacity:
         )
 
     def check(self, messages, schema) -> int:
+        estimated = self.estimate(messages, schema)
+        if exceeds_limit(estimated, self._limit):
+            raise ProviderRequestWindowError(
+                f"Patrol provider_request_window: input_bound={estimated}, input_limit={self._limit}, output_reserve={self.output_reserve}",
+                stage="patrol_decision",
+            )
+        return estimated
+
+    @property
+    def input_limit(self):
+        return self._limit
+
+    def estimate(self, messages, schema) -> int:
         image_tokens = 0
         projected = []
         for message in messages:
@@ -48,10 +61,4 @@ class PatrolRequestCapacity:
             projected.append({"role": message.type, "content": content})
         payload = {"messages": projected,
                    "schema": schema.model_json_schema()}
-        estimated = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 256 + image_tokens
-        if exceeds_limit(estimated, self._limit):
-            raise ProviderRequestWindowError(
-                f"Patrol provider_request_window: input_bound={estimated}, input_limit={self._limit}, output_reserve={self.output_reserve}",
-                stage="patrol_decision",
-            )
-        return estimated
+        return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 256 + image_tokens

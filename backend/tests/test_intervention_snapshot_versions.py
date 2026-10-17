@@ -104,6 +104,17 @@ def test_distinct_snapshots_preserve_fact_revisions_and_complete_causal_pages(tm
                 assert latest.pre_input_state["intervention"]["visible_context"]["status"] == "unknown"
                 assert canonical_hash(old) == second["snapshot_hash"]
                 assert [item["intent_id"] for item in latest.causal_chain] == [first["intent_id"], second["intent_id"], third["intent_id"]]
+                first_view, second_view, third_view = [item["read_view"] for item in latest.causal_chain]
+                assert first_view["comparison"] == "baseline_only"
+                assert second_view["snapshot_hash"] == second["snapshot_hash"]
+                assert third_view["previous"]["intent_id"] == second["intent_id"]
+                assert third_view["previous"]["snapshot_hash"] == second["snapshot_hash"]
+                assert second_view["visible_context"] == visible
+                referenced, = second_view["referenced_facts"]
+                assert referenced["fact_id"] == fact_id and referenced["revision"] == 1
+                assert referenced["state"] == "observed" and referenced["presentation"] == {"summary": "未验证"}
+                assert any(change["path"] == ["intervention", "facts", {"fact_id": fact_id}, "revision"]
+                           and change["before"] == 1 and change["after"] == 3 for change in third_view["changes"])
                 assert await session.scalar(select(func.count()).select_from(LoopDecisionInputs).where(LoopDecisionInputs.round_id == first["round_id"])) == 3
                 assert await session.scalar(select(func.count()).select_from(LoopProgressWork).where(LoopProgressWork.loop_id == first["loop_id"])) == 0
             reader, cursor, content = LoopObservationService(sessions, None), 0, ""
@@ -116,6 +127,18 @@ def test_distinct_snapshots_preserve_fact_revisions_and_complete_causal_pages(tm
             with pytest.raises(ValueError):
                 await reader.selective_read(latest, (PatrolCausalReadRequest(
                     intent_id=uuid.uuid4().hex, snapshot_hash=second["snapshot_hash"]),))
+            with pytest.raises(ValueError):
+                await reader.selective_read(latest, (PatrolCausalReadRequest(
+                    intent_id=second["intent_id"], snapshot_hash=third["snapshot_hash"]),))
+            fourth = await intake.submit(workspace, PatrolInputRequest(submission_id=uuid.uuid4().hex,
+                content="仍然引用第一版", visible_context=VisibleContext(loop_id=first["loop_id"],
+                    fact_refs=({"fact_id": fact_id, "revision": 1},))))
+            async with sessions() as session:
+                fourth_row = await session.get(LoopObservation, fourth["observation_id"])
+                assert fourth_row.envelope["intervention"]["facts"][0]["revision"] == 3
+                view = fourth_row.envelope["causal_chain"][-1]["read_view"]
+                assert view["referenced_facts"] == second_view["referenced_facts"]
+                assert canonical_hash((await session.get(LoopObservation, second["observation_id"])).envelope["pre_input_state"]) == second["snapshot_hash"]
         finally:
             await engine.dispose()
     asyncio.run(run())

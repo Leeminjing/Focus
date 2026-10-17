@@ -1,7 +1,7 @@
 """本文件对外提供 EvolutionStrategy、freeze_strategies 和策略认知约定。
 
 输入为三段策略正文或当前事务与工作区身份；输出为校验后的正文及带内容 hash 的冻结条目。
-工作流在既有记忆库筛选启用且范围匹配的策略，完整投影，不维护执行状态或授予权限。
+工作流筛选生效策略，原文按 hash 耐久保存，Observation 只冻结适用目录；不授予权限。
 示例：snapshot = await freeze_strategies(session, workspace_id)。
 """
 
@@ -27,6 +27,8 @@ class EvolutionStrategy(BaseModel):
 
 
 EVOLUTION_GUIDANCE = """evolution_strategies 是用户配置的演化参考，不授予权限或替代当前要求。
+目录只含适用信息与冻结 memory_id/content_hash。需要方法细节时，以 source=strategy 的 read 句柄按 section、UTF-8 cursor/max_bytes 读取 evolution 或 inheritance；Patrol 在 reads 中请求，规划器在 strategy_reads 中请求。next_cursor 非空表示正文尚未读完。
+只根据实际读到的正文判断方法，不凭名称或适用信息臆测演化过程和继承规则；未读取的方法细节不得声称已采用。
 结合冻结用户意见、Mission 和真实 Context 结果判断适用性。安装、启用、适用与实际采用分别判断；启用不要求每轮采用。
 用户明确指定的工作方法随本次要求冻结；冲突时优先遵守最新有效要求和授权。
 Patrol 在 strategy_adoptions 中仅记录实际影响动作的策略，引用冻结 memory_id/content_hash、reason 及从 0 开始的 action_indexes；没有采用时返回空集合。
@@ -44,8 +46,19 @@ async def freeze_strategies(session, workspace_id):
         Memory.category == "evolution_strategy",
         or_(Memory.workspace_id.is_(None), Memory.workspace_id == workspace_id),
     ).order_by(Memory.memory_id))).all()
+    from backend.app.desktop.strategy_snapshots import save_strategy_snapshots
+
+    snapshots = freeze_strategy_rows(rows, workspace_id)
+    await save_strategy_snapshots(session, snapshots)
+    return strategy_catalog(snapshots)
+
+
+def freeze_strategy_rows(rows, workspace_id):
+    """冻结与保存预检共用覆盖规则；停用的工作区安装同样遮蔽全局安装。"""
     effective = {}
     for row in rows:
+        if row.workspace_id is not None and row.workspace_id != workspace_id:
+            continue
         identity = (row.strategy_package or {}).get("id") or row.memory_id
         previous = effective.get(identity)
         if previous is None or row.workspace_id is not None:
@@ -60,6 +73,34 @@ async def freeze_strategies(session, workspace_id):
             body["package"] = {key: value for key, value in row.strategy_package.items() if key != "installed_hash"}
         result.append({**body, "content_hash": content_hash(body)})
     return tuple(result)
+
+
+def strategy_catalog(strategies):
+    """旧全文快照也投影为同一目录；不重写已有 Observation 或其 hash。"""
+    result = []
+    for item in strategies:
+        if "strategy" not in item:
+            result.append(dict(item))
+            continue
+        strategy = item["strategy"]
+        result.append({**{key: value for key, value in item.items() if key != "strategy"},
+            "applicability": strategy.get("applicability", ""),
+            "sections": {key: {"total_bytes": len(value.encode("utf-8"))} for key, value in strategy.items()
+                         if key in {"evolution", "inheritance"}},
+            "read": {"source": "strategy", "memory_id": item["memory_id"], "content_hash": item["content_hash"],
+                     "section": "evolution", "cursor": 0}})
+    return tuple(result)
+
+
+def strategy_catalog_input(payload):
+    """仅投影 Worker 输入的策略字段与已知 scope 路径，保留原冻结文档。"""
+    result = dict(payload)
+    if "evolution_strategies" in result:
+        result["evolution_strategies"] = strategy_catalog(result["evolution_strategies"])
+    for key in ("scope", "derivation_input", "derivation"):
+        if isinstance(result.get(key), dict):
+            result[key] = strategy_catalog_input(result[key])
+    return result
 
 
 def validate_strategy_adoptions(adoptions, strategies, action_count):

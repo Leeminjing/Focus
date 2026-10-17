@@ -19,6 +19,7 @@
     return `<header class="patrol-quiet-heading"><div><h1>Patrol</h1><p data-i18n="patrol.tagline">说出你的想法，剩下的交给 Patrol。</p></div><button class="quiet-button" type="button" data-patrol-clear-draft${remote ? " hidden disabled" : workspace ? "" : " disabled"} data-i18n="patrol.clear_draft">清空输入</button></header><form class="glass-surface" data-patrol-composer><i class="workbench-composer-icon" aria-hidden="true"><span class="ui-icon icon-brain-circuit"></span></i><span class="workbench-composer-label">Patrol · ${escape(workspace?.display_name || "工作区")}</span>
       ${remote ? '<p>新问题、截图和文字都在桌面机器人旁预览并发送。</p>' : ''}<textarea data-patrol-content rows="3" aria-label="向 Patrol 输入信息" data-i18n-placeholder="patrol.placeholder" placeholder="描述你的任务、问题或想法…"${remote ? " hidden disabled" : workspace ? "" : " disabled"}></textarea>
       <div data-patrol-materials aria-label="待发送参考材料"></div><div data-patrol-file-refs aria-label="已引用文件版本"></div><button type="button" data-patrol-file-picker-open${remote ? " hidden disabled" : ""}>＠ 引用文件版本</button><div data-patrol-file-picker hidden aria-label="选择文件版本"></div>
+      ${workspace ? root.FocusWorkspacePatrolBudget?.markup() || "" : ""}
       <p data-patrol-error role="alert" hidden></p><div class="patrol-composer-footer"><div><button type="button" data-action="show-patrol" data-patrol-switch>▢ ${escape(workspace?.display_name || "选择工作区")}</button><select data-patrol-type aria-label="输入类型">${Object.entries(labels).map(([key, label]) => `<option value="${key}">${label}</option>`).join("")}</select><span data-patrol-target></span><button type="button" data-patrol-clear-target hidden>改为主动输入</button></div>
       <div><span data-patrol-receipt role="status"></span><button type="button" data-patrol-pending hidden>待处理</button><button type="button" data-patrol-live-retry hidden>重连工作状态</button><button type="button" data-patrol-history-open aria-expanded="false" aria-controls="patrolInputHistory">输入记录</button><button type="button" data-patrol-details aria-expanded="false" aria-controls="patrolWorkDetails">查看工作详情 ↗</button><button type="submit" aria-label="发送给工作区 Patrol"${workspace ? "" : " disabled"}>↑</button></div></div><small data-patrol-state role="status">${workspace ? "正在读取工作状态" : "先选择工作区文件夹，确认后即可输入"}</small></form>`;
   }
@@ -62,12 +63,14 @@
   }
   function lineageManifest(snapshot, projection) {
     const contexts = new Map();
+    const revisions = new Map();
     for (const node of snapshot.nodes) {
+      revisions.set(node.revision_id, node);
       if (!contexts.has(node.context_id) || contexts.get(node.context_id).generation < node.generation) contexts.set(node.context_id, node);
     }
     for (const [contextId, revisionId] of Object.entries(snapshot.roots || {})) {
-      const rootNode = snapshot.nodes.find(node => node.context_id === contextId && node.revision_id === revisionId);
-      if (rootNode) contexts.set(contextId, rootNode);
+      const rootNode = revisions.get(revisionId);
+      if (rootNode?.context_id === contextId) contexts.set(contextId, rootNode);
     }
     const cards = new Map((root.FocusLoopLiveSelectors?.selectContextCards(projection) || []).map(item => [item.id, item]));
     const nodes = [...contexts.values()].map(node => {

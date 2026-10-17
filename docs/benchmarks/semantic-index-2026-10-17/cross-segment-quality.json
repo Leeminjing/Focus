@@ -1,0 +1,21 @@
+{
+  "provider": "configured real model",
+  "joint_statements": [
+    "An HTTP 500 occurred; the connection pool was initially suspected but ruled out by investigation, and a thread-pool deadlock was confirmed as the cause."
+  ],
+  "joint_supports": [
+    [
+      "diagnosis",
+      "reject",
+      "suspect",
+      "symptom"
+    ]
+  ],
+  "read_rounds": 1,
+  "reused_local_segments": 2,
+  "quality": "complete",
+  "model_calls": 12,
+  "input_tokens": 9670,
+  "output_tokens": 3909,
+  "exact_hit_calls": 0
+}

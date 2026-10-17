@@ -73,6 +73,7 @@ class PatrolInputRequest(BaseModel):
     visible_context: VisibleContext | None = None
     file_refs: tuple[FileReference, ...] = Field(default=(), max_length=32)
     attachments: tuple[WorkspaceAttachmentReference, ...] = Field(default=(), max_length=32)
+    budget_preset: Literal["normal", "long"] | None = None
 
     @model_validator(mode="after")
     def _validate_input(self):
@@ -125,6 +126,8 @@ def request_document(request: PatrolInputRequest) -> dict:
         exclude.add("file_refs")
     if not request.attachments:
         exclude.add("attachments")
+    if request.budget_preset is None:
+        exclude.add("budget_preset")
     return request.model_dump(mode="json", exclude=exclude)
 
 

@@ -31,7 +31,7 @@ Frozen Revision
 
 仅局部抽取一次看一个协议闭合 segment，不能引用其他段。`SegmentProjectionRecord` 保存 drafts、精确 quotes、独立 verdicts、隔离结果和可用 provider 元数据；它按 Context 隔离，独立于具体 Revision。这是缓存子步骤，不能代替整个 Index 的理解合同。
 
-`RevisionInterpretationBuilder` 获取全部有序 segment 身份、所有已接受的局部 authority／线索、rejection 和 fallback。冷构建原文全部能容纳时共同提供；增量先给变化尾部原文。综合模型可 `read_segments` 展开任意冻结旧段，在同一次调用中理解多段原文；没有固定相邻窗口、关键词或 top-k 门槛。摘要只引导发现，支持引文必须来自实际提供的原文。
+`RevisionInterpretationBuilder` 获取全部有序 segment 身份、所有已接受的局部 authority／线索、rejection 和 fallback。冷构建和增量均优先在首轮提供全部冻结原文，前提是完整请求窗口、读取上限和本轮剩余模型预算均容纳；否则增量先给变化尾部，冷构建先给目录，再按需读取。预算预检不预留或消费，实际发送仍重新检查持久授权和共享额度。综合模型可 `read_segments` 展开任意冻结旧段，在同一次调用中理解多段原文；没有固定相邻窗口、关键词或 top-k 门槛。摘要只引导发现，支持引文必须来自实际提供的原文。
 
 例如 S1 报告 500、S2 怀疑连接池、S3 排除连接池、S4 确认线程池死锁，可在投影阶段生成联合时间线，并用 S2/S3/S4 的原文共同独立验证。Curator 收到已生成的诊断。
 
@@ -55,11 +55,15 @@ Frozen Revision
 | index_assembly / semantic_indexer / semantic_index | 新来源绑定、协议切分、全量覆盖和身份校验 |
 | index_model_budget / index_budget_repository / RoleBoundStructuredModel | 逐 attempt 请求准入、短事务共享预算预留与结算、窗口和真实用量 |
 
-读取和发布分别使用短 session；模型调用不持有数据库事务。Portfolio 与 segment 调度共用同一个并发上限，段内顺序处理，不额外放大并发。
+读取和发布分别使用短 session；模型调用不持有数据库事务。同一 Revision 的独立 segment 并发处理并按原序组装，每段仍依次执行抽取和独立验证。服务内跨 Revision、跨 build 的抽取、验证与整体解释共享模型调用额度，默认 4；内部重试也占用同一名额，不按 Context 数量放大并发。
+
+同一服务内，完全相同的冻结 Observation、授权版本、fencing token、切段／模型合同与 catalog 限制共享一个进行中的完整构建。等待者独立取消；最后一个等待者离开时才取消并回收工作。不同 Round、Observation 或授权不合并；跨进程／服务实例仍依靠持久缓存和提交赢家保证一致性。
 
 ## 发布与恢复
 
-所有来源完成局部抽取及整体解释后，在一个短事务中解析 record/index 赢家并校验完整 catalog；失败或容量超限不发布部分批次。竞争可能等待别的事务提交，因此在局部 put 后重新查完整目标赢家，采用其 proof、Index ID 和 catalog。不同 Revision 竞争导致理解依赖与局部赢家不一致时显式阻断，不拼装未经重算的 proof。
+每个局部段完成抽取、验证和完整性检查后，独立短事务保存不可变缓存并采用首个提交赢家。失败、取消或进程重启后的构建可以复用这些记录，只补缺失段及整体解释。
+
+所有来源完成整体解释后，在一个短事务中重验已提交局部依赖、解析完整 Index 赢家并校验 catalog；失败或容量超限不发布部分完整 Index。局部缓存仅供构建使用，Curator 始终消费完整 catalog。不同 Revision 竞争导致理解依赖不一致时显式阻断，不拼装未经验证的 proof。
 
 完成、失败、重试和取消都记录实际新模型用量，历史 attempt 不重复计费。每个阶段通过 `index_phase` 区分 local、interpretation 和 interpretation_verifier；所有阶段共用 durable admission，不额外获得预算。
 
@@ -73,7 +77,7 @@ Index／record schema 和完整切分 fingerprint 都属于 record 合同。即�
 
 预算增加后，可显式调用 `service.build(frozen_observation, budget_authority_revision=new_revision)`。新预算及 catalog 容量限制来自持久化授权，预留及 stage 身份记录授权版本；原 Observation、任务记忆和 Lineage 不被修改。未传新授权版本的旧重试不会自动获得更多额度。
 
-提交前进程崩溃会重做未提交模型工作；提交后新进程可以零调用精确命中，并为后继 Revision 继续增量构建。
+完整 Index 提交前进程崩溃，只重做未保存的段及整体解释，已提交局部缓存可以复用；完整 Index 提交后新进程可以零调用精确命中，并为后继 Revision 继续增量构建。
 
 无法确认真实用量的崩溃预留继续占额度，不按 TTL、重试或新授权自动释放；恢复重做也需要剩余额度。此阶段没有自动推断失联请求结果的功能。
 
@@ -86,6 +90,33 @@ Index／record schema 和完整切分 fingerprint 都属于 record 合同。即�
 100 个稳定段、1202 条消息的确定性 fixture 中：冷构建局部 202 次 + 综合 1 次 = 203 次；追加局部 2 次 + 综合 1 次 = 3 次；精确命中 0 次。该 fixture 综合合法空结果，无联合 verifier；有跨段关系的实际成本还包含回读与联合验证。测试分别记录两阶段及合计的请求 payload、模拟 tokens，不能将局部节省当成总管线成本或真实 provider token 预测。
 
 确定性测试以同一目标的 cold/incremental 陈述、覆盖与质量合同作比较；真实 LLM 的两次输出不要求逐字相同。提供商未公开的模型别名变化无法完全检测，显式配置／prompt／verifier 版本变化可以使缓存失效。
+
+默认分段仍为 12 条，工具交换保持闭合；本轮调度和缓存优化不改变分段 fingerprint，也不要求已有完整缓存冷构建。12／30 的选择还需比较真实模型冷构建与追加场景，不能从请求数直接推算端到端加速。
+
+性能统计使用每次调用的运行日志：`semantic_index_build` 记录实际等待耗时、是否合并和结果；`semantic_index_model_invocation` 记录 schema、排队、执行与预算准入耗时；`semantic_index_revision` 记录局部抽取、整体解释及局部缓存命中／新投影段数。执行耗时包含预算准入和内部重试，不能当作纯 provider 延迟；日志不含原文或凭据。不可变 stage artifact 在精确重放时保留首次耗时，不能直接作为缓存请求的实时延迟样本。
+
+### 2026-10-17 真实模型摸底（原文预取生产化之前）
+
+使用用户当前配置的 `deepseek-flash`，每组独立 Context、55 条合成验证事实，随后追加 2 条。以下均为索引服务单次实际耗时，尚未包含 Curator、Patrol 和材料合成，也不是 P50/P95。
+
+| 分段上限 | 模型并发 | 冷构建 | 追加 2 条 | 追加索引质量 |
+| --- | --- | --- | --- | --- |
+| 12 | 1 | 99.98 s | 49.48 s | complete |
+| 12 | 4 | 69.34 s | 47.18 s | complete |
+| 30 | 1 | 77.01 s | 55.00 s | complete |
+| 30 | 4 | 73.72 s | 65.40 s | degraded：隔离 1 条 unsupported claim |
+
+四组精确命中均为零模型调用，约 46–74 ms。30/4 追加样本的 57 条消息仍有已接受的引用；严格要求 `complete` 的基准断言失败，该结果保留在原始报告中。单轮结果不能用于推断分段大小与质量失败率的因果关系。
+
+12/4 的追加阶段中，局部处理约 14.78 s，整体解释约 32.21 s，并产生一轮旧原文回读。隔离实验在容量及读取上限允许时，首次整体解释直接提供全部冻结原文：冷构建 70.75 s，追加 26.85 s，缓存命中约 39 ms；追加不再回读，索引为 complete。模型调用由 5 次变为 3 次，其中也包含联合命题输出及验证需求的差异，不能将全部加速都归因于少了一轮回读。跨段“怀疑—排除—最终诊断”的真实模型检查也通过。当时该策略仅存在于测试补丁，随后已按上述预算和窗口约束落实到生产 builder；有效的历史窄窗口 proof 与完整缓存继续复用，不强制冷构建。
+
+此前 8 项真实模型测试为 7 项通过、1 项严格质量断言失败。原始分阶段耗时、调用、tokens、引用及质量数据见 [汇总报告](benchmarks/semantic-index-2026-10-17/summary.json)。基准入口为 `backend/tests/test_index_real_model_performance.py`，需显式设置 `FOCUS_INDEX_REAL_MODEL=1`；输出目录、消息数和重复次数分别由 `FOCUS_INDEX_BENCHMARK_OUTPUT`、`FOCUS_INDEX_BENCHMARK_MESSAGES`、`FOCUS_INDEX_BENCHMARK_REPEATS` 控制。当前基准直接使用生产窗口选择，已移除原文预取测试补丁。样本为短文本事实，尚不能代表长工具返回和生产流量分布。
+
+### 原文预取生产化后的复测
+
+同一提供商、12 条分段、共享并发 4，基准直接运行生产代码：55 条合成消息冷构建 61.05 s，追加 2 条 43.90 s，精确命中约 60 ms、零调用，均为 complete。追加调用从此前样本的 5 次降到 4 次，旧原文回读从 1 轮降到 0 轮，但整体解释及联合验证仍约 29.82 s；没有复现隔离实验的 26.85 s。独立跨段纠错检查通过，保留“初步怀疑、随后排除、最终确认”的联合陈述，不过该 fixture 的追加仍耗时 64.20 s，零回读不等于低延迟。
+
+本轮 202 项确定性回归和 2 项生产真实模型测试通过，覆盖容量／读取／预算不足时回退、旧窄窗口缓存精确命中、引用验证、取消及崩溃恢复。各配置仍只有一次样本，输出和提供商延迟均有波动，不能声明稳定加速比例或 P50/P95。生产原始数据及与此前样本的比较见 [生产复测汇总](benchmarks/semantic-index-2026-10-17/production-prefill/summary.json)；历史失败和隔离实验报告保留。
 
 ## 迁移与回滚
 

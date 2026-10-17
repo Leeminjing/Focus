@@ -9,6 +9,7 @@
     write_models_preference(models, removed_models, config_name) — 只改模型目录相关键并原子写出
     credential_is_set(variable) — 该凭据变量在当前进程内是否已设置（只回答是/否，不给出值）
     apply_credential(variable, value) — 写入凭据文件并在当前进程内立即可用
+    write_model_settings(models, removed, credentials, config_name) — 提交设置，失败时回滚文件和环境
 
 输入:
     models: list[dict] — 用户偏好层要声明的条目（完整声明，不含半条）
@@ -175,6 +176,37 @@ def apply_credential(variable: str, value: str) -> None:
     _write_env_value(preference_env_path(), name, value)
     # 当前进程内立即生效：require_env_var 在使用期读 os.environ
     os.environ[name] = value
+
+
+def write_model_settings(
+    models: list[dict], removed: list[str], credentials: dict[str, str],
+    config_name: str = "config.yaml",
+) -> None:
+    """提交模型配置与凭据；任一写入失败则还原磁盘和环境变量。"""
+    paths = [preference_config_path(config_name), preference_env_path()]
+    try:
+        before = {path: path.read_bytes() if path.exists() else None for path in paths}
+    except OSError as exc:
+        raise PreferenceWriteError("无法读取用户配置目录，请检查文件权限后重试") from exc
+    environment = {name: os.environ.get(name) for name in credentials}
+    try:
+        for name, value in credentials.items():
+            apply_credential(name, value)
+        write_models_preference(models, removed, config_name)
+    except (PreferenceWriteError, OSError) as exc:
+        try:
+            for path, content in before.items():
+                if content is None:
+                    path.unlink(missing_ok=True)
+                elif not path.exists() or path.read_bytes() != content:
+                    _write_text_atomically(path, content.decode("utf-8"))
+        finally:
+            for name, value in environment.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+        raise PreferenceWriteError("模型设置未保存，请检查用户配置目录的权限与文件格式后重试") from exc
 
 
 def _write_env_value(path: Path, name: str, value: str) -> None:

@@ -3,7 +3,7 @@
 工作流为装配共享 intake 和预览模块，显式发送后读取既有 Live；示例：desktop-patrol.html?surface=panel。
 -->
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Focus · Patrol</title><link rel="stylesheet" href="./styles/icons.css"><link rel="stylesheet" href="./desktop-patrol.css"></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Focus · Patrol</title><link rel="stylesheet" href="./styles/icons.css"><link rel="stylesheet" href="./desktop-patrol.css"><link rel="stylesheet" href="./styles/workspace-patrol-budget.css"></head>
 <body>
   <main id="robot" hidden><button id="robot-open" aria-label="打开 Patrol，拖入图片、文字或文件"><img src="./assets/patrol-avatar/idle.png" alt="Patrol 机器人" draggable="false"></button><span id="robot-status" role="status">点击开始</span><button id="robot-hide" aria-label="隐藏机器人到托盘">收起</button></main>
   <main id="panel" hidden>
@@ -25,11 +25,12 @@
       <section id="version-picker" aria-label="引用文件版本" hidden><header><strong>引用文件版本</strong><button type="button" id="close-versions" aria-label="关闭文件版本"><span class="ui-icon icon-x" aria-hidden="true"></span></button></header><label class="version-search"><span class="ui-icon icon-search" aria-hidden="true"></span><input id="version-query" placeholder="搜索产物文件名…" aria-label="搜索产物文件名"></label><div id="version-candidates" role="status"></div><button id="older-versions" type="button" hidden>更早的文件版本</button></section>
       <section id="version-detail" aria-label="文件版本详情" hidden><header><strong>文件版本</strong><button type="button" id="close-version-detail" aria-label="关闭版本详情"><span class="ui-icon icon-x" aria-hidden="true"></span></button></header><div id="version-body"></div></section>
       <div class="panel-feedback"><div class="panel-feedback-content">
+      <div id="task-budget"></div>
       <p id="error" role="alert" hidden></p>
       <button id="retry-workspace" type="button" hidden>重新读取工作区</button>
       <div id="activity" role="status" hidden><i></i><span id="activity-text"></span><button id="activity-reconnect" hidden>重连</button><span class="ui-icon icon-loader-circle" aria-hidden="true"></span></div>
       <section id="requests" aria-label="待处理请求"></section>
-      <section id="results" aria-label="工作区已提交结果"></section>
+      <section id="results" aria-label="工作区已提交结果"><div id="answers"></div><div id="progress"></div><div id="artifacts"></div></section>
       <details id="history" hidden><summary>输入记录 <span id="receipt"></span></summary><div id="history-items"></div><button id="older" hidden>更早的输入</button></details>
       </div></div>
     </div></div></div>
@@ -37,5 +38,5 @@
   <script src="./http-response.js"></script><script src="./loop-api.js"></script>
   <script src="./loop-live-schema.js"></script><script src="./loop-live-reducer.js"></script><script src="./loop-live-selectors.js"></script><script src="./loop-live-store.js"></script><script src="./loop-live-connection.js"></script>
   <script src="./access-mode.js"></script><script src="./workspace-patrol-inputs.js"></script><script src="./workspace-patrol-intake.js"></script><script src="./workspace-patrol-material-preview.js"></script><script src="./workspace-patrol-feedback.js"></script><script src="./loop-facts-view.js"></script><script src="./desktop-patrol-references.js"></script>
-  <script src="./desktop-patrol-robot.js"></script><script src="./desktop-patrol-panel.js"></script>
+  <script src="./workspace-patrol-budget.js"></script><script src="./desktop-patrol-robot.js"></script><script src="./desktop-patrol-panel.js"></script>
 </body></html>

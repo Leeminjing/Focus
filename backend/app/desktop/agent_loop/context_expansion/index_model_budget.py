@@ -3,20 +3,28 @@ r"""本文件对外提供 IndexModelBudget 与 BudgetedIndexModel。
 输入为冻结资源策略、模型窗口和结构化 payload；输出为 attempt 准入、纯窗口预检或显式预算异常。
 具体工作流为按完整请求 UTF-8 字节上界估计输入，预留输出／调用；生产模型绑定逐次 owner receipt，局部窗口/额度检查不重复预留；兼容未托管模型复用批次预留，结束时幂等结算真实用量。
 resources 提供冻结策略；fits_request/require_fit 纯检查容量，后者拒绝时提供安全尺寸诊断；admit 才为局部／综合／verifier attempts 预留额度。未知崩溃预留仍占额度。
+fits_available_budget 为可选原文预取检查窗口与本轮剩余额度，不预留或消费；实际发送仍由 admit 和持久授权准入重验。
 BudgetedIndexModel.last_attempt_records 只包含本次 invocation：准入／配置拒绝返回空记录，已发送的失败或取消保留真实 attempts。
+可选共享 semaphore 限制完整 invocation（含内部重试），排队取消不准入、不重复捕获旧 attempt。
+运行日志分别记录排队、预算准入和执行耗时，包含失败与取消，不记录原文或凭据。
 容量拒绝提供请求 schema、hash 和字段字节尺寸的安全诊断，不保存正文或凭据，也不凭通用超窗推断 Tool 原子过大。
 示例：model.fits_request(schema, prompt, multi_segment_payload)；多段原文超窗显式阻断，Tool 原子段不切开。
 """
 
 import asyncio
 import json
+import logging
+from contextlib import nullcontext
 from hashlib import sha256
+from time import perf_counter_ns
 
 from backend.app.desktop.agent_loop.resource_limits import (
     exceeds_limit,
     remaining_capacity,
     request_limits,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 class IndexBudgetExceeded(ValueError):
@@ -76,6 +84,16 @@ class IndexModelBudget:
         limit, _ = self._request_limits(model)
         return not exceeds_limit(self._estimated_input(schema, system, payload), limit)
 
+    def fits_available_budget(self, model, schema, system, payload):
+        estimated = self._estimated_input(schema, system, payload)
+        limit, output = self._request_limits(model)
+        return not (
+            exceeds_limit(estimated, limit)
+            or exceeds_limit(estimated, self._input)
+            or exceeds_limit(1, self._calls)
+            or exceeds_limit(output, self._output)
+        )
+
     async def admit(self, model, schema, system, payload) -> None:
         estimated, _, output = self.require_fit(model, schema, system, payload)
         async with self._lock:
@@ -110,9 +128,15 @@ class IndexModelBudget:
 
 
 class BudgetedIndexModel:
-    def __init__(self, model, budget: IndexModelBudget) -> None:
+    def __init__(
+        self, model, budget: IndexModelBudget, *, semaphore: asyncio.Semaphore | None = None,
+        telemetry_context=None,
+    ) -> None:
         self._model = model
         self._budget = budget
+        self._semaphore = semaphore
+        self._admission_ms = 0.0
+        self._telemetry_context = dict(telemetry_context or {})
         self._identity = getattr(model, "cache_identity", None)
         self._guarded = hasattr(model, "bind_request_guard")
         self._last_attempt_records = ()
@@ -123,7 +147,11 @@ class BudgetedIndexModel:
 
     async def _admit_checked(self, model, schema, system, payload):
         self._check_identity()
-        await self._budget.admit(model, schema, system, payload)
+        started = perf_counter_ns()
+        try:
+            await self._budget.admit(model, schema, system, payload)
+        finally:
+            self._admission_ms += (perf_counter_ns() - started) / 1_000_000
 
     def _check_identity(self):
         if getattr(self._model, "cache_identity", None) != self._identity:
@@ -137,6 +165,10 @@ class BudgetedIndexModel:
         self._check_identity()
         return self._budget.fits_request(self._model, schema, system, payload)
 
+    def fits_available_budget(self, schema, system, payload):
+        self._check_identity()
+        return self._budget.fits_available_budget(self._model, schema, system, payload)
+
     def require_fit(self, schema, system, payload):
         self._check_identity()
         return self._budget.require_fit(self._model, schema, system, payload)
@@ -149,6 +181,31 @@ class BudgetedIndexModel:
 
     async def _invoke(self, schema, system, payload, validator=None):
         self._last_attempt_records = ()
+        self._admission_ms = 0.0
+        started = perf_counter_ns()
+        entered = None
+        outcome = "error"
+        try:
+            async with self._semaphore if self._semaphore is not None else nullcontext():
+                entered = perf_counter_ns()
+                result = await self._invoke_with_slot(schema, system, payload, validator)
+                outcome = "ready"
+                return result
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        finally:
+            finished = perf_counter_ns()
+            metrics = {
+                **self._telemetry_context,
+                "schema_name": schema.__name__, "invocation_outcome": outcome,
+                "queue_wait_ms": ((entered or finished) - started) / 1_000_000,
+                "execution_ms": (finished - entered) / 1_000_000 if entered else 0.0,
+                "admission_ms": self._admission_ms,
+            }
+            _logger.info("semantic_index_model_invocation %s", metrics, extra=metrics)
+
+    async def _invoke_with_slot(self, schema, system, payload, validator):
         self._check_identity()
         method = (
             getattr(self._model, "invoke_validated", None)
@@ -156,7 +213,7 @@ class BudgetedIndexModel:
             else None
         )
         if not self._guarded:
-            await self._budget.admit(self._model, schema, system, payload)
+            await self._admit_checked(self._model, schema, system, payload)
         try:
             if method is not None:
                 return await method(schema, system, payload, validator)

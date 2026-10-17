@@ -32,7 +32,8 @@ async def get_mcp_tools_cached(
 ) -> list[BaseTool]:
     # 配置先解析为实际值再取摘要，不把环境变量引用或秘密值存入缓存键。
     config = get_extensions_config("extensions_config.json", workspace=workspace)
-    digest = hashlib.sha256(json.dumps(config.model_dump(), sort_keys=True).encode()).hexdigest()
+    snapshot = {"config": config.model_dump(), "sources": config.mcp_server_sources, "errors": config.mcp_server_errors}
+    digest = hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()
     key = (asyncio.get_running_loop(), digest)
     lock = _locks.setdefault(key, asyncio.Lock())
     async with lock:
@@ -42,5 +43,5 @@ async def get_mcp_tools_cached(
         tools = await get_mcp_tools(config=config)
         _cache[key] = tools
         if not getattr(tools, "healthy", True):
-            logger.warning("MCP 部分连接失败，下次装配将自动重试")
+            logger.warning("MCP 配置或连接失败，下次装配将自动重试")
         return tools

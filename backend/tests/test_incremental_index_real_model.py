@@ -42,6 +42,21 @@ def observed_model_factory(config, role, calls, usage):
         def last_attempt_records(self):
             return self._model.last_attempt_records
 
+        @property
+        def context_window_tokens(self):
+            return self._model.context_window_tokens
+
+        @property
+        def max_output_tokens(self):
+            return self._model.max_output_tokens
+
+        @property
+        def usage_managed(self):
+            return self._model.usage_managed
+
+        def bind_usage_receipts(self, receipts):
+            self._model.bind_usage_receipts(receipts)
+
         def bind_request_guard(self, guard):
             self._model.bind_request_guard(guard)
 
@@ -176,7 +191,7 @@ def test_real_provider_cross_segment_diagnosis_and_incremental_discovery(tmp_pat
             index.interpretation.completed
             and len(index.inheritance.reused_segment_ids) == 2
         )
-        assert index.interpretation.read_requests
+        assert not index.interpretation.read_requests
         assert any(len(p["segments"]) >= 3 for _, p in calls if "inventory" in p)
         assert any(
             len({s["message_id"] for s in c["supports"]}) >= 3

@@ -1,0 +1,58 @@
+{
+  "configured_model": "deepseek-flash",
+  "quality": {
+    "state": "complete",
+    "message_count": 4,
+    "represented_messages": 4,
+    "missing_message_ids": [],
+    "fallback_segments": 0,
+    "rejection_codes": {},
+    "all_sources_bound": true,
+    "statements": [
+      {
+        "text": "An HTTP 500 error occurred.",
+        "authority": "confirmed",
+        "message_ids": [
+          "symptom"
+        ]
+      },
+      {
+        "text": "The connection pool was initially suspected.",
+        "authority": "hypothesis",
+        "message_ids": [
+          "suspect"
+        ]
+      },
+      {
+        "text": "An HTTP 500 error occurred; the connection pool was initially suspected but then ruled out, and a thread-pool deadlock was ultimately confirmed as the cause.",
+        "authority": "confirmed",
+        "message_ids": [
+          "diagnosis",
+          "reject",
+          "suspect",
+          "symptom"
+        ]
+      },
+      {
+        "text": "The investigation ruled out the connection pool.",
+        "authority": "confirmed",
+        "message_ids": [
+          "reject"
+        ]
+      },
+      {
+        "text": "A thread-pool deadlock was confirmed as the cause.",
+        "authority": "confirmed",
+        "message_ids": [
+          "diagnosis"
+        ]
+      }
+    ]
+  },
+  "append_duration_ms": 26486.616099995445,
+  "interpretation_read_rounds": 0,
+  "joint_statements": [
+    "An HTTP 500 error occurred; the connection pool was initially suspected but then ruled out, and a thread-pool deadlock was ultimately confirmed as the cause."
+  ],
+  "reused_segments": 2
+}

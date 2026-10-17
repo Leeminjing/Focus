@@ -18,6 +18,7 @@ import asyncio
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+from backend.app.desktop.evolution_strategies import strategy_catalog_input
 
 from focus.config.app_config import AppConfig
 from focus.runtime.runs.usage import ModelUsage
@@ -448,10 +449,24 @@ class LoopWorkerRuntime:
             (planning.session_id, *index_ids),
             RetrievalBackedCognitiveAdvisor.VERSION,
         )
+        async def strategy_reader(requests):
+            from backend.app.desktop.agent_loop.models import LoopObservation
+            from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
+            from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
+
+            async with self._sessions() as session:
+                await WorkerAttemptAuthority().require_current(session, request)
+                base = await session.get(LoopObservation, request.observation_id)
+                if base is None or base.loop_id != request.loop_id or base.round_id != request.round_id:
+                    raise ValueError("Planner 策略读取缺少冻结 Observation")
+                envelope = LoopObservationEnvelope.model_validate(base.envelope)
+            return await LoopObservationService(self._sessions, None).selective_read(envelope, requests)
+
         result = await RetrievalBackedCognitiveAdvisor(
             worker,
             retriever=AuthorizedSemanticRetriever(catalog.mission_catalog),
             checkpoint=checkpoint,
+            strategy_reader=strategy_reader,
         ).plan(
             {**payload, "assignments": request.scope.get("assignments", [])},
             planning,
@@ -618,7 +633,7 @@ class LoopWorkerRuntime:
             )
             frozen = request.scope.get("frozen_worker_input")
             if frozen is not None and not retrieval:
-                return frozen, loop, round_row
+                return strategy_catalog_input(frozen), loop, round_row
             if request.kind in {"lane_curator", "retrieval_cognitive_planner"}:
                 from backend.app.desktop.agent_loop.models import LoopObservation
                 from backend.app.desktop.agent_loop.schemas import (
@@ -672,7 +687,7 @@ class LoopWorkerRuntime:
                 row.scope = {**row.scope, "frozen_worker_input": payload}
                 frozen = payload
             request.scope = dict(row.scope)
-            return frozen, loop, round_row
+            return strategy_catalog_input(frozen), loop, round_row
 
     async def _advance(self, loop_id: str, round_id: str, *, request=None) -> None:
         async with self._sessions.begin() as session:

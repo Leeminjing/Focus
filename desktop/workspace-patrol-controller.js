@@ -1,6 +1,7 @@
 /* 本文件对外提供工作区 Patrol 页面控制器。
  * 输入为已绑定工作区、共享 Loop API、Live Store/Connection 及输入 store；输出为逐条耐久回执和图主导工作台更新；选择身份由原 ContextInspector 持有。
  * 具体工作流为先读取绑定/历史再订阅已有单路 Live，依据投影结构共享只更新变化区域，保留 composer、进度和未变等待表单 DOM，异步响应按工作区代际隔离；
+ * 图谱 Live 变化在同一动画帧合并，使用最新投影检查拓扑与更新节点；离开时取消待执行帧。
  * 主输入走 workspace intake，固定当时可见的 Live 游标、Fact revision 与独立 Run 有界片段；旧请求重试复用原文和证据。Observation 按精确版本检视，迟到分页不得进入另一版本。
  * 显隐复用 SurfaceTransition 保留输入节点，运行预览复用共享 Run 观察器，折叠/离开释放订阅；原生 dialog 管理焦点，AbortController 清理监听与读请求。示例：await controller.mount(host, workspace)。
  * 文件详情/候选响应绑定工作区与请求代际；实时文件事实保留历史滚动位置，详情与输入节点独立。
@@ -31,6 +32,7 @@
     let historyHTML = "";
     let unlisten = null;
     let materialPreview = null;
+    let budget = null;
 
 
     let lifetime = null;
@@ -40,6 +42,8 @@
     let relatedOnly = false;
     let highlightIds = [];
     let projection = null;
+    let graphFrame = null;
+    let lineagePending = false;
     let observation = null;
     let observationIdentity = null;
     let observationVersion = 0;
@@ -66,7 +70,7 @@
     const waitUi = new Map();
     const previews = createRunPreviews?.((values, structural) => {
       if (!host || !detailsOpen) return;
-      if (structural) patchGraph();
+      if (structural) scheduleGraphPatch();
       else root.FocusPortfolioMapView.patchPreviews(host.querySelector("[data-patrol-lineage]"), values);
       patchRetry();
     });
@@ -166,6 +170,21 @@
       button.setAttribute("aria-pressed", String(relatedOnly));
       button.textContent = relatedOnly ? "恢复全部关系" : "仅看所选关联";
       for (const item of host.querySelectorAll("[data-patrol-progress-locate]")) item.setAttribute("aria-pressed", String(JSON.parse(item.dataset.patrolProgressLocate).includes(selected?.contextId)));
+    }
+    function scheduleGraphPatch(refreshTopology = false) {
+      if (!host || !detailsOpen) return;
+      lineagePending ||= refreshTopology;
+      if (graphFrame !== null) return;
+      const owner = token;
+      graphFrame = requestAnimationFrame(() => {
+        if (owner !== token) return;
+        graphFrame = null;
+        const refresh = lineagePending;
+        lineagePending = false;
+        if (!host || !detailsOpen) return;
+        if (refresh && projection) void refreshLineage(projection);
+        patchGraph();
+      });
     }
     function selectionChanged(selected) {
       if (!selected) relatedOnly = false;
@@ -371,6 +390,7 @@
     }
     const patchInputs = model => {
       if (!host) return;
+      budget?.syncDraft();
       patchHistory(model);
       materialPreview?.render(model.draft);
       const content = host.querySelector("[data-patrol-content]");
@@ -406,7 +426,7 @@
           if (snapshot.complete !== true) throw new Error("来源关系尚未完整返回");
           lineageSnapshot = snapshot;
           host.querySelector("[data-patrol-lineage-error]").hidden = true;
-          patchGraph(); inspector?.refresh();
+          scheduleGraphPatch(); inspector?.refresh();
         }
       } catch (failure) {
         if (current === token && version === lineageToken && failure.name !== "AbortError") {
@@ -428,6 +448,7 @@
       if (next.loop_id !== loopId) return;
       const previous = projection;
       projection = next;
+      budget?.update(next);
       for (const [id] of waitUi) {
         if (!projection.wait_requests[id] || !["open", "resolving"].includes(projection.wait_requests[id].state.status)) waitUi.delete(id);
       }
@@ -460,9 +481,10 @@
         patchFileFacts(true);
       }
       if (detailsOpen) {
-        if (["loop", "portfolio", "lineage", "contexts"].some(key => previous?.[key] !== projection[key])) void refreshLineage(projection);
+        const topologyChanged = ["loop", "portfolio", "lineage", "contexts"].some(key => previous?.[key] !== projection[key]);
+        if (topologyChanged) scheduleGraphPatch(true);
         if (previous?.round !== projection.round) void refreshObservation(true);
-        if (lineageSnapshot && ["contexts", "runs", "task_progress"].some(key => previous?.[key] !== projection[key])) patchGraph();
+        if (lineageSnapshot && ["contexts", "runs", "task_progress"].some(key => previous?.[key] !== projection[key])) scheduleGraphPatch();
       }
       if (!projection.round?.state?.observation_id) {
         observation = null; observationIdentity = null; observationVersion++;
@@ -614,6 +636,9 @@
       lifetime = new AbortController();
       historyLoading = true;
       host.innerHTML = view.skeleton(bound, Boolean(onCompose));
+      const budgetHost = host.querySelector("[data-patrol-budget]");
+      if (budgetHost) budget = root.FocusWorkspacePatrolBudget.create({ host: budgetHost, api,
+        getDraft: () => inputs.get().draft, editDraft: patch => inputs.edit(patch), onError: error, canChooseInitial: !onCompose });
       if (onCompose) {
         host.querySelector("[data-patrol-composer]").classList.add("is-remote-composer");
         host.querySelector("[data-patrol-type]").hidden = true;
@@ -704,6 +729,9 @@
       }
     }
     function leave() {
+      budget?.dispose(); budget = null;
+      if (graphFrame !== null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(graphFrame);
+      graphFrame = null; lineagePending = false;
       materialPreview?.dispose(); materialPreview = null;
       previews?.stop();
       root.document.body.classList.remove("has-patrol-workbench");

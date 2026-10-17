@@ -264,6 +264,28 @@ def test_cancelled_sent_attempt_is_captured_and_cancellation_propagates():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("guarded", [False, True])
+def test_cancelled_queued_invocation_spends_no_budget_and_replays_no_attempt(guarded):
+    async def run():
+        semaphore = asyncio.Semaphore(1)
+        model = _AttemptModel(guarded=guarded)
+        wrapper = BudgetedIndexModel(model, _budget(2), semaphore=semaphore)
+        await wrapper.invoke(IndexBuildPlan, "test", {})
+        assert wrapper.last_attempt_records
+        async with semaphore:
+            queued = asyncio.create_task(wrapper.invoke(IndexBuildPlan, "test", {}))
+            await asyncio.sleep(0)
+            assert not queued.done() and wrapper.last_attempt_records == ()
+            queued.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await queued
+        assert model.calls == 1 and wrapper.last_attempt_records == ()
+        await wrapper.invoke(IndexBuildPlan, "test", {})
+        assert model.calls == 2 and wrapper.last_attempt_records
+
+    asyncio.run(run())
+
+
 @pytest.mark.usefixtures("isolated_postgres_database")
 def test_portfolio_publishes_colliding_quotes_with_both_original_proofs(tmp_path):
     async def run(sessions, seed):

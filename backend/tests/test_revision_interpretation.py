@@ -207,7 +207,7 @@ def joint_response(
 
 
 @pytest.mark.parametrize("gap", [0, 40])
-def test_append_discovery_expands_nonadjacent_originals_and_refreshes_empty_result(
+def test_append_discovery_prefills_nonadjacent_originals_and_refreshes_empty_result(
     tmp_path, gap
 ):
     async def run(sessions, seed):
@@ -236,15 +236,13 @@ def test_append_discovery_expands_nonadjacent_originals_and_refreshes_empty_resu
         index = current.indexes[0]
         assert len(index.inheritance.reused_segment_ids) == 2 + gap
         assert len(probe.local_calls) == 5
-        assert len(probe.interpretation_calls) == 2
-        initial, expanded = [p for _, p in probe.interpretation_calls]
+        assert len(probe.interpretation_calls) == 1
+        initial = probe.interpretation_calls[0][1]
         assert len(initial["inventory"]) == gap + 4
         assert {
             m["message_id"] for s in initial["segments"] for m in s["messages"]
-        } == {"reject", "diagnosis"}
-        assert {
-            m["message_id"] for s in expanded["segments"] for m in s["messages"]
-        } >= {"suspect", "reject", "diagnosis"}
+        } == {m["id"] for m in NARRATIVE} | {m["id"] for m in filler}
+        assert index.interpretation.read_requests == ()
         assert any(u.statement == STATEMENT for u in index.semantic_units)
         assert old.interpretation != index.interpretation
         reference_probe = NarrativeProbe(version="full-original-reference")
@@ -333,7 +331,8 @@ def test_discovery_is_not_gated_by_local_summary_or_keywords(tmp_path, case):
         ]
         assert len(units) == 1
         assert {r.message_id for r in units[0].evidence_refs} == {"left", "right"}
-        assert result.indexes[0].interpretation.read_requests
+        assert not result.indexes[0].interpretation.read_requests
+        assert {m["message_id"] for s in probe.interpretation_calls[0][1]["segments"] for m in s["messages"]} >= {"left", "right"}
         assert len(probe.interpretation_calls[0][1]["inventory"]) == len(
             old_history + appended
         )
@@ -406,12 +405,13 @@ def test_summaries_and_unread_messages_are_not_original_evidence(tmp_path, inval
         probe = ControlledInterpretationProbe(reply)
         service = narrative_service(probe, sessions)
         first = None
+        budget = {"expansion_resources": {"max_exact_reads": 2}} if invalid == "unsupplied_original" else None
         if invalid == "unsupplied_original":
             first = await revision(sessions, seed["context_id"], NARRATIVE[:2])
-            await service.build(observation(seed, first))
+            await service.build(observation(seed, first, budget=budget))
         ready = True
         target = await revision(sessions, seed["context_id"], NARRATIVE, parent=first)
-        result = await service.build(observation(seed, target))
+        result = await service.build(observation(seed, target, budget=budget))
         assert result.blocker_code is None, result.blocker_summary
         record = result.indexes[0].interpretation
         assert record.accepted_claim_keys == () and record.rejections[0].code == (

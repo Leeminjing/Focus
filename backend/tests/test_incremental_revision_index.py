@@ -439,11 +439,12 @@ def test_fatal_boundaries_never_publish_partial_indexes(tmp_path, kind):
                     LoopSemanticIndexArtifact.revision_id == target.ref.revision_id
                 )
             )
-            assert not await session.scalar(
+            partial_record = await session.scalar(
                 select(LoopSegmentProjectionRecord.record_id).where(
                     LoopSegmentProjectionRecord.context_id == target.ref.context_id
                 )
             )
+            assert bool(partial_record) == (kind == "overflow")
         if kind in {"stale", "scope", "zero_budget", "invalid_tool"}:
             assert probe.calls == []
 
@@ -515,6 +516,128 @@ def test_concurrent_builds_return_persisted_winner_and_bill_both(tmp_path):
                     session, (result.indexes[0].index_id,)
                 )
                 assert stored == (result.indexes[0],)
+
+    exercise(tmp_path, run)
+
+
+def test_segments_run_in_parallel_and_assemble_in_source_order(tmp_path):
+    async def run(sessions, seed):
+        ready = asyncio.Event()
+        completed = [asyncio.Event() for _ in range(4)]
+        arrivals = 0
+        order = []
+
+        async def gate(role, payload):
+            nonlocal arrivals
+            if role != "projector":
+                return
+            position = int(payload["segments"][0]["messages"][0]["message_id"][2:]) // 12
+            arrivals += 1
+            if arrivals == 4:
+                ready.set()
+            await asyncio.wait_for(ready.wait(), 5)
+            if position < 3:
+                await asyncio.wait_for(completed[position + 1].wait(), 5)
+            order.append(position)
+            completed[position].set()
+
+        target = await revision(sessions, seed["context_id"], messages(48))
+        probe = ModelProbe(gate=gate)
+        service = probe.service(sessions)
+        result = await service.build(observation(seed, target))
+        assert result.blocker_code is None, result.blocker_summary
+        assert order == [3, 2, 1, 0] and probe.max_active == 4
+        assert len(probe.local_calls) == 8 and len(probe.interpretation_calls) == 1
+        assert result.indexes[0].coverage.covered_message_count == 48
+        async with sessions() as session:
+            assert (await session.get(LoopBudgetUsage, seed["loop_id"])).model_calls == 9
+        probe.calls.clear()
+        replay = await service.build(observation(seed, target))
+        assert replay.indexes == result.indexes and probe.calls == []
+        serial = ModelProbe(version="serial-comparison")
+        baseline = await serial.service(sessions, concurrency=1).build(observation(seed, target))
+        assert baseline.blocker_code is None, baseline.blocker_summary
+        assert serial.max_active == 1
+        assert baseline.indexes[0].semantic_units == result.indexes[0].semantic_units
+        assert baseline.indexes[0].coverage == result.indexes[0].coverage
+
+    exercise(tmp_path, run)
+
+
+def test_service_model_limit_is_shared_across_concurrent_builds(tmp_path):
+    async def run(sessions, seed):
+        ready = asyncio.Event()
+        arrivals = 0
+
+        async def gate(role, payload):
+            nonlocal arrivals
+            arrivals += 1
+            if arrivals == 2:
+                ready.set()
+            await asyncio.wait_for(ready.wait(), 5)
+            await asyncio.sleep(0.01)
+
+        first = await revision(sessions, seed["context_id"], messages(48))
+        second = await revision(sessions, seed["context_id"], messages(48, 48), parent=first)
+        probe = ModelProbe(gate=gate)
+        service = probe.service(sessions, concurrency=2)
+        results = await asyncio.gather(
+            service.build(observation(seed, first)),
+            service.build(observation(seed, second)),
+        )
+        assert all(r.blocker_code is None for r in results), [r.blocker_summary for r in results]
+        assert probe.max_active == 2
+        assert len(probe.local_calls) == 16 and len(probe.interpretation_calls) == 2
+        async with sessions() as session:
+            assert (await session.get(LoopBudgetUsage, seed["loop_id"])).model_calls == 18
+
+    exercise(tmp_path, run)
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_parallel_segments_are_drained_before_failure_or_cancel_returns(tmp_path, failure):
+    async def run(sessions, seed):
+        ready = asyncio.Event()
+        arrivals = 0
+
+        async def gate(role, payload):
+            nonlocal arrivals
+            if role != "verifier":
+                return
+            arrivals += 1
+            if arrivals == 2:
+                ready.set()
+                if failure:
+                    raise ValueError("stale test configuration")
+            await asyncio.Event().wait()
+
+        target = await revision(sessions, seed["context_id"], messages(24))
+        probe = ModelProbe(gate=gate)
+        service = probe.service(sessions, concurrency=2)
+        task = asyncio.create_task(service.build(observation(seed, target)))
+        try:
+            await asyncio.wait_for(ready.wait(), 5)
+            if failure:
+                result = await asyncio.wait_for(task, 5)
+                assert result.blocker_code == "portfolio_index_failed"
+            else:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            assert probe.active == 0
+            assert not probe.interpretation_calls
+            async with sessions() as session:
+                assert (await session.get(LoopBudgetUsage, seed["loop_id"])).model_calls == 2
+                assert not await session.scalar(select(LoopSemanticIndexArtifact.index_id).where(
+                    LoopSemanticIndexArtifact.revision_id == target.ref.revision_id
+                ))
+            probe.gate = None
+            retried = await service.build(observation(seed, target))
+            assert retried.blocker_code is None, retried.blocker_summary
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     exercise(tmp_path, run)
 

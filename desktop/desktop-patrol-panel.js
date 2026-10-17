@@ -2,7 +2,8 @@
  * 输入为工作区绑定、预览/要求、明确发送和宿主唤起事件；输出为稳定发送回执、工作区草稿和已提交回答卡。
  * 工作流为先预览，再绑定/发送，按工作区代际订阅与读取；隐藏保留草稿，旧工作区回调不覆盖当前视图。
  * 要求与参考文字分开，Enter/IME 不发送，Ctrl+Enter 显式发送；示例：拖入截图、补充“解释报错”、点击发送。
- * 回答仅取固定 Context revision 的 assistant 正文，进度/产物来自 Live；授权处理沿用工作台，不展示 Patrol 内部理由。
+ * 回答仅取固定 Context revision 的 assistant 正文并有界缓存，进度/产物分别来自 Live；隐藏时保留 Live 状态同步，取消正文读取并暂停结果 DOM 更新。
+ * 原生显隐由宿主通知，浏览器回退用 visibilitychange；再次显示时读取最新投影。授权处理沿用工作台，不展示 Patrol 内部理由。
  */
 (async function () {
   "use strict";
@@ -14,15 +15,27 @@
   const runtime = window.focusDesktop?.runtime() || { apiBase: location.origin, session: new URLSearchParams(location.search).get("session") || "" };
   const api = FocusLoopApi.create(runtime), live = FocusLoopLiveStore.create();
   const connection = FocusLoopLiveConnection.create({ api, store: live });
+  const feedback = FocusWorkspacePatrolFeedback.createReader(api);
   const intake = FocusWorkspacePatrolIntake.create({ runtime, api, selectWorkspace: window.focusDesktop?.selectWorkspace,
+    recovery: bridge?.enabled ? bridge.recovery : null,
     accessMode: FocusAccessMode.readNewSessionDefault(localStorage) });
   const preview = FocusWorkspacePatrolMaterialPreview.create({ host, intake, workspaceId: () => workspace?.workspace_id || null, onError: fail, compact:true });
   let workspace = null, workspaceLoaded = false, generation = 0, loopId = null, unsubscribe = null, reads = new AbortController();
   let resultKey = "", inputKey = "", publishedState = "", binding = false, nativeReady = false, shownFailure = "", closeEpoch = 0, commandQueue = Promise.resolve();
-  let historyKey = "", requestKey = "";
+  let historyKey = "", requestKey = "", progressKey = "", artifactKey = "";
+  let panelVisible = bridge?.enabled ? false : !document.hidden, visibilityKnown = false, resultsNeedReset = false;
   const draftStore = () => intake.store(workspace?.workspace_id || null);
   const references = FocusDesktopPatrolReferences.create({ host, api, store:draftStore, loopId:() => loopId, onError:fail });
   function fail(error) { $("#error").hidden = !error; $("#error").textContent = error ? String(error.message || error) : ""; if (!error) $("#retry-workspace").hidden = true; }
+  let budget = null;
+  function resetBudget() {
+    budget?.dispose();
+    $("#task-budget").hidden = !workspace;
+    $("#task-budget").innerHTML = FocusWorkspacePatrolBudget.markup();
+    budget = FocusWorkspacePatrolBudget.create({ host: $("#task-budget"), api,
+      getDraft: () => draftStore().get().draft, editDraft: patch => draftStore().edit(patch), onError: fail });
+    budget.update(null);
+  }
   function enqueue(action) { commandQueue = commandQueue.then(action).catch(fail); return commandQueue; }
   function element(tag, text, parent) { const node = document.createElement(tag); node.textContent = text; parent?.append(node); return node; }
   function action(text, parent, handler) { const button = element("button", text, parent); button.type = "button"; button.addEventListener("click", () => { void Promise.resolve().then(handler).catch(fail); }); return button; }
@@ -43,6 +56,7 @@
     if (bridge?.enabled && nativeReady && key !== publishedState) { publishedState = key; void bridge.setState(state).catch(fail); }
   }
   function renderInput(model) {
+    budget?.syncDraft();
     if ($("#instruction").value !== model.draft.content) $("#instruction").value = model.draft.content;
     preview.render(model.draft);
     references.render(model.draft);
@@ -79,21 +93,26 @@
     notify();
   }
   function watchDraft() { unsubscribe?.(); unsubscribe = draftStore().subscribe(renderInput); }
+  function cancelResults() { reads.abort(); reads = new AbortController(); resultKey = ""; }
+  function resetResults() {
+    cancelResults(); requestKey = ""; progressKey = ""; artifactKey = ""; resultsNeedReset = true;
+    if (panelVisible) refreshVisible();
+  }
   function connect(id) {
     if (!id || id === loopId) return;
-    reads.abort(); reads = new AbortController(); resultKey = "";
-    $("#results").replaceChildren();
     loopId = id;
+    resetResults();
     void connection.start(id).catch(error => { if (loopId === id) fail(error); });
   }
   async function activate(bound) {
     if (bound?.workspace_id === workspace?.workspace_id && workspace && workspaceLoaded) return;
     const token = ++generation;
-    reads.abort(); reads = new AbortController(); connection.stop(); loopId = null;
-    workspace = bound; workspaceLoaded = false; resultKey = ""; inputKey = ""; requestKey = "";
+    loopId = null; resetResults(); connection.stop();
+    workspace = bound; workspaceLoaded = false; inputKey = "";
     references.close();
     $("#reference-file").disabled = !bound;
-    $("#results").replaceChildren(); $("#requests").replaceChildren(); fail(null);
+    resetBudget();
+    fail(null);
     if (bound) { intake.remember(bound); intake.claimUnbound(bound.workspace_id); }
     $("#binding-name").textContent = bound ? bound.display_name : "绑定工作区";
     $("#binding").title = bound?.path || "选择工作区文件夹";
@@ -105,6 +124,7 @@
       intake.history(bound.workspace_id, page, false, true);
       workspaceLoaded = true;
       if (loop) connect(loop.loop_id);
+      await intake.reconcile(bound.workspace_id, page);
     } catch (error) {
       if (token !== generation) return;
       $("#retry-workspace").hidden = false; throw error;
@@ -137,6 +157,8 @@
     if (!workspace) { await choose(); return; }
     references.close();
     const id = workspace.workspace_id;
+    // 写盘失败后，显式发送必须再次保存眼前的文字，不能发送回滚后的旧草稿。
+    if (draftStore().get().draft.content !== $("#instruction").value) draftStore().edit({ content: $("#instruction").value });
     const visible = FocusWorkspacePatrolInputs.captureVisibleContext({ projection: live.get().projection });
     await send(() => intake.submit(id, visible), id);
   }
@@ -165,12 +187,9 @@
     }
   }
   async function renderResults(projection, key, token, signal) {
-    const cards = await FocusWorkspacePatrolFeedback.results(api, projection, signal);
-    if (token !== generation || key !== resultKey || projection.loop_id !== loopId) return;
-    const container = $("#results"); container.replaceChildren();
-    const progress = projection.task_progress?.state?.document?.items || [];
-    const files = FocusLoopLiveSelectors.selectFacts(projection).filter(item => item.kind === "file" || item.kind === "artifact").slice(0, 3);
-    if (cards.length || progress.length || files.length) element("h2", "工作区更新", container);
+    const cards = await feedback.results(projection, signal);
+    if (signal.aborted || !panelVisible || token !== generation || key !== resultKey || projection.loop_id !== loopId) return;
+    const container = $("#answers"); container.replaceChildren();
     for (const result of cards) {
       const card = element("article", "", container);
       element("h2", result.title, card); element("pre", result.text || result.error, card);
@@ -178,23 +197,57 @@
       source.title = `Context ${result.context_id} · Revision ${result.revision_id}`;
       source.dataset.contextId = result.context_id; source.dataset.revisionId = result.revision_id;
     }
-    if (progress.length) {
-      const card = element("article", "", container); element("h2", "已提交进度", card);
-      const verified = progress.filter(item => item.state === "completed" && item.support === "supported").length;
-      element("p", `${verified} / ${progress.length} 项已有验证证据`, card); action("查看进度 ↗", card, () => openWorkbench());
-    }
-    if (files.length) { const card = element("article", "", container); element("h2", `${files.length} 项产物更新`, card); action("查看文件和来源 ↗", card, () => openWorkbench()); }
   }
+  function refreshVisible() {
+    if (!panelVisible) return;
+    if (resultsNeedReset) {
+      for (const selector of ["#answers", "#progress", "#artifacts", "#requests"]) $(selector).replaceChildren();
+      resultsNeedReset = false;
+    }
+    const { projection } = live.get();
+    if (!projection || projection.loop_id !== loopId) return;
+    budget?.update(projection);
+    renderRequests(projection);
+    const progress = projection.task_progress?.state?.document?.items || [];
+    const verified = progress.filter(item => item.state === "completed" && item.support === "supported").length;
+    const nextProgress = JSON.stringify([verified, progress.length]);
+    if (nextProgress !== progressKey) {
+      progressKey = nextProgress;
+      const container = $("#progress"); container.replaceChildren();
+      if (progress.length) {
+        const card = element("article", "", container); element("h2", "已提交进度", card);
+        element("p", `${verified} / ${progress.length} 项已有验证证据`, card); action("查看进度 ↗", card, () => openWorkbench());
+      }
+    }
+    const files = FocusLoopLiveSelectors.selectFacts(projection).filter(item => item.kind === "file" || item.kind === "artifact").slice(0, 3);
+    const nextArtifacts = JSON.stringify(files.map(item => [item.fact_id, item.revision]));
+    if (nextArtifacts !== artifactKey) {
+      artifactKey = nextArtifacts;
+      const container = $("#artifacts"); container.replaceChildren();
+      if (files.length) { const card = element("article", "", container); element("h2", `${files.length} 项产物更新`, card); action("查看文件和来源 ↗", card, () => openWorkbench()); }
+    }
+    const key = FocusWorkspacePatrolFeedback.signature(projection);
+    if (key !== resultKey) {
+      cancelResults();
+      resultKey = key;
+      const token = generation, signal = reads.signal;
+      void renderResults(projection, key, token, signal).catch(error => {
+        if (!signal.aborted && panelVisible && token === generation && key === resultKey && error.name !== "AbortError") fail(error);
+      });
+    }
+  }
+  function setVisibility(visible) {
+    visibilityKnown = true;
+    if (panelVisible === visible) return;
+    panelVisible = visible;
+    if (!visible) cancelResults();
+    else refreshVisible();
+  }
+  if (!bridge?.enabled) document.addEventListener("visibilitychange", () => setVisibility(!document.hidden));
   live.subscribe(({ projection }) => {
     notify();
+    refreshVisible();
     if (!projection || projection.loop_id !== loopId) return;
-    renderRequests(projection);
-    const artifacts = FocusLoopLiveSelectors.selectFacts(projection).filter(item => ["file", "artifact"].includes(item.kind)).map(item => [item.fact_id, item.revision]);
-    const key = JSON.stringify([FocusWorkspacePatrolFeedback.signature(projection), projection.task_progress?.revision, artifacts]);
-    if (key !== resultKey) {
-      resultKey = key;
-      void renderResults(projection, key, generation, reads.signal).catch(error => { if (error.name !== "AbortError") fail(error); });
-    }
     const next = JSON.stringify(projection.interventions);
     if (next !== inputKey && workspace) {
       inputKey = next; const token = generation, id = workspace.workspace_id;
@@ -202,7 +255,10 @@
     }
   });
   $("#compose").addEventListener("submit", event => { event.preventDefault(); void submit().catch(fail); });
-  $("#instruction").addEventListener("input", event => { draftStore().edit({ content: event.target.value }); if (!event.isComposing) references.input(); });
+  $("#instruction").addEventListener("input", event => {
+    try { draftStore().edit({ content: event.target.value }); fail(null); if (!event.isComposing) references.input(); }
+    catch (error) { fail(new Error(`草稿保存失败：${error.message}`)); }
+  });
   $("#instruction").addEventListener("compositionend", () => references.input());
   $("#instruction").addEventListener("keydown", event => {
     if (event.key === "Enter" && event.ctrlKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); $("#compose").requestSubmit(); }
@@ -237,6 +293,7 @@
     $("#older").disabled = true;
     try { intake.history(id, await api.workspaceInputs(id, before), true); } catch (error) { fail(error); } finally { $("#older").disabled = false; }
   });
+  resetBudget();
   watchDraft();
   const sizeObserver = new ResizeObserver(() => {
     const detail = !$("#version-detail").hidden, beside = detail && matchMedia("(min-width:580px)").matches;
@@ -260,6 +317,7 @@
   sizeObserver.observe($("#version-picker"));
   sizeObserver.observe($("#version-detail"));
   if (bridge?.enabled) {
+    bridge.onVisibility(setVisibility);
     bridge.onOpen(target => {
       closeEpoch++; host.inert = false; host.classList.remove("is-closing");
       host.classList.remove("is-opening");
@@ -284,10 +342,14 @@
       notify();
     }));
     const ready = await bridge.ready();
+    if (!visibilityKnown) setVisibility(ready.panelVisible === true);
     await enqueue(async () => {
-      try { if (!workspace && ready.state.workspaceId) await activate(await intake.workspace(ready.state.workspaceId)); }
+      try {
+        const id = intake.readBinding()?.workspace_id || ready.state.workspaceId;
+        if (!workspace && id) await activate(await intake.workspace(id));
+      }
       finally { nativeReady = true; notify(); }
     });
   } else if (intake.readBinding()) await activate(await intake.workspace(intake.readBinding().workspace_id));
-  window.addEventListener("beforeunload", () => { sizeObserver.disconnect(); references.dispose(); preview.dispose(); connection.stop(); reads.abort(); });
+  window.addEventListener("beforeunload", () => { budget?.dispose(); sizeObserver.disconnect(); references.dispose(); preview.dispose(); connection.stop(); reads.abort(); });
 })().catch(error => { const node = document.querySelector("#error"); node.hidden = false; node.textContent = error.message; });

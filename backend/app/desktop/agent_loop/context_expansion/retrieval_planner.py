@@ -10,7 +10,8 @@ r"""本文件对外提供 RetrievalBackedCognitiveAdvisor 及其分步 worker sc
 
 from __future__ import annotations
 
-from backend.app.desktop.evolution_strategies import EVOLUTION_GUIDANCE
+from backend.app.desktop.evolution_strategies import EVOLUTION_GUIDANCE, strategy_catalog
+from backend.app.desktop.strategy_snapshots import PatrolStrategyReadRequest
 
 from itertools import count
 from functools import partial
@@ -72,11 +73,17 @@ class PlannerQueryProposal(_PlannerModel):
 class PlannerReadProposal(_PlannerModel):
     rationale: str = Field(min_length=1, max_length=4000)
     candidate_ids: tuple[str, ...]
+    strategy_reads: tuple[PatrolStrategyReadRequest, ...] = Field(default=(), max_length=4)
 
 
 class LaneAdviceProposal(_PlannerModel):
     rationale: str = Field(min_length=1, max_length=4000)
     work_specs: tuple[WorkContextDraft, ...]
+
+
+class PlannerStrategyReadProposal(_PlannerModel):
+    rationale: str = Field(min_length=1, max_length=4000)
+    strategy_reads: tuple[PatrolStrategyReadRequest, ...] = Field(default=(), max_length=4)
 
 
 class RetrievalBackedPlanningResult(_PlannerModel):
@@ -103,7 +110,7 @@ class StructuredModelPort(Protocol):
 
 
 class RetrievalBackedCognitiveAdvisor:
-    VERSION = "retrieval-backed-cognitive-advisor-v2"
+    VERSION = "retrieval-backed-cognitive-advisor-v3"
 
     def __init__(
         self,
@@ -111,11 +118,13 @@ class RetrievalBackedCognitiveAdvisor:
         retriever: AuthorizedSemanticRetriever | None = None,
         controller: PlanningRetrievalSessionController | None = None,
         checkpoint: Callable[[PlanningRetrievalSession], Awaitable[None]] | None = None,
+        strategy_reader=None,
     ) -> None:
         self._model = model
         self._retriever = retriever or AuthorizedSemanticRetriever()
         self._controller = controller or PlanningRetrievalSessionController()
         self._checkpoint = checkpoint
+        self._strategy_reader = strategy_reader
 
     async def plan(
         self,
@@ -177,6 +186,9 @@ class RetrievalBackedCognitiveAdvisor:
                     session = await self._select_v1_reads(payload, session, indexes)
                 if session.state == "blocked":
                     return await self._budget_blocked(session)
+            session = await self._continue_strategy_reads(payload, session)
+            if session.state == "blocked":
+                return await self._budget_blocked(session)
             reads = session.reads
             selected = self._selected_from_reads(session)
             manifests = self._manifests(indexes, selected)
@@ -283,6 +295,7 @@ class RetrievalBackedCognitiveAdvisor:
         )
         if session.state == "blocked":
             return session
+        session = await self._read_strategies(payload, session, proposal.strategy_reads)
         by_candidate = {item.candidate_id: item for item in candidates}
         selected = tuple(by_candidate.get(candidate_id) for candidate_id in proposal.candidate_ids)
         if any(item is None for item in selected):
@@ -328,6 +341,7 @@ class RetrievalBackedCognitiveAdvisor:
             )
             if session.state == "blocked":
                 return session
+            session = await self._read_strategies(payload, session, proposal.strategy_reads)
             if len(set(proposal.candidate_ids)) != len(proposal.candidate_ids):
                 return self._controller.block(session, "planner_candidate_duplicate", stage="read_selection", boundary="candidate_identity", operation_id=f"read_page:{page.page_id}")
             if not set(proposal.candidate_ids).issubset(page.candidate_ids):
@@ -348,6 +362,50 @@ class RetrievalBackedCognitiveAdvisor:
             return self._controller.block(session, "expansion_policy_limit", summary="精确读取超过冻结上限", stage="exact_read", boundary="max_exact_reads")
         reads = tuple(self._retriever.read(session, item, indexes) for item in selected)
         session = self._controller.record_reads(session, reads)
+        await self._save(session)
+        return session
+
+    async def _read_strategies(self, payload, session, requests):
+        if not requests:
+            return session
+        catalog = self._planning_input(payload)["derivation"].get("evolution_strategies", ())
+        allowed = {(item["memory_id"], item["content_hash"]) for item in catalog}
+        if any((request.memory_id, request.content_hash) not in allowed for request in requests):
+            raise ValueError("Planner 策略读取超出冻结目录")
+        if self._strategy_reader is None:
+            raise ValueError("Planner 冻结策略读取端口不可用")
+        pages = await self._strategy_reader(requests)
+        combined = {(item["memory_id"], item["content_hash"], item["section"], item["cursor"]): item
+                    for item in (*session.strategy_read_pages, *pages)}
+        session = session.model_copy(update={"strategy_read_pages": tuple(combined.values())})
+        await self._save(session)
+        return session
+
+    async def _continue_strategy_reads(self, payload, session):
+        if session.strategy_reads_complete or not session.strategy_read_pages:
+            return session
+        while True:
+            read_cursors = {(item["memory_id"], item["content_hash"], item["section"], item["cursor"])
+                            for item in session.strategy_read_pages}
+            pending = tuple(item for item in session.strategy_read_pages if item["next_cursor"] is not None
+                and (item["memory_id"], item["content_hash"], item["section"], item["next_cursor"]) not in read_cursors)
+            if not pending:
+                break
+            if session.strategy_read_rounds >= 8:
+                return self._controller.block(session, "expansion_policy_limit", summary="策略选读次数已耗尽",
+                    stage="strategy_read", boundary="strategy_read_rounds")
+            proposal, session = await self._invoke(session, PlannerStrategyReadProposal,
+                "只决定是否继续读取冻结策略正文。按 next_cursor 和原 memory_id/content_hash/section 请求后续页；已有内容足够时 strategy_reads 返回空集合，不得臆测未读内容。",
+                {**self._planning_input(payload), "strategy_read_pages": pending},
+                operation_id=f"strategy_read:{session.strategy_read_rounds}")
+            if session.state == "blocked":
+                return session
+            session = await self._read_strategies(payload, session, proposal.strategy_reads)
+            session = session.model_copy(update={"strategy_read_rounds": session.strategy_read_rounds + 1})
+            await self._save(session)
+            if not proposal.strategy_reads:
+                break
+        session = session.model_copy(update={"strategy_reads_complete": True})
         await self._save(session)
         return session
 
@@ -439,11 +497,22 @@ class RetrievalBackedCognitiveAdvisor:
                 await self._save(blocked)
                 return None, blocked
             error = None
+            request_payload = payload if feedback is None else {
+                **payload, "previous_attempt_failure": feedback,
+                "retry_instruction": "Correct the previous failure without changing frozen input or evidence identities.",
+            }
+            config = getattr(self._model, "request_model_config", None)
+            if config is not None:
+                from backend.app.desktop.agent_loop.patrol_request_capacity import PatrolRequestCapacity
+
+                policy = session.frozen_resources.policy.model_dump(mode="json") if session.frozen_resources else {}
+                try:
+                    PatrolRequestCapacity(config, {"expansion_resources": policy}).check(
+                        self._model.request_messages(schema, authority + "\n" + EVOLUTION_GUIDANCE, request_payload), schema)
+                except ProviderRequestWindowError as exc:
+                    raise ProviderRequestWindowError(str(exc), stage=stage) from exc
             try:
-                result = await self._model.invoke(schema, authority + "\n" + EVOLUTION_GUIDANCE, payload if feedback is None else {
-                    **payload, "previous_attempt_failure": feedback,
-                    "retry_instruction": "Correct the previous failure without changing frozen input or evidence identities.",
-                })
+                result = await self._model.invoke(schema, authority + "\n" + EVOLUTION_GUIDANCE, request_payload)
                 if validator is not None:
                     validator(result)
             except Exception as exc:
@@ -527,6 +596,8 @@ class RetrievalBackedCognitiveAdvisor:
 
     @staticmethod
     def _operation_stage(operation_id: str) -> str:
+        if operation_id.startswith("strategy_read:"):
+            return "strategy_read"
         if operation_id == "query_plan":
             return "query_plan"
         if operation_id.startswith("read_page:") or operation_id == "read_selection":
@@ -561,6 +632,8 @@ class RetrievalBackedCognitiveAdvisor:
     def _planning_input(payload: dict[str, Any]) -> dict[str, Any]:
         scope = dict(payload.get("scope") or {})
         derivation = dict(scope.get("derivation_input") or {})
+        if "evolution_strategies" in derivation:
+            derivation["evolution_strategies"] = strategy_catalog(derivation["evolution_strategies"])
         derivation.pop("semantic_index_ids", None)
         derivation.pop("frozen_expansion_resources", None)
         catalog = derivation.get("portfolio_index_catalog")
@@ -594,7 +667,8 @@ class RetrievalBackedCognitiveAdvisor:
         catalog = planning["derivation"].get("portfolio_index_catalog")
         indexes = {read.index_id for read in session.reads}
         roles = tuple(item["context_role"] for item in catalog["descriptors"] if item["index_id"] in indexes) if catalog else None
-        return {**planning, "evidence_role_contract": evidence_role_contract(unit_kinds=kinds, context_roles=roles, include_run_results=False)}
+        return {**planning, "strategy_read_pages": session.strategy_read_pages,
+                "evidence_role_contract": evidence_role_contract(unit_kinds=kinds, context_roles=roles, include_run_results=False)}
 
     def _blocked(
         self,
@@ -644,7 +718,7 @@ class RetrievalBackedCognitiveAdvisor:
 
     @staticmethod
     def _read_authority() -> str:
-        return "你是无权 Evidence Read Selector。只从服务端返回的 candidates 中选择必须精读的 semantic_unit 或 mission_section candidate_id；不得选择 segment、发明 identity、生成 WorkSpec 或执行指令。"
+        return "你是无权 Evidence Read Selector。candidate_ids 只从服务端 candidates 中选择必须精读的 semantic_unit 或 mission_section；可在 strategy_reads 中使用冻结策略目录句柄选读方法正文。不得选择 segment、发明 identity、生成 WorkSpec 或执行指令。"
 
     @staticmethod
     def _work_authority() -> str:

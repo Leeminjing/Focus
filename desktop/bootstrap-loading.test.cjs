@@ -17,14 +17,16 @@ function harness() {
 test("Patrol renders before bootstrap and requests no task details, plugins or trees", async () => {
   const { run } = harness();
   run(`var paths = [], releaseBootstrap;
-    api = path => { paths.push(path); return new Promise(resolve => { releaseBootstrap = resolve; }); };
+    api = path => { paths.push(path);
+      if (path.endsWith('/settings/models')) return Promise.resolve({setup_required:false});
+      return new Promise(resolve => { releaseBootstrap = resolve; }); };
     var loading = bootstrap();`);
   assert.equal(run("renders[0]"), "patrol");
-  assert.deepEqual(Array.from(run("paths")), ["/desktop/api/bootstrap"]);
+  assert.deepEqual(Array.from(run("paths")), ["/desktop/api/settings/models", "/desktop/api/bootstrap"]);
   run(`releaseBootstrap({tasks:[{task_id:'task',workspace_id:'ws'}], equipment:{tools:[],tools_status:'deferred'}});`);
   assert.equal(await run("loading"), true);
   assert.equal(run("state.activeTaskId"), "task");
-  assert.deepEqual(Array.from(run("paths")), ["/desktop/api/bootstrap"]);
+  assert.deepEqual(Array.from(run("paths")), ["/desktop/api/settings/models", "/desktop/api/bootstrap"]);
 });
 
 test("a slow equipment connection and its failure leave Patrol usable, and allow retry", async () => {
@@ -60,7 +62,8 @@ test("bootstrap failure keeps the existing Patrol and navigation intact", async 
 test("late bootstrap uses the current destination without returning to Patrol", async () => {
   const { run } = harness();
   run(`var releaseBootstrap, details = 0;
-    api = () => new Promise(resolve => { releaseBootstrap = resolve; });
+    api = path => path.endsWith('/settings/models') ? Promise.resolve({setup_required:false})
+      : new Promise(resolve => { releaseBootstrap = resolve; });
     hydrateActive = async () => { details++; };
     var loading = bootstrap();
     state.view = 'focus';
@@ -68,6 +71,14 @@ test("late bootstrap uses the current destination without returning to Patrol", 
   await run("loading");
   assert.equal(run("state.view"), "focus");
   assert.equal(run("details"), 1);
+});
+
+test("a slow model setup check does not delay the task bootstrap", async () => {
+  const { run } = harness();
+  run(`api = path => path.endsWith('/settings/models') ? new Promise(() => {})
+    : Promise.resolve({tasks:[],equipment:{models:[],tools:[]}});`);
+  assert.equal(await run("bootstrap()"), true);
+  assert.equal(run("state.view"), "patrol");
 });
 
 test("trees load only for the current entry and omit inactive workspaces", async () => {
