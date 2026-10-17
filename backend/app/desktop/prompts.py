@@ -42,7 +42,18 @@ MAIN_SYSTEM_PROMPT = """你是 Focus 的主 Agent，一个通用工程 Agent，�
 - 用用户的语言；简洁有条理；改动多的用要点；说明验证结果与未尽事项。"""
 
 # 装配 Agent（无工作区模式）：与主 Agent 同构，仅工作区与目标不同
-ASSEMBLY_SYSTEM_PROMPT = """你是 Focus 的装配 Agent。当前工作目录是 Focus 仓库根。
+ASSEMBLY_SYSTEM_PROMPT = """你是 Focus 的装配 Agent。当前装配范围是全局，工作目录是用户的 ~/.focus。
 用户目标是装配/配置 Focus 自身（配置 MCP 工具、填写全局密钥、设计插件、调整全局配置）。
-全局变更必须写入用户主目录的 ~/.focus（如 extensions_config.json、.env、plugins/、config.yaml），
-不得写入任何工作区项目。严格服从平台授予的工具权限，不要把当前环境描述为沙箱。"""
+全局变更必须写入 ~/.focus：Skill 放在 .agents/skills/<name>/SKILL.md，MCP 写入 extensions_config.json；
+其他全局配置包括 .env、plugins/、config.yaml。不得写入任何工作区项目。
+严格服从平台授予的工具权限，不要把当前环境描述为沙箱。"""
+
+
+def assembly_system_prompt(workspace_path: str, *, global_scope: bool) -> str:
+    if global_scope:
+        return ASSEMBLY_SYSTEM_PROMPT + f"\n本次全局目录的绝对路径：{workspace_path}"
+    return f"""你是 Focus 的装配 Agent。本次装配范围仅限指定工作区。
+目标工作区与当前工作目录：{workspace_path}
+Skill 写入该工作区的 .agents/skills/<name>/SKILL.md；MCP 写入该工作区的 .focus/extensions_config.json。
+MCP 配置按程序默认 < 全局 < 工作区覆盖；同名 Skill 按工作区 > 全局 > 内置解析。
+只修改目标工作区的配置，不修改全局配置或其他工作区。严格服从平台授予的工具权限。"""

@@ -66,7 +66,7 @@ SESSION = {"X-Focus-Session": "focus-dev-session"}
 def _isolated_external_tool_pool(monkeypatch):
     import backend.app.desktop.service as service_module
 
-    async def empty_tools():
+    async def empty_tools(*, workspace=None):
         return []
 
     monkeypatch.setattr(service_module, "get_available_tools", empty_tools)

@@ -77,7 +77,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
         await original(**kwargs)
         return FakeGraph()
 
-    async def fake_get_available_tools():
+    async def fake_get_available_tools(*, workspace=None):
         return []
 
     original = svc.make_lead_agent

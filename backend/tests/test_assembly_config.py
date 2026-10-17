@@ -1,6 +1,6 @@
-r"""本文件对外提供两层配置聚合、MCP mtime cache 与全局配置家目录访问策略测试。
+r"""本文件提供配置聚合、MCP 内容缓存与全局配置家目录访问策略测试。
 
-输入为隔离的全局/工作区配置文件、显式纳秒 mtime、路径访问请求与并发读取；输出为配置优先级、缓存刷新和访问决策断言。
+输入为隔离的配置文件、固定 mtime、路径访问请求；输出为配置优先级、缓存刷新和访问决策断言。
 具体工作流为在临时目录构造两层配置，固定文件时间因果后调用公开读取/cache 接口，并验证同一快照和变更快照的行为。
 访问用例经生产执行身份派生策略，分别验证只读拒写、工作区写边界和全局业务审批，避免缺省只读被误当成写授权。
 示例：`pytest backend/tests/test_assembly_config.py -q`。
@@ -139,7 +139,7 @@ def test_assembly_run_sets_allow_global_config():
     from backend.app.desktop.service import DesktopService
 
     assert "allow_global_config" in inspect.signature(DesktopService._prepare).parameters
-    assert "allow_global_config=is_assembly" in inspect.getsource(DesktopService.start_main_run)
+    assert "allow_global_config=is_global_assembly" in inspect.getsource(DesktopService.start_main_run)
 
 
 def test_regression_global_empty_equals_repo(tmp_path, monkeypatch):
@@ -191,36 +191,66 @@ def test_plugin_reload_active(monkeypatch, tmp_path):
     assert any(h.plugin == "verify-demo" for h in registry.hooks("hook.before_model"))
 
 
-def test_mcp_cache_refresh_on_mtime(monkeypatch, tmp_path):
-    """全局态 extensions_config.json mtime 变化时 MCP 缓存应刷新（复用现有热刷机制）。"""
+def _server(url):
+    return {"enabled": True, "type": "http", "description": "test", "url": url}
+
+
+def test_mcp_cache_refresh_on_content_change(monkeypatch, tmp_path):
     import asyncio
-
     import focus.mcp.cache as cache
-    from focus.mcp.cache import get_mcp_tools_cached
 
+    monkeypatch.chdir(tmp_path)
     home = tmp_path / ".focus"
-    (home).mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(home))
-    config_file = home / "extensions_config.json"
-    config_file.write_text('{"mcpServers": {}}', encoding="utf-8")
+    config_file = _write(home / "extensions_config.json", {"mcpServers": {"a": _server("https://old.test/mcp")}})
+    calls = []
 
-    calls = {"n": 0}
-    previous_tools, previous_mtime = cache._mcp_tools, cache._mtime
-    cache._mcp_tools, cache._mtime = None, None
-
-    async def fake_get_tools():
-        calls["n"] += 1
+    async def fake_get_tools(*, config):
+        calls.append(config.mcp_servers["a"].url)
         return []
 
     monkeypatch.setattr(cache, "get_mcp_tools", fake_get_tools)
-    try:
-        asyncio.run(get_mcp_tools_cached())
-        asyncio.run(get_mcp_tools_cached())
-        assert calls["n"] == 1  # mtime 未变 → 命中缓存
+    monkeypatch.setattr(cache, "_cache", {})
+    monkeypatch.setattr(cache, "_locks", {})
+
+    async def scenario():
+        await cache.get_mcp_tools_cached()
+        await cache.get_mcp_tools_cached()
+        assert len(calls) == 1
         previous_ns = config_file.stat().st_mtime_ns
-        config_file.write_text('{"mcpServers": {"a": {"enabled": true}}}', encoding="utf-8")
-        os.utime(config_file, ns=(previous_ns + 2_000_000_000, previous_ns + 2_000_000_000))
-        asyncio.run(get_mcp_tools_cached())
-        assert calls["n"] == 2  # mtime 变化 → 刷新
-    finally:
-        cache._mcp_tools, cache._mtime = previous_tools, previous_mtime
+        _write(config_file, {"mcpServers": {"a": _server("https://new.test/mcp")}})
+        # 文件时间未变也必须刷新；不依赖文件系统时间精度。
+        os.utime(config_file, ns=(previous_ns, previous_ns))
+        await cache.get_mcp_tools_cached()
+        assert calls == ["https://old.test/mcp", "https://new.test/mcp"]
+
+    asyncio.run(scenario())
+
+
+def test_mcp_cache_refreshes_after_newer_global_file_is_deleted(monkeypatch, tmp_path):
+    import asyncio
+    import focus.mcp.cache as cache
+
+    monkeypatch.chdir(tmp_path)
+    home = tmp_path / ".focus"
+    monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(home))
+    repo = _write(tmp_path / "extensions_config.json", {"mcpServers": {"a": _server("https://default.test/mcp")}})
+    user = _write(home / "extensions_config.json", {"mcpServers": {"a": _server("https://global.test/mcp")}})
+    os.utime(user, (repo.stat().st_mtime + 10, repo.stat().st_mtime + 10))
+    calls = []
+
+    async def fake_get_tools(*, config):
+        calls.append(config.mcp_servers["a"].url)
+        return []
+
+    monkeypatch.setattr(cache, "get_mcp_tools", fake_get_tools)
+    monkeypatch.setattr(cache, "_cache", {})
+    monkeypatch.setattr(cache, "_locks", {})
+
+    async def scenario():
+        await cache.get_mcp_tools_cached()
+        user.unlink()
+        await cache.get_mcp_tools_cached()
+        assert calls == ["https://global.test/mcp", "https://default.test/mcp"]
+
+    asyncio.run(scenario())
