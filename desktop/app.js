@@ -8374,6 +8374,7 @@ async function openPatrolWorkbench(target) {
   await renderWorkspacePatrol();
   if (navigation !== workspacePatrolNavigation) return;
   workspacePatrolController?.showDetails();
+  if (target.attentionId) workspacePatrolController?.showAttention(target.attentionId, target.loopId);
   if (target.taskId) await workspacePatrolController?.showContext(target.taskId, target.revisionId);
 }
 if (desktopPatrol) desktopPatrol.onWorkbench(target => runUiAction(() => openPatrolWorkbench(target)));
@@ -8408,6 +8409,11 @@ async function openTaskNotification(target) {
   if (!task) return setStatus("该任务已归档或删除，可在设置中查看归档任务。");
   for (const modal of [settingsDialog, dialog]) {
     if (modal?.open) await window.FocusSurfaceTransition.visible(modal, false, { modal: true });
+  }
+  if (target.workspaceId || (target.loopId && task.loop?.interaction_mode === "workspace_patrol")) {
+    await openPatrolWorkbench({ workspaceId: target.workspaceId || task.loop.workspace_id,
+      loopId: target.loopId, attentionId: target.attentionId });
+    return;
   }
   await switchTask(task.task_id);
   if (target.loopId && task.loop?.loop_id === target.loopId) {

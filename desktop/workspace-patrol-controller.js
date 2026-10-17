@@ -57,6 +57,7 @@
     let inspectionVersion = 0;
     let dialogKind = null;
     let movedPanel = null;
+    let attentionTarget = null;
 
 
 
@@ -104,6 +105,7 @@
       if (!dialog.open || dialog.inert) void root.FocusSurfaceTransition.visible(dialog, true, { modal: true, source: root.document.activeElement });
     }
     function closeDialog() {
+      attentionTarget = null;
       dialogKind = null; progressVersion++; factVersion++; inspectionVersion++; observationInspection = null;
       return root.FocusSurfaceTransition.visible(host.querySelector("[data-patrol-dialog]"), false, { modal: true });
     }
@@ -310,6 +312,15 @@
       }
       existing.forEach(card => card.remove());
     }
+    function locateAttention() {
+      if (!attentionTarget || !projection || projection.loop_id !== loopId || dialogKind !== "requests") return;
+      const target = attentionTarget;
+      attentionTarget = null;
+      const card = [...host.querySelectorAll("[data-wait-request-id], [data-request-id]")]
+        .find(node => (node.dataset.waitRequestId || node.dataset.requestId) === target);
+      card?.scrollIntoView?.({ block: "center" });
+      card?.querySelector("input, textarea, select, button")?.focus({ preventScroll: true });
+    }
     async function respondWait(request, answer) {
       if (waitUi.get(request.entity_id)?.pending) return;
       const owner = token, id = request.entity_id;
@@ -501,6 +512,7 @@
         if (progressNode.innerHTML !== progressHtml) progressNode.innerHTML = progressHtml;
       }
       if (previous?.wait_requests !== projection.wait_requests) patchRequests();
+      locateAttention();
       const pending = Object.values(projection.wait_requests).filter(item => item.state.status === "open").length;
       const pendingButton = host.querySelector("[data-patrol-pending]");
       pendingButton.hidden = !pending;
@@ -784,13 +796,19 @@
       if (history) { history.hidden = true; history.inert = true; }
       historyOpen = false; historyReady = false; historyLoading = false; historyRefreshPending = false; historyFailure = null; historyFailureBefore = null; historyHTML = "";
       inspector?.dispose(); inspector = null; observation = null; observationIdentity = null; observationInspection = null;
-      movedPanel = null; dialogKind = null; projection = null; detailsOpen = false; detailsScroll = 0; lineageSnapshot = null;
+      movedPanel = null; dialogKind = null; attentionTarget = null; projection = null; detailsOpen = false; detailsScroll = 0; lineageSnapshot = null;
       unlisten?.(); unlisten = null; host = null; workspace = null; loopId = null; lineageKey = null; historyKey = null; connection.stop();
     }
     const unsubscribe = liveStore.subscribe(patchLive);
     return Object.freeze({
       mount, leave,
       showDetails() { if (host && !detailsOpen) toggleDetails(); },
+      showAttention(requestId, expectedLoopId) {
+        if (!host || !loopId || (expectedLoopId && expectedLoopId !== loopId)) return;
+        attentionTarget = requestId;
+        showDialog("requests", "待处理工作", "", host.querySelector("[data-patrol-requests]"));
+        locateAttention();
+      },
       async showContext(contextId, revisionId) {
         if (!host || !loopId) return;
         if (!detailsOpen) toggleDetails();
