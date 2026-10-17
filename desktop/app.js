@@ -6250,6 +6250,7 @@ function modelEntryPayload(entry) {
   const fields = modelSettings.snapshot?.editable_fields || [];
   const payload = {};
   fields.forEach(field => { payload[field] = entry[field] ?? null; });
+  if (fields.includes("derivation_max_output_tokens")) payload.derivation_max_output_tokens = entry.derivation_max_output_tokens || {};
   MODEL_FLAG_FIELDS.forEach(field => { payload[field] = Boolean(entry[field]); });
   return payload;
 }

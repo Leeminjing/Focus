@@ -28,9 +28,10 @@ from openai.lib._parsing import type_to_response_format_param
 
 
 class StructuredWorkerModel:
-    def __init__(self, app_config: AppConfig, model_name: str | None = None) -> None:
+    def __init__(self, app_config: AppConfig, model_name: str | None = None, *, max_output_tokens: int | None = None) -> None:
         self._app_config = app_config
         self._model_name = model_name
+        self._max_output_tokens = max_output_tokens
         self.usage = ModelUsage()
         self.last_usage = ModelUsage()
         self.last_usage_reported = False
@@ -53,14 +54,17 @@ class StructuredWorkerModel:
         return self._model_config().curation_max_output_tokens
 
     def _model_config(self):
-        return self._app_config.get_model(
+        config = self._app_config.get_model(
             self._model_name or self._app_config.resolve_default_model_name()
+        )
+        return config if self._max_output_tokens is None else config.model_copy(
+            update={"curation_max_output_tokens": self._max_output_tokens}
         )
 
     def _chat_model(self):
         config = self._model_config()
         return create_chat_model(name=config.name, app_config=self._app_config,
-                                 max_tokens=config.curation_max_output_tokens)
+                                 max_tokens=self.max_output_tokens)
 
     @staticmethod
     def _structured_request(model, schema, method):
