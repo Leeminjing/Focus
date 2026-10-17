@@ -211,7 +211,7 @@ def test_retry_feedback_repairs_malformed_proposal_on_frozen_observation(monkeyp
         def __init__(self, sessions, decision_model):
             self._decision_model = decision_model
 
-        async def decide(self, frozen_observation, holder_id):
+        async def decide(self, frozen_observation, holder_id, *, fencing_token=None):
             assert frozen_observation is observation
             return await self._decision_model(frozen_observation)
 
@@ -295,7 +295,7 @@ def _required_expansion_observation() -> LoopObservationEnvelope:
 
 
 def _claim() -> CoordinatorClaim:
-    return CoordinatorClaim(lease_id="l1", loop_id="loop-1", round_id="round-1", fencing_token="f1")
+    return CoordinatorClaim(lease_id="l1", loop_id="loop-1", round_id="round-1", fencing_token="1")
 
 
 def _orchestrator(monkeypatch, outcomes: list[Exception | None]):
@@ -306,7 +306,7 @@ def _orchestrator(monkeypatch, outcomes: list[Exception | None]):
         def __init__(self, sessions, model) -> None:
             self._model = model
 
-        async def decide(self, observation, holder_id):
+        async def decide(self, observation, holder_id, *, fencing_token=None):
             outcome = outcomes[min(calls["decide"], len(outcomes) - 1)]
             calls["decide"] += 1
             if outcome is not None:

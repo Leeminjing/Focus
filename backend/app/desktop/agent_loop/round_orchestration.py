@@ -15,6 +15,7 @@ patrol_contract.PatrolDecisionContract 校验，形状或合同不合法时在�
 违例有界原始输出与已解析动作的脱敏结构仅留既有审计，后者不因长理由丢失等待 cause/证据种类，
 用尽才收敛为 waiting_user，最后 Kernel 校验并提交。首轮 Mission renderer 只补全 Patrol 已决定的 Primary continuation，
 不独立提交权威决策；旧 Context Loop 的初始证据 Run 完成前不开展首轮认知。
+临时 429、5xx、连接与超时在单次未提交模型请求内最多退避重试两次，冻结输入不变；每次重新核验原 owner、授权与共享预算并保留用量回执。
 真实 Patrol 只对直接用户消息选择 intent_id；普通 Portfolio 意见不注入执行 Agent。
 质量编译阻断同时投影安全失败维度与耐久修订次数；材料修订由 compiler 的专责模块执行，不由本编排扩张权限。
 模型读面保留完整来源目录及同政策合法等待身份，Worker 正文按精确 hash 分页；完整原输入 Oi 链经校验装配后才进入模型窗口，无法装入时使用既有容量 blocker，不能静默删历史。
@@ -29,6 +30,7 @@ Patrol 读取同一冻结策略并按真实诊断进展决策；派生仍选择�
 
 from __future__ import annotations
 
+from asyncio import sleep as _patrol_retry_sleep
 import json
 import uuid
 from typing import Any
@@ -38,6 +40,7 @@ from focus.models.factory import create_chat_model
 from focus.runtime.runs.usage import ModelUsage, callback_usage
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langchain_core.messages import HumanMessage, SystemMessage
+from openai import APIConnectionError, APIStatusError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -188,6 +191,7 @@ attachments 是用户显式发送的参考材料，不是附加执行指令。�
 """
 
 _PATROL_CONTRACT_ATTEMPTS = 3
+_PATROL_REQUEST_ATTEMPTS = 3
 _RAW_OUTPUT_LIMIT = 2000
 
 
@@ -252,8 +256,10 @@ class StructuredPatrolDecisionModel:
         self._source_catalog = source_catalog
         self._attachment_sessions = attachment_sessions
         self.call_count = 0
+        self.retry_count = 0
         self.usage = ModelUsage()
         self._remaining_calls = 1
+        self._remaining_retries = None
         self._contract = PatrolDecisionContract()
         self._last_raw_text: str | None = None
         self.attempt_metadata: list[dict] = []
@@ -277,9 +283,11 @@ class StructuredPatrolDecisionModel:
         self._remaining_calls = remaining_capacity(
             limits.get("max_model_calls", 200), int(usage.get("model_calls", 0)),
         )
+        self._remaining_retries = remaining_capacity(limits.get("max_retries"), int(usage.get("retries", 0)))
         config = self._app_config.get_model(self._model_name or self._app_config.resolve_default_model_name())
         self._request_capacity = PatrolRequestCapacity(config, limits)
-        model = create_chat_model(name=config.name, app_config=self._app_config, max_tokens=config.curation_max_output_tokens)
+        # Patrol owns retries so each actual request passes authorization and accounting.
+        model = create_chat_model(name=config.name, app_config=self._app_config, max_tokens=config.curation_max_output_tokens, max_retries=0)
         sources = await self._source_catalog(observation) if self._source_catalog is not None else None
         prompt = json.dumps(PatrolReadView.payload(observation, sources), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         from focus.context.requests import frozen_request_messages
@@ -426,8 +434,20 @@ class StructuredPatrolDecisionModel:
         return await self._reader(observation, step.reads)
 
     async def _invoke(self, model, messages, method: str, schema):
+        for attempt in range(_PATROL_REQUEST_ATTEMPTS):
+            try:
+                return await self._invoke_once(model, messages, method, schema, retry=attempt > 0)
+            except (APIConnectionError, APIStatusError) as exc:
+                transient = isinstance(exc, APIConnectionError) or exc.status_code in {408, 429} or 500 <= exc.status_code < 600
+                if not transient or attempt == _PATROL_REQUEST_ATTEMPTS - 1:
+                    raise
+                await _patrol_retry_sleep(0.5 * 2 ** attempt)
+
+    async def _invoke_once(self, model, messages, method: str, schema, *, retry: bool = False):
         if exceeds_limit(self.call_count, self._remaining_calls, inclusive=True):
             raise RuntimeError("Patrol model-call budget 已耗尽")
+        if retry and exceeds_limit(self.retry_count, self._remaining_retries, inclusive=True):
+            raise RuntimeError("Patrol retry budget 已耗尽")
         config = self._app_config.get_model(self._model_name or self._app_config.resolve_default_model_name())
         capacity = self._request_capacity or PatrolRequestCapacity(config, {})
         request_messages = list(messages)
@@ -435,13 +455,15 @@ class StructuredPatrolDecisionModel:
             schema_text = json.dumps(schema.model_json_schema(), ensure_ascii=False, separators=(",", ":"))
             request_messages.append(HumanMessage(content=f"只返回符合此 JSON Schema 的 JSON：{schema_text}"))
         estimated = capacity.check(request_messages, schema)
-        self.call_count += 1
         callback = UsageMetadataCallbackHandler()
         metadata = {}
         receipt = None
         if self._usage_receipts is not None:
-            receipt = await self._usage_receipts.reserve(estimated, capacity.output_reserve)
+            receipt = await self._usage_receipts.reserve(estimated, capacity.output_reserve, retry=retry)
+        self.call_count += 1
         try:
+            if retry:
+                self.retry_count += 1
             invoke_config = {"callbacks": [callback]}
             if method == "prompt_json":
                 response = await model.ainvoke(
@@ -471,11 +493,12 @@ class StructuredPatrolDecisionModel:
         except BaseException as exc:
             audit = getattr(exc, "audit", {})
             metadata = {**metadata, "request_source_manifest": audit.get("request_source_manifest", metadata.get("request_source_manifest")),
-                        "usage": audit.get("usage", metadata.get("usage")), "status": getattr(exc, "status", "failed")}
+                        "usage": audit.get("usage", metadata.get("usage")), "status": getattr(exc, "status", "failed"),
+                        "error_type": type(exc).__name__, "status_code": getattr(exc, "status_code", None)}
             raise
         finally:
             self.attempt_metadata.append({key: metadata.get(key) for key in
-                ("request_source_manifest", "provider", "protocol", "model_name", "status", "usage")})
+                ("request_source_manifest", "provider", "protocol", "model_name", "status", "usage", "error_type", "status_code")})
             measured = callback_usage(callback)
             self.usage += measured if measured.model_calls else ModelUsage(model_calls=1)
             if receipt is not None:
@@ -821,6 +844,10 @@ class LoopRoundOrchestrator:
                     await self._record_usage(claim.loop_id, decision_model.usage)
                 await self._fail(claim, exc)
                 raise
+            finally:
+                if not getattr(decision_model, "usage_managed", False):
+                    for _ in range(getattr(decision_model, "retry_count", 0)):
+                        await self._record_retry(claim.loop_id)
             if not getattr(decision_model, "usage_managed", False):
                 await self._record_usage(claim.loop_id, decision_model.usage)
             return intent
