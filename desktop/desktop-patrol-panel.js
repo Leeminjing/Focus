@@ -6,6 +6,7 @@
  * 回答独立读取和重试，保留其他卡片 DOM；展开后按需渲染 Markdown 并提供全文/代码复制，文件直接打开固定版本或加入引用。
  * 原生显隐由宿主通知，浏览器回退用 visibilitychange；再次显示时读取最新投影。授权处理沿用工作台，不展示 Patrol 内部理由。
  * 状态旁原位暂停/继续，停止收进菜单；复用 Loop control，区分 HTTP 受理与 Live 生效，隔离工作区代际并阻止在途重复控制。
+ * 当前 Loop 就绪即连接 Live，历史独立读取；历史加载/失败/重试仅更新记录面板，不重启工作连接。
  */
 (async function () {
   "use strict";
@@ -30,6 +31,7 @@
   let workspace = null, workspaceLoaded = false, generation = 0, loopId = null, unsubscribe = null, reads = new AbortController();
   let resultKey = "", inputKey = "", publishedState = "", binding = false, nativeReady = false, shownFailure = "", closeEpoch = 0, commandQueue = Promise.resolve();
   let historyKey = "", requestKey = "", progressKey = "", artifactKey = "";
+  let historyRead = null, historyReady = false, historyRetryBefore = null, historyRefreshPending = false;
   let panelVisible = bridge?.enabled ? false : !document.hidden, visibilityKnown = false, resultsNeedReset = false;
   let control = null;
   const draftStore = () => intake.store(workspace?.workspace_id || null);
@@ -163,12 +165,44 @@
     resetResults();
     void connection.start(id).catch(error => { if (loopId === id) fail(error); });
   }
+  function readHistory(before = null) {
+    if (!workspace) return Promise.resolve();
+    if (historyRead) return historyRead;
+    const token = generation, id = workspace.workspace_id, initialize = !historyReady;
+    const status = $("#history-status"), retry = $("#retry-history");
+    status.textContent = "正在读取记录…"; status.hidden = false; retry.hidden = true;
+    $("#older").disabled = true;
+    historyRead = (async () => {
+      try {
+        const page = await api.workspaceInputs(id, before);
+        if (token !== generation) return;
+        intake.history(id, page, Boolean(before), initialize);
+        if (initialize) await intake.reconcile(id, page);
+        if (token !== generation) return;
+        historyReady = true;
+        status.hidden = true; status.textContent = "";
+      } catch (error) {
+        if (token !== generation) return;
+        historyRetryBefore = before;
+        status.textContent = `读取记录失败：${error.message || error}`;
+        retry.hidden = false;
+      } finally {
+        if (token === generation) {
+          historyRead = null; $("#older").disabled = false;
+          if (historyRefreshPending) { historyRefreshPending = false; void readHistory(); }
+        }
+      }
+    })();
+    return historyRead;
+  }
   async function activate(bound) {
     if (bound?.workspace_id === workspace?.workspace_id && workspace && workspaceLoaded) return;
     const token = ++generation;
     control = null;
     loopId = null; resetResults(); connection.stop();
     workspace = bound; workspaceLoaded = false; inputKey = "";
+    historyRead = null; historyReady = false; historyRetryBefore = null; historyRefreshPending = false;
+    $("#history-status").hidden = true; $("#history-status").textContent = ""; $("#retry-history").hidden = true;
     references.close();
     artifacts.reset();
     $("#reference-file").disabled = !bound;
@@ -179,17 +213,20 @@
     $("#binding").title = bound?.path || "选择工作区文件夹";
     watchDraft();
     if (!bound) return;
-    try {
-      const [loop, page] = await Promise.all([api.workspacePatrol(bound.workspace_id), api.workspaceInputs(bound.workspace_id)]);
-      if (token !== generation) return;
-      intake.history(bound.workspace_id, page, false, true);
-      workspaceLoaded = true;
-      if (loop) connect(loop.loop_id);
-      await intake.reconcile(bound.workspace_id, page);
-    } catch (error) {
-      if (token !== generation) return;
-      $("#retry-workspace").hidden = false; throw error;
-    }
+    await Promise.all([
+      (async () => {
+        try {
+          const loop = await api.workspacePatrol(bound.workspace_id);
+          if (token !== generation) return;
+          workspaceLoaded = true;
+          if (loop) connect(loop.loop_id);
+        } catch (error) {
+          if (token !== generation) return;
+          $("#retry-workspace").hidden = false; throw error;
+        }
+      })(),
+      readHistory(),
+    ]);
   }
   async function choose() {
     if (binding) return false;
@@ -405,9 +442,11 @@
     refreshVisible();
     if (!projection || projection.loop_id !== loopId) return;
     const next = JSON.stringify(projection.interventions);
+    if (inputKey === "") inputKey = next;
     if (next !== inputKey && workspace) {
-      inputKey = next; const token = generation, id = workspace.workspace_id;
-      void api.workspaceInputs(id).then(page => { if (token === generation) intake.history(id, page); }).catch(error => { if (token === generation) fail(error); });
+      inputKey = next;
+      if (historyRead) historyRefreshPending = true;
+      else void readHistory();
     }
   });
   $("#compose").addEventListener("submit", event => { event.preventDefault(); void submit().catch(fail); });
@@ -442,16 +481,15 @@
   $("#reconnect").addEventListener("click", () => { const id = loopId; loopId = null; connect(id); });
   $("#activity-reconnect").addEventListener("click", () => $("#reconnect").click());
   $("#retry-workspace").addEventListener("click", () => { void enqueue(() => activate(workspace)); });
+  $("#retry-history").addEventListener("click", () => { void readHistory(historyRetryBefore); });
   $("#add-material").addEventListener("click", () => $("#file-picker").click());
   $("#file-picker").addEventListener("change", async event => {
     const id = workspace?.workspace_id || null, files = [...event.target.files]; event.target.value = "";
     try { await intake.add(id, await FocusWorkspacePatrolMaterialPreview.readTransfer({ files }, await intake.resourceLimits())); } catch (error) { fail(error); }
   });
-  $("#older").addEventListener("click", async () => {
-    const id = workspace?.workspace_id, store = draftStore(), before = store.get().cursor;
-    if (!id || !before) return;
-    $("#older").disabled = true;
-    try { intake.history(id, await api.workspaceInputs(id, before), true); } catch (error) { fail(error); } finally { $("#older").disabled = false; }
+  $("#older").addEventListener("click", () => {
+    const before = draftStore().get().cursor;
+    if (before) void readHistory(before);
   });
   resetBudget();
   watchDraft();
