@@ -4,6 +4,7 @@
  * 要求与参考文字分开，Enter/IME 不发送，Ctrl+Enter 显式发送；示例：拖入截图、补充“解释报错”、点击发送。
  * 回答仅取固定 Context revision 的 assistant 正文并有界缓存，进度/产物分别来自 Live；隐藏时保留 Live 状态同步，取消正文读取并暂停结果 DOM 更新。
  * 原生显隐由宿主通知，浏览器回退用 visibilitychange；再次显示时读取最新投影。授权处理沿用工作台，不展示 Patrol 内部理由。
+ * 状态旁原位暂停/继续，停止收进菜单；复用 Loop control，区分 HTTP 受理与 Live 生效，隔离工作区代际并阻止在途重复控制。
  */
 (async function () {
   "use strict";
@@ -24,6 +25,7 @@
   let resultKey = "", inputKey = "", publishedState = "", binding = false, nativeReady = false, shownFailure = "", closeEpoch = 0, commandQueue = Promise.resolve();
   let historyKey = "", requestKey = "", progressKey = "", artifactKey = "";
   let panelVisible = bridge?.enabled ? false : !document.hidden, visibilityKnown = false, resultsNeedReset = false;
+  let control = null;
   const draftStore = () => intake.store(workspace?.workspace_id || null);
   const references = FocusDesktopPatrolReferences.create({ host, api, store:draftStore, loopId:() => loopId, onError:fail });
   function fail(error) { $("#error").hidden = !error; $("#error").textContent = error ? String(error.message || error) : ""; if (!error) $("#retry-workspace").hidden = true; }
@@ -44,9 +46,34 @@
     location.href = `./index.html?session=${encodeURIComponent(runtime.session)}`;
   }
   function notify() {
-    const status = FocusWorkspacePatrolFeedback.status(live.get().projection, live.get().connection, draftStore().get());
+    const current = live.get(), projection = current.projection?.loop_id === loopId ? current.projection : null;
+    const status = FocusWorkspacePatrolFeedback.status(projection, current.connection, draftStore().get());
+    const loop = projection?.loop?.state;
+    const pausable = loop?.status === "running" || (loop?.status === "waiting_user" && loop.waiting_reason === "awaiting_input");
+    const resumable = loop?.status === "paused";
+    if (control?.phase === "accepted") {
+      // HTTP acceptance is separate from the canonical Live state. A newer
+      // revision may already have superseded the requested state (e.g. resume).
+      if (loop?.status === control.target && (control.revision == null || loop.revision >= control.revision)) control.phase = "applied";
+      else if (control.revision != null && loop?.revision > control.revision) control = null;
+    }
+    if (control?.phase === "applied" && loop?.status !== control.target) control = null;
+    const pendingControl = control && control.phase !== "applied";
+    const toggle = $("#toggle-work");
+    toggle.hidden = !pausable && !resumable;
+    toggle.textContent = resumable ? "继续" : "暂停";
+    toggle.dataset.command = resumable ? "resume" : "pause";
+    toggle.setAttribute("aria-label", resumable ? "继续当前工作" : "暂停当前工作");
+    toggle.disabled = !!pendingControl || current.connection.status !== "live" || (!pausable && !resumable);
+    $("#stop-work").disabled = !!pendingControl || current.connection.status !== "live" || !["running", "paused", "waiting_user"].includes(loop?.status);
+    for (const button of [toggle, $("#stop-work")]) {
+      if (pendingControl) button.setAttribute("aria-busy", "true");
+      else button.removeAttribute("aria-busy");
+    }
+    $("#control-feedback").hidden = !control;
+    $("#control-feedback").textContent = control ? `${{ pause: "暂停", resume: "继续", stop: "停止" }[control.command]}${{ requesting: "请求中…", accepted: "已受理 · 等待工作状态更新", applied: "已生效" }[control.phase]}` : "";
     $("#status").textContent = workspace ? status.text : "准备接收新输入";
-    $("#activity").hidden = !workspace || status.state === "idle";
+    $("#activity").hidden = !workspace || (status.state === "idle" && !pausable && !resumable);
     $("#activity-text").textContent = status.text; $("#activity-text").title = status.text;
     host.dataset.state = status.state;
     $("#activity-reconnect").hidden = status.state !== "disconnected";
@@ -54,6 +81,22 @@
     const state = { workspaceId: workspace?.workspace_id || "", workspaceName: workspace?.display_name || "", state: status.state, dirty: intake.hasUnfinished(), pending: intake.isSending() };
     const key = JSON.stringify(state);
     if (bridge?.enabled && nativeReady && key !== publishedState) { publishedState = key; void bridge.setState(state).catch(fail); }
+  }
+  async function controlWork(command) {
+    const button = command === "stop" ? $("#stop-work") : $("#toggle-work");
+    if (!loopId || button.disabled || button.hidden) return;
+    const owner = { loopId, command, target: { pause: "paused", resume: "running", stop: "stopped" }[command], phase: "requesting" };
+    const id = loopId, token = generation;
+    control = owner; fail(null); notify();
+    $(".panel-menu").open = false;
+    try {
+      const receipt = await api.control(id, command);
+      if (token !== generation || id !== loopId || control !== owner) return;
+      owner.phase = "accepted"; owner.revision = receipt?.revision;
+    } catch (error) {
+      if (token !== generation || id !== loopId || control !== owner) return;
+      control = null; fail(error);
+    } finally { if (token === generation && id === loopId) notify(); }
   }
   function renderInput(model) {
     budget?.syncDraft();
@@ -100,6 +143,7 @@
   }
   function connect(id) {
     if (!id || id === loopId) return;
+    if (control?.loopId !== id) control = null;
     loopId = id;
     resetResults();
     void connection.start(id).catch(error => { if (loopId === id) fail(error); });
@@ -107,6 +151,7 @@
   async function activate(bound) {
     if (bound?.workspace_id === workspace?.workspace_id && workspace && workspaceLoaded) return;
     const token = ++generation;
+    control = null;
     loopId = null; resetResults(); connection.stop();
     workspace = bound; workspaceLoaded = false; inputKey = "";
     references.close();
@@ -279,6 +324,8 @@
     else { void hidePanel().catch(fail); }
   });
   $("#workbench").addEventListener("click", () => { void openWorkbench(); });
+  $("#toggle-work").addEventListener("click", () => { void controlWork($("#toggle-work").dataset.command); });
+  $("#stop-work").addEventListener("click", () => { void controlWork("stop"); });
   $("#reconnect").addEventListener("click", () => { const id = loopId; loopId = null; connect(id); });
   $("#activity-reconnect").addEventListener("click", () => $("#reconnect").click());
   $("#retry-workspace").addEventListener("click", () => { void enqueue(() => activate(workspace)); });
