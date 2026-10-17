@@ -105,6 +105,16 @@ class AppConfig(BaseModel):
             )
         return declared[0]
 
+    def resolve_curation_model_name(self) -> str:
+        """策展与内部结构化派生共用策展默认，不受普通对话默认覆盖影响。"""
+        for model in self.models:
+            if model.curation_default:
+                return model.name
+        raise ValueError(
+            "尚未配置策展默认模型: 请为某个模型条目设置 curation_default: true；"
+            f"可用条目: {available_model_names(self)}。{_MODEL_ENTRY_HINT}"
+        )
+
     def _normalize_name(self, name: str) -> str:
         return name.strip()
 

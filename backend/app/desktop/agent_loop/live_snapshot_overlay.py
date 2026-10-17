@@ -6,7 +6,7 @@ ContextLineageResolver 从权威 revision 来源解析，作为客户端在快�
 事务轮次与预留/未知用量由共享 AccountingQuery 读取，并提供独立 accounting 实体，使消费事件不改变控制版本；Loop 和 Round 沿用同一实体的 journal 版本，尚未发布事件时使用初始版本一，控制版本和轮号不代替实体版本；Run 的业务终态和结算清理状态分别公开。
 示例：`await overlay.apply(session, projection, boundary)`。
 interventions 从耐久用户消息表补齐类型、来源、交付状态和 Run 身份，快照重启不丢失接受提交后的状态。
-Round/Observation/Session 按身份完整保存，当前视图由观察指针派生；快照公开真实提交凭据及每个 Run 的所属轮权限，accounting 历史诊断不回写旧事务。
+Round/Observation/Session 按身份读取有界近期窗口并保留未完成工作，当前视图由观察指针派生；快照公开真实提交凭据及批量读取的 Run 所属轮权限，accounting 历史诊断不回写旧事务。
 Mission交付调用与兼容快照/Directive事件相同的只读评估；重连使用当前事实，旧journal不被补写。
 task_progress 从既有持久 head 读取并独立补齐；Loop 显式提供交互模式，用户受理不构造任务结果。
 """
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 
@@ -55,7 +55,7 @@ from backend.app.desktop.context_evolution.lineage import (
 from backend.app.desktop.models import DesktopRun, DesktopThread
 from backend.app.desktop.run_orchestration.models import RunDispatch
 from backend.app.desktop.agent_loop.accounting_query import LoopAccountingQuery
-from backend.app.desktop.agent_loop.directive_equipment import round_permission_state
+from backend.app.desktop.agent_loop.directive_equipment import round_permission_states
 
 
 class LoopLiveProjectionOverlay:
@@ -65,15 +65,22 @@ class LoopLiveProjectionOverlay:
     async def apply(self, session: AsyncSession, projection: LoopLiveProjection, sequence: int) -> LoopLiveProjection:
         loop = await session.get(AgentLoop, projection.loop_id)
         mission = await session.scalar(select(LoopMissionRevision).where(LoopMissionRevision.loop_id == projection.loop_id, LoopMissionRevision.revision == loop.goal_revision))
-        rounds = tuple(await session.scalars(select(LoopRound).where(LoopRound.loop_id == loop.loop_id).order_by(LoopRound.number)))
+        rounds = await self._window(session, LoopRound, LoopRound.round_id, LoopRound.number,
+            loop.loop_id, or_(LoopRound.status.not_in(("settled", "error", "superseded")),
+                             LoopRound.round_id == loop.current_round_id), limit=50)
         round_by_id = {row.round_id: row for row in rounds}
         round_row = round_by_id.get(loop.current_round_id)
-        observations = tuple(await session.scalars(select(LoopObservation).where(LoopObservation.loop_id == loop.loop_id).options(
+        patrols = await self._window(session, LoopPatrolSession, LoopPatrolSession.session_id,
+            LoopPatrolSession.started_at, loop.loop_id, LoopPatrolSession.status == "active", limit=50)
+        observation_ids = {row.observation_id for row in (*rounds, *patrols) if row.observation_id}
+        observations = tuple(await session.scalars(select(LoopObservation).where(
+            LoopObservation.loop_id == loop.loop_id, LoopObservation.observation_id.in_(observation_ids)).options(
             load_only(LoopObservation.observation_id, LoopObservation.round_id, LoopObservation.generation,
-                      LoopObservation.envelope_hash, LoopObservation.created_at))))
+                      LoopObservation.envelope_hash, LoopObservation.created_at)))) if observation_ids else ()
         observation_by_id = {row.observation_id: row for row in observations}
-        patrols = tuple(await session.scalars(select(LoopPatrolSession).where(LoopPatrolSession.loop_id == loop.loop_id)))
-        decisions = {row.decision_id: row for row in await session.scalars(select(LoopDecision).where(LoopDecision.loop_id == loop.loop_id))}
+        decision_ids = {row.decision_id for row in rounds if row.decision_id}
+        decisions = {row.decision_id: row for row in await session.scalars(select(LoopDecision).where(
+            LoopDecision.loop_id == loop.loop_id, LoopDecision.decision_id.in_(decision_ids)))} if decision_ids else {}
         adopted_observations = [row.observation_id for row in decisions.values() if row.intent.get("strategy_adoptions")]
         strategy_inputs = dict((await session.execute(select(LoopObservation.observation_id,
             LoopObservation.envelope["evolution_strategies"]).where(LoopObservation.observation_id.in_(adopted_observations)))).all()) if adopted_observations else {}
@@ -84,24 +91,32 @@ class LoopLiveProjectionOverlay:
         recent_runs = tuple(await session.scalars(select(DesktopRun).where(DesktopRun.loop_id == projection.loop_id).order_by(DesktopRun.created_at.desc()).limit(200)))
         active_runs = tuple(await session.scalars(select(DesktopRun).where(DesktopRun.loop_id == projection.loop_id, DesktopRun.settled_at.is_(None))))
         runs = tuple({row.run_id: row for row in (*recent_runs, *active_runs)}.values())
-        permission_states = {row.run_id: await round_permission_state(session, row) for row in runs}
+        permission_states = await round_permission_states(session, runs)
         run_ids = tuple(row.run_id for row in runs)
         dispatch_rows = () if not run_ids else tuple((await session.scalars(select(RunDispatch).where(RunDispatch.run_id.in_(run_ids)))).all())
         dispatch_by_run = {row.run_id: row for row in dispatch_rows}
-        curators = tuple((await session.scalars(select(LoopCuratorAssignment).where(LoopCuratorAssignment.loop_id == projection.loop_id))).all())
-        expansions = tuple((await session.scalars(select(LoopContextExpansion).where(LoopContextExpansion.loop_id == projection.loop_id))).all())
-        directives = tuple((await session.scalars(select(LoopDirective).where(LoopDirective.loop_id == projection.loop_id))).all())
-        interventions = tuple((await session.scalars(select(LoopUserIntent).where(
-            LoopUserIntent.loop_id == projection.loop_id).order_by(LoopUserIntent.created_at.desc()).limit(200))).all())
-        facts = tuple((await session.scalars(select(LoopFact).where(LoopFact.loop_id == projection.loop_id, LoopFact.fact_type != "tool"))).all())
-        wait_requests = tuple((await session.scalars(select(LoopWaitRequest).where(LoopWaitRequest.loop_id == projection.loop_id).order_by(LoopWaitRequest.created_at.desc()).limit(50))).all())
+        curators = await self._window(session, LoopCuratorAssignment, LoopCuratorAssignment.assignment_id,
+            LoopCuratorAssignment.updated_at, loop.loop_id, LoopCuratorAssignment.state.not_in(("consumed", "failed", "cancelled")))
+        expansions = await self._window(session, LoopContextExpansion, LoopContextExpansion.expansion_id,
+            LoopContextExpansion.updated_at, loop.loop_id,
+            LoopContextExpansion.state.not_in(("dispatched", "declined", "blocked", "failed", "superseded")))
+        directives = await self._window(session, LoopDirective, LoopDirective.directive_id,
+            LoopDirective.created_at, loop.loop_id,
+            LoopDirective.lifecycle_state.in_(("proposed", "authorized", "delivering", "delivered", "run_started")))
+        interventions = await self._window(session, LoopUserIntent, LoopUserIntent.intent_id,
+            LoopUserIntent.created_at, loop.loop_id,
+            LoopUserIntent.delivery_state.not_in(("addressed", "rejected", "delivery_failed", "settled", "failed", "cancelled")))
+        facts = await self._window(session, LoopFact, LoopFact.fact_id, LoopFact.updated_at,
+            loop.loop_id, LoopFact.state == "verifying", scope=LoopFact.fact_type != "tool")
+        wait_requests = await self._window(session, LoopWaitRequest, LoopWaitRequest.request_id,
+            LoopWaitRequest.created_at, loop.loop_id, LoopWaitRequest.status.in_(("open", "resolving")), limit=50)
         wait_request_ids = tuple(row.request_id for row in wait_requests)
         wait_responses = () if not wait_request_ids else tuple((await session.scalars(select(LoopWaitResponse).where(LoopWaitResponse.request_id.in_(wait_request_ids)))).all())
         failures = tuple((await session.scalars(select(LoopProjectionFailure).where(LoopProjectionFailure.loop_id == projection.loop_id, LoopProjectionFailure.status != "resolved"))).all())
         grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.loop_id == projection.loop_id).order_by(LoopDelegationGrant.revision.desc()).limit(1))
         usage = await session.get(LoopBudgetUsage, projection.loop_id)
         portfolio = await session.get(PortfolioRevision, loop.current_portfolio_revision_id) if loop.current_portfolio_revision_id else None
-        accounting = await LoopAccountingQuery().read(session, loop.loop_id)
+        accounting = await LoopAccountingQuery().read(session, loop.loop_id, include_round_history=False)
         delivery = await MissionBootstrapStage().assess(session, loop, round_row) if round_row is not None else None
         lineage = await self._lineage.resolve(
             session,
@@ -148,6 +163,13 @@ class LoopLiveProjectionOverlay:
                 "quarantined_units": tuple(sorted(row.unit_id for row in failures if row.status == "quarantined")),
             }),
         }))
+
+    @staticmethod
+    async def _window(session, model, identity, ordering, loop_id, active, *, limit=200, scope=True):
+        recent = select(identity).where(model.loop_id == loop_id, scope).order_by(
+            ordering.desc(), identity.desc()).limit(limit)
+        return tuple(await session.scalars(select(model).where(
+            model.loop_id == loop_id, scope, or_(identity.in_(recent), active)).order_by(ordering, identity)))
 
     @classmethod
     def _round_entity(cls, row, observation, decision, sequence, prior, strategies=None):

@@ -381,7 +381,7 @@ def test_full_request_input_budget_is_checked_and_reserved(tmp_path, monkeypatch
             work_id = await register_progress(sessions, observation)
             config = SimpleNamespace(name="fixture", model="fixture", curation_output_method="json_schema",
                                      curation_max_output_tokens=1000, context_window=100000)
-            app = SimpleNamespace(get_model=lambda name: config, resolve_default_model_name=lambda: "fixture")
+            app = SimpleNamespace(get_model=lambda name: config, resolve_curation_model_name=lambda: "fixture")
             monkeypatch.setattr(structured_worker, "create_chat_model", lambda **kwargs: model)
             worker = structured_worker.StructuredWorkerModel(app)
             runtime = TaskProgressRuntime(sessions, app, model_factory=lambda name: worker)

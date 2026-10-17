@@ -211,7 +211,7 @@ def test_mcp_cache_refresh_on_content_change(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cache, "get_mcp_tools", fake_get_tools)
     monkeypatch.setattr(cache, "_cache", {})
-    monkeypatch.setattr(cache, "_locks", {})
+    monkeypatch.setattr(cache, "_loads", {})
 
     async def scenario():
         await cache.get_mcp_tools_cached()
@@ -245,7 +245,7 @@ def test_mcp_cache_refreshes_after_newer_global_file_is_deleted(monkeypatch, tmp
 
     monkeypatch.setattr(cache, "get_mcp_tools", fake_get_tools)
     monkeypatch.setattr(cache, "_cache", {})
-    monkeypatch.setattr(cache, "_locks", {})
+    monkeypatch.setattr(cache, "_loads", {})
 
     async def scenario():
         await cache.get_mcp_tools_cached()

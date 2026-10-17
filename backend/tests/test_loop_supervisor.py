@@ -14,6 +14,30 @@ from backend.app.desktop.agent_loop.supervisor import LoopSupervisor, Supervisor
 from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim, LoopCoordinatorRuntime
 
 
+def test_index_prewarm_is_supervised_and_cancelled_independently():
+    async def run():
+        entered, cancelled = asyncio.Event(), asyncio.Event()
+
+        class Orchestrator:
+            async def prewarm_indexes(self, loop_id):
+                assert loop_id == "loop-1"
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+
+        runtime = LoopCoordinatorRuntime(None, None, orchestrator=Orchestrator())
+        component = next(c for c in runtime._components_for_loop("loop-1") if c.name == "index_prewarm")
+        supervisor = LoopSupervisor("test", [component])
+        await supervisor.start()
+        await asyncio.wait_for(entered.wait(), 1)
+        await supervisor.close()
+        assert cancelled.is_set()
+
+    asyncio.run(run())
+
+
 def test_components_progress_and_fail_independently() -> None:
     async def run() -> None:
         blocked = asyncio.Event()

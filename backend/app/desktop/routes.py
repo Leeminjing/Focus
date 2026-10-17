@@ -49,6 +49,7 @@ from backend.app.desktop.run_materials import RunMaterialRequest
 from backend.app.desktop.run_orchestration import RunLauncher
 from backend.app.desktop.run_stream import durable_run_sse_consumer
 from backend.app.desktop.workspace_material_routes import workspace_material_router
+from backend.app.desktop.file_routes import file_router
 from backend.app.gateway.services import start_run
 from focus.sandbox.status import sandbox_status
 
@@ -57,11 +58,30 @@ from focus.sandbox.status import sandbox_status
 # 保护由 AuthMiddleware（统一会话保护）统一承担，本路由不再挂独立依赖。
 desktop_router = APIRouter(prefix="/desktop/api")
 desktop_router.include_router(workspace_material_router)
+desktop_router.include_router(file_router)
 
 
 @desktop_router.get("/sandbox/status")
 async def get_sandbox_status() -> dict[str, object]:
     return sandbox_status()
+
+
+@desktop_router.get("/shell-recovery")
+async def list_shell_recovery(request: Request) -> list[dict]:
+    return await request.app.state.desktop_service.shell_recovery.blocked()
+
+
+@desktop_router.post("/runs/{run_id}/shell-recovery")
+async def recover_shell_cleanup(run_id: str, request: Request) -> dict:
+    try:
+        settlement = await request.app.state.desktop_service.shell_recovery.recover(run_id)
+        return settlement.model_dump(mode="json")
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error
+    except (ValueError, OSError) as error:
+        raise HTTPException(409, str(error)) from error
+
+
 @desktop_router.get("/bootstrap")
 async def bootstrap(request: Request) -> dict:
     service = request.app.state.desktop_service

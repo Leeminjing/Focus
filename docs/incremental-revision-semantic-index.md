@@ -93,6 +93,29 @@ Index／record schema 和完整切分 fingerprint 都属于 record 合同。即�
 
 默认分段仍为 12 条，工具交换保持闭合；本轮调度和缓存优化不改变分段 fingerprint，也不要求已有完整缓存冷构建。12／30 的选择还需比较真实模型冷构建与追加场景，不能从请求数直接推算端到端加速。
 
+### 已发布 Revision 的局部预热、角色输出与阶段进度
+
+运行中的 Loop 增加独立 `index_prewarm` 监督任务，轮询活动成员的已发布、有效且不可变的当前 Revision。预热只准备单段投影及独立验证后的 `SegmentProjectionRecord`，不发布完整 Index，不生成 Curator 提案。当前轮仍用本轮冻结 Observation 重做整体解释和联合验证；追加版本仅能复用符合原局部合同的稳定记录。已完成的局部记录可跨服务重启恢复。
+
+后台按 Revision 串行准备，共享原索引模型池且最多占一个名额；等待名额时前台优先。发现完整前台 build 后不再启动下一段，已经发送的请求完成并正常结算。服务内同一局部缓存键互斥填充，前台遇到正在预热的同段会等待并复用，避免重复采样。不能抢占已经发出的 provider 请求，因此仍可能等待当前一段。跨进程竞争继续依靠持久记录的首个提交赢家，可能发生重复消费。
+
+预热的每次模型请求使用带 `index_prewarm`、精确 Revision、Context 和 hash 的持久消费回执，重新检查 active grant、授权版本、到期时间、成员资格、scope、publication receipt 和共享剩余额度；不新增预算。暂停／撤销后的下一次采样会被拒绝，已发送请求仍结算。后台失败不阻断前台；同一进程中相同 Revision／授权／模型合同失败后不持续自动重试，新版本或新授权可再次准备，前台仍沿用既有恢复路径。进程重启后只复用已保存记录，未知用量的旧预留仍占额度。
+
+局部投影、整体解释、验证分别绑定 `semantic_index_projector`、`semantic_index_interpreter`、`claim_verifier`。模型条目可选配置 `derivation_max_output_tokens`（每项 512–65536），未指定角色继续使用该模型的 `curation_max_output_tokens`。例如以下数值仅用于实验，不是已验证的新默认值：
+
+```yaml
+derivation_max_output_tokens:
+  semantic_index_projector: 4096
+  semantic_index_interpreter: 2048
+  claim_verifier: 1024
+```
+
+有效角色上限同时进入 provider 请求、窗口预检、逐次预算预留及缓存 identity。只修改 interpreter 上限不会使局部缓存失效；默认未配置时维持原模型 identity。验证角色同时用于局部和联合验证，其上限变化会使相应证明合同失效。设置保存及旧客户端提交均保留已有角色参数。
+
+`semantic_index_model_invocation` 按 `local_projection`／`local_verifier`／`interpretation`／`interpretation_verifier` 记录输出上限、实际输入／输出 token、调用数、排队／准入／执行耗时。运行中的前台构建通过已有 canonical Live 活动流发布 `semantic_index.progress`，显示局部完成段数、整体解释或联合验证，以及等待模型名额、额度不足或请求超窗。事件只包含阶段、计数和身份，不含原文；快照重放保留这些字段，旧 Observation／fence 的迟到进度不会覆盖当前轮。
+
+基准可设置 `FOCUS_INDEX_BENCHMARK_PREWARM='off,on'` 对比有无局部预热，另用 `FOCUS_INDEX_BENCHMARK_ROLE_LIMITS` 的 JSON 映射控制本次实验的角色上限（不修改用户配置）。预热成本单列 `prewarm-N`，`cold`／`append-N` 记录随后前台等待；比较总成本时必须把预热加回，不能只报告前台时间。更换角色参数应使用独立输出目录，并固定模型、输入、分段、并发与预算，多次重复并人工复核遗漏和跨段关系。真实模型基准需显式启用，本次代码改动没有产生新的真实延迟结论，默认 12 条与关闭 token 上限保持不变。
+
 ### token 体积分段与冻结上下文对照
 
 `PortfolioSemanticIndexService(..., segment_max_messages=12, segment_max_estimated_tokens=4096)` 可同时约束消息条数和估算 token 体积。体积统计覆盖序列化内容、结构化正文、工具参数及元数据，使用共享文本启发式（CJK 字符 1、其他非空白字符约 1/4，加消息开销），不是 provider tokenizer，也不替代完整模型请求的窗口／授权预检。单条消息和完整工具调用／结果交换始终不可拆分，超过体积目标时独占一段，实际请求仍可能因窗口不足被拒绝。
@@ -216,3 +239,11 @@ Alembic revision `9d0e1f2a3b4c` 添加局部 records；`ae1f2a3b4c5d` 添加预�
 关闭 token 上限时，长工具样本为 4／3／2 段，最后一次追加为 5／3／2 段。开启 4096 后三种消息上限分别都为 8 段、17 段，体积约束主导了切分，不能把这些配置间的延迟差都归因于消息上限。完整工具交换超过目标时保留原子，未截断原文。
 
 每配置只有一次完成样本，执行顺序未随机化，没有人工语义完整性 gold set。这些是本批输入上的观测值，不是 P50/P95 或稳定加速比例；保持默认参数不变。
+
+## 普通任务预算结算复测
+
+索引实例的本地余额现按「已可靠结算的实际消费 + 仍在途或消费未知的预留」计算。生产模型的逐请求 owner receipt 在持久结算成功后同步释放本地输入／输出预留差额，内部重试前即可再次使用；持久结算失败或用量未知时保留整笔预留。兼容模型也按请求独立预留和结算，批次汇总跳过已由回执管理的 attempts，避免重复落账。并发结算和迟到回填均按各自回执幂等处理。
+
+另用普通任务真实预设（100 次调用、500,000 输入 token、50,000 输出 token）及产品默认单次输出上限 8,192 跑通两项真实 provider 完整索引流程。冷构建→追加→缓存场景合计 8 次调用、11,245 输入／5,336 输出 token；跨段诊断及增量发现场景合计 12 次调用、8,117 输入／4,162 输出 token。两项质量均为 complete，完整缓存命中均为零调用；隔离 PostgreSQL 测试通过。宿主的 65,536 单次输出覆盖仅在测试配置副本中恢复为产品默认值，未修改宿主配置。
+
+这些结果验证了上述两个合成历史的冷构建、局部投影、独立验证、整体解释、增量追加及完整缓存流程，不包含后续 planner、Curator、材料合成或完整 Loop，也不证明任意用户历史都能落在默认预算内。普通额度下另有确定性用例覆盖单次构建超过六次调用、内部重试、并发在途／未知占用及账本一致性。真实模型运行口径和原始结果见 [普通任务预算复测](benchmarks/index-budget-normal-2026-10-17/summary.json)。

@@ -3,7 +3,7 @@
  * 没有可见正文）、可注入布局属性的会话容器节点与 app.js 的真实写入路径；输出为七类断言结果：
  * 滚动策略只按阅读意图与高度差决策（三情形）、一帧内布局读取与滚动写入各不超过一次、未贴底帧写入后
  * 不再读布局、常驻 DOM 按行数受限且不切断工具调用组、窗口滑动不整体重建执行序列且阅读位置不变、
- * 可见正文以 `STREAM_TEXT_LIMIT` 为界（越限不进入可见 DOM 且该帧不渲染正文）、占位不渲染专用徽标且推理行
+ * 自动解析以 `STREAM_TEXT_LIMIT` 为界（超限冻结预览，首次超限只解析有界前缀）、占位不渲染专用徽标且推理行
  * 与成稿执行行同形、会话容器的锚点策略显式声明。
  * 工作流只构造数据并调用既有函数，不修改运行时代码。示例：`node desktop/conversation-frame-budget.test.cjs`。
  */
@@ -356,7 +356,7 @@ test("窗口上边界前移时，向上阅读的位置落在同一行", () => {
   );
 });
 
-test("越限的流式正文不进入可见 DOM，且该帧不解析正文", () => {
+test("首帧超限的流式正文提供有界预览，后续帧不再解析正文", () => {
   const harness = newHarness();
   renderFresh(harness, [{ id: "h-1", role: "human", content: "开始" }]);
   harness.context.__big = "文件正文行内容\n".repeat(10000);
@@ -367,30 +367,32 @@ test("越限的流式正文不进入可见 DOM，且该帧不解析正文", () =
     state.streamBuffers.set("run-big", buffer);
     conversationView.syncStreamingPlaceholder(conv, "run-big", buffer);
     const after = conversationRenderStats();
+    conversationView.syncStreamingPlaceholder(conv, "run-big", buffer);
+    const repeated = conversationRenderStats();
     const placeholder = conv.querySelector("[data-stream-run]");
     return {
       limit: FocusConversationRender.STREAM_TEXT_LIMIT,
       textBytes: __big.length,
       visibleBody: Boolean(placeholder && placeholder.querySelector(".message-rich")),
-      leaksIntoConversation: conv.textContent.includes(__big.slice(0, 64)),
+      previewVisible: conv.textContent.includes(__big.slice(0, 64)),
       hasPlaceholder: Boolean(placeholder),
       badges: placeholder ? placeholder.querySelectorAll(".ui-badge").length : null,
       streamingBuilt: after.streamingBuilt - before.streamingBuilt,
-      streamingReused: after.streamingReused - before.streamingReused,
+      previewLength: buffer.streamPreview.source.length,
+      repeatedWork: repeated.streamingBuilt + repeated.streamingReused - after.streamingBuilt - after.streamingReused,
     };
   })()`, harness.context);
   assert.ok(measured.textBytes > measured.limit, `该用例必须真的越限（${measured.textBytes} > ${measured.limit}）`);
-  assert.equal(measured.visibleBody, false, "越限正文不得进入可见 DOM");
-  assert.equal(measured.leaksIntoConversation, false, "越限正文不得出现在会话文本里");
-  assert.equal(measured.hasPlaceholder, true, "占位仍在（只是不渲染徽标与正文）");
+  assert.equal(measured.visibleBody, true, "首次超限也必须提供正文预览");
+  assert.equal(measured.previewVisible, true, "正文前缀应出现在会话中");
+  assert.ok(measured.previewLength <= measured.limit, "首次自动解析只允许有界前缀");
+  assert.equal(measured.hasPlaceholder, true, "占位仍在");
   assert.equal(measured.badges, 0, "占位不得渲染专用徽标");
-  assert.equal(
-    measured.streamingBuilt + measured.streamingReused, 0,
-    "越限正文不得交给 markdown 渲染（该帧不产生任何块级渲染工作）",
-  );
+  assert.ok(measured.streamingBuilt > 0, "首次超限须真正生成预览");
+  assert.equal(measured.repeatedWork, 0, "后续帧复用冻结预览，不产生解析或块级渲染工作");
 });
 
-test("流式累积以可见正文上限为界，上限内照常渲染且落定后按需可展开", () => {
+test("超限后继续累积并保留预览，工具快照落定后仍可按需展开全文", () => {
   const harness = newHarness();
   renderFresh(harness, [{ id: "h-1", role: "human", content: "开始" }]);
   const result = harness.vm.runInContext(`(() => {
@@ -417,7 +419,7 @@ test("流式累积以可见正文上限为界，上限内照常渲染且落定�
     conversationView.syncStreamingPlaceholder(conv, "run-a", state.streamBuffers.get("run-a"));
     const over = {
       grown: afterBig > limit,
-      stoppedGrowing: afterMore === afterBig,
+      continuedGrowing: afterMore > afterBig,
       visibleBody: Boolean(conv.querySelector("[data-stream-run] .message-rich")),
     };
 
@@ -442,8 +444,8 @@ test("流式累积以可见正文上限为界，上限内照常渲染且落定�
   assert.equal(result.under.visibleBody, true, "上限内的正文必须照常渲染");
   assert.equal(result.under.shown, true, "上限内的正文内容必须真的进入可见 DOM");
   assert.equal(result.over.grown, true, "越限后累积正文必须确实超过上限");
-  assert.equal(result.over.stoppedGrowing, true, "越限后不再并入后续增量（累积有界）");
-  assert.equal(result.over.visibleBody, false, "越限后可见正文必须退出 DOM");
+  assert.equal(result.over.continuedGrowing, true, "超限后继续保留增量，支持按需展开最新全文");
+  assert.equal(result.over.visibleBody, true, "超限后可见预览必须保留");
   assert.equal(result.settled.placeholders, 0, "快照落定后占位必须回收");
   assert.equal(result.settled.toolRows, 1, "工具结果按正式形态呈现为一行工具行");
   assert.equal(result.settled.detailHasFullOutput, true, "完整输出仍可按需展开得到");
@@ -497,7 +499,7 @@ test("占位不渲染专用徽标，推理行与成稿执行行同形", () => {
 
 test("会话容器显式声明锚点策略，且不扩散到全局", () => {
   const css = fs.readFileSync(path.resolve(__dirname, "styles", "views.css"), "utf8");
-  const rule = css.match(/\.conversation\s*\{([^}]*)\}/);
+  const rule = css.match(/^\.conversation\s*\{([^}]*)\}/m);
   assert.ok(rule, "必须存在 .conversation 规则");
   assert.match(rule[1], /overflow-anchor:\s*none/, "会话容器必须显式退出浏览器滚动锚定");
   assert.doesNotMatch(css, /\*\s*\{[^}]*overflow-anchor/, "锚点策略不得扩散为全局声明");

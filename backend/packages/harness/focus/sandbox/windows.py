@@ -72,14 +72,17 @@ class WindowsAclBackend:
             sid_args = [grant.write_sid, grant.temp_write_sid]
         else:
             sid_args = ["", ""]
-        try:
-            status_fd, status_name = tempfile.mkstemp(
-                prefix="focus-sandbox-status-", suffix=".json", dir=temp_root,
-            )
-        except OSError as error:
-            raise SandboxUnavailable(f"Windows ACL 状态通道创建失败: {error}") from error
-        os.close(status_fd)
-        status_path = Path(status_name)
+        if request.recovery_status_path is not None:
+            status_path = request.recovery_status_path
+        else:
+            try:
+                status_fd, status_name = tempfile.mkstemp(
+                    prefix="focus-sandbox-status-", suffix=".json", dir=temp_root,
+                )
+            except OSError as error:
+                raise SandboxUnavailable(f"Windows ACL 状态通道创建失败: {error}") from error
+            os.close(status_fd)
+            status_path = Path(status_name)
         cancel_path = status_path.with_name(status_path.name + ".cancel")
         argv = [
             node, str(runner), str(status_path), str(workspace),
@@ -91,10 +94,14 @@ class WindowsAclBackend:
                 with self._lock:
                     if self._closed:
                         raise SandboxUnavailable("Windows ACL 后端已关闭")
+                    environment = os.environ.copy()
+                    environment.pop("FOCUS_SHELL_EVIDENCE", None)
+                    if request.recovery_evidence is not None:
+                        environment["FOCUS_SHELL_EVIDENCE"] = json.dumps(request.recovery_evidence)
                     process = subprocess.Popen(
                         argv, cwd=request.binding.workspace, stdin=subprocess.DEVNULL,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True,
-                        env=os.environ.copy(),
+                        env=environment,
                     )
                     self._active[process] = cancel_path
             except OSError as error:
@@ -103,6 +110,8 @@ class WindowsAclBackend:
             try:
                 status, stdout, stderr = self._wait(process, request, cancel_path)
                 fact = self._read_status(status_path)
+                if request.recovery_evidence is not None and fact.get("execution") != request.recovery_evidence:
+                    raise SandboxUnavailable("Windows ACL 退出回执与执行 identity 不匹配")
                 cleanup = "confirmed" if fact.get("jobDrained") is True else "unknown"
                 if fact.get("phase") == "failed":
                     cleanup = "not_started"
@@ -140,7 +149,8 @@ class WindowsAclBackend:
                 with self._lock:
                     self._active.pop(process, None)
         finally:
-            for cleanup_path in (status_path, status_path.with_name(status_path.name + ".pending"), cancel_path):
+            cleanup_paths = () if request.recovery_evidence is not None else (status_path, status_path.with_name(status_path.name + ".pending"), cancel_path)
+            for cleanup_path in cleanup_paths:
                 try:
                     cleanup_path.unlink(missing_ok=True)
                 except OSError as error:

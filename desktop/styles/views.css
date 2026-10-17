@@ -276,6 +276,28 @@
 }
 
 .message-rich { max-width: 74ch; }
+.message-actions { display: flex; margin-top: var(--space-2); }
+.message-actions button,
+.code-block-toolbar button { min-height: 32px; font-size: 12px; }
+.message-code-block {
+  margin: var(--space-3) 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  background: var(--surface-code);
+}
+.code-block-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.code-block-toolbar > span { min-width: 0; overflow-wrap: anywhere; }
+.code-block-toolbar button { flex-shrink: 0; }
 .message-rich p { margin-block: 0 var(--space-3); }
 .message-rich h1,
 .message-rich h2,
@@ -289,6 +311,7 @@
   overflow-x: auto;
 }
 .message-rich :not(pre) > code { padding: 2px 5px; border-radius: 5px; background: var(--surface-muted); }
+.message-rich .message-code-block pre { margin: 0; border: 0; border-radius: 0; }
 .message-rich blockquote { margin: var(--space-3) 0; padding: var(--space-1) 0 var(--space-1) var(--space-4); border-left-color: var(--accent-primary); }
 .message-rich table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
 .message-rich th { background: var(--surface-subtle); text-align: left; }
@@ -475,6 +498,8 @@
 .composer-feedback { margin: 0; padding: var(--space-1) var(--space-3) var(--space-2); color: var(--text-secondary); font-size: 11px; }
 .composer-feedback.is-warning { color: var(--text-warning); }
 .composer-feedback.is-danger { color: var(--text-danger); }
+.main-submission-recovery:empty { display: none; }
+.main-submission-recovery { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: 0 var(--space-3) var(--space-2); }
 /* @命令 高亮叠加层：与 textarea 同字体/内边距/换行；textarea 正文透明、由 backdrop 显示，@命令片段蓝字。 */
 .composer-input-wrap { position: relative; min-width: 0; }
 .composer .composer-input-wrap textarea { position: relative; z-index: 1; color: transparent; caret-color: var(--text-primary); }
