@@ -34,6 +34,16 @@ window.focusDesktop.selectWorkspace = async () => {
   if (window.patrolFixture.holdFolder) await new Promise(resolve => { window.patrolFixture.releaseFolder = resolve; });
   return chosen;
 };
+if (process.env.FOCUS_PATROL_TEST_NATIVE === "1") {
+  window.patrolFixture.robotPanelOpens = [];
+  window.patrolFixture.robotReady = false;
+  window.focusDesktop.patrol = {
+    enabled: true,
+    openPanel: async target => { window.patrolFixture.robotPanelOpens.push(target); },
+    onWorkbench: listener => { window.patrolFixture.openWorkbench = listener; },
+    ready: async () => { window.patrolFixture.robotReady = true; },
+  };
+}
 window.fetch = async (input, options = {}) => {
   const fileFeedback = await window.fileFeedbackFetch?.(input, options);
   if (fileFeedback) return fileFeedback;
