@@ -62,6 +62,24 @@ desktop_router.include_router(workspace_material_router)
 @desktop_router.get("/sandbox/status")
 async def get_sandbox_status() -> dict[str, object]:
     return sandbox_status()
+
+
+@desktop_router.get("/shell-recovery")
+async def list_shell_recovery(request: Request) -> list[dict]:
+    return await request.app.state.desktop_service.shell_recovery.blocked()
+
+
+@desktop_router.post("/runs/{run_id}/shell-recovery")
+async def recover_shell_cleanup(run_id: str, request: Request) -> dict:
+    try:
+        settlement = await request.app.state.desktop_service.shell_recovery.recover(run_id)
+        return settlement.model_dump(mode="json")
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error
+    except (ValueError, OSError) as error:
+        raise HTTPException(409, str(error)) from error
+
+
 @desktop_router.get("/bootstrap")
 async def bootstrap(request: Request) -> dict:
     service = request.app.state.desktop_service
