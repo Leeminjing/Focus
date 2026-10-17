@@ -72,6 +72,8 @@ def create_chat_model(
     params.update(kwargs)
     if contract.protocol == "responses":
         params["provider_contract"] = contract
+        params.setdefault("client_pool", app_config._response_client_pool)
+        params.setdefault("client_scope", model_config.name)
 
 
     caller_controls_network = any(
