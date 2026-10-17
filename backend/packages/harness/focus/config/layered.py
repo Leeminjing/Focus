@@ -113,6 +113,25 @@ def load_layered_map(config_name: str, file_path: str, *, workspace: str | Path 
     return merged
 
 
+def load_layered_map_with_sources(
+    config_name: str, file_path: str, *, workspace: str | Path | None = None,
+) -> tuple[dict, dict[str, dict[str, dict[str, str]]]]:
+    """合并配置并记录每个二级条目的最后定义层（如 mcpServers 下的 server）。"""
+    merged: dict = {}
+    sources: dict = {}
+    paths = layered_candidate_paths(config_name, file_path, workspace=workspace)
+    for scope, path in zip(("default", "global", "workspace"), paths):
+        layer = _read_yaml_map(path)
+        merged = deep_merge(merged, layer)
+        for section, entries in layer.items():
+            if isinstance(entries, dict):
+                for name in entries:
+                    sources.setdefault(section, {})[name] = {
+                        "scope": scope, "config_path": str(path.resolve()),
+                    }
+    return merged, sources
+
+
 def layered_candidate_paths(
     config_name: str, file_path: str, *, workspace: str | Path | None = None,
 ) -> tuple[Path, ...]:

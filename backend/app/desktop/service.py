@@ -691,6 +691,8 @@ class DesktopService:
         ]
 
     async def refresh_task_capabilities(self, task_id: str) -> dict[str, Any]:
+        from dataclasses import asdict
+
         from focus.mcp.cache import get_mcp_tools_cached
 
         async with self.session_factory() as session:
@@ -700,6 +702,7 @@ class DesktopService:
             "skills": await self.list_task_skills(task_id),
             "mcp_tool_count": len(tools),
             "failed_servers": list(getattr(tools, "failed_servers", ())),
+            "mcp_failures": [asdict(failure) for failure in getattr(tools, "failures", ())],
         }
 
     async def save_ui_state(self, task_id: str, ui_state: dict[str, Any]) -> None:
