@@ -3,7 +3,7 @@
 工作流为装配共享 intake 和预览模块，显式发送后读取既有 Live；示例：desktop-patrol.html?surface=panel。
 -->
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Focus · Patrol</title><link rel="stylesheet" href="./styles/icons.css"><link rel="stylesheet" href="./desktop-patrol.css"><link rel="stylesheet" href="./styles/workspace-patrol-budget.css"><link rel="stylesheet" href="./styles/patrol-input-references.css"></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Focus · Patrol</title><link rel="stylesheet" href="./styles/icons.css"><link rel="stylesheet" href="./desktop-patrol.css"><link rel="stylesheet" href="./styles/workspace-patrol-budget.css"><link rel="stylesheet" href="./file-preview.css"><link rel="stylesheet" href="./styles/patrol-input-references.css"></head>
 <body>
   <main id="robot" hidden><button id="robot-open" aria-label="打开 Patrol，拖入图片、文字或文件"><img src="./assets/patrol-avatar/idle.png" alt="Patrol 机器人" draggable="false"></button><span id="robot-status" role="status">点击开始</span><button id="robot-hide" aria-label="隐藏机器人到托盘">收起</button></main>
   <main id="panel" hidden>
@@ -11,7 +11,7 @@
     <header class="panel-header">
       <button id="binding" title="选择工作区文件夹"><span class="ui-icon icon-folder" aria-hidden="true"></span><span id="binding-name">绑定工作区</span><span class="ui-icon icon-chevron-down" aria-hidden="true"></span></button>
       <details class="panel-menu"><summary aria-label="更多操作" title="更多操作"><span class="ui-icon icon-ellipsis" aria-hidden="true"></span></summary><div class="panel-menu-content">
-        <button id="toggle-history" aria-controls="history" aria-expanded="false">输入记录</button><button id="workbench">打开工作台</button><button id="hide">收起面板 <span>Esc</span></button>
+        <button id="toggle-history" aria-controls="history" aria-expanded="false">输入记录</button><button id="workbench">打开工作台</button><button id="stop-work" type="button" disabled>停止当前工作</button><button id="hide">收起面板 <span>Esc</span></button>
         <div class="status-row"><i></i><span id="status" role="status">绑定工作区后即可发送</span><button id="reconnect" hidden>重连</button></div>
       </div></details>
     </header>
@@ -28,7 +28,8 @@
       <div id="task-budget"></div>
       <p id="error" role="alert" hidden></p>
       <button id="retry-workspace" type="button" hidden>重新读取工作区</button>
-      <div id="activity" role="status" hidden><i></i><span id="activity-text"></span><button id="activity-reconnect" hidden>重连</button><span class="ui-icon icon-loader-circle" aria-hidden="true"></span></div>
+      <div id="activity" role="status" hidden><i></i><span id="activity-text"></span><button id="activity-reconnect" hidden>重连</button><button id="toggle-work" type="button" aria-label="暂停当前工作" hidden disabled>暂停</button><span class="ui-icon icon-loader-circle" aria-hidden="true"></span></div>
+      <p id="control-feedback" role="status" hidden></p>
       <section id="requests" aria-label="待处理请求"></section>
       <section id="results" aria-label="工作区已提交结果"><div id="answers"></div><div id="progress"></div><div id="artifacts"></div></section>
       <details id="history" hidden><summary>输入记录 <span id="receipt"></span></summary><div id="history-items"></div><button id="older" hidden>更早的输入</button></details>
@@ -37,6 +38,6 @@
   </main>
   <script src="./http-response.js"></script><script src="./loop-api.js"></script>
   <script src="./loop-live-schema.js"></script><script src="./loop-live-reducer.js"></script><script src="./loop-live-selectors.js"></script><script src="./loop-live-store.js"></script><script src="./loop-live-connection.js"></script>
-  <script src="./access-mode.js"></script><script src="./workspace-patrol-inputs.js"></script><script src="./workspace-patrol-intake.js"></script><script src="./workspace-patrol-material-preview.js"></script><script src="./workspace-patrol-feedback.js"></script><script src="./loop-facts-view.js"></script><script src="./desktop-patrol-references.js"></script>
+  <script src="./vendor/markdown-it.min.js"></script><script src="./access-mode.js"></script><script src="./workspace-patrol-inputs.js"></script><script src="./workspace-patrol-intake.js"></script><script src="./workspace-patrol-material-preview.js"></script><script src="./workspace-patrol-feedback.js"></script><script src="./file-preview.js"></script><script src="./loop-facts-view.js"></script><script src="./desktop-patrol-references.js"></script>
   <script src="./patrol-input-references.js"></script><script src="./workspace-patrol-budget.js"></script><script src="./desktop-patrol-robot.js"></script><script src="./desktop-patrol-panel.js"></script>
 </body></html>

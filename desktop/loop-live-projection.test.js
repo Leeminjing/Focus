@@ -18,6 +18,7 @@ const LiveStore = require("./loop-live-store.js");
 const Connection = require("./loop-live-connection.js");
 const LoopApi = require("./loop-api.js");
 const LoopStore = require("./loop-store.js");
+const ConsoleStore = require("./loop-console-store.js");
 const PortfolioMap = require("./portfolio-map-view.js");
 
 const entity = (id, revision, sequence, state = {}) => ({ entity_id: id, revision, updated_sequence: sequence, state });
@@ -57,6 +58,133 @@ const event = (sequence, patch = {}) => ({
   occurred_at: "2026-09-19T00:00:00Z",
   retained_until: null,
   ...patch,
+});
+
+test("activity history pages separately while SSE keeps its sequence and state", async () => {
+  const store = LiveStore.create();
+  const calls = [];
+  let onEvent;
+  const connection = Connection.create({ store, api: {
+    liveSnapshot: async () => snapshot(60),
+    liveHistory: async (_id, { beforeSequence }) => {
+      calls.push(beforeSequence);
+      const start = beforeSequence === 61 ? 11 : 1;
+      return { items: Array.from({ length: beforeSequence === 61 ? 50 : 10 }, (_, index) => ({ sequence: start + index })),
+        next_before_sequence: beforeSequence === 61 ? 11 : null, minimum_sequence: 1 };
+    },
+    liveStream: async (_id, _cursor, callback, signal) => {
+      onEvent = callback;
+      await new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }));
+    },
+  } });
+  const running = connection.start("l1");
+  while (!store.get().history.initialized || !onEvent) await new Promise(resolve => setImmediate(resolve));
+  const before = store.get().projection;
+  await connection.loadHistory(true);
+  assert.deepEqual(calls, [61, 11]);
+  assert.equal(store.get().projection, before);
+  onEvent(event(61));
+  assert.equal(store.get().projection.last_sequence, 61);
+  assert.equal(store.get().history.items[0].sequence, 1);
+  await connection.loadHistory(false);
+  assert.equal(calls.at(-1), 62);
+  connection.stop();
+  await running;
+  assert.equal(store.get().history.initialized, false);
+});
+
+test("latest activity page advances its older cursor as live events arrive", () => {
+  const projection = snapshot(160, { activity_timeline: Array.from({ length: 100 }, (_, index) => ({ sequence: 61 + index })) });
+  const history = { items: Array.from({ length: 50 }, (_, index) => ({ sequence: 11 + index })), minimum_sequence: 1 };
+  const page = Selectors.selectActivityPage(projection, history);
+  assert.equal(page.items.length, 50);
+  assert.equal(page.beforeSequence, 111);
+  assert.equal(page.items.at(-1).sequence, 160);
+});
+
+test("separate history restores selected Context causality without replaying events", () => {
+  const store = ConsoleStore.create();
+  store.loadManifest({ loop_id: "l1", initial_context_id: "c1", nodes: [{ context_id: "c1" }, { context_id: "c2" }] });
+  const projection = Schema.validateSnapshot(snapshot(80, {
+    contexts: { c1: entity("c1", 1, 1, {}), c2: entity("c2", 1, 1, {}) },
+  }));
+  store.projectLive(projection, Selectors);
+  assert.deepEqual(store.get().causality, []);
+  const canonical = Reducer.reduce(Schema.validateSnapshot(snapshot(3)), event(4, {
+    entity_type: "directive", entity_id: "old-directive", payload: { target_context_id: "c1" },
+  })).activity_timeline[0];
+  store.projectHistory({ initialized: true, older: true, next_before_sequence: null, items: [
+    canonical,
+    { sequence: 5, entity_id: "other", detail: { context_id: "c2" } },
+  ] });
+  assert.deepEqual(store.get().causality.map(item => item.sequence), [4]);
+  store.selectContext("c2");
+  assert.deepEqual(store.get().causality.map(item => item.sequence), [5]);
+  assert.equal(projection.last_sequence, 80);
+});
+
+test("scoped paginated facts survive a bounded global snapshot and unrelated SSE", () => {
+  const store = ConsoleStore.create();
+  store.loadManifest({ loop_id: "l1", initial_context_id: "c1", nodes: [{ context_id: "c1" }] });
+  store.loadFacts({ facts: [{ fact_id: "old-a", revision: 2, context_id: "c1", kind: "test", status: "verified" }],
+    range: { start: 20, end: 21 }, has_more: true, next_before: 20, total: 21 });
+  const projection = Schema.validateSnapshot(snapshot(200, {
+    contexts: { c1: entity("c1", 1, 1, {}) },
+    facts: Object.fromEntries(Array.from({ length: 200 }, (_, index) => [`b-${index}`, entity(`b-${index}`, 1, index + 1,
+      { context_id: "c2", kind: "test", status: "verified" })])),
+  }));
+  store.projectLive(projection, Selectors);
+  store.projectLive(Reducer.reduce(projection, event(201)), Selectors);
+  assert.deepEqual(store.get().facts.facts.map(item => item.fact_id), ["old-a"]);
+  assert.equal(store.get().facts.has_more, true);
+  assert.equal(store.get().facts.next_before, 20);
+});
+
+test("redacted snapshots replace same-revision fact data and invalidate old-authority pages", () => {
+  const store = ConsoleStore.create();
+  store.loadManifest({ loop_id: "l1", initial_context_id: "c1", nodes: [{ context_id: "c1" }] });
+  const projection = authority => Schema.validateSnapshot(snapshot(2, {
+    loop: entity("l1", 1, 2, { authority_revision: authority }),
+    contexts: { c1: entity("c1", 1, 1, {}) },
+    facts: { f1: entity("f1", 1, 1, { context_id: "c1", kind: "test", status: "verified" }) },
+  }));
+  store.projectLive(projection(1), Selectors);
+  const page = { facts: [
+    { fact_id: "f1", revision: 1, context_id: "c1", evidence: ["private"] },
+    { fact_id: "old", revision: 1, context_id: "c1", evidence: ["private"] },
+  ], has_more: true, next_before: 20 };
+  store.loadFacts(page);
+  store.projectLive(projection(1), Selectors);
+  assert.equal(store.get().facts.facts.find(item => item.fact_id === "f1").evidence, undefined);
+  store.loadFacts(page);
+  store.projectLive(projection(2), Selectors);
+  assert.deepEqual(store.get().facts.facts.map(item => item.fact_id), ["f1"]);
+  assert.equal(store.get().facts.facts[0].evidence, undefined);
+});
+
+test("history failure and late responses do not disturb a running or switched Loop", async () => {
+  const store = LiveStore.create();
+  let release;
+  const connection = Connection.create({ store, api: {
+    liveSnapshot: async id => ({ ...snapshot(1), loop_id: id }),
+    liveHistory: id => id === "l1" ? new Promise(resolve => { release = resolve; }) : Promise.reject(new Error("history unavailable")),
+    liveStream: async (_id, _cursor, _callback, signal) => {
+      await new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }));
+    },
+  } });
+  const first = connection.start("l1");
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  const second = connection.start("l2");
+  while (!store.get().history.error) await new Promise(resolve => setImmediate(resolve));
+  release({ items: [{ sequence: 999 }], next_before_sequence: null });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(store.get().connection.status, "live");
+  assert.equal(store.get().projection.loop_id, "l2");
+  assert.equal(store.get().projection.last_sequence, 1);
+  assert.deepEqual(store.get().history.items, []);
+  assert.equal(store.get().history.error, "history unavailable");
+  connection.stop();
+  await Promise.all([first, second]);
 });
 
 test("overlapping rounds and stale cognition remain historical while V3 stays current", () => {

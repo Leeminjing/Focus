@@ -151,7 +151,7 @@
         });
         const current = store.get();
         const currentContextId = current.factScope === "all" ? null : current.selectedContextId;
-        if (currentContextId !== contextId) return;
+        if (currentContextId !== contextId || requestRevision !== factsRevision || current.authorityRevision !== state.authorityRevision) return;
         if (options.prepend) store.prependFacts(facts);
         else store.loadFacts(facts);
       } finally {
@@ -347,7 +347,7 @@
       unsubscribe();
     }
 
-    return Object.freeze({ load, refresh, selectContext, loadOlder, loadNewer, loadOlderFacts, setFactScope, setFactFilter, setFactStatus, submit, bind, destroy });
+    return Object.freeze({ load, refresh, selectContext, loadOlder, loadNewer, loadOlderFacts, reloadFacts, setFactScope, setFactFilter, setFactStatus, submit, bind, destroy });
   }
 
   return Object.freeze({ create });

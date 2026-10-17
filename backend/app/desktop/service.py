@@ -369,6 +369,9 @@ class DesktopService:
 
         self.run_lifecycle = RunLifecycleFinalizer(session_factory, checkpointer,
             secret_provider=lambda: configured_secret_values(self.app_config))
+        from backend.app.desktop.execution_attempts.shell_recovery import ShellCleanupRecovery
+
+        self.shell_recovery = ShellCleanupRecovery(session_factory, self.run_lifecycle, run_manager)
         self._run_admission = self._admission_service()
         self._run_dispatch_repository = RunDispatchRepository()
         self._run_dispatch_recovery = RunDispatchRecovery(session_factory)
@@ -645,28 +648,105 @@ class DesktopService:
             ).all()
             if not rows:
                 return []
-            # 列表只投影最新活跃 Main Run，不读取任何恢复 checkpoint。
+            # 每个任务只读取最新活跃/非活跃 Main Run 的轻量列。
             ranked_runs = select(
                 DesktopRun.run_id,
                 func.row_number().over(
-                    partition_by=DesktopRun.task_id,
+                    partition_by=(DesktopRun.task_id, DesktopRun.status.in_(["pending", "running"])),
                     order_by=(DesktopRun.created_at.desc(), DesktopRun.run_id.desc()),
                 ).label("position"),
             ).where(
                 DesktopRun.agent_id == "main:" + DesktopRun.task_id,
-                DesktopRun.status.in_(["pending", "running"]),
             ).subquery()
-            runs = (await session.scalars(
-                select(DesktopRun).join(ranked_runs, DesktopRun.run_id == ranked_runs.c.run_id)
+            runs = (await session.execute(
+                select(DesktopRun, DesktopRun.workspace_result["task_attention"].label("attention"))
+                .join(ranked_runs, DesktopRun.run_id == ranked_runs.c.run_id)
                 .where(ranked_runs.c.position == 1)
                 .options(load_only(
                     DesktopRun.run_id, DesktopRun.task_id, DesktopRun.agent_id,
                     DesktopRun.kind, DesktopRun.status, DesktopRun.model_name,
+                    DesktopRun.created_at, DesktopRun.updated_at, DesktopRun.settled_at,
+                    DesktopRun.execution_thread_id, DesktopRun.checkpoint_ns,
                 ))
+                .order_by(DesktopRun.created_at.desc(), DesktopRun.run_id.desc())
             )).all()
-            active_runs = {run.task_id: run for run in runs}
-            return [self._task_summary(task, workspace, active_runs.get(task.task_id))
-                    for task, workspace in rows]
+            active_runs, latest_runs, latest_results, attention_by_run = {}, {}, {}, {}
+            for run, attention in runs:
+                latest_runs.setdefault(run.task_id, run)
+                attention_by_run[run.run_id] = attention
+                if run.status in {"pending", "running"}:
+                    active_runs[run.task_id] = run
+                else:
+                    latest_results[run.task_id] = run
+            summaries = []
+            for task, workspace in rows:
+                latest = latest_runs.get(task.task_id)
+                summary = self._task_summary(task, workspace, active_runs.get(task.task_id), latest,
+                                             latest_results.get(task.task_id))
+                if latest is not None and summary["active_run"] is None:
+                    try:
+                        summary["attention"] = await self._task_attention(
+                            latest, task, attention_by_run.get(latest.run_id)
+                        )
+                    except Exception:
+                        logger.warning("任务待处理摘要读取失败: %s", task.task_id, exc_info=True)
+                        summary["attention_unavailable"] = True
+                summaries.append(summary)
+            await self._add_loop_task_summaries(session, summaries)
+            return summaries
+
+    async def _task_attention(self, run, task, persisted=None):
+        if run.status != "interrupted":
+            return []
+        if isinstance(persisted, list):
+            return [dict(item) for item in persisted]
+        # 历史数据只在中断且无持久摘要时读取检查点；不加载详情和消息。
+        from backend.app.desktop.task_attention import read_task_attention
+        cache = getattr(self, "_task_attention_cache", None)
+        if cache is None:
+            self._task_attention_cache = cache = {}
+        key = (run.run_id, run.updated_at)
+        if key not in cache:
+            if len(cache) > 1000:
+                cache.clear()
+            cache[key] = await read_task_attention(self.checkpointer, run, task)
+        return [dict(item) for item in cache[key]]
+
+    async def _add_loop_task_summaries(self, session, summaries):
+        from backend.app.desktop.agent_loop.models import AgentLoop, LoopPendingDecision
+        from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest
+        ranked = select(AgentLoop.loop_id, func.row_number().over(
+            partition_by=AgentLoop.initial_context_id,
+            order_by=(AgentLoop.created_at.desc(), AgentLoop.loop_id.desc()),
+        ).label("position")).where(AgentLoop.interaction_mode == "context_loop").subquery()
+        rows = (await session.execute(select(
+            AgentLoop.initial_context_id, AgentLoop.loop_id, AgentLoop.status, AgentLoop.updated_at,
+            LoopPendingDecision.pending_decision_id, LoopPendingDecision.kind,
+            LoopWaitRequest.request_id, LoopWaitRequest.kind,
+        ).join(ranked, AgentLoop.loop_id == ranked.c.loop_id)
+          .outerjoin(LoopPendingDecision, (LoopPendingDecision.loop_id == AgentLoop.loop_id)
+                     & (LoopPendingDecision.status == "pending"))
+          .outerjoin(LoopWaitRequest, (LoopWaitRequest.loop_id == AgentLoop.loop_id)
+                     & (LoopWaitRequest.status == "open"))
+          .where(ranked.c.position == 1))).all()
+        by_task = {item["task_id"]: item for item in summaries}
+        for task_id, loop_id, status, updated_at, decision_id, decision_kind, request_id, request_kind in rows:
+            summary = by_task.get(task_id)
+            if summary is None:
+                continue
+            latest_created = (summary.get("latest_run") or {}).get("created_at")
+            if status in {"completed", "stopped", "failed"} and latest_created and latest_created > updated_at.isoformat():
+                continue
+            summary["loop"] = {"loop_id": loop_id, "status": status}
+            if status not in {"running", "waiting_user", "paused", "pausing", "completing"}:
+                continue
+            for identity, kind in ((decision_id, decision_kind), (request_id, request_kind)):
+                if identity and not any(item["id"] == identity for item in summary["attention"]):
+                    # A Loop decision may project the same Main interrupt.
+                    if identity == decision_id:
+                        summary["attention"] = [item for item in summary["attention"]
+                                                if item["kind"] != kind or item.get("loop_id")]
+                    summary["attention"].append({"id": identity, "kind": kind, "loop_id": loop_id})
 
     async def get_task(self, task_id: str) -> dict[str, Any]:
         async with self.session_factory() as session:
@@ -1665,6 +1745,14 @@ class DesktopService:
         await self.checkpointer.adelete_thread(
             commitment_subgraph_thread_id(execution_identity.thread_id)
         )
+        async with self.session_factory.begin() as session:
+            latest = await latest_main_run(session, task)
+            if latest and identity_from_main_run(task, latest) == execution_identity:
+                result = dict(latest.workspace_result or {})
+                if isinstance(result.get("task_attention"), list):
+                    result["task_attention"] = [item for item in result["task_attention"] if item["kind"] != "commitment"]
+                    latest.workspace_result = result
+        getattr(self, "_task_attention_cache", {}).clear()
         return {"ok": True, "thread_id": thread_id}
 
     async def retry_agent(self, agent_id: str) -> PreparedRun:
@@ -2782,7 +2870,9 @@ class DesktopService:
         return {"workspace_id": workspace.workspace_id, "path": workspace.path, "display_name": workspace.display_name}
 
     def _task_summary(
-        self, task: DesktopThread, workspace: DesktopWorkspace, active: DesktopRun | None = None
+        self, task: DesktopThread, workspace: DesktopWorkspace, active: DesktopRun | None = None,
+        latest: DesktopRun | None = None,
+        result: DesktopRun | None = None,
     ) -> dict[str, Any]:
         return {
             "task_id": task.task_id, "workspace_id": task.workspace_id, "workspace_path": workspace.path,
@@ -2802,6 +2892,14 @@ class DesktopService:
                 key: getattr(active, key)
                 for key in ("run_id", "task_id", "agent_id", "kind", "status", "model_name")
             } if active else None,
+            "latest_run": {
+                "run_id": latest.run_id, "status": latest.status,
+                "created_at": latest.created_at.isoformat() if latest.created_at else None,
+                "settled_at": latest.settled_at.isoformat() if latest.settled_at else None,
+            } if latest else None,
+            "attention": [],
+            "latest_result": {"run_id": result.run_id, "status": result.status,
+                              "settled_at": result.settled_at.isoformat() if result.settled_at else None} if result else None,
         }
 
     async def _task_payload(
@@ -2837,8 +2935,9 @@ class DesktopService:
         access_recovery = await main_pending_interrupt(
             session, task, self.checkpointer, APPROVAL_TYPE
         )
+        latest = await latest_main_run(session, task)
         return {
-            **self._task_summary(task, workspace, active),
+            **self._task_summary(task, workspace, active, latest),
             "ui_state": ui_state,
             "active_run": self._run_payload(active) if active else None,
             "latest_direct_user_run": self._run_payload(latest_direct_user) if latest_direct_user else None,

@@ -623,6 +623,7 @@
               if (owner !== token || version !== fileVersion) return;
               host.querySelector("[data-patrol-file-body]").innerHTML = root.FocusLoopFactsView.renderFile(detail.file);
               host.querySelector("[data-patrol-file-detail]").hidden = false;
+              root.FocusFilePreview?.mountHistory(host.querySelector("[data-patrol-file-body]"), detail.file, loopId);
             } else showDialog("fact", "事实与来源", root.FocusLoopFactsView.renderDetail(detail));
           }
         }

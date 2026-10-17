@@ -47,6 +47,7 @@
 .message-rich table { border-collapse: collapse; margin: 8px 0; }
 .message-rich th, .message-rich td { border: 1px solid var(--line); padding: 4px 8px; }
 .message-rich a { color: var(--blue); text-decoration: underline; }
+.streaming-overflow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; color: var(--muted); font-size: 13px; white-space: normal; }
 .message.streaming .message-content::after { content: ""; display: inline-block; width: 2px; height: 1em; margin-left: 3px; vertical-align: -.12em; background: var(--blue); animation: cursor-blink .8s steps(1) infinite; }
 @keyframes cursor-blink { 50% { opacity: 0; } }
 .message.tool { color: var(--muted); border-left: 2px solid var(--line); padding-left: 12px; font-size: 13px; }

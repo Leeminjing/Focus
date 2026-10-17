@@ -93,10 +93,12 @@ class RunDispatchRepository:
         if run is not None and (run.workspace_result or {}).get("shell_cleanup"):
             raise RuntimeError("Shell 进程树清理未确认，不能结算 Run dispatch")
         row = await session.scalar(select(RunDispatch).where(RunDispatch.run_id == run_id).with_for_update())
-        if row is None or row.status in {"settled", "failed_to_start", "interrupted"}:
+        if row is None:
             return row
-        row.status = "settled"
-        row.settled_at = datetime.now(UTC)
+        if row.status not in {"settled", "failed_to_start", "interrupted"}:
+            row.status = "settled"
+        if row.settled_at is None:
+            row.settled_at = datetime.now(UTC)
         row.lease_expires_at = None
         await session.flush()
         return row

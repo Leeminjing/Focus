@@ -41,7 +41,7 @@ def provider(monkeypatch):
     """只替换 HTTP 传输，保留真实客户端、协议映射及策展引擎。"""
     from focus.models import create_chat_model
 
-    state = {"calls": [], "status": 200, "curation": None, "network_error": None}
+    state = {"calls": [], "status": 200, "curation": None, "semantic_index": None, "network_error": None}
     def respond(request):
         payload = json.loads(request.content)
         state["calls"].append((request.headers.get("authorization"), payload))
@@ -53,6 +53,12 @@ def provider(monkeypatch):
         content = state["curation"] if is_curation else "OK"
         if content is None:
             content = json.dumps({"outcome": "replace", "items": [{"type": "copy_message", "source_message_id": "probe"}]})
+        if "你是无权 semantic_index_projector" in json.dumps(payload, ensure_ascii=False):
+            content = state["semantic_index"]
+            if content is None:
+                content = json.dumps({"units": [{"kind": "claim", "authority": "hypothesis",
+                    "statement": "请保留这条测试消息。",
+                    "supports": [{"message_id": "probe", "quote": "请保留这条测试消息。"}]}]})
         if "input" in payload:
             return httpx.Response(200, json={
                 "id": "probe", "object": "response", "created_at": 0, "model": "test", "status": "completed",
@@ -69,6 +75,7 @@ def provider(monkeypatch):
                                  http_async_client=httpx.AsyncClient(transport=transport))
     monkeypatch.setattr("focus.models.create_chat_model", factory)
     monkeypatch.setattr("backend.app.desktop.context_curator.engine.create_chat_model", factory)
+    monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model", factory)
     return state
 
 
@@ -135,8 +142,8 @@ def test_saved_key_reaches_chat_and_real_curation_output_path(setup_workspace, p
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["verification"]["ok"], result
-    assert [check["capability"] for check in result["verification"]["checks"]] == ["chat", "curation"]
-    assert len(provider["calls"]) == 2
+    assert [check["capability"] for check in result["verification"]["checks"]] == ["chat", "curation", "semantic_index"]
+    assert len(provider["calls"]) == 3
     assert ("input" in provider["calls"][1][1]) == (protocol == "responses")
     assert all(auth == "Bearer synthetic-new-key" for auth, _ in provider["calls"])
     assert "synthetic-new-key" not in response.text
@@ -181,6 +188,83 @@ def test_different_chat_and_curation_defaults_use_their_own_credentials(setup_wo
     assert provider["calls"][0][0] == "Bearer old-synthetic-key"
     assert provider["calls"][1][0] == "Bearer synthetic-curation-key"
     assert provider["calls"][1][1]["model"] == "curation-model"
+    assert provider["calls"][2][0] == "Bearer synthetic-curation-key"
+    assert provider["calls"][2][1]["model"] == "curation-model"
+
+
+@pytest.mark.parametrize("role", ["semantic_index_projector", "semantic_index_interpreter", "claim_verifier"])
+def test_automatic_index_roles_use_curation_default(setup_workspace, provider, role):
+    from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
+    from backend.app.desktop.agent_loop.patrol_runtime import CuratorCoordinationStage
+    from backend.app.desktop.context_curator.contract import CuratedContextPlan
+    from backend.app.desktop.context_curator.engine import CURATOR_SYSTEM_CONTRACT
+
+    _, entry = setup_workspace
+    config = get_app_config("config.yaml")
+    saved = _client(config).put("/desktop/api/settings/models", json={
+        "models": [
+            {**entry, "curation_default": False, "curation_output_method": None,
+             "derivation_max_output_tokens": {role: 4096}},
+            {**entry, "name": "curator", "model": "curation-model", "default": False,
+             "context_window": 16384, "curation_max_output_tokens": 2048,
+             "derivation_max_output_tokens": {role: 1024}},
+        ],
+    })
+    assert saved.json()["verification"]["ok"]
+    service = CuratorCoordinationStage(None, object(), app_config=config)._index_service
+    factory = {"semantic_index_projector": service._semantic_projector_factory,
+               "semantic_index_interpreter": service._semantic_interpreter_factory,
+               "claim_verifier": service._semantic_claim_verifier_factory}[role]
+    worker = factory()
+    assert worker.context_window_tokens == 16384
+    assert worker.max_output_tokens == 1024
+    assert worker.cache_identity == RoleBoundStructuredModel(config, role, "curator").cache_identity
+    result = asyncio.run(worker.invoke(CuratedContextPlan, CURATOR_SYSTEM_CONTRACT, {}))
+    assert result.outcome == "replace"
+    assert provider["calls"][-1][1]["model"] == "curation-model"
+    request = provider["calls"][-1][1]
+    assert request.get("max_completion_tokens", request.get("max_tokens")) == 1024
+
+
+@pytest.mark.parametrize("output", ["not json", '{"units": []}'])
+def test_verification_rejects_invalid_automatic_index_output(setup_workspace, provider, output):
+    provider["semantic_index"] = output
+    result = asyncio.run(verify_model_setup(get_app_config("config.yaml")))
+    assert not result["ok"]
+    assert all(check["ok"] for check in result["checks"][:2])
+    assert result["checks"][2]["capability"] == "semantic_index"
+    assert not result["checks"][2]["ok"]
+    assert "自动索引" in result["reason"]
+
+
+def test_internal_model_selection_honors_explicit_overrides_and_rejects_missing_default(setup_workspace, monkeypatch):
+    from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
+    from backend.app.desktop.agent_loop.structured_worker import StructuredWorkerModel
+    from backend.app.desktop.context_curator.engine import CurationEngine
+
+    config = get_app_config("config.yaml")
+    curator = config.models[0].model_copy(update={"name": "curator", "default": False})
+    config.models[0].curation_default = False
+    config.models.append(curator)
+    monkeypatch.setenv("FOCUS_MODEL", "test")
+    assert config.resolve_default_model_name() == "test"
+    assert config.resolve_curation_model_name() == "curator"
+    assert StructuredWorkerModel(config).request_model_config.name == "curator"
+    assert CurationEngine(config)._resolve_config(None).name == "curator"
+    assert StructuredWorkerModel(config, "test").request_model_config.name == "test"
+    default = RoleBoundStructuredModel(config, "claim_verifier")
+    assert default.cache_identity == RoleBoundStructuredModel(config, "claim_verifier", "curator").cache_identity
+    original_identity = default.cache_identity
+    config.models[0].curation_default = True
+    curator.curation_default = False
+    assert default.cache_identity != original_identity
+    assert default.cache_identity == RoleBoundStructuredModel(config, "claim_verifier", "test").cache_identity
+    config.models[0].curation_default = False
+    with pytest.raises(ValueError, match="策展默认模型"):
+        _ = StructuredWorkerModel(config).request_model_config
+    with pytest.raises(ValueError, match="策展默认模型"):
+        _ = default.cache_identity
+    assert StructuredWorkerModel(config, "test").request_model_config.name == "test"
 
 
 def test_responses_protocol_mismatch_has_an_actionable_diagnosis(setup_workspace, monkeypatch):
@@ -189,6 +273,7 @@ def test_responses_protocol_mismatch_has_an_actionable_diagnosis(setup_workspace
         raise ResponseAttemptError("invalid", {}, "synthetic protocol mismatch")
     monkeypatch.setattr("focus.models.create_chat_model", fail)
     monkeypatch.setattr("backend.app.desktop.context_curator.engine.create_chat_model", fail)
+    monkeypatch.setattr("backend.app.desktop.agent_loop.structured_worker.create_chat_model", fail)
     result = asyncio.run(verify_model_setup(get_app_config("config.yaml")))
     assert not result["checks"][0]["ok"]
     assert "协议" in result["checks"][0]["reason"]
