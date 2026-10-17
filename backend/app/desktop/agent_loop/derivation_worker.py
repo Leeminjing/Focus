@@ -98,9 +98,7 @@ class RoleBoundStructuredModel:
 
     @property
     def cache_identity(self) -> str:
-        config = self._app_config.get_model(
-            self._model_name or self._app_config.resolve_default_model_name()
-        )
+        config = StructuredWorkerModel(self._app_config, self._model_name).request_model_config
         payload = {
             key: value
             for key, value in config.model_dump(mode="json").items()

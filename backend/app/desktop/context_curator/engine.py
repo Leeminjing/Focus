@@ -124,7 +124,7 @@ class CurationEngine:
         if model_name:
             return self._app_config.get_model(model_name)
         try:
-            return self._app_config.get_model(self._app_config.resolve_default_model_name())
+            return self._app_config.get_model(self._app_config.resolve_curation_model_name())
         except ValueError as exc:
             raise CurationEngineError("capability", str(exc)) from exc
 
