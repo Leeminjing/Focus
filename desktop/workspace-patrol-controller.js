@@ -613,7 +613,8 @@
         else if (button.dataset.contextId) await inspectContext(button.dataset.contextId, button, button.dataset.revisionId);
         else if (button.dataset.factId) {
           const owner = token, version = ++fileVersion;
-          const detail = await api.factDetail(loopId, button.dataset.factId, lifetime.signal);
+          const revision = button.closest("[data-fact-revision]")?.dataset.factRevision;
+          const detail = await api.factDetail(loopId, button.dataset.factId, lifetime.signal, revision ? Number(revision) : undefined);
           if (owner === token && version === fileVersion) {
             visibleFact = detail.fact;
             if (detail.file) {
