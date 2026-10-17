@@ -16,6 +16,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
+const { createArtifactFiles } = require("./artifact-files.cjs");
 const { setTimeout: delay } = require("node:timers/promises");
 
 const desktopDir = __dirname;
@@ -365,6 +366,21 @@ ipcMain.handle("focus:open-external", async (event, value) => {
   await shell.openExternal(url);
   return true;
 });
+
+const artifactFiles = createArtifactFiles({ shell, dialog, resolve: async reference => {
+  const response = await fetch(`${desktopOrigin}/desktop/api/agent-loops/${encodeURIComponent(reference.loopId)}/facts/${encodeURIComponent(reference.factId)}/local-file?revision=${reference.revision}`, {
+    headers: { "X-Focus-Session": process.env.FOCUS_DESKTOP_SESSION }, signal: AbortSignal.timeout(10000),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "无法读取文件位置");
+  return result;
+} });
+for (const [channel, operation] of [["open", "open"], ["reveal", "reveal"], ["save-as", "saveAs"]]) {
+  ipcMain.handle(`focus:file-${channel}`, async (event, reference) => {
+    assertDesktopSender(event);
+    return artifactFiles[operation](reference, BrowserWindow.fromWebContents(event.sender));
+  });
+}
 
 ipcMain.handle("focus:set-zoom-level", (event, value) => {
   assertDesktopSender(event);

@@ -46,6 +46,7 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
     FocusAccessMode: { readNewSessionDefault() {} }, FocusWorkspacePatrolFeedback: Feedback, FocusWorkspacePatrolInputs: Inputs,
     FocusLoopLiveSelectors: { selectFacts: value => value.files || [] } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-references.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "artifact-drawer.js"), "utf8"), context);
   await vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-panel.js"), "utf8"), context);
   return { calls, states, body, events, api,
     async emit(value) { state = { ...state, projection: value }; listener(state); await tick(); },

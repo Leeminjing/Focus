@@ -31,6 +31,11 @@ contextBridge.exposeInMainWorld("focusDesktop", {
   }),
   selectWorkspace: () => ipcRenderer.invoke("focus:select-workspace"),
   openExternal: url => ipcRenderer.invoke("focus:open-external", url),
+  files: {
+    open: reference => ipcRenderer.invoke("focus:file-open", reference),
+    reveal: reference => ipcRenderer.invoke("focus:file-reveal", reference),
+    saveAs: reference => ipcRenderer.invoke("focus:file-save-as", reference),
+  },
   setZoomLevel: level => ipcRenderer.invoke("focus:set-zoom-level", level),
   getZoomLevel: () => ipcRenderer.invoke("focus:get-zoom-level"),
   patrol: {

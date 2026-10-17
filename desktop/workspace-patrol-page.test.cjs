@@ -143,6 +143,19 @@ if (!process.versions.electron) {
     }
     await run('window.savedPatrolComposer = document.querySelector("[data-patrol-composer]"); render()');
     assert.equal(await run('window.savedPatrolComposer === document.querySelector("[data-patrol-composer]")'), true);
+    await run(`window.fileFeedbackFetch = async input => {
+      const path = new URL(String(input), 'http://focus.test').pathname;
+      const file = {slot_id:'slot-report',path:'reports/报告.md',result_key:'report-result',operation:'created',sha256:'a'.repeat(64)};
+      if (path.endsWith('/facts')) return new Response(JSON.stringify({facts:[{fact_id:'report',revision:1,context_id:'root',occurred_at:'2026-10-17T01:00:00Z',file}],has_more:false}));
+      if (path.endsWith('/facts/report')) return new Response(JSON.stringify({file:{...file,after:{available:true,text:'工作台中的报告正文'},before:{available:false,reason:'before_unobserved'}}}));
+    }; document.querySelector('[data-patrol-files-open]').click()`);
+    await until('document.querySelector(".artifact-row")');
+    assert.match(await run('document.querySelector(".artifact-drawer").textContent'), /reports\/报告.md/);
+    await run('document.querySelector("[data-files-view]").click()');
+    await until('document.querySelector("[data-files-preview]").textContent.includes("工作台中的报告正文")');
+    await run('document.querySelector("[data-files-close]").click(); delete window.fileFeedbackFetch');
+    assert.equal(await run('document.activeElement.hasAttribute("data-patrol-files-open")'),true);
+    assert.equal(await run('window.savedPatrolComposer === document.querySelector("[data-patrol-composer]")'),true);
     const beforeIME = await run('window.patrolFixture.submissions.length');
     await run('document.querySelector("[data-patrol-content]").dispatchEvent(new KeyboardEvent("keydown", {key:"Enter",isComposing:true,bubbles:true,cancelable:true}))');
     assert.equal(await run('window.patrolFixture.submissions.length'), beforeIME);

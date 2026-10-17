@@ -33,6 +33,7 @@
     let unlisten = null;
     let materialPreview = null;
     let budget = null;
+    let artifacts = null;
 
 
     let lifetime = null;
@@ -479,6 +480,7 @@
       if (pendingButton.textContent !== pendingText) pendingButton.textContent = pendingText;
       if (previous?.facts !== projection.facts) {
         patchFileFacts(true);
+        artifacts?.update(root.FocusLoopLiveSelectors.selectFacts(projection));
       }
       if (detailsOpen) {
         const topologyChanged = ["loop", "portfolio", "lineage", "contexts"].some(key => previous?.[key] !== projection[key]);
@@ -534,7 +536,8 @@
           await onCompose({ workspaceId: workspace.workspace_id, ...(button.dataset.patrolAnswer ? { requestId: button.dataset.patrolAnswer, requestRevision: Number(button.dataset.requestRevision) } : {}), ...(button.dataset.patrolFileAdd ? {file_refs:[JSON.parse(button.dataset.patrolFileAdd)]} : {}) });
           return;
         }
-        if (button.hasAttribute("data-patrol-file-picker-open")) await openFilePicker();
+        if (button.hasAttribute("data-patrol-files-open")) await artifacts.open();
+        else if (button.hasAttribute("data-patrol-file-picker-open")) await openFilePicker();
         else if (button.dataset.patrolFileAdd) addFileReference(JSON.parse(button.dataset.patrolFileAdd));
         else if (button.dataset.patrolFileRemove) inputs.edit({ file_refs: inputs.get().draft.file_refs.filter(item => item.result_key !== button.dataset.patrolFileRemove) });
         else if (button.dataset.patrolEditFailed) {
@@ -636,6 +639,8 @@
       lifetime = new AbortController();
       historyLoading = true;
       host.innerHTML = view.skeleton(bound, Boolean(onCompose));
+      artifacts = root.FocusArtifactDrawer.create({ host: host.querySelector(".workspace-patrol"), api, getLoopId: () => loopId,
+        onSource: async id => { artifacts.close(); if (!detailsOpen) toggleDetails(); await inspectContext(id, host.querySelector("[data-patrol-files-open]")); } });
       const budgetHost = host.querySelector("[data-patrol-budget]");
       if (budgetHost) budget = root.FocusWorkspacePatrolBudget.create({ host: budgetHost, api,
         getDraft: () => inputs.get().draft, editDraft: patch => inputs.edit(patch), onError: error, canChooseInitial: !onCompose });
@@ -729,6 +734,7 @@
       }
     }
     function leave() {
+      artifacts?.dispose(); artifacts = null;
       budget?.dispose(); budget = null;
       if (graphFrame !== null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(graphFrame);
       graphFrame = null; lineagePending = false;

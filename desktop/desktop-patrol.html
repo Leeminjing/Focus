@@ -5,13 +5,14 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Focus · Patrol</title><link rel="stylesheet" href="./styles/icons.css"><link rel="stylesheet" href="./desktop-patrol.css"><link rel="stylesheet" href="./styles/workspace-patrol-budget.css"></head>
 <body>
+  <link rel="stylesheet" href="./styles/artifact-drawer.css">
   <main id="robot" hidden><button id="robot-open" aria-label="打开 Patrol，拖入图片、文字或文件"><img src="./assets/patrol-avatar/idle.png" alt="Patrol 机器人" draggable="false"></button><span id="robot-status" role="status">点击开始</span><button id="robot-hide" aria-label="隐藏机器人到托盘">收起</button></main>
   <main id="panel" hidden>
     <div class="panel-shell">
     <header class="panel-header">
       <button id="binding" title="选择工作区文件夹"><span class="ui-icon icon-folder" aria-hidden="true"></span><span id="binding-name">绑定工作区</span><span class="ui-icon icon-chevron-down" aria-hidden="true"></span></button>
       <details class="panel-menu"><summary aria-label="更多操作" title="更多操作"><span class="ui-icon icon-ellipsis" aria-hidden="true"></span></summary><div class="panel-menu-content">
-        <button id="toggle-history" aria-controls="history" aria-expanded="false">输入记录</button><button id="workbench">打开工作台</button><button id="hide">收起面板 <span>Esc</span></button>
+        <button id="open-files">文件 / 产物</button><button id="toggle-history" aria-controls="history" aria-expanded="false">输入记录</button><button id="workbench">打开工作台</button><button id="hide">收起面板 <span>Esc</span></button>
         <div class="status-row"><i></i><span id="status" role="status">绑定工作区后即可发送</span><button id="reconnect" hidden>重连</button></div>
       </div></details>
     </header>
@@ -38,5 +39,5 @@
   <script src="./http-response.js"></script><script src="./loop-api.js"></script>
   <script src="./loop-live-schema.js"></script><script src="./loop-live-reducer.js"></script><script src="./loop-live-selectors.js"></script><script src="./loop-live-store.js"></script><script src="./loop-live-connection.js"></script>
   <script src="./access-mode.js"></script><script src="./workspace-patrol-inputs.js"></script><script src="./workspace-patrol-intake.js"></script><script src="./workspace-patrol-material-preview.js"></script><script src="./workspace-patrol-feedback.js"></script><script src="./loop-facts-view.js"></script><script src="./desktop-patrol-references.js"></script>
-  <script src="./workspace-patrol-budget.js"></script><script src="./desktop-patrol-robot.js"></script><script src="./desktop-patrol-panel.js"></script>
+  <script src="./artifact-drawer.js"></script><script src="./workspace-patrol-budget.js"></script><script src="./desktop-patrol-robot.js"></script><script src="./desktop-patrol-panel.js"></script>
 </body></html>

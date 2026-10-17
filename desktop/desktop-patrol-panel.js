@@ -26,6 +26,8 @@
   let panelVisible = bridge?.enabled ? false : !document.hidden, visibilityKnown = false, resultsNeedReset = false;
   const draftStore = () => intake.store(workspace?.workspace_id || null);
   const references = FocusDesktopPatrolReferences.create({ host, api, store:draftStore, loopId:() => loopId, onError:fail });
+  const artifacts = FocusArtifactDrawer.create({ host, api, getLoopId: () => loopId, onSource: id => openWorkbench(id) });
+  function openArtifacts() { references.close(); return artifacts.open(); }
   function fail(error) { $("#error").hidden = !error; $("#error").textContent = error ? String(error.message || error) : ""; if (!error) $("#retry-workspace").hidden = true; }
   let budget = null;
   function resetBudget() {
@@ -110,6 +112,7 @@
     loopId = null; resetResults(); connection.stop();
     workspace = bound; workspaceLoaded = false; inputKey = "";
     references.close();
+    artifacts.reset();
     $("#reference-file").disabled = !bound;
     resetBudget();
     fail(null);
@@ -219,12 +222,22 @@
         element("p", `${verified} / ${progress.length} 项已有验证证据`, card); action("查看进度 ↗", card, () => openWorkbench());
       }
     }
-    const files = FocusLoopLiveSelectors.selectFacts(projection).filter(item => item.kind === "file" || item.kind === "artifact").slice(0, 3);
+    const files = FocusLoopLiveSelectors.selectFacts(projection).filter(item => item.kind === "file" || item.kind === "artifact");
     const nextArtifacts = JSON.stringify(files.map(item => [item.fact_id, item.revision]));
     if (nextArtifacts !== artifactKey) {
       artifactKey = nextArtifacts;
+      artifacts.update(files);
       const container = $("#artifacts"); container.replaceChildren();
-      if (files.length) { const card = element("article", "", container); element("h2", `${files.length} 项产物更新`, card); action("查看文件和来源 ↗", card, () => openWorkbench()); }
+      if (files.length) {
+        const card = element("article", "", container);
+        element("h2", `${files.length} 项产物更新`, card);
+        for (const versions of FocusArtifactDrawer.groupFiles(files).slice(0, 3)) {
+          const file = versions[0].file;
+          const entry = action(file.path.split(/[\\/]/).at(-1), card, openArtifacts);
+          entry.title = file.path;
+        }
+        action("文件 / 产物", card, openArtifacts);
+      }
     }
     const key = FocusWorkspacePatrolFeedback.signature(projection);
     if (key !== resultKey) {
@@ -275,10 +288,12 @@
   document.addEventListener("keydown", event => {
     if (event.key !== "Escape") return;
     if ($(".panel-menu").open) { $(".panel-menu").open = false; $(".panel-menu summary").focus(); }
+    else if (artifacts.isOpen()) artifacts.close();
     else if (references.isOpen()) references.close(true);
     else { void hidePanel().catch(fail); }
   });
   $("#workbench").addEventListener("click", () => { void openWorkbench(); });
+  $("#open-files").addEventListener("click", () => { $(".panel-menu").open = false; void openArtifacts().catch(fail); });
   $("#reconnect").addEventListener("click", () => { const id = loopId; loopId = null; connect(id); });
   $("#activity-reconnect").addEventListener("click", () => $("#reconnect").click());
   $("#retry-workspace").addEventListener("click", () => { void enqueue(() => activate(workspace)); });
@@ -297,7 +312,7 @@
   watchDraft();
   const sizeObserver = new ResizeObserver(() => {
     const detail = !$("#version-detail").hidden, beside = detail && matchMedia("(min-width:580px)").matches;
-    const popupHeight = [$("#version-picker"),$("#version-detail")].reduce((sum,node) => sum + (node.hidden || (beside && node.id === "version-detail") ? 0 : node.offsetHeight + 8),0);
+    const popupHeight = [$("#version-picker"),$("#version-detail"),$(".artifact-drawer")].reduce((sum,node) => sum + (node.hidden || (beside && node.id === "version-detail") ? 0 : node.offsetHeight + 8),0);
     const shellStyle = getComputedStyle($(".panel-shell"));
     const contentStyle = getComputedStyle($(".panel-content"));
     const composeHeight = $(".panel-header").offsetHeight + $("#compose").offsetHeight + parseFloat(contentStyle.paddingTop) + parseFloat(contentStyle.paddingBottom) + parseFloat(shellStyle.borderTopWidth) + parseFloat(shellStyle.borderBottomWidth);
@@ -307,7 +322,7 @@
     const menuHeight = $(".panel-menu").open ? $(".panel-menu-content").offsetTop + $(".panel-menu-content").offsetHeight + 10 : 0;
     const gutter = parseFloat(getComputedStyle(host).paddingTop);
     const height = Math.round(Math.max(contentHeight, menuHeight, beside ? $("#version-detail").offsetHeight + 56 : 0)+gutter*2);
-    if (bridge?.enabled) void bridge.resizePanel({height,width:(detail ? 590 : 288)+gutter*2,animate:!matchMedia("(prefers-reduced-motion:reduce)").matches}).catch(fail);
+    if (bridge?.enabled) void bridge.resizePanel({height,width:(detail || artifacts.isOpen() ? 590 : 288)+gutter*2,animate:!matchMedia("(prefers-reduced-motion:reduce)").matches}).catch(fail);
   });
   sizeObserver.observe(host);
   sizeObserver.observe($(".panel-content"));
@@ -316,6 +331,7 @@
   sizeObserver.observe($(".panel-menu-content"));
   sizeObserver.observe($("#version-picker"));
   sizeObserver.observe($("#version-detail"));
+  sizeObserver.observe($(".artifact-drawer"));
   if (bridge?.enabled) {
     bridge.onVisibility(setVisibility);
     bridge.onOpen(target => {

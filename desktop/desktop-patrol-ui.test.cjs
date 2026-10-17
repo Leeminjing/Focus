@@ -56,6 +56,12 @@ if (!process.versions.electron) {
   const history = new Map(), streams = new Map(), requests = [], uploads = [], errors = [];
   let host, server, workbench, selectedPath = "C:\\fixture\\workspace-a", completed = false, dropReceipt = false, hiddenSubmission = null;
   const fileRef = {fact_id:"file-fixed",revision:2,result_key:"b".repeat(64),slot_id:"slot-a",path:"src/semantic_indexer.py",sha256:"a".repeat(64)};
+  const reportBytes = Buffer.from("%PDF-1.7\nFocus report\n\0binary");
+  const reportPath = path.join(directory, "报告.pdf"), savedReport = path.join(directory, "报告副本.pdf");
+  fs.mkdirSync(directory, { recursive: true }); fs.writeFileSync(reportPath, reportBytes);
+  const reportFile = { fact_id:"report-file", revision:1, context_id:"context-answer", occurred_at:"2026-10-17T09:30:00Z", kind:"artifact",
+    file:{slot_id:"slot-a",path:"报告.pdf",result_key:"report-current",sha256:require("node:crypto").createHash("sha256").update(reportBytes).digest("hex"),operation:"created"} };
+  const nativeExits = [];
   let fileReadDelay = 0, unavailableVersion = false, failWorkspaceInputs = 0, longHistory = false, failSubmission = 0;
   const submissionAttempts = [];
   let liveSequence = 1, answerRevision = "revision-answer", progressRevision = 1, statusOverride = null;
@@ -88,6 +94,7 @@ if (!process.versions.electron) {
         grant: { status: "active", budgets: activeBudget }, usage: { model_calls: 40, input_tokens: 100000, output_tokens: 5000, rounds: 5, retries: 0 } }),
       runs: completed ? { "run-answer": entity("run-answer", { run_id: "run-answer", context_id: "context-answer", status: "completed" }) } : {},
       contexts: completed ? { "context-answer": entity("context-answer", { context_id: "context-answer", title: "截图问题", current_revision_id: answerRevision }) } : {},
+      facts: completed ? { "report-file": entity("report-file", reportFile) } : {},
       task_progress: { ...entity(loopId, { generation: 0, document: { items: progressRevision > 1 ? [{ state: "completed", support: "supported" }] : [] } }), revision: progressRevision },
     };
   }
@@ -111,7 +118,11 @@ if (!process.versions.electron) {
     const bytes = Buffer.concat(chunks);
     const body = bytes.length && request.headers["content-type"]?.startsWith("application/json") ? JSON.parse(bytes) : null;
     if (url.pathname.endsWith("/materials/limits")) return json(response, limits);
-    if (url.pathname.endsWith("/facts")) { if (fileReadDelay) await delay(fileReadDelay); return json(response,{facts:[{fact_id:fileRef.fact_id,revision:fileRef.revision,kind:"artifact",file:fileRef},{fact_id:"file-grounding",revision:1,kind:"artifact",file:{...fileRef,path:"src/semantic_grounding.py",result_key:"d".repeat(64)}}],has_more:false,next_before:null}); }
+    if (url.pathname.endsWith("/facts")) { if (fileReadDelay) await delay(fileReadDelay); return json(response,{facts:[{fact_id:fileRef.fact_id,revision:fileRef.revision,kind:"artifact",file:fileRef},{fact_id:"file-grounding",revision:1,kind:"artifact",file:{...fileRef,path:"src/semantic_grounding.py",result_key:"d".repeat(64)}},...(url.searchParams.get("limit") === "200" ? [reportFile,{...reportFile,fact_id:"report-old",occurred_at:"2026-10-16T09:30:00Z",file:{...reportFile.file,result_key:"report-old"}}] : [])],has_more:false,next_before:null}); }
+    if (/\/facts\/report-(file|old)$/.test(url.pathname)) {
+      const old = url.pathname.endsWith("report-old");
+      return json(response,{file:{...reportFile.file,result_key:old ? "report-old" : "report-current",after:{available:true,text:old ? "报告初稿" : "报告完成"},before:{available:false,reason:"binary"}}});
+    }
     if (url.pathname.endsWith("/facts/file-fixed")) {
       assert.equal(url.searchParams.get("revision"),"2");
       if (unavailableVersion) return json(response,{file:{...fileRef,result_key:"c".repeat(64)}});
@@ -178,6 +189,14 @@ if (!process.versions.electron) {
     let apiBase = `http://127.0.0.1:${server.address().port}`;
     process.env.FOCUS_DESKTOP_API = apiBase;
     process.env.FOCUS_DESKTOP_SESSION = session;
+    const exits = require("./artifact-files.cjs").createArtifactFiles({
+      resolve: async reference => { assert.equal(reference.factId,"report-file"); return {root_path:directory,path:reportPath,sha256:reportFile.file.sha256}; },
+      shell: { openPath: async target => { nativeExits.push(["open",target]); return ""; }, showItemInFolder: target => nativeExits.push(["reveal",target]) },
+      dialog: { showSaveDialog: async () => ({filePath:savedReport}) },
+    });
+    for (const [channel,operation] of [["open","open"],["reveal","reveal"],["save-as","saveAs"]]) ipcMain.handle(`focus:file-${channel}`, async (event,reference) => {
+      assert.ok(host.accepts(event)); return exits[operation](reference);
+    });
     ipcMain.handle("focus:select-workspace", () => selectedPath);
     app.on("web-contents-created", (_event, contents) => {
       contents.on("console-message", (_event, level, message) => { if (level >= 3) errors.push(message); });
@@ -314,6 +333,7 @@ if (!process.versions.electron) {
     assert.match(await run(host.panel, "document.querySelector('#results [data-context-id]').title"), /Context context-answer · Revision revision-answer/);
     assert.doesNotMatch(resultText, /隐藏推理|工具调用不可/);
     await capture(host.panel, "desktop-committed-answer");
+    assert.match(await run(host.panel,"document.querySelector('#artifacts').textContent"),/报告.pdf/);
 
     const readsBefore = conversationReads.length;
     await run(host.panel, "window.answerNode=document.querySelector('#answers article')");
@@ -345,6 +365,25 @@ if (!process.versions.electron) {
     await waitFor(workbench, "Boolean(window.target)", "工作台未收到来源定位");
     assert.deepEqual(await run(workbench, "window.target"), { workspaceId: "workspace-a", taskId: "context-answer", revisionId: answerRevision });
     await host.openPanel();
+    await run(host.panel,"document.querySelector('#open-files').click()");
+    await waitFor(host.panel,"document.querySelectorAll('.artifact-row').length === 3","产物抽屉没有按文件合并历史");
+    await run(host.panel,"document.querySelector('[data-files-search]').value='报告'; document.querySelector('[data-files-search]').dispatchEvent(new Event('input',{bubbles:true}))");
+    assert.equal(await run(host.panel,"document.querySelectorAll('.artifact-row').length"),1);
+    await waitFor(host.panel,"innerWidth >= 580","文件抽屉未展开窗口宽度");
+    await waitFor(host.panel,"(() => { const drawer=document.querySelector('.artifact-drawer').getBoundingClientRect(), button=document.querySelector('[data-files-native=saveAs]').getBoundingClientRect(); return button.top>=drawer.top && button.bottom<=drawer.bottom; })()","报告的另存按钮应直接可见");
+    await capture(host.panel,"desktop-artifact-drawer");
+    assert.equal(await run(host.panel,"document.querySelector('.artifact-drawer').scrollWidth <= document.querySelector('.artifact-drawer').clientWidth"),true,"文件抽屉不能横向溢出");
+    await run(host.panel,"document.querySelector('[data-files-native=open]').click()");
+    await waitFor(host.panel,"document.querySelector('[data-files-status]').textContent === '已打开'","文件打开未返回结果");
+    await run(host.panel,"document.querySelector('[data-files-native=reveal]').click()");
+    await run(host.panel,"document.querySelector('[data-files-native=saveAs]').click()");
+    await waitFor(host.panel,"document.querySelector('[data-files-status]').textContent === '已另存文件'","另存文件未返回结果");
+    assert.deepEqual(fs.readFileSync(savedReport),reportBytes);
+    assert.deepEqual(nativeExits,[["open",reportPath],["reveal",reportPath]]);
+    await run(host.panel,"document.querySelector('.artifact-history [data-files-view]').click()");
+    await waitFor(host.panel,"document.querySelector('[data-files-preview]').textContent.includes('报告初稿')","报告历史快照不可查看");
+    assert.equal(await run(host.panel,"Boolean(document.querySelector('.artifact-history [data-files-native]'))"),false);
+    await run(host.panel,"document.querySelector('[data-files-close]').click()");
     await run(host.panel,"document.querySelector('#reference-file').click()");
     await waitFor(host.panel,"document.querySelector('#version-candidates').textContent.includes('semantic_indexer.py')","文件版本候选未显示");
     await run(host.panel,"document.querySelector('#version-query').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))");
