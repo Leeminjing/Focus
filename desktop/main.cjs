@@ -284,9 +284,14 @@ async function start() {
   checked("git", ["--version"]);
   checked("docker", ["compose", "version"]);
   await updateSplashStage("正在准备数据服务", 28);
+  const managed = require("../scripts/managed-update.cjs").assertReady(rootDir, process.env.FOCUS_GLOBAL_HOME || path.join(app.getPath("home"), ".focus"));
   checked("docker", ["compose", "-f", path.join(desktopDir, "compose.yaml"), "up", "-d", "--pull", "missing", "--wait"], { stdio: "inherit" });
-  await updateSplashStage("正在应用工作区迁移", 48);
-  checkedPython(pythonRuntime, ["-m", "alembic", "-c", migrationIni, "upgrade", "head"], { env, stdio: "inherit" });
+  await updateSplashStage(managed ? "正在检查工作区数据" : "正在应用工作区迁移", 48);
+  if (managed) {
+    checkedPython(pythonRuntime, ["-m", "backend.app.update_check", "--schema-only"], { env, stdio: "inherit" });
+  } else {
+    checkedPython(pythonRuntime, ["-m", "alembic", "-c", migrationIni, "upgrade", "head"], { env, stdio: "inherit" });
+  }
   const port = await freePort();
   const apiBase = `http://127.0.0.1:${port}`;
   desktopOrigin = apiBase;
