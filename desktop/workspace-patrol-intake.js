@@ -108,10 +108,10 @@
       const unbound = stores.get(null);
       if (!unbound) return;
       const draft = unbound.get().draft;
-      if (!draft.content && !draft.attachments?.length) return;
+      if (!draft.content && !draft.attachments?.length && !draft.budget_preset) return;
       const target = store(id).get().draft;
-      store(id).edit({ content: [target.content, draft.content].filter(Boolean).join("\n"), attachments: [...(target.attachments || []), ...(draft.attachments || [])] });
-      unbound.edit({ content: "", attachments: [] });
+      store(id).edit({ content: [target.content, draft.content].filter(Boolean).join("\n"), attachments: [...(target.attachments || []), ...(draft.attachments || [])], ...(draft.budget_preset ? { budget_preset: draft.budget_preset } : {}) });
+      unbound.edit({ content: "", attachments: [], budget_preset: null });
     }
     async function prepare(id, row) {
       const result = [];

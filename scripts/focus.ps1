@@ -142,9 +142,10 @@ function Test-DependenciesReady {
         return $false
     }
 
-    & $VenvPython -c "import alembic, asyncpg, fastapi, psycopg, uvicorn" *> $null
-    return $LASTEXITCODE -eq 0
+    # 完整导入检查在安装/更新及原生首次准备阶段执行；日常这里只检查文件。
+    return $true
 }
+
 
 function Start-Focus {
     Assert-ManagedInstall

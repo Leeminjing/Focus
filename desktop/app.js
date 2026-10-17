@@ -249,7 +249,7 @@ let mapRelatedOnly = false;
 let mapLive = null;
 const mapRunPreviews = createRunPreviews((values, structural) => {
   if (state.view !== "map" || state.mapViewMode !== "graph") return;
-  if (structural) patchMapGraph();
+  if (structural) scheduleMapGraphPatch();
   else window.FocusPortfolioMapView.patchPreviews(app.querySelector("[data-map-graph]"), values);
 });
 const loopWaitDrafts = window.FocusLoopWaitRequestView?.createDraftStore();
@@ -3331,23 +3331,20 @@ function createRunPreviews(onChange) {
 function stopMapLive() {
   const previous = mapLive;
   mapLive = null;
+  if (previous?.frame != null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(previous.frame);
   previous?.unsubscribe();
   previous?.connection.stop();
   mapRunPreviews?.stop();
 }
 
-function ensureMapLive() {
-  const loopId = mapPortfolio.manifest?.loop_id, workspaceId = mapPortfolio.workspaceId;
-  if (!loopId || !window.FocusLoopLiveStore || !window.FocusLoopLiveConnection) return;
-  if (mapLive?.loopId === loopId && mapLive.workspaceId === workspaceId) return;
-  stopMapLive();
-  const store = window.FocusLoopLiveStore.create();
-  const connection = window.FocusLoopLiveConnection.create({ api: loopApi, store });
-  const owner = { loopId, workspaceId, store, connection, roots: null, unsubscribe: () => {} };
-  mapLive = owner;
-  owner.unsubscribe = store.subscribe(({ projection }) => {
+function scheduleMapGraphPatch() {
+  const owner = mapLive;
+  if (!owner || state.view !== "map" || state.mapViewMode !== "graph" || owner.frame !== null) return;
+  owner.frame = requestAnimationFrame(() => {
+    owner.frame = null;
     if (mapLive !== owner || state.view !== "map" || state.mapViewMode !== "graph") return;
     patchMapGraph();
+    const projection = owner.store.get().projection;
     if (!projection) return;
     const roots = JSON.stringify([
       Object.values(projection.contexts).map(item => [item.entity_id, item.state.current_revision_id]),
@@ -3357,7 +3354,21 @@ function ensureMapLive() {
     if (roots === owner.roots) return;
     const previous = owner.roots;
     owner.roots = roots;
-    if (previous !== null) void hydrateMapPortfolio(workspaceId, true);
+    if (previous !== null) void hydrateMapPortfolio(owner.workspaceId, true);
+  });
+}
+
+function ensureMapLive() {
+  const loopId = mapPortfolio.manifest?.loop_id, workspaceId = mapPortfolio.workspaceId;
+  if (!loopId || !window.FocusLoopLiveStore || !window.FocusLoopLiveConnection) return;
+  if (mapLive?.loopId === loopId && mapLive.workspaceId === workspaceId) return;
+  stopMapLive();
+  const store = window.FocusLoopLiveStore.create();
+  const connection = window.FocusLoopLiveConnection.create({ api: loopApi, store });
+  const owner = { loopId, workspaceId, store, connection, roots: null, frame: null, unsubscribe: () => {} };
+  mapLive = owner;
+  owner.unsubscribe = store.subscribe(() => {
+    if (mapLive === owner) scheduleMapGraphPatch();
   });
   void connection.start(loopId).catch(error => {
     if (mapLive === owner) { mapPortfolio.error = error.message; patchMapGraph(); }

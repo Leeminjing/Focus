@@ -19,10 +19,13 @@ if (process.versions.electron) {
   const report = value => console.log(`STARTUP_TEST ${JSON.stringify(value)}`);
   const fail = error => { console.error(error); server?.close(); app.exit(90); };
 
-  cp.execFileSync = (command, args, options) => {
+  cp.execFile = (command, args, options, callback) => {
     assert.equal(options.windowsHide, true, "启动依赖与迁移子进程必须隐藏控制台");
-    if (scenario === "preflight" && command === "docker") throw new Error("fixture: Docker unavailable");
-    return command === "where.exe" ? `${process.execPath}\n` : "fixture";
+    assert.ok(options.timeout > 0, "启动命令必须有超时");
+    setImmediate(() => {
+      if (scenario === "preflight" && command === "docker") return callback(Object.assign(new Error("fixture"), { code: "ENOENT" }));
+      callback(null, args.some(arg => arg.endsWith("database-state.py")) ? '{"status":"current"}' : command === "git" || command === "docker" ? "fixture" : process.execPath);
+    });
   };
   cp.spawn = (_command, args) => {
     backendStarts++;
@@ -160,7 +163,7 @@ if (process.versions.electron) {
   }
 
   for (const [scenario, message, kills] of [
-    ["preflight", /Docker unavailable/, 0],
+    ["preflight", /Docker Compose 检查失败/, 0],
     ["backend-exit", /代码 7/, 0],
     ["spawn-error", /Python spawn failed/, 1],
     ["hung-health", /30 秒.*健康检查/, 1],

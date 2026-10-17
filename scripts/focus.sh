@@ -148,8 +148,10 @@ electron_runtime_ready() (
 dependencies_ready() {
     [ -x "$venv_python" ] || return 1
     electron_runtime_ready || return 1
-    "$venv_python" -c 'import alembic, asyncpg, fastapi, psycopg, uvicorn' >/dev/null 2>&1
+    # Full imports run during install/update and native first-run preparation.
+    return 0
 }
+
 
 start_focus() {
     assert_managed_install

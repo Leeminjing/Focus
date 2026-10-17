@@ -47,11 +47,20 @@ class PatrolReadView:
         payload["worker_results"] = [cls._descriptor(item, observation.round_id) for item in observation.worker_results]
         payload["worker_source_catalog"] = [cls._descriptor(item, observation.round_id) for item in (sources if sources is not None else observation.worker_results)]
         payload.pop("pre_input_state", None)
-        payload["causal_source_catalog"] = [{**item, "read": {
-            "source": "causal", "intent_id": item["intent_id"],
-            "snapshot_hash": item["snapshot_hash"], "cursor": 0} if item.get("snapshot_hash") else None}
-            for item in observation.causal_chain]
+        payload.pop("causal_chain", None)
+        payload["causal_source_catalog"] = cls.causal_catalog(observation)
         return payload
+
+    @staticmethod
+    def causal_catalog(observation):
+        sources = []
+        for item in observation.causal_chain:
+            if item.get("read_view") and item["read_view"].get("snapshot_hash") != item.get("snapshot_hash"):
+                raise ValueError("Patrol 因果变化视图 hash 不匹配")
+            sources.append({**item, "read": {
+                "source": "causal", "intent_id": item["intent_id"],
+                "snapshot_hash": item["snapshot_hash"], "cursor": 0} if item.get("snapshot_hash") else None})
+        return sources
 
     @classmethod
     def _descriptor(cls, worker: dict, round_id: str) -> dict:

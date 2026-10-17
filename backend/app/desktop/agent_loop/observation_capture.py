@@ -296,6 +296,13 @@ class LoopObservationService:
             intent.request_payload = {**intent.request_payload, "accepted_sequence": envelope.projection_sequence,
                 "accepted_at": (intent.created_at or datetime.now(UTC)).isoformat()}
         intents = await self._observe_intents(session, loop.loop_id, round_row.round_id, mark=True)
+        if intent is not None:
+            from backend.app.desktop.agent_loop.causal_read_view import CausalInputReadView
+
+            prior_chain = await self._causal_chain(session, [row for row in intents if row.intent_id != intent.intent_id])
+            read_view = await CausalInputReadView.capture(session, loop.loop_id, pre_state,
+                intent.request_payload.get("request", {}), previous_source=prior_chain[-1] if prior_chain else None)
+            intent.request_payload = {**intent.request_payload, "causal_read_view": read_view}
         chain = await self._causal_chain(session, intents)
         manifest = await self._sources.capture(session, loop, boundary=observation_id)
         if not manifest.complete:
@@ -367,6 +374,7 @@ class LoopObservationService:
             "observation_id": row.introduced_observation_id, "generation": row.introduced_generation,
             "snapshot_hash": row.snapshot_hash, "accepted_at": row.request_payload.get("accepted_at"),
             "accepted_sequence": row.request_payload.get("accepted_sequence"),
+            **({"read_view": row.request_payload["causal_read_view"]} if row.request_payload.get("causal_read_view") else {}),
             "input": {"content": row.content, **{key: row.request_payload.get("request", {}).get(key)
                   for key in ("input_type", "request_id", "request_revision", "file_refs")},
                   **({"attachments": row.request_payload["attachments"]} if row.request_payload.get("attachments") else {})}}
