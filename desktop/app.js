@@ -33,6 +33,7 @@
  * 当前会话模式经独立 API 串行保存，成功后才更新界面及后续运行策略；
  * 沙箱状态视图展示已准备或曾尝试准备的工作区及持久限制；
  * 主任务 Composer 仅在存在错误或需处理的提醒时显示反馈，不为常态和运行提示预留空行；
+ * 普通任务投递前持久化原文、材料及完整请求；未确认受理时按原身份重放，显式进入编辑后才新建身份。回执确认后与本地刷新错误分开处理。
  * 审批弹窗区分单次放宽和常驻切换；Agent Loop 的 snapshot、sequence reducer、断线重放和重同步
  * 由独立 Live Store/Connection 负责，切换 Loop 时清除旧投影，启动边界观察意外连接拒绝并归入连接状态；Expansion 表单和阻断视图委托 FocusLoopExpansionBudget，普通 API 响应统一委托无 DOM 的 FocusHttpResponse 解码，本文件只组合页面生命周期和控制请求。
  * 独立 Patrol 入口经系统文件夹选择器选取路径，picker 仅确认本次选择，显式进入才登记绑定；原导航偏好保存已确认工作区，重载不读取历史目录列表。
@@ -154,6 +155,7 @@ const state = {
   streamBuffers: new Map(),
   streamFrames: new Map(),
   composerErrors: new Map(),
+  mainRecoveryRestored: new Map(),
   commitment: {
     taskId: null,
     stage: 0,
@@ -760,6 +762,14 @@ async function hydrateActive(taskId = state.activeTaskId) {
   ]);
   if (taskDetailRequestIds.get(taskId) !== requestId) return;
   state.details.set(taskId, detail);
+  const mainRecovery = taskRunOperations?.recovery(taskId);
+  if (mainRecovery) {
+    if (!mainRecovery.editing || !detail.ui_state?.input) detail.ui_state = { ...(detail.ui_state || {}), input: mainRecovery.input };
+    if (state.mainRecoveryRestored.get(taskId) !== mainRecovery.request_id) {
+      state.materialSelections.set(taskId, JSON.parse(mainRecovery.selectionSignature));
+      state.mainRecoveryRestored.set(taskId, mainRecovery.request_id);
+    }
+  }
   state.materials.set(taskId, materials);
   state.agents.set(taskId, agents);
   state.skillCatalogs.set(taskId, catalog.skills);
@@ -1622,8 +1632,13 @@ function renderMustViewRecovery(detail) {
 }
 
 function composerFeedback(detail, projectionBlocked) {
+  const recovery = taskRunOperations?.recovery(state.activeTaskId);
+  if (recovery?.failure?.uncertain === false && !recovery.editing) return { kind: "danger", text: `发送未受理：${recovery.failure.message}` };
+  if (recovery) return { kind: "warning", text: recovery.editing
+    ? "原请求尚未确认是否受理；编辑后重新发送会创建新请求，原请求仍可能执行。"
+    : "尚未确认是否受理。原消息、附件和请求身份已保留，可按原内容重试。" };
   const error = state.composerErrors.get(state.activeTaskId);
-  if (error) return { kind: "danger", text: `发送失败：${error}` };
+  if (error) return { kind: "danger", text: error.startsWith("消息已受理") ? error : `发送失败：${error}` };
   if (projectionBlocked) return { kind: "warning", text: "该 Context 需要完成执行投影决断后才能继续。" };
   if (activeTaskHasCommitmentLock()) return { kind: "warning", text: "当前任务正在等待 Commitment 审批，请先处理上方审批区。" };
   if (detail?.pending_compression) return { kind: "warning", text: "存在待确认的压缩计划，请先确认或取消。" };
@@ -1632,10 +1647,37 @@ function composerFeedback(detail, projectionBlocked) {
   return null;
 }
 
+function renderMainRecovery(taskId) {
+  const recovery = taskRunOperations?.recovery(taskId);
+  if (!recovery) return "";
+  const pending = taskRunOperations.get(taskId).submission?.status === "pending";
+  return `<button type="button" class="text-button" data-action="retry-main" ${pending ? "disabled" : ""}>按原内容重试</button><button type="button" class="text-button" data-action="edit-main" ${pending ? "disabled" : ""}>编辑后重新发送</button>`;
+}
+
+function updateMainRecoveryControls() {
+  const taskId = state.activeTaskId;
+  const recovery = taskRunOperations?.recovery(taskId);
+  const node = document.querySelector("#mainSubmissionRecovery");
+  if (node) node.innerHTML = renderMainRecovery(taskId);
+  const input = document.querySelector("#mainInput");
+  if (input) input.readOnly = Boolean(recovery && !recovery.editing);
+  const send = document.querySelector('[data-action="send-main"]');
+  if (send) send.textContent = recovery ? (recovery.editing ? "发送新请求" : "按原内容重试") : uiText("focus.send", "发送");
+}
+
+function editMainRequest() {
+  const taskId = state.activeTaskId;
+  if (taskRunOperations?.get(taskId).submission?.status === "pending") return;
+  taskRunOperations?.editRecovery(taskId);
+  setComposerError();
+  document.querySelector("#mainInput")?.focus();
+}
+
 function setComposerError(error = null, taskId = state.activeTaskId) {
   if (error) state.composerErrors.set(taskId, String(error));
   else state.composerErrors.delete(taskId);
   if (taskId !== state.activeTaskId) return;
+  updateMainRecoveryControls();
   const node = document.querySelector("#composerFeedback");
   if (!node) return;
   const detail = state.details.get(taskId);
@@ -1739,8 +1781,10 @@ function renderFocus(task = activeTask()) {
   if (!task) return renderNoActiveTask();
   const isAssembly = task.harness_mode === "assembly";
   const admission = taskRunOperations?.get(task.task_id)?.admission;
+  const mainRecovery = taskRunOperations?.recovery(task.task_id);
   if (appInspector.parentElement !== document.querySelector(".app-shell")) document.querySelector(".app-shell").append(appInspector);
   const detail = state.details.get(task.task_id) || { messages: [] };
+  const composerInput = composerDraft.value(task.task_id, mainRecovery && !mainRecovery.editing ? mainRecovery.input : detail.ui_state?.input || mainRecovery?.input || "");
   const projectionStatus = detail.context?.projection_status || "root";
   const projectionBlocked = !["root", "valid", "repaired", "approved"].includes(projectionStatus);
   const contextBlock = projectionBlocked
@@ -1776,10 +1820,11 @@ function renderFocus(task = activeTask()) {
           <div class="composer-shell glass-surface">
             <div class="composer-context"><span class="ui-badge is-active">${isAssembly ? uiText("focus.free_session", "自由会话") : uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
             <div class="composer">
-              ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(composerDraft.value(task.task_id, detail.ui_state?.input || ""))}</textarea>`, true)}
+              ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(composerInput)}</textarea>`, true)}
               <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
             </div>
             <p id="composerFeedback" class="composer-feedback${feedback ? ` is-${feedback.kind}` : ""}" role="status"${feedback ? "" : " hidden"}>${feedback ? escapeHtml(feedback.text) : ""}</p>
+            <div id="mainSubmissionRecovery" class="main-submission-recovery">${renderMainRecovery(task.task_id)}</div>
           </div>
         </div>
       </section>
@@ -1803,6 +1848,9 @@ function renderFocus(task = activeTask()) {
   const sendButton = document.querySelector('[data-action="send-main"]');
   if (mainInput) mainInput.disabled = commitmentBlocked;
   if (sendButton) sendButton.disabled = commitmentBlocked;
+  // 原身份重试只核对/重放既有受理，不受随后出现的执行审批阻断。
+  if (sendButton && taskRunOperations?.recovery(task.task_id)?.editing === false) sendButton.disabled = false;
+  updateMainRecoveryControls();
   updateAtHighlight(mainInput);
   conversation.scrollTop = previousConversation
     ? (wasPinned ? conversation.scrollHeight : previousScrollTop)
@@ -4264,37 +4312,38 @@ function openImageLightbox(url, label) {
   root.innerHTML = `<div class="image-lightbox" role="dialog" aria-modal="true" aria-label="${escapeHtml(label)}" data-action="close-lightbox"><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}"><button class="text-button" data-action="close-lightbox">关闭</button></div>`;
 }
 
-async function sendMainOnce(taskId, requestId) {
+async function sendMainOnce(taskId, requestId, retry = null) {
   const task = state.tasks.find(item => item.task_id === taskId);
   if (!task) return setStatus("当前没有活动任务", true);
   adoptCommitmentContext();
-  if (activeTaskHasCommitmentLock()) {
+  if (!retry && activeTaskHasCommitmentLock()) {
     return setStatus("存在尚未处理的承诺流程，请先处理审批面板", true);
   }
-  if (state.details.get(taskId)?.pending_compression) {
+  if (!retry && state.details.get(taskId)?.pending_compression) {
     return setStatus("存在待确认的压缩请求，请先完成压缩或取消", true);
   }
-  if (state.details.get(taskId)?.pending_must_view_report) {
+  if (!retry && state.details.get(taskId)?.pending_must_view_report) {
     return setStatus("存在待处理的必看图片报告，请先重试或取消", true);
   }
-  if (state.accessReviews.panel) {
+  if (!retry && state.accessReviews.panel) {
     return setStatus("存在待批准的本机资源访问请求，请先批准或拒绝", true);
   }
   setStatus("");
   const input = document.querySelector("#mainInput");
-  const message = input.value.trim();
+  const message = retry ? retry.message : input.value.trim();
   if (!message) return;
+  if (!retry) composerDraft.claim(taskId, input.value);
   // f35 仅保留规范命令；旧 @压缩 输入按普通用户消息发送。
   const quickKeyword = keywordCommand.parse(message);
-  if (quickKeyword !== null) {
+  if (!retry && quickKeyword !== null) {
     const keyword = quickKeyword;
     input.value = "";
     composerDraft.release(taskId);
     return openCompressionView(task, null, keyword);
   }
   setComposerError();
-  const spatialTarget = currentSpatialTarget();
-  if (spatialTarget?.focus.kind === "patrol"
+  const spatialTarget = retry ? null : currentSpatialTarget();
+  if (!retry && spatialTarget?.focus.kind === "patrol"
       && typeof spatialTarget.view.sendFocusedMessage === "function") {
     try {
       if (await spatialTarget.view.sendFocusedMessage(message)) {
@@ -4313,16 +4362,16 @@ async function sendMainOnce(taskId, requestId) {
       return;
     }
   }
-  const selectionSignature = JSON.stringify(materialSelection(taskId));
-  const outgoing = runMaterialPicker.buildOutgoing(
-    state.materials.get(taskId) || [], message, materialSelection(taskId)
-  );
+  const selectionSignature = retry?.selectionSignature || JSON.stringify(materialSelection(taskId));
+  const original = retry ? JSON.parse(retry.body) : null;
+  const outgoing = original ? { message: original.message, materialInputs: original.material_inputs, requiredImageIds: original.must_view_material_ids }
+    : runMaterialPicker.buildOutgoing(state.materials.get(taskId) || [], message, materialSelection(taskId));
   const messagePayload = outgoing.message;
-  const detail = state.details.get(taskId) || {};
+  let detail = state.details.get(taskId) || {};
+  let confirmed = false;
   try {
-    const run = await api(`/desktop/api/tasks/${taskId}/main/runs`, {
-      method: "POST",
-      headers: { "Idempotency-Key": requestId },
+    const frozen = retry || taskRunOperations?.freeze(taskId, requestId, {
+      input: input.value, message, selectionSignature,
       body: JSON.stringify({
         message: messagePayload,
         material_inputs: outgoing.materialInputs,
@@ -4332,7 +4381,20 @@ async function sendMainOnce(taskId, requestId) {
         ...accessMode.requestBody(accessModeOf("main")),
       }),
     });
+    state.mainRecoveryRestored.set(taskId, requestId);
+    updateMainRecoveryControls();
+    const run = await api(`/desktop/api/tasks/${taskId}/main/runs`, {
+      method: "POST",
+      headers: { "Idempotency-Key": requestId },
+      body: frozen.body,
+    });
+    if (!run || (!run.run_id && !(run.intent_kind === "direct_message" && run.intent_id))) throw new Error("未收到有效受理回执");
+    confirmed = true;
     taskRunOperations?.accept(taskId, requestId, run);
+    taskRunOperations?.forgetRecovery(taskId, requestId);
+    state.mainRecoveryRestored.delete(taskId);
+    state.composerErrors.delete(taskId);
+    detail = state.details.get(taskId) || detail;
     if (run.intent_kind === "direct_message") {
       if (JSON.stringify(materialSelection(taskId)) === selectionSignature) state.materialSelections.set(taskId, runMaterialPicker.empty());
       const unchanged = composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
@@ -4380,27 +4442,41 @@ async function sendMainOnce(taskId, requestId) {
     if (unchanged) composerDraft.release(taskId);
     state.details.set(taskId, detail);
     if (state.activeTaskId === taskId && state.view === "focus") {
+      if (unchanged && document.querySelector("#mainInput") === input) input.value = "";
       renderFocus();
       persistFocusState();
     }
     listenToRun(run);
   } catch (error) {
-    taskRunOperations?.fail(taskId, requestId, error.message);
-    setStatus(error.message, true);
-    setComposerError(error.message, taskId);
+    if (!confirmed) taskRunOperations?.fail(taskId, requestId, error.message);
+    let failed = null;
+    if (!confirmed) {
+      try { failed = taskRunOperations?.failRecovery(taskId, requestId, error); }
+      catch { /* 投递前的冻结快照仍在；保存诊断失败不能丢失原身份。 */ }
+    }
+    const feedback = confirmed ? `消息已受理，但本地状态更新失败：${error.message}`
+      : failed?.failure?.uncertain === false ? `发送未受理：${error.message}`
+      : taskRunOperations?.recovery(taskId) ? `尚未确认是否受理：${error.message}` : error.message;
+    if (state.activeTaskId === taskId) setStatus(feedback, true);
+    setComposerError(feedback, taskId);
   }
 }
 
-function sendMain() {
+function sendMain(retryOriginal = false) {
   const taskId = state.activeTaskId;
   if (!taskId) return Promise.resolve();
   if (taskRunOperations?.get(taskId).submission?.status === "pending") {
     setStatus("这条消息正在提交，请稍候；其他 Context 仍可独立发送。", false);
     return Promise.resolve();
   }
-  const requestId = crypto.randomUUID();
+  const saved = taskRunOperations?.recovery(taskId);
+  const retry = saved && (retryOriginal || !saved.editing) ? saved : null;
+  const requestId = retry?.request_id || crypto.randomUUID();
   taskRunOperations?.begin(taskId, requestId);
-  return sendMainOnce(taskId, requestId).finally(() => taskRunOperations?.finish(taskId, requestId));
+  return sendMainOnce(taskId, requestId, retry).finally(() => {
+    taskRunOperations?.finish(taskId, requestId);
+    if (state.activeTaskId === taskId) updateMainRecoveryControls();
+  });
 }
 
 const COMMITMENT_STAGE_NAMES = {
@@ -7040,6 +7116,8 @@ async function handleDocumentClick(event) {
   if (action === "retry-must-view") return resumeMustView("retry");
   if (action === "cancel-must-view") return resumeMustView("cancel");
   if (action === "send-main") return sendMain();
+  if (action === "retry-main") return sendMain(true);
+  if (action === "edit-main") return editMainRequest();
   if (action === "load-earlier-conversation") return loadEarlierConversation();
   if (action === "toggle-compress-message") {
     state.compression.selected = compressionPanel.toggleSelect(
