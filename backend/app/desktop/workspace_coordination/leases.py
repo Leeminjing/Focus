@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.desktop.workspace_coordination.models import WorkspaceLease, WorkspaceSlot
 from backend.app.desktop.workspace_coordination.schemas import WorkspaceLeaseGrant, WorkspaceLeaseRequest
 from backend.app.desktop.models import DesktopRun
+from backend.app.desktop.workspace_coordination.reservations import reserved_adoption
 
 
 class WorkspaceLeaseConflict(RuntimeError):
@@ -36,6 +37,8 @@ class WorkspaceLeaseManager:
             )
             if slot is None or slot.lifecycle != "active":
                 raise WorkspaceLeaseConflict("workspace slot 不可用")
+            if await reserved_adoption(session, request.slot_id):
+                raise WorkspaceLeaseConflict("workspace slot 存在未恢复的采用意图")
             unresolved = await session.scalar(select(DesktopRun.run_id).where(
                 DesktopRun.workspace_anchor["slot_id"].astext == request.slot_id, DesktopRun.settled_at.is_(None),
                 DesktopRun.workspace_result["shell_cleanup"].astext.not_in(("{}", "null")),

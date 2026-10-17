@@ -8,16 +8,19 @@
 import asyncio
 from datetime import UTC, datetime
 from functools import partial
+from pathlib import Path
 import uuid
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopAction, LoopBudgetUsage, LoopDecision, LoopDelegationGrant, LoopRound, LoopWorkerRequest
 from backend.app.desktop.agent_loop.workspace_adoption import LoopWorkspaceAdoptionService
 from backend.app.desktop.workspace_coordination.models import WorkspaceAdoption, WorkspaceSlot
 from backend.tests.test_loop_governance_convergence import _loop, _freeze
 from backend.tests.test_loop_termination_lock_order import _race_pause
+from backend.tests.test_git_workspace_adoption import _git, _repository
+from backend.tests.test_workspace_adoption_recovery import _crash
 
 
 pytestmark = pytest.mark.usefixtures('runtime_postgres_database')
@@ -169,4 +172,61 @@ def test_adoption_refreshes_cached_owner_after_pause(tmp_path):
                 assert decision.rejection == {'reason': 'loop_paused'}
                 assert action.status != 'applied'
                 assert loop.current_round_id == current.round_id
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("phase", ("before_apply", "after_apply", "after_commit"))
+@pytest.mark.parametrize("paused", (False, True))
+def test_startup_recovers_real_git_adoption_and_respects_pause(tmp_path, phase, paused):
+    from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
+    from backend.app.desktop.agent_loop.recovery import AgentLoopRecovery
+    from backend.app.desktop.run_orchestration import RunOutboxConsumer
+    from backend.app.desktop.workspace_coordination import WorkspaceAdoptionRequest, WorkspaceFingerprinter
+
+    async def run():
+        async with _loop(tmp_path, 'adopt-restart') as (sessions, fixture):
+            decision_id, pending = await _seed_adoption(sessions, fixture, adopted=False)
+            async with sessions.begin() as session:
+                source = await session.get(WorkspaceSlot, pending.source_slot_id)
+                target = await session.get(WorkspaceSlot, pending.target_slot_id)
+                target_root, source_root = Path(target.root_path), Path(source.root_path)
+                baseline = _repository(target_root)
+                _git(target_root, 'worktree', 'add', '--detach', str(source_root), baseline)
+                (source_root / 'tracked.txt').write_text('recovered loop result\n', encoding='utf-8')
+                source.base_revision = target.base_revision = baseline
+                source.current_fingerprint = WorkspaceFingerprinter().capture(source_root).digest
+                target.current_fingerprint = WorkspaceFingerprinter().capture(target_root).digest
+                before = target.current_fingerprint
+                await session.execute(delete(WorkspaceAdoption).where(WorkspaceAdoption.adoption_id == pending.adoption_id))
+            request = WorkspaceAdoptionRequest(adoption_id=pending.adoption_id,
+                source_slot_id=pending.source_slot_id, target_slot_id=pending.target_slot_id,
+                source_revision=pending.source_revision, expected_target_revision=pending.expected_target_revision)
+            await _crash(request, target_root, phase)
+            if paused:
+                await fixture['service'].control(fixture['loop_id'], 'pause')
+            recovery = AgentLoopRecovery(sessions, LoopCoordinator(sessions), RunOutboxConsumer(sessions))
+            await recovery.reconcile()
+            await recovery.reconcile()
+            async with sessions() as session:
+                adoption = await session.get(WorkspaceAdoption, pending.adoption_id)
+                target = await session.get(WorkspaceSlot, pending.target_slot_id)
+                decision = await session.get(LoopDecision, decision_id)
+                action = await session.get(LoopAction, pending.adoption_id)
+                loop = await session.get(AgentLoop, fixture['loop_id'])
+                if paused and phase == 'before_apply':
+                    assert adoption.status == 'rejected'
+                    assert target.current_fingerprint == before
+                    assert target.revision == pending.expected_target_revision
+                else:
+                    assert adoption.status == 'adopted'
+                    assert target.revision == pending.expected_target_revision + 1
+                    assert target.current_fingerprint == WorkspaceFingerprinter().capture(target_root).digest
+                    assert (target_root / 'tracked.txt').read_text(encoding='utf-8') == 'recovered loop result\n'
+                if paused:
+                    assert loop.status == 'paused'
+                    assert decision.status == 'superseded'
+                    assert action.status != 'applied'
+                else:
+                    assert decision.status == 'committed'
+                    assert action.status == 'applied'
     asyncio.run(run())

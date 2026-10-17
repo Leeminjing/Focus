@@ -33,7 +33,9 @@ from backend.app.desktop.workspace_coordination import (
     WorkspaceLease,
     WorkspaceRunReconciler,
     WorkspaceSlot,
+    GitWorkspaceResultApplier,
 )
+from backend.tests.test_git_workspace_adoption import _git, _repository
 
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
@@ -55,8 +57,12 @@ def test_server_intent_cannot_downgrade_write_and_fingerprint_is_stable(tmp_path
     assert WorkspaceFingerprinter().capture(root).digest != first.digest
 
 
-def test_single_writer_many_readers_fencing_adoption_and_recovery() -> None:
+def test_single_writer_many_readers_fencing_adoption_and_recovery(tmp_path) -> None:
     async def run() -> None:
+        target_root, source_root = tmp_path / "target", tmp_path / "source"
+        baseline = _repository(target_root)
+        _git(target_root, "worktree", "add", "--detach", str(source_root), baseline)
+        (source_root / "tracked.txt").write_text("result\n", encoding="utf-8")
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         suffix = uuid.uuid4().hex[:8]
@@ -76,8 +82,8 @@ def test_single_writer_many_readers_fencing_adoption_and_recovery() -> None:
                     session.add(DesktopRun(run_id=run_id, task_id=context_id, agent_id=f"agent-{run_id}", kind="main", status="success", origin="loop", execution_thread_id=f"execution-{run_id}"))
                 await session.flush()
                 session.add_all([
-                    WorkspaceSlot(slot_id=authoritative_id, workspace_id=workspace_id, kind="authoritative", root_path=f"/tmp/{workspace_id}", current_fingerprint="a" * 64),
-                    WorkspaceSlot(slot_id=isolated_id, workspace_id=workspace_id, kind="isolated", root_path=f"/tmp/{workspace_id}-isolated", current_fingerprint="b" * 64, owner_loop_id="loop-1", owner_lane_id="lane-1"),
+                    WorkspaceSlot(slot_id=authoritative_id, workspace_id=workspace_id, kind="authoritative", root_path=str(target_root), base_revision=baseline, current_fingerprint=WorkspaceFingerprinter().capture(target_root).digest),
+                    WorkspaceSlot(slot_id=isolated_id, workspace_id=workspace_id, kind="isolated", root_path=str(source_root), base_revision=baseline, current_fingerprint=WorkspaceFingerprinter().capture(source_root).digest, owner_loop_id="loop-1", owner_lane_id="lane-1"),
                 ])
             manager = WorkspaceLeaseManager(sessions)
             first = await manager.acquire(WorkspaceLeaseRequest(slot_id=authoritative_id, run_id=writer_ids[0], mode="write"))
@@ -112,13 +118,9 @@ def test_single_writer_many_readers_fencing_adoption_and_recovery() -> None:
                 assert expired.status == "expired"
             adopter = WorkspaceAdopter(sessions)
 
-            async def apply_result(source, target):
-                assert source.slot_id == isolated_id
-                return "c" * 64
-
             adopted = await adopter.adopt(
                 WorkspaceAdoptionRequest(adoption_id=uuid.uuid4().hex, source_slot_id=isolated_id, target_slot_id=authoritative_id, source_revision=1, expected_target_revision=1),
-                apply_result,
+                GitWorkspaceResultApplier(),
             )
             assert adopted.status == "adopted"
             anchor = RunExecutionAnchor(run_id=writer_ids[0], slot_id=isolated_id, observed_workspace_revision=1, observed_fingerprint="b" * 64, effect_evidence=[{"tool": "write"}])

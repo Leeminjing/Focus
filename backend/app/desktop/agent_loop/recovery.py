@@ -26,6 +26,7 @@ from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.agent_loop.worker_attempts import WorkerAttemptAuthority, WorkerAttemptRejected
 from backend.app.desktop.agent_loop.worker_recovery import WorkerRecoveryRepository
 from backend.app.desktop.agent_loop.worker_receipt_recovery import WorkerReceiptRecovery
+from backend.app.desktop.agent_loop.workspace_adoption import LoopWorkspaceAdoptionService
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +55,7 @@ class AgentLoopRecovery:
                 )
                 or 0
             )
+        await LoopWorkspaceAdoptionService(self._sessions).recover()
         coordinator_leases = await self._coordinator.recover()
         run_events = await self._run_events.recover()
         async with self._sessions.begin() as session:

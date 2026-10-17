@@ -24,6 +24,7 @@ from backend.app.desktop.workspace_coordination.models import (
 from backend.app.desktop.workspace_coordination.git_worktree import GitWorktreeIsolationProvider
 from backend.app.desktop.workspace_coordination.isolation import IsolationResult
 from backend.app.desktop.models import DesktopRun
+from backend.app.desktop.workspace_coordination.reservations import reserved_adoption
 
 
 class WorkspaceSlotLifecycle:
@@ -35,6 +36,8 @@ class WorkspaceSlotLifecycle:
         async with self._sessions.begin() as session:
             slot = await session.scalar(select(WorkspaceSlot).where(WorkspaceSlot.slot_id == slot_id).with_for_update())
             if slot is None or slot.kind == "authoritative":
+                return False
+            if await reserved_adoption(session, slot_id):
                 return False
             unresolved = await session.scalar(select(DesktopRun.run_id).where(
                 DesktopRun.workspace_anchor["slot_id"].astext == slot_id, DesktopRun.settled_at.is_(None),

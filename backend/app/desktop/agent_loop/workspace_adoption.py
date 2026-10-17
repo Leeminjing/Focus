@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.agent_loop.models import (
@@ -48,6 +48,36 @@ class LoopWorkspaceAdoptionService:
             request = await self._request(session, decision_id)
             adoption = await self._adopter.adopt(request, self._applier)
             return await self._finish(session, decision_id, adoption)
+
+    async def recover(self) -> None:
+        # Record already-applied files even for paused owners; continuing an unapplied
+        # intent still requires the live owner/authority checks in _request.
+        recovered = await self._adopter.recover_pending()
+        pending_ids = [row.adoption_id for row in recovered if row.status == "adopting"]
+        pending_decisions = select(LoopAction.decision_id).where(LoopAction.action_id.in_(pending_ids))
+        async with self._sessions() as session:
+            ids = list((await session.scalars(
+                select(LoopDecision.decision_id).where(or_(
+                    LoopDecision.status == "adopting", LoopDecision.decision_id.in_(pending_decisions)
+                ))
+            )).all())
+        for decision_id in ids:
+            async with self._sessions.begin() as session:
+                loop, round_row, decision = await self._lock_owner(session, decision_id)
+                if (loop.status != "running" or round_row.status != "adopting"
+                    or decision.status != "adopting" or round_row.decision_id != decision_id
+                    or round_row.authority_revision != loop.authority_revision
+                    or decision.authority_committed_at is None):
+                    # A pause/supersession revokes permission to perform new file effects.
+                    # Release a durable reservation only after re-proving the exact before state.
+                    unapplied = list((await session.scalars(select(LoopAction.action_id).where(
+                        LoopAction.decision_id == decision_id, LoopAction.action_id.in_(pending_ids)))).all())
+                    for adoption_id in unapplied:
+                        await self._adopter.recover(adoption_id, apply_if_before=False, reject_if_before=True)
+                    continue
+                request = await self._request(session, decision_id)
+                adoption = await self._adopter.adopt(request, self._applier)
+                await self._finish(session, decision_id, adoption)
 
     async def _request(self, session: AsyncSession, decision_id: str) -> WorkspaceAdoptionRequest:
         loop, round_row, decision = await self._lock_owner(session, decision_id)

@@ -2,7 +2,7 @@ r"""本文件对外提供 WorkspaceSlot、WorkspaceLease、RunExecutionAnchor �
 
 输入为可信 workspace、Run、Loop、Lane、fingerprint 与租约事实；输出为可锁定的 slot、单调 fencing
 token、执行锚点、采用记录和清理墓碑。具体工作流为 slot 维护物理世界版本，lease 约束活动 writer，
-anchor 固化 Run 前后状态，adoption 原子记录隔离结果进入权威 slot。示例：
+anchor 固化 Run 前后状态，adoption 持久保存补丁意图并原子登记隔离结果进入权威 slot。示例：
 `slot = WorkspaceSlot(slot_id="s1", kind="authoritative", ...)`。
 """
 
@@ -101,6 +101,7 @@ class WorkspaceAdoption(Base):
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending", server_default="pending")
     evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     conflict: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    application_intent: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

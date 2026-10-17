@@ -6,6 +6,7 @@ r"""本文件对外提供 RunLifecycleFinalizer 与 RunSettlement。
 来源不可读时不授予自动修复因果；随后用共享协议编译器验证 execution view，按 base revision CAS 发布合法 revision，
 按 lease 模式结算 workspace effect、释放 lease，保存使用当前注入秘密值脱敏的类型化任务领域来源并 enqueue outbox；Reader 只记录并发变化，隔离 Writer 保留待采用结果，
 权威 Writer 才推进权威 slot。控制终止只改变业务状态，finalize 仍回填用量与清理且不复活执行；
+slot 有未恢复的采用意图时仅记录 adoption_recovery_pending，不由迟到 Run 结算推进该 slot。
 未启动的 abort_prepared 同事务按 Run→Dispatch 顺序保存终态、终结派发和释放租约，再登记 outbox。
 重复 finalize 返回同一事实，陈旧 Context 不覆盖用户的新 current pointer。Run.workspace_result 中未清理的 Shell attempt 阻止结算、派发完成和租约释放；重启只记录 interrupted，绝不将未知进程树当作已退出。
 checkpoint 的 canonical typed bridge 在结算前验证，新 publication 保存 V2 execution Items，UI codec 不参与恢复。
@@ -60,6 +61,7 @@ from backend.app.desktop.workspace_coordination.models import (
     WorkspaceLease,
     WorkspaceSlot,
 )
+from backend.app.desktop.workspace_coordination.reservations import reserved_adoption
 
 
 class RunSettlement(BaseModel):
@@ -552,6 +554,11 @@ class RunLifecycleFinalizer:
         anchor = await session.get(RunExecutionAnchor, run.run_id, with_for_update=True)
         if slot is None or anchor is None:
             return {**result, "workspace_status": "anchor_missing"}
+        adoption_id = await reserved_adoption(session, slot_id)
+        if adoption_id is not None:
+            return {**result, "workspace_status": "adoption_recovery_pending",
+                "adoption_id": adoption_id, "revision": slot.revision,
+                "fingerprint": slot.current_fingerprint}
         expected = anchor.observed_workspace_revision
         if slot.revision != expected:
             return {

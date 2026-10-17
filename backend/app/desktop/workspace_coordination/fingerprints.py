@@ -3,6 +3,7 @@ r"""本文件对外提供 WorkspaceFingerprinter（capture、compare_and_advance
 输入为已验证的 workspace 根路径或持久 slot；输出为稳定内容 fingerprint、文件统计和可选 Git revision。
 Git revision 只描述以该根为顶层的仓库，子目录不借用父仓库 baseline，以保持 worktree 文件路径一致。
 git_state 输入根目录，输出 (HEAD commit 或 None, 是否有未提交修改)；非仓库根输出 (None, False)。
+capture 的可选 git_state 用于临时采用预演树，沿用真实目标仓库的 HEAD/dirty 语义。
 具体工作流为按相对路径排序散列文件类型、路径、大小与内容，忽略 Git 管理数据，并以 compare_and_advance
 锁定 slot 后推进 revision。示例：`result = fingerprinter.capture(Path(root))`。
 """
@@ -18,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
 from backend.app.desktop.workspace_coordination.schemas import WorkspaceFingerprint
+from backend.app.desktop.workspace_coordination.reservations import reserved_adoption
 
 
 class WorkspaceRevisionConflict(RuntimeError):
@@ -28,7 +30,7 @@ class WorkspaceFingerprinter:
     def __init__(self, sessions: async_sessionmaker[AsyncSession] | None = None) -> None:
         self._sessions = sessions
 
-    def capture(self, root: Path) -> WorkspaceFingerprint:
+    def capture(self, root: Path, *, git_state: tuple[str | None, bool] | None = None) -> WorkspaceFingerprint:
         resolved = root.resolve(strict=True)
         digest = hashlib.sha256()
         file_count = 0
@@ -45,7 +47,7 @@ class WorkspaceFingerprinter:
                     digest.update(block)
             file_count += 1
             byte_count += size
-        vcs_revision, dirty = self.git_state(resolved)
+        vcs_revision, dirty = git_state if git_state is not None else self.git_state(resolved)
         digest.update((vcs_revision or "").encode("ascii"))
         digest.update(b"1" if dirty else b"0")
         return WorkspaceFingerprint(
@@ -65,6 +67,8 @@ class WorkspaceFingerprinter:
             slot = await session.scalar(select(WorkspaceSlot).where(WorkspaceSlot.slot_id == slot_id).with_for_update())
             if slot is None or slot.revision != expected_revision:
                 raise WorkspaceRevisionConflict("workspace revision 已变化")
+            if await reserved_adoption(session, slot_id):
+                raise WorkspaceRevisionConflict("workspace slot 存在未恢复的采用意图")
             if slot.current_fingerprint == fingerprint.digest:
                 return slot.revision
             slot.revision += 1
