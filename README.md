@@ -107,6 +107,8 @@ Windows includes a desktop robot entry point. Click it to open the input panel, 
 
 macOS uses the workbench window. Image input requires a configured model with image support.
 
+Shell capabilities differ by platform. Windows supports read-only, workspace-write, and full-access execution. macOS currently supports full-access Shell only; restricted modes report that execution is unavailable and never relax permissions automatically. Users can approve full access for one call, or continue using file tools. Cancellation and timeouts on macOS stop the command's process group, then capture workspace file changes after exit is confirmed. Full access allows programs to leave that group, so it does not provide Windows Job-equivalent process-tree containment. macOS does not yet offer the full restricted coding experience.
+
 ## Strategy: bring your way of working
 
 **A Strategy describes how a project should advance, how contexts should be organized, and what information subsequent work should inherit.**
