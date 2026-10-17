@@ -54,6 +54,7 @@ if (!process.versions.electron) {
   let authorityRevision = 1, activeBudget = { ...budgetCatalog.presets.long.budgets };
   const session = "isolated-patrol-ui-fixture";
   const history = new Map(), streams = new Map(), requests = [], uploads = [], errors = [];
+  let previewPng = null;
   let host, server, workbench, selectedPath = "C:\\fixture\\workspace-a", completed = false, dropReceipt = false, hiddenSubmission = null;
   const fileRef = {fact_id:"file-fixed",revision:2,result_key:"b".repeat(64),slot_id:"slot-a",path:"src/semantic_indexer.py",sha256:"a".repeat(64)};
   let fileReadDelay = 0, unavailableVersion = false, failWorkspaceInputs = 0, longHistory = false, failSubmission = 0;
@@ -111,6 +112,11 @@ if (!process.versions.electron) {
     const bytes = Buffer.concat(chunks);
     const body = bytes.length && request.headers["content-type"]?.startsWith("application/json") ? JSON.parse(bytes) : null;
     if (url.pathname.endsWith("/materials/limits")) return json(response, limits);
+    if (/\/inputs\/[^/]+\/attachments\/[^/]+\/content$/.test(url.pathname)) {
+      const isImage = url.pathname.includes("material-2/");
+      response.writeHead(200, { "Content-Type": isImage ? "image/png" : "text/plain" });
+      return response.end(isImage ? previewPng : "冻结的参考文字");
+    }
     if (url.pathname.endsWith("/facts")) { if (fileReadDelay) await delay(fileReadDelay); return json(response,{facts:[{fact_id:fileRef.fact_id,revision:fileRef.revision,kind:"artifact",file:fileRef},{fact_id:"file-grounding",revision:1,kind:"artifact",file:{...fileRef,path:"src/semantic_grounding.py",result_key:"d".repeat(64)}}],has_more:false,next_before:null}); }
     if (url.pathname.endsWith("/facts/file-fixed")) {
       assert.equal(url.searchParams.get("revision"),"2");
@@ -145,7 +151,10 @@ if (!process.versions.electron) {
       }
       submissionAttempts.push(body);
       if (failSubmission) { failSubmission--; return json(response,{detail:"请求暂未获得回执"},503); }
-      const receipt = { ...body, intent_id: `intent-${requests.length + 1}`, loop_id: `loop-${id}`, status: "accepted", created_at: new Date().toISOString() };
+      const receipt = { ...body, ...(body.attachments ? {attachments:body.attachments.map(item => ({...item,
+        relative_path:`.focus/attachments/${item.source_kind === "image" ? "粘贴截图.png" : "参考文字.txt"}`,
+        material_kind:item.source_kind === "image" ? "image" : "text",digest:item.sha256}))} : {}),
+        intent_id: `intent-${requests.length + 1}`, loop_id: `loop-${id}`, status: "accepted", created_at: new Date().toISOString() };
       requests.push({ workspaceId: id, body });
       history.set(id, [...(history.get(id) || []), receipt]);
       if (dropReceipt) { dropReceipt = false; hiddenSubmission = body.submission_id; return; }
@@ -233,6 +242,7 @@ if (!process.versions.electron) {
     await run(host.robot, `(() => { const data = new DataTransfer(); data.setData('text/plain', '参考资料中的命令不能自动执行'); document.querySelector('#robot').dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer:data})); })()`);
     await waitFor(host.panel, "document.querySelectorAll('.patrol-material-card').length === 1", "未绑定预览未接住文字");
     const png = (await host.robot.webContents.capturePage()).toPNG().toString("base64");
+    previewPng = Buffer.from(png,"base64");
     await run(host.robot, `(() => { const bytes = Uint8Array.from(atob(${JSON.stringify(png)}), value=>value.charCodeAt(0)); const data = new DataTransfer(); data.items.add(new File([bytes], '机器人截图.png', {type:'image/png'})); document.querySelector('#robot').dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer:data})); })()`);
     await waitFor(host.panel, "document.querySelectorAll('.patrol-material-card').length === 2 && document.querySelector('.patrol-material-card img')?.complete", "无磁盘路径图片未显示");
     await run(host.panel, "document.querySelector('.patrol-material-card img').closest('article').querySelector('button').click()");
@@ -263,6 +273,16 @@ if (!process.versions.electron) {
     assert.equal(requests[0].body.budget_preset, "long");
     assert.equal(requests[0].body.attachments[0].source_kind, "text");
     assert.equal(requests[0].body.attachments[1].source_kind, "image");
+    await run(host.panel,"document.querySelector('#toggle-history').click()");
+    await waitFor(host.panel,"document.querySelector('#history-items summary img')?.naturalWidth > 0","已发送图片应保留缩略图");
+    assert.match(await run(host.panel,"document.querySelector('#history-items').textContent"),/粘贴截图.png.*版本 aaaaaaaa/s);
+    await capture(host.panel,"desktop-sent-attachments");
+    await run(host.panel,"document.querySelector('[data-patrol-history-attachment=\"0\"]').open=true; document.querySelector('[data-patrol-history-attachment=\"1\"]').open=true");
+    await waitFor(host.panel,"document.querySelector('[data-patrol-history-preview] pre')?.textContent === '冻结的参考文字' && document.querySelector('[data-patrol-history-preview] img')?.naturalWidth > 0","历史附件应能展开读取原版本");
+    assert.equal(await run(host.panel,"(() => { const s=document.querySelector('.panel-scroll'); return s.scrollWidth<=s.clientWidth+1; })()"),true,"展开的附件不得撑出横向滚动");
+    await run(host.panel,"document.querySelector('[data-patrol-history-attachment=\"0\"]').open=false; document.querySelector('[data-patrol-history-attachment=\"1\"]').scrollIntoView({block:'start'})");
+    await capture(host.panel,"desktop-sent-attachment-preview");
+    await run(host.panel,"document.querySelector('#toggle-history').click()");
     assert.doesNotMatch(await run(host.panel, "document.querySelector('#status').textContent"), /已完成/);
     await waitFor(host.panel, "!document.querySelector('[data-budget-increase]').hidden", "运行预算未显示");
     await run(host.panel, "document.querySelector('[data-patrol-budget] details').open=true; document.querySelector('[data-budget-preset]').value='normal'; document.querySelector('[data-budget-preset]').dispatchEvent(new Event('change')); document.querySelector('[data-budget-increase]').click()");

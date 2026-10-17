@@ -7682,13 +7682,18 @@ document.addEventListener("change", event => {
 function serializeWaitDraft(form) {
   return window.FocusLoopWaitRequestView.serializeDraft(form);
 }
-async function uploadMaterialFile(file) {
+async function uploadMaterialFile(file, taskId = state.activeTaskId) {
   if (!file) return;
-  if (!state.activeTaskId) return setStatus("请先选择任务，再粘贴图片", true);
-  const taskId = state.activeTaskId;
+  if (!taskId) return setStatus("请先选择任务，再添加材料", true);
   const body = new FormData(); body.append("file", file);
   try {
-    await api(`/desktop/api/tasks/${taskId}/materials/upload`, { method: "POST", body });
+    const material = await api(`/desktop/api/tasks/${taskId}/materials/upload`, { method: "POST", body });
+    const materials = state.materials.get(taskId) || [];
+    state.materials.set(taskId, [...materials.filter(item => item.material_id !== material.material_id), material]);
+    const selection = materialSelection(taskId);
+    if (!selection.bindings.some(item => item.materialId === material.material_id)) {
+      state.materialSelections.set(taskId, runMaterialPicker.toggleMaterial(selection, material.material_id));
+    }
     refreshMaterialView(taskId, true);
     state.materials.set(taskId, await api(`/desktop/api/tasks/${taskId}/materials`)); refreshMaterialView(taskId);
   } catch (error) { setStatus(error.message, true); }
@@ -7699,8 +7704,9 @@ document.addEventListener("change", event => {
   const input = event.target;
   const file = input.files[0];
   if (!file) return;
+  const taskId = state.activeTaskId;
   runUiAction(async () => {
-    try { await uploadMaterialFile(file); }
+    try { await uploadMaterialFile(file, taskId); }
     finally { input.value = ""; }
   });
 });
@@ -7719,11 +7725,10 @@ document.addEventListener("paste", event => {
   if (!images.length) return;
   event.preventDefault();
   if (!state.activeTaskId) return setStatus("请先选择任务，再粘贴图片", true);
+  const taskId = state.activeTaskId;
+  const files = images.map(item => item.getAsFile()).filter(Boolean);
   runUiAction(async () => {
-    for (const item of images) {
-      const file = item.getAsFile();
-      if (file) await uploadMaterialFile(file);
-    }
+    for (const file of files) await uploadMaterialFile(file, taskId);
   });
 });
 

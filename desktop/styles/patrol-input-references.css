@@ -1,0 +1,15 @@
+/* 浏览器与机器人历史共用紧凑引用；展开时读取该次提交的原版本。 */
+.patrol-history-references { display:grid; gap:5px; margin:6px 0; min-width:0; }
+.patrol-history-references details,.patrol-history-references>button { border:1px solid #8293ab40; border-radius:7px; padding:5px 7px; min-width:0; background:#8293ab0b; }
+.patrol-history-references summary,.patrol-history-references>button { display:flex; align-items:center; gap:7px; cursor:pointer; text-align:left; color:inherit; font:inherit; }
+.patrol-history-references summary::before { content:"›"; flex:none; }
+.patrol-history-references details[open]>summary::before { content:"⌄"; }
+.patrol-history-references summary>span,.patrol-history-references>button>span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.patrol-history-references summary img { width:42px; height:32px; object-fit:contain; border-radius:4px; background:#8293ab20; flex:none; }
+.patrol-history-references small { display:block; opacity:.7; font-size:.85em; overflow-wrap:anywhere; }
+.patrol-history-references summary:focus-visible,.patrol-history-references button:focus-visible { outline:2px solid #559fe6; outline-offset:2px; }
+[data-patrol-history-preview] { padding-top:7px; overflow-wrap:anywhere; }
+[data-patrol-history-preview]>img { display:block; max-width:100%; max-height:60vh; object-fit:contain; margin-bottom:5px; }
+[data-patrol-history-preview]>pre { max-height:280px!important; overflow:auto; white-space:pre-wrap; }
+[data-patrol-history-preview]>a { display:block; color:inherit; }
+#history-items .patrol-history-references>button { margin:0; padding:5px 7px; color:inherit; }

@@ -148,6 +148,15 @@
       if (restored.has(submissionId)) throw new Error("请先完成历史核对，再编辑未确认的发送");
       store(id).editFailed(submissionId); releaseUnused();
     }
+    async function attachmentContent(id, row, item, signal) {
+      const bytes = item.local_id && sources.get(item.local_id);
+      if (bytes) return new Blob([bytes], { type: item.type });
+      if (!row.intent_id || !item.material_id) throw new Error("附件预览已不可用，请重新添加材料");
+      const path = `/workspaces/${encodeURIComponent(id)}/inputs/${encodeURIComponent(row.intent_id)}/attachments/${encodeURIComponent(item.material_id)}/content`;
+      const response = await fetchImpl(`${prefix}${path}`, { headers: { "X-Focus-Session": runtime.session }, signal });
+      if (!response.ok) { await Http.decodeResponse(response, { operation: "附件版本读取" }); }
+      return response.blob();
+    }
     function claimUnbound(id) {
       const unbound = stores.get(null);
       if (!unbound) return;
@@ -259,7 +268,7 @@
     }
     return Object.freeze({ store, add, remove, submit, send, retry, bind, choose, workspace, remember, claimUnbound, resourceLimits, history, editFailed, reconcile,
       readBinding: () => binding || readBinding(storage), hasUnfinished, isSending: () => pending.size > 0,
-      source: localId => sources.get(localId), request });
+      source: localId => sources.get(localId), attachmentContent, request });
   }
   return Object.freeze({ create, readBinding });
 });

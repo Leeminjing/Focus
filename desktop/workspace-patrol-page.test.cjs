@@ -554,6 +554,28 @@ if (!process.versions.electron) {
       assert.equal(await run('typeof patrolFixture.openWorkbench'), "function");
       assert.deepEqual(await run('patrolFixture.robotPanelOpens'), []);
     }
+    // 两种运行模式下的工作台历史均可检查原附件与精确 Fact revision。
+    await run(`window.historyAttachmentReads=[]; window.fileFeedbackFetch=async input => {
+      const url=new URL(String(input),location.origin);
+      if(url.pathname.includes('/inputs/history-intent/attachments/')) {
+        historyAttachmentReads.push(url.pathname);
+        if(url.pathname.includes('/image/')) return new Response(Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aPioAAAAASUVORK5CYII='),c=>c.charCodeAt(0)),{headers:{'Content-Type':'image/png'}});
+        return new Response('发送时的文件内容',{headers:{'Content-Type':'text/plain'}});
+      }
+      if(url.pathname.includes('/facts/history-file')) {
+        if(url.searchParams.get('revision')!=='3' || !url.pathname.includes('/loop-source/')) throw new Error('历史版本身份漂移');
+        return Response.json({file:{result_key:'fixed-result',path:'src/old.txt',sha256:'c'.repeat(64),after:{available:true,text:'固定版本三'}}});
+      }
+      return null;
+    }; workspacePatrolIntake.history(state.patrolWorkspace.workspace_id,{items:[{submission_id:'history-submission',intent_id:'history-intent',loop_id:'loop-source',content:'核对已发送附件',input_type:'information',
+      attachments:[{material_id:'image',relative_path:'.focus/attachments/报错截图.png',material_kind:'image',digest:'a'.repeat(64)},{material_id:'text',relative_path:'.focus/attachments/说明.txt',material_kind:'text',digest:'b'.repeat(64)}],
+      file_refs:[{fact_id:'history-file',revision:3,path:'src/old.txt',result_key:'fixed-result',sha256:'c'.repeat(64)}]}],next_before:null}); document.querySelector('[data-patrol-history-open]').click()`);
+    await until('document.querySelector("[data-patrol-history] summary img")?.naturalWidth > 0');
+    assert.match(await run('document.querySelector("[data-patrol-history]").textContent'),/报错截图.png.*aaaaaaaa.*说明.txt.*bbbbbbbb.*old.txt.*版本 3/s);
+    await run('document.querySelector("[data-patrol-history-attachment=\\"1\\"]").open=true');
+    await until('document.querySelector("[data-patrol-history-preview] pre")?.textContent === "发送时的文件内容"');
+    await run('document.querySelector("[data-patrol-history-file]").click()');
+    await until('document.querySelector("[data-patrol-file-body]").textContent.includes("固定版本三")');
     assert.deepEqual(errors, []);
     console.log("PATROL_UI_PASS: four first types, rapid inputs, draft, nonmodal history, requests, independent progress/facts, ordinary page");
     win.destroy(); app.quit();

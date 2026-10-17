@@ -26,6 +26,8 @@
   let panelVisible = bridge?.enabled ? false : !document.hidden, visibilityKnown = false, resultsNeedReset = false;
   const draftStore = () => intake.store(workspace?.workspace_id || null);
   const references = FocusDesktopPatrolReferences.create({ host, api, store:draftStore, loopId:() => loopId, onError:fail });
+  const historyReferences = FocusPatrolInputReferences.create({ host, intake, workspaceId: () => workspace?.workspace_id,
+    onFile: (row, file) => references.detail(file, row.loop_id || loopId), onError: fail });
   function fail(error) { $("#error").hidden = !error; $("#error").textContent = error ? String(error.message || error) : ""; if (!error) $("#retry-workspace").hidden = true; }
   let budget = null;
   function resetBudget() {
@@ -72,9 +74,10 @@
       const items = $("#history-items"); items.replaceChildren();
       for (const row of model.rows) {
         const card = element("article", "", items);
+        card.dataset.submissionId = row.submission_id;
         element("pre", row.content || "仅参考材料", card);
-        const count = (row.attachments?.length || 0) + (row.file_refs?.length || 0);
-        element("small", `${status[row.status]}${count ? ` · ${count} 项引用内容` : ""}`, card);
+        card.insertAdjacentHTML("beforeend", FocusPatrolInputReferences.render(row));
+        element("small", status[row.status], card);
         if (row.status === "failed") {
           element("small", row.error, card);
           const id = workspace?.workspace_id;
@@ -83,6 +86,7 @@
         }
       }
     }
+    historyReferences.bind(model);
     $("#older").hidden = !model.cursor;
     if (model.rows[0]?.status === "failed" && shownFailure !== model.rows[0].submission_id) {
       shownFailure = model.rows[0].submission_id;
@@ -351,5 +355,5 @@
       finally { nativeReady = true; notify(); }
     });
   } else if (intake.readBinding()) await activate(await intake.workspace(intake.readBinding().workspace_id));
-  window.addEventListener("beforeunload", () => { budget?.dispose(); sizeObserver.disconnect(); references.dispose(); preview.dispose(); connection.stop(); reads.abort(); });
+  window.addEventListener("beforeunload", () => { budget?.dispose(); sizeObserver.disconnect(); historyReferences.dispose(); references.dispose(); preview.dispose(); connection.stop(); reads.abort(); });
 })().catch(error => { const node = document.querySelector("#error"); node.hidden = false; node.textContent = error.message; });
