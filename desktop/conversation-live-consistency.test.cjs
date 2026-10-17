@@ -211,6 +211,77 @@ test("SSE 未收到 end 就断开时从运行 API 对账终态并刷新会话", 
   assert.strictEqual(harness.vm.runInContext("state.streams.has(__run.run_id)", context), false);
 });
 
+test("流缺口补读权威消息和待审批状态，同时继续接收保留的增量", async () => {
+  let source;
+  class TestEventSource {
+    constructor() { source = this; this.listeners = new Map(); }
+    addEventListener(type, handler) { this.listeners.set(type, handler); }
+    emit(type, id, data) { this.listeners.get(type)?.({ lastEventId: String(id), data: JSON.stringify(data) }); }
+    close() {}
+  }
+  const h = createAppHarness({ fetch: true });
+  h.context.EventSource = TestEventSource;
+  h.vm.runInContext(readAppSource(), h.context);
+  const evaluate = code => h.vm.runInContext(code, h.context);
+  const task = { task_id: TASK_ID, thread_id: THREAD_ID, workspace_id: WORKSPACE_ID, title: "任务" };
+  const run = { run_id: "resync-run", task_id: TASK_ID, thread_id: THREAD_ID, kind: "main", status: "running" };
+  h.context.__task = task;
+  h.context.__run = run;
+  const requests = [];
+  h.context.api = async path => {
+    requests.push(path);
+    if (path === "/desktop/api/tasks") return [task];
+    if (path.endsWith(`/tasks/${TASK_ID}`)) return { messages: LIVE, pending_access_review: { type: "access_review", tool: "read_file" }, active_run: run };
+    if (path.endsWith("/skills")) return { skills: [] };
+    return [];
+  };
+  // 保留真实 refreshTaskAfterTxn/hydrateActive，只隔离审批弹窗的 DOM 副作用。
+  h.context.showAccessReview = (task, value) => { h.context.__review = value; };
+  h.context.scheduleRender = () => {};
+  evaluate(`state.tasks = [__task]; state.activeTaskId = __task.task_id; state.view = "focus"; listenToRun(__run);`);
+  await new Promise(resolve => setImmediate(resolve));
+  const envelope = content => ({ run_id: run.run_id, thread_id: THREAD_ID, workspace_id: WORKSPACE_ID,
+    agent_id: `main:${TASK_ID}`, data: { message_id: "a", content } });
+  source.emit("tokens", 1, envelope("缺口前"));
+  assert.strictEqual(evaluate(`state.streamBuffers.get(__run.run_id).text`), "缺口前");
+  source.emit("resync", 3, { reason: "buffer_overrun", resume_after_event_id: "3" });
+  source.emit("tokens", 4, envelope("恢复后的片段"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(requests.includes(`/desktop/api/tasks/${TASK_ID}`));
+  assert.deepStrictEqual(evaluate(`state.details.get(__task.task_id).messages`), LIVE);
+  assert.strictEqual(h.context.__review.tool, "read_file");
+  assert.strictEqual(evaluate(`state.streamBuffers.get(__run.run_id).text`), "恢复后的片段");
+  assert.strictEqual(evaluate(`state.streams.has(__run.run_id)`), true);
+});
+
+test("补读期间再次出现缺口时最多一个请求在执行，并补读最新状态", async () => {
+  let source, release, calls = 0, active = 0, maximum = 0;
+  class TestEventSource {
+    constructor() { source = this; this.listeners = new Map(); }
+    addEventListener(type, handler) { this.listeners.set(type, handler); }
+    emit(id) { this.listeners.get("resync")?.({ lastEventId: String(id), data: "{}" }); }
+    close() {}
+  }
+  const h = createAppHarness({ fetch: true });
+  h.context.EventSource = TestEventSource;
+  h.vm.runInContext(readAppSource(), h.context);
+  h.context.refreshTaskAfterTxn = async () => {
+    calls++; active++; maximum = Math.max(maximum, active);
+    if (calls === 1) await new Promise(resolve => { release = resolve; });
+    active--;
+  };
+  h.context.scheduleRender = () => {};
+  h.vm.runInContext(`listenToRun({ run_id: "r", task_id: "task", kind: "main" });`, h.context);
+  await new Promise(resolve => setImmediate(resolve));
+  source.emit(2);
+  for (let id = 3; id <= 100; id++) source.emit(id);
+  assert.strictEqual(calls, 1);
+  release();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.strictEqual(calls, 2);
+  assert.strictEqual(maximum, 1);
+});
+
 test("切换 Context 后返回的旧响应只落它自己的缓存，当前会话状态不被改写", async () => {
   const harness = newHarness();
   const { context } = harness;

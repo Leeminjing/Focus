@@ -83,6 +83,7 @@ class StreamBridge(ABC):
 
         输出:
             AsyncIterator[StreamEvent] — 逐条产出事件；无新事件时产出 HEARTBEAT_SENTINEL；
+                                        缓冲缺口时产出 resync，调用方须从权威快照补读；
                                         流结束时产出 END_SENTINEL
         """
         ...
