@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供会话渲染的单元模型、内容签名与渲染缓存：buildUnits/renderConversation（消息 → 带签名的
  * 单元 → 缓存命中的 HTML）、streamingContent/streamingBlocks/visibleStreamBlocks（流式正文按顶层块渲染
- * 并复用已闭合块；可见正文以 `STREAM_TEXT_LIMIT` 为界，越限不产出正文块）、
+ * 并复用已闭合块；超过 `STREAM_TEXT_LIMIT` 后冻结预览，按需展开最新全文）、
  * windowStartIndex/WINDOW_MESSAGES/WINDOW_ROWS（长会话窗口边界：消息条数与已挂载行数两个上限同时生效，
  * 并按"完整工具调用组"回退到安全起点）、stats/resetStats（渲染计数与缓存规模，供预算检查）。
  * 输入为 detail、task、渲染依赖（renderMessage、renderDivider、events 归一、expandMessages、markdown 渲染器）
@@ -10,9 +10,8 @@
  * 无工作区模式以独立输入/附加材料的安静空态承接，不以插件配置提示替代真实会话。
  * 流式块 HTML 与统计计数。具体工作流为按窗口截取消息 → 逐段归一为单元 → 按内容签名命中缓存 →
  * 未命中才调用传入的渲染函数；普通段落的流式正文从已结束的空行边界续解析，复杂语法从最近安全边界重解析。
- * 可见正文边界约定：可见渲染与缓冲语义分离——缓冲照旧累积（完成态判据取正文前缀），而超过
- * `STREAM_TEXT_LIMIT` 的正文不交给 markdown 渲染、也不进入可见 DOM，使越界或超长正文既有界又不会以
- * "助手正在生成"的形态出现在会话里（工具结果只经快照以工具行呈现）。
+ * 可见正文边界约定：缓冲照旧累积（完成态判据取正文前缀），超过 `STREAM_TEXT_LIMIT` 后复用
+ * 已显示的块并提示仍在生成。首次接收即超限时只解析有界前缀；完整正文仅在用户主动展开时解析。
  * 记忆化粒度：单元级（消息/分界/流式/加载更早）与**行级**（执行过程的事件行）两层。行级缓存以
  * "行身份 + 行签名"为键，因此容器内其它行的变化不会使本行失效——尾部追加一行只重建那一行；
  * 缓存按 `CACHE_LIMIT` 淘汰最久未命中的条目，条目数与会话长度无关。
@@ -145,7 +144,7 @@
   }
 
   function _streamingSignature(runId, buffer) {
-    return _join(["streaming", runId, buffer.messageId || "", String(buffer.text || "").length, String(buffer.reasoning || "").length]);
+    return _join(["streaming", runId, buffer.messageId || "", String(buffer.text || "").length, String(buffer.reasoning || "").length, buffer.streamExpandedVersion || 0]);
   }
 
   // 一条消息在执行序列里占几行：助手消息按"推理 + 正文 + 未决工具调用"计，工具结果各占一行。
@@ -415,12 +414,40 @@
       : "";
   }
 
-  // 可见正文的体积边界：越限不产出正文块，使"越界或超长的流式正文"不会把单帧变成解析+插入长任务；
-  // 缓冲本身不受影响（"快照是否已携带该正文"的判据取的是正文前缀），完成态仍按正式消息呈现。
+  // 上限约束自动解析量，而不是正文的存活时间。超限后冻结最近可见块，后续帧只复用；
+  // 首帧即超限时也提供有界预览，避免出现空正文。前缀校验防止消息重置后复用旧内容。
   function visibleStreamBlocks(markdown, buffer) {
     const text = String(buffer?.text ?? "");
-    if (!text || text.length > STREAM_TEXT_LIMIT) return [];
-    return streamingBlocks(markdown, buffer);
+    if (!text) {
+      buffer.streamPreview = null;
+      return [];
+    }
+    if (text.length <= STREAM_TEXT_LIMIT) {
+      const entries = streamingBlocks(markdown, buffer);
+      buffer.streamPreview = { source: text, entries };
+      return entries;
+    }
+    const preview = buffer.streamPreview;
+    if (preview && text.length >= (preview.length || preview.source.length) && text.startsWith(preview.source)) return preview.entries;
+    const source = text.slice(0, STREAM_TEXT_LIMIT);
+    const entries = streamingBlocks(markdown, { text: source });
+    buffer.streamPreview = { source, entries };
+    buffer.blockEntries = entries;
+    buffer.streamCheckpoint = null;
+    return entries;
+  }
+
+  function expandStreamBlocks(markdown, buffer) {
+    const entries = streamingBlocks(markdown, buffer);
+    const text = String(buffer.text ?? "");
+    buffer.streamPreview = { source: text.slice(0, STREAM_TEXT_LIMIT), length: text.length, entries };
+    buffer.streamExpandedVersion = (buffer.streamExpandedVersion || 0) + 1;
+    return entries;
+  }
+
+  function streamingNotice(buffer) {
+    if (String(buffer.text ?? "").length <= STREAM_TEXT_LIMIT) return "";
+    return `<div class="streaming-overflow"><span role="status">内容较长，仍在生成</span><button type="button" class="text-button" data-action="expand-stream-content">${buffer.streamExpandedVersion ? "更新完整内容" : "展开完整内容"}</button></div>`;
   }
 
   function streamingContent(markdown, events, buffer) {
@@ -428,7 +455,7 @@
     const answer = blocks.length
       ? `<div class="message-rich">${blocks.map(entry => entry.html).join("")}</div>`
       : "";
-    return `${_reasoningSection(events, buffer.reasoning)}${answer}`;
+    return `${_reasoningSection(events, buffer.reasoning)}${answer}${streamingNotice(buffer)}`;
   }
 
   return {
@@ -441,6 +468,8 @@
     markdownBlocks,
     streamingBlocks,
     visibleStreamBlocks,
+    expandStreamBlocks,
+    streamingNotice,
     streamingContent,
     windowStartIndex,
     stats: snapshotStats,

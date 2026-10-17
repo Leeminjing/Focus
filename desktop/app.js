@@ -24,8 +24,8 @@
  * 用户展开时按 conversationEventIndex 按需生成；Main Run 提交与流状态按 task/run identity 隔离，Loop wait request
  * 使用独立响应面和按 request identity 持久草稿，沿用当前 Mission 的恢复需显式确认且不发送普通聊天消息；会话渲染走两步：buildUnits 产出带内容签名的单元，
  * _unitHtml 按签名命中缓存，因此连续相同帧为零重建、增量帧只重建变化单元；流式正文按顶层块缓存，
- * 只重渲染未闭合尾块，且累积与可见渲染都以 `STREAM_TEXT_LIMIT` 为界（越限不再并入缓冲、也不进入可见
- * DOM，避免越界或超长正文把单帧变成解析与插入长任务）；同一 tick 内的多次状态变化由 scheduleRender
+ * 只重渲染未闭合尾块，自动解析以 `STREAM_TEXT_LIMIT` 为界（超限后完整累积正文、冻结可见块，
+ * 用户可按需展开最新全文）；同一 tick 内的多次状态变化由 scheduleRender
  * 合并为一次；快照帧在写入前先登记滚动基线（此时的高度与贴底判定才是写入前的状态），写入后由写入侧按
  * 阅读意图与阅读锚点决定跟随或回正；作曲区未发送内容的事实来源是按任务归属的草稿镜像
  * （`FocusComposerDraft`），输入事件即镜像、去抖落盘、页面隐藏与卸载流程各补一次落盘，因此任何界面重建
@@ -2360,10 +2360,12 @@ function appendStreamDelta(envelope, field) {
     buffer.blocks = [];
     buffer.blockEntries = [];
     buffer.streamCheckpoint = null;
+    buffer.streamPreview = null;
+    buffer.streamExpandedVersion = 0;
     buffer.reasoningRendered = undefined;
   }
   const accumulated = buffer[field] || "";
-  if (accumulated.length < conversationRender.STREAM_TEXT_LIMIT) buffer[field] = accumulated + content;
+  if (field === "text" || accumulated.length < conversationRender.STREAM_TEXT_LIMIT) buffer[field] = accumulated + content;
   state.streamBuffers.set(envelope.run_id, buffer);
   if (state.streamFrames.has(envelope.run_id)) return;
   state.streamFrames.set(envelope.run_id, requestAnimationFrame(() => {
@@ -7271,6 +7273,12 @@ async function handleDocumentClick(event) {
   if (action === "retry-main") return sendMain(true);
   if (action === "edit-main") return editMainRequest();
   if (action === "load-earlier-conversation") return loadEarlierConversation();
+  if (action === "expand-stream-content") {
+    const article = button.closest("[data-stream-run]");
+    const buffer = state.streamBuffers.get(article?.dataset.streamRun);
+    if (buffer && buffer.taskId === state.activeTaskId) return conversationView.expandStreaming(article, buffer);
+    return;
+  }
   if (action === "toggle-compress-message") {
     state.compression.selected = compressionPanel.toggleSelect(
       state.compression.selected, Number(button.dataset.index)
