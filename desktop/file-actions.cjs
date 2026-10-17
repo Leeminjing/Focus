@@ -21,7 +21,8 @@ function createFileActions({ shell, dialog, BrowserWindow, apiBase, session, fet
   async function run(event, { operation, target, name }) {
     if (!["open", "reveal", "save", "html"].includes(operation)) throw new Error("未知文件操作");
     const parent = BrowserWindow.fromWebContents(event.sender);
-    if (operation === "reveal" || (operation === "open" && !target.loop_id)) {
+    // An explicit current-file request keeps its history identity for path resolution.
+    if (operation === "reveal" || (operation === "open" && (target.current === true || !target.loop_id))) {
       const location = await (await api("location", { ...target, current: true })).json();
       if (operation === "reveal") shell.showItemInFolder(location.path);
       else { const error = await shell.openPath(location.path); if (error) throw new Error(error); }
