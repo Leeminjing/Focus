@@ -49,10 +49,11 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
     FocusAccessMode: { readNewSessionDefault() {} }, FocusWorkspacePatrolFeedback: Feedback, FocusWorkspacePatrolInputs: Inputs, FocusLoopFactsView: Facts,
     FocusLoopLiveSelectors: { selectFacts: value => value.files || [] } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-references.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "file-links.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "artifact-drawer.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "patrol-input-references.js"), "utf8"), context);
   await vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-panel.js"), "utf8"), context);
-  return { calls, states, body, events, api, copied, store,
+  return { calls, states, body, events, api, copied, store, context,
     async emit(value, connection = state.connection) { state = { ...state, projection: value, connection }; listener(state); await tick(); },
     async visibility(value) { events.visibility?.(value); await tick(); },
     results: () => body.querySelector("#results") };
@@ -253,6 +254,49 @@ test("answers expand as Markdown and copy the full source or an individual code 
   assert.deepEqual(f.copied, [text, 'const value = 1;\n']);
   reading.open = false; reading.dispatchEvent({ type: "toggle" });
   assert.equal(f.body.querySelector("#panel").dataset.reading, "false");
+});
+
+test("answer body local links preserve the message's execution source through the shared reader", async () => {
+  const mounts = [];
+  const f = await panel({ read: async () => ({ messages: [{
+    message: { id: "answer", role: "assistant", content: "[报告](reports/report.md)\n\n[中文](<reports/中文 报告.md>)\n\n[编码](reports/%E4%B8%AD%E6%96%87%20%E6%8A%A5%E5%91%8A.md)\n\n[错误](reports/%XY.md)" },
+    file_context: { task_id: "c", workspace_id: "a", run_id: "original-run", slot_id: "original-slot" },
+  }] }) });
+  f.context.FocusFilePreview = { mount: async (_host, options) => mounts.push(JSON.parse(JSON.stringify(options))) };
+  await f.emit(projection());
+  const reading = f.body.querySelector(".answer-reading"); reading.open = true; reading.dispatchEvent({ type: "toggle" });
+  const body = reading.querySelector(".answer-markdown"), links = body.querySelectorAll("a");
+  for (const [index, expected] of [[0, "reports/report.md"], [1, "reports/中文 报告.md"], [2, "reports/中文 报告.md"]]) {
+    let prevented = false;
+    body.dispatchEvent({ type: "click", target: links[index], preventDefault() { prevented = true; }, stopPropagation() {} });
+    await tick();
+    assert.equal(prevented, true, "相对链接必须在原生导航前拦截");
+    assert.equal(mounts.at(-1)?.target.task_id, "c");
+    assert.equal(mounts.at(-1)?.target.link.path, expected);
+    assert.equal(mounts.at(-1)?.target.link.run_id, "original-run");
+    assert.equal(mounts.at(-1)?.target.link.slot_id, "original-slot");
+    assert.match(f.body.querySelector("#version-body").textContent, /当前磁盘文件/);
+  }
+  const count = mounts.length;
+  links[3].setAttribute("href", "reports/%XY.md");
+  body.dispatchEvent({ type: "click", target: links[3], preventDefault() {}, stopPropagation() {} }); await tick();
+  assert.equal(mounts.length, count);
+  assert.match(f.body.querySelector("#error").textContent, /文件链接无效/);
+});
+
+test("answer links explain missing or conflicting sources without navigating or reading another workspace", async () => {
+  for (const file_context of [undefined, { task_id: "c", workspace_id: "foreign", run_id: "r" },
+    { error: "回答缺少可验证的文件执行来源；请从文件 / 产物打开" }]) {
+    const f = await panel({ read: async () => ({ messages: [{ message: { role: "ai", content: "[报告](report.md)" }, file_context }] }) });
+    f.context.FocusFilePreview = { mount: async () => assert.fail("来源不明不得尝试读取文件") };
+    await f.emit(projection());
+    const reading = f.body.querySelector(".answer-reading"); reading.open = true; reading.dispatchEvent({ type: "toggle" });
+    const body = reading.querySelector(".answer-markdown"); let prevented = false;
+    body.dispatchEvent({ type: "click", target: body.querySelector("a"), preventDefault() { prevented = true; }, stopPropagation() {} }); await tick();
+    assert.equal(prevented, true);
+    assert.match(f.body.querySelector("#error").textContent, /文件.*来源/);
+    assert.equal(f.body.querySelector("#version-detail").hidden, true);
+  }
 });
 
 test("artifact names open fixed version details and can be referenced without leaving the panel", async () => {

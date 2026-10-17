@@ -27,7 +27,8 @@
       const message = item.message || {}, role = message.role || message.type;
       if (!["assistant", "ai"].includes(role) || message.tool_calls?.length || message.additional_kwargs?.tool_calls?.length) continue;
       const text = typeof message.content === "string" ? message.content : (Array.isArray(message.content) ? message.content.filter(block => ["text", "output_text"].includes(block.type)).map(block => block.text || "").join("\n") : "");
-      if (text.trim()) return { text, message_id: message.id || null };
+      if (text.trim()) return { text, message_id: message.id || null,
+        ...(item.file_context ? { file_context: item.file_context } : {}) };
     }
     return null;
   }

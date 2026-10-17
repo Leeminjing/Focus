@@ -1993,13 +1993,7 @@ function releaseFileLinkPreview() {
 }
 
 function fileLinkReference(value = {}) {
-  const reference = {};
-  for (const key of ["path", "workspace_id", "run_id", "slot_id", "view", "fact_id", "revision", "result_key", "sha256", "version_id"]) {
-    if (value[key] != null && value[key] !== "") reference[key] = value[key];
-  }
-  if (["fact_id", "revision", "result_key", "sha256", "version_id"].some(key => reference[key] != null)) reference.view = "history";
-  reference.view ||= "current";
-  return reference;
+  return FocusFileLinks.reference(value);
 }
 
 function openFileLink(reference, taskId = state.activeTaskId) {
@@ -2225,15 +2219,7 @@ function collectMessageImages(content) {
 const FILE_VIEWABLE_RE = /\S/;
 
 function filePathFromLinkHref(href) {
-  if (!href || href.startsWith("#") || /^https?:/i.test(href)) return null;
-  if (/^[a-z][a-z\d+.-]*:/i.test(href) && !/^file:/i.test(href) && !/^[a-z]:[\\/]/i.test(href)) return null;
-  let path = href.replace(/[?#].*$/, "");
-  if (/^file:/i.test(path)) {
-    path = path.replace(/^file:\/\/(localhost)?(?=\/)/i, "").replace(/^file:/i, "");
-    if (/^\/[a-z]:[\\/]/i.test(path)) path = path.slice(1);
-    else if (!path.startsWith("/")) path = `//${path}`;
-  }
-  return decodeURIComponent(path).replace(/\\/g, "/");
+  return FocusFileLinks.pathFromHref(href);
 }
 
 
@@ -7145,30 +7131,16 @@ function openFileCard(button) {
 // Capture all local links before Electron can navigate. Display text and material
 // filenames never participate in resolution. Real web links remain external.
 document.addEventListener("click", event => {
-  const anchor = event.target.closest("a[href]");
-  if (!anchor) return;
-  const href = anchor.getAttribute("href") || "";
-  if (anchor.hasAttribute?.("download")) return;
-  if (/^https?:\/\//i.test(href)) {
-    event.preventDefault();
-    event.stopPropagation();
-    if (typeof window.focusDesktop?.openExternal !== "function") return setStatus("当前运行环境无法打开外部链接", true);
-    Promise.resolve(window.focusDesktop.openExternal(href)).catch(error => setStatus(error.message, true));
-    return;
-  }
-  if (!href || href.startsWith("#")) return;
-  if (/^[a-z][a-z\d+.-]*:/i.test(href) && !/^file:/i.test(href) && !/^[a-z]:[\\/]/i.test(href)) return;
-  event.preventDefault();
-  event.stopPropagation();
-  try {
-    const path = filePathFromLinkHref(href);
-    if (!path) return setStatus("不支持此文件链接", true);
-    if (!FILE_VIEWABLE_RE.test(path)) return setStatus("当前不支持此文件类型的预览", true);
-    const source = fileContextFromNode(anchor);
-    const reference = anchor.dataset?.fileReference ? JSON.parse(anchor.dataset.fileReference) : {};
-    if (source.reference.view === "history") reference.view = "history";
-    return openFileLink({ ...source.reference, ...reference, path }, source.taskId);
-  } catch (error) { setStatus(`文件链接无效: ${error.message}`, true); }
+  FocusFileLinks.follow(event, {
+    onExternal: window.focusDesktop?.openExternal,
+    onError: error => setStatus(error.message, true),
+    onFile: (path, anchor) => {
+      const source = fileContextFromNode(anchor);
+      const reference = anchor.dataset?.fileReference ? JSON.parse(anchor.dataset.fileReference) : {};
+      if (source.reference.view === "history") reference.view = "history";
+      return openFileLink({ ...source.reference, ...reference, path }, source.taskId);
+    },
+  });
 }, true);
 
 // 全局错误可见化:任何未捕获异常显示在状态栏,避免白屏时无从排查

@@ -278,12 +278,18 @@
           const body = element("div", "", content); body.className = "answer-markdown";
           body.innerHTML = markdown.render(result.text);
           body.addEventListener("click", event => {
-            const href = event.target.closest("a[href]")?.getAttribute("href");
-            if (!href || !/^https?:\/\//i.test(href)) return;
-            if (window.focusDesktop?.openExternal) {
-              event.preventDefault();
-              void Promise.resolve(window.focusDesktop.openExternal(href)).catch(fail);
-            }
+            FocusFileLinks.follow(event, {
+              onExternal: window.focusDesktop?.openExternal,
+              onError: fail,
+              onFile: path => {
+                const source = result.file_context;
+                if (source?.error) throw new Error(source.error);
+                if (!source?.task_id || source.workspace_id !== workspace?.workspace_id)
+                  throw new Error("回答缺少可信的文件来源，无法确定执行位置；请从文件 / 产物打开");
+                fail(null);
+                return references.link(FocusFileLinks.reference({ ...source, path }), source.task_id);
+              },
+            });
           });
           for (const pre of body.querySelectorAll("pre")) {
             const code = pre.querySelector("code");

@@ -4,7 +4,7 @@ const { readAppSource } = require("./test-helper.cjs");
 
 const functionSource = readAppSource().match(/function filePathFromLinkHref[\s\S]*?\n}/)?.[0];
 assert.ok(functionSource, "应能从 app.js 加载文件链接解析函数");
-const context = vm.createContext({ decodeURIComponent, URL });
+const context = vm.createContext({ decodeURIComponent, URL, FocusFileLinks: require("./file-links.js") });
 new vm.Script(functionSource).runInContext(context);
 
 const filePathFromHref = href => new vm.Script(

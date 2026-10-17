@@ -158,6 +158,7 @@ function createAppHarness(options = {}) {
     globals.FormData = class {};
   }
   const context = vm.createContext(globals);
+  vm.runInContext(fs.readFileSync(require.resolve("./file-links.js"), "utf8"), context);
   const dispatch = (type, event) => {
     for (const handler of listeners.get(type) || []) handler(event);
   };
