@@ -24,6 +24,15 @@ class LoopSupervisorRegistry:
     def loop_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._supervisors))
 
+    def diagnostic_states(self) -> list[dict]:
+        """Expose bounded, content-free component state through the runtime port."""
+        return [
+            {"loop_id": loop_id, "name": state.name, "running": state.running,
+             "failures": state.failures, "error_type": state.last_error_type}
+            for loop_id, supervisor in sorted(self._supervisors.items())
+            for state in supervisor.states()
+        ]
+
     async def reconcile(self, loop_ids: Iterable[str]) -> tuple[str, ...]:
         desired = frozenset(loop_ids)
         removed = tuple(sorted(set(self._supervisors) - desired))

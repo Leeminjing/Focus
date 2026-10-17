@@ -29,6 +29,7 @@ class ComponentState:
     running: bool
     failures: int
     last_error: str | None
+    last_error_type: str | None = None
 
 
 class LoopSupervisor:
@@ -81,7 +82,7 @@ class LoopSupervisor:
                     raise
                 except Exception as exc:
                     failures += 1
-                    self._states[component.name] = ComponentState(component.name, True, failures, str(exc)[:1000])
+                    self._states[component.name] = ComponentState(component.name, True, failures, str(exc)[:1000], type(exc).__name__)
                     logger.exception("Loop supervisor component failed: %s", component.name)
                 delay = min(max(component.poll_seconds, 0.001) * (2 ** min(failures, 5)), 5.0)
                 try:
@@ -90,4 +91,4 @@ class LoopSupervisor:
                     pass
         finally:
             state = self._states[component.name]
-            self._states[component.name] = ComponentState(component.name, False, state.failures, state.last_error)
+            self._states[component.name] = ComponentState(component.name, False, state.failures, state.last_error, state.last_error_type)

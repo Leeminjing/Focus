@@ -171,6 +171,21 @@ focus update
 
 See [stable releases, installation, and update recovery](docs/managed-releases.md) for details.
 
+To inspect a running instance or export a diagnostic report:
+
+```sh
+focus doctor
+focus doctor --output focus-diagnostics.json
+```
+
+The report includes version and schema checks, live component health, Loop/Run IDs,
+queue backlog, budget usage, recent event identities and startup timings. With Focus
+stopped, it performs read-only offline checks. See [diagnostics](docs/diagnostics.md)
+for source usage and exit codes.
+
+Managed installs keep application code in `~/.focus/app`, dependencies and CLI
+entry points in `~/.focus/runtime`, and the terminal command in `~/.focus/bin`.
+
 ### Run from source
 
 On the first launch from source, the desktop app checks the runtime, starts local PostgreSQL if needed, applies database migrations, and starts the backend service.

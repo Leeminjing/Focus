@@ -111,6 +111,17 @@ class RunManager:
 
     # === helpers ===
 
+    def diagnostic_snapshot(self, limit: int = 20) -> dict:
+        """Current in-memory authority; omit messages, errors and provider data."""
+        states: dict[str, int] = {}
+        for record in self._runs.values():
+            states[record.status.value] = states.get(record.status.value, 0) + 1
+        records = sorted(self._runs.values(), key=lambda record: (record.updated_at, record.run_id), reverse=True)
+        return {"states": states, "sample": [
+            {"run_id": record.run_id, "status": record.status.value}
+            for record in records[:limit]
+        ]}
+
     @staticmethod
     def _generate_run_id() -> str:
         """生成唯一的 run_id（UUID4 字符串）。"""
