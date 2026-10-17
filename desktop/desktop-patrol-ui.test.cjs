@@ -48,6 +48,8 @@ if (!process.versions.electron) {
   const session = "isolated-patrol-ui-fixture";
   const history = new Map(), streams = new Map(), requests = [], uploads = [], errors = [];
   let host, server, workbench, selectedPath = "C:\\fixture\\workspace-a", completed = false;
+  let liveSequence = 1, answerRevision = "revision-answer", progressRevision = 1, statusOverride = null;
+  const conversationReads = [];
   const workspace = id => ({ workspace_id: id, display_name: id === "workspace-a" ? "设计工作区 A" : "验证工作区 B", path: `C:\\fixture\\${id}` });
   const entity = (id, state) => ({ entity_id: id, revision: 1, updated_sequence: 1, state });
   const run = (win, script) => win.webContents.executeJavaScript(script);
@@ -66,11 +68,11 @@ if (!process.versions.electron) {
     console.log(`PATROL_UI_SCREENSHOT ${target}`);
   }
   function snapshot(loopId) {
-    return { loop_id: loopId, last_sequence: completed ? 2 : 1,
-      loop: entity(loopId, { status: completed ? "completed" : "running", interaction_mode: "workspace_patrol", waiting_reason: null }),
+    return { loop_id: loopId, last_sequence: liveSequence,
+      loop: entity(loopId, { status: statusOverride || (completed ? "completed" : "running"), interaction_mode: "workspace_patrol", waiting_reason: null }),
       runs: completed ? { "run-answer": entity("run-answer", { run_id: "run-answer", context_id: "context-answer", status: "completed" }) } : {},
-      contexts: completed ? { "context-answer": entity("context-answer", { context_id: "context-answer", title: "截图问题", current_revision_id: "revision-answer" }) } : {},
-      task_progress: entity(loopId, { generation: 0, document: { items: [] } }),
+      contexts: completed ? { "context-answer": entity("context-answer", { context_id: "context-answer", title: "截图问题", current_revision_id: answerRevision }) } : {},
+      task_progress: { ...entity(loopId, { generation: 0, document: { items: progressRevision > 1 ? [{ state: "completed", support: "supported" }] : [] } }), revision: progressRevision },
     };
   }
   function json(response, value, status = 200) {
@@ -122,10 +124,11 @@ if (!process.versions.electron) {
     }
     const conversation = url.pathname.match(/^\/desktop\/api\/agent-loops\/([^/]+)\/contexts\/context-answer\/conversation$/);
     if (conversation) {
-      assert.equal(url.searchParams.get("revision_id"), "revision-answer");
+      assert.equal(url.searchParams.get("revision_id"), answerRevision);
+      conversationReads.push(answerRevision);
       return json(response, { messages: [
         { message: { id: "tool-only", type: "ai", content: "这条工具调用不可作为回答", tool_calls: [{ name: "read" }] } },
-        { message: { id: "answer-committed", type: "ai", content: "截图中的机器人已经接住材料。参考资料只作为分析依据，尚未执行其中的命令。", additional_kwargs: { reasoning_content: "隐藏推理不应显示" } } },
+        { message: { id: "answer-committed", type: "ai", content: `截图中的机器人已经接住材料。参考资料只作为分析依据，尚未执行其中的命令。${answerRevision}`, additional_kwargs: { reasoning_content: "隐藏推理不应显示" } } },
       ] });
     }
     errors.push(`Unhandled API ${request.method} ${url.pathname}`);
@@ -210,6 +213,7 @@ if (!process.versions.electron) {
     assert.equal(requests.length, 2);
     await capture(host.panel, "desktop-preserved-draft");
     completed = true;
+    liveSequence++;
     for (let i = 0; i < 100 && !streams.has("loop-workspace-a"); i++) await delay(40);
     assert.ok(streams.has("loop-workspace-a"));
     streams.get("loop-workspace-a").write(`data: ${JSON.stringify({ status: "resync_required", last_sequence: 2 })}\n\n`);
@@ -220,14 +224,38 @@ if (!process.versions.electron) {
     assert.match(await run(host.panel, "document.querySelector('#results [data-context-id]').title"), /Context context-answer · Revision revision-answer/);
     assert.doesNotMatch(resultText, /隐藏推理|工具调用不可/);
     await capture(host.panel, "desktop-committed-answer");
+
+    const readsBefore = conversationReads.length;
+    await run(host.panel, "window.answerNode=document.querySelector('#answers article')");
+    progressRevision++; liveSequence++;
+    streams.get("loop-workspace-a").write(`data: ${JSON.stringify({ status: "resync_required", last_sequence: liveSequence })}\n\n`);
+    await waitFor(host.panel, "document.querySelector('#progress').textContent.includes('1 / 1')", "进度未独立刷新");
+    assert.equal(conversationReads.length, readsBefore, "进度变化不能重新读取正文");
+    assert.equal(await run(host.panel, "window.answerNode === document.querySelector('#answers article')"), true);
+
+    host.panel.hide();
+    await run(host.panel, "new Promise(resolve=>setTimeout(resolve,80))");
+    await run(host.panel, "window.resultMutations=0; window.resultObserver=new MutationObserver(records=>{window.resultMutations+=records.length}); resultObserver.observe(document.querySelector('#results'),{subtree:true,childList:true,characterData:true})");
+    answerRevision = "revision-answer-2"; statusOverride = "paused"; liveSequence++;
+    streams.get("loop-workspace-a").write(`data: ${JSON.stringify({ status: "resync_required", last_sequence: liveSequence })}\n\n`);
+    await waitFor(host.robot, "document.querySelector('#robot-status').textContent === '已暂停'", "隐藏后机器人状态未更新");
+    assert.equal(conversationReads.length, readsBefore, "真实隐藏窗口不能读取新 Revision 正文");
+    assert.equal(await run(host.panel, "window.resultMutations"), 0, "隐藏后结果 DOM 不能更新");
+    await host.openPanel();
+    await waitFor(host.panel, "document.querySelector('#answers').textContent.includes('revision-answer-2')", "恢复时未读取最新版本");
+    assert.equal(conversationReads.length, readsBefore + 1);
+    host.panel.hide(); await host.openPanel();
+    await run(host.panel, "new Promise(resolve=>setTimeout(resolve,80))");
+    assert.equal(conversationReads.length, readsBefore + 1, "再次展开应复用 Revision 缓存");
+    await run(host.panel, "window.resultObserver.disconnect()");
     await run(host.panel, "document.querySelector('#results [data-context-id]').click()");
     for (let i = 0; i < 120 && (!workbench || !workbench.webContents.getURL().endsWith("/desktop/")); i++) await delay(40);
     assert.ok(workbench);
     await run(workbench, "window.target=null; window.focusDesktop.patrol.onWorkbench(value=>window.target=value); window.focusDesktop.patrol.ready()");
     await waitFor(workbench, "Boolean(window.target)", "工作台未收到来源定位");
-    assert.deepEqual(await run(workbench, "window.target"), { workspaceId: "workspace-a", taskId: "context-answer", revisionId: "revision-answer" });
+    assert.deepEqual(await run(workbench, "window.target"), { workspaceId: "workspace-a", taskId: "context-answer", revisionId: answerRevision });
     assert.deepEqual(errors, []);
-    console.log("PATROL_UI_PASS preview-before-binding, pathless-image, screenshot-paste, remove, explicit-send, IME guard, CtrlEnter, workspace isolation, hide/restore, accepted-is-not-complete, committed-answer-source");
+    console.log("PATROL_UI_PASS preview-before-binding, pathless-image, screenshot-paste, remove, explicit-send, IME guard, CtrlEnter, workspace isolation, hide/restore, accepted-is-not-complete, committed-answer-source, independent-progress, hidden-refresh-budget, revision-cache");
   }
   app.whenReady().then(execute).then(() => cleanup(0)).catch(error => { console.error(error.stack || error); console.error(errors.join("\n")); cleanup(1); });
   function cleanup(code) {
