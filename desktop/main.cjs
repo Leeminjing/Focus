@@ -403,7 +403,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on("window-all-closed", () => { if (!patrolHost || fatalErrorShown) app.quit(); });
 }
 app.on("before-quit", event => {
-  if (!fatalErrorShown && patrolHost?.hasUnconfirmedInput()) {
+  if (!fatalErrorShown && patrolHost && !patrolHost.canQuit()) {
     event.preventDefault();
     patrolHost.requestQuit().catch(error => console.error("退出 Focus 失败:", error));
     return;
