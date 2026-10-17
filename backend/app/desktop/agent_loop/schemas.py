@@ -299,12 +299,18 @@ class AdjustLoopBudgetsRequest(StrictModel):
     budgets: LoopBudgetContract
 
 
+class IncreaseLoopBudgetRequest(StrictModel):
+    command: Literal["increase_budget"]
+    preset: Literal["normal", "long"]
+    expected_authority_revision: int = Field(ge=1)
+
+
 class RevokeLoopGrantRequest(StrictModel):
     command: Literal["revoke"]
 
 
 LoopGrantMutationRequest = Annotated[
-    NarrowLoopGrantRequest | AdjustLoopBudgetsRequest | RevokeLoopGrantRequest,
+    NarrowLoopGrantRequest | AdjustLoopBudgetsRequest | IncreaseLoopBudgetRequest | RevokeLoopGrantRequest,
     Field(discriminator="command"),
 ]
 

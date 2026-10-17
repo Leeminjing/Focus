@@ -1,0 +1,9 @@
+/* 桌面面板与工作台共用预算读面，数值可换行，详情保留原生键盘交互。 */
+.patrol-budget { margin:12px 0; padding:10px 12px; border:1px solid var(--line, #b7c8db70); border-radius:12px; font-size:12px; line-height:1.65; overflow-wrap:anywhere; }
+.patrol-budget label { display:flex; align-items:center; gap:8px; }
+.patrol-budget select { font:inherit; color:inherit; background:transparent; border:1px solid var(--line, #b7c8db70); border-radius:6px; padding:3px 6px; max-width:100%; }
+.patrol-budget [data-budget-summary] { margin:6px 0; font-variant-numeric:tabular-nums; }
+.patrol-budget summary { cursor:pointer; }
+.patrol-budget ul { padding-left:20px; }
+.patrol-budget p { margin:8px 0; opacity:.8; }
+.patrol-budget button { font:inherit; padding:5px 8px; border:1px solid var(--line, #b7c8db70); border-radius:6px; }

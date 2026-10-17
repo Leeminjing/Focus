@@ -30,7 +30,7 @@ from backend.app.desktop.agent_loop.models import (
 )
 from backend.app.desktop.agent_loop.mission_contract import LoopMissionContract
 from backend.app.desktop.agent_loop.patrol_inputs import PatrolInputRepository, input_identity
-from backend.app.desktop.agent_loop.schemas import LoopBudgetContract
+from backend.app.desktop.agent_loop.budget_presets import initial_budgets
 from backend.app.desktop.agent_loop.rounds import create_observation_round
 from backend.app.desktop.agent_loop.curation_ownership import CurationOwnershipRepository
 from backend.app.desktop.agent_loop.lifecycle_events import LoopLifecycleEventRecorder
@@ -296,7 +296,7 @@ class WorkspacePatrolService:
                     capabilities=capabilities,
                     context_scope=[context.task_id],
                     permission_scope=equipment["permissions"],
-                    budgets=LoopBudgetContract().as_grant_budgets(),
+                    budgets=initial_budgets(request.budget_preset),
                     delegable_gates=[],
                 ),
                 LoopContextMembership(
