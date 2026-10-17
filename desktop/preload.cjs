@@ -18,6 +18,12 @@ function recoveryCall(operation, value) {
   if (result?.error) throw new Error(result.error);
   return result.value;
 }
+function mainRequestCall(operation, key, value) {
+  const result = ipcRenderer.sendSync(`focus:main-request-${operation}`, key, value);
+  if (result?.error) throw new Error(result.error);
+  if (!result || !("value" in result)) throw new Error("普通任务恢复仓库不可用");
+  return result.value;
+}
 async function recoveryWrite(operation, value) {
   const result = await ipcRenderer.invoke(`focus:patrol-recovery-${operation}`, value);
   if (result?.error) throw new Error(result.error);
@@ -28,6 +34,11 @@ window.addEventListener("DOMContentLoaded", () => {
 }, { once: true });
 
 contextBridge.exposeInMainWorld("focusDesktop", {
+  mainRequestStorage: {
+    getItem: key => mainRequestCall("getItem", key),
+    setItem: (key, value) => mainRequestCall("setItem", key, value),
+    removeItem: key => mainRequestCall("removeItem", key),
+  },
   runtime: () => ({
     apiBase: process.env.FOCUS_DESKTOP_API,
     session: process.env.FOCUS_DESKTOP_SESSION,

@@ -2,6 +2,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
+const os = require("node:os");
+const path = require("node:path");
 const { createFileActions } = require("./file-actions.cjs");
 
 test("system open and reveal use the backend-resolved path, never renderer names", async () => {
@@ -15,6 +17,32 @@ test("system open and reveal use the backend-resolved path, never renderer names
   assert.deepEqual(opened, ["C:/workspace/report.xlsx"]);
   assert.deepEqual(revealed, opened);
   assert.equal(requests[0][1].current, true);
+});
+
+test("opening the current file from history edits the workspace original and survives cleanup", async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "focus-workspace-test-"));
+  const original = path.join(workspace, "report.md");
+  const requests = [];
+  let opened;
+  const target = { loop_id: "loop", fact_id: "fact", revision: 2, current: true };
+  const actions = createFileActions({ shell: { openPath: async p => { opened = p; return ""; } }, dialog: {},
+    BrowserWindow: { fromWebContents: () => ({}) }, apiBase: () => "http://local", session: () => "s",
+    fetch: async (url, options) => {
+      requests.push([url, JSON.parse(options.body)]);
+      return url.endsWith("/location") ? Response.json({ path: original }) : new Response("current bytes");
+    } });
+  try {
+    await fs.writeFile(original, "current bytes");
+    await actions.run({}, { operation: "open", target, name: "report.md" });
+    assert.equal(opened, original);
+    assert.deepEqual(requests, [["http://local/desktop/api/files/location", target]]);
+    await fs.writeFile(opened, "edited and saved");
+    await actions.cleanup();
+    assert.equal(await fs.readFile(original, "utf8"), "edited and saved");
+  } finally {
+    await actions.cleanup();
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
 });
 
 test("opening a historical version materializes the exact response with a safe basename", async () => {

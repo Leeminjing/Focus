@@ -256,7 +256,7 @@ async function createWorkspacePatrolIntake() {
   const recovery = window.focusDesktop?.workspacePatrolRecovery || await window.FocusPatrolBrowserRecovery.open("workbench");
   return window.FocusWorkspacePatrolIntake.create({ runtime, api: loopApi, recovery,
     onSaveError: error => setStatus(`Patrol 草稿保存失败：${error.message}`, true),
-    selectWorkspace: window.focusDesktop?.selectWorkspace, accessMode: accessMode.readNewSessionDefault(window.localStorage) });
+    selectWorkspace: window.focusDesktop?.selectWorkspace, accessMode: () => accessMode.readNewSessionDefault(window.localStorage) });
 }
 let workspacePatrolController = null;
 let workspacePatrolMount = Promise.resolve();
@@ -4095,12 +4095,12 @@ function contextMessageElement(message, index, uiKey, expanded = false) {
 }
 
 function contextListPositions() {
-  return new Map([...document.querySelectorAll(".context-message-editor")].map(row => [row.dataset.contextUiKey, row.getBoundingClientRect().top]));
+  return new Map([...document.querySelectorAll(".context-message-editor[data-context-ui-key]")].map(row => [row.dataset.contextUiKey, row.getBoundingClientRect().top]));
 }
 
 function animateContextReflow(previous) {
   if (!previous || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-  document.querySelectorAll(".context-message-editor").forEach(row => {
+  document.querySelectorAll(".context-message-editor[data-context-ui-key]").forEach(row => {
     const before = previous.get(row.dataset.contextUiKey);
     if (before == null) return;
     const delta = before - row.getBoundingClientRect().top;
@@ -4112,7 +4112,7 @@ function updateContextMessageIndices() {
   const draft = state.contextDraft;
   const list = document.querySelector(".context-message-list");
   if (!draft || !list) return;
-  const rows = [...list.querySelectorAll(".context-message-editor")];
+  const rows = [...list.querySelectorAll(".context-message-editor[data-context-ui-key]")];
   rows.forEach((row, index) => {
     row.dataset.contextMessageIndex = String(index);
     const role = draft.messages[index]?.role || "未指定角色";
@@ -4125,7 +4125,7 @@ function updateContextMessageIndices() {
   });
   const count = document.querySelector(".context-compose-heading > div > span");
   if (count) count.textContent = `${draft.messages.length} 条消息`;
-  if (!rows.length && !list.querySelector(".context-empty-drop")) list.innerHTML = contextEditor.renderMessages([], []);
+  if (!rows.length && !list.querySelector(".context-empty-drop")) list.insertAdjacentHTML("beforeend", contextEditor.renderMessages([], []));
 }
 
 function renderContextEditor(scrollTop = null) {
@@ -4160,7 +4160,7 @@ function insertContextMessage(message, index, options = {}) {
   draft.uiKeys.splice(safeIndex, 0, key);
   if (options.expand) draft.expandedKey = key;
   list.querySelector(".context-empty-drop")?.remove();
-  const rows = [...list.querySelectorAll(".context-message-editor")];
+  const rows = [...list.querySelectorAll(".context-message-editor[data-context-ui-key]")];
   list.insertBefore(contextMessageElement(draft.messages[safeIndex], safeIndex, key, Boolean(options.expand)), rows[safeIndex] || null);
   updateContextMessageIndices();
   animateContextReflow(previous);
@@ -4175,7 +4175,7 @@ function moveContextMessage(from, to, focus = false) {
   const key = draft.uiKeys[from];
   contextEditor.move(draft.messages, from, to);
   contextEditor.move(draft.uiKeys, from, to);
-  const rows = new Map([...document.querySelectorAll(".context-message-editor")].map(row => [row.dataset.contextUiKey, row]));
+  const rows = new Map([...document.querySelectorAll(".context-message-editor[data-context-ui-key]")].map(row => [row.dataset.contextUiKey, row]));
   const list = document.querySelector(".context-message-list");
   draft.uiKeys.forEach(uiKey => list.append(rows.get(uiKey)));
   updateContextMessageIndices();
@@ -4209,26 +4209,40 @@ function showContextUndo() {
   }, 4500);
 }
 
-async function deleteContextMessage(index) {
-  const draft = syncContextDraft();
-  const row = document.querySelector(`.context-message-editor[data-context-message-index="${index}"]`);
+async function deleteContextMessage(uiKey) {
+  const index = state.contextDraft?.uiKeys.indexOf(uiKey) ?? -1;
+  if (index < 0) return;
+  const row = document.querySelector(`.context-message-editor[data-context-ui-key="${uiKey}"]`);
   if (!row) return;
+  const draft = syncContextDraft();
   const panel = document.querySelector(".context-definition-panel");
   const scrollTop = panel?.scrollTop || 0;
-  const previous = contextListPositions();
   const [message] = draft.messages.splice(index, 1);
   const [key] = draft.uiKeys.splice(index, 1);
   if (draft.expandedKey === key) draft.expandedKey = null;
   draft.undo = { message, key, index };
-  if (!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
-    const animation = row.animate([{ opacity: 1, transform: "scale(1)", maxHeight: `${row.offsetHeight}px` }, { opacity: 0, transform: "scale(.98)", maxHeight: "0px" }], { duration: 150, easing: "ease-in", fill: "forwards" });
-    await Promise.race([animation.finished.catch(() => {}), new Promise(resolve => setTimeout(resolve, 180))]);
-  }
-  row.remove();
+  // Retire the row synchronously; only its visual shell survives the exit animation.
+  row.setAttribute("inert", "");
+  row.setAttribute("aria-hidden", "true");
+  row.removeAttribute("data-context-ui-key");
+  row.removeAttribute("data-context-message-index");
+  row.querySelectorAll("button, textarea").forEach(input => { input.disabled = true; });
+  row.querySelector("[data-context-message-json]")?.removeAttribute("data-context-message-json");
   updateContextMessageIndices();
-  if (panel) panel.scrollTop = Math.min(scrollTop, Math.max(0, panel.scrollHeight - panel.clientHeight));
-  animateContextReflow(previous);
   showContextUndo();
+  try {
+    if (!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      const animation = row.animate([{ opacity: 1, transform: "scale(1)", maxHeight: `${row.offsetHeight}px` }, { opacity: 0, transform: "scale(.98)", maxHeight: "0px" }], { duration: 150, easing: "ease-in", fill: "forwards" });
+      await Promise.race([animation.finished.catch(() => {}), new Promise(resolve => setTimeout(resolve, 180))]);
+    }
+  } finally {
+    const previous = contextListPositions();
+    row.remove();
+    if (state.contextDraft === draft && panel?.isConnected) {
+      panel.scrollTop = Math.min(scrollTop, Math.max(0, panel.scrollHeight - panel.clientHeight));
+      animateContextReflow(previous);
+    }
+  }
 }
 
 function undoContextMessageDelete() {
@@ -4636,19 +4650,20 @@ function toggleRunMaterial(materialId) {
 }
 
 async function toggleImageRequired(materialId) {
-  const selection = materialSelection();
+  const taskId = state.activeTaskId;
+  const selection = materialSelection(taskId);
   if (!selection.bindings.some(item => item.materialId === materialId)) {
     return setStatus("请先把图片选为本轮材料", true);
   }
   if (!selection.requiredImageIds.includes(materialId)) {
-    await api(`/desktop/api/tasks/${state.activeTaskId}/materials/${materialId}/image-validity`);
+    await api(`/desktop/api/tasks/${taskId}/materials/${materialId}/image-validity`);
   }
   state.materialSelections.set(
-    state.activeTaskId,
+    taskId,
     runMaterialPicker.toggleRequired(
-      selection,
+      materialSelection(taskId),
       materialId,
-      state.materials.get(state.activeTaskId) || []
+      state.materials.get(taskId) || []
     )
   );
 }
@@ -7526,13 +7541,19 @@ async function handleDocumentClick(event) {
     try { return clearContextMessages(); }
     catch (error) { return setStatus(error.message, true); }
   }
-  if (action === "context-message-toggle") return toggleContextMessage(button.closest("[data-context-ui-key]").dataset.contextUiKey);
+  if (action === "context-message-toggle") {
+    const row = button.closest("[data-context-ui-key]");
+    if (row) return toggleContextMessage(row.dataset.contextUiKey);
+    return;
+  }
   if (action === "context-message-undo") return undoContextMessageDelete();
   if (["context-message-copy", "context-message-delete"].includes(action)) {
     try {
-      const index = Number(button.closest("[data-context-message-index]").dataset.contextMessageIndex);
+      const uiKey = button.closest("[data-context-ui-key]")?.dataset.contextUiKey;
+      const index = state.contextDraft?.uiKeys.indexOf(uiKey) ?? -1;
+      if (index < 0) return;
       if (action === "context-message-copy") return insertContextMessage(state.contextDraft.messages[index], index + 1);
-      return deleteContextMessage(index);
+      return deleteContextMessage(uiKey);
     } catch (error) { return setStatus(error.message, true); }
   }
   if (action === "submit-context") return submitContext();
@@ -7913,7 +7934,7 @@ function updateContextDropTarget(clientX, clientY) {
     drag.placeholder?.remove();
     return;
   }
-  const rows = [...list.querySelectorAll(".context-message-editor")].filter(row => row !== drag.card);
+  const rows = [...list.querySelectorAll(".context-message-editor[data-context-ui-key]")].filter(row => row !== drag.card);
   let index = rows.findIndex(row => clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2);
   if (index < 0) index = rows.length;
   if (drag.dropIndex === index && drag.placeholder?.isConnected) return;
@@ -8184,6 +8205,15 @@ document.addEventListener("input", event => {
   if (requestId) loopWaitDrafts?.set(requestId, serializeWaitDraft(form));
 });
 document.addEventListener("change", event => {
+  if (event.target.id === "newSessionAccessMode") {
+    const select = event.target;
+    try { select.value = accessMode.saveNewSessionDefault(window.localStorage, select.value); }
+    catch (error) {
+      select.value = accessMode.readNewSessionDefault(window.localStorage);
+      setStatus(error.message, true);
+    }
+    return;
+  }
   if (event.target.id === "taskNotificationsEnabled") {
     const input = event.target;
     const enabled = input.checked;
