@@ -4,6 +4,7 @@
  * 具体工作流为只呈现领域 revision 并排除历史 tool 条目；未变行不移出 tbody、不改写签名，按实际顺序原位更新状态；稳定 fact_id 来源按钮进入真实证据检查。
  * 示例：`FocusLoopFactsView.reconcileRows(tbody, facts)`。
  * 文件事件使用紧凑条目和显式来源高亮；renderFile 按执行位置与不可变快照展示预览和可靠 Diff，所有正文转义后输出。
+ * buildLineDiff 生成有计算上限的最短逐行编辑路径、双侧行号及多变更块；详情折叠未改内容并限制渲染量。
  */
 (function (root, factory) {
   const api = factory();
@@ -127,20 +128,146 @@
     const selected = new Set(references.map(item => JSON.stringify([item.slot_id, item.path])));
     return items.map(item => { const file = fileReference(item); return file && selected.has(JSON.stringify([file.slot_id, file.path])) ? { ...item, file_importance: "user_reference" } : item; });
   }
+
+  // Myers shortest edit path. Bound both search work and retained backtracking
+  // state; exceeding either budget must never turn unchanged lines into edits.
+  function lineEdits(left, right) {
+    if (!left.length) return right.map(text => ({ kind: "added", text }));
+    if (!right.length) return left.map(text => ({ kind: "removed", text }));
+    const leftLines = new Set(left);
+    if (!right.some(line => leftLines.has(line))) return [
+      ...left.map(text => ({ kind: "removed", text })),
+      ...right.map(text => ({ kind: "added", text })),
+    ];
+    let frontier = new Map([[1, 0]]), work = 0, entries = 0;
+    const trace = [];
+    for (let distance = 0; distance <= left.length + right.length; distance++) {
+      const next = new Map();
+      for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
+        if (++work > 2000000 || ++entries > 250000) return null;
+        const down = diagonal === -distance || (diagonal !== distance && frontier.get(diagonal - 1) < frontier.get(diagonal + 1));
+        let x = down ? frontier.get(diagonal + 1) : frontier.get(diagonal - 1) + 1;
+        let y = x - diagonal;
+        while (x < left.length && y < right.length && left[x] === right[y]) {
+          x++; y++;
+          if (++work > 2000000) return null;
+        }
+        next.set(diagonal, x);
+        if (x >= left.length && y >= right.length) {
+          const edits = [];
+          for (let depth = distance; depth > 0; depth--) {
+            const previous = trace[depth - 1], k = x - y;
+            const fromDown = k === -depth || (k !== depth && previous.get(k - 1) < previous.get(k + 1));
+            const previousK = fromDown ? k + 1 : k - 1;
+            const previousX = previous.get(previousK), previousY = previousX - previousK;
+            while (x > previousX && y > previousY) {
+              edits.push({ kind: "equal", text: left[--x] }); y--;
+            }
+            if (fromDown) edits.push({ kind: "added", text: right[--y] });
+            else edits.push({ kind: "removed", text: left[--x] });
+          }
+          while (x > 0 && y > 0) { edits.push({ kind: "equal", text: left[--x] }); y--; }
+          return edits.reverse();
+        }
+      }
+      trace.push(next);
+      frontier = next;
+    }
+    return null;
+  }
+
+  function buildLineDiff(before, after) {
+    // Keep line terminators in comparisons, including a missing final newline.
+    // An empty file has zero lines; a trailing newline is not an extra blank line.
+    if (before.length + after.length > 2 * 1024 * 1024) return { limited: true };
+    const left = before.match(/[^\n]*\n|[^\n]+$/g) || [];
+    const right = after.match(/[^\n]*\n|[^\n]+$/g) || [];
+    if (left.length + right.length > 100000) return { limited: true };
+    let prefix = 0, suffix = 0;
+    while (prefix < Math.min(left.length, right.length) && left[prefix] === right[prefix]) prefix++;
+    while (suffix < Math.min(left.length, right.length) - prefix && left[left.length - suffix - 1] === right[right.length - suffix - 1]) suffix++;
+    const edits = lineEdits(left.slice(prefix, left.length - suffix), right.slice(prefix, right.length - suffix));
+    if (!edits) return { limited: true };
+    const rows = [
+      ...left.slice(0, prefix).map(text => ({ kind: "equal", text })),
+      ...edits,
+      ...(suffix ? left.slice(-suffix).map(text => ({ kind: "equal", text })) : []),
+    ];
+    let oldLine = 1, newLine = 1, added = 0, removed = 0;
+    for (const row of rows) {
+      row.oldBefore = oldLine - 1; row.newBefore = newLine - 1;
+      row.oldLine = row.kind === "added" ? null : oldLine++;
+      row.newLine = row.kind === "removed" ? null : newLine++;
+      if (row.kind === "added") added++;
+      if (row.kind === "removed") removed++;
+    }
+    const hunks = [];
+    rows.forEach((row, index) => {
+      if (row.kind === "equal") return;
+      const start = Math.max(0, index - 3), end = Math.min(rows.length, index + 4);
+      const previous = hunks.at(-1);
+      if (previous && start <= previous.end) previous.end = end;
+      else hunks.push({ start, end });
+    });
+    for (const hunk of hunks) {
+      const lines = rows.slice(hunk.start, hunk.end);
+      hunk.oldCount = lines.filter(row => row.oldLine !== null).length;
+      hunk.newCount = lines.filter(row => row.newLine !== null).length;
+      hunk.oldStart = rows[hunk.start].oldBefore + (hunk.oldCount ? 1 : 0);
+      hunk.newStart = rows[hunk.start].newBefore + (hunk.newCount ? 1 : 0);
+    }
+    return { limited: false, rows, hunks, added, removed };
+  }
+
+  function renderLineDiff(comparison) {
+    if (comparison.limited) return '<p class="file-diff-notice">文件差异过大，已停止逐行比较；请查看前后完整版本。</p>';
+    const { rows, hunks, added, removed } = comparison;
+    if (!hunks.length) return '<p class="file-diff-summary">无逐行变更 · +0 / −0</p>';
+    // Separate budgets keep collapsed context from crowding out actual edits.
+    const budgets = { visible: { rows: 1000, characters: 120000 }, folded: { rows: 1000, characters: 60000 } };
+    function renderRows(start, end, folded = false) {
+      const html = [];
+      const budget = folded ? budgets.folded : budgets.visible;
+      let index = start;
+      for (; index < end && budget.characters > 0 && budget.rows > 0; index++) {
+        const row = rows[index];
+        budget.rows--;
+        const text = row.text.replace(/\n$/, "").replace(/\r/g, "␍");
+        const shown = text.slice(0, Math.min(2000, budget.characters));
+        budget.characters -= shown.length + 1;
+        const marker = row.kind === "added" ? "+" : row.kind === "removed" ? "−" : " ";
+        html.push(`<div class="file-diff-row is-${row.kind}" data-old-line="${row.oldLine ?? ""}" data-new-line="${row.newLine ?? ""}"><code class="file-diff-number" aria-label="旧行 ${row.oldLine ?? "无"}">${row.oldLine ?? ""}</code><code class="file-diff-number" aria-label="新行 ${row.newLine ?? "无"}">${row.newLine ?? ""}</code><span class="${row.kind}">${marker}${escape(shown)}${shown.length < text.length ? '<small class="file-diff-notice"> … 此行显示已截断</small>' : ""}</span></div>${row.text.endsWith("\n") ? "" : '<div class="file-diff-note">\\ 文件末尾无换行</div>'}`);
+      }
+      if (index < end) html.push(`<p class="file-diff-notice">其余 ${end - index} 行未渲染，请查看前后完整版本。</p>`);
+      return html.join("");
+    }
+    function foldedRows(start, end) {
+      return end > start ? `<details class="file-diff-fold"><summary>展开 ${end - start} 行未修改内容</summary><div class="file-diff-lines">${renderRows(start, end, true)}</div></details>` : "";
+    }
+    let cursor = 0;
+    const blocks = [];
+    for (const [index, hunk] of hunks.entries()) {
+      if (budgets.visible.rows <= 0 || budgets.visible.characters <= 0) {
+        blocks.push(`<p class="file-diff-notice">其余 ${hunks.length - index} 个变更块未渲染，请查看前后完整版本。统计包含全部变更。</p>`);
+        cursor = rows.length;
+        break;
+      }
+      const content = renderRows(hunk.start, hunk.end);
+      blocks.push(`${foldedRows(cursor, hunk.start)}<section class="file-diff-hunk" aria-label="变更块 ${index + 1}"><header>@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@</header><div class="file-diff-lines">${content}</div></section>`);
+      cursor = hunk.end;
+    }
+    blocks.push(foldedRows(cursor, rows.length));
+    return `<p class="file-diff-summary">${hunks.length} 个变更块 · 新增 ${added} 行 · 删除 ${removed} 行（+${added} / −${removed}）</p><div class="file-diff" aria-label="逐行差异"><div class="file-diff-columns">旧行　 新行　 内容</div>${blocks.join("")}</div>`;
+  }
+
   function renderFile(file) {
     const reasons = { before_unobserved: "写入前版本未被观察，无法生成可靠 Diff", unreadable: "无法读取", outside_slot: "超出工作区", over_1_mib: "超过 1 MiB，未保存正文", binary: "二进制文件", non_utf8: "非 UTF-8 文本" };
     const snapshot = side => side?.available ? `<pre>${escape(side.text)}</pre>` : `<p>${escape(reasons[side?.reason] || "历史快照不可用")}</p>`;
     const before = file.before, after = file.after;
     const reliable = before?.available && after?.available;
-    let diff = "";
-    if (reliable) {
-      const left = before.text.split("\n"), right = after.text.split("\n");
-      let prefix = 0, suffix = 0;
-      while (prefix < Math.min(left.length, right.length) && left[prefix] === right[prefix]) prefix++;
-      while (suffix < Math.min(left.length, right.length) - prefix && left[left.length - 1 - suffix] === right[right.length - 1 - suffix]) suffix++;
-      diff = `<pre class="file-diff">${left.slice(0, prefix).map(line => ` ${escape(line)}`).join("\n")}\n${left.slice(prefix, left.length - suffix).map(line => `<span class="removed">−${escape(line)}</span>`).join("\n")}\n${right.slice(prefix, right.length - suffix).map(line => `<span class="added">+${escape(line)}</span>`).join("\n")}\n${suffix ? right.slice(-suffix).map(line => ` ${escape(line)}`).join("\n") : ""}</pre>`;
-    }
-    return `<section class="file-version"><h3>${escape(file.path)}</h3><p>版本 ${(file.sha256 || file.result_key).slice(0, 12)}${before?.redacted || after?.redacted ? " · 已脱敏" : ""}</p><p>执行位置 ${escape(file.slot_id)}${file.context_id ? ` · 工作线 ${escape(file.context_id)}` : ""}</p><button type="button" data-patrol-file-add="${escape(JSON.stringify(inputFileReference(file)))}">＠ 引用此版本</button><details open><summary>此版本内容</summary><div data-version-preview>${snapshot(after)}</div></details><details><summary>Diff${reliable ? "" : " · 不可用"}</summary>${reliable ? diff : snapshot(before?.available ? after : before)}</details><details><summary>写入前内容</summary>${snapshot(before)}</details></section>`;
+    const comparison = reliable ? buildLineDiff(before.text, after.text) : null;
+    const summary = comparison && !comparison.limited ? ` · +${comparison.added} / −${comparison.removed}` : "";
+    return `<section class="file-version"><h3>${escape(file.path)}</h3><p>版本 ${(file.sha256 || file.result_key).slice(0, 12)}${before?.redacted || after?.redacted ? " · 已脱敏" : ""}</p><p>执行位置 ${escape(file.slot_id)}${file.context_id ? ` · 工作线 ${escape(file.context_id)}` : ""}</p><button type="button" data-patrol-file-add="${escape(JSON.stringify(inputFileReference(file)))}">＠ 引用此版本</button><details open><summary>此版本内容</summary><div data-version-preview>${snapshot(after)}</div></details><details><summary>Diff${reliable ? summary : " · 不可用"}</summary>${reliable ? renderLineDiff(comparison) : snapshot(before?.available ? after : before)}</details><details><summary>写入前内容</summary>${snapshot(before)}</details></section>`;
   }
-  return Object.freeze({ render, renderRows, reconcileRows, renderTimeline, reconcileTimeline, renderDetail, renderFile, fileReference, inputFileReference, markFileReferences, statusOptions, outcomeOptions });
+  return Object.freeze({ render, renderRows, reconcileRows, renderTimeline, reconcileTimeline, renderDetail, renderFile, buildLineDiff, fileReference, inputFileReference, markFileReferences, statusOptions, outcomeOptions });
 });

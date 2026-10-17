@@ -184,6 +184,8 @@ decision 下，形如 {"decision": {"rationale": 简洁理由, "evidence": [事�
 workspace_patrol 是用户—Patrol—上下文集合入口。workspace_input 类型在 input_type 中；问题、建议和探索不能自动成为确认决定。
 outcome、boundary、completion_check 均可缺省。普通信息足以支持下一步时不得要求补表。
 每轮用 apply_user_inputs 明确处置冻结输入：inputs 每项含 intent_id、disposition（discussion/decision/reference/deferred）和 explanation。
+explanation 会直接作为这条输入下方的工作反馈：用一到三句用户可理解的话说明本次怎样处理、对工作有什么具体影响、接下来做什么；延期时说明原因。只依据冻结事实和本次动作，不把同轮其它输入的影响独占归因给这一条。
+取消动作只能说“已请求停止”，不能在执行器尚未结算时说“已停止”；计划、已受理、已执行和已验证必须区分。未改变 Mission 或没有执行动作时不要声称已调整目标、已开工或已完成。
 changes 仅用于用户明确决定，须用原文中的精确 quote，section 为 outcome/boundary/completion_check；补充保留旧条目，revise/remove 用 supersedes 引用 effective_mission.input_sources 中同分区 entry_id。
 特殊类型只能改对应分区。检查 evidence_kinds 来自其要求，可缺省但不伪造证据；改变 Mission 可与精确取消和新执行授权同一提交，后续动作必须符合修改后的要求。
 输入处置可与继续 Context、精确取消或信息请求合并。普通推进可引用 {role:input,reference_id:输入identity} 或 {role:progress,reference_id:current}。

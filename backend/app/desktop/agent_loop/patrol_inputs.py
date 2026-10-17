@@ -6,6 +6,7 @@
 同时提供 UserInputUse、MissionInputChange、ApplyUserInputsAction 和 workspace_input_scope；已保存文件模式仅用于首次授权，后续信息不扩大权限。
 file_refs 可选绑定 Fact revision、Artifact result_key、slot/path 和内容 hash；接受时校验同工作区及证据权限，空引用保持旧请求 hash。
 attachments 保存用户选择的材料身份和来源；服务端另外冻结精确内容 manifest，空附件不改变旧请求 hash，纯附件保留空正文。
+history 追加已应用的逐输入 processing_result；intent_ids 仅在原工作区范围内刷新已加载旧记录，不改变受理语义。
 """
 
 import uuid
@@ -207,7 +208,7 @@ class PatrolInputRepository:
         await self._lifecycle.transition(session, row.intent_id, "accepted")
         return self.view(row)
 
-    async def history(self, session, workspace_id, *, before=None, limit=50):
+    async def history(self, session, workspace_id, *, before=None, limit=50, intent_ids=None):
         query = (
             select(LoopUserIntent)
             .join(AgentLoop, AgentLoop.loop_id == LoopUserIntent.loop_id)
@@ -216,6 +217,8 @@ class PatrolInputRepository:
                 LoopUserIntent.intent_kind == "workspace_input",
             )
         )
+        if intent_ids is not None:
+            query = query.where(LoopUserIntent.intent_id.in_(intent_ids))
         if before:
             cursor = await session.scalar(query.where(LoopUserIntent.intent_id == before))
             if cursor is None:
@@ -234,8 +237,12 @@ class PatrolInputRepository:
             )
         )
         page = rows[:limit]
+        from backend.app.desktop.agent_loop.input_feedback import PatrolInputFeedbackReader
+
+        feedback = await PatrolInputFeedbackReader().read(session, workspace_id, page)
         return {
-            "items": [self.view(row) for row in page],
+            "items": [{**self.view(row), "processing_result": feedback.get(row.intent_id)}
+                      for row in page],
             "has_more": len(rows) > limit,
             "next_before": page[-1].intent_id if len(rows) > limit and page else None,
         }

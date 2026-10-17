@@ -18,3 +18,5 @@ def test_guidance_includes_current_mode_workspace_and_single_call_rules(tmp_path
     assert "最小放宽" in text
     assert "重复" in text
     assert "部分约束" in text
+    assert "macOS" in text and "SANDBOX_UNAVAILABLE" in text
+    assert "禁止自动放宽" in text

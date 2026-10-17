@@ -20,15 +20,16 @@ const projection = (revision = "r1", patch = {}) => ({ loop_id: "loop-a", loop: 
   contexts: { c: { entity_id: "c", updated_sequence: 1, state: { title: "回答", current_revision_id: revision } } },
   task_progress: { revision: 1, state: { document: { items: [] } } }, interventions: {}, ...patch });
 
-async function panel({ visible = true, read = async (_loop, _context, options) => conversation(options.revisionId) } = {}) {
+async function panel({ visible = true, read = async (_loop, _context, options) => conversation(options.revisionId), history = async () => ({ items: [] }), waitForActivation = true } = {}) {
   const body = createElement("body");
   body.innerHTML = fs.readFileSync(path.join(__dirname, "desktop-patrol.html"), "utf8");
   const document = { ...createDocument(), body, querySelector: selector => body.querySelector(selector), hidden: false,
     addEventListener: (...args) => body.addEventListener(...args) };
+  body.querySelector("#history-items").ownerDocument = document;
   let state = { projection: null, connection: { status: "live" } }, listener;
-  const events = {}, calls = [], states = [], stores = new Map(), copied = [];
+  const events = {}, calls = [], states = [], stores = new Map(), copied = [], starts = [], loopReads = [];
   const store = id => { if (!stores.has(id)) stores.set(id, Inputs.create()); return stores.get(id); };
-  const api = { workspacePatrol: async id => ({ loop_id: `loop-${id}` }), workspaceInputs: async () => ({ items: [] }),
+  const api = { workspacePatrol: async id => { loopReads.push(id); return { loop_id: `loop-${id}` }; }, workspaceInputs: history,
     conversation: (...args) => { calls.push(args); return read(...args); } };
   const bridge = { enabled: true, onVisibility: callback => { events.visibility = callback; },
     onOpen: callback => { events.open = callback; }, onContent() {},
@@ -40,23 +41,75 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
     workspace: async id => ({ workspace_id: id, display_name: id }), resourceLimits: async () => ({}),
     history: (id, page) => store(id).history(page) };
   const window = { markdownit, focusDesktop: { runtime: () => ({}), patrol: bridge }, addEventListener() {} };
-  const context = vm.createContext({ window, document, location: { search: "?surface=panel" }, URLSearchParams,
+  const context = vm.createContext({ window, document, markdownit, setTimeout, location: { search: "?surface=panel" }, URLSearchParams,
     AbortController, navigator: { clipboard: { writeText: async text => copied.push(text) } }, requestAnimationFrame: callback => setImmediate(callback), localStorage: {}, ResizeObserver: class { observe() {} disconnect() {} },
     FocusLoopApi: { create: () => api }, FocusLoopLiveStore: { create: () => ({ get: () => state, subscribe: callback => { listener = callback; callback(state); } }) },
-    FocusLoopLiveConnection: { create: () => ({ start: async () => {}, stop() {} }) },
+    FocusLoopLiveConnection: { create: () => ({ start: async id => { starts.push(id); }, stop() {} }) },
     FocusWorkspacePatrolIntake: { create: () => intake }, FocusWorkspacePatrolMaterialPreview: { create: () => ({ render() {}, dispose() {} }) },
     FocusWorkspacePatrolBudget: { markup: () => "", create: () => ({ update() {}, syncDraft() {}, dispose() {} }) },
     FocusAccessMode: { readNewSessionDefault() {} }, FocusWorkspacePatrolFeedback: Feedback, FocusWorkspacePatrolInputs: Inputs, FocusLoopFactsView: Facts,
     FocusLoopLiveSelectors: { selectFacts: value => value.files || [] } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-references.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "file-links.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "artifact-drawer.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "patrol-input-references.js"), "utf8"), context);
-  await vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-panel.js"), "utf8"), context);
-  return { calls, states, body, events, api, copied, store,
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "message-reading.js"), "utf8"), context);
+  window.FocusMessageReading = context.FocusMessageReading;
+  const activated = vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-panel.js"), "utf8"), context);
+  if (waitForActivation) await activated;
+  else await tick();
+  return { calls, states, body, events, api, copied, store, starts, loopReads, activated, context,
     async emit(value, connection = state.connection) { state = { ...state, projection: value, connection }; listener(state); await tick(); },
     async visibility(value) { events.visibility?.(value); await tick(); },
     results: () => body.querySelector("#results") };
 }
+
+test("initial history failure leaves panel Live connected and offers a history-only retry", async () => {
+  let reads = 0;
+  const f = await panel({ history: async () => { if (++reads === 1) throw new Error("HTTP 503"); return { items: [] }; } });
+  assert.deepEqual(f.starts, ["loop-a"]);
+  assert.equal(f.body.querySelector("#error").textContent, "");
+  assert.match(f.body.querySelector("#history-status").textContent, /503/);
+  await f.emit(projection());
+  assert.equal(f.body.querySelector("#toggle-work").disabled, false);
+  assert.match(f.results().textContent, /r1/);
+  f.body.querySelector("#retry-history").dispatchEvent({ type: "click" }); await tick();
+  assert.equal(reads, 2);
+  assert.equal(f.body.querySelector("#history-status").hidden, true);
+  assert.deepEqual(f.loopReads, ["a"]);
+  assert.deepEqual(f.starts, ["loop-a"]);
+});
+
+test("pending panel history allows Live results and controls, then coalesces incoming history updates", async () => {
+  let release, reads = 0;
+  const f = await panel({ waitForActivation: false, history: () => {
+    if (++reads === 1) return new Promise(resolve => { release = resolve; });
+    return Promise.resolve({ items: [{ submission_id: "one", content: "latest input" }], next_before: null });
+  } });
+  assert.deepEqual(f.starts, ["loop-a"]);
+  await f.emit(projection());
+  await f.emit(projection("r1", { interventions: { updated: {} } }));
+  assert.equal(f.body.querySelector("#toggle-work").disabled, false);
+  assert.match(f.results().textContent, /r1/);
+  assert.equal(reads, 1);
+  release({ items: [{ submission_id: "one", content: "old input" }], next_before: null });
+  await f.activated; await tick();
+  assert.equal(reads, 2);
+  assert.match(f.body.querySelector("#history-items").textContent, /latest input/);
+});
+
+test("late panel history refresh failures cannot affect another workspace", async () => {
+  const f = await panel();
+  await f.emit(projection());
+  let rejectOld;
+  f.api.workspaceInputs = id => id === "a" ? new Promise((_resolve, reject) => { rejectOld = reject; }) : Promise.resolve({ items: [] });
+  await f.emit(projection("r1", { interventions: { updated: {} } }));
+  await f.events.open({ workspaceId: "b" });
+  rejectOld(new Error("old history 503")); await tick();
+  assert.equal(f.body.querySelector("#history-status").hidden, true);
+  assert.equal(f.body.querySelector("#error").textContent, "");
+  assert.deepEqual(f.starts, ["loop-a", "loop-b"]);
+});
 
 test("panel controls follow authoritative status and connection, including waiting for new input", async () => {
   const f = await panel(), toggle = f.body.querySelector("#toggle-work"), stop = f.body.querySelector("#stop-work");
@@ -248,11 +301,57 @@ test("answers expand as Markdown and copy the full source or an individual code 
   assert.equal(reading.querySelector("strong").textContent, "结论");
   assert.equal(reading.querySelector("script"), null);
   const buttons = reading.querySelectorAll("button");
-  buttons.find(button => button.textContent === "复制全文").dispatchEvent({ type: "click" }); await tick();
-  buttons.find(button => button.textContent === "复制代码").dispatchEvent({ type: "click" }); await tick();
+  const fullCopy = buttons.find(button => button.textContent === "复制全文");
+  // This minimal DOM retains attribute entities; real Electron checks HTML decoding.
+  fullCopy.dataset.copyText = text;
+  fullCopy.dispatchEvent({ type: "click", preventDefault() {} }); await tick();
+  buttons.find(button => button.textContent === "复制代码").dispatchEvent({ type: "click", preventDefault() {} }); await tick();
   assert.deepEqual(f.copied, [text, 'const value = 1;\n']);
   reading.open = false; reading.dispatchEvent({ type: "toggle" });
   assert.equal(f.body.querySelector("#panel").dataset.reading, "false");
+});
+
+test("answer body local links preserve the message's execution source through the shared reader", async () => {
+  const mounts = [];
+  const f = await panel({ read: async () => ({ messages: [{
+    message: { id: "answer", role: "assistant", content: "[报告](reports/report.md)\n\n[中文](<reports/中文 报告.md>)\n\n[编码](reports/%E4%B8%AD%E6%96%87%20%E6%8A%A5%E5%91%8A.md)\n\n[错误](reports/%XY.md)" },
+    file_context: { task_id: "c", workspace_id: "a", run_id: "original-run", slot_id: "original-slot" },
+  }] }) });
+  f.context.FocusFilePreview = { mount: async (_host, options) => mounts.push(JSON.parse(JSON.stringify(options))) };
+  await f.emit(projection());
+  const reading = f.body.querySelector(".answer-reading"); reading.open = true; reading.dispatchEvent({ type: "toggle" });
+  const body = reading.querySelector(".answer-markdown"), links = body.querySelectorAll("a");
+  for (const [index, expected] of [[0, "reports/report.md"], [1, "reports/中文 报告.md"], [2, "reports/中文 报告.md"]]) {
+    let prevented = false;
+    reading.querySelector(".answer-content").dispatchEvent({ type: "click", target: links[index], preventDefault() { prevented = true; }, stopPropagation() {} });
+    await tick();
+    assert.equal(prevented, true, "相对链接必须在原生导航前拦截");
+    assert.equal(mounts.at(-1)?.target.task_id, "c");
+    assert.equal(mounts.at(-1)?.target.link.path, expected);
+    assert.equal(mounts.at(-1)?.target.link.run_id, "original-run");
+    assert.equal(mounts.at(-1)?.target.link.slot_id, "original-slot");
+    assert.match(f.body.querySelector("#version-body").textContent, /当前磁盘文件/);
+  }
+  const count = mounts.length;
+  links[3].setAttribute("href", "reports/%XY.md");
+  reading.querySelector(".answer-content").dispatchEvent({ type: "click", target: links[3], preventDefault() {}, stopPropagation() {} }); await tick();
+  assert.equal(mounts.length, count);
+  assert.match(f.body.querySelector("#error").textContent, /文件链接无效/);
+});
+
+test("answer links explain missing or conflicting sources without navigating or reading another workspace", async () => {
+  for (const file_context of [undefined, { task_id: "c", workspace_id: "foreign", run_id: "r" },
+    { error: "回答缺少可验证的文件执行来源；请从文件 / 产物打开" }]) {
+    const f = await panel({ read: async () => ({ messages: [{ message: { role: "ai", content: "[报告](report.md)" }, file_context }] }) });
+    f.context.FocusFilePreview = { mount: async () => assert.fail("来源不明不得尝试读取文件") };
+    await f.emit(projection());
+    const reading = f.body.querySelector(".answer-reading"); reading.open = true; reading.dispatchEvent({ type: "toggle" });
+    const body = reading.querySelector(".answer-markdown"); let prevented = false;
+    reading.querySelector(".answer-content").dispatchEvent({ type: "click", target: body.querySelector("a"), preventDefault() { prevented = true; }, stopPropagation() {} }); await tick();
+    assert.equal(prevented, true);
+    assert.match(f.body.querySelector("#error").textContent, /文件.*来源/);
+    assert.equal(f.body.querySelector("#version-detail").hidden, true);
+  }
 });
 
 test("artifact names open fixed version details and can be referenced without leaving the panel", async () => {

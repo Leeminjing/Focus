@@ -4,30 +4,34 @@
  * 要求与参考文字分开，Enter/IME 不发送，Ctrl+Enter 显式发送；示例：拖入截图、补充“解释报错”、点击发送。
  * 回答仅取固定 Context revision 的 assistant 正文并有界缓存，进度/产物分别来自 Live；隐藏时保留 Live 状态同步，取消正文读取并暂停结果 DOM 更新。
  * 回答独立读取和重试，保留其他卡片 DOM；展开后按需渲染 Markdown 并提供全文/代码复制，文件直接打开固定版本或加入引用。
- * 原生显隐由宿主通知，浏览器回退用 visibilitychange；再次显示时读取最新投影。授权处理沿用工作台，不展示 Patrol 内部理由。
+ * 原生显隐由宿主通知，浏览器回退用 visibilitychange；再次显示时读取最新投影。授权处理沿用工作台，输入下方可展开已提交的处理说明和证据。
  * 状态旁原位暂停/继续，停止收进菜单；复用 Loop control，区分 HTTP 受理与 Live 生效，隔离工作区代际并阻止在途重复控制。
+ * 当前 Loop 就绪即连接 Live，历史独立读取；历史加载/失败/重试仅更新记录面板，不重启工作连接。
  */
 (async function () {
   "use strict";
   if (new URLSearchParams(location.search).get("surface") !== "panel") return;
   document.body.dataset.surface = "panel";
   const host = document.querySelector("#panel"); host.hidden = false;
+  host.inert = true;
   const $ = selector => host.querySelector(selector), bridge = window.focusDesktop?.patrol;
   host.prepend($("#version-picker"),$("#version-detail"));
   const runtime = window.focusDesktop?.runtime() || { apiBase: location.origin, session: new URLSearchParams(location.search).get("session") || "" };
   const api = FocusLoopApi.create(runtime), live = FocusLoopLiveStore.create();
   const connection = FocusLoopLiveConnection.create({ api, store: live });
   const feedback = FocusWorkspacePatrolFeedback.createReader(api);
-  const markdown = window.markdownit({ html:false, linkify:true });
+  const readingView = window.FocusMessageReading;
   const answerCards = new Map();
   const intake = FocusWorkspacePatrolIntake.create({ runtime, api, selectWorkspace: window.focusDesktop?.selectWorkspace,
-    recovery: bridge?.enabled ? bridge.recovery : null,
+    recovery: bridge?.enabled ? bridge.recovery : await FocusPatrolBrowserRecovery.open("panel"),
     onSaveError: error => fail(new Error(`草稿保存失败：${error.message}`)),
-    accessMode: FocusAccessMode.readNewSessionDefault(localStorage) });
+    accessMode: () => FocusAccessMode.readNewSessionDefault(localStorage) });
+  host.inert = false;
   const preview = FocusWorkspacePatrolMaterialPreview.create({ host, intake, workspaceId: () => workspace?.workspace_id || null, onError: fail, compact:true });
   let workspace = null, workspaceLoaded = false, generation = 0, loopId = null, unsubscribe = null, reads = new AbortController();
   let resultKey = "", inputKey = "", publishedState = "", binding = false, nativeReady = false, shownFailure = "", closeEpoch = 0, commandQueue = Promise.resolve();
   let historyKey = "", requestKey = "", progressKey = "", artifactKey = "";
+  let historyRead = null, historyReady = false, historyRetryBefore = null, historyRefreshPending = false;
   let panelVisible = bridge?.enabled ? false : !document.hidden, visibilityKnown = false, resultsNeedReset = false;
   let control = null;
   const draftStore = () => intake.store(workspace?.workspace_id || null);
@@ -120,11 +124,14 @@
     const nextHistory = `${workspace?.workspace_id || ""}:${model.historyRevision}`;
     if (historyKey !== nextHistory) {
       historyKey = nextHistory;
-      const items = $("#history-items"); items.replaceChildren();
+      const items = $("#history-items");
+      const restoreResults = FocusWorkspacePatrolFeedback.preserveInputResults(items);
+      items.replaceChildren();
       for (const row of model.rows) {
         const card = element("article", "", items);
         card.dataset.submissionId = row.submission_id;
         element("pre", row.content || "仅参考材料", card);
+        card.insertAdjacentHTML("beforeend", FocusWorkspacePatrolFeedback.inputResult(row));
         card.insertAdjacentHTML("beforeend", FocusPatrolInputReferences.render(row));
         element("small", status[row.status], card);
         if (row.status === "failed") {
@@ -134,6 +141,7 @@
           action("编辑为新输入", card, () => intake.editFailed(id, row.submission_id));
         }
       }
+      restoreResults();
     }
     historyReferences.bind(model);
     $("#older").hidden = !model.cursor;
@@ -161,12 +169,45 @@
     resetResults();
     void connection.start(id).catch(error => { if (loopId === id) fail(error); });
   }
+  function readHistory(before = null) {
+    if (!workspace) return Promise.resolve();
+    if (historyRead) return historyRead;
+    const token = generation, id = workspace.workspace_id, initialize = !historyReady;
+    const status = $("#history-status"), retry = $("#retry-history");
+    status.textContent = "正在读取记录…"; status.hidden = false; retry.hidden = true;
+    $("#older").disabled = true;
+    historyRead = (async () => {
+      try {
+        const page = before || initialize ? await api.workspaceInputs(id, before)
+          : await FocusWorkspacePatrolFeedback.refreshInputs(api, id, draftStore().get());
+        if (token !== generation) return;
+        intake.history(id, page, Boolean(before), initialize);
+        if (initialize) await intake.reconcile(id, page);
+        if (token !== generation) return;
+        historyReady = true;
+        status.hidden = true; status.textContent = "";
+      } catch (error) {
+        if (token !== generation) return;
+        historyRetryBefore = before;
+        status.textContent = `读取记录失败：${error.message || error}`;
+        retry.hidden = false;
+      } finally {
+        if (token === generation) {
+          historyRead = null; $("#older").disabled = false;
+          if (historyRefreshPending) { historyRefreshPending = false; void readHistory(); }
+        }
+      }
+    })();
+    return historyRead;
+  }
   async function activate(bound) {
     if (bound?.workspace_id === workspace?.workspace_id && workspace && workspaceLoaded) return;
     const token = ++generation;
     control = null;
     loopId = null; resetResults(); connection.stop();
     workspace = bound; workspaceLoaded = false; inputKey = "";
+    historyRead = null; historyReady = false; historyRetryBefore = null; historyRefreshPending = false;
+    $("#history-status").hidden = true; $("#history-status").textContent = ""; $("#retry-history").hidden = true;
     references.close();
     artifacts.reset();
     $("#reference-file").disabled = !bound;
@@ -177,17 +218,20 @@
     $("#binding").title = bound?.path || "选择工作区文件夹";
     watchDraft();
     if (!bound) return;
-    try {
-      const [loop, page] = await Promise.all([api.workspacePatrol(bound.workspace_id), api.workspaceInputs(bound.workspace_id)]);
-      if (token !== generation) return;
-      intake.history(bound.workspace_id, page, false, true);
-      workspaceLoaded = true;
-      if (loop) connect(loop.loop_id);
-      await intake.reconcile(bound.workspace_id, page);
-    } catch (error) {
-      if (token !== generation) return;
-      $("#retry-workspace").hidden = false; throw error;
-    }
+    await Promise.all([
+      (async () => {
+        try {
+          const loop = await api.workspacePatrol(bound.workspace_id);
+          if (token !== generation) return;
+          workspaceLoaded = true;
+          if (loop) connect(loop.loop_id);
+        } catch (error) {
+          if (token !== generation) return;
+          $("#retry-workspace").hidden = false; throw error;
+        }
+      })(),
+      readHistory(),
+    ]);
   }
   async function choose() {
     if (binding) return false;
@@ -261,36 +305,28 @@
       const label = element("span", "展开阅读", summary); label.className = "answer-toggle";
       const content = element("div", "", reading); content.className = "answer-content";
       let rendered = false;
-      function copyButton(text, parent, value) {
-        const button = action(text, parent, async () => {
-          await navigator.clipboard.writeText(value);
-          button.textContent = "已复制";
-        });
-        button.setAttribute("aria-label", text); button.setAttribute("aria-live", "polite");
-        button.addEventListener("blur", () => { button.textContent = text; });
-      }
       function updateReading() {
         if (!panelVisible) return;
         label.textContent = reading.open ? "收起阅读" : "展开阅读";
         if (reading.open && !rendered) {
           rendered = true;
-          copyButton("复制全文", content, result.text);
-          const body = element("div", "", content); body.className = "answer-markdown";
-          body.innerHTML = markdown.render(result.text);
-          body.addEventListener("click", event => {
-            const href = event.target.closest("a[href]")?.getAttribute("href");
-            if (!href || !/^https?:\/\//i.test(href)) return;
-            if (window.focusDesktop?.openExternal) {
-              event.preventDefault();
-              void Promise.resolve(window.focusDesktop.openExternal(href)).catch(fail);
-            }
+          content.innerHTML = readingView.render({ role: "assistant", content: result.text }, { copyLabel: "复制全文" });
+          const body = content.querySelector(".message-rich"); body.classList.add("answer-markdown");
+          content.addEventListener("click", event => {
+            if (readingView.handleCopy(event, { onStatus: (text, error) => { if (error) fail(new Error(text)); } })) return;
+            FocusFileLinks.follow(event, {
+              onExternal: window.focusDesktop?.openExternal,
+              onError: fail,
+              onFile: path => {
+                const source = result.file_context;
+                if (source?.error) throw new Error(source.error);
+                if (!source?.task_id || source.workspace_id !== workspace?.workspace_id)
+                  throw new Error("回答缺少可信的文件来源，无法确定执行位置；请从文件 / 产物打开");
+                fail(null);
+                return references.link(FocusFileLinks.reference({ ...source, path }), source.task_id);
+              },
+            });
           });
-          for (const pre of body.querySelectorAll("pre")) {
-            const code = pre.querySelector("code");
-            if (!code) continue;
-            const block = document.createElement("div"); block.className = "answer-code";
-            pre.replaceWith(block); copyButton("复制代码", block, code.textContent); block.append(pre);
-          }
         }
         syncReading();
       }
@@ -402,10 +438,12 @@
     notify();
     refreshVisible();
     if (!projection || projection.loop_id !== loopId) return;
-    const next = JSON.stringify(projection.interventions);
+    const next = FocusWorkspacePatrolFeedback.inputSignature(projection);
+    if (inputKey === "") inputKey = next;
     if (next !== inputKey && workspace) {
-      inputKey = next; const token = generation, id = workspace.workspace_id;
-      void api.workspaceInputs(id).then(page => { if (token === generation) intake.history(id, page); }).catch(error => { if (token === generation) fail(error); });
+      inputKey = next;
+      if (historyRead) historyRefreshPending = true;
+      else void readHistory();
     }
   });
   $("#compose").addEventListener("submit", event => { event.preventDefault(); void submit().catch(fail); });
@@ -440,16 +478,15 @@
   $("#reconnect").addEventListener("click", () => { const id = loopId; loopId = null; connect(id); });
   $("#activity-reconnect").addEventListener("click", () => $("#reconnect").click());
   $("#retry-workspace").addEventListener("click", () => { void enqueue(() => activate(workspace)); });
+  $("#retry-history").addEventListener("click", () => { void readHistory(historyRetryBefore); });
   $("#add-material").addEventListener("click", () => $("#file-picker").click());
   $("#file-picker").addEventListener("change", async event => {
     const id = workspace?.workspace_id || null, files = [...event.target.files]; event.target.value = "";
     try { await intake.add(id, await FocusWorkspacePatrolMaterialPreview.readTransfer({ files }, await intake.resourceLimits())); } catch (error) { fail(error); }
   });
-  $("#older").addEventListener("click", async () => {
-    const id = workspace?.workspace_id, store = draftStore(), before = store.get().cursor;
-    if (!id || !before) return;
-    $("#older").disabled = true;
-    try { intake.history(id, await api.workspaceInputs(id, before), true); } catch (error) { fail(error); } finally { $("#older").disabled = false; }
+  $("#older").addEventListener("click", () => {
+    const before = draftStore().get().cursor;
+    if (before) void readHistory(before);
   });
   resetBudget();
   watchDraft();
@@ -515,5 +552,8 @@
       finally { nativeReady = true; notify(); }
     });
   } else if (intake.readBinding()) await activate(await intake.workspace(intake.readBinding().workspace_id));
+  const flush = () => { void intake.flush().catch(fail); };
+  document.addEventListener("visibilitychange", () => { if (document.hidden) flush(); });
+  window.addEventListener("pagehide", () => { try { intake.checkpoint(); } catch (error) { fail(error); } flush(); });
   window.addEventListener("beforeunload", () => { budget?.dispose(); sizeObserver.disconnect(); historyReferences.dispose(); references.dispose(); preview.dispose(); connection.stop(); reads.abort(); });
 })().catch(error => { const node = document.querySelector("#error"); node.hidden = false; node.textContent = error.message; });

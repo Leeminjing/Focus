@@ -97,7 +97,15 @@
       restartWorkspacePatrol: workspaceId => request(`/workspace/${encodeURIComponent(workspaceId)}/restart`, { method: "POST" }),
       workspacePatrol: workspaceId => request(`/workspace/${encodeURIComponent(workspaceId)}`),
       submitWorkspaceInput: (workspaceId, body) => request(`/workspace/${encodeURIComponent(workspaceId)}/inputs`, { method: "POST", body: JSON.stringify(body) }),
-      workspaceInputs: (workspaceId, before = null) => request(`/workspace/${encodeURIComponent(workspaceId)}/inputs${before ? `?before=${encodeURIComponent(before)}` : ""}`),
+      workspaceInputs: (workspaceId, before = null, { intentIds = [] } = {}) => {
+        const query = new URLSearchParams();
+        if (before) query.set("before", before);
+        if (intentIds.length) {
+          intentIds.forEach(id => query.append("intent_ids", id));
+          query.set("limit", String(intentIds.length));
+        }
+        return request(`/workspace/${encodeURIComponent(workspaceId)}/inputs${query.size ? `?${query}` : ""}`);
+      },
       committedLineage: (loopId, signal) => request(`/${encodeURIComponent(loopId)}/lineage`, { signal }),
       start: body => request("", { method: "POST", body: JSON.stringify(body) }),
       activationEligibility: contextId => request(`/activation-eligibility/by-context/${encodeURIComponent(contextId)}`),

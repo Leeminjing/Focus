@@ -23,7 +23,7 @@
     (4) read_file 按内容分发：.pdf/.docx/.doc → focus.readers 解析；图片与二进制内容
         → 抛可修正的 ToolException（绝不静默返回替换字符乱码）；其余按 UTF-8 读取
     (5) Shell 先排除 Windows WSL 启动器，再绑定服务端执行身份和本次调用；受限模式经 Focus Windows ACL 后端执行，
-        Windows 三档模式共用可取消且等待进程树退出的 Job；实际启动前将服务端清理回执置 unknown，明确未启动或整个 Job 退出才解除结算屏障；完全访问跳过文件限制，后端失败不启动替代命令
+        Windows 三档模式共用可取消且等待进程树退出的 Job；POSIX 完全访问使用可取消进程组，受限模式明确不可用；实际启动前将服务端清理回执置 unknown，明确未启动或清理确认后才解除结算屏障；后端失败不启动替代命令
 
 效果声明：三个文件工具的目标就是参数里的 path，可由确定性解析完整枚举，故声明为可结构化
 枚举；四个 Shell 仅因实际走受限后端而声明受限效果，未知宿主工具仍按不透明效果审批。
@@ -40,7 +40,6 @@ import atexit
 import json
 import os
 import shutil
-import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -51,11 +50,11 @@ from langchain_core.tools import ToolException, tool
 from focus.images import is_image_name
 from focus.sandbox import SandboxUnavailable, ShellExecutionRequest, WindowsAclBackend
 from focus.sandbox.diagnostics import classify_shell_outcome
+from focus.sandbox.posix import PosixShellBackend
 from focus.security import AccessPolicy, canonical_target, policy_from_context
 from focus.security.execution import bind_call_execution
 from focus.security.context import security_context_of
 from focus.security.file_target import checked_write_target
-from focus.security.policy import AccessMode
 from focus.security.effects import (
     SANDBOXED_SHELL_EFFECT,
     ResolvedFsEffect,
@@ -66,6 +65,7 @@ from focus.security.effects import (
 
 WORKSPACE_TOOL_NAMES = frozenset({"read_file", "list_files", "write_file", "bash", "powershell", "cmd", "sh"})
 _SHELL_BACKEND = WindowsAclBackend()
+_POSIX_SHELL_BACKEND = PosixShellBackend()
 atexit.register(_SHELL_BACKEND.close)
 
 TOOL_NAMES_BY_PERMISSION: dict[str, list[str]] = {
@@ -211,20 +211,11 @@ def _run_shell(command: str, runtime: ToolRuntime[dict], exe_name: str, args: li
     capture = security_context_of(runtime.context).extras.get("file_version_capture")
     if capture is not None:
         capture.before_shell(binding.workspace)
-    if binding.mode is AccessMode.DANGER_FULL_ACCESS and os.name != "nt":
-        try:
-            process = subprocess.run(
-                [exe_path, *args, command], cwd=binding.workspace,
-                stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                timeout=120, shell=False, errors="replace", close_fds=True,
-            )
-        except subprocess.TimeoutExpired as error:
-            return _shell_fact(binding, False, "timeout", None, str(error.stdout or ""), str(error.stderr or ""))
-        return _shell_fact(binding, False, "exited", process.returncode, process.stdout, process.stderr)
     try:
         if receipt is not None:
             receipt["process_cleanup"] = "unknown"
-        result = _SHELL_BACKEND.run(
+        backend = _SHELL_BACKEND if os.name == "nt" else _POSIX_SHELL_BACKEND
+        result = backend.run(
             ShellExecutionRequest(binding, exe_path, (*args, command), cancel_event=cancel_event,
                 recovery_evidence=receipt.get("execution") if receipt else None,
                 recovery_status_path=Path(receipt["status_path"]) if receipt and receipt.get("status_path") else None)
@@ -232,6 +223,8 @@ def _run_shell(command: str, runtime: ToolRuntime[dict], exe_name: str, args: li
     except SandboxUnavailable as error:
         if receipt is not None:
             receipt["process_cleanup"] = error.process_cleanup
+        if capture is not None:
+            capture.after_shell(error.process_cleanup)
         return _shell_fact(binding, False, "SANDBOX_UNAVAILABLE", None, "", str(error), process_cleanup=error.process_cleanup)
     if receipt is not None:
         receipt["process_cleanup"] = result.process_cleanup

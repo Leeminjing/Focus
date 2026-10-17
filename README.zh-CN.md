@@ -107,6 +107,8 @@ Windows 提供桌面机器人入口：点击展开输入面板，拖动调整位
 
 macOS 使用工作台窗口。图片输入需要配置支持图像的模型。
 
+Shell 的平台能力有差异：Windows 提供只读、工作区写入和完全访问三档执行；macOS 目前仅提供完全访问 Shell，受限模式会明确返回不可用，不会自动放宽权限。需要执行时，可由用户单次批准完全访问，或继续使用文件工具。macOS 的取消与超时会停止本次进程组，确认退出后采集工作区文件变化；完全访问不限制程序主动脱离进程组，因此不提供 Windows Job 等价的进程树隔离保证。macOS 尚不具备完整的受限编程体验。
+
 ## Strategy：把你的工作方法交给 Focus
 
 **Strategy 定义项目怎样推进、上下文怎样组织，以及后续工作应当继承哪些信息。**
@@ -166,6 +168,18 @@ focus
 ```sh
 focus update
 ```
+
+查看健康摘要或导出统一故障诊断报告：
+
+```sh
+focus doctor
+focus doctor --output focus-diagnostics.json
+```
+
+报告包含版本、schema、实时组件状态、Loop/Run 关联 ID、队列积压、预算用量、近期事件标识和启动耗时。
+Focus 未启动时执行只读离线检查。源码运行方式与退出码见[故障诊断说明](docs/diagnostics.md)。
+
+托管安装将应用代码放在 `~/.focus/app`，依赖与命令入口放在 `~/.focus/runtime`，终端命令放在 `~/.focus/bin`。
 
 安装与更新流程详见 [稳定版发布、安装与更新恢复](docs/managed-releases.md)。
 

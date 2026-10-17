@@ -4,7 +4,7 @@
  * 示例：host.innerHTML = FocusWorkspacePatrolView.skeleton(workspace)。
  * lineageManifest 输入 Live 投影或 console 节点摘要，输出保留真实最新 Run、roots 与历史祖先的共享图数据；来源按钮交回同一只读检查器。
  * 文件详情为非模态 aside，普通输入附加可移除版本引用，选择文件不改变发送目标。
- * 输入记录为无标题的非模态滚动区域，history 输入全部已加载 rows，输出正文和真实发送状态；面板显隐不替换 composer。
+ * 输入记录为无标题的非模态滚动区域，history 输入全部已加载 rows，输出正文、可展开的真实处置和独立发送状态；面板显隐不替换 composer。
  * remote=true 时工作台仅提供机器人唤起入口；可编辑输入和附件由原生面板唯一持有，浏览器仍使用本页 composer。
  */
 (function (root, factory) {
@@ -16,6 +16,7 @@
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
   const labels = { information: "普通信息", outcome: "最终结果", boundary: "执行边界", completion_check: "完成检查" };
   const inputReferences = root.FocusPatrolInputReferences || (typeof require === "function" ? require("./patrol-input-references.js") : null);
+  const feedback = root.FocusWorkspacePatrolFeedback || (typeof require === "function" ? require("./workspace-patrol-feedback.js") : null);
   function composer(workspace, remote = false) {
     return `<header class="patrol-quiet-heading"><div><h1>Patrol</h1><p data-i18n="patrol.tagline">说出你的想法，剩下的交给 Patrol。</p></div><button class="quiet-button" type="button" data-patrol-clear-draft${remote ? " hidden disabled" : workspace ? "" : " disabled"} data-i18n="patrol.clear_draft">清空输入</button></header><form class="glass-surface" data-patrol-composer><i class="workbench-composer-icon" aria-hidden="true"><span class="ui-icon icon-brain-circuit"></span></i><span class="workbench-composer-label">Patrol · ${escape(workspace?.display_name || "工作区")}</span>
       ${remote ? '<p>新问题、截图和文字都在桌面机器人旁预览并发送。</p>' : ''}<textarea data-patrol-content rows="3" aria-label="向 Patrol 输入信息" data-i18n-placeholder="patrol.placeholder" placeholder="描述你的任务、问题或想法…"${remote ? " hidden disabled" : workspace ? "" : " disabled"}></textarea>
@@ -43,7 +44,7 @@
 
   function history(model) {
     const status = { accepted: "已受理", sending: "发送中", failed: "发送失败", edited: "已转为草稿" };
-    return model.rows.map(row => `<article data-submission-id="${escape(row.submission_id)}"><pre>${escape(row.content)}</pre>${inputReferences.render(row)}<header><span>${labels[row.input_type]}</span><span>${status[row.status]}</span>${row.request_id ? "<span>指定请求的回答</span>" : ""}</header>${row.status === "failed" ? `<p role="alert">${escape(row.error)}</p><button data-patrol-retry="${escape(row.submission_id)}">重试</button>${row.file_refs?.length || row.attachments?.length ? `<button data-patrol-edit-failed="${escape(row.submission_id)}">编辑后重发</button>` : ""}` : ""}</article>`).join("") || "尚无用户输入";
+    return model.rows.map(row => `<article data-submission-id="${escape(row.submission_id)}"><pre>${escape(row.content)}</pre>${feedback.inputResult(row)}${inputReferences.render(row)}<header><span>${labels[row.input_type]}</span><span>${status[row.status]}</span>${row.request_id ? "<span>指定请求的回答</span>" : ""}</header>${row.status === "failed" ? `<p role="alert">${escape(row.error)}</p><button data-patrol-retry="${escape(row.submission_id)}">重试</button><button data-patrol-edit-failed="${escape(row.submission_id)}">编辑后重发</button>` : ""}</article>`).join("") || "尚无用户输入";
   }
   function progress(entity, full = false, filter = "all") {
     const state = entity?.state || entity;

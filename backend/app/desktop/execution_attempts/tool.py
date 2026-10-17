@@ -2,7 +2,7 @@
 
 输入为稳定调用 identity、Run 与参数、注入的实时控制校验及 canonical ToolMessage；输出为新 claim、可靠缓存结果或不确定诊断。
 具体工作流为同一短事务先锁控制版本并校验 Run，再提交唯一执行 claim；暂停后的新工具意图拒绝，已开始的调用仍保存结果。
-已有意图但无结果时拒绝恢复重复副作用。Windows Shell 将未确认清理的 attempt identity 保存在 Run.workspace_result；只有服务端逐调用回执中的 confirmed/not_started 可解除，控制失败或回执丢失保留屏障并禁止继续工具执行。本模块通过组合根注入控制政策，文件结果提交遵循 Loop→Run 的既有锁序。
+已有意图但无结果时拒绝恢复重复副作用。所有平台 Shell 将未确认清理的 attempt identity 保存在 Run.workspace_result；只有服务端逐调用回执中的 confirmed/not_started 可解除，控制失败或回执丢失保留屏障并禁止继续工具执行。本模块通过组合根注入控制政策，文件结果提交遵循 Loop→Run 的既有锁序。
 示例：cached = await ledger.claim(identity, run_id, call)；await ledger.complete(identity, result)。
 每次工具调用可准备独立文件采集端口；成功工具结果、不可变文件版本与既有 Run outbox 在同一事务提交，失败提交保留原执行不确定性。
 """

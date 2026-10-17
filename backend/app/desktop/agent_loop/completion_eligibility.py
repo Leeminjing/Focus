@@ -13,7 +13,6 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 
 from backend.app.desktop.agent_loop.completion import CompletionGuard
-from backend.app.desktop.agent_loop.completion_policy import CompletionCheckPolicy
 from backend.app.desktop.agent_loop.completion_sources import CompletionSourceValidator, CompletionSourceRejection
 from backend.app.desktop.agent_loop.mission_contract import LegacyMissionAdapter
 from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
@@ -74,18 +73,10 @@ class CompletionEligibilityPolicy:
         except ValueError:
             reasons.append('verification_contract_invalid')
         else:
-            guard = CompletionGuard().check(contract, **facts['expected'], active_or_queued_runs=facts['runs'],
+            guard = CompletionGuard().check(contract, checks=checks, **facts['expected'], active_or_queued_runs=facts['runs'],
                 pending_human_gates=facts['pending'], portfolio_published=facts['published'],
                 workspace_adopted=facts['adopted'], grant_allows_completion=facts['authorized'])
             reasons.extend(guard.reasons)
-            required = {str(check['check_id']) for check in checks if check.get('required', True)}
-            satisfied = {item.check_id for item in contract.criteria if item.status == 'satisfied'}
-            if not required or not required.issubset(satisfied):
-                reasons.append('required_checks_missing')
-            try:
-                CompletionCheckPolicy().validate(checks, contract.criteria)
-            except ValueError:
-                reasons.append('verification_checks_invalid')
             if not reasons:
                 try:
                     await CompletionSourceValidator().validate(session, checks, contract, require_artifact_content=True)
