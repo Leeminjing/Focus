@@ -1556,3 +1556,17 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 @media (max-width: 720px) {
   .loop-start-budget { grid-template-columns: 1fr; }
 }
+/* Storage maintenance shares the data pane's spacing and form controls. */
+#storageSettingsHost { display: grid; gap: var(--space-3); padding: var(--space-3); }
+#storageSettingsHost > header { margin: calc(-1 * var(--space-3)) calc(-1 * var(--space-3)) 0; }
+#storageSettingsHost > p { margin: 0; }
+#storageSettingsHost .ui-toolbar { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+#storageSettingsHost .ui-toolbar button { flex: 0 0 auto; white-space: nowrap; }
+#storageSettingsHost > header, .storage-backups li { display: flex; justify-content: space-between; gap: var(--space-3); align-items: start; }
+.storage-usage { display: flex; flex-wrap: wrap; gap: var(--space-5); margin: 0; }
+.storage-usage dt { color: var(--text-secondary); font-size: 12px; }
+.storage-usage dd { margin: 4px 0 0; font-weight: 600; }
+.storage-preview { border: 1px solid var(--border-default); border-radius: 8px; padding: var(--space-3); }
+.storage-backups { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow: auto; }
+.storage-backups li { padding: var(--space-2) 0; overflow-wrap: anywhere; }
+.storage-backups small { display: block; color: var(--text-secondary); }

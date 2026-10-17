@@ -6986,6 +6986,16 @@ async function testModelConnection() {
   renderModelSettings();
 }
 
+let storageSettingsController = null;
+function loadStorageSettings() {
+  if (!window.FocusStorageSettings) return;
+  storageSettingsController ||= window.FocusStorageSettings.create({
+    api, host: document.querySelector("#storageSettingsHost"), escapeHtml,
+    english: () => interfaceI18n.locale() === "en-US",
+  });
+  return storageSettingsController.load();
+}
+
 function selectSettingsTab(tab) {
   const selected = ["general", "models", "data"].includes(tab) ? tab : "general";
   document.querySelectorAll("[data-settings-tab]").forEach(button => {
@@ -6997,6 +7007,7 @@ function selectSettingsTab(tab) {
   document.querySelectorAll("[data-settings-pane]").forEach(pane => {
     pane.hidden = pane.dataset.settingsPane !== selected;
   });
+  if (selected === "data") return runUiAction(loadStorageSettings);
   if (selected === "models") {
     return runUiAction(async () => {
       try { await loadModelSettings(); } catch (error) { modelSettings.error = error.message; }
@@ -7065,6 +7076,7 @@ async function openSettings() {
     }
   }
   await loadShellRecovery();
+  if (document.querySelector('[data-settings-pane="data"]')?.hidden === false) await loadStorageSettings();
 }
 
 async function loadShellRecovery() {

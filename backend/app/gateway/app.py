@@ -198,6 +198,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Update acceptance opens the real lifespan without resuming user work
         # or starting recovery writers before the release has been accepted.
         update_check = os.getenv("FOCUS_UPDATE_CHECK") == "1"
+        from backend.app.desktop.storage_maintenance import StorageMaintenance
+        app.state.storage_maintenance = StorageMaintenance(
+            sessions, database_url=str(app_config.database.url) if app_config.database else None,
+        )
         app.state.agent_loop_ownership_repair_task = None
         if not update_check:
             await service.start()
@@ -207,9 +211,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
         if not update_check and app.state.loop_feature_flags.supervisor_scheduling:
             await app.state.agent_loop_runtime.start()
+        if not update_check:
+            await app.state.storage_maintenance.start()
         try:
             yield
         finally:
+            await app.state.storage_maintenance.close()
             await app.state.agent_loop_runtime.close()
             repair_results = (
                 await asyncio.gather(app.state.agent_loop_ownership_repair_task, return_exceptions=True)
