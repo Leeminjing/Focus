@@ -31,6 +31,21 @@ if (!process.versions.electron) {
     const emit = (type, data) => run(`previewFixture.event('workspace-run-0',${JSON.stringify(type)},${JSON.stringify(data)})`);
     const messages = (...rows) => ({ messages: [{ role: "human", id: "input-workspace-run-0", content: "本轮输入" }, ...rows] });
     const capture = async name => { if (!process.env.FOCUS_PREVIEW_HOST_EVIDENCE) return; await run("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))"); await pause(200); fs.mkdirSync(process.env.FOCUS_PREVIEW_HOST_EVIDENCE, {recursive:true}); fs.writeFileSync(path.join(process.env.FOCUS_PREVIEW_HOST_EVIDENCE,name+".png"),(await win.webContents.capturePage()).toPNG()); };
+    const assertGraphBatch = async selector => {
+      await run("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+      const counts = await run(`(async () => {
+        const original = FocusPortfolioMapView, originalFetch = window.fetch;
+        let patches = 0, lineageReads = 0;
+        window.FocusPortfolioMapView = { ...original, reconcile(...args) { if (args[0] === document.querySelector(${JSON.stringify(selector)})) patches++; return original.reconcile(...args); } };
+        window.fetch = (...args) => { if (String(args[0]).includes('/lineage')) lineageReads++; return originalFetch(...args); };
+        try {
+          for (let i = 0; i < 12; i++) previewFixture.runState('workspace-run-0', 'running');
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          return { patches, lineageReads };
+        } finally { window.FocusPortfolioMapView = original; window.fetch = originalFetch; }
+      })()`);
+      assert.deepEqual(counts, { patches: 1, lineageReads: 0 }, "同帧 Run Live 事件只更新图谱一次且不重读拓扑");
+    };
     await win.loadFile(path.join(__dirname, "index.html"));
     await until("document.querySelector('[data-patrol-content]')");
     await run("state.patrolWorkspace={workspace_id:'workspace',display_name:'运行预览验收',path:'C:/workspace'};render()");
@@ -40,6 +55,7 @@ if (!process.versions.electron) {
     assert.equal(await run("previewFixture.count()"), 0);
     await run("for(let i=0;i<8;i++)previewFixture.runState('workspace-run-'+i,'running')");
     await until("previewFixture.count()===8 && document.querySelectorAll('[data-live-run-id]').length===8");
+    await assertGraphBatch("[data-patrol-lineage]");
     await run("previewFixture.runs['later-queued']={...previewFixture.runs['workspace-run-0'],run_id:'later-queued',status:'queued'};previewFixture.runState('later-queued','queued')");
     await pause(80); assert.equal(await run("previewFixture.count()"),8);assert.equal(await run("document.querySelector('[data-live-run-id=workspace-run-0]')!==null"),true);
     await emit("events", messages());
@@ -62,6 +78,7 @@ if (!process.versions.electron) {
     await click("[data-patrol-composer] [data-patrol-details]"); await until("previewFixture.count()===0");
     await click("[data-patrol-composer] [data-patrol-details]"); await until("previewFixture.count()===8");
     await click("[data-action=show-map]"); await until("mapLive?.store.get().projection && previewFixture.count()===8 && document.querySelectorAll('[data-map-graph] [data-live-run-id]').length===8");
+    await assertGraphBatch("[data-map-graph]");
     await emit("tokens", {message_id:"map-message",content:"全图角色输出"}); await until(`${body}?.textContent==='全图角色输出'`);
     await capture("map-assistant");
     await run("previewFixture.event('workspace-run-0','events',{type:'commitment_messages',actor:'worker',content_mode:'delta',stream_id:'worker-1',messages:[{role:'ai',content:'工作角色输出'}]})");

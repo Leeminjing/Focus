@@ -4,6 +4,7 @@
  * 具体工作流为从实体 state 派生展示模型并排除工具事实（成员派生边不含自环），不持有领域状态；示例：`selectContextCards(projection)`。
  * 用户 intervention 尚无 Run 时也可按真实目标和 correlation 进入 Context 因果链。
  * Context 卡的 active_run 优先实际 running，再回落排队/待执行；较新的队列条目不能遮住仍执行的 Run，latest_run 仍保留时间顺序。
+ * Context 卡每次先按 Context 索引 Run，并反向索引最近活动，避免逐卡扫描全部 Run 和活动时间线。
  */
 (function (root, factory) {
   const api = factory();
@@ -36,13 +37,26 @@
   }
 
   function selectContextCards(projection) {
-    const runs = values(projection?.runs);
+    const runsByContext = new Map(), runContexts = new Map(), liveActions = new Map();
+    for (const run of values(projection?.runs)) {
+      const id = run.state.context_id;
+      if (!runsByContext.has(id)) runsByContext.set(id, []);
+      runsByContext.get(id).push(run);
+      runContexts.set(run.entity_id, id);
+    }
+    for (const runs of runsByContext.values()) runs.sort((left, right) => right.updated_sequence - left.updated_sequence);
+    const timeline = projection?.activity_timeline || [];
+    for (let index = timeline.length - 1; index >= 0; index--) {
+      const item = timeline[index];
+      for (const id of [item.detail?.context_id, runContexts.get(item.detail?.run_id)]) {
+        if (id !== undefined && !liveActions.has(id)) liveActions.set(id, item);
+      }
+    }
     return Object.freeze(values(projection?.contexts).map(entity => {
-      const contextRuns = runs.filter(run => run.state.context_id === entity.entity_id).sort((left, right) => right.updated_sequence - left.updated_sequence);
+      const contextRuns = runsByContext.get(entity.entity_id) || [];
       const activeRun = contextRuns.find(run => run.state.status === "running")
         || contextRuns.find(run => ["queued", "pending"].includes(run.state.status)) || null;
-      const runIds = new Set(contextRuns.map(run => run.entity_id));
-      const liveAction = [...(projection?.activity_timeline || [])].reverse().find(item => item.detail?.context_id === entity.entity_id || runIds.has(item.detail?.run_id));
+      const liveAction = liveActions.get(entity.entity_id);
       return Object.freeze({ id: entity.entity_id, revision: entity.revision, ...entity.state, active_run: activeRun ? { id: activeRun.entity_id, ...activeRun.state } : null, latest_run: contextRuns[0] ? { id: contextRuns[0].entity_id, ...contextRuns[0].state } : null, live_action: liveAction || null });
     }));
   }
