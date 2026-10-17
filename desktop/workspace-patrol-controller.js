@@ -347,7 +347,7 @@
         panel.scrollTop = retained ? panel.scrollTop + retained.getBoundingClientRect().top - edge - offset : top;
       }
       historyReferences?.bind(model);
-      const occupied = Boolean(model.draft.content || model.draft.file_refs?.length);
+      const occupied = Boolean(model.draft.content || model.draft.file_refs?.length || model.draft.attachments?.length);
       for (const button of list.querySelectorAll("[data-patrol-edit-failed]")) {
         button.disabled = occupied;
         button.title = occupied ? "先处理当前草稿" : "";

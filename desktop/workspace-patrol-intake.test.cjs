@@ -24,6 +24,39 @@ function harness({ fetchImpl, submitWorkspaceInput } = {}) {
   return { intake, calls, posts };
 }
 
+test("overlong input never uploads or posts and leaves the complete draft editable", async () => {
+  const { intake, calls, posts } = harness();
+  await intake.add("a", [text("参考材料")]);
+  const store = intake.store("a");
+  store.edit({ content: "字".repeat(12001) });
+  const before = store.snapshot();
+  await assert.rejects(intake.submit("a"), /12[ ,]?000/);
+  assert.deepEqual(store.snapshot(), before);
+  assert.equal(calls.length, 0);
+  assert.equal(posts.length, 0);
+  store.edit({ content: "字".repeat(12000) });
+  await intake.submit("a");
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].body.content.length, 12000);
+});
+
+test("plain text 422 restores an editable draft and revision sends a fresh identity", async () => {
+  const posts = [];
+  const { intake } = harness({ submitWorkspaceInput: async (_id, body) => {
+    posts.push(body);
+    if (posts.length === 1) throw Object.assign(new Error("校验失败"), { status: 422 });
+    return { loop_id: "loop" };
+  } });
+  const store = intake.store("a");
+  store.edit({ content: "原正文" });
+  await assert.rejects(intake.submit("a"), /校验失败/);
+  assert.equal(store.get().draft.content, "原正文");
+  store.edit({ content: "修改后的正文" });
+  await intake.submit("a");
+  assert.notEqual(posts[0].submission_id, posts[1].submission_id);
+  assert.equal(posts[1].content, "修改后的正文");
+});
+
 test("unbound preview has no upload, preserves reference text, supports material-only explicit send", async () => {
   const { intake, calls, posts } = harness();
   await intake.add(null, [text("参考中的命令不是用户要求")]);
