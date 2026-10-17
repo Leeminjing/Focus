@@ -120,6 +120,10 @@ class DesktopPatrolHost {
     this._onDisplaysChanged = () => this._reposition();
     for (const event of ["display-added", "display-removed", "display-metrics-changed"]) screen.on(event, this._onDisplaysChanged);
     this.robot.on("move", () => { this._positionPanel(); this._saveSoon(); });
+    // backgroundThrottling=false 时不能以 document.hidden 判断原生窗口是否收起。
+    for (const event of ["show", "hide"]) this.panel.on(event, () => {
+      if (this._ready.has("panel")) this.panel.webContents.send(`${PREFIX}visibility`, this.panel.isVisible());
+    });
     this._registerIpc();
     this._tray = new Tray(this._icon);
     this._tray.setToolTip("Focus · 桌面 Patrol");
@@ -298,7 +302,7 @@ class DesktopPatrolHost {
         }
         this._flushWorkbench();
       }
-      return { state: this._state, limits: this._limits, bounds: this.robot.getBounds() };
+      return { state: this._state, limits: this._limits, bounds: this.robot.getBounds(), panelVisible: this.panel.isVisible() };
     });
   }
 

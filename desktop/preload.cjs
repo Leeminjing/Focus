@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld("focusDesktop", {
     ready: () => ipcRenderer.invoke("focus:patrol-ready"),
     onContent: callback => subscribe("focus:patrol-content", callback),
     onOpen: callback => subscribe("focus:patrol-open", callback),
+    onVisibility: callback => subscribe("focus:patrol-visibility", callback),
     onState: callback => subscribe("focus:patrol-state", callback),
     onWorkbench: callback => subscribe("focus:patrol-open-workbench", callback),
   },

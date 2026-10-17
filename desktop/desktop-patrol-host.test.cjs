@@ -37,8 +37,8 @@ function fixture(t) {
     getBounds() { return { ...this.bounds }; }
     setBounds(value) { this.bounds = { ...value }; }
     showInactive() { this.visible = true; }
-    show() { this.visible = true; }
-    hide() { this.visible = false; }
+    show() { if (!this.visible) { this.visible = true; this.emit("show"); } }
+    hide() { if (this.visible) { this.visible = false; this.emit("hide"); } }
     focus() { this.focuses++; }
     isVisible() { return this.visible === true; }
     isDestroyed() { return this.destroyed === true; }
@@ -117,6 +117,19 @@ test("compact panel expands within display bounds and only accepts resize from i
   assert.equal(f.host.panel.getBounds().width, 400);
   f.invoke("resize-panel", f.host.panel, 0);
   assert.equal(f.host.panel.getBounds().height, 202);
+});
+
+test("panel visibility comes from the host for startup, IPC hide, close and robot hide", async t => {
+  const f = fixture(t); await f.host.start();
+  assert.equal(f.host.panel.options.webPreferences.backgroundThrottling, false);
+  assert.equal(f.invoke("ready", f.host.panel).panelVisible, false);
+  const visibility = () => f.host.panel.messages.filter(row => row.channel === "focus:patrol-visibility").map(row => row.value);
+  f.host.openPanel();
+  assert.equal(f.invoke("ready", f.host.panel).panelVisible, true);
+  f.invoke("hide-panel", f.host.panel);
+  f.host.openPanel(); f.host.panel.close();
+  f.host.openPanel(); f.invoke("hide-robot", f.host.robot);
+  assert.deepEqual(visibility(), [true, false, true, false, true, false]);
 });
 
 test("IPC authenticates owner window, main frame, origin and surface before transfer", async t => {
