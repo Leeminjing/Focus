@@ -2,7 +2,8 @@
  * 输入为工作区绑定、预览/要求、明确发送和宿主唤起事件；输出为稳定发送回执、工作区草稿和已提交回答卡。
  * 工作流为先预览，再绑定/发送，按工作区代际订阅与读取；隐藏保留草稿，旧工作区回调不覆盖当前视图。
  * 要求与参考文字分开，Enter/IME 不发送，Ctrl+Enter 显式发送；示例：拖入截图、补充“解释报错”、点击发送。
- * 回答仅取固定 Context revision 的 assistant 正文，进度/产物来自 Live；授权处理沿用工作台，不展示 Patrol 内部理由。
+ * 回答仅取固定 Context revision 的 assistant 正文并有界缓存，进度/产物分别来自 Live；隐藏时保留 Live 状态同步，取消正文读取并暂停结果 DOM 更新。
+ * 原生显隐由宿主通知，浏览器回退用 visibilitychange；再次显示时读取最新投影。授权处理沿用工作台，不展示 Patrol 内部理由。
  */
 (async function () {
   "use strict";
@@ -13,11 +14,14 @@
   const runtime = window.focusDesktop?.runtime() || { apiBase: location.origin, session: new URLSearchParams(location.search).get("session") || "" };
   const api = FocusLoopApi.create(runtime), live = FocusLoopLiveStore.create();
   const connection = FocusLoopLiveConnection.create({ api, store: live });
+  const feedback = FocusWorkspacePatrolFeedback.createReader(api);
   const intake = FocusWorkspacePatrolIntake.create({ runtime, api, selectWorkspace: window.focusDesktop?.selectWorkspace,
     accessMode: FocusAccessMode.readNewSessionDefault(localStorage) });
   const preview = FocusWorkspacePatrolMaterialPreview.create({ host, intake, workspaceId: () => workspace?.workspace_id || null, onError: fail });
   let workspace = null, generation = 0, loopId = null, unsubscribe = null, reads = new AbortController();
   let resultKey = "", inputKey = "", publishedState = "", binding = false, nativeReady = false, commandQueue = Promise.resolve();
+  let panelVisible = bridge?.enabled ? false : !document.hidden, visibilityKnown = false, resultsNeedReset = false;
+  let requestKey = "", progressKey = "", artifactKey = "";
   const draftStore = () => intake.store(workspace?.workspace_id || null);
   let budget = null;
   function resetBudget() {
@@ -70,20 +74,24 @@
     notify();
   }
   function watchDraft() { unsubscribe?.(); unsubscribe = draftStore().subscribe(renderInput); }
+  function cancelResults() { reads.abort(); reads = new AbortController(); resultKey = ""; }
+  function resetResults() {
+    cancelResults(); requestKey = ""; progressKey = ""; artifactKey = ""; resultsNeedReset = true;
+    if (panelVisible) refreshVisible();
+  }
   function connect(id) {
     if (!id || id === loopId) return;
-    reads.abort(); reads = new AbortController(); resultKey = "";
-    $("#results").replaceChildren();
     loopId = id;
+    resetResults();
     void connection.start(id).catch(error => { if (loopId === id) fail(error); });
   }
   async function activate(bound) {
     if (bound?.workspace_id === workspace?.workspace_id && workspace) return;
     const token = ++generation;
-    reads.abort(); reads = new AbortController(); connection.stop(); loopId = null;
-    workspace = bound; resultKey = ""; inputKey = "";
+    loopId = null; resetResults(); connection.stop();
+    workspace = bound; inputKey = "";
     resetBudget();
-    $("#results").replaceChildren(); $("#requests").replaceChildren(); fail(null);
+    fail(null);
     if (bound) { intake.remember(bound); intake.claimUnbound(bound.workspace_id); }
     $("#binding-name").textContent = bound ? bound.display_name : "绑定工作区";
     $("#binding").title = bound?.path || "选择工作区文件夹";
@@ -134,9 +142,9 @@
     }
   }
   async function renderResults(projection, key, token, signal) {
-    const cards = await FocusWorkspacePatrolFeedback.results(api, projection, signal);
-    if (token !== generation || key !== resultKey || projection.loop_id !== loopId) return;
-    const container = $("#results"); container.replaceChildren();
+    const cards = await feedback.results(projection, signal);
+    if (signal.aborted || !panelVisible || token !== generation || key !== resultKey || projection.loop_id !== loopId) return;
+    const container = $("#answers"); container.replaceChildren();
     for (const result of cards) {
       const card = element("article", "", container);
       element("h2", result.title, card); element("pre", result.text || result.error, card);
@@ -144,26 +152,58 @@
       source.title = `Context ${result.context_id} · Revision ${result.revision_id}`;
       source.dataset.contextId = result.context_id; source.dataset.revisionId = result.revision_id;
     }
-    const progress = projection.task_progress?.state?.document?.items || [];
-    if (progress.length) {
-      const card = element("article", "", container); element("h2", "已提交进度", card);
-      const verified = progress.filter(item => item.state === "completed" && item.support === "supported").length;
-      element("p", `${verified} / ${progress.length} 项已有验证证据`, card); action("查看进度 ↗", card, () => openWorkbench());
-    }
-    const files = FocusLoopLiveSelectors.selectFacts(projection).filter(item => item.kind === "file" || item.kind === "artifact").slice(0, 3);
-    if (files.length) { const card = element("article", "", container); element("h2", `${files.length} 项产物更新`, card); action("查看文件和来源 ↗", card, () => openWorkbench()); }
   }
-  live.subscribe(({ projection }) => {
-    notify();
+  function refreshVisible() {
+    if (!panelVisible) return;
+    if (resultsNeedReset) {
+      for (const selector of ["#answers", "#progress", "#artifacts", "#requests"]) $(selector).replaceChildren();
+      resultsNeedReset = false;
+    }
+    const { projection } = live.get();
     if (!projection || projection.loop_id !== loopId) return;
     budget?.update(projection);
-    renderRequests(projection);
-    const artifacts = FocusLoopLiveSelectors.selectFacts(projection).filter(item => ["file", "artifact"].includes(item.kind)).map(item => [item.fact_id, item.revision]);
-    const key = JSON.stringify([FocusWorkspacePatrolFeedback.signature(projection), projection.task_progress?.revision, artifacts]);
-    if (key !== resultKey) {
-      resultKey = key;
-      void renderResults(projection, key, generation, reads.signal).catch(error => { if (error.name !== "AbortError") fail(error); });
+    const nextRequest = JSON.stringify(projection.wait_requests);
+    if (nextRequest !== requestKey) { requestKey = nextRequest; renderRequests(projection); }
+    const progress = projection.task_progress?.state?.document?.items || [];
+    const verified = progress.filter(item => item.state === "completed" && item.support === "supported").length;
+    const nextProgress = JSON.stringify([verified, progress.length]);
+    if (nextProgress !== progressKey) {
+      progressKey = nextProgress;
+      const container = $("#progress"); container.replaceChildren();
+      if (progress.length) {
+        const card = element("article", "", container); element("h2", "已提交进度", card);
+        element("p", `${verified} / ${progress.length} 项已有验证证据`, card); action("查看进度 ↗", card, () => openWorkbench());
+      }
     }
+    const files = FocusLoopLiveSelectors.selectFacts(projection).filter(item => item.kind === "file" || item.kind === "artifact").slice(0, 3);
+    const nextArtifacts = JSON.stringify(files.map(item => [item.fact_id, item.revision]));
+    if (nextArtifacts !== artifactKey) {
+      artifactKey = nextArtifacts;
+      const container = $("#artifacts"); container.replaceChildren();
+      if (files.length) { const card = element("article", "", container); element("h2", `${files.length} 项产物更新`, card); action("查看文件和来源 ↗", card, () => openWorkbench()); }
+    }
+    const key = FocusWorkspacePatrolFeedback.signature(projection);
+    if (key !== resultKey) {
+      cancelResults();
+      resultKey = key;
+      const token = generation, signal = reads.signal;
+      void renderResults(projection, key, token, signal).catch(error => {
+        if (!signal.aborted && panelVisible && token === generation && key === resultKey && error.name !== "AbortError") fail(error);
+      });
+    }
+  }
+  function setVisibility(visible) {
+    visibilityKnown = true;
+    if (panelVisible === visible) return;
+    panelVisible = visible;
+    if (!visible) cancelResults();
+    else refreshVisible();
+  }
+  if (!bridge?.enabled) document.addEventListener("visibilitychange", () => setVisibility(!document.hidden));
+  live.subscribe(({ projection }) => {
+    notify();
+    refreshVisible();
+    if (!projection || projection.loop_id !== loopId) return;
     const next = JSON.stringify(projection.interventions);
     if (next !== inputKey && workspace) {
       inputKey = next; const token = generation, id = workspace.workspace_id;
@@ -214,6 +254,7 @@
   sizeObserver.observe($(".panel-menu-content"));
   await intake.resourceLimits();
   if (bridge?.enabled) {
+    bridge.onVisibility(setVisibility);
     bridge.onOpen(target => enqueue(async () => {
       if (target.workspaceId && target.workspaceId !== workspace?.workspace_id) await activate(await intake.workspace(target.workspaceId));
       if (target.requestId) draftStore().edit({ request_id: target.requestId, request_revision: target.requestRevision });
@@ -225,6 +266,7 @@
       notify();
     }));
     const ready = await bridge.ready();
+    if (!visibilityKnown) setVisibility(ready.panelVisible === true);
     await enqueue(async () => {
       try { if (!workspace && ready.state.workspaceId) await activate(await intake.workspace(ready.state.workspaceId)); }
       finally { nativeReady = true; notify(); }

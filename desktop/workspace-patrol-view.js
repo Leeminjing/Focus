@@ -63,12 +63,14 @@
   }
   function lineageManifest(snapshot, projection) {
     const contexts = new Map();
+    const revisions = new Map();
     for (const node of snapshot.nodes) {
+      revisions.set(node.revision_id, node);
       if (!contexts.has(node.context_id) || contexts.get(node.context_id).generation < node.generation) contexts.set(node.context_id, node);
     }
     for (const [contextId, revisionId] of Object.entries(snapshot.roots || {})) {
-      const rootNode = snapshot.nodes.find(node => node.context_id === contextId && node.revision_id === revisionId);
-      if (rootNode) contexts.set(contextId, rootNode);
+      const rootNode = revisions.get(revisionId);
+      if (rootNode?.context_id === contextId) contexts.set(contextId, rootNode);
     }
     const cards = new Map((root.FocusLoopLiveSelectors?.selectContextCards(projection) || []).map(item => [item.id, item]));
     const nodes = [...contexts.values()].map(node => {

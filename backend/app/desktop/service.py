@@ -58,7 +58,6 @@ focus.security 承担（见 openspec add-local-access-policy）。
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -98,6 +97,7 @@ from backend.app.desktop.material_context import MaterialContextProjector
 from backend.app.desktop.material_groups import MaterialGroupService
 from backend.app.desktop.material_kinds import MaterialKindClassifier
 from backend.app.desktop.material_snapshots import MaterialSnapshotVerifier
+from backend.app.desktop.material_watch import MaterialFileMonitor, restore_material_file
 from backend.app.desktop.material_upload import MaterialUploadService
 from backend.app.desktop.main_execution_identity import (
     identity_from_main_run,
@@ -2672,7 +2672,7 @@ class DesktopService:
 
     @staticmethod
     def _digest(path: Path) -> str:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        return MaterialSnapshotVerifier._digest(path)
 
     async def _ensure_git(self, workspace: Path, confirmed: bool) -> None:
         if (workspace / ".git").exists():
@@ -2714,6 +2714,8 @@ class DesktopService:
         return await asyncio.to_thread(run)
 
     async def _watch_materials(self) -> None:
+        monitor = MaterialFileMonitor(self._digest)
+        failures = self._material_watch_failures = set()
         while True:
             try:
                 await asyncio.sleep(2)
@@ -2726,35 +2728,37 @@ class DesktopService:
                             .where(DesktopMaterial.retention == "irreplaceable")
                         )
                     ).all()
+                    paths = [
+                        (material, workspace, Path(workspace.path, *Path(material.relative_path).parts))
+                        for material, _, workspace in rows
+                    ]
+                    monitor.retain({(material.material_id, path) for material, _, path in paths})
+                    failures.intersection_update(material.material_id for material, _, _ in paths)
                     changed = False
-                    for material, _, workspace in rows:
+                    for material, workspace, path in paths:
                         try:
-                            path = Path(workspace.path, *Path(material.relative_path).parts)
-                            if not path.exists():
+                            try:
+                                # 串行等待后台操作，避免材料数量变成线程/任务数量。
+                                digest = await asyncio.to_thread(monitor.digest, material.material_id, path)
+                            except FileNotFoundError:
                                 latest = await session.scalar(
                                     select(MaterialVersion)
                                     .where(MaterialVersion.material_id == material.material_id)
                                     .order_by(MaterialVersion.created_at.desc())
                                 )
                                 if latest:
-                                    path.parent.mkdir(parents=True, exist_ok=True)
-                                    path.write_bytes(await self._git_bytes(Path(workspace.path), "cat-file", "blob", latest.object_id))
-                                    material.digest = self._digest(path)
+                                    content = await self._git_bytes(Path(workspace.path), "cat-file", "blob", latest.object_id)
+                                    material.digest = await asyncio.to_thread(restore_material_file, path, content)
                                     material.needs_confirmation = True
                                     changed = True
                             else:
-                                digest = self._digest(path)
-                                if material.digest and digest != material.digest:
+                                if digest is not None and material.digest and digest != material.digest:
                                     await self._save_material_version(session, material, workspace.path, "external")
                                     changed = True
-                            self._material_watch_failures.discard(material.material_id)
+                            failures.discard(material.material_id)
                         except asyncio.CancelledError:
                             raise
                         except Exception:
-
-                            failures = getattr(self, "_material_watch_failures", None)
-                            if failures is None:
-                                failures = self._material_watch_failures = set()
                             if material.material_id not in failures:
                                 logger.warning(
                                     "材料监测失败，跳过该材料: material_id=%s",

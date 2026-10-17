@@ -24,7 +24,16 @@
     const ids = nodes.map(node => node.context_id).sort();
     const incoming = new Map(ids.map(id => [id, 0]));
     const outgoing = new Map(ids.map(id => [id, []]));
+    const neighbors = new Map(ids.map(id => [id, []]));
+    const degree = new Map(ids.map(id => [id, 0]));
     edges.forEach(edge => {
+      const source = edge.source_context_id, target = edge.target_context_id;
+      if (degree.has(source)) degree.set(source, degree.get(source) + 1);
+      if (target !== source && degree.has(target)) degree.set(target, degree.get(target) + 1);
+      if (neighbors.has(source) && neighbors.has(target)) {
+        neighbors.get(source).push(target);
+        if (source !== target) neighbors.get(target).push(source);
+      }
       if (edge.source_context_id === edge.target_context_id) return;
       if (!incoming.has(edge.target_context_id) || !outgoing.has(edge.source_context_id)) return;
       incoming.set(edge.target_context_id, incoming.get(edge.target_context_id) + 1);
@@ -33,8 +42,8 @@
     const depth = new Map(ids.map(id => [id, 0]));
     const queue = ids.filter(id => incoming.get(id) === 0);
     const visited = new Set();
-    while (queue.length) {
-      const id = queue.shift();
+    for (let head = 0; head < queue.length; head++) {
+      const id = queue[head];
       if (visited.has(id)) continue;
       visited.add(id);
       for (const target of outgoing.get(id) || []) {
@@ -61,18 +70,16 @@
       const rank = new Map(ordered.map((id, index) => [id, index]));
       for (let pass = 0; pass < 3; pass++) {
         for (const band of bands) {
-          const score = id => {
-            const peers = edges.filter(edge => edge.target_context_id === id || edge.source_context_id === id)
-              .map(edge => rank.get(edge.source_context_id === id ? edge.target_context_id : edge.source_context_id)).filter(Number.isFinite);
-            return peers.length ? peers.reduce((sum, value) => sum + value, 0) / peers.length : rank.get(id);
-          };
-          band.sort((a, b) => score(a) - score(b) || a.localeCompare(b));
+          const scores = new Map(band.map(id => {
+            const peers = neighbors.get(id).map(peer => rank.get(peer));
+            return [id, peers.length ? peers.reduce((sum, value) => sum + value, 0) / peers.length : rank.get(id)];
+          }));
+          band.sort((a, b) => scores.get(a) - scores.get(b) || a.localeCompare(b));
           band.forEach((id, index) => rank.set(id, index));
         }
       }
-      const degree = id => edges.filter(edge => edge.source_context_id === id || edge.target_context_id === id).length;
       for (const band of bands) {
-        const anchor = [...band].sort((a, b) => degree(b) - degree(a) || a.localeCompare(b))[0];
+        const anchor = [...band].sort((a, b) => degree.get(b) - degree.get(a) || a.localeCompare(b))[0];
         if (anchor && band.length > 2) { band.splice(band.indexOf(anchor), 1); band.splice(Math.floor(band.length / 2), 0, anchor); }
       }
       const columnSpace = nodeSizes.live.width + 56, rowSpace = nodeSizes.live.height + 48;
