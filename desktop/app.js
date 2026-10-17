@@ -2487,6 +2487,7 @@ function appendStreamDelta(envelope, field) {
   if (!task || !content || !envelope.agent_id.startsWith("main:")) return;
   beginLeadExecution(task.task_id);
   const buffer = state.streamBuffers.get(envelope.run_id) || { taskId: task.task_id, text: "", reasoning: "", messageId: null };
+  buffer.runId = envelope.run_id;
   if (typeof messageId === "string" && messageId && messageId !== buffer.messageId) {
     buffer.messageId = messageId;
     buffer.text = "";
@@ -2499,7 +2500,7 @@ function appendStreamDelta(envelope, field) {
     buffer.reasoningRendered = undefined;
   }
   const accumulated = buffer[field] || "";
-  if (field === "text" || accumulated.length < conversationRender.STREAM_TEXT_LIMIT) buffer[field] = accumulated + content;
+  buffer[field] = accumulated + content;
   state.streamBuffers.set(envelope.run_id, buffer);
   if (state.streamFrames.has(envelope.run_id)) return;
   state.streamFrames.set(envelope.run_id, requestAnimationFrame(() => {

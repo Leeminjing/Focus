@@ -311,10 +311,12 @@
     if (!allMessages.length) state.units.push(_placeholderUnit(task, input.escapeHtml));
     for (const [runId, buffer] of input.state.streamBuffers || []) {
       if (buffer.taskId !== task.task_id || !(buffer.text || buffer.reasoning)) continue;
+      const reasoning = streamingReasoningEvent(buffer, runId);
+      if (reasoning) state.eventIndex.set(reasoning.eventKey, reasoning);
       const key = `stream:${runId}`;
       state.units.push({
         key,
-        html: _unitHtml(key, _streamingSignature(runId, buffer), () => `<article class="${STREAMING_PLACEHOLDER_CLASS}" data-stream-run="${runId}">${streamingContent(input.markdown, input.events, buffer)}</article>`),
+        html: _unitHtml(key, _streamingSignature(runId, buffer), () => `<article class="${STREAMING_PLACEHOLDER_CLASS}" data-stream-run="${runId}">${streamingContent(input.markdown, input.events, buffer, runId)}</article>`),
       });
     }
     return { units: state.units, eventIndex: state.eventIndex };
@@ -408,9 +410,16 @@
     return next;
   }
 
-  function _reasoningSection(events, reasoning) {
-    return reasoning
-      ? `<section class="conversation-event-sequence" role="group" aria-label="执行过程">${events.renderEvent({ type: "reasoning", content: reasoning }, { previewMode: "latest" })}</section>`
+  function streamingReasoningEvent(buffer, runId = buffer.runId || "") {
+    return buffer.reasoning ? {
+      type: "reasoning", content: buffer.reasoning, messageId: buffer.messageId || "",
+      eventKey: `reasoning:stream:${encodeURIComponent(runId)}:${encodeURIComponent(buffer.messageId || "")}`,
+    } : null;
+  }
+
+  function _reasoningSection(events, event) {
+    return event
+      ? `<section class="conversation-event-sequence" role="group" aria-label="执行过程">${events.renderEvent(event, { previewMode: "latest" })}</section>`
       : "";
   }
 
@@ -450,12 +459,12 @@
     return `<div class="streaming-overflow"><span role="status">内容较长，仍在生成</span><button type="button" class="text-button" data-action="expand-stream-content">${buffer.streamExpandedVersion ? "更新完整内容" : "展开完整内容"}</button></div>`;
   }
 
-  function streamingContent(markdown, events, buffer) {
+  function streamingContent(markdown, events, buffer, runId) {
     const blocks = visibleStreamBlocks(markdown, buffer);
     const answer = blocks.length
       ? `<div class="message-rich">${blocks.map(entry => entry.html).join("")}</div>`
       : "";
-    return `${_reasoningSection(events, buffer.reasoning)}${answer}${streamingNotice(buffer)}`;
+    return `${_reasoningSection(events, streamingReasoningEvent(buffer, runId))}${answer}${streamingNotice(buffer)}`;
   }
 
   return {
@@ -471,6 +480,7 @@
     expandStreamBlocks,
     streamingNotice,
     streamingContent,
+    streamingReasoningEvent,
     windowStartIndex,
     stats: snapshotStats,
     resetStats,
