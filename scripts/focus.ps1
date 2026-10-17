@@ -191,8 +191,8 @@ function Test-DependenciesReady {
         return $false
     }
 
-    & $VenvPython -c "import alembic, asyncpg, fastapi, psycopg, uvicorn" *> $null
-    return $LASTEXITCODE -eq 0
+    # 完整导入检查在安装/更新及原生首次准备阶段执行；日常这里只检查文件。
+    return $true
 }
 
 function Sync-FocusDependencies {
@@ -211,7 +211,8 @@ function Sync-FocusDependencies {
     Write-Host "Updating Python dependencies..."
     $desktopRequirement = "$HarnessDir[desktop]"
     Invoke-Native $VenvPython @("-m", "pip", "install", "--disable-pip-version-check", "-e", $desktopRequirement)
-    Invoke-Native $VenvPython @("-c", "import alembic, asyncpg, fastapi, psycopg, uvicorn")
+    $node = Get-ApplicationPath "node.exe"
+    Invoke-Native $node @((Join-Path $DesktopDir "startup-runtime.cjs"), "--prepare", $VenvPython, $FocusHome)
 }
 
 function Start-Focus {
