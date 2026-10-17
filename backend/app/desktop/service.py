@@ -369,6 +369,9 @@ class DesktopService:
 
         self.run_lifecycle = RunLifecycleFinalizer(session_factory, checkpointer,
             secret_provider=lambda: configured_secret_values(self.app_config))
+        from backend.app.desktop.execution_attempts.shell_recovery import ShellCleanupRecovery
+
+        self.shell_recovery = ShellCleanupRecovery(session_factory, self.run_lifecycle, run_manager)
         self._run_admission = self._admission_service()
         self._run_dispatch_repository = RunDispatchRepository()
         self._run_dispatch_recovery = RunDispatchRecovery(session_factory)

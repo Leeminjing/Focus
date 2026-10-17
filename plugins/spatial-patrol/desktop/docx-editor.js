@@ -169,6 +169,7 @@
   async function openEditor(mode, instance = active) {
     if (!isCurrent(instance) || instance.opening) return;
     instance.opening = true;
+    instance.mode = mode;
     statusFor(instance, "正在准备开源编辑器…", "warning");
     try {
       const payload = await api("/sessions", {
@@ -202,7 +203,7 @@
           if (instance.dirty) statusFor(instance, "编辑器内有未保存更改", "warning");
           else if (!instance.saved) statusFor(instance, "已同步", "success");
         },
-        onError: event => renderErrorFor(instance, new Error(event?.data?.errorDescription || `编辑器错误 ${event?.data?.errorCode || ""}`)),
+        onError: event => handleOpenError(instance, new Error(event?.data?.errorDescription || `编辑器错误 ${event?.data?.errorCode || ""}`)),
         onRequestClose: () => closeEditor(instance),
       };
       instance.editor = new root.DocsAPI.DocEditor(host.id, config);
@@ -211,10 +212,26 @@
       instance.pollTimer = setInterval(() => pollSession(instance), 2000);
       loadAnchors(instance).catch(error => statusFor(instance, `锚点加载未完成：${error.message}`, "warning"));
     } catch (error) {
-      renderErrorFor(instance, error);
+      await handleOpenError(instance, error);
     } finally {
       instance.opening = false;
     }
+  }
+
+  async function handleOpenError(instance, error) {
+    if (!isCurrent(instance)) return;
+    if (instance.mode !== "view" || !root.FocusFilePreview) { renderErrorFor(instance, error); return; }
+    clearInterval(instance.pollTimer);
+    try { instance.editor?.destroyEditor?.(); } catch {}
+    instance.editor = null; instance.frame = null;
+    const stage = instance.container.querySelector("[data-docx-stage]");
+    stage.innerHTML = '<div data-generic-file></div>';
+    instance.container.querySelector("[data-docx-anchor]").hidden = true;
+    statusFor(instance, "编辑服务不可用，已回退只读文本", "warning");
+    await root.FocusFilePreview.mount(stage.querySelector("[data-generic-file]"), {
+      name: instance.material.relative_path,
+      target: { task_id: instance.task.task_id, content_ref: instance.material.relative_path },
+    });
   }
 
   async function pollSession(instance = active) {
@@ -388,6 +405,13 @@
       onClose: options.onClose,
     };
     active = instance;
+    if (root.FocusFilePreview) {
+      const target = { task_id: task.task_id, content_ref: material.relative_path };
+      const exits = document.createElement("div");
+      exits.innerHTML = root.FocusFilePreview.toolbar(target, material.relative_path);
+      container.querySelector(".focus-docx-toolbar").after(exits);
+      root.FocusFilePreview.bindActions(exits, target, material.relative_path);
+    }
     root.addEventListener("message", projectionMessage);
     root.addEventListener("resize", renderOverlays);
     if (typeof root.ResizeObserver === "function") {

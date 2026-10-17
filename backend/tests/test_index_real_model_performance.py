@@ -93,19 +93,29 @@ def _corpus_cases():
 @pytest.mark.parametrize("token_limit", [None if value == "none" else int(value) for value in
                                       os.environ.get("FOCUS_INDEX_BENCHMARK_TOKEN_LIMITS", "none,4096").split(",")])
 @pytest.mark.parametrize("segment_size", [12, 20, 30])
-def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, token_limit, repeat, case):
+@pytest.mark.parametrize("prewarm", os.environ.get("FOCUS_INDEX_BENCHMARK_PREWARM", "off").split(","))
+def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, token_limit, repeat, case, prewarm):
     async def run(sessions, seed):
-        config = get_app_config("config.yaml")
+        assert prewarm in {"off", "on"}
+        config = get_app_config("config.yaml").model_copy(deep=True)
         selected = config.get_model(config.resolve_default_model_name())
+        role_limits = os.environ.get("FOCUS_INDEX_BENCHMARK_ROLE_LIMITS")
+        if role_limits:
+            validated = type(selected).model_validate({**selected.model_dump(),
+                "derivation_max_output_tokens": json.loads(role_limits)})
+            selected.derivation_max_output_tokens = validated.derivation_max_output_tokens
         concurrency = int(os.environ.get("FOCUS_INDEX_BENCHMARK_CONCURRENCY", "4"))
         count = int(os.environ.get("FOCUS_INDEX_BENCHMARK_MESSAGES", "55"))
         output = Path(os.environ.get("FOCUS_INDEX_BENCHMARK_OUTPUT", ".tmp/index-latency"))
         output.mkdir(parents=True, exist_ok=True)
         case_key = stable_expansion_hash("benchmark-case", case.model_dump(mode="json"))[:16] if case else "synthetic"
-        path = output / f"{case_key}-segment-{segment_size}-tokens-{token_limit}-concurrency-{concurrency}-repeat-{repeat}.json"
+        preparation_suffix = "-prewarm" if prewarm == "on" else ""
+        path = output / f"{case_key}-segment-{segment_size}-tokens-{token_limit}-concurrency-{concurrency}-repeat-{repeat}{preparation_suffix}.json"
         report = {
             "configured_model": selected.name, "provider_model": selected.model,
             "output_token_limit": selected.curation_max_output_tokens,
+            "role_output_token_limits": selected.derivation_max_output_tokens,
+            "local_prewarm": prewarm,
             "segment_size": segment_size, "concurrency": concurrency, "repeat": repeat,
             "segment_token_limit": token_limit,
             "fixture": case.category if case else "unique synthetic batch verification facts; no customer data",
@@ -129,6 +139,7 @@ def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, token_limi
                         return result
                     finally:
                         invocations.append({
+                            "role": role, "output_token_limit": self.max_output_tokens,
                             "schema": schema.__name__, "duration_ms": (perf_counter() - started) * 1000,
                             "response_json_chars": len(result.model_dump_json()) if result is not None else None,
                             "input_tokens": sum(a.get("input_tokens", 0) for a in self.last_attempt_records),
@@ -145,11 +156,13 @@ def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, token_limi
             segment_max_messages=segment_size, segment_max_estimated_tokens=token_limit,
             semantic_projector_factory=factory("semantic_index_projector"),
             semantic_claim_verifier_factory=factory("claim_verifier"),
+            semantic_interpreter_factory=factory("semantic_index_interpreter"),
         )
         report["segmenter_fingerprint"] = service._indexer.segmenter_version
         report["model_identities"] = {
             "projector": service._model_identity(service._semantic_projector_factory),
             "verifier": service._model_identity(service._semantic_claim_verifier_factory),
+            "interpreter": service._model_identity(service._semantic_interpreter_factory),
         }
         # Corpus exports already contain the versioned semantic view. Re-reading
         # them through the legacy adapter could reclassify evidence. Only source
@@ -166,7 +179,7 @@ def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, token_limi
         if case:
             service._reader = FrozenReader()
 
-        async def measure(name, target):
+        async def measure(name, target, *, prepare_only=False):
             invocations.clear()
             log_start = len(caplog.records)
             async with sessions() as session:
@@ -174,7 +187,11 @@ def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, token_limi
                 billed_before = before.model_calls
             started = perf_counter()
             try:
-                result = await service.build(observation(seed, target))
+                if prepare_only:
+                    await service.prewarm_revision(seed["loop_id"], 1, target)
+                    result = PortfolioIndexBuildResult()
+                else:
+                    result = await service.build(observation(seed, target))
             except Exception as exc:
                 # An uncaught provider/storage error is a measured failure, not
                 # a missing sample. Preserve attempts and billing below without
@@ -197,7 +214,9 @@ def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, token_limi
                 "invocations": [{k: v for k, v in call.items() if k != "attempts"} for call in invocations],
                 "locally_projected_messages": sum(call["projected_messages"] for call in invocations),
                 "timings": [{"phase": r.index_phase, "queue_wait_ms": r.queue_wait_ms,
-                             "execution_ms": r.execution_ms, "admission_ms": r.admission_ms} for r in metrics],
+                             "execution_ms": r.execution_ms, "admission_ms": r.admission_ms,
+                             "output_token_limit": r.output_token_limit, "output_tokens": r.output_tokens,
+                             "input_tokens": r.input_tokens, "model_calls": r.model_calls} for r in metrics],
             }
             phase["revision_timings"] = [
                 {name: getattr(record, name) for name in (
@@ -229,7 +248,7 @@ def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, token_limi
             if result.blocker_code is not None:
                 if case is None:
                     pytest.fail(result.blocker_summary)
-            else:
+            elif result.indexes:
                 assert phase["quality"]["all_sources_bound"]
                 assert phase["quality"]["valid_supports"] == phase["quality"]["accepted_supports"]
             return result
@@ -241,6 +260,8 @@ def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, token_limi
             if case:
                 frozen_messages[target.ref.revision_id] = tuple(history)
             phase_name = "cold" if i == 0 else f"append-{i}"
+            if prewarm == "on":
+                await measure(f"prewarm-{i}", target, prepare_only=True)
             built = await measure(phase_name, target)
             if built.blocker_code is None:
                 cached = await measure(f"exact-{i}", target)
@@ -252,7 +273,8 @@ def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, token_limi
         report["evaluation_complete"] = True
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         if case is None:
-            assert all(phase["quality"]["state"] == "complete" for phase in report["phases"].values()), path
+            assert all(phase["quality"]["state"] == "complete" for phase in report["phases"].values()
+                       if "quality" in phase), path
 
     with caplog.at_level(logging.INFO):
         exercise(tmp_path, run)

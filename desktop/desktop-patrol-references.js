@@ -100,6 +100,7 @@
           section.querySelectorAll('[role="tabpanel"]').forEach((panel,i) => { panel.hidden = i !== index; });
         }
         select(0); section.append(cite);
+        root.FocusFilePreview?.mountHistory(body, { ...result.file, fact_id: file.fact_id, revision: file.revision }, id);
         const note = document.createElement("small"); note.className = "version-note"; note.textContent = "固定版本，不随文件更新漂移"; section.append(note);
         body.querySelector("[data-patrol-file-add]")?.addEventListener("click",() => { try { add(file); } catch (error) { onError(error); } });
       } catch (error) { if (owner === epoch && error.name !== "AbortError") body.textContent = "引用版本不可用，请重新选择；原引用和要求已保留。"; }

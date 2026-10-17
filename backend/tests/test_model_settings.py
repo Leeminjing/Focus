@@ -176,6 +176,16 @@ def test_catalog_snapshot_exposes_every_editable_field(workspace):
             assert field in entry
 
 
+def test_saving_from_older_client_keeps_declared_role_output_limits(workspace):
+    catalog = _file_catalog()
+    catalog[0]["derivation_max_output_tokens"] = {"semantic_index_interpreter": 2048}
+    _write_preference(workspace, catalog, [])
+    _, config = _load_config(workspace)
+    submitted = _file_catalog()  # No role field in an older settings client.
+    save_model_settings(config, {"models": submitted, "removed_models": []})
+    assert config.models[0].derivation_max_output_tokens == {"semantic_index_interpreter": 2048}
+
+
 def test_catalog_snapshot_never_exposes_the_secret(workspace):
     config = _app_config()
 
@@ -400,9 +410,12 @@ def test_save_records_removals_and_keeps_them_after_the_file_layer_grows(workspa
     assert snapshot["removed_models"] == ["beta"]
 
 
-def test_save_writes_the_credential_and_reports_it_set(workspace):
+@pytest.mark.parametrize("reference", [f"${_KEY_VAR}", "${" + _KEY_VAR + "}"])
+def test_save_writes_the_credential_and_reports_it_set(workspace, reference):
     config = _app_config()
     catalog = _file_catalog()
+    for entry in catalog:
+        entry["api_key"] = reference
 
     snapshot = save_model_settings(
         config, {"models": catalog, "credentials": {_KEY_VAR: "rotated-secret"}}
@@ -412,6 +425,8 @@ def test_save_writes_the_credential_and_reports_it_set(workspace):
     assert "rotated-secret" in env_text
     assert os.environ[_KEY_VAR] == "rotated-secret"
     assert all(entry["api_key_set"] for entry in snapshot["models"])
+    assert all(entry["api_key"] == reference for entry in snapshot["models"])
+    assert all(entry["api_key_variable"] == _KEY_VAR for entry in snapshot["models"])
     assert "rotated-secret" not in json.dumps(snapshot, ensure_ascii=False)
     # 发行条目未发生字段变化时也必须刷新；检查下一次真实 factory 装配。
     from focus.models import create_chat_model

@@ -19,6 +19,7 @@
   const feedback = FocusWorkspacePatrolFeedback.createReader(api);
   const intake = FocusWorkspacePatrolIntake.create({ runtime, api, selectWorkspace: window.focusDesktop?.selectWorkspace,
     recovery: bridge?.enabled ? bridge.recovery : null,
+    onSaveError: error => fail(new Error(`草稿保存失败：${error.message}`)),
     accessMode: FocusAccessMode.readNewSessionDefault(localStorage) });
   const preview = FocusWorkspacePatrolMaterialPreview.create({ host, intake, workspaceId: () => workspace?.workspace_id || null, onError: fail, compact:true });
   let workspace = null, workspaceLoaded = false, generation = 0, loopId = null, unsubscribe = null, reads = new AbortController();
@@ -109,7 +110,7 @@
     $("#reply-target span").textContent = model.draft.request_id ? `回复指定问题 · 版本 ${model.draft.request_revision}` : "";
     const status = { accepted: "已受理", sending: "发送中", failed: "未确认", edited: "已转为草稿" };
     $("#receipt").textContent = status[model.rows[0]?.status] || "";
-    const nextHistory = JSON.stringify([workspace?.workspace_id,model.rows]);
+    const nextHistory = `${workspace?.workspace_id || ""}:${model.historyRevision}`;
     if (historyKey !== nextHistory) {
       historyKey = nextHistory;
       const items = $("#history-items"); items.replaceChildren();
@@ -202,12 +203,13 @@
     if (!workspace) { await choose(); return; }
     references.close();
     const id = workspace.workspace_id;
-    // 写盘失败后，显式发送必须再次保存眼前的文字，不能发送回滚后的旧草稿。
+    // 显式发送以眼前的文字为准，发送流程会等待本地持久化成功。
     if (draftStore().get().draft.content !== $("#instruction").value) draftStore().edit({ content: $("#instruction").value });
     const visible = FocusWorkspacePatrolInputs.captureVisibleContext({ projection: live.get().projection });
     await send(() => intake.submit(id, visible), id);
   }
   async function hidePanel() {
+    await intake.flush();
     const owner = ++closeEpoch;
     host.classList.remove("is-opening"); host.classList.add("is-closing"); host.inert = true;
     await Promise.all(host.getAnimations().map(animation => animation.finished.catch(() => {})));
@@ -282,6 +284,7 @@
     }
   }
   function setVisibility(visible) {
+    if (!visible) void intake.flush().catch(fail);
     visibilityKnown = true;
     if (panelVisible === visible) return;
     panelVisible = visible;
@@ -364,6 +367,11 @@
   sizeObserver.observe($("#version-picker"));
   sizeObserver.observe($("#version-detail"));
   if (bridge?.enabled) {
+    bridge.recovery?.onFlush(async token => {
+      let error = null;
+      try { await intake.flush(); } catch (failure) { fail(failure); error = failure.message; }
+      await bridge.recovery.flushed({ token, error });
+    });
     bridge.onVisibility(setVisibility);
     bridge.onOpen(target => {
       closeEpoch++; host.inert = false; host.classList.remove("is-closing");

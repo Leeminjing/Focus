@@ -159,6 +159,9 @@ if (!process.versions.electron) {
     }
     const live = url.pathname.match(/^\/desktop\/api\/agent-loops\/([^/]+)\/live$/);
     if (live) return json(response, snapshot(live[1]));
+    const liveHistory = url.pathname.match(/^\/desktop\/api\/agent-loops\/([^/]+)\/live\/history$/);
+    if (liveHistory) return json(response, { loop_id: liveHistory[1], last_sequence: liveSequence, authority_revision: authorityRevision,
+      items: [], next_before_sequence: null, minimum_sequence: 1, truncated: false });
     const stream = url.pathname.match(/^\/desktop\/api\/agent-loops\/([^/]+)\/live\/stream$/);
     if (stream) {
       response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
@@ -210,6 +213,21 @@ if (!process.versions.electron) {
     assert.equal(host.robot.isAlwaysOnTop(),true,"打开输入框后机器人必须仍处于桌面浮层，不能被普通窗口遮住");
     assert.equal(host.panel.isAlwaysOnTop(),true,"输入框和机器人必须保持同一浮层级别");
     await waitFor(host.panel,"document.querySelector('#send').disabled && document.querySelector('#status').textContent.length > 0","草稿初始化未完成");
+    await host.flushRecovery();
+    let draftSaves = 0, synchronousSyncs = 0;
+    const save = host._recovery.save.bind(host._recovery), fsyncSync = fs.fsyncSync;
+    host._recovery.save = state => { draftSaves++; return save(state); };
+    fs.fsyncSync = (...args) => { synchronousSyncs++; return fsyncSync(...args); };
+    try {
+      await run(host.panel, `(() => { const input=document.querySelector('#instruction'); for(let i=0;i<100;i++){ input.value='draft-'+i; input.dispatchEvent(new Event('input',{bubbles:true})); } })()`);
+      assert.equal(await run(host.panel, "document.querySelector('#instruction').value"), "draft-99");
+      await host.flushRecovery();
+      assert.equal(synchronousSyncs, 0, "真实输入/preload/IPC 路径不能同步刷盘");
+      assert.equal(draftSaves, 1, "100 次编辑应合并保存");
+      assert.equal(host._recovery.read().state.workspaces[0][1].draft.content, "draft-99");
+    } finally { host._recovery.save = save; fs.fsyncSync = fsyncSync; }
+    await run(host.panel, "document.querySelector('#instruction').value=''; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true}))");
+    await host.flushRecovery();
     if (process.env.FOCUS_PATROL_NATIVE_PREVIEW) {
       const backdrop=new BrowserWindow({x:420,y:160,width:500,height:260,frame:false,resizable:false,backgroundColor:"#e8eef6",show:false,webPreferences:{sandbox:true,contextIsolation:true}});
       const backdropColor=process.env.FOCUS_PATROL_NATIVE_DARK ? "#253044" : "#e8eef6";
@@ -326,7 +344,7 @@ if (!process.versions.electron) {
     assert.equal(await run(host.panel, "document.querySelector('#instruction').value"), "A 的草稿");
     assert.equal(requests.length, 2);
     await capture(host.panel, "desktop-preserved-draft");
-    // 真实 preload/同步 IPC/renderer 重建：本地草稿与材料不能依赖闭包或旧页面来源。
+    // 真实 preload/异步写入 IPC/renderer 重建：本地草稿与材料不能依赖闭包或旧页面来源。
     await run(host.robot, `(() => { const data = new DataTransfer(); data.setData('text/plain', '刷新后保留的材料'); document.querySelector('#robot').dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer:data})); })()`);
     await waitFor(host.panel, "document.querySelectorAll('.patrol-material-card').length === 1", "恢复材料未进入草稿");
     const streamBeforeReload = streams.get("loop-workspace-a");

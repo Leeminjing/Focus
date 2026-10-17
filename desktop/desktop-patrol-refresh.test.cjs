@@ -33,6 +33,7 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
     ready: async () => ({ state: { workspaceId: "a" }, panelVisible: visible }),
     setState: async value => { states.push(value); }, resizePanel: async () => {} };
   const intake = { store, hasUnfinished: () => false, isSending: () => false, remember() {}, claimUnbound() {},
+    flush: async () => {},
     readBinding: () => null, reconcile: async () => {},
     workspace: async id => ({ workspace_id: id, display_name: id }), resourceLimits: async () => ({}),
     history: (id, page) => store(id).history(page) };
@@ -47,7 +48,7 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
     FocusLoopLiveSelectors: { selectFacts: value => value.files || [] } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-references.js"), "utf8"), context);
   await vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-panel.js"), "utf8"), context);
-  return { calls, states, body, events, api,
+  return { calls, states, body, events, api, store,
     async emit(value, connection = state.connection) { state = { ...state, projection: value, connection }; listener(state); await tick(); },
     async visibility(value) { events.visibility?.(value); await tick(); },
     results: () => body.querySelector("#results") };
@@ -180,6 +181,17 @@ test("a newer authoritative state releases an accepted control superseded by oth
   await f.emit(projection("r1", { loop: { state: { status: "waiting_user", waiting_reason: "awaiting_input", revision: 3 } } }));
   assert.equal(f.body.querySelector("#control-feedback").hidden, true);
   assert.equal(toggle.disabled, false);
+});
+
+test("typing preserves loaded history DOM until a history change", async () => {
+  const f = await panel();
+  f.store("a").history({ items: [{ submission_id: "old", content: "existing history", created_at: "2020" }], next_before: null });
+  const row = f.body.querySelector("#history-items article");
+  assert.ok(row);
+  for (let i = 0; i < 100; i++) f.store("a").edit({ content: String(i) });
+  assert.equal(f.body.querySelector("#history-items article"), row);
+  f.store("a").history({ items: [{ submission_id: "new", content: "new history", created_at: "2021" }], next_before: null });
+  assert.notEqual(f.body.querySelector("#history-items article"), row);
 });
 
 test("initially hidden panel keeps robot status live without reading answers or mutating results", async () => {

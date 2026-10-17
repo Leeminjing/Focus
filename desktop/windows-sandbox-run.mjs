@@ -17,10 +17,12 @@ let phase = "preparing";
 let targetCreated = false;
 let targetExitCode = null;
 let targetDrained = false;
+const execution = process.env.FOCUS_SHELL_EVIDENCE ? JSON.parse(process.env.FOCUS_SHELL_EVIDENCE) : null;
+delete process.env.FOCUS_SHELL_EVIDENCE;
 
 function report(next, fields = {}) {
   const pending = `${statusPath}.pending`;
-  writeFileSync(pending, JSON.stringify({ phase: next, ...fields }), "utf8");
+  writeFileSync(pending, JSON.stringify({ phase: next, ...(execution ? { execution } : {}), ...fields }), "utf8");
   renameSync(pending, statusPath);
   phase = next;
 }

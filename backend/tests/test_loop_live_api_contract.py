@@ -26,6 +26,14 @@ def test_live_stream_rejects_malformed_cursor() -> None:
     assert response.status_code == 422
 
 
+def test_live_history_rejects_invalid_pagination() -> None:
+    app = FastAPI()
+    app.include_router(live_loop_router)
+    with TestClient(app) as client:
+        for query in ("before_sequence=0", "before_sequence=bad", "limit=0", "limit=201"):
+            assert client.get(f"/desktop/api/agent-loops/loop/live/history?{query}").status_code == 422
+
+
 def test_live_stream_stops_without_output_after_disconnect() -> None:
     class Request:
         app = SimpleNamespace(state=SimpleNamespace(desktop_service=SimpleNamespace(session_factory=None)))

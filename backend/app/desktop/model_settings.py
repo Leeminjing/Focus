@@ -105,6 +105,7 @@ _EDITABLE_FIELDS = (
     "context_window",
     "curation_output_method",
     "curation_max_output_tokens",
+    "derivation_max_output_tokens",
     "curation_default",
     "default",
     "supports_image_input",
@@ -165,6 +166,7 @@ def _entry_view(model: ModelConfig | None, raw: dict | None) -> dict:
     declared = _normalized_entry(raw)
     surface = declared or (model.model_dump() if model is not None else raw or {})
     entry = {field: surface.get(field) for field in _EDITABLE_FIELDS}
+    entry["derivation_max_output_tokens"] = surface.get("derivation_max_output_tokens") or {}
 
     raw_key = raw.get("api_key") if isinstance(raw, dict) else None
     raw_key = raw_key if isinstance(raw_key, str) else ""
@@ -279,7 +281,8 @@ def settings_snapshot(app_config: AppConfig, config_name: str = CONFIG_FILE_NAME
 
 def _entries_for_submission(entry: dict) -> dict:
 
-    return {field: entry.get(field) for field in _EDITABLE_FIELDS}
+    return {field: entry.get(field, {} if field == "derivation_max_output_tokens" else None)
+            for field in _EDITABLE_FIELDS}
 
 
 def _entry_errors(index: int, entry: Any) -> dict[str, str]:
@@ -457,6 +460,11 @@ def save_model_settings(
     declared = _by_name(merge_model_layers(file_map, stored_preferences).get("models") or [])
 
     submitted = _with_inherited_api_keys(payload.get("models"), declared)
+    # Older settings clients have no editor for role limits; keep declared limits.
+    if isinstance(submitted, list):
+        submitted = [{**entry, "derivation_max_output_tokens": entry.get("derivation_max_output_tokens",
+                      declared.get(entry.get("name"), {}).get("derivation_max_output_tokens", {}))}
+                     if isinstance(entry, dict) else entry for entry in submitted]
     validate_catalog(submitted)
     pending = _pending_credentials(payload)
 
@@ -579,7 +587,7 @@ async def probe_model_connection(entry: dict, api_key_value: str | None = None) 
 
 
     secrets = [api_key_value] if api_key_value else []
-    candidate = {field: entry.get(field) for field in _EDITABLE_FIELDS}
+    candidate = _entries_for_submission(entry)
     if api_key_value:
         candidate["api_key"] = api_key_value
     if not candidate.get("api_key"):
