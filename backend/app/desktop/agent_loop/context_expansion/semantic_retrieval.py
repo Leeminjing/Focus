@@ -344,6 +344,9 @@ class PlanningRetrievalSession(_RetrievalModel):
     selected_candidate_ids: tuple[str, ...] = ()
     model_results: dict[str, dict[str, Any]] = Field(default_factory=dict)
     reads: tuple[ExactEvidenceRead, ...] = ()
+    strategy_read_pages: tuple[dict[str, Any], ...] = ()
+    strategy_read_rounds: int = Field(default=0, ge=0)
+    strategy_reads_complete: bool = False
     planned_payload: dict[str, Any] | None = None
     blocker_code: str | None = None
     blocker_summary: str | None = None

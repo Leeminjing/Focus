@@ -27,7 +27,7 @@
     service = MemoryService(session_factory, app_config, context_reader)
     await service.create(MemoryCreate(title="...", content="...", source=...))
     block = await service.build_memory_block(["mem-1", "mem-2"])
-演化策略沿用 CRUD，以三段正文、启停及工作区范围保存；普通 Run 装备只接受普通记忆，策略由 Observation 完整冻结。
+演化策略沿用 CRUD，以三段正文、启停及工作区范围保存；普通 Run 装备只接受普通记忆，策略目录随 Observation 冻结，正文按 hash 留存供选读。
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from __future__ import annotations
 import logging
 import json
 from typing import Any, Callable, Literal
+from types import SimpleNamespace
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -50,6 +51,7 @@ from backend.app.desktop.evolution_strategies import EvolutionStrategy
 from backend.app.desktop.strategy_packages import (
     StrategyMetadata, StrategyPackage, installation_hash, package_from_memory, parse_strategy,
 )
+from backend.app.desktop.strategy_capacity import StrategyCapacityAdmission
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +225,7 @@ class MemoryService:
                 raise HTTPException(422, "策略正文仅使用三段策略字段")
             if body.category != "evolution_strategy" and body.strategy_package is not None:
                 raise HTTPException(422, "普通记忆不接受策略包信息")
+            admission = await StrategyCapacityAdmission.load(session, self._app_config, lock=True) if body.category == "evolution_strategy" else None
             memory_id = _new_id()
             package = self._package(body.title, body.strategy, body.strategy_package, memory_id) if body.strategy else None
             row = Memory(
@@ -242,6 +245,8 @@ class MemoryService:
                 ),
             )
             session.add(row)
+            if admission is not None:
+                admission.check([*admission.rows, row])
             await self._commit_strategy(session)
             return self._payload(row)
 
@@ -251,6 +256,7 @@ class MemoryService:
             row = await session.get(Memory, memory_id)
             if not row:
                 raise HTTPException(404, "记忆不存在")
+            admission = await StrategyCapacityAdmission.load(session, self._app_config, lock=True) if row.category == "evolution_strategy" else None
             workspace_id = body.workspace_id if "workspace_id" in body.model_fields_set else row.workspace_id
             strategy = body.strategy if "strategy" in body.model_fields_set else row.strategy
             await self._validate_strategy(session, row.category, workspace_id, strategy)
@@ -276,6 +282,8 @@ class MemoryService:
                 row.content_mode = body.content_mode
             if body.segments is not None:
                 row.segments = body.segments
+            if admission is not None:
+                admission.check(admission.rows)
             await self._commit_strategy(session)
             fresh = await session.get(Memory, memory_id, populate_existing=True)
             return self._payload(fresh)
@@ -299,13 +307,21 @@ class MemoryService:
                 raise
             raise HTTPException(409, "同一范围已安装此策略，或安装内容已发生变化；请刷新后重试") from exc
 
-    async def preview_strategy(self, markdown, workspace_id):
+    async def preview_strategy(self, markdown, workspace_id, enabled=True):
         package = parse_strategy(markdown)
         async with self._session_factory() as session:
             await self._validate_strategy(session, "evolution_strategy", workspace_id, package.strategy)
             row = await self._installed_strategy(session, package.metadata.id, workspace_id)
+            admission = await StrategyCapacityAdmission.load(session, self._app_config)
+            candidate = SimpleNamespace(memory_id=row.memory_id if row else _new_id(),
+                title=package.metadata.name, workspace_id=workspace_id, enabled=enabled,
+                strategy=package.strategy.model_dump(mode="json"), strategy_package=package.metadata.model_dump(by_alias=True))
+            if row and package_from_memory(row).fingerprint() == package.fingerprint():
+                candidate = row  # Idempotent installation keeps the existing enabled state.
+            projected = [item for item in admission.rows if row is None or item.memory_id != row.memory_id] + [candidate]
             return {**package.model_dump(mode="json", by_alias=True), "content_hash": package.fingerprint(),
-                    "existing": self._payload(row) if row else None}
+                    "existing": self._payload(row) if row else None,
+                    "capacity": admission.reports(projected, workspace_id=workspace_id)}
 
     @staticmethod
     async def _installed_strategy(session, package_id, workspace_id, *, lock=False):
@@ -318,6 +334,7 @@ class MemoryService:
         async with self._session_factory() as session:
             session.expire_on_commit = False
             await self._validate_strategy(session, "evolution_strategy", workspace_id, package.strategy)
+            admission = await StrategyCapacityAdmission.load(session, self._app_config, lock=True)
             row = await self._installed_strategy(session, package.metadata.id, workspace_id, lock=True)
             if replace_memory_id is not None and (row is None or row.memory_id != replace_memory_id or installation_hash(row) != expected_hash):
                 raise HTTPException(409, "策略已在预览后发生变化，请重新预览")
@@ -331,10 +348,12 @@ class MemoryService:
                 row = Memory(memory_id=_new_id(), category="evolution_strategy", content="", source_kind="manual",
                              content_mode="complete", segments=[], source_snapshot=[])
                 session.add(row)
+                admission.rows.append(row)
                 status = "installed"
             row.title, row.workspace_id, row.enabled = package.metadata.name, workspace_id, enabled
             row.strategy = package.strategy.model_dump(mode="json")
             row.strategy_package = {**package.metadata.model_dump(by_alias=True), "installed_hash": package.fingerprint()}
+            admission.check(admission.rows)
             await self._commit_strategy(session)
             await session.refresh(row)
             return {"status": status, "memory": self._payload(row)}
@@ -399,6 +418,9 @@ class MemoryService:
             row = await session.get(Memory, memory_id)
             if not row:
                 raise HTTPException(404, "记忆不存在")
+            if row.category == "evolution_strategy":
+                admission = await StrategyCapacityAdmission.load(session, self._app_config, lock=True)
+                admission.check([item for item in admission.rows if item.memory_id != memory_id])
             await session.delete(row)
             await session.commit()
 

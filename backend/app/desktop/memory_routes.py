@@ -25,10 +25,10 @@ class StrategyPreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     markdown: str = Field(min_length=1, max_length=160000)
     workspace_id: str | None = None
+    enabled: bool = True
 
 
 class StrategyInstallRequest(StrategyPreviewRequest):
-    enabled: bool = True
     replace_memory_id: str | None = Field(default=None, max_length=32)
     expected_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
@@ -68,7 +68,7 @@ async def rehearse_strategy(body: StrategyRehearsalRequest, request: Request) ->
 @memory_router.post("/desktop/api/strategies/preview")
 async def preview_strategy(body: StrategyPreviewRequest, request: Request) -> dict:
     try:
-        return await request.app.state.desktop_service.memory.preview_strategy(body.markdown, body.workspace_id)
+        return await request.app.state.desktop_service.memory.preview_strategy(body.markdown, body.workspace_id, body.enabled)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 

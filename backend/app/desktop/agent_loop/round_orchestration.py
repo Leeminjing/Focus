@@ -121,6 +121,7 @@ from backend.app.desktop.agent_loop.task_progress.repository import ProgressNotR
 from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 
 from backend.app.desktop.evolution_strategies import EVOLUTION_GUIDANCE
+from backend.app.desktop.strategy_snapshots import PatrolStrategyReadRequest
 
 PATROL_SYSTEM_CONTRACT = EVOLUTION_GUIDANCE + "\n" + """你是 Focus Portfolio Patrol，是用户当前 Agent Loop 的唯一可撤销委托权力持有者。
 previous_task_progress 是上一轮任务记忆，task_delta 是本轮 Observation 内未吸收的任务增量；结合两者理解当前完整任务状态。
@@ -218,7 +219,7 @@ class PatrolDecisionProposal(BaseModel):
 class PatrolCognitiveStep(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    reads: tuple[PatrolReadRequest | PatrolWorkerReadRequest | PatrolCausalReadRequest, ...] = Field(default=(), max_length=4)
+    reads: tuple[PatrolReadRequest | PatrolWorkerReadRequest | PatrolCausalReadRequest | PatrolStrategyReadRequest, ...] = Field(default=(), max_length=4)
     compression_candidate: CompressionCandidateRequest | None = None
     decision: PatrolDecisionProposal | None = None
 
@@ -260,6 +261,7 @@ class StructuredPatrolDecisionModel:
         self._rejection_feedback: str | None = None
         self._usage_receipts = None
         self._request_capacity = None
+        self._strategy_reads = set()
 
     def bind_usage_receipts(self, receipts) -> None:
         self._usage_receipts = receipts
@@ -272,6 +274,7 @@ class StructuredPatrolDecisionModel:
         self._rejection_feedback = feedback[:500]
 
     async def __call__(self, observation: LoopObservationEnvelope) -> PatrolDecisionIntent:
+        self._strategy_reads.clear()
         limits = observation.budget.get("limits") or {}
         usage = observation.budget.get("usage") or {}
         self._remaining_calls = remaining_capacity(
@@ -299,6 +302,8 @@ class StructuredPatrolDecisionModel:
 
             messages = await WorkspaceAttachments().project(self._attachment_sessions, observation, config, messages)
         proposal = await self._decide(model, messages, config.curation_output_method, observation)
+        if any((item.memory_id, item.content_hash) not in self._strategy_reads for item in proposal.strategy_adoptions):
+            raise PatrolContractViolation("采用策略前必须读取本轮冻结版本的方法正文", raw_output=self._raw_output(proposal), proposal_actions=proposal.actions)
         try:
             self._contract.validate(
                 actions=proposal.actions,
@@ -376,9 +381,13 @@ class StructuredPatrolDecisionModel:
         if self._reader is None:
             return await self._invoke(model, messages, method, PatrolDecisionProposal)
         step = await self._invoke(model, messages, method, PatrolCognitiveStep)
-        for _ in range(2):
+        strategy_reading = False
+        for read_index in range(7 if observation.evolution_strategies else 2):
             if step.decision is not None:
                 return step.decision
+            strategy_reading = strategy_reading or any(isinstance(item, PatrolStrategyReadRequest) for item in step.reads)
+            if read_index >= 2 and not strategy_reading:
+                break
             evidence = await self._cognitive_evidence(observation, step)
             messages = [
                 *messages,
@@ -387,7 +396,7 @@ class StructuredPatrolDecisionModel:
                         "<selected_context_evidence>"
                         + json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                         + "</selected_context_evidence>\n"
-                        "现在可以返回 final decision；仅确有必要时再请求一次 selective read 或 compression candidate。"
+                        "现在可以返回 final decision；仅确有必要时继续 selective read 或 compression candidate。"
                     )
                 ),
             ]
@@ -423,7 +432,11 @@ class StructuredPatrolDecisionModel:
                 "after_tokens": candidate.after_tokens,
                 "expires_at": candidate.expires_at.isoformat(),
             },)
-        return await self._reader(observation, step.reads)
+        evidence = await self._reader(observation, step.reads)
+        requested = {(item.memory_id, item.content_hash) for item in step.reads if isinstance(item, PatrolStrategyReadRequest)}
+        self._strategy_reads.update((item["memory_id"], item["content_hash"]) for item in evidence
+            if item.get("source") == "strategy" and item.get("content") and (item.get("memory_id"), item.get("content_hash")) in requested)
+        return evidence
 
     async def _invoke(self, model, messages, method: str, schema):
         if exceeds_limit(self.call_count, self._remaining_calls, inclusive=True):

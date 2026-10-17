@@ -18,7 +18,8 @@ workspace 输入的 introduced identity 固定原 Oi，observed_round_id 跟随�
 
 from __future__ import annotations
 
-from backend.app.desktop.evolution_strategies import freeze_strategies
+from backend.app.desktop.evolution_strategies import freeze_strategies, strategy_catalog
+from backend.app.desktop.strategy_snapshots import PatrolStrategyReadRequest, read_strategy_page
 
 import asyncio
 import uuid
@@ -797,7 +798,7 @@ class LoopObservationService:
     async def selective_read(
         self,
         observation: LoopObservationEnvelope,
-        requests: tuple[PatrolReadRequest | PatrolWorkerReadRequest | PatrolCausalReadRequest, ...],
+        requests: tuple[PatrolReadRequest | PatrolWorkerReadRequest | PatrolCausalReadRequest | PatrolStrategyReadRequest, ...],
     ) -> tuple[dict[str, Any], ...]:
         allowed = {
             (str(item.get("context_id")), str(item.get("revision_id"))): item.get(
@@ -809,6 +810,9 @@ class LoopObservationService:
         results: list[dict[str, Any]] = []
         async with self._sessions() as session:
             for request in requests:
+                if isinstance(request, PatrolStrategyReadRequest):
+                    results.append(await self._strategy_page(session, observation, request))
+                    continue
                 if isinstance(request, PatrolCausalReadRequest):
                     from backend.app.desktop.agent_loop.causal_snapshot import read_causal_snapshot
 
@@ -839,6 +843,31 @@ class LoopObservationService:
                     }
                 )
         return tuple(results)
+
+    async def _strategy_page(self, session, observation, request):
+        loop = await session.get(AgentLoop, observation.loop_id)
+        round_row = await session.get(LoopRound, observation.round_id)
+        identity = observation.observation_id or observation.decision_inputs_ref
+        if identity is None and round_row is not None and any("strategy" in item for item in observation.evolution_strategies):
+            identity = round_row.observation_id  # Historical full envelopes predate explicit identity fields.
+        if (loop is None or round_row is None or round_row.loop_id != loop.loop_id
+                or loop.status != "running" or round_row.status in TERMINAL_ROUND_STATUSES
+                or loop.authority_revision != observation.authority_revision
+                or round_row.authority_revision != observation.authority_revision
+                or loop.goal_revision != observation.goal_revision
+                or round_row.observation_id != identity):
+            raise ValueError("策略读取授权或 Observation 已失效")
+        grant = await session.scalar(select(LoopDelegationGrant).where(
+            LoopDelegationGrant.loop_id == loop.loop_id, LoopDelegationGrant.revision == observation.authority_revision))
+        if grant is None or grant.status != "active" or (grant.expires_at and grant.expires_at <= datetime.now(UTC)):
+            raise ValueError("策略读取授权已撤销或过期")
+        base = await session.get(LoopObservation, identity)
+        if (base is None or base.loop_id != loop.loop_id or base.round_id != round_row.round_id
+                or (observation.generation and base.generation != observation.generation)
+                or observation_hash(LoopObservationEnvelope.model_validate(base.envelope)) != base.envelope_hash
+                or strategy_catalog(base.envelope.get("evolution_strategies", ())) != strategy_catalog(observation.evolution_strategies)):
+            raise ValueError("策略读取冻结 Observation identity/hash 不匹配")
+        return await read_strategy_page(session, base.envelope.get("evolution_strategies", ()), request)
 
     async def worker_sources(self, observation) -> tuple[dict, ...]:
         async with self._sessions() as session:

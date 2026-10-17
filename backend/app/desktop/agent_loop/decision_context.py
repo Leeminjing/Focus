@@ -4,7 +4,7 @@
 scoped_memory 另接收 Context 集合，输出相关任务事项、增量、完整祖先与因果来源清单；具体 Oi 正文由调用方按冻结身份装配，不重读当前世界。
 具体工作流为只允许追加 worker_results/expansion_assessment，基础预算、授权、来源、血缘与 frontier 保持不变。
 示例：PatrolDecisionContext(base, curator_results=results).model_observation()。
-scoped_memory 同时传递完整策略及作用域内用户原文和文件版本引用；不重新读取当前记忆或文件。
+scoped_memory 同时传递策略目录及作用域内用户原文和文件版本引用；正文由精确 hash 选读，不重读当前安装。
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
+from backend.app.desktop.evolution_strategies import strategy_catalog
 from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
 from backend.app.desktop.agent_loop.task_progress.models import LoopDecisionSupplement
 from backend.app.desktop.context_evolution.committed_lineage import (
@@ -33,7 +34,7 @@ def scoped_memory(observation: LoopObservationEnvelope, context_ids: set[str]) -
         "decision_inputs_ref": observation.decision_inputs_ref,
         "observation_id": observation.observation_id,
         "observation_generation": observation.generation,
-        "evolution_strategies": observation.evolution_strategies,
+        "evolution_strategies": strategy_catalog(observation.evolution_strategies),
         "user_intents": tuple(item for item in observation.user_intents
             if item.get("scope") == "portfolio" or item.get("context_id") in context_ids),
         "causal_chain": observation.causal_chain,

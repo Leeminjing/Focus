@@ -27,6 +27,7 @@ from backend.app.desktop.agent_loop.curator_assignments import (
     CuratorAssignmentRepository,
 )
 from backend.app.desktop.agent_loop.decision_context import scoped_memory
+from backend.app.desktop.evolution_strategies import strategy_catalog
 from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
 from backend.app.desktop.agent_loop.expansion_resource_policy import (
     resolve_expansion_resources,
@@ -263,7 +264,7 @@ class CuratorCoordinationStage:
             "portfolio_index_stage": built.stage_record.model_dump(mode="json") if built.stage_record else None,
             "stable_results": observation.stable_results,
             "user_intents": observation.user_intents,
-            "evolution_strategies": observation.evolution_strategies,
+            "evolution_strategies": strategy_catalog(observation.evolution_strategies),
             "workspace": observation.workspace,
             "budget": observation.budget,
             "frozen_expansion_resources": resolve_expansion_resources(

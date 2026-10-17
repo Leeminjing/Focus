@@ -33,6 +33,8 @@ from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_context_expansion_kernel import _source_ref
 from backend.tests.test_patrol_session import _persist_observation
 from backend.tests.test_round_task_progress import _Checkpointer
+from backend.app.desktop.evolution_strategies import strategy_catalog
+from focus.history import content_hash
 
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
@@ -42,6 +44,7 @@ class _Model:
         self.inputs = []
         self.before_call = None
         self.block = False
+        self.read_strategy = False
 
     async def invoke(self, schema, system, payload):
         if self.before_call:
@@ -50,7 +53,8 @@ class _Model:
         if schema is PlannerQueryProposal:
             return schema(rationale="Find requirement", queries=({"text": "durable lock", "kinds": ("semantic_unit",), "limit": 2},))
         if schema is PlannerReadProposal:
-            return schema(rationale="Read requirement", candidate_ids=() if self.block else (payload["candidates"][0]["candidate_id"],))
+            return schema(rationale="Read requirement", candidate_ids=() if self.block else (payload["candidates"][0]["candidate_id"],),
+                strategy_reads=(payload["derivation"]["evolution_strategies"][0]["read"],) if self.read_strategy else ())
         assert schema is LaneAdviceProposal
         return schema(rationale=f"fresh-plan-{len(self.inputs)}", work_specs=())
 
@@ -63,8 +67,10 @@ async def _case(tmp_path):
     runtime = LoopWorkerRuntime(sessions, app_config_for("binding", None))
     try:
         base = await LoopObservationService(sessions, _Checkpointer()).capture(seeded["loop_id"], seeded["round_id"])
+        strategy = {"memory_id": "strategy", "title": "方法", "workspace_id": None,
+                    "strategy": {"applicability": "适用", "evolution": "diagnose", "inheritance": "约束"}}
         base = base.model_copy(update={
-            "evolution_strategies": ({"memory_id": "strategy", "strategy": {"evolution": "diagnose"}},),
+            "evolution_strategies": ({**strategy, "content_hash": content_hash(strategy)},),
             "user_intents": ({"scope": "portfolio", "content": "Please reconsider", "file_refs": [{"path": "plan.md", "sha256": "a" * 64}]},),
         })
         observation = await _persist_observation(sessions, base, generation=base.generation + 1)
@@ -110,6 +116,18 @@ async def _saved(case):
         return {row.session_id: deepcopy(row.payload) for row in rows}
 
 
+def test_worker_strategy_reader_resolves_the_bound_observation(tmp_path):
+    async def run():
+        async with _case(tmp_path) as case:
+            case.model.read_strategy = True
+            result = await _plan(case, await _request(case, case.observation))
+            assert result["planning_session"]["state"] == "planned"
+            pages = result["planning_session"]["strategy_read_pages"]
+            assert len(pages) == 1 and pages[0]["content"] == "diagnose"
+            assert pages[0]["content_hash"] == case.observation.evolution_strategies[0]["content_hash"]
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("change", ["strategy", "feedback", "file", "generation"])
 def test_new_observation_replans_through_persisted_worker_session(tmp_path, change):
     async def run():
@@ -121,6 +139,7 @@ def test_new_observation_replans_through_persisted_worker_session(tmp_path, chan
             updated = case.observation.model_copy(deep=True)
             if change == "strategy":
                 updated.evolution_strategies[0]["strategy"]["evolution"] = "reconstruct"
+                updated.evolution_strategies[0]["content_hash"] = content_hash({key: value for key, value in updated.evolution_strategies[0].items() if key != "content_hash"})
             elif change == "feedback":
                 updated.user_intents[0]["content"] = "Use an offline design"
             elif change == "file":
@@ -131,7 +150,7 @@ def test_new_observation_replans_through_persisted_worker_session(tmp_path, chan
             assert second["planning_session"]["state"] == "planned"
             assert len(case.model.inputs) > count
             for _, payload in case.model.inputs[count:]:
-                assert payload["derivation"]["evolution_strategies"] == updated.evolution_strategies
+                assert payload["derivation"]["evolution_strategies"] == strategy_catalog(updated.evolution_strategies)
                 assert payload["derivation"]["user_intents"] == updated.user_intents
                 assert payload["derivation"]["observation_id"] == updated.observation_id
             saved = await _saved(case)
