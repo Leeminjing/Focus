@@ -1,5 +1,6 @@
 /*
  * 本文件对外提供应用组合根；输入为真实 API/Live 与用户导航动作，输出为六页及原业务入口。
+ * 助手正文与代码提供独立复制反馈；任务工具从完整消息快照导出 Markdown，展开压缩来源并保留正文格式。
  * 工作区绑定与投递复用 WorkspacePatrolIntake；桌面 App 与浏览器保留本页输入，桌面机器人继续提供独立输入入口，既有任务输入不受影响。来源导航按最新请求身份生效，迟到读取不能覆盖后来选择。
  * 任务与图卡共用 Run SSE 订阅；图卡通过只读观察器呈现真实角色与短尾部，按工作区和 Run 隔离，退出页面释放观察而不触发审批。
  * 工作流为沿原控制器装配页面、按任务保留草稿，卡片/列表偏好仅留在页面状态。示例：renderPlugins() 展示 registry 的当前状态。
@@ -47,6 +48,14 @@
 // 点击经全局拦截器打开右侧文件面板,不触发窗口导航);vendor 文件先行加载。
 const mdRenderer = window.markdownit({ html: false, linkify: true });
 mdRenderer.validateLink = url => /^(https?:|file:)/i.test(url);
+// 包装默认规则，保留代码转义、语言类名以及流式/完成态的一致性。
+for (const rule of ["fence", "code_block"]) {
+  const renderCode = mdRenderer.renderer.rules[rule];
+  mdRenderer.renderer.rules[rule] = (tokens, index, options, env, renderer) => {
+    const language = rule === "fence" ? tokens[index].info.trim().split(/\s+/)[0] : "";
+    return `<div class="message-code-block"><div class="code-block-toolbar"><span>${escapeHtml(language)}</span><button type="button" class="text-button" data-action="copy-code" aria-live="polite">${escapeHtml(uiText("conversation.copy_code", "复制代码"))}</button></div>${renderCode(tokens, index, options, env, renderer)}</div>\n`;
+  };
+}
 const keywordCommand = window.FocusKeywordCommand;
 const interfaceI18n = window.FocusI18n || {
   apply() {},
@@ -678,6 +687,60 @@ function renderAssistantContent(value) {
   // markdown-it 渲染完成态助手消息(html:false 转义 LLM 输出中的原始 HTML;
   // 危险协议链接被默认 validateLink 拒绝)。vendor 文件由 index.html 先行加载。
   return `<div class="message-rich">${mdRenderer.render(String(value))}</div>`;
+}
+
+async function copyMessageText(button, text) {
+  if (button.disabled || typeof text !== "string") return;
+  const label = button.textContent;
+  button.disabled = true;
+  try {
+    await navigator.clipboard.writeText(text);
+    button.textContent = uiText("conversation.copied", "已复制");
+    setStatus(uiText("conversation.copied", "已复制"));
+  } catch {
+    button.textContent = uiText("conversation.copy_failed", "复制失败，请重试");
+    setStatus(uiText("conversation.copy_failed", "复制失败，请重试"), true);
+  } finally {
+    setTimeout(() => {
+      button.textContent = label;
+      button.disabled = false;
+    }, 1600);
+  }
+}
+
+function conversationMarkdown(detail, task) {
+  const title = String(task.title || uiText("conversation.title", "对话")).replace(/[\r\n]+/g, " ");
+  const sections = [`# ${title}`];
+  // 从完整快照展开压缩来源，不受会话 DOM 的窗口上限影响。
+  for (const message of compressionPanel.expandForConversation(detail.messages || [])) {
+    if (message.divider || compressionPanel.degradedParts(message)) continue;
+    const kind = contextCuratorPresentation.messageSemantics(message).kind;
+    if (kind !== "human" && kind !== "ai") continue;
+    const text = messageBodyText(message);
+    if (!text.trim()) continue;
+    const role = kind === "human" ? uiText("conversation.user", "用户") : uiText("conversation.assistant", "助手");
+    sections.push(`## ${role}\n\n${text}`);
+  }
+  return sections.join("\n\n---\n\n") + "\n";
+}
+
+function exportConversation() {
+  const task = activeTask();
+  const detail = task && state.details.get(task.task_id);
+  if (!detail) return;
+  const markdown = conversationMarkdown(detail, task);
+  const filename = String(task.title || "conversation").replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").slice(0, 100).replace(/[. ]+$/, "") || "conversation";
+  const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${filename}.md`;
+  try {
+    document.body.append(link);
+    link.click();
+  } finally {
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
 }
 
 // 生成中的正文按「顶层块」切分后逐块渲染。
@@ -1763,7 +1826,7 @@ function renderFocus(task = activeTask()) {
     <header class="task-page-heading"><div><small>${task.harness_mode === "assembly" ? "独立会话" : escapeHtml(task.workspace_name || "本地工作区")}</small><h1>${task.harness_mode === "assembly" ? "无工作区模式" : "任务"}</h1><p>${task.harness_mode === "assembly" ? "从一个问题或一份材料开始。" : "一条任务，一条持续会话。"}</p></div><div><button data-action="show-patrol">回到 Patrol</button><button data-action="new-task">＋ 新建任务</button></div></header>
     <section class="task-workspace-layout${task.harness_mode === "assembly" ? " is-assembly" : ""}">${task.harness_mode === "assembly" ? "" : renderTaskRail(task)}<section class="focus-shell" style="${shellStyle}">
       <section class="focus-view" data-task-id="${task.task_id}">
-        <header class="task-workspace-tools"><strong>${escapeHtml(task.title)}</strong><details><summary>任务工具</summary><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-loop">任务 Loop 控制台</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details>${isAssembly ? renderAssemblyTarget(task) : ""}</header>
+        <header class="task-workspace-tools"><strong>${escapeHtml(task.title)}</strong><details><summary>任务工具</summary><button type="button" data-action="export-conversation">${escapeHtml(uiText("conversation.export", "导出对话为 Markdown"))}</button><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-loop">任务 Loop 控制台</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details>${isAssembly ? renderAssemblyTarget(task) : ""}</header>
         ${admission ? `<section class="task-admission-receipt" role="status"><span>消息受理回执 · ${escapeHtml(admission.intent_id)}。交付与执行以实际状态为准。</span><button data-action="show-loop">查看任务 Loop 的交付状态</button></section>` : ""}
         ${contextBlock}
         <div class="commitment-progress" id="commitmentProgress" hidden>
@@ -1970,6 +2033,13 @@ function contentPlainText(content) {
   return "";
 }
 
+function messageBodyText(message) {
+  const content = Array.isArray(message.content)
+    ? message.content.filter(block => block?.type === "text").map(block => block.text || "").join("\n")
+    : typeof message.content === "string" ? message.content : "";
+  return stripImageReferences(stripRunMaterialProtocol(content, message));
+}
+
 function collectMessageImages(content) {
   return imageMaterialPicker.materialRefIds(contentPlainText(content));
 }
@@ -2069,7 +2139,9 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
   } else {
     content = escapeHtml(JSON.stringify(message.content, null, 2));
   }
-  const renderedContent = kind === "ai" ? renderAssistantContent(content) : content;
+  const answerText = kind === "ai" ? messageBodyText(message) : "";
+  const renderedContent = kind === "ai" ? renderAssistantContent(answerText) : content;
+  const actions = answerText.trim() ? `<div class="message-actions"><button type="button" class="text-button" data-action="copy-answer" data-copy-text="${escapeHtml(answerText).replace(/\r/g, "&#13;")}" aria-live="polite">${escapeHtml(uiText("conversation.copy_answer", "复制回答"))}</button></div>` : "";
   const associations = semantics.associations.map(item => `<span class="message-association">${escapeHtml(item.direction)} ${escapeHtml(item.name)}${item.tool_call_id ? ` · ${escapeHtml(item.tool_call_id)}` : ""}</span>`).join("");
   let header = "";
   if (showRoleHeader) {
@@ -2081,6 +2153,7 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
     ${header}
     ${renderMessageImages(messageImages)}${renderFileCards(message)}${renderRunMaterialCards(message)}
     <div class="message-content">${renderedContent}</div>
+    ${actions}
   </article>`;
 }
 
@@ -2124,6 +2197,7 @@ function _conversationRenderInput(detail, task) {
   return {
     detail,
     task,
+    locale: interfaceI18n.locale(),
     state: {
       activeTaskId: state.activeTaskId,
       streamBuffers: state.streamBuffers,
@@ -6723,6 +6797,9 @@ async function handleDocumentClick(event) {
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const action = button.dataset.action;
+  if (action === "copy-answer") return copyMessageText(button, button.dataset.copyText);
+  if (action === "copy-code") return copyMessageText(button, button.closest(".message-code-block")?.querySelector("pre > code")?.textContent);
+  if (action === "export-conversation") return exportConversation();
   if (action === "show-patrol") {
     if (state.view === "focus") persistFocusState();
     workspacePatrolPicker?.dispose();
