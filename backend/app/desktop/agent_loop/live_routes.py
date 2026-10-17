@@ -2,7 +2,7 @@ r"""本文件对外提供 live_loop_router、live_loop_snapshot 与 live_loop_st
 
 输入为 Loop id、`after_sequence`、桌面会话和断连信号；输出为一致的 Live projection 或 multiplexed SSE 事件、heartbeat、
 snapshot-required/resync-required 控制帧。具体工作流为 snapshot 首先设置只读 Repeatable Read 事务，再调用服务读取；stream 逐批读取且不维护无界内存队列，
-断连即停止轮询。示例：`app.include_router(live_loop_router)`。
+断连即停止轮询；读取事务结束后独立单调保存检查点，活动历史通过独立 sequence 分页接口读取。示例：`app.include_router(live_loop_router)`。
 """
 
 from __future__ import annotations
@@ -25,9 +25,25 @@ live_loop_router = APIRouter(prefix="/desktop/api/agent-loops", tags=["agent-loo
 async def live_loop_snapshot(loop_id: str, request: Request) -> dict:
     _require_live_api(request)
     sessions = request.app.state.desktop_service.session_factory
+    service = LoopLiveSnapshotService()
     async with sessions.begin() as session:
         await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
-        return await LoopLiveSnapshotService().read(session, loop_id)
+        snapshot = await service.read(session, loop_id)
+    await service.save_checkpoint(sessions)
+    return snapshot
+
+
+@live_loop_router.get("/{loop_id}/live/history")
+async def live_loop_history(loop_id: str, request: Request,
+                            before_sequence: int | None = Query(default=None, ge=1),
+                            limit: int = Query(default=50, ge=1, le=200)) -> dict:
+    from backend.app.desktop.agent_loop.live_history import LoopLiveHistoryService
+
+    _require_live_api(request)
+    sessions = request.app.state.desktop_service.session_factory
+    async with sessions.begin() as session:
+        await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+        return await LoopLiveHistoryService().read(session, loop_id, before_sequence, limit)
 
 
 @live_loop_router.get("/{loop_id}/live/stream")

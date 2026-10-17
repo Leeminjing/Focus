@@ -1,0 +1,75 @@
+"use strict";
+
+// Poll in the main process so hidden workbenches still receive notifications.
+// Persist identities/statuses only, never task content or approval payloads.
+class TaskNotifications {
+  constructor({ load, save, listTasks, show, onTasks = () => {}, interval = 5000 }) {
+    Object.assign(this, { save, listTasks, show, onTasks, interval });
+    const stored = load() || {};
+    this.enabled = stored.enabled !== false;
+    this.seen = new Set(Array.isArray(stored.seen) ? stored.seen : []);
+    this.initialized = false;
+    this.busy = false;
+    this.stopped = false;
+    this.saved = JSON.stringify({ enabled: this.enabled, seen: [...this.seen] });
+  }
+  persist() {
+    this.seen = new Set([...this.seen].slice(-2000));
+    const value = { enabled: this.enabled, seen: [...this.seen] };
+    const serialized = JSON.stringify(value);
+    if (serialized !== this.saved) { this.save(value); this.saved = serialized; }
+  }
+  settings() { return { enabled: this.enabled }; }
+  configure(enabled) {
+    if (typeof enabled !== "boolean") throw new TypeError("提醒开关必须是布尔值");
+    this.enabled = enabled;
+    this.persist();
+    return this.settings();
+  }
+  async poll() {
+    if (this.busy || this.stopped) return;
+    this.busy = true;
+    try {
+      const tasks = await this.listTasks();
+      if (this.stopped) return;
+      this.onTasks(tasks);
+      const events = [];
+      for (const task of tasks) {
+        if (task.lifecycle && task.lifecycle !== "active") continue;
+        for (const item of task.attention || []) {
+          events.push({ key: `attention:${task.task_id}:${item.id}`, priority: 0,
+            title: item.kind === "access_approval" ? "需要你授权" : "需要你处理",
+            body: task.title, target: { taskId: task.task_id, attentionId: item.id, loopId: item.loop_id || null } });
+        }
+        if (task.active_run || task.attention?.length || task.attention_unavailable) continue;
+        const loop = task.loop;
+        if (loop && !["completed", "failed"].includes(loop.status)) continue;
+        const result = loop && ["completed", "failed"].includes(loop.status)
+          ? { run_id: `loop:${loop.loop_id}`, status: loop.status === "completed" ? "success" : "error" }
+          : task.latest_run;
+        if (!result || !["success", "error"].includes(result.status)) continue;
+        const event = { key: `result:${task.task_id}:${result.run_id}:${result.status}`, priority: 1,
+          title: result.status === "success" ? "任务已完成" : "任务运行失败",
+          body: task.title, target: { taskId: task.task_id, loopId: loop?.loop_id || null } };
+        // Starting the application does not replay historical results.
+        if (!this.initialized) this.seen.add(event.key);
+        else events.push(event);
+      }
+      this.initialized = true;
+      for (const event of events.sort((a, b) => a.priority - b.priority)) {
+        if (this.seen.has(event.key)) continue;
+        if (this.enabled) this.show(event);
+        this.seen.add(event.key);
+      }
+      this.persist();
+    } finally { this.busy = false; }
+  }
+  start() {
+    const tick = () => this.poll().catch(error => console.warn("任务状态刷新失败:", error.message));
+    void tick();
+    this.timer = setInterval(tick, this.interval);
+    this.timer.unref?.();
+  }
+  stop() { this.stopped = true; clearInterval(this.timer); }
+}
+module.exports = { TaskNotifications };

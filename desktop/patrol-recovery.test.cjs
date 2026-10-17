@@ -54,6 +54,7 @@ test("restart across API ports restores workspace drafts, reply/version, access 
   assert.equal(second.store(null).get().draft.attachments.length, 1);
   assert.equal(f.uploads.length + f.posts.length, 0);
   second.claimUnbound("b");
+  await second.flush();
   const third = f.create();
   assert.equal(third.store(null).get().draft.attachments.length, 0);
   assert.equal(third.store("b").get().draft.attachments.length, 1);
@@ -101,6 +102,7 @@ test("lost receipt found on an older history page is confirmed without reupload 
   await assert.rejects(first.submit("a"), /回执丢失/);
   const id = first.store("a").get().rows[0].submission_id;
   first.store("a").edit({ content: "后续草稿" });
+  await first.flush();
   const pages = [];
   const second = f.create({ api: { workspaceInputs: async (workspace, before) => {
     pages.push([workspace, before]);
@@ -155,20 +157,22 @@ test("failed history reconciliation keeps retry identity and blocks resend and e
   assert.equal(f.posts.length, 1);
 });
 
-test("disk write failure rolls back edits and draft release, and blocks uploads and sends", async t => {
+test("disk write failure retains current edits in memory and blocks uploads and sends", async t => {
   const f = fixture(t), repository = f.repository();
   let full = false;
   const first = f.create({ recovery: { read: () => repository.read(), put: (id, bytes) => repository.put(id, bytes), save: state => {
     if (full) throw new Error("磁盘已满"); return repository.save(state);
   } } });
   first.store("a").edit({ content: "已保存原文" });
+  await first.flush();
   full = true;
-  assert.throws(() => first.store("a").edit({ content: "未保存的修改" }), /磁盘已满/);
+  first.store("a").edit({ content: "未保存的修改" });
+  await assert.rejects(first.flush(), /磁盘已满/);
   await assert.rejects(first.add("a", [text("未保存材料")]), /磁盘已满/);
-  assert.equal(first.store("a").get().draft.attachments, undefined);
+  assert.equal(first.store("a").get().draft.attachments.length, 1);
   await assert.rejects(first.submit("a"), /磁盘已满/);
-  assert.equal(first.store("a").get().draft.content, "已保存原文");
-  assert.equal(first.store("a").get().rows.length, 0);
+  assert.equal(first.store("a").get().rows[0].request.content, "未保存的修改");
+  assert.equal(first.store("a").get().rows[0].status, "failed");
   assert.equal(f.uploads.length + f.posts.length, 0);
   assert.equal(f.create().store("a").get().draft.content, "已保存原文");
   assert.equal(f.files().length, 0, "启动清理未提交快照的孤儿附件");
@@ -176,7 +180,7 @@ test("disk write failure rolls back edits and draft release, and blocks uploads 
 
 test("wire payload must be durable before POST even when uploads completed", async t => {
   const f = fixture(t), repository = f.repository();
-  const first = f.create({ recovery: { read: () => repository.read(), put: (id, bytes) => repository.put(id, bytes), save: state => {
+  const first = f.create({ recovery: { read: () => repository.read(), put: (id, bytes) => repository.put(id, bytes), save: async state => {
     if (state.submitted.length) throw new Error("提交日志写入失败"); return repository.save(state);
   } } });
   await first.add("a", [text("先保存身份")]);
@@ -208,17 +212,17 @@ test("a send interrupted by disk failure remains retryable in the same renderer 
   assert.equal(f.posts[0].body.submission_id, id);
 });
 
-test("repository bounds disk bytes, removes interrupted files and preserves referenced materials until release", t => {
+test("repository bounds disk bytes, removes interrupted files and preserves referenced materials until release", async t => {
   const f = fixture(t), repository = f.repository();
-  repository.put("../pathless", new Uint8Array(700));
-  repository.save({ version: 1, workspaces: [], source_ids: ["../pathless"] });
-  assert.throws(() => repository.put("other", new Uint8Array(400)), /总量超限/);
+  await repository.put("../pathless", new Uint8Array(700));
+  await repository.save({ version: 1, workspaces: [], source_ids: ["../pathless"] });
+  await assert.rejects(repository.put("other", new Uint8Array(400)), /总量超限/);
   const temp = `${repository.sourcePath("interrupted")}.tmp`;
   fs.writeFileSync(temp, new Uint8Array([1]));
-  repository.put("orphan", new Uint8Array(1));
+  await repository.put("orphan", new Uint8Array(1));
   f.repository().read();
   assert.equal(fs.existsSync(temp), false);
   assert.equal(f.files().length, 1);
-  repository.save({ version: 1, workspaces: [], source_ids: [] });
+  await repository.save({ version: 1, workspaces: [], source_ids: [] });
   assert.equal(f.files().length, 0);
 });

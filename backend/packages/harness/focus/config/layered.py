@@ -63,21 +63,45 @@ def load_global_dotenv() -> None:
         load_dotenv(dotenv_path=str(env_file), override=False)
 
 
-def _read_yaml_map(path: Path) -> dict:
-    """读取 YAML/JSON 配置为 dict；文件不存在或非 dict 时返回空 dict。"""
+class LayeredConfigError(ValueError):
+    """来源明确的配置文件读取失败；诊断不包含配置正文或凭据。"""
+
+    def __init__(self, path: Path, scope: str, reason: str):
+        self.config_path = str(path.resolve())
+        self.scope = scope
+        self.reason = reason
+        self.action = f"修复配置文件 {self.config_path}，然后重试 MCP。"
+        super().__init__(f"{scope} 配置文件 {self.config_path}：{reason}")
+
+
+def _read_yaml_map(path: Path, *, scope: str | None = None) -> dict:
+    """缺失文件返回空 dict；指定来源的扩展配置读取遇到损坏时显式失败。"""
     import json
 
-    if not path.is_file():
+    if scope is None and not path.is_file():
         return {}
     try:
+        text = path.read_text(encoding="utf-8")
         if path.suffix.lower() == ".json":
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(text)
         else:
             import yaml
 
-            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, json.JSONDecodeError, ValueError):
+            raw = yaml.safe_load(text) or {}
+    except FileNotFoundError:
         return {}
+    except json.JSONDecodeError as exc:
+        if scope is not None:
+            raise LayeredConfigError(
+                path, scope, f"JSON 语法错误（第 {exc.lineno} 行，第 {exc.colno} 列）：{exc.msg}",
+            ) from exc
+        return {}
+    except (OSError, ValueError) as exc:
+        if scope is not None:
+            raise LayeredConfigError(path, scope, f"配置文件无法读取或解码（{type(exc).__name__}）") from exc
+        return {}
+    if scope is not None and not isinstance(raw, dict):
+        raise LayeredConfigError(path, scope, "配置文件顶层必须是 JSON 对象")
     return raw if isinstance(raw, dict) else {}
 
 
@@ -116,12 +140,12 @@ def load_layered_map(config_name: str, file_path: str, *, workspace: str | Path 
 def load_layered_map_with_sources(
     config_name: str, file_path: str, *, workspace: str | Path | None = None,
 ) -> tuple[dict, dict[str, dict[str, dict[str, str]]]]:
-    """合并配置并记录每个二级条目的最后定义层（如 mcpServers 下的 server）。"""
+    """合并配置并记录条目来源；损坏文件抛出 LayeredConfigError，禁止静默回落。"""
     merged: dict = {}
     sources: dict = {}
     paths = layered_candidate_paths(config_name, file_path, workspace=workspace)
     for scope, path in zip(("default", "global", "workspace"), paths):
-        layer = _read_yaml_map(path)
+        layer = _read_yaml_map(path, scope=scope)
         merged = deep_merge(merged, layer)
         for section, entries in layer.items():
             if isinstance(entries, dict):

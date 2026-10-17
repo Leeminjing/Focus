@@ -24,7 +24,7 @@ def scoped_mcp(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(tmp_path / "global"))
     monkeypatch.setattr(cache, "_cache", {})
-    monkeypatch.setattr(cache, "_locks", {})
+    monkeypatch.setattr(cache, "_loads", {})
     monkeypatch.setattr(tools, "_MCP_CLIENTS", [])
     monkeypatch.setattr(tools, "_MCP_SESSIONS", [])
     monkeypatch.setattr(tools, "_MCP_CONNECTIONS", {})

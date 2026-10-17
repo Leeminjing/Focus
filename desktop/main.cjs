@@ -6,7 +6,8 @@
  * 工作台缩放以 Chromium 每级 1.2 倍钳制在 50%~300%，原生标题覆盖层同步 56 CSS px 基础高度。
  * 示例：electron . 启动机器人，托盘打开工作台；第二实例唤回既有机器人而不再启动后端。
  */
-const { app, BrowserWindow, dialog, ipcMain, Menu, shell, nativeTheme } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell, nativeTheme, Notification } = require("electron");
+const { TaskNotifications } = require("./task-notifications.cjs");
 const { supportsAcrylic, bindWindowMaterial } = require("./window-material.cjs");
 const { DesktopPatrolHost } = require("./desktop-patrol-host.cjs");
 const nativeMaterialSupported = supportsAcrylic(process.platform, require("node:os").release());
@@ -64,6 +65,10 @@ let desktopOrigin = null;
 let workbenchLoading = null;
 let fatalErrorShown = false;
 let startupStage = "正在加载启动窗口";
+let taskNotifications = null;
+let notificationTarget = null;
+let notificationReadyContents = null;
+const activeNotifications = new Set();
 const startupAbort = new AbortController();
 
 if (process.env.FOCUS_DISABLE_HARDWARE_ACCELERATION === "1") {
@@ -290,6 +295,45 @@ async function start() {
   await stage("ready", "Focus 已就绪", 100, async () => {});
   startupAbort.signal.throwIfAborted();
   closeSplashWindow();
+  const notificationFile = path.join(app.getPath("userData"), "task-notifications.json");
+  taskNotifications = new TaskNotifications({
+    load: () => { try { return JSON.parse(fs.readFileSync(notificationFile, "utf8")); } catch { return {}; } },
+    save: value => {
+      fs.mkdirSync(path.dirname(notificationFile), { recursive: true });
+      fs.writeFileSync(`${notificationFile}.tmp`, JSON.stringify(value), "utf8");
+      fs.renameSync(`${notificationFile}.tmp`, notificationFile);
+    },
+    listTasks: async () => {
+      const response = await fetch(`${apiBase}/desktop/api/tasks`, {
+        headers: { "X-Focus-Session": session }, signal: AbortSignal.timeout(10000),
+      });
+      if (!response.ok) throw new Error(`读取任务状态失败: HTTP ${response.status}`);
+      return response.json();
+    },
+    onTasks: tasks => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("focus:tasks-updated", tasks);
+    },
+    show: event => {
+      if (!Notification.isSupported()) return;
+      const notification = new Notification({ title: event.title, body: event.body, icon: focusIconPath });
+      activeNotifications.add(notification);
+      notification.on("close", () => activeNotifications.delete(notification));
+      notification.on("failed", (_event, error) => { activeNotifications.delete(notification); console.warn("桌面提醒不可用:", error); });
+      notification.on("click", () => {
+        notificationTarget = event.target;
+        void showWorkbench().then(flushNotificationTarget).catch(error => console.warn("打开提醒任务失败:", error.message));
+      });
+      notification.show();
+    },
+  });
+  taskNotifications.start();
+}
+
+function flushNotificationTarget() {
+  if (!notificationTarget || !mainWindow || mainWindow.isDestroyed()
+      || notificationReadyContents !== mainWindow.webContents) return;
+  mainWindow.webContents.send("focus:notification-open", notificationTarget);
+  notificationTarget = null;
 }
 
 async function showWorkbench() {
@@ -334,6 +378,7 @@ async function createWorkbench() {
     };
   }
   mainWindow = new BrowserWindow(mainWindowOptions);
+  mainWindow.webContents.on("did-start-loading", () => { notificationReadyContents = null; });
   nativeTheme.themeSource = "light";
   bindWindowMaterial(mainWindow, nativeTheme, nativeMaterialSupported);
   mainWindow.setMenuBarVisibility(false);
@@ -359,6 +404,22 @@ ipcMain.handle("focus:select-workspace", async event => {
   return result.canceled ? "" : result.filePaths[0];
 });
 
+ipcMain.handle("focus:notifications-settings", (event, enabled) => {
+  assertDesktopSender(event);
+  if (enabled === undefined) return taskNotifications?.settings() || { enabled: true };
+  if (!taskNotifications) throw new Error("桌面提醒仍在启动，请稍后重试");
+  const settings = taskNotifications.configure(enabled);
+  if (!enabled) for (const notification of activeNotifications) notification.close();
+  return settings;
+});
+
+ipcMain.handle("focus:notifications-ready", event => {
+  assertDesktopSender(event);
+  if (event.sender !== mainWindow?.webContents) return;
+  notificationReadyContents = event.sender;
+  flushNotificationTarget();
+});
+
 ipcMain.handle("focus:open-external", async (event, value) => {
   assertDesktopSender(event);
   const url = externalHttpUrl(value);
@@ -381,6 +442,14 @@ for (const [channel, operation] of [["open", "open"], ["reveal", "reveal"], ["sa
     return artifactFiles[operation](reference, BrowserWindow.fromWebContents(event.sender));
   });
 }
+const fileActions = require("./file-actions.cjs").createFileActions({
+  shell, dialog, BrowserWindow, apiBase: () => desktopOrigin, session: () => process.env.FOCUS_DESKTOP_SESSION,
+});
+ipcMain.handle("focus:file-action", async (event, request) => {
+  assertDesktopSender(event);
+  return fileActions.run(event, request);
+});
+app.on("will-quit", () => { void fileActions.cleanup(); });
 
 ipcMain.handle("focus:set-zoom-level", (event, value) => {
   assertDesktopSender(event);
@@ -419,12 +488,13 @@ if (!app.requestSingleInstanceLock()) {
   app.on("window-all-closed", () => { if (!patrolHost || fatalErrorShown) app.quit(); });
 }
 app.on("before-quit", event => {
-  if (!fatalErrorShown && patrolHost?.hasUnconfirmedInput()) {
+  if (!fatalErrorShown && patrolHost && !patrolHost.canQuit()) {
     event.preventDefault();
     patrolHost.requestQuit().catch(error => console.error("退出 Focus 失败:", error));
     return;
   }
   app.isQuitting = true;
+  taskNotifications?.stop();
   startupAbort.abort();
   closeSplashWindow();
   patrolHost?.dispose();

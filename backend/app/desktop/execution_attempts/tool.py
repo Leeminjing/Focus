@@ -7,18 +7,30 @@
 每次工具调用可准备独立文件采集端口；成功工具结果、不可变文件版本与既有 Run outbox 在同一事务提交，失败提交保留原执行不确定性。
 """
 
+import asyncio
+
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from backend.app.desktop.models import DesktopRun, ToolExecutionAttempt
 from focus.history import content_hash, deserialize_history_message, serialize_history_message
 from focus.runtime.tool_attempts import ToolExecutionUncertain
+from focus.sandbox.recovery import ShellRecoveryEvidence
 
 
 class ToolExecutionLedger:
-    def __init__(self, sessions, *, authority_validator=None, secret_provider=None):
+    def __init__(self, sessions, *, authority_validator=None, secret_provider=None, shell_evidence=None):
         self._sessions = sessions
         self._authority_validator = authority_validator
         self._secret_provider = secret_provider or (lambda: ())
+        self._shell_evidence = shell_evidence or ShellRecoveryEvidence()
+
+    async def shell_receipt(self, identity):
+        async with self._sessions() as session:
+            row = await session.get(ToolExecutionAttempt, identity)
+            run = await session.get(DesktopRun, row.run_id)
+            evidence = run.workspace_result["shell_cleanup"][identity]["execution"]
+            return {"process_cleanup": "not_started", "execution": evidence,
+                    "status_path": str(self._shell_evidence.path(evidence))}
 
     async def prepare_file_capture(self, run_id):
         from backend.app.desktop.domain_evidence.file_versions import FileVersionCapture
@@ -32,6 +44,7 @@ class ToolExecutionLedger:
 
     async def claim(self, identity, run_id, call, *, requires_process_cleanup=False):
         digest = content_hash(call)
+        evidence = await asyncio.to_thread(self._shell_evidence.prepare, run_id, identity, call["id"]) if requires_process_cleanup else None
         async with self._sessions() as session:
             run = await session.get(DesktopRun, run_id)
             if run is None:
@@ -49,7 +62,7 @@ class ToolExecutionLedger:
             ).on_conflict_do_nothing().returning(ToolExecutionAttempt.attempt_id))
             if created:
                 if requires_process_cleanup:
-                    pending[identity] = {"call_id": call["id"], "tool": call["name"], "state": "pending"}
+                    pending[identity] = {"call_id": call["id"], "tool": call["name"], "state": "pending", "execution": evidence}
                     run.workspace_result = {**(run.workspace_result or {}), "shell_cleanup": pending}
                 await session.commit()
                 return None

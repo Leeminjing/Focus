@@ -5,10 +5,13 @@
 示例：POST /desktop/api/workspaces/{id}/materials/upload?submission_id=s1&item_id=0。
 """
 
+import asyncio
+import mimetypes
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 
 from backend.app.desktop.material_files import resolve_material_path
@@ -16,6 +19,9 @@ from backend.app.desktop.material_ownership import (
     ensure_material_mutable, load_material, lock_material_upload, material_upload_key,
 )
 from backend.app.desktop.models import DesktopMaterial, DesktopWorkspace
+from backend.app.desktop.agent_loop.models import AgentLoop, LoopUserIntent
+from backend.app.desktop.material_snapshots import MaterialSnapshotVerifier
+from focus.agents.material_inputs import RunMaterialInput
 
 
 workspace_material_router = APIRouter()
@@ -61,6 +67,35 @@ async def workspace_material_content(workspace_id: str, material_id: str, reques
     content = await request.app.state.desktop_service.material_contents.resolve_workspace(workspace_id, material_id)
     return FileResponse(content.path, media_type=content.media_type,
         filename=content.filename, content_disposition_type="inline")
+
+
+@workspace_material_router.get("/workspaces/{workspace_id}/inputs/{intent_id}/attachments/{material_id}/content")
+async def workspace_input_attachment(workspace_id: str, intent_id: str, material_id: str, request: Request) -> Response:
+    """Read the accepted input's frozen version, even when the source file changes."""
+    service = request.app.state.desktop_service
+    async with service.session_factory() as session:
+        workspace = await _workspace(session, workspace_id)
+        intent = await session.scalar(select(LoopUserIntent).join(
+            AgentLoop, AgentLoop.loop_id == LoopUserIntent.loop_id,
+        ).where(AgentLoop.workspace_id == workspace_id, LoopUserIntent.intent_id == intent_id,
+            LoopUserIntent.intent_kind == "workspace_input"))
+        reference = next((item for item in (intent.request_payload.get("attachments", []) if intent else [])
+            if item.get("material_id") == material_id), None)
+        if reference is None:
+            raise HTTPException(404, "输入附件不存在或不属于当前工作区")
+        await load_material(session, material_id, workspace_id=workspace_id)
+        item = RunMaterialInput.from_mapping(reference)
+        try:
+            raw = await asyncio.to_thread(MaterialSnapshotVerifier().read, item, workspace.path)
+        except (OSError, ValueError) as error:
+            raise HTTPException(409, "附件的提交版本已不可用") from error
+    filename = Path(item.relative_path).name
+    media_type = "text/plain" if item.material_kind == "text" else (
+        mimetypes.guess_type(filename)[0] if item.material_kind == "image" else "application/octet-stream")
+    return Response(raw, media_type=media_type or "application/octet-stream", headers={
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        "Cache-Control": "private, no-store",
+    })
 
 
 @workspace_material_router.delete("/workspaces/{workspace_id}/materials/{material_id}")

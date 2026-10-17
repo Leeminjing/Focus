@@ -211,7 +211,7 @@ def test_existing_structured_worker_routes_receive_bound_schema(monkeypatch, met
 
     config = SimpleNamespace(model="fixture", name="fixture", curation_output_method=method,
                              curation_max_output_tokens=1000, context_window=100000)
-    app_config = SimpleNamespace(get_model=lambda name: config, resolve_default_model_name=lambda: "fixture")
+    app_config = SimpleNamespace(get_model=lambda name: config, resolve_curation_model_name=lambda: "fixture")
     monkeypatch.setattr(worker, "create_chat_model", lambda **kwargs: Model())
     result = asyncio.run(worker.StructuredWorkerModel(app_config).invoke(schema, "fixture system", interpretation_payload(inputs, {})))
     assert validate_candidate(inputs, result) == covered_candidate(inputs)

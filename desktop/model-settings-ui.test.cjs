@@ -253,6 +253,28 @@ const SNAPSHOT = `
   assert.match(result.verificationHtml, /设置已保存。策展输出不符合合同/);
   assert.equal(result.readyOpened, 1);
 
+  // 保存必须从当前编辑的合法引用提取变量名，不能使用旧快照的变量。
+  for (const [reference, expected] of [
+    ["$NEW_KEY", "NEW_KEY"], ["${NEW_KEY}", "NEW_KEY"],
+    ["$100", null], ["${NEW_KEY", null], ["$NEW_KEY}", null], ["literal", null],
+  ]) {
+    harness.context.referenceUnderTest = reference;
+    const payload = await harness.vm.runInContext(`(async () => {
+      ${SNAPSHOT}
+      modelSettings.snapshot = JSON.parse(JSON.stringify(snapshot));
+      startModelDraft(0);
+      modelSettings.snapshot.models[0].api_key = referenceUnderTest;
+      modelSettings.credentialValue = "typed-secret";
+      let submitted;
+      api = async (_path, options) => { submitted = JSON.parse(options.body); return snapshot; };
+      await saveModelSettings();
+      return submitted;
+    })()`, harness.context);
+    assert.deepEqual(Object.keys(payload.credentials || {}), expected ? [expected] : [], reference);
+    if (expected) assert.equal(payload.credentials[expected], "typed-secret");
+    assert.equal(payload.models[0].api_key, reference);
+  }
+
   console.log("model-settings-ui: all assertions passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });
 

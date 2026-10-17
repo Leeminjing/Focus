@@ -13,7 +13,7 @@
     ToolCapableFakeChatModel → BaseChatModel 实例，记录已绑定工具名与每次收到的消息
 
 具体工作流:
-    (1) app_config_for 拼最小可用模型条目（声明为 default），仅在显式传入时写入能力声明
+    (1) app_config_for 拼最小可用模型条目（声明普通与策展默认），仅在显式传入时写入图像能力声明
     (2) ToolCapableFakeChatModel.bind_tools 记录工具名并返回自身——GenericFakeChatModel 未实现该方法，
         导致 response_format（ToolStrategy）在假模型下无法测试，故此处自行实现
     (3) 若给出了 structured_args 且存在已绑定工具，则产出一次指向该工具的工具调用；
@@ -43,6 +43,8 @@ def app_config_for(model_name: str, supports_image_input: bool | None) -> AppCon
         "api_key": "sk-test",
         "base_url": "https://api.deepseek.com",
         "default": True,
+        "curation_default": True,
+        "curation_output_method": "prompt_json",
     }
     if supports_image_input is not None:
         entry["supports_image_input"] = supports_image_input
