@@ -13,6 +13,11 @@ function subscribe(channel, callback) {
   ipcRenderer.on(channel, listener);
   return () => ipcRenderer.removeListener(channel, listener);
 }
+function recoveryCall(operation, value) {
+  const result = ipcRenderer.sendSync(`focus:patrol-recovery-${operation}`, value);
+  if (result?.error) throw new Error(result.error);
+  return result.value;
+}
 window.addEventListener("DOMContentLoaded", () => {
   if (nativeMaterial) document.documentElement.dataset.nativeMaterial = "acrylic";
 }, { once: true });
@@ -30,6 +35,11 @@ contextBridge.exposeInMainWorld("focusDesktop", {
   getZoomLevel: () => ipcRenderer.invoke("focus:get-zoom-level"),
   patrol: {
     enabled: patrolEnabled,
+    recovery: {
+      read: () => recoveryCall("read"),
+      put: (id, bytes) => recoveryCall("put", { id, bytes }),
+      save: state => recoveryCall("save", state),
+    },
     openPanel: target => ipcRenderer.invoke("focus:patrol-open", target),
     hidePanel: () => ipcRenderer.invoke("focus:patrol-hide-panel"),
     resizePanel: height => ipcRenderer.invoke("focus:patrol-resize-panel", height),
