@@ -93,6 +93,38 @@ Index／record schema 和完整切分 fingerprint 都属于 record 合同。即�
 
 默认分段仍为 12 条，工具交换保持闭合；本轮调度和缓存优化不改变分段 fingerprint，也不要求已有完整缓存冷构建。12／30 的选择还需比较真实模型冷构建与追加场景，不能从请求数直接推算端到端加速。
 
+### token 体积分段与冻结上下文对照
+
+`PortfolioSemanticIndexService(..., segment_max_messages=12, segment_max_estimated_tokens=4096)` 可同时约束消息条数和估算 token 体积。体积统计覆盖序列化内容、结构化正文、工具参数及元数据，使用共享文本启发式（CJK 字符 1、其他非空白字符约 1/4，加消息开销），不是 provider tokenizer，也不替代完整模型请求的窗口／授权预检。单条消息和完整工具调用／结果交换始终不可拆分，超过体积目标时独占一段，实际请求仍可能因窗口不足被拒绝。
+
+token 上限默认关闭，继续使用原来的 12 条策略与 v2 fingerprint；开启时使用含消息上限、token 上限和估算算法版本的 v3 fingerprint。因此已有缓存保持可读，开启新合同需重新索引，不会复用另一切分合同的局部 records。Curator 提案仍依据本次冻结输入生成。
+
+从仓库根目录运行以下 PowerShell 命令。发现和导出只连接本机 Focus 数据库的只读会话，通过 `ContextRevisionReader` 读取精确 Revision 的 semantic view；不执行迁移、checkpoint setup 或数据清理。`--config` 可选择其他配置文件。导出包含会话原文，示例存放在仓库外。
+
+```powershell
+$env:PYTHONPATH = "$PWD;$PWD\backend\packages\harness"
+python -m backend.scripts.semantic_index_corpus list
+python -m backend.scripts.semantic_index_corpus export --auto --output "$env:USERPROFILE\focus-index-corpus.json"
+# 或指定 Context，读取其已发布 Revision；也可重复 --revision-id 精确固定多个版本：
+python -m backend.scripts.semantic_index_corpus export --context-id CONTEXT_ID --output "$env:USERPROFILE\focus-index-selected.json"
+python -m backend.scripts.semantic_index_corpus export --revision-id REVISION_ID_1 --revision-id REVISION_ID_2 --output "$env:USERPROFILE\focus-index-revisions.json"
+
+$env:FOCUS_INDEX_REAL_MODEL = '1'
+$env:FOCUS_INDEX_BENCHMARK_CORPUS = "$env:USERPROFILE\focus-index-corpus.json"
+$env:FOCUS_INDEX_BENCHMARK_OUTPUT = "$env:USERPROFILE\focus-index-results"
+$env:FOCUS_INDEX_BENCHMARK_CONCURRENCY = '4'
+$env:FOCUS_INDEX_BENCHMARK_TOKEN_LIMITS = 'none,4096'
+$env:FOCUS_INDEX_BENCHMARK_REPEATS = '1'
+python -m pytest backend/tests/test_index_real_model_performance.py -k latency_matrix -q
+python -m backend.scripts.semantic_index_corpus summarize --reports "$env:FOCUS_INDEX_BENCHMARK_OUTPUT" --output "$env:USERPROFILE\focus-index-summary.json"
+```
+
+自动选择包含短对话（≤12 条、≤2048 估算 token、没有长工具输出）、至少 4096 字符工具输出，以及三个严格追加版本的样本；优先选择超过 30 条消息的后两类样本，以便消息上限确实可能改变分段。样本不足则明确报错，可以指定 ID 做覆盖范围较小的测试。短对话／长工具样本若没有固定后继，只测 cold 和 exact；报告的 `incremental_scenario_available` 明确标出该范围，多次追加 case 测增量阶段，不伪造后继原文。`list` 仅输出 ID、消息数及体积，不打印正文。导出文件以排他创建方式写入，包含来源身份、来源内容 hash 和 semantic 内容 hash；不允许静默覆盖。内容 hash、协议闭合和追加前缀在加载时重验；来源历史发生改写时分为独立测试 case，不冒充追加链。含 NUL／孤立 surrogate 的文本无法存入索引 JSONB，发现时单独报告并跳过，不清洗后冒充原样本。`--limit` 默认最多发现最近 200 个已发布版本。
+
+矩阵为消息上限 12／20／30 × token 上限关闭／4096。比较消息上限时固定 token 上限；比较 token 上限时固定消息上限。每个 case、配置和重复次数均创建独立测试 Context，全部索引写入自动创建／销毁的隔离 PostgreSQL 测试库，不使用或删除生产缓存。模型、共享并发和预算限制一致并写入报告。数据文件重放保留原 semantic policy；新的 Revision 身份只属于测试命名空间，报告保留原始来源及输入 hash。未设置 corpus 时仍使用明确标注的合成消息。
+
+每份 JSON 分别记录冷构建、每次追加、每个成功版本的完整缓存命中：实际总耗时、模型调用数与落账数、输入／输出 token、重试次数和比例、分阶段耗时、fallback 段比例、引文逐字有效性和接受引文的消息覆盖率。后者只是语义覆盖的代理指标，不能证明语义完整性；报告保留接受陈述和消息来源，需人工核对遗漏、否定及跨段关系。模型阻断／预算或窗口不足保留耗时及真实消费；未发布完整 Index 时将缓存阶段标记为未执行，不把失败称为缓存命中。各阶段预算按真实累计消费扣除，不重置追加版本的预算。若设置外部 `FOCUS_TEST_DATABASE_URL`，它必须指向专用测试库。
+
 性能统计使用每次调用的运行日志：`semantic_index_build` 记录实际等待耗时、是否合并和结果；`semantic_index_model_invocation` 记录 schema、排队、执行与预算准入耗时；`semantic_index_revision` 记录局部抽取、整体解释及局部缓存命中／新投影段数。执行耗时包含预算准入和内部重试，不能当作纯 provider 延迟；日志不含原文或凭据。不可变 stage artifact 在精确重放时保留首次耗时，不能直接作为缓存请求的实时延迟样本。
 
 ### 2026-10-17 真实模型摸底（原文预取生产化之前）

@@ -93,7 +93,7 @@ def test_unlimited_reservations_keep_accounting_and_obey_finite_authority(tmp_pa
     exercise(tmp_path, run)
 
 
-@pytest.mark.parametrize("change", ["segmenter", "schema", "record_schema"])
+@pytest.mark.parametrize("change", ["segmenter", "segment_tokens", "schema", "record_schema"])
 def test_new_contract_does_not_adopt_old_projection_record(
     tmp_path, change, monkeypatch
 ):
@@ -109,6 +109,10 @@ def test_new_contract_does_not_adopt_old_projection_record(
         if change == "segmenter":
             service._indexer = RevisionSemanticIndexer(
                 ProtocolSafeRevisionSegmenter(max_messages=24)
+            )
+        elif change == "segment_tokens":
+            service._indexer = RevisionSemanticIndexer(
+                ProtocolSafeRevisionSegmenter(max_estimated_tokens=4096)
             )
         elif change == "schema":
 
