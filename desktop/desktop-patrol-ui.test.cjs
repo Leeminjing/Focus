@@ -54,12 +54,21 @@ if (!process.versions.electron) {
   let authorityRevision = 1, activeBudget = { ...budgetCatalog.presets.long.budgets };
   const session = "isolated-patrol-ui-fixture";
   const history = new Map(), streams = new Map(), requests = [], uploads = [], errors = [];
+  let previewPng = null;
   let host, server, workbench, selectedPath = "C:\\fixture\\workspace-a", completed = false, dropReceipt = false, hiddenSubmission = null;
   const fileRef = {fact_id:"file-fixed",revision:2,result_key:"b".repeat(64),slot_id:"slot-a",path:"src/semantic_indexer.py",sha256:"a".repeat(64)};
+  const reportBytes = Buffer.from("%PDF-1.7\nFocus report\n\0binary");
+  const reportPath = path.join(directory, "报告.pdf"), savedReport = path.join(directory, "报告副本.pdf");
+  fs.mkdirSync(directory, { recursive: true }); fs.writeFileSync(reportPath, reportBytes);
+  const reportFile = { fact_id:"report-file", revision:1, context_id:"context-answer", occurred_at:"2026-10-17T09:30:00Z", kind:"artifact",
+    file:{slot_id:"slot-a",path:"报告.pdf",result_key:"report-current",sha256:require("node:crypto").createHash("sha256").update(reportBytes).digest("hex"),operation:"created"} };
+  const nativeExits = [];
   let fileReadDelay = 0, unavailableVersion = false, failWorkspaceInputs = 0, longHistory = false, failSubmission = 0;
   const submissionAttempts = [];
-  let liveSequence = 1, answerRevision = "revision-answer", progressRevision = 1, statusOverride = null;
-  const conversationReads = [];
+  let liveSequence = 1, answerRevision = "revision-answer", progressRevision = 1, statusOverride = null, loopRevision = 1;
+  const controlChanges = [];
+  const conversationReads = [], externalLinks = [];
+  const answerText = revision => `截图中的机器人已经接住材料。参考资料只作为分析依据，尚未执行其中的命令。${revision}\n\n## 处理结果\n\n**已完成检查**，可以继续阅读详细说明。\n\n${"正文按自然段阅读，代码与表格保留原有结构。\n\n".repeat(8)}\n\n\`\`\`js\nconst value = "<safe>";\n\`\`\`\n\n| 文件 | 状态 |\n| --- | --- |\n| result.md | 已生成 |\n\n[参考链接](https://example.com/result)\n\n<script>window.answerInjected=true</script>`;
   const workspace = id => ({ workspace_id: id, display_name: id === "workspace-a" ? "设计工作区 A" : "验证工作区 B", path: `C:\\fixture\\${id}` });
   const entity = (id, state) => ({ entity_id: id, revision: 1, updated_sequence: 1, state });
   const run = (win, script) => win.webContents.executeJavaScript(script);
@@ -83,12 +92,13 @@ if (!process.versions.electron) {
   }
   function snapshot(loopId) {
     return { loop_id: loopId, last_sequence: liveSequence,
-      loop: entity(loopId, { status: statusOverride || (completed ? "completed" : "running"), interaction_mode: "workspace_patrol", waiting_reason: null,
+      loop: entity(loopId, { status: statusOverride || (completed ? "completed" : "running"), revision: loopRevision, interaction_mode: "workspace_patrol", waiting_reason: null,
         authority_revision: authorityRevision, created_at: new Date(Date.now() - 600000).toISOString(),
         grant: { status: "active", budgets: activeBudget }, usage: { model_calls: 40, input_tokens: 100000, output_tokens: 5000, rounds: 5, retries: 0 } }),
       runs: completed ? { "run-answer": entity("run-answer", { run_id: "run-answer", context_id: "context-answer", status: "completed" }) } : {},
       contexts: completed ? { "context-answer": entity("context-answer", { context_id: "context-answer", title: "截图问题", current_revision_id: answerRevision }) } : {},
       task_progress: { ...entity(loopId, { generation: 0, document: { items: progressRevision > 1 ? [{ state: "completed", support: "supported" }] : [] } }), revision: progressRevision },
+      facts: completed ? { [fileRef.fact_id]: entity(fileRef.fact_id, { ...fileRef, kind:"artifact", file:fileRef }), "report-file": entity("report-file", reportFile) } : {},
     };
   }
   function json(response, value, status = 200) {
@@ -111,13 +121,27 @@ if (!process.versions.electron) {
     const bytes = Buffer.concat(chunks);
     const body = bytes.length && request.headers["content-type"]?.startsWith("application/json") ? JSON.parse(bytes) : null;
     if (url.pathname.endsWith("/materials/limits")) return json(response, limits);
-    if (url.pathname.endsWith("/facts")) { if (fileReadDelay) await delay(fileReadDelay); return json(response,{facts:[{fact_id:fileRef.fact_id,revision:fileRef.revision,kind:"artifact",file:fileRef},{fact_id:"file-grounding",revision:1,kind:"artifact",file:{...fileRef,path:"src/semantic_grounding.py",result_key:"d".repeat(64)}}],has_more:false,next_before:null}); }
+    if (url.pathname.endsWith("/facts")) { if (fileReadDelay) await delay(fileReadDelay); return json(response,{facts:[{fact_id:fileRef.fact_id,revision:fileRef.revision,kind:"artifact",file:fileRef},{fact_id:"file-grounding",revision:1,kind:"artifact",file:{...fileRef,path:"src/semantic_grounding.py",result_key:"d".repeat(64)}},...(url.searchParams.get("limit") === "200" ? [reportFile,{...reportFile,fact_id:"report-old",occurred_at:"2026-10-16T09:30:00Z",file:{...reportFile.file,result_key:"report-old"}}] : [])],has_more:false,next_before:null}); }
+    if (/\/facts\/report-(file|old)$/.test(url.pathname)) {
+      const old = url.pathname.endsWith("report-old");
+      return json(response,{file:{...reportFile.file,result_key:old ? "report-old" : "report-current",after:{available:true,text:old ? "报告初稿" : "报告完成"},before:{available:false,reason:"binary"}}});
+    }
+    if (/\/inputs\/[^/]+\/attachments\/[^/]+\/content$/.test(url.pathname)) {
+      const isImage = url.pathname.includes("material-2/");
+      response.writeHead(200, { "Content-Type": isImage ? "image/png" : "text/plain" });
+      return response.end(isImage ? previewPng : "冻结的参考文字");
+    }
     if (url.pathname.endsWith("/facts/file-fixed")) {
       assert.equal(url.searchParams.get("revision"),"2");
       if (unavailableVersion) return json(response,{file:{...fileRef,result_key:"c".repeat(64)}});
       return json(response,{file:{...fileRef,after:{available:true,text:"class ProtocolSafeRevisionSegmenter:\n    VERSION = 2"},before:{available:false,reason:"not_recorded"}}});
     }
     if (url.pathname.endsWith("/agent-loops/budget-presets")) return json(response, budgetCatalog);
+    const control = url.pathname.match(/^\/desktop\/api\/agent-loops\/([^/]+)\/control$/);
+    if (control && request.method === "POST") {
+      controlChanges.push({ loopId: control[1], command: body.command });
+      return json(response, { loop_id: control[1], revision: ++loopRevision });
+    }
     if (/\/agent-loops\/loop-[^/]+\/grant$/.test(url.pathname)) {
       grantChanges.push(body);
       assert.equal(body.expected_authority_revision, authorityRevision);
@@ -145,7 +169,10 @@ if (!process.versions.electron) {
       }
       submissionAttempts.push(body);
       if (failSubmission) { failSubmission--; return json(response,{detail:"请求暂未获得回执"},503); }
-      const receipt = { ...body, intent_id: `intent-${requests.length + 1}`, loop_id: `loop-${id}`, status: "accepted", created_at: new Date().toISOString() };
+      const receipt = { ...body, ...(body.attachments ? {attachments:body.attachments.map(item => ({...item,
+        relative_path:`.focus/attachments/${item.source_kind === "image" ? "粘贴截图.png" : "参考文字.txt"}`,
+        material_kind:item.source_kind === "image" ? "image" : "text",digest:item.sha256}))} : {}),
+        intent_id: `intent-${requests.length + 1}`, loop_id: `loop-${id}`, status: "accepted", created_at: new Date().toISOString() };
       requests.push({ workspaceId: id, body });
       history.set(id, [...(history.get(id) || []), receipt]);
       if (dropReceipt) { dropReceipt = false; hiddenSubmission = body.submission_id; return; }
@@ -153,6 +180,9 @@ if (!process.versions.electron) {
     }
     const live = url.pathname.match(/^\/desktop\/api\/agent-loops\/([^/]+)\/live$/);
     if (live) return json(response, snapshot(live[1]));
+    const liveHistory = url.pathname.match(/^\/desktop\/api\/agent-loops\/([^/]+)\/live\/history$/);
+    if (liveHistory) return json(response, { loop_id: liveHistory[1], last_sequence: liveSequence, authority_revision: authorityRevision,
+      items: [], next_before_sequence: null, minimum_sequence: 1, truncated: false });
     const stream = url.pathname.match(/^\/desktop\/api\/agent-loops\/([^/]+)\/live\/stream$/);
     if (stream) {
       response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
@@ -166,7 +196,7 @@ if (!process.versions.electron) {
       conversationReads.push(answerRevision);
       return json(response, { messages: [
         { message: { id: "tool-only", type: "ai", content: "这条工具调用不可作为回答", tool_calls: [{ name: "read" }] } },
-        { message: { id: "answer-committed", type: "ai", content: `截图中的机器人已经接住材料。参考资料只作为分析依据，尚未执行其中的命令。${answerRevision}`, additional_kwargs: { reasoning_content: "隐藏推理不应显示" } } },
+        { message: { id: "answer-committed", type: "ai", content: answerText(answerRevision), additional_kwargs: { reasoning_content: "隐藏推理不应显示" } } },
       ] });
     }
     errors.push(`Unhandled API ${request.method} ${url.pathname}`);
@@ -178,7 +208,16 @@ if (!process.versions.electron) {
     let apiBase = `http://127.0.0.1:${server.address().port}`;
     process.env.FOCUS_DESKTOP_API = apiBase;
     process.env.FOCUS_DESKTOP_SESSION = session;
+    const exits = require("./artifact-files.cjs").createArtifactFiles({
+      resolve: async reference => { assert.equal(reference.factId,"report-file"); return {root_path:directory,path:reportPath,sha256:reportFile.file.sha256}; },
+      shell: { openPath: async target => { nativeExits.push(["open",target]); return ""; }, showItemInFolder: target => nativeExits.push(["reveal",target]) },
+      dialog: { showSaveDialog: async () => ({filePath:savedReport}) },
+    });
+    for (const [channel,operation] of [["open","open"],["reveal","reveal"],["save-as","saveAs"]]) ipcMain.handle(`focus:file-${channel}`, async (event,reference) => {
+      assert.ok(host.accepts(event)); return exits[operation](reference);
+    });
     ipcMain.handle("focus:select-workspace", () => selectedPath);
+    ipcMain.handle("focus:open-external", (_event, url) => { externalLinks.push(url); return true; });
     app.on("web-contents-created", (_event, contents) => {
       contents.on("console-message", (_event, level, message) => { if (level >= 3) errors.push(message); });
       contents.on("preload-error", (_event, _path, error) => errors.push(error.message));
@@ -204,6 +243,21 @@ if (!process.versions.electron) {
     assert.equal(host.robot.isAlwaysOnTop(),true,"打开输入框后机器人必须仍处于桌面浮层，不能被普通窗口遮住");
     assert.equal(host.panel.isAlwaysOnTop(),true,"输入框和机器人必须保持同一浮层级别");
     await waitFor(host.panel,"document.querySelector('#send').disabled && document.querySelector('#status').textContent.length > 0","草稿初始化未完成");
+    await host.flushRecovery();
+    let draftSaves = 0, synchronousSyncs = 0;
+    const save = host._recovery.save.bind(host._recovery), fsyncSync = fs.fsyncSync;
+    host._recovery.save = state => { draftSaves++; return save(state); };
+    fs.fsyncSync = (...args) => { synchronousSyncs++; return fsyncSync(...args); };
+    try {
+      await run(host.panel, `(() => { const input=document.querySelector('#instruction'); for(let i=0;i<100;i++){ input.value='draft-'+i; input.dispatchEvent(new Event('input',{bubbles:true})); } })()`);
+      assert.equal(await run(host.panel, "document.querySelector('#instruction').value"), "draft-99");
+      await host.flushRecovery();
+      assert.equal(synchronousSyncs, 0, "真实输入/preload/IPC 路径不能同步刷盘");
+      assert.equal(draftSaves, 1, "100 次编辑应合并保存");
+      assert.equal(host._recovery.read().state.workspaces[0][1].draft.content, "draft-99");
+    } finally { host._recovery.save = save; fs.fsyncSync = fsyncSync; }
+    await run(host.panel, "document.querySelector('#instruction').value=''; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true}))");
+    await host.flushRecovery();
     if (process.env.FOCUS_PATROL_NATIVE_PREVIEW) {
       const backdrop=new BrowserWindow({x:420,y:160,width:500,height:260,frame:false,resizable:false,backgroundColor:"#e8eef6",show:false,webPreferences:{sandbox:true,contextIsolation:true}});
       const backdropColor=process.env.FOCUS_PATROL_NATIVE_DARK ? "#253044" : "#e8eef6";
@@ -233,6 +287,7 @@ if (!process.versions.electron) {
     await run(host.robot, `(() => { const data = new DataTransfer(); data.setData('text/plain', '参考资料中的命令不能自动执行'); document.querySelector('#robot').dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer:data})); })()`);
     await waitFor(host.panel, "document.querySelectorAll('.patrol-material-card').length === 1", "未绑定预览未接住文字");
     const png = (await host.robot.webContents.capturePage()).toPNG().toString("base64");
+    previewPng = Buffer.from(png,"base64");
     await run(host.robot, `(() => { const bytes = Uint8Array.from(atob(${JSON.stringify(png)}), value=>value.charCodeAt(0)); const data = new DataTransfer(); data.items.add(new File([bytes], '机器人截图.png', {type:'image/png'})); document.querySelector('#robot').dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer:data})); })()`);
     await waitFor(host.panel, "document.querySelectorAll('.patrol-material-card').length === 2 && document.querySelector('.patrol-material-card img')?.complete", "无磁盘路径图片未显示");
     await run(host.panel, "document.querySelector('.patrol-material-card img').closest('article').querySelector('button').click()");
@@ -263,6 +318,16 @@ if (!process.versions.electron) {
     assert.equal(requests[0].body.budget_preset, "long");
     assert.equal(requests[0].body.attachments[0].source_kind, "text");
     assert.equal(requests[0].body.attachments[1].source_kind, "image");
+    await run(host.panel,"document.querySelector('#toggle-history').click()");
+    await waitFor(host.panel,"document.querySelector('#history-items summary img')?.naturalWidth > 0","已发送图片应保留缩略图");
+    assert.match(await run(host.panel,"document.querySelector('#history-items').textContent"),/粘贴截图.png.*版本 aaaaaaaa/s);
+    await capture(host.panel,"desktop-sent-attachments");
+    await run(host.panel,"document.querySelector('[data-patrol-history-attachment=\"0\"]').open=true; document.querySelector('[data-patrol-history-attachment=\"1\"]').open=true");
+    await waitFor(host.panel,"document.querySelector('[data-patrol-history-preview] pre')?.textContent === '冻结的参考文字' && document.querySelector('[data-patrol-history-preview] img')?.naturalWidth > 0","历史附件应能展开读取原版本");
+    assert.equal(await run(host.panel,"(() => { const s=document.querySelector('.panel-scroll'); return s.scrollWidth<=s.clientWidth+1; })()"),true,"展开的附件不得撑出横向滚动");
+    await run(host.panel,"document.querySelector('[data-patrol-history-attachment=\"0\"]').open=false; document.querySelector('[data-patrol-history-attachment=\"1\"]').scrollIntoView({block:'start'})");
+    await capture(host.panel,"desktop-sent-attachment-preview");
+    await run(host.panel,"document.querySelector('#toggle-history').click()");
     assert.doesNotMatch(await run(host.panel, "document.querySelector('#status').textContent"), /已完成/);
     await waitFor(host.panel, "!document.querySelector('[data-budget-increase]').hidden", "运行预算未显示");
     await run(host.panel, "document.querySelector('[data-patrol-budget] details').open=true; document.querySelector('[data-budget-preset]').value='normal'; document.querySelector('[data-budget-preset]').dispatchEvent(new Event('change')); document.querySelector('[data-budget-increase]').click()");
@@ -272,6 +337,35 @@ if (!process.versions.electron) {
     assert.match(await run(host.panel, "document.querySelector('[data-budget-details]').textContent"), /已结算 40.*上限 500.*剩余 460/);
     await capture(host.panel, "desktop-running-budget");
     await run(host.panel, "document.querySelector('[data-patrol-budget] details').open=false");
+    // Exercise the production API and Live connection, holding back the state
+    // update until HTTP acceptance has been observed by the renderer.
+    for (const [command, target, label] of [["pause", "paused", "继续"], ["resume", "running", "暂停"], ["stop", "stopped", "暂停"]]) {
+      if (command === "stop") {
+        await run(host.panel, "document.querySelector('.panel-menu summary').click()");
+        await waitFor(host.panel, "document.querySelector('.panel-menu-content').getBoundingClientRect().bottom <= innerHeight", "停止菜单不得裁切");
+        await capture(host.panel, "desktop-control-menu");
+      }
+      const selector = command === "stop" ? "#stop-work" : "#toggle-work";
+      await run(host.panel, `document.querySelector('${selector}').click(); document.querySelector('${selector}').click()`);
+      await waitFor(host.panel, "document.querySelector('#control-feedback').textContent.includes('已受理')", "控制回执未显示");
+      assert.equal(controlChanges.length, { pause: 1, resume: 2, stop: 3 }[command], "重复点击不得重复请求");
+      assert.equal(controlChanges.at(-1).loopId, "loop-workspace-a");
+      assert.equal(controlChanges.at(-1).command, command);
+      assert.equal(await run(host.panel, "document.querySelector('#stop-work').disabled"), true);
+      if (command === "pause") assert.equal(await run(host.panel, "document.querySelector('#toggle-work').textContent"), "暂停");
+      statusOverride = target; liveSequence++;
+      streams.get("loop-workspace-a").write(`data: ${JSON.stringify({ status: "resync_required", last_sequence: liveSequence })}\n\n`);
+      await waitFor(host.panel, "document.querySelector('#control-feedback').textContent.includes('已生效')", "控制必须由 Live 确认生效");
+      assert.equal(await run(host.panel, "document.querySelector('#toggle-work').textContent"), label);
+      if (command === "pause") {
+        assert.equal(await run(host.panel, "document.querySelector('#toggle-work').getBoundingClientRect().right <= document.querySelector('.panel-shell').getBoundingClientRect().right"), true);
+        await capture(host.panel, "desktop-control-paused");
+      }
+    }
+    assert.equal(await run(host.panel, "document.querySelector('#toggle-work').hidden && document.querySelector('#stop-work').disabled"), true);
+    statusOverride = null; loopRevision++; liveSequence++;
+    streams.get("loop-workspace-a").write(`data: ${JSON.stringify({ status: "resync_required", last_sequence: liveSequence })}\n\n`);
+    await waitFor(host.panel, "!document.querySelector('#toggle-work').disabled && !document.querySelector('#toggle-work').hidden", "新工作状态应恢复控制入口");
     await run(host.panel, "document.querySelector('#instruction').value='A 的草稿'; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true}))");
     selectedPath = "C:\\fixture\\workspace-b";
     await run(host.panel, "document.querySelector('#binding').click()");
@@ -291,7 +385,7 @@ if (!process.versions.electron) {
     assert.equal(await run(host.panel, "document.querySelector('#instruction').value"), "A 的草稿");
     assert.equal(requests.length, 2);
     await capture(host.panel, "desktop-preserved-draft");
-    // 真实 preload/同步 IPC/renderer 重建：本地草稿与材料不能依赖闭包或旧页面来源。
+    // 真实 preload/异步写入 IPC/renderer 重建：本地草稿与材料不能依赖闭包或旧页面来源。
     await run(host.robot, `(() => { const data = new DataTransfer(); data.setData('text/plain', '刷新后保留的材料'); document.querySelector('#robot').dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer:data})); })()`);
     await waitFor(host.panel, "document.querySelectorAll('.patrol-material-card').length === 1", "恢复材料未进入草稿");
     const streamBeforeReload = streams.get("loop-workspace-a");
@@ -314,6 +408,36 @@ if (!process.versions.electron) {
     assert.match(await run(host.panel, "document.querySelector('#results [data-context-id]').title"), /Context context-answer · Revision revision-answer/);
     assert.doesNotMatch(resultText, /隐藏推理|工具调用不可/);
     await capture(host.panel, "desktop-committed-answer");
+    assert.match(await run(host.panel,"document.querySelector('#artifacts').textContent"),/报告.pdf/);
+
+    assert.equal(await run(host.panel,"document.querySelector('.answer-reading').open"),false);
+    assert.equal(await run(host.panel,"document.querySelector('.panel-shell').offsetWidth"),288);
+    await run(host.panel,"document.querySelector('.answer-reading summary').click()");
+    await waitFor(host.panel,"document.querySelector('.panel-shell').offsetWidth === 520", "展开阅读未拓宽面板");
+    assert.equal(await run(host.panel,"getComputedStyle(document.querySelector('.answer-markdown')).fontSize"),"14px");
+    assert.equal(await run(host.panel,"document.querySelector('.answer-markdown strong').textContent"),"已完成检查");
+    assert.equal(await run(host.panel,"document.querySelector('.answer-markdown table') !== null"),true);
+    assert.equal(await run(host.panel,"getComputedStyle(document.querySelector('.answer-markdown pre')).maxHeight"),"none");
+    assert.equal(await run(host.panel,"Boolean(window.answerInjected)"),false);
+    await run(host.panel,"window.copiedAnswers=[]; Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>window.copiedAnswers.push(text)}}); document.querySelector('.answer-content>button').click()");
+    await waitFor(host.panel,"window.copiedAnswers.length === 1", "全文复制未完成");
+    await run(host.panel,"document.querySelector('.answer-code>button').click()");
+    await waitFor(host.panel,"window.copiedAnswers.length === 2", "代码复制未完成");
+    assert.deepEqual(await run(host.panel,"window.copiedAnswers"),[answerText(answerRevision),'const value = "<safe>";\n']);
+    await capture(host.panel,"desktop-answer-reading");
+    await run(host.panel,"document.querySelector('.answer-code').scrollIntoView({block:'center'}); document.querySelector('.answer-markdown a[href=\"https://example.com/result\"]').click()");
+    await waitFor(host.panel,"document.querySelector('#error').hidden", "回答外链打开失败");
+    assert.deepEqual(externalLinks,["https://example.com/result"]);
+    assert.ok(host.panel.webContents.getURL().includes("desktop-patrol.html?surface=panel"));
+    await capture(host.panel,"desktop-answer-code");
+    await run(host.panel,"document.querySelector('.answer-reading summary').click()");
+    await waitFor(host.panel,"document.querySelector('.panel-shell').offsetWidth === 288", "收起阅读未恢复小面板");
+    assert.match(await run(host.panel,"document.querySelector('#artifacts').textContent"),/semantic_indexer.py/);
+    await run(host.panel,"[...document.querySelectorAll('.artifact-result')].find(row=>row.textContent.includes('semantic_indexer.py')).querySelectorAll('button')[1].click()");
+    await waitFor(host.panel,"document.querySelector('#file-refs').textContent.includes('semantic_indexer.py')", "产物无法直接引用");
+    await run(host.panel,"document.querySelector('.file-ref>button:last-child').click(); [...document.querySelectorAll('.artifact-result')].find(row=>row.textContent.includes('semantic_indexer.py')).querySelector('button').click()");
+    await waitFor(host.panel,"!document.querySelector('#version-detail').hidden && document.querySelector('#version-body').textContent.includes('ProtocolSafeRevisionSegmenter')", "产物未打开固定版本");
+    await run(host.panel,"document.querySelector('#close-version-detail').click()");
 
     const readsBefore = conversationReads.length;
     await run(host.panel, "window.answerNode=document.querySelector('#answers article')");
@@ -345,6 +469,25 @@ if (!process.versions.electron) {
     await waitFor(workbench, "Boolean(window.target)", "工作台未收到来源定位");
     assert.deepEqual(await run(workbench, "window.target"), { workspaceId: "workspace-a", taskId: "context-answer", revisionId: answerRevision });
     await host.openPanel();
+    await run(host.panel,"document.querySelector('#open-files').click()");
+    await waitFor(host.panel,"document.querySelectorAll('.artifact-row').length === 3","产物抽屉没有按文件合并历史");
+    await run(host.panel,"document.querySelector('[data-files-search]').value='报告'; document.querySelector('[data-files-search]').dispatchEvent(new Event('input',{bubbles:true}))");
+    assert.equal(await run(host.panel,"document.querySelectorAll('.artifact-row').length"),1);
+    await waitFor(host.panel,"innerWidth >= 580","文件抽屉未展开窗口宽度");
+    await waitFor(host.panel,"(() => { const drawer=document.querySelector('.artifact-drawer').getBoundingClientRect(), button=document.querySelector('[data-files-native=saveAs]').getBoundingClientRect(); return button.top>=drawer.top && button.bottom<=drawer.bottom; })()","报告的另存按钮应直接可见");
+    await capture(host.panel,"desktop-artifact-drawer");
+    assert.equal(await run(host.panel,"document.querySelector('.artifact-drawer').scrollWidth <= document.querySelector('.artifact-drawer').clientWidth"),true,"文件抽屉不能横向溢出");
+    await run(host.panel,"document.querySelector('[data-files-native=open]').click()");
+    await waitFor(host.panel,"document.querySelector('[data-files-status]').textContent === '已打开'","文件打开未返回结果");
+    await run(host.panel,"document.querySelector('[data-files-native=reveal]').click()");
+    await run(host.panel,"document.querySelector('[data-files-native=saveAs]').click()");
+    await waitFor(host.panel,"document.querySelector('[data-files-status]').textContent === '已另存文件'","另存文件未返回结果");
+    assert.deepEqual(fs.readFileSync(savedReport),reportBytes);
+    assert.deepEqual(nativeExits,[["open",reportPath],["reveal",reportPath]]);
+    await run(host.panel,"document.querySelector('.artifact-history [data-files-view]').click()");
+    await waitFor(host.panel,"document.querySelector('[data-files-preview]').textContent.includes('报告初稿')","报告历史快照不可查看");
+    assert.equal(await run(host.panel,"Boolean(document.querySelector('.artifact-history [data-files-native]'))"),false);
+    await run(host.panel,"document.querySelector('[data-files-close]').click()");
     await run(host.panel,"document.querySelector('#reference-file').click()");
     await waitFor(host.panel,"document.querySelector('#version-candidates').textContent.includes('semantic_indexer.py')","文件版本候选未显示");
     await run(host.panel,"document.querySelector('#version-query').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))");
@@ -451,7 +594,7 @@ if (!process.versions.electron) {
     assert.equal(requests.length, requestsBeforeLostReceipt + 1, "服务端已受理的输入不能在重启后重发");
     assert.equal(uploads.length, 2, "重启恢复不能自动上传草稿附件");
     assert.deepEqual(errors, []);
-    console.log("PATROL_UI_PASS preview-before-binding, pathless-image, screenshot-paste, remove, explicit-send, IME guard, CtrlEnter, workspace isolation, hide/restore, accepted-is-not-complete, committed-answer-source, independent-progress, hidden-refresh-budget, revision-cache, reload-recovery, new-port-recovery, lost-receipt-reconciliation");
+    console.log("PATROL_UI_PASS preview-before-binding, pathless-image, screenshot-paste, remove, explicit-send, IME guard, CtrlEnter, workspace isolation, pause-resume-stop, control-acceptance-and-Live, hide/restore, accepted-is-not-complete, committed-answer-source, independent-progress, hidden-refresh-budget, revision-cache, reload-recovery, new-port-recovery, lost-receipt-reconciliation");
   }
   app.whenReady().then(execute).then(() => cleanup(0)).catch(error => { console.error(error.stack || error); console.error(errors.join("\n")); cleanup(1); });
   function cleanup(code) {

@@ -7,7 +7,7 @@
  * 唯一改动 DOM 的**应用**（复用、原地更新、移入新节点、按目标顺序就位）；syncStreamingPlaceholder 按 run
  * 身份找到或就地创建占位并随即同步其内容（占位属性取自渲染模块的身份常量，保证与渲染侧单元逐字一致；
  * 占位不渲染专用徽标或头部——它的可见形态与其落成形态一致，因此写入侧只按渲染模块给出的形态落 DOM；
- * 可见正文该不该渲染由渲染模块的 visibleStreamBlocks 判定——越限正文不产出块，写入侧只把结果同步进 DOM）；
+ * 可见正文由渲染模块的 visibleStreamBlocks 判定——超限后保留已显示块，并提供按需展开最新全文的入口）；
  * loadEarlier 在提高窗口后按高度差回填滚动位置。
  * 子节点归类约定：带身份键者参与对账（`data-unit-key`，或消息/分界/流式的既有键；没有显式键的事件序列
  * 回退取首事件键）；声明保留者（`data-conversation-preserved` 或 PRESERVED_SELECTORS 命中，且自身没有
@@ -531,6 +531,16 @@
 
     let body = article.querySelector(":scope > .message-rich");
     const blocks = deps.render.visibleStreamBlocks(deps.markdown, buffer).map(entry => entry.html);
+    const noticeHtml = deps.render.streamingNotice(buffer);
+    const notice = article.querySelector(":scope > .streaming-overflow");
+    if (!noticeHtml) {
+      if (notice) notice.remove();
+    } else if (!notice || notice.outerHTML !== noticeHtml) {
+      const template = document.createElement("template");
+      template.innerHTML = noticeHtml;
+      if (notice) notice.replaceWith(template.content.firstElementChild);
+      else article.append(template.content.firstElementChild);
+    }
     if (!blocks.length) {
       if (body) body.remove();
       buffer.blocks = [];
@@ -540,9 +550,14 @@
     if (!body) {
       body = document.createElement("div");
       body.className = "message-rich";
-      article.append(body);
+      article.insertBefore(body, article.querySelector(":scope > .streaming-overflow"));
     }
     buffer.blocks = syncBlocks(body, blocks, buffer.blocks || []);
+  }
+
+  function expandStreaming(article, buffer) {
+    deps.render.expandStreamBlocks(deps.markdown, buffer);
+    syncStreaming(article, buffer);
   }
 
   return {
@@ -552,6 +567,7 @@
     reconcile,
     mountLazyDetails,
     syncStreaming,
+    expandStreaming,
     syncStreamingPlaceholder,
     syncBlocks,
     trackScroll,

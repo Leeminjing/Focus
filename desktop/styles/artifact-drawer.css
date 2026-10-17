@@ -1,0 +1,24 @@
+/* File-oriented reading surface shared by the compact robot and workspace. */
+.artifact-drawer { color:#2b3749; background:#f5f8fc; border:1px solid #ccd8e5; border-radius:12px; padding:16px; overflow:auto; scrollbar-width:thin; }
+.artifact-drawer[hidden] { display:none!important; }
+.artifact-drawer>header { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+.artifact-drawer h2 { font-size:16px; margin:0; }
+.artifact-drawer h3 { font-size:13px; }
+.artifact-drawer button { font:inherit; cursor:pointer; border:1px solid #ccd8e5; background:#fff; color:#365d85; border-radius:6px; padding:4px 8px; }
+.artifact-drawer button:disabled { opacity:.5; cursor:default; }
+.artifact-drawer :is(button,input,summary):focus-visible { outline:2px solid #547da8; outline-offset:2px; }
+.artifact-scope,.artifact-drawer time,.artifact-path,.artifact-drawer [data-files-status] { color:#596b80; font-size:11px; }
+.artifact-toolbar { display:flex; gap:8px; }
+.artifact-toolbar input { min-width:0; flex:1; border:1px solid #bdcde0; background:#fff; border-radius:6px; padding:6px 8px; font:inherit; }
+.artifact-row { border-top:1px solid #d6e0ec; padding:12px 0; }
+.artifact-row>strong,.artifact-path,.artifact-row>time { display:block; overflow-wrap:anywhere; }
+.artifact-row>strong { font-size:13px; }
+.artifact-actions,.artifact-exits,.artifact-history { display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
+.artifact-actions { margin:8px 0; }
+.artifact-row summary { cursor:pointer; color:#596b80; font-size:11px; }
+.artifact-history { padding:8px 0; }
+.artifact-drawer pre { max-height:200px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:11px/1.6 Consolas,monospace; }
+.artifact-drawer [data-files-preview] { border-top:1px solid #ccd8e5; margin-top:8px; }
+.workspace-patrol>.artifact-drawer { position:fixed; z-index:25; right:16px; top:72px; bottom:24px; width:min(560px,calc(100vw - 32px)); box-shadow:0 8px 30px #29395320; }
+#panel>.artifact-drawer { flex:0 1 auto; min-height:0; width:100%; max-height:min(440px,calc(100vh - 16px)); margin-top:auto; font-size:11px; }
+#panel:has(>.artifact-drawer:not([hidden]))>.panel-shell { display:none; }

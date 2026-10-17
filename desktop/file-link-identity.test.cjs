@@ -127,5 +127,15 @@ async function testVersionPreview() {
     closest: selector => selector === "[data-action]" ? button : null,
   } }), /stop after request/);
   assert.equal(selectedRevision, 3);
+
+  let previewOptions;
+  h.context.FocusFilePreview = { mount: async (_host, options) => { previewOptions = options; } };
+  h.context.openFileLink({ path: "data.csv", slot_id: "tree-a", run_id: "run-a" });
+  await h.context.mountFileLinkPanel(container, h.vm.runInContext("state.filesPanel", h.context));
+  assert.equal(previewOptions.target.link.path, "data.csv");
+  assert.equal(previewOptions.target.link.slot_id, "tree-a");
+  assert.equal(previewOptions.target.link.run_id, "run-a");
+  assert.equal(previewOptions.target.task_id, "t");
+  assert.match(container.innerHTML, /当前磁盘文件/);
 }
 testVersionPreview().then(() => console.log("file-link-identity.test.cjs OK")).catch(error => { console.error(error); process.exitCode = 1; });

@@ -37,7 +37,7 @@ def _config(provider):
     return AppConfig(models=[ModelConfig(name="fixture", display_name="Fixture",
         use="focus.models.responses:FocusResponsesChatModel", provider=provider, protocol="responses",
         model="fixture", api_key="fixture", base_url="https://fixture.test/v1", default=True,
-        curation_output_method="json_schema", context_window=100000)])
+        curation_default=True, curation_output_method="json_schema", context_window=100000)])
 
 
 def _response():

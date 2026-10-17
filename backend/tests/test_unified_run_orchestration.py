@@ -60,19 +60,22 @@ class _Checkpoint:
 
 
 class _Checkpointer:
-    def __init__(self, checkpoint_id: str, messages=(), source_messages=(), source_checkpoint_id=None) -> None:
+    def __init__(self, checkpoint_id: str, messages=(), source_messages=(), source_checkpoint_id=None, pending_writes=()) -> None:
         self.checkpoint_id = checkpoint_id
         self.messages = messages
         self.source_messages = source_messages
         self.source_checkpoint_id = source_checkpoint_id
         self.configs = []
+        self.pending_writes = pending_writes
 
     async def aget_tuple(self, config):
         self.configs.append(config)
         source_id = config["configurable"].get("checkpoint_id")
         if source_id is not None and source_id != self.checkpoint_id:
             return _Checkpoint(self.source_checkpoint_id or source_id, self.source_messages)
-        return _Checkpoint(self.checkpoint_id, self.messages)
+        checkpoint = _Checkpoint(self.checkpoint_id, self.messages)
+        checkpoint.pending_writes = self.pending_writes
+        return checkpoint
 
 
 class _FailingOutbox(RunOutboxRepository):
@@ -293,6 +296,7 @@ def test_finalization_is_atomic_idempotent_and_restart_consumer_drains() -> None
                 current = await ContextRevisionRepository().current(session, context_id)
                 receipts = list((await session.scalars(select(RunOutboxDelivery))).all())
                 assert persisted.status == "success"
+                assert persisted.workspace_result["task_attention"] == []
                 assert persisted.final_checkpoint_id == "final-checkpoint"
                 assert persisted.model_call_count == 3
                 assert persisted.prompt_input_tokens == 91
@@ -316,6 +320,37 @@ def test_finalization_is_atomic_idempotent_and_restart_consumer_drains() -> None
             await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_settled_approval_is_visible_after_restart_without_reading_checkpoints() -> None:
+    from backend.app.desktop.service import DesktopService
+
+    async def scenario():
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        workspace_id, context_id, ref = await _seed(sessions, uuid.uuid4().hex[:8])
+        run_id = uuid.uuid4().hex
+        try:
+            await RunRegistrar(sessions).register(_registration(context_id, ref, run_id, uuid.uuid4().hex))
+            checkpointer = _Checkpointer("approval-checkpoint", pending_writes=[
+                ("approval", "__interrupt__", {"type": "access_review", "command": "private"}),
+            ])
+            await RunLifecycleFinalizer(sessions, checkpointer).finalize(RunRecord(
+                run_id=run_id, thread_id=ref.execution_thread_id,
+                status=RunStatus.interrupted, on_disconnect=DisconnectMode.cancel,
+            ))
+            restarted = DesktopService.__new__(DesktopService)
+            restarted.session_factory = sessions
+            summary = next(item for item in await restarted.list_tasks() if item["task_id"] == context_id)
+            assert summary["active_run"] is None
+            assert summary["latest_run"]["status"] == "interrupted"
+            assert summary["attention"] == [{"id": f"{run_id}:access_approval", "kind": "access_approval", "run_id": run_id}]
+        finally:
+            async with sessions.begin() as session:
+                await session.execute(delete(DesktopDomainResult).where(DesktopDomainResult.context_id == context_id))
+                await session.execute(delete(DesktopWorkspace).where(DesktopWorkspace.workspace_id == workspace_id))
+            await engine.dispose()
+    asyncio.run(scenario())
 
 
 def test_interrupted_run_publishes_repaired_execution_without_mutating_checkpoint_history() -> None:

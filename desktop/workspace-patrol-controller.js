@@ -32,7 +32,9 @@
     let historyHTML = "";
     let unlisten = null;
     let materialPreview = null;
+    let historyReferences = null;
     let budget = null;
+    let artifacts = null;
 
 
     let lifetime = null;
@@ -342,6 +344,7 @@
         const retained = id && [...list.children].find(row => row.dataset.submissionId === id);
         panel.scrollTop = retained ? panel.scrollTop + retained.getBoundingClientRect().top - edge - offset : top;
       }
+      historyReferences?.bind(model);
       const occupied = Boolean(model.draft.content || model.draft.file_refs?.length);
       for (const button of list.querySelectorAll("[data-patrol-edit-failed]")) {
         button.disabled = occupied;
@@ -479,6 +482,7 @@
       if (pendingButton.textContent !== pendingText) pendingButton.textContent = pendingText;
       if (previous?.facts !== projection.facts) {
         patchFileFacts(true);
+        artifacts?.update(root.FocusLoopLiveSelectors.selectFacts(projection));
       }
       if (detailsOpen) {
         const topologyChanged = ["loop", "portfolio", "lineage", "contexts"].some(key => previous?.[key] !== projection[key]);
@@ -534,7 +538,8 @@
           await onCompose({ workspaceId: workspace.workspace_id, ...(button.dataset.patrolAnswer ? { requestId: button.dataset.patrolAnswer, requestRevision: Number(button.dataset.requestRevision) } : {}), ...(button.dataset.patrolFileAdd ? {file_refs:[JSON.parse(button.dataset.patrolFileAdd)]} : {}) });
           return;
         }
-        if (button.hasAttribute("data-patrol-file-picker-open")) await openFilePicker();
+        if (button.hasAttribute("data-patrol-files-open")) await artifacts.open();
+        else if (button.hasAttribute("data-patrol-file-picker-open")) await openFilePicker();
         else if (button.dataset.patrolFileAdd) addFileReference(JSON.parse(button.dataset.patrolFileAdd));
         else if (button.dataset.patrolFileRemove) inputs.edit({ file_refs: inputs.get().draft.file_refs.filter(item => item.result_key !== button.dataset.patrolFileRemove) });
         else if (button.dataset.patrolEditFailed) {
@@ -622,6 +627,7 @@
               if (owner !== token || version !== fileVersion) return;
               host.querySelector("[data-patrol-file-body]").innerHTML = root.FocusLoopFactsView.renderFile(detail.file);
               host.querySelector("[data-patrol-file-detail]").hidden = false;
+              root.FocusFilePreview?.mountHistory(host.querySelector("[data-patrol-file-body]"), detail.file, loopId);
             } else showDialog("fact", "事实与来源", root.FocusLoopFactsView.renderDetail(detail));
           }
         }
@@ -637,6 +643,17 @@
       lifetime = new AbortController();
       historyLoading = true;
       host.innerHTML = view.skeleton(bound, Boolean(onCompose));
+      artifacts = root.FocusArtifactDrawer.create({ host: host.querySelector(".workspace-patrol"), api, getLoopId: () => loopId,
+        onSource: async id => { artifacts.close(); if (!detailsOpen) toggleDetails(); await inspectContext(id, host.querySelector("[data-patrol-files-open]")); } });
+      historyReferences = root.FocusPatrolInputReferences.create({ host, intake, workspaceId: () => bound.workspace_id, onError: error,
+        onFile: async (row, file) => {
+          const owner = token, version = ++fileVersion;
+          const detail = await api.factDetail(row.loop_id || loopId, file.fact_id, lifetime.signal, file.revision);
+          if (owner !== token || version !== fileVersion) return;
+          if (!detail.file || detail.file.result_key !== file.result_key || (file.sha256 && detail.file.sha256 !== file.sha256)) throw new Error("引用版本不可用，原输入记录已保留");
+          host.querySelector("[data-patrol-file-body]").innerHTML = root.FocusLoopFactsView.renderFile({ ...detail.file, fact_id: file.fact_id, revision: file.revision });
+          host.querySelector("[data-patrol-file-detail]").hidden = false;
+        } });
       const budgetHost = host.querySelector("[data-patrol-budget]");
       if (budgetHost) budget = root.FocusWorkspacePatrolBudget.create({ host: budgetHost, api,
         getDraft: () => inputs.get().draft, editDraft: patch => inputs.edit(patch), onError: error, canChooseInitial: !onCompose });
@@ -730,10 +747,12 @@
       }
     }
     function leave() {
+      artifacts?.dispose(); artifacts = null;
       budget?.dispose(); budget = null;
       if (graphFrame !== null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(graphFrame);
       graphFrame = null; lineagePending = false;
       materialPreview?.dispose(); materialPreview = null;
+      historyReferences?.dispose(); historyReferences = null;
       previews?.stop();
       root.document.body.classList.remove("has-patrol-workbench");
       relatedOnly = false; highlightIds = [];

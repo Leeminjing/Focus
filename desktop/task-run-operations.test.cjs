@@ -67,3 +67,25 @@ test("renderer has no global Main Run lock and reports duplicate clicks", () => 
   assert.match(source, /taskRunOperations\?\.get\(taskId\)/);
   assert.match(source, /const ownerTaskId = run\.task_id/);
 });
+
+test("finish releases the in-flight lock while keeping a durable immutable retry", () => {
+  const values = new Map();
+  const storage = { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
+  const store = Operations.create({ storage });
+  const snapshot = { body: '{"message":"original"}', selectionSignature: "{}", message: "original", input: "original" };
+  store.begin("a", "request");
+  store.freeze("a", "request", snapshot);
+  snapshot.body = "changed";
+  store.fail("a", "request", "offline");
+  store.finish("a", "request");
+  assert.equal(store.get("a").submission, null);
+  const restarted = Operations.create({ storage });
+  assert.equal(restarted.recovery("a").body, '{"message":"original"}');
+  assert.equal(restarted.recovery("b"), null);
+  const copy = restarted.recovery("a");
+  copy.request_id = "mutated";
+  assert.equal(restarted.recovery("a").request_id, "request");
+  assert.equal(restarted.forgetRecovery("a", "stale"), false);
+  assert.equal(restarted.forgetRecovery("a", "request"), true);
+  assert.equal(Operations.create({ storage }).recovery("a"), null);
+});

@@ -513,6 +513,9 @@ class LoopRoundOrchestrator:
         self._mission_bootstrap = MissionBootstrapStage()
         self._supplements = DecisionSupplementRepository()
 
+    async def prewarm_indexes(self, loop_id):
+        return await self._curators.prewarm_indexes(loop_id)
+
     async def _wait_for_progress(self, claim, error):
         from backend.app.desktop.agent_loop.task_progress.models import LoopProgressWork
         from backend.app.desktop.agent_loop.wait_requests import LoopWaitRequestFactory, LoopWaitRequestService

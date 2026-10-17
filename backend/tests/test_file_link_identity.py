@@ -50,6 +50,8 @@ def files(tmp_path):
     rows = [workspace, task, slot]
     app = FastAPI()
     app.include_router(file_link_router, prefix="/desktop/api")
+    from backend.app.desktop.file_routes import file_router
+    app.include_router(file_router, prefix="/desktop/api")
     session = Session(rows)
     app.state.desktop_service = SimpleNamespace(session_factory=lambda: session)
     with TestClient(app) as client:
@@ -88,6 +90,20 @@ def test_worktree_source_never_falls_back(files):
     assert (root / "report.md").read_text() == "root"
     session.rows[(WorkspaceSlot, "s")].lifecycle = "deleted"
     assert read(client, path="report.md", slot_id="s").status_code == 404
+
+
+def test_shared_previews_and_native_exits_keep_link_identity(files):
+    client, root, tree, session, run = files
+    session.rows[(DesktopRun, "r")] = run
+    (tree / "data.csv").write_text("name,value\n正确工作树,1", encoding="utf-8")
+    (root / "data.csv").write_text("wrong root", encoding="utf-8")
+    target = {"task_id": "t", "link": {"path": "data.csv", "workspace_id": "w", "run_id": "r", "slot_id": "s"}}
+    response = client.post("/desktop/api/files/content?preview=true", json=target)
+    assert response.status_code == 200 and "正确工作树" in response.text
+    location = client.post("/desktop/api/files/location", json={**target, "current": True})
+    assert location.status_code == 200 and location.json()["path"] == str((tree / "data.csv").resolve())
+    target["link"]["view"] = "history"
+    assert client.post("/desktop/api/files/location", json={**target, "current": True}).status_code == 422
 
 
 def test_git_history_stays_frozen_after_update_and_delete(files):

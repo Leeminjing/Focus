@@ -66,9 +66,9 @@
       if (!fromTyping) $("#version-query").focus({preventScroll:true});
       await load();
     }
-    async function detail(file) {
+    async function detail(file, sourceLoopId = loopId()) {
       close(); typed = false;
-      const owner = epoch, id = loopId(), body = $("#version-body");
+      const owner = epoch, id = sourceLoopId, body = $("#version-body");
       $("#version-detail").hidden = false; body.textContent = "正在读取文件版本…";
       try {
         const result = await api.factDetail(id,file.fact_id,reads.signal,file.revision);
@@ -100,6 +100,7 @@
           section.querySelectorAll('[role="tabpanel"]').forEach((panel,i) => { panel.hidden = i !== index; });
         }
         select(0); section.append(cite);
+        root.FocusFilePreview?.mountHistory(body, { ...result.file, fact_id: file.fact_id, revision: file.revision }, id);
         const note = document.createElement("small"); note.className = "version-note"; note.textContent = "固定版本，不随文件更新漂移"; section.append(note);
         body.querySelector("[data-patrol-file-add]")?.addEventListener("click",() => { try { add(file); } catch (error) { onError(error); } });
       } catch (error) { if (owner === epoch && error.name !== "AbortError") body.textContent = "引用版本不可用，请重新选择；原引用和要求已保留。"; }
@@ -138,7 +139,7 @@
     $("#version-candidates").addEventListener("keydown",navigateCandidates);
     $("#instruction").addEventListener("keydown",event => { if (!event.isComposing && !$("#version-picker").hidden) navigateCandidates(event); });
     $("#older-versions").addEventListener("click",() => void load(true));
-    return {render,open,close,isOpen:() => !$("#version-picker").hidden || !$("#version-detail").hidden,
+    return {render,open,close,detail,reference(file) { typed = false; add(file); },isOpen:() => !$("#version-picker").hidden || !$("#version-detail").hidden,
       input() {
         const match = $("#instruction").value.match(/(?:^|\s)@([^@\n]*)$/);
         if (!match || $("#reference-file").disabled) { if (typed) close(); return; }

@@ -27,6 +27,9 @@
   <link rel="stylesheet" href="./styles/loop-console.css?v=20260916b">
   <link rel="stylesheet" href="./styles/workspace-patrol.css?v=20261009-filesystem">
   <link rel="stylesheet" href="./styles/workspace-patrol-budget.css">
+  <link rel="stylesheet" href="./styles/artifact-drawer.css">
+  <link rel="stylesheet" href="./styles/patrol-input-references.css">
+  <link rel="stylesheet" href="./file-preview.css">
 </head>
 <body>
   <div class="app-frame">
@@ -108,6 +111,9 @@
       <button role="tab" data-action="settings-tab" data-settings-tab="data" aria-selected="false" data-i18n="settings.data">数据</button>
     </nav>
     <section class="settings-pane" data-settings-pane="general">
+      <h3>桌面提醒</h3>
+      <label><input id="taskNotificationsEnabled" type="checkbox" checked>启用桌面提醒</label>
+      <p class="muted tiny">优先提醒需要你处理的事项，再提醒任务完成和失败。点击提醒可进入对应任务。</p>
       <h3 data-i18n="settings.language">界面语言</h3>
       <div class="settings-language-options" role="radiogroup" aria-label="界面语言" data-i18n-aria-label="settings.language">
         <button type="button" data-action="set-language" data-locale="zh-CN" data-i18n="settings.chinese">中文</button>
@@ -123,6 +129,9 @@
       <p class="muted tiny" data-i18n="settings.new_session_mode_help">只影响之后创建的会话；现有会话模式保持不变。</p>
       <h3 data-i18n="settings.sandbox_status">Windows 文件沙箱</h3>
       <div id="sandboxStatusHost" class="sandbox-status-host"></div>
+      <h3 data-i18n="shell_recovery.title">Shell 异常恢复</h3>
+      <p id="shellRecoveryFeedback" role="status" aria-live="polite"></p>
+      <div id="shellRecoveryHost" class="sandbox-status-host" aria-live="polite"></div>
     </section>
     <section class="settings-pane" data-settings-pane="models" hidden>
       <h3 data-i18n="settings.models">模型</h3>
@@ -249,7 +258,9 @@
   <script src="./portfolio-map-layout.js"></script>
   <script src="./portfolio-map-view.js?v=20260916b"></script>
   <script src="./context-conversation-view.js?v=20260916b"></script>
+  <script src="./file-preview.js"></script>
   <script src="./loop-facts-view.js?v=20260916b"></script>
+  <script src="./artifact-drawer.js"></script>
   <script src="./loop-console-view.js?v=20260916b"></script>
   <script src="./loop-expansion-budget.js?v=20260926a"></script>
   <script src="./workspace-patrol-budget.js"></script>
@@ -258,6 +269,7 @@
   <script src="./workspace-patrol-inputs.js"></script>
   <script src="./workspace-patrol-intake.js"></script>
   <script src="./workspace-patrol-material-preview.js"></script>
+  <script src="./patrol-input-references.js"></script>
   <script src="./workspace-patrol-view.js"></script>
   <script src="./observation-view.js?v=20261017-strategy"></script>
   <script src="./context-inspector.js"></script>

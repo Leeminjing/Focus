@@ -7,10 +7,11 @@
 (function (root, factory) {
   const api = factory(
     typeof module === "object" && module.exports ? require("./loop-live-reducer.js") : root.FocusLoopLiveReducer,
+    typeof module === "object" && module.exports ? require("./loop-live-selectors.js") : root.FocusLoopLiveSelectors,
   );
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.FocusLoopLiveConnection = api;
-})(typeof globalThis === "object" ? globalThis : this, function (Reducer) {
+})(typeof globalThis === "object" ? globalThis : this, function (Reducer, Selectors) {
   "use strict";
 
   function waitForRetry(milliseconds, signal) {
@@ -26,12 +27,36 @@
     let generation = 0;
     let abort = null;
     let running = null;
+    let historyRevision = 0;
+
+    async function loadHistory(older = false) {
+      if (!api.liveHistory || !running || !store.get().projection) return;
+      const token = generation;
+      const revision = historyRevision;
+      const controller = abort;
+      const state = store.get();
+      const pageCursor = Selectors.selectActivityPage(state.projection, state.history).beforeSequence;
+      if (state.history.loading || (older && pageCursor == null)) return;
+      const beforeSequence = older ? pageCursor : state.projection.last_sequence + 1;
+      store.setHistory({ loading: true, error: null });
+      try {
+        const page = await api.liveHistory(running.loopId, { beforeSequence, signal: controller.signal });
+        if (token !== generation || revision !== historyRevision || controller.signal.aborted) return;
+        store.setHistory({ items: page.items, next_before_sequence: page.next_before_sequence,
+          minimum_sequence: page.minimum_sequence, initialized: true, older, loading: false });
+      } catch (error) {
+        if (token !== generation || revision !== historyRevision || controller.signal.aborted) return;
+        store.setHistory({ loading: false, error: String(error?.message || error) });
+      }
+    }
 
     async function synchronize(loopId, token, controller) {
       const snapshot = await api.liveSnapshot(loopId, controller.signal);
       if (token !== generation || controller.signal.aborted) return false;
+      historyRevision += 1;
       store.replaceSnapshot(snapshot);
       store.setConnection("connecting", { error: null, retry_count: 0 });
+      void loadHistory();
       return true;
     }
 
@@ -92,13 +117,14 @@
 
     function stop() {
       generation += 1;
+      historyRevision += 1;
       abort?.abort();
       abort = null;
       running = null;
       store.reset();
     }
 
-    return Object.freeze({ start, stop, isRunning: loopId => running?.loopId === loopId && !abort?.signal.aborted });
+    return Object.freeze({ start, stop, loadHistory, isRunning: loopId => running?.loopId === loopId && !abort?.signal.aborted });
   }
 
   return Object.freeze({ create });

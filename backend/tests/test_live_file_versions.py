@@ -138,6 +138,11 @@ def test_live_versions_atomic_replay_and_frozen_input(isolated_postgres_database
                 assert len(facts) == 2
                 details = [await MaterializedFactQueryService().detail(session, loop_id, fact.fact_id) for fact in facts]
                 first = details[0]["file"]
+                local = await FileVersionReader().local_file(session, loop_id, first["fact_id"], first["revision"])
+                assert local["path"] == str((tmp_path / "plan.md").resolve())
+                assert local["sha256"] == first["sha256"]
+                with pytest.raises(HTTPException, match="404"):
+                    await FileVersionReader().local_file(session, "foreign-loop", first["fact_id"], first["revision"])
                 assert first["importance"] == "declared_artifact"
                 readable = LoopLiveRedactionPolicy.redact_value(details[0], frozenset({"read"}))
                 assert readable["file"]["after"]["text"] == "version one"

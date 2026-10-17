@@ -1,0 +1,122 @@
+{
+  "date": "2026-10-17",
+  "scope": "Complete semantic indexing: cold build, local projection, independent claim verification, revision interpretation, incremental append, exact cache hit. Does not measure the later planner, Curator, synthesis or whole Loop.",
+  "model": "deepseek-flash",
+  "provider": "configured real provider; no response stubs",
+  "database": "isolated PostgreSQL, migrated to head; no production contexts or caches changed",
+  "command": "FOCUS_INDEX_REAL_MODEL=1 python -m pytest backend/tests/test_incremental_index_real_model.py -q -x",
+  "result": "2 passed in 170.04s",
+  "output_cap_source": "ModelConfig.curation_max_output_tokens default (8192); host override 65536 replaced in the test configuration only",
+  "cases": [
+    {
+      "case": "cold_append_cache",
+      "provider": "configured real model",
+      "budget_preset": "normal",
+      "budgets": {
+        "max_rounds": 40,
+        "max_duration_seconds": 1800,
+        "max_model_calls": 100,
+        "max_input_tokens": 500000,
+        "max_output_tokens": 50000,
+        "max_retries": 6,
+        "max_lanes": 64,
+        "max_contexts": 256,
+        "max_providers": 32,
+        "max_new_lanes_per_round": 16,
+        "max_concurrent_runs": 2,
+        "max_no_progress": 20,
+        "expansion_resources": {
+          "version": "expansion-resource-policy-v1",
+          "max_queries": null,
+          "max_unique_candidates": null,
+          "max_exact_reads": null,
+          "max_planner_model_calls": null,
+          "max_model_attempts_per_operation": null,
+          "max_planner_tokens": null,
+          "max_compiled_evidence_items": null,
+          "max_catalog_descriptor_chars": null,
+          "max_request_input_tokens": null,
+          "output_token_reserve": null
+        },
+        "expansion_resources_source": "default"
+      },
+      "max_output_tokens_per_request": 8192,
+      "first_quality": "complete",
+      "next_quality": "complete",
+      "reused_segments": 1,
+      "recomputed_segments": 1,
+      "exact_hit_calls": 0,
+      "model_calls": 8,
+      "input_tokens": 11245,
+      "output_tokens": 5336
+    },
+    {
+      "case": "cross_segment_diagnosis_append_cache",
+      "provider": "configured real model",
+      "budget_preset": "normal",
+      "budgets": {
+        "max_rounds": 40,
+        "max_duration_seconds": 1800,
+        "max_model_calls": 100,
+        "max_input_tokens": 500000,
+        "max_output_tokens": 50000,
+        "max_retries": 6,
+        "max_lanes": 64,
+        "max_contexts": 256,
+        "max_providers": 32,
+        "max_new_lanes_per_round": 16,
+        "max_concurrent_runs": 2,
+        "max_no_progress": 20,
+        "expansion_resources": {
+          "version": "expansion-resource-policy-v1",
+          "max_queries": null,
+          "max_unique_candidates": null,
+          "max_exact_reads": null,
+          "max_planner_model_calls": null,
+          "max_model_attempts_per_operation": null,
+          "max_planner_tokens": null,
+          "max_compiled_evidence_items": null,
+          "max_catalog_descriptor_chars": null,
+          "max_request_input_tokens": null,
+          "output_token_reserve": null
+        },
+        "expansion_resources_source": "default"
+      },
+      "max_output_tokens_per_request": 8192,
+      "joint_statements": [
+        "An HTTP 500 error occurred. The connection pool was initially suspected, but the investigation ruled it out; a thread-pool deadlock was confirmed as the cause."
+      ],
+      "joint_supports": [
+        [
+          "diagnosis",
+          "reject",
+          "suspect",
+          "symptom"
+        ]
+      ],
+      "read_rounds": 0,
+      "reused_local_segments": 2,
+      "quality": "complete",
+      "model_calls": 12,
+      "input_tokens": 8117,
+      "output_tokens": 4162,
+      "exact_hit_calls": 0
+    }
+  ],
+  "interpretation": "These two synthetic histories fit the normal budget; this does not establish that arbitrary user histories or a full Loop fit it.",
+  "regression_validation": {
+    "result": "178 passed, 1 deselected in 213.28s",
+    "files": [
+      "backend/tests/test_index_model_budget_settlement.py",
+      "backend/tests/test_incremental_revision_index.py",
+      "backend/tests/test_index_publication_integrity.py",
+      "backend/tests/test_index_budget_and_contract_isolation.py",
+      "backend/tests/test_loop_governance_accounting.py",
+      "backend/tests/test_interpretation_read_window.py",
+      "backend/tests/test_complete_semantic_context_derivation.py",
+      "backend/tests/test_expansion_resource_policy.py"
+    ],
+    "excluded_existing_failure": "test_large_evidence_pages_and_cites_distant_reads",
+    "existing_failure_verification": "Reproduced identical provider_request_window failure with the HEAD budget module loaded in memory."
+  }
+}

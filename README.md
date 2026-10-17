@@ -1,611 +1,287 @@
 # Focus
 
-**human in the contexts · 上下文手术**
+**Keep your ideas moving. Let Focus organize the work.**
 
-**[Strategy · Working methods](docs/strategies/README.md)**: write, import, and share a `STRATEGY.md` that describes when and how Focus should organize work and inherit context. Keep expressing goals and feedback through one entry point.
+English · [简体中文](README.zh-CN.md)
 
-> An open-source, local-first agent built on LangGraph. Its single conviction is the *in* of "human in the loop" — raised from the execution loop to the context itself: **the human participates in the contexts, and operates on them.**
->
-> 一个基于 LangGraph 的开源、本地优先 Agent。它的唯一信念，是 "human in the loop" 里那个 *in*——从执行循环抬升到上下文本体：**人参与在 contexts 里，并直接在它们上面做手术。**
+Focus is an open-source, local-first agent workspace for building software as your ideas and requirements evolve. Keep sharing ideas, asking questions, and making decisions through **Patrol**. Patrol organizes the contexts behind your project and coordinates successive rounds of work.
 
-> A carefully curated, precise context is better than a bloated context with a high cache hit rate, and as the number of run iterations increases, the former may actually become less expensive than the latter.
->
-> 经过筛选的精确的上下文优于臃肿但缓存命中率高的上下文，并且随着 run 的轮次增长，前者的花费反而可能低于后者。
+**You → Patrol → A collection of contexts**
 
-> **Traditional agent loops iterate prompts. Focus iterates contexts.**
+Start with a rough idea, refine the requirements and spec, move into implementation and validation, then adjust your decisions as results arrive. Clear requirements can move into development while open questions remain under exploration. You work through the same entry point throughout.
 
-```
-                    Focus
-                      │
-          ┌───────────┴───────────┐
-          │                       │
-      Agent Focus             Human Focus
-          │                       │
-   Context Surgery              Patrol
-          │                       │
-Prevents Context Drift    Prevents Attention Drift
-          │                       │
-          └───────────┬───────────┘
-                      │
-         Patrol can perform surgery
-              on the user's behalf
-                      │
-                 Focus on Task
-```
+**Rough idea → Refined spec → Execution → Revised decisions → Further execution.**
 
-## Focus Agent Loop: contexts that evolve with the task
+[Quick start](#quick-start) · [Working strategies](#strategy-bring-your-way-of-working) · [Documentation](#documentation)
 
-Focus has two interaction entrances. Ordinary conversations keep their existing messages, Agent replies and execution results. **Workspace Patrol** is a separate entrance: `User → Patrol → an evolving collection of Contexts`.
+## One entry point for an evolving project
 
-Bind a workspace and send any nonblank input to start Patrol. There is no prerequisite Context, Main Run or Mission form. The same composer accepts ordinary information, desired outcomes, execution boundaries and completion checks; the three special kinds are optional and can be supplied or revised independently. New Patrols use the saved default file access mode and the existing finite permissions and budgets.
+When a project keeps changing, organizing conversations becomes work of its own:
 
-Input receipts show the user's original text and whether it was received. They do not mean a decision has taken effect. The four kinds share a folded history of the latest three records, with earlier records available on expansion. Patrol's ordinary answers and scheduling reasoning are not a chat transcript in this entrance. Separate information requests remain visible and can receive targeted answers through the same composer.
+- Which conversation should receive this new idea?
+- Do I need to stop an ongoing task before asking a question?
+- A decision has changed. Which work needs to change, and which results still hold?
+- How should a conclusion from one conversation inform the next implementation?
 
-Task Progress shows the latest committed work state; Current Derivation Lineage shows published Context ancestry; LoopFact shows Round and Run facts across the Loop. Inspecting a Context preserves the Patrol composer and its draft. Input remains available during execution, explicit pause and idle. New input wakes idle work, while explicit pause and stop remain authoritative. With no known work to advance, Patrol waits for new input; absent completion checks never imply that an undefined project goal passed acceptance. Explicit reactivation after stop creates a successor using the existing Contexts and task state.
+Focus gives that organizational work to Patrol. You express goals, feedback, and tradeoffs. Patrol considers the current state of the project and proposes what should continue, what needs independent exploration, which results should come together, and which plans need to change.
 
-The execution mechanisms described below are shared by workspace Patrol and the retained Context Loop entrance.
+Behind this entry point are multiple **Contexts** that can evolve independently. Each Context holds the background, discussion, and results of a continuing line of work. Requirements, implementation, investigation, and validation can be at different stages while sharing relevant results with traceable sources.
 
-Most agent loops solve one problem: how to run the agent again. When one run ends, an outer script sends another prompt and the agent continues with the same increasingly bloated history.
+**You can express the next thought without first choosing a thread or planning when to interrupt it.** An input is accepted first; a new Patrol decision determines how it affects the work. The interface distinguishes receipt of your input from its subsequent handling.
 
-More runs do not fix a drifting direction or a polluted context.
+## Clarify the idea while building the software
 
-Focus changes more than the next prompt. It changes **the world the agent enters next**.
+Consider an Obsidian plugin. The following example shows a sequence of inputs you could give to the same Patrol.
 
-After each run, Patrol observes the task and its Context Portfolio, then decides whether to continue, curate, derive, merge, pause, or stop. A deterministic Kernel validates and commits that decision.
+### Begin before every requirement is settled
 
-```text
-User grants a goal and authority
-        ↓
-Agent executes inside one Context
-        ↓
-Portfolio Patrol observes the result and the whole task
-        ↓
-Continue / curate history / derive several Contexts / merge results
-        ↓
-Patrol writes an ordinary HumanMessage on the user's behalf
-        ↓
-One or more Agents continue inside purpose-built Contexts
-        ↓
-Patrol observes and chooses again, until completion or user judgment
-```
+> I want a plugin that explains selected text. Work out the interaction, error cases, and acceptance criteria first. I haven't decided about cloud sync yet.
 
-This is not `AI → AI → AI` self-continuation. It preserves the control rhythm `HumanMessage → Agent → HumanMessage → Agent`, while allowing later HumanMessages to be generated by Patrol under authority granted in advance by the user.
+Requirements work can establish a concrete behavioral spec: how the feature starts, where results appear, how failures are handled, and what counts as completion. Open questions remain available for exploration.
 
-### Why this is not just another `/loop`
+### Move the clear parts forward
 
-This Loop is built directly on two native Focus capabilities.
+> The selected-text explanation feature is decided. Start building it. Keep evaluating cloud sync, but don't implement it yet.
 
-Derived Context can change the past visible to the next model call. Patrol can continuously exercise the user's delegated context authority.
+Confirmed work can enter development while unresolved options remain under discussion. Work proceeds according to actual dependencies. When a missing decision needs your attention, Focus presents a specific request for input.
 
-Without either one, the system falls back to “send another prompt.”
+### Change a decision after seeing the results
 
-| | Conventional outer Agent Loop | Focus Agent Loop |
-|---|---|---|
-| Next-round input | Append a prompt based on the last result | Patrol creates a delegated HumanMessage |
-| History | Keep accumulating it, or erase everything each round | Curate a precise Derived Context from immutable Revisions |
-| Task structure | One line, or several isolated attempts | An evolving Context Portfolio whose Lanes may split and merge |
-| Parallel work | Run more attempts, then select an output | Give each Lane its own goal, history, and workspace |
-| Authority | Agent or outer script advances the process | User is root authority; Patrol is the sole revocable delegate |
-| Completion | Agent claims success, or a script checks an exit code | Independent evidence, Completion Guard, and user judgment when uncertain |
+> Drop cloud sync for now and use local storage. Keep the explanation feature that already works. Add support for long text and regression tests.
 
-A conventional loop designs the next instruction. Focus also designs **the next history, the next set of execution worlds, and the lineage between them**. That capability emerges specifically from combining Derived Context with Patrol.
+The new decision becomes an input to subsequent work. Patrol determines which plans are affected, which results remain useful, and how implementation and validation should proceed.
 
-### One Patrol, one evolving Context Portfolio
+### Give feedback on the result in front of you
 
-Each Loop has one logical control authority: the **Portfolio Patrol**. It is the user's sole, revocable delegated authority holder.
+> This version freezes on long text. Investigate the cause first, preserve the existing interface, then fix it and verify the result.
 
-It does not maintain one endless chat. It governs a portfolio of task-specific cognitive Lanes that evolve over time.
+Open a specific file version from an output record, add it as a reference, and describe the problem. Feedback can point to the exact result you have just reviewed.
 
-```text
-Portfolio R12                     Portfolio R13
+As the project develops, contexts branch and come together where the work calls for it. This diagram illustrates the relationships between several lines of work:
 
-Implementation R8  ────────────→ Implementation R9
-Testing        R5  ────────────→ Testing        R6
-Requirement    R3  ────────────→ Requirement    R3  (unchanged)
-Architecture   R6  ────────────→ Architecture   R7
-Scope Drift    R2  ────────────→ retired
-                                  Release        R1  (new)
+```mermaid
+flowchart TD
+    A["Requirements and behavioral spec"] --> B["Selected-text explanation"]
+    A --> C["Cloud sync exploration"]
+    B --> D["Tests and validation"]
+    D --> E["Long-text investigation"]
+    C --> F["Local storage requirements"]
+    B --> G["Revised implementation"]
+    E --> G
+    F --> G
 ```
 
-“One” means one authority holder, not one model call. Patrol normally observes, judges, and curates by itself.
+The resulting context network records how the project was understood, implemented, and revised. An existing Context continues when it can support the next step; new contexts are derived when independent work or a different selection of background is useful.
 
-It calls temporary Workers when it needs parallel Lane construction, semantic indexing, evidence-grounded synthesis, independent quality review, or completion verification outside its own judgment.
+## A loop modeled on how a person keeps work moving
 
-> **Patrol owns judgment. Workers are optional cognitive tools.**
+Focus models a person working within one workspace: organizing several lines of work, responding to changing goals, and moving between discussion, action, and feedback.
 
-Workers return typed candidates, semantic units, synthesized claims, or verification verdicts. Each role receives only its frozen input and has no Portfolio mutation, Run-start, or delegated-Human write port. Regardless of how capable a Worker is, the governing rule remains: **Workers return. Patrol commits.**
+Each round revisits the questions: **What should we do now? What has changed? Which work should continue? Which results support the next step?**
 
-### Patrol chooses where to go; Derived Context chooses what past to carry
+1. **Observe the current situation.** Bring together user input, task progress, contexts, and actual execution results.
+2. **Organize the next work.** Continue, derive, or combine contexts, and determine what should proceed, change, or wait.
+3. **Arrange execution.** Let Runs advance the relevant contexts, with concurrency or queueing based on dependencies, permissions, and available capacity.
+4. **Reconsider with new results.** Use execution and validation outcomes in the next observation to refine requirements and plans.
 
-This is the defining difference between Focus and a conventional outer loop.
+You can keep submitting input while execution is underway. Ideas under discussion, confirmed decisions, reference material, and deferred items receive distinct treatment, with records of how they affect subsequent work.
 
-| Control question | Focus answer |
-|---|---|
-| Where should the next round go? | Patrol judges from the goal, results, failures, drift, and new opportunities. |
-| What past should the next round carry? | Derived Context selects, recomposes, and compiles history from one or more immutable Revisions. |
-| Who may turn a judgment into state? | Only the current Portfolio Patrol may submit a decision intent to the Kernel. |
-| Who acts while the user is away? | Patrol acts within a revocable `LoopDelegationGrant`. |
+## Inspect progress and step in when needed
 
-Context identities may live for a long time and influence each other. The immutable Revision lineage is what remains acyclic.
+Use Patrol for everyday input. Open the workbench when you want a closer look.
 
-Architecture can shape Implementation, and a new implementation result can produce the next Architecture revision without rewriting history.
+| View | What it shows |
+| --- | --- |
+| **Task Progress** | Verified, ongoing, blocked, or superseded work, with associated contexts and evidence status. |
+| **Observation** | The user input, task state, and execution snapshot used for a particular round's decisions. |
+| **LoopFact** | Incoming execution, test, file, and workspace-result facts, together with their sources. |
+| **Context graph** | Relationships between lines of work, execution status, conversations, and historical versions. |
 
-```text
-Architecture R4
-      ↓
-Implementation R7
-      ↓
-Architecture R5
-```
+Open important file outputs and modifications to inspect saved content and available diffs. Use **@ file-version references** to give feedback on a specific result. Inspecting a Context keeps your everyday input directed to the same Patrol.
 
-The Portfolio is an index, not a super-context. Patrol's ordinary control observation stays bounded to each Lane's purpose, revision, freshness, summary, fingerprint, and latest result.
+You can also pause, resume, or stop execution, adjust authorization and budgets, or open a line of work in the task interface to inspect, edit, and derive contexts directly.
 
-Automatic Context derivation does not plan from a truncated tail preview. Every immutable source Revision is completely indexed into protocol-safe segments and grounded semantic units. A planner starts from the compact Portfolio catalog, searches authorized indexes, and performs bounded exact reads before it proposes a `WorkContextSpec`. Full histories remain reachable without being dumped wholesale into every model call.
+### Patrol on your desktop
 
-### Continuous many-to-one and many-to-many curation
+Windows includes a desktop robot entry point. Click it to open the input panel, drag it to reposition it, or drop screenshots, images, files, and reference text onto it. Preview the material, add your request, and send it. Restore the robot from the system tray after hiding it, or open the full workbench for details.
 
-Focus does not reduce Derived Context to a chat tree that can only branch outward. Patrol may curate one Lane from several source Revisions, or project the same sources into several Lanes with different histories and responsibilities.
+macOS uses the workbench window. Image input requires a configured model with image support.
 
-```text
-{ Goal, Contract, Implementation, Test failures }
-                         ↓
-                 Portfolio Patrol
-          ┌──────────────┼──────────────┐
-          ↓              ↓              ↓
- Implementation     Failure Analysis   Architecture Review
- relevant history   three failed runs   goal, constraints, decisions
-```
+## Strategy: bring your way of working
 
-An Implementation Context need not carry every debugging transcript. A Testing Context need not inherit unrelated architecture discussion. An adversarial review need not accept the assumptions accumulated by the current implementation.
+**A Strategy describes how a project should advance, how contexts should be organized, and what information subsequent work should inherit.**
 
-When several Lanes return results, Patrol may continue one, retire another, curate a new Context from several results, or pull the task back to its Task Contract.
+For example: validate a critical assumption before implementation; investigate repeated failures before trying another approach; or explore alternatives independently and choose based on actual results.
 
-The next round does not have to follow the previous agent's suggested direction.
+Under **Memory → Strategy**, you can create, import, edit, and export a `STRATEGY.md`, with global or workspace scope. Keep using Patrol as usual, or explicitly request a method: “Use the validate-critical-assumptions-first strategy for this task.”
 
-### Delegated HumanMessages: the user may leave; their authority remains
+A Strategy has three parts:
 
-A Patrol directive reaches the model as an ordinary `HumanMessage(id, content)`. Its body, `additional_kwargs`, and system prompt contain no Patrol label, authority field, or “synthetic human” marker.
+| Part | Purpose |
+| --- | --- |
+| `applicability` | When the method is useful, and when it is unnecessary. |
+| `evolution` | How work advances, adapts, comes together, and ends. |
+| `inheritance` | Which background, evidence, and constraints each line of work should carry. |
 
-True provenance lives outside the model context. The Desktop can show which message was typed directly by the user and which was generated by Patrol under a particular grant. The model receives only a clean human-role message.
+Enabled strategies are available for Patrol to consider against the current task. Actual adoption is recorded with the round, and execution remains subject to current requirements, permissions, and budgets.
 
-```text
-Model sees: HumanMessage("Stop editing code. Analyze why the last three fixes failed.")
+Read the [Strategy guide](docs/strategies/README.md), or start with the [validate critical assumptions](docs/strategies/examples/validate-before-build/STRATEGY.md) example.
 
-System records: actor=patrol · authority=delegated · grant=... · patrol=...
-```
+## Quick start
 
-Here, `HumanMessage` names the human authority domain; it does not have to mean “typed by the user's hands at this moment.” The user remains the root authority and Patrol remains a revocable delegate.
+Install a stable release with the one-line installer, or run Focus from source.
 
-When the user returns with a new instruction, that direct HumanMessage advances the goal and authority revisions. Any uncommitted Patrol decision made under the previous authority is superseded.
+### Prerequisites
 
-### Long-running work does not die by repeating “continue”
+- Git.
+- Python **3.11+**.
+- Node.js **22.12.0+** and npm.
+- Docker Desktop with Docker Compose, with Docker running.
+- A working model-service account and API key, which you can configure after launch.
 
-- **Drift**: derive from an earlier or cleaner Revision and realign with the Task Contract.
-- **Repeated failure**: stop retrying and create a Lane that only analyzes why earlier attempts changed nothing.
-- **Side discovery**: investigate in an isolated Context while the main line continues; never force the whole side history back in.
-- **Multiple viewpoints**: advance Implementation, Testing, Requirement, and Architecture Lanes in parallel, then select or combine results.
-- **Uncertain completion**: require independent evidence and enter `waiting_user` instead of claiming success.
+### One-line installation
 
-> **The human does not need to remain present in every iteration; their authority does.**
->
-> **人不必守在每一轮执行旁边，但人的控制权始终留在 Loop 中。**
+These commands require a published, non-prerelease stable `vX.Y.Z` release with the corresponding installer attached. Before the first stable release is published, use the source instructions below.
 
-Derived Context lets Focus rewrite the past carried into the next round. Patrol makes that power continuous, autonomous, and governable. Together they turn an Agent Loop from repeated model invocation into a **Context Evolution Engine**.
-
-Public installers and updates use published stable `vX.Y.Z` GitHub Releases. Drafts, prereleases and `main` are ineligible; without a stable release installation fails. Before changing code, `focus update` saves a full PostgreSQL recovery point under `~/.focus/backups/`, installs locked dependencies, migrates, checks the schema and starts the Gateway for read checks. Only success records the exact commit in `install.json`. A failure restores previous code, dependencies and the complete database; incomplete recovery blocks startup and `focus update` retries recovery first, without network access. Backups are retained. This workflow supports the bundled default local PostgreSQL; custom databases are refused before changes. Existing main-based installations must rerun the installer once to receive the protected command entry point. Docker must be running during installation and update. See [release and recovery procedure](docs/managed-releases.md).
-
-## Install on Windows / Windows 安装
-
-Prerequisites: Git, Python 3.11+, Node.js 22.12+, and Docker Desktop. Then run once in PowerShell:
+**Windows · PowerShell**
 
 ```powershell
 irm https://github.com/Leeminjing/Focus/releases/latest/download/install.ps1 | iex
 ```
 
-The first launch opens Settings → Models. Enter a real API key, check the endpoint, model name and protocol, then save to verify chat and curation output before starting a task. You can also configure `%USERPROFILE%\.focus\.env`. Use the same two commands from any directory:
+**macOS · Terminal**
 
-```powershell
-focus          # start Focus
-focus update   # update to the published stable release after backup, migration and health checks
-```
-
-The installer keeps application code in `%USERPROFILE%\.focus\app`, its managed Python environment in `%USERPROFILE%\.focus\runtime`, and the command launcher in `%USERPROFILE%\.focus\bin`. Persistent configuration, plugins, users, and PostgreSQL data are outside the managed Git checkout; keep selected workspaces outside `.focus\app` as well. `focus update` deliberately discards tracked changes inside `.focus\app`; develop in a separate clone.
-
-## Install on macOS / macOS 安装
-
-Prerequisites: Git, Python 3.11+, Node.js 22.12+, and a running Docker Desktop. Then run once in Terminal:
-
-```sh
+```bash
 curl -fsSL https://github.com/Leeminjing/Focus/releases/latest/download/install.sh | sh
 ```
 
-The first launch opens Settings → Models. Enter a real API key and save to verify chat and curation output. You can also configure `~/.focus/.env`. Open a new terminal and use:
+After installation, open a new terminal and run:
 
 ```sh
-focus          # start Focus
-focus update   # update to the published stable release after backup, migration and health checks
+focus
 ```
 
-The macOS installer uses the same `~/.focus/app`, `~/.focus/runtime`, and `~/.focus/bin` layout and adds the command directory to the active shell's user profile. It does not use `sudo`. This is an unsigned, source-managed Electron distribution rather than a notarized `.app`, so macOS may show security prompts. As on Windows, updates replace tracked application files but leave persistent data outside `~/.focus/app` intact.
+To update, first close Focus and keep Docker Desktop running, then execute:
 
----
-
-## The "in" is participation, not a location / 这个 "in" 是参与，不是坐标
-
-"Human in the loop" (HITL) never meant a person is physically *inside* a loop. It names a state: inside an automated process, the human **participates as a decision-maker**, stepping in where the machine should not decide alone. That "in" is **participation**, not a spatial preposition.
-
-"Human in the contexts" uses the same "in", one level higher.
-
-- **HITL / in the loop** — the human participates at the **execution** level: tool calls, output stream, which actions are approved.
-- **Focus / in the contexts** — the human participates at the **context** level: the substrate the model reasons over. The human decides which context becomes a contract, which messages get folded, which context gets forked, what a parallel agent wakes up with, and which memories survive across sessions.
-
-"上下文手术" is the same sentence said with the hand — that human, holding the scalpel.
-
-> **人参与在 contexts 里，并在它们上面做手术。**
-> **The human participates in the contexts, and operates on them.**
-
----
-
-## Patrol: delegated participation / patrol：委托的参与
-
-Human in the contexts does not mean the human must manually operate every context transformation. The human owns the decision; **Patrol can perform the operation on the human's behalf**.
-
-- **Direct participation** — `Human → Context Surgery`
-- **Delegated participation** — `Human → Patrol → Context Surgery`
-
-> **Control can be delegated without surrendering ownership.**
-
-Human in the contexts defines the user's authority over context. **Patrol makes that authority delegatable.** Its first instance is **context curation**:
-
-```
-Main Context
-     │
-     ▼
-   Patrol
-     │
-     ├─ reads the committed context
-     ├─ removes noise
-     ├─ preserves goals / constraints / decisions
-     ├─ curates a new context
-     ▼
-Derived Context
-     │
-     ▼
-Agent continues from a cleaner context
+```sh
+focus update
 ```
 
-Quick Curation is the first instance of Patrol acting as a shortcut for Human in the contexts.
+See [stable releases, installation, and update recovery](docs/managed-releases.md) for details.
 
----
+### Run from source
 
-## The core rule / 公理的内核
+On the first launch from source, the desktop app checks the runtime, starts local PostgreSQL if needed, applies database migrations, and starts the backend service.
 
-One rule reproduces itself across the system:
-
-> **At every context-transformation boundary, box the model's uncertainty into a narrow, mechanically-checkable shell; then let deterministic code authorize and isolate, and the human approve and write. Messages are the single source of truth, checkpoint namespaces are identity, tombstones carry the source, and where the code cannot be sure, it hands back to the human rather than guessing.**
-
----
-
-## Architecture / 架构
-
-A single FastAPI gateway drives Focus over one `POST /api/threads/{thread_id}/runs/stream` SSE channel; the desktop shell loads it same-origin, no CORS.
-
-```
-┌────────────────────────────── FastAPI Gateway ──────────────────────────────┐
-│  router (access)  →  services (orchestrate)  →  worker (execute)             │
-│  AuthMiddleware · RunManager · StreamBridge · checkpointer · store            │
-└──────────────────────────────────┬───────────────────────────────────────────┘
-                                   │ SSE (metadata / tokens / events / interrupt /
-                                   │  commitment_messages / error)
-                                   ▼
-                     ┌──────────────────────────────┐
-                     │   focus agents (LangGraph)     │
-                     │   make_lead_agent ──────────►   │
-                     │   (the one assembly seam)      │
-                     │   middleware + tools + prompt  │
-                     └──────────────┬───────────────┘
-                                    │  run_agent (the one execution spine)
-                                    ▼
-                        ┌───────────────────────┐
-                        │  Patrol (delegated)    │
-                        │  operator across       │
-                        │  context mechanisms    │
-                        └──────────┬────────────┘
-            ┌───────────────┬──────┴────────┬────────────────┐
-            ▼               ▼               ▼                ▼
-          compression  context fork      memory           commitment
-          gate          DAG (f15)        <memory>         9-stage
-```
-
-- **Storage**: PostgreSQL + asyncpg checkpointer (survives restart) + LangGraph Store (`async_postgres`, vectors off).
-- **Streaming**: in-process `StreamBridge` → SSE; `RunManager` tracks run status; checkpointer provides rollback snapshots.
-- **Identity**: every agent is `(thread_id, checkpoint namespace)` — `patrol:{id}`, `{thread_id}:commitment` — the same engine in different rooms, so forking, isolation, and recovery are just namespaces.
-- **Frontend**: zero-dependency static UI served by the same Python process (hand-written vanilla JS + design-token CSS; one vendored markdown lib). No npm UI deps, no build step, no framework.
-
----
-
-## Core mechanisms / 核心机制
-
-The context operations are implemented as mechanisms grouped into two, not a flat list of five. **The context operations are the substrate; Patrol is the delegated operator that can perform them on the user's behalf.**
-
-### Context operations
-
-Each operation is where the human participates, and where the human's decision is what gets kept.
-
-#### Compression mechanism / 压缩机制
-
-The main agent estimates token usage before every model call. When usage crosses `context_window × threshold_ratio`, the graph interrupts and asks you — it never trims on its own.
-
-- You select one or more message ranges (they may even split a tool-call group; the code repairs the protocol afterward).
-- For each range the system generates a candidate summary; you accept, edit, regenerate, or cancel. What is kept is *your* text.
-- You can also delete a selected range outright (a tombstone) instead of summarizing it.
-- On confirm, messages are rewritten: each range becomes a compression block (a `HumanMessage` carrying the original source + a `block_id`, persisted with the checkpoint); a deletion becomes an empty tombstone.
-- `wrap_model_call` strips the compression metadata before every model call, so the original source never reaches the model.
-- Blocks can be expanded, re-edited, re-compressed, or undone; recovery goes through the resume channel. A pending compression request blocks a new main run (409) until resolved.
-
-#### Derived-context mechanism / 派生 contexts 机制
-
-A context is not a single window; you can **fork** one. From one or more committed checkpoints of the same workspace, you derive a new context.
-
-- The system keeps two things: `authored_messages` (what you wrote) and `execution_messages` (the valid projection the model runs on).
-- The projector only **adds structure** — it repairs dangling tool calls with synthetic placeholders. Any change that would rewrite your text becomes `approval_required`, an explicit hash-bound `accept`/`reject`, never a silent rewrite.
-- Each derived context gets a **fresh** `thread_id`; the projection is written into the new checkpoint, never mutating the parent.
-- Contexts form a tree with depth and lineage you can trace, merge, branch, archive, and delete (a tombstone when it still has children).
-
-#### Commitment layer / 承诺层
-
-Before the work begins, Focus makes you **align on a contract** — and the alignment machinery is deliberately not an LLM.
-
-- `/commit <指令>` triggers a nine-phase state machine (goal / requirements & conflicts / priorities / inputs / versions / official knowledge / contract / task_contract / final message).
-- The supervisor is a deterministic `StateGraph` that fabricates an `AIMessage` (a synthetic `tool_call` to `delegate_with_review`) and routes it through a `ToolNode`. The LLM only runs inside the tool body (Worker + Evaluator); which stage, what's next, when to stop — that is pure code. Stage order is locked: `expected = stage + 1; stage != expected → invalid_stage`.
-- A Worker proposes; an independent Evaluator reviews; a deterministic validator checks structure. After three failed reviews it hands the decision to you.
-- You approve or revise stages 3/5/6/7 (and conditionally 2/4) by hand.
-- When signed, the contract **replaces the `/commit` message in place** (same message id), in the isolated namespace `{thread_id}:commitment`; the pre-commit conversation is untouched.
-- Because the supervisor is code, it cannot be prompt-injected to skip or reorder a stage; the LLM's reach is confined to a schema-gated content box.
-
-#### Memory library / 记忆库
-
-Memory is not the model's job here; it is **yours** to curate. Nothing is auto-captured or auto-recalled.
-
-> Memory ownership is yours. Curation may be direct or delegated to Patrol.
-
-- You pull from a whole session, particular (non-contiguous) messages, a span of text, or your own words — any combination.
-- You compress it into a `complete` overview or independent `segmented` notes, then **edit the draft yourself**; what is saved is *your* version, not the model's.
-- Each memory carries its `source_snapshot` and per-segment `source_ref`, so it is always attributable and re-generatable.
-- Before a new session you choose which memories to carry in, injected as a `<memory>` block into the system prompt — to the main agent only.
-
-### Delegated operation: Patrol / 委托操作：Patrol
-
-Patrol is not a fifth context mechanism alongside the ones above — it is the **delegated operator** that can perform them on the user's behalf.
-
-The context operations above are the substrate; Patrol can operate Compression, Derivation, Memory, Curation... on the user's behalf. It has two roles:
-
-1. **Attention isolation** — delegate side quests without interrupting the user's main task.
-2. **Context operation** — perform context operations on the user's behalf: curate, derive, compress, organize memory, ...
-
-The "separate room" below is *how* it works, not *what* it is. Patrol's real definition is: **the user's delegated context operator across context mechanisms**.
-
-- From the main agent's latest committed checkpoint you deep-copy a frozen draft, then edit its `system_prompt`, history, and final message freely.
-- Deployment is **idempotent** (`deployment_id` + unique constraint): repeat clicks never create a duplicate.
-- It runs in its own namespace (`patrol:{id}`), in parallel with your main line and never interrupting it.
-- Its results are **never auto-injected** into your main context. You read them when you choose, via `list_patrol_agents` / `read_patrol_agent_history`.
-- It has an independent lifecycle — cancel its run, retry on the original frozen input, or append a new message to continue.
-- **Spatial patrol** pins the same idea to a place: drop a patrol agent onto a coordinate in a document or page, and it observes outward from that point; position is its identity. DOCX edits require explicit read-or-write authorization.
-
----
-
-## Context operations: the division of labor / Context 操作：人与代码的分工
-
-Each governed context operation collapses the model's freedom into a narrow artifact. Code owns the **authorization and isolation** of that artifact; the LLM owns the **content**; the human owns the **decision**. Patrol is an **execution mode** that can perform any of these operations on the human's behalf.
-
-| Operation | Context artifact | Code owns | LLM owns | Human owns |
-|---|---|---|---|---|
-| **compression** | compressed / tombstoned messages | validate ranges, repair protocol, strip metadata, carry source | propose summary | pick range · write or rewrite · delete · undo |
-| **derived context** | authored / execution projection | compile projection (add-only), hash-bound accept/reject, fresh thread_id, lineage | — (human-authored) | author messages · accept or reject |
-| **commitment** | task contract | supervisor (code), validator, in-place replace, namespace | propose stage content | approve / revise each stage |
-| **memory** | memory (complete / segmented) + `<memory>` block | resolve source, slice text, render block, `_safe_attr` | propose the compressed draft | pick source · edit draft · choose what to carry in |
-| **patrol** *(operator, not an operation)* | the context artifact it operates on | idempotent deploy, namespace isolation, no auto-inject, reader tools, curation pipeline | do the work | rewrite draft · deploy · choose to read · approve curation |
-
----
-
-## Capabilities / 能力地图
-
-- **Focus Agent Loop**: Patrol continuously governs a Context Portfolio. Derived Context controls what past each round carries; delegated HumanMessages control where it goes. Supports many-to-many curation, parallel Lanes, atomic publication, independent completion evidence, and user takeover.
-- **承诺层 (Commitment)**: `/commit <指令>` triggers 9 phases; Worker–Evaluator review; fixed human pauses at phases 3/5/6/7; outputs a `task-contract`. Context7 is loaded lazily for this flow only.
-- **压缩机制 (Compression)**: interrupt-on-threshold; user picks ranges; LLM summary draft; tombstone delete / undo / reopen; source retained with the checkpoint, never seen by the model.
-- **派生 contexts 机制 (Derived context forking)**: derive from single/multiple parent checkpoints; `authored vs execution` separation; hash-bound accept/reject; lineage/depth/tree; fresh thread_id.
-- **patrol 机制 (Patrol)**: the user's delegated context operator — attention isolation (side quests off the main thread) + context operation (curate / derive / compress / organize memory on the user's behalf); implemented as frozen draft + full context rewrite + idempotent deploy + isolated namespace + results not auto-injected. **Quick Curation** derives a cleaner context for you.
-- **空间小兵 (Spatial)**: coordinate-anchored deploy, observe outward, position is identity, DOCX explicit read/write authorization.
-- **记忆库 (Memory)**: multi-source (session / messages / text / manual), complete / segmented, human-edit-then-save, `<memory>` injection into a new session (main only), cross-session persistence.
-- **插件 (Plugins)**: interface catalog (tool/hook/service) + dependency-injection registry + a single bridge middleware + a language-neutral stdio remote protocol; can carry desktop API routes and frontend assets.
-- **技能 (Skills)**: `skills/public` + per-user `custom`; enabled via `extensions_config.json`; `describe_skill` discovery.
-- **工具错误收口 (Tool errors)**: catches tool exceptions and returns a recoverable `ToolMessage` so the loop continues.
-
----
-
-## Agent Loop execution kernel
-
-Four hard boundaries implement the behavior above. Delegation defines authority. Patrol forms judgments. The Kernel validates state transitions. Run Orchestration executes them.
-
-Models produce cognitive content but never write authoritative state directly.
-
-```text
-User (root authority)
-  └─ revocable LoopDelegationGrant
-       └─ one Portfolio Patrol (sole delegated authority holder)
-            ├─ observes a bounded Portfolio frontier
-            ├─ judges whether to continue, curate, derive, merge, wait, or stop
-            ├─ may invoke role-bound indexing, planning, synthesis, and verification Workers
-            └─ submits one typed decision intent
-                 └─ deterministic Kernel validates and commits
-                      ├─ atomic Portfolio publication
-                      ├─ ordinary HumanMessage directives
-                      └─ concurrency-safe Agent Runs
-```
-
-Patrol owns judgment; Workers are optional cognitive tools. Workers return typed artifacts and have no state-mutation port. The Kernel is the only commit boundary.
-
-The invariant is: **many readers, many advisors, many candidate producers, one authoritative publisher per Portfolio**.
-
-### Grounded semantic Context derivation
-
-Automatic derivation is a staged, fail-closed pipeline rather than keyword routing or recent-message slicing:
-
-```text
-complete immutable Revisions
-  → protocol-safe semantic indexes
-  → bounded search and exact reads across the Portfolio
-  → WorkContextSpec planning and semantic reconciliation
-  → exact multi-source evidence resolution
-  → claim-level dossier synthesis and grounding verification
-  → minimality · sufficiency · coherence quality gate
-  → deterministic Context compilation
-  → Kernel admission and commit
-```
-
-Semantic identities and source hashes connect every stage. Projected statements may be faithful paraphrases, but every confirmed unit carries exact frozen support spans and an independent `supported | unsupported | unknown` assessment. A bad optional unit is quarantined in a rejection ledger while deterministic segment coverage keeps the Revision index ready. Index artifacts record accepted projected unit IDs and exact fallback segment IDs; descriptors expose their counts and mark segment-only coverage `degraded`, not `complete`. Revision identity, content hash, scope, and stale-source failures remain blocking. Required evidence must resolve to exact source units; tool calls and results remain closed; conflicting WorkSpecs do not merge silently; unsupported claims and any unknown quality verdict block compilation. Model-call attempts, actual token usage, stage duration, schema/projector versions, outputs, retries, and stable failure codes are persisted for audit and replay. Legacy semantic cache versions are not reinterpreted: the versioned cache key causes a deterministic rebuild while immutable source Revisions remain unchanged.
-
-The same derivation path can run in observe-only shadow mode, producing comparison artifacts without creating a Context or changing the Portfolio. Operators can disable automatic expansion writes with `FOCUS_LOOP_AUTOMATIC_CONTEXT_EXPANSION_WRITES=false`; planning and diagnostics continue while the authoritative write path remains closed.
-
-### Tool protocol repair and single-source recovery
-
-Checkpoint-authored history is immutable audit data. Before a settled Run revision becomes runnable, the shared tool-exchange compiler produces a separate provider-facing execution view. A proven interrupted or cancelled call receives one deterministic `status=error` ToolMessage with the original call id and tool name; its repair manifest records the source Run, source Revision, cause, compiler version, and synthetic message. Proof includes the exact source checkpoint: a later provider failure cannot claim an inherited call as its own interruption. Ambiguous missing calls/results remain `approval_required` and are never represented as successful.
-
-When a legacy or rejected Context cannot continue but one authoritative Revision has a safe evidence-preserving subset, the Loop persists a `ContextRecoveryOpportunity`. The trusted recovery compiler excludes only a terminal unresolved exchange with no partial results, retains its source reference, and records that tool side effects are unknown; nonterminal or partially resolved exchanges require approval. Repeated discovery preserves the opportunity's original expiry. Patrol can only select `recover_context(opportunity_id=...)`; trusted code constructs the one-source `CreateLanePlan`. Kernel rechecks the source frontier, goal, workspace, authority, grant, compiler version, expiry, consumption state, and current source Revision. Opportunity consumption and Lane/Portfolio publication share one transaction, so stale or replayed recovery cannot publish a partial state. If evidence and protocol validity cannot both be preserved, the observation carries an explicit waiting reason naming the missing evidence or approval.
-
-The additive migration is `6a7b8c9d0e1f`. Rollback removes pending recovery-opportunity rows only; it does not rewrite authored checkpoints, repaired Revision audit records, existing Context lineage, or a previously published Portfolio. Disable new readers/actions before downgrading if a deployment must roll back across this boundary.
-
-### Atomic Portfolio publication
-
-Each Portfolio generation freezes its source frontier before candidate Revisions are prepared in parallel.
-
-The system switches every Lane pointer and emits `PortfolioPublished` only after all candidates pass schema, lineage, authority, projection, and writer-ownership checks.
-
-If one candidate fails, none of that generation becomes visible. An Agent can never run in a mixed world where Implementation has advanced but Testing still belongs to the previous planned generation.
-
-### Authority and message provenance
-
-Delegated instructions enter the model as exactly `HumanMessage(id, content)`. Patrol identity, grant, authority, and audit metadata live in separate provenance tables, never in message content, `additional_kwargs`, or the system prompt.
-
-The Desktop can still distinguish direct and delegated HumanMessages. Only the current grant holder may write to the delegated Human channel, while a direct user instruction always has higher authority.
-
-### Workspace concurrency and adoption
-
-Workspace execution follows one-Writer/many-Readers leases with fencing tokens. Multiple authorized Writers use Lane-owned Git worktrees from a common clean baseline.
-
-Their results remain isolated until Patrol explicitly adopts one against the current authoritative revision. Non-Git or dirty workspaces fall back to one Writer.
-
-Interrupted Readers may retry only when reconciliation proves the fingerprint unchanged. Writers are never retried blindly.
-
-### Patrol can compress a Context without taking ownership away from the user
-
-New Loops explicitly enable **Allow Patrol to autonomously compress Contexts** by default. This grant is recoverable and revocable: unchecking it creates or narrows a grant without compression authority, and any direct user message, manual compression, goal override, grant change, pause/stop, or newer Context revision supersedes stale Patrol work.
-
-Autonomous compression has four hard stages. `CompressionGate` only raises a stable interrupt. Patrol may inspect a body-free manifest and request bounded exact ranges, while the existing summarizer prepares a non-authoritative candidate. The Kernel rechecks the exact Loop, grant, goal, round, Context revision, checkpoint, frontier, policy, protected anchors, budgets, expiry, and token reduction before it atomically commits one resolution. A leased coordinator then resumes the original LangGraph interrupt through the same `DesktopService.resume_run → execute_prepared_run → RunLifecycleFinalizer` spine used by manual compression.
-
-The existing `apply_compression_ranges` compiler remains the sole message transformer. The checkpoint retains the complete serialized source for restore, while provider requests receive only ordinary summary text: candidate ids, Patrol identity, grant data, resolution metadata, and deleted tombstones never enter model-visible messages.
-
-The Loop console exposes `prepared → accepted/committed → resuming → applied`, plus `expired`, `superseded`, and `failed`, with Context, ranges, estimated/actual reduction, Run, checkpoint, and resulting revision links. Operators can reconcile an expired lease by restarting the gateway; the database determines whether to resume, observe an existing Run, supersede changed-frontier work, or require the user. Rolling back the migration removes only autonomous-compression records and the versioned policy column; it does not alter existing compressed checkpoints or their restore sources.
-
-### Completion is not self-certification
-
-Completion is not self-certified. An independent Completion Verifier returns criterion-level evidence, and Patrol decides whether to request completion.
-
-The Completion Guard checks evidence freshness, pending gates and Runs, Portfolio integrity, workspace adoption, and the final path. Unknown or conflicted evidence enters `waiting_user`.
-
-### Observable, recoverable, and always reclaimable
-
-In the Desktop task view, open **Agent Loop**, provide a goal, Task Contract, acceptance criteria, and budgets, then grant Patrol control.
-
-The Loop Control Console keeps the evolving Context Portfolio and the selected Context's complete conversation on one screen. Every node carries its topic, purpose, revision, Run state, and evidence counts; stable multi-source edges show how the current worlds were derived. Selecting a node opens its full Human/Assistant/Tool history with provenance kept outside the model-visible body, while the facts drawer lists traceable Runs, tool outcomes, and conservative test counts across one or all Contexts.
-
-The user can intervene through three explicit authority paths: send a direct HumanMessage into the selected Context, give Patrol an opinion scoped to that Context, or reshape the whole Portfolio. Patrol opinions are persisted and audited as external user intents, then enter Patrol's next frozen observation; they are never smuggled into an execution Agent's message history.
-
-Loop events are replayable over cursor-based SSE. A direct message or **User takeover** advances the goal and authority revisions, superseding any uncommitted Patrol work formed under the previous authority.
-
-Current operational limits: isolated parallel writing requires Git and a clean baseline. Access expansion and other non-delegable gates always require the user. Existing Loop grants are not silently upgraded to autonomous compression; only a root-user grant containing the compression gate, closed capability, and versioned policy can use it.
-
-Context revision history and abandoned Lanes are retained for audit until lifecycle cleanup policy allows removal.
-
----
-
-## Tech stack / 技术栈
-
-- **Language/framework**: Python · LangChain · LangGraph (`create_agent`).
-- **Service**: FastAPI (gateway) · in-process `StreamBridge` · SSE.
-- **Storage**: PostgreSQL (asyncpg) · Alembic · LangGraph Store (`async_postgres`, vectors off).
-- **Models**: OpenAI-compatible (default `deepseek-v4-flash-vision-exp` via `focus.models.deepseek`), pluggable via `use: module:Class`.
-- **External**: MCP (Context7 docs, Playwright browser); vendored vanilla-JS frontend.
-- **Config**: `config.yaml` · `extensions_config.json` · `plugins/<name>/plugin.json`.
-
----
-
-## Development setup / 开发环境
-
-**Requirements** — Python ≥ 3.11 (with `alembic` and `uvicorn`), `git`, `docker` (for the bundled PostgreSQL via `desktop/compose.yaml`), Node.js ≥ 22.12.0 (required by Electron 43; older versions fail inside its installer), and an OpenAI-compatible key (DeepSeek) in `OPENAI_API_KEY`.
-
-**Configure** — credentials and selection come from environment variables; structure comes from configuration files.
-
-| Variable | Required | Purpose |
-|---|---|---|
-| `OPENAI_API_KEY` | yes | credential source for the model entries |
-| `FOCUS_MODEL` | no | CI / one-off override: must name an entry in the effective catalog; an unknown name fails at startup and the error lists every available entry |
-| `FOCUS_DATABASE_URL` | no | overrides the database connection |
-
-Set them in `.env` (`cp .env.example .env`) or as OS environment variables, which take precedence: `setx OPENAI_API_KEY "sk-..."` on Windows, `export OPENAI_API_KEY=...` on macOS/Linux — both require a new terminal.
-
-**Configuring models** — open the desktop app's *Settings → Models*: add, edit or delete entries, pick the default and curation-default model, enter or rotate credentials, test the connection; saving applies immediately without a restart or a terminal. Hand-editing the configuration files stays supported.
-
-Configuration is resolved from two file layers, the later one winning:
-
-1. file layer `<cwd>/config.yaml` — the defaults shipped with this build (for an installed app that is `~/.focus/app/config.yaml`, replaced wholesale on upgrade);
-2. user preference layer `~/.focus/config.yaml` — written by the settings panel, survives upgrades, and **takes precedence over the file layer**.
-
-The environment (`.env` and the process environment) participates through exactly two channels and is **not** a generic per-key override layer: `$VAR` references inside configuration values are resolved at use time, and two configuration items have documented override keys — `FOCUS_MODEL` (default model selection) and `FOCUS_DATABASE_URL` (database connection) — which win over both file layers. No other configuration item is rewritten by a same-named environment variable.
-
-`models` merges per entry `name`: entries declared by the user preference layer override same-named defaults, defaults the user did not declare survive, and deletions are recorded in an explicit `removed_models` list (so they are not resurrected by a build update). `default` and `curation_default` are owned by the highest layer that declares them.
-
-The remaining sections (`commitment` / `compression` / `checkpointer` / `database`) and `extensions_config.json` (skills / mcpServers) follow the same layer order.
-
-**Start the backend**
+#### Windows · PowerShell
 
 ```powershell
-cd backend/packages/harness
-python -m uvicorn backend.app.gateway.app:app --host 127.0.0.1 --port 8765
+git clone https://github.com/Leeminjing/Focus.git
+cd Focus
+
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r scripts/desktop-requirements.txt
+.\.venv\Scripts\python.exe -m pip install --no-deps -e backend/packages/harness
+
+$env:FOCUS_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe).Path
+npm --prefix desktop ci
+npm --prefix desktop run install:electron
+npm --prefix desktop start
 ```
 
-It applies Alembic migrations and connects to PostgreSQL. For a fresh database: `docker compose -f desktop/compose.yaml up -d`.
+#### macOS · Terminal
 
-Round task memory, committed derivation history, and realtime domain facts follow separate update boundaries. See [Round memory architecture and rollout](docs/round-memory-architecture.md) for the frozen inputs, background publication, diagnostics, and migration/rollback procedure.
+```bash
+git clone https://github.com/Leeminjing/Focus.git
+cd Focus
 
-**Start the desktop shell**
+python3 -m venv .venv
+.venv/bin/python -m pip install -r scripts/desktop-requirements.txt
+.venv/bin/python -m pip install --no-deps -e backend/packages/harness
 
-```powershell
-cd desktop
-npm install && npm start        # electron .
+export FOCUS_PYTHON="$PWD/.venv/bin/python"
+npm --prefix desktop ci
+npm --prefix desktop run install:electron
+npm --prefix desktop start
 ```
 
----
+For later launches from source, run `npm --prefix desktop start` from the repository root. In a new terminal, first set `FOCUS_PYTHON` again as shown above so it points to the Python executable in this virtual environment.
 
-## Repo layout / 目录结构
+### Configure a model and start a project
 
-```
-backend/
-  app/desktop/                context · patrol · memory · compression services
-    agent_loop/               delegated authority · Patrol · Kernel · coordinator
-    context_evolution/        immutable revisions · DAG reader/publisher
-    context_curation/         multi-context Programs · Lanes · Portfolio publication
-    run_orchestration/        the single PreparedRun → run_agent execution spine
-    workspace_coordination/   slots · leases · fencing · worktrees · adoption
-  app/gateway/                unified run interface (SSE / session / auth)
-  packages/harness/focus/
-    agents/                   lead assembly · commitment (9-stage) · compression gate
-    plugins/                  interface catalog · registry · bridge · remote
-    runtime/                  runs (worker) · checkpointer · stream-bridge · store
-    tools/                    builtin tools (permission-gated) · custom-tool registry
-    config/ · models/ · skills/ · mcp/ · persistence/
-desktop/                      Electron shell (zero-dependency vanilla JS)
-plugins/                      spatial-patrol 
-```
+1. Open **Settings → Models**, enter a real API key, and check the model name, service URL, and API protocol.
+2. Choose the default model and the curation default model. Both can use the same model entry.
+3. Save and confirm that both the regular-call and curation-output checks pass.
+4. Select a local folder as your workspace and send Patrol your first goal, question, or idea.
 
----
+Focus provides OpenAI / DeepSeek configurations and model connections using Responses or compatible Chat Completions protocols. Validate your specific model and endpoint in Settings. User model preferences are saved in `~/.focus/config.yaml`; see [config.yaml](config.yaml) and [.env.example](.env.example) for file-based configuration.
+
+Task state and contexts are stored in local PostgreSQL by default. Model calls connect to your configured service and send the content needed for that request.
+
+## Skills, MCP, and memory
+
+Equip Focus with methods and tools for individual tasks, and retain knowledge you want to reuse.
+
+| Capability | Purpose |
+| --- | --- |
+| **Skill** | Instructions and methods for a specific kind of work. |
+| **MCP** | External tools and services that the model can call. |
+| **Memory** | Reusable facts, decisions, and constraints. |
+| **Strategy** | Methods for organizing contexts and advancing the overall project. |
+
+Skills and MCP support global and workspace scopes:
+
+| Configuration | Global location | Workspace location |
+| --- | --- | --- |
+| Custom Skill | `~/.focus/.agents/skills/<name>/SKILL.md` | `<workspace>/.agents/skills/<name>/SKILL.md` |
+| MCP | `~/.focus/extensions_config.json` | `<workspace>/.focus/extensions_config.json` |
+
+Skills with the same name resolve in **workspace → global → built-in** priority order. MCP configuration is merged in **application defaults → global → workspace** order. Changes apply to subsequent assembly; active Runs retain their assembled tools and explicitly selected Skill snapshots.
+
+The “No workspace” mode also lets you select a global or specific-workspace assembly target and configure capabilities in its corresponding conversation.
+
+## How it works
+
+| Object | Responsibility |
+| --- | --- |
+| **Patrol** | Receives user intent, observes the overall situation, and proposes the next arrangement of work. |
+| **Context** | Holds the background and results of a continuing line of work, with immutable Revisions recording versions and sources. |
+| **Run** | One actual execution based on a Context. |
+| **Round** | A frozen observation, a decision, and the associated execution, retaining the inputs and evidence used at the time. |
+| **Kernel** | Validates permissions, versions, and state before committing a decision into executable work. |
+
+Contexts can persist over time or be derived from multiple sources. Execution results return to the overall project state and inform subsequent arrangements.
+
+Concurrent writing tasks require authorized Git worktree isolation and a clean baseline. When those conditions are unavailable, work proceeds serially within available resources. Execution respects authorization and budgets, with explicit requests when user input or approval is needed.
+
+Completion uses evidence from an independent verification process, checked against the current task, contexts, and workspace. Test, file, and tool results support the acceptance checks.
+
+### Stack and source map
+
+Python · LangChain / LangGraph · FastAPI · PostgreSQL · Electron · JavaScript
+
+| Directory | Contents |
+| --- | --- |
+| [backend/app/desktop/agent_loop](backend/app/desktop/agent_loop/) | Patrol, rounds, task progress, execution coordination, and completion checks. |
+| [backend/app/desktop/context_evolution](backend/app/desktop/context_evolution/) | Context versions, source relationships, and the evolution graph. |
+| [backend/app/desktop/workspace_coordination](backend/app/desktop/workspace_coordination/) | Workspace access, isolation, and result adoption. |
+| [backend/packages/harness/focus](backend/packages/harness/focus/) | Agent runtime, models, tools, Skills, MCP, and persistence. |
+| [desktop](desktop/) | Desktop shell, robot entry point, and workbench. |
+
+## Documentation
+
+- [Strategy: write, import, and share working methods](docs/strategies/README.md)
+- [File outputs and version-specific feedback](docs/context-evolution-file-feedback.md)
+- [Task progress, round memory, and source relationships](docs/round-memory-architecture.md)
+- [Concurrent execution with Git worktrees](docs/governed-worktree-parallel-runs.md)
+- [Desktop startup](docs/desktop-startup.md)
+- [Stable releases, installation, and update recovery](docs/managed-releases.md)
+- [First-run and live-model acceptance](docs/first-run-acceptance.md)
+
+## Contributing
+
+Use [Issues](https://github.com/Leeminjing/Focus/issues) to report problems and reproducible examples, or contribute through a Pull Request. Include your operating system, model and protocol, reproduction steps, and observed result when reporting an issue.
+
+## License
+
+[Apache License 2.0](LICENSE)

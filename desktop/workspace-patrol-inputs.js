@@ -19,19 +19,22 @@
     let historyInitialized = false;
     let order = 0;
     let draftRevision = 0;
+    let historyRevision = 0, cachedRows = null, cachedSnapshotRows = null;
     let cursor = null;
     const rows = new Map();
     const listeners = new Set();
-    const sorted = () => [...rows.values()].sort((a, b) => {
+    const snapshotRows = () => cachedSnapshotRows ||= Object.freeze([...rows.values()].map(frozenCopy));
+    const sorted = () => cachedRows ||= Object.freeze([...snapshotRows()].sort((a, b) => {
       const time = String(b.created_at || "").localeCompare(String(a.created_at || ""));
       return time || b.order - a.order || String(b.intent_id || "").localeCompare(String(a.intent_id || ""));
-    });
-    const get = () => ({ draft: { ...draft }, cursor, rows: sorted() });
-    const snapshot = () => ({ draft: { ...draft }, draftRevision, order, rows: [...rows.values()].map(row => ({ ...row })) });
+    }));
+    const get = () => ({ draft: { ...draft }, draftRevision, historyRevision, cursor, rows: sorted() });
+    const snapshot = () => ({ draft: { ...draft }, draftRevision, order, rows: snapshotRows() });
     function restore(value, recovering = false) {
       draft = { ...frozenCopy(value.draft) };
       draftRevision = value.draftRevision || 0; order = value.order || 0;
       rows.clear();
+      historyRevision++; cachedRows = cachedSnapshotRows = null;
       for (const item of value.rows || []) {
         const row = { ...item, request: frozenCopy(item.request) };
         if (recovering && row.status === "sending") { row.status = "failed"; row.error = "发送确认中断，请先核对历史后重试"; }
@@ -40,7 +43,8 @@
     }
     if (saved) restore(saved, true);
     let committed = snapshot();
-    const publish = () => {
+    const publish = (historyChanged = true) => {
+      if (historyChanged) { historyRevision++; cachedRows = cachedSnapshotRows = null; }
       try { onChange?.(); } catch (error) { restore(committed); throw error; }
       committed = snapshot();
       listeners.forEach(listener => listener(get()));
@@ -49,7 +53,7 @@
       get, snapshot,
       restoreSnapshot(value) { restore(value); committed = snapshot(); publish(); },
       subscribe(listener) { listeners.add(listener); listener(get()); return () => listeners.delete(listener); },
-      edit(patch) { draftRevision++; draft = { ...draft, ...patch, ...(patch.file_refs ? { file_refs: frozenCopy(patch.file_refs) } : {}), ...(patch.attachments ? { attachments: frozenCopy(patch.attachments) } : {}) }; publish(); },
+      edit(patch) { draftRevision++; draft = { ...draft, ...patch, ...(patch.file_refs ? { file_refs: frozenCopy(patch.file_refs) } : {}), ...(patch.attachments ? { attachments: frozenCopy(patch.attachments) } : {}) }; publish(false); },
       submit(visibleContext = null) {
         if (!draft.content.trim() && !draft.attachments?.length) throw new Error("请输入信息或添加材料");
         const payload = { submission_id: identity(), access_mode: accessMode, ...draft, ...(visibleContext ? { visible_context: visibleContext } : {}) };
@@ -79,6 +83,7 @@
           // 发送身份已经落盘；失败状态即使暂时无法落盘，也必须在本页保留重试入口。
           const current = rows.get(id);
           current.status = "failed"; current.error = String(failure.message || failure);
+          historyRevision++; cachedRows = cachedSnapshotRows = null;
           committed = snapshot();
           listeners.forEach(listener => listener(get()));
           throw failure;

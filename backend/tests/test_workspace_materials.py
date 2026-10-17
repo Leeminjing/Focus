@@ -109,6 +109,55 @@ def test_workspace_upload_first_send_retry_and_ownership(tmp_path):
         assert not Path(material["path"]).exists()
 
 
+@pytest.mark.parametrize("git", [False, True])
+def test_input_attachment_preview_reads_accepted_version_and_checks_owner(tmp_path, git):
+    import subprocess
+    from backend.app.desktop.material_snapshots import MaterialSnapshotVerifier
+
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        workspace = _workspace(client, tmp_path / "workspace")
+        other = _workspace(client, tmp_path / "other")
+        if git:
+            subprocess.run(["git", "init", workspace["path"]], check=True, capture_output=True)
+        task = _task(client, workspace)
+        original = _png()
+        material = _upload(client, workspace, uuid.uuid4().hex, data=original).json()
+
+        async def seed():
+            async with app.state.desktop_service.session_factory.begin() as session:
+                row = await session.get(DesktopMaterial, material["material_id"])
+                version = await MaterialSnapshotVerifier().protect(session, row, workspace["path"], "workspace_input")
+                loop = AgentLoop(loop_id=uuid.uuid4().hex, workspace_id=workspace["workspace_id"],
+                    initial_context_id=task["task_id"], holder_id=uuid.uuid4().hex, status="paused")
+                session.add(loop)
+                await session.flush()
+                intent_id = uuid.uuid4().hex
+                session.add(LoopUserIntent(intent_id=intent_id, loop_id=loop.loop_id, scope="portfolio",
+                    content="preview", intent_kind="workspace_input", delivery_state="accepted",
+                    correlation_id=uuid.uuid4().hex, goal_revision=1, authority_revision=1,
+                    request_payload={"attachments": [{"material_id": row.material_id, "relative_path": row.relative_path,
+                        "digest": row.digest, "sha256": row.digest, "size_bytes": len(original), "material_kind": "image",
+                        "snapshot_object_id": version.object_id if version else None}]}))
+                return intent_id
+
+        intent_id = client.portal.call(seed)
+        path = f"/desktop/api/workspaces/{workspace['workspace_id']}/inputs/{intent_id}/attachments/{material['material_id']}/content"
+        response = client.get(path, headers=SESSION)
+        assert response.status_code == 200, response.text
+        assert response.content == original
+        assert response.headers["content-type"] == "image/png"
+        assert "filename*=" in response.headers["content-disposition"]
+        assert client.get(path.replace(workspace["workspace_id"], other["workspace_id"]), headers=SESSION).status_code == 404
+        assert client.get(path.replace(intent_id, uuid.uuid4().hex), headers=SESSION).status_code == 404
+        assert client.get(path.replace(material["material_id"], uuid.uuid4().hex), headers=SESSION).status_code == 404
+        assert client.get(path).status_code in (401, 403)
+        Path(material["path"]).write_bytes(b"changed after sending")
+        changed = client.get(path, headers=SESSION)
+        assert changed.status_code == (200 if git else 409), changed.text
+        if git:
+            assert changed.content == original
+
+
 def test_workspace_upload_validates_bytes_and_cleans_failures(tmp_path, monkeypatch):
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         workspace = _workspace(client, tmp_path / "workspace")

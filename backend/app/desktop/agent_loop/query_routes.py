@@ -165,6 +165,15 @@ async def loop_fact_detail(loop_id: str, fact_id: str, request: Request, revisio
         return LoopLiveRedactionPolicy.redact_value(result, access.permissions)
 
 
+@loop_query_router.get("/agent-loops/{loop_id}/facts/{fact_id}/local-file")
+async def loop_fact_local_file(loop_id: str, fact_id: str, request: Request,
+                               revision: int | None = Query(default=None, ge=1)) -> dict:
+    from backend.app.desktop.domain_evidence.file_reads import FileVersionReader
+
+    async with request.app.state.desktop_service.session_factory() as session:
+        return await FileVersionReader().local_file(session, loop_id, fact_id, revision)
+
+
 @loop_query_router.get("/workspaces/{workspace_id}/context-evolution")
 async def context_evolution(workspace_id: str, request: Request) -> dict:
     async with request.app.state.desktop_service.session_factory() as session:

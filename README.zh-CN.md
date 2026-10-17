@@ -1,589 +1,287 @@
 # Focus
 
-**human in the contexts · 上下文手术**
+**不用管理线程，让想法持续变成软件。**
 
-**[Strategy · 工作策略](docs/strategies/README.md)**：把你的工作方法装进 Focus。编写、导入和分享 `STRATEGY.md`，定义工作怎样推进、上下文怎样组织及继承；日常仍只表达目标与反馈。
+[English](README.md) · 简体中文
 
-> 一个基于 LangGraph 的开源、本地优先 Agent。它的唯一信念，是 "human in the loop" 里那个 *in*——从执行循环抬升到上下文本体：**人参与在 contexts 里，并直接在它们上面做手术。**
+Focus 是一个开源、本地优先的 Agent 开发工作区。你持续向 **Patrol** 表达想法、提出问题、作出决定；Patrol 组织背后的上下文集合，安排一轮轮工作，让项目在需求不断变化的过程中持续推进。
 
-> 经过筛选的精确的上下文优于臃肿但缓存命中率高的上下文，并且随着 run 的轮次增长，前者的花费反而可能低于后者。
->
-> A carefully curated, precise context is better than a bloated context with a high cache hit rate, and as the number of run iterations increases, the former may actually become less expensive than the latter.
+**用户 → Patrol → 上下文集合**
 
-> **普通 Agent Loop 迭代 Prompt。Focus 迭代 Context。**
+从一个模糊想法开始，逐渐明确需求与 Spec，进入实现和验证，再根据结果调整决定、继续执行。已明确的部分可以先开发，尚未确定的部分可以继续探索。你始终通过同一个入口推进整个项目。
 
-```
-                    Focus
-                      │
-          ┌───────────┴───────────┐
-          │                       │
-      Agent Focus             Human Focus
-          │                       │
-   Context Surgery              Patrol
-          │                       │
-Prevents Context Drift    Prevents Attention Drift
-          │                       │
-          └───────────┬───────────┘
-                      │
-         Patrol can perform surgery
-              on the user's behalf
-                      │
-                 Focus on Task
-```
+**模糊想法 → 精细化 Spec → 执行 → 调整决策 → 继续执行。**
 
-## Focus Agent Loop：让 Context 替长期任务持续进化
+[快速开始](#快速开始) · [工作策略](#strategy把你的工作方法交给-focus) · [文档](#文档)
 
-多数 Agent Loop 只解决“怎样再运行一次 Agent”：上一轮结束，外部脚本再发一条 Prompt，Agent 带着同一段越来越臃肿的历史继续。运行次数增加了，但任务方向、信息边界和错误惯性仍由上一轮输出决定。
+## 一个入口，持续组织整个项目
 
-Focus 改变的不是重试次数，而是**下一轮 Agent 所处的世界**。每轮结束后，Patrol 观察任务与 Context Portfolio，判断应该沿用、策展、派生、合并、暂停还是结束，再由确定性 Kernel 校验并提交下一代 Portfolio。
+做一个不断变化的项目时，组织会话本身就会消耗注意力：
 
-```text
-用户给出目标与授权
-        ↓
-Agent 在一个 Context 中执行
-        ↓
-Portfolio Patrol 观察结果与任务全局
-        ↓
-继续当前 Context / 策展历史 / 派生多个 Context / 合并已有结果
-        ↓
-Patrol 代表用户写入普通 HumanMessage
-        ↓
-一个或多个 Agent 在各自 Context 中继续
-        ↓
-Patrol 再观察、再选择，直到完成或等待用户
-```
+- 这个新想法应该放在哪条会话？
+- 开发还在进行，现在问个问题要不要先点停止？
+- 某个方案变了，哪些工作需要调整，哪些成果可以保留？
+- 另一条会话里的结论，该怎样带到接下来的实现中？
 
-这不是 `AI → AI → AI` 的自我续写。它始终保持 `HumanMessage → Agent → HumanMessage → Agent` 的控制节奏，只是后续 HumanMessage 可以由用户预先授权的 Patrol 生成。
+Focus 把这部分组织工作交给 Patrol。你表达目标、反馈和取舍，Patrol 根据当前进展判断：继续已有工作、开启独立探索、汇合相关结果，或调整已经失去意义的安排。
 
-### 为什么这不是又一个 `/loop`
+一个入口后面，保留着多条可以独立演化的 **Context**。每个 Context 保存一条工作线需要的背景、讨论和结果；需求探索、功能实现、失败调查与验证可以处于不同阶段，并在需要时共享有来源的成果。
 
-这套 Loop 直接建立在 Focus 已有的两项原生能力上：Derived Context 能改变模型下一轮看到的过去，Patrol 能代表用户持续行使 Context 控制权。缺少其中任何一个，系统都只剩“再发一条 Prompt”。
+**你不必先选好线程、安排好打断时机，再表达下一句话。** 输入先被受理，再由 Patrol 的新决策确定如何影响工作；界面中的“已受理”表示输入已经收到，具体处理结果可以继续查看。
 
-| | 普通外层 Agent Loop | Focus Agent Loop |
-|---|---|---|
-| 下一轮输入 | 根据上一轮结果拼接 Prompt | Patrol 生成 delegated HumanMessage |
-| 历史 | 继续累积，或每轮全部清空 | 从不可变 Revision 精确策展 Derived Context |
-| 任务结构 | 一条线，或若干彼此孤立的 attempt | 持续演化、可分可合的 Context Portfolio |
-| 并行 | 多跑几次，再选一个结果 | 每个 Lane 拥有不同目标、历史与 workspace |
-| 控制权 | Agent 或外部脚本推进 | 用户是根权力，Patrol 是唯一可撤销代理 |
-| 完成判断 | Agent 自报完成，或脚本看退出码 | 独立证据、Completion Guard、必要时等待用户 |
+## 一边把需求想清楚，一边把软件做出来
 
-普通 Loop 设计下一条指令；Focus 同时设计**下一条指令、下一轮历史、下一组执行世界以及它们之间的血缘**。这正是 Derived Context 与 Patrol 结合后才出现的能力。
+以开发一个 Obsidian 插件为例，下面是一组可以持续交给 Patrol 的输入。
 
-### One Patrol, one evolving Context Portfolio
+### 从还没想完整的需求开始
 
-一个 Loop 只有一个拥有控制权的逻辑主体：**Portfolio Patrol**。它是用户唯一的、可撤销的委托权力持有者，持续管理的不是一条聊天记录，而是一组会演化的任务认知 Lane。
+> 我想做一个选中文本就能解释的插件。先把交互、异常情况和验收标准梳理清楚，云同步我还没想好。
 
-```text
-Portfolio R12                     Portfolio R13
+需求讨论可以先形成明确的行为 Spec：什么时候触发、如何显示结果、失败时如何处理、怎样验收。尚未确定的问题保留为探索事项。
 
-Implementation R8  ────────────→ Implementation R9
-Testing        R5  ────────────→ Testing        R6
-Requirement    R3  ────────────→ Requirement    R3  （无需更新）
-Architecture   R6  ────────────→ Architecture   R7
-Scope Drift    R2  ────────────→ 退出
-                                  Release        R1  （新建）
+### 让已明确的部分先向前走
+
+> 选中文本解释已经确定，先做出来。云同步继续评估，先别进入实现。
+
+已确认的功能进入开发，待定方案继续讨论。工作线按照实际依赖推进；遇到需要用户决定的缺口时，Focus 会展示具体的补充请求。
+
+### 看到结果后，继续改变决定
+
+> 云同步先不要了，改为本地保存。已经可用的解释功能保留，补上长文本处理和回归测试。
+
+新决定成为后续工作的依据。Patrol 判断哪些安排受到影响，哪些成果可以继续使用，再组织实现与验证。
+
+### 针对眼前的结果继续反馈
+
+> 这个版本处理长文本时会卡住。先定位原因，保留现有接口，再修复并验证。
+
+在文件产出记录中打开具体版本，将它加入输入引用，再描述问题。反馈可以指向刚刚看到的那一版结果。
+
+在这样的过程中，上下文会随工作需要分化与汇合。下面示意一组工作线之间的来源关系：
+
+```mermaid
+flowchart TD
+    A["需求讨论与行为 Spec"] --> B["选中文本解释实现"]
+    A --> C["云同步方案探索"]
+    B --> D["测试与验证"]
+    D --> E["长文本问题调查"]
+    C --> F["本地保存的新要求"]
+    B --> G["修订实现"]
+    E --> G
+    F --> G
 ```
 
-这里的“一”指一个 authority holder，不是只允许一次模型调用。Patrol 可以自己完成观察、判断与策展；需要并行构造 Lane、建立语义索引、基于证据进行合成、独立评估质量或验证完成状态时，才调用临时 Worker。
+这张逐渐形成的上下文网络，记录项目怎样被想清楚、实现和修正。已有 Context 足以承接下一步时，就继续使用；需要独立讨论或重新组织背景时，再派生新的工作线。
 
-> **Patrol owns judgment. Workers are optional cognitive tools.**
+## 拟人 Loop：任务在变，工作持续向前
 
-Worker 只返回类型化的候选、semantic unit、合成 claim 或验证 verdict。每种角色只能读取自己的冻结输入，不能改变 Portfolio、不能启动 Run、不能写入 delegated Human channel。无论 Worker 多强，最终都遵守同一条原则：**Workers return. Patrol commits.**
+Focus 的 Loop 模拟一个人在同一工作区中，面对持续变化的目标，不断组织多条工作线，在讨论、执行和反馈之间推进项目。
 
-### Patrol 决定往哪里走，Derived Context 决定带着什么过去
+每一轮都会重新考虑：**现在要做什么？哪些要求改变了？哪些工作继续？哪些结果足以支持下一步？**
 
-这是 Focus Agent Loop 与普通外层循环的根本差异。
+1. **观察当前局面**：结合用户输入、任务进度、上下文和真实执行结果。
+2. **组织下一步工作**：复用、派生或汇合 Context，明确继续、调整和等待的事项。
+3. **安排执行**：让 Run 在相应 Context 中推进工作，根据依赖、权限和可用容量安排并行或排队。
+4. **带着结果重新判断**：将执行与验证结果纳入后续观察，继续细化要求和调整安排。
 
-| 控制问题 | Focus 的回答 |
-|---|---|
-| 下一轮往哪里走？ | Patrol 根据目标、结果、失败、偏航和新机会作出判断。 |
-| 下一轮带着什么过去？ | Derived Context 从一个或多个不可变 Revision 中选择、重组并编译历史。 |
-| 谁能把判断变成系统状态？ | 只有当前 Portfolio Patrol 能向 Kernel 提交 decision intent。 |
-| 用户离开后谁行使控制权？ | Patrol 在可撤销的 `LoopDelegationGrant` 范围内代表用户。 |
+用户可以在执行期间继续输入。讨论中的想法、已确认的决定、参考材料和暂缓事项会被分别处理，并保留它们与后续工作的关系。
 
-Context identity 可以长期存在并彼此影响；真正保持无环的是不可变的 Revision 血缘。于是 Architecture 可以影响 Implementation，Implementation 的新结果也可以生成 Architecture 的下一版，而不会伪造或覆盖历史。
+## 随时查看进展，也能直接介入
 
-```text
-Architecture R4
-      ↓
-Implementation R7
-      ↓
-Architecture R5
-```
+日常通过 Patrol 表达；需要了解细节时，再展开工作台。
 
-Portfolio 是索引，不是超级上下文。Patrol 的普通控制观察仍保持有界，只读取每个 Lane 的 purpose、revision、freshness、summary、fingerprint 和最近结果。
+| 视图 | 你可以看到什么 |
+| --- | --- |
+| **Task Progress · 任务进度** | 已验证、正在推进、被阻塞或被替代的事项，以及相关工作线和证据状态。 |
+| **Observation · 本轮观察** | 本轮决策所依据的用户输入、任务状态与运行快照。 |
+| **LoopFact · 事实流** | 持续产生的执行、测试、文件产出和工作区结果，以及它们的来源。 |
+| **上下文图谱** | 工作线之间的来源关系、运行状态、会话内容和历史版本。 |
 
-但自动 Context 派生不会再基于截断的尾部消息预览进行规划。系统会把每个不可变 source Revision 完整索引为 protocol-safe segments 与有原文依据的 semantic units；Planner 从紧凑的 Portfolio catalog 出发，在授权索引中检索候选，并在生成 `WorkContextSpec` 前执行有预算的精确读取。完整历史始终可达，但不会被整段塞进每一次模型调用。
+重要文件产出与修改可以直接点开，查看已保存的内容和可用的 Diff，并通过 **@ 引用文件版本** 继续提出意见。查看某个 Context 时，日常输入仍面向同一个 Patrol。
 
-### 工作区自动执行预算
+你也可以暂停、继续或停止执行，调整授权与预算，或在任务界面打开某条工作线，直接查看、编辑和派生上下文。
 
-首次发送工作区输入时，默认采用“普通任务”，也可以在桌面输入面板或浏览器工作台选择“长任务”：
+### 把 Patrol 放在桌面上
 
-| 预算上限 | 普通任务（默认） | 长任务 |
-| --- | --- | --- |
-| 从创建起的总时长 | 30 分钟 | 2 小时 |
-| 轮次 | 40 | 160 |
-| 模型调用 | 100 | 400 |
-| 输入 / 输出 token | 500,000 / 50,000 | 2,000,000 / 200,000 |
-| 重试 | 6 | 20 |
-| 授权并发 Run | 2 | 4 |
+Windows 提供桌面机器人入口：点击展开输入面板，拖动调整位置，把截图、图片、文件或参考文字拖入，预览后补充要求并发送。隐藏后可以从托盘重新唤出，需要细节时进入完整工作台。
 
-预算栏显示已用时长、剩余时间、正在并行与排队的工作；展开明细可查看已结算、预留／待确认用量及剩余额度。达到 80% 时提示预算即将用尽，预算等待时提示追加或停止；实际并发仍受运行池约束。时长包含暂停和等待，预算是执行上限，不能用来预测完成时间或实际费用。在途调用可能在预算检查后结算。
+macOS 使用工作台窗口。图片输入需要配置支持图像的模型。
 
-“增加一份预算”只调整本次授权，基于当前上限或已占用量中较大值追加，保留累计用量和未设限字段，轮次累计最多 1,000；并发采用当前值与所选份额中较大值。暂停任务保持暂停，其他授权或信息待办仍需单独处理。已有任务及传统 Context Loop 的预算保持原样。
+## Strategy：把你的工作方法交给 Focus
 
-### 多对一、多对多持续策展
+**Strategy 定义项目怎样推进、上下文怎样组织，以及后续工作应当继承哪些信息。**
 
-Focus 不把 Derived Context 限制成“一棵只能向外分叉的聊天树”。Patrol 可以从多个来源 Revision 策展一个新 Lane，也可以把同一组来源投影成多个拥有不同历史与目标的 Lane。
+例如：先验证关键假设再实现；遇到反复失败时先调查原因；独立比较多个方案，再根据真实结果作出选择。
 
-```text
-{ Goal, Contract, Implementation, Test failures }
-                         ↓
-                 Portfolio Patrol
-          ┌──────────────┼──────────────┐
-          ↓              ↓              ↓
- Implementation     Failure Analysis   Architecture Review
- 继续实现所需历史     三轮失败与日志       目标、约束与关键决策
-```
+在 **记忆库 → Strategy · 工作策略** 中，可以新建、导入、编辑和导出 `STRATEGY.md`，选择全局或工作区范围。日常仍然直接向 Patrol 表达，也可以明确说：“这次按先验证关键假设的方法推进。”
 
-实现 Context 不必携带全部调试噪声；测试 Context 不必继承无关架构讨论；反方审查 Context 也不必接受当前实现已经形成的思维惯性。每个 Agent 只看到完成自己任务所需的过去。
+一份 Strategy 包含三个部分：
 
-当多个 Lane 产生结果后，Patrol 可以继续其中一个、淘汰一个、从多个结果策展新 Context，或把任务重新拉回 Task Contract。下一轮不必沿着上一轮 Agent 自己建议的方向前进。
+| 部分 | 作用 |
+| --- | --- |
+| `applicability` | 什么情况下适用，什么时候无需采用。 |
+| `evolution` | 如何推进、调整、汇合和结束工作。 |
+| `inheritance` | 各条工作线继承什么背景、证据和约束。 |
 
-### 委托式 HumanMessage：人可以离场，人的权力仍在 Loop 中
+启用的策略供 Patrol 根据当前任务选择；实际采用会随轮次记录，执行仍遵守当前要求、权限和预算。
 
-Patrol 发出的控制指令进入模型时，就是普通的 `HumanMessage(id, content)`。正文、`additional_kwargs` 与 system prompt 都不包含 Patrol 标签、授权字段或“synthetic human”提示。
+阅读 [Strategy 文档](docs/strategies/README.md)，或从 [先验证关键假设](docs/strategies/examples/validate-before-build/STRATEGY.md) 示例开始。
 
-真实来源保存在模型上下文之外的 provenance 记录中。用户在 Desktop 中能看见哪条消息由自己输入、哪条由 Patrol 根据哪份授权生成；模型只接收干净的 human role 消息。
+## 快速开始
 
-```text
-模型看到：HumanMessage("暂停修改代码，只分析过去三轮为什么失败。")
+可以通过一键安装脚本安装稳定版，也可以从源码运行 Focus。
 
-系统记录：actor=patrol · authority=delegated · grant=... · patrol=...
-```
+### 准备环境
 
-因此 `HumanMessage` 表示的是 human authority domain，而不必等同于“用户此刻亲手敲下”。用户始终是根权力；Patrol 只是可撤销代理。用户一旦回来输入新要求，新的直接 HumanMessage 会推进目标与授权版本，使尚未提交的 Patrol 决策失效。
+- Git。
+- Python **3.11+**。
+- Node.js **22.12.0+** 与 npm。
+- Docker Desktop，包含 Docker Compose，且 Docker 已启动。
+- 一个可用的模型服务账号与 API Key，可在首次启动后配置。
 
-### 长程任务不会被“继续”两个字拖死
+### 一键安装
 
-- **发生偏航**：从更早或更干净的 Revision 派生新 Context，重新对齐 Task Contract。
-- **陷入重复**：停止机械重试，建立只分析失败模式的 Lane，再据此恢复执行。
-- **发现支线问题**：创建独立 Side Context 调查，主线继续，不把整段支线历史强塞回来。
-- **需要多视角**：让实现、测试、需求和架构 Lane 并行推进，再由 Patrol 选择与组合结果。
-- **无法证明完成**：独立 Completion Verifier 提供证据；证据不足时进入 `waiting_user`，绝不擅自宣布成功。
+安装命令适用于已发布、非预发布的稳定 `vX.Y.Z` Release，且该 Release 需附带对应安装脚本。首个稳定版发布前，可以使用下方的源码运行方式。
 
-> **The human does not need to remain present in every iteration; their authority does.**
->
-> **人不必守在每一轮执行旁边，但人的控制权始终留在 Loop 中。**
-
-Derived Context 让 Focus 能重写下一轮的过去；Patrol 让这种能力持续、自主而可治理。两者合在一起，Agent Loop 不再只是重复调用模型，而成为一台持续演化任务认知状态的 **Context Evolution Engine**。
-
-公开安装和更新只使用已发布的稳定 `vX.Y.Z` GitHub Release；草稿、预发布版本和 `main` 不会成为更新目标，没有稳定版本时安装失败。`focus update` 在改动代码前将完整 PostgreSQL 恢复点保存在 `~/.focus/backups/`，再安装锁定依赖、执行迁移、检查表结构并启动 Gateway 验证读取接口，全部通过才在 `install.json` 记录精确提交。失败会恢复旧代码、依赖和整个数据库；恢复未完成时禁止启动，再次运行 `focus update` 会先离线恢复。备份持续保留。首发托管流程仅支持默认本地 PostgreSQL，自定义数据库会在改动前被拒绝。已有跟随 main 的安装需重新运行一次安装器以获得受保护的命令入口。安装和更新时 Docker 必须正在运行。详见[发布和恢复流程](docs/managed-releases.md)。
-
-## Windows 安装
-
-先准备 Git、Python 3.11+、Node.js 22.12+ 与 Docker Desktop，然后在 PowerShell 中执行一次：
+**Windows · PowerShell**
 
 ```powershell
 irm https://github.com/Leeminjing/Focus/releases/latest/download/install.ps1 | iex
 ```
 
-首次运行会打开「设置 → 模型」。填写真实 API Key，核对模型名称、地址和协议后保存；普通调用及策展输出验证通过后即可开始任务。也可在 `%USERPROFILE%\.focus\.env` 中配置。以后可在任意目录使用同一组命令：
+**macOS · Terminal**
 
-```powershell
-focus          # 启动 Focus
-focus update   # 备份数据、迁移并检查健康后，更新到最新已发布稳定版本
-```
-
-安装器把程序代码放在 `%USERPROFILE%\.focus\app`，托管的 Python 环境放在 `%USERPROFILE%\.focus\runtime`，命令入口放在 `%USERPROFILE%\.focus\bin`。持久化配置、插件、用户和 PostgreSQL 数据位于受管理 Git 工作区之外；选中的工作区也应放在 `.focus\app` 之外。`focus update` 会有意丢弃 `.focus\app` 内已跟踪文件的本地改动；开发请使用另一个 clone。
-
-## macOS 安装
-
-先准备 Git、Python 3.11+、Node.js 22.12+，并启动 Docker Desktop，然后在终端执行一次：
-
-```sh
+```bash
 curl -fsSL https://github.com/Leeminjing/Focus/releases/latest/download/install.sh | sh
 ```
 
-首次运行会打开「设置 → 模型」，填写真实 API Key 并保存，验证普通调用及策展输出。也可在 `~/.focus/.env` 中配置。打开一个新终端后使用：
+安装完成后，打开一个新终端，运行：
 
 ```sh
-focus          # 启动 Focus
-focus update   # 备份数据、迁移并检查健康后，更新到最新已发布稳定版本
+focus
 ```
 
-macOS 安装器同样使用 `~/.focus/app`、`~/.focus/runtime` 和 `~/.focus/bin`，并把命令目录加入当前 shell 的用户配置文件；整个过程不使用 `sudo`。当前提供的是未签名、从源码托管运行的 Electron 分发方式，不是经过公证的 `.app`，因此 macOS 可能显示安全提示。更新只替换程序目录内的已跟踪文件，不影响 `~/.focus/app` 外的持久数据。
+更新时，先关闭 Focus，并保持 Docker Desktop 运行，再执行：
 
----
-
-## 这个 "in" 是参与，不是坐标
-
-"Human in the loop" (HITL) 从不意味着一个人物理上*待在*循环里。它命名一种状态：在自动化流程中，人**作为决策者参与其中**，在机器不该独自做决定的地方介入。那个 "in" 是**参与**，不是空间介词。
-
-"Human in the contexts" 用的是同一个 "in"，只是高了一层。
-
-- **HITL / in the loop** —— 人参与的是**执行层**：工具调用、输出流、哪些动作被批准。
-- **Focus / in the contexts** —— 人参与的是**上下文本体**：模型赖以推理的基底。由人决定哪个上下文成为合同、哪些消息被折叠、哪个上下文被分叉、一个平行 Agent 醒来时带着什么、哪些记忆跨会话活下来。
-
-"上下文手术" 是同一句话换了一只手说——参与的那个人，握着手术刀。
-
-> **人参与在 contexts 里，并在它们上面做手术。**
-
----
-
-## Patrol：委托的参与
-
-"Human in the contexts" 并不意味着人必须手动操作每一次上下文变换。人拥有**决定权**；**Patrol 可以代表人来执行这个操作**。
-
-- **直接参与** — `Human → Context Surgery`
-- **委托参与** — `Human → Patrol → Context Surgery`
-
-> **控制权可以委托，而不必交出所有权。**
-
-"Human in the contexts" 定义了用户对 context 的权威。**Patrol 让这份权威变得可委托。** 它的第一个落地实例是**上下文策展**：
-
-```
-Main Context
-     │
-     ▼
-   Patrol
-     │
-     ├─ reads the committed context
-     ├─ removes noise
-     ├─ preserves goals / constraints / decisions
-     ├─ curates a new context
-     ▼
-Derived Context
-     │
-     ▼
-Agent continues from a cleaner context
+```sh
+focus update
 ```
 
-快捷策展正是 Patrol 作为 "Human in the contexts" 快捷键的第一次落地。
+安装与更新流程详见 [稳定版发布、安装与更新恢复](docs/managed-releases.md)。
 
----
+### 源码运行
 
-## 公理的内核
+首次从源码启动时，桌面应用会检查运行环境、按需启动本地 PostgreSQL、应用数据库迁移并启动后端服务。
 
-一条规则在整个系统里自我复制：
-
-> **在每一处"上下文变换"的边界，把模型的不确定性关进一个可机械校验的窄壳里——然后由确定性代码负责授权与隔离，由人负责批准与书写；用消息作为唯一事实源，用 checkpoint 命名空间当作身份，用墓碑保留来源，并在代码无法确定时交还给人，而不是猜测。**
-
----
-
-## 架构
-
-一个 FastAPI gateway 通过一条 `POST /api/threads/{thread_id}/runs/stream` SSE 通道驱动 Focus；桌面壳以同源加载，无 CORS。
-
-```
-┌────────────────────────────── FastAPI Gateway ──────────────────────────────┐
-│  router (access)  →  services (orchestrate)  →  worker (execute)             │
-│  AuthMiddleware · RunManager · StreamBridge · checkpointer · store            │
-└──────────────────────────────────┬───────────────────────────────────────────┘
-                                   │ SSE (metadata / tokens / events / interrupt /
-                                   │  commitment_messages / error)
-                                   ▼
-                     ┌──────────────────────────────┐
-                     │   focus agents (LangGraph)     │
-                     │   make_lead_agent ──────────►   │
-                     │   (唯一装配腰)                 │
-                     │   middleware + tools + prompt  │
-                     └──────────────┬───────────────┘
-                                    │  run_agent (唯一执行脊柱)
-                                    ▼
-                        ┌───────────────────────┐
-                        │   Patrol (委托)        │
-                        │  跨上下文机制的       │
-                        │  委托执行者            │
-                        └──────────┬────────────┘
-            ┌───────────────┬──────┴────────┬────────────────┐
-            ▼               ▼               ▼                ▼
-         压缩门         context 分叉       记忆库           承诺层
-         手术门         DAG (f15)         <memory>          九阶段
-```
-
-- **存储**: PostgreSQL + asyncpg checkpointer（跨重启持久）+ LangGraph Store（`async_postgres`，关闭向量）。
-- **流式**: 进程内 `StreamBridge` → SSE；`RunManager` 管理 run 状态；checkpointer 提供 rollback 快照。
-- **身份**: 每一个 agent 只是 `(thread_id, checkpoint 命名空间)`——`patrol:{id}`、`{thread_id}:commitment`——同一个引擎，不同的房间；所以分叉、隔离、恢复都只是命名空间。
-- **前端**: 零依赖静态 UI，由同一个 Python 进程直接服务（手写 vanilla JS + design-token CSS；一个 vendor 的 markdown 库）。无 npm UI 依赖、无构建、无框架。
-
----
-
-## 核心机制
-
-上下文操作按**两组**机制实现，而不是平铺的五个并列。**这些上下文操作是基底；Patrol 是能代表用户执行它们的委托执行者。**
-
-### Context operations
-
-每一个操作都是人参与的地方，也都是"人决定留下什么"的地方。
-
-#### 压缩机制
-
-主 Agent 在每次模型调用前估算 token 用量。当用量超过 `context_window × threshold_ratio` 时，图 interrupt 暂停并询问你——它从不自行修剪。
-
-- 你划定一个或多个消息范围（甚至可以拆散一个 tool-call 组，由代码事后修复协议）。
-- 系统为每个范围生成候选摘要；你接受、编辑、重新生成、或取消。被留下的是*你的*文字。
-- 你也可以直接把某个范围删除（墓碑），而不是总结它。
-- 确认后 messages 重写：每个范围变成一个压缩块（一个携带来源原文 + `block_id` 的 `HumanMessage`，随 checkpoint 持久化）；删除变成空墓碑。
-- `wrap_model_call` 在每次模型调用前剥离 compression 元数据，来源原文永不进入模型。
-- 压缩块可展开、重新编辑、再压缩、撤销；恢复走 resume 通道。存在待确认压缩请求时，新的主运行返回 409，直到解决。
-
-#### 派生 contexts 机制
-
-context 不是单扇窗口；你可以**派生**一个。从同一个工作区的一个或多个已提交 checkpoint，派生出一个新 context。
-
-- 系统保存两份：`authored_messages`（你写的）与 `execution_messages`（模型运行的合法投影）。
-- 投影器只**增加结构**——它用合成占位修复悬空 tool call。任何会改写你文字的处理都变成 `approval_required`，即显式、绑定哈希的 `accept`/`reject`，绝不静默改写。
-- 每个派生 context 拿到一个**全新** `thread_id`；投影写入新 checkpoint，从不动父级。
-- contexts 长成一棵带深度与血统的树，可追踪、合并、分叉、归档、删除（有后代时以墓碑保留）。
-
-#### 承诺层
-
-开工之前，Focus 让你先**立一份合同**——而这份"立约"的机械故意不是 LLM。
-
-- `/commit <指令>` 触发九阶段状态机（目标 / 需求与矛盾 / 优先级 / 输入 / 版本 / 官方知识 / 合同 / task_contract / 最终消息）。
-- Supervisor 是确定性 `StateGraph`，伪造一条 `AIMessage`（合成 `tool_call` 指向 `delegate_with_review`）交给 `ToolNode`。LLM 只在工具函数体内（Worker + Evaluator）运行；哪个阶段、下一步做什么、何时停——那是纯代码。阶段顺序锁死：`expected = stage + 1; stage != expected → invalid_stage`。
-- Worker 提议；独立 Evaluator 审核；确定性校验器检查结构。三轮未过把决定交还给你。
-- 阶段 3/5/6/7（以及条件的 2/4）由你亲手批准或修订。
-- 签字后，合同**原位替换**那条 `/commit` 消息（同一 message id），位于隔离命名空间 `{thread_id}:commitment`；`/commit` 之前的对话原封不动。
-- 因为 Supervisor 是代码，它无法被 prompt injection 说服跳步或重排；LLM 的触手被关进一个 schema 收口的盒子。
-
-#### 记忆库
-
-记忆不是模型的工作，而是**你**的策展。没有什么是自动捕获或自动回想的。
-
-> 记忆的最终治理权属于你。策展可以直接做，也可以委托给 Patrol。
-
-- 你从某个完整会话、某几条（非连续）消息、某段文字、或你自己的话里取材——任意组合。
-- 你把它压成一份 `complete` 纵览或几条独立 `segmented` 笔记，然后**自己改定草稿**；被保存的是*你的*版本，不是模型的。
-- 每条记忆带 `source_snapshot` 与逐段 `source_ref`，因此始终可溯源、可重新生成。
-- 开启新会话前，你挑选哪些记忆带走，以 `<memory>` 块注入系统提示词——只作用于主 Agent。
-
-### 委托操作：Patrol
-
-Patrol 不是上面这些机制的第五种——它是**委托执行者**，能代表用户执行这些机制。
-
-上面的上下文操作是基底；Patrol 可以代表用户操作压缩、派生、记忆、策展……它有双重角色：
-
-1. **注意力隔离** —— 把支线任务委托出去，不打断用户的主线任务。
-2. **上下文操作** —— 代表用户执行上下文操作：策展、派生、压缩、整理记忆……
-
-下面的「独立房间」是它*怎么工作*，不是它*是什么*。Patrol 真正的定义是：**用户的、跨各种上下文机制的委托式上下文操作者（delegated context operator across context mechanisms）**。
-
-- 从主 Agent 最近已提交 checkpoint 深拷贝出冻结草稿，然后自由编辑它的 `system_prompt`、历史、最后一条消息。
-- 投放是**幂等**的（`deployment_id` + 唯一约束）：重复点击绝不产生副本。
-- 它在自己的命名空间（`patrol:{id}`）运行，与你的主线并行、绝不打断它。
-- 它的结果**永不自动注入**你的主线。你想读时再读，经 `list_patrol_agents` / `read_patrol_agent_history`。
-- 它有独立生命周期——取消它的 run、按最初冻结输入重试、或追加一条消息继续对话。
-- **空间小兵**把同一想法钉在某个位置：把一个 patrol 放到文档或页面上的某个坐标，它从那个点向外观察；位置就是它的身份。DOCX 编辑需要显式的读/写授权。
-
----
-
-## Context 操作：人与代码的分工
-
-每一处被治理的 context 操作，都把模型的自由度坍缩成一个窄产物。代码拥有该产物的**授权与隔离**；LLM 只拥有其中的**内容**；人拥有**决定权**。Patrol 是一种**执行模式**，可以代表用户执行以上任何一种操作。
-
-| 操作 | Context 产物 | 代码拥有 | LLM 拥有 | 人拥有 |
-|---|---|---|---|---|
-| **压缩** | 压缩/墓碑化消息 | 校验范围、修复协议、剥离元数据、携带来源 | 提议摘要 | 划范围 · 写或改写 · 删除 · 撤销 |
-| **派生 context** | authored / execution 投影 | 编译投影（只增）、哈希绑定 accept/reject、全新 thread_id、血统 | —（人写的） | 撰写消息 · 接受或拒绝 |
-| **承诺层** | 任务合同 | Supervisor（代码）、校验器、原位替换、命名空间 | 提议阶段内容 | 批准 / 修订每个阶段 |
-| **记忆库** | 记忆（complete/segmented）+ `<memory>` 块 | 解析来源、切文字、渲染块、`_safe_attr` | 提议压缩草稿 | 挑来源 · 编辑草稿 · 决定带什么 |
-| **patrol** *（操作者，而非操作）* | 它操作的那个 context 产物 | 幂等投放、命名空间隔离、不自动注入、读取工具、策展管线 | 干活 | 重写草稿 · 投放 · 选择读 · 批准策展 |
-
----
-
-## 能力地图
-
-- **Focus Agent Loop**: Patrol 持续治理 Context Portfolio；Derived Context 决定下一轮携带什么过去；delegated HumanMessage 决定下一轮往哪里走。支持多对一、多对多策展、并行 Lane、原子发布、独立完成验证与用户随时接管。
-- **承诺层 (Commitment)**: `/commit <指令>` 触发 9 阶段；Worker–Evaluator 审核；阶段 3/5/6/7 固定人工暂停；输出 `task-contract`。Context7 仅为该流程懒加载。
-- **压缩机制**: 触发阈值 + 用户划范围 + LLM 摘要草稿 + 墓碑删除/撤销/重开；来源随 checkpoint 保留，模型看不到。
-- **派生 contexts 机制**: 从单/多父 checkpoint 派生；`authored vs execution` 分离；哈希绑定 accept/reject；lineage/depth/tree；全新 thread_id。
-- **patrol 机制**: 用户的委托式上下文操作者 —— 注意力隔离（支线任务不占主线）+ 上下文操作（代表用户策展/派生/压缩/整理记忆）；实现为冻结草稿 + 全量重写上下文 + 幂等投放 + 独立命名空间 + 结果不自动注入。**快捷策展**为你派生一个更干净的 context。
-- **记忆库 (Memory)**: 多来源（会话/消息/文字/手输）、complete/segmented、人工编辑后保存、`<memory>` 注入新会话（仅 main）、跨会话持久化。
-- **插件 (Plugins)**: 接口目录（tool/hook/service）+ 依赖注入注册表 + 单一桥接中间件 + 语言中立 stdio 远程协议；可携带桌面 API 路由与前端资源。
-
----
-
-## Agent Loop 执行内核
-
-前面的产品行为由四层硬边界实现：Delegation 定义权力，Patrol 形成判断，Kernel 校验状态转换，Run Orchestration 执行。模型负责认知内容，但没有任何一层让模型直接写入权威状态。
-
-```text
-用户（根权力）
-  └─ 可撤销的 LoopDelegationGrant
-       └─ 一个 Portfolio Patrol（唯一委托权力持有者）
-            ├─ 观察有界的 Portfolio frontier
-            ├─ 自己判断继续、策展、派生、合并、等待或停止
-            ├─ 必要时调用角色受限的索引、规划、合成与验证 Worker
-            └─ 提交一份严格 decision intent
-                 └─ 确定性 Kernel 校验并提交
-                      ├─ 原子 Portfolio publication
-                      ├─ 普通 HumanMessage 指令
-                      └─ 并发安全的 Agent Run
-```
-
-Patrol 拥有判断权；Worker 只是可选外脑。Worker 只能返回类型化产物，没有任何状态提交端口；Kernel 是唯一 commit 边界。核心不变量是：**多 reader、多 advisor、多 candidate producer，但每个 Portfolio 只有一个权威 publisher**。
-
-### 有证据约束的语义 Context 派生
-
-自动派生是一条 fail-closed 的阶段流水线，不再是关键词路由或最近消息切片：
-
-```text
-完整不可变 Revisions
-  → protocol-safe semantic indexes
-  → Portfolio 范围内的有界检索与精确读取
-  → WorkContextSpec 规划与语义 reconciliation
-  → 精确的多源 evidence resolution
-  → claim 级 dossier synthesis 与 grounding verification
-  → minimality · sufficiency · coherence Quality Gate
-  → 确定性 Context compilation
-  → Kernel admission 与 commit
-```
-
-每个阶段都由 semantic identity 与 source hash 串联。投影 statement 可以是忠实改写，但每个 confirmed unit 都必须携带冻结原文中的精确 support spans，并经过独立的 `supported | unsupported | unknown` 判定。单个可选 unit 失败会进入 rejection ledger，确定性 segment coverage 仍使 Revision index 保持 ready。Index artifact 记录被接受投影的 unit ID 和精确 fallback segment ID；descriptor 暴露两者数量，并将只有 segment coverage 的结果标为 `degraded`，而非 `complete`。Revision identity、content hash、scope 与 stale-source 错误仍整体阻断。Required evidence 必须解析到精确 source unit；tool call/result 必须保持闭合；相互冲突的 WorkSpec 不会被静默合并；无原文支持的 claim 或任一 unknown 质量结论都会阻止编译。系统持久化模型调用尝试、实际 token 用量、阶段耗时、schema/projector 版本、输出、重试与稳定失败码，用于审计和重放。旧 semantic cache 不会被重新解释；版本化 cache key 会触发确定性重建，immutable source Revision 不被改写。
-
-同一条派生链可以运行在 observe-only shadow mode，只生成对比产物，不创建 Context，也不改变 Portfolio。运维可设置 `FOCUS_LOOP_AUTOMATIC_CONTEXT_EXPANSION_WRITES=false` 关闭自动派生写入；规划与诊断仍会继续，但权威写入路径保持关闭。
-
-### Tool 协议修复与单来源恢复
-
-Checkpoint authored history 是不可变审计事实。Run settlement 发布可运行 Revision 前，共享 tool-exchange compiler 会另外生成 provider-facing execution view。已证明 interrupted/cancelled 的调用只会获得一个确定性的 `status=error` ToolMessage，保留原 call id 与 tool name；repair manifest 记录 source Run、source Revision、原因、compiler version 与 synthetic message。归属证明包含精确来源 checkpoint：后续 Provider 故障不能把继承的旧调用认作本次中断。无法证明原因的缺失 call/result 保持 `approval_required`，绝不伪装为成功。
-
-当旧 Context 或 Provider 拒绝后的 Context 无法继续，但某一个权威 Revision 存在安全且保留证据的子集时，Loop 会持久化 `ContextRecoveryOpportunity`。可信恢复编译器只隔离没有部分结果的终端未闭合交换，保留来源引用，并明确记录工具副作用未知；非终端或部分完成的交换需要人工批准。重复发现保留机会首次记录的到期时间。Patrol 只能选择 `recover_context(opportunity_id=...)`，可信服务负责构造单来源 `CreateLanePlan`。Kernel 重新校验 source frontier、goal、workspace、authority、grant、compiler version、expiry、消费状态和当前 source Revision；opportunity 消费与 Lane/Portfolio publication 位于同一事务，因此 stale 或 replay 不会发布部分状态。若协议合法性与必要证据无法同时保留，observation 会给出明确等待原因，指出缺失证据或所需批准。
-
-追加迁移为 `6a7b8c9d0e1f`。回滚只删除尚存的 recovery opportunity 表，不改写 authored checkpoint、已记录的 repaired Revision、既有 Context lineage 或已发布 Portfolio。若部署需要跨该边界回滚，应先禁用新 reader/action，再执行 downgrade。
-
-### 原子 Portfolio 发布
-
-每一代 Portfolio 先冻结 source frontier，再并行准备候选 Revision。全部候选通过 schema、血缘、权限、projection 与 writer ownership 校验后，系统才原子切换所有 Lane 指针并发出 `PortfolioPublished`。
-
-只要一个候选失败，整代 Portfolio 都不会部分可见，Agent 也不会在“Implementation 已更新、Testing 仍停在上一代”的混合世界中运行。
-
-### 权限与消息来源
-
-委托指令进入模型时严格只有 `HumanMessage(id, content)`。Patrol 身份、grant、authority 和审计信息保存在外部 provenance 表，不会写进正文、`additional_kwargs` 或 system prompt。
-
-Desktop 历史仍能向用户区分直接与委托 HumanMessage。Delegated Human channel 只接受当前有效 grant 的持有者写入；用户输入会立即取得更高优先级。
-
-### Workspace 并发与采用
-
-Workspace 使用带 fencing token 的单 Writer/多 Reader lease。多个获授权 Writer 从同一个干净 Git 基线进入 Lane 专属 worktree；结果保持隔离，直到 Patrol 针对当前权威 revision 明确采用其中一个。非 Git 或脏工作区退化为单 Writer。中断 Reader 只有在 fingerprint 证明未变化时才能重试，Writer 永不盲目重试。
-
-### 完成不是自证
-
-完成不能由 Patrol 自证。独立 Completion Verifier 逐条返回验收证据；Patrol 判断是否请求结束；Completion Guard 再检查证据新鲜度、未决 gate/Run、Portfolio 完整性、workspace adoption 与最终路径。任何 unknown 或 conflict 都进入 `waiting_user`。
-
-### Patrol 可以自主压缩，但用户始终保有定义权
-
-新建 Loop 时默认显式勾选 **“允许 Patrol 自主压缩 Context”**。这份权力可恢复、可撤销：取消勾选会创建或收窄为不含压缩权力的 grant；用户直接发消息、手工压缩、覆盖目标、修改授权、暂停/停止 Loop，或发布更新的 Context revision，都会让旧候选立即失效。
-
-自治压缩分成四个硬边界。`CompressionGate` 只产生稳定 interrupt；Patrol 先查看不含消息正文的有界 manifest，只能请求受授权的精确范围，既有摘要能力再生成不具权威性的 candidate；Kernel 对 Loop/grant/goal/round、Context revision、checkpoint、frontier、policy、保护锚点、预算、过期时间和 token 减量全部做 compare-and-set 校验，然后原子提交唯一 resolution；带 lease 与 fencing 的 coordinator 最后沿用手工压缩同一条 `DesktopService.resume_run → execute_prepared_run → RunLifecycleFinalizer` 执行脊柱恢复 LangGraph。
-
-`apply_compression_ranges` 仍是手工、快捷和自治入口唯一的消息变换编译器。Checkpoint 保存完整序列化 source，用户可恢复原文；下一次 provider 请求只看普通摘要正文，candidate id、Patrol 身份、grant、resolution 审计元数据和删除墓碑都不会进入模型上下文。
-
-Loop Console 展示 `prepared → accepted/committed → resuming → applied`，也展示 `expired`、`superseded`、`failed`，并串联目标 Context、范围、预计/实际 token 减量、Run、checkpoint 和最终 revision。进程重启时由数据库事实与过期 lease 决定继续恢复、观察已存在 Run、淘汰陈旧 frontier，还是等待用户；迁移回滚只删除自治压缩的 policy/candidate/resolution 结构，不会改写已经存在的压缩 checkpoint 或恢复源。
-
-### 可观察、可接管、可恢复
-
-在 Desktop 任务页打开 **Agent Loop**，填写目标、Task Contract、验收条件和预算后授权 Patrol。Loop Control Console 把持续演化的 Context Portfolio 与当前选中 Context 的完整会话放在同一个页面：每个节点都有主题、职责、revision、Run 状态和证据计数；稳定的多来源连线展示当前世界如何派生。点击节点即可查看完整 Human/Assistant/Tool 记录，来源审计始终位于模型正文之外；事实抽屉则按单个或全部 Context 展示可追溯 Run、工具结果与保守统计的测试事实。
-
-用户有三条明确的介入路径：直接向选中 Context 发送 HumanMessage；向 Patrol 表达只针对该 Context 的意见；或调整整个 Portfolio 的布局。给 Patrol 的意见会作为外部用户意图持久化、审计，并进入下一次冻结 observation，绝不会被偷塞进执行 Agent 的消息历史。
-
-所有 Loop 事件都通过 cursor 可重放的 SSE 输出。用户直接发送新消息或使用“用户接管”时，系统推进 goal 与 authority revision，并使基于旧授权且尚未提交的 Patrol 工作失效。
-
-当前运行限制：并行隔离写入需要 Git 且基线干净；扩大访问范围等不可委托 gate 永远等待用户；旧 Loop grant 不会被静默升级为自治压缩，只有根用户明确授予 compression gate、closed capability 与版本化 policy 才能启用；Context revision 历史和未采用 Lane 会为审计保留，直到生命周期清理策略允许删除。
-
----
-
-## Skill 与 MCP 的装配范围
-
-在「无工作区模式」顶部选择 **全局** 或 **指定工作区**，也可通过「选择其他工作区」绑定本地文件夹。每个目标保留独立会话；切换目标后，后续 Run 的工作目录、技能目录与写入权限随目标绑定。
-
-| 能力 | 全局位置 | 工作区位置 | 同名优先级 |
-| --- | --- | --- | --- |
-| 自定义 Skill | `~/.focus/.agents/skills/<name>/SKILL.md` | `<工作区>/.agents/skills/<name>/SKILL.md` | 工作区 > 全局 > 内置 |
-| MCP 配置 | `~/.focus/extensions_config.json` | `<工作区>/.focus/extensions_config.json` | 程序默认 < 全局 < 工作区 |
-
-Skill 列表、手选正文冻结与 `describe_skill` 使用同一套目录解析。工作区 MCP 按字段覆盖全局配置，例如 `{"mcpServers":{"example":{"enabled":false}}}` 只在当前工作区停用对应服务。
-
-配置新增、修改、删除或引用的环境变量变化，会在下一次装配时重新解析。MCP 部分连接失败后会在下次装配时重试，也可点击 **刷新技能 / 重试 MCP**；已成功的连接会复用。正在执行的 Run 保留已装配的工具和手选技能正文，新配置从后续 Run 生效。装配范围与文件访问模式分别控制目标和权限，配置、技能等敏感路径仍走现有访问审批。
-
-## 技术栈
-
-- **语言/框架**: Python · LangChain · LangGraph（`create_agent`）。
-- **服务**: FastAPI (gateway) · 进程内 `StreamBridge` · SSE。
-- **存储**: PostgreSQL (asyncpg) · Alembic · LangGraph Store（`async_postgres`，关闭向量）。
-- **模型**: OpenAI 兼容（默认 `deepseek-v4-flash-vision-exp`，经 `focus.models.deepseek`），经 `use: module:Class` 可插拔。
-- **外部能力**: MCP（Context7 文档、Playwright 浏览器）；vendored vanilla-JS 前端。
-- **配置**: `config.yaml` · `extensions_config.json` · `plugins/<name>/plugin.json`。
-
----
-
-## 开发环境
-
-**要求** — Python ≥ 3.11（需可用 `alembic` 与 `uvicorn`）、`git`、`docker`（用于 `desktop/compose.yaml` 内置的 PostgreSQL）、Node.js ≥ 22.12.0（Electron 43 的硬性要求，更低版本会在其安装阶段失败）、以及配置在 `OPENAI_API_KEY` 里的 OpenAI 兼容 Key（DeepSeek）。
-
-**配置** — 密钥与选择经环境变量提供，结构经配置文件提供。
-
-| 变量 | 必填 | 说明 |
-|---|---|---|
-| `OPENAI_API_KEY` | 是 | 模型条目的密钥来源 |
-| `FOCUS_MODEL` | 否 | CI / 一次性覆盖：取生效目录中已存在的条目名；写成不存在的名字会在启动期失败，错误信息会列出全部可用条目名 |
-| `FOCUS_DATABASE_URL` | 否 | 覆盖数据库连接 |
-
-变量可写入 `.env`（`cp .env.example .env`），也可用操作系统环境变量提供（优先级更高）：Windows `setx OPENAI_API_KEY "sk-..."`，macOS/Linux `export OPENAI_API_KEY=...`；两者都需新开终端生效。
-
-**模型怎么配** — 打开桌面应用的「设置 → 模型」：新增/编辑/删除条目、指定默认与策展默认、录入或轮换密钥、测试连接，保存后立即生效，不需要重启或用终端。手动编辑配置文件同样受支持。
-
-配置按两层由低到高解析，高者覆盖低者：
-
-1. 文件层 `<cwd>/config.yaml` —— 这份程序自带的默认（安装版即 `~/.focus/app/config.yaml`，升级会整体替换）；
-2. 用户偏好层 `~/.focus/config.yaml` —— 设置面板写入，升级不丢，**优先于文件层**。
-
-环境（`.env` 与进程环境）只经两条通道参与，**不是**通用的逐键覆盖层：配置值里的 `$VAR` 引用在使用期解析；以及有文档化覆写键的两项 —— `FOCUS_MODEL`（默认模型选择）与 `FOCUS_DATABASE_URL`（数据库连接），它们优先于上面两层。其它配置项不会被同名环境变量改写。
-
-`models` 按条目 `name` 逐条合并：用户偏好层声明的条目覆盖同名默认条目，未声明的默认条目保留，删除用显式的 `removed_models` 名单记录（发行层更新后不会复活）。`default` 与 `curation_default` 由声明它的最高层独占。
-
-配置文件还有 `commitment` / `compression` / `checkpointer` / `database` 段，`extensions_config.json` 负责 skills / mcpServers；这些同样以用户偏好层优先。
-
-**启动后端**
+#### Windows · PowerShell
 
 ```powershell
-cd backend/packages/harness
-python -m uvicorn backend.app.gateway.app:app --host 127.0.0.1 --port 8765
+git clone https://github.com/Leeminjing/Focus.git
+cd Focus
+
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r scripts/desktop-requirements.txt
+.\.venv\Scripts\python.exe -m pip install --no-deps -e backend/packages/harness
+
+$env:FOCUS_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe).Path
+npm --prefix desktop ci
+npm --prefix desktop run install:electron
+npm --prefix desktop start
 ```
 
-它会应用 Alembic 迁移并连接 PostgreSQL。全新数据库先拉起：`docker compose -f desktop/compose.yaml up -d`。
+#### macOS · Terminal
 
-**启动桌面壳**
+```bash
+git clone https://github.com/Leeminjing/Focus.git
+cd Focus
 
-```powershell
-cd desktop
-npm install && npm start        # electron .
+python3 -m venv .venv
+.venv/bin/python -m pip install -r scripts/desktop-requirements.txt
+.venv/bin/python -m pip install --no-deps -e backend/packages/harness
+
+export FOCUS_PYTHON="$PWD/.venv/bin/python"
+npm --prefix desktop ci
+npm --prefix desktop run install:electron
+npm --prefix desktop start
 ```
 
----
+通过源码运行时，后续在仓库根目录执行 `npm --prefix desktop start`。换用新终端时，先按上述方式重新设置 `FOCUS_PYTHON`，指向该虚拟环境中的 Python。
 
-## 目录结构
+### 配置模型，开始第一个项目
 
-```
-backend/
-  app/desktop/                context · patrol · memory · compression 服务
-    agent_loop/               委托权力 · Patrol · Kernel · coordinator
-    context_evolution/        不可变 revision · DAG reader/publisher
-    context_curation/         多 Context Program · Lane · Portfolio 原子发布
-    run_orchestration/        唯一 PreparedRun → run_agent 执行脊柱
-    workspace_coordination/   slot · lease · fencing · worktree · adoption
-  app/gateway/                统一运行接口 (SSE/会话/鉴权)
-  packages/harness/focus/
-    agents/                   lead 装配 · 承诺层(九阶段) · 压缩门
-    plugins/                  接口目录 · 注册表 · 桥接 · 远程
-    runtime/                  run(worker) · checkpointer · stream-bridge · store
-    tools/                    内置工具(权限门控) · 自定义工具注册表
-    config/ · models/ · skills/ · mcp/ · persistence/
-desktop/                      Electron 壳(零依赖 vanilla JS)
-plugins/                      spatial-patrol 
-```
+1. 打开 **设置 → 模型**，填写真实 API Key，核对模型名称、服务地址和 API 协议。
+2. 指定默认模型与策展默认模型；两者可以使用同一模型。
+3. 保存后，确认普通调用与策展输出两项验证通过。
+4. 选择本地文件夹作为工作区，向 Patrol 发送第一个目标、问题或想法。
 
----
+当前提供 OpenAI / DeepSeek 配置，以及 Responses 和兼容 Chat Completions 协议的模型接入；具体模型与端点需要通过设置页验证。用户模型偏好保存在 `~/.focus/config.yaml`。也可以通过 [config.yaml](config.yaml) 与 [.env.example](.env.example) 了解文件配置。
+
+默认使用本地 PostgreSQL 保存任务状态和上下文；模型调用连接你配置的服务，并向它发送本次调用所需的内容。
+
+## Skill、MCP 与记忆
+
+Focus 可以装配具体工作所需的技能与工具，并保存可复用的项目知识。
+
+| 能力 | 用途 |
+| --- | --- |
+| **Skill** | 为某项具体工作提供操作方法和说明。 |
+| **MCP** | 接入模型可以调用的外部工具与服务。 |
+| **Memory** | 保存需要复用的事实、决定与约束。 |
+| **Strategy** | 描述整体工作的推进方式和上下文组织方法。 |
+
+Skill 与 MCP 支持全局和工作区范围：
+
+| 配置 | 全局位置 | 工作区位置 |
+| --- | --- | --- |
+| 自定义 Skill | `~/.focus/.agents/skills/<name>/SKILL.md` | `<工作区>/.agents/skills/<name>/SKILL.md` |
+| MCP | `~/.focus/extensions_config.json` | `<工作区>/.focus/extensions_config.json` |
+
+同名 Skill 按 **工作区 → 全局 → 内置** 的优先级解析；MCP 配置按 **程序默认 → 全局 → 工作区** 逐层合并。配置变更用于后续装配，正在执行的 Run 保留已装配的工具与手选 Skill 快照。
+
+在“无工作区模式”中，也可以选择全局或指定工作区作为装配目标，并在对应会话中配置相关能力。
+
+## 工作原理
+
+| 对象 | 职责 |
+| --- | --- |
+| **Patrol** | 承接用户意图，观察整个工作局面，提出下一步安排。 |
+| **Context** | 持续保存一条工作线的背景与成果；通过不可变 Revision 记录版本和来源。 |
+| **Run** | 基于某个 Context 的一次实际执行。 |
+| **Round** | 一轮冻结观察、决策和相应执行，保留当时的输入与依据。 |
+| **Kernel** | 校验权限、版本和状态，把有效决策提交为可执行安排。 |
+
+Context 可以长期延续，也可以从多个来源派生。执行结果回到整体工作局面，再影响后续安排。
+
+多个写入任务并行执行需要已授权的 Git worktree 隔离与干净基线；条件不足时按可用资源串行推进。执行受授权和预算约束，需要用户补充信息或批准时会明确呈现。
+
+完成检查由独立验证流程提供证据，并经过当前任务、上下文和工作区状态校验。测试、文件与工具结果为验收提供依据。
+
+### 技术栈与源码入口
+
+Python · LangChain / LangGraph · FastAPI · PostgreSQL · Electron · JavaScript
+
+| 目录 | 内容 |
+| --- | --- |
+| [backend/app/desktop/agent_loop](backend/app/desktop/agent_loop/) | Patrol、轮次、任务进度、执行协调与完成检查。 |
+| [backend/app/desktop/context_evolution](backend/app/desktop/context_evolution/) | Context 版本、来源关系与演化图谱。 |
+| [backend/app/desktop/workspace_coordination](backend/app/desktop/workspace_coordination/) | 工作区访问、隔离与结果采用。 |
+| [backend/packages/harness/focus](backend/packages/harness/focus/) | Agent 运行时、模型、工具、Skill、MCP 与持久化。 |
+| [desktop](desktop/) | 桌面壳、机器人入口与工作台。 |
+
+## 文档
+
+- [Strategy：编写、导入与分享工作方法](docs/strategies/README.md)
+- [文件产出与版本反馈](docs/context-evolution-file-feedback.md)
+- [任务进度、轮次记忆与来源关系](docs/round-memory-architecture.md)
+- [Git worktree 并行执行](docs/governed-worktree-parallel-runs.md)
+- [桌面启动流程](docs/desktop-startup.md)
+- [稳定版发布、安装与更新恢复](docs/managed-releases.md)
+- [首次运行与真实模型验收](docs/first-run-acceptance.md)
+
+## 参与项目
+
+欢迎通过 [Issues](https://github.com/Leeminjing/Focus/issues) 反馈使用问题、提交可复现的案例，或通过 Pull Request 参与开发。问题报告中请说明操作系统、使用的模型与协议、复现步骤和实际结果。
+
+## 许可证
+
+[Apache License 2.0](LICENSE)
