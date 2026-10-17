@@ -80,7 +80,7 @@
         section.querySelector("h3").title = file.path;
         section.querySelector("p").textContent = `${(file.sha256 || file.result_key).slice(0,8)} · 已提交来源${result.file.after?.redacted || result.file.before?.redacted ? " · 已脱敏" : ""}`;
         tabs.className = "version-tabs"; tabs.setAttribute("role","tablist"); tabs.setAttribute("aria-label","版本内容");
-        const panels = [...section.querySelectorAll("details")];
+        const panels = [...section.querySelectorAll(":scope > details")];
         section.querySelectorAll(":scope > p")[1]?.classList.add("sr-only");
         const cite = section.querySelector("[data-patrol-file-add]");
         section.insertBefore(tabs,cite);
@@ -97,7 +97,7 @@
         });
         function select(index) {
           [...tabs.children].forEach((tab,i) => { tab.setAttribute("aria-selected",String(i === index)); tab.tabIndex = i === index ? 0 : -1; });
-          section.querySelectorAll('[role="tabpanel"]').forEach((panel,i) => { panel.hidden = i !== index; });
+          section.querySelectorAll(':scope > [role="tabpanel"]').forEach((panel,i) => { panel.hidden = i !== index; });
         }
         select(0); section.append(cite);
         root.FocusFilePreview?.mountHistory(body, { ...result.file, fact_id: file.fact_id, revision: file.revision }, id);

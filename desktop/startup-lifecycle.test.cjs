@@ -123,7 +123,18 @@ if (process.versions.electron) {
           // windowsHide suppresses native visibility; assert the loaded main window survives instead.
           assert.equal(quitting, false);
           assert.equal(BrowserWindow.getAllWindows().length, 1);
-          report({ mainWindow: true, healthRequests });
+          const recovered = await win.webContents.executeJavaScript(`(async () => {
+            const recovery=window.focusDesktop.workspacePatrolRecovery;
+            recovery.onFlush(token=>recovery.flushed({token}));
+            recovery.read();
+            await recovery.put('fixture',new Uint8Array([0,255,128]));
+            recovery.checkpoint({version:1,workspaces:[],source_ids:['fixture'],binding:{workspace_id:'saved',path:'/saved'}});
+            return {enabled:window.focusDesktop.patrol.enabled,binding:recovery.read().state.binding,bytes:Array.from(recovery.read().sources[0][1])};
+          })()`);
+          assert.equal(recovered.enabled,false);
+          assert.equal(recovered.binding.workspace_id,'saved');
+          assert.deepEqual(recovered.bytes,[0,255,128]);
+          report({ mainWindow: true, healthRequests, workbenchRecovery: true });
           win.close();
         }
       } catch (error) { fail(error); }
@@ -183,6 +194,7 @@ if (process.versions.electron) {
     assert.equal(result.code, 0, result.stderr);
     assert.ok(result.events.some(event => event.mainWindow));
     assert.ok(result.events.find(event => event.mainWindow).healthRequests > 1);
+    assert.equal(result.events.find(event => event.mainWindow).workbenchRecovery,true);
     assert.doesNotMatch(result.stderr, /Focus 启动失败/);
   });
   test("user quit cancels startup without opening an error window", async () => {

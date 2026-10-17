@@ -53,7 +53,7 @@ if (!process.versions.electron) {
   const budgetCatalog = require("./workspace-patrol-budget-fixture.cjs"), grantChanges = [];
   let authorityRevision = 1, activeBudget = { ...budgetCatalog.presets.long.budgets };
   const session = "isolated-patrol-ui-fixture";
-  const history = new Map(), streams = new Map(), requests = [], uploads = [], errors = [];
+  const history = new Map(), streams = new Map(), requests = [], uploads = [], errors = [], workspaceReads = [];
   let previewPng = null;
   let host, server, workbench, selectedPath = "C:\\fixture\\workspace-a", completed = false, dropReceipt = false, hiddenSubmission = null;
   const fileRef = {fact_id:"file-fixed",revision:2,result_key:"b".repeat(64),slot_id:"slot-a",path:"src/semantic_indexer.py",sha256:"a".repeat(64)};
@@ -172,7 +172,7 @@ if (!process.versions.electron) {
     const input = url.pathname.match(/^\/desktop\/api\/agent-loops\/workspace\/([^/]+)(\/inputs)?$/);
     if (input) {
       const id = input[1];
-      if (!input[2]) return json(response, history.has(id) ? { loop_id: `loop-${id}`, workspace_id: id } : null);
+      if (!input[2]) { workspaceReads.push(id); return json(response, history.has(id) ? { loop_id: `loop-${id}`, workspace_id: id } : null); }
       if (request.method === "GET") {
         if (failWorkspaceInputs) { failWorkspaceInputs--; return json(response,{detail:"暂时读取失败"},503); }
         const items = (history.get(id) || []).filter(item => item.submission_id !== hiddenSubmission);
@@ -433,13 +433,13 @@ if (!process.versions.electron) {
     assert.equal(await run(host.panel,"document.querySelector('.answer-markdown table') !== null"),true);
     assert.equal(await run(host.panel,"getComputedStyle(document.querySelector('.answer-markdown pre')).maxHeight"),"none");
     assert.equal(await run(host.panel,"Boolean(window.answerInjected)"),false);
-    await run(host.panel,"window.copiedAnswers=[]; Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>window.copiedAnswers.push(text)}}); document.querySelector('.answer-content>button').click()");
+    await run(host.panel,"window.copiedAnswers=[]; Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>window.copiedAnswers.push(text)}}); document.querySelector('.answer-content [data-action=copy-answer]').click()");
     await waitFor(host.panel,"window.copiedAnswers.length === 1", "全文复制未完成");
-    await run(host.panel,"document.querySelector('.answer-code>button').click()");
+    await run(host.panel,"document.querySelector('.message-code-block [data-action=copy-code]').click()");
     await waitFor(host.panel,"window.copiedAnswers.length === 2", "代码复制未完成");
     assert.deepEqual(await run(host.panel,"window.copiedAnswers"),[answerText(answerRevision),'const value = "<safe>";\n']);
     await capture(host.panel,"desktop-answer-reading");
-    await run(host.panel,"document.querySelector('.answer-code').scrollIntoView({block:'center'}); document.querySelector('.answer-markdown a[href=\"https://example.com/result\"]').click()");
+    await run(host.panel,"document.querySelector('.message-code-block').scrollIntoView({block:'center'}); document.querySelector('.answer-markdown a[href=\"https://example.com/result\"]').click()");
     await waitFor(host.panel,"document.querySelector('#error').hidden", "回答外链打开失败");
     assert.deepEqual(externalLinks,["https://example.com/result"]);
     await run(host.panel, "[...document.querySelectorAll('.answer-markdown a')].find(a=>a.textContent==='查看报告').click()");
@@ -576,9 +576,15 @@ if (!process.versions.electron) {
     failWorkspaceInputs = 1;
     longHistory = true;
     await host.openPanel({workspaceId:"workspace-a"});
-    await waitFor(host.panel,"document.querySelector('#error').textContent.includes('暂时读取失败')","临时读取失败未呈现");
-    await host.openPanel();
-    await waitFor(host.panel,"document.querySelector('#error').hidden && document.querySelector('#results').textContent.includes('截图中的机器人')","机器人重新打开应恢复暂时失败的工作区读取");
+    await waitFor(host.panel,"document.querySelector('#history-status').textContent.includes('暂时读取失败') && document.querySelector('#results').textContent.includes('截图中的机器人')","历史读取失败时应继续展示 Live 结果");
+    assert.equal(await run(host.panel,"document.querySelector('#error').hidden"),true,"历史失败仅留在记录面板");
+    for (let i=0; i<100 && !streams.has('loop-workspace-a'); i++) await delay(20);
+    const historyRetryStream = streams.get('loop-workspace-a'), lookupsBeforeRetry = workspaceReads.length;
+    assert.ok(historyRetryStream,"历史失败时仍建立 Live 连接");
+    await run(host.panel,"document.querySelector('#retry-history').click()");
+    await waitFor(host.panel,"document.querySelector('#history-status').hidden && document.querySelector('#history-items').textContent.includes('较早的输入')","历史重试应恢复记录");
+    assert.equal(workspaceReads.length,lookupsBeforeRetry,"历史重试不能重新查询 Loop");
+    assert.equal(streams.get('loop-workspace-a'),historyRetryStream,"历史重试不能重建 Live 连接");
     await run(host.panel,"document.querySelector('#instruction').value=Array(20).fill('长输入不会挡住操作区').join('\\n'); document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true})); if(document.querySelector('#history').hidden) document.querySelector('#toggle-history').click()");
     await waitFor(host.panel,"innerHeight >= 490","长内容窗口未扩展");
     assert.equal(await run(host.panel,"(() => { document.querySelector('#history-items article:last-child').scrollIntoView({block:'end'}); const b=document.querySelector('#send').getBoundingClientRect(); return b.top>=0 && b.bottom<=innerHeight; })()"),true,"滚动长历史时发送按钮必须保持可见");
