@@ -45,7 +45,7 @@
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from focus.config.env import resolve_env_vars
 
@@ -66,6 +66,9 @@ class ExtensionsConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     mcp_servers: dict[str, McpServerConfig] = Field(alias="mcpServers")
+    # 由加载器生成，不作为用户配置序列化；缓存单独纳入来源，避免跨作用域误报。
+    mcp_server_sources: dict[str, dict[str, str]] = Field(default_factory=dict, exclude=True)
+    mcp_server_errors: dict[str, str] = Field(default_factory=dict, exclude=True)
 
     def get_enabled_mcp_servers(self) -> dict[str, McpServerConfig]:
         return {
@@ -77,13 +80,28 @@ class ExtensionsConfig(BaseModel):
 
 def get_extensions_config(json_path: str, *, workspace: str | Path | None = None) -> ExtensionsConfig:
     """读取程序默认 < 全局 < 工作区扩展配置，并解析环境变量。"""
-    from focus.config.layered import load_layered_map
+    from focus.config.layered import load_layered_map_with_sources
 
-    raw = load_layered_map(Path(json_path).name, json_path, workspace=workspace)
+    raw, sources = load_layered_map_with_sources(Path(json_path).name, json_path, workspace=workspace)
     resolved = resolve_env_vars(raw)
     if not resolved.get("mcpServers"):
         return ExtensionsConfig(mcp_servers={})
-    return ExtensionsConfig.model_validate(resolved)
+    servers = {}
+    errors = {}
+    for name, entry in resolved["mcpServers"].items():
+        try:
+            servers[name] = McpServerConfig.model_validate(entry)
+        except ValidationError as exc:
+            if isinstance(entry, dict) and entry.get("enabled") is False:
+                continue
+            # 不序列化 input，避免把 env / headers 等字段的密钥带入刷新响应。
+            errors[name] = "配置字段无效：" + "; ".join(
+                f"{'.'.join(map(str, error['loc'])) or 'server'}: {error['msg']}"
+                for error in exc.errors(include_input=False, include_url=False)
+            )
+    return ExtensionsConfig(
+        mcp_servers=servers, mcp_server_sources=sources.get("mcpServers", {}), mcp_server_errors=errors,
+    )
 
 
 def get_enabled_mcp_servers(config: ExtensionsConfig) -> dict[str, McpServerConfig]:

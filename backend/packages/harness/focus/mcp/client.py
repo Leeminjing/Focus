@@ -18,7 +18,7 @@ langchain-mcp-adapters 的 MultiServerMCPClient 可接受的 dict 格式。
 
 输出:
     build_server_params → dict，字段按 transport 类型不同
-    build_servers_config → dict[str, dict]，失败的 server 跳过不抛
+    build_servers_config → ServersConfig，兼容 dict，failures 保留跳过原因
 
 工作流:
     build_server_params:
@@ -49,59 +49,88 @@ import logging
 
 from focus.config.env import require_env_var
 from focus.config.extensions_config import ExtensionsConfig, McpServerConfig
+from focus.config.layered import global_home
+from focus.mcp.diagnostics import McpConfigurationError, McpFailure, server_failure
 
 logger = logging.getLogger(__name__)
 
 _SUPPORTED_TRANSPORTS = frozenset({"stdio", "sse", "http"})
 
 
+class ServersConfig(dict[str, dict]):
+    def __init__(self):
+        super().__init__()
+        self.failures: list[McpFailure] = []
+
+
+def _resolve(value, server_name: str):
+    try:
+        return require_env_var(value, context=f"MCP server '{server_name}'")
+    except ValueError as exc:
+        raise McpConfigurationError(
+            str(exc), f"在 Focus 进程环境或 {global_home() / '.env'} 中设置该变量；使用 .env 时重启 Focus，然后重试 MCP。",
+        ) from exc
+
+
 def build_server_params(server_name: str, config: McpServerConfig) -> dict:
     transport = config.type or "stdio"
     if transport not in _SUPPORTED_TRANSPORTS:
-        raise ValueError(
+        raise McpConfigurationError(
             f"MCP server '{server_name}': 不支持的 transport 类型 '{transport}'，"
-            f"仅支持 {sorted(_SUPPORTED_TRANSPORTS)}"
+            f"仅支持 {sorted(_SUPPORTED_TRANSPORTS)}",
+            "将 type 修改为 stdio、sse 或 http，然后重试 MCP。",
         )
 
     params: dict = {"transport": transport}
 
     if transport == "stdio":
         if not config.command:
-            raise ValueError(
-                f"MCP server '{server_name}': stdio 类型必须提供 command 字段"
+            raise McpConfigurationError(
+                f"MCP server '{server_name}': stdio 类型必须提供 command 字段",
+                "在该配置的 mcpServers 条目中补充 command（可执行程序路径），然后重试 MCP。",
             )
-        params["command"] = config.command
+        params["command"] = _resolve(config.command, server_name)
         if config.args:
-            params["args"] = config.args
+            params["args"] = [_resolve(value, server_name) for value in config.args]
         if config.env:
             params["env"] = {
-                key: require_env_var(value, context=f"MCP server '{server_name}'")
+                key: _resolve(value, server_name)
                 for key, value in config.env.items()
             }
     else:
         if not config.url:
-            raise ValueError(
-                f"MCP server '{server_name}': sse/http 类型必须提供 url 字段"
+            raise McpConfigurationError(
+                f"MCP server '{server_name}': sse/http 类型必须提供 url 字段",
+                "在该配置的 mcpServers 条目中补充 url（MCP 服务地址），然后重试 MCP。",
             )
-        params["url"] = config.url
+        params["url"] = _resolve(config.url, server_name)
         if config.headers:
-            params["headers"] = config.headers
+            params["headers"] = {key: _resolve(value, server_name) for key, value in config.headers.items()}
 
     return params
 
 
-def build_servers_config(extensions_config: ExtensionsConfig) -> dict[str, dict]:
+def build_servers_config(extensions_config: ExtensionsConfig) -> ServersConfig:
+    result = ServersConfig()
+    for name, reason in extensions_config.mcp_server_errors.items():
+        result.failures.append(server_failure(
+            name, extensions_config.mcp_server_sources, stage="configuration", reason=reason,
+            action="修正该 MCP 条目中提示字段的类型或补齐必填字段，然后重试 MCP。",
+        ))
     enabled = extensions_config.get_enabled_mcp_servers()
     if not enabled:
         logger.info("没有启用的 MCP Server")
-        return {}
+        return result
 
-    result: dict[str, dict] = {}
     for name, config in enabled.items():
         try:
             result[name] = build_server_params(name, config)
             logger.info("MCP Server '%s' 配置翻译成功 (transport=%s)", name, config.type or "stdio")
-        except Exception:
+        except Exception as exc:
+            result.failures.append(server_failure(
+                name, extensions_config.mcp_server_sources, stage="configuration", reason=str(exc),
+                action=getattr(exc, "action", "检查该 MCP 配置的字段和类型，然后重试 MCP。"),
+            ))
             logger.error("MCP Server '%s' 配置翻译失败，已跳过", name, exc_info=True)
 
     return result

@@ -20,6 +20,7 @@ from langchain_core.tools import BaseTool
 
 from focus.config.extensions_config import ExtensionsConfig, get_extensions_config
 from focus.mcp.client import build_servers_config
+from focus.mcp.diagnostics import McpFailure, connection_reason, server_failure
 from focus.security.trust import parse_trust_override, trust_tools
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,12 @@ class McpTools(list[BaseTool]):
     def __init__(self):
         super().__init__()
         self.failed_servers: list[str] = []
+        self.failures: list[McpFailure] = []
         self.sessions: list[_PersistentMcpSession] = []
+
+    def record_failure(self, failure: McpFailure) -> None:
+        self.failed_servers.append(failure.server_name)
+        self.failures.append(failure)
 
     @property
     def healthy(self) -> bool:
@@ -113,13 +119,15 @@ async def close_mcp_sessions() -> None:
 async def load_mcp_tools(
     servers_config: dict[str, dict],
     overrides: dict[str, dict] | None = None,
-) -> list[BaseTool]:
+    *, sources: dict[str, dict[str, str]] | None = None,
+) -> McpTools:
     """连接一组 MCP server；单个 server 失败时跳过，其余 server 继续加载。
 
     这是外部工具的唯一摄取边界：每个 server 的工具在此按三层信任签发效果契约，
     因此随版本契约覆盖本系统自接的 server，用户覆盖只作用于其显式声明的 server。
     """
     tools = McpTools()
+    sources = sources or {}
     if not servers_config:
         return tools
     try:
@@ -127,7 +135,11 @@ async def load_mcp_tools(
         from langchain_mcp_adapters.tools import load_mcp_tools as load_tools_from_session
     except ImportError:
         logger.warning("langchain-mcp-adapters 未安装，MCP 工具不可用")
-        tools.failed_servers.extend(servers_config)
+        for name in servers_config:
+            tools.record_failure(server_failure(
+                name, sources, stage="connection", reason="langchain-mcp-adapters 未安装，MCP 工具不可用",
+                action="安装 Focus 的 MCP 依赖（langchain-mcp-adapters），重启 Focus 后重试。",
+            ))
         return tools
 
     trusted_overrides = overrides or {}
@@ -157,26 +169,34 @@ async def load_mcp_tools(
             scoped_tools = [item.model_copy(update={"metadata": dict(item.metadata or {})}) for item in server_tools]
             tools.extend(trust_tools(server_name, scoped_tools, trusted_overrides.get(server_name)))
             logger.info("MCP Server '%s' 连接成功，获取 %d 个工具", server_name, len(server_tools))
-        except Exception:
-            tools.failed_servers.append(server_name)
+        except Exception as exc:
+            action = (
+                "检查 command 程序是否已安装、可执行及 args 是否正确，查看服务日志后重试 MCP。"
+                if params.get("transport") == "stdio" else
+                "检查 MCP 服务地址、网络连接和认证配置，确认服务可用后重试 MCP。"
+            )
+            tools.record_failure(server_failure(
+                server_name, sources, stage="connection", reason=connection_reason(exc, params), action=action,
+            ))
             logger.warning("MCP Server '%s' 连接失败，已跳过", server_name, exc_info=True)
     return tools
 
 
 async def get_mcp_tools(
     workspace: str | Path | None = None, *, config: ExtensionsConfig | None = None,
-) -> list[BaseTool]:
+) -> McpTools:
     extensions_config = config if config is not None else (
         get_extensions_config("extensions_config.json", workspace=workspace)
         if workspace is not None else get_extensions_config("extensions_config.json")
     )
     servers_config = build_servers_config(extensions_config)
 
-    if not servers_config:
-        return []
     overrides = {
         name: parse_trust_override(name, server.trust)
         for name, server in extensions_config.mcp_servers.items()
         if server.trust
     }
-    return await load_mcp_tools(servers_config, overrides)
+    tools = await load_mcp_tools(servers_config, overrides, sources=extensions_config.mcp_server_sources)
+    for failure in getattr(servers_config, "failures", ()):
+        tools.record_failure(failure)
+    return tools
