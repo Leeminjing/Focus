@@ -53,7 +53,7 @@ if (!process.versions.electron) {
   const budgetCatalog = require("./workspace-patrol-budget-fixture.cjs"), grantChanges = [];
   let authorityRevision = 1, activeBudget = { ...budgetCatalog.presets.long.budgets };
   const session = "isolated-patrol-ui-fixture";
-  const history = new Map(), streams = new Map(), requests = [], uploads = [], errors = [];
+  const history = new Map(), streams = new Map(), requests = [], uploads = [], errors = [], workspaceReads = [];
   let previewPng = null;
   let host, server, workbench, selectedPath = "C:\\fixture\\workspace-a", completed = false, dropReceipt = false, hiddenSubmission = null;
   const fileRef = {fact_id:"file-fixed",revision:2,result_key:"b".repeat(64),slot_id:"slot-a",path:"src/semantic_indexer.py",sha256:"a".repeat(64)};
@@ -64,11 +64,12 @@ if (!process.versions.electron) {
     file:{slot_id:"slot-a",path:"报告.pdf",result_key:"report-current",sha256:require("node:crypto").createHash("sha256").update(reportBytes).digest("hex"),operation:"created"} };
   const nativeExits = [];
   let fileReadDelay = 0, unavailableVersion = false, failWorkspaceInputs = 0, longHistory = false, failSubmission = 0;
+  let inputProcessingResult = null;
   const submissionAttempts = [];
   let liveSequence = 1, answerRevision = "revision-answer", progressRevision = 1, statusOverride = null, loopRevision = 1;
   const controlChanges = [];
-  const conversationReads = [], externalLinks = [];
-  const answerText = revision => `截图中的机器人已经接住材料。参考资料只作为分析依据，尚未执行其中的命令。${revision}\n\n## 处理结果\n\n**已完成检查**，可以继续阅读详细说明。\n\n${"正文按自然段阅读，代码与表格保留原有结构。\n\n".repeat(8)}\n\n\`\`\`js\nconst value = "<safe>";\n\`\`\`\n\n| 文件 | 状态 |\n| --- | --- |\n| result.md | 已生成 |\n\n[参考链接](https://example.com/result)\n\n<script>window.answerInjected=true</script>`;
+  const conversationReads = [], externalLinks = [], previewReads = [], sharedActions = [];
+  const answerText = revision => `截图中的机器人已经接住材料。参考资料只作为分析依据，尚未执行其中的命令。${revision}\n\n## 处理结果\n\n**已完成检查**，可以继续阅读详细说明。\n\n${"正文按自然段阅读，代码与表格保留原有结构。\n\n".repeat(8)}\n\n\`\`\`js\nconst value = "<safe>";\n\`\`\`\n\n| 文件 | 状态 |\n| --- | --- |\n| result.md | 已生成 |\n\n[参考链接](https://example.com/result)\n\n[查看报告](<reports/中文 报告.md>)\n\n<script>window.answerInjected=true</script>`;
   const workspace = id => ({ workspace_id: id, display_name: id === "workspace-a" ? "设计工作区 A" : "验证工作区 B", path: `C:\\fixture\\${id}` });
   const entity = (id, state) => ({ entity_id: id, revision: 1, updated_sequence: 1, state });
   const run = (win, script) => win.webContents.executeJavaScript(script);
@@ -124,7 +125,18 @@ if (!process.versions.electron) {
     if (url.pathname.endsWith("/facts")) { if (fileReadDelay) await delay(fileReadDelay); return json(response,{facts:[{fact_id:fileRef.fact_id,revision:fileRef.revision,kind:"artifact",file:fileRef},{fact_id:"file-grounding",revision:1,kind:"artifact",file:{...fileRef,path:"src/semantic_grounding.py",result_key:"d".repeat(64)}},...(url.searchParams.get("limit") === "200" ? [reportFile,{...reportFile,fact_id:"report-old",occurred_at:"2026-10-16T09:30:00Z",file:{...reportFile.file,result_key:"report-old"}}] : [])],has_more:false,next_before:null}); }
     if (/\/facts\/report-(file|old)$/.test(url.pathname)) {
       const old = url.pathname.endsWith("report-old");
-      return json(response,{file:{...reportFile.file,result_key:old ? "report-old" : "report-current",after:{available:true,text:old ? "报告初稿" : "报告完成"},before:{available:false,reason:"binary"}}});
+      return json(response,{file:{...reportFile.file,result_key:old ? "report-old" : "report-current",after:old ? {available:true,text:"报告初稿"} : {available:false,reason:"binary"},before:{available:false,reason:"binary"}}});
+    }
+    if (url.pathname === "/desktop/api/files/pdf-page") {
+      previewReads.push(body);
+      assert.deepEqual(body, {loop_id:"loop-workspace-a",fact_id:"report-file",revision:1});
+      return json(response, {image:previewPng.toString("base64"),page_count:2});
+    }
+    if (url.pathname === "/desktop/api/files/content") {
+      previewReads.push(body);
+      assert.deepEqual(body, {task_id:"context-answer",link:{path:"reports/中文 报告.md",workspace_id:"workspace-a",run_id:"run-answer",slot_id:"slot-a",view:"current"}});
+      response.writeHead(200, {"Content-Type":"application/octet-stream"});
+      return response.end("# 正确执行位置的报告\n\n共享阅读器内容");
     }
     if (/\/inputs\/[^/]+\/attachments\/[^/]+\/content$/.test(url.pathname)) {
       const isImage = url.pathname.includes("material-2/");
@@ -161,10 +173,12 @@ if (!process.versions.electron) {
     const input = url.pathname.match(/^\/desktop\/api\/agent-loops\/workspace\/([^/]+)(\/inputs)?$/);
     if (input) {
       const id = input[1];
-      if (!input[2]) return json(response, history.has(id) ? { loop_id: `loop-${id}`, workspace_id: id } : null);
+      if (!input[2]) { workspaceReads.push(id); return json(response, history.has(id) ? { loop_id: `loop-${id}`, workspace_id: id } : null); }
       if (request.method === "GET") {
         if (failWorkspaceInputs) { failWorkspaceInputs--; return json(response,{detail:"暂时读取失败"},503); }
-        const items = (history.get(id) || []).filter(item => item.submission_id !== hiddenSubmission);
+        const requestedIds = url.searchParams.getAll("intent_ids");
+        const items = (history.get(id) || []).filter(item => item.submission_id !== hiddenSubmission && (!requestedIds.length || requestedIds.includes(item.intent_id)))
+          .map((item,index) => inputProcessingResult && index === 0 ? {...item,processing_state:'addressed',processing_result:inputProcessingResult} : item);
         return json(response, { items: longHistory ? [...items,...Array.from({length:20},(_,i)=>({...items[0],submission_id:`old-${i}`,intent_id:`old-intent-${i}`,content:`较早的输入 ${i} · 保持发送区可见`,created_at:new Date(Date.now()-1000*(i+1)).toISOString()}))] : items, next_before: null, has_more: false });
       }
       submissionAttempts.push(body);
@@ -196,7 +210,8 @@ if (!process.versions.electron) {
       conversationReads.push(answerRevision);
       return json(response, { messages: [
         { message: { id: "tool-only", type: "ai", content: "这条工具调用不可作为回答", tool_calls: [{ name: "read" }] } },
-        { message: { id: "answer-committed", type: "ai", content: answerText(answerRevision), additional_kwargs: { reasoning_content: "隐藏推理不应显示" } } },
+        { message: { id: "answer-committed", type: "ai", content: answerText(answerRevision), additional_kwargs: { reasoning_content: "隐藏推理不应显示" } },
+          file_context:{task_id:"context-answer",workspace_id:"workspace-a",run_id:"run-answer",slot_id:"slot-a"} },
       ] });
     }
     errors.push(`Unhandled API ${request.method} ${url.pathname}`);
@@ -218,6 +233,7 @@ if (!process.versions.electron) {
     });
     ipcMain.handle("focus:select-workspace", () => selectedPath);
     ipcMain.handle("focus:open-external", (_event, url) => { externalLinks.push(url); return true; });
+    ipcMain.handle("focus:file-action", (event, request) => { assert.ok(host.accepts(event)); sharedActions.push(request); return true; });
     app.on("web-contents-created", (_event, contents) => {
       contents.on("console-message", (_event, level, message) => { if (level >= 3) errors.push(message); });
       contents.on("preload-error", (_event, _path, error) => errors.push(error.message));
@@ -271,6 +287,7 @@ if (!process.versions.electron) {
       await new Promise(()=>{});
     }
     await capture(host.panel, "desktop-empty");
+    for (let i = 0; i < 100 && host._panelHeight == null; i++) await delay(20);
     assert.ok(Math.abs(host.panel.getBounds().width-304)<=1,"透明原生窗口允许一个 DIP 的系统缩放取整");
     assert.equal(await run(host.panel,"document.querySelector('.panel-shell').offsetWidth"),288,"阴影留白不能放大可见卡片");
     assert.equal(host._panelHeight,125);
@@ -319,6 +336,20 @@ if (!process.versions.electron) {
     assert.equal(requests[0].body.attachments[0].source_kind, "text");
     assert.equal(requests[0].body.attachments[1].source_kind, "image");
     await run(host.panel,"document.querySelector('#toggle-history').click()");
+    inputProcessingResult = {disposition:'decision',explanation:'已调整优先级：先定位导入失败。下一步验证错误原因。',mission_revision:3,decision_id:'input-decision',round_id:'input-round',observation_id:'input-observation',observation_generation:2,rationale:'导入失败阻塞后续工作',evidence:[{fact_id:'import-error',revision:4}],related_cancellations:[{state:'cancel_requested',target_kind:'run',target_id:'ui-run',round_id:'old-round',reason:'先解决导入失败'}]};
+    for (let attempt=0; attempt<100 && !streams.has('loop-workspace-a'); attempt++) await delay(20);
+    loopRevision++; liveSequence++;
+    streams.get('loop-workspace-a').write(`data: ${JSON.stringify({status:'resync_required',last_sequence:liveSequence})}\n\n`);
+    await waitFor(host.panel, "document.querySelector('[data-patrol-input-result] summary')?.textContent.includes('已请求停止')", "每条输入必须显示真实的处理反馈");
+    await run(host.panel,"document.querySelector('[data-patrol-input-result] summary').click(); document.querySelector('[data-patrol-input-result] summary').focus()");
+    assert.match(await run(host.panel,"document.querySelector('[data-patrol-input-result]').textContent"),/input-decision.*input-observation.*import-error/s);
+    await capture(host.panel,'desktop-input-processing-requested');
+    inputProcessingResult = {...inputProcessingResult,related_cancellations:inputProcessingResult.related_cancellations.map(item=>({...item,state:'stopped'}))};
+    loopRevision++; liveSequence++;
+    streams.get('loop-workspace-a').write(`data: ${JSON.stringify({status:'resync_required',last_sequence:liveSequence})}\n\n`);
+    await waitFor(host.panel,"document.querySelector('[data-patrol-input-result] summary')?.textContent.includes('同次决策：已停止')","清理结束后反馈必须更新");
+    assert.equal(await run(host.panel,"document.querySelector('[data-patrol-input-result]').open && document.activeElement.matches('[data-patrol-input-result] > summary')"),true,"反馈更新必须保留已展开来源和键盘焦点");
+    await run(host.panel,"document.querySelector('[data-patrol-input-result]').open=false; document.querySelector('[data-patrol-history-attachment=\"1\"]').scrollIntoView({block:'center'})");
     await waitFor(host.panel,"document.querySelector('#history-items summary img')?.naturalWidth > 0","已发送图片应保留缩略图");
     assert.match(await run(host.panel,"document.querySelector('#history-items').textContent"),/粘贴截图.png.*版本 aaaaaaaa/s);
     await capture(host.panel,"desktop-sent-attachments");
@@ -419,15 +450,25 @@ if (!process.versions.electron) {
     assert.equal(await run(host.panel,"document.querySelector('.answer-markdown table') !== null"),true);
     assert.equal(await run(host.panel,"getComputedStyle(document.querySelector('.answer-markdown pre')).maxHeight"),"none");
     assert.equal(await run(host.panel,"Boolean(window.answerInjected)"),false);
-    await run(host.panel,"window.copiedAnswers=[]; Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>window.copiedAnswers.push(text)}}); document.querySelector('.answer-content>button').click()");
+    await run(host.panel,"window.copiedAnswers=[]; Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>window.copiedAnswers.push(text)}}); document.querySelector('.answer-content [data-action=copy-answer]').click()");
     await waitFor(host.panel,"window.copiedAnswers.length === 1", "全文复制未完成");
-    await run(host.panel,"document.querySelector('.answer-code>button').click()");
+    await run(host.panel,"document.querySelector('.message-code-block [data-action=copy-code]').click()");
     await waitFor(host.panel,"window.copiedAnswers.length === 2", "代码复制未完成");
     assert.deepEqual(await run(host.panel,"window.copiedAnswers"),[answerText(answerRevision),'const value = "<safe>";\n']);
     await capture(host.panel,"desktop-answer-reading");
-    await run(host.panel,"document.querySelector('.answer-code').scrollIntoView({block:'center'}); document.querySelector('.answer-markdown a[href=\"https://example.com/result\"]').click()");
+    await run(host.panel,"document.querySelector('.message-code-block').scrollIntoView({block:'center'}); document.querySelector('.answer-markdown a[href=\"https://example.com/result\"]').click()");
     await waitFor(host.panel,"document.querySelector('#error').hidden", "回答外链打开失败");
     assert.deepEqual(externalLinks,["https://example.com/result"]);
+    await run(host.panel, "[...document.querySelectorAll('.answer-markdown a')].find(a=>a.textContent==='查看报告').click()");
+    await waitFor(host.panel,"document.querySelector('#version-body').textContent.includes('正确执行位置的报告')", "正文中文空格链接未进入共享预览器");
+    assert.match(await run(host.panel,"document.querySelector('#version-body').textContent"),/当前磁盘文件/);
+    await run(host.panel,"document.querySelector('#version-body [data-source-toggle]').click()");
+    assert.equal(await run(host.panel,"Boolean(document.querySelector('#version-body .file-source'))"),true);
+    await run(host.panel,"document.querySelector('#version-body [data-file-operation=open]').click()");
+    await waitFor(host.panel,"document.querySelector('#version-body [data-file-status]').textContent === '已完成'", "正文文件未接通原生操作");
+    assert.equal(sharedActions.at(-1).target.link.slot_id,"slot-a");
+    assert.equal(sharedActions.at(-1).target.link.run_id,"run-answer");
+    await run(host.panel,"document.querySelector('#close-version-detail').click()");
     assert.ok(host.panel.webContents.getURL().includes("desktop-patrol.html?surface=panel"));
     await capture(host.panel,"desktop-answer-code");
     await run(host.panel,"document.querySelector('.answer-reading summary').click()");
@@ -484,6 +525,13 @@ if (!process.versions.electron) {
     await waitFor(host.panel,"document.querySelector('[data-files-status]').textContent === '已另存文件'","另存文件未返回结果");
     assert.deepEqual(fs.readFileSync(savedReport),reportBytes);
     assert.deepEqual(nativeExits,[["open",reportPath],["reveal",reportPath]]);
+    await run(host.panel,"document.querySelector('.artifact-actions [data-files-view]').click()");
+    await waitFor(host.panel,"document.querySelector('[data-files-preview] [data-page-label]')?.textContent === '1/2'","文件抽屉 PDF 未挂载共享分页预览");
+    await run(host.panel,"document.querySelector('[data-next-page]').click()");
+    await waitFor(host.panel,"document.querySelector('[data-page-label]').textContent === '2/2'","抽屉 PDF 无法翻页");
+    await run(host.panel,"document.querySelector('[data-files-preview] [data-file-operation=save]').click()");
+    await waitFor(host.panel,"document.querySelector('[data-files-preview] [data-file-status]').textContent === '已完成'","抽屉固定 PDF 未接通另存");
+    assert.deepEqual(sharedActions.at(-1).target,{loop_id:"loop-workspace-a",fact_id:"report-file",revision:1});
     await run(host.panel,"document.querySelector('.artifact-history [data-files-view]').click()");
     await waitFor(host.panel,"document.querySelector('[data-files-preview]').textContent.includes('报告初稿')","报告历史快照不可查看");
     assert.equal(await run(host.panel,"Boolean(document.querySelector('.artifact-history [data-files-native]'))"),false);
@@ -545,9 +593,15 @@ if (!process.versions.electron) {
     failWorkspaceInputs = 1;
     longHistory = true;
     await host.openPanel({workspaceId:"workspace-a"});
-    await waitFor(host.panel,"document.querySelector('#error').textContent.includes('暂时读取失败')","临时读取失败未呈现");
-    await host.openPanel();
-    await waitFor(host.panel,"document.querySelector('#error').hidden && document.querySelector('#results').textContent.includes('截图中的机器人')","机器人重新打开应恢复暂时失败的工作区读取");
+    await waitFor(host.panel,"document.querySelector('#history-status').textContent.includes('暂时读取失败') && document.querySelector('#results').textContent.includes('截图中的机器人')","历史读取失败时应继续展示 Live 结果");
+    assert.equal(await run(host.panel,"document.querySelector('#error').hidden"),true,"历史失败仅留在记录面板");
+    for (let i=0; i<100 && !streams.has('loop-workspace-a'); i++) await delay(20);
+    const historyRetryStream = streams.get('loop-workspace-a'), lookupsBeforeRetry = workspaceReads.length;
+    assert.ok(historyRetryStream,"历史失败时仍建立 Live 连接");
+    await run(host.panel,"document.querySelector('#retry-history').click()");
+    await waitFor(host.panel,"document.querySelector('#history-status').hidden && document.querySelector('#history-items').textContent.includes('较早的输入')","历史重试应恢复记录");
+    assert.equal(workspaceReads.length,lookupsBeforeRetry,"历史重试不能重新查询 Loop");
+    assert.equal(streams.get('loop-workspace-a'),historyRetryStream,"历史重试不能重建 Live 连接");
     await run(host.panel,"document.querySelector('#instruction').value=Array(20).fill('长输入不会挡住操作区').join('\\n'); document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true})); if(document.querySelector('#history').hidden) document.querySelector('#toggle-history').click()");
     await waitFor(host.panel,"innerHeight >= 490","长内容窗口未扩展");
     assert.equal(await run(host.panel,"(() => { document.querySelector('#history-items article:last-child').scrollIntoView({block:'end'}); const b=document.querySelector('#send').getBoundingClientRect(); return b.top>=0 && b.bottom<=innerHeight; })()"),true,"滚动长历史时发送按钮必须保持可见");

@@ -713,14 +713,25 @@ class DesktopService:
         return [dict(item) for item in cache[key]]
 
     async def _add_loop_task_summaries(self, session, summaries):
-        from backend.app.desktop.agent_loop.models import AgentLoop, LoopPendingDecision
+        from backend.app.desktop.agent_loop.models import AgentLoop, LoopContextMembership, LoopPendingDecision
         from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest
+        # A workspace Patrol owns multiple Contexts. Keep that association even
+        # after settlement so a child Run cannot become an overall result.
+        associations = select(
+            AgentLoop.loop_id, AgentLoop.initial_context_id.label("task_id"),
+        ).union(select(
+            AgentLoop.loop_id, LoopContextMembership.context_id.label("task_id"),
+        ).join(LoopContextMembership, LoopContextMembership.loop_id == AgentLoop.loop_id)
+          .where(AgentLoop.interaction_mode == "workspace_patrol")).subquery()
         ranked = select(AgentLoop.loop_id, func.row_number().over(
-            partition_by=AgentLoop.initial_context_id,
+            partition_by=associations.c.task_id,
             order_by=(AgentLoop.created_at.desc(), AgentLoop.loop_id.desc()),
-        ).label("position")).where(AgentLoop.interaction_mode == "context_loop").subquery()
+        ).label("position"), associations.c.task_id).join(
+            associations, associations.c.loop_id == AgentLoop.loop_id,
+        ).subquery()
         rows = (await session.execute(select(
-            AgentLoop.initial_context_id, AgentLoop.loop_id, AgentLoop.status, AgentLoop.updated_at,
+            ranked.c.task_id, AgentLoop.loop_id, AgentLoop.status, AgentLoop.updated_at,
+            AgentLoop.interaction_mode, AgentLoop.workspace_id, AgentLoop.initial_context_id,
             LoopPendingDecision.pending_decision_id, LoopPendingDecision.kind,
             LoopWaitRequest.request_id, LoopWaitRequest.kind,
         ).join(ranked, AgentLoop.loop_id == ranked.c.loop_id)
@@ -730,14 +741,23 @@ class DesktopService:
                      & (LoopWaitRequest.status == "open"))
           .where(ranked.c.position == 1))).all()
         by_task = {item["task_id"]: item for item in summaries}
-        for task_id, loop_id, status, updated_at, decision_id, decision_kind, request_id, request_kind in rows:
+        for (task_id, loop_id, status, updated_at, mode, workspace_id, initial_context_id,
+             decision_id, decision_kind, request_id, request_kind) in rows:
             summary = by_task.get(task_id)
             if summary is None:
                 continue
             latest_created = (summary.get("latest_run") or {}).get("created_at")
-            if status in {"completed", "stopped", "failed"} and latest_created and latest_created > updated_at.isoformat():
+            if (mode == "context_loop" and status in {"completed", "stopped", "failed"}
+                    and latest_created and latest_created > updated_at.isoformat()):
                 continue
             summary["loop"] = {"loop_id": loop_id, "status": status}
+            if mode == "workspace_patrol":
+                summary["loop"].update(interaction_mode=mode, workspace_id=workspace_id,
+                                       initial_context_id=initial_context_id)
+                # Project shared waits only once; Run-local attention stays on
+                # its own Context and retains its original navigation target.
+                if task_id != initial_context_id:
+                    continue
             if status not in {"running", "waiting_user", "paused", "pausing", "completing"}:
                 continue
             for identity, kind in ((decision_id, decision_kind), (request_id, request_kind)):

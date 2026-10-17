@@ -198,6 +198,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Update acceptance opens the real lifespan without resuming user work
         # or starting recovery writers before the release has been accepted.
         update_check = os.getenv("FOCUS_UPDATE_CHECK") == "1"
+        from backend.app.desktop.storage_maintenance import StorageMaintenance
+        app.state.storage_maintenance = StorageMaintenance(
+            sessions, database_url=str(app_config.database.url) if app_config.database else None,
+        )
         app.state.agent_loop_ownership_repair_task = None
         if not update_check:
             await service.start()
@@ -207,9 +211,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
         if not update_check and app.state.loop_feature_flags.supervisor_scheduling:
             await app.state.agent_loop_runtime.start()
+        if not update_check:
+            await app.state.storage_maintenance.start()
         try:
-            yield
+            from backend.app.diagnostic_endpoint import publish_endpoint
+
+            with publish_endpoint():
+                yield
         finally:
+            await app.state.storage_maintenance.close()
             await app.state.agent_loop_runtime.close()
             repair_results = (
                 await asyncio.gather(app.state.agent_loop_ownership_repair_task, return_exceptions=True)
@@ -238,8 +248,21 @@ logger.info("桌面路由与静态资源已挂载 (/desktop/api, /desktop)")
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict:
+    from backend.app.diagnostics import collect_diagnostics
+    from focus.persistence.engine import get_session_factory
+
+    try:
+        sessions = get_session_factory()
+    except RuntimeError:
+        sessions = None
+    flags = getattr(app.state, "loop_feature_flags", None)
+    return await collect_diagnostics(
+        sessions,
+        runtime=getattr(app.state, "agent_loop_runtime", None),
+        run_manager=getattr(app.state, "run_manager", None),
+        scheduling_enabled=bool(flags and flags.supervisor_scheduling and os.getenv("FOCUS_UPDATE_CHECK") != "1"),
+    )
 
 
 def selector_loop_factory() -> asyncio.AbstractEventLoop:

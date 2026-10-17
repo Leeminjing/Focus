@@ -26,6 +26,22 @@ function fixture(load = async id => run(id)) {
   return { api, subscriptions, queries, notifications, frames, flush };
 }
 
+test("resync clears partial text and checks authoritative Run state without blocking later frames", async () => {
+  const f = fixture();
+  f.api.sync(owner());
+  await tick();
+  const sub = f.subscriptions[0];
+  sub.callbacks.onFrame(envelope(1, { message_id: "a", content: "before gap" }));
+  sub.callbacks.onFrame({ type: "resync", id: "3", data: '{"reason":"buffer_overrun"}' });
+  assert.equal(f.api.get().c.text, "");
+  assert.match(f.api.get().c.notice, /早前片段不可用/);
+  sub.callbacks.onFrame(envelope(4, { message_id: "a", content: "after gap" }));
+  await tick();
+  assert.equal(f.queries.length, 2);
+  assert.equal(f.api.get().c.text, "after gap");
+  f.api.stop();
+});
+
 test("only current roots with running Runs load and identity mismatch never subscribes", async () => {
   const f = fixture();
   f.api.sync(owner([node("historic", { historical: true }), node("pending", { context_id: "pending", latest_run: { run_id: "pending", status: "pending" } })]));

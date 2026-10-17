@@ -50,3 +50,9 @@ Live Loop 的权威状态始终保存在原有 Loop 领域表、canonical journa
 - 普通 Live event 不触发 snapshot、Portfolio、Evolution、Tree、Audit、Slots、Console、Facts 和 Conversation 的级联请求。
 - 一个 Loop 的慢发布或慢 Context 不阻塞同 Loop 的 Run/Fact/Curator，也不阻塞其他 Loop。
 - Patrol、directive、Context Run、Tool、Workspace、Fact 和 Portfolio 的可见变化都能追溯到持久事件。
+
+## Run 事件恢复
+
+部署前应用 `f36d7e8f901a` 迁移，为 Run outbox 增加 `lease_expires_at`、`next_attempt_at` 和 `failed` 状态。消费者每轮 drain 都按 Loop scope 回收过期领取；启动恢复只处理过期或旧 schema 遗留的无租期领取，跳过仍持有行锁的处理事务。默认领取租期为 60 秒，处理事务持有事件行锁期间不会被回收。副作用和 delivery receipt 同事务提交，处理异常或取消先回滚，再按 `(event_id, claimed_by, delivery_count)` 归还本次领取；旧领取不能投递或归还新领取。
+
+失败按 1、2、4…秒持久化退避，上限 60 秒；默认 8 次领取仍未成功则进入 `failed`，保留错误和领取次数，停止自动重试。可查询 `run_outbox_events` 的 `status`、`error`、`delivery_count`、`next_attempt_at` 和 `lease_expires_at` 定位问题；恢复处理器后，未耗尽重试的事件无需重启即可继续消费。`delivery_count` 同时作为领取代次，不应重置。数据库暂时不可用导致异常归还失败时，后续正常 tick 通过过期租约恢复。降级迁移保留事件、错误和 receipt，将 `failed` 转为旧版支持的 `error`。

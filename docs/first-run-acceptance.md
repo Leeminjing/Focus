@@ -34,3 +34,17 @@
 - `backend/tests/test_model_setup.py`：真实 SDK 请求序列化与策展引擎，HTTP 传输使用合成响应；覆盖 Chat Completions / Responses 及三种输出方式、故障诊断、脱敏和保存回滚。
 - `backend/tests/test_model_settings_api.py`：真实 Gateway 与隔离 PostgreSQL，验证缺失/占位凭据和损坏模型目录的启动、读取和修复。联网能力在上一组测试中验证。
 - `desktop/model-settings-ui.test.cjs`：自动打开模型设置、预选编辑条目、保存结果与失败提示、重复刷新保留未保存密钥。
+
+## 文件阅读与回答链接
+
+| 场景 | 验收结果 |
+| --- | --- |
+| 从文件 / 产物抽屉、LoopFact、机器人引用详情查看同一文件版本 | 都使用共享阅读器；PDF 可翻页，文本可查找、复制，保留系统打开、另存入口 |
+| 回答正文的 `reports/report.md`、中文及空格路径、百分号编码路径 | 从原始 href 解码一次，按回答所属任务、Run、工作树定位；失败时显示原因 |
+| 两次执行在不同工作树生成同名文件，之后继续执行或派生 Context | 旧回答保留原生产 Run；不能使用当前最新执行位置代替旧来源 |
+| 查看旧文本快照；查看磁盘已变化的旧 PDF | 旧文本保持冻结；旧 PDF 字节不匹配时说明历史内容不可用，只有显式“打开当前文件”才读取当前版本 |
+| 旧消息缺少可信来源，或多个来源冲突 | 显示来源不可验证，可从文件 / 产物选择；不猜测同名文件 |
+
+来源投影只读取已提交 revision 的谱系和服务端 Run，不采信正文自行声明的文件来源。谱系查询每页缓存，并限制深度 32、来源版本 64；超限同样显示来源不可验证。
+
+自动化覆盖：`desktop/artifact-drawer.test.cjs` 的二进制 PDF 入口回归、`desktop/desktop-patrol-refresh.test.cjs` 的正文链接和失败提示、`desktop/desktop-patrol-ui.test.cjs` 的真实 Electron 翻页/中文空格链接/原生操作、`backend/tests/test_conversation_file_sources.py` 的跨执行与派生来源，以及 `backend/tests/test_file_link_identity.py`、`backend/tests/test_file_preview.py` 的实际路径与版本校验。Electron 使用隔离 HTTP fixture；它不替代安装包的真实文件验收。

@@ -20,11 +20,13 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app.desktop.agent_loop.completion import CompletionEvidenceService
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDecision, LoopDelegationGrant, LoopObservation, LoopRound, LoopWorkerRequest
+from backend.app.desktop.agent_loop.mission_models import LoopMissionRevision
 from backend.app.desktop.agent_loop.observation_capture import LoopObservationService
 from backend.app.desktop.agent_loop.patrol import PatrolContractViolation
 from backend.app.desktop.agent_loop.patrol_contract import PatrolDecisionContract
 from backend.app.desktop.agent_loop.schemas import CompletionVerificationContract, RequestCompletionAction, LoopObservationEnvelope
 from backend.tests.completion_evidence_support import claim_verifier, record_verified_fixture
+from backend.tests.loop_run_boundary_support import freeze_patrol_intent
 from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 from backend.tests.test_round_task_progress import _Checkpointer
 
@@ -32,7 +34,8 @@ pytestmark = pytest.mark.usefixtures('runtime_postgres_database')
 
 
 @asynccontextmanager
-async def _lab(tmp_path, *, stale=True, complete=False, mode='context_loop'):
+async def _lab(tmp_path, *, stale=True, complete=False, mode='context_loop', required=True,
+               optional_status=None, optional_unresolved=False, conclusion=None):
     engine = create_async_engine(os.environ['FOCUS_DATABASE_URL'])
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     fixture = await _seed_loop(sessions, tmp_path, label='d10', started_at=datetime.now(UTC))
@@ -44,20 +47,32 @@ async def _lab(tmp_path, *, stale=True, complete=False, mode='context_loop'):
             grant = await session.scalar(select(LoopDelegationGrant).where(LoopDelegationGrant.loop_id == fixture['loop_id']))
             grant.capabilities = [*grant.capabilities, 'request_completion', 'request_completion_verifier']
             round_row = await session.get(LoopRound, fixture['round_id'])
+            mission = await session.scalar(select(LoopMissionRevision).where(
+                LoopMissionRevision.loop_id == loop.loop_id, LoopMissionRevision.revision == loop.goal_revision))
+            checks = [{**check, 'required': required} for check in mission.completion_checks]
+            if optional_status is not None:
+                checks.append({'check_id': 'polish', 'claim': '可选外观优化', 'required': False,
+                               'expected_evidence_kinds': ['fact']})
+            mission.completion_checks = checks
             session.add(LoopWorkerRequest(worker_request_id=worker_id, loop_id=fixture['loop_id'],
                 round_id=fixture['round_id'], kind='completion_verifier', scope={}))
         source = None
         if complete:
             source = await record_verified_fixture(sessions, fixture['loop_id'], fixture['context_id'],
                 fixture['round_id'], next(tmp_path.iterdir()), round_row.workspace_revision)
+        criteria = [{'check_id': 'tests', 'status': 'satisfied' if complete else 'unknown',
+            'evidence': [{'kind': 'fact', 'source_id': source, 'summary': '真实 fixture 通过'}] if source else [],
+            'explanation': '检查实际证据'}]
+        if optional_status is not None:
+            criteria.append({'check_id': 'polish', 'status': optional_status, 'evidence': [],
+                             'explanation': '可选外观优化未完成'})
+        unresolved = (() if complete else ('tests',)) + (('polish',) if optional_unresolved else ())
         contract = CompletionVerificationContract(verification_id=uuid.uuid4().hex,
             loop_id=fixture['loop_id'], round_id=fixture['round_id'], goal_revision=1,
             frontier_hash='e' * 64 if stale else round_row.frontier_hash,
             workspace_revision=round_row.workspace_revision,
-            criteria=({'check_id': 'tests', 'status': 'satisfied' if complete else 'unknown',
-                'evidence': [{'kind': 'fact', 'source_id': source, 'summary': '真实 fixture 通过'}] if source else [],
-                'explanation': '检查实际证据'},),
-            conclusion='satisfied' if complete else 'unknown', unresolved=() if complete else ('tests',))
+            criteria=tuple(criteria), conclusion=conclusion or ('satisfied' if complete else 'unknown'),
+            unresolved=unresolved)
         retry = await claim_verifier(sessions, fixture['loop_id'], worker_id)
         await CompletionEvidenceService(sessions).record(contract, worker_id, retry_identity=retry)
         frozen = await LoopObservationService(sessions, _Checkpointer()).capture(fixture['loop_id'], fixture['round_id'])
@@ -152,7 +167,7 @@ def test_credible_complete_verification_passes_candidate_stage_and_kernel(tmp_pa
     async def run():
         async with _lab(tmp_path, stale=False, complete=True) as (sessions, fixture, frozen, action):
             PatrolDecisionContract().validate(actions=(action,), mission_references=(), observation=frozen)
-            intent = _intent(frozen).model_copy(update={'actions': (action,)})
+            intent = await freeze_patrol_intent(sessions, _intent(frozen).model_copy(update={'actions': (action,)}))
             stage, assessed = await _stage_observation(sessions, frozen)
             resolved = await stage.resolve(assessed, intent)
             assert resolved.blocker is None and resolved.intent.actions == (action,)
@@ -163,13 +178,66 @@ def test_credible_complete_verification_passes_candidate_stage_and_kernel(tmp_pa
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('optional_status,optional_unresolved', [
+    ('unknown', False), ('unknown', True), ('unsatisfied', True),
+])
+def test_optional_checks_pass_candidate_stage_and_kernel_with_final_explanation(tmp_path, optional_status, optional_unresolved):
+    from backend.app.desktop.agent_loop.kernel import LoopKernel
+    from backend.tests.test_loop_round_progress_admission import _intent
+
+    async def run():
+        async with _lab(tmp_path, stale=False, complete=True, optional_status=optional_status,
+                        optional_unresolved=optional_unresolved) as (sessions, fixture, frozen, action):
+            entry, = frozen.completion_eligibility['verifications']
+            assert entry['allowed'], entry['reasons']
+            PatrolDecisionContract().validate(actions=(action,), mission_references=(), observation=frozen)
+            stage, assessed = await _stage_observation(sessions, frozen)
+            intent = await freeze_patrol_intent(sessions, _intent(frozen).model_copy(update={'actions': (action,)}))
+            resolved = await stage.resolve(assessed, intent)
+            assert resolved.blocker is None
+            result = await LoopKernel(sessions).commit(resolved.intent)
+            assert result.status == 'committed', result.reason
+            async with sessions() as session:
+                loop = await session.get(AgentLoop, fixture['loop_id'])
+                assert loop.status == 'completed'
+                verification = loop.final_result['verification']
+                optional = next(c for c in verification['criteria'] if c['check_id'] == 'polish')
+                assert optional['status'] == optional_status and optional['explanation'] == '可选外观优化未完成'
+                assert verification['unresolved'] == (['polish'] if optional_unresolved else [])
+    asyncio.run(run())
+
+
+def test_all_optional_unknown_checks_can_complete_after_independent_satisfied_conclusion(tmp_path):
+    from backend.app.desktop.agent_loop.kernel import LoopKernel
+    from backend.tests.test_loop_round_progress_admission import _intent
+
+    async def run():
+        async with _lab(tmp_path, stale=False, required=False, conclusion='satisfied') as (sessions, fixture, frozen, action):
+            entry, = frozen.completion_eligibility['verifications']
+            assert entry['allowed'], entry['reasons']
+            PatrolDecisionContract().validate(actions=(action,), mission_references=(), observation=frozen)
+            stage, assessed = await _stage_observation(sessions, frozen)
+            intent = await freeze_patrol_intent(sessions, _intent(frozen).model_copy(update={'actions': (action,)}))
+            resolved = await stage.resolve(assessed, intent)
+            assert resolved.blocker is None
+            result = await LoopKernel(sessions).commit(resolved.intent)
+            assert result.status == 'committed', result.reason
+            async with sessions() as session:
+                loop = await session.get(AgentLoop, fixture['loop_id'])
+                assert loop.status == 'completed'
+                assert loop.final_result['verification']['criteria'][0]['status'] == 'unknown'
+                assert loop.final_result['verification']['unresolved'] == ['tests']
+    asyncio.run(run())
+
+
 def test_workspace_completion_keeps_delegation_and_waits_for_new_input(tmp_path):
     from backend.app.desktop.agent_loop.kernel import LoopKernel
     from backend.app.desktop.context_curation.models import CurationLane
     from backend.tests.test_loop_round_progress_admission import _intent
     async def run():
         async with _lab(tmp_path, stale=False, complete=True, mode='workspace_patrol') as (sessions, fixture, frozen, action):
-            result = await LoopKernel(sessions).commit(_intent(frozen).model_copy(update={'actions': (action,)}))
+            intent = await freeze_patrol_intent(sessions, _intent(frozen).model_copy(update={'actions': (action,)}))
+            result = await LoopKernel(sessions).commit(intent)
             assert result.status == 'committed', result.reason
             async with sessions() as session:
                 loop = await session.get(AgentLoop, fixture['loop_id'])
@@ -194,7 +262,7 @@ def test_final_state_changes_reject_previously_eligible_frozen_candidate(tmp_pat
     async def run():
         async with _lab(tmp_path, stale=False, complete=True) as (sessions, fixture, frozen, action):
             PatrolDecisionContract().validate(actions=(action,), mission_references=(), observation=frozen)
-            intent = _intent(frozen).model_copy(update={'actions': (action,)})
+            intent = await freeze_patrol_intent(sessions, _intent(frozen).model_copy(update={'actions': (action,)}))
             stage, assessed = await _stage_observation(sessions, frozen)
             assert (await stage.resolve(assessed, intent)).blocker is None
             if change == 'pause':

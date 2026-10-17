@@ -404,7 +404,13 @@
 .loop-message.is-tool { background: #fffdf8; }
 .loop-message > header { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; padding: 12px 8px 11px 0; border: 0; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
 .loop-message > header > span:last-child { margin: 0; color: #9aa5b4; }
-.loop-message pre { margin: 0; padding: 12px 4px 11px 10px; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; line-height: 1.55; }
+.loop-message-content { min-width: 0; padding: 12px 4px 11px 10px; font-size: 13px; line-height: 1.6; }
+.context-conversation.is-inspection { display: block; height: auto; background: transparent; }
+.is-inspection .loop-transcript { overflow: visible; padding: 6px 0 10px; }
+.is-inspection .loop-message { display: block; background: transparent; }
+.is-inspection .loop-message > header { flex-direction: row; align-items: center; padding: 10px 0 6px; gap: 8px; }
+.is-inspection .loop-message-content { padding: 0 0 16px; }
+
 .loop-message small { grid-column: 2; display: block; padding: 0 10px 9px; color: #78889d; }
 .message-provenance { max-width: 110px; padding: 3px 5px; border-radius: 999px; background: #fff0cc; color: #845d00; text-transform: none; letter-spacing: 0; }
 .message-provenance.is-direct { background: #e7f4ed; color: #236b49; }

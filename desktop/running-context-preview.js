@@ -3,6 +3,7 @@
  * 工作流按全部事件游标去重/检测缺口，过滤其他运行与初始历史，按真实消息或工具调用身份切换当前角色；正文只保留 4096 个 Unicode code point，消息指纹最多 256 条。
  * 首个普通 values 默认建立历史基线；本 Run 已接收 tokens 的当前消息及其精确工具调用可确认归属，因此可承接快照与工具结果，旧消息不覆盖后来的角色。
  * 后续实际变化的完整消息覆盖增量；具名角色显式 content_mode/stream_id 区分传输重试，思考、输入、参数和元数据不充当输出。
+ * resync 立即断开旧文本拼接并显示缺口说明，不把保留的尾部当成完整输出。
  * 示例：let preview = create(identity); preview = reduce(preview, {type:"tokens",id:"2",data:JSON.stringify(envelope)})；connection(preview,"reconnecting") 保留真实内容并标记断线。
  */
 (function (root, factory) {
@@ -99,6 +100,8 @@
   }
   function reduce(state, frame) {
     if (state.ended) return state;
+    if (frame.type === "resync") return Object.freeze({ ...state, role: null, actor: null, tool_name: null,
+      text: "", current_key: null, message_id: null, status: "waiting", notice: "已重新接收，早前片段不可用" });
     let envelope;
     try { envelope = typeof frame.data === "string" ? JSON.parse(frame.data) : frame.data; }
     catch { return Object.freeze({ ...state, status: "unavailable", notice: "输出事件无法读取" }); }

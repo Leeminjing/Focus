@@ -67,3 +67,19 @@ test("notification click discovers its loop from the server after restart", asyn
   `);
   assert.equal(run("openedLoops[0]"), "loop");
 });
+
+test("Patrol notification opens its workspace and wait instead of the Context loop", async () => {
+  const run = harness();
+  await run(`
+    globalThis.openedPatrols = [];
+    refreshTasks = async () => { state.tasks = [{task_id: "root", workspace_id: "workspace", loop: {
+      loop_id: "patrol", interaction_mode: "workspace_patrol", workspace_id: "workspace", initial_context_id: "root"
+    }}]; };
+    switchTask = async () => { throw new Error("Patrol notification should open the workspace"); };
+    openPatrolWorkbench = async target => { openedPatrols.push(target); };
+    openTaskNotification({taskId: "root", loopId: "patrol", workspaceId: "workspace", attentionId: "budget"});
+  `);
+  assert.deepEqual(JSON.parse(run("JSON.stringify(openedPatrols[0])")), {
+    workspaceId: "workspace", loopId: "patrol", attentionId: "budget",
+  });
+});

@@ -50,8 +50,9 @@ test("replay is bounded and preserves all event sequence types without duplicati
   sources[0].emit("metadata", 601);
   sources[0].emit("tokens", 601);
   await tick();
-  assert.equal(received.length, 512);
-  assert.equal(received[0], 90);
+  assert.equal(received.length, 513); // 一条缺口控制帧 + 512 条保留帧。
+  assert.equal(received[0], 89);
+  assert.equal(received[1], 90);
   assert.equal(received.at(-1), 601);
   sub.close();
 });
@@ -114,4 +115,34 @@ test("a late Main observer retains original interrupt and end business events in
   assert.equal(JSON.parse(task[1].data).data.value.type, "access_review");
   assert.equal(JSON.parse(task[2].data).status, "interrupted");
   assert.equal(sources.length, 1);
+});
+
+test("server gaps invalidate stale replay and reach both current and late observers", async () => {
+  const { streams, sources } = fixture(), current = [], late = [];
+  streams.subscribe("r", { onFrame: frame => current.push(frame) });
+  await tick();
+  sources[0].emit("tokens", 1, "old partial");
+  sources[0].emit("resync", 3, '{"reason":"buffer_overrun","resume_after_event_id":"3"}');
+  sources[0].emit("tokens", 4, "retained");
+  sources[0].emit("interrupt", 5, "approval");
+  streams.subscribe("r", { onFrame: frame => late.push(frame) });
+  sources[0].emit("end", "end");
+  await tick();
+  assert.deepEqual(current.map(frame => frame.type), ["tokens", "resync", "tokens", "interrupt", "end"]);
+  assert.deepEqual(late.map(frame => frame.type), ["resync", "tokens", "interrupt", "end"]);
+  assert.equal(late[1].id, "4", "resync must not deduplicate the first retained frame");
+});
+
+test("local replay overflow cannot silently evict a server resync or approval", async () => {
+  const { streams, sources } = fixture({ maxFrames: 2 }), late = [];
+  streams.subscribe("r", {});
+  sources[0].emit("resync", 3);
+  sources[0].emit("interrupt", 4, "evicted approval");
+  sources[0].emit("events", 5, "tool result");
+  sources[0].emit("tokens", 6, "tail");
+  streams.subscribe("r", { onFrame: frame => late.push(frame) });
+  await tick();
+  assert.deepEqual(late.map(frame => frame.type), ["resync", "events", "tokens"]);
+  assert.equal(JSON.parse(late[0].data).reason, "client_buffer_overrun");
+  assert.equal(late[0].id, "4");
 });

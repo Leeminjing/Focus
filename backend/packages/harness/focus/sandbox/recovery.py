@@ -1,4 +1,4 @@
-"""本文件对外提供 ShellRecoveryEvidence 与 Windows 内核启动身份读取端口。
+"""本文件对外提供跨平台 ShellRecoveryEvidence 与 Windows 内核启动身份读取端口。
 
 输入为逐 attempt 的持久执行身份；输出为匹配的终态回执、同机重启证据或核验失败。
 具体工作流为 claim 预登记关联信息，runner 保存回执，恢复核验终态或内核启动 GUID；
@@ -69,9 +69,11 @@ class ShellRecoveryEvidence:
             fact = {}
         if isinstance(fact, dict) and fact.get("execution") == evidence:
             if fact.get("phase") == "failed" or (
-                fact.get("phase") in {"exited", "control_failed"} and fact.get("jobDrained") is True
+                fact.get("phase") in {"exited", "control_failed"}
+                and (fact.get("jobDrained") is True or fact.get("processGroupDrained") is True)
             ):
                 return {"kind": "runner_receipt", "receipt": fact}
         # A request to stop is never exit evidence. A later verification must read a terminal receipt.
         path.with_name(path.name + ".cancel").write_text("cancelled", encoding="utf-8")
-        raise ValueError("尚无匹配的进程树退出证据；已请求遗留 runner 停止，请稍后再核验。若回执损坏或 runner 已崩溃，请重启 Windows 后核验")
+        detail = "若回执损坏或 runner 已崩溃，请重启 Windows 后核验" if os.name == "nt" else "若控制进程已崩溃，需人工核对遗留进程；当前平台不支持通过重启自动核验"
+        raise ValueError(f"尚无匹配的进程树退出证据；已请求遗留 runner 停止，请稍后再核验。{detail}")

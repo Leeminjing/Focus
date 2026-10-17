@@ -275,50 +275,8 @@
   white-space: pre-wrap;
 }
 
-.message-rich { max-width: 74ch; }
-.message-actions { display: flex; margin-top: var(--space-2); }
-.message-actions button,
-.code-block-toolbar button { min-height: 32px; font-size: 12px; }
-.message-code-block {
-  margin: var(--space-3) 0;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-card);
-  overflow: hidden;
-  background: var(--surface-code);
-}
-.code-block-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-.code-block-toolbar > span { min-width: 0; overflow-wrap: anywhere; }
-.code-block-toolbar button { flex-shrink: 0; }
-.message-rich p { margin-block: 0 var(--space-3); }
-.message-rich h1,
-.message-rich h2,
-.message-rich h3 { margin: var(--space-5) 0 var(--space-2); color: var(--text-primary); line-height: 1.28; }
-.message-rich pre {
-  margin: var(--space-3) 0;
-  padding: var(--space-4);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-card);
-  background: var(--surface-code);
-  overflow-x: auto;
-}
-.message-rich :not(pre) > code { padding: 2px 5px; border-radius: 5px; background: var(--surface-muted); }
-.message-rich .message-code-block pre { margin: 0; border: 0; border-radius: 0; }
-.message-rich blockquote { margin: var(--space-3) 0; padding: var(--space-1) 0 var(--space-1) var(--space-4); border-left-color: var(--accent-primary); }
-.message-rich table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
-.message-rich th { background: var(--surface-subtle); text-align: left; }
-.message-rich th,
-.message-rich td { padding: var(--space-2) var(--space-3); border-color: var(--border-default); }
-
-.focus-bottom { padding: 0 var(--space-3); }
+/* 输入区高于小兵浮层，附件使输入区增高时也不能被其按钮遮挡。 */
+.focus-bottom { position: relative; z-index: 9; padding: 0 var(--space-3); }
 .composer-shell {
   border-radius: 18px;
   overflow: visible;
@@ -363,6 +321,29 @@
   outline: 0;
   background: transparent;
 }
+.composer-attachments:empty { display: none; }
+.composer-attachments { min-width: 0; padding: var(--space-3) var(--space-3) 0; }
+.composer-attachments-label { display: block; margin-bottom: var(--space-2); color: var(--text-secondary); font-size: 12px; }
+.composer-attachment-list { display: flex; gap: var(--space-2); overflow-x: auto; padding-bottom: var(--space-2); }
+.composer-attachment {
+  display: flex;
+  flex: 0 0 min(320px, 100%);
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+}
+.composer-attachment.is-failed { border-color: var(--status-danger); }
+.composer-attachment.is-failed small { color: var(--status-danger); }
+.composer-attachment-preview { display: grid; place-items: center; flex: 0 0 40px; width: 40px; height: 40px; padding: 0; overflow: hidden; border-radius: var(--radius-control); }
+.composer-attachment-preview img { width: 100%; height: 100%; object-fit: cover; }
+.composer-attachment-info { flex: 1; min-width: 0; }
+.composer-attachment-info strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.composer-attachment-info small { display: block; max-height: 4.2em; overflow: auto; color: var(--text-secondary); font-size: 11px; overflow-wrap: anywhere; }
+.composer-attachment .text-button { flex-shrink: 0; min-height: 32px; padding-inline: 4px; }
 .composer-actions {
   display: flex;
   min-width: 0;
@@ -1556,3 +1537,17 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 @media (max-width: 720px) {
   .loop-start-budget { grid-template-columns: 1fr; }
 }
+/* Storage maintenance shares the data pane's spacing and form controls. */
+#storageSettingsHost { display: grid; gap: var(--space-3); padding: var(--space-3); }
+#storageSettingsHost > header { margin: calc(-1 * var(--space-3)) calc(-1 * var(--space-3)) 0; }
+#storageSettingsHost > p { margin: 0; }
+#storageSettingsHost .ui-toolbar { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+#storageSettingsHost .ui-toolbar button { flex: 0 0 auto; white-space: nowrap; }
+#storageSettingsHost > header, .storage-backups li { display: flex; justify-content: space-between; gap: var(--space-3); align-items: start; }
+.storage-usage { display: flex; flex-wrap: wrap; gap: var(--space-5); margin: 0; }
+.storage-usage dt { color: var(--text-secondary); font-size: 12px; }
+.storage-usage dd { margin: 4px 0 0; font-weight: 600; }
+.storage-preview { border: 1px solid var(--border-default); border-radius: 8px; padding: var(--space-3); }
+.storage-backups { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow: auto; }
+.storage-backups li { padding: var(--space-2) 0; overflow-wrap: anywhere; }
+.storage-backups small { display: block; color: var(--text-secondary); }

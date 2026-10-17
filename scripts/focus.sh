@@ -186,10 +186,32 @@ update_focus() {
 
 }
 
+doctor_focus() {
+    if [ -x "$venv_python" ]; then
+        doctor_python="$venv_python"
+    elif [ -n "${FOCUS_PYTHON:-}" ]; then
+        doctor_python="$FOCUS_PYTHON"
+    else
+        resolve_python_runtime
+        doctor_python="$python_runtime"
+    fi
+    if [ -f "$metadata_path" ]; then
+        export FOCUS_GLOBAL_HOME="$focus_home"
+    fi
+    export FOCUS_DOCTOR_CWD="$PWD"
+    cd "$app_dir"
+    exec "$doctor_python" -m backend.app.doctor "$@"
+}
+
+if [ "${1:-}" = "doctor" ]; then
+    shift
+    doctor_focus "$@"
+fi
+
 [ "$(uname -s)" = "Darwin" ] || fail "This command currently supports macOS only."
 
 case "$#:$*" in
     0:) start_focus ;;
     1:update) update_focus ;;
-    *) fail "Usage: focus [update]" ;;
+    *) fail "Usage: focus [update | doctor [--json] [--output FILE] [--url URL]]" ;;
 esac

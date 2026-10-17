@@ -8,7 +8,7 @@ CanonicalEventEnvelope/显式跳过、严格有序分页或 snapshot-required �
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 import uuid
 
 from sqlalchemy import delete, func, select
@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft, CanonicalEventEnvelope, EventVisibility
 from backend.app.desktop.agent_loop.feature_flags import LoopFeatureFlags
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent, LoopJournalSequence, LoopReplayRetention
+from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent, LoopJournalSequence, LoopProjectorCursor, LoopReplayRetention
 from backend.app.desktop.agent_loop.models import AgentLoop
 from backend.app.desktop.persistence_safety import PersistencePayloadNormalizer
 
@@ -107,16 +107,25 @@ class LoopEventJournal:
         return tuple(self._envelope(row) for row in rows)
 
     async def configure_retention(self, session: AsyncSession, loop_id: str, retention_seconds: int) -> None:
+        if retention_seconds < 0:
+            raise ValueError("retention_seconds 必须非负")
         await session.execute(insert(LoopReplayRetention).values(loop_id=loop_id, retention_seconds=retention_seconds).on_conflict_do_update(index_elements=["loop_id"], set_={"retention_seconds": retention_seconds}))
 
-    async def prune(self, session: AsyncSession, loop_id: str, now: datetime | None = None) -> int:
+    async def prune(self, session: AsyncSession, loop_id: str, now: datetime | None = None, *, maximum_sequence: int | None = None) -> int:
+        from backend.app.desktop.agent_loop.journal_retention import cleanup_boundary
+
+        # Fact consumers lock their cursor before appending derived events.
+        await session.execute(select(LoopProjectorCursor).where(LoopProjectorCursor.loop_id == loop_id)
+                              .order_by(LoopProjectorCursor.projector_name).with_for_update())
+        await session.get(AgentLoop, loop_id, with_for_update=True)
+        await session.get(LoopJournalSequence, loop_id, with_for_update=True, populate_existing=True)
         retention = await session.get(LoopReplayRetention, loop_id, with_for_update=True)
         if retention is None:
             return 0
-        threshold = (now or datetime.now(UTC)) - timedelta(seconds=retention.retention_seconds)
-        retained_minimum = await session.scalar(select(func.min(LoopJournalEvent.sequence)).where(LoopJournalEvent.loop_id == loop_id, LoopJournalEvent.occurred_at >= threshold))
-        last_sequence = await session.scalar(select(func.max(LoopJournalEvent.sequence)).where(LoopJournalEvent.loop_id == loop_id))
-        minimum = int(retained_minimum or ((last_sequence or 0) + 1))
+        minimum = await cleanup_boundary(session, loop_id, retention.retention_seconds, now=now)
+        if maximum_sequence is not None:
+            minimum = min(minimum, maximum_sequence)
+        minimum = max(retention.minimum_sequence, minimum)
         result = await session.execute(delete(LoopJournalEvent).where(LoopJournalEvent.loop_id == loop_id, LoopJournalEvent.sequence < minimum))
         retention.minimum_sequence = minimum
         return int(result.rowcount or 0)

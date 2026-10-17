@@ -2,6 +2,7 @@
  * 输入为共享 Run 订阅、Run 身份查询与变化回调，sync 接收当前工作区、Loop 和图节点；输出为按 Context 隔离的短预览及真实终态修正。
  * 工作流为只观察当前根的 running Run，核对身份后归约真实事件，按帧合并通知；切区、换 Run 或停止时取消查询与订阅，迟到响应不生效。
  * 终态来自已核对身份的 end/metadata/Run 查询，decorate 仅修正显示而不写领域投影，同一 Run 的终态记录在节点仍存在时阻止陈旧 running 状态重新订阅。
+ * resync 清空不连续的文本片段并补查 Run 状态；后续实时帧继续独立归约。
  * 示例：observer.sync({workspaceId, loopId, nodes}); observer.stop()。
  */
 (function (root, factory) {
@@ -69,6 +70,7 @@
         entry.subscription = streams.subscribe(entry.runId, {
           onFrame(event) {
             if (!current(entry) || entry.terminal) return;
+            if (event.type === "resync") void reconcile(entry);
             if (event.type === "end") {
               try {
                 const result = JSON.parse(event.data);

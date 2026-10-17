@@ -76,3 +76,24 @@ head 检查、空库/多头、连接拒绝及读取 revision 图时不加载桌�
 额外运行 `desktop/f20-architecture-guard.test.cjs` 时，现有 HTML 脚本版本号与其硬编码
 断言不一致而失败。使用 `git show HEAD:<file>` 的原始测试与源码也复现相同断言失败，
 确认早于本次修改；本轮未调整该前端断言。
+
+## 普通任务的未确认请求
+
+Electron 的 Gateway 端口每次启动重新选择。普通任务的冻结请求体、材料选择、编辑状态、
+未确认诊断与幂等 ID 保存到 Electron `userData/main-request-recovery/`，不再依赖端口对应的
+localStorage。`FOCUS_ELECTRON_USER_DATA` 可显式指定该用户数据目录；跨重启恢复需保持此目录。
+每个任务独立保存，投递前先同步写入临时文件、fsync 并原子替换；读取、校验或写盘失败时
+阻止投递。重启后用户按原内容重试，继续使用原 ID 和原请求体；受理回执确认后删除凭证。
+
+当前 origin 仍可见的旧 localStorage 凭证会先迁入本机仓库再清理旧值。旧版本已遗留在其他
+端口 origin 中的凭证不会自动找回。普通输入文字继续由后端 `ui_state` 保存；本机仓库只处理
+冻结的普通任务请求，不将全部聊天草稿纳入恢复。浏览器访问保留原 localStorage 行为。
+
+回归命令：
+
+```powershell
+node --test desktop/main-request-storage.test.cjs desktop/task-run-operations.test.cjs desktop/app-main-retry.test.cjs
+```
+
+测试运行真实 app.js 发送入口、preload 桥和临时磁盘仓库；模拟跨端口重启、回执丢失与投递中
+进程退出，验证原请求身份/内容不变、幂等受理一次，以及写盘失败、损坏凭证和旧值迁移边界。

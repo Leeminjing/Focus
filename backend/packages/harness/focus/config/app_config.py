@@ -57,6 +57,7 @@ def available_model_names(config: "AppConfig") -> str:
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
     _model_recovery: bool = PrivateAttr(default=False)
+    _response_client_pool: object | None = PrivateAttr(default=None)
 
     models: list[ModelConfig]
     context_run_admission: bool = True

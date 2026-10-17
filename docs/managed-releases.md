@@ -40,7 +40,7 @@ Each update (including repairing the same release) performs these steps:
 5. Apply Alembic migrations immediately. Compare actual migration heads and read every mapped column, then open the real Gateway lifespan and check `/health`, the authenticated task list and the desktop page. During this check user work, recovery writers and background dispatchers stay stopped; no model requests are sent.
 6. Record the accepted release, exact commit and recovery path in `install.json`; remove the pending journal and report success. Managed startup checks acceptance and schema compatibility without applying migrations. Developer clones retain their existing migration-on-start behavior.
 
-Recovery points include full database content, including checkpoints/store, Contexts, immutable Revisions and run history. They also contain complete dependency snapshots, so rollback does not need npm/PyPI downloads. They consume disk space proportional to the database plus installed dependencies. Backups are retained until the user removes them after verifying their work. Keep the active journal's recovery point intact.
+Recovery points include full database content, including checkpoints/store, Contexts, immutable Revisions and run history. They also contain complete dependency snapshots, so rollback does not need npm/PyPI downloads. They consume disk space proportional to the database plus installed dependencies. Backups are retained by default; **Settings → Data → Storage maintenance** provides retention policy, cleanup preview, and optional periodic cleanup and regular database backup. The active recovery journal and current accepted recovery point are protected. See [storage maintenance](storage-maintenance.md).
 
 ## Failure and recovery
 

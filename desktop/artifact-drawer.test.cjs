@@ -8,6 +8,29 @@ const { groupFiles } = require("./artifact-drawer.js");
 const fact = (id, path = "reports/报告.pdf", slot = "slot", time = 1) => ({ fact_id: id, revision: 1, context_id: "context", occurred_at: new Date(time * 1000).toISOString(),
   file: { path, slot_id: slot, result_key: id, operation: "modified", sha256: id } });
 
+test("drawer PDF uses the shared fixed-version reader instead of the binary snapshot placeholder", async () => {
+  const host = createElement("main"); host.rootMarker = true;
+  const requests = [];
+  const context = vm.createContext({ document: createDocument(), AbortController,
+    FocusLoopFactsView: require("./loop-facts-view.js"),
+    fetch: async (url, options) => {
+      requests.push([url, JSON.parse(options.body)]);
+      return { ok: true, json: async () => ({ image: "cGFnZQ==", page_count: 2 }) };
+    } });
+  for (const source of ["./file-preview.js", "./artifact-drawer.js"])
+    vm.runInContext(fs.readFileSync(require.resolve(source), "utf8"), context);
+  const drawer = context.FocusArtifactDrawer.create({ host, getLoopId: () => "loop", api: {
+    facts: async () => ({ facts: [fact("pdf")], has_more: false }),
+    factDetail: async () => ({ file: { ...fact("pdf").file, after: { available: false, reason: "binary" } } }),
+  } });
+  await drawer.open();
+  host.querySelector(".artifact-drawer").dispatchEvent({ type: "click", target: host.querySelector("[data-files-view]"), stopPropagation() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, [["/desktop/api/files/pdf-page?page=1", { loop_id: "loop", fact_id: "pdf", revision: 1 }]]);
+  assert.equal(host.querySelector("[data-page-label]").textContent, "1/2");
+  drawer.dispose();
+});
+
 test("files group by location, latest write wins over verification time, deletions hide old files", () => {
   const old = { ...fact("old"), updated_at: "2099-01-01", revision: 5 };
   const newest = fact("new", undefined, undefined, 2);

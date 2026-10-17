@@ -15,3 +15,16 @@
 .file-version [data-version-preview]{min-height:100px}.file-version .file-exits{padding-left:0}
 .file-version [role=tabpanel]:has([data-version-preview]){height:min(45vh,360px)}
 #version-detail:has([data-version-preview]){max-height:min(65vh,520px)}
+.file-version .file-diff{max-height:55vh;overflow:auto;border:1px solid var(--border-default,#ddd);border-radius:7px;font:11px/1.65 Consolas,monospace}
+.file-diff-columns,.file-diff-hunk>header{padding:5px 8px;background:#8495a518;color:var(--secondary,#566473);white-space:pre}
+.file-diff-lines{min-width:max-content}
+.file-version .file-diff-row{display:grid;grid-template-columns:4.5em 4.5em minmax(max-content,1fr);white-space:pre;min-height:1.65em}
+.file-version .file-diff-row>span{display:block;min-width:0;padding:0 8px;background:transparent;color:inherit}
+.file-diff-number{padding:0 8px;text-align:right;color:var(--muted,#727b87);border-right:1px solid #8495a530;font:inherit;user-select:none}
+.file-diff-row.is-removed{background:#bd425317;color:#873646}
+.file-diff-row.is-added{background:#3c935b1c;color:#24683b}
+.file-version .file-diff-fold>summary{padding:6px 8px;background:#8495a50b;cursor:pointer;font:inherit}
+.file-diff-note,.file-version .file-diff-notice{padding:3px 8px;color:var(--muted,#727b87);font:inherit}
+.file-version .file-diff-summary{font-size:11px;font-variant-numeric:tabular-nums}
+.file-version [role=tabpanel]:has(.file-diff){height:auto;max-height:55vh}
+.file-version [role=tabpanel] .file-diff{max-height:none}

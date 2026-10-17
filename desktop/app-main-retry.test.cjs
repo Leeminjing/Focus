@@ -2,12 +2,17 @@
 const assert = require("node:assert/strict");
 const vm = require("node:vm");
 const test = require("node:test");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { MainRequestStorage } = require("./main-request-storage.cjs");
 const { createAppHarness, createNode, readAppSource } = require("./test-helper.cjs");
 
 function setup(options = {}) {
   const input = createNode({ value: "检查这份附件" });
   const feedback = createNode(), recovery = createNode(), send = createNode();
   const harness = createAppHarness({ fetch: true, statusNode: "record", storage: options.storage,
+    globals: options.globals,
     selectors: { "#mainInput": input, "#composerFeedback": feedback, "#mainSubmissionRecovery": recovery, '[data-action="send-main"]': send } });
   const evaluate = code => vm.runInContext(code, harness.context);
   evaluate(readAppSource());
@@ -45,6 +50,108 @@ function receipt(payload = { run_id: "run", task_id: "task", message_id: "messag
   return { ok: true, status: 200, json: async () => payload };
 }
 const identity = request => request.options.headers.get("Idempotency-Key");
+
+function localRepository(t) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "focus-main-retry-"));
+  t.after(() => {
+    assert.ok(path.resolve(directory).startsWith(path.resolve(os.tmpdir()) + path.sep));
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  return () => new MainRequestStorage(directory);
+}
+
+test("跨端口重启从桌面稳定存储恢复原身份、完整请求及未确认状态", async t => {
+  const repository = localRepository(t);
+  const desktop = port => ({
+    location: { origin: `http://127.0.0.1:${port}`, protocol: "http:" },
+    focusDesktop: { mainRequestStorage: repository() },
+  });
+  const accepted = new Map();
+  const accept = (_url, options) => {
+    const id = options.headers.get("Idempotency-Key");
+    if (!accepted.has(id)) accepted.set(id, receipt());
+    return accepted.get(id);
+  };
+  const first = setup({ globals: desktop(1234), onMain: (...args) => {
+    accept(...args);
+    throw new TypeError("lost receipt");
+  } });
+  await first.evaluate("sendMain()");
+  const restarted = setup({ globals: desktop(5678), onMain: accept });
+  assert.equal(restarted.context.localStorage.getItem("focus-main-request:task"), null);
+  assert.equal(restarted.evaluate('taskRunOperations.recovery("task")?.failure.uncertain'), true);
+  await restarted.evaluate("sendMain()");
+  assert.equal(identity(restarted.requests[0]), identity(first.requests[0]));
+  assert.equal(restarted.requests[0].options.body, first.requests[0].options.body);
+  assert.equal(accepted.size, 1);
+  assert.equal(setup({ globals: desktop(9012) }).evaluate('taskRunOperations.recovery("task")'), null);
+});
+
+test("投递后进程退出但未保存失败诊断时，仍从磁盘恢复原请求", async t => {
+  const repository = localRepository(t);
+  let sent;
+  const started = new Promise(resolve => { sent = resolve; });
+  const globals = () => ({ focusDesktop: { mainRequestStorage: repository() } });
+  const first = setup({ globals: globals(), onMain: () => {
+    assert.ok(repository().getItem("focus-main-request:task"), "网络投递之前已持久化");
+    sent();
+    return new Promise(() => {});
+  } });
+  void first.evaluate("sendMain()");
+  await started;
+  const restarted = setup({ globals: globals() });
+  await restarted.evaluate("sendMain()");
+  assert.equal(identity(restarted.requests[0]), identity(first.requests[0]));
+  assert.equal(restarted.requests[0].options.body, first.requests[0].options.body);
+});
+
+test("桌面仓库写入失败不能退回 localStorage 并投递", async () => {
+  const h = setup({ globals: { focusDesktop: { mainRequestStorage: {
+    getItem: () => null, setItem: () => { throw new Error("disk full"); }, removeItem() {},
+  } } } });
+  await h.evaluate("sendMain()");
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.context.localStorage.getItem("focus-main-request:task"), null);
+  assert.match(h.feedback.textContent, /disk full/);
+});
+
+test("旧 origin 可见的凭证先迁入磁盘，确认受理后两处均不再恢复", async t => {
+  const repository = localRepository(t);
+  const first = setup();
+  await first.evaluate("sendMain()");
+  const key = "focus-main-request:task";
+  const globals = () => ({ focusDesktop: { mainRequestStorage: repository() } });
+  const migrated = setup({ storage: { [key]: first.context.localStorage.getItem(key) }, globals: globals(), onMain: () => receipt() });
+  assert.equal(migrated.evaluate('taskRunOperations.recovery("task").request_id'), identity(first.requests[0]));
+  assert.ok(repository().getItem(key));
+  assert.equal(migrated.context.localStorage.getItem(key), null);
+  await migrated.evaluate("sendMain()");
+  assert.equal(identity(migrated.requests[0]), identity(first.requests[0]));
+  assert.equal(repository().getItem(key), null);
+  assert.equal(setup({ globals: globals() }).evaluate('taskRunOperations.recovery("task")'), null);
+});
+
+test("稳定凭证优先于旧 origin 缓存；稳定凭证损坏时阻止投递", async t => {
+  const repository = localRepository(t);
+  const key = "focus-main-request:task";
+  const first = setup({ globals: { focusDesktop: { mainRequestStorage: repository() } } });
+  await first.evaluate("sendMain()");
+  const saved = JSON.parse(repository().getItem(key));
+  const restarted = setup({
+    globals: { focusDesktop: { mainRequestStorage: repository() } },
+    storage: { [key]: JSON.stringify({ ...saved, request_id: "stale-origin-id" }) },
+  });
+  await restarted.evaluate("sendMain()");
+  assert.equal(identity(restarted.requests[0]), identity(first.requests[0]));
+  assert.equal(restarted.context.localStorage.getItem(key), null);
+  fs.writeFileSync(repository().file(key), "broken");
+  const broken = setup({
+    globals: { focusDesktop: { mainRequestStorage: repository() } },
+    storage: { [key]: JSON.stringify(saved) },
+  });
+  assert.throws(() => broken.evaluate("sendMain()"), /Unexpected token/);
+  assert.equal(broken.requests.length, 0);
+});
 
 test("回执丢失后再次发送沿用身份和完整请求，只受理一次", async () => {
   const accepted = new Map();

@@ -2,7 +2,8 @@
  * 本文件对外提供 FocusTaskRunOperations 任务级异步操作 store。
  * 输入为 task id、request id、Run 或耐久消息受理回执、stream transition 或错误；输出为按 task 隔离的只读状态和受理凭证，凭证不宣称后续执行阶段。
  * 具体工作流为 begin 建立请求所有权，accept/fail 仅处理匹配请求，只有带 Run 身份且非 direct_message 的回执更新 active_run；updateRun 按 Run 身份更新，finally 清理本请求资源。
- * freeze 在投递前按任务持久化完整原请求；recovery 跨重绘/重载恢复，finish 不删除未确认请求，只有受理回执或显式编辑后的新提交才能替换它。
+ * freeze 在投递前按任务持久化完整原请求；桌面优先使用 userData 仓库跨端口恢复，浏览器使用 localStorage。
+ * recovery 迁移当前 origin 可见的旧凭证；finish 不删除未确认请求，只有受理回执或显式编辑后的新提交才能替换它。
  * 示例：`const operations = FocusTaskRunOperations.create(); operations.begin("task-1", "request-1")`。
  */
 
@@ -15,17 +16,25 @@
     return value ? JSON.parse(JSON.stringify(value)) : value;
   }
 
-  function create({ storage = global.localStorage } = {}) {
+  function create({ storage = global.focusDesktop?.mainRequestStorage || global.localStorage } = {}) {
     const tasks = new Map();
     const recoveries = new Map();
     const recoveryKey = taskId => `focus-main-request:${taskId}`;
     function recovery(taskId) {
       if (!recoveries.has(taskId)) {
-        const saved = storage?.getItem(recoveryKey(taskId));
+        const key = recoveryKey(taskId);
+        let saved = storage?.getItem(key);
+        // 只迁移仍可见的旧 origin；稳定仓库读写失败时上抛，不能当作没有原请求。
+        const legacy = storage === global.focusDesktop?.mainRequestStorage ? global.localStorage : null;
+        if (!saved && legacy) {
+          saved = legacy.getItem(key);
+          if (saved) storage.setItem(key, saved);
+        }
         const value = saved ? JSON.parse(saved) : null;
         if (value && (value.version !== 1 || typeof value.request_id !== "string" || typeof value.body !== "string")) {
           throw new Error("普通任务恢复数据无法读取，请保留原请求后重试");
         }
+        if (saved && legacy) legacy.removeItem(key);
         recoveries.set(taskId, value);
       }
       return clone(recoveries.get(taskId));
