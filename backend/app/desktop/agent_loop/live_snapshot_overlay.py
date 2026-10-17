@@ -74,6 +74,9 @@ class LoopLiveProjectionOverlay:
         observation_by_id = {row.observation_id: row for row in observations}
         patrols = tuple(await session.scalars(select(LoopPatrolSession).where(LoopPatrolSession.loop_id == loop.loop_id)))
         decisions = {row.decision_id: row for row in await session.scalars(select(LoopDecision).where(LoopDecision.loop_id == loop.loop_id))}
+        adopted_observations = [row.observation_id for row in decisions.values() if row.intent.get("strategy_adoptions")]
+        strategy_inputs = dict((await session.execute(select(LoopObservation.observation_id,
+            LoopObservation.envelope["evolution_strategies"]).where(LoopObservation.observation_id.in_(adopted_observations)))).all()) if adopted_observations else {}
         memberships = tuple((await session.scalars(select(LoopContextMembership).where(LoopContextMembership.loop_id == projection.loop_id))).all())
         membership_by_context = {item.context_id: item for item in memberships}
         context_ids = tuple(item.context_id for item in memberships)
@@ -114,7 +117,7 @@ class LoopLiveProjectionOverlay:
                 sequence, {"accounting": accounting, "usage": {**self._usage(usage, len(contexts)), "rounds": accounting["completed_rounds"]}}),
             "loop": self._entity(loop.loop_id, projection.loop.revision if projection.loop is not None else 1, sequence, {"loop_id": loop.loop_id, "workspace_id": loop.workspace_id, "interaction_mode": loop.interaction_mode, "initial_context_id": loop.initial_context_id, "program_id": loop.program_id, "status": loop.status, "health": loop.health, "revision": loop.revision, "authority_revision": loop.authority_revision, "goal_revision": loop.goal_revision, "active_mission_revision": loop.goal_revision, "current_round_id": loop.current_round_id, "current_portfolio_revision_id": loop.current_portfolio_revision_id, "waiting_reason": loop.waiting_reason, "equipment": loop.equipment, "final_result": loop.final_result, "grant": self._grant(grant), "usage": {**self._usage(usage, len(contexts)), "rounds": accounting["completed_rounds"]}, "accounting": accounting, "mission_delivery": None if delivery is None else delivery.to_payload()}),
             "mission": None if mission is None else self._entity(mission.mission_revision_id, mission.revision, sequence, {"outcome": mission.outcome, "boundaries": mission.boundaries, "completion_checks": mission.completion_checks, "authored_by": mission.authored_by}),
-            "rounds": {row.round_id: self._round_entity(row, observation_by_id.get(row.observation_id), decisions.get(row.decision_id), sequence, projection.rounds.get(row.round_id)) for row in rounds},
+            "rounds": {row.round_id: self._round_entity(row, observation_by_id.get(row.observation_id), decisions.get(row.decision_id), sequence, projection.rounds.get(row.round_id), strategy_inputs.get(row.observation_id)) for row in rounds},
             "observations": {row.observation_id: self._entity(row.observation_id, 1, sequence, {"round_id": row.round_id, "generation": getattr(row, "generation", 1), "observation_hash": row.envelope_hash, "frozen_at": row.created_at.isoformat()}) for row in observations},
             "patrol_sessions": {row.session_id: self._entity(row.session_id, row.revision, sequence, {"round_id": row.round_id, "observation_id": row.observation_id, "observation_generation": getattr(observation_by_id.get(row.observation_id), "generation", 0), "phase": row.current_phase, "status": row.status, "safe_summary": row.safe_summary, "wait_reason": row.wait_reason, "wait_targets": row.wait_targets, "terminal_outcome": row.terminal_outcome}) for row in patrols},
             "contexts": {row.task_id: self._entity(row.task_id, 1, sequence, {"title": row.title, "current_revision_id": row.current_revision_id, "deleted": row.deleted_at is not None, "membership_id": membership_by_context[row.task_id].membership_id, "lane_id": membership_by_context[row.task_id].lane_id, "role": membership_by_context[row.task_id].role, "status": membership_by_context[row.task_id].status, "required_barrier": membership_by_context[row.task_id].required_barrier}) for row in contexts},
@@ -147,13 +150,16 @@ class LoopLiveProjectionOverlay:
         }))
 
     @classmethod
-    def _round_entity(cls, row, observation, decision, sequence, prior):
+    def _round_entity(cls, row, observation, decision, sequence, prior, strategies=None):
+        from backend.app.desktop.evolution_strategies import strategy_adoption_records
+
         committed = getattr(decision, "authority_committed_at", None)
         return cls._entity(row.round_id, prior.revision if prior else 1, sequence, {
             "round_id": row.round_id, "number": row.number, "status": row.status,
             "observation_id": row.observation_id,
             "observation_generation": getattr(observation, "generation", 0),
             "decision_id": row.decision_id,
+            "strategy_adoptions": strategy_adoption_records(decision.intent if decision else None, {"evolution_strategies": strategies or ()}),
             "authority_committed_at": committed.isoformat() if committed else None,
             "barrier": row.barrier, "frontier_hash": row.frontier_hash,
             "workspace_revision": row.workspace_revision,

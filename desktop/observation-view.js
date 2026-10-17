@@ -67,15 +67,19 @@
   }
   function rounds(projection) {
     const items = Object.values(projection.rounds || {}).sort((a, b) => b.state.number - a.state.number);
-    return `<details class="observation-rounds"><summary>轮次与执行权限 · ${items.length} 轮</summary>${items.map(entity => {
+    const current = items[0]?.state;
+    return `${strategyAdoptions(current?.strategy_adoptions)}<details class="observation-rounds"><summary>轮次与执行权限 · ${items.length} 轮</summary>${items.map(entity => {
       const round = entity.state;
       const runs = Object.values(projection.runs || {}).filter(run => run.state.round_id === entity.entity_id);
-      return `<section><h4>Round ${escape(round.number)} · V${escape(round.observation_generation ?? "—")}</h4><p>${escape(round.status)} · ${round.authority_committed_at ? "权威决策已提交" : "尚无权威提交"}</p>${round.observation_id ? `<button data-patrol-observation-version="${escape(round.observation_id)}">检查该轮当前观察</button>` : ""}${round.barrier && Object.keys(round.barrier).length ? `<details><summary>汇合等待依据</summary><pre>${escape(JSON.stringify(round.barrier, null, 2))}</pre></details>` : ""}<ul>${runs.map(entity => {
+      return `<section><h4>Round ${escape(round.number)} · V${escape(round.observation_generation ?? "—")}</h4><p>${escape(round.status)} · ${round.authority_committed_at ? "权威决策已提交" : "尚无权威提交"}</p>${strategyAdoptions(round.strategy_adoptions)}${round.observation_id ? `<button data-patrol-observation-version="${escape(round.observation_id)}">检查该轮当前观察</button>` : ""}${round.barrier && Object.keys(round.barrier).length ? `<details><summary>汇合等待依据</summary><pre>${escape(JSON.stringify(round.barrier, null, 2))}</pre></details>` : ""}<ul>${runs.map(entity => {
         const run = entity.state, grant = run.round_authorization, valid = permissionValidity(projection, run, round);
         return `<li>Context ${short(run.context_id)} · Run ${short(entity.entity_id)}<p>${grant ? `${modes[grant.access_mode] || escape(grant.access_mode)} · ${grant.source === "migration" ? "历史迁移授权" : "Patrol 本轮授权"} · ${valid === true ? "有效" : valid === false ? "已失效" : "资格待核验"}${run.permission_state?.reason ? `（${escape(run.permission_state.reason)}）` : ""}` : "本轮授权未记录"}</p><p>${escape(run.status)} · ${run.settlement_status === "settled" ? "已结算" : "等待执行清理与结算"}</p></li>`;
       }).join("") || "<li>尚无执行 Run</li>"}</ul></section>`;
     }).join("")}</details>`;
   }
-  root.FocusObservationView = Object.freeze({ card, render, rounds });
+  function strategyAdoptions(records) {
+    return (records || []).map(record => `<section class="strategy-adoption"><strong>已采用「${escape(record.title)}」</strong><p>${escape(record.reason)}</p><details><summary>策略版本与影响的安排</summary><p>${escape(record.package?.id || record.memory_id)} · v${escape(record.package?.version || "历史版本")}</p><p>动作 ${(record.action_indexes || []).map(index => index + 1).join("、")} · ${escape(record.content_hash)}</p></details></section>`).join("");
+  }
+  root.FocusObservationView = Object.freeze({ card, render, rounds, strategyAdoptions });
   if (typeof module === "object" && module.exports) module.exports = root.FocusObservationView;
 })(globalThis);

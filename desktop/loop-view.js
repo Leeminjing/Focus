@@ -242,6 +242,8 @@
     const usage = loop.usage || {};
     const budgets = loop.grant?.budgets || {};
     const related = state.related || {};
+    const lastAdoption = (related.audit?.decisions || []).filter(item => item.status === "committed").at(-1);
+    const strategyStatus = lastAdoption?.strategy_adoptions?.length ? `<div data-strategy-adoption-decision="${escape(lastAdoption.decision_id)}">${globalThis.FocusObservationView?.strategyAdoptions(lastAdoption.strategy_adoptions) || ""}</div>` : "";
     const activeRuns = (related.audit?.runs || []).filter(run => ["pending", "running"].includes(run.status));
     const terminal = TERMINAL.has(loop.status);
     const missionEditor = globalThis.FocusLoopMissionEditor?.render(loop.mission || { goal: loop.goal }) || "";
@@ -251,7 +253,7 @@
     const budgetDetails = `<div class="loop-budget"><span>Rounds ${escape(usage.rounds || 0)} / ${escape(budgets.max_rounds || "∞")} · 已完成事务</span><span>Legacy ${escape(loop.accounting?.legacy_rounds || 0)}</span><span>待清理 ${escape(loop.accounting?.cleanup_pending_runs || 0)}</span><span>预留调用 ${escape(loop.accounting?.reserved_model_calls || 0)}</span><span>用量未知 ${escape(loop.accounting?.unknown_model_attempts || 0)}</span><span>Duration ${escape(usage.duration_seconds || 0)} / ${escape(budgets.max_duration_seconds || "∞")}s</span>${consumptionDetails(loop, budgets)}<span>Retries ${escape(usage.retries || 0)} / ${escape(budgets.max_retries ?? "∞")}</span><span>Lanes ${escape(usage.lanes || 0)} / ${escape(budgets.max_lanes || "∞")}</span><span>Contexts ${escape(usage.contexts || 0)} / ${escape(budgets.max_contexts || "∞")}</span><span>Providers ${escape(usage.providers || 0)} / ${escape(budgets.max_providers || "∞")}</span></div>`;
     const consoleHtml = globalThis.FocusLoopConsoleView?.render({ ...consoleState, loopStatus: loop.status, terminal }) || '<section class="loop-console-loading">控制台模块不可用</section>';
     const waitRequest = globalThis.FocusLoopWaitRequestView?.render(loop.wait_request, waitUi, escape) || (loop.waiting_reason ? `<p class="loop-waiting" data-loop-waiting role="status">${escape(loop.waiting_reason)}</p>` : "");
-    return `<section class="loop-dashboard console-shell" data-loop-id="${escape(loop.loop_id)}" data-loop-status="${escape(loop.status)}">${commandBar(loop, consoleState, state.live?.round?.state?.number)}${connectionNotice(state)}${patrolActivity(state)}${missionDeliveryStatus(loop)}${waitRequest}${expansionBudget.renderStatus(loop.expansion_resources)}${compressionStatus({ ...related, snapshot: loop })}${terminal ? `<div class="loop-terminal-notice" role="status"><strong>该 Loop 已${loop.status === "completed" ? "完成" : loop.status === "failed" ? "失败" : "停止"}</strong><span>历史 Context、完整会话和事实证据仍可查看；退出不会删除审计记录。</span></div>` : ""}${consoleHtml}<details class="loop-advanced"><summary>授权、预算与目标控制</summary>${budgetDetails}${roundHistory}${grantControls(loop)}${history}${override}<p class="muted tiny">当前轮次 ${escape(loop.current_round_id || "—")} · 活动 Run ${escape(activeRuns.length)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)} · Authority R${escape(loop.authority_revision)}</p></details></section>`;
+    return `<section class="loop-dashboard console-shell" data-loop-id="${escape(loop.loop_id)}" data-loop-status="${escape(loop.status)}">${commandBar(loop, consoleState, state.live?.round?.state?.number)}${connectionNotice(state)}${patrolActivity(state)}${missionDeliveryStatus(loop)}${strategyStatus}${waitRequest}${expansionBudget.renderStatus(loop.expansion_resources)}${compressionStatus({ ...related, snapshot: loop })}${terminal ? `<div class="loop-terminal-notice" role="status"><strong>该 Loop 已${loop.status === "completed" ? "完成" : loop.status === "failed" ? "失败" : "停止"}</strong><span>历史 Context、完整会话和事实证据仍可查看；退出不会删除审计记录。</span></div>` : ""}${consoleHtml}<details class="loop-advanced"><summary>授权、预算与目标控制</summary>${budgetDetails}${roundHistory}${grantControls(loop)}${history}${override}<p class="muted tiny">当前轮次 ${escape(loop.current_round_id || "—")} · 活动 Run ${escape(activeRuns.length)} · Mission R${escape(loop.active_mission_revision || loop.goal_revision)} · Authority R${escape(loop.authority_revision)}</p></details></section>`;
   }
 
   function patchLifecycle(container, state) {
@@ -259,6 +261,9 @@
     const shell = container?.querySelector?.(".loop-dashboard.console-shell");
     if (!loop || !shell || shell.dataset.loopId !== loop.loop_id) return false;
     if (shell.dataset.loopStatus !== loop.status) return false;
+    const adoptedDecision = (state.related?.audit?.decisions || []).filter(item => item.status === "committed").at(-1);
+    const adoptionIdentity = adoptedDecision?.strategy_adoptions?.length ? adoptedDecision.decision_id : null;
+    if ((shell.querySelector("[data-strategy-adoption-decision]")?.dataset.strategyAdoptionDecision || null) !== adoptionIdentity) return false;
     const renderedDelivery = shell.querySelector("[data-mission-delivery]")?.dataset.missionDelivery || null;
     const nextDelivery = loop.mission_delivery?.state === "not_required" ? null : loop.mission_delivery?.state || null;
     if (renderedDelivery !== nextDelivery) return false;

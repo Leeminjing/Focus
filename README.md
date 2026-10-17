@@ -2,6 +2,8 @@
 
 **human in the contexts · 上下文手术**
 
+**[Strategy · Working methods](docs/strategies/README.md)**: write, import, and share a `STRATEGY.md` that describes when and how Focus should organize work and inherit context. Keep expressing goals and feedback through one entry point.
+
 > An open-source, local-first agent built on LangGraph. Its single conviction is the *in* of "human in the loop" — raised from the execution loop to the context itself: **the human participates in the contexts, and operates on them.**
 >
 > 一个基于 LangGraph 的开源、本地优先 Agent。它的唯一信念，是 "human in the loop" 里那个 *in*——从执行循环抬升到上下文本体：**人参与在 contexts 里，并直接在它们上面做手术。**

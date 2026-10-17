@@ -90,7 +90,14 @@ class PatrolDecisionContract:
         actions: tuple[PatrolModelAction, ...],
         mission_references: tuple[MissionReference, ...],
         observation: LoopObservationEnvelope,
+        strategy_adoptions=(),
     ) -> None:
+        from backend.app.desktop.evolution_strategies import validate_strategy_adoptions
+
+        try:
+            validate_strategy_adoptions(strategy_adoptions, observation.evolution_strategies, len(actions))
+        except ValueError as exc:
+            raise PatrolContractViolation(str(exc)) from exc
         self._validate_mission_references(mission_references, observation)
         self._validate_expansion_decision(actions, observation)
         self._validate_recovery_decision(actions, observation)

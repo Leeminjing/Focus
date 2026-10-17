@@ -515,6 +515,9 @@ class AgentBoardTask(Base):
 
 class Memory(Base):
     __tablename__ = "memory_items"
+    __table_args__ = (Index("uq_strategy_package_scope", text("(strategy_package ->> 'id')"),
+                           text("COALESCE(workspace_id, '')"), unique=True,
+                           postgresql_where=text("category = 'evolution_strategy' AND strategy_package IS NOT NULL")),)
 
     memory_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -523,6 +526,7 @@ class Memory(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     workspace_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("desktop_workspaces.workspace_id", ondelete="CASCADE"), nullable=True)
     strategy: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    strategy_package: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     content_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="complete")
 

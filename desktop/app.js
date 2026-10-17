@@ -2546,6 +2546,8 @@ function renderMemory() {
     selectedId: s.selectedId,
     composing: s.composing,
     draft: s.draft,
+    strategyImport: s.strategyImport,
+    authoring: { ...s.strategyAuthoring, saving: Boolean(s.strategySaving) },
     workspaces: [...new Map([...s.memories, ...state.tasks, ...(state.patrolWorkspace ? [state.patrolWorkspace] : [])].filter(t => t.workspace_id).map(t => [t.workspace_id, { id: t.workspace_id, name: t.workspace_name || t.display_name || t.workspace_id }])).values()],
     sessions: s.sessions,
     activeSessionId: s.activeSessionId,
@@ -2590,12 +2592,19 @@ function restoreMemoryScroll() {
 function syncMemoryField(field, value) {
   const draft = { ...(state.memory.draft || {}) };
   if (field.startsWith("strategy:")) draft.strategy = { ...draft.strategy, [field.slice(9)]: value };
+  else if (field.startsWith("package:")) draft.strategy_package = { ...draft.strategy_package, [field.slice(8)]: value };
+  else if (field.startsWith("scenario:")) draft.rehearsal_scenarios = { ...draft.rehearsal_scenarios, [field.slice(9)]: value };
+  else if (field === "strategy-source") draft.strategy_source = value;
   else if (field === "workspace_id") draft.workspace_id = value || null;
   else if (field === "enabled") draft.enabled = Boolean(value);
   else if (field === "title") draft.title = value;
   else if (field === "content") { draft.content = value; draft.contentDirty = true; }
   else if (field === "contentMode") { draft.contentMode = value; state.memory = { ...state.memory, draft }; render(); return; }
   state.memory = { ...state.memory, draft };
+  if (field.startsWith("strategy:") || field.startsWith("scenario:") || field === "title") {
+    draft.rehearsal_result = null;
+    document.querySelector("[data-strategy-rehearsal-results]")?.remove?.();
+  }
 }
 
 // 编辑分段记忆的某个段（title 或 body）。
@@ -2630,11 +2639,14 @@ async function hydrateMemory() {
 }
 
 async function openMemoryView() {
+  strategyImportRequestSequence++;
+  strategyAuthoringRequestSequence++;
+  state.memory.strategyAuthoring = null;
   if (state.view === "focus") persistFocusState();
   cancelPendingViewRequests();
   const requestId = memoryViewRequestSequence;
   state.inspector.open = false;
-  state.memory = { ...state.memory, composing: false, selectedId: state.memory.selectedId, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], draft: null };
+  state.memory = { ...state.memory, strategyImport: null, composing: false, selectedId: state.memory.selectedId, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], draft: null };
   state.view = "memory";
   render();
   await hydrateMemory();
@@ -2650,12 +2662,17 @@ function memorySessionCandidates() {
 }
 
 function openMemoryCompose(editing = false) {
+  strategyAuthoringRequestSequence++;
+  strategyImportRequestSequence++;
   const existing = editing ? (state.memory.memories.find(m => m.memory_id === state.memory.selectedId) || null) : null;
   const fresh = {
     composing: true,
+    strategyAuthoring: null,
+    strategyImport: null,
     draft: {
       memory_id: existing?.memory_id, category: existing?.category || "memory",
       strategy: existing?.strategy || {}, enabled: existing?.enabled ?? true, workspace_id: existing?.workspace_id || null,
+      strategy_package: existing?.strategy_package ? Object.fromEntries(Object.entries(existing.strategy_package).filter(([key]) => key !== "installed_hash")) : {},
       title: existing?.title || "",
       content: existing?.content || "",
       contentDirty: false,
@@ -2873,14 +2890,149 @@ function memorySourceForApi(source) {
 
 async function saveStrategy() {
   const draft = state.memory.draft;
+  if (!draft || state.memory.strategySaving) return;
   const body = { title: draft.title, strategy: draft.strategy, enabled: draft.enabled, workspace_id: draft.workspace_id || null };
+  body.strategy_package = { schema: "focus.strategy/v1", version: "1.0.0", description: "", ...draft.strategy_package,
+    id: draft.strategy_package?.id?.trim() || `local/${crypto.randomUUID().replaceAll("-", "")}`, name: draft.title };
+  const savingDraft = { ...draft, strategy_package: body.strategy_package };
+  state.memory.draft = savingDraft;
+  state.memory.strategySaving = true;
+  renderMemory();
   if (!draft.memory_id) body.category = "evolution_strategy";
   try {
     await api(`/desktop/api/memory${draft.memory_id ? "/" + draft.memory_id : ""}`, { method: draft.memory_id ? "PUT" : "POST", body: JSON.stringify(body) });
-    state.memory = { ...state.memory, composing: false, draft: null };
+    if (state.memory.draft === savingDraft) state.memory = { ...state.memory, composing: false, draft: null };
     await hydrateMemory();
     render();
   } catch (error) { setStatus(error.message, true); }
+  finally { state.memory.strategySaving = false; if (state.view === "memory") renderMemory(); }
+}
+
+let strategyImportRequestSequence = 0;
+let strategyAuthoringRequestSequence = 0;
+
+function openStrategyImport() {
+  strategyImportRequestSequence++;
+  strategyAuthoringRequestSequence++;
+  state.memory = { ...state.memory, category: "evolution_strategy", composing: false, draft: null,
+    strategyImport: { markdown: "", workspace_id: state.patrolWorkspace?.workspace_id || null, enabled: true, preview: null, error: "", busy: false } };
+  renderMemory();
+}
+
+function syncStrategyImportField(field, value) {
+  const draft = state.memory.strategyImport;
+  if (!draft || draft.busy) return;
+  strategyImportRequestSequence++;
+  state.memory.strategyImport = { ...draft, [field]: field === "workspace_id" ? value || null : value, preview: null, error: "" };
+  document.querySelector("[data-strategy-import-preview]")?.remove?.();
+  const error = document.querySelector("[data-strategy-import-error]");
+  if (error) error.textContent = "内容或设置已更改，请预览后安装。";
+}
+
+async function readStrategyFile(file) {
+  if (!file || !state.memory.strategyImport) return;
+  if (file.size > 160000) return setStatus("策略文件不能超过 160 KB", true);
+  const draft = state.memory.strategyImport;
+  try {
+    const markdown = await file.text();
+    if (state.memory.strategyImport !== draft) return;
+    syncStrategyImportField("markdown", markdown);
+    renderMemory();
+  } catch (error) { setStatus(`读取策略失败：${error.message}`, true); }
+}
+
+async function previewStrategyImport() {
+  const draft = state.memory.strategyImport;
+  if (!draft || draft.busy) return;
+  const requestId = ++strategyImportRequestSequence;
+  state.memory.strategyImport = { ...draft, busy: true, error: "", preview: null };
+  renderMemory();
+  try {
+    const preview = await api("/desktop/api/strategies/preview", { method: "POST", body: JSON.stringify({ markdown: draft.markdown, workspace_id: draft.workspace_id }) });
+    if (requestId !== strategyImportRequestSequence || !state.memory.strategyImport) return;
+    state.memory.strategyImport = { ...draft, preview, busy: false, error: "" };
+  } catch (error) {
+    if (requestId !== strategyImportRequestSequence || !state.memory.strategyImport) return;
+    state.memory.strategyImport = { ...draft, preview: null, busy: false, error: error.message };
+  }
+  if (state.view === "memory") renderMemory();
+}
+
+async function installStrategyImport() {
+  const draft = state.memory.strategyImport;
+  if (!draft?.preview || draft.busy) return;
+  const requestId = ++strategyImportRequestSequence;
+  state.memory.strategyImport = { ...draft, busy: true, error: "" };
+  renderMemory();
+  const existing = draft.preview.existing;
+  try {
+    const result = await api("/desktop/api/strategies/install", { method: "POST", body: JSON.stringify({
+      markdown: draft.markdown, workspace_id: draft.workspace_id, enabled: draft.enabled,
+      replace_memory_id: existing?.memory_id || null, expected_hash: existing?.installation_hash || null,
+    }) });
+    if (requestId !== strategyImportRequestSequence) { await hydrateMemory(); return; }
+    state.memory = { ...state.memory, strategyImport: null, selectedId: result.memory.memory_id, category: "evolution_strategy" };
+    setStatus(result.status === "already_installed" ? "已安装相同策略，保留现有启用设置" : "策略已保存，将从后续新轮次生效");
+    await hydrateMemory();
+  } catch (error) {
+    if (requestId === strategyImportRequestSequence && state.memory.strategyImport) state.memory.strategyImport = { ...draft, busy: false, preview: null, error: error.message };
+  }
+  if (state.view === "memory") renderMemory();
+}
+
+function forkImportedStrategy() {
+  const draft = state.memory.strategyImport;
+  if (!draft?.preview || draft.busy) return;
+  const { metadata, strategy } = draft.preview;
+  openMemoryCompose(false);
+  state.memory.draft = { ...state.memory.draft, category: "evolution_strategy", title: metadata.name, strategy,
+    strategy_package: { ...metadata, id: `local/${crypto.randomUUID().replaceAll("-", "")}` },
+    workspace_id: draft.workspace_id, enabled: draft.enabled };
+  renderMemory();
+}
+
+async function exportStrategy(memoryId) {
+  try {
+    const data = await api(`/desktop/api/strategies/${encodeURIComponent(memoryId)}/export`);
+    const url = URL.createObjectURL(new Blob([data.markdown], { type: "text/markdown;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url; link.download = data.filename; document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) { setStatus(error.message, true); }
+}
+
+async function generateStrategyDraft() {
+  const draft = state.memory.draft;
+  if (!draft || state.memory.strategyAuthoring?.busy) return;
+  const sources = memorySourcesForApi(state.memory.collectedSources || [], state.memory.activeSessionId);
+  const text = draft.strategy_source || draft.content || "";
+  if (!sources.length && !text.trim()) return setStatus("请先填写经验或选择工作材料", true);
+  const requestId = ++strategyAuthoringRequestSequence;
+  state.memory.strategyAuthoring = { busy: true };
+  renderMemory();
+  try {
+    const result = await api("/desktop/api/strategies/draft", { method: "POST", body: JSON.stringify({ selection: { sources: sources.length ? sources : [{ type: "manual", text }] } }) });
+    if (requestId !== strategyAuthoringRequestSequence || state.memory.draft !== draft) return;
+    if (draft.category !== "evolution_strategy") openMemoryCompose(false);
+    state.memory.category = "evolution_strategy";
+    state.memory.draft = { ...state.memory.draft, category: "evolution_strategy", title: result.title, strategy: result.strategy, rehearsal_result: null };
+    setStatus("策略草稿已生成，请检查后保存");
+  } catch (error) { if (requestId === strategyAuthoringRequestSequence) setStatus(error.message, true); }
+  finally { if (requestId === strategyAuthoringRequestSequence) state.memory.strategyAuthoring = null; if (state.view === "memory") renderMemory(); }
+}
+
+async function rehearseStrategy() {
+  const draft = state.memory.draft;
+  if (!draft || state.memory.strategyAuthoring?.busy) return;
+  const requestId = ++strategyAuthoringRequestSequence;
+  state.memory.strategyAuthoring = { busy: true };
+  renderMemory();
+  try {
+    const result = await api("/desktop/api/strategies/rehearse", { method: "POST", body: JSON.stringify({ title: draft.title, strategy: draft.strategy, scenarios: draft.rehearsal_scenarios || {} }) });
+    if (requestId === strategyAuthoringRequestSequence && state.memory.draft === draft) state.memory.draft = { ...draft, rehearsal_result: result };
+    if (requestId === strategyAuthoringRequestSequence) state.memory.strategyAuthoring = null;
+  } catch (error) { if (requestId === strategyAuthoringRequestSequence) state.memory.strategyAuthoring = { busy: false, error: error.message }; }
+  if (state.view === "memory") renderMemory();
 }
 
 async function saveMemory() {
@@ -6643,6 +6795,15 @@ async function handleDocumentClick(event) {
   if (action === "memory-category") { state.memory.category = button.dataset.category; return renderMemory(); }
   if (action === "new-strategy") { openMemoryCompose(false); state.memory.draft = { ...state.memory.draft, category: "evolution_strategy", enabled: true }; renderMemory(); return; }
   if (action === "save-strategy") return saveStrategy();
+  if (action === "import-strategy") return openStrategyImport();
+  if (action === "preview-strategy") return previewStrategyImport();
+  if (action === "install-strategy") return installStrategyImport();
+  if (action === "fork-imported-strategy") return forkImportedStrategy();
+  if (action === "export-strategy") return exportStrategy(button.dataset.memoryId);
+  if (action === "generate-strategy-draft") return generateStrategyDraft();
+  if (action === "rehearse-strategy") return rehearseStrategy();
+  if (action === "extract-memory-strategy") { openMemoryCompose(true); return generateStrategyDraft(); }
+  if (action === "cancel-strategy-import") { strategyImportRequestSequence++; state.memory.strategyImport = null; return renderMemory(); }
   if (action === "new-memory") return openMemoryCompose(false);
   if (action === "select-memory") { state.memory = { ...state.memory, selectedId: button.dataset.memoryId || null }; return render(); }
   if (action === "pick-session") return pickMemorySession(button.dataset.contextId);
@@ -6957,6 +7118,7 @@ document.addEventListener("input", event => {
   if (event.target.matches("[data-skill-input]")) updateSkillMenu(event.target, true);
   if (event.target.matches("[data-draft-field],[data-message-field],[data-equipment],[data-permission],[data-curation-policy]")) scheduleDraftSave();
   if (event.target.matches("[data-memory-field]")) syncMemoryField(event.target.dataset.memoryField, event.target.type === "checkbox" ? event.target.checked : event.target.value);
+  if (event.target.matches("[data-strategy-import-field]")) syncStrategyImportField(event.target.dataset.strategyImportField, event.target.type === "checkbox" ? event.target.checked : event.target.value);
   if (event.target.matches("[data-source-field]")) editSourceText(Number(event.target.dataset.sourceIndex), event.target.value);
   if (event.target.matches("[data-segment-field]")) editMemorySegment(Number(event.target.dataset.segmentIndex), event.target.dataset.segmentField, event.target.value);
   if (event.target.matches("[data-range-index]")) {
@@ -7445,6 +7607,7 @@ document.addEventListener("change", event => {
     });
     return;
   }
+  if (event.target.matches?.("[data-strategy-file]")) { readStrategyFile(event.target.files?.[0]); return; }
   const form = event.target.closest?.("[data-loop-wait-response]");
   const requestId = form?.closest?.("[data-wait-request-id]")?.dataset.waitRequestId;
   if (requestId) loopWaitDrafts?.set(requestId, serializeWaitDraft(form));

@@ -221,8 +221,15 @@ async def curation_program(program_id: str, request: Request) -> dict:
 
 @loop_query_router.get("/agent-loops/{loop_id}/audit")
 async def loop_audit(loop_id: str, request: Request) -> dict:
+    from backend.app.desktop.agent_loop.models import LoopObservation
+    from backend.app.desktop.evolution_strategies import strategy_adoption_records
+
     async with request.app.state.desktop_service.session_factory() as session:
         decisions = list((await session.scalars(select(LoopDecision).where(LoopDecision.loop_id == loop_id).order_by(LoopDecision.created_at))).all())
+        adopted_observations = [row.observation_id for row in decisions if row.intent.get("strategy_adoptions")]
+        observations = {identity: {"evolution_strategies": strategies or ()} for identity, strategies in (await session.execute(
+            select(LoopObservation.observation_id, LoopObservation.envelope["evolution_strategies"])
+            .where(LoopObservation.observation_id.in_(adopted_observations)))).all()} if adopted_observations else {}
         actions = list((await session.scalars(select(LoopAction).where(LoopAction.loop_id == loop_id).order_by(LoopAction.position))).all())
         directives = list((await session.scalars(select(LoopDirective).where(LoopDirective.loop_id == loop_id).order_by(LoopDirective.created_at))).all())
         attempts = list((await session.scalars(select(LoopPatrolAttempt).where(LoopPatrolAttempt.loop_id == loop_id).order_by(LoopPatrolAttempt.created_at))).all())
@@ -241,7 +248,8 @@ async def loop_audit(loop_id: str, request: Request) -> dict:
         mission_history = await MissionHistoryQueryService().read(session, loop_id)
         return {
             "mission_history": mission_history,
-            "decisions": [{"decision_id": row.decision_id, "round_id": row.round_id, "rationale": row.rationale, "evidence": row.evidence, "status": row.status, "rejection": row.rejection} for row in decisions],
+            "decisions": [{"decision_id": row.decision_id, "round_id": row.round_id, "rationale": row.rationale, "evidence": row.evidence, "status": row.status, "rejection": row.rejection,
+                           "strategy_adoptions": strategy_adoption_records(row.intent, observations.get(row.observation_id))} for row in decisions],
             "actions": [{"action_id": row.action_id, "decision_id": row.decision_id, "type": row.action_type, "payload": row.payload, "status": row.status, "result": row.result} for row in actions],
             "directives": [{"directive_id": row.directive_id, "round_id": row.round_id, "decision_id": row.decision_id, "action_id": row.action_id, "message_id": row.message_id, "target_context_id": row.target_context_id, "target_context_revision_id": row.target_context_revision_id, "content": row.content, "actor_kind": row.actor_kind, "actor_id": row.actor_id, "grant_id": row.grant_id, "grant_revision": row.grant_revision, "goal_revision": row.goal_revision, "status": row.status, "launched_run_id": row.launched_run_id} for row in directives],
             "patrol_attempts": [{"attempt_id": row.patrol_attempt_id, "round_id": row.round_id, "attempt": row.attempt, "status": row.status, "error": row.error} for row in attempts],

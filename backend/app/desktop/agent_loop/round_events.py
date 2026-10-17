@@ -22,11 +22,14 @@ class RoundStateEventRecorder:
 
         observation = await session.get(LoopObservation, round_row.observation_id) if round_row.observation_id else None
         decision = await session.get(LoopDecision, round_row.decision_id) if round_row.decision_id else None
+        from backend.app.desktop.evolution_strategies import strategy_adoption_records
+
         payload = {"round_id": round_row.round_id, "number": round_row.number, "status": round_row.status,
             "observation_id": round_row.observation_id, "decision_id": round_row.decision_id,
             "observation_generation": observation.generation if observation else None,
             "authority_committed_at": decision.authority_committed_at.isoformat() if decision and decision.authority_committed_at else None,
             "trigger_kind": round_row.trigger_kind,
+            "strategy_adoptions": strategy_adoption_records(decision.intent if decision else None, observation.envelope if observation else None),
             "barrier": json.loads(json.dumps(round_row.barrier or {}))}
         latest = await session.scalar(select(LoopJournalEvent).where(
             LoopJournalEvent.loop_id == round_row.loop_id, LoopJournalEvent.entity_type == "round",

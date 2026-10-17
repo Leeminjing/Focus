@@ -2,6 +2,8 @@
 
 **human in the contexts · 上下文手术**
 
+**[Strategy · 工作策略](docs/strategies/README.md)**：把你的工作方法装进 Focus。编写、导入和分享 `STRATEGY.md`，定义工作怎样推进、上下文怎样组织及继承；日常仍只表达目标与反馈。
+
 > 一个基于 LangGraph 的开源、本地优先 Agent。它的唯一信念，是 "human in the loop" 里那个 *in*——从执行循环抬升到上下文本体：**人参与在 contexts 里，并直接在它们上面做手术。**
 
 > 经过筛选的精确的上下文优于臃肿但缓存命中率高的上下文，并且随着 run 的轮次增长，前者的花费反而可能低于后者。
