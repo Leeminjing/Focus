@@ -8,7 +8,8 @@
 round_history 只读保存各轮冻结身份与实际执行是否缺少 Patrol Decision；待观察轮没有执行时不误报历史违约。
 """
 
-from sqlalchemy import func, select
+from sqlalchemy import JSON, func, or_, select
+from sqlalchemy.orm import load_only
 
 from backend.app.desktop.agent_loop.activation_models import LoopActivation
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopRound, LoopBudgetUsage, LoopPatrolAttempt, LoopWorkerRequest
@@ -18,17 +19,30 @@ from backend.app.desktop.agent_loop.task_progress.models import LoopProgressWork
 
 
 class LoopAccountingQuery:
-    async def read(self, session, loop_id):
-        rounds = tuple((await session.scalars(select(LoopRound).where(LoopRound.loop_id == loop_id))).all())
-        legacy = [row for row in rounds if row.status == "settled" and not row.observation_id and not row.decision_id]
-        completed = [row for row in rounds if row.status == "settled" and row.decision_id and row.observation_id]
+    async def read(self, session, loop_id, *, include_round_history=True):
+        rounds = tuple(await session.scalars(select(LoopRound).where(LoopRound.loop_id == loop_id))) if include_round_history else ()
+        counts = (await session.execute(select(
+            func.count(),
+            func.count().filter(LoopRound.status == "settled", LoopRound.observation_id.is_(None), LoopRound.decision_id.is_(None)),
+            func.count().filter(LoopRound.status == "settled", LoopRound.observation_id.is_not(None), LoopRound.decision_id.is_not(None)),
+        ).select_from(LoopRound).where(LoopRound.loop_id == loop_id))).one()
+        total_rounds, legacy_count, completed_count = counts
         activation = await session.scalar(select(LoopActivation).where(LoopActivation.loop_id == loop_id))
         initial = await session.get(DesktopRun, activation.selected_run_id) if activation else None
-        attempts = tuple((await session.scalars(select(ModelAttemptAudit).join(DesktopRun,
-            DesktopRun.run_id == ModelAttemptAudit.run_id).where(DesktopRun.loop_id == loop_id,
-                DesktopRun.round_id.is_not(None), DesktopRun.run_id != initial.run_id if initial else True))).all())
-        reservations = [row.usage_accounting for row in attempts if (row.usage_accounting or {}).get("state") == "reserved"]
-        unknown = [row for row in attempts if (row.usage_accounting or {}).get("state") == "unknown" or not row.usage_accounting]
+        owned = (DesktopRun.loop_id == loop_id, DesktopRun.round_id.is_not(None),
+                 DesktopRun.run_id != initial.run_id if initial else True)
+        state = ModelAttemptAudit.usage_accounting["state"].as_string()
+        unknown = or_(state == "unknown", ModelAttemptAudit.usage_accounting.is_(None),
+                      ModelAttemptAudit.usage_accounting == JSON.NULL, ModelAttemptAudit.usage_accounting == {})
+        audit_count, completed_audits, unknown_count = (await session.execute(select(
+            func.count(), func.count().filter(ModelAttemptAudit.status == "completed"),
+            func.count().filter(unknown),
+        ).select_from(ModelAttemptAudit).join(DesktopRun, DesktopRun.run_id == ModelAttemptAudit.run_id).where(*owned))).one()
+        # 只装载尚未报告的消费；已结算历史仅参与数据库聚合。
+        attempts = tuple(await session.scalars(select(ModelAttemptAudit).join(DesktopRun,
+            DesktopRun.run_id == ModelAttemptAudit.run_id).where(*owned, state.in_(("reserved", "unknown"))).options(
+                load_only(ModelAttemptAudit.usage_accounting))))
+        reservations = [row.usage_accounting for row in attempts if row.usage_accounting.get("state") == "reserved"]
         unsettled = int(await session.scalar(select(func.count()).select_from(DesktopRun).where(
             DesktopRun.loop_id == loop_id, DesktopRun.round_id.is_not(None), DesktopRun.settled_at.is_(None),
             DesktopRun.status.not_in(("pending", "running")),
@@ -46,26 +60,28 @@ class LoopAccountingQuery:
             "output_tokens": int(item.get("reserved_output_tokens") or 0),
             "unknown": bool(item.get("accounted")) or work.state != "claimed" or item.get("fence") != work.fence}
             for work in memory_work for item in work.usage if not item.get("usage_reported")]
-        task_audits = tuple((await session.execute(select(ModelAttemptAudit.status, DesktopRun.run_id, DesktopRun.loop_id).join(
-            DesktopRun, DesktopRun.run_id == ModelAttemptAudit.run_id).where(
-                DesktopRun.task_id == initial.task_id if initial else False))).all())
-        baseline_attempts = [item for item in task_audits if item.run_id == initial.run_id] if initial else []
+        task_completed, baseline_completed, unattributed = (await session.execute(select(
+            func.count().filter(ModelAttemptAudit.status == "completed"),
+            func.count().filter(DesktopRun.run_id == initial.run_id, ModelAttemptAudit.status == "completed") if initial else func.count().filter(False),
+            func.count().filter(DesktopRun.loop_id.is_(None)),
+        ).select_from(ModelAttemptAudit).join(DesktopRun, DesktopRun.run_id == ModelAttemptAudit.run_id).where(
+            DesktopRun.task_id == initial.task_id if initial else False))).one()
         usage = await session.get(LoopBudgetUsage, loop_id)
         baseline = await self._initial_evidence(session, initial)
-        return {"completed_rounds": len(completed), "legacy_rounds": len(legacy),
+        return {"completed_rounds": completed_count, "legacy_rounds": legacy_count,
             "round_history": await self._round_history(session, rounds),
-            "started_rounds": len(rounds) - len(legacy), "cleanup_pending_runs": unsettled,
+            "started_rounds": total_rounds - legacy_count, "cleanup_pending_runs": unsettled,
             "reserved_model_calls": len(reservations) + sum(row.model_calls for row in index_pending) + sum(item["model_calls"] for item in memory_unreported),
             "reserved_input_tokens": sum(int(item.get("input_tokens") or 0) for item in reservations) + sum(row.input_tokens for row in index_pending) + sum(item["input_tokens"] for item in memory_unreported),
             "reserved_output_tokens": sum(int(item.get("output_tokens") or 0) for item in reservations) + sum(row.output_tokens for row in index_pending) + sum(item["output_tokens"] for item in memory_unreported),
-            "unknown_model_attempts": len(unknown) + sum(row.model_calls for row in index_unknown) + sum(item["model_calls"] for item in memory_unreported if item["unknown"]), "initial_evidence": baseline,
+            "unknown_model_attempts": unknown_count + sum(row.model_calls for row in index_unknown) + sum(item["model_calls"] for item in memory_unreported if item["unknown"]), "initial_evidence": baseline,
             "consumption": self._consumption(usage, attempts, index_pending, memory_unreported),
-            "historical_reconciliation": {"task_completed_attempts": sum(item.status == "completed" for item in task_audits),
-                "baseline_completed_attempts": sum(item.status == "completed" for item in baseline_attempts),
-                "owned_completed_attempts": sum(item.status == "completed" for item in attempts),
-                "unattributed_task_attempts": sum(item.loop_id is None for item in task_audits),
+            "historical_reconciliation": {"task_completed_attempts": task_completed,
+                "baseline_completed_attempts": baseline_completed,
+                "owned_completed_attempts": completed_audits,
+                "unattributed_task_attempts": unattributed,
                 "ledger_model_calls": usage.model_calls if usage else 0,
-                "owned_audit_model_calls": len(attempts)}}
+                "owned_audit_model_calls": audit_count}}
 
     @staticmethod
     async def _round_history(session, rounds):

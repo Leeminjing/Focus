@@ -133,5 +133,5 @@ class LoopLiveProjectionReducer:
     @staticmethod
     def _activity(event: CanonicalEventEnvelope) -> ActivityEntry:
         summary = event.payload.get("summary") or event.payload.get("status") or event.kind
-        detail = {key: event.payload.get(key) for key in ("context_id", "source_context_id", "run_id", "tool_name", "status", "directive_id", "opportunity_id", "blocker_code", "origin", "intent_kind", "state", "round_id", "observation_id", "source_revision_id", "index_phase", "completed_segments", "total_segments") if event.payload.get(key) is not None}
+        detail = {key: event.payload.get(key) for key in ("context_id", "target_context_id", "source_context_id", "run_id", "tool_name", "status", "directive_id", "opportunity_id", "blocker_code", "origin", "intent_kind", "state", "round_id", "observation_id", "source_revision_id", "index_phase", "completed_segments", "total_segments") if event.payload.get(key) is not None}
         return ActivityEntry(event_id=event.event_id, sequence=event.sequence, kind=event.kind, entity_type=event.entity_type, entity_id=event.entity_id, summary=str(summary)[:500], occurred_at=event.occurred_at, correlation_id=event.correlation_id, causation_id=event.causation_id, detail=detail)
