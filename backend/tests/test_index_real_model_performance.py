@@ -2,7 +2,9 @@
 
 Run with FOCUS_INDEX_REAL_MODEL=1. FOCUS_INDEX_BENCHMARK_OUTPUT selects the report
 directory; FOCUS_INDEX_BENCHMARK_MESSAGES and FOCUS_INDEX_BENCHMARK_REPEATS control
-the synthetic workload and sample count. No customer conversation is sent.
+the synthetic workload and sample count. FOCUS_INDEX_BENCHMARK_CORPUS selects
+an explicitly exported frozen corpus instead. Each case/configuration/repeat
+gets a new Context in an isolated test database; source caches are never used.
 The production builder selects its initial window; this benchmark does not
 patch model input or interpretation behavior.
 """
@@ -18,15 +20,19 @@ import pytest
 from focus.config.app_config import get_app_config
 from sqlalchemy import select
 
-from backend.app.desktop.agent_loop.context_expansion.portfolio_index import PortfolioSemanticIndexService
+from backend.app.desktop.agent_loop.context_expansion.portfolio_index import PortfolioIndexBuildResult, PortfolioSemanticIndexService
 from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
     ProtocolSafeRevisionSegmenter,
     RevisionSemanticIndexer,
 )
+from backend.app.desktop.agent_loop.context_expansion.projection_record_repository import ProjectionRecordRepository
+from backend.app.desktop.agent_loop.context_expansion.contracts import stable_expansion_hash
+from backend.app.desktop.context_evolution.schemas import ContextRevisionMessageView
 from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
 from backend.app.desktop.agent_loop.models import LoopBudgetUsage
 from backend.tests.incremental_index_support import Checkpoints, observation, revision
 from backend.tests.test_incremental_revision_index import exercise
+from backend.scripts.semantic_index_corpus import load_corpus
 
 
 pytestmark = [
@@ -45,18 +51,30 @@ def _history(count):
     ]
 
 
-def _quality(index):
+def _quality(index, records=()):
     represented = {
         ref.message_id for unit in index.semantic_units
         if unit.unit_id in index.projected_unit_ids
         for ref in unit.evidence_refs
     }
+    eligible = {m.message_id for m in index.messages if m.semantic_policy == "index"}
+    contents = RevisionSemanticIndexer.message_contents(index.messages)
+    proofs = (*records, *((index.interpretation,) if index.interpretation else ()))
+    supports = [support for proof in proofs for draft in proof.drafts
+                if draft.claim_key in proof.accepted_claim_keys for support in draft.supports]
+    valid_supports = sum(s.message_id in contents and s.quote in contents[s.message_id] for s in supports)
     return {
         "state": index.quality_state,
         "message_count": len(index.messages),
         "represented_messages": len(represented),
         "missing_message_ids": sorted({m.message_id for m in index.messages} - represented),
+        "eligible_messages": len(eligible),
+        "accepted_citation_message_coverage": len(eligible & represented) / len(eligible) if eligible else 1.0,
+        "semantic_coverage_method": "accepted citation message coverage proxy; semantic completeness requires review",
         "fallback_segments": len(index.fallback_segment_ids),
+        "fallback_ratio": len(index.fallback_segment_ids) / len(index.segments) if index.segments else 0.0,
+        "accepted_supports": len(supports), "valid_supports": valid_supports,
+        "citation_validity": valid_supports / len(supports) if supports else None,
         "rejection_codes": dict(Counter(r.code for r in index.rejected_units)),
         "all_sources_bound": all(ref.source == index.source for u in index.semantic_units for ref in u.evidence_refs),
         "statements": [{"text": u.statement, "authority": u.authority,
@@ -65,22 +83,38 @@ def _quality(index):
     }
 
 
+def _corpus_cases():
+    path = os.environ.get("FOCUS_INDEX_BENCHMARK_CORPUS")
+    return load_corpus(path).cases if path else (None,)
+
+
+@pytest.mark.parametrize("case", _corpus_cases(), ids=lambda case: case.name if case else "synthetic")
 @pytest.mark.parametrize("repeat", range(int(os.environ.get("FOCUS_INDEX_BENCHMARK_REPEATS", "1"))))
-@pytest.mark.parametrize("segment_size,concurrency", [(12, 1), (12, 4), (30, 1), (30, 4)])
-def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, concurrency, repeat):
+@pytest.mark.parametrize("token_limit", [None if value == "none" else int(value) for value in
+                                      os.environ.get("FOCUS_INDEX_BENCHMARK_TOKEN_LIMITS", "none,4096").split(",")])
+@pytest.mark.parametrize("segment_size", [12, 20, 30])
+def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, token_limit, repeat, case):
     async def run(sessions, seed):
         config = get_app_config("config.yaml")
         selected = config.get_model(config.resolve_default_model_name())
+        concurrency = int(os.environ.get("FOCUS_INDEX_BENCHMARK_CONCURRENCY", "4"))
         count = int(os.environ.get("FOCUS_INDEX_BENCHMARK_MESSAGES", "55"))
         output = Path(os.environ.get("FOCUS_INDEX_BENCHMARK_OUTPUT", ".tmp/index-latency"))
         output.mkdir(parents=True, exist_ok=True)
-        path = output / f"segment-{segment_size}-concurrency-{concurrency}-repeat-{repeat}.json"
+        case_key = stable_expansion_hash("benchmark-case", case.model_dump(mode="json"))[:16] if case else "synthetic"
+        path = output / f"{case_key}-segment-{segment_size}-tokens-{token_limit}-concurrency-{concurrency}-repeat-{repeat}.json"
         report = {
             "configured_model": selected.name, "provider_model": selected.model,
             "output_token_limit": selected.curation_max_output_tokens,
             "segment_size": segment_size, "concurrency": concurrency, "repeat": repeat,
-            "fixture": "unique synthetic batch verification facts; no customer data",
-            "history_messages": count, "append_messages": 2, "phases": {},
+            "segment_token_limit": token_limit,
+            "fixture": case.category if case else "unique synthetic batch verification facts; no customer data",
+            "case": case.name if case else "synthetic", "corpus_case_hash": case_key,
+            "incremental_scenario_available": len(case.snapshots) > 1 if case else True,
+            "frozen_sources": [{"source": s.source.model_dump(mode="json"),
+                                "source_content_hash": s.source_content_hash, "semantic_hash": s.semantic_hash,
+                                "messages": len(s.messages)} for s in case.snapshots] if case else [],
+            "phases": {},
             "initial_originals_policy": "capacity-and-budget-checked-full-originals-production",
         }
         invocations = []
@@ -108,10 +142,29 @@ def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, concurrenc
 
         service = PortfolioSemanticIndexService(
             sessions, Checkpoints(), concurrency=concurrency,
+            segment_max_messages=segment_size, segment_max_estimated_tokens=token_limit,
             semantic_projector_factory=factory("semantic_index_projector"),
             semantic_claim_verifier_factory=factory("claim_verifier"),
         )
-        service._indexer = RevisionSemanticIndexer(ProtocolSafeRevisionSegmenter(max_messages=segment_size))
+        report["segmenter_fingerprint"] = service._indexer.segmenter_version
+        report["model_identities"] = {
+            "projector": service._model_identity(service._semantic_projector_factory),
+            "verifier": service._model_identity(service._semantic_claim_verifier_factory),
+        }
+        # Corpus exports already contain the versioned semantic view. Re-reading
+        # them through the legacy adapter could reclassify evidence. Only source
+        # reading is rehydrated; production indexing and model payloads are intact.
+        frozen_messages = {}
+        reader = service._reader
+
+        class FrozenReader:
+            async def read(self, session, ref, view):
+                if view == "semantic" and ref.revision_id in frozen_messages:
+                    return ContextRevisionMessageView(ref=ref, view=view, messages=frozen_messages[ref.revision_id])
+                return await reader.read(session, ref, view)
+
+        if case:
+            service._reader = FrozenReader()
 
         async def measure(name, target):
             invocations.clear()
@@ -120,7 +173,15 @@ def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, concurrenc
                 before = await session.get(LoopBudgetUsage, seed["loop_id"])
                 billed_before = before.model_calls
             started = perf_counter()
-            result = await service.build(observation(seed, target))
+            try:
+                result = await service.build(observation(seed, target))
+            except Exception as exc:
+                # An uncaught provider/storage error is a measured failure, not
+                # a missing sample. Preserve attempts and billing below without
+                # writing raw exception payloads (which may contain credentials).
+                result = PortfolioIndexBuildResult(
+                    blocker_code="benchmark_build_exception", blocker_summary=type(exc).__name__,
+                )
             elapsed = (perf_counter() - started) * 1000
             attempts = [a for call in invocations for a in call["attempts"]]
             metrics = [r for r in caplog.records[log_start:] if r.msg.startswith("semantic_index_model_invocation")]
@@ -131,6 +192,7 @@ def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, concurrenc
                 "input_tokens": sum(a.get("input_tokens", 0) for a in attempts),
                 "output_tokens": sum(a.get("output_tokens", 0) for a in attempts),
                 "retries": sum(int(a.get("attempt", 1)) > 1 for a in attempts),
+                "retry_rate": sum(int(a.get("attempt", 1)) > 1 for a in attempts) / len(attempts) if attempts else 0.0,
                 "error_categories": dict(Counter(a.get("failure_category") or a.get("outcome") for a in attempts if a.get("outcome") != "success")),
                 "invocations": [{k: v for k, v in call.items() if k != "attempts"} for call in invocations],
                 "locally_projected_messages": sum(call["projected_messages"] for call in invocations),
@@ -148,30 +210,49 @@ def test_real_provider_latency_matrix(tmp_path, caplog, segment_size, concurrenc
                 phase["billed_model_calls"] = after.model_calls - billed_before
             if result.indexes:
                 index = result.indexes[0]
+                async with sessions() as session:
+                    records = await ProjectionRecordRepository().by_ids(session, index.source.context_id, index.inheritance.record_ids)
+                assert records is not None
                 phase.update(
-                    quality=_quality(index), segments=len(index.segments),
+                    quality=_quality(index, records), segments=len(index.segments),
                     reused_segments=len(index.inheritance.reused_segment_ids),
                     recomputed_segments=len(index.inheritance.recomputed_segment_ids),
                     interpretation_read_rounds=len(index.interpretation.read_requests),
                 )
             report["phases"][name] = phase
+            report["budget_limits"] = observation(seed, target).budget["limits"]
             path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
             print(f"[index-bench] size={segment_size} concurrency={concurrency} repeat={repeat} "
                   f"phase={name} seconds={elapsed / 1000:.2f} calls={phase['model_calls']} "
                   f"quality={phase.get('quality', {}).get('state', result.blocker_code)}", flush=True)
-            assert result.blocker_code is None, result.blocker_summary
             assert phase["model_calls"] == phase["billed_model_calls"], phase
-            assert phase["quality"]["all_sources_bound"]
+            if result.blocker_code is not None:
+                if case is None:
+                    pytest.fail(result.blocker_summary)
+            else:
+                assert phase["quality"]["all_sources_bound"]
+                assert phase["quality"]["valid_supports"] == phase["quality"]["accepted_supports"]
             return result
 
-        history = _history(count)
-        first = await revision(sessions, seed["context_id"], history)
-        await measure("cold", first)
-        newer = await revision(sessions, seed["context_id"], _history(count + 2), parent=first)
-        appended = await measure("append", newer)
-        cached = await measure("exact", newer)
-        assert cached.indexes == appended.indexes and report["phases"]["exact"]["model_calls"] == 0
-        assert all(phase["quality"]["state"] == "complete" for phase in report["phases"].values()), path
+        histories = [s.messages for s in case.snapshots] if case else [_history(count), _history(count + 2)]
+        parent = None
+        for i, history in enumerate(histories):
+            target = await revision(sessions, seed["context_id"], history, parent=parent)
+            if case:
+                frozen_messages[target.ref.revision_id] = tuple(history)
+            phase_name = "cold" if i == 0 else f"append-{i}"
+            built = await measure(phase_name, target)
+            if built.blocker_code is None:
+                cached = await measure(f"exact-{i}", target)
+                assert cached.indexes == built.indexes
+                assert report["phases"][f"exact-{i}"]["model_calls"] == 0
+            else:
+                report["phases"][f"exact-{i}"] = {"status": "not_run", "reason": "no complete Index was published"}
+            parent = target
+        report["evaluation_complete"] = True
+        path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        if case is None:
+            assert all(phase["quality"]["state"] == "complete" for phase in report["phases"].values()), path
 
     with caplog.at_level(logging.INFO):
         exercise(tmp_path, run)

@@ -93,6 +93,38 @@ Index／record schema 和完整切分 fingerprint 都属于 record 合同。即�
 
 默认分段仍为 12 条，工具交换保持闭合；本轮调度和缓存优化不改变分段 fingerprint，也不要求已有完整缓存冷构建。12／30 的选择还需比较真实模型冷构建与追加场景，不能从请求数直接推算端到端加速。
 
+### token 体积分段与冻结上下文对照
+
+`PortfolioSemanticIndexService(..., segment_max_messages=12, segment_max_estimated_tokens=4096)` 可同时约束消息条数和估算 token 体积。体积统计覆盖序列化内容、结构化正文、工具参数及元数据，使用共享文本启发式（CJK 字符 1、其他非空白字符约 1/4，加消息开销），不是 provider tokenizer，也不替代完整模型请求的窗口／授权预检。单条消息和完整工具调用／结果交换始终不可拆分，超过体积目标时独占一段，实际请求仍可能因窗口不足被拒绝。
+
+token 上限默认关闭，继续使用原来的 12 条策略与 v2 fingerprint；开启时使用含消息上限、token 上限和估算算法版本的 v3 fingerprint。因此已有缓存保持可读，开启新合同需重新索引，不会复用另一切分合同的局部 records。Curator 提案仍依据本次冻结输入生成。
+
+从仓库根目录运行以下 PowerShell 命令。发现和导出只连接本机 Focus 数据库的只读会话，通过 `ContextRevisionReader` 读取精确 Revision 的 semantic view；不执行迁移、checkpoint setup 或数据清理。`--config` 可选择其他配置文件。导出包含会话原文，示例存放在仓库外。
+
+```powershell
+$env:PYTHONPATH = "$PWD;$PWD\backend\packages\harness"
+python -m backend.scripts.semantic_index_corpus list
+python -m backend.scripts.semantic_index_corpus export --auto --output "$env:USERPROFILE\focus-index-corpus.json"
+# 或指定 Context，读取其已发布 Revision；也可重复 --revision-id 精确固定多个版本：
+python -m backend.scripts.semantic_index_corpus export --context-id CONTEXT_ID --output "$env:USERPROFILE\focus-index-selected.json"
+python -m backend.scripts.semantic_index_corpus export --revision-id REVISION_ID_1 --revision-id REVISION_ID_2 --output "$env:USERPROFILE\focus-index-revisions.json"
+
+$env:FOCUS_INDEX_REAL_MODEL = '1'
+$env:FOCUS_INDEX_BENCHMARK_CORPUS = "$env:USERPROFILE\focus-index-corpus.json"
+$env:FOCUS_INDEX_BENCHMARK_OUTPUT = "$env:USERPROFILE\focus-index-results"
+$env:FOCUS_INDEX_BENCHMARK_CONCURRENCY = '4'
+$env:FOCUS_INDEX_BENCHMARK_TOKEN_LIMITS = 'none,4096'
+$env:FOCUS_INDEX_BENCHMARK_REPEATS = '1'
+python -m pytest backend/tests/test_index_real_model_performance.py -k latency_matrix -q
+python -m backend.scripts.semantic_index_corpus summarize --reports "$env:FOCUS_INDEX_BENCHMARK_OUTPUT" --output "$env:USERPROFILE\focus-index-summary.json"
+```
+
+自动选择包含短对话（≤12 条、≤2048 估算 token、没有长工具输出）、至少 4096 字符工具输出，以及三个严格追加版本的样本；优先选择超过 30 条消息的后两类样本，以便消息上限确实可能改变分段。样本不足则明确报错，可以指定 ID 做覆盖范围较小的测试。短对话／长工具样本若没有固定后继，只测 cold 和 exact；报告的 `incremental_scenario_available` 明确标出该范围，多次追加 case 测增量阶段，不伪造后继原文。`list` 仅输出 ID、消息数及体积，不打印正文。导出文件以排他创建方式写入，包含来源身份、来源内容 hash 和 semantic 内容 hash；不允许静默覆盖。内容 hash、协议闭合和追加前缀在加载时重验；来源历史发生改写时分为独立测试 case，不冒充追加链。含 NUL／孤立 surrogate 的文本无法存入索引 JSONB，发现时单独报告并跳过，不清洗后冒充原样本。`--limit` 默认最多发现最近 200 个已发布版本。
+
+矩阵为消息上限 12／20／30 × token 上限关闭／4096。比较消息上限时固定 token 上限；比较 token 上限时固定消息上限。每个 case、配置和重复次数均创建独立测试 Context，全部索引写入自动创建／销毁的隔离 PostgreSQL 测试库，不使用或删除生产缓存。模型、共享并发和预算限制一致并写入报告。数据文件重放保留原 semantic policy；新的 Revision 身份只属于测试命名空间，报告保留原始来源及输入 hash。未设置 corpus 时仍使用明确标注的合成消息。
+
+每份 JSON 分别记录冷构建、每次追加、每个成功版本的完整缓存命中：实际总耗时、模型调用数与落账数、输入／输出 token、重试次数和比例、分阶段耗时、fallback 段比例、引文逐字有效性和接受引文的消息覆盖率。后者只是语义覆盖的代理指标，不能证明语义完整性；报告保留接受陈述和消息来源，需人工核对遗漏、否定及跨段关系。模型阻断／预算或窗口不足保留耗时及真实消费；未发布完整 Index 时将缓存阶段标记为未执行，不把失败称为缓存命中。各阶段预算按真实累计消费扣除，不重置追加版本的预算。若设置外部 `FOCUS_TEST_DATABASE_URL`，它必须指向专用测试库。
+
 性能统计使用每次调用的运行日志：`semantic_index_build` 记录实际等待耗时、是否合并和结果；`semantic_index_model_invocation` 记录 schema、排队、执行与预算准入耗时；`semantic_index_revision` 记录局部抽取、整体解释及局部缓存命中／新投影段数。执行耗时包含预算准入和内部重试，不能当作纯 provider 延迟；日志不含原文或凭据。不可变 stage artifact 在精确重放时保留首次耗时，不能直接作为缓存请求的实时延迟样本。
 
 ### 2026-10-17 真实模型摸底（原文预取生产化之前）
@@ -125,3 +157,62 @@ Alembic revision `9d0e1f2a3b4c` 添加局部 records；`ae1f2a3b4c5d` 添加预�
 后继 additive revision `ae1f2a3b4c5d` 添加 `loop_index_budget_reservations`，不改已发布迁移。存在未结算预留时 downgrade 显式失败，避免降级后重新获得已发送工作的额度；需依据真实调用证据先完成结算。
 
 回滚应用可保留数据库结构。显式 downgrade 前停止 writers；新迁移先撤销 `rev:` 综合 artifact，再移除约束；若继续降级则旧迁移撤销带继承凭据 v4 后删 records。旧历史 artifact 与 Context／Progress 数据保留。引用被撤销新合同 artifact 的 planning sessions 需重新规划，schema downgrade 不保留新版执行状态。
+
+## 2026-10-17 冻结真实上下文：完整 12／20／30 对照
+
+本批结果显示耗时、调用数与覆盖之间存在取舍：关闭 token 上限时，30 条把长工具冷构建从 12 条的 238.13 s／10 次降到 165.23 s／6 次，但接受引文消息覆盖从 100% 降到 50%，fallback 从 0/4 段变为 1/2 段。最后一次追加中，30 条为 157.00 s／6 次，12 条为 284.71 s／12 次；三种消息上限均只有 1 个 fallback 段、消息覆盖均为 33.33%，不能单凭 fallback 百分比判断覆盖损失。
+
+开启 4096 上限后，长工具及最后追加的模型调用和耗时都增加，消息覆盖改善并不一致。整批合计 270 次有记录模型调用、6 次结构化重试，30 次完整缓存检查全部零调用。最后目标版本均为 degraded；接受引文逐字有效不代表语义完整。上述是单轮观测，默认参数保持不变。
+
+18 个配置全部完成：保留此前 4 份报告的原始字节，补跑其余 14 项。源文件 SHA-256 为 `8328bb9c8c4bf3a98a9e7e4cd50c7495d846b83987b476ce68a622e0a3f8fd38`，三类样本的全部原始 Revision identity、内容 hash、报告 hash、配置及分阶段数据见 [完整汇总](benchmarks/semantic-index-token-sizing-2026-10-17/summary.json)。输入仍是短对话 2 条、长工具上下文 42 条，以及 1→5→57 条消息的同一追加链；没有重新发现或替换样本。
+
+模型为 `deepseek-flash`，输出上限 65,536；共享并发 4。每组授权均为 10,000 次模型调用、输入和输出各 10,000,000 token。每个配置使用独立测试 Context 和隔离测试数据库，未清理生产缓存。默认仍为 12 条、token 上限关闭。
+
+下表每格为「实际秒数／模型调用数」。耗时仅覆盖索引服务 build，不含后续 Curator、Patrol 或材料合成。冷构建和两次追加分别统计，缓存命中单独统计。
+
+| token 上限 | 消息上限 | 短对话冷构建 | 长工具冷构建 | 追加链冷构建 | 追加 1（5 条） | 追加 2（57 条） | 模型重试合计 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 关闭 | 12 | 38.86／3 | 238.13／10 | 8.84／2 | 62.59／3 | 284.71／12 | 0 |
+| 关闭 | 20 | 38.70／4 | 209.96／8 | 8.71／2 | 88.69／5 | 361.53／9 | 3 |
+| 关闭 | 30 | 42.67／4 | 165.23／6 | 9.37／2 | 85.32／4 | 157.00／6 | 0 |
+| 4096 | 12 | 32.15／3 | 302.22／19 | 12.17／2 | 44.14／3 | 555.38／37 | 2 |
+| 4096 | 20 | 40.22／3 | 282.11／18 | 9.27／2 | 33.62／3 | 545.49／36 | 0 |
+| 4096 | 30 | 32.06／3 | 384.67／19 | 8.99／2 | 60.97／4 | 466.07／36 | 1 |
+
+| token 上限 | 消息上限 | 模型调用合计 | 输入 token 合计 | 输出 token 合计 | 5 次完整缓存命中范围（ms） |
+| --- | --- | --- | --- | --- | --- |
+| 关闭 | 12 | 30 | 634,310 | 263,731 | 26.24–240.27 |
+| 关闭 | 20 | 28 | 704,439 | 242,869 | 25.59–248.25 |
+| 关闭 | 30 | 22 | 593,904 | 129,870 | 31.96–212.30 |
+| 4096 | 12 | 64 | 730,178 | 553,139 | 24.23–268.63 |
+| 4096 | 20 | 62 | 727,731 | 547,699 | 23.55–310.29 |
+| 4096 | 30 | 64 | 729,727 | 564,119 | 26.51–297.52 |
+
+质量表使用每个 case 的最后一个冻结版本（短对话／长工具为 cold，追加链为 append-2）。fallback 同时列出段数和分母；消息覆盖是接受引文对 `semantic_policy=index` 消息的覆盖代理，不能证明语义完整。逐字有效性仅针对已经接受的 supports，unsupported／unknown 等隔离结果另计。
+
+| token 上限 | 消息上限 | 样本 | fallback 段 | 接受引文逐字有效率 | 接受引文消息覆盖 | 隔离命题数 | 质量状态 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 关闭 | 12 | short | 1/1 (100.00%) | 100% (10/10) | 50.00% | 0 | degraded |
+| 关闭 | 12 | long-tool | 0/4 (0.00%) | 100% (127/127) | 100.00% | 15 | degraded |
+| 关闭 | 12 | multiple-append | 1/5 (20.00%) | 100% (253/253) | 33.33% | 11 | degraded |
+| 关闭 | 20 | short | 1/1 (100.00%) | 100% (10/10) | 50.00% | 0 | degraded |
+| 关闭 | 20 | long-tool | 0/3 (0.00%) | 100% (160/160) | 100.00% | 5 | degraded |
+| 关闭 | 20 | multiple-append | 1/3 (33.33%) | 100% (111/111) | 33.33% | 23 | degraded |
+| 关闭 | 30 | short | 1/1 (100.00%) | 100% (15/15) | 50.00% | 0 | degraded |
+| 关闭 | 30 | long-tool | 1/2 (50.00%) | 100% (81/81) | 50.00% | 4 | degraded |
+| 关闭 | 30 | multiple-append | 1/2 (50.00%) | 100% (62/62) | 33.33% | 9 | degraded |
+| 4096 | 12 | short | 1/1 (100.00%) | 100% (10/10) | 50.00% | 0 | degraded |
+| 4096 | 12 | long-tool | 0/8 (0.00%) | 100% (254/254) | 100.00% | 21 | degraded |
+| 4096 | 12 | multiple-append | 1/17 (5.88%) | 100% (388/388) | 50.00% | 66 | degraded |
+| 4096 | 20 | short | 1/1 (100.00%) | 100% (9/9) | 50.00% | 0 | degraded |
+| 4096 | 20 | long-tool | 1/8 (12.50%) | 100% (409/409) | 87.50% | 17 | degraded |
+| 4096 | 20 | multiple-append | 1/17 (5.88%) | 100% (353/353) | 33.33% | 57 | degraded |
+| 4096 | 30 | short | 1/1 (100.00%) | 100% (9/9) | 50.00% | 0 | degraded |
+| 4096 | 30 | long-tool | 0/8 (0.00%) | 100% (293/293) | 100.00% | 21 | degraded |
+| 4096 | 30 | multiple-append | 1/17 (5.88%) | 100% (432/432) | 33.33% | 91 | degraded |
+
+全部已接受引文均通过逐字及目标 Revision 绑定校验；完整缓存命中均为零模型调用。调用数按有记录的结构化模型 attempt／落账统计，不等于底层 HTTP 发送次数。这里的重试是结构化模型 invocation 内 `attempt > 1` 的次数，不包含 SDK HTTP 内部重试；本轮日志确实出现 SDK 重试及代理回退，实际墙钟耗时包含这些等待。历史中断请求未冒充成功样本，也不等于账户账单零消费。
+
+关闭 token 上限时，长工具样本为 4／3／2 段，最后一次追加为 5／3／2 段。开启 4096 后三种消息上限分别都为 8 段、17 段，体积约束主导了切分，不能把这些配置间的延迟差都归因于消息上限。完整工具交换超过目标时保留原子，未截断原文。
+
+每配置只有一次完成样本，执行顺序未随机化，没有人工语义完整性 gold set。这些是本批输入上的观测值，不是 P50/P95 或稳定加速比例；保持默认参数不变。

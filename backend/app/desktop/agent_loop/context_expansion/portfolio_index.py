@@ -47,6 +47,7 @@ from backend.app.desktop.agent_loop.context_expansion.semantic_index import (
     RevisionSemanticIndex,
 )
 from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
+    ProtocolSafeRevisionSegmenter,
     RevisionSemanticIndexer,
 )
 from backend.app.desktop.agent_loop.context_expansion.semantic_retrieval import (
@@ -137,6 +138,8 @@ class PortfolioSemanticIndexService:
         checkpointer: Any,
         *,
         concurrency: int = 4,
+        segment_max_messages: int = 12,
+        segment_max_estimated_tokens: int | None = None,
         max_attempts: int = 2,
         catalog_max_descriptor_chars: int | None = None,
         semantic_projector_factory: Callable[[], Any] | None = None,
@@ -147,7 +150,10 @@ class PortfolioSemanticIndexService:
         self._revision_repository = ContextRevisionRepository()
         self._reader = ContextRevisionReader(self._revision_repository, checkpointer)
         self._artifacts = SemanticDerivationArtifactRepository()
-        self._indexer = RevisionSemanticIndexer()
+        self._indexer = RevisionSemanticIndexer(ProtocolSafeRevisionSegmenter(
+            max_messages=segment_max_messages,
+            max_estimated_tokens=segment_max_estimated_tokens,
+        ))
         self._concurrency = max(1, concurrency)
         self._model_slots = asyncio.Semaphore(self._concurrency)
         self._inflight_builds: dict[str, _SharedIndexBuild] = {}

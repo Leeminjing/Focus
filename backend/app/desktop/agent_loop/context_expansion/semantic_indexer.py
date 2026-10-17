@@ -2,6 +2,7 @@ r"""本文件对外提供 ProtocolSafeRevisionSegmenter、SupervisedSegmentSeman
 
 输入为冻结 semantic 消息、原始位置、来源/hash 和受监督的 drafts／assessments；输出为协议闭合 segments 与完整目标 Index。
 具体工作流为规范消息、将 Tool Exchange 折叠成原子，按实际参数 fingerprint 切段，统一验证引用并补齐 fallback。
+可选 max_estimated_tokens 按序列化消息估算体积；同时约束条数，超大单消息／工具交换保持原子。关闭时沿用 v2 切分与 fingerprint。
 v9 fallback 只从 index 消息生成正文和来源，所有 drafts 经共享宿主资格校验；混合段的证据／参考仍可解释。
 每条 draft 的引文／verdict 独立 grounding，再按最终 unit_id 合并相同事实和 projected 库存；局部／综合 proof 保留原始证据。
 describe_segment 是纯 identity 工具；validate_proposal 检查投影 identity 唯一性。旧 projector 保留兼容，新 Portfolio 合并局部及综合 drafts。
@@ -13,6 +14,8 @@ from __future__ import annotations
 import json
 from hashlib import sha256
 from typing import Any
+
+from focus.messages.usage import estimate_raw_tokens
 
 from backend.app.desktop.agent_loop.context_expansion.contracts import (
     SemanticEvidenceUnit,
@@ -100,12 +103,17 @@ class SupervisedSegmentSemanticProjector:
 
 
 class ProtocolSafeRevisionSegmenter:
-    VERSION = "protocol-safe-segmenter-v2"
+    VERSION = "protocol-safe-segmenter-v3"
 
-    def __init__(self, max_messages: int = 12) -> None:
+    def __init__(
+        self, max_messages: int = 12, *, max_estimated_tokens: int | None = None
+    ) -> None:
         if max_messages < 1:
             raise ValueError("segment max_messages 必须为正数")
+        if max_estimated_tokens is not None and max_estimated_tokens < 1:
+            raise ValueError("segment max_estimated_tokens 必须为正数")
         self._max_messages = max_messages
+        self._max_estimated_tokens = max_estimated_tokens
 
     def segment(
         self, messages: tuple[IndexedMessage, ...]
@@ -113,11 +121,21 @@ class ProtocolSafeRevisionSegmenter:
         atoms = self._atoms(messages)
         groups: list[tuple[IndexedMessage, ...]] = []
         current: list[IndexedMessage] = []
+        current_tokens = 0
         for atom in atoms:
-            if current and len(current) + len(atom) > self._max_messages:
+            atom_tokens = self.estimated_tokens(atom) if self._max_estimated_tokens is not None else 0
+            if current and (
+                len(current) + len(atom) > self._max_messages
+                or (self._max_estimated_tokens is not None
+                    and current_tokens + atom_tokens > self._max_estimated_tokens)
+            ):
                 groups.append(tuple(current))
                 current = []
+                current_tokens = 0
+            # A tool exchange (or single large message) is indivisible, even
+            # above either limit. Request admission still checks the full input.
             current.extend(atom)
+            current_tokens += atom_tokens
         if current:
             groups.append(tuple(current))
         return tuple(
@@ -126,7 +144,22 @@ class ProtocolSafeRevisionSegmenter:
 
     @property
     def fingerprint(self) -> str:
-        return "seg:" + stable_expansion_hash(self.VERSION, self._max_messages)[:60]
+        if self._max_estimated_tokens is None:
+            return "seg:" + stable_expansion_hash("protocol-safe-segmenter-v2", self._max_messages)[:60]
+        return "seg:" + stable_expansion_hash(
+            self.VERSION, self._max_messages, self._max_estimated_tokens,
+            "serialized-cjk1-other4-message12-v1",
+        )[:60]
+
+    @staticmethod
+    def estimated_tokens(messages: tuple[IndexedMessage, ...]) -> int:
+        # Count the serialized payload, including tool arguments, structured
+        # results and metadata, with the shared text heuristic. This is a sizing
+        # target, not a provider tokenizer or the request admission calculation.
+        return sum(estimate_raw_tokens(
+            json.dumps(message.model_dump(mode="json"), ensure_ascii=False,
+                       sort_keys=True, separators=(",", ":")), 1
+        ) for message in messages)
 
     def _atoms(
         self, messages: tuple[IndexedMessage, ...]

@@ -149,6 +149,7 @@ def test_long_history_reuses_100_segments_and_rebinds_all_evidence(tmp_path):
         import json
         from pathlib import Path
 
+        Path(".tmp").mkdir(exist_ok=True)
         Path(".tmp/index-performance.json").write_text(
             json.dumps(
                 {
