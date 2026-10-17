@@ -36,11 +36,13 @@
         if (!draft.content.trim() && !draft.attachments?.length) throw new Error("请输入信息或添加材料");
         const payload = { submission_id: identity(), access_mode: accessMode, ...draft, ...(visibleContext ? { visible_context: visibleContext } : {}) };
         if (!payload.attachments?.length) delete payload.attachments;
+        if (payload.budget_preset == null) delete payload.budget_preset;
         const request = frozenCopy(payload);
         const row = { request, ...request, status: "sending", error: null, order: ++order, draftRevision: ++draftRevision, created_at: new Date().toISOString() };
         rows.set(request.submission_id, row);
         draft = { ...draft, content: "", request_id: null, request_revision: null, file_refs: [] };
         delete draft.attachments;
+        delete draft.budget_preset;
         publish();
         return row;
       },
@@ -61,7 +63,7 @@
         const row = rows.get(id);
         if (!row || row.status !== "failed" || draft.content || draft.file_refs.length || draft.attachments?.length) return;
         draftRevision++;
-        draft = { ...draft, content: row.content, file_refs: row.file_refs || [], ...(row.attachments?.length ? { attachments: row.attachments } : {}), input_type: row.input_type, request_id: row.request_id, request_revision: row.request_revision };
+        draft = { ...draft, content: row.content, file_refs: row.file_refs || [], ...(row.attachments?.length ? { attachments: row.attachments } : {}), ...(row.request?.budget_preset ? { budget_preset: row.request.budget_preset } : {}), input_type: row.input_type, request_id: row.request_id, request_revision: row.request_revision };
         row.status = "edited";
         publish();
       },

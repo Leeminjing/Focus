@@ -37,6 +37,13 @@ from backend.app.desktop.agent_loop.schemas import (
 agent_loop_router = APIRouter(prefix="/desktop/api/agent-loops", tags=["agent-loops"])
 
 
+@agent_loop_router.get("/budget-presets")
+async def workspace_budget_presets() -> dict:
+    from backend.app.desktop.agent_loop.budget_presets import PRESETS
+
+    return {"default": "normal", "presets": PRESETS}
+
+
 @agent_loop_router.get("/workspace/{workspace_id}")
 async def workspace_patrol(workspace_id: str, request: Request) -> dict | None:
     return await request.app.state.workspace_patrol.current(workspace_id)

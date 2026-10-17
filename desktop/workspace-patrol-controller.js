@@ -31,6 +31,7 @@
     let historyHTML = "";
     let unlisten = null;
     let materialPreview = null;
+    let budget = null;
 
 
     let lifetime = null;
@@ -371,6 +372,7 @@
     }
     const patchInputs = model => {
       if (!host) return;
+      budget?.syncDraft();
       patchHistory(model);
       materialPreview?.render(model.draft);
       const content = host.querySelector("[data-patrol-content]");
@@ -428,6 +430,7 @@
       if (next.loop_id !== loopId) return;
       const previous = projection;
       projection = next;
+      budget?.update(next);
       for (const [id] of waitUi) {
         if (!projection.wait_requests[id] || !["open", "resolving"].includes(projection.wait_requests[id].state.status)) waitUi.delete(id);
       }
@@ -614,6 +617,9 @@
       lifetime = new AbortController();
       historyLoading = true;
       host.innerHTML = view.skeleton(bound, Boolean(onCompose));
+      const budgetHost = host.querySelector("[data-patrol-budget]");
+      if (budgetHost) budget = root.FocusWorkspacePatrolBudget.create({ host: budgetHost, api,
+        getDraft: () => inputs.get().draft, editDraft: patch => inputs.edit(patch), onError: error, canChooseInitial: !onCompose });
       if (onCompose) {
         host.querySelector("[data-patrol-composer]").classList.add("is-remote-composer");
         host.querySelector("[data-patrol-type]").hidden = true;
@@ -704,6 +710,7 @@
       }
     }
     function leave() {
+      budget?.dispose(); budget = null;
       materialPreview?.dispose(); materialPreview = null;
       previews?.stop();
       root.document.body.classList.remove("has-patrol-workbench");

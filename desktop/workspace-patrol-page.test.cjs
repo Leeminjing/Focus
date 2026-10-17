@@ -108,10 +108,17 @@ if (!process.versions.electron) {
       await until('document.querySelector("[data-patrol-enter]")');
       await run('document.querySelector("[data-patrol-enter]").click()');
       await until('document.querySelector("[data-patrol-content]")');
+      if (process.env.FOCUS_PATROL_TEST_NATIVE !== "1") {
+        await until('!document.querySelector("[data-budget-preset]").disabled');
+        assert.match(await run('document.querySelector("[data-budget-summary]").textContent'), /普通任务.*30 分钟/);
+        await run('document.querySelector("[data-budget-preset]").value="long"; document.querySelector("[data-budget-preset]").dispatchEvent(new Event("change"))');
+        assert.match(await run('document.querySelector("[data-budget-summary]").textContent'), /长任务.*120 分钟/);
+      }
       await run(`document.querySelector("[data-patrol-type]").value = ${JSON.stringify(input_type)}; document.querySelector("[data-patrol-type]").dispatchEvent(new Event("change")); document.querySelector("[data-patrol-content]").value="首条模糊信息"; document.querySelector("[data-patrol-content]").dispatchEvent(new Event("input")); document.querySelector("[data-patrol-composer]").requestSubmit()`);
     await until('document.querySelector("[data-patrol-history]").textContent.includes("已受理")');
       const body = await run('window.patrolFixture.submissions.at(-1)');
       assert.equal(body.input_type, input_type);
+      if (process.env.FOCUS_PATROL_TEST_NATIVE !== "1") assert.equal(body.budget_preset, "long");
       assert.ok(!body.context_id && !body.mode);
       assert.equal(await run('document.querySelector("[data-patrol-details-content]").hidden'), true);
     }
@@ -408,7 +415,8 @@ if (!process.versions.electron) {
     const desktopBounds = await historyBounds();
     assertHistoryBounds(desktopBounds);
     assert.ok(Math.abs(desktopBounds.panel.width / desktopBounds.composer.width - .344) < .005, JSON.stringify(desktopBounds));
-    assert.ok(Math.abs(desktopBounds.panel.height / desktopBounds.composer.width - .315) < .005, JSON.stringify(desktopBounds));
+    const availableHistoryHeight = desktopBounds.clear.bottom - 16;
+    assert.ok(Math.abs(desktopBounds.panel.height - Math.min(desktopBounds.composer.width * .315, availableHistoryHeight)) < 2, JSON.stringify(desktopBounds));
     assert.ok(Math.abs(desktopBounds.composer.top - hiddenComposer.top) < 1);
     await snapshot("history-desktop-open");
     if (process.env.FOCUS_FRONTEND_QA_DIR) fs.writeFileSync(path.join(process.env.FOCUS_FRONTEND_QA_DIR, "history-bounds.json"), JSON.stringify(desktopBounds, null, 2));

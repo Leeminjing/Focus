@@ -19,6 +19,14 @@
   let workspace = null, generation = 0, loopId = null, unsubscribe = null, reads = new AbortController();
   let resultKey = "", inputKey = "", publishedState = "", binding = false, nativeReady = false, commandQueue = Promise.resolve();
   const draftStore = () => intake.store(workspace?.workspace_id || null);
+  let budget = null;
+  function resetBudget() {
+    budget?.dispose();
+    $("#task-budget").innerHTML = FocusWorkspacePatrolBudget.markup();
+    budget = FocusWorkspacePatrolBudget.create({ host: $("#task-budget"), api,
+      getDraft: () => draftStore().get().draft, editDraft: patch => draftStore().edit(patch), onError: fail });
+    budget.update(null);
+  }
   function fail(error) { $("#error").hidden = !error; $("#error").textContent = error ? String(error.message || error) : ""; }
   function enqueue(action) { commandQueue = commandQueue.then(action).catch(fail); return commandQueue; }
   function element(tag, text, parent) { const node = document.createElement(tag); node.textContent = text; parent?.append(node); return node; }
@@ -38,6 +46,7 @@
     if (bridge?.enabled && nativeReady && key !== publishedState) { publishedState = key; void bridge.setState(state).catch(fail); }
   }
   function renderInput(model) {
+    budget?.syncDraft();
     if ($("#instruction").value !== model.draft.content) $("#instruction").value = model.draft.content;
     preview.render(model.draft);
     $("#reply-target").hidden = !model.draft.request_id;
@@ -73,6 +82,7 @@
     const token = ++generation;
     reads.abort(); reads = new AbortController(); connection.stop(); loopId = null;
     workspace = bound; resultKey = ""; inputKey = "";
+    resetBudget();
     $("#results").replaceChildren(); $("#requests").replaceChildren(); fail(null);
     if (bound) { intake.remember(bound); intake.claimUnbound(bound.workspace_id); }
     $("#binding-name").textContent = bound ? bound.display_name : "绑定工作区";
@@ -146,6 +156,7 @@
   live.subscribe(({ projection }) => {
     notify();
     if (!projection || projection.loop_id !== loopId) return;
+    budget?.update(projection);
     renderRequests(projection);
     const artifacts = FocusLoopLiveSelectors.selectFacts(projection).filter(item => ["file", "artifact"].includes(item.kind)).map(item => [item.fact_id, item.revision]);
     const key = JSON.stringify([FocusWorkspacePatrolFeedback.signature(projection), projection.task_progress?.revision, artifacts]);
@@ -191,6 +202,7 @@
     $("#older").disabled = true;
     try { intake.history(id, await api.workspaceInputs(id, before), true); } catch (error) { fail(error); } finally { $("#older").disabled = false; }
   });
+  resetBudget();
   watchDraft();
   const sizeObserver = new ResizeObserver(() => {
     const contentHeight = $(".panel-header").offsetHeight + $(".panel-content").offsetHeight + 2;
@@ -218,5 +230,5 @@
       finally { nativeReady = true; notify(); }
     });
   } else if (intake.readBinding()) await activate(await intake.workspace(intake.readBinding().workspace_id));
-  window.addEventListener("beforeunload", () => { sizeObserver.disconnect(); preview.dispose(); connection.stop(); reads.abort(); });
+  window.addEventListener("beforeunload", () => { budget?.dispose(); sizeObserver.disconnect(); preview.dispose(); connection.stop(); reads.abort(); });
 })().catch(error => { const node = document.querySelector("#error"); node.hidden = false; node.textContent = error.message; });

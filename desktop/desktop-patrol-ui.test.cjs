@@ -45,6 +45,8 @@ if (!process.versions.electron) {
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch("disable-gpu");
   const limits = { general_file_bytes: 1024 * 1024, original_image_bytes: 256 * 1024, run_material_count: 8 };
+  const budgetCatalog = require("./workspace-patrol-budget-fixture.cjs"), grantChanges = [];
+  let authorityRevision = 1, activeBudget = { ...budgetCatalog.presets.long.budgets };
   const session = "isolated-patrol-ui-fixture";
   const history = new Map(), streams = new Map(), requests = [], uploads = [], errors = [];
   let host, server, workbench, selectedPath = "C:\\fixture\\workspace-a", completed = false;
@@ -67,7 +69,9 @@ if (!process.versions.electron) {
   }
   function snapshot(loopId) {
     return { loop_id: loopId, last_sequence: completed ? 2 : 1,
-      loop: entity(loopId, { status: completed ? "completed" : "running", interaction_mode: "workspace_patrol", waiting_reason: null }),
+      loop: entity(loopId, { status: completed ? "completed" : "running", interaction_mode: "workspace_patrol", waiting_reason: null,
+        authority_revision: authorityRevision, created_at: new Date(Date.now() - 600000).toISOString(),
+        grant: { status: "active", budgets: activeBudget }, usage: { model_calls: 40, input_tokens: 100000, output_tokens: 5000, rounds: 5, retries: 0 } }),
       runs: completed ? { "run-answer": entity("run-answer", { run_id: "run-answer", context_id: "context-answer", status: "completed" }) } : {},
       contexts: completed ? { "context-answer": entity("context-answer", { context_id: "context-answer", title: "截图问题", current_revision_id: "revision-answer" }) } : {},
       task_progress: entity(loopId, { generation: 0, document: { items: [] } }),
@@ -93,6 +97,15 @@ if (!process.versions.electron) {
     const bytes = Buffer.concat(chunks);
     const body = bytes.length && request.headers["content-type"]?.startsWith("application/json") ? JSON.parse(bytes) : null;
     if (url.pathname.endsWith("/materials/limits")) return json(response, limits);
+    if (url.pathname.endsWith("/agent-loops/budget-presets")) return json(response, budgetCatalog);
+    if (/\/agent-loops\/loop-[^/]+\/grant$/.test(url.pathname)) {
+      grantChanges.push(body);
+      assert.equal(body.expected_authority_revision, authorityRevision);
+      authorityRevision++;
+      activeBudget = { ...activeBudget, max_model_calls: activeBudget.max_model_calls + budgetCatalog.presets[body.preset].budgets.max_model_calls };
+      return json(response, { authority_revision: authorityRevision });
+    }
+    if (/\/agent-loops\/loop-[^/]+$/.test(url.pathname)) return json(response, snapshot(url.pathname.split("/").at(-1)).loop.state);
     if (url.pathname === "/desktop/api/workspaces" && request.method === "POST") return json(response, workspace(body.path.split(/[\\/]/).at(-1)));
     const ws = url.pathname.match(/^\/desktop\/api\/workspaces\/([^/]+)$/);
     if (ws) return json(response, workspace(ws[1]));
@@ -179,6 +192,10 @@ if (!process.versions.electron) {
     await capture(host.panel, "desktop-unbound-preview");
     await run(host.panel, "document.querySelector('#binding').click()");
     await waitFor(host.panel, "document.querySelector('#binding').textContent.includes('设计工作区 A')", "绑定工作区失败");
+    await waitFor(host.panel, "!document.querySelector('[data-budget-preset]').disabled", "预算预设未加载");
+    assert.match(await run(host.panel, "document.querySelector('[data-budget-summary]').textContent"), /普通任务.*30 分钟.*2 项并行/);
+    await run(host.panel, "document.querySelector('[data-budget-preset]').value='long'; document.querySelector('[data-budget-preset]').dispatchEvent(new Event('change'))");
+    assert.match(await run(host.panel, "document.querySelector('[data-budget-summary]').textContent"), /长任务.*120 分钟.*4 项并行/);
     assert.equal(requests.length, 0);
     await run(host.panel, `(() => { const input = document.querySelector('#instruction'); input.value = '解释这段参考资料'; input.dispatchEvent(new Event('input', {bubbles:true})); input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',bubbles:true})); input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',ctrlKey:true,isComposing:true,bubbles:true})); })()`);
     await delay(80);
@@ -189,9 +206,18 @@ if (!process.versions.electron) {
     assert.equal(requests.length, 1);
     assert.equal(uploads.length, 2);
     assert.equal(requests[0].body.content, "解释这段参考资料");
+    assert.equal(requests[0].body.budget_preset, "long");
     assert.equal(requests[0].body.attachments[0].source_kind, "text");
     assert.equal(requests[0].body.attachments[1].source_kind, "image");
     assert.doesNotMatch(await run(host.panel, "document.querySelector('#status').textContent"), /已完成/);
+    await waitFor(host.panel, "!document.querySelector('[data-budget-increase]').hidden", "运行预算未显示");
+    await run(host.panel, "document.querySelector('[data-patrol-budget] details').open=true; document.querySelector('[data-budget-preset]').value='normal'; document.querySelector('[data-budget-preset]').dispatchEvent(new Event('change')); document.querySelector('[data-budget-increase]').click()");
+    await waitFor(host.panel, "document.querySelector('[data-budget-message]').textContent.includes('本次预算已增加')", "追加预算失败");
+    assert.equal(grantChanges.length, 1);
+    assert.equal(grantChanges[0].command, "increase_budget");
+    assert.match(await run(host.panel, "document.querySelector('[data-budget-details]').textContent"), /已结算 40.*上限 500.*剩余 460/);
+    await capture(host.panel, "desktop-running-budget");
+    await run(host.panel, "document.querySelector('[data-patrol-budget] details').open=false");
     await run(host.panel, "document.querySelector('#instruction').value='A 的草稿'; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true}))");
     selectedPath = "C:\\fixture\\workspace-b";
     await run(host.panel, "document.querySelector('#binding').click()");
