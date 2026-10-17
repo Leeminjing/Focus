@@ -14,7 +14,9 @@ from pathlib import Path
 from langchain_core.tools import BaseTool
 
 from focus.config.extensions_config import get_extensions_config
-from focus.mcp.tools import MCP_SESSION_IDLE_TIMEOUT, get_mcp_tools, retain_mcp_tools
+from focus.config.layered import LayeredConfigError
+from focus.mcp.diagnostics import McpFailure
+from focus.mcp.tools import MCP_SESSION_IDLE_TIMEOUT, McpTools, get_mcp_tools, retain_mcp_tools
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +61,17 @@ async def get_mcp_tools_cached(
     workspace: str | Path | None = None, *, force_refresh: bool = False,
 ) -> list[BaseTool]:
     # 配置先解析为实际值再取摘要，不把环境变量引用或秘密值存入缓存键。
-    config = get_extensions_config("extensions_config.json", workspace=workspace)
+    try:
+        config = get_extensions_config("extensions_config.json", workspace=workspace)
+    except LayeredConfigError as exc:
+        # 整层损坏时无法知道哪些 server 被覆盖，禁止继续连接低优先级配置。
+        # 不缓存错误；文件修复后的下一次装配会重新读取。
+        tools = McpTools()
+        tools.record_failure(McpFailure(
+            server_name=Path(exc.config_path).name, scope=exc.scope, config_path=exc.config_path,
+            stage="configuration", reason=exc.reason, action=exc.action,
+        ))
+        return tools
     snapshot = {"config": config.model_dump(), "sources": config.mcp_server_sources, "errors": config.mcp_server_errors}
     digest = hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()
     key = (asyncio.get_running_loop(), digest)

@@ -46,6 +46,57 @@ def test_all_invalid_configs_are_failed_refreshes(tmp_path, isolated_mcp):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("scope", ["default", "global", "workspace"])
+@pytest.mark.parametrize("content", ['{"mcpServers":', '[]', 'null', '"secret-value"', ''])
+@pytest.mark.parametrize("force_refresh", [False, True])
+def test_broken_config_file_blocks_fallback_and_reports_repair(
+    tmp_path, isolated_mcp, fake_servers, scope, content, force_refresh,
+):
+    from focus.config.extensions_config import get_extensions_config
+    import focus.mcp.tools as mcp_tools
+
+    workspace = tmp_path / "workspace"
+    paths = {
+        "default": tmp_path / "extensions_config.json",
+        "global": tmp_path / "global" / "extensions_config.json",
+        "workspace": workspace / ".focus" / "extensions_config.json",
+    }
+    _write(paths["default"], {
+        "shared": {"enabled": True, "type": "http", "description": "test", "url": "https://test.invalid"},
+    })
+    path = paths[scope]
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    async def scenario():
+        try:
+            # 先建立成功缓存，再损坏文件；错误不能复用之前的工具或回落默认层。
+            initial = await isolated_mcp.get_mcp_tools_cached(workspace)
+            assert [tool.name for tool in initial] == ["shared"]
+            path.write_text(content, encoding="utf-8")
+            with pytest.raises(ValueError):
+                get_extensions_config("extensions_config.json", workspace=workspace)
+            tools = await isolated_mcp.get_mcp_tools_cached(workspace, force_refresh=force_refresh)
+            assert tools == [] and not tools.healthy
+            failure, = tools.failures
+            assert failure.scope == scope
+            assert failure.config_path == str(path.resolve())
+            assert failure.stage == "configuration"
+            assert "JSON" in failure.reason
+            assert str(path.resolve()) in failure.action
+            assert "修复" in failure.action
+            assert "secret-value" not in failure.reason
+            if content == '{"mcpServers":':
+                assert "第 1 行，第 15 列" in failure.reason
+            assert fake_servers[0] == ["shared"]
+            _write(path, {"shared": {"enabled": False}})
+            repaired = await isolated_mcp.get_mcp_tools_cached(workspace)
+            assert repaired == [] and repaired.healthy and repaired.failures == []
+        finally:
+            await mcp_tools.close_mcp_sessions()
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("entry, reason, action", [
     ({"type": "http"}, "url", "url"),
     ({"type": "sse"}, "url", "url"),
@@ -175,12 +226,15 @@ def test_empty_and_disabled_configs_are_healthy(tmp_path, isolated_mcp):
     asyncio.run(scenario())
 
 
-def test_refresh_service_serializes_configuration_failure(tmp_path, isolated_mcp):
+@pytest.mark.parametrize("broken_file", [False, True])
+def test_refresh_service_serializes_configuration_failure(tmp_path, isolated_mcp, broken_file):
     from backend.app.desktop.service import DesktopService
 
     _write(tmp_path / "global" / "extensions_config.json", {
         "broken": {"enabled": True, "type": "stdio", "description": "test"},
     })
+    if broken_file:
+        (tmp_path / "global" / "extensions_config.json").write_text('{"mcpServers":', encoding="utf-8")
     service = DesktopService.__new__(DesktopService)
 
     @asynccontextmanager
@@ -198,10 +252,14 @@ def test_refresh_service_serializes_configuration_failure(tmp_path, isolated_mcp
     service.list_task_skills = skills
     result = asyncio.run(service.refresh_task_capabilities("task"))
     assert result["mcp_tool_count"] == 0
-    assert result["failed_servers"] == ["broken"]
+    assert result["failed_servers"] == (["extensions_config.json"] if broken_file else ["broken"])
     assert result["skills"][0]["name"] == "shared"
     assert result["mcp_failures"][0]["scope"] == "global"  # 全局装配不伪装成工作区。
-    assert "command" in result["mcp_failures"][0]["action"]
+    failure = result["mcp_failures"][0]
+    assert ("修复" if broken_file else "command") in failure["action"]
+    assert failure["config_path"] == str(tmp_path / "global" / "extensions_config.json")
+    if broken_file:
+        assert "JSON" in failure["reason"]
     json.dumps(result)
 
 
