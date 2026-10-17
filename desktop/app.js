@@ -6515,12 +6515,11 @@ async function saveModelSettings() {
   modelSettings.errors = {};
   setStatus(uiText("settings.model_verifying", "正在保存并验证普通调用和策展输出…"));
   const payload = { models: modelSettings.snapshot.models.map(modelEntryPayload) };
-  // 凭据写入哪个变量以**当前编辑值**为准：用户可能刚把 api_key 改成另一个 $VAR
+  // 与后端 match_env_ref 一致，仅接受当前编辑值中的合法 $VAR / ${VAR} 引用。
   const editing = modelSettings.snapshot.models[modelSettings.draft?.index ?? -1];
   const reference = String(editing?.api_key || "");
-  const credentialVariable = reference.startsWith("$")
-    ? reference.slice(1)
-    : (editing?.api_key_variable || "");
+  const referenceMatch = reference.match(/^\$([A-Z_][A-Z0-9_]*)$|^\$\{([A-Z_][A-Z0-9_]*)\}$/);
+  const credentialVariable = referenceMatch ? referenceMatch[1] || referenceMatch[2] : "";
   if (modelSettings.credentialValue && credentialVariable) {
     payload.credentials = { [credentialVariable]: modelSettings.credentialValue };
   }
