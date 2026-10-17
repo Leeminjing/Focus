@@ -1,0 +1,17 @@
+.file-exits,.file-text-tools,.file-preview-pages{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--border-default,#ddd)}
+.file-exits button,.file-text-tools button,.file-preview-pages button{font:inherit;padding:5px 9px;cursor:pointer}
+.file-exits [role=status]{font-size:12px;overflow-wrap:anywhere}
+.file-preview-content{min-height:0;flex:1;overflow:auto;overflow-wrap:anywhere}
+.file-preview-content>p{padding:12px}
+.file-text-tools label{display:flex;gap:6px;align-items:center}.file-text-tools input{min-width:80px;width:140px;font:inherit}
+.file-text-body{overflow:auto;max-height:65vh;padding:12px}.file-source{margin:0;counter-reset:file-line;white-space:pre;tab-size:4;font:13px/1.65 Consolas,monospace;min-width:max-content}
+.file-source-line{display:block;min-height:1.65em;padding-right:12px}.file-source-line:before{counter-increment:file-line;content:counter(file-line);display:inline-block;width:4em;margin-right:1em;text-align:right;color:#777;user-select:none}
+.file-source-line.is-match{background:#fff0a5;color:#161616}.file-source-line.is-current{outline:2px solid #b97800;outline-offset:-2px}
+.syntax-comment{color:#6a8067}.syntax-string{color:#9e4c17}.syntax-keyword,.syntax-tag{color:#8457b3}.syntax-number{color:#237d8c}
+.file-csv{border-collapse:collapse;white-space:pre;min-width:100%}.file-csv th,.file-csv td{border:1px solid var(--border-default,#ccc);padding:6px 12px;text-align:left}.file-csv th{background:var(--surface-muted,#eee);position:sticky;top:0}
+.file-preview-image{display:block;max-width:100%;height:auto;margin:auto}
+[data-generic-file]{display:flex;flex-direction:column;min-height:0;height:100%;overflow:hidden}
+.file-panel-head:has(.file-exits){flex-wrap:wrap}.file-panel-head>.file-exits{flex-basis:100%;padding:0;border:0}
+.file-version [data-version-preview]{min-height:100px}.file-version .file-exits{padding-left:0}
+.file-version [role=tabpanel]:has([data-version-preview]){height:min(45vh,360px)}
+#version-detail:has([data-version-preview]){max-height:min(65vh,520px)}

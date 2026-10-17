@@ -26,7 +26,8 @@
       load(snapshot) { eventIds.clear(); return publish({ snapshot, related: null, live: null, connection: null, events: [], cursor: 0, pendingControl: null, error: null }); },
       reconcile(snapshot) { return publish({ snapshot, pendingControl: null, error: null }); },
       projectConnection(connection) { return publish({ connection }); },
-      clearLive(connection) { return publish({ live: null, connection, cursor: 0 }); },
+      projectHistory(history) { return publish({ history }); },
+      clearLive(connection) { return publish({ live: null, history: null, connection, cursor: 0 }); },
       projectLive(projection, connection = null) {
         if (!projection?.loop) return current;
         const loop = projection.loop.state;

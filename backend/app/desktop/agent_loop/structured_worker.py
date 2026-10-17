@@ -1,6 +1,6 @@
 r"""本文件对外提供 StructuredWorkerModel 及其 provider 单请求窗口、输出预留和真实用量读取接口。
 
-输入为 AppConfig、可选模型名、Pydantic 输出 schema、角色专属 authority prompt 与冻结 JSON payload；输出为严格 schema 校验的
+输入为 AppConfig、可选模型名（未指定时使用策展默认）、Pydantic 输出 schema、角色专属 authority prompt 与冻结 JSON payload；输出为严格 schema 校验的
 结构化模型结果、请求窗口、最近一次调用及累计 ModelUsage，并标明 provider 是否报告真实 Token 与可用模型元数据。具体工作流为按 curation 配置读取窗口与输出限制，创建无工具 chat model，使用 prompt_json 或 provider
 structured output 调用，统一剥离 fenced JSON、校验 extra-forbid schema，并以独立 callback 记录每次调用 usage 或显式标记缺失；本模块不决定业务阶段或状态。
 request_messages 提供冻结消息；estimate_input_tokens 复用真实 Runnable 的绑定参数和 adapter/SDK 序列化，
@@ -28,9 +28,10 @@ from openai.lib._parsing import type_to_response_format_param
 
 
 class StructuredWorkerModel:
-    def __init__(self, app_config: AppConfig, model_name: str | None = None) -> None:
+    def __init__(self, app_config: AppConfig, model_name: str | None = None, *, max_output_tokens: int | None = None) -> None:
         self._app_config = app_config
         self._model_name = model_name
+        self._max_output_tokens = max_output_tokens
         self.usage = ModelUsage()
         self.last_usage = ModelUsage()
         self.last_usage_reported = False
@@ -53,14 +54,17 @@ class StructuredWorkerModel:
         return self._model_config().curation_max_output_tokens
 
     def _model_config(self):
-        return self._app_config.get_model(
-            self._model_name or self._app_config.resolve_default_model_name()
+        config = self._app_config.get_model(
+            self._model_name or self._app_config.resolve_curation_model_name()
+        )
+        return config if self._max_output_tokens is None else config.model_copy(
+            update={"curation_max_output_tokens": self._max_output_tokens}
         )
 
     def _chat_model(self):
         config = self._model_config()
         return create_chat_model(name=config.name, app_config=self._app_config,
-                                 max_tokens=config.curation_max_output_tokens)
+                                 max_tokens=self.max_output_tokens)
 
     @staticmethod
     def _structured_request(model, schema, method):

@@ -8,7 +8,7 @@ Patrol 必须完整列出可治理 Context 与 action:index 新目标，Kernel �
 示例：equipment = await resolve_directive_equipment(session, loop, directive)。
 """
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 
 from backend.app.desktop.agent_loop.models import LoopAction, LoopContextMembership, LoopDecision, LoopDelegationGrant
 from backend.app.desktop.context_curation.models import CurationLane
@@ -66,12 +66,16 @@ async def resolve_context_equipment(session, loop, context_id, *, overrides=None
     if membership is None:
         raise ValueError("目标 Context 缺少当前 Loop membership")
     lane = await session.get(CurationLane, membership.lane_id) if membership and membership.lane_id else None
+    grant = await session.scalar(select(LoopDelegationGrant).where(
+        LoopDelegationGrant.loop_id == loop.loop_id, LoopDelegationGrant.status == "active"))
+    return _context_equipment(loop, membership, lane, grant, overrides=overrides)
+
+
+def _context_equipment(loop, membership, lane, grant, *, overrides=None):
     workspace_mode = (lane.lane_policy or {}).get("workspace_mode") if lane is not None else None
     read_only = lane is not None and (workspace_mode == "read_only" or
         (workspace_mode is None and membership.role != "primary"))
     source = effective_equipment(loop.equipment or {}, read_only=read_only)
-    grant = await session.scalar(select(LoopDelegationGrant).where(
-        LoopDelegationGrant.loop_id == loop.loop_id, LoopDelegationGrant.status == "active"))
     if grant is None:
         raise ValueError("Context 缺少当前有效授权")
     source["permissions"] = [item for item in source["permissions"] if item in grant.permission_scope]
@@ -110,19 +114,57 @@ async def resolve_directive_equipment(session, loop, directive):
 
 
 async def round_permission_state(session, run):
-    from datetime import UTC, datetime
+    return (await round_permission_states(session, (run,)))[getattr(run, "run_id", "")]
+
+
+async def round_permission_states(session, runs):
+    """固定批次数读取授权依赖；单 Run 与 Live 快照使用相同的验证政策。"""
     from backend.app.desktop.agent_loop.models import AgentLoop, LoopDirective, LoopRound
-    binding = (run.equipment or {}).get("round_authorization")
-    if not binding:
-        return {"valid": False, "reason": "missing_round_authorization"}
-    loop = await session.get(AgentLoop, run.loop_id)
-    round_row = await session.get(LoopRound, run.round_id)
-    directive = await session.get(LoopDirective, run.directive_id) if run.directive_id else None
-    grant = await session.scalar(select(LoopDelegationGrant).where(
-        LoopDelegationGrant.loop_id == run.loop_id,
-        LoopDelegationGrant.revision == binding.get("grant_revision")))
-    decision = await session.get(LoopDecision, directive.decision_id) if directive else None
-    action = await session.get(LoopAction, directive.action_id) if directive else None
+
+    runs = tuple(runs)
+    bound = [run for run in runs if (run.equipment or {}).get("round_authorization")]
+    result = {getattr(run, "run_id", ""): {"valid": False, "reason": "missing_round_authorization"} for run in runs}
+    if not bound:
+        return result
+
+    async def rows(model, key, identities):
+        identities = {value for value in identities if value is not None}
+        return {} if not identities else {getattr(row, key): row for row in await session.scalars(
+            select(model).where(getattr(model, key).in_(identities)))}
+
+    loops = await rows(AgentLoop, "loop_id", (run.loop_id for run in bound))
+    rounds = await rows(LoopRound, "round_id", (run.round_id for run in bound))
+    directives = await rows(LoopDirective, "directive_id", (run.directive_id for run in bound))
+    decisions = await rows(LoopDecision, "decision_id", (row.decision_id for row in directives.values()))
+    actions = await rows(LoopAction, "action_id", (row.action_id for row in directives.values()))
+    grant_keys = {(run.loop_id, run.equipment["round_authorization"].get("grant_revision")) for run in bound}
+    grants = {(row.loop_id, row.revision): row for row in await session.scalars(
+        select(LoopDelegationGrant).where(tuple_(LoopDelegationGrant.loop_id, LoopDelegationGrant.revision).in_(grant_keys)
+            | (LoopDelegationGrant.loop_id.in_(loops) & (LoopDelegationGrant.status == "active"))))}
+    active_grants = {row.loop_id: row for row in grants.values() if row.status == "active"}
+    context_keys = {(run.loop_id, run.task_id) for run in bound}
+    memberships = {(row.loop_id, row.context_id): row for row in await session.scalars(
+        select(LoopContextMembership).where(
+            tuple_(LoopContextMembership.loop_id, LoopContextMembership.context_id).in_(context_keys),
+            LoopContextMembership.status.in_(("active", "paused"))))}
+    lanes = await rows(CurationLane, "lane_id", (row.lane_id for row in memberships.values()))
+    for run in bound:
+        binding = run.equipment["round_authorization"]
+        directive = directives.get(run.directive_id)
+        membership = memberships.get((run.loop_id, run.task_id))
+        result[getattr(run, "run_id", "")] = _round_permission_state(
+            run, binding, loops.get(run.loop_id), rounds.get(run.round_id), directive,
+            grants.get((run.loop_id, binding.get("grant_revision"))),
+            decisions.get(directive.decision_id) if directive else None,
+            actions.get(directive.action_id) if directive else None,
+            membership, lanes.get(membership.lane_id) if membership else None, active_grants.get(run.loop_id))
+    return result
+
+
+def _round_permission_state(run, binding, loop, round_row, directive, grant, decision, action,
+                            membership, lane, active_grant):
+    from datetime import UTC, datetime
+
     identity = f"action:{action.position}" if action and action.action_type in _DERIVED_ACTIONS else run.task_id
     selected = {row["context_id"]: row["access_mode"]
                 for row in (decision.intent.get("context_permissions", ()) if decision else ())}
@@ -141,9 +183,11 @@ async def round_permission_state(session, run):
         and _MODES[mode] <= _MODES.get((loop.equipment or {}).get("access_mode", "read-only"), -1)
         and binding.get("round_id") == run.round_id and binding.get("loop_id") == run.loop_id
         and binding.get("context_id") == run.task_id and binding.get("decision_id") == directive.decision_id)
+    if valid and membership is None:
+        valid = False
     if valid:
         try:
-            current = await resolve_context_equipment(session, loop, run.task_id)
+            current = _context_equipment(loop, membership, lane, active_grant)
             valid = (_MODES[mode] <= _MODES[current["access_mode"]]
                      and set((run.equipment or {}).get("permissions", ())).issubset(current["permissions"]))
         except ValueError:

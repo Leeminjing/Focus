@@ -129,10 +129,20 @@ class CuratorCoordinationStage:
                     if app_config is not None
                     else None
                 ),
+                semantic_interpreter_factory=(
+                    (lambda: RoleBoundStructuredModel(app_config, "semantic_index_interpreter"))
+                    if app_config is not None else None
+                ),
             )
             if checkpointer is not None
             else None
         )
+        from backend.app.desktop.agent_loop.context_expansion.index_prewarm import LocalIndexPrewarmer
+
+        self._prewarmer = LocalIndexPrewarmer(sessions, self._index_service)
+
+    async def prewarm_indexes(self, loop_id):
+        return await self._prewarmer.drain(loop_id)
 
     def scopes(self, observation: LoopObservationEnvelope) -> tuple[dict, ...]:
         eligible = tuple(item for item in observation.portfolio_frontier if item.get("revision_id"))

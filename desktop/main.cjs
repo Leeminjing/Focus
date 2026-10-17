@@ -427,6 +427,15 @@ ipcMain.handle("focus:open-external", async (event, value) => {
   return true;
 });
 
+const fileActions = require("./file-actions.cjs").createFileActions({
+  shell, dialog, BrowserWindow, apiBase: () => desktopOrigin, session: () => process.env.FOCUS_DESKTOP_SESSION,
+});
+ipcMain.handle("focus:file-action", async (event, request) => {
+  assertDesktopSender(event);
+  return fileActions.run(event, request);
+});
+app.on("will-quit", () => { void fileActions.cleanup(); });
+
 ipcMain.handle("focus:set-zoom-level", (event, value) => {
   assertDesktopSender(event);
   const level = clampZoomLevel(value);
@@ -464,7 +473,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on("window-all-closed", () => { if (!patrolHost || fatalErrorShown) app.quit(); });
 }
 app.on("before-quit", event => {
-  if (!fatalErrorShown && patrolHost?.hasUnconfirmedInput()) {
+  if (!fatalErrorShown && patrolHost && !patrolHost.canQuit()) {
     event.preventDefault();
     patrolHost.requestQuit().catch(error => console.error("退出 Focus 失败:", error));
     return;

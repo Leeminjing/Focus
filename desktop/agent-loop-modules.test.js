@@ -867,6 +867,21 @@ test("Curator activity formats structured scopes and escapes labels", () => {
   assert.doesNotMatch(html, /\[object Object\]|<Testing>/);
 });
 
+test("index preparation shows the current frozen observation stage and excludes stale progress", () => {
+  const progress = (observationId, summary) => ({ event_id: summary, kind: "semantic_index.progress", entity_type: "loop_activity",
+    summary, occurred_at: "2026-10-17T01:00:00Z", detail: { observation_id: observationId, round_id: "r1", index_phase: "local", status: "running" } });
+  const state = { snapshot: { loop_id: "l1", status: "running" }, live: {
+    round: { entity_id: "r1", state: { number: 1 } },
+    patrol_session: { state: { phase: "dispatching_curators", observation_id: "o1", safe_summary: "准备分派 Curator" } },
+    activity_timeline: [progress("o1", "局部投影 · 局部 2/4 段"), progress("old", "旧版本进度")],
+  } };
+  const html = LoopView.render(state);
+  assert.match(html, /准备上下文索引/);
+  assert.match(html, /<strong>局部投影 · 局部 2\/4 段<\/strong>/);
+  state.live.activity_timeline[0].detail.status = "ready";
+  assert.match(LoopView.render(state), /<strong>准备分派 Curator<\/strong>/);
+});
+
 test("first round displays committed Context Run activity before Patrol exists", () => {
   const html = LoopView.render({
     snapshot: {

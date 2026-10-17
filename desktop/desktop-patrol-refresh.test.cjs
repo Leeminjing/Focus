@@ -12,6 +12,8 @@ const path = require("node:path");
 const { createDocument, createElement } = require("./test-dom.cjs");
 const Feedback = require("./workspace-patrol-feedback.js");
 const Inputs = require("./workspace-patrol-inputs.js");
+const Facts = require("./loop-facts-view.js");
+const markdownit = require("./vendor/markdown-it.min.js");
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const conversation = text => ({ messages: [{ message: { role: "assistant", content: text } }] });
 const projection = (revision = "r1", patch = {}) => ({ loop_id: "loop-a", loop: { state: { status: "running" } },
@@ -24,7 +26,7 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
   const document = { ...createDocument(), body, querySelector: selector => body.querySelector(selector), hidden: false,
     addEventListener: (...args) => body.addEventListener(...args) };
   let state = { projection: null, connection: { status: "live" } }, listener;
-  const events = {}, calls = [], states = [], stores = new Map();
+  const events = {}, calls = [], states = [], stores = new Map(), copied = [];
   const store = id => { if (!stores.has(id)) stores.set(id, Inputs.create()); return stores.get(id); };
   const api = { workspacePatrol: async id => ({ loop_id: `loop-${id}` }), workspaceInputs: async () => ({ items: [] }),
     conversation: (...args) => { calls.push(args); return read(...args); } };
@@ -33,25 +35,166 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
     ready: async () => ({ state: { workspaceId: "a" }, panelVisible: visible }),
     setState: async value => { states.push(value); }, resizePanel: async () => {} };
   const intake = { store, hasUnfinished: () => false, isSending: () => false, remember() {}, claimUnbound() {},
+    flush: async () => {},
     readBinding: () => null, reconcile: async () => {},
     workspace: async id => ({ workspace_id: id, display_name: id }), resourceLimits: async () => ({}),
     history: (id, page) => store(id).history(page) };
-  const window = { focusDesktop: { runtime: () => ({}), patrol: bridge }, addEventListener() {} };
+  const window = { markdownit, focusDesktop: { runtime: () => ({}), patrol: bridge }, addEventListener() {} };
   const context = vm.createContext({ window, document, location: { search: "?surface=panel" }, URLSearchParams,
-    AbortController, requestAnimationFrame: callback => setImmediate(callback), localStorage: {}, ResizeObserver: class { observe() {} disconnect() {} },
+    AbortController, navigator: { clipboard: { writeText: async text => copied.push(text) } }, requestAnimationFrame: callback => setImmediate(callback), localStorage: {}, ResizeObserver: class { observe() {} disconnect() {} },
     FocusLoopApi: { create: () => api }, FocusLoopLiveStore: { create: () => ({ get: () => state, subscribe: callback => { listener = callback; callback(state); } }) },
     FocusLoopLiveConnection: { create: () => ({ start: async () => {}, stop() {} }) },
     FocusWorkspacePatrolIntake: { create: () => intake }, FocusWorkspacePatrolMaterialPreview: { create: () => ({ render() {}, dispose() {} }) },
     FocusWorkspacePatrolBudget: { markup: () => "", create: () => ({ update() {}, syncDraft() {}, dispose() {} }) },
-    FocusAccessMode: { readNewSessionDefault() {} }, FocusWorkspacePatrolFeedback: Feedback, FocusWorkspacePatrolInputs: Inputs,
+    FocusAccessMode: { readNewSessionDefault() {} }, FocusWorkspacePatrolFeedback: Feedback, FocusWorkspacePatrolInputs: Inputs, FocusLoopFactsView: Facts,
     FocusLoopLiveSelectors: { selectFacts: value => value.files || [] } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-references.js"), "utf8"), context);
   await vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-panel.js"), "utf8"), context);
-  return { calls, states, body, events, api,
-    async emit(value) { state = { ...state, projection: value }; listener(state); await tick(); },
+  return { calls, states, body, events, api, copied, store,
+    async emit(value, connection = state.connection) { state = { ...state, projection: value, connection }; listener(state); await tick(); },
     async visibility(value) { events.visibility?.(value); await tick(); },
     results: () => body.querySelector("#results") };
 }
+
+test("panel controls follow authoritative status and connection, including waiting for new input", async () => {
+  const f = await panel(), toggle = f.body.querySelector("#toggle-work"), stop = f.body.querySelector("#stop-work");
+  assert.equal(toggle.hidden, true);
+  assert.equal(stop.disabled, true);
+  await f.emit(projection());
+  assert.equal(toggle.hidden, false);
+  assert.equal(toggle.textContent, "暂停");
+  assert.equal(toggle.disabled, false);
+  assert.equal(stop.closest(".panel-menu") != null, true);
+  await f.emit(projection("r1", { loop: { state: { status: "waiting_user", waiting_reason: "awaiting_input" } } }));
+  assert.equal(toggle.disabled, false);
+  assert.equal(f.body.querySelector("#activity").hidden, false);
+  await f.emit(projection("r1", { loop: { state: { status: "waiting_user", waiting_reason: "approval" } } }));
+  assert.equal(toggle.hidden, true);
+  assert.equal(stop.disabled, false);
+  await f.emit(projection("r1", { loop: { state: { status: "paused" } } }));
+  assert.equal(toggle.textContent, "继续");
+  assert.equal(toggle.getAttribute("aria-label"), "继续当前工作");
+  await f.emit(projection(), { status: "reconnecting" });
+  assert.equal(toggle.disabled, true);
+  assert.equal(stop.disabled, true);
+  for (const status of ["stopped", "completed", "failed"]) {
+    await f.emit(projection("r1", { loop: { state: { status } } }), { status: "live" });
+    assert.equal(toggle.hidden, true);
+    assert.equal(stop.disabled, true);
+  }
+});
+
+test("pause, resume and secondary stop reuse control API with separate requesting, accepted and applied feedback", async () => {
+  const f = await panel(), toggle = f.body.querySelector("#toggle-work"), stop = f.body.querySelector("#stop-work");
+  const message = f.body.querySelector("#control-feedback"), commands = [];
+  let accept;
+  f.api.control = (id, command) => { commands.push([id, command]); return new Promise(resolve => { accept = resolve; }); };
+  const emitStatus = (status, revision) => f.emit(projection("r1", { loop: { state: { status, revision } } }));
+  await emitStatus("running", 1);
+  toggle.dispatchEvent({ type: "click" });
+  assert.match(message.textContent, /暂停请求中/);
+  toggle.dispatchEvent({ type: "click" }); stop.dispatchEvent({ type: "click" });
+  assert.equal(commands.length, 1, "在途操作阻止重复点击和冲突命令");
+  accept({ revision: 3 }); await tick();
+  assert.match(message.textContent, /暂停已受理/);
+  assert.equal(toggle.textContent, "暂停", "受理不能乐观切换成继续");
+  await emitStatus("paused", 2);
+  assert.match(message.textContent, /已受理/, "旧投影不能确认本次操作");
+  await emitStatus("paused", 3);
+  assert.match(message.textContent, /暂停已生效/);
+  assert.equal(toggle.textContent, "继续");
+  assert.equal(toggle.disabled, false);
+  toggle.dispatchEvent({ type: "click" });
+  accept({ revision: 4 }); await tick();
+  await emitStatus("running", 4);
+  assert.match(message.textContent, /继续已生效/);
+  const menu = stop.closest(".panel-menu"); menu.open = true;
+  stop.dispatchEvent({ type: "click" });
+  assert.equal(menu.open, false);
+  accept({ revision: 5 }); await tick();
+  await emitStatus("stopped", 5);
+  assert.match(message.textContent, /停止已生效/);
+  assert.equal(toggle.hidden, true);
+  assert.equal(stop.disabled, true);
+  assert.deepEqual(commands, [["loop-a", "pause"], ["loop-a", "resume"], ["loop-a", "stop"]]);
+});
+
+test("Live can confirm a control before its HTTP response without allowing another request in flight", async () => {
+  const f = await panel(), toggle = f.body.querySelector("#toggle-work");
+  let accept;
+  f.api.control = () => new Promise(resolve => { accept = resolve; });
+  await f.emit(projection()); toggle.dispatchEvent({ type: "click" });
+  await f.emit(projection("r1", { loop: { state: { status: "paused", revision: 2 } } }));
+  assert.equal(toggle.disabled, true);
+  accept({ revision: 2 }); await tick();
+  assert.equal(toggle.disabled, false);
+  assert.match(f.body.querySelector("#control-feedback").textContent, /暂停已生效/);
+});
+
+test("reconnecting the same loop preserves an in-flight control and its acceptance", async () => {
+  const f = await panel(), toggle = f.body.querySelector("#toggle-work"), reconnect = f.body.querySelector("#reconnect");
+  let accept, calls = 0;
+  f.api.control = () => { calls++; return new Promise(resolve => { accept = resolve; }); };
+  await f.emit(projection()); toggle.dispatchEvent({ type: "click" });
+  reconnect.dispatchEvent({ type: "click" });
+  toggle.dispatchEvent({ type: "click" });
+  assert.equal(calls, 1);
+  accept({ revision: 2 }); await tick();
+  reconnect.dispatchEvent({ type: "click" });
+  assert.match(f.body.querySelector("#control-feedback").textContent, /已受理/);
+  assert.equal(toggle.disabled, true);
+  await f.emit(projection("r1", { loop: { state: { status: "paused", revision: 2 } } }));
+  assert.match(f.body.querySelector("#control-feedback").textContent, /已生效/);
+  assert.equal(toggle.disabled, false);
+});
+
+test("failed controls surface errors and restore controls for an explicit retry", async () => {
+  const f = await panel(), toggle = f.body.querySelector("#toggle-work");
+  f.api.control = async () => { throw new Error("控制请求失败"); };
+  await f.emit(projection()); toggle.dispatchEvent({ type: "click" }); await tick();
+  assert.match(f.body.querySelector("#error").textContent, /控制请求失败/);
+  assert.equal(f.body.querySelector("#control-feedback").hidden, true);
+  assert.equal(toggle.disabled, false);
+  assert.equal(toggle.textContent, "暂停");
+  assert.equal(toggle.hasAttribute("aria-busy"), false);
+});
+
+test("late control responses and failures cannot affect a different workspace", async () => {
+  for (const reject of [false, true]) {
+    const f = await panel(), toggle = f.body.querySelector("#toggle-work");
+    let finish;
+    f.api.control = () => new Promise((resolve, fail) => { finish = () => reject ? fail(new Error("旧工作区失败")) : resolve({ revision: 2 }); });
+    await f.emit(projection()); toggle.dispatchEvent({ type: "click" });
+    await f.events.open({ workspaceId: "b" });
+    assert.equal(toggle.hidden, true, "不得使用上一工作区尚未清除的投影");
+    await f.emit(projection("r1", { loop_id: "loop-b" }));
+    finish(); await tick();
+    assert.equal(f.body.querySelector("#control-feedback").hidden, true);
+    assert.equal(f.body.querySelector("#error").textContent, "");
+    assert.equal(toggle.disabled, false);
+  }
+});
+
+test("a newer authoritative state releases an accepted control superseded by other work", async () => {
+  const f = await panel(), toggle = f.body.querySelector("#toggle-work");
+  f.api.control = async () => ({ revision: 2 });
+  await f.emit(projection("r1", { loop: { state: { status: "paused", revision: 1 } } }));
+  toggle.dispatchEvent({ type: "click" }); await tick();
+  await f.emit(projection("r1", { loop: { state: { status: "waiting_user", waiting_reason: "awaiting_input", revision: 3 } } }));
+  assert.equal(f.body.querySelector("#control-feedback").hidden, true);
+  assert.equal(toggle.disabled, false);
+});
+
+test("typing preserves loaded history DOM until a history change", async () => {
+  const f = await panel();
+  f.store("a").history({ items: [{ submission_id: "old", content: "existing history", created_at: "2020" }], next_before: null });
+  const row = f.body.querySelector("#history-items article");
+  assert.ok(row);
+  for (let i = 0; i < 100; i++) f.store("a").edit({ content: String(i) });
+  assert.equal(f.body.querySelector("#history-items article"), row);
+  f.store("a").history({ items: [{ submission_id: "new", content: "new history", created_at: "2021" }], next_before: null });
+  assert.notEqual(f.body.querySelector("#history-items article"), row);
+});
 
 test("initially hidden panel keeps robot status live without reading answers or mutating results", async () => {
   const f = await panel({ visible: false });
@@ -64,6 +207,92 @@ test("initially hidden panel keeps robot status live without reading answers or 
   await f.visibility(true);
   assert.equal(f.calls.length, 1);
   assert.match(results.textContent, /r2/);
+});
+
+test("ready answers appear while another context is pending; failed cards retry only their own revision", async () => {
+  let release, failed = true;
+  const f = await panel({ read: async (_loop, context) => {
+    if (context === "slow") return new Promise(resolve => { release = resolve; });
+    if (context === "broken" && failed) { failed = false; throw new Error("offline"); }
+    return conversation(`${context} 已就绪`);
+  } });
+  const contexts = Object.fromEntries(["slow", "fast", "broken"].map((id, i) => [id,
+    { entity_id: id, updated_sequence: 3-i, state: { title: id, current_revision_id: `r-${id}` } }]));
+  await f.emit(projection("r1", { contexts }));
+  const answers = f.body.querySelector("#answers");
+  assert.match(answers.textContent, /fast 已就绪/, "已就绪回答不能被慢读取阻塞");
+  assert.match(answers.textContent, /回答读取失败/);
+  const ready = answers.querySelector('[data-answer-context="fast"]');
+  const retry = answers.querySelector('[data-answer-context="broken"] button');
+  assert.equal(retry.textContent, "重试读取");
+  retry.dispatchEvent({ type: "click" }); await tick();
+  assert.match(answers.textContent, /broken 已就绪/);
+  assert.deepEqual(f.calls.map(call => call[1]), ["slow", "fast", "broken", "broken"]);
+  assert.equal(answers.querySelector('[data-answer-context="fast"]'), ready);
+  release(conversation("slow 终于返回")); await tick();
+  assert.match(answers.textContent, /slow 终于返回/);
+  assert.deepEqual(answers.children.map(card => card.dataset.answerContext), ["slow", "fast", "broken"]);
+});
+
+test("answers expand as Markdown and copy the full source or an individual code block", async () => {
+  const text = '# 可读回答\n\n**结论**\n\n```js\nconst value = 1;\n```\n\n<script>unsafe()</script>';
+  const f = await panel({ read: async () => conversation(text) });
+  await f.emit(projection());
+  const card = f.body.querySelector("#answers article"), reading = card.querySelector(".answer-reading");
+  assert.ok(reading, "按需展开阅读区");
+  assert.ok(!reading.open);
+  reading.open = true; reading.dispatchEvent({ type: "toggle" });
+  assert.equal(f.body.querySelector("#panel").dataset.reading, "true");
+  assert.equal(reading.querySelector("strong").textContent, "结论");
+  assert.equal(reading.querySelector("script"), null);
+  const buttons = reading.querySelectorAll("button");
+  buttons.find(button => button.textContent === "复制全文").dispatchEvent({ type: "click" }); await tick();
+  buttons.find(button => button.textContent === "复制代码").dispatchEvent({ type: "click" }); await tick();
+  assert.deepEqual(f.copied, [text, 'const value = 1;\n']);
+  reading.open = false; reading.dispatchEvent({ type: "toggle" });
+  assert.equal(f.body.querySelector("#panel").dataset.reading, "false");
+});
+
+test("artifact names open fixed version details and can be referenced without leaving the panel", async () => {
+  const file = { path: "reports/result.md", result_key: "result-v1", sha256: "hash-v1", slot_id: "slot-a" };
+  const f = await panel();
+  const details = [];
+  f.api.factDetail = async (...args) => { details.push(args); return { file: { ...file, after: { available: true, text: "产物内容" } } }; };
+  await f.emit(projection("r1", { files: [{ fact_id: "artifact-a", revision: 2, kind: "artifact", file }] }));
+  const artifacts = f.body.querySelector("#artifacts");
+  assert.match(artifacts.textContent, /result.md/);
+  artifacts.querySelectorAll("button").find(button => button.textContent === "引用").dispatchEvent({ type: "click" }); await tick();
+  assert.equal(f.store("a").get().draft.file_refs[0].result_key, "result-v1");
+  assert.equal(f.store("a").get().draft.file_refs[0].revision, 2);
+  artifacts.querySelectorAll("button").find(button => button.textContent === "打开").dispatchEvent({ type: "click" }); await tick();
+  assert.equal(details[0][0], "loop-a");
+  assert.equal(details[0][1], "artifact-a");
+  assert.equal(details[0][3], 2);
+  assert.equal(f.body.querySelector("#version-detail").hidden, false);
+});
+
+test("other contexts and title changes preserve an expanded answer and its Markdown DOM", async () => {
+  const f = await panel();
+  const p = projection();
+  await f.emit(p);
+  const reading = f.body.querySelector(".answer-reading");
+  reading.open = true; reading.dispatchEvent({ type:"toggle" });
+  const markdown = reading.querySelector(".answer-markdown");
+  p.contexts.c.state.title = "更新后的标题";
+  p.contexts.other = { entity_id:"other", updated_sequence:2, state:{ title:"另一项回答", current_revision_id:"other-r1" } };
+  await f.emit(p);
+  assert.equal(f.body.querySelector('[data-answer-context="c"] h2').textContent, "更新后的标题");
+  assert.equal(f.body.querySelector('[data-answer-context="c"] .answer-reading'), reading);
+  assert.equal(reading.open, true);
+  assert.equal(reading.querySelector(".answer-markdown"), markdown);
+  assert.equal(f.calls.length, 2, "新增 Context 只读取新卡片");
+  await f.visibility(false); await f.visibility(true);
+  assert.equal(f.body.querySelector('[data-answer-context="c"] .answer-reading'), reading);
+  assert.equal(reading.open, true);
+  assert.equal(f.calls.length, 2);
+  await f.emit(projection("r2"));
+  assert.equal(f.body.querySelector("#panel").dataset.reading, "false", "新版本收起旧版本阅读区域");
+  assert.doesNotMatch(f.results().textContent, /other-r1/);
 });
 
 test("progress and files refresh independently, including while an answer read is pending", async () => {

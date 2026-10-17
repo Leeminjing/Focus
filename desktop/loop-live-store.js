@@ -14,8 +14,10 @@
   "use strict";
 
   function create() {
+    const emptyHistory = () => Object.freeze({ items: Object.freeze([]), next_before_sequence: null, loading: false, error: null, initialized: false, older: false });
     let current = Object.freeze({
       projection: null,
+      history: emptyHistory(),
       connection: Object.freeze({ status: "idle", error: null, retry_count: 0 }),
       ui: Object.freeze({ selected_context_id: null, filters: Object.freeze({ fact_kind: "all", fact_status: "all", fact_scope: "current" }), composer_draft: "", scroll_anchors: Object.freeze({}), expanded_ids: Object.freeze([]) }),
     });
@@ -28,12 +30,17 @@
     return Object.freeze({
       get: () => current,
       subscribe(listener) { listeners.add(listener); listener(current); return () => listeners.delete(listener); },
-      reset() { return publish({ projection: null, connection: Object.freeze({ status: "idle", error: null, retry_count: 0 }) }); },
+      reset() { return publish({ projection: null, history: emptyHistory(), connection: Object.freeze({ status: "idle", error: null, retry_count: 0 }) }); },
       replaceSnapshot(snapshot) {
         const projection = Schema.validateSnapshot(snapshot);
         const selected = current.ui.selected_context_id;
         const selected_context_id = selected && projection.contexts[selected] ? selected : Object.keys(projection.contexts)[0] || null;
-        return publish({ projection, ui: Object.freeze({ ...current.ui, selected_context_id }) });
+        return publish({ projection, history: emptyHistory(), ui: Object.freeze({ ...current.ui, selected_context_id }) });
+      },
+      setHistory(patch) {
+        const history = { ...current.history, ...patch };
+        if (patch.items) history.items = Object.freeze(patch.items.map(item => Object.freeze({ ...item })));
+        return publish({ history: Object.freeze(history) });
       },
       applyEvent(event) { return publish({ projection: Reducer.reduce(current.projection, event) }); },
       applyEvents(events) { return publish({ projection: Reducer.reduceBatch(current.projection, events) }); },

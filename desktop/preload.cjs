@@ -18,6 +18,11 @@ function recoveryCall(operation, value) {
   if (result?.error) throw new Error(result.error);
   return result.value;
 }
+async function recoveryWrite(operation, value) {
+  const result = await ipcRenderer.invoke(`focus:patrol-recovery-${operation}`, value);
+  if (result?.error) throw new Error(result.error);
+  return result.value;
+}
 window.addEventListener("DOMContentLoaded", () => {
   if (nativeMaterial) document.documentElement.dataset.nativeMaterial = "acrylic";
 }, { once: true });
@@ -31,6 +36,7 @@ contextBridge.exposeInMainWorld("focusDesktop", {
   }),
   selectWorkspace: () => ipcRenderer.invoke("focus:select-workspace"),
   openExternal: url => ipcRenderer.invoke("focus:open-external", url),
+  fileAction: request => ipcRenderer.invoke("focus:file-action", request),
   setZoomLevel: level => ipcRenderer.invoke("focus:set-zoom-level", level),
   getZoomLevel: () => ipcRenderer.invoke("focus:get-zoom-level"),
   notifications: {
@@ -43,8 +49,10 @@ contextBridge.exposeInMainWorld("focusDesktop", {
     enabled: patrolEnabled,
     recovery: {
       read: () => recoveryCall("read"),
-      put: (id, bytes) => recoveryCall("put", { id, bytes }),
-      save: state => recoveryCall("save", state),
+      put: (id, bytes) => recoveryWrite("put", { id, bytes }),
+      save: state => recoveryWrite("save", state),
+      onFlush: callback => subscribe("focus:patrol-recovery-flush", callback),
+      flushed: result => ipcRenderer.invoke("focus:patrol-recovery-flushed", result),
     },
     openPanel: target => ipcRenderer.invoke("focus:patrol-open", target),
     hidePanel: () => ipcRenderer.invoke("focus:patrol-hide-panel"),

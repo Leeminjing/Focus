@@ -62,7 +62,7 @@ def test_estimate_matches_sdk_request_including_bound_output_contract(monkeypatc
                  if protocol == "responses" else chat_class(**options))
         config = SimpleNamespace(name="fixture", model="fixture", curation_output_method=method,
                                  curation_max_output_tokens=1000, context_window=100000)
-        app = SimpleNamespace(get_model=lambda name: config, resolve_default_model_name=lambda: "fixture")
+        app = SimpleNamespace(get_model=lambda name: config, resolve_curation_model_name=lambda: "fixture")
         monkeypatch.setattr(structured_worker, "create_chat_model", lambda **kwargs: model)
         worker = structured_worker.StructuredWorkerModel(app)
         try:
@@ -91,7 +91,7 @@ def test_full_request_window_rejects_before_reservation_or_invocation(monkeypatc
     inputs = frozen_inputs()
     config = SimpleNamespace(name="fixture", model="fixture", curation_output_method=method,
                              curation_max_output_tokens=1000, context_window=10622)
-    app = SimpleNamespace(get_model=lambda name: config, resolve_default_model_name=lambda: "fixture")
+    app = SimpleNamespace(get_model=lambda name: config, resolve_curation_model_name=lambda: "fixture")
     model = FocusResponsesChatModel(model="fixture", api_key="fixture", max_tokens=1000,
                                    provider_contract=ProviderContract(provider="openai", protocol="responses"))
     monkeypatch.setattr(structured_worker, "create_chat_model", lambda **kwargs: model)
