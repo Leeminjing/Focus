@@ -24,6 +24,7 @@ import pytest
 from focus.sandbox import SandboxUnavailable, ShellExecutionRequest, WindowsAclBackend
 from focus.security.execution import CallExecutionBinding
 from focus.security.policy import AccessMode
+from focus.sandbox.recovery import ShellRecoveryEvidence
 from windows_sandbox_fixture import held_outside_handle, windows_sandbox_roots
 
 
@@ -49,6 +50,22 @@ def test_missing_runner_fails_before_target_can_run(tmp_path):
     with pytest.raises(SandboxUnavailable, match="runner"):
         backend.run(request)
     assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 持久退出回执验收")
+def test_status_read_failure_retains_correlated_receipt_for_recovery(windows_sandbox_roots, acl_backend, tmp_path, monkeypatch):
+    evidence = ShellRecoveryEvidence(tmp_path / "receipts", boot_provider=lambda: None)
+    execution = evidence.prepare("run-1", "attempt-1", "call-1")
+    def unreadable(path):
+        raise SandboxUnavailable("injected status read failure")
+    monkeypatch.setattr(acl_backend, "_read_status", unreadable)
+    with pytest.raises(SandboxUnavailable) as failure:
+        acl_backend.run(ShellExecutionRequest(_binding(windows_sandbox_roots.workspace_a), sys.executable,
+            ("-c", "print('FINISHED')"), recovery_evidence=execution, recovery_status_path=evidence.path(execution)))
+    assert failure.value.process_cleanup == "unknown"
+    proof = evidence.verify(execution, current_boot=None)
+    assert proof["kind"] == "runner_receipt" and proof["receipt"]["jobDrained"] is True
+    assert proof["receipt"]["execution"]["attempt_id"] == "attempt-1"
 
 
 def test_missing_node_fails_before_target_can_run(tmp_path):

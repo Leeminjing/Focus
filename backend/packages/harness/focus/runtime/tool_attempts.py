@@ -39,6 +39,8 @@ class ToolExecutionMiddleware(AgentMiddleware):
         if existing is not None:
             return existing
         receipt = {"process_cleanup": "not_started"} if options else None
+        if receipt is not None and hasattr(ledger, "shell_receipt"):
+            receipt = await ledger.shell_receipt(identity)
         capture = await ledger.prepare_file_capture(routing.run_id) if hasattr(ledger, "prepare_file_capture") else None
         if receipt is not None or capture is not None:
             security = security_context_of(context)

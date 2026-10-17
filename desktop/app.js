@@ -6821,7 +6821,55 @@ async function openSettings() {
       sandboxHost.textContent = error.message;
     }
   }
+  await loadShellRecovery();
 }
+
+async function loadShellRecovery() {
+  const host = settingsDialog?.querySelector?.("#shellRecoveryHost");
+  if (!host) return;
+  try {
+    host.innerHTML = renderShellRecovery(await api("/desktop/api/shell-recovery"));
+  } catch (error) {
+    host.textContent = error.message;
+  }
+}
+
+function renderShellRecovery(runs) {
+  const refresh = `<button class="text-button" data-action="refresh-shell-recovery">${escapeHtml(uiText("shell_recovery.refresh", "刷新"))}</button>`;
+  if (!runs.length) return `<p>${escapeHtml(uiText("shell_recovery.empty", "没有等待 Shell 退出核验的 Run"))}</p>${refresh}`;
+  return `<p>${escapeHtml(uiText("shell_recovery.help", "退出证据未确认，以下 Run 和目录暂时保留。核验会请求遗留 Shell 停止；成功后保持 Run 中断并释放目录，不会自动重放命令。若回执损坏或 runner 崩溃，请重启 Windows 后再次核验；仅重启应用不能证明进程树已退出。"))}</p>
+    ${runs.map(run => `<div class="archived-session-item">
+      <div class="archived-session-info"><strong>${escapeHtml(run.title)}</strong>
+        <p>Run <code>${escapeHtml(run.run_id)}</code> · ${escapeHtml(run.status)}</p>
+        <p><code>${escapeHtml(run.directory || uiText("shell_recovery.no_directory", "目录信息不可用"))}</code></p>
+        <ul>${run.attempts.map(attempt => `<li>${escapeHtml(attempt.tool)} · <code>${escapeHtml(attempt.call_id)}</code> · ${escapeHtml(attempt.state)}</li>`).join("")}</ul>
+      </div><button class="text-button" data-action="recover-shell-cleanup" data-run-id="${escapeHtml(run.run_id)}" ${run.status !== "interrupted" ? "disabled" : ""}>${escapeHtml(uiText("shell_recovery.recover", "核验退出并恢复"))}</button>
+    </div>`).join("")}${refresh}`;
+}
+
+document.addEventListener("click", event => {
+  const button = event.target.closest?.("[data-action='recover-shell-cleanup'], [data-action='refresh-shell-recovery']");
+  if (!button) return;
+  runUiAction(async () => {
+    button.disabled = true;
+    const feedback = settingsDialog?.querySelector?.("#shellRecoveryFeedback");
+    try {
+      if (button.dataset.action === "recover-shell-cleanup") {
+        if (feedback) feedback.textContent = uiText("shell_recovery.verifying", "正在核验退出证据…");
+        await api(`/desktop/api/runs/${encodeURIComponent(button.dataset.runId)}/shell-recovery`, { method: "POST" });
+        const message = uiText("shell_recovery.done", "退出已核验，Run 已结算，目录已释放；请核对命令副作用后再发起新调用");
+        if (feedback) feedback.textContent = message;
+        setStatus(message);
+      }
+    } catch (error) {
+      if (feedback) feedback.textContent = error.message;
+      throw error;
+    } finally {
+      button.disabled = false;
+      await loadShellRecovery();
+    }
+  });
+});
 
 function renderSandboxStatus(status) {
   const prepared = Array.isArray(status?.prepared_workspaces) ? status.prepared_workspaces : [];
