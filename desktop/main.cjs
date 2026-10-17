@@ -26,6 +26,7 @@ const ZOOM_LEVEL_MIN = -3;
 const ZOOM_LEVEL_MAX = 5;
 const TITLEBAR_BASE_HEIGHT = 56;
 const patrolEnabled = process.platform === "win32" && process.env.FOCUS_DESKTOP_PATROL !== "0";
+let revealPatrolPanel = process.argv.includes("--show-patrol-panel");
 
 function clampZoomLevel(value) {
   const numeric = Number(value);
@@ -322,6 +323,7 @@ async function start() {
       openWorkbench: showWorkbench, getWorkbench: () => mainWindow, quit: () => app.quit(),
     });
     await patrolHost.start();
+    if (revealPatrolPanel) patrolHost.openPanel();
   } else {
     await showWorkbench();
   }
@@ -425,8 +427,14 @@ if (process.platform === "win32") app.setAppUserModelId("Focus.Desktop");
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
-    if (patrolHost) { patrolHost.restore(); return; }
+  app.on("second-instance", (_event, argv) => {
+    const showPanel = argv.includes("--show-patrol-panel");
+    if (showPanel) revealPatrolPanel = true;
+    if (patrolHost) {
+      if (showPanel) patrolHost.openPanel();
+      else patrolHost.restore();
+      return;
+    }
     if (!mainWindow || mainWindow.isDestroyed()) return;
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();

@@ -1,0 +1,414 @@
+{
+  "family": "Noto Sans SC",
+  "weight": 400,
+  "license": "SIL Open Font License 1.1",
+  "sourceRepository": "https://github.com/fontsource/font-files",
+  "sourceCSS": "https://github.com/fontsource/font-files/blob/main/fonts/google/noto-sans-sc/400.css",
+  "method": "Fetched WOFF subset files with GitHub plugin; decoded each WOFF to TTF with fontTools; merged complete Regular subsets with fontTools.merge.Merger; no glyph outline edits.",
+  "files": [
+    {
+      "file": "noto-sans-sc-4-400-normal.woff",
+      "sha": "44a54cd2c2a133a9b50a749effdac947f6aeef49"
+    },
+    {
+      "file": "noto-sans-sc-5-400-normal.woff",
+      "sha": "633bcc8b077bb4df0b56b5eb2e9b65a12dd6cf25"
+    },
+    {
+      "file": "noto-sans-sc-6-400-normal.woff",
+      "sha": "ab1ee04f6bc978dc1e08ef7ed06dd3b300ee6020"
+    },
+    {
+      "file": "noto-sans-sc-21-400-normal.woff",
+      "sha": "9e88f1d99c495a630d9a4bd2c8c38cd4916b36ed"
+    },
+    {
+      "file": "noto-sans-sc-22-400-normal.woff",
+      "sha": "2181f545d6be423b5a620c75c11260d0999ce9a3"
+    },
+    {
+      "file": "noto-sans-sc-23-400-normal.woff",
+      "sha": "1ae3d1e35314bf3fce3db785d2e5f3f1968ce3ff"
+    },
+    {
+      "file": "noto-sans-sc-24-400-normal.woff",
+      "sha": "6cc884b36d3abcc5ad302242c1ead889595bf64e"
+    },
+    {
+      "file": "noto-sans-sc-25-400-normal.woff",
+      "sha": "4324af751c78b3b44b51bd99edb752f6e735fe42"
+    },
+    {
+      "file": "noto-sans-sc-26-400-normal.woff",
+      "sha": "a7c9729f2300e8b6ba26bca5797efaeea0c6a07b"
+    },
+    {
+      "file": "noto-sans-sc-27-400-normal.woff",
+      "sha": "9f482b98603cc285a23f2c0a13386d88e6bf7ec8"
+    },
+    {
+      "file": "noto-sans-sc-28-400-normal.woff",
+      "sha": "98d8128b804a818745fdc59ca081ce24b0fe83aa"
+    },
+    {
+      "file": "noto-sans-sc-29-400-normal.woff",
+      "sha": "bb0ff1f3dcc61b87b1f3bb6957dceb0c959bc7bc"
+    },
+    {
+      "file": "noto-sans-sc-30-400-normal.woff",
+      "sha": "485dee4dbf46faa30db597e2e24a432ea4e4dcdf"
+    },
+    {
+      "file": "noto-sans-sc-31-400-normal.woff",
+      "sha": "570639bbbf821ab32b313b60e66e68a53b829f22"
+    },
+    {
+      "file": "noto-sans-sc-32-400-normal.woff",
+      "sha": "0ad63fa2dc5550980b82687ce8da7c34545d773c"
+    },
+    {
+      "file": "noto-sans-sc-33-400-normal.woff",
+      "sha": "491303be6d3c57f36abbae37338c55c6e4ba6a53"
+    },
+    {
+      "file": "noto-sans-sc-34-400-normal.woff",
+      "sha": "3578ee9451668ae44ac50441b90f2f036d0a2960"
+    },
+    {
+      "file": "noto-sans-sc-35-400-normal.woff",
+      "sha": "2903a3e0c71aa509d4699d849eb3ee9a8f7437ad"
+    },
+    {
+      "file": "noto-sans-sc-36-400-normal.woff",
+      "sha": "74ee9b96c3b646f910d4bb8f3de00a932ba889c7"
+    },
+    {
+      "file": "noto-sans-sc-37-400-normal.woff",
+      "sha": "ce9a940989266a3aee4ebd08b89b57a8ad7f7af3"
+    },
+    {
+      "file": "noto-sans-sc-38-400-normal.woff",
+      "sha": "f1345d593fad0cd4c01e3140ab772f90598e1b1a"
+    },
+    {
+      "file": "noto-sans-sc-39-400-normal.woff",
+      "sha": "e8979f5c6342f1688095ff72f76c25a899caba39"
+    },
+    {
+      "file": "noto-sans-sc-40-400-normal.woff",
+      "sha": "70dabfcd2dc7085e67d502eeccf6b5717105a5de"
+    },
+    {
+      "file": "noto-sans-sc-41-400-normal.woff",
+      "sha": "770d82226cffcabf190530169ac053ebcc432ecc"
+    },
+    {
+      "file": "noto-sans-sc-42-400-normal.woff",
+      "sha": "22291ff2877c66b89f472ab74c5dd33e586b5384"
+    },
+    {
+      "file": "noto-sans-sc-43-400-normal.woff",
+      "sha": "8f1ee0f5682adf6f3f279e8c63340b64b7e58a8e"
+    },
+    {
+      "file": "noto-sans-sc-44-400-normal.woff",
+      "sha": "3aab63a62c498627fd278b2220e88cfbbd7f892d"
+    },
+    {
+      "file": "noto-sans-sc-45-400-normal.woff",
+      "sha": "abc31149d15023af980a25932b1577a846a0373f"
+    },
+    {
+      "file": "noto-sans-sc-46-400-normal.woff",
+      "sha": "a43b0bb1ccf600d87773ccca47cd0c235b86d8bb"
+    },
+    {
+      "file": "noto-sans-sc-47-400-normal.woff",
+      "sha": "3bfad39729db1cb927d47270735c81016cb489d2"
+    },
+    {
+      "file": "noto-sans-sc-48-400-normal.woff",
+      "sha": "e90c73deecd0ec3940c15805651b14e9051bb792"
+    },
+    {
+      "file": "noto-sans-sc-49-400-normal.woff",
+      "sha": "ce24fe7b32e2fa69cfcefc50115f838e58954a81"
+    },
+    {
+      "file": "noto-sans-sc-50-400-normal.woff",
+      "sha": "2c5a1b60f778676798f245b6ef4e113ec7b505a1"
+    },
+    {
+      "file": "noto-sans-sc-51-400-normal.woff",
+      "sha": "0d3da29ea58dda72227c38e752e5eea426142bea"
+    },
+    {
+      "file": "noto-sans-sc-52-400-normal.woff",
+      "sha": "8dfa9964d8fcc579ed4100ccadfaf5617426f2e1"
+    },
+    {
+      "file": "noto-sans-sc-53-400-normal.woff",
+      "sha": "1696f6ac148c23d77f9d8c73305387dea8927eb7"
+    },
+    {
+      "file": "noto-sans-sc-54-400-normal.woff",
+      "sha": "21c6957e608b90b382a6a189406bf7e14044489a"
+    },
+    {
+      "file": "noto-sans-sc-55-400-normal.woff",
+      "sha": "d81dcfb2c9e309a7b4e901f9b00520b0334e9cad"
+    },
+    {
+      "file": "noto-sans-sc-56-400-normal.woff",
+      "sha": "213b3b727d464a718bbdc1fda1409655e92a904c"
+    },
+    {
+      "file": "noto-sans-sc-57-400-normal.woff",
+      "sha": "c4bae6df819b0f0ed195dabc2e55d188a3e62e37"
+    },
+    {
+      "file": "noto-sans-sc-58-400-normal.woff",
+      "sha": "a971872706b49727ab1ca1a0d12d3d95767c17d2"
+    },
+    {
+      "file": "noto-sans-sc-59-400-normal.woff",
+      "sha": "9b872263ea18caf4354d6e106eba1abc83f68bf8"
+    },
+    {
+      "file": "noto-sans-sc-60-400-normal.woff",
+      "sha": "9e5e6c1afbef3d013c3e52fd0ffc3fe1b3f1feff"
+    },
+    {
+      "file": "noto-sans-sc-61-400-normal.woff",
+      "sha": "ffad70bfd163c9d91e34cdd636ff6a26c3d4a053"
+    },
+    {
+      "file": "noto-sans-sc-62-400-normal.woff",
+      "sha": "453bb4d3d129360c5870baaa200e42130b700e7c"
+    },
+    {
+      "file": "noto-sans-sc-63-400-normal.woff",
+      "sha": "392ff2bf13e78b6165a60160f3fdf8b7338c86c3"
+    },
+    {
+      "file": "noto-sans-sc-64-400-normal.woff",
+      "sha": "9ad55124fce7a55b8440ff8a23e81f5fd1d09cff"
+    },
+    {
+      "file": "noto-sans-sc-65-400-normal.woff",
+      "sha": "7af6f3dd5d03ee211e8eae83d72ed77d9b1a2386"
+    },
+    {
+      "file": "noto-sans-sc-66-400-normal.woff",
+      "sha": "dc2a7bf05348d5b03e0dbc94feb03acf684607e1"
+    },
+    {
+      "file": "noto-sans-sc-67-400-normal.woff",
+      "sha": "14f893a837f0fbd7719e312a7f796c0f4aeb5c30"
+    },
+    {
+      "file": "noto-sans-sc-68-400-normal.woff",
+      "sha": "1aef29d040e806716289759866c1b425314a855d"
+    },
+    {
+      "file": "noto-sans-sc-69-400-normal.woff",
+      "sha": "4308eeb8caaa6a2be055cba39d7bb52d2c5761f8"
+    },
+    {
+      "file": "noto-sans-sc-70-400-normal.woff",
+      "sha": "e833b95ba2754f4ca52419fa7e5636b729c74e76"
+    },
+    {
+      "file": "noto-sans-sc-71-400-normal.woff",
+      "sha": "b049243abc18bbbb00654fbd04869aa504d0ad07"
+    },
+    {
+      "file": "noto-sans-sc-72-400-normal.woff",
+      "sha": "42ca2a7314576c3aaf3a2695960481336bdfb805"
+    },
+    {
+      "file": "noto-sans-sc-73-400-normal.woff",
+      "sha": "00962a87d7273b561467acee2d8ea7c0b49c9514"
+    },
+    {
+      "file": "noto-sans-sc-74-400-normal.woff",
+      "sha": "03298bd4a6cbd703c2e3863e12895c96d5e92c61"
+    },
+    {
+      "file": "noto-sans-sc-75-400-normal.woff",
+      "sha": "afc38214a41b917d1a495372470d0fcfe8e4249e"
+    },
+    {
+      "file": "noto-sans-sc-76-400-normal.woff",
+      "sha": "7f5528c76e7367e1b002ed25163145e3c9a5e45c"
+    },
+    {
+      "file": "noto-sans-sc-77-400-normal.woff",
+      "sha": "c74cf948e7e1d3ca7a567698f3ea1279302f2ac7"
+    },
+    {
+      "file": "noto-sans-sc-78-400-normal.woff",
+      "sha": "34093c3fd83bdfe7069b9ea6268367428b20e7eb"
+    },
+    {
+      "file": "noto-sans-sc-79-400-normal.woff",
+      "sha": "2c5c4590e0be927503b4d0491b65b913e65dfdf8"
+    },
+    {
+      "file": "noto-sans-sc-80-400-normal.woff",
+      "sha": "6a5bbd55b75abebf1b144889e62fa3462f55a272"
+    },
+    {
+      "file": "noto-sans-sc-81-400-normal.woff",
+      "sha": "12c1948c1f39e43ae89145d29d7122f3e41f8688"
+    },
+    {
+      "file": "noto-sans-sc-82-400-normal.woff",
+      "sha": "be63dbdcd52118bc9445b3aedabfc2a999442db7"
+    },
+    {
+      "file": "noto-sans-sc-83-400-normal.woff",
+      "sha": "ce011a7c9a416df553ae110c388d2a83e3362d6c"
+    },
+    {
+      "file": "noto-sans-sc-84-400-normal.woff",
+      "sha": "4bf595975fb5f2f0e42162f7eb7341205dd7ec61"
+    },
+    {
+      "file": "noto-sans-sc-85-400-normal.woff",
+      "sha": "dfbc42bad91fcc7b96a0ce928359556a519daab7"
+    },
+    {
+      "file": "noto-sans-sc-86-400-normal.woff",
+      "sha": "d6aca375bec28d067e4e7a89a0d19190e9395c64"
+    },
+    {
+      "file": "noto-sans-sc-87-400-normal.woff",
+      "sha": "55ff2b6117802bcd1f02c627fe7b54b22cf1c102"
+    },
+    {
+      "file": "noto-sans-sc-88-400-normal.woff",
+      "sha": "617f82772bfd814022e90fbf2ed3c2a974906a8a"
+    },
+    {
+      "file": "noto-sans-sc-89-400-normal.woff",
+      "sha": "a3146ec558dd6312eae502ac87de63b17efee492"
+    },
+    {
+      "file": "noto-sans-sc-90-400-normal.woff",
+      "sha": "4b94df0a57633f4a20cfd329c6a1f58243d689ce"
+    },
+    {
+      "file": "noto-sans-sc-91-400-normal.woff",
+      "sha": "f95f4b63166ac0daf81d0df7488d105b6020fcd9"
+    },
+    {
+      "file": "noto-sans-sc-97-400-normal.woff",
+      "sha": "57888badda4702a4fa46b1d588a5686243f968c9"
+    },
+    {
+      "file": "noto-sans-sc-98-400-normal.woff",
+      "sha": "b00289c20f3de89f7d408b95d8427ed8e1ebf337"
+    },
+    {
+      "file": "noto-sans-sc-99-400-normal.woff",
+      "sha": "5bd37cc81b179143f25e9c32c02a81983cefc4f9"
+    },
+    {
+      "file": "noto-sans-sc-100-400-normal.woff",
+      "sha": "32c58a51b8760447a0a86d52f31054e809eae4fb"
+    },
+    {
+      "file": "noto-sans-sc-101-400-normal.woff",
+      "sha": "37bae38ef5b6ca952b9caecb1e0638b74d7a8b56"
+    },
+    {
+      "file": "noto-sans-sc-102-400-normal.woff",
+      "sha": "f7000f0be91a60383a99e541ddb6044b0ff9ada7"
+    },
+    {
+      "file": "noto-sans-sc-103-400-normal.woff",
+      "sha": "ea71c92997624bf48ea1830ca89b34d5e893b359"
+    },
+    {
+      "file": "noto-sans-sc-104-400-normal.woff",
+      "sha": "18d1d947f6f198bcb2bf8d66f925688903c6f1bd"
+    },
+    {
+      "file": "noto-sans-sc-105-400-normal.woff",
+      "sha": "a9d1c7f63ec7e04a40969c6d2acb93298305528e"
+    },
+    {
+      "file": "noto-sans-sc-106-400-normal.woff",
+      "sha": "6377c7b611f3d90e7d109ad10a46c70538d1a3a4"
+    },
+    {
+      "file": "noto-sans-sc-107-400-normal.woff",
+      "sha": "67077ffb382e24a971bfef1368eaaa8cbc11cd64"
+    },
+    {
+      "file": "noto-sans-sc-108-400-normal.woff",
+      "sha": "0be8fcfd42b85e03eee1407c0bc0aa1237f46935"
+    },
+    {
+      "file": "noto-sans-sc-109-400-normal.woff",
+      "sha": "019bf862e3140fd94ecba9fe35759c33f0817212"
+    },
+    {
+      "file": "noto-sans-sc-110-400-normal.woff",
+      "sha": "fbc8493eda8a086443d7c6ca01dd4ff692114375"
+    },
+    {
+      "file": "noto-sans-sc-111-400-normal.woff",
+      "sha": "05e23aa7b981e35c2fde329dcbe13d768affcf92"
+    },
+    {
+      "file": "noto-sans-sc-112-400-normal.woff",
+      "sha": "3d154b72db94f476c281bfa99ae23aa69bd6e1e2"
+    },
+    {
+      "file": "noto-sans-sc-113-400-normal.woff",
+      "sha": "f6140fca0e5853e1d3c32807032cc751e1d51e95"
+    },
+    {
+      "file": "noto-sans-sc-114-400-normal.woff",
+      "sha": "1f89e43b2f0d67f5105032ea6a088346633c3656"
+    },
+    {
+      "file": "noto-sans-sc-115-400-normal.woff",
+      "sha": "fca0580772b4d15e7d5ce4c769307447f6323ed3"
+    },
+    {
+      "file": "noto-sans-sc-116-400-normal.woff",
+      "sha": "dd559146ae0ce0feb3e741158bfa7d59c6ff2f17"
+    },
+    {
+      "file": "noto-sans-sc-117-400-normal.woff",
+      "sha": "2a2a6a0bcf9b6fe9beda87fa9153ff6b8d945d16"
+    },
+    {
+      "file": "noto-sans-sc-118-400-normal.woff",
+      "sha": "37f7a000c01eb4bd591c3d043674a294d033565b"
+    },
+    {
+      "file": "noto-sans-sc-119-400-normal.woff",
+      "sha": "18119266f7ba87961214c6acbb796e326e2fd347"
+    },
+    {
+      "file": "noto-sans-sc-cyrillic-400-normal.woff",
+      "sha": "513fa8ce3f1f6248a66478edcd7e49fdaf9d069e"
+    },
+    {
+      "file": "noto-sans-sc-vietnamese-400-normal.woff",
+      "sha": "90ab0f9352da6bc4aeb4cd91283c1b362dbbc6b4"
+    },
+    {
+      "file": "noto-sans-sc-latin-ext-400-normal.woff",
+      "sha": "64582a53295f23af7ee7c4f2fd4b57c04fc851d9"
+    },
+    {
+      "file": "noto-sans-sc-latin-400-normal.woff",
+      "sha": "2c97225cebc14d06a96e5faba25a68d0aca8bb10"
+    }
+  ]
+}

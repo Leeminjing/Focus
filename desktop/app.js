@@ -853,6 +853,7 @@ async function renderWorkspacePatrol() {
     const connection = window.FocusLoopLiveConnection.create({ api: loopApi, store });
     workspacePatrolController = window.FocusWorkspacePatrolController.create({
       api: loopApi, inputs: workspacePatrolIntake.store(workspace.workspace_id), intake: workspacePatrolIntake,
+      ...(desktopPatrol ? { onCompose:target => desktopPatrol.openPanel(target) } : {}),
       liveStore: store, connection,
       createRunPreviews,
       onOpenTask: async contextId => {

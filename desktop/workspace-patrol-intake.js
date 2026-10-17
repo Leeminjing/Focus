@@ -165,7 +165,7 @@
     function hasUnfinished() {
       return submitted.size > 0 || [...stores.values()].some(value => {
         const model = value.get();
-        return Boolean(model.draft.content || model.draft.attachments?.length || model.rows.some(row => ["sending", "failed"].includes(row.status)));
+        return Boolean(model.draft.content || model.draft.attachments?.length || model.draft.file_refs?.length || model.rows.some(row => ["sending", "failed"].includes(row.status)));
       });
     }
     return Object.freeze({ store, add, remove, submit, send, retry, bind, choose, workspace, remember, claimUnbound, resourceLimits, history, editFailed,

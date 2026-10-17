@@ -23,11 +23,13 @@
   }
   bridge.onState(update);
   const ready = await bridge.ready();
-  let bounds = ready.bounds, drag = null, moved = false;
+  let drag = null, moved = false;
   update(ready.state);
   button.addEventListener("pointerdown", event => {
     if (event.button !== 0) return;
-    drag = { x: event.screenX, y: event.screenY, bounds }; moved = false;
+    // Derive the current frameless-window origin from this pointer, so display
+    // changes or OS repositioning cannot leave a cached drag origin behind.
+    drag = { x: event.screenX, y: event.screenY, bounds: {x:event.screenX-event.clientX,y:event.screenY-event.clientY} }; moved = false;
     button.setPointerCapture(event.pointerId);
   });
   button.addEventListener("pointermove", event => {
@@ -35,7 +37,7 @@
     const x = event.screenX - drag.x, y = event.screenY - drag.y;
     if (!moved && Math.hypot(x, y) < 5) return;
     moved = true;
-    void bridge.move({ x: drag.bounds.x + x, y: drag.bounds.y + y }).then(value => { bounds = value; }).catch(error => { label.textContent = error.message; });
+    void bridge.move({ x: drag.bounds.x + x, y: drag.bounds.y + y }).catch(error => { label.textContent = error.message; });
   });
   button.addEventListener("pointerup", () => { drag = null; });
   button.addEventListener("pointercancel", () => { drag = null; });

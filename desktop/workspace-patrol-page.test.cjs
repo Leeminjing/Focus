@@ -80,6 +80,25 @@ if (!process.versions.electron) {
     await until('document.querySelector("[data-patrol-content]")');
     assert.equal(await run('window.patrolFixture.workspaceBinds.at(-1).path'), chosen);
     assert.equal(await run('window.patrolFixture.submissions.length'), 0);
+    if (process.env.FOCUS_PATROL_TEST_NATIVE === "1") {
+      assert.equal(await run('document.querySelector("[data-patrol-content]").hidden && document.querySelector("[data-patrol-content]").disabled'),true);
+      assert.equal(await run('document.querySelector("[data-patrol-file-picker-open]").disabled'),true);
+      await run('document.querySelector("[data-patrol-composer]").requestSubmit()');
+      await until('window.patrolFixture.robotPanelOpens.length === 1');
+      const workspaceId = await run('state.patrolWorkspace.workspace_id');
+      assert.deepEqual(await run('patrolFixture.robotPanelOpens[0]'),{workspaceId});
+      const file = {fact_id:"fixed-file",revision:2,result_key:"b".repeat(64),slot_id:"slot-a",path:"src/index.py",sha256:"a".repeat(64)};
+      await run(`document.querySelector('[data-patrol-file-body]').innerHTML = FocusLoopFactsView.renderFile(${JSON.stringify(file)}); document.querySelector('[data-patrol-file-detail]').hidden=false; document.querySelector('[data-patrol-file-add]').click()`);
+      await until('window.patrolFixture.robotPanelOpens.length === 2');
+      assert.deepEqual(await run('patrolFixture.robotPanelOpens[1]'),{workspaceId,file_refs:[file]});
+      assert.equal(await run('workspacePatrolIntake.store(state.patrolWorkspace.workspace_id).get().draft.file_refs.length'),0);
+      assert.equal(await run('window.patrolFixture.submissions.length'),0);
+      assert.equal(await run('patrolFixture.robotReady'),true);
+      assert.equal(await run('typeof patrolFixture.openWorkbench'),"function");
+      assert.deepEqual(errors,[]);
+      console.log("PATROL_UI_PASS: native workbench has one remote composer, opens the existing robot, transfers exact file version without a second draft");
+      win.destroy(); app.quit(); return;
+    }
     const calls = await run('window.patrolFixture.folderCalls');
     await run('document.querySelector("[data-action=show-patrol][data-patrol-switch]").click()');
     await until('document.querySelector("[data-patrol-bind]")');
@@ -394,6 +413,8 @@ if (!process.versions.electron) {
     await run('document.querySelector("[data-action=show-patrol]:not([data-patrol-switch])").click()');
     await until('document.querySelector("[data-patrol-composer]")');
     win.setContentSize(1400, 942);
+    await until('innerWidth >= 1399 && innerHeight >= 941');
+    await run('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     const historyBounds = () => run('(() => { const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON(); return {panel:rect("[data-patrol-input-history]"),clear:rect("[data-patrol-clear-draft]"),composer:rect("[data-patrol-composer]"),viewport:{width:innerWidth,height:innerHeight}}; })()');
     const assertHistoryBounds = bounds => {
       assert.ok(bounds.panel.left >= 8 && bounds.panel.top >= 8, JSON.stringify(bounds));

@@ -7,6 +7,7 @@
 <body>
   <main id="robot" hidden><button id="robot-open" aria-label="打开 Patrol，拖入图片、文字或文件"><img src="./assets/patrol-avatar/idle.png" alt="Patrol 机器人" draggable="false"></button><span id="robot-status" role="status">点击开始</span><button id="robot-hide" aria-label="隐藏机器人到托盘">收起</button></main>
   <main id="panel" hidden>
+    <div class="panel-shell">
     <header class="panel-header">
       <button id="binding" title="选择工作区文件夹"><span class="ui-icon icon-folder" aria-hidden="true"></span><span id="binding-name">绑定工作区</span><span class="ui-icon icon-chevron-down" aria-hidden="true"></span></button>
       <details class="panel-menu"><summary aria-label="更多操作" title="更多操作"><span class="ui-icon icon-ellipsis" aria-hidden="true"></span></summary><div class="panel-menu-content">
@@ -17,19 +18,24 @@
     <div class="panel-scroll"><div class="panel-content">
       <form id="compose" data-patrol-composer>
         <label class="sr-only" for="instruction">你的想法或要求</label><textarea id="instruction" rows="2" placeholder="有什么想法？" aria-describedby="compose-help"></textarea>
-        <div data-patrol-materials aria-label="待发送参考材料"></div>
+        <div id="references" hidden><div class="reference-heading">引用内容 <span id="reference-count"></span></div><div data-patrol-materials aria-label="待发送参考材料"></div><div id="file-refs" aria-label="固定文件版本引用"></div></div>
         <div id="reply-target" hidden><span></span><button type="button" id="clear-reply">取消指定回复</button></div>
-        <div class="send-row"><button type="button" id="add-material" aria-label="添加材料" title="添加图片、文字或文件，也可以拖入或粘贴截图"><span class="ui-icon icon-plus" aria-hidden="true"></span></button><input type="file" id="file-picker" multiple hidden><span id="compose-help" class="sr-only">可拖入图片、文字或文件。Enter 换行，Ctrl+Enter 发送。</span><span class="send-shortcut" title="Ctrl+Enter 发送">Ctrl <span class="ui-icon icon-corner-down-left" aria-hidden="true"></span></span><button id="send" type="submit" aria-label="发送" title="发送 · Ctrl+Enter"><span class="ui-icon icon-arrow-up" aria-hidden="true"></span></button></div>
+        <div class="send-row"><button type="button" id="add-material" aria-label="添加材料" title="添加图片、文字或文件，也可以拖入或粘贴截图"><span class="ui-icon icon-plus" aria-hidden="true"></span></button><button type="button" id="reference-file" aria-label="引用文件版本" title="引用工作区的文件版本" aria-controls="version-picker" aria-expanded="false" disabled>@</button><input type="file" id="file-picker" multiple hidden><span id="compose-help" class="sr-only">可拖入图片、文字或文件。Enter 换行，Ctrl+Enter 发送。</span><span class="send-shortcut" title="Ctrl+Enter 发送">Ctrl <span class="ui-icon icon-corner-down-left" aria-hidden="true"></span></span><button id="send" type="submit" aria-label="发送" title="发送 · Ctrl+Enter"><span class="ui-icon icon-arrow-up" aria-hidden="true"></span></button></div>
       </form>
+      <section id="version-picker" aria-label="引用文件版本" hidden><header><strong>引用文件版本</strong><button type="button" id="close-versions" aria-label="关闭文件版本"><span class="ui-icon icon-x" aria-hidden="true"></span></button></header><label class="version-search"><span class="ui-icon icon-search" aria-hidden="true"></span><input id="version-query" placeholder="搜索产物文件名…" aria-label="搜索产物文件名"></label><div id="version-candidates" role="status"></div><button id="older-versions" type="button" hidden>更早的文件版本</button></section>
+      <section id="version-detail" aria-label="文件版本详情" hidden><header><strong>文件版本</strong><button type="button" id="close-version-detail" aria-label="关闭版本详情"><span class="ui-icon icon-x" aria-hidden="true"></span></button></header><div id="version-body"></div></section>
+      <div class="panel-feedback"><div class="panel-feedback-content">
       <p id="error" role="alert" hidden></p>
-      <p id="activity" role="status" hidden></p>
+      <button id="retry-workspace" type="button" hidden>重新读取工作区</button>
+      <div id="activity" role="status" hidden><i></i><span id="activity-text"></span><button id="activity-reconnect" hidden>重连</button><span class="ui-icon icon-loader-circle" aria-hidden="true"></span></div>
       <section id="requests" aria-label="待处理请求"></section>
       <section id="results" aria-label="工作区已提交结果"></section>
       <details id="history" hidden><summary>输入记录 <span id="receipt"></span></summary><div id="history-items"></div><button id="older" hidden>更早的输入</button></details>
-    </div></div>
+      </div></div>
+    </div></div></div>
   </main>
   <script src="./http-response.js"></script><script src="./loop-api.js"></script>
   <script src="./loop-live-schema.js"></script><script src="./loop-live-reducer.js"></script><script src="./loop-live-selectors.js"></script><script src="./loop-live-store.js"></script><script src="./loop-live-connection.js"></script>
-  <script src="./access-mode.js"></script><script src="./workspace-patrol-inputs.js"></script><script src="./workspace-patrol-intake.js"></script><script src="./workspace-patrol-material-preview.js"></script><script src="./workspace-patrol-feedback.js"></script>
+  <script src="./access-mode.js"></script><script src="./workspace-patrol-inputs.js"></script><script src="./workspace-patrol-intake.js"></script><script src="./workspace-patrol-material-preview.js"></script><script src="./workspace-patrol-feedback.js"></script><script src="./loop-facts-view.js"></script><script src="./desktop-patrol-references.js"></script>
   <script src="./desktop-patrol-robot.js"></script><script src="./desktop-patrol-panel.js"></script>
 </body></html>

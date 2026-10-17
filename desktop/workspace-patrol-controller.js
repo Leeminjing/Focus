@@ -6,7 +6,7 @@
  * 文件详情/候选响应绑定工作区与请求代际；实时文件事实保留历史滚动位置，详情与输入节点独立。
  * 输入记录复用非模态显隐和游标查询，开关只改变面板；草稿更新保留记录 DOM，内容更新恢复可见记录偏移，滚动续页仅允许一个在途请求。
  * 弹窗类型由现有 dialogKind 投影为 data-patrol-dialog-kind，供局部材质区分；每次打开同步，关闭动画期间保留，不作为业务状态来源。
- * intake 统一绑定/上传/投递，浏览器拖放先预览；onCompose 存在时原生工作台只转交输入入口和精确回复目标，不持有第二份可编辑草稿。
+ * intake 统一绑定/上传/投递，浏览器拖放先预览；onCompose 存在时原生工作台转交输入入口、精确回复目标及固定文件版本，不持有第二份可编辑草稿。
  */
 (function (root, factory) {
   const api = factory(root);
@@ -509,7 +509,7 @@
       const clickOwner = token;
       try {
         if (onCompose && (button.dataset.patrolAnswer || button.dataset.patrolRetry || button.dataset.patrolEditFailed || button.dataset.patrolFileAdd)) {
-          await onCompose({ workspaceId: workspace.workspace_id, ...(button.dataset.patrolAnswer ? { requestId: button.dataset.patrolAnswer, requestRevision: Number(button.dataset.requestRevision) } : {}) });
+          await onCompose({ workspaceId: workspace.workspace_id, ...(button.dataset.patrolAnswer ? { requestId: button.dataset.patrolAnswer, requestRevision: Number(button.dataset.requestRevision) } : {}), ...(button.dataset.patrolFileAdd ? {file_refs:[JSON.parse(button.dataset.patrolFileAdd)]} : {}) });
           return;
         }
         if (button.hasAttribute("data-patrol-file-picker-open")) await openFilePicker();

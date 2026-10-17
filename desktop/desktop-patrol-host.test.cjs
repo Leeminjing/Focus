@@ -39,6 +39,9 @@ function fixture(t) {
     showInactive() { this.visible = true; }
     show() { this.visible = true; }
     hide() { this.visible = false; }
+    setAlwaysOnTop(value) { this.topmost = value; }
+    isAlwaysOnTop() { return this.topmost === true; }
+    moveTop() { this.raises = (this.raises || 0) + 1; }
     focus() { this.focuses++; }
     isVisible() { return this.visible === true; }
     isDestroyed() { return this.destroyed === true; }
@@ -82,7 +85,7 @@ test("geometry keeps both surfaces reachable across negative coordinates and sma
   assert.deepEqual(clampBounds({ x: 5000, y: -1000, width: 144, height: 164 }, area), { x: -144, y: -300, width: 144, height: 164 });
   const leftRobot = { x: -1280, y: 100, width: 144, height: 164 };
   const panel = panelBounds(leftRobot, area);
-  assert.equal(panel.x, -1128);
+  assert.equal(panel.x, -1138);
   assert.ok(panel.y >= area.y && panel.y + panel.height <= area.y + area.height);
   assert.deepEqual(clampBounds({ x: 5, y: 5, width: 440, height: 620 }, { x: 0, y: 0, width: 400, height: 300 }), { x: 0, y: 0, width: 400, height: 300 });
 });
@@ -101,22 +104,61 @@ test("content accepts pathless clipboard bytes and bounds the entire UTF-8 batch
   ]) assert.throws(() => validateContent(invalid, limits));
 });
 
+test("fixed file identity crosses workbench IPC without accepting unbounded or unscoped references", async t => {
+  const f = fixture(t); await f.host.start();
+  const file = {fact_id:"fact-file",revision:2,result_key:"b".repeat(64),slot_id:"slot-1",path:"src/index.py",sha256:"a".repeat(64)};
+  f.invoke("ready",f.host.panel);
+  await f.host.openWorkbench();
+  f.invoke("open",f.workbench,{workspaceId:"workspace-a",file_refs:[file]});
+  assert.deepEqual(f.host.panel.messages.at(-1).value,{workspaceId:"workspace-a",file_refs:[file]});
+  for (const target of [{file_refs:[file]}, {workspaceId:"a",file_refs:Array(33).fill(file)}, {workspaceId:"a",file_refs:[{...file,revision:0}]}, {workspaceId:"a",file_refs:[{...file,result_key:"path"}]}, {workspaceId:"a",file_refs:[{...file,path:"a".repeat(4097)}]}]) {
+    assert.throws(() => f.host.openPanel(target),/无效|版本|过长/);
+  }
+});
+
+test("floating surfaces have alpha transparency and no Windows non-client frame", async t => {
+  const f=fixture(t); await f.host.start();
+  for (const win of [f.host.robot,f.host.panel]) {
+    assert.equal(win.options.thickFrame,false,"无边框浮窗必须明确关闭 Windows 厚边框");
+    assert.equal(win.options.transparent,true,"CSS 圆角外必须使用真正的 alpha 透明");
+    assert.equal(win.options.hasShadow,false,"不能保留系统矩形阴影");
+    assert.equal(win.options.backgroundMaterial,"none","不能在卡片外绘制整窗 Acrylic");
+  }
+});
+
 test("compact panel expands within display bounds and only accepts resize from its owner", async t => {
   const f = fixture(t); await f.host.start();
-  assert.equal(f.host.panel.getBounds().width, 560);
-  assert.equal(f.host.panel.getBounds().height, 202);
+  assert.equal(f.host.panel.getBounds().width, 304);
+  assert.equal(f.host.panel.getBounds().height, 125);
   assert.throws(() => f.invoke("resize-panel", f.host.robot, 500), /不能调用/);
   for (const value of [null, "400", NaN, Infinity]) assert.throws(() => f.invoke("resize-panel", f.host.panel, value), /高度无效/);
   f.invoke("resize-panel", f.host.panel, 10000);
-  assert.equal(f.host.panel.getBounds().height, 620);
+  assert.equal(f.host.panel.getBounds().height, 516);
   f.host.openPanel();
-  assert.equal(f.host.panel.getBounds().height, 620);
+  assert.equal(f.host.panel.getBounds().height, 516);
   f.screen.area = { x: 0, y: 0, width: 400, height: 300 };
   f.screen.emit("display-metrics-changed");
   assert.equal(f.host.panel.getBounds().height, 300);
-  assert.equal(f.host.panel.getBounds().width, 400);
+  assert.equal(f.host.panel.getBounds().width, 304);
   f.invoke("resize-panel", f.host.panel, 0);
-  assert.equal(f.host.panel.getBounds().height, 202);
+  assert.equal(f.host.panel.getBounds().height, 125);
+  f.screen.area = { ...originalArea };
+  f.invoke("resize-panel",f.host.panel,{height:400,width:10000});
+  assert.equal(f.host.panel.getBounds().width,606);
+  f.invoke("resize-panel",f.host.panel,136);
+  assert.equal(f.host.panel.getBounds().width,304);
+  assert.throws(() => f.invoke("resize-panel",f.host.panel,{height:200,width:NaN}),/宽度无效/);
+});
+
+test("panel height follows the reference easing and display changes cancel an obsolete transition", async t => {
+  const f=fixture(t); await f.host.start(); f.host.openPanel();
+  f.invoke("resize-panel",f.host.panel,{height:400,width:304,animate:true});
+  assert.ok(f.host.panel.getBounds().height<400);
+  await new Promise(resolve=>setTimeout(resolve,120));
+  assert.ok(f.host.panel.getBounds().height>125 && f.host.panel.getBounds().height<400);
+  f.screen.area={x:0,y:0,width:400,height:240}; f.screen.emit("display-metrics-changed");
+  await new Promise(resolve=>setTimeout(resolve,300));
+  assert.equal(f.host.panel.getBounds().height,240,"旧动画不得把窗口移回已断开的显示器或覆盖新的边界");
 });
 
 test("IPC authenticates owner window, main frame, origin and surface before transfer", async t => {
@@ -158,7 +200,7 @@ test("queued content is bounded, panel hide preserves owner and background chang
   f.screen.emit("display-removed");
   assert.equal(owner.focuses, focused);
   assert.equal(f.host.robot.focuses, 0);
-  assert.ok(f.host.robot.getBounds().x + 144 <= 800);
+  assert.ok(f.host.robot.getBounds().x + f.host.robot.getBounds().width <= 800);
   assert.ok(owner.getBounds().y + owner.getBounds().height <= 600);
   f.host.restore();
   assert.equal(owner.isVisible(), false);

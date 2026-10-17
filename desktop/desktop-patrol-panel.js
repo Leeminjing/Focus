@@ -10,16 +10,19 @@
   document.body.dataset.surface = "panel";
   const host = document.querySelector("#panel"); host.hidden = false;
   const $ = selector => host.querySelector(selector), bridge = window.focusDesktop?.patrol;
+  host.prepend($("#version-picker"),$("#version-detail"));
   const runtime = window.focusDesktop?.runtime() || { apiBase: location.origin, session: new URLSearchParams(location.search).get("session") || "" };
   const api = FocusLoopApi.create(runtime), live = FocusLoopLiveStore.create();
   const connection = FocusLoopLiveConnection.create({ api, store: live });
   const intake = FocusWorkspacePatrolIntake.create({ runtime, api, selectWorkspace: window.focusDesktop?.selectWorkspace,
     accessMode: FocusAccessMode.readNewSessionDefault(localStorage) });
-  const preview = FocusWorkspacePatrolMaterialPreview.create({ host, intake, workspaceId: () => workspace?.workspace_id || null, onError: fail });
-  let workspace = null, generation = 0, loopId = null, unsubscribe = null, reads = new AbortController();
-  let resultKey = "", inputKey = "", publishedState = "", binding = false, nativeReady = false, commandQueue = Promise.resolve();
+  const preview = FocusWorkspacePatrolMaterialPreview.create({ host, intake, workspaceId: () => workspace?.workspace_id || null, onError: fail, compact:true });
+  let workspace = null, workspaceLoaded = false, generation = 0, loopId = null, unsubscribe = null, reads = new AbortController();
+  let resultKey = "", inputKey = "", publishedState = "", binding = false, nativeReady = false, shownFailure = "", closeEpoch = 0, commandQueue = Promise.resolve();
+  let historyKey = "", requestKey = "";
   const draftStore = () => intake.store(workspace?.workspace_id || null);
-  function fail(error) { $("#error").hidden = !error; $("#error").textContent = error ? String(error.message || error) : ""; }
+  const references = FocusDesktopPatrolReferences.create({ host, api, store:draftStore, loopId:() => loopId, onError:fail });
+  function fail(error) { $("#error").hidden = !error; $("#error").textContent = error ? String(error.message || error) : ""; if (!error) $("#retry-workspace").hidden = true; }
   function enqueue(action) { commandQueue = commandQueue.then(action).catch(fail); return commandQueue; }
   function element(tag, text, parent) { const node = document.createElement(tag); node.textContent = text; parent?.append(node); return node; }
   function action(text, parent, handler) { const button = element("button", text, parent); button.type = "button"; button.addEventListener("click", () => { void Promise.resolve().then(handler).catch(fail); }); return button; }
@@ -29,9 +32,11 @@
   }
   function notify() {
     const status = FocusWorkspacePatrolFeedback.status(live.get().projection, live.get().connection, draftStore().get());
-    $("#status").textContent = workspace ? status.text : "先预览材料，绑定工作区后再发送";
+    $("#status").textContent = workspace ? status.text : "准备接收新输入";
     $("#activity").hidden = !workspace || status.state === "idle";
-    $("#activity").textContent = status.text;
+    $("#activity-text").textContent = status.text; $("#activity-text").title = status.text;
+    host.dataset.state = status.state;
+    $("#activity-reconnect").hidden = status.state !== "disconnected";
     $("#reconnect").hidden = status.state !== "disconnected";
     const state = { workspaceId: workspace?.workspace_id || "", workspaceName: workspace?.display_name || "", state: status.state, dirty: intake.hasUnfinished(), pending: intake.isSending() };
     const key = JSON.stringify(state);
@@ -40,23 +45,36 @@
   function renderInput(model) {
     if ($("#instruction").value !== model.draft.content) $("#instruction").value = model.draft.content;
     preview.render(model.draft);
+    references.render(model.draft);
+    $("#instruction").style.height = "36px";
+    $("#instruction").style.height = `${Math.max(36, Math.min(108, $("#instruction").scrollHeight))}px`;
     $("#reply-target").hidden = !model.draft.request_id;
     $("#reply-target span").textContent = model.draft.request_id ? `回复指定问题 · 版本 ${model.draft.request_revision}` : "";
     const status = { accepted: "已受理", sending: "发送中", failed: "未确认", edited: "已转为草稿" };
     $("#receipt").textContent = status[model.rows[0]?.status] || "";
-    const items = $("#history-items"); items.replaceChildren();
-    for (const row of model.rows) {
-      const card = element("article", "", items);
-      element("pre", row.content || "仅参考材料", card);
-      element("small", `${status[row.status]}${row.attachments?.length ? ` · ${row.attachments.length} 份材料` : ""}`, card);
-      if (row.status === "failed") {
-        element("small", row.error, card);
-        const id = workspace?.workspace_id;
-        action("按原内容重试", card, () => send(() => intake.retry(id, row.submission_id), id));
-        action("编辑为新输入", card, () => intake.editFailed(workspace?.workspace_id, row.submission_id));
+    const nextHistory = JSON.stringify([workspace?.workspace_id,model.rows]);
+    if (historyKey !== nextHistory) {
+      historyKey = nextHistory;
+      const items = $("#history-items"); items.replaceChildren();
+      for (const row of model.rows) {
+        const card = element("article", "", items);
+        element("pre", row.content || "仅参考材料", card);
+        const count = (row.attachments?.length || 0) + (row.file_refs?.length || 0);
+        element("small", `${status[row.status]}${count ? ` · ${count} 项引用内容` : ""}`, card);
+        if (row.status === "failed") {
+          element("small", row.error, card);
+          const id = workspace?.workspace_id;
+          action("按原内容重试", card, () => send(() => intake.retry(id, row.submission_id), id));
+          action("编辑为新输入", card, () => intake.editFailed(id, row.submission_id));
+        }
       }
     }
     $("#older").hidden = !model.cursor;
+    if (model.rows[0]?.status === "failed" && shownFailure !== model.rows[0].submission_id) {
+      shownFailure = model.rows[0].submission_id;
+      $("#history").hidden = false; $("#history").open = true;
+      $("#toggle-history").setAttribute("aria-expanded", "true");
+    }
     $("#send").disabled = !model.draft.content.trim() && !model.draft.attachments?.length;
     notify();
   }
@@ -69,20 +87,28 @@
     void connection.start(id).catch(error => { if (loopId === id) fail(error); });
   }
   async function activate(bound) {
-    if (bound?.workspace_id === workspace?.workspace_id && workspace) return;
+    if (bound?.workspace_id === workspace?.workspace_id && workspace && workspaceLoaded) return;
     const token = ++generation;
     reads.abort(); reads = new AbortController(); connection.stop(); loopId = null;
-    workspace = bound; resultKey = ""; inputKey = "";
+    workspace = bound; workspaceLoaded = false; resultKey = ""; inputKey = ""; requestKey = "";
+    references.close();
+    $("#reference-file").disabled = !bound;
     $("#results").replaceChildren(); $("#requests").replaceChildren(); fail(null);
     if (bound) { intake.remember(bound); intake.claimUnbound(bound.workspace_id); }
     $("#binding-name").textContent = bound ? bound.display_name : "绑定工作区";
     $("#binding").title = bound?.path || "选择工作区文件夹";
     watchDraft();
     if (!bound) return;
-    const [loop, page] = await Promise.all([api.workspacePatrol(bound.workspace_id), api.workspaceInputs(bound.workspace_id)]);
-    if (token !== generation) return;
-    intake.history(bound.workspace_id, page, false, true);
-    if (loop) connect(loop.loop_id);
+    try {
+      const [loop, page] = await Promise.all([api.workspacePatrol(bound.workspace_id), api.workspaceInputs(bound.workspace_id)]);
+      if (token !== generation) return;
+      intake.history(bound.workspace_id, page, false, true);
+      workspaceLoaded = true;
+      if (loop) connect(loop.loop_id);
+    } catch (error) {
+      if (token !== generation) return;
+      $("#retry-workspace").hidden = false; throw error;
+    }
   }
   async function choose() {
     if (binding) return false;
@@ -98,19 +124,34 @@
     try {
       const promise = operation(); notify();
       const receipt = await promise;
-      if (workspace?.workspace_id === id && receipt?.loop_id) {
-        const current = await api.workspacePatrol(id);
-        if (workspace?.workspace_id === id) connect(current?.loop_id || receipt.loop_id);
-      }
+      if (workspace?.workspace_id === id && receipt?.loop_id) connect(receipt.loop_id);
+    } catch (error) {
+      if (workspace?.workspace_id !== id) return;
+      // The input row already owns its transport error and original-identity
+      // retry. Keep one recovery surface instead of duplicating it above results.
+      if (draftStore().get().rows.some(row => row.status === "failed")) { fail(null); $(".panel-feedback").scrollTop = 0; }
+      else throw error;
     } finally { notify(); }
   }
   async function submit() {
     if (!workspace) { await choose(); return; }
+    references.close();
     const id = workspace.workspace_id;
     const visible = FocusWorkspacePatrolInputs.captureVisibleContext({ projection: live.get().projection });
     await send(() => intake.submit(id, visible), id);
   }
+  async function hidePanel() {
+    const owner = ++closeEpoch;
+    host.classList.remove("is-opening"); host.classList.add("is-closing"); host.inert = true;
+    await Promise.all(host.getAnimations().map(animation => animation.finished.catch(() => {})));
+    if (owner !== closeEpoch) return;
+    try { await bridge?.hidePanel(); }
+    finally { if (owner === closeEpoch) { host.classList.remove("is-closing"); host.inert = false; } }
+  }
   function renderRequests(projection) {
+    const next = JSON.stringify([workspace?.workspace_id, projection?.wait_requests]);
+    if (requestKey === next) return;
+    requestKey = next;
     const container = $("#requests"); container.replaceChildren();
     for (const entity of Object.values(projection?.wait_requests || {})) {
       const request = entity.state;
@@ -127,6 +168,9 @@
     const cards = await FocusWorkspacePatrolFeedback.results(api, projection, signal);
     if (token !== generation || key !== resultKey || projection.loop_id !== loopId) return;
     const container = $("#results"); container.replaceChildren();
+    const progress = projection.task_progress?.state?.document?.items || [];
+    const files = FocusLoopLiveSelectors.selectFacts(projection).filter(item => item.kind === "file" || item.kind === "artifact").slice(0, 3);
+    if (cards.length || progress.length || files.length) element("h2", "工作区更新", container);
     for (const result of cards) {
       const card = element("article", "", container);
       element("h2", result.title, card); element("pre", result.text || result.error, card);
@@ -134,13 +178,11 @@
       source.title = `Context ${result.context_id} · Revision ${result.revision_id}`;
       source.dataset.contextId = result.context_id; source.dataset.revisionId = result.revision_id;
     }
-    const progress = projection.task_progress?.state?.document?.items || [];
     if (progress.length) {
       const card = element("article", "", container); element("h2", "已提交进度", card);
       const verified = progress.filter(item => item.state === "completed" && item.support === "supported").length;
       element("p", `${verified} / ${progress.length} 项已有验证证据`, card); action("查看进度 ↗", card, () => openWorkbench());
     }
-    const files = FocusLoopLiveSelectors.selectFacts(projection).filter(item => item.kind === "file" || item.kind === "artifact").slice(0, 3);
     if (files.length) { const card = element("article", "", container); element("h2", `${files.length} 项产物更新`, card); action("查看文件和来源 ↗", card, () => openWorkbench()); }
   }
   live.subscribe(({ projection }) => {
@@ -160,13 +202,14 @@
     }
   });
   $("#compose").addEventListener("submit", event => { event.preventDefault(); void submit().catch(fail); });
-  $("#instruction").addEventListener("input", event => draftStore().edit({ content: event.target.value }));
+  $("#instruction").addEventListener("input", event => { draftStore().edit({ content: event.target.value }); if (!event.isComposing) references.input(); });
+  $("#instruction").addEventListener("compositionend", () => references.input());
   $("#instruction").addEventListener("keydown", event => {
     if (event.key === "Enter" && event.ctrlKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); $("#compose").requestSubmit(); }
   });
   $("#binding").addEventListener("click", () => { void enqueue(choose); });
   $("#clear-reply").addEventListener("click", () => draftStore().edit({ request_id: null, request_revision: null }));
-  $("#hide").addEventListener("click", () => bridge?.hidePanel());
+  $("#hide").addEventListener("click", () => { void hidePanel().catch(fail); });
   $("#toggle-history").addEventListener("click", () => {
     const history = $("#history"); history.hidden = !history.hidden; history.open = !history.hidden;
     $("#toggle-history").setAttribute("aria-expanded", String(!history.hidden));
@@ -176,10 +219,13 @@
   document.addEventListener("keydown", event => {
     if (event.key !== "Escape") return;
     if ($(".panel-menu").open) { $(".panel-menu").open = false; $(".panel-menu summary").focus(); }
-    else bridge?.hidePanel();
+    else if (references.isOpen()) references.close(true);
+    else { void hidePanel().catch(fail); }
   });
   $("#workbench").addEventListener("click", () => { void openWorkbench(); });
   $("#reconnect").addEventListener("click", () => { const id = loopId; loopId = null; connect(id); });
+  $("#activity-reconnect").addEventListener("click", () => $("#reconnect").click());
+  $("#retry-workspace").addEventListener("click", () => { void enqueue(() => activate(workspace)); });
   $("#add-material").addEventListener("click", () => $("#file-picker").click());
   $("#file-picker").addEventListener("change", async event => {
     const id = workspace?.workspace_id || null, files = [...event.target.files]; event.target.value = "";
@@ -193,19 +239,44 @@
   });
   watchDraft();
   const sizeObserver = new ResizeObserver(() => {
-    const contentHeight = $(".panel-header").offsetHeight + $(".panel-content").offsetHeight + 2;
-    const menuHeight = $(".panel-menu").open ? $(".panel-menu-content").getBoundingClientRect().bottom + 10 : 0;
-    const height = Math.ceil(Math.max(contentHeight, menuHeight));
-    if (bridge?.enabled) void bridge.resizePanel(height).catch(fail);
+    const detail = !$("#version-detail").hidden, beside = detail && matchMedia("(min-width:580px)").matches;
+    const popupHeight = [$("#version-picker"),$("#version-detail")].reduce((sum,node) => sum + (node.hidden || (beside && node.id === "version-detail") ? 0 : node.offsetHeight + 8),0);
+    const shellStyle = getComputedStyle($(".panel-shell"));
+    const contentStyle = getComputedStyle($(".panel-content"));
+    const composeHeight = $(".panel-header").offsetHeight + $("#compose").offsetHeight + parseFloat(contentStyle.paddingTop) + parseFloat(contentStyle.paddingBottom) + parseFloat(shellStyle.borderTopWidth) + parseFloat(shellStyle.borderBottomWidth);
+    const popupRoom = `${Math.max(80,Math.min(500,screen.availHeight)-composeHeight-8)}px`;
+    if (host.style.getPropertyValue("--popup-room") !== popupRoom) host.style.setProperty("--popup-room",popupRoom);
+    const contentHeight = composeHeight + $(".panel-feedback-content").offsetHeight + popupHeight;
+    const menuHeight = $(".panel-menu").open ? $(".panel-menu-content").offsetTop + $(".panel-menu-content").offsetHeight + 10 : 0;
+    const gutter = parseFloat(getComputedStyle(host).paddingTop);
+    const height = Math.round(Math.max(contentHeight, menuHeight, beside ? $("#version-detail").offsetHeight + 56 : 0)+gutter*2);
+    if (bridge?.enabled) void bridge.resizePanel({height,width:(detail ? 590 : 288)+gutter*2,animate:!matchMedia("(prefers-reduced-motion:reduce)").matches}).catch(fail);
   });
+  sizeObserver.observe(host);
   sizeObserver.observe($(".panel-content"));
+  sizeObserver.observe($("#compose"));
+  sizeObserver.observe($(".panel-feedback-content"));
   sizeObserver.observe($(".panel-menu-content"));
-  await intake.resourceLimits();
+  sizeObserver.observe($("#version-picker"));
+  sizeObserver.observe($("#version-detail"));
   if (bridge?.enabled) {
-    bridge.onOpen(target => enqueue(async () => {
-      if (target.workspaceId && target.workspaceId !== workspace?.workspace_id) await activate(await intake.workspace(target.workspaceId));
-      if (target.requestId) draftStore().edit({ request_id: target.requestId, request_revision: target.requestRevision });
-    }));
+    bridge.onOpen(target => {
+      closeEpoch++; host.inert = false; host.classList.remove("is-closing");
+      host.classList.remove("is-opening");
+      const owner = closeEpoch;
+      requestAnimationFrame(() => { if (owner === closeEpoch) host.classList.add("is-opening"); });
+      return enqueue(async () => {
+        if (target.workspaceId) await activate(target.workspaceId === workspace?.workspace_id ? workspace : await intake.workspace(target.workspaceId));
+        else if (workspace && !workspaceLoaded) await activate(workspace);
+        if (target.requestId) draftStore().edit({ request_id: target.requestId, request_revision: target.requestRevision });
+        if (target.file_refs?.length) {
+          const refs = new Map(draftStore().get().draft.file_refs.map(file => [file.result_key,file]));
+          target.file_refs.forEach(file => refs.set(file.result_key,file));
+          if (refs.size > 32) throw new Error("一次输入最多引用 32 个文件版本");
+          draftStore().edit({file_refs:[...refs.values()]});
+        }
+      });
+    });
     bridge.onContent(payload => enqueue(async () => {
       const id = payload.workspaceId || null;
       await intake.add(id, payload.items);
@@ -218,5 +289,5 @@
       finally { nativeReady = true; notify(); }
     });
   } else if (intake.readBinding()) await activate(await intake.workspace(intake.readBinding().workspace_id));
-  window.addEventListener("beforeunload", () => { sizeObserver.disconnect(); preview.dispose(); connection.stop(); reads.abort(); });
+  window.addEventListener("beforeunload", () => { sizeObserver.disconnect(); references.dispose(); preview.dispose(); connection.stop(); reads.abort(); });
 })().catch(error => { const node = document.querySelector("#error"); node.hidden = false; node.textContent = error.message; });

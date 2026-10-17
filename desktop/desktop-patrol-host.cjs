@@ -10,8 +10,10 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const ROBOT_SIZE = { width: 144, height: 164 };
-const PANEL_SIZE = { width: 560, height: 202 };
+const ROBOT_SIZE = { width: 96, height: 120 };
+// Transparent paint space for the CSS shadow; the visible composer stays 288×109.
+const PANEL_GUTTER = 8;
+const PANEL_SIZE = { width: 288 + PANEL_GUTTER*2, height: 109 + PANEL_GUTTER*2 };
 const PREFIX = "focus:patrol-";
 
 function clampBounds(bounds, area) {
@@ -24,10 +26,10 @@ function clampBounds(bounds, area) {
   };
 }
 
-function panelBounds(robot, area, height = PANEL_SIZE.height) {
-  const x = robot.x - PANEL_SIZE.width - 8 >= area.x
-    ? robot.x - PANEL_SIZE.width - 8 : robot.x + robot.width + 8;
-  return clampBounds({ x, y: robot.y + robot.height - height, ...PANEL_SIZE, height }, area);
+function panelBounds(robot, area, height = PANEL_SIZE.height, width = PANEL_SIZE.width) {
+  const x = robot.x - width - 6 >= area.x
+    ? robot.x - width - 6 + PANEL_GUTTER : robot.x + robot.width + 6 - PANEL_GUTTER;
+  return clampBounds({ x, y: robot.y + robot.height - 40 - height + PANEL_GUTTER, width, height }, area);
 }
 
 function boundedString(value, limit, name, optional = false) {
@@ -71,6 +73,20 @@ function validateTarget(value = {}) {
     if (!Number.isSafeInteger(value.requestRevision) || value.requestRevision < 0) throw new Error("问题版本无效");
     target.requestRevision = value.requestRevision;
   }
+  if (value.file_refs != null) {
+    if (!target.workspaceId || !Array.isArray(value.file_refs) || value.file_refs.length > 32) throw new Error("文件版本引用无效");
+    target.file_refs = value.file_refs.map(file => {
+      if (!file || !Number.isSafeInteger(file.revision) || file.revision < 1) throw new Error("文件事实版本无效");
+      const ref = { revision:file.revision };
+      for (const [key,limit] of [["fact_id",160],["result_key",64],["slot_id",64],["path",4096]]) {
+        ref[key] = boundedString(file[key],limit,key);
+        if (!ref[key]) throw new Error("文件版本引用不能为空");
+      }
+      if (!/^[a-f0-9]{64}$/.test(ref.result_key) || (file.sha256 != null && !/^[a-f0-9]{64}$/.test(file.sha256))) throw new Error("文件版本 hash 无效");
+      ref.sha256 = file.sha256 ?? null;
+      return ref;
+    });
+  }
   return target;
 }
 
@@ -103,6 +119,9 @@ class DesktopPatrolHost {
     const bounds = clampBounds({ ...saved, ...ROBOT_SIZE }, screen.getDisplayMatching({ ...saved, ...ROBOT_SIZE }).workArea);
     const common = {
       show: false, frame: false, resizable: false, maximizable: false, minimizable: false,
+      // Chromium owns the antialiased card edge. A native frame/material/region
+      // would add a second outline or opaque rectangle outside that edge.
+      thickFrame: false, hasShadow: false, transparent: true, backgroundColor: "#00000000", backgroundMaterial: "none", roundedCorners: false,
       skipTaskbar: true, alwaysOnTop: true, icon: this._icon,
       webPreferences: {
         preload: path.join(this._desktopDir, "preload.cjs"), contextIsolation: true,
@@ -110,8 +129,8 @@ class DesktopPatrolHost {
         additionalArguments: ["--focus-desktop-patrol"],
       },
     };
-    this.robot = new BrowserWindow({ ...common, ...bounds, transparent: true, backgroundColor: "#00000000", focusable: false });
-    this.panel = new BrowserWindow({ ...common, ...panelBounds(bounds, screen.getDisplayMatching(bounds).workArea), backgroundColor: "#00000000", backgroundMaterial: "acrylic", roundedCorners: true });
+    this.robot = new BrowserWindow({ ...common, ...bounds, focusable: false });
+    this.panel = new BrowserWindow({ ...common, ...panelBounds(bounds, screen.getDisplayMatching(bounds).workArea) });
     for (const [surface, win] of [["robot", this.robot], ["panel", this.panel]]) {
       this._protectWindow(win, surface);
       win.on("close", event => { if (!this._disposed) { event.preventDefault(); win.hide(); } });
@@ -135,6 +154,7 @@ class DesktopPatrolHost {
       this.panel.loadURL(this._url("panel")),
     ]);
     this.robot.showInactive();
+    this._raiseSurfaces();
   }
 
   accepts(event, roles = ["robot", "panel", "workbench"]) {
@@ -155,6 +175,7 @@ class DesktopPatrolHost {
     if (this._disposed) return;
     this._reposition();
     this.robot.showInactive();
+    this._raiseSurfaces();
     if (this.panel.isVisible()) this.panel.focus();
   }
 
@@ -163,10 +184,21 @@ class DesktopPatrolHost {
     this.robot.showInactive();
     this._positionPanel();
     this.panel.show();
+    this._raiseSurfaces();
     this.panel.focus();
     if (this._ready.has("panel")) this.panel.webContents.send(`${PREFIX}open`, valid);
     else this._panelTarget = valid;
     return true;
+  }
+
+  _raiseSurfaces() {
+    // Restoring visibility alone does not restore a lost native topmost state.
+    // Raise the pair without focusing the robot or interrupting text input.
+    for (const win of [this.panel, this.robot]) {
+      if (!win || win.isDestroyed()) continue;
+      win.setAlwaysOnTop(true);
+      if (win.isVisible()) win.moveTop();
+    }
   }
 
   async openWorkbench(target = {}) {
@@ -204,6 +236,7 @@ class DesktopPatrolHost {
     this._writePreferences();
     this._disposed = true;
     clearTimeout(this._saveTimer);
+    clearTimeout(this._resizeTimer);
     for (const name of this._handlers) this._electron.ipcMain.removeHandler(name);
     if (this._onDisplaysChanged) {
       for (const event of ["display-added", "display-removed", "display-metrics-changed"]) this._electron.screen.removeListener(event, this._onDisplaysChanged);
@@ -235,10 +268,16 @@ class DesktopPatrolHost {
     };
     handle("open", ["robot", "panel", "workbench"], value => this.openPanel(value));
     handle("hide-panel", ["robot", "panel"], () => this.panel.hide());
-    handle("resize-panel", ["panel"], height => {
+    handle("resize-panel", ["panel"], size => {
+      const height = typeof size === "object" && size ? size.height : size;
+      const width = typeof size === "object" && size ? size.width : PANEL_SIZE.width;
       if (!Number.isFinite(height)) throw new Error("面板高度无效");
-      this._panelHeight = Math.max(PANEL_SIZE.height, Math.min(620, Math.ceil(height)));
-      this._positionPanel();
+      if (!Number.isFinite(width)) throw new Error("面板宽度无效");
+      const nextHeight = Math.max(PANEL_SIZE.height, Math.min(500 + PANEL_GUTTER*2, Math.ceil(height)));
+      const nextWidth = Math.max(PANEL_SIZE.width, Math.min(590 + PANEL_GUTTER*2, Math.ceil(width)));
+      if (nextHeight === this._panelHeight && nextWidth === this._panelWidth) return true;
+      this._panelHeight = nextHeight; this._panelWidth = nextWidth;
+      this._positionPanel(size?.animate === true);
       return true;
     });
     handle("hide-robot", ["robot", "panel"], () => { this.panel.hide(); this.robot.hide(); });
@@ -310,10 +349,23 @@ class DesktopPatrolHost {
     }
   }
 
-  _positionPanel() {
+  _positionPanel(animate = false) {
+    clearTimeout(this._resizeTimer);
+    this._resizeTimer = null;
     if (!this.robot || this.robot.isDestroyed() || !this.panel || this.panel.isDestroyed()) return;
     const robot = this.robot.getBounds();
-    this.panel.setBounds(panelBounds(robot, this._electron.screen.getDisplayMatching(robot).workArea, this._panelHeight));
+    const target = panelBounds(robot, this._electron.screen.getDisplayMatching(robot).workArea, this._panelHeight, this._panelWidth);
+    const from = this.panel.getBounds();
+    if (!animate || !this.panel.isVisible() || from.width !== target.width || from.height === target.height) { this.panel.setBounds(target); return; }
+    const started = performance.now();
+    const frame = () => {
+      if (this._disposed || this.panel.isDestroyed()) return;
+      const t = Math.min(1,(performance.now()-started)/380), eased = 1-Math.pow(1-t,3);
+      this.panel.setBounds({...target,y:Math.round(from.y+(target.y-from.y)*eased),height:Math.round(from.height+(target.height-from.height)*eased)});
+      if (t < 1) this._resizeTimer = setTimeout(frame,16);
+      else this._resizeTimer = null;
+    };
+    frame();
   }
 
   _reposition() {
