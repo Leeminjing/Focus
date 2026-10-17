@@ -8,6 +8,7 @@
  */
 const { app, BrowserWindow, dialog, ipcMain, Menu, shell, nativeTheme, Notification } = require("electron");
 const { TaskNotifications } = require("./task-notifications.cjs");
+const { registerMainRequestStorage } = require("./main-request-storage.cjs");
 const { supportsAcrylic, bindWindowMaterial } = require("./window-material.cjs");
 const { DesktopPatrolHost } = require("./desktop-patrol-host.cjs");
 const nativeMaterialSupported = supportsAcrylic(process.platform, require("node:os").release());
@@ -397,6 +398,11 @@ function assertDesktopSender(event) {
   }
   throw new Error("仅允许 Focus 同源窗口调用桌面功能");
 }
+
+registerMainRequestStorage(ipcMain, {
+  directory: () => app.getPath("userData"),
+  authorize: assertDesktopSender,
+});
 
 ipcMain.handle("focus:select-workspace", async event => {
   assertDesktopSender(event);
