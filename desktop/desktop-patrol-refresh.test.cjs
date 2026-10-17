@@ -25,6 +25,7 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
   body.innerHTML = fs.readFileSync(path.join(__dirname, "desktop-patrol.html"), "utf8");
   const document = { ...createDocument(), body, querySelector: selector => body.querySelector(selector), hidden: false,
     addEventListener: (...args) => body.addEventListener(...args) };
+  body.querySelector("#history-items").ownerDocument = document;
   let state = { projection: null, connection: { status: "live" } }, listener;
   const events = {}, calls = [], states = [], stores = new Map(), copied = [];
   const store = id => { if (!stores.has(id)) stores.set(id, Inputs.create()); return stores.get(id); };

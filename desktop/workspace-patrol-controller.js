@@ -336,11 +336,13 @@
       const panel = host.querySelector("[data-patrol-input-history]"), list = host.querySelector("[data-patrol-history]");
       const html = view.history(model);
       if (html !== historyHTML) {
+        const restoreResults = root.FocusWorkspacePatrolFeedback.preserveInputResults(list);
         const top = panel.scrollTop, edge = panel.getBoundingClientRect().top;
         const visible = top > 0 ? [...list.children].find(row => row.getBoundingClientRect().bottom > edge) : null;
         const offset = visible ? visible.getBoundingClientRect().top - edge : 0;
         const id = visible?.dataset.submissionId;
         list.innerHTML = html; historyHTML = html;
+        restoreResults();
         const retained = id && [...list.children].find(row => row.dataset.submissionId === id);
         panel.scrollTop = retained ? panel.scrollTop + retained.getBoundingClientRect().top - edge - offset : top;
       }
@@ -496,12 +498,12 @@
         if (node.textContent !== "本轮尚未冻结") node.textContent = "本轮尚未冻结";
         host.querySelector("[data-patrol-observation-open]").disabled = true;
       }
-      const key = JSON.stringify(projection.interventions);
+      const key = root.FocusWorkspacePatrolFeedback.inputSignature(projection);
       if (key !== historyKey) {
         historyKey = key;
         const current = token;
         const version = ++historyToken;
-        api.workspaceInputs(workspace.workspace_id).then(page => {
+        root.FocusWorkspacePatrolFeedback.refreshInputs(api, workspace.workspace_id, inputs.get()).then(page => {
           if (current === token && version === historyToken) {
             intake.history(workspace.workspace_id, page);
           }

@@ -121,9 +121,10 @@ window.fetch = async (input, options = {}) => {
     }
     if (!workspace[2]) return json(loops.has(id) ? { loop_id: `loop-${id}`, workspace_id: id } : null);
     if (!options.method || options.method === "GET") {
-      const before = url.searchParams.get("before"), rows = [...(records.get(id) || [])].reverse();
+      const before = url.searchParams.get("before"), requestedIds = url.searchParams.getAll("intent_ids");
+      const rows = [...(records.get(id) || [])].reverse().filter(row => !requestedIds.length || requestedIds.includes(row.intent_id));
       const start = before ? rows.findIndex(row => row.intent_id === before) + 1 : 0;
-      const items = rows.slice(start, start + window.patrolFixture.historyPageSize);
+      const items = rows.slice(start, start + (requestedIds.length || window.patrolFixture.historyPageSize));
       const has_more = start + items.length < rows.length;
       window.patrolFixture.historyRequests.push({ id, before });
       if (window.patrolFixture.holdHistory) await new Promise(resolve => window.patrolFixture.historyReleases.push(resolve));

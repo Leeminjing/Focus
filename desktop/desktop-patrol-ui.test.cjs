@@ -64,6 +64,7 @@ if (!process.versions.electron) {
     file:{slot_id:"slot-a",path:"报告.pdf",result_key:"report-current",sha256:require("node:crypto").createHash("sha256").update(reportBytes).digest("hex"),operation:"created"} };
   const nativeExits = [];
   let fileReadDelay = 0, unavailableVersion = false, failWorkspaceInputs = 0, longHistory = false, failSubmission = 0;
+  let inputProcessingResult = null;
   const submissionAttempts = [];
   let liveSequence = 1, answerRevision = "revision-answer", progressRevision = 1, statusOverride = null, loopRevision = 1;
   const controlChanges = [];
@@ -164,7 +165,9 @@ if (!process.versions.electron) {
       if (!input[2]) return json(response, history.has(id) ? { loop_id: `loop-${id}`, workspace_id: id } : null);
       if (request.method === "GET") {
         if (failWorkspaceInputs) { failWorkspaceInputs--; return json(response,{detail:"暂时读取失败"},503); }
-        const items = (history.get(id) || []).filter(item => item.submission_id !== hiddenSubmission);
+        const requestedIds = url.searchParams.getAll("intent_ids");
+        const items = (history.get(id) || []).filter(item => item.submission_id !== hiddenSubmission && (!requestedIds.length || requestedIds.includes(item.intent_id)))
+          .map((item,index) => inputProcessingResult && index === 0 ? {...item,processing_state:'addressed',processing_result:inputProcessingResult} : item);
         return json(response, { items: longHistory ? [...items,...Array.from({length:20},(_,i)=>({...items[0],submission_id:`old-${i}`,intent_id:`old-intent-${i}`,content:`较早的输入 ${i} · 保持发送区可见`,created_at:new Date(Date.now()-1000*(i+1)).toISOString()}))] : items, next_before: null, has_more: false });
       }
       submissionAttempts.push(body);
@@ -319,6 +322,20 @@ if (!process.versions.electron) {
     assert.equal(requests[0].body.attachments[0].source_kind, "text");
     assert.equal(requests[0].body.attachments[1].source_kind, "image");
     await run(host.panel,"document.querySelector('#toggle-history').click()");
+    inputProcessingResult = {disposition:'decision',explanation:'已调整优先级：先定位导入失败。下一步验证错误原因。',mission_revision:3,decision_id:'input-decision',round_id:'input-round',observation_id:'input-observation',observation_generation:2,rationale:'导入失败阻塞后续工作',evidence:[{fact_id:'import-error',revision:4}],related_cancellations:[{state:'cancel_requested',target_kind:'run',target_id:'ui-run',round_id:'old-round',reason:'先解决导入失败'}]};
+    for (let attempt=0; attempt<100 && !streams.has('loop-workspace-a'); attempt++) await delay(20);
+    loopRevision++; liveSequence++;
+    streams.get('loop-workspace-a').write(`data: ${JSON.stringify({status:'resync_required',last_sequence:liveSequence})}\n\n`);
+    await waitFor(host.panel, "document.querySelector('[data-patrol-input-result] summary')?.textContent.includes('已请求停止')", "每条输入必须显示真实的处理反馈");
+    await run(host.panel,"document.querySelector('[data-patrol-input-result] summary').click(); document.querySelector('[data-patrol-input-result] summary').focus()");
+    assert.match(await run(host.panel,"document.querySelector('[data-patrol-input-result]').textContent"),/input-decision.*input-observation.*import-error/s);
+    await capture(host.panel,'desktop-input-processing-requested');
+    inputProcessingResult = {...inputProcessingResult,related_cancellations:inputProcessingResult.related_cancellations.map(item=>({...item,state:'stopped'}))};
+    loopRevision++; liveSequence++;
+    streams.get('loop-workspace-a').write(`data: ${JSON.stringify({status:'resync_required',last_sequence:liveSequence})}\n\n`);
+    await waitFor(host.panel,"document.querySelector('[data-patrol-input-result] summary')?.textContent.includes('同次决策：已停止')","清理结束后反馈必须更新");
+    assert.equal(await run(host.panel,"document.querySelector('[data-patrol-input-result]').open && document.activeElement.matches('[data-patrol-input-result] > summary')"),true,"反馈更新必须保留已展开来源和键盘焦点");
+    await run(host.panel,"document.querySelector('[data-patrol-input-result]').open=false; document.querySelector('[data-patrol-history-attachment=\"1\"]').scrollIntoView({block:'center'})");
     await waitFor(host.panel,"document.querySelector('#history-items summary img')?.naturalWidth > 0","已发送图片应保留缩略图");
     assert.match(await run(host.panel,"document.querySelector('#history-items').textContent"),/粘贴截图.png.*版本 aaaaaaaa/s);
     await capture(host.panel,"desktop-sent-attachments");

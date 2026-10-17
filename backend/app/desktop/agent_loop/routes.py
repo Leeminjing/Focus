@@ -61,8 +61,10 @@ async def restart_workspace_patrol(workspace_id: str, request: Request) -> dict:
 
 @agent_loop_router.get("/workspace/{workspace_id}/inputs")
 async def workspace_input_history(workspace_id: str, request: Request, before: str | None = None,
-                                  limit: int = Query(default=50, ge=1, le=100)) -> dict:
-    return await request.app.state.workspace_patrol.history(workspace_id, before, limit)
+                                  limit: int = Query(default=50, ge=1, le=100),
+                                  intent_ids: list[str] | None = Query(default=None, max_length=100)) -> dict:
+    return await request.app.state.workspace_patrol.history(workspace_id, before, limit,
+                                                           intent_ids=intent_ids)
 
 
 class LoopControlRequest(BaseModel):

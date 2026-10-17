@@ -143,6 +143,22 @@ if (!process.versions.electron) {
     }
     await run('window.savedPatrolComposer = document.querySelector("[data-patrol-composer]"); render()');
     assert.equal(await run('window.savedPatrolComposer === document.querySelector("[data-patrol-composer]")'), true);
+    await run(`window.inputProcessing = {disposition:'decision',explanation:'已调整优先级：先定位导入失败。下一步验证错误原因。',mission_revision:3,decision_id:'input-decision',round_id:'input-round',observation_id:'input-observation',observation_generation:2,rationale:'导入失败阻塞后续工作',evidence:[{fact_id:'import-error',revision:4}],related_cancellations:[{state:'cancel_requested',target_kind:'run',target_id:'ui-run',round_id:'old-round',reason:'先解决导入失败'}]};
+      window.updateInputProcessing = () => { const id=state.patrolWorkspace.workspace_id; patrolFixture.seedHistory(id,workspacePatrolIntake.store(id).get().rows.map((row,index)=>index ? row : {...row,processing_state:'addressed',processing_result:inputProcessing})); };
+      updateInputProcessing(); patrolFixture.emit('loop-completion_check','intervention','input-feedback',1,{state:'addressed'});
+      document.querySelector('[data-patrol-history-open]').click()`);
+    await until('document.querySelector("[data-patrol-input-result]")?.textContent.includes("已调整优先级")');
+    assert.match(await run('document.querySelector("[data-patrol-input-result] summary").textContent'), /已纳入决策.*已请求停止/s);
+    await run('document.querySelector("[data-patrol-input-result] summary").click()');
+    assert.match(await run('document.querySelector("[data-patrol-input-result]").textContent'), /input-decision.*input-round.*input-observation.*import-error/s);
+    await run(`document.querySelector('[data-patrol-input-result] summary').focus(); inputProcessing.related_cancellations[0].state='stopped'; updateInputProcessing(); patrolFixture.emit('loop-completion_check','run','ui-run',2,{status:'interrupted',settled_at:'2026-10-17T01:00:00Z'})`);
+    await until('document.querySelector("[data-patrol-input-result] summary").textContent.includes("同次决策：已停止")');
+    assert.equal(await run('document.querySelector("[data-patrol-input-result]").open && document.activeElement.matches("[data-patrol-input-result] > summary")'), true);
+    if (process.env.FOCUS_FRONTEND_QA_DIR) {
+      await run('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      fs.writeFileSync(path.join(process.env.FOCUS_FRONTEND_QA_DIR, 'input-processing-result.png'), (await win.webContents.capturePage()).toPNG());
+    }
+    await run('document.querySelector("[data-patrol-history-open]").click()');
     await run(`window.fileFeedbackFetch = async input => {
       const path = new URL(String(input), 'http://focus.test').pathname;
       const file = {slot_id:'slot-report',path:'reports/报告.md',result_key:'report-result',operation:'created',sha256:'a'.repeat(64)};

@@ -4,7 +4,7 @@
  * 要求与参考文字分开，Enter/IME 不发送，Ctrl+Enter 显式发送；示例：拖入截图、补充“解释报错”、点击发送。
  * 回答仅取固定 Context revision 的 assistant 正文并有界缓存，进度/产物分别来自 Live；隐藏时保留 Live 状态同步，取消正文读取并暂停结果 DOM 更新。
  * 回答独立读取和重试，保留其他卡片 DOM；展开后按需渲染 Markdown 并提供全文/代码复制，文件直接打开固定版本或加入引用。
- * 原生显隐由宿主通知，浏览器回退用 visibilitychange；再次显示时读取最新投影。授权处理沿用工作台，不展示 Patrol 内部理由。
+ * 原生显隐由宿主通知，浏览器回退用 visibilitychange；再次显示时读取最新投影。授权处理沿用工作台，输入下方可展开已提交的处理说明和证据。
  * 状态旁原位暂停/继续，停止收进菜单；复用 Loop control，区分 HTTP 受理与 Live 生效，隔离工作区代际并阻止在途重复控制。
  */
 (async function () {
@@ -28,6 +28,7 @@
   let workspace = null, workspaceLoaded = false, generation = 0, loopId = null, unsubscribe = null, reads = new AbortController();
   let resultKey = "", inputKey = "", publishedState = "", binding = false, nativeReady = false, shownFailure = "", closeEpoch = 0, commandQueue = Promise.resolve();
   let historyKey = "", requestKey = "", progressKey = "", artifactKey = "";
+  let inputRefreshVersion = 0;
   let panelVisible = bridge?.enabled ? false : !document.hidden, visibilityKnown = false, resultsNeedReset = false;
   let control = null;
   const draftStore = () => intake.store(workspace?.workspace_id || null);
@@ -120,11 +121,14 @@
     const nextHistory = `${workspace?.workspace_id || ""}:${model.historyRevision}`;
     if (historyKey !== nextHistory) {
       historyKey = nextHistory;
-      const items = $("#history-items"); items.replaceChildren();
+      const items = $("#history-items");
+      const restoreResults = FocusWorkspacePatrolFeedback.preserveInputResults(items);
+      items.replaceChildren();
       for (const row of model.rows) {
         const card = element("article", "", items);
         card.dataset.submissionId = row.submission_id;
         element("pre", row.content || "仅参考材料", card);
+        card.insertAdjacentHTML("beforeend", FocusWorkspacePatrolFeedback.inputResult(row));
         card.insertAdjacentHTML("beforeend", FocusPatrolInputReferences.render(row));
         element("small", status[row.status], card);
         if (row.status === "failed") {
@@ -134,6 +138,7 @@
           action("编辑为新输入", card, () => intake.editFailed(id, row.submission_id));
         }
       }
+      restoreResults();
     }
     historyReferences.bind(model);
     $("#older").hidden = !model.cursor;
@@ -402,10 +407,13 @@
     notify();
     refreshVisible();
     if (!projection || projection.loop_id !== loopId) return;
-    const next = JSON.stringify(projection.interventions);
+    const next = FocusWorkspacePatrolFeedback.inputSignature(projection);
     if (next !== inputKey && workspace) {
       inputKey = next; const token = generation, id = workspace.workspace_id;
-      void api.workspaceInputs(id).then(page => { if (token === generation) intake.history(id, page); }).catch(error => { if (token === generation) fail(error); });
+      const version = ++inputRefreshVersion;
+      void FocusWorkspacePatrolFeedback.refreshInputs(api, id, draftStore().get()).then(page => {
+        if (token === generation && version === inputRefreshVersion) intake.history(id, page);
+      }).catch(error => { if (token === generation && version === inputRefreshVersion) fail(error); });
     }
   });
   $("#compose").addEventListener("submit", event => { event.preventDefault(); void submit().catch(fail); });
