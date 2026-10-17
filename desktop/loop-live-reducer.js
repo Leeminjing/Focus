@@ -37,7 +37,7 @@
       occurred_at: event.occurred_at || null,
       correlation_id: event.correlation_id || null,
       causation_id: event.causation_id || null,
-      detail: Object.freeze(Object.fromEntries(["context_id", "source_context_id", "run_id", "tool_name", "status", "directive_id", "opportunity_id", "blocker_code", "origin", "intent_kind", "state"].filter(key => event.payload[key] != null).map(key => [key, event.payload[key]]))),
+      detail: Object.freeze(Object.fromEntries(["context_id", "target_context_id", "source_context_id", "run_id", "tool_name", "status", "directive_id", "opportunity_id", "blocker_code", "origin", "intent_kind", "state"].filter(key => event.payload[key] != null).map(key => [key, event.payload[key]]))),
     });
   }
 

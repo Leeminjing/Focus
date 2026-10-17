@@ -24,6 +24,16 @@ Live Loop 的权威状态始终保存在原有 Loop 领域表、canonical journa
 
 每一步都能独立回退。默认路径不会同时运行旧轮询和 Live stream。
 
+## 长任务读取
+
+部署前应用 `e25c6d7e8f90` 迁移，创建 `loop_live_checkpoints`。首次缓存缺失时重放保留 journal；随后打开或重同步从检查点 sequence 补放尾部事件。快照仍在只读 Repeatable Read 事务内读取单一边界，事务结束后独立保存检查点；旧请求不能覆盖较新的 sequence，缓存写失败不影响已经读出的快照。缓存保存 reducer 的原始版本，响应每次根据当前授权脱敏。
+
+当前快照保留最近 50 个 rounds/patrol sessions、最近 200 个 runs/curators/expansions/directives/facts，并额外保留未完成工作。Observation/Decision 只读取所选实体引用的身份；当前 Context 拓扑保持完整。accounting 用数据库聚合轮次和已结算调用，不携带完整 round_history。Run 权限依赖统一批量读取，200 个 Run 与一个 Run 的依赖查询数量一致。
+
+`GET /desktop/api/agent-loops/{loop_id}/live/history?before_sequence=100&limit=50` 返回一页 `items`（页内正序）、排他的 `next_before_sequence`、`minimum_sequence` 和 `truncated`。省略游标从最新事件开始，limit 上限 200；每页复查权限。前端独立加载历史并提供“更早活动/返回最新”，不把历史事件再次送入 reducer，不推进 SSE 游标。已有 SSE 增量和缺口重同步协议保持原样。
+
+检查点缺失、格式失效或被裁剪边界超越时，从仍保留的 journal 恢复并由权威物化表补齐当前实体。裁剪掉的活动历史不会伪造恢复，历史接口显式返回保留边界。`rebuild` 绕过缓存，供诊断使用。
+
 ## 回滚步骤
 
 1. 先关闭 `FOCUS_LOOP_FRONTEND_PROJECTION`，renderer 切回 legacy adapter；已有 projection 保留但不再作为 UI 权威。

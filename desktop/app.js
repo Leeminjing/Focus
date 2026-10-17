@@ -279,6 +279,8 @@ const loopConnection = runtime.features?.liveLoopProjection === false ? loopLega
 let loopLifecycleFrame = null;
 let projectedLoopState = null;
 loopLiveStore?.subscribe(liveState => {
+  loopStore?.projectHistory(liveState.history);
+  loopConsoleStore?.projectHistory(liveState.history);
   if (!liveState.projection) {
     projectedLoopState = null;
     loopStore?.clearLive(liveState.connection);
@@ -293,7 +295,11 @@ loopLiveStore?.subscribe(liveState => {
   projectedLoopState = liveState.projection;
   loopStore?.projectLive(liveState.projection, liveState.connection);
   const previousConversation = loopConsoleStore?.get().conversation;
+  const previousAuthority = loopConsoleStore?.get().authorityRevision;
   const nextConsole = loopConsoleStore?.projectLive(liveState.projection, loopLiveSelectors);
+  if (previousAuthority != null && previousAuthority !== nextConsole?.authorityRevision) {
+    void loopConsoleController?.reloadFacts();
+  }
   if (previousConversation && nextConsole?.selectedContextId === previousConversation.context_id && !nextConsole.conversation) {
     void loopConsoleController?.selectContext(nextConsole.selectedContextId, { preserveSelection: true });
   }
@@ -6839,6 +6845,8 @@ async function handleDocumentClick(event) {
     setStatus("压缩来源已恢复并发布新 Context Revision");
   });
   if (action === "loop-load-older") return loopConsoleController?.loadOlder();
+  if (action === "loop-load-older-activity") return loopLiveConnection?.loadHistory(true);
+  if (action === "loop-load-latest-activity") return loopLiveConnection?.loadHistory(false);
   if (action === "loop-load-newer") return loopConsoleController?.loadNewer();
   if (action === "loop-load-older-facts") return loopConsoleController?.loadOlderFacts();
   if (action === "loop-intervention-mode") return loopConsoleStore?.setMode(button.dataset.mode);
