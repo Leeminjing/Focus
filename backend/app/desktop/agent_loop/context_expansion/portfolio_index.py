@@ -2,11 +2,13 @@ r"""本文件对外提供 PortfolioSemanticIndexService 与 PortfolioIndexBuildR
 
 输入为冻结 Observation、Revision reader、监督模型 factories 和并发上限；输出为完整 indexes、catalog、stage 与真实用量。
 具体工作流为冻结独立局部／整体合同，精确缓存优先，权威追加继承局部 records，再用完整目录及任意冻结原文做整体解释和联合验证。
-模型工作不持有事务；短事务解析局部及完整 Index 赢家并校验 catalog。全部阶段共用 Loop 准入／结算，取消和竞争仍计实际成本。
+模型工作不持有事务；局部成功即保存不可变赢家，完整 Index 仍在短事务校验依赖与 catalog 后发布。全部阶段共用 Loop 准入／结算，取消和竞争仍计实际成本。
 索引采样绑定本次冻结 Round identity 并复用逐次 owner receipt，混合成功和取消分别结算，不把通用预算行当作独立执行权威；批次汇总跳过已托管 attempts 避免重复计费。
 新 Index 包含 interpretation proof；必要综合失败不发布局部-only artifact。显式新授权重试记录版本，冻结认知输入不变。
 整体解释窗口合同独立进入 fingerprint，使旧综合缓存不冒充新协议；局部记录继续按独立合同复用，旧 proof 不改写。
 局部投影在调用模型前读取并校验原合同缓存，只有未命中的段调用局部模型；发布前仍采用原子赢家并复核综合依赖。
+同一 Revision 的独立局部段并发投影并按原序归并；服务内所有局部／综合／验证模型调用共享并发额度，失败或取消先回收子任务再结算。
+完全相同的冻结输入、模型合同与授权仅在同一服务内合并进行中构建；最后一个等待者取消才终止工作，每次实际等待独立记录运行耗时。
 Revision 原文从版本化 semantic view 读取，控制与 reasoning 不参与 segmentation、fallback 或综合解释。
 容量失败的阶段 attempt 保存 schema、请求 hash 与字段尺寸，保留真实消费，不将通用窗口拒绝误记为 Tool 原子失败。
 示例：result = await service.build(observation)；稳定旧段免重抽，新增否定与远端怀疑生成联合诊断，消费者读取一个完整目标。
@@ -15,9 +17,12 @@ Revision 原文从版本化 semantic view 读取，控制与 reasoning 不参与
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import dataclass, field
+from time import perf_counter_ns
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -104,6 +109,7 @@ class _IndexBuildState:
 
 
 _BUILD_STATE: ContextVar[_IndexBuildState] = ContextVar("semantic_index_build")
+_logger = logging.getLogger(__name__)
 
 
 class PortfolioIndexBuildResult(BaseModel):
@@ -114,6 +120,12 @@ class PortfolioIndexBuildResult(BaseModel):
     blocker_code: str | None = None
     blocker_summary: str | None = None
     stage_record: DerivationStageRecord | None = None
+
+
+@dataclass
+class _SharedIndexBuild:
+    task: asyncio.Task[PortfolioIndexBuildResult]
+    waiters: int = 0
 
 
 class PortfolioSemanticIndexService:
@@ -137,6 +149,8 @@ class PortfolioSemanticIndexService:
         self._artifacts = SemanticDerivationArtifactRepository()
         self._indexer = RevisionSemanticIndexer()
         self._concurrency = max(1, concurrency)
+        self._model_slots = asyncio.Semaphore(self._concurrency)
+        self._inflight_builds: dict[str, _SharedIndexBuild] = {}
         self._max_attempts = max(1, max_attempts)
         self._catalog_max_descriptor_chars = catalog_max_descriptor_chars
         self._semantic_projector_factory = semantic_projector_factory
@@ -219,6 +233,83 @@ class PortfolioSemanticIndexService:
         _BUILD_STATE.set(_IndexBuildState(attempts=value))
 
     async def build(
+        self,
+        observation: LoopObservationEnvelope,
+        *,
+        budget_authority_revision: int | None = None,
+        fencing_token: int | None = None,
+    ) -> PortfolioIndexBuildResult:
+        started = perf_counter_ns()
+        observation = deepcopy(observation)
+        try:
+            model_identities = tuple(
+                self._model_identity(getattr(self, name, None)) for name in (
+                    "_semantic_projector_factory", "_semantic_claim_verifier_factory",
+                    "_semantic_interpreter_factory",
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            # Preserve the normal blocked-result and accounting path on invalid config.
+            return await self._build(
+                observation, budget_authority_revision=budget_authority_revision,
+                fencing_token=fencing_token,
+            )
+        key = stable_expansion_hash(
+            "authorized-index-build-v1",
+            self.VERSION,
+            observation.model_dump(mode="json")
+            if isinstance(observation, BaseModel)
+            else vars(observation),
+            budget_authority_revision,
+            fencing_token,
+            getattr(getattr(self, "_indexer", None), "segmenter_version", ""),
+            getattr(getattr(self, "_indexer", None), "INDEX_SCHEMA_VERSION", ""),
+            SegmentProjectionRecord.SCHEMA_VERSION,
+            RevisionInterpretationRecord.SCHEMA_VERSION,
+            SemanticGroundingValidator.VERSION,
+            SupervisedSemanticClaimSupportVerifier.VERSION,
+            SEGMENT_PROMPT,
+            INTERPRETATION_PROMPT,
+            model_identities,
+            getattr(self, "_catalog_max_descriptor_chars", None),
+            self._max_attempts,
+        )
+        # Some specialized services override construction but keep this entry point.
+        if not hasattr(self, "_inflight_builds"):
+            self._inflight_builds = {}
+        shared = self._inflight_builds.get(key)
+        joined = shared is not None
+        if shared is None:
+            shared = _SharedIndexBuild(asyncio.create_task(self._build(
+                observation, budget_authority_revision=budget_authority_revision,
+                fencing_token=fencing_token,
+            )))
+            self._inflight_builds[key] = shared
+        shared.waiters += 1
+        outcome = "error"
+        try:
+            result = await asyncio.shield(shared.task)
+            outcome = result.blocker_code or "ready"
+            return result
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        finally:
+            shared.waiters -= 1
+            if shared.waiters == 0:
+                if self._inflight_builds.get(key) is shared:
+                    del self._inflight_builds[key]
+                if not shared.task.done():
+                    shared.task.cancel()
+                    await asyncio.gather(shared.task, return_exceptions=True)
+            metrics = {
+                "index_build_key": key, "joined_build": joined,
+                "duration_ms": (perf_counter_ns() - started) / 1_000_000,
+                "build_outcome": outcome,
+            }
+            _logger.info("semantic_index_build %s", metrics, extra=metrics)
+
+    async def _build(
         self,
         observation: LoopObservationEnvelope,
         *,
@@ -376,12 +467,12 @@ class PortfolioSemanticIndexService:
             )
             if cached is not None:
                 return cached
-            winners = tuple(
-                [
-                    await self._records.put(session, index.source.context_id, record)
-                    for record in records
-                ]
+            winners = await self._records.by_ids(
+                session, index.source.context_id,
+                tuple(record.record_id for record in records),
             )
+            if winners is None:
+                raise ValueError("segment projection committed dependencies disappeared")
             committed = await self._artifacts.cached_index(
                 session,
                 revision_id=index.source.revision_id,
@@ -607,17 +698,30 @@ class PortfolioSemanticIndexService:
         if plan is None:
             return frozen
         source = frozen.source
+        telemetry = _BUILD_STATE.get().telemetry.setdefault(source.revision_id, {})
+        telemetry.update(local_cache_hits=0, projected_segments=0)
+        local_started = perf_counter_ns()
         records = list(inherited)
-        for segment in frozen.segments[len(inherited) :]:
-            records.append(await self._project_segment(frozen, segment))
+        tasks = [
+            asyncio.create_task(self._project_segment(frozen, segment))
+            for segment in frozen.segments[len(inherited) :]
+        ]
+        try:
+            records.extend(await asyncio.gather(*tasks))
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        telemetry["local_projection_ms"] = (perf_counter_ns() - local_started) / 1_000_000
         async with self._sessions.begin() as session:
             records = await self._records.resolve_existing(
                 session, source.context_id, records
             )
         state = _BUILD_STATE.get()
         interpreter = RevisionInterpretationBuilder(
-            self._budgeted_model(self._semantic_interpreter_factory),
-            self._budgeted_model(self._semantic_claim_verifier_factory),
+            self._budgeted_model(self._semantic_interpreter_factory, source.revision_id, "interpretation"),
+            self._budgeted_model(self._semantic_claim_verifier_factory, source.revision_id, "interpretation_verifier"),
             state.budget.resources,
             state.interpretation_contract,
             state.local_contract,
@@ -625,9 +729,18 @@ class PortfolioSemanticIndexService:
                 self._append_attempt(source.revision_id, a) for a in attempts
             ],
         )
-        interpretation = await interpreter.build(frozen, records, plan)
+        interpretation_started = perf_counter_ns()
+        try:
+            interpretation = await interpreter.build(frozen, records, plan)
+        finally:
+            telemetry["interpretation_ms"] = (perf_counter_ns() - interpretation_started) / 1_000_000
+            metrics = {
+                "source_revision_id": source.revision_id, **telemetry,
+            }
+            _logger.info("semantic_index_revision %s", metrics, extra=metrics)
         _BUILD_STATE.get().records[source.revision_id] = tuple(records)
         _BUILD_STATE.get().telemetry[source.revision_id] = {
+            **telemetry,
             "mode": plan.mode,
             "baseline_index_id": plan.baseline_index_id,
             "full_build_reason": plan.full_build_reason,
@@ -653,16 +766,23 @@ class PortfolioSemanticIndexService:
         async with self._sessions() as session:
             cached = await self._records.for_segment(session, frozen.source.context_id, segment, messages, contract)
         if cached is not None:
+            telemetry = _BUILD_STATE.get().telemetry[frozen.source.revision_id]
+            telemetry["local_cache_hits"] += 1
             return cached
         builder = SegmentProjectionBuilder(
             frozen.source.context_id, contract,
-            self._budgeted_model(self._semantic_projector_factory),
-            self._budgeted_model(self._semantic_claim_verifier_factory),
+            self._budgeted_model(self._semantic_projector_factory, frozen.source.revision_id, "local_projection"),
+            self._budgeted_model(self._semantic_claim_verifier_factory, frozen.source.revision_id, "local_verifier"),
             lambda attempts: [self._append_attempt(frozen.source.revision_id, {**a, "index_phase": "local"}) for a in attempts],
         )
-        return await builder.build(segment, messages)
+        record = await builder.build(segment, messages)
+        _BUILD_STATE.get().telemetry[frozen.source.revision_id]["projected_segments"] += 1
+        async with self._sessions.begin() as session:
+            winner = await self._records.put(session, frozen.source.context_id, record)
+            winner.validate_target(segment, messages, contract)
+        return winner
 
-    def _budgeted_model(self, factory):
+    def _budgeted_model(self, factory, revision_id, phase):
         if factory is None:
             return None
         model = factory()
@@ -673,7 +793,10 @@ class PortfolioSemanticIndexService:
         )
         if actual != _BUILD_STATE.get().model_identities[factory]:
             raise ValueError("semantic index model configuration 已 stale")
-        return BudgetedIndexModel(model, _BUILD_STATE.get().budget)
+        return BudgetedIndexModel(
+            model, _BUILD_STATE.get().budget, semaphore=self._model_slots,
+            telemetry_context={"source_revision_id": revision_id, "index_phase": phase},
+        )
 
     def _append_attempt(self, revision_id: str, attempt: dict[str, Any]) -> None:
         self._projection_attempts[revision_id] = (

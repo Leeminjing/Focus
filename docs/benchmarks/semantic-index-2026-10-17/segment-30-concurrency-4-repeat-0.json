@@ -1,0 +1,1388 @@
+{
+  "configured_model": "deepseek-flash",
+  "provider_model": "deepseek-flash",
+  "output_token_limit": 65536,
+  "segment_size": 30,
+  "concurrency": 4,
+  "repeat": 0,
+  "fixture": "unique synthetic batch verification facts; no customer data",
+  "history_messages": 55,
+  "append_messages": 2,
+  "phases": {
+    "cold": {
+      "duration_ms": 73724.44050000922,
+      "blocker_code": null,
+      "blocker_summary": null,
+      "model_calls": 5,
+      "input_tokens": 22526,
+      "output_tokens": 18246,
+      "retries": 0,
+      "error_categories": {},
+      "invocations": [
+        {
+          "schema": "SemanticProjectionProposal",
+          "duration_ms": 14157.952800000203
+        },
+        {
+          "schema": "SemanticProjectionProposal",
+          "duration_ms": 14118.954000005033
+        },
+        {
+          "schema": "SemanticClaimSupportProposal",
+          "duration_ms": 9684.701999998651
+        },
+        {
+          "schema": "SemanticClaimSupportProposal",
+          "duration_ms": 14809.058499988168
+        },
+        {
+          "schema": "RevisionInterpretationProposal",
+          "duration_ms": 44591.884800000116
+        }
+      ],
+      "timings": [
+        {
+          "phase": "local_projection",
+          "queue_wait_ms": 0.0029,
+          "execution_ms": 14157.9705,
+          "admission_ms": 0.6478
+        },
+        {
+          "phase": "local_projection",
+          "queue_wait_ms": 0.0057,
+          "execution_ms": 14118.9883,
+          "admission_ms": 1.7932
+        },
+        {
+          "phase": "local_verifier",
+          "queue_wait_ms": 0.0029,
+          "execution_ms": 9684.7338,
+          "admission_ms": 0.4296
+        },
+        {
+          "phase": "local_verifier",
+          "queue_wait_ms": 0.0024,
+          "execution_ms": 14809.0966,
+          "admission_ms": 0.4446
+        },
+        {
+          "phase": "interpretation",
+          "queue_wait_ms": 0.0035,
+          "execution_ms": 44591.9119,
+          "admission_ms": 0.8436
+        }
+      ],
+      "billed_model_calls": 5,
+      "quality": {
+        "state": "complete",
+        "message_count": 55,
+        "represented_messages": 55,
+        "missing_message_ids": [],
+        "fallback_segments": 0,
+        "rejection_codes": {},
+        "all_sources_bound": true,
+        "statements": [
+          {
+            "text": "Verification batch B044 had 84 tests passed and 2 tests failed; the result belongs only to batch B044.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-44"
+            ]
+          },
+          {
+            "text": "Verification batch B043 had 83 tests passed and 1 tests failed; the result belongs only to batch B043.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-43"
+            ]
+          },
+          {
+            "text": "Verification batch B025 had 65 tests passed and 1 test failed; the result belongs only to batch B025.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-25"
+            ]
+          },
+          {
+            "text": "Verification batch B000 had 40 tests passed and 0 tests failed; the result belongs only to batch B000.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-0"
+            ]
+          },
+          {
+            "text": "Verification batch B035 had 75 tests passed and 2 tests failed; the result belongs only to batch B035.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-35"
+            ]
+          },
+          {
+            "text": "Verification batch B024 had 64 tests passed and 0 tests failed; the result belongs only to batch B024.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-24"
+            ]
+          },
+          {
+            "text": "Verification batch B005 had 45 tests passed and 2 tests failed; the result belongs only to batch B005.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-5"
+            ]
+          },
+          {
+            "text": "Verification batch B046 had 86 tests passed and 1 tests failed; the result belongs only to batch B046.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-46"
+            ]
+          },
+          {
+            "text": "Verification batch B018 had 58 tests passed and 0 tests failed; the result belongs only to batch B018.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-18"
+            ]
+          },
+          {
+            "text": "Verification batch B051 had 91 tests passed and 0 tests failed; the result belongs only to batch B051.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-51"
+            ]
+          },
+          {
+            "text": "Verification batch B004 had 44 tests passed and 1 test failed; the result belongs only to batch B004.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-4"
+            ]
+          },
+          {
+            "text": "Verification batch B011 had 51 tests passed and 2 tests failed; the result belongs only to batch B011.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-11"
+            ]
+          },
+          {
+            "text": "Verification batch B047 had 87 tests passed and 2 tests failed; the result belongs only to batch B047.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-47"
+            ]
+          },
+          {
+            "text": "Verification batch B029 had 69 tests passed and 2 tests failed; the result belongs only to batch B029.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-29"
+            ]
+          },
+          {
+            "text": "Verification batch B036 had 76 tests passed and 0 tests failed; the result belongs only to batch B036.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-36"
+            ]
+          },
+          {
+            "text": "Verification batch B032 had 72 tests passed and 2 tests failed; the result belongs only to batch B032.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-32"
+            ]
+          },
+          {
+            "text": "Verification batch B015 had 55 tests passed and 0 tests failed; the result belongs only to batch B015.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-15"
+            ]
+          },
+          {
+            "text": "Verification batch B013 had 53 tests passed and 1 test failed; the result belongs only to batch B013.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-13"
+            ]
+          },
+          {
+            "text": "Verification batch B031 had 71 tests passed and 1 tests failed; the result belongs only to batch B031.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-31"
+            ]
+          },
+          {
+            "text": "Verification batch B009 had 49 tests passed and 0 tests failed; the result belongs only to batch B009.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-9"
+            ]
+          },
+          {
+            "text": "Verification batch B019 had 59 tests passed and 1 test failed; the result belongs only to batch B019.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-19"
+            ]
+          },
+          {
+            "text": "Verification batch B010 had 50 tests passed and 1 test failed; the result belongs only to batch B010.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-10"
+            ]
+          },
+          {
+            "text": "Verification batch B041 had 81 tests passed and 2 tests failed; the result belongs only to batch B041.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-41"
+            ]
+          },
+          {
+            "text": "Verification batch B037 had 77 tests passed and 1 tests failed; the result belongs only to batch B037.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-37"
+            ]
+          },
+          {
+            "text": "Verification batch B034 had 74 tests passed and 1 tests failed; the result belongs only to batch B034.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-34"
+            ]
+          },
+          {
+            "text": "Verification batch B054 had 94 tests passed and 0 tests failed; the result belongs only to batch B054.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-54"
+            ]
+          },
+          {
+            "text": "Verification batch B008 had 48 tests passed and 2 tests failed; the result belongs only to batch B008.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-8"
+            ]
+          },
+          {
+            "text": "Verification batch B028 had 68 tests passed and 1 test failed; the result belongs only to batch B028.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-28"
+            ]
+          },
+          {
+            "text": "Verification batch B002 had 42 tests passed and 2 tests failed; the result belongs only to batch B002.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-2"
+            ]
+          },
+          {
+            "text": "Verification batch B021 had 61 tests passed and 0 tests failed; the result belongs only to batch B021.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-21"
+            ]
+          },
+          {
+            "text": "Verification batch B050 had 90 tests passed and 2 tests failed; the result belongs only to batch B050.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-50"
+            ]
+          },
+          {
+            "text": "Verification batch B006 had 46 tests passed and 0 tests failed; the result belongs only to batch B006.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-6"
+            ]
+          },
+          {
+            "text": "Verification batch B020 had 60 tests passed and 2 tests failed; the result belongs only to batch B020.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-20"
+            ]
+          },
+          {
+            "text": "Verification batch B048 had 88 tests passed and 0 tests failed; the result belongs only to batch B048.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-48"
+            ]
+          },
+          {
+            "text": "Verification batch B049 had 89 tests passed and 1 tests failed; the result belongs only to batch B049.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-49"
+            ]
+          },
+          {
+            "text": "Verification batch B042 had 82 tests passed and 0 tests failed; the result belongs only to batch B042.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-42"
+            ]
+          },
+          {
+            "text": "Verification batch B016 had 56 tests passed and 1 test failed; the result belongs only to batch B016.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-16"
+            ]
+          },
+          {
+            "text": "Verification batch B012 had 52 tests passed and 0 tests failed; the result belongs only to batch B012.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-12"
+            ]
+          },
+          {
+            "text": "Verification batch B026 had 66 tests passed and 2 tests failed; the result belongs only to batch B026.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-26"
+            ]
+          },
+          {
+            "text": "Verification batch B022 had 62 tests passed and 1 test failed; the result belongs only to batch B022.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-22"
+            ]
+          },
+          {
+            "text": "Verification batch B039 had 79 tests passed and 0 tests failed; the result belongs only to batch B039.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-39"
+            ]
+          },
+          {
+            "text": "Verification batch B038 had 78 tests passed and 2 tests failed; the result belongs only to batch B038.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-38"
+            ]
+          },
+          {
+            "text": "Verification batch B053 had 93 tests passed and 2 tests failed; the result belongs only to batch B053.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-53"
+            ]
+          },
+          {
+            "text": "Verification batch B023 had 63 tests passed and 2 tests failed; the result belongs only to batch B023.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-23"
+            ]
+          },
+          {
+            "text": "Verification batch B033 had 73 tests passed and 0 tests failed; the result belongs only to batch B033.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-33"
+            ]
+          },
+          {
+            "text": "Verification batch B017 had 57 tests passed and 2 tests failed; the result belongs only to batch B017.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-17"
+            ]
+          },
+          {
+            "text": "Verification batch B003 had 43 tests passed and 0 tests failed; the result belongs only to batch B003.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-3"
+            ]
+          },
+          {
+            "text": "Verification batch B027 had 67 tests passed and 0 tests failed; the result belongs only to batch B027.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-27"
+            ]
+          },
+          {
+            "text": "Verification batch B001 had 41 tests passed and 1 test failed; the result belongs only to batch B001.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-1"
+            ]
+          },
+          {
+            "text": "Verification batch B007 had 47 tests passed and 1 test failed; the result belongs only to batch B007.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-7"
+            ]
+          },
+          {
+            "text": "Verification batch B045 had 85 tests passed and 0 tests failed; the result belongs only to batch B045.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-45"
+            ]
+          },
+          {
+            "text": "Verification batch B040 had 80 tests passed and 1 tests failed; the result belongs only to batch B040.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-40"
+            ]
+          },
+          {
+            "text": "Verification batch B030 had 70 tests passed and 0 tests failed; the result belongs only to batch B030.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-30"
+            ]
+          },
+          {
+            "text": "Verification batch B014 had 54 tests passed and 2 tests failed; the result belongs only to batch B014.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-14"
+            ]
+          },
+          {
+            "text": "Verification batch B052 had 92 tests passed and 1 tests failed; the result belongs only to batch B052.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-52"
+            ]
+          }
+        ]
+      },
+      "segments": 2,
+      "reused_segments": 0,
+      "recomputed_segments": 2,
+      "interpretation_read_rounds": 0
+    },
+    "append": {
+      "duration_ms": 65405.15910000249,
+      "blocker_code": null,
+      "blocker_summary": null,
+      "model_calls": 5,
+      "input_tokens": 23625,
+      "output_tokens": 10634,
+      "retries": 0,
+      "error_categories": {},
+      "invocations": [
+        {
+          "schema": "SemanticProjectionProposal",
+          "duration_ms": 11365.162900008727
+        },
+        {
+          "schema": "SemanticClaimSupportProposal",
+          "duration_ms": 13408.901299990248
+        },
+        {
+          "schema": "RevisionInterpretationProposal",
+          "duration_ms": 7933.525499989628
+        },
+        {
+          "schema": "RevisionInterpretationProposal",
+          "duration_ms": 22338.902599993162
+        },
+        {
+          "schema": "SemanticClaimSupportProposal",
+          "duration_ms": 10009.237499994924
+        }
+      ],
+      "timings": [
+        {
+          "phase": "local_projection",
+          "queue_wait_ms": 0.0025,
+          "execution_ms": 11365.1794,
+          "admission_ms": 0.6064
+        },
+        {
+          "phase": "local_verifier",
+          "queue_wait_ms": 0.003,
+          "execution_ms": 13408.9402,
+          "admission_ms": 0.4047
+        },
+        {
+          "phase": "interpretation",
+          "queue_wait_ms": 0.0032,
+          "execution_ms": 7933.5512,
+          "admission_ms": 0.7421
+        },
+        {
+          "phase": "interpretation",
+          "queue_wait_ms": 0.0029,
+          "execution_ms": 22338.9344,
+          "admission_ms": 0.8797
+        },
+        {
+          "phase": "interpretation_verifier",
+          "queue_wait_ms": 0.0028,
+          "execution_ms": 10009.2771,
+          "admission_ms": 0.3706
+        }
+      ],
+      "billed_model_calls": 5,
+      "quality": {
+        "state": "degraded",
+        "message_count": 57,
+        "represented_messages": 57,
+        "missing_message_ids": [],
+        "fallback_segments": 0,
+        "rejection_codes": {
+          "claim_support_unsupported": 1
+        },
+        "all_sources_bound": true,
+        "statements": [
+          {
+            "text": "Verification batch B050 passed 90 tests and failed 2 tests, and the result belongs only to batch B050.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-50"
+            ]
+          },
+          {
+            "text": "Verification batch B022 had 62 tests passed and 1 test failed; the result belongs only to batch B022.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-22"
+            ]
+          },
+          {
+            "text": "Verification batch B000 had 40 tests passed and 0 tests failed; the result belongs only to batch B000.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-0"
+            ]
+          },
+          {
+            "text": "Verification batch B054 passed 94 tests and failed 0 tests, and the result belongs only to batch B054.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-54"
+            ]
+          },
+          {
+            "text": "Verification batch B035 passed 75 tests and failed 2 tests, and the result belongs only to batch B035.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-35"
+            ]
+          },
+          {
+            "text": "Verification batch B056 passed 96 tests and failed 2 tests, and the result belongs only to batch B056.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-56"
+            ]
+          },
+          {
+            "text": "Verification batch B049 passed 89 tests and failed 1 test, and the result belongs only to batch B049.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-49"
+            ]
+          },
+          {
+            "text": "Verification batch B043 passed 83 tests and failed 1 test, and the result belongs only to batch B043.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-43"
+            ]
+          },
+          {
+            "text": "Verification batch B019 had 59 tests passed and 1 test failed; the result belongs only to batch B019.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-19"
+            ]
+          },
+          {
+            "text": "Verification batch B045 passed 85 tests and failed 0 tests, and the result belongs only to batch B045.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-45"
+            ]
+          },
+          {
+            "text": "Verification batch B024 had 64 tests passed and 0 tests failed; the result belongs only to batch B024.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-24"
+            ]
+          },
+          {
+            "text": "Verification batch B007 had 47 tests passed and 1 test failed; the result belongs only to batch B007.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-7"
+            ]
+          },
+          {
+            "text": "Verification batch B004 had 44 tests passed and 1 test failed; the result belongs only to batch B004.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-4"
+            ]
+          },
+          {
+            "text": "Verification batch B008 had 48 tests passed and 2 tests failed; the result belongs only to batch B008.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-8"
+            ]
+          },
+          {
+            "text": "Verification batch B021 had 61 tests passed and 0 tests failed; the result belongs only to batch B021.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-21"
+            ]
+          },
+          {
+            "text": "Verification batch B017 had 57 tests passed and 2 tests failed; the result belongs only to batch B017.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-17"
+            ]
+          },
+          {
+            "text": "Verification batch B005 had 45 tests passed and 2 tests failed; the result belongs only to batch B005.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-5"
+            ]
+          },
+          {
+            "text": "Verification batch B046 passed 86 tests and failed 1 test, and the result belongs only to batch B046.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-46"
+            ]
+          },
+          {
+            "text": "Verification batch B013 had 53 tests passed and 1 test failed; the result belongs only to batch B013.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-13"
+            ]
+          },
+          {
+            "text": "Verification batch B023 had 63 tests passed and 2 tests failed; the result belongs only to batch B023.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-23"
+            ]
+          },
+          {
+            "text": "Verification batch B032 passed 72 tests and failed 2 tests, and the result belongs only to batch B032.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-32"
+            ]
+          },
+          {
+            "text": "Verification batch B031 passed 71 tests and failed 1 test, and the result belongs only to batch B031.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-31"
+            ]
+          },
+          {
+            "text": "Verification batch B001 had 41 tests passed and 1 test failed; the result belongs only to batch B001.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-1"
+            ]
+          },
+          {
+            "text": "Verification batch B015 had 55 tests passed and 0 tests failed; the result belongs only to batch B015.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-15"
+            ]
+          },
+          {
+            "text": "Verification batch B055 passed 95 tests and failed 1 test, and the result belongs only to batch B055.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-55"
+            ]
+          },
+          {
+            "text": "Verification batch B037 passed 77 tests and failed 1 test, and the result belongs only to batch B037.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-37"
+            ]
+          },
+          {
+            "text": "Verification batch B044 passed 84 tests and failed 2 tests, and the result belongs only to batch B044.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-44"
+            ]
+          },
+          {
+            "text": "Verification batch B039 passed 79 tests and failed 0 tests, and the result belongs only to batch B039.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-39"
+            ]
+          },
+          {
+            "text": "Verification batch B040 passed 80 tests and failed 1 test, and the result belongs only to batch B040.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-40"
+            ]
+          },
+          {
+            "text": "Verification batch B053 passed 93 tests and failed 2 tests, and the result belongs only to batch B053.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-53"
+            ]
+          },
+          {
+            "text": "Verification batch B029 had 69 tests passed and 2 tests failed; the result belongs only to batch B029.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-29"
+            ]
+          },
+          {
+            "text": "Verification batch B002 had 42 tests passed and 2 tests failed; the result belongs only to batch B002.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-2"
+            ]
+          },
+          {
+            "text": "Verification batch B016 had 56 tests passed and 1 test failed; the result belongs only to batch B016.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-16"
+            ]
+          },
+          {
+            "text": "Verification batch B025 had 65 tests passed and 1 test failed; the result belongs only to batch B025.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-25"
+            ]
+          },
+          {
+            "text": "Verification batch B042 passed 82 tests and failed 0 tests, and the result belongs only to batch B042.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-42"
+            ]
+          },
+          {
+            "text": "Verification batch B027 had 67 tests passed and 0 tests failed; the result belongs only to batch B027.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-27"
+            ]
+          },
+          {
+            "text": "Verification batch B009 had 49 tests passed and 0 tests failed; the result belongs only to batch B009.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-9"
+            ]
+          },
+          {
+            "text": "Verification batch B052 passed 92 tests and failed 1 test, and the result belongs only to batch B052.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-52"
+            ]
+          },
+          {
+            "text": "Verification batch B036 passed 76 tests and failed 0 tests, and the result belongs only to batch B036.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-36"
+            ]
+          },
+          {
+            "text": "Verification batch B020 had 60 tests passed and 2 tests failed; the result belongs only to batch B020.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-20"
+            ]
+          },
+          {
+            "text": "Verification batch B041 passed 81 tests and failed 2 tests, and the result belongs only to batch B041.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-41"
+            ]
+          },
+          {
+            "text": "Verification batch B012 had 52 tests passed and 0 tests failed; the result belongs only to batch B012.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-12"
+            ]
+          },
+          {
+            "text": "Verification batch B048 passed 88 tests and failed 0 tests, and the result belongs only to batch B048.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-48"
+            ]
+          },
+          {
+            "text": "Verification batch B006 had 46 tests passed and 0 tests failed; the result belongs only to batch B006.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-6"
+            ]
+          },
+          {
+            "text": "Verification batch B011 had 51 tests passed and 2 tests failed; the result belongs only to batch B011.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-11"
+            ]
+          },
+          {
+            "text": "Verification batch B033 passed 73 tests and failed 0 tests, and the result belongs only to batch B033.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-33"
+            ]
+          },
+          {
+            "text": "Verification batch B038 passed 78 tests and failed 2 tests, and the result belongs only to batch B038.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-38"
+            ]
+          },
+          {
+            "text": "Verification batch B018 had 58 tests passed and 0 tests failed; the result belongs only to batch B018.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-18"
+            ]
+          },
+          {
+            "text": "Verification batch B010 had 50 tests passed and 1 test failed; the result belongs only to batch B010.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-10"
+            ]
+          },
+          {
+            "text": "Verification batch B026 had 66 tests passed and 2 tests failed; the result belongs only to batch B026.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-26"
+            ]
+          },
+          {
+            "text": "Verification batch B028 had 68 tests passed and 1 test failed; the result belongs only to batch B028.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-28"
+            ]
+          },
+          {
+            "text": "Verification batch B003 had 43 tests passed and 0 tests failed; the result belongs only to batch B003.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-3"
+            ]
+          },
+          {
+            "text": "Verification batch B034 passed 74 tests and failed 1 test, and the result belongs only to batch B034.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-34"
+            ]
+          },
+          {
+            "text": "Verification batch B030 passed 70 tests and failed 0 tests, and the result belongs only to batch B030.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-30"
+            ]
+          },
+          {
+            "text": "Verification batch B051 passed 91 tests and failed 0 tests, and the result belongs only to batch B051.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-51"
+            ]
+          },
+          {
+            "text": "Verification batch B014 had 54 tests passed and 2 tests failed; the result belongs only to batch B014.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-14"
+            ]
+          },
+          {
+            "text": "Verification batch B047 passed 87 tests and failed 2 tests, and the result belongs only to batch B047.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-47"
+            ]
+          }
+        ]
+      },
+      "segments": 2,
+      "reused_segments": 1,
+      "recomputed_segments": 1,
+      "interpretation_read_rounds": 1
+    },
+    "exact": {
+      "duration_ms": 46.31900000094902,
+      "blocker_code": null,
+      "blocker_summary": null,
+      "model_calls": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "retries": 0,
+      "error_categories": {},
+      "invocations": [],
+      "timings": [],
+      "billed_model_calls": 0,
+      "quality": {
+        "state": "degraded",
+        "message_count": 57,
+        "represented_messages": 57,
+        "missing_message_ids": [],
+        "fallback_segments": 0,
+        "rejection_codes": {
+          "claim_support_unsupported": 1
+        },
+        "all_sources_bound": true,
+        "statements": [
+          {
+            "text": "Verification batch B050 passed 90 tests and failed 2 tests, and the result belongs only to batch B050.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-50"
+            ]
+          },
+          {
+            "text": "Verification batch B022 had 62 tests passed and 1 test failed; the result belongs only to batch B022.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-22"
+            ]
+          },
+          {
+            "text": "Verification batch B000 had 40 tests passed and 0 tests failed; the result belongs only to batch B000.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-0"
+            ]
+          },
+          {
+            "text": "Verification batch B054 passed 94 tests and failed 0 tests, and the result belongs only to batch B054.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-54"
+            ]
+          },
+          {
+            "text": "Verification batch B035 passed 75 tests and failed 2 tests, and the result belongs only to batch B035.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-35"
+            ]
+          },
+          {
+            "text": "Verification batch B056 passed 96 tests and failed 2 tests, and the result belongs only to batch B056.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-56"
+            ]
+          },
+          {
+            "text": "Verification batch B049 passed 89 tests and failed 1 test, and the result belongs only to batch B049.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-49"
+            ]
+          },
+          {
+            "text": "Verification batch B043 passed 83 tests and failed 1 test, and the result belongs only to batch B043.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-43"
+            ]
+          },
+          {
+            "text": "Verification batch B019 had 59 tests passed and 1 test failed; the result belongs only to batch B019.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-19"
+            ]
+          },
+          {
+            "text": "Verification batch B045 passed 85 tests and failed 0 tests, and the result belongs only to batch B045.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-45"
+            ]
+          },
+          {
+            "text": "Verification batch B024 had 64 tests passed and 0 tests failed; the result belongs only to batch B024.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-24"
+            ]
+          },
+          {
+            "text": "Verification batch B007 had 47 tests passed and 1 test failed; the result belongs only to batch B007.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-7"
+            ]
+          },
+          {
+            "text": "Verification batch B004 had 44 tests passed and 1 test failed; the result belongs only to batch B004.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-4"
+            ]
+          },
+          {
+            "text": "Verification batch B008 had 48 tests passed and 2 tests failed; the result belongs only to batch B008.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-8"
+            ]
+          },
+          {
+            "text": "Verification batch B021 had 61 tests passed and 0 tests failed; the result belongs only to batch B021.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-21"
+            ]
+          },
+          {
+            "text": "Verification batch B017 had 57 tests passed and 2 tests failed; the result belongs only to batch B017.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-17"
+            ]
+          },
+          {
+            "text": "Verification batch B005 had 45 tests passed and 2 tests failed; the result belongs only to batch B005.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-5"
+            ]
+          },
+          {
+            "text": "Verification batch B046 passed 86 tests and failed 1 test, and the result belongs only to batch B046.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-46"
+            ]
+          },
+          {
+            "text": "Verification batch B013 had 53 tests passed and 1 test failed; the result belongs only to batch B013.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-13"
+            ]
+          },
+          {
+            "text": "Verification batch B023 had 63 tests passed and 2 tests failed; the result belongs only to batch B023.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-23"
+            ]
+          },
+          {
+            "text": "Verification batch B032 passed 72 tests and failed 2 tests, and the result belongs only to batch B032.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-32"
+            ]
+          },
+          {
+            "text": "Verification batch B031 passed 71 tests and failed 1 test, and the result belongs only to batch B031.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-31"
+            ]
+          },
+          {
+            "text": "Verification batch B001 had 41 tests passed and 1 test failed; the result belongs only to batch B001.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-1"
+            ]
+          },
+          {
+            "text": "Verification batch B015 had 55 tests passed and 0 tests failed; the result belongs only to batch B015.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-15"
+            ]
+          },
+          {
+            "text": "Verification batch B055 passed 95 tests and failed 1 test, and the result belongs only to batch B055.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-55"
+            ]
+          },
+          {
+            "text": "Verification batch B037 passed 77 tests and failed 1 test, and the result belongs only to batch B037.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-37"
+            ]
+          },
+          {
+            "text": "Verification batch B044 passed 84 tests and failed 2 tests, and the result belongs only to batch B044.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-44"
+            ]
+          },
+          {
+            "text": "Verification batch B039 passed 79 tests and failed 0 tests, and the result belongs only to batch B039.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-39"
+            ]
+          },
+          {
+            "text": "Verification batch B040 passed 80 tests and failed 1 test, and the result belongs only to batch B040.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-40"
+            ]
+          },
+          {
+            "text": "Verification batch B053 passed 93 tests and failed 2 tests, and the result belongs only to batch B053.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-53"
+            ]
+          },
+          {
+            "text": "Verification batch B029 had 69 tests passed and 2 tests failed; the result belongs only to batch B029.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-29"
+            ]
+          },
+          {
+            "text": "Verification batch B002 had 42 tests passed and 2 tests failed; the result belongs only to batch B002.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-2"
+            ]
+          },
+          {
+            "text": "Verification batch B016 had 56 tests passed and 1 test failed; the result belongs only to batch B016.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-16"
+            ]
+          },
+          {
+            "text": "Verification batch B025 had 65 tests passed and 1 test failed; the result belongs only to batch B025.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-25"
+            ]
+          },
+          {
+            "text": "Verification batch B042 passed 82 tests and failed 0 tests, and the result belongs only to batch B042.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-42"
+            ]
+          },
+          {
+            "text": "Verification batch B027 had 67 tests passed and 0 tests failed; the result belongs only to batch B027.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-27"
+            ]
+          },
+          {
+            "text": "Verification batch B009 had 49 tests passed and 0 tests failed; the result belongs only to batch B009.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-9"
+            ]
+          },
+          {
+            "text": "Verification batch B052 passed 92 tests and failed 1 test, and the result belongs only to batch B052.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-52"
+            ]
+          },
+          {
+            "text": "Verification batch B036 passed 76 tests and failed 0 tests, and the result belongs only to batch B036.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-36"
+            ]
+          },
+          {
+            "text": "Verification batch B020 had 60 tests passed and 2 tests failed; the result belongs only to batch B020.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-20"
+            ]
+          },
+          {
+            "text": "Verification batch B041 passed 81 tests and failed 2 tests, and the result belongs only to batch B041.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-41"
+            ]
+          },
+          {
+            "text": "Verification batch B012 had 52 tests passed and 0 tests failed; the result belongs only to batch B012.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-12"
+            ]
+          },
+          {
+            "text": "Verification batch B048 passed 88 tests and failed 0 tests, and the result belongs only to batch B048.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-48"
+            ]
+          },
+          {
+            "text": "Verification batch B006 had 46 tests passed and 0 tests failed; the result belongs only to batch B006.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-6"
+            ]
+          },
+          {
+            "text": "Verification batch B011 had 51 tests passed and 2 tests failed; the result belongs only to batch B011.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-11"
+            ]
+          },
+          {
+            "text": "Verification batch B033 passed 73 tests and failed 0 tests, and the result belongs only to batch B033.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-33"
+            ]
+          },
+          {
+            "text": "Verification batch B038 passed 78 tests and failed 2 tests, and the result belongs only to batch B038.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-38"
+            ]
+          },
+          {
+            "text": "Verification batch B018 had 58 tests passed and 0 tests failed; the result belongs only to batch B018.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-18"
+            ]
+          },
+          {
+            "text": "Verification batch B010 had 50 tests passed and 1 test failed; the result belongs only to batch B010.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-10"
+            ]
+          },
+          {
+            "text": "Verification batch B026 had 66 tests passed and 2 tests failed; the result belongs only to batch B026.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-26"
+            ]
+          },
+          {
+            "text": "Verification batch B028 had 68 tests passed and 1 test failed; the result belongs only to batch B028.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-28"
+            ]
+          },
+          {
+            "text": "Verification batch B003 had 43 tests passed and 0 tests failed; the result belongs only to batch B003.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-3"
+            ]
+          },
+          {
+            "text": "Verification batch B034 passed 74 tests and failed 1 test, and the result belongs only to batch B034.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-34"
+            ]
+          },
+          {
+            "text": "Verification batch B030 passed 70 tests and failed 0 tests, and the result belongs only to batch B030.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-30"
+            ]
+          },
+          {
+            "text": "Verification batch B051 passed 91 tests and failed 0 tests, and the result belongs only to batch B051.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-51"
+            ]
+          },
+          {
+            "text": "Verification batch B014 had 54 tests passed and 2 tests failed; the result belongs only to batch B014.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-14"
+            ]
+          },
+          {
+            "text": "Verification batch B047 passed 87 tests and failed 2 tests, and the result belongs only to batch B047.",
+            "authority": "confirmed",
+            "message_ids": [
+              "bench-47"
+            ]
+          }
+        ]
+      },
+      "segments": 2,
+      "reused_segments": 1,
+      "recomputed_segments": 1,
+      "interpretation_read_rounds": 1
+    }
+  }
+}

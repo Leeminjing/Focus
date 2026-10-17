@@ -1,0 +1,11 @@
+{
+  "provider": "configured real model",
+  "first_quality": "complete",
+  "next_quality": "complete",
+  "reused_segments": 1,
+  "recomputed_segments": 1,
+  "exact_hit_calls": 0,
+  "model_calls": 9,
+  "input_tokens": 13320,
+  "output_tokens": 10063
+}

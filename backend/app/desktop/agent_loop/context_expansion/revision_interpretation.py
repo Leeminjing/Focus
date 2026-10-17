@@ -1,7 +1,7 @@
 r"""本文件对外提供 RevisionInterpretationBuilder 与综合合同 prompt。
 
 输入为完整冻结目录、局部 records、预算化模型及原文读取上限；输出为联合引用、独立 verdict 和全部阅读依赖的综合 record。
-具体工作流为冷构建或增量提供可容纳的初始原文窗口及完整目录；模型 read 先纯预检范围和完整请求容量，经既有有界校验反馈后才替换窗口，最终从完整实际阅读依赖验证联合 claims。
+具体工作流为冷构建和增量优先提供可容纳的完整冻结原文及目录；窗口、读取上限或本轮剩余预算不足时回退到变化尾部。模型 read 经纯预检和有界反馈后才替换窗口，最终从完整实际阅读依赖验证联合 claims。
 示例：record = await builder.build(index, records, plan)。旧段可免重抽，却可与新段一起参与新的否定和因果理解。
 """
 
@@ -62,12 +62,9 @@ class RevisionInterpretationBuilder:
                 "interpretation model is required for new-contract indexing"
             )
         initial = () if plan.mode == "full" else plan.recomputed_segment_ids
-        if (
-            plan.mode == "full"
-            and not exceeds_limit(len(index.segments), self._resources.policy.max_exact_reads)
-        ):
+        if not exceeds_limit(len(index.segments), self._resources.policy.max_exact_reads):
             payload = inputs.payload(originals=inputs.all_originals())
-            if self._projector.fits_request(
+            if self._projector.fits_available_budget(
                 RevisionInterpretationProposal, INTERPRETATION_PROMPT, payload
             ):
                 initial = tuple(s.segment_id for s in index.segments)

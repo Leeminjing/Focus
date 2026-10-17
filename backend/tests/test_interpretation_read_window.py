@@ -56,6 +56,82 @@ class _ScriptedModel:
         return schema.model_validate(next(self._replies))
 
 
+def test_incremental_initial_window_prefills_all_originals_without_read_round():
+    index, records = _source(("old cause", "new correction"))
+    ids = tuple(segment.segment_id for segment in index.segments)
+    resources = _resources()
+    raw = _ScriptedModel([{"action": "complete"}])
+    wrapped = BudgetedIndexModel(raw, IndexModelBudget(resources))
+    builder = RevisionInterpretationBuilder(wrapped, None, resources, "window-contract", "local-contract", lambda rows: None)
+    proof = asyncio.run(builder.build(index, records, SimpleNamespace(mode="incremental", recomputed_segment_ids=(ids[-1],))))
+    assert tuple(segment["segment_id"] for segment in raw.calls[0]["segments"]) == ids
+    assert tuple(original.segment_id for original in proof.provided) == ids
+    assert proof.read_requests == () and len(raw.calls) == 1
+
+
+@pytest.mark.parametrize("constraint", ["window", "reads", "input_budget"])
+def test_incremental_prefill_falls_back_to_tail_when_a_limit_is_insufficient(constraint):
+    index, records = _source() if constraint == "window" else _source(("old evidence", "new evidence"))
+    ids = tuple(segment.segment_id for segment in index.segments)
+    resources = _resources(max_reads=1 if constraint == "reads" else None)
+    raw = _ScriptedModel([{"action": "complete"}])
+    inputs = FrozenInterpretationInputs(index, records, max_reads=None)
+    tail = inputs.preview_read((ids[-1],), requested=False)
+    full = inputs.payload(originals=inputs.all_originals())
+    if constraint == "input_budget":
+        resources.global_input_tokens_remaining = IndexModelBudget._estimated_input(RevisionInterpretationProposal, INTERPRETATION_PROMPT, tail)
+    budget = IndexModelBudget(resources)
+    if constraint == "window":
+        assert not budget.fits_request(raw, RevisionInterpretationProposal, INTERPRETATION_PROMPT, full)
+    assert budget.fits_request(raw, RevisionInterpretationProposal, INTERPRETATION_PROMPT, tail)
+    wrapped = BudgetedIndexModel(raw, budget)
+    builder = RevisionInterpretationBuilder(wrapped, None, resources, "window-contract", "local-contract", lambda rows: None)
+    proof = asyncio.run(builder.build(index, records, SimpleNamespace(mode="incremental", recomputed_segment_ids=(ids[-1],))))
+    assert tuple(segment["segment_id"] for segment in raw.calls[0]["segments"]) == (ids[-1],)
+    assert tuple(original.segment_id for original in proof.provided) == (ids[-1],)
+    assert proof.read_requests == () and len(raw.calls) == 1
+
+
+def test_incremental_fallback_can_read_distant_originals_without_loading_the_middle():
+    index, records = _source(("甲" * 1000, "乙" * 5000, "new correction"))
+    ids = tuple(segment.segment_id for segment in index.segments)
+    resources = _resources()
+    raw = _ScriptedModel([{"action": "read", "read_segments": (ids[0], ids[-1])}, {"action": "complete"}])
+    wrapped = BudgetedIndexModel(raw, IndexModelBudget(resources))
+    builder = RevisionInterpretationBuilder(wrapped, None, resources, "window-contract", "local-contract", lambda rows: None)
+    proof = asyncio.run(builder.build(index, records, SimpleNamespace(mode="incremental", recomputed_segment_ids=(ids[-1],))))
+    assert [tuple(segment["segment_id"] for segment in call["segments"]) for call in raw.calls] == [(ids[-1],), (ids[0], ids[-1])]
+    assert tuple(original.segment_id for original in proof.provided) == (ids[0], ids[-1])
+    assert len(proof.inventory) == 3 and proof.read_requests == ((ids[0], ids[-1]),)
+
+
+@pytest.mark.parametrize("dimension", ["input_tokens", "output_tokens", "model_calls"])
+def test_optional_prefetch_checks_current_budget_without_reserving_it(dimension):
+    async def run():
+        resources = _resources()
+        payload = {"inventory": (), "segments": (), "read_requests": ()}
+        estimated = IndexModelBudget._estimated_input(RevisionInterpretationProposal, INTERPRETATION_PROMPT, payload)
+        resources.global_input_tokens_remaining = estimated
+        resources.global_output_tokens_remaining = 512
+        resources.global_model_calls_remaining = 1
+        raw = _ScriptedModel([{"action": "complete"}])
+        wrapped = BudgetedIndexModel(raw, IndexModelBudget(resources))
+        for _ in range(2):
+            assert wrapped.fits_available_budget(RevisionInterpretationProposal, INTERPRETATION_PROMPT, payload)
+        assert raw.calls == [] and wrapped.last_attempt_records == ()
+        await wrapped.invoke(RevisionInterpretationProposal, INTERPRETATION_PROMPT, payload)
+        assert len(raw.calls) == 1
+        assert not wrapped.fits_available_budget(RevisionInterpretationProposal, INTERPRETATION_PROMPT, payload)
+
+        setattr(resources, f"global_{dimension}_remaining", {"input_tokens": estimated - 1, "output_tokens": 511, "model_calls": 0}[dimension])
+        rejected = BudgetedIndexModel(_ScriptedModel([]), IndexModelBudget(resources))
+        assert rejected.fits_request(RevisionInterpretationProposal, INTERPRETATION_PROMPT, payload)
+        assert not rejected.fits_available_budget(RevisionInterpretationProposal, INTERPRETATION_PROMPT, payload)
+        assert rejected.last_attempt_records == ()
+
+    asyncio.run(run())
+
+
 def test_builder_replaces_window_and_keeps_every_read_dependency():
     index, records = _source()
     ids = tuple(s.segment_id for s in index.segments)
@@ -220,6 +296,30 @@ def test_tool_exchange_is_a_complete_window_atom():
     messages = inputs.payload()["segments"][0]["messages"]
     assert tuple(m["message_id"] for m in messages) == ("call", "result")
     assert messages[0]["tool_calls"][0]["id"] == messages[1]["tool_call_id"]
+
+
+@pytest.mark.usefixtures("isolated_postgres_database")
+def test_existing_tail_window_index_remains_an_exact_cache_hit(monkeypatch, tmp_path):
+    from backend.tests.incremental_index_support import ModelProbe, messages, observation, revision
+    from backend.tests.test_incremental_revision_index import exercise
+
+    async def run(sessions, seed):
+        probe = ModelProbe()
+        service = probe.service(sessions)
+        first = await revision(sessions, seed["context_id"], messages(12))
+        assert (await service.build(observation(seed, first))).blocker_code is None
+        target = await revision(sessions, seed["context_id"], messages(13), parent=first)
+        frozen = observation(seed, target)
+        with monkeypatch.context() as legacy:
+            legacy.setattr(BudgetedIndexModel, "fits_available_budget", lambda *args: False)
+            old = await service.build(frozen)
+        assert old.blocker_code is None, old.blocker_summary
+        assert len(old.indexes[0].interpretation.provided) == 1
+        probe.calls.clear()
+        current = await service.build(frozen)
+        assert current.indexes == old.indexes and probe.calls == []
+
+    exercise(tmp_path, run)
 
 
 @pytest.mark.usefixtures("isolated_postgres_database")

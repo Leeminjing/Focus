@@ -113,7 +113,7 @@ def test_independent_process_kill_and_persisted_inheritance(tmp_path, boundary):
                 child.kill()
                 child.wait(5)
             log.close()
-        assert replay["calls"] == (0 if boundary == "after_commit" else 3)
+        assert replay["calls"] == (0 if boundary == "after_commit" else 1)
         if stored:
             assert replay["index_id"] == stored
         new = await revision(sessions, seed["context_id"], messages(13), parent=first)
