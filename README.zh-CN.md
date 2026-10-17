@@ -167,6 +167,18 @@ focus
 focus update
 ```
 
+查看健康摘要或导出统一故障诊断报告：
+
+```sh
+focus doctor
+focus doctor --output focus-diagnostics.json
+```
+
+报告包含版本、schema、实时组件状态、Loop/Run 关联 ID、队列积压、预算用量、近期事件标识和启动耗时。
+Focus 未启动时执行只读离线检查。源码运行方式与退出码见[故障诊断说明](docs/diagnostics.md)。
+
+托管安装将应用代码放在 `~/.focus/app`，依赖与命令入口放在 `~/.focus/runtime`，终端命令放在 `~/.focus/bin`。
+
 安装与更新流程详见 [稳定版发布、安装与更新恢复](docs/managed-releases.md)。
 
 ### 源码运行

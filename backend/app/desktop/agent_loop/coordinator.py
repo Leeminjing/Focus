@@ -656,6 +656,18 @@ class LoopCoordinatorRuntime:
     def supervised_loop_ids(self) -> tuple[str, ...]:
         return self._registry.loop_ids
 
+    def diagnostic_snapshot(self) -> dict:
+        components = [
+            {"loop_id": None, "name": state.name, "running": state.running,
+             "failures": state.failures, "error_type": state.last_error_type}
+            for state in self._supervisor.states()
+        ] if self._supervisor is not None else []
+        components.extend(self._registry.diagnostic_states())
+        return {"started": self._supervisor is not None,
+                "supervised_loops": len(self.supervised_loop_ids),
+                "unhealthy_components": sum(bool(item["failures"]) or not item["running"] for item in components),
+                "components": components[:200], "component_count": len(components)}
+
     async def start(self) -> None:
         if self._supervisor is not None:
             return
