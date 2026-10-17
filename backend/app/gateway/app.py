@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from focus.config import get_app_config
 
-    app_config = get_app_config("config.yaml")
+    app_config = get_app_config("config.yaml", recover_models=True)
     # FOCUS_DATABASE_URL 环境变量覆写数据库 URL（Electron 启动链传入，与独立桌面入口行为一致）。
     # 就地赋值而非 model_copy：Pydantic v2 的 model_copy(update=...) 不触发校验，且会造出第二个
     # 配置对象。配置必须在启动期定型为单一对象身份——随后 langgraph_runtime 与 DesktopService
@@ -67,17 +67,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app_config.database = DatabaseConfig.model_validate({
             **app_config.database.model_dump(), "url": database_url,
         })
-    # 启动自检：装配显式声明的默认模型。装配即解析其密钥引用，使必需凭据的缺失在启动期
-    # 以带上下文的错误暴露，而不是推迟到首次请求；未被消费的可选能力不受影响。
-    from focus.models import create_chat_model
-
-    try:
-        create_chat_model(app_config=app_config)
-    except ValueError:
-        # 配置类问题（必需凭据缺失、默认模型未声明）在启动期直接失败
-        raise
-    except Exception:
-        logger.warning("默认模型启动自检未完成，将在实际使用时重试", exc_info=True)
+    # 模型问题由设置页报告并修复；不能在挂载 Desktop API 之前退出。
+    # 构造客户端也不能证明真实调用成功，保存后的验证会实际调用两种能力。
 
     logger.info("AppConfig 已加载，开始初始化 agent 核心资源...")
 

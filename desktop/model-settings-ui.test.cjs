@@ -146,10 +146,34 @@ const SNAPSHOT = `
     renderModelSettings();
     const overrideHtml = document.querySelector("#modelSettingsHost").innerHTML;
 
+    let opened = 0;
+    let selected = null;
+    openSettings = async () => { opened += 1; };
+    selectSettingsTab = tab => { selected = tab; };
+    modelSettings.setupChecked = false;
+    api = async () => ({ ...snapshot, setup_required: true,
+      setup_issues: { "models[0].api_key": "请输入真实 API Key" } });
+    await ensureModelSetup();
+    const setupHtml = document.querySelector("#modelSettingsHost").innerHTML;
+    modelSettings.credentialValue = "unsaved-key";
+    await ensureModelSetup();
+    const setup = { opened, selected, draft: modelSettings.draft.index,
+      credential: modelSettings.credentialValue, setupHtml };
+
+    modelSettings.snapshot = { ...snapshot, verification: { ok: false, reason: "策展输出不符合合同，请修改输出方式" } };
+    modelSettings.draft = null;
+    renderModelSettings();
+    const verificationHtml = document.querySelector("#modelSettingsHost").innerHTML;
+
+    modelSettings.setupChecked = false;
+    api = async () => snapshot;
+    await ensureModelSetup();
+    const readyOpened = opened;
+
     return {
       listHtml, editorHtml, errorHtml, afterSave, validationErrors, attempted, confirmations,
       afterDelete, afterReset, probeHtml, probes, addedName, addTemplate: addTemplate.use,
-      afterCancel, emptyHtml, overrideHtml,
+      afterCancel, emptyHtml, overrideHtml, setup, verificationHtml, readyOpened,
     };
   })()`, harness.context);
 
@@ -221,6 +245,13 @@ const SNAPSHOT = `
 
   // 环境变量覆盖默认模型时必须显式告知：否则「默认模型」徽标会骗人
   assert.match(result.overrideHtml, /FOCUS_MODEL 正在覆盖默认模型：deepseek-v4-flash-vision-exp/);
+  assert.equal(result.setup.opened, 1);
+  assert.equal(result.setup.selected, "models");
+  assert.equal(result.setup.draft, 0);
+  assert.equal(result.setup.credential, "unsaved-key");
+  assert.match(result.setup.setupHtml, /请输入真实 API Key/);
+  assert.match(result.verificationHtml, /设置已保存。策展输出不符合合同/);
+  assert.equal(result.readyOpened, 1);
 
   console.log("model-settings-ui: all assertions passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -170,7 +170,7 @@ Derived Context 让 Focus 能重写下一轮的过去；Patrol 让这种能力�
 irm https://raw.githubusercontent.com/Leeminjing/Focus/main/install.ps1 | iex
 ```
 
-把模型 API Key 写入 `%USERPROFILE%\.focus\.env`，以后可在任意目录使用同一组命令：
+首次运行会打开「设置 → 模型」。填写真实 API Key，核对模型名称、地址和协议后保存；普通调用及策展输出验证通过后即可开始任务。也可在 `%USERPROFILE%\.focus\.env` 中配置。以后可在任意目录使用同一组命令：
 
 ```powershell
 focus          # 启动 Focus
@@ -187,7 +187,7 @@ focus update   # 将受管理的已跟踪代码同步到 GitHub 最新 main
 curl -fsSL https://raw.githubusercontent.com/Leeminjing/Focus/main/install.sh | sh
 ```
 
-把模型 API Key 写入 `~/.focus/.env`，打开一个新终端后使用：
+首次运行会打开「设置 → 模型」，填写真实 API Key 并保存，验证普通调用及策展输出。也可在 `~/.focus/.env` 中配置。打开一个新终端后使用：
 
 ```sh
 focus          # 启动 Focus

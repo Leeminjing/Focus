@@ -200,7 +200,7 @@ Prerequisites: Git, Python 3.11+, Node.js 22.12+, and Docker Desktop. Then run o
 irm https://raw.githubusercontent.com/Leeminjing/Focus/main/install.ps1 | iex
 ```
 
-Add your model API key to `%USERPROFILE%\.focus\.env`, then use the same two commands from any directory:
+The first launch opens Settings → Models. Enter a real API key, check the endpoint, model name and protocol, then save to verify chat and curation output before starting a task. You can also configure `%USERPROFILE%\.focus\.env`. Use the same two commands from any directory:
 
 ```powershell
 focus          # start Focus
@@ -217,7 +217,7 @@ Prerequisites: Git, Python 3.11+, Node.js 22.12+, and a running Docker Desktop. 
 curl -fsSL https://raw.githubusercontent.com/Leeminjing/Focus/main/install.sh | sh
 ```
 
-Add your model API key to `~/.focus/.env`, then open a new terminal and use:
+The first launch opens Settings → Models. Enter a real API key and save to verify chat and curation output. You can also configure `~/.focus/.env`. Open a new terminal and use:
 
 ```sh
 focus          # start Focus

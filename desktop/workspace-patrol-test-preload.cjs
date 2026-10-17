@@ -51,6 +51,7 @@ window.fetch = async (input, options = {}) => {
   const url = new URL(String(input), "http://focus.test");
   const path = url.pathname;
   window.patrolFixture.requests.push(path);
+  if (path === "/desktop/api/settings/models") return json({setup_required:false});
   if (path === "/desktop/api/bootstrap" && process.env.FOCUS_TEST_HOLD_BOOTSTRAP === "1" && !sessionStorage.getItem("focus-test-bootstrap-held")) {
     sessionStorage.setItem("focus-test-bootstrap-held", "1");
     await new Promise(resolve => { window.patrolFixture.releaseBootstrap = resolve; });

@@ -36,11 +36,11 @@ if (!process.versions.electron) {
       while (!await run(`Boolean(${expression})`)) { if (Date.now() > end) throw new Error(`Timeout: ${expression} · ${await run('JSON.stringify({view:state.view,task:state.activeTaskId,draftOpens:window.patrolFixture.draftOpens,status:document.querySelector("#globalStatus")?.textContent,focused:document.activeElement?.outerHTML?.slice(0,250)})')}`); await new Promise(resolve => setTimeout(resolve, 20)); }
     };
     await until('document.body.dataset.view === "patrol" && document.querySelector("[data-patrol-content]")');
-    assert.deepEqual(await run('window.patrolFixture.requests'), ["/desktop/api/bootstrap"], "Patrol 必须在 bootstrap 返回前可见，且不预读其它页面");
+    assert.deepEqual(await run('window.patrolFixture.requests'), ["/desktop/api/settings/models", "/desktop/api/bootstrap"], "Patrol 必须在 bootstrap 返回前可见，只额外读取首次模型配置状态");
     assert.equal(await run('state.tasks.length'), 0);
     await run('window.patrolFixture.releaseBootstrap()');
     await until('state.tasks.length > 0 && !document.querySelector("#globalStatus").textContent');
-    assert.deepEqual(await run('window.patrolFixture.requests'), ["/desktop/api/bootstrap"], "进入 Patrol 后不发现工具、加载插件、任务详情或工作区树");
+    assert.deepEqual(await run('window.patrolFixture.requests'), ["/desktop/api/settings/models", "/desktop/api/bootstrap"], "进入 Patrol 后不发现工具、加载插件、任务详情或工作区树");
     assert.equal(await run('document.querySelectorAll("[data-nav-key]").length'), 6);
     assert.equal(await run('document.querySelector("[data-patrol-content]").disabled'), true);
     assert.equal(await run('Boolean(document.querySelector("[data-patrol-details-content]"))'), false);

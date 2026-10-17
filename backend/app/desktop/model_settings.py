@@ -65,9 +65,7 @@ from focus.config.model_config import ModelConfig
 from focus.config.model_layers import derive_preference_overlay, merge_model_layers
 from focus.config.preference_store import (
     PreferenceWriteError,
-    apply_credential,
-    credential_is_set,
-    write_models_preference,
+    write_model_settings,
 )
 
 logger = logging.getLogger(__name__)
@@ -162,10 +160,10 @@ def _raw_layers(config_name: str) -> tuple[dict[str, dict], dict[str, dict]]:
     return file_entries, declared
 
 
-def _entry_view(model: ModelConfig, raw: dict | None) -> dict:
+def _entry_view(model: ModelConfig | None, raw: dict | None) -> dict:
 
     declared = _normalized_entry(raw)
-    surface = declared or model.model_dump()
+    surface = declared or (model.model_dump() if model is not None else raw or {})
     entry = {field: surface.get(field) for field in _EDITABLE_FIELDS}
 
     raw_key = raw.get("api_key") if isinstance(raw, dict) else None
@@ -174,11 +172,17 @@ def _entry_view(model: ModelConfig, raw: dict | None) -> dict:
     entry["api_key"] = raw_key if variable else ""
     entry["api_key_variable"] = variable
     entry["api_key_literal"] = bool(raw_key) and variable is None
-    entry["api_key_set"] = credential_is_set(variable) if variable else entry["api_key_literal"]
+    value = os.environ.get(variable, "") if variable else raw_key
+    entry["api_key_set"] = _credential_ready(value)
+    entry["api_key_placeholder"] = bool(value) and not entry["api_key_set"]
     from focus.models.provider_contract import resolve_provider_contract
-    contract = resolve_provider_contract(model)
-    entry["effective_provider"] = contract.provider
-    entry["effective_protocol"] = contract.protocol
+    try:
+        contract = resolve_provider_contract(model or ModelConfig.model_validate(raw))
+        entry["effective_provider"] = contract.provider
+        entry["effective_protocol"] = contract.protocol
+    except (ValueError, ValidationError):
+        entry["effective_provider"] = None
+        entry["effective_protocol"] = None
     return entry
 
 
@@ -197,7 +201,21 @@ def catalog_snapshot(app_config: AppConfig, config_name: str = CONFIG_FILE_NAME)
         else:
             entry["source"] = "user_modified"
         snapshot.append(entry)
+    # 模型目录校验失败时 Gateway 仍启动；保留原始字段供用户修复。
+    if getattr(app_config, "_model_recovery", False):
+        for raw in declared.values():
+            entry = _entry_view(None, raw)
+            entry["source"] = "user_modified" if raw != file_entries.get(raw.get("name")) else "shipped"
+            snapshot.append(entry)
     return snapshot
+
+
+def _credential_ready(value: str | None) -> bool:
+    text = (value or "").strip().lower()
+    return bool(text) and text not in {
+        "sk-your-api-key-here", "your-api-key", "your_api_key", "your-api-key-here",
+        "placeholder", "changeme", "replace-me", "<your-api-key>",
+    }
 
 
 def _default_state(app_config: AppConfig) -> tuple[str | None, str | None]:
@@ -222,12 +240,29 @@ def settings_snapshot(app_config: AppConfig, config_name: str = CONFIG_FILE_NAME
     default_name, default_error = _default_state(app_config)
     curated = [model.name for model in app_config.models if model.curation_default]
     file_entries, _ = _raw_layers(config_name)
+    catalog = catalog_snapshot(app_config, config_name)
+    issues = {}
+    try:
+        validate_catalog([
+            {**_entries_for_submission(entry), "api_key": "$INLINE_CREDENTIAL"}
+            if entry["api_key_literal"] else _entries_for_submission(entry)
+            for entry in catalog
+        ])
+    except ModelSettingsError as exc:
+        issues.update(exc.errors)
+    if default_error:
+        issues["default"] = default_error
+    for index, entry in enumerate(catalog):
+        if not entry["api_key_set"]:
+            issues[f"models[{index}].api_key"] = "请输入真实 API Key，当前密钥未设置或仍是占位值"
     return {
-        "models": catalog_snapshot(app_config, config_name),
+        "models": catalog,
+        "setup_required": bool(issues),
+        "setup_issues": issues,
         "shipped_models": [
-            _entries_for_submission(entry)
-            for entry in (_normalized_entry(raw) for raw in file_entries.values())
-            if entry is not None
+            _entries_for_submission(_entry_view(None, raw))
+            for raw in file_entries.values()
+            if _normalized_entry(raw) is not None
         ],
         "editable_fields": list(_EDITABLE_FIELDS),
         "removed_models": list(app_config.removed_models),
@@ -352,10 +387,12 @@ def _validate_credentials(models: Sequence[dict], pending: dict[str, str]) -> No
     for index, entry in enumerate(models):
         variable = credential_variable(entry)
         if variable is None:
+            if not _credential_ready(entry.get("api_key")):
+                errors[f"models[{index}].api_key"] = "请输入真实 API Key，不能使用占位值"
             continue
-        if pending.get(variable) or credential_is_set(variable):
+        if _credential_ready(pending.get(variable) or os.environ.get(variable)):
             continue
-        errors[f"models[{index}].api_key"] = f"凭据来源变量未设置: {variable}"
+        errors[f"models[{index}].api_key"] = f"凭据来源变量未设置或仍是占位值: {variable}"
     if errors:
         raise ModelSettingsError(errors)
 
@@ -416,8 +453,8 @@ def save_model_settings(
     config_name: str = CONFIG_FILE_NAME,
 ) -> dict:
 
-    file_map, _ = load_layered_maps(config_name, str(Path(config_name)))
-    declared = _by_name(merge_model_layers(file_map, {}).get("models") or [])
+    file_map, stored_preferences = load_layered_maps(config_name, str(Path(config_name)))
+    declared = _by_name(merge_model_layers(file_map, stored_preferences).get("models") or [])
 
     submitted = _with_inherited_api_keys(payload.get("models"), declared)
     validate_catalog(submitted)
@@ -435,20 +472,19 @@ def save_model_settings(
     removed = list(
         dict.fromkeys([*derived_removed, *[n for n in requested_removals if n in shipped_names]])
     )
-    preference_map = {"models": overrides, "removed_models": removed}
+    preference_map = {**stored_preferences, "models": overrides, "removed_models": removed}
 
 
-    fresh = build_app_config(
-        file_map,
-        {"models": _with_pending_credentials(overrides, pending), "removed_models": removed},
-    )
+    merged = merge_model_layers(file_map, preference_map)
+    merged["models"] = _with_pending_credentials(merged.get("models") or [], pending)
+    # 模型设置只替换模型目录；保留数据库环境覆盖与运行期准入等既有配置。
+    fresh = build_app_config({
+        **app_config.model_dump(), "models": merged["models"], "removed_models": removed,
+    }, {})
     _self_check(fresh)
 
-    for variable, value in pending.items():
-        apply_credential(variable, value)
-
     try:
-        write_models_preference(overrides, removed, config_name)
+        write_model_settings(overrides, removed, pending, config_name)
     except PreferenceWriteError as exc:
         raise ModelSettingsError({"file": str(exc)}) from exc
 
@@ -555,6 +591,7 @@ async def probe_model_connection(entry: dict, api_key_value: str | None = None) 
     from focus.models import create_chat_model
 
     fresh = build_app_config({"models": [candidate]}, {})
+    secrets.extend(model.api_key for model in fresh.models)
 
     try:
         model = create_chat_model(
@@ -562,7 +599,7 @@ async def probe_model_connection(entry: dict, api_key_value: str | None = None) 
         )
         await model.ainvoke("ping")
     except Exception as exc:
-        return {"ok": False, "reason": _redact(_describe_failure(exc), secrets)}
+        return {"ok": False, "reason": _redact(_describe_failure(exc, secrets), secrets)}
     return {"ok": True, "reason": "连接成功"}
 
 
@@ -589,28 +626,34 @@ def _provider_message(exc: Exception) -> str:
     return ""
 
 
-def _describe_failure(exc: Exception) -> str:
+def _describe_failure(exc: Exception, secrets: Sequence[str] = ()) -> str:
+
+    from focus.models.response_output import ResponseAttemptError
+    if isinstance(exc, ResponseAttemptError):
+        return "响应不符合所选 API 协议，请核对端点地址、模型名称与协议"
 
     try:
         import openai
     except ImportError:
         return f"{type(exc).__name__}: 连接失败"
 
-    detail = _provider_message(exc)
+    detail = _redact(_provider_message(exc), secrets)
     suffix = f"：{detail[:200]}" if detail else ""
 
     if isinstance(exc, openai.AuthenticationError):
         return f"凭据被拒绝（401），请检查密钥{suffix}"
     if isinstance(exc, openai.PermissionDeniedError):
-        return f"凭据无权访问该模型（403）{suffix}"
+        return f"凭据无权访问该模型（403），请开通模型权限或更换密钥{suffix}"
     if isinstance(exc, openai.NotFoundError):
-        return f"模型标识或端点路径不存在（404）{suffix}"
+        return f"模型标识或端点路径不存在（404），请核对模型名称、端点地址及 API 协议{suffix}"
     if isinstance(exc, openai.RateLimitError):
         return f"请求被限流（429），请稍后重试{suffix}"
     if isinstance(exc, openai.APITimeoutError):
-        return "请求超时，端点无响应"
+        return "请求超时，端点无响应，请检查地址、网络及代理后重试"
     if isinstance(exc, openai.APIConnectionError):
         return "端点不可达，请检查地址与网络"
     if isinstance(exc, openai.APIStatusError):
-        return f"端点返回 {exc.status_code}（常见于模型标识或请求参数不被接受）{suffix}"
+        if exc.status_code >= 500:
+            return f"模型服务暂时不可用（{exc.status_code}），请稍后重试或检查服务状态{suffix}"
+        return f"端点返回 {exc.status_code}，请核对模型名称、API 协议与策展输出方式{suffix}"
     return f"{type(exc).__name__}: 连接失败"

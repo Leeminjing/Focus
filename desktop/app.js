@@ -722,6 +722,7 @@ async function bootstrap() {
   setStatus("正在连接…");
   performance.mark("focus:bootstrap-start");
   render();
+  void ensureModelSetup().catch(error => setStatus(error.message, true));
   try {
     const data = await api("/desktop/api/bootstrap");
     replaceTasks(data.tasks);
@@ -6207,6 +6208,7 @@ const modelSettings = {
   credentialValue: "", // 密钥输入框的当前值：只进不出，任何响应都不回填
   dirty: false,
   saving: false,
+  setupChecked: false,
 };
 
 const MODEL_NUMERIC_FIELDS = ["context_window", "curation_max_output_tokens"];
@@ -6227,6 +6229,7 @@ function modelEntrySource(entry) {
 }
 
 function modelCredentialState(entry) {
+  if (entry.api_key_placeholder) return uiText("settings.model_placeholder_key", "占位密钥，请填写真实 API Key");
   if (entry.api_key_literal) return uiText("settings.model_key_literal", "已内联字面量（不建议）");
   if (entry.api_key_set ?? Boolean(entry.api_key)) return uiText("settings.model_key_set", "已设置");
   return uiText("settings.model_key_unset", "未设置");
@@ -6322,6 +6325,15 @@ function renderModelSettings() {
   }
 
   const banners = [];
+  if (snapshot.setup_required) {
+    banners.push(`<p class="settings-model-banner is-warn">${escapeHtml(uiText("settings.model_setup_help", "首次使用或模型配置需要修复。请填写真实 API Key，核对地址、模型名称与协议；保存后将验证普通调用和策展输出。"))}</p>`);
+    banners.push(`<ul class="settings-model-errors">${Object.values(snapshot.setup_issues || {}).map(message => `<li>${escapeHtml(message)}</li>`).join("")}</ul>`);
+  }
+  if (modelSettings.saving) {
+    banners.push(`<p role="status" class="settings-model-banner">${escapeHtml(uiText("settings.model_verifying", "正在保存并验证普通调用和策展输出…"))}</p>`);
+  } else if (snapshot.verification) {
+    banners.push(`<p role="status" class="settings-model-banner ${snapshot.verification.ok ? "is-ok" : "is-error"}">${escapeHtml(uiText("settings.model_verified", "设置已保存。{reason}", { reason: snapshot.verification.reason }))}</p>`);
+  }
   if (snapshot.default_error) {
     banners.push(`<p class="settings-model-banner is-error">${escapeHtml(uiText("settings.model_default_error", "默认模型无法解析：{message}", { message: snapshot.default_error }))}</p>`);
   }
@@ -6371,6 +6383,19 @@ async function loadModelSettings({ force = false } = {}) {
   modelSettings.error = null;
   modelSettings.errors = {};
   return snapshot;
+}
+
+async function ensureModelSetup() {
+  if (modelSettings.setupChecked) return;
+  const snapshot = await loadModelSettings({ force: true });
+  modelSettings.setupChecked = true;
+  if (!snapshot.setup_required) return;
+  selectSettingsTab("models");
+  // 不等待归档会话或沙箱检查，让模型修复入口立即可见。
+  void openSettings();
+  const index = snapshot.models.findIndex(entry => !entry.api_key_set || entry.default);
+  if (index >= 0) startModelDraft(index);
+  else renderModelSettings();
 }
 
 function startModelDraft(index, isNew = false) {
@@ -6456,6 +6481,7 @@ async function saveModelSettings() {
   if (!modelSettings.snapshot || modelSettings.saving) return;
   modelSettings.saving = true;
   modelSettings.errors = {};
+  setStatus(uiText("settings.model_verifying", "正在保存并验证普通调用和策展输出…"));
   const payload = { models: modelSettings.snapshot.models.map(modelEntryPayload) };
   // 凭据写入哪个变量以**当前编辑值**为准：用户可能刚把 api_key 改成另一个 $VAR
   const editing = modelSettings.snapshot.models[modelSettings.draft?.index ?? -1];
@@ -6466,6 +6492,7 @@ async function saveModelSettings() {
   if (modelSettings.credentialValue && credentialVariable) {
     payload.credentials = { [credentialVariable]: modelSettings.credentialValue };
   }
+  renderModelSettings();
   try {
     let snapshot;
     try {
@@ -6484,7 +6511,9 @@ async function saveModelSettings() {
     modelSettings.credentialValue = "";
     modelSettings.dirty = false;
     state.equipment = { ...state.equipment, models: snapshot.models };
-    setStatus(uiText("settings.model_saved", "已保存并立即生效"));
+    if (snapshot.verification) {
+      setStatus(uiText("settings.model_verified", "设置已保存。{reason}", { reason: snapshot.verification.reason }), !snapshot.verification.ok);
+    } else setStatus(uiText("settings.model_saved", "已保存并立即生效"));
   } catch (error) {
     if (error.silent) return;
     if (error.status === 422 && error.detail?.errors) modelSettings.errors = error.detail.errors;

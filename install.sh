@@ -166,6 +166,7 @@ configure_shell_path
 export PATH="$bin_dir:$PATH"
 
 printf '\nFocus installed successfully.\n\n'
-printf 'Before the first run, add your API key to:\n    %s\n\n' "$focus_home/.env"
+printf 'On first launch, Model Settings will open. Enter your API key and save to verify chat and curation.\n'
+printf 'Optional environment-file configuration: %s\n\n' "$focus_home/.env"
 printf 'Open a new terminal, then run:\n    focus\n\n'
 printf 'Update later with:\n    focus update\n'

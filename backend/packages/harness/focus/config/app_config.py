@@ -3,7 +3,7 @@
 以及 AppConfig 配置聚合类。
 
 AppConfig: 声明式配置数据模型，聚合 models / stream_bridge / database / checkpointer / extensions 配置
-get_app_config: 组合根入口，将 config.yaml 加载为全局单例 AppConfig 对象
+get_app_config: 组合根入口，将 config.yaml 加载为全局单例 AppConfig 对象；Gateway 可选择模型修复模式
 reload_app_config: 强制替换全局单例（仅用于测试与显式重载；运行期生效走 apply_app_config）
 build_app_config: 由两层原始 map 构造一个已校验的 AppConfig（不触碰全局单例）
 apply_app_config: 把已校验对象就地写入既有对象，保持对象身份不变
@@ -28,7 +28,7 @@ MUST NOT 依赖 reload_app_config——它替换模块全局，会让已经按�
 import os
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
 from focus.config.checkpointer_config import CheckpointerConfig
 from focus.config.env import resolve_env_vars
@@ -56,6 +56,7 @@ def available_model_names(config: "AppConfig") -> str:
 
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
+    _model_recovery: bool = PrivateAttr(default=False)
 
     models: list[ModelConfig]
     context_run_admission: bool = True
@@ -143,13 +144,26 @@ def apply_app_config(target: AppConfig, fresh: AppConfig) -> AppConfig:
         setattr(target, name, getattr(fresh, name))
     for name, value in (fresh.__pydantic_extra__ or {}).items():
         setattr(target, name, value)
+    target._model_recovery = fresh._model_recovery
     return target
 
 
-def get_app_config(yaml_path: str) -> AppConfig:
+def get_app_config(yaml_path: str, *, recover_models: bool = False) -> AppConfig:
     global _app_config
     if _app_config is None:
-        _app_config = _load_layered_config(yaml_path)
+        try:
+            _app_config = _load_layered_config(yaml_path)
+        except ValidationError:
+            if not recover_models:
+                raise
+            # 仅模型目录可由设置页修复。其它资源配置仍须通过完整校验。
+            from focus.config.layered import load_layered_maps
+            from focus.config.model_layers import merge_model_layers
+
+            file_map, preference_map = load_layered_maps(Path(yaml_path).name, yaml_path)
+            merged = merge_model_layers(file_map, preference_map)
+            _app_config = build_app_config({**merged, "models": []}, {})
+            _app_config._model_recovery = True
     return _app_config
 
 
