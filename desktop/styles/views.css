@@ -101,6 +101,22 @@
 
 .page-search { display: flex; gap: 12px; justify-content: flex-end; align-items: center; color: var(--text-secondary); font-size: 12px; }
 .page-search input { max-width: 100%; width: min(300px, 36vw); padding: 10px 12px; border: 1px solid var(--border-default); border-radius: 9px; background: var(--surface-base); }
+.history-results { display: grid; gap: 10px; }
+.history-result { display: grid; grid-template-columns: minmax(0, 1fr); justify-content: stretch; justify-items: start; gap: 10px; width: 100%; padding: 16px; text-align: left; border: 1px solid var(--border-default); border-radius: 12px; background: var(--surface-base); color: var(--text-primary); }
+.history-result:hover { background: var(--surface-subtle); }
+.history-result small { display: block; margin-top: 4px; color: var(--text-secondary); }
+.history-snippet { white-space: pre-wrap; overflow-wrap: anywhere; }
+.history-reader { max-width: 960px; margin: 0 auto; padding: 24px; color: var(--text-primary); }
+.history-reader .task-page-heading > div:first-child { display: block; min-width: 0; }
+.history-reader h1 { overflow-wrap: anywhere; }
+.history-reader h2 { font-size: 16px; }
+.history-messages, .history-files { display: grid; gap: 12px; margin: 16px 0; }
+.history-message, .history-file { padding: 16px; border: 1px solid var(--border-default); border-radius: 12px; background: var(--surface-base); overflow-wrap: anywhere; }
+.history-message header { margin-bottom: 8px; font-size: 12px; color: var(--text-secondary); }
+.history-file small { display: block; margin-bottom: 6px; color: var(--text-secondary); }
+.history-message > div { white-space: pre-wrap; }
+.history-target { outline: 2px solid var(--text-accent); outline-offset: 2px; }
+.history-reader mark, .history-results mark { background: var(--surface-warning); color: var(--text-primary); border-radius: 2px; }
 .memory-page-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
 .memory-page-heading h1, .plugins-heading h1 { font-size: 29px; margin: 0 0 8px; }
 .memory-page-heading p { color: var(--text-secondary); }

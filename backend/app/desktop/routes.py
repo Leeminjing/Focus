@@ -186,6 +186,25 @@ async def list_archived_sessions(request: Request) -> list[dict]:
     return await request.app.state.desktop_service.contexts.list_archived()
 
 
+@desktop_router.get("/history/search")
+async def search_history(
+    request: Request, q: str = Query(min_length=1, max_length=200),
+    offset: int = Query(default=0, ge=0), limit: int = Query(default=50, ge=1, le=100),
+) -> dict:
+    from backend.app.desktop.history_search import HistorySearchService
+
+    service = request.app.state.desktop_service
+    return await HistorySearchService(service.session_factory, service.contexts).search(q, offset, limit)
+
+
+@desktop_router.get("/history/{context_id}")
+async def read_history(context_id: str, request: Request) -> dict:
+    from backend.app.desktop.history_search import HistorySearchService
+
+    service = request.app.state.desktop_service
+    return await HistorySearchService(service.session_factory, service.contexts).read(context_id)
+
+
 @desktop_router.get("/tasks/{task_id}/skills")
 async def list_task_skills(task_id: str, request: Request) -> dict:
     return {"skills": await request.app.state.desktop_service.list_task_skills(task_id)}

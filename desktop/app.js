@@ -135,6 +135,8 @@ const state = {
   soldierArmed: false,
   selectionMode: false,
   selectedContextIds: new Set(),
+  historySearch: { query: "", results: [], loading: false, error: "", hasMore: false, unavailable: 0, sequence: 0 },
+  historyReader: { contextId: null, detail: null, loading: false, error: "", targetKey: "", messageId: null, start: 0, sequence: 0 },
   mapViewMode: mapViewPreferences.mode,
   mapExpandedWorkspaceIds: new Set(mapViewPreferences.workspaceIds),
   mapExpandedContextIds: new Set(mapViewPreferences.contextIds),
@@ -814,6 +816,7 @@ function render() {
     else renderFocus(task);
   }
   else if (state.view === "map") renderMap();
+  else if (state.view === "history") renderHistoryReader();
   else if (state.view === "draft") renderDraft();
   else if (state.view === "compress") renderCompress();
   else if (state.view === "plugins") renderPlugins();
@@ -1308,6 +1311,7 @@ async function overrideAgentLoop(form) {
 }
 
 function activeNavigationKey() {
+  if (state.view === "history") return "map";
   if (state.view === "patrol") return "patrol";
   if (state.view === "map") return "map";
   if (state.view === "plugins") return "plugins";
@@ -1325,6 +1329,10 @@ function renderShellChrome() {
   if (shellTaskMeta) shellTaskMeta.textContent = state.view === "patrol" ? "工作区统一输入" : task
     ? `${task.workspace_name || uiText("common.local_workspace", "本地工作区")} · ${task.task_id.slice(0, 8)}`
     : uiText("header.workbench", "本地 Agent 工作台");
+  if (state.view === "history") {
+    if (shellTaskTitle) shellTaskTitle.textContent = state.historyReader.detail?.title || "历史记录";
+    if (shellTaskMeta) shellTaskMeta.textContent = "只读查看";
+  }
   const current = activeNavigationKey();
   document.querySelectorAll?.("[data-nav-key]").forEach(button => {
     const label = button.querySelector(".app-nav-label")?.textContent || button.dataset.navKey;
@@ -3489,6 +3497,11 @@ function inspectMapRelationship(identity, trigger) {
 }
 
 function renderMap(focusKey = null) {
+  if (String(state.mapQuery || "").trim()) {
+    stopMapLive();
+    mapContextInspector?.dispose(); mapContextInspector = null; mapRelatedOnly = false;
+    return renderHistorySearch();
+  }
   const sel = state.selectedContextIds.size;
   const treeMode = state.mapViewMode === "tree";
   const query = String(state.mapQuery || "").trim().toLowerCase();
@@ -3517,7 +3530,7 @@ function renderMap(focusKey = null) {
     mapContextInspector?.dispose(); mapContextInspector = null; mapRelatedOnly = false;
     app.innerHTML = `<section class="map-view">
       <header class="task-page-heading"><div><h1>全图</h1><p>沿精确来源关系检查工作。层次与卡片浏览保留所有工作区操作。</p></div><button data-action="show-patrol">回到 Patrol</button></header>
-      ${toolbar}<label class="page-search">检索已加载任务 <input type="search" data-page-search="map" value="${escapeHtml(state.mapQuery || "")}" placeholder="查找 Context…"></label>
+      ${toolbar}<label class="page-search">搜索历史 <input type="search" data-page-search="map" maxlength="200" value="${escapeHtml(state.mapQuery || "")}" placeholder="消息正文、任务或文件名…"></label>
       ${graphMode ? `<section class="map-portfolio-surface" data-workspace-id="${escapeHtml(workspaceId || "")}"><header><span>当前工作区 · 已提交来源</span><div><button data-action="map-related" disabled>仅看所选关联</button><button data-action="refresh-map-portfolio">刷新</button></div></header><p data-map-status role="status" hidden></p><div data-map-graph></div><footer class="workbench-legend"><span>已提交来源关系</span><span>所选 Context 的直接关联</span><span>Run 状态以节点为准</span><small>连线可查看来源与目标版本</small></footer></section><aside data-patrol-context class="patrol-context-drawer" aria-label="只读 Context 检查" hidden><div data-patrol-context-content></div></aside>` : `<div class="${treeMode ? "map-tree-host" : "map-groups"}">${activeTasks.length ? (treeMode ? renderMapTree(activeTasks) : renderMapGroups(activeTasks)) : '<p>暂无匹配的活动任务</p>'}</div>`}
     </section>`;
     if (graphMode) {
@@ -3537,6 +3550,125 @@ function renderMap(focusKey = null) {
       || app.querySelector("[role='treeitem'][tabindex='0']");
     target?.focus();
   }
+}
+
+let historySearchTimer = null;
+
+function historyHighlighted(text, query = state.mapQuery || "") {
+  text = String(text || "");
+  query = String(query).trim();
+  if (!query) return escapeHtml(text);
+  const index = text.toLowerCase().indexOf(query.toLowerCase());
+  if (index < 0) return escapeHtml(text);
+  return `${escapeHtml(text.slice(0, index))}<mark>${escapeHtml(text.slice(index, index + query.length))}</mark>${escapeHtml(text.slice(index + query.length))}`;
+}
+
+function renderHistorySearch() {
+  const search = state.historySearch;
+  app.innerHTML = `<section class="map-view history-search-view">
+    <header class="task-page-heading"><div><h1>历史查找</h1><p>搜索消息正文、任务和文件名，包含已归档任务。</p></div><button data-action="clear-history-search">返回全图</button></header>
+    <label class="page-search">搜索历史 <input type="search" data-page-search="map" maxlength="200" value="${escapeHtml(state.mapQuery || "")}" placeholder="消息正文、任务或文件名…"></label>
+    <div role="status">${search.loading ? "正在搜索历史…" : search.error ? escapeHtml(search.error) : search.results.length ? `已显示 ${search.results.length} 条匹配${search.hasMore ? "，还有更多结果" : ""}` : "暂无匹配的历史记录"}${search.unavailable ? `<p>有 ${search.unavailable} 个任务正文暂时无法读取，可重试搜索。</p>` : ""}</div>
+    ${search.error || search.unavailable ? '<button data-action="retry-history-search">重试搜索</button>' : ""}
+    <div class="history-results">${search.results.map((hit, index) => `<button class="history-result" data-action="open-history-result" data-result-index="${index}"><span><strong>${escapeHtml(hit.title)}</strong><small>${escapeHtml(hit.workspace_name)} · ${hit.lifecycle === "archived" ? "已归档 · 只读" : "活动任务"} · ${{ task: "任务信息", message: "消息正文", file: "文件" }[hit.kind] || "历史"}</small></span><span class="history-snippet">${historyHighlighted(hit.snippet)}</span></button>`).join("")}</div>
+    ${search.hasMore ? `<button data-action="more-history-results" ${search.loading ? "disabled" : ""}>加载更多结果</button>` : ""}
+  </section>`;
+}
+
+function queueHistorySearch(query) {
+  clearTimeout(historySearchTimer);
+  const search = state.historySearch;
+  search.sequence += 1;
+  Object.assign(search, { query: query.trim(), results: [], loading: !!query.trim(), error: "", hasMore: false, unavailable: 0 });
+  if (query.trim()) historySearchTimer = setTimeout(() => void loadHistorySearch(), 250);
+}
+
+async function loadHistorySearch(append = false) {
+  const search = state.historySearch;
+  const query = String(state.mapQuery || "").trim();
+  if (!query) return;
+  const sequence = ++search.sequence;
+  search.loading = true; search.error = "";
+  if (state.view === "map") refreshHistorySearch();
+  try {
+    const response = await api(`/desktop/api/history/search?q=${encodeURIComponent(query)}&offset=${append ? search.results.length : 0}`);
+    if (sequence !== search.sequence || query !== String(state.mapQuery || "").trim()) return;
+    search.results = append ? [...search.results, ...response.results] : response.results;
+    search.hasMore = response.has_more;
+    search.unavailable = response.unavailable_context_ids.length;
+  } catch (error) {
+    if (sequence !== search.sequence) return;
+    search.error = `历史搜索失败：${error.message}`;
+  } finally {
+    if (sequence === search.sequence) {
+      search.loading = false;
+      if (state.view === "map") refreshHistorySearch();
+    }
+  }
+}
+
+function refreshHistorySearch() {
+  const input = app.querySelector('[data-page-search="map"]');
+  const focused = document.activeElement === input;
+  const position = input?.selectionStart;
+  const scrollTop = app.scrollTop;
+  renderHistorySearch();
+  app.scrollTop = scrollTop;
+  if (focused) {
+    const next = app.querySelector('[data-page-search="map"]');
+    next?.focus();
+    next?.setSelectionRange?.(position, position);
+  }
+}
+
+async function openHistory(contextId, targetKey = "", messageId = null) {
+  const reader = state.historyReader;
+  const sequence = ++reader.sequence;
+  if (state.view === "focus") persistFocusState();
+  cancelPendingViewRequests();
+  ++taskSwitchSequence;
+  Object.assign(reader, { contextId, targetKey, messageId, detail: null, loading: true, error: "", start: 0 });
+  state.inspector.open = false;
+  state.view = "history";
+  app.scrollTop = 0;
+  if (settingsDialog?.open) void window.FocusSurfaceTransition.visible(settingsDialog, false, { modal: true });
+  render();
+  try {
+    const detail = await api(`/desktop/api/history/${encodeURIComponent(contextId)}`);
+    if (sequence !== reader.sequence || state.view !== "history") return;
+    reader.detail = detail;
+    const targetIndex = messageId ? detail.entries.findIndex(entry => entry.message_id === messageId) : detail.entries.findIndex(entry => entry.key === targetKey);
+    if (targetIndex >= 0) {
+      reader.targetKey = detail.entries[targetIndex].key;
+      reader.start = Math.max(0, targetIndex - 20);
+    } else if (targetKey && !detail.materials.some(item => item.key === targetKey)) {
+      reader.error = "原命中消息已发生变化，正在显示当前保存的历史。";
+    }
+  } catch (error) {
+    if (sequence === reader.sequence) reader.error = `读取历史失败：${error.message}`;
+  } finally {
+    if (sequence === reader.sequence && state.view === "history") {
+      reader.loading = false;
+      render();
+      const target = app.querySelector(".history-target");
+      target?.scrollIntoView?.({ block: "center" });
+      target?.focus?.({ preventScroll: true });
+    }
+  }
+}
+
+function renderHistoryReader() {
+  const reader = state.historyReader, detail = reader.detail;
+  const entries = detail?.entries || [];
+  app.innerHTML = `<section class="history-reader">
+    <header class="task-page-heading"><div><h1>${escapeHtml(detail?.title || "历史记录")}</h1><p>${detail?.lifecycle === "archived" ? "已归档 · " : ""}只读查看${detail ? ` · ${escapeHtml(detail.workspace_name)}` : ""}</p></div><div><button data-action="back-history-search">返回历史查找</button>${detail?.lifecycle === "active" ? `<button data-action="history-continue" data-context-id="${escapeHtml(detail.context_id)}">继续任务</button>` : ""}</div></header>
+    ${reader.loading ? '<p role="status">正在读取历史…</p>' : ""}
+    ${reader.error ? `<p role="status">${escapeHtml(reader.error)}</p>${!detail ? '<button data-action="retry-history-reader">重试读取</button>' : ""}` : ""}
+    ${detail?.materials.length ? `<section class="history-files" aria-label="相关输入与产物"><h2>相关输入与产物</h2>${detail.materials.map(item => `<div class="history-file ${reader.targetKey === item.key ? "history-target" : ""}" tabindex="-1"><small>${({ input: "输入文件", artifact: "产物", material: "材料" })[item.kind] || "文件"}</small><strong>${historyHighlighted(item.path)}</strong>${item.note ? `<p>${historyHighlighted(item.note)}</p>` : ""}</div>`).join("")}</section>` : ""}
+    ${reader.start ? '<button data-action="history-earlier">查看更早消息</button>' : ""}
+    <div class="history-messages">${entries.slice(reader.start, reader.start + 80).map(entry => `<article class="history-message ${reader.targetKey === entry.key ? "history-target" : ""}" tabindex="-1"><header>${({ human: "你", user: "你", ai: "助手", assistant: "助手", tool: "工具", system: "系统" })[entry.role] || "消息"}${entry.retained_source ? " · 压缩前原文" : ""}</header><div>${historyHighlighted(entry.text)}</div></article>`).join("")}${detail && !entries.length ? "<p>该任务暂无已保存的消息。</p>" : ""}</div>
+    ${reader.start + 80 < entries.length ? '<button data-action="history-later">查看后续消息</button>' : ""}
+  </section>`;
 }
 
 async function hydrateContextTrees(workspaceIds = null) {
@@ -6622,6 +6754,7 @@ async function openSettings() {
                 <span class="archived-session-meta">${escapeHtml(item.workspace_name || uiText("common.local_workspace", "本地工作区"))} · ${escapeHtml(item.context_id.slice(0, 8))}</span>
               </div>
               <div class="archived-session-actions">
+                <button class="text-button" data-action="view-history" data-context-id="${escapeHtml(item.context_id)}">只读查看</button>
                 <button class="text-button" data-action="unarchive-context" data-context-id="${escapeHtml(item.context_id)}">${uiText("common.restore", "恢复")}</button>
                 <button class="text-button danger" data-action="delete-context" data-context-id="${escapeHtml(item.context_id)}">${uiText("common.delete", "删除")}</button>
               </div>
@@ -6958,6 +7091,24 @@ async function handleDocumentClick(event) {
   if (action === "derive-context") return openContextEditor(state.activeTaskId);
   if (action === "organize-context") return openCompressionView(activeTask(), null, null, true);
   if (action === "open-settings") return openSettings();
+  if (action === "view-history") return openHistory(button.dataset.contextId);
+  if (action === "open-history-result") {
+    const hit = state.historySearch.results[Number(button.dataset.resultIndex)];
+    if (hit) return openHistory(hit.context_id, hit.key, hit.message_id);
+    return;
+  }
+  if (action === "clear-history-search") { state.mapQuery = ""; queueHistorySearch(""); return renderMap(); }
+  if (action === "retry-history-search") return loadHistorySearch();
+  if (action === "more-history-results") return loadHistorySearch(true);
+  if (action === "retry-history-reader") return openHistory(state.historyReader.contextId, state.historyReader.targetKey, state.historyReader.messageId);
+  if (action === "back-history-search") { state.view = "map"; return render(); }
+  if (action === "history-continue") return switchTask(button.dataset.contextId);
+  if (action === "history-earlier" || action === "history-later") {
+    state.historyReader.start = Math.max(0, state.historyReader.start + (action === "history-earlier" ? -80 : 80));
+    renderHistoryReader();
+    app.scrollTop = 0;
+    return;
+  }
   if (action === "close-settings") return void window.FocusSurfaceTransition.visible(settingsDialog, false, { modal: true });
   if (action === "settings-tab") return selectSettingsTab(button.dataset.settingsTab);
   if (action === "model-add") return runUiAction(addModelEntry);
@@ -7163,10 +7314,10 @@ document.addEventListener("input", event => {
   if (event.target.dataset?.pageSearch) {
     const page = event.target.dataset.pageSearch;
     const position = event.target.selectionStart;
-    if (event.isComposing) { if (page === "map") state.mapQuery = event.target.value; else state[page].query = event.target.value; return; }
+    if (event.isComposing) { if (page === "map") { state.mapQuery = event.target.value; queueHistorySearch(""); } else state[page].query = event.target.value; return; }
     if (page === "plugins") { state.plugins.query = event.target.value; renderPlugins(); }
     else if (page === "memory") { state.memory.query = event.target.value; renderMemory(); }
-    else if (page === "map") { state.mapQuery = event.target.value; renderMap(); }
+    else if (page === "map") { state.mapQuery = event.target.value; queueHistorySearch(event.target.value); renderMap(); }
     const input = app.querySelector(`[data-page-search="${page}"]`);
     input?.focus();
     input?.setSelectionRange(position, position);
