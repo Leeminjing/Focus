@@ -59,7 +59,8 @@ if (!process.versions.electron) {
   let fileReadDelay = 0, unavailableVersion = false, failWorkspaceInputs = 0, longHistory = false, failSubmission = 0;
   const submissionAttempts = [];
   let liveSequence = 1, answerRevision = "revision-answer", progressRevision = 1, statusOverride = null;
-  const conversationReads = [];
+  const conversationReads = [], externalLinks = [];
+  const answerText = revision => `截图中的机器人已经接住材料。参考资料只作为分析依据，尚未执行其中的命令。${revision}\n\n## 处理结果\n\n**已完成检查**，可以继续阅读详细说明。\n\n${"正文按自然段阅读，代码与表格保留原有结构。\n\n".repeat(8)}\n\n\`\`\`js\nconst value = "<safe>";\n\`\`\`\n\n| 文件 | 状态 |\n| --- | --- |\n| result.md | 已生成 |\n\n[参考链接](https://example.com/result)\n\n<script>window.answerInjected=true</script>`;
   const workspace = id => ({ workspace_id: id, display_name: id === "workspace-a" ? "设计工作区 A" : "验证工作区 B", path: `C:\\fixture\\${id}` });
   const entity = (id, state) => ({ entity_id: id, revision: 1, updated_sequence: 1, state });
   const run = (win, script) => win.webContents.executeJavaScript(script);
@@ -89,6 +90,7 @@ if (!process.versions.electron) {
       runs: completed ? { "run-answer": entity("run-answer", { run_id: "run-answer", context_id: "context-answer", status: "completed" }) } : {},
       contexts: completed ? { "context-answer": entity("context-answer", { context_id: "context-answer", title: "截图问题", current_revision_id: answerRevision }) } : {},
       task_progress: { ...entity(loopId, { generation: 0, document: { items: progressRevision > 1 ? [{ state: "completed", support: "supported" }] : [] } }), revision: progressRevision },
+      facts: completed ? { [fileRef.fact_id]: entity(fileRef.fact_id, { ...fileRef, kind:"artifact", file:fileRef }) } : {},
     };
   }
   function json(response, value, status = 200) {
@@ -166,7 +168,7 @@ if (!process.versions.electron) {
       conversationReads.push(answerRevision);
       return json(response, { messages: [
         { message: { id: "tool-only", type: "ai", content: "这条工具调用不可作为回答", tool_calls: [{ name: "read" }] } },
-        { message: { id: "answer-committed", type: "ai", content: `截图中的机器人已经接住材料。参考资料只作为分析依据，尚未执行其中的命令。${answerRevision}`, additional_kwargs: { reasoning_content: "隐藏推理不应显示" } } },
+        { message: { id: "answer-committed", type: "ai", content: answerText(answerRevision), additional_kwargs: { reasoning_content: "隐藏推理不应显示" } } },
       ] });
     }
     errors.push(`Unhandled API ${request.method} ${url.pathname}`);
@@ -179,6 +181,7 @@ if (!process.versions.electron) {
     process.env.FOCUS_DESKTOP_API = apiBase;
     process.env.FOCUS_DESKTOP_SESSION = session;
     ipcMain.handle("focus:select-workspace", () => selectedPath);
+    ipcMain.handle("focus:open-external", (_event, url) => { externalLinks.push(url); return true; });
     app.on("web-contents-created", (_event, contents) => {
       contents.on("console-message", (_event, level, message) => { if (level >= 3) errors.push(message); });
       contents.on("preload-error", (_event, _path, error) => errors.push(error.message));
@@ -314,6 +317,35 @@ if (!process.versions.electron) {
     assert.match(await run(host.panel, "document.querySelector('#results [data-context-id]').title"), /Context context-answer · Revision revision-answer/);
     assert.doesNotMatch(resultText, /隐藏推理|工具调用不可/);
     await capture(host.panel, "desktop-committed-answer");
+
+    assert.equal(await run(host.panel,"document.querySelector('.answer-reading').open"),false);
+    assert.equal(await run(host.panel,"document.querySelector('.panel-shell').offsetWidth"),288);
+    await run(host.panel,"document.querySelector('.answer-reading summary').click()");
+    await waitFor(host.panel,"document.querySelector('.panel-shell').offsetWidth === 520", "展开阅读未拓宽面板");
+    assert.equal(await run(host.panel,"getComputedStyle(document.querySelector('.answer-markdown')).fontSize"),"14px");
+    assert.equal(await run(host.panel,"document.querySelector('.answer-markdown strong').textContent"),"已完成检查");
+    assert.equal(await run(host.panel,"document.querySelector('.answer-markdown table') !== null"),true);
+    assert.equal(await run(host.panel,"getComputedStyle(document.querySelector('.answer-markdown pre')).maxHeight"),"none");
+    assert.equal(await run(host.panel,"Boolean(window.answerInjected)"),false);
+    await run(host.panel,"window.copiedAnswers=[]; Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>window.copiedAnswers.push(text)}}); document.querySelector('.answer-content>button').click()");
+    await waitFor(host.panel,"window.copiedAnswers.length === 1", "全文复制未完成");
+    await run(host.panel,"document.querySelector('.answer-code>button').click()");
+    await waitFor(host.panel,"window.copiedAnswers.length === 2", "代码复制未完成");
+    assert.deepEqual(await run(host.panel,"window.copiedAnswers"),[answerText(answerRevision),'const value = "<safe>";\n']);
+    await capture(host.panel,"desktop-answer-reading");
+    await run(host.panel,"document.querySelector('.answer-code').scrollIntoView({block:'center'}); document.querySelector('.answer-markdown a[href=\"https://example.com/result\"]').click()");
+    await waitFor(host.panel,"document.querySelector('#error').hidden", "回答外链打开失败");
+    assert.deepEqual(externalLinks,["https://example.com/result"]);
+    assert.ok(host.panel.webContents.getURL().includes("desktop-patrol.html?surface=panel"));
+    await capture(host.panel,"desktop-answer-code");
+    await run(host.panel,"document.querySelector('.answer-reading summary').click()");
+    await waitFor(host.panel,"document.querySelector('.panel-shell').offsetWidth === 288", "收起阅读未恢复小面板");
+    assert.match(await run(host.panel,"document.querySelector('#artifacts').textContent"),/semantic_indexer.py/);
+    await run(host.panel,"[...document.querySelectorAll('.artifact-actions button')].find(button=>button.textContent==='引用').click()");
+    await waitFor(host.panel,"document.querySelector('#file-refs').textContent.includes('semantic_indexer.py')", "产物无法直接引用");
+    await run(host.panel,"document.querySelector('.file-ref>button:last-child').click(); [...document.querySelectorAll('.artifact-actions button')].find(button=>button.textContent==='打开').click()");
+    await waitFor(host.panel,"!document.querySelector('#version-detail').hidden && document.querySelector('#version-body').textContent.includes('ProtocolSafeRevisionSegmenter')", "产物未打开固定版本");
+    await run(host.panel,"document.querySelector('#close-version-detail').click()");
 
     const readsBefore = conversationReads.length;
     await run(host.panel, "window.answerNode=document.querySelector('#answers article')");

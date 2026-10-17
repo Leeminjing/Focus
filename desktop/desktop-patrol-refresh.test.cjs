@@ -12,6 +12,8 @@ const path = require("node:path");
 const { createDocument, createElement } = require("./test-dom.cjs");
 const Feedback = require("./workspace-patrol-feedback.js");
 const Inputs = require("./workspace-patrol-inputs.js");
+const Facts = require("./loop-facts-view.js");
+const markdownit = require("./vendor/markdown-it.min.js");
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const conversation = text => ({ messages: [{ message: { role: "assistant", content: text } }] });
 const projection = (revision = "r1", patch = {}) => ({ loop_id: "loop-a", loop: { state: { status: "running" } },
@@ -24,7 +26,7 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
   const document = { ...createDocument(), body, querySelector: selector => body.querySelector(selector), hidden: false,
     addEventListener: (...args) => body.addEventListener(...args) };
   let state = { projection: null, connection: { status: "live" } }, listener;
-  const events = {}, calls = [], states = [], stores = new Map();
+  const events = {}, calls = [], states = [], stores = new Map(), copied = [];
   const store = id => { if (!stores.has(id)) stores.set(id, Inputs.create()); return stores.get(id); };
   const api = { workspacePatrol: async id => ({ loop_id: `loop-${id}` }), workspaceInputs: async () => ({ items: [] }),
     conversation: (...args) => { calls.push(args); return read(...args); } };
@@ -36,18 +38,18 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
     readBinding: () => null, reconcile: async () => {},
     workspace: async id => ({ workspace_id: id, display_name: id }), resourceLimits: async () => ({}),
     history: (id, page) => store(id).history(page) };
-  const window = { focusDesktop: { runtime: () => ({}), patrol: bridge }, addEventListener() {} };
+  const window = { markdownit, focusDesktop: { runtime: () => ({}), patrol: bridge }, addEventListener() {} };
   const context = vm.createContext({ window, document, location: { search: "?surface=panel" }, URLSearchParams,
-    AbortController, requestAnimationFrame: callback => setImmediate(callback), localStorage: {}, ResizeObserver: class { observe() {} disconnect() {} },
+    AbortController, navigator: { clipboard: { writeText: async text => copied.push(text) } }, requestAnimationFrame: callback => setImmediate(callback), localStorage: {}, ResizeObserver: class { observe() {} disconnect() {} },
     FocusLoopApi: { create: () => api }, FocusLoopLiveStore: { create: () => ({ get: () => state, subscribe: callback => { listener = callback; callback(state); } }) },
     FocusLoopLiveConnection: { create: () => ({ start: async () => {}, stop() {} }) },
     FocusWorkspacePatrolIntake: { create: () => intake }, FocusWorkspacePatrolMaterialPreview: { create: () => ({ render() {}, dispose() {} }) },
     FocusWorkspacePatrolBudget: { markup: () => "", create: () => ({ update() {}, syncDraft() {}, dispose() {} }) },
-    FocusAccessMode: { readNewSessionDefault() {} }, FocusWorkspacePatrolFeedback: Feedback, FocusWorkspacePatrolInputs: Inputs,
+    FocusAccessMode: { readNewSessionDefault() {} }, FocusWorkspacePatrolFeedback: Feedback, FocusWorkspacePatrolInputs: Inputs, FocusLoopFactsView: Facts,
     FocusLoopLiveSelectors: { selectFacts: value => value.files || [] } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-references.js"), "utf8"), context);
   await vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-panel.js"), "utf8"), context);
-  return { calls, states, body, events, api,
+  return { calls, states, body, events, api, copied, store,
     async emit(value) { state = { ...state, projection: value }; listener(state); await tick(); },
     async visibility(value) { events.visibility?.(value); await tick(); },
     results: () => body.querySelector("#results") };
@@ -64,6 +66,92 @@ test("initially hidden panel keeps robot status live without reading answers or 
   await f.visibility(true);
   assert.equal(f.calls.length, 1);
   assert.match(results.textContent, /r2/);
+});
+
+test("ready answers appear while another context is pending; failed cards retry only their own revision", async () => {
+  let release, failed = true;
+  const f = await panel({ read: async (_loop, context) => {
+    if (context === "slow") return new Promise(resolve => { release = resolve; });
+    if (context === "broken" && failed) { failed = false; throw new Error("offline"); }
+    return conversation(`${context} 已就绪`);
+  } });
+  const contexts = Object.fromEntries(["slow", "fast", "broken"].map((id, i) => [id,
+    { entity_id: id, updated_sequence: 3-i, state: { title: id, current_revision_id: `r-${id}` } }]));
+  await f.emit(projection("r1", { contexts }));
+  const answers = f.body.querySelector("#answers");
+  assert.match(answers.textContent, /fast 已就绪/, "已就绪回答不能被慢读取阻塞");
+  assert.match(answers.textContent, /回答读取失败/);
+  const ready = answers.querySelector('[data-answer-context="fast"]');
+  const retry = answers.querySelector('[data-answer-context="broken"] button');
+  assert.equal(retry.textContent, "重试读取");
+  retry.dispatchEvent({ type: "click" }); await tick();
+  assert.match(answers.textContent, /broken 已就绪/);
+  assert.deepEqual(f.calls.map(call => call[1]), ["slow", "fast", "broken", "broken"]);
+  assert.equal(answers.querySelector('[data-answer-context="fast"]'), ready);
+  release(conversation("slow 终于返回")); await tick();
+  assert.match(answers.textContent, /slow 终于返回/);
+  assert.deepEqual(answers.children.map(card => card.dataset.answerContext), ["slow", "fast", "broken"]);
+});
+
+test("answers expand as Markdown and copy the full source or an individual code block", async () => {
+  const text = '# 可读回答\n\n**结论**\n\n```js\nconst value = 1;\n```\n\n<script>unsafe()</script>';
+  const f = await panel({ read: async () => conversation(text) });
+  await f.emit(projection());
+  const card = f.body.querySelector("#answers article"), reading = card.querySelector(".answer-reading");
+  assert.ok(reading, "按需展开阅读区");
+  assert.ok(!reading.open);
+  reading.open = true; reading.dispatchEvent({ type: "toggle" });
+  assert.equal(f.body.querySelector("#panel").dataset.reading, "true");
+  assert.equal(reading.querySelector("strong").textContent, "结论");
+  assert.equal(reading.querySelector("script"), null);
+  const buttons = reading.querySelectorAll("button");
+  buttons.find(button => button.textContent === "复制全文").dispatchEvent({ type: "click" }); await tick();
+  buttons.find(button => button.textContent === "复制代码").dispatchEvent({ type: "click" }); await tick();
+  assert.deepEqual(f.copied, [text, 'const value = 1;\n']);
+  reading.open = false; reading.dispatchEvent({ type: "toggle" });
+  assert.equal(f.body.querySelector("#panel").dataset.reading, "false");
+});
+
+test("artifact names open fixed version details and can be referenced without leaving the panel", async () => {
+  const file = { path: "reports/result.md", result_key: "result-v1", sha256: "hash-v1", slot_id: "slot-a" };
+  const f = await panel();
+  const details = [];
+  f.api.factDetail = async (...args) => { details.push(args); return { file: { ...file, after: { available: true, text: "产物内容" } } }; };
+  await f.emit(projection("r1", { files: [{ fact_id: "artifact-a", revision: 2, kind: "artifact", file }] }));
+  const artifacts = f.body.querySelector("#artifacts");
+  assert.match(artifacts.textContent, /result.md/);
+  artifacts.querySelectorAll("button").find(button => button.textContent === "引用").dispatchEvent({ type: "click" }); await tick();
+  assert.equal(f.store("a").get().draft.file_refs[0].result_key, "result-v1");
+  assert.equal(f.store("a").get().draft.file_refs[0].revision, 2);
+  artifacts.querySelectorAll("button").find(button => button.textContent === "打开").dispatchEvent({ type: "click" }); await tick();
+  assert.equal(details[0][0], "loop-a");
+  assert.equal(details[0][1], "artifact-a");
+  assert.equal(details[0][3], 2);
+  assert.equal(f.body.querySelector("#version-detail").hidden, false);
+});
+
+test("other contexts and title changes preserve an expanded answer and its Markdown DOM", async () => {
+  const f = await panel();
+  const p = projection();
+  await f.emit(p);
+  const reading = f.body.querySelector(".answer-reading");
+  reading.open = true; reading.dispatchEvent({ type:"toggle" });
+  const markdown = reading.querySelector(".answer-markdown");
+  p.contexts.c.state.title = "更新后的标题";
+  p.contexts.other = { entity_id:"other", updated_sequence:2, state:{ title:"另一项回答", current_revision_id:"other-r1" } };
+  await f.emit(p);
+  assert.equal(f.body.querySelector('[data-answer-context="c"] h2').textContent, "更新后的标题");
+  assert.equal(f.body.querySelector('[data-answer-context="c"] .answer-reading'), reading);
+  assert.equal(reading.open, true);
+  assert.equal(reading.querySelector(".answer-markdown"), markdown);
+  assert.equal(f.calls.length, 2, "新增 Context 只读取新卡片");
+  await f.visibility(false); await f.visibility(true);
+  assert.equal(f.body.querySelector('[data-answer-context="c"] .answer-reading'), reading);
+  assert.equal(reading.open, true);
+  assert.equal(f.calls.length, 2);
+  await f.emit(projection("r2"));
+  assert.equal(f.body.querySelector("#panel").dataset.reading, "false", "新版本收起旧版本阅读区域");
+  assert.doesNotMatch(f.results().textContent, /other-r1/);
 });
 
 test("progress and files refresh independently, including while an answer read is pending", async () => {

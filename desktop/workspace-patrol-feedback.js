@@ -2,7 +2,7 @@
  * 输入为既有 Live 投影、连接和输入记录，或固定 revision 的会话；输出为真实状态和带 Context/revision 来源的回答卡。
  * 工作流为区分受理、执行和完成，按已提交版本查询最终 assistant 正文，忽略工具调用与推理；不把工作区结果猜测归属到某条输入。
  * createReader(api) 为单个面板保留最多 48 个不可变版本的正文（包括空回答），不缓存失败或取消的读取及可变标题。
- * 示例：const reader = Feedback.createReader(api); const cards = await reader.results(projection, signal)。本模块不创建 Loop、Run 或任务。
+ * entries + read 支持逐卡片读取与单项重试；results 保留批量调用兼容。本模块不创建 Loop、Run 或任务。
  */
 (function (root, factory) {
   const api = factory();
@@ -36,33 +36,38 @@
       .sort((a, b) => b.updated_sequence - a.updated_sequence).slice(0, 6);
   }
   function signature(projection) { return JSON.stringify(revisions(projection).map(item => [item.entity_id, item.state.current_revision_id, item.state.title, item.state.description])); }
+  function entries(projection) {
+    return revisions(projection).map(entity => ({ context_id: entity.entity_id, revision_id: entity.state.current_revision_id,
+      title: entity.state.title || entity.state.description || "已提交回答" }));
+  }
+  async function read(api, loopId, base, signal, cache) {
+    signal?.throwIfAborted();
+    const key = JSON.stringify([loopId, base.context_id, base.revision_id]);
+    try {
+      let content;
+      if (cache?.has(key)) {
+        content = cache.get(key);
+        cache.delete(key); cache.set(key, content);
+      } else {
+        const conversation = await api.conversation(loopId, base.context_id, { revisionId: base.revision_id, limit: 30, signal });
+        signal?.throwIfAborted();
+        content = answer(conversation);
+        if (cache) {
+          cache.set(key, content);
+          if (cache.size > 48) cache.delete(cache.keys().next().value);
+        }
+      }
+      return content ? { ...base, ...content } : null;
+    } catch (error) { signal?.throwIfAborted(); if (error.name === "AbortError") throw error; return { ...base, error: "回答读取失败，请重试读取" }; }
+  }
   async function results(api, projection, signal, cache) {
     signal?.throwIfAborted();
-    return Promise.all(revisions(projection).map(async entity => {
-      const contextId = entity.entity_id, revisionId = entity.state.current_revision_id;
-      const base = { context_id: contextId, revision_id: revisionId, title: entity.state.title || entity.state.description || "已提交回答" };
-      const key = JSON.stringify([projection.loop_id, contextId, revisionId]);
-      try {
-        let content;
-        if (cache?.has(key)) {
-          content = cache.get(key);
-          cache.delete(key); cache.set(key, content);
-        } else {
-          const conversation = await api.conversation(projection.loop_id, contextId, { revisionId, limit: 30, signal });
-          signal?.throwIfAborted();
-          content = answer(conversation);
-          if (cache) {
-            cache.set(key, content);
-            if (cache.size > 48) cache.delete(cache.keys().next().value);
-          }
-        }
-        return content ? { ...base, ...content } : null;
-      } catch (error) { signal?.throwIfAborted(); if (error.name === "AbortError") throw error; return { ...base, error: "回答读取失败，可打开工作台重试" }; }
-    })).then(items => items.filter(Boolean));
+    return (await Promise.all(entries(projection).map(base => read(api, projection.loop_id, base, signal, cache)))).filter(Boolean);
   }
   function createReader(api) {
     const cache = new Map();
-    return Object.freeze({ results: (projection, signal) => results(api, projection, signal, cache) });
+    return Object.freeze({ entries, read: (loopId, base, signal) => read(api, loopId, base, signal, cache),
+      results: (projection, signal) => results(api, projection, signal, cache) });
   }
   return Object.freeze({ status, answer, signature, results, createReader });
 });

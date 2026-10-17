@@ -138,7 +138,7 @@
     $("#version-candidates").addEventListener("keydown",navigateCandidates);
     $("#instruction").addEventListener("keydown",event => { if (!event.isComposing && !$("#version-picker").hidden) navigateCandidates(event); });
     $("#older-versions").addEventListener("click",() => void load(true));
-    return {render,open,close,isOpen:() => !$("#version-picker").hidden || !$("#version-detail").hidden,
+    return {render,open,close,detail,reference(file) { typed = false; add(file); },isOpen:() => !$("#version-picker").hidden || !$("#version-detail").hidden,
       input() {
         const match = $("#instruction").value.match(/(?:^|\s)@([^@\n]*)$/);
         if (!match || $("#reference-file").disabled) { if (typed) close(); return; }
