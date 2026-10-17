@@ -43,12 +43,12 @@ from backend.tests.test_agent_loop_round_liveness import _seed_loop, _stop
 pytestmark = pytest.mark.usefixtures("isolated_postgres_database")
 
 
-def exercise(tmp_path, operation):
+def exercise(tmp_path, operation, *, budgets=None):
     async def run():
         engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         seed = await _seed_loop(
-            sessions, tmp_path, label="inc", started_at=datetime.now(UTC)
+            sessions, tmp_path, label="inc", started_at=datetime.now(UTC), budgets=budgets,
         )
         async with sessions.begin() as session:
             grant = await session.scalar(
@@ -56,7 +56,7 @@ def exercise(tmp_path, operation):
                     LoopDelegationGrant.loop_id == seed["loop_id"]
                 )
             )
-            grant.budgets = {
+            grant.budgets = budgets if budgets is not None else {
                 **grant.budgets,
                 "max_model_calls": 10000,
                 "max_input_tokens": 10000000,
@@ -779,7 +779,10 @@ def test_cancellation_and_provider_failure_preserve_actual_usage(tmp_path):
                     )
                 )
             ).all()
-            assert rows and all(row.settled_at is not None for row in rows)
+            assert len(rows) == 2
+            assert sum(row.settled_at is not None for row in rows) == 1
+            unknown = next(row for row in rows if row.settled_at is None)
+            assert unknown.model_calls == 1 and unknown.actual_usage["receipt_state"] == "unknown"
             assert (
                 await session.get(LoopBudgetUsage, seed["loop_id"])
             ).model_calls == 1

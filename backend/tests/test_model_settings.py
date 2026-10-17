@@ -410,9 +410,12 @@ def test_save_records_removals_and_keeps_them_after_the_file_layer_grows(workspa
     assert snapshot["removed_models"] == ["beta"]
 
 
-def test_save_writes_the_credential_and_reports_it_set(workspace):
+@pytest.mark.parametrize("reference", [f"${_KEY_VAR}", "${" + _KEY_VAR + "}"])
+def test_save_writes_the_credential_and_reports_it_set(workspace, reference):
     config = _app_config()
     catalog = _file_catalog()
+    for entry in catalog:
+        entry["api_key"] = reference
 
     snapshot = save_model_settings(
         config, {"models": catalog, "credentials": {_KEY_VAR: "rotated-secret"}}
@@ -422,6 +425,8 @@ def test_save_writes_the_credential_and_reports_it_set(workspace):
     assert "rotated-secret" in env_text
     assert os.environ[_KEY_VAR] == "rotated-secret"
     assert all(entry["api_key_set"] for entry in snapshot["models"])
+    assert all(entry["api_key"] == reference for entry in snapshot["models"])
+    assert all(entry["api_key_variable"] == _KEY_VAR for entry in snapshot["models"])
     assert "rotated-secret" not in json.dumps(snapshot, ensure_ascii=False)
     # 发行条目未发生字段变化时也必须刷新；检查下一次真实 factory 装配。
     from focus.models import create_chat_model

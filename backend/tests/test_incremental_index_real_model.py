@@ -1,7 +1,7 @@
 r"""本文件对外提供显式启用的真实 provider 增量索引 smoke。
 
 输入为宿主已配置模型、隔离数据库和合成消息；输出为真实局部复用、联合原文综合、独立 verdict、provider 用量与 exact 零调用证据。
-工作流为 FOCUS_INDEX_REAL_MODEL=1 启用两项演练：稳定旧段追加、四段怀疑／否定／诊断综合并展开冻结旧原文。
+工作流为 FOCUS_INDEX_REAL_MODEL=1 在普通任务额度和默认单次输出上限下启用两项演练：稳定旧段追加、四段怀疑／否定／诊断综合并展开冻结旧原文。
 示例：FOCUS_INDEX_REAL_MODEL=1 python -m pytest backend/tests/test_incremental_index_real_model.py -q。
 """
 
@@ -16,6 +16,7 @@ from backend.app.desktop.agent_loop.context_expansion.portfolio_index import (
     PortfolioSemanticIndexService,
 )
 from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
+from backend.app.desktop.agent_loop.budget_presets import initial_budgets
 from backend.tests.incremental_index_support import Checkpoints, observation, revision
 from backend.tests.test_incremental_revision_index import exercise
 
@@ -26,6 +27,16 @@ pytestmark = [
         reason="explicit real-provider smoke",
     ),
 ]
+
+
+def normal_budget_config():
+    # Host overrides used by benchmarks may reserve more than the entire normal
+    # task budget. Exercise the product's default output cap without changing it.
+    config = get_app_config("config.yaml").model_copy(deep=True)
+    model = config.get_model(config.resolve_default_model_name())
+    model.curation_max_output_tokens = type(model).model_fields["curation_max_output_tokens"].default
+    assert model.curation_max_output_tokens == 8192
+    return config
 
 
 def observed_model_factory(config, role, calls, usage):
@@ -73,8 +84,10 @@ def observed_model_factory(config, role, calls, usage):
 
 
 def test_real_provider_locality_support_and_cache(tmp_path):
+    budgets = initial_budgets()
+
     async def run(sessions, seed):
-        config = get_app_config("config.yaml")
+        config = normal_budget_config()
         calls = []
         usage = []
 
@@ -97,7 +110,7 @@ def test_real_provider_locality_support_and_cache(tmp_path):
             for i in range(12)
         ]
         first = await revision(sessions, seed["context_id"], history)
-        a = await service.build(observation(seed, first))
+        a = await service.build(observation(seed, first, budget=budgets))
         assert a.blocker_code is None, a.blocker_summary
         assert (
             a.indexes[0].projected_unit_ids and a.indexes[0].quality_state == "complete"
@@ -111,7 +124,7 @@ def test_real_provider_locality_support_and_cache(tmp_path):
         new = await revision(
             sessions, seed["context_id"], history + [next_message], parent=first
         )
-        b = await service.build(observation(seed, new))
+        b = await service.build(observation(seed, new, budget=budgets))
         assert b.blocker_code is None, b.blocker_summary
         assert len(b.indexes[0].inheritance.reused_segment_ids) == 1
         projector_inputs = [
@@ -125,10 +138,13 @@ def test_real_provider_locality_support_and_cache(tmp_path):
         ] == ["smoke-12"]
         assert b.indexes[0].quality_state == "complete"
         calls.clear()
-        c = await service.build(observation(seed, new))
+        c = await service.build(observation(seed, new, budget=budgets))
         assert c.indexes[0] == b.indexes[0] and calls == []
         evidence = {
             "provider": "configured real model",
+            "budget_preset": "normal",
+            "budgets": budgets,
+            "max_output_tokens_per_request": config.get_model(config.resolve_default_model_name()).curation_max_output_tokens,
             "first_quality": a.indexes[0].quality_state,
             "next_quality": b.indexes[0].quality_state,
             "reused_segments": 1,
@@ -138,14 +154,18 @@ def test_real_provider_locality_support_and_cache(tmp_path):
             "input_tokens": sum(r.get("input_tokens", 0) for r in usage),
             "output_tokens": sum(r.get("output_tokens", 0) for r in usage),
         }
-        Path(".tmp/index-real-smoke.json").write_text(
+        output = Path(".tmp/index-real-smoke.json")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
             json.dumps(evidence, indent=2), encoding="utf-8"
         )
 
-    exercise(tmp_path, run)
+    exercise(tmp_path, run, budgets=budgets)
 
 
 def test_real_provider_cross_segment_diagnosis_and_incremental_discovery(tmp_path):
+    budgets = initial_budgets()
+
     async def run(sessions, seed):
         from backend.app.desktop.agent_loop.context_expansion.semantic_indexer import (
             ProtocolSafeRevisionSegmenter,
@@ -153,7 +173,7 @@ def test_real_provider_cross_segment_diagnosis_and_incremental_discovery(tmp_pat
         )
         from backend.tests.test_revision_interpretation import NARRATIVE
 
-        config = get_app_config("config.yaml")
+        config = normal_budget_config()
         calls, usage = [], []
         service = PortfolioSemanticIndexService(
             sessions,
@@ -169,11 +189,11 @@ def test_real_provider_cross_segment_diagnosis_and_incremental_discovery(tmp_pat
             ProtocolSafeRevisionSegmenter(max_messages=1)
         )
         first = await revision(sessions, seed["context_id"], NARRATIVE[:2])
-        before = await service.build(observation(seed, first))
+        before = await service.build(observation(seed, first, budget=budgets))
         assert before.blocker_code is None, before.blocker_summary
         target = await revision(sessions, seed["context_id"], NARRATIVE, parent=first)
         calls.clear()
-        result = await service.build(observation(seed, target))
+        result = await service.build(observation(seed, target, budget=budgets))
         assert result.blocker_code is None, result.blocker_summary
         index = result.indexes[0]
         required = {"suspect", "reject", "diagnosis"}
@@ -206,11 +226,14 @@ def test_real_provider_cross_segment_diagnosis_and_incremental_discovery(tmp_pat
         )
         assert any(w in text for w in ("ruled", "reject", "排除", "否定", "excluded"))
         calls.clear()
-        assert (await service.build(observation(seed, target))).indexes[
+        assert (await service.build(observation(seed, target, budget=budgets))).indexes[
             0
         ] == index and not calls
         evidence = {
             "provider": "configured real model",
+            "budget_preset": "normal",
+            "budgets": budgets,
+            "max_output_tokens_per_request": config.get_model(config.resolve_default_model_name()).curation_max_output_tokens,
             "joint_statements": [u.statement for u in joint],
             "joint_supports": [[r.message_id for r in u.evidence_refs] for u in joint],
             "read_rounds": len(index.interpretation.read_requests),
@@ -221,8 +244,10 @@ def test_real_provider_cross_segment_diagnosis_and_incremental_discovery(tmp_pat
             "output_tokens": sum(r.get("output_tokens", 0) for r in usage),
             "exact_hit_calls": 0,
         }
-        Path(".tmp/cross-real-smoke.json").write_text(
+        output = Path(".tmp/cross-real-smoke.json")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
             json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    exercise(tmp_path, run)
+    exercise(tmp_path, run, budgets=budgets)

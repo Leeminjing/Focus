@@ -47,6 +47,22 @@ test("partial refresh preserves available skill and tool counts with failure det
   assert.equal(harness.statusState.danger, true);
 });
 
+test("broken JSON refresh displays the file, scope and syntax repair location", async () => {
+  const configPath = "C:/workspace/.focus/extensions_config.json";
+  const harness = await refresh({ skills: [{ name: "skill" }], mcp_tool_count: 0,
+    failed_servers: ["extensions_config.json"], mcp_failures: [{
+      server_name: "extensions_config.json", scope: "workspace", config_path: configPath,
+      stage: "configuration", reason: "JSON 语法错误（第 1 行，第 15 列）：Expecting value",
+      action: `修复配置文件 ${configPath}，然后重试 MCP。`,
+    }],
+  });
+  const html = harness.vm.runInContext('renderCapabilityRefreshResult("assembly")', harness.context);
+  assert.equal(harness.statusState.danger, true);
+  for (const text of [configPath, "工作区", "第 1 行，第 15 列", "修复配置文件", "重试 MCP", "1 个技能、0 个 MCP 工具"]) {
+    assert.ok(html.includes(text), text);
+  }
+});
+
 test("empty configuration remains a successful refresh", async () => {
   const harness = await refresh({ skills: [], mcp_tool_count: 0, failed_servers: [], mcp_failures: [] });
   assert.equal(harness.statusState.danger, false);
