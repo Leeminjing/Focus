@@ -52,7 +52,7 @@ function fixture(t) {
   });
   const electron = {
     BrowserWindow: Window, screen, app: { getPath: () => directory },
-    ipcMain: { handle: (name, callback) => handlers.set(name, callback), removeHandler: name => handlers.delete(name) },
+    ipcMain: Object.assign(new EventEmitter(), { handle: (name, callback) => handlers.set(name, callback), removeHandler: name => handlers.delete(name) }),
     Menu: { buildFromTemplate: value => value },
     Tray: class extends EventEmitter { setToolTip() {} setContextMenu(value) { this.menu = value; } destroy() {} },
     dialog: { showMessageBox: async () => { prompts++; return { response: promptResponse }; } },
@@ -72,7 +72,11 @@ function fixture(t) {
     assert.ok(path.resolve(directory).startsWith(path.resolve(os.tmpdir()) + path.sep));
     fs.rmSync(directory, { recursive: true, force: true });
   });
-  return { host, screen, handlers, invoke, event, Window, directory,
+  const recover = (name, senderEvent, value) => {
+    electron.ipcMain.emit(`focus:patrol-recovery-${name}`, senderEvent, value);
+    return senderEvent.returnValue;
+  };
+  return { host, screen, handlers, invoke, recover, event, Window, directory,
     get workbench() { return workbench; }, get quits() { return quits; }, get prompts() { return prompts; },
     confirmQuit() { promptResponse = 1; } };
 }
@@ -154,6 +158,20 @@ test("IPC authenticates owner window, main frame, origin and surface before tran
     f.host.robot.webContents.emit("will-navigate", { preventDefault: () => { prevented = true; } }, target);
     assert.equal(prevented, true);
   }
+});
+
+test("recovery IPC belongs only to the panel main frame and acknowledges durable writes", async t => {
+  const f = fixture(t); await f.host.start(); await f.host.openWorkbench();
+  for (const win of [f.host.robot, f.workbench]) assert.match(f.recover("read", f.event(win)).error, /不能访问/);
+  assert.match(f.recover("read", { sender: f.host.panel.webContents, senderFrame: { url: f.host.panel.webContents.mainFrame.url } }).error, /不能访问/);
+  assert.deepEqual(f.recover("read", f.event(f.host.panel)).value, { state: null, sources: [] });
+  assert.equal(f.recover("put", f.event(f.host.panel), { id: "local", bytes: new Uint8Array([1, 2]) }).value, true);
+  const state = { version: 1, workspaces: [], source_ids: ["local"] };
+  assert.equal(f.recover("save", f.event(f.host.panel), state).value, true);
+  assert.deepEqual(f.recover("read", f.event(f.host.panel)).value, { state, sources: [["local", new Uint8Array([1, 2])]] });
+  assert.match(f.recover("put", f.event(f.host.panel), { id: "too-big", bytes: new Uint8Array(33) }).error, /总量超限/);
+  f.host.panel.webContents.mainFrame.url = "https://example.com/desktop/desktop-patrol.html?surface=panel";
+  assert.match(f.recover("read", f.event(f.host.panel)).error, /不能访问/);
 });
 
 test("queued content is bounded, panel hide preserves owner and background changes never focus", async t => {

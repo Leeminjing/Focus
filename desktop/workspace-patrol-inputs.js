@@ -14,7 +14,7 @@
   const types = Object.freeze({ information: "普通信息", outcome: "最终结果", boundary: "执行边界", completion_check: "完成检查" });
   const frozenCopy = value => value && typeof value === "object"
     ? Object.freeze(Array.isArray(value) ? value.map(frozenCopy) : Object.fromEntries(Object.entries(value).map(([key, item]) => [key, frozenCopy(item)]))) : value;
-  function create(identity = () => crypto.randomUUID(), accessMode = "workspace-write") {
+  function create(identity = () => crypto.randomUUID(), accessMode = "workspace-write", { saved = null, onChange = null } = {}) {
     let draft = { content: "", input_type: "information", request_id: null, request_revision: null, file_refs: [] };
     let historyInitialized = false;
     let order = 0;
@@ -27,9 +27,27 @@
       return time || b.order - a.order || String(b.intent_id || "").localeCompare(String(a.intent_id || ""));
     });
     const get = () => ({ draft: { ...draft }, cursor, rows: sorted() });
-    const publish = () => listeners.forEach(listener => listener(get()));
+    const snapshot = () => ({ draft: { ...draft }, draftRevision, order, rows: [...rows.values()].map(row => ({ ...row })) });
+    function restore(value, recovering = false) {
+      draft = { ...frozenCopy(value.draft) };
+      draftRevision = value.draftRevision || 0; order = value.order || 0;
+      rows.clear();
+      for (const item of value.rows || []) {
+        const row = { ...item, request: frozenCopy(item.request) };
+        if (recovering && row.status === "sending") { row.status = "failed"; row.error = "发送确认中断，请先核对历史后重试"; }
+        rows.set(row.submission_id, row);
+      }
+    }
+    if (saved) restore(saved, true);
+    let committed = snapshot();
+    const publish = () => {
+      try { onChange?.(); } catch (error) { restore(committed); throw error; }
+      committed = snapshot();
+      listeners.forEach(listener => listener(get()));
+    };
     return Object.freeze({
-      get,
+      get, snapshot,
+      restoreSnapshot(value) { restore(value); committed = snapshot(); publish(); },
       subscribe(listener) { listeners.add(listener); listener(get()); return () => listeners.delete(listener); },
       edit(patch) { draftRevision++; draft = { ...draft, ...patch, ...(patch.file_refs ? { file_refs: frozenCopy(patch.file_refs) } : {}), ...(patch.attachments ? { attachments: frozenCopy(patch.attachments) } : {}) }; publish(); },
       submit(visibleContext = null) {
@@ -57,7 +75,14 @@
           row.status = "edited";
           draftRevision++;
         }
-        publish();
+        try { publish(); } catch (failure) {
+          // 发送身份已经落盘；失败状态即使暂时无法落盘，也必须在本页保留重试入口。
+          const current = rows.get(id);
+          current.status = "failed"; current.error = String(failure.message || failure);
+          committed = snapshot();
+          listeners.forEach(listener => listener(get()));
+          throw failure;
+        }
       },
       editFailed(id) {
         const row = rows.get(id);

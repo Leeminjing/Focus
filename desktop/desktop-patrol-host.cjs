@@ -2,13 +2,14 @@
  * 本文件对外提供 DesktopPatrolHost、clampBounds、panelBounds 和 validateContent。
  * 输入为现有 Electron 运行时、同源 API、材料限制和工作台回调；输出为单一机器人、邻接面板和受限 IPC。
  * 工作流为恢复 userData 中的位置与工作区身份，建立同 session 的两个窗口，转交显式用户输入并保留面板，
- * 通过托盘恢复窗口或明确退出；仅面板持有草稿，宿主只缓存尚未交付的有界消息及退出提醒标志。
+ * 通过托盘恢复窗口或明确退出；唯一面板编辑草稿，宿主提供限额恢复仓库并缓存尚未交付的有界消息及退出提醒标志。
  * 示例：const host = new DesktopPatrolHost(options); await host.start(); host.restore();
  */
 "use strict";
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { PatrolRecovery } = require("./patrol-recovery.cjs");
 
 const ROBOT_SIZE = { width: 144, height: 164 };
 const PANEL_SIZE = { width: 560, height: 202 };
@@ -90,6 +91,8 @@ class DesktopPatrolHost {
     this._queuedBytes = 0;
     this._ready = new Set();
     this._handlers = [];
+    this._syncHandlers = [];
+    this._recovery = new PatrolRecovery(electron.app.getPath("userData"), limits.general_file_bytes);
     this._disposed = false;
     this._quitConfirmed = false;
     this._quitPrompt = null;
@@ -187,7 +190,7 @@ class DesktopPatrolHost {
       if (this.hasUnconfirmedInput()) {
         const { response } = await this._electron.dialog.showMessageBox({
           type: "warning", title: "退出 Focus", message: "还有未发送的草稿或尚未确认的发送。",
-          detail: "退出后未发送的预览不会恢复；已受理的工作保留在工作区中。", buttons: ["继续编辑", "退出 Focus"],
+          detail: "已保存的草稿和材料将在下次启动恢复；未确认的发送会先核对工作区历史，再由你选择重试。", buttons: ["继续编辑", "退出 Focus"],
           defaultId: 0, cancelId: 0, noLink: true,
         });
         if (response !== 1) { this.openPanel(); return false; }
@@ -209,6 +212,7 @@ class DesktopPatrolHost {
     this._disposed = true;
     clearTimeout(this._saveTimer);
     for (const name of this._handlers) this._electron.ipcMain.removeHandler(name);
+    for (const [name, listener] of this._syncHandlers) this._electron.ipcMain.removeListener(name, listener);
     if (this._onDisplaysChanged) {
       for (const event of ["display-added", "display-removed", "display-metrics-changed"]) this._electron.screen.removeListener(event, this._onDisplaysChanged);
     }
@@ -229,6 +233,18 @@ class DesktopPatrolHost {
   }
 
   _registerIpc() {
+    // 同步确认磁盘写入后才允许 renderer 上传/投递；只向唯一可编辑面板开放。
+    for (const [operation, callback] of Object.entries({ read: () => this._recovery.read(), put: value => this._recovery.put(value.id, value.bytes), save: value => this._recovery.save(value) })) {
+      const channel = `${PREFIX}recovery-${operation}`;
+      const listener = (event, value) => {
+        try {
+          if (!this.accepts(event, ["panel"])) throw new Error("此窗口不能访问 Patrol 恢复数据");
+          event.returnValue = { value: callback(value) };
+        } catch (error) { event.returnValue = { error: error.message }; }
+      };
+      this._electron.ipcMain.on(channel, listener);
+      this._syncHandlers.push([channel, listener]);
+    }
     const handle = (name, roles, callback) => {
       const channel = `${PREFIX}${name}`;
       this._electron.ipcMain.handle(channel, (event, value) => {

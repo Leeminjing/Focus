@@ -16,6 +16,7 @@
   const connection = FocusLoopLiveConnection.create({ api, store: live });
   const feedback = FocusWorkspacePatrolFeedback.createReader(api);
   const intake = FocusWorkspacePatrolIntake.create({ runtime, api, selectWorkspace: window.focusDesktop?.selectWorkspace,
+    recovery: bridge?.enabled ? bridge.recovery : null,
     accessMode: FocusAccessMode.readNewSessionDefault(localStorage) });
   const preview = FocusWorkspacePatrolMaterialPreview.create({ host, intake, workspaceId: () => workspace?.workspace_id || null, onError: fail });
   let workspace = null, generation = 0, loopId = null, unsubscribe = null, reads = new AbortController();
@@ -101,6 +102,7 @@
     if (token !== generation) return;
     intake.history(bound.workspace_id, page, false, true);
     if (loop) connect(loop.loop_id);
+    await intake.reconcile(bound.workspace_id, page);
   }
   async function choose() {
     if (binding) return false;
@@ -125,6 +127,8 @@
   async function submit() {
     if (!workspace) { await choose(); return; }
     const id = workspace.workspace_id;
+    // 写盘失败后，显式发送必须再次保存眼前的文字，不能发送回滚后的旧草稿。
+    if (draftStore().get().draft.content !== $("#instruction").value) draftStore().edit({ content: $("#instruction").value });
     const visible = FocusWorkspacePatrolInputs.captureVisibleContext({ projection: live.get().projection });
     await send(() => intake.submit(id, visible), id);
   }
@@ -211,7 +215,9 @@
     }
   });
   $("#compose").addEventListener("submit", event => { event.preventDefault(); void submit().catch(fail); });
-  $("#instruction").addEventListener("input", event => draftStore().edit({ content: event.target.value }));
+  $("#instruction").addEventListener("input", event => {
+    try { draftStore().edit({ content: event.target.value }); fail(null); } catch (error) { fail(new Error(`草稿保存失败：${error.message}`)); }
+  });
   $("#instruction").addEventListener("keydown", event => {
     if (event.key === "Enter" && event.ctrlKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); $("#compose").requestSubmit(); }
   });
@@ -268,7 +274,10 @@
     const ready = await bridge.ready();
     if (!visibilityKnown) setVisibility(ready.panelVisible === true);
     await enqueue(async () => {
-      try { if (!workspace && ready.state.workspaceId) await activate(await intake.workspace(ready.state.workspaceId)); }
+      try {
+        const id = intake.readBinding()?.workspace_id || ready.state.workspaceId;
+        if (!workspace && id) await activate(await intake.workspace(id));
+      }
       finally { nativeReady = true; notify(); }
     });
   } else if (intake.readBinding()) await activate(await intake.workspace(intake.readBinding().workspace_id));

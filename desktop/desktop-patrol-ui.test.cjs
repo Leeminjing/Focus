@@ -44,12 +44,13 @@ if (!process.versions.electron) {
   app.setPath("userData", directory);
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch("disable-gpu");
+  app.on("window-all-closed", () => {});
   const limits = { general_file_bytes: 1024 * 1024, original_image_bytes: 256 * 1024, run_material_count: 8 };
   const budgetCatalog = require("./workspace-patrol-budget-fixture.cjs"), grantChanges = [];
   let authorityRevision = 1, activeBudget = { ...budgetCatalog.presets.long.budgets };
   const session = "isolated-patrol-ui-fixture";
   const history = new Map(), streams = new Map(), requests = [], uploads = [], errors = [];
-  let host, server, workbench, selectedPath = "C:\\fixture\\workspace-a", completed = false;
+  let host, server, workbench, selectedPath = "C:\\fixture\\workspace-a", completed = false, dropReceipt = false, hiddenSubmission = null;
   let liveSequence = 1, answerRevision = "revision-answer", progressRevision = 1, statusOverride = null;
   const conversationReads = [];
   const workspace = id => ({ workspace_id: id, display_name: id === "workspace-a" ? "设计工作区 A" : "验证工作区 B", path: `C:\\fixture\\${id}` });
@@ -120,10 +121,11 @@ if (!process.versions.electron) {
     if (input) {
       const id = input[1];
       if (!input[2]) return json(response, history.has(id) ? { loop_id: `loop-${id}`, workspace_id: id } : null);
-      if (request.method === "GET") return json(response, { items: history.get(id) || [], next_before: null, has_more: false });
+      if (request.method === "GET") return json(response, { items: (history.get(id) || []).filter(item => item.submission_id !== hiddenSubmission), next_before: null, has_more: false });
       const receipt = { ...body, intent_id: `intent-${requests.length + 1}`, loop_id: `loop-${id}`, status: "accepted", created_at: new Date().toISOString() };
       requests.push({ workspaceId: id, body });
       history.set(id, [...(history.get(id) || []), receipt]);
+      if (dropReceipt) { dropReceipt = false; hiddenSubmission = body.submission_id; return; }
       return json(response, receipt);
     }
     const live = url.pathname.match(/^\/desktop\/api\/agent-loops\/([^/]+)\/live$/);
@@ -150,7 +152,7 @@ if (!process.versions.electron) {
   async function execute() {
     server = http.createServer((request, response) => route(request, response).catch(error => { errors.push(error.stack); if (!response.headersSent) json(response, { detail: error.message }, 500); else response.end(); }));
     await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-    const apiBase = `http://127.0.0.1:${server.address().port}`;
+    let apiBase = `http://127.0.0.1:${server.address().port}`;
     process.env.FOCUS_DESKTOP_API = apiBase;
     process.env.FOCUS_DESKTOP_SESSION = session;
     ipcMain.handle("focus:select-workspace", () => selectedPath);
@@ -158,7 +160,7 @@ if (!process.versions.electron) {
       contents.on("console-message", (_event, level, message) => { if (level >= 3) errors.push(message); });
       contents.on("preload-error", (_event, _path, error) => errors.push(error.message));
     });
-    host = new DesktopPatrolHost({ electron, apiBase, desktopDir: __dirname, icon: path.join(__dirname, "assets/focus-icon.ico"), limits,
+    const makeHost = () => new DesktopPatrolHost({ electron, apiBase, desktopDir: __dirname, icon: path.join(__dirname, "assets/focus-icon.ico"), limits,
       getWorkbench: () => workbench, quit: () => app.quit(),
       openWorkbench: async () => {
         if (!workbench) {
@@ -167,6 +169,7 @@ if (!process.versions.electron) {
         }
       },
     });
+    host = makeHost();
     await host.start();
     await waitFor(host.panel, "document.body.dataset.surface === 'panel' && !document.querySelector('#panel').hidden", "面板初始化失败");
     await waitFor(host.robot, "document.body.dataset.surface === 'robot' && !document.querySelector('#robot').hidden", "机器人初始化失败");
@@ -238,6 +241,15 @@ if (!process.versions.electron) {
     assert.equal(await run(host.panel, "document.querySelector('#instruction').value"), "A 的草稿");
     assert.equal(requests.length, 2);
     await capture(host.panel, "desktop-preserved-draft");
+    // 真实 preload/同步 IPC/renderer 重建：本地草稿与材料不能依赖闭包或旧页面来源。
+    await run(host.robot, `(() => { const data = new DataTransfer(); data.setData('text/plain', '刷新后保留的材料'); document.querySelector('#robot').dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer:data})); })()`);
+    await waitFor(host.panel, "document.querySelectorAll('.patrol-material-card').length === 1", "恢复材料未进入草稿");
+    await new Promise(resolve => { host.panel.webContents.once("did-finish-load", resolve); host.panel.webContents.reload(); });
+    await waitFor(host.panel, "document.querySelector('#instruction').value === 'A 的草稿' && document.querySelectorAll('.patrol-material-card').length === 1", "刷新后草稿或材料未恢复");
+    assert.equal(requests.length, 2, "恢复不得自动发送");
+    assert.equal(uploads.length, 2, "恢复不得自动上传");
+    await run(host.panel, "document.querySelector('.patrol-material-card button').click()");
+    await waitFor(host.panel, "document.querySelectorAll('.patrol-material-card').length === 0", "恢复材料不能移除");
     completed = true;
     liveSequence++;
     for (let i = 0; i < 100 && !streams.has("loop-workspace-a"); i++) await delay(40);
@@ -280,8 +292,28 @@ if (!process.versions.electron) {
     await run(workbench, "window.target=null; window.focusDesktop.patrol.onWorkbench(value=>window.target=value); window.focusDesktop.patrol.ready()");
     await waitFor(workbench, "Boolean(window.target)", "工作台未收到来源定位");
     assert.deepEqual(await run(workbench, "window.target"), { workspaceId: "workspace-a", taskId: "context-answer", revisionId: answerRevision });
+    dropReceipt = true;
+    await run(host.panel, "document.querySelector('#instruction').value='服务端已受理但回执丢失'; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#send').click()");
+    await waitFor(host.panel, "document.querySelector('#history-items').textContent.includes('发送中')", "未收到回执前发送状态错误");
+    for (let i = 0; i < 120 && requests.length < 3; i++) await delay(40);
+    assert.equal(requests.length, 3);
+    await run(host.panel, "document.querySelector('#instruction').value='重启后继续编辑'; document.querySelector('#instruction').dispatchEvent(new Event('input',{bubbles:true}))");
+    await run(host.robot, `(() => { const bytes = Uint8Array.from(atob(${JSON.stringify(png)}), value=>value.charCodeAt(0)); const data = new DataTransfer(); data.items.add(new File([bytes], '重启草稿.png', {type:'image/png'})); document.querySelector('#robot').dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer:data})); })()`);
+    await waitFor(host.panel, "document.querySelectorAll('.patrol-material-card').length === 1", "重启前材料未保存");
+    host.dispose(); workbench.destroy(); workbench = null;
+    hiddenSubmission = null;
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    streams.clear();
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    apiBase = `http://127.0.0.1:${server.address().port}`;
+    process.env.FOCUS_DESKTOP_API = apiBase;
+    host = makeHost(); await host.start(); await host.openPanel();
+    await waitFor(host.panel, "document.querySelector('#instruction').value === '重启后继续编辑' && document.querySelector('.patrol-material-card img')?.complete && document.querySelector('#history-items').textContent.includes('服务端已受理但回执丢失') && !document.querySelector('#history-items').textContent.includes('未确认')", "跨来源重启后未恢复草稿或核对回执");
+    assert.equal(requests.length, 3, "服务端已受理的输入不能在重启后重发");
+    assert.equal(uploads.length, 2, "重启恢复不能自动上传草稿附件");
     assert.deepEqual(errors, []);
-    console.log("PATROL_UI_PASS preview-before-binding, pathless-image, screenshot-paste, remove, explicit-send, IME guard, CtrlEnter, workspace isolation, hide/restore, accepted-is-not-complete, committed-answer-source, independent-progress, hidden-refresh-budget, revision-cache");
+    console.log("PATROL_UI_PASS preview-before-binding, pathless-image, screenshot-paste, remove, explicit-send, IME guard, CtrlEnter, workspace isolation, hide/restore, accepted-is-not-complete, committed-answer-source, independent-progress, hidden-refresh-budget, revision-cache, reload-recovery, new-port-recovery, lost-receipt-reconciliation");
   }
   app.whenReady().then(execute).then(() => cleanup(0)).catch(error => { console.error(error.stack || error); console.error(errors.join("\n")); cleanup(1); });
   function cleanup(code) {
