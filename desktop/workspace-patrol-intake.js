@@ -1,6 +1,7 @@
 /* 本文件对外提供 FocusWorkspacePatrolIntake.create 工作区输入编排。
  * 输入为同源 runtime、既有 Loop API、资源上限及目录选择回调；输出为按工作区隔离的既有输入 store、绑定、材料预览与稳定发送。
  * 工作流为通过可选恢复仓库保存草稿与有界附件，显式发送前持久化冻结请求和身份，按项幂等上传；恢复先核对历史，重试复用原提交，回执不覆盖新草稿。
+ * 草稿即时更新并按 250ms 固定窗口合并异步保存；flush 等待当前及写入期间的新变化，后台失败保留内存内容并通过 onSaveError 报告。
  * 空附件保持旧请求格式，文件内容与用户要求分开；本模块不启动模型或保存第二份领域状态。示例：intake.store(id).edit({content:"解释图片"}); await intake.submit(id)。
  * 部分上传后明确移除的独占材料使用原提交身份清理；曾投递且受理不确定的材料保留，服务端引用锁始终决定能否删除。
  */
@@ -19,23 +20,45 @@
     } catch { return null; }
   }
 
-  function create({ runtime, api, fetchImpl = globalThis.fetch, storage = globalThis.localStorage, recovery = null, selectWorkspace, accessMode = "workspace-write", limits = null, identity = () => crypto.randomUUID() }) {
+  function create({ runtime, api, fetchImpl = globalThis.fetch, storage = globalThis.localStorage, recovery = null, onSaveError = () => {}, selectWorkspace, accessMode = "workspace-write", limits = null, identity = () => crypto.randomUUID() }) {
     const stores = new Map(), sources = new Map(), uploads = new Map(), pending = new Map();
     const submitted = new Set();
     const payloads = new Map(), restored = new Set(), reconciling = new Map();
     let binding = null, batching = false;
+    let revision = 0, savedRevision = 0, saveTimer = null, saving = null;
+    const recoveryRows = new WeakMap();
     const prefix = `${String(runtime.apiBase || "").replace(/\/$/, "")}/desktop/api`;
     function persist() {
       if (!recovery || batching) return;
+      revision++;
+      // 固定窗口合并：连续打字也会定期保存，不会一直推迟到停止输入。
+      if (saveTimer === null) saveTimer = setTimeout(() => { saveTimer = null; void flush().catch(onSaveError); }, 250);
+    }
+    function snapshot() {
       const abandonedUploads = new Set([...uploads.values()].map(value => value.submission_id));
       const workspaces = [...stores].map(([id, value]) => {
         const model = value.snapshot();
-        return [id, { ...model, rows: model.rows.filter(row => row.status !== "accepted" && (row.status !== "edited" || submitted.has(row.submission_id) || abandonedUploads.has(row.submission_id))) }];
+        let candidates = recoveryRows.get(model.rows);
+        if (!candidates) { candidates = model.rows.filter(row => row.status !== "accepted"); recoveryRows.set(model.rows, candidates); }
+        return [id, { ...model, rows: candidates.filter(row => row.status !== "edited" || submitted.has(row.submission_id) || abandonedUploads.has(row.submission_id)) }];
       });
       const active = new Set(workspaces.flatMap(([, model]) => model.rows.map(row => row.submission_id)));
       const used = new Set(workspaces.flatMap(([, model]) => [...(model.draft.attachments || []), ...model.rows.filter(row => ["sending", "failed"].includes(row.status)).flatMap(row => row.request?.attachments || [])].map(item => item.local_id)));
-      recovery.save({ version: 1, binding, source_ids: [...sources.keys()].filter(id => used.has(id)), workspaces,
-        uploads: [...uploads].filter(([, value]) => active.has(value.submission_id)), submitted: [...submitted].filter(id => active.has(id)), payloads: [...payloads].filter(([id]) => active.has(id)) });
+      return { version: 1, binding, source_ids: [...sources.keys()].filter(id => used.has(id)), workspaces,
+        uploads: [...uploads].filter(([, value]) => active.has(value.submission_id)), submitted: [...submitted].filter(id => active.has(id)), payloads: [...payloads].filter(([id]) => active.has(id)) };
+    }
+    async function flush() {
+      clearTimeout(saveTimer); saveTimer = null;
+      if (!recovery) return;
+      if (saving) { await saving; return flush(); }
+      saving = (async () => {
+        while (savedRevision !== revision) {
+          const target = revision;
+          await recovery.save(snapshot());
+          savedRevision = target;
+        }
+      })();
+      try { await saving; } finally { saving = null; }
     }
     const store = id => {
       if (!stores.has(id)) stores.set(id, Inputs.create(identity, accessMode, { onChange: persist }));
@@ -101,11 +124,13 @@
       }
       // 附件先落盘；只有随后提交的快照才拥有这些临时字节。
       try {
-        for (const item of additions) { recovery?.put(item.meta.local_id, item.bytes); sources.set(item.meta.local_id, item.bytes); }
-        store(id).edit({ attachments: [...current, ...additions.map(item => item.meta)] });
+        for (const item of additions) { await recovery?.put(item.meta.local_id, item.bytes); sources.set(item.meta.local_id, item.bytes); }
+        store(id).edit({ attachments: [...(store(id).get().draft.attachments || []), ...additions.map(item => item.meta)] });
+        await flush();
       } catch (error) {
-        for (const item of additions) sources.delete(item.meta.local_id);
-        try { persist(); } catch { /* 保留原始保存错误，发送仍需成功持久化。 */ }
+        // 已发布的预览保留在内存，允许保存恢复后重试；不能丢掉它引用的字节。
+        const referenced = new Set((store(id).get().draft.attachments || []).map(item => item.local_id));
+        for (const item of additions) if (!referenced.has(item.meta.local_id)) sources.delete(item.meta.local_id);
         throw error;
       }
     }
@@ -113,6 +138,7 @@
       store(id).edit({ attachments: (store(id).get().draft.attachments || []).filter(item => item.local_id !== localId) });
       releaseUnused();
       await cleanupUploads();
+      await flush();
     }
     function releaseUnused() {
       const used = new Set([...stores.values()].flatMap(value => {
@@ -155,17 +181,13 @@
       if (!draft.content && !draft.attachments?.length && !draft.budget_preset) return;
       const target = store(id).get().draft;
       // 合并和清空作为一次恢复快照提交，避免中断后重复领用未绑定草稿。
-      const targetStore = store(id), targetSaved = targetStore.snapshot(), unboundSaved = unbound.snapshot();
+      const targetStore = store(id);
       batching = true;
       try {
         targetStore.edit({ content: [target.content, draft.content].filter(Boolean).join("\n"), attachments: [...(target.attachments || []), ...(draft.attachments || [])], ...(draft.budget_preset ? { budget_preset: draft.budget_preset } : {}) });
         unbound.edit({ content: "", attachments: [], budget_preset: null });
       } finally { batching = false; }
-      try { persist(); } catch (error) {
-        batching = true;
-        try { targetStore.restoreSnapshot(targetSaved); unbound.restoreSnapshot(unboundSaved); } finally { batching = false; }
-        throw error;
-      }
+      persist();
     }
     async function prepare(id, row) {
       if (payloads.has(row.submission_id)) return payloads.get(row.submission_id);
@@ -182,6 +204,7 @@
           uploaded = await request(`/workspaces/${encodeURIComponent(id)}/materials/upload?${new URLSearchParams({ submission_id: row.submission_id, item_id: String(index) })}`, { method: "POST", body: data });
           uploads.set(key, { ...uploaded, local_id: item.local_id, workspace_id: id, submission_id: row.submission_id });
           persist();
+          await flush();
         }
         result.push({ material_id: uploaded.material_id, sha256: uploaded.sha256 || uploaded.digest, source_kind: item.source_kind, note: item.note || "" });
       }
@@ -196,19 +219,24 @@
           const known = store(id).get().rows.find(item => item.submission_id === row.submission_id && item.status === "accepted");
           if (known) return known;
           persist();
+          await flush();
           const payload = await prepare(id, row);
           payloads.set(row.submission_id, payload);
           submitted.add(row.submission_id);
           persist();
+          await flush();
           const receipt = await api.submitWorkspaceInput(id, payload);
           store(id).accepted(row.submission_id, receipt);
           releaseUnused();
+          await flush();
           return receipt;
         } catch (failure) {
           const accepted = store(id).get().rows.find(item => item.submission_id === row.submission_id && item.status === "accepted");
-          if (accepted) { releaseUnused(); return accepted; }
+          if (accepted) { releaseUnused(); await flush(); return accepted; }
           if ([400, 403, 404, 409, 413, 415, 422].includes(failure.status)) submitted.delete(row.submission_id);
-          store(id).failed(row.submission_id, failure); throw failure;
+          store(id).failed(row.submission_id, failure);
+          try { await flush(); } catch (error) { onSaveError(error); }
+          throw failure;
         }
         finally { pending.delete(row.submission_id); }
       });
@@ -247,6 +275,7 @@
         }
         for (const key of ids) restored.delete(key);
         await cleanupUploads();
+        await flush();
       })();
       reconciling.set(id, operation);
       try { await operation; } finally { reconciling.delete(id); }
@@ -257,7 +286,7 @@
         return Boolean(model.draft.content || model.draft.attachments?.length || model.draft.file_refs?.length || model.rows.some(row => ["sending", "failed"].includes(row.status)));
       });
     }
-    return Object.freeze({ store, add, remove, submit, send, retry, bind, choose, workspace, remember, claimUnbound, resourceLimits, history, editFailed, reconcile,
+    return Object.freeze({ store, add, remove, submit, send, retry, bind, choose, workspace, remember, claimUnbound, resourceLimits, history, editFailed, reconcile, flush,
       readBinding: () => binding || readBinding(storage), hasUnfinished, isSending: () => pending.size > 0,
       source: localId => sources.get(localId), request });
   }

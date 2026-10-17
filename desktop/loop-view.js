@@ -146,6 +146,16 @@
   }
 
   function currentActivity(live) {
+    const patrol = live.patrol_session?.state;
+    if (patrol?.phase === "dispatching_curators") {
+      const latestIndex = [...(live.activity_timeline || [])].reverse().find(item =>
+        item.kind === "semantic_index.progress" && item.detail?.round_id === live.round?.entity_id &&
+        item.detail?.observation_id === patrol.observation_id);
+      if (latestIndex && !["ready", "cancelled"].includes(latestIndex.detail.status)) return {
+        label: "准备上下文索引", summary: latestIndex.summary,
+        detail: activityAge(latestIndex.occurred_at),
+      };
+    }
     const runs = Object.values(live.runs || {}).filter(item => ["pending", "running"].includes(item.state?.status)).sort((left, right) => right.updated_sequence - left.updated_sequence);
     const active = runs[0];
     if (active) {
@@ -157,7 +167,6 @@
         detail: activityAge(activityAt, active.state.created_at),
       };
     }
-    const patrol = live.patrol_session?.state;
     if (patrol) return {
       label: `Patrol · ${patrol.phase || patrol.status}`,
       summary: patrol.safe_summary || patrol.summary || patrol.phase || patrol.status,
@@ -178,7 +187,7 @@
     const history = state.history;
     const page = history?.initialized ? liveSelectors.selectActivityPage(live, history) : { items: live.activity_timeline || [], beforeSequence: null };
     const activity = page.items;
-    const entries = activity.filter(item => ["patrol_session", "curator", "context_expansion", "directive", "context_run", "model_call", "tool", "artifact"].includes(item.entity_type)).slice(-50).reverse();
+    const entries = activity.filter(item => item.kind === "semantic_index.progress" || ["patrol_session", "curator", "context_expansion", "directive", "context_run", "model_call", "tool", "artifact"].includes(item.entity_type)).slice(-50).reverse();
     const curators = Object.values(live.curators || {}).sort((left, right) => right.updated_sequence - left.updated_sequence);
     const expansions = Object.values(live.expansions || {}).sort((left, right) => right.updated_sequence - left.updated_sequence);
     const connection = state.connection || { status: "idle" };

@@ -1,5 +1,6 @@
 /*
  * 本文件对外提供应用组合根；输入为真实 API/Live 与用户导航动作，输出为六页及原业务入口。
+ * 助手正文与代码提供独立复制反馈；任务工具从完整消息快照导出 Markdown，展开压缩来源并保留正文格式。
  * 工作区绑定与投递复用 WorkspacePatrolIntake；桌面 App 与浏览器保留本页输入，桌面机器人继续提供独立输入入口，既有任务输入不受影响。来源导航按最新请求身份生效，迟到读取不能覆盖后来选择。
  * 任务与图卡共用 Run SSE 订阅；图卡通过只读观察器呈现真实角色与短尾部，按工作区和 Run 隔离，退出页面释放观察而不触发审批。
  * 工作流为沿原控制器装配页面、按任务保留草稿，卡片/列表偏好仅留在页面状态。示例：renderPlugins() 展示 registry 的当前状态。
@@ -33,6 +34,7 @@
  * 当前会话模式经独立 API 串行保存，成功后才更新界面及后续运行策略；
  * 沙箱状态视图展示已准备或曾尝试准备的工作区及持久限制；
  * 主任务 Composer 仅在存在错误或需处理的提醒时显示反馈，不为常态和运行提示预留空行；
+ * 普通任务投递前持久化原文、材料及完整请求；未确认受理时按原身份重放，显式进入编辑后才新建身份。回执确认后与本地刷新错误分开处理。
  * 审批弹窗区分单次放宽和常驻切换；Agent Loop 的 snapshot、sequence reducer、断线重放和重同步
  * 由独立 Live Store/Connection 负责，切换 Loop 时清除旧投影，启动边界观察意外连接拒绝并归入连接状态；Expansion 表单和阻断视图委托 FocusLoopExpansionBudget，普通 API 响应统一委托无 DOM 的 FocusHttpResponse 解码，本文件只组合页面生命周期和控制请求。
  * 独立 Patrol 入口经系统文件夹选择器选取路径，picker 仅确认本次选择，显式进入才登记绑定；原导航偏好保存已确认工作区，重载不读取历史目录列表。
@@ -47,6 +49,14 @@
 // 点击经全局拦截器打开右侧文件面板,不触发窗口导航);vendor 文件先行加载。
 const mdRenderer = window.markdownit({ html: false, linkify: true });
 mdRenderer.validateLink = url => /^(https?:|file:)/i.test(url);
+// 包装默认规则，保留代码转义、语言类名以及流式/完成态的一致性。
+for (const rule of ["fence", "code_block"]) {
+  const renderCode = mdRenderer.renderer.rules[rule];
+  mdRenderer.renderer.rules[rule] = (tokens, index, options, env, renderer) => {
+    const language = rule === "fence" ? tokens[index].info.trim().split(/\s+/)[0] : "";
+    return `<div class="message-code-block"><div class="code-block-toolbar"><span>${escapeHtml(language)}</span><button type="button" class="text-button" data-action="copy-code" aria-live="polite">${escapeHtml(uiText("conversation.copy_code", "复制代码"))}</button></div>${renderCode(tokens, index, options, env, renderer)}</div>\n`;
+  };
+}
 const keywordCommand = window.FocusKeywordCommand;
 const interfaceI18n = window.FocusI18n || {
   apply() {},
@@ -154,6 +164,7 @@ const state = {
   streamBuffers: new Map(),
   streamFrames: new Map(),
   composerErrors: new Map(),
+  mainRecoveryRestored: new Map(),
   commitment: {
     taskId: null,
     stage: 0,
@@ -664,7 +675,14 @@ window.__focusCloseFilePanel = () => {
 function pluginViewForMaterial(material) {
   return Object.values(pluginViews).find(view =>
     typeof view.supportsMaterial === "function" && view.supportsMaterial(material)
-  ) || null;
+  ) || (window.FocusFilePreview ? {
+    mountPanel(container, file, appState) {
+      const name = file.relative_path || file.path;
+      container.innerHTML = `<header class="file-panel-head"><strong>${escapeHtml(name)}</strong><button type="button" data-file-close>关闭</button></header><div data-generic-file></div>`;
+      container.querySelector("[data-file-close]").addEventListener("click", () => window.__focusCloseFilePanel());
+      void window.FocusFilePreview.mount(container.querySelector("[data-generic-file]"), { name, target: { task_id: appState.activeTaskId, content_ref: name } });
+    },
+  } : null);
 }
 
 function currentSpatialTarget() {
@@ -684,6 +702,60 @@ function renderAssistantContent(value) {
   // markdown-it 渲染完成态助手消息(html:false 转义 LLM 输出中的原始 HTML;
   // 危险协议链接被默认 validateLink 拒绝)。vendor 文件由 index.html 先行加载。
   return `<div class="message-rich">${mdRenderer.render(String(value))}</div>`;
+}
+
+async function copyMessageText(button, text) {
+  if (button.disabled || typeof text !== "string") return;
+  const label = button.textContent;
+  button.disabled = true;
+  try {
+    await navigator.clipboard.writeText(text);
+    button.textContent = uiText("conversation.copied", "已复制");
+    setStatus(uiText("conversation.copied", "已复制"));
+  } catch {
+    button.textContent = uiText("conversation.copy_failed", "复制失败，请重试");
+    setStatus(uiText("conversation.copy_failed", "复制失败，请重试"), true);
+  } finally {
+    setTimeout(() => {
+      button.textContent = label;
+      button.disabled = false;
+    }, 1600);
+  }
+}
+
+function conversationMarkdown(detail, task) {
+  const title = String(task.title || uiText("conversation.title", "对话")).replace(/[\r\n]+/g, " ");
+  const sections = [`# ${title}`];
+  // 从完整快照展开压缩来源，不受会话 DOM 的窗口上限影响。
+  for (const message of compressionPanel.expandForConversation(detail.messages || [])) {
+    if (message.divider || compressionPanel.degradedParts(message)) continue;
+    const kind = contextCuratorPresentation.messageSemantics(message).kind;
+    if (kind !== "human" && kind !== "ai") continue;
+    const text = messageBodyText(message);
+    if (!text.trim()) continue;
+    const role = kind === "human" ? uiText("conversation.user", "用户") : uiText("conversation.assistant", "助手");
+    sections.push(`## ${role}\n\n${text}`);
+  }
+  return sections.join("\n\n---\n\n") + "\n";
+}
+
+function exportConversation() {
+  const task = activeTask();
+  const detail = task && state.details.get(task.task_id);
+  if (!detail) return;
+  const markdown = conversationMarkdown(detail, task);
+  const filename = String(task.title || "conversation").replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").slice(0, 100).replace(/[. ]+$/, "") || "conversation";
+  const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${filename}.md`;
+  try {
+    document.body.append(link);
+    link.click();
+  } finally {
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
 }
 
 // 生成中的正文按「顶层块」切分后逐块渲染。
@@ -766,6 +838,14 @@ async function hydrateActive(taskId = state.activeTaskId) {
   ]);
   if (taskDetailRequestIds.get(taskId) !== requestId) return;
   state.details.set(taskId, detail);
+  const mainRecovery = taskRunOperations?.recovery(taskId);
+  if (mainRecovery) {
+    if (!mainRecovery.editing || !detail.ui_state?.input) detail.ui_state = { ...(detail.ui_state || {}), input: mainRecovery.input };
+    if (state.mainRecoveryRestored.get(taskId) !== mainRecovery.request_id) {
+      state.materialSelections.set(taskId, JSON.parse(mainRecovery.selectionSignature));
+      state.mainRecoveryRestored.set(taskId, mainRecovery.request_id);
+    }
+  }
   state.materials.set(taskId, materials);
   state.agents.set(taskId, agents);
   state.skillCatalogs.set(taskId, catalog.skills);
@@ -1628,8 +1708,13 @@ function renderMustViewRecovery(detail) {
 }
 
 function composerFeedback(detail, projectionBlocked) {
+  const recovery = taskRunOperations?.recovery(state.activeTaskId);
+  if (recovery?.failure?.uncertain === false && !recovery.editing) return { kind: "danger", text: `发送未受理：${recovery.failure.message}` };
+  if (recovery) return { kind: "warning", text: recovery.editing
+    ? "原请求尚未确认是否受理；编辑后重新发送会创建新请求，原请求仍可能执行。"
+    : "尚未确认是否受理。原消息、附件和请求身份已保留，可按原内容重试。" };
   const error = state.composerErrors.get(state.activeTaskId);
-  if (error) return { kind: "danger", text: `发送失败：${error}` };
+  if (error) return { kind: "danger", text: error.startsWith("消息已受理") ? error : `发送失败：${error}` };
   if (projectionBlocked) return { kind: "warning", text: "该 Context 需要完成执行投影决断后才能继续。" };
   if (activeTaskHasCommitmentLock()) return { kind: "warning", text: "当前任务正在等待 Commitment 审批，请先处理上方审批区。" };
   if (detail?.pending_compression) return { kind: "warning", text: "存在待确认的压缩计划，请先确认或取消。" };
@@ -1638,10 +1723,37 @@ function composerFeedback(detail, projectionBlocked) {
   return null;
 }
 
+function renderMainRecovery(taskId) {
+  const recovery = taskRunOperations?.recovery(taskId);
+  if (!recovery) return "";
+  const pending = taskRunOperations.get(taskId).submission?.status === "pending";
+  return `<button type="button" class="text-button" data-action="retry-main" ${pending ? "disabled" : ""}>按原内容重试</button><button type="button" class="text-button" data-action="edit-main" ${pending ? "disabled" : ""}>编辑后重新发送</button>`;
+}
+
+function updateMainRecoveryControls() {
+  const taskId = state.activeTaskId;
+  const recovery = taskRunOperations?.recovery(taskId);
+  const node = document.querySelector("#mainSubmissionRecovery");
+  if (node) node.innerHTML = renderMainRecovery(taskId);
+  const input = document.querySelector("#mainInput");
+  if (input) input.readOnly = Boolean(recovery && !recovery.editing);
+  const send = document.querySelector('[data-action="send-main"]');
+  if (send) send.textContent = recovery ? (recovery.editing ? "发送新请求" : "按原内容重试") : uiText("focus.send", "发送");
+}
+
+function editMainRequest() {
+  const taskId = state.activeTaskId;
+  if (taskRunOperations?.get(taskId).submission?.status === "pending") return;
+  taskRunOperations?.editRecovery(taskId);
+  setComposerError();
+  document.querySelector("#mainInput")?.focus();
+}
+
 function setComposerError(error = null, taskId = state.activeTaskId) {
   if (error) state.composerErrors.set(taskId, String(error));
   else state.composerErrors.delete(taskId);
   if (taskId !== state.activeTaskId) return;
+  updateMainRecoveryControls();
   const node = document.querySelector("#composerFeedback");
   if (!node) return;
   const detail = state.details.get(taskId);
@@ -1745,8 +1857,10 @@ function renderFocus(task = activeTask()) {
   if (!task) return renderNoActiveTask();
   const isAssembly = task.harness_mode === "assembly";
   const admission = taskRunOperations?.get(task.task_id)?.admission;
+  const mainRecovery = taskRunOperations?.recovery(task.task_id);
   if (appInspector.parentElement !== document.querySelector(".app-shell")) document.querySelector(".app-shell").append(appInspector);
   const detail = state.details.get(task.task_id) || { messages: [] };
+  const composerInput = composerDraft.value(task.task_id, mainRecovery && !mainRecovery.editing ? mainRecovery.input : detail.ui_state?.input || mainRecovery?.input || "");
   const projectionStatus = detail.context?.projection_status || "root";
   const projectionBlocked = !["root", "valid", "repaired", "approved"].includes(projectionStatus);
   const contextBlock = projectionBlocked
@@ -1769,7 +1883,7 @@ function renderFocus(task = activeTask()) {
     <header class="task-page-heading"><div><small>${task.harness_mode === "assembly" ? "独立会话" : escapeHtml(task.workspace_name || "本地工作区")}</small><h1>${task.harness_mode === "assembly" ? "无工作区模式" : "任务"}</h1><p>${task.harness_mode === "assembly" ? "从一个问题或一份材料开始。" : "一条任务，一条持续会话。"}</p></div><div><button data-action="show-patrol">回到 Patrol</button><button data-action="new-task">＋ 新建任务</button></div></header>
     <section class="task-workspace-layout${task.harness_mode === "assembly" ? " is-assembly" : ""}">${task.harness_mode === "assembly" ? "" : renderTaskRail(task)}<section class="focus-shell" style="${shellStyle}">
       <section class="focus-view" data-task-id="${task.task_id}">
-        <header class="task-workspace-tools"><strong>${escapeHtml(task.title)}</strong><details><summary>任务工具</summary><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-loop">任务 Loop 控制台</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details>${isAssembly ? renderAssemblyTarget(task) : ""}</header>
+        <header class="task-workspace-tools"><strong>${escapeHtml(task.title)}</strong><details><summary>任务工具</summary><button type="button" data-action="export-conversation">${escapeHtml(uiText("conversation.export", "导出对话为 Markdown"))}</button><button data-action="show-contexts">上下文与派生</button><button data-action="organize-context">整理上下文</button><button data-action="show-agents">协作与 Session Patrol</button><button data-action="toggle-session-patrol">会话 Patrol 小兵</button><button data-action="show-loop">任务 Loop 控制台</button><button data-action="open-inspector-tab" data-inspector-tab="materials">材料</button><button data-action="open-inspector-tab" data-inspector-tab="run">运行与恢复</button></details>${isAssembly ? renderAssemblyTarget(task) : ""}</header>
         ${admission ? `<section class="task-admission-receipt" role="status"><span>消息受理回执 · ${escapeHtml(admission.intent_id)}。交付与执行以实际状态为准。</span><button data-action="show-loop">查看任务 Loop 的交付状态</button></section>` : ""}
         ${contextBlock}
         <div class="commitment-progress" id="commitmentProgress" hidden>
@@ -1782,10 +1896,11 @@ function renderFocus(task = activeTask()) {
           <div class="composer-shell glass-surface">
             <div class="composer-context"><span class="ui-badge is-active">${isAssembly ? uiText("focus.free_session", "自由会话") : uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
             <div class="composer">
-              ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(composerDraft.value(task.task_id, detail.ui_state?.input || ""))}</textarea>`, true)}
+              ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(composerInput)}</textarea>`, true)}
               <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
             </div>
             <p id="composerFeedback" class="composer-feedback${feedback ? ` is-${feedback.kind}` : ""}" role="status"${feedback ? "" : " hidden"}>${feedback ? escapeHtml(feedback.text) : ""}</p>
+            <div id="mainSubmissionRecovery" class="main-submission-recovery">${renderMainRecovery(task.task_id)}</div>
           </div>
         </div>
       </section>
@@ -1809,6 +1924,9 @@ function renderFocus(task = activeTask()) {
   const sendButton = document.querySelector('[data-action="send-main"]');
   if (mainInput) mainInput.disabled = commitmentBlocked;
   if (sendButton) sendButton.disabled = commitmentBlocked;
+  // 原身份重试只核对/重放既有受理，不受随后出现的执行审批阻断。
+  if (sendButton && taskRunOperations?.recovery(task.task_id)?.editing === false) sendButton.disabled = false;
+  updateMainRecoveryControls();
   updateAtHighlight(mainInput);
   conversation.scrollTop = previousConversation
     ? (wasPinned ? conversation.scrollHeight : previousScrollTop)
@@ -1976,23 +2094,40 @@ function contentPlainText(content) {
   return "";
 }
 
+function messageBodyText(message) {
+  const content = Array.isArray(message.content)
+    ? message.content.filter(block => block?.type === "text").map(block => block.text || "").join("\n")
+    : typeof message.content === "string" ? message.content : "";
+  return stripImageReferences(stripRunMaterialProtocol(content, message));
+}
+
 function collectMessageImages(content) {
   return imageMaterialPicker.materialRefIds(contentPlainText(content));
 }
 
-// f18:消息文件卡片 —— 常见类型全部可点开(图片/PDF/docx/doc/md/txt),点击打开右侧文件面板
-const FILE_VIEWABLE_RE = /\.(png|jpe?g|webp|bmp|gif|pdf|docx?|md|txt)$/i;
+// Every artifact has a preview or explicit native file exits.
+const FILE_VIEWABLE_RE = /\S/;
 
 function fileNameFromLinkHref(href, hostPart = "") {
   const source = href.startsWith("file:") ? href : hostPart;
   return decodeURIComponent(source.replace(/[?#].*$/, "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "");
 }
 
+function filePathFromLinkHref(href, hostPart = "") {
+  if (href.startsWith("file:")) {
+    const url = new URL(href);
+    const path = decodeURIComponent(url.pathname);
+    return url.hostname ? `//${url.hostname}${path}` : path.replace(/^\/([A-Za-z]:\/)/, "$1");
+  }
+  if (/^https?:/i.test(href)) return fileNameFromLinkHref(href, hostPart);
+  return decodeURIComponent(href.replace(/[?#].*$/, ""));
+}
+
 function renderFileCards(message) {
   const files = message.files;
   if (!Array.isArray(files) || !files.length) return "";
   const cards = files.map(file => {
-    const name = String(file?.filename || file?.name || "");
+    const name = String(file?.relative_path || file?.path || file?.filename || file?.name || "");
     if (!name) return "";
     const viewable = FILE_VIEWABLE_RE.test(name)
       && !!pluginViewForMaterial({ relative_path: name, path: name });
@@ -2075,7 +2210,9 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
   } else {
     content = escapeHtml(JSON.stringify(message.content, null, 2));
   }
-  const renderedContent = kind === "ai" ? renderAssistantContent(content) : content;
+  const answerText = kind === "ai" ? messageBodyText(message) : "";
+  const renderedContent = kind === "ai" ? renderAssistantContent(answerText) : content;
+  const actions = answerText.trim() ? `<div class="message-actions"><button type="button" class="text-button" data-action="copy-answer" data-copy-text="${escapeHtml(answerText).replace(/\r/g, "&#13;")}" aria-live="polite">${escapeHtml(uiText("conversation.copy_answer", "复制回答"))}</button></div>` : "";
   const associations = semantics.associations.map(item => `<span class="message-association">${escapeHtml(item.direction)} ${escapeHtml(item.name)}${item.tool_call_id ? ` · ${escapeHtml(item.tool_call_id)}` : ""}</span>`).join("");
   let header = "";
   if (showRoleHeader) {
@@ -2087,6 +2224,7 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
     ${header}
     ${renderMessageImages(messageImages)}${renderFileCards(message)}${renderRunMaterialCards(message)}
     <div class="message-content">${renderedContent}</div>
+    ${actions}
   </article>`;
 }
 
@@ -2130,6 +2268,7 @@ function _conversationRenderInput(detail, task) {
   return {
     detail,
     task,
+    locale: interfaceI18n.locale(),
     state: {
       activeTaskId: state.activeTaskId,
       streamBuffers: state.streamBuffers,
@@ -4270,37 +4409,38 @@ function openImageLightbox(url, label) {
   root.innerHTML = `<div class="image-lightbox" role="dialog" aria-modal="true" aria-label="${escapeHtml(label)}" data-action="close-lightbox"><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}"><button class="text-button" data-action="close-lightbox">关闭</button></div>`;
 }
 
-async function sendMainOnce(taskId, requestId) {
+async function sendMainOnce(taskId, requestId, retry = null) {
   const task = state.tasks.find(item => item.task_id === taskId);
   if (!task) return setStatus("当前没有活动任务", true);
   adoptCommitmentContext();
-  if (activeTaskHasCommitmentLock()) {
+  if (!retry && activeTaskHasCommitmentLock()) {
     return setStatus("存在尚未处理的承诺流程，请先处理审批面板", true);
   }
-  if (state.details.get(taskId)?.pending_compression) {
+  if (!retry && state.details.get(taskId)?.pending_compression) {
     return setStatus("存在待确认的压缩请求，请先完成压缩或取消", true);
   }
-  if (state.details.get(taskId)?.pending_must_view_report) {
+  if (!retry && state.details.get(taskId)?.pending_must_view_report) {
     return setStatus("存在待处理的必看图片报告，请先重试或取消", true);
   }
-  if (state.accessReviews.panel) {
+  if (!retry && state.accessReviews.panel) {
     return setStatus("存在待批准的本机资源访问请求，请先批准或拒绝", true);
   }
   setStatus("");
   const input = document.querySelector("#mainInput");
-  const message = input.value.trim();
+  const message = retry ? retry.message : input.value.trim();
   if (!message) return;
+  if (!retry) composerDraft.claim(taskId, input.value);
   // f35 仅保留规范命令；旧 @压缩 输入按普通用户消息发送。
   const quickKeyword = keywordCommand.parse(message);
-  if (quickKeyword !== null) {
+  if (!retry && quickKeyword !== null) {
     const keyword = quickKeyword;
     input.value = "";
     composerDraft.release(taskId);
     return openCompressionView(task, null, keyword);
   }
   setComposerError();
-  const spatialTarget = currentSpatialTarget();
-  if (spatialTarget?.focus.kind === "patrol"
+  const spatialTarget = retry ? null : currentSpatialTarget();
+  if (!retry && spatialTarget?.focus.kind === "patrol"
       && typeof spatialTarget.view.sendFocusedMessage === "function") {
     try {
       if (await spatialTarget.view.sendFocusedMessage(message)) {
@@ -4319,16 +4459,16 @@ async function sendMainOnce(taskId, requestId) {
       return;
     }
   }
-  const selectionSignature = JSON.stringify(materialSelection(taskId));
-  const outgoing = runMaterialPicker.buildOutgoing(
-    state.materials.get(taskId) || [], message, materialSelection(taskId)
-  );
+  const selectionSignature = retry?.selectionSignature || JSON.stringify(materialSelection(taskId));
+  const original = retry ? JSON.parse(retry.body) : null;
+  const outgoing = original ? { message: original.message, materialInputs: original.material_inputs, requiredImageIds: original.must_view_material_ids }
+    : runMaterialPicker.buildOutgoing(state.materials.get(taskId) || [], message, materialSelection(taskId));
   const messagePayload = outgoing.message;
-  const detail = state.details.get(taskId) || {};
+  let detail = state.details.get(taskId) || {};
+  let confirmed = false;
   try {
-    const run = await api(`/desktop/api/tasks/${taskId}/main/runs`, {
-      method: "POST",
-      headers: { "Idempotency-Key": requestId },
+    const frozen = retry || taskRunOperations?.freeze(taskId, requestId, {
+      input: input.value, message, selectionSignature,
       body: JSON.stringify({
         message: messagePayload,
         material_inputs: outgoing.materialInputs,
@@ -4338,7 +4478,20 @@ async function sendMainOnce(taskId, requestId) {
         ...accessMode.requestBody(accessModeOf("main")),
       }),
     });
+    state.mainRecoveryRestored.set(taskId, requestId);
+    updateMainRecoveryControls();
+    const run = await api(`/desktop/api/tasks/${taskId}/main/runs`, {
+      method: "POST",
+      headers: { "Idempotency-Key": requestId },
+      body: frozen.body,
+    });
+    if (!run || (!run.run_id && !(run.intent_kind === "direct_message" && run.intent_id))) throw new Error("未收到有效受理回执");
+    confirmed = true;
     taskRunOperations?.accept(taskId, requestId, run);
+    taskRunOperations?.forgetRecovery(taskId, requestId);
+    state.mainRecoveryRestored.delete(taskId);
+    state.composerErrors.delete(taskId);
+    detail = state.details.get(taskId) || detail;
     if (run.intent_kind === "direct_message") {
       if (JSON.stringify(materialSelection(taskId)) === selectionSignature) state.materialSelections.set(taskId, runMaterialPicker.empty());
       const unchanged = composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
@@ -4386,27 +4539,41 @@ async function sendMainOnce(taskId, requestId) {
     if (unchanged) composerDraft.release(taskId);
     state.details.set(taskId, detail);
     if (state.activeTaskId === taskId && state.view === "focus") {
+      if (unchanged && document.querySelector("#mainInput") === input) input.value = "";
       renderFocus();
       persistFocusState();
     }
     listenToRun(run);
   } catch (error) {
-    taskRunOperations?.fail(taskId, requestId, error.message);
-    setStatus(error.message, true);
-    setComposerError(error.message, taskId);
+    if (!confirmed) taskRunOperations?.fail(taskId, requestId, error.message);
+    let failed = null;
+    if (!confirmed) {
+      try { failed = taskRunOperations?.failRecovery(taskId, requestId, error); }
+      catch { /* 投递前的冻结快照仍在；保存诊断失败不能丢失原身份。 */ }
+    }
+    const feedback = confirmed ? `消息已受理，但本地状态更新失败：${error.message}`
+      : failed?.failure?.uncertain === false ? `发送未受理：${error.message}`
+      : taskRunOperations?.recovery(taskId) ? `尚未确认是否受理：${error.message}` : error.message;
+    if (state.activeTaskId === taskId) setStatus(feedback, true);
+    setComposerError(feedback, taskId);
   }
 }
 
-function sendMain() {
+function sendMain(retryOriginal = false) {
   const taskId = state.activeTaskId;
   if (!taskId) return Promise.resolve();
   if (taskRunOperations?.get(taskId).submission?.status === "pending") {
     setStatus("这条消息正在提交，请稍候；其他 Context 仍可独立发送。", false);
     return Promise.resolve();
   }
-  const requestId = crypto.randomUUID();
+  const saved = taskRunOperations?.recovery(taskId);
+  const retry = saved && (retryOriginal || !saved.editing) ? saved : null;
+  const requestId = retry?.request_id || crypto.randomUUID();
   taskRunOperations?.begin(taskId, requestId);
-  return sendMainOnce(taskId, requestId).finally(() => taskRunOperations?.finish(taskId, requestId));
+  return sendMainOnce(taskId, requestId, retry).finally(() => {
+    taskRunOperations?.finish(taskId, requestId);
+    if (state.activeTaskId === taskId) updateMainRecoveryControls();
+  });
 }
 
 const COMMITMENT_STAGE_NAMES = {
@@ -6256,6 +6423,7 @@ function modelEntryPayload(entry) {
   const fields = modelSettings.snapshot?.editable_fields || [];
   const payload = {};
   fields.forEach(field => { payload[field] = entry[field] ?? null; });
+  if (fields.includes("derivation_max_output_tokens")) payload.derivation_max_output_tokens = entry.derivation_max_output_tokens || {};
   MODEL_FLAG_FIELDS.forEach(field => { payload[field] = Boolean(entry[field]); });
   return payload;
 }
@@ -6521,12 +6689,11 @@ async function saveModelSettings() {
   modelSettings.errors = {};
   setStatus(uiText("settings.model_verifying", "正在保存并验证普通调用和策展输出…"));
   const payload = { models: modelSettings.snapshot.models.map(modelEntryPayload) };
-  // 凭据写入哪个变量以**当前编辑值**为准：用户可能刚把 api_key 改成另一个 $VAR
+  // 与后端 match_env_ref 一致，仅接受当前编辑值中的合法 $VAR / ${VAR} 引用。
   const editing = modelSettings.snapshot.models[modelSettings.draft?.index ?? -1];
   const reference = String(editing?.api_key || "");
-  const credentialVariable = reference.startsWith("$")
-    ? reference.slice(1)
-    : (editing?.api_key_variable || "");
+  const referenceMatch = reference.match(/^\$([A-Z_][A-Z0-9_]*)$|^\$\{([A-Z_][A-Z0-9_]*)\}$/);
+  const credentialVariable = referenceMatch ? referenceMatch[1] || referenceMatch[2] : "";
   if (modelSettings.credentialValue && credentialVariable) {
     payload.credentials = { [credentialVariable]: modelSettings.credentialValue };
   }
@@ -6683,7 +6850,8 @@ document.addEventListener("click", event => {
     /\.(md|txt|png|jpe?g|pdf|docx?)$/i.test(hostPart)
     || /[一-鿿]/.test(hostPart)
   );
-  if (!isHttp && !href.startsWith("file:")) return; // 非 http/file 链接不处理
+  const relativeFile = !/^(?:[a-z][a-z\d+.-]*:|#|\/\/)/i.test(href) && /\.[\w-]+(?:[?#].*)?$/.test(href);
+  if (!isHttp && !href.startsWith("file:") && !relativeFile) return;
   if (isHttp && !looksLikeFileHost) {
     event.preventDefault();
     event.stopPropagation();
@@ -6694,7 +6862,7 @@ document.addEventListener("click", event => {
   event.preventDefault();
   event.stopPropagation();
   // 显示文字可能含图标/说明,路径只取自 href(file URL)或兼容分支的 host。
-  const fileName = fileNameFromLinkHref(href, hostPart);
+  const fileName = filePathFromLinkHref(href, hostPart);
   if (FILE_VIEWABLE_RE.test(fileName)) {
     const taskId = state.activeTaskId;
     const material = (state.materials.get(taskId) || [])
@@ -6729,6 +6897,9 @@ async function handleDocumentClick(event) {
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const action = button.dataset.action;
+  if (action === "copy-answer") return copyMessageText(button, button.dataset.copyText);
+  if (action === "copy-code") return copyMessageText(button, button.closest(".message-code-block")?.querySelector("pre > code")?.textContent);
+  if (action === "export-conversation") return exportConversation();
   if (action === "show-patrol") {
     if (state.view === "focus") persistFocusState();
     workspacePatrolPicker?.dispose();
@@ -6810,6 +6981,7 @@ async function handleDocumentClick(event) {
     panel.className = "patrol-dialog glass-surface";
     panel.setAttribute("aria-label", "事实与来源");
     panel.innerHTML = `<header><h2>事实与来源</h2><form method="dialog"><button aria-label="关闭">×</button></form></header><div data-patrol-dialog-body>${window.FocusLoopFactsView.renderDetail(detail)}</div>`;
+    if (detail.file) window.FocusFilePreview?.mountHistory(panel, detail.file, loopId);
     document.body.append(panel);
     panel.addEventListener("close", () => panel.remove(), { once: true });
     const dismiss = event => { event.preventDefault(); void window.FocusSurfaceTransition.visible(panel, false, { modal: true }); };
@@ -7048,6 +7220,8 @@ async function handleDocumentClick(event) {
   if (action === "retry-must-view") return resumeMustView("retry");
   if (action === "cancel-must-view") return resumeMustView("cancel");
   if (action === "send-main") return sendMain();
+  if (action === "retry-main") return sendMain(true);
+  if (action === "edit-main") return editMainRequest();
   if (action === "load-earlier-conversation") return loadEarlierConversation();
   if (action === "toggle-compress-message") {
     state.compression.selected = compressionPanel.toggleSelect(

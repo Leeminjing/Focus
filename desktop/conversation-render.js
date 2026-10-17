@@ -6,6 +6,7 @@
  * 并按"完整工具调用组"回退到安全起点）、stats/resetStats（渲染计数与缓存规模，供预算检查）。
  * 输入为 detail、task、渲染依赖（renderMessage、renderDivider、events 归一、expandMessages、markdown 渲染器）
  * 与运行态快照（activeTaskId、streamBuffers、materialHistory、pluginViewCount）；输出为单元列表、会话 HTML、
+ * locale 变化会清除 HTML 缓存，避免复制按钮在后续快照刷新时恢复旧语言。
  * 无工作区模式以独立输入/附加材料的安静空态承接，不以插件配置提示替代真实会话。
  * 流式块 HTML 与统计计数。具体工作流为按窗口截取消息 → 逐段归一为单元 → 按内容签名命中缓存 →
  * 未命中才调用传入的渲染函数；普通段落的流式正文从已结束的空行边界续解析，复杂语法从最近安全边界重解析。
@@ -39,6 +40,7 @@
   const STREAMING_PLACEHOLDER_CLASS = "work-record message ai streaming";
 
   const cache = new Map();
+  let cacheLocale = "";
   const stats = { built: 0, reused: 0, rowsBuilt: 0, rowsReused: 0, streamingBuilt: 0, streamingReused: 0 };
 
   function snapshotStats() {
@@ -278,6 +280,12 @@
   }
 
   function buildUnits(input) {
+    // 按钮文案属于缓存 HTML；切换语言时重建，后续快照不能恢复旧语言。
+    const locale = input.locale || "";
+    if (cacheLocale !== locale) {
+      cache.clear();
+      cacheLocale = locale;
+    }
     const detail = input.detail || {};
     const task = input.task || {};
     const allMessages = detail.messages || [];
