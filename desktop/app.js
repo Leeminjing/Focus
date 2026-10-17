@@ -743,6 +743,7 @@ async function bootstrap() {
     else if (state.view === "draft") void hydrateEquipment();
     if (state.view !== "patrol") render();
   } catch (error) { setStatus(error.message, true); }
+  await window.focusDesktop?.notifications?.ready?.();
   return true;
 }
 
@@ -1355,6 +1356,24 @@ function presentRunStatus(status) {
   return { label: status && !RUN_STATUS_PRESENTATION[status] ? status : uiText(item.key, item.fallback), tone: item.tone };
 }
 
+function presentTaskStatus(task) {
+  const attention = task.attention || [];
+  if (attention.length) {
+    return { label: attention.some(item => item.kind === "access_approval") ? "等待授权" : "需要你处理", tone: "warning" };
+  }
+  if (task.attention_unavailable) return { label: "待处理状态待刷新", tone: "warning" };
+  if (["pending", "running"].includes(task.active_run?.status)) return presentRunStatus(task.active_run.status);
+  const loopStatus = task.loop?.status;
+  if (["running", "pausing", "completing"].includes(loopStatus)) return presentRunStatus("running");
+  if (loopStatus === "waiting_user") return { label: "需要你处理", tone: "warning" };
+  if (loopStatus === "paused") return { label: "已暂停", tone: "warning" };
+  if (loopStatus === "failed") return presentRunStatus("error");
+  if (loopStatus === "completed") return presentRunStatus("success");
+  if (loopStatus === "stopped") return { label: "已停止", tone: "warning" };
+  if (task.latest_run) return presentRunStatus(task.latest_run.status);
+  return { label: "未开始", tone: "neutral" };
+}
+
 function materialGroupingProjection(task) {
   const detail = state.details.get(task.task_id) || {};
   const mode = detail.ui_state?.material_grouping_mode === "type" ? "type" : "run";
@@ -1438,8 +1457,8 @@ function renderInspector() {
 
     return;
   }
-  const run = state.details.get(task.task_id)?.active_run;
-  const presented = presentRunStatus(run?.status || "ready");
+  const run = task.active_run || task.latest_run;
+  const presented = presentTaskStatus(task);
   inspectorContent.innerHTML = `<section class="inspector-section"><header><h3>主 Agent</h3><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></header><dl class="inspector-run-meta"><div><dt>任务</dt><dd>${escapeHtml(task.title)}</dd></div><div><dt>运行 ID</dt><dd>${escapeHtml(run?.run_id || "—")}</dd></div></dl>${state.commitment.stage ? `<section class="inspector-run-stage"><span class="workspace-kicker">COMMITMENT</span><strong>${state.commitment.stage}/9 · ${escapeHtml(COMMITMENT_STAGE_NAMES[state.commitment.stage] || "准备中")}</strong><span>${state.commitment.review ? "等待人工确认" : state.commitment.terminalStatus ? presentRunStatus(state.commitment.terminalStatus).label : "正在执行"}</span></section>` : ""}${renderInterruptButton(state.details.get(task.task_id))}</section>`;
 }
 
@@ -1695,7 +1714,7 @@ function renderContextRail(task) {
 
 function renderTaskRail(task) {
   const tasks = state.tasks.filter(item => item.harness_mode !== "assembly" && sessionLifecycle(item) === "active");
-  return `<aside class="task-workspace-list"><header><strong>工作区任务</strong><button data-action="new-task" aria-label="新建任务">＋</button></header><nav>${tasks.map(item => `<button data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.workspace_name || "本地工作区")} · ${escapeHtml(presentRunStatus(state.details.get(item.task_id)?.active_run?.status).label)}</small></button>`).join("")}</nav><footer>这里的输入只发送到当前选中的任务。</footer></aside>`;
+  return `<aside class="task-workspace-list"><header><strong>工作区任务</strong><button data-action="new-task" aria-label="新建任务">＋</button></header><nav>${tasks.map(item => `<button data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.workspace_name || "本地工作区")} · ${escapeHtml(presentTaskStatus(item).label)}</small></button>`).join("")}</nav><footer>这里的输入只发送到当前选中的任务。</footer></aside>`;
 }
 
 function capabilityRefreshSummary(result) {
@@ -3259,8 +3278,7 @@ function collapseMapTree() {
 function taskCardMarkup(task, draftMode = false) {
   const draft = state.drafts.get(state.activeTaskId);
   const selected = draftMode && draft?.task_id === task.task_id;
-  const status = task.active_run?.status;
-  const presented = presentRunStatus(status || "ready");
+  const presented = presentTaskStatus(task);
   const tree = state.contextTrees.get(task.workspace_id) || [];
   const context = tree.find(item => item.context_id === task.task_id);
   const projectionStatus = context?.projection_status || "root";
@@ -3289,6 +3307,7 @@ function taskCardMarkup(task, draftMode = false) {
   return `<article class="task-card-shell ${draftMode && !selected ? "dimmed" : ""}" data-context-depth="${context?.depth || 0}">
     <button class="${cardClass}" data-task-id="${task.task_id}" data-action="${cardAction}" ${selectable ? `aria-pressed="${isSelected}"` : ""}>
       <span class="task-card-heading">${selectMarkup}<span class="task-title">${escapeHtml(task.title)}</span><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></span>
+      ${task.active_run && task.latest_result ? `<span class="task-last-result">上次执行：${escapeHtml(presentRunStatus(task.latest_result.status).label)}</span>` : ""}
       <span class="context-identity">${contextIdentity}</span>
       ${contextMeta}
     </button>
@@ -6638,6 +6657,14 @@ async function openSettings() {
   syncLanguageControls();
   const newSessionMode = settingsDialog?.querySelector?.("#newSessionAccessMode");
   if (newSessionMode) newSessionMode.value = accessMode.readNewSessionDefault(window.localStorage);
+  const notificationsToggle = settingsDialog?.querySelector?.("#taskNotificationsEnabled");
+  if (notificationsToggle) {
+    notificationsToggle.disabled = !window.focusDesktop?.notifications;
+    if (!notificationsToggle.disabled) {
+      try { notificationsToggle.checked = (await window.focusDesktop.notifications.settings()).enabled; }
+      catch (error) { setStatus(error.message, true); }
+    }
+  }
   interfaceI18n.apply(settingsDialog);
   const sandboxHost = settingsDialog?.querySelector?.("#sandboxStatusHost");
   if (sandboxHost) {
@@ -7664,6 +7691,17 @@ document.addEventListener("input", event => {
   if (requestId) loopWaitDrafts?.set(requestId, serializeWaitDraft(form));
 });
 document.addEventListener("change", event => {
+  if (event.target.id === "taskNotificationsEnabled") {
+    const input = event.target;
+    const enabled = input.checked;
+    input.disabled = true;
+    runUiAction(async () => {
+      try { input.checked = (await window.focusDesktop.notifications.settings(enabled)).enabled; }
+      catch (error) { input.checked = !enabled; setStatus(error.message, true); }
+      finally { input.disabled = false; }
+    });
+    return;
+  }
   if (event.target.matches?.("[data-assembly-target]")) {
     const select = event.target;
     select.disabled = true;
@@ -7817,4 +7855,51 @@ async function openPatrolWorkbench(target) {
   if (target.taskId) await workspacePatrolController?.showContext(target.taskId, target.revisionId);
 }
 if (desktopPatrol) desktopPatrol.onWorkbench(target => runUiAction(() => openPatrolWorkbench(target)));
+window.focusDesktop?.notifications?.onTasks(tasks => {
+  replaceTasks(tasks);
+  const rail = app.querySelector(".task-workspace-list");
+  rail?.querySelectorAll("[data-task-id]").forEach(button => {
+    const task = state.tasks.find(item => item.task_id === button.dataset.taskId);
+    const status = button.querySelector("small");
+    if (task && status) status.textContent = `${task.workspace_name || "本地工作区"} · ${presentTaskStatus(task).label}`;
+  });
+  // Patch only status badges: polling must not discard composer text or selection.
+  app.querySelectorAll(".task-card[data-task-id]").forEach(card => {
+    const task = state.tasks.find(item => item.task_id === card.dataset.taskId);
+    const badge = card.querySelector(".ui-badge");
+    if (!task || !badge) return;
+    const status = presentTaskStatus(task);
+    badge.textContent = status.label;
+    badge.className = `ui-badge is-${status.tone}`;
+    card.querySelector(".task-last-result")?.remove();
+    if (task.active_run && task.latest_result) {
+      const previous = document.createElement("span");
+      previous.className = "task-last-result";
+      previous.textContent = `上次执行：${presentRunStatus(task.latest_result.status).label}`;
+      card.append(previous);
+    }
+  });
+});
+async function openTaskNotification(target) {
+  await refreshTasks();
+  const task = state.tasks.find(item => item.task_id === target.taskId && sessionLifecycle(item) === "active");
+  if (!task) return setStatus("该任务已归档或删除，可在设置中查看归档任务。");
+  for (const modal of [settingsDialog, dialog]) {
+    if (modal?.open) await window.FocusSurfaceTransition.visible(modal, false, { modal: true });
+  }
+  await switchTask(task.task_id);
+  if (target.loopId && task.loop?.loop_id === target.loopId) {
+    localStorage.setItem(`focus-agent-loop:${task.task_id}`, target.loopId);
+    await openLoopView();
+    const pending = [...app.querySelectorAll("[data-wait-request-id]")].find(node => node.dataset.waitRequestId === target.attentionId);
+    pending?.scrollIntoView?.({ block: "center" });
+  } else if (target.attentionId) {
+    state.inspector.open = true;
+    state.inspector.tab = "run";
+    render();
+    const pending = document.querySelector(".access-review-panel, .review-panel, .compression-panel, .must-view-panel");
+    pending?.scrollIntoView?.({ block: "center" });
+  }
+}
+window.focusDesktop?.notifications?.onOpen(target => runUiAction(() => openTaskNotification(target)));
 runUiAction(async () => { await bootstrap(); if (desktopPatrol) await desktopPatrol.ready(); });

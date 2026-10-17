@@ -15,6 +15,7 @@ checkpoint 的 canonical typed bridge 在结算前验证，新 publication 保�
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -100,6 +101,16 @@ class RunLifecycleFinalizer:
         checkpoint = await self._latest_checkpoint(run, thread)
         checkpoint_id = self._checkpoint_id(checkpoint)
         checkpoint_messages = self._checkpoint_messages(checkpoint)
+        from backend.app.desktop.task_attention import read_task_attention
+
+        try:
+            attention = await read_task_attention(
+                self._checkpointer, run, thread, checkpoint,
+                status="interrupted" if run.status == "interrupted" else record.status.value,
+            )
+        except Exception:
+            logging.getLogger(__name__).warning("待处理摘要暂不可用: %s", run.run_id, exc_info=True)
+            attention = None
         captured = await self._capture_workspace(run)
         async with self._sessions.begin() as session:
             locked = await session.scalar(
@@ -137,6 +148,8 @@ class RunLifecycleFinalizer:
                 await self._settle_workspace(session, locked, workspace_result, captured),
                 "desktop-run.workspace-result",
             )
+            if attention is not None:
+                locked.workspace_result = {**locked.workspace_result, "task_attention": attention if locked.status == "interrupted" else []}
             locked.settled_at = datetime.now(UTC)
             from backend.app.desktop.run_orchestration.dispatch import RunDispatchRepository
 

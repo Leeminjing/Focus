@@ -575,6 +575,7 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .map-workspace-group > header,
 .map-root-group > header,
 .task-card-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.task-last-result { color: var(--text-secondary); font-size: 11px; }
 .map-workspace-group h2 { margin: 1px 0 0; font-size: 16px; }
 .map-root-groups { display: grid; gap: var(--space-3); }
 .map-root-group { display: grid; gap: var(--space-2); }

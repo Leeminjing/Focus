@@ -33,6 +33,12 @@ contextBridge.exposeInMainWorld("focusDesktop", {
   openExternal: url => ipcRenderer.invoke("focus:open-external", url),
   setZoomLevel: level => ipcRenderer.invoke("focus:set-zoom-level", level),
   getZoomLevel: () => ipcRenderer.invoke("focus:get-zoom-level"),
+  notifications: {
+    settings: enabled => ipcRenderer.invoke("focus:notifications-settings", enabled),
+    ready: () => ipcRenderer.invoke("focus:notifications-ready"),
+    onOpen: callback => subscribe("focus:notification-open", callback),
+    onTasks: callback => subscribe("focus:tasks-updated", callback),
+  },
   patrol: {
     enabled: patrolEnabled,
     recovery: {
