@@ -21,7 +21,7 @@ def isolated_mcp(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(tmp_path / "global"))
     monkeypatch.setattr(cache, "_cache", {})
-    monkeypatch.setattr(cache, "_locks", {})
+    monkeypatch.setattr(cache, "_loads", {})
     return cache
 
 

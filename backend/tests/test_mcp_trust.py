@@ -145,8 +145,11 @@ def test_overrides_are_scoped_to_the_server_that_declared_them(monkeypatch):
     class _FakeSession:
         is_alive = True
 
-        def __init__(self, client, server_name, load_tools):
+        def __init__(self, client, server_name, load_tools, **kwargs):
             self._tools = [_probe()]
+
+        def touch(self):
+            pass
 
         async def start(self):
             return self._tools
@@ -224,8 +227,11 @@ def test_promise_stage_external_queries_do_not_ask(monkeypatch):
     resolver, query = _context7_tools()
 
     class _FakeSession:
-        def __init__(self, client, server_name, load_tools):
+        def __init__(self, client, server_name, load_tools, **kwargs):
             self._tools = [resolver, query]
+
+        def touch(self):
+            pass
 
         async def start(self):
             return self._tools
