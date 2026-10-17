@@ -13,6 +13,7 @@ const records = new Map();
 const streams = new Map();
 let sequence = 0;
 window.patrolFixture = {
+  requests: [], releaseBootstrap: null,
   pageError: null, pagesEmpty: false, reloads: 0, mainSubmissions: [], waitAnswers: [], grantChanges: [],
   observationError: false,
   historyPageSize: 50, historyRequests: [], historyReleases: [], holdHistory: false, failHistory: false,
@@ -39,6 +40,11 @@ window.fetch = async (input, options = {}) => {
   if (fileFeedback) return fileFeedback;
   const url = new URL(String(input), "http://focus.test");
   const path = url.pathname;
+  window.patrolFixture.requests.push(path);
+  if (path === "/desktop/api/bootstrap" && process.env.FOCUS_TEST_HOLD_BOOTSTRAP === "1" && !sessionStorage.getItem("focus-test-bootstrap-held")) {
+    sessionStorage.setItem("focus-test-bootstrap-held", "1");
+    await new Promise(resolve => { window.patrolFixture.releaseBootstrap = resolve; });
+  }
   const prefix = "/desktop/api/agent-loops";
   if (path === '/desktop/api/contexts/batch-delete' && window.patrolFixture.mapDeletes) {
     const body = JSON.parse(options.body);

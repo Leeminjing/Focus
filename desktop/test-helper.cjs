@@ -30,6 +30,7 @@ const BASE_GLOBALS = {
   console,
   crypto: webcrypto,
   location: { origin: "http://localhost", protocol: "http:" },
+  performance,
   requestAnimationFrame() {},
   setInterval() {},
   setTimeout() {},
@@ -79,6 +80,7 @@ function createNode(extra = {}) {
 function readAppSource() {
   return fs
     .readFileSync(require.resolve("./app.js"), "utf8")
+    .replace(/runUiAction\(async \(\) => \{ await bootstrap\(\); if \(desktopPatrol\) await desktopPatrol.ready\(\); \}\);\s*$/, "")
     .replace(/(?:runUiAction\(bootstrap\)|bootstrap\(\));\s*$/, "");
 }
 
@@ -186,6 +188,8 @@ function createAppHarness(options = {}) {
   vm.runInContext(fs.readFileSync(require.resolve("./task-run-operations.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./run-stream-subscriptions.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./http-response.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("./workspace-patrol-inputs.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("./workspace-patrol-intake.js"), "utf8"), context);
   return { vm, context, document, inert, statusNode, statusState, fetches, listeners, dispatch };
 }
 

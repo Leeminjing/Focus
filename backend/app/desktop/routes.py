@@ -65,17 +65,15 @@ async def get_sandbox_status() -> dict[str, object]:
 @desktop_router.get("/bootstrap")
 async def bootstrap(request: Request) -> dict:
     service = request.app.state.desktop_service
-    from focus.plugins import get_plugin_registry
-
-    plugins = [
-        plugin for plugin in get_plugin_registry().list_plugins()
-        if plugin["status"] == "active"
-    ]
     return {
         "tasks": await service.list_tasks(),
-        "equipment": await service.equipment(),
-        "plugins": plugins,
+        "equipment": await service.equipment(include_tools=False),
     }
+
+
+@desktop_router.get("/equipment")
+async def get_equipment(request: Request) -> dict:
+    return await request.app.state.desktop_service.equipment()
 
 
 @desktop_router.post("/workspaces")

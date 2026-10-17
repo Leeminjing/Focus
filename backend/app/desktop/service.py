@@ -74,9 +74,10 @@ from backend.app.desktop.equipment_policy import effective_equipment
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 from langgraph.graph.state import CompiledStateGraph
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import load_only
 
 from backend.app.desktop.collab import AgentCollab
 from backend.app.desktop.checkpoint_recovery import select_checkpoint_base
@@ -525,7 +526,7 @@ class DesktopService:
             raise RuntimeError(f"Run 装配未生成 Agent factory: {run_id}")
         return RunExecutionAssembly(run_id=run_id, body=prepared.body, thread_id=prepared.thread_id, agent_factory=prepared.agent_factory)
 
-    async def equipment(self) -> dict[str, Any]:
+    async def equipment(self, *, include_tools: bool = True) -> dict[str, Any]:
         from backend.app.desktop.model_settings import catalog_snapshot
 
         try:
@@ -538,7 +539,8 @@ class DesktopService:
             "models": catalog_snapshot(self.app_config),
             "skills": skills,
             "permissions": ["read", "write", "host_command"],
-            "tools": await self._equipment_tools(),
+            "tools": await self._equipment_tools() if include_tools else [],
+            "tools_status": "loaded" if include_tools else "deferred",
         }
 
     async def run_by_idempotency(self, idempotency_key: str) -> dict[str, Any] | None:
@@ -627,11 +629,38 @@ class DesktopService:
             rows = (
                 await session.execute(
                     select(DesktopThread, DesktopWorkspace)
+                    .options(load_only(
+                        DesktopThread.task_id, DesktopThread.workspace_id, DesktopThread.thread_id,
+                        DesktopThread.title, DesktopThread.archived_at, DesktopThread.deleted_at,
+                    ))
                     .join(DesktopWorkspace, DesktopThread.workspace_id == DesktopWorkspace.workspace_id)
                     .order_by(DesktopThread.created_at)
                 )
             ).all()
-            return [await self._task_payload(session, task, workspace) for task, workspace in rows]
+            if not rows:
+                return []
+            # 列表只投影最新活跃 Main Run，不读取任何恢复 checkpoint。
+            ranked_runs = select(
+                DesktopRun.run_id,
+                func.row_number().over(
+                    partition_by=DesktopRun.task_id,
+                    order_by=(DesktopRun.created_at.desc(), DesktopRun.run_id.desc()),
+                ).label("position"),
+            ).where(
+                DesktopRun.agent_id == "main:" + DesktopRun.task_id,
+                DesktopRun.status.in_(["pending", "running"]),
+            ).subquery()
+            runs = (await session.scalars(
+                select(DesktopRun).join(ranked_runs, DesktopRun.run_id == ranked_runs.c.run_id)
+                .where(ranked_runs.c.position == 1)
+                .options(load_only(
+                    DesktopRun.run_id, DesktopRun.task_id, DesktopRun.agent_id,
+                    DesktopRun.kind, DesktopRun.status, DesktopRun.model_name,
+                ))
+            )).all()
+            active_runs = {run.task_id: run for run in runs}
+            return [self._task_summary(task, workspace, active_runs.get(task.task_id))
+                    for task, workspace in rows]
 
     async def get_task(self, task_id: str) -> dict[str, Any]:
         async with self.session_factory() as session:
@@ -2709,6 +2738,24 @@ class DesktopService:
     def _workspace_payload(workspace: DesktopWorkspace) -> dict[str, Any]:
         return {"workspace_id": workspace.workspace_id, "path": workspace.path, "display_name": workspace.display_name}
 
+    def _task_summary(
+        self, task: DesktopThread, workspace: DesktopWorkspace, active: DesktopRun | None = None
+    ) -> dict[str, Any]:
+        return {
+            "task_id": task.task_id, "workspace_id": task.workspace_id, "workspace_path": workspace.path,
+            "workspace_name": workspace.display_name, "thread_id": task.thread_id, "title": task.title,
+            "harness_mode": "assembly" if task.thread_id == _ASSEMBLY_THREAD_ID else "workspace",
+            "lifecycle": (
+                "deleted" if task.deleted_at is not None
+                else "archived" if task.archived_at is not None
+                else "active"
+            ),
+            "active_run": {
+                key: getattr(active, key)
+                for key in ("run_id", "task_id", "agent_id", "kind", "status", "model_name")
+            } if active else None,
+        }
+
     async def _task_payload(
         self, session: AsyncSession, task: DesktopThread, workspace: DesktopWorkspace
     ) -> dict[str, Any]:
@@ -2743,14 +2790,7 @@ class DesktopService:
             session, task, self.checkpointer, APPROVAL_TYPE
         )
         return {
-            "task_id": task.task_id, "workspace_id": task.workspace_id, "workspace_path": workspace.path,
-            "workspace_name": workspace.display_name, "thread_id": task.thread_id, "title": task.title,
-            "harness_mode": "assembly" if task.thread_id == _ASSEMBLY_THREAD_ID else "workspace",
-            "lifecycle": (
-                "deleted" if task.deleted_at is not None
-                else "archived" if task.archived_at is not None
-                else "active"
-            ),
+            **self._task_summary(task, workspace, active),
             "ui_state": ui_state,
             "active_run": self._run_payload(active) if active else None,
             "latest_direct_user_run": self._run_payload(latest_direct_user) if latest_direct_user else None,

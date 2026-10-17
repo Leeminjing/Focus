@@ -568,12 +568,12 @@ function loadPluginScript(src) {
   const loading = new Promise(resolve => {
     const script = document.createElement("script");
     script.src = src;
-    script.onload = resolve;
+    script.onload = () => resolve(true);
     script.onerror = () => {
       pluginScriptAssets.delete(src);
       script.remove();
       console.error("插件脚本加载失败:", src);
-      resolve();
+      resolve(false);
     };
     document.head.append(script);
   });
@@ -595,6 +595,7 @@ async function hydratePluginAssets(bootstrapPlugins = null) {
     const data = bootstrapPlugins == null
       ? await api("/desktop/api/plugins") : { plugins: bootstrapPlugins };
     const active = (data.plugins || []).filter(plugin => plugin.status === "active");
+    const failed = [];
     for (const plugin of active) {
       const files = plugin.desktop_assets || [];
       for (const file of files.filter(name => name.endsWith(".css"))) {
@@ -615,13 +616,30 @@ async function hydratePluginAssets(bootstrapPlugins = null) {
         .filter(name => name.endsWith(".js"))
         .sort((a, b) => (a === "entry.js") - (b === "entry.js"));
       for (const file of jsFiles) {
-        await loadPluginScript(`/plugins/${encodeURIComponent(plugin.name)}/desktop/${encodeURIComponent(file)}`);
+        if (!await loadPluginScript(`/plugins/${encodeURIComponent(plugin.name)}/desktop/${encodeURIComponent(file)}`)) {
+          failed.push(plugin.name);
+          break;
+        }
       }
     }
+    if (failed.length) throw new Error(`无法加载插件: ${failed.join("、")}`);
+    return true;
   } catch (error) {
     console.error("插件前端资源注入失败:", error);
-    setStatus(`插件资源注入失败: ${error.message}`, true);
+    if (["focus", "plugins"].includes(state.view)) setStatus(`插件资源注入失败: ${error.message}`, true);
+    return false;
   }
+}
+
+let pluginAssetsLoading = null;
+function ensurePluginAssets(plugins = null) {
+  if (!pluginAssetsLoading) {
+    pluginAssetsLoading = hydratePluginAssets(plugins).then(loaded => {
+      if (!loaded) pluginAssetsLoading = null;
+      if (state.view === "focus") render();
+    });
+  }
+  return pluginAssetsLoading;
 }
 
 // f18: 插件视图返回 Focus 对话页的统一钩子
@@ -702,20 +720,27 @@ function replaceTasks(tasks) {
 
 async function bootstrap() {
   setStatus("正在连接…");
+  performance.mark("focus:bootstrap-start");
+  render();
   try {
     const data = await api("/desktop/api/bootstrap");
     replaceTasks(data.tasks);
-    state.equipment = data.equipment;
-    await hydratePluginAssets(data.plugins || []);
-    await hydrateContextTrees();
+    state.equipment = equipmentLoading ? { ...data.equipment, tools_status: "loading" } : data.equipment;
+    performance.mark("focus:bootstrap-ready");
     setStatus("");
-    await hydrateActive();
   } catch (error) {
     setStatus(error.message, true);
-    app.innerHTML = `<section class="empty-state"><h1>桌面服务未就绪</h1><p>${escapeHtml(error.message)}</p><button class="primary" data-action="reload">重跑新分支</button></section>`;
+    // Patrol 有独立的数据入口，摘要读取失败不能卸载已挂载的页面。
+    statusNode.insertAdjacentHTML("beforeend", ' <button data-action="reload">重试连接</button>');
     return false;
   }
   render();
+  try {
+    if (state.view === "focus") await hydrateActive();
+    else if (state.view === "map") await hydrateContextTrees();
+    else if (state.view === "draft") void hydrateEquipment();
+    if (state.view !== "patrol") render();
+  } catch (error) { setStatus(error.message, true); }
   return true;
 }
 
@@ -738,7 +763,7 @@ async function hydrateActive(taskId = state.activeTaskId) {
   state.skillCatalogs.set(taskId, catalog.skills);
   state.materialGroups.set(taskId, materialGroups);
   state.materialHistory.set(taskId, materialHistory);
-  if (state.activeTaskId === taskId) {
+  if (state.activeTaskId === taskId && ["focus", "compress"].includes(state.view)) {
     reconcileCommitmentRecovery(detail);
     reconcileCompressionRecovery(detail);
     reconcileAccessReview(detail);
@@ -750,6 +775,15 @@ async function hydrateActive(taskId = state.activeTaskId) {
     if (["pending", "running"].includes(agent.latest_run?.status)) listenToRun(agent.latest_run);
   });
   updatePatrolAvatarLayer(taskId);
+  if (state.view === "focus" && state.activeTaskId === taskId) {
+    void ensurePluginAssets();
+    const workspaceId = state.tasks.find(task => task.task_id === taskId)?.workspace_id;
+    if (workspaceId && !state.contextTrees.has(workspaceId)) void hydrateContextTrees([workspaceId]).then(() => {
+      if (state.view === "focus" && state.activeTaskId === taskId) render();
+    }).catch(error => {
+      if (state.view === "focus" && state.activeTaskId === taskId) setStatus(`Context 目录加载失败: ${error.message}`, true);
+    });
+  }
 }
 
 function render() {
@@ -828,11 +862,13 @@ async function renderWorkspacePatrol() {
       },
     });
     workspacePatrolMount = workspacePatrolController.mount(app, workspace);
+    performance.mark("focus:patrol-mounted");
     await workspacePatrolMount;
     return;
   }
   if (desktopPatrol) {
     app.innerHTML = '<section class="empty-state"><h1>桌面机器人已就绪</h1><p>在机器人旁绑定工作区，拖入材料并发送。</p><button data-action="show-patrol">打开机器人输入 ↗</button></section>';
+    performance.mark("focus:patrol-mounted");
     return;
   }
   if (workspacePatrolPicker) return;
@@ -857,6 +893,7 @@ async function renderWorkspacePatrol() {
   });
   workspacePatrolPicker = picker;
   picker.mount(app);
+  performance.mark("focus:patrol-mounted");
 }
 
 function observeLoopConnection(loopId) {
@@ -1659,7 +1696,7 @@ function renderContextRail(task) {
 }
 
 function renderTaskRail(task) {
-  const tasks = state.tasks.filter(item => item.harness_mode !== "assembly" && !item.archived_at && !item.deleted_at);
+  const tasks = state.tasks.filter(item => item.harness_mode !== "assembly" && sessionLifecycle(item) === "active");
   return `<aside class="task-workspace-list"><header><strong>工作区任务</strong><button data-action="new-task" aria-label="新建任务">＋</button></header><nav>${tasks.map(item => `<button data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.workspace_name || "本地工作区")} · ${escapeHtml(presentRunStatus(state.details.get(item.task_id)?.active_run?.status).label)}</small></button>`).join("")}</nav><footer>这里的输入只发送到当前选中的任务。</footer></aside>`;
 }
 
@@ -2459,6 +2496,7 @@ async function hydratePlugins() {
       ? state.plugins.selectedName
       : null;
     state.plugins = { plugins, interfaces: data.interfaces || {}, traces: traceData.traces || [], filter: state.plugins.filter || "all", selectedName, query: state.plugins.query || "" };
+    void ensurePluginAssets(plugins);
     return true;
   } catch (error) {
     if (requestId === pluginHydrationSequence) state.plugins = { ...state.plugins, error: error.message };
@@ -3303,9 +3341,15 @@ function renderMap(focusKey = null) {
   }
 }
 
-async function hydrateContextTrees() {
+async function hydrateContextTrees(workspaceIds = null) {
+  if (workspaceIds == null) {
+    if (state.view === "map" && state.mapViewMode !== "graph") {
+      workspaceIds = [...new Set(state.tasks.filter(task => sessionLifecycle(task) === "active").map(task => task.workspace_id))];
+    } else if (["focus", "draft", "context"].includes(state.view) && activeTask()) {
+      workspaceIds = [activeTask().workspace_id];
+    } else return;
+  }
   const requestId = ++contextTreeRequestSequence;
-  const workspaceIds = [...new Set(state.tasks.map(task => task.workspace_id))];
   const trees = await Promise.all(workspaceIds.map(async workspaceId => [
     workspaceId,
     await api(`/desktop/api/workspaces/${workspaceId}/contexts/tree`),
@@ -3666,7 +3710,7 @@ function renderDraft() {
   if (!curator && currentWorkbench?.dataset?.draftId === draft.draft_id && window.FocusPatrolWorkbench) {
     window.FocusPatrolWorkbench.get(draft.draft_id).rebind({draft,api,onStale:updateTokenState,onPreview:updateTokenState,onReload:()=>renderDraft(),onEquipment:()=>{const panel=document.querySelector(".draft-equipment");if(panel)panel.open=true;}});
     const equipment = document.querySelector('.draft-step[data-step="equipment"] .draft-step-body');
-    const signature = JSON.stringify([draft.equipment.model_name,draft.equipment.skills,draft.equipment.permissions,draft.equipment.access_mode]);
+    const signature = JSON.stringify([draft.equipment.model_name,draft.equipment.skills,draft.equipment.permissions,draft.equipment.access_mode,state.equipment.tools_status]);
     if (equipment && equipment.dataset.signature !== signature) { equipment.innerHTML = renderEquipment(draft); equipment.dataset.signature = signature; }
     updateTokenState(); return;
   }
@@ -3721,6 +3765,8 @@ const sourceMeta = {
 };
 
 function renderEquipmentTools() {
+  if (state.equipment.tools_status === "loading") return '<p role="status">正在加载工具目录…</p>';
+  if (state.equipment.tools_status === "error") return `<p role="status">工具目录加载失败：${escapeHtml(state.equipment.tools_error)} <button data-action="retry-equipment">重试</button></p>`;
   const tools = state.equipment.tools || [];
   if (!tools.length) return "";
   const grouped = tools.reduce((map, tool) => {
@@ -3737,7 +3783,29 @@ function renderEquipmentTools() {
         <ul class="equipment-tool-list">${items.map(tool => `<li title="${escapeHtml(String(tool.source || ""))}">${escapeHtml(tool.label || tool.name)}</li>`).join("")}</ul>
       </div>`;
     }).join("");
-  return `<div class="equipment-tools"><span class="tiny muted">可用工具（按来源）</span>${blocks}</div>`;
+  return `<div class="equipment-tools"><span class="tiny muted">工具目录（按来源，执行时校验）</span>${blocks}</div>`;
+}
+
+let equipmentLoading = null;
+async function hydrateEquipment() {
+  if (equipmentLoading) return equipmentLoading;
+  if (state.equipment.tools_status === "loaded") return;
+  state.equipment = { ...state.equipment, tools_status: "loading" };
+  equipmentLoading = (async () => {
+    try {
+      const equipment = await api("/desktop/api/equipment");
+      if (!Array.isArray(equipment.tools)) throw new Error("工具目录响应无效");
+      state.equipment = { ...state.equipment, tools: equipment.tools, tools_status: "loaded", tools_error: null };
+      performance.mark("focus:equipment-loaded");
+    } catch (error) {
+      state.equipment = { ...state.equipment, tools_status: "error", tools_error: error.message };
+    } finally {
+      equipmentLoading = null;
+      if (state.view === "draft") renderDraft();
+    }
+  })();
+  if (state.view === "draft") renderDraft();
+  return equipmentLoading;
 }
 
 function scoreSource(source) {
@@ -3773,6 +3841,7 @@ async function openDraft(taskId) {
     state.soldierArmed = false;
     setStatus("");
     render();
+    void hydrateEquipment();
   } catch (error) { if (requestId === draftOpenRequestSequence) setStatus(error.message, true); }
 }
 
@@ -6456,7 +6525,7 @@ async function handleDocumentClick(event) {
   if (action === "select-skill") return selectSkill(button.dataset.pickerKind, button.dataset.skillName);
   if (action === "select-commit") return selectCommitCommand(button.dataset.pickerKind);
   if (action === "remove-skill") return removeSkill(button.dataset.pickerKind, button.dataset.skillName);
-  if (action === "show-map") { if (state.view === "focus") persistFocusState(); cancelPendingViewRequests(); state.inspector.open = false; state.view = "map"; return render(); }
+  if (action === "show-map") { if (state.view === "focus") persistFocusState(); cancelPendingViewRequests(); state.inspector.open = false; state.view = "map"; render(); await hydrateContextTrees(); if (state.view === "map") render(); return; }
   if (action === "set-map-view") {
     const mode = button.dataset.mapView;
     if (!["graph", "tree", "cards"].includes(mode)) return;
@@ -6464,6 +6533,9 @@ async function handleDocumentClick(event) {
     state.mapTreeFocusKey = "";
     if (mode === "tree") state.mapExpandedForTaskId = null;
     persistMapViewPreferences();
+    renderMap();
+    await hydrateContextTrees();
+    if (state.view !== "map" || state.mapViewMode !== mode) return;
     renderMap();
     app.querySelector(`[data-action="set-map-view"][data-map-view="${mode}"]`)?.focus();
     return;
@@ -6594,6 +6666,7 @@ async function handleDocumentClick(event) {
     renderPlugins();
     try {
       await api("/desktop/api/plugins/reload", { method: "POST" });
+      pluginAssetsLoading = null;
       await hydratePlugins();
     } catch (error) {
       state.plugins = { ...state.plugins, loading: false, error: error.message };
@@ -6601,6 +6674,7 @@ async function handleDocumentClick(event) {
     }
     return;
   }
+  if (action === "retry-equipment") return hydrateEquipment();
   if (action === "set-library-layout") {
     const library = button.dataset.library;
     if (!["plugins", "memory"].includes(library) || !["cards", "list"].includes(button.dataset.layout)) return;
