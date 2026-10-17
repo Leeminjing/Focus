@@ -669,7 +669,14 @@ window.__focusCloseFilePanel = () => {
 function pluginViewForMaterial(material) {
   return Object.values(pluginViews).find(view =>
     typeof view.supportsMaterial === "function" && view.supportsMaterial(material)
-  ) || null;
+  ) || (window.FocusFilePreview ? {
+    mountPanel(container, file, appState) {
+      const name = file.relative_path || file.path;
+      container.innerHTML = `<header class="file-panel-head"><strong>${escapeHtml(name)}</strong><button type="button" data-file-close>关闭</button></header><div data-generic-file></div>`;
+      container.querySelector("[data-file-close]").addEventListener("click", () => window.__focusCloseFilePanel());
+      void window.FocusFilePreview.mount(container.querySelector("[data-generic-file]"), { name, target: { task_id: appState.activeTaskId, content_ref: name } });
+    },
+  } : null);
 }
 
 function currentSpatialTarget() {
@@ -2092,19 +2099,29 @@ function collectMessageImages(content) {
   return imageMaterialPicker.materialRefIds(contentPlainText(content));
 }
 
-// f18:消息文件卡片 —— 常见类型全部可点开(图片/PDF/docx/doc/md/txt),点击打开右侧文件面板
-const FILE_VIEWABLE_RE = /\.(png|jpe?g|webp|bmp|gif|pdf|docx?|md|txt)$/i;
+// Every artifact has a preview or explicit native file exits.
+const FILE_VIEWABLE_RE = /\S/;
 
 function fileNameFromLinkHref(href, hostPart = "") {
   const source = href.startsWith("file:") ? href : hostPart;
   return decodeURIComponent(source.replace(/[?#].*$/, "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "");
 }
 
+function filePathFromLinkHref(href, hostPart = "") {
+  if (href.startsWith("file:")) {
+    const url = new URL(href);
+    const path = decodeURIComponent(url.pathname);
+    return url.hostname ? `//${url.hostname}${path}` : path.replace(/^\/([A-Za-z]:\/)/, "$1");
+  }
+  if (/^https?:/i.test(href)) return fileNameFromLinkHref(href, hostPart);
+  return decodeURIComponent(href.replace(/[?#].*$/, ""));
+}
+
 function renderFileCards(message) {
   const files = message.files;
   if (!Array.isArray(files) || !files.length) return "";
   const cards = files.map(file => {
-    const name = String(file?.filename || file?.name || "");
+    const name = String(file?.relative_path || file?.path || file?.filename || file?.name || "");
     if (!name) return "";
     const viewable = FILE_VIEWABLE_RE.test(name)
       && !!pluginViewForMaterial({ relative_path: name, path: name });
@@ -6826,7 +6843,8 @@ document.addEventListener("click", event => {
     /\.(md|txt|png|jpe?g|pdf|docx?)$/i.test(hostPart)
     || /[一-鿿]/.test(hostPart)
   );
-  if (!isHttp && !href.startsWith("file:")) return; // 非 http/file 链接不处理
+  const relativeFile = !/^(?:[a-z][a-z\d+.-]*:|#|\/\/)/i.test(href) && /\.[\w-]+(?:[?#].*)?$/.test(href);
+  if (!isHttp && !href.startsWith("file:") && !relativeFile) return;
   if (isHttp && !looksLikeFileHost) {
     event.preventDefault();
     event.stopPropagation();
@@ -6837,7 +6855,7 @@ document.addEventListener("click", event => {
   event.preventDefault();
   event.stopPropagation();
   // 显示文字可能含图标/说明,路径只取自 href(file URL)或兼容分支的 host。
-  const fileName = fileNameFromLinkHref(href, hostPart);
+  const fileName = filePathFromLinkHref(href, hostPart);
   if (FILE_VIEWABLE_RE.test(fileName)) {
     const taskId = state.activeTaskId;
     const material = (state.materials.get(taskId) || [])
@@ -6956,6 +6974,7 @@ async function handleDocumentClick(event) {
     panel.className = "patrol-dialog glass-surface";
     panel.setAttribute("aria-label", "事实与来源");
     panel.innerHTML = `<header><h2>事实与来源</h2><form method="dialog"><button aria-label="关闭">×</button></form></header><div data-patrol-dialog-body>${window.FocusLoopFactsView.renderDetail(detail)}</div>`;
+    if (detail.file) window.FocusFilePreview?.mountHistory(panel, detail.file, loopId);
     document.body.append(panel);
     panel.addEventListener("close", () => panel.remove(), { once: true });
     const dismiss = event => { event.preventDefault(); void window.FocusSurfaceTransition.visible(panel, false, { modal: true }); };

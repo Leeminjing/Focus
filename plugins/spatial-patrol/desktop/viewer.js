@@ -105,7 +105,7 @@
   function supportsMaterial(materialOrName) {
     const name = typeof materialOrName === "string"
       ? materialOrName : materialOrName?.relative_path || materialOrName?.path || "";
-    return /\.(png|jpe?g|webp|bmp|gif|pdf|docx?|md|txt)$/i.test(name);
+    return !!name;
   }
 
   function previewUrl() {
@@ -741,6 +741,21 @@
   }
 
   function mountPanel(container, material, appState) {
+    const name = material?.relative_path || material?.path || "";
+    const target = { task_id: appState.activeTaskId, content_ref: name };
+    const preview = root.FocusFilePreview;
+    if (!/\.docx$/i.test(name)) root.FocusDocxEditor?.destroy();
+    if (!/\.(png|jpe?g|webp|bmp|gif|pdf|docx?|doc)$/i.test(name) && preview) {
+      state.panelMode = false;
+      state.panelContainer = null;
+      state.textResizeObserver?.disconnect();
+      state.docxRunMode = null;
+      state.selectedId = null;
+      container.innerHTML = `<header class="file-panel-head"><strong>${escapeHtml(name)}</strong><button type="button" data-generic-close>关闭</button></header><div data-generic-file></div>`;
+      container.querySelector("[data-generic-close]").addEventListener("click", () => root.__focusCloseFilePanel?.());
+      void preview.mount(container.querySelector("[data-generic-file]"), { name, target });
+      return;
+    }
     if (/\.docx$/i.test(material?.relative_path || "")) {
       state.panelMode = true;
       state.panelContainer = container;
@@ -748,7 +763,8 @@
       state.task = appState.tasks.find(item => item.task_id === appState.activeTaskId) || state.task;
       const editor = root.FocusDocxEditor;
       if (!editor?.mount) {
-        container.innerHTML = '<section class="focus-docx-error"><strong>DOCX 编辑插件资源不可用</strong><p>Focus 其他功能不受影响。</p></section>';
+        if (preview) void preview.mount(container, { name, target });
+        else container.innerHTML = '<section class="focus-docx-error"><strong>DOCX 编辑插件资源不可用</strong></section>';
         return;
       }
       editor.mount(container, material, appState, {
@@ -788,6 +804,14 @@
   }
 
   function bindPanelEvents(container) {
+    const name = state.material?.relative_path || "";
+    if (root.FocusFilePreview) {
+      const exits = document.createElement("div");
+      const target = { task_id: state.task.task_id, content_ref: name };
+      exits.innerHTML = root.FocusFilePreview.toolbar(target, name);
+      container.querySelector(".file-panel-head")?.append(exits);
+      root.FocusFilePreview.bindActions(exits, target, name);
+    }
     container.querySelector("[data-panel-action='close']")?.addEventListener("click", () => {
       state.panelMode = false;
       state.filesPanel = null;
@@ -813,6 +837,9 @@
       }, { passive: false });
       container.querySelector("#spatialImage")?.addEventListener("load", event => onImageLoaded(event.target));
       const image = container.querySelector("#spatialImage");
+      image?.addEventListener("error", () => {
+        image.alt = "文件预览失败，请使用上方系统打开、文件夹或另存为操作";
+      });
       if (image?.complete && image.naturalWidth) onImageLoaded(image);
     }
     const textView = container.querySelector("#spatialTextView");
