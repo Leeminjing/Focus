@@ -35,6 +35,12 @@ class IndexBudgetExceeded(ValueError):
         self.request_diagnostic = request_diagnostic
 
 
+def index_failure_progress_status(message):
+    if "provider_request_window" in message:
+        return "capacity_blocked"
+    return "blocked" if "exhausted" in message else "failed"
+
+
 @dataclass
 class _LocalReservation:
     amounts: list[int] = field(default_factory=lambda: [0, 0, 0])
@@ -207,6 +213,8 @@ class BudgetedIndexModel:
     def __init__(
         self, model, budget: IndexModelBudget, *, semaphore: asyncio.Semaphore | None = None,
         telemetry_context=None,
+        progress=None,
+        background=False,
     ) -> None:
         self._model = model
         self._budget = budget
@@ -214,8 +222,11 @@ class BudgetedIndexModel:
         self._admission_ms = 0.0
         self._telemetry_context = dict(telemetry_context or {})
         self._identity = getattr(model, "cache_identity", None)
+        self._output_token_limit = getattr(model, "max_output_tokens", None)
         self._guarded = hasattr(model, "bind_request_guard")
         self._last_attempt_records = ()
+        self._progress = progress
+        self._background = background
         self._admissions = []
         if budget.usage_receipts is not None and hasattr(model, "bind_usage_receipts"):
             model.bind_usage_receipts(budget.usage_receipts)
@@ -229,6 +240,7 @@ class BudgetedIndexModel:
             reservation = await self._budget.admit(model, schema, system, payload, per_attempt=True)
             if reservation is not None:
                 self._admissions.append(reservation)
+            await self._report("running")
         finally:
             self._admission_ms += (perf_counter_ns() - started) / 1_000_000
 
@@ -266,11 +278,22 @@ class BudgetedIndexModel:
         entered = None
         outcome = "error"
         try:
-            async with self._semaphore if self._semaphore is not None else nullcontext():
+            waiting = (self._semaphore.would_wait(background=self._background)
+                       if hasattr(self._semaphore, "would_wait") else
+                       self._semaphore is not None and self._semaphore.locked())
+            if waiting:
+                await self._report("queued")
+            slot = (self._semaphore.slot(background=self._background)
+                    if hasattr(self._semaphore, "slot") else self._semaphore)
+            async with slot if slot is not None else nullcontext():
                 entered = perf_counter_ns()
                 result = await self._invoke_with_slot(schema, system, payload, validator)
                 outcome = "ready"
                 return result
+        except IndexBudgetExceeded as exc:
+            outcome = "blocked"
+            await self._report(index_failure_progress_status(str(exc)))
+            raise
         except asyncio.CancelledError:
             outcome = "cancelled"
             raise
@@ -282,8 +305,16 @@ class BudgetedIndexModel:
                 "queue_wait_ms": ((entered or finished) - started) / 1_000_000,
                 "execution_ms": (finished - entered) / 1_000_000 if entered else 0.0,
                 "admission_ms": self._admission_ms,
+                "output_token_limit": self._output_token_limit,
+                "model_calls": sum(int(a.get("model_calls") or 0) for a in self._last_attempt_records),
+                "input_tokens": sum(int(a.get("input_tokens") or 0) for a in self._last_attempt_records),
+                "output_tokens": sum(int(a.get("output_tokens") or 0) for a in self._last_attempt_records),
             }
             _logger.info("semantic_index_model_invocation %s", metrics, extra=metrics)
+
+    async def _report(self, status):
+        if self._progress is not None:
+            await self._progress(status=status, **self._telemetry_context)
 
     async def _invoke_with_slot(self, schema, system, payload, validator):
         self._check_identity()

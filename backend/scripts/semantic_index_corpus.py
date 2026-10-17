@@ -111,8 +111,9 @@ def summarize_reports(directory):
             "configured_model", "provider_model", "output_token_limit", "model_identities",
             "concurrency", "budget_limits",
         )}
+        control["role_output_token_limits"] = report.get("role_output_token_limits") or {}
         if key in controls and controls[key] != control:
-            raise ValueError("incomparable benchmark reports: model, concurrency or budget differs")
+            raise ValueError("incomparable benchmark reports: model, role output limits, concurrency or budget differs")
         controls[key] = control
         inputs[report["corpus_case_hash"]] = report["frozen_sources"]
         for phase_name, phase in report["phases"].items():
@@ -120,6 +121,7 @@ def summarize_reports(directory):
             rows.append({
                 "case": report["case"], "corpus_case_hash": key[0], "repeat": key[1],
                 "max_messages": report["segment_size"], "max_estimated_tokens": report["segment_token_limit"],
+                "local_prewarm": report.get("local_prewarm", "off"),
                 "phase": phase_name, "evaluation_complete": report.get("evaluation_complete", False),
                 **{name: phase.get(name) for name in (
                     "duration_ms", "model_calls", "billed_model_calls", "input_tokens", "output_tokens",
@@ -135,7 +137,7 @@ def summarize_reports(directory):
         raise ValueError("no benchmark reports found")
     return {
         "version": "semantic-index-benchmark-summary-v1",
-        "comparison_rule": "vary max_messages at fixed max_estimated_tokens, or vice versa; compare matching cases/repeats/phases",
+        "comparison_rule": "vary one of max_messages, max_estimated_tokens or local_prewarm at a time; compare matching cases/repeats/phases and include prewarm cost",
         "semantic_review": "message citation coverage is a proxy; semantic completeness has no human gold set",
         "controls": [{"corpus_case_hash": key[0], "repeat": key[1], **value} for key, value in controls.items()],
         "source_inputs": inputs, "rows": rows,

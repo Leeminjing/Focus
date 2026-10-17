@@ -178,6 +178,13 @@ class IndexBudgetReservationRepository:
         from backend.app.desktop.agent_loop.models import LoopPatrolAttempt, LoopRound, LoopWorkerRequest
 
         kind = self._owner.get("owner_kind")
+        if kind == "index_prewarm":
+            from .index_prewarm import validate_prewarm_owner
+
+            loop = await session.get(AgentLoop, self._loop_id)
+            grant = await self._authorized_grant(session, self._loop_id, self._grant_revision)
+            await validate_prewarm_owner(session, loop, grant, self._owner)
+            return
         model = {"patrol": LoopPatrolAttempt, "worker": LoopWorkerRequest, "round": LoopRound}.get(kind)
         source = await session.get(model, self._owner.get("owner_id"), with_for_update=True) if model else None
         loop = await session.get(AgentLoop, self._loop_id)

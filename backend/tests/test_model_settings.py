@@ -176,6 +176,16 @@ def test_catalog_snapshot_exposes_every_editable_field(workspace):
             assert field in entry
 
 
+def test_saving_from_older_client_keeps_declared_role_output_limits(workspace):
+    catalog = _file_catalog()
+    catalog[0]["derivation_max_output_tokens"] = {"semantic_index_interpreter": 2048}
+    _write_preference(workspace, catalog, [])
+    _, config = _load_config(workspace)
+    submitted = _file_catalog()  # No role field in an older settings client.
+    save_model_settings(config, {"models": submitted, "removed_models": []})
+    assert config.models[0].derivation_max_output_tokens == {"semantic_index_interpreter": 2048}
+
+
 def test_catalog_snapshot_never_exposes_the_secret(workspace):
     config = _app_config()
 

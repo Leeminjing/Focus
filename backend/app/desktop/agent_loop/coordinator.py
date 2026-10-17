@@ -701,6 +701,9 @@ class LoopCoordinatorRuntime:
             SupervisorComponent("run_events", lambda: self._drain_run_events(loop_id), self._poll_seconds),
             SupervisorComponent("rounds", lambda: self._process_round(loop_id), self._poll_seconds),
         ]
+        prewarm = getattr(self._orchestrator, "prewarm_indexes", None)
+        if prewarm is not None:
+            components.append(SupervisorComponent("index_prewarm", lambda: prewarm(loop_id), self._poll_seconds))
         if self._workers is not None:
             components.append(SupervisorComponent("workers", lambda: self._workers.drain(loop_id), self._poll_seconds))
         if self._portfolio_publications is not None:
