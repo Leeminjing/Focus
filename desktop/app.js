@@ -4635,19 +4635,20 @@ function toggleRunMaterial(materialId) {
 }
 
 async function toggleImageRequired(materialId) {
-  const selection = materialSelection();
+  const taskId = state.activeTaskId;
+  const selection = materialSelection(taskId);
   if (!selection.bindings.some(item => item.materialId === materialId)) {
     return setStatus("请先把图片选为本轮材料", true);
   }
   if (!selection.requiredImageIds.includes(materialId)) {
-    await api(`/desktop/api/tasks/${state.activeTaskId}/materials/${materialId}/image-validity`);
+    await api(`/desktop/api/tasks/${taskId}/materials/${materialId}/image-validity`);
   }
   state.materialSelections.set(
-    state.activeTaskId,
+    taskId,
     runMaterialPicker.toggleRequired(
-      selection,
+      materialSelection(taskId),
       materialId,
-      state.materials.get(state.activeTaskId) || []
+      state.materials.get(taskId) || []
     )
   );
 }
