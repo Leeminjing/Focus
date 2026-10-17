@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { runCommand, createStartupRuntime, createStageRecorder } = require("./startup-runtime.cjs");
 
-async function fixture(t, statuses = ["current"], externalDatabase = false) {
+async function fixture(t, statuses = ["current"], externalDatabase = false, managed = false) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "focus-runtime-"));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const rootDir = path.join(home, "app");
@@ -23,7 +23,7 @@ async function fixture(t, statuses = ["current"], externalDatabase = false) {
     if (args.includes("-c")) return executable;
     return "fixture";
   };
-  const runtime = createStartupRuntime({ rootDir, home, python: executable, externalDatabase, signal: controller.signal, run, stage: recorder.stage });
+  const runtime = createStartupRuntime({ rootDir, home, python: executable, externalDatabase, managed, signal: controller.signal, run, stage: recorder.stage });
   return { runtime, calls, entries, rootDir, executable, controller };
 }
 
@@ -106,6 +106,23 @@ test("database is checked again on every start, even with an unchanged runtime",
 test("a migration that fails to reach head prevents gateway startup", async t => {
   const { runtime } = await fixture(t, ["pending"]);
   await assert.rejects(runtime.prepareDatabase(await runtime.prepare(), {}), /版本仍未就绪/);
+});
+
+test("managed startup refuses pending migrations and directs users to the update transaction", async t => {
+  const { runtime, calls } = await fixture(t, ["pending"], false, true);
+  await assert.rejects(runtime.prepareDatabase(await runtime.prepare(), {}), /focus update/);
+  assert.equal(calls.filter(call => call.args.includes("upgrade")).length, 0);
+});
+
+test("managed startup checks mapped schema while preserving daily runtime caching", async t => {
+  const { runtime, calls, entries } = await fixture(t, ["current"], false, true);
+  const python = await runtime.prepare();
+  calls.length = 0;
+  await runtime.prepareDatabase(await runtime.prepare(), {});
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].args, ["-m", "backend.app.update_check", "--schema-only"]);
+  assert.equal(calls.some(call => call.args.includes("upgrade") || call.command === "docker"), false);
+  assert.ok(entries.some(entry => entry.stage === "database-schema"));
 });
 
 test("quitting cancels preparation without writing a success cache", async t => {

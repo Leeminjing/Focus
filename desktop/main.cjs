@@ -240,7 +240,8 @@ async function start() {
   startupAbort.signal.throwIfAborted();
   const session = crypto.randomBytes(32).toString("hex");
   const env = pythonEnvironment(session);
-  const runtime = createStartupRuntime({ rootDir, home, signal: startupAbort.signal, stage });
+  const managed = require("../scripts/managed-update.cjs").assertReady(rootDir, home);
+  const runtime = createStartupRuntime({ rootDir, home, signal: startupAbort.signal, stage, managed });
   const pythonRuntime = await stage("runtime", "正在读取已准备的运行环境", 10, () => runtime.prepare());
   await runtime.prepareDatabase(pythonRuntime, env);
   const port = await freePort();

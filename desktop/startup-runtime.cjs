@@ -26,7 +26,7 @@ async function fileIdentity(file) {
   return [stat.size, stat.mtimeMs, stat.ctimeMs];
 }
 
-function createStartupRuntime({ rootDir, home, signal, python = process.env.FOCUS_PYTHON, externalDatabase = Boolean(process.env.FOCUS_DATABASE_URL), run = runCommand, stage = async (_id, _label, _progress, work) => work() }) {
+function createStartupRuntime({ rootDir, home, signal, managed = false, python = process.env.FOCUS_PYTHON, externalDatabase = Boolean(process.env.FOCUS_DATABASE_URL), run = runCommand, stage = async (_id, _label, _progress, work) => work() }) {
   const desktopDir = path.join(rootDir, "desktop");
   const cachePath = path.join(home, "runtime", `startup-${crypto.createHash("sha256").update(rootDir).digest("hex").slice(0, 16)}.json`);
   const command = (file, args, options) => run(file, args, { cwd: rootDir, signal, ...options });
@@ -100,8 +100,13 @@ function createStartupRuntime({ rootDir, home, signal, python = process.env.FOCU
       if (status === "unavailable") throw new Error("本地数据库启动后仍无法连接，请检查 Docker Desktop 和数据库端口。");
     }
     if (status === "pending") {
+      if (managed) throw new Error("数据库版本与已验收版本不一致，请关闭 Focus 后运行 focus update 完成备份、迁移与检查。");
       await stage("migrations", "检测到数据库更新，正在应用迁移", 48, () => pythonCommand(runtime, ["-m", "alembic", "-c", path.join(rootDir, "backend/packages/harness/focus/persistence/migrations/alembic.ini"), "upgrade", "head"], { env, timeout: 180000, label: "数据库迁移", hint: "请检查数据库连接与迁移版本，修复后重试。" }));
       if (await stage("migration-verify", "正在确认数据库更新完成", 56, check) !== "current") throw new Error("数据库迁移后版本仍未就绪");
+    }
+    if (managed) {
+      await stage("database-schema", "正在检查工作区数据", 56, () => pythonCommand(runtime,
+        ["-m", "backend.app.update_check", "--schema-only"], { env, timeout: 15000, label: "数据库结构检查", hint: "请关闭 Focus 后运行 focus update。" }));
     }
   }
   return { prepare, prepareDatabase, cachePath };

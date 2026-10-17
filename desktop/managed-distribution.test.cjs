@@ -11,6 +11,7 @@ const windowsInstaller = read("install.ps1");
 const windowsCli = read("scripts/focus.ps1");
 const gitAttributes = read(".gitattributes");
 const main = read("desktop/main.cjs");
+const updater = read("scripts/managed-update.cjs");
 const readme = read("README.md");
 const readmeZh = read("README.zh-CN.md");
 
@@ -30,6 +31,15 @@ for (const script of ["install.sh", "scripts/focus.sh"]) {
   const result = spawnSync(shell, ["-n", path.join(root, script)], { encoding: "utf8" });
   assert.equal(result.status, 0, `${script} must pass sh -n: ${result.stderr}`);
 }
+if (process.platform === "win32") {
+  for (const script of ["install.ps1", "scripts/focus.ps1"]) {
+    const parser = "$errors = $null; [System.Management.Automation.Language.Parser]::ParseFile($env:FOCUS_PARSE_SCRIPT, [ref]$null, [ref]$errors) | Out-Null; if ($errors) { throw ($errors.Message -join '; ') }";
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", parser], {
+      windowsHide: true, encoding: "utf8", env: { ...process.env, FOCUS_PARSE_SCRIPT: path.join(root, script) },
+    });
+    assert.equal(result.status, 0, `${script} must parse in Windows PowerShell: ${result.stderr}`);
+  }
+}
 
 assert.ok(installer.indexOf('"$(uname -s)" = "Darwin"') < installer.indexOf('mkdir -p "$focus_home"'), "Darwin and prerequisites are checked before installation writes");
 for (const prerequisite of ["git", "node", "npm", "docker"]) {
@@ -42,22 +52,22 @@ assert.match(installer, /chmod 755 "\$bin_dir\/focus"/);
 assert.match(installer, /export PATH="\$HOME\/\.focus\/bin:\$PATH"/);
 
 assert.match(macCli, /case "\$#:\$\*" in[\s\S]*0:\) start_focus[\s\S]*1:update\) update_focus/);
-assert.match(macCli, /git -C "\$app_dir" fetch --prune origin "\$expected_branch"/);
-assert.match(macCli, /git -C "\$app_dir" reset --hard "origin\/\$expected_branch"/);
-assert.match(macCli, /git -C "\$app_dir" reset --hard "\$previous_commit"/);
-assert.match(macCli, /npm --prefix "\$desktop_dir" ci \|\| return \$\?/);
-assert.match(macCli, /pip install[\s\S]*\|\| return \$\?/);
+assert.match(macCli, /node "\$updater" update/);
+assert.match(updater, /refs\/tags\/\$\{tag\}/);
+assert.match(updater, /i\.git\("reset", "--hard", state\.previousCommit\)/);
+assert.match(updater, /i\.backup\(directory\)/);
+assert.match(updater, /i\.migrate\(\);\s*i\.health\(\)/);
 assert.match(macCli, /lock_is_active "\$locks_dir\/running\.lock"/);
 assert.match(macCli, /kill -0 "\$owner"/);
 assert.match(macCli, /FOCUS_GLOBAL_HOME="\$focus_home"/);
 assert.match(macCli, /FOCUS_PYTHON="\$venv_python"/);
 
 assert.match(windowsInstaller, /This installer currently supports Windows only/);
-assert.match(windowsCli, /reset", "--hard", "origin\/\$ExpectedBranch"/);
+assert.match(windowsCli, /managed-update\.cjs/);
 assert.match(main, /if \(process\.platform !== "darwin"\) \{[\s\S]*mainWindowOptions\.titleBarOverlay/);
 assert.match(main, /process\.platform === "win32"/);
 
-const macInstallCommand = "curl -fsSL https://raw.githubusercontent.com/Leeminjing/Focus/main/install.sh | sh";
+const macInstallCommand = "curl -fsSL https://github.com/Leeminjing/Focus/releases/latest/download/install.sh | sh";
 assert.ok(readme.includes(macInstallCommand));
 assert.ok(readmeZh.includes(macInstallCommand));
 for (const document of [readme, readmeZh]) {
@@ -105,19 +115,12 @@ assert.equal(
 
 // electron@43.2.0 不再声明依赖级 postinstall；npm ci 只安装 JS 包，必须由 Focus
 // 显式调用 install-electron，否则 path.txt 永远不会生成，focus/update 会形成死循环。
-const macNpmCi = 'npm --prefix "$desktop_dir" ci || return $?';
-const macElectronInstall = 'npm --prefix "$desktop_dir" run install:electron || return $?';
-assert.ok(macCli.includes(macElectronInstall), "scripts/focus.sh must explicitly install the Electron runtime");
+const macNpmCi = '["ci"]';
+const macElectronInstall = '["run", "install:electron"]';
+assert.ok(updater.includes(macElectronInstall), "scripts/focus.sh must explicitly install the Electron runtime");
 assert.ok(
-  macCli.indexOf(macNpmCi) < macCli.indexOf(macElectronInstall),
+  updater.indexOf(macNpmCi) < updater.indexOf(macElectronInstall),
   "scripts/focus.sh must install Electron after npm ci"
-);
-const windowsNpmCi = 'Invoke-Native $npm @("--prefix", $DesktopDir, "ci")';
-const windowsElectronInstall = 'Invoke-Native $npm @("--prefix", $DesktopDir, "run", "install:electron")';
-assert.ok(windowsCli.includes(windowsElectronInstall), "scripts/focus.ps1 must explicitly install the Electron runtime");
-assert.ok(
-  windowsCli.indexOf(windowsNpmCi) < windowsCli.indexOf(windowsElectronInstall),
-  "scripts/focus.ps1 must install Electron after npm ci"
 );
 assert.ok(
   fs.existsSync(path.join(root, "desktop", ".npmrc")),

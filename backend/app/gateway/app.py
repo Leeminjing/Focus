@@ -204,18 +204,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.agent_loop_completion = CompletionEvidenceService(sessions)
         app.state.session_key = os.getenv("FOCUS_DESKTOP_SESSION", "focus-dev-session")
-        await service.start()
-        app.state.agent_loop_ownership_repair_task = asyncio.create_task(
-            CurationOwnershipRecovery(sessions).reconcile(),
-            name="agent-loop-curation-ownership-repair",
-        )
-        if app.state.loop_feature_flags.supervisor_scheduling:
+        # Update acceptance opens the real lifespan without resuming user work
+        # or starting recovery writers before the release has been accepted.
+        update_check = os.getenv("FOCUS_UPDATE_CHECK") == "1"
+        app.state.agent_loop_ownership_repair_task = None
+        if not update_check:
+            await service.start()
+            app.state.agent_loop_ownership_repair_task = asyncio.create_task(
+                CurationOwnershipRecovery(sessions).reconcile(),
+                name="agent-loop-curation-ownership-repair",
+            )
+        if not update_check and app.state.loop_feature_flags.supervisor_scheduling:
             await app.state.agent_loop_runtime.start()
         try:
             yield
         finally:
             await app.state.agent_loop_runtime.close()
-            repair_results = await asyncio.gather(app.state.agent_loop_ownership_repair_task, return_exceptions=True)
+            repair_results = (
+                await asyncio.gather(app.state.agent_loop_ownership_repair_task, return_exceptions=True)
+                if app.state.agent_loop_ownership_repair_task else []
+            )
             if repair_results and isinstance(repair_results[0], Exception):
                 logger.error("Agent Loop curation ownership repair failed: %s", repair_results[0])
             await service.close()

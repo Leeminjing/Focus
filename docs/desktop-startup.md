@@ -6,7 +6,9 @@
 
 日常启动读取缓存，异步检查真实数据库的连接与 Alembic heads。数据库已可用且版本一致时，
 不执行 Compose 或 `alembic upgrade`；本地数据服务不可连接时才执行有界的 Compose up/wait，
-有待执行迁移时才 upgrade，升级后再次确认版本。设置 `FOCUS_DATABASE_URL` 的外部数据库
+源码开发安装有待执行迁移时才 upgrade，升级后再次确认版本。公开托管安装在启动时只检查
+数据库版本与映射结构；版本不一致时要求运行 `focus update`，由更新事务先备份再迁移和验收，
+不会在下一次启动时补做迁移。设置 `FOCUS_DATABASE_URL` 的外部数据库
 不可连接时直接提示检查该服务，不启动本地 Compose。认证错误、版本查询错误会阻止启动。
 
 缓存放在 Focus home 下的 `runtime/startup-<checkout hash>.json`，绑定仓库位置、平台、
@@ -24,6 +26,7 @@
 | runtime | 获取或准备 Python 运行时 |
 | environment-prepare | 完整预检，仅首次、更新或缓存失效时出现；包含在 runtime 内 |
 | database-check | 实际数据库连接、当前版本与脚本 heads 核对 |
+| database-schema | 托管稳定版本额外核对映射表结构，不执行迁移 |
 | data-services / database-recheck | 按需启动本地服务及复检 |
 | migrations / migration-verify | 按需迁移及版本复检 |
 | gateway-health | 等待 Gateway 导入、初始化及健康响应 |

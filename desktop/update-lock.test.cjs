@@ -14,6 +14,7 @@ $DesktopDir = Join-Path $AppDir 'desktop'
 $LocksDir = Join-Path $FocusHome 'locks'
 $ExpectedRepository = 'https://github.com/Leeminjing/Focus.git'
 $ExpectedBranch = 'main'
+$UpdaterScript = "fixture-managed-update.cjs"
 $parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:FOCUS_TEST_SCRIPT, [ref]$null, [ref]$parseErrors)
 if ($parseErrors) { throw ($parseErrors.Message -join '; ') }
@@ -34,7 +35,11 @@ $script:nativeCalls = 0
 $script:dependencyProbes = 0
 function Test-DependenciesReady { $script:dependencyProbes++; $true }
 function Invoke-Native { param($FilePath, $ArgumentList) $script:nativeCalls++ }
-function Sync-FocusDependencies {
+function Assert-NodeRuntime { "fixture.exe" }
+function Ensure-PythonEnvironment {}
+$VenvPython = "fixture-python"
+function Invoke-Native { param($FilePath, $ArgumentList)
+    $script:nativeCalls++
     try { Start-Focus; throw 'Start was allowed during update' }
     catch { if ($_.Exception.Message -notmatch 'running or being updated') { throw } }
     if ($script:dependencyProbes -ne 0) { throw 'Start probed dependencies during update' }
@@ -58,7 +63,7 @@ switch ($env:FOCUS_TEST_CASE) {
     'updating' { Update-Focus }
     'failed-update' {
         try { Update-Focus; throw 'Update ignored dependency failure' }
-        catch { if ($_.Exception.Message -notmatch 'Focus update failed.*fixture dependency failure') { throw } }
+        catch { if ($_.Exception.Message -notmatch 'fixture dependency failure') { throw } }
     }
 }
 foreach ($name in @('running.lock', 'update.lock')) { $released = Open-ExclusiveLock $name; $released.Dispose() }

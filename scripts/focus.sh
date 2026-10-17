@@ -3,9 +3,9 @@
 set -eu
 
 app_dir="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+app_dir="${FOCUS_UPDATE_APP:-$app_dir}"
 focus_home="$(dirname "$app_dir")"
 desktop_dir="$app_dir/desktop"
-harness_dir="$app_dir/backend/packages/harness"
 runtime_dir="$focus_home/runtime"
 venv_dir="$runtime_dir/venv"
 venv_python="$venv_dir/bin/python"
@@ -73,7 +73,7 @@ try:
     matches = (
         metadata.get("managed") is True
         and normalize_repository(metadata.get("repository", "")) == normalize_repository(repository)
-        and metadata.get("branch") == branch
+        and (metadata.get("channel") == "stable" or metadata.get("branch") == branch)
         and os.path.realpath(metadata.get("appPath", "")) == os.path.realpath(app_dir)
     )
 except (OSError, TypeError, ValueError):
@@ -85,10 +85,6 @@ PY
     [ -d "$app_dir/.git" ] || fail "Focus managed app is not a Git checkout: $app_dir"
 }
 
-normalize_repository() {
-    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -e 's:/*$::' -e 's:\.git$::'
-}
-
 lock_is_active() {
     lock_path="$1"
     [ -d "$lock_path" ] || return 1
@@ -97,7 +93,14 @@ lock_is_active() {
         owner="$(sed -n '1p' "$lock_path/pid" 2>/dev/null || true)"
     fi
     case "$owner" in
-        ''|*[!0-9]*) ;;
+        # Allow the owner time to write its PID; a killed shell can otherwise
+        # leave this acquisition window behind permanently.
+        ''|*[!0-9]*)
+            command -v node >/dev/null 2>&1 || return 0
+            if node -e 'process.exit(Date.now() - require("node:fs").statSync(process.argv[1]).mtimeMs < 30000 ? 0 : 1)' "$lock_path"; then
+                return 0
+            fi
+            ;;
         *)
             if kill -0 "$owner" 2>/dev/null; then
                 return 0
@@ -132,14 +135,6 @@ acquire_lock() {
     return 0
 }
 
-ensure_python_environment() {
-    [ -x "$venv_python" ] && return
-    mkdir -p "$runtime_dir"
-    resolve_python_runtime
-    printf 'Creating the managed Python environment...\n'
-    "$python_runtime" -m venv "$venv_dir"
-}
-
 electron_runtime_ready() (
     electron_dir="$desktop_dir/node_modules/electron"
     electron_path_file="$electron_dir/path.txt"
@@ -157,30 +152,18 @@ dependencies_ready() {
     return 0
 }
 
-sync_focus_dependencies() {
-    require_node_runtime
-    require_command npm
-    ensure_python_environment || return $?
-    printf 'Updating desktop dependencies...\n'
-    npm --prefix "$desktop_dir" ci || return $?
-    printf 'Installing Electron runtime...\n'
-    npm --prefix "$desktop_dir" run install:electron || return $?
-    if ! electron_runtime_ready; then
-        printf 'Electron runtime installation completed without a usable executable.\n' >&2
-        return 1
-    fi
-    printf 'Updating Python dependencies...\n'
-    "$venv_python" -m pip install --disable-pip-version-check -e "${harness_dir}[desktop]" || return $?
-    node "$desktop_dir/startup-runtime.cjs" --prepare "$venv_python" "$focus_home" || return $?
-}
 
 start_focus() {
     assert_managed_install
-    dependencies_ready || fail "Focus dependencies are missing. Run 'focus update' first."
-    require_command npm
     acquire_lock "running.lock" || fail "Focus is already running."
     trap release_lock EXIT
     trap 'exit 130' HUP INT TERM
+    [ ! -f "$focus_home/update-state.json" ] || fail "Focus recovery is incomplete. Run 'focus update' before starting Focus."
+    require_node_runtime
+    updater="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/managed-update.cjs"
+    node "$updater" check "$focus_home" "$app_dir"
+    dependencies_ready || fail "Focus dependencies are missing. Run 'focus update' first."
+    require_command npm
     export FOCUS_GLOBAL_HOME="$focus_home"
     export FOCUS_MANAGED_APP="$app_dir"
     export FOCUS_PYTHON="$venv_python"
@@ -193,38 +176,14 @@ update_focus() {
     if lock_is_active "$locks_dir/running.lock"; then
         fail "Focus is running. Close it before running 'focus update'."
     fi
-    acquire_lock "update.lock" || fail "Another Focus update is already running."
+    acquire_lock "running.lock" || fail "Focus is running or another update is already running."
     trap release_lock EXIT
     trap 'exit 130' HUP INT TERM
 
-    require_command git
-    origin="$(git -C "$app_dir" remote get-url origin)"
-    [ "$(normalize_repository "$origin")" = "$(normalize_repository "$expected_repository")" ] ||
-        fail "Focus refused to update because origin is not $expected_repository."
+    require_node_runtime
+    updater="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/managed-update.cjs"
+    node "$updater" update "$focus_home" "$app_dir" "$venv_python"
 
-    previous_commit="$(git -C "$app_dir" rev-parse HEAD)"
-    printf 'Fetching Focus...\n'
-    git -C "$app_dir" fetch --prune origin "$expected_branch"
-    target_commit="$(git -C "$app_dir" rev-parse "origin/$expected_branch")"
-    printf 'Updating %.7s -> %.7s...\n' "$previous_commit" "$target_commit"
-    git -C "$app_dir" reset --hard "origin/$expected_branch"
-
-    if ! sync_focus_dependencies; then
-        if [ "$previous_commit" != "$target_commit" ]; then
-            printf 'Dependency update failed. Restoring %.7s...\n' "$previous_commit" >&2
-            git -C "$app_dir" reset --hard "$previous_commit"
-            if ! sync_focus_dependencies; then
-                printf 'Warning: the previous dependency set could not be fully restored.\n' >&2
-            fi
-        fi
-        fail "Focus update failed while synchronizing dependencies."
-    fi
-
-    if [ "$previous_commit" = "$target_commit" ]; then
-        printf 'Focus is up to date (%.7s).\n' "$target_commit"
-    else
-        printf 'Focus updated successfully: %.7s -> %.7s.\n' "$previous_commit" "$target_commit"
-    fi
 }
 
 [ "$(uname -s)" = "Darwin" ] || fail "This command currently supports macOS only."
