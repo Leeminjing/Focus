@@ -13,9 +13,9 @@
     cfg = StreamBridgeConfig(type="memory", queue_maxsize=512)
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class StreamBridgeConfig(BaseModel):
     type: str = "memory"
-    queue_maxsize: int = 512
+    queue_maxsize: int = Field(default=512, ge=1)

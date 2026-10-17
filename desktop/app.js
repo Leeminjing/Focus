@@ -4887,6 +4887,23 @@ function listenToRun(run) {
   const handlers = new Map();
   const listen = (type, handler) => handlers.set(type, handler);
   let source;
+  let resyncPending = null;
+  let resyncAgain = false;
+  listen("resync", () => {
+    clearStreamBuffer(run.run_id);
+    // 缺失的完整消息、工具结果和待审批状态从既有权威快照恢复。
+    resyncAgain = true;
+    if (!resyncPending) resyncPending = (async () => {
+      do {
+        resyncAgain = false;
+        await refreshTaskAfterTxn(ownerTaskId);
+      } while (resyncAgain && state.streams.get(run.run_id) === source);
+      scheduleRender();
+    })()
+      .catch(error => setStatus(`运行内容补读失败：${error.message}`, true))
+      .finally(() => { resyncPending = null; });
+    return resyncPending;
+  });
   listen("metadata", event => {
     const envelope = parseEvent(event);
     if (envelope?.data?.status) {
