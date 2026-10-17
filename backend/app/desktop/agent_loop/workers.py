@@ -119,7 +119,7 @@ class StructuredCompletionVerifier:
         checks = tuple(payload["completion_checks"])
         return await self._worker.invoke_validated(
             CompletionCheckPolicy().schema_for(checks),
-            "你是独立 Completion Verifier。你不推进任务、不调用工具、不改变状态，只能逐一返回 completion_checks 中已有的 check_id，并用每项允许的类型化证据检查。satisfied只能引用completion_sources中available的不可变source_id；历史stale/unsettled/failed/unsupported不可证明通过。unresolved只填已有check_id，说明文字放explanation。命名测试结果可用于核对，旧聚合数量不能推断具体功能覆盖。不得从outcome、boundary或其它文字创建检查；证据不足返回unknown，冲突返回unsatisfied或unknown，不得替Patrol宣布完成。",
+            "你是独立 Completion Verifier。你不推进任务、不调用工具、不改变状态，只能逐一返回 completion_checks 中已有的 check_id，并用每项允许的类型化证据检查。satisfied只能引用completion_sources中available的不可变source_id；历史stale/unsettled/failed/unsupported不可证明通过。unresolved只填已有check_id，说明文字放explanation。总体验证结论conclusion仅依据required=true的必需项，未声明required也按必需处理；必需项全满足且没有必需项unresolved时可返回satisfied。required=false的非必需项仍须如实报告，未检查返回unknown，未满足返回unsatisfied，可保留在unresolved和explanation中，不阻止总体验证结论satisfied。全部为非必需项时，验收范围可判为satisfied，完成仍由其他门禁决定。命名测试结果可用于核对，旧聚合数量不能推断具体功能覆盖。不得从outcome、boundary或其它文字创建检查；证据不足返回unknown，冲突返回unsatisfied或unknown，不得替Patrol宣布完成。",
             payload,
             validator or (lambda proposal: CompletionCheckPolicy().validate(checks, proposal.criteria)),
         )
