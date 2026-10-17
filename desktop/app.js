@@ -252,7 +252,7 @@ const loopApi = window.FocusLoopApi?.create(runtime);
 const runStreams = window.FocusRunStreamSubscriptions?.create(runtime);
 const desktopPatrol = window.focusDesktop?.patrol?.enabled ? window.focusDesktop.patrol : null;
 const workspacePatrolIntake = window.FocusWorkspacePatrolIntake.create({ runtime, api: loopApi,
-  selectWorkspace: window.focusDesktop?.selectWorkspace, accessMode: accessMode.readNewSessionDefault(window.localStorage) });
+  selectWorkspace: window.focusDesktop?.selectWorkspace, accessMode: () => accessMode.readNewSessionDefault(window.localStorage) });
 let workspacePatrolController = null;
 let workspacePatrolMount = Promise.resolve();
 let workspacePatrolNavigation = 0;
@@ -8169,6 +8169,15 @@ document.addEventListener("input", event => {
   if (requestId) loopWaitDrafts?.set(requestId, serializeWaitDraft(form));
 });
 document.addEventListener("change", event => {
+  if (event.target.id === "newSessionAccessMode") {
+    const select = event.target;
+    try { select.value = accessMode.saveNewSessionDefault(window.localStorage, select.value); }
+    catch (error) {
+      select.value = accessMode.readNewSessionDefault(window.localStorage);
+      setStatus(error.message, true);
+    }
+    return;
+  }
   if (event.target.id === "taskNotificationsEnabled") {
     const input = event.target;
     const enabled = input.checked;

@@ -4,6 +4,7 @@
  * 新草稿与历史分页互不覆盖；首次页建立本次遍历，普通首页刷新不重启已耗尽游标。示例：store.history(page, false, true); const row = store.submit(); await send(row.request)。
  * file_refs、附件元数据与正文同时深冻结；附件字节由 intake 持有，空附件字段不进入旧请求；校验拒绝只恢复未被后续编辑替换的草稿，重试保留原版本。
  * 显式编辑失败记录时标记本地记录已转为草稿，结束旧记录的重试能力；原发送是否受理仍以服务器历史为准。
+ * accessMode 可为固定模式或读取已保存默认值的回调；仅新提交时读取，重试保留原请求模式。
  */
 (function (root, factory) {
   const api = factory();
@@ -56,7 +57,7 @@
       edit(patch) { draftRevision++; draft = { ...draft, ...patch, ...(patch.file_refs ? { file_refs: frozenCopy(patch.file_refs) } : {}), ...(patch.attachments ? { attachments: frozenCopy(patch.attachments) } : {}) }; publish(false); },
       submit(visibleContext = null) {
         if (!draft.content.trim() && !draft.attachments?.length) throw new Error("请输入信息或添加材料");
-        const payload = { submission_id: identity(), access_mode: accessMode, ...draft, ...(visibleContext ? { visible_context: visibleContext } : {}) };
+        const payload = { submission_id: identity(), access_mode: typeof accessMode === "function" ? accessMode() : accessMode, ...draft, ...(visibleContext ? { visible_context: visibleContext } : {}) };
         if (!payload.attachments?.length) delete payload.attachments;
         if (payload.budget_preset == null) delete payload.budget_preset;
         const request = frozenCopy(payload);

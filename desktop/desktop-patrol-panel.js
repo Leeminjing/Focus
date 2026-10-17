@@ -23,7 +23,7 @@
   const intake = FocusWorkspacePatrolIntake.create({ runtime, api, selectWorkspace: window.focusDesktop?.selectWorkspace,
     recovery: bridge?.enabled ? bridge.recovery : null,
     onSaveError: error => fail(new Error(`草稿保存失败：${error.message}`)),
-    accessMode: FocusAccessMode.readNewSessionDefault(localStorage) });
+    accessMode: () => FocusAccessMode.readNewSessionDefault(localStorage) });
   const preview = FocusWorkspacePatrolMaterialPreview.create({ host, intake, workspaceId: () => workspace?.workspace_id || null, onError: fail, compact:true });
   let workspace = null, workspaceLoaded = false, generation = 0, loopId = null, unsubscribe = null, reads = new AbortController();
   let resultKey = "", inputKey = "", publishedState = "", binding = false, nativeReady = false, shownFailure = "", closeEpoch = 0, commandQueue = Promise.resolve();
