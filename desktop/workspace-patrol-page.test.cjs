@@ -316,10 +316,39 @@ if (!process.versions.electron) {
     await until('window.patrolFixture.waitAnswers.length === 1');
     assert.equal(await run('window.patrolFixture.waitAnswers[0].answer.text'), "保留回答草稿");
     await run('document.querySelector("[data-patrol-dialog-close]").click()');
-    await run('document.querySelector("[data-patrol-content]").value="查看时保留草稿"; document.querySelector("[data-patrol-content]").dispatchEvent(new Event("input")); document.querySelector("[data-patrol-lineage] [data-context-id=root]").click()');
+    await run('window.contextTaskBeforeInspection=state.activeTaskId; document.querySelector("[data-patrol-content]").value="查看时保留草稿"; document.querySelector("[data-patrol-content]").dispatchEvent(new Event("input")); document.querySelector("[data-patrol-lineage] [data-context-id=root]").click()');
     await until('document.querySelector("[data-patrol-context-tab=conversation]")');
     await run('document.querySelector("[data-patrol-context-tab=conversation]").click()');
     await until('document.querySelector("[data-patrol-context-content]").textContent.includes("Context 执行结果")');
+    await run(`window.contextCopied=[]; Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>contextCopied.push(text)}})`);
+    const inspection = '[data-patrol-context-content]';
+    for (const selector of ['h2', 'ul', 'table', 'a[href="file:///C:/work/a.js"]', '.message-code-block']) {
+      assert.equal(await run(`Boolean(document.querySelector(${JSON.stringify(inspection + ' .message-rich ')} + ${JSON.stringify(selector)}))`), true, selector);
+    }
+    assert.equal(await run('document.querySelector("[data-patrol-context-content] .message-tool").open'), false);
+    assert.equal(await run('document.querySelector("[data-patrol-context-content] .message-audit").open'), false);
+    await run('document.querySelector("[data-patrol-context-content] .message-reading > .message-actions [data-action=copy-answer]").click()');
+    await until('contextCopied.length === 1');
+    assert.match(await run('contextCopied[0]'), /## 可读结果/);
+    assert.doesNotMatch(await run('contextCopied[0]'), /read_file|Revision/);
+    await run('document.querySelector("[data-patrol-context-content] [data-action=copy-code]").click()');
+    await until('contextCopied.length === 2');
+    assert.equal(await run('contextCopied[1]'), '\t  x < 2 && y\n');
+    await run('document.querySelector("[data-patrol-context-content] .message-audit summary").click()');
+    assert.equal(await run('document.querySelector("[data-patrol-context-content] .message-audit").open'), true);
+    assert.match(await run('document.querySelector("[data-patrol-context-content] .message-audit").textContent'), /r1/);
+    await run('document.querySelector("[data-patrol-context-content] .message-tool summary").click()');
+    assert.equal(await run('document.querySelector("[data-patrol-context-content] .message-tool").open'), true);
+    assert.equal(await run('Boolean(document.querySelector("#loopInterventionForm"))'), false);
+    assert.equal(await run('state.activeTaskId === contextTaskBeforeInspection'), true);
+    assert.equal(await run('Boolean(document.querySelector("[data-patrol-content]"))'), true);
+    if (process.env.FOCUS_CONTEXT_READING_QA) {
+      await run('document.querySelector("[data-patrol-context-content] .message-audit summary").click(); document.querySelector("[data-patrol-context-content] .message-tool summary").click()');
+      await run('Promise.all([...document.querySelectorAll("[data-patrol-dialog], [data-patrol-context-content]")].flatMap(node => node.getAnimations().map(animation => animation.finished.catch(() => {}))))');
+      await run('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      fs.writeFileSync(process.env.FOCUS_CONTEXT_READING_QA, (await win.webContents.capturePage()).toPNG());
+    }
+
     assert.equal(await run('document.body.dataset.view'), "patrol");
     assert.equal(await run('document.querySelector("[data-patrol-content]").value'), "查看时保留草稿");
     await run('document.querySelector("[data-patrol-context-tab=sources]").click()');

@@ -44,21 +44,9 @@
  */
 "use strict";
 
-// markdown-it 单例(渲染器无状态):完成态助手消息的 md 渲染引擎。
-// html:false 转义原始 HTML;validateLink 放行 file:// 协议(本地文件链接,
-// 点击经全局拦截器打开右侧文件面板,不触发窗口导航);vendor 文件先行加载。
-const mdRenderer = window.markdownit({ html: false, linkify: true });
-mdRenderer.validateLink = url => /^(https?:|file:)/i.test(url)
-  || /^[a-z]:[\\/]/i.test(url)
-  || (!/^[a-z][a-z\d+.-]*:/i.test(url) && !url.startsWith("//"));
-// 包装默认规则，保留代码转义、语言类名以及流式/完成态的一致性。
-for (const rule of ["fence", "code_block"]) {
-  const renderCode = mdRenderer.renderer.rules[rule];
-  mdRenderer.renderer.rules[rule] = (tokens, index, options, env, renderer) => {
-    const language = rule === "fence" ? tokens[index].info.trim().split(/\s+/)[0] : "";
-    return `<div class="message-code-block"><div class="code-block-toolbar"><span>${escapeHtml(language)}</span><button type="button" class="text-button" data-action="copy-code" aria-live="polite">${escapeHtml(uiText("conversation.copy_code", "复制代码"))}</button></div>${renderCode(tokens, index, options, env, renderer)}</div>\n`;
-  };
-}
+// Shared reader also supplies the Markdown instance used by streaming blocks.
+const messageReading = window.FocusMessageReading.create({ translate: (key, fallback) => uiText(key, fallback) });
+const mdRenderer = messageReading.markdown;
 const keywordCommand = window.FocusKeywordCommand;
 const interfaceI18n = window.FocusI18n || {
   apply() {},
@@ -704,28 +692,11 @@ function escapeHtml(value = "") {
 }
 
 function renderAssistantContent(value) {
-  // markdown-it 渲染完成态助手消息(html:false 转义 LLM 输出中的原始 HTML;
-  // 危险协议链接被默认 validateLink 拒绝)。vendor 文件由 index.html 先行加载。
-  return `<div class="message-rich">${mdRenderer.render(String(value))}</div>`;
+  return messageReading.renderContent(value);
 }
 
 async function copyMessageText(button, text) {
-  if (button.disabled || typeof text !== "string") return;
-  const label = button.textContent;
-  button.disabled = true;
-  try {
-    await navigator.clipboard.writeText(text);
-    button.textContent = uiText("conversation.copied", "已复制");
-    setStatus(uiText("conversation.copied", "已复制"));
-  } catch {
-    button.textContent = uiText("conversation.copy_failed", "复制失败，请重试");
-    setStatus(uiText("conversation.copy_failed", "复制失败，请重试"), true);
-  } finally {
-    setTimeout(() => {
-      button.textContent = label;
-      button.disabled = false;
-    }, 1600);
-  }
+  return messageReading.copyText(button, text, { onStatus: (label, danger) => setStatus(label, danger) });
 }
 
 function conversationMarkdown(detail, task) {
@@ -2326,7 +2297,7 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
   }
   const answerText = kind === "ai" ? messageBodyText(message) : "";
   const renderedContent = kind === "ai" ? renderAssistantContent(answerText) : content;
-  const actions = answerText.trim() ? `<div class="message-actions"><button type="button" class="text-button" data-action="copy-answer" data-copy-text="${escapeHtml(answerText).replace(/\r/g, "&#13;")}" aria-live="polite">${escapeHtml(uiText("conversation.copy_answer", "复制回答"))}</button></div>` : "";
+  const actions = messageReading.renderActions(answerText);
   const associations = semantics.associations.map(item => `<span class="message-association">${escapeHtml(item.direction)} ${escapeHtml(item.name)}${item.tool_call_id ? ` · ${escapeHtml(item.tool_call_id)}` : ""}</span>`).join("");
   let header = "";
   if (showRoleHeader) {

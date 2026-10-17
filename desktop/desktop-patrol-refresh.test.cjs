@@ -40,7 +40,7 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
     workspace: async id => ({ workspace_id: id, display_name: id }), resourceLimits: async () => ({}),
     history: (id, page) => store(id).history(page) };
   const window = { markdownit, focusDesktop: { runtime: () => ({}), patrol: bridge }, addEventListener() {} };
-  const context = vm.createContext({ window, document, location: { search: "?surface=panel" }, URLSearchParams,
+  const context = vm.createContext({ window, document, markdownit, setTimeout, location: { search: "?surface=panel" }, URLSearchParams,
     AbortController, navigator: { clipboard: { writeText: async text => copied.push(text) } }, requestAnimationFrame: callback => setImmediate(callback), localStorage: {}, ResizeObserver: class { observe() {} disconnect() {} },
     FocusLoopApi: { create: () => api }, FocusLoopLiveStore: { create: () => ({ get: () => state, subscribe: callback => { listener = callback; callback(state); } }) },
     FocusLoopLiveConnection: { create: () => ({ start: async () => {}, stop() {} }) },
@@ -51,6 +51,8 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
   vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-references.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "artifact-drawer.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "patrol-input-references.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "message-reading.js"), "utf8"), context);
+  window.FocusMessageReading = context.FocusMessageReading;
   await vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-panel.js"), "utf8"), context);
   return { calls, states, body, events, api, copied, store,
     async emit(value, connection = state.connection) { state = { ...state, projection: value, connection }; listener(state); await tick(); },
@@ -248,8 +250,11 @@ test("answers expand as Markdown and copy the full source or an individual code 
   assert.equal(reading.querySelector("strong").textContent, "结论");
   assert.equal(reading.querySelector("script"), null);
   const buttons = reading.querySelectorAll("button");
-  buttons.find(button => button.textContent === "复制全文").dispatchEvent({ type: "click" }); await tick();
-  buttons.find(button => button.textContent === "复制代码").dispatchEvent({ type: "click" }); await tick();
+  const fullCopy = buttons.find(button => button.textContent === "复制全文");
+  // This minimal DOM retains attribute entities; real Electron checks HTML decoding.
+  fullCopy.dataset.copyText = text;
+  fullCopy.dispatchEvent({ type: "click", preventDefault() {} }); await tick();
+  buttons.find(button => button.textContent === "复制代码").dispatchEvent({ type: "click", preventDefault() {} }); await tick();
   assert.deepEqual(f.copied, [text, 'const value = 1;\n']);
   reading.open = false; reading.dispatchEvent({ type: "toggle" });
   assert.equal(f.body.querySelector("#panel").dataset.reading, "false");

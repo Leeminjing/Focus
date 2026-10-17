@@ -18,7 +18,7 @@
   const api = FocusLoopApi.create(runtime), live = FocusLoopLiveStore.create();
   const connection = FocusLoopLiveConnection.create({ api, store: live });
   const feedback = FocusWorkspacePatrolFeedback.createReader(api);
-  const markdown = window.markdownit({ html:false, linkify:true });
+  const readingView = window.FocusMessageReading;
   const answerCards = new Map();
   const intake = FocusWorkspacePatrolIntake.create({ runtime, api, selectWorkspace: window.focusDesktop?.selectWorkspace,
     recovery: bridge?.enabled ? bridge.recovery : null,
@@ -261,36 +261,22 @@
       const label = element("span", "展开阅读", summary); label.className = "answer-toggle";
       const content = element("div", "", reading); content.className = "answer-content";
       let rendered = false;
-      function copyButton(text, parent, value) {
-        const button = action(text, parent, async () => {
-          await navigator.clipboard.writeText(value);
-          button.textContent = "已复制";
-        });
-        button.setAttribute("aria-label", text); button.setAttribute("aria-live", "polite");
-        button.addEventListener("blur", () => { button.textContent = text; });
-      }
       function updateReading() {
         if (!panelVisible) return;
         label.textContent = reading.open ? "收起阅读" : "展开阅读";
         if (reading.open && !rendered) {
           rendered = true;
-          copyButton("复制全文", content, result.text);
-          const body = element("div", "", content); body.className = "answer-markdown";
-          body.innerHTML = markdown.render(result.text);
-          body.addEventListener("click", event => {
+          content.innerHTML = readingView.render({ role: "assistant", content: result.text }, { copyLabel: "复制全文" });
+          const body = content.querySelector(".message-rich"); body.classList.add("answer-markdown");
+          content.addEventListener("click", event => {
+            if (readingView.handleCopy(event, { onStatus: (text, error) => { if (error) fail(new Error(text)); } })) return;
             const href = event.target.closest("a[href]")?.getAttribute("href");
-            if (!href || !/^https?:\/\//i.test(href)) return;
-            if (window.focusDesktop?.openExternal) {
-              event.preventDefault();
-              void Promise.resolve(window.focusDesktop.openExternal(href)).catch(fail);
-            }
+            if (!href || href.startsWith("#")) return;
+            event.preventDefault();
+            if (/^https?:\/\//i.test(href)) {
+              void Promise.resolve(window.focusDesktop?.openExternal?.(href)).catch(fail);
+            } else void Promise.resolve().then(() => openWorkbench(result.context_id, result.revision_id)).catch(fail);
           });
-          for (const pre of body.querySelectorAll("pre")) {
-            const code = pre.querySelector("code");
-            if (!code) continue;
-            const block = document.createElement("div"); block.className = "answer-code";
-            pre.replaceWith(block); copyButton("复制代码", block, code.textContent); block.append(pre);
-          }
         }
         syncReading();
       }

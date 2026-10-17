@@ -419,13 +419,13 @@ if (!process.versions.electron) {
     assert.equal(await run(host.panel,"document.querySelector('.answer-markdown table') !== null"),true);
     assert.equal(await run(host.panel,"getComputedStyle(document.querySelector('.answer-markdown pre')).maxHeight"),"none");
     assert.equal(await run(host.panel,"Boolean(window.answerInjected)"),false);
-    await run(host.panel,"window.copiedAnswers=[]; Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>window.copiedAnswers.push(text)}}); document.querySelector('.answer-content>button').click()");
+    await run(host.panel,"window.copiedAnswers=[]; Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>window.copiedAnswers.push(text)}}); document.querySelector('.answer-content [data-action=copy-answer]').click()");
     await waitFor(host.panel,"window.copiedAnswers.length === 1", "全文复制未完成");
-    await run(host.panel,"document.querySelector('.answer-code>button').click()");
+    await run(host.panel,"document.querySelector('.message-code-block [data-action=copy-code]').click()");
     await waitFor(host.panel,"window.copiedAnswers.length === 2", "代码复制未完成");
     assert.deepEqual(await run(host.panel,"window.copiedAnswers"),[answerText(answerRevision),'const value = "<safe>";\n']);
     await capture(host.panel,"desktop-answer-reading");
-    await run(host.panel,"document.querySelector('.answer-code').scrollIntoView({block:'center'}); document.querySelector('.answer-markdown a[href=\"https://example.com/result\"]').click()");
+    await run(host.panel,"document.querySelector('.message-code-block').scrollIntoView({block:'center'}); document.querySelector('.answer-markdown a[href=\"https://example.com/result\"]').click()");
     await waitFor(host.panel,"document.querySelector('#error').hidden", "回答外链打开失败");
     assert.deepEqual(externalLinks,["https://example.com/result"]);
     assert.ok(host.panel.webContents.getURL().includes("desktop-patrol.html?surface=panel"));
