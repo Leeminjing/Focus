@@ -35,6 +35,8 @@ python -m pytest backend/tests/test_workspace_adoption_recovery.py backend/tests
 
 上述五个核心文件的 48 项回归通过；暂停释放未应用意图的最终行为又单独通过全部 12 项采纳治理测试。`git diff --check` 和相关 Python 文件编译检查通过。未执行全量测试或重启已安装应用。
 
+合入本地 main 前已将采用意图迁移接在新增的 Run outbox 迁移 `f36d7e8f901a` 之后，确认迁移 head 唯一；基于合并后代码重跑上述五个文件及 `test_run_outbox_migration.py`，49 项全部通过。
+
 ## 验证（2026-10-09）
 
 - 两项已复现失败转为正式回归：基线变化后的同轮补位、配额动态释放后的串行回退；修复后通过。另验证准备期间用户编辑权威文件时不交付 Run、认领不耗 attempt，已准备目录仍有持久身份。

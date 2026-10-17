@@ -264,7 +264,7 @@ def test_intent_migration_preserves_existing_adoption(isolated_migration_databas
 
     identity = asyncio.run(seed())
     config = Config(str(Path(__file__).parents[1] / "packages/harness/focus/persistence/migrations/alembic.ini"))
-    command.downgrade(config, "e25c6d7e8f90")
+    command.downgrade(config, "f36d7e8f901a")
     command.upgrade(config, "head")
 
     async def verify():
