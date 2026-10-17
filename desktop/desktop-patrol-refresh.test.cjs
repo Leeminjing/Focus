@@ -49,10 +49,139 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
   vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-references.js"), "utf8"), context);
   await vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-panel.js"), "utf8"), context);
   return { calls, states, body, events, api, store,
-    async emit(value) { state = { ...state, projection: value }; listener(state); await tick(); },
+    async emit(value, connection = state.connection) { state = { ...state, projection: value, connection }; listener(state); await tick(); },
     async visibility(value) { events.visibility?.(value); await tick(); },
     results: () => body.querySelector("#results") };
 }
+
+test("panel controls follow authoritative status and connection, including waiting for new input", async () => {
+  const f = await panel(), toggle = f.body.querySelector("#toggle-work"), stop = f.body.querySelector("#stop-work");
+  assert.equal(toggle.hidden, true);
+  assert.equal(stop.disabled, true);
+  await f.emit(projection());
+  assert.equal(toggle.hidden, false);
+  assert.equal(toggle.textContent, "暂停");
+  assert.equal(toggle.disabled, false);
+  assert.equal(stop.closest(".panel-menu") != null, true);
+  await f.emit(projection("r1", { loop: { state: { status: "waiting_user", waiting_reason: "awaiting_input" } } }));
+  assert.equal(toggle.disabled, false);
+  assert.equal(f.body.querySelector("#activity").hidden, false);
+  await f.emit(projection("r1", { loop: { state: { status: "waiting_user", waiting_reason: "approval" } } }));
+  assert.equal(toggle.hidden, true);
+  assert.equal(stop.disabled, false);
+  await f.emit(projection("r1", { loop: { state: { status: "paused" } } }));
+  assert.equal(toggle.textContent, "继续");
+  assert.equal(toggle.getAttribute("aria-label"), "继续当前工作");
+  await f.emit(projection(), { status: "reconnecting" });
+  assert.equal(toggle.disabled, true);
+  assert.equal(stop.disabled, true);
+  for (const status of ["stopped", "completed", "failed"]) {
+    await f.emit(projection("r1", { loop: { state: { status } } }), { status: "live" });
+    assert.equal(toggle.hidden, true);
+    assert.equal(stop.disabled, true);
+  }
+});
+
+test("pause, resume and secondary stop reuse control API with separate requesting, accepted and applied feedback", async () => {
+  const f = await panel(), toggle = f.body.querySelector("#toggle-work"), stop = f.body.querySelector("#stop-work");
+  const message = f.body.querySelector("#control-feedback"), commands = [];
+  let accept;
+  f.api.control = (id, command) => { commands.push([id, command]); return new Promise(resolve => { accept = resolve; }); };
+  const emitStatus = (status, revision) => f.emit(projection("r1", { loop: { state: { status, revision } } }));
+  await emitStatus("running", 1);
+  toggle.dispatchEvent({ type: "click" });
+  assert.match(message.textContent, /暂停请求中/);
+  toggle.dispatchEvent({ type: "click" }); stop.dispatchEvent({ type: "click" });
+  assert.equal(commands.length, 1, "在途操作阻止重复点击和冲突命令");
+  accept({ revision: 3 }); await tick();
+  assert.match(message.textContent, /暂停已受理/);
+  assert.equal(toggle.textContent, "暂停", "受理不能乐观切换成继续");
+  await emitStatus("paused", 2);
+  assert.match(message.textContent, /已受理/, "旧投影不能确认本次操作");
+  await emitStatus("paused", 3);
+  assert.match(message.textContent, /暂停已生效/);
+  assert.equal(toggle.textContent, "继续");
+  assert.equal(toggle.disabled, false);
+  toggle.dispatchEvent({ type: "click" });
+  accept({ revision: 4 }); await tick();
+  await emitStatus("running", 4);
+  assert.match(message.textContent, /继续已生效/);
+  const menu = stop.closest(".panel-menu"); menu.open = true;
+  stop.dispatchEvent({ type: "click" });
+  assert.equal(menu.open, false);
+  accept({ revision: 5 }); await tick();
+  await emitStatus("stopped", 5);
+  assert.match(message.textContent, /停止已生效/);
+  assert.equal(toggle.hidden, true);
+  assert.equal(stop.disabled, true);
+  assert.deepEqual(commands, [["loop-a", "pause"], ["loop-a", "resume"], ["loop-a", "stop"]]);
+});
+
+test("Live can confirm a control before its HTTP response without allowing another request in flight", async () => {
+  const f = await panel(), toggle = f.body.querySelector("#toggle-work");
+  let accept;
+  f.api.control = () => new Promise(resolve => { accept = resolve; });
+  await f.emit(projection()); toggle.dispatchEvent({ type: "click" });
+  await f.emit(projection("r1", { loop: { state: { status: "paused", revision: 2 } } }));
+  assert.equal(toggle.disabled, true);
+  accept({ revision: 2 }); await tick();
+  assert.equal(toggle.disabled, false);
+  assert.match(f.body.querySelector("#control-feedback").textContent, /暂停已生效/);
+});
+
+test("reconnecting the same loop preserves an in-flight control and its acceptance", async () => {
+  const f = await panel(), toggle = f.body.querySelector("#toggle-work"), reconnect = f.body.querySelector("#reconnect");
+  let accept, calls = 0;
+  f.api.control = () => { calls++; return new Promise(resolve => { accept = resolve; }); };
+  await f.emit(projection()); toggle.dispatchEvent({ type: "click" });
+  reconnect.dispatchEvent({ type: "click" });
+  toggle.dispatchEvent({ type: "click" });
+  assert.equal(calls, 1);
+  accept({ revision: 2 }); await tick();
+  reconnect.dispatchEvent({ type: "click" });
+  assert.match(f.body.querySelector("#control-feedback").textContent, /已受理/);
+  assert.equal(toggle.disabled, true);
+  await f.emit(projection("r1", { loop: { state: { status: "paused", revision: 2 } } }));
+  assert.match(f.body.querySelector("#control-feedback").textContent, /已生效/);
+  assert.equal(toggle.disabled, false);
+});
+
+test("failed controls surface errors and restore controls for an explicit retry", async () => {
+  const f = await panel(), toggle = f.body.querySelector("#toggle-work");
+  f.api.control = async () => { throw new Error("控制请求失败"); };
+  await f.emit(projection()); toggle.dispatchEvent({ type: "click" }); await tick();
+  assert.match(f.body.querySelector("#error").textContent, /控制请求失败/);
+  assert.equal(f.body.querySelector("#control-feedback").hidden, true);
+  assert.equal(toggle.disabled, false);
+  assert.equal(toggle.textContent, "暂停");
+  assert.equal(toggle.hasAttribute("aria-busy"), false);
+});
+
+test("late control responses and failures cannot affect a different workspace", async () => {
+  for (const reject of [false, true]) {
+    const f = await panel(), toggle = f.body.querySelector("#toggle-work");
+    let finish;
+    f.api.control = () => new Promise((resolve, fail) => { finish = () => reject ? fail(new Error("旧工作区失败")) : resolve({ revision: 2 }); });
+    await f.emit(projection()); toggle.dispatchEvent({ type: "click" });
+    await f.events.open({ workspaceId: "b" });
+    assert.equal(toggle.hidden, true, "不得使用上一工作区尚未清除的投影");
+    await f.emit(projection("r1", { loop_id: "loop-b" }));
+    finish(); await tick();
+    assert.equal(f.body.querySelector("#control-feedback").hidden, true);
+    assert.equal(f.body.querySelector("#error").textContent, "");
+    assert.equal(toggle.disabled, false);
+  }
+});
+
+test("a newer authoritative state releases an accepted control superseded by other work", async () => {
+  const f = await panel(), toggle = f.body.querySelector("#toggle-work");
+  f.api.control = async () => ({ revision: 2 });
+  await f.emit(projection("r1", { loop: { state: { status: "paused", revision: 1 } } }));
+  toggle.dispatchEvent({ type: "click" }); await tick();
+  await f.emit(projection("r1", { loop: { state: { status: "waiting_user", waiting_reason: "awaiting_input", revision: 3 } } }));
+  assert.equal(f.body.querySelector("#control-feedback").hidden, true);
+  assert.equal(toggle.disabled, false);
+});
 
 test("typing preserves loaded history DOM until a history change", async () => {
   const f = await panel();

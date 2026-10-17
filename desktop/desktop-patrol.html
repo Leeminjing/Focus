@@ -11,7 +11,7 @@
     <header class="panel-header">
       <button id="binding" title="选择工作区文件夹"><span class="ui-icon icon-folder" aria-hidden="true"></span><span id="binding-name">绑定工作区</span><span class="ui-icon icon-chevron-down" aria-hidden="true"></span></button>
       <details class="panel-menu"><summary aria-label="更多操作" title="更多操作"><span class="ui-icon icon-ellipsis" aria-hidden="true"></span></summary><div class="panel-menu-content">
-        <button id="toggle-history" aria-controls="history" aria-expanded="false">输入记录</button><button id="workbench">打开工作台</button><button id="hide">收起面板 <span>Esc</span></button>
+        <button id="toggle-history" aria-controls="history" aria-expanded="false">输入记录</button><button id="workbench">打开工作台</button><button id="stop-work" type="button" disabled>停止当前工作</button><button id="hide">收起面板 <span>Esc</span></button>
         <div class="status-row"><i></i><span id="status" role="status">绑定工作区后即可发送</span><button id="reconnect" hidden>重连</button></div>
       </div></details>
     </header>
@@ -28,7 +28,8 @@
       <div id="task-budget"></div>
       <p id="error" role="alert" hidden></p>
       <button id="retry-workspace" type="button" hidden>重新读取工作区</button>
-      <div id="activity" role="status" hidden><i></i><span id="activity-text"></span><button id="activity-reconnect" hidden>重连</button><span class="ui-icon icon-loader-circle" aria-hidden="true"></span></div>
+      <div id="activity" role="status" hidden><i></i><span id="activity-text"></span><button id="activity-reconnect" hidden>重连</button><button id="toggle-work" type="button" aria-label="暂停当前工作" hidden disabled>暂停</button><span class="ui-icon icon-loader-circle" aria-hidden="true"></span></div>
+      <p id="control-feedback" role="status" hidden></p>
       <section id="requests" aria-label="待处理请求"></section>
       <section id="results" aria-label="工作区已提交结果"><div id="answers"></div><div id="progress"></div><div id="artifacts"></div></section>
       <details id="history" hidden><summary>输入记录 <span id="receipt"></span></summary><div id="history-items"></div><button id="older" hidden>更早的输入</button></details>
