@@ -296,6 +296,7 @@
       });
     }
     return Object.freeze({ store, add, remove, submit, send, retry, bind, choose, workspace, remember, claimUnbound, resourceLimits, history, editFailed, reconcile, flush,
+      checkpoint: () => recovery?.checkpoint?.(snapshot()),
       readBinding: () => binding || readBinding(storage), hasUnfinished, isSending: () => pending.size > 0,
       source: localId => sources.get(localId), attachmentContent, request });
   }

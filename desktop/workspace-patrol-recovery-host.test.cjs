@@ -1,0 +1,43 @@
+/* 工作台恢复 IPC 的所有者检查、独立路径与退出耐久屏障。 */
+"use strict";
+const { test } = require("node:test");
+const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { WorkspacePatrolRecoveryHost } = require("./workspace-patrol-recovery-host.cjs");
+const { PatrolRecovery } = require("./patrol-recovery.cjs");
+test("workbench recovery rejects panel, subframe and remote senders and flushes independent disk state", async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "focus-workbench-ipc-"));
+  t.after(() => {
+    assert.ok(path.resolve(directory).startsWith(path.resolve(os.tmpdir()) + path.sep));
+    fs.rmSync(directory, {recursive:true,force:true});
+  });
+  const handlers = new Map(), ipcMain = new EventEmitter();
+  ipcMain.handle = (key, value) => handlers.set(key, value);
+  const contents = {mainFrame:{url:"http://localhost:1234/desktop/"},isLoading:()=>false,send:(channel,token)=>messages.push({channel,token})};
+  const messages = [], win = {webContents:contents,isDestroyed:()=>false};
+  const host = new WorkspacePatrolRecoveryHost({ipcMain,directory,byteLimit:1024,getWorkbench:()=>win,origin:"http://localhost:1234"});
+  const event = () => ({sender:contents,senderFrame:contents.mainFrame});
+  const read = e => {ipcMain.emit("focus:workspace-patrol-recovery-read",e);return e.returnValue;};
+  const write = (name,e,value) => handlers.get(`focus:workspace-patrol-recovery-${name}`)(e,value);
+  assert.match(read({sender:{},senderFrame:contents.mainFrame}).error,/仅允许/);
+  assert.match(read({...event(),senderFrame:{url:contents.mainFrame.url}}).error,/仅允许/);
+  contents.mainFrame.url="https://remote.test/desktop/";
+  assert.match(read(event()).error,/仅允许/);
+  contents.mainFrame.url="http://localhost:1234/desktop/desktop-patrol.html?surface=panel";
+  assert.match((await write("save",event(),{})).error,/仅允许/);
+  contents.mainFrame.url="http://localhost:1234/desktop/";
+  assert.equal(read(event()).value.state,null);
+  await write("put",event(),{id:"bytes",bytes:new Uint8Array([1,255])});
+  await write("save",event(),{version:1,workspaces:[],source_ids:["bytes"]});
+  assert.equal(new PatrolRecovery(directory,1024).read().state,null,"robot repository remains independent");
+  let flush=host.flush();
+  assert.equal(messages[0].channel,"focus:workspace-patrol-recovery-flush");
+  assert.equal(write("flushed",event(),{token:-1}),false);
+  write("flushed",event(),{token:messages[0].token,error:"disk full"});
+  await assert.rejects(flush,/disk full/);
+  flush=host.flush(); write("flushed",event(),{token:messages[1].token}); await flush;
+  assert.deepEqual(read(event()).value.sources[0][1],new Uint8Array([1,255]));
+});

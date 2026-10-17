@@ -118,7 +118,7 @@ if (!process.versions.electron) {
     await until('Boolean(window.patrolFixture.releaseBind)');
     await run('document.querySelector("[data-action=focus-home]").click(); window.patrolFixture.releaseBind(); window.patrolFixture.holdBind=false');
     await until('document.body.dataset.view === "focus"');
-    assert.equal(await run('JSON.parse(localStorage.getItem("focus-patrol-workspace")).path'), chosen);
+    assert.equal(await run('workspacePatrolIntake.readBinding().path'), chosen);
     await run('localStorage.removeItem("focus-patrol-workspace")');
     for (const input_type of ["information", "outcome", "boundary", "completion_check"]) {
       await run('document.querySelector("[data-action=show-patrol][data-patrol-switch]").click()');
@@ -163,7 +163,7 @@ if (!process.versions.electron) {
     await until('document.querySelector("[data-patrol-retry]")');
     const failedIdentity = await run('window.patrolFixture.submissions.at(-1).submission_id');
     await run('document.querySelector("[data-patrol-history-open]").click(); document.querySelector("[data-patrol-retry]").click()');
-    await until('!document.querySelector("[data-patrol-retry]")');
+    await until('workspacePatrolIntake.store(state.patrolWorkspace.workspace_id).get().rows[0]?.status === "accepted"');
     assert.equal(await run('window.patrolFixture.submissions.at(-1).submission_id'), failedIdentity);
     await run('document.querySelector("[data-patrol-history-open]").click()');
     await run('window.patrolFixture.hold = true; document.querySelector("[data-patrol-content]").value="A"; document.querySelector("[data-patrol-content]").dispatchEvent(new Event("input")); document.querySelector("[data-patrol-composer]").requestSubmit(); document.querySelector("[data-patrol-content]").value="B"; document.querySelector("[data-patrol-content]").dispatchEvent(new Event("input")); document.querySelector("[data-patrol-composer]").requestSubmit(); document.querySelector("[data-patrol-content]").value="C 草稿"; document.querySelector("[data-patrol-content]").dispatchEvent(new Event("input"))');
@@ -590,7 +590,30 @@ if (!process.versions.electron) {
     await run('document.querySelector("[data-patrol-history-file]").click()');
     await until('document.querySelector("[data-patrol-file-body]").textContent.includes("固定版本三")');
     assert.deepEqual(errors, []);
-    console.log("PATROL_UI_PASS: four first types, rapid inputs, draft, nonmodal history, requests, independent progress/facts, ordinary page");
+    // 生产 App 在同一存储上刷新，恢复本页草稿、未绑定材料及失败请求原身份。
+    const saved = await run(`(async () => {
+      workspacePatrolIntake.remember({workspace_id:'reload',path:'C:/reload',display_name:'Reload'});
+      workspacePatrolIntake.store('reload').edit({content:'未发送正文',request_id:'question',request_revision:3});
+      await workspacePatrolIntake.add('reload',[{kind:'file',name:'binary',bytes:new Uint8Array([0,255,128])}]);
+      await workspacePatrolIntake.add(null,[{kind:'text',text:'未绑定材料'}]);
+      const store=workspacePatrolIntake.store('failed');store.edit({content:'失败正文'});
+      const row=store.submit();store.failed(row.submission_id,new Error('断网'));
+      await workspacePatrolIntake.flush();
+      return {draft:workspacePatrolIntake.store('reload').get().draft,request:row.request};
+    })()`);
+    await win.loadFile(path.join(__dirname,'index.html'));
+    await until('workspacePatrolIntake !== null && state.tasks.length > 0');
+    assert.deepEqual(await run('workspacePatrolIntake.store("reload").get().draft'),saved.draft);
+    assert.deepEqual(await run('Array.from(workspacePatrolIntake.source(workspacePatrolIntake.store("reload").get().draft.attachments[0].local_id))'),[0,255,128]);
+    assert.deepEqual(await run('workspacePatrolIntake.store("failed").get().rows[0].request'),saved.request);
+    assert.equal(await run('workspacePatrolIntake.store(null).get().draft.attachments.length'),1);
+    assert.equal(await run('state.patrolWorkspace.workspace_id'),'reload');
+    await run('workspacePatrolIntake.store("reload").edit({content:"刷新前最后一次输入"})');
+    await win.loadFile(path.join(__dirname,'index.html'));
+    await until('workspacePatrolIntake !== null && state.tasks.length > 0');
+    assert.equal(await run('workspacePatrolIntake.store("reload").get().draft.content'),"刷新前最后一次输入");
+    await run('workspacePatrolIntake.flush()');
+    console.log("PATROL_UI_PASS: four first types, rapid inputs, draft, nonmodal history, requests, independent progress/facts, ordinary page, reload recovery");
     win.destroy(); app.quit();
   }).catch(error => { console.error(error); app.exit(1); });
 }

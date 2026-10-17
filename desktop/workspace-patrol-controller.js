@@ -740,6 +740,8 @@
         if (current !== token) return;
         historyReady = true;
         intake.history(bound.workspace_id, page, false, true);
+        await intake.reconcile(bound.workspace_id, page);
+        if (current !== token) return;
         if (loop) connect(loop.loop_id);
       } catch (failure) { if (current === token) { historyFailure = failure; error(failure); } }
       finally {

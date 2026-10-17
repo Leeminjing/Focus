@@ -10,6 +10,7 @@ const { app, BrowserWindow, dialog, ipcMain, Menu, shell, nativeTheme, Notificat
 const { TaskNotifications } = require("./task-notifications.cjs");
 const { supportsAcrylic, bindWindowMaterial } = require("./window-material.cjs");
 const { DesktopPatrolHost } = require("./desktop-patrol-host.cjs");
+const { WorkspacePatrolRecoveryHost } = require("./workspace-patrol-recovery-host.cjs");
 const nativeMaterialSupported = supportsAcrylic(process.platform, require("node:os").release());
 const { spawn } = require("node:child_process");
 const { createStartupRuntime, createStageRecorder } = require("./startup-runtime.cjs");
@@ -61,6 +62,9 @@ let backend = null;
 let splashWindow = null;
 let mainWindow = null;
 let patrolHost = null;
+let workspacePatrolRecovery = null;
+let workspacePatrolFlushed = false;
+let workspacePatrolQuit = null;
 let desktopOrigin = null;
 let workbenchLoading = null;
 let fatalErrorShown = false;
@@ -274,14 +278,16 @@ async function start() {
   await stage("gateway-health", "正在等待 Focus Gateway 就绪", 72, () => waitForHealth(apiBase));
   await stage("interface", "正在加载工作区", 84, async () => {
     startupAbort.signal.throwIfAborted();
-    if (patrolEnabled) {
-      const response = await fetch(`${apiBase}/desktop/api/materials/limits`, {
-        headers: { "X-Focus-Session": session }, signal: AbortSignal.any([startupAbort.signal, AbortSignal.timeout(10000)]),
-      });
-      if (!response.ok) throw new Error(`读取材料资源限制失败：HTTP ${response.status}`);
-      const limits = await response.json();
-      if (!Number.isSafeInteger(limits.general_file_bytes) || limits.general_file_bytes <= 0
+    const response = await fetch(`${apiBase}/desktop/api/materials/limits`, {
+      headers: { "X-Focus-Session": session }, signal: AbortSignal.any([startupAbort.signal, AbortSignal.timeout(10000)]),
+    });
+    if (!response.ok) throw new Error(`读取材料资源限制失败：HTTP ${response.status}`);
+    const limits = await response.json();
+    if (!Number.isSafeInteger(limits.general_file_bytes) || limits.general_file_bytes <= 0
         || !Number.isSafeInteger(limits.run_material_count) || limits.run_material_count <= 0) throw new Error("材料资源限制无效");
+    workspacePatrolRecovery = new WorkspacePatrolRecoveryHost({ ipcMain, directory: app.getPath("userData"),
+      byteLimit: limits.general_file_bytes, getWorkbench: () => mainWindow, origin: apiBase });
+    if (patrolEnabled) {
       patrolHost = new DesktopPatrolHost({
         electron: require("electron"), apiBase, desktopDir, icon: focusIconPath, limits,
         openWorkbench: showWorkbench, getWorkbench: () => mainWindow, quit: () => app.quit(),
@@ -385,6 +391,10 @@ async function createWorkbench() {
   protectAppNavigation(mainWindow, desktopOrigin);
   mainWindow.on("close", event => {
     if (patrolHost && !app.isQuitting) { event.preventDefault(); mainWindow.hide(); }
+    else if (!fatalErrorShown && !workspacePatrolFlushed) {
+      event.preventDefault();
+      app.quit();
+    }
   });
   mainWindow.on("closed", () => { mainWindow = null; });
   await mainWindow.loadURL(`${desktopOrigin}/desktop/`);
@@ -491,6 +501,14 @@ app.on("before-quit", event => {
   if (!fatalErrorShown && patrolHost && !patrolHost.canQuit()) {
     event.preventDefault();
     patrolHost.requestQuit().catch(error => console.error("退出 Focus 失败:", error));
+    return;
+  }
+  if (!fatalErrorShown && workspacePatrolRecovery && !workspacePatrolFlushed) {
+    event.preventDefault();
+    if (!workspacePatrolQuit) workspacePatrolQuit = workspacePatrolRecovery.flush().then(() => {
+      workspacePatrolFlushed = true;
+      app.quit();
+    }).catch(error => dialog.showErrorBox("Patrol 输入保存失败", error.message)).finally(() => { workspacePatrolQuit = null; });
     return;
   }
   app.isQuitting = true;

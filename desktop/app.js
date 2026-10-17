@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供应用组合根；输入为真实 API/Live 与用户导航动作，输出为六页及原业务入口。
  * 助手正文与代码提供独立复制反馈；任务工具从完整消息快照导出 Markdown，展开压缩来源并保留正文格式。
- * 工作区绑定与投递复用 WorkspacePatrolIntake；桌面 App 与浏览器保留本页输入，桌面机器人继续提供独立输入入口，既有任务输入不受影响。来源导航按最新请求身份生效，迟到读取不能覆盖后来选择。
+ * 工作区绑定与投递复用 WorkspacePatrolIntake；桌面工作台使用独立 userData 仓库，浏览器使用 IndexedDB，恢复后开放编辑；机器人继续使用独立输入仓库。来源导航按最新请求身份生效，迟到读取不能覆盖后来选择。
  * 任务与图卡共用 Run SSE 订阅；图卡通过只读观察器呈现真实角色与短尾部，按工作区和 Run 隔离，退出页面释放观察而不触发审批。
  * 工作流为沿原控制器装配页面、按任务保留草稿，卡片/列表偏好仅留在页面状态。示例：renderPlugins() 展示 registry 的当前状态。
  * Loop 激活由服务端解析初始 Run 装备，客户端不从详情缓存猜测权限；继承请求输出完整有效授权快照。Main 接口的 direct_message 回执仅表示受理，不写 active_run 或材料执行历史。默认 Patrol，任务列表与材料检查器承接传统操作，复杂能力通过明确次级入口使用原业务用例。
@@ -251,8 +251,13 @@ const taskRunOperations = window.FocusTaskRunOperations?.create();
 const loopApi = window.FocusLoopApi?.create(runtime);
 const runStreams = window.FocusRunStreamSubscriptions?.create(runtime);
 const desktopPatrol = window.focusDesktop?.patrol?.enabled ? window.focusDesktop.patrol : null;
-const workspacePatrolIntake = window.FocusWorkspacePatrolIntake.create({ runtime, api: loopApi,
-  selectWorkspace: window.focusDesktop?.selectWorkspace, accessMode: accessMode.readNewSessionDefault(window.localStorage) });
+let workspacePatrolIntake = null;
+async function createWorkspacePatrolIntake() {
+  const recovery = window.focusDesktop?.workspacePatrolRecovery || await window.FocusPatrolBrowserRecovery.open("workbench");
+  return window.FocusWorkspacePatrolIntake.create({ runtime, api: loopApi, recovery,
+    onSaveError: error => setStatus(`Patrol 草稿保存失败：${error.message}`, true),
+    selectWorkspace: window.focusDesktop?.selectWorkspace, accessMode: accessMode.readNewSessionDefault(window.localStorage) });
+}
 let workspacePatrolController = null;
 let workspacePatrolMount = Promise.resolve();
 let workspacePatrolNavigation = 0;
@@ -803,6 +808,16 @@ function replaceTasks(tasks) {
 }
 
 async function bootstrap() {
+  if (!workspacePatrolIntake) {
+    workspacePatrolIntake = await createWorkspacePatrolIntake();
+    state.patrolWorkspace = workspacePatrolIntake.readBinding();
+    window.focusDesktop?.workspacePatrolRecovery?.onFlush(async token => {
+      let error = null;
+      try { await workspacePatrolIntake.flush(); }
+      catch (failure) { error = failure.message; setStatus(`Patrol 草稿保存失败：${error}`, true); }
+      await window.focusDesktop.workspacePatrolRecovery.flushed({ token, error });
+    });
+  }
   setStatus("正在连接…");
   performance.mark("focus:bootstrap-start");
   render();
@@ -8297,9 +8312,15 @@ function flushComposerPersist() {
 }
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") void flushComposerPersist();
+  if (document.visibilityState === "hidden") { void flushComposerPersist(); flushWorkspacePatrol(); }
 });
-window.addEventListener("pagehide", () => { void flushComposerPersist(); });
+function flushWorkspacePatrol(checkpoint = false) {
+  try {
+    if (checkpoint) workspacePatrolIntake?.checkpoint();
+    void workspacePatrolIntake?.flush().catch(error => setStatus(`Patrol 草稿保存失败：${error.message}`, true));
+  } catch (error) { setStatus(`Patrol 草稿保存失败：${error.message}`, true); }
+}
+window.addEventListener("pagehide", () => { void flushComposerPersist(); flushWorkspacePatrol(true); });
 
 document.addEventListener("focus:languagechange", () => {
   render();

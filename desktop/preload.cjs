@@ -50,6 +50,30 @@ contextBridge.exposeInMainWorld("focusDesktop", {
     onOpen: callback => subscribe("focus:notification-open", callback),
     onTasks: callback => subscribe("focus:tasks-updated", callback),
   },
+  workspacePatrolRecovery: {
+    checkpoint: state => {
+      const result = ipcRenderer.sendSync("focus:workspace-patrol-recovery-checkpoint", state);
+      if (result?.error) throw new Error(result.error);
+      return result.value;
+    },
+    read: () => {
+      const result = ipcRenderer.sendSync("focus:workspace-patrol-recovery-read");
+      if (result?.error) throw new Error(result.error);
+      return result.value;
+    },
+    put: async (id, bytes) => {
+      const result = await ipcRenderer.invoke("focus:workspace-patrol-recovery-put", { id, bytes });
+      if (result?.error) throw new Error(result.error);
+      return result.value;
+    },
+    save: async state => {
+      const result = await ipcRenderer.invoke("focus:workspace-patrol-recovery-save", state);
+      if (result?.error) throw new Error(result.error);
+      return result.value;
+    },
+    onFlush: callback => subscribe("focus:workspace-patrol-recovery-flush", callback),
+    flushed: result => ipcRenderer.invoke("focus:workspace-patrol-recovery-flushed", result),
+  },
   patrol: {
     enabled: patrolEnabled,
     recovery: {

@@ -12,6 +12,7 @@
   if (new URLSearchParams(location.search).get("surface") !== "panel") return;
   document.body.dataset.surface = "panel";
   const host = document.querySelector("#panel"); host.hidden = false;
+  host.inert = true;
   const $ = selector => host.querySelector(selector), bridge = window.focusDesktop?.patrol;
   host.prepend($("#version-picker"),$("#version-detail"));
   const runtime = window.focusDesktop?.runtime() || { apiBase: location.origin, session: new URLSearchParams(location.search).get("session") || "" };
@@ -21,9 +22,10 @@
   const markdown = window.markdownit({ html:false, linkify:true });
   const answerCards = new Map();
   const intake = FocusWorkspacePatrolIntake.create({ runtime, api, selectWorkspace: window.focusDesktop?.selectWorkspace,
-    recovery: bridge?.enabled ? bridge.recovery : null,
+    recovery: bridge?.enabled ? bridge.recovery : await FocusPatrolBrowserRecovery.open("panel"),
     onSaveError: error => fail(new Error(`草稿保存失败：${error.message}`)),
     accessMode: FocusAccessMode.readNewSessionDefault(localStorage) });
+  host.inert = false;
   const preview = FocusWorkspacePatrolMaterialPreview.create({ host, intake, workspaceId: () => workspace?.workspace_id || null, onError: fail, compact:true });
   let workspace = null, workspaceLoaded = false, generation = 0, loopId = null, unsubscribe = null, reads = new AbortController();
   let resultKey = "", inputKey = "", publishedState = "", binding = false, nativeReady = false, shownFailure = "", closeEpoch = 0, commandQueue = Promise.resolve();
@@ -515,5 +517,8 @@
       finally { nativeReady = true; notify(); }
     });
   } else if (intake.readBinding()) await activate(await intake.workspace(intake.readBinding().workspace_id));
+  const flush = () => { void intake.flush().catch(fail); };
+  document.addEventListener("visibilitychange", () => { if (document.hidden) flush(); });
+  window.addEventListener("pagehide", () => { try { intake.checkpoint(); } catch (error) { fail(error); } flush(); });
   window.addEventListener("beforeunload", () => { budget?.dispose(); sizeObserver.disconnect(); historyReferences.dispose(); references.dispose(); preview.dispose(); connection.stop(); reads.abort(); });
 })().catch(error => { const node = document.querySelector("#error"); node.hidden = false; node.textContent = error.message; });
