@@ -15,7 +15,7 @@ from typing import ClassVar
 from sqlalchemy import func, select
 
 from backend.app.desktop.agent_loop.models import AgentLoop, LoopBudgetUsage, LoopDelegationGrant
-from backend.app.desktop.agent_loop.usage import LoopUsageLedger
+from backend.app.desktop.agent_loop.usage import LoopUsageDelta, LoopUsageLedger
 from backend.app.desktop.agent_loop.resource_limits import exceeds_limit
 
 from .index_model_budget import IndexBudgetExceeded
@@ -58,7 +58,7 @@ class IndexBudgetReservationRepository:
                 "usage": {name: getattr(usage, name) for name in cls._DEFAULTS},
             }
 
-    async def reserve(self, input_tokens: int, output_tokens: int) -> None:
+    async def reserve(self, input_tokens: int, output_tokens: int, *, retry: bool = False) -> None:
         amounts = {
             "model_calls": 1,
             "input_tokens": input_tokens,
@@ -99,6 +99,12 @@ class IndexBudgetReservationRepository:
                     raise IndexBudgetExceeded(
                         "semantic index authorized_model_budget exhausted"
                     )
+            if retry:
+                consumed_retries = max(usage.retries, int(self._frozen_usage.get("retries", 0)))
+                if any(exceeds_limit(consumed_retries + 1, limits.get("max_retries"))
+                       for limits in (self._limits, grant.budgets)):
+                    raise IndexBudgetExceeded("model retry budget exhausted")
+                LoopUsageLedger.apply(usage, LoopUsageDelta(retries=1))
             row = await session.get(LoopIndexBudgetReservation, self._reservation_id)
             if row is None:
                 row = LoopIndexBudgetReservation(
