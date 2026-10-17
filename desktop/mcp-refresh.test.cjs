@@ -1,0 +1,69 @@
+"use strict";
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { createAppHarness, readAppSource } = require("./test-helper.cjs");
+
+async function refresh(result) {
+  const harness = createAppHarness({ statusNode: "record", fetch: true });
+  harness.vm.runInContext(readAppSource(), harness.context);
+  harness.context.fetch = async () => ({ ok: true, status: 200, json: async () => result });
+  harness.vm.runInContext(`
+    state.activeTaskId = "assembly";
+    state.tasks = [{ task_id: "assembly", harness_mode: "assembly", workspace_path: "C:/workspace" }];
+    state.details.set("assembly", { messages: [], ui_state: {} });
+  `, harness.context);
+  const button = { dataset: { action: "refresh-capabilities" }, disabled: false };
+  harness.context.refreshEvent = { target: { closest: () => button } };
+  await harness.vm.runInContext("handleDocumentClick(refreshEvent)", harness.context);
+  assert.equal(button.disabled, false);
+  return harness;
+}
+
+test("all-invalid refresh shows name, scope, reason and repair in the assembly area", async () => {
+  const harness = await refresh({ skills: [], mcp_tool_count: 0, failed_servers: ["broken"], mcp_failures: [{
+    server_name: "broken<script>", scope: "workspace", config_path: "C:/workspace/.focus/extensions_config.json",
+    stage: "configuration", reason: "缺少 command", action: "补充 command 后重试 MCP",
+  }] });
+  assert.equal(harness.statusState.danger, true);
+  assert.match(harness.statusState.text, /MCP 刷新存在失败/);
+  const html = harness.vm.runInContext('renderAssemblyTarget(state.tasks[0])', harness.context);
+  for (const text of ["broken&lt;script&gt;", "工作区", "extensions_config.json", "缺少 command", "补充 command 后重试 MCP"]) {
+    assert.ok(html.includes(text), text);
+  }
+  assert.doesNotMatch(html, /broken<script>/);
+  assert.match(html, /role="status"/);
+  assert.equal(harness.vm.runInContext('renderCapabilityRefreshResult("other")', harness.context), "");
+});
+
+test("partial refresh preserves available skill and tool counts with failure details", async () => {
+  const harness = await refresh({ skills: [{ name: "skill" }], mcp_tool_count: 2, failed_servers: ["offline"], mcp_failures: [{
+    server_name: "offline", scope: "global", config_path: "C:/global/extensions_config.json",
+    stage: "connection", reason: "connection refused", action: "确认服务可用后重试",
+  }] });
+  const html = harness.vm.runInContext('renderCapabilityRefreshResult("assembly")', harness.context);
+  assert.match(html, /1 个技能、2 个 MCP 工具/);
+  assert.match(html, /全局/);
+  assert.match(html, /connection refused/);
+  assert.equal(harness.statusState.danger, true);
+});
+
+test("empty configuration remains a successful refresh", async () => {
+  const harness = await refresh({ skills: [], mcp_tool_count: 0, failed_servers: [], mcp_failures: [] });
+  assert.equal(harness.statusState.danger, false);
+  assert.match(harness.statusState.text, /已刷新 0 个技能、0 个 MCP 工具/);
+  assert.doesNotMatch(harness.statusState.text, /失败/);
+});
+
+test("successful retry replaces the previous failure panel", async () => {
+  const harness = await refresh({ skills: [], mcp_tool_count: 0, failed_servers: ["broken"], mcp_failures: [{
+    server_name: "broken", scope: "global", stage: "configuration", reason: "缺少 command", action: "补充 command",
+  }] });
+  harness.context.fetch = async () => ({ ok: true, status: 200, json: async () => ({
+    skills: [], mcp_tool_count: 1, failed_servers: [], mcp_failures: [],
+  }) });
+  await harness.vm.runInContext("handleDocumentClick(refreshEvent)", harness.context);
+  const html = harness.vm.runInContext('renderCapabilityRefreshResult("assembly")', harness.context);
+  assert.match(html, /1 个 MCP 工具/);
+  assert.doesNotMatch(html, /缺少 command|broken|danger/);
+  assert.equal(harness.statusState.danger, false);
+});

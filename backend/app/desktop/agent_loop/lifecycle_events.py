@@ -27,6 +27,8 @@ class LoopLifecycleEventRecorder:
         if grant_state is not None:
             grant_state["expires_at"] = grant.expires_at.isoformat() if grant.expires_at else None
         payload = {"status": loop.status, "health": loop.health, "waiting_reason": loop.waiting_reason,
+                "created_at": loop.created_at.isoformat(),
+                "completed_at": loop.completed_at.isoformat() if loop.completed_at else None,
                 "current_round_id": loop.current_round_id, "current_portfolio_revision_id": loop.current_portfolio_revision_id,
                 "revision": loop.revision, "authority_revision": loop.authority_revision, "goal_revision": loop.goal_revision,
                 "equipment": loop.equipment, "grant": grant_state, "final_result": loop.final_result}

@@ -116,6 +116,23 @@ Portfolio 是索引，不是超级上下文。Patrol 的普通控制观察仍保
 
 但自动 Context 派生不会再基于截断的尾部消息预览进行规划。系统会把每个不可变 source Revision 完整索引为 protocol-safe segments 与有原文依据的 semantic units；Planner 从紧凑的 Portfolio catalog 出发，在授权索引中检索候选，并在生成 `WorkContextSpec` 前执行有预算的精确读取。完整历史始终可达，但不会被整段塞进每一次模型调用。
 
+### 工作区自动执行预算
+
+首次发送工作区输入时，默认采用“普通任务”，也可以在桌面输入面板或浏览器工作台选择“长任务”：
+
+| 预算上限 | 普通任务（默认） | 长任务 |
+| --- | --- | --- |
+| 从创建起的总时长 | 30 分钟 | 2 小时 |
+| 轮次 | 40 | 160 |
+| 模型调用 | 100 | 400 |
+| 输入 / 输出 token | 500,000 / 50,000 | 2,000,000 / 200,000 |
+| 重试 | 6 | 20 |
+| 授权并发 Run | 2 | 4 |
+
+预算栏显示已用时长、剩余时间、正在并行与排队的工作；展开明细可查看已结算、预留／待确认用量及剩余额度。达到 80% 时提示预算即将用尽，预算等待时提示追加或停止；实际并发仍受运行池约束。时长包含暂停和等待，预算是执行上限，不能用来预测完成时间或实际费用。在途调用可能在预算检查后结算。
+
+“增加一份预算”只调整本次授权，基于当前上限或已占用量中较大值追加，保留累计用量和未设限字段，轮次累计最多 1,000；并发采用当前值与所选份额中较大值。暂停任务保持暂停，其他授权或信息待办仍需单独处理。已有任务及传统 Context Loop 的预算保持原样。
+
 ### 多对一、多对多持续策展
 
 Focus 不把 Derived Context 限制成“一棵只能向外分叉的聊天树”。Patrol 可以从多个来源 Revision 策展一个新 Lane，也可以把同一组来源投影成多个拥有不同历史与目标的 Lane。
@@ -162,19 +179,21 @@ Patrol 发出的控制指令进入模型时，就是普通的 `HumanMessage(id, 
 
 Derived Context 让 Focus 能重写下一轮的过去；Patrol 让这种能力持续、自主而可治理。两者合在一起，Agent Loop 不再只是重复调用模型，而成为一台持续演化任务认知状态的 **Context Evolution Engine**。
 
+公开安装和更新只使用已发布的稳定 `vX.Y.Z` GitHub Release；草稿、预发布版本和 `main` 不会成为更新目标，没有稳定版本时安装失败。`focus update` 在改动代码前将完整 PostgreSQL 恢复点保存在 `~/.focus/backups/`，再安装锁定依赖、执行迁移、检查表结构并启动 Gateway 验证读取接口，全部通过才在 `install.json` 记录精确提交。失败会恢复旧代码、依赖和整个数据库；恢复未完成时禁止启动，再次运行 `focus update` 会先离线恢复。备份持续保留。首发托管流程仅支持默认本地 PostgreSQL，自定义数据库会在改动前被拒绝。已有跟随 main 的安装需重新运行一次安装器以获得受保护的命令入口。安装和更新时 Docker 必须正在运行。详见[发布和恢复流程](docs/managed-releases.md)。
+
 ## Windows 安装
 
 先准备 Git、Python 3.11+、Node.js 22.12+ 与 Docker Desktop，然后在 PowerShell 中执行一次：
 
 ```powershell
-irm https://raw.githubusercontent.com/Leeminjing/Focus/main/install.ps1 | iex
+irm https://github.com/Leeminjing/Focus/releases/latest/download/install.ps1 | iex
 ```
 
 首次运行会打开「设置 → 模型」。填写真实 API Key，核对模型名称、地址和协议后保存；普通调用及策展输出验证通过后即可开始任务。也可在 `%USERPROFILE%\.focus\.env` 中配置。以后可在任意目录使用同一组命令：
 
 ```powershell
 focus          # 启动 Focus
-focus update   # 将受管理的已跟踪代码同步到 GitHub 最新 main
+focus update   # 备份数据、迁移并检查健康后，更新到最新已发布稳定版本
 ```
 
 安装器把程序代码放在 `%USERPROFILE%\.focus\app`，托管的 Python 环境放在 `%USERPROFILE%\.focus\runtime`，命令入口放在 `%USERPROFILE%\.focus\bin`。持久化配置、插件、用户和 PostgreSQL 数据位于受管理 Git 工作区之外；选中的工作区也应放在 `.focus\app` 之外。`focus update` 会有意丢弃 `.focus\app` 内已跟踪文件的本地改动；开发请使用另一个 clone。
@@ -184,14 +203,14 @@ focus update   # 将受管理的已跟踪代码同步到 GitHub 最新 main
 先准备 Git、Python 3.11+、Node.js 22.12+，并启动 Docker Desktop，然后在终端执行一次：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Leeminjing/Focus/main/install.sh | sh
+curl -fsSL https://github.com/Leeminjing/Focus/releases/latest/download/install.sh | sh
 ```
 
 首次运行会打开「设置 → 模型」，填写真实 API Key 并保存，验证普通调用及策展输出。也可在 `~/.focus/.env` 中配置。打开一个新终端后使用：
 
 ```sh
 focus          # 启动 Focus
-focus update   # 将受管理的已跟踪代码同步到 GitHub 最新 main
+focus update   # 备份数据、迁移并检查健康后，更新到最新已发布稳定版本
 ```
 
 macOS 安装器同样使用 `~/.focus/app`、`~/.focus/runtime` 和 `~/.focus/bin`，并把命令目录加入当前 shell 的用户配置文件；整个过程不使用 `sudo`。当前提供的是未签名、从源码托管运行的 Electron 分发方式，不是经过公证的 `.app`，因此 macOS 可能显示安全提示。更新只替换程序目录内的已跟踪文件，不影响 `~/.focus/app` 外的持久数据。

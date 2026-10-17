@@ -3,7 +3,12 @@
     $ErrorActionPreference = "Stop"
 
     $Repository = "https://github.com/Leeminjing/Focus.git"
-    $Branch = "main"
+    # Only published stable releases are eligible for public installation.
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/Leeminjing/Focus/releases/latest" -Headers @{ "User-Agent" = "Focus-installer" } -TimeoutSec 15
+    if ($release.draft -ne $false -or $release.prerelease -ne $false -or -not $release.published_at -or $release.tag_name -notmatch '^v\d+\.\d+\.\d+$') {
+        throw "No published stable Focus release is available."
+    }
+    $ReleaseTag = [string]$release.tag_name
     $UserProfile = [Environment]::GetFolderPath("UserProfile")
     if ([string]::IsNullOrWhiteSpace($UserProfile)) {
         throw "Could not determine the current Windows user profile directory."
@@ -70,7 +75,8 @@
             $metadata = Get-Content -Raw -LiteralPath $MetadataPath | ConvertFrom-Json
             return $metadata.managed -eq $true -and
                 (Normalize-RepositoryUrl ([string]$metadata.repository)) -eq (Normalize-RepositoryUrl $Repository) -and
-                [string]$metadata.branch -eq $Branch -and
+                ((($metadata.PSObject.Properties.Name -contains "channel") -and $metadata.channel -eq "stable") -or
+                    (($metadata.PSObject.Properties.Name -contains "branch") -and $metadata.branch -eq "main")) -and
                 [System.IO.Path]::GetFullPath([string]$metadata.appPath) -eq [System.IO.Path]::GetFullPath($AppDir)
         } catch {
             return $false
@@ -106,34 +112,39 @@
 
     New-Item -ItemType Directory -Force -Path $FocusHome, $BinDir, (Join-Path $FocusHome "plugins"), (Join-Path $FocusHome "users") | Out-Null
 
-    if (Test-Path -LiteralPath $AppDir) {
+    $existingInstall = Test-Path -LiteralPath $AppDir
+    if ($existingInstall) {
         if (-not (Test-ExistingManagedInstall)) {
             throw "$AppDir already exists but is not a Focus managed installation. Move it elsewhere, then run the installer again."
         }
         Write-Host "Existing Focus installation found. Updating it..."
-    } else {
-        Write-Host "Cloning Focus into $AppDir..."
-        $stagingRoot = Join-Path $FocusHome "staging"
-        $stagingApp = Join-Path $stagingRoot "app-$PID"
-        New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
-        try {
-            Invoke-Native $git @("clone", "--branch", $Branch, "--single-branch", $Repository, $stagingApp)
+    }
+    Write-Host "Cloning stable Focus $ReleaseTag..."
+    $stagingRoot = Join-Path $FocusHome "staging"
+    $stagingApp = Join-Path $stagingRoot "app-$PID"
+    New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
+    try {
+        Invoke-Native $git @("clone", "--branch", $ReleaseTag, "--single-branch", $Repository, $stagingApp)
+        if (-not $existingInstall) {
             Move-Item -LiteralPath $stagingApp -Destination $AppDir
-        } catch {
-            $resolvedStagingRoot = [System.IO.Path]::GetFullPath($stagingRoot).TrimEnd("\") + "\"
-            $resolvedStagingApp = [System.IO.Path]::GetFullPath($stagingApp)
-            if ($resolvedStagingApp.StartsWith($resolvedStagingRoot, [System.StringComparison]::OrdinalIgnoreCase) -and
-                (Test-Path -LiteralPath $resolvedStagingApp)) {
-                Remove-Item -LiteralPath $resolvedStagingApp -Recurse -Force
-            }
-            throw
         }
+    } catch {
+        $resolvedStagingRoot = [System.IO.Path]::GetFullPath($stagingRoot).TrimEnd("\") + "\"
+        $resolvedStagingApp = [System.IO.Path]::GetFullPath($stagingApp)
+        if ($resolvedStagingApp.StartsWith($resolvedStagingRoot, [System.StringComparison]::OrdinalIgnoreCase) -and
+            (Test-Path -LiteralPath $resolvedStagingApp)) {
+            Remove-Item -LiteralPath $resolvedStagingApp -Recurse -Force
+        }
+        throw
+    }
 
+    if (-not $existingInstall) {
         $metadata = [ordered]@{
             schema = 1
             managed = $true
             repository = $Repository
-            branch = $Branch
+            channel = "stable"
+            release = $ReleaseTag
             appPath = $AppDir
             installedAt = [DateTime]::UtcNow.ToString("o")
         }
@@ -153,7 +164,16 @@
         Copy-Item -LiteralPath (Join-Path $AppDir ".env.example") -Destination $globalEnv
     }
 
-    $cliScript = Join-Path $AppDir "scripts\focus.ps1"
+    # Keep the validated CLI outside the checkout. It remains available if a
+    # failed migration requires restoring an older main-based checkout.
+    $cliSource = $AppDir
+    if ($existingInstall) { $cliSource = $stagingApp }
+    $cliDir = Join-Path $FocusHome "runtime\cli"
+    New-Item -ItemType Directory -Force -Path $cliDir | Out-Null
+    foreach ($file in @("focus.ps1", "managed-update.cjs")) {
+        Copy-Item -LiteralPath (Join-Path $cliSource "scripts\$file") -Destination (Join-Path $cliDir $file) -Force
+    }
+    $cliScript = Join-Path $cliDir "focus.ps1"
     if (-not (Test-Path -LiteralPath $cliScript -PathType Leaf)) {
         throw "The installed repository does not contain scripts\focus.ps1."
     }
@@ -162,13 +182,20 @@
     if (-not (Test-Path -LiteralPath $powershell -PathType Leaf)) {
         $powershell = Get-ApplicationPath "powershell.exe"
     }
-    Invoke-Native $powershell @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $cliScript, "update")
-
-    $launcher = '@echo off' + "`r`n" +
-        'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\.focus\app\scripts\focus.ps1" %*' + "`r`n"
+    $launcher = '@echo off' + "`r`n" + 'setlocal' + "`r`n" +
+        'set "FOCUS_UPDATE_APP=%USERPROFILE%\.focus\app"' + "`r`n" +
+        'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\.focus\runtime\cli\focus.ps1" %*' + "`r`n"
     $launcherPath = Join-Path $BinDir "focus.cmd"
     [System.IO.File]::WriteAllText($launcherPath, $launcher, [System.Text.Encoding]::ASCII)
     Add-UserPathEntry $BinDir
+
+    $previousUpdateApp = $env:FOCUS_UPDATE_APP
+    try {
+        $env:FOCUS_UPDATE_APP = $AppDir
+        Invoke-Native $powershell @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $cliScript, "update")
+    } finally {
+        $env:FOCUS_UPDATE_APP = $previousUpdateApp
+    }
 
     Write-Host ""
     Write-Host "Focus installed successfully."

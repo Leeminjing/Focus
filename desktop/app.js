@@ -127,6 +127,7 @@ const state = {
   materialHistory: new Map(),
   agents: new Map(),
   skillCatalogs: new Map(),
+  capabilityRefreshResults: new Map(),
   contextTrees: new Map(),
   contextDraft: null,
   pickerActive: { main: 0, draft: 0 },
@@ -249,7 +250,7 @@ let mapRelatedOnly = false;
 let mapLive = null;
 const mapRunPreviews = createRunPreviews((values, structural) => {
   if (state.view !== "map" || state.mapViewMode !== "graph") return;
-  if (structural) patchMapGraph();
+  if (structural) scheduleMapGraphPatch();
   else window.FocusPortfolioMapView.patchPreviews(app.querySelector("[data-map-graph]"), values);
 });
 const loopWaitDrafts = window.FocusLoopWaitRequestView?.createDraftStore();
@@ -1696,6 +1697,25 @@ function renderTaskRail(task) {
   return `<aside class="task-workspace-list"><header><strong>工作区任务</strong><button data-action="new-task" aria-label="新建任务">＋</button></header><nav>${tasks.map(item => `<button data-action="context-rail-card" data-task-id="${escapeHtml(item.task_id)}" aria-current="${item.task_id === task.task_id ? "true" : "false"}"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.workspace_name || "本地工作区")} · ${escapeHtml(presentRunStatus(state.details.get(item.task_id)?.active_run?.status).label)}</small></button>`).join("")}</nav><footer>这里的输入只发送到当前选中的任务。</footer></aside>`;
 }
 
+function capabilityRefreshSummary(result) {
+  return `已刷新 ${result.skills.length} 个技能、${result.mcp_tool_count} 个 MCP 工具`;
+}
+
+function mcpFailureDescription(item) {
+  const scopes = { default: "程序默认", global: "全局", workspace: "工作区", provided: "传入配置" };
+  return `${item.server_name}（${scopes[item.scope] || item.scope}${item.config_path ? ` · ${item.config_path}` : ""}）：${item.reason}；处理：${item.action}`;
+}
+
+function renderCapabilityRefreshResult(taskId) {
+  const result = state.capabilityRefreshResults.get(taskId);
+  if (!result) return "";
+  const failures = result.mcp_failures || [];
+  const hasFailures = failures.length > 0 || result.failed_servers.length > 0;
+  const details = failures.length ? failures.map(mcpFailureDescription)
+    : result.failed_servers.map(name => `${name}：请检查配置或连接后重试 MCP。`);
+  return `<section class="capability-refresh-result${hasFailures ? " danger" : ""}" role="status" aria-label="能力刷新结果"><strong>${hasFailures ? "MCP 刷新存在失败；" : ""}${escapeHtml(capabilityRefreshSummary(result))}</strong>${details.length ? `<ul>${details.map(text => `<li>${escapeHtml(text)}</li>`).join("")}</ul>` : ""}</section>`;
+}
+
 function renderAssemblyTarget(task) {
   const target = task.assembly_target || { scope: "global", path: task.workspace_path };
   const workspaces = new Map(state.tasks.filter(item => item.harness_mode !== "assembly" || item.assembly_target?.scope === "workspace")
@@ -1704,7 +1724,7 @@ function renderAssemblyTarget(task) {
     id: state.patrolWorkspace.workspace_id, name: state.patrolWorkspace.display_name, path: state.patrolWorkspace.path,
   });
   if (target.scope === "workspace") workspaces.set(target.workspace_id, { id: target.workspace_id, name: task.workspace_name, path: target.path });
-  return `<div class="assembly-target"><label>装配范围 <select data-assembly-target aria-label="装配范围"><option value=""${target.scope === "global" ? " selected" : ""}>全局 · 所有工作区</option>${[...workspaces.values()].map(item => `<option value="${escapeHtml(item.id)}"${target.workspace_id === item.id ? " selected" : ""}>仅 ${escapeHtml(item.name || item.path)}</option>`).join("")}</select></label><button type="button" data-action="pick-assembly-workspace">选择其他工作区</button><button type="button" data-action="refresh-capabilities">刷新技能 / 重试 MCP</button><small title="${escapeHtml(target.path || "")}">${escapeHtml(target.path || "~/.focus")}</small></div>`;
+  return `<div class="assembly-target"><label>装配范围 <select data-assembly-target aria-label="装配范围"><option value=""${target.scope === "global" ? " selected" : ""}>全局 · 所有工作区</option>${[...workspaces.values()].map(item => `<option value="${escapeHtml(item.id)}"${target.workspace_id === item.id ? " selected" : ""}>仅 ${escapeHtml(item.name || item.path)}</option>`).join("")}</select></label><button type="button" data-action="pick-assembly-workspace">选择其他工作区</button><button type="button" data-action="refresh-capabilities">刷新技能 / 重试 MCP</button><small title="${escapeHtml(target.path || "")}">${escapeHtml(target.path || "~/.focus")}</small>${renderCapabilityRefreshResult(task.task_id)}</div>`;
 }
 
 async function showAssembly(workspaceId = "") {
@@ -3332,23 +3352,20 @@ function createRunPreviews(onChange) {
 function stopMapLive() {
   const previous = mapLive;
   mapLive = null;
+  if (previous?.frame != null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(previous.frame);
   previous?.unsubscribe();
   previous?.connection.stop();
   mapRunPreviews?.stop();
 }
 
-function ensureMapLive() {
-  const loopId = mapPortfolio.manifest?.loop_id, workspaceId = mapPortfolio.workspaceId;
-  if (!loopId || !window.FocusLoopLiveStore || !window.FocusLoopLiveConnection) return;
-  if (mapLive?.loopId === loopId && mapLive.workspaceId === workspaceId) return;
-  stopMapLive();
-  const store = window.FocusLoopLiveStore.create();
-  const connection = window.FocusLoopLiveConnection.create({ api: loopApi, store });
-  const owner = { loopId, workspaceId, store, connection, roots: null, unsubscribe: () => {} };
-  mapLive = owner;
-  owner.unsubscribe = store.subscribe(({ projection }) => {
+function scheduleMapGraphPatch() {
+  const owner = mapLive;
+  if (!owner || state.view !== "map" || state.mapViewMode !== "graph" || owner.frame !== null) return;
+  owner.frame = requestAnimationFrame(() => {
+    owner.frame = null;
     if (mapLive !== owner || state.view !== "map" || state.mapViewMode !== "graph") return;
     patchMapGraph();
+    const projection = owner.store.get().projection;
     if (!projection) return;
     const roots = JSON.stringify([
       Object.values(projection.contexts).map(item => [item.entity_id, item.state.current_revision_id]),
@@ -3358,7 +3375,21 @@ function ensureMapLive() {
     if (roots === owner.roots) return;
     const previous = owner.roots;
     owner.roots = roots;
-    if (previous !== null) void hydrateMapPortfolio(workspaceId, true);
+    if (previous !== null) void hydrateMapPortfolio(owner.workspaceId, true);
+  });
+}
+
+function ensureMapLive() {
+  const loopId = mapPortfolio.manifest?.loop_id, workspaceId = mapPortfolio.workspaceId;
+  if (!loopId || !window.FocusLoopLiveStore || !window.FocusLoopLiveConnection) return;
+  if (mapLive?.loopId === loopId && mapLive.workspaceId === workspaceId) return;
+  stopMapLive();
+  const store = window.FocusLoopLiveStore.create();
+  const connection = window.FocusLoopLiveConnection.create({ api: loopApi, store });
+  const owner = { loopId, workspaceId, store, connection, roots: null, frame: null, unsubscribe: () => {} };
+  mapLive = owner;
+  owner.unsubscribe = store.subscribe(() => {
+    if (mapLive === owner) scheduleMapGraphPatch();
   });
   void connection.start(loopId).catch(error => {
     if (mapLive === owner) { mapPortfolio.error = error.message; patchMapGraph(); }
@@ -6875,8 +6906,13 @@ async function handleDocumentClick(event) {
     try {
       const result = await api(`/desktop/api/tasks/${taskId}/capabilities/refresh`, { method: "POST" });
       state.skillCatalogs.set(taskId, result.skills);
+      state.capabilityRefreshResults.set(taskId, result);
       if (state.activeTaskId === taskId) renderFocus();
-      setStatus(result.failed_servers.length ? `MCP 连接失败：${result.failed_servers.join("、")}，可再次重试` : `已刷新 ${result.skills.length} 个技能、${result.mcp_tool_count} 个 MCP 工具；下次运行生效`, !!result.failed_servers.length);
+      const failures = result.mcp_failures || [];
+      const hasFailures = failures.length > 0 || result.failed_servers.length > 0;
+      setStatus(hasFailures
+        ? `MCP 刷新存在失败；${capabilityRefreshSummary(result)}，请查看装配区的处理建议`
+        : `${capabilityRefreshSummary(result)}；下次运行生效`, hasFailures);
     } catch (error) { setStatus(error.message, true); }
     finally { button.disabled = false; }
     return;

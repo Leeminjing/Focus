@@ -57,6 +57,7 @@ window.fetch = async (input, options = {}) => {
     await new Promise(resolve => { window.patrolFixture.releaseBootstrap = resolve; });
   }
   const prefix = "/desktop/api/agent-loops";
+  if (path === `${prefix}/budget-presets`) return json(require("./workspace-patrol-budget-fixture.cjs"));
   if (path === '/desktop/api/contexts/batch-delete' && window.patrolFixture.mapDeletes) {
     const body = JSON.parse(options.body);
     window.patrolFixture.mapDeletes.push(body);

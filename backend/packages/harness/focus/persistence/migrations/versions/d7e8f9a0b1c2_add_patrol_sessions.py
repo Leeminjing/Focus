@@ -7,8 +7,6 @@ r"""本迁移对外提供可恢复 Patrol Session 与不可变 phase history。
 
 from alembic import op
 
-import backend.app.desktop.persistence_registry
-from focus.persistence.base import Base
 
 
 revision = "d7e8f9a0b1c2"
@@ -18,6 +16,10 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # 读取 revision 图时不加载整个后端；仅在执行 DDL 时注册 ORM。
+    import backend.app.desktop.persistence_registry  # noqa: F401
+    from focus.persistence.base import Base
+
     bind = op.get_bind()
     Base.metadata.tables["loop_patrol_sessions"].create(bind=bind, checkfirst=False)
     Base.metadata.tables["loop_patrol_phase_transitions"].create(bind=bind, checkfirst=False)
@@ -25,6 +27,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # 读取 revision 图时不加载整个后端；仅在执行 DDL 时注册 ORM。
+    import backend.app.desktop.persistence_registry  # noqa: F401
+    from focus.persistence.base import Base
+
     bind = op.get_bind()
     Base.metadata.tables["loop_curator_assignments"].drop(bind=bind, checkfirst=False)
     Base.metadata.tables["loop_patrol_phase_transitions"].drop(bind=bind, checkfirst=False)

@@ -8,9 +8,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $AppDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+if ($env:FOCUS_UPDATE_APP) { $AppDir = [System.IO.Path]::GetFullPath($env:FOCUS_UPDATE_APP) }
 $FocusHome = Split-Path -Parent $AppDir
 $DesktopDir = Join-Path $AppDir "desktop"
-$HarnessDir = Join-Path $AppDir "backend\packages\harness"
 $RuntimeDir = Join-Path $FocusHome "runtime"
 $VenvDir = Join-Path $RuntimeDir "venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
@@ -18,6 +18,7 @@ $MetadataPath = Join-Path $FocusHome "install.json"
 $LocksDir = Join-Path $FocusHome "locks"
 $ExpectedRepository = "https://github.com/Leeminjing/Focus.git"
 $ExpectedBranch = "main"
+$UpdaterScript = Join-Path $PSScriptRoot "managed-update.cjs"
 
 function Get-ApplicationPath {
     param([Parameter(Mandatory = $true)][string]$Name)
@@ -39,19 +40,6 @@ function Invoke-Native {
     if ($LASTEXITCODE -ne 0) {
         throw "Command failed with exit code $LASTEXITCODE`: $FilePath $($ArgumentList -join ' ')"
     }
-}
-
-function Invoke-NativeOutput {
-    param(
-        [Parameter(Mandatory = $true)][string]$FilePath,
-        [string[]]$ArgumentList = @()
-    )
-
-    $output = & $FilePath @ArgumentList 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code $LASTEXITCODE`: $FilePath $($ArgumentList -join ' ')`n$($output -join [Environment]::NewLine)"
-    }
-    return (($output | Out-String).Trim())
 }
 
 function Normalize-RepositoryUrl {
@@ -78,7 +66,8 @@ function Assert-ManagedInstall {
     $managed = $metadata.PSObject.Properties.Name -contains "managed" -and $metadata.managed -eq $true
     $repositoryMatches = $metadata.PSObject.Properties.Name -contains "repository" -and
         (Normalize-RepositoryUrl ([string]$metadata.repository)) -eq (Normalize-RepositoryUrl $ExpectedRepository)
-    $branchMatches = $metadata.PSObject.Properties.Name -contains "branch" -and [string]$metadata.branch -eq $ExpectedBranch
+    $branchMatches = ($metadata.PSObject.Properties.Name -contains "channel" -and $metadata.channel -eq "stable") -or
+        ($metadata.PSObject.Properties.Name -contains "branch" -and [string]$metadata.branch -eq $ExpectedBranch)
     $pathMatches = $metadata.PSObject.Properties.Name -contains "appPath" -and
         [System.IO.Path]::GetFullPath([string]$metadata.appPath) -eq $AppDir
 
@@ -109,33 +98,6 @@ function Assert-FocusIsStopped {
     }
 }
 
-function Resolve-PythonRuntime {
-    $candidates = @(
-        [PSCustomObject]@{ File = "py.exe"; Prefix = @("-3") },
-        [PSCustomObject]@{ File = "python.exe"; Prefix = @() },
-        [PSCustomObject]@{ File = "python"; Prefix = @() }
-    )
-
-    foreach ($candidate in $candidates) {
-        $application = Get-Command -Name $candidate.File -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($null -eq $application) {
-            continue
-        }
-
-        $version = & $application.Source @($candidate.Prefix) -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
-        if ($LASTEXITCODE -ne 0 -or -not $version) {
-            continue
-        }
-
-        $parts = ([string]$version).Trim().Split(".")
-        if ([int]$parts[0] -gt 3 -or ([int]$parts[0] -eq 3 -and [int]$parts[1] -ge 11)) {
-            return [PSCustomObject]@{ File = $application.Source; Prefix = @($candidate.Prefix) }
-        }
-    }
-
-    throw "Python 3.11 or newer was not found. Install Python and run 'focus update' again."
-}
-
 # Electron 43 uses @electron/get 5 (ESM-only), requiring Node >= 22.12.0.
 # Older Node versions can leave node_modules without a usable Electron binary.
 function Assert-NodeRuntime {
@@ -150,17 +112,6 @@ function Assert-NodeRuntime {
     }
 
     throw "Node.js 22.12.0 or newer is required (found $( & $node --version ))."
-}
-
-function Ensure-PythonEnvironment {
-    if (Test-Path -LiteralPath $VenvPython -PathType Leaf) {
-        return
-    }
-
-    New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
-    $runtime = Resolve-PythonRuntime
-    Write-Host "Creating the managed Python environment..."
-    Invoke-Native $runtime.File (@($runtime.Prefix) + @("-m", "venv", $VenvDir))
 }
 
 function Test-ElectronRuntime {
@@ -191,28 +142,10 @@ function Test-DependenciesReady {
         return $false
     }
 
-    & $VenvPython -c "import alembic, asyncpg, fastapi, psycopg, uvicorn" *> $null
-    return $LASTEXITCODE -eq 0
+    # 完整导入检查在安装/更新及原生首次准备阶段执行；日常这里只检查文件。
+    return $true
 }
 
-function Sync-FocusDependencies {
-    Assert-NodeRuntime | Out-Null
-    $npm = Get-ApplicationPath "npm.cmd"
-    Ensure-PythonEnvironment
-
-    Write-Host "Updating desktop dependencies..."
-    Invoke-Native $npm @("--prefix", $DesktopDir, "ci")
-    Write-Host "Installing Electron runtime..."
-    Invoke-Native $npm @("--prefix", $DesktopDir, "run", "install:electron")
-    if (-not (Test-ElectronRuntime)) {
-        throw "Electron runtime installation completed without a usable executable."
-    }
-
-    Write-Host "Updating Python dependencies..."
-    $desktopRequirement = "$HarnessDir[desktop]"
-    Invoke-Native $VenvPython @("-m", "pip", "install", "--disable-pip-version-check", "-e", $desktopRequirement)
-    Invoke-Native $VenvPython @("-c", "import alembic, asyncpg, fastapi, psycopg, uvicorn")
-}
 
 function Start-Focus {
     Assert-ManagedInstall
@@ -225,6 +158,10 @@ function Start-Focus {
         } catch [System.IO.IOException] {
             throw "Focus is already running or being updated."
         }
+        if (Test-Path -LiteralPath (Join-Path $FocusHome "update-state.json")) {
+            throw "Focus recovery is incomplete. Run 'focus update' before starting Focus."
+        }
+        Invoke-Native (Assert-NodeRuntime) @($UpdaterScript, "check", $FocusHome, $AppDir)
         if (-not (Test-DependenciesReady)) {
             throw "Focus dependencies are missing. Run 'focus update' first."
         }
@@ -263,41 +200,11 @@ function Update-Focus {
         }
         Assert-FocusIsStopped
 
-        $git = Get-ApplicationPath "git.exe"
-        $origin = Invoke-NativeOutput $git @("-C", $AppDir, "remote", "get-url", "origin")
-        if ((Normalize-RepositoryUrl $origin) -ne (Normalize-RepositoryUrl $ExpectedRepository)) {
-            throw "Focus refused to update because origin is not $ExpectedRepository."
-        }
+        $node = Assert-NodeRuntime
+        # Execute the updater loaded by this entry point, including the stable
+        # installer staging copy when upgrading a legacy main-based install.
+        Invoke-Native $node @($UpdaterScript, "update", $FocusHome, $AppDir, $VenvPython)
 
-        $previousCommit = Invoke-NativeOutput $git @("-C", $AppDir, "rev-parse", "HEAD")
-        Write-Host "Fetching Focus..."
-        Invoke-Native $git @("-C", $AppDir, "fetch", "--prune", "origin", $ExpectedBranch)
-        $targetCommit = Invoke-NativeOutput $git @("-C", $AppDir, "rev-parse", "origin/$ExpectedBranch")
-
-        Write-Host "Updating $($previousCommit.Substring(0, 7)) -> $($targetCommit.Substring(0, 7))..."
-        Invoke-Native $git @("-C", $AppDir, "reset", "--hard", "origin/$ExpectedBranch")
-
-        try {
-            Sync-FocusDependencies
-        } catch {
-            $updateFailure = $_
-            if ($previousCommit -ne $targetCommit) {
-                Write-Warning "Dependency update failed. Restoring $($previousCommit.Substring(0, 7))..."
-                Invoke-Native $git @("-C", $AppDir, "reset", "--hard", $previousCommit)
-                try {
-                    Sync-FocusDependencies
-                } catch {
-                    Write-Warning "The previous dependency set could not be fully restored: $($_.Exception.Message)"
-                }
-            }
-            throw "Focus update failed: $($updateFailure.Exception.Message)"
-        }
-
-        if ($previousCommit -eq $targetCommit) {
-            Write-Host "Focus is up to date ($($targetCommit.Substring(0, 7)))."
-        } else {
-            Write-Host "Focus updated successfully: $($previousCommit.Substring(0, 7)) -> $($targetCommit.Substring(0, 7))."
-        }
     } finally {
         if ($null -ne $runLock) {
             $runLock.Dispose()

@@ -192,19 +192,21 @@ When the user returns with a new instruction, that direct HumanMessage advances 
 
 Derived Context lets Focus rewrite the past carried into the next round. Patrol makes that power continuous, autonomous, and governable. Together they turn an Agent Loop from repeated model invocation into a **Context Evolution Engine**.
 
+Public installers and updates use published stable `vX.Y.Z` GitHub Releases. Drafts, prereleases and `main` are ineligible; without a stable release installation fails. Before changing code, `focus update` saves a full PostgreSQL recovery point under `~/.focus/backups/`, installs locked dependencies, migrates, checks the schema and starts the Gateway for read checks. Only success records the exact commit in `install.json`. A failure restores previous code, dependencies and the complete database; incomplete recovery blocks startup and `focus update` retries recovery first, without network access. Backups are retained. This workflow supports the bundled default local PostgreSQL; custom databases are refused before changes. Existing main-based installations must rerun the installer once to receive the protected command entry point. Docker must be running during installation and update. See [release and recovery procedure](docs/managed-releases.md).
+
 ## Install on Windows / Windows 安装
 
 Prerequisites: Git, Python 3.11+, Node.js 22.12+, and Docker Desktop. Then run once in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/Leeminjing/Focus/main/install.ps1 | iex
+irm https://github.com/Leeminjing/Focus/releases/latest/download/install.ps1 | iex
 ```
 
 The first launch opens Settings → Models. Enter a real API key, check the endpoint, model name and protocol, then save to verify chat and curation output before starting a task. You can also configure `%USERPROFILE%\.focus\.env`. Use the same two commands from any directory:
 
 ```powershell
 focus          # start Focus
-focus update   # sync the managed installation to the latest GitHub main
+focus update   # update to the published stable release after backup, migration and health checks
 ```
 
 The installer keeps application code in `%USERPROFILE%\.focus\app`, its managed Python environment in `%USERPROFILE%\.focus\runtime`, and the command launcher in `%USERPROFILE%\.focus\bin`. Persistent configuration, plugins, users, and PostgreSQL data are outside the managed Git checkout; keep selected workspaces outside `.focus\app` as well. `focus update` deliberately discards tracked changes inside `.focus\app`; develop in a separate clone.
@@ -214,14 +216,14 @@ The installer keeps application code in `%USERPROFILE%\.focus\app`, its managed 
 Prerequisites: Git, Python 3.11+, Node.js 22.12+, and a running Docker Desktop. Then run once in Terminal:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Leeminjing/Focus/main/install.sh | sh
+curl -fsSL https://github.com/Leeminjing/Focus/releases/latest/download/install.sh | sh
 ```
 
 The first launch opens Settings → Models. Enter a real API key and save to verify chat and curation output. You can also configure `~/.focus/.env`. Open a new terminal and use:
 
 ```sh
 focus          # start Focus
-focus update   # sync the managed installation to the latest GitHub main
+focus update   # update to the published stable release after backup, migration and health checks
 ```
 
 The macOS installer uses the same `~/.focus/app`, `~/.focus/runtime`, and `~/.focus/bin` layout and adds the command directory to the active shell's user profile. It does not use `sudo`. This is an unsigned, source-managed Electron distribution rather than a notarized `.app`, so macOS may show security prompts. As on Windows, updates replace tracked application files but leave persistent data outside `~/.focus/app` intact.

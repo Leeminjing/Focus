@@ -9,8 +9,6 @@ from collections.abc import Sequence
 
 from alembic import op
 
-import backend.app.desktop.persistence_registry
-from focus.persistence.base import Base
 
 
 revision: str = "a4b5c6d7e8f9"
@@ -20,8 +18,16 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # 读取 revision 图时不加载整个后端；仅在执行 DDL 时注册 ORM。
+    import backend.app.desktop.persistence_registry  # noqa: F401
+    from focus.persistence.base import Base
+
     Base.metadata.tables["loop_mission_revisions"].create(bind=op.get_bind(), checkfirst=False)
 
 
 def downgrade() -> None:
+    # 读取 revision 图时不加载整个后端；仅在执行 DDL 时注册 ORM。
+    import backend.app.desktop.persistence_registry  # noqa: F401
+    from focus.persistence.base import Base
+
     Base.metadata.tables["loop_mission_revisions"].drop(bind=op.get_bind(), checkfirst=False)
