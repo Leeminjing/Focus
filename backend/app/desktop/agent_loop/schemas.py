@@ -219,6 +219,13 @@ PatrolModelAction = Annotated[
 PATROL_MODEL_ACTION_ADAPTER = TypeAdapter(PatrolModelAction)
 
 
+class StrategyAdoption(StrictModel):
+    memory_id: str = Field(min_length=1, max_length=32)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reason: str = Field(min_length=1, max_length=2000, pattern=r"\S")
+    action_indexes: tuple[int, ...] = Field(min_length=1)
+
+
 class PatrolDecisionIntent(StrictModel):
     decision_id: str
     idempotency_key: str
@@ -239,6 +246,7 @@ class PatrolDecisionIntent(StrictModel):
     observed_projection_sequence: int = Field(default=0, ge=0)
     base_entity_revisions: dict[str, int | str] = Field(default_factory=dict)
     rationale: str = Field(min_length=1, max_length=4000)
+    strategy_adoptions: tuple[StrategyAdoption, ...] = ()
     evidence: tuple[dict[str, Any], ...] = ()
     actions: tuple[PatrolAction, ...] = Field(min_length=1)
     context_permissions: tuple[ContextPermission, ...] = ()

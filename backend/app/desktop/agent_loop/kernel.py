@@ -197,6 +197,9 @@ class LoopKernel:
 
                 if observation is None:
                     raise KernelRejected("决策缺少冻结 Observation")
+                from backend.app.desktop.evolution_strategies import validate_strategy_adoptions
+
+                validate_strategy_adoptions(intent.strategy_adoptions, observation.envelope.get("evolution_strategies", ()), len(intent.actions))
                 from backend.app.desktop.agent_loop.schemas import LoopObservationEnvelope
 
                 await validate_context_permissions(session, loop, LoopObservationEnvelope.model_validate(observation.envelope), intent)

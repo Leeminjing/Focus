@@ -7,14 +7,83 @@ DesktopService.memory 的 CRUD 与 resolve_selection/summarize。示例：
 """
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.desktop.memory import (
     MemoryCreate,
     MemorySummarizeRequest,
     MemoryUpdate,
+    MemorySelection,
+    StrategyScenarios,
 )
+from backend.app.desktop.evolution_strategies import EvolutionStrategy
 
 memory_router = APIRouter()
+
+
+class StrategyPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    markdown: str = Field(min_length=1, max_length=160000)
+    workspace_id: str | None = None
+
+
+class StrategyInstallRequest(StrategyPreviewRequest):
+    enabled: bool = True
+    replace_memory_id: str | None = Field(default=None, max_length=32)
+    expected_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class StrategyDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    selection: MemorySelection
+    model_name: str | None = None
+
+
+class StrategyRehearsalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1, max_length=200)
+    strategy: EvolutionStrategy
+    scenarios: StrategyScenarios
+    model_name: str | None = None
+
+
+@memory_router.post("/desktop/api/strategies/draft")
+async def draft_strategy(body: StrategyDraftRequest, request: Request) -> dict:
+    try:
+        return await request.app.state.desktop_service.memory.draft_strategy(body.selection, body.model_name)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, "策略草稿生成失败，请检查模型设置后重试") from exc
+
+
+@memory_router.post("/desktop/api/strategies/rehearse")
+async def rehearse_strategy(body: StrategyRehearsalRequest, request: Request) -> dict:
+    try:
+        return await request.app.state.desktop_service.memory.rehearse_strategy(body.title, body.strategy, body.scenarios, body.model_name)
+    except Exception as exc:
+        raise HTTPException(502, "策略预演失败，请检查模型设置或场景内容后重试") from exc
+
+
+@memory_router.post("/desktop/api/strategies/preview")
+async def preview_strategy(body: StrategyPreviewRequest, request: Request) -> dict:
+    try:
+        return await request.app.state.desktop_service.memory.preview_strategy(body.markdown, body.workspace_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@memory_router.post("/desktop/api/strategies/install")
+async def install_strategy(body: StrategyInstallRequest, request: Request) -> dict:
+    try:
+        return await request.app.state.desktop_service.memory.install_strategy(**body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@memory_router.get("/desktop/api/strategies/{memory_id}/export")
+async def export_strategy(memory_id: str, request: Request) -> dict:
+    return await request.app.state.desktop_service.memory.export_strategy(memory_id)
 
 
 @memory_router.get("/desktop/api/memory")

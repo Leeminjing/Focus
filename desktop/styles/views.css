@@ -1195,6 +1195,12 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .memory-empty p { max-width: 460px; color: var(--text-secondary); }
 .memory-empty > .ui-icon { width: 64px; height: 64px; color: var(--text-accent); }
 .memory-detail-card { display: grid; gap: var(--space-4); padding: var(--space-5); }
+.strategy-import fieldset, .strategy-editor-fields { display: grid; gap: var(--space-4); border: 0; padding: 0; min-width: 0; }
+.strategy-import label, [data-strategy-form] label { display: grid; gap: var(--space-2); }
+.strategy-import label:has(input[type="checkbox"]), [data-strategy-form] label:has(input[type="checkbox"]) { display: flex; align-items: center; }
+.strategy-import textarea, [data-strategy-form] textarea { width: 100%; resize: vertical; }
+.strategy-import-comparison { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: var(--space-4); }
+.strategy-adoption { padding: var(--space-3); border-inline-start: 3px solid var(--accent, #2563eb); background: var(--surface-subtle); overflow-wrap: anywhere; }
 .memory-detail-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
 .memory-detail-heading h2 { margin: var(--space-1) 0; font-size: 20px; }
 .memory-detail-heading p { margin: 0; color: var(--text-secondary); font-size: 11px; }

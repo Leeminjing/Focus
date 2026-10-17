@@ -113,6 +113,7 @@ from backend.app.desktop.agent_loop.schemas import (
     ContextPermission,
     LoopObservationEnvelope,
     PatrolDecisionIntent,
+    StrategyAdoption,
     PatrolModelAction,
     WaitForUserAction,
 )
@@ -194,6 +195,7 @@ class PatrolDecisionProposal(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     rationale: str = Field(min_length=1, max_length=4000)
+    strategy_adoptions: tuple[StrategyAdoption, ...] = ()
     evidence: tuple[dict[str, Any], ...] = ()
     mission_references: tuple[MissionReference, ...] = Field(min_length=1)
     actions: tuple[PatrolModelAction, ...] = Field(min_length=1)
@@ -225,7 +227,7 @@ class PatrolCognitiveStep(BaseModel):
     def _fold_flat_proposal(cls, value: Any) -> Any:
         if not isinstance(value, dict):
             return value
-        flat = {key: value[key] for key in ("rationale", "evidence", "mission_references", "actions", "context_permissions") if key in value}
+        flat = {key: value[key] for key in ("rationale", "strategy_adoptions", "evidence", "mission_references", "actions", "context_permissions") if key in value}
         if not flat or value.get("decision") is not None:
             return value
         if value.get("reads") or value.get("compression_candidate") is not None:
@@ -302,6 +304,7 @@ class StructuredPatrolDecisionModel:
                 actions=proposal.actions,
                 mission_references=proposal.mission_references,
                 observation=observation,
+                strategy_adoptions=proposal.strategy_adoptions,
             )
         except PatrolContractViolation as exc:
             raise PatrolContractViolation(str(exc), raw_output=self._raw_output(proposal), proposal_actions=proposal.actions) from exc
@@ -324,6 +327,7 @@ class StructuredPatrolDecisionModel:
             observed_projection_sequence=observation.projection_sequence,
             base_entity_revisions=observation.base_entity_revisions,
             rationale=proposal.rationale,
+            strategy_adoptions=proposal.strategy_adoptions,
             evidence=(*proposal.evidence, *(reference.model_dump(mode="json") | {"kind": "mission_reference"} for reference in proposal.mission_references)),
             actions=proposal.actions,
         )
