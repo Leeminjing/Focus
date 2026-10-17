@@ -6,6 +6,7 @@ structured output 调用，统一剥离 fenced JSON、校验 extra-forbid schema
 request_messages 提供冻结消息；estimate_input_tokens 复用真实 Runnable 的绑定参数和 adapter/SDK 序列化，
 完整计入消息、text.format、response_format 与工具合同，供外部窗口准入及消费预留；预览不发请求、不产生用量。
 request_model_config 提供该请求的模型配置。Responses 复用完整请求预算，legacy Chat 复用 SDK 严格 schema 转换及既有预算估算。
+模型、schema 绑定及用量 callback 逐请求独立；Responses 的底层连接由 AppConfig 绑定的应用级会话复用。
 示例：`result = await StructuredWorkerModel(config).invoke(MySchema, system, payload)`。
 """
 

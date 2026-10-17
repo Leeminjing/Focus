@@ -41,6 +41,8 @@ class FocusResponsesChatModel(BaseChatModel):
     timeout: float = 120.0
     http_client: Any = Field(default=None, exclude=True)
     http_async_client: Any = Field(default=None, exclude=True)
+    client_pool: Any = Field(default=None, exclude=True, repr=False)
+    client_scope: str | None = Field(default=None, exclude=True, repr=False)
     _client: Any = PrivateAttr()
     _async_client: Any = PrivateAttr()
 
@@ -48,7 +50,10 @@ class FocusResponsesChatModel(BaseChatModel):
         super().__init__(**kwargs)
         options = {"api_key": self.api_key.get_secret_value(), "base_url": self.base_url,
                    "max_retries": self.max_retries, "timeout": self.timeout}
-        self._client, self._async_client = responses_clients(options, self.http_client, self.http_async_client)
+        self._client, self._async_client = responses_clients(
+            options, self.http_client, self.http_async_client, pool=self.client_pool,
+            provider=self.provider_contract.provider, scope=self.client_scope,
+        )
 
     @property
     def _llm_type(self):

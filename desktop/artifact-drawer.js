@@ -95,9 +95,11 @@
           const version = ++previewVersion;
           const detail = await api.factDetail(id, fact.fact_id, reads.signal, fact.revision);
           if (owner !== epoch || version !== previewVersion || id !== getLoopId()) return;
-          if (!detail.file || detail.file.result_key !== fact.file.result_key) throw new Error("此版本快照不可用");
-          $("[data-files-preview]").innerHTML = `<h3>版本快照</h3>${root.FocusLoopFactsView.renderFile(detail.file)}`;
+          if (!detail.file || detail.file.result_key !== fact.file.result_key || (fact.file.sha256 && detail.file.sha256 !== fact.file.sha256)) throw new Error("此版本快照不可用");
+          const file = { ...detail.file, fact_id: fact.fact_id, revision: fact.revision };
+          $("[data-files-preview]").innerHTML = `<h3>历史版本 · 固定快照</h3>${root.FocusLoopFactsView.renderFile(file)}`;
           $("[data-files-preview]").querySelector("[data-patrol-file-add]")?.remove();
+          root.FocusFilePreview?.mountHistory($("[data-files-preview]"), file, id);
           $("[data-files-preview]").hidden = false;
           $("[data-files-preview]").scrollIntoView({ block: "nearest" });
         }

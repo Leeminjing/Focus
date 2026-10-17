@@ -60,8 +60,12 @@ class RunOutboxEvent(Base):
     __table_args__ = (
         Index("uq_run_outbox_result", "run_id", "event_type", unique=True,
             postgresql_where=text("event_type <> 'ArtifactVersion'")),
+        Index("ix_run_outbox_ready", "created_at", "event_id",
+            postgresql_where=text("status IN ('pending', 'error')")),
+        Index("ix_run_outbox_claim_expiry", "lease_expires_at",
+            postgresql_where=text("status = 'claimed'")),
         CheckConstraint(
-            "status IN ('pending', 'claimed', 'delivered', 'error')",
+            "status IN ('pending', 'claimed', 'delivered', 'error', 'failed')",
             name="ck_run_outbox_status",
         ),
     )
@@ -78,6 +82,8 @@ class RunOutboxEvent(Base):
     delivery_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     claimed_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

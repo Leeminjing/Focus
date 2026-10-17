@@ -9,7 +9,7 @@
     let reads = new AbortController(), epoch = 0, candidates = [], before = null, typed = false, rendered = "", linkedTarget = null;
     const linkedPreview = root.FocusFileLinks.createPreview({ runtime,
       isCurrent: target => linkedTarget === target, onClose: () => close(true),
-      onCurrent: (reference, taskId) => openLink(reference, taskId) });
+      onCurrent: (reference, taskId) => link(reference, taskId) });
     function close(focus = false) {
       epoch++; reads.abort(); reads = new AbortController();
       linkedTarget = null; linkedPreview.release();
@@ -84,7 +84,7 @@
         section.querySelector("h3").title = file.path;
         section.querySelector("p").textContent = `${(file.sha256 || file.result_key).slice(0,8)} · 已提交来源${result.file.after?.redacted || result.file.before?.redacted ? " · 已脱敏" : ""}`;
         tabs.className = "version-tabs"; tabs.setAttribute("role","tablist"); tabs.setAttribute("aria-label","版本内容");
-        const panels = [...section.querySelectorAll("details")];
+        const panels = [...section.querySelectorAll(":scope > details")];
         section.querySelectorAll(":scope > p")[1]?.classList.add("sr-only");
         const cite = section.querySelector("[data-patrol-file-add]");
         section.insertBefore(tabs,cite);
@@ -101,7 +101,7 @@
         });
         function select(index) {
           [...tabs.children].forEach((tab,i) => { tab.setAttribute("aria-selected",String(i === index)); tab.tabIndex = i === index ? 0 : -1; });
-          section.querySelectorAll('[role="tabpanel"]').forEach((panel,i) => { panel.hidden = i !== index; });
+          section.querySelectorAll(':scope > [role="tabpanel"]').forEach((panel,i) => { panel.hidden = i !== index; });
         }
         select(0); section.append(cite);
         root.FocusFilePreview?.mountHistory(body, { ...result.file, fact_id: file.fact_id, revision: file.revision }, id);
@@ -109,7 +109,7 @@
         body.querySelector("[data-patrol-file-add]")?.addEventListener("click",() => { try { add(file); } catch (error) { onError(error); } });
       } catch (error) { if (owner === epoch && error.name !== "AbortError") body.textContent = "引用版本不可用，请重新选择；原引用和要求已保留。"; }
     }
-    async function openLink(reference, taskId) {
+    async function link(reference, taskId) {
       close();
       linkedTarget = { ...reference, task_id: taskId };
       $("#version-detail").hidden = false;
@@ -149,7 +149,7 @@
     $("#version-candidates").addEventListener("keydown",navigateCandidates);
     $("#instruction").addEventListener("keydown",event => { if (!event.isComposing && !$("#version-picker").hidden) navigateCandidates(event); });
     $("#older-versions").addEventListener("click",() => void load(true));
-    return {render,open,close,detail,openLink,reference(file) { typed = false; add(file); },isOpen:() => !$("#version-picker").hidden || !$("#version-detail").hidden,
+    return {render,open,close,detail,link,reference(file) { typed = false; add(file); },isOpen:() => !$("#version-picker").hidden || !$("#version-detail").hidden,
       input() {
         const match = $("#instruction").value.match(/(?:^|\s)@([^@\n]*)$/);
         if (!match || $("#reference-file").disabled) { if (typed) close(); return; }

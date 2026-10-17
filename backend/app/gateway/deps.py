@@ -13,6 +13,7 @@
 
 具体工作流:
     (1) 创建 AsyncExitStack 统一管理多个异步上下文资源
+        → 先绑定应用级 Responses 连接池，退出时在所有模型任务停止后释放
     (2) 通过 create_stream_bridge(app_config) 创建 StreamBridge → 挂载到 app.state.stream_bridge
         → 注册到 ExitStack（create_stream_bridge 自带 cleanup on exit）
     (3) 若 app_config.database 非空，初始化 AsyncEngine 和 session factory 全局单例
@@ -48,6 +49,7 @@ from fastapi import FastAPI
 from focus.config.app_config import AppConfig
 from focus.runtime import RunManager
 from focus.runtime.stream_bridge.async_provider import create_stream_bridge
+from focus.models.response_clients import response_client_session
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def langgraph_runtime(app: FastAPI, app_config: AppConfig) -> AsyncGenerator[None, None]:
     async with contextlib.AsyncExitStack() as stack:
+        # 比模型和运行任务活得更久；最后在所属事件循环释放共享 HTTP 连接。
+        await stack.enter_async_context(response_client_session(app_config))
         # (2) 通过 create_stream_bridge 工厂创建 StreamBridge（组合根依赖注入）
         #     create_stream_bridge 根据 app_config.stream_bridge.type 选择实现
         #     退出时自动清理所有 run 资源

@@ -20,15 +20,16 @@ const projection = (revision = "r1", patch = {}) => ({ loop_id: "loop-a", loop: 
   contexts: { c: { entity_id: "c", updated_sequence: 1, state: { title: "回答", current_revision_id: revision } } },
   task_progress: { revision: 1, state: { document: { items: [] } } }, interventions: {}, ...patch });
 
-async function panel({ visible = true, read = async (_loop, _context, options) => conversation(options.revisionId), fetchImpl } = {}) {
+async function panel({ visible = true, read = async (_loop, _context, options) => conversation(options.revisionId), history = async () => ({ items: [] }), waitForActivation = true } = {}) {
   const body = createElement("body");
   body.innerHTML = fs.readFileSync(path.join(__dirname, "desktop-patrol.html"), "utf8");
   const document = { ...createDocument(), body, querySelector: selector => body.querySelector(selector), hidden: false,
     addEventListener: (...args) => body.addEventListener(...args) };
+  body.querySelector("#history-items").ownerDocument = document;
   let state = { projection: null, connection: { status: "live" } }, listener;
-  const events = {}, calls = [], states = [], stores = new Map(), copied = [], previews = [], externalLinks = [];
+  const events = {}, calls = [], states = [], stores = new Map(), copied = [], starts = [], loopReads = [];
   const store = id => { if (!stores.has(id)) stores.set(id, Inputs.create()); return stores.get(id); };
-  const api = { workspacePatrol: async id => ({ loop_id: `loop-${id}` }), workspaceInputs: async () => ({ items: [] }),
+  const api = { workspacePatrol: async id => { loopReads.push(id); return { loop_id: `loop-${id}` }; }, workspaceInputs: history,
     conversation: (...args) => { calls.push(args); return read(...args); } };
   const bridge = { enabled: true, onVisibility: callback => { events.visibility = callback; },
     onOpen: callback => { events.open = callback; }, onContent() {},
@@ -39,27 +40,76 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
     readBinding: () => null, reconcile: async () => {},
     workspace: async id => ({ workspace_id: id, display_name: id }), resourceLimits: async () => ({}),
     history: (id, page) => store(id).history(page) };
-  const window = { markdownit, focusDesktop: { runtime: () => ({ apiBase: "http://fixture", session: "test-session" }), patrol: bridge,
-    openExternal: async href => externalLinks.push(href) }, addEventListener() {} };
-  const context = vm.createContext({ window, document, location: { search: "?surface=panel" }, URLSearchParams, URL, Response, fetch: fetchImpl,
+  const window = { markdownit, focusDesktop: { runtime: () => ({ apiBase: "http://fixture", session: "test-session" }), patrol: bridge }, addEventListener() {} };
+  const context = vm.createContext({ window, document, markdownit, setTimeout, location: { search: "?surface=panel" }, URLSearchParams,
     AbortController, navigator: { clipboard: { writeText: async text => copied.push(text) } }, requestAnimationFrame: callback => setImmediate(callback), localStorage: {}, ResizeObserver: class { observe() {} disconnect() {} },
     FocusLoopApi: { create: () => api }, FocusLoopLiveStore: { create: () => ({ get: () => state, subscribe: callback => { listener = callback; callback(state); } }) },
-    FocusLoopLiveConnection: { create: () => ({ start: async () => {}, stop() {} }) },
+    FocusLoopLiveConnection: { create: () => ({ start: async id => { starts.push(id); }, stop() {} }) },
     FocusWorkspacePatrolIntake: { create: () => intake }, FocusWorkspacePatrolMaterialPreview: { create: () => ({ render() {}, dispose() {} }) },
     FocusWorkspacePatrolBudget: { markup: () => "", create: () => ({ update() {}, syncDraft() {}, dispose() {} }) },
-    FocusFilePreview: { mount: async (_host, options) => { previews.push(options); } },
     FocusAccessMode: { readNewSessionDefault() {} }, FocusWorkspacePatrolFeedback: Feedback, FocusWorkspacePatrolInputs: Inputs, FocusLoopFactsView: Facts,
     FocusLoopLiveSelectors: { selectFacts: value => value.files || [] } });
-  vm.runInContext(fs.readFileSync(path.join(__dirname, "file-links.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-references.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "file-links.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "artifact-drawer.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "patrol-input-references.js"), "utf8"), context);
-  await vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-panel.js"), "utf8"), context);
-  return { calls, states, body, events, api, copied, store, previews, externalLinks,
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "message-reading.js"), "utf8"), context);
+  window.FocusMessageReading = context.FocusMessageReading;
+  const activated = vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-panel.js"), "utf8"), context);
+  if (waitForActivation) await activated;
+  else await tick();
+  return { calls, states, body, events, api, copied, store, starts, loopReads, activated, context,
     async emit(value, connection = state.connection) { state = { ...state, projection: value, connection }; listener(state); await tick(); },
     async visibility(value) { events.visibility?.(value); await tick(); },
     results: () => body.querySelector("#results") };
 }
+
+test("initial history failure leaves panel Live connected and offers a history-only retry", async () => {
+  let reads = 0;
+  const f = await panel({ history: async () => { if (++reads === 1) throw new Error("HTTP 503"); return { items: [] }; } });
+  assert.deepEqual(f.starts, ["loop-a"]);
+  assert.equal(f.body.querySelector("#error").textContent, "");
+  assert.match(f.body.querySelector("#history-status").textContent, /503/);
+  await f.emit(projection());
+  assert.equal(f.body.querySelector("#toggle-work").disabled, false);
+  assert.match(f.results().textContent, /r1/);
+  f.body.querySelector("#retry-history").dispatchEvent({ type: "click" }); await tick();
+  assert.equal(reads, 2);
+  assert.equal(f.body.querySelector("#history-status").hidden, true);
+  assert.deepEqual(f.loopReads, ["a"]);
+  assert.deepEqual(f.starts, ["loop-a"]);
+});
+
+test("pending panel history allows Live results and controls, then coalesces incoming history updates", async () => {
+  let release, reads = 0;
+  const f = await panel({ waitForActivation: false, history: () => {
+    if (++reads === 1) return new Promise(resolve => { release = resolve; });
+    return Promise.resolve({ items: [{ submission_id: "one", content: "latest input" }], next_before: null });
+  } });
+  assert.deepEqual(f.starts, ["loop-a"]);
+  await f.emit(projection());
+  await f.emit(projection("r1", { interventions: { updated: {} } }));
+  assert.equal(f.body.querySelector("#toggle-work").disabled, false);
+  assert.match(f.results().textContent, /r1/);
+  assert.equal(reads, 1);
+  release({ items: [{ submission_id: "one", content: "old input" }], next_before: null });
+  await f.activated; await tick();
+  assert.equal(reads, 2);
+  assert.match(f.body.querySelector("#history-items").textContent, /latest input/);
+});
+
+test("late panel history refresh failures cannot affect another workspace", async () => {
+  const f = await panel();
+  await f.emit(projection());
+  let rejectOld;
+  f.api.workspaceInputs = id => id === "a" ? new Promise((_resolve, reject) => { rejectOld = reject; }) : Promise.resolve({ items: [] });
+  await f.emit(projection("r1", { interventions: { updated: {} } }));
+  await f.events.open({ workspaceId: "b" });
+  rejectOld(new Error("old history 503")); await tick();
+  assert.equal(f.body.querySelector("#history-status").hidden, true);
+  assert.equal(f.body.querySelector("#error").textContent, "");
+  assert.deepEqual(f.starts, ["loop-a", "loop-b"]);
+});
 
 test("panel controls follow authoritative status and connection, including waiting for new input", async () => {
   const f = await panel(), toggle = f.body.querySelector("#toggle-work"), stop = f.body.querySelector("#stop-work");
@@ -251,98 +301,82 @@ test("answers expand as Markdown and copy the full source or an individual code 
   assert.equal(reading.querySelector("strong").textContent, "结论");
   assert.equal(reading.querySelector("script"), null);
   const buttons = reading.querySelectorAll("button");
-  buttons.find(button => button.textContent === "复制全文").dispatchEvent({ type: "click" }); await tick();
-  buttons.find(button => button.textContent === "复制代码").dispatchEvent({ type: "click" }); await tick();
+  const fullCopy = buttons.find(button => button.textContent === "复制全文");
+  // This minimal DOM retains attribute entities; real Electron checks HTML decoding.
+  fullCopy.dataset.copyText = text;
+  fullCopy.dispatchEvent({ type: "click", preventDefault() {} }); await tick();
+  buttons.find(button => button.textContent === "复制代码").dispatchEvent({ type: "click", preventDefault() {} }); await tick();
   assert.deepEqual(f.copied, [text, 'const value = 1;\n']);
   reading.open = false; reading.dispatchEvent({ type: "toggle" });
   assert.equal(f.body.querySelector("#panel").dataset.reading, "false");
 });
 
-test("answer body file links open shared preview with the selected message's source identity", async () => {
-  const f = await panel({ read: async () => ({ messages: [
-    { message: { id: "answer", role: "assistant", task_id: "source-task", workspace_id: "a", run_id: "source-run", slot_id: "source-tree",
-      content: "[报告](output/report.md) [中文](output/%E6%8A%A5%E5%91%8A.md#L3)" } },
-    { message: { role: "tool", content: "ignored", run_id: "other-run" } },
-  ] }) });
+test("answer body local links preserve the message's execution source through the shared reader", async () => {
+  const mounts = [];
+  const f = await panel({ read: async () => ({ messages: [{
+    message: { id: "answer", role: "assistant", content: "[报告](reports/report.md)\n\n[中文](<reports/中文 报告.md>)\n\n[编码](reports/%E4%B8%AD%E6%96%87%20%E6%8A%A5%E5%91%8A.md)\n\n[错误](reports/%XY.md)" },
+    file_context: { task_id: "c", workspace_id: "a", run_id: "original-run", slot_id: "original-slot" },
+  }] }) });
+  f.context.FocusFilePreview = { mount: async (_host, options) => mounts.push(JSON.parse(JSON.stringify(options))) };
   await f.emit(projection());
-  const reading = f.body.querySelector(".answer-reading");
-  reading.open = true; reading.dispatchEvent({ type: "toggle" });
-  const links = reading.querySelectorAll("a[href]");
-  for (const [index, link] of links.entries()) {
+  const reading = f.body.querySelector(".answer-reading"); reading.open = true; reading.dispatchEvent({ type: "toggle" });
+  const body = reading.querySelector(".answer-markdown"), links = body.querySelectorAll("a");
+  for (const [index, expected] of [[0, "reports/report.md"], [1, "reports/中文 报告.md"], [2, "reports/中文 报告.md"]]) {
     let prevented = false;
-    link.dispatchEvent({ type: "click", preventDefault() { prevented = true; }, stopPropagation() {} });
+    reading.querySelector(".answer-content").dispatchEvent({ type: "click", target: links[index], preventDefault() { prevented = true; }, stopPropagation() {} });
     await tick();
-    assert.equal(prevented, true, "正文文件点击必须阻止窗口导航并交给文件解析器");
-    const target = f.previews[index]?.target;
-    assert.equal(target?.task_id, "source-task");
-    assert.equal(target.link.path, index ? "output/报告.md" : "output/report.md");
-    assert.equal(target.link.workspace_id, "a");
-    assert.equal(target.link.run_id, "source-run");
-    assert.equal(target.link.slot_id, "source-tree");
-    assert.equal(target.link.view, "current");
+    assert.equal(prevented, true, "相对链接必须在原生导航前拦截");
+    assert.equal(mounts.at(-1)?.target.task_id, "c");
+    assert.equal(mounts.at(-1)?.target.link.path, expected);
+    assert.equal(mounts.at(-1)?.target.link.run_id, "original-run");
+    assert.equal(mounts.at(-1)?.target.link.slot_id, "original-slot");
+    assert.match(f.body.querySelector("#version-body").textContent, /当前磁盘文件/);
   }
-  assert.equal(f.body.querySelector("#version-detail").hidden, false);
-});
-
-test("answer links share workbench URL handling and use the answer context when no task is embedded", async () => {
-  const f = await panel({ read: async () => conversation('[文件](file:///C:/work%20tree/report.md#L8) [坏路径](output/%XY.md) [网页](https://example.com/report) [锚点](#section) [危险](javascript:alert(1))') });
-  await f.emit(projection("r1", { runs: { latest: { state: { run_id: "unrelated-run", context_id: "c" } } } }));
-  const reading = f.body.querySelector(".answer-reading");
-  reading.open = true; reading.dispatchEvent({ type: "toggle" });
-  const click = async href => {
-    let prevented = false;
-    reading.querySelector(`a[href="${href}"]`).dispatchEvent({ type: "click", preventDefault() { prevented = true; }, stopPropagation() {} });
-    await tick(); return prevented;
-  };
-  assert.equal(await click("file:///C:/work%20tree/report.md#L8"), true);
-  assert.equal(f.previews[0].target.task_id, "c");
-  assert.equal(f.previews[0].target.link.path, "C:/work tree/report.md");
-  assert.equal(f.previews[0].target.link.workspace_id, "a");
-  assert.equal(f.previews[0].target.link.run_id, undefined, "不能猜测使用 Context 最新 Run 的工作树");
-  // markdown-it encodes a malformed percent sign as %25; exercise a malformed DOM href too.
-  reading.querySelectorAll("a")[1].setAttribute("href", "output/%XY.md");
-  assert.equal(await click("output/%XY.md"), true);
-  assert.equal(f.previews.length, 1);
+  const count = mounts.length;
+  links[3].setAttribute("href", "reports/%XY.md");
+  reading.querySelector(".answer-content").dispatchEvent({ type: "click", target: links[3], preventDefault() {}, stopPropagation() {} }); await tick();
+  assert.equal(mounts.length, count);
   assert.match(f.body.querySelector("#error").textContent, /文件链接无效/);
-  assert.equal(await click("https://example.com/report"), true);
-  assert.deepEqual(f.externalLinks, ["https://example.com/report"]);
-  assert.equal(await click("#section"), false);
-  assert.equal(reading.querySelector('a[href="javascript:alert(1)"]'), null);
 });
 
-test("historical answer links retain exact version and require an explicit switch to disk", async () => {
-  const requests = [];
+test("answer links explain missing or conflicting sources without navigating or reading another workspace", async () => {
+  for (const file_context of [undefined, { task_id: "c", workspace_id: "foreign", run_id: "r" },
+    { error: "回答缺少可验证的文件执行来源；请从文件 / 产物打开" }]) {
+    const f = await panel({ read: async () => ({ messages: [{ message: { role: "ai", content: "[报告](report.md)" }, file_context }] }) });
+    f.context.FocusFilePreview = { mount: async () => assert.fail("来源不明不得尝试读取文件") };
+    await f.emit(projection());
+    const reading = f.body.querySelector(".answer-reading"); reading.open = true; reading.dispatchEvent({ type: "toggle" });
+    const body = reading.querySelector(".answer-markdown"); let prevented = false;
+    reading.querySelector(".answer-content").dispatchEvent({ type: "click", target: body.querySelector("a"), preventDefault() { prevented = true; }, stopPropagation() {} }); await tick();
+    assert.equal(prevented, true);
+    assert.match(f.body.querySelector("#error").textContent, /文件.*来源/);
+    assert.equal(f.body.querySelector("#version-detail").hidden, true);
+  }
+});
+
+test("historical answer links retain the trusted version and require an explicit switch to disk", async () => {
+  const requests = [], mounts = [];
   const ref = { workspace_id: "a", run_id: "old-run", slot_id: "old-tree", fact_id: "old-fact", revision: 2, result_key: "old-result", sha256: "old-hash" };
-  const f = await panel({ read: async () => ({ messages: [{ message: { role: "assistant", file_reference: ref, content: "[报告](output/report.md)" } }] }),
-    fetchImpl: async (url, options) => {
-      requests.push({ url, ...options, reference: JSON.parse(options.body) });
-      return new Response(JSON.stringify({ detail: "此历史版本未保存对应内容" }), { status: 409 });
-    } });
-  await f.emit(projection());
-  const reading = f.body.querySelector(".answer-reading");
-  reading.open = true; reading.dispatchEvent({ type: "toggle" });
-  reading.querySelector("a").dispatchEvent({ type: "click", preventDefault() {}, stopPropagation() {} });
-  await tick();
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, "http://fixture/desktop/api/tasks/c/file-links/content");
-  assert.equal(requests[0].headers["X-Focus-Session"], "test-session");
-  assert.deepEqual(requests[0].reference, { ...ref, path: "output/report.md", view: "history" });
-  assert.equal(f.previews.length, 0, "历史读取失败不能改读当前文件");
-  assert.match(f.body.querySelector("#version-body").textContent, /此历史版本未保存对应内容/);
-  f.body.querySelector("[data-file-link-current]").dispatchEvent({ type: "click" }); await tick();
-  assert.deepEqual(JSON.parse(JSON.stringify(f.previews[0].target)), { task_id: "c", link: {
-    workspace_id: "a", run_id: "old-run", slot_id: "old-tree", path: "output/report.md", view: "current",
-  } });
-});
-
-test("answer file links reject a foreign workspace before opening preview", async () => {
-  const f = await panel({ read: async () => ({ messages: [{ message: { role: "assistant", file_context: { workspace_id: "foreign" }, content: "[报告](output/report.md)" } }] }) });
+  const f = await panel({ read: async () => ({ messages: [{ message: { role: "assistant", content: "[报告](output/report.md)" }, file_context: { task_id: "c", ...ref } }] }) });
+  f.context.fetch = async (url, options) => {
+    requests.push({ url, ...options, reference: JSON.parse(options.body) });
+    return new Response(JSON.stringify({ detail: "此历史版本未保存对应内容" }), { status: 409 });
+  };
+  f.context.FocusFilePreview = { mount: async (_host, options) => mounts.push(JSON.parse(JSON.stringify(options))) };
   await f.emit(projection());
   const reading = f.body.querySelector(".answer-reading");
   reading.open = true; reading.dispatchEvent({ type: "toggle" });
   reading.querySelector("a").dispatchEvent({ type: "click", preventDefault() {}, stopPropagation() {} }); await tick();
-  assert.equal(f.previews.length, 0);
-  assert.match(f.body.querySelector("#error").textContent, /工作区与来源任务不匹配/);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "http://fixture/desktop/api/tasks/c/file-links/content");
+  assert.equal(requests[0].headers["X-Focus-Session"], "test-session");
+  assert.deepEqual(requests[0].reference, { ...ref, path: "output/report.md", view: "history" });
+  assert.equal(mounts.length, 0, "历史读取失败不能改读当前文件");
+  assert.match(f.body.querySelector("#version-body").textContent, /此历史版本未保存对应内容/);
+  f.body.querySelector("[data-file-link-current]").dispatchEvent({ type: "click" }); await tick();
+  assert.deepEqual(mounts[0].target, { task_id: "c", link: {
+    workspace_id: "a", run_id: "old-run", slot_id: "old-tree", path: "output/report.md", view: "current",
+  } });
 });
 
 test("artifact names open fixed version details and can be referenced without leaving the panel", async () => {

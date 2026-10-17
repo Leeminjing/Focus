@@ -215,16 +215,42 @@ function Update-Focus {
     }
 }
 
+function Invoke-FocusDoctor {
+    param([string[]]$DoctorArguments = @())
+
+    $doctorPython = $VenvPython
+    if (-not (Test-Path -LiteralPath $doctorPython -PathType Leaf)) {
+        $doctorPython = if ($env:FOCUS_PYTHON) { $env:FOCUS_PYTHON } else { Get-ApplicationPath "python.exe" }
+    }
+    if (Test-Path -LiteralPath $MetadataPath -PathType Leaf) {
+        $env:FOCUS_GLOBAL_HOME = $FocusHome
+    }
+    $env:FOCUS_DOCTOR_CWD = (Get-Location).ProviderPath
+    Push-Location $AppDir
+    try {
+        & $doctorPython -m backend.app.doctor @DoctorArguments
+        $doctorExitCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    exit $doctorExitCode
+}
+
 $Command = ""
 if ($null -ne $Arguments -and $Arguments.Count -gt 0) {
     $Command = $Arguments[0]
 }
+if ($Command -eq "doctor") {
+    $doctorArguments = @()
+    if ($Arguments.Count -gt 1) { $doctorArguments = $Arguments[1..($Arguments.Count - 1)] }
+    Invoke-FocusDoctor -DoctorArguments $doctorArguments
+}
 if ($null -ne $Arguments -and $Arguments.Count -gt 1) {
-    throw "Usage: focus [update]"
+    throw "Usage: focus [update | doctor [--json] [--output FILE] [--url URL]]"
 }
 
 switch ($Command) {
     { [string]::IsNullOrWhiteSpace($_) } { Start-Focus; break }
     "update" { Update-Focus; break }
-    default { throw "Unknown command '$Command'. Usage: focus [update]" }
+    default { throw "Unknown command '$Command'. Usage: focus [update | doctor]" }
 }

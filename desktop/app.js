@@ -1,7 +1,7 @@
 /*
  * 本文件对外提供应用组合根；输入为真实 API/Live 与用户导航动作，输出为六页及原业务入口。
  * 助手正文与代码提供独立复制反馈；任务工具从完整消息快照导出 Markdown，展开压缩来源并保留正文格式。
- * 工作区绑定与投递复用 WorkspacePatrolIntake；桌面 App 与浏览器保留本页输入，桌面机器人继续提供独立输入入口，既有任务输入不受影响。来源导航按最新请求身份生效，迟到读取不能覆盖后来选择。
+ * 工作区绑定与投递复用 WorkspacePatrolIntake；桌面工作台使用独立 userData 仓库，浏览器使用 IndexedDB，恢复后开放编辑；机器人继续使用独立输入仓库。来源导航按最新请求身份生效，迟到读取不能覆盖后来选择。
  * 任务与图卡共用 Run SSE 订阅；图卡通过只读观察器呈现真实角色与短尾部，按工作区和 Run 隔离，退出页面释放观察而不触发审批。
  * 工作流为沿原控制器装配页面、按任务保留草稿，卡片/列表偏好仅留在页面状态。示例：renderPlugins() 展示 registry 的当前状态。
  * Loop 激活由服务端解析初始 Run 装备，客户端不从详情缓存猜测权限；继承请求输出完整有效授权快照。Main 接口的 direct_message 回执仅表示受理，不写 active_run 或材料执行历史。默认 Patrol，任务列表与材料检查器承接传统操作，复杂能力通过明确次级入口使用原业务用例。
@@ -40,23 +40,13 @@
  * 独立 Patrol 入口经系统文件夹选择器选取路径，picker 仅确认本次选择，显式进入才登记绑定；原导航偏好保存已确认工作区，重载不读取历史目录列表。
  * 全图复用共享玻璃图、精确关系与原检查器，局部更新保留视口和历史版本；批选、装备及只读检查沿既有任务身份分流，生命周期变更成功后重读关系。
  * 普通会话照旧，workspace Loop 不进入旧 Mission/介入控制台，草稿和单路 Live 由专责控制器保持；Patrol 不展示普通会话检查器，壳层刷新保留本次路径选择。
- * 记忆库沿用同一 CRUD，区分普通记忆与演化策略编辑，策略三段正文、范围和启停独立保存。
+ * 记忆库沿用同一 CRUD，区分普通记忆与演化策略编辑；列表响应按导航身份、压缩响应按请求及编辑快照隔离，迟到结果不得覆盖后续页面、选择或草稿。
  */
 "use strict";
 
-// markdown-it 单例(渲染器无状态):完成态助手消息的 md 渲染引擎。
-// html:false 转义原始 HTML;validateLink 放行 file:// 协议(本地文件链接,
-// 点击经全局拦截器打开右侧文件面板,不触发窗口导航);vendor 文件先行加载。
-const mdRenderer = window.markdownit({ html: false, linkify: true });
-mdRenderer.validateLink = FocusFileLinks.validateLink;
-// 包装默认规则，保留代码转义、语言类名以及流式/完成态的一致性。
-for (const rule of ["fence", "code_block"]) {
-  const renderCode = mdRenderer.renderer.rules[rule];
-  mdRenderer.renderer.rules[rule] = (tokens, index, options, env, renderer) => {
-    const language = rule === "fence" ? tokens[index].info.trim().split(/\s+/)[0] : "";
-    return `<div class="message-code-block"><div class="code-block-toolbar"><span>${escapeHtml(language)}</span><button type="button" class="text-button" data-action="copy-code" aria-live="polite">${escapeHtml(uiText("conversation.copy_code", "复制代码"))}</button></div>${renderCode(tokens, index, options, env, renderer)}</div>\n`;
-  };
-}
+// Shared reader also supplies the Markdown instance used by streaming blocks.
+const messageReading = window.FocusMessageReading.create({ translate: (key, fallback) => uiText(key, fallback) });
+const mdRenderer = messageReading.markdown;
 const keywordCommand = window.FocusKeywordCommand;
 const interfaceI18n = window.FocusI18n || {
   apply() {},
@@ -249,8 +239,13 @@ const taskRunOperations = window.FocusTaskRunOperations?.create();
 const loopApi = window.FocusLoopApi?.create(runtime);
 const runStreams = window.FocusRunStreamSubscriptions?.create(runtime);
 const desktopPatrol = window.focusDesktop?.patrol?.enabled ? window.focusDesktop.patrol : null;
-const workspacePatrolIntake = window.FocusWorkspacePatrolIntake.create({ runtime, api: loopApi,
-  selectWorkspace: window.focusDesktop?.selectWorkspace, accessMode: accessMode.readNewSessionDefault(window.localStorage) });
+let workspacePatrolIntake = null;
+async function createWorkspacePatrolIntake() {
+  const recovery = window.focusDesktop?.workspacePatrolRecovery || await window.FocusPatrolBrowserRecovery.open("workbench");
+  return window.FocusWorkspacePatrolIntake.create({ runtime, api: loopApi, recovery,
+    onSaveError: error => setStatus(`Patrol 草稿保存失败：${error.message}`, true),
+    selectWorkspace: window.focusDesktop?.selectWorkspace, accessMode: () => accessMode.readNewSessionDefault(window.localStorage) });
+}
 let workspacePatrolController = null;
 let workspacePatrolMount = Promise.resolve();
 let workspacePatrolNavigation = 0;
@@ -336,6 +331,7 @@ let pluginHydrationSequence = 0;
 let pluginViewRequestSequence = 0;
 let memoryViewRequestSequence = 0;
 let memoryHydrationSequence = 0;
+let memoryCompressionRequestSequence = 0;
 let contextTreeRequestSequence = 0;
 let panelResizeFrame = null;
 let patrolAvatarController = null;
@@ -606,6 +602,7 @@ function cancelPendingViewRequests() {
   compressionRequestSequence += 1;
   draftOpenRequestSequence += 1;
   pluginViewRequestSequence += 1;
+  memoryViewRequestSequence += 1;
 }
 
 async function hydratePluginAssets(bootstrapPlugins = null) {
@@ -702,28 +699,11 @@ function escapeHtml(value = "") {
 }
 
 function renderAssistantContent(value) {
-  // markdown-it 渲染完成态助手消息(html:false 转义 LLM 输出中的原始 HTML;
-  // 危险协议链接被默认 validateLink 拒绝)。vendor 文件由 index.html 先行加载。
-  return `<div class="message-rich">${mdRenderer.render(String(value))}</div>`;
+  return messageReading.renderContent(value);
 }
 
 async function copyMessageText(button, text) {
-  if (button.disabled || typeof text !== "string") return;
-  const label = button.textContent;
-  button.disabled = true;
-  try {
-    await navigator.clipboard.writeText(text);
-    button.textContent = uiText("conversation.copied", "已复制");
-    setStatus(uiText("conversation.copied", "已复制"));
-  } catch {
-    button.textContent = uiText("conversation.copy_failed", "复制失败，请重试");
-    setStatus(uiText("conversation.copy_failed", "复制失败，请重试"), true);
-  } finally {
-    setTimeout(() => {
-      button.textContent = label;
-      button.disabled = false;
-    }, 1600);
-  }
+  return messageReading.copyText(button, text, { onStatus: (label, danger) => setStatus(label, danger) });
 }
 
 function conversationMarkdown(detail, task) {
@@ -801,6 +781,16 @@ function replaceTasks(tasks) {
 }
 
 async function bootstrap() {
+  if (!workspacePatrolIntake) {
+    workspacePatrolIntake = await createWorkspacePatrolIntake();
+    state.patrolWorkspace = workspacePatrolIntake.readBinding();
+    window.focusDesktop?.workspacePatrolRecovery?.onFlush(async token => {
+      let error = null;
+      try { await workspacePatrolIntake.flush(); }
+      catch (failure) { error = failure.message; setStatus(`Patrol 草稿保存失败：${error}`, true); }
+      await window.focusDesktop.workspacePatrolRecovery.flushed({ token, error });
+    });
+  }
   setStatus("正在连接…");
   performance.mark("focus:bootstrap-start");
   render();
@@ -2168,6 +2158,11 @@ function collectMessageImages(content) {
 // Every artifact has a preview or explicit native file exits.
 const FILE_VIEWABLE_RE = /\S/;
 
+function filePathFromLinkHref(href) {
+  return FocusFileLinks.pathFromHref(href);
+}
+
+
 function renderFileCards(message) {
   const files = message.files;
   if (!Array.isArray(files) || !files.length) return "";
@@ -2257,7 +2252,7 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
   }
   const answerText = kind === "ai" ? messageBodyText(message) : "";
   const renderedContent = kind === "ai" ? renderAssistantContent(answerText) : content;
-  const actions = answerText.trim() ? `<div class="message-actions"><button type="button" class="text-button" data-action="copy-answer" data-copy-text="${escapeHtml(answerText).replace(/\r/g, "&#13;")}" aria-live="polite">${escapeHtml(uiText("conversation.copy_answer", "复制回答"))}</button></div>` : "";
+  const actions = messageReading.renderActions(answerText);
   const associations = semantics.associations.map(item => `<span class="message-association">${escapeHtml(item.direction)} ${escapeHtml(item.name)}${item.tool_call_id ? ` · ${escapeHtml(item.tool_call_id)}` : ""}</span>`).join("");
   let header = "";
   if (showRoleHeader) {
@@ -2265,7 +2260,9 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
   } else if (kind === "system") {
     header = `<header class="work-record-header"><span class="work-record-kicker">CONTEXT</span><span class="message-role">系统上下文</span>${associations}</header>`;
   }
-  const fileContext = FocusFileLinks.messageSource(message).reference;
+  const fileContext = fileLinkReference(message.file_reference || message.file_context || {
+    workspace_id: message.workspace_id, run_id: message.run_id, slot_id: message.slot_id,
+  });
   return `<article class="work-record message ${kind}" data-message-key="${escapeHtml(messageKey)}" data-file-task-id="${escapeHtml(message.task_id || state.activeTaskId || "")}" data-file-context="${escapeHtml(JSON.stringify(fileContext))}">
     ${header}
     ${renderMessageImages(messageImages)}${renderFileCards(message)}${renderRunMaterialCards(message)}
@@ -2399,6 +2396,7 @@ function appendStreamDelta(envelope, field) {
   if (!task || !content || !envelope.agent_id.startsWith("main:")) return;
   beginLeadExecution(task.task_id);
   const buffer = state.streamBuffers.get(envelope.run_id) || { taskId: task.task_id, text: "", reasoning: "", messageId: null };
+  buffer.runId = envelope.run_id;
   if (typeof messageId === "string" && messageId && messageId !== buffer.messageId) {
     buffer.messageId = messageId;
     buffer.text = "";
@@ -2411,7 +2409,7 @@ function appendStreamDelta(envelope, field) {
     buffer.reasoningRendered = undefined;
   }
   const accumulated = buffer[field] || "";
-  if (field === "text" || accumulated.length < conversationRender.STREAM_TEXT_LIMIT) buffer[field] = accumulated + content;
+  buffer[field] = accumulated + content;
   state.streamBuffers.set(envelope.run_id, buffer);
   if (state.streamFrames.has(envelope.run_id)) return;
   state.streamFrames.set(envelope.run_id, requestAnimationFrame(() => {
@@ -2831,24 +2829,27 @@ function editMemorySegment(index, field, value) {
 
 async function hydrateMemory() {
   const requestId = ++memoryHydrationSequence;
+  const viewId = memoryViewRequestSequence;
+  const selection = state.memory.selectedId;
+  const isCurrent = () => requestId === memoryHydrationSequence && viewId === memoryViewRequestSequence;
   state.memory = { ...state.memory, loading: true, error: null };
   if (state.view === "memory") renderMemory();
   try {
     const data = await api("/desktop/api/memory");
-    if (requestId !== memoryHydrationSequence) return false;
+    if (!isCurrent()) return false;
     const memories = data.memories || [];
-    const selectedId = memories.some(item => item.memory_id === state.memory.selectedId)
+    const selectedId = state.memory.selectedId !== selection || memories.some(item => item.memory_id === selection)
       ? state.memory.selectedId
       : null;
     state.memory = { ...state.memory, memories, selectedId };
     return true;
   } catch (error) {
-    if (requestId === memoryHydrationSequence) state.memory = { ...state.memory, error: error.message };
+    if (isCurrent()) state.memory = { ...state.memory, error: error.message };
     return false;
   } finally {
     if (requestId === memoryHydrationSequence) {
       state.memory.loading = false;
-      if (state.view === "memory") renderMemory();
+      if (isCurrent() && state.view === "memory") renderMemory();
     }
   }
 }
@@ -2859,15 +2860,11 @@ async function openMemoryView() {
   state.memory.strategyAuthoring = null;
   if (state.view === "focus") persistFocusState();
   cancelPendingViewRequests();
-  const requestId = memoryViewRequestSequence;
   state.inspector.open = false;
   state.memory = { ...state.memory, strategyImport: null, composing: false, selectedId: state.memory.selectedId, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], draft: null };
   state.view = "memory";
   render();
   await hydrateMemory();
-  if (requestId !== memoryViewRequestSequence) return;
-  state.view = "memory";
-  render();
 }
 
 function memorySessionCandidates() {
@@ -3083,17 +3080,28 @@ function memorySourcesForApi(collectedSources, activeSessionId) {
 
 // 重新压缩：按当前压缩语义（完整/分段）调用后端生成草稿，填充目标区。
 async function recompressMemory() {
-  const draft = (state.memory.draft || {});
+  const draft = state.memory.draft;
+  if (state.view !== "memory" || !state.memory.composing || !draft) return;
   const sources = state.memory.collectedSources || [];
   const mode = draft.contentMode || "complete";
   const payloadSources = memorySourcesForApi(sources, state.memory.activeSessionId);
   if (!payloadSources.length) { setStatus("请先添加至少一个记忆来源", true); return; }
+  const requestId = ++memoryCompressionRequestSequence;
+  const viewId = memoryViewRequestSequence;
+  const { selectedId, category, activeSessionId } = state.memory;
+  // 输入处理器以新对象保存草稿/来源；任何后续编辑都会使本次快照失效。
+  const isCurrent = () => requestId === memoryCompressionRequestSequence
+    && viewId === memoryViewRequestSequence && state.view === "memory"
+    && state.memory.composing && state.memory.draft === draft
+    && state.memory.collectedSources === sources && state.memory.selectedId === selectedId
+    && state.memory.category === category && state.memory.activeSessionId === activeSessionId;
   try {
     const result = await api("/desktop/api/memory/summarize", { method: "POST", body: JSON.stringify({ selection: { sources: payloadSources }, mode }) });
+    if (!isCurrent()) return;
     const segments = result.segments || [];
     state.memory = { ...state.memory, draft: { ...draft, content: result.content || "", segments, contentMode: mode, contentDirty: false } };
     render();
-  } catch (error) { setStatus(error.message, true); }
+  } catch (error) { if (isCurrent()) setStatus(error.message, true); }
 }
 
 // 后端 MemorySource 仅接受的字段（前端展示字段 contextTitle/count/text 不发送）。
@@ -4009,12 +4017,12 @@ function contextMessageElement(message, index, uiKey, expanded = false) {
 }
 
 function contextListPositions() {
-  return new Map([...document.querySelectorAll(".context-message-editor")].map(row => [row.dataset.contextUiKey, row.getBoundingClientRect().top]));
+  return new Map([...document.querySelectorAll(".context-message-editor[data-context-ui-key]")].map(row => [row.dataset.contextUiKey, row.getBoundingClientRect().top]));
 }
 
 function animateContextReflow(previous) {
   if (!previous || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-  document.querySelectorAll(".context-message-editor").forEach(row => {
+  document.querySelectorAll(".context-message-editor[data-context-ui-key]").forEach(row => {
     const before = previous.get(row.dataset.contextUiKey);
     if (before == null) return;
     const delta = before - row.getBoundingClientRect().top;
@@ -4026,7 +4034,7 @@ function updateContextMessageIndices() {
   const draft = state.contextDraft;
   const list = document.querySelector(".context-message-list");
   if (!draft || !list) return;
-  const rows = [...list.querySelectorAll(".context-message-editor")];
+  const rows = [...list.querySelectorAll(".context-message-editor[data-context-ui-key]")];
   rows.forEach((row, index) => {
     row.dataset.contextMessageIndex = String(index);
     const role = draft.messages[index]?.role || "未指定角色";
@@ -4039,7 +4047,7 @@ function updateContextMessageIndices() {
   });
   const count = document.querySelector(".context-compose-heading > div > span");
   if (count) count.textContent = `${draft.messages.length} 条消息`;
-  if (!rows.length && !list.querySelector(".context-empty-drop")) list.innerHTML = contextEditor.renderMessages([], []);
+  if (!rows.length && !list.querySelector(".context-empty-drop")) list.insertAdjacentHTML("beforeend", contextEditor.renderMessages([], []));
 }
 
 function renderContextEditor(scrollTop = null) {
@@ -4074,7 +4082,7 @@ function insertContextMessage(message, index, options = {}) {
   draft.uiKeys.splice(safeIndex, 0, key);
   if (options.expand) draft.expandedKey = key;
   list.querySelector(".context-empty-drop")?.remove();
-  const rows = [...list.querySelectorAll(".context-message-editor")];
+  const rows = [...list.querySelectorAll(".context-message-editor[data-context-ui-key]")];
   list.insertBefore(contextMessageElement(draft.messages[safeIndex], safeIndex, key, Boolean(options.expand)), rows[safeIndex] || null);
   updateContextMessageIndices();
   animateContextReflow(previous);
@@ -4089,7 +4097,7 @@ function moveContextMessage(from, to, focus = false) {
   const key = draft.uiKeys[from];
   contextEditor.move(draft.messages, from, to);
   contextEditor.move(draft.uiKeys, from, to);
-  const rows = new Map([...document.querySelectorAll(".context-message-editor")].map(row => [row.dataset.contextUiKey, row]));
+  const rows = new Map([...document.querySelectorAll(".context-message-editor[data-context-ui-key]")].map(row => [row.dataset.contextUiKey, row]));
   const list = document.querySelector(".context-message-list");
   draft.uiKeys.forEach(uiKey => list.append(rows.get(uiKey)));
   updateContextMessageIndices();
@@ -4123,26 +4131,40 @@ function showContextUndo() {
   }, 4500);
 }
 
-async function deleteContextMessage(index) {
-  const draft = syncContextDraft();
-  const row = document.querySelector(`.context-message-editor[data-context-message-index="${index}"]`);
+async function deleteContextMessage(uiKey) {
+  const index = state.contextDraft?.uiKeys.indexOf(uiKey) ?? -1;
+  if (index < 0) return;
+  const row = document.querySelector(`.context-message-editor[data-context-ui-key="${uiKey}"]`);
   if (!row) return;
+  const draft = syncContextDraft();
   const panel = document.querySelector(".context-definition-panel");
   const scrollTop = panel?.scrollTop || 0;
-  const previous = contextListPositions();
   const [message] = draft.messages.splice(index, 1);
   const [key] = draft.uiKeys.splice(index, 1);
   if (draft.expandedKey === key) draft.expandedKey = null;
   draft.undo = { message, key, index };
-  if (!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
-    const animation = row.animate([{ opacity: 1, transform: "scale(1)", maxHeight: `${row.offsetHeight}px` }, { opacity: 0, transform: "scale(.98)", maxHeight: "0px" }], { duration: 150, easing: "ease-in", fill: "forwards" });
-    await Promise.race([animation.finished.catch(() => {}), new Promise(resolve => setTimeout(resolve, 180))]);
-  }
-  row.remove();
+  // Retire the row synchronously; only its visual shell survives the exit animation.
+  row.setAttribute("inert", "");
+  row.setAttribute("aria-hidden", "true");
+  row.removeAttribute("data-context-ui-key");
+  row.removeAttribute("data-context-message-index");
+  row.querySelectorAll("button, textarea").forEach(input => { input.disabled = true; });
+  row.querySelector("[data-context-message-json]")?.removeAttribute("data-context-message-json");
   updateContextMessageIndices();
-  if (panel) panel.scrollTop = Math.min(scrollTop, Math.max(0, panel.scrollHeight - panel.clientHeight));
-  animateContextReflow(previous);
   showContextUndo();
+  try {
+    if (!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      const animation = row.animate([{ opacity: 1, transform: "scale(1)", maxHeight: `${row.offsetHeight}px` }, { opacity: 0, transform: "scale(.98)", maxHeight: "0px" }], { duration: 150, easing: "ease-in", fill: "forwards" });
+      await Promise.race([animation.finished.catch(() => {}), new Promise(resolve => setTimeout(resolve, 180))]);
+    }
+  } finally {
+    const previous = contextListPositions();
+    row.remove();
+    if (state.contextDraft === draft && panel?.isConnected) {
+      panel.scrollTop = Math.min(scrollTop, Math.max(0, panel.scrollHeight - panel.clientHeight));
+      animateContextReflow(previous);
+    }
+  }
 }
 
 function undoContextMessageDelete() {
@@ -4550,19 +4572,20 @@ function toggleRunMaterial(materialId) {
 }
 
 async function toggleImageRequired(materialId) {
-  const selection = materialSelection();
+  const taskId = state.activeTaskId;
+  const selection = materialSelection(taskId);
   if (!selection.bindings.some(item => item.materialId === materialId)) {
     return setStatus("请先把图片选为本轮材料", true);
   }
   if (!selection.requiredImageIds.includes(materialId)) {
-    await api(`/desktop/api/tasks/${state.activeTaskId}/materials/${materialId}/image-validity`);
+    await api(`/desktop/api/tasks/${taskId}/materials/${materialId}/image-validity`);
   }
   state.materialSelections.set(
-    state.activeTaskId,
+    taskId,
     runMaterialPicker.toggleRequired(
-      selection,
+      materialSelection(taskId),
       materialId,
-      state.materials.get(state.activeTaskId) || []
+      state.materials.get(taskId) || []
     )
   );
 }
@@ -4816,6 +4839,23 @@ function listenToRun(run) {
   const handlers = new Map();
   const listen = (type, handler) => handlers.set(type, handler);
   let source;
+  let resyncPending = null;
+  let resyncAgain = false;
+  listen("resync", () => {
+    clearStreamBuffer(run.run_id);
+    // 缺失的完整消息、工具结果和待审批状态从既有权威快照恢复。
+    resyncAgain = true;
+    if (!resyncPending) resyncPending = (async () => {
+      do {
+        resyncAgain = false;
+        await refreshTaskAfterTxn(ownerTaskId);
+      } while (resyncAgain && state.streams.get(run.run_id) === source);
+      scheduleRender();
+    })()
+      .catch(error => setStatus(`运行内容补读失败：${error.message}`, true))
+      .finally(() => { resyncPending = null; });
+    return resyncPending;
+  });
   listen("metadata", event => {
     const envelope = parseEvent(event);
     if (envelope?.data?.status) {
@@ -6915,6 +6955,16 @@ async function testModelConnection() {
   renderModelSettings();
 }
 
+let storageSettingsController = null;
+function loadStorageSettings() {
+  if (!window.FocusStorageSettings) return;
+  storageSettingsController ||= window.FocusStorageSettings.create({
+    api, host: document.querySelector("#storageSettingsHost"), escapeHtml,
+    english: () => interfaceI18n.locale() === "en-US",
+  });
+  return storageSettingsController.load();
+}
+
 function selectSettingsTab(tab) {
   const selected = ["general", "models", "data"].includes(tab) ? tab : "general";
   document.querySelectorAll("[data-settings-tab]").forEach(button => {
@@ -6926,6 +6976,7 @@ function selectSettingsTab(tab) {
   document.querySelectorAll("[data-settings-pane]").forEach(pane => {
     pane.hidden = pane.dataset.settingsPane !== selected;
   });
+  if (selected === "data") return runUiAction(loadStorageSettings);
   if (selected === "models") {
     return runUiAction(async () => {
       try { await loadModelSettings(); } catch (error) { modelSettings.error = error.message; }
@@ -6994,6 +7045,7 @@ async function openSettings() {
     }
   }
   await loadShellRecovery();
+  if (document.querySelector('[data-settings-pane="data"]')?.hidden === false) await loadStorageSettings();
 }
 
 async function loadShellRecovery() {
@@ -7071,12 +7123,20 @@ function openFileCard(button) {
   return openFileLink({ ...source.reference, ...reference }, source.taskId);
 }
 
-// Capture local links before Electron can navigate, using the same router as Patrol.
-document.addEventListener("click", event => FocusFileLinks.handleClick(event, {
-  source: fileContextFromNode, onFile: openFileLink,
-  onExternal: window.focusDesktop?.openExternal,
-  onError: error => setStatus(error.message, true),
-}), true);
+// Capture all local links before Electron can navigate. Display text and material
+// filenames never participate in resolution. Real web links remain external.
+document.addEventListener("click", event => {
+  FocusFileLinks.follow(event, {
+    onExternal: window.focusDesktop?.openExternal,
+    onError: error => setStatus(error.message, true),
+    onFile: (path, anchor) => {
+      const source = fileContextFromNode(anchor);
+      const reference = anchor.dataset?.fileReference ? JSON.parse(anchor.dataset.fileReference) : {};
+      if (source.reference.view === "history") reference.view = "history";
+      return openFileLink({ ...source.reference, ...reference, path }, source.taskId);
+    },
+  });
+}, true);
 
 // 全局错误可见化:任何未捕获异常显示在状态栏,避免白屏时无从排查
 window.addEventListener("error", event => {
@@ -7107,6 +7167,7 @@ async function handleDocumentClick(event) {
   if (action === "export-conversation") return exportConversation();
   if (action === "show-patrol") {
     if (state.view === "focus") persistFocusState();
+    cancelPendingViewRequests();
     workspacePatrolPicker?.dispose();
     workspacePatrolPicker = null;
     if (button.hasAttribute("data-patrol-switch")) patrolWorkspaceBeforePick = state.patrolWorkspace || patrolWorkspaceBeforePick;
@@ -7418,13 +7479,19 @@ async function handleDocumentClick(event) {
     try { return clearContextMessages(); }
     catch (error) { return setStatus(error.message, true); }
   }
-  if (action === "context-message-toggle") return toggleContextMessage(button.closest("[data-context-ui-key]").dataset.contextUiKey);
+  if (action === "context-message-toggle") {
+    const row = button.closest("[data-context-ui-key]");
+    if (row) return toggleContextMessage(row.dataset.contextUiKey);
+    return;
+  }
   if (action === "context-message-undo") return undoContextMessageDelete();
   if (["context-message-copy", "context-message-delete"].includes(action)) {
     try {
-      const index = Number(button.closest("[data-context-message-index]").dataset.contextMessageIndex);
+      const uiKey = button.closest("[data-context-ui-key]")?.dataset.contextUiKey;
+      const index = state.contextDraft?.uiKeys.indexOf(uiKey) ?? -1;
+      if (index < 0) return;
       if (action === "context-message-copy") return insertContextMessage(state.contextDraft.messages[index], index + 1);
-      return deleteContextMessage(index);
+      return deleteContextMessage(uiKey);
     } catch (error) { return setStatus(error.message, true); }
   }
   if (action === "submit-context") return submitContext();
@@ -7805,7 +7872,7 @@ function updateContextDropTarget(clientX, clientY) {
     drag.placeholder?.remove();
     return;
   }
-  const rows = [...list.querySelectorAll(".context-message-editor")].filter(row => row !== drag.card);
+  const rows = [...list.querySelectorAll(".context-message-editor[data-context-ui-key]")].filter(row => row !== drag.card);
   let index = rows.findIndex(row => clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2);
   if (index < 0) index = rows.length;
   if (drag.dropIndex === index && drag.placeholder?.isConnected) return;
@@ -8076,6 +8143,15 @@ document.addEventListener("input", event => {
   if (requestId) loopWaitDrafts?.set(requestId, serializeWaitDraft(form));
 });
 document.addEventListener("change", event => {
+  if (event.target.id === "newSessionAccessMode") {
+    const select = event.target;
+    try { select.value = accessMode.saveNewSessionDefault(window.localStorage, select.value); }
+    catch (error) {
+      select.value = accessMode.readNewSessionDefault(window.localStorage);
+      setStatus(error.message, true);
+    }
+    return;
+  }
   if (event.target.id === "taskNotificationsEnabled") {
     const input = event.target;
     const enabled = input.checked;
@@ -8204,9 +8280,15 @@ function flushComposerPersist() {
 }
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") void flushComposerPersist();
+  if (document.visibilityState === "hidden") { void flushComposerPersist(); flushWorkspacePatrol(); }
 });
-window.addEventListener("pagehide", () => { void flushComposerPersist(); });
+function flushWorkspacePatrol(checkpoint = false) {
+  try {
+    if (checkpoint) workspacePatrolIntake?.checkpoint();
+    void workspacePatrolIntake?.flush().catch(error => setStatus(`Patrol 草稿保存失败：${error.message}`, true));
+  } catch (error) { setStatus(`Patrol 草稿保存失败：${error.message}`, true); }
+}
+window.addEventListener("pagehide", () => { void flushComposerPersist(); flushWorkspacePatrol(true); });
 
 document.addEventListener("focus:languagechange", () => {
   render();
@@ -8234,6 +8316,7 @@ bindShellResizers();
 restoreZoomLevel();
 
 async function openPatrolWorkbench(target) {
+  cancelPendingViewRequests();
   const navigation = ++workspacePatrolNavigation;
   const workspace = target.workspaceId ? await workspacePatrolIntake.workspace(target.workspaceId) : state.patrolWorkspace;
   if (navigation !== workspacePatrolNavigation) return;
@@ -8243,6 +8326,7 @@ async function openPatrolWorkbench(target) {
   await renderWorkspacePatrol();
   if (navigation !== workspacePatrolNavigation) return;
   workspacePatrolController?.showDetails();
+  if (target.attentionId) workspacePatrolController?.showAttention(target.attentionId, target.loopId);
   if (target.taskId) await workspacePatrolController?.showContext(target.taskId, target.revisionId);
 }
 if (desktopPatrol) desktopPatrol.onWorkbench(target => runUiAction(() => openPatrolWorkbench(target)));
@@ -8277,6 +8361,11 @@ async function openTaskNotification(target) {
   if (!task) return setStatus("该任务已归档或删除，可在设置中查看归档任务。");
   for (const modal of [settingsDialog, dialog]) {
     if (modal?.open) await window.FocusSurfaceTransition.visible(modal, false, { modal: true });
+  }
+  if (target.workspaceId || (target.loopId && task.loop?.interaction_mode === "workspace_patrol")) {
+    await openPatrolWorkbench({ workspaceId: target.workspaceId || task.loop.workspace_id,
+      loopId: target.loopId, attentionId: target.attentionId });
+    return;
   }
   await switchTask(task.task_id);
   if (target.loopId && task.loop?.loop_id === target.loopId) {

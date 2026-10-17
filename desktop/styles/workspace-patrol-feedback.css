@@ -1,0 +1,13 @@
+/* 输入反馈在工作台与原生面板共享，展开仍留在原输入下方。 */
+.patrol-input-result { margin: 8px 0; padding: 10px 12px; border-left: 2px solid var(--text-accent, var(--accent, #557b98)); background: rgb(114 145 168 / 8%); border-radius: 4px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.patrol-input-result > summary { cursor: pointer; }
+.patrol-input-result > summary:focus-visible { outline: 2px solid var(--text-accent, var(--accent, #557b98)); outline-offset: 3px; }
+.patrol-input-result > summary strong, .patrol-input-result > summary span, .patrol-input-result > summary small { display: block; white-space: pre-wrap; }
+.patrol-input-result > summary span { margin-top: 4px; }
+.patrol-input-evidence { margin-top: 12px; }
+.patrol-input-evidence h4 { margin: 10px 0 4px; font-size: inherit; }
+.patrol-input-evidence p { margin: 4px 0; white-space: pre-wrap; }
+.patrol-input-evidence dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; font-size: 11px; }
+.patrol-input-evidence dd { margin: 0; }
+.patrol-input-evidence ul { padding-left: 18px; }
+.patrol-input-evidence pre { white-space: pre-wrap; overflow-wrap: anywhere; }

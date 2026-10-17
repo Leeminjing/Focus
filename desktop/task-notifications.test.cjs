@@ -71,3 +71,49 @@ test("failed polling preserves baseline and overlapping polls never duplicate", 
   await pending;
   assert.equal(f.shown.length, 0);
 });
+
+test("workspace results follow Patrol status and notify once across its Contexts", async () => {
+  const f = fixture();
+  await f.service.poll();
+  const loop = { loop_id: "patrol", workspace_id: "workspace", initial_context_id: "root",
+    interaction_mode: "workspace_patrol", status: "running" };
+  const rows = () => [task("root", null, { loop, latest_run: null }), task("child", "success", { loop })];
+  for (const status of ["running", "waiting_user", "paused", "completing", "stopping", "stopped"]) {
+    loop.status = status;
+    f.set(rows());
+    await f.service.poll();
+    assert.equal(f.shown.length, 0);
+  }
+  loop.status = "completed";
+  f.set(rows().reverse());
+  await f.service.poll();
+  await f.service.poll();
+  assert.equal(f.shown.length, 1);
+  assert.equal(f.shown[0].title, "任务已完成");
+  assert.deepEqual(f.shown[0].target, { taskId: "root", loopId: "patrol", workspaceId: "workspace" });
+  loop.status = "failed";
+  f.set(rows());
+  await f.service.poll();
+  assert.deepEqual(f.shown.map(item => item.title), ["任务已完成", "任务运行失败"]);
+});
+
+test("Patrol waits carry workspace navigation while Run authorization stays on the Context", async () => {
+  const f = fixture();
+  const loop = { loop_id: "patrol", workspace_id: "workspace", initial_context_id: "root",
+    interaction_mode: "workspace_patrol", status: "running" };
+  const rows = [task("root", null, { loop, attention: [
+    { id: "question", kind: "clarification", loop_id: "patrol" },
+    { id: "budget", kind: "budget_action", loop_id: "patrol" },
+  ] }), task("child", "interrupted", { loop, attention: [{ id: "approval", kind: "access_approval" }] })];
+  f.set(rows);
+  await f.service.poll();
+  await f.service.poll();
+  assert.equal(f.shown.length, 3);
+  assert.deepEqual(f.shown[0].target, { taskId: "root", attentionId: "question", loopId: "patrol", workspaceId: "workspace" });
+  assert.deepEqual(f.shown[1].target, { taskId: "root", attentionId: "budget", loopId: "patrol", workspaceId: "workspace" });
+  assert.deepEqual(f.shown[2].target, { taskId: "child", attentionId: "approval", loopId: null });
+  const restart = fixture(f.saved());
+  restart.set(rows);
+  await restart.service.poll();
+  assert.equal(restart.shown.length, 0);
+});

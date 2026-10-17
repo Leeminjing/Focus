@@ -1,22 +1,11 @@
-/* Shared local-link routing and source identity for workbench and Patrol answers.
- * Paths come only from href; immutable versions never fall back to current disk.
- * createPreview hosts the existing workbench link preview with scoped lifetime.
- */
+/* Shared local-link identity for the workbench and robot. Paths come only from
+ * href and are decoded once; the backend validates the owning task/run/slot. */
 (function (root, factory) {
   const api = factory(root);
   if (typeof module === "object" && module.exports) module.exports = api;
   root.FocusFileLinks = api;
 })(globalThis, function (root) {
   "use strict";
-  function reference(value = {}) {
-    const ref = {};
-    for (const key of ["path", "workspace_id", "run_id", "slot_id", "view", "fact_id", "revision", "result_key", "sha256", "version_id"]) {
-      if (value[key] != null && value[key] !== "") ref[key] = value[key];
-    }
-    if (["fact_id", "revision", "result_key", "sha256", "version_id"].some(key => ref[key] != null)) ref.view = "history";
-    ref.view ||= "current";
-    return ref;
-  }
   function pathFromHref(href) {
     if (!href || href.startsWith("#") || /^https?:/i.test(href)) return null;
     if (/^[a-z][a-z\d+.-]*:/i.test(href) && !/^file:/i.test(href) && !/^[a-z]:[\\/]/i.test(href)) return null;
@@ -28,35 +17,28 @@
     }
     return decodeURIComponent(path).replace(/\\/g, "/");
   }
-  function validateLink(url) {
-    return /^(https?:|file:)/i.test(url) || /^[a-z]:[\\/]/i.test(url)
-      || (!/^[a-z][a-z\d+.-]*:/i.test(url) && !url.startsWith("//"));
+  function reference(value = {}) {
+    const ref = {};
+    for (const key of ["path", "workspace_id", "run_id", "slot_id", "view", "fact_id", "revision", "result_key", "sha256", "version_id"])
+      if (value[key] != null && value[key] !== "") ref[key] = value[key];
+    if (["fact_id", "revision", "result_key", "sha256", "version_id"].some(key => ref[key] != null)) ref.view = "history";
+    ref.view ||= "current";
+    return ref;
   }
-  function messageSource(message) {
-    return { taskId: message.task_id,
-      reference: reference(message.file_reference || message.file_context || {
-        workspace_id: message.workspace_id, run_id: message.run_id, slot_id: message.slot_id,
-      }) };
-  }
-  function handleClick(event, { source, onFile, onExternal, onError }) {
-    const anchor = event.target.closest?.("a[href]");
+  function follow(event, { onFile, onExternal, onError }) {
+    const anchor = event.target.closest("a[href]");
     if (!anchor || anchor.hasAttribute?.("download")) return;
     const href = anchor.getAttribute("href") || "";
-    if (!href || href.startsWith("#")) return;
-    const external = /^https?:\/\//i.test(href);
-    if (!external && /^[a-z][a-z\d+.-]*:/i.test(href) && !/^file:/i.test(href) && !/^[a-z]:[\\/]/i.test(href)) return;
+    if (!href || href.startsWith("#") || /^blob:/i.test(href)) return;
     event.preventDefault(); event.stopPropagation();
     try {
-      if (external) {
+      if (/^https?:\/\//i.test(href)) {
         if (!onExternal) throw new Error("当前运行环境无法打开外部链接");
         return Promise.resolve(onExternal(href)).catch(onError);
       }
       const path = pathFromHref(href);
-      if (!path || !/\S/.test(path)) throw new Error("不支持此文件链接");
-      const origin = typeof source === "function" ? source(anchor) : source;
-      const ref = anchor.dataset?.fileReference ? JSON.parse(anchor.dataset.fileReference) : {};
-      if (origin.reference.view === "history") ref.view = "history";
-      return Promise.resolve(onFile(reference({ ...origin.reference, ...ref, path }), origin.taskId)).catch(onError);
+      if (!path) throw new Error("不支持此文件链接");
+      return Promise.resolve(onFile(path, anchor)).catch(onError);
     } catch (error) { onError(new Error(`文件链接无效: ${error.message}`)); }
   }
   function createPreview({ runtime, isCurrent, onClose, onCurrent, getPreview = () => root.FocusFilePreview }) {
@@ -120,5 +102,5 @@
     }
     return { mount, release: releaseFileLinkPreview };
   }
-  return { reference, pathFromHref, validateLink, messageSource, handleClick, createPreview };
+  return Object.freeze({ pathFromHref, reference, follow, createPreview });
 });

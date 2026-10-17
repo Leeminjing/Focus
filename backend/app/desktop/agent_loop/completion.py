@@ -1,7 +1,7 @@
 r"""本文件对外提供 CompletionVerifierPort、CompletionCandidateValidator、CompletionEvidenceService、CompletionGuard 与 CompletionGuardResult。
 
 输入为当前 Mission 检查、候选 Portfolio、workspace/测试/产物证据和持久 verification；输出为逐 check_id
-验证建议或确定性完成许可。具体工作流为候选在短只读事务内核对冻结来源及当前授权，模型有界纠错等待实际来源校验；独立 Worker 只返回类型化证据，持久化前再次核对唯一领取身份并拒绝未声明检查，Guard 再检查新鲜度、unknown、
+验证建议或确定性完成许可。具体工作流为候选在短只读事务内核对冻结来源及当前授权，模型有界纠错等待实际来源校验；独立 Worker 只返回类型化证据，持久化前再次核对唯一领取身份并拒绝未声明检查，Guard 再检查新鲜度、必需项、
 活动 Run、gate、publication、adoption 与 grant，不能由 Patrol 自证。示例：`guard.check(...)`。
 Verifier提交verification与Worker success时同事务补交原模型回执；结算失败回滚结果，已失效领取身份不能发布verification。
 新版正文读面的候选及最终记录复用完整文本资格复检；历史冻结输入只保存原内容，不回填新正文。
@@ -9,6 +9,7 @@ Verifier提交verification与Worker success时同事务补交原模型回执；�
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -86,6 +87,7 @@ class CompletionGuard:
         self,
         verification: CompletionVerificationContract,
         *,
+        checks: Iterable[Mapping[str, Any]],
         goal_revision: int,
         frontier_hash: str,
         workspace_revision: int,
@@ -95,12 +97,22 @@ class CompletionGuard:
         workspace_adopted: bool,
         grant_allows_completion: bool,
     ) -> CompletionGuardResult:
+        checks = tuple(checks)
         reasons: list[str] = []
         if verification.goal_revision != goal_revision or verification.frontier_hash != frontier_hash or verification.workspace_revision != workspace_revision:
             reasons.append("verification_stale")
-        if verification.conclusion != "satisfied" or any(item.status != "satisfied" for item in verification.criteria):
+        policy = CompletionCheckPolicy()
+        try:
+            policy.validate(checks, verification.criteria)
+        except ValueError:
+            reasons.append("verification_checks_invalid")
+        required = policy.required_check_ids(checks)
+        satisfied = {item.check_id for item in verification.criteria if item.status == "satisfied"}
+        if verification.conclusion != "satisfied" or not required.issubset(satisfied):
             reasons.append("criteria_not_satisfied")
-        if verification.unresolved:
+        if not required.issubset(satisfied):
+            reasons.append("required_checks_missing")
+        if required.intersection(verification.unresolved):
             reasons.append("unresolved_items")
         if active_or_queued_runs:
             reasons.append("runs_active")

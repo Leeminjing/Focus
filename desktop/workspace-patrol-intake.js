@@ -4,6 +4,7 @@
  * 草稿即时更新并按 250ms 固定窗口合并异步保存；flush 等待当前及写入期间的新变化，后台失败保留内存内容并通过 onSaveError 报告。
  * 空附件保持旧请求格式，文件内容与用户要求分开；本模块不启动模型或保存第二份领域状态。示例：intake.store(id).edit({content:"解释图片"}); await intake.submit(id)。
  * 部分上传后明确移除的独占材料使用原提交身份清理；曾投递且受理不确定的材料保留，服务端引用锁始终决定能否删除。
+ * accessMode 接受固定模式或取值回调，透传给输入 store，在每次新提交时读取默认值。
  */
 (function (root, factory) {
   const api = factory(root.FocusWorkspacePatrolInputs || (typeof require === "function" ? require("./workspace-patrol-inputs.js") : null),
@@ -296,6 +297,7 @@
       });
     }
     return Object.freeze({ store, add, remove, submit, send, retry, bind, choose, workspace, remember, claimUnbound, resourceLimits, history, editFailed, reconcile, flush,
+      checkpoint: () => recovery?.checkpoint?.(snapshot()),
       readBinding: () => binding || readBinding(storage), hasUnfinished, isSending: () => pending.size > 0,
       source: localId => sources.get(localId), attachmentContent, request });
   }

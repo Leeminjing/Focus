@@ -169,11 +169,12 @@ class WorkspacePatrolService:
                 LoopEventOutbox.idempotency_key == f"cognition-preempted:{observation.observation_id}"))
             return self._inputs.view(intent), preemption
 
-    async def history(self, workspace_id, before=None, limit=50):
+    async def history(self, workspace_id, before=None, limit=50, *, intent_ids=None):
         async with self._sessions() as session:
             if await session.get(DesktopWorkspace, workspace_id) is None:
                 raise HTTPException(404, "工作区不存在")
-            return await self._inputs.history(session, workspace_id, before=before, limit=limit)
+            return await self._inputs.history(session, workspace_id, before=before, limit=limit,
+                                              intent_ids=intent_ids)
 
     async def lineage(self, loop_id):
         from backend.app.desktop.context_evolution.committed_lineage import CommittedLineageReader

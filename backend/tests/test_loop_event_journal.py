@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 import backend.app.desktop.persistence_registry
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft, CanonicalEventEnvelope, EventNotAuthorized, EventVisibility, LiveEventAuthorizationPolicy
 from backend.app.desktop.agent_loop.event_journal import LoopEventJournal, ReplayUnavailable, StaleEntityRevision
-from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
+from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent, LoopProjectorCursor
 from backend.app.desktop.agent_loop.models import AgentLoop
 from backend.app.desktop.models import DesktopThread, DesktopWorkspace
 
@@ -115,6 +115,8 @@ def test_concurrent_append_replay_idempotency_and_retention(tmp_path: Path) -> N
                     await journal.append(session, loop_id, CanonicalEventDraft(kind="context.run.failed", entity_type="run", entity_id="run-3", entity_revision=1, idempotency_key="stale"))
             async with sessions.begin() as session:
                 await journal.configure_retention(session, loop_id, 0)
+                session.add(LoopProjectorCursor(loop_id=loop_id, projector_name="loop_facts", last_sequence=13))
+                await session.flush()
                 removed = await journal.prune(session, loop_id, now=datetime.now(UTC) + timedelta(seconds=1))
                 assert removed == 13
             async with sessions() as session:

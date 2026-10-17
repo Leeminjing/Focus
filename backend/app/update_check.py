@@ -49,7 +49,9 @@ def main() -> None:
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         response = client.get("/health")
         response.raise_for_status()
-        if response.json() != {"status": "ok"}:
+        # Existing user-work failures may degrade diagnostics without making a
+        # release incompatible. Acceptance requires a readable current schema.
+        if response.json().get("database", {}).get("status") != "ok":
             raise RuntimeError("Gateway health response is invalid")
         headers = {"X-Focus-Session": app.state.session_key}
         response = client.get("/desktop/api/tasks", headers=headers)

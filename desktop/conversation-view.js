@@ -17,6 +17,7 @@
  * 沿用其契约字段（kind / key / signature；本模块始终给出 signature，kind 仅为契约完整性保留）。
  * 阅读态约定：展开态与按需挂载的详情体属于交互态，事件与事件序列的签名只取摘要行（剔除 `open` 与详情体），
  * 因此无关更新不触碰它们；自身内容变化时保留展开态并按当前记录重新挂载详情体。
+ * 流式推理按 Run/消息键登记详情，复用同一事件节点；全文变化即刷新已展开详情，即使尾部摘要未变。
  * 滚动约定：登记（`trackScroll`）发生在写入之前，因此首次建立基线时读到的是写入前的高度；贴底且内容增长时
  * 按高度差跟随；不在底部时按**阅读锚点**（写入前记录的、视口内最上面几条执行行的视口坐标）在写入后把滚动
  * 位置回正，使窗口上边界前移不打扰正在向上阅读的用户。锚点记录在 `rememberScroll`（用户滚动或显式定位）时
@@ -297,14 +298,17 @@
   }
 
   function _syncEventElement(current, next) {
-    if (_eventSignature(current) === _eventSignature(next)) return;
     const wasOpen = current.open;
-    _syncElementAttributes(current, next);
-    const currentSummary = _summaryOf(current);
-    const nextSummary = _summaryOf(next);
-    if (currentSummary && nextSummary && currentSummary !== nextSummary) currentSummary.replaceWith(nextSummary);
-    current.open = wasOpen;
-    if (wasOpen) _fillDetail(current, current.querySelector?.(".conversation-event-detail"));
+    if (_eventSignature(current) !== _eventSignature(next)) {
+      _syncElementAttributes(current, next);
+      const currentSummary = _summaryOf(current);
+      const nextSummary = _summaryOf(next);
+      if (currentSummary && nextSummary && currentSummary !== nextSummary) currentSummary.replaceWith(nextSummary);
+      current.open = wasOpen;
+    }
+    const body = current.querySelector?.(".conversation-event-detail");
+    if (wasOpen) _fillDetail(current, body);
+    else if (body) body.dataset.detailLazy = "1";
   }
 
   function _rowUnit(node) {
@@ -499,6 +503,7 @@
   }
 
   function syncStreamingPlaceholder(conversation, runId, buffer) {
+    mountLazyDetails(conversation);
     const placeholderClass = deps?.render?.STREAMING_PLACEHOLDER_CLASS || "work-record message ai streaming";
     let article = conversation.querySelector?.(`[data-stream-run="${runId}"]`);
     if (!article) {
@@ -512,21 +517,25 @@
   }
 
   function syncStreaming(article, buffer) {
-    const reasoningHtml = buffer.reasoning
-      ? `<section class="conversation-event-sequence" role="group" aria-label="执行过程">${deps.events.renderEvent({ type: "reasoning", content: buffer.reasoning }, { previewMode: "latest" })}</section>`
-      : "";
-    if (buffer.reasoningRendered !== reasoningHtml) {
-      const reasoning = article.querySelector(":scope > .conversation-event-sequence");
-      if (reasoningHtml) {
+    const event = deps.render.streamingReasoningEvent(buffer, article.dataset.streamRun);
+    if (event) deps.eventIndex.set(event.eventKey, event);
+    const reasoning = article.querySelector(":scope > .conversation-event-sequence");
+    if (buffer.reasoningRendered?.eventKey !== event?.eventKey
+      || buffer.reasoningRendered?.content !== event?.content
+      || Boolean(reasoning) !== Boolean(event)) {
+      if (event) {
         const template = document.createElement("template");
-        template.innerHTML = reasoningHtml;
+        template.innerHTML = `<section class="conversation-event-sequence" role="group" aria-label="执行过程">${deps.events.renderEvent(event, { previewMode: "latest" })}</section>`;
         const node = template.content.firstElementChild;
-        if (reasoning) reasoning.replaceWith(node);
+        const currentRow = reasoning?.querySelector(EVENT_SELECTOR);
+        const nextRow = node.querySelector(EVENT_SELECTOR);
+        if (currentRow?.dataset.eventKey === event.eventKey) _syncEventElement(currentRow, nextRow);
+        else if (reasoning) reasoning.replaceWith(node);
         else article.insertBefore(node, article.querySelector(":scope > .message-rich"));
       } else if (reasoning) {
         reasoning.remove();
       }
-      buffer.reasoningRendered = reasoningHtml;
+      buffer.reasoningRendered = event;
     }
 
     let body = article.querySelector(":scope > .message-rich");

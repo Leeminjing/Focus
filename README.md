@@ -107,6 +107,8 @@ Windows includes a desktop robot entry point. Click it to open the input panel, 
 
 macOS uses the workbench window. Image input requires a configured model with image support.
 
+Shell capabilities differ by platform. Windows supports read-only, workspace-write, and full-access execution. macOS currently supports full-access Shell only; restricted modes report that execution is unavailable and never relax permissions automatically. Users can approve full access for one call, or continue using file tools. Cancellation and timeouts on macOS stop the command's process group, then capture workspace file changes after exit is confirmed. Full access allows programs to leave that group, so it does not provide Windows Job-equivalent process-tree containment. macOS does not yet offer the full restricted coding experience.
+
 ## Strategy: bring your way of working
 
 **A Strategy describes how a project should advance, how contexts should be organized, and what information subsequent work should inherit.**
@@ -168,6 +170,21 @@ focus update
 ```
 
 See [stable releases, installation, and update recovery](docs/managed-releases.md) for details.
+
+To inspect a running instance or export a diagnostic report:
+
+```sh
+focus doctor
+focus doctor --output focus-diagnostics.json
+```
+
+The report includes version and schema checks, live component health, Loop/Run IDs,
+queue backlog, budget usage, recent event identities and startup timings. With Focus
+stopped, it performs read-only offline checks. See [diagnostics](docs/diagnostics.md)
+for source usage and exit codes.
+
+Managed installs keep application code in `~/.focus/app`, dependencies and CLI
+entry points in `~/.focus/runtime`, and the terminal command in `~/.focus/bin`.
 
 ### Run from source
 

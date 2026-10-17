@@ -78,6 +78,7 @@
       const button = event.target.closest("button");
       if (!button || !panel.contains(button)) return;
       event.stopPropagation();
+      if (root.FocusMessageReading.handleCopy(event)) return;
       if (button.hasAttribute("data-patrol-context-close")) return close();
       if (button.dataset.patrolContextTab) { tab = button.dataset.patrolContextTab; render(); if (tab === "sources") await sources(); }
       else if (button.dataset.contextRelated) {

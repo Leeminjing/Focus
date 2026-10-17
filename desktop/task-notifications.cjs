@@ -36,13 +36,17 @@ class TaskNotifications {
       const events = [];
       for (const task of tasks) {
         if (task.lifecycle && task.lifecycle !== "active") continue;
+        const loop = task.loop;
+        const workspacePatrol = loop?.interaction_mode === "workspace_patrol";
         for (const item of task.attention || []) {
           events.push({ key: `attention:${task.task_id}:${item.id}`, priority: 0,
             title: item.kind === "access_approval" ? "需要你授权" : "需要你处理",
-            body: task.title, target: { taskId: task.task_id, attentionId: item.id, loopId: item.loop_id || null } });
+            body: task.title, target: { taskId: task.task_id, attentionId: item.id, loopId: item.loop_id || null,
+              ...(workspacePatrol && item.loop_id === loop.loop_id ? { workspaceId: loop.workspace_id } : {}) } });
         }
+        // Only the Patrol's root summary emits the shared terminal result.
+        if (workspacePatrol && task.task_id !== loop.initial_context_id) continue;
         if (task.active_run || task.attention?.length || task.attention_unavailable) continue;
-        const loop = task.loop;
         if (loop && !["completed", "failed"].includes(loop.status)) continue;
         const result = loop && ["completed", "failed"].includes(loop.status)
           ? { run_id: `loop:${loop.loop_id}`, status: loop.status === "completed" ? "success" : "error" }
@@ -50,7 +54,8 @@ class TaskNotifications {
         if (!result || !["success", "error"].includes(result.status)) continue;
         const event = { key: `result:${task.task_id}:${result.run_id}:${result.status}`, priority: 1,
           title: result.status === "success" ? "任务已完成" : "任务运行失败",
-          body: task.title, target: { taskId: task.task_id, loopId: loop?.loop_id || null } };
+          body: task.title, target: { taskId: task.task_id, loopId: loop?.loop_id || null,
+            ...(workspacePatrol ? { workspaceId: loop.workspace_id } : {}) } };
         // Starting the application does not replay historical results.
         if (!this.initialized) this.seen.add(event.key);
         else events.push(event);

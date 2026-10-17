@@ -17,7 +17,7 @@
 .artifact-actions { margin:8px 0; }
 .artifact-row summary { cursor:pointer; color:#596b80; font-size:11px; }
 .artifact-history { padding:8px 0; }
-.artifact-drawer pre { max-height:200px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:11px/1.6 Consolas,monospace; }
+.artifact-drawer pre:not(.file-source) { max-height:200px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:11px/1.6 Consolas,monospace; }
 .artifact-drawer [data-files-preview] { border-top:1px solid #ccd8e5; margin-top:8px; }
 .workspace-patrol>.artifact-drawer { position:fixed; z-index:25; right:16px; top:72px; bottom:24px; width:min(560px,calc(100vw - 32px)); box-shadow:0 8px 30px #29395320; }
 #panel>.artifact-drawer { flex:0 1 auto; min-height:0; width:100%; max-height:min(440px,calc(100vh - 16px)); margin-top:auto; font-size:11px; }

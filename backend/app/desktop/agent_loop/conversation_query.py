@@ -22,6 +22,7 @@ from backend.app.desktop.context_evolution import (
     ContextRevisionReader,
     ContextRevisionRepository,
 )
+from backend.app.desktop.agent_loop.file_link_sources import ConversationFileSources
 
 
 class ContextConversationQueryService:
@@ -75,6 +76,11 @@ class ContextConversationQueryService:
             revision.ref.revision_id,
             message_ids,
         )
+        file_sources = ConversationFileSources(session, self._repository, self._reader, loop.workspace_id)
+        file_contexts = {}
+        for message in page.messages:
+            if (message.get("role") or message.get("type")) in {"ai", "assistant"}:
+                file_contexts[str(message.get("id"))] = await file_sources.for_message(revision, message)
         return {
             "loop_id": loop_id,
             "context_id": context_id,
@@ -89,6 +95,7 @@ class ContextConversationQueryService:
                     "index": page.start + offset,
                     "message": message,
                     "provenance": provenance.get(str(message.get("id"))),
+                    "file_context": file_contexts.get(str(message.get("id"))),
                 }
                 for offset, message in enumerate(page.messages)
             ],
