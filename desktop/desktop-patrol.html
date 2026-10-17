@@ -3,7 +3,7 @@
 工作流为装配共享 intake 和预览模块，显式发送后读取既有 Live；示例：desktop-patrol.html?surface=panel。
 -->
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Focus · Patrol</title><link rel="stylesheet" href="./styles/icons.css"><link rel="stylesheet" href="./desktop-patrol.css"></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Focus · Patrol</title><link rel="stylesheet" href="./styles/icons.css"><link rel="stylesheet" href="./desktop-patrol.css"><link rel="stylesheet" href="./styles/workspace-patrol-budget.css"></head>
 <body>
   <main id="robot" hidden><button id="robot-open" aria-label="打开 Patrol，拖入图片、文字或文件"><img src="./assets/patrol-avatar/idle.png" alt="Patrol 机器人" draggable="false"></button><span id="robot-status" role="status">点击开始</span><button id="robot-hide" aria-label="隐藏机器人到托盘">收起</button></main>
   <main id="panel" hidden>
@@ -21,15 +21,16 @@
         <div id="reply-target" hidden><span></span><button type="button" id="clear-reply">取消指定回复</button></div>
         <div class="send-row"><button type="button" id="add-material" aria-label="添加材料" title="添加图片、文字或文件，也可以拖入或粘贴截图"><span class="ui-icon icon-plus" aria-hidden="true"></span></button><input type="file" id="file-picker" multiple hidden><span id="compose-help" class="sr-only">可拖入图片、文字或文件。Enter 换行，Ctrl+Enter 发送。</span><span class="send-shortcut" title="Ctrl+Enter 发送">Ctrl <span class="ui-icon icon-corner-down-left" aria-hidden="true"></span></span><button id="send" type="submit" aria-label="发送" title="发送 · Ctrl+Enter"><span class="ui-icon icon-arrow-up" aria-hidden="true"></span></button></div>
       </form>
+      <div id="task-budget"></div>
       <p id="error" role="alert" hidden></p>
       <p id="activity" role="status" hidden></p>
       <section id="requests" aria-label="待处理请求"></section>
-      <section id="results" aria-label="工作区已提交结果"></section>
+      <section id="results" aria-label="工作区已提交结果"><div id="answers"></div><div id="progress"></div><div id="artifacts"></div></section>
       <details id="history" hidden><summary>输入记录 <span id="receipt"></span></summary><div id="history-items"></div><button id="older" hidden>更早的输入</button></details>
     </div></div>
   </main>
   <script src="./http-response.js"></script><script src="./loop-api.js"></script>
   <script src="./loop-live-schema.js"></script><script src="./loop-live-reducer.js"></script><script src="./loop-live-selectors.js"></script><script src="./loop-live-store.js"></script><script src="./loop-live-connection.js"></script>
   <script src="./access-mode.js"></script><script src="./workspace-patrol-inputs.js"></script><script src="./workspace-patrol-intake.js"></script><script src="./workspace-patrol-material-preview.js"></script><script src="./workspace-patrol-feedback.js"></script>
-  <script src="./desktop-patrol-robot.js"></script><script src="./desktop-patrol-panel.js"></script>
+  <script src="./workspace-patrol-budget.js"></script><script src="./desktop-patrol-robot.js"></script><script src="./desktop-patrol-panel.js"></script>
 </body></html>

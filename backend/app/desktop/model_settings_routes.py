@@ -37,12 +37,16 @@ def _service(request: Request):
 @model_settings_router.get("/models")
 async def get_model_settings(request: Request) -> dict:
     """当前生效目录、删除名单、可选适配器与默认模型解析状态。"""
-    return settings_snapshot(_service(request).app_config)
+    service = _service(request)
+    snapshot = settings_snapshot(service.app_config)
+    if getattr(service, "model_verification", None) is not None:
+        snapshot["verification"] = service.model_verification
+    return snapshot
 
 
 @model_settings_router.put("/models")
 async def put_model_settings(body: dict, request: Request) -> dict:
-    """校验并保存模型设置；被引用的条目在删除前需要显式确认。"""
+    """保存并就地生效后联网验证普通调用和策展；删除被引用条目前需确认。"""
     service = _service(request)
     removed = _removed_entry_names(service.app_config, body)
     if removed and not body.get("acknowledge_references"):
@@ -57,11 +61,22 @@ async def put_model_settings(body: dict, request: Request) -> dict:
                 },
             )
     try:
-        return save_model_settings(service.app_config, body)
+        snapshot = save_model_settings(service.app_config, body)
     except ModelSettingsError as exc:
         raise HTTPException(
             422, {"code": "model_settings_invalid", "errors": exc.errors}
         ) from exc
+    from backend.app.desktop.model_verification import verify_model_setup
+
+    # 验证只消费本次保存后的配置快照；等待期间其它保存不会改写本次检查的输入。
+    config = service.app_config.model_copy(deep=True)
+    revision = getattr(service, "model_settings_revision", 0) + 1
+    service.model_settings_revision = revision
+    service.model_verification = None
+    verification = await verify_model_setup(config)
+    if service.model_settings_revision == revision:
+        service.model_verification = verification
+    return {**snapshot, "verification": verification}
 
 
 @model_settings_router.post("/models/references")

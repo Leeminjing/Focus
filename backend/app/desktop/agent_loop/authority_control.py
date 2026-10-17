@@ -27,7 +27,7 @@ from backend.app.desktop.agent_loop.models import (
     LoopEventOutbox,
     LoopRound,
 )
-from backend.app.desktop.agent_loop.schemas import AdjustLoopBudgetsRequest, LoopGrantMutationRequest, NarrowLoopGrantRequest
+from backend.app.desktop.agent_loop.schemas import AdjustLoopBudgetsRequest, IncreaseLoopBudgetRequest, LoopGrantMutationRequest, NarrowLoopGrantRequest
 from backend.app.desktop.agent_loop.rounds import create_observation_round
 from backend.app.desktop.agent_loop.compression_authority.contracts import AutonomousCompressionPolicy
 from backend.app.desktop.agent_loop.compression_authority.repository import CompressionAuthorityRepository
@@ -54,6 +54,30 @@ class LoopAuthorityService:
             )
             if grant is None:
                 raise HTTPException(409, "Agent Loop 当前没有可修改的活动授权")
+            preserve_pause = False
+            if isinstance(request, IncreaseLoopBudgetRequest):
+                if loop.authority_revision != request.expected_authority_revision:
+                    raise HTTPException(409, "预算授权已更新，请刷新后重试")
+                if loop.status == "waiting_user":
+                    from backend.app.desktop.agent_loop.wait_models import LoopWaitRequest
+
+                    wait = await session.scalar(select(LoopWaitRequest).where(
+                        LoopWaitRequest.loop_id == loop_id, LoopWaitRequest.status == "open").with_for_update())
+                    if wait is None or wait.kind != "budget_action":
+                        raise HTTPException(409, "请先处理当前待办；增加预算不能代替授权或补充信息")
+                from backend.app.desktop.agent_loop.budget_presets import increased_budgets
+
+                usage = await session.get(LoopBudgetUsage, loop_id, with_for_update=True)
+                used = {name: int(getattr(usage, name) or 0) if usage else 0
+                        for name in ("rounds", "model_calls", "input_tokens", "output_tokens", "retries")}
+                from backend.app.desktop.agent_loop.accounting_query import LoopAccountingQuery
+
+                accounting = await LoopAccountingQuery().read(session, loop_id)
+                used.update(accounting["consumption"]["occupied"])
+                used["duration_seconds"] = max(0, int((datetime.now(UTC) - self._as_utc(loop.created_at)).total_seconds()))
+                preserve_pause = loop.status == "paused"
+                request = AdjustLoopBudgetsRequest(command="adjust_budgets",
+                    budgets=increased_budgets(grant.budgets, used, request.preset))
             prior_round = await session.get(LoopRound, loop.current_round_id) if loop.current_round_id else None
             replacement = self._replacement(loop, grant, request)
             loop.revision += 1
@@ -90,8 +114,8 @@ class LoopAuthorityService:
                 else:
                     round_row = await create_observation_round(session, loop, prior_round, "0" * 64)
                     loop.current_round_id = round_row.round_id
-                    loop.status = "running"
-                    loop.health = "observing"
+                    loop.status = "paused" if preserve_pause else "running"
+                    loop.health = "idle" if preserve_pause else "observing"
                     loop.waiting_reason = None
                     session.add(round_row)
                 event_type = "LoopGrantNarrowed" if isinstance(request, NarrowLoopGrantRequest) else "LoopBudgetsAdjusted"

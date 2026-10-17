@@ -413,6 +413,12 @@ def test_save_writes_the_credential_and_reports_it_set(workspace):
     assert os.environ[_KEY_VAR] == "rotated-secret"
     assert all(entry["api_key_set"] for entry in snapshot["models"])
     assert "rotated-secret" not in json.dumps(snapshot, ensure_ascii=False)
+    # 发行条目未发生字段变化时也必须刷新；检查下一次真实 factory 装配。
+    from focus.models import create_chat_model
+
+    for entry in config.models:
+        model = create_chat_model(name=entry.name, app_config=config)
+        assert model.openai_api_key.get_secret_value() == "rotated-secret"
 
 
 def test_save_rejects_two_defaults_without_touching_anything(workspace):
@@ -732,6 +738,9 @@ def test_route_requires_confirmation_before_deleting_a_referenced_entry(workspac
         return {"beta": [{"kind": "run", "run_id": "r1", "task_id": "t1"}]}
 
     monkeypatch.setattr(routes, "referencing_models", fake_references)
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr("backend.app.desktop.model_verification.verify_model_setup",
+                        AsyncMock(return_value={"ok": True, "reason": "验证通过", "checks": []}))
     client = _client(_app_config())
     catalog = [entry for entry in _file_catalog() if entry["name"] != "beta"]
 

@@ -10,7 +10,8 @@ const { app, BrowserWindow, dialog, ipcMain, Menu, shell, nativeTheme } = requir
 const { supportsAcrylic, bindWindowMaterial } = require("./window-material.cjs");
 const { DesktopPatrolHost } = require("./desktop-patrol-host.cjs");
 const nativeMaterialSupported = supportsAcrylic(process.platform, require("node:os").release());
-const { execFileSync, spawn } = require("node:child_process");
+const { spawn } = require("node:child_process");
+const { createStartupRuntime, createStageRecorder } = require("./startup-runtime.cjs");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const net = require("node:net");
@@ -19,7 +20,6 @@ const { setTimeout: delay } = require("node:timers/promises");
 
 const desktopDir = __dirname;
 const rootDir = path.resolve(desktopDir, "..");
-const migrationIni = path.join(rootDir, "backend", "packages", "harness", "focus", "persistence", "migrations", "alembic.ini");
 const focusIconPath = path.join(desktopDir, "assets", process.platform === "win32" ? "focus-icon.ico" : "focus-icon.png");
 
 const ZOOM_LEVEL_MIN = -3;
@@ -70,10 +70,6 @@ if (process.env.FOCUS_DISABLE_HARDWARE_ACCELERATION === "1") {
 }
 if (process.env.FOCUS_ELECTRON_USER_DATA) app.setPath("userData", process.env.FOCUS_ELECTRON_USER_DATA);
 
-function checked(command, args, options = {}) {
-  return execFileSync(command, args, { cwd: rootDir, encoding: "utf8", windowsHide: true, stdio: options.stdio || "pipe", env: options.env || process.env });
-}
-
 function pythonEnvironment(session) {
   const separator = process.platform === "win32" ? ";" : ":";
   const pythonPath = [path.join(rootDir, "backend", "packages", "harness"), rootDir, process.env.PYTHONPATH].filter(Boolean).join(separator);
@@ -85,53 +81,6 @@ function pythonEnvironment(session) {
     FOCUS_DATABASE_URL: process.env.FOCUS_DATABASE_URL || "postgresql+asyncpg://focus:qweasdzxc123@127.0.0.1:7221/focus",
     PYTHONUTF8: "1",
   };
-}
-
-function pythonCandidates() {
-  const candidates = [];
-  const seen = new Set();
-  const add = (command, prefix = []) => {
-    if (!command) return;
-    const key = `${command}\0${prefix.join("\0")}`.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    candidates.push({ command, prefix });
-  };
-  add(process.env.FOCUS_PYTHON);
-  if (process.platform === "win32") {
-    try {
-      execFileSync("where.exe", ["python"], { encoding: "utf8", windowsHide: true })
-        .split(/\r?\n/).map(value => value.trim()).filter(Boolean).forEach(value => add(value));
-    } catch {}
-    add("py", ["-3.12"]);
-    add("py", ["-3"]);
-  } else {
-    add("python3");
-  }
-  add("python");
-  return candidates;
-}
-
-function resolvePythonRuntime() {
-  const failures = [];
-  for (const candidate of pythonCandidates()) {
-    try {
-      execFileSync(candidate.command, [...candidate.prefix, "-c", "import alembic, uvicorn"], {
-        cwd: rootDir,
-        encoding: "utf8",
-        stdio: "pipe",
-        windowsHide: true,
-      });
-      return candidate;
-    } catch (error) {
-      failures.push(`${candidate.command} ${candidate.prefix.join(" ")}`.trim());
-    }
-  }
-  throw new Error(`未找到同时包含 Alembic 与 Uvicorn 的 Python 运行时（已检查：${failures.join("、")}）`);
-}
-
-function checkedPython(runtime, args, options = {}) {
-  return checked(runtime.command, [...runtime.prefix, ...args], options);
 }
 
 function createSplashWindow() {
@@ -273,21 +222,30 @@ function protectAppNavigation(win, apiBase) {
 
 async function start() {
   Menu.setApplicationMenu(null);
-  await createSplashWindow();
+  const startupId = crypto.randomUUID();
+  const home = ensureFocusHome();
+  const logPath = path.join(home, "startup-timing.jsonl");
+  // 每次启动保留结构化阶段耗时，最多保留约 1 MiB；无连接串或密钥。
+  try { if (fs.statSync(logPath).size > 1024 * 1024) fs.renameSync(logPath, `${logPath}.previous`); } catch {}
+  const recorder = createStageRecorder({
+    update: updateSplashStage,
+    report: entry => {
+      const line = JSON.stringify({ startup: startupId, at: new Date().toISOString(), ...entry });
+      console.log(`[focus-startup] ${line}`);
+      try { fs.appendFileSync(logPath, `${line}\n`, "utf8"); } catch (error) { console.error("无法写入启动耗时:", error.message); }
+    },
+  });
+  const stage = recorder.stage;
+  await stage("splash", "正在加载启动窗口", 0, () => createSplashWindow());
   startupAbort.signal.throwIfAborted();
-  try { ensureFocusHome(); } catch (error) { console.error("创建 ~/.focus 失败:", error); }
-  await updateSplashStage("正在检查本地运行环境", 10);
   const session = crypto.randomBytes(32).toString("hex");
   const env = pythonEnvironment(session);
-  const pythonRuntime = resolvePythonRuntime();
-  checkedPython(pythonRuntime, ["--version"]);
-  checked("git", ["--version"]);
-  checked("docker", ["compose", "version"]);
-  await updateSplashStage("正在准备数据服务", 28);
-  checked("docker", ["compose", "-f", path.join(desktopDir, "compose.yaml"), "up", "-d", "--pull", "missing", "--wait"], { stdio: "inherit" });
-  await updateSplashStage("正在应用工作区迁移", 48);
-  checkedPython(pythonRuntime, ["-m", "alembic", "-c", migrationIni, "upgrade", "head"], { env, stdio: "inherit" });
+  const managed = require("../scripts/managed-update.cjs").assertReady(rootDir, home);
+  const runtime = createStartupRuntime({ rootDir, home, signal: startupAbort.signal, stage, managed });
+  const pythonRuntime = await stage("runtime", "正在读取已准备的运行环境", 10, () => runtime.prepare());
+  await runtime.prepareDatabase(pythonRuntime, env);
   const port = await freePort();
+  startupAbort.signal.throwIfAborted();
   const apiBase = `http://127.0.0.1:${port}`;
   desktopOrigin = apiBase;
   process.env.FOCUS_DESKTOP_API = apiBase;
@@ -306,26 +264,27 @@ async function start() {
     backend = null;
     if (!app.isQuitting) showFatalError(new Error(`FastAPI 已退出（代码 ${code ?? "—"}${signal ? `，信号 ${signal}` : ""}）`));
   });
-  await waitForHealth(apiBase);
-  await updateSplashStage("正在加载工作区", 84);
-  startupAbort.signal.throwIfAborted();
-  if (patrolEnabled) {
-    const response = await fetch(`${apiBase}/desktop/api/materials/limits`, {
-      headers: { "X-Focus-Session": session }, signal: AbortSignal.timeout(10000),
-    });
-    if (!response.ok) throw new Error(`读取材料资源限制失败：HTTP ${response.status}`);
-    const limits = await response.json();
-    if (!Number.isSafeInteger(limits.general_file_bytes) || limits.general_file_bytes <= 0
-      || !Number.isSafeInteger(limits.run_material_count) || limits.run_material_count <= 0) throw new Error("材料资源限制无效");
-    patrolHost = new DesktopPatrolHost({
-      electron: require("electron"), apiBase, desktopDir, icon: focusIconPath, limits,
-      openWorkbench: showWorkbench, getWorkbench: () => mainWindow, quit: () => app.quit(),
-    });
-    await patrolHost.start();
-  } else {
-    await showWorkbench();
-  }
-  await updateSplashStage("Focus 已就绪", 100);
+  await stage("gateway-health", "正在等待 Focus Gateway 就绪", 72, () => waitForHealth(apiBase));
+  await stage("interface", "正在加载工作区", 84, async () => {
+    startupAbort.signal.throwIfAborted();
+    if (patrolEnabled) {
+      const response = await fetch(`${apiBase}/desktop/api/materials/limits`, {
+        headers: { "X-Focus-Session": session }, signal: AbortSignal.any([startupAbort.signal, AbortSignal.timeout(10000)]),
+      });
+      if (!response.ok) throw new Error(`读取材料资源限制失败：HTTP ${response.status}`);
+      const limits = await response.json();
+      if (!Number.isSafeInteger(limits.general_file_bytes) || limits.general_file_bytes <= 0
+        || !Number.isSafeInteger(limits.run_material_count) || limits.run_material_count <= 0) throw new Error("材料资源限制无效");
+      patrolHost = new DesktopPatrolHost({
+        electron: require("electron"), apiBase, desktopDir, icon: focusIconPath, limits,
+        openWorkbench: showWorkbench, getWorkbench: () => mainWindow, quit: () => app.quit(),
+      });
+      await patrolHost.start();
+    } else {
+      await showWorkbench();
+    }
+  });
+  await stage("ready", "Focus 已就绪", 100, async () => {});
   startupAbort.signal.throwIfAborted();
   closeSplashWindow();
 }

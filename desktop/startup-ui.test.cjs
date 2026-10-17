@@ -66,11 +66,11 @@ assert.match(main, /if \(process\.platform !== "darwin"\) \{[\s\S]*mainWindowOpt
 // 基础带高仍为 56，只是收敛为命名常量（并随缩放同步，见 f20-architecture-guard）。
 assert.match(main, /const TITLEBAR_BASE_HEIGHT = 56/);
 assert.match(main, /show: false,[\s\S]*frame: false,[\s\S]*loadFile\(path\.join\(desktopDir, "splash\.html"\)\)/);
-assert.ok(main.indexOf("await createSplashWindow()") < main.indexOf("const pythonRuntime = resolvePythonRuntime()"));
+assert.ok(main.indexOf('stage("splash"') < main.indexOf("runtime.prepare()"));
 assert.match(main, /if \(patrolEnabled\)[\s\S]*await patrolHost\.start\(\)[\s\S]*else \{\s*await showWorkbench\(\)/);
 assert.match(main, /workbenchLoading = createWorkbench\(\)[\s\S]*await workbenchLoading[\s\S]*mainWindow\.show\(\)/);
-assert.match(main, /import alembic, uvicorn/);
-assert.match(main, /where\.exe/);
+assert.match(main, /createStartupRuntime/);
+assert.doesNotMatch(main, /execFileSync/);
 assert.match(main, /app\.setAppUserModelId\("Focus\.Desktop"\)/);
 assert.match(main, /FOCUS_DISABLE_HARDWARE_ACCELERATION[\s\S]*app\.disableHardwareAcceleration\(\)/);
 

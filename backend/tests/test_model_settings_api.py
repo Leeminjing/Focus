@@ -30,6 +30,44 @@ from focus.config.layered import load_layered_maps  # noqa: E402
 
 SESSION = {"X-Focus-Session": "focus-dev-session"}
 
+
+@pytest.mark.parametrize("problem", ["missing_key", "placeholder_key", "invalid_model"])
+def test_gateway_starts_and_settings_can_repair_initial_configuration(tmp_path, monkeypatch, problem):
+    import yaml
+    from unittest.mock import AsyncMock
+    from focus.config import app_config as config_module
+
+    # 保留仓库中真实的数据库/checkpointer/store 配置，仅改变模型或凭据。
+    document = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+    valid_models = document["models"]
+    home = tmp_path / ".focus"
+    home.mkdir()
+    monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(home))
+    monkeypatch.setattr(config_module, "_app_config", None)
+    if problem == "missing_key":
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    elif problem == "placeholder_key":
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-your-api-key-here")
+    else:
+        document["models"] = [{**entry, "curation_output_method": "broken"} for entry in valid_models]
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(document), encoding="utf-8")
+    verify = AsyncMock(return_value={"ok": True, "reason": "验证通过", "checks": []})
+    monkeypatch.setattr("backend.app.desktop.model_verification.verify_model_setup", verify)
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        assert client.get("/health").status_code == 200
+        assert client.get("/desktop/api/bootstrap", headers=SESSION).status_code == 200
+        snapshot = client.get("/desktop/api/settings/models", headers=SESSION).json()
+        assert snapshot["setup_required"]
+        saved = client.put("/desktop/api/settings/models", headers=SESSION, json={
+            "models": valid_models, "credentials": {"OPENAI_API_KEY": "synthetic-gateway-key"},
+        })
+        assert saved.status_code == 200, saved.text
+        assert not saved.json()["setup_required"]
+        assert saved.json()["verification"]["ok"]
+        verify.assert_awaited_once()
+        assert client.app.state.desktop_service.app_config.models[0].api_key == "synthetic-gateway-key"
+
 _ANNOTATED_PREFERENCE = """\
 # 我自己写的说明，程序不该动它。
 stream_bridge:
@@ -52,6 +90,10 @@ def desktop(tmp_path, monkeypatch):
     monkeypatch.setenv("FOCUS_GLOBAL_HOME", str(home))
     (home / "config.yaml").write_text(_ANNOTATED_PREFERENCE, encoding="utf-8")
     original_key = os.environ.get("OPENAI_API_KEY")
+    # 此模块验证 Gateway/持久化合同；真实能力验证的 HTTP 传输覆盖在 test_model_setup.py。
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr("backend.app.desktop.model_verification.verify_model_setup",
+                        AsyncMock(return_value={"ok": True, "reason": "验证通过", "checks": []}))
 
     file_map, preference_map = load_layered_maps("config.yaml", "config.yaml")
     file_bytes = Path("config.yaml").read_bytes()

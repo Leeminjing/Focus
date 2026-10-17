@@ -37,8 +37,8 @@ function fixture(t) {
     getBounds() { return { ...this.bounds }; }
     setBounds(value) { this.bounds = { ...value }; }
     showInactive() { this.visible = true; }
-    show() { this.visible = true; }
-    hide() { this.visible = false; }
+    show() { if (!this.visible) { this.visible = true; this.emit("show"); } }
+    hide() { if (this.visible) { this.visible = false; this.emit("hide"); } }
     focus() { this.focuses++; }
     isVisible() { return this.visible === true; }
     isDestroyed() { return this.destroyed === true; }
@@ -52,7 +52,7 @@ function fixture(t) {
   });
   const electron = {
     BrowserWindow: Window, screen, app: { getPath: () => directory },
-    ipcMain: { handle: (name, callback) => handlers.set(name, callback), removeHandler: name => handlers.delete(name) },
+    ipcMain: Object.assign(new EventEmitter(), { handle: (name, callback) => handlers.set(name, callback), removeHandler: name => handlers.delete(name) }),
     Menu: { buildFromTemplate: value => value },
     Tray: class extends EventEmitter { setToolTip() {} setContextMenu(value) { this.menu = value; } destroy() {} },
     dialog: { showMessageBox: async () => { prompts++; return { response: promptResponse }; } },
@@ -72,7 +72,11 @@ function fixture(t) {
     assert.ok(path.resolve(directory).startsWith(path.resolve(os.tmpdir()) + path.sep));
     fs.rmSync(directory, { recursive: true, force: true });
   });
-  return { host, screen, handlers, invoke, event, Window, directory,
+  const recover = (name, senderEvent, value) => {
+    electron.ipcMain.emit(`focus:patrol-recovery-${name}`, senderEvent, value);
+    return senderEvent.returnValue;
+  };
+  return { host, screen, handlers, invoke, recover, event, Window, directory,
     get workbench() { return workbench; }, get quits() { return quits; }, get prompts() { return prompts; },
     confirmQuit() { promptResponse = 1; } };
 }
@@ -119,6 +123,19 @@ test("compact panel expands within display bounds and only accepts resize from i
   assert.equal(f.host.panel.getBounds().height, 202);
 });
 
+test("panel visibility comes from the host for startup, IPC hide, close and robot hide", async t => {
+  const f = fixture(t); await f.host.start();
+  assert.equal(f.host.panel.options.webPreferences.backgroundThrottling, false);
+  assert.equal(f.invoke("ready", f.host.panel).panelVisible, false);
+  const visibility = () => f.host.panel.messages.filter(row => row.channel === "focus:patrol-visibility").map(row => row.value);
+  f.host.openPanel();
+  assert.equal(f.invoke("ready", f.host.panel).panelVisible, true);
+  f.invoke("hide-panel", f.host.panel);
+  f.host.openPanel(); f.host.panel.close();
+  f.host.openPanel(); f.invoke("hide-robot", f.host.robot);
+  assert.deepEqual(visibility(), [true, false, true, false, true, false]);
+});
+
 test("IPC authenticates owner window, main frame, origin and surface before transfer", async t => {
   const f = fixture(t); await f.host.start();
   const handler = f.handlers.get("focus:patrol-receive");
@@ -141,6 +158,20 @@ test("IPC authenticates owner window, main frame, origin and surface before tran
     f.host.robot.webContents.emit("will-navigate", { preventDefault: () => { prevented = true; } }, target);
     assert.equal(prevented, true);
   }
+});
+
+test("recovery IPC belongs only to the panel main frame and acknowledges durable writes", async t => {
+  const f = fixture(t); await f.host.start(); await f.host.openWorkbench();
+  for (const win of [f.host.robot, f.workbench]) assert.match(f.recover("read", f.event(win)).error, /不能访问/);
+  assert.match(f.recover("read", { sender: f.host.panel.webContents, senderFrame: { url: f.host.panel.webContents.mainFrame.url } }).error, /不能访问/);
+  assert.deepEqual(f.recover("read", f.event(f.host.panel)).value, { state: null, sources: [] });
+  assert.equal(f.recover("put", f.event(f.host.panel), { id: "local", bytes: new Uint8Array([1, 2]) }).value, true);
+  const state = { version: 1, workspaces: [], source_ids: ["local"] };
+  assert.equal(f.recover("save", f.event(f.host.panel), state).value, true);
+  assert.deepEqual(f.recover("read", f.event(f.host.panel)).value, { state, sources: [["local", new Uint8Array([1, 2])]] });
+  assert.match(f.recover("put", f.event(f.host.panel), { id: "too-big", bytes: new Uint8Array(33) }).error, /总量超限/);
+  f.host.panel.webContents.mainFrame.url = "https://example.com/desktop/desktop-patrol.html?surface=panel";
+  assert.match(f.recover("read", f.event(f.host.panel)).error, /不能访问/);
 });
 
 test("queued content is bounded, panel hide preserves owner and background changes never focus", async t => {

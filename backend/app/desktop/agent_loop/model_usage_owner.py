@@ -24,7 +24,7 @@ class OwnedModelUsage:
         self._observation_id = observation_id
         self._fencing_token = fencing_token
 
-    async def reserve(self, input_tokens, output_tokens):
+    async def reserve(self, input_tokens, output_tokens, *, retry=False):
         async with self._sessions.begin() as session:
             loop = await session.get(AgentLoop, self._loop_id, with_for_update=True)
             model = {"patrol": LoopPatrolAttempt, "worker": LoopWorkerRequest, "round": LoopRound}.get(self._kind)
@@ -63,7 +63,7 @@ class OwnedModelUsage:
                    "observation_id": observation_id,
                    **({"fencing_token": int(self._fencing_token)} if self._fencing_token is not None else {}),
                    **({"retry_identity": self._retry_identity} if self._kind == "worker" else {})})
-        await repository.reserve(input_tokens, output_tokens)
+        await repository.reserve(input_tokens, output_tokens, retry=retry)
         return repository
 
     @staticmethod

@@ -57,7 +57,7 @@ class StrictModel(BaseModel):
 
 
 _ATTACHMENT_INPUT_DESCRIPTION = (
-    "选择携带附件的 user_intents[].intent_id 或 causal_chain[].intent_id；"
+    "选择携带附件的 user_intents[].intent_id 或 causal_source_catalog[].intent_id；"
     "每个身份交付该次输入的全部冻结附件。这里不是 material_id、路径或摘要。"
 )
 
@@ -299,12 +299,18 @@ class AdjustLoopBudgetsRequest(StrictModel):
     budgets: LoopBudgetContract
 
 
+class IncreaseLoopBudgetRequest(StrictModel):
+    command: Literal["increase_budget"]
+    preset: Literal["normal", "long"]
+    expected_authority_revision: int = Field(ge=1)
+
+
 class RevokeLoopGrantRequest(StrictModel):
     command: Literal["revoke"]
 
 
 LoopGrantMutationRequest = Annotated[
-    NarrowLoopGrantRequest | AdjustLoopBudgetsRequest | RevokeLoopGrantRequest,
+    NarrowLoopGrantRequest | AdjustLoopBudgetsRequest | IncreaseLoopBudgetRequest | RevokeLoopGrantRequest,
     Field(discriminator="command"),
 ]
 

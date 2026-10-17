@@ -29,8 +29,7 @@ _DECISION = {"rationale": "继续推进", "evidence": [], "mission_references": 
 _FLAT = {"rationale": _DECISION["rationale"], "evidence": [], "mission_references": _DECISION["mission_references"], "actions": _DECISION["actions"]}
 
 
-@pytest.mark.parametrize("damage", [None, "missing_page", "cursor_gap", "changed_total", "wrong_identity", "wrong_hash"])
-def test_causal_read_reconstructs_exact_full_utf8_history(damage):
+def test_explicit_causal_read_reconstructs_only_selected_utf8_history():
     from backend.app.desktop.agent_loop.patrol_read_view import PatrolReadView
     from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
 
@@ -39,30 +38,89 @@ def test_causal_read_reconstructs_exact_full_utf8_history(damage):
     observation = SimpleNamespace(causal_chain=({"intent_id": "intent-1", "snapshot_hash": digest},))
 
     async def reader(envelope, requests):
-        request = requests[0]
-        actual = {**snapshot, "changed": True} if damage == "wrong_hash" else snapshot
-        page = PatrolReadView.causal_page(actual, request.model_copy(update={"snapshot_hash": canonical_hash(actual)}))
-        page["snapshot_hash"] = digest
-        if damage == "missing_page":
-            page["next_cursor"] = None
-        elif damage == "cursor_gap":
-            page["next_cursor"] += 1
-        elif damage == "changed_total" and request.cursor:
-            page["total_bytes"] += 1
-        elif damage == "wrong_identity":
-            page["intent_id"] = "different-input"
-        return (page,)
+        assert len(requests) == 1 and requests[0].intent_id == "intent-1"
+        return (PatrolReadView.causal_page(snapshot, requests[0]),)
 
     model = StructuredPatrolDecisionModel(object(), reader=reader)
-    if damage:
-        with pytest.raises(ValueError, match="causal_history_"):
-            _run(model._causal_evidence(observation))
-    else:
-        assert _run(model._causal_evidence(observation))[0]["snapshot"] == snapshot
+    async def read():
+        cursor, chunks = 0, []
+        while cursor is not None:
+            step = PatrolCognitiveStep.model_validate({"reads": [{"source": "causal", "intent_id": "intent-1",
+                "snapshot_hash": digest, "cursor": cursor, "max_bytes": 256}]})
+            page, = await model._cognitive_evidence(observation, step)
+            chunks.append(page["content"])
+            cursor = page["next_cursor"]
+        return json.loads("".join(chunks))
+    assert _run(read()) == snapshot
 
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def test_consecutive_inputs_do_not_eagerly_read_or_inject_full_snapshots(monkeypatch):
+    from backend.app.desktop.agent_loop.patrol_read_view import PatrolReadView
+    from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
+
+    snapshots = [{"shared": "unchanged work state " * 200, "revision": i} for i in range(3)]
+    chain = tuple({"intent_id": f"intent-{i}", "snapshot_hash": canonical_hash(snapshot),
+                   "input": {"content": f"U{i + 1}"}} for i, snapshot in enumerate(snapshots))
+    reads = []
+
+    async def reader(observation, requests):
+        reads.extend(requests)
+        return tuple(PatrolReadView.causal_page(snapshots[int(request.intent_id[-1])], request)
+                     for request in requests)
+
+    model = _scripted_model(json.dumps({"decision": _DECISION}, ensure_ascii=False))
+    monkeypatch.setattr(module, "create_chat_model", lambda **kwargs: model)
+    observation = _required_expansion_observation().model_copy(update={
+        "grant": {"grant_id": "grant-1", "holder_id": "patrol:1"},
+        "expansion_assessment": None, "causal_chain": chain,
+        "intervention": snapshots[-1], "pre_input_state": snapshots[-1],
+    })
+    _run(StructuredPatrolDecisionModel(_prompt_json_config(), reader=reader)(observation))
+
+    assert reads == []
+    request = " ".join(str(message.content) for message in model.received[0])
+    assert request.count("unchanged work state") == 200
+    assert "<causal_evidence>" not in request
+    assert all(item["snapshot_hash"] in request and item["input"]["content"] in request for item in chain)
+    payload = PatrolReadView.payload(observation)
+    assert "causal_chain" not in payload and "pre_input_state" not in payload
+    full_history_bytes = sum(len(json.dumps(snapshot).encode()) for snapshot in snapshots)
+    assert len(json.dumps(payload).encode()) < full_history_bytes * 0.65
+
+
+def test_model_can_request_one_old_snapshot_before_deciding(monkeypatch):
+    from backend.tests.config_helpers import ToolCapableFakeChatModel
+    from backend.app.desktop.agent_loop.patrol_read_view import PatrolReadView
+    from backend.app.desktop.agent_loop.task_progress.contracts import canonical_hash
+
+    old = {"fact_id": "fact", "revision": 1, "meaning": "old-visible-value"}
+    current = {**old, "revision": 2, "meaning": "current-visible-value"}
+    chain = tuple({"intent_id": f"intent-{i}", "snapshot_hash": canonical_hash(snapshot),
+                   "input": {"content": f"U{i}"}} for i, snapshot in enumerate((old, current)))
+    read = {"source": "causal", "intent_id": "intent-0", "snapshot_hash": canonical_hash(old), "max_bytes": 256}
+    reads = []
+
+    async def reader(observation, requests):
+        reads.extend(requests)
+        assert len(requests) == 1 and requests[0].intent_id == "intent-0"
+        return (PatrolReadView.causal_page(old, requests[0]),)
+
+    model = ToolCapableFakeChatModel(scripted=[AIMessage(content=json.dumps({"reads": [read]})),
+        AIMessage(content=json.dumps({"decision": _DECISION}, ensure_ascii=False))])
+    monkeypatch.setattr(module, "create_chat_model", lambda **kwargs: model)
+    observation = _required_expansion_observation().model_copy(update={
+        "grant": {"grant_id": "grant-1", "holder_id": "patrol:1"},
+        "expansion_assessment": None, "causal_chain": chain, "intervention": current,
+    })
+    _run(StructuredPatrolDecisionModel(_prompt_json_config(), reader=reader)(observation))
+    assert len(reads) == 1 and len(model.received) == 2
+    assert "old-visible-value" not in " ".join(str(message.content) for message in model.received[0])
+    selected = next(message.content for message in model.received[1] if "<selected_context_evidence>" in str(message.content))
+    assert "old-visible-value" in selected and "current-visible-value" not in selected
 
 
 def test_flat_proposal_folds_into_decision():
@@ -211,7 +269,7 @@ def test_retry_feedback_repairs_malformed_proposal_on_frozen_observation(monkeyp
         def __init__(self, sessions, decision_model):
             self._decision_model = decision_model
 
-        async def decide(self, frozen_observation, holder_id):
+        async def decide(self, frozen_observation, holder_id, *, fencing_token):
             assert frozen_observation is observation
             return await self._decision_model(frozen_observation)
 
@@ -295,7 +353,7 @@ def _required_expansion_observation() -> LoopObservationEnvelope:
 
 
 def _claim() -> CoordinatorClaim:
-    return CoordinatorClaim(lease_id="l1", loop_id="loop-1", round_id="round-1", fencing_token="f1")
+    return CoordinatorClaim(lease_id="l1", loop_id="loop-1", round_id="round-1", fencing_token="1")
 
 
 def _orchestrator(monkeypatch, outcomes: list[Exception | None]):
@@ -306,7 +364,7 @@ def _orchestrator(monkeypatch, outcomes: list[Exception | None]):
         def __init__(self, sessions, model) -> None:
             self._model = model
 
-        async def decide(self, observation, holder_id):
+        async def decide(self, observation, holder_id, *, fencing_token):
             outcome = outcomes[min(calls["decide"], len(outcomes) - 1)]
             calls["decide"] += 1
             if outcome is not None:
