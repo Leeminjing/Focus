@@ -40,7 +40,7 @@
  * 独立 Patrol 入口经系统文件夹选择器选取路径，picker 仅确认本次选择，显式进入才登记绑定；原导航偏好保存已确认工作区，重载不读取历史目录列表。
  * 全图复用共享玻璃图、精确关系与原检查器，局部更新保留视口和历史版本；批选、装备及只读检查沿既有任务身份分流，生命周期变更成功后重读关系。
  * 普通会话照旧，workspace Loop 不进入旧 Mission/介入控制台，草稿和单路 Live 由专责控制器保持；Patrol 不展示普通会话检查器，壳层刷新保留本次路径选择。
- * 记忆库沿用同一 CRUD，区分普通记忆与演化策略编辑，策略三段正文、范围和启停独立保存。
+ * 记忆库沿用同一 CRUD，区分普通记忆与演化策略编辑；列表响应按导航身份、压缩响应按请求及编辑快照隔离，迟到结果不得覆盖后续页面、选择或草稿。
  */
 "use strict";
 
@@ -343,6 +343,7 @@ let pluginHydrationSequence = 0;
 let pluginViewRequestSequence = 0;
 let memoryViewRequestSequence = 0;
 let memoryHydrationSequence = 0;
+let memoryCompressionRequestSequence = 0;
 let contextTreeRequestSequence = 0;
 let panelResizeFrame = null;
 let patrolAvatarController = null;
@@ -613,6 +614,7 @@ function cancelPendingViewRequests() {
   compressionRequestSequence += 1;
   draftOpenRequestSequence += 1;
   pluginViewRequestSequence += 1;
+  memoryViewRequestSequence += 1;
 }
 
 async function hydratePluginAssets(bootstrapPlugins = null) {
@@ -2917,24 +2919,27 @@ function editMemorySegment(index, field, value) {
 
 async function hydrateMemory() {
   const requestId = ++memoryHydrationSequence;
+  const viewId = memoryViewRequestSequence;
+  const selection = state.memory.selectedId;
+  const isCurrent = () => requestId === memoryHydrationSequence && viewId === memoryViewRequestSequence;
   state.memory = { ...state.memory, loading: true, error: null };
   if (state.view === "memory") renderMemory();
   try {
     const data = await api("/desktop/api/memory");
-    if (requestId !== memoryHydrationSequence) return false;
+    if (!isCurrent()) return false;
     const memories = data.memories || [];
-    const selectedId = memories.some(item => item.memory_id === state.memory.selectedId)
+    const selectedId = state.memory.selectedId !== selection || memories.some(item => item.memory_id === selection)
       ? state.memory.selectedId
       : null;
     state.memory = { ...state.memory, memories, selectedId };
     return true;
   } catch (error) {
-    if (requestId === memoryHydrationSequence) state.memory = { ...state.memory, error: error.message };
+    if (isCurrent()) state.memory = { ...state.memory, error: error.message };
     return false;
   } finally {
     if (requestId === memoryHydrationSequence) {
       state.memory.loading = false;
-      if (state.view === "memory") renderMemory();
+      if (isCurrent() && state.view === "memory") renderMemory();
     }
   }
 }
@@ -2945,15 +2950,11 @@ async function openMemoryView() {
   state.memory.strategyAuthoring = null;
   if (state.view === "focus") persistFocusState();
   cancelPendingViewRequests();
-  const requestId = memoryViewRequestSequence;
   state.inspector.open = false;
   state.memory = { ...state.memory, strategyImport: null, composing: false, selectedId: state.memory.selectedId, sessions: [], activeSessionId: null, enabledMessages: [], selectedMessageIds: [], activeMessageId: null, collectedSources: [], draft: null };
   state.view = "memory";
   render();
   await hydrateMemory();
-  if (requestId !== memoryViewRequestSequence) return;
-  state.view = "memory";
-  render();
 }
 
 function memorySessionCandidates() {
@@ -3169,17 +3170,28 @@ function memorySourcesForApi(collectedSources, activeSessionId) {
 
 // 重新压缩：按当前压缩语义（完整/分段）调用后端生成草稿，填充目标区。
 async function recompressMemory() {
-  const draft = (state.memory.draft || {});
+  const draft = state.memory.draft;
+  if (state.view !== "memory" || !state.memory.composing || !draft) return;
   const sources = state.memory.collectedSources || [];
   const mode = draft.contentMode || "complete";
   const payloadSources = memorySourcesForApi(sources, state.memory.activeSessionId);
   if (!payloadSources.length) { setStatus("请先添加至少一个记忆来源", true); return; }
+  const requestId = ++memoryCompressionRequestSequence;
+  const viewId = memoryViewRequestSequence;
+  const { selectedId, category, activeSessionId } = state.memory;
+  // 输入处理器以新对象保存草稿/来源；任何后续编辑都会使本次快照失效。
+  const isCurrent = () => requestId === memoryCompressionRequestSequence
+    && viewId === memoryViewRequestSequence && state.view === "memory"
+    && state.memory.composing && state.memory.draft === draft
+    && state.memory.collectedSources === sources && state.memory.selectedId === selectedId
+    && state.memory.category === category && state.memory.activeSessionId === activeSessionId;
   try {
     const result = await api("/desktop/api/memory/summarize", { method: "POST", body: JSON.stringify({ selection: { sources: payloadSources }, mode }) });
+    if (!isCurrent()) return;
     const segments = result.segments || [];
     state.memory = { ...state.memory, draft: { ...draft, content: result.content || "", segments, contentMode: mode, contentDirty: false } };
     render();
-  } catch (error) { setStatus(error.message, true); }
+  } catch (error) { if (isCurrent()) setStatus(error.message, true); }
 }
 
 // 后端 MemorySource 仅接受的字段（前端展示字段 contextTitle/count/text 不发送）。
@@ -7230,6 +7242,7 @@ async function handleDocumentClick(event) {
   if (action === "export-conversation") return exportConversation();
   if (action === "show-patrol") {
     if (state.view === "focus") persistFocusState();
+    cancelPendingViewRequests();
     workspacePatrolPicker?.dispose();
     workspacePatrolPicker = null;
     if (button.hasAttribute("data-patrol-switch")) patrolWorkspaceBeforePick = state.patrolWorkspace || patrolWorkspaceBeforePick;
@@ -8378,6 +8391,7 @@ bindShellResizers();
 restoreZoomLevel();
 
 async function openPatrolWorkbench(target) {
+  cancelPendingViewRequests();
   const navigation = ++workspacePatrolNavigation;
   const workspace = target.workspaceId ? await workspacePatrolIntake.workspace(target.workspaceId) : state.patrolWorkspace;
   if (navigation !== workspacePatrolNavigation) return;
