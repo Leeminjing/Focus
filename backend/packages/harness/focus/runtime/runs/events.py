@@ -92,6 +92,9 @@ def serialize_message(message: BaseMessage) -> dict[str, Any]:
         result["compression"] = _display_compression(compression)
     if message.additional_kwargs and message.additional_kwargs.get("curation_synthetic"):
         result["curation_synthetic"] = True
+    reference = message.additional_kwargs.get("message_reference") if message.additional_kwargs else None
+    if reference:
+        result["additional_kwargs"] = {"message_reference": reference}
     return result
 
 

@@ -242,7 +242,7 @@ test("navigation during preparation retains a recoverable branch without hijacki
 });
 
 test("historical retries retain structured quote provenance while editing only the original prose", async () => {
-  const reference = { task_id: 'ancestor', message_id: 'answer', text: 'quoted answer', start_offset: 0, end_offset: 13 };
+  const reference = { task_id: 'ancestor', message_id: 'answer', text: 'quoted answer', start: 0, end: 13, offset_basis: 'rendered_text_utf16' };
   const question = { role: 'human', id: 'quoted-q', content: 'follow up\n\n<focus_message_reference>\n' + JSON.stringify(reference) + '\n</focus_message_reference>', additional_kwargs: { message_reference: reference } };
   assert.equal(retry.editableText(question), 'follow up');
   assert.equal(retry.replayContent(question), 'follow up');
