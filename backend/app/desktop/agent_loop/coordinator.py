@@ -630,6 +630,7 @@ class LoopCoordinatorRuntime:
         fact_projector: SupervisedQueuePort | None = None,
         task_progress=None,
         run_manager=None,
+        workspace_cleanup=None,
     ) -> None:
         self._coordinator = coordinator
         self._run_events = run_events
@@ -644,6 +645,7 @@ class LoopCoordinatorRuntime:
         self._fact_projector = fact_projector
         self._task_progress = task_progress
         self._run_manager = run_manager
+        self._workspace_cleanup = workspace_cleanup
         self._poll_seconds = poll_seconds
         self._max_concurrent_loops = max(1, max_concurrent_loops)
         self._supervisor: LoopSupervisor | None = None
@@ -712,6 +714,8 @@ class LoopCoordinatorRuntime:
             components.append(SupervisorComponent("compression_resolutions", self._compression_resolutions.drain, self._poll_seconds))
         if self._maintenance is not None:
             components.append(SupervisorComponent("maintenance", self._maintenance.maintain_rounds, self._poll_seconds))
+        if self._workspace_cleanup is not None:
+            components.append(SupervisorComponent("workspace_cleanup", self._workspace_cleanup.drain, 60.0))
         self._supervisor = LoopSupervisor("agent-loop-admission", components)
         await self._supervisor.start()
         if self._notifications is not None:

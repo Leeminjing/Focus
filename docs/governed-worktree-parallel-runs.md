@@ -8,6 +8,16 @@ ContextRunPool 按 Run 数量预留全局/每 Loop 剩余容量，并允许当�
 
 已有或未采用成果保留；采用沿用 Kernel、目标 revision/fingerprint 和 Git patch check/apply。未新增调度表、计划 schema、action、依赖图引擎或外部依赖。
 
+## 隔离工作树自动回收（2026-10-18）
+
+Gateway 为 Loop admission supervisor 接入独立 `workspace_cleanup` 组件，启动恢复后立即检查，以后每 60 秒复查；没有 running Loop 时仍执行，暂停或终态 Loop 不依赖自己的执行 supervisor 来清理。该组件随现有 `supervisor_scheduling` 运行开关启停，升级检查模式不启动。采用后台扫描，避免在 Run 结算、结果采用或 Loop 终态事务中删除目录，也能处理保留期限到期和启动后的补偿清理。
+
+默认保留 24 小时，从最新 Run 结算、成功采用或 Loop 终态时间计算，持久保存 `retention_until`，尊重已有更晚的期限。`LoopWorkspaceCleanup` 的 `retention` 构造参数可供部署组合调整，目前没有新增设置界面。保留期间目录仍计入现有 worktree 配额。候选限于受管 Git 隔离 slot：已结算且无变更或变更已采用；尚未绑定 Run 的预创建目录必须等待所属 Loop 终态。未采用、冲突、证据缺失、未结算 Run、活动租约、Shell 清理未确认和采用恢复预留均阻止默认删除；清理前重新核对完整文件 fingerprint，额外编辑也保留。
+
+清理统一调用 `WorkspaceSlotLifecycle.cleanup(..., force=False)`，只允许删除全局受管根 `loop-workspaces/<workspace_id>` 内的目录。slot 行锁覆盖物理删除与墓碑登记，防止并发清理、租约和采用竞态；重复调用不会重删 deleted identity。失败保留 slot 和错误，下次扫描重试；取消等待已开始的操作和数据库提交完成。硬退出后目录已不存在的重试仍可补齐墓碑。领域证据与执行锚点继续保留。
+
+回归入口：`backend/tests/test_workspace_slot_cleanup.py`（真实 Git/PostgreSQL）与 `backend/tests/test_loop_supervisor.py`（无活动 Loop 时仍维护）。
+
 ## 采用崩溃恢复（2026-10-17）
 
 采用分为两个提交阶段。第一阶段锁定 source/target slot，核对 revision、fingerprint 和活动租约，生成 binary patch，并在临时文件树上用目标仓库的 HEAD、index 和配置预演。随后独立提交 `workspace_adoptions.application_intent`：协议版本、补丁字节（base64）、SHA-256、两个根路径、来源 fingerprint、目标前态和预期后态 fingerprint。迁移 `f36d7e8f9012` 为旧记录填入空对象，不猜测历史文件效果。预演临时复制完整工作树（包括 ignored/untracked 文件），因此需要相应临时磁盘空间；不复制 Git 对象库。
