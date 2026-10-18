@@ -67,3 +67,31 @@ def test_route_passes_reference_to_execution_and_rejects_cross_task():
     with pytest.raises(HTTPException) as caught:
         asyncio.run(start_main_run("different", body, request, "key"))
     assert caught.value.status_code == 422
+
+
+def test_current_run_delivery_projects_reference_and_keeps_context_provenance(monkeypatch):
+    from backend.app.desktop import conversation_input_delivery as delivery
+
+    routing = SimpleNamespace(task_id="task", run_id="active")
+    monkeypatch.setattr(delivery, "security_context_of", lambda context: SimpleNamespace(routing=routing))
+    middleware = delivery.ConversationInputDelivery(None, None)
+
+    async def pending(_routing):
+        return [SimpleNamespace(input_id="input", payload={"message": "why?", "message_reference": reference()})]
+
+    middleware.pending = pending
+    result = asyncio.run(middleware.abefore_model({"messages": []}, SimpleNamespace(context=None)))
+    message = result["messages"][0]
+    assert message.additional_kwargs["message_reference"] == reference()
+    assert message.additional_kwargs["focus_context"]["source_refs"][0]["run_id"] == "active"
+    assert "<focus_message_reference>" in message.content
+
+
+def test_conversation_inputs_reject_cross_task_reference_before_admission():
+    from backend.app.desktop.conversation_inputs import ConversationInputCreate, ConversationInputs
+
+    inputs = ConversationInputs(SimpleNamespace(session_factory=None))
+    body = ConversationInputCreate(mode="queue", run=MainRunCreate(message="why?", message_reference=reference()))
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(inputs.submit("different", body, "request"))
+    assert caught.value.status_code == 422

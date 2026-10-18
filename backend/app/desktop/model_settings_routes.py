@@ -68,17 +68,53 @@ async def put_model_settings(body: dict, request: Request) -> dict:
         raise HTTPException(
             422, {"code": "model_settings_invalid", "errors": exc.errors}
         ) from exc
+    verification = await _verify_settings(service, body.get("verification_id"))
+    return {**snapshot, "verification": verification}
+
+
+@model_settings_router.get("/models/verification")
+async def get_model_verification(request: Request, verification_id: str) -> dict:
+    """只返回当前请求的脱敏进度，避免旧验证覆盖新一轮界面。"""
+    verification = getattr(_service(request), "model_verification", None)
+    return {"verification": verification if verification and verification.get("verification_id") == verification_id else None}
+
+
+@model_settings_router.post("/models/verify")
+@model_client_scope()
+async def post_model_verification(body: dict, request: Request) -> dict:
+    """重新验证已保存的配置，不重新写入配置或凭据。"""
+    service = _service(request)
+    snapshot = settings_snapshot(service.app_config)
+    verification = await _verify_settings(service, body.get("verification_id"))
+    return {**snapshot, "verification": verification}
+
+
+async def _verify_settings(service, verification_id) -> dict:
     from backend.app.desktop.model_verification import verify_model_setup
 
-    # 验证只消费本次保存后的配置快照；等待期间其它保存不会改写本次检查的输入。
+    if not isinstance(verification_id, str) or len(verification_id) > 100:
+        verification_id = None
+    # 检查使用独立快照；只有最新一轮可以发布进度。
     config = service.app_config.model_copy(deep=True)
     revision = getattr(service, "model_settings_revision", 0) + 1
     service.model_settings_revision = revision
-    service.model_verification = None
-    verification = await verify_model_setup(config)
-    if service.model_settings_revision == revision:
-        service.model_verification = verification
-    return {**snapshot, "verification": verification}
+
+    def publish(progress):
+        if service.model_settings_revision == revision:
+            service.model_verification = {**progress, "verification_id": verification_id}
+
+    publish({"status": "running", "ok": False, "checks": []})
+    try:
+        verification = await verify_model_setup(config, on_progress=publish)
+    except BaseException:
+        previous = getattr(service, "model_verification", {}) or {}
+        publish({"status": "interrupted", "ok": False, "reason": "验证未完成，请重新验证", "checks": [
+            {**check, "status": "interrupted"} if check.get("status") in {"pending", "running"} else check
+            for check in previous.get("checks", [])
+        ]})
+        raise
+    publish(verification)
+    return {**verification, "verification_id": verification_id}
 
 
 @model_settings_router.post("/models/references")

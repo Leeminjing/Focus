@@ -20,6 +20,7 @@ import uuid
 from fastapi import APIRouter, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from backend.app.desktop.session_patrol.contracts import SourcePreviewRequest
+from backend.app.desktop.conversation_inputs import ConversationInputCreate
 
 from backend.app.desktop.models import (
     BatchDeleteRequest,
@@ -355,6 +356,25 @@ async def start_main_run(
     )
     request.app.state.desktop_service.notify_run_dispatch()
     return prepared.payload
+
+
+@desktop_router.post("/tasks/{task_id}/main/inputs")
+async def submit_conversation_input(task_id: str, body: "ConversationInputCreate", request: Request,
+    idempotency_header: str = Header(alias="Idempotency-Key", min_length=1, max_length=160)) -> dict:
+    service = request.app.state.desktop_service
+    accepted = await service.conversation_inputs.submit(task_id, body, idempotency_header)
+    service.notify_run_dispatch()
+    return accepted
+
+
+@desktop_router.delete("/tasks/{task_id}/main/inputs/{input_id}")
+async def withdraw_conversation_input(task_id: str, input_id: str, request: Request) -> dict:
+    return await request.app.state.desktop_service.conversation_inputs.withdraw(task_id, input_id)
+
+
+@desktop_router.get("/tasks/{task_id}/main/inputs")
+async def list_conversation_inputs(task_id: str, request: Request) -> list[dict]:
+    return await request.app.state.desktop_service.conversation_inputs.list(task_id)
 
 
 @desktop_router.post("/drafts/{draft_id}/preview")

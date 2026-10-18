@@ -167,6 +167,15 @@ null 表示本轮不授予执行权限，有执行动作的目标必须明确授
 省略、降权、新 Mission 或新的 Context 权限清单都不会隐式取消旧轮；明确取消与保留旧工作、新执行、输入处置可在同一 decision 中提交。
 隔离 workspace 结果不会自动进入主工作区；仅在证据充分且授权包含 adoption 时提交 adopt_workspace_result。
 每次只采用一个已验证结果，后继 observation 重新核对目标 revision 和冲突；待本阶段模块结果逐个采用后，再让集成任务读取权威目录验收。
+workspace.adoptions[].repair_context 只为可证明尚未写入、目标变化可追溯到已采用成果的代码冲突提供。
+常规代码重叠在已有授权内用 continue_context.workspace_repair={"adoption_id":精确身份,"phase":"repair"}
+安排隔离修复，message 说明必须保留的双方行为；系统提供共同基线、当前目标、待采用补丁和双方任务意图。
+修复后用独立 Context 的 continue_context.workspace_repair={"adoption_id":原身份,"phase":"review","slot_id":修复slot,"revision":当前revision}
+安排只读验证和审查，context_permissions 必须为 read-only。检查测试证据与审查结论，阻断未解决时继续处理，
+只有两者通过才对新修复 slot 提交现有 adopt_workspace_result；Kernel 会重新核验修复/审查 Run、授权、目标和实际变更。
+修复和审查必须各自独立提交且没有活动 Run。旧冲突成果保留；同一冲突只自动尝试一次修复。
+target_version_changed 先重新观察；user_changes、execution_uncertain、缺少 repair_context 或涉及产品意图取舍时，
+不得让模型自动改权威文件；保留现场并解释缺少的证据或请求用户决定。
 例如：基础/接口验证 → 独立模块 A、B 的 worktree Run → 逐个采用 A、B → 集成验收；这只是依赖允许时的示例，不是固定阶段表。
 当 observation.expansion_assessment.level 为 required 时，必须给出派生、策略允许的 decline_expansion 或 wait_for_user 三者之一。
 required 只要求满足上述合同，不要求本轮选择全部 opportunity；只选择当前阶段可安全推进的子集，其余留待后续观察。

@@ -149,6 +149,10 @@ class LoopWorkerRuntime:
         self._derivation_artifacts = SemanticDerivationArtifactRepository()
         self._concurrency = max(1, concurrency)
         self._tasks: dict[str, asyncio.Task] = {}
+        self._wake = lambda: None
+
+    def bind_wakeup(self, wake) -> None:
+        self._wake = wake
 
     async def drain(self, loop_id: str | None = None) -> int:
         self._reap()
@@ -158,6 +162,7 @@ class LoopWorkerRuntime:
                 self._run_one(request),
                 name=f"loop-curator:{request.loop_id}:{request.worker_request_id}",
             )
+            self._tasks[request.retry_identity].add_done_callback(lambda _task: self._wake())
         return len(requests)
 
     async def close(self) -> None:

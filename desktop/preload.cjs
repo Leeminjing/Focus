@@ -24,6 +24,24 @@ function mainRequestCall(operation, key, value) {
   if (!result || !("value" in result)) throw new Error("普通任务恢复仓库不可用");
   return result.value;
 }
+function preferenceCall(operation, key, value) {
+  const result = ipcRenderer.sendSync(`focus:preferences-${operation}`, key, value);
+  if (result?.error) throw new Error(result.error);
+  if (!result || !("value" in result)) throw new Error("桌面偏好仓库不可用");
+  return result.value;
+}
+function readPreference(key) {
+  const saved = preferenceCall("getItem", key);
+  if (saved !== null) return saved;
+  // 只迁移当前来源可见的旧值，固定仓库中的已存值始终优先。
+  let legacy = null;
+  try { legacy = window.localStorage?.getItem(key) ?? null; } catch {}
+  if (legacy !== null) {
+    preferenceCall("setItem", key, legacy);
+    try { window.localStorage.removeItem(key); } catch {}
+  }
+  return legacy;
+}
 async function recoveryWrite(operation, value) {
   const result = await ipcRenderer.invoke(`focus:patrol-recovery-${operation}`, value);
   if (result?.error) throw new Error(result.error);
@@ -34,6 +52,16 @@ window.addEventListener("DOMContentLoaded", () => {
 }, { once: true });
 
 contextBridge.exposeInMainWorld("focusDesktop", {
+  gateway: {
+    status: () => ipcRenderer.invoke("focus:gateway-status"),
+    reconnect: () => ipcRenderer.invoke("focus:gateway-reconnect"),
+    restart: () => ipcRenderer.invoke("focus:gateway-restart"),
+    onStatus: callback => subscribe("focus:gateway-status", callback),
+  },
+  preferences: {
+    getItem: key => readPreference(key),
+    setItem: (key, value) => preferenceCall("setItem", key, value),
+  },
   mainRequestStorage: {
     getItem: key => mainRequestCall("getItem", key),
     setItem: (key, value) => mainRequestCall("setItem", key, value),
@@ -99,6 +127,7 @@ contextBridge.exposeInMainWorld("focusDesktop", {
     resizePanel: size => ipcRenderer.invoke("focus:patrol-resize-panel", size),
     hideRobot: () => ipcRenderer.invoke("focus:patrol-hide-robot"),
     openWorkbench: target => ipcRenderer.invoke("focus:patrol-workbench", target),
+    completeModelSetup: () => ipcRenderer.invoke("focus:patrol-complete-model-setup"),
     receive: content => ipcRenderer.invoke("focus:patrol-receive", content),
     move: position => ipcRenderer.invoke("focus:patrol-move", position),
     setState: state => ipcRenderer.invoke("focus:patrol-state", state),

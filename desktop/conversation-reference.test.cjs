@@ -86,6 +86,34 @@ test("a failed delivery retains its exact quote and idempotency key on retry", a
   assert.equal(h.evaluate('referenceDrafts.get("A").text'), "next");
 });
 
+for (const mode of ["steer", "queue"]) test(`${mode} delivery preserves its nested reference on retry and queue editing`, async () => {
+  const h = setup();
+  h.evaluate(`state.details.get("A").active_run = {run_id:"active",status:"running"};
+    const base = api;
+    api = async (path, options) => {
+      const accepted = await base(path, options);
+      const body = JSON.parse(options.body);
+      return {input_id:"queued",mode:body.mode,status:body.mode === "queue" ? "queued" : "accepted",run:body.run};
+    }; fail = true;`);
+  await h.evaluate(`sendMain(false, "${mode}")`);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.evaluate('mainReference("A")'))), quote());
+  assert.deepEqual(JSON.parse(h.context.requests[0].body).run.message_reference, quote());
+  h.evaluate("fail = false");
+  await h.evaluate("sendMain(true)");
+  assert.deepEqual(h.context.requests[0], h.context.requests[1]);
+  assert.equal(h.evaluate('referenceDrafts.get("A")'), null);
+  if (mode === "queue") {
+    h.context.savedRun = JSON.parse(h.context.requests[0].body).run;
+    h.evaluate('api = async () => ({input_id:"queued",run:savedRun}); persistUiState = async () => {};');
+    await h.evaluate('withdrawQueuedMain("queued", true)');
+    assert.deepEqual(JSON.parse(JSON.stringify(h.evaluate('mainReference("A")'))), quote());
+    h.evaluate('setMainReference(null); api = async () => { throw new Error("offline"); };');
+    await h.evaluate('sendMain(false, "queue")');
+    const frozen = h.evaluate('taskRunOperations.recovery("A")');
+    assert.equal(JSON.parse(frozen.body).run.message_reference, undefined);
+  }
+});
+
 test("switching task during delivery never clears another task's reference", async () => {
   const h = setup();
   h.evaluate("hold = true");

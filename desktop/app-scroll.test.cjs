@@ -4,12 +4,12 @@
  */
 const assert = require("node:assert/strict");
 const vm = require("node:vm");
-const { createAppHarness, readAppSource } = require("./test-helper.cjs");
+const { createAppHarness, readAppSource, createNode } = require("./test-helper.cjs");
 
 let conversation;
 let nextScrollHeight = 1000;
 
-const app = { dataset: {} };
+const app = createNode();
 Object.defineProperty(app, "innerHTML", {
   set() {
     let scrollTop = 0;
