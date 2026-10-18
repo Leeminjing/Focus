@@ -85,7 +85,7 @@
           ...current,
           submission: { request_id: requestId, status: "accepted", controller: null },
           admission: run?.intent_kind === "direct_message" ? clone(run) : null,
-          active_run: run?.run_id && run.intent_kind !== "direct_message" ? clone(run) : current.active_run,
+          active_run: run?.run_id && !run.input_id && run.intent_kind !== "direct_message" ? clone(run) : current.active_run,
           error: null,
         });
         return true;
