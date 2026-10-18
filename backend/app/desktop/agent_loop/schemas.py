@@ -62,12 +62,28 @@ _ATTACHMENT_INPUT_DESCRIPTION = (
 )
 
 
+class WorkspaceRepairSelection(StrictModel):
+    adoption_id: str = Field(min_length=1, max_length=32)
+    phase: Literal["repair", "review"]
+    slot_id: str | None = None
+    revision: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def require_review_identity(self):
+        if (self.phase == "review") != (self.slot_id is not None and self.revision is not None):
+            raise ValueError("review 必须引用精确修复 slot/revision，repair 不接受 slot")
+        if self.phase == "repair" and (self.slot_id is not None or self.revision is not None):
+            raise ValueError("repair slot 由服务端分配")
+        return self
+
+
 class ContinueContextAction(StrictModel):
     action: Literal["continue_context"]
     context_id: str
     context_revision_id: str
     message: str = Field(min_length=1)
     required_barrier: bool = True
+    workspace_repair: WorkspaceRepairSelection | None = None
     attachment_input_ids: tuple[str, ...] = Field(default=(), max_length=32, description=_ATTACHMENT_INPUT_DESCRIPTION)
 
 

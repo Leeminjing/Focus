@@ -121,6 +121,9 @@ class RoundConsequenceReader:
         observed_adoptions = {row.adoption_id for row in adoptions}
         identities["workspace_adoptions"] = tuple(sorted(adoption_ids - observed_adoptions | {
             row.adoption_id for row in adoptions if row.status in {"pending", "adopting"}}))
+        repairable = {row.action_id for row in actions if row.result.get("repair_available") is True}
         identities["failed_adoptions"] = tuple(sorted(row.adoption_id for row in adoptions
-            if row.status in {"conflict", "waiting_user", "rejected"}))
+            if row.status in {"conflict", "waiting_user", "rejected"}
+            and not (row.adoption_id in repairable and not row.application_intent
+                     and (row.evidence or {}).get("repair_context") and row.conflict.get("kind") == "code_overlap")))
         return tuple(kind for kind in ("failed_publications", "failed_adoptions") if identities[kind])

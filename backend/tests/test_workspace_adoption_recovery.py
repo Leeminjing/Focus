@@ -162,6 +162,7 @@ def test_recovery_preserves_unknown_state_as_conflict(isolated_postgres_database
             before = WorkspaceFingerprinter().capture(target).digest
             result = await WorkspaceAdopter(sessions).recover(request.adoption_id)
             assert result.status == "conflict"
+            assert result.conflict["kind"] == "execution_uncertain"
             assert result.resulting_target_revision is None
             assert WorkspaceFingerprinter().capture(target).digest == before
             with pytest.raises(WorkspaceLeaseConflict, match="采用意图"):
@@ -199,7 +200,7 @@ def test_exit_after_database_commit_is_idempotent(isolated_postgres_database, tm
             request, source, target = await _seed(sessions, tmp_path)
             await _crash(request, target, "after_commit")
             result = await WorkspaceAdopter(sessions).adopt(request, GitWorkspaceResultApplier())
-            assert result.status == "adopted"
+            assert result.status == "adopted", result.conflict
             assert result.resulting_target_revision == 2
             async with sessions() as session:
                 assert (await session.get(WorkspaceSlot, request.target_slot_id)).revision == 2

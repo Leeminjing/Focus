@@ -130,8 +130,9 @@ def test_git_workspace_result_rejects_changed_authoritative_target(tmp_path: Pat
             current_fingerprint=WorkspaceFingerprinter().capture(target).digest,
         )
         (target / "tracked.txt").write_text("user edit\n", encoding="utf-8")
-        with pytest.raises(WorkspaceAdoptionConflict, match="权威 workspace fingerprint 已变化"):
+        with pytest.raises(WorkspaceAdoptionConflict, match="权威 workspace fingerprint 已变化") as caught:
             await GitWorkspaceResultApplier()(source, destination)
+        assert caught.value.kind == "user_changes"
         assert (target / "tracked.txt").read_text(encoding="utf-8") == "user edit\n"
 
     asyncio.run(run())
