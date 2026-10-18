@@ -83,6 +83,31 @@ test("returning to a task creates the right editor and restores only its draft",
   assert.match(h.app.querySelector("#mainInput").textContent, /B 的草稿/);
 });
 
+for (const composing of [false, true]) {
+  test(`first task details update load status and ${composing ? "preserve an unfinished composition" : "restore the saved draft"} in the mounted editor`, async () => {
+    const h = fixture();
+    h.evaluate(`state.details.delete('b'); ensurePluginAssets = async () => {};
+      var releaseDetail;
+      api = path => path === '/desktop/api/tasks/b'
+        ? new Promise(resolve => { releaseDetail = resolve; })
+        : Promise.resolve(path.endsWith('/skills') ? {skills:[]} : []);
+      var loadingDetails = hydrateActive('b');`);
+    assert.match(h.app.querySelector('#taskDetailLoadStatus').textContent, /加载中/);
+    let selections = 0;
+    h.input.setSelectionRange = () => { selections++; };
+    h.document.activeElement = h.input;
+    if (composing) h.dispatch('compositionstart', { target: h.input });
+    await withConnectedInput(h, async () => {
+      h.evaluate(`releaseDetail({messages:[], ui_state:{input:'服务端草稿'}})`);
+      await h.evaluate('loadingDetails');
+    });
+    assert.equal(h.input.value, composing ? '' : '服务端草稿');
+    assert.equal(h.app.querySelector('#taskDetailLoadStatus').textContent, '');
+    assert.equal(h.app.querySelector('#mainSkillLoadStatus').textContent, '');
+    assert.equal(selections, 0, 'updating a mounted editor never resets the IME selection');
+  });
+}
+
 // Observe writes to any ancestor, not just final node identity. Removing a live
 // ancestor ends a browser's editing session even if the same node is reattached.
 async function withConnectedInput(h, action) {

@@ -328,7 +328,8 @@ let contextPointerDrag = null;
 let contextUndoTimer = null;
 let agentDetailsRequestSequence = 0;
 let taskSwitchSequence = 0;
-const taskDetailRequestIds = new Map();
+// 各资源独立提交；导航复用在途请求，事务刷新仍以最新请求为准。
+const taskResourceLoads = new Map();
 let compressionRequestSequence = 0;
 let draftOpenRequestSequence = 0;
 let pluginHydrationSequence = 0;
@@ -772,8 +773,8 @@ function activeTask() {
 
 function replaceTasks(tasks) {
   state.tasks = Array.isArray(tasks) ? tasks : [];
-  for (const taskId of [...taskDetailRequestIds.keys()]) {
-    if (!state.tasks.some(task => task.task_id === taskId)) taskDetailRequestIds.delete(taskId);
+  for (const taskId of taskResourceLoads.keys()) {
+    if (!state.tasks.some(task => task.task_id === taskId)) taskResourceLoads.delete(taskId);
   }
   const selected = state.tasks.find(task =>
     task.task_id === state.activeTaskId && sessionLifecycle(task) === "active"
@@ -822,20 +823,91 @@ async function bootstrap() {
   return true;
 }
 
-async function hydrateActive(taskId = state.activeTaskId) {
-  if (!taskId) return;
-  const requestId = (taskDetailRequestIds.get(taskId) || 0) + 1;
-  taskDetailRequestIds.set(taskId, requestId);
-  const [detail, materials, agents, catalog, materialGroups, materialHistory] = await Promise.all([
-    api(`/desktop/api/tasks/${taskId}`),
-    api(`/desktop/api/tasks/${taskId}/materials`),
-    api(`/desktop/api/tasks/${taskId}/agents`),
-    api(`/desktop/api/tasks/${taskId}/skills`),
-    api(`/desktop/api/tasks/${taskId}/material-groups`),
-    api(`/desktop/api/tasks/${taskId}/material-history`),
-  ]);
-  if (taskDetailRequestIds.get(taskId) !== requestId) return;
-  state.details.set(taskId, detail);
+const TASK_RESOURCES = {
+  detail: { suffix: "", label: "任务消息与运行状态", store: "details" },
+  materials: { suffix: "/materials", label: "材料", store: "materials" },
+  agents: { suffix: "/agents", label: "Agents", store: "agents" },
+  skills: { suffix: "/skills", label: "Skills", store: "skillCatalogs" },
+  groups: { suffix: "/material-groups", label: "材料分组", store: "materialGroups" },
+  history: { suffix: "/material-history", label: "材料历史", store: "materialHistory" },
+};
+
+function renderTaskResourceStatus(taskId, resources) {
+  const loads = taskResourceLoads.get(taskId);
+  return resources.map(resource => {
+    const load = loads?.[resource];
+    const source = TASK_RESOURCES[resource];
+    if (load?.status === "loading") return `<p class="muted tiny" role="status">${source.label}${state[source.store].has(taskId) ? "正在刷新" : "加载中"}…</p>`;
+    if (load?.status !== "error") return "";
+    return `<p class="ui-notice is-warning" role="status"><span>${source.label}加载失败：${escapeHtml(load.error)}</span><button type="button" data-action="retry-task-resource" data-task-id="${escapeHtml(taskId)}" data-resource="${resource}">重试</button></p>`;
+  }).join("");
+}
+
+function refreshTaskResourceView(taskId, resource) {
+  if (state.activeTaskId !== taskId || state.view !== "focus") return;
+  const load = taskResourceLoads.get(taskId)?.[resource];
+  if (resource === "detail") {
+    if (load?.status === "loaded") render();
+    else {
+      const status = document.querySelector("#taskDetailLoadStatus");
+      if (status) status.innerHTML = renderTaskResourceStatus(taskId, ["detail"]);
+    }
+  } else if (resource === "skills") {
+    const status = document.querySelector("#mainSkillLoadStatus");
+    if (status) status.innerHTML = renderTaskResourceStatus(taskId, ["skills"]);
+    const input = document.querySelector('#mainInput');
+    if (input && document.activeElement === input) updateSkillMenu(input);
+  } else {
+    if (resource === "agents") updatePatrolAvatarLayer(taskId);
+    if (resource === "materials" && load?.status === "loaded") refreshComposerAttachments(taskId);
+    if (resource === "history" && load?.status === "loaded") refreshConversation(activeTask());
+    if (state.inspector.tab === (resource === "agents" ? "agents" : "materials")) renderInspector();
+  }
+}
+
+function hydrateTaskResource(taskId, resource, { reusePending = false } = {}) {
+  const source = TASK_RESOURCES[resource];
+  if (!taskId || !Object.hasOwn(TASK_RESOURCES, resource)) return Promise.resolve();
+  let loads = taskResourceLoads.get(taskId);
+  if (!loads) taskResourceLoads.set(taskId, loads = {});
+  if (reusePending && loads[resource]?.status === "loading") return loads[resource].promise;
+  const load = { status: "loading", error: "", promise: null };
+  loads[resource] = load;
+  load.promise = (async () => {
+    let result;
+    try { result = await api(`/desktop/api/tasks/${taskId}${source.suffix}`); }
+    catch (error) {
+      if (taskResourceLoads.get(taskId)?.[resource] !== load) return;
+      load.status = "error";
+      load.error = error.message;
+      refreshTaskResourceView(taskId, resource);
+      return;
+    }
+    if (taskResourceLoads.get(taskId)?.[resource] !== load) return;
+    state[source.store].set(taskId, resource === "skills" ? result.skills : result);
+    load.status = "loaded";
+    if (resource === "detail") applyTaskDetail(taskId, result);
+    if (resource === "agents") (result || []).forEach(agent => {
+      if (["pending", "running"].includes(agent.latest_run?.status)) listenToRun(agent.latest_run);
+    });
+    refreshTaskResourceView(taskId, resource);
+    return result;
+  })().finally(() => { load.promise = null; });
+  refreshTaskResourceView(taskId, resource);
+  return load.promise;
+}
+
+function hydrateActive(taskId = state.activeTaskId, options = {}) {
+  if (!taskId) return Promise.resolve();
+  const detail = hydrateTaskResource(taskId, "detail", options);
+  for (const resource of ["materials", "agents", "skills", "groups", "history"]) {
+    void hydrateTaskResource(taskId, resource, options);
+  }
+  // 调用方只等待主体；附属资源自行更新对应区域和重试状态。
+  return detail;
+}
+
+function applyTaskDetail(taskId, detail) {
   const mainRecovery = taskRunOperations?.recovery(taskId);
   if (mainRecovery) {
     if (!mainRecovery.editing || !detail.ui_state?.input) detail.ui_state = { ...(detail.ui_state || {}), input: mainRecovery.input };
@@ -844,11 +916,6 @@ async function hydrateActive(taskId = state.activeTaskId) {
       state.mainRecoveryRestored.set(taskId, mainRecovery.request_id);
     }
   }
-  state.materials.set(taskId, materials);
-  state.agents.set(taskId, agents);
-  state.skillCatalogs.set(taskId, catalog.skills);
-  state.materialGroups.set(taskId, materialGroups);
-  state.materialHistory.set(taskId, materialHistory);
   if (state.activeTaskId === taskId && ["focus", "compress"].includes(state.view)) {
     reconcileCommitmentRecovery(detail);
     reconcileCompressionRecovery(detail);
@@ -857,9 +924,6 @@ async function hydrateActive(taskId = state.activeTaskId) {
   if (detail.active_run?.status === "pending" || detail.active_run?.status === "running") {
     listenToRun(detail.active_run);
   }
-  agents.forEach(agent => {
-    if (["pending", "running"].includes(agent.latest_run?.status)) listenToRun(agent.latest_run);
-  });
   updatePatrolAvatarLayer(taskId);
   if (state.view === "focus" && state.activeTaskId === taskId) {
     void ensurePluginAssets();
@@ -1473,7 +1537,11 @@ function materialGroupingProjection(task) {
     detail.ui_state?.collapsed_material_groups || [],
     materialSelection(task.task_id)
   );
-  detail.ui_state = { ...(detail.ui_state || {}), material_grouping_mode: mode, collapsed_material_groups: projection.collapsedKeys };
+  const loads = taskResourceLoads.get(task.task_id);
+  const groupingReady = state.materials.has(task.task_id) && state.materialGroups.has(task.task_id)
+    && loads?.materials?.status !== "loading" && loads?.groups?.status !== "loading";
+  detail.ui_state = { ...(detail.ui_state || {}), material_grouping_mode: mode,
+    collapsed_material_groups: groupingReady ? projection.collapsedKeys : (detail.ui_state?.collapsed_material_groups || []) };
   return { ...projection, mode };
 }
 
@@ -1515,6 +1583,7 @@ function renderInspector() {
     const materials = state.materials.get(task.task_id) || [];
     const protectedCount = materials.filter(item => item.retention === "irreplaceable").length;
     inspectorContent.innerHTML = `<section class="inspector-section materials-inspector"><header><div><span class="workspace-kicker">TASK SOURCES</span><h3>任务材料</h3></div><span class="ui-badge">${materials.length}</span></header><p class="inspector-description">每轮选择与长期策略互不覆盖；手动分组始终优先于自动分组。</p>${protectedCount ? `<div class="ui-notice is-success"><strong>${protectedCount} 份材料受版本保护</strong><span>不可遗失材料可置空或从历史版本恢复，但不会直接删除。</span></div>` : ""}<div class="inspector-list">${materials.length || (state.materialGroups.get(task.task_id) || []).length ? renderMaterialGroups(task) : '<section class="ui-empty-state"><h1>暂无材料</h1><p>从 Composer 添加文件后，可在这里配置阅读和保留策略。</p></section>'}</div></section>`;
+    inspectorContent.insertAdjacentHTML("afterbegin", renderTaskResourceStatus(task.task_id, ["materials", "groups", "history"]));
     return;
   }
   if (tab === "agents") {
@@ -1527,6 +1596,7 @@ function renderInspector() {
       const presented = presentRunStatus(status);
       const curator = agent?.mode === "context_curator";
       inspectorContent.innerHTML = `<section class="inspector-section agent-inspector-detail">
+        ${renderTaskResourceStatus(task.task_id, ["agents"])}
         <header><button class="text-button" type="button" data-action="agent-list"><span class="ui-icon is-sm icon-chevron-left" aria-hidden="true"></span>Agents</button><span class="ui-badge is-${presented.tone}">${escapeHtml(curator ? curatorStateLabel(agent) : presented.label)}</span></header>
         <div><h3>${agent ? `小兵 ${escapeHtml(agent.agent_id.slice(0, 8))}` : "Agent"}</h3><p class="ui-meta">${escapeHtml(agent?.checkpoint_ns || "")}</p></div>
         ${curator
@@ -1542,7 +1612,7 @@ function renderInspector() {
       });
       return;
     }
-    inspectorContent.innerHTML = `<section class="inspector-section"><header><h3>协作 Agents</h3><span class="ui-badge">${agents.length}</span></header><div class="inspector-list">${agents.length ? renderAgentStrip(task.task_id) : '<p class="muted">尚未投放小兵</p>'}</div></section>`;
+    inspectorContent.innerHTML = `${renderTaskResourceStatus(task.task_id, ["agents"])}<section class="inspector-section"><header><h3>协作 Agents</h3><span class="ui-badge">${agents.length}</span></header><div class="inspector-list">${agents.length ? renderAgentStrip(task.task_id) : '<p class="muted">尚未投放小兵</p>'}</div></section>`;
 
     return;
   }
@@ -1613,6 +1683,7 @@ function renderSkillPicker(kind, textarea, highlight = false) {
     <div class="skill-tags" aria-label="Selected skills">${tags}</div>
     ${inputNode}
     <div class="skill-menu" id="${listId}" role="listbox" aria-label="Skills" hidden></div>
+    ${kind === "main" ? `<div id="mainSkillLoadStatus">${renderTaskResourceStatus(state.activeTaskId, ["skills"])}</div>` : ""}
   </div>`;
 }
 
@@ -1893,7 +1964,8 @@ function patchFocusChrome(markup) {
   const next = template.content;
   for (const selector of [".task-page-heading", ".task-workspace-list", ".task-workspace-tools",
     ".composer-context", "#composerAttachments", ".composer-actions", "#composerFeedback",
-    "#mainSubmissionRecovery", '[data-skill-picker="main"] .skill-tags']) {
+    "#mainSubmissionRecovery", "#taskDetailLoadStatus", "#mainSkillLoadStatus",
+    '[data-skill-picker="main"] .skill-tags']) {
     const current = app.querySelector(selector);
     const replacement = next.querySelector(selector);
     if (current && replacement && current.outerHTML !== replacement.outerHTML) current.replaceWith(replacement);
@@ -1928,6 +2000,12 @@ function renderFocus(task = activeTask()) {
   const admission = taskRunOperations?.get(task.task_id)?.admission;
   const mainRecovery = taskRunOperations?.recovery(task.task_id);
   if (appInspector.parentElement !== document.querySelector(".app-shell")) document.querySelector(".app-shell").append(appInspector);
+  const previousInput = document.querySelector("#mainInput");
+  const inputFocused = previousInput && document.activeElement === previousInput;
+  const sameTask = app.dataset.taskId === task.task_id;
+  const inputSelection = inputFocused && sameTask
+    ? { start: previousInput.selectionStart, end: previousInput.selectionEnd, direction: previousInput.selectionDirection }
+    : null;
   const detail = state.details.get(task.task_id) || { messages: [] };
   const composerInput = composerDraft.value(task.task_id, mainRecovery && !mainRecovery.editing ? mainRecovery.input : detail.ui_state?.input || mainRecovery?.input || "");
   const projectionStatus = detail.context?.projection_status || "root";
@@ -1965,6 +2043,7 @@ function renderFocus(task = activeTask()) {
         <div class="conversation" id="conversation"></div>
         <div class="patrol-avatar-layer" id="patrolAvatarLayer" aria-label="会话 Patrol 小兵"${detail.ui_state?.show_session_patrol === false ? " hidden" : ""}></div>
         <div class="focus-bottom">
+          <div id="taskDetailLoadStatus">${renderTaskResourceStatus(task.task_id, ["detail"])}</div>
           <div class="composer-shell glass-surface">
             <div class="composer-context"><span class="ui-badge is-active">${isAssembly ? uiText("focus.free_session", "自由会话") : uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
             <div class="composer">
@@ -1979,7 +2058,12 @@ function renderFocus(task = activeTask()) {
       </section>
       ${panelOpen ? `<aside class="file-panel" id="filePanel"><div class="panel-resizer" id="panelResizer" title="拖拽调整面板宽度"></div><div class="file-panel-inner"></div></aside>` : ""}
     </section></section>`;
-  if (keepEditor) patchFocusChrome(markup);
+  if (keepEditor) {
+    patchFocusChrome(markup);
+    // 首次详情可以填入已保存的草稿；真实编辑（包括尚未产生 input 的组字）始终优先。
+    if (!composingMainInputs.has(previousInput) && composerDraft.value(task.task_id, null) === null
+        && previousInput.value === "" && composerInput) previousInput.value = composerInput;
+  }
   else app.innerHTML = markup;
   app.querySelector(".task-workspace-layout").append(appInspector);
   app.dataset.taskId = task.task_id;
@@ -2003,6 +2087,10 @@ function renderFocus(task = activeTask()) {
   if (sendButton && taskRunOperations?.recovery(task.task_id)?.editing === false) sendButton.disabled = false;
   updateMainRecoveryControls();
   updateAtHighlight(mainInput);
+  if (!keepEditor && inputFocused && mainInput && !mainInput.disabled) {
+    mainInput.focus({ preventScroll: true });
+    if (inputSelection) mainInput.setSelectionRange(inputSelection.start, inputSelection.end, inputSelection.direction);
+  }
   conversation.scrollTop = previousConversation
     ? (wasPinned ? conversation.scrollHeight : previousScrollTop)
     : (detail.ui_state?.scrollTop ?? conversation.scrollHeight);
@@ -2421,11 +2509,18 @@ function replaceConversation(task, messages, snapshotRunId) {
   const detail = state.details.get(task.task_id) || {};
   detail.messages = messages;
   state.details.set(task.task_id, detail);
+  refreshConversation(task);
+}
+
+function refreshConversation(task) {
+  if (!task) return;
+  const detail = state.details.get(task.task_id);
+  if (!detail) return;
   if (state.view !== "focus" || state.activeTaskId !== task.task_id) return;
   const conversation = document.querySelector("#conversation");
   if (!conversation) return;
   conversationView.trackScroll(conversation);
-  reconcileConversationMarkup(conversation, renderConversation(detail, task));
+  reconcileConversationMarkup(conversation, `${renderConversation(detail, task)}${renderMustViewRecovery(detail)}`);
   restoreCommitmentPanels(conversation);
   restoreAccessReviewPanels(conversation);
   materialContentLoader.bindAll(conversation);
@@ -4644,15 +4739,15 @@ function renderComposerAttachments(taskId) {
   const materials = new Map((state.materials.get(taskId) || []).map(item => [item.material_id, item]));
   const cards = uploads.filter(entry => entry.status !== "ready").map(entry => ({ entry }));
   for (const binding of materialSelection(taskId).bindings) {
-    cards.push({ material: materials.get(binding.materialId), entry: uploads.find(entry => entry.materialId === binding.materialId) });
+    cards.push({ materialId: binding.materialId, material: materials.get(binding.materialId), entry: uploads.find(entry => entry.materialId === binding.materialId) });
   }
   if (!cards.length) return "";
-  return `<span class="composer-attachments-label">本次附件 · ${cards.length}</span><div class="composer-attachment-list">${cards.map(({ entry, material }) => {
+  return `<span class="composer-attachments-label">本次附件 · ${cards.length}</span><div class="composer-attachment-list">${cards.map(({ entry, material, materialId }) => {
     const name = material?.relative_path || entry?.file?.name || "附件";
-    const status = material ? "ready" : entry.status;
+    const status = material ? "ready" : entry?.status || "preparing";
     const label = status === "ready" ? "已就绪" : status === "failed" ? "失败" : "准备中";
     const image = entry?.previewUrl ? `<img src="${escapeHtml(entry.previewUrl)}" alt="">` : material?.is_image ? materialImageMarkup(material.material_id, "", "", null) : '<span class="ui-icon icon-file-text" aria-hidden="true"></span>';
-    return `<article class="composer-attachment is-${status}" data-composer-task="${escapeHtml(taskId)}"${entry ? ` data-composer-upload="${entry.id}"` : ""}${material ? ` data-composer-material="${escapeHtml(material.material_id)}"` : ""}>
+    return `<article class="composer-attachment is-${status}" data-composer-task="${escapeHtml(taskId)}"${entry ? ` data-composer-upload="${entry.id}"` : ""}${materialId ? ` data-composer-material="${escapeHtml(materialId)}"` : ""}>
       <button type="button" class="composer-attachment-preview" data-action="composer-preview-attachment" aria-label="预览 ${escapeHtml(name)}"${!material && !entry?.previewUrl ? " disabled" : ""}>${image}</button>
       <span class="composer-attachment-info"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><small role="status">${label}${entry?.error ? `：${escapeHtml(entry.error)}` : ""}</small></span>
       ${status === "failed" ? '<button type="button" class="text-button" data-action="composer-retry-attachment">重试</button>' : ""}
@@ -4751,6 +4846,10 @@ function consumeMainAttachments(taskId, outgoing, entries) {
 function materialSelection(taskId = state.activeTaskId) {
   if (!state.materialSelections.has(taskId)) {
     state.materialSelections.set(taskId, runMaterialPicker.empty());
+  }
+  // 未加载/刷新失败不等于材料已删除，恢复中的附件与必看标记须等权威列表就绪再清理。
+  if (!state.materials.has(taskId) || ["loading", "error"].includes(taskResourceLoads.get(taskId)?.materials?.status)) {
+    return state.materialSelections.get(taskId);
   }
   const materials = state.materials.get(taskId) || [];
   const normalized = runMaterialPicker.normalizeSelection(
@@ -6728,11 +6827,10 @@ async function switchTask(taskId) {
   state.activeTaskId = taskId;
   state.view = "focus";
   render();
-  await hydrateActive(taskId);
-  if (requestId !== taskSwitchSequence || state.activeTaskId !== taskId) return;
+  await hydrateActive(taskId, { reusePending: true });
+  if (requestId !== taskSwitchSequence || state.activeTaskId !== taskId || state.view !== "focus") return;
   const projectionStatus = state.details.get(taskId)?.context?.projection_status || "root";
   if (!["root", "valid", "repaired", "approved"].includes(projectionStatus)) return reopenContextDecision(taskId);
-  render();
 }
 
 async function goFocusHome() {
@@ -6750,8 +6848,7 @@ async function goFocusHome() {
   state.inspector.tab = "materials";
   state.view = "focus";
   render();
-  await hydrateActive(taskId);
-  if (state.activeTaskId === taskId && state.view === "focus") render();
+  await hydrateActive(taskId, { reusePending: true });
 }
 
 // === 会话生命周期：归档 / 恢复 / 删除 + 设置面板 ===
@@ -7636,6 +7733,10 @@ async function handleDocumentClick(event) {
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const action = button.dataset.action;
+  if (action === "retry-task-resource") {
+    if (button.dataset.taskId !== state.activeTaskId || state.view !== "focus") return;
+    return hydrateTaskResource(button.dataset.taskId, button.dataset.resource, { reusePending: true });
+  }
   if (action === "open-file-panel") return openFileCard(button);
   if (action === "copy-answer") return copyMessageText(button, button.dataset.copyText);
   if (action === "copy-code") return copyMessageText(button, button.closest(".message-code-block")?.querySelector("pre > code")?.textContent);
