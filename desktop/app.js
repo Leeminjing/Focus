@@ -6774,6 +6774,8 @@ const modelSettings = {
   dirty: false,
   saving: false,
   setupChecked: false,
+  onboarding: false,
+  loading: null,
 };
 
 const MODEL_NUMERIC_FIELDS = ["context_window", "curation_max_output_tokens"];
@@ -6887,10 +6889,17 @@ function renderModelSettings() {
   const snapshot = modelSettings.snapshot;
   if (!snapshot) {
     host.innerHTML = `<p class="muted tiny settings-model-empty">${escapeHtml(modelSettings.error || "")}</p>`;
+    if (modelSettings.onboarding) host.innerHTML += `<button class="primary" data-action="model-setup-retry">${uiText("settings.model_setup_retry", "重新读取模型配置")}</button>`;
     return;
   }
 
   const banners = [];
+  if (modelSettings.onboarding) {
+    banners.push(`<p role="status" class="settings-model-banner">${uiText("settings.model_setup_steps", "首次使用：配置模型 → 验证可用 → 选择项目文件夹 → 输入第一个目标。保存并验证通过后，将自动返回桌面机器人。")}</p>`);
+    if (!snapshot.setup_required && snapshot.verification?.ok === true && !modelSettings.dirty && !modelSettings.saving) {
+      banners.push(`<button class="primary" data-action="model-setup-continue">${uiText("settings.model_setup_continue", "继续：选择项目文件夹")}</button>`);
+    }
+  }
   if (snapshot.setup_required) {
     banners.push(`<p class="settings-model-banner is-warn">${escapeHtml(uiText("settings.model_setup_help", "首次使用或模型配置需要修复。请填写真实 API Key，核对地址、模型名称与协议；保存后将验证普通调用和策展输出。"))}</p>`);
     banners.push(`<ul class="settings-model-errors">${Object.values(snapshot.setup_issues || {}).map(message => `<li>${escapeHtml(message)}</li>`).join("")}</ul>`);
@@ -6944,24 +6953,45 @@ function renderModelSettings() {
 
 async function loadModelSettings({ force = false } = {}) {
   if (modelSettings.snapshot && !force) return modelSettings.snapshot;
-  const snapshot = await api("/desktop/api/settings/models");
-  modelSettings.snapshot = snapshot;
-  modelSettings.error = null;
-  modelSettings.errors = {};
-  return snapshot;
+  if (!modelSettings.loading) {
+    modelSettings.loading = api("/desktop/api/settings/models").then(snapshot => {
+      modelSettings.snapshot = snapshot;
+      modelSettings.error = null;
+      modelSettings.errors = {};
+      return snapshot;
+    }).finally(() => { modelSettings.loading = null; });
+  }
+  return modelSettings.loading;
 }
 
-async function ensureModelSetup() {
-  if (modelSettings.setupChecked) return;
-  const snapshot = await loadModelSettings({ force: true });
+async function ensureModelSetup({ onboarding = false } = {}) {
+  if (onboarding) {
+    modelSettings.onboarding = true;
+    selectSettingsTab("models");
+    renderModelSettings();
+    void openSettings();
+  }
+  if (modelSettings.setupChecked && !onboarding) return;
+  let snapshot;
+  try { snapshot = await loadModelSettings({ force: !modelSettings.setupChecked && !modelSettings.draft }); }
+  catch (error) { modelSettings.error = error.message; renderModelSettings(); throw error; }
   modelSettings.setupChecked = true;
-  if (!snapshot.setup_required) return;
+  if (!snapshot.setup_required && !modelSettings.onboarding) return;
   selectSettingsTab("models");
   // 不等待归档会话或沙箱检查，让模型修复入口立即可见。
   void openSettings();
   const index = snapshot.models.findIndex(entry => !entry.api_key_set || entry.default);
-  if (index >= 0) startModelDraft(index);
+  if (index >= 0 && !modelSettings.draft) startModelDraft(index);
   else renderModelSettings();
+}
+
+async function finishDesktopModelSetup() {
+  if (!modelSettings.onboarding || modelSettings.dirty || modelSettings.snapshot?.setup_required
+      || modelSettings.snapshot?.verification?.ok !== true) return;
+  if (await desktopPatrol?.completeModelSetup()) {
+    modelSettings.onboarding = false;
+    void window.FocusSurfaceTransition.visible(settingsDialog, false, { modal: true });
+  }
 }
 
 function startModelDraft(index, isNew = false) {
@@ -7079,6 +7109,7 @@ async function saveModelSettings() {
     if (snapshot.verification) {
       setStatus(uiText("settings.model_verified", "设置已保存。{reason}", { reason: snapshot.verification.reason }), !snapshot.verification.ok);
     } else setStatus(uiText("settings.model_saved", "已保存并立即生效"));
+    await finishDesktopModelSetup();
   } catch (error) {
     if (error.silent) return;
     if (error.status === 422 && error.detail?.errors) modelSettings.errors = error.detail.errors;
@@ -7588,6 +7619,8 @@ async function handleDocumentClick(event) {
   if (action === "model-reset") return runUiAction(restoreShippedModels);
   if (action === "model-cancel") return runUiAction(cancelModelDraft);
   if (action === "model-save") return runUiAction(saveModelSettings);
+  if (action === "model-setup-continue") return runUiAction(finishDesktopModelSetup);
+  if (action === "model-setup-retry") return runUiAction(() => ensureModelSetup({ onboarding: true }));
   if (action === "model-test") return runUiAction(testModelConnection);
   if (action === "set-language") {
     interfaceI18n.setLocale(button.dataset.locale);
@@ -7834,7 +7867,10 @@ document.addEventListener("input", event => {
   }
   if (event.target.matches("[data-model-field]")) updateModelField(event.target);
   // 密钥输入只进内存、不回填：任何响应都不携带凭据值
-  if (event.target.matches("[data-model-credential]")) modelSettings.credentialValue = event.target.value;
+  if (event.target.matches("[data-model-credential]")) {
+    modelSettings.credentialValue = event.target.value;
+    modelSettings.dirty = true;
+  }
 });
 
 // 主输入框滚动时同步 @命令高亮 backdrop（textarea 的 scroll 不冒泡，用捕获监听）。
@@ -8500,6 +8536,7 @@ bindShellResizers();
 restoreZoomLevel();
 
 async function openPatrolWorkbench(target) {
+  if (target.setupModels) return ensureModelSetup({ onboarding: true });
   cancelPendingViewRequests();
   const navigation = ++workspacePatrolNavigation;
   const workspace = target.workspaceId ? await workspacePatrolIntake.workspace(target.workspaceId) : state.patrolWorkspace;

@@ -99,6 +99,7 @@ contextBridge.exposeInMainWorld("focusDesktop", {
     resizePanel: size => ipcRenderer.invoke("focus:patrol-resize-panel", size),
     hideRobot: () => ipcRenderer.invoke("focus:patrol-hide-robot"),
     openWorkbench: target => ipcRenderer.invoke("focus:patrol-workbench", target),
+    completeModelSetup: () => ipcRenderer.invoke("focus:patrol-complete-model-setup"),
     receive: content => ipcRenderer.invoke("focus:patrol-receive", content),
     move: position => ipcRenderer.invoke("focus:patrol-move", position),
     setState: state => ipcRenderer.invoke("focus:patrol-state", state),
