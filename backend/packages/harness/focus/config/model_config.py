@@ -22,6 +22,8 @@ class ModelConfig(BaseModel):
     provider: Literal["openai", "deepseek"] | None = None
     protocol: Literal["responses", "chat_completions"] | None = None
     context_window: int | None = None
+    reasoning_efforts: list[Literal["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]] = Field(default_factory=list)
+    """模型条目明确支持的思考强度；空列表不开放会话级覆盖。"""
     curation_output_method: Literal["json_schema", "json_mode", "prompt_json"] | None = None
     curation_max_output_tokens: int = Field(default=8192, ge=512, le=65536)
     derivation_max_output_tokens: dict[

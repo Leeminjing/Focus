@@ -347,6 +347,7 @@ async def start_main_run(
     message_id = uuid.uuid5(uuid.NAMESPACE_URL, f"focus:direct-user-message:{request_identity}").hex
     prepared = await request.app.state.desktop_service.start_main_run(
         task_id=task_id, message=body.message, model_name=body.model_name,
+        reasoning_effort=body.reasoning_effort,
         message_reference=body.message_reference.model_dump() if body.message_reference else None,
         permissions=body.permissions, skills=body.skills, spatial_focus=body.spatial_focus,
         memory_ids=body.memory_ids,

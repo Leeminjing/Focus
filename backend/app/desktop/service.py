@@ -566,9 +566,14 @@ class DesktopService:
             skills = sorted(name for name, cfg in raw.get("skills", {}).items() if cfg.get("enabled"))
         except (OSError, json.JSONDecodeError):
             skills = []
+        try:
+            default_model_name = self.app_config.resolve_default_model_name()
+        except ValueError:
+            default_model_name = None
         return {
 
             "models": catalog_snapshot(self.app_config),
+            "default_model_name": default_model_name,
             "skills": skills,
             "permissions": ["read", "write", "host_command"],
             "tools": await self._equipment_tools() if include_tools else [],
@@ -820,6 +825,10 @@ class DesktopService:
         snapshot = await self.contexts.live_conversation(task_id)
         payload["messages"] = snapshot["messages"]
         payload["context"] = await self.contexts.get(task_id)
+        payload["context_usage"] = {
+            "estimated_tokens": estimate_tokens(_MAIN_SYSTEM_PROMPT, snapshot["messages"], ""),
+            "basis": "execution_messages_and_base_prompt",
+        }
         return payload
 
     async def _memory_context_messages(self, context_id: str) -> list[dict[str, Any]]:
@@ -839,12 +848,15 @@ class DesktopService:
         from dataclasses import asdict
 
         from focus.mcp.cache import get_mcp_tools_cached
+        from focus.tools.registry import reload_tool_registry
 
         async with self.session_factory() as session:
             _, workspace = await self._get_task_entities(session, task_id)
+        custom_tools = reload_tool_registry().tools()
         tools = await get_mcp_tools_cached(workspace.path, force_refresh=True)
         return {
             "skills": await self.list_task_skills(task_id),
+            "custom_tool_count": len(custom_tools),
             "mcp_tool_count": len(tools),
             "failed_servers": list(getattr(tools, "failed_servers", ())),
             "mcp_failures": [asdict(failure) for failure in getattr(tools, "failures", ())],
@@ -1248,6 +1260,7 @@ class DesktopService:
         execution_slot_id: str | None = None,
         admit_only: bool = False,
         message_reference: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> PreparedRun:
         identity = run_identity or {}
         if identity.get("directive_id") and (not identity.get("loop_id") or not execution_slot_id):
@@ -1368,8 +1381,13 @@ class DesktopService:
             )
             if run_materials.images.attached and not self._model_supports_image_input(model_name):
                 raise HTTPException(422, "当前执行模型未声明支持图像输入")
+            model = self._require_model(model_name)
+            model_name = model.name
+            if reasoning_effort is not None and reasoning_effort not in model.reasoning_efforts:
+                raise HTTPException(422, "当前模型不支持所选思考强度，请重新选择")
             equipment = {
                 "model_name": model_name,
+                **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
                 "skills": list(dict.fromkeys(skills)),
                 "skill_snapshots": snapshots,
                 "permissions": permissions,
@@ -2275,6 +2293,7 @@ class DesktopService:
                 )
             return await make_lead_agent(
                 model_name=model_name,
+                **({"reasoning_effort": equipment["reasoning_effort"]} if equipment.get("reasoning_effort") is not None else {}),
                 tools=tools,
                 system_prompt=base_prompt,
                 middlewares=middlewares,
@@ -3078,6 +3097,7 @@ class DesktopService:
             **self._task_summary(task, workspace, active, latest),
             "ui_state": ui_state,
             "active_run": self._run_payload(active) if active else None,
+            "latest_main_run": self._run_payload(latest) if latest else None,
             "latest_direct_user_run": self._run_payload(latest_direct_user) if latest_direct_user else None,
             "conversation_inputs": await self.conversation_inputs.list(task.task_id),
             "pending_commitment_review": (

@@ -178,6 +178,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             TaskProgressRuntime,
         )
         app.state.agent_loop_task_progress = TaskProgressRuntime(sessions, app_config)
+        from backend.app.desktop.agent_loop.workspace_cleanup import LoopWorkspaceCleanup
+
         app.state.agent_loop_runtime = LoopCoordinatorRuntime(
             app.state.agent_loop_coordinator,
             app.state.agent_loop_run_events,
@@ -192,6 +194,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             fact_projector=app.state.agent_loop_fact_projector,
             task_progress=app.state.agent_loop_task_progress,
             run_manager=service.run_manager,
+            workspace_cleanup=LoopWorkspaceCleanup(sessions),
         )
         app.state.agent_loop_completion = CompletionEvidenceService(sessions)
         app.state.session_key = os.getenv("FOCUS_DESKTOP_SESSION", "focus-dev-session")

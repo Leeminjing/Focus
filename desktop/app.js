@@ -1712,6 +1712,30 @@ function renderRunCausality(run) {
   </section>`;
 }
 
+function sessionUsageRun(taskId) {
+  const detail = state.details.get(taskId);
+  const task = state.tasks.find(item => item.task_id === taskId);
+  return detail?.active_run || task?.active_run || detail?.latest_main_run || detail?.latest_direct_user_run || task?.latest_run;
+}
+
+function renderSessionControls(taskId) {
+  const task = state.tasks.find(item => item.task_id === taskId);
+  if (task?.loop || state.details.get(taskId)?.context?.managed_status) return "";
+  return window.FocusSessionControls.render(state.equipment, state.details.get(taskId), sessionUsageRun(taskId), escapeHtml);
+}
+
+function refreshSessionControls() {
+  const current = document.querySelector("#sessionControls");
+  if (!current) return;
+  const template = document.createElement("template");
+  template.innerHTML = renderSessionControls(state.activeTaskId);
+  const next = template.content.firstElementChild;
+  next.querySelector("details").open = current.querySelector("details")?.open || false;
+  const focusId = current.contains(document.activeElement) ? document.activeElement.id : null;
+  current.replaceWith(next);
+  if (["sessionModel", "sessionReasoning"].includes(focusId)) next.querySelector(`#${focusId}`)?.focus({ preventScroll: true });
+}
+
 function renderInspector() {
   if (!appInspector?.setAttribute || !inspectorContent) return;
   const open = state.inspector.open && state.view !== "patrol" && !(state.view === "focus" && state.filesPanel);
@@ -1774,9 +1798,10 @@ function renderInspector() {
 
     return;
   }
-  const run = task.active_run || task.latest_run;
+  const run = sessionUsageRun(task.task_id);
   const presented = presentTaskStatus(task);
   inspectorContent.innerHTML = `<section class="inspector-section"><header><h3>主 Agent</h3><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></header><dl class="inspector-run-meta"><div><dt>任务</dt><dd>${escapeHtml(task.title)}</dd></div><div><dt>运行 ID</dt><dd>${escapeHtml(run?.run_id || "—")}</dd></div></dl>${state.commitment.stage ? `<section class="inspector-run-stage"><span class="workspace-kicker">COMMITMENT</span><strong>${state.commitment.stage}/9 · ${escapeHtml(COMMITMENT_STAGE_NAMES[state.commitment.stage] || "准备中")}</strong><span>${state.commitment.review ? "等待人工确认" : state.commitment.terminalStatus ? presentRunStatus(state.commitment.terminalStatus).label : "正在执行"}</span></section>` : ""}${renderInterruptButton(state.details.get(task.task_id))}</section>`;
+  inspectorContent.insertAdjacentHTML("beforeend", window.FocusSessionControls.usage(state.equipment, run, escapeHtml));
   inspectorContent.insertAdjacentHTML("beforeend", renderRunCausality(run));
 }
 
@@ -2149,7 +2174,7 @@ function renderTaskRail(task) {
 }
 
 function capabilityRefreshSummary(result) {
-  return `已刷新 ${result.skills.length} 个技能、${result.mcp_tool_count} 个 MCP 工具`;
+  return `已刷新 ${result.skills.length} 个技能、${result.mcp_tool_count} 个 MCP 工具、${result.custom_tool_count ?? 0} 个自定义工具`;
 }
 
 function mcpFailureDescription(item) {
@@ -2175,7 +2200,7 @@ function renderAssemblyTarget(task) {
     id: state.patrolWorkspace.workspace_id, name: state.patrolWorkspace.display_name, path: state.patrolWorkspace.path,
   });
   if (target.scope === "workspace") workspaces.set(target.workspace_id, { id: target.workspace_id, name: task.workspace_name, path: target.path });
-  return `<div class="assembly-target"><label>装配范围 <select data-assembly-target aria-label="装配范围"><option value=""${target.scope === "global" ? " selected" : ""}>全局 · 所有工作区</option>${[...workspaces.values()].map(item => `<option value="${escapeHtml(item.id)}"${target.workspace_id === item.id ? " selected" : ""}>仅 ${escapeHtml(item.name || item.path)}</option>`).join("")}</select></label><button type="button" data-action="pick-assembly-workspace">选择其他工作区</button><button type="button" data-action="refresh-capabilities">刷新技能 / 重试 MCP</button><small title="${escapeHtml(target.path || "")}">${escapeHtml(target.path || "~/.focus")}</small>${renderCapabilityRefreshResult(task.task_id)}</div>`;
+  return `<div class="assembly-target"><label>装配范围 <select data-assembly-target aria-label="装配范围"><option value=""${target.scope === "global" ? " selected" : ""}>全局 · 所有工作区</option>${[...workspaces.values()].map(item => `<option value="${escapeHtml(item.id)}"${target.workspace_id === item.id ? " selected" : ""}>仅 ${escapeHtml(item.name || item.path)}</option>`).join("")}</select></label><button type="button" data-action="pick-assembly-workspace">选择其他工作区</button><button type="button" data-action="refresh-capabilities" title="刷新所选范围的技能和 MCP，并重载全局自定义工具；下次运行生效，正在运行的 Run 保持原快照">刷新技能 / 自定义工具 / 重试 MCP</button><small title="${escapeHtml(target.path || "")}">${escapeHtml(target.path || "~/.focus")}</small>${renderCapabilityRefreshResult(task.task_id)}</div>`;
 }
 
 async function showAssembly(workspaceId = "") {
@@ -2192,11 +2217,20 @@ function patchFocusChrome(markup) {
   template.innerHTML = markup;
   const next = template.content;
   for (const selector of [".task-page-heading", ".task-workspace-list", ".task-workspace-tools",
-    ".composer-context", "#composerReference", "#composerAttachments", "#composerFileReferences", ".composer-actions", "#composerFeedback",
+    ".composer-context", "#composerReference", "#composerAttachments", "#composerFileReferences", "#sessionControls", ".composer-actions", "#composerFeedback",
     "#mainSubmissionRecovery", "#conversationInputs", "#taskDetailLoadStatus", "#mainSkillLoadStatus",
     '[data-skill-picker="main"] .skill-tags']) {
     const current = app.querySelector(selector);
     const replacement = next.querySelector(selector);
+    if (selector === "#sessionControls" && !current && replacement) {
+      app.querySelector(".composer").insertBefore(replacement, app.querySelector(".composer-actions"));
+      continue;
+    }
+    if (selector === "#sessionControls" && current && !replacement) { current.remove(); continue; }
+    if (selector === "#sessionControls" && current && replacement) {
+      if (current.contains(document.activeElement)) continue;
+      replacement.querySelector("details").open = current.querySelector("details")?.open || false;
+    }
     if (current && replacement && current.outerHTML !== replacement.outerHTML) current.replaceWith(replacement);
   }
   const view = app.querySelector(".focus-view");
@@ -2277,12 +2311,13 @@ function renderFocus(task = activeTask()) {
           <div id="taskDetailLoadStatus">${renderTaskResourceStatus(task.task_id, ["detail"])}</div>
           <div class="composer-shell glass-surface">
             <div class="composer-context"><span class="ui-badge is-active">${isAssembly ? uiText("focus.free_session", "自由会话") : uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
-            <div class="composer">
+            <div class="composer" data-main-composer>
               <div id="composerReference">${conversationReference.render(mainReference(task.task_id))}</div>
               <div id="composerAttachments" class="composer-attachments" aria-label="本次消息附件">${renderComposerAttachments(task.task_id)}</div>
               <div id="composerFileReferences" class="composer-file-references" aria-label="本次问题引用的文件">${composerFiles.cards(fileReferences(task.task_id))}</div>
               ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，输入 @ 引用文件，或 / 选择技能…")}">${escapeHtml(composerInput)}</textarea>`, true)}
               <div id="composerFileMenu" class="composer-file-menu" role="listbox" aria-label="工作区文件" hidden></div>
+              ${renderSessionControls(task.task_id)}
               <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" multiple hidden></label>${renderInterruptButton(detail)}${mainDeliveryRun(task.task_id) ? `<button type="button" data-action="queue-main">排队下一轮</button>` : ""}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
             </div>
             <p id="composerFeedback" class="composer-feedback${feedback ? ` is-${feedback.kind}` : ""}" role="status"${feedback ? "" : " hidden"}>${feedback ? escapeHtml(feedback.text) : ""}</p>
@@ -5323,11 +5358,14 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
   const input = document.querySelector("#mainInput");
   const message = retry ? retry.message : input.value.trim();
   const submittedFileRefs = retry?.fileReferences || (retry ? [] : JSON.parse(JSON.stringify(fileReferences(taskId))));
-  if (!message && !submittedFileRefs.length) return;
+  let submittedSelection = retry ? null : JSON.parse(JSON.stringify(materialSelection(taskId)));
+  const attachments = retry ? [] : [...(state.composerAttachments.get(taskId)?.values() || [])]
+    .filter(entry => entry.status !== "ready");
+  if (!retry && !message && !submittedFileRefs.length && !submittedSelection.bindings.length && !attachments.length) return;
   if (!retry) composerDraft.claim(taskId, input.value);
   // f35 仅保留规范命令；旧 @压缩 输入按普通用户消息发送。
   const quickKeyword = keywordCommand.parse(message);
-  if (!retry && !submittedFileRefs.length && quickKeyword !== null && !mainReference(taskId)) {
+  if (!retry && !submittedFileRefs.length && !submittedSelection.bindings.length && !attachments.length && quickKeyword !== null && !mainReference(taskId)) {
     const keyword = quickKeyword;
     input.value = "";
     composerDraft.release(taskId);
@@ -5337,13 +5375,12 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
   const submittedInput = retry?.input ?? input.value;
   const frozenBody = retry ? JSON.parse(retry.body) : null;
   const submittedReference = retry ? (frozenBody.run || frozenBody).message_reference || null : mainReference(taskId);
-  let submittedSelection = retry ? null : JSON.parse(JSON.stringify(materialSelection(taskId)));
-  const attachments = retry ? [] : [...(state.composerAttachments.get(taskId)?.values() || [])]
-    .filter(entry => entry.status !== "ready");
   const queuedEdit = !retry && taskRunOperations?.recovery(taskId)?.queued_edit
     ? JSON.parse(taskRunOperations.recovery(taskId).body) : null;
   const requestOptions = retry ? null : {
     ...(queuedEdit || {}),
+    ...(!task.loop && !state.details.get(taskId)?.context?.managed_status
+      ? window.FocusSessionControls.request(state.equipment, state.details.get(taskId)?.ui_state) : {}),
     skills: selectedSkills("main"),
     ...accessMode.requestBody(accessModeOf("main")),
   };
@@ -5356,6 +5393,8 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
       return;
     }
   }
+  // 等待期间可能移除了最后一个附件；只使用本次冻结的正文与附件判断，不能发送空消息。
+  if (!retry && !message && !submittedFileRefs.length && !submittedSelection.bindings.length) return;
   if (!delivery && !retry && !submittedFileRefs.length && !submittedReference && !submittedSelection.bindings.length && spatialTarget?.focus.kind === "patrol"
       && typeof spatialTarget.view.sendFocusedMessage === "function") {
     try {
@@ -5380,6 +5419,7 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
   const original = retryBody?.run || retryBody;
   const outgoing = original ? { message: original.message, materialInputs: original.material_inputs, requiredImageIds: original.must_view_material_ids }
     : runMaterialPicker.buildOutgoing(state.materials.get(taskId) || [], composerFiles.compose(message, submittedFileRefs), submittedSelection);
+  if (!retry && !outgoing.message.trim() && !outgoing.materialInputs.length) return;
   const messagePayload = outgoing.message;
   let detail = state.details.get(taskId) || {};
   let confirmed = false;
@@ -7415,6 +7455,7 @@ function modelEntryPayload(entry) {
   const payload = {};
   fields.forEach(field => { payload[field] = entry[field] ?? null; });
   if (fields.includes("derivation_max_output_tokens")) payload.derivation_max_output_tokens = entry.derivation_max_output_tokens || {};
+  if (fields.includes("reasoning_efforts")) payload.reasoning_efforts = entry.reasoning_efforts || [];
   MODEL_FLAG_FIELDS.forEach(field => { payload[field] = Boolean(entry[field]); });
   return payload;
 }
@@ -7908,7 +7949,7 @@ async function saveModelSettings() {
     modelSettings.progress = null;
     modelSettings.credentialDrafts = {};
     modelSettings.dirty = false;
-    state.equipment = { ...state.equipment, models: snapshot.models };
+    state.equipment = { ...state.equipment, models: snapshot.models, default_model_name: snapshot.default_model_name };
     if (snapshot.verification) {
       setStatus(uiText("settings.model_verified", "设置已保存。{reason}", { reason: snapshot.verification.reason }), !snapshot.verification.ok);
     } else setStatus(uiText("settings.model_saved", "已保存并立即生效"));
@@ -8305,8 +8346,7 @@ async function handleDocumentClick(event) {
   if (action === "close-loop-revision") { state.loop.revisionSnapshot = null; return renderLoop(); }
   if (action === "open-inspector-tab") return openInspector(button.dataset.inspectorTab, button);
   if (action === "refresh-run-causality") {
-    const task = activeTask();
-    readRunCausality(task?.active_run || task?.latest_run, true);
+    readRunCausality(sessionUsageRun(state.activeTaskId), true);
     return renderInspector();
   }
   if (action === "close-inspector") return closeInspector();
@@ -9196,6 +9236,18 @@ document.addEventListener("input", event => {
   if (requestId) loopWaitDrafts?.set(requestId, serializeWaitDraft(form));
 });
 document.addEventListener("change", event => {
+  if (["sessionModel", "sessionReasoning"].includes(event.target.id)) {
+    const detail = state.details.get(state.activeTaskId);
+    if (!detail) return;
+    detail.ui_state ||= {};
+    if (event.target.id === "sessionModel") {
+      detail.ui_state.session_model_name = event.target.value || null;
+      detail.ui_state.session_reasoning_effort = null;
+    } else detail.ui_state.session_reasoning_effort = event.target.value || null;
+    refreshSessionControls();
+    void persistUiState();
+    return;
+  }
   if (event.target.matches("[data-model-service]")) return updateModelService(event.target.value);
   if (event.target.id === "newSessionAccessMode") {
     const select = event.target;
@@ -9305,6 +9357,43 @@ document.addEventListener("paste", event => {
   if (!state.activeTaskId) return setStatus("请先选择任务，再粘贴图片", true);
   const taskId = state.activeTaskId;
   const files = images.map(item => item.getAsFile()).filter(Boolean);
+  queueComposerAttachments(files, taskId);
+});
+
+function mainComposerDropTarget(event) {
+  const composer = event.target.closest?.("[data-main-composer]");
+  const input = document.querySelector("#mainInput");
+  return composer && input && !input.disabled ? composer : null;
+}
+
+document.addEventListener("dragover", event => {
+  const composer = event.target.closest?.("[data-main-composer]");
+  if (!composer || !Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+  event.preventDefault();
+  if (!mainComposerDropTarget(event)) {
+    event.dataTransfer.dropEffect = "none";
+    composer.classList.remove("is-file-dragover");
+    return;
+  }
+  event.dataTransfer.dropEffect = "copy";
+  composer.classList.add("is-file-dragover");
+});
+
+document.addEventListener("dragleave", event => {
+  const composer = event.target.closest?.("[data-main-composer]");
+  if (composer && !composer.contains(event.relatedTarget)) composer.classList.remove("is-file-dragover");
+});
+
+document.addEventListener("drop", event => {
+  const composer = event.target.closest?.("[data-main-composer]");
+  composer?.classList.remove("is-file-dragover");
+  if (!composer || !Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+  event.preventDefault();
+  if (!mainComposerDropTarget(event)) return;
+  const files = Array.from(event.dataTransfer.files || []);
+  if (!files.length) return;
+  const taskId = state.activeTaskId;
+  if (!taskId) return setStatus("请先选择任务，再添加材料", true);
   queueComposerAttachments(files, taskId);
 });
 

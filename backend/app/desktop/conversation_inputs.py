@@ -51,8 +51,6 @@ class ConversationInputCreate(StrictRequest):
 
     @model_validator(mode="after")
     def validate_steer(self):
-        if isinstance(self.run.message, str) and not self.run.message.strip():
-            raise ValueError("消息不能为空")
         if self.mode == "queue" and self.target_run_id is not None:
             raise ValueError("排队消息不绑定当前 Run")
         if self.mode == "steer":
@@ -187,6 +185,7 @@ class ConversationInputs:
                     prepared = await self.desktop.start_main_run(task_id=task_id, message=body.message,
                         message_reference=body.message_reference.model_dump() if body.message_reference else None,
                         model_name=body.model_name, permissions=body.permissions, skills=body.skills,
+                        reasoning_effort=body.reasoning_effort,
                         spatial_focus=body.spatial_focus, memory_ids=body.memory_ids, access_mode=body.access_mode,
                         material_inputs=[RunMaterialRequest(material_id=item.material_id, note=item.note)
                                          for item in body.material_inputs] if body.material_inputs is not None else None,

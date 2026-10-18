@@ -311,6 +311,10 @@
   overflow: visible;
   background: transparent;
 }
+.composer[data-main-composer].is-file-dragover {
+  outline: 2px dashed var(--accent-primary);
+  outline-offset: -2px;
+}
 .composer textarea {
   min-width: 0;
   min-height: 56px;

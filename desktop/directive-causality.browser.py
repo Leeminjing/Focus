@@ -43,7 +43,7 @@ with sync_playwright() as playwright:
         page.goto((DESKTOP / "index.html").as_uri())
         page.wait_for_load_state("networkidle")
         page.locator('[data-action="focus-home"]').click()
-        page.evaluate("activeTask().latest_run = {run_id:'run-1',status:'success'}")
+        page.evaluate("activeTask().latest_run = {run_id:'summary-run',status:'success'}; state.details.get(state.activeTaskId).latest_main_run = {run_id:'run-1',status:'success'}")
         page.locator('.composer-context [data-inspector-tab="run"]').click()
         panel = page.locator(".run-causality")
         expect(panel.get_by_text("测试失败，需要检查结果", exact=True)).to_be_visible()

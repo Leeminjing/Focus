@@ -72,6 +72,25 @@ test("file panel, feedback and skill changes preserve the editor", async () => {
   assert.equal(h.app.querySelector("#mainSkillList").hidden, true);
 });
 
+test("session model changes preserve IME and draft, clear old effort, and stay in their task", () => {
+  const h = fixture();
+  h.evaluate(`state.equipment = {default_model_name:'a', models:[
+    {name:'a',display_name:'A',reasoning_efforts:['high'],context_window:10000},
+    {name:'b',display_name:'B',reasoning_efforts:[],context_window:1000}]};
+    state.details.get('b').ui_state.session_reasoning_effort = 'high'; renderFocus();`);
+  h.type("正在输入中文", true);
+  const select = h.app.querySelector('#sessionModel');
+  select.id = 'sessionModel';
+  select.value = 'b';
+  h.dispatch('change', {target: select});
+  assert.equal(h.app.querySelector('#mainInput'), h.input);
+  assert.equal(h.input.value, '正在输入中文');
+  assert.equal(h.evaluate("state.details.get('b').ui_state.session_model_name"), 'b');
+  assert.equal(h.evaluate("state.details.get('b').ui_state.session_reasoning_effort"), null);
+  assert.equal(h.evaluate("state.details.get('a').ui_state.session_model_name"), undefined);
+  assert.equal(h.app.querySelector('#sessionReasoning'), null);
+});
+
 test("returning to a task creates the right editor and restores only its draft", () => {
   const h = fixture();
   h.type("B 的草稿");
@@ -81,6 +100,18 @@ test("returning to a task creates the right editor and restores only its draft",
   assert.equal(other.value, "");
   h.evaluate('state.activeTaskId = "b"; renderFocus()');
   assert.match(h.app.querySelector("#mainInput").textContent, /B 的草稿/);
+});
+
+test("session controls only mount for ordinary sessions and do not remount the editor", () => {
+  const h = fixture();
+  h.type('正在输入', true);
+  assert.ok(h.app.querySelector('#sessionControls'));
+  h.evaluate("state.tasks.find(task => task.task_id === 'b').loop = {loop_id:'loop'}; renderFocus()");
+  assert.equal(h.app.querySelector('#sessionControls'), null);
+  h.evaluate("delete state.tasks.find(task => task.task_id === 'b').loop; renderFocus()");
+  assert.ok(h.app.querySelector('#sessionControls'));
+  assert.equal(h.app.querySelector('#mainInput'), h.input);
+  assert.equal(h.input.value, '正在输入');
 });
 
 for (const composing of [false, true]) {
