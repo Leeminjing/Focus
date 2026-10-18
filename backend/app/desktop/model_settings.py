@@ -30,7 +30,7 @@
 具体工作流为（保存）:
     (1) 字段与目录级校验：未知字段、必填、条目名唯一、适配器在受支持集合内、端点 http/https、
         窗口与策展上限为正整数、恰好一个默认与一个策展默认、策展默认必须声明策展输出方式。
-    (2) 凭据可用性：每个条目的来源变量必须能在本次提交值或当前进程内取到。
+    (2) 凭据可用性：普通默认、策展默认及环境覆盖选中的模型必须具备凭据；其余可作为未配置模板保留。
     (3) 内存中构造一份校验通过的 AppConfig（待提交凭据就地代入）并装配自检——失败都不落盘。
     (4) 依次写入凭据文件、用户偏好层配置，最后就地把新对象应用到权威对象，使全部持有者立刻
         读到新值。删除名单由服务端从期望目录与文件层的差集推导，不依赖界面自报。
@@ -256,7 +256,7 @@ def settings_snapshot(app_config: AppConfig, config_name: str = CONFIG_FILE_NAME
     if default_error:
         issues["default"] = default_error
     for index, entry in enumerate(catalog):
-        if not entry["api_key_set"]:
+        if _requires_credential(entry, default_name) and not entry["api_key_set"]:
             issues[f"models[{index}].api_key"] = "请输入真实 API Key，当前密钥未设置或仍是占位值"
     return {
         "models": catalog,
@@ -385,10 +385,18 @@ def _is_http_url(value: str) -> bool:
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
+def _requires_credential(entry: dict, effective_default: str | None) -> bool:
+    """自动使用的模型必须就绪；目录中的其它条目允许稍后配置。"""
+    return bool(entry.get("default") or entry.get("curation_default")
+                or (effective_default and entry.get("name") == effective_default))
+
+
 def _validate_credentials(models: Sequence[dict], pending: dict[str, str]) -> None:
 
     errors: dict[str, str] = {}
     for index, entry in enumerate(models):
+        if not _requires_credential(entry, _default_model_override()):
+            continue
         variable = credential_variable(entry)
         if variable is None:
             if not _credential_ready(entry.get("api_key")):

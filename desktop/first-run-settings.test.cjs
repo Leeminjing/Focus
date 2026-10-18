@@ -14,7 +14,7 @@ function fixture() {
   const run = source => harness.vm.runInContext(source, harness.context);
   run(readAppSource());
   run(`openSettings = async () => {}; selectSettingsTab = () => {};
-    var snapshot = {models:[{name:'first',api_key_set:false,default:true}],editable_fields:[],shipped_models:[],setup_required:true};
+    var snapshot = {models:[{name:'first',api_key:'$FIRST_API_KEY',api_key_set:false,default:true}],editable_fields:[],shipped_models:[],setup_required:true};
     api = async () => snapshot;`);
   return { run, host, completed, transitions };
 }
@@ -22,9 +22,10 @@ function fixture() {
 test("desktop setup preserves an unsaved key when the robot reopens settings", async () => {
   const f = fixture();
   await f.run("openPatrolWorkbench({setupModels:true})");
-  f.run("modelSettings.credentialValue = 'unsaved'; modelSettings.dirty = true;");
+  f.run("updateModelCredential('unsaved');");
   await f.run("openPatrolWorkbench({setupModels:true})");
-  assert.equal(f.run("modelSettings.credentialValue"), "unsaved");
+  assert.equal(f.run("modelCredentialValue()"), "unsaved");
+  assert.match(f.host.innerHTML, /data-model-credential value="unsaved"/);
   assert.match(f.host.innerHTML, /选择项目文件夹/);
 });
 
