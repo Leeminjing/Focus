@@ -65,7 +65,8 @@ def mount_plugin_assets(app) -> None:
         (2) 每个 Active 插件的路由以 /desktop/api/plugin/{name} 为强制前缀注册
         (3) 其前端资源目录挂载为 /plugins/{name}/desktop 静态路径
 
-    插件被禁用或卸载后,本函数不再注册其资源(下次进程启动生效)。
+    仅在进程启动时调用；插件 HTTP 路由与静态资源挂载的新增、变更、禁用或卸载
+    均需重启后端进程才完整生效。重建注册表不重新挂载，也不撤销已注册的路由。
     """
     from focus.plugins import get_plugin_registry
 

@@ -905,3 +905,65 @@ def test_assets_rejected_plugin_not_mounted(tmp_path):
 def test_assets_empty_plugin_dir_zero_impact(tmp_path):
     registry = _load(tmp_path)
     assert registry.active_assets() == {}
+
+
+def test_reload_reports_activation_boundary_without_remounting_assets(tmp_path, monkeypatch):
+    import focus.plugins as plugins
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from backend.app.desktop.app import mount_plugin_assets
+    from backend.app.desktop.plugins_routes import plugins_router
+
+    monkeypatch.setattr(plugins, "_registries", {})
+    monkeypatch.setattr(plugins, "_plugin_roots", lambda root=None: ("test", [tmp_path / "plugins"]))
+    old_dir = _asset_plugin(tmp_path, "old")
+
+    def start_app():
+        app = FastAPI()
+        app.include_router(plugins_router)
+        mount_plugin_assets(app)
+        return TestClient(app)
+
+    activation = {
+        "registry": "immediate",
+        "tools_and_hooks": "next_run",
+        "running_runs": "unchanged",
+        "http_routes": "process_restart",
+        "desktop_assets": "process_restart",
+    }
+    with start_app() as client:
+        running_bridge = PluginBridgeMiddleware(plugins.get_plugin_registry())
+        assert client.get("/desktop/api/plugins").json()["activation"] == activation
+        assert client.get("/desktop/api/plugin/old/ping").status_code == 200
+        assert client.get("/plugins/old/desktop/entry.js").status_code == 200
+
+        _asset_plugin(tmp_path, "new")
+        response = client.post("/desktop/api/plugins/reload")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["activation"] == activation
+        assert {p["name"]: p["status"] for p in data["plugins"]} == {"new": "active", "old": "active"}
+        next_bridge = PluginBridgeMiddleware(plugins.get_plugin_registry())
+        assert [tool_.name for tool_ in running_bridge.tools] == ["tool_old"]
+        assert [tool_.name for tool_ in next_bridge.tools] == ["tool_new", "tool_old"]
+        assert client.get("/desktop/api/plugin/new/ping").status_code == 404
+        assert client.get("/plugins/new/desktop/entry.js").status_code == 404
+
+        manifest_file = old_dir / "plugin.json"
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+        manifest["enabled"] = False
+        manifest_file.write_text(json.dumps(manifest), encoding="utf-8")
+        disabled = client.post("/desktop/api/plugins/reload").json()
+        assert [p["name"] for p in disabled["plugins"]] == ["new"]
+        assert [tool_.name for tool_ in PluginBridgeMiddleware(plugins.get_plugin_registry()).tools] == ["tool_new"]
+        assert client.get("/desktop/api/plugin/old/ping").status_code == 200
+        assert client.get("/plugins/old/desktop/entry.js").status_code == 200
+
+    # 新应用模拟进程重启时的重新挂载；禁用的旧路由此时才被撤下。
+    plugins._registries.clear()
+    with start_app() as restarted:
+        assert restarted.get("/desktop/api/plugin/new/ping").status_code == 200
+        assert restarted.get("/plugins/new/desktop/entry.js").status_code == 200
+        assert restarted.get("/desktop/api/plugin/old/ping").status_code == 404
+        assert restarted.get("/plugins/old/desktop/entry.js").status_code == 404

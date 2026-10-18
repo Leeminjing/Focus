@@ -23,6 +23,14 @@ const traces = [
 
 const all = view.render(plugins, interfaces, traces, { filter: "all", selectedName: "demo" });
 assert.match(all, /按插件状态筛选/);
+assert.match(all, /已注册/);
+assert.doesNotMatch(all, /已生效/);
+assert.match(all, /重新加载注册表/);
+assert.match(all, /下次 Run 装配时生效/);
+assert.match(all, /正在运行的 Run 保留原快照/);
+assert.match(all, /插件 UI\/API.*需要重启后端进程/);
+assert.match(all, /退出并重新启动 Focus/);
+assert.match(all, /“刷新”仅读取当前状态/);
 assert.match(all, /3\/3/);
 assert.match(all, /aria-pressed="true"/);
 assert.ok(all.indexOf('class="trace-failed"') < all.indexOf('class="trace-success"'), "异常轨迹必须排在成功轨迹之前");

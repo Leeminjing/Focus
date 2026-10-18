@@ -63,6 +63,7 @@ def reload_plugins(root: str | Path | None = None) -> PluginRegistry:
 
     装配模式写入新插件后调用；新实例重新扫描、重新解析依赖，避免已登记插件重复。
     正在运行中的 run 使用装配时快照，不受影响；下一次 run 装配时读到新注册表。
+    插件 HTTP 路由与静态资源挂载由 Gateway 在启动时完成，变更需重启后端进程。
     """
     key, roots = _plugin_roots(root)
     _registries[key] = _build_registry(roots)

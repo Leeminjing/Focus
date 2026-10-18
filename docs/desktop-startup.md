@@ -1,5 +1,39 @@
 # 桌面启动准备与耗时
 
+## 插件重载与重启边界
+
+插件中心的“重新加载注册表”（`POST /desktop/api/plugins/reload`）重新扫描仓库内置
+`plugins/` 与全局 `~/.focus/plugins/`（自定义 Focus home 时使用对应目录），重建注册表。
+“刷新”（`GET /desktop/api/plugins`）仅读取当前状态，不扫描安装变更。
+
+| 变更或状态 | 生效时间 |
+| --- | --- |
+| 插件清单、依赖解析和接口注册状态 | 重新加载成功后立即可查询；`active` 在界面中显示为“已注册” |
+| 插件工具与 hooks 的后续装配 | 重新加载后的下次 Run 装配时生效 |
+| 正在执行的 Run | 保留原有注册表和工具快照，不中途替换 |
+| 插件 HTTP 路由与静态资源挂载的新增、变更、禁用或卸载 | 重启后端进程后完整生效；桌面使用时退出并重新启动 Focus |
+
+例如，启动后新装插件并重新加载，它可以显示为“已注册”，下次 Run 也能装配其工具，
+但 `/desktop/api/plugin/<name>/…` 和 `/plugins/<name>/desktop/…` 仍可能返回 404。
+已禁用或卸载插件的旧 HTTP 路由在重启前也可能继续可达；不能用注册表状态判断端点是否已撤下。
+仅刷新页面或重载注册表不能完成资源挂载更新；已注入页面的脚本和样式也不由重载撤销。
+
+查询和重载响应都保留 `plugins`、`interfaces`，并附带 `activation`，说明支持的生效范围：
+
+```json
+{
+  "registry": "immediate",
+  "tools_and_hooks": "next_run",
+  "running_runs": "unchanged",
+  "http_routes": "process_restart",
+  "desktop_assets": "process_restart"
+}
+```
+
+这是生效策略说明，不是某个插件的端点就绪检测。当前版本不提供完整热插拔。
+
+## 启动准备与耗时记录
+
 安装及 `focus update` 安装依赖后，通过 `desktop/startup-runtime.cjs --prepare <python> <home>`
 检查 Python 桌面依赖、Git 和 Docker Compose，并保存已经确认的 Python 绝对路径。
 源码开发直接启动 Electron 时，首次启动自动完成同样的准备。

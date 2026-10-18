@@ -14,7 +14,7 @@
   }
 
   const STATUS_BADGES = {
-    active: "已生效",
+    active: "已注册",
     unavailable: "不可用",
     rejected: "已拒绝",
     pending: "待解析",
@@ -102,7 +102,7 @@
     const filtered = all.filter(plugin => (filter === "all" || plugin.status === filter) && (!query || `${plugin.name} ${(plugin.injected || []).join(" ")}`.toLowerCase().includes(query)));
     const selected = filtered.find(plugin => plugin.name === options.selectedName) || null;
     const filters = [
-      ["all", "全部"], ["active", "已生效"], ["unavailable", "不可用"], ["rejected", "已拒绝"],
+      ["all", "全部"], ["active", "已注册"], ["unavailable", "不可用"], ["rejected", "已拒绝"],
     ].map(([status, label]) => {
       const count = status === "all" ? all.length : all.filter(plugin => plugin.status === status).length;
       return `<button type="button" class="${filter === status ? "active" : ""}" data-action="filter-plugins" data-plugin-status="${status}" aria-pressed="${filter === status}">${label} <span>${count}</span></button>`;
@@ -110,9 +110,10 @@
     return `<section class="plugins-view">
       <header class="plugins-heading">
         <div><h1>插件</h1><p class="muted">能力状态、依赖与实际执行轨迹。</p></div>
-        <button class="text-button" data-action="reload-plugins"${options.loading ? " disabled" : ""}>重新加载</button>
+        <button class="text-button" data-action="reload-plugins"${options.loading ? " disabled" : ""}>重新加载注册表</button>
         <button class="text-button" data-action="refresh-plugins">刷新</button>
       </header>
+      <div class="ui-notice"><strong>插件变更何时生效</strong><span>重新加载后，工具与 hooks 在下次 Run 装配时生效，正在运行的 Run 保留原快照。“已注册”仅表示注册表接入成功。插件 UI/API 的新增、变更、禁用或卸载需要重启后端进程；桌面使用时请退出并重新启动 Focus。“刷新”仅读取当前状态。</span></div>
       <div class="library-toolbar"><div class="plugin-filter segmented" role="group" aria-label="按插件状态筛选">${filters}</div>
       <label class="page-search">检索已加载插件 <input type="search" data-page-search="plugins" value="${escapeHtml(options.query || "")}" placeholder="查找能力…"></label><div class="library-layout" role="group" aria-label="插件布局" data-i18n-aria-label="view.layout">${["cards", "list"].map(layout => `<button data-action="set-library-layout" data-library="plugins" data-layout="${layout}" aria-pressed="${(options.layout || "cards") === layout}" data-i18n="view.${layout}">${layout === "cards" ? "卡片" : "列表"}</button>`).join("")}</div></div>
       ${options.loading ? '<p role="status">正在读取插件状态…</p>' : ""}
