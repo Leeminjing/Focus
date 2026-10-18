@@ -1,0 +1,55 @@
+{
+  "date": "2026-10-18",
+  "focused_backend": {
+    "command": "python -m pytest backend/tests/test_submission_latency.py backend/tests/test_submission_latency_probe.py backend/tests/test_loop_run_live_dispatch.py::test_live_activity_is_idempotent_private_and_replayable -q --tb=short",
+    "result": "10 passed in 9.56s",
+    "coverage": "deadline/interruption censoring, missing samples and percentiles, publication and authority gates, addressed/deferred input provenance, successor decisions, Primary continuation and derived Run outputs, safe idempotent replay"
+  },
+  "backend_live_projection": {
+    "result": "14 passed (15-test invocation also included the then-single submission probe test)"
+  },
+  "frontend_live_projection": {
+    "command": "node --test desktop/loop-live-projection.test.js",
+    "result": "44 passed"
+  },
+  "python_compile": "passed",
+  "git_diff_check": "passed",
+  "full_backend_suite": {
+    "command": "python -m pytest backend/tests -q --tb=short --disable-warnings",
+    "result": "192 failed, 2687 passed, 31 skipped, 1 warning in 2492.12s",
+    "source_state": "in-progress working tree, before the latest observer fixes; this is not a clean final-tree full-suite result",
+    "baseline_verified_failures": [
+      "test_loop_run_live_dispatch.py::test_generic_dispatch_publishes_loop_tool_activity_before_settlement",
+      "test_loop_run_live_dispatch.py::test_generic_assembly_uses_the_planned_isolated_slot"
+    ],
+    "baseline_verification": "Both fail at Run permission validation with the HEAD 46295b78 run_activity_bridge module loaded instead of the modified one.",
+    "other_failures": "Not individually attributed; no claim that every failure is pre-existing."
+  },
+  "real_model_matrix": {
+    "command": "FOCUS_SUBMISSION_REAL_MODEL=1 python -m pytest backend/tests/test_submission_latency_real_model.py -q --tb=short",
+    "observer_version": 3,
+    "run_scope": "all_causally_related_runs",
+    "repeats_per_scenario": 3,
+    "raw_samples": 12,
+    "result": "12 failed in 3462.83s (0:57:42)",
+    "outcomes": {
+      "waiting_user": 10,
+      "timeout": 2
+    },
+    "all_five_milestones_completed": 0,
+    "derived_context_available": 0,
+    "observer_interrupted": 0,
+    "cleanup_errors": 0,
+    "meaning": "All 12 measurements were saved. The complete-derivation assertions failed; this is not evidence of a successful end-to-end derivation."
+  },
+  "report_cli": {
+    "result": "passed for final v3, archived v2 and preflight directories",
+    "cache_diagnostics": "expected_mode_observed_any_revision only; no target source revision attribution"
+  },
+  "review": {
+    "spec": "no actionable defect in final review",
+    "standards": "cache attribution overclaim corrected; new module declarative header added"
+  },
+  "final_report_integrity": "passed: 4 x 3 unique samples, observer v3/all-Run homogeneous scope, no interrupted or post-deadline milestone samples, insufficient P95 flags, target-cache attribution not claimed",
+  "final_source_checks": "passed: new module declarative header, Python syntax, staged git diff --check"
+}

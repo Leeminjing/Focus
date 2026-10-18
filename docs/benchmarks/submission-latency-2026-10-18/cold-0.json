@@ -1,0 +1,244 @@
+{
+  "metadata": {
+    "scenario": "cold",
+    "repeat": 0,
+    "model": "deepseek-flash",
+    "budget_preset": "normal",
+    "curation_max_output_tokens": 8192,
+    "host_curation_max_output_tokens": 65536,
+    "cap_source": "product default, test only",
+    "derivation_max_output_tokens": {},
+    "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
+    "database": "per-sample isolated PostgreSQL, migrated to head",
+    "synthetic_history": true,
+    "background_prewarm": true,
+    "observer_version": 3,
+    "run_scope": "all_causally_related_runs",
+    "timeout_seconds": 300.0,
+    "budgets": {
+      "max_lanes": 64,
+      "max_rounds": 40,
+      "max_retries": 6,
+      "max_contexts": 256,
+      "max_providers": 32,
+      "max_model_calls": 100,
+      "max_no_progress": 20,
+      "max_input_tokens": 500000,
+      "max_output_tokens": 50000,
+      "expansion_resources": {
+        "version": "expansion-resource-policy-v1",
+        "max_queries": null,
+        "max_exact_reads": null,
+        "max_planner_tokens": null,
+        "output_token_reserve": null,
+        "max_unique_candidates": null,
+        "max_planner_model_calls": null,
+        "max_request_input_tokens": null,
+        "max_compiled_evidence_items": null,
+        "max_catalog_descriptor_chars": null,
+        "max_model_attempts_per_operation": null
+      },
+      "max_concurrent_runs": 2,
+      "max_duration_seconds": 1800,
+      "max_new_lanes_per_round": 16,
+      "expansion_resources_source": "default"
+    },
+    "source_revision_id": "994d988e90de4ba29c5f291c219ebc96",
+    "usage_before_submission": {
+      "model_calls": 0,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "preparation_artifact_ids": [],
+    "measured_usage": {
+      "model_calls": 11,
+      "input_tokens": 139029,
+      "output_tokens": 48565
+    },
+    "total_usage": {
+      "model_calls": 11,
+      "input_tokens": 139029,
+      "output_tokens": 48565
+    }
+  },
+  "sample": {
+    "scenario": "cold",
+    "repeat": 0,
+    "milestones_ms": {
+      "durable_acceptance": 475.3476000041701
+    },
+    "identities": {
+      "durable_acceptance": {
+        "submission_id": "d4d500ee763a4cb7bcdad77c64107279",
+        "loop_id": "8813ce9110744c04a157d09ae5e8a3b5",
+        "intent_id": "299eeb035ea85ec0b2e67100700001b4",
+        "observation_id": "10e308cf99e048799ab55c1d183b2c75",
+        "round_id": "4a1498bf14904b54b4bb9aa8334e36a5"
+      }
+    },
+    "stages": [
+      {
+        "artifact_id": "8bda905dd4d231859d94d25ad865727e936ae052c3455f40841b4d6ee3535a14",
+        "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+        "stage": "portfolio_indexing",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 53067.8362,
+        "version": "portfolio-semantic-index-service-v4",
+        "failure_code": null,
+        "attempts": [
+          {
+            "role": "semantic_index_projector",
+            "index_phase": "local",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 2024,
+            "output_tokens": 2830
+          },
+          {
+            "role": "claim_verifier",
+            "index_phase": "local",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 3325,
+            "output_tokens": 4428
+          },
+          {
+            "role": "semantic_index_interpreter",
+            "index_phase": "interpretation",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 6406,
+            "output_tokens": 1588
+          },
+          {
+            "role": "semantic_index_builder",
+            "attempt": 1
+          },
+          {
+            "role": "semantic_index_build",
+            "mode": "full",
+            "local_cache_hits": 1,
+            "reused_segments": 0,
+            "recomputed_segments": 2,
+            "local_projection_ms": 38757.2404,
+            "interpretation_ms": 14116.5562
+          }
+        ]
+      },
+      {
+        "artifact_id": "19ae01fbb907955f0da138d81df515730263fd747c22f518f1b29e75238770bb",
+        "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+        "stage": "retrieval_planning",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 102520.1822,
+        "version": "retrieval-backed-cognitive-advisor-v3",
+        "failure_code": null,
+        "attempts": [
+          {
+            "attempt": 1
+          }
+        ]
+      },
+      {
+        "artifact_id": "0ff1a008e80fbb4384455764974b837d053333eb217dd5429ec268a0287145fd",
+        "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+        "stage": "candidate_admission",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 0.0033,
+        "version": "candidate-evidence-admission-v1",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "12f7f90983d2c96e249802fa2939556770c86b21c79b5b22ec4d56344bab4db3",
+        "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+        "stage": "admission",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 0.1321,
+        "version": "semantic-expansion-admission-v2",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "13553675b5d2d040b2ae048cd3e16d30dba8a1a75c19277e88b466a81e6eadda",
+        "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+        "stage": "cognitive_planning",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 19.035,
+        "version": "retrieval-worker-cognitive-planner-v2",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "2451750844068bf6e7e3209eedc67b0c04957ee57342ed1d98bea351b633a8cf",
+        "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+        "stage": "work_reconciliation",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 9048.552,
+        "version": "work-spec-reconciler-v1",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "68069ea435b0c597540e331c8414ac457a50c20ee4f3803c5fc08717b90234bb",
+        "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+        "stage": "signal_collection",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 0.1573,
+        "version": "semantic-expansion-signals-v1",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "6b82f855b5f47eb73c079dabe656979e16916dce99a8abb7bdcbb4f94a1594d3",
+        "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+        "stage": "retrieval_planning",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 102520.1822,
+        "version": "retrieval-backed-cognitive-advisor-v3",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "6cc6191170ed6503ed4247641e1735b4ee344f41ea6a92940098d3b6437e6592",
+        "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+        "stage": "portfolio_indexing",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 53067.8362,
+        "version": "portfolio-semantic-index-service-v4",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "792b52a5c02e5eb6d495cebec235c3c1376417b76812139aef14f1c39885e64e",
+        "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+        "stage": "portfolio_projection",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 0.4634,
+        "version": "retrieval-only-semantic-manifest-v3",
+        "failure_code": null,
+        "attempts": []
+      }
+    ],
+    "outcome": "waiting_user",
+    "failure_code": "loop_waiting_reason",
+    "observation_ms": 254052.51000000862,
+    "discarded_milestones_ms": {},
+    "missing_milestones": [
+      "patrol_decision_committed",
+      "derived_context_available",
+      "first_run_started",
+      "first_effective_output"
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 r"""本文件对外提供 LoopRunActivityBridge。
 
-输入为既有 StreamBridge、Loop/Context/Run 身份和 Agent values 事件；输出为原流转发及持久化的模型、工具与工作区活动事件。
+输入为既有 StreamBridge、Loop/Context/Run 身份和 Agent values 事件；输出为原流转发及持久化的模型、首个有效输出、工具与工作区活动事件。
 具体工作流为只读取当前指令消息之后的已确认消息，按消息或 tool-call 身份去重，在缩为活动摘要前提取类型化测试结果及使用实际秘密值脱敏的命名元数据；
 Writer 在同事务保存独立领域来源并追加安全事件。失败由 Writer 重试并记录降级，close 等待提交并报告未恢复的失败。
 示例：`bridge.publish(run_id, stream_event)`。
@@ -104,6 +104,9 @@ class LoopRunActivityBridge(StreamBridge):
                 draft = self._model_completed(str(message["id"]))
                 if draft is not None:
                     drafts.append(draft)
+                output = self._effective_output(message)
+                if output is not None:
+                    drafts.append(output)
             for call in message.get("tool_calls") or ():
                 if isinstance(call, dict) and call.get("id"):
                     self._calls[str(call["id"])] = call
@@ -119,6 +122,28 @@ class LoopRunActivityBridge(StreamBridge):
                     drafts.append(draft)
                 drafts.extend(self._artifacts(message))
         return tuple(drafts)
+
+    def _effective_output(self, message: dict) -> CanonicalEventDraft | None:
+        content = message.get("content")
+        has_text = isinstance(content, str) and bool(content.strip())
+        if isinstance(content, list):
+            has_text = any((isinstance(block, str) and block.strip())
+                           or (isinstance(block, dict) and block.get("type") == "text"
+                               and isinstance(block.get("text"), str) and block["text"].strip())
+                           for block in content)
+        has_tool = any(isinstance(call, dict) and call.get("id")
+                       and isinstance(call.get("name"), str) and call["name"].strip()
+                       for call in message.get("tool_calls") or ())
+        if not (has_text or has_tool) or not self._new("output", self._run_id):
+            return None
+        return CanonicalEventDraft(
+            kind="context.output.available", entity_type="loop_activity", entity_id=self._run_id,
+            entity_revision=1, correlation_id=self._correlation_id,
+            payload={"run_id": self._run_id, "context_id": self._context_id,
+                     "message_id": str(message["id"]), "output_kind": "text" if has_text else "tool_call",
+                     "source": "run_stream", "summary": "Context 已产生首个执行输出"},
+            idempotency_key=f"context-output:{self._run_id}:first",
+        )
 
     def _model_completed(self, message_id: str) -> CanonicalEventDraft | None:
         if not self._new("model", message_id):
@@ -231,4 +256,6 @@ class LoopRunActivityBridge(StreamBridge):
 
     @staticmethod
     def _phase(kind: str) -> str:
-        return "started" if kind == "context.tool.started" else "completed" if kind == "context.tool.completed" else "model" if kind == "context.model.completed" else "test" if kind == "context.test.completed" else "artifact"
+        return {"context.output.available": "output", "context.tool.started": "started",
+                "context.tool.completed": "completed", "context.model.completed": "model",
+                "context.test.completed": "test"}.get(kind, "artifact")
