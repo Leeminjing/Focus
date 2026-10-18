@@ -605,7 +605,7 @@ class MessageReference(StrictRequest):
 
 
 class MainRunCreate(StrictRequest):
-    message: str | list[dict[str, Any]] = Field(min_length=1)
+    message: str | list[dict[str, Any]]
     message_reference: MessageReference | None = None
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=160)
     material_inputs: list[RunMaterialCreate] | None = None
@@ -631,6 +631,8 @@ class MainRunCreate(StrictRequest):
             if self.material_inputs is not None
             else list(self.attached_material_ids or [])
         )
+        if (not self.message or isinstance(self.message, str) and not self.message.strip()) and not material_ids:
+            raise ValueError("消息必须包含文字或附件")
         if len(material_ids) != len(set(material_ids)):
             raise ValueError("本轮材料不能重复")
         if len(self.must_view_material_ids) != len(set(self.must_view_material_ids)):

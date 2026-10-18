@@ -832,12 +832,15 @@ class DesktopService:
         from dataclasses import asdict
 
         from focus.mcp.cache import get_mcp_tools_cached
+        from focus.tools.registry import reload_tool_registry
 
         async with self.session_factory() as session:
             _, workspace = await self._get_task_entities(session, task_id)
+        custom_tools = reload_tool_registry().tools()
         tools = await get_mcp_tools_cached(workspace.path, force_refresh=True)
         return {
             "skills": await self.list_task_skills(task_id),
+            "custom_tool_count": len(custom_tools),
             "mcp_tool_count": len(tools),
             "failed_servers": list(getattr(tools, "failed_servers", ())),
             "mcp_failures": [asdict(failure) for failure in getattr(tools, "failures", ())],

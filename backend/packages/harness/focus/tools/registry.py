@@ -14,8 +14,8 @@
 
 具体工作流:
     (1) 遍历 root 下的每个子目录（目录名即 tool name），跳过无入口的目录
-    (2) 用 importlib.spec_from_file_location + 独立模块名加载入口文件（不污染 sys.modules，
-        与 focus/plugins/loader.py 同模式）
+    (2) 用 importlib.spec_from_file_location + 独立模块名加载入口文件（不污染 sys.modules），
+        直接编译当前源码，避免快速编辑命中旧字节码缓存
     (3) 从模块中提取符合 RegisterTool 的工具对象或 build_tool() 工厂，构建 BaseTool
     (4) 包装为 ToolInfo(source="custom")，name=目录名，label/description 取自工具元数据或回退
     (5) 单例按 root 缓存；get_tool_registry 返回缓存，reload_tool_registry 重建
@@ -106,7 +106,8 @@ class ToolRegistry:
             return None
         module = importlib.util.module_from_spec(spec)
         try:
-            spec.loader.exec_module(module)
+            # 时间戳和文件大小相同的编辑仍必须生效；不复用磁盘上的 .pyc。
+            exec(compile(entry_file.read_bytes(), str(entry_file), "exec"), module.__dict__)
         except Exception:
             logger.error("用户工具入口执行失败: %s", entry_file, exc_info=True)
             return None

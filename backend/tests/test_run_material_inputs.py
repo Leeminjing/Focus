@@ -18,6 +18,7 @@ from backend.app.desktop.material_context import MaterialContextProjector
 from backend.app.desktop.material_kinds import MaterialKindClassifier
 from backend.app.desktop.material_snapshots import MaterialSnapshotVerifier
 from backend.app.desktop.models import MainRunCreate
+from backend.app.desktop.conversation_inputs import ConversationInputCreate
 from backend.app.desktop.resource_limits import ImageResourceLimits
 from backend.app.desktop.run_material_message import RunMaterialMessageProjector
 from backend.app.desktop.run_materials import RunMaterialRequest, RunMaterialResolver
@@ -40,6 +41,34 @@ def _item(material_id: str, path: str, kind: str, note: str = "") -> RunMaterial
         model_bytes=10 if kind == "image" else 0,
         model_tokens=3 if kind == "image" else 0,
     )
+
+
+@pytest.mark.parametrize("message", ["", " \n "])
+def test_attachment_only_requests_and_queue_allow_empty_text(message) -> None:
+    body = MainRunCreate(message=message, material_inputs=[{"material_id": "shot"}])
+    queued = ConversationInputCreate(mode="queue", run=body)
+    assert queued.run.message == message
+    assert queued.run.material_inputs[0].material_id == "shot"
+    legacy = MainRunCreate(message=message, attached_material_ids=["shot"])
+    assert legacy.attached_material_ids == ["shot"]
+    with pytest.raises(ValidationError, match="补充要求不能为空"):
+        ConversationInputCreate(mode="steer", target_run_id="running", run=body)
+
+
+@pytest.mark.parametrize("message", ["", " \n ", []])
+@pytest.mark.parametrize("attachments", [{}, {"material_inputs": []}, {"attached_material_ids": []}, {"must_view_material_ids": ["shot"]}])
+def test_empty_requests_without_selected_attachments_are_rejected(message, attachments) -> None:
+    with pytest.raises(ValidationError, match="文字或附件"):
+        MainRunCreate(message=message, **attachments)
+
+
+def test_attachment_only_message_projects_material_identity_into_human_content() -> None:
+    inputs = RunMaterialInputs.build("run", "message", [_item("shot", "shot.png", "image")])
+    projected = RunMaterialMessageProjector.project("", inputs)
+    assert projected["role"] == "human"
+    assert projected["id"] == "message"
+    assert '"material_id":"shot"' in projected["content"]
+    assert '"relative_path":"shot.png"' in projected["content"]
 
 
 def test_value_object_round_trip_order_required_subset_and_immutability(tmp_path) -> None:

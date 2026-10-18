@@ -70,6 +70,18 @@ test("empty configuration remains a successful refresh", async () => {
   assert.doesNotMatch(harness.statusState.text, /失败/);
 });
 
+test("refresh reports custom tools and explains when they take effect", async () => {
+  const harness = await refresh({ skills: [], custom_tool_count: 3, mcp_tool_count: 0,
+    failed_servers: [], mcp_failures: [] });
+  assert.match(harness.statusState.text, /3 个自定义工具/);
+  assert.match(harness.statusState.text, /下次运行生效/);
+  const html = harness.vm.runInContext('renderAssemblyTarget(state.tasks[0])', harness.context);
+  assert.match(html, /3 个自定义工具/);
+  assert.match(html, /刷新技能 \/ 自定义工具 \/ 重试 MCP/);
+  assert.match(html, /全局自定义工具/);
+  assert.match(html, /正在运行.*保持原快照/);
+});
+
 test("successful retry replaces the previous failure panel", async () => {
   const harness = await refresh({ skills: [], mcp_tool_count: 0, failed_servers: ["broken"], mcp_failures: [{
     server_name: "broken", scope: "global", stage: "configuration", reason: "缺少 command", action: "补充 command",

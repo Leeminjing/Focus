@@ -51,8 +51,6 @@ class ConversationInputCreate(StrictRequest):
 
     @model_validator(mode="after")
     def validate_steer(self):
-        if isinstance(self.run.message, str) and not self.run.message.strip():
-            raise ValueError("消息不能为空")
         if self.mode == "queue" and self.target_run_id is not None:
             raise ValueError("排队消息不绑定当前 Run")
         if self.mode == "steer":
