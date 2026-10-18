@@ -2103,7 +2103,7 @@ function renderTaskRail(task) {
 }
 
 function capabilityRefreshSummary(result) {
-  return `已刷新 ${result.skills.length} 个技能、${result.mcp_tool_count} 个 MCP 工具`;
+  return `已刷新 ${result.skills.length} 个技能、${result.mcp_tool_count} 个 MCP 工具、${result.custom_tool_count ?? 0} 个自定义工具`;
 }
 
 function mcpFailureDescription(item) {
@@ -2129,7 +2129,7 @@ function renderAssemblyTarget(task) {
     id: state.patrolWorkspace.workspace_id, name: state.patrolWorkspace.display_name, path: state.patrolWorkspace.path,
   });
   if (target.scope === "workspace") workspaces.set(target.workspace_id, { id: target.workspace_id, name: task.workspace_name, path: target.path });
-  return `<div class="assembly-target"><label>装配范围 <select data-assembly-target aria-label="装配范围"><option value=""${target.scope === "global" ? " selected" : ""}>全局 · 所有工作区</option>${[...workspaces.values()].map(item => `<option value="${escapeHtml(item.id)}"${target.workspace_id === item.id ? " selected" : ""}>仅 ${escapeHtml(item.name || item.path)}</option>`).join("")}</select></label><button type="button" data-action="pick-assembly-workspace">选择其他工作区</button><button type="button" data-action="refresh-capabilities">刷新技能 / 重试 MCP</button><small title="${escapeHtml(target.path || "")}">${escapeHtml(target.path || "~/.focus")}</small>${renderCapabilityRefreshResult(task.task_id)}</div>`;
+  return `<div class="assembly-target"><label>装配范围 <select data-assembly-target aria-label="装配范围"><option value=""${target.scope === "global" ? " selected" : ""}>全局 · 所有工作区</option>${[...workspaces.values()].map(item => `<option value="${escapeHtml(item.id)}"${target.workspace_id === item.id ? " selected" : ""}>仅 ${escapeHtml(item.name || item.path)}</option>`).join("")}</select></label><button type="button" data-action="pick-assembly-workspace">选择其他工作区</button><button type="button" data-action="refresh-capabilities" title="刷新所选范围的技能和 MCP，并重载全局自定义工具；下次运行生效，正在运行的 Run 保持原快照">刷新技能 / 自定义工具 / 重试 MCP</button><small title="${escapeHtml(target.path || "")}">${escapeHtml(target.path || "~/.focus")}</small>${renderCapabilityRefreshResult(task.task_id)}</div>`;
 }
 
 async function showAssembly(workspaceId = "") {
