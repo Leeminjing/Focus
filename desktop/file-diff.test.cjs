@@ -158,6 +158,7 @@ test("history tabs leave nested unchanged-line folds inside the Diff panel", asy
   const host = createElement("div");
   host.innerHTML = fs.readFileSync(require.resolve("./desktop-patrol.html"), "utf8");
   const context = vm.createContext({ AbortController, FocusLoopFactsView: require("./loop-facts-view.js"), document: createDocument() });
+  vm.runInContext(fs.readFileSync(require.resolve("./file-links.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./desktop-patrol-references.js"), "utf8"), context);
   const left = Array.from({ length: 1000 }, (_, i) => `line ${i + 1}\n`), right = [...left];
   right[99] = "first\n"; right[899] = "last\n";

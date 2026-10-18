@@ -269,5 +269,5 @@
     const summary = comparison && !comparison.limited ? ` · +${comparison.added} / −${comparison.removed}` : "";
     return `<section class="file-version"><h3>${escape(file.path)}</h3><p>版本 ${(file.sha256 || file.result_key).slice(0, 12)}${before?.redacted || after?.redacted ? " · 已脱敏" : ""}</p><p>执行位置 ${escape(file.slot_id)}${file.context_id ? ` · 工作线 ${escape(file.context_id)}` : ""}</p><button type="button" data-patrol-file-add="${escape(JSON.stringify(inputFileReference(file)))}">＠ 引用此版本</button><details open><summary>此版本内容</summary><div data-version-preview>${snapshot(after)}</div></details><details><summary>Diff${reliable ? summary : " · 不可用"}</summary>${reliable ? renderLineDiff(comparison) : snapshot(before?.available ? after : before)}</details><details><summary>写入前内容</summary>${snapshot(before)}</details></section>`;
   }
-  return Object.freeze({ render, renderRows, reconcileRows, renderTimeline, reconcileTimeline, renderDetail, renderFile, buildLineDiff, fileReference, inputFileReference, markFileReferences, statusOptions, outcomeOptions });
+  return Object.freeze({ render, renderRows, reconcileRows, renderTimeline, reconcileTimeline, renderDetail, renderFile, buildLineDiff, renderLineDiff, fileReference, inputFileReference, markFileReferences, statusOptions, outcomeOptions });
 });

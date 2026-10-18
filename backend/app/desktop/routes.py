@@ -51,6 +51,7 @@ from backend.app.desktop.run_stream import durable_run_sse_consumer
 from backend.app.desktop.workspace_material_routes import workspace_material_router
 from backend.app.desktop.file_links import file_link_router
 from backend.app.desktop.file_routes import file_router
+from backend.app.desktop.task_changes import task_changes_router
 from backend.app.gateway.services import start_run
 from focus.sandbox.status import sandbox_status
 
@@ -61,6 +62,7 @@ desktop_router = APIRouter(prefix="/desktop/api")
 desktop_router.include_router(workspace_material_router)
 desktop_router.include_router(file_link_router)
 desktop_router.include_router(file_router)
+desktop_router.include_router(task_changes_router)
 
 
 @desktop_router.get("/sandbox/status")

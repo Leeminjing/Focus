@@ -1914,6 +1914,7 @@ function renderFocus(task = activeTask()) {
         <div class="conversation" id="conversation"></div>
         <div class="patrol-avatar-layer" id="patrolAvatarLayer" aria-label="会话 Patrol 小兵"${detail.ui_state?.show_session_patrol === false ? " hidden" : ""}></div>
         <div class="focus-bottom">
+          <div id="roundChanges"></div>
           <div class="composer-shell glass-surface">
             <div class="composer-context"><span class="ui-badge is-active">${isAssembly ? uiText("focus.free_session", "自由会话") : uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
             <div class="composer">
@@ -1936,6 +1937,7 @@ function renderFocus(task = activeTask()) {
   }
   const conversation = document.querySelector("#conversation");
   reconcileConversationMarkup(conversation, `${renderConversation(detail, task)}${renderMustViewRecovery(detail)}`);
+  roundChanges?.mount(document.querySelector("#roundChanges"), task.task_id, detail.active_run?.run_id);
   mountCommitmentRecovery(detail);
   restoreCommitmentPanels(conversation);
   restoreAccessReviewPanels(conversation);
@@ -2375,7 +2377,24 @@ function replaceConversation(task, messages, snapshotRunId) {
   restoreAccessReviewPanels(conversation);
   materialContentLoader.bindAll(conversation);
   conversationView.syncScrollAfterWrite(conversation);
+  roundChanges?.schedule();
 }
+
+const roundChanges = window.FocusRoundChanges?.create({
+  api,
+  diff: window.FocusLoopFactsView,
+  onReview: (text, taskId) => {
+    if (state.activeTaskId !== taskId || state.view !== "focus") return false;
+    const input = document.querySelector("#mainInput");
+    if (!input || input.disabled) return false;
+    input.value = input.value.trim() ? `${input.value}\n\n${text}` : text;
+    composerDraft.claim(taskId, input.value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+    persistFocusState();
+    return true;
+  },
+});
 
 conversationView.configure({
   reconciler: conversationReconciler,
