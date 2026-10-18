@@ -45,6 +45,10 @@ class LoopPortfolioPublicationQueue:
         self._tasks: dict[str, asyncio.Task] = {}
         self._patrol_sessions = PatrolSessionLifecycle(sessions)
         self._interventions = InterventionLifecycleRepository()
+        self._wake = lambda: None
+
+    def bind_wakeup(self, wake) -> None:
+        self._wake = wake
 
     async def recover(self) -> int:
         async with self._sessions.begin() as session:
@@ -64,6 +68,7 @@ class LoopPortfolioPublicationQueue:
         for decision_id in decision_ids:
             task = asyncio.create_task(self._run(decision_id), name=f"loop-portfolio-publication:{decision_id}")
             self._tasks[decision_id] = task
+            task.add_done_callback(lambda _task: self._wake())
         return len(decision_ids)
 
     async def close(self) -> None:

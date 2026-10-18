@@ -1,7 +1,8 @@
 r"""本文件对外提供 LoopSupervisor、SupervisorComponent 与 ComponentState。
 
 输入为具有独立 tick 的命名组件、轮询间隔和 Loop/supervisor identity；输出为可启动、暂停、恢复、停止且故障隔离的并发组件生命周期。
-具体工作流为每个组件拥有独立 asyncio task，pause 在下一次 tick 前建立屏障，单组件异常记录失败并有界退避，
+具体工作流为每个组件拥有独立 asyncio task 和可合并的 wake hint，tick 中的新通知保留至下一次处理，
+pause 在下一次 tick 前建立屏障，单组件异常记录失败并有界退避，唤醒不能跳过退避，
 stop 取消全部 task 并等待收敛。示例：`await LoopSupervisor("runtime", components).start()`。
 """
 
@@ -39,6 +40,7 @@ class LoopSupervisor:
         self._tasks: dict[str, asyncio.Task] = {}
         self._states = {item.name: ComponentState(item.name, False, 0, None) for item in self._components}
         self._stop = asyncio.Event()
+        self._wakeups = {item.name: asyncio.Event() for item in self._components}
         self._resume = asyncio.Event()
         self._resume.set()
 
@@ -54,6 +56,13 @@ class LoopSupervisor:
 
     def resume(self) -> None:
         self._resume.set()
+
+    def wake(self, *names: str) -> None:
+        """Coalesce hints; the next tick still reads and claims durable facts."""
+        for name in names or self._wakeups:
+            signal = self._wakeups.get(name)
+            if signal is not None:
+                signal.set()
 
     async def close(self) -> None:
         self._stop.set()
@@ -74,6 +83,8 @@ class LoopSupervisor:
         try:
             while not self._stop.is_set():
                 await self._resume.wait()
+                signal = self._wakeups[component.name]
+                signal.clear()
                 try:
                     await component.tick()
                     failures = 0
@@ -84,9 +95,11 @@ class LoopSupervisor:
                     failures += 1
                     self._states[component.name] = ComponentState(component.name, True, failures, str(exc)[:1000], type(exc).__name__)
                     logger.exception("Loop supervisor component failed: %s", component.name)
-                delay = min(max(component.poll_seconds, 0.001) * (2 ** min(failures, 5)), 5.0)
+                delay = max(component.poll_seconds, 0.001)
+                if failures:
+                    delay = min(delay * (2 ** min(failures, 5)), 5.0)
                 try:
-                    await asyncio.wait_for(self._stop.wait(), timeout=delay)
+                    await asyncio.wait_for(self._stop.wait() if failures else signal.wait(), timeout=delay)
                 except TimeoutError:
                     pass
         finally:
