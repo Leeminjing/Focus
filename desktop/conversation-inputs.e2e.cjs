@@ -57,13 +57,14 @@ if (!process.versions.electron) {
     await until("document.querySelector('#conversationInputs').textContent.includes('已受理')");
     await run("inputFixture.rows[0].status='delivered'");
     await until("document.querySelector('#conversationInputs').textContent.includes('已进入当前轮上下文')");
-    await run("document.querySelector('#mainInput').value='结束后补一组测试';document.querySelector('[data-action=queue-main]').click()");
+    await run("state.details.get('child').ui_state.skills=['test-skill'];document.querySelector('#mainInput').value='结束后补一组测试';document.querySelector('[data-action=queue-main]').click()");
     await until("inputFixture.posts.length===2 && document.querySelector('[data-action=edit-queued-main]')");
     assert.equal(await run("inputFixture.posts[1].body.mode"), "queue");
+    assert.equal(await run("state.details.get('child').ui_state.skills.length"), 0);
     await run("document.querySelector('[data-action=edit-queued-main]').click()");
     await until("document.querySelector('#mainInput').value==='结束后补一组测试'");
     assert.equal(await run("inputFixture.rows[1].status"), "withdrawn");
-    await run("document.querySelector('#mainInput').value='结束后补两组测试';document.querySelector('[data-action=queue-main]').click()");
+    await run("document.querySelector('#mainInput').value='结束后补两组测试';document.querySelector('[data-action=send-main]').click()");
     await until("inputFixture.posts.length===3 && document.querySelector('[data-action=delete-queued-main]')");
     assert.equal(await run("inputFixture.posts[2].body.run.message"), "结束后补两组测试");
     await run("document.querySelector('[data-action=delete-queued-main]').click()");

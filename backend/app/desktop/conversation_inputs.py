@@ -76,6 +76,15 @@ class ConversationInputs:
         self.desktop = desktop
         self.sessions = desktop.session_factory
 
+    @staticmethod
+    async def ordinary_session(session, task_id):
+        from backend.app.desktop.agent_loop.models import AgentLoop, LoopContextMembership
+        loop_id = await session.scalar(select(AgentLoop.loop_id).join(LoopContextMembership,
+            LoopContextMembership.loop_id == AgentLoop.loop_id).where(
+            LoopContextMembership.context_id == task_id, LoopContextMembership.status.in_(("active", "paused")),
+            AgentLoop.status.in_(("running", "paused", "waiting_user"))).limit(1))
+        return loop_id is None
+
     async def submit(self, task_id, body, request_id):
         identity = uuid.uuid5(uuid.NAMESPACE_URL, f"focus:conversation-input:{task_id}:{request_id}").hex
         frozen = body.model_dump(mode="json")
@@ -91,6 +100,8 @@ class ConversationInputs:
                 if existing.request_hash != request_hash:
                     raise HTTPException(409, "同一请求身份不能更改消息内容")
                 return input_payload(existing)
+            if not await self.ordinary_session(session, task_id):
+                raise HTTPException(409, "此入口仅用于普通会话；当前任务由 Loop 管理")
             if body.mode == "steer":
                 run = await session.get(DesktopRun, body.target_run_id, with_for_update=True)
                 if run is None or run.task_id != task_id or run.kind != "main" or run.loop_id or run.status not in {"pending", "running"}:
@@ -116,6 +127,11 @@ class ConversationInputs:
                 raise HTTPException(404, "消息不存在")
             if row.mode != "queue" or row.status not in {"queued", "blocked", "withdrawn"}:
                 raise HTTPException(409, "消息已开始执行，不能撤回")
+            admitted = await session.scalar(select(DesktopRun.run_id).where(
+                DesktopRun.idempotency_key == f"conversation-queue:{row.input_id}"))
+            if admitted is not None:
+                # Run 已提交而消息回执尚未提交的重启窗口也不能伪报撤回成功。
+                raise HTTPException(409, {"message": "消息已开始执行，不能撤回", "run_id": admitted})
             row.status = "withdrawn"
             return input_payload(row)
 
@@ -150,6 +166,9 @@ class ConversationInputs:
                 blocked = await session.scalar(select(ConversationInput.input_id).where(
                     ConversationInput.task_id == task_id, ConversationInput.status == "blocked").limit(1))
                 if blocked:
+                    continue
+                if not await self.ordinary_session(session, task_id):
+                    queued.status, queued.error = "blocked", "当前任务已转由 Loop 管理，请撤回排队消息"
                     continue
                 active = await session.scalar(select(DesktopRun.run_id).where(DesktopRun.task_id == task_id,
                     DesktopRun.kind == "main", or_(DesktopRun.status.in_(("pending", "running")),

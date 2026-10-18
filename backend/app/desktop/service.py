@@ -452,6 +452,11 @@ class DesktopService:
             self._run_dispatch_wakeup.clear()
             try:
                 await self.conversation_inputs.drain()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("ordinary conversation input dispatch cycle failed")
+            try:
                 await self._run_dispatch_worker.drain(limit=4)
             except asyncio.CancelledError:
                 raise
@@ -2222,9 +2227,10 @@ class DesktopService:
                 task_skill_names = None
                 middlewares = []
             additional_middlewares = [build_tool_error_middleware()]
+            user_input_middleware = None
             if agent_role == "main" and not governed_loop:
                 from backend.app.desktop.conversation_input_delivery import ConversationInputDelivery
-                additional_middlewares.append(ConversationInputDelivery(self.session_factory, self.checkpointer))
+                user_input_middleware = ConversationInputDelivery(self.session_factory, self.checkpointer)
             if agent_role == "main":
                 image_inputs = RunMaterialInputs.from_equipment(equipment).images
                 additional_middlewares.append(build_image_attachment_middleware())
@@ -2248,6 +2254,7 @@ class DesktopService:
                 system_prompt=base_prompt,
                 middlewares=middlewares,
                 additional_middlewares=additional_middlewares,
+                user_input_middleware=user_input_middleware,
                 app_config=self.app_config,
                 middleware_skill_names=task_skill_names,
                 frozen_contexts=desktop_contexts(equipment, material_context),

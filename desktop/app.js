@@ -4920,7 +4920,8 @@ async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
       consumeMainAttachments(taskId, outgoing, attachments);
       const unchanged = composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
       if (unchanged) composerDraft.release(taskId);
-      detail.ui_state = { ...(detail.ui_state || {}), input: unchanged ? "" : composerDraft.value(taskId) };
+      detail.ui_state = { ...(detail.ui_state || {}), input: unchanged ? "" : composerDraft.value(taskId),
+        skills: unchanged ? [] : detail.ui_state?.skills || [] };
       state.details.set(taskId, detail);
       if (state.activeTaskId === taskId) {
         if (unchanged && document.querySelector("#mainInput") === input) input.value = "";

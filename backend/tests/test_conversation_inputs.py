@@ -107,6 +107,9 @@ def test_queue_order_settlement_withdraw_and_crash_recovery(tmp_path):
             async with sessions.begin() as session:
                 row = await session.get(ConversationInput, first["input_id"])
                 row.status, row.run_id = "queued", None
+            with pytest.raises(HTTPException) as interrupted_receipt:
+                await inputs.withdraw(task, first["input_id"])
+            assert interrupted_receipt.value.status_code == 409
             await ConversationInputs(desktop).drain()
             assert len(desktop.started) == 1
             await settle(sessions, first["input_id"])
@@ -144,12 +147,20 @@ def test_steer_scoping_idempotency_and_unconsumed_receipt(tmp_path):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("timing", ["before_model", "during_final", "before_tool"])
-def test_steer_reaches_typed_checkpoint_before_model_and_stops_stale_tool(tmp_path, timing):
+@pytest.mark.parametrize("timing", ["before_model", "during_final", "before_tool", "checkpoint_failure"])
+def test_steer_reaches_typed_checkpoint_before_model_and_stops_stale_tool(tmp_path, timing, monkeypatch):
     async def scenario():
         engine, sessions, task, run, desktop, inputs = await setup(tmp_path)
-        saver = InMemorySaver()
         received, calls, tools = [], [], []
+        failures = []
+        class Saver(InMemorySaver):
+            async def aput(self, config, checkpoint, metadata, new_versions):
+                if timing == "checkpoint_failure" and not failures and any(item.get("origin") == "direct_user"
+                    for item in checkpoint.get("channel_values", {}).get("execution_items", [])):
+                    failures.append(True)
+                    raise RuntimeError("injected checkpoint failure")
+                return await super().aput(config, checkpoint, metadata, new_versions)
+        saver = Saver()
         async def submit():
             received.append(await inputs.submit(task, ConversationInputCreate(mode="steer", target_run_id=run.run_id,
                 run={"message": "只修前端"}), "steer"))
@@ -164,7 +175,7 @@ def test_steer_reaches_typed_checkpoint_before_model_and_stops_stale_tool(tmp_pa
 
             async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
                 calls.append(messages)
-                if timing != "before_model" and len(calls) == 1:
+                if timing in {"during_final", "before_tool"} and len(calls) == 1:
                     await submit()
                 else:
                     async with sessions() as session:
@@ -174,18 +185,29 @@ def test_steer_reaches_typed_checkpoint_before_model_and_stops_stale_tool(tmp_pa
         answers = [AIMessage(content="done")]
         if timing == "before_tool":
             answers.insert(0, AIMessage(content="", tool_calls=[{"id": "old-tool", "name": "modify_database", "args": {}}]))
-        graph = create_agent(Model(messages=iter(answers) if timing == "before_tool" else cycle(answers)),
-            [modify_database], middleware=[ConversationInputDelivery(sessions, saver),
-                WorldStateMiddleware([], "base", frozenset(), "test", "v1"), TypedHistoryMiddleware()],
-            state_schema=LeadAgentState, checkpointer=saver, context_schema=dict)
+        from focus.agents.lead import agent as lead
+        from backend.tests.tool_catalog_support import registry_for
+        model = Model(messages=iter(answers) if timing == "before_tool" else cycle(answers))
+        monkeypatch.setattr(lead, "create_chat_model", lambda **kwargs: model)
+        monkeypatch.setattr(lead, "get_plugin_registry", lambda: registry_for([]))
+        graph = await lead.make_lead_agent(model_name="fixture", tools=[modify_database], middlewares=[],
+            system_prompt="base", user_input_middleware=ConversationInputDelivery(sessions, saver))
+        graph.checkpointer = saver
         security = SecurityContext(AuthorizationIdentity(tmp_path, (tmp_path,), ("read",), AccessMode.READ_ONLY, "main"),
             RoutingIdentity(task, task, f"main:{task}", task, "", run.run_id))
         try:
-            if timing == "before_model":
+            if timing in {"before_model", "checkpoint_failure"}:
                 await submit()
-            result = await graph.ainvoke({"messages": [HumanMessage(content="initial")]},
-                {"configurable": {"thread_id": task}}, context=security.to_runtime_context(), durability="sync")
-            assert len(calls) == (1 if timing == "before_model" else 2)
+            config = {"configurable": {"thread_id": task}}
+            initial = {"messages": [HumanMessage(content="initial")]}
+            if timing == "checkpoint_failure":
+                with pytest.raises(RuntimeError, match="injected checkpoint failure"):
+                    await graph.ainvoke(initial, config, context=security.to_runtime_context(), durability="sync")
+                assert calls == []
+                assert (await inputs.list(task))[0]["status"] == "accepted"
+                initial = None
+            result = await graph.ainvoke(initial, config, context=security.to_runtime_context(), durability="sync")
+            assert len(calls) == (2 if timing in {"during_final", "before_tool"} else 1)
             assert any(message.content == "只修前端" for message in calls[-1])
             assert len([message for message in result["messages"] if message.id == received[0]["input_id"]]) == 1
             assert tools == []
@@ -194,3 +216,75 @@ def test_steer_reaches_typed_checkpoint_before_model_and_stops_stale_tool(tmp_pa
         finally:
             await engine.dispose()
     asyncio.run(scenario())
+
+
+def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypatch, wait_until):
+    """HTTP→准入→真实 dispatcher/worker→精确补充 checkpoint→结算→下一轮。"""
+    from backend.app.gateway.app import app
+    from backend.app.desktop import service as service_module
+    from fastapi.testclient import TestClient
+
+    controls, sampled = {}, []
+
+    async def empty_tools(**kwargs):
+        return []
+
+    async def make_agent(**kwargs):
+        class Model(GenericFakeChatModel):
+            async def _astream(self, messages, stop=None, run_manager=None, **options):
+                sampled.append(messages)
+                if len(sampled) == 1:
+                    controls["started"], controls["release"] = True, asyncio.Event()
+                    await controls["release"].wait()
+                async for chunk in super()._astream(messages, stop, run_manager, **options):
+                    yield chunk
+        return create_agent(Model(messages=cycle([AIMessage(content="answer")])), [],
+            middleware=[kwargs["user_input_middleware"], *kwargs["additional_middlewares"],
+                WorldStateMiddleware([], "base", frozenset(), "test", "v1"), TypedHistoryMiddleware()],
+            state_schema=LeadAgentState, context_schema=dict)
+
+    monkeypatch.setattr(service_module, "get_available_tools", empty_tools)
+    monkeypatch.setattr(service_module, "make_lead_agent", make_agent)
+    headers = {"X-Focus-Session": "focus-dev-session"}
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        folder = tmp_path / "workspace"
+        folder.mkdir()
+        workspace = client.post("/desktop/api/workspaces", headers=headers, json={"path": str(folder)})
+        assert workspace.status_code == 200, workspace.text
+        task = client.post(f"/desktop/api/workspaces/{workspace.json()['workspace_id']}/threads", headers=headers,
+                           json={"thread_id": f"conversation-{uuid.uuid4().hex}", "title": "conversation"}).json()
+        path = f"/desktop/api/tasks/{task['task_id']}/main"
+        initial = client.post(f"{path}/runs", headers=headers, json={"message": "initial", "permissions": ["read"]})
+        assert initial.status_code == 200, initial.text
+        run = initial.json()
+        try:
+            wait_until(lambda: controls.get("started") or client.get(
+                f"/desktop/api/runs/{run['run_id']}", headers=headers).json()["status"] in {"error", "interrupted"}, timeout=30)
+        except AssertionError:
+            async def dispatch_state():
+                service = app.state.desktop_service
+                dispatcher = service._run_dispatch_task
+                current = await service.get_run_payload(run["run_id"])
+                return {"dispatcher_done": dispatcher is None or dispatcher.done(),
+                        "status": current["status"], "error": current["error"], "dispatch": current.get("dispatch")}
+            raise AssertionError(client.portal.call(dispatch_state)) from None
+        assert controls.get("started"), client.get(f"/desktop/api/runs/{run['run_id']}", headers=headers).json()
+        steer = client.post(f"{path}/inputs", headers={**headers, "Idempotency-Key": "steer"},
+            json={"mode": "steer", "target_run_id": run["run_id"], "run": {"message": "只修前端"}})
+        assert steer.status_code == 200, steer.text
+        queued = client.post(f"{path}/inputs", headers={**headers, "Idempotency-Key": "queue"},
+            json={"mode": "queue", "run": {"message": "补一组测试", "permissions": ["read"]}})
+        assert queued.status_code == 200, queued.text
+        assert steer.json()["status"] == "accepted" and queued.json()["status"] == "queued"
+        async def release():
+            controls["release"].set()
+        client.portal.call(release)
+        wait_until(lambda: any(row["status"] == "started" for row in client.get(f"{path}/inputs", headers=headers).json()), timeout=30)
+        rows = {row["input_id"]: row for row in client.get(f"{path}/inputs", headers=headers).json()}
+        assert rows[steer.json()["input_id"]]["status"] == "delivered"
+        second_run = rows[queued.json()["input_id"]]["run_id"]
+        wait_until(lambda: client.get(f"/desktop/api/runs/{second_run}", headers=headers).json()["status"] == "success", timeout=30)
+        assert any(any(message.content == "只修前端" for message in messages) for messages in sampled)
+        assert any(any(message.content == "补一组测试" for message in messages) for messages in sampled)
+        detail = client.get(f"/desktop/api/tasks/{task['task_id']}", headers=headers).json()
+        assert len(detail["conversation_inputs"]) == 2
