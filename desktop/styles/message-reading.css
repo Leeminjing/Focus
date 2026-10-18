@@ -20,7 +20,11 @@
 .message-rich th { background: var(--surface-subtle, #f5f7fa); }
 .message-rich a { color: var(--accent-primary, #426b96); text-decoration: underline; }
 .message-rich img { max-width: 100%; height: auto; }
-.message-actions { display: flex; margin-top: 8px; }
+.message-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.message-retry-dialog { max-width: calc(100vw - 32px); pointer-events: auto; }
+.message-retry-dialog textarea { width: 100%; min-height: 160px; max-height: 50vh; resize: vertical; padding: 12px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+.message-retry-dialog p { margin: 0; color: var(--muted); font-size: 13px; }
+.message-retry-dialog .danger { color: var(--danger, #b42318); }
 .message-actions button, .code-block-toolbar button { min-height: 32px; font-size: 12px; }
 .message-code-block { margin: 12px 0; border: 1px solid var(--border-subtle, var(--line, #dfe6f0)); border-radius: 8px; overflow: hidden; background: var(--surface-code, #fafdff); }
 .code-block-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 12px; border-bottom: 1px solid var(--border-subtle, var(--line, #dfe6f0)); color: var(--text-secondary, #63758d); font-size: 12px; }

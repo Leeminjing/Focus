@@ -1,6 +1,6 @@
 /*
  * 本文件对外提供应用组合根；输入为真实 API/Live 与用户导航动作，输出为六页及原业务入口。
- * 助手正文与代码提供独立复制反馈；任务工具从完整消息快照导出 Markdown，展开压缩来源并保留正文格式。
+ * 历史提问提供复制、编辑重发与从此重试，助手提供复制、引用和重新回答；重试从冻结 checkpoint 的提问前缀派生，保留原会话与附件清单，并复用普通提交恢复。任务工具从完整消息快照导出 Markdown。
  * 工作区绑定与投递复用 WorkspacePatrolIntake；桌面工作台使用独立 userData 仓库，浏览器使用 IndexedDB，恢复后开放编辑；机器人继续使用独立输入仓库。来源导航按最新请求身份生效，迟到读取不能覆盖后来选择。
  * 任务与图卡共用 Run SSE 订阅；图卡通过只读观察器呈现真实角色与短尾部，按工作区和 Run 隔离，退出页面释放观察而不触发审批。
  * 工作流为沿原控制器装配页面、按任务保留草稿，卡片/列表偏好仅留在页面状态。示例：renderPlugins() 展示 registry 的当前状态。
@@ -2206,9 +2206,13 @@ function stripImageReferences(text) {
 function messageMaterialHistory(message) {
   const messageId = message?.id || message?.message_id;
   if (!messageId) return [];
-  return (state.materialHistory.get(state.activeTaskId) || [])
+  const history = (state.materialHistory.get(state.activeTaskId) || [])
     .filter(item => item.message_id === messageId)
     .sort((a, b) => Number(a.ordinal) - Number(b.ordinal));
+  if (history.length) return history;
+  // Inherited questions retain their manifest, while binding rows remain with
+  // the original task. Keep their cards and prose readable in the new branch.
+  try { return FocusMessageRetry.materialBindings(message); } catch { return []; }
 }
 
 function stripRunMaterialProtocol(text, message) {
@@ -2219,7 +2223,7 @@ function stripRunMaterialProtocol(text, message) {
 function renderRunMaterialCards(message) {
   const rows = messageMaterialHistory(message);
   if (!rows.length) return "";
-  return `<section class="message-materials"><header><strong>本轮材料</strong><span class="ui-badge">${rows.length}</span></header>${rows.map(item => `<article class="message-material-card">${item.material_kind === "image" && item.current_available ? materialImageMarkup(item.material_id, "message-material-thumb", item.relative_path) : `<span class="ui-icon is-sm icon-${item.material_kind === "image" ? "file-image" : "file"}" aria-hidden="true"></span>`}<span><strong>${escapeHtml(item.relative_path)}</strong>${item.note ? `<p>${escapeHtml(item.note)}</p>` : '<small class="muted">无备注</small>'}${item.must_view_requested ? '<small class="ui-badge is-warning">必须看</small>' : ""}${!item.current_available ? '<small class="muted">当前内容不可用</small>' : ""}</span></article>`).join("")}</section>`;
+  return `<section class="message-materials"><header><strong>本轮材料</strong><span class="ui-badge">${rows.length}</span></header>${rows.map(item => `<article class="message-material-card">${item.material_kind === "image" && item.current_available ? materialImageMarkup(item.material_id, "message-material-thumb", item.relative_path) : `<span class="ui-icon is-sm icon-${item.material_kind === "image" ? "file-image" : "file"}" aria-hidden="true"></span>`}<span><strong>${escapeHtml(item.relative_path)}</strong>${item.note ? `<p>${escapeHtml(item.note)}</p>` : '<small class="muted">无备注</small>'}${item.must_view_requested ? '<small class="ui-badge is-warning">必须看</small>' : ""}${item.current_available === false ? '<small class="muted">当前内容不可用</small>' : ""}</span></article>`).join("")}</section>`;
 }
 
 function renderContentBlock(block, message = null) {
@@ -2235,7 +2239,7 @@ function messageKeyOf(message, fallbackIndex) {
   return message?.id || message?.message_id || `${message?.role || "message"}:${fallbackIndex}`;
 }
 
-function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}) {
+function renderMessage(message, { showRoleHeader = false, fallbackKey = 0, historyActions = false } = {}) {
   // 后端兜底降级消息按工具结果样式渲染，不泄露原始 XML 标签
   const degraded = compressionPanel.degradedParts(message);
   const messageKey = messageKeyOf(message, fallbackKey);
@@ -2256,7 +2260,7 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
   }
   const answerText = kind === "ai" ? messageBodyText(message) : "";
   const renderedContent = kind === "ai" ? renderAssistantContent(answerText) : content;
-  const actions = messageReading.renderActions(answerText);
+  const actions = renderHistoryMessageActions(message, kind, historyActions);
   const associations = semantics.associations.map(item => `<span class="message-association">${escapeHtml(item.direction)} ${escapeHtml(item.name)}${item.tool_call_id ? ` · ${escapeHtml(item.tool_call_id)}` : ""}</span>`).join("");
   let header = "";
   if (showRoleHeader) {
@@ -2273,6 +2277,145 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
     <div class="message-content">${renderedContent}</div>
     ${actions}
   </article>`;
+}
+
+function renderHistoryMessageActions(message, kind, enabled) {
+  const source = messageBodyText(message);
+  const copy = kind === "ai" ? messageReading.renderActions(source)
+    : kind === "human" ? messageReading.renderActions(source, uiText("conversation.copy_question", "复制提问")).replace('data-action="copy-answer"', 'data-action="copy-question"') : "";
+  if (!enabled || message.curation_synthetic || !(message.id || message.message_id)) return copy;
+  const action = (name, key, label) => `<button type="button" class="text-button" data-action="${name}">${escapeHtml(uiText(key, label))}</button>`;
+  const extra = kind === "human"
+    ? action("edit-history-message", "conversation.edit_resend", "编辑后重新发送") + action("retry-history-message", "conversation.retry_here", "从这里重新尝试")
+    : kind === "ai" && source.trim()
+      ? action("quote-history-message", "conversation.quote", "引用追问") + action("retry-history-message", "conversation.regenerate", "重新回答") : "";
+  if (!extra) return copy;
+  return copy ? copy.replace("</div>", `${extra}</div>`) : `<div class="message-actions">${extra}</div>`;
+}
+
+let messageRetryDraft = null;
+let messageRetryLoading = false;
+
+function closeMessageRetry() {
+  if (messageRetryDraft?.pending) return;
+  const draft = messageRetryDraft;
+  messageRetryDraft = null;
+  document.querySelector("#messageRetryDialog")?.remove();
+  draft?.trigger?.focus();
+}
+
+function quoteHistoryMessage(button) {
+  const key = button.closest("[data-message-key]")?.dataset.messageKey;
+  const messages = compressionPanel.expandForConversation(state.details.get(state.activeTaskId)?.messages || []);
+  const message = messages.find(item => messageKeyOf(item) === key);
+  const source = message && messageBodyText(message);
+  const input = document.querySelector("#mainInput");
+  if (!source?.trim() || !input) return;
+  const taskId = state.activeTaskId;
+  const current = composerDraft.value(taskId, input.value || "");
+  input.value = `${current}${current ? "\n\n" : ""}${source.split("\n").map(line => `> ${line}`).join("\n")}\n\n`;
+  composerDraft.claim(taskId, input.value);
+  updateAtHighlight(input);
+  void persistFocusState();
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+async function openMessageRetry(button, edit) {
+  if (messageRetryLoading || messageRetryDraft) return;
+  const task = activeTask();
+  const messageId = button.closest("[data-message-key]")?.dataset.messageKey;
+  if (!task || !messageId || task.loop || state.details.get(task.task_id)?.context?.managed_status) return;
+  const navigation = taskSwitchSequence;
+  messageRetryLoading = true;
+  try {
+    const snapshot = await api(`/desktop/api/contexts/${task.task_id}/snapshot`);
+    if (navigation !== taskSwitchSequence || state.view !== "focus") return;
+    if (!snapshot.checkpoint_id) throw new Error("这条消息尚无已提交的会话快照，请稍后重试");
+    const turn = FocusMessageRetry.selectTurn(snapshot.messages, messageId);
+    messageRetryDraft = {
+      task, snapshot, turn, edit, navigation, trigger: button, pending: false, context: null, materials: new Map(),
+      options: { skills: selectedSkills("main"), ...accessMode.requestBody(accessModeOf("main")) },
+    };
+    const title = edit ? uiText("conversation.edit_resend", "编辑后重新发送") : uiText("conversation.retry_here", "从这里重新尝试");
+    document.querySelector("#overlayRoot").innerHTML = `<dialog id="messageRetryDialog" class="message-retry-dialog" aria-labelledby="messageRetryTitle"><div class="dialog-form">
+      <h2 id="messageRetryTitle">${escapeHtml(title)}</h2><p>${escapeHtml(uiText("conversation.branch_notice", "将从这条提问之前创建新分支。原会话及之后的记录会保留，文件改动不会回退。"))}</p>
+      <label>${escapeHtml(uiText("conversation.question", "提问"))}<textarea id="messageRetryInput" ${edit ? "autofocus" : "readonly"}>${escapeHtml(FocusMessageRetry.editableText(turn.message))}</textarea></label>
+      <p id="messageRetryError" class="danger" role="alert"></p><div class="dialog-actions"><button type="button" data-action="cancel-message-retry">${escapeHtml(uiText("conversation.cancel", "取消"))}</button><button type="button" class="primary" data-action="submit-message-retry">${escapeHtml(uiText("conversation.send_branch", "在新分支重新发送"))}</button></div>
+    </div></dialog>`;
+    const dialog = document.querySelector("#messageRetryDialog");
+    dialog.addEventListener("cancel", event => { event.preventDefault(); closeMessageRetry(); });
+    dialog.showModal();
+    if (!edit) await submitMessageRetry();
+  } catch (error) { setStatus(error.message, true); }
+  finally { messageRetryLoading = false; }
+}
+
+async function submitMessageRetry() {
+  const draft = messageRetryDraft;
+  if (!draft || draft.pending) return;
+  const input = document.querySelector("#messageRetryInput");
+  const editedText = draft.edit ? input.value.trim() : null;
+  const errorNode = document.querySelector("#messageRetryError");
+  if (draft.edit && !editedText) { errorNode.textContent = uiText("conversation.question_required", "提问不能为空"); return; }
+  const dialog = document.querySelector("#messageRetryDialog");
+  draft.pending = true;
+  dialog.querySelectorAll("button, textarea").forEach(node => { node.disabled = true; });
+  errorNode.textContent = "";
+  try {
+    // Freeze the source by checkpoint, never slice the visible/windowed DOM history.
+    if (!draft.context) draft.context = await api("/desktop/api/contexts/derive", { method: "POST", body: JSON.stringify({
+      title: `${draft.task.title.slice(0, 180)} · 重试`,
+      sources: [{ context_id: draft.task.task_id, checkpoint_id: draft.snapshot.checkpoint_id }], messages: draft.turn.messages,
+    }) });
+    const context = draft.context;
+    if (!["valid", "repaired", "approved"].includes(context.projection_status)) throw new Error("该历史上下文需要先处理安全执行投影，请在上下文与派生中查看");
+    const [history, materials] = await Promise.all([
+      api(`/desktop/api/tasks/${draft.task.task_id}/material-history`),
+      api(`/desktop/api/tasks/${draft.task.task_id}/materials`),
+    ]);
+    const localBindings = history.filter(item => item.message_id === (draft.turn.message.id || draft.turn.message.message_id));
+    const inheritedBindings = FocusMessageRetry.materialBindings(draft.turn.message);
+    const bindings = (inheritedBindings.length ? inheritedBindings.map(item => localBindings.find(local => local.material_id === item.material_id) || item) : localBindings).sort((a, b) => Number(a.ordinal) - Number(b.ordinal));
+    // Material IDs belong to a task. Re-enroll their paths in the branch and carry
+    // notes/must-view intent; never silently drop an unavailable attachment.
+    for (const binding of bindings) {
+      if (binding.current_available === false) throw new Error(`原提问的材料已不可用：${binding.relative_path}`);
+      const original = materials.find(item => item.material_id === binding.material_id);
+      if (!draft.materials.has(binding.material_id)) draft.materials.set(binding.material_id, await api(`/desktop/api/tasks/${context.context_id}/materials`, { method: "POST", body: JSON.stringify({ path: binding.relative_path, reading_mode: original?.reading_mode || "full", instruction_mode: original?.instruction_mode || "reference" }) }));
+    }
+    let content = FocusMessageRetry.replayContent(draft.turn.message, editedText);
+    const remap = text => {
+      for (const [oldId, material] of draft.materials) text = text.replaceAll(`material_id=${oldId}`, `material_id=${material.material_id}`);
+      return text;
+    };
+    content = typeof content === "string" ? remap(content) : content.map(block => typeof block.text === "string" ? { ...block, text: remap(block.text) } : block);
+    const taskId = context.context_id;
+    const message = editedText ?? FocusMessageRetry.editableText(draft.turn.message);
+    await api(`/desktop/api/tasks/${taskId}/access-mode`, { method: "PUT", body: JSON.stringify({ access_mode: draft.options.access_mode }) });
+    const requestId = crypto.randomUUID();
+    const replayBindings = bindings.map(item => ({ materialId: draft.materials.get(item.material_id).material_id, note: item.note || "" }));
+    const requiredImageIds = bindings.filter(item => item.must_view_requested).map(item => draft.materials.get(item.material_id).material_id);
+    taskRunOperations.freeze(taskId, requestId, { input: message, message, selectionSignature: JSON.stringify({ bindings: replayBindings, requiredImageIds, notes: Object.fromEntries(replayBindings.map(item => [item.materialId, item.note])) }), body: JSON.stringify({
+      message: content, ...draft.options,
+      material_inputs: replayBindings.map(item => ({ material_id: item.materialId, note: item.note })),
+      must_view_material_ids: requiredImageIds,
+    }) });
+    await refreshTasks();
+    await hydrateContextTrees();
+    draft.pending = false;
+    closeMessageRetry();
+    if (draft.navigation !== taskSwitchSequence || state.view !== "focus" || state.activeTaskId !== draft.task.task_id) return;
+    await switchTask(taskId);
+    // A newer navigation owns the screen. Its composer must never submit this retry.
+    if (state.activeTaskId === taskId && state.view === "focus") await sendMain(true);
+  } catch (error) {
+    errorNode.textContent = error.message;
+    setStatus(error.message, true);
+  } finally {
+    draft.pending = false;
+    dialog.querySelectorAll("button, textarea").forEach(node => { node.disabled = false; });
+  }
 }
 
 function collectImagesFromMessages(messages, depth = 0) {
@@ -2321,11 +2464,12 @@ function _conversationRenderInput(detail, task) {
       streamBuffers: state.streamBuffers,
       materialHistory: state.materialHistory,
       pluginViewCount: Object.keys(pluginViews).length,
+      historyActionsEnabled: !detail.context?.managed_status && !task.loop,
     },
     markdown: mdRenderer,
     events: conversationEvents,
     expandMessages: compressionPanel.expandForConversation,
-    renderMessage,
+    renderMessage: (message, options) => renderMessage(message, { ...options, historyActions: !detail.context?.managed_status && !task.loop }),
     renderDivider: renderCompressionDivider,
     escapeHtml,
     windowLimit: conversationView.windowLimit(task.task_id),
@@ -7319,7 +7463,12 @@ async function handleDocumentClick(event) {
   if (!button) return;
   const action = button.dataset.action;
   if (action === "open-file-panel") return openFileCard(button);
-  if (action === "copy-answer") return copyMessageText(button, button.dataset.copyText);
+  if (action === "copy-answer" || action === "copy-question") return copyMessageText(button, button.dataset.copyText);
+  if (action === "edit-history-message") return openMessageRetry(button, true);
+  if (action === "retry-history-message") return openMessageRetry(button, false);
+  if (action === "quote-history-message") return quoteHistoryMessage(button);
+  if (action === "cancel-message-retry") return closeMessageRetry();
+  if (action === "submit-message-retry") return submitMessageRetry();
   if (action === "copy-code") return copyMessageText(button, button.closest(".message-code-block")?.querySelector("pre > code")?.textContent);
   if (action === "export-conversation") return exportConversation();
   if (action === "show-patrol") {

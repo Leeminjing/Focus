@@ -116,7 +116,7 @@
       compression ? `${compression.block_id}:${(compression.source || []).length}:${compression.deleted ? 1 : 0}` : "",
       message.curation_synthetic ? 1 : 0,
       (message.files || []).length,
-      state.activeTaskId, history.length, state.pluginViewCount,
+      state.activeTaskId, history.length, state.pluginViewCount, state.historyActionsEnabled,
     ]);
   }
 
