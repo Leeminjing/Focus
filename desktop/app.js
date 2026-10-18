@@ -6770,7 +6770,7 @@ const modelSettings = {
   draft: null,        // { index }：正在编辑/新增的条目在当前目录中的下标
   errors: {},         // 后端返回的字段级错误（键形如 models[0].base_url）
   test: null,         // { state: "running" | "ok" | "fail", reason }
-  credentialValue: "", // 密钥输入框的当前值：只进不出，任何响应都不回填
+  credentialDrafts: {}, // 按来源变量保留未保存密钥；只保存在内存，任何响应都不回填
   dirty: false,
   saving: false,
   setupChecked: false,
@@ -6778,6 +6778,32 @@ const modelSettings = {
 
 const MODEL_NUMERIC_FIELDS = ["context_window", "curation_max_output_tokens"];
 const MODEL_FLAG_FIELDS = ["default", "curation_default", "supports_image_input"];
+
+function modelCredentialVariable(entry) {
+  // 与后端 match_env_ref 一致；$VAR 和 ${VAR} 共用同一份草稿。
+  const match = String(entry?.api_key || "").match(/^\$([A-Z_][A-Z0-9_]*)$|^\$\{([A-Z_][A-Z0-9_]*)\}$/);
+  return match ? match[1] || match[2] : "";
+}
+
+function modelCredentialValue(entry = modelSettings.snapshot?.models?.[modelSettings.draft?.index]) {
+  return modelSettings.credentialDrafts[modelCredentialVariable(entry)] || "";
+}
+
+function updateModelCredential(value) {
+  const entry = modelSettings.snapshot?.models?.[modelSettings.draft?.index];
+  const variable = modelCredentialVariable(entry);
+  if (!variable) return;
+  if (value) modelSettings.credentialDrafts[variable] = value;
+  else delete modelSettings.credentialDrafts[variable];
+  modelSettings.dirty = true;
+  modelSettings.test = null;
+}
+
+function pendingModelCredentials() {
+  const variables = new Set((modelSettings.snapshot?.models || []).map(modelCredentialVariable));
+  return Object.fromEntries(Object.entries(modelSettings.credentialDrafts)
+    .filter(([variable, value]) => variable && variables.has(variable) && value));
+}
 
 function modelEntryPayload(entry) {
   const fields = modelSettings.snapshot?.editable_fields || [];
@@ -6795,6 +6821,11 @@ function modelEntrySource(entry) {
 }
 
 function modelCredentialState(entry) {
+  if (modelCredentialValue(entry)) return uiText("settings.model_key_pending", "密钥待保存");
+  if (!entry.api_key_set && !entry.api_key_literal && !entry.default && !entry.curation_default
+      && entry.name !== modelSettings.snapshot?.default_model_override) {
+    return uiText("settings.model_key_optional", "未配置（可选模板）");
+  }
   if (entry.api_key_placeholder) return uiText("settings.model_placeholder_key", "占位密钥，请填写真实 API Key");
   if (entry.api_key_literal) return uiText("settings.model_key_literal", "已内联字面量（不建议）");
   if (entry.api_key_set ?? Boolean(entry.api_key)) return uiText("settings.model_key_set", "已设置");
@@ -6866,7 +6897,7 @@ function renderModelDraft() {
         ${modelFieldError("api_key") ? `<span class="field-error">${escapeHtml(modelFieldError("api_key"))}</span>` : ""}
       </label>
       <label class="settings-model-field">${uiText("settings.model_field_key_value", "密钥值")} · ${escapeHtml(modelCredentialState(entry))}
-        <input type="password" data-model-credential value="${escapeHtml(modelSettings.credentialValue)}" autocomplete="off" placeholder="${escapeHtml(uiText("settings.model_key_placeholder", "留空表示不修改"))}">
+        <input type="password" data-model-credential value="${escapeHtml(modelCredentialValue(entry))}" autocomplete="off" placeholder="${escapeHtml(uiText("settings.model_key_placeholder", "留空表示不修改"))}">
       </label>
     </div>
     <div class="settings-model-flags">
@@ -6959,17 +6990,21 @@ async function ensureModelSetup() {
   selectSettingsTab("models");
   // 不等待归档会话或沙箱检查，让模型修复入口立即可见。
   void openSettings();
-  const index = snapshot.models.findIndex(entry => !entry.api_key_set || entry.default);
+  const issueIndex = Object.keys(snapshot.setup_issues || {}).map(key => /^models\[(\d+)\]/.exec(key)).find(Boolean);
+  const index = issueIndex ? Number(issueIndex[1]) : snapshot.models.findIndex(entry => entry.default);
   if (index >= 0) startModelDraft(index);
   else renderModelSettings();
 }
 
 function startModelDraft(index, isNew = false) {
   const entry = modelSettings.snapshot?.models?.[index];
-  modelSettings.draft = { index, isNew, before: entry ? JSON.parse(JSON.stringify(entry)) : null };
+  modelSettings.draft = {
+    index, isNew, before: entry ? JSON.parse(JSON.stringify(entry)) : null,
+    beforeFlags: modelSettings.snapshot.models.map(model => ({ default: model.default, curation_default: model.curation_default })),
+    beforeCredentials: { ...modelSettings.credentialDrafts },
+  };
   modelSettings.errors = {};
   modelSettings.test = null;
-  modelSettings.credentialValue = "";
   renderModelSettings();
 }
 
@@ -6978,10 +7013,11 @@ function cancelModelDraft() {
   if (!draft) return;
   if (draft.isNew) modelSettings.snapshot.models.splice(draft.index, 1);
   else if (draft.before) modelSettings.snapshot.models[draft.index] = draft.before;
+  modelSettings.snapshot.models.forEach((entry, index) => Object.assign(entry, draft.beforeFlags?.[index] || {}));
+  modelSettings.credentialDrafts = draft.beforeCredentials || {};
   modelSettings.draft = null;
   modelSettings.errors = {};
   modelSettings.test = null;
-  modelSettings.credentialValue = "";
   renderModelSettings();
 }
 
@@ -7002,6 +7038,7 @@ function addModelEntry() {
 
 function removeModelEntry(index) {
   modelSettings.snapshot.models.splice(index, 1);
+  modelSettings.credentialDrafts = pendingModelCredentials();
   modelSettings.draft = null;
   modelSettings.dirty = true;
   modelSettings.errors = {};
@@ -7011,6 +7048,7 @@ function removeModelEntry(index) {
 function restoreShippedModels() {
   if (!confirm(uiText("settings.model_reset", "恢复发行默认"))) return;
   modelSettings.snapshot.models = (modelSettings.snapshot.shipped_models || []).map(entry => ({ ...entry, source: "shipped" }));
+  modelSettings.credentialDrafts = {};
   modelSettings.draft = null;
   modelSettings.dirty = true;
   modelSettings.errors = {};
@@ -7022,6 +7060,9 @@ function updateModelField(target) {
   if (!entry) return;
   const field = target.dataset.modelField;
   if (MODEL_FLAG_FIELDS.includes(field)) {
+    if (target.checked && ["default", "curation_default"].includes(field)) {
+      modelSettings.snapshot.models.forEach(model => { model[field] = false; });
+    }
     entry[field] = target.checked;
     modelSettings.dirty = true;
     renderModelSettings();
@@ -7034,6 +7075,10 @@ function updateModelField(target) {
   }
   if (["provider", "protocol"].includes(field) && value === "") value = null;
   entry[field] = value;
+  if (field === "api_key") {
+    const input = document.querySelector("[data-model-credential]");
+    if (input) input.value = modelCredentialValue(entry);
+  }
   modelSettings.dirty = true;
 }
 
@@ -7049,14 +7094,8 @@ async function saveModelSettings() {
   modelSettings.errors = {};
   setStatus(uiText("settings.model_verifying", "正在保存并验证普通调用和策展输出…"));
   const payload = { models: modelSettings.snapshot.models.map(modelEntryPayload) };
-  // 与后端 match_env_ref 一致，仅接受当前编辑值中的合法 $VAR / ${VAR} 引用。
-  const editing = modelSettings.snapshot.models[modelSettings.draft?.index ?? -1];
-  const reference = String(editing?.api_key || "");
-  const referenceMatch = reference.match(/^\$([A-Z_][A-Z0-9_]*)$|^\$\{([A-Z_][A-Z0-9_]*)\}$/);
-  const credentialVariable = referenceMatch ? referenceMatch[1] || referenceMatch[2] : "";
-  if (modelSettings.credentialValue && credentialVariable) {
-    payload.credentials = { [credentialVariable]: modelSettings.credentialValue };
-  }
+  const credentials = pendingModelCredentials();
+  if (Object.keys(credentials).length) payload.credentials = credentials;
   renderModelSettings();
   try {
     let snapshot;
@@ -7073,7 +7112,7 @@ async function saveModelSettings() {
     }
     modelSettings.snapshot = snapshot;
     modelSettings.draft = null;
-    modelSettings.credentialValue = "";
+    modelSettings.credentialDrafts = {};
     modelSettings.dirty = false;
     state.equipment = { ...state.equipment, models: snapshot.models };
     if (snapshot.verification) {
@@ -7098,7 +7137,7 @@ async function testModelConnection() {
   try {
     const result = await api("/desktop/api/settings/models/test", {
       method: "POST",
-      body: JSON.stringify({ entry: modelEntryPayload(entry), api_key_value: modelSettings.credentialValue || undefined }),
+      body: JSON.stringify({ entry: modelEntryPayload(entry), api_key_value: modelCredentialValue(entry) || undefined }),
     });
     modelSettings.test = { state: result.ok ? "ok" : "fail", reason: result.reason };
   } catch (error) {
@@ -7834,7 +7873,7 @@ document.addEventListener("input", event => {
   }
   if (event.target.matches("[data-model-field]")) updateModelField(event.target);
   // 密钥输入只进内存、不回填：任何响应都不携带凭据值
-  if (event.target.matches("[data-model-credential]")) modelSettings.credentialValue = event.target.value;
+  if (event.target.matches("[data-model-credential]")) updateModelCredential(event.target.value);
 });
 
 // 主输入框滚动时同步 @命令高亮 backdrop（textarea 的 scroll 不冒泡，用捕获监听）。
