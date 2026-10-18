@@ -1,0 +1,8 @@
+{
+  "screens": 110,
+  "sections": 6,
+  "embedded_images_match_pngs": true,
+  "sections_do_not_overlap": true,
+  "importer_completed": "Imported 110 Focus UI screenshots in 6 sections.",
+  "validation_mode": "offline API stub; not executed in a Figma account"
+}

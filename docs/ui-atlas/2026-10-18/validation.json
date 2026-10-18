@@ -1,0 +1,11 @@
+{
+  "screenshots": 110,
+  "groups": 6,
+  "all_images_decoded": true,
+  "gallery_search_filter_lightbox_keyboard_download_link": "passed",
+  "zip_integrity": "passed",
+  "sha256_integrity": "passed",
+  "figma_plugin": "syntax checked; not executed in Figma account",
+  "renderer_fixture": "production HTML/CSS/JS with isolated test data",
+  "page_errors": []
+}
