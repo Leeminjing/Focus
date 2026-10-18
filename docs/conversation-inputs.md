@@ -14,3 +14,11 @@
 后端入口为 `POST /desktop/api/tasks/{task_id}/main/inputs`，接受 `mode`、可选 `target_run_id` 和 `run: MainRunCreate`，并要求 `Idempotency-Key`。GET 同路径读取状态，DELETE `/{input_id}` 撤回尚未启动的队列消息。
 
 验证：`python -m pytest backend/tests/test_conversation_inputs.py -q`、`node --test desktop/conversation-inputs.test.cjs`、`node desktop/conversation-inputs.e2e.cjs`。
+
+2026-10-18 验证记录：
+
+- 本功能、访问审批中间件和耐久派发的 32 项后端测试通过，包含生产工厂工具边界、checkpoint 写入失败恢复和真实 HTTP/Worker/结算链路。
+- 本功能、原请求恢复及输入草稿的 33 项桌面测试通过；隐藏 Electron 的补充、队列、撤回编辑、删除、技能清理和幂等重试交互验收通过。
+- 桌面全量：554 项通过、6 项失败、2 项跳过；6 项失败在原始提交 `773d086` 的独立快照中全部复现。
+- 后端全量运行超过半小时后在约 53% 处停止，已有多项失败，未宣称全量通过。其中工具目录的 10 项失败在原始提交独立快照中以相同 fixture 参数错误复现。
+- Standards 与 Spec 两路复核发现的问题均已修复，复核未发现剩余具体问题。
