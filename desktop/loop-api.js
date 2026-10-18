@@ -146,6 +146,12 @@
       },
       taskProgress: (loopId, progressId, signal) => request(`/${encodeURIComponent(loopId)}/task-progress${progressId ? `?progress_id=${encodeURIComponent(progressId)}` : ""}`, { signal }),
       retryTaskProgress: (loopId, observationId) => request(`/${encodeURIComponent(loopId)}/task-progress/${encodeURIComponent(observationId)}/retry`, { method: "POST" }),
+      projectionFailures: (loopId, { before, includeResolved = false, signal } = {}) => {
+        const query = new URLSearchParams({ include_resolved: String(includeResolved) });
+        if (before) query.set("before", before);
+        return request(`/${encodeURIComponent(loopId)}/projection-failures?${query}`, { signal });
+      },
+      repairProjectionFailure: (loopId, failureId) => request(`/${encodeURIComponent(loopId)}/projection-failures/${encodeURIComponent(failureId)}/repair`, { method: "POST" }),
       factDetail: (loopId, factId, signal, revision) => request(`/${encodeURIComponent(loopId)}/facts/${encodeURIComponent(factId)}${revision ? `?revision=${encodeURIComponent(revision)}` : ""}`, { signal }),
       liveSnapshot: (loopId, signal) => request(`/${encodeURIComponent(loopId)}/live`, { signal }),
       liveHistory: (loopId, { beforeSequence, limit = 50, signal } = {}) => {

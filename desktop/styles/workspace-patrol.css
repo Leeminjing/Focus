@@ -9,6 +9,9 @@
  * 原生工作台显示机器人唤起按钮；浏览器材料卡保持有界图片与引用文字预览，不改变发送目标。
 */
 #app:has(.workspace-patrol) { padding: 0; }
+.patrol-projection-failure { margin-block: 12px; padding: 12px; border: 1px solid var(--material-rim); border-radius: 10px; }
+.patrol-projection-failure summary { cursor: pointer; overflow-wrap: anywhere; }
+.patrol-projection-failure dd { margin: 4px 0 12px; overflow-wrap: anywhere; }
 .workspace-patrol [data-patrol-materials] { display: flex; flex-wrap: wrap; gap: 8px; }
 .workspace-patrol .patrol-material-card { display: flex; flex-direction: column; gap: 4px; width: 150px; padding: 10px; border: 1px solid var(--material-rim); border-radius: 10px; background: var(--material-fill); font-size: 12px; overflow-wrap: anywhere; }
 .workspace-patrol .patrol-material-card img { height: 90px; object-fit: contain; }

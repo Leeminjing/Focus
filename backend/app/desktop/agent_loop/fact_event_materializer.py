@@ -4,7 +4,7 @@ r"""本文件对外提供 FactEventMaterializer。
 确定 identity、携带 persistence-safety provenance 的事实修订和 policy 驱动的生命周期状态。具体工作流为把同一领域实体的连续事件归并为同一 Fact，先追加
 观察修订与规范化披露，再用类型化证据推进验证；verification 事件只作用于明确引用的 Fact。示例：
 `fact = await materializer.materialize(session, event)`。
-Artifact 事件保留 file 版本描述和领域 result_key，正文不进入事实流，来源身份区分 slot/path 的每次写入。
+Artifact 事件保留 file 版本描述和领域 result_key，正文不进入事实流，来源身份区分 slot/path 的每次写入；重放旧来源不替换或验证较新观察。
 """
 
 from __future__ import annotations
@@ -78,7 +78,8 @@ class FactEventMaterializer:
             cause_event_id=event.event_id,
         )
         fact = await self._lifecycle.upsert_observation(session, observation)
-        decision = self._policy.evaluate(evidence, observation.observer)
+        decision = self._policy.evaluate(tuple(FactEvidenceReference.model_validate(item) for item in fact.evidence),
+                                         FactActor.model_validate(fact.observer))
         if fact.state in {"observed", "verifying"}:
             fact = await self._lifecycle.apply_verification(session, fact.fact_id, decision, cause_event_id=event.event_id)
         return fact
@@ -152,7 +153,7 @@ class FactEventMaterializer:
                 entity_id=event.entity_id,
                 run_id=str(event.payload.get("run_id")) if event.payload.get("run_id") else None,
                 context_revision_id=str(event.payload.get("context_revision_id")) if event.payload.get("context_revision_id") else None,
-                metadata={"event_id": event.event_id, "kind": event.kind, "sequence": event.sequence,
+                metadata={"event_id": event.event_id, "kind": event.kind, "sequence": event.sequence, "projection_sequence": event.sequence,
                     **({"file": event.payload["file"]} if event.payload.get("file") else {}),
                     "persistence_safety": event.payload.get("_persistence_safety") or {}},
             ),
