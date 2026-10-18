@@ -9,6 +9,7 @@
  * Loop 介入提交保留原文；成功后只清空同一 Context、模式和内容的当前表单，重绘替换及提交期间的新草稿不被旧节点重置影响。全图节点在选择/装备模式复用原操作，普通检查仍不改变发送目标；选择重绘恢复原节点焦点。
  * 任务工具提供手工整理并复用既有 quick-apply；已有压缩待决仍使用原 resume。授权/等待表单解析复用共享视图，文件预览暂时隐藏材料检查器，关闭后恢复原 UI 偏好；独立会话的内部目录不呈现为用户已绑定工作区。
  * 会话 standard Patrol 由独立 Document/Workbench/Branches 模块负责 typed 左右编排、精确来源选择、保存、只读请求预览和精确执行分支；本文件组合路由、装备、检查器与运行订阅，材料变更按所属任务使检查过期并按当前页面刷新，保留编辑挂载。
+ * 传统任务与独立会话在同任务刷新时保持输入区及其祖先挂载，只更新消息与外围状态；后台其他任务结束只更新任务列表，回执不清除正在组字的草稿。
  * 示例：refreshMaterialView(taskId, true) 使该任务材料变更后的检查过期并刷新当前路由；await sendMain()。模型配置显式选择 Provider 与协议，详情展示有效协议。
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
  * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
@@ -237,6 +238,7 @@ const runMaterialPicker = window.runMaterialPicker;
 const materialGrouping = window.materialGrouping;
 const accessMode = window.FocusAccessMode;
 const composerDraft = window.FocusComposerDraft;
+const composingMainInputs = new WeakSet();
 const taskRunOperations = window.FocusTaskRunOperations?.create();
 const loopApi = window.FocusLoopApi?.create(runtime);
 const runStreams = window.FocusRunStreamSubscriptions?.create(runtime);
@@ -1686,6 +1688,12 @@ function setPickerSelection(kind, names, clearQuery = false) {
     const detail = state.details.get(state.activeTaskId);
     detail.ui_state ||= {};
     detail.ui_state.input = clearQuery ? "" : (document.querySelector("#mainInput")?.value || "");
+    if (clearQuery) {
+      const input = document.querySelector("#mainInput");
+      if (input) input.value = "";
+      composerDraft.claim(state.activeTaskId, "");
+      if (input) updateSkillMenu(input);
+    }
     detail.ui_state.skills = names;
     detail.ui_state.scrollTop = document.querySelector("#conversation")?.scrollTop || 0;
     renderFocus();
@@ -1757,7 +1765,10 @@ function updateMainRecoveryControls() {
   const node = document.querySelector("#mainSubmissionRecovery");
   if (node) node.innerHTML = renderMainRecovery(taskId);
   const input = document.querySelector("#mainInput");
-  if (input) input.readOnly = Boolean(recovery && !recovery.editing);
+  const pending = taskRunOperations?.get(taskId)?.submission?.status === "pending";
+  if (input) input.readOnly = Boolean(recovery && !recovery.editing && !pending
+    && !composingMainInputs.has(input)
+    && composerDraft.value(taskId, input.value).trim() === recovery.message);
   const send = document.querySelector('[data-action="send-main"]');
   if (send) send.textContent = state.mainPreparations.has(taskId) ? "等待附件…" : recovery ? (recovery.editing ? "发送新请求" : "按原内容重试") : uiText("focus.send", "发送");
 }
@@ -1874,6 +1885,43 @@ async function showAssembly(workspaceId = "") {
   return switchTask(task.task_id);
 }
 
+// Keep the editor, its entire ancestor chain, and the conversation mounted.
+// Even moving the old textarea out and back would end an active IME session.
+function patchFocusChrome(markup) {
+  const template = document.createElement("template");
+  template.innerHTML = markup;
+  const next = template.content;
+  for (const selector of [".task-page-heading", ".task-workspace-list", ".task-workspace-tools",
+    ".composer-context", "#composerAttachments", ".composer-actions", "#composerFeedback",
+    "#mainSubmissionRecovery", '[data-skill-picker="main"] .skill-tags']) {
+    const current = app.querySelector(selector);
+    const replacement = next.querySelector(selector);
+    if (current && replacement && current.outerHTML !== replacement.outerHTML) current.replaceWith(replacement);
+  }
+  const view = app.querySelector(".focus-view");
+  for (const selector of [".task-admission-receipt", ".context-block-banner"]) {
+    const current = app.querySelector(selector);
+    const replacement = next.querySelector(selector);
+    if (!replacement) current?.remove();
+    else if (!current) view.insertBefore(replacement, app.querySelector("#commitmentProgress"));
+    else if (current.outerHTML !== replacement.outerHTML) current.replaceWith(replacement);
+  }
+  const shell = app.querySelector(".focus-shell");
+  const style = next.querySelector(".focus-shell").getAttribute("style");
+  if (shell.getAttribute("style") !== style) shell.setAttribute("style", style);
+  const panel = app.querySelector("#filePanel");
+  const nextPanel = next.querySelector("#filePanel");
+  if (!nextPanel) panel?.remove();
+  else if (!panel) shell.append(nextPanel);
+  // Labels may change with the locale; value, selection and skill-menu state
+  // belong to the live editing session and must never be reapplied here.
+  const input = app.querySelector("#mainInput");
+  const nextInput = next.querySelector("#mainInput");
+  for (const name of ["aria-label", "placeholder"]) {
+    if (input.getAttribute(name) !== nextInput.getAttribute(name)) input.setAttribute(name, nextInput.getAttribute(name));
+  }
+}
+
 function renderFocus(task = activeTask()) {
   if (!task) return renderNoActiveTask();
   const isAssembly = task.harness_mode === "assembly";
@@ -1900,7 +1948,10 @@ function renderFocus(task = activeTask()) {
   const shellStyle = `grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr)${panelOpen ? ` ${state.panelWidth}px` : ""}`;
   patrolAvatarController?.destroy();
   patrolAvatarController = null;
-  app.innerHTML = `
+  const keepEditor = app.dataset.taskId === task.task_id
+    && app.querySelector?.(".focus-view")?.dataset?.taskId === task.task_id
+    && !!app.querySelector?.("#mainInput");
+  const markup = `
     <header class="task-page-heading"><div><small>${task.harness_mode === "assembly" ? "独立会话" : escapeHtml(task.workspace_name || "本地工作区")}</small><h1>${task.harness_mode === "assembly" ? "无工作区模式" : "任务"}</h1><p>${task.harness_mode === "assembly" ? "从一个问题或一份材料开始。" : "一条任务，一条持续会话。"}</p></div><div><button data-action="show-patrol">回到 Patrol</button><button data-action="new-task">＋ 新建任务</button></div></header>
     <section class="task-workspace-layout${task.harness_mode === "assembly" ? " is-assembly" : ""}">${task.harness_mode === "assembly" ? "" : renderTaskRail(task)}<section class="focus-shell" style="${shellStyle}">
       <section class="focus-view" data-task-id="${task.task_id}">
@@ -1928,10 +1979,12 @@ function renderFocus(task = activeTask()) {
       </section>
       ${panelOpen ? `<aside class="file-panel" id="filePanel"><div class="panel-resizer" id="panelResizer" title="拖拽调整面板宽度"></div><div class="file-panel-inner"></div></aside>` : ""}
     </section></section>`;
+  if (keepEditor) patchFocusChrome(markup);
+  else app.innerHTML = markup;
   app.querySelector(".task-workspace-layout").append(appInspector);
   app.dataset.taskId = task.task_id;
   const freshConversation = document.querySelector("#conversation");
-  if (previousConversation && freshConversation && typeof freshConversation.replaceWith === "function") {
+  if (!keepEditor && previousConversation && freshConversation && typeof freshConversation.replaceWith === "function") {
     freshConversation.replaceWith(previousConversation);
   }
   const conversation = document.querySelector("#conversation");
@@ -2004,10 +2057,12 @@ async function mountFileLinkPanel(container, target) {
   return linkedFilePreview.mount(container, target);
 }
 
+const boundPanelResizers = new WeakSet();
 function bindPanelResizer() {
   const resizer = document.querySelector("#panelResizer");
   const shell = document.querySelector(".focus-shell");
-  if (!resizer || !shell) return;
+  if (!resizer || !shell || boundPanelResizers.has(resizer)) return;
+  boundPanelResizers.add(resizer);
   resizer.addEventListener("pointerdown", event => {
     event.preventDefault();
     resizer.setPointerCapture(event.pointerId);
@@ -4846,7 +4901,8 @@ async function sendMainOnce(taskId, requestId, retry = null) {
     detail = state.details.get(taskId) || detail;
     if (run.intent_kind === "direct_message") {
       consumeMainAttachments(taskId, outgoing, attachments);
-      const unchanged = composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
+      const unchanged = !composingMainInputs.has(input)
+        && composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
       if (unchanged) composerDraft.release(taskId);
       detail.ui_state = { ...(detail.ui_state || {}), input: unchanged ? "" : composerDraft.value(taskId) };
       state.details.set(taskId, detail);
@@ -4886,7 +4942,8 @@ async function sendMainOnce(taskId, requestId, retry = null) {
     consumeMainAttachments(taskId, outgoing, attachments);
     state.composerErrors.delete(taskId);
     if (!(detail.messages || []).some(item => item.id === run.message_id)) detail.messages = [...(detail.messages || []), { role: "human", content: messagePayload, id: run.message_id }];
-    const unchanged = composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
+    const unchanged = !composingMainInputs.has(input)
+      && composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
     detail.ui_state = { ...(detail.ui_state || {}), input: unchanged ? "" : composerDraft.value(taskId), skills: unchanged ? [] : detail.ui_state?.skills || [] };
     if (unchanged) composerDraft.release(taskId);
     state.details.set(taskId, detail);
@@ -4935,6 +4992,24 @@ const COMMITMENT_STAGE_NAMES = {
 const TRACE_ACTORS = { supervisor: "Supervisor", worker: "Worker", evaluator: "Evaluator" };
 const TERMINAL_RUN_STATUSES = new Set(["success", "error", "interrupted", "timeout", "cancelled", "stopped"]);
 
+function renderRunUpdate(taskId) {
+  if (state.view === "focus" && taskId && state.activeTaskId !== taskId) {
+    // Another task's completion only changes the task list, never this editor.
+    const rail = app.querySelector?.(".task-workspace-list");
+    const task = activeTask();
+    if (rail && task) {
+      const markup = renderTaskRail(task);
+      if (rail.outerHTML !== markup) {
+        const template = document.createElement("template");
+        template.innerHTML = markup;
+        rail.replaceWith(template.content.firstElementChild);
+      }
+    }
+    return;
+  }
+  scheduleRender();
+}
+
 async function settleRunStream(run, source, ownerTaskId, terminal) {
   if (state.streams.get(run.run_id) !== source) return;
   syncPatrolRunState(run, terminal.status, terminal.error || null);
@@ -4955,7 +5030,7 @@ async function settleRunStream(run, source, ownerTaskId, terminal) {
     ? state.tasks.find(item => item.task_id === run.task_id)
     : state.tasks.find(item => item.thread_id === run.thread_id);
   if (task) settleCommitmentRun(task.task_id, terminal);
-  scheduleRender();
+  renderRunUpdate(ownerTaskId);
   const detail = task ? state.details.get(task.task_id) : null;
   if (wasMainInterrupted
       && !state.commitment.review
@@ -5007,7 +5082,7 @@ function listenToRun(run) {
         resyncAgain = false;
         await refreshTaskAfterTxn(ownerTaskId);
       } while (resyncAgain && state.streams.get(run.run_id) === source);
-      scheduleRender();
+      renderRunUpdate(ownerTaskId);
     })()
       .catch(error => setStatus(`运行内容补读失败：${error.message}`, true))
       .finally(() => { resyncPending = null; });
@@ -8053,6 +8128,13 @@ document.addEventListener("drop", event => {
     target.dataset.dropGroupId || null,
     beforeMaterialId && beforeMaterialId !== materialId ? beforeMaterialId : null
   ));
+});
+
+document.addEventListener("compositionstart", event => {
+  if (event.target.id === "mainInput") composingMainInputs.add(event.target);
+});
+document.addEventListener("compositionend", event => {
+  if (event.target.id === "mainInput") composingMainInputs.delete(event.target);
 });
 
 document.addEventListener("input", event => {

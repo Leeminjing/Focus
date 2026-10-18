@@ -11,7 +11,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const { createAppHarness, readAppSource } = require("./test-helper.cjs");
+const { createAppHarness, readAppSource, createNode } = require("./test-helper.cjs");
 
 const mode = require("./access-mode.js");
 
@@ -80,7 +80,7 @@ assert.match(panelNotice, /data-action="confirm-access-review-full"/, "批准面
 assert.equal(mode.riskNoticeHtml(t).includes("data-action"), false, "未给出动作名时不渲染按钮");
 
 // 6) 两个入口共用同一渲染：作曲区与草稿装备
-const app = { dataset: {}, innerHTML: "" };
+const app = createNode();
 Object.defineProperty(app, "innerHTML", {
   set(value) { app.html = value; },
   get() { return app.html || ""; },
@@ -108,9 +108,12 @@ assert.match(statusHtml, /C:\/prepared/);
 assert.match(statusHtml, /部分约束/);
 
 const seed = uiState => new vm.Script(`
+  state.view = "focus";
   state.tasks = [{ task_id: "task", thread_id: "thread", workspace_id: "ws", workspace_path: "C:/workspace" }];
   state.activeTaskId = "task";
   state.details.set("task", { messages: [], ui_state: ${JSON.stringify(uiState)}, active_run: null });
+  document.querySelector("#mainInput").value = "测试消息";
+  composerDraft.claim("task", "测试消息");
   state.equipment = { models: [], tools: [], skills: [], permissions: ["read", "write", "host_command"] };
   renderFocus();
 `).runInContext(harness.context);
