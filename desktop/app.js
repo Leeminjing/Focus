@@ -332,8 +332,9 @@ function setMainReference(reference) {
   document.querySelector("#mainInput")?.focus();
 }
 
-function jumpToReference(reference) {
-  if (reference.task_id !== state.activeTaskId || state.view !== "focus") return setStatus("请在来源会话中查看引用", true);
+async function jumpToReference(reference) {
+  if (reference.task_id !== state.activeTaskId || state.view !== "focus") await switchTask(reference.task_id);
+  if (reference.task_id !== state.activeTaskId || state.view !== "focus") return;
   const find = () => [...document.querySelectorAll("#conversation [data-message-id]")]
     .find(node => node.dataset.messageId === reference.message_id);
   let article = find();

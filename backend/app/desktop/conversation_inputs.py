@@ -18,6 +18,7 @@ from typing import Literal
 from backend.app.desktop.models import DesktopRun, DesktopThread, MainRunCreate, StrictRequest
 from backend.app.desktop.persistence_safety import PersistencePayloadNormalizer
 from backend.app.desktop.run_materials import RunMaterialRequest
+from backend.app.desktop.message_reference import validate_message_reference
 from backend.app.desktop.run_orchestration.admission import RunAdmissionService
 from focus.history import content_hash
 from focus.persistence.base import Base
@@ -84,8 +85,7 @@ class ConversationInputs:
         return loop_id is None
 
     async def submit(self, task_id, body, request_id):
-        if body.run.message_reference and body.run.message_reference.task_id != task_id:
-            raise HTTPException(422, "引用必须来自当前会话")
+        await validate_message_reference(self.desktop, task_id, body.run.message_reference)
         identity = uuid.uuid5(uuid.NAMESPACE_URL, f"focus:conversation-input:{task_id}:{request_id}").hex
         frozen = body.model_dump(mode="json")
         request_hash = content_hash(frozen)

@@ -47,6 +47,7 @@ from backend.app.desktop.models import (
 )
 from backend.app.desktop.service import PreparedRun
 from backend.app.desktop.run_materials import RunMaterialRequest
+from backend.app.desktop.message_reference import validate_message_reference
 from backend.app.desktop.run_orchestration import RunLauncher
 from backend.app.desktop.run_stream import durable_run_sse_consumer
 from backend.app.desktop.workspace_material_routes import workspace_material_router
@@ -330,8 +331,7 @@ async def start_main_run(
     idempotency_header: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict:
     request_identity = body.idempotency_key or idempotency_header or uuid.uuid4().hex
-    if body.message_reference and body.message_reference.task_id != task_id:
-        raise HTTPException(422, "引用必须来自当前会话")
+    await validate_message_reference(request.app.state.desktop_service, task_id, body.message_reference)
     loop_service = getattr(request.app.state, "agent_loop_service", None)
     if loop_service is not None:
         accepted = await loop_service.user_message(task_id, _loop_message_text(body.message),

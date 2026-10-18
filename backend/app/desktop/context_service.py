@@ -26,6 +26,8 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.desktop.context_projection import ContextProjection, compile_context_messages
+from backend.app.desktop.context_evolution.reader import ContextRevisionReader
+from backend.app.desktop.message_reference import contains_message_reference
 from backend.app.desktop.context_curation import (
     PortfolioPublicationError,
     PortfolioSuperseded,
@@ -140,6 +142,23 @@ class ContextService:
             "checkpoint_id": actual_id,
             "messages": self._checkpoint_messages(checkpoint),
         }
+
+    async def permits_message_reference(self, context_id: str, reference: dict) -> bool:
+        """Allow exact quotations already recorded in immutable branch sources.
+
+        Read the declared revision, never the source's latest history or the
+        client-authored branch definition. The replayed question itself is cut
+        out of the branch prefix, but remains in its frozen source snapshot.
+        """
+        reader = ContextRevisionReader(ContextRevisionRepository(), self.checkpointer)
+        async with self.session_factory() as session:
+            current = await self.evolution.current(session, context_id)
+            sources = await self.context_lineage.external_source_refs(session, current)
+            for source in sources:
+                view = await reader.read(session, source, "display")
+                if contains_message_reference(view.messages, reference):
+                    return True
+        return False
 
     async def semantic_snapshot(self, context_id: str, checkpoint_id: str) -> dict[str, Any]:
         async with self.session_factory() as session:

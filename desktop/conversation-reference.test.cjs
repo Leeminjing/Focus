@@ -62,6 +62,35 @@ function setup() {
   return { ...h, input, card, evaluate };
 }
 
+test("a branch reference navigates to the origin, reveals its message and restores the selection", async () => {
+  const h = setup();
+  const calls = [];
+  const content = {};
+  const article = { dataset: { messageId: "answer" },
+    scrollIntoView: () => calls.push("scroll"),
+    classList: { add: () => calls.push("highlight"), remove() {} },
+    querySelector: () => content };
+  h.context.document.querySelectorAll = () => [article];
+  h.context.content = content;
+  h.context.calls = calls;
+  h.evaluate(`state.activeTaskId = 'branch';
+    switchTask = async taskId => { calls.push(taskId); state.activeTaskId = taskId; };
+    conversationReference.selectRange = (node, selected) => {
+      if (node === content && selected.task_id === 'A' && selected.message_id === 'answer') calls.push('selection');
+    };`);
+  await h.evaluate("jumpToReference(quote)");
+  assert.deepEqual(calls, ["A", "scroll", "highlight", "selection"]);
+});
+
+test("source navigation does not select a message after a newer navigation takes over", async () => {
+  const h = setup();
+  h.evaluate(`state.activeTaskId = 'branch';
+    switchTask = async () => { state.activeTaskId = 'another'; };
+    conversationReference.selectRange = () => { throw new Error('stale selection'); };`);
+  await h.evaluate("jumpToReference(quote)");
+  assert.equal(h.evaluate("state.activeTaskId"), "another");
+});
+
 test("sending includes provenance, displays a historical card and consumes only the accepted quote", async () => {
   const h = setup();
   await h.evaluate("sendMain()");

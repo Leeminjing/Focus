@@ -2,6 +2,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -45,10 +46,30 @@ def test_no_reference_preserves_legacy_message():
     assert project_message_reference(message, None) is message
 
 
+def test_reference_survives_ui_snapshot_without_exposing_other_metadata():
+    from langchain_core.messages import HumanMessage
+    from focus.runtime.runs.events import serialize_message
+
+    message = HumanMessage(content="why?", additional_kwargs={"message_reference": reference(),
+        "private_provider_state": "hidden"})
+    assert serialize_message(message)["additional_kwargs"] == {"message_reference": reference()}
+
+
+def test_reference_in_compressed_history_requires_exact_provenance():
+    from backend.app.desktop.message_reference import contains_message_reference
+
+    history = [{"compression": {"source": [{"compression": {"source": [
+        {"additional_kwargs": {"message_reference": reference()}}
+    ]}}]}}]
+    assert contains_message_reference(history, reference())
+    assert not contains_message_reference(history, {**reference(), "task_id": "forged"})
+
+
 def test_route_passes_reference_to_execution_and_rejects_cross_task():
     calls = []
 
     class Desktop:
+        contexts = SimpleNamespace(permits_message_reference=AsyncMock(return_value=False))
         async def run_by_idempotency(self, key):
             return None
 
@@ -90,7 +111,8 @@ def test_current_run_delivery_projects_reference_and_keeps_context_provenance(mo
 def test_conversation_inputs_reject_cross_task_reference_before_admission():
     from backend.app.desktop.conversation_inputs import ConversationInputCreate, ConversationInputs
 
-    inputs = ConversationInputs(SimpleNamespace(session_factory=None))
+    inputs = ConversationInputs(SimpleNamespace(session_factory=None,
+        contexts=SimpleNamespace(permits_message_reference=AsyncMock(return_value=False))))
     body = ConversationInputCreate(mode="queue", run=MainRunCreate(message="why?", message_reference=reference()))
     with pytest.raises(HTTPException) as caught:
         asyncio.run(inputs.submit("different", body, "request"))
