@@ -36,6 +36,7 @@
   let panelVisible = bridge?.enabled ? false : !document.hidden, visibilityKnown = false, resultsNeedReset = false;
   let control = null;
   let restart = null;
+  let onboarding = false;
   const draftStore = () => intake.store(workspace?.workspace_id || null);
   const references = FocusDesktopPatrolReferences.create({ host, api, runtime, store:draftStore, loopId:() => loopId, onError:fail });
   const artifacts = FocusArtifactDrawer.create({ host, api, getLoopId: () => loopId, onSource: id => openWorkbench(id) });
@@ -43,6 +44,14 @@
   const historyReferences = FocusPatrolInputReferences.create({ host, intake, workspaceId: () => workspace?.workspace_id,
     onFile: (row, file) => references.detail(file, row.loop_id || loopId), onError: fail });
   function fail(error) { $("#error").hidden = !error; $("#error").textContent = error ? String(error.message || error) : ""; if (!error) $("#retry-workspace").hidden = true; }
+  function renderOnboarding() {
+    $("#first-goal").hidden = !onboarding;
+    $("#first-goal-help").textContent = workspace
+      ? "项目文件夹已就绪。输入第一个目标，点击发送或按 Ctrl+Enter 开始。"
+      : "模型已验证可用。接下来选择项目文件夹，用于读取资料和保存工作结果。";
+    $("#first-goal-folder").hidden = !!workspace;
+    $("#instruction").placeholder = onboarding ? "你想在这个项目中完成什么？" : "有什么想法？";
+  }
   let budget = null;
   function resetBudget() {
     budget?.dispose();
@@ -80,6 +89,9 @@
     const latest = draftStore().get().rows[0];
     $("#receipt").textContent = latest?.status === "accepted" && recovery ? "已保存"
       : ({ accepted: "已受理", sending: "发送中", failed: "未确认", edited: "已转为草稿" }[latest?.status] || "");
+    const deliveryHtml = FocusWorkspacePatrolFeedback.delivery(projection, workspace);
+    $("#delivery").hidden = !deliveryHtml;
+    if ($("#delivery").innerHTML !== deliveryHtml) $("#delivery").innerHTML = deliveryHtml;
     const pausable = loop?.status === "running" || (loop?.status === "waiting_user" && loop.waiting_reason === "awaiting_input");
     const resumable = loop?.status === "paused";
     if (control?.phase === "accepted") {
@@ -250,6 +262,7 @@
     if (bound) { intake.remember(bound); intake.claimUnbound(bound.workspace_id); }
     $("#binding-name").textContent = bound ? bound.display_name : "绑定工作区";
     $("#binding").title = bound?.path || "选择工作区文件夹";
+    renderOnboarding();
     watchDraft();
     if (!bound) return;
     await Promise.all([
@@ -273,7 +286,8 @@
     try {
       const path = await intake.choose();
       if (!path) return false;
-      await activate(await intake.bind(path)); return true;
+      await activate(await intake.bind(path));
+      $("#instruction").focus(); return true;
     } finally { binding = false; $("#binding").disabled = false; }
   }
   async function send(operation, id) {
@@ -281,6 +295,7 @@
     try {
       const promise = operation(); notify();
       const receipt = await promise;
+      if (receipt && workspace?.workspace_id === id && onboarding) { onboarding = false; renderOnboarding(); }
       if (workspace?.workspace_id === id && receipt?.loop_id) connect(receipt.loop_id);
     } catch (error) {
       if (workspace?.workspace_id !== id) return;
@@ -490,6 +505,7 @@
     if (event.key === "Enter" && event.ctrlKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); $("#compose").requestSubmit(); }
   });
   $("#binding").addEventListener("click", () => { void enqueue(choose); });
+  $("#first-goal-folder").addEventListener("click", () => { void enqueue(choose); });
   $("#clear-reply").addEventListener("click", () => draftStore().edit({ request_id: null, request_revision: null }));
   $("#hide").addEventListener("click", () => { void hidePanel().catch(fail); });
   $("#toggle-history").addEventListener("click", () => {
@@ -507,6 +523,11 @@
   });
   $("#workbench").addEventListener("click", () => { void openWorkbench(); });
   $("#open-files").addEventListener("click", () => { $(".panel-menu").open = false; void openArtifacts().catch(fail); });
+  $("#delivery").addEventListener("click", event => {
+    const button = event.target.closest("button");
+    if (button?.hasAttribute("data-patrol-files-open")) void openArtifacts().catch(fail);
+    else if (button?.dataset.patrolDeliveryContext) void Promise.resolve(openWorkbench(button.dataset.patrolDeliveryContext, button.dataset.revisionId)).catch(fail);
+  });
   $("#toggle-work").addEventListener("click", () => { void controlWork($("#toggle-work").dataset.command); });
   $("#stop-work").addEventListener("click", () => { void controlWork("stop"); });
   $("#restart-work").addEventListener("click", () => { void restartWork(); });
@@ -560,6 +581,7 @@
       const owner = closeEpoch;
       requestAnimationFrame(() => { if (owner === closeEpoch) host.classList.add("is-opening"); });
       return enqueue(async () => {
+        if (target.setupWorkspace) { onboarding = true; renderOnboarding(); }
         if (target.workspaceId) await activate(target.workspaceId === workspace?.workspace_id ? workspace : await intake.workspace(target.workspaceId));
         else if (workspace && !workspaceLoaded) await activate(workspace);
         if (target.requestId) draftStore().edit({ request_id: target.requestId, request_revision: target.requestRevision });
@@ -568,6 +590,11 @@
           target.file_refs.forEach(file => refs.set(file.result_key,file));
           if (refs.size > 32) throw new Error("一次输入最多引用 32 个文件版本");
           draftStore().edit({file_refs:[...refs.values()]});
+        }
+        if (target.setupWorkspace) {
+          renderOnboarding();
+          if (!workspace) await choose();
+          else $("#instruction").focus();
         }
       });
     });

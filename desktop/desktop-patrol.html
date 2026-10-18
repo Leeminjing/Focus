@@ -28,12 +28,14 @@
       <section id="version-picker" aria-label="引用文件版本" hidden><header><strong>引用文件版本</strong><button type="button" id="close-versions" aria-label="关闭文件版本"><span class="ui-icon icon-x" aria-hidden="true"></span></button></header><label class="version-search"><span class="ui-icon icon-search" aria-hidden="true"></span><input id="version-query" placeholder="搜索产物文件名…" aria-label="搜索产物文件名"></label><div id="version-candidates" role="status"></div><button id="older-versions" type="button" hidden>更早的文件版本</button></section>
       <section id="version-detail" aria-label="文件版本详情" hidden><header><strong>文件版本</strong><button type="button" id="close-version-detail" aria-label="关闭版本详情"><span class="ui-icon icon-x" aria-hidden="true"></span></button></header><div id="version-body"></div></section>
       <div class="panel-feedback"><div class="panel-feedback-content">
+      <section id="first-goal" aria-label="首次使用引导" hidden><p id="first-goal-help" role="status"></p><button id="first-goal-folder" type="button">选择项目文件夹</button></section>
       <div id="task-budget"></div>
       <p id="error" role="alert" hidden></p>
       <button id="retry-workspace" type="button" hidden>重新读取工作区</button>
       <div id="activity" role="status" hidden><i></i><span id="activity-text"></span><button id="activity-reconnect" hidden>重连</button><button id="toggle-work" type="button" aria-label="暂停当前工作" hidden disabled>暂停</button><span class="ui-icon icon-loader-circle" aria-hidden="true"></span></div>
       <p id="control-feedback" role="status" hidden></p>
       <div id="work-recovery" hidden><p id="recovery-message" role="status"></p><button id="restart-work" type="button">重新启用</button></div>
+      <section id="delivery" class="patrol-delivery" aria-label="本次工作交付" hidden></section>
       <section id="requests" aria-label="待处理请求"></section>
       <section id="results" aria-label="工作区已提交结果"><div id="answers"></div><div id="progress"></div><div id="artifacts"></div></section>
       <details id="history" hidden><summary>输入记录 <span id="receipt"></span></summary><div id="history-items"></div><p id="history-status" role="status" hidden></p><button id="retry-history" type="button" hidden>重试读取</button><button id="older" hidden>更早的输入</button></details>

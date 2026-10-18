@@ -1,7 +1,7 @@
 /*
  * 本文件启动 Focus 单实例桌面运行时。输入为 Python/Git/Docker、品牌资源和环境变量，输出为
  * 单一 loopback FastAPI、同源隔离窗口及 Windows 桌面 Patrol 宿主；失败时切换到品牌错误窗口。
- * 工作流为先取单实例锁，隐藏预检控制台后启动及检查后端，Windows 默认显示机器人，工作台按需打开、关闭仅隐藏；
+ * 工作流为先取单实例锁，隐藏预检控制台后启动及检查后端，Windows 未配置时先进入模型验证与项目选择，之后默认显示机器人，工作台按需打开、关闭仅隐藏；
  * 明确退出时检查未确认输入，再沿用后端 shutdown。其他平台或 FOCUS_DESKTOP_PATROL=0 保留工作台启动。
  * 工作台缩放以 Chromium 每级 1.2 倍钳制在 50%~300%，原生标题覆盖层同步 56 CSS px 基础高度。
  * 示例：electron . 启动机器人，托盘打开工作台；第二实例唤回既有机器人而不再启动后端。
@@ -293,6 +293,14 @@ async function start() {
       patrolHost = new DesktopPatrolHost({
         electron: require("electron"), apiBase, desktopDir, icon: focusIconPath, limits,
         openWorkbench: showWorkbench, getWorkbench: () => mainWindow, quit: () => app.quit(),
+        getModelSettings: async () => {
+          const response = await fetch(`${apiBase}/desktop/api/settings/models`, {
+            headers: { "X-Focus-Session": session },
+            signal: AbortSignal.any([startupAbort.signal, AbortSignal.timeout(10000)]),
+          });
+          if (!response.ok) throw new Error(`读取模型配置失败：HTTP ${response.status}`);
+          return response.json();
+        },
       });
       await patrolHost.start();
       if (revealPatrolPanel) patrolHost.openPanel();

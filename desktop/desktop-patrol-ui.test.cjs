@@ -95,7 +95,13 @@ if (!process.versions.electron) {
   }
   function snapshot(loopId) {
     return { loop_id: loopId, last_sequence: liveSequence,
-      loop: entity(loopId, { status: statusOverride || (completed ? "completed" : "running"), revision: loopRevision, interaction_mode: "workspace_patrol", waiting_reason: null,
+      loop: entity(loopId, { status: statusOverride || (completed ? "waiting_user" : "running"), revision: loopRevision, interaction_mode: "workspace_patrol", waiting_reason: completed ? "awaiting_input" : null,
+        current_round_id: "delivery-round", goal_revision: 1,
+        final_result: completed ? { summary: "完成截图分析并生成报告", round_id: "delivery-round", goal_revision: 1,
+          verification: { verification_id: "accepted-delivery", conclusion: "satisfied", criteria: [
+            { check_id: "report", status: "satisfied", explanation: "报告内容检查通过" },
+            { check_id: "optional", status: "unknown", explanation: "可选平台尚未验证" },
+          ], unresolved: ["optional"] }, final_path: [{ context_id: "context-answer", revision_id: "revision-answer", title: "分析报告" }] } : {},
         authority_revision: authorityRevision, created_at: new Date(Date.now() - 600000).toISOString(),
         grant: { status: "active", budgets: activeBudget }, usage: { model_calls: 40, input_tokens: 100000, output_tokens: 5000, rounds: 5, retries: 0 } }),
       runs: completed ? { "run-answer": entity("run-answer", { run_id: "run-answer", context_id: "context-answer", status: "completed" }) } : {},
@@ -445,6 +451,17 @@ if (!process.versions.electron) {
     assert.ok(streams.has("loop-workspace-a"));
     assert.notEqual(streams.get("loop-workspace-a"),streamBeforeReload,"刷新后的状态必须发送给新页面建立的连接");
     streams.get("loop-workspace-a").write(`data: ${JSON.stringify({ status: "resync_required", last_sequence: 2 })}\n\n`);
+    await waitFor(host.panel, "!document.querySelector('#delivery').hidden", "已验收的常驻 Patrol 必须展示本次交付");
+    assert.match(await run(host.panel, "document.querySelector('#status').textContent"), /本次工作已交付/);
+    assert.match(await run(host.panel, "document.querySelector('#delivery').textContent"), /完成截图分析并生成报告.*验收通过 1 项 · 仍未解决 1 项/s);
+    assert.equal(await run(host.panel, "document.querySelector('#instruction').value"), "A 的草稿");
+    assert.equal(await run(host.panel, "document.querySelector('#toggle-work').disabled"), false);
+    await run(host.panel, "document.querySelector('#delivery details').open=true; document.querySelector('#delivery').scrollIntoView({block:'start'})");
+    await capture(host.panel, "desktop-accepted-delivery");
+    assert.equal(await run(host.panel, "document.querySelector('#delivery').scrollWidth <= document.querySelector('#delivery').clientWidth + 1"), true);
+    await run(host.panel, "document.querySelector('#delivery details').open=false; document.querySelector('[data-patrol-delivery-context]').click()");
+    await run(workbench, "window.target=null;window.focusDesktop.patrol.onWorkbench(value=>window.target=value);window.focusDesktop.patrol.ready()");
+    await waitFor(workbench, "window.target?.revisionId === 'revision-answer'", "交付入口必须传递验收时的固定结果版本");
     await waitFor(host.panel, "document.querySelector('#results').textContent.includes('截图中的机器人已经接住材料')", "已提交回答未显示");
     const resultText = await run(host.panel, "document.querySelector('#results').textContent");
     assert.equal(await run(host.panel, "document.querySelector('#results [data-context-id]').dataset.contextId"), "context-answer");
@@ -516,10 +533,10 @@ if (!process.versions.electron) {
     await run(host.panel, "new Promise(resolve=>setTimeout(resolve,80))");
     assert.equal(conversationReads.length, readsBefore + 1, "再次展开应复用 Revision 缓存");
     await run(host.panel, "window.resultObserver.disconnect()");
+    await run(workbench, "window.target=null");
     await run(host.panel, "document.querySelector('#results [data-context-id]').click()");
     for (let i = 0; i < 120 && (!workbench || !workbench.webContents.getURL().endsWith("/desktop/")); i++) await delay(40);
     assert.ok(workbench);
-    await run(workbench, "window.target=null; window.focusDesktop.patrol.onWorkbench(value=>window.target=value); window.focusDesktop.patrol.ready()");
     await waitFor(workbench, "Boolean(window.target)", "工作台未收到来源定位");
     assert.deepEqual(await run(workbench, "window.target"), { workspaceId: "workspace-a", taskId: "context-answer", revisionId: answerRevision });
     await host.openPanel();

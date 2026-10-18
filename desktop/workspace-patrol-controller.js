@@ -48,6 +48,7 @@
     let highlightIds = [];
     let projection = null;
     let restart = null;
+    let deliveryRequested = false;
     let graphFrame = null;
     let lineagePending = false;
     let observation = null;
@@ -522,7 +523,7 @@
       const loop = projection.loop?.state || {};
       const states = { running: "推进中", paused: "已暂停", stopped: "已停止", failed: "执行失败", waiting_user: "等待处理", completed: "已完成当前工作" };
       const connections = { live: "实时更新", syncing: "同步中", connecting: "连接中", reconnecting: "重连中", resyncing: "重新同步", unavailable: "连接不可用" };
-      const stateText = loop.status === "waiting_user" && loop.waiting_reason === "awaiting_input" ? "等待新输入" : `${states[loop.status] || "准备中"} · ${connections[status.status] || "同步中"}`;
+      const stateText = loop.status === "waiting_user" && loop.waiting_reason === "awaiting_input" ? root.FocusWorkspacePatrolFeedback.status(projection, status, inputs.get()).text : `${states[loop.status] || "准备中"} · ${connections[status.status] || "同步中"}`;
       host.querySelector("[data-workbench-status]").textContent = stateText;
       host.querySelector("[data-workbench-round]").textContent = projection.round?.state?.number ? `当前 Round ${projection.round.state.number} · Live 事实` : "当前 Live 事实";
       if (["rounds", "runs", "patrol_sessions", "loop", "directives"].some(key => previous?.[key] !== projection[key])) {
@@ -530,6 +531,14 @@
       }
       const stateNode = host.querySelector("[data-patrol-state]");
       if (stateNode.textContent !== stateText) stateNode.textContent = stateText;
+      const deliveryNode = host.querySelector("[data-patrol-delivery]"), deliveryHtml = view.delivery(projection, workspace);
+      deliveryNode.hidden = !deliveryHtml;
+      if (deliveryNode.innerHTML !== deliveryHtml) deliveryNode.innerHTML = deliveryHtml;
+      if (deliveryRequested && deliveryHtml) {
+        deliveryRequested = false;
+        deliveryNode.scrollIntoView?.({ block: "nearest" });
+        deliveryNode.querySelector("button")?.focus({ preventScroll: true });
+      }
       host.querySelector('[data-patrol-control="pause"]').disabled = !(loop.status === "running" || (loop.status === "waiting_user" && loop.waiting_reason === "awaiting_input"));
       host.querySelector('[data-patrol-control="resume"]').disabled = loop.status !== "paused";
       host.querySelector('[data-patrol-control="stop"]').disabled = !["running", "paused", "waiting_user"].includes(loop.status);
@@ -598,6 +607,10 @@
           return;
         }
         if (button.hasAttribute("data-patrol-files-open")) await artifacts.open();
+        else if (button.dataset.patrolDeliveryContext) {
+          if (!detailsOpen) toggleDetails();
+          await inspectContext(button.dataset.patrolDeliveryContext, button, button.dataset.revisionId);
+        }
         else if (button.hasAttribute("data-patrol-file-picker-open")) await openFilePicker();
         else if (button.dataset.patrolFileAdd) addFileReference(JSON.parse(button.dataset.patrolFileAdd));
         else if (button.dataset.patrolFileRemove) inputs.edit({ file_refs: inputs.get().draft.file_refs.filter(item => item.result_key !== button.dataset.patrolFileRemove) });
@@ -830,13 +843,19 @@
       if (history) { history.hidden = true; history.inert = true; }
       historyOpen = false; historyReady = false; historyLoading = false; historyRefreshPending = false; historyFailure = null; historyFailureBefore = null; historyHTML = "";
       inspector?.dispose(); inspector = null; observation = null; observationIdentity = null; observationInspection = null;
-      movedPanel = null; dialogKind = null; attentionTarget = null; projection = null; restart = null; detailsOpen = false; detailsScroll = 0; lineageSnapshot = null;
+      movedPanel = null; dialogKind = null; attentionTarget = null; projection = null; restart = null; deliveryRequested = false; detailsOpen = false; detailsScroll = 0; lineageSnapshot = null;
       unlisten?.(); unlisten = null; host = null; workspace = null; loopId = null; lineageKey = null; historyKey = null; connection.stop();
     }
     const unsubscribe = liveStore.subscribe(patchLive);
     return Object.freeze({
       mount, leave,
       showDetails() { if (host && !detailsOpen) toggleDetails(); },
+      showDelivery() {
+        if (!host) return;
+        if (detailsOpen) toggleDetails();
+        deliveryRequested = true;
+        if (projection) patchLive(liveStore.get());
+      },
       showAttention(requestId, expectedLoopId) {
         if (!host || !loopId || (expectedLoopId && expectedLoopId !== loopId)) return;
         attentionTarget = requestId;
