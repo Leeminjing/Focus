@@ -6774,6 +6774,9 @@ const modelSettings = {
   dirty: false,
   saving: false,
   setupChecked: false,
+  setupMode: false,
+  advanced: false,
+  progress: null,
 };
 
 const MODEL_NUMERIC_FIELDS = ["context_window", "curation_max_output_tokens"];
@@ -6834,7 +6837,7 @@ function modelTextField(label, field, entry, options = {}) {
   const value = entry[field] ?? "";
   const control = options.select
     ? `<select data-model-field="${field}">${options.select.map(option => `<option value="${escapeHtml(option.value)}" ${option.value === value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select>`
-    : `<input type="${options.type || "text"}" data-model-field="${field}" value="${escapeHtml(String(value))}" ${options.placeholder ? `placeholder="${escapeHtml(options.placeholder)}"` : ""}>`;
+    : `<input type="${options.type || "text"}" data-model-field="${field}" value="${escapeHtml(String(value))}" ${options.list ? `list="${options.list}"` : ""} ${options.placeholder ? `placeholder="${escapeHtml(options.placeholder)}"` : ""}>`;
   return `<label class="settings-model-field${error ? " has-error" : ""}">${escapeHtml(label)}${control}${error ? `<span class="field-error">${escapeHtml(error)}</span>` : ""}</label>`;
 }
 
@@ -6848,12 +6851,25 @@ function renderModelDraft() {
   const adapters = (modelSettings.snapshot.adapters || []).map(adapter => ({ value: adapter.use, label: adapter.label }));
   const methods = [{ value: "", label: uiText("settings.model_curation_method_none", "不用于策展") }]
     .concat((modelSettings.snapshot.curation_output_methods || []).map(name => ({ value: name, label: name })));
+  const simple = modelSettings.setupMode;
+  const credential = `<label class="settings-model-field${modelFieldError("api_key") ? " has-error" : ""}">${simple ? "API Key" : uiText("settings.model_field_key_value", "密钥值")} · ${escapeHtml(modelCredentialState(entry))}
+    <input type="password" data-model-credential value="${escapeHtml(modelSettings.credentialValue)}" autocomplete="off" placeholder="${escapeHtml(simple && !entry.api_key_set ? uiText("settings.model_setup_key_placeholder", "请输入服务商提供的 API Key") : uiText("settings.model_key_placeholder", "留空表示不修改"))}">
+    ${modelFieldError("api_key") ? `<span class="field-error">${escapeHtml(modelFieldError("api_key"))}</span>` : ""}
+  </label>`;
   return `<section class="settings-model-editor">
-    <header><strong>${uiText(modelSettings.draft.isNew ? "settings.model_add" : "settings.model_edit", modelSettings.draft.isNew ? "新增模型" : "编辑")}</strong><span class="muted tiny">${escapeHtml(entry.name || "")}</span></header>
+    <header><strong>${simple ? uiText("settings.model_connect", "连接模型") : uiText(modelSettings.draft.isNew ? "settings.model_add" : "settings.model_edit", modelSettings.draft.isNew ? "新增模型" : "编辑")}</strong>${simple ? "" : `<span class="muted tiny">${escapeHtml(entry.name || "")}</span>`}</header>
+    ${simple ? `<div class="settings-model-grid is-simple">
+      <label class="settings-model-field">${uiText("settings.model_service", "服务商")}<select data-model-service>${modelServiceOptions(entry).map(option => `<option value="${escapeHtml(option.id)}" ${option.selected ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select></label>
+      ${credential}
+      ${modelTextField(uiText("settings.model_field_model", "模型标识"), "model", entry, { list: "modelSetupSuggestions" })}
+      <datalist id="modelSetupSuggestions">${(modelSettings.snapshot.shipped_models || []).filter(model => model.base_url === entry.base_url).map(model => `<option value="${escapeHtml(model.model)}"></option>`).join("")}</datalist>
+    </div><p class="muted tiny">${uiText("settings.model_shared_default", "普通调用与策展使用同一个模型。其他设置可在高级配置中调整。")}</p>
+    <button class="text-button" data-action="model-advanced" aria-expanded="${modelSettings.advanced}">${uiText("settings.model_advanced", "高级配置")}</button>` : ""}
+    <div ${simple && !modelSettings.advanced ? "hidden" : ""}>
     <div class="settings-model-grid">
       ${modelTextField(uiText("settings.model_field_name", "条目名（查表键）"), "name", entry)}
       ${modelTextField(uiText("settings.model_field_display_name", "显示名"), "display_name", entry)}
-      ${modelTextField(uiText("settings.model_field_model", "模型标识"), "model", entry)}
+      ${simple ? "" : modelTextField(uiText("settings.model_field_model", "模型标识"), "model", entry)}
       ${modelTextField(uiText("settings.model_field_use", "适配器"), "use", entry, { select: adapters })}
       ${modelTextField("Provider", "provider", entry, { select: [{ value: "", label: "沿用旧适配器映射" }, { value: "openai", label: "OpenAI" }, { value: "deepseek", label: "DeepSeek" }] })}
       ${modelTextField("API 协议", "protocol", entry, { select: [{ value: "", label: "沿用旧适配器映射" }, { value: "responses", label: "Responses" }, { value: "chat_completions", label: "Chat Completions（兼容）" }] })}
@@ -6865,20 +6881,86 @@ function renderModelDraft() {
         <input type="text" data-model-field="api_key" value="${escapeHtml(String(entry.api_key || ""))}" placeholder="$OPENAI_API_KEY">
         ${modelFieldError("api_key") ? `<span class="field-error">${escapeHtml(modelFieldError("api_key"))}</span>` : ""}
       </label>
-      <label class="settings-model-field">${uiText("settings.model_field_key_value", "密钥值")} · ${escapeHtml(modelCredentialState(entry))}
-        <input type="password" data-model-credential value="${escapeHtml(modelSettings.credentialValue)}" autocomplete="off" placeholder="${escapeHtml(uiText("settings.model_key_placeholder", "留空表示不修改"))}">
-      </label>
+      ${simple ? "" : credential}
     </div>
     <div class="settings-model-flags">
       ${modelFlagField(uiText("settings.model_field_default", "默认模型"), "default", entry)}
       ${modelFlagField(uiText("settings.model_field_curation_default", "策展默认模型"), "curation_default", entry)}
       ${modelFlagField(uiText("settings.model_field_supports_image", "支持图像输入"), "supports_image_input", entry)}
     </div>
-    <div class="settings-model-editor-actions">
+    </div>
+    <div class="settings-model-editor-actions" ${simple && !modelSettings.advanced ? "hidden" : ""}>
       <button class="text-button" data-action="model-test">${modelSettings.test?.state === "running" ? uiText("settings.model_testing", "正在测试…") : uiText("settings.model_test", "测试连接")}</button>
-      <button class="text-button" data-action="model-cancel">${uiText("settings.model_cancel", "取消")}</button>
+      ${simple ? "" : `<button class="text-button" data-action="model-cancel">${uiText("settings.model_cancel", "取消")}</button>`}
     </div>
   </section>`;
+}
+
+// 服务商选项从发行目录提取；自定义服务通过高级配置填写地址与协议。
+function modelServiceOptions(entry) {
+  const templates = modelSettings.snapshot.shipped_models || [];
+  const options = templates.filter((item, index) => templates.findIndex(other => other.base_url === item.base_url && other.provider === item.provider) === index)
+    .map((item, index) => ({ id: String(index), label: ({ deepseek: "DeepSeek", openai: "OpenAI" })[item.provider] || item.base_url || item.display_name, template: item,
+      selected: entry.base_url === item.base_url && entry.provider === item.provider }));
+  options.push({ id: "openai", label: "OpenAI", template: {
+    use: "langchain_openai:ChatOpenAI", provider: "openai", protocol: "chat_completions",
+    base_url: "https://api.openai.com/v1", model: "", context_window: null,
+    curation_output_method: "prompt_json", curation_max_output_tokens: 8192, supports_image_input: false,
+  }, selected: !options.some(item => item.selected) && entry.base_url === "https://api.openai.com/v1" });
+  options.push({ id: "custom", label: uiText("settings.model_custom_service", "其他 OpenAI 兼容服务（自定义）"), selected: !options.some(item => item.selected) });
+  return options;
+}
+
+function updateModelService(value) {
+  if (modelSettings.saving) return;
+  const entry = modelSettings.snapshot?.models?.[modelSettings.draft?.index];
+  if (!entry) return;
+  const option = modelServiceOptions(entry).find(item => item.id === value);
+  if (option?.template) {
+    const fields = ["use", "provider", "protocol", "base_url", "model", "context_window", "curation_output_method", "curation_max_output_tokens", "supports_image_input"];
+    fields.forEach(field => { entry[field] = option.template[field] ?? null; });
+  } else {
+    Object.assign(entry, { use: "langchain_openai:ChatOpenAI", provider: "openai", protocol: "chat_completions", base_url: "", model: "", context_window: null, curation_output_method: "prompt_json", supports_image_input: false });
+    modelSettings.advanced = true;
+  }
+  modelSettings.dirty = true;
+  renderModelSettings();
+}
+
+const MODEL_SETUP_CHECKS = [
+  ["chat", "普通调用", "能否正常理解和回答"],
+  ["curation", "策展输出", "能否整理和派生上下文"],
+  ["semantic_index", "自动索引", "能否为后续工作检索上下文"],
+];
+
+function renderModelVerification() {
+  const verification = modelSettings.progress || modelSettings.snapshot?.verification;
+  if (!verification && !modelSettings.setupMode && !modelSettings.saving) return "";
+  const checks = verification?.checks || [];
+  const labels = { pending: "等待中", running: "验证中", passed: "已通过", failed: "失败", interrupted: "未完成" };
+  return `<section class="settings-model-verification" aria-label="${uiText("settings.model_checks", "模型验证")}">
+    <ol>${MODEL_SETUP_CHECKS.map(([capability, label, description]) => {
+      const check = checks.find(item => item.capability === capability);
+      const status = check?.status || (check ? (check.ok ? "passed" : "failed") : "pending");
+      return `<li data-model-check="${capability}" data-check-status="${status}">
+        <div><strong>${uiText(`settings.model_check_${capability}`, label)}</strong><p class="muted tiny">${uiText(`settings.model_check_${capability}_help`, description)}</p>
+        ${check?.reason ? `<p class="field-error">${escapeHtml(check.reason)}</p>` : ""}</div>
+        <span role="status" aria-label="${uiText(`settings.model_check_${capability}`, label)}: ${uiText(`settings.model_check_${status}`, labels[status] || status)}">${uiText(`settings.model_check_${status}`, labels[status] || status)}</span>
+        ${status === "failed" ? `<button class="text-button" data-action="model-repair" data-capability="${capability}" ${modelSettings.saving ? "disabled" : ""}>${uiText("settings.model_repair", "修复此项")}</button>` : ""}
+      </li>`;
+    }).join("")}</ol>
+    ${verification && !modelSettings.saving ? `<button class="text-button" data-action="model-verify" ${modelSettings.dirty ? "disabled" : ""}>${uiText("settings.model_retry", "重新验证")}</button>` : ""}
+    ${verification?.ok && !modelSettings.saving && !modelSettings.dirty && modelSettings.setupMode ? `<button class="primary" data-action="model-start">${uiText("settings.model_start", "开始第一个项目")}</button>` : ""}
+  </section>`;
+}
+
+function repairModelCheck(capability) {
+  const verification = modelSettings.snapshot?.verification;
+  const name = verification?.checks?.find(check => check.capability === capability)?.model;
+  const index = modelSettings.snapshot.models.findIndex(entry => entry.name === name || (!name && (capability === "chat" ? entry.default : entry.curation_default)));
+  if (index >= 0) startModelDraft(index);
+  modelSettings.advanced = true;
+  renderModelSettings();
 }
 
 function renderModelSettings() {
@@ -6891,14 +6973,16 @@ function renderModelSettings() {
   }
 
   const banners = [];
+  const verification = modelSettings.progress || snapshot.verification;
   if (snapshot.setup_required) {
-    banners.push(`<p class="settings-model-banner is-warn">${escapeHtml(uiText("settings.model_setup_help", "首次使用或模型配置需要修复。请填写真实 API Key，核对地址、模型名称与协议；保存后将验证普通调用和策展输出。"))}</p>`);
+    banners.push(`<p class="settings-model-banner is-warn">${escapeHtml(uiText("settings.model_setup_help", "选择服务商，填写 API Key 和模型，然后验证并开始。"))}</p>`);
     banners.push(`<ul class="settings-model-errors">${Object.values(snapshot.setup_issues || {}).map(message => `<li>${escapeHtml(message)}</li>`).join("")}</ul>`);
   }
   if (modelSettings.saving) {
-    banners.push(`<p role="status" class="settings-model-banner">${escapeHtml(uiText("settings.model_verifying", "正在保存并验证普通调用和策展输出…"))}</p>`);
-  } else if (snapshot.verification) {
-    banners.push(`<p role="status" class="settings-model-banner ${snapshot.verification.ok ? "is-ok" : "is-error"}">${escapeHtml(uiText("settings.model_verified", "设置已保存。{reason}", { reason: snapshot.verification.reason }))}</p>`);
+    banners.push(`<p role="status" class="settings-model-banner">${escapeHtml(uiText("settings.model_verifying", "正在验证模型能力，请查看各项进度…"))}</p>`);
+  } else if (verification) {
+    const reason = verification.reason || uiText("settings.model_incomplete", "验证未完成，请重新验证");
+    banners.push(`<p role="status" class="settings-model-banner ${verification.ok ? "is-ok" : "is-error"}">${escapeHtml(verification.status === "interrupted" ? reason : uiText("settings.model_verified", "设置已保存。{reason}", { reason }))}</p>`);
   }
   if (snapshot.default_error) {
     banners.push(`<p class="settings-model-banner is-error">${escapeHtml(uiText("settings.model_default_error", "默认模型无法解析：{message}", { message: snapshot.default_error }))}</p>`);
@@ -6932,13 +7016,17 @@ function renderModelSettings() {
 
   host.innerHTML = `
     ${banners.join("")}
+    <fieldset class="settings-model-controls" ${modelSettings.saving ? "disabled" : ""}>
+    ${modelSettings.setupMode && modelSettings.draft ? renderModelDraft() : ""}
     <div class="settings-model-actions">
-      <button class="text-button" data-action="model-add">${uiText("settings.model_add", "新增模型")}</button>
-      <button class="text-button" data-action="model-reset">${uiText("settings.model_reset", "恢复发行默认")}</button>
-      <button class="primary" data-action="model-save" ${modelSettings.saving ? "disabled" : ""}>${uiText("settings.model_save", "保存并立即生效")}</button>
+      ${!modelSettings.setupMode || modelSettings.advanced ? `<button class="text-button" data-action="model-add">${uiText("settings.model_add", "新增模型")}</button>
+      <button class="text-button" data-action="model-reset">${uiText("settings.model_reset", "恢复发行默认")}</button>` : ""}
+      <button class="primary" data-action="model-save" ${modelSettings.saving ? "disabled" : ""}>${modelSettings.setupMode ? uiText("settings.model_validate_start", "验证并开始") : uiText("settings.model_save", "保存并立即生效")}</button>
     </div>
-    <div class="settings-model-list">${rows}</div>
-    ${modelSettings.draft ? renderModelDraft() : ""}`;
+    <div class="settings-model-list" ${modelSettings.setupMode && !modelSettings.advanced ? "hidden" : ""}>${rows}</div>
+    ${!modelSettings.setupMode && modelSettings.draft ? renderModelDraft() : ""}
+    </fieldset>
+    ${renderModelVerification()}`;
   interfaceI18n.apply(host);
 }
 
@@ -6955,13 +7043,29 @@ async function ensureModelSetup() {
   if (modelSettings.setupChecked) return;
   const snapshot = await loadModelSettings({ force: true });
   modelSettings.setupChecked = true;
-  if (!snapshot.setup_required) return;
+  if (!snapshot.setup_required && snapshot.verification?.ok !== false) return;
+  modelSettings.setupMode = true;
+  modelSettings.advanced = false;
+  const firstSetup = !snapshot.models.some(entry => entry.api_key_set);
   selectSettingsTab("models");
   // 不等待归档会话或沙箱检查，让模型修复入口立即可见。
   void openSettings();
-  const index = snapshot.models.findIndex(entry => !entry.api_key_set || entry.default);
+  const index = snapshot.models.findIndex(entry => entry.default);
   if (index >= 0) startModelDraft(index);
-  else renderModelSettings();
+  else if (snapshot.models.length) startModelDraft(0);
+  else {
+    addModelEntry();
+    const entry = snapshot.models[modelSettings.draft.index];
+    Object.assign(entry, { name: "first-model", display_name: "My model", curation_output_method: "prompt_json" });
+    updateModelService("openai");
+  }
+  const entry = snapshot.models[modelSettings.draft.index];
+  if (firstSetup) {
+    snapshot.models.forEach(model => { model.default = model === entry; model.curation_default = model === entry; });
+    entry.curation_output_method ||= "prompt_json";
+    modelSettings.dirty = true;
+  }
+  renderModelSettings();
 }
 
 function startModelDraft(index, isNew = false) {
@@ -7018,6 +7122,7 @@ function restoreShippedModels() {
 }
 
 function updateModelField(target) {
+  if (modelSettings.saving) return;
   const entry = modelSettings.snapshot?.models?.[modelSettings.draft?.index];
   if (!entry) return;
   const field = target.dataset.modelField;
@@ -7035,6 +7140,54 @@ function updateModelField(target) {
   if (["provider", "protocol"].includes(field) && value === "") value = null;
   entry[field] = value;
   modelSettings.dirty = true;
+  document.querySelectorAll('[data-action="model-start"], [data-action="model-verify"]').forEach(button => { button.disabled = true; });
+  // 新的输入需要新一轮验证，旧的成功结果不能成为开始入口。
+  modelSettings.progress = null;
+}
+
+function pollModelVerification(verificationId) {
+  let polling = false;
+  let stopped = false;
+  const timer = setInterval(async () => {
+    if (polling || stopped) return;
+    polling = true;
+    try {
+      const result = await api(`/desktop/api/settings/models/verification?verification_id=${encodeURIComponent(verificationId)}`);
+      if (!stopped && result.verification?.verification_id === verificationId && JSON.stringify(result.verification) !== JSON.stringify(modelSettings.progress)) {
+        modelSettings.progress = result.verification;
+        renderModelSettings();
+      }
+    } catch { /* 临时查询失败不替代保存请求的最终结果。 */ }
+    finally { polling = false; }
+  }, 500);
+  return () => { stopped = true; clearInterval(timer); };
+}
+
+async function reverifyModelSettings() {
+  if (modelSettings.saving || modelSettings.dirty) return;
+  const verificationId = crypto.randomUUID();
+  modelSettings.saving = true;
+  modelSettings.progress = { status: "running", checks: [] };
+  renderModelSettings();
+  const stopPolling = pollModelVerification(verificationId);
+  try {
+    modelSettings.snapshot = await api("/desktop/api/settings/models/verify", { method: "POST", body: JSON.stringify({ verification_id: verificationId }) });
+    modelSettings.progress = null;
+  } catch (error) {
+    modelSettings.progress = interruptedModelVerification();
+    setStatus(error.message, true);
+  } finally {
+    stopPolling();
+    modelSettings.saving = false;
+    renderModelSettings();
+  }
+}
+
+function interruptedModelVerification() {
+  return { status: "interrupted", ok: false, reason: uiText("settings.model_incomplete", "验证未完成，请重新验证"), checks: MODEL_SETUP_CHECKS.map(([capability]) => {
+    const check = modelSettings.progress?.checks?.find(item => item.capability === capability);
+    return check && ["passed", "failed"].includes(check.status) ? check : { capability, status: "interrupted" };
+  }) };
 }
 
 async function putModelSettings(payload, acknowledge = false) {
@@ -7047,10 +7200,15 @@ async function saveModelSettings() {
   if (!modelSettings.snapshot || modelSettings.saving) return;
   modelSettings.saving = true;
   modelSettings.errors = {};
-  setStatus(uiText("settings.model_verifying", "正在保存并验证普通调用和策展输出…"));
-  const payload = { models: modelSettings.snapshot.models.map(modelEntryPayload) };
-  // 与后端 match_env_ref 一致，仅接受当前编辑值中的合法 $VAR / ${VAR} 引用。
+  modelSettings.progress = { status: "running", checks: [] };
+  setStatus(uiText("settings.model_verifying", "正在验证模型能力，请查看各项进度…"));
+  const verificationId = crypto.randomUUID();
   const editing = modelSettings.snapshot.models[modelSettings.draft?.index ?? -1];
+  if (modelSettings.setupMode && editing && modelSettings.credentialValue && !/^\$([A-Z_][A-Z0-9_]*)$|^\$\{([A-Z_][A-Z0-9_]*)\}$/.test(editing.api_key || "")) {
+    editing.api_key = "$FOCUS_SETUP_API_KEY";
+  }
+  const payload = { models: modelSettings.snapshot.models.map(modelEntryPayload), verification_id: verificationId };
+  // 与后端 match_env_ref 一致，仅接受当前编辑值中的合法 $VAR / ${VAR} 引用。
   const reference = String(editing?.api_key || "");
   const referenceMatch = reference.match(/^\$([A-Z_][A-Z0-9_]*)$|^\$\{([A-Z_][A-Z0-9_]*)\}$/);
   const credentialVariable = referenceMatch ? referenceMatch[1] || referenceMatch[2] : "";
@@ -7058,6 +7216,7 @@ async function saveModelSettings() {
     payload.credentials = { [credentialVariable]: modelSettings.credentialValue };
   }
   renderModelSettings();
+  const stopPolling = pollModelVerification(verificationId);
   try {
     let snapshot;
     try {
@@ -7072,7 +7231,10 @@ async function saveModelSettings() {
       snapshot = await putModelSettings(payload, true);
     }
     modelSettings.snapshot = snapshot;
-    modelSettings.draft = null;
+    // 首配保留三项输入以便修复失败；凭据已保存后不回填。
+    if (!modelSettings.setupMode) modelSettings.draft = null;
+    else if (modelSettings.draft) modelSettings.draft.before = JSON.parse(JSON.stringify(snapshot.models[modelSettings.draft.index]));
+    modelSettings.progress = null;
     modelSettings.credentialValue = "";
     modelSettings.dirty = false;
     state.equipment = { ...state.equipment, models: snapshot.models };
@@ -7080,10 +7242,15 @@ async function saveModelSettings() {
       setStatus(uiText("settings.model_verified", "设置已保存。{reason}", { reason: snapshot.verification.reason }), !snapshot.verification.ok);
     } else setStatus(uiText("settings.model_saved", "已保存并立即生效"));
   } catch (error) {
+    modelSettings.progress = interruptedModelVerification();
     if (error.silent) return;
-    if (error.status === 422 && error.detail?.errors) modelSettings.errors = error.detail.errors;
+    if (error.status === 422 && error.detail?.errors) {
+      modelSettings.errors = error.detail.errors;
+      modelSettings.advanced = true;
+    }
     else setStatus(error.message, true);
   } finally {
+    stopPolling();
     modelSettings.saving = false;
     renderModelSettings();
   }
@@ -7589,6 +7756,15 @@ async function handleDocumentClick(event) {
   if (action === "model-cancel") return runUiAction(cancelModelDraft);
   if (action === "model-save") return runUiAction(saveModelSettings);
   if (action === "model-test") return runUiAction(testModelConnection);
+  if (action === "model-advanced") { modelSettings.advanced = !modelSettings.advanced; return renderModelSettings(); }
+  if (action === "model-verify") return runUiAction(reverifyModelSettings);
+  if (action === "model-repair") return runUiAction(() => repairModelCheck(button.dataset.capability));
+  if (action === "model-start") {
+    if (modelSettings.saving || modelSettings.dirty || !modelSettings.snapshot?.verification?.ok) return;
+    modelSettings.setupMode = false;
+    await window.FocusSurfaceTransition.visible(settingsDialog, false, { modal: true });
+    return window.FocusSurfaceTransition.visible(dialog, true, { modal: true, source: button });
+  }
   if (action === "set-language") {
     interfaceI18n.setLocale(button.dataset.locale);
     syncLanguageControls();
@@ -7834,7 +8010,12 @@ document.addEventListener("input", event => {
   }
   if (event.target.matches("[data-model-field]")) updateModelField(event.target);
   // 密钥输入只进内存、不回填：任何响应都不携带凭据值
-  if (event.target.matches("[data-model-credential]")) modelSettings.credentialValue = event.target.value;
+  if (event.target.matches("[data-model-credential]") && !modelSettings.saving) {
+    modelSettings.credentialValue = event.target.value;
+    modelSettings.dirty = true;
+    // 不重建输入框，以免打断键盘输入；立即禁用旧结果上的开始与重试入口。
+    document.querySelectorAll('[data-action="model-start"], [data-action="model-verify"]').forEach(button => { button.disabled = true; });
+  }
 });
 
 // 主输入框滚动时同步 @命令高亮 backdrop（textarea 的 scroll 不冒泡，用捕获监听）。
@@ -8301,6 +8482,7 @@ document.addEventListener("input", event => {
   if (requestId) loopWaitDrafts?.set(requestId, serializeWaitDraft(form));
 });
 document.addEventListener("change", event => {
+  if (event.target.matches("[data-model-service]")) return updateModelService(event.target.value);
   if (event.target.id === "newSessionAccessMode") {
     const select = event.target;
     try { select.value = accessMode.saveNewSessionDefault(window.localStorage, select.value); }

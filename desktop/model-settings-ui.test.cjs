@@ -261,6 +261,7 @@ const SNAPSHOT = `
     harness.context.referenceUnderTest = reference;
     const payload = await harness.vm.runInContext(`(async () => {
       ${SNAPSHOT}
+      modelSettings.setupMode = false;
       modelSettings.snapshot = JSON.parse(JSON.stringify(snapshot));
       startModelDraft(0);
       modelSettings.snapshot.models[0].api_key = referenceUnderTest;

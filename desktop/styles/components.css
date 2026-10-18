@@ -357,3 +357,23 @@ details.task-card-more .task-card-actions .text-button { font-size: 12px; }
 .settings-model-flags { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 .settings-model-flag { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-primary); }
 .settings-model-editor-actions { display: flex; gap: var(--space-2); }
+.settings-model-controls { border: 0; padding: 0; margin: 0; min-width: 0; display: grid; gap: var(--space-3); }
+.settings-model-controls:disabled { opacity: .75; }
+.settings-model-grid.is-simple { grid-template-columns: minmax(0, 1fr); }
+.settings-model-editor [hidden], .settings-model-controls [hidden] { display: none; }
+.settings-model-verification { margin-top: var(--space-4); }
+.settings-model-verification ol { list-style: none; padding: 0; margin: 0 0 var(--space-3); }
+.settings-model-verification li { display: flex; gap: var(--space-3); align-items: start; padding: var(--space-3) 0; border-bottom: 1px solid var(--border-default); }
+.settings-model-verification li > div { flex: 1; min-width: 0; }
+.settings-model-verification p { margin: var(--space-1) 0 0; overflow-wrap: anywhere; }
+.settings-model-verification li > span { flex: none; font-size: 12px; }
+.settings-model-verification [data-check-status="running"] > span { color: var(--text-accent); }
+.settings-model-verification [data-check-status="passed"] > span { color: var(--text-success); }
+.settings-model-verification [data-check-status="failed"] > span,
+.settings-model-verification .field-error { color: var(--text-danger); }
+.settings-model-verification button:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+@media (max-width: 600px) {
+  .settings-model-grid { grid-template-columns: minmax(0, 1fr); }
+  .settings-model-verification li { flex-wrap: wrap; }
+  .settings-model-verification li > div { flex-basis: 65%; }
+}

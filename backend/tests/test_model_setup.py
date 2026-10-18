@@ -363,3 +363,102 @@ def test_non_model_configuration_errors_still_fail(setup_workspace):
     (path / "config.yaml").write_text(yaml.safe_dump({"models": [entry], "stream_bridge": {"queue_maxsize": "bad"}}), encoding="utf-8")
     with pytest.raises(ValidationError):
         get_app_config("config.yaml", recover_models=True)
+
+
+def test_progress_reports_actual_running_checks_and_keeps_failures_redacted(setup_workspace, provider):
+    provider["curation"] = "not json"
+    updates = []
+    result = asyncio.run(verify_model_setup(get_app_config("config.yaml"), on_progress=updates.append))
+    running = [update for update in updates if any(check.get("status") == "running" for check in update["checks"])]
+    assert [[check["status"] for check in update["checks"]] for update in running] == [
+        ["running", "pending", "pending"],
+        ["passed", "running", "pending"],
+        ["passed", "failed", "running"],
+    ]
+    assert updates[-1] == result
+    assert result["status"] == "complete"
+    assert not result["ok"]
+    assert "old-synthetic-key" not in json.dumps(updates)
+
+
+def test_reverification_does_not_write_config_or_credentials(setup_workspace, provider, monkeypatch):
+    path, entry = setup_workspace
+    client = _client(get_app_config("config.yaml"))
+    saved = client.put("/desktop/api/settings/models", json={
+        "models": [entry], "credentials": {"SETUP_TEST_KEY": "synthetic-new-key"}, "verification_id": "save-1",
+    })
+    assert saved.json()["verification"]["ok"]
+    before = {file: file.read_bytes() for file in (path / ".focus").rglob("*") if file.is_file()}
+    provider["calls"].clear()
+    def unexpected_save(*args, **kwargs):
+        raise AssertionError("Retry must not save")
+    monkeypatch.setattr("backend.app.desktop.model_settings_routes.save_model_settings", unexpected_save)
+    retried = client.post("/desktop/api/settings/models/verify", json={"verification_id": "retry-2"})
+    assert retried.json()["verification"]["ok"]
+    assert len(provider["calls"]) == 3
+    assert all(auth == "Bearer synthetic-new-key" for auth, _ in provider["calls"])
+    assert before == {file: file.read_bytes() for file in (path / ".focus").rglob("*") if file.is_file()}
+    assert client.get("/desktop/api/settings/models/verification?verification_id=save-1").json()["verification"] is None
+    assert client.get("/desktop/api/settings/models/verification?verification_id=retry-2").json()["verification"]["ok"]
+
+
+def test_progress_is_visible_before_save_finishes_and_old_attempt_cannot_overwrite_new_one(setup_workspace, monkeypatch):
+    config = get_app_config("config.yaml")
+    app = _client(config).app
+
+    async def scenario():
+        started, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+        async def verify(snapshot, *, on_progress):
+            nonlocal calls
+            calls += 1
+            first = calls == 1
+            on_progress({"status": "running", "ok": False, "checks": [{"capability": "chat", "status": "running"}]})
+            if first:
+                started.set()
+                await release.wait()
+            return {"status": "complete", "ok": not first, "reason": "done", "checks": []}
+        monkeypatch.setattr("backend.app.desktop.model_verification.verify_model_setup", verify)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            old = asyncio.create_task(client.put("/desktop/api/settings/models", json={
+                "models": [setup_workspace[1]], "verification_id": "old",
+            }))
+            await asyncio.wait_for(started.wait(), 5)
+            progress = (await client.get("/desktop/api/settings/models/verification?verification_id=old")).json()["verification"]
+            assert progress["checks"][0]["status"] == "running"
+            assert not old.done()
+            latest = await client.post("/desktop/api/settings/models/verify", json={"verification_id": "new"})
+            assert latest.json()["verification"]["ok"]
+            release.set()
+            assert not (await old).json()["verification"]["ok"]
+            final = (await client.get("/desktop/api/settings/models")).json()["verification"]
+            assert final["verification_id"] == "new"
+            assert final["ok"]
+    asyncio.run(scenario())
+
+
+def test_cancelled_verification_marks_unfinished_checks_as_interrupted(setup_workspace, monkeypatch):
+    app = _client(get_app_config("config.yaml")).app
+
+    async def scenario():
+        started = asyncio.Event()
+        async def verify(config, *, on_progress):
+            on_progress({"status": "running", "ok": False, "checks": [
+                {"capability": "chat", "status": "passed", "ok": True},
+                {"capability": "curation", "status": "running"},
+                {"capability": "semantic_index", "status": "pending"},
+            ]})
+            started.set()
+            await asyncio.Event().wait()
+        monkeypatch.setattr("backend.app.desktop.model_verification.verify_model_setup", verify)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            pending = asyncio.create_task(client.post("/desktop/api/settings/models/verify", json={"verification_id": "cancelled"}))
+            await asyncio.wait_for(started.wait(), 5)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+            result = (await client.get("/desktop/api/settings/models/verification?verification_id=cancelled")).json()["verification"]
+            assert result["status"] == "interrupted"
+            assert not result["ok"]
+            assert [check["status"] for check in result["checks"]] == ["passed", "interrupted", "interrupted"]
+    asyncio.run(scenario())
