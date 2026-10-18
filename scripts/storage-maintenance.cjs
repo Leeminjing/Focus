@@ -1,5 +1,6 @@
 /* Local backup inventory and retention. Mutations share the updater's lock.
- * Only complete, recognised, unlinked children of HOME/backups may be removed. */
+ * Only complete, recognised direct directories of HOME/backups may be removed.
+ * Dependency snapshots may contain links; traversal never follows them. */
 "use strict";
 const fs = require("node:fs");
 const path = require("node:path");
@@ -11,14 +12,19 @@ function readJson(file, fallback) {
   catch (error) { if (error.code === "ENOENT") return fallback; throw error; }
 }
 
-function measure(file) {
+function measure(file, allowDependencyLinks = false) {
   const stat = fs.lstatSync(file);
   if (stat.isSymbolicLink()) return { bytes: 0, linked: true };
   if (!stat.isDirectory()) return { bytes: stat.size, linked: false };
   let bytes = 0, linked = false;
   for (const name of fs.readdirSync(file)) {
-    const child = measure(path.join(file, name));
-    bytes += child.bytes; linked ||= child.linked;
+    const childPath = path.join(file, name);
+    const child = measure(childPath);
+    // Only real dependency snapshot directories may contain links. The backup
+    // root, snapshot roots, manifests and database archive must stay unlinked.
+    const dependency = allowDependencyLinks && ["venv", "node_modules"].includes(name)
+      && fs.lstatSync(childPath).isDirectory();
+    bytes += child.bytes; linked ||= child.linked && !dependency;
   }
   return { bytes, linked };
 }
@@ -35,7 +41,7 @@ function inventory(home, policy, now = Date.now()) {
   if (fs.lstatSync(root).isSymbolicLink()) throw new Error("Backup directory must not be a link.");
   const entries = fs.readdirSync(root).map(id => {
     const directory = path.join(root, id);
-    const size = measure(directory);
+    const size = measure(directory, /^update-\d+-[a-f0-9]+$/.test(id));
     const row = { id, bytes: size.bytes, kind: "unknown", created_at: null, protected_reason: "unrecognised_or_incomplete" };
     if (size.linked || !fs.lstatSync(directory).isDirectory()) return { ...row, protected_reason: "linked_or_not_directory" };
     let manifest;
@@ -78,9 +84,13 @@ function cleanup(home, policy, ids) {
   for (const row of current.entries) {
     if (!selected.has(row.id) || row.protected_reason) continue;
     try {
-      const root = fs.realpathSync(path.join(home, "backups"));
+      const backupRoot = path.resolve(home, "backups");
+      if (fs.lstatSync(backupRoot).isSymbolicLink()) throw new Error("Backup directory must not be a link.");
+      const root = fs.realpathSync(backupRoot);
       const target = path.resolve(root, row.id);
-      if (path.dirname(target) !== root || fs.realpathSync(target) !== target || measure(target).linked) throw new Error("Unsafe backup cleanup target.");
+      if (path.dirname(target) !== root || fs.lstatSync(target).isSymbolicLink()
+          || fs.realpathSync(target) !== target || measure(target, row.kind === "update").linked) throw new Error("Unsafe backup cleanup target.");
+      // rm removes nested symbolic links/junctions themselves, not their targets.
       fs.rmSync(target, { recursive: true });
       removed.push(row.id);
     } catch (error) { errors.push({ id: row.id, message: error.message }); }
