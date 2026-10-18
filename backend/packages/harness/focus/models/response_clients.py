@@ -16,7 +16,10 @@ from threading import RLock
 
 from openai import AsyncOpenAI, OpenAI
 
-from focus.models.http_clients import ProxyFirstAsyncHttpClient, ProxyFirstHttpClient, environment_proxy_configured
+from focus.models.http_clients import (
+    ProxyFirstAsyncHttpClient, ProxyFirstHttpClient,
+    ObservedAsyncHttpClient, ObservedHttpClient, environment_proxy_configured,
+)
 from focus.models.lifecycle import retain_model_clients
 
 
@@ -144,7 +147,8 @@ class _AsyncClient(_ClientOwner):
             await client.close()
 
 
-def responses_clients(options, http_client=None, http_async_client=None, *, pool=None, provider=None, scope=None):
+def responses_clients(options, http_client=None, http_async_client=None, *, pool=None,
+                      provider=None, scope=None, performance_identity=None):
     # 调用方显式注入的 transport 继续独占，禁止混入共享池。
     custom = http_client is not None or http_async_client is not None
     if custom:
@@ -152,11 +156,19 @@ def responses_clients(options, http_client=None, http_async_client=None, *, pool
 
     def sync():
         proxy = not custom and environment_proxy_configured()
-        return OpenAI(**options, http_client=ProxyFirstHttpClient() if proxy else http_client)
+        client = http_client
+        if client is None:
+            client_type = ProxyFirstHttpClient if proxy else ObservedHttpClient
+            client = client_type(performance_identity=performance_identity)
+        return OpenAI(**options, http_client=client)
 
     def asynchronous():
         proxy = not custom and environment_proxy_configured()
-        return AsyncOpenAI(**options, http_client=ProxyFirstAsyncHttpClient() if proxy else http_async_client)
+        client = http_async_client
+        if client is None:
+            client_type = ProxyFirstAsyncHttpClient if proxy else ObservedAsyncHttpClient
+            client = client_type(performance_identity=performance_identity)
+        return AsyncOpenAI(**options, http_client=client)
 
     identity = {"provider": provider, "scope": scope, "options": dict(options)}
     sync_port = _SyncClient(sync, pool, {**identity, "asynchronous": False})

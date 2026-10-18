@@ -66,6 +66,7 @@ from pathlib import Path
 import subprocess
 from typing import Any, Awaitable, Callable
 import uuid
+from time import monotonic
 
 from fastapi import HTTPException, UploadFile
 from backend.app.desktop.collaboration_contracts import WaitSeconds, validate_wait_seconds
@@ -98,6 +99,9 @@ from backend.app.desktop.material_groups import MaterialGroupService
 from backend.app.desktop.material_kinds import MaterialKindClassifier
 from backend.app.desktop.material_snapshots import MaterialSnapshotVerifier
 from backend.app.desktop.material_watch import MaterialFileMonitor, restore_material_file
+from backend.app.desktop.state_changes import DesktopStateChanges
+from backend.app.desktop.material_events import MaterialChangeFeed, path_key
+from focus.models.telemetry import observe_operation, emit
 from backend.app.desktop.material_upload import MaterialUploadService
 from backend.app.desktop.main_execution_identity import (
     identity_from_main_run,
@@ -402,6 +406,13 @@ class DesktopService:
         return getattr(self, "_run_admission", None) or RunAdmissionService(RunOwnershipPolicy().admit)
 
     async def start(self) -> None:
+        self.state_changes = DesktopStateChanges(self.session_factory)
+        self.state_changes.start()
+        self._performance = None
+        if os.environ.get("FOCUS_PERFORMANCE_METRICS") == "1":
+            from backend.app.desktop.performance import DesktopPerformanceMonitor
+            self._performance = DesktopPerformanceMonitor(self.session_factory.kw["bind"])
+            self._performance.start()
         dispatch_recovery = await self._run_dispatch_recovery.reconcile()
         await self.run_lifecycle.reconcile_active(
             "桌面后端重启，原运行无法继续",
@@ -426,6 +437,10 @@ class DesktopService:
             if not task.done():
                 task.cancel()
         await asyncio.gather(*background, return_exceptions=True)
+        if hasattr(self, "state_changes"):
+            await self.state_changes.close()
+        if getattr(self, "_performance", None) is not None:
+            await self._performance.close()
 
     def notify_run_dispatch(self) -> None:
         self._run_dispatch_wakeup.set()
@@ -633,6 +648,7 @@ class DesktopService:
             await session.commit()
             return await self._task_payload(session, task, workspace)
 
+    @observe_operation("task_list")
     async def list_tasks(self) -> list[dict[str, Any]]:
         async with self.session_factory() as session:
             rows = (
@@ -1781,9 +1797,14 @@ class DesktopService:
     async def continue_agent(self, agent_id: str, message: str, run_id: str | None = None, checkpoint_id: str | None = None) -> PreparedRun:
         return await self.session_patrol.continue_from(agent_id, message, source_run_id=run_id, checkpoint_id=checkpoint_id)
 
+    @observe_operation("run_cancel_request")
     async def cancel_run(self, run_id: str) -> dict[str, Any]:
-
-        self.run_manager.cancel(run_id)
+        started = monotonic()
+        record = self.run_manager.get(run_id)
+        accepted = self.run_manager.cancel(run_id)
+        if accepted and record is not None and record.task is not None and not record.task.done():
+            record.task.add_done_callback(lambda _task: emit(
+                "run_cancelled", run_id=run_id, local_completion_ms=(monotonic() - started) * 1000))
         async with self.session_factory() as session:
             run = await session.get(DesktopRun, run_id)
             if not run:
@@ -2826,64 +2847,123 @@ class DesktopService:
 
     async def _watch_materials(self) -> None:
         monitor = MaterialFileMonitor(self._digest)
-        failures = self._material_watch_failures = set()
-        while True:
-            try:
-                await asyncio.sleep(2)
-                async with self.session_factory() as session:
-                    rows = (
-                        await session.execute(
-                            select(DesktopMaterial, DesktopThread, DesktopWorkspace)
-                            .join(DesktopThread, DesktopMaterial.task_id == DesktopThread.task_id)
-                            .join(DesktopWorkspace, DesktopThread.workspace_id == DesktopWorkspace.workspace_id)
-                            .where(DesktopMaterial.retention == "irreplaceable")
+        self._material_watch_failures = set()
+        feed = MaterialChangeFeed()
+        signal = self.state_changes.materials
+        paths, retry_at = {}, {}
+        next_scan = 0
+        scan_retry_at = 0
+        generation = signal.generation
+        try:
+            while True:
+                file_generation = feed.signal.generation
+                dirty = feed.take()
+                full = monotonic() >= next_scan or generation != signal.generation or dirty is None
+                generation = signal.generation
+                now = monotonic()
+                targets = None if full else {identity for identity, deadline in retry_at.items() if deadline <= now} | {
+                    identity for identity, path in paths.items()
+                    if identity not in retry_at and any(
+                        path_key(path) == item or path_key(path).startswith(item + os.sep) for item in dirty)
+                }
+                if (full or targets) and monotonic() >= scan_retry_at:
+                    try:
+                        observed, pending = await self._scan_materials(monitor, targets)
+                        if full:
+                            retry_at.clear()
+                        else:
+                            for identity in targets:
+                                retry_at.pop(identity, None)
+                        retry_at.update({identity: monotonic() + 2 for identity in pending})
+                        if full:
+                            paths = observed
+                            next_scan = monotonic() + 60
+                            await feed.set_paths(paths.values())
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.warning("材料核对失败，稍后重试", exc_info=True)
+                        retry_at.clear()
+                        scan_retry_at = next_scan = monotonic() + 3
+                timeout = max(0, min([next_scan, *retry_at.values()]) - monotonic())
+                waits = [asyncio.create_task(signal.wait(generation, timeout)),
+                         asyncio.create_task(feed.signal.wait(file_generation, timeout))]
+                try:
+                    await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    for waiter in waits:
+                        waiter.cancel()
+                    await asyncio.gather(*waits, return_exceptions=True)
+        except asyncio.CancelledError:
+            return
+        finally:
+            await feed.close()
+
+    @observe_operation("material_watch")
+    async def _scan_materials(self, monitor, material_ids=None):
+        failures = self._material_watch_failures
+        pending = set()
+        observed = {}
+        async with self.session_factory() as session:
+            query = (
+                select(DesktopMaterial, DesktopThread, DesktopWorkspace)
+                .join(DesktopThread, DesktopMaterial.task_id == DesktopThread.task_id)
+                .join(DesktopWorkspace, DesktopThread.workspace_id == DesktopWorkspace.workspace_id)
+                .where(DesktopMaterial.retention == "irreplaceable")
+            )
+            if material_ids is not None:
+                query = query.where(DesktopMaterial.material_id.in_(material_ids))
+            rows = (
+                await session.execute(query)
+            ).all()
+            paths = [
+                (material, workspace, Path(workspace.path, *Path(material.relative_path).parts))
+                for material, _, workspace in rows
+            ]
+            observed = {material.material_id: path for material, _, path in paths}
+            if material_ids is None:
+                monitor.retain({(material.material_id, path) for material, _, path in paths})
+                failures.intersection_update(observed)
+            changed = False
+            for material, workspace, path in paths:
+                try:
+                    try:
+                        # 串行等待后台操作，避免材料数量变成线程/任务数量。
+                        digest = await asyncio.to_thread(monitor.digest, material.material_id, path)
+                        if digest is None:
+                            pending.add(material.material_id)
+                    except FileNotFoundError:
+                        latest = await session.scalar(
+                            select(MaterialVersion)
+                            .where(MaterialVersion.material_id == material.material_id)
+                            .order_by(MaterialVersion.created_at.desc())
                         )
-                    ).all()
-                    paths = [
-                        (material, workspace, Path(workspace.path, *Path(material.relative_path).parts))
-                        for material, _, workspace in rows
-                    ]
-                    monitor.retain({(material.material_id, path) for material, _, path in paths})
-                    failures.intersection_update(material.material_id for material, _, _ in paths)
-                    changed = False
-                    for material, workspace, path in paths:
-                        try:
-                            try:
-                                # 串行等待后台操作，避免材料数量变成线程/任务数量。
-                                digest = await asyncio.to_thread(monitor.digest, material.material_id, path)
-                            except FileNotFoundError:
-                                latest = await session.scalar(
-                                    select(MaterialVersion)
-                                    .where(MaterialVersion.material_id == material.material_id)
-                                    .order_by(MaterialVersion.created_at.desc())
-                                )
-                                if latest:
-                                    content = await self._git_bytes(Path(workspace.path), "cat-file", "blob", latest.object_id)
-                                    material.digest = await asyncio.to_thread(restore_material_file, path, content)
-                                    material.needs_confirmation = True
-                                    changed = True
-                            else:
-                                if digest is not None and material.digest and digest != material.digest:
-                                    await self._save_material_version(session, material, workspace.path, "external")
-                                    changed = True
-                            failures.discard(material.material_id)
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception:
-                            if material.material_id not in failures:
-                                logger.warning(
-                                    "材料监测失败，跳过该材料: material_id=%s",
-                                    material.material_id,
-                                    exc_info=True,
-                                )
-                                failures.add(material.material_id)
-                            continue
-                    if changed:
-                        await session.commit()
-            except asyncio.CancelledError:
-                return
-            except Exception:
-                await asyncio.sleep(3)
+                        if latest:
+                            content = await self._git_bytes(Path(workspace.path), "cat-file", "blob", latest.object_id)
+                            material.digest = await asyncio.to_thread(restore_material_file, path, content)
+                            material.needs_confirmation = True
+                            changed = True
+                    else:
+                        if digest is not None and material.digest and digest != material.digest:
+                            await self._save_material_version(session, material, workspace.path, "external")
+                            changed = True
+                    failures.discard(material.material_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    pending.add(material.material_id)
+                    if material.material_id not in failures:
+                        logger.warning(
+                            "材料监测失败，跳过该材料: material_id=%s",
+                            material.material_id,
+                            exc_info=True,
+                        )
+                        failures.add(material.material_id)
+                    continue
+            if changed:
+                await session.commit()
+        monitor.metrics()
+        return observed, pending
 
     @staticmethod
     def _workspace_payload(workspace: DesktopWorkspace) -> dict[str, Any]:

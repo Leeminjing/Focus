@@ -18,6 +18,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from hashlib import sha256
 from time import perf_counter_ns
+from focus.models.telemetry import model_invocation, model_context, emit
 
 from backend.app.desktop.agent_loop.resource_limits import (
     exceeds_limit,
@@ -272,6 +273,34 @@ class BudgetedIndexModel:
 
     async def _invoke(self, schema, system, payload, validator=None):
         self._last_attempt_records = ()
+        category = "index_prewarm" if self._background else "index_foreground"
+        with model_invocation(category=category, **self._telemetry_context):
+            state = {"entered": False}
+            task = asyncio.create_task(self._invoke_observed(schema, system, payload, validator, state))
+            try:
+                # Catch caller cancellation before propagating it into model/budget cleanup.
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled_at = perf_counter_ns()
+                task.cancel()
+                while not task.done():
+                    try:
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                # Retrieve any cleanup exception without replacing caller cancellation.
+                if not task.cancelled():
+                    task.exception()
+                emit("index_cancelled", **(model_context.get() or {}), queued=not state["entered"],
+                     origin="caller" if asyncio.current_task().cancelling() else "child",
+                     release_ms=((perf_counter_ns() - cancelled_at) / 1_000_000
+                                 if asyncio.current_task().cancelling() else None))
+                raise
+
+    async def _invoke_observed(self, schema, system, payload, validator=None, cancellation_state=None):
+        self._last_attempt_records = ()
         self._admissions = []
         self._admission_ms = 0.0
         started = perf_counter_ns()
@@ -287,6 +316,8 @@ class BudgetedIndexModel:
                     if hasattr(self._semaphore, "slot") else self._semaphore)
             async with slot if slot is not None else nullcontext():
                 entered = perf_counter_ns()
+                if cancellation_state is not None:
+                    cancellation_state["entered"] = True
                 result = await self._invoke_with_slot(schema, system, payload, validator)
                 outcome = "ready"
                 return result
@@ -311,6 +342,7 @@ class BudgetedIndexModel:
                 "output_tokens": sum(int(a.get("output_tokens") or 0) for a in self._last_attempt_records),
             }
             _logger.info("semantic_index_model_invocation %s", metrics, extra=metrics)
+            emit("index_invocation", **{**(model_context.get() or {}), **metrics})
 
     async def _report(self, status):
         if self._progress is not None:

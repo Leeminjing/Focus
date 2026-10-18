@@ -21,6 +21,7 @@ from focus.models.response_projection import ResponsesRequestProjector, function
 from focus.messages.request_budget import estimate_responses_budget
 from focus.models.response_source import response_source_manifest
 from focus.models.response_clients import responses_clients
+from focus.models.telemetry import model_context, model_invocation
 
 
 class FocusResponsesChatModel(BaseChatModel):
@@ -53,6 +54,8 @@ class FocusResponsesChatModel(BaseChatModel):
         self._client, self._async_client = responses_clients(
             options, self.http_client, self.http_async_client, pool=self.client_pool,
             provider=self.provider_contract.provider, scope=self.client_scope,
+            performance_identity={"provider": self.provider_contract.provider,
+                                  "model": self.model_name, "protocol": "responses"},
         )
 
     @property
@@ -91,9 +94,16 @@ class FocusResponsesChatModel(BaseChatModel):
             raise ValueError(f"完整 Responses 请求超出上下文窗口: estimate={estimate}, limit={window}")
         return payload
 
+    def _performance_context(self):
+        return model_invocation(
+            category=(model_context.get() or {}).get("category", "unclassified"),
+            provider=self.provider_contract.provider, model=self.model_name, protocol="responses",
+        )
+
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         request = self.request_payload(messages, stop=stop, **kwargs)
-        raw = self._client.responses.create(**request).model_dump(mode="json")
+        with self._performance_context():
+            raw = self._client.responses.create(**request).model_dump(mode="json")
         raw["requested_model"] = self.model_name
         raw["request_source_manifest"] = response_source_manifest(request, messages, self.provider_contract)
         message = decode_response(raw, self.provider_contract, request["tools"])
@@ -101,7 +111,8 @@ class FocusResponsesChatModel(BaseChatModel):
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         request = self.request_payload(messages, stop=stop, **kwargs)
-        raw = (await self._async_client.responses.create(**request)).model_dump(mode="json")
+        with self._performance_context():
+            raw = (await self._async_client.responses.create(**request)).model_dump(mode="json")
         raw["requested_model"] = self.model_name
         raw["request_source_manifest"] = response_source_manifest(request, messages, self.provider_contract)
         message = decode_response(raw, self.provider_contract, request["tools"])
@@ -112,7 +123,9 @@ class FocusResponsesChatModel(BaseChatModel):
         bridge = ResponseChunkBridge(self.provider_contract, request["tools"], model_name=self.model_name,
                                      source_manifest=response_source_manifest(request, messages, self.provider_contract))
         try:
-            with self._client.responses.create(**request) as stream:
+            with self._performance_context():
+                stream = self._client.responses.create(**request)
+            with stream:
                 for event in stream:
                     for message in bridge.accept(event.model_dump(mode="json")):
                         chunk = ChatGenerationChunk(message=message)
@@ -131,7 +144,9 @@ class FocusResponsesChatModel(BaseChatModel):
         bridge = ResponseChunkBridge(self.provider_contract, request["tools"], model_name=self.model_name,
                                      source_manifest=response_source_manifest(request, messages, self.provider_contract))
         try:
-            async with await self._async_client.responses.create(**request) as stream:
+            with self._performance_context():
+                stream = await self._async_client.responses.create(**request)
+            async with stream:
                 async for event in stream:
                     for message in bridge.accept(event.model_dump(mode="json")):
                         chunk = ChatGenerationChunk(message=message)

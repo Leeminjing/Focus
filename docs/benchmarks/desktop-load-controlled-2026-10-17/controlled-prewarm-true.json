@@ -1,0 +1,122 @@
+{
+  "mode": "controlled",
+  "prewarm": true,
+  "submitted_runs": 5,
+  "summary": {
+    "provider_requests": [],
+    "queues": {
+      "run": {
+        "queue_wait_ms": {
+          "samples": 5,
+          "p50": 100.756,
+          "p95": 104.45420000000001,
+          "max": 104.97800000000001
+        },
+        "startup_ms": {
+          "samples": 5,
+          "p50": 75.51299999999999,
+          "p95": 172.41499999999996,
+          "max": 193.649
+        },
+        "admission_ms": {
+          "samples": 0,
+          "p50": null,
+          "p95": null,
+          "max": null
+        },
+        "execution_ms": {
+          "samples": 0,
+          "p50": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "index_prewarm": {
+        "queue_wait_ms": {
+          "samples": 4,
+          "p50": 0.016399999999999998,
+          "p95": 0.018430000000000002,
+          "max": 0.0187
+        },
+        "startup_ms": {
+          "samples": 0,
+          "p50": null,
+          "p95": null,
+          "max": null
+        },
+        "admission_ms": {
+          "samples": 4,
+          "p50": 112.6888,
+          "p95": 214.109805,
+          "max": 228.0714
+        },
+        "execution_ms": {
+          "samples": 4,
+          "p50": 265.81190000000004,
+          "p95": 397.36558,
+          "max": 403.999
+        }
+      }
+    },
+    "cancellations": {
+      "run_cancelled": {
+        "samples": 1,
+        "p50": 14.999999999417923,
+        "p95": 14.999999999417923,
+        "max": 14.999999999417923
+      }
+    },
+    "processes": [
+      {
+        "process": "backend",
+        "pid": 22480,
+        "rss_bytes": {
+          "samples": 1,
+          "p50": 249171968.0,
+          "p95": 249171968.0,
+          "max": 249171968.0
+        },
+        "rss_delta_bytes": null,
+        "cpu_percent": {
+          "samples": 1,
+          "p50": 62.9,
+          "p95": 62.9,
+          "max": 62.9
+        }
+      }
+    ],
+    "sql": {
+      "other": {
+        "queries": 1059,
+        "duration_ms": 3264.0490001795115,
+        "errors": 0
+      },
+      "material_watch": {
+        "queries": 3,
+        "duration_ms": 13.58859999163542,
+        "errors": 0
+      },
+      "run_cancel_request": {
+        "queries": 2,
+        "duration_ms": 7.161899993661791,
+        "errors": 0
+      }
+    },
+    "material_scans": {
+      "stat_checks": 0,
+      "digest_reads": 0
+    },
+    "execution_to_first_token_ms": {
+      "samples": 4,
+      "p50": 74.83540000248468,
+      "p95": 1008.3933749985587,
+      "max": 1171.7657999979565
+    },
+    "limitations": [
+      "Header latency is not first visible token latency.",
+      "Local cancellation does not prove upstream cancellation or settled usage.",
+      "Caller-supplied HTTP clients require their own request instrumentation.",
+      "Transport fallback attempts may have unknown upstream execution."
+    ]
+  }
+}

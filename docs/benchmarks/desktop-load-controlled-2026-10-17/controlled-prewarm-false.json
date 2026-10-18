@@ -1,0 +1,96 @@
+{
+  "mode": "controlled",
+  "prewarm": false,
+  "submitted_runs": 5,
+  "summary": {
+    "provider_requests": [],
+    "queues": {
+      "run": {
+        "queue_wait_ms": {
+          "samples": 5,
+          "p50": 94.18700000000001,
+          "p95": 158.5946,
+          "max": 168.96800000000002
+        },
+        "startup_ms": {
+          "samples": 5,
+          "p50": 70.718,
+          "p95": 114.6702,
+          "max": 123.59
+        },
+        "admission_ms": {
+          "samples": 0,
+          "p50": null,
+          "p95": null,
+          "max": null
+        },
+        "execution_ms": {
+          "samples": 0,
+          "p50": null,
+          "p95": null,
+          "max": null
+        }
+      }
+    },
+    "cancellations": {
+      "run_cancelled": {
+        "samples": 1,
+        "p50": 14.999999999417923,
+        "p95": 14.999999999417923,
+        "max": 14.999999999417923
+      }
+    },
+    "processes": [
+      {
+        "process": "backend",
+        "pid": 22480,
+        "rss_bytes": {
+          "samples": 1,
+          "p50": 241270784.0,
+          "p95": 241270784.0,
+          "max": 241270784.0
+        },
+        "rss_delta_bytes": null,
+        "cpu_percent": {
+          "samples": 1,
+          "p50": 73.2,
+          "p95": 73.2,
+          "max": 73.2
+        }
+      }
+    ],
+    "sql": {
+      "other": {
+        "queries": 480,
+        "duration_ms": 2387.281999865081,
+        "errors": 0
+      },
+      "material_watch": {
+        "queries": 2,
+        "duration_ms": 9.985499986214563,
+        "errors": 0
+      },
+      "run_cancel_request": {
+        "queries": 2,
+        "duration_ms": 6.025099995895289,
+        "errors": 0
+      }
+    },
+    "material_scans": {
+      "stat_checks": 0,
+      "digest_reads": 0
+    },
+    "execution_to_first_token_ms": {
+      "samples": 4,
+      "p50": 105.13794999860693,
+      "p95": 747.204440005589,
+      "max": 857.3597000067821
+    },
+    "limitations": [
+      "Header latency is not first visible token latency.",
+      "Local cancellation does not prove upstream cancellation or settled usage.",
+      "Caller-supplied HTTP clients require their own request instrumentation.",
+      "Transport fallback attempts may have unknown upstream execution."
+    ]
+  }
+}

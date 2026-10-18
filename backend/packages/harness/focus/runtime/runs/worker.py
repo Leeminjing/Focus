@@ -83,6 +83,8 @@ from focus.runtime.runs.events import (
 from focus.runtime.runs.manager import RunManager, RunRecord
 from focus.runtime.runs.schemas import RunStatus
 from focus.runtime.runs.usage import StreamUsageAccumulator
+from focus.models.telemetry import emit
+from time import perf_counter
 from focus.runtime.stream_bridge.base import StreamBridge
 from focus.runtime.stream_bridge.schemas import StreamEvent
 from focus.security.context import (
@@ -189,6 +191,8 @@ async def run_agent(
     checkpointer: BaseCheckpointSaver | None = None,
     store: BaseStore | None = None,
 ) -> None:
+    execution_started = perf_counter()
+    first_visible = False
     agent_ready = False
     mcp_run = begin_mcp_run()
     model_clients = begin_model_clients()
@@ -329,6 +333,10 @@ async def run_agent(
             if mode not in requested_stream_modes and mode == "messages":
                 continue
             for chunk_event in chunk_to_events(mode, chunk, env_base):
+                if chunk_event.event == "tokens" and not first_visible:
+                    first_visible = True
+                    emit("run_first_token", run_id=record.run_id,
+                         execution_to_first_token_ms=(perf_counter() - execution_started) * 1000)
                 bridge.publish(record.run_id, chunk_event)
 
 

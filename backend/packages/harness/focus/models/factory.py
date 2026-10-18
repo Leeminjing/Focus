@@ -31,6 +31,8 @@ from focus.config.env import require_env_var
 from focus.models.http_clients import (
     ProxyFirstAsyncHttpClient,
     ProxyFirstHttpClient,
+    ObservedHttpClient,
+    ObservedAsyncHttpClient,
     environment_proxy_configured,
 )
 from focus.reflection.resolvers import resolve_class
@@ -80,13 +82,21 @@ def create_chat_model(
     caller_controls_network = any(
         key in kwargs for key in ("http_client", "http_async_client", "openai_proxy")
     )
+    performance_identity = {"provider": contract.provider, "model": model_config.model,
+                            "protocol": contract.protocol}
     if (
         contract.protocol == "chat_completions" and issubclass(chat_model_cls, ChatOpenAI)
         and environment_proxy_configured()
         and not caller_controls_network
     ):
-        params["http_client"] = ProxyFirstHttpClient()
-        params["http_async_client"] = ProxyFirstAsyncHttpClient()
+        params["http_client"] = ProxyFirstHttpClient(performance_identity=performance_identity)
+        params["http_async_client"] = ProxyFirstAsyncHttpClient(performance_identity=performance_identity)
+
+    if contract.protocol == "chat_completions" and issubclass(chat_model_cls, ChatOpenAI) and not caller_controls_network:
+        if "http_client" not in params:
+            params["http_client"] = ObservedHttpClient(performance_identity=performance_identity)
+        if "http_async_client" not in params:
+            params["http_async_client"] = ObservedAsyncHttpClient(performance_identity=performance_identity)
 
     model = chat_model_cls(**params)
     if contract.protocol == "chat_completions" and isinstance(model, ChatOpenAI):

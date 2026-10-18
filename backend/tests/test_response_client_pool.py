@@ -56,7 +56,7 @@ def install_sdk(monkeypatch, *, failure=None, started=None):
                 }]}], "usage": {"input_tokens": value, "output_tokens": 2, "total_tokens": value + 2},
         })
 
-    def transport():
+    def transport(**_kwargs):
         return httpx.AsyncClient(transport=httpx.MockTransport(handle), trust_env=False)
 
     def factory(**options):
@@ -68,6 +68,7 @@ def install_sdk(monkeypatch, *, failure=None, started=None):
 
     monkeypatch.setattr(clients, "AsyncOpenAI", factory)
     monkeypatch.setattr(clients, "ProxyFirstAsyncHttpClient", transport)
+    monkeypatch.setattr(clients, "ObservedAsyncHttpClient", transport)
     return constructed, requests
 
 
@@ -260,7 +261,8 @@ def test_sync_borrowers_share_one_client_across_threads_and_close_independently(
             self.closed = True
 
     monkeypatch.setattr(clients, "OpenAI", SDK)
-    monkeypatch.setattr(clients, "ProxyFirstHttpClient", lambda: None)
+    monkeypatch.setattr(clients, "ProxyFirstHttpClient", lambda **_kwargs: None)
+    monkeypatch.setattr(clients, "ObservedHttpClient", lambda **_kwargs: None)
 
     async def run():
         app = config()
@@ -326,3 +328,60 @@ def test_unpooled_worker_closes_actual_sdk_after_request(monkeypatch, failure):
         assert constructed[0].is_closed()
 
     asyncio.run(run())
+
+
+def test_shared_observed_transport_records_each_borrowers_model_and_invocation(monkeypatch, caplog):
+    from focus.models.http_clients import ObservedAsyncHttpClient, _SDK_HTTPX
+    from focus.models.telemetry import model_invocation
+
+    caplog.set_level("INFO", logger="focus.performance")
+    transports = []
+
+    async def handle(request):
+        body = json.loads(request.content)
+        await asyncio.sleep(0)
+        return _SDK_HTTPX.Response(200, json={
+            "object": "response", "id": "r", "created_at": 0, "model": body["model"],
+            "status": "completed", "output": [{"type": "message", "id": "m",
+                "role": "assistant", "status": "completed", "content": [{
+                    "type": "output_text", "text": "ok", "annotations": [],
+                }]}], "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        })
+
+    def transport(**options):
+        client = ObservedAsyncHttpClient(
+            **options, transport=_SDK_HTTPX.MockTransport(handle), trust_env=False,
+        )
+        transports.append(client)
+        return client
+
+    monkeypatch.setattr(clients, "ObservedAsyncHttpClient", transport)
+    monkeypatch.setattr(clients, "ProxyFirstAsyncHttpClient", transport)
+
+    async def run():
+        app = config()
+        app.models.append(app.models[0].model_copy(update={
+            "name": "second", "model": "other", "curation_default": False,
+        }))
+        async with clients.response_client_session(app):
+            first = create_chat_model("fixture", app_config=app)
+            second = create_chat_model("second", app_config=app)
+            # Direct calls also need the borrower's identity, rather than the first pool creator's.
+            await asyncio.gather(first.ainvoke("first"), second.ainvoke("second"))
+            with model_invocation(category="index_prewarm", run_id="probe") as invocation:
+                await second.ainvoke("scoped")
+            assert first._async_client._get() is second._async_client._get()
+            assert len(transports) == 1 and not transports[0].is_closed
+        assert transports[0].is_closed
+        return invocation["invocation_id"]
+
+    invocation_id = asyncio.run(run())
+    records = [json.loads(record.getMessage().split("focus_metric ", 1)[1])
+               for record in caplog.records if record.getMessage().startswith("focus_metric ")]
+    requests = [record for record in records if record["event"] == "provider_request"]
+    assert sorted(record["model"] for record in requests) == ["fixture", "other", "other"]
+    direct = [record for record in requests if record["category"] == "unclassified"]
+    assert len({record["invocation_id"] for record in direct}) == 2
+    scoped = [record for record in requests if record["category"] == "index_prewarm"]
+    assert len(scoped) == 1 and scoped[0]["model"] == "other"
+    assert scoped[0]["invocation_id"] == invocation_id and scoped[0]["run_id"] == "probe"

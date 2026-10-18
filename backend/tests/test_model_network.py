@@ -11,6 +11,8 @@ from focus.models.factory import create_chat_model
 from focus.models.http_clients import (
     ProxyFirstAsyncHttpClient,
     ProxyFirstHttpClient,
+    ObservedHttpClient,
+    ObservedAsyncHttpClient,
 )
 
 
@@ -143,14 +145,15 @@ def test_factory_installs_proxy_fallback_clients_when_proxy_is_configured(monkey
     assert isinstance(model.http_async_client, ProxyFirstAsyncHttpClient)
 
 
-def test_factory_leaves_sdk_direct_client_unchanged_without_proxy(monkeypatch):
+def test_factory_observes_direct_requests_without_enabling_proxy_fallback(monkeypatch):
     for key in _PROXY_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
 
     model = create_chat_model(app_config=_config())
 
-    assert model.http_client is None
-    assert model.http_async_client is None
+    assert isinstance(model.http_client, ObservedHttpClient)
+    assert isinstance(model.http_async_client, ObservedAsyncHttpClient)
+    assert not isinstance(model.http_client, ProxyFirstHttpClient)
 
 
 def test_chat_model_survives_unavailable_proxy_by_calling_provider_directly(monkeypatch):

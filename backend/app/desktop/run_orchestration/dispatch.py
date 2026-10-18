@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.desktop.run_orchestration.assembler import RunExecutionAssembler, RunExecutionAssembly
 from backend.app.desktop.run_orchestration.models import RunDispatch
 from backend.app.desktop.models import DesktopRun
+from focus.models.telemetry import emit
 
 
 class StaleDispatchFence(RuntimeError):
@@ -267,6 +268,9 @@ class DurableRunDispatchWorker:
                 if self._on_failed is not None:
                     await self._on_failed(identity[1], str(error))
             else:
+                emit("run_dispatch", category="run", run_id=identity[1],
+                     queue_wait_ms=max(0, (dispatch.claimed_at - dispatch.accepted_at).total_seconds() * 1000),
+                     startup_ms=max(0, (running.running_at - dispatch.claimed_at).total_seconds() * 1000))
                 if self._on_started is not None:
                     self._on_started(started)
             processed += 1
