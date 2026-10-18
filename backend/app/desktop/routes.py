@@ -466,6 +466,11 @@ async def get_run(run_id: str, request: Request) -> dict:
     return await request.app.state.desktop_service.get_run_payload(run_id)
 
 
+@desktop_router.get("/runs/{run_id}/causality")
+async def get_run_causality(run_id: str, request: Request) -> dict:
+    return await request.app.state.desktop_service.get_run_causality(run_id)
+
+
 @desktop_router.post("/runs/{run_id}/cancel")
 async def cancel_run(run_id: str, request: Request) -> dict:
     return await request.app.state.desktop_service.cancel_run(run_id)

@@ -1668,6 +1668,50 @@ function renderMaterialGroups(task) {
   return `<div class="material-group-toolbar"><span class="segmented" role="group" aria-label="材料自动分组"><button data-action="set-material-grouping" data-mode="run" class="${projection.mode === "run" ? "active" : ""}">按 Run</button><button data-action="set-material-grouping" data-mode="type" class="${projection.mode === "type" ? "active" : ""}">按类型</button></span><button class="text-button" data-action="create-material-group">新建分组</button></div>${groups}`;
 }
 
+// 查询仅在运行详情可见时触发；请求身份隔离任务切换和迟到响应。
+function readRunCausality(run, refresh = false) {
+  if (!run?.run_id) return null;
+  const key = JSON.stringify([run.run_id, run.status, run.settled_at]);
+  if (!refresh && state.inspector.causality?.key === key) return state.inspector.causality;
+  const entry = { key, loading: true, data: null, error: null };
+  state.inspector.causality = entry;
+  api(`/desktop/api/runs/${encodeURIComponent(run.run_id)}/causality`).then(payload => {
+    if (state.inspector.causality !== entry) return;
+    entry.data = payload.causality;
+  }).catch(error => {
+    if (state.inspector.causality === entry) entry.error = error.message;
+  }).finally(() => {
+    if (state.inspector.causality !== entry) return;
+    entry.loading = false;
+    renderInspector();
+  });
+  return entry;
+}
+
+function renderRunCausality(run) {
+  if (!run?.run_id) return "";
+  const entry = readRunCausality(run);
+  const heading = '<header><h3>指令因果链</h3><button class="text-button" data-action="refresh-run-causality">刷新</button></header>';
+  if (entry.loading) return `<section class="inspector-section run-causality">${heading}<p role="status">正在读取指令因果链…</p></section>`;
+  if (entry.error) return `<section class="inspector-section run-causality">${heading}<p role="alert">因果链读取失败：${escapeHtml(entry.error)}</p><button class="text-button" data-action="refresh-run-causality">重试</button></section>`;
+  const chain = entry.data;
+  if (!chain) return `<section class="inspector-section run-causality">${heading}<p class="muted">此运行未关联 Directive，暂无指令因果记录。</p></section>`;
+  const labels = { proposed: "已提出", authorized: "已授权", delivering: "投递中", delivered: "已送达", run_started: "已启动", settled: "已结算", rejected: "已拒绝", failed: "执行失败", cancelled: "已取消", delivery_failed: "投递失败" };
+  const origins = { direct_user: "用户直接指令", patrol: "Patrol 委托", delegated_patrol: "Patrol 委托" };
+  const meta = fields => `<dl class="inspector-run-meta">${fields.map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(value ?? "—")}</dd></div>`).join("")}</dl>`;
+  const json = value => `<pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
+  return `<section class="inspector-section run-causality">${heading}
+    ${meta([["指令 ID", chain.directive.directive_id], ["来源", origins[chain.directive.origin] || chain.directive.origin], ["执行进度", labels[chain.directive.state] || chain.directive.state], ["关联标识", chain.directive.correlation_id]])}
+    <h4>为什么执行</h4><p>${escapeHtml(chain.decision?.rationale || "未记录决策理由")}</p>
+    <h4>指令内容</h4><p>${escapeHtml(chain.directive.content)}</p>
+    ${chain.directive.reason ? `<p>${escapeHtml(chain.directive.reason)}</p>` : ""}
+    <h4>状态变化</h4><ol>${chain.transitions.map(item => `<li><strong>${escapeHtml(labels[item.state] || item.state)}</strong> · ${escapeHtml(item.occurred_at || "")} ${item.reason ? `<p>${escapeHtml(item.reason)}</p>` : ""}${item.run_id ? `<small>Run ${escapeHtml(item.run_id)}</small>` : ""}</li>`).join("") || "<li>暂无状态变化记录</li>"}</ol>
+    <h4>关联运行</h4>${chain.runs.map(item => meta([["Run", item.run_id], ["状态", presentRunStatus(item.status).label]])).join("") || '<p class="muted">暂无关联运行</p>'}
+    <h4>工作树与变更</h4>${chain.workspace.map(item => `<div>${meta([["Run", item.run_id], ["工作树", item.root_path], ["工作树 ID", item.slot_id], ["类型", item.kind === "isolated" ? "隔离工作树" : "主工作区"], ["工作区版本", `${item.observed_workspace_revision} → ${item.resulting_workspace_revision ?? "待结算"}`], ["采用状态", item.adoption_state]])}<details><summary>变更证据</summary>${json(item.effect_evidence)}</details></div>`).join("") || '<p class="muted">暂无工作区执行锚点</p>'}
+    <details><summary>关联事件（${chain.events.length}）</summary><ol>${chain.events.map(item => `<li><strong>#${item.sequence} · ${escapeHtml(item.kind)}</strong>${json(item)}</li>`).join("")}</ol></details>
+  </section>`;
+}
+
 function renderInspector() {
   if (!appInspector?.setAttribute || !inspectorContent) return;
   const open = state.inspector.open && state.view !== "patrol" && !(state.view === "focus" && state.filesPanel);
@@ -1733,12 +1777,14 @@ function renderInspector() {
   const run = task.active_run || task.latest_run;
   const presented = presentTaskStatus(task);
   inspectorContent.innerHTML = `<section class="inspector-section"><header><h3>主 Agent</h3><span class="ui-badge is-${presented.tone}">${escapeHtml(presented.label)}</span></header><dl class="inspector-run-meta"><div><dt>任务</dt><dd>${escapeHtml(task.title)}</dd></div><div><dt>运行 ID</dt><dd>${escapeHtml(run?.run_id || "—")}</dd></div></dl>${state.commitment.stage ? `<section class="inspector-run-stage"><span class="workspace-kicker">COMMITMENT</span><strong>${state.commitment.stage}/9 · ${escapeHtml(COMMITMENT_STAGE_NAMES[state.commitment.stage] || "准备中")}</strong><span>${state.commitment.review ? "等待人工确认" : state.commitment.terminalStatus ? presentRunStatus(state.commitment.terminalStatus).label : "正在执行"}</span></section>` : ""}${renderInterruptButton(state.details.get(task.task_id))}</section>`;
+  inspectorContent.insertAdjacentHTML("beforeend", renderRunCausality(run));
 }
 
 function openInspector(tab, trigger) {
   const wasOpen = state.inspector.open;
   state.inspector.open = true;
   state.inspector.tab = tab;
+  if (tab === "run") state.inspector.causality = null;
   if (trigger && !trigger.matches?.('[role="tab"]')) state.inspector.returnFocus = trigger;
   else if (!wasOpen || !state.inspector.returnFocus) state.inspector.returnFocus = trigger || document.activeElement;
   const exiting = appInspector?.inert;
@@ -8258,6 +8304,11 @@ async function handleDocumentClick(event) {
   if (action === "open-loop-revision") return openLoopRevision(button.dataset.openRevision);
   if (action === "close-loop-revision") { state.loop.revisionSnapshot = null; return renderLoop(); }
   if (action === "open-inspector-tab") return openInspector(button.dataset.inspectorTab, button);
+  if (action === "refresh-run-causality") {
+    const task = activeTask();
+    readRunCausality(task?.active_run || task?.latest_run, true);
+    return renderInspector();
+  }
   if (action === "close-inspector") return closeInspector();
   if (action === "show-plugins") return openPluginsView();
   if (action === "show-memory") return openMemoryView();

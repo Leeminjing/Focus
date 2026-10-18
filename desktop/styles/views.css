@@ -1556,3 +1556,9 @@ html:not([data-native-material]) .map-portfolio-surface { background: #edf0f0; }
 .storage-backups { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow: auto; }
 .storage-backups li { padding: var(--space-2) 0; overflow-wrap: anywhere; }
 .storage-backups small { display: block; color: var(--text-secondary); }
+
+.run-causality { overflow-wrap: anywhere; }
+.run-causality p, .run-causality pre { white-space: pre-wrap; }
+.run-causality pre { max-height: 320px; overflow: auto; font-size: 12px; }
+.run-causality ol { padding-left: 20px; }
+.run-causality li { margin-block: var(--space-2); }

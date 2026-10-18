@@ -14,10 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft
 from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
 from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
-from backend.app.desktop.agent_loop.models import LoopDirective, LoopDirectiveTransition
+from backend.app.desktop.agent_loop.models import LoopDecision, LoopDirective, LoopDirectiveTransition
 from backend.app.desktop.agent_loop.directive_equipment import round_permission_state
 from backend.app.desktop.models import DesktopRun
-from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor
+from backend.app.desktop.workspace_coordination.models import RunExecutionAnchor, WorkspaceSlot
 
 
 class DirectiveCausalityRecorder:
@@ -106,6 +106,7 @@ class DirectiveCausalityQuery:
         directive = await session.get(LoopDirective, directive_id)
         if directive is None:
             raise LookupError("Directive 不存在")
+        decision = await session.get(LoopDecision, directive.decision_id)
         transitions = tuple(
             (
                 await session.scalars(
@@ -127,8 +128,11 @@ class DirectiveCausalityQuery:
         run_ids = tuple(run.run_id for run in runs)
         anchors = () if not run_ids else tuple(
             (
-                await session.scalars(
-                    select(RunExecutionAnchor).where(RunExecutionAnchor.run_id.in_(run_ids))
+                await session.execute(
+                    select(RunExecutionAnchor, WorkspaceSlot)
+                    .join(WorkspaceSlot, WorkspaceSlot.slot_id == RunExecutionAnchor.slot_id)
+                    .where(RunExecutionAnchor.run_id.in_(run_ids))
+                    .order_by(RunExecutionAnchor.created_at, RunExecutionAnchor.run_id)
                 )
             ).all()
         )
@@ -154,9 +158,28 @@ class DirectiveCausalityQuery:
                 "target_context_id": directive.target_context_id,
                 "state": directive.lifecycle_state,
                 "correlation_id": directive.correlation_id,
+                "loop_id": directive.loop_id,
+                "round_id": directive.round_id,
+                "content": directive.content,
+                "reason": directive.terminal_reason or directive.queued_reason,
+                "causation_event_id": directive.causation_event_id,
             },
-            "transitions": tuple({"revision": item.revision, "state": item.to_state, "run_id": item.run_id, "reason": item.reason} for item in transitions),
+            "decision": None if decision is None else {
+                "decision_id": decision.decision_id,
+                "rationale": decision.rationale,
+                "evidence": decision.evidence,
+            },
+            "transitions": tuple({"revision": item.revision, "from_state": item.from_state, "state": item.to_state, "run_id": item.run_id, "reason": item.reason, "caused_by_event_id": item.caused_by_event_id, "occurred_at": item.occurred_at.isoformat()} for item in transitions),
             "runs": tuple({"run_id": item.run_id, "status": item.status, "origin": item.origin} for item in runs),
-            "workspace": tuple({"run_id": item.run_id, "slot_id": item.slot_id, "effect_evidence": item.effect_evidence} for item in anchors),
-            "events": tuple({"sequence": item.sequence, "kind": item.kind, "entity_type": item.entity_type, "entity_id": item.entity_id, "payload": item.payload} for item in events),
+            "workspace": tuple({
+                "run_id": anchor.run_id, "slot_id": anchor.slot_id,
+                "root_path": slot.root_path, "kind": slot.kind,
+                "observed_workspace_revision": anchor.observed_workspace_revision,
+                "resulting_workspace_revision": anchor.resulting_workspace_revision,
+                "observed_fingerprint": anchor.observed_fingerprint,
+                "resulting_fingerprint": anchor.resulting_fingerprint,
+                "adoption_state": anchor.adoption_state,
+                "effect_evidence": anchor.effect_evidence,
+            } for anchor, slot in anchors),
+            "events": tuple({"event_id": item.event_id, "sequence": item.sequence, "kind": item.kind, "entity_type": item.entity_type, "entity_id": item.entity_id, "correlation_id": item.correlation_id, "causation_id": item.causation_id, "payload": item.payload} for item in events),
         }

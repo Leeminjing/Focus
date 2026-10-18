@@ -591,6 +591,22 @@ class DesktopService:
             dispatch = await session.scalar(select(RunDispatch).where(RunDispatch.run_id == run_id))
             return self._run_payload_with_dispatch(run, dispatch)
 
+    async def get_run_causality(self, run_id: str) -> dict[str, Any]:
+        """按持久 Run 身份读取其 Directive 因果链，兼容没有 Directive 的历史 Run。"""
+        from backend.app.desktop.agent_loop.directive_causality import DirectiveCausalityQuery
+
+        async with self.session_factory() as session:
+            run = await session.get(DesktopRun, run_id)
+            if run is None:
+                raise HTTPException(404, "运行不存在")
+            chain = None
+            if run.directive_id:
+                try:
+                    chain = await DirectiveCausalityQuery().read(session, run.directive_id)
+                except LookupError as error:
+                    raise HTTPException(404, str(error)) from error
+            return {"run_id": run.run_id, "causality": chain}
+
     async def _equipment_tools(self) -> list[dict[str, Any]]:
 
 
