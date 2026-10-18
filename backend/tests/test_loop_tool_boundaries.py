@@ -60,7 +60,8 @@ def test_formal_read_only_lane_rejects_write_and_shell_even_with_full_user_mode(
             with pytest.raises(PermissionError, match="host_command"):
                 powershell.func(command=f"[IO.File]::WriteAllText('{marker}', 'escaped')", runtime=runtime)
             assert not marker.parent.exists() and existing.read_text(encoding="utf-8") == "original"
-            assert {item.name for item in select_workspace_tools(equipment["permissions"])} == {"read_file", "list_files"}
+            assert {item.name for item in select_workspace_tools(equipment["permissions"])} == {
+                "read_file", "read_file_lines", "list_files", "search_files", "search_text"}
         finally:
             if fixture:
                 await _stop(fixture["service"], fixture["loop_id"])

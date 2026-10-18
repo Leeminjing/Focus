@@ -5,7 +5,7 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createAppHarness, readAppSource } = require("./test-helper.cjs");
+const { createAppHarness, readAppSource, createNode } = require("./test-helper.cjs");
 
 function sendingSetup() {
   const input = { value: "看看这个报错", focus() {} };
@@ -234,7 +234,7 @@ function setup() {
 
 test("new file is selected for its original task and can be deselected", async () => {
   const { h } = setup();
-  const input = { id: "fileInput", files: [{ name: "report.txt" }], value: "report.txt" };
+  const input = createNode({ id: "fileInput", files: [{ name: "report.txt" }], value: "report.txt" });
   h.dispatch("change", { target: input });
   await h.context.pendingAction;
   assert.deepEqual(Array.from(h.vm.runInContext('materialSelection("A").bindings.map(item => item.materialId)', h.context)), ["existing", "report.txt"]);
@@ -261,7 +261,7 @@ for (const switchBeforeStart of [false, true]) test(`paste batch stays with its 
 
 test("file selection captures its task before the UI action starts", async () => {
   const { h } = setup();
-  h.dispatch("change", { target: { id: "fileInput", files: [{ name: "report.txt" }] } });
+  h.dispatch("change", { target: createNode({ id: "fileInput", files: [{ name: "report.txt" }] }) });
   h.vm.runInContext('state.activeTaskId = "B"', h.context);
   await h.context.pendingAction;
   assert.equal(h.context.calls[0].taskId, "A");

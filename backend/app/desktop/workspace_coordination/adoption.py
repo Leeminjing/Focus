@@ -1,7 +1,7 @@
 r"""本文件对外提供 WorkspaceAdopter、GitWorkspaceResultApplier、WorkspaceResultApplier 与冲突类型。
 
 输入为隔离/权威 slot 版本和采用证据；输出为 adopted 或可审计 conflict 记录。
-先独立提交包含补丁字节、SHA256、前后 fingerprint 的采用意图，再锁定两个 slot 执行真实 Git apply。
+具体工作流为先独立提交包含补丁字节、SHA256、前后 fingerprint 的采用意图，再锁定两个 slot 执行真实 Git apply。
 重试/启动恢复按目标 fingerprint 判定：后态只登记，前态应用持久补丁，其他状态保留冲突和 slot 预留。
 示例：`result = await adopter.adopt(request, GitWorkspaceResultApplier())`。
 """
@@ -34,7 +34,9 @@ class WorkspaceResultApplier(Protocol):
 
 
 class WorkspaceAdoptionConflict(RuntimeError):
-    pass
+    def __init__(self, reason: str, *, kind: str = "execution_uncertain") -> None:
+        super().__init__(reason)
+        self.kind = kind
 
 
 class GitWorkspaceResultApplier:
@@ -49,13 +51,15 @@ class GitWorkspaceResultApplier:
             asyncio.to_thread(WorkspaceFingerprinter().capture, target_root),
         )
         if source_actual.digest != source.current_fingerprint:
-            raise WorkspaceAdoptionConflict("隔离 workspace fingerprint 已变化")
+            raise WorkspaceAdoptionConflict("隔离 workspace fingerprint 已变化", kind="user_changes")
         if target_actual.digest != target.current_fingerprint:
-            raise WorkspaceAdoptionConflict("权威 workspace fingerprint 已变化")
+            raise WorkspaceAdoptionConflict("权威 workspace fingerprint 已变化", kind="user_changes")
         if not source.base_revision:
             raise WorkspaceAdoptionConflict("隔离 workspace 缺少共同 Git baseline")
         patch = await self._patch(source_root, source.base_revision)
         if patch:
+            # Only a patch-check overlap before a durable write intent is a repair candidate.
+            # Eligibility still requires provenance and fresh fingerprints in the Loop port.
             await self._git(target_root, "apply", "--check", "--binary", "-", stdin=patch)
         # Simulate against a complete file snapshot, retaining ignored/untracked files and the
         # target's HEAD/index semantics. Git metadata stays in place and is never copied.
@@ -144,8 +148,11 @@ class GitWorkspaceResultApplier:
             env=environment,
         )
         if process.returncode:
+            reason = process.stderr.decode(errors="replace").strip() or "Git workspace adoption 失败"
+            check_overlap = (arguments[:3] == ("apply", "--check", "--binary") and process.returncode == 1
+                and any(marker in reason for marker in ("patch does not apply", "already exists in working directory")))
             raise WorkspaceAdoptionConflict(
-                process.stderr.decode(errors="replace").strip() or "Git workspace adoption 失败"
+                reason, kind="code_overlap" if check_overlap else "execution_uncertain"
             )
         return process.stdout
 
@@ -189,8 +196,8 @@ class WorkspaceAdopter:
                     if active:
                         raise WorkspaceAdoptionConflict("采用 slot 存在活动 lease")
                     adoption.application_intent = await applier.prepare(source, target)
-                except WorkspaceAdoptionConflict as exc:
-                    self._conflict(adoption, str(exc))
+                except (WorkspaceAdoptionConflict, OSError) as exc:
+                    self._conflict(adoption, str(exc), kind=getattr(exc, "kind", "execution_uncertain"))
                     return adoption
         return await self.recover(request.adoption_id, applier)
 
@@ -250,9 +257,9 @@ class WorkspaceAdopter:
         return [await self.recover(identity, apply_if_before=False) for identity in ids]
 
     @staticmethod
-    def _conflict(adoption: WorkspaceAdoption, reason: str) -> None:
+    def _conflict(adoption: WorkspaceAdoption, reason: str, *, kind: str = "execution_uncertain") -> None:
         adoption.status = "conflict"
-        adoption.conflict = {"reason": reason}
+        adoption.conflict = {"reason": reason, "kind": kind}
         adoption.completed_at = datetime.now(UTC)
 
     @staticmethod
@@ -290,6 +297,6 @@ class WorkspaceAdopter:
         if source.lifecycle not in ("active", "retained") or target.lifecycle != "active":
             raise WorkspaceAdoptionConflict("采用 slot 已不可用")
         if source.revision != request.source_revision:
-            raise WorkspaceAdoptionConflict("隔离结果 revision 已变化")
+            raise WorkspaceAdoptionConflict("隔离结果 revision 已变化", kind="user_changes")
         if target.revision != request.expected_target_revision:
-            raise WorkspaceAdoptionConflict("权威 workspace revision 已变化")
+            raise WorkspaceAdoptionConflict("权威 workspace revision 已变化", kind="target_version_changed")
