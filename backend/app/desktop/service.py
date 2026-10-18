@@ -380,6 +380,8 @@ class DesktopService:
         self._run_dispatch_repository = RunDispatchRepository()
         self._run_dispatch_recovery = RunDispatchRecovery(session_factory)
         self._run_dispatch_wakeup = asyncio.Event()
+        from backend.app.desktop.conversation_inputs import ConversationInputs
+        self.conversation_inputs = ConversationInputs(self)
         self._run_dispatch_worker = DurableRunDispatchWorker(
             session_factory,
             f"desktop-main:{uuid.uuid4().hex}",
@@ -448,6 +450,12 @@ class DesktopService:
     async def _run_dispatch_loop(self) -> None:
         while True:
             self._run_dispatch_wakeup.clear()
+            try:
+                await self.conversation_inputs.drain()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("ordinary conversation input dispatch cycle failed")
             try:
                 await self._run_dispatch_worker.drain(limit=4)
             except asyncio.CancelledError:
@@ -2224,6 +2232,10 @@ class DesktopService:
                 task_skill_names = None
                 middlewares = []
             additional_middlewares = [build_tool_error_middleware()]
+            user_input_middleware = None
+            if agent_role == "main" and not governed_loop:
+                from backend.app.desktop.conversation_input_delivery import ConversationInputDelivery
+                user_input_middleware = ConversationInputDelivery(self.session_factory, self.checkpointer)
             if agent_role == "main":
                 image_inputs = RunMaterialInputs.from_equipment(equipment).images
                 additional_middlewares.append(build_image_attachment_middleware())
@@ -2247,6 +2259,7 @@ class DesktopService:
                 system_prompt=base_prompt,
                 middlewares=middlewares,
                 additional_middlewares=additional_middlewares,
+                user_input_middleware=user_input_middleware,
                 app_config=self.app_config,
                 middleware_skill_names=task_skill_names,
                 frozen_contexts=desktop_contexts(equipment, material_context),
@@ -3046,6 +3059,7 @@ class DesktopService:
             "ui_state": ui_state,
             "active_run": self._run_payload(active) if active else None,
             "latest_direct_user_run": self._run_payload(latest_direct_user) if latest_direct_user else None,
+            "conversation_inputs": await self.conversation_inputs.list(task.task_id),
             "pending_commitment_review": (
                 recovery["review"] if recovery and recovery["status"] == "resumable" else None
             ),

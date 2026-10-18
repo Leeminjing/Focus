@@ -1851,7 +1851,73 @@ function updateMainRecoveryControls() {
     && !composingMainInputs.has(input)
     && composerDraft.value(taskId, input.value).trim() === recovery.message);
   const send = document.querySelector('[data-action="send-main"]');
-  if (send) send.textContent = state.mainPreparations.has(taskId) ? "等待附件…" : recovery ? (recovery.editing ? "发送新请求" : "按原内容重试") : uiText("focus.send", "发送");
+  if (send) send.textContent = state.mainPreparations.has(taskId) ? "等待附件…" : recovery ? (recovery.editing ? (recovery.queued_edit ? "排队下一轮" : "发送新请求") : "按原内容重试") : mainDeliveryRun(taskId) ? "补充当前轮" : uiText("focus.send", "发送");
+}
+
+function mainDeliveryRun(taskId = state.activeTaskId) {
+  const run = state.details.get(taskId)?.active_run;
+  return run && ["pending", "running"].includes(run.status) && !run.loop_id ? run : null;
+}
+
+function renderConversationInputs(taskId) {
+  return window.FocusConversationInputs.render(state.details.get(taskId)?.conversation_inputs || [], escapeHtml);
+}
+
+let conversationInputPolling = false;
+setInterval(async () => {
+  const taskId = state.activeTaskId;
+  const detail = state.details.get(taskId);
+  if (conversationInputPolling || state.view !== "focus" || !detail) return;
+  if (!mainDeliveryRun(taskId) && !(detail.conversation_inputs || []).some(row => ["accepted", "queued"].includes(row.status))) return;
+  conversationInputPolling = true;
+  try {
+    const rows = await api(`/desktop/api/tasks/${taskId}/main/inputs`);
+    const started = rows.some(row => row.status === "started" && !(detail.conversation_inputs || [])
+      .some(old => old.input_id === row.input_id && old.status === "started"));
+    const current = state.details.get(taskId);
+    if (!current) return;
+    const changed = JSON.stringify(current.conversation_inputs) !== JSON.stringify(rows);
+    current.conversation_inputs = rows;
+    if (state.activeTaskId === taskId) {
+      const panel = document.querySelector("#conversationInputs");
+      if (panel && changed) panel.innerHTML = renderConversationInputs(taskId);
+    }
+    if (started) { await hydrateActive(taskId); if (state.activeTaskId === taskId && state.view === "focus") renderFocus(); }
+  } catch (error) {
+    if (state.activeTaskId === taskId) setStatus(`消息交付状态暂时无法刷新：${error.message}`, true);
+  } finally { conversationInputPolling = false; }
+}, 1000);
+
+async function withdrawQueuedMain(inputId, edit) {
+  const taskId = state.activeTaskId;
+  if (edit && (composerDraft.value(taskId, state.details.get(taskId)?.ui_state?.input || "").trim()
+      || taskRunOperations?.recovery(taskId) || materialSelection(taskId).bindings.length
+      || state.composerAttachments.get(taskId)?.size)) {
+    return setStatus("请先发送或清空当前输入和附件，再撤回排队消息编辑", true);
+  }
+  try {
+    const row = await api(`/desktop/api/tasks/${taskId}/main/inputs/${inputId}`, { method: "DELETE" });
+    const detail = state.details.get(taskId);
+    detail.conversation_inputs = (detail.conversation_inputs || []).filter(item => item.input_id !== inputId);
+    if (edit) {
+      const input = typeof row.run.message === "string" ? row.run.message : JSON.stringify(row.run.message);
+      const selection = { bindings: (row.run.material_inputs || (row.run.attached_material_ids || []).map(material_id => ({ material_id, note: "" })))
+        .map(item => ({ materialId: item.material_id, note: item.note })), requiredImageIds: row.run.must_view_material_ids || [] };
+      state.materialSelections.set(taskId, selection);
+      taskRunOperations.freeze(taskId, crypto.randomUUID(), { input, message: input, queued_edit: true,
+        body: JSON.stringify(row.run), selectionSignature: JSON.stringify(selection) });
+      taskRunOperations.editRecovery(taskId);
+      detail.ui_state = { ...(detail.ui_state || {}), input, skills: row.run.skills || [] };
+      if (row.run.access_mode) detail.ui_state = accessMode.writeMode(detail.ui_state, row.run.access_mode);
+      composerDraft.claim(taskId, input);
+      if (state.activeTaskId === taskId && state.view === "focus") {
+        const editor = document.querySelector("#mainInput");
+        if (editor) { editor.value = input; updateAtHighlight(editor); }
+      }
+      await persistUiState(taskId);
+    }
+    if (state.activeTaskId === taskId && state.view === "focus") { renderFocus(); document.querySelector("#mainInput")?.focus(); }
+  } catch (error) { setStatus(error.message, true); }
 }
 
 function editMainRequest() {
@@ -1974,7 +2040,7 @@ function patchFocusChrome(markup) {
   const next = template.content;
   for (const selector of [".task-page-heading", ".task-workspace-list", ".task-workspace-tools",
     ".composer-context", "#composerAttachments", ".composer-actions", "#composerFeedback",
-    "#mainSubmissionRecovery", "#taskDetailLoadStatus", "#mainSkillLoadStatus",
+    "#mainSubmissionRecovery", "#conversationInputs", "#taskDetailLoadStatus", "#mainSkillLoadStatus",
     '[data-skill-picker="main"] .skill-tags']) {
     const current = app.querySelector(selector);
     const replacement = next.querySelector(selector);
@@ -2059,10 +2125,11 @@ function renderFocus(task = activeTask()) {
             <div class="composer">
               <div id="composerAttachments" class="composer-attachments" aria-label="本次消息附件">${renderComposerAttachments(task.task_id)}</div>
               ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(composerInput)}</textarea>`, true)}
-              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" multiple hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
+              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" multiple hidden></label>${renderInterruptButton(detail)}${mainDeliveryRun(task.task_id) ? `<button type="button" data-action="queue-main">排队下一轮</button>` : ""}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
             </div>
             <p id="composerFeedback" class="composer-feedback${feedback ? ` is-${feedback.kind}` : ""}" role="status"${feedback ? "" : " hidden"}>${feedback ? escapeHtml(feedback.text) : ""}</p>
             <div id="mainSubmissionRecovery" class="main-submission-recovery">${renderMainRecovery(task.task_id)}</div>
+            <section id="conversationInputs" class="conversation-inputs" aria-label="补充与排队消息" aria-live="polite">${renderConversationInputs(task.task_id)}</section>
           </div>
         </div>
       </section>
@@ -4910,7 +4977,7 @@ function openImageLightbox(url, label) {
   root.innerHTML = `<div class="image-lightbox" role="dialog" aria-modal="true" aria-label="${escapeHtml(label)}" data-action="close-lightbox"><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}"><button class="text-button" data-action="close-lightbox">关闭</button></div>`;
 }
 
-async function sendMainOnce(taskId, requestId, retry = null) {
+async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
   const task = state.tasks.find(item => item.task_id === taskId);
   if (!task) return setStatus("当前没有活动任务", true);
   adoptCommitmentContext();
@@ -4944,7 +5011,10 @@ async function sendMainOnce(taskId, requestId, retry = null) {
   let submittedSelection = retry ? null : JSON.parse(JSON.stringify(materialSelection(taskId)));
   const attachments = retry ? [] : [...(state.composerAttachments.get(taskId)?.values() || [])]
     .filter(entry => entry.status !== "ready");
+  const queuedEdit = !retry && taskRunOperations?.recovery(taskId)?.queued_edit
+    ? JSON.parse(taskRunOperations.recovery(taskId).body) : null;
   const requestOptions = retry ? null : {
+    ...(queuedEdit || {}),
     skills: selectedSkills("main"),
     ...accessMode.requestBody(accessModeOf("main")),
   };
@@ -4957,7 +5027,7 @@ async function sendMainOnce(taskId, requestId, retry = null) {
       return;
     }
   }
-  if (!retry && !submittedSelection.bindings.length && spatialTarget?.focus.kind === "patrol"
+  if (!delivery && !retry && !submittedSelection.bindings.length && spatialTarget?.focus.kind === "patrol"
       && typeof spatialTarget.view.sendFocusedMessage === "function") {
     try {
       if (await spatialTarget.view.sendFocusedMessage(message)) {
@@ -4977,49 +5047,56 @@ async function sendMainOnce(taskId, requestId, retry = null) {
     }
   }
   const selectionSignature = retry?.selectionSignature || JSON.stringify(submittedSelection);
-  const original = retry ? JSON.parse(retry.body) : null;
+  const retryBody = retry ? JSON.parse(retry.body) : null;
+  const original = retryBody?.run || retryBody;
   const outgoing = original ? { message: original.message, materialInputs: original.material_inputs, requiredImageIds: original.must_view_material_ids }
     : runMaterialPicker.buildOutgoing(state.materials.get(taskId) || [], message, submittedSelection);
   const messagePayload = outgoing.message;
   let detail = state.details.get(taskId) || {};
   let confirmed = false;
   try {
-    const frozen = retry || taskRunOperations?.freeze(taskId, requestId, {
-      input: submittedInput, message, selectionSignature,
-      body: JSON.stringify({
+    const runBody = {
+        ...requestOptions,
         message: messagePayload,
         material_inputs: outgoing.materialInputs,
         must_view_material_ids: outgoing.requiredImageIds,
-        ...requestOptions,
         spatial_focus: spatialTarget?.focus || null,
-      }),
+    };
+    delete runBody.attached_material_ids;
+    delete runBody.idempotency_key;
+    const frozen = retry || taskRunOperations?.freeze(taskId, requestId, {
+      input: submittedInput, message, selectionSignature,
+      endpoint: delivery ? "inputs" : "runs",
+      body: JSON.stringify(delivery ? { ...delivery, run: runBody } : runBody),
     });
     state.mainRecoveryRestored.set(taskId, requestId);
     updateMainRecoveryControls();
-    const run = await api(`/desktop/api/tasks/${taskId}/main/runs`, {
+    const run = await api(`/desktop/api/tasks/${taskId}/main/${frozen.endpoint || "runs"}`, {
       method: "POST",
       headers: { "Idempotency-Key": requestId },
       body: frozen.body,
     });
-    if (!run || (!run.run_id && !(run.intent_kind === "direct_message" && run.intent_id))) throw new Error("未收到有效受理回执");
+    if (!run || (!run.run_id && !run.input_id && !(run.intent_kind === "direct_message" && run.intent_id))) throw new Error("未收到有效受理回执");
     confirmed = true;
     taskRunOperations?.accept(taskId, requestId, run);
     taskRunOperations?.forgetRecovery(taskId, requestId);
     state.mainRecoveryRestored.delete(taskId);
     state.composerErrors.delete(taskId);
     detail = state.details.get(taskId) || detail;
-    if (run.intent_kind === "direct_message") {
+    if (run.intent_kind === "direct_message" || run.input_id) {
+      if (run.input_id) detail.conversation_inputs = [...(detail.conversation_inputs || []).filter(item => item.input_id !== run.input_id), run];
       consumeMainAttachments(taskId, outgoing, attachments);
       const unchanged = !composingMainInputs.has(input)
         && composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
       if (unchanged) composerDraft.release(taskId);
-      detail.ui_state = { ...(detail.ui_state || {}), input: unchanged ? "" : composerDraft.value(taskId) };
+      detail.ui_state = { ...(detail.ui_state || {}), input: unchanged ? "" : composerDraft.value(taskId),
+        skills: unchanged ? [] : detail.ui_state?.skills || [] };
       state.details.set(taskId, detail);
       if (state.activeTaskId === taskId) {
         if (unchanged && document.querySelector("#mainInput") === input) input.value = "";
         persistFocusState();
         if (state.view === "focus") renderFocus();
-        setStatus("消息已受理，交付与执行以实际工作状态为准");
+        setStatus(run.input_id ? window.FocusConversationInputs.labels[run.status] : "消息已受理，交付与执行以实际工作状态为准");
       }
       return;
     }
@@ -5077,7 +5154,7 @@ async function sendMainOnce(taskId, requestId, retry = null) {
   }
 }
 
-function sendMain(retryOriginal = false) {
+function sendMain(retryOriginal = false, mode = null) {
   const taskId = state.activeTaskId;
   if (!taskId) return Promise.resolve();
   if (taskRunOperations?.get(taskId).submission?.status === "pending") {
@@ -5088,7 +5165,9 @@ function sendMain(retryOriginal = false) {
   const retry = saved && (retryOriginal || !saved.editing) ? saved : null;
   const requestId = retry?.request_id || crypto.randomUUID();
   taskRunOperations?.begin(taskId, requestId);
-  return sendMainOnce(taskId, requestId, retry).finally(() => {
+  const target = mainDeliveryRun(taskId);
+  const delivery = mode === "queue" || saved?.queued_edit ? { mode: "queue" } : target ? { mode: "steer", target_run_id: target.run_id } : null;
+  return sendMainOnce(taskId, requestId, retry, delivery).finally(() => {
     taskRunOperations?.finish(taskId, requestId);
     if (state.activeTaskId === taskId) updateMainRecoveryControls();
   });
@@ -8113,6 +8192,9 @@ async function handleDocumentClick(event) {
   if (action === "retry-must-view") return resumeMustView("retry");
   if (action === "cancel-must-view") return resumeMustView("cancel");
   if (action === "send-main") return sendMain();
+  if (action === "queue-main") return sendMain(false, "queue");
+  if (action === "edit-queued-main") return withdrawQueuedMain(button.dataset.inputId, true);
+  if (action === "delete-queued-main") return withdrawQueuedMain(button.dataset.inputId, false);
   if (action === "retry-main") return sendMain(true);
   if (action === "edit-main") return editMainRequest();
   if (action.startsWith("composer-") && action.endsWith("-attachment")) return handleComposerAttachmentAction(button);
