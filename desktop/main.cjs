@@ -1,6 +1,6 @@
 /*
  * 本文件启动 Focus 单实例桌面运行时。输入为 Python/Git/Docker、品牌资源和环境变量，输出为
- * 单一 loopback FastAPI、同源隔离窗口及 Windows 桌面 Patrol 宿主；失败时切换到品牌错误窗口。
+ * 单一 loopback FastAPI、同源隔离窗口及 Windows 桌面 Patrol 宿主；启动失败显示错误窗口，运行期退出保留界面并提供原端口恢复。
  * 工作流为先取单实例锁，隐藏预检控制台后启动及检查后端，Windows 未配置时先进入模型验证与项目选择，之后默认显示机器人，工作台按需打开、关闭仅隐藏；
  * 明确退出时检查未确认输入，再沿用后端 shutdown。其他平台或 FOCUS_DESKTOP_PATROL=0 保留工作台启动。
  * 工作台缩放以 Chromium 每级 1.2 倍钳制在 50%~300%，原生标题覆盖层同步 56 CSS px 基础高度。
@@ -9,6 +9,7 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, shell, nativeTheme, Notification, powerMonitor } = require("electron");
 const { TaskNotifications } = require("./task-notifications.cjs");
 const { registerMainRequestStorage } = require("./main-request-storage.cjs");
+const { registerDesktopPreferences } = require("./desktop-preferences.cjs");
 const { subscribeTaskChanges } = require("./task-state-stream.cjs");
 const { supportsAcrylic, bindWindowMaterial } = require("./window-material.cjs");
 const { DesktopPatrolHost } = require("./desktop-patrol-host.cjs");
@@ -61,6 +62,12 @@ function ensureFocusHome() {
   return home;
 }
 let backend = null;
+let gatewayConfig = null;
+let gatewayReady = false;
+let gatewayRecovery = null;
+let gatewayAttempt = null;
+let retiringBackend = null;
+let gatewayStatus = { status: "starting", error: null, revision: 0 };
 let splashWindow = null;
 let mainWindow = null;
 let patrolHost = null;
@@ -144,8 +151,7 @@ function freePort() {
   });
 }
 
-async function waitForHealth(url, timeoutMs = 30000) {
-  const signal = startupAbort.signal;
+async function waitForHealth(url, timeoutMs = 30000, signal = startupAbort.signal) {
   const deadline = Date.now() + timeoutMs;
   let lastFailure = "尚未收到响应";
   for (let remaining; (remaining = deadline - Date.now()) > 0;) {
@@ -188,6 +194,89 @@ function stopBackend() {
   const child = backend;
   backend = null;
   if (child && !child.killed) child.kill();
+}
+
+function publishGatewayStatus(status, error = null) {
+  gatewayStatus = { status, error: error ? String(error.message || error) : null, revision: gatewayStatus.revision + 1 };
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    try {
+      if (new URL(win.webContents.getURL()).origin === desktopOrigin) win.webContents.send("focus:gateway-status", gatewayStatus);
+    } catch {}
+  }
+}
+
+function gatewayFailed(child, error, exited = false) {
+  if (backend !== child || app.isQuitting || retiringBackend === child) return;
+  if (exited) backend = null;
+  if (!gatewayReady) { showFatalError(error); return; }
+  console.error("Focus Gateway 连接中断:", error.message);
+  gatewayAttempt?.abort(error);
+  publishGatewayStatus("unavailable", error);
+}
+
+function spawnGateway() {
+  const { command, args, options } = gatewayConfig;
+  const child = backend = spawn(command, args, options);
+  child.stdout.on("data", data => process.stdout.write(data));
+  child.stderr.on("data", data => process.stderr.write(data));
+  child.once("error", error => gatewayFailed(child, error));
+  child.once("exit", (code, signal) => {
+    gatewayFailed(child, new Error(`FastAPI 已退出（代码 ${code ?? "—"}${signal ? `，信号 ${signal}` : ""}）`), true);
+    if (backend === child) backend = null;
+  });
+  return child;
+}
+
+async function retireGateway(child) {
+  // 等旧进程真正退出后才绑定同一端口；迟到的旧 exit 不得清除新进程。
+  retiringBackend = child;
+  try {
+    await new Promise((resolve, reject) => {
+      const finish = error => {
+        clearTimeout(timer);
+        child.removeListener("exit", exited);
+        startupAbort.signal.removeEventListener("abort", aborted);
+        error ? reject(error) : resolve();
+      };
+      const exited = () => finish();
+      const aborted = () => finish(startupAbort.signal.reason || new Error("Focus 正在退出"));
+      const timer = setTimeout(() => finish(new Error("旧 Gateway 尚未退出，请稍后重试")), 5000);
+      child.once("exit", exited);
+      startupAbort.signal.addEventListener("abort", aborted, { once: true });
+      try { child.kill(); } catch (error) { finish(error); }
+    });
+  } finally { retiringBackend = null; }
+}
+
+function recoverGateway(restart) {
+  if (gatewayRecovery) return gatewayRecovery;
+  if (!gatewayReady || app.isQuitting || fatalErrorShown) return Promise.reject(new Error("Gateway 尚不可恢复"));
+  publishGatewayStatus(restart ? "restarting" : "reconnecting");
+  gatewayRecovery = Promise.resolve().then(async () => {
+    try {
+      if (restart && backend) await retireGateway(backend);
+      startupAbort.signal.throwIfAborted();
+      gatewayAttempt = new AbortController();
+      const signal = AbortSignal.any([startupAbort.signal, gatewayAttempt.signal]);
+      // 复用本次运行的端口、令牌与环境，不重载任何渲染器。
+      if (restart) spawnGateway();
+      await waitForHealth(desktopOrigin, restart ? 30000 : 3000, signal);
+      const response = await fetch(`${desktopOrigin}/desktop/api/reconcile`, { method: "POST",
+        headers: { "X-Focus-Session": process.env.FOCUS_DESKTOP_SESSION },
+        signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]),
+      });
+      if (!response.ok) throw new Error(`恢复状态核对失败：HTTP ${response.status}`);
+      signal.throwIfAborted();
+      taskNotifications?.invalidate();
+      publishGatewayStatus("ready");
+      return gatewayStatus;
+    } catch (error) {
+      if (!app.isQuitting) publishGatewayStatus("unavailable", error);
+      throw error;
+    }
+  }).finally(() => { gatewayAttempt = null; gatewayRecovery = null; });
+  return gatewayRecovery;
 }
 
 function showFatalError(error) {
@@ -264,19 +353,14 @@ async function start() {
   process.env.FOCUS_DESKTOP_API = apiBase;
   process.env.FOCUS_DESKTOP_SESSION = session;
   await updateSplashStage("正在启动 Focus Gateway", 66);
-  backend = spawn(pythonRuntime.command, [...pythonRuntime.prefix, "-m", "uvicorn", "backend.app.gateway.app:app", "--host", "127.0.0.1", "--port", String(port), "--loop", "backend.app.gateway.app:selector_loop_factory"], {
+  gatewayConfig = { command: pythonRuntime.command,
+    args: [...pythonRuntime.prefix, "-m", "uvicorn", "backend.app.gateway.app:app", "--host", "127.0.0.1", "--port", String(port), "--loop", "backend.app.gateway.app:selector_loop_factory"], options: {
     cwd: rootDir,
     env: { ...env, FOCUS_DESKTOP_PORT: String(port) },
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
-  });
-  backend.stdout.on("data", data => process.stdout.write(data));
-  backend.stderr.on("data", data => process.stderr.write(data));
-  backend.once("error", showFatalError);
-  backend.once("exit", (code, signal) => {
-    backend = null;
-    if (!app.isQuitting) showFatalError(new Error(`FastAPI 已退出（代码 ${code ?? "—"}${signal ? `，信号 ${signal}` : ""}）`));
-  });
+  } };
+  spawnGateway();
   await stage("gateway-health", "正在等待 Focus Gateway 就绪", 72, () => waitForHealth(apiBase));
   await stage("interface", "正在加载工作区", 84, async () => {
     startupAbort.signal.throwIfAborted();
@@ -311,6 +395,8 @@ async function start() {
   await stage("ready", "Focus 已就绪", 100, async () => {});
   startupAbort.signal.throwIfAborted();
   closeSplashWindow();
+  gatewayReady = true;
+  publishGatewayStatus("ready");
   const notificationFile = path.join(app.getPath("userData"), "task-notifications.json");
   taskNotifications = new TaskNotifications({
     load: () => { try { return JSON.parse(fs.readFileSync(notificationFile, "utf8")); } catch { return {}; } },
@@ -445,6 +531,17 @@ registerMainRequestStorage(ipcMain, {
   directory: () => app.getPath("userData"),
   authorize: assertDesktopSender,
 });
+registerDesktopPreferences(ipcMain, {
+  directory: () => app.getPath("userData"),
+  authorize: assertDesktopSender,
+});
+ipcMain.handle("focus:gateway-status", event => { assertDesktopSender(event); return gatewayStatus; });
+for (const operation of ["reconnect", "restart"]) {
+  ipcMain.handle(`focus:gateway-${operation}`, event => {
+    assertDesktopSender(event);
+    return recoverGateway(operation === "restart");
+  });
+}
 
 ipcMain.handle("focus:select-workspace", async event => {
   assertDesktopSender(event);

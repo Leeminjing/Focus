@@ -79,11 +79,21 @@ const materialContentLoader = window.MaterialContentLoader
     };
 
 const MAP_VIEW_PREFERENCES_KEY = "focus-map-view-v1";
+const preferenceStorage = {
+  getItem(key) {
+    try { return (window.focusDesktop?.preferences || localStorage).getItem(key); }
+    catch (error) { console.warn("读取界面偏好失败:", key, error.message); return null; }
+  },
+  setItem(key, value) {
+    try { (window.focusDesktop?.preferences || localStorage).setItem(key, value); }
+    catch (error) { console.warn("保存界面偏好失败:", key, error.message); }
+  },
+};
 
 function readMapViewPreferences() {
   const fallback = { mode: "graph", workspaceIds: [], contextIds: [] };
   try {
-    const raw = localStorage.getItem(MAP_VIEW_PREFERENCES_KEY);
+    const raw = preferenceStorage.getItem(MAP_VIEW_PREFERENCES_KEY);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw);
     return {
@@ -192,9 +202,9 @@ const state = {
   loop: { loopId: null, loading: false, revisionSnapshot: null },
   inspector: { open: window.innerWidth > 1100, tab: "materials", returnFocus: null },
   filesPanel: null,   // f18:右侧文件面板当前打开的 material(relative_path 等)
-  panelWidth: normalizePanelWidth(localStorage.getItem("focus-panel-width") || 400),
+  panelWidth: normalizePanelWidth(preferenceStorage.getItem("focus-panel-width") || 400),
   shellLayout: normalizeShellLayout(readShellLayout(), window.innerWidth),
-  zoomLevel: normalizeZoomLevel(localStorage.getItem(ZOOM_LEVEL_KEY)),
+  zoomLevel: normalizeZoomLevel(preferenceStorage.getItem(ZOOM_LEVEL_KEY)),
 };
 
 const app = document.querySelector("#app");
@@ -366,7 +376,7 @@ function shellLayoutDefaults() {
 
 function readShellLayout() {
   try {
-    const raw = localStorage.getItem(SHELL_LAYOUT_KEY);
+    const raw = preferenceStorage.getItem(SHELL_LAYOUT_KEY);
     if (!raw) return shellLayoutDefaults();
     const parsed = JSON.parse(raw);
     return {
@@ -426,7 +436,7 @@ function applyShellLayout(layout) {
 
 function persistShellLayout() {
   try {
-    localStorage.setItem(SHELL_LAYOUT_KEY, JSON.stringify(state.shellLayout));
+    preferenceStorage.setItem(SHELL_LAYOUT_KEY, JSON.stringify(state.shellLayout));
   } catch { /* 只读存储忽略 */ }
 }
 
@@ -538,7 +548,7 @@ function announceZoom(level) {
 function applyZoomLevel(level, options = {}) {
   const next = normalizeZoomLevel(level);
   state.zoomLevel = next;
-  try { localStorage.setItem(ZOOM_LEVEL_KEY, String(next)); } catch { /* 只读存储忽略 */ }
+  try { preferenceStorage.setItem(ZOOM_LEVEL_KEY, String(next)); } catch { /* 只读存储忽略 */ }
   try { window.focusDesktop?.setZoomLevel?.(next); } catch { /* 无桥环境忽略 */ }
   if (options.announce !== false) announceZoom(next);
   return next;
@@ -554,7 +564,7 @@ function changeZoomLevel(delta) {
 // 启动恢复：读回持久化级别（非法/越界回落 0），启动时不播报以免打断。
 function restoreZoomLevel() {
   let stored = null;
-  try { stored = localStorage.getItem(ZOOM_LEVEL_KEY); } catch { /* 只读存储忽略 */ }
+  try { stored = preferenceStorage.getItem(ZOOM_LEVEL_KEY); } catch { /* 只读存储忽略 */ }
   return applyZoomLevel(normalizeZoomLevel(stored), { announce: false });
 }
 
@@ -843,11 +853,11 @@ function renderTaskResourceStatus(taskId, resources) {
   }).join("");
 }
 
-function refreshTaskResourceView(taskId, resource) {
+function refreshTaskResourceView(taskId, resource, { preserveMount = false } = {}) {
   if (state.activeTaskId !== taskId || state.view !== "focus") return;
   const load = taskResourceLoads.get(taskId)?.[resource];
   if (resource === "detail") {
-    if (load?.status === "loaded") render();
+    if (load?.status === "loaded" && !preserveMount) render();
     else {
       const status = document.querySelector("#taskDetailLoadStatus");
       if (status) status.innerHTML = renderTaskResourceStatus(taskId, ["detail"]);
@@ -865,7 +875,7 @@ function refreshTaskResourceView(taskId, resource) {
   }
 }
 
-function hydrateTaskResource(taskId, resource, { reusePending = false } = {}) {
+function hydrateTaskResource(taskId, resource, { reusePending = false, preserveMount = false } = {}) {
   const source = TASK_RESOURCES[resource];
   if (!taskId || !Object.hasOwn(TASK_RESOURCES, resource)) return Promise.resolve();
   let loads = taskResourceLoads.get(taskId);
@@ -880,20 +890,20 @@ function hydrateTaskResource(taskId, resource, { reusePending = false } = {}) {
       if (taskResourceLoads.get(taskId)?.[resource] !== load) return;
       load.status = "error";
       load.error = error.message;
-      refreshTaskResourceView(taskId, resource);
+      refreshTaskResourceView(taskId, resource, { preserveMount });
       return;
     }
     if (taskResourceLoads.get(taskId)?.[resource] !== load) return;
     state[source.store].set(taskId, resource === "skills" ? result.skills : result);
     load.status = "loaded";
-    if (resource === "detail") applyTaskDetail(taskId, result);
+    if (resource === "detail") applyTaskDetail(taskId, result, { preserveMount });
     if (resource === "agents") (result || []).forEach(agent => {
       if (["pending", "running"].includes(agent.latest_run?.status)) listenToRun(agent.latest_run);
     });
-    refreshTaskResourceView(taskId, resource);
+    refreshTaskResourceView(taskId, resource, { preserveMount });
     return result;
   })().finally(() => { load.promise = null; });
-  refreshTaskResourceView(taskId, resource);
+  refreshTaskResourceView(taskId, resource, { preserveMount });
   return load.promise;
 }
 
@@ -907,7 +917,7 @@ function hydrateActive(taskId = state.activeTaskId, options = {}) {
   return detail;
 }
 
-function applyTaskDetail(taskId, detail) {
+function applyTaskDetail(taskId, detail, { preserveMount = false } = {}) {
   const mainRecovery = taskRunOperations?.recovery(taskId);
   if (mainRecovery) {
     if (!mainRecovery.editing || !detail.ui_state?.input) detail.ui_state = { ...(detail.ui_state || {}), input: mainRecovery.input };
@@ -925,7 +935,7 @@ function applyTaskDetail(taskId, detail) {
     listenToRun(detail.active_run);
   }
   updatePatrolAvatarLayer(taskId);
-  if (state.view === "focus" && state.activeTaskId === taskId) {
+  if (!preserveMount && state.view === "focus" && state.activeTaskId === taskId) {
     void ensurePluginAssets();
     const workspaceId = state.tasks.find(task => task.task_id === taskId)?.workspace_id;
     if (workspaceId && !state.contextTrees.has(workspaceId)) void hydrateContextTrees([workspaceId]).then(() => {
@@ -939,7 +949,7 @@ function applyTaskDetail(taskId, detail) {
 function render() {
   if (state.view !== "focus" && appInspector.parentElement !== document.querySelector(".app-shell")) document.querySelector(".app-shell").append(appInspector);
   if (state.view !== "map") { stopMapLive(); mapContextInspector?.dispose(); mapContextInspector = null; mapRelatedOnly = false; }
-  localStorage.setItem("focus-interaction-entry", state.view === "patrol" ? "patrol" : "focus");
+  preferenceStorage.setItem("focus-interaction-entry", state.view === "patrol" ? "patrol" : "focus");
   if (state.view !== "patrol") {
     workspacePatrolController?.leave();
     workspacePatrolPicker?.dispose();
@@ -2170,7 +2180,7 @@ function bindPanelResizer() {
       resizer.removeEventListener("pointerup", finish);
       resizer.removeEventListener("pointercancel", finish);
       resizer.removeEventListener("lostpointercapture", finish);
-      localStorage.setItem("focus-panel-width", String(state.panelWidth));
+      preferenceStorage.setItem("focus-panel-width", String(state.panelWidth));
     };
     resizer.addEventListener("pointermove", move);
     resizer.addEventListener("pointerup", finish);
@@ -3537,7 +3547,7 @@ function renderCuratorDetails(agent, curation) {
 
 function persistMapViewPreferences() {
   try {
-    localStorage.setItem(MAP_VIEW_PREFERENCES_KEY, JSON.stringify({
+    preferenceStorage.setItem(MAP_VIEW_PREFERENCES_KEY, JSON.stringify({
       mode: state.mapViewMode,
       workspaceIds: [...state.mapExpandedWorkspaceIds],
       contextIds: [...state.mapExpandedContextIds],
@@ -8924,6 +8934,20 @@ document.addEventListener("focus:languagechange", () => {
   syncLanguageControls();
   if (settingsDialog?.open) runUiAction(openSettings);
 });
+
+document.addEventListener("focus:gateway-restored", () => runUiAction(async () => {
+  const taskId = state.activeTaskId;
+  await refreshTasks();
+  if (taskId) await hydrateActive(taskId, { preserveMount: true });
+  // 只对账会话内容，保持输入节点、选择区、当前页面和阅读锚点。
+  const task = state.tasks.find(item => item.task_id === taskId);
+  const detail = state.details.get(taskId);
+  if (task && detail && state.view === "focus" && state.activeTaskId === taskId) {
+    replaceConversation(task, detail.messages || [], detail.active_run?.run_id);
+    updateMainRecoveryControls();
+    await flushComposerPersist();
+  }
+}));
 
 window.addEventListener("beforeunload", () => {
   stopMapLive();

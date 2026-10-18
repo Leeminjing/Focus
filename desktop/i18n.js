@@ -474,7 +474,7 @@
 
   function storedLocale() {
     try {
-      const value = global.localStorage?.getItem(STORAGE_KEY);
+      const value = (global.focusDesktop?.preferences || global.localStorage)?.getItem(STORAGE_KEY);
       return SUPPORTED_LOCALES.has(value) ? value : DEFAULT_LOCALE;
     } catch {
       return DEFAULT_LOCALE;
@@ -514,7 +514,7 @@
   function setLocale(value) {
     if (!SUPPORTED_LOCALES.has(value)) return false;
     activeLocale = value;
-    try { global.localStorage?.setItem(STORAGE_KEY, value); } catch { /* read-only storage */ }
+    try { (global.focusDesktop?.preferences || global.localStorage)?.setItem(STORAGE_KEY, value); } catch { /* read-only storage */ }
     syncDocumentLanguage();
     apply();
     global.document?.dispatchEvent?.(new global.CustomEvent("focus:languagechange", {
