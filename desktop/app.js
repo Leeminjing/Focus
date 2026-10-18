@@ -3291,6 +3291,11 @@ async function interruptMainRun() {
     setStatus(error.status === 404 ? "运行不存在（可能已结束）" : error.message, true);
   } finally {
     state.mainInterrupting = false;
+    // The request may outlive a render or a task switch. Restore the currently
+    // mounted control using the current run, rather than the captured button.
+    const currentButton = document.querySelector('[data-action="interrupt-main-run"]');
+    const currentRun = state.details.get(state.activeTaskId)?.active_run;
+    if (currentButton) currentButton.disabled = !currentRun || !["pending", "running"].includes(currentRun.status);
   }
 }
 

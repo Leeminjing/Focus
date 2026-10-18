@@ -23,6 +23,7 @@ const conversation = {
   set innerHTML(value) { lastHtml += value; },
   get innerHTML() { return ""; },
 };
+let interruptButton = createNode();
 
 const harness = createAppHarness({
   statusNode: "record",
@@ -31,6 +32,7 @@ const harness = createAppHarness({
     "#app": app,
     "#conversation": conversation,
     "#mainInput": { value: "测试消息", focus() {} },
+    '[data-action="interrupt-main-run"]': () => interruptButton,
   },
 });
 const { context, statusNode, fetches } = harness;
@@ -101,6 +103,55 @@ for (const status of ["success", "error", "interrupted"]) {
   });
   await new vm.Script(`state.mainInterrupting = true; interruptMainRun();`).runInContext(context);
   assert.equal(fetches.length, 0, "busy 期间不重复请求");
+
+  // 请求失败必须恢复当前按钮；期间的重渲染也不能令新按钮永久禁用。
+  for (const rerender of [false, true]) {
+    renderTask({ run_id: "run-retry", status: "running", kind: "main" });
+    new vm.Script(`state.mainInterrupting = false`).runInContext(context);
+    interruptButton = createNode();
+    fetches.length = 0;
+    let rejectRequest;
+    setGlobal("fetch", (url) => {
+      fetches.push({ url });
+      return new Promise((resolve, reject) => { rejectRequest = reject; });
+    });
+    const pending = new vm.Script(`interruptMainRun()`).runInContext(context);
+    assert.equal(interruptButton.disabled, true, "请求期间禁用按钮");
+    await new vm.Script(`interruptMainRun()`).runInContext(context);
+    assert.equal(fetches.length, 1, "实际请求期间不能重复提交");
+    if (rerender) interruptButton = createNode({ disabled: true });
+    rejectRequest(new Error("fixture cancellation failed"));
+    await pending;
+    assert.match(statusNode.textContent, /fixture cancellation failed/);
+    assert.equal(interruptButton.disabled, false, "取消失败后无需切换会话即可重试");
+    assert.equal(new vm.Script(`state.mainInterrupting`).runInContext(context), false);
+    setGlobal("fetch", async (url) => {
+      fetches.push({ url });
+      return { ok: true, status: 200, json: async () => ({ status: "interrupted" }) };
+    });
+    await new vm.Script(`interruptMainRun()`).runInContext(context);
+    assert.equal(fetches.length, 2, "第二次点击重新发出取消请求");
+    assert.ok(fetches.every(call => call.url.endsWith("/runs/run-retry/cancel")));
+  }
+
+  // 请求结束时以当前运行状态为准，包括终态、切换会话及按钮已卸载。
+  for (const nextRun of [null, { run_id: "run-ended", status: "success" }, { run_id: "run-other", status: "running" }]) {
+    renderTask({ run_id: "run-before-switch", status: "running", kind: "main" });
+    interruptButton = createNode();
+    let rejectRequest;
+    setGlobal("fetch", () => new Promise((resolve, reject) => { rejectRequest = reject; }));
+    const pending = new vm.Script(`interruptMainRun()`).runInContext(context);
+    context.nextRun = nextRun;
+    new vm.Script(`
+      state.activeTaskId = "other-task";
+      state.details.set("other-task", { active_run: nextRun });
+    `).runInContext(context);
+    interruptButton = nextRun ? createNode({ disabled: true }) : null;
+    rejectRequest(new Error("late cancellation failure"));
+    await pending;
+    if (interruptButton) assert.equal(interruptButton.disabled, nextRun.status !== "running");
+    assert.equal(new vm.Script(`state.mainInterrupting`).runInContext(context), false);
+  }
 
   // 8) 发送消息后 active_run 立即更新 → 运行中即渲染中断按钮
   renderTask(null);

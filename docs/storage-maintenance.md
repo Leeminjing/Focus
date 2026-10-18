@@ -42,12 +42,18 @@ Backup protections include:
 - `install.json`'s current accepted recovery point is always retained.
 - The most recent configured number of each backup type, regardless of age.
 - All backups inside the retention period, regardless of count.
-- Unknown, incomplete, malformed, linked or unusual entries. These are displayed
-  for inspection and never automatically removed.
+- Unknown, incomplete, malformed or unusual entries, linked backup roots, and
+  links outside upgrade dependency snapshots. These are displayed for inspection
+  and never automatically removed.
 
 Backup creation and removal share the updater's transaction lock and re-read
 recovery metadata while holding it. Backup cleanup only touches recognised direct
-children of the fixed backup directory and refuses linked roots or contents.
+children of the fixed backup directory and refuses linked roots. Real `venv`
+and `node_modules` directories inside upgrade recovery points may contain
+symbolic links, including dangling links. Inventory does not follow these links
+or count their targets' contents; cleanup removes the links with the obsolete
+snapshot and leaves their targets untouched. Linked dependency snapshot roots,
+manifests, database archives and other backup contents remain protected.
 
 ## Regular database backups
 
