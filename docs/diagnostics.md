@@ -61,3 +61,43 @@ Exports omit credentials, configuration documents, workspace paths, conversation
 content, tool/event payloads and arbitrary error messages. They contain operational
 identifiers and counts. Error types and unresolved failure IDs support looking up
 the detailed local logs without copying their contents into a support report.
+
+## Fact projection repair
+
+In the workspace Patrol workbench, open **查看工作详情 → 工作控制 → 事实投影诊断**.
+Expand a persisted failure to inspect its projector, source identity, error class,
+failure count, event boundary and timestamps. After correcting its source or
+implementation, choose **修复后重新生成**. Only quarantined `loop_facts`
+`journal_event` and `run_backfill` units offer this action. Retryable units remain
+under normal recovery; other projectors have no repair action here. The panel
+supports pagination, refresh and including resolved records.
+
+This operation regenerates materialized facts from existing sources. It does not
+launch or retry a business Run, call a model, or grant permissions. Journal repair
+holds the fact cursor lock and restores subsequent consumed events in order,
+without moving the cursor backward or retrying other unresolved failures. This
+keeps newer fact presentations current. Successful materialization and resolution
+commit together. Another failure rolls back materialization and records a new
+quarantined attempt, including for backfill or a missing source. A repeated request
+for an already resolved failure returns its state without replaying again.
+Source ordering uses canonical journal sequence, including for a backfilled Run
+with a settlement event; legacy sources without journal entries use the Run's
+settlement/creation time and stable ID. Transaction timestamps alone do not decide
+which canonical observation is current. A savepoint rolls back failed materialization
+while retaining the outer source/failure locks through attempt accounting.
+
+Session-protected local API:
+
+- `GET /desktop/api/agent-loops/{loop_id}/projection-failures`: unresolved failure
+  metadata by default; `include_resolved=true`, `limit=1..100` and `before` support
+  bounded inspection. Responses contain `items`, `has_more` and `next_before`.
+- `POST /desktop/api/agent-loops/{loop_id}/projection-failures/{failure_id}/repair`:
+  returns `processed` and the persisted `failure`. Check `failure.status`:
+  HTTP 200 confirms an attempted operation, and only `resolved` confirms repair.
+  Unknown or cross-Loop IDs return 404, unsupported states return 409, and an
+  unavailable projector returns 503.
+
+The workbench reloads its Live snapshot after an attempted repair so facts and
+recovery diagnostics update even without a new business event. Diagnostic responses
+and doctor exports omit arbitrary exception messages; detailed error text remains
+in the local failure record.

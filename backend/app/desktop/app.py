@@ -42,11 +42,13 @@ def mount_desktop(app) -> None:
     from backend.app.desktop.agent_loop.routes import agent_loop_router
     from backend.app.desktop.agent_loop.query_routes import loop_query_router
     from backend.app.desktop.agent_loop.live_routes import live_loop_router
+    from backend.app.desktop.agent_loop.projection_routes import projection_router
 
     app.include_router(desktop_router)
     app.include_router(agent_loop_router)
     app.include_router(loop_query_router)
     app.include_router(live_loop_router)
+    app.include_router(projection_router)
     app.include_router(compression_router)
     app.include_router(plugins_router)
     app.include_router(memory_router)

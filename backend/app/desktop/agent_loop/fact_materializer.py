@@ -3,13 +3,14 @@ r"""本文件对外提供 FactMaterializer，将一个已提交 Run 的候选证
 输入为 Run、来源 journal event、correlation 与 RunFactSourceReader；输出为该 Run 创建或复用的领域 LoopFact 集合和 fact
 规范事件。具体工作流为解析候选、生成稳定 identity、记录 observed、应用验证 policy、关联旧 subject 结论；本模块不维护
 投影游标或调度循环。示例：`facts = await materializer.materialize_run(session, run, event)`。
-只物化 Run/Test/Workspace/Artifact 领域结果；独立 activity 保留 Tool 审计，领域结果版本可更新同一事实。
+只物化 Run/Test/Workspace/Artifact 领域结果；独立 activity 保留 Tool 审计，领域结果版本可更新同一事实；旧来源不验证或替换较新观察。
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventEnvelope
@@ -25,6 +26,7 @@ from backend.app.desktop.agent_loop.fact_verification import (
     FactVerificationPolicy,
 )
 from backend.app.desktop.agent_loop.materialized_fact_sources import RunFactSourceReader
+from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
 from backend.app.desktop.models import DesktopRun
 
 
@@ -44,12 +46,20 @@ class FactMaterializer:
             return ()
         correlation_id = source_event.correlation_id if source_event is not None else await self._correlation(run)
         cause_event_id = source_event.event_id if source_event is not None else None
+        source_sequence = source_event.sequence if source_event is not None else int(await session.scalar(
+            select(func.max(LoopJournalEvent.sequence)).where(
+                LoopJournalEvent.loop_id == run.loop_id, LoopJournalEvent.entity_id == run.run_id,
+                LoopJournalEvent.kind == "context.run.settled",
+            )) or 0)
         candidates = await self._sources.read(session, (run,))
         materialized: list[LoopFact] = []
         for candidate in candidates:
             if candidate["kind"] == "tool":
                 continue
             evidence = self._evidence(candidate)
+            evidence = tuple(item.model_copy(update={"metadata": {
+                **item.metadata, "projection_sequence": source_sequence,
+            }}) for item in evidence)
             identity = FactIdentityResolver.resolve(
                 run.loop_id,
                 candidate["kind"],
@@ -75,7 +85,8 @@ class FactMaterializer:
                 cause_event_id=cause_event_id,
             )
             fact = await self._lifecycle.upsert_observation(session, observation)
-            decision = self._policy.evaluate(evidence, observation.observer)
+            decision = self._policy.evaluate(tuple(FactEvidenceReference.model_validate(item) for item in fact.evidence),
+                                             FactActor.model_validate(fact.observer))
             if fact.state in {"observed", "verifying"}:
                 fact = await self._lifecycle.apply_verification(session, fact.fact_id, decision, cause_event_id=cause_event_id)
             if fact.state == "verified":

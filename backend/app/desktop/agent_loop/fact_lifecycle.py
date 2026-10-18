@@ -3,17 +3,18 @@ r"""本文件对外提供 FactObservation、FactLifecycleRepository 与 FactTran
 输入为确定性事实身份、展示字段、类型化证据、观察/验证主体、原因事件和目标生命周期；输出为安全规范化的当前事实、不可变修订、
 关系记录及 `fact.upserted` 规范事件。具体工作流为先持久化 observed，同 identity 的新语义或状态追加同生命周期修订，
 再按验证策略推进；新观察可显式 supersede 或
-contradict 同 subject 的旧事实，历史从不删除。示例：`fact = await repository.observe(session, observation)`。
+contradict 同 subject 的旧事实，历史从不删除。修复旧来源时按规范来源顺序保留较新的展示与结论，
+关系仍从较新事实指向旧事实。示例：`fact = await repository.observe(session, observation)`。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 import json
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.agent_loop.event_contract import CanonicalEventDraft, EventVisibility
@@ -21,6 +22,8 @@ from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
 from backend.app.desktop.agent_loop.fact_identity import FactIdentity
 from backend.app.desktop.agent_loop.fact_models import LoopFact, LoopFactRelationship, LoopFactRevision
 from backend.app.desktop.agent_loop.fact_verification import FactActor, FactEvidenceReference, FactVerificationDecision
+from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
+from backend.app.desktop.models import DesktopRun
 from backend.app.desktop.persistence_safety import PersistencePayloadNormalizer
 
 
@@ -84,6 +87,8 @@ class FactLifecycleRepository:
         fact = await session.get(LoopFact, observation.identity.fact_id, with_for_update=True)
         if fact is None:
             return await self.observe(session, observation)
+        if await self._source_order(session, observation) < await self._source_order(session, fact):
+            return fact
         presentation, evidence, observer = self._safe_observation(observation)
         if fact.presentation == presentation and fact.evidence == evidence:
             return fact
@@ -137,6 +142,11 @@ class FactLifecycleRepository:
         )
         if previous is None:
             return None
+        if await self._source_order(session, previous) > await self._source_order(session, current):
+            if previous.state != "verified":
+                return None
+            # 历史 Run 按规范来源次序建立关系，不能淘汰较新的结论。
+            current, previous = previous, current
         relation = "supersedes" if self._meaning(previous.presentation) == self._meaning(current.presentation) else "contradicts"
         target_state = "superseded" if relation == "supersedes" else "contradicted"
         await self._append_revision(session, previous, target_state, cause_event_id, None, f"被事实 {current.fact_id} {relation}")
@@ -150,6 +160,30 @@ class FactLifecycleRepository:
         )
         session.add(relationship)
         return relationship
+
+    @staticmethod
+    async def _source_order(session: AsyncSession, fact: LoopFact | FactObservation) -> tuple:
+        """优先规范 sequence；历史 backfill 无事件时按 Run 落定/创建时间与稳定 ID 排序。"""
+        metadata = [item.metadata if isinstance(item, FactEvidenceReference) else item.get("metadata", {})
+                    for item in fact.evidence]
+        sequence = max((int(item.get("projection_sequence") or 0) for item in metadata), default=0)
+        if not sequence:
+            event_ids = [item["event_id"] for item in metadata if item.get("event_id")]
+            if event_ids:
+                sequence = int(await session.scalar(select(func.max(LoopJournalEvent.sequence)).where(
+                    LoopJournalEvent.loop_id == fact.loop_id, LoopJournalEvent.event_id.in_(event_ids))) or 0)
+        source_run = None
+        if not sequence and fact.source_run_id:
+            sequence = int(await session.scalar(select(func.max(LoopJournalEvent.sequence)).where(
+                LoopJournalEvent.loop_id == fact.loop_id, LoopJournalEvent.entity_id == fact.source_run_id,
+                LoopJournalEvent.kind == "context.run.settled")) or 0)
+            if not sequence:
+                source_run = await session.get(DesktopRun, fact.source_run_id)
+        timestamp = datetime.min.replace(tzinfo=UTC) if sequence else (
+            (source_run.settled_at or source_run.created_at) if source_run else fact.occurred_at)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
+        return sequence, timestamp, fact.source_run_id or ""
 
     async def history(self, session: AsyncSession, fact_id: str) -> tuple[LoopFactRevision, ...]:
         return tuple((await session.scalars(select(LoopFactRevision).where(LoopFactRevision.fact_id == fact_id).order_by(LoopFactRevision.revision))).all())

@@ -17,7 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.desktop.agent_loop.event_journal import LoopEventJournal
 from backend.app.desktop.agent_loop.fact_materializer import FactMaterializer
 from backend.app.desktop.agent_loop.fact_event_materializer import FactEventMaterializer
-from backend.app.desktop.agent_loop.journal_models import LoopJournalSequence, LoopProjectorCursor
+from backend.app.desktop.agent_loop.fact_models import LoopFact
+from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent, LoopJournalSequence, LoopProjectorCursor
 from backend.app.desktop.agent_loop.materialized_fact_sources import RunFactSourceReader
 from backend.app.desktop.agent_loop.projection_models import LoopProjectionFailure
 from backend.app.desktop.agent_loop.projection_recovery import ProjectionRecoveryRepository
@@ -87,27 +88,79 @@ class FactProjector:
             if len(page) < self._page_size:
                 return processed
 
-    async def repair_failure(self, failure_id: str) -> int:
-        async with self._sessions.begin() as session:
-            failure = await session.get(LoopProjectionFailure, failure_id, with_for_update=True)
-            if failure is None:
+    async def repair_failure(self, failure_id: str, *, loop_id: str | None = None) -> int:
+        """重放一个隔离单元；成功与 resolved 原子提交，失败独立记账，不回退 cursor。"""
+        async with self._sessions() as session:
+            failure = await session.get(LoopProjectionFailure, failure_id)
+            if failure is None or (loop_id is not None and failure.loop_id != loop_id):
                 raise LookupError(failure_id)
-            if failure.projector_name != self.PROJECTOR_NAME or failure.status != "quarantined":
+            target_loop = failure.loop_id
+            unit_kind, unit_id = failure.unit_kind, failure.unit_id
+            boundary = failure.boundary_sequence
+        async with self._sessions.begin() as session:
+            # 与正常消费保持 cursor/Run -> failure 锁序，重复请求在成功后只读返回。
+            if unit_kind == "journal_event":
+                cursor = await self._cursor(session, target_loop)
+                source = await session.get(LoopJournalEvent, unit_id)
+            elif unit_kind == "run_backfill":
+                source = await session.get(DesktopRun, unit_id, with_for_update=True)
+            else:
+                raise ValueError(f"未知投影单元: {unit_kind}")
+            failure = await session.get(LoopProjectionFailure, failure_id, with_for_update=True)
+            if failure is None or failure.loop_id != target_loop:
+                raise LookupError(failure_id)
+            if failure.projector_name != self.PROJECTOR_NAME:
                 raise ValueError("只有 loop_facts 的 quarantined 单元可修复重放")
-            loop_id = failure.loop_id
-            if failure.unit_kind == "journal_event":
-                cursor = await self._cursor(session, loop_id)
-                cursor.last_sequence = min(cursor.last_sequence, max(0, failure.boundary_sequence - 1))
-            elif failure.unit_kind != "run_backfill":
-                raise ValueError(f"未知投影单元: {failure.unit_kind}")
-            failure.status = "retryable"
-            failure.resolved_at = None
-            unit_kind = failure.unit_kind
-            unit_id = failure.unit_id
-        if unit_kind == "run_backfill":
-            await FactBackfillService(self._sessions, self._checkpointer)._project_run(loop_id, unit_id)
-            return 1
-        return await self.project_loop(loop_id)
+            if failure.status == "resolved":
+                return 0
+            if failure.status != "quarantined":
+                raise ValueError("只有 loop_facts 的 quarantined 单元可修复重放")
+            try:
+                # savepoint 只回滚物化，外层锁保留到失败记账提交，消除并发成功/失败竞态。
+                async with session.begin_nested():
+                    if source is None or source.loop_id != target_loop:
+                        raise LookupError("原始投影来源不存在或不属于当前 Loop")
+                    if unit_kind == "journal_event":
+                        if source.kind == "context.run.settled":
+                            run = await session.get(DesktopRun, source.entity_id)
+                            if run is None or run.loop_id != target_loop:
+                                raise LookupError("journal 引用的 Run 不存在或不属于当前 Loop")
+                        processed = await self._replay_events(session, target_loop, source, cursor.last_sequence)
+                    else:
+                        await self._materializer.materialize_run(session, source, None)
+                        processed = 1
+                        await self._recovery.resolve(session, loop_id=target_loop, projector_name=self.PROJECTOR_NAME,
+                                                     unit_kind=unit_kind, unit_id=unit_id)
+                return processed
+            except Exception as error:
+                await self._recovery.record_failure(session, loop_id=target_loop, projector_name=self.PROJECTOR_NAME,
+                                                    unit_kind=unit_kind, unit_id=unit_id, error=error,
+                                                    boundary_sequence=boundary, max_attempts=1)
+                return 0
+
+    async def _replay_events(self, session: AsyncSession, loop_id: str, source, boundary: int) -> int:
+        """在不回退 cursor 的事务中恢复后续事件，保留其他隔离单元及已有终态。"""
+        processed = await self._materialize_event(session, loop_id, self._journal._envelope(source), replay=True)
+        after = source.sequence
+        while after < boundary:
+            page = tuple(await session.scalars(select(LoopJournalEvent).where(
+                LoopJournalEvent.loop_id == loop_id, LoopJournalEvent.sequence > after,
+                LoopJournalEvent.sequence <= boundary,
+            ).order_by(LoopJournalEvent.sequence).limit(self._page_size)))
+            if not page:
+                break
+            blocked = set(await session.scalars(select(LoopProjectionFailure.unit_id).where(
+                LoopProjectionFailure.loop_id == loop_id,
+                LoopProjectionFailure.projector_name == self.PROJECTOR_NAME,
+                LoopProjectionFailure.unit_kind == "journal_event",
+                LoopProjectionFailure.unit_id.in_([event.event_id for event in page]),
+                LoopProjectionFailure.status != "resolved",
+            )))
+            for event in page:
+                if event.event_id not in blocked:
+                    processed += await self._materialize_event(session, loop_id, self._journal._envelope(event), replay=True)
+            after = page[-1].sequence
+        return processed
 
     async def _next_page(self, loop_id: str) -> tuple:
         async with self._sessions() as session:
@@ -123,31 +176,37 @@ class FactProjector:
             )
 
     async def _project_event(self, loop_id: str, event) -> int:
-        processed = 0
         async with self._sessions.begin() as session:
             cursor = await self._cursor(session, loop_id)
             if cursor.last_sequence >= event.sequence:
                 return 0
-            if event.kind == "context.run.settled":
-                run = await session.get(DesktopRun, event.entity_id)
-                if run is not None:
-                    await self._materializer.materialize_run(session, run, event)
-                    processed += 1
-            if await self._event_materializer.materialize(session, event) is not None:
-                processed += 1
+            processed = await self._materialize_event(session, loop_id, event)
             cursor.last_sequence = event.sequence
-            await self._recovery.resolve(
-                session,
-                loop_id=loop_id,
-                projector_name=self.PROJECTOR_NAME,
-                unit_kind="journal_event",
-                unit_id=event.event_id,
-                boundary_sequence=event.sequence,
+        return processed
+
+    async def _materialize_event(self, session: AsyncSession, loop_id: str, event, *, replay: bool = False) -> int:
+        processed = 0
+        skip_verification = False
+        if replay and event.kind.startswith("fact.verification."):
+            fact = await session.get(LoopFact, str(event.payload.get("fact_id") or event.entity_id))
+            skip_verification = fact is not None and (
+                fact.state in {"contradicted", "superseded"}
+                or (fact.state == "verified" and event.payload.get("target_state") == "verifying")
             )
+        if event.kind == "context.run.settled":
+            run = await session.get(DesktopRun, event.entity_id)
+            if run is not None:
+                await self._materializer.materialize_run(session, run, event)
+                processed += 1
+        if not skip_verification and await self._event_materializer.materialize(session, event) is not None:
+            processed += 1
+        await self._recovery.resolve(session, loop_id=loop_id, projector_name=self.PROJECTOR_NAME,
+                                     unit_kind="journal_event", unit_id=event.event_id, boundary_sequence=event.sequence)
         return processed
 
     async def _record_event_failure(self, loop_id: str, event, error: Exception):
         async with self._sessions.begin() as session:
+            cursor = await self._cursor(session, loop_id)
             failure = await self._recovery.record_failure(
                 session,
                 loop_id=loop_id,
@@ -158,7 +217,6 @@ class FactProjector:
                 boundary_sequence=event.sequence,
             )
             if failure.status == "quarantined":
-                cursor = await self._cursor(session, loop_id)
                 cursor.last_sequence = max(cursor.last_sequence, event.sequence)
             return failure
 

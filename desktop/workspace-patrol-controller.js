@@ -9,6 +9,7 @@
  * 弹窗类型由现有 dialogKind 投影为 data-patrol-dialog-kind，供局部材质区分；每次打开同步，关闭动画期间保留，不作为业务状态来源。
  * intake 统一绑定/上传/投递，浏览器拖放先预览；onCompose 存在时原生工作台转交输入入口、精确回复目标及固定文件版本，不持有第二份可编辑草稿。
  * 停止/失败在 composer 直接提供重新启用；与详情入口共享在途保护，保存回执和新 Loop 的 Live 生效分开呈现。
+ * 事实投影诊断按当前 Loop 分页，修复复用服务端重放并刷新 Live；失败、重复点击与迟到响应不改变业务发送目标。
  */
 (function (root, factory) {
   const api = factory(root);
@@ -70,6 +71,7 @@
     let visibleFact = null;
     let factOptions = { kind: "", status: "", outcomeStatus: "", contextId: "" };
     let factVersion = 0;
+    let projectionPage = null, projectionVersion = 0, projectionRepair = null, projectionIncludeResolved = false;
     let fileVersion = 0;
     let fileCandidates = [];
     let progressInspection = null;
@@ -111,7 +113,7 @@
     }
     function closeDialog() {
       attentionTarget = null;
-      dialogKind = null; progressVersion++; factVersion++; inspectionVersion++; observationInspection = null;
+      dialogKind = null; progressVersion++; factVersion++; inspectionVersion++; projectionVersion++; observationInspection = null;
       return root.FocusSurfaceTransition.visible(host.querySelector("[data-patrol-dialog]"), false, { modal: true });
     }
     function toggleDetails() {
@@ -349,6 +351,48 @@
       const merged = older ? [...(page.facts || []), ...(factPage?.facts || [])] : page.facts || [];
       factPage = { ...page, facts: [...new Map(merged.map(item => [item.fact_id, item])).values()] };
       showDialog("facts", "LoopFact", `<div class="patrol-fact-filters"><label>类型<select data-patrol-fact-filter="kind">${["", "run", "test", "context_revision", "artifact", "workspace", "directive"].map(v => `<option value="${v}"${factOptions.kind === v ? " selected" : ""}>${v || "全部"}</option>`).join("")}</select></label><label>事实状态<select data-patrol-fact-filter="status">${root.FocusLoopFactsView.statusOptions.map(([value, label]) => `<option value="${value}"${factOptions.status === value ? " selected" : ""}>${label}</option>`).join("")}</select></label><label>业务结果<select data-patrol-fact-filter="outcomeStatus">${root.FocusLoopFactsView.outcomeOptions.map(([value, label]) => `<option value="${value}"${factOptions.outcomeStatus === value ? " selected" : ""}>${label}</option>`).join("")}</select></label><label>Context<input data-patrol-fact-filter="contextId" value="${view.escape(factOptions.contextId)}" placeholder="精确 Context 身份"></label></div><div class="patrol-facts"><table><tbody>${root.FocusLoopFactsView.renderRows(factPage.facts)}</tbody></table></div><p>${factPage.has_more ? "后续还有事实" : "已到当前查询范围末尾"}</p>${factPage.has_more ? '<button data-patrol-facts-older>加载更早事实</button>' : ""}`);
+    }
+
+    async function openProjectionFailures(older = false) {
+      if (!loopId || projectionRepair) return;
+      const owner = token, identity = loopId, version = ++projectionVersion;
+      const before = older ? projectionPage?.next_before : null;
+      showDialog("projection", "事实投影诊断", '正在读取失败记录 <button data-patrol-projection-refresh>重试读取</button>');
+      const page = await api.projectionFailures(identity, { before, includeResolved: projectionIncludeResolved, signal: lifetime.signal });
+      if (owner !== token || identity !== loopId || version !== projectionVersion || dialogKind !== "projection") return;
+      projectionPage = older ? { ...page, items: [...projectionPage.items, ...page.items] } : page;
+      showDialog("projection", "事实投影诊断", view.projectionFailures(projectionPage, { includeResolved: projectionIncludeResolved }));
+    }
+
+    async function repairProjection(failureId) {
+      if (!loopId || projectionRepair) return;
+      const operation = { loopId, failureId }, owner = token, version = ++projectionVersion;
+      projectionRepair = operation;
+      showDialog("projection", "事实投影诊断", view.projectionFailures(projectionPage, { pendingId: failureId, includeResolved: projectionIncludeResolved }));
+      try {
+        const result = await api.repairProjectionFailure(operation.loopId, failureId);
+        if (owner !== token || operation.loopId !== loopId) return;
+        projectionPage = { ...projectionPage, items: projectionPage.items.map(row => row.failure_id === failureId ? result.failure : row) };
+        if (version === projectionVersion && dialogKind === "projection") showDialog("projection", "事实投影诊断", view.projectionFailures(projectionPage, {
+          includeResolved: projectionIncludeResolved,
+          message: result.failure.status === "resolved" ? "事实投影已修复。" : "重新生成仍失败，记录已更新。请修复来源或实现后再次尝试。",
+        }));
+        // 已物化事实和诊断不一定产生新业务事件，主动重取权威快照。
+        connection.stop(); connect(operation.loopId);
+      } catch (failure) {
+        if (owner === token && operation.loopId === loopId && version === projectionVersion && dialogKind === "projection") {
+          showDialog("projection", "事实投影诊断", view.projectionFailures(projectionPage, {
+            includeResolved: projectionIncludeResolved, message: `修复请求未确认：${failure.message}。可刷新诊断核对结果。`,
+          }));
+        }
+      } finally {
+        if (projectionRepair === operation) {
+          projectionRepair = null;
+          if (owner === token && dialogKind === "projection") {
+            for (const button of host.querySelectorAll("[data-patrol-projection-repair], [data-patrol-projection-refresh], [data-patrol-projection-more], [data-patrol-projection-resolved]")) button.disabled = false;
+          }
+        }
+      }
     }
     function patchHistory(model) {
       if (renderedHistoryRevision === model.historyRevision) return;
@@ -655,6 +699,9 @@
         else if (button.hasAttribute("data-patrol-pending")) showDialog("requests", "待处理工作", "", host.querySelector("[data-patrol-requests]"));
         else if (button.hasAttribute("data-patrol-progress-open")) { progressFilter = "all"; await openProgress(); }
         else if (button.hasAttribute("data-patrol-grant-open")) await openGrant();
+        else if (button.hasAttribute("data-patrol-projection-open") || button.hasAttribute("data-patrol-projection-refresh")) await openProjectionFailures();
+        else if (button.hasAttribute("data-patrol-projection-more")) await openProjectionFailures(true);
+        else if (button.dataset.patrolProjectionRepair) await repairProjection(button.dataset.patrolProjectionRepair);
         else if (button.hasAttribute("data-patrol-live-retry") && loopId) { previews?.retry(); connect(loopId); }
         else if (button.dataset.action === "loop-revoke-grant") {
           if (!root.confirm("确认撤销当前工作区 Patrol 的授权？现有工作会保留。")) return;
@@ -798,6 +845,10 @@
         }
       }, options);
       host.addEventListener("change", event => {
+        if (event.target.hasAttribute("data-patrol-projection-resolved")) {
+          projectionIncludeResolved = event.target.checked;
+          void openProjectionFailures().catch(error);
+        }
         const key = event.target.dataset.patrolFactFilter;
         if (key) { factOptions[key] = event.target.value; void loadFacts().catch(error); }
         if (event.target.hasAttribute("data-patrol-progress-version")) void openProgress(event.target.value).catch(error);
@@ -855,6 +906,7 @@
       root.document.body.classList.remove("has-patrol-workbench");
       relatedOnly = false; highlightIds = [];
       token++; lineageToken++; historyToken++; observationVersion++; factVersion++; fileVersion++; progressVersion++; inspectionVersion++;
+      projectionVersion++; projectionPage = null; projectionRepair = null; projectionIncludeResolved = false;
       fileCandidates = [];
       lifetime?.abort(); lifetime = null;
       if (host) for (const element of host.querySelectorAll("[data-surface-managed], [data-patrol-composer]")) root.FocusSurfaceTransition.finish(element);
