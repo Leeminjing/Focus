@@ -108,6 +108,11 @@ if (!process.versions.electron) {
     apiBase = `http://127.0.0.1:${server.address().port}`;
     process.env.FOCUS_DESKTOP_API = apiBase; process.env.FOCUS_DESKTOP_SESSION = session;
     new WorkspacePatrolRecoveryHost({ ipcMain, directory, byteLimit: limits.general_file_bytes, getWorkbench: () => workbench, origin: apiBase });
+    require("./desktop-preferences.cjs").registerDesktopPreferences(ipcMain, {
+      directory: () => directory,
+      authorize: event => assert.equal(new URL(event.senderFrame.url).origin, apiBase),
+    });
+    ipcMain.handle("focus:gateway-status", () => ({ status: "ready", error: null, revision: 1 }));
     ipcMain.handle("focus:notifications-ready", () => true);
     ipcMain.handle("focus:notifications-settings", () => ({ enabled: true }));
     ipcMain.handle("focus:get-zoom-level", () => 0);
