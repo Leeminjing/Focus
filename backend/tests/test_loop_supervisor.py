@@ -14,6 +14,34 @@ from backend.app.desktop.agent_loop.supervisor import LoopSupervisor, Supervisor
 from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim, LoopCoordinatorRuntime
 
 
+def test_workspace_cleanup_runs_without_active_loop_supervisors():
+    async def run():
+        cleaned = asyncio.Event()
+        class Coordinator:
+            async def recover(self):
+                pass
+            async def running_loop_ids(self):
+                return ()
+        class RunEvents:
+            async def recover(self):
+                pass
+        class Cleanup:
+            async def drain(self):
+                cleaned.set()
+        runtime = LoopCoordinatorRuntime(Coordinator(), RunEvents(), workspace_cleanup=Cleanup())
+        async def no_preemptions():
+            return 0
+        runtime._drain_preemptions = no_preemptions
+        await runtime.start()
+        try:
+            await asyncio.wait_for(cleaned.wait(), 1)
+            assert runtime.supervised_loop_ids == ()
+            assert "workspace_cleanup" in {row["name"] for row in runtime.diagnostic_snapshot()["components"]}
+        finally:
+            await runtime.close()
+    asyncio.run(run())
+
+
 def test_wake_during_tick_is_retained_coalesced_and_targeted():
     async def run():
         entered, release, repeated = asyncio.Event(), asyncio.Event(), asyncio.Event()
