@@ -8,26 +8,37 @@ from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 from typing import Callable
+from time import monotonic
+from focus.models.telemetry import emit
 
 
 @dataclass(frozen=True)
 class _Observation:
     signature: tuple[int, ...]
     digest: str | None
+    stable_since: float
 
 
 class MaterialFileMonitor:
-    def __init__(self, digest: Callable[[Path], str]) -> None:
+    def __init__(self, digest: Callable[[Path], str], *, clock=monotonic, stability_seconds=2) -> None:
         self._digest = digest
+        self._clock = clock
+        self._stability_seconds = stability_seconds
         self._observations: dict[tuple[str, Path], _Observation] = {}
+        self.stat_checks = 0
+        self.digest_reads = 0
+
+    def metrics(self):
+        emit("material_scan", stat_checks=self.stat_checks, digest_reads=self.digest_reads)
+        self.stat_checks = self.digest_reads = 0
 
     def retain(self, active: set[tuple[str, Path]]) -> None:
         self._observations = {
             key: value for key, value in self._observations.items() if key in active
         }
 
-    @staticmethod
-    def _signature(path: Path) -> tuple[int, ...]:
+    def _signature(self, path: Path) -> tuple[int, ...]:
+        self.stat_checks += 1
         info = path.stat()
         return (info.st_mtime_ns, info.st_ctime_ns, info.st_size, info.st_dev, info.st_ino)
 
@@ -42,17 +53,20 @@ class MaterialFileMonitor:
         previous = self._observations.get(key)
         if previous is not None:
             if previous.signature != signature:
-                self._observations[key] = _Observation(signature, None)
+                self._observations[key] = _Observation(signature, None, self._clock())
                 return None
             if previous.digest is not None:
                 return previous.digest
+            if self._clock() - previous.stable_since < self._stability_seconds:
+                return None
 
+        self.digest_reads += 1
         digest = self._digest(path)
         after = self._signature(path)
         if after != signature:
-            self._observations[key] = _Observation(after, None)
+            self._observations[key] = _Observation(after, None, self._clock())
             return None
-        self._observations[key] = _Observation(signature, digest)
+        self._observations[key] = _Observation(signature, digest, self._clock())
         return digest
 
 

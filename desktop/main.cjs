@@ -6,8 +6,9 @@
  * 工作台缩放以 Chromium 每级 1.2 倍钳制在 50%~300%，原生标题覆盖层同步 56 CSS px 基础高度。
  * 示例：electron . 启动机器人，托盘打开工作台；第二实例唤回既有机器人而不再启动后端。
  */
-const { app, BrowserWindow, dialog, ipcMain, Menu, shell, nativeTheme, Notification } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell, nativeTheme, Notification, powerMonitor } = require("electron");
 const { TaskNotifications } = require("./task-notifications.cjs");
+const { subscribeTaskChanges } = require("./task-state-stream.cjs");
 const { supportsAcrylic, bindWindowMaterial } = require("./window-material.cjs");
 const { DesktopPatrolHost } = require("./desktop-patrol-host.cjs");
 const nativeMaterialSupported = supportsAcrylic(process.platform, require("node:os").release());
@@ -303,9 +304,13 @@ async function start() {
       fs.writeFileSync(`${notificationFile}.tmp`, JSON.stringify(value), "utf8");
       fs.renameSync(`${notificationFile}.tmp`, notificationFile);
     },
-    listTasks: async () => {
+    subscribe: onChange => subscribeTaskChanges({
+      url: `${apiBase}/desktop/api/task-changes/stream`,
+      headers: { "X-Focus-Session": session }, onChange,
+    }),
+    listTasks: async signal => {
       const response = await fetch(`${apiBase}/desktop/api/tasks`, {
-        headers: { "X-Focus-Session": session }, signal: AbortSignal.timeout(10000),
+        headers: { "X-Focus-Session": session }, signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]),
       });
       if (!response.ok) throw new Error(`读取任务状态失败: HTTP ${response.status}`);
       return response.json();
@@ -327,6 +332,25 @@ async function start() {
     },
   });
   taskNotifications.start();
+  powerMonitor.on("resume", () => {
+    taskNotifications?.invalidate();
+    void fetch(`${apiBase}/desktop/api/reconcile`, { method: "POST",
+      headers: { "X-Focus-Session": session }, signal: AbortSignal.timeout(10000),
+    }).then(response => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    }).catch(error => console.warn("休眠恢复核对失败:", error.message));
+  });
+  if (process.env.FOCUS_PERFORMANCE_METRICS === "1") {
+    const timer = setInterval(() => {
+      for (const metric of app.getAppMetrics()) {
+        console.info("focus_metric", JSON.stringify({ event: "process_sample", timestamp: new Date().toISOString(),
+          process: `electron:${metric.type}`, pid: metric.pid, cpu_percent: metric.cpu.percentCPUUsage,
+          rss_bytes: metric.memory.workingSetSize * 1024, interval_seconds: 60 }));
+      }
+    }, 60000);
+    timer.unref();
+    app.once("will-quit", () => clearInterval(timer));
+  }
 }
 
 function flushNotificationTarget() {

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 from backend.app.desktop import service as service_module
 from backend.app.desktop.service import DesktopService
+from backend.app.desktop.material_watch import MaterialFileMonitor
 
 
 def _watch_service(tmp_path):
@@ -28,17 +29,14 @@ def _watch_service(tmp_path):
 
 
 def _run_cycles(service, monkeypatch, count, before_cycle=lambda _: None):
-    cycle = 0
-
-    async def tick(_delay):
-        nonlocal cycle
-        cycle += 1
-        if cycle > count:
-            raise asyncio.CancelledError
-        before_cycle(cycle)
-
-    monkeypatch.setattr(service_module.asyncio, "sleep", tick)
-    asyncio.run(service._watch_materials())
+    async def run():
+        service._material_watch_failures = set()
+        cycle = 0
+        monitor = MaterialFileMonitor(service._digest, clock=lambda: cycle * 2)
+        for cycle in range(1, count + 1):
+            before_cycle(cycle)
+            await service._scan_materials(monitor)
+    asyncio.run(run())
 
 
 def test_material_watcher_does_not_rehash_unchanged_files(tmp_path, monkeypatch):
@@ -95,21 +93,14 @@ def test_slow_material_digest_keeps_event_loop_responsive(tmp_path, monkeypatch)
     released_by_loop = []
     original_digest = service._digest
     sleep = asyncio.sleep
-    cycles = 0
 
     def slow_digest(path):
         started.set()
         released_by_loop.append(release.wait(timeout=2))
         return original_digest(path)
 
-    async def tick(_delay):
-        nonlocal cycles
-        cycles += 1
-        if cycles > 1:
-            raise asyncio.CancelledError
-
     async def run():
-        watcher = asyncio.create_task(service._watch_materials())
+        watcher = asyncio.create_task(service._scan_materials(MaterialFileMonitor(service._digest)))
         try:
             while not started.is_set() and not watcher.done():
                 await sleep(0)
@@ -121,7 +112,6 @@ def test_slow_material_digest_keeps_event_loop_responsive(tmp_path, monkeypatch)
             await asyncio.gather(watcher, return_exceptions=True)
 
     monkeypatch.setattr(service, "_digest", slow_digest)
-    monkeypatch.setattr(service_module.asyncio, "sleep", tick)
     asyncio.run(run())
 
     assert released_by_loop == [True]
@@ -251,23 +241,14 @@ def test_material_watcher_logs_persistent_failure_only_once(monkeypatch):
     service = object.__new__(DesktopService)
     service.session_factory = _Session
 
-    sleep_count = 0
-
-    async def two_cycles_then_cancel(_delay):
-        nonlocal sleep_count
-        sleep_count += 1
-        if sleep_count > 2:
-            raise asyncio.CancelledError
-
     def deny_access(_path):
         raise PermissionError("workspace denied")
 
-    monkeypatch.setattr(service_module.asyncio, "sleep", two_cycles_then_cancel)
     monkeypatch.setattr(service_module.Path, "stat", deny_access)
     warning = Mock()
     monkeypatch.setattr(service_module.logger, "warning", warning)
 
-    asyncio.run(service._watch_materials())
+    _run_cycles(service, monkeypatch, 2)
 
     assert warning.call_count == 1
     assert warning.call_args.args == (

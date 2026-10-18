@@ -10,7 +10,8 @@ from threading import RLock
 
 from openai import AsyncOpenAI, OpenAI
 
-from focus.models.http_clients import ProxyFirstAsyncHttpClient, ProxyFirstHttpClient, environment_proxy_configured
+from focus.models.http_clients import (ProxyFirstAsyncHttpClient, ProxyFirstHttpClient,
+                                      ObservedAsyncHttpClient, ObservedHttpClient, environment_proxy_configured)
 
 
 class _ClientOwner:
@@ -53,13 +54,17 @@ class _AsyncClient(_ClientOwner):
             await client.close()
 
 
-def responses_clients(options, http_client=None, http_async_client=None):
+def responses_clients(options, http_client=None, http_async_client=None, *, performance_identity=None):
     proxy = http_client is None and http_async_client is None and environment_proxy_configured()
 
     def sync():
-        return OpenAI(**options, http_client=ProxyFirstHttpClient() if proxy else http_client)
+        return OpenAI(**options, http_client=(ProxyFirstHttpClient(performance_identity=performance_identity)
+                      if proxy else ObservedHttpClient(performance_identity=performance_identity))
+                      if http_client is None else http_client)
 
     def asynchronous():
-        return AsyncOpenAI(**options, http_client=ProxyFirstAsyncHttpClient() if proxy else http_async_client)
+        return AsyncOpenAI(**options, http_client=(ProxyFirstAsyncHttpClient(performance_identity=performance_identity)
+                           if proxy else ObservedAsyncHttpClient(performance_identity=performance_identity))
+                           if http_async_client is None else http_async_client)
 
     return _SyncClient(sync), _AsyncClient(asynchronous)

@@ -133,6 +133,34 @@ async def list_tasks(request: Request) -> list[dict]:
     return await request.app.state.desktop_service.list_tasks()
 
 
+@desktop_router.get("/task-changes/stream")
+async def task_changes(request: Request) -> StreamingResponse:
+    signal = request.app.state.desktop_service.state_changes.tasks
+
+    async def stream():
+        generation = signal.generation
+        # Always reconcile on connection/reconnection, even after missed notifications.
+        yield "event: changed\ndata: {}\n\n"
+        while not await request.is_disconnected():
+            current = await signal.wait(generation, timeout=15)
+            if current != generation:
+                generation = current
+                yield "event: changed\ndata: {}\n\n"
+            else:
+                yield ": keepalive\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@desktop_router.post("/reconcile")
+async def reconcile_desktop_state(request: Request) -> dict:
+    changes = request.app.state.desktop_service.state_changes
+    changes.tasks.publish()
+    changes.materials.publish()
+    return {"ok": True}
+
+
 @desktop_router.get("/tasks/{task_id}")
 async def get_task(task_id: str, request: Request) -> dict:
     return await request.app.state.desktop_service.get_task(task_id)

@@ -22,6 +22,8 @@ from focus.runtime.runs.usage import ModelUsage
 from pydantic import ValidationError
 
 from backend.app.desktop.agent_loop.structured_worker import StructuredWorkerModel
+from focus.models.telemetry import model_invocation, model_context
+from focus.models.provider_contract import resolve_provider_contract
 
 DerivationWorkerRole = Literal[
     "semantic_index_projector",
@@ -136,6 +138,13 @@ class RoleBoundStructuredModel:
         payload: dict[str, Any],
         validator: Callable[[Any], None | Awaitable[None]] | None,
     ):
+        config = self._app_config.get_model(self._model_name or self._app_config.resolve_curation_model_name())
+        with model_invocation(category=(model_context.get() or {}).get("category", "structured"),
+                              role=self.role, model=config.model,
+                              provider=resolve_provider_contract(config).provider):
+            return await self._invoke_observed(schema, system, payload, validator)
+
+    async def _invoke_observed(self, schema, system, payload, validator):
         records: list[dict[str, Any]] = []
         invocation_usage = ModelUsage()
         last_error: Exception | None = None

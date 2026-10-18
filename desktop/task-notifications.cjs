@@ -1,10 +1,13 @@
 "use strict";
 
-// Poll in the main process so hidden workbenches still receive notifications.
+// Reconcile in the main process so hidden workbenches still receive notifications.
 // Persist identities/statuses only, never task content or approval payloads.
 class TaskNotifications {
-  constructor({ load, save, listTasks, show, onTasks = () => {}, interval = 5000 }) {
-    Object.assign(this, { save, listTasks, show, onTasks, interval });
+  constructor({ load, save, listTasks, show, onTasks = () => {}, subscribe,
+    interval = 60000, debounce = 250 }) {
+    Object.assign(this, { save, listTasks, show, onTasks, subscribe, interval, debounce });
+    this.generation = 0;
+    this.abort = new AbortController();
     const stored = load() || {};
     this.enabled = stored.enabled !== false;
     this.seen = new Set(Array.isArray(stored.seen) ? stored.seen : []);
@@ -29,8 +32,9 @@ class TaskNotifications {
   async poll() {
     if (this.busy || this.stopped) return;
     this.busy = true;
+    const generation = this.generation;
     try {
-      const tasks = await this.listTasks();
+      const tasks = await this.listTasks(this.abort.signal);
       if (this.stopped) return;
       this.onTasks(tasks);
       const events = [];
@@ -62,14 +66,37 @@ class TaskNotifications {
         this.seen.add(event.key);
       }
       this.persist();
-    } finally { this.busy = false; }
+    } finally {
+      this.busy = false;
+      if (generation !== this.generation) this.schedule();
+    }
+  }
+  invalidate() {
+    this.generation += 1;
+    if (!this.busy) this.schedule();
+  }
+  schedule() {
+    if (this.stopped || this.refreshTimer) return;
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
+      void this.poll().catch(error => console.warn("任务状态刷新失败:", error.message));
+    }, this.debounce);
+    this.refreshTimer.unref?.();
   }
   start() {
+    if (this.timer || this.stopped) return;
     const tick = () => this.poll().catch(error => console.warn("任务状态刷新失败:", error.message));
     void tick();
+    this.unsubscribe = this.subscribe?.(() => this.invalidate());
     this.timer = setInterval(tick, this.interval);
     this.timer.unref?.();
   }
-  stop() { this.stopped = true; clearInterval(this.timer); }
+  stop() {
+    this.stopped = true;
+    this.abort.abort();
+    this.unsubscribe?.();
+    clearTimeout(this.refreshTimer);
+    clearInterval(this.timer);
+  }
 }
 module.exports = { TaskNotifications };

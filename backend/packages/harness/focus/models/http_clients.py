@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from openai import DefaultAsyncHttpxClient, DefaultHttpxClient
+from focus.models.telemetry import RequestTiming
 
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,108 @@ def _copy_request(request: Any, content: bytes) -> Any:
     )
 
 
-class ProxyFirstHttpClient(DefaultHttpxClient):
+class _TimedSyncStream(_SDK_HTTPX.SyncByteStream):
+    def __init__(self, stream, timing):
+        self.stream, self.timing = stream, timing
+        self.complete = False
+
+    def __iter__(self):
+        try:
+            yield from self.stream
+            self.complete = True
+            self.timing.finish("error" if self.timing.status >= 400 else "success")
+        except BaseException as error:
+            self.timing.finish("error", error)
+            raise
+
+    def close(self):
+        try:
+            self.stream.close()
+        finally:
+            self.timing.finish("success" if self.complete else "closed_early")
+
+
+class _TimedAsyncStream(_SDK_HTTPX.AsyncByteStream):
+    def __init__(self, stream, timing):
+        self.stream, self.timing = stream, timing
+        self.complete = False
+
+    async def __aiter__(self):
+        import asyncio
+        try:
+            async for chunk in self.stream:
+                yield chunk
+            self.complete = True
+            self.timing.finish("error" if self.timing.status >= 400 else "success")
+        except BaseException as error:
+            self.timing.finish("cancelled" if isinstance(error, asyncio.CancelledError) else "error", error)
+            raise
+
+    async def aclose(self):
+        try:
+            await self.stream.aclose()
+        finally:
+            self.timing.finish("success" if self.complete else "closed_early")
+
+
+class ObservedHttpClient(DefaultHttpxClient):
+    def __init__(self, *, performance_identity=None, **kwargs):
+        self.performance_identity = performance_identity
+        hooks = {name: list(values) for name, values in kwargs.pop("event_hooks", {}).items()}
+        hooks["response"] = [self._headers, *hooks.get("response", [])]
+        kwargs["event_hooks"] = hooks
+        super().__init__(**kwargs)
+
+    @staticmethod
+    def _headers(response):
+        timing = response.request.extensions.get("focus_request_timing")
+        if timing is not None:
+            timing.headers(response)
+
+    def send(self, request, *args, **kwargs):
+        timing = RequestTiming(request, self.performance_identity)
+        request.extensions["focus_request_timing"] = timing
+        try:
+            response = super().send(request, *args, **kwargs)
+            if response.is_closed:
+                timing.finish("error" if response.status_code >= 400 else "success")
+            else:
+                response.stream = _TimedSyncStream(response.stream, timing)
+            return response
+        except BaseException as error:
+            timing.finish("error", error)
+            raise
+
+
+class ObservedAsyncHttpClient(DefaultAsyncHttpxClient):
+    def __init__(self, *, performance_identity=None, **kwargs):
+        self.performance_identity = performance_identity
+        hooks = {name: list(values) for name, values in kwargs.pop("event_hooks", {}).items()}
+        hooks["response"] = [self._headers, *hooks.get("response", [])]
+        kwargs["event_hooks"] = hooks
+        super().__init__(**kwargs)
+
+    @staticmethod
+    async def _headers(response):
+        ObservedHttpClient._headers(response)
+
+    async def send(self, request, *args, **kwargs):
+        import asyncio
+        timing = RequestTiming(request, self.performance_identity)
+        request.extensions["focus_request_timing"] = timing
+        try:
+            response = await super().send(request, *args, **kwargs)
+            if response.is_closed:
+                timing.finish("error" if response.status_code >= 400 else "success")
+            else:
+                response.stream = _TimedAsyncStream(response.stream, timing)
+            return response
+        except BaseException as error:
+            timing.finish("cancelled" if isinstance(error, asyncio.CancelledError) else "error", error)
+            raise
+
+
+class ProxyFirstHttpClient(ObservedHttpClient):
     """先使用环境代理；传输失败且尚未返回响应时改走直连。"""
 
     def __init__(
@@ -66,7 +168,7 @@ class ProxyFirstHttpClient(DefaultHttpxClient):
         direct_kwargs["trust_env"] = False
         if direct_transport is not None:
             direct_kwargs["transport"] = direct_transport
-        self._direct_client = DefaultHttpxClient(**direct_kwargs)
+        self._direct_client = ObservedHttpClient(**direct_kwargs)
 
     def send(self, request: Any, *args: Any, **kwargs: Any) -> Any:
         content = request.read()
@@ -87,7 +189,7 @@ class ProxyFirstHttpClient(DefaultHttpxClient):
             super().close()
 
 
-class ProxyFirstAsyncHttpClient(DefaultAsyncHttpxClient):
+class ProxyFirstAsyncHttpClient(ObservedAsyncHttpClient):
     """ProxyFirstHttpClient 的异步版本，用于 Agent 的流式模型调用。"""
 
     def __init__(
@@ -107,7 +209,7 @@ class ProxyFirstAsyncHttpClient(DefaultAsyncHttpxClient):
         direct_kwargs["trust_env"] = False
         if direct_transport is not None:
             direct_kwargs["transport"] = direct_transport
-        self._direct_client = DefaultAsyncHttpxClient(**direct_kwargs)
+        self._direct_client = ObservedAsyncHttpClient(**direct_kwargs)
 
     async def send(self, request: Any, *args: Any, **kwargs: Any) -> Any:
         content = await request.aread()

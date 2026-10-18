@@ -19,6 +19,7 @@ from focus.security.context import security_context_of
 from focus.history import deserialize_history_messages, serialize_history_message
 from backend.app.desktop.execution_attempts.usage_receipts import ModelUsageReceipts
 from focus.messages import estimate_messages_tokens
+from focus.models.telemetry import model_invocation
 
 
 class ModelAttemptJournal:
@@ -67,6 +68,11 @@ class ModelAttemptMiddleware(AgentMiddleware):
         self._journal = journal
 
     async def awrap_model_call(self, request, handler):
+        routing = security_context_of(request.runtime.context).routing
+        with model_invocation(category="run", run_id=routing.run_id):
+            return await self._observed_model_call(request, handler)
+
+    async def _observed_model_call(self, request, handler):
         routing = security_context_of(request.runtime.context).routing
         manifest = request.state.get("request_manifest")
         checkpoint_id = get_config()["configurable"].get("checkpoint_map", {}).get("")
