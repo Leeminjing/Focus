@@ -30,7 +30,8 @@
   host.inert = false;
   const preview = FocusWorkspacePatrolMaterialPreview.create({ host, intake, workspaceId: () => workspace?.workspace_id || null, onError: fail, compact:true });
   let workspace = null, workspaceLoaded = false, generation = 0, loopId = null, unsubscribe = null, reads = new AbortController();
-  let resultKey = "", inputKey = "", publishedState = "", binding = false, nativeReady = false, shownFailure = "", closeEpoch = 0, commandQueue = Promise.resolve();
+  let resultKey = "", publishedState = "", binding = false, nativeReady = false, shownFailure = "", closeEpoch = 0, commandQueue = Promise.resolve();
+  let historyRefresh = FocusWorkspacePatrolFeedback.createInputRefresh();
   let historyKey = "", requestKey = "", progressKey = "", artifactKey = "";
   let historyRead = null, historyReady = false, historyRetryBefore = null, historyRefreshPending = false;
   let panelVisible = bridge?.enabled ? false : !document.hidden, visibilityKnown = false, resultsNeedReset = false;
@@ -187,8 +188,8 @@
         }
       }
       restoreResults();
+      historyReferences.bind(model);
     }
-    historyReferences.bind(model);
     $("#older").hidden = !model.cursor;
     if (model.rows[0]?.status === "failed" && shownFailure !== model.rows[0].submission_id) {
       shownFailure = model.rows[0].submission_id;
@@ -218,13 +219,14 @@
     if (!workspace) return Promise.resolve();
     if (historyRead) return historyRead;
     const token = generation, id = workspace.workspace_id, initialize = !historyReady;
+    const refresh = before || initialize ? null : historyRefresh.take();
     const status = $("#history-status"), retry = $("#retry-history");
     status.textContent = "正在读取记录…"; status.hidden = false; retry.hidden = true;
     $("#older").disabled = true;
     historyRead = (async () => {
       try {
         const page = before || initialize ? await api.workspaceInputs(id, before)
-          : await FocusWorkspacePatrolFeedback.refreshInputs(api, id, draftStore().get());
+          : await FocusWorkspacePatrolFeedback.refreshInputs(api, id, draftStore().get(), refresh);
         if (token !== generation) return;
         intake.history(id, page, Boolean(before), initialize);
         if (initialize) await intake.reconcile(id, page);
@@ -233,6 +235,7 @@
         status.hidden = true; status.textContent = "";
       } catch (error) {
         if (token !== generation) return;
+        if (refresh) historyRefresh.restore(refresh);
         historyRetryBefore = before;
         status.textContent = `读取记录失败：${error.message || error}`;
         retry.hidden = false;
@@ -251,7 +254,7 @@
     control = null;
     restart = null;
     loopId = null; resetResults(); connection.stop();
-    workspace = bound; workspaceLoaded = false; inputKey = "";
+    workspace = bound; workspaceLoaded = false; historyRefresh = FocusWorkspacePatrolFeedback.createInputRefresh();
     historyRead = null; historyReady = false; historyRetryBefore = null; historyRefreshPending = false;
     $("#history-status").hidden = true; $("#history-status").textContent = ""; $("#retry-history").hidden = true;
     references.close();
@@ -487,10 +490,7 @@
     notify();
     refreshVisible();
     if (!projection || projection.loop_id !== loopId) return;
-    const next = FocusWorkspacePatrolFeedback.inputSignature(projection);
-    if (inputKey === "") inputKey = next;
-    if (next !== inputKey && workspace) {
-      inputKey = next;
+    if (workspace && historyRefresh.observe(projection, draftStore().get())) {
       if (historyRead) historyRefreshPending = true;
       else void readHistory();
     }

@@ -24,7 +24,7 @@
     let lineageKey = null;
     let lineageSnapshot = null;
     let lineageToken = 0;
-    let historyKey = null;
+    let historyRefresh = root.FocusWorkspacePatrolFeedback.createInputRefresh();
     let historyToken = 0;
     let historyOpen = false;
     let historyReady = false;
@@ -33,6 +33,8 @@
     let historyFailure = null;
     let historyFailureBefore = null;
     let historyHTML = "";
+    let renderedHistoryRevision = null, draftOccupied = null;
+    let historyFileRefs = [], fileRefs = [], fileRefsKey = "", draftFileRefsKey = "";
     let unlisten = null;
     let materialPreview = null;
     let historyReferences = null;
@@ -349,6 +351,8 @@
       showDialog("facts", "LoopFact", `<div class="patrol-fact-filters"><label>类型<select data-patrol-fact-filter="kind">${["", "run", "test", "context_revision", "artifact", "workspace", "directive"].map(v => `<option value="${v}"${factOptions.kind === v ? " selected" : ""}>${v || "全部"}</option>`).join("")}</select></label><label>事实状态<select data-patrol-fact-filter="status">${root.FocusLoopFactsView.statusOptions.map(([value, label]) => `<option value="${value}"${factOptions.status === value ? " selected" : ""}>${label}</option>`).join("")}</select></label><label>业务结果<select data-patrol-fact-filter="outcomeStatus">${root.FocusLoopFactsView.outcomeOptions.map(([value, label]) => `<option value="${value}"${factOptions.outcomeStatus === value ? " selected" : ""}>${label}</option>`).join("")}</select></label><label>Context<input data-patrol-fact-filter="contextId" value="${view.escape(factOptions.contextId)}" placeholder="精确 Context 身份"></label></div><div class="patrol-facts"><table><tbody>${root.FocusLoopFactsView.renderRows(factPage.facts)}</tbody></table></div><p>${factPage.has_more ? "后续还有事实" : "已到当前查询范围末尾"}</p>${factPage.has_more ? '<button data-patrol-facts-older>加载更早事实</button>' : ""}`);
     }
     function patchHistory(model) {
+      if (renderedHistoryRevision === model.historyRevision) return;
+      renderedHistoryRevision = model.historyRevision;
       const panel = host.querySelector("[data-patrol-input-history]"), list = host.querySelector("[data-patrol-history]");
       const html = view.history(model);
       if (html !== historyHTML) {
@@ -363,13 +367,18 @@
         panel.scrollTop = retained ? panel.scrollTop + retained.getBoundingClientRect().top - edge - offset : top;
       }
       historyReferences?.bind(model);
+      patchHistoryActions(model, true);
+      patchHistoryStatus();
+      void loadOlderHistory();
+    }
+    function patchHistoryActions(model, force = false) {
       const occupied = Boolean(model.draft.content || model.draft.file_refs?.length || model.draft.attachments?.length);
-      for (const button of list.querySelectorAll("[data-patrol-edit-failed]")) {
+      if (!force && draftOccupied === occupied) return;
+      draftOccupied = occupied;
+      for (const button of host.querySelectorAll("[data-patrol-edit-failed]")) {
         button.disabled = occupied;
         button.title = occupied ? "先处理当前草稿" : "";
       }
-      patchHistoryStatus();
-      void loadOlderHistory();
     }
     function patchHistoryStatus() {
       const status = host.querySelector("[data-patrol-history-status]");
@@ -398,17 +407,21 @@
     async function loadLatestHistory() {
       if (historyLoading) { historyRefreshPending = true; return; }
       const current = token, version = ++historyToken, initialize = !historyReady;
+      const refresh = initialize ? null : historyRefresh.take();
       historyLoading = true; historyFailure = null; patchHistoryStatus();
       try {
         const page = initialize ? await api.workspaceInputs(workspace.workspace_id)
-          : await root.FocusWorkspacePatrolFeedback.refreshInputs(api, workspace.workspace_id, inputs.get());
+          : await root.FocusWorkspacePatrolFeedback.refreshInputs(api, workspace.workspace_id, inputs.get(), refresh);
         if (current !== token || version !== historyToken) return;
         intake.history(workspace.workspace_id, page, false, initialize);
         if (initialize) await intake.reconcile(workspace.workspace_id, page);
         if (current !== token) return;
         historyReady = true;
       } catch (failure) {
-        if (current === token && version === historyToken) { historyFailure = failure; historyFailureBefore = null; }
+        if (current === token && version === historyToken) {
+          if (refresh) historyRefresh.restore(refresh);
+          historyFailure = failure; historyFailureBefore = null;
+        }
       } finally { if (current === token) finishHistoryLoading(); }
     }
     async function loadOlderHistory(retry = false) {
@@ -434,7 +447,9 @@
     const patchInputs = model => {
       if (!host) return;
       budget?.syncDraft();
+      const historyChanged = renderedHistoryRevision !== model.historyRevision;
       patchHistory(model);
+      patchHistoryActions(model);
       materialPreview?.render(model.draft);
       const content = host.querySelector("[data-patrol-content]");
       if (content.value !== model.draft.content) content.value = model.draft.content;
@@ -443,7 +458,16 @@
       host.querySelector("[data-patrol-target]").textContent = model.draft.request_id ? `回答请求 ${model.draft.request_id} · 版本 ${model.draft.request_revision ?? "未知"}` : "";
       host.querySelector("[data-patrol-clear-target]").hidden = !model.draft.request_id;
       patchRecovery();
-      patchFileFacts();
+      if (historyChanged) historyFileRefs = model.rows.filter(row => row.status === "accepted").flatMap(row => row.file_refs || []);
+      const draftRefsKey = JSON.stringify(model.draft.file_refs);
+      if (historyChanged || draftRefsKey !== draftFileRefsKey) {
+        draftFileRefsKey = draftRefsKey;
+        const refs = [...model.draft.file_refs, ...historyFileRefs], refsKey = JSON.stringify(refs);
+        if (refsKey !== fileRefsKey) {
+          fileRefs = refs; fileRefsKey = refsKey;
+          patchFileFacts();
+        }
+      }
     };
     function patchRecovery() {
       if (!host) return;
@@ -473,8 +497,7 @@
       if (!host || !projection) return;
       const stream = host.querySelector("[data-patrol-facts]"), top = stream.scrollTop;
       const atEnd = stream.scrollHeight - top - stream.clientHeight < 24;
-      const model = inputs.get(), refs = [...model.draft.file_refs, ...model.rows.filter(row => row.status === "accepted").flatMap(row => row.file_refs || [])];
-      const facts = root.FocusLoopFactsView.markFileReferences(root.FocusLoopLiveSelectors.selectFacts(projection), refs);
+      const facts = root.FocusLoopFactsView.markFileReferences(root.FocusLoopLiveSelectors.selectFacts(projection), fileRefs);
       root.FocusLoopFactsView.reconcileTimeline(stream, facts);
       stream.scrollTop = announce && atEnd ? stream.scrollHeight : top;
       if (announce) host.querySelector("[data-patrol-new-facts]").hidden = atEnd;
@@ -569,10 +592,7 @@
         if (node.textContent !== "本轮尚未冻结") node.textContent = "本轮尚未冻结";
         host.querySelector("[data-patrol-observation-open]").disabled = true;
       }
-      const key = root.FocusWorkspacePatrolFeedback.inputSignature(projection);
-      if (historyKey === null) historyKey = key;
-      if (key !== historyKey) {
-        historyKey = key;
+      if (historyRefresh.observe(projection, inputs.get())) {
         void loadLatestHistory();
       }
     }
@@ -842,9 +862,11 @@
       const history = host?.querySelector("[data-patrol-input-history]");
       if (history) { history.hidden = true; history.inert = true; }
       historyOpen = false; historyReady = false; historyLoading = false; historyRefreshPending = false; historyFailure = null; historyFailureBefore = null; historyHTML = "";
+      renderedHistoryRevision = null; draftOccupied = null; historyFileRefs = []; fileRefs = []; fileRefsKey = ""; draftFileRefsKey = "";
+      historyRefresh = root.FocusWorkspacePatrolFeedback.createInputRefresh();
       inspector?.dispose(); inspector = null; observation = null; observationIdentity = null; observationInspection = null;
       movedPanel = null; dialogKind = null; attentionTarget = null; projection = null; restart = null; deliveryRequested = false; detailsOpen = false; detailsScroll = 0; lineageSnapshot = null;
-      unlisten?.(); unlisten = null; host = null; workspace = null; loopId = null; lineageKey = null; historyKey = null; connection.stop();
+      unlisten?.(); unlisten = null; host = null; workspace = null; loopId = null; lineageKey = null; connection.stop();
     }
     const unsubscribe = liveStore.subscribe(patchLive);
     return Object.freeze({

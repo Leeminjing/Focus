@@ -55,12 +55,18 @@ async function panel({ visible = true, workspaceId = "a", choose = async () => n
   vm.runInContext(fs.readFileSync(path.join(__dirname, "file-links.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "artifact-drawer.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "patrol-input-references.js"), "utf8"), context);
+  const work = { bindings: 0 };
+  const InputReferences = context.FocusPatrolInputReferences;
+  context.FocusPatrolInputReferences = { ...InputReferences, create(options) {
+    const references = InputReferences.create(options);
+    return { ...references, bind(model) { work.bindings++; references.bind(model); } };
+  } };
   vm.runInContext(fs.readFileSync(path.join(__dirname, "message-reading.js"), "utf8"), context);
   window.FocusMessageReading = context.FocusMessageReading;
   const activated = vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-panel.js"), "utf8"), context);
   if (waitForActivation) await activated;
   else await tick();
-  return { calls, states, body, events, api, copied, store, starts, loopReads, activated, context, submissions,
+  return { calls, states, body, events, api, copied, store, starts, loopReads, activated, context, submissions, work,
     async emit(value, connection = state.connection) { state = { ...state, projection: value, connection }; listener(state); await tick(); },
     async visibility(value) { events.visibility?.(value); await tick(); },
     results: () => body.querySelector("#results") };
@@ -571,4 +577,52 @@ test("late cancelled reads cannot poison the cache or surface non-Abort errors",
   }) });
   await f.emit(projection()); await f.visibility(false);
   assert.equal(f.body.querySelector("#error").textContent, "");
+});
+
+for (const count of [20, 200, 1000]) {
+  test(`panel typing with ${count} inputs skips history requests, construction and reference binding`, async () => {
+    let requests = 0;
+    const rows = Array.from({ length: count }, (_, i) => ({ submission_id: `s-${i}`, intent_id: `i-${i}`, content: `saved ${i}`, processing_state: "addressed" }));
+    const f = await panel({ history: async () => { requests++; return { items: rows, next_before: null }; } });
+    const items = f.body.querySelector("#history-items");
+    let builds = 0;
+    const replace = items.replaceChildren.bind(items);
+    items.replaceChildren = (...args) => { builds++; replace(...args); };
+    const baseline = f.work.bindings, reads = requests;
+    const content = f.body.querySelector("#instruction");
+    for (let i = 1; i <= 10; i++) {
+      content.value = "typing".repeat(i);
+      content.dispatchEvent({ type: "input", target: content });
+    }
+    await tick();
+    assert.equal(requests - reads, 0);
+    assert.equal(builds, 0);
+    assert.equal(f.work.bindings - baseline, 0);
+  });
+}
+
+test("panel coalesces affected old IDs during a refresh and retries the same targeted failures", async () => {
+  const requests = [];
+  const rows = Array.from({ length: 1000 }, (_, i) => ({ submission_id: `s-${i}`, intent_id: `i-${i}`, content: `saved ${i}`, processing_state: "addressed" }));
+  let release, fail = true;
+  const f = await panel({ history: async (_workspace, _before, options) => {
+    requests.push(options?.intentIds || "latest");
+    if (requests.length === 2) return new Promise(resolve => { release = resolve; });
+    if (options && fail) { fail = false; throw new Error("targeted read failed"); }
+    return { items: options ? rows.filter(row => options.intentIds.includes(row.intent_id)) : requests.length === 1 ? rows : [rows[999]], next_before: null };
+  } });
+  await f.emit(projection());
+  await f.emit(projection("r1", { loop: { state: { status: "paused" } }, runs: { unrelated: { state: { status: "success" } } } }));
+  assert.deepEqual(requests, ["latest"]);
+  await f.emit(projection("r1", { interventions: { "i-999": { revision: 2 } } }));
+  await f.emit(projection("r1", { interventions: { "i-999": { revision: 2 }, "i-1": { revision: 2 } } }));
+  await f.emit(projection("r1", { interventions: { "i-999": { revision: 2 }, "i-1": { revision: 2 }, "i-2": { revision: 2 } } }));
+  assert.deepEqual(requests, ["latest", "latest"]);
+  release({ items: [rows[999]], next_before: null }); await tick();
+  assert.deepEqual(requests, ["latest", "latest", "latest", ["i-1", "i-2"]]);
+  assert.match(f.body.querySelector("#history-status").textContent, /targeted read failed/);
+  f.body.querySelector("#retry-history").dispatchEvent({ type: "click" }); await tick();
+  assert.deepEqual(requests.slice(-2), ["latest", ["i-1", "i-2"]]);
+  assert.equal(f.body.querySelector("#history-status").hidden, true);
+  assert.equal(f.store("a").get().rows.length, 1000);
 });

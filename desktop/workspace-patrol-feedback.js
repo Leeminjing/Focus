@@ -3,7 +3,7 @@
  * 工作流为区分受理、执行和完成，按已提交版本查询最终 assistant 正文，忽略工具调用与推理；不把工作区结果猜测归属到某条输入。
  * createReader(api) 为单个面板保留最多 48 个不可变版本的正文（包括空回答），不缓存失败或取消的读取及可变标题。
  * entries + read 支持逐卡片读取与单项重试；results 保留批量调用兼容。本模块不创建 Loop、Run 或任务。
- * inputResult 只展示该输入的已提交说明；停止状态来自执行器结算。refreshInputs 同时更新较早的已加载输入，保留历史游标。
+ * inputResult 只展示该输入的已提交说明；停止状态来自执行器结算。历史刷新合并受影响输入 ID，Round 提交覆盖延期说明，关联执行结算覆盖停止回执；不重读全部已加载记录。
  * recovery 从停止/失败状态和已保存的待处理输入生成当前入口提示，不把受理视为恢复或处理完成。
  */
 (function (root, factory) {
@@ -47,14 +47,76 @@
       }
     };
   }
-  function inputSignature(projection) {
-    return JSON.stringify([projection.interventions, projection.loop, projection.round,
-      projection.runs, projection.directives, projection.workers]);
+  const pendingInput = row => !row.processing_state || ["pending", "observed"].includes(row.processing_state) || row.processing_result?.disposition === "deferred";
+  const rounds = projection => ({ ...projection?.rounds, ...(projection?.round ? { [projection.round.entity_id]: projection.round } : {}) });
+  const changed = (before, after) => before !== after && JSON.stringify(before) !== JSON.stringify(after);
+  function cancellationTarget(projection, item) {
+    const entity = projection?.[{ run: "runs", directive: "directives", worker: "workers" }[item.target_kind]]?.[item.target_id];
+    const state = entity?.state;
+    // Directive 的停止状态可能最终由它启动的 Run 结算。
+    const run = item.target_kind === "directive" ? projection?.runs?.[state?.launched_run_id || state?.run_id]?.state : null;
+    // Worker 没有独立 Live collection 时，其 Round 的屏障是现有结算通知。
+    const round = item.target_kind === "worker" && !entity ? rounds(projection)[item.round_id]?.state : null;
+    return [state?.status, state?.state, state?.lifecycle_state, state?.settled_at, state?.settlement_status, state?.completed_at,
+      state?.launched_run_id, state?.run_id, run?.status, run?.settled_at, run?.settlement_status, round?.status, round?.barrier];
   }
-  async function refreshInputs(api, workspaceId, model) {
-    const page = await api.workspaceInputs(workspaceId);
+  // observe 按 Live 差量累计脏输入；请求开始时 take，失败时 restore。
+  // 请求期间的新变化留在下一批，客户端仍持有唯一在途请求；空队列的 take 用于手动刷新/重试首页。
+  function createInputRefresh() {
+    let previous = null, latest = false;
+    let cachedRows = null, loaded = new Set(), pending = [], cancellations = [];
+    const ids = new Set();
+    const restore = plan => { latest ||= plan.latest; for (const id of plan.intentIds) ids.add(id); };
+    return Object.freeze({
+      observe(projection, model) {
+        const before = previous;
+        previous = projection;
+        if (!before || before.loop_id !== projection.loop_id || before === projection) return false;
+        if (model.rows !== cachedRows) {
+          cachedRows = model.rows;
+          loaded = new Set(model.rows.map(row => row.intent_id).filter(Boolean));
+          pending = model.rows.filter(row => row.intent_id && pendingInput(row));
+          cancellations = model.rows.flatMap(row => row.intent_id ? (row.processing_result?.related_cancellations || [])
+            .filter(item => ["cancel_requested", "unknown"].includes(item.state)).map(item => ({ id: row.intent_id, item })) : []);
+        }
+        const affected = new Set();
+        let readLatest = false;
+        if (before.interventions !== projection.interventions) {
+          for (const [id, entity] of Object.entries(projection.interventions || {})) {
+            if (changed(before.interventions?.[id], entity)) {
+              if (loaded.has(id)) affected.add(id);
+              readLatest = true;
+            }
+          }
+        }
+        const committed = new Set(), oldRounds = rounds(before);
+        for (const [id, entity] of Object.entries(rounds(projection))) {
+          const state = entity.state || {};
+          if (state.authority_committed_at && (state.authority_committed_at !== oldRounds[id]?.state?.authority_committed_at
+            || state.decision_id !== oldRounds[id]?.state?.decision_id)) committed.add(id);
+        }
+        readLatest ||= committed.size > 0;
+        // 延期输入可在后继 Round 或新 Loop 中再次采用；不能仅依赖缓存中的旧 round_id。
+        if (committed.size) for (const row of pending) affected.add(row.intent_id);
+        for (const { id, item } of cancellations) {
+          if (changed(cancellationTarget(before, item), cancellationTarget(projection, item))) affected.add(id);
+        }
+        if (!readLatest && !affected.size) return false;
+        restore({ latest: readLatest, intentIds: affected });
+        return true;
+      },
+      take() {
+        const plan = { latest: latest || !ids.size, intentIds: [...ids] };
+        latest = false; ids.clear();
+        return plan;
+      },
+      restore,
+    });
+  }
+  async function refreshInputs(api, workspaceId, model, plan = { latest: true, intentIds: [] }) {
+    const page = plan.latest ? await api.workspaceInputs(workspaceId) : { items: [], next_before: model.cursor };
     const latest = new Set(page.items.map(row => row.intent_id));
-    const older = model.rows.map(row => row.intent_id).filter(id => id && !latest.has(id));
+    const older = [...new Set(plan.intentIds)].filter(id => id && !latest.has(id));
     const pages = [];
     for (let offset = 0; offset < older.length; offset += 100) {
       pages.push(await api.workspaceInputs(workspaceId, null, { intentIds: older.slice(offset, offset + 100) }));
@@ -159,5 +221,5 @@
     return Object.freeze({ entries, read: (loopId, base, signal) => read(api, loopId, base, signal, cache),
       results: (projection, signal) => results(api, projection, signal, cache) });
   }
-  return Object.freeze({ status, recovery, answer, signature, results, createReader, inputResult, preserveInputResults, inputSignature, refreshInputs, deliveryVerification, isCurrentDelivery, delivery });
+  return Object.freeze({ status, recovery, answer, signature, results, createReader, inputResult, preserveInputResults, createInputRefresh, refreshInputs, deliveryVerification, isCurrentDelivery, delivery });
 });

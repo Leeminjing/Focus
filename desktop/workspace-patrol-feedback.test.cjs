@@ -106,19 +106,89 @@ test("history refresh updates old loaded inputs without changing the paging curs
     calls.push({ workspace, before, options });
     return options ? { items: [{ ...row(), intent_id: "older" }] } : { items: [{ ...row("reference"), submission_id: "two", intent_id: "latest" }], next_before: "latest" };
   } };
-  store.history(await feedback.refreshInputs(api, "workspace", store.get()));
+  store.history(await feedback.refreshInputs(api, "workspace", store.get(), { latest: true, intentIds: ["older"] }));
   assert.equal(store.get().rows.find(item => item.intent_id === "older").processing_result.disposition, "decision");
   assert.equal(store.get().draft.content, "继续编辑");
   assert.equal(store.get().cursor, null);
   assert.deepEqual(calls[1].options.intentIds, ["older"]);
 });
 
-test("deferred decisions and execution cleanup both invalidate feedback", () => {
-  const projection = { interventions: { input: "observed" }, round: { revision: 1 }, runs: { run: { state: { status: "interrupted", settled_at: null } } } };
-  const before = feedback.inputSignature(projection);
-  projection.round.revision++;
-  assert.notEqual(feedback.inputSignature(projection), before);
-  const requested = feedback.inputSignature(projection);
-  projection.runs.run.state.settled_at = "2026-10-17T00:00:00Z";
-  assert.notEqual(feedback.inputSignature(projection), requested);
+test("unrelated execution changes do not refresh history; settlement targets only related inputs", () => {
+  const refresh = feedback.createInputRefresh();
+  const model = { rows: [{ ...row(), intent_id: "older" }] };
+  const before = { loop_id: "loop", interventions: {}, runs: { "ui-run": { state: { status: "interrupted", settlement_status: "pending" } } } };
+  assert.equal(refresh.observe(before, model), false);
+  const unrelated = { ...before, loop: { state: { status: "paused" } }, round: { entity_id: "r", state: { status: "running" } },
+    runs: { ...before.runs, unrelated: { state: { status: "running" } } } };
+  assert.equal(refresh.observe(unrelated, model), false);
+  const settled = { ...unrelated, runs: { ...unrelated.runs, "ui-run": { state: { status: "interrupted", settlement_status: "settled" } } } };
+  assert.equal(refresh.observe(settled, model), true);
+  assert.deepEqual(refresh.take(), { latest: false, intentIds: ["older"] });
+});
+
+test("committed rounds refresh deferred inputs including an input inherited from an earlier loop", () => {
+  const refresh = feedback.createInputRefresh();
+  const model = { rows: [{ ...row("deferred"), intent_id: "deferred", loop_id: "previous-loop", round_id: "previous-round" },
+    { ...row(), intent_id: "done", processing_result: { disposition: "decision" } }] };
+  const before = { loop_id: "loop", interventions: {}, round: { entity_id: "r", state: { status: "running" } } };
+  refresh.observe(before, model);
+  assert.equal(refresh.observe({ ...before, round: { entity_id: "r", state: { authority_committed_at: "now", decision_id: "d" } } }, model), true);
+  assert.deepEqual(refresh.take(), { latest: true, intentIds: ["deferred"] });
+});
+
+test("directive transitions and their launched Run settlement refresh only the referenced input", () => {
+  const refresh = feedback.createInputRefresh();
+  const model = { rows: [{ intent_id: "i", processing_state: "addressed", processing_result: {
+    related_cancellations: [{ target_kind: "directive", target_id: "d", state: "cancel_requested" }] } }] };
+  const before = { loop_id: "loop", directives: { d: { state: { state: "active", run_id: "run" } } },
+    runs: { run: { state: { status: "interrupted", settlement_status: "pending" } } } };
+  refresh.observe(before, model);
+  const cancelled = { ...before, directives: { d: { state: { state: "cancelled", run_id: "run" } } } };
+  assert.equal(refresh.observe(cancelled, model), true);
+  assert.deepEqual(refresh.take().intentIds, ["i"]);
+  assert.equal(refresh.observe({ ...cancelled, runs: { run: { state: { status: "interrupted", settlement_status: "settled" } } } }, model), true);
+  assert.deepEqual(refresh.take(), { latest: false, intentIds: ["i"] });
+});
+
+test("worker cleanup follows its own Round barrier when no worker collection is published", () => {
+  const refresh = feedback.createInputRefresh();
+  const model = { rows: [{ intent_id: "i", processing_state: "addressed", processing_result: {
+    related_cancellations: [{ target_kind: "worker", target_id: "w", round_id: "r", state: "cancel_requested" }] } }] };
+  const before = { loop_id: "loop", rounds: { r: { state: { status: "running", barrier: {} } } } };
+  refresh.observe(before, model);
+  assert.equal(refresh.observe({ ...before, rounds: { r: { state: { status: "settled", barrier: { worker: "settled" } } } } }, model), true);
+  assert.deepEqual(refresh.take(), { latest: false, intentIds: ["i"] });
+});
+
+test("refresh plans merge changed input IDs and restore failures without rescanning loaded history", async () => {
+  const refresh = feedback.createInputRefresh();
+  const model = { rows: Array.from({ length: 1000 }, (_, i) => ({ intent_id: `i-${i}`, processing_state: "addressed" })), cursor: "cursor" };
+  const before = { loop_id: "loop", interventions: {} };
+  refresh.observe(before, model);
+  const one = { ...before, interventions: { "i-1": { revision: 2 } } };
+  refresh.observe(one, model);
+  const plan = refresh.take();
+  refresh.observe({ ...one, interventions: { ...one.interventions, "i-2": { revision: 2 } } }, model);
+  refresh.restore(plan);
+  const merged = refresh.take();
+  assert.deepEqual(merged, { latest: true, intentIds: ["i-2", "i-1"] });
+  const calls = [];
+  const result = await feedback.refreshInputs({ workspaceInputs: async (_workspace, _before, options) => {
+    calls.push(options);
+    return options ? { items: [{ intent_id: "i-1" }] } : { items: [{ intent_id: "i-2" }], next_before: "next" };
+  } }, "workspace", model, merged);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].intentIds, ["i-1"], "exclude IDs already returned in the latest page");
+  assert.equal(result.items.length, 2);
+});
+
+test("targeted reads retain the cursor and batch only affected IDs in groups of at most 100", async () => {
+  const calls = [], intentIds = Array.from({ length: 205 }, (_, i) => `i-${i}`);
+  const result = await feedback.refreshInputs({ workspaceInputs: async (_workspace, _before, options) => {
+    calls.push(options.intentIds);
+    return { items: options.intentIds.map(intent_id => ({ intent_id })) };
+  } }, "workspace", { cursor: "cursor" }, { latest: false, intentIds });
+  assert.deepEqual(calls.map(ids => ids.length), [100, 100, 5]);
+  assert.equal(result.next_before, "cursor");
+  assert.equal(result.items.length, 205);
 });
