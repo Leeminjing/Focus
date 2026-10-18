@@ -80,7 +80,8 @@ class LoopRunExecutionBoundary:
                 name=f"loop-run-activity-flush:{assembly.run_id}",
             )
             return record
-        except Exception:
+        except (asyncio.CancelledError, Exception):
+            # Startup deadlines cancel this coroutine after the Agent may already exist.
             if record is not None:
                 resources.run_manager.cancel(record.run_id, action="interrupt")
                 if record.task is not None:

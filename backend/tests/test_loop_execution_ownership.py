@@ -10,6 +10,7 @@ r"""本文件对外提供 Loop Run 单一 durable 启动者的竞争与授权回
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ import uuid
 
 import pytest
 from focus.runtime.stream_bridge.memory import MemoryStreamBridge
+from focus.runtime.runs.manager import RunManager
 from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -29,15 +31,18 @@ from backend.app.desktop.agent_loop.models import LoopUserIntent
 from backend.app.desktop.agent_loop.intervention_lifecycle import InterventionLifecycleRepository
 from backend.app.desktop.agent_loop.journal_models import LoopJournalEvent
 from backend.app.desktop.agent_loop.coordinator import LoopCoordinator
+from backend.app.desktop.agent_loop.dispatch import LoopRunWorkspaceBinder
+from backend.app.desktop.agent_loop.run_execution import LoopRunExecutionBoundary
 from backend.app.desktop.models import DesktopRun, DesktopThread
 from backend.app.desktop.agent_loop.execution_ownership import RunOwnershipPolicy
 from backend.app.desktop.run_orchestration.admission import RunAdmissionService
 from backend.app.desktop.run_orchestration.assembler import RunExecutionAssembly
 from backend.app.desktop.run_orchestration.dispatch import DurableRunDispatchWorker, RunDispatchRecovery, RunDispatchRepository
 from backend.app.desktop.run_orchestration.lifecycle import RunLifecycleFinalizer
+from backend.app.desktop.run_orchestration.executor import RunExecutionResources
 from backend.app.desktop.service import DesktopService, PreparedRun
 from backend.app.desktop.workspace_coordination.leases import WorkspaceLeaseManager
-from backend.app.desktop.workspace_coordination.models import WorkspaceSlot
+from backend.app.desktop.workspace_coordination.models import WorkspaceLease, WorkspaceSlot
 from backend.app.desktop.workspace_coordination.schemas import WorkspaceAccessMode, WorkspaceLeaseRequest
 
 from test_agent_loop_round_liveness import _seed_loop, _stop
@@ -232,6 +237,121 @@ def test_competing_durable_workers_start_one_loop_run(tmp_path: Path, monkeypatc
             done.set_result(None)
             await asyncio.sleep(0)
         finally:
+            if fixture is not None:
+                await _stop(fixture["service"], fixture["loop_id"])
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_loop_start_timeout_cleans_agent_and_activity_before_releasing_lease(tmp_path: Path, runtime_postgres_database) -> None:
+    async def run() -> None:
+        engine = create_async_engine(os.environ["FOCUS_DATABASE_URL"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        fixture = None
+        activity = record = None
+        drain = None
+        manager = RunManager()
+        committing = asyncio.Event()
+        agent_started = asyncio.Event()
+        agent_exited = asyncio.Event()
+        try:
+            fixture = await _seed_loop(sessions, tmp_path, label="start-timeout", started_at=datetime.now(UTC))
+            directive_id = await _seed_launching_directive(sessions, fixture, label="start-timeout")
+            run_id = await _admit_run(sessions, fixture, directive_id)
+            async with sessions() as session:
+                slot_id = (await session.get(DesktopRun, run_id)).workspace_anchor["slot_id"]
+
+            class StartupSessions:
+                def __call__(self):
+                    return sessions()
+
+                @asynccontextmanager
+                async def begin(self):
+                    async with sessions.begin() as session:
+                        yield session
+                        await agent_started.wait()
+                        committing.set()
+                        # Stall after lifecycle writes, before committing the startup transaction.
+                        await asyncio.Future()
+
+            class Assembler:
+                async def assemble(self, requested_run_id):
+                    body = SimpleNamespace(context={"run_id": requested_run_id})
+                    await LoopRunWorkspaceBinder(sessions).bind(
+                        run_id=requested_run_id, loop_id=fixture["loop_id"], body=body,
+                        slot_id=slot_id, directive_id=directive_id,
+                    )
+                    return RunExecutionAssembly(
+                        run_id=requested_run_id, body=body,
+                        thread_id=f"thread-{fixture['context_id']}", agent_factory=None,
+                    )
+
+            async def agent():
+                agent_started.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    await asyncio.sleep(0)
+                    assert not activity._closed
+                    agent_exited.set()
+
+            async def execute(body, thread_id, adapted, factory):
+                nonlocal activity, record
+                activity = adapted.bridge
+                record = manager.create(thread_id, run_id=run_id)
+                record.task = asyncio.create_task(agent())
+                return record
+
+            resources = RunExecutionResources(
+                bridge=MemoryStreamBridge(), run_manager=manager,
+                checkpointer=None, store=None, app_config=None,
+            )
+            boundary = LoopRunExecutionBoundary(StartupSessions())
+
+            async def start(assembly):
+                return await boundary.start(assembly, resources, execute)
+
+            async def failed(identity, reason):
+                assert identity == run_id
+                assert committing.is_set(), "Timeout must occur after Agent creation and lifecycle writes"
+                assert record.task.done() and agent_exited.is_set()
+                assert activity._closed and activity._worker.done()
+                async with sessions() as session:
+                    lease = await session.scalar(select(WorkspaceLease).where(WorkspaceLease.run_id == run_id))
+                    assert lease.status == "active", "Lease must cover Agent teardown"
+                await RunLifecycleFinalizer(sessions, None).abort_prepared(identity, reason)
+
+            started = []
+            worker = DurableRunDispatchWorker(
+                sessions, "startup-timeout", Assembler(), start,
+                on_started=started.append, on_failed=failed,
+            )
+            # Shorten only this test's deadline; production keeps its 60-second default.
+            worker._startup_deadline_seconds = 1
+            drain = asyncio.create_task(worker.drain(limit=1))
+            assert await asyncio.wait_for(drain, timeout=5) == 1
+            assert started == []
+            async with sessions() as session:
+                stored = await session.get(DesktopRun, run_id)
+                dispatch = await RunDispatchRepository().by_run(session, run_id)
+                lease = await session.scalar(select(WorkspaceLease).where(WorkspaceLease.run_id == run_id))
+                directive = await session.get(LoopDirective, directive_id)
+                assert stored.status == "error" and stored.settled_at is not None
+                assert dispatch.status == "failed_to_start" and dispatch.settled_at is not None
+                assert dispatch.lease_expires_at is None
+                assert stored.error == dispatch.error
+                assert lease.status == "released" and lease.released_at is not None
+                assert directive.lifecycle_state == "delivering"
+                assert directive.status == "launching" and directive.launched_run_id is None
+        finally:
+            if drain is not None:
+                if not drain.done():
+                    drain.cancel()
+                await asyncio.gather(drain, return_exceptions=True)
+            await manager.shutdown()
+            if activity is not None:
+                await activity.close()
             if fixture is not None:
                 await _stop(fixture["service"], fixture["loop_id"])
             await engine.dispose()
