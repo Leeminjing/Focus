@@ -123,7 +123,7 @@ const SNAPSHOT = `
     api = async (path, options) => { probes.push({ path, body: JSON.parse(options.body) }); return { ok: true, reason: "连接成功" }; };
     modelSettings.snapshot = JSON.parse(JSON.stringify(snapshot));
     startModelDraft(0);
-    modelSettings.credentialValue = "typed-secret";
+    updateModelCredential("typed-secret");
     await testModelConnection();
     const probeHtml = document.querySelector("#modelSettingsHost").innerHTML;
 
@@ -155,10 +155,10 @@ const SNAPSHOT = `
       setup_issues: { "models[0].api_key": "请输入真实 API Key" } });
     await ensureModelSetup();
     const setupHtml = document.querySelector("#modelSettingsHost").innerHTML;
-    modelSettings.credentialValue = "unsaved-key";
+    updateModelCredential("unsaved-key");
     await ensureModelSetup();
     const setup = { opened, selected, draft: modelSettings.draft.index,
-      credential: modelSettings.credentialValue, setupHtml };
+      credential: modelCredentialValue(), setupHtml };
 
     modelSettings.snapshot = { ...snapshot, verification: { ok: false, reason: "策展输出不符合合同，请修改输出方式" } };
     modelSettings.draft = null;
@@ -263,9 +263,10 @@ const SNAPSHOT = `
       ${SNAPSHOT}
       modelSettings.setupMode = false;
       modelSettings.snapshot = JSON.parse(JSON.stringify(snapshot));
+      modelSettings.credentialDrafts = {};
       startModelDraft(0);
       modelSettings.snapshot.models[0].api_key = referenceUnderTest;
-      modelSettings.credentialValue = "typed-secret";
+      updateModelCredential("typed-secret");
       let submitted;
       api = async (_path, options) => { submitted = JSON.parse(options.body); return snapshot; };
       await saveModelSettings();

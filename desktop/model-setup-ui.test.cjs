@@ -38,8 +38,8 @@ const run = source => harness.vm.runInContext(source, harness.context);
   assert.equal(run('modelSettings.snapshot.models.filter(entry => entry.default && entry.curation_default).length'), 1);
   assert.equal(run('modelSettings.snapshot.models[1].curation_default'), false);
 
-  run('modelSettings.credentialValue = "typed-secret"; updateModelService("openai");');
-  assert.equal(run('modelSettings.credentialValue'), "typed-secret");
+  run('updateModelCredential("typed-secret"); updateModelService("openai");');
+  assert.equal(run('modelCredentialValue()'), "typed-secret");
   assert.equal(run('modelSettings.snapshot.models[0].base_url'), "https://api.openai.com/v1");
   run('updateModelService("custom");');
   assert.equal(run('modelSettings.advanced'), true);
@@ -47,7 +47,7 @@ const run = source => harness.vm.runInContext(source, harness.context);
 
   await run(`
     modelSettings.advanced = false;
-    modelSettings.credentialValue = "typed-secret";
+    updateModelCredential("typed-secret");
     let resolveSave;
     let savedBody;
     const failed = { ...snapshot, setup_required: false, verification: { ok: false, status: "complete", reason: "策展失败",
@@ -80,7 +80,7 @@ const run = source => harness.vm.runInContext(source, harness.context);
   run('repairModelCheck("curation");');
   assert.equal(run('modelSettings.draft.index'), 1);
   assert.equal(run('modelSettings.advanced'), true);
-  assert.equal(run('modelSettings.credentialValue'), "");
+  assert.equal(run('modelCredentialValue()'), "");
 
   await run(`
     let retried;
@@ -103,6 +103,7 @@ const run = source => harness.vm.runInContext(source, harness.context);
   // 已配置过的独立策展默认不能在打开修复入口时被首配默认覆盖。
   await run(`
     modelSettings.setupChecked = false;
+    modelSettings.draft = null;
     api = async () => ({ ...snapshot, setup_required: false,
       models: snapshot.models.map(entry => ({ ...entry, api_key_set: true })), verification: failed.verification });
     ensureModelSetup();

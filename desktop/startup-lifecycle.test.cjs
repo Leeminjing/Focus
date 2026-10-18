@@ -41,6 +41,10 @@ if (process.versions.electron) {
           assert.equal(request.headers["x-focus-session"], process.env.FOCUS_DESKTOP_SESSION);
           response.setHeader("Content-Type", "application/json");
           response.end(JSON.stringify({ general_file_bytes: 1024, run_material_count: 4 }));
+        } else if (request.url === "/desktop/api/settings/models") {
+          assert.equal(request.headers["x-focus-session"], process.env.FOCUS_DESKTOP_SESSION);
+          response.setHeader("Content-Type", "application/json");
+          response.end(JSON.stringify({ setup_required: false }));
         } else { response.setHeader("Content-Type", "text/html"); response.end("<!doctype html><title>Host fixture</title><body>host fixture</body>"); }
       }
       else if (scenario !== "hung-health" && scenario !== "cancel") { response.writeHead(503); response.end("starting"); }

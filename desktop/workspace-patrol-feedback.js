@@ -4,6 +4,7 @@
  * createReader(api) 为单个面板保留最多 48 个不可变版本的正文（包括空回答），不缓存失败或取消的读取及可变标题。
  * entries + read 支持逐卡片读取与单项重试；results 保留批量调用兼容。本模块不创建 Loop、Run 或任务。
  * inputResult 只展示该输入的已提交说明；停止状态来自执行器结算。refreshInputs 同时更新较早的已加载输入，保留历史游标。
+ * recovery 从停止/失败状态和已保存的待处理输入生成当前入口提示，不把受理视为恢复或处理完成。
  */
 (function (root, factory) {
   const api = factory();
@@ -60,6 +61,42 @@
     }
     return { ...page, items: [...page.items, ...pages.flatMap(item => item.items)] };
   }
+  function recovery(projection, model) {
+    const status = projection?.loop?.state?.status;
+    if (!["stopped", "failed"].includes(status)) return null;
+    const pending = model?.rows?.some(row => row.status === "accepted" && !row.processing_result
+      && [undefined, "pending", "observed"].includes(row.processing_state));
+    return pending ? { text: "这条输入已保存，重新启用后处理。", label: "重新启用并处理" }
+      : { text: status === "stopped" ? "工作已停止，重新启用后继续。" : "工作执行失败，重新启用后继续。", label: "重新启用" };
+  }
+  // A committed verification identifies a delivery; waiting for input alone never does.
+  function deliveryVerification(loop) {
+    if (loop?.interaction_mode !== "workspace_patrol") return null;
+    const verification = loop.final_result?.verification || loop.delivery;
+    return verification?.verification_id && verification.conclusion === "satisfied" ? verification : null;
+  }
+  function isCurrentDelivery(loop) {
+    const result = loop?.final_result;
+    return Boolean(deliveryVerification(loop) && result?.round_id &&
+      result.round_id === loop.current_round_id &&
+      (result.goal_revision == null || result.goal_revision === loop.goal_revision));
+  }
+  function delivery(projection, workspace) {
+    const loop = projection?.loop?.state, verification = deliveryVerification(loop);
+    if (!verification || !loop.final_result) return "";
+    const result = loop.final_result, criteria = verification.criteria || [];
+    const checks = new Map((result.completion_checks || []).map(item => [item.check_id, item.claim]));
+    const unresolved = new Set(verification.unresolved || []);
+    const passed = criteria.filter(item => item.status === "satisfied" && !unresolved.has(item.check_id));
+    const remaining = criteria.filter(item => item.status !== "satisfied" || unresolved.has(item.check_id));
+    const renderCheck = item => `<li><strong>${escape(checks.get(item.check_id) || item.check_id)}</strong><p>${escape(item.explanation)}</p></li>`;
+    return `<header><h2>本次工作交付</h2><span>${isCurrentDelivery(loop) ? "已验收" : "最近一次已验收交付"}</span></header>
+      <p class="patrol-delivery-summary">${escape(result.summary || passed.map(item => item.explanation).join("；") || "已提交验收结果，可查看交付内容。")}</p>
+      <details><summary>验收通过 ${passed.length} 项 · 仍未解决 ${remaining.length} 项</summary><h3>验收通过</h3><ul>${passed.map(renderCheck).join("") || "<li>未记录逐项验收说明</li>"}</ul><h3>仍未解决</h3>${remaining.length ? `<ul>${remaining.map(renderCheck).join("")}</ul>` : "<p>本次验收未记录未解决项</p>"}</details>
+      <h3>结果与修改位置</h3>${workspace?.path ? `<p>${escape(workspace.path)}</p>` : ""}
+      <nav aria-label="查看本次交付">${(result.final_path || []).map(item => `<button type="button" data-patrol-delivery-context="${escape(item.context_id)}"${item.revision_id ? ` data-revision-id="${escape(item.revision_id)}"` : ""}>查看结果 · ${escape(item.title || "已提交结果")}</button>`).join("")}<button type="button" data-patrol-files-open>查看文件 / 修改</button></nav>
+      <p class="patrol-delivery-next">在输入框继续提出调整，Patrol 会继续处理。</p>`;
+  }
   function status(projection, connection, model) {
     if (["unavailable", "reconnecting", "resyncing"].includes(connection?.status)) return { state: "disconnected", text: "工作状态连接中断 · 草稿已保留" };
     const latest = model?.rows?.[0];
@@ -68,7 +105,9 @@
     const loop = projection?.loop?.state;
     if (latest?.status === "accepted" && (!projection || (latest.accepted_sequence != null && (projection.loop?.updated_sequence || 0) < latest.accepted_sequence))) return { state: "accepted", text: "已受理 · 等待工作状态更新" };
     const labels = { running: "正在工作", waiting_user: "等待你的处理", paused: "工作已暂停", stopped: "工作已停止", failed: "工作遇到问题", completed: "当前工作已完成" };
-    if (loop?.status === "waiting_user" && loop.waiting_reason === "awaiting_input") return { state: "idle", text: "准备接收新输入" };
+    if (loop?.status === "waiting_user" && loop.waiting_reason === "awaiting_input") return isCurrentDelivery(loop)
+      ? { state: "delivered", text: "本次工作已交付 · 可以继续提出调整" }
+      : { state: "idle", text: "准备接收新输入" };
     if (labels[loop?.status]) return { state: loop.status, text: labels[loop.status] };
     return latest?.status === "accepted" ? { state: "accepted", text: "已受理 · 等待工作状态更新" } : { state: "idle", text: "准备好了 · 拖入材料或写下问题" };
   }
@@ -120,5 +159,5 @@
     return Object.freeze({ entries, read: (loopId, base, signal) => read(api, loopId, base, signal, cache),
       results: (projection, signal) => results(api, projection, signal, cache) });
   }
-  return Object.freeze({ status, answer, signature, results, createReader, inputResult, preserveInputResults, inputSignature, refreshInputs });
+  return Object.freeze({ status, recovery, answer, signature, results, createReader, inputResult, preserveInputResults, inputSignature, refreshInputs, deliveryVerification, isCurrentDelivery, delivery });
 });

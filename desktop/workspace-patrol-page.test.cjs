@@ -647,6 +647,41 @@ if (!process.versions.electron) {
     await run('document.querySelector("[data-patrol-history-file]").click()');
     await until('document.querySelector("[data-patrol-file-body]").textContent.includes("固定版本三")');
     assert.deepEqual(errors, []);
+    // 停止/失败输入留在当前入口；重新启用使用同一 API，回执与 Live 确认分开。
+    await run(`window.fileFeedbackFetch=async input=>new URL(String(input),location.origin).pathname === '/desktop/api/workspaces/recovery'
+      ? Response.json({workspace_id:'recovery',display_name:'恢复工作区',path:'C:/recovery'}) : null;
+      patrolFixture.seedHistory('recovery',[]); openPatrolWorkbench({workspaceId:'recovery'})`);
+    await until('patrolFixture.connected("loop-recovery")');
+    await run('document.querySelector("[data-patrol-composer] [data-patrol-details]").click()');
+    await until('document.querySelector("[data-patrol-details-content]").hidden');
+    await run(`patrolFixture.emit('loop-recovery','loop','loop-recovery',2,{status:'stopped',interaction_mode:'workspace_patrol'});
+      workspacePatrolIntake.store('recovery').edit({content:'继续，换个方案'}); workspacePatrolIntake.submit('recovery')`);
+    await until('document.querySelector("[data-patrol-recovery-message]").textContent === "这条输入已保存，重新启用后处理。"');
+    assert.equal(await run('document.querySelector("[data-patrol-receipt]").textContent'), '已保存');
+    assert.equal(await run('document.querySelector("[data-patrol-details-content]").hidden'), true);
+    await run(`window.restartCalls=0; window.restartFails=true; window.fileFeedbackFetch=async input=> {
+      const path=new URL(String(input),location.origin).pathname;
+      if(path.endsWith('/workspace/recovery/restart')) {
+        restartCalls++;
+        if(restartFails) return Response.json({detail:'前序执行尚未安全结算'},{status:409});
+        return Response.json({loop_id:'loop-recovery-new',status:'running'});
+      }
+      if(path.endsWith('/loop-recovery-new/live')) {
+        await new Promise(resolve=>window.releaseRestartLive=resolve);
+        return Response.json({loop_id:'loop-recovery-new',last_sequence:patrolFixture.sequence,loop:{entity_id:'loop-recovery-new',revision:1,updated_sequence:patrolFixture.sequence,state:{status:'running',interaction_mode:'workspace_patrol'}}});
+      }
+      return null;
+    }; workspacePatrolIntake.store('recovery').edit({content:'保留草稿'}); document.querySelector('[data-patrol-recovery] button').click()`);
+    await until('document.querySelector("[data-patrol-error]").textContent.includes("尚未安全结算") && !document.querySelector("[data-patrol-recovery] button").disabled');
+    await run(`restartFails=false; document.querySelector('[data-patrol-recovery] button').click(); document.querySelector('[data-patrol-restart]').click()`);
+    await until('Boolean(window.releaseRestartLive)');
+    assert.equal(await run('restartCalls'),2,'两个入口共享请求保护');
+    assert.match(await run('document.querySelector("[data-patrol-recovery-message]").textContent'),/正在确认工作状态/);
+    await run('releaseRestartLive()');
+    await until('patrolFixture.connected("loop-recovery-new") && document.querySelector("[data-patrol-recovery-message]").textContent === "工作已重新启用。"');
+    assert.equal(await run('workspacePatrolIntake.store("recovery").get().draft.content'),'保留草稿');
+    await run(`patrolFixture.emit('loop-recovery-new','loop','loop-recovery-new',2,{status:'failed',interaction_mode:'workspace_patrol'})`);
+    await until('!document.querySelector("[data-patrol-recovery] button").hidden && document.querySelector("[data-patrol-recovery] button").textContent === "重新启用并处理"');
     // 生产 App 在同一存储上刷新，恢复本页草稿、未绑定材料及失败请求原身份。
     const saved = await run(`(async () => {
       workspacePatrolIntake.remember({workspace_id:'reload',path:'C:/reload',display_name:'Reload'});

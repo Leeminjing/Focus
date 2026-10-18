@@ -74,8 +74,22 @@ def test_workspace_patrol_summaries_include_members_waits_and_successors(isolate
                 if status in {"completed", "failed", "stopped"}:
                     assert rows[root]["attention"] == []
 
+            async with sessions.begin() as session:
+                loop = await session.get(AgentLoop, loop_id)
+                loop.status, loop.health, loop.waiting_reason = "waiting_user", "idle", "awaiting_input"
+                loop.final_result = {"verification": {"verification_id": "delivery-first", "conclusion": "satisfied",
+                                                       "criteria": [{"explanation": "private result"}]}}
+            rows = await summaries()
+            for identity in (root, child):
+                assert rows[identity]["loop"]["status"] == "waiting_user"
+                assert rows[identity]["loop"]["delivery"] == {"verification_id": "delivery-first", "conclusion": "satisfied"}
+                assert "private result" not in str(rows[identity]["loop"])
+
             successor = uuid.uuid4().hex
             async with sessions.begin() as session:
+                loop = await session.get(AgentLoop, loop_id)
+                loop.status = "stopped"
+                await session.flush()
                 session.add(AgentLoop(loop_id=successor, workspace_id=workspace_id, initial_context_id=root,
                                       holder_id="patrol", interaction_mode="workspace_patrol", status="running",
                                       created_at=now + timedelta(seconds=3)))
@@ -86,6 +100,7 @@ def test_workspace_patrol_summaries_include_members_waits_and_successors(isolate
             assert rows[root]["loop"]["loop_id"] == successor
             assert rows[child]["loop"]["loop_id"] == successor
             assert rows[root]["attention"] == []
+            assert "delivery" not in rows[root]["loop"]
         finally:
             await engine.dispose()
 

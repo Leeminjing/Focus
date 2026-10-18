@@ -462,6 +462,84 @@ def test_save_rejects_a_missing_credential_without_writing(workspace, monkeypatc
     assert not (workspace / ".focus" / CONFIG_FILE_NAME).exists()
 
 
+def test_save_allows_unconfigured_templates_with_a_ready_new_provider(workspace, monkeypatch):
+    monkeypatch.delenv(_KEY_VAR, raising=False)
+    monkeypatch.delenv("FOCUS_NEW_PROVIDER_KEY", raising=False)
+    config = _app_config()
+    catalog = _file_catalog()
+    for entry in catalog:
+        entry.update(default=False, curation_default=False)
+    catalog.append(_entry(
+        "gamma", api_key="$FOCUS_NEW_PROVIDER_KEY", default=True,
+        curation_default=True, curation_output_method="prompt_json",
+    ))
+
+    snapshot = save_model_settings(config, {
+        "models": catalog, "credentials": {"FOCUS_NEW_PROVIDER_KEY": "new-provider-secret"},
+    })
+
+    assert snapshot["setup_required"] is False
+    assert snapshot["setup_issues"] == {}
+    assert [entry["api_key_set"] for entry in snapshot["models"]] == [False, False, True]
+    assert config.resolve_default_model_name() == "gamma"
+    assert [model.name for model in config.models] == ["alpha", "beta", "gamma"]
+    assert "new-provider-secret" not in json.dumps(snapshot)
+
+    from focus.config.app_config import _load_layered_config
+
+    reloaded = settings_snapshot(_load_layered_config(CONFIG_FILE_NAME))
+    assert reloaded["setup_required"] is False
+    assert [entry["api_key_set"] for entry in reloaded["models"]] == [False, False, True]
+
+
+@pytest.mark.parametrize("role", ["default", "curation_default", "environment_override"])
+def test_required_roles_still_reject_missing_credentials(workspace, monkeypatch, role):
+    monkeypatch.delenv("FOCUS_REQUIRED_ROLE_KEY", raising=False)
+    catalog = _file_catalog()
+    catalog[1]["api_key"] = "$FOCUS_REQUIRED_ROLE_KEY"
+    if role == "environment_override":
+        monkeypatch.setenv(DEFAULT_MODEL_ENV_VAR, "beta")
+    else:
+        catalog[0][role] = False
+        catalog[1][role] = True
+        catalog[1]["curation_output_method"] = "prompt_json"
+    # 快照与保存使用相同的必需模型范围。
+    import yaml
+
+    (workspace / CONFIG_FILE_NAME).write_text(yaml.safe_dump({"models": catalog}), encoding="utf-8")
+    config = _app_config(catalog)
+    snapshot = settings_snapshot(config)
+    assert snapshot["setup_required"] is True
+    assert "models[1].api_key" in snapshot["setup_issues"]
+
+    with pytest.raises(ModelSettingsError) as excinfo:
+        save_model_settings(config, {"models": catalog})
+
+    assert "models[1].api_key" in excinfo.value.errors
+    assert not (workspace / ".focus" / CONFIG_FILE_NAME).exists()
+
+
+def test_save_persists_multiple_pending_credentials(workspace, monkeypatch):
+    monkeypatch.delenv("FOCUS_SECOND_PROVIDER_KEY", raising=False)
+    config = _app_config()
+    catalog = _file_catalog()
+    catalog[0]["curation_default"] = False
+    catalog[1].update(api_key="$FOCUS_SECOND_PROVIDER_KEY", curation_default=True,
+                      curation_output_method="prompt_json")
+
+    snapshot = save_model_settings(config, {
+        "models": catalog,
+        "credentials": {_KEY_VAR: "first-new-secret", "FOCUS_SECOND_PROVIDER_KEY": "second-new-secret"},
+    })
+
+    assert [model.api_key for model in config.models] == ["first-new-secret", "second-new-secret"]
+    assert not snapshot["setup_required"]
+    assert all(entry["api_key_set"] for entry in snapshot["models"])
+    env_text = (workspace / ".focus" / ".env").read_text(encoding="utf-8")
+    assert "first-new-secret" in env_text and "second-new-secret" in env_text
+    assert "new-secret" not in json.dumps(snapshot)
+
+
 def test_save_rejects_unknown_field_without_writing(workspace):
     config = _app_config()
     catalog = _file_catalog()

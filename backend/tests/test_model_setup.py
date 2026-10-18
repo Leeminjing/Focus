@@ -192,6 +192,30 @@ def test_different_chat_and_curation_defaults_use_their_own_credentials(setup_wo
     assert provider["calls"][2][1]["model"] == "curation-model"
 
 
+def test_save_verifies_only_selected_provider_with_unconfigured_templates(setup_workspace, provider, monkeypatch):
+    _, entry = setup_workspace
+    monkeypatch.delenv("SETUP_TEST_KEY", raising=False)
+    monkeypatch.delenv("SETUP_OTHER_PROVIDER_KEY", raising=False)
+    config = get_app_config("config.yaml")
+    template = {**entry, "default": False, "curation_default": False}
+    selected = {**entry, "name": "selected", "model": "selected-model",
+                "api_key": "$SETUP_OTHER_PROVIDER_KEY"}
+
+    response = _client(config).put("/desktop/api/settings/models", json={
+        "models": [template, selected],
+        "credentials": {"SETUP_OTHER_PROVIDER_KEY": "synthetic-selected-key"},
+    })
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["verification"]["ok"], result
+    assert not result["setup_required"]
+    assert result["models"][0]["api_key_set"] is False
+    assert len(provider["calls"]) == 3
+    assert all(auth == "Bearer synthetic-selected-key" for auth, _ in provider["calls"])
+    assert all(payload["model"] == "selected-model" for _, payload in provider["calls"])
+
+
 @pytest.mark.parametrize("role", ["semantic_index_projector", "semantic_index_interpreter", "claim_verifier"])
 def test_automatic_index_roles_use_curation_default(setup_workspace, provider, role):
     from backend.app.desktop.agent_loop.derivation_worker import RoleBoundStructuredModel
