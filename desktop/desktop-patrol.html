@@ -33,6 +33,7 @@
       <button id="retry-workspace" type="button" hidden>重新读取工作区</button>
       <div id="activity" role="status" hidden><i></i><span id="activity-text"></span><button id="activity-reconnect" hidden>重连</button><button id="toggle-work" type="button" aria-label="暂停当前工作" hidden disabled>暂停</button><span class="ui-icon icon-loader-circle" aria-hidden="true"></span></div>
       <p id="control-feedback" role="status" hidden></p>
+      <div id="work-recovery" hidden><p id="recovery-message" role="status"></p><button id="restart-work" type="button">重新启用</button></div>
       <section id="requests" aria-label="待处理请求"></section>
       <section id="results" aria-label="工作区已提交结果"><div id="answers"></div><div id="progress"></div><div id="artifacts"></div></section>
       <details id="history" hidden><summary>输入记录 <span id="receipt"></span></summary><div id="history-items"></div><p id="history-status" role="status" hidden></p><button id="retry-history" type="button" hidden>重试读取</button><button id="older" hidden>更早的输入</button></details>

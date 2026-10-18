@@ -4,6 +4,7 @@
  * createReader(api) 为单个面板保留最多 48 个不可变版本的正文（包括空回答），不缓存失败或取消的读取及可变标题。
  * entries + read 支持逐卡片读取与单项重试；results 保留批量调用兼容。本模块不创建 Loop、Run 或任务。
  * inputResult 只展示该输入的已提交说明；停止状态来自执行器结算。refreshInputs 同时更新较早的已加载输入，保留历史游标。
+ * recovery 从停止/失败状态和已保存的待处理输入生成当前入口提示，不把受理视为恢复或处理完成。
  */
 (function (root, factory) {
   const api = factory();
@@ -59,6 +60,14 @@
       pages.push(await api.workspaceInputs(workspaceId, null, { intentIds: older.slice(offset, offset + 100) }));
     }
     return { ...page, items: [...page.items, ...pages.flatMap(item => item.items)] };
+  }
+  function recovery(projection, model) {
+    const status = projection?.loop?.state?.status;
+    if (!["stopped", "failed"].includes(status)) return null;
+    const pending = model?.rows?.some(row => row.status === "accepted" && !row.processing_result
+      && [undefined, "pending", "observed"].includes(row.processing_state));
+    return pending ? { text: "这条输入已保存，重新启用后处理。", label: "重新启用并处理" }
+      : { text: status === "stopped" ? "工作已停止，重新启用后继续。" : "工作执行失败，重新启用后继续。", label: "重新启用" };
   }
   function status(projection, connection, model) {
     if (["unavailable", "reconnecting", "resyncing"].includes(connection?.status)) return { state: "disconnected", text: "工作状态连接中断 · 草稿已保留" };
@@ -120,5 +129,5 @@
     return Object.freeze({ entries, read: (loopId, base, signal) => read(api, loopId, base, signal, cache),
       results: (projection, signal) => results(api, projection, signal, cache) });
   }
-  return Object.freeze({ status, answer, signature, results, createReader, inputResult, preserveInputResults, inputSignature, refreshInputs });
+  return Object.freeze({ status, recovery, answer, signature, results, createReader, inputResult, preserveInputResults, inputSignature, refreshInputs });
 });

@@ -333,4 +333,6 @@ html:not([data-native-material]) body.has-patrol-workbench { background: #e9eded
 [data-patrol-file-refs] > span { padding: 2px 8px; background: #7397b51c; border-radius: 8px; overflow-wrap: anywhere; font-size: 12px; }
 [data-patrol-file-picker] { max-height: 160px; overflow: auto; }
 [data-patrol-file-picker] button { display: block; width: 100%; text-align: left; overflow-wrap: anywhere; }
+[data-patrol-recovery] { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+[data-patrol-recovery-message] { margin: 0 0 6px; font-size: 13px; }
 @media (max-width: 600px) { .patrol-file-detail { top: 12px; right: 8px; bottom: 300px; width: calc(100vw - 16px); padding: 12px; } }

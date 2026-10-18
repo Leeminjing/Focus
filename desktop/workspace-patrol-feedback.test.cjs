@@ -5,6 +5,24 @@ const feedback = require("./workspace-patrol-feedback.js");
 const view = require("./workspace-patrol-view.js");
 const { create } = require("./workspace-patrol-inputs.js");
 
+test("stopped and failed work separates saved inputs from reactivation", () => {
+  for (const status of ["stopped", "failed"]) {
+    const projection = { loop_id: "loop", loop: { state: { status } } };
+    const model = { rows: [{ status: "accepted", processing_state: "pending" }] };
+    assert.deepEqual(feedback.recovery(projection, model), {
+      text: "这条输入已保存，重新启用后处理。", label: "重新启用并处理",
+    });
+    assert.equal(feedback.recovery(projection, { rows: [] }).label, "重新启用");
+    for (const row of [{ status: "failed" }, { status: "sending" }, { status: "accepted", processing_state: "addressed" }, { status: "accepted", processing_result: {} }]) {
+      assert.equal(feedback.recovery(projection, { rows: [row] }).label, "重新启用");
+    }
+  }
+  for (const status of ["running", "paused", "waiting_user", "completed"]) {
+    assert.equal(feedback.recovery({ loop: { state: { status } } }, { rows: [] }), null);
+  }
+  assert.equal(feedback.recovery(null, { rows: [] }), null);
+});
+
 const row = (disposition = "decision") => ({ submission_id: "one", input_type: "information", status: "accepted", processing_state: "addressed", content: "先别改 UI，把导入失败解决。", processing_result: {
   disposition, explanation: "先定位导入失败。下一步验证错误原因。", mission_revision: 3,
   decision_id: "decision-1", round_id: "round-2", observation_id: "observation-3", observation_generation: 4,

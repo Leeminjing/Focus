@@ -8,6 +8,7 @@
  * 输入记录复用非模态显隐和游标查询，开关只改变面板；草稿更新保留记录 DOM，内容更新恢复可见记录偏移，滚动续页仅允许一个在途请求。
  * 弹窗类型由现有 dialogKind 投影为 data-patrol-dialog-kind，供局部材质区分；每次打开同步，关闭动画期间保留，不作为业务状态来源。
  * intake 统一绑定/上传/投递，浏览器拖放先预览；onCompose 存在时原生工作台转交输入入口、精确回复目标及固定文件版本，不持有第二份可编辑草稿。
+ * 停止/失败在 composer 直接提供重新启用；与详情入口共享在途保护，保存回执和新 Loop 的 Live 生效分开呈现。
  */
 (function (root, factory) {
   const api = factory(root);
@@ -46,6 +47,7 @@
     let relatedOnly = false;
     let highlightIds = [];
     let projection = null;
+    let restart = null;
     let graphFrame = null;
     let lineagePending = false;
     let observation = null;
@@ -439,10 +441,33 @@
       host.querySelector("[data-patrol-type]").value = model.draft.input_type;
       host.querySelector("[data-patrol-target]").textContent = model.draft.request_id ? `回答请求 ${model.draft.request_id} · 版本 ${model.draft.request_revision ?? "未知"}` : "";
       host.querySelector("[data-patrol-clear-target]").hidden = !model.draft.request_id;
-      const latest = model.rows[0];
-      host.querySelector("[data-patrol-receipt]").textContent = latest ? ({ accepted: "已受理 · 变化以提交进度为准", sending: "发送中", failed: "发送失败 · 可在输入记录重试" }[latest.status] || "") : "";
+      patchRecovery();
       patchFileFacts();
     };
+    function patchRecovery() {
+      if (!host) return;
+      const current = projection?.loop_id === loopId ? projection : null;
+      const recovery = root.FocusWorkspacePatrolFeedback.recovery(current, inputs.get());
+      if (restart?.phase === "accepted" && current?.loop_id === restart.loopId) {
+        if (recovery) restart = null;
+        else if (current.loop?.state?.status) restart.phase = "applied";
+      }
+      if (restart?.phase === "applied" && recovery) restart = null;
+      const pending = restart && restart.phase !== "applied";
+      host.querySelector("[data-patrol-recovery]").hidden = !recovery && !restart;
+      host.querySelector("[data-patrol-recovery-message]").textContent = restart
+        ? ({ requesting: "正在重新启用…", accepted: "重新启用请求已受理，正在确认工作状态…", applied: "工作已重新启用。" }[restart.phase]) : recovery?.text || "";
+      for (const button of host.querySelectorAll("[data-patrol-restart]")) {
+        const inline = !!button.closest("[data-patrol-recovery]");
+        button.hidden = inline ? !recovery && !pending : !["completed", "stopped", "failed"].includes(current?.loop?.state?.status);
+        button.disabled = !!pending || liveStore.get().connection.status !== "live";
+        button.setAttribute("aria-busy", String(!!pending));
+        if (inline) button.textContent = recovery?.label || "重新启用";
+      }
+      const latest = inputs.get().rows[0];
+      host.querySelector("[data-patrol-receipt]").textContent = latest?.status === "accepted" && recovery ? "已保存"
+        : ({ accepted: "已受理 · 变化以提交进度为准", sending: "发送中", failed: "发送失败 · 可在输入记录重试" }[latest?.status] || "");
+    }
     function patchFileFacts(announce = false) {
       if (!host || !projection) return;
       const stream = host.querySelector("[data-patrol-facts]"), top = stream.scrollTop;
@@ -482,12 +507,14 @@
       if (!host) return;
       patchRetry();
       if (!next) {
+        patchRecovery();
         host.querySelector("[data-patrol-state]").textContent = status?.status === "unavailable" ? "连接不可用 · 正在保留输入" : "正在连接工作状态";
         return;
       }
       if (next.loop_id !== loopId) return;
       const previous = projection;
       projection = next;
+      patchRecovery();
       budget?.update(next);
       for (const [id] of waitUi) {
         if (!projection.wait_requests[id] || !["open", "resolving"].includes(projection.wait_requests[id].state.status)) waitUi.delete(id);
@@ -506,7 +533,6 @@
       host.querySelector('[data-patrol-control="pause"]').disabled = !(loop.status === "running" || (loop.status === "waiting_user" && loop.waiting_reason === "awaiting_input"));
       host.querySelector('[data-patrol-control="resume"]').disabled = loop.status !== "paused";
       host.querySelector('[data-patrol-control="stop"]').disabled = !["running", "paused", "waiting_user"].includes(loop.status);
-      host.querySelector("[data-patrol-restart]").hidden = !["completed", "stopped", "failed"].includes(loop.status);
       if (previous?.task_progress !== projection.task_progress) {
         const progressNode = host.querySelector("[data-patrol-progress]"), progressHtml = view.progress(projection.task_progress);
         if (progressNode.innerHTML !== progressHtml) progressNode.innerHTML = progressHtml;
@@ -632,9 +658,17 @@
           try { await api.control(loopId, button.dataset.patrolControl); } finally { button.removeAttribute("aria-busy"); }
         }
         else if (button.hasAttribute("data-patrol-restart")) {
-          if (button.getAttribute("aria-busy") === "true") return;
-          button.setAttribute("aria-busy", "true"); const owner = token;
-          try { const loop = await api.restartWorkspacePatrol(workspace.workspace_id); if (owner === token) connect(loop.loop_id); } finally { button.removeAttribute("aria-busy"); }
+          if (button.disabled || button.getAttribute("aria-busy") === "true") return;
+          const owner = token, operation = { phase: "requesting", loopId: null };
+          restart = operation; error(null); patchRecovery();
+          try {
+            const loop = await api.restartWorkspacePatrol(workspace.workspace_id);
+            if (owner === token && restart === operation) {
+              operation.phase = "accepted"; operation.loopId = loop.loop_id;
+              connect(loop.loop_id);
+            }
+          } catch (failure) { if (owner === token) restart = null; throw failure; }
+          finally { if (owner === token) patchRecovery(); }
         }
         else if (button.dataset.waitAction) {
           const card = button.closest("[data-wait-request-id]");
@@ -796,7 +830,7 @@
       if (history) { history.hidden = true; history.inert = true; }
       historyOpen = false; historyReady = false; historyLoading = false; historyRefreshPending = false; historyFailure = null; historyFailureBefore = null; historyHTML = "";
       inspector?.dispose(); inspector = null; observation = null; observationIdentity = null; observationInspection = null;
-      movedPanel = null; dialogKind = null; attentionTarget = null; projection = null; detailsOpen = false; detailsScroll = 0; lineageSnapshot = null;
+      movedPanel = null; dialogKind = null; attentionTarget = null; projection = null; restart = null; detailsOpen = false; detailsScroll = 0; lineageSnapshot = null;
       unlisten?.(); unlisten = null; host = null; workspace = null; loopId = null; lineageKey = null; historyKey = null; connection.stop();
     }
     const unsubscribe = liveStore.subscribe(patchLive);

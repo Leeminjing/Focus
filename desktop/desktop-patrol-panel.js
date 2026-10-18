@@ -7,6 +7,7 @@
  * 原生显隐由宿主通知，浏览器回退用 visibilitychange；再次显示时读取最新投影。授权处理沿用工作台，输入下方可展开已提交的处理说明和证据。
  * 状态旁原位暂停/继续，停止收进菜单；复用 Loop control，区分 HTTP 受理与 Live 生效，隔离工作区代际并阻止在途重复控制。
  * 当前 Loop 就绪即连接 Live，历史独立读取；历史加载/失败/重试仅更新记录面板，不重启工作连接。
+ * 停止/失败在输入区展示保存提示与重新启用，复用工作区 restart；HTTP 受理后等待新 Loop 的 Live 确认，保留草稿并隔离迟到响应。
  */
 (async function () {
   "use strict";
@@ -34,6 +35,7 @@
   let historyRead = null, historyReady = false, historyRetryBefore = null, historyRefreshPending = false;
   let panelVisible = bridge?.enabled ? false : !document.hidden, visibilityKnown = false, resultsNeedReset = false;
   let control = null;
+  let restart = null;
   const draftStore = () => intake.store(workspace?.workspace_id || null);
   const references = FocusDesktopPatrolReferences.create({ host, api, runtime, store:draftStore, loopId:() => loopId, onError:fail });
   const artifacts = FocusArtifactDrawer.create({ host, api, getLoopId: () => loopId, onSource: id => openWorkbench(id) });
@@ -61,6 +63,23 @@
     const current = live.get(), projection = current.projection?.loop_id === loopId ? current.projection : null;
     const status = FocusWorkspacePatrolFeedback.status(projection, current.connection, draftStore().get());
     const loop = projection?.loop?.state;
+    const recovery = FocusWorkspacePatrolFeedback.recovery(projection, draftStore().get());
+    if (restart?.phase === "accepted" && projection?.loop_id === restart.loopId) {
+      if (recovery) restart = null;
+      else if (loop?.status) restart.phase = "applied";
+    }
+    if (restart?.phase === "applied" && recovery) restart = null;
+    const restarting = restart && restart.phase !== "applied";
+    $("#work-recovery").hidden = !recovery && !restart;
+    $("#recovery-message").textContent = restart ? ({ requesting: "正在重新启用…", accepted: "重新启用请求已受理，正在确认工作状态…", applied: "工作已重新启用。" }[restart.phase]) : recovery?.text || "";
+    const restartButton = $("#restart-work");
+    restartButton.hidden = !recovery && !restarting;
+    restartButton.textContent = recovery?.label || "重新启用";
+    restartButton.disabled = !!restarting || current.connection.status !== "live";
+    restartButton.setAttribute("aria-busy", String(!!restarting));
+    const latest = draftStore().get().rows[0];
+    $("#receipt").textContent = latest?.status === "accepted" && recovery ? "已保存"
+      : ({ accepted: "已受理", sending: "发送中", failed: "未确认", edited: "已转为草稿" }[latest?.status] || "");
     const pausable = loop?.status === "running" || (loop?.status === "waiting_user" && loop.waiting_reason === "awaiting_input");
     const resumable = loop?.status === "paused";
     if (control?.phase === "accepted") {
@@ -109,6 +128,20 @@
       if (token !== generation || id !== loopId || control !== owner) return;
       control = null; fail(error);
     } finally { if (token === generation && id === loopId) notify(); }
+  }
+  async function restartWork() {
+    if (!workspace || $("#restart-work").disabled || $("#restart-work").hidden) return;
+    const owner = { phase: "requesting", loopId: null }, token = generation, id = workspace.workspace_id;
+    restart = owner; fail(null); notify();
+    try {
+      const loop = await api.restartWorkspacePatrol(id);
+      if (token !== generation || restart !== owner) return;
+      owner.phase = "accepted"; owner.loopId = loop.loop_id;
+      connect(loop.loop_id);
+    } catch (error) {
+      if (token !== generation || restart !== owner) return;
+      restart = null; fail(error);
+    } finally { if (token === generation) notify(); }
   }
   function renderInput(model) {
     budget?.syncDraft();
@@ -204,6 +237,7 @@
     if (bound?.workspace_id === workspace?.workspace_id && workspace && workspaceLoaded) return;
     const token = ++generation;
     control = null;
+    restart = null;
     loopId = null; resetResults(); connection.stop();
     workspace = bound; workspaceLoaded = false; inputKey = "";
     historyRead = null; historyReady = false; historyRetryBefore = null; historyRefreshPending = false;
@@ -475,6 +509,7 @@
   $("#open-files").addEventListener("click", () => { $(".panel-menu").open = false; void openArtifacts().catch(fail); });
   $("#toggle-work").addEventListener("click", () => { void controlWork($("#toggle-work").dataset.command); });
   $("#stop-work").addEventListener("click", () => { void controlWork("stop"); });
+  $("#restart-work").addEventListener("click", () => { void restartWork(); });
   $("#reconnect").addEventListener("click", () => { const id = loopId; loopId = null; connect(id); });
   $("#activity-reconnect").addEventListener("click", () => $("#reconnect").click());
   $("#retry-workspace").addEventListener("click", () => { void enqueue(() => activate(workspace)); });
