@@ -43,6 +43,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from focus.models import create_chat_model
+from focus.models.lifecycle import model_client_scope
 from focus.context.scoped import FrozenContext
 from focus.context.requests import frozen_request_messages
 
@@ -383,6 +384,7 @@ class MemoryService:
             {"title": title, "strategy": strategy.model_dump(), "scenarios": scenarios.model_dump()}, model_name)
         return result.model_dump(mode="json")
 
+    @model_client_scope()
     async def _strategy_authoring(self, schema, instruction, payload, model_name):
         config = self._app_config.get_model(model_name or self._app_config.resolve_default_model_name())
         model = create_chat_model(name=config.name, app_config=self._app_config, max_tokens=config.curation_max_output_tokens)
@@ -477,6 +479,7 @@ class MemoryService:
             lines.append(f"[{index}] {message.get('role', 'unknown')}:\n{content}")
         return "\n\n".join(lines)
 
+    @model_client_scope()
     async def summarize(self, body: MemorySummarizeRequest) -> dict[str, Any]:
 
 

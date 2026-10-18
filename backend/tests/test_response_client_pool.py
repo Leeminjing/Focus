@@ -302,3 +302,27 @@ def test_empty_session_and_close_of_unused_ports_never_construct_sdk(monkeypatch
             await model._async_client.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", [None, "provider_error", "cancel"])
+def test_unpooled_worker_closes_actual_sdk_after_request(monkeypatch, failure):
+    async def run():
+        started = asyncio.Event()
+        constructed, requests = install_sdk(monkeypatch, failure=failure, started=started)
+        worker = StructuredWorkerModel(config())
+        task = asyncio.create_task(worker.invoke(Result, "Return JSON", {"value": 1}))
+        await asyncio.wait_for(started.wait(), 2)
+        if failure == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        elif failure == "provider_error":
+            from openai import InternalServerError
+            with pytest.raises(InternalServerError):
+                await task
+        else:
+            assert (await task).value == 1
+        assert len(requests) == len(constructed) == 1
+        assert constructed[0].is_closed()
+
+    asyncio.run(run())

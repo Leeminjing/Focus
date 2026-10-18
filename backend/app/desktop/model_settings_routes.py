@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
+from focus.models.lifecycle import model_client_scope
 
 from backend.app.desktop.model_settings import (
     ModelSettingsError,
@@ -45,6 +46,7 @@ async def get_model_settings(request: Request) -> dict:
 
 
 @model_settings_router.put("/models")
+@model_client_scope()
 async def put_model_settings(body: dict, request: Request) -> dict:
     """保存并就地生效后联网验证普通调用和策展；删除被引用条目前需确认。"""
     service = _service(request)

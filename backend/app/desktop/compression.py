@@ -35,6 +35,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, ConfigDict, Field
 
 from focus.models import create_chat_model
+from focus.models.lifecycle import model_client_scope
 
 from backend.app.desktop.pending_interrupts import main_pending_interrupt
 
@@ -119,6 +120,7 @@ def _scrub_terms(text: str, terms: tuple[str, ...] | list[str] | None) -> str:
     return scrubbed.strip()
 
 
+@model_client_scope()
 async def summarize_messages(
     messages: list[dict[str, Any]],
     model_name: str | None,

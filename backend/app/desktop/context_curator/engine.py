@@ -18,6 +18,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from focus.config.app_config import AppConfig
 from focus.config.model_config import ModelConfig
 from focus.models.factory import create_chat_model
+from focus.models.lifecycle import model_client_scope
 from backend.app.desktop.storage_values import normalize_json_storage_value
 
 from .contract import CuratedContextPlan
@@ -106,6 +107,7 @@ class CurationEngine:
             raise CurationEngineError("capability", f"模型适配器 {config.use} 不支持异步调用")
         return method
 
+    @model_client_scope()
     async def curate(self, model_name: str | None, payload: dict[str, Any]) -> CurationEngineResult:
         config = self._resolve_config(model_name)
         method = require_curation_model(config)

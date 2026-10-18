@@ -58,6 +58,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from focus.config.app_config import AppConfig, apply_app_config, build_app_config
+from focus.models.lifecycle import model_client_scope
 from backend.app.desktop.secret_redaction import redact_text as _redact
 from focus.config.env import match_env_ref
 from focus.config.layered import load_layered_maps
@@ -583,6 +584,7 @@ async def referencing_models(session_factory, names: Sequence[str]) -> dict[str,
     return references
 
 
+@model_client_scope()
 async def probe_model_connection(entry: dict, api_key_value: str | None = None) -> dict:
 
 

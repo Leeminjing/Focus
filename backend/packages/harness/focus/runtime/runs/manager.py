@@ -331,6 +331,15 @@ class RunManager:
         logger.info("run '%s' 已取消 (action=%s)", run_id, action)
         return True
 
+    async def shutdown(self) -> None:
+        """停止运行并等待各自的 finally，随后组合根才能释放共享连接。"""
+        tasks = []
+        for record in list(self._runs.values()):
+            if record.task is not None and not record.task.done():
+                self.cancel(record.run_id)
+                tasks.append(record.task)
+        await asyncio.gather(*tasks, return_exceptions=True)
+
     def _cleanup_later(self, run_id: str) -> None:
         """安排延迟清理任务。
 

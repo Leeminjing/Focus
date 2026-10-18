@@ -8,10 +8,12 @@ from __future__ import annotations
 import asyncio
 
 from focus.config.app_config import AppConfig
+from focus.models.lifecycle import model_client_scope
 from backend.app.desktop.model_settings import _describe_failure
 from backend.app.desktop.secret_redaction import redact_text
 
 
+@model_client_scope()
 async def verify_model_setup(config: AppConfig) -> dict:
     from focus.models import create_chat_model
     from backend.app.desktop.context_curator.contract import (

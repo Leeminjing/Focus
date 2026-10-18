@@ -37,6 +37,7 @@ from typing import Any
 
 from focus.config.app_config import AppConfig
 from focus.models.factory import create_chat_model
+from focus.models.lifecycle import model_client_scope
 from focus.runtime.runs.usage import ModelUsage, callback_usage
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -285,6 +286,7 @@ class StructuredPatrolDecisionModel:
     def set_rejection_feedback(self, feedback: str) -> None:
         self._rejection_feedback = feedback[:500]
 
+    @model_client_scope()
     async def __call__(self, observation: LoopObservationEnvelope) -> PatrolDecisionIntent:
         self._strategy_reads.clear()
         limits = observation.budget.get("limits") or {}

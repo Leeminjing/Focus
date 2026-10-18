@@ -35,6 +35,7 @@ from focus.models.http_clients import (
 )
 from focus.reflection.resolvers import resolve_class
 from focus.models.provider_contract import resolve_provider_contract
+from focus.models.lifecycle import retain_model_clients
 
 
 def create_chat_model(
@@ -87,4 +88,14 @@ def create_chat_model(
         params["http_client"] = ProxyFirstHttpClient()
         params["http_async_client"] = ProxyFirstAsyncHttpClient()
 
-    return chat_model_cls(**params)
+    model = chat_model_cls(**params)
+    if contract.protocol == "chat_completions" and isinstance(model, ChatOpenAI):
+        retain_model_clients(
+            sync_client=model.root_client if not any(
+                kwargs.get(key) is not None for key in ("http_client", "client", "root_client")
+            ) else None,
+            async_client=model.root_async_client if not any(
+                kwargs.get(key) is not None for key in ("http_async_client", "async_client", "root_async_client")
+            ) else None,
+        )
+    return model

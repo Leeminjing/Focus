@@ -17,6 +17,7 @@ from threading import RLock
 from openai import AsyncOpenAI, OpenAI
 
 from focus.models.http_clients import ProxyFirstAsyncHttpClient, ProxyFirstHttpClient, environment_proxy_configured
+from focus.models.lifecycle import retain_model_clients
 
 
 class ResponseClientPool:
@@ -158,5 +159,10 @@ def responses_clients(options, http_client=None, http_async_client=None, *, pool
         return AsyncOpenAI(**options, http_client=ProxyFirstAsyncHttpClient() if proxy else http_async_client)
 
     identity = {"provider": provider, "scope": scope, "options": dict(options)}
-    return (_SyncClient(sync, pool, {**identity, "asynchronous": False}),
-            _AsyncClient(asynchronous, pool, {**identity, "asynchronous": True}))
+    sync_port = _SyncClient(sync, pool, {**identity, "asynchronous": False})
+    async_port = _AsyncClient(asynchronous, pool, {**identity, "asynchronous": True})
+    retain_model_clients(
+        sync_client=sync_port if http_client is None else None,
+        async_client=async_port if http_async_client is None else None,
+    )
+    return sync_port, async_port

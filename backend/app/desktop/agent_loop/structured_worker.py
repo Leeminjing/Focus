@@ -17,6 +17,7 @@ from typing import Any
 
 from focus.config.app_config import AppConfig
 from focus.models.factory import create_chat_model
+from focus.models.lifecycle import model_client_scope
 from focus.context.requests import frozen_request_messages
 from focus.history import content_hash
 from focus.runtime.runs.usage import ModelUsage, callback_usage
@@ -90,6 +91,7 @@ class StructuredWorkerModel:
             request["response_format"] = type_to_response_format_param(request["response_format"])
         return estimate_request_budget(request.pop("messages"), format_spec=request)
 
+    @model_client_scope()
     async def invoke(self, schema, system: str, payload: dict[str, Any]):
         config = self._model_config()
         self.last_model_metadata = {"configured_model": config.model}

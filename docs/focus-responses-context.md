@@ -72,6 +72,12 @@ models:
 
 Responses SDK 客户端按同步与异步用途分别延迟到首次请求创建；配置校验、工具绑定和未使用客户端关闭不加载 TLS。使用中的客户端遵守 SDK close 合同，保留原有代理优先与直连策略。
 
+模型连接有明确的两层所有权。应用级 `response_client_session` 复用相同 Provider 和连接配置的 Responses SDK；Run 只拥有借用端口，结束时不会关闭其他 Run 正在使用的共享连接。未接入应用池的 Responses 以及工厂创建的 legacy Chat 连接，由当前 Run 或独立模型调用的 `model_client_scope` 登记并回收。子任务继承当前作用域，并发作用域相互隔离；调用方显式注入的 HTTP/SDK 客户端仍由调用方关闭。
+
+Run 的正常结束、执行异常、装配失败和取消均先回收模型独占连接，再关闭事件流。后台结构化角色、策展、摘要和配置验证也使用独立调用边界。清理某个连接失败时继续回收其他连接并记录诊断；清理期间再次取消时等待回收完成。应用退出先停止并等待登记的 Run，再关闭 MCP、持久化资源和应用共享连接池。默认 Agent 装配必须传入同一 `app_config`，以继承组合根绑定的连接池。
+
+这些边界保证显式回收与共享连接的存活顺序；连接池复用本身不提供 Provider/凭据级流量配额。请求容量、Loop 预算、索引并发及各角色的重试策略仍遵循各自现有合同。
+
 两种 Provider 均手工 replay。OpenAI 使用 store=false，并请求 encrypted reasoning continuation；DeepSeek 省略 store/conversation/previous_response_id，policy 使用 system，reasoning_text 原样保存。Registry、MCP 和 plugin 工具继续由 Focus 作为 function tools 执行。Structured Outputs 使用 text.format；schema 与领域 publication 校验保持独立。
 
 DeepSeek 真实验证发现 high reasoning 与强制工具选择组合返回 400；显式 high/xhigh 搭配 required/指定 function 在发送前拒绝。reasoning 工具回合使用 auto 已通过真实 replay；需要强制选择时显式关闭 reasoning 并按 Provider 能力验证。

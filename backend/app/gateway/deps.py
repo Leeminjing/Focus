@@ -100,6 +100,8 @@ async def langgraph_runtime(app: FastAPI, app_config: AppConfig) -> AsyncGenerat
         from focus.mcp.tools import close_mcp_sessions
 
         stack.push_async_callback(close_mcp_sessions)
+        # Run 的 finally 先归还 MCP/模型借用，之后才关闭共享连接和持久化资源。
+        stack.push_async_callback(run_manager.shutdown)
 
         # (5) ... 待扩展更多资源
 
