@@ -6,6 +6,26 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const View = require("./observation-view.js");
 
+test("Patrol history renders selected-version phases, waiting workers, failure and empty state", () => {
+  const summary = { generation: 1, observation_id: "old-observation", previous_progress: {}, sources: {}, lineage: {} };
+  assert.match(View.render(summary), /data-patrol-observation-section="patrol_history"/);
+  const html = View.render(summary, { patrol_history: { total: 2, has_more: false,
+    patrol_session: { session_id: "old-session", observation_id: "old-observation", phase: "superseded", status: "superseded" },
+    items: [{ history_kind: "phase", from_phase: "collecting_curators", to_phase: "superseded", summary: "版本失效",
+      occurred_at: "2026-10-18", wait_reason: "等候 <Curator>", wait_targets: [{ entity_type: "worker_request", entity_id: "old-worker" }] },
+    { history_kind: "curator", worker_request_id: "old-worker", state: "failed", failure: "<script>超时</script>" }] } });
+  assert.match(html, /Patrol 阶段历史 · V1/);
+  assert.match(html, /收集 Curator → 已失效/);
+  assert.match(html, /等待目标：worker_request · old-worker/);
+  assert.match(html, /失败原因：&lt;script&gt;超时/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /old-observation/);
+  assert.match(html, /刷新此版本的审计记录/);
+  const empty = View.render(summary, { patrol_history: { patrol_session: null, items: [], total: 0 } });
+  assert.match(empty, /此 Observation 版本尚无 Patrol 会话记录/);
+  assert.doesNotMatch(empty, /old-worker|old-session/);
+});
+
 test("inspection keeps original input links, boundaries and paging separate from current version", () => {
   const html = View.render({ round_number: 6, generation: 3, observation_id: "o3", frozen_at: "2026-10-11",
     decision_state: "rejected", previous_progress: {}, sources: { total: 0 }, lineage: { node_count: 0 },

@@ -1,6 +1,7 @@
 /* 本文件对外提供冻结 Observation 的摘要与分页检查 HTML。
  * 输入为同一 Observation 白名单响应和已读取 section；输出为人类可读依据、可选紧凑工作台摘要、独立前序与折叠精确身份。
  * 具体工作流为按精确 V 与逐输入 Oi/Ui 呈现完整因果清单和分页，分别显示接收边界、事实覆盖、历史权限与当前逐轮执行授权；实时资格单独标示，不填充历史。
+ * 同一检查入口按所选版本读取 Patrol 阶段、等待目标及 Curator 失败信息，审计记录可独立刷新。
  * 示例：FocusObservationView.render(summary, { sources: page })。
  */
 (function (root) {
@@ -11,6 +12,18 @@
   const states = { completed: "已验证", in_progress: "进行中", not_started: "待开展", blocked: "阻塞", not_applicable: "被替代", unknown: "待判断", conflicted: "存在冲突", success: "已确认", failed: "失败" };
   const decisions = { current: "当前认知 · 尚未提交", superseded: "已被新观察版本抢占", rejected: "候选被拒绝 · 尚未提交", committed: "权威决策已提交" };
   const modes = { "read-only": "只读执行", "workspace-write": "工作区可写", "danger-full-access": "完全访问" };
+  const patrolPhases = { created: "已创建", freezing_observation: "冻结观察", observing: "观察中", dispatching_curators: "派发 Curator", collecting_curators: "收集 Curator", proposing: "生成提案", authorizing: "授权中", delivering: "交付中", awaiting_evidence: "等待证据", publishing: "发布中", completed: "已完成", failed: "失败", interrupted: "已中断", superseded: "已失效" };
+  const curatorStates = { queued: "排队中", reading: "读取中", analyzing: "分析中", running: "运行中", proposed: "已提交提案", consumed: "已采用", failed: "失败", cancelled: "已取消", superseded: "已失效" };
+  function patrolHistory(summary, page) {
+    const title = `<h3>Patrol 阶段历史 · V${escape(summary.generation ?? "—")}</h3>`;
+    if (!page) return `<section>${title}<button data-patrol-observation-section="patrol_history">读取此版本的阶段与 Curator</button></section>`;
+    if (!page.patrol_session) return `<section>${title}<p>此 Observation 版本尚无 Patrol 会话记录。</p><button data-patrol-observation-section="patrol_history">刷新此版本的审计记录</button></section>`;
+    const session = page.patrol_session;
+    const entries = page.items.map(item => item.history_kind === "phase"
+      ? `<li><strong>${escape(patrolPhases[item.from_phase] || item.from_phase)} → ${escape(patrolPhases[item.to_phase] || item.to_phase)}</strong><p>${time(item.occurred_at)} · ${escape(item.summary)}</p>${item.wait_reason ? `<p>等待原因：${escape(item.wait_reason)}</p>` : ""}${item.wait_targets?.length ? `<p>等待目标：${item.wait_targets.map(target => `${escape(target.entity_type)} · ${escape(target.entity_id)}`).join("；")}</p>` : ""}${identities(item)}</li>`
+      : `<li><strong>Curator · ${escape(curatorStates[item.state] || item.state)}</strong><p>Worker ${escape(item.worker_request_id)}</p>${item.result_summary ? `<p>${escape(item.result_summary)}</p>` : ""}${item.failure ? `<p>失败原因：${escape(item.failure)}</p>` : ""}${identities(item)}</li>`).join("");
+    return `<section>${title}<p>${escape(patrolPhases[session.phase] || session.phase)} · ${escape(session.status)} · 已读取 ${page.items.length} / ${page.total} 条记录</p><ul class="observation-source-list">${entries || "<li>此会话尚无阶段与 Curator 记录</li>"}</ul><button data-patrol-observation-section="patrol_history">${page.has_more ? "加载后续审计记录" : "刷新此版本的审计记录"}</button>${identities(session)}</section>`;
+  }
   function time(value) {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? escape(value) : escape(date.toLocaleString([], { hour12: false }));
@@ -49,7 +62,7 @@
     return `<div class="observation-inspection"><div class="observation-meta"><span>不可变快照 · Round ${escape(summary.round_number ?? "—")}</span><span>冻结于 ${time(summary.frozen_at)}</span></div><h3 class="observation-question">这一轮，基于什么作决定？</h3><p>本轮观察与上一轮进度一起进入决策。新的表达仍可随时提交，但不会改写已经冻结的输入。</p>${boundary(summary)}${coverage(summary)}${summary.availability === "legacy" ? '<p role="status">旧记录没有完整冻结读面；不使用当前 Progress 回填。</p>' : ""}<div class="observation-identities"><section><h3>上一轮 Task Progress</h3><strong>${short(summary.previous_progress.progress_id)}</strong><p>${summary.previous_progress.item_count} 个冻结条目</p>${summary.previous_progress.progress_id ? `<button data-patrol-observation-progress="${escape(summary.previous_progress.progress_id)}">检查本轮前序版本 ↗</button>` : ""}</section><section><h3>本轮 Observation</h3><strong>${short(summary.observation_id)}</strong><p>${summary.sources.total} 个任务来源 · ${summary.lineage.node_count} 个 Revision</p></section></div><p class="observation-frontier">精确 Context frontier · ${summary.lineage.node_count} 个冻结 Revision · ${summary.lineage.edge_count ?? 0} 条来源关系</p>${!summary.evidence_visible ? '<p>当前权限不包含证据正文，仅显示允许的身份与状态。</p>' : ""}${Object.entries(titles).map(([key, title]) => {
       const page = sections[key];
       return `<section><h3>${title}</h3>${page ? `<p>当前冻结清单已读取 ${page.items.length} / ${page.total} 项${page.has_more ? " · 仍有后续" : ""}</p><ul class="observation-source-list">${page.items.map(item => itemView(item, key)).join("") || "<li>此冻结范围没有条目</li>"}</ul>${page.has_more ? `<button data-patrol-observation-section="${key}">加载下一页</button>` : ""}` : `<button data-patrol-observation-section="${key}">读取冻结条目</button>`}</section>`;
-    }).join("")}${identities({ observation_id: summary.observation_id, observation_hash: summary.observation_hash, inputs_hash: summary.inputs_hash, previous_progress_id: summary.previous_progress.progress_id, previous_progress_hash: summary.previous_progress.content_hash, goal_revision: summary.goal_revision, authority_revision: summary.authority_revision })}<p>Observation 是本轮冻结输入，LoopFact 是持续更新的事实记录。</p></div>`;
+    }).join("")}${patrolHistory(summary, sections.patrol_history)}${identities({ observation_id: summary.observation_id, observation_hash: summary.observation_hash, inputs_hash: summary.inputs_hash, previous_progress_id: summary.previous_progress.progress_id, previous_progress_hash: summary.previous_progress.content_hash, goal_revision: summary.goal_revision, authority_revision: summary.authority_revision })}<p>Observation 是本轮冻结输入，LoopFact 是持续更新的事实记录。</p></div>`;
   }
   function boundary(summary) {
     const value = summary.boundary || {};

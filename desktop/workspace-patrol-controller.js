@@ -245,12 +245,18 @@
       const selected = observationInspection, owner = token, loading = observationLoading;
       if (!selected || loading.has(section)) return;
       loading.add(section);
-      const old = observationSections[section];
+      const old = section === "patrol_history" && !observationSections[section]?.has_more ? null : observationSections[section];
       try {
         const page = await api.observation(loopId, selected.observation_id, { section, cursor: old?.next_cursor, signal: lifetime.signal });
         if (owner !== token || selected !== observationInspection) return;
         observationSections[section] = { ...page, items: [...(old?.items || []), ...page.items] };
         if (dialogKind === "observation") showDialog("observation", "Observation", root.FocusObservationView.render(selected, observationSections));
+      } catch (failure) {
+        if (section === "patrol_history" && failure.status === 409 && owner === token && selected === observationInspection) {
+          delete observationSections[section];
+          if (dialogKind === "observation") showDialog("observation", "Observation", root.FocusObservationView.render(selected, observationSections));
+        }
+        throw failure;
       } finally { loading.delete(section); }
     }
     async function openObservation(id) {

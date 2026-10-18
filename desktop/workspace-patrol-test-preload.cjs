@@ -7,7 +7,7 @@
 */
 require("./context-ui-test-preload.cjs");
 const base = window.fetch;
-const json = body => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
+const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 const loops = new Map();
 const records = new Map();
 const streams = new Map();
@@ -175,7 +175,23 @@ window.fetch = async (input, options = {}) => {
   if (observation) {
     if (window.patrolFixture.observationError) return new Response("冻结读取暂不可用", { status: 503 });
     const section = url.searchParams.get("section");
-    const summary = { observation_id: observation[1], round_number: observation[1].endsWith("2") ? 2 : 1, observation_hash: "frozen-hash", frozen_at: "2026-10-09T00:00:00Z", availability: "available", evidence_visible: false, previous_progress: { progress_id: "old-progress", item_count: 1, history_complete: false }, sources: { total: 1, complete: false }, lineage: { node_count: 1, complete: true }, goal_revision: 1, authority_revision: 1 };
+    const historical = observation[1] === "observation-old";
+    const summary = { observation_id: observation[1], generation: historical ? 1 : 2, round_number: observation[1].endsWith("2") ? 2 : 1, observation_hash: "frozen-hash", frozen_at: "2026-10-09T00:00:00Z", availability: "available", evidence_visible: false, previous_progress: { progress_id: "old-progress", item_count: 1, history_complete: false }, sources: { total: 1, complete: false }, lineage: { node_count: 1, complete: true }, goal_revision: 1, authority_revision: 1 };
+    if (section === "versions") return json({ ...summary, items: [{ observation_id: "observation-old", generation: 1, frozen_at: summary.frozen_at }], total: 1, has_more: false });
+    if (section === "patrol_history") {
+      const next = url.searchParams.has("cursor");
+      if (next && window.patrolFixture.patrolHistoryChanged) {
+        window.patrolFixture.patrolHistoryChanged = false;
+        return json({ detail: "Patrol 审计记录或权限已变化，请重新读取此版本" }, 409);
+      }
+      const item = historical
+        ? { history_kind: "curator", state: "failed", worker_request_id: "historical-worker", failure: "历史 Curator 超时" }
+        : next ? { history_kind: "curator", state: "analyzing", worker_request_id: "selected-worker", result_summary: "selected-curator-record" }
+        : { history_kind: "phase", from_phase: "dispatching_curators", to_phase: "collecting_curators", summary: "收集当前版本 Curator", occurred_at: summary.frozen_at,
+          wait_reason: "等待 selected-worker", wait_targets: [{ entity_type: "worker_request", entity_id: "selected-worker" }] };
+      return json({ ...summary, patrol_session: { session_id: historical ? "historical-session" : "selected-session", observation_id: observation[1], phase: historical ? "failed" : "collecting_curators", status: historical ? "failed" : "active" },
+        items: [item], total: historical ? 1 : 2, has_more: !historical && !next, next_cursor: !historical && !next ? "patrol-next" : null });
+    }
     return json(section ? { ...summary, section, items: [{ source_id: "frozen-source", version: "original" }], total: 1, has_more: false } : summary);
   }
   if (path.endsWith("/task-progress")) return json({ current: { progress_id: "current-progress", generation: 2, document: { items: [] } }, selected: { progress_id: url.searchParams.get("progress_id") || "current-progress", generation: 2, document: { items: [] } }, history: [{ progress_id: "current-progress", generation: 2 }] });
