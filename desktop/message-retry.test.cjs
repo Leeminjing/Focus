@@ -240,3 +240,22 @@ test("navigation during preparation retains a recoverable branch without hijacki
   assert.equal(run("JSON.parse(taskRunOperations.recovery('branch').body).message"), 'changed question');
   assert.equal(requests.filter(request => request.url.endsWith('/main/runs')).length, 0);
 });
+
+test("historical retries retain structured quote provenance while editing only the original prose", async () => {
+  const reference = { task_id: 'ancestor', message_id: 'answer', text: 'quoted answer', start_offset: 0, end_offset: 13 };
+  const question = { role: 'human', id: 'quoted-q', content: 'follow up\n\n<focus_message_reference>\n' + JSON.stringify(reference) + '\n</focus_message_reference>', additional_kwargs: { message_reference: reference } };
+  assert.equal(retry.editableText(question), 'follow up');
+  assert.equal(retry.replayContent(question), 'follow up');
+  assert.equal(retry.replayContent(question, 'changed'), 'changed');
+  for (const edit of [false, true]) {
+    const { context, run, button, requests } = setup();
+    const originalApi = context.api;
+    context.api = async (url, options) => url.endsWith('/snapshot') ? { checkpoint_id: 'quoted-cp', messages: [question] } : originalApi(url, options);
+    context.button = button('quoted-q');
+    await run(`openMessageRetry(button, ${edit})`);
+    if (edit) await run('submitMessageRetry()');
+    const body = JSON.parse(requests.find(request => request.url.endsWith('/main/runs')).body);
+    assert.equal(body.message, edit ? 'changed question' : 'follow up');
+    assert.deepEqual(body.message_reference, reference);
+  }
+});

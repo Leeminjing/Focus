@@ -4,16 +4,16 @@
  * The host owns branch creation, material registration, admission recovery and navigation.
  */
 (function (root, factory) {
-  const api = factory();
+  const api = factory(typeof module === "object" && module.exports ? require("./conversation-reference.js") : root.FocusConversationReference);
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.FocusMessageRetry = api;
-})(typeof globalThis === "object" ? globalThis : this, function () {
+})(typeof globalThis === "object" ? globalThis : this, function (references) {
   "use strict";
   const clone = value => JSON.parse(JSON.stringify(value));
   const idOf = message => message?.id || message?.message_id;
   const isHuman = message => ["human", "user"].includes(message?.role) && !message.curation_synthetic;
   const protocol = /(?:\n\n)?<focus_run_materials>\n[\s\S]*?\n<\/focus_run_materials>/g;
-  const cleanText = text => String(text ?? "").replace(protocol, "");
+  const cleanText = (text, message) => references.stripProtocol(String(text ?? "").replace(protocol, ""), message?.additional_kwargs?.message_reference);
 
   function materialBindings(message) {
     // A derived Context retains the serialized per-turn material manifest even
@@ -54,14 +54,14 @@
   }
 
   function editableText(message) {
-    if (typeof message.content === "string") return cleanText(message.content);
-    return (message.content || []).filter(block => ["text", "input_text"].includes(block?.type)).map(block => cleanText(block.text)).filter(Boolean).join("\n");
+    if (typeof message.content === "string") return cleanText(message.content, message);
+    return (message.content || []).filter(block => ["text", "input_text"].includes(block?.type)).map(block => cleanText(block.text, message)).filter(Boolean).join("\n");
   }
 
   function replayContent(message, editedText = null) {
-    if (typeof message.content === "string") return editedText === null ? cleanText(message.content) : editedText;
+    if (typeof message.content === "string") return editedText === null ? cleanText(message.content, message) : editedText;
     const blocks = clone(message.content || []);
-    if (editedText === null) return blocks.map(block => ["text", "input_text"].includes(block.type) ? { ...block, text: cleanText(block.text) } : block).filter(block => !["text", "input_text"].includes(block.type) || block.text);
+    if (editedText === null) return blocks.map(block => ["text", "input_text"].includes(block.type) ? { ...block, text: cleanText(block.text, message) } : block).filter(block => !["text", "input_text"].includes(block.type) || block.text);
     // Keep images and other non-text blocks while replacing only the editable prose.
     return [{ type: "text", text: editedText }, ...blocks.filter(block => !["text", "input_text"].includes(block.type))];
   }

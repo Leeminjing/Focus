@@ -168,7 +168,6 @@ function createAppHarness(options = {}) {
   // markdown-it(vendor):与浏览器一致,script 内容在 context 内执行,暴露全局 markdownit
   vm.runInContext(fs.readFileSync(require.resolve("./vendor/markdown-it.min.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./message-reading.js"), "utf8"), context);
-  vm.runInContext(fs.readFileSync(require.resolve("./message-retry.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./skill-picker.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./context-editor.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./compression-panel.js"), "utf8"), context);
@@ -188,7 +187,10 @@ function createAppHarness(options = {}) {
   vm.runInContext(fs.readFileSync(require.resolve("./access-mode.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./access-approval.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./composer-draft.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("./conversation-reference.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("./message-retry.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./task-run-operations.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("./conversation-inputs.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./run-stream-subscriptions.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./http-response.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./workspace-patrol-inputs.js"), "utf8"), context);

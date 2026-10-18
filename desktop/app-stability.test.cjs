@@ -52,6 +52,8 @@ async function testTaskScopedHydration() {
     state.activeTaskId = 'task-b';
     const second = hydrateActive('task-b');
     await Promise.all([first, second]);
+    // hydrateActive 只等待主体；本断言另等材料请求，以检查跨任务缓存归属。
+    await Promise.all(['task-a', 'task-b'].map(taskId => taskResourceLoads.get(taskId).materials.promise));
     return {
       detailA: state.details.get('task-a')?.task_id,
       detailB: state.details.get('task-b')?.task_id,

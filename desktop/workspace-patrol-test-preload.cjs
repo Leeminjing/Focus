@@ -22,6 +22,7 @@ window.patrolFixture = {
   folder: null, folderError: false, folderCalls: 0, holdFolder: false, releaseFolder: null,
   workspaceBinds: [], bindError: false, holdBind: false, releaseBind: null, historyListRequests: 0,
   connected: loopId => streams.has(loopId),
+  get sequence() { return sequence; },
   lineage: { roots: {}, nodes: [], edges: [], complete: true },
   emit(loopId, entity_type, entity_id, entity_revision, payload) {
     const event = { event_id: `event-${++sequence}`, loop_id: loopId, sequence, kind: `${entity_type}.updated`, entity_type, entity_id, entity_revision, payload, occurred_at: new Date().toISOString(), schema_version: 1 };

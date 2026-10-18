@@ -12,6 +12,7 @@ WorkspaceAdopter 应用隔离 Git 结果，再提交 action/decision/anchor、�
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -109,6 +110,17 @@ class LoopWorkspaceAdoptionService:
             raise RuntimeError("Workspace adoption 来源不属于当前 Loop")
         if round_row.authority_revision != grant.revision:
             raise RuntimeError("Workspace adoption authority/goal revision 已变化")
+        if ("adopt_workspace_result" not in (grant.capabilities or ())
+                or "write" not in (grant.permission_scope or ())
+                or (grant.expires_at and grant.expires_at <= datetime.now(UTC))):
+            raise RuntimeError("Workspace adoption 当前授权已失效")
+        from backend.app.desktop.agent_loop.workspace_repair import WorkspaceConflictRepair
+
+        from backend.app.desktop.workspace_coordination.models import WorkspaceAdoption
+
+        durable = await session.get(WorkspaceAdoption, action_row.action_id)
+        if durable is None or durable.status not in {"adopting", "adopted"}:
+            await WorkspaceConflictRepair(self._sessions).validate_result(session, source)
         return WorkspaceAdoptionRequest(
             adoption_id=action_row.action_id,
             source_slot_id=source.slot_id,
@@ -126,6 +138,9 @@ class LoopWorkspaceAdoptionService:
         from backend.app.desktop.agent_loop.kernel import KernelCommitResult
 
         loop, round_row, decision = await self._lock_owner(session, decision_id)
+        from backend.app.desktop.workspace_coordination.models import WorkspaceAdoption
+
+        adoption = await session.get(WorkspaceAdoption, adoption.adoption_id, with_for_update=True, populate_existing=True)
         action = await session.scalar(
             select(LoopAction).where(LoopAction.decision_id == decision_id).with_for_update()
             .execution_options(populate_existing=True)
@@ -150,11 +165,32 @@ class LoopWorkspaceAdoptionService:
                 anchor.adoption_state = "conflict"
             action.status = "conflict"
             action.result = {"adoption_id": adoption.adoption_id, "conflict": adoption.conflict}
+            from backend.app.desktop.agent_loop.workspace_repair import WorkspaceConflictRepair
+
+            grant = await session.scalar(select(LoopDelegationGrant).where(
+                LoopDelegationGrant.loop_id == loop.loop_id,
+                LoopDelegationGrant.revision == loop.authority_revision,
+                LoopDelegationGrant.status == "active"))
+            context = await WorkspaceConflictRepair(self._sessions).assess(session, loop, grant, adoption) if grant else None
+            action.result = {**action.result, "conflict": adoption.conflict}
+            if context is not None:
+                adoption.evidence = {**adoption.evidence, "repair_context": context}
+                action.result = {**action.result, "repair_available": True}
+                # The attempted adoption failed; the authorized handling succeeded. Preserve
+                # that distinction and let Patrol decide whether to repair or ask for intent.
+                decision.status = "committed"
+                await self._event(session, loop.loop_id, "WorkspaceAdoptionConflict", action.result,
+                                  f"adoption-conflict:{adoption.adoption_id}")
+                if await settle_round(session, loop, round_row):
+                    await advance_settled_round(session, loop, round_row)
+                return KernelCommitResult(decision_id, "committed", (action.action_id,), ())
             decision.status = "rejected"
             decision.rejection = adoption.conflict
             round_row.status = "error"
             loop.health = "degraded"
             reason = f"Workspace adoption 冲突: {adoption.conflict.get('reason', 'unknown')}"
+            if adoption.conflict.get("repair_blocker"):
+                reason += f"；自动修复条件未满足：{adoption.conflict['repair_blocker']}"
             await open_recovery_wait(
                 session,
                 loop,
@@ -167,6 +203,9 @@ class LoopWorkspaceAdoptionService:
             return KernelCommitResult(decision_id, "rejected", (action.action_id,), (), loop.waiting_reason)
         for anchor in anchors:
             anchor.adoption_state = "adopted"
+        from backend.app.desktop.agent_loop.workspace_repair import WorkspaceConflictRepair
+
+        await WorkspaceConflictRepair(self._sessions).record_adopted(session, adoption)
         action.status = "applied"
         action.result = {
             "adoption_id": adoption.adoption_id,

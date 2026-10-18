@@ -113,6 +113,7 @@
       String(message.reasoning_content || "").length,
       calls.map(call => `${call.id}:${call.name}:${JSON.stringify(call.args ?? {}).length}`).join(","),
       message.tool_call_id, message.name, message.status,
+      JSON.stringify(message.additional_kwargs?.message_reference || null),
       compression ? `${compression.block_id}:${(compression.source || []).length}:${compression.deleted ? 1 : 0}` : "",
       message.curation_synthetic ? 1 : 0,
       (message.files || []).length,
