@@ -472,6 +472,7 @@ class LoopObservationService:
         adoptions = (await session.scalars(select(WorkspaceAdoption).where(
             WorkspaceAdoption.source_slot_id.in_([item.slot_id for item in isolated_slots])
         ).order_by(WorkspaceAdoption.created_at.desc()).limit(24))).all()
+        from backend.app.desktop.agent_loop.workspace_repair import WorkspaceConflictRepair
         recovery = await ContextRecoveryOpportunityService(
             _PreparedContextReader(views)
         ).discover(
@@ -530,11 +531,13 @@ class LoopObservationService:
                 "isolation_authorized": "isolate_workspace" in (grant.capabilities or []),
                 "isolated_slots": tuple({"slot_id": item.slot_id, "revision": item.revision,
                     "base_revision": item.base_revision, "fingerprint": item.current_fingerprint,
-                    "lane_id": item.owner_lane_id, "lifecycle": item.lifecycle} for item in isolated_slots),
+                    "lane_id": item.owner_lane_id, "lifecycle": item.lifecycle,
+                    "repair": (item.metadata_json or {}).get("repair")} for item in isolated_slots),
                 "adoptions": tuple({"adoption_id": item.adoption_id, "source_slot_id": item.source_slot_id,
                     "source_revision": item.source_revision, "status": item.status,
                     "expected_target_revision": item.expected_target_revision,
-                    "resulting_target_revision": item.resulting_target_revision, "conflict": item.conflict}
+                    "resulting_target_revision": item.resulting_target_revision, "conflict": item.conflict,
+                    "repair_context": WorkspaceConflictRepair.reference((item.evidence or {}).get("repair_context"))}
                     for item in adoptions),
             },
             budget={

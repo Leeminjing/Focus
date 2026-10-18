@@ -471,6 +471,17 @@ class LoopKernel:
                 raise KernelRejected("待采用 workspace slot 不属于当前 Loop 或 revision 已变化")
             if "adopt_workspace_result" not in set(grant.capabilities or []):
                 raise KernelRejected("delegation 未授权 workspace result adoption")
+            from backend.app.desktop.agent_loop.workspace_repair import WorkspaceConflictRepair
+
+            await WorkspaceConflictRepair(self._sessions).validate_result(session, source)
+        repairs = [action for action in intent.actions if action.action == "continue_context" and action.workspace_repair]
+        if repairs:
+            if len(intent.actions) != 1 or active:
+                raise KernelRejected("workspace 修复/审查必须在无活动 Run 时独立提交")
+            from backend.app.desktop.agent_loop.workspace_repair import WorkspaceConflictRepair
+
+            await WorkspaceConflictRepair(self._sessions).select(session, loop, grant, round_row, repairs[0],
+                {item.context_id: item.access_mode for item in intent.context_permissions})
         if any(action.action == "apply_context_compression" for action in intent.actions) and len(intent.actions) != 1:
             raise KernelRejected("autonomous compression 必须独立提交")
         for action in intent.actions:
@@ -680,10 +691,21 @@ class LoopKernel:
                 action.result = await ExecutionCancellation().apply(session, loop, observation, intent_action, action_id)
                 action.status = "applied"
             elif intent_action.action == "continue_context":
+                content = intent_action.message
+                if intent_action.workspace_repair:
+                    from backend.app.desktop.agent_loop.workspace_repair import WorkspaceConflictRepair
+
+                    repair = WorkspaceConflictRepair(self._sessions)
+                    from backend.app.desktop.workspace_coordination.models import WorkspaceAdoption
+
+                    adoption = await session.get(WorkspaceAdoption, intent_action.workspace_repair.adoption_id)
+                    context = adoption.evidence["repair_context"]
+                    action.result = {"repair_context": context}
+                    content = repair.message(context, intent_action.workspace_repair.phase, content)
                 directive, provenance = self._directives.create(
                     loop_id=loop.loop_id, round_id=round_row.round_id, decision_id=decision.decision_id,
                     action_id=action_id, context_id=intent_action.context_id,
-                    context_revision_id=intent_action.context_revision_id, content=intent_action.message,
+                    context_revision_id=intent_action.context_revision_id, content=content,
                     actor_id=intent.holder_id, grant_id=grant.grant_id, grant_revision=grant.revision,
                     goal_revision=loop.goal_revision, idempotency_key=f"{intent.idempotency_key}:directive:{position}",
                     origin_kind=intent.origin_kind,
