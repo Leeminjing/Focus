@@ -955,10 +955,12 @@ def test_postgres_draft_runtime_namespace_and_materials(tmp_path, wait_until, mo
             f"/desktop/api/runs/{continued['run_id']}/cancel", headers=SESSION
         ).json()["status"] in {"interrupted", "success"}
 
-        assert {t.name for t in select_workspace_tools(["read"])} == {"read_file", "list_files"}
+        assert {t.name for t in select_workspace_tools(["read"])} == {
+            "read_file", "read_file_lines", "list_files", "search_files", "search_text"}
         assert select_workspace_tools([]) == []
         assert {t.name for t in select_workspace_tools(["read", "write", "host_command"])} == {
-            "read_file", "list_files", "write_file", "bash", "powershell", "cmd", "sh"
+            "read_file", "read_file_lines", "list_files", "search_files", "search_text",
+            "write_file", "edit_file", "bash", "powershell", "cmd", "sh"
         }
 
         _git(workspace_folder, "init")

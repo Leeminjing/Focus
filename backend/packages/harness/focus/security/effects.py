@@ -2,7 +2,7 @@
 
 对外提供:
     ToolEffectKind — 五种互斥的效果分类
-    ResolvedFsEffect — 一次调用被证明的全部受治理本地目标（读 / 写，0..N 个）
+    ResolvedFsEffect — 一次调用被证明的全部受治理本地目标（读 / 写 / 递归读根，0..N 个）
     EffectContract — 一条效果契约（分类 + 结构化目标解析器）
     OPAQUE_LOCAL_EFFECT / NO_LOCAL_EFFECT / DELEGATED_EXECUTION_EFFECT — 三个无数据的契约单例
     structured_fs(resolver) — 构造可结构化枚举的契约
@@ -32,7 +32,8 @@
         其声明等价于作者或用户的契约
     (3) 结构化契约的解析器只回答「这次调用会作用于哪些真实本地目标」，必须确定、幂等、
         无副作用；分类、路径规范化与准入判定都不在这里
-    (4) 未完整枚举全部受治理目标的工具不得声明为结构化，只能按不透明处理
+    (4) 递归读必须显式列出 read_trees；准入点同时检查根下全部权柄面。
+        未完整枚举全部目标或声明其递归读根的工具只能按不透明处理
 
 示例:
     declare_effect(read_file, structured_fs(_read_target_resolver))
@@ -69,11 +70,14 @@ class ResolvedFsEffect:
 
     args 为 None 表示无需改写；非 None 时其中已把受治理目标替换为规范化真实路径，
     使「判定所依据的目标」与「工具体实际作用的目标」是同一个值。
+    read_trees 显式表达整树读取，准入点保守检查根下的所有权柄面；工具不得跟随子链接。
     """
 
     reads: tuple[Path, ...] = ()
     writes: tuple[Path, ...] = ()
     args: Mapping[str, Any] | None = None
+    # 显式声明递归读取；准入点连同根下的权柄面一起检查，不把目录当作单文件放行。
+    read_trees: tuple[Path, ...] = ()
 
 
 FsEffectResolver = Callable[[Mapping[str, Any], Mapping[str, Any]], ResolvedFsEffect]
