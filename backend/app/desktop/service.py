@@ -824,26 +824,36 @@ class DesktopService:
         values = checkpoint.checkpoint.get("channel_values", {})
         return [serialize_message(message) for message in values.get("messages", [])]
 
+    async def _compression_execution_identity(
+        self, session: AsyncSession, task: DesktopThread
+    ) -> tuple[str, str]:
+        """让压缩快照、预览与应用使用同一 current Revision 的线程和命名空间。"""
+        current_revision = (
+            await ContextRevisionRepository().current(session, task.task_id)
+            if hasattr(self, "contexts")
+            else None
+        )
+        if current_revision is None:
+            return task.thread_id, ""
+        return current_revision.ref.execution_thread_id, current_revision.ref.checkpoint_ns
+
+    async def get_compression_messages(self, task_id: str) -> list[dict[str, Any]]:
+        """读取当前 Revision 执行位置的完整消息快照，保留压缩块来源元数据。"""
+        async with self.session_factory() as session:
+            task, _ = await self._get_task_entities(session, task_id)
+            execution_thread_id, execution_checkpoint_ns = await self._compression_execution_identity(
+                session, task
+            )
+        return await self.get_checkpoint_messages(execution_thread_id, execution_checkpoint_ns)
+
     async def quick_compression_preview(
         self, task_id: str, keyword: str, case_sensitive: bool = False
     ) -> dict[str, Any]:
-
-
         async with self.session_factory() as session:
             task, _ = await self._get_task_entities(session, task_id)
             await self.contexts.ensure_runnable(session, task_id)
-            current_revision = await ContextRevisionRepository().current(
-                session, task_id
-            )
-            execution_thread_id = (
-                current_revision.ref.execution_thread_id
-                if current_revision is not None
-                else task.thread_id
-            )
-            execution_checkpoint_ns = (
-                current_revision.ref.checkpoint_ns
-                if current_revision is not None
-                else ""
+            execution_thread_id, execution_checkpoint_ns = await self._compression_execution_identity(
+                session, task
             )
         messages = await self.get_checkpoint_messages(
             execution_thread_id, execution_checkpoint_ns
@@ -858,18 +868,8 @@ class DesktopService:
 
         async with self.session_factory() as session:
             task, _ = await self._get_task_entities(session, task_id)
-            current_revision = await ContextRevisionRepository().current(
-                session, task_id
-            ) if hasattr(self, "contexts") else None
-            execution_thread_id = (
-                current_revision.ref.execution_thread_id
-                if current_revision is not None
-                else task.thread_id
-            )
-            execution_checkpoint_ns = (
-                current_revision.ref.checkpoint_ns
-                if current_revision is not None
-                else ""
+            execution_thread_id, execution_checkpoint_ns = await self._compression_execution_identity(
+                session, task
             )
             active = await session.scalar(
                 select(DesktopRun.run_id)
