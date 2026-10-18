@@ -11,7 +11,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from focus.security import (
     AccessDecision, AccessOperation, canonical_target, decide_path_access,
@@ -34,6 +34,19 @@ class FileLinkReference(BaseModel):
     result_key: str | None = None
     sha256: str | None = None
     version_id: str | None = None
+    start_line: int | None = Field(default=None, ge=1)
+    end_line: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_range(self):
+        if self.end_line is not None and self.start_line is None:
+            raise ValueError("行范围缺少起始行")
+        if self.start_line is not None:
+            if self.end_line is None:
+                self.end_line = self.start_line
+            if self.end_line < self.start_line:
+                raise ValueError("结束行不能早于起始行")
+        return self
 
 
 @dataclass(frozen=True)

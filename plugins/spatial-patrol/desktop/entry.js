@@ -11,7 +11,7 @@
     render: (app, appState) => viewer.render(app, appState),
     openMaterial: (material, appState) => viewer.openMaterial(material, appState),
     supportsMaterial: material => viewer.supportsMaterial(material),
-    mountPanel: (container, material, appState) => viewer.mountPanel(container, material, appState),
+    mountPanel: (container, material, appState, options) => viewer.mountPanel(container, material, appState, options),
     getFocus: () => viewer.getFocus(),
     sendFocusedMessage: message => viewer.sendFocusedMessage(message),
   };

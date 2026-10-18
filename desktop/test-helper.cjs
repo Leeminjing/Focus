@@ -187,6 +187,7 @@ function createAppHarness(options = {}) {
   vm.runInContext(fs.readFileSync(require.resolve("./access-mode.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./access-approval.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./composer-draft.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(require.resolve("./composer-files.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./task-run-operations.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./run-stream-subscriptions.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(require.resolve("./http-response.js"), "utf8"), context);

@@ -124,6 +124,7 @@ const state = {
   materials: new Map(),
   materialSelections: new Map(),
   composerAttachments: new Map(),
+  composerFileReferences: new Map(),
   mainPreparations: new Map(),
   materialGroups: new Map(),
   materialHistory: new Map(),
@@ -237,6 +238,56 @@ const runMaterialPicker = window.runMaterialPicker;
 const materialGrouping = window.materialGrouping;
 const accessMode = window.FocusAccessMode;
 const composerDraft = window.FocusComposerDraft;
+const composerFiles = window.FocusComposerFiles;
+let mainFilePicker = null;
+
+function fileReferences(taskId) {
+  if (!state.details.has(taskId) && !state.composerFileReferences.has(taskId)) return [];
+  if (!state.composerFileReferences.has(taskId)) state.composerFileReferences.set(taskId,
+    [...(state.details.get(taskId)?.ui_state?.file_references || [])]);
+  return state.composerFileReferences.get(taskId);
+}
+
+function updateFileReferences(taskId, refs) {
+  state.composerFileReferences.set(taskId, refs);
+  const detail = state.details.get(taskId);
+  if (detail) detail.ui_state = { ...(detail.ui_state || {}), file_references: refs };
+  if (state.activeTaskId === taskId) {
+    const cards = document.querySelector("#composerFileReferences");
+    if (cards) cards.innerHTML = composerFiles.cards(refs);
+  }
+  void persistUiState(taskId).catch(error => setStatus(`文件引用保存失败：${error.message}`, true));
+}
+
+function addFileReference(value, taskId = state.activeTaskId) {
+  if (!taskId || !value.path) return;
+  const ref = { ...fileLinkReference(value), ...(typeof value.text === "string" ? { text: value.text } : {}) };
+  const refs = fileReferences(taskId);
+  if (!refs.some(item => composerFiles.key(item) === composerFiles.key(ref))) updateFileReferences(taskId, [...refs, ref]);
+}
+
+function addTaskFileReference(value, taskId) {
+  const task = state.tasks.find(item => item.task_id === taskId);
+  let path = value.path;
+  if (task?.workspace_path && !/^(?:[a-z]:[\\/]|[\\/])/i.test(path)) path = `${task.workspace_path.replace(/[\\/]$/, "")}/${path}`;
+  addFileReference({ ...value, path, workspace_id: task?.workspace_id }, taskId);
+}
+
+function consumeFileReferences(taskId, submitted) {
+  if (!submitted.length) return;
+  const sent = new Set(submitted.map(composerFiles.key));
+  updateFileReferences(taskId, fileReferences(taskId).filter(ref => !sent.has(composerFiles.key(ref))));
+}
+
+function mountMainFilePicker(taskId, input) {
+  mainFilePicker?.destroy(); mainFilePicker = null;
+  const menu = document.querySelector("#composerFileMenu");
+  if (!input?.addEventListener || menu?.id !== "composerFileMenu") return;
+  mainFilePicker = composerFiles.bind({ input, menu,
+    search: query => api(`/desktop/api/tasks/${encodeURIComponent(taskId)}/files/search?q=${encodeURIComponent(query)}`),
+    onSelect: ref => addFileReference(ref, taskId),
+  });
+}
 const taskRunOperations = window.FocusTaskRunOperations?.create();
 const loopApi = window.FocusLoopApi?.create(runtime);
 const runStreams = window.FocusRunStreamSubscriptions?.create(runtime);
@@ -682,7 +733,8 @@ function pluginViewForMaterial(material) {
       const name = file.relative_path || file.path;
       container.innerHTML = `<header class="file-panel-head"><strong>${escapeHtml(name)}</strong><button type="button" data-file-close>关闭</button></header><div data-generic-file></div>`;
       container.querySelector("[data-file-close]").addEventListener("click", () => window.__focusCloseFilePanel());
-      void window.FocusFilePreview.mount(container.querySelector("[data-generic-file]"), { name, target: { task_id: appState.activeTaskId, content_ref: name } });
+      const taskId = appState.activeTaskId;
+      void window.FocusFilePreview.mount(container.querySelector("[data-generic-file]"), { name, target: { task_id: taskId, content_ref: name }, onReference: value => addTaskFileReference(value, taskId) });
     },
   } : null);
 }
@@ -1875,6 +1927,7 @@ async function showAssembly(workspaceId = "") {
 }
 
 function renderFocus(task = activeTask()) {
+  mainFilePicker?.destroy(); mainFilePicker = null;
   if (!task) return renderNoActiveTask();
   const isAssembly = task.harness_mode === "assembly";
   const admission = taskRunOperations?.get(task.task_id)?.admission;
@@ -1918,7 +1971,9 @@ function renderFocus(task = activeTask()) {
             <div class="composer-context"><span class="ui-badge is-active">${isAssembly ? uiText("focus.free_session", "自由会话") : uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
             <div class="composer">
               <div id="composerAttachments" class="composer-attachments" aria-label="本次消息附件">${renderComposerAttachments(task.task_id)}</div>
-              ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(composerInput)}</textarea>`, true)}
+              <div id="composerFileReferences" class="composer-file-references" aria-label="本次问题引用的文件">${composerFiles.cards(fileReferences(task.task_id))}</div>
+              ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，输入 @ 引用文件，或 / 选择技能…")}">${escapeHtml(composerInput)}</textarea>`, true)}
+              <div id="composerFileMenu" class="composer-file-menu" role="listbox" aria-label="工作区文件" hidden></div>
               <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" multiple hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
             </div>
             <p id="composerFeedback" class="composer-feedback${feedback ? ` is-${feedback.kind}` : ""}" role="status"${feedback ? "" : " hidden"}>${feedback ? escapeHtml(feedback.text) : ""}</p>
@@ -1945,6 +2000,7 @@ function renderFocus(task = activeTask()) {
   const mainInput = document.querySelector("#mainInput");
   const sendButton = document.querySelector('[data-action="send-main"]');
   if (mainInput) mainInput.disabled = commitmentBlocked;
+  mountMainFilePicker(task.task_id, mainInput);
   if (sendButton) sendButton.disabled = commitmentBlocked;
   // 原身份重试只核对/重放既有受理，不受随后出现的执行审批阻断。
   if (sendButton && taskRunOperations?.recovery(task.task_id)?.editing === false) sendButton.disabled = false;
@@ -1972,7 +2028,8 @@ function mountFilePanel() {
   if (state.filesPanel.file_link) return mountFileLinkPanel(container, state.filesPanel);
   releaseFileLinkPreview();
   const view = pluginViewForMaterial(state.filesPanel);
-  if (view?.mountPanel) view.mountPanel(container, state.filesPanel, state);
+  const taskId = state.activeTaskId;
+  if (view?.mountPanel) view.mountPanel(container, state.filesPanel, state, { onReference: value => addTaskFileReference(value, taskId) });
 }
 
 // Link previews are read-only and bound to one complete reference, including the
@@ -1981,6 +2038,7 @@ const linkedFilePreview = FocusFileLinks.createPreview({ runtime,
   isCurrent: target => state.filesPanel === target,
   onClose: () => window.__focusCloseFilePanel(),
   onCurrent: (reference, taskId) => openFileLink(reference, taskId),
+  onReference: (reference, taskId) => addFileReference(reference, taskId),
   getPreview: () => window.FocusFilePreview });
 
 function releaseFileLinkPreview() { linkedFilePreview.release(); }
@@ -4765,11 +4823,12 @@ async function sendMainOnce(taskId, requestId, retry = null) {
   setStatus("");
   const input = document.querySelector("#mainInput");
   const message = retry ? retry.message : input.value.trim();
-  if (!message) return;
+  const submittedFileRefs = retry?.fileReferences || (retry ? [] : JSON.parse(JSON.stringify(fileReferences(taskId))));
+  if (!message && !submittedFileRefs.length) return;
   if (!retry) composerDraft.claim(taskId, input.value);
   // f35 仅保留规范命令；旧 @压缩 输入按普通用户消息发送。
   const quickKeyword = keywordCommand.parse(message);
-  if (!retry && quickKeyword !== null) {
+  if (!retry && !submittedFileRefs.length && quickKeyword !== null) {
     const keyword = quickKeyword;
     input.value = "";
     composerDraft.release(taskId);
@@ -4793,7 +4852,7 @@ async function sendMainOnce(taskId, requestId, retry = null) {
       return;
     }
   }
-  if (!retry && !submittedSelection.bindings.length && spatialTarget?.focus.kind === "patrol"
+  if (!retry && !submittedFileRefs.length && !submittedSelection.bindings.length && spatialTarget?.focus.kind === "patrol"
       && typeof spatialTarget.view.sendFocusedMessage === "function") {
     try {
       if (await spatialTarget.view.sendFocusedMessage(message)) {
@@ -4815,13 +4874,13 @@ async function sendMainOnce(taskId, requestId, retry = null) {
   const selectionSignature = retry?.selectionSignature || JSON.stringify(submittedSelection);
   const original = retry ? JSON.parse(retry.body) : null;
   const outgoing = original ? { message: original.message, materialInputs: original.material_inputs, requiredImageIds: original.must_view_material_ids }
-    : runMaterialPicker.buildOutgoing(state.materials.get(taskId) || [], message, submittedSelection);
+    : runMaterialPicker.buildOutgoing(state.materials.get(taskId) || [], composerFiles.compose(message, submittedFileRefs), submittedSelection);
   const messagePayload = outgoing.message;
   let detail = state.details.get(taskId) || {};
   let confirmed = false;
   try {
     const frozen = retry || taskRunOperations?.freeze(taskId, requestId, {
-      input: submittedInput, message, selectionSignature,
+      input: submittedInput, message, selectionSignature, fileReferences: submittedFileRefs,
       body: JSON.stringify({
         message: messagePayload,
         material_inputs: outgoing.materialInputs,
@@ -4839,6 +4898,7 @@ async function sendMainOnce(taskId, requestId, retry = null) {
     });
     if (!run || (!run.run_id && !(run.intent_kind === "direct_message" && run.intent_id))) throw new Error("未收到有效受理回执");
     confirmed = true;
+    consumeFileReferences(taskId, submittedFileRefs);
     taskRunOperations?.accept(taskId, requestId, run);
     taskRunOperations?.forgetRecovery(taskId, requestId);
     state.mainRecoveryRestored.delete(taskId);
@@ -7286,11 +7346,11 @@ document.addEventListener("click", event => {
   FocusFileLinks.follow(event, {
     onExternal: window.focusDesktop?.openExternal,
     onError: error => setStatus(error.message, true),
-    onFile: (path, anchor) => {
+    onFile: (path, anchor, location) => {
       const source = fileContextFromNode(anchor);
       const reference = anchor.dataset?.fileReference ? JSON.parse(anchor.dataset.fileReference) : {};
       if (source.reference.view === "history") reference.view = "history";
-      return openFileLink({ ...source.reference, ...reference, path }, source.taskId);
+      return openFileLink({ ...source.reference, ...reference, path, ...FocusFileLinks.lineRange(location) }, source.taskId);
     },
   });
 }, true);
@@ -7668,6 +7728,12 @@ async function handleDocumentClick(event) {
   if (action === "retry-must-view") return resumeMustView("retry");
   if (action === "cancel-must-view") return resumeMustView("cancel");
   if (action === "send-main") return sendMain();
+  if (action === "open-composer-file" || action === "remove-composer-file") {
+    const refs = fileReferences(state.activeTaskId), index = Number(button.dataset.referenceIndex);
+    if (!refs[index]) return;
+    if (action === "open-composer-file") return openFileLink(refs[index]);
+    return updateFileReferences(state.activeTaskId, refs.filter((_, i) => i !== index));
+  }
   if (action === "retry-main") return sendMain(true);
   if (action === "edit-main") return editMainRequest();
   if (action.startsWith("composer-") && action.endsWith("-attachment")) return handleComposerAttachmentAction(button);
@@ -7818,7 +7884,11 @@ document.addEventListener("input", event => {
     const row = event.target.closest("[data-material-id]");
     if (row) updateRunMaterialNote(row.dataset.materialId, event.target.value);
   }
-  if (event.target.matches("[data-skill-input]")) updateSkillMenu(event.target, true);
+  if (event.target.matches("[data-skill-input]")) {
+    const fileMentionOpen = event.target.id === "mainInput" && mainFilePicker?.update();
+    if (fileMentionOpen) document.querySelector("#mainSkillList").hidden = true;
+    else updateSkillMenu(event.target, true);
+  }
   if (event.target.matches("[data-draft-field],[data-message-field],[data-equipment],[data-permission],[data-curation-policy]")) scheduleDraftSave();
   if (event.target.matches("[data-memory-field]")) syncMemoryField(event.target.dataset.memoryField, event.target.type === "checkbox" ? event.target.checked : event.target.value);
   if (event.target.matches("[data-strategy-import-field]")) syncStrategyImportField(event.target.dataset.strategyImportField, event.target.type === "checkbox" ? event.target.checked : event.target.value);
@@ -8428,6 +8498,7 @@ function persistFocusState() {
   detail.ui_state = {
     ...(detail.ui_state || {}),
     input: composerDraft.value(taskId, detail.ui_state?.input ?? ""),
+    file_references: fileReferences(taskId),
     skills: selectedSkills("main"),
     scrollTop: conversation ? (conversation.scrollTop || 0) : (detail.ui_state?.scrollTop || 0),
   };
@@ -8456,7 +8527,7 @@ function flushComposerPersist() {
   const input = document.querySelector("#mainInput");
   if (input) composerDraft.claim(taskId, input.value);
   const unsent = composerDraft.value(taskId, null);
-  if (unsent !== null) detail.ui_state = { ...(detail.ui_state || {}), input: unsent };
+  detail.ui_state = { ...(detail.ui_state || {}), file_references: fileReferences(taskId), ...(unsent !== null ? { input: unsent } : {}) };
   return persistUiState(taskId);
 }
 

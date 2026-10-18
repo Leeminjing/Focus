@@ -23,7 +23,20 @@
       if (value[key] != null && value[key] !== "") ref[key] = value[key];
     if (["fact_id", "revision", "result_key", "sha256", "version_id"].some(key => ref[key] != null)) ref.view = "history";
     ref.view ||= "current";
+    const range = lineRange(value);
+    if (range) Object.assign(ref, range);
     return ref;
+  }
+  function lineRange(value = {}) {
+    const start = Number(value.start_line), end = Number(value.end_line ?? value.start_line);
+    return Number.isSafeInteger(start) && start > 0 && Number.isSafeInteger(end) && end >= start
+      ? { start_line: start, end_line: end } : null;
+  }
+  function referenceFromHref(href) {
+    const path = pathFromHref(href);
+    if (!path) return null;
+    const match = String(href).match(/#L(\d+)(?:-L?(\d+))?$/i);
+    return reference({ path, ...(match ? { start_line: match[1], end_line: match[2] || match[1] } : {}) });
   }
   function follow(event, { onFile, onExternal, onError }) {
     const anchor = event.target.closest("a[href]");
@@ -38,10 +51,10 @@
       }
       const path = pathFromHref(href);
       if (!path) throw new Error("不支持此文件链接");
-      return Promise.resolve(onFile(path, anchor)).catch(onError);
+      return Promise.resolve(onFile(path, anchor, referenceFromHref(href))).catch(onError);
     } catch (error) { onError(new Error(`文件链接无效: ${error.message}`)); }
   }
-  function createPreview({ runtime, isCurrent, onClose, onCurrent, getPreview = () => root.FocusFilePreview }) {
+  function createPreview({ runtime, isCurrent, onClose, onCurrent, onReference, getPreview = () => root.FocusFilePreview }) {
     let fileLinkPreview = null;
     const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
     function releaseFileLinkPreview() {
@@ -57,6 +70,7 @@
         container.querySelector("[data-file-link-close]")?.addEventListener("click", onClose);
         return getPreview().mount(container.querySelector("[data-linked-preview]"), {
           name: target.path, target: { task_id: target.task_id, link: reference(target) },
+          onReference: onReference ? value => onReference(value, target.task_id) : undefined,
         });
       }
       if (fileLinkPreview?.target !== target) {
@@ -94,7 +108,14 @@
         container.querySelector("[data-file-link-close]")?.addEventListener("click", onClose);
         container.querySelector("[data-file-link-current]")?.addEventListener("click", () => onCurrent({
           path: target.path, workspace_id: target.workspace_id, slot_id: target.slot_id, run_id: target.run_id, view: "current",
+          ...lineRange(target),
         }, target.task_id));
+        if (entry.text != null && getPreview()?.renderText) {
+          getPreview().renderText(container.querySelector(".file-link-content"), entry.text, target.path, {
+            range: lineRange(target),
+            onReference: onReference ? value => onReference({ ...reference(target), ...value }, target.task_id) : undefined,
+          });
+        }
       };
       paint();
       await entry.pending;
@@ -102,5 +123,5 @@
     }
     return { mount, release: releaseFileLinkPreview };
   }
-  return Object.freeze({ pathFromHref, reference, follow, createPreview });
+  return Object.freeze({ pathFromHref, referenceFromHref, lineRange, reference, follow, createPreview });
 });

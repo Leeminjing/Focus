@@ -9,10 +9,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import os
 from hashlib import sha256
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
@@ -26,6 +27,55 @@ from focus.security import AccessDecision, AccessOperation, canonical_target, is
 
 file_router = APIRouter()
 PREVIEW_LIMIT = 4 * 1024 * 1024
+
+
+def search_workspace_files(root: str, query: str, limit: int) -> dict:
+    """Bounded discovery in the task workspace; every result passes read policy."""
+    base = Path(root).resolve()
+    policy = restrictive_policy(base)
+    excluded = {".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__", ".focus"}
+    needle = query.replace("\\", "/").casefold()
+    found, scanned, truncated = [], 0, False
+    for directory, dirs, names in os.walk(base, followlinks=False):
+        dirs[:] = sorted(name for name in dirs if name not in excluded
+            and not (Path(directory) / name).is_symlink()
+            and decide_path_access(policy, Path(directory) / name, AccessOperation.READ) is AccessDecision.ALLOW)
+        for name in sorted(names):
+            scanned += 1
+            if scanned > 20000:
+                truncated = True
+                break
+            path = Path(directory) / name
+            relative = path.relative_to(base).as_posix()
+            if needle not in relative.casefold():
+                continue
+            resolved = path.resolve()
+            if not is_within(base, resolved) or not resolved.is_file():
+                continue
+            if decide_path_access(policy, resolved, AccessOperation.READ) is not AccessDecision.ALLOW:
+                continue
+            found.append({"path": str(resolved), "relative_path": relative})
+            if len(found) >= limit:
+                truncated = True
+                break
+        if truncated:
+            break
+    return {"files": found, "truncated": truncated}
+
+
+@file_router.get("/tasks/{task_id}/files/search")
+async def search_task_files(task_id: str, request: Request,
+        q: str = Query(default="", max_length=200), limit: int = Query(default=30, ge=1, le=50)):
+    async with request.app.state.desktop_service.session_factory() as session:
+        task = await session.get(DesktopThread, task_id)
+        workspace = await session.get(DesktopWorkspace, task.workspace_id) if task else None
+        if workspace is None:
+            raise HTTPException(404, "任务工作区不存在")
+        root, workspace_id = workspace.path, workspace.workspace_id
+    result = await asyncio.to_thread(search_workspace_files, root, q, limit)
+    for item in result["files"]:
+        item["workspace_id"] = workspace_id
+    return result
 
 
 class FileTarget(BaseModel):
