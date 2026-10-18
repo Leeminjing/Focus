@@ -875,7 +875,17 @@ class LoopKernel:
 
     @staticmethod
     async def _completion_result(session, loop, action) -> dict:
+        from backend.app.desktop.agent_loop.mission_repository import MissionRevisionRepository
+        from backend.app.desktop.agent_loop.mission_projection import EffectiveMissionProjector
+        from backend.app.desktop.agent_loop.models import LoopGoalRevision
+
         verification = await session.get(CompletionVerification, action.verification_id)
+        mission = await MissionRevisionRepository().get(session, loop.loop_id, loop.goal_revision)
+        goal = await session.scalar(select(LoopGoalRevision).where(
+            LoopGoalRevision.loop_id == loop.loop_id, LoopGoalRevision.revision == loop.goal_revision))
+        effective = EffectiveMissionProjector.from_rows(structured=mission, legacy=goal)
+        contexts = {item.task_id: item for item in (await session.scalars(
+            select(DesktopThread).where(DesktopThread.task_id.in_(action.final_context_ids)))).all()}
         memberships = list(
             (
                 await session.scalars(
@@ -906,6 +916,10 @@ class LoopKernel:
         )
         final_ids = set(action.final_context_ids)
         return {
+            "summary": effective.outcome,
+            "goal_revision": loop.goal_revision,
+            "round_id": loop.current_round_id,
+            "completion_checks": list(effective.completion_checks),
             "verification": {
                 "verification_id": verification.verification_id,
                 "conclusion": verification.conclusion,
@@ -917,6 +931,8 @@ class LoopKernel:
                 {
                     "membership_id": item.membership_id,
                     "context_id": item.context_id,
+                    "revision_id": contexts[item.context_id].current_revision_id,
+                    "title": contexts[item.context_id].title,
                     "lane_id": item.lane_id,
                     "status": item.status,
                 }

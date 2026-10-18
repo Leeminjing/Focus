@@ -748,6 +748,8 @@ class DesktopService:
         rows = (await session.execute(select(
             ranked.c.task_id, AgentLoop.loop_id, AgentLoop.status, AgentLoop.updated_at,
             AgentLoop.interaction_mode, AgentLoop.workspace_id, AgentLoop.initial_context_id,
+            AgentLoop.final_result["verification"]["verification_id"].astext,
+            AgentLoop.final_result["verification"]["conclusion"].astext,
             LoopPendingDecision.pending_decision_id, LoopPendingDecision.kind,
             LoopWaitRequest.request_id, LoopWaitRequest.kind,
         ).join(ranked, AgentLoop.loop_id == ranked.c.loop_id)
@@ -758,6 +760,7 @@ class DesktopService:
           .where(ranked.c.position == 1))).all()
         by_task = {item["task_id"]: item for item in summaries}
         for (task_id, loop_id, status, updated_at, mode, workspace_id, initial_context_id,
+             verification_id, conclusion,
              decision_id, decision_kind, request_id, request_kind) in rows:
             summary = by_task.get(task_id)
             if summary is None:
@@ -770,6 +773,8 @@ class DesktopService:
             if mode == "workspace_patrol":
                 summary["loop"].update(interaction_mode=mode, workspace_id=workspace_id,
                                        initial_context_id=initial_context_id)
+                if verification_id and conclusion == "satisfied":
+                    summary["loop"]["delivery"] = {"verification_id": verification_id, "conclusion": conclusion}
                 # Project shared waits only once; Run-local attention stays on
                 # its own Context and retains its original navigation target.
                 if task_id != initial_context_id:
