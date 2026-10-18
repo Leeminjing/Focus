@@ -1218,6 +1218,7 @@ class DesktopService:
         execution_workspace_path: str | None = None,
         execution_slot_id: str | None = None,
         admit_only: bool = False,
+        message_reference: dict[str, Any] | None = None,
     ) -> PreparedRun:
         identity = run_identity or {}
         if identity.get("directive_id") and (not identity.get("loop_id") or not execution_slot_id):
@@ -1351,6 +1352,9 @@ class DesktopService:
                 execution_thread_id, execution_checkpoint_ns
             )
             current_message = RunMaterialMessageProjector.project(message, run_materials)
+            from backend.app.desktop.message_reference import project_message_reference
+
+            current_message = project_message_reference(current_message, message_reference)
             checkpoint_id = authoritative_checkpoint_id or await select_checkpoint_base(
                 self.checkpointer, execution_thread_id, execution_checkpoint_ns
             )

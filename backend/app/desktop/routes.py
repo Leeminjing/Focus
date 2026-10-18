@@ -327,6 +327,8 @@ async def start_main_run(
     idempotency_header: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict:
     request_identity = body.idempotency_key or idempotency_header or uuid.uuid4().hex
+    if body.message_reference and body.message_reference.task_id != task_id:
+        raise HTTPException(422, "引用必须来自当前会话")
     loop_service = getattr(request.app.state, "agent_loop_service", None)
     if loop_service is not None:
         accepted = await loop_service.user_message(task_id, _loop_message_text(body.message),
@@ -342,6 +344,7 @@ async def start_main_run(
     message_id = uuid.uuid5(uuid.NAMESPACE_URL, f"focus:direct-user-message:{request_identity}").hex
     prepared = await request.app.state.desktop_service.start_main_run(
         task_id=task_id, message=body.message, model_name=body.model_name,
+        message_reference=body.message_reference.model_dump() if body.message_reference else None,
         permissions=body.permissions, skills=body.skills, spatial_focus=body.spatial_focus,
         memory_ids=body.memory_ids,
         material_inputs=[RunMaterialRequest(material_id=item.material_id, note=item.note)

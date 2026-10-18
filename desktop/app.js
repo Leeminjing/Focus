@@ -237,6 +237,53 @@ const runMaterialPicker = window.runMaterialPicker;
 const materialGrouping = window.materialGrouping;
 const accessMode = window.FocusAccessMode;
 const composerDraft = window.FocusComposerDraft;
+const conversationReference = window.FocusConversationReference;
+const referenceDrafts = conversationReference.createDrafts(localStorage);
+const referenceSelection = conversationReference.mount({
+  document, window,
+  getTaskId: () => state.view === "focus" && document.querySelector("#mainInput") ? state.activeTaskId : null,
+  onQuote: setMainReference,
+  onStatus: setStatus,
+});
+
+function mainReference(taskId) {
+  const recovery = taskRunOperations?.recovery(taskId);
+  if (recovery && !recovery.editing) return JSON.parse(recovery.body).message_reference || null;
+  return referenceDrafts.get(taskId, state.details.get(taskId)?.ui_state?.message_reference);
+}
+
+function setMainReference(reference) {
+  const taskId = state.activeTaskId;
+  const recovery = taskRunOperations?.recovery(taskId);
+  if (recovery && !recovery.editing) return setStatus("请先选择「编辑后重新发送」以修改引用", true);
+  referenceDrafts.set(taskId, reference);
+  const detail = state.details.get(taskId);
+  if (detail) detail.ui_state = { ...(detail.ui_state || {}), message_reference: reference };
+  const node = document.querySelector("#composerReference");
+  if (node) node.innerHTML = conversationReference.render(reference);
+  void persistFocusState();
+  document.querySelector("#mainInput")?.focus();
+}
+
+function jumpToReference(reference) {
+  if (reference.task_id !== state.activeTaskId || state.view !== "focus") return setStatus("请在来源会话中查看引用", true);
+  const find = () => [...document.querySelectorAll("#conversation [data-message-id]")]
+    .find(node => node.dataset.messageId === reference.message_id);
+  let article = find();
+  // Earlier messages are already in the snapshot but rendered in bounded windows.
+  while (!article && document.querySelector('[data-action="load-earlier-conversation"]')) {
+    const previous = conversationWindowLimit(reference.task_id);
+    loadEarlierConversation();
+    article = find();
+    if (conversationWindowLimit(reference.task_id) === previous) break;
+  }
+  if (!article) return setStatus("原消息已不在当前历史中，引用原文仍已保留", true);
+  article.scrollIntoView({ block: "center", behavior: "smooth" });
+  article.classList.add("is-reference-source");
+  setTimeout(() => article.classList.remove("is-reference-source"), 2000);
+  const content = article.querySelector(".message-content");
+  if (content) conversationReference.selectRange(content, reference, window);
+}
 const taskRunOperations = window.FocusTaskRunOperations?.create();
 const loopApi = window.FocusLoopApi?.create(runtime);
 const runStreams = window.FocusRunStreamSubscriptions?.create(runtime);
@@ -1876,6 +1923,7 @@ async function showAssembly(workspaceId = "") {
 
 function renderFocus(task = activeTask()) {
   if (!task) return renderNoActiveTask();
+  referenceSelection.hide();
   const isAssembly = task.harness_mode === "assembly";
   const admission = taskRunOperations?.get(task.task_id)?.admission;
   const mainRecovery = taskRunOperations?.recovery(task.task_id);
@@ -1917,6 +1965,7 @@ function renderFocus(task = activeTask()) {
           <div class="composer-shell glass-surface">
             <div class="composer-context"><span class="ui-badge is-active">${isAssembly ? uiText("focus.free_session", "自由会话") : uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
             <div class="composer">
+              <div id="composerReference">${conversationReference.render(mainReference(task.task_id))}</div>
               <div id="composerAttachments" class="composer-attachments" aria-label="本次消息附件">${renderComposerAttachments(task.task_id)}</div>
               ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，或输入 / 选择技能…")}">${escapeHtml(composerInput)}</textarea>`, true)}
               <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" multiple hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
@@ -2228,7 +2277,7 @@ function renderContentBlock(block, message = null) {
     return ""; // 图片已由 collectMessageImages 提取到消息框上方,气泡内不输出
   }
   // text 块:移除图片引用(图片已提取到上方行),其余转义
-  return escapeHtml(stripImageReferences(stripRunMaterialProtocol(String(block.text ?? ""), message)));
+  return escapeHtml(stripImageReferences(stripRunMaterialProtocol(conversationReference.stripProtocol(String(block.text ?? ""), message?.additional_kwargs?.message_reference), message)));
 }
 
 function messageKeyOf(message, fallbackIndex) {
@@ -2244,11 +2293,12 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
   }
   const semantics = contextCuratorPresentation.messageSemantics(message);
   const kind = semantics.kind;
+  const reference = message.additional_kwargs?.message_reference;
   // 安全:字符串 human 消息 MUST 转义(否则消息内 HTML 会注入 DOM,如 <style> 覆盖主题变量)。
   const messageImages = collectMessageImages(message.content);
   let content;
   if (typeof message.content === "string") {
-    content = kind === "ai" ? message.content : escapeHtml(stripImageReferences(stripRunMaterialProtocol(message.content, message)));
+    content = kind === "ai" ? message.content : escapeHtml(stripImageReferences(stripRunMaterialProtocol(conversationReference.stripProtocol(message.content, reference), message)));
   } else if (Array.isArray(message.content)) {
     content = message.content.map(block => renderContentBlock(block, message)).join("\n");
   } else {
@@ -2267,9 +2317,10 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
   const fileContext = fileLinkReference(message.file_reference || message.file_context || {
     workspace_id: message.workspace_id, run_id: message.run_id, slot_id: message.slot_id,
   });
-  return `<article class="work-record message ${kind}" data-message-key="${escapeHtml(messageKey)}" data-file-task-id="${escapeHtml(message.task_id || state.activeTaskId || "")}" data-file-context="${escapeHtml(JSON.stringify(fileContext))}">
+  return `<article class="work-record message ${kind}" data-message-key="${escapeHtml(messageKey)}"${message.id || message.message_id ? ` data-message-id="${escapeHtml(message.id || message.message_id)}"` : ""} data-file-task-id="${escapeHtml(message.task_id || state.activeTaskId || "")}" data-file-context="${escapeHtml(JSON.stringify(fileContext))}">
     ${header}
     ${renderMessageImages(messageImages)}${renderFileCards(message)}${renderRunMaterialCards(message)}
+    ${conversationReference.render(reference, { editable: false })}
     <div class="message-content">${renderedContent}</div>
     ${actions}
   </article>`;
@@ -4769,7 +4820,7 @@ async function sendMainOnce(taskId, requestId, retry = null) {
   if (!retry) composerDraft.claim(taskId, input.value);
   // f35 仅保留规范命令；旧 @压缩 输入按普通用户消息发送。
   const quickKeyword = keywordCommand.parse(message);
-  if (!retry && quickKeyword !== null) {
+  if (!retry && quickKeyword !== null && !mainReference(taskId)) {
     const keyword = quickKeyword;
     input.value = "";
     composerDraft.release(taskId);
@@ -4777,6 +4828,7 @@ async function sendMainOnce(taskId, requestId, retry = null) {
   }
   setComposerError();
   const submittedInput = retry?.input ?? input.value;
+  const submittedReference = retry ? JSON.parse(retry.body).message_reference || null : mainReference(taskId);
   let submittedSelection = retry ? null : JSON.parse(JSON.stringify(materialSelection(taskId)));
   const attachments = retry ? [] : [...(state.composerAttachments.get(taskId)?.values() || [])]
     .filter(entry => entry.status !== "ready");
@@ -4793,7 +4845,7 @@ async function sendMainOnce(taskId, requestId, retry = null) {
       return;
     }
   }
-  if (!retry && !submittedSelection.bindings.length && spatialTarget?.focus.kind === "patrol"
+  if (!retry && !submittedReference && !submittedSelection.bindings.length && spatialTarget?.focus.kind === "patrol"
       && typeof spatialTarget.view.sendFocusedMessage === "function") {
     try {
       if (await spatialTarget.view.sendFocusedMessage(message)) {
@@ -4824,6 +4876,7 @@ async function sendMainOnce(taskId, requestId, retry = null) {
       input: submittedInput, message, selectionSignature,
       body: JSON.stringify({
         message: messagePayload,
+        ...(submittedReference ? { message_reference: submittedReference } : {}),
         material_inputs: outgoing.materialInputs,
         must_view_material_ids: outgoing.requiredImageIds,
         ...requestOptions,
@@ -4844,6 +4897,8 @@ async function sendMainOnce(taskId, requestId, retry = null) {
     state.mainRecoveryRestored.delete(taskId);
     state.composerErrors.delete(taskId);
     detail = state.details.get(taskId) || detail;
+    referenceDrafts.consume(taskId, submittedReference);
+    detail.ui_state = { ...(detail.ui_state || {}), message_reference: referenceDrafts.get(taskId) };
     if (run.intent_kind === "direct_message") {
       consumeMainAttachments(taskId, outgoing, attachments);
       const unchanged = composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
@@ -4885,7 +4940,8 @@ async function sendMainOnce(taskId, requestId, retry = null) {
     ]);
     consumeMainAttachments(taskId, outgoing, attachments);
     state.composerErrors.delete(taskId);
-    if (!(detail.messages || []).some(item => item.id === run.message_id)) detail.messages = [...(detail.messages || []), { role: "human", content: messagePayload, id: run.message_id }];
+    if (!(detail.messages || []).some(item => item.id === run.message_id)) detail.messages = [...(detail.messages || []), { role: "human", content: messagePayload, id: run.message_id,
+      ...(submittedReference ? { additional_kwargs: { message_reference: submittedReference } } : {}) }];
     const unchanged = composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
     detail.ui_state = { ...(detail.ui_state || {}), input: unchanged ? "" : composerDraft.value(taskId), skills: unchanged ? [] : detail.ui_state?.skills || [] };
     if (unchanged) composerDraft.release(taskId);
@@ -7318,6 +7374,8 @@ async function handleDocumentClick(event) {
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const action = button.dataset.action;
+  if (action === "reference-remove") return setMainReference(null);
+  if (action === "reference-source") return jumpToReference(JSON.parse(button.dataset.reference));
   if (action === "open-file-panel") return openFileCard(button);
   if (action === "copy-answer") return copyMessageText(button, button.dataset.copyText);
   if (action === "copy-code") return copyMessageText(button, button.closest(".message-code-block")?.querySelector("pre > code")?.textContent);
@@ -8428,6 +8486,7 @@ function persistFocusState() {
   detail.ui_state = {
     ...(detail.ui_state || {}),
     input: composerDraft.value(taskId, detail.ui_state?.input ?? ""),
+    message_reference: referenceDrafts.get(taskId, detail.ui_state?.message_reference),
     skills: selectedSkills("main"),
     scrollTop: conversation ? (conversation.scrollTop || 0) : (detail.ui_state?.scrollTop || 0),
   };
