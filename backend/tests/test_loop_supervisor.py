@@ -14,6 +14,140 @@ from backend.app.desktop.agent_loop.supervisor import LoopSupervisor, Supervisor
 from backend.app.desktop.agent_loop.coordinator import CoordinatorClaim, LoopCoordinatorRuntime
 
 
+def test_wake_during_tick_is_retained_coalesced_and_targeted():
+    async def run():
+        entered, release, repeated = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        calls = {"rounds": 0, "workers": 0}
+
+        async def rounds():
+            calls["rounds"] += 1
+            if calls["rounds"] == 1:
+                entered.set()
+                await release.wait()
+            else:
+                repeated.set()
+
+        async def workers():
+            calls["workers"] += 1
+
+        supervisor = LoopSupervisor("test", (
+            SupervisorComponent("rounds", rounds, 30),
+            SupervisorComponent("workers", workers, 30),
+        ))
+        await supervisor.start()
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            for _ in range(100):
+                supervisor.wake("rounds")
+            release.set()
+            await asyncio.wait_for(repeated.wait(), 1)
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert calls == {"rounds": 2, "workers": 1}
+        finally:
+            await supervisor.close()
+
+    asyncio.run(run())
+
+
+def test_wake_respects_pause_and_failure_backoff():
+    async def run():
+        entered, retried = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def tick():
+            nonlocal calls
+            calls += 1
+            entered.set()
+            if calls == 1:
+                raise RuntimeError("retry")
+            retried.set()
+
+        supervisor = LoopSupervisor("test", (SupervisorComponent("events", tick, 0.05),))
+        await supervisor.start()
+        try:
+            await entered.wait()
+            for _ in range(50):
+                supervisor.wake("events")
+                await asyncio.sleep(0)
+            assert calls == 1
+            supervisor.pause()
+            await asyncio.sleep(0.12)
+            assert calls == 1
+            supervisor.resume()
+            await asyncio.wait_for(retried.wait(), 1)
+        finally:
+            await supervisor.close()
+
+    asyncio.run(run())
+
+
+def test_polling_recovers_without_notification():
+    async def run():
+        progressed = asyncio.Event()
+        calls = 0
+
+        async def tick():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                progressed.set()
+
+        supervisor = LoopSupervisor("test", (SupervisorComponent("events", tick, 0.01),))
+        await supervisor.start()
+        try:
+            await asyncio.wait_for(progressed.wait(), 1)
+        finally:
+            await supervisor.close()
+
+    asyncio.run(run())
+
+
+def test_new_loop_is_admitted_by_committed_hint_without_registry_poll():
+    async def run():
+        desired = []
+        checked, admitted = asyncio.Event(), asyncio.Event()
+
+        class Coordinator:
+            async def recover(self):
+                pass
+
+            async def running_loop_ids(self):
+                checked.set()
+                return tuple(desired)
+
+            async def claim_for_loop(self, identity, _owner):
+                assert identity == "new-loop"
+                admitted.set()
+                return None
+
+        class RunEvents:
+            async def recover(self):
+                pass
+
+            async def drain(self, *_args, **_kwargs):
+                return 0
+
+        runtime = LoopCoordinatorRuntime(Coordinator(), RunEvents(), poll_seconds=30)
+
+        async def no_preemptions():
+            return 0
+
+        runtime._drain_preemptions = no_preemptions
+        await runtime.start()
+        try:
+            checked.clear()
+            await asyncio.wait_for(checked.wait(), 1)
+            desired.append("new-loop")
+            runtime._work_committed('{"loop_id":"new-loop","components":["rounds"]}')
+            await asyncio.wait_for(admitted.wait(), 1)
+            assert runtime.supervised_loop_ids == ("new-loop",)
+        finally:
+            await runtime.close()
+
+    asyncio.run(run())
+
+
 def test_index_prewarm_is_supervised_and_cancelled_independently():
     async def run():
         entered, cancelled = asyncio.Event(), asyncio.Event()

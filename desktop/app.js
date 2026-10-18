@@ -1,6 +1,6 @@
 /*
  * 本文件对外提供应用组合根；输入为真实 API/Live 与用户导航动作，输出为六页及原业务入口。
- * 助手正文与代码提供独立复制反馈；任务工具从完整消息快照导出 Markdown，展开压缩来源并保留正文格式。
+ * 历史提问提供复制、编辑重发与从此重试，助手提供复制、引用和重新回答；重试从冻结 checkpoint 的提问前缀派生，保留原会话与附件清单，并复用普通提交恢复。任务工具从完整消息快照导出 Markdown。
  * 工作区绑定与投递复用 WorkspacePatrolIntake；桌面工作台使用独立 userData 仓库，浏览器使用 IndexedDB，恢复后开放编辑；机器人继续使用独立输入仓库。来源导航按最新请求身份生效，迟到读取不能覆盖后来选择。
  * 任务与图卡共用 Run SSE 订阅；图卡通过只读观察器呈现真实角色与短尾部，按工作区和 Run 隔离，退出页面释放观察而不触发审批。
  * 工作流为沿原控制器装配页面、按任务保留草稿，卡片/列表偏好仅留在页面状态。示例：renderPlugins() 展示 registry 的当前状态。
@@ -9,6 +9,7 @@
  * Loop 介入提交保留原文；成功后只清空同一 Context、模式和内容的当前表单，重绘替换及提交期间的新草稿不被旧节点重置影响。全图节点在选择/装备模式复用原操作，普通检查仍不改变发送目标；选择重绘恢复原节点焦点。
  * 任务工具提供手工整理并复用既有 quick-apply；已有压缩待决仍使用原 resume。授权/等待表单解析复用共享视图，文件预览暂时隐藏材料检查器，关闭后恢复原 UI 偏好；独立会话的内部目录不呈现为用户已绑定工作区。
  * 会话 standard Patrol 由独立 Document/Workbench/Branches 模块负责 typed 左右编排、精确来源选择、保存、只读请求预览和精确执行分支；本文件组合路由、装备、检查器与运行订阅，材料变更按所属任务使检查过期并按当前页面刷新，保留编辑挂载。
+ * 传统任务与独立会话在同任务刷新时保持输入区及其祖先挂载，只更新消息与外围状态；后台其他任务结束只更新任务列表，回执不清除正在组字的草稿。
  * 示例：refreshMaterialView(taskId, true) 使该任务材料变更后的检查过期并刷新当前路由；await sendMain()。模型配置显式选择 Provider 与协议，详情展示有效协议。
  * 本文件对外提供 Focus 桌面宿主的状态协调与原生 DOM 渲染。输入为同源 desktop API、SSE、
  * preload 运行时信息和用户操作，输出为持久导航、任务工作区、检查器、常驻会话 Patrol 小兵、
@@ -78,11 +79,21 @@ const materialContentLoader = window.MaterialContentLoader
     };
 
 const MAP_VIEW_PREFERENCES_KEY = "focus-map-view-v1";
+const preferenceStorage = {
+  getItem(key) {
+    try { return (window.focusDesktop?.preferences || localStorage).getItem(key); }
+    catch (error) { console.warn("读取界面偏好失败:", key, error.message); return null; }
+  },
+  setItem(key, value) {
+    try { (window.focusDesktop?.preferences || localStorage).setItem(key, value); }
+    catch (error) { console.warn("保存界面偏好失败:", key, error.message); }
+  },
+};
 
 function readMapViewPreferences() {
   const fallback = { mode: "graph", workspaceIds: [], contextIds: [] };
   try {
-    const raw = localStorage.getItem(MAP_VIEW_PREFERENCES_KEY);
+    const raw = preferenceStorage.getItem(MAP_VIEW_PREFERENCES_KEY);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw);
     return {
@@ -192,9 +203,9 @@ const state = {
   loop: { loopId: null, loading: false, revisionSnapshot: null },
   inspector: { open: window.innerWidth > 1100, tab: "materials", returnFocus: null },
   filesPanel: null,   // f18:右侧文件面板当前打开的 material(relative_path 等)
-  panelWidth: normalizePanelWidth(localStorage.getItem("focus-panel-width") || 400),
+  panelWidth: normalizePanelWidth(preferenceStorage.getItem("focus-panel-width") || 400),
   shellLayout: normalizeShellLayout(readShellLayout(), window.innerWidth),
-  zoomLevel: normalizeZoomLevel(localStorage.getItem(ZOOM_LEVEL_KEY)),
+  zoomLevel: normalizeZoomLevel(preferenceStorage.getItem(ZOOM_LEVEL_KEY)),
 };
 
 const app = document.querySelector("#app");
@@ -280,6 +291,7 @@ function consumeFileReferences(taskId, submitted) {
 }
 
 function mountMainFilePicker(taskId, input) {
+  if (mainFilePicker?.input === input && mainFilePicker.taskId === taskId) return;
   mainFilePicker?.destroy(); mainFilePicker = null;
   const menu = document.querySelector("#composerFileMenu");
   if (!input?.addEventListener || menu?.id !== "composerFileMenu") return;
@@ -287,7 +299,59 @@ function mountMainFilePicker(taskId, input) {
     search: query => api(`/desktop/api/tasks/${encodeURIComponent(taskId)}/files/search?q=${encodeURIComponent(query)}`),
     onSelect: ref => addFileReference(ref, taskId),
   });
+  Object.assign(mainFilePicker, { input, taskId });
 }
+const conversationReference = window.FocusConversationReference;
+const referenceDrafts = conversationReference.createDrafts(localStorage);
+const referenceSelection = conversationReference.mount({
+  document, window,
+  getTaskId: () => state.view === "focus" && document.querySelector("#mainInput") ? state.activeTaskId : null,
+  onQuote: setMainReference,
+  onStatus: setStatus,
+});
+
+function mainReference(taskId) {
+  const recovery = taskRunOperations?.recovery(taskId);
+  if (recovery && !recovery.editing) {
+    const body = JSON.parse(recovery.body);
+    return (body.run || body).message_reference || null;
+  }
+  return referenceDrafts.get(taskId, state.details.get(taskId)?.ui_state?.message_reference);
+}
+
+function setMainReference(reference) {
+  const taskId = state.activeTaskId;
+  const recovery = taskRunOperations?.recovery(taskId);
+  if (recovery && !recovery.editing) return setStatus("请先选择「编辑后重新发送」以修改引用", true);
+  referenceDrafts.set(taskId, reference);
+  const detail = state.details.get(taskId);
+  if (detail) detail.ui_state = { ...(detail.ui_state || {}), message_reference: reference };
+  const node = document.querySelector("#composerReference");
+  if (node) node.innerHTML = conversationReference.render(reference);
+  void persistFocusState();
+  document.querySelector("#mainInput")?.focus();
+}
+
+function jumpToReference(reference) {
+  if (reference.task_id !== state.activeTaskId || state.view !== "focus") return setStatus("请在来源会话中查看引用", true);
+  const find = () => [...document.querySelectorAll("#conversation [data-message-id]")]
+    .find(node => node.dataset.messageId === reference.message_id);
+  let article = find();
+  // Earlier messages are already in the snapshot but rendered in bounded windows.
+  while (!article && document.querySelector('[data-action="load-earlier-conversation"]')) {
+    const previous = conversationWindowLimit(reference.task_id);
+    loadEarlierConversation();
+    article = find();
+    if (conversationWindowLimit(reference.task_id) === previous) break;
+  }
+  if (!article) return setStatus("原消息已不在当前历史中，引用原文仍已保留", true);
+  article.scrollIntoView({ block: "center", behavior: "smooth" });
+  article.classList.add("is-reference-source");
+  setTimeout(() => article.classList.remove("is-reference-source"), 2000);
+  const content = article.querySelector(".message-content");
+  if (content) conversationReference.selectRange(content, reference, window);
+}
+const composingMainInputs = new WeakSet();
 const taskRunOperations = window.FocusTaskRunOperations?.create();
 const loopApi = window.FocusLoopApi?.create(runtime);
 const runStreams = window.FocusRunStreamSubscriptions?.create(runtime);
@@ -377,7 +441,8 @@ let contextPointerDrag = null;
 let contextUndoTimer = null;
 let agentDetailsRequestSequence = 0;
 let taskSwitchSequence = 0;
-const taskDetailRequestIds = new Map();
+// 各资源独立提交；导航复用在途请求，事务刷新仍以最新请求为准。
+const taskResourceLoads = new Map();
 let compressionRequestSequence = 0;
 let draftOpenRequestSequence = 0;
 let pluginHydrationSequence = 0;
@@ -414,7 +479,7 @@ function shellLayoutDefaults() {
 
 function readShellLayout() {
   try {
-    const raw = localStorage.getItem(SHELL_LAYOUT_KEY);
+    const raw = preferenceStorage.getItem(SHELL_LAYOUT_KEY);
     if (!raw) return shellLayoutDefaults();
     const parsed = JSON.parse(raw);
     return {
@@ -474,7 +539,7 @@ function applyShellLayout(layout) {
 
 function persistShellLayout() {
   try {
-    localStorage.setItem(SHELL_LAYOUT_KEY, JSON.stringify(state.shellLayout));
+    preferenceStorage.setItem(SHELL_LAYOUT_KEY, JSON.stringify(state.shellLayout));
   } catch { /* 只读存储忽略 */ }
 }
 
@@ -586,7 +651,7 @@ function announceZoom(level) {
 function applyZoomLevel(level, options = {}) {
   const next = normalizeZoomLevel(level);
   state.zoomLevel = next;
-  try { localStorage.setItem(ZOOM_LEVEL_KEY, String(next)); } catch { /* 只读存储忽略 */ }
+  try { preferenceStorage.setItem(ZOOM_LEVEL_KEY, String(next)); } catch { /* 只读存储忽略 */ }
   try { window.focusDesktop?.setZoomLevel?.(next); } catch { /* 无桥环境忽略 */ }
   if (options.announce !== false) announceZoom(next);
   return next;
@@ -602,7 +667,7 @@ function changeZoomLevel(delta) {
 // 启动恢复：读回持久化级别（非法/越界回落 0），启动时不播报以免打断。
 function restoreZoomLevel() {
   let stored = null;
-  try { stored = localStorage.getItem(ZOOM_LEVEL_KEY); } catch { /* 只读存储忽略 */ }
+  try { stored = preferenceStorage.getItem(ZOOM_LEVEL_KEY); } catch { /* 只读存储忽略 */ }
   return applyZoomLevel(normalizeZoomLevel(stored), { announce: false });
 }
 
@@ -822,8 +887,8 @@ function activeTask() {
 
 function replaceTasks(tasks) {
   state.tasks = Array.isArray(tasks) ? tasks : [];
-  for (const taskId of [...taskDetailRequestIds.keys()]) {
-    if (!state.tasks.some(task => task.task_id === taskId)) taskDetailRequestIds.delete(taskId);
+  for (const taskId of taskResourceLoads.keys()) {
+    if (!state.tasks.some(task => task.task_id === taskId)) taskResourceLoads.delete(taskId);
   }
   const selected = state.tasks.find(task =>
     task.task_id === state.activeTaskId && sessionLifecycle(task) === "active"
@@ -872,20 +937,91 @@ async function bootstrap() {
   return true;
 }
 
-async function hydrateActive(taskId = state.activeTaskId) {
-  if (!taskId) return;
-  const requestId = (taskDetailRequestIds.get(taskId) || 0) + 1;
-  taskDetailRequestIds.set(taskId, requestId);
-  const [detail, materials, agents, catalog, materialGroups, materialHistory] = await Promise.all([
-    api(`/desktop/api/tasks/${taskId}`),
-    api(`/desktop/api/tasks/${taskId}/materials`),
-    api(`/desktop/api/tasks/${taskId}/agents`),
-    api(`/desktop/api/tasks/${taskId}/skills`),
-    api(`/desktop/api/tasks/${taskId}/material-groups`),
-    api(`/desktop/api/tasks/${taskId}/material-history`),
-  ]);
-  if (taskDetailRequestIds.get(taskId) !== requestId) return;
-  state.details.set(taskId, detail);
+const TASK_RESOURCES = {
+  detail: { suffix: "", label: "任务消息与运行状态", store: "details" },
+  materials: { suffix: "/materials", label: "材料", store: "materials" },
+  agents: { suffix: "/agents", label: "Agents", store: "agents" },
+  skills: { suffix: "/skills", label: "Skills", store: "skillCatalogs" },
+  groups: { suffix: "/material-groups", label: "材料分组", store: "materialGroups" },
+  history: { suffix: "/material-history", label: "材料历史", store: "materialHistory" },
+};
+
+function renderTaskResourceStatus(taskId, resources) {
+  const loads = taskResourceLoads.get(taskId);
+  return resources.map(resource => {
+    const load = loads?.[resource];
+    const source = TASK_RESOURCES[resource];
+    if (load?.status === "loading") return `<p class="muted tiny" role="status">${source.label}${state[source.store].has(taskId) ? "正在刷新" : "加载中"}…</p>`;
+    if (load?.status !== "error") return "";
+    return `<p class="ui-notice is-warning" role="status"><span>${source.label}加载失败：${escapeHtml(load.error)}</span><button type="button" data-action="retry-task-resource" data-task-id="${escapeHtml(taskId)}" data-resource="${resource}">重试</button></p>`;
+  }).join("");
+}
+
+function refreshTaskResourceView(taskId, resource, { preserveMount = false } = {}) {
+  if (state.activeTaskId !== taskId || state.view !== "focus") return;
+  const load = taskResourceLoads.get(taskId)?.[resource];
+  if (resource === "detail") {
+    if (load?.status === "loaded" && !preserveMount) render();
+    else {
+      const status = document.querySelector("#taskDetailLoadStatus");
+      if (status) status.innerHTML = renderTaskResourceStatus(taskId, ["detail"]);
+    }
+  } else if (resource === "skills") {
+    const status = document.querySelector("#mainSkillLoadStatus");
+    if (status) status.innerHTML = renderTaskResourceStatus(taskId, ["skills"]);
+    const input = document.querySelector('#mainInput');
+    if (input && document.activeElement === input) updateSkillMenu(input);
+  } else {
+    if (resource === "agents") updatePatrolAvatarLayer(taskId);
+    if (resource === "materials" && load?.status === "loaded") refreshComposerAttachments(taskId);
+    if (resource === "history" && load?.status === "loaded") refreshConversation(activeTask());
+    if (state.inspector.tab === (resource === "agents" ? "agents" : "materials")) renderInspector();
+  }
+}
+
+function hydrateTaskResource(taskId, resource, { reusePending = false, preserveMount = false } = {}) {
+  const source = TASK_RESOURCES[resource];
+  if (!taskId || !Object.hasOwn(TASK_RESOURCES, resource)) return Promise.resolve();
+  let loads = taskResourceLoads.get(taskId);
+  if (!loads) taskResourceLoads.set(taskId, loads = {});
+  if (reusePending && loads[resource]?.status === "loading") return loads[resource].promise;
+  const load = { status: "loading", error: "", promise: null };
+  loads[resource] = load;
+  load.promise = (async () => {
+    let result;
+    try { result = await api(`/desktop/api/tasks/${taskId}${source.suffix}`); }
+    catch (error) {
+      if (taskResourceLoads.get(taskId)?.[resource] !== load) return;
+      load.status = "error";
+      load.error = error.message;
+      refreshTaskResourceView(taskId, resource, { preserveMount });
+      return;
+    }
+    if (taskResourceLoads.get(taskId)?.[resource] !== load) return;
+    state[source.store].set(taskId, resource === "skills" ? result.skills : result);
+    load.status = "loaded";
+    if (resource === "detail") applyTaskDetail(taskId, result, { preserveMount });
+    if (resource === "agents") (result || []).forEach(agent => {
+      if (["pending", "running"].includes(agent.latest_run?.status)) listenToRun(agent.latest_run);
+    });
+    refreshTaskResourceView(taskId, resource, { preserveMount });
+    return result;
+  })().finally(() => { load.promise = null; });
+  refreshTaskResourceView(taskId, resource, { preserveMount });
+  return load.promise;
+}
+
+function hydrateActive(taskId = state.activeTaskId, options = {}) {
+  if (!taskId) return Promise.resolve();
+  const detail = hydrateTaskResource(taskId, "detail", options);
+  for (const resource of ["materials", "agents", "skills", "groups", "history"]) {
+    void hydrateTaskResource(taskId, resource, options);
+  }
+  // 调用方只等待主体；附属资源自行更新对应区域和重试状态。
+  return detail;
+}
+
+function applyTaskDetail(taskId, detail, { preserveMount = false } = {}) {
   const mainRecovery = taskRunOperations?.recovery(taskId);
   if (mainRecovery) {
     if (!mainRecovery.editing || !detail.ui_state?.input) detail.ui_state = { ...(detail.ui_state || {}), input: mainRecovery.input };
@@ -894,11 +1030,6 @@ async function hydrateActive(taskId = state.activeTaskId) {
       state.mainRecoveryRestored.set(taskId, mainRecovery.request_id);
     }
   }
-  state.materials.set(taskId, materials);
-  state.agents.set(taskId, agents);
-  state.skillCatalogs.set(taskId, catalog.skills);
-  state.materialGroups.set(taskId, materialGroups);
-  state.materialHistory.set(taskId, materialHistory);
   if (state.activeTaskId === taskId && ["focus", "compress"].includes(state.view)) {
     reconcileCommitmentRecovery(detail);
     reconcileCompressionRecovery(detail);
@@ -907,11 +1038,8 @@ async function hydrateActive(taskId = state.activeTaskId) {
   if (detail.active_run?.status === "pending" || detail.active_run?.status === "running") {
     listenToRun(detail.active_run);
   }
-  agents.forEach(agent => {
-    if (["pending", "running"].includes(agent.latest_run?.status)) listenToRun(agent.latest_run);
-  });
   updatePatrolAvatarLayer(taskId);
-  if (state.view === "focus" && state.activeTaskId === taskId) {
+  if (!preserveMount && state.view === "focus" && state.activeTaskId === taskId) {
     void ensurePluginAssets();
     const workspaceId = state.tasks.find(task => task.task_id === taskId)?.workspace_id;
     if (workspaceId && !state.contextTrees.has(workspaceId)) void hydrateContextTrees([workspaceId]).then(() => {
@@ -925,7 +1053,7 @@ async function hydrateActive(taskId = state.activeTaskId) {
 function render() {
   if (state.view !== "focus" && appInspector.parentElement !== document.querySelector(".app-shell")) document.querySelector(".app-shell").append(appInspector);
   if (state.view !== "map") { stopMapLive(); mapContextInspector?.dispose(); mapContextInspector = null; mapRelatedOnly = false; }
-  localStorage.setItem("focus-interaction-entry", state.view === "patrol" ? "patrol" : "focus");
+  preferenceStorage.setItem("focus-interaction-entry", state.view === "patrol" ? "patrol" : "focus");
   if (state.view !== "patrol") {
     workspacePatrolController?.leave();
     workspacePatrolPicker?.dispose();
@@ -1523,7 +1651,11 @@ function materialGroupingProjection(task) {
     detail.ui_state?.collapsed_material_groups || [],
     materialSelection(task.task_id)
   );
-  detail.ui_state = { ...(detail.ui_state || {}), material_grouping_mode: mode, collapsed_material_groups: projection.collapsedKeys };
+  const loads = taskResourceLoads.get(task.task_id);
+  const groupingReady = state.materials.has(task.task_id) && state.materialGroups.has(task.task_id)
+    && loads?.materials?.status !== "loading" && loads?.groups?.status !== "loading";
+  detail.ui_state = { ...(detail.ui_state || {}), material_grouping_mode: mode,
+    collapsed_material_groups: groupingReady ? projection.collapsedKeys : (detail.ui_state?.collapsed_material_groups || []) };
   return { ...projection, mode };
 }
 
@@ -1565,6 +1697,7 @@ function renderInspector() {
     const materials = state.materials.get(task.task_id) || [];
     const protectedCount = materials.filter(item => item.retention === "irreplaceable").length;
     inspectorContent.innerHTML = `<section class="inspector-section materials-inspector"><header><div><span class="workspace-kicker">TASK SOURCES</span><h3>任务材料</h3></div><span class="ui-badge">${materials.length}</span></header><p class="inspector-description">每轮选择与长期策略互不覆盖；手动分组始终优先于自动分组。</p>${protectedCount ? `<div class="ui-notice is-success"><strong>${protectedCount} 份材料受版本保护</strong><span>不可遗失材料可置空或从历史版本恢复，但不会直接删除。</span></div>` : ""}<div class="inspector-list">${materials.length || (state.materialGroups.get(task.task_id) || []).length ? renderMaterialGroups(task) : '<section class="ui-empty-state"><h1>暂无材料</h1><p>从 Composer 添加文件后，可在这里配置阅读和保留策略。</p></section>'}</div></section>`;
+    inspectorContent.insertAdjacentHTML("afterbegin", renderTaskResourceStatus(task.task_id, ["materials", "groups", "history"]));
     return;
   }
   if (tab === "agents") {
@@ -1577,6 +1710,7 @@ function renderInspector() {
       const presented = presentRunStatus(status);
       const curator = agent?.mode === "context_curator";
       inspectorContent.innerHTML = `<section class="inspector-section agent-inspector-detail">
+        ${renderTaskResourceStatus(task.task_id, ["agents"])}
         <header><button class="text-button" type="button" data-action="agent-list"><span class="ui-icon is-sm icon-chevron-left" aria-hidden="true"></span>Agents</button><span class="ui-badge is-${presented.tone}">${escapeHtml(curator ? curatorStateLabel(agent) : presented.label)}</span></header>
         <div><h3>${agent ? `小兵 ${escapeHtml(agent.agent_id.slice(0, 8))}` : "Agent"}</h3><p class="ui-meta">${escapeHtml(agent?.checkpoint_ns || "")}</p></div>
         ${curator
@@ -1592,7 +1726,7 @@ function renderInspector() {
       });
       return;
     }
-    inspectorContent.innerHTML = `<section class="inspector-section"><header><h3>协作 Agents</h3><span class="ui-badge">${agents.length}</span></header><div class="inspector-list">${agents.length ? renderAgentStrip(task.task_id) : '<p class="muted">尚未投放小兵</p>'}</div></section>`;
+    inspectorContent.innerHTML = `${renderTaskResourceStatus(task.task_id, ["agents"])}<section class="inspector-section"><header><h3>协作 Agents</h3><span class="ui-badge">${agents.length}</span></header><div class="inspector-list">${agents.length ? renderAgentStrip(task.task_id) : '<p class="muted">尚未投放小兵</p>'}</div></section>`;
 
     return;
   }
@@ -1663,6 +1797,7 @@ function renderSkillPicker(kind, textarea, highlight = false) {
     <div class="skill-tags" aria-label="Selected skills">${tags}</div>
     ${inputNode}
     <div class="skill-menu" id="${listId}" role="listbox" aria-label="Skills" hidden></div>
+    ${kind === "main" ? `<div id="mainSkillLoadStatus">${renderTaskResourceStatus(state.activeTaskId, ["skills"])}</div>` : ""}
   </div>`;
 }
 
@@ -1738,6 +1873,12 @@ function setPickerSelection(kind, names, clearQuery = false) {
     const detail = state.details.get(state.activeTaskId);
     detail.ui_state ||= {};
     detail.ui_state.input = clearQuery ? "" : (document.querySelector("#mainInput")?.value || "");
+    if (clearQuery) {
+      const input = document.querySelector("#mainInput");
+      if (input) input.value = "";
+      composerDraft.claim(state.activeTaskId, "");
+      if (input) updateSkillMenu(input);
+    }
     detail.ui_state.skills = names;
     detail.ui_state.scrollTop = document.querySelector("#conversation")?.scrollTop || 0;
     renderFocus();
@@ -1809,9 +1950,81 @@ function updateMainRecoveryControls() {
   const node = document.querySelector("#mainSubmissionRecovery");
   if (node) node.innerHTML = renderMainRecovery(taskId);
   const input = document.querySelector("#mainInput");
-  if (input) input.readOnly = Boolean(recovery && !recovery.editing);
+  const pending = taskRunOperations?.get(taskId)?.submission?.status === "pending";
+  if (input) input.readOnly = Boolean(recovery && !recovery.editing && !pending
+    && !composingMainInputs.has(input)
+    && composerDraft.value(taskId, input.value).trim() === recovery.message);
   const send = document.querySelector('[data-action="send-main"]');
-  if (send) send.textContent = state.mainPreparations.has(taskId) ? "等待附件…" : recovery ? (recovery.editing ? "发送新请求" : "按原内容重试") : uiText("focus.send", "发送");
+  if (send) send.textContent = state.mainPreparations.has(taskId) ? "等待附件…" : recovery ? (recovery.editing ? (recovery.queued_edit ? "排队下一轮" : "发送新请求") : "按原内容重试") : mainDeliveryRun(taskId) ? "补充当前轮" : uiText("focus.send", "发送");
+}
+
+function mainDeliveryRun(taskId = state.activeTaskId) {
+  const run = state.details.get(taskId)?.active_run;
+  return run && ["pending", "running"].includes(run.status) && !run.loop_id ? run : null;
+}
+
+function renderConversationInputs(taskId) {
+  return window.FocusConversationInputs.render(state.details.get(taskId)?.conversation_inputs || [], escapeHtml);
+}
+
+let conversationInputPolling = false;
+setInterval(async () => {
+  const taskId = state.activeTaskId;
+  const detail = state.details.get(taskId);
+  if (conversationInputPolling || state.view !== "focus" || !detail) return;
+  if (!mainDeliveryRun(taskId) && !(detail.conversation_inputs || []).some(row => ["accepted", "queued"].includes(row.status))) return;
+  conversationInputPolling = true;
+  try {
+    const rows = await api(`/desktop/api/tasks/${taskId}/main/inputs`);
+    const started = rows.some(row => row.status === "started" && !(detail.conversation_inputs || [])
+      .some(old => old.input_id === row.input_id && old.status === "started"));
+    const current = state.details.get(taskId);
+    if (!current) return;
+    const changed = JSON.stringify(current.conversation_inputs) !== JSON.stringify(rows);
+    current.conversation_inputs = rows;
+    if (state.activeTaskId === taskId) {
+      const panel = document.querySelector("#conversationInputs");
+      if (panel && changed) panel.innerHTML = renderConversationInputs(taskId);
+    }
+    if (started) { await hydrateActive(taskId); if (state.activeTaskId === taskId && state.view === "focus") renderFocus(); }
+  } catch (error) {
+    if (state.activeTaskId === taskId) setStatus(`消息交付状态暂时无法刷新：${error.message}`, true);
+  } finally { conversationInputPolling = false; }
+}, 1000);
+
+async function withdrawQueuedMain(inputId, edit) {
+  const taskId = state.activeTaskId;
+  if (edit && (composerDraft.value(taskId, state.details.get(taskId)?.ui_state?.input || "").trim()
+      || mainReference(taskId)
+      || taskRunOperations?.recovery(taskId) || materialSelection(taskId).bindings.length
+      || state.composerAttachments.get(taskId)?.size)) {
+    return setStatus("请先发送或清空当前输入和附件，再撤回排队消息编辑", true);
+  }
+  try {
+    const row = await api(`/desktop/api/tasks/${taskId}/main/inputs/${inputId}`, { method: "DELETE" });
+    const detail = state.details.get(taskId);
+    detail.conversation_inputs = (detail.conversation_inputs || []).filter(item => item.input_id !== inputId);
+    if (edit) {
+      const input = typeof row.run.message === "string" ? row.run.message : JSON.stringify(row.run.message);
+      const selection = { bindings: (row.run.material_inputs || (row.run.attached_material_ids || []).map(material_id => ({ material_id, note: "" })))
+        .map(item => ({ materialId: item.material_id, note: item.note })), requiredImageIds: row.run.must_view_material_ids || [] };
+      state.materialSelections.set(taskId, selection);
+      taskRunOperations.freeze(taskId, crypto.randomUUID(), { input, message: input, queued_edit: true,
+        body: JSON.stringify(row.run), selectionSignature: JSON.stringify(selection) });
+      taskRunOperations.editRecovery(taskId);
+      referenceDrafts.set(taskId, row.run.message_reference || null);
+      detail.ui_state = { ...(detail.ui_state || {}), input, skills: row.run.skills || [],
+        message_reference: row.run.message_reference || null };
+      if (row.run.access_mode) detail.ui_state = accessMode.writeMode(detail.ui_state, row.run.access_mode);
+      composerDraft.claim(taskId, input);
+      if (state.activeTaskId === taskId && state.view === "focus") {
+        const editor = document.querySelector("#mainInput");
+        if (editor) { editor.value = input; updateAtHighlight(editor); }
+      }
+      await persistUiState(taskId);
+    }
+    if (state.activeTaskId === taskId && state.view === "focus") { renderFocus(); document.querySelector("#mainInput")?.focus(); }
+  } catch (error) { setStatus(error.message, true); }
 }
 
 function editMainRequest() {
@@ -1926,13 +2139,57 @@ async function showAssembly(workspaceId = "") {
   return switchTask(task.task_id);
 }
 
+// Keep the editor, its entire ancestor chain, and the conversation mounted.
+// Even moving the old textarea out and back would end an active IME session.
+function patchFocusChrome(markup) {
+  const template = document.createElement("template");
+  template.innerHTML = markup;
+  const next = template.content;
+  for (const selector of [".task-page-heading", ".task-workspace-list", ".task-workspace-tools",
+    ".composer-context", "#composerReference", "#composerAttachments", "#composerFileReferences", ".composer-actions", "#composerFeedback",
+    "#mainSubmissionRecovery", "#conversationInputs", "#taskDetailLoadStatus", "#mainSkillLoadStatus",
+    '[data-skill-picker="main"] .skill-tags']) {
+    const current = app.querySelector(selector);
+    const replacement = next.querySelector(selector);
+    if (current && replacement && current.outerHTML !== replacement.outerHTML) current.replaceWith(replacement);
+  }
+  const view = app.querySelector(".focus-view");
+  for (const selector of [".task-admission-receipt", ".context-block-banner"]) {
+    const current = app.querySelector(selector);
+    const replacement = next.querySelector(selector);
+    if (!replacement) current?.remove();
+    else if (!current) view.insertBefore(replacement, app.querySelector("#commitmentProgress"));
+    else if (current.outerHTML !== replacement.outerHTML) current.replaceWith(replacement);
+  }
+  const shell = app.querySelector(".focus-shell");
+  const style = next.querySelector(".focus-shell").getAttribute("style");
+  if (shell.getAttribute("style") !== style) shell.setAttribute("style", style);
+  const panel = app.querySelector("#filePanel");
+  const nextPanel = next.querySelector("#filePanel");
+  if (!nextPanel) panel?.remove();
+  else if (!panel) shell.append(nextPanel);
+  // Labels may change with the locale; value, selection and skill-menu state
+  // belong to the live editing session and must never be reapplied here.
+  const input = app.querySelector("#mainInput");
+  const nextInput = next.querySelector("#mainInput");
+  for (const name of ["aria-label", "placeholder"]) {
+    if (input.getAttribute(name) !== nextInput.getAttribute(name)) input.setAttribute(name, nextInput.getAttribute(name));
+  }
+}
+
 function renderFocus(task = activeTask()) {
-  mainFilePicker?.destroy(); mainFilePicker = null;
-  if (!task) return renderNoActiveTask();
+  if (!task) { mainFilePicker?.destroy(); mainFilePicker = null; return renderNoActiveTask(); }
+  referenceSelection.hide();
   const isAssembly = task.harness_mode === "assembly";
   const admission = taskRunOperations?.get(task.task_id)?.admission;
   const mainRecovery = taskRunOperations?.recovery(task.task_id);
   if (appInspector.parentElement !== document.querySelector(".app-shell")) document.querySelector(".app-shell").append(appInspector);
+  const previousInput = document.querySelector("#mainInput");
+  const inputFocused = previousInput && document.activeElement === previousInput;
+  const sameTask = app.dataset.taskId === task.task_id;
+  const inputSelection = inputFocused && sameTask
+    ? { start: previousInput.selectionStart, end: previousInput.selectionEnd, direction: previousInput.selectionDirection }
+    : null;
   const detail = state.details.get(task.task_id) || { messages: [] };
   const composerInput = composerDraft.value(task.task_id, mainRecovery && !mainRecovery.editing ? mainRecovery.input : detail.ui_state?.input || mainRecovery?.input || "");
   const projectionStatus = detail.context?.projection_status || "root";
@@ -1953,7 +2210,10 @@ function renderFocus(task = activeTask()) {
   const shellStyle = `grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr)${panelOpen ? ` ${state.panelWidth}px` : ""}`;
   patrolAvatarController?.destroy();
   patrolAvatarController = null;
-  app.innerHTML = `
+  const keepEditor = app.dataset.taskId === task.task_id
+    && app.querySelector?.(".focus-view")?.dataset?.taskId === task.task_id
+    && !!app.querySelector?.("#mainInput");
+  const markup = `
     <header class="task-page-heading"><div><small>${task.harness_mode === "assembly" ? "独立会话" : escapeHtml(task.workspace_name || "本地工作区")}</small><h1>${task.harness_mode === "assembly" ? "无工作区模式" : "任务"}</h1><p>${task.harness_mode === "assembly" ? "从一个问题或一份材料开始。" : "一条任务，一条持续会话。"}</p></div><div><button data-action="show-patrol">回到 Patrol</button><button data-action="new-task">＋ 新建任务</button></div></header>
     <section class="task-workspace-layout${task.harness_mode === "assembly" ? " is-assembly" : ""}">${task.harness_mode === "assembly" ? "" : renderTaskRail(task)}<section class="focus-shell" style="${shellStyle}">
       <section class="focus-view" data-task-id="${task.task_id}">
@@ -1967,26 +2227,36 @@ function renderFocus(task = activeTask()) {
         <div class="conversation" id="conversation"></div>
         <div class="patrol-avatar-layer" id="patrolAvatarLayer" aria-label="会话 Patrol 小兵"${detail.ui_state?.show_session_patrol === false ? " hidden" : ""}></div>
         <div class="focus-bottom">
+          <div id="taskDetailLoadStatus">${renderTaskResourceStatus(task.task_id, ["detail"])}</div>
           <div class="composer-shell glass-surface">
             <div class="composer-context"><span class="ui-badge is-active">${isAssembly ? uiText("focus.free_session", "自由会话") : uiText("focus.current_task", "当前任务")}</span><span>${escapeHtml(task.title)}</span><button class="text-button" type="button" data-action="open-inspector-tab" data-inspector-tab="run">${uiText("focus.run_details", "运行详情")}</button></div>
             <div class="composer">
+              <div id="composerReference">${conversationReference.render(mainReference(task.task_id))}</div>
               <div id="composerAttachments" class="composer-attachments" aria-label="本次消息附件">${renderComposerAttachments(task.task_id)}</div>
               <div id="composerFileReferences" class="composer-file-references" aria-label="本次问题引用的文件">${composerFiles.cards(fileReferences(task.task_id))}</div>
               ${renderSkillPicker("main", `<textarea id="mainInput" aria-label="${uiText("focus.input_label", "任务输入")}" placeholder="${uiText("focus.input_placeholder", "描述下一步，输入 @ 引用文件，或 / 选择技能…")}">${escapeHtml(composerInput)}</textarea>`, true)}
               <div id="composerFileMenu" class="composer-file-menu" role="listbox" aria-label="工作区文件" hidden></div>
-              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" multiple hidden></label>${renderInterruptButton(detail)}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
+              <div class="composer-actions"><div class="composer-actions-left">${renderAccessModePicker("main")}<span class="access-mode-impact" title="${escapeHtml(uiText("access.risk_standing_acl", "首次准备工作区会留下权限调整；退出 Focus 后不会自动恢复。"))}"><span class="access-mode-impact-icon" aria-hidden="true">i</span>${escapeHtml(isAssembly && task.assembly_target?.scope !== "workspace" ? uiText("access.internal_scope", "模式作用于 Focus 全局目录") : uiText("access.persistent_impact", "首次受限运行会持久调整工作区权限"))}</span></div><div class="composer-actions-right"><label class="attach-button">${uiText("focus.add_file", "添加文件")}<input id="fileInput" type="file" multiple hidden></label>${renderInterruptButton(detail)}${mainDeliveryRun(task.task_id) ? `<button type="button" data-action="queue-main">排队下一轮</button>` : ""}<button class="send-button" data-action="send-main">${uiText("focus.send", "发送")}</button></div></div>
             </div>
             <p id="composerFeedback" class="composer-feedback${feedback ? ` is-${feedback.kind}` : ""}" role="status"${feedback ? "" : " hidden"}>${feedback ? escapeHtml(feedback.text) : ""}</p>
             <div id="mainSubmissionRecovery" class="main-submission-recovery">${renderMainRecovery(task.task_id)}</div>
+            <section id="conversationInputs" class="conversation-inputs" aria-label="补充与排队消息" aria-live="polite">${renderConversationInputs(task.task_id)}</section>
           </div>
         </div>
       </section>
       ${panelOpen ? `<aside class="file-panel" id="filePanel"><div class="panel-resizer" id="panelResizer" title="拖拽调整面板宽度"></div><div class="file-panel-inner"></div></aside>` : ""}
     </section></section>`;
+  if (keepEditor) {
+    patchFocusChrome(markup);
+    // 首次详情可以填入已保存的草稿；真实编辑（包括尚未产生 input 的组字）始终优先。
+    if (!composingMainInputs.has(previousInput) && composerDraft.value(task.task_id, null) === null
+        && previousInput.value === "" && composerInput) previousInput.value = composerInput;
+  }
+  else app.innerHTML = markup;
   app.querySelector(".task-workspace-layout").append(appInspector);
   app.dataset.taskId = task.task_id;
   const freshConversation = document.querySelector("#conversation");
-  if (previousConversation && freshConversation && typeof freshConversation.replaceWith === "function") {
+  if (!keepEditor && previousConversation && freshConversation && typeof freshConversation.replaceWith === "function") {
     freshConversation.replaceWith(previousConversation);
   }
   const conversation = document.querySelector("#conversation");
@@ -2006,6 +2276,10 @@ function renderFocus(task = activeTask()) {
   if (sendButton && taskRunOperations?.recovery(task.task_id)?.editing === false) sendButton.disabled = false;
   updateMainRecoveryControls();
   updateAtHighlight(mainInput);
+  if (!keepEditor && inputFocused && mainInput && !mainInput.disabled) {
+    mainInput.focus({ preventScroll: true });
+    if (inputSelection) mainInput.setSelectionRange(inputSelection.start, inputSelection.end, inputSelection.direction);
+  }
   conversation.scrollTop = previousConversation
     ? (wasPinned ? conversation.scrollHeight : previousScrollTop)
     : (detail.ui_state?.scrollTop ?? conversation.scrollHeight);
@@ -2062,10 +2336,12 @@ async function mountFileLinkPanel(container, target) {
   return linkedFilePreview.mount(container, target);
 }
 
+const boundPanelResizers = new WeakSet();
 function bindPanelResizer() {
   const resizer = document.querySelector("#panelResizer");
   const shell = document.querySelector(".focus-shell");
-  if (!resizer || !shell) return;
+  if (!resizer || !shell || boundPanelResizers.has(resizer)) return;
+  boundPanelResizers.add(resizer);
   resizer.addEventListener("pointerdown", event => {
     event.preventDefault();
     resizer.setPointerCapture(event.pointerId);
@@ -2085,7 +2361,7 @@ function bindPanelResizer() {
       resizer.removeEventListener("pointerup", finish);
       resizer.removeEventListener("pointercancel", finish);
       resizer.removeEventListener("lostpointercapture", finish);
-      localStorage.setItem("focus-panel-width", String(state.panelWidth));
+      preferenceStorage.setItem("focus-panel-width", String(state.panelWidth));
     };
     resizer.addEventListener("pointermove", move);
     resizer.addEventListener("pointerup", finish);
@@ -2264,9 +2540,13 @@ function stripImageReferences(text) {
 function messageMaterialHistory(message) {
   const messageId = message?.id || message?.message_id;
   if (!messageId) return [];
-  return (state.materialHistory.get(state.activeTaskId) || [])
+  const history = (state.materialHistory.get(state.activeTaskId) || [])
     .filter(item => item.message_id === messageId)
     .sort((a, b) => Number(a.ordinal) - Number(b.ordinal));
+  if (history.length) return history;
+  // Inherited questions retain their manifest, while binding rows remain with
+  // the original task. Keep their cards and prose readable in the new branch.
+  try { return FocusMessageRetry.materialBindings(message); } catch { return []; }
 }
 
 function stripRunMaterialProtocol(text, message) {
@@ -2277,7 +2557,7 @@ function stripRunMaterialProtocol(text, message) {
 function renderRunMaterialCards(message) {
   const rows = messageMaterialHistory(message);
   if (!rows.length) return "";
-  return `<section class="message-materials"><header><strong>本轮材料</strong><span class="ui-badge">${rows.length}</span></header>${rows.map(item => `<article class="message-material-card">${item.material_kind === "image" && item.current_available ? materialImageMarkup(item.material_id, "message-material-thumb", item.relative_path) : `<span class="ui-icon is-sm icon-${item.material_kind === "image" ? "file-image" : "file"}" aria-hidden="true"></span>`}<span><strong>${escapeHtml(item.relative_path)}</strong>${item.note ? `<p>${escapeHtml(item.note)}</p>` : '<small class="muted">无备注</small>'}${item.must_view_requested ? '<small class="ui-badge is-warning">必须看</small>' : ""}${!item.current_available ? '<small class="muted">当前内容不可用</small>' : ""}</span></article>`).join("")}</section>`;
+  return `<section class="message-materials"><header><strong>本轮材料</strong><span class="ui-badge">${rows.length}</span></header>${rows.map(item => `<article class="message-material-card">${item.material_kind === "image" && item.current_available ? materialImageMarkup(item.material_id, "message-material-thumb", item.relative_path) : `<span class="ui-icon is-sm icon-${item.material_kind === "image" ? "file-image" : "file"}" aria-hidden="true"></span>`}<span><strong>${escapeHtml(item.relative_path)}</strong>${item.note ? `<p>${escapeHtml(item.note)}</p>` : '<small class="muted">无备注</small>'}${item.must_view_requested ? '<small class="ui-badge is-warning">必须看</small>' : ""}${item.current_available === false ? '<small class="muted">当前内容不可用</small>' : ""}</span></article>`).join("")}</section>`;
 }
 
 function renderContentBlock(block, message = null) {
@@ -2286,14 +2566,14 @@ function renderContentBlock(block, message = null) {
     return ""; // 图片已由 collectMessageImages 提取到消息框上方,气泡内不输出
   }
   // text 块:移除图片引用(图片已提取到上方行),其余转义
-  return escapeHtml(stripImageReferences(stripRunMaterialProtocol(String(block.text ?? ""), message)));
+  return escapeHtml(stripImageReferences(stripRunMaterialProtocol(conversationReference.stripProtocol(String(block.text ?? ""), message?.additional_kwargs?.message_reference), message)));
 }
 
 function messageKeyOf(message, fallbackIndex) {
   return message?.id || message?.message_id || `${message?.role || "message"}:${fallbackIndex}`;
 }
 
-function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}) {
+function renderMessage(message, { showRoleHeader = false, fallbackKey = 0, historyActions = false } = {}) {
   // 后端兜底降级消息按工具结果样式渲染，不泄露原始 XML 标签
   const degraded = compressionPanel.degradedParts(message);
   const messageKey = messageKeyOf(message, fallbackKey);
@@ -2302,11 +2582,12 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
   }
   const semantics = contextCuratorPresentation.messageSemantics(message);
   const kind = semantics.kind;
+  const reference = message.additional_kwargs?.message_reference;
   // 安全:字符串 human 消息 MUST 转义(否则消息内 HTML 会注入 DOM,如 <style> 覆盖主题变量)。
   const messageImages = collectMessageImages(message.content);
   let content;
   if (typeof message.content === "string") {
-    content = kind === "ai" ? message.content : escapeHtml(stripImageReferences(stripRunMaterialProtocol(message.content, message)));
+    content = kind === "ai" ? message.content : escapeHtml(stripImageReferences(stripRunMaterialProtocol(conversationReference.stripProtocol(message.content, reference), message)));
   } else if (Array.isArray(message.content)) {
     content = message.content.map(block => renderContentBlock(block, message)).join("\n");
   } else {
@@ -2314,7 +2595,7 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
   }
   const answerText = kind === "ai" ? messageBodyText(message) : "";
   const renderedContent = kind === "ai" ? renderAssistantContent(answerText) : content;
-  const actions = messageReading.renderActions(answerText);
+  const actions = renderHistoryMessageActions(message, kind, historyActions);
   const associations = semantics.associations.map(item => `<span class="message-association">${escapeHtml(item.direction)} ${escapeHtml(item.name)}${item.tool_call_id ? ` · ${escapeHtml(item.tool_call_id)}` : ""}</span>`).join("");
   let header = "";
   if (showRoleHeader) {
@@ -2325,12 +2606,153 @@ function renderMessage(message, { showRoleHeader = false, fallbackKey = 0 } = {}
   const fileContext = fileLinkReference(message.file_reference || message.file_context || {
     workspace_id: message.workspace_id, run_id: message.run_id, slot_id: message.slot_id,
   });
-  return `<article class="work-record message ${kind}" data-message-key="${escapeHtml(messageKey)}" data-file-task-id="${escapeHtml(message.task_id || state.activeTaskId || "")}" data-file-context="${escapeHtml(JSON.stringify(fileContext))}">
+  return `<article class="work-record message ${kind}" data-message-key="${escapeHtml(messageKey)}"${message.id || message.message_id ? ` data-message-id="${escapeHtml(message.id || message.message_id)}"` : ""} data-file-task-id="${escapeHtml(message.task_id || state.activeTaskId || "")}" data-file-context="${escapeHtml(JSON.stringify(fileContext))}">
     ${header}
     ${renderMessageImages(messageImages)}${renderFileCards(message)}${renderRunMaterialCards(message)}
+    ${conversationReference.render(reference, { editable: false })}
     <div class="message-content">${renderedContent}</div>
     ${actions}
   </article>`;
+}
+
+function renderHistoryMessageActions(message, kind, enabled) {
+  const source = messageBodyText(message);
+  const copy = kind === "ai" ? messageReading.renderActions(source)
+    : kind === "human" ? messageReading.renderActions(source, uiText("conversation.copy_question", "复制提问")).replace('data-action="copy-answer"', 'data-action="copy-question"') : "";
+  if (!enabled || message.curation_synthetic || !(message.id || message.message_id)) return copy;
+  const action = (name, key, label) => `<button type="button" class="text-button" data-action="${name}">${escapeHtml(uiText(key, label))}</button>`;
+  const extra = kind === "human"
+    ? action("edit-history-message", "conversation.edit_resend", "编辑后重新发送") + action("retry-history-message", "conversation.retry_here", "从这里重新尝试")
+    : kind === "ai" && source.trim()
+      ? action("quote-history-message", "conversation.quote", "引用追问") + action("retry-history-message", "conversation.regenerate", "重新回答") : "";
+  if (!extra) return copy;
+  return copy ? copy.replace("</div>", `${extra}</div>`) : `<div class="message-actions">${extra}</div>`;
+}
+
+let messageRetryDraft = null;
+let messageRetryLoading = false;
+
+function closeMessageRetry() {
+  if (messageRetryDraft?.pending) return;
+  const draft = messageRetryDraft;
+  messageRetryDraft = null;
+  document.querySelector("#messageRetryDialog")?.remove();
+  draft?.trigger?.focus();
+}
+
+function quoteHistoryMessage(button) {
+  const key = button.closest("[data-message-key]")?.dataset.messageKey;
+  const messages = compressionPanel.expandForConversation(state.details.get(state.activeTaskId)?.messages || []);
+  const message = messages.find(item => messageKeyOf(item) === key);
+  const source = message && messageBodyText(message);
+  const input = document.querySelector("#mainInput");
+  if (!source?.trim() || !input) return;
+  const taskId = state.activeTaskId;
+  const current = composerDraft.value(taskId, input.value || "");
+  input.value = `${current}${current ? "\n\n" : ""}${source.split("\n").map(line => `> ${line}`).join("\n")}\n\n`;
+  composerDraft.claim(taskId, input.value);
+  updateAtHighlight(input);
+  void persistFocusState();
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+async function openMessageRetry(button, edit) {
+  if (messageRetryLoading || messageRetryDraft) return;
+  const task = activeTask();
+  const messageId = button.closest("[data-message-key]")?.dataset.messageKey;
+  if (!task || !messageId || task.loop || state.details.get(task.task_id)?.context?.managed_status) return;
+  const navigation = taskSwitchSequence;
+  messageRetryLoading = true;
+  try {
+    const snapshot = await api(`/desktop/api/contexts/${task.task_id}/snapshot`);
+    if (navigation !== taskSwitchSequence || state.view !== "focus") return;
+    if (!snapshot.checkpoint_id) throw new Error("这条消息尚无已提交的会话快照，请稍后重试");
+    const turn = FocusMessageRetry.selectTurn(snapshot.messages, messageId);
+    messageRetryDraft = {
+      task, snapshot, turn, edit, navigation, trigger: button, pending: false, context: null, materials: new Map(),
+      options: { skills: selectedSkills("main"), ...accessMode.requestBody(accessModeOf("main")) },
+    };
+    const title = edit ? uiText("conversation.edit_resend", "编辑后重新发送") : uiText("conversation.retry_here", "从这里重新尝试");
+    document.querySelector("#overlayRoot").innerHTML = `<dialog id="messageRetryDialog" class="message-retry-dialog" aria-labelledby="messageRetryTitle"><div class="dialog-form">
+      <h2 id="messageRetryTitle">${escapeHtml(title)}</h2><p>${escapeHtml(uiText("conversation.branch_notice", "将从这条提问之前创建新分支。原会话及之后的记录会保留，文件改动不会回退。"))}</p>
+      <label>${escapeHtml(uiText("conversation.question", "提问"))}<textarea id="messageRetryInput" ${edit ? "autofocus" : "readonly"}>${escapeHtml(FocusMessageRetry.editableText(turn.message))}</textarea></label>
+      <p id="messageRetryError" class="danger" role="alert"></p><div class="dialog-actions"><button type="button" data-action="cancel-message-retry">${escapeHtml(uiText("conversation.cancel", "取消"))}</button><button type="button" class="primary" data-action="submit-message-retry">${escapeHtml(uiText("conversation.send_branch", "在新分支重新发送"))}</button></div>
+    </div></dialog>`;
+    const dialog = document.querySelector("#messageRetryDialog");
+    dialog.addEventListener("cancel", event => { event.preventDefault(); closeMessageRetry(); });
+    dialog.showModal();
+    if (!edit) await submitMessageRetry();
+  } catch (error) { setStatus(error.message, true); }
+  finally { messageRetryLoading = false; }
+}
+
+async function submitMessageRetry() {
+  const draft = messageRetryDraft;
+  if (!draft || draft.pending) return;
+  const input = document.querySelector("#messageRetryInput");
+  const editedText = draft.edit ? input.value.trim() : null;
+  const errorNode = document.querySelector("#messageRetryError");
+  if (draft.edit && !editedText) { errorNode.textContent = uiText("conversation.question_required", "提问不能为空"); return; }
+  const dialog = document.querySelector("#messageRetryDialog");
+  draft.pending = true;
+  dialog.querySelectorAll("button, textarea").forEach(node => { node.disabled = true; });
+  errorNode.textContent = "";
+  try {
+    // Freeze the source by checkpoint, never slice the visible/windowed DOM history.
+    if (!draft.context) draft.context = await api("/desktop/api/contexts/derive", { method: "POST", body: JSON.stringify({
+      title: `${draft.task.title.slice(0, 180)} · 重试`,
+      sources: [{ context_id: draft.task.task_id, checkpoint_id: draft.snapshot.checkpoint_id }], messages: draft.turn.messages,
+    }) });
+    const context = draft.context;
+    if (!["valid", "repaired", "approved"].includes(context.projection_status)) throw new Error("该历史上下文需要先处理安全执行投影，请在上下文与派生中查看");
+    const [history, materials] = await Promise.all([
+      api(`/desktop/api/tasks/${draft.task.task_id}/material-history`),
+      api(`/desktop/api/tasks/${draft.task.task_id}/materials`),
+    ]);
+    const localBindings = history.filter(item => item.message_id === (draft.turn.message.id || draft.turn.message.message_id));
+    const inheritedBindings = FocusMessageRetry.materialBindings(draft.turn.message);
+    const bindings = (inheritedBindings.length ? inheritedBindings.map(item => localBindings.find(local => local.material_id === item.material_id) || item) : localBindings).sort((a, b) => Number(a.ordinal) - Number(b.ordinal));
+    // Material IDs belong to a task. Re-enroll their paths in the branch and carry
+    // notes/must-view intent; never silently drop an unavailable attachment.
+    for (const binding of bindings) {
+      if (binding.current_available === false) throw new Error(`原提问的材料已不可用：${binding.relative_path}`);
+      const original = materials.find(item => item.material_id === binding.material_id);
+      if (!draft.materials.has(binding.material_id)) draft.materials.set(binding.material_id, await api(`/desktop/api/tasks/${context.context_id}/materials`, { method: "POST", body: JSON.stringify({ path: binding.relative_path, reading_mode: original?.reading_mode || "full", instruction_mode: original?.instruction_mode || "reference" }) }));
+    }
+    let content = FocusMessageRetry.replayContent(draft.turn.message, editedText);
+    const remap = text => {
+      for (const [oldId, material] of draft.materials) text = text.replaceAll(`material_id=${oldId}`, `material_id=${material.material_id}`);
+      return text;
+    };
+    content = typeof content === "string" ? remap(content) : content.map(block => typeof block.text === "string" ? { ...block, text: remap(block.text) } : block);
+    const taskId = context.context_id;
+    const message = editedText ?? FocusMessageRetry.editableText(draft.turn.message);
+    await api(`/desktop/api/tasks/${taskId}/access-mode`, { method: "PUT", body: JSON.stringify({ access_mode: draft.options.access_mode }) });
+    const requestId = crypto.randomUUID();
+    const replayBindings = bindings.map(item => ({ materialId: draft.materials.get(item.material_id).material_id, note: item.note || "" }));
+    const requiredImageIds = bindings.filter(item => item.must_view_requested).map(item => draft.materials.get(item.material_id).material_id);
+    taskRunOperations.freeze(taskId, requestId, { input: message, message, selectionSignature: JSON.stringify({ bindings: replayBindings, requiredImageIds, notes: Object.fromEntries(replayBindings.map(item => [item.materialId, item.note])) }), body: JSON.stringify({
+      message: content, ...draft.options,
+      ...(draft.turn.message.additional_kwargs?.message_reference ? { message_reference: draft.turn.message.additional_kwargs.message_reference } : {}),
+      material_inputs: replayBindings.map(item => ({ material_id: item.materialId, note: item.note })),
+      must_view_material_ids: requiredImageIds,
+    }) });
+    await refreshTasks();
+    await hydrateContextTrees();
+    draft.pending = false;
+    closeMessageRetry();
+    if (draft.navigation !== taskSwitchSequence || state.view !== "focus" || state.activeTaskId !== draft.task.task_id) return;
+    await switchTask(taskId);
+    // A newer navigation owns the screen. Its composer must never submit this retry.
+    if (state.activeTaskId === taskId && state.view === "focus") await sendMain(true);
+  } catch (error) {
+    errorNode.textContent = error.message;
+    setStatus(error.message, true);
+  } finally {
+    draft.pending = false;
+    dialog.querySelectorAll("button, textarea").forEach(node => { node.disabled = false; });
+  }
 }
 
 function collectImagesFromMessages(messages, depth = 0) {
@@ -2379,11 +2801,12 @@ function _conversationRenderInput(detail, task) {
       streamBuffers: state.streamBuffers,
       materialHistory: state.materialHistory,
       pluginViewCount: Object.keys(pluginViews).length,
+      historyActionsEnabled: !detail.context?.managed_status && !task.loop,
     },
     markdown: mdRenderer,
     events: conversationEvents,
     expandMessages: compressionPanel.expandForConversation,
-    renderMessage,
+    renderMessage: (message, options) => renderMessage(message, { ...options, historyActions: !detail.context?.managed_status && !task.loop }),
     renderDivider: renderCompressionDivider,
     escapeHtml,
     windowLimit: conversationView.windowLimit(task.task_id),
@@ -2424,11 +2847,18 @@ function replaceConversation(task, messages, snapshotRunId) {
   const detail = state.details.get(task.task_id) || {};
   detail.messages = messages;
   state.details.set(task.task_id, detail);
+  refreshConversation(task);
+}
+
+function refreshConversation(task) {
+  if (!task) return;
+  const detail = state.details.get(task.task_id);
+  if (!detail) return;
   if (state.view !== "focus" || state.activeTaskId !== task.task_id) return;
   const conversation = document.querySelector("#conversation");
   if (!conversation) return;
   conversationView.trackScroll(conversation);
-  reconcileConversationMarkup(conversation, renderConversation(detail, task));
+  reconcileConversationMarkup(conversation, `${renderConversation(detail, task)}${renderMustViewRecovery(detail)}`);
   restoreCommitmentPanels(conversation);
   restoreAccessReviewPanels(conversation);
   materialContentLoader.bindAll(conversation);
@@ -3445,7 +3875,7 @@ function renderCuratorDetails(agent, curation) {
 
 function persistMapViewPreferences() {
   try {
-    localStorage.setItem(MAP_VIEW_PREFERENCES_KEY, JSON.stringify({
+    preferenceStorage.setItem(MAP_VIEW_PREFERENCES_KEY, JSON.stringify({
       mode: state.mapViewMode,
       workspaceIds: [...state.mapExpandedWorkspaceIds],
       contextIds: [...state.mapExpandedContextIds],
@@ -4647,15 +5077,15 @@ function renderComposerAttachments(taskId) {
   const materials = new Map((state.materials.get(taskId) || []).map(item => [item.material_id, item]));
   const cards = uploads.filter(entry => entry.status !== "ready").map(entry => ({ entry }));
   for (const binding of materialSelection(taskId).bindings) {
-    cards.push({ material: materials.get(binding.materialId), entry: uploads.find(entry => entry.materialId === binding.materialId) });
+    cards.push({ materialId: binding.materialId, material: materials.get(binding.materialId), entry: uploads.find(entry => entry.materialId === binding.materialId) });
   }
   if (!cards.length) return "";
-  return `<span class="composer-attachments-label">本次附件 · ${cards.length}</span><div class="composer-attachment-list">${cards.map(({ entry, material }) => {
+  return `<span class="composer-attachments-label">本次附件 · ${cards.length}</span><div class="composer-attachment-list">${cards.map(({ entry, material, materialId }) => {
     const name = material?.relative_path || entry?.file?.name || "附件";
-    const status = material ? "ready" : entry.status;
+    const status = material ? "ready" : entry?.status || "preparing";
     const label = status === "ready" ? "已就绪" : status === "failed" ? "失败" : "准备中";
     const image = entry?.previewUrl ? `<img src="${escapeHtml(entry.previewUrl)}" alt="">` : material?.is_image ? materialImageMarkup(material.material_id, "", "", null) : '<span class="ui-icon icon-file-text" aria-hidden="true"></span>';
-    return `<article class="composer-attachment is-${status}" data-composer-task="${escapeHtml(taskId)}"${entry ? ` data-composer-upload="${entry.id}"` : ""}${material ? ` data-composer-material="${escapeHtml(material.material_id)}"` : ""}>
+    return `<article class="composer-attachment is-${status}" data-composer-task="${escapeHtml(taskId)}"${entry ? ` data-composer-upload="${entry.id}"` : ""}${materialId ? ` data-composer-material="${escapeHtml(materialId)}"` : ""}>
       <button type="button" class="composer-attachment-preview" data-action="composer-preview-attachment" aria-label="预览 ${escapeHtml(name)}"${!material && !entry?.previewUrl ? " disabled" : ""}>${image}</button>
       <span class="composer-attachment-info"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><small role="status">${label}${entry?.error ? `：${escapeHtml(entry.error)}` : ""}</small></span>
       ${status === "failed" ? '<button type="button" class="text-button" data-action="composer-retry-attachment">重试</button>' : ""}
@@ -4755,6 +5185,10 @@ function materialSelection(taskId = state.activeTaskId) {
   if (!state.materialSelections.has(taskId)) {
     state.materialSelections.set(taskId, runMaterialPicker.empty());
   }
+  // 未加载/刷新失败不等于材料已删除，恢复中的附件与必看标记须等权威列表就绪再清理。
+  if (!state.materials.has(taskId) || ["loading", "error"].includes(taskResourceLoads.get(taskId)?.materials?.status)) {
+    return state.materialSelections.get(taskId);
+  }
   const materials = state.materials.get(taskId) || [];
   const normalized = runMaterialPicker.normalizeSelection(
     state.materialSelections.get(taskId), materials
@@ -4804,7 +5238,7 @@ function openImageLightbox(url, label) {
   root.innerHTML = `<div class="image-lightbox" role="dialog" aria-modal="true" aria-label="${escapeHtml(label)}" data-action="close-lightbox"><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}"><button class="text-button" data-action="close-lightbox">关闭</button></div>`;
 }
 
-async function sendMainOnce(taskId, requestId, retry = null) {
+async function sendMainOnce(taskId, requestId, retry = null, delivery = null) {
   const task = state.tasks.find(item => item.task_id === taskId);
   if (!task) return setStatus("当前没有活动任务", true);
   adoptCommitmentContext();
@@ -4828,7 +5262,7 @@ async function sendMainOnce(taskId, requestId, retry = null) {
   if (!retry) composerDraft.claim(taskId, input.value);
   // f35 仅保留规范命令；旧 @压缩 输入按普通用户消息发送。
   const quickKeyword = keywordCommand.parse(message);
-  if (!retry && !submittedFileRefs.length && quickKeyword !== null) {
+  if (!retry && !submittedFileRefs.length && quickKeyword !== null && !mainReference(taskId)) {
     const keyword = quickKeyword;
     input.value = "";
     composerDraft.release(taskId);
@@ -4836,10 +5270,15 @@ async function sendMainOnce(taskId, requestId, retry = null) {
   }
   setComposerError();
   const submittedInput = retry?.input ?? input.value;
+  const frozenBody = retry ? JSON.parse(retry.body) : null;
+  const submittedReference = retry ? (frozenBody.run || frozenBody).message_reference || null : mainReference(taskId);
   let submittedSelection = retry ? null : JSON.parse(JSON.stringify(materialSelection(taskId)));
   const attachments = retry ? [] : [...(state.composerAttachments.get(taskId)?.values() || [])]
     .filter(entry => entry.status !== "ready");
+  const queuedEdit = !retry && taskRunOperations?.recovery(taskId)?.queued_edit
+    ? JSON.parse(taskRunOperations.recovery(taskId).body) : null;
   const requestOptions = retry ? null : {
+    ...(queuedEdit || {}),
     skills: selectedSkills("main"),
     ...accessMode.requestBody(accessModeOf("main")),
   };
@@ -4852,7 +5291,7 @@ async function sendMainOnce(taskId, requestId, retry = null) {
       return;
     }
   }
-  if (!retry && !submittedFileRefs.length && !submittedSelection.bindings.length && spatialTarget?.focus.kind === "patrol"
+  if (!delivery && !retry && !submittedFileRefs.length && !submittedReference && !submittedSelection.bindings.length && spatialTarget?.focus.kind === "patrol"
       && typeof spatialTarget.view.sendFocusedMessage === "function") {
     try {
       if (await spatialTarget.view.sendFocusedMessage(message)) {
@@ -4872,31 +5311,38 @@ async function sendMainOnce(taskId, requestId, retry = null) {
     }
   }
   const selectionSignature = retry?.selectionSignature || JSON.stringify(submittedSelection);
-  const original = retry ? JSON.parse(retry.body) : null;
+  const retryBody = retry ? JSON.parse(retry.body) : null;
+  const original = retryBody?.run || retryBody;
   const outgoing = original ? { message: original.message, materialInputs: original.material_inputs, requiredImageIds: original.must_view_material_ids }
     : runMaterialPicker.buildOutgoing(state.materials.get(taskId) || [], composerFiles.compose(message, submittedFileRefs), submittedSelection);
   const messagePayload = outgoing.message;
   let detail = state.details.get(taskId) || {};
   let confirmed = false;
   try {
-    const frozen = retry || taskRunOperations?.freeze(taskId, requestId, {
-      input: submittedInput, message, selectionSignature, fileReferences: submittedFileRefs,
-      body: JSON.stringify({
+    const runBody = {
+        ...requestOptions,
         message: messagePayload,
+        ...(submittedReference ? { message_reference: submittedReference } : {}),
         material_inputs: outgoing.materialInputs,
         must_view_material_ids: outgoing.requiredImageIds,
-        ...requestOptions,
         spatial_focus: spatialTarget?.focus || null,
-      }),
+    };
+    delete runBody.attached_material_ids;
+    delete runBody.idempotency_key;
+    if (!submittedReference) delete runBody.message_reference;
+    const frozen = retry || taskRunOperations?.freeze(taskId, requestId, {
+      input: submittedInput, message, selectionSignature, fileReferences: submittedFileRefs,
+      endpoint: delivery ? "inputs" : "runs",
+      body: JSON.stringify(delivery ? { ...delivery, run: runBody } : runBody),
     });
     state.mainRecoveryRestored.set(taskId, requestId);
     updateMainRecoveryControls();
-    const run = await api(`/desktop/api/tasks/${taskId}/main/runs`, {
+    const run = await api(`/desktop/api/tasks/${taskId}/main/${frozen.endpoint || "runs"}`, {
       method: "POST",
       headers: { "Idempotency-Key": requestId },
       body: frozen.body,
     });
-    if (!run || (!run.run_id && !(run.intent_kind === "direct_message" && run.intent_id))) throw new Error("未收到有效受理回执");
+    if (!run || (!run.run_id && !run.input_id && !(run.intent_kind === "direct_message" && run.intent_id))) throw new Error("未收到有效受理回执");
     confirmed = true;
     consumeFileReferences(taskId, submittedFileRefs);
     taskRunOperations?.accept(taskId, requestId, run);
@@ -4904,17 +5350,22 @@ async function sendMainOnce(taskId, requestId, retry = null) {
     state.mainRecoveryRestored.delete(taskId);
     state.composerErrors.delete(taskId);
     detail = state.details.get(taskId) || detail;
-    if (run.intent_kind === "direct_message") {
+    referenceDrafts.consume(taskId, submittedReference);
+    detail.ui_state = { ...(detail.ui_state || {}), message_reference: referenceDrafts.get(taskId) };
+    if (run.intent_kind === "direct_message" || run.input_id) {
+      if (run.input_id) detail.conversation_inputs = [...(detail.conversation_inputs || []).filter(item => item.input_id !== run.input_id), run];
       consumeMainAttachments(taskId, outgoing, attachments);
-      const unchanged = composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
+      const unchanged = !composingMainInputs.has(input)
+        && composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
       if (unchanged) composerDraft.release(taskId);
-      detail.ui_state = { ...(detail.ui_state || {}), input: unchanged ? "" : composerDraft.value(taskId) };
+      detail.ui_state = { ...(detail.ui_state || {}), input: unchanged ? "" : composerDraft.value(taskId),
+        skills: unchanged ? [] : detail.ui_state?.skills || [] };
       state.details.set(taskId, detail);
       if (state.activeTaskId === taskId) {
         if (unchanged && document.querySelector("#mainInput") === input) input.value = "";
         persistFocusState();
         if (state.view === "focus") renderFocus();
-        setStatus("消息已受理，交付与执行以实际工作状态为准");
+        setStatus(run.input_id ? window.FocusConversationInputs.labels[run.status] : "消息已受理，交付与执行以实际工作状态为准");
       }
       return;
     }
@@ -4945,8 +5396,10 @@ async function sendMainOnce(taskId, requestId, retry = null) {
     ]);
     consumeMainAttachments(taskId, outgoing, attachments);
     state.composerErrors.delete(taskId);
-    if (!(detail.messages || []).some(item => item.id === run.message_id)) detail.messages = [...(detail.messages || []), { role: "human", content: messagePayload, id: run.message_id }];
-    const unchanged = composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
+    if (!(detail.messages || []).some(item => item.id === run.message_id)) detail.messages = [...(detail.messages || []), { role: "human", content: messagePayload, id: run.message_id,
+      ...(submittedReference ? { additional_kwargs: { message_reference: submittedReference } } : {}) }];
+    const unchanged = !composingMainInputs.has(input)
+      && composerDraft.value(taskId, detail.ui_state?.input || "").trim() === message;
     detail.ui_state = { ...(detail.ui_state || {}), input: unchanged ? "" : composerDraft.value(taskId), skills: unchanged ? [] : detail.ui_state?.skills || [] };
     if (unchanged) composerDraft.release(taskId);
     state.details.set(taskId, detail);
@@ -4971,7 +5424,7 @@ async function sendMainOnce(taskId, requestId, retry = null) {
   }
 }
 
-function sendMain(retryOriginal = false) {
+function sendMain(retryOriginal = false, mode = null) {
   const taskId = state.activeTaskId;
   if (!taskId) return Promise.resolve();
   if (taskRunOperations?.get(taskId).submission?.status === "pending") {
@@ -4982,7 +5435,9 @@ function sendMain(retryOriginal = false) {
   const retry = saved && (retryOriginal || !saved.editing) ? saved : null;
   const requestId = retry?.request_id || crypto.randomUUID();
   taskRunOperations?.begin(taskId, requestId);
-  return sendMainOnce(taskId, requestId, retry).finally(() => {
+  const target = mainDeliveryRun(taskId);
+  const delivery = mode === "queue" || saved?.queued_edit ? { mode: "queue" } : target ? { mode: "steer", target_run_id: target.run_id } : null;
+  return sendMainOnce(taskId, requestId, retry, delivery).finally(() => {
     taskRunOperations?.finish(taskId, requestId);
     if (state.activeTaskId === taskId) updateMainRecoveryControls();
   });
@@ -4994,6 +5449,24 @@ const COMMITMENT_STAGE_NAMES = {
 };
 const TRACE_ACTORS = { supervisor: "Supervisor", worker: "Worker", evaluator: "Evaluator" };
 const TERMINAL_RUN_STATUSES = new Set(["success", "error", "interrupted", "timeout", "cancelled", "stopped"]);
+
+function renderRunUpdate(taskId) {
+  if (state.view === "focus" && taskId && state.activeTaskId !== taskId) {
+    // Another task's completion only changes the task list, never this editor.
+    const rail = app.querySelector?.(".task-workspace-list");
+    const task = activeTask();
+    if (rail && task) {
+      const markup = renderTaskRail(task);
+      if (rail.outerHTML !== markup) {
+        const template = document.createElement("template");
+        template.innerHTML = markup;
+        rail.replaceWith(template.content.firstElementChild);
+      }
+    }
+    return;
+  }
+  scheduleRender();
+}
 
 async function settleRunStream(run, source, ownerTaskId, terminal) {
   if (state.streams.get(run.run_id) !== source) return;
@@ -5015,7 +5488,7 @@ async function settleRunStream(run, source, ownerTaskId, terminal) {
     ? state.tasks.find(item => item.task_id === run.task_id)
     : state.tasks.find(item => item.thread_id === run.thread_id);
   if (task) settleCommitmentRun(task.task_id, terminal);
-  scheduleRender();
+  renderRunUpdate(ownerTaskId);
   const detail = task ? state.details.get(task.task_id) : null;
   if (wasMainInterrupted
       && !state.commitment.review
@@ -5067,7 +5540,7 @@ function listenToRun(run) {
         resyncAgain = false;
         await refreshTaskAfterTxn(ownerTaskId);
       } while (resyncAgain && state.streams.get(run.run_id) === source);
-      scheduleRender();
+      renderRunUpdate(ownerTaskId);
     })()
       .catch(error => setStatus(`运行内容补读失败：${error.message}`, true))
       .finally(() => { resyncPending = null; });
@@ -6713,11 +7186,10 @@ async function switchTask(taskId) {
   state.activeTaskId = taskId;
   state.view = "focus";
   render();
-  await hydrateActive(taskId);
-  if (requestId !== taskSwitchSequence || state.activeTaskId !== taskId) return;
+  await hydrateActive(taskId, { reusePending: true });
+  if (requestId !== taskSwitchSequence || state.activeTaskId !== taskId || state.view !== "focus") return;
   const projectionStatus = state.details.get(taskId)?.context?.projection_status || "root";
   if (!["root", "valid", "repaired", "approved"].includes(projectionStatus)) return reopenContextDecision(taskId);
-  render();
 }
 
 async function goFocusHome() {
@@ -6735,8 +7207,7 @@ async function goFocusHome() {
   state.inspector.tab = "materials";
   state.view = "focus";
   render();
-  await hydrateActive(taskId);
-  if (state.activeTaskId === taskId && state.view === "focus") render();
+  await hydrateActive(taskId, { reusePending: true });
 }
 
 // === 会话生命周期：归档 / 恢复 / 删除 + 设置面板 ===
@@ -6830,14 +7301,49 @@ const modelSettings = {
   draft: null,        // { index }：正在编辑/新增的条目在当前目录中的下标
   errors: {},         // 后端返回的字段级错误（键形如 models[0].base_url）
   test: null,         // { state: "running" | "ok" | "fail", reason }
-  credentialValue: "", // 密钥输入框的当前值：只进不出，任何响应都不回填
+  credentialDrafts: {}, // 按来源变量保留未保存密钥；只保存在内存，任何响应都不回填
   dirty: false,
   saving: false,
   setupChecked: false,
+  setupMode: false,
+  advanced: false,
+  progress: null,
+  onboarding: false,
+  loading: null,
 };
 
 const MODEL_NUMERIC_FIELDS = ["context_window", "curation_max_output_tokens"];
 const MODEL_FLAG_FIELDS = ["default", "curation_default", "supports_image_input"];
+
+function modelCredentialVariable(entry) {
+  // 与后端 match_env_ref 一致；$VAR 和 ${VAR} 共用同一份草稿。
+  const match = String(entry?.api_key || "").match(/^\$([A-Z_][A-Z0-9_]*)$|^\$\{([A-Z_][A-Z0-9_]*)\}$/);
+  return match ? match[1] || match[2] : "";
+}
+
+function modelCredentialValue(entry = modelSettings.snapshot?.models?.[modelSettings.draft?.index]) {
+  return modelSettings.credentialDrafts[modelCredentialVariable(entry)] || "";
+}
+
+function updateModelCredential(value) {
+  const entry = modelSettings.snapshot?.models?.[modelSettings.draft?.index];
+  let variable = modelCredentialVariable(entry);
+  if (!variable && modelSettings.setupMode && entry) {
+    entry.api_key = "$FOCUS_SETUP_API_KEY";
+    variable = modelCredentialVariable(entry);
+  }
+  if (!variable) return;
+  if (value) modelSettings.credentialDrafts[variable] = value;
+  else delete modelSettings.credentialDrafts[variable];
+  modelSettings.dirty = true;
+  modelSettings.test = null;
+}
+
+function pendingModelCredentials() {
+  const variables = new Set((modelSettings.snapshot?.models || []).map(modelCredentialVariable));
+  return Object.fromEntries(Object.entries(modelSettings.credentialDrafts)
+    .filter(([variable, value]) => variable && variables.has(variable) && value));
+}
 
 function modelEntryPayload(entry) {
   const fields = modelSettings.snapshot?.editable_fields || [];
@@ -6855,6 +7361,11 @@ function modelEntrySource(entry) {
 }
 
 function modelCredentialState(entry) {
+  if (modelCredentialValue(entry)) return uiText("settings.model_key_pending", "密钥待保存");
+  if (!entry.api_key_set && !entry.api_key_literal && !entry.default && !entry.curation_default
+      && entry.name !== modelSettings.snapshot?.default_model_override) {
+    return uiText("settings.model_key_optional", "未配置（可选模板）");
+  }
   if (entry.api_key_placeholder) return uiText("settings.model_placeholder_key", "占位密钥，请填写真实 API Key");
   if (entry.api_key_literal) return uiText("settings.model_key_literal", "已内联字面量（不建议）");
   if (entry.api_key_set ?? Boolean(entry.api_key)) return uiText("settings.model_key_set", "已设置");
@@ -6894,7 +7405,7 @@ function modelTextField(label, field, entry, options = {}) {
   const value = entry[field] ?? "";
   const control = options.select
     ? `<select data-model-field="${field}">${options.select.map(option => `<option value="${escapeHtml(option.value)}" ${option.value === value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select>`
-    : `<input type="${options.type || "text"}" data-model-field="${field}" value="${escapeHtml(String(value))}" ${options.placeholder ? `placeholder="${escapeHtml(options.placeholder)}"` : ""}>`;
+    : `<input type="${options.type || "text"}" data-model-field="${field}" value="${escapeHtml(String(value))}" ${options.list ? `list="${options.list}"` : ""} ${options.placeholder ? `placeholder="${escapeHtml(options.placeholder)}"` : ""}>`;
   return `<label class="settings-model-field${error ? " has-error" : ""}">${escapeHtml(label)}${control}${error ? `<span class="field-error">${escapeHtml(error)}</span>` : ""}</label>`;
 }
 
@@ -6908,12 +7419,25 @@ function renderModelDraft() {
   const adapters = (modelSettings.snapshot.adapters || []).map(adapter => ({ value: adapter.use, label: adapter.label }));
   const methods = [{ value: "", label: uiText("settings.model_curation_method_none", "不用于策展") }]
     .concat((modelSettings.snapshot.curation_output_methods || []).map(name => ({ value: name, label: name })));
+  const simple = modelSettings.setupMode;
+  const credential = `<label class="settings-model-field${modelFieldError("api_key") ? " has-error" : ""}">${simple ? "API Key" : uiText("settings.model_field_key_value", "密钥值")} · ${escapeHtml(modelCredentialState(entry))}
+    <input type="password" data-model-credential value="${escapeHtml(modelCredentialValue(entry))}" autocomplete="off" placeholder="${escapeHtml(simple && !entry.api_key_set ? uiText("settings.model_setup_key_placeholder", "请输入服务商提供的 API Key") : uiText("settings.model_key_placeholder", "留空表示不修改"))}">
+    ${modelFieldError("api_key") ? `<span class="field-error">${escapeHtml(modelFieldError("api_key"))}</span>` : ""}
+  </label>`;
   return `<section class="settings-model-editor">
-    <header><strong>${uiText(modelSettings.draft.isNew ? "settings.model_add" : "settings.model_edit", modelSettings.draft.isNew ? "新增模型" : "编辑")}</strong><span class="muted tiny">${escapeHtml(entry.name || "")}</span></header>
+    <header><strong>${simple ? uiText("settings.model_connect", "连接模型") : uiText(modelSettings.draft.isNew ? "settings.model_add" : "settings.model_edit", modelSettings.draft.isNew ? "新增模型" : "编辑")}</strong>${simple ? "" : `<span class="muted tiny">${escapeHtml(entry.name || "")}</span>`}</header>
+    ${simple ? `<div class="settings-model-grid is-simple">
+      <label class="settings-model-field">${uiText("settings.model_service", "服务商")}<select data-model-service>${modelServiceOptions(entry).map(option => `<option value="${escapeHtml(option.id)}" ${option.selected ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select></label>
+      ${credential}
+      ${modelTextField(uiText("settings.model_field_model", "模型标识"), "model", entry, { list: "modelSetupSuggestions" })}
+      <datalist id="modelSetupSuggestions">${(modelSettings.snapshot.shipped_models || []).filter(model => model.base_url === entry.base_url).map(model => `<option value="${escapeHtml(model.model)}"></option>`).join("")}</datalist>
+    </div><p class="muted tiny">${uiText("settings.model_shared_default", "普通调用与策展使用同一个模型。其他设置可在高级配置中调整。")}</p>
+    <button class="text-button" data-action="model-advanced" aria-expanded="${modelSettings.advanced}">${uiText("settings.model_advanced", "高级配置")}</button>` : ""}
+    <div ${simple && !modelSettings.advanced ? "hidden" : ""}>
     <div class="settings-model-grid">
       ${modelTextField(uiText("settings.model_field_name", "条目名（查表键）"), "name", entry)}
       ${modelTextField(uiText("settings.model_field_display_name", "显示名"), "display_name", entry)}
-      ${modelTextField(uiText("settings.model_field_model", "模型标识"), "model", entry)}
+      ${simple ? "" : modelTextField(uiText("settings.model_field_model", "模型标识"), "model", entry)}
       ${modelTextField(uiText("settings.model_field_use", "适配器"), "use", entry, { select: adapters })}
       ${modelTextField("Provider", "provider", entry, { select: [{ value: "", label: "沿用旧适配器映射" }, { value: "openai", label: "OpenAI" }, { value: "deepseek", label: "DeepSeek" }] })}
       ${modelTextField("API 协议", "protocol", entry, { select: [{ value: "", label: "沿用旧适配器映射" }, { value: "responses", label: "Responses" }, { value: "chat_completions", label: "Chat Completions（兼容）" }] })}
@@ -6925,20 +7449,86 @@ function renderModelDraft() {
         <input type="text" data-model-field="api_key" value="${escapeHtml(String(entry.api_key || ""))}" placeholder="$OPENAI_API_KEY">
         ${modelFieldError("api_key") ? `<span class="field-error">${escapeHtml(modelFieldError("api_key"))}</span>` : ""}
       </label>
-      <label class="settings-model-field">${uiText("settings.model_field_key_value", "密钥值")} · ${escapeHtml(modelCredentialState(entry))}
-        <input type="password" data-model-credential value="${escapeHtml(modelSettings.credentialValue)}" autocomplete="off" placeholder="${escapeHtml(uiText("settings.model_key_placeholder", "留空表示不修改"))}">
-      </label>
+      ${simple ? "" : credential}
     </div>
     <div class="settings-model-flags">
       ${modelFlagField(uiText("settings.model_field_default", "默认模型"), "default", entry)}
       ${modelFlagField(uiText("settings.model_field_curation_default", "策展默认模型"), "curation_default", entry)}
       ${modelFlagField(uiText("settings.model_field_supports_image", "支持图像输入"), "supports_image_input", entry)}
     </div>
-    <div class="settings-model-editor-actions">
+    </div>
+    <div class="settings-model-editor-actions" ${simple && !modelSettings.advanced ? "hidden" : ""}>
       <button class="text-button" data-action="model-test">${modelSettings.test?.state === "running" ? uiText("settings.model_testing", "正在测试…") : uiText("settings.model_test", "测试连接")}</button>
-      <button class="text-button" data-action="model-cancel">${uiText("settings.model_cancel", "取消")}</button>
+      ${simple ? "" : `<button class="text-button" data-action="model-cancel">${uiText("settings.model_cancel", "取消")}</button>`}
     </div>
   </section>`;
+}
+
+// 服务商选项从发行目录提取；自定义服务通过高级配置填写地址与协议。
+function modelServiceOptions(entry) {
+  const templates = modelSettings.snapshot.shipped_models || [];
+  const options = templates.filter((item, index) => templates.findIndex(other => other.base_url === item.base_url && other.provider === item.provider) === index)
+    .map((item, index) => ({ id: String(index), label: ({ deepseek: "DeepSeek", openai: "OpenAI" })[item.provider] || item.base_url || item.display_name, template: item,
+      selected: entry.base_url === item.base_url && entry.provider === item.provider }));
+  options.push({ id: "openai", label: "OpenAI", template: {
+    use: "langchain_openai:ChatOpenAI", provider: "openai", protocol: "chat_completions",
+    base_url: "https://api.openai.com/v1", model: "", context_window: null,
+    curation_output_method: "prompt_json", curation_max_output_tokens: 8192, supports_image_input: false,
+  }, selected: !options.some(item => item.selected) && entry.base_url === "https://api.openai.com/v1" });
+  options.push({ id: "custom", label: uiText("settings.model_custom_service", "其他 OpenAI 兼容服务（自定义）"), selected: !options.some(item => item.selected) });
+  return options;
+}
+
+function updateModelService(value) {
+  if (modelSettings.saving) return;
+  const entry = modelSettings.snapshot?.models?.[modelSettings.draft?.index];
+  if (!entry) return;
+  const option = modelServiceOptions(entry).find(item => item.id === value);
+  if (option?.template) {
+    const fields = ["use", "provider", "protocol", "base_url", "model", "context_window", "curation_output_method", "curation_max_output_tokens", "supports_image_input"];
+    fields.forEach(field => { entry[field] = option.template[field] ?? null; });
+  } else {
+    Object.assign(entry, { use: "langchain_openai:ChatOpenAI", provider: "openai", protocol: "chat_completions", base_url: "", model: "", context_window: null, curation_output_method: "prompt_json", supports_image_input: false });
+    modelSettings.advanced = true;
+  }
+  modelSettings.dirty = true;
+  renderModelSettings();
+}
+
+const MODEL_SETUP_CHECKS = [
+  ["chat", "普通调用", "能否正常理解和回答"],
+  ["curation", "策展输出", "能否整理和派生上下文"],
+  ["semantic_index", "自动索引", "能否为后续工作检索上下文"],
+];
+
+function renderModelVerification() {
+  const verification = modelSettings.progress || modelSettings.snapshot?.verification;
+  if (!verification && !modelSettings.setupMode && !modelSettings.saving) return "";
+  const checks = verification?.checks || [];
+  const labels = { pending: "等待中", running: "验证中", passed: "已通过", failed: "失败", interrupted: "未完成" };
+  return `<section class="settings-model-verification" aria-label="${uiText("settings.model_checks", "模型验证")}">
+    <ol>${MODEL_SETUP_CHECKS.map(([capability, label, description]) => {
+      const check = checks.find(item => item.capability === capability);
+      const status = check?.status || (check ? (check.ok ? "passed" : "failed") : "pending");
+      return `<li data-model-check="${capability}" data-check-status="${status}">
+        <div><strong>${uiText(`settings.model_check_${capability}`, label)}</strong><p class="muted tiny">${uiText(`settings.model_check_${capability}_help`, description)}</p>
+        ${check?.reason ? `<p class="field-error">${escapeHtml(check.reason)}</p>` : ""}</div>
+        <span role="status" aria-label="${uiText(`settings.model_check_${capability}`, label)}: ${uiText(`settings.model_check_${status}`, labels[status] || status)}">${uiText(`settings.model_check_${status}`, labels[status] || status)}</span>
+        ${status === "failed" ? `<button class="text-button" data-action="model-repair" data-capability="${capability}" ${modelSettings.saving ? "disabled" : ""}>${uiText("settings.model_repair", "修复此项")}</button>` : ""}
+      </li>`;
+    }).join("")}</ol>
+    ${verification && !modelSettings.saving ? `<button class="text-button" data-action="model-verify" ${modelSettings.dirty ? "disabled" : ""}>${uiText("settings.model_retry", "重新验证")}</button>` : ""}
+    ${verification?.ok && !modelSettings.saving && !modelSettings.dirty && modelSettings.setupMode ? `<button class="primary" data-action="model-start">${uiText("settings.model_start", "开始第一个项目")}</button>` : ""}
+  </section>`;
+}
+
+function repairModelCheck(capability) {
+  const verification = modelSettings.snapshot?.verification;
+  const name = verification?.checks?.find(check => check.capability === capability)?.model;
+  const index = modelSettings.snapshot.models.findIndex(entry => entry.name === name || (!name && (capability === "chat" ? entry.default : entry.curation_default)));
+  if (index >= 0) startModelDraft(index);
+  modelSettings.advanced = true;
+  renderModelSettings();
 }
 
 function renderModelSettings() {
@@ -6947,18 +7537,27 @@ function renderModelSettings() {
   const snapshot = modelSettings.snapshot;
   if (!snapshot) {
     host.innerHTML = `<p class="muted tiny settings-model-empty">${escapeHtml(modelSettings.error || "")}</p>`;
+    if (modelSettings.onboarding) host.innerHTML += `<button class="primary" data-action="model-setup-retry">${uiText("settings.model_setup_retry", "重新读取模型配置")}</button>`;
     return;
   }
 
   const banners = [];
+  const verification = modelSettings.progress || snapshot.verification;
+  if (modelSettings.onboarding) {
+    banners.push(`<p role="status" class="settings-model-banner">${uiText("settings.model_setup_steps", "首次使用：配置模型 → 验证可用 → 选择项目文件夹 → 输入第一个目标。保存并验证通过后，点击“开始第一个项目”继续。")}</p>`);
+    if (!modelSettings.setupMode && !snapshot.setup_required && snapshot.verification?.ok === true && !modelSettings.dirty && !modelSettings.saving) {
+      banners.push(`<button class="primary" data-action="model-setup-continue">${uiText("settings.model_setup_continue", "继续：选择项目文件夹")}</button>`);
+    }
+  }
   if (snapshot.setup_required) {
-    banners.push(`<p class="settings-model-banner is-warn">${escapeHtml(uiText("settings.model_setup_help", "首次使用或模型配置需要修复。请填写真实 API Key，核对地址、模型名称与协议；保存后将验证普通调用和策展输出。"))}</p>`);
+    banners.push(`<p class="settings-model-banner is-warn">${escapeHtml(uiText("settings.model_setup_help", "选择服务商，填写 API Key 和模型，然后验证并开始。"))}</p>`);
     banners.push(`<ul class="settings-model-errors">${Object.values(snapshot.setup_issues || {}).map(message => `<li>${escapeHtml(message)}</li>`).join("")}</ul>`);
   }
   if (modelSettings.saving) {
-    banners.push(`<p role="status" class="settings-model-banner">${escapeHtml(uiText("settings.model_verifying", "正在保存并验证普通调用和策展输出…"))}</p>`);
-  } else if (snapshot.verification) {
-    banners.push(`<p role="status" class="settings-model-banner ${snapshot.verification.ok ? "is-ok" : "is-error"}">${escapeHtml(uiText("settings.model_verified", "设置已保存。{reason}", { reason: snapshot.verification.reason }))}</p>`);
+    banners.push(`<p role="status" class="settings-model-banner">${escapeHtml(uiText("settings.model_verifying", "正在验证模型能力，请查看各项进度…"))}</p>`);
+  } else if (verification) {
+    const reason = verification.reason || uiText("settings.model_incomplete", "验证未完成，请重新验证");
+    banners.push(`<p role="status" class="settings-model-banner ${verification.ok ? "is-ok" : "is-error"}">${escapeHtml(verification.status === "interrupted" ? reason : uiText("settings.model_verified", "设置已保存。{reason}", { reason }))}</p>`);
   }
   if (snapshot.default_error) {
     banners.push(`<p class="settings-model-banner is-error">${escapeHtml(uiText("settings.model_default_error", "默认模型无法解析：{message}", { message: snapshot.default_error }))}</p>`);
@@ -6992,44 +7591,90 @@ function renderModelSettings() {
 
   host.innerHTML = `
     ${banners.join("")}
+    <fieldset class="settings-model-controls" ${modelSettings.saving ? "disabled" : ""}>
+    ${modelSettings.setupMode && modelSettings.draft ? renderModelDraft() : ""}
     <div class="settings-model-actions">
-      <button class="text-button" data-action="model-add">${uiText("settings.model_add", "新增模型")}</button>
-      <button class="text-button" data-action="model-reset">${uiText("settings.model_reset", "恢复发行默认")}</button>
-      <button class="primary" data-action="model-save" ${modelSettings.saving ? "disabled" : ""}>${uiText("settings.model_save", "保存并立即生效")}</button>
+      ${!modelSettings.setupMode || modelSettings.advanced ? `<button class="text-button" data-action="model-add">${uiText("settings.model_add", "新增模型")}</button>
+      <button class="text-button" data-action="model-reset">${uiText("settings.model_reset", "恢复发行默认")}</button>` : ""}
+      <button class="primary" data-action="model-save" ${modelSettings.saving ? "disabled" : ""}>${modelSettings.setupMode ? uiText("settings.model_validate_start", "验证并开始") : uiText("settings.model_save", "保存并立即生效")}</button>
     </div>
-    <div class="settings-model-list">${rows}</div>
-    ${modelSettings.draft ? renderModelDraft() : ""}`;
+    <div class="settings-model-list" ${modelSettings.setupMode && !modelSettings.advanced ? "hidden" : ""}>${rows}</div>
+    ${!modelSettings.setupMode && modelSettings.draft ? renderModelDraft() : ""}
+    </fieldset>
+    ${renderModelVerification()}`;
   interfaceI18n.apply(host);
 }
 
 async function loadModelSettings({ force = false } = {}) {
   if (modelSettings.snapshot && !force) return modelSettings.snapshot;
-  const snapshot = await api("/desktop/api/settings/models");
-  modelSettings.snapshot = snapshot;
-  modelSettings.error = null;
-  modelSettings.errors = {};
-  return snapshot;
+  if (!modelSettings.loading) {
+    modelSettings.loading = api("/desktop/api/settings/models").then(snapshot => {
+      modelSettings.snapshot = snapshot;
+      modelSettings.error = null;
+      modelSettings.errors = {};
+      return snapshot;
+    }).finally(() => { modelSettings.loading = null; });
+  }
+  return modelSettings.loading;
 }
 
-async function ensureModelSetup() {
-  if (modelSettings.setupChecked) return;
-  const snapshot = await loadModelSettings({ force: true });
+async function ensureModelSetup({ onboarding = false } = {}) {
+  if (onboarding) {
+    modelSettings.onboarding = true;
+    selectSettingsTab("models");
+    renderModelSettings();
+    void openSettings();
+  }
+  if (modelSettings.setupChecked && !onboarding) return;
+  let snapshot;
+  try { snapshot = await loadModelSettings({ force: !modelSettings.setupChecked && !modelSettings.draft }); }
+  catch (error) { modelSettings.error = error.message; renderModelSettings(); throw error; }
   modelSettings.setupChecked = true;
-  if (!snapshot.setup_required) return;
+  if (!snapshot.setup_required && snapshot.verification?.ok !== false && !modelSettings.onboarding) return;
+  modelSettings.setupMode = true;
+  const firstSetup = !snapshot.models.some(entry => entry.api_key_set);
   selectSettingsTab("models");
   // 不等待归档会话或沙箱检查，让模型修复入口立即可见。
   void openSettings();
-  const index = snapshot.models.findIndex(entry => !entry.api_key_set || entry.default);
+  if (modelSettings.draft) { renderModelSettings(); return; }
+  modelSettings.advanced = false;
+  const issueIndex = Object.keys(snapshot.setup_issues || {}).map(key => /^models\[(\d+)\]/.exec(key)).find(Boolean);
+  const index = !firstSetup && issueIndex ? Number(issueIndex[1]) : snapshot.models.findIndex(entry => entry.default);
   if (index >= 0) startModelDraft(index);
-  else renderModelSettings();
+  else if (snapshot.models.length) startModelDraft(0);
+  else {
+    addModelEntry();
+    const entry = snapshot.models[modelSettings.draft.index];
+    Object.assign(entry, { name: "first-model", display_name: "My model", curation_output_method: "prompt_json" });
+    updateModelService("openai");
+  }
+  const entry = snapshot.models[modelSettings.draft.index];
+  if (firstSetup) {
+    snapshot.models.forEach(model => { model.default = model === entry; model.curation_default = model === entry; });
+    entry.curation_output_method ||= "prompt_json";
+    modelSettings.dirty = true;
+  }
+  renderModelSettings();
+}
+
+async function finishDesktopModelSetup() {
+  if (!modelSettings.onboarding || modelSettings.dirty || modelSettings.snapshot?.setup_required
+      || modelSettings.snapshot?.verification?.ok !== true) return;
+  if (await desktopPatrol?.completeModelSetup()) {
+    modelSettings.onboarding = false;
+    void window.FocusSurfaceTransition.visible(settingsDialog, false, { modal: true });
+  }
 }
 
 function startModelDraft(index, isNew = false) {
   const entry = modelSettings.snapshot?.models?.[index];
-  modelSettings.draft = { index, isNew, before: entry ? JSON.parse(JSON.stringify(entry)) : null };
+  modelSettings.draft = {
+    index, isNew, before: entry ? JSON.parse(JSON.stringify(entry)) : null,
+    beforeFlags: modelSettings.snapshot.models.map(model => ({ default: model.default, curation_default: model.curation_default })),
+    beforeCredentials: { ...modelSettings.credentialDrafts },
+  };
   modelSettings.errors = {};
   modelSettings.test = null;
-  modelSettings.credentialValue = "";
   renderModelSettings();
 }
 
@@ -7038,10 +7683,11 @@ function cancelModelDraft() {
   if (!draft) return;
   if (draft.isNew) modelSettings.snapshot.models.splice(draft.index, 1);
   else if (draft.before) modelSettings.snapshot.models[draft.index] = draft.before;
+  modelSettings.snapshot.models.forEach((entry, index) => Object.assign(entry, draft.beforeFlags?.[index] || {}));
+  modelSettings.credentialDrafts = draft.beforeCredentials || {};
   modelSettings.draft = null;
   modelSettings.errors = {};
   modelSettings.test = null;
-  modelSettings.credentialValue = "";
   renderModelSettings();
 }
 
@@ -7062,6 +7708,7 @@ function addModelEntry() {
 
 function removeModelEntry(index) {
   modelSettings.snapshot.models.splice(index, 1);
+  modelSettings.credentialDrafts = pendingModelCredentials();
   modelSettings.draft = null;
   modelSettings.dirty = true;
   modelSettings.errors = {};
@@ -7071,6 +7718,7 @@ function removeModelEntry(index) {
 function restoreShippedModels() {
   if (!confirm(uiText("settings.model_reset", "恢复发行默认"))) return;
   modelSettings.snapshot.models = (modelSettings.snapshot.shipped_models || []).map(entry => ({ ...entry, source: "shipped" }));
+  modelSettings.credentialDrafts = {};
   modelSettings.draft = null;
   modelSettings.dirty = true;
   modelSettings.errors = {};
@@ -7078,10 +7726,14 @@ function restoreShippedModels() {
 }
 
 function updateModelField(target) {
+  if (modelSettings.saving) return;
   const entry = modelSettings.snapshot?.models?.[modelSettings.draft?.index];
   if (!entry) return;
   const field = target.dataset.modelField;
   if (MODEL_FLAG_FIELDS.includes(field)) {
+    if (target.checked && ["default", "curation_default"].includes(field)) {
+      modelSettings.snapshot.models.forEach(model => { model[field] = false; });
+    }
     entry[field] = target.checked;
     modelSettings.dirty = true;
     renderModelSettings();
@@ -7094,7 +7746,59 @@ function updateModelField(target) {
   }
   if (["provider", "protocol"].includes(field) && value === "") value = null;
   entry[field] = value;
+  if (field === "api_key") {
+    const input = document.querySelector("[data-model-credential]");
+    if (input) input.value = modelCredentialValue(entry);
+  }
   modelSettings.dirty = true;
+  document.querySelectorAll('[data-action="model-start"], [data-action="model-verify"]').forEach(button => { button.disabled = true; });
+  // 新的输入需要新一轮验证，旧的成功结果不能成为开始入口。
+  modelSettings.progress = null;
+}
+
+function pollModelVerification(verificationId) {
+  let polling = false;
+  let stopped = false;
+  const timer = setInterval(async () => {
+    if (polling || stopped) return;
+    polling = true;
+    try {
+      const result = await api(`/desktop/api/settings/models/verification?verification_id=${encodeURIComponent(verificationId)}`);
+      if (!stopped && result.verification?.verification_id === verificationId && JSON.stringify(result.verification) !== JSON.stringify(modelSettings.progress)) {
+        modelSettings.progress = result.verification;
+        renderModelSettings();
+      }
+    } catch { /* 临时查询失败不替代保存请求的最终结果。 */ }
+    finally { polling = false; }
+  }, 500);
+  return () => { stopped = true; clearInterval(timer); };
+}
+
+async function reverifyModelSettings() {
+  if (modelSettings.saving || modelSettings.dirty) return;
+  const verificationId = crypto.randomUUID();
+  modelSettings.saving = true;
+  modelSettings.progress = { status: "running", checks: [] };
+  renderModelSettings();
+  const stopPolling = pollModelVerification(verificationId);
+  try {
+    modelSettings.snapshot = await api("/desktop/api/settings/models/verify", { method: "POST", body: JSON.stringify({ verification_id: verificationId }) });
+    modelSettings.progress = null;
+  } catch (error) {
+    modelSettings.progress = interruptedModelVerification();
+    setStatus(error.message, true);
+  } finally {
+    stopPolling();
+    modelSettings.saving = false;
+    renderModelSettings();
+  }
+}
+
+function interruptedModelVerification() {
+  return { status: "interrupted", ok: false, reason: uiText("settings.model_incomplete", "验证未完成，请重新验证"), checks: MODEL_SETUP_CHECKS.map(([capability]) => {
+    const check = modelSettings.progress?.checks?.find(item => item.capability === capability);
+    return check && ["passed", "failed"].includes(check.status) ? check : { capability, status: "interrupted" };
+  }) };
 }
 
 async function putModelSettings(payload, acknowledge = false) {
@@ -7107,17 +7811,14 @@ async function saveModelSettings() {
   if (!modelSettings.snapshot || modelSettings.saving) return;
   modelSettings.saving = true;
   modelSettings.errors = {};
-  setStatus(uiText("settings.model_verifying", "正在保存并验证普通调用和策展输出…"));
-  const payload = { models: modelSettings.snapshot.models.map(modelEntryPayload) };
-  // 与后端 match_env_ref 一致，仅接受当前编辑值中的合法 $VAR / ${VAR} 引用。
-  const editing = modelSettings.snapshot.models[modelSettings.draft?.index ?? -1];
-  const reference = String(editing?.api_key || "");
-  const referenceMatch = reference.match(/^\$([A-Z_][A-Z0-9_]*)$|^\$\{([A-Z_][A-Z0-9_]*)\}$/);
-  const credentialVariable = referenceMatch ? referenceMatch[1] || referenceMatch[2] : "";
-  if (modelSettings.credentialValue && credentialVariable) {
-    payload.credentials = { [credentialVariable]: modelSettings.credentialValue };
-  }
+  modelSettings.progress = { status: "running", checks: [] };
+  setStatus(uiText("settings.model_verifying", "正在验证模型能力，请查看各项进度…"));
+  const verificationId = crypto.randomUUID();
+  const payload = { models: modelSettings.snapshot.models.map(modelEntryPayload), verification_id: verificationId };
+  const credentials = pendingModelCredentials();
+  if (Object.keys(credentials).length) payload.credentials = credentials;
   renderModelSettings();
+  const stopPolling = pollModelVerification(verificationId);
   try {
     let snapshot;
     try {
@@ -7132,18 +7833,31 @@ async function saveModelSettings() {
       snapshot = await putModelSettings(payload, true);
     }
     modelSettings.snapshot = snapshot;
-    modelSettings.draft = null;
-    modelSettings.credentialValue = "";
+    // 首配保留三项输入以便修复失败；成功落盘后清除全部凭据草稿。
+    if (!modelSettings.setupMode) modelSettings.draft = null;
+    else if (modelSettings.draft) {
+      modelSettings.draft.before = JSON.parse(JSON.stringify(snapshot.models[modelSettings.draft.index]));
+      modelSettings.draft.beforeCredentials = {};
+      modelSettings.draft.beforeFlags = snapshot.models.map(entry => ({ default: entry.default, curation_default: entry.curation_default }));
+    }
+    modelSettings.progress = null;
+    modelSettings.credentialDrafts = {};
     modelSettings.dirty = false;
     state.equipment = { ...state.equipment, models: snapshot.models };
     if (snapshot.verification) {
       setStatus(uiText("settings.model_verified", "设置已保存。{reason}", { reason: snapshot.verification.reason }), !snapshot.verification.ok);
     } else setStatus(uiText("settings.model_saved", "已保存并立即生效"));
+    if (!modelSettings.setupMode) await finishDesktopModelSetup();
   } catch (error) {
+    modelSettings.progress = interruptedModelVerification();
     if (error.silent) return;
-    if (error.status === 422 && error.detail?.errors) modelSettings.errors = error.detail.errors;
+    if (error.status === 422 && error.detail?.errors) {
+      modelSettings.errors = error.detail.errors;
+      modelSettings.advanced = true;
+    }
     else setStatus(error.message, true);
   } finally {
+    stopPolling();
     modelSettings.saving = false;
     renderModelSettings();
   }
@@ -7158,7 +7872,7 @@ async function testModelConnection() {
   try {
     const result = await api("/desktop/api/settings/models/test", {
       method: "POST",
-      body: JSON.stringify({ entry: modelEntryPayload(entry), api_key_value: modelSettings.credentialValue || undefined }),
+      body: JSON.stringify({ entry: modelEntryPayload(entry), api_key_value: modelCredentialValue(entry) || undefined }),
     });
     modelSettings.test = { state: result.ok ? "ok" : "fail", reason: result.reason };
   } catch (error) {
@@ -7378,8 +8092,19 @@ async function handleDocumentClick(event) {
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const action = button.dataset.action;
+  if (action === "reference-remove") return setMainReference(null);
+  if (action === "reference-source") return jumpToReference(JSON.parse(button.dataset.reference));
+  if (action === "retry-task-resource") {
+    if (button.dataset.taskId !== state.activeTaskId || state.view !== "focus") return;
+    return hydrateTaskResource(button.dataset.taskId, button.dataset.resource, { reusePending: true });
+  }
   if (action === "open-file-panel") return openFileCard(button);
-  if (action === "copy-answer") return copyMessageText(button, button.dataset.copyText);
+  if (action === "copy-answer" || action === "copy-question") return copyMessageText(button, button.dataset.copyText);
+  if (action === "edit-history-message") return openMessageRetry(button, true);
+  if (action === "retry-history-message") return openMessageRetry(button, false);
+  if (action === "quote-history-message") return quoteHistoryMessage(button);
+  if (action === "cancel-message-retry") return closeMessageRetry();
+  if (action === "submit-message-retry") return submitMessageRetry();
   if (action === "copy-code") return copyMessageText(button, button.closest(".message-code-block")?.querySelector("pre > code")?.textContent);
   if (action === "export-conversation") return exportConversation();
   if (action === "show-patrol") {
@@ -7648,7 +8373,23 @@ async function handleDocumentClick(event) {
   if (action === "model-reset") return runUiAction(restoreShippedModels);
   if (action === "model-cancel") return runUiAction(cancelModelDraft);
   if (action === "model-save") return runUiAction(saveModelSettings);
+  if (action === "model-setup-continue") return runUiAction(finishDesktopModelSetup);
+  if (action === "model-setup-retry") return runUiAction(() => ensureModelSetup({ onboarding: true }));
   if (action === "model-test") return runUiAction(testModelConnection);
+  if (action === "model-advanced") { modelSettings.advanced = !modelSettings.advanced; return renderModelSettings(); }
+  if (action === "model-verify") return runUiAction(reverifyModelSettings);
+  if (action === "model-repair") return runUiAction(() => repairModelCheck(button.dataset.capability));
+  if (action === "model-start") {
+    if (modelSettings.saving || modelSettings.dirty || !modelSettings.snapshot?.verification?.ok) return;
+    if (modelSettings.onboarding) {
+      await finishDesktopModelSetup();
+      if (!modelSettings.onboarding) modelSettings.setupMode = false;
+      return;
+    }
+    modelSettings.setupMode = false;
+    await window.FocusSurfaceTransition.visible(settingsDialog, false, { modal: true });
+    return window.FocusSurfaceTransition.visible(dialog, true, { modal: true, source: button });
+  }
   if (action === "set-language") {
     interfaceI18n.setLocale(button.dataset.locale);
     syncLanguageControls();
@@ -7734,6 +8475,9 @@ async function handleDocumentClick(event) {
     if (action === "open-composer-file") return openFileLink(refs[index]);
     return updateFileReferences(state.activeTaskId, refs.filter((_, i) => i !== index));
   }
+  if (action === "queue-main") return sendMain(false, "queue");
+  if (action === "edit-queued-main") return withdrawQueuedMain(button.dataset.inputId, true);
+  if (action === "delete-queued-main") return withdrawQueuedMain(button.dataset.inputId, false);
   if (action === "retry-main") return sendMain(true);
   if (action === "edit-main") return editMainRequest();
   if (action.startsWith("composer-") && action.endsWith("-attachment")) return handleComposerAttachmentAction(button);
@@ -7862,6 +8606,13 @@ document.addEventListener("drop", event => {
   ));
 });
 
+document.addEventListener("compositionstart", event => {
+  if (event.target.id === "mainInput") composingMainInputs.add(event.target);
+});
+document.addEventListener("compositionend", event => {
+  if (event.target.id === "mainInput") composingMainInputs.delete(event.target);
+});
+
 document.addEventListener("input", event => {
   if (event.target.dataset?.pageSearch) {
     const page = event.target.dataset.pageSearch;
@@ -7904,7 +8655,11 @@ document.addEventListener("input", event => {
   }
   if (event.target.matches("[data-model-field]")) updateModelField(event.target);
   // 密钥输入只进内存、不回填：任何响应都不携带凭据值
-  if (event.target.matches("[data-model-credential]")) modelSettings.credentialValue = event.target.value;
+  if (event.target.matches("[data-model-credential]") && !modelSettings.saving) {
+    updateModelCredential(event.target.value);
+    // 不重建输入框，以免打断键盘输入；立即禁用旧结果上的开始与重试入口。
+    document.querySelectorAll('[data-action="model-start"], [data-action="model-verify"]').forEach(button => { button.disabled = true; });
+  }
 });
 
 // 主输入框滚动时同步 @命令高亮 backdrop（textarea 的 scroll 不冒泡，用捕获监听）。
@@ -8371,6 +9126,7 @@ document.addEventListener("input", event => {
   if (requestId) loopWaitDrafts?.set(requestId, serializeWaitDraft(form));
 });
 document.addEventListener("change", event => {
+  if (event.target.matches("[data-model-service]")) return updateModelService(event.target.value);
   if (event.target.id === "newSessionAccessMode") {
     const select = event.target;
     try { select.value = accessMode.saveNewSessionDefault(window.localStorage, select.value); }
@@ -8499,6 +9255,7 @@ function persistFocusState() {
     ...(detail.ui_state || {}),
     input: composerDraft.value(taskId, detail.ui_state?.input ?? ""),
     file_references: fileReferences(taskId),
+    message_reference: referenceDrafts.get(taskId, detail.ui_state?.message_reference),
     skills: selectedSkills("main"),
     scrollTop: conversation ? (conversation.scrollTop || 0) : (detail.ui_state?.scrollTop || 0),
   };
@@ -8549,6 +9306,20 @@ document.addEventListener("focus:languagechange", () => {
   if (settingsDialog?.open) runUiAction(openSettings);
 });
 
+document.addEventListener("focus:gateway-restored", () => runUiAction(async () => {
+  const taskId = state.activeTaskId;
+  await refreshTasks();
+  if (taskId) await hydrateActive(taskId, { preserveMount: true });
+  // 只对账会话内容，保持输入节点、选择区、当前页面和阅读锚点。
+  const task = state.tasks.find(item => item.task_id === taskId);
+  const detail = state.details.get(taskId);
+  if (task && detail && state.view === "focus" && state.activeTaskId === taskId) {
+    replaceConversation(task, detail.messages || [], detail.active_run?.run_id);
+    updateMainRecoveryControls();
+    await flushComposerPersist();
+  }
+}));
+
 window.addEventListener("beforeunload", () => {
   stopMapLive();
   workspacePatrolController?.dispose();
@@ -8571,6 +9342,7 @@ bindShellResizers();
 restoreZoomLevel();
 
 async function openPatrolWorkbench(target) {
+  if (target.setupModels) return ensureModelSetup({ onboarding: true });
   cancelPendingViewRequests();
   const navigation = ++workspacePatrolNavigation;
   const workspace = target.workspaceId ? await workspacePatrolIntake.workspace(target.workspaceId) : state.patrolWorkspace;
@@ -8580,7 +9352,8 @@ async function openPatrolWorkbench(target) {
   render();
   await renderWorkspacePatrol();
   if (navigation !== workspacePatrolNavigation) return;
-  workspacePatrolController?.showDetails();
+  if (target.deliveryId) workspacePatrolController?.showDelivery();
+  else workspacePatrolController?.showDetails();
   if (target.attentionId) workspacePatrolController?.showAttention(target.attentionId, target.loopId);
   if (target.taskId) await workspacePatrolController?.showContext(target.taskId, target.revisionId);
 }
@@ -8619,7 +9392,7 @@ async function openTaskNotification(target) {
   }
   if (target.workspaceId || (target.loopId && task.loop?.interaction_mode === "workspace_patrol")) {
     await openPatrolWorkbench({ workspaceId: target.workspaceId || task.loop.workspace_id,
-      loopId: target.loopId, attentionId: target.attentionId });
+      loopId: target.loopId, attentionId: target.attentionId, deliveryId: target.deliveryId });
     return;
   }
   await switchTask(task.task_id);

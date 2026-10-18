@@ -1,4 +1,5 @@
 "use strict";
+const { deliveryVerification } = require("./workspace-patrol-feedback.js");
 
 // Reconcile in the main process so hidden workbenches still receive notifications.
 // Persist identities/statuses only, never task content or approval payloads.
@@ -51,14 +52,18 @@ class TaskNotifications {
         // Only the Patrol's root summary emits the shared terminal result.
         if (workspacePatrol && task.task_id !== loop.initial_context_id) continue;
         if (task.active_run || task.attention?.length || task.attention_unavailable) continue;
-        if (loop && !["completed", "failed"].includes(loop.status)) continue;
-        const result = loop && ["completed", "failed"].includes(loop.status)
+        const delivery = deliveryVerification(loop);
+        if (loop && !delivery && !["completed", "failed"].includes(loop.status)) continue;
+        const result = delivery && loop.status !== "failed"
+          ? { run_id: `delivery:${loop.loop_id}:${delivery.verification_id}`, status: "success" }
+          : loop && ["completed", "failed"].includes(loop.status)
           ? { run_id: `loop:${loop.loop_id}`, status: loop.status === "completed" ? "success" : "error" }
           : task.latest_run;
         if (!result || !["success", "error"].includes(result.status)) continue;
         const event = { key: `result:${task.task_id}:${result.run_id}:${result.status}`, priority: 1,
-          title: result.status === "success" ? "任务已完成" : "任务运行失败",
+          title: result.status === "success" ? (delivery ? "本次工作已交付" : "任务已完成") : "任务运行失败",
           body: task.title, target: { taskId: task.task_id, loopId: loop?.loop_id || null,
+            ...(delivery && result.status === "success" ? { deliveryId: delivery.verification_id } : {}),
             ...(workspacePatrol ? { workspaceId: loop.workspace_id } : {}) } };
         // Starting the application does not replay historical results.
         if (!this.initialized) this.seen.add(event.key);

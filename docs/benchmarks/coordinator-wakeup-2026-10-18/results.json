@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-18",
+  "baseline_commit": "773d086787673e20485622b60a7fbb69f1f4ab90",
+  "probe": "backend/tests/test_loop_work_notifications.py::test_committed_work_starts_before_recovery_poll",
+  "command": "python -m pytest backend/tests/test_loop_work_notifications.py -q -s",
+  "database": "isolated local PostgreSQL databases",
+  "clock": "perf_counter; SQLAlchemy after_commit acknowledgement to consumer admission and real Run startup boundary",
+  "model_execution": "excluded; real Kernel, ContextRunPool, Dispatcher and Run start boundary with model-free executor",
+  "samples_per_configuration": 1,
+  "notification_recovery_poll_ms": 30000,
+  "polling_control_interval_ms": 1000,
+  "runtime_default_recovery_poll_ms": 5000,
+  "measurements": {
+    "decision_to_run": {
+      "notify_ms": 321.08,
+      "poll_only_ms": 938.29,
+      "notify_commit_to_admission_ms": 20.33,
+      "poll_only_commit_to_admission_ms": 652.16
+    },
+    "worker_to_round_consumer": {
+      "notify_ms": 4.52,
+      "poll_only_ms": 954.99
+    }
+  },
+  "limitations": [
+    "Controlled local samples, not production performance estimates or percentile measurements.",
+    "Polling phase is controlled by preparing inputs before runtime startup and committing shortly after an idle scan.",
+    "Decision-to-Run includes dispatch and startup transactions; commit-to-admission isolates scheduling and pool admission from startup.",
+    "Worker completion is committed directly; the next-stage probe reads that committed result instead of invoking cognition.",
+    "Notifications carry hints only. Database claims, receipts, fencing and periodic reconciliation remain authoritative."
+  ]
+}

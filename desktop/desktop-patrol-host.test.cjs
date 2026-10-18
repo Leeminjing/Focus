@@ -17,8 +17,9 @@ const { DesktopPatrolHost, clampBounds, panelBounds, validateContent } = require
 const limits = { general_file_bytes: 32, run_material_count: 3 };
 const originalArea = { x: 0, y: 0, width: 1920, height: 1040 };
 
-function fixture(t) {
+function fixture(t, { preferences, ...options } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "focus-patrol-host-"));
+  if (preferences) fs.writeFileSync(path.join(directory, "desktop-patrol.json"), JSON.stringify(preferences));
   const handlers = new Map();
   let workbench = null, quits = 0, promptResponse = 0, prompts = 0;
   class Window extends EventEmitter {
@@ -66,7 +67,7 @@ function fixture(t) {
       if (!workbench) { workbench = new Window(); await workbench.loadURL("http://127.0.0.1:8123/desktop/"); }
       workbench.show();
     },
-    getWorkbench: () => workbench, quit: () => { quits++; },
+    getWorkbench: () => workbench, quit: () => { quits++; }, ...options,
   });
   const event = win => ({ sender: win.webContents, senderFrame: win.webContents.mainFrame });
   const invoke = (name, win, value) => handlers.get(`focus:patrol-${name}`)(event(win), value);
@@ -84,6 +85,63 @@ function fixture(t) {
     get workbench() { return workbench; }, get quits() { return quits; }, get prompts() { return prompts; },
     confirmQuit() { promptResponse = 1; } };
 }
+
+test("fresh desktop startup opens model setup before the robot can compose", async t => {
+  let snapshot = { setup_required: true };
+  const f = fixture(t, { getModelSettings: async () => snapshot });
+  await f.host.start();
+  assert.ok(f.workbench?.isVisible(), "新用户无需自行打开工作台");
+  f.invoke("ready", f.workbench);
+  assert.deepEqual(f.workbench.messages.at(-1).value, { setupModels: true });
+  await f.host.openPanel();
+  assert.equal(f.host.panel.isVisible(), false, "未配置时点击机器人仍进入模型引导");
+  assert.throws(() => f.invoke("complete-model-setup", f.host.panel), /不能调用/);
+  snapshot = { setup_required: false, verification: { ok: false } };
+  await assert.rejects(f.invoke("complete-model-setup", f.workbench), /验证/);
+  assert.equal(f.host.panel.isVisible(), false);
+  snapshot = { setup_required: false };
+  await assert.rejects(f.invoke("complete-model-setup", f.workbench), /验证/);
+  snapshot = { setup_required: false, verification: { ok: true } };
+  f.invoke("ready", f.host.panel);
+  await f.invoke("complete-model-setup", f.workbench);
+  assert.equal(f.workbench.isVisible(), false);
+  assert.equal(f.host.panel.isVisible(), true);
+  assert.deepEqual(f.host.panel.messages.at(-1).value, { setupWorkspace: true });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.directory, "desktop-patrol.json"))).setupStep, "workspace");
+  f.invoke("state", f.host.panel, { workspaceId: "first-project", workspaceName: "项目", state: "idle" });
+  f.host._writePreferences();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.directory, "desktop-patrol.json"))).setupStep, "");
+});
+
+test("configured desktop starts with only the lightweight robot", async t => {
+  const f = fixture(t, { getModelSettings: async () => ({ setup_required: false }) });
+  await f.host.start();
+  assert.equal(f.workbench, null);
+  assert.equal(f.host.panel.isVisible(), false);
+  f.host.openPanel();
+  assert.equal(f.host.panel.isVisible(), true);
+});
+
+test("interrupted setup resumes and a status read failure keeps setup reachable", async t => {
+  const f = fixture(t, { getModelSettings: async () => { throw new Error("HTTP 503"); } });
+  await f.host.start();
+  assert.ok(f.workbench.isVisible());
+  assert.equal(f.host.panel.isVisible(), false);
+  f.host._writePreferences();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.directory, "desktop-patrol.json"))).setupStep, "models");
+});
+
+test("restart resumes saved but unverified models and the pending folder selection", async t => {
+  const f = fixture(t, { preferences: { setupStep: "models" }, getModelSettings: async () => ({ setup_required: false }) });
+  await f.host.start();
+  assert.ok(f.workbench.isVisible(), "上次只保存但未验证的配置仍需完成验证");
+  const g = fixture(t, { preferences: { setupStep: "workspace" }, getModelSettings: async () => ({ setup_required: false }) });
+  await g.host.start();
+  assert.equal(g.workbench, null);
+  assert.equal(g.host.panel.isVisible(), true);
+  g.invoke("ready", g.host.panel);
+  assert.deepEqual(g.host.panel.messages.at(-1).value, { setupWorkspace: true });
+});
 
 test("geometry keeps both surfaces reachable across negative coordinates and small displays", () => {
   const area = { x: -1280, y: -300, width: 1280, height: 720 };
@@ -285,7 +343,7 @@ test("quit requires an explicit decision for drafts and persists only identity/p
   assert.equal(f.host.hasUnconfirmedInput(), false);
   f.host.dispose();
   const saved = JSON.parse(fs.readFileSync(path.join(f.directory, "desktop-patrol.json"), "utf8"));
-  assert.deepEqual(Object.keys(saved).sort(), ["workspaceId", "workspaceName", "x", "y"]);
+  assert.deepEqual(Object.keys(saved).sort(), ["setupStep", "workspaceId", "workspaceName", "x", "y"]);
   assert.equal(saved.workspaceId, "ws-a");
   assert.equal(f.handlers.size, 0);
 });

@@ -74,6 +74,9 @@ function validateTarget(value = {}) {
     if (!Number.isSafeInteger(value.requestRevision) || value.requestRevision < 0) throw new Error("问题版本无效");
     target.requestRevision = value.requestRevision;
   }
+  for (const key of ["setupModels", "setupWorkspace"]) {
+    if (value[key] === true) target[key] = true;
+  }
   if (value.file_refs != null) {
     if (!target.workspaceId || !Array.isArray(value.file_refs) || value.file_refs.length > 32) throw new Error("文件版本引用无效");
     target.file_refs = value.file_refs.map(file => {
@@ -92,7 +95,7 @@ function validateTarget(value = {}) {
 }
 
 class DesktopPatrolHost {
-  constructor({ electron, apiBase, desktopDir, icon, limits, openWorkbench, getWorkbench, quit }) {
+  constructor({ electron, apiBase, desktopDir, icon, limits, openWorkbench, getWorkbench, quit, getModelSettings }) {
     this._electron = electron;
     this._apiBase = apiBase;
     this._desktopDir = desktopDir;
@@ -101,6 +104,8 @@ class DesktopPatrolHost {
     this._openWorkbench = openWorkbench;
     this._getWorkbench = getWorkbench;
     this._quit = quit;
+    this._getModelSettings = getModelSettings;
+    this._setupStep = "";
     this._preferencesPath = path.join(electron.app.getPath("userData"), "desktop-patrol.json");
     this._state = { workspaceId: "", workspaceName: "", state: "idle", dirty: false, pending: false };
     this._queue = [];
@@ -160,6 +165,17 @@ class DesktopPatrolHost {
       this.robot.loadURL(this._url("robot")),
       this.panel.loadURL(this._url("panel")),
     ]);
+    if (this._getModelSettings) {
+      // Configuration is checked before exposing the desktop entry point. A
+      // failed read must leave a visible, retryable setup surface.
+      let snapshot;
+      try { snapshot = await this._getModelSettings(); } catch {}
+      if (!snapshot || snapshot.setup_required !== false || snapshot.verification?.ok === false || this._setupStep === "models") {
+        this._setupStep = "models";
+        this._writePreferences();
+        await this.openWorkbench({ setupModels: true });
+      } else if (this._setupStep === "workspace") this.openPanel({ setupWorkspace: true });
+    }
     this.robot.showInactive();
     this._raiseSurfaces();
   }
@@ -188,6 +204,8 @@ class DesktopPatrolHost {
 
   openPanel(target = {}) {
     const valid = validateTarget(target);
+    if (this._setupStep === "models") return this.openWorkbench({ setupModels: true });
+    if (this._setupStep === "workspace") valid.setupWorkspace = true;
     this.robot.showInactive();
     this._positionPanel();
     this.panel.show();
@@ -209,9 +227,20 @@ class DesktopPatrolHost {
   }
 
   async openWorkbench(target = {}) {
-    this._workbenchTarget = validateTarget(target);
+    this._workbenchTarget = this._setupStep === "models" ? { setupModels: true } : validateTarget(target);
     await this._openWorkbench();
     this._flushWorkbench();
+    return true;
+  }
+
+  async completeModelSetup() {
+    if (this._setupStep !== "models") return false;
+    const snapshot = await this._getModelSettings();
+    if (snapshot.setup_required !== false || snapshot.verification?.ok !== true) throw new Error("请先保存模型配置并通过可用性验证");
+    this._setupStep = "workspace";
+    this._writePreferences();
+    this._getWorkbench()?.hide();
+    this.openPanel({ setupWorkspace: true });
     return true;
   }
 
@@ -340,6 +369,7 @@ class DesktopPatrolHost {
     });
     handle("hide-robot", ["robot", "panel"], () => { this.panel.hide(); this.robot.hide(); });
     handle("workbench", ["robot", "panel"], value => this.openWorkbench(value));
+    handle("complete-model-setup", ["workbench"], () => this.completeModelSetup());
     handle("receive", ["robot"], value => {
       const content = validateContent(value, this._limits);
       if (this._queuedBytes + content.totalBytes > this._limits.general_file_bytes) throw new Error("待预览材料超出总大小限制");
@@ -371,6 +401,7 @@ class DesktopPatrolHost {
         dirty: value?.dirty === true, pending: value?.pending === true,
       };
       this._state = next;
+      if (next.workspaceId && this._setupStep === "workspace") this._setupStep = "";
       if (this._ready.has("robot")) this.robot.webContents.send(`${PREFIX}state`, next);
       this._saveSoon();
       return true;
@@ -440,6 +471,7 @@ class DesktopPatrolHost {
       if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) this._position = { x: saved.x, y: saved.y };
       this._state.workspaceId = boundedString(saved.workspaceId, 160, "工作区", true);
       this._state.workspaceName = boundedString(saved.workspaceName, 255, "工作区名称", true);
+      if (["models", "workspace"].includes(saved.setupStep)) this._setupStep = saved.setupStep;
     } catch {}
   }
 
@@ -454,7 +486,7 @@ class DesktopPatrolHost {
     const { workspaceId, workspaceName } = this._state;
     try {
       fs.mkdirSync(path.dirname(this._preferencesPath), { recursive: true });
-      fs.writeFileSync(`${this._preferencesPath}.tmp`, JSON.stringify({ x, y, workspaceId, workspaceName }), "utf8");
+      fs.writeFileSync(`${this._preferencesPath}.tmp`, JSON.stringify({ x, y, workspaceId, workspaceName, setupStep: this._setupStep }), "utf8");
       fs.renameSync(`${this._preferencesPath}.tmp`, this._preferencesPath);
     } catch (error) { console.error("保存桌面机器人偏好失败:", error.message); }
   }

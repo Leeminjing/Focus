@@ -20,25 +20,27 @@ const projection = (revision = "r1", patch = {}) => ({ loop_id: "loop-a", loop: 
   contexts: { c: { entity_id: "c", updated_sequence: 1, state: { title: "回答", current_revision_id: revision } } },
   task_progress: { revision: 1, state: { document: { items: [] } } }, interventions: {}, ...patch });
 
-async function panel({ visible = true, read = async (_loop, _context, options) => conversation(options.revisionId), history = async () => ({ items: [] }), waitForActivation = true } = {}) {
+async function panel({ visible = true, workspaceId = "a", choose = async () => null, read = async (_loop, _context, options) => conversation(options.revisionId), history = async () => ({ items: [] }), waitForActivation = true } = {}) {
   const body = createElement("body");
   body.innerHTML = fs.readFileSync(path.join(__dirname, "desktop-patrol.html"), "utf8");
   const document = { ...createDocument(), body, querySelector: selector => body.querySelector(selector), hidden: false,
     addEventListener: (...args) => body.addEventListener(...args) };
   body.querySelector("#history-items").ownerDocument = document;
   let state = { projection: null, connection: { status: "live" } }, listener;
-  const events = {}, calls = [], states = [], stores = new Map(), copied = [], starts = [], loopReads = [];
+  const events = {}, calls = [], states = [], stores = new Map(), copied = [], starts = [], loopReads = [], submissions = [];
   const store = id => { if (!stores.has(id)) stores.set(id, Inputs.create()); return stores.get(id); };
   const api = { workspacePatrol: async id => { loopReads.push(id); return { loop_id: `loop-${id}` }; }, workspaceInputs: history,
     conversation: (...args) => { calls.push(args); return read(...args); } };
   const bridge = { enabled: true, onVisibility: callback => { events.visibility = callback; },
     onOpen: callback => { events.open = callback; }, onContent() {},
-    ready: async () => ({ state: { workspaceId: "a" }, panelVisible: visible }),
+    ready: async () => ({ state: { workspaceId }, panelVisible: visible }),
     setState: async value => { states.push(value); }, resizePanel: async () => {} };
   const intake = { store, hasUnfinished: () => false, isSending: () => false, remember() {}, claimUnbound() {},
     flush: async () => {},
     readBinding: () => null, reconcile: async () => {},
     workspace: async id => ({ workspace_id: id, display_name: id }), resourceLimits: async () => ({}),
+    choose, bind: async path => ({ workspace_id: path, display_name: path }),
+    submit: async id => { submissions.push({ workspaceId: id, content: store(id).get().draft.content }); return { loop_id: `loop-${id}` }; },
     history: (id, page) => store(id).history(page) };
   const window = { markdownit, focusDesktop: { runtime: () => ({ apiBase: "http://fixture", session: "test-session" }), patrol: bridge }, addEventListener() {} };
   const context = vm.createContext({ window, document, markdownit, setTimeout, location: { search: "?surface=panel" }, URLSearchParams,
@@ -53,16 +55,51 @@ async function panel({ visible = true, read = async (_loop, _context, options) =
   vm.runInContext(fs.readFileSync(path.join(__dirname, "file-links.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "artifact-drawer.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "patrol-input-references.js"), "utf8"), context);
+  const work = { bindings: 0 };
+  const InputReferences = context.FocusPatrolInputReferences;
+  context.FocusPatrolInputReferences = { ...InputReferences, create(options) {
+    const references = InputReferences.create(options);
+    return { ...references, bind(model) { work.bindings++; references.bind(model); } };
+  } };
   vm.runInContext(fs.readFileSync(path.join(__dirname, "message-reading.js"), "utf8"), context);
   window.FocusMessageReading = context.FocusMessageReading;
   const activated = vm.runInContext(fs.readFileSync(path.join(__dirname, "desktop-patrol-panel.js"), "utf8"), context);
   if (waitForActivation) await activated;
   else await tick();
-  return { calls, states, body, events, api, copied, store, starts, loopReads, activated, context,
+  return { calls, states, body, events, api, copied, store, starts, loopReads, activated, context, submissions, work,
     async emit(value, connection = state.connection) { state = { ...state, projection: value, connection }; listener(state); await tick(); },
     async visibility(value) { events.visibility?.(value); await tick(); },
     results: () => body.querySelector("#results") };
 }
+
+test("onboarding survives cancelling the folder picker and reaches the first explicit send", async () => {
+  let selections = 0;
+  const f = await panel({ workspaceId: "", choose: async () => ++selections === 1 ? null : "first-project" });
+  await f.events.open({ setupWorkspace: true });
+  assert.equal(selections, 1);
+  assert.equal(f.body.querySelector("#first-goal").hidden, false);
+  assert.match(f.body.querySelector("#first-goal-help").textContent, /模型已验证可用/);
+  assert.equal(f.submissions.length, 0);
+  f.body.querySelector("#first-goal-folder").dispatchEvent({ type: "click" }); await tick();
+  assert.equal(selections, 2);
+  assert.equal(f.body.querySelector("#binding-name").textContent, "first-project");
+  assert.match(f.body.querySelector("#first-goal-help").textContent, /输入第一个目标/);
+  assert.equal(f.submissions.length, 0, "绑定项目不能自动发送");
+  const input = f.body.querySelector("#instruction");
+  input.value = "整理这个项目的待办事项";
+  f.body.querySelector("#compose").dispatchEvent({ type: "submit", preventDefault() {} }); await tick();
+  assert.deepEqual(f.submissions, [{ workspaceId: "first-project", content: "整理这个项目的待办事项" }]);
+  assert.equal(f.body.querySelector("#first-goal").hidden, true);
+});
+
+test("a folder picker failure leaves onboarding with an actionable retry", async () => {
+  const f = await panel({ workspaceId: "", choose: async () => { throw new Error("目录选择失败"); } });
+  await f.events.open({ setupWorkspace: true });
+  assert.equal(f.body.querySelector("#first-goal").hidden, false);
+  assert.equal(f.body.querySelector("#first-goal-folder").disabled, false);
+  assert.match(f.body.querySelector("#error").textContent, /目录选择失败/);
+  assert.equal(f.submissions.length, 0);
+});
 
 test("initial history failure leaves panel Live connected and offers a history-only retry", async () => {
   let reads = 0;
@@ -540,4 +577,52 @@ test("late cancelled reads cannot poison the cache or surface non-Abort errors",
   }) });
   await f.emit(projection()); await f.visibility(false);
   assert.equal(f.body.querySelector("#error").textContent, "");
+});
+
+for (const count of [20, 200, 1000]) {
+  test(`panel typing with ${count} inputs skips history requests, construction and reference binding`, async () => {
+    let requests = 0;
+    const rows = Array.from({ length: count }, (_, i) => ({ submission_id: `s-${i}`, intent_id: `i-${i}`, content: `saved ${i}`, processing_state: "addressed" }));
+    const f = await panel({ history: async () => { requests++; return { items: rows, next_before: null }; } });
+    const items = f.body.querySelector("#history-items");
+    let builds = 0;
+    const replace = items.replaceChildren.bind(items);
+    items.replaceChildren = (...args) => { builds++; replace(...args); };
+    const baseline = f.work.bindings, reads = requests;
+    const content = f.body.querySelector("#instruction");
+    for (let i = 1; i <= 10; i++) {
+      content.value = "typing".repeat(i);
+      content.dispatchEvent({ type: "input", target: content });
+    }
+    await tick();
+    assert.equal(requests - reads, 0);
+    assert.equal(builds, 0);
+    assert.equal(f.work.bindings - baseline, 0);
+  });
+}
+
+test("panel coalesces affected old IDs during a refresh and retries the same targeted failures", async () => {
+  const requests = [];
+  const rows = Array.from({ length: 1000 }, (_, i) => ({ submission_id: `s-${i}`, intent_id: `i-${i}`, content: `saved ${i}`, processing_state: "addressed" }));
+  let release, fail = true;
+  const f = await panel({ history: async (_workspace, _before, options) => {
+    requests.push(options?.intentIds || "latest");
+    if (requests.length === 2) return new Promise(resolve => { release = resolve; });
+    if (options && fail) { fail = false; throw new Error("targeted read failed"); }
+    return { items: options ? rows.filter(row => options.intentIds.includes(row.intent_id)) : requests.length === 1 ? rows : [rows[999]], next_before: null };
+  } });
+  await f.emit(projection());
+  await f.emit(projection("r1", { loop: { state: { status: "paused" } }, runs: { unrelated: { state: { status: "success" } } } }));
+  assert.deepEqual(requests, ["latest"]);
+  await f.emit(projection("r1", { interventions: { "i-999": { revision: 2 } } }));
+  await f.emit(projection("r1", { interventions: { "i-999": { revision: 2 }, "i-1": { revision: 2 } } }));
+  await f.emit(projection("r1", { interventions: { "i-999": { revision: 2 }, "i-1": { revision: 2 }, "i-2": { revision: 2 } } }));
+  assert.deepEqual(requests, ["latest", "latest"]);
+  release({ items: [rows[999]], next_before: null }); await tick();
+  assert.deepEqual(requests, ["latest", "latest", "latest", ["i-1", "i-2"]]);
+  assert.match(f.body.querySelector("#history-status").textContent, /targeted read failed/);
+  f.body.querySelector("#retry-history").dispatchEvent({ type: "click" }); await tick();
+  assert.deepEqual(requests.slice(-2), ["latest", ["i-1", "i-2"]]);
+  assert.equal(f.body.querySelector("#history-status").hidden, true);
+  assert.equal(f.store("a").get().rows.length, 1000);
 });

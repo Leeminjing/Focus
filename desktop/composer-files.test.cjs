@@ -81,6 +81,29 @@ test("failed send keeps quotations; retry replays frozen text and preserves new 
   assert.equal(h.evaluate("fileReferences('A')[0].path"), "C:/workspace/new.py");
 });
 
+for (const mode of ["steer", "queue"]) test(`${mode} delivery preserves file excerpts alongside message references on retry`, async () => {
+  const h = setup();
+  h.evaluate(`state.details.get('A').active_run = {run_id:'active',status:'running'};
+    setMainReference({task_id:'A',message_id:'answer',text:'previous answer',start:0,end:15,offset_basis:'rendered_text_utf16'});
+    api = async (_path, options) => {
+      requests.push(options.body);
+      if (fail) throw new Error('Failed to fetch');
+      const body = JSON.parse(options.body);
+      return {input_id:'queued',mode:body.mode,status:body.mode === 'queue' ? 'queued' : 'accepted',run:body.run};
+    };`);
+  await h.evaluate(`sendMain(false, '${mode}')`);
+  const body = JSON.parse(h.context.requests[0]);
+  assert.equal(body.mode, mode);
+  assert.match(body.run.message, /#L120-L121/);
+  assert.equal(body.run.message_reference.text, "previous answer");
+  assert.equal(h.evaluate("fileReferences('A').length"), 1);
+  h.evaluate("fail = false");
+  await h.evaluate("sendMain(true)");
+  assert.equal(h.context.requests[0], h.context.requests[1]);
+  assert.equal(h.evaluate("fileReferences('A').length"), 0);
+  assert.equal(h.evaluate("referenceDrafts.get('A')"), null);
+});
+
 test("references hydrate from saved UI state and remain owned by the originating task", () => {
   const h = setup();
   h.evaluate("state.composerFileReferences.delete('A'); state.activeTaskId = 'B';");

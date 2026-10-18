@@ -380,6 +380,8 @@ class DesktopService:
         self._run_dispatch_repository = RunDispatchRepository()
         self._run_dispatch_recovery = RunDispatchRecovery(session_factory)
         self._run_dispatch_wakeup = asyncio.Event()
+        from backend.app.desktop.conversation_inputs import ConversationInputs
+        self.conversation_inputs = ConversationInputs(self)
         self._run_dispatch_worker = DurableRunDispatchWorker(
             session_factory,
             f"desktop-main:{uuid.uuid4().hex}",
@@ -448,6 +450,12 @@ class DesktopService:
     async def _run_dispatch_loop(self) -> None:
         while True:
             self._run_dispatch_wakeup.clear()
+            try:
+                await self.conversation_inputs.drain()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("ordinary conversation input dispatch cycle failed")
             try:
                 await self._run_dispatch_worker.drain(limit=4)
             except asyncio.CancelledError:
@@ -748,6 +756,8 @@ class DesktopService:
         rows = (await session.execute(select(
             ranked.c.task_id, AgentLoop.loop_id, AgentLoop.status, AgentLoop.updated_at,
             AgentLoop.interaction_mode, AgentLoop.workspace_id, AgentLoop.initial_context_id,
+            AgentLoop.final_result["verification"]["verification_id"].astext,
+            AgentLoop.final_result["verification"]["conclusion"].astext,
             LoopPendingDecision.pending_decision_id, LoopPendingDecision.kind,
             LoopWaitRequest.request_id, LoopWaitRequest.kind,
         ).join(ranked, AgentLoop.loop_id == ranked.c.loop_id)
@@ -758,6 +768,7 @@ class DesktopService:
           .where(ranked.c.position == 1))).all()
         by_task = {item["task_id"]: item for item in summaries}
         for (task_id, loop_id, status, updated_at, mode, workspace_id, initial_context_id,
+             verification_id, conclusion,
              decision_id, decision_kind, request_id, request_kind) in rows:
             summary = by_task.get(task_id)
             if summary is None:
@@ -770,6 +781,8 @@ class DesktopService:
             if mode == "workspace_patrol":
                 summary["loop"].update(interaction_mode=mode, workspace_id=workspace_id,
                                        initial_context_id=initial_context_id)
+                if verification_id and conclusion == "satisfied":
+                    summary["loop"]["delivery"] = {"verification_id": verification_id, "conclusion": conclusion}
                 # Project shared waits only once; Run-local attention stays on
                 # its own Context and retains its original navigation target.
                 if task_id != initial_context_id:
@@ -1218,6 +1231,7 @@ class DesktopService:
         execution_workspace_path: str | None = None,
         execution_slot_id: str | None = None,
         admit_only: bool = False,
+        message_reference: dict[str, Any] | None = None,
     ) -> PreparedRun:
         identity = run_identity or {}
         if identity.get("directive_id") and (not identity.get("loop_id") or not execution_slot_id):
@@ -1351,6 +1365,9 @@ class DesktopService:
                 execution_thread_id, execution_checkpoint_ns
             )
             current_message = RunMaterialMessageProjector.project(message, run_materials)
+            from backend.app.desktop.message_reference import project_message_reference
+
+            current_message = project_message_reference(current_message, message_reference)
             checkpoint_id = authoritative_checkpoint_id or await select_checkpoint_base(
                 self.checkpointer, execution_thread_id, execution_checkpoint_ns
             )
@@ -2219,6 +2236,10 @@ class DesktopService:
                 task_skill_names = None
                 middlewares = []
             additional_middlewares = [build_tool_error_middleware()]
+            user_input_middleware = None
+            if agent_role == "main" and not governed_loop:
+                from backend.app.desktop.conversation_input_delivery import ConversationInputDelivery
+                user_input_middleware = ConversationInputDelivery(self.session_factory, self.checkpointer)
             if agent_role == "main":
                 image_inputs = RunMaterialInputs.from_equipment(equipment).images
                 additional_middlewares.append(build_image_attachment_middleware())
@@ -2242,6 +2263,7 @@ class DesktopService:
                 system_prompt=base_prompt,
                 middlewares=middlewares,
                 additional_middlewares=additional_middlewares,
+                user_input_middleware=user_input_middleware,
                 app_config=self.app_config,
                 middleware_skill_names=task_skill_names,
                 frozen_contexts=desktop_contexts(equipment, material_context),
@@ -3041,6 +3063,7 @@ class DesktopService:
             "ui_state": ui_state,
             "active_run": self._run_payload(active) if active else None,
             "latest_direct_user_run": self._run_payload(latest_direct_user) if latest_direct_user else None,
+            "conversation_inputs": await self.conversation_inputs.list(task.task_id),
             "pending_commitment_review": (
                 recovery["review"] if recovery and recovery["status"] == "resumable" else None
             ),

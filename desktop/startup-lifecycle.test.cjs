@@ -15,7 +15,9 @@ if (process.versions.electron) {
   const { PassThrough } = require("node:stream");
   const http = require("node:http");
   const scenario = process.env.FOCUS_STARTUP_TEST;
-  let server, kills = 0, quitting = false, healthRequests = 0, backendStarts = 0, secondInstances = 0;
+  let server, childBackend, kills = 0, quitting = false, healthRequests = 0, backendStarts = 0, secondInstances = 0;
+  const launches = [];
+  let rejectReconcile = false;
   const report = value => console.log(`STARTUP_TEST ${JSON.stringify(value)}`);
   const fail = error => { console.error(error); server?.close(); app.exit(90); };
 
@@ -27,20 +29,31 @@ if (process.versions.electron) {
       callback(null, args.some(arg => arg.endsWith("database-state.py")) ? '{"status":"current"}' : command === "git" || command === "docker" ? "fixture" : process.execPath);
     });
   };
-  cp.spawn = (_command, args) => {
+  cp.spawn = (_command, args, options) => {
     backendStarts++;
+    launches.push({ args, session: options.env.FOCUS_DESKTOP_SESSION });
     const backend = Object.assign(new EventEmitter(), {
       stdout: new PassThrough(), stderr: new PassThrough(), killed: false,
       kill() { this.killed = true; kills++; server?.close(); setImmediate(() => this.emit("exit", null, "SIGTERM")); },
     });
+    childBackend = backend;
     const readyAt = Date.now() + 750;
     server = http.createServer((request, response) => {
       if (request.url === "/health") healthRequests++;
-      if (["healthy", "companion"].includes(scenario) && Date.now() >= readyAt) {
+      if ((["healthy", "companion", "runtime-exit"].includes(scenario) || scenario.startsWith("preferences-")) && Date.now() >= readyAt) {
         if (request.url === "/desktop/api/materials/limits") {
           assert.equal(request.headers["x-focus-session"], process.env.FOCUS_DESKTOP_SESSION);
           response.setHeader("Content-Type", "application/json");
           response.end(JSON.stringify({ general_file_bytes: 1024, run_material_count: 4 }));
+        } else if (request.url === "/desktop/api/settings/models") {
+          assert.equal(request.headers["x-focus-session"], process.env.FOCUS_DESKTOP_SESSION);
+          response.setHeader("Content-Type", "application/json");
+          response.end(JSON.stringify({ setup_required: false }));
+        } else if (request.url === "/desktop/api/reconcile") {
+          assert.equal(request.headers["x-focus-session"], launches[0].session);
+          if (rejectReconcile) { rejectReconcile = false; response.writeHead(503); response.end("unavailable"); return; }
+          response.setHeader("Content-Type", "application/json");
+          response.end('{"ok":true}');
         } else { response.setHeader("Content-Type", "text/html"); response.end("<!doctype html><title>Host fixture</title><body>host fixture</body>"); }
       }
       else if (scenario !== "hung-health" && scenario !== "cancel") { response.writeHead(503); response.end("starting"); }
@@ -98,6 +111,15 @@ if (process.versions.electron) {
           assert.equal(await run(workbench, "window.opened.workspaceId"), "fixture");
           workbench.close();
           assert.equal(workbench.isDestroyed(), false);
+          await run(panel, "window.pendingDraft='机器人面板未发送草稿'");
+          server.closeAllConnections();
+          await new Promise(resolve => server.close(resolve));
+          childBackend.emit("exit", 9, null);
+          await delay(50);
+          assert.equal(BrowserWindow.getAllWindows().length, 3, "运行期失联保留机器人、面板和工作台");
+          assert.equal(await run(panel, "pendingDraft"), "机器人面板未发送草稿");
+          await run(panel, "window.focusDesktop.gateway.restart()");
+          assert.equal(BrowserWindow.getAllWindows().length, 3);
           const second = nativeSpawn(process.execPath, [__filename], {
             windowsHide: true, env: { ...process.env, FOCUS_STARTUP_TEST: "secondary" }, stdio: "ignore",
           });
@@ -106,7 +128,7 @@ if (process.versions.electron) {
           clearTimeout(secondWatchdog);
           assert.equal(secondCode, 0);
           assert.equal(secondInstances, 1);
-          assert.equal(backendStarts, 1);
+          assert.equal(backendStarts, 2);
           assert.equal(BrowserWindow.getAllWindows().length, 3);
           let prompts = 0;
           require("electron").dialog.showMessageBox = async () => { prompts++; return { response: 0 }; };
@@ -117,6 +139,59 @@ if (process.versions.electron) {
           assert.equal(kills, 0);
           await run(panel, "window.focusDesktop.patrol.setState({workspaceId:'fixture',workspaceName:'Fixture',state:'idle',dirty:false,pending:false})");
           report({ companion: true, backendStarts, secondInstances, windows: 3, prompts });
+          app.quit();
+        } else if (scenario.startsWith("preferences-") && url.endsWith("/desktop/")) {
+          await delay(250);
+          const prefs = { "focus-interface-language-v1": "en-US", "focus-zoom-level": "2", "focus-shell-layout": '{"navWidth":250,"inspectorWidth":360,"navCollapsed":true}' };
+          if (scenario === "preferences-write") {
+            await win.webContents.executeJavaScript(`for (const [key,value] of Object.entries(${JSON.stringify(prefs)})) window.focusDesktop.preferences.setItem(key,value)`);
+          } else {
+            const restored = await win.webContents.executeJavaScript(`Object.fromEntries(${JSON.stringify(Object.keys(prefs))}.map(key=>[key,window.focusDesktop.preferences.getItem(key)]))`);
+            assert.deepEqual(restored, prefs);
+          }
+          report({ preferences: true, origin: new URL(url).origin });
+          app.quit();
+        } else if (scenario === "runtime-exit" && url.endsWith("/desktop/")) {
+          await delay(250);
+          await win.webContents.executeJavaScript("document.body.innerHTML='<textarea id=work></textarea>'; work.value='未发送草稿'; work.setSelectionRange(2,4); window.readingPosition=123");
+          await win.webContents.executeJavaScript(require("node:fs").readFileSync(require.resolve("./gateway-recovery.js"), "utf8"));
+          server.closeAllConnections();
+          await new Promise(resolve => server.close(resolve));
+          childBackend.emit("exit", 7, null);
+          await delay(100);
+          assert.equal(win.isDestroyed(), false, "运行期后端退出必须保留工作台");
+          assert.equal(await win.webContents.executeJavaScript("work.value"), "未发送草稿");
+          assert.equal(await win.webContents.executeJavaScript("readingPosition"), 123);
+          assert.equal(await win.webContents.executeJavaScript("work.selectionStart"), 2);
+          assert.equal(await win.webContents.executeJavaScript("document.querySelector('.gateway-recovery').hidden"), false);
+          assert.match(await win.webContents.executeJavaScript("document.querySelector('.gateway-recovery').innerText"), /重新连接.*重启服务/s);
+          assert.equal(await win.webContents.executeJavaScript("window.focusDesktop.gateway.status().then(s=>s.status)"), "unavailable");
+          // 并发操作合并为同一次恢复，保持页面、来源、令牌和已有草稿。
+          await win.webContents.executeJavaScript("Promise.all([window.focusDesktop.gateway.restart(),window.focusDesktop.gateway.restart()])");
+          assert.equal(backendStarts, 2);
+          assert.deepEqual(launches[1], launches[0]);
+          const revision = await win.webContents.executeJavaScript("window.focusDesktop.gateway.status().then(s=>s.revision)");
+          await win.webContents.executeJavaScript("window.focusDesktop.gateway.reconnect()");
+          assert.equal(backendStarts, 2, "重连不额外启动进程");
+          await win.webContents.executeJavaScript("window.focusDesktop.gateway.restart()");
+          assert.equal(backendStarts, 3, "在运行的服务也可重启，先等旧进程退出");
+          assert.equal(kills, 1);
+          assert.ok(await win.webContents.executeJavaScript("window.focusDesktop.gateway.status().then(s=>s.revision)") > revision);
+          assert.equal(await win.webContents.executeJavaScript("work.value"), "未发送草稿");
+          assert.equal(await win.webContents.executeJavaScript("readingPosition"), 123);
+          assert.equal(await win.webContents.executeJavaScript("work.selectionStart"), 2);
+          assert.equal(win.webContents.getURL(), url);
+          assert.equal(await win.webContents.executeJavaScript("document.querySelector('.gateway-recovery').hidden"), true);
+          rejectReconcile = true;
+          await assert.rejects(win.webContents.executeJavaScript("window.focusDesktop.gateway.reconnect()"), /HTTP 503/);
+          assert.equal(win.isDestroyed(), false);
+          assert.equal(await win.webContents.executeJavaScript("document.querySelector('.gateway-recovery').hidden"), false);
+          await win.webContents.executeJavaScript(`new Promise(resolve => {
+            const stop = window.focusDesktop.gateway.onStatus(value => { if (value.status === 'ready') { stop(); resolve(); } });
+            document.querySelector('.gateway-recovery button').click();
+          })`);
+          assert.equal(await win.webContents.executeJavaScript("document.querySelector('.gateway-recovery').hidden"), true);
+          report({ runtimePreserved: true, restarts: 2 });
           app.quit();
         } else if (scenario === "healthy" && url.endsWith("/desktop/")) {
           await delay(200);
@@ -148,8 +223,8 @@ if (process.versions.electron) {
   const os = require("node:os");
   const path = require("node:path");
 
-  async function launch(scenario) {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "focus-startup-test-"));
+  async function launch(scenario, sharedHome) {
+    const home = sharedHome || fs.mkdtempSync(path.join(os.tmpdir(), "focus-startup-test-"));
     assert.ok(path.resolve(home).startsWith(path.resolve(os.tmpdir()) + path.sep));
     let stdout = "", stderr = "";
     const env = { ...process.env, FOCUS_STARTUP_TEST: scenario,
@@ -169,7 +244,7 @@ if (process.versions.electron) {
       return { code, events, stderr };
     } finally {
       clearTimeout(watchdog);
-      fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      if (!sharedHome) fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   }
 
@@ -197,6 +272,35 @@ if (process.versions.electron) {
     assert.equal(result.events.find(event => event.mainWindow).workbenchRecovery,true);
     assert.doesNotMatch(result.stderr, /Focus 启动失败/);
   });
+  test("运行中 Gateway 退出保留原窗口、草稿和阅读位置", async () => {
+    const result = await launch("runtime-exit");
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(result.events.some(event => event.runtimePreserved));
+  });
+  test("完全退出后换端口，语言、缩放和分栏偏好仍从同一 userData 恢复", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "focus-startup-test-prefs-"));
+    const previousPort = require("node:net").createServer();
+    try {
+      const first = await launch("preferences-write", home);
+      assert.equal(first.code, 0, first.stderr);
+      const saved = first.events.find(event => event.preferences);
+      assert.ok(saved);
+      // 占住上次端口，确保本次验收确实跨来源，而不依赖 OS 的端口随机分配。
+      await new Promise((resolve, reject) => {
+        previousPort.once("error", reject);
+        previousPort.listen(Number(new URL(saved.origin).port), "127.0.0.1", resolve);
+      });
+      const second = await launch("preferences-read", home);
+      assert.equal(second.code, 0, second.stderr);
+      const restored = second.events.find(event => event.preferences);
+      assert.ok(saved && restored);
+      assert.notEqual(saved.origin, restored.origin);
+    } finally {
+      if (previousPort.listening) await new Promise(resolve => previousPort.close(resolve));
+      assert.ok(path.resolve(home).startsWith(path.resolve(os.tmpdir()) + path.sep));
+      fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  });
   test("user quit cancels startup without opening an error window", async () => {
     const result = await launch("cancel");
     assert.equal(result.code, 0, result.stderr);
@@ -204,7 +308,7 @@ if (process.versions.electron) {
     assert.equal(result.events.find(event => "backendKills" in event).backendKills, 1);
     assert.doesNotMatch(result.stderr, /Focus 启动失败/);
   });
-  test("Windows companion keeps one backend and restores existing windows through native IPC", { skip: process.platform !== "win32" }, async () => {
+  test("Windows companion restores existing windows and restarts Gateway without losing panel state", { skip: process.platform !== "win32" }, async () => {
     const result = await launch("companion");
     assert.equal(result.code, 0, result.stderr);
     assert.ok(result.events.some(event => event.companion));

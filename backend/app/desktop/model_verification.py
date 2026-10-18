@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 from focus.config.app_config import AppConfig
 from focus.models.lifecycle import model_client_scope
@@ -14,7 +15,7 @@ from backend.app.desktop.secret_redaction import redact_text
 
 
 @model_client_scope()
-async def verify_model_setup(config: AppConfig) -> dict:
+async def verify_model_setup(config: AppConfig, *, on_progress: Callable[[dict], None] | None = None) -> dict:
     from focus.models import create_chat_model
     from backend.app.desktop.context_curator.contract import (
         CurationSourceSnapshot, build_curation_input, compile_curated_context,
@@ -24,7 +25,18 @@ async def verify_model_setup(config: AppConfig) -> dict:
     secrets = [model.api_key for model in config.models]
     checks = []
     labels = {"chat": "普通调用", "curation": "策展输出", "semantic_index": "自动索引"}
+    def publish(running: str | None = None) -> None:
+        if on_progress:
+            completed = {check["capability"]: check for check in checks}
+            on_progress({"status": "running", "ok": False, "checks": [
+                {**completed[capability], "status": "passed" if completed[capability]["ok"] else "failed"}
+                if capability in completed else
+                {"capability": capability, "status": "running" if capability == running else "pending"}
+                for capability in labels
+            ]})
+
     for capability in labels:
+        publish(capability)
         name = None
         try:
             if capability == "chat":
@@ -64,12 +76,16 @@ async def verify_model_setup(config: AppConfig) -> dict:
                 "capability": capability, "model": name, "ok": False,
                 "reason": redact_text(reason, secrets),
             })
+        publish()
     ok = all(check["ok"] for check in checks)
     reason = "普通调用、策展输出和自动索引验证通过" if ok else "；".join(
         f"{labels[check['capability']]}：{check['reason']}"
         for check in checks if not check["ok"]
     )
-    return {"ok": ok, "reason": reason, "checks": checks}
+    result = {"ok": ok, "reason": reason, "status": "complete", "checks": checks}
+    if on_progress:
+        on_progress(result)
+    return result
 
 
 async def _verify_semantic_index(config: AppConfig) -> None:

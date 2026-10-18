@@ -589,8 +589,24 @@ class RunMaterialCreate(StrictRequest):
     note: str = ""
 
 
+class MessageReference(StrictRequest):
+    task_id: str = Field(min_length=1, max_length=160)
+    message_id: str = Field(min_length=1, max_length=160)
+    text: str = Field(min_length=1, max_length=16000)
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    offset_basis: Literal["rendered_text_utf16"]
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> "MessageReference":
+        if not self.text.strip() or self.end - self.start != len(self.text.encode("utf-16-le")) // 2:
+            raise ValueError("引用选区与原文长度不匹配")
+        return self
+
+
 class MainRunCreate(StrictRequest):
     message: str | list[dict[str, Any]] = Field(min_length=1)
+    message_reference: MessageReference | None = None
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=160)
     material_inputs: list[RunMaterialCreate] | None = None
     attached_material_ids: list[str] | None = None

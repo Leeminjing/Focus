@@ -81,8 +81,11 @@ class FileVersionCapture:
             return
         before = self._before.get(target, {"available": False, "reason": "before_unobserved"})
         after = self._snapshot(target)
-        if expected_content is not None and after.get("sha256") != sha256(expected_content.replace("\n", os.linesep).encode("utf-8")).hexdigest():
-            return
+        if expected_content is not None:
+            expected_bytes = (expected_content if isinstance(expected_content, bytes)
+                              else expected_content.replace("\n", os.linesep).encode("utf-8"))
+            if after.get("sha256") != sha256(expected_bytes).hexdigest():
+                return
         if "sha256" in before and "sha256" in after and before["sha256"] == after["sha256"]:
             return
         if "exists" not in after:
