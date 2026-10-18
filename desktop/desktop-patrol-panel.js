@@ -61,6 +61,9 @@
     const current = live.get(), projection = current.projection?.loop_id === loopId ? current.projection : null;
     const status = FocusWorkspacePatrolFeedback.status(projection, current.connection, draftStore().get());
     const loop = projection?.loop?.state;
+    const deliveryHtml = FocusWorkspacePatrolFeedback.delivery(projection, workspace);
+    $("#delivery").hidden = !deliveryHtml;
+    if ($("#delivery").innerHTML !== deliveryHtml) $("#delivery").innerHTML = deliveryHtml;
     const pausable = loop?.status === "running" || (loop?.status === "waiting_user" && loop.waiting_reason === "awaiting_input");
     const resumable = loop?.status === "paused";
     if (control?.phase === "accepted") {
@@ -473,6 +476,11 @@
   });
   $("#workbench").addEventListener("click", () => { void openWorkbench(); });
   $("#open-files").addEventListener("click", () => { $(".panel-menu").open = false; void openArtifacts().catch(fail); });
+  $("#delivery").addEventListener("click", event => {
+    const button = event.target.closest("button");
+    if (button?.hasAttribute("data-patrol-files-open")) void openArtifacts().catch(fail);
+    else if (button?.dataset.patrolDeliveryContext) void Promise.resolve(openWorkbench(button.dataset.patrolDeliveryContext, button.dataset.revisionId)).catch(fail);
+  });
   $("#toggle-work").addEventListener("click", () => { void controlWork($("#toggle-work").dataset.command); });
   $("#stop-work").addEventListener("click", () => { void controlWork("stop"); });
   $("#reconnect").addEventListener("click", () => { const id = loopId; loopId = null; connect(id); });

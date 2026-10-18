@@ -11,3 +11,19 @@
 .patrol-input-evidence dd { margin: 0; }
 .patrol-input-evidence ul { padding-left: 18px; }
 .patrol-input-evidence pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.patrol-delivery { width: 100%; max-width: 1240px; padding: 18px 22px; border: 1px solid var(--material-rim, #ccd9e6); border-radius: 18px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.patrol-delivery header, .patrol-delivery nav { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.patrol-delivery header { justify-content: space-between; }
+.patrol-delivery h2 { margin: 0; font-size: 17px; }
+.patrol-delivery header span, .patrol-delivery-next { color: var(--text-secondary, #68768a); font-size: 12px; }
+.patrol-delivery h3 { margin: 12px 0 4px; font-size: 13px; }
+.patrol-delivery p { margin: 4px 0 10px; white-space: pre-wrap; }
+.patrol-delivery summary { cursor: pointer; }
+.patrol-delivery summary:focus-visible { outline: 2px solid var(--text-accent, #557b98); outline-offset: 3px; }
+.patrol-delivery ul { margin: 6px 0; padding-left: 20px; }
+.patrol-delivery nav button { padding: 6px 10px; border: 1px solid var(--material-rim, #ccd9e6); border-radius: 8px; color: var(--text-accent, #557b98); }
+.patrol-delivery .patrol-delivery-next { margin: 12px 0 0; }
+#panel .patrol-delivery { margin: 8px 0; padding: 12px; border-radius: 10px; font-size: 11px; }
+#panel .patrol-delivery h2 { font-size: 13px; }
+#panel .patrol-delivery h3, #panel .patrol-delivery header span, #panel .patrol-delivery-next { font-size: 11px; }

@@ -8509,7 +8509,8 @@ async function openPatrolWorkbench(target) {
   render();
   await renderWorkspacePatrol();
   if (navigation !== workspacePatrolNavigation) return;
-  workspacePatrolController?.showDetails();
+  if (target.deliveryId) workspacePatrolController?.showDelivery();
+  else workspacePatrolController?.showDetails();
   if (target.attentionId) workspacePatrolController?.showAttention(target.attentionId, target.loopId);
   if (target.taskId) await workspacePatrolController?.showContext(target.taskId, target.revisionId);
 }
@@ -8548,7 +8549,7 @@ async function openTaskNotification(target) {
   }
   if (target.workspaceId || (target.loopId && task.loop?.interaction_mode === "workspace_patrol")) {
     await openPatrolWorkbench({ workspaceId: target.workspaceId || task.loop.workspace_id,
-      loopId: target.loopId, attentionId: target.attentionId });
+      loopId: target.loopId, attentionId: target.attentionId, deliveryId: target.deliveryId });
     return;
   }
   await switchTask(task.task_id);

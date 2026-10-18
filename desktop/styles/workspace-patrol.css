@@ -253,6 +253,8 @@
 .patrol-selected-card.is-expanded h2 { overflow-wrap: anywhere; }
 .workspace-patrol:not(.is-quiet) [data-patrol-composer] { grid-column: 2; grid-row: 2; position: relative; min-width: 0; padding: 12px 20px 8px; border-radius: 26px; }
 .workspace-patrol:not(.is-quiet) [data-patrol-composer]:focus-within { outline: 1px solid #88a8c373; outline-offset: 1px; border-color: white; }
+.workspace-patrol:not(.is-quiet):has([data-patrol-delivery]:not([hidden])) { grid-template-rows: minmax(120px, 1fr) auto auto; }
+.workspace-patrol:not(.is-quiet) [data-patrol-delivery] { grid-column: 2; grid-row: 3; min-height: 0; max-height: 34vh; overflow-y: auto; }
 .workspace-patrol:not(.is-quiet) .workbench-composer-label { display: block; margin-left: 48px; font-size: 11px; color: var(--workbench-muted); }
 .workspace-patrol:not(.is-quiet) .workbench-composer-icon { display: grid; place-items: center; position: absolute; left: 16px; top: 14px; width: 38px; height: 38px; border: 1px solid #fffffff0; border-radius: 12px; background: #ffffff47; color: #7193b0; }
 .workbench-composer-icon .ui-icon { width: 22px; height: 22px; }
@@ -278,6 +280,8 @@
   .patrol-progress-card, .patrol-observation-card, .patrol-facts-card, .patrol-selected-card { grid-column: 2; grid-row: 3 / 5; display: none; height: auto; align-self: stretch; }
   [data-workbench-panel=graph] .patrol-facts-card, [data-workbench-panel=facts] .patrol-facts-card, [data-workbench-panel=progress] .patrol-progress-card, [data-workbench-panel=observation] .patrol-observation-card, [data-workbench-panel=context] .patrol-selected-card { display: flex; }
   .workspace-patrol:not(.is-quiet) [data-patrol-composer] { grid-column: 1; grid-row: 4; }
+  .workspace-patrol:not(.is-quiet):has([data-patrol-delivery]:not([hidden])) { grid-template-rows: 26px 32px minmax(120px, 1fr) auto auto; }
+  .workspace-patrol:not(.is-quiet) [data-patrol-delivery] { grid-column: 1; grid-row: 5; }
   .workspace-patrol .is-workbench .portfolio-map-zoom { position: absolute; bottom: 30px; left: 8px; width: 188px; }
 }
 @media (max-width: 899px) {
@@ -292,6 +296,8 @@
   [data-workbench-panel=graph] .patrol-graph-card, [data-workbench-panel=facts] .patrol-facts-card, [data-workbench-panel=progress] .patrol-progress-card, [data-workbench-panel=observation] .patrol-observation-card, [data-workbench-panel=context] .patrol-selected-card { display: flex; }
   .patrol-selected-card.is-expanded { height: auto; position: relative; inset: auto; width: auto; }
   .workspace-patrol:not(.is-quiet) [data-patrol-composer] { grid-column: 1; grid-row: 4; padding: 12px 14px 8px; }
+  .workspace-patrol:not(.is-quiet):has([data-patrol-delivery]:not([hidden])) { grid-template-rows: auto 36px minmax(120px, 1fr) auto auto; }
+  .workspace-patrol:not(.is-quiet) [data-patrol-delivery] { grid-column: 1; grid-row: 5; }
   .workspace-patrol:not(.is-quiet) .workbench-composer-icon { display: none; }
   .workspace-patrol:not(.is-quiet) .workbench-composer-label { margin-left: 0; }
   .workspace-patrol:not(.is-quiet) [data-patrol-composer] textarea { font-size: 13px; width: calc(100% - 110px); margin-left: 0; }
