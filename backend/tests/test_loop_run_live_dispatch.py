@@ -284,7 +284,7 @@ def test_live_activity_is_idempotent_private_and_replayable(tmp_path: Path) -> N
                     LoopJournalEvent.payload["run_id"].astext == run_id,
                 ).order_by(LoopJournalEvent.sequence))).all())
             assert [item.kind for item in events] == [
-                "context.model.completed", "context.tool.started",
+                "context.model.completed", "context.output.available", "context.tool.started",
                 "context.test.completed",
                 "context.tool.completed", "context.artifact.observed",
             ]

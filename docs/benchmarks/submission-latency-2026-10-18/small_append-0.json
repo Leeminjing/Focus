@@ -1,0 +1,324 @@
+{
+  "metadata": {
+    "scenario": "small_append",
+    "repeat": 0,
+    "model": "deepseek-flash",
+    "budget_preset": "normal",
+    "curation_max_output_tokens": 8192,
+    "host_curation_max_output_tokens": 65536,
+    "cap_source": "product default, test only",
+    "derivation_max_output_tokens": {},
+    "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
+    "database": "per-sample isolated PostgreSQL, migrated to head",
+    "synthetic_history": true,
+    "background_prewarm": true,
+    "observer_version": 3,
+    "run_scope": "all_causally_related_runs",
+    "timeout_seconds": 300.0,
+    "budgets": {
+      "max_lanes": 64,
+      "max_rounds": 40,
+      "max_retries": 6,
+      "max_contexts": 256,
+      "max_providers": 32,
+      "max_model_calls": 100,
+      "max_no_progress": 20,
+      "max_input_tokens": 500000,
+      "max_output_tokens": 50000,
+      "expansion_resources": {
+        "version": "expansion-resource-policy-v1",
+        "max_queries": null,
+        "max_exact_reads": null,
+        "max_planner_tokens": null,
+        "output_token_reserve": null,
+        "max_unique_candidates": null,
+        "max_planner_model_calls": null,
+        "max_request_input_tokens": null,
+        "max_compiled_evidence_items": null,
+        "max_catalog_descriptor_chars": null,
+        "max_model_attempts_per_operation": null
+      },
+      "max_concurrent_runs": 2,
+      "max_duration_seconds": 1800,
+      "max_new_lanes_per_round": 16,
+      "expansion_resources_source": "default"
+    },
+    "source_revision_id": "22be81c27399427e9608ceadc62e74cb",
+    "preparation": {
+      "blocker_code": null,
+      "index_ids": [
+        "e980627d61da56af4459a4557d4958c955d53cfe0cc4b65cfb4ce913b5ad9060"
+      ],
+      "quality": [
+        "complete"
+      ]
+    },
+    "usage_before_submission": {
+      "model_calls": 5,
+      "input_tokens": 13022,
+      "output_tokens": 8500
+    },
+    "preparation_artifact_ids": [
+      "7453a7b5fa8abdecb1b66e94fc85070266151d53b5ede8c6b42688b1e6e5c9e4"
+    ],
+    "measured_usage": {
+      "model_calls": 11,
+      "input_tokens": 139807,
+      "output_tokens": 50154
+    },
+    "total_usage": {
+      "model_calls": 16,
+      "input_tokens": 152829,
+      "output_tokens": 58654
+    }
+  },
+  "sample": {
+    "scenario": "small_append",
+    "repeat": 0,
+    "milestones_ms": {
+      "durable_acceptance": 378.6182999901939,
+      "patrol_decision_committed": 153807.7387000085,
+      "first_run_started": 161284.65750001487,
+      "first_effective_output": 214123.29409999074
+    },
+    "identities": {
+      "durable_acceptance": {
+        "submission_id": "22fbf7309e394fabad93d9d7a8bd3b3b",
+        "loop_id": "6eff2f478fbf4e98902b565e187d1cbb",
+        "intent_id": "d6d760b4708a52b4a102f4f59d33b94a",
+        "observation_id": "21f9c8bec3ee48628115eb8af88017dd",
+        "round_id": "42364cf2d70f4b52ab72cc04029af43a"
+      },
+      "patrol_decision_committed": {
+        "decision_id": "72fb5d3d6add442cb6bbdfd405efb490",
+        "observation_id": "21f9c8bec3ee48628115eb8af88017dd",
+        "round_id": "42364cf2d70f4b52ab72cc04029af43a"
+      },
+      "first_run_started": {
+        "decision_id": "72fb5d3d6add442cb6bbdfd405efb490",
+        "observation_id": "21f9c8bec3ee48628115eb8af88017dd",
+        "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+        "context_id": "470989f3d3514668a86e01487e9833ce",
+        "revision_id": "22be81c27399427e9608ceadc62e74cb",
+        "run_id": "c65247bb8a9d4683ad01f709473e5d40",
+        "event_id": "423795de72b045fbb3657fb68b558939"
+      },
+      "first_effective_output": {
+        "decision_id": "72fb5d3d6add442cb6bbdfd405efb490",
+        "observation_id": "21f9c8bec3ee48628115eb8af88017dd",
+        "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+        "context_id": "470989f3d3514668a86e01487e9833ce",
+        "revision_id": "22be81c27399427e9608ceadc62e74cb",
+        "run_id": "c65247bb8a9d4683ad01f709473e5d40",
+        "event_id": "8773db6349d74c26ac5534df5c34fb90"
+      }
+    },
+    "stages": [
+      {
+        "artifact_id": "7453a7b5fa8abdecb1b66e94fc85070266151d53b5ede8c6b42688b1e6e5c9e4",
+        "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+        "stage": "portfolio_indexing",
+        "outcome": "ready",
+        "phase": "preparation",
+        "duration_ms": 36600.7951,
+        "version": "portfolio-semantic-index-service-v4",
+        "failure_code": null,
+        "attempts": [
+          {
+            "role": "semantic_index_projector",
+            "index_phase": "local",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 2024,
+            "output_tokens": 2983
+          },
+          {
+            "role": "semantic_index_projector",
+            "index_phase": "local",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 2036,
+            "output_tokens": 3278
+          },
+          {
+            "role": "claim_verifier",
+            "index_phase": "local",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 1944,
+            "output_tokens": 1055
+          },
+          {
+            "role": "claim_verifier",
+            "index_phase": "local",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 1869,
+            "output_tokens": 998
+          },
+          {
+            "role": "semantic_index_interpreter",
+            "index_phase": "interpretation",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 5149,
+            "output_tokens": 186
+          },
+          {
+            "role": "semantic_index_builder",
+            "attempt": 1
+          },
+          {
+            "role": "semantic_index_build",
+            "mode": "full",
+            "local_cache_hits": 0,
+            "reused_segments": 0,
+            "recomputed_segments": 2,
+            "local_projection_ms": 30639.348,
+            "interpretation_ms": 5801.711
+          }
+        ]
+      },
+      {
+        "artifact_id": "6d50907b6feb633f8f40ee370dbc64184d8da7f391e707179026ffcca63ff7c8",
+        "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+        "stage": "portfolio_indexing",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 36671.2667,
+        "version": "portfolio-semantic-index-service-v4",
+        "failure_code": null,
+        "attempts": [
+          {
+            "role": "semantic_index_interpreter",
+            "index_phase": "interpretation",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 5489,
+            "output_tokens": 3680
+          },
+          {
+            "role": "claim_verifier",
+            "index_phase": "interpretation_verifier",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 1571,
+            "output_tokens": 410
+          },
+          {
+            "role": "semantic_index_builder",
+            "attempt": 1
+          },
+          {
+            "role": "semantic_index_build",
+            "mode": "incremental",
+            "local_cache_hits": 1,
+            "reused_segments": 2,
+            "recomputed_segments": 1,
+            "local_projection_ms": 8745.4627,
+            "interpretation_ms": 27729.9126
+          }
+        ]
+      },
+      {
+        "artifact_id": "a7bd56e264fcef91bb384a6dbd1234f472c1af6197b30e99c3c342a972c039b8",
+        "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+        "stage": "retrieval_planning",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 70640.2897,
+        "version": "retrieval-backed-cognitive-advisor-v3",
+        "failure_code": null,
+        "attempts": [
+          {
+            "attempt": 1
+          }
+        ]
+      },
+      {
+        "artifact_id": "5634a24ed003c71b87b7e14bc6d71f5e4664a7a353729ba10cbc751ffe2a4f4b",
+        "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+        "stage": "cognitive_planning",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 21.9268,
+        "version": "retrieval-worker-cognitive-planner-v2",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "5b97eac55c47bae7f8820acfc5f76baa0c8c6dcef613487c3db769b849708f56",
+        "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+        "stage": "portfolio_indexing",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 36671.2667,
+        "version": "portfolio-semantic-index-service-v4",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "869ec54d926ed048c05d54f0e1bae0fee70fce85c9e710e54fcba9391e947f8e",
+        "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+        "stage": "candidate_admission",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 0.0041,
+        "version": "candidate-evidence-admission-v1",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "8c50d7ad1b08eb35665610c6be769324b1b1fe126e9b1c31c86d9ddfda018374",
+        "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+        "stage": "retrieval_planning",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 70640.2897,
+        "version": "retrieval-backed-cognitive-advisor-v3",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "90e31218b1661130809d39385357d8cefe9998e491b056bbe7077b040fbcaa0f",
+        "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+        "stage": "admission",
+        "outcome": "blocked",
+        "phase": "measurement",
+        "duration_ms": 0.0539,
+        "version": "semantic-expansion-admission-v2",
+        "failure_code": "not_independent",
+        "attempts": []
+      },
+      {
+        "artifact_id": "b1891bd4cf313babdaec4f025c420a7faa6dcada472832588b0bf72a288b5853",
+        "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+        "stage": "signal_collection",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 0.1506,
+        "version": "semantic-expansion-signals-v1",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "dd3675e6ae7d0876d9c2446ff26e7d4db827778054cbcdca26c07ef43c49aaf9",
+        "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+        "stage": "portfolio_projection",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 0.5867,
+        "version": "retrieval-only-semantic-manifest-v3",
+        "failure_code": null,
+        "attempts": []
+      }
+    ],
+    "outcome": "timeout",
+    "failure_code": null,
+    "observation_ms": 299998.9393000142,
+    "discarded_milestones_ms": {},
+    "missing_milestones": [
+      "derived_context_available"
+    ]
+  }
+}

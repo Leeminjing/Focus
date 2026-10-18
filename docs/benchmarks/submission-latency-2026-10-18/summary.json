@@ -1,0 +1,3686 @@
+{
+  "clock": "submitter perf_counter; post-commit polling upper bounds",
+  "percentiles": "nearest rank, observed milestones only; missing samples are not zero",
+  "p95_note": "Fewer than 20 observations cannot resolve the upper 5%; 20 is a minimum, not confidence evidence.",
+  "scenarios": {
+    "cold": {
+      "samples": 3,
+      "completed": 0,
+      "outcomes": {
+        "waiting_user": 3
+      },
+      "metrics": {
+        "durable_acceptance": {
+          "observed": 3,
+          "missing": 0,
+          "p50_ms": 429.1769999836106,
+          "p95_ms": 475.3476000041701,
+          "p95_sample_sufficient": false
+        },
+        "patrol_decision_committed": {
+          "observed": 0,
+          "missing": 3,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p95_sample_sufficient": false
+        },
+        "derived_context_available": {
+          "observed": 0,
+          "missing": 3,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p95_sample_sufficient": false
+        },
+        "first_run_started": {
+          "observed": 0,
+          "missing": 3,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p95_sample_sufficient": false
+        },
+        "first_effective_output": {
+          "observed": 0,
+          "missing": 3,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p95_sample_sufficient": false
+        }
+      }
+    },
+    "exact_cache": {
+      "samples": 3,
+      "completed": 0,
+      "outcomes": {
+        "timeout": 1,
+        "waiting_user": 2
+      },
+      "metrics": {
+        "durable_acceptance": {
+          "observed": 3,
+          "missing": 0,
+          "p50_ms": 621.2447000143584,
+          "p95_ms": 690.8326999982819,
+          "p95_sample_sufficient": false
+        },
+        "patrol_decision_committed": {
+          "observed": 2,
+          "missing": 1,
+          "p50_ms": 118752.41890002508,
+          "p95_ms": 137563.6528999894,
+          "p95_sample_sufficient": false
+        },
+        "derived_context_available": {
+          "observed": 0,
+          "missing": 3,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p95_sample_sufficient": false
+        },
+        "first_run_started": {
+          "observed": 2,
+          "missing": 1,
+          "p50_ms": 127407.55350000109,
+          "p95_ms": 139589.0430000145,
+          "p95_sample_sufficient": false
+        },
+        "first_effective_output": {
+          "observed": 2,
+          "missing": 1,
+          "p50_ms": 144981.32600000827,
+          "p95_ms": 200522.9506000178,
+          "p95_sample_sufficient": false
+        }
+      }
+    },
+    "small_append": {
+      "samples": 3,
+      "completed": 0,
+      "outcomes": {
+        "timeout": 1,
+        "waiting_user": 2
+      },
+      "metrics": {
+        "durable_acceptance": {
+          "observed": 3,
+          "missing": 0,
+          "p50_ms": 456.11609998741187,
+          "p95_ms": 1042.8688999963924,
+          "p95_sample_sufficient": false
+        },
+        "patrol_decision_committed": {
+          "observed": 1,
+          "missing": 2,
+          "p50_ms": 153807.7387000085,
+          "p95_ms": 153807.7387000085,
+          "p95_sample_sufficient": false
+        },
+        "derived_context_available": {
+          "observed": 0,
+          "missing": 3,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p95_sample_sufficient": false
+        },
+        "first_run_started": {
+          "observed": 1,
+          "missing": 2,
+          "p50_ms": 161284.65750001487,
+          "p95_ms": 161284.65750001487,
+          "p95_sample_sufficient": false
+        },
+        "first_effective_output": {
+          "observed": 1,
+          "missing": 2,
+          "p50_ms": 214123.29409999074,
+          "p95_ms": 214123.29409999074,
+          "p95_sample_sufficient": false
+        }
+      }
+    },
+    "long_tool_output": {
+      "samples": 3,
+      "completed": 0,
+      "outcomes": {
+        "waiting_user": 3
+      },
+      "metrics": {
+        "durable_acceptance": {
+          "observed": 3,
+          "missing": 0,
+          "p50_ms": 398.7810999969952,
+          "p95_ms": 439.40639999345876,
+          "p95_sample_sufficient": false
+        },
+        "patrol_decision_committed": {
+          "observed": 0,
+          "missing": 3,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p95_sample_sufficient": false
+        },
+        "derived_context_available": {
+          "observed": 0,
+          "missing": 3,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p95_sample_sufficient": false
+        },
+        "first_run_started": {
+          "observed": 0,
+          "missing": 3,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p95_sample_sufficient": false
+        },
+        "first_effective_output": {
+          "observed": 0,
+          "missing": 3,
+          "p50_ms": null,
+          "p95_ms": null,
+          "p95_sample_sufficient": false
+        }
+      }
+    }
+  },
+  "raw_samples": [
+    {
+      "scenario": "cold",
+      "repeat": 0,
+      "milestones_ms": {
+        "durable_acceptance": 475.3476000041701
+      },
+      "identities": {
+        "durable_acceptance": {
+          "submission_id": "d4d500ee763a4cb7bcdad77c64107279",
+          "loop_id": "8813ce9110744c04a157d09ae5e8a3b5",
+          "intent_id": "299eeb035ea85ec0b2e67100700001b4",
+          "observation_id": "10e308cf99e048799ab55c1d183b2c75",
+          "round_id": "4a1498bf14904b54b4bb9aa8334e36a5"
+        }
+      },
+      "stages": [
+        {
+          "artifact_id": "8bda905dd4d231859d94d25ad865727e936ae052c3455f40841b4d6ee3535a14",
+          "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 53067.8362,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2024,
+              "output_tokens": 2830
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 3325,
+              "output_tokens": 4428
+            },
+            {
+              "role": "semantic_index_interpreter",
+              "index_phase": "interpretation",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 6406,
+              "output_tokens": 1588
+            },
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "full",
+              "local_cache_hits": 1,
+              "reused_segments": 0,
+              "recomputed_segments": 2,
+              "local_projection_ms": 38757.2404,
+              "interpretation_ms": 14116.5562
+            }
+          ]
+        },
+        {
+          "artifact_id": "19ae01fbb907955f0da138d81df515730263fd747c22f518f1b29e75238770bb",
+          "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 102520.1822,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": [
+            {
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "artifact_id": "0ff1a008e80fbb4384455764974b837d053333eb217dd5429ec268a0287145fd",
+          "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+          "stage": "candidate_admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.0033,
+          "version": "candidate-evidence-admission-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "12f7f90983d2c96e249802fa2939556770c86b21c79b5b22ec4d56344bab4db3",
+          "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+          "stage": "admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.1321,
+          "version": "semantic-expansion-admission-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "13553675b5d2d040b2ae048cd3e16d30dba8a1a75c19277e88b466a81e6eadda",
+          "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+          "stage": "cognitive_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 19.035,
+          "version": "retrieval-worker-cognitive-planner-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "2451750844068bf6e7e3209eedc67b0c04957ee57342ed1d98bea351b633a8cf",
+          "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+          "stage": "work_reconciliation",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 9048.552,
+          "version": "work-spec-reconciler-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "68069ea435b0c597540e331c8414ac457a50c20ee4f3803c5fc08717b90234bb",
+          "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+          "stage": "signal_collection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.1573,
+          "version": "semantic-expansion-signals-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "6b82f855b5f47eb73c079dabe656979e16916dce99a8abb7bdcbb4f94a1594d3",
+          "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 102520.1822,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "6cc6191170ed6503ed4247641e1735b4ee344f41ea6a92940098d3b6437e6592",
+          "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 53067.8362,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "792b52a5c02e5eb6d495cebec235c3c1376417b76812139aef14f1c39885e64e",
+          "round_id": "4a1498bf14904b54b4bb9aa8334e36a5",
+          "stage": "portfolio_projection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.4634,
+          "version": "retrieval-only-semantic-manifest-v3",
+          "failure_code": null,
+          "attempts": []
+        }
+      ],
+      "outcome": "waiting_user",
+      "failure_code": "loop_waiting_reason",
+      "observation_ms": 254052.51000000862,
+      "discarded_milestones_ms": {},
+      "missing_milestones": [
+        "patrol_decision_committed",
+        "derived_context_available",
+        "first_run_started",
+        "first_effective_output"
+      ]
+    },
+    {
+      "scenario": "cold",
+      "repeat": 1,
+      "milestones_ms": {
+        "durable_acceptance": 429.1769999836106
+      },
+      "identities": {
+        "durable_acceptance": {
+          "submission_id": "4b870c020d0a4367be24b00b42eff6cb",
+          "loop_id": "4126062663574309b3382fafa1621786",
+          "intent_id": "1bece27f8481558ea6397c8ff3191300",
+          "observation_id": "3f36a9f67096441cb7aec4df50640525",
+          "round_id": "5b847ee1d0f34717a44cc36c08e4c714"
+        }
+      },
+      "stages": [
+        {
+          "artifact_id": "7e89d273e6c15fed588be3806a63e401b4c6a9a5a0ae7d4d5b8a3e7760cccee8",
+          "round_id": "5b847ee1d0f34717a44cc36c08e4c714",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 90834.0327,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2024,
+              "output_tokens": 4256
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 4228,
+              "output_tokens": 6482
+            },
+            {
+              "role": "semantic_index_interpreter",
+              "index_phase": "interpretation",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 8749,
+              "output_tokens": 4025
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "interpretation_verifier",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1761,
+              "output_tokens": 3392
+            },
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "full",
+              "local_cache_hits": 1,
+              "reused_segments": 0,
+              "recomputed_segments": 2,
+              "local_projection_ms": 47031.5381,
+              "interpretation_ms": 43601.5325
+            }
+          ]
+        },
+        {
+          "artifact_id": "485e56a7a6d6b0938497e217304957322d23bed46437be4cfd3fbf58787c9e32",
+          "round_id": "5b847ee1d0f34717a44cc36c08e4c714",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 86551.3965,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": [
+            {
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "artifact_id": "284ba5788026651126f7b696efcbc2a9dd37a3869a8fbe9c2cc6c489934ebb0c",
+          "round_id": "5b847ee1d0f34717a44cc36c08e4c714",
+          "stage": "work_reconciliation",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 9114.0735,
+          "version": "work-spec-reconciler-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "3c0c322435b38e8d97c7520d25e3ef415bb36f48dd247d23db20ff124b5f50e3",
+          "round_id": "5b847ee1d0f34717a44cc36c08e4c714",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 86551.3965,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "432ff28620ada739c5cf6db59dbb1bf420aa8b1db1558b125c1078834e773965",
+          "round_id": "5b847ee1d0f34717a44cc36c08e4c714",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 90834.0327,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "6c8618e37d1ce9252fe40ead92d0f23efc516068407b2a6e9068564909f08817",
+          "round_id": "5b847ee1d0f34717a44cc36c08e4c714",
+          "stage": "cognitive_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 22.6885,
+          "version": "retrieval-worker-cognitive-planner-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "849ca95369fa733cd5c6e99d562d3d4b20c1458361f47694041008e0ba4edecb",
+          "round_id": "5b847ee1d0f34717a44cc36c08e4c714",
+          "stage": "admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.0672,
+          "version": "semantic-expansion-admission-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "8aa8bb844e908ebd1bd2f0f8f074e60184d9f235e913a3f1eb43ecddd7c63719",
+          "round_id": "5b847ee1d0f34717a44cc36c08e4c714",
+          "stage": "candidate_admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.0033,
+          "version": "candidate-evidence-admission-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "aeb002c11e7d5f852c9fd20833a330e73d7f2b73bdbf22391962a023f58a3dbb",
+          "round_id": "5b847ee1d0f34717a44cc36c08e4c714",
+          "stage": "portfolio_projection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.6733,
+          "version": "retrieval-only-semantic-manifest-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "fc9b67b4de65e06ab42923153458adf26fbf324b5f18eb89ab8736d6c5e75db3",
+          "round_id": "5b847ee1d0f34717a44cc36c08e4c714",
+          "stage": "signal_collection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.1444,
+          "version": "semantic-expansion-signals-v1",
+          "failure_code": null,
+          "attempts": []
+        }
+      ],
+      "outcome": "waiting_user",
+      "failure_code": "loop_waiting_reason",
+      "observation_ms": 282130.22819999605,
+      "discarded_milestones_ms": {},
+      "missing_milestones": [
+        "patrol_decision_committed",
+        "derived_context_available",
+        "first_run_started",
+        "first_effective_output"
+      ]
+    },
+    {
+      "scenario": "cold",
+      "repeat": 2,
+      "milestones_ms": {
+        "durable_acceptance": 423.6887999868486
+      },
+      "identities": {
+        "durable_acceptance": {
+          "submission_id": "dbbd9d9dcca84a9798caca339e9fc5d5",
+          "loop_id": "6bb8ebaca81144738a2f4938acbbf0ea",
+          "intent_id": "0a6aa8abdddb5713a08986bbddfe0ddc",
+          "observation_id": "4de007c01d4c4609a2050e12587caeab",
+          "round_id": "ec3bff6c769640378560fcf7079fb969"
+        }
+      },
+      "stages": [
+        {
+          "artifact_id": "d9e8f4cfe7004c492c79a3735e003f70f9c6c253326fa367c20c5aa3dcf81845",
+          "round_id": "ec3bff6c769640378560fcf7079fb969",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 51905.2529,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2024,
+              "output_tokens": 3359
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 3213,
+              "output_tokens": 3029
+            },
+            {
+              "role": "semantic_index_interpreter",
+              "index_phase": "interpretation",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 5605,
+              "output_tokens": 2708
+            },
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "full",
+              "local_cache_hits": 1,
+              "reused_segments": 0,
+              "recomputed_segments": 2,
+              "local_projection_ms": 33198.3489,
+              "interpretation_ms": 18535.1599
+            }
+          ]
+        },
+        {
+          "artifact_id": "062d4225ddeadc48ccf028943da607580d02c31e4b63ce5ea6ab72f9efddf6fc",
+          "round_id": "ec3bff6c769640378560fcf7079fb969",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 100275.3188,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": [
+            {
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "artifact_id": "3523387bc58d2ae19cb2d8b8d03e7bf3c40f17594b40b186b17b6bbad5895724",
+          "round_id": "ec3bff6c769640378560fcf7079fb969",
+          "stage": "portfolio_projection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.2898,
+          "version": "retrieval-only-semantic-manifest-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "4ccf544e0cc1d59527a373619a9d3de71ffd79ee0eca09c8316a38dee3d4d096",
+          "round_id": "ec3bff6c769640378560fcf7079fb969",
+          "stage": "signal_collection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.1663,
+          "version": "semantic-expansion-signals-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "602b1bde6990e87f2155a58adece099f7aaed899f4db40f88e43ac3b4e3df62b",
+          "round_id": "ec3bff6c769640378560fcf7079fb969",
+          "stage": "admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.0633,
+          "version": "semantic-expansion-admission-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "bdf7332a664c8f31154e73d7a962080d0d3ace5cc05bc36a679532fd548b4bf4",
+          "round_id": "ec3bff6c769640378560fcf7079fb969",
+          "stage": "cognitive_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 16.7428,
+          "version": "retrieval-worker-cognitive-planner-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "e4767a91d73c3ef76c54904cfcf62d0a846c6eaa699466c0f701b3ce88fa4b5a",
+          "round_id": "ec3bff6c769640378560fcf7079fb969",
+          "stage": "work_reconciliation",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 8002.845,
+          "version": "work-spec-reconciler-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "f072ebb0013b95c862176ad960e4456ffaf3c13c3176f9c4b59c450551ade907",
+          "round_id": "ec3bff6c769640378560fcf7079fb969",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 51905.2529,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "f188d2cdc532e3b0fe7904a01efc0fbdf5cb7ea88cd547a512e9c41e1f48ed99",
+          "round_id": "ec3bff6c769640378560fcf7079fb969",
+          "stage": "candidate_admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.0027,
+          "version": "candidate-evidence-admission-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "f679c9a520d5518b33c1612d26abb686707354f3bec72b39f54ce6f6ebd13e20",
+          "round_id": "ec3bff6c769640378560fcf7079fb969",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 100275.3188,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": []
+        }
+      ],
+      "outcome": "waiting_user",
+      "failure_code": "loop_waiting_reason",
+      "observation_ms": 248367.76269998518,
+      "discarded_milestones_ms": {},
+      "missing_milestones": [
+        "patrol_decision_committed",
+        "derived_context_available",
+        "first_run_started",
+        "first_effective_output"
+      ]
+    },
+    {
+      "scenario": "exact_cache",
+      "repeat": 0,
+      "milestones_ms": {
+        "durable_acceptance": 621.2447000143584,
+        "patrol_decision_committed": 118752.41890002508,
+        "first_run_started": 127407.55350000109,
+        "first_effective_output": 144981.32600000827
+      },
+      "identities": {
+        "durable_acceptance": {
+          "submission_id": "3613f8b48e20454eba2cab45e65627f5",
+          "loop_id": "b15eb6bcf0df40579ceacffdd6dc0c3a",
+          "intent_id": "1ad4eb49b1aa562f8c3985dbd59ebae9",
+          "observation_id": "737507b00b314e38933f7d6fe0a33021",
+          "round_id": "41557d915f8d4c5bba34b7065073c926"
+        },
+        "patrol_decision_committed": {
+          "decision_id": "cff3c2f710e64921bea179ed54297bc4",
+          "observation_id": "737507b00b314e38933f7d6fe0a33021",
+          "round_id": "41557d915f8d4c5bba34b7065073c926"
+        },
+        "first_run_started": {
+          "decision_id": "cff3c2f710e64921bea179ed54297bc4",
+          "observation_id": "737507b00b314e38933f7d6fe0a33021",
+          "round_id": "41557d915f8d4c5bba34b7065073c926",
+          "context_id": "2f96554bf06f46ec967901e0e2ba3e96",
+          "revision_id": "a77ce7830a874cc19c6ea8681ac5d206",
+          "run_id": "97da1dea5a7d475b9a71bf5ceaec399e",
+          "event_id": "00721be862ef47c5a26a9a036b9c58e0"
+        },
+        "first_effective_output": {
+          "decision_id": "cff3c2f710e64921bea179ed54297bc4",
+          "observation_id": "737507b00b314e38933f7d6fe0a33021",
+          "round_id": "41557d915f8d4c5bba34b7065073c926",
+          "context_id": "2f96554bf06f46ec967901e0e2ba3e96",
+          "revision_id": "a77ce7830a874cc19c6ea8681ac5d206",
+          "run_id": "97da1dea5a7d475b9a71bf5ceaec399e",
+          "event_id": "79fcb9c2178d4555967aadb5a4682f4a"
+        }
+      },
+      "stages": [
+        {
+          "artifact_id": "705c5549d103d2e0246a3cb81640c73668f022987fc0ae5f139a06017caa33ed",
+          "round_id": "41557d915f8d4c5bba34b7065073c926",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "preparation",
+          "duration_ms": 55676.154,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2036,
+              "output_tokens": 2969
+            },
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2024,
+              "output_tokens": 3172
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1880,
+              "output_tokens": 1197
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1944,
+              "output_tokens": 1199
+            },
+            {
+              "role": "semantic_index_interpreter",
+              "index_phase": "interpretation",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 5149,
+              "output_tokens": 2880
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "interpretation_verifier",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1169,
+              "output_tokens": 322
+            },
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "full",
+              "local_cache_hits": 0,
+              "reused_segments": 0,
+              "recomputed_segments": 2,
+              "local_projection_ms": 30548.7673,
+              "interpretation_ms": 24827.394
+            }
+          ]
+        },
+        {
+          "artifact_id": "40be6cb94387ae0d086f77c118a49277b44b30ff4358bc8f5d768175a7700a80",
+          "round_id": "41557d915f8d4c5bba34b7065073c926",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 97.8764,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "exact_hit",
+              "reused_segments": 2,
+              "recomputed_segments": 0
+            }
+          ]
+        },
+        {
+          "artifact_id": "2b279e622a7b1ee16fa59286ff4cc029f763838d104961ed894616d949e6d732",
+          "round_id": "41557d915f8d4c5bba34b7065073c926",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 68500.0411,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": [
+            {
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "artifact_id": "24e65740304563cdc523e1fa965f7b231f2d8e26d5280c925c78adaa7db72e1b",
+          "round_id": "41557d915f8d4c5bba34b7065073c926",
+          "stage": "signal_collection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.2087,
+          "version": "semantic-expansion-signals-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "36e4a18b0caaeffafeae76256c9750e4607f297544f3631d52deb3f6cb1d6a62",
+          "round_id": "41557d915f8d4c5bba34b7065073c926",
+          "stage": "portfolio_projection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.9653,
+          "version": "retrieval-only-semantic-manifest-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "579214021448c0e9ba71e9961468aaac17df26d07d693883947f5e8c8b553750",
+          "round_id": "41557d915f8d4c5bba34b7065073c926",
+          "stage": "admission",
+          "outcome": "blocked",
+          "phase": "measurement",
+          "duration_ms": 0.0719,
+          "version": "semantic-expansion-admission-v2",
+          "failure_code": "not_independent",
+          "attempts": []
+        },
+        {
+          "artifact_id": "6627bc7828aca18b46e069a42a67cfe08fedb1445cdd5317d5c48fc936a8aba2",
+          "round_id": "41557d915f8d4c5bba34b7065073c926",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 68500.0411,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "8b23b6db3fd79bca9055e6ea2cd330691cc81207eeea9c9c553eac42bb7e415a",
+          "round_id": "41557d915f8d4c5bba34b7065073c926",
+          "stage": "cognitive_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 22.5243,
+          "version": "retrieval-worker-cognitive-planner-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "9418c0a75518e0aecad6867ff7bb6cb14ee98e4e1a7cb86e7b122b3f42d99304",
+          "round_id": "41557d915f8d4c5bba34b7065073c926",
+          "stage": "candidate_admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.0041,
+          "version": "candidate-evidence-admission-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "e63087d9e40832ebc98969468e5850150c339c781b894c5acb73019246e5953e",
+          "round_id": "41557d915f8d4c5bba34b7065073c926",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 97.8764,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": []
+        }
+      ],
+      "outcome": "waiting_user",
+      "failure_code": "loop_waiting_reason",
+      "observation_ms": 196822.93350002146,
+      "discarded_milestones_ms": {},
+      "missing_milestones": [
+        "derived_context_available"
+      ]
+    },
+    {
+      "scenario": "exact_cache",
+      "repeat": 1,
+      "milestones_ms": {
+        "durable_acceptance": 690.8326999982819
+      },
+      "identities": {
+        "durable_acceptance": {
+          "submission_id": "17cf58380a6a45bf9a45778031bdde59",
+          "loop_id": "0eeb7e7058e1410aa581932d96e08ff5",
+          "intent_id": "d03335bceecc5039b8d0ef540e0f8c78",
+          "observation_id": "b292a9e930914efbb5ff626e737184f9",
+          "round_id": "15694cee8cc943a0867a5984b4e4889e"
+        }
+      },
+      "stages": [
+        {
+          "artifact_id": "594d8fef7c99811ca466de6c0e143e81cc32f1c172836666ac017d7dd8598b9d",
+          "round_id": "15694cee8cc943a0867a5984b4e4889e",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "preparation",
+          "duration_ms": 52696.5731,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2024,
+              "output_tokens": 2690
+            },
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2036,
+              "output_tokens": 3669
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1984,
+              "output_tokens": 1117
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1938,
+              "output_tokens": 1221
+            },
+            {
+              "role": "semantic_index_interpreter",
+              "index_phase": "interpretation",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 5204,
+              "output_tokens": 2368
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "interpretation_verifier",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1241,
+              "output_tokens": 433
+            },
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "full",
+              "local_cache_hits": 0,
+              "reused_segments": 0,
+              "recomputed_segments": 2,
+              "local_projection_ms": 30999.5246,
+              "interpretation_ms": 21366.1767
+            }
+          ]
+        },
+        {
+          "artifact_id": "ca016927f2b7b15c89fce686afbc4a99f7f9e3b0e9dd3350b3af84f5d8fde053",
+          "round_id": "15694cee8cc943a0867a5984b4e4889e",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 397.1514,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "exact_hit",
+              "reused_segments": 2,
+              "recomputed_segments": 0
+            }
+          ]
+        },
+        {
+          "artifact_id": "edd1b650e367fc5172fa85393efbac48bd8d014c4816bdc8c682c0537a8b10e1",
+          "round_id": "15694cee8cc943a0867a5984b4e4889e",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 67565.173,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": [
+            {
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "artifact_id": "5b15b9867cbf2e6220da3e46cb8f035b0a056d0b3ed6855497867c906520db77",
+          "round_id": "15694cee8cc943a0867a5984b4e4889e",
+          "stage": "candidate_admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.0034,
+          "version": "candidate-evidence-admission-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "74b29342473ee83e520a6c7d3602d63d73015ecff0da1a1507da9e0c237030f7",
+          "round_id": "15694cee8cc943a0867a5984b4e4889e",
+          "stage": "cognitive_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 38.0834,
+          "version": "retrieval-worker-cognitive-planner-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "767f7d2f8fbe470d43d34bd3700fff14861f3b8add2010f84393529c9b02763c",
+          "round_id": "15694cee8cc943a0867a5984b4e4889e",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 397.1514,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "7d16e17a2a0852f97e64a62903efd606ea162f329b019592b483e4e689a8be11",
+          "round_id": "15694cee8cc943a0867a5984b4e4889e",
+          "stage": "portfolio_projection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.8822,
+          "version": "retrieval-only-semantic-manifest-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "b0aeb59b7cf39cb9f844ddef380ba8ffb8447049422b76b48189af7dacfca97d",
+          "round_id": "15694cee8cc943a0867a5984b4e4889e",
+          "stage": "signal_collection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.2407,
+          "version": "semantic-expansion-signals-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "baf2e3196957d99a96b03b6dd55dbb0f2f96c25a9df38be98ee99344103f4a97",
+          "round_id": "15694cee8cc943a0867a5984b4e4889e",
+          "stage": "work_reconciliation",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 8259.5172,
+          "version": "work-spec-reconciler-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "bf9aef10105703bd5bed7ee1543288f6aa18b392fc8f62d564120b561b3e0a48",
+          "round_id": "15694cee8cc943a0867a5984b4e4889e",
+          "stage": "admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.1028,
+          "version": "semantic-expansion-admission-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "cbafdbc48205cc3f3feae16a284ae023701eb906a9b8d432e5fd4a6bdc293fc1",
+          "round_id": "15694cee8cc943a0867a5984b4e4889e",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 67565.173,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": []
+        }
+      ],
+      "outcome": "waiting_user",
+      "failure_code": "loop_waiting_reason",
+      "observation_ms": 197635.7505999913,
+      "discarded_milestones_ms": {},
+      "missing_milestones": [
+        "patrol_decision_committed",
+        "derived_context_available",
+        "first_run_started",
+        "first_effective_output"
+      ]
+    },
+    {
+      "scenario": "exact_cache",
+      "repeat": 2,
+      "milestones_ms": {
+        "durable_acceptance": 514.0799999935552,
+        "patrol_decision_committed": 137563.6528999894,
+        "first_run_started": 139589.0430000145,
+        "first_effective_output": 200522.9506000178
+      },
+      "identities": {
+        "durable_acceptance": {
+          "submission_id": "240b26170fae4048853075e5e37d39da",
+          "loop_id": "8fe4e707879740c1987c6fd1a2006e43",
+          "intent_id": "c44cd1646c19570995fdfbc6f4e79414",
+          "observation_id": "a971ecfcdb5b486291d69d27e6f7dd33",
+          "round_id": "8ada5c3c16764de4ac6e5d67f26f5306"
+        },
+        "patrol_decision_committed": {
+          "decision_id": "7a7716fabd3e433cb597d94e378738f9",
+          "observation_id": "a971ecfcdb5b486291d69d27e6f7dd33",
+          "round_id": "8ada5c3c16764de4ac6e5d67f26f5306"
+        },
+        "first_run_started": {
+          "decision_id": "7a7716fabd3e433cb597d94e378738f9",
+          "observation_id": "a971ecfcdb5b486291d69d27e6f7dd33",
+          "round_id": "8ada5c3c16764de4ac6e5d67f26f5306",
+          "context_id": "0056e66e50954c63883a8ccd86cd25f4",
+          "revision_id": "e866905b720540a3b90eb42ea1624f1c",
+          "run_id": "f27913cf033d4e50b93a95634444ee6e",
+          "event_id": "bff33a73783d44cdb9b7cb8f09d3571c"
+        },
+        "first_effective_output": {
+          "decision_id": "7a7716fabd3e433cb597d94e378738f9",
+          "observation_id": "a971ecfcdb5b486291d69d27e6f7dd33",
+          "round_id": "8ada5c3c16764de4ac6e5d67f26f5306",
+          "context_id": "0056e66e50954c63883a8ccd86cd25f4",
+          "revision_id": "e866905b720540a3b90eb42ea1624f1c",
+          "run_id": "f27913cf033d4e50b93a95634444ee6e",
+          "event_id": "8865b4d6a052482883c56cfd9589a71d"
+        }
+      },
+      "stages": [
+        {
+          "artifact_id": "6edb2f738257f2119423979bbf48ec4193c1f85bfd3e474693760d111b6828ba",
+          "round_id": "8ada5c3c16764de4ac6e5d67f26f5306",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "preparation",
+          "duration_ms": 52460.2635,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2036,
+              "output_tokens": 3632
+            },
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2024,
+              "output_tokens": 3404
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1806,
+              "output_tokens": 787
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1967,
+              "output_tokens": 1022
+            },
+            {
+              "role": "semantic_index_interpreter",
+              "index_phase": "interpretation",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 5324,
+              "output_tokens": 2419
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "interpretation_verifier",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1166,
+              "output_tokens": 342
+            },
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "full",
+              "local_cache_hits": 0,
+              "reused_segments": 0,
+              "recomputed_segments": 2,
+              "local_projection_ms": 32851.4491,
+              "interpretation_ms": 19444.9056
+            }
+          ]
+        },
+        {
+          "artifact_id": "bf3ace26a2887f34fbf2ca0049bec6c37d3815a4d55bba791e40ad04cf9f386b",
+          "round_id": "8ada5c3c16764de4ac6e5d67f26f5306",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 96.3988,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "exact_hit",
+              "reused_segments": 2,
+              "recomputed_segments": 0
+            }
+          ]
+        },
+        {
+          "artifact_id": "1cd9c319bf670004dcb4a70039dbd93cdc0038fac7d1e9aedb55d18b1d0ecebe",
+          "round_id": "8ada5c3c16764de4ac6e5d67f26f5306",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 101853.5361,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": [
+            {
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "artifact_id": "14727571c2f4c529ff193943ebfddd20caa9432560ce365ac9207b8171e4d553",
+          "round_id": "8ada5c3c16764de4ac6e5d67f26f5306",
+          "stage": "portfolio_projection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 2.8679,
+          "version": "retrieval-only-semantic-manifest-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "17b192b057642bb5418837628bedf857b6b975ce3a2c7b5ce9172391584ce9bf",
+          "round_id": "8ada5c3c16764de4ac6e5d67f26f5306",
+          "stage": "cognitive_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 45.621,
+          "version": "retrieval-worker-cognitive-planner-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "78ee6c24bd8224c5410e1125a7062f8222f573625ea18fe037890ee168663432",
+          "round_id": "8ada5c3c16764de4ac6e5d67f26f5306",
+          "stage": "admission",
+          "outcome": "blocked",
+          "phase": "measurement",
+          "duration_ms": 0.084,
+          "version": "semantic-expansion-admission-v2",
+          "failure_code": "not_independent",
+          "attempts": []
+        },
+        {
+          "artifact_id": "9f77b8b7babf0d98ea8c870428785e0807c20b7ec2b42ee2df37831c62892c25",
+          "round_id": "8ada5c3c16764de4ac6e5d67f26f5306",
+          "stage": "signal_collection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.2314,
+          "version": "semantic-expansion-signals-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "b8ed337b59af9120ae0456537e70b29fdd0f3cf23cd219c3cf509412cade15ac",
+          "round_id": "8ada5c3c16764de4ac6e5d67f26f5306",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 96.3988,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "e219ed41e30b0cb2f3c9ce9b420c7d08912b2ae5411d0c392702468efece3838",
+          "round_id": "8ada5c3c16764de4ac6e5d67f26f5306",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 101853.5361,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "eb7cdb49166795a88e638d02cbdc64d58d513e6faad5c0d52266a9a08b2b3a84",
+          "round_id": "8ada5c3c16764de4ac6e5d67f26f5306",
+          "stage": "candidate_admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.0079,
+          "version": "candidate-evidence-admission-v1",
+          "failure_code": null,
+          "attempts": []
+        }
+      ],
+      "outcome": "timeout",
+      "failure_code": null,
+      "observation_ms": 300017.7743000095,
+      "discarded_milestones_ms": {},
+      "missing_milestones": [
+        "derived_context_available"
+      ]
+    },
+    {
+      "scenario": "small_append",
+      "repeat": 0,
+      "milestones_ms": {
+        "durable_acceptance": 378.6182999901939,
+        "patrol_decision_committed": 153807.7387000085,
+        "first_run_started": 161284.65750001487,
+        "first_effective_output": 214123.29409999074
+      },
+      "identities": {
+        "durable_acceptance": {
+          "submission_id": "22fbf7309e394fabad93d9d7a8bd3b3b",
+          "loop_id": "6eff2f478fbf4e98902b565e187d1cbb",
+          "intent_id": "d6d760b4708a52b4a102f4f59d33b94a",
+          "observation_id": "21f9c8bec3ee48628115eb8af88017dd",
+          "round_id": "42364cf2d70f4b52ab72cc04029af43a"
+        },
+        "patrol_decision_committed": {
+          "decision_id": "72fb5d3d6add442cb6bbdfd405efb490",
+          "observation_id": "21f9c8bec3ee48628115eb8af88017dd",
+          "round_id": "42364cf2d70f4b52ab72cc04029af43a"
+        },
+        "first_run_started": {
+          "decision_id": "72fb5d3d6add442cb6bbdfd405efb490",
+          "observation_id": "21f9c8bec3ee48628115eb8af88017dd",
+          "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+          "context_id": "470989f3d3514668a86e01487e9833ce",
+          "revision_id": "22be81c27399427e9608ceadc62e74cb",
+          "run_id": "c65247bb8a9d4683ad01f709473e5d40",
+          "event_id": "423795de72b045fbb3657fb68b558939"
+        },
+        "first_effective_output": {
+          "decision_id": "72fb5d3d6add442cb6bbdfd405efb490",
+          "observation_id": "21f9c8bec3ee48628115eb8af88017dd",
+          "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+          "context_id": "470989f3d3514668a86e01487e9833ce",
+          "revision_id": "22be81c27399427e9608ceadc62e74cb",
+          "run_id": "c65247bb8a9d4683ad01f709473e5d40",
+          "event_id": "8773db6349d74c26ac5534df5c34fb90"
+        }
+      },
+      "stages": [
+        {
+          "artifact_id": "7453a7b5fa8abdecb1b66e94fc85070266151d53b5ede8c6b42688b1e6e5c9e4",
+          "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "preparation",
+          "duration_ms": 36600.7951,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2024,
+              "output_tokens": 2983
+            },
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2036,
+              "output_tokens": 3278
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1944,
+              "output_tokens": 1055
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1869,
+              "output_tokens": 998
+            },
+            {
+              "role": "semantic_index_interpreter",
+              "index_phase": "interpretation",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 5149,
+              "output_tokens": 186
+            },
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "full",
+              "local_cache_hits": 0,
+              "reused_segments": 0,
+              "recomputed_segments": 2,
+              "local_projection_ms": 30639.348,
+              "interpretation_ms": 5801.711
+            }
+          ]
+        },
+        {
+          "artifact_id": "6d50907b6feb633f8f40ee370dbc64184d8da7f391e707179026ffcca63ff7c8",
+          "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 36671.2667,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_interpreter",
+              "index_phase": "interpretation",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 5489,
+              "output_tokens": 3680
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "interpretation_verifier",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1571,
+              "output_tokens": 410
+            },
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "incremental",
+              "local_cache_hits": 1,
+              "reused_segments": 2,
+              "recomputed_segments": 1,
+              "local_projection_ms": 8745.4627,
+              "interpretation_ms": 27729.9126
+            }
+          ]
+        },
+        {
+          "artifact_id": "a7bd56e264fcef91bb384a6dbd1234f472c1af6197b30e99c3c342a972c039b8",
+          "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 70640.2897,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": [
+            {
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "artifact_id": "5634a24ed003c71b87b7e14bc6d71f5e4664a7a353729ba10cbc751ffe2a4f4b",
+          "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+          "stage": "cognitive_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 21.9268,
+          "version": "retrieval-worker-cognitive-planner-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "5b97eac55c47bae7f8820acfc5f76baa0c8c6dcef613487c3db769b849708f56",
+          "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 36671.2667,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "869ec54d926ed048c05d54f0e1bae0fee70fce85c9e710e54fcba9391e947f8e",
+          "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+          "stage": "candidate_admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.0041,
+          "version": "candidate-evidence-admission-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "8c50d7ad1b08eb35665610c6be769324b1b1fe126e9b1c31c86d9ddfda018374",
+          "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 70640.2897,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "90e31218b1661130809d39385357d8cefe9998e491b056bbe7077b040fbcaa0f",
+          "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+          "stage": "admission",
+          "outcome": "blocked",
+          "phase": "measurement",
+          "duration_ms": 0.0539,
+          "version": "semantic-expansion-admission-v2",
+          "failure_code": "not_independent",
+          "attempts": []
+        },
+        {
+          "artifact_id": "b1891bd4cf313babdaec4f025c420a7faa6dcada472832588b0bf72a288b5853",
+          "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+          "stage": "signal_collection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.1506,
+          "version": "semantic-expansion-signals-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "dd3675e6ae7d0876d9c2446ff26e7d4db827778054cbcdca26c07ef43c49aaf9",
+          "round_id": "42364cf2d70f4b52ab72cc04029af43a",
+          "stage": "portfolio_projection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.5867,
+          "version": "retrieval-only-semantic-manifest-v3",
+          "failure_code": null,
+          "attempts": []
+        }
+      ],
+      "outcome": "timeout",
+      "failure_code": null,
+      "observation_ms": 299998.9393000142,
+      "discarded_milestones_ms": {},
+      "missing_milestones": [
+        "derived_context_available"
+      ]
+    },
+    {
+      "scenario": "small_append",
+      "repeat": 1,
+      "milestones_ms": {
+        "durable_acceptance": 456.11609998741187
+      },
+      "identities": {
+        "durable_acceptance": {
+          "submission_id": "a91a073a49a1438893ad64a48d5c1a4c",
+          "loop_id": "e83324fc00214945a27d544754707e2c",
+          "intent_id": "2bdcd41fc49f5ca798a1f434b189759c",
+          "observation_id": "a95a46134cfc4c9db8c169247874a2a6",
+          "round_id": "a07f4c22df834cedae738b5d34dc7596"
+        }
+      },
+      "stages": [
+        {
+          "artifact_id": "2d6dc52bbe6cc6bc8c4aa206c3b9d50f6a820c81ed7982abd4416dc9c363bc8b",
+          "round_id": "a07f4c22df834cedae738b5d34dc7596",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "preparation",
+          "duration_ms": 62811.2387,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2024,
+              "output_tokens": 3159
+            },
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2036,
+              "output_tokens": 5595
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1878,
+              "output_tokens": 1124
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 3928,
+              "output_tokens": 3137
+            },
+            {
+              "role": "semantic_index_interpreter",
+              "index_phase": "interpretation",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 5775,
+              "output_tokens": 3146
+            },
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "full",
+              "local_cache_hits": 0,
+              "reused_segments": 0,
+              "recomputed_segments": 2,
+              "local_projection_ms": 41833.3012,
+              "interpretation_ms": 20807.6426
+            }
+          ]
+        },
+        {
+          "artifact_id": "f7c41c4a1c7ecf812b993b4485be813ea6e463926f6ef65c92a373692bc8047b",
+          "round_id": "a07f4c22df834cedae738b5d34dc7596",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 36673.8803,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_interpreter",
+              "index_phase": "interpretation",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 6111,
+              "output_tokens": 3759
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "interpretation_verifier",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1578,
+              "output_tokens": 717
+            },
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "incremental",
+              "local_cache_hits": 1,
+              "reused_segments": 2,
+              "recomputed_segments": 1,
+              "local_projection_ms": 8707.5561,
+              "interpretation_ms": 27714.6916
+            }
+          ]
+        },
+        {
+          "artifact_id": "4592d35cb063a54509a7b64a300a2c241da2ce4579388e38d39ac9ad2bbbe5c2",
+          "round_id": "a07f4c22df834cedae738b5d34dc7596",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 82634.3062,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": [
+            {
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "artifact_id": "0a3ac01b17a77c4bc384b72e4d7c8dda8c11a077cbdb433d16dc2ac5afb4bfd8",
+          "round_id": "a07f4c22df834cedae738b5d34dc7596",
+          "stage": "cognitive_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 26.0197,
+          "version": "retrieval-worker-cognitive-planner-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "1441ce098eab94dfb9b04381a71c0f83f8bb906818793f7a818362286befb927",
+          "round_id": "a07f4c22df834cedae738b5d34dc7596",
+          "stage": "work_reconciliation",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 10398.1933,
+          "version": "work-spec-reconciler-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "27b0c372597e9c58f28f2127a1775cd12488342f4b0591510547ed45256ab368",
+          "round_id": "a07f4c22df834cedae738b5d34dc7596",
+          "stage": "portfolio_projection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.5746,
+          "version": "retrieval-only-semantic-manifest-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "7eaf4014eaca5fbba803788a9284651704399dc4f7457747a76e3ec6f73f55a3",
+          "round_id": "a07f4c22df834cedae738b5d34dc7596",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 82634.3062,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "97526e1b982b67de6c1248a6cb3919431a71f67797ffafa0f114bf127fcaaa2d",
+          "round_id": "a07f4c22df834cedae738b5d34dc7596",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 36673.8803,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "bdb316f1d581cb866715b684bfec0e01c85acb0c57725830cfa48513b05d8e18",
+          "round_id": "a07f4c22df834cedae738b5d34dc7596",
+          "stage": "candidate_admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.0031,
+          "version": "candidate-evidence-admission-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "d1195db58a6f15d22369767755af6b0d691e1f024633a9a2fab725d6ab88617a",
+          "round_id": "a07f4c22df834cedae738b5d34dc7596",
+          "stage": "admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.1026,
+          "version": "semantic-expansion-admission-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "f268584656c504e76069ba0c8abb8709c63a1a1f9a7a986df05cd0602618eeb9",
+          "round_id": "a07f4c22df834cedae738b5d34dc7596",
+          "stage": "signal_collection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.1872,
+          "version": "semantic-expansion-signals-v1",
+          "failure_code": null,
+          "attempts": []
+        }
+      ],
+      "outcome": "waiting_user",
+      "failure_code": "loop_waiting_reason",
+      "observation_ms": 186315.73080000817,
+      "discarded_milestones_ms": {},
+      "missing_milestones": [
+        "patrol_decision_committed",
+        "derived_context_available",
+        "first_run_started",
+        "first_effective_output"
+      ]
+    },
+    {
+      "scenario": "small_append",
+      "repeat": 2,
+      "milestones_ms": {
+        "durable_acceptance": 1042.8688999963924
+      },
+      "identities": {
+        "durable_acceptance": {
+          "submission_id": "bc16474959044b0a898cb33f2432f51a",
+          "loop_id": "24b3a5efadd3401abd5aa71c92590bd4",
+          "intent_id": "0cfc538ce2b555808749af8c183ae417",
+          "observation_id": "212f78cbaead48ffa5d3153f45ff465f",
+          "round_id": "7d00fb1d527b41ecb853b0ecccded43a"
+        }
+      },
+      "stages": [
+        {
+          "artifact_id": "91ca00d849a71af79892393b62f0c2d709667251f8c63ca54dc2aeb52210bbc0",
+          "round_id": "7d00fb1d527b41ecb853b0ecccded43a",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "preparation",
+          "duration_ms": 87519.437,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2036,
+              "output_tokens": 2984
+            },
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2024,
+              "output_tokens": 5189
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1880,
+              "output_tokens": 1110
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1806,
+              "output_tokens": 834
+            },
+            {
+              "role": "semantic_index_interpreter",
+              "index_phase": "interpretation",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 5253,
+              "output_tokens": 2891
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "interpretation_verifier",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1456,
+              "output_tokens": 289
+            },
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "full",
+              "local_cache_hits": 0,
+              "reused_segments": 0,
+              "recomputed_segments": 2,
+              "local_projection_ms": 53162.8371,
+              "interpretation_ms": 33996.6658
+            }
+          ]
+        },
+        {
+          "artifact_id": "2581e1084e92bfdb462007501acb1112cee439a951356326a5cb4504c7e723da",
+          "round_id": "7d00fb1d527b41ecb853b0ecccded43a",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 57405.5857,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_interpreter",
+              "index_phase": "interpretation",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 5593,
+              "output_tokens": 4248
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "interpretation_verifier",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1185,
+              "output_tokens": 364
+            },
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "incremental",
+              "local_cache_hits": 1,
+              "reused_segments": 2,
+              "recomputed_segments": 1,
+              "local_projection_ms": 14766.076,
+              "interpretation_ms": 41840.118
+            }
+          ]
+        },
+        {
+          "artifact_id": "a4e1d4b59cb7c5492e60af21497c49f8cb3443d2e7e3280d023856ee71f40e18",
+          "round_id": "7d00fb1d527b41ecb853b0ecccded43a",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 95263.0297,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": [
+            {
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "artifact_id": "241b96b6b59bc91f4fff6c859bd1ec61822472922e1dc70e103afda5bee5f879",
+          "round_id": "7d00fb1d527b41ecb853b0ecccded43a",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 95263.0297,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "33c040ee016173ddffad0508939e659b942b7bef9ff898f158797c6e6f99fdce",
+          "round_id": "7d00fb1d527b41ecb853b0ecccded43a",
+          "stage": "candidate_admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.0075,
+          "version": "candidate-evidence-admission-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "4f1aeee11ef095e7dc9239ca3b9f21ae7a2ff9de2bf7d97db4aa4e66ce71847a",
+          "round_id": "7d00fb1d527b41ecb853b0ecccded43a",
+          "stage": "cognitive_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 67.618,
+          "version": "retrieval-worker-cognitive-planner-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "7bd7312c8ccbe2a1ab67bb406cdc098e40859e86c3485b8c0f319c5420abb72f",
+          "round_id": "7d00fb1d527b41ecb853b0ecccded43a",
+          "stage": "signal_collection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.4096,
+          "version": "semantic-expansion-signals-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "afe2d35c10e60c6cc34952da8f0f195847ff283a8606a58f348358dc36a95671",
+          "round_id": "7d00fb1d527b41ecb853b0ecccded43a",
+          "stage": "work_reconciliation",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 14174.1431,
+          "version": "work-spec-reconciler-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "dc9c09a13f37ba7c33e2ab66f7ccf661a26bd4d6fdfec66536312fad54cc1bd6",
+          "round_id": "7d00fb1d527b41ecb853b0ecccded43a",
+          "stage": "portfolio_projection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 1.4843,
+          "version": "retrieval-only-semantic-manifest-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "e39d7033aa384b37b1043e25e91a1519ccf1f7546dd2e22e85f350054cf8e8e5",
+          "round_id": "7d00fb1d527b41ecb853b0ecccded43a",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 57405.5857,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "f4b15edb13897e26a2056d6d6f95e16361cf40cfafaab68f1bedd57338677dc0",
+          "round_id": "7d00fb1d527b41ecb853b0ecccded43a",
+          "stage": "admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.4247,
+          "version": "semantic-expansion-admission-v2",
+          "failure_code": null,
+          "attempts": []
+        }
+      ],
+      "outcome": "waiting_user",
+      "failure_code": "loop_waiting_reason",
+      "observation_ms": 276092.3032000137,
+      "discarded_milestones_ms": {},
+      "missing_milestones": [
+        "patrol_decision_committed",
+        "derived_context_available",
+        "first_run_started",
+        "first_effective_output"
+      ]
+    },
+    {
+      "scenario": "long_tool_output",
+      "repeat": 0,
+      "milestones_ms": {
+        "durable_acceptance": 398.7810999969952
+      },
+      "identities": {
+        "durable_acceptance": {
+          "submission_id": "968cf3e7fc344857a44a1a2961c73971",
+          "loop_id": "67f0e7c0bc864537b8bd0d5578aead38",
+          "intent_id": "af1a6e364056550da937f4652f146f27",
+          "observation_id": "9b408d6242af48b5bf5d6b29b9203704",
+          "round_id": "fdccec45336347beb455277aea0f586f"
+        }
+      },
+      "stages": [
+        {
+          "artifact_id": "8a11184f63aff187a7650b1f53729d6eac31d12372d38d5fa74112953179c70f",
+          "round_id": "fdccec45336347beb455277aea0f586f",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 93273.7563,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2024,
+              "output_tokens": 2932
+            },
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 30340,
+              "output_tokens": 2459
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 546,
+              "output_tokens": 1399
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 3033,
+              "output_tokens": 3544
+            },
+            {
+              "role": "semantic_index_interpreter",
+              "index_phase": "interpretation",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 35623,
+              "output_tokens": 10438
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "interpretation_verifier",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2183,
+              "output_tokens": 482
+            },
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "full",
+              "local_cache_hits": 1,
+              "reused_segments": 0,
+              "recomputed_segments": 3,
+              "local_projection_ms": 38670.1967,
+              "interpretation_ms": 54380.2989
+            }
+          ]
+        },
+        {
+          "artifact_id": "5ac4abf9a2a013b1f6044bfdb08f3b2f9617f0b6f24ace37fad3df09e2d7994b",
+          "round_id": "fdccec45336347beb455277aea0f586f",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 117800.8351,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": [
+            {
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "artifact_id": "2db51cdbcf6dc4b7202afdbd74a4ba950c56feff12246c30ecd2befab286cec8",
+          "round_id": "fdccec45336347beb455277aea0f586f",
+          "stage": "signal_collection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.1442,
+          "version": "semantic-expansion-signals-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "5d46b4b1860d9ff013c0b1d8b8d1cb01d1d50be3f50ed001972df26f2492cd81",
+          "round_id": "fdccec45336347beb455277aea0f586f",
+          "stage": "candidate_admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.0028,
+          "version": "candidate-evidence-admission-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "8d390af348558f2141a93d0fe8bf2f331d98bfbf815fa9fb3252c04678a09592",
+          "round_id": "fdccec45336347beb455277aea0f586f",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 93273.7563,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "914be6b127d29581bf8f1ec6bca86a7e8dbe28519cf2c9ab22c1f68d98df949f",
+          "round_id": "fdccec45336347beb455277aea0f586f",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 117800.8351,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "a8b705fc2bcc2ae5b9d45f954661689a8af77afbcf2ef3dda9986b35d53ef22c",
+          "round_id": "fdccec45336347beb455277aea0f586f",
+          "stage": "work_reconciliation",
+          "outcome": "blocked",
+          "phase": "measurement",
+          "duration_ms": 6562.3674,
+          "version": "work-spec-reconciler-v1",
+          "failure_code": "work_reconciliation_failed",
+          "attempts": []
+        },
+        {
+          "artifact_id": "b2751158af9c3bf88eee3bc9b33a079032b02268fffb49e0e1f12835dc7a6d36",
+          "round_id": "fdccec45336347beb455277aea0f586f",
+          "stage": "cognitive_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 30.9947,
+          "version": "retrieval-worker-cognitive-planner-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "d3fa97f9a6e9d649f156ab4b730a6e78e79435203a8f08d786c79e0ebd813147",
+          "round_id": "fdccec45336347beb455277aea0f586f",
+          "stage": "portfolio_projection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.9632,
+          "version": "retrieval-only-semantic-manifest-v3",
+          "failure_code": null,
+          "attempts": []
+        }
+      ],
+      "outcome": "waiting_user",
+      "failure_code": "loop_waiting_reason",
+      "observation_ms": 227259.7325000097,
+      "discarded_milestones_ms": {},
+      "missing_milestones": [
+        "patrol_decision_committed",
+        "derived_context_available",
+        "first_run_started",
+        "first_effective_output"
+      ]
+    },
+    {
+      "scenario": "long_tool_output",
+      "repeat": 1,
+      "milestones_ms": {
+        "durable_acceptance": 439.40639999345876
+      },
+      "identities": {
+        "durable_acceptance": {
+          "submission_id": "d358f0cbe8c74c75ac0d58e5051f2a52",
+          "loop_id": "311a5b4da4a049ed99fa5db20d5e6162",
+          "intent_id": "4e60befbf5e65f3c95731e1d8ad27f9f",
+          "observation_id": "5aea611fdd2d4c7cb682a9be851d8a2d",
+          "round_id": "cdc08c3f5590490086b4ea1bb6bbf84f"
+        }
+      },
+      "stages": [
+        {
+          "artifact_id": "f8627a8a192b0a8bb9241b0728e2a58ad16eb880c1079aea89683789ea65b9e4",
+          "round_id": "cdc08c3f5590490086b4ea1bb6bbf84f",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 106688.526,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2024,
+              "output_tokens": 3360
+            },
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 30340,
+              "output_tokens": 4331
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1944,
+              "output_tokens": 1424
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 548,
+              "output_tokens": 2675
+            },
+            {
+              "role": "semantic_index_interpreter",
+              "index_phase": "interpretation",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 35564,
+              "output_tokens": 11145
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "interpretation_verifier",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2190,
+              "output_tokens": 1653
+            },
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "full",
+              "local_cache_hits": 1,
+              "reused_segments": 0,
+              "recomputed_segments": 3,
+              "local_projection_ms": 45559.6594,
+              "interpretation_ms": 60894.6522
+            }
+          ]
+        },
+        {
+          "artifact_id": "097e44b038b0ca1b0cd10cda91b5fd0a8e2ec6a481d9ee1591c288d9ce676fd0",
+          "round_id": "cdc08c3f5590490086b4ea1bb6bbf84f",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 103596.1582,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": [
+            {
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "artifact_id": "2d5b09c51d0e7c8a58575cfb7bc83f40f456c7c07350fe8eaed2d5603a849e4f",
+          "round_id": "cdc08c3f5590490086b4ea1bb6bbf84f",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 106688.526,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "3282240736beb0a04d3cac272d3926119b74c779233ec16039998d10e2bfdc16",
+          "round_id": "cdc08c3f5590490086b4ea1bb6bbf84f",
+          "stage": "cognitive_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 30.6813,
+          "version": "retrieval-worker-cognitive-planner-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "747b8d3151c7c3d9b6d95b23797748662ba61b3b94fe2e1e0e76de62a3450ed1",
+          "round_id": "cdc08c3f5590490086b4ea1bb6bbf84f",
+          "stage": "signal_collection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.214,
+          "version": "semantic-expansion-signals-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "7e14e3021f615be6137a0b6c3bf1c49c4b625567d6ce7e1db76cdddbc80728b9",
+          "round_id": "cdc08c3f5590490086b4ea1bb6bbf84f",
+          "stage": "work_reconciliation",
+          "outcome": "blocked",
+          "phase": "measurement",
+          "duration_ms": 7048.4986,
+          "version": "work-spec-reconciler-v1",
+          "failure_code": "work_reconciliation_failed",
+          "attempts": []
+        },
+        {
+          "artifact_id": "9374bb01d317a9eb11a416ff6e8ef5956c79efe1c0d743ee899153b29ce2a89b",
+          "round_id": "cdc08c3f5590490086b4ea1bb6bbf84f",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 103596.1582,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "970e25d18344310638b3d7060311be0a8662bbb649c2ab19a1a22a8bc72eecaf",
+          "round_id": "cdc08c3f5590490086b4ea1bb6bbf84f",
+          "stage": "candidate_admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.0029,
+          "version": "candidate-evidence-admission-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "b1f202ac715d50f29300944c8001a8509b18d2296914d8560b6f05647c282970",
+          "round_id": "cdc08c3f5590490086b4ea1bb6bbf84f",
+          "stage": "portfolio_projection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.3252,
+          "version": "retrieval-only-semantic-manifest-v3",
+          "failure_code": null,
+          "attempts": []
+        }
+      ],
+      "outcome": "waiting_user",
+      "failure_code": "loop_waiting_reason",
+      "observation_ms": 228285.7859999931,
+      "discarded_milestones_ms": {},
+      "missing_milestones": [
+        "patrol_decision_committed",
+        "derived_context_available",
+        "first_run_started",
+        "first_effective_output"
+      ]
+    },
+    {
+      "scenario": "long_tool_output",
+      "repeat": 2,
+      "milestones_ms": {
+        "durable_acceptance": 371.5501000115182
+      },
+      "identities": {
+        "durable_acceptance": {
+          "submission_id": "8da1317450914426b316dc0fdf44a088",
+          "loop_id": "517ccc45ce27414fa9af2ac7354c52d9",
+          "intent_id": "74ead1af25ba51ae99bb8f18c393db86",
+          "observation_id": "97314da268a947519e6b3c236503f2fc",
+          "round_id": "1f0ede5ea0144294a272859b6e5a57bd"
+        }
+      },
+      "stages": [
+        {
+          "artifact_id": "5d53a6c258dcfa5c5ada4d219c250ef45aaf5f2e8f20df04891c4b3ed8db3ed4",
+          "round_id": "1f0ede5ea0144294a272859b6e5a57bd",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 88027.6026,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": [
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 30340,
+              "output_tokens": 3197
+            },
+            {
+              "role": "semantic_index_projector",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 2024,
+              "output_tokens": 4544
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 917,
+              "output_tokens": 482
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "local",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 4200,
+              "output_tokens": 2973
+            },
+            {
+              "role": "semantic_index_interpreter",
+              "index_phase": "interpretation",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 35796,
+              "output_tokens": 9521
+            },
+            {
+              "role": "claim_verifier",
+              "index_phase": "interpretation_verifier",
+              "attempt": 1,
+              "model_calls": 1,
+              "input_tokens": 1763,
+              "output_tokens": 606
+            },
+            {
+              "role": "semantic_index_builder",
+              "attempt": 1
+            },
+            {
+              "role": "semantic_index_build",
+              "mode": "full",
+              "local_cache_hits": 1,
+              "reused_segments": 0,
+              "recomputed_segments": 3,
+              "local_projection_ms": 36177.7915,
+              "interpretation_ms": 51634.4444
+            }
+          ]
+        },
+        {
+          "artifact_id": "5e7257828cdeae883dc25f6cec84b00e6c5ff71c10cd6027baeb3c382a04fce6",
+          "round_id": "1f0ede5ea0144294a272859b6e5a57bd",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 74743.2607,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": [
+            {
+              "attempt": 1
+            }
+          ]
+        },
+        {
+          "artifact_id": "17005fd74e7f25db9ae576c115f57de069851d01f8b77950c188dd06b2585a11",
+          "round_id": "1f0ede5ea0144294a272859b6e5a57bd",
+          "stage": "candidate_admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.0029,
+          "version": "candidate-evidence-admission-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "3512689d8e1d5c0ba4f09f00ca9933cb024e815aaf824366a97d595b69d3322b",
+          "round_id": "1f0ede5ea0144294a272859b6e5a57bd",
+          "stage": "signal_collection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.1418,
+          "version": "semantic-expansion-signals-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "78e94a61c05d34b5872a0e6c3ccfe536da5893326910d0669c66e5c699e86853",
+          "round_id": "1f0ede5ea0144294a272859b6e5a57bd",
+          "stage": "work_reconciliation",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 8402.8998,
+          "version": "work-spec-reconciler-v1",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "7e28de43426eeee5b6e1fb5686d05b4670da949ce8beeda134d014c0fdd5b111",
+          "round_id": "1f0ede5ea0144294a272859b6e5a57bd",
+          "stage": "cognitive_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 27.9975,
+          "version": "retrieval-worker-cognitive-planner-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "90064a4618340be12703818a8b4d6c1f7ad79b3c1d843683b7b0313b72561755",
+          "round_id": "1f0ede5ea0144294a272859b6e5a57bd",
+          "stage": "portfolio_projection",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.7413,
+          "version": "retrieval-only-semantic-manifest-v3",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "96bbf9897a4586493dd40e49c2047a53f9f42389c1e94dac4e88132d98613c44",
+          "round_id": "1f0ede5ea0144294a272859b6e5a57bd",
+          "stage": "portfolio_indexing",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 88027.6026,
+          "version": "portfolio-semantic-index-service-v4",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "bf12d6edc1b9d0bd3096c1b1e9dc9db7b14b8f9e9cf81431b28121f219eefbe0",
+          "round_id": "1f0ede5ea0144294a272859b6e5a57bd",
+          "stage": "admission",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 0.0667,
+          "version": "semantic-expansion-admission-v2",
+          "failure_code": null,
+          "attempts": []
+        },
+        {
+          "artifact_id": "cf86c79e19febcd8e20a35d2333ca92e168d4f3030cba2b8433e4ffb5035f0a8",
+          "round_id": "1f0ede5ea0144294a272859b6e5a57bd",
+          "stage": "retrieval_planning",
+          "outcome": "ready",
+          "phase": "measurement",
+          "duration_ms": 74743.2607,
+          "version": "retrieval-backed-cognitive-advisor-v3",
+          "failure_code": null,
+          "attempts": []
+        }
+      ],
+      "outcome": "waiting_user",
+      "failure_code": "loop_waiting_reason",
+      "observation_ms": 251184.22439999995,
+      "discarded_milestones_ms": {},
+      "missing_milestones": [
+        "patrol_decision_committed",
+        "derived_context_available",
+        "first_run_started",
+        "first_effective_output"
+      ]
+    }
+  ],
+  "sources": [
+    {
+      "file": "cold-0.json",
+      "scenario": "cold",
+      "repeat": 0,
+      "model": "deepseek-flash",
+      "budget_preset": "normal",
+      "curation_max_output_tokens": 8192,
+      "host_curation_max_output_tokens": 65536,
+      "cap_source": "product default, test only",
+      "derivation_max_output_tokens": {},
+      "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
+      "database": "per-sample isolated PostgreSQL, migrated to head",
+      "synthetic_history": true,
+      "background_prewarm": true,
+      "observer_version": 3,
+      "run_scope": "all_causally_related_runs",
+      "timeout_seconds": 300.0,
+      "budgets": {
+        "max_lanes": 64,
+        "max_rounds": 40,
+        "max_retries": 6,
+        "max_contexts": 256,
+        "max_providers": 32,
+        "max_model_calls": 100,
+        "max_no_progress": 20,
+        "max_input_tokens": 500000,
+        "max_output_tokens": 50000,
+        "expansion_resources": {
+          "version": "expansion-resource-policy-v1",
+          "max_queries": null,
+          "max_exact_reads": null,
+          "max_planner_tokens": null,
+          "output_token_reserve": null,
+          "max_unique_candidates": null,
+          "max_planner_model_calls": null,
+          "max_request_input_tokens": null,
+          "max_compiled_evidence_items": null,
+          "max_catalog_descriptor_chars": null,
+          "max_model_attempts_per_operation": null
+        },
+        "max_concurrent_runs": 2,
+        "max_duration_seconds": 1800,
+        "max_new_lanes_per_round": 16,
+        "expansion_resources_source": "default"
+      },
+      "source_revision_id": "994d988e90de4ba29c5f291c219ebc96",
+      "usage_before_submission": {
+        "model_calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "preparation_artifact_ids": [],
+      "measured_usage": {
+        "model_calls": 11,
+        "input_tokens": 139029,
+        "output_tokens": 48565
+      },
+      "total_usage": {
+        "model_calls": 11,
+        "input_tokens": 139029,
+        "output_tokens": 48565
+      },
+      "index_mode_check": {
+        "expected": "full",
+        "observed": [
+          "full"
+        ],
+        "expected_mode_observed_any_revision": true,
+        "scope": "Sample-level diagnostics; exported stage attempts do not bind modes to source_revision_id."
+      }
+    },
+    {
+      "file": "cold-1.json",
+      "scenario": "cold",
+      "repeat": 1,
+      "model": "deepseek-flash",
+      "budget_preset": "normal",
+      "curation_max_output_tokens": 8192,
+      "host_curation_max_output_tokens": 65536,
+      "cap_source": "product default, test only",
+      "derivation_max_output_tokens": {},
+      "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
+      "database": "per-sample isolated PostgreSQL, migrated to head",
+      "synthetic_history": true,
+      "background_prewarm": true,
+      "observer_version": 3,
+      "run_scope": "all_causally_related_runs",
+      "timeout_seconds": 300.0,
+      "budgets": {
+        "max_lanes": 64,
+        "max_rounds": 40,
+        "max_retries": 6,
+        "max_contexts": 256,
+        "max_providers": 32,
+        "max_model_calls": 100,
+        "max_no_progress": 20,
+        "max_input_tokens": 500000,
+        "max_output_tokens": 50000,
+        "expansion_resources": {
+          "version": "expansion-resource-policy-v1",
+          "max_queries": null,
+          "max_exact_reads": null,
+          "max_planner_tokens": null,
+          "output_token_reserve": null,
+          "max_unique_candidates": null,
+          "max_planner_model_calls": null,
+          "max_request_input_tokens": null,
+          "max_compiled_evidence_items": null,
+          "max_catalog_descriptor_chars": null,
+          "max_model_attempts_per_operation": null
+        },
+        "max_concurrent_runs": 2,
+        "max_duration_seconds": 1800,
+        "max_new_lanes_per_round": 16,
+        "expansion_resources_source": "default"
+      },
+      "source_revision_id": "da7fef0c3d5148a39f2ecb9034304c60",
+      "usage_before_submission": {
+        "model_calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "preparation_artifact_ids": [],
+      "measured_usage": {
+        "model_calls": 12,
+        "input_tokens": 179420,
+        "output_tokens": 52925
+      },
+      "total_usage": {
+        "model_calls": 12,
+        "input_tokens": 179420,
+        "output_tokens": 52925
+      },
+      "index_mode_check": {
+        "expected": "full",
+        "observed": [
+          "full"
+        ],
+        "expected_mode_observed_any_revision": true,
+        "scope": "Sample-level diagnostics; exported stage attempts do not bind modes to source_revision_id."
+      }
+    },
+    {
+      "file": "cold-2.json",
+      "scenario": "cold",
+      "repeat": 2,
+      "model": "deepseek-flash",
+      "budget_preset": "normal",
+      "curation_max_output_tokens": 8192,
+      "host_curation_max_output_tokens": 65536,
+      "cap_source": "product default, test only",
+      "derivation_max_output_tokens": {},
+      "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
+      "database": "per-sample isolated PostgreSQL, migrated to head",
+      "synthetic_history": true,
+      "background_prewarm": true,
+      "observer_version": 3,
+      "run_scope": "all_causally_related_runs",
+      "timeout_seconds": 300.0,
+      "budgets": {
+        "max_lanes": 64,
+        "max_rounds": 40,
+        "max_retries": 6,
+        "max_contexts": 256,
+        "max_providers": 32,
+        "max_model_calls": 100,
+        "max_no_progress": 20,
+        "max_input_tokens": 500000,
+        "max_output_tokens": 50000,
+        "expansion_resources": {
+          "version": "expansion-resource-policy-v1",
+          "max_queries": null,
+          "max_exact_reads": null,
+          "max_planner_tokens": null,
+          "output_token_reserve": null,
+          "max_unique_candidates": null,
+          "max_planner_model_calls": null,
+          "max_request_input_tokens": null,
+          "max_compiled_evidence_items": null,
+          "max_catalog_descriptor_chars": null,
+          "max_model_attempts_per_operation": null
+        },
+        "max_concurrent_runs": 2,
+        "max_duration_seconds": 1800,
+        "max_new_lanes_per_round": 16,
+        "expansion_resources_source": "default"
+      },
+      "source_revision_id": "82c8ccf68f4d47cb91c8a853eed5b442",
+      "usage_before_submission": {
+        "model_calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "preparation_artifact_ids": [],
+      "measured_usage": {
+        "model_calls": 11,
+        "input_tokens": 129533,
+        "output_tokens": 43990
+      },
+      "total_usage": {
+        "model_calls": 11,
+        "input_tokens": 129533,
+        "output_tokens": 43990
+      },
+      "index_mode_check": {
+        "expected": "full",
+        "observed": [
+          "full"
+        ],
+        "expected_mode_observed_any_revision": true,
+        "scope": "Sample-level diagnostics; exported stage attempts do not bind modes to source_revision_id."
+      }
+    },
+    {
+      "file": "exact_cache-0.json",
+      "scenario": "exact_cache",
+      "repeat": 0,
+      "model": "deepseek-flash",
+      "budget_preset": "normal",
+      "curation_max_output_tokens": 8192,
+      "host_curation_max_output_tokens": 65536,
+      "cap_source": "product default, test only",
+      "derivation_max_output_tokens": {},
+      "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
+      "database": "per-sample isolated PostgreSQL, migrated to head",
+      "synthetic_history": true,
+      "background_prewarm": true,
+      "observer_version": 3,
+      "run_scope": "all_causally_related_runs",
+      "timeout_seconds": 300.0,
+      "budgets": {
+        "max_lanes": 64,
+        "max_rounds": 40,
+        "max_retries": 6,
+        "max_contexts": 256,
+        "max_providers": 32,
+        "max_model_calls": 100,
+        "max_no_progress": 20,
+        "max_input_tokens": 500000,
+        "max_output_tokens": 50000,
+        "expansion_resources": {
+          "version": "expansion-resource-policy-v1",
+          "max_queries": null,
+          "max_exact_reads": null,
+          "max_planner_tokens": null,
+          "output_token_reserve": null,
+          "max_unique_candidates": null,
+          "max_planner_model_calls": null,
+          "max_request_input_tokens": null,
+          "max_compiled_evidence_items": null,
+          "max_catalog_descriptor_chars": null,
+          "max_model_attempts_per_operation": null
+        },
+        "max_concurrent_runs": 2,
+        "max_duration_seconds": 1800,
+        "max_new_lanes_per_round": 16,
+        "expansion_resources_source": "default"
+      },
+      "source_revision_id": "a77ce7830a874cc19c6ea8681ac5d206",
+      "preparation": {
+        "blocker_code": null,
+        "index_ids": [
+          "9e34e9fe9f3e14c6067c13e311d57c55dfa9b0b9f4b4dbe322e8685f8a62bd49"
+        ],
+        "quality": [
+          "complete"
+        ]
+      },
+      "usage_before_submission": {
+        "model_calls": 6,
+        "input_tokens": 14202,
+        "output_tokens": 11739
+      },
+      "preparation_artifact_ids": [
+        "705c5549d103d2e0246a3cb81640c73668f022987fc0ae5f139a06017caa33ed"
+      ],
+      "measured_usage": {
+        "model_calls": 8,
+        "input_tokens": 122983,
+        "output_tokens": 30080
+      },
+      "total_usage": {
+        "model_calls": 14,
+        "input_tokens": 137185,
+        "output_tokens": 41819
+      },
+      "index_mode_check": {
+        "expected": "exact_hit",
+        "observed": [
+          "exact_hit"
+        ],
+        "expected_mode_observed_any_revision": true,
+        "scope": "Sample-level diagnostics; exported stage attempts do not bind modes to source_revision_id."
+      }
+    },
+    {
+      "file": "exact_cache-1.json",
+      "scenario": "exact_cache",
+      "repeat": 1,
+      "model": "deepseek-flash",
+      "budget_preset": "normal",
+      "curation_max_output_tokens": 8192,
+      "host_curation_max_output_tokens": 65536,
+      "cap_source": "product default, test only",
+      "derivation_max_output_tokens": {},
+      "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
+      "database": "per-sample isolated PostgreSQL, migrated to head",
+      "synthetic_history": true,
+      "background_prewarm": true,
+      "observer_version": 3,
+      "run_scope": "all_causally_related_runs",
+      "timeout_seconds": 300.0,
+      "budgets": {
+        "max_lanes": 64,
+        "max_rounds": 40,
+        "max_retries": 6,
+        "max_contexts": 256,
+        "max_providers": 32,
+        "max_model_calls": 100,
+        "max_no_progress": 20,
+        "max_input_tokens": 500000,
+        "max_output_tokens": 50000,
+        "expansion_resources": {
+          "version": "expansion-resource-policy-v1",
+          "max_queries": null,
+          "max_exact_reads": null,
+          "max_planner_tokens": null,
+          "output_token_reserve": null,
+          "max_unique_candidates": null,
+          "max_planner_model_calls": null,
+          "max_request_input_tokens": null,
+          "max_compiled_evidence_items": null,
+          "max_catalog_descriptor_chars": null,
+          "max_model_attempts_per_operation": null
+        },
+        "max_concurrent_runs": 2,
+        "max_duration_seconds": 1800,
+        "max_new_lanes_per_round": 16,
+        "expansion_resources_source": "default"
+      },
+      "source_revision_id": "05626354f2ab4f4c9921f9923e95495a",
+      "preparation": {
+        "blocker_code": null,
+        "index_ids": [
+          "4885e48132afaf1473f2204109bcdc65e7a014c2821a4581cc3d56bb97548a38"
+        ],
+        "quality": [
+          "complete"
+        ]
+      },
+      "usage_before_submission": {
+        "model_calls": 6,
+        "input_tokens": 14427,
+        "output_tokens": 11498
+      },
+      "preparation_artifact_ids": [
+        "594d8fef7c99811ca466de6c0e143e81cc32f1c172836666ac017d7dd8598b9d"
+      ],
+      "measured_usage": {
+        "model_calls": 7,
+        "input_tokens": 157368,
+        "output_tokens": 31574
+      },
+      "total_usage": {
+        "model_calls": 13,
+        "input_tokens": 171795,
+        "output_tokens": 43072
+      },
+      "index_mode_check": {
+        "expected": "exact_hit",
+        "observed": [
+          "exact_hit"
+        ],
+        "expected_mode_observed_any_revision": true,
+        "scope": "Sample-level diagnostics; exported stage attempts do not bind modes to source_revision_id."
+      }
+    },
+    {
+      "file": "exact_cache-2.json",
+      "scenario": "exact_cache",
+      "repeat": 2,
+      "model": "deepseek-flash",
+      "budget_preset": "normal",
+      "curation_max_output_tokens": 8192,
+      "host_curation_max_output_tokens": 65536,
+      "cap_source": "product default, test only",
+      "derivation_max_output_tokens": {},
+      "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
+      "database": "per-sample isolated PostgreSQL, migrated to head",
+      "synthetic_history": true,
+      "background_prewarm": true,
+      "observer_version": 3,
+      "run_scope": "all_causally_related_runs",
+      "timeout_seconds": 300.0,
+      "budgets": {
+        "max_lanes": 64,
+        "max_rounds": 40,
+        "max_retries": 6,
+        "max_contexts": 256,
+        "max_providers": 32,
+        "max_model_calls": 100,
+        "max_no_progress": 20,
+        "max_input_tokens": 500000,
+        "max_output_tokens": 50000,
+        "expansion_resources": {
+          "version": "expansion-resource-policy-v1",
+          "max_queries": null,
+          "max_exact_reads": null,
+          "max_planner_tokens": null,
+          "output_token_reserve": null,
+          "max_unique_candidates": null,
+          "max_planner_model_calls": null,
+          "max_request_input_tokens": null,
+          "max_compiled_evidence_items": null,
+          "max_catalog_descriptor_chars": null,
+          "max_model_attempts_per_operation": null
+        },
+        "max_concurrent_runs": 2,
+        "max_duration_seconds": 1800,
+        "max_new_lanes_per_round": 16,
+        "expansion_resources_source": "default"
+      },
+      "source_revision_id": "e866905b720540a3b90eb42ea1624f1c",
+      "preparation": {
+        "blocker_code": null,
+        "index_ids": [
+          "33a488cfdc14e3eac0dcb7030a845449fda7ab2de9b5b4319fc8277a91cee0e2"
+        ],
+        "quality": [
+          "complete"
+        ]
+      },
+      "usage_before_submission": {
+        "model_calls": 6,
+        "input_tokens": 14323,
+        "output_tokens": 11606
+      },
+      "preparation_artifact_ids": [
+        "6edb2f738257f2119423979bbf48ec4193c1f85bfd3e474693760d111b6828ba"
+      ],
+      "measured_usage": {
+        "model_calls": 6,
+        "input_tokens": 137501,
+        "output_tokens": 33028
+      },
+      "total_usage": {
+        "model_calls": 12,
+        "input_tokens": 151824,
+        "output_tokens": 44634
+      },
+      "index_mode_check": {
+        "expected": "exact_hit",
+        "observed": [
+          "exact_hit"
+        ],
+        "expected_mode_observed_any_revision": true,
+        "scope": "Sample-level diagnostics; exported stage attempts do not bind modes to source_revision_id."
+      }
+    },
+    {
+      "file": "small_append-0.json",
+      "scenario": "small_append",
+      "repeat": 0,
+      "model": "deepseek-flash",
+      "budget_preset": "normal",
+      "curation_max_output_tokens": 8192,
+      "host_curation_max_output_tokens": 65536,
+      "cap_source": "product default, test only",
+      "derivation_max_output_tokens": {},
+      "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
+      "database": "per-sample isolated PostgreSQL, migrated to head",
+      "synthetic_history": true,
+      "background_prewarm": true,
+      "observer_version": 3,
+      "run_scope": "all_causally_related_runs",
+      "timeout_seconds": 300.0,
+      "budgets": {
+        "max_lanes": 64,
+        "max_rounds": 40,
+        "max_retries": 6,
+        "max_contexts": 256,
+        "max_providers": 32,
+        "max_model_calls": 100,
+        "max_no_progress": 20,
+        "max_input_tokens": 500000,
+        "max_output_tokens": 50000,
+        "expansion_resources": {
+          "version": "expansion-resource-policy-v1",
+          "max_queries": null,
+          "max_exact_reads": null,
+          "max_planner_tokens": null,
+          "output_token_reserve": null,
+          "max_unique_candidates": null,
+          "max_planner_model_calls": null,
+          "max_request_input_tokens": null,
+          "max_compiled_evidence_items": null,
+          "max_catalog_descriptor_chars": null,
+          "max_model_attempts_per_operation": null
+        },
+        "max_concurrent_runs": 2,
+        "max_duration_seconds": 1800,
+        "max_new_lanes_per_round": 16,
+        "expansion_resources_source": "default"
+      },
+      "source_revision_id": "22be81c27399427e9608ceadc62e74cb",
+      "preparation": {
+        "blocker_code": null,
+        "index_ids": [
+          "e980627d61da56af4459a4557d4958c955d53cfe0cc4b65cfb4ce913b5ad9060"
+        ],
+        "quality": [
+          "complete"
+        ]
+      },
+      "usage_before_submission": {
+        "model_calls": 5,
+        "input_tokens": 13022,
+        "output_tokens": 8500
+      },
+      "preparation_artifact_ids": [
+        "7453a7b5fa8abdecb1b66e94fc85070266151d53b5ede8c6b42688b1e6e5c9e4"
+      ],
+      "measured_usage": {
+        "model_calls": 11,
+        "input_tokens": 139807,
+        "output_tokens": 50154
+      },
+      "total_usage": {
+        "model_calls": 16,
+        "input_tokens": 152829,
+        "output_tokens": 58654
+      },
+      "index_mode_check": {
+        "expected": "incremental",
+        "observed": [
+          "incremental"
+        ],
+        "expected_mode_observed_any_revision": true,
+        "scope": "Sample-level diagnostics; exported stage attempts do not bind modes to source_revision_id."
+      }
+    },
+    {
+      "file": "small_append-1.json",
+      "scenario": "small_append",
+      "repeat": 1,
+      "model": "deepseek-flash",
+      "budget_preset": "normal",
+      "curation_max_output_tokens": 8192,
+      "host_curation_max_output_tokens": 65536,
+      "cap_source": "product default, test only",
+      "derivation_max_output_tokens": {},
+      "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
+      "database": "per-sample isolated PostgreSQL, migrated to head",
+      "synthetic_history": true,
+      "background_prewarm": true,
+      "observer_version": 3,
+      "run_scope": "all_causally_related_runs",
+      "timeout_seconds": 300.0,
+      "budgets": {
+        "max_lanes": 64,
+        "max_rounds": 40,
+        "max_retries": 6,
+        "max_contexts": 256,
+        "max_providers": 32,
+        "max_model_calls": 100,
+        "max_no_progress": 20,
+        "max_input_tokens": 500000,
+        "max_output_tokens": 50000,
+        "expansion_resources": {
+          "version": "expansion-resource-policy-v1",
+          "max_queries": null,
+          "max_exact_reads": null,
+          "max_planner_tokens": null,
+          "output_token_reserve": null,
+          "max_unique_candidates": null,
+          "max_planner_model_calls": null,
+          "max_request_input_tokens": null,
+          "max_compiled_evidence_items": null,
+          "max_catalog_descriptor_chars": null,
+          "max_model_attempts_per_operation": null
+        },
+        "max_concurrent_runs": 2,
+        "max_duration_seconds": 1800,
+        "max_new_lanes_per_round": 16,
+        "expansion_resources_source": "default"
+      },
+      "source_revision_id": "7b7bd29a7a05457d8f2e4237b931ab8d",
+      "preparation": {
+        "blocker_code": null,
+        "index_ids": [
+          "cafc54f581695461aed35574a8f22fafd74f64716b1f62bb7a38bf34b3d68bf8"
+        ],
+        "quality": [
+          "complete"
+        ]
+      },
+      "usage_before_submission": {
+        "model_calls": 5,
+        "input_tokens": 15641,
+        "output_tokens": 16161
+      },
+      "preparation_artifact_ids": [
+        "2d6dc52bbe6cc6bc8c4aa206c3b9d50f6a820c81ed7982abd4416dc9c363bc8b"
+      ],
+      "measured_usage": {
+        "model_calls": 10,
+        "input_tokens": 152896,
+        "output_tokens": 27071
+      },
+      "total_usage": {
+        "model_calls": 15,
+        "input_tokens": 168537,
+        "output_tokens": 43232
+      },
+      "index_mode_check": {
+        "expected": "incremental",
+        "observed": [
+          "incremental"
+        ],
+        "expected_mode_observed_any_revision": true,
+        "scope": "Sample-level diagnostics; exported stage attempts do not bind modes to source_revision_id."
+      }
+    },
+    {
+      "file": "small_append-2.json",
+      "scenario": "small_append",
+      "repeat": 2,
+      "model": "deepseek-flash",
+      "budget_preset": "normal",
+      "curation_max_output_tokens": 8192,
+      "host_curation_max_output_tokens": 65536,
+      "cap_source": "product default, test only",
+      "derivation_max_output_tokens": {},
+      "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
+      "database": "per-sample isolated PostgreSQL, migrated to head",
+      "synthetic_history": true,
+      "background_prewarm": true,
+      "observer_version": 3,
+      "run_scope": "all_causally_related_runs",
+      "timeout_seconds": 300.0,
+      "budgets": {
+        "max_lanes": 64,
+        "max_rounds": 40,
+        "max_retries": 6,
+        "max_contexts": 256,
+        "max_providers": 32,
+        "max_model_calls": 100,
+        "max_no_progress": 20,
+        "max_input_tokens": 500000,
+        "max_output_tokens": 50000,
+        "expansion_resources": {
+          "version": "expansion-resource-policy-v1",
+          "max_queries": null,
+          "max_exact_reads": null,
+          "max_planner_tokens": null,
+          "output_token_reserve": null,
+          "max_unique_candidates": null,
+          "max_planner_model_calls": null,
+          "max_request_input_tokens": null,
+          "max_compiled_evidence_items": null,
+          "max_catalog_descriptor_chars": null,
+          "max_model_attempts_per_operation": null
+        },
+        "max_concurrent_runs": 2,
+        "max_duration_seconds": 1800,
+        "max_new_lanes_per_round": 16,
+        "expansion_resources_source": "default"
+      },
+      "source_revision_id": "ddc2e109c1d5466ba6dbd8a8bb176ddd",
+      "preparation": {
+        "blocker_code": null,
+        "index_ids": [
+          "743df70ffad5797431c7e6367b4a4f735d77ca7803cbb7665c898717494b19a0"
+        ],
+        "quality": [
+          "complete"
+        ]
+      },
+      "usage_before_submission": {
+        "model_calls": 6,
+        "input_tokens": 14455,
+        "output_tokens": 13297
+      },
+      "preparation_artifact_ids": [
+        "91ca00d849a71af79892393b62f0c2d709667251f8c63ca54dc2aeb52210bbc0"
+      ],
+      "measured_usage": {
+        "model_calls": 10,
+        "input_tokens": 152993,
+        "output_tokens": 30013
+      },
+      "total_usage": {
+        "model_calls": 16,
+        "input_tokens": 167448,
+        "output_tokens": 43310
+      },
+      "index_mode_check": {
+        "expected": "incremental",
+        "observed": [
+          "incremental"
+        ],
+        "expected_mode_observed_any_revision": true,
+        "scope": "Sample-level diagnostics; exported stage attempts do not bind modes to source_revision_id."
+      }
+    },
+    {
+      "file": "long_tool_output-0.json",
+      "scenario": "long_tool_output",
+      "repeat": 0,
+      "model": "deepseek-flash",
+      "budget_preset": "normal",
+      "curation_max_output_tokens": 8192,
+      "host_curation_max_output_tokens": 65536,
+      "cap_source": "product default, test only",
+      "derivation_max_output_tokens": {},
+      "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
+      "database": "per-sample isolated PostgreSQL, migrated to head",
+      "synthetic_history": true,
+      "background_prewarm": true,
+      "observer_version": 3,
+      "run_scope": "all_causally_related_runs",
+      "timeout_seconds": 300.0,
+      "budgets": {
+        "max_lanes": 64,
+        "max_rounds": 40,
+        "max_retries": 6,
+        "max_contexts": 256,
+        "max_providers": 32,
+        "max_model_calls": 100,
+        "max_no_progress": 20,
+        "max_input_tokens": 500000,
+        "max_output_tokens": 50000,
+        "expansion_resources": {
+          "version": "expansion-resource-policy-v1",
+          "max_queries": null,
+          "max_exact_reads": null,
+          "max_planner_tokens": null,
+          "output_token_reserve": null,
+          "max_unique_candidates": null,
+          "max_planner_model_calls": null,
+          "max_request_input_tokens": null,
+          "max_compiled_evidence_items": null,
+          "max_catalog_descriptor_chars": null,
+          "max_model_attempts_per_operation": null
+        },
+        "max_concurrent_runs": 2,
+        "max_duration_seconds": 1800,
+        "max_new_lanes_per_round": 16,
+        "expansion_resources_source": "default"
+      },
+      "source_revision_id": "d355f1203aa14a97aa921eb3569fdd68",
+      "usage_before_submission": {
+        "model_calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "preparation_artifact_ids": [],
+      "measured_usage": {
+        "model_calls": 11,
+        "input_tokens": 188888,
+        "output_tokens": 47986
+      },
+      "total_usage": {
+        "model_calls": 11,
+        "input_tokens": 188888,
+        "output_tokens": 47986
+      },
+      "index_mode_check": {
+        "expected": "full",
+        "observed": [
+          "full"
+        ],
+        "expected_mode_observed_any_revision": true,
+        "scope": "Sample-level diagnostics; exported stage attempts do not bind modes to source_revision_id."
+      }
+    },
+    {
+      "file": "long_tool_output-1.json",
+      "scenario": "long_tool_output",
+      "repeat": 1,
+      "model": "deepseek-flash",
+      "budget_preset": "normal",
+      "curation_max_output_tokens": 8192,
+      "host_curation_max_output_tokens": 65536,
+      "cap_source": "product default, test only",
+      "derivation_max_output_tokens": {},
+      "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
+      "database": "per-sample isolated PostgreSQL, migrated to head",
+      "synthetic_history": true,
+      "background_prewarm": true,
+      "observer_version": 3,
+      "run_scope": "all_causally_related_runs",
+      "timeout_seconds": 300.0,
+      "budgets": {
+        "max_lanes": 64,
+        "max_rounds": 40,
+        "max_retries": 6,
+        "max_contexts": 256,
+        "max_providers": 32,
+        "max_model_calls": 100,
+        "max_no_progress": 20,
+        "max_input_tokens": 500000,
+        "max_output_tokens": 50000,
+        "expansion_resources": {
+          "version": "expansion-resource-policy-v1",
+          "max_queries": null,
+          "max_exact_reads": null,
+          "max_planner_tokens": null,
+          "output_token_reserve": null,
+          "max_unique_candidates": null,
+          "max_planner_model_calls": null,
+          "max_request_input_tokens": null,
+          "max_compiled_evidence_items": null,
+          "max_catalog_descriptor_chars": null,
+          "max_model_attempts_per_operation": null
+        },
+        "max_concurrent_runs": 2,
+        "max_duration_seconds": 1800,
+        "max_new_lanes_per_round": 16,
+        "expansion_resources_source": "default"
+      },
+      "source_revision_id": "cbd468745c764f00afeff3ad1be033db",
+      "usage_before_submission": {
+        "model_calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "preparation_artifact_ids": [],
+      "measured_usage": {
+        "model_calls": 12,
+        "input_tokens": 190833,
+        "output_tokens": 45267
+      },
+      "total_usage": {
+        "model_calls": 12,
+        "input_tokens": 190833,
+        "output_tokens": 45267
+      },
+      "index_mode_check": {
+        "expected": "full",
+        "observed": [
+          "full"
+        ],
+        "expected_mode_observed_any_revision": true,
+        "scope": "Sample-level diagnostics; exported stage attempts do not bind modes to source_revision_id."
+      }
+    },
+    {
+      "file": "long_tool_output-2.json",
+      "scenario": "long_tool_output",
+      "repeat": 2,
+      "model": "deepseek-flash",
+      "budget_preset": "normal",
+      "curation_max_output_tokens": 8192,
+      "host_curation_max_output_tokens": 65536,
+      "cap_source": "product default, test only",
+      "derivation_max_output_tokens": {},
+      "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
+      "database": "per-sample isolated PostgreSQL, migrated to head",
+      "synthetic_history": true,
+      "background_prewarm": true,
+      "observer_version": 3,
+      "run_scope": "all_causally_related_runs",
+      "timeout_seconds": 300.0,
+      "budgets": {
+        "max_lanes": 64,
+        "max_rounds": 40,
+        "max_retries": 6,
+        "max_contexts": 256,
+        "max_providers": 32,
+        "max_model_calls": 100,
+        "max_no_progress": 20,
+        "max_input_tokens": 500000,
+        "max_output_tokens": 50000,
+        "expansion_resources": {
+          "version": "expansion-resource-policy-v1",
+          "max_queries": null,
+          "max_exact_reads": null,
+          "max_planner_tokens": null,
+          "output_token_reserve": null,
+          "max_unique_candidates": null,
+          "max_planner_model_calls": null,
+          "max_request_input_tokens": null,
+          "max_compiled_evidence_items": null,
+          "max_catalog_descriptor_chars": null,
+          "max_model_attempts_per_operation": null
+        },
+        "max_concurrent_runs": 2,
+        "max_duration_seconds": 1800,
+        "max_new_lanes_per_round": 16,
+        "expansion_resources_source": "default"
+      },
+      "source_revision_id": "dc3cd9b1694b422c99135471421b7062",
+      "usage_before_submission": {
+        "model_calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "preparation_artifact_ids": [],
+      "measured_usage": {
+        "model_calls": 14,
+        "input_tokens": 264728,
+        "output_tokens": 50735
+      },
+      "total_usage": {
+        "model_calls": 14,
+        "input_tokens": 264728,
+        "output_tokens": 50735
+      },
+      "index_mode_check": {
+        "expected": "full",
+        "observed": [
+          "full"
+        ],
+        "expected_mode_observed_any_revision": true,
+        "scope": "Sample-level diagnostics; exported stage attempts do not bind modes to source_revision_id."
+      }
+    }
+  ],
+  "scope": "Synthetic full-pipeline smoke, default model/normal budget; no production caches or histories.",
+  "timing_limitations": "HTTP uses in-process ASGI transport. Downstream times include supervisor startup, recovery and DB polling. Preparation is excluded but charged to the same normal budget. Not desktop click-to-render latency.",
+  "observer_versions": [
+    3
+  ],
+  "attribution_limitations": null,
+  "legacy_observer_limitations": null,
+  "configuration_limitations": "The configured default model is retained. The curation output cap uses its product schema default (8192), replacing the host's 65536 in test memory only; host defaults are not measured unchanged."
+}

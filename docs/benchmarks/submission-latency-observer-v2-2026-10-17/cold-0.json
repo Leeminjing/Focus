@@ -1,0 +1,249 @@
+{
+  "metadata": {
+    "scenario": "cold",
+    "repeat": 0,
+    "model": "deepseek-flash",
+    "budget_preset": "normal",
+    "curation_max_output_tokens": 8192,
+    "host_curation_max_output_tokens": 65536,
+    "cap_source": "product default, test only",
+    "derivation_max_output_tokens": {},
+    "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
+    "database": "per-sample isolated PostgreSQL, migrated to head",
+    "synthetic_history": true,
+    "background_prewarm": true,
+    "observer_version": 2,
+    "timeout_seconds": 300.0,
+    "budgets": {
+      "max_lanes": 64,
+      "max_rounds": 40,
+      "max_retries": 6,
+      "max_contexts": 256,
+      "max_providers": 32,
+      "max_model_calls": 100,
+      "max_no_progress": 20,
+      "max_input_tokens": 500000,
+      "max_output_tokens": 50000,
+      "expansion_resources": {
+        "version": "expansion-resource-policy-v1",
+        "max_queries": null,
+        "max_exact_reads": null,
+        "max_planner_tokens": null,
+        "output_token_reserve": null,
+        "max_unique_candidates": null,
+        "max_planner_model_calls": null,
+        "max_request_input_tokens": null,
+        "max_compiled_evidence_items": null,
+        "max_catalog_descriptor_chars": null,
+        "max_model_attempts_per_operation": null
+      },
+      "max_concurrent_runs": 2,
+      "max_duration_seconds": 1800,
+      "max_new_lanes_per_round": 16,
+      "expansion_resources_source": "default"
+    },
+    "source_revision_id": "6b82041e574141e4ab0f2c9dae516546",
+    "usage_before_submission": {
+      "model_calls": 0,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "preparation_artifact_ids": [],
+    "measured_usage": {
+      "model_calls": 11,
+      "input_tokens": 147009,
+      "output_tokens": 39071
+    },
+    "total_usage": {
+      "model_calls": 11,
+      "input_tokens": 147009,
+      "output_tokens": 39071
+    }
+  },
+  "sample": {
+    "scenario": "cold",
+    "repeat": 0,
+    "milestones_ms": {
+      "durable_acceptance": 415.5239999963669
+    },
+    "identities": {
+      "durable_acceptance": {
+        "submission_id": "d04c7600b4594112b696094852e16075",
+        "loop_id": "1e54c7f871f84e5da32309d598e52276",
+        "intent_id": "c3b960b0bb8b592f942e45dda19ceb9b",
+        "observation_id": "540c9ba0dc64497081be0100a44882c7",
+        "round_id": "68b45ed74b804e4aa05ad9af7edc12f3"
+      }
+    },
+    "stages": [
+      {
+        "artifact_id": "aae8c1cea947efba9441321a9798d122f88599c63892618fa5681e6b405617c4",
+        "round_id": "68b45ed74b804e4aa05ad9af7edc12f3",
+        "stage": "portfolio_indexing",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 84794.4017,
+        "version": "portfolio-semantic-index-service-v4",
+        "failure_code": null,
+        "attempts": [
+          {
+            "role": "semantic_index_projector",
+            "index_phase": "local",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 2024,
+            "output_tokens": 3310
+          },
+          {
+            "role": "claim_verifier",
+            "index_phase": "local",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 1981,
+            "output_tokens": 1239
+          },
+          {
+            "role": "semantic_index_interpreter",
+            "index_phase": "interpretation",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 5212,
+            "output_tokens": 5101
+          },
+          {
+            "role": "claim_verifier",
+            "index_phase": "interpretation_verifier",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 1445,
+            "output_tokens": 272
+          },
+          {
+            "role": "semantic_index_builder",
+            "attempt": 1
+          },
+          {
+            "role": "semantic_index_build",
+            "mode": "full",
+            "local_cache_hits": 1,
+            "reused_segments": 0,
+            "recomputed_segments": 2,
+            "local_projection_ms": 37066.147,
+            "interpretation_ms": 47518.543
+          }
+        ]
+      },
+      {
+        "artifact_id": "96664bc4a47b06eedd220e4d807b99f48a605b8d878844eb781eebccc54bbb52",
+        "round_id": "68b45ed74b804e4aa05ad9af7edc12f3",
+        "stage": "retrieval_planning",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 121671.0119,
+        "version": "retrieval-backed-cognitive-advisor-v3",
+        "failure_code": null,
+        "attempts": [
+          {
+            "attempt": 1
+          }
+        ]
+      },
+      {
+        "artifact_id": "18738bb2a25704c80085cc73b1b17458db35a0bd32c4042b7cba465fbea44dbd",
+        "round_id": "68b45ed74b804e4aa05ad9af7edc12f3",
+        "stage": "retrieval_planning",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 121671.0119,
+        "version": "retrieval-backed-cognitive-advisor-v3",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "45f6801d7b7322bd23a093f496b9c05d662a1e75dd6fe36af7ef7a4db8bbc2d6",
+        "round_id": "68b45ed74b804e4aa05ad9af7edc12f3",
+        "stage": "candidate_admission",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 0.0037,
+        "version": "candidate-evidence-admission-v1",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "648cb4cce912c0c187f6c9549746d114769f3428e18306108b368916120e50db",
+        "round_id": "68b45ed74b804e4aa05ad9af7edc12f3",
+        "stage": "work_reconciliation",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 7240.3802,
+        "version": "work-spec-reconciler-v1",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "a248cdf4835d64a2aebf74da32749826249cef11922cdb6e7087d21985131711",
+        "round_id": "68b45ed74b804e4aa05ad9af7edc12f3",
+        "stage": "portfolio_projection",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 0.8574,
+        "version": "retrieval-only-semantic-manifest-v3",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "c8df3007452a5510c574edde0f892bd36bb410c0efa4435ce7716b70089f7e4b",
+        "round_id": "68b45ed74b804e4aa05ad9af7edc12f3",
+        "stage": "signal_collection",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 0.1511,
+        "version": "semantic-expansion-signals-v1",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "cc0ca67335203d87a71967356b3ba9ac296d56050b9ea11d8c27f0704e9e56e4",
+        "round_id": "68b45ed74b804e4aa05ad9af7edc12f3",
+        "stage": "admission",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 0.183,
+        "version": "semantic-expansion-admission-v2",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "dd7742b8f8de855fdc6350c0f6f2af28bf7cd4249ad10c92955b1e83b84419e6",
+        "round_id": "68b45ed74b804e4aa05ad9af7edc12f3",
+        "stage": "cognitive_planning",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 23.5713,
+        "version": "retrieval-worker-cognitive-planner-v2",
+        "failure_code": null,
+        "attempts": []
+      },
+      {
+        "artifact_id": "f4cab5dc55c5c4af5964d89ca626ebebbaf0acd1fdc995ae8c9f5b6212a7b851",
+        "round_id": "68b45ed74b804e4aa05ad9af7edc12f3",
+        "stage": "portfolio_indexing",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 84794.4017,
+        "version": "portfolio-semantic-index-service-v4",
+        "failure_code": null,
+        "attempts": []
+      }
+    ],
+    "outcome": "timeout",
+    "failure_code": null,
+    "missing_milestones": [
+      "patrol_decision_committed",
+      "derived_context_available",
+      "first_run_started",
+      "first_effective_output"
+    ]
+  }
+}

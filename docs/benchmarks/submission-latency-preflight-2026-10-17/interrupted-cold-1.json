@@ -1,0 +1,137 @@
+{
+  "metadata": {
+    "scenario": "cold",
+    "repeat": 1,
+    "model": "deepseek-flash",
+    "budget_preset": "normal",
+    "curation_max_output_tokens": 8192,
+    "host_curation_max_output_tokens": 65536,
+    "cap_source": "product default, test only",
+    "derivation_max_output_tokens": {},
+    "measurement_boundary": "HTTP submission through committed DB polling; includes supervisor startup",
+    "database": "per-sample isolated PostgreSQL, migrated to head",
+    "synthetic_history": true,
+    "background_prewarm": true,
+    "observer_version": 2,
+    "timeout_seconds": 300.0,
+    "budgets": {
+      "max_lanes": 64,
+      "max_rounds": 40,
+      "max_retries": 6,
+      "max_contexts": 256,
+      "max_providers": 32,
+      "max_model_calls": 100,
+      "max_no_progress": 20,
+      "max_input_tokens": 500000,
+      "max_output_tokens": 50000,
+      "expansion_resources": {
+        "version": "expansion-resource-policy-v1",
+        "max_queries": null,
+        "max_exact_reads": null,
+        "max_planner_tokens": null,
+        "output_token_reserve": null,
+        "max_unique_candidates": null,
+        "max_planner_model_calls": null,
+        "max_request_input_tokens": null,
+        "max_compiled_evidence_items": null,
+        "max_catalog_descriptor_chars": null,
+        "max_model_attempts_per_operation": null
+      },
+      "max_concurrent_runs": 2,
+      "max_duration_seconds": 1800,
+      "max_new_lanes_per_round": 16,
+      "expansion_resources_source": "default"
+    },
+    "source_revision_id": "bce6c62a09fd47149455f348a2d9f070",
+    "usage_before_submission": {
+      "model_calls": 0,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "preparation_artifact_ids": []
+  },
+  "sample": {
+    "scenario": "cold",
+    "repeat": 1,
+    "milestones_ms": {
+      "durable_acceptance": 540.9943000122439
+    },
+    "identities": {
+      "durable_acceptance": {
+        "submission_id": "1ef1ded5e80b4f5eaac7e3c3995bcdf7",
+        "loop_id": "21141201f6d748e88365569a283f3297",
+        "intent_id": "95afbd3133b655ef9a55bdfa4816b393",
+        "observation_id": "7f83bfee1b7b4584a918ea3368a844cf",
+        "round_id": "8e43b1fc713a4fdcbc03000c14157ca8"
+      }
+    },
+    "stages": [
+      {
+        "artifact_id": "93d6f75524a69ee9d701f9836642c161c5ca32737fb290b186afa2b987f4927a",
+        "round_id": "8e43b1fc713a4fdcbc03000c14157ca8",
+        "stage": "portfolio_indexing",
+        "outcome": "ready",
+        "phase": "measurement",
+        "duration_ms": 59479.5906,
+        "version": "portfolio-semantic-index-service-v4",
+        "failure_code": null,
+        "attempts": [
+          {
+            "role": "semantic_index_projector",
+            "index_phase": "local",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 2024,
+            "output_tokens": 2602
+          },
+          {
+            "role": "claim_verifier",
+            "index_phase": "local",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 1814,
+            "output_tokens": 1155
+          },
+          {
+            "role": "semantic_index_interpreter",
+            "index_phase": "interpretation",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 5254,
+            "output_tokens": 3228
+          },
+          {
+            "role": "claim_verifier",
+            "index_phase": "interpretation_verifier",
+            "attempt": 1,
+            "model_calls": 1,
+            "input_tokens": 1445,
+            "output_tokens": 251
+          },
+          {
+            "role": "semantic_index_builder",
+            "attempt": 1
+          },
+          {
+            "role": "semantic_index_build",
+            "mode": "full",
+            "local_cache_hits": 1,
+            "reused_segments": 0,
+            "recomputed_segments": 2,
+            "local_projection_ms": 29103.3048,
+            "interpretation_ms": 29769.096
+          }
+        ]
+      }
+    ],
+    "outcome": "error",
+    "failure_code": "TimeoutError",
+    "observation_ms": 26822102.372800015,
+    "missing_milestones": [
+      "patrol_decision_committed",
+      "derived_context_available",
+      "first_run_started",
+      "first_effective_output"
+    ]
+  }
+}
