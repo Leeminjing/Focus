@@ -109,6 +109,10 @@ macOS uses the workbench window. Image input requires a configured model with im
 
 Shell capabilities differ by platform. Windows supports read-only, workspace-write, and full-access execution. macOS currently supports full-access Shell only; restricted modes report that execution is unavailable and never relax permissions automatically. Users can approve full access for one call, or continue using file tools. Cancellation and timeouts on macOS stop the command's process group, then capture workspace file changes after exit is confirmed. Full access allows programs to leave that group, so it does not provide Windows Job-equivalent process-tree containment. macOS does not yet offer the full restricted coding experience.
 
+The default code tools work without Shell access: `search_files` finds paths by glob, and `search_text` finds single-line literal text with paths, line/column numbers, and context. Both respect nested `.gitignore`, `.ignore`, and `.rgignore` rules, skip hidden entries by default, and do not follow directory links. `read_file_lines` returns numbered text pages with SHA-256 and continuation cursors. `edit_file` validates unique, non-overlapping old-text matches against the original file, commits replacements together, returns the actual diff, and records the file version. Pass `expected_sha256` to reject stale edits, then reread on a mismatch.
+
+Line reads and edits support UTF-8 files up to 4 MiB. Pages default to 200 lines, with limits of 500 lines and 20000 content characters; long lines can continue by column. Searches default to 100 matching lines/paths, adjustable to 200, with scan and output limits. Results explicitly report `truncated`, `incomplete`, `limit_reasons`, and `skipped` when a search is partial. `read_file` retains complete material reading, and `write_file` handles new files or intentional whole-file writes.
+
 ## Strategy: bring your way of working
 
 **A Strategy describes how a project should advance, how contexts should be organized, and what information subsequent work should inherit.**

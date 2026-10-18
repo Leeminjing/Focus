@@ -260,7 +260,7 @@ def test_subagent_role_assembly_and_mailbox_injection(tmp_path, wait_until, monk
             patrol_cfg = captured[-1]
             patrol_names = {tool.name for tool in patrol_cfg["tools"]}
             # 小兵机制纯净：仅工作区工具，无任何协作工具与消息注入
-            assert patrol_names <= {"read_file", "list_files", "write_file",
+            assert patrol_names <= {"read_file", "read_file_lines", "list_files", "search_files", "search_text", "write_file", "edit_file",
                                     "bash", "powershell", "cmd", "sh"}
             assert "send_message" not in patrol_names
             assert "spawn_agent" not in patrol_names
