@@ -114,6 +114,7 @@ def test_desktop_run_sync_persists_record_error():
                     prompt_cache_hit_tokens,
                 )
             )
+            return "worker", "task-error"
 
         async def completed():
             return None

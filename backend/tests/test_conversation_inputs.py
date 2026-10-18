@@ -218,7 +218,8 @@ def test_steer_reaches_typed_checkpoint_before_model_and_stops_stale_tool(tmp_pa
     asyncio.run(scenario())
 
 
-def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypatch, wait_until):
+@pytest.mark.parametrize("finalization_fault", [None, "before_commit", "after_commit"])
+def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypatch, wait_until, finalization_fault):
     """HTTP→准入→真实 dispatcher/worker→精确补充 checkpoint→结算→下一轮。"""
     from backend.app.gateway.app import app
     from backend.app.desktop import service as service_module
@@ -246,6 +247,7 @@ def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypa
 
     monkeypatch.setattr(service_module, "get_available_tools", empty_tools)
     monkeypatch.setattr(service_module, "make_lead_agent", make_agent)
+    monkeypatch.setattr(service_module, "_RUN_FINALIZATION_RETRY_INITIAL_SECONDS", 0.01)
     headers = {"X-Focus-Session": "focus-dev-session"}
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
         config = app.state.desktop_service.app_config
@@ -265,6 +267,32 @@ def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypa
         initial = client.post(f"{path}/runs", headers=headers, json={"message": "initial", "permissions": ["read"], **model_options})
         assert initial.status_code == 200, initial.text
         run = initial.json()
+        service = app.state.desktop_service
+        finalizer = service.run_lifecycle
+        original_finalize = finalizer.finalize
+        original_enqueue = finalizer._outbox.enqueue_settled
+        attempts = []
+
+        async def enqueue(session, run_id, payload):
+            event = await original_enqueue(session, run_id, payload)
+            if finalization_fault == "before_commit" and run_id == run["run_id"] and len(attempts) == 1:
+                raise RuntimeError("injected settlement transaction failure")
+            return event
+
+        async def finalize(record, *args, **kwargs):
+            if record.run_id == run["run_id"]:
+                attempts.append(record.run_id)
+                if len(attempts) == 2:
+                    controls["retry_waiting"] = True
+                    controls["retry_release"] = asyncio.Event()
+                    await controls["retry_release"].wait()
+            result = await original_finalize(record, *args, **kwargs)
+            if finalization_fault == "after_commit" and record.run_id == run["run_id"] and len(attempts) == 1:
+                raise RuntimeError("injected lost settlement acknowledgement")
+            return result
+
+        monkeypatch.setattr(finalizer._outbox, "enqueue_settled", enqueue)
+        monkeypatch.setattr(finalizer, "finalize", finalize)
         try:
             wait_until(lambda: controls.get("started") or client.get(
                 f"/desktop/api/runs/{run['run_id']}", headers=headers).json()["status"] in {"error", "interrupted"}, timeout=30)
@@ -287,6 +315,20 @@ def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypa
         async def release():
             controls["release"].set()
         client.portal.call(release)
+        if finalization_fault:
+            wait_until(lambda: controls.get("retry_waiting"), timeout=30)
+            if finalization_fault == "before_commit":
+                async def unsettled():
+                    async with service.session_factory() as session:
+                        row = await session.get(DesktopRun, run["run_id"])
+                        return row.status, row.settled_at
+                assert client.portal.call(unsettled) == ("running", None)
+                assert next(row for row in client.get(f"{path}/inputs", headers=headers).json()
+                            if row["input_id"] == queued.json()["input_id"])["status"] == "queued"
+                assert len(assembled) == 1
+            async def release_retry():
+                controls["retry_release"].set()
+            client.portal.call(release_retry)
         wait_until(lambda: any(row["status"] == "started" for row in client.get(f"{path}/inputs", headers=headers).json()), timeout=30)
         rows = {row["input_id"]: row for row in client.get(f"{path}/inputs", headers=headers).json()}
         assert rows[steer.json()["input_id"]]["status"] == "delivered"
@@ -300,3 +342,20 @@ def test_http_delivery_and_queued_run_use_production_dispatch(tmp_path, monkeypa
         assert detail["latest_main_run"]["equipment"]["reasoning_effort"] == "high"
         assert detail["context_usage"]["estimated_tokens"] > 0
         assert assembled == [(selected_model.name, "high"), (selected_model.name, "high")]
+        wait_until(lambda: run["run_id"] not in service._pending_run_finalizations, timeout=30)
+
+        async def settlement_facts():
+            from backend.app.desktop.context_evolution.models import ContextRevision
+            from backend.app.desktop.run_orchestration.models import RunDispatch, RunOutboxEvent
+
+            async with service.session_factory() as session:
+                runs = (await session.scalars(select(DesktopRun).where(DesktopRun.task_id == task["task_id"]))).all()
+                revisions = (await session.scalars(select(ContextRevision).where(
+                    ContextRevision.origin_id == run["run_id"], ContextRevision.origin_kind == "run_settled"))).all()
+                events = (await session.scalars(select(RunOutboxEvent).where(RunOutboxEvent.run_id == run["run_id"]))).all()
+                dispatch = await session.scalar(select(RunDispatch).where(RunDispatch.run_id == run["run_id"]))
+                return len(runs), len(revisions), len(events), dispatch.status, all(row.settled_at for row in runs)
+
+        wait_until(lambda: client.portal.call(settlement_facts)[-1], timeout=30)
+        assert client.portal.call(settlement_facts)[:4] == (2, 1, 1, "settled")
+        assert len(attempts) == (2 if finalization_fault else 1)
