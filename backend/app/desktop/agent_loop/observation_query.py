@@ -2,6 +2,7 @@
 
 输入为 Desktop 会话、Loop/Observation 身份、section 与绑定内容哈希的游标；输出为安全摘要或有界冻结条目。
 具体工作流为复用当前 Live 权限，核对不可变输入身份，白名单投影并分页；版本清单截止所选 generation，因果链保留完整原文和精确 Oi 引用，输入前证据不读取当前 head 回填历史，不写领域状态。
+Patrol 审计按精确 Observation 读取阶段及 Curator；分页绑定已读审计内容，变化时要求重新读取，避免记录错位。
 示例：await ObservationInspectionQuery().read(session, "loop", "observation", section="sources", limit=40)。
 """
 
@@ -17,13 +18,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.desktop.agent_loop.live_access import LoopLiveAccessPolicy, LoopLiveRedactionPolicy
 from backend.app.desktop.agent_loop.models import LoopDecision, LoopObservation, LoopRound
+from backend.app.desktop.agent_loop.patrol_audit_query import PatrolAuditQuery
 from backend.app.desktop.agent_loop.observation_inspection_snapshot import ObservationSnapshotView
 from backend.app.desktop.agent_loop.causal_snapshot import read_causal_snapshot
 from backend.app.desktop.agent_loop.task_progress.models import LoopDecisionInputs
 from backend.app.desktop.domain_evidence.identity import canonical_hash
 
 
-ObservationSection = Literal["summary", "previous_progress", "sources", "lineage", "versions", "causal_chain", "snapshot"]
+ObservationSection = Literal["summary", "previous_progress", "sources", "lineage", "versions", "causal_chain", "snapshot", "patrol_history"]
 
 
 class ObservationInspectionQuery:
@@ -55,11 +57,15 @@ class ObservationInspectionQuery:
             if cursor:
                 raise HTTPException(422, "摘要不接受分页游标")
             return summary
-        if section not in {"previous_progress", "sources", "lineage", "versions", "causal_chain", "snapshot"} or not 1 <= limit <= 120:
+        if section not in {"previous_progress", "sources", "lineage", "versions", "causal_chain", "snapshot", "patrol_history"} or not 1 <= limit <= 120:
             raise HTTPException(422, "无效的冻结读取范围")
         binding = [loop_id, observation_id, observation.envelope_hash, frozen.content_hash if frozen else None, section]
-        offset = self._offset(cursor, binding)
-        if section == "versions":
+        patrol = None
+        if section == "patrol_history":
+            patrol = await PatrolAuditQuery().read(session, loop_id, observation_id=observation_id)
+            rows = [{"history_kind": "phase", **item} for item in patrol["phases"]]
+            rows += [{"history_kind": "curator", **item} for item in patrol["curators"]]
+        elif section == "versions":
             versions = await session.scalars(select(LoopObservation).where(
                 LoopObservation.round_id == observation.round_id,
                 LoopObservation.generation <= observation.generation,
@@ -79,6 +85,14 @@ class ObservationInspectionQuery:
                 rows.extend({"snapshot_section": name, **item} for item in self._rows(evidence, name, access.permissions))
         else:
             rows = self._rows(payload, section, access.permissions)
+        if patrol is not None:
+            binding.append(canonical_hash(patrol))
+        try:
+            offset = self._offset(cursor, binding)
+        except HTTPException as exc:
+            if patrol is not None:
+                raise HTTPException(409, "Patrol 审计记录或权限已变化，请重新读取此版本") from exc
+            raise
         if offset > len(rows):
             raise HTTPException(422, "游标超出冻结集合")
         end = min(offset + limit, len(rows))
@@ -90,6 +104,7 @@ class ObservationInspectionQuery:
                 raise HTTPException(409, "原始输入因果快照无法完整读取") from exc
         return {
             **summary, "section": section, "items": rows[offset:end], "total": len(rows),
+            **({"patrol_session": patrol["session"]} if patrol is not None else {}),
             "has_more": end < len(rows),
             "next_cursor": self._cursor(binding, end) if end < len(rows) else None,
         }

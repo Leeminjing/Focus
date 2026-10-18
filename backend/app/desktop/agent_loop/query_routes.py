@@ -3,6 +3,7 @@ r"""本文件对外提供 Loop Console、Mission 历史、完整会话、物化�
 输入为 Desktop 会话下的 workspace/Context/Program/Loop identity、过滤器与游标；输出为轻量 Portfolio
 拓扑、分页完整会话、可追溯 current facts/历史、revision graph 和执行 slot。具体工作流为路由把只读参数交给专用
 query service，不修改 Context 或模型输入；只读 audit 关联 Expansion planning session 的冻结策略/用量/阻断，以及自主压缩的 gate、candidate、resolution、Run 与 revision。
+audit 的 patrol_history 缺省读取当前 Round，支持 round_id/observation_id 精确选择历史 Session 与 Curator。
 示例：`app.include_router(loop_query_router)`。
 TaskProgress 诊断输出前序、Observation、manifest、Lineage refs/hash 及独立后台工作的 readiness 和用量；Observation 检查按当前权限分页读取同一冻结内容。
 事实详情的可选 revision 固定历史文件预览，继续使用同一 Live 权限与脱敏合同。
@@ -46,6 +47,7 @@ from backend.app.desktop.agent_loop.models import (
 )
 from backend.app.desktop.agent_loop.live_access import LoopLiveAccessPolicy, LoopLiveRedactionPolicy
 from backend.app.desktop.agent_loop.observation_query import ObservationInspectionQuery, ObservationSection
+from backend.app.desktop.agent_loop.patrol_audit_query import PatrolAuditQuery
 from backend.app.desktop.context_curation.models import (
     CurationLane,
     CurationProgram,
@@ -229,11 +231,17 @@ async def curation_program(program_id: str, request: Request) -> dict:
 
 
 @loop_query_router.get("/agent-loops/{loop_id}/audit")
-async def loop_audit(loop_id: str, request: Request) -> dict:
+async def loop_audit(
+    loop_id: str, request: Request,
+    round_id: str | None = None, observation_id: str | None = None,
+) -> dict:
     from backend.app.desktop.agent_loop.models import LoopObservation
     from backend.app.desktop.evolution_strategies import strategy_adoption_records
 
     async with request.app.state.desktop_service.session_factory() as session:
+        patrol_history = await PatrolAuditQuery().read(
+            session, loop_id, round_id=round_id, observation_id=observation_id,
+        )
         decisions = list((await session.scalars(select(LoopDecision).where(LoopDecision.loop_id == loop_id).order_by(LoopDecision.created_at))).all())
         adopted_observations = [row.observation_id for row in decisions if row.intent.get("strategy_adoptions")]
         observations = {identity: {"evolution_strategies": strategies or ()} for identity, strategies in (await session.execute(
@@ -256,6 +264,7 @@ async def loop_audit(loop_id: str, request: Request) -> dict:
         resolutions = list((await session.scalars(select(LoopCompressionResolution).where(LoopCompressionResolution.loop_id == loop_id).order_by(LoopCompressionResolution.created_at))).all())
         mission_history = await MissionHistoryQueryService().read(session, loop_id)
         return {
+            "patrol_history": patrol_history,
             "mission_history": mission_history,
             "decisions": [{"decision_id": row.decision_id, "round_id": row.round_id, "rationale": row.rationale, "evidence": row.evidence, "status": row.status, "rejection": row.rejection,
                            "strategy_adoptions": strategy_adoption_records(row.intent, observations.get(row.observation_id))} for row in decisions],
