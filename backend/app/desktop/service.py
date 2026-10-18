@@ -21,7 +21,7 @@ Loop 文件模式按所属 Round 的成功决策实时复核，普通会话继�
 内容读取、逐轮材料解析/历史/投影和自定义分组分别委托给单一职责服务；主运行在同一事务
 持久化稳定用户消息与有序材料绑定，图片是通用材料聚合的派生视图，初始与恢复路径使用同一
 投影，图片交付、必看完成门和压缩门按职责独立装配；压缩通过 Context Evolution 迁移端口发布，
-稳定 Run 则由 RunLifecycleFinalizer 在同一事务收敛终态、Context revision 与 durable outbox，并通过配置提供器为命名测试结果获取当前实际秘密值；主 Run 先原子写入 accepted dispatch，后台 worker 通过 lease/fencing 领取并从持久装备重建 Agent，HTTP 确认不再依赖内存 task 接力；Loop
+稳定 Run 则由 RunLifecycleFinalizer 在同一事务收敛终态、Context revision 与 durable outbox，并通过配置提供器为命名测试结果获取当前实际秘密值；收尾失败按有上限的指数退避持续重试，原始 RunRecord 保留至结算成功，派发循环补偿丢失的同步任务且不重放 Agent；主 Run 先原子写入 accepted dispatch，后台 worker 通过 lease/fencing 领取并从持久装备重建 Agent，HTTP 确认不再依赖内存 task 接力；Loop
 后台启动把计划 Workspace Slot 与 Run 一同持久化，再把受治理工具根绑定到该 Slot；任务详情同时公开最新直接用户
 Main Run 供 Loop 绑定首轮，并按活跃执行视图返回该 Context 的会话消息（执行身份上有更新状态时与运行流同源，
 否则与已发布 revision 一致），数据库锚点与真实作用路径一致。
@@ -218,6 +218,8 @@ logger = logging.getLogger(__name__)
 
 _MAIN_RUNTIME_EQUIPMENT_KEY = MAIN_RUN_EQUIPMENT_KEY
 _RUN_DISPATCH_EQUIPMENT_KEY = "_durable_dispatch_execution"
+_RUN_FINALIZATION_RETRY_INITIAL_SECONDS = 1.0
+_RUN_FINALIZATION_RETRY_MAX_SECONDS = 30.0
 _TERMINAL_STATUSES = frozenset({"success", "error", "interrupted"})
 _ACCESS_DECISIONS = frozenset({"approve", "reject", "cancel"})
 
@@ -399,6 +401,11 @@ class DesktopService:
         self.memory = MemoryService(session_factory, app_config, self._memory_context_messages)
 
         self._sync_tasks: set[asyncio.Task] = set()
+        self._run_sync_tasks: dict[str, asyncio.Task] = {}
+        # Keep the original terminal record beyond RunManager's five-minute cleanup.
+        # Only successful settlement removes it; persisted unsettled Runs cover restart.
+        self._pending_run_finalizations: dict[str, RunRecord] = {}
+        self._closing = False
         self._watcher: asyncio.Task | None = None
         self._material_watch_failures: set[str] = set()
 
@@ -426,6 +433,7 @@ class DesktopService:
         self._run_dispatch_wakeup.set()
 
     async def close(self) -> None:
+        self._closing = True
         await self.context_patrol.close()
         background = list(self._sync_tasks)
         if self._run_dispatch_task:
@@ -450,6 +458,7 @@ class DesktopService:
     async def _run_dispatch_loop(self) -> None:
         while True:
             self._run_dispatch_wakeup.clear()
+            self._resume_pending_run_finalizations()
             try:
                 await self.conversation_inputs.drain()
             except asyncio.CancelledError:
@@ -2636,57 +2645,89 @@ class DesktopService:
         return run.run_id
 
     def attach_run_sync(self, record: RunRecord) -> None:
-
-        task = asyncio.create_task(self._sync_run_status(record))
+        if self._closing:
+            return
+        existing = self._run_sync_tasks.get(record.run_id)
+        if existing is not None and not existing.done():
+            return
+        self._pending_run_finalizations[record.run_id] = record
+        task = asyncio.create_task(self._sync_run_status(record), name=f"run-finalize:{record.run_id}")
+        self._run_sync_tasks[record.run_id] = task
         self._sync_tasks.add(task)
+        # Also handles cancellation before the coroutine gets its first turn.
+        task.add_done_callback(self._sync_tasks.discard)
+
+    def _resume_pending_run_finalizations(self) -> None:
+        for record in tuple(self._pending_run_finalizations.values()):
+            self.attach_run_sync(record)
 
     async def _sync_run_status(self, record: RunRecord) -> None:
         try:
-            await record.task
-        except asyncio.CancelledError:
-            pass
-        finally:
             try:
-                activity_task = getattr(record, "loop_activity_task", None)
-                if activity_task is not None:
-                    try:
-                        await activity_task
-                    except Exception:
-                        logger.exception("Loop Run 活动事件提交失败: run_id=%s", record.run_id)
-                if not hasattr(self, "run_lifecycle") and hasattr(self, "_set_run_status"):
-                    kind, task_id = await self._set_run_status(
-                        record.run_id,
-                        record.status.value,
-                        record.error,
-                        record.prompt_input_tokens,
-                        record.prompt_cache_hit_tokens,
-                    )
-                    if kind == "main":
-                        await self.contexts.evolution.publish_latest_checkpoint(
-                            task_id,
-                            ContextRevisionOriginKind.RUN_SETTLED,
-                            origin_id=record.run_id,
-                        )
-                        await self.context_patrol.notify_stable_context_checkpoint(task_id)
-                    return
-                settlement = await self.run_lifecycle.finalize(record)
-                async with self.session_factory.begin() as session:
-                    await self._run_dispatch_repository.settle_by_run(session, record.run_id)
-                if settlement.kind == "main":
-                    try:
-                        await self.context_patrol.notify_stable_context_checkpoint(
-                            settlement.task_id
-                        )
-                    except Exception:
-                        logger.warning(
-                            "登记稳定 Context checkpoint 失败: context_id=%s",
-                            settlement.task_id,
-                            exc_info=True,
-                        )
+                await asyncio.shield(record.task)
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():
+                    raise
             except Exception:
-                logger.exception("收敛 Run 终态失败: run_id=%s", record.run_id)
-            finally:
-                self._sync_tasks.discard(asyncio.current_task())
+                logger.exception("Run 执行任务异常退出，继续收尾: run_id=%s", record.run_id)
+            activity_task = getattr(record, "loop_activity_task", None)
+            if activity_task is not None:
+                try:
+                    await asyncio.shield(activity_task)
+                except asyncio.CancelledError:
+                    if asyncio.current_task().cancelling():
+                        raise
+                    logger.warning("Loop Run 活动事件提交已取消: run_id=%s", record.run_id)
+                except Exception:
+                    logger.exception("Loop Run 活动事件提交失败: run_id=%s", record.run_id)
+            delay = _RUN_FINALIZATION_RETRY_INITIAL_SECONDS
+            while True:
+                try:
+                    await self._finalize_run_status(record)
+                except Exception:
+                    logger.exception("收敛 Run 终态失败，%s 秒后重试: run_id=%s", delay, record.run_id)
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, _RUN_FINALIZATION_RETRY_MAX_SECONDS)
+                else:
+                    getattr(self, "_pending_run_finalizations", {}).pop(record.run_id, None)
+                    return
+        finally:
+            task = asyncio.current_task()
+            self._sync_tasks.discard(task)
+            tasks = getattr(self, "_run_sync_tasks", {})
+            if tasks.get(record.run_id) is task:
+                tasks.pop(record.run_id, None)
+
+    async def _finalize_run_status(self, record: RunRecord) -> None:
+        if not hasattr(self, "run_lifecycle") and hasattr(self, "_set_run_status"):
+            kind, task_id = await self._set_run_status(
+                record.run_id,
+                record.status.value,
+                record.error,
+                record.prompt_input_tokens,
+                record.prompt_cache_hit_tokens,
+            )
+            if kind == "main":
+                await self.contexts.evolution.publish_latest_checkpoint(
+                    task_id,
+                    ContextRevisionOriginKind.RUN_SETTLED,
+                    origin_id=record.run_id,
+                )
+                await self.context_patrol.notify_stable_context_checkpoint(task_id)
+            return
+        settlement = await self.run_lifecycle.finalize(record)
+        async with self.session_factory.begin() as session:
+            await self._run_dispatch_repository.settle_by_run(session, record.run_id)
+        self.notify_run_dispatch()
+        if settlement.kind == "main":
+            try:
+                await self.context_patrol.notify_stable_context_checkpoint(settlement.task_id)
+            except Exception:
+                logger.warning(
+                    "登记稳定 Context checkpoint 失败: context_id=%s",
+                    settlement.task_id,
+                    exc_info=True,
+                )
 
     async def _material_context(self, task_id: str) -> tuple[str, str]:
 
