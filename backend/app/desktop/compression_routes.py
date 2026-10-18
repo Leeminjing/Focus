@@ -3,7 +3,7 @@
 输入为带 X-Focus-Session 的桌面请求与 SummarizeRequest / 关键字预览与应用请求；输出为候选
 摘要 JSON、压缩面板消息快照或关键字命中预览/应用结果。具体工作流为快捷 apply 先让用户决定
 取代同一 Loop 的 Patrol 压缩，再复用 DesktopService 的规范压缩编译与 revision 发布；消息快照复用
-DesktopService.get_checkpoint_messages（checkpoint_ns=""）。示例：
+DesktopService.get_compression_messages，按当前 Revision 的执行线程与命名空间读取完整消息。示例：
 `app.include_router(compression_router)`。
 """
 
@@ -82,9 +82,7 @@ async def quick_apply(body: QuickApplyRequest, request: Request) -> dict:
 
 @compression_router.get("/desktop/api/tasks/{task_id}/messages")
 async def task_messages(task_id: str, request: Request) -> dict:
-    """压缩面板消息快照：主图 checkpoint 的当前 messages（含压缩块元数据）。"""
+    """压缩面板消息快照：当前 Revision 执行位置的完整 messages（含压缩块元数据）。"""
     service = request.app.state.desktop_service
-    async with service.session_factory() as session:
-        task, _ = await service._get_task_entities(session, task_id)
-    messages = await service.get_checkpoint_messages(task.thread_id, "")
+    messages = await service.get_compression_messages(task_id)
     return {"messages": messages}
